@@ -1,0 +1,31 @@
+[package]
+name = "banlieue-api"
+description = "API types and CRD generation for banlieue, a Kubernetes-native VM management API"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+[dependencies]
+kube.workspace = true
+k8s-openapi.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml = { workspace = true, optional = true }
+
+[dev-dependencies]
+serde_yaml.workspace = true
+
+[features]
+default = []
+# Enables the binary that prints all CRDs as YAML for kustomize/helm consumption.
+crdgen = ["dep:serde_yaml"]
+
+[[bin]]
+name = "crdgen"
+path = "src/bin/crdgen.rs"
+required-features = ["crdgen"]

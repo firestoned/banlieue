@@ -1,0 +1,38 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# A single libvirt host advertising the same abstract "gold" and "prod"
+# class names as the vSphere provider, even though libvirt has no native
+# concept of storage tiers. The mapping is purely admin-declarative.
+apiVersion: banlieue.io/v1alpha1
+kind: Provider
+metadata:
+  name: libvirt-edge-host-7
+  namespace: ops
+  labels:
+    dc: dc-edge
+    env: edge
+spec:
+  providerClassRef:
+    name: libvirt
+  connection:
+    endpoint: qemu+ssh://kvm-7.edge.example/system
+    credentialsRef:
+      name: libvirt-edge-creds
+  capabilities:
+    storageClasses:
+      - name: gold          # admin asserts: on this host, gold = nvme pool
+        target:
+          pool: nvme-pool
+      - name: standard
+        target:
+          pool: default
+    networkClasses:
+      - name: prod
+        target:
+          network: br-prod
+      - name: mgmt
+        target:
+          network: br-mgmt
+    features:
+      - nestedVirtualization

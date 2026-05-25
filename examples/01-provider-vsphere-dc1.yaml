@@ -1,0 +1,66 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# A vCenter in datacenter 1, with two failure domains (compute clusters)
+# and admin-defined storage / network class mappings.
+apiVersion: banlieue.io/v1alpha1
+kind: Provider
+metadata:
+  name: vcenter-dc1
+  namespace: ops
+  labels:
+    dc: dc1
+    env: prod
+spec:
+  providerClassRef:
+    name: vsphere
+  connection:
+    endpoint: https://vcenter-dc1.corp.example/sdk
+    credentialsRef:
+      name: vcenter-dc1-creds
+    insecureSkipTLSVerify: false
+  capabilities:
+    storageClasses:
+      - name: gold
+        target:
+          datastoreCluster: dsc-gold
+      - name: silver
+        target:
+          datastoreCluster: dsc-silver
+    networkClasses:
+      - name: prod
+        target:
+          portGroup: vmnet-prod
+      - name: mgmt
+        target:
+          portGroup: vmnet-mgmt
+    features:
+      - hotAddCPU
+      - hotAddMemory
+      - efiSecureBoot
+# Status is written by the vSphere provider controller after introspection,
+# shown here for reference:
+# status:
+#   failureDomains:
+#     - name: dc1-cluster-a
+#       labels: { dc: dc1, env: prod, cluster: cluster-a }
+#       attributes:
+#         availableStorageClasses: [gold, silver]
+#         availableNetworkClasses: [prod, mgmt]
+#         features: [hotAddCPU, hotAddMemory, efiSecureBoot]
+#         raw:
+#           datacenter: DC-East
+#           cluster: Compute-A
+#     - name: dc1-cluster-b
+#       labels: { dc: dc1, env: nonprod, cluster: cluster-b }
+#       attributes:
+#         availableStorageClasses: [silver]
+#         availableNetworkClasses: [prod, mgmt]
+#         features: [hotAddCPU, hotAddMemory]
+#         raw:
+#           datacenter: DC-East
+#           cluster: Compute-B
+#   conditions:
+#     - type: Ready
+#       status: "True"
+#       reason: Connected

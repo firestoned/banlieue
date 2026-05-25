@@ -1,0 +1,41 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/banlieue-api",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "Apache-2.0"
+repository = "https://github.com/firestoned/banlieue"
+homepage = "https://github.com/firestoned/banlieue"
+authors = ["Erick Bourgeois <erick@jeb.ca>"]
+
+[workspace.dependencies]
+# Kubernetes — versions match kube-rs/controller-rs (2026-05-19)
+kube = { version = "3", features = ["derive", "client", "runtime"] }
+k8s-openapi = { version = "0.27", features = ["latest", "schemars"] }
+schemars = "1"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+
+# Errors
+thiserror = "2"
+anyhow = "1"
+
+# Async / runtime (used by controller crates in later phases)
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+futures = "0.3"
+
+# Logging / telemetry
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

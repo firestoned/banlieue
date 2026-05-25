@@ -1,0 +1,105 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+
+name: 'Extract Version Information'
+description: 'Extracts version, tag name, and image tags for consistent use across workflows'
+author: 'Erick Bourgeois'
+
+branding:
+  icon: 'tag'
+  color: 'blue'
+
+inputs:
+  repository:
+    description: 'Repository name (e.g., firestoned/banlieue) - used for image repository naming'
+    required: true
+  workflow-type:
+    description: 'Workflow type: main, pr, or release'
+    required: true
+  pr-number:
+    description: 'PR number (only for pr workflow)'
+    required: false
+  release-tag:
+    description: 'Release tag name (only for release workflow)'
+    required: false
+  image-tag-suffix:
+    description: 'Suffix to append to the image tag (e.g., "-distroless")'
+    required: false
+    default: ''
+
+outputs:
+  version:
+    description: 'Semantic version (e.g., 1.2.3)'
+    value: ${{ steps.extract.outputs.version }}
+  tag-name:
+    description: 'Git tag name (e.g., v1.2.3)'
+    value: ${{ steps.extract.outputs.tag-name }}
+  image-tag:
+    description: 'Docker image tag (e.g., main-2026-05-24, pr-42, v0.2.0)'
+    value: ${{ steps.extract.outputs.image-tag }}
+  image-repository:
+    description: 'Docker repository name (e.g., firestoned/banlieue)'
+    value: ${{ steps.extract.outputs.image-repository }}
+  short-sha:
+    description: 'Short 7-character SHA'
+    value: ${{ steps.extract.outputs.short-sha }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Extract version information
+      id: extract
+      shell: bash
+      env:
+        GH_SHA: ${{ github.sha }}
+        GH_RUN_NUMBER: ${{ github.run_number }}
+        IN_REPOSITORY: ${{ inputs.repository }}
+        IN_WORKFLOW_TYPE: ${{ inputs.workflow-type }}
+        IN_PR_NUMBER: ${{ inputs.pr-number }}
+        IN_RELEASE_TAG: ${{ inputs.release-tag }}
+        IN_IMAGE_TAG_SUFFIX: ${{ inputs.image-tag-suffix }}
+      run: |
+        SHORT_SHA="${GH_SHA:0:7}"
+        echo "short-sha=${SHORT_SHA}" >> $GITHUB_OUTPUT
+
+        IMAGE_REPOSITORY="${IN_REPOSITORY}"
+        IMAGE_TAG_SUFFIX="${IN_IMAGE_TAG_SUFFIX}"
+        echo "image-repository=${IMAGE_REPOSITORY}" >> $GITHUB_OUTPUT
+
+        case "${IN_WORKFLOW_TYPE}" in
+          release)
+            TAG_NAME="${IN_RELEASE_TAG}"
+            VERSION="${TAG_NAME#v}"
+            IMAGE_TAG="${TAG_NAME}${IMAGE_TAG_SUFFIX}"
+            echo "version=${VERSION}" >> $GITHUB_OUTPUT
+            echo "tag-name=${TAG_NAME}" >> $GITHUB_OUTPUT
+            echo "image-tag=${IMAGE_TAG}" >> $GITHUB_OUTPUT
+            echo "Release: version=${VERSION}, tag=${TAG_NAME}, image=${IMAGE_REPOSITORY}:${IMAGE_TAG}"
+            ;;
+
+          pr)
+            VERSION="pr-${IN_PR_NUMBER}"
+            TAG_NAME="pr-${IN_PR_NUMBER}"
+            IMAGE_TAG="pr-${IN_PR_NUMBER}${IMAGE_TAG_SUFFIX}"
+            echo "version=${VERSION}" >> $GITHUB_OUTPUT
+            echo "tag-name=${TAG_NAME}" >> $GITHUB_OUTPUT
+            echo "image-tag=${IMAGE_TAG}" >> $GITHUB_OUTPUT
+            echo "PR: version=${VERSION}, tag=${TAG_NAME}, image=${IMAGE_REPOSITORY}:${IMAGE_TAG}"
+            ;;
+
+          main)
+            DATE=$(date +%Y-%m-%d)
+            VERSION="0.0.0-main.${DATE}.${GH_RUN_NUMBER}"
+            TAG_NAME="main-${DATE}"
+            IMAGE_TAG="main-${DATE}${IMAGE_TAG_SUFFIX}"
+            echo "version=${VERSION}" >> $GITHUB_OUTPUT
+            echo "tag-name=${TAG_NAME}" >> $GITHUB_OUTPUT
+            echo "image-tag=${IMAGE_TAG}" >> $GITHUB_OUTPUT
+            echo "Main: version=${VERSION}, tag=${TAG_NAME}, image=${IMAGE_REPOSITORY}:${IMAGE_TAG}"
+            ;;
+
+          *)
+            echo "Error: Invalid workflow-type '${IN_WORKFLOW_TYPE}'. Must be: main, pr, or release"
+            exit 1
+            ;;
+        esac

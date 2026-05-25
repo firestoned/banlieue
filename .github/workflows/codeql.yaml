@@ -1,0 +1,76 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# CodeQL analysis — explicit language list.
+#
+# Writing this workflow disables GitHub's "default setup" CodeQL config
+# and lets us pin exactly which languages get analyzed.
+#
+# Languages analyzed here are exactly the ones with real source files:
+#   - `rust`    — crates/**/*.rs (beta in CodeQL; stable enough for
+#                  static vulnerability checks on our surface)
+#   - `actions` — .github/workflows/**/*.yaml
+#
+# Add `javascript-typescript` once banlieue ships a docs/ site with
+# JS sources, or `python` if any Python tooling is added.
+
+name: CodeQL
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+  schedule:
+    # Weekly full re-scan on Sundays at 07:17 UTC. Offsets the minute
+    # so we don't collide with the hourly cron queue. Keeps the Code
+    # Scanning dashboard fresh when a week passes without code changes.
+    - cron: '17 7 * * 0'
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: 🔍 CodeQL - ${{ matrix.language }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write
+      packages: read
+      # Required by github/codeql-action/upload-sarif to fetch workflow-run
+      # metadata for SARIF fingerprinting (otherwise: "Resource not accessible
+      # by integration" on the get-a-workflow-run API).
+      actions: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: rust
+            build-mode: none
+            runner: ubuntu-latest
+          - language: actions
+            build-mode: none
+            runner: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@e46ed2cbd01164d986452f91f178727624ae40d7 # v4.35.3
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+          # Repo-local config file (paths-ignore, query suites). Keeps
+          # generated / vendored output out of the database.
+          config-file: ./.github/codeql/codeql-config.yml
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@e46ed2cbd01164d986452f91f178727624ae40d7 # v4.35.3
+        with:
+          category: "/language:${{ matrix.language }}"

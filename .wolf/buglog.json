@@ -1,0 +1,369 @@
+{
+  "version": 1,
+  "bugs": [
+    {
+      "id": "bug-001",
+      "timestamp": "2026-05-24T23:13:36.196Z",
+      "error_message": "Incorrect value in code",
+      "file": "Cargo.toml",
+      "root_cause": "Had \"0.8\"",
+      "fix": "Changed to \"schemars\"",
+      "tags": [
+        "auto-detected",
+        "wrong-value",
+        "toml"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-05-24T23:13:36.196Z"
+    },
+    {
+      "id": "bug-002",
+      "timestamp": "2026-05-24T23:18:00.775Z",
+      "error_message": "Wrong reference: mod should be path",
+      "file": "crates/banlieue-api/src/common.rs",
+      "root_cause": "Used \"mod\" instead of \"path\"",
+      "fix": "Changed mod → path",
+      "tags": [
+        "auto-detected",
+        "wrong-reference",
+        "rs"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-05-24T23:18:00.775Z"
+    },
+    {
+      "id": "bug-003",
+      "timestamp": "2026-05-24T23:18:37.500Z",
+      "error_message": "Significant refactor of ",
+      "file": "crates/banlieue-api/src/common_tests.rs",
+      "root_cause": "4 lines replaced/restructured",
+      "fix": "Rewrote 20→26 lines (4 removed)",
+      "tags": [
+        "auto-detected",
+        "refactor",
+        "rs"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-05-24T23:18:37.500Z"
+    },
+    {
+      "id": "bug-004",
+      "timestamp": "2026-05-24T19:30:00.000Z",
+      "error_message": "the trait bound `Condition: JsonSchema` is not satisfied (also `Time: JsonSchema`)",
+      "file": "Cargo.toml",
+      "root_cause": "k8s-openapi 0.23 only implements JsonSchema for Condition/Time when its `schemars` feature is enabled; the workspace had only `v1_31`.",
+      "fix": "Added `schemars` to k8s-openapi features in the workspace [workspace.dependencies] table.",
+      "tags": [
+        "schemars",
+        "k8s-openapi",
+        "cargo-features",
+        "build-break"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-05-24T19:30:00.000Z"
+    },
+    {
+      "id": "bug-005",
+      "timestamp": "2026-05-24T19:30:00.000Z",
+      "error_message": "use of unresolved crate `serde_yaml` in crates/banlieue-api/src/bin/crdgen.rs",
+      "file": "crates/banlieue-api/Cargo.toml",
+      "root_cause": "`crdgen` is a feature-gated binary that depends on serde_yaml, but serde_yaml was only in [dev-dependencies] so the binary could not see it.",
+      "fix": "Added `serde_yaml = { workspace = true, optional = true }` to [dependencies] and made the `crdgen` feature pull it in via `crdgen = [\"dep:serde_yaml\"]`.",
+      "tags": [
+        "cargo-features",
+        "optional-dep",
+        "crdgen"
+      ],
+      "related_bugs": [
+        "bug-004"
+      ],
+      "occurrences": 1,
+      "last_seen": "2026-05-24T19:30:00.000Z"
+    },
+    {
+      "id": "bug-006",
+      "timestamp": "2026-05-24T19:30:00.000Z",
+      "error_message": "panic in kube-core schema flattener: Property \"source\" has the schema [enum: \"static\"] but was already defined as [enum: \"dhcp\", description: ...]",
+      "file": "crates/banlieue-api/src/common.rs (IpamSpec)",
+      "root_cause": "kube-derive's CRD schema flattener is fundamentally incompatible with `#[serde(tag = \"...\")]` enums. By construction each variant subschema fixes the discriminator property to a *different* enum value (`dhcp`, `static`, `pool`), and kube-core's flattener demands an identical schema for any property used in multiple subschemas. The schemars 0.8 panic surfaced a description-metadata mismatch first; on schemars 1 + kube 3 the discriminator-value mismatch is what panics. Tagged enums cannot survive CRD generation either way. Stripping doc comments removed one symptom but not the cause.",
+      "fix": "FIXED 2026-05-25 by restructuring `IpamSpec` from a serde-tagged enum into a flat struct: `IpamSpec { source: IpamSource, static: Option<StaticIpamConfig>, pool: Option<PoolIpamConfig> }`. New `IpamSource` is a plain `Dhcp|Static|Pool` enum that serializes as a lower-case string. Wire format changed (sub-config now nested under a sibling field named after the discriminator), which is Kubernetes-idiomatic and matches how CAPI structures similar shapes. Cross-field validation (`source=Static implies static is set`) is intentionally NOT schema-enforced — left to the controller and/or a future CEL rule. The three `*_currently_panics_due_to_ipam_spec_bug` tests were replaced with positive CRD-metadata assertions. Verified end-to-end: `cargo run -p banlieue-api --bin crdgen --features crdgen` now emits 6 valid CRDs.",
+      "tags": [
+        "kube-derive",
+        "schemars",
+        "tagged-enum",
+        "ipam",
+        "crdgen",
+        "fixed"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-05-25T12:30:00.000Z"
+    },
+    {
+      "id": "bug-007",
+      "timestamp": "2026-05-25T14:42:55.211Z",
+      "error_message": "Incorrect value in code",
+      "file": "crates/banlieue-api/src/banlieue/provider_tests.rs",
+      "root_cause": "Had \"ok\"",
+      "fix": "Changed to \"2026-05-24T00:00:00Z\"",
+      "tags": [
+        "auto-detected",
+        "wrong-value",
+        "rs"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-05-25T14:42:55.211Z"
+    },
+    {
+      "id": "bug-008",
+      "timestamp": "2026-05-25T14:45:17.156Z",
+      "error_message": "Missing error handling in unknown",
+      "file": ".claude/CHANGELOG.md",
+      "root_cause": "Code path had no error handling — exceptions would propagate uncaught",
+      "fix": "Added try/catch block",
+      "tags": [
+        "auto-detected",
+        "error-handling",
+        "md"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-05-25T14:45:17.156Z"
+    },
+    {
+      "id": "bug-009",
+      "timestamp": "2026-05-25T16:17:54.438Z",
+      "error_message": "Significant refactor of ",
+      "file": "crates/banlieue-api/src/common.rs",
+      "root_cause": "10 lines replaced/restructured",
+      "fix": "Rewrote 29→37 lines (10 removed) | Also: /// IPAM configuration for a network interface. Th; /// Variants:",
+      "tags": [
+        "auto-detected",
+        "refactor",
+        "rs"
+      ],
+      "related_bugs": [],
+      "occurrences": 2,
+      "last_seen": "2026-05-25T16:20:01.835Z"
+    },
+    {
+      "id": "bug-010",
+      "timestamp": "2026-05-25T16:21:44.551Z",
+      "error_message": "Significant refactor of ",
+      "file": "crates/banlieue-api/src/common_tests.rs",
+      "root_cause": "18 lines replaced/restructured",
+      "fix": "Rewrote 106→156 lines (18 removed)",
+      "tags": [
+        "auto-detected",
+        "refactor",
+        "rs"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-05-25T16:21:44.551Z"
+    },
+    {
+      "id": "bug-011",
+      "timestamp": "2026-05-25T17:06:00.379Z",
+      "error_message": "Incorrect value in code",
+      "file": ".claude/CLAUDE.md",
+      "root_cause": "Had 't relax the principle. (See `",
+      "fix": "Changed to 't relax the principle. (Rationale is in the maint",
+      "tags": [
+        "auto-detected",
+        "wrong-value",
+        "md"
+      ],
+      "related_bugs": [],
+      "occurrences": 2,
+      "last_seen": "2026-05-25T17:06:42.660Z"
+    },
+    {
+      "id": "bug-012",
+      "timestamp": "2026-05-25T17:06:57.200Z",
+      "error_message": "Incorrect value in code",
+      "file": ".claude/SKILL.md",
+      "root_cause": "Had `docs/roadmap/`",
+      "fix": "Changed to `regen-crds`",
+      "tags": [
+        "auto-detected",
+        "wrong-value",
+        "md"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-05-25T17:06:57.200Z"
+    },
+    {
+      "id": "bug-013",
+      "timestamp": "2026-05-25T17:07:08.389Z",
+      "error_message": "Significant refactor of ",
+      "file": ".claude/SKILL.md",
+      "root_cause": "2 lines replaced/restructured",
+      "fix": "Rewrote 4→4 lines (2 removed)",
+      "tags": [
+        "auto-detected",
+        "refactor",
+        "md"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-05-25T17:07:08.389Z"
+    },
+    {
+      "id": "bug-014",
+      "timestamp": "2026-05-25T19:51:10.758Z",
+      "error_message": "Wrong operator: != should be ==",
+      "file": ".github/workflows/calm-test.yaml",
+      "root_cause": "Used \"!=\" instead of \"==\"",
+      "fix": "Changed operator != → ==",
+      "tags": [
+        "auto-detected",
+        "operator-fix",
+        "yaml"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-05-25T19:51:10.758Z"
+    },
+    {
+      "id": "bug-015",
+      "timestamp": "2026-05-25T19:58:18.710Z",
+      "error_message": "Significant refactor of ",
+      "file": ".github/workflows/build.yaml",
+      "root_cause": "2 lines replaced/restructured",
+      "fix": "Rewrote 5→17 lines (2 removed)",
+      "tags": [
+        "auto-detected",
+        "refactor",
+        "yaml"
+      ],
+      "related_bugs": [
+        "bug-016"
+      ],
+      "occurrences": 1,
+      "last_seen": "2026-05-25T19:58:18.710Z"
+    },
+    {
+      "id": "bug-016",
+      "timestamp": "2026-05-25T19:58:00.000Z",
+      "error_message": "error validating \"deploy/crds/banlieue-crds.yaml\": error validating data: failed to download openapi: Get \"http://localhost:8080/openapi/v2?timeout=32s\": dial tcp [::1]:8080: connect: connection refused",
+      "file": ".github/workflows/build.yaml (package-crds job)",
+      "root_cause": "`kubectl apply --dry-run=client` performs server-side OpenAPI validation by default: it tries to fetch the cluster's /openapi/v2 to validate the manifest. In a GitHub Actions runner there is no cluster and no kubeconfig, so kubectl falls back to localhost:8080 (the legacy default) and connection-refuses. `--dry-run=client` controls *application* mode, not *validation* mode — they are independent flags.",
+      "fix": "Added `--validate=false` to skip the OpenAPI fetch (kubectl still structurally parses and shape-checks the manifest), then added a `grep -c '^kind: CustomResourceDefinition'` sanity check to assert the generator produced at least one CRD. Locally verifies: 6 CRDs generated and parsed.",
+      "tags": [
+        "ci",
+        "kubectl",
+        "dry-run",
+        "openapi",
+        "offline-validation",
+        "fixed"
+      ],
+      "related_bugs": [
+        "bug-015"
+      ],
+      "occurrences": 1,
+      "last_seen": "2026-05-25T19:58:00.000Z"
+    },
+    {
+      "id": "bug-017",
+      "timestamp": "2026-05-26T02:55:32.568Z",
+      "error_message": "Significant refactor of ",
+      "file": ".github/workflows/scorecard.yaml",
+      "root_cause": "2 lines replaced/restructured",
+      "fix": "Rewrote 8→12 lines (2 removed)",
+      "tags": [
+        "auto-detected",
+        "refactor",
+        "yaml"
+      ],
+      "related_bugs": [
+        "bug-018"
+      ],
+      "occurrences": 1,
+      "last_seen": "2026-05-26T02:55:32.568Z"
+    },
+    {
+      "id": "bug-018",
+      "timestamp": "2026-05-26T02:55:00.000Z",
+      "error_message": "Error: Resource not accessible by integration - https://docs.github.com/rest/actions/workflow-runs#get-a-workflow-run (in github/codeql-action/upload-sarif step of the SAST/Semgrep job)",
+      "file": ".github/workflows/sast.yaml (also codeql.yaml, scorecard.yaml)",
+      "root_cause": "`github/codeql-action/upload-sarif` calls the GitHub REST API `GET /repos/{owner}/{repo}/actions/runs/{run_id}` to gather workflow-run metadata used for SARIF fingerprinting (deduplication of repeat findings across runs). That endpoint requires the `actions:read` permission, which is NOT included in the default GITHUB_TOKEN scope and was not declared at the job level. The job had `security-events: write` (lets it upload SARIF) but not `actions: read` (lets it look up the workflow run).",
+      "fix": "Added `actions: read` to the job-level `permissions:` block in sast.yaml (semgrep job), codeql.yaml (analyze job), and scorecard.yaml (analysis job — replaced the commented-out hint). All three workflows use upload-sarif and would hit the same failure on later runs.",
+      "tags": [
+        "ci",
+        "github-actions",
+        "permissions",
+        "upload-sarif",
+        "codeql-action",
+        "semgrep",
+        "fixed"
+      ],
+      "related_bugs": [
+        "bug-017"
+      ],
+      "occurrences": 1,
+      "last_seen": "2026-05-26T02:55:00.000Z"
+    },
+    {
+      "id": "bug-019",
+      "timestamp": "2026-05-26T03:02:01.834Z",
+      "error_message": "Wrong operator: || should be !=",
+      "file": ".github/workflows/build.yaml",
+      "root_cause": "Used \"||\" instead of \"!=\"",
+      "fix": "Changed operator || → !=",
+      "tags": [
+        "auto-detected",
+        "operator-fix",
+        "yaml"
+      ],
+      "related_bugs": [
+        "bug-020"
+      ],
+      "occurrences": 1,
+      "last_seen": "2026-05-26T03:02:01.834Z"
+    },
+    {
+      "id": "bug-020",
+      "timestamp": "2026-05-26T03:02:00.000Z",
+      "error_message": "unable to recognize \"deploy/crds/banlieue-crds.yaml\": Get \"http://localhost:8080/api?timeout=32s\": dial tcp [::1]:8080: connect: connection refused",
+      "file": ".github/workflows/build.yaml (package-crds job)",
+      "root_cause": "Sequel to bug-016. `kubectl apply --validate=false` skipped OpenAPI schema validation but kubectl still calls the cluster's `/api` discovery endpoint to *resolve* each kind/apiVersion to a REST resource (the \"mapper\" phase). Discovery has no offline flag in kubectl — `apply` cannot function without contacting an API server. `--dry-run=client` only controls whether the resolved operation is executed; it does not bypass discovery.",
+      "fix": "Replaced the kubectl validation step entirely with an inline Python YAML validator: parse every document with yaml.safe_load_all, assert each has apiVersion=apiextensions.k8s.io/v1, kind=CustomResourceDefinition, a non-empty metadata.name, and at least one spec.versions[]. Removed the azure/setup-kubectl install step. Python 3 is preinstalled on ubuntu-latest, so no install. `kube-derive` already guarantees structural correctness at compile time, so the validator only needs to verify generator output shape — not enforce K8s-API-server semantics.",
+      "tags": [
+        "ci",
+        "kubectl",
+        "kubectl-discovery",
+        "offline-validation",
+        "fixed"
+      ],
+      "related_bugs": [
+        "bug-016",
+        "bug-019"
+      ],
+      "occurrences": 1,
+      "last_seen": "2026-05-26T03:02:00.000Z"
+    },
+    {
+      "id": "bug-021",
+      "timestamp": "2026-05-26T03:05:56.001Z",
+      "error_message": "Incorrect value in code",
+      "file": "Cargo.toml",
+      "root_cause": "Had \"banlieue contributors\"",
+      "fix": "Changed to \"Erick Bourgeois <erick@jeb.ca>\"",
+      "tags": [
+        "auto-detected",
+        "wrong-value",
+        "toml"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-05-26T03:05:56.001Z"
+    }
+  ]
+}
