@@ -1,0 +1,28 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# Ubuntu 22.04 cloud image, available on all three provider classes.
+# Each source maps to whatever that backend uses to identify a base image.
+apiVersion: banlieue.io/v1alpha1
+kind: VMImage
+metadata:
+  name: ubuntu-22.04-cloudinit
+spec:
+  osFamily: linux
+  osDistribution: ubuntu
+  osVersion: "22.04"
+  architecture: amd64
+  guestAgent: cloud-init
+  sources:
+    - providerClass: vsphere
+      kind: Template
+      ref: ubuntu-22.04-cloudinit
+      importFrom: https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.ova
+    - providerClass: proxmox
+      kind: Template
+      ref: "9000"
+    - providerClass: libvirt
+      kind: BackingFile
+      ref: /var/lib/libvirt/images/ubuntu-22.04.qcow2
+      importFrom: https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img
+      checksum: sha256:0000000000000000000000000000000000000000000000000000000000000000

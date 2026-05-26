@@ -1,0 +1,37 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# A large database tier VM class.
+apiVersion: banlieue.io/v1alpha1
+kind: VMClass
+metadata:
+  name: db-prod-large
+spec:
+  hardware:
+    cpus: 8
+    memoryMiB: 32768
+    disks:
+      - name: root
+        sizeGiB: 80
+        storageClass: gold
+        provisioning: thin
+      - name: data
+        sizeGiB: 500
+        storageClass: gold
+        provisioning: eagerZeroed
+  network:
+    interfaces:
+      - name: eth0
+        networkClass: prod
+        ipam:
+          source: pool
+          pool:
+            poolRef:
+              apiGroup: ipam.cluster.x-k8s.io
+              kind: InClusterIPPool
+              name: prod-pool
+  firmware: efi-secure
+  features:
+    - hotAddCPU
+    - hotAddMemory
+    - efiSecureBoot

@@ -1,0 +1,379 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+
+name: Build
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/build.yaml'
+      - '.github/actions/**'
+  push:
+    branches:
+      - main
+  release:
+    types:
+      - published
+
+# Top-level GITHUB_TOKEN is read-only by default (OpenSSF Scorecard
+# Token-Permissions rule). Jobs that need elevated scopes declare them
+# explicitly at the job level (package-crds / upload-release-assets).
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # License headers — always runs (PRs are pre-filtered by path at the trigger).
+  # ─────────────────────────────────────────────────────────────────────────────
+  license-check:
+    name: ⚖️ Verify SPDX License Headers
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Check license headers
+        uses: firestoned/github-actions/security/license-check@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
+        with:
+          copyright-holder: "Erick Bourgeois, banlieue"
+          license-id: "Apache-2.0"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Commit signatures — verify-mode differs by event type.
+  # ─────────────────────────────────────────────────────────────────────────────
+  verify-commits:
+    name: 🔐 Verify Signed Commits
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Verify commits (PR)
+        if: github.event_name == 'pull_request'
+        uses: firestoned/github-actions/security/verify-signed-commits@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          base-ref: origin/${{ github.base_ref }}
+          verify-mode: pr
+
+      - name: Verify commits (push to main)
+        if: github.event_name == 'push'
+        uses: firestoned/github-actions/security/verify-signed-commits@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          verify-mode: push
+
+      - name: Verify commits (release)
+        if: github.event_name == 'release'
+        uses: firestoned/github-actions/security/verify-signed-commits@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          verify-mode: release
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # PR only: formatting + clippy.
+  # ─────────────────────────────────────────────────────────────────────────────
+  format:
+    name: 🎨 Check Formatting
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    needs: [license-check, verify-commits]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (moving ref — re-pin quarterly)
+        with:
+          components: rustfmt
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+  clippy:
+    name: 📎 Clippy
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    needs: [format]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (moving ref — re-pin quarterly)
+        with:
+          components: clippy
+
+      - name: Cache cargo dependencies
+        uses: firestoned/github-actions/rust/cache-cargo@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
+
+      - name: Run clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Extract version — all events; downstream build/package jobs depend on this.
+  # format/clippy are independent PR quality checks and do not gate the build.
+  # ─────────────────────────────────────────────────────────────────────────────
+  extract-version:
+    name: 🏷️ Extract Version Information
+    runs-on: ubuntu-latest
+    needs: [license-check, verify-commits]
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag_name: ${{ steps.version.outputs.tag-name }}
+      short-sha: ${{ steps.version.outputs.short-sha }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Extract version
+        id: version
+        uses: ./.github/actions/extract-version
+        with:
+          repository: ${{ github.repository }}
+          workflow-type: ${{ github.event_name == 'pull_request' && 'pr' || github.event_name == 'push' && 'main' || 'release' }}
+          pr-number: ${{ github.event.pull_request.number }}
+          release-tag: ${{ github.event.release.tag_name }}
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Build — all events. Cargo workspace build (crates/*).
+  # On release the workspace version is bumped to match the release tag.
+  # ─────────────────────────────────────────────────────────────────────────────
+  build:
+    name: 🦀 Build - ${{ matrix.platform.name }}
+    runs-on: ${{ matrix.platform.runner }}
+    needs: [extract-version]
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - name: Linux x86_64
+            runner: ubuntu-24.04
+          - name: Linux ARM64
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Update workspace version (release)
+        if: github.event_name == 'release'
+        run: |
+          perl -i -pe 's/^version = ".*"/version = "${{ needs.extract-version.outputs.version }}"/ if /^\[workspace\.package\]/ .. /^\[/' Cargo.toml
+          echo "Updated Cargo.toml to version ${{ needs.extract-version.outputs.version }}"
+          grep '^version = ' Cargo.toml
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (moving ref — re-pin quarterly)
+
+      - name: Cache cargo dependencies
+        uses: firestoned/github-actions/rust/cache-cargo@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
+
+      - name: Build workspace
+        run: cargo build --workspace --release --all-features
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Tests — all events; running unconditionally lets package jobs depend on it.
+  # ─────────────────────────────────────────────────────────────────────────────
+  test:
+    name: 🧪 Test
+    runs-on: ubuntu-latest
+    needs: [build]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (moving ref — re-pin quarterly)
+
+      - name: Cache cargo dependencies
+        uses: firestoned/github-actions/rust/cache-cargo@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
+
+      - name: Run tests
+        run: cargo test --workspace --all-features --verbose
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Security scan — all events (cargo-audit).
+  # Release uploads the audit report as a workflow artifact.
+  # ─────────────────────────────────────────────────────────────────────────────
+  security:
+    name: 🛡️ Security Vulnerability Scan
+    runs-on: ubuntu-latest
+    needs: [verify-commits]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (moving ref — re-pin quarterly)
+
+      - name: Run security scan (PR / push)
+        if: github.event_name != 'release'
+        uses: firestoned/github-actions/rust/security-scan@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
+        with:
+          cargo-audit-version: "0.22.0"
+
+      - name: Run security scan (release)
+        if: github.event_name == 'release'
+        uses: firestoned/github-actions/rust/security-scan@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
+        with:
+          cargo-audit-version: "0.22.0"
+          upload-artifact-name: cargo-audit-report-release
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # cargo-deny — PR + push to main.
+  # Enforces license allow-list, RustSec advisories, and forbids dependencies
+  # from unknown registries or git URLs. Requires deny.toml at repo root.
+  # ─────────────────────────────────────────────────────────────────────────────
+  cargo-deny:
+    name: 🧪 cargo-deny (License + Advisory + Sources)
+    if: github.event_name != 'release'
+    runs-on: ubuntu-latest
+    needs: [verify-commits]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Run cargo-deny
+        uses: EmbarkStudios/cargo-deny-action@91bf2b620e09e18d6eb78b92e7861937469acedb # v2.0.17
+        with:
+          log-level: warn
+          command: check
+          # `all-features = true` is set in `deny.toml`. cargo-deny 0.19+ no
+          # longer accepts `--all-features` on the `check` subcommand; relying
+          # on config keeps this forward-compatible with future bumps.
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CRD generation — all events.
+  #
+  # banlieue is code-first: deploy/crds/ YAML is generated from the Rust types
+  # in `crates/banlieue-api/src/` via the `crdgen` binary (feature-gated). This
+  # job regenerates the manifests, verifies they parse via kubectl --dry-run,
+  # and uploads them as an artifact. On release, they are bundled into the
+  # release assets by upload-release-assets.
+  # ─────────────────────────────────────────────────────────────────────────────
+  package-crds:
+    name: 📦 Generate CRD Manifests
+    runs-on: ubuntu-latest
+    needs: [build]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (moving ref — re-pin quarterly)
+
+      - name: Cache cargo dependencies
+        uses: firestoned/github-actions/rust/cache-cargo@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
+
+      - name: Generate CRDs
+        run: |
+          mkdir -p deploy/crds
+          cargo run -p banlieue-api --bin crdgen --features crdgen > deploy/crds/banlieue-crds.yaml
+          echo "── Generated CRDs ─────────────────────────────────────────"
+          grep '^kind:' deploy/crds/banlieue-crds.yaml || true
+          wc -l deploy/crds/banlieue-crds.yaml
+
+      # Offline validation: parse every YAML document and assert each is a
+      # CustomResourceDefinition with the required top-level fields.
+      #
+      # We deliberately do NOT use `kubectl apply --dry-run=client` here:
+      # even with `--validate=false` (skips OpenAPI fetch), kubectl still
+      # calls the cluster's `/api` discovery endpoint to resolve each kind
+      # to a REST resource. In a CI runner with no cluster, kubectl falls
+      # back to localhost:8080 and connection-refuses. There is no flag to
+      # bypass discovery — it is required for `apply` to function at all.
+      #
+      # `kube-derive` already guarantees structural correctness at compile
+      # time, so we only need to verify the emitted YAML parses and is the
+      # expected shape.
+      - name: Validate generated CRDs (offline)
+        run: |
+          python3 - <<'PY'
+          import sys, yaml, pathlib
+          path = pathlib.Path("deploy/crds/banlieue-crds.yaml")
+          docs = list(yaml.safe_load_all(path.read_text()))
+          if not docs:
+              sys.exit("::error::Generated CRD file is empty")
+          for i, doc in enumerate(docs):
+              if not isinstance(doc, dict):
+                  sys.exit(f"::error::Document {i} is not a mapping")
+              if doc.get("apiVersion") != "apiextensions.k8s.io/v1":
+                  sys.exit(f"::error::Document {i} has unexpected apiVersion: {doc.get('apiVersion')!r}")
+              if doc.get("kind") != "CustomResourceDefinition":
+                  sys.exit(f"::error::Document {i} has unexpected kind: {doc.get('kind')!r}")
+              name = doc.get("metadata", {}).get("name")
+              if not name:
+                  sys.exit(f"::error::Document {i} is missing metadata.name")
+              if not doc.get("spec", {}).get("versions"):
+                  sys.exit(f"::error::CRD {name!r} has no spec.versions")
+          print(f"Validated {len(docs)} CustomResourceDefinition document(s):")
+          for d in docs:
+              print(f"  - {d['metadata']['name']}")
+          PY
+
+      - name: Package CRD manifests
+        run: tar czf banlieue-crds.tar.gz deploy/crds/
+
+      - name: Upload CRD manifests artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: banlieue-crds
+          path: |
+            deploy/crds/banlieue-crds.yaml
+            banlieue-crds.tar.gz
+          if-no-files-found: error
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Release only: collate artifacts and upload to the GitHub Release.
+  # ─────────────────────────────────────────────────────────────────────────────
+  upload-release-assets:
+    name: 🚀 Upload Release Assets
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    needs: [extract-version, test, package-crds]
+    permissions:
+      contents: write
+    steps:
+      - name: Download CRD manifests
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: banlieue-crds
+          path: ./artifacts/crds
+
+      - name: Organize release artifacts
+        run: |
+          mkdir -p release
+          cp artifacts/crds/banlieue-crds.yaml release/
+          cp artifacts/crds/banlieue-crds.tar.gz release/
+          cd release && sha256sum * > checksums.sha256
+          echo "── Release artifacts ──"
+          ls -lh
+
+      - name: Upload release assets
+        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
+        with:
+          files: |
+            release/banlieue-crds.yaml
+            release/banlieue-crds.tar.gz
+            release/checksums.sha256
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # NOTE: Docker / VEX / Cosign / SLSA / Grype jobs are deliberately NOT
+  # included yet. banlieue is at Phase 0 (`crates/banlieue-api` library +
+  # `crdgen` binary). The full 5-spot-style supply-chain pipeline (image
+  # build, Cosign signing, OpenVEX assembly, Grype scan, SLSA provenance)
+  # lands when banlieue-controller ships a deployable binary in Phase 1A.
+  # (Phase plans are maintained outside this repo.)
+  # ─────────────────────────────────────────────────────────────────────────────

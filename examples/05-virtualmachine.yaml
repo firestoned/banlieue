@@ -1,0 +1,46 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# A prod database VM. The scheduler will:
+#   1. Filter Providers by `placement.providerSelector` (label dc=dc1, env=prod)
+#   2. Filter failure domains by `placement.failureDomainSelector`
+#   3. Drop candidates whose `availableStorageClasses` doesn't include "gold"
+#   4. Drop candidates whose `availableNetworkClasses` doesn't include "prod"
+#   5. Drop candidates whose `features` doesn't include the VMClass features
+#   6. Apply anti-affinity vs other VMs with `app: db-prod` in the namespace
+#   7. Pick one, write to status.scheduled, create the VSphereMachine
+apiVersion: banlieue.io/v1alpha1
+kind: VirtualMachine
+metadata:
+  name: db-prod-01
+  namespace: ops
+  labels:
+    app: db-prod
+    role: primary
+spec:
+  classRef:
+    name: db-prod-large
+  imageRef:
+    name: ubuntu-22.04-cloudinit
+  placement:
+    providerSelector:
+      matchLabels:
+        dc: dc1
+        env: prod
+    failureDomainSelector:
+      matchExpressions:
+        - key: cluster
+          operator: In
+          values: [cluster-a, cluster-b]
+    antiAffinity:
+      - topologyKey: cluster
+        labelSelector:
+          matchLabels:
+            app: db-prod
+        mode: required
+  desiredPowerState: "On"
+  userData:
+    secretRef:
+      name: db-prod-01-cloudinit
+    key: user-data
+  migrationPolicy: automatic

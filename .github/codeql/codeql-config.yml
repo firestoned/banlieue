@@ -1,0 +1,17 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# CodeQL config consumed by .github/workflows/codeql.yaml. Keeps
+# generated / vendored output out of the scanning database so the
+# analyzer doesn't waste time on files we don't ship and can't fix.
+
+name: "banlieue CodeQL Config"
+
+# Exclude generated or third-party content from analysis. We still
+# scan every hand-written source file under crates/**, .github/, etc.
+paths-ignore:
+  # Rust build output (compiled artifacts, incremental-build state,
+  # Cargo-vendored registry caches).
+  - target/**
+  # Generated CRD manifests (produced by the crdgen binary).
+  - deploy/crds/**

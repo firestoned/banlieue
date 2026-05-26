@@ -1,0 +1,75 @@
+# cargo-deny configuration
+# https://embarkstudios.github.io/cargo-deny/checks/cfg.html
+#
+# This file is consumed by `.github/workflows/build.yaml` (job: cargo-deny)
+# which runs `cargo deny check --all-features` against the workspace.
+
+[graph]
+# Match the workflow invocation (`--all-features`) so the lockfile we audit
+# reflects everything that actually ships.
+all-features = true
+
+[output]
+feature-depth = 1
+
+# ─── Advisories ─────────────────────────────────────────────────────────────
+# Fail the build on any unpatched RustSec advisory or yanked crate version.
+[advisories]
+db-urls = ["https://github.com/rustsec/advisory-db"]
+yanked = "deny"
+ignore = []
+
+# ─── Licenses ───────────────────────────────────────────────────────────────
+# Allow-list narrowed to the licenses actually present in the current dep tree
+# (cargo-deny warns on entries that are never encountered, which is useful for
+# noticing when an unexpected license slips in). Re-derive with:
+#   cargo metadata --format-version 1 \
+#     | python3 -c 'import json,sys,collections;
+#                   print(collections.Counter(p["license"] for p in json.load(sys.stdin)["packages"]).most_common())'
+# after any dep bump.
+[licenses]
+confidence-threshold = 0.93
+allow = [
+    "Apache-2.0",
+    "BSD-3-Clause",
+    "ISC",
+    "MIT",
+    "Unicode-3.0",
+    "Zlib",
+]
+
+# ─── Bans (multiple versions, wildcards, banned crates) ─────────────────────
+[bans]
+# Duplicates are reported as warnings (not failures). The `skip` list below
+# explicitly suppresses entries we have looked at and accepted.
+multiple-versions = "warn"
+wildcards = "allow"
+allow-wildcard-paths = true
+
+skip = [
+    # getrandom 0.2 (pulled in via ring → rustls → hyper-rustls → kube-client)
+    # vs getrandom 0.3 (pulled in via ahash → kube-runtime).
+    # Both paths originate inside `kube 3.1.0`; we cannot unify until either
+    # `ring` bumps to getrandom 0.3 or `ahash` migrates back. Revisit on the
+    # next `kube` release.
+    { crate = "getrandom@0.2" },
+
+    # hashbrown 0.16 (transitive via tracing-subscriber/foldhash-using crates)
+    # vs hashbrown 0.17 (newer chain). Same transitive-only situation.
+    { crate = "hashbrown@0.16" },
+
+    # windows-sys 0.52 vs 0.61 — common in async/IO crates where some
+    # dependencies pin older windows-sys while newer ones moved to 0.6x.
+    # No security or correctness impact; not on a hot path.
+    { crate = "windows-sys@0.52" },
+]
+
+skip-tree = []
+
+# ─── Sources (where crates may be fetched from) ─────────────────────────────
+# Lock the toolchain to crates.io. No git deps, no alternate registries.
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
