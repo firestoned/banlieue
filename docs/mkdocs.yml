@@ -1,0 +1,195 @@
+# Copyright (c) 2026 Erick Bourgeois
+# SPDX-License-Identifier: Apache-2.0
+
+# banlieue Documentation — MkDocs Material Configuration
+
+site_name: banlieue — Kubernetes-Native Abstract Virtualization API
+site_url: https://firestoned.github.io/banlieue/
+site_description: A Kubernetes-native, provider-agnostic virtualization API. Users create one VirtualMachine CR; banlieue schedules it onto vSphere, Proxmox, libvirt — or any backend that satisfies the CAPI v1beta2 InfraMachine contract.
+site_author: Erick Bourgeois
+
+# Repository
+repo_url: https://github.com/firestoned/banlieue
+repo_name: firestoned/banlieue
+edit_uri: edit/main/docs/src/
+
+# Documentation source directory (relative to mkdocs.yml location)
+docs_dir: src
+site_dir: site
+
+# Copyright
+copyright: Copyright &copy; 2026 Erick Bourgeois
+
+# Configuration
+theme:
+  name: material
+  language: en
+
+  # Color palette with dark mode support.
+  # Both primary and accent are set to "custom" so the full palette is
+  # controlled via CSS variables in stylesheets/extra.css.
+  palette:
+    # Light mode
+    - scheme: default
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+
+    # Dark mode
+    - scheme: slate
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+
+  # Font configuration
+  font:
+    text: Roboto
+    code: Roboto Mono
+
+  # Features
+  features:
+    # Navigation
+    - navigation.instant
+    - navigation.instant.progress
+    - navigation.tracking
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.sections
+    - navigation.expand
+    - navigation.path
+    - navigation.indexes
+    - navigation.top
+
+    # Table of contents
+    - toc.follow
+
+    # Search
+    - search.suggest
+    - search.highlight
+    - search.share
+
+    # Header
+    - header.autohide
+
+    # Content
+    - content.code.copy
+    - content.code.annotate
+    - content.tabs.link
+    - content.tooltips
+
+  icon:
+    repo: fontawesome/brands/github
+    edit: material/pencil
+    view: material/eye
+
+# Plugins
+plugins:
+  - search:
+      lang: en
+      separator: '[\s\-,:!=\[\]()"/]+|(?!\b)(?=[A-Z][a-z])|\.(?!\d)|&[lg]t;'
+
+  - git-revision-date-localized:
+      enable_creation_date: true
+      type: timeago
+      fallback_to_build_date: true
+      enable_git_follow: false
+
+# Extensions
+markdown_extensions:
+  # Python Markdown
+  - abbr
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+      permalink_title: Anchor link to this section
+      toc_depth: 3
+
+  # PyMdown Extensions
+  - pymdownx.arithmatex:
+      generic: true
+  - pymdownx.betterem:
+      smart_enable: all
+  - pymdownx.caret
+  - pymdownx.details
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.keys
+  - pymdownx.mark
+  - pymdownx.smartsymbols
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_div_format
+  - pymdownx.tabbed:
+      alternate_style: true
+      combine_header_slug: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.tilde
+
+# Extra CSS (paths relative to docs_dir = src/)
+extra_css:
+  - stylesheets/extra.css
+
+# Extra JavaScript (paths relative to docs_dir = src/)
+extra_javascript:
+  - https://unpkg.com/mermaid@11.12.2/dist/mermaid.min.js
+  - javascripts/mermaid-init.js
+
+# Extra configuration
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/firestoned/banlieue
+      name: banlieue on GitHub
+
+  generator: true
+
+# Navigation structure
+nav:
+  - Home:
+      - index.md
+      - Getting Started: getting-started/quickstart.md
+  - Overview: overview.md
+
+  - Why banlieue?:
+      - Overview: reasoning/index.md
+      - The Problem: reasoning/problem.md
+      - The Abstraction Principle: reasoning/abstraction-principle.md
+      - Least-Touch Workflow: reasoning/least-touch.md
+      - CRD-Only Contract: reasoning/crd-only-contract.md
+      - Relationship to Cluster API: reasoning/capi-relationship.md
+      - Comparisons: reasoning/comparisons.md
+      - Non-Goals: reasoning/non-goals.md
+
+  - Concepts:
+      - Overview: concepts/index.md
+      - Architecture: concepts/architecture.md
+      - VirtualMachine: concepts/virtualmachine.md
+      - Provider Model: concepts/providers.md
+      - Infrastructure CRDs & CAPI: concepts/infra-crds-capi.md
+
+  - Architecture (CALM):
+      - Overview: architecture/index.md
+      - System Diagram: architecture/system.md
+      - Architecture Flows: architecture/flows.md
+
+  - Reference:
+      - Roadmap: reference/roadmap.md
+      - License: reference/license.md

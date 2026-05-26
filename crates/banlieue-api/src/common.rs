@@ -120,12 +120,16 @@ pub enum Firmware {
 }
 
 /// Power state, used both for desired and observed.
+///
+/// Wire values are `PoweredOn` / `PoweredOff` / `Suspended` rather than
+/// `On` / `Off` / `Suspended` to dodge YAML 1.1's implicit-boolean rule (Go's
+/// YAML parser, used by the kube apiserver, otherwise reads bare `On`/`Off`
+/// tokens as booleans and rejects the CRD schema).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "PascalCase")]
 pub enum PowerState {
     #[default]
-    On,
-    Off,
+    PoweredOn,
+    PoweredOff,
     Suspended,
 }
 

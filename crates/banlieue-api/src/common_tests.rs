@@ -315,19 +315,20 @@ mod tests {
     }
 
     // ----------------------------------------------------------------------
-    // PowerState (PascalCase)
+    // PowerState (PoweredOn / PoweredOff / Suspended — explicit string forms
+    // chosen to avoid YAML 1.1 implicit-boolean parsing of bare `On`/`Off`).
     // ----------------------------------------------------------------------
 
     #[test]
-    fn power_state_default_is_on() {
-        assert_eq!(PowerState::default(), PowerState::On);
+    fn power_state_default_is_powered_on() {
+        assert_eq!(PowerState::default(), PowerState::PoweredOn);
     }
 
     #[test]
-    fn power_state_all_variants_use_pascal_case() {
+    fn power_state_variants_serialize_unambiguously() {
         let cases = [
-            (PowerState::On, "On"),
-            (PowerState::Off, "Off"),
+            (PowerState::PoweredOn, "PoweredOn"),
+            (PowerState::PoweredOff, "PoweredOff"),
             (PowerState::Suspended, "Suspended"),
         ];
         for (variant, expected) in cases {
@@ -340,8 +341,17 @@ mod tests {
 
     #[test]
     fn power_state_rejects_lowercase_input() {
-        let err = serde_json::from_str::<PowerState>(r#""on""#);
+        let err = serde_json::from_str::<PowerState>(r#""poweredon""#);
         assert!(err.is_err());
+    }
+
+    #[test]
+    fn power_state_rejects_legacy_short_form() {
+        // `On`/`Off` are no longer accepted — they're the strings that caused
+        // CRD schema validation to fail on the kube apiserver (Go YAML 1.1
+        // boolean coercion).
+        assert!(serde_json::from_str::<PowerState>(r#""On""#).is_err());
+        assert!(serde_json::from_str::<PowerState>(r#""Off""#).is_err());
     }
 
     // ----------------------------------------------------------------------

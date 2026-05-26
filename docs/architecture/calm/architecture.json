@@ -1,0 +1,605 @@
+{
+  "$schema": "https://calm.finos.org/release/1.2/meta/calm.json",
+  "nodes": [
+    {
+      "unique-id": "actor-vm-consumer",
+      "node-type": "actor",
+      "name": "VM Consumer",
+      "description": "Application or platform-engineer user who declares VirtualMachine custom resources via kubectl / GitOps. Never interacts with the underlying hypervisor SDKs directly — that is the whole point of banlieue."
+    },
+    {
+      "unique-id": "actor-platform-operator",
+      "node-type": "actor",
+      "name": "Platform Operator",
+      "description": "Cluster administrator who installs the banlieue CRDs, deploys the controller and provider controllers, and configures Provider CRs with backend credentials."
+    },
+    {
+      "unique-id": "ecosystem-management-cluster",
+      "node-type": "ecosystem",
+      "name": "Management Kubernetes Cluster",
+      "description": "Kubernetes cluster (>=1.27) that hosts the banlieue controller and every provider controller. Acts as the control plane for VM lifecycle management across heterogeneous hypervisor backends."
+    },
+    {
+      "unique-id": "service-kubernetes-api",
+      "node-type": "service",
+      "name": "Kubernetes API Server",
+      "description": "Management cluster API server. The ONLY communication bus between the banlieue controller and every provider controller. Persists VirtualMachine, VMClass, VMImage, Provider, and infrastructure CRs; mediates every state transition.",
+      "interfaces": [
+        {
+          "unique-id": "kube-api-https",
+          "definition-url": "https://calm.finos.org/release/1.2/prototype/interface/http-endpoint.json",
+          "config": {
+            "port": 6443,
+            "protocol": "HTTPS"
+          }
+        }
+      ]
+    },
+    {
+      "unique-id": "service-banlieue-controller",
+      "node-type": "service",
+      "name": "banlieue-controller",
+      "description": "Main Rust kube-rs controller. Watches VirtualMachine CRs, resolves class/image/providerRef references, creates a backend-specific infrastructure CR carrying the resolved spec, and mirrors status from that infra CR back onto the VirtualMachine. Owns no backend credentials — all backend access is delegated to provider controllers via CRDs.",
+      "interfaces": [
+        {
+          "unique-id": "banlieue-controller-metrics",
+          "definition-url": "https://calm.finos.org/release/1.2/prototype/interface/http-endpoint.json",
+          "config": {
+            "host": "0.0.0.0",
+            "port": 8080,
+            "path": "/metrics",
+            "protocol": "HTTP"
+          }
+        },
+        {
+          "unique-id": "banlieue-controller-health",
+          "definition-url": "https://calm.finos.org/release/1.2/prototype/interface/http-endpoint.json",
+          "config": {
+            "host": "0.0.0.0",
+            "port": 8081,
+            "path": "/healthz",
+            "protocol": "HTTP"
+          }
+        }
+      ],
+      "controls": {
+        "crd-only-contract": {
+          "description": "Controller MUST NOT speak RPC, REST, gRPC, or any out-of-band protocol to provider controllers. All inter-controller communication is via Kubernetes CRDs and the API server. This is a project non-negotiable (see CLAUDE.md \"Non-Negotiables\" #1).",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": ["SC-7", "AC-4"],
+                "evidence": "CLAUDE.md, docs/src/reasoning/crd-only-contract.md"
+              }
+            }
+          ]
+        },
+        "least-privilege": {
+          "description": "Controller ServiceAccount holds a ClusterRole scoped to banlieue.io/* and infrastructure.banlieue.io/* CRDs plus events and Secrets (read for resolving Provider.credentialsRef). No cluster-admin.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": ["AC-3", "AC-6"],
+                "evidence": "deploy/controller/rbac/clusterrole.yaml"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "service-provider-vsphere",
+      "node-type": "service",
+      "name": "banlieue-provider-vsphere (planned, Phase 1B)",
+      "description": "Provider controller that watches VSphereMachine / VSphereMachineTemplate infrastructure CRs and drives vCenter via the govmomi-equivalent Rust client. Satisfies the CAPI v1beta2 InfraMachine contract so the same provider can also serve CAPI Clusters. Status: PLANNED — Phase 1B in the roadmap; no code in-tree as of this revision."
+    },
+    {
+      "unique-id": "service-provider-proxmox",
+      "node-type": "service",
+      "name": "banlieue-provider-proxmox (planned, Phase 1C)",
+      "description": "Provider controller for Proxmox VE clusters. Watches ProxmoxMachine infrastructure CRs and drives the Proxmox HTTP API. Status: PLANNED — Phase 1C."
+    },
+    {
+      "unique-id": "service-provider-libvirt",
+      "node-type": "service",
+      "name": "banlieue-provider-libvirt (planned, Phase 1D)",
+      "description": "Provider controller for libvirt/KVM hosts. Watches LibvirtMachine infrastructure CRs and drives libvirt over TCP/TLS or SSH. Status: PLANNED — Phase 1D."
+    },
+    {
+      "unique-id": "network-vsphere-backend",
+      "node-type": "network",
+      "name": "vSphere / vCenter Backend",
+      "description": "Real VMware vSphere environment (vCenter + ESXi hosts) reached by the vSphere provider over HTTPS. The address, credentials, and datacenter are declared in a Provider CR.",
+      "interfaces": [
+        {
+          "unique-id": "vsphere-api-https",
+          "definition-url": "https://calm.finos.org/release/1.2/prototype/interface/http-endpoint.json",
+          "config": {
+            "port": 443,
+            "protocol": "HTTPS"
+          }
+        }
+      ]
+    },
+    {
+      "unique-id": "network-proxmox-backend",
+      "node-type": "network",
+      "name": "Proxmox VE Backend",
+      "description": "Real Proxmox VE cluster reached by the Proxmox provider over its HTTPS API on port 8006.",
+      "interfaces": [
+        {
+          "unique-id": "proxmox-api-https",
+          "definition-url": "https://calm.finos.org/release/1.2/prototype/interface/http-endpoint.json",
+          "config": {
+            "port": 8006,
+            "protocol": "HTTPS"
+          }
+        }
+      ]
+    },
+    {
+      "unique-id": "network-libvirt-backend",
+      "node-type": "network",
+      "name": "libvirt / KVM Host",
+      "description": "libvirt/KVM host reached by the libvirt provider over libvirt's native TCP/TLS protocol (port 16514) or SSH transport.",
+      "interfaces": [
+        {
+          "unique-id": "libvirt-tls",
+          "definition-url": "https://calm.finos.org/release/1.2/prototype/interface/host-port.json",
+          "config": {
+            "port": 16514,
+            "protocol": "TCP"
+          }
+        }
+      ]
+    },
+    {
+      "unique-id": "data-asset-virtualmachine-cr",
+      "node-type": "data-asset",
+      "name": "VirtualMachine Custom Resource",
+      "description": "Namespaced CRD (banlieue.io/v1alpha1) declaring a backend-agnostic VM: class (→ VMClass), image (→ VMImage), providerRef (→ Provider), and optional userData. The ONLY user-facing API."
+    },
+    {
+      "unique-id": "data-asset-provider-cr",
+      "node-type": "data-asset",
+      "name": "Provider Custom Resource",
+      "description": "Namespaced CRD (banlieue.io/v1alpha1) declaring the existence of a backend in this cluster: type (vsphere|proxmox|libvirt), endpoint, datacenter, credentialsRef to a Secret. Owned by the platform operator, referenced by VirtualMachine."
+    },
+    {
+      "unique-id": "data-asset-vmclass-cr",
+      "node-type": "data-asset",
+      "name": "VMClass Custom Resource",
+      "description": "Cluster-scoped CRD (banlieue.io/v1alpha1) declaring a flavour: CPU count, memory, disk shape. Referenced by VirtualMachine.spec.class by name."
+    },
+    {
+      "unique-id": "data-asset-vmimage-cr",
+      "node-type": "data-asset",
+      "name": "VMImage Custom Resource",
+      "description": "Cluster-scoped CRD (banlieue.io/v1alpha1) declaring a boot image and its source. Referenced by VirtualMachine.spec.image by name; resolved by the provider against its backend's native image catalog."
+    },
+    {
+      "unique-id": "data-asset-infra-machine-cr",
+      "node-type": "data-asset",
+      "name": "Infrastructure Machine CR (VSphereMachine, etc.)",
+      "description": "Namespaced CRD (infrastructure.banlieue.io/v1alpha1) created by the banlieue-controller as the message to the provider. Satisfies the CAPI v1beta2 InfraMachine contract so the same provider can serve both banlieue and CAPI. Status is owned by the provider; the banlieue controller mirrors it back onto the VirtualMachine."
+    }
+  ],
+
+  "relationships": [
+    {
+      "unique-id": "rel-mgmt-cluster-contains-controllers",
+      "description": "The management cluster hosts the banlieue controller, every provider controller, and the Kubernetes API server itself.",
+      "relationship-type": {
+        "deployed-in": {
+          "container": "ecosystem-management-cluster",
+          "nodes": [
+            "service-banlieue-controller",
+            "service-kubernetes-api",
+            "service-provider-vsphere",
+            "service-provider-proxmox",
+            "service-provider-libvirt"
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-kube-api-stores-crs",
+      "description": "Every banlieue CR (VirtualMachine, Provider, VMClass, VMImage, infrastructure machines) is persisted by the management-cluster API server in etcd. The API server is therefore the bus AND the source of truth for state.",
+      "relationship-type": {
+        "composed-of": {
+          "container": "service-kubernetes-api",
+          "nodes": [
+            "data-asset-virtualmachine-cr",
+            "data-asset-provider-cr",
+            "data-asset-vmclass-cr",
+            "data-asset-vmimage-cr",
+            "data-asset-infra-machine-cr"
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-consumer-authors-vm-cr",
+      "description": "VM consumer authors and applies VirtualMachine CRs (and references VMClass / VMImage / Provider by name).",
+      "relationship-type": {
+        "interacts": {
+          "actor": "actor-vm-consumer",
+          "nodes": [
+            "data-asset-virtualmachine-cr",
+            "data-asset-vmclass-cr",
+            "data-asset-vmimage-cr"
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-operator-authors-provider-cr",
+      "description": "Platform operator authors Provider CRs and the backing Secret (out of band of consumer flow). Consumers never see provider credentials.",
+      "relationship-type": {
+        "interacts": {
+          "actor": "actor-platform-operator",
+          "nodes": ["data-asset-provider-cr"]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-consumer-kubectl",
+      "description": "VM consumer applies manifests via kubectl / GitOps to the management-cluster Kubernetes API.",
+      "relationship-type": {
+        "connects": {
+          "source": { "node": "actor-vm-consumer" },
+          "destination": {
+            "node": "service-kubernetes-api",
+            "interfaces": ["kube-api-https"]
+          }
+        }
+      },
+      "protocol": "HTTPS"
+    },
+    {
+      "unique-id": "rel-operator-kubectl",
+      "description": "Platform operator applies CRDs, Provider CRs, and the controller deployment via kubectl / GitOps.",
+      "relationship-type": {
+        "connects": {
+          "source": { "node": "actor-platform-operator" },
+          "destination": {
+            "node": "service-kubernetes-api",
+            "interfaces": ["kube-api-https"]
+          }
+        }
+      },
+      "protocol": "HTTPS"
+    },
+    {
+      "unique-id": "rel-controller-kube-api",
+      "description": "banlieue-controller watches VirtualMachine / Provider / VMClass / VMImage CRs, server-side-applies infrastructure machine CRs, watches their status, and patches VirtualMachine status with the mirrored conditions.",
+      "relationship-type": {
+        "connects": {
+          "source": { "node": "service-banlieue-controller" },
+          "destination": {
+            "node": "service-kubernetes-api",
+            "interfaces": ["kube-api-https"]
+          }
+        }
+      },
+      "protocol": "HTTPS"
+    },
+    {
+      "unique-id": "rel-provider-vsphere-kube-api",
+      "description": "vSphere provider controller watches VSphereMachine infrastructure CRs and patches their .status. NEVER speaks to the banlieue controller directly — the K8s API is the bus.",
+      "relationship-type": {
+        "connects": {
+          "source": { "node": "service-provider-vsphere" },
+          "destination": {
+            "node": "service-kubernetes-api",
+            "interfaces": ["kube-api-https"]
+          }
+        }
+      },
+      "protocol": "HTTPS"
+    },
+    {
+      "unique-id": "rel-provider-proxmox-kube-api",
+      "description": "Proxmox provider controller watches ProxmoxMachine infrastructure CRs and patches their .status. Same CRD-only contract as the vSphere provider.",
+      "relationship-type": {
+        "connects": {
+          "source": { "node": "service-provider-proxmox" },
+          "destination": {
+            "node": "service-kubernetes-api",
+            "interfaces": ["kube-api-https"]
+          }
+        }
+      },
+      "protocol": "HTTPS"
+    },
+    {
+      "unique-id": "rel-provider-libvirt-kube-api",
+      "description": "libvirt provider controller watches LibvirtMachine infrastructure CRs and patches their .status. Same CRD-only contract.",
+      "relationship-type": {
+        "connects": {
+          "source": { "node": "service-provider-libvirt" },
+          "destination": {
+            "node": "service-kubernetes-api",
+            "interfaces": ["kube-api-https"]
+          }
+        }
+      },
+      "protocol": "HTTPS"
+    },
+    {
+      "unique-id": "rel-provider-vsphere-backend",
+      "description": "vSphere provider talks to vCenter over HTTPS to create, query, update, and destroy VMs.",
+      "relationship-type": {
+        "connects": {
+          "source": { "node": "service-provider-vsphere" },
+          "destination": {
+            "node": "network-vsphere-backend",
+            "interfaces": ["vsphere-api-https"]
+          }
+        }
+      },
+      "protocol": "HTTPS"
+    },
+    {
+      "unique-id": "rel-provider-proxmox-backend",
+      "description": "Proxmox provider talks to Proxmox VE over its HTTPS API on port 8006.",
+      "relationship-type": {
+        "connects": {
+          "source": { "node": "service-provider-proxmox" },
+          "destination": {
+            "node": "network-proxmox-backend",
+            "interfaces": ["proxmox-api-https"]
+          }
+        }
+      },
+      "protocol": "HTTPS"
+    },
+    {
+      "unique-id": "rel-provider-libvirt-backend",
+      "description": "libvirt provider talks to a libvirtd over native TCP/TLS (port 16514) or SSH transport.",
+      "relationship-type": {
+        "connects": {
+          "source": { "node": "service-provider-libvirt" },
+          "destination": {
+            "node": "network-libvirt-backend",
+            "interfaces": ["libvirt-tls"]
+          }
+        }
+      },
+      "protocol": "TCP"
+    }
+  ],
+
+  "flows": [
+    {
+      "unique-id": "flow-create-virtualmachine",
+      "name": "Create a VirtualMachine",
+      "description": "User applies a VirtualMachine CR; the banlieue controller resolves its references and creates a backend-specific infrastructure CR; the matching provider controller observes the infra CR, provisions on its backend, and patches status; the banlieue controller mirrors the status back onto the VirtualMachine.",
+      "transitions": [
+        {
+          "sequence-number": 1,
+          "relationship-unique-id": "rel-consumer-kubectl",
+          "description": "VM consumer kubectl-applies a VirtualMachine CR with class, image, and providerRef. Persisted in etcd via the management-cluster API server."
+        },
+        {
+          "sequence-number": 2,
+          "relationship-unique-id": "rel-controller-kube-api",
+          "description": "banlieue-controller watch fires. Controller resolves the named VMClass, VMImage, and Provider; computes the desired infrastructure spec.",
+          "direction": "destination-to-source"
+        },
+        {
+          "sequence-number": 3,
+          "relationship-unique-id": "rel-controller-kube-api",
+          "description": "banlieue-controller server-side-applies a VSphereMachine (or ProxmoxMachine / LibvirtMachine) CR with the resolved spec, ownerReference back to the VirtualMachine, and the controller's field manager 'banlieue.io/controller'."
+        },
+        {
+          "sequence-number": 4,
+          "relationship-unique-id": "rel-provider-vsphere-kube-api",
+          "description": "The matching provider controller's watch fires on the new infrastructure CR. Provider reads its spec.",
+          "direction": "destination-to-source"
+        },
+        {
+          "sequence-number": 5,
+          "relationship-unique-id": "rel-provider-vsphere-backend",
+          "description": "Provider talks to its backend (vCenter / Proxmox / libvirt) to create the underlying VM, attach disks, attach network, power on."
+        },
+        {
+          "sequence-number": 6,
+          "relationship-unique-id": "rel-provider-vsphere-kube-api",
+          "description": "Provider patches infrastructure-CR .status with CAPI v1beta2 conditions (Ready, addresses[], providerID, etc.) using its own field manager (e.g. 'banlieue.io/provider-vsphere')."
+        },
+        {
+          "sequence-number": 7,
+          "relationship-unique-id": "rel-controller-kube-api",
+          "description": "banlieue-controller watch on infrastructure CRs fires. Controller mirrors the status (Ready, conditions, addresses) onto VirtualMachine.status — never sets Ready=true on its own.",
+          "direction": "destination-to-source"
+        }
+      ],
+      "controls": {
+        "no-rpc-between-controllers": {
+          "description": "Every transition in this flow is a Kubernetes API call. There is no direct controller-to-controller communication. Enforces the CRD-only contract.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": ["AC-4", "SC-7"],
+                "evidence": "docs/src/reasoning/crd-only-contract.md"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "flow-swap-provider",
+      "name": "Swap a VirtualMachine's backend (least-touch)",
+      "description": "User changes a single field — VirtualMachine.spec.providerRef.name — to repoint a VM from one backend to another. The banlieue controller tears down the old infrastructure CR and creates a new one of the right kind on the new provider. The user's manifest does not otherwise change. This is the canonical demonstration of banlieue's abstraction principle.",
+      "transitions": [
+        {
+          "sequence-number": 1,
+          "relationship-unique-id": "rel-consumer-kubectl",
+          "description": "VM consumer patches VirtualMachine.spec.providerRef.name (e.g. 'prod-vsphere' → 'prod-proxmox')."
+        },
+        {
+          "sequence-number": 2,
+          "relationship-unique-id": "rel-controller-kube-api",
+          "description": "banlieue-controller observes the spec change. Detects that the existing infrastructure CR no longer matches the desired provider type.",
+          "direction": "destination-to-source"
+        },
+        {
+          "sequence-number": 3,
+          "relationship-unique-id": "rel-controller-kube-api",
+          "description": "Controller deletes the stale VSphereMachine CR; the vSphere provider observes the deletion and tears down the backend VM via finalizer; ownerReference cascade clears the infra CR."
+        },
+        {
+          "sequence-number": 4,
+          "relationship-unique-id": "rel-controller-kube-api",
+          "description": "Controller server-side-applies a ProxmoxMachine CR with the same uniform spec. The Proxmox provider observes the new CR and provisions on Proxmox VE."
+        },
+        {
+          "sequence-number": 5,
+          "relationship-unique-id": "rel-controller-kube-api",
+          "description": "Provider patches new infra-CR status; controller mirrors Ready=true back onto the VirtualMachine. Consumer's manifest still looks identical except for one field."
+        }
+      ],
+      "controls": {
+        "least-touch": {
+          "description": "Demonstrates banlieue's user-facing invariant: changing the backend MUST NOT require changes outside spec.providerRef.name. Any feature that breaks this is rejected.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": ["CM-3", "CM-4"],
+                "evidence": "docs/src/reasoning/least-touch.md, docs/src/reasoning/abstraction-principle.md"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "flow-delete-virtualmachine",
+      "name": "Delete a VirtualMachine (finalizer cleanup)",
+      "description": "Deletion is gated by two finalizers (controller, provider) to guarantee that the backend VM is torn down BEFORE the CR is removed from etcd. No leaks.",
+      "transitions": [
+        {
+          "sequence-number": 1,
+          "relationship-unique-id": "rel-consumer-kubectl",
+          "description": "VM consumer kubectl-deletes the VirtualMachine. API server sets deletionTimestamp; CR persists because the controller finalizer 'banlieue.io/virtualmachine' is still attached."
+        },
+        {
+          "sequence-number": 2,
+          "relationship-unique-id": "rel-controller-kube-api",
+          "description": "banlieue-controller observes deletionTimestamp. Issues a delete on the owned infrastructure machine CR.",
+          "direction": "destination-to-source"
+        },
+        {
+          "sequence-number": 3,
+          "relationship-unique-id": "rel-provider-vsphere-kube-api",
+          "description": "Provider observes deletionTimestamp on its infra CR (its own finalizer is attached). Begins backend teardown.",
+          "direction": "destination-to-source"
+        },
+        {
+          "sequence-number": 4,
+          "relationship-unique-id": "rel-provider-vsphere-backend",
+          "description": "Provider talks to the backend (vCenter / Proxmox / libvirt) to power-off, detach storage, and delete the underlying VM. Confirms via backend API."
+        },
+        {
+          "sequence-number": 5,
+          "relationship-unique-id": "rel-provider-vsphere-kube-api",
+          "description": "Provider clears its finalizer; infra CR is garbage-collected by the API server."
+        },
+        {
+          "sequence-number": 6,
+          "relationship-unique-id": "rel-controller-kube-api",
+          "description": "banlieue-controller observes the infra CR disappear; clears its own finalizer on the VirtualMachine; CR is garbage-collected. No backend leak."
+        }
+      ],
+      "controls": {
+        "finalizer-ordering": {
+          "description": "Two-level finalizer chain (controller-side waits for provider-side to clear) guarantees the backend VM is destroyed before the CR is. A crash anywhere in the chain is replay-safe because reconciliation is idempotent.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": ["SI-7", "CP-10"],
+                "evidence": "crates/banlieue-provider-sdk/src/finalizer.rs, crates/banlieue-controller/src/reconciler/virtualmachine.rs"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+
+  "controls": {
+    "code-first-crds": {
+      "description": "All CRDs are generated from the Rust type system in crates/banlieue-api via the crdgen binary; YAML in deploy/crds/ is never hand-edited. Prevents drift between Rust types and the schemas the API server validates against.",
+      "requirements": [
+        {
+          "requirement-url": "https://csrc.nist.gov/pubs/sp/800/218/final",
+          "config": {
+            "framework": "NIST SP 800-218 SSDF",
+            "controls": ["PW.4", "PS.1"],
+            "evidence": "CLAUDE.md \"CRD Schema is Code-First\", crates/banlieue-api/src/bin/crdgen.rs"
+          }
+        }
+      ]
+    },
+    "capi-v1beta2-infra-machine-contract": {
+      "description": "Every banlieue provider's infrastructure CRD satisfies the upstream Cluster API v1beta2 InfraMachine contract. Buys a battle-tested status model AND lets the same provider also serve CAPI Clusters without modification.",
+      "requirements": [
+        {
+          "requirement-url": "https://cluster-api.sigs.k8s.io/developer/providers/contracts/infra-machine",
+          "config": {
+            "framework": "Kubernetes Cluster API",
+            "controls": ["v1beta2/InfraMachine"],
+            "evidence": "crates/banlieue-api/src/infrastructure/vsphere_machine.rs, docs/src/concepts/infra-crds-capi.md"
+          }
+        }
+      ]
+    },
+    "supply-chain-scanning": {
+      "description": "Repository is scanned by CodeQL (SAST on Rust), cargo-deny (RustSec advisories + license allow-list + source restrictions), and OpenSSF Scorecard. SPDX license identifiers on every source file.",
+      "requirements": [
+        {
+          "requirement-url": "https://csrc.nist.gov/pubs/sp/800/218/final",
+          "config": {
+            "framework": "NIST SP 800-218 SSDF",
+            "controls": ["PO.5", "PS.1", "PW.4"],
+            "evidence": ".github/workflows/codeql.yaml, .github/workflows/sast.yaml, .github/workflows/scorecard.yaml, deny.toml"
+          }
+        }
+      ]
+    }
+  },
+
+  "metadata": {
+    "project": "banlieue — Kubernetes-Native Abstract Virtualization API",
+    "repository": "https://github.com/firestoned/banlieue",
+    "license": "Apache-2.0",
+    "calm-schema-version": "1.2",
+    "phase": "Phase 1A in progress — banlieue-api shipped, controller + SDK landing, providers PLANNED",
+    "crds": {
+      "user-facing": {
+        "group": "banlieue.io",
+        "version": "v1alpha1",
+        "kinds": ["VirtualMachine", "Provider", "VMClass", "VMImage"]
+      },
+      "infrastructure": {
+        "group": "infrastructure.banlieue.io",
+        "version": "v1alpha1",
+        "kinds": ["VSphereMachine", "VSphereMachineTemplate"]
+      }
+    }
+  },
+
+  "adrs": []
+}

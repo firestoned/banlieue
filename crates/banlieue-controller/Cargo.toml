@@ -1,0 +1,37 @@
+[package]
+name = "banlieue-controller"
+description = "Main banlieue controller — watches VirtualMachine CRs and reconciles them onto provider infrastructure CRs."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "banlieue-controller"
+path = "src/main.rs"
+
+[dependencies]
+banlieue-api = { path = "../banlieue-api" }
+banlieue-provider-sdk = { path = "../banlieue-provider-sdk" }
+
+kube.workspace = true
+k8s-openapi.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+thiserror.workspace = true
+anyhow.workspace = true
+
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "io-util", "signal"] }
+futures.workspace = true
+
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+clap.workspace = true
+chrono.workspace = true
+async-trait.workspace = true

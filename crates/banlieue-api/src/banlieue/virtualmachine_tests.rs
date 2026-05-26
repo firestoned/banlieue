@@ -23,7 +23,7 @@ mod tests {
                 name: "ubuntu-22.04".to_string(),
             },
             placement: PlacementSpec::default(),
-            desired_power_state: PowerState::On,
+            desired_power_state: PowerState::PoweredOn,
             user_data: None,
             migration_policy: MigrationPolicy::default(),
             paused: false,
@@ -45,7 +45,7 @@ mod tests {
     }
 
     #[test]
-    fn vm_spec_default_power_state_is_on() {
+    fn vm_spec_default_power_state_is_powered_on() {
         // The function `default_power_on` is private, but we can assert the
         // observable default behavior by deserializing a spec that omits it.
         let json = serde_json::json!({
@@ -53,7 +53,7 @@ mod tests {
             "imageRef": { "name": "i" }
         });
         let s: VirtualMachineSpec = serde_json::from_value(json).unwrap();
-        assert_eq!(s.desired_power_state, PowerState::On);
+        assert_eq!(s.desired_power_state, PowerState::PoweredOn);
     }
 
     #[test]
@@ -315,7 +315,7 @@ mod tests {
                 address_type: MachineAddressType::InternalIP,
                 address: "10.0.0.10".to_string(),
             }],
-            observed_power_state: Some(PowerState::On),
+            observed_power_state: Some(PowerState::PoweredOn),
             conditions: Vec::new(),
             observed_generation: Some(5),
         };

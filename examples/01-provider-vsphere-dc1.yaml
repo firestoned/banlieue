@@ -7,7 +7,7 @@ apiVersion: banlieue.io/v1alpha1
 kind: Provider
 metadata:
   name: vcenter-dc1
-  namespace: ops
+  namespace: banlieue-system
   labels:
     dc: dc1
     env: prod

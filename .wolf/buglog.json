@@ -364,6 +364,347 @@
       "related_bugs": [],
       "occurrences": 1,
       "last_seen": "2026-05-26T03:05:56.001Z"
+    },
+    {
+      "id": "bug-022",
+      "timestamp": "2026-05-26T03:30:35.107Z",
+      "error_message": "Incorrect value in code",
+      "file": "../roadmaps/banlieue/README.md",
+      "root_cause": "Had `20-PHASE-2-SNAPSHOTS.md`",
+      "fix": "Changed to `14-PHASE-1E-DOCS.md`",
+      "tags": [
+        "auto-detected",
+        "wrong-value",
+        "md"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-05-26T03:30:35.107Z"
+    },
+    {
+      "id": "bug-023",
+      "timestamp": "2026-05-26T04:30:09.314Z",
+      "error_message": "Significant refactor of ",
+      "file": "crates/banlieue-api/src/common.rs",
+      "root_cause": "3 lines replaced/restructured",
+      "fix": "Rewrote 9→13 lines (3 removed)",
+      "tags": [
+        "auto-detected",
+        "refactor",
+        "rs"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-05-26T04:30:09.314Z"
+    },
+    {
+      "id": "bug-024",
+      "timestamp": "2026-05-26T04:30:29.243Z",
+      "error_message": "Significant refactor of ",
+      "file": "crates/banlieue-api/src/common_tests.rs",
+      "root_cause": "7 lines replaced/restructured",
+      "fix": "Rewrote 29→39 lines (7 removed)",
+      "tags": [
+        "auto-detected",
+        "refactor",
+        "rs"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-05-26T04:30:29.243Z"
+    },
+    {
+      "id": "bug-025",
+      "timestamp": "2026-05-26T04:30:44.460Z",
+      "error_message": "Incorrect value in code",
+      "file": "crates/banlieue-api/src/banlieue/virtualmachine.rs",
+      "root_cause": "Had `On`",
+      "fix": "Changed to `PoweredOn`",
+      "tags": [
+        "auto-detected",
+        "wrong-value",
+        "rs"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-05-26T04:30:44.460Z"
+    },
+    {
+      "id": "bug-026",
+      "timestamp": "2026-05-26T04:31:00.008Z",
+      "error_message": "Wrong reference: vm_spec_default_power_state_is_on should be vm_spec_default_power_state_is_powered_on",
+      "file": "crates/banlieue-api/src/banlieue/virtualmachine_tests.rs",
+      "root_cause": "Used \"vm_spec_default_power_state_is_on\" instead of \"vm_spec_default_power_state_is_powered_on\"",
+      "fix": "Changed vm_spec_default_power_state_is_on → vm_spec_default_power_state_is_powered_on",
+      "tags": [
+        "auto-detected",
+        "wrong-reference",
+        "rs"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-05-26T04:31:00.008Z"
+    },
+    {
+      "id": "bug-027",
+      "timestamp": "2026-05-26T04:45:00.000Z",
+      "error_message": "The CustomResourceDefinition \"virtualmachines.banlieue.io\" is invalid: spec.validation.openAPIV3Schema.properties[spec].properties[desiredPowerState].default: Invalid value: \"boolean\": in body must be of type string: \"boolean\"",
+      "file": "crates/banlieue-api/src/common.rs",
+      "root_cause": "PowerState enum used variant names On/Off/Suspended. The generated CRD YAML had bare `default: On` and `enum: - On - Off`. Go's YAML 1.1 parser (used by the kube apiserver) interprets bare `On`/`Off` (any case) as boolean literals, so the apiserver saw a boolean default for a string-typed field and rejected the CRD.",
+      "fix": "Renamed variants to PowerState::PoweredOn / PoweredOff / Suspended (vSphere/CAPI terminology). PoweredOn/PoweredOff are unambiguous strings in YAML 1.1. Updated all call sites (virtualmachine.rs default_power_on, virtualmachine_tests.rs, common_tests.rs) and the example YAML. Regenerated deploy/crds/.",
+      "tags": [
+        "yaml-1.1",
+        "norway-problem",
+        "crd-validation",
+        "kube-apiserver",
+        "serde",
+        "PowerState"
+      ],
+      "related_bugs": [
+        "bug-006"
+      ],
+      "occurrences": 1,
+      "last_seen": "2026-05-26T04:45:00.000Z"
+    },
+    {
+      "id": "bug-028",
+      "timestamp": "2026-05-26T05:07:14.247Z",
+      "error_message": "Wrong reference: ops should be banlieue",
+      "file": "examples/01-provider-vsphere-dc1.yaml",
+      "root_cause": "Used \"ops\" instead of \"banlieue\"",
+      "fix": "Changed ops → banlieue",
+      "tags": [
+        "auto-detected",
+        "wrong-reference",
+        "yaml"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-05-26T05:07:14.247Z"
+    },
+    {
+      "id": "bug-029",
+      "timestamp": "2026-05-26T05:07:15.757Z",
+      "error_message": "Wrong reference: ops should be banlieue",
+      "file": "examples/02-provider-libvirt-edge.yaml",
+      "root_cause": "Used \"ops\" instead of \"banlieue\"",
+      "fix": "Changed ops → banlieue",
+      "tags": [
+        "auto-detected",
+        "wrong-reference",
+        "yaml"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-05-26T05:07:15.757Z"
+    },
+    {
+      "id": "bug-030",
+      "timestamp": "2026-05-26T05:07:17.309Z",
+      "error_message": "Wrong reference: ops should be banlieue",
+      "file": "examples/05-virtualmachine.yaml",
+      "root_cause": "Used \"ops\" instead of \"banlieue\"",
+      "fix": "Changed ops → banlieue",
+      "tags": [
+        "auto-detected",
+        "wrong-reference",
+        "yaml"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-05-26T05:07:17.309Z"
+    },
+    {
+      "id": "bug-031",
+      "timestamp": "2026-05-26T05:08:19.768Z",
+      "error_message": "Incorrect value in code",
+      "file": "crates/banlieue-api/src/banlieue/provider_tests.rs",
+      "root_cause": "Had \"insecureSkipTlsVerify\"",
+      "fix": "Changed to \"insecureSkipTLSVerify\"",
+      "tags": [
+        "auto-detected",
+        "wrong-value",
+        "rs"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-05-26T05:08:19.768Z"
+    },
+    {
+      "id": "bug-032",
+      "timestamp": "2026-05-26T05:19:05.149Z",
+      "error_message": "Wrong reference: virtualmachine should be scheduler",
+      "file": "crates/banlieue-controller/src/reconciler/mod.rs",
+      "root_cause": "Used \"virtualmachine\" instead of \"scheduler\"",
+      "fix": "Changed virtualmachine → scheduler",
+      "tags": [
+        "auto-detected",
+        "wrong-reference",
+        "rs"
+      ],
+      "related_bugs": [],
+      "occurrences": 2,
+      "last_seen": "2026-05-26T05:22:14.865Z"
+    },
+    {
+      "id": "bug-033",
+      "timestamp": "2026-05-26T05:22:31.027Z",
+      "error_message": "Wrong reference: status_mirror should be mirror_status_from_infra",
+      "file": "crates/banlieue-controller/src/reconciler/status_mirror_tests.rs",
+      "root_cause": "Used \"status_mirror\" instead of \"mirror_status_from_infra\"",
+      "fix": "Changed status_mirror → mirror_status_from_infra",
+      "tags": [
+        "auto-detected",
+        "wrong-reference",
+        "rs"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-05-26T05:22:31.027Z"
+    },
+    {
+      "id": "bug-034",
+      "timestamp": "2026-05-26T05:59:36.028Z",
+      "error_message": "Significant refactor of ",
+      "file": "crates/banlieue-controller/src/reconciler/infra.rs",
+      "root_cause": "2 lines replaced/restructured",
+      "fix": "Rewrote 9→18 lines (2 removed)",
+      "tags": [
+        "auto-detected",
+        "refactor",
+        "rs"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-05-26T05:59:36.028Z"
+    },
+    {
+      "id": "bug-035",
+      "timestamp": "2026-05-26T06:00:25.496Z",
+      "error_message": "Significant refactor of ",
+      "file": "crates/banlieue-controller/src/reconciler/infra_tests.rs",
+      "root_cause": "2 lines replaced/restructured",
+      "fix": "Rewrote 18→25 lines (2 removed) | Also: let err =; build_vsphere_machine(&parent_vm(), &parent_class(",
+      "tags": [
+        "auto-detected",
+        "refactor",
+        "rs"
+      ],
+      "related_bugs": [],
+      "occurrences": 2,
+      "last_seen": "2026-05-26T06:00:48.850Z"
+    },
+    {
+      "id": "bug-036",
+      "timestamp": "2026-05-26T06:02:16.075Z",
+      "error_message": "Missing await",
+      "file": "crates/banlieue-controller/src/reconciler/virtualmachine.rs",
+      "root_cause": "Async call without await — returned Promise instead of value",
+      "fix": "Added await to async call",
+      "tags": [
+        "auto-detected",
+        "async-fix",
+        "rs"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-05-26T06:02:16.075Z"
+    },
+    {
+      "id": "bug-037",
+      "timestamp": "2026-05-26T06:02:31.756Z",
+      "error_message": "Significant refactor of ",
+      "file": "crates/banlieue-controller/src/reconciler/virtualmachine.rs",
+      "root_cause": "4 lines replaced/restructured",
+      "fix": "Rewrote 8→44 lines (4 removed)",
+      "tags": [
+        "auto-detected",
+        "refactor",
+        "rs"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-05-26T06:02:31.756Z"
+    },
+    {
+      "id": "bug-038",
+      "timestamp": "2026-05-26T06:04:06.199Z",
+      "error_message": "Significant refactor of ",
+      "file": "crates/banlieue-controller/src/main.rs",
+      "root_cause": "3 lines replaced/restructured",
+      "fix": "Rewrote 10→11 lines (3 removed)",
+      "tags": [
+        "auto-detected",
+        "refactor",
+        "rs"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-05-26T06:04:06.199Z"
+    },
+    {
+      "id": "bug-039",
+      "timestamp": "2026-05-26T18:25:03.732Z",
+      "error_message": "Wrong reference: validate should be docify",
+      "file": "Makefile",
+      "root_cause": "Used \"validate\" instead of \"docify\"",
+      "fix": "Changed validate → docify",
+      "tags": [
+        "auto-detected",
+        "wrong-reference",
+        "unknown"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-05-26T18:25:03.732Z"
+    },
+    {
+      "id": "bug-040",
+      "timestamp": "2026-05-26T20:22:14.673Z",
+      "error_message": "Missing await",
+      "file": "crates/banlieue-controller/src/main.rs",
+      "root_cause": "Async call without await — returned Promise instead of value",
+      "fix": "Added await to async call",
+      "tags": [
+        "auto-detected",
+        "async-fix",
+        "rs"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-05-26T20:22:14.673Z"
+    },
+    {
+      "id": "bug-041",
+      "timestamp": "2026-05-26T20:31:55.003Z",
+      "error_message": "Significant refactor of ",
+      "file": "deploy/controller/rbac/clusterrole.yaml",
+      "root_cause": "2 lines replaced/restructured",
+      "fix": "Rewrote 5→6 lines (2 removed)",
+      "tags": [
+        "auto-detected",
+        "refactor",
+        "yaml"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-05-26T20:31:55.003Z"
+    },
+    {
+      "id": "bug-042",
+      "timestamp": "2026-05-26T20:33:08.494Z",
+      "error_message": "Function not marked async",
+      "file": ".claude/CHANGELOG.md",
+      "root_cause": "Function uses await but wasn't declared async",
+      "fix": "Added async modifier",
+      "tags": [
+        "auto-detected",
+        "async-fix",
+        "md"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-05-26T20:33:08.494Z"
     }
   ]
 }

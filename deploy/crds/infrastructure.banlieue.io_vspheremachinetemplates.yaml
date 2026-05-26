@@ -1,0 +1,251 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: vspheremachinetemplates.infrastructure.banlieue.io
+spec:
+  group: infrastructure.banlieue.io
+  names:
+    categories: []
+    kind: VSphereMachineTemplate
+    plural: vspheremachinetemplates
+    shortNames:
+    - vsmt
+    singular: vspheremachinetemplate
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns: []
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for VSphereMachineTemplateSpec via `CustomResource`
+        properties:
+          spec:
+            properties:
+              template:
+                properties:
+                  spec:
+                    properties:
+                      cluster:
+                        description: Compute cluster within the datacenter.
+                        type: string
+                      datacenter:
+                        description: Datacenter name.
+                        type: string
+                      datastore:
+                        description: Datastore or datastore cluster name (resolved from the storage class).
+                        type: string
+                      disks:
+                        description: |-
+                          Disks. The first disk is the template's OS disk (grown if needed);
+                          subsequent disks are blank.
+                        items:
+                          properties:
+                            name:
+                              type: string
+                            provisioning:
+                              default: thin
+                              description: Disk provisioning hint. Providers honor on a best-effort basis.
+                              enum:
+                              - thin
+                              - thick
+                              - eagerZeroed
+                              type: string
+                            sizeGiB:
+                              format: uint32
+                              minimum: 0.0
+                              type: integer
+                          required:
+                          - name
+                          - sizeGiB
+                          type: object
+                        type: array
+                      failureDomain:
+                        description: |-
+                          CAPI contract (optional): failure domain placement. The banlieue
+                          scheduler writes the chosen failure domain here; for CAPI users the
+                          parent Machine's `spec.failureDomain` is what populates this.
+                        nullable: true
+                        type: string
+                      firmware:
+                        description: Firmware. EFI / EFI Secure require the template to be EFI-capable.
+                        enum:
+                        - bios
+                        - efi
+                        - efi-secure
+                        type: string
+                      folder:
+                        description: VM folder path. Optional; defaults to the datacenter VM root.
+                        nullable: true
+                        type: string
+                      memoryMiB:
+                        description: Memory in MiB.
+                        format: uint32
+                        minimum: 0.0
+                        type: integer
+                      network:
+                        description: Network interfaces.
+                        items:
+                          properties:
+                            ipam:
+                              description: |-
+                                IPAM configuration for a network interface.
+
+                                `source` selects the strategy and the matching sibling field
+                                (`static` / `pool`) carries its parameters. `Dhcp` needs no parameters.
+
+                                Wire shape (Kubernetes-idiomatic; chosen over a serde-tagged enum
+                                because kube-derive's CRD schema flattener does not support per-variant
+                                discriminator subschemas — see `.wolf/buglog.json` bug-006):
+
+                                ```yaml
+                                ipam:
+                                  source: dhcp                       # nothing else needed
+                                ipam:
+                                  source: static
+                                  static:
+                                    address: 10.0.0.5
+                                    prefix: 24
+                                    gateway: 10.0.0.1
+                                ipam:
+                                  source: pool
+                                  pool:
+                                    poolRef:
+                                      apiGroup: ipam.cluster.x-k8s.io
+                                      kind: IPAddressClaim
+                                      name: prod-pool
+                                ```
+                              properties:
+                                pool:
+                                  description: Required when `source == Pool`; ignored otherwise.
+                                  nullable: true
+                                  properties:
+                                    poolRef:
+                                      description: |-
+                                        Typed reference (apiGroup + kind + name + optional namespace).
+
+                                        Used wherever the referenced kind is pluggable — e.g. IPAM pools, where we
+                                        want to accept either `ipam.cluster.x-k8s.io/IPAddressClaim` (CAPI's
+                                        default) or future banlieue-native pool types.
+                                      properties:
+                                        apiGroup:
+                                          type: string
+                                        kind:
+                                          type: string
+                                        name:
+                                          type: string
+                                        namespace:
+                                          nullable: true
+                                          type: string
+                                      required:
+                                      - apiGroup
+                                      - kind
+                                      - name
+                                      type: object
+                                  required:
+                                  - poolRef
+                                  type: object
+                                source:
+                                  description: |-
+                                    IPAM source. `Dhcp` is the default so a freshly-constructed `IpamSpec`
+                                    is a valid one.
+                                  enum:
+                                  - dhcp
+                                  - static
+                                  - pool
+                                  type: string
+                                static:
+                                  description: Required when `source == Static`; ignored otherwise.
+                                  nullable: true
+                                  properties:
+                                    address:
+                                      type: string
+                                    gateway:
+                                      nullable: true
+                                      type: string
+                                    nameservers:
+                                      items:
+                                        type: string
+                                      type: array
+                                    prefix:
+                                      format: uint8
+                                      maximum: 255.0
+                                      minimum: 0.0
+                                      type: integer
+                                  required:
+                                  - address
+                                  - prefix
+                                  type: object
+                              required:
+                              - source
+                              type: object
+                            macAddress:
+                              description: Optional MAC address (otherwise vCenter generates one).
+                              nullable: true
+                              type: string
+                            name:
+                              type: string
+                            portGroup:
+                              description: Resolved port group or distributed port group name.
+                              type: string
+                          required:
+                          - ipam
+                          - name
+                          - portGroup
+                          type: object
+                        type: array
+                      numCpus:
+                        description: Number of virtual CPUs.
+                        format: uint32
+                        minimum: 0.0
+                        type: integer
+                      providerID:
+                        description: |-
+                          CAPI contract: Provider ID for the resulting Node, if this VM
+                          becomes a Kubernetes node. Format: `vsphere://<vm-instance-uuid>`.
+                          Set by the provider controller after the VM is created.
+                        nullable: true
+                        type: string
+                      providerRef:
+                        description: |-
+                          Reference to the banlieue `Provider` whose connection details
+                          describe the target vCenter.
+                        properties:
+                          name:
+                            type: string
+                        required:
+                        - name
+                        type: object
+                      resourcePool:
+                        description: |-
+                          Resource pool path within the cluster. Optional; defaults to the
+                          cluster's root resource pool.
+                        nullable: true
+                        type: string
+                      template:
+                        description: vCenter template name (resolved from `VMImage`).
+                        type: string
+                    required:
+                    - cluster
+                    - datacenter
+                    - datastore
+                    - disks
+                    - firmware
+                    - memoryMiB
+                    - network
+                    - numCpus
+                    - providerRef
+                    - template
+                    type: object
+                required:
+                - spec
+                type: object
+            required:
+            - template
+            type: object
+        required:
+        - spec
+        title: VSphereMachineTemplate
+        type: object
+    served: true
+    storage: true
+    subresources: {}

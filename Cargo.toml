@@ -2,6 +2,8 @@
 resolver = "2"
 members = [
     "crates/banlieue-api",
+    "crates/banlieue-controller",
+    "crates/banlieue-provider-sdk",
 ]
 
 [workspace.package]
@@ -34,7 +36,14 @@ futures = "0.3"
 
 # Logging / telemetry
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# CLI
+clap = { version = "4", features = ["derive", "env"] }
+
+# Misc
+chrono = { version = "0.4", features = ["serde"] }
+async-trait = "0.1"
 
 [profile.release]
 lto = "thin"

@@ -1,0 +1,250 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+
+name: Documentation
+
+on:
+  # Build-only triggers — exercise the docs pipeline so breakage is
+  # caught at PR / merge time, but do NOT publish to GitHub Pages.
+  # Deployment is gated on the Build workflow completing successfully
+  # for a release (see workflow_run trigger and deploy job below).
+  push:
+    branches:
+      - main
+    paths:
+      - 'docs/**'
+      - 'crates/**/*.rs'
+      - '.github/workflows/docs.yaml'
+      - '.github/workflows/calm.yaml'
+  pull_request:
+    paths:
+      - 'docs/**'
+      - 'crates/**/*.rs'
+      - '.github/workflows/docs.yaml'
+      - '.github/workflows/calm.yaml'
+  # Deploy trigger — chained to the Build workflow's completion rather
+  # than the raw `release: published` event so docs only ship when the
+  # release's binaries / container images / signatures actually built
+  # cleanly. The deploy job below filters strictly on
+  # workflow_run.event == 'release' and conclusion == 'success';
+  # PR / push-to-main Build completions still fire this workflow as a
+  # redundant docs-pipeline sanity check, but never deploy.
+  workflow_run:
+    workflows: ["Build"]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Build runs on every PR / push and can race with itself — cancel
+# in-progress to keep CI from queuing redundant builds. Release deploys
+# happen at most once per release tag and must NEVER be cancelled by a
+# subsequent push (operators rely on the published release deploying);
+# the `cancel-in-progress` expression below disables cancellation only
+# for the release event.
+concurrency:
+  group: pages-${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_branch || github.ref }}
+  cancel-in-progress: ${{ !(github.event_name == 'workflow_run' && github.event.workflow_run.event == 'release') }}
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # Validate the CALM architecture document before building the docs site.
+  # Uses the reusable CALM workflow at .github/workflows/calm.yaml.
+  # A broken architecture means broken diagrams downstream, so this is a
+  # hard gate on every docs build.
+  calm-validate:
+    name: ✅ Validate CALM architecture
+    uses: ./.github/workflows/calm.yaml
+    with:
+      command: validate
+      architecture: docs/architecture/calm/architecture.json
+      format: pretty
+      verbose: true
+
+  # Render one Mermaid flowchart per CALM node-set / flow into
+  # docs/src/architecture/. The rendered markdown is uploaded as an
+  # artifact and consumed by the build job below. The output directory
+  # is gitignored — the file only exists at build time (locally we keep
+  # placeholder stubs that get clobbered by `make calm-diagrams`).
+  calm-diagrams:
+    name: 🧱 Render CALM Mermaid diagrams
+    uses: ./.github/workflows/calm.yaml
+    with:
+      command: template
+      architecture: docs/architecture/calm/architecture.json
+      template-dir: docs/architecture/calm/templates/mermaid
+      output: docs/src/architecture
+      clear-output-directory: true
+      verbose: true
+      upload-artifact: true
+      artifact-name: calm-mermaid
+      artifact-retention-days: 7
+
+  build:
+    name: 📚 Build Documentation
+    needs: [calm-validate, calm-diagrams]
+    runs-on: ubuntu-latest
+    # CodeQL: "Checkout of untrusted code in a privileged context".
+    #
+    # `workflow_run` always executes with default-branch permissions, even
+    # when the upstream "Build" workflow was triggered by a fork's PR. If we
+    # let the workflow run for a fork-originated workflow_run event, we'd be
+    # checking out the fork's SHA into a privileged context (and writing to
+    # the default-branch GHA cache, enabling cache poisoning).
+    #
+    # Hard-gate at the job level: workflow_run events are only honoured when
+    # the triggering Build ran against THIS repository (i.e. a branch push or
+    # an internal PR), never a fork. Non-workflow_run events (push, PR,
+    # workflow_dispatch) are unaffected — those triggers already run with
+    # read-only fork permissions / no secrets.
+    if: |
+      github.event_name != 'workflow_run' ||
+      github.event.workflow_run.head_repository.full_name == github.repository
+    steps:
+      # Defence-in-depth: even if the job-level `if:` is bypassed (e.g. via
+      # a future YAML refactor), fail fast on a fork-originated workflow_run
+      # *before* any subsequent step can checkout, install, or cache anything.
+      - name: Verify trusted workflow_run source
+        if: github.event_name == 'workflow_run'
+        env:
+          HEAD_REPO: ${{ github.event.workflow_run.head_repository.full_name }}
+          THIS_REPO: ${{ github.repository }}
+        run: |
+          if [ "$HEAD_REPO" != "$THIS_REPO" ]; then
+            echo "::error::Refusing workflow_run from untrusted fork '$HEAD_REPO' (expected '$THIS_REPO')"
+            exit 1
+          fi
+
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0  # Full history for git-revision-date-localized plugin
+          # workflow_run executes in the default-branch context (main),
+          # so without an explicit ref the docs would be built from main
+          # even on a release-tagged Build. Pin to the SHA the Build ran
+          # against so released docs reflect released code. For other
+          # events (push / pull_request / workflow_dispatch) fall back to
+          # the workflow's triggering ref. The job-level `if:` above
+          # guarantees this SHA is from the same repository (not a fork)
+          # when the trigger is workflow_run.
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.ref }}
+
+      - name: Download rendered CALM diagrams
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: calm-mermaid
+          path: docs/src/architecture
+
+      - name: Strip .hbs suffix from rendered files
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          for f in docs/src/architecture/*.hbs; do
+            mv "$f" "${f%.hbs}"
+          done
+          ls -la docs/src/architecture
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (moving ref — re-pin quarterly)
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.11'
+
+      - name: Install Poetry
+        env:
+          # Pinned for reproducibility; bump alongside docs/pyproject.toml.
+          POETRY_VERSION: "1.8.4"
+        # pip install (vs curl | python3) because the curl-pipe pattern trips
+        # Scorecard's Pinned-Dependencies downloadThenRun rule; pip uses
+        # PyPI's per-wheel sha256 from the Python package index.
+        run: |
+          python3 -m pip install --user "poetry==${POETRY_VERSION}"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Configure Poetry
+        run: |
+          cd docs
+          poetry config virtualenvs.in-project true
+
+      - name: Cache Poetry dependencies
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: docs/.venv
+          key: ${{ runner.os }}-poetry-${{ hashFiles('docs/pyproject.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-poetry-
+
+      - name: Install documentation dependencies
+        run: |
+          cd docs
+          poetry install --no-interaction --no-ansi
+
+      - name: Cache cargo build
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-docs-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-docs-
+
+      - name: Build documentation
+        # CALM diagrams were rendered by the calm-diagrams job and downloaded
+        # above, so skip the local re-render via the Makefile.
+        env:
+          SKIP_CALM_DIAGRAMS: "1"
+        run: make docs
+
+      - name: Check for broken links
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        env:
+          # Pinned for reproducibility; bump periodically.
+          LINKINATOR_VERSION: "6.1.2"
+        run: |
+          npm install -g "linkinator@${LINKINATOR_VERSION}"
+          linkinator docs/site/ --recurse --skip "rustdoc/.*" --verbosity error
+
+      # Pages setup + artifact upload only happen when this workflow was
+      # triggered by a successful Build run for a release. PR / push runs
+      # (and Build completions for non-release events) build the site to
+      # prove it compiles cleanly, but never produce a deploy artifact.
+      - name: Setup Pages
+        if: github.event_name == 'workflow_run' && github.event.workflow_run.event == 'release' && github.event.workflow_run.conclusion == 'success'
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+
+      - name: Upload Pages artifact
+        if: github.event_name == 'workflow_run' && github.event.workflow_run.event == 'release' && github.event.workflow_run.conclusion == 'success'
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: docs/site
+
+  deploy:
+    name: 🚀 Deploy to GitHub Pages
+    # Gated on the Build workflow finishing successfully for a release.
+    # This is stricter than a `release: published` trigger:
+    # if Build fails (e.g., a binary won't compile, a signature step
+    # errors, an SBOM upload breaks), docs no longer publish for that
+    # tag. PR / push-to-main runs and Build completions whose triggering
+    # event was not a release validate the docs pipeline but do NOT
+    # publish.
+    if: github.event_name == 'workflow_run' && github.event.workflow_run.event == 'release' && github.event.workflow_run.conclusion == 'success'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0

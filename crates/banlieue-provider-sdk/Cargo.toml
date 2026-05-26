@@ -1,0 +1,27 @@
+[package]
+name = "banlieue-provider-sdk"
+description = "Shared runtime helpers used by banlieue-controller and every provider crate."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+[dependencies]
+banlieue-api = { path = "../banlieue-api" }
+kube.workspace = true
+k8s-openapi.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+futures.workspace = true
+tracing.workspace = true
+chrono.workspace = true
+async-trait.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }

@@ -1,0 +1,18 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# kind cluster config used by `make kind-create`.
+# Single-node by default; adjust the workers list when you need to test
+# anti-affinity or multi-node scheduling.
+
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: banlieue-dev
+nodes:
+  - role: control-plane
+    kubeadmConfigPatches:
+      - |
+        kind: InitConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            node-labels: "ingress-ready=true"

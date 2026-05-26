@@ -13,7 +13,7 @@ apiVersion: banlieue.io/v1alpha1
 kind: VirtualMachine
 metadata:
   name: db-prod-01
-  namespace: ops
+  namespace: banlieue-system
   labels:
     app: db-prod
     role: primary
@@ -38,7 +38,7 @@ spec:
           matchLabels:
             app: db-prod
         mode: required
-  desiredPowerState: "On"
+  desiredPowerState: PoweredOn
   userData:
     secretRef:
       name: db-prod-01-cloudinit

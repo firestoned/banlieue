@@ -76,7 +76,14 @@ pub struct ProviderConnection {
     pub credentials_ref: LocalObjectReference,
 
     /// Skip TLS verification. Applies to vsphere and proxmox.
-    #[serde(default, skip_serializing_if = "is_false")]
+    ///
+    /// Serialized as `insecureSkipTLSVerify` (matching CAPI convention with
+    /// uppercase `TLS`), not the auto-derived `insecureSkipTlsVerify`.
+    #[serde(
+        default,
+        skip_serializing_if = "is_false",
+        rename = "insecureSkipTLSVerify"
+    )]
     pub insecure_skip_tls_verify: bool,
 
     /// Optional PEM-encoded CA bundle to validate the endpoint.

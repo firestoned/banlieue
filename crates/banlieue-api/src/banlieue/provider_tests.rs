@@ -114,7 +114,7 @@ mod tests {
             ca_bundle: Some("-----BEGIN CERT-----\n...".to_string()),
         };
         let json = serde_json::to_value(&c).unwrap();
-        assert_eq!(json["insecureSkipTlsVerify"], true);
+        assert_eq!(json["insecureSkipTLSVerify"], true);
         assert_eq!(json["caBundle"], "-----BEGIN CERT-----\n...");
         let back: ProviderConnection = serde_json::from_value(json).unwrap();
         assert_eq!(back, c);

@@ -1,0 +1,15 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: banlieue-controller-config
+  namespace: banlieue-system
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: controller
+data:
+  RUST_LOG: "info,kube=warn,hyper=warn,tower=warn"
+  RUST_LOG_FORMAT: "json"
+  BANLIEUE_METRICS_PORT: "8080"
+  BANLIEUE_HEALTH_PORT: "8081"
