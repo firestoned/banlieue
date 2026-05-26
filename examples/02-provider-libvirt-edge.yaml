@@ -8,7 +8,7 @@ apiVersion: banlieue.io/v1alpha1
 kind: Provider
 metadata:
   name: libvirt-edge-host-7
-  namespace: ops
+  namespace: banlieue-system
   labels:
     dc: dc-edge
     env: edge

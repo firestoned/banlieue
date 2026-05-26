@@ -1,0 +1,39 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# Chainguard production Dockerfile for banlieue binaries.
+#
+# Uses Chainguard's hardened, zero-CVE glibc-dynamic image. Suitable for
+# regulated environments (SOX, NIST 800-53, PCI-DSS, FedRAMP).
+#
+# Build with:
+#     make docker-build-chainguard BINARY=banlieue-controller
+
+# Pinned by digest. Chainguard rebuilds this tag daily with patches;
+# Dependabot opens a PR with the new digest on each rebuild — review and merge.
+# Do NOT revert to a floating tag.
+ARG BASE_IMAGE=cgr.dev/chainguard/glibc-dynamic:latest@sha256:fa0d07a6a352921b778c4da11d889b41d9ef8e99c69bc2ec1f8c9ec46b2462e9
+
+FROM ${BASE_IMAGE}
+
+ARG VERSION
+ARG GIT_SHA
+ARG TARGETARCH
+ARG BASE_IMAGE
+ARG BINARY=banlieue-controller
+
+LABEL org.opencontainers.image.source="https://github.com/firestoned/banlieue" \
+      org.opencontainers.image.description="banlieue — Kubernetes-native abstract virtualization API (${BINARY}, Chainguard)" \
+      org.opencontainers.image.licenses="Apache-2.0" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.revision="${GIT_SHA}" \
+      org.opencontainers.image.base.name="${BASE_IMAGE}" \
+      banlieue.io/binary="${BINARY}"
+
+COPY --chmod=755 binaries/${TARGETARCH}/${BINARY} /app
+
+USER 65532:65532
+
+EXPOSE 8080 8081
+
+ENTRYPOINT ["/app"]

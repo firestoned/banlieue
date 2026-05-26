@@ -1,0 +1,215 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: vmclasses.banlieue.io
+spec:
+  group: banlieue.io
+  names:
+    categories: []
+    kind: VMClass
+    plural: vmclasses
+    shortNames:
+    - vmc
+    singular: vmclass
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.hardware.cpus
+      name: CPUs
+      type: integer
+    - jsonPath: .spec.hardware.memoryMiB
+      name: MemoryMiB
+      type: integer
+    - jsonPath: .spec.firmware
+      name: Firmware
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for VMClassSpec via `CustomResource`
+        properties:
+          spec:
+            properties:
+              features:
+                description: |-
+                  Required feature flags. The scheduler will only select a Provider
+                  + failure domain whose `features` is a superset of this list.
+
+                  Well-known values match those in `Provider.spec.capabilities.features`.
+                items:
+                  type: string
+                type: array
+              firmware:
+                default: efi
+                description: |-
+                  Firmware. Providers / failure domains that lack support for the
+                  requested firmware are filtered out by the scheduler.
+                enum:
+                - bios
+                - efi
+                - efi-secure
+                type: string
+              hardware:
+                properties:
+                  cpus:
+                    description: Number of virtual CPUs.
+                    format: uint32
+                    minimum: 0.0
+                    type: integer
+                  disks:
+                    description: |-
+                      Disks in attachment order. The first disk is the OS disk and is
+                      backed by the VMImage resolved for the VirtualMachine; subsequent
+                      disks are blank and created with the requested size and storage class.
+                    items:
+                      properties:
+                        name:
+                          description: |-
+                            Stable name within the VM; used in status to report resolved
+                            backend identifiers.
+                          type: string
+                        provisioning:
+                          default: thin
+                          description: Disk provisioning hint. Providers honor on a best-effort basis.
+                          enum:
+                          - thin
+                          - thick
+                          - eagerZeroed
+                          type: string
+                        sizeGiB:
+                          description: |-
+                            Size in GiB. For the OS disk this is the minimum size; if the image
+                            is larger, the provider grows accordingly.
+                          format: uint32
+                          minimum: 0.0
+                          type: integer
+                        storageClass:
+                          description: |-
+                            Abstract storage class name. MUST be advertised in the chosen
+                            Provider's `spec.capabilities.storageClasses`.
+                          type: string
+                      required:
+                      - name
+                      - sizeGiB
+                      - storageClass
+                      type: object
+                    type: array
+                  memoryMiB:
+                    description: Memory in MiB.
+                    format: uint32
+                    minimum: 0.0
+                    type: integer
+                required:
+                - cpus
+                - disks
+                - memoryMiB
+                type: object
+              network:
+                properties:
+                  interfaces:
+                    description: Network interfaces in attachment order.
+                    items:
+                      properties:
+                        ipam:
+                          description: IPAM configuration. See `IpamSpec` in common.
+                          properties:
+                            pool:
+                              description: Required when `source == Pool`; ignored otherwise.
+                              nullable: true
+                              properties:
+                                poolRef:
+                                  description: |-
+                                    Typed reference (apiGroup + kind + name + optional namespace).
+
+                                    Used wherever the referenced kind is pluggable — e.g. IPAM pools, where we
+                                    want to accept either `ipam.cluster.x-k8s.io/IPAddressClaim` (CAPI's
+                                    default) or future banlieue-native pool types.
+                                  properties:
+                                    apiGroup:
+                                      type: string
+                                    kind:
+                                      type: string
+                                    name:
+                                      type: string
+                                    namespace:
+                                      nullable: true
+                                      type: string
+                                  required:
+                                  - apiGroup
+                                  - kind
+                                  - name
+                                  type: object
+                              required:
+                              - poolRef
+                              type: object
+                            source:
+                              description: |-
+                                IPAM source. `Dhcp` is the default so a freshly-constructed `IpamSpec`
+                                is a valid one.
+                              enum:
+                              - dhcp
+                              - static
+                              - pool
+                              type: string
+                            static:
+                              description: Required when `source == Static`; ignored otherwise.
+                              nullable: true
+                              properties:
+                                address:
+                                  type: string
+                                gateway:
+                                  nullable: true
+                                  type: string
+                                nameservers:
+                                  items:
+                                    type: string
+                                  type: array
+                                prefix:
+                                  format: uint8
+                                  maximum: 255.0
+                                  minimum: 0.0
+                                  type: integer
+                              required:
+                              - address
+                              - prefix
+                              type: object
+                          required:
+                          - source
+                          type: object
+                        mtu:
+                          description: Optional MTU override. Provider may ignore if unsupported.
+                          format: uint32
+                          minimum: 0.0
+                          nullable: true
+                          type: integer
+                        name:
+                          description: Stable name within the VM.
+                          type: string
+                        networkClass:
+                          description: |-
+                            Abstract network class name. MUST be advertised in the chosen
+                            Provider's `spec.capabilities.networkClasses`.
+                          type: string
+                      required:
+                      - ipam
+                      - name
+                      - networkClass
+                      type: object
+                    type: array
+                required:
+                - interfaces
+                type: object
+            required:
+            - hardware
+            - network
+            type: object
+        required:
+        - spec
+        title: VMClass
+        type: object
+    served: true
+    storage: true
+    subresources: {}

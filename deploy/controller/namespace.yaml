@@ -1,0 +1,13 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: banlieue-system
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: controller
+    # Pod Security Standards — restricted profile for the controller namespace.
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted

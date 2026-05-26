@@ -1,0 +1,13 @@
+# Documentation build artifacts
+site/
+target/
+book/
+
+# Python virtual environment
+.venv/
+__pycache__/
+
+# Temporary files
+*.tmp
+*.swp
+*~

@@ -16,6 +16,7 @@ schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml = { workspace = true, optional = true }
+clap = { workspace = true, optional = true }
 
 [dev-dependencies]
 serde_yaml.workspace = true
@@ -23,7 +24,7 @@ serde_yaml.workspace = true
 [features]
 default = []
 # Enables the binary that prints all CRDs as YAML for kustomize/helm consumption.
-crdgen = ["dep:serde_yaml"]
+crdgen = ["dep:serde_yaml", "dep:clap"]
 
 [[bin]]
 name = "crdgen"

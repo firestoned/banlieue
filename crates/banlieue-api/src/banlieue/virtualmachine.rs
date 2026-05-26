@@ -49,7 +49,7 @@ pub struct VirtualMachineSpec {
     #[serde(default)]
     pub placement: PlacementSpec,
 
-    /// Desired power state. Defaults to `On`.
+    /// Desired power state. Defaults to `PoweredOn`.
     #[serde(default = "default_power_on")]
     pub desired_power_state: PowerState,
 
@@ -68,7 +68,7 @@ pub struct VirtualMachineSpec {
 }
 
 fn default_power_on() -> PowerState {
-    PowerState::On
+    PowerState::PoweredOn
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

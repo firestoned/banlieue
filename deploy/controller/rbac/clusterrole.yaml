@@ -1,0 +1,80 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: banlieue-controller
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: controller
+    # Aggregated to CAPI manager so a future CAPI Machine referencing one of
+    # our infrastructure CRDs can be authorised without a custom binding.
+    cluster.x-k8s.io/aggregate-to-manager: "true"
+rules:
+  # ---------------------------------------------------------------------------
+  # banlieue.io group — user-facing CRDs
+  # ---------------------------------------------------------------------------
+  - apiGroups: ["banlieue.io"]
+    resources:
+      - providers
+      - providers/status
+      - virtualmachines
+      - virtualmachines/status
+      - vmclasses
+      - vmimages
+      - vmimages/status
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # Finalizer subresources — required when the controller writes
+  # blockOwnerDeletion=true on owned objects' ownerReferences.
+  - apiGroups: ["banlieue.io"]
+    resources:
+      - virtualmachines/finalizers
+      - providers/finalizers
+    verbs: ["update"]
+
+  # ---------------------------------------------------------------------------
+  # infrastructure.banlieue.io group — provider infra CRDs
+  # ---------------------------------------------------------------------------
+  - apiGroups: ["infrastructure.banlieue.io"]
+    resources:
+      - vspheremachines
+      - vspheremachines/status
+      - vspheremachinetemplates
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["infrastructure.banlieue.io"]
+    resources:
+      - vspheremachines/finalizers
+    verbs: ["update"]
+
+  # ---------------------------------------------------------------------------
+  # CAPI IPAM contract — for Pool-based IpamSpec
+  # ---------------------------------------------------------------------------
+  - apiGroups: ["ipam.cluster.x-k8s.io"]
+    resources:
+      - ipaddressclaims
+      - ipaddresses
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # ---------------------------------------------------------------------------
+  # Core resources the controller reads or writes
+  # ---------------------------------------------------------------------------
+  # Read Secrets (provider credentials, cloud-init user-data)
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch"]
+
+  # Emit Events for state transitions visible via `kubectl describe`.
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+  - apiGroups: ["events.k8s.io"]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+
+  # Leases for leader election. banlieue's SDK uses GET + CREATE on first
+  # acquisition and server-side-apply PATCH on every renewal and take-over.
+  # `update` is kept for compatibility with any future helper that PUTs.
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "create", "update", "patch"]

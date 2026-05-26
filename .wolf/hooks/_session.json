@@ -1,405 +1,264 @@
 {
-  "session_id": "session-2026-05-25-2247",
-  "started": "2026-05-25T02:47:13.266Z",
+  "session_id": "session-2026-05-26-0205",
+  "started": "2026-05-26T06:05:40.294Z",
   "files_read": {
-    "/Users/erick/dev/banlieue/docs/roadmap/README.md": {
+    "/Users/erick/dev/banlieue/.github/workflows/calm.yaml": {
       "count": 1,
-      "tokens": 0,
-      "first_read": "2026-05-25T02:48:27.418Z"
+      "tokens": 2023,
+      "first_read": "2026-05-26T06:10:10.538Z"
     },
-    "/Users/erick/dev/banlieue/docs/roadmap/00-OVERVIEW.md": {
+    "/Users/erick/dev/banlieue/docs/architecture/calm/README.md": {
       "count": 1,
-      "tokens": 0,
-      "first_read": "2026-05-25T02:48:28.415Z"
+      "tokens": 999,
+      "first_read": "2026-05-26T06:10:50.339Z"
     },
-    "/Users/erick/dev/banlieue/docs/roadmap/01-DECISIONS.md": {
+    "/Users/erick/dev/banlieue/docs/src/architecture/system.md": {
       "count": 1,
-      "tokens": 0,
-      "first_read": "2026-05-25T02:48:28.891Z"
+      "tokens": 152,
+      "first_read": "2026-05-26T06:10:53.182Z"
     },
-    "/Users/erick/dev/banlieue/docs/roadmap/02-CONVENTIONS.md": {
+    "/Users/erick/dev/banlieue/docs/src/architecture/flows.md": {
       "count": 1,
-      "tokens": 0,
-      "first_read": "2026-05-25T02:48:29.531Z"
+      "tokens": 253,
+      "first_read": "2026-05-26T06:10:55.791Z"
     },
-    "/Users/erick/dev/banlieue/docs/roadmap/10-PHASE-1A-CONTROLLER-AND-SDK.md": {
+    "/Users/erick/dev/banlieue/Makefile": {
+      "count": 3,
+      "tokens": 4952,
+      "first_read": "2026-05-26T06:11:07.047Z"
+    },
+    "/Users/erick/dev/banlieue/docs/src/concepts/infra-crds-capi.md": {
       "count": 1,
-      "tokens": 0,
-      "first_read": "2026-05-25T02:48:34.865Z"
+      "tokens": 1133,
+      "first_read": "2026-05-26T06:11:14.905Z"
     },
-    "/Users/erick/dev/banlieue/docs/roadmap/11-PHASE-1B-VSPHERE-PROVIDER.md": {
+    "/Users/erick/dev/banlieue/docs/mkdocs.yml": {
       "count": 1,
-      "tokens": 0,
-      "first_read": "2026-05-25T02:48:35.383Z"
+      "tokens": 1387,
+      "first_read": "2026-05-26T06:11:17.444Z"
     },
-    "/Users/erick/dev/banlieue/docs/roadmap/12-PHASE-1C-PROXMOX-PROVIDER.md": {
+    "/Users/erick/dev/banlieue/docs/architecture/calm/architecture.json": {
       "count": 1,
-      "tokens": 0,
-      "first_read": "2026-05-25T02:48:36.416Z"
-    },
-    "/Users/erick/dev/banlieue/docs/roadmap/13-PHASE-1D-LIBVIRT-PROVIDER.md": {
-      "count": 1,
-      "tokens": 0,
-      "first_read": "2026-05-25T02:48:36.901Z"
-    },
-    "/Users/erick/dev/banlieue/docs/roadmap/20-PHASE-2-SNAPSHOTS.md": {
-      "count": 1,
-      "tokens": 0,
-      "first_read": "2026-05-25T02:48:40.255Z"
-    },
-    "/Users/erick/dev/banlieue/docs/roadmap/30-PHASE-3-PROVIDER-LIFECYCLE.md": {
-      "count": 1,
-      "tokens": 0,
-      "first_read": "2026-05-25T02:48:41.326Z"
-    },
-    "/Users/erick/dev/banlieue/docs/roadmap/40-PHASE-4-FINOS-READY.md": {
-      "count": 1,
-      "tokens": 0,
-      "first_read": "2026-05-25T02:48:41.822Z"
-    },
-    "/Users/erick/dev/banlieue/Cargo.toml": {
-      "count": 2,
-      "tokens": 267,
-      "first_read": "2026-05-25T14:41:14.792Z"
-    },
-    "/Users/erick/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/k8s-openapi-0.27.1/src/v1_34/apimachinery/pkg/apis/meta/v1/time.rs": {
-      "count": 1,
-      "tokens": 0,
-      "first_read": "2026-05-25T14:42:32.059Z"
-    },
-    "/Users/erick/dev/banlieue/crates/banlieue-api/src/banlieue/provider_tests.rs": {
-      "count": 1,
-      "tokens": 3194,
-      "first_read": "2026-05-25T14:42:44.169Z"
+      "tokens": 7752,
+      "first_read": "2026-05-26T18:24:25.036Z"
     },
     "/Users/erick/dev/banlieue/.claude/CHANGELOG.md": {
-      "count": 1,
-      "tokens": 1021,
-      "first_read": "2026-05-25T14:44:53.931Z"
-    },
-    "/Users/erick/dev/banlieue/crates/banlieue-api/src/common.rs": {
-      "count": 1,
-      "tokens": 1884,
-      "first_read": "2026-05-25T16:17:40.183Z"
-    },
-    "/Users/erick/dev/banlieue/crates/banlieue-api/src/common_tests.rs": {
       "count": 2,
-      "tokens": 4664,
-      "first_read": "2026-05-25T16:21:07.087Z"
+      "tokens": 12969,
+      "first_read": "2026-05-26T18:29:16.234Z"
     },
-    "/Users/erick/dev/banlieue/crates/banlieue-api/src/banlieue/vmclass_tests.rs": {
-      "count": 5,
-      "tokens": 2462,
-      "first_read": "2026-05-25T16:21:50.296Z"
-    },
-    "/Users/erick/dev/banlieue/crates/banlieue-api/src/infrastructure/vsphere_machine_tests.rs": {
-      "count": 3,
-      "tokens": 3129,
-      "first_read": "2026-05-25T16:22:43.694Z"
-    },
-    "/Users/erick/dev/banlieue/examples/03-vmclass-db-prod-large.yaml": {
+    "/Users/erick/dev/roadmaps/banlieue/README.md": {
       "count": 1,
       "tokens": 0,
-      "first_read": "2026-05-25T16:23:25.007Z"
+      "first_read": "2026-05-26T18:39:35.723Z"
     },
-    "/Users/erick/dev/banlieue/.claude/CLAUDE.md": {
-      "count": 3,
-      "tokens": 2618,
-      "first_read": "2026-05-25T17:05:52.468Z"
-    },
-    "/Users/erick/dev/banlieue/.claude/SKILL.md": {
+    "/Users/erick/dev/roadmaps/banlieue/10-PHASE-1A-CONTROLLER-AND-SDK.md": {
       "count": 4,
-      "tokens": 2537,
-      "first_read": "2026-05-25T17:06:50.428Z"
+      "tokens": 0,
+      "first_read": "2026-05-26T18:39:50.022Z"
     },
-    "/Users/erick/dev/banlieue/.github/workflows/build.yaml": {
-      "count": 6,
-      "tokens": 4178,
-      "first_read": "2026-05-25T17:07:35.264Z"
-    },
-    "/Users/erick/dev/banlieue/.github/workflows/calm-test.yaml": {
+    "/Users/erick/dev/banlieue/crates/banlieue-controller/src/main.rs": {
       "count": 1,
-      "tokens": 1661,
-      "first_read": "2026-05-25T19:50:38.730Z"
+      "tokens": 1609,
+      "first_read": "2026-05-26T18:41:37.497Z"
+    },
+    "/Users/erick/dev/banlieue/crates/banlieue-provider-sdk/src/lib.rs": {
+      "count": 1,
+      "tokens": 290,
+      "first_read": "2026-05-26T18:41:43.079Z"
+    },
+    "/Users/erick/dev/banlieue/crates/banlieue-provider-sdk/Cargo.toml": {
+      "count": 1,
+      "tokens": 328,
+      "first_read": "2026-05-26T18:41:49.081Z"
+    },
+    "/Users/erick/dev/banlieue/crates/banlieue-provider-sdk/src/error.rs": {
+      "count": 1,
+      "tokens": 428,
+      "first_read": "2026-05-26T18:41:53.551Z"
+    },
+    "/Users/erick/dev/banlieue/crates/banlieue-controller/Cargo.toml": {
+      "count": 1,
+      "tokens": 328,
+      "first_read": "2026-05-26T18:41:57.886Z"
+    },
+    "/Users/erick/dev/banlieue/Cargo.toml": {
+      "count": 1,
+      "tokens": 328,
+      "first_read": "2026-05-26T18:42:02.802Z"
+    },
+    "/Users/erick/dev/banlieue/crates/banlieue-provider-sdk/src/client.rs": {
+      "count": 1,
+      "tokens": 384,
+      "first_read": "2026-05-26T18:42:13.615Z"
+    },
+    "/private/tmp/claude-502/-Users-erick-dev-banlieue/8f03b6a1-d6af-4cc4-8e46-6c852db7a24d/tasks/bexg3wadf.output": {
+      "count": 2,
+      "tokens": 0,
+      "first_read": "2026-05-26T20:17:58.481Z"
+    },
+    "/Users/erick/dev/banlieue/deploy/controller/rbac/clusterrole.yaml": {
+      "count": 1,
+      "tokens": 856,
+      "first_read": "2026-05-26T20:22:38.752Z"
+    },
+    "/Users/erick/dev/banlieue/deploy/controller/deployment.yaml": {
+      "count": 1,
+      "tokens": 863,
+      "first_read": "2026-05-26T20:31:58.240Z"
     }
   },
   "files_written": [
     {
-      "file": "/Users/erick/dev/banlieue/.github/workflows/sast.yaml",
-      "action": "create",
-      "tokens": 446,
-      "at": "2026-05-25T02:47:54.487Z"
-    },
-    {
-      "file": "/Users/erick/dev/banlieue/.github/workflows/codeql.yaml",
-      "action": "create",
-      "tokens": 634,
-      "at": "2026-05-25T02:48:01.916Z"
-    },
-    {
-      "file": "/Users/erick/dev/banlieue/.github/codeql/codeql-config.yml",
-      "action": "create",
-      "tokens": 192,
-      "at": "2026-05-25T02:48:05.478Z"
-    },
-    {
-      "file": "/Users/erick/dev/banlieue/.github/workflows/scorecard.yaml",
-      "action": "create",
-      "tokens": 1018,
-      "at": "2026-05-25T02:48:23.077Z"
-    },
-    {
-      "file": "/Users/erick/dev/banlieue/.github/workflows/calm.yaml",
-      "action": "create",
-      "tokens": 2023,
-      "at": "2026-05-25T02:48:52.386Z"
-    },
-    {
-      "file": "/Users/erick/dev/banlieue/.github/workflows/calm-test.yaml",
-      "action": "create",
-      "tokens": 1661,
-      "at": "2026-05-25T02:49:15.845Z"
-    },
-    {
-      "file": "/Users/erick/dev/banlieue/Cargo.toml",
-      "action": "create",
-      "tokens": 286,
-      "at": "2026-05-25T14:41:22.325Z"
-    },
-    {
-      "file": "/Users/erick/dev/banlieue/crates/banlieue-api/src/banlieue/provider_tests.rs",
+      "file": "/Users/erick/dev/banlieue/.claude/CHANGELOG.md",
       "action": "edit",
-      "tokens": 45,
-      "at": "2026-05-25T14:42:55.210Z"
+      "tokens": 1781,
+      "at": "2026-05-26T06:05:48.457Z"
     },
     {
-      "file": "/Users/erick/dev/banlieue/crates/banlieue-api/src/banlieue/provider_tests.rs",
+      "file": "/Users/erick/dev/banlieue/Makefile",
       "action": "edit",
-      "tokens": 106,
-      "at": "2026-05-25T14:43:03.723Z"
+      "tokens": 28,
+      "at": "2026-05-26T18:25:03.730Z"
+    },
+    {
+      "file": "/Users/erick/dev/banlieue/Makefile",
+      "action": "edit",
+      "tokens": 213,
+      "at": "2026-05-26T18:25:15.117Z"
+    },
+    {
+      "file": "/Users/erick/dev/banlieue/docs/src/architecture/index.md",
+      "action": "create",
+      "tokens": 1502,
+      "at": "2026-05-26T18:25:49.594Z"
+    },
+    {
+      "file": "/Users/erick/dev/banlieue/docs/src/reasoning/capi-relationship.md",
+      "action": "create",
+      "tokens": 1943,
+      "at": "2026-05-26T18:26:35.152Z"
+    },
+    {
+      "file": "/Users/erick/dev/banlieue/docs/mkdocs.yml",
+      "action": "edit",
+      "tokens": 246,
+      "at": "2026-05-26T18:26:52.571Z"
+    },
+    {
+      "file": "/Users/erick/dev/banlieue/Makefile",
+      "action": "edit",
+      "tokens": 211,
+      "at": "2026-05-26T18:28:26.146Z"
+    },
+    {
+      "file": "/Users/erick/dev/banlieue/Makefile",
+      "action": "edit",
+      "tokens": 206,
+      "at": "2026-05-26T18:28:37.932Z"
     },
     {
       "file": "/Users/erick/dev/banlieue/.claude/CHANGELOG.md",
       "action": "edit",
-      "tokens": 736,
-      "at": "2026-05-25T14:45:17.155Z"
+      "tokens": 807,
+      "at": "2026-05-26T18:29:41.383Z"
     },
     {
-      "file": "/Users/erick/dev/banlieue/crates/banlieue-api/src/common.rs",
-      "action": "edit",
-      "tokens": 436,
-      "at": "2026-05-25T16:17:54.436Z"
-    },
-    {
-      "file": "/Users/erick/dev/banlieue/crates/banlieue-api/src/common.rs",
-      "action": "edit",
-      "tokens": 612,
-      "at": "2026-05-25T16:20:01.832Z"
-    },
-    {
-      "file": "/Users/erick/dev/banlieue/crates/banlieue-api/src/common_tests.rs",
-      "action": "edit",
-      "tokens": 1503,
-      "at": "2026-05-25T16:21:44.549Z"
-    },
-    {
-      "file": "/Users/erick/dev/banlieue/crates/banlieue-api/src/banlieue/vmclass_tests.rs",
-      "action": "edit",
-      "tokens": 71,
-      "at": "2026-05-25T16:21:55.585Z"
-    },
-    {
-      "file": "/Users/erick/dev/banlieue/crates/banlieue-api/src/banlieue/vmclass_tests.rs",
-      "action": "edit",
-      "tokens": 393,
-      "at": "2026-05-25T16:22:15.129Z"
-    },
-    {
-      "file": "/Users/erick/dev/banlieue/crates/banlieue-api/src/banlieue/vmclass_tests.rs",
-      "action": "edit",
-      "tokens": 224,
-      "at": "2026-05-25T16:22:32.433Z"
-    },
-    {
-      "file": "/Users/erick/dev/banlieue/crates/banlieue-api/src/infrastructure/vsphere_machine_tests.rs",
-      "action": "edit",
-      "tokens": 71,
-      "at": "2026-05-25T16:22:39.100Z"
-    },
-    {
-      "file": "/Users/erick/dev/banlieue/crates/banlieue-api/src/infrastructure/vsphere_machine_tests.rs",
-      "action": "edit",
-      "tokens": 435,
-      "at": "2026-05-25T16:22:57.377Z"
-    },
-    {
-      "file": "/Users/erick/dev/banlieue/crates/banlieue-api/src/infrastructure/vsphere_machine_tests.rs",
-      "action": "edit",
-      "tokens": 337,
-      "at": "2026-05-25T16:23:21.922Z"
-    },
-    {
-      "file": "/Users/erick/dev/banlieue/examples/03-vmclass-db-prod-large.yaml",
-      "action": "edit",
-      "tokens": 53,
-      "at": "2026-05-25T16:23:30.725Z"
-    },
-    {
-      "file": "/Users/erick/dev/banlieue/.claude/CHANGELOG.md",
-      "action": "edit",
-      "tokens": 1007,
-      "at": "2026-05-25T16:25:19.366Z"
-    },
-    {
-      "file": "/Users/erick/dev/banlieue/.claude/CLAUDE.md",
-      "action": "edit",
-      "tokens": 55,
-      "at": "2026-05-25T17:06:00.375Z"
-    },
-    {
-      "file": "/Users/erick/dev/banlieue/.claude/CLAUDE.md",
-      "action": "edit",
-      "tokens": 188,
-      "at": "2026-05-25T17:06:15.403Z"
-    },
-    {
-      "file": "/Users/erick/dev/banlieue/.claude/CLAUDE.md",
-      "action": "edit",
-      "tokens": 285,
-      "at": "2026-05-25T17:06:31.871Z"
-    },
-    {
-      "file": "/Users/erick/dev/banlieue/.claude/CLAUDE.md",
-      "action": "edit",
-      "tokens": 27,
-      "at": "2026-05-25T17:06:42.658Z"
-    },
-    {
-      "file": "/Users/erick/dev/banlieue/.claude/SKILL.md",
-      "action": "edit",
-      "tokens": 39,
-      "at": "2026-05-25T17:06:57.199Z"
-    },
-    {
-      "file": "/Users/erick/dev/banlieue/.claude/SKILL.md",
-      "action": "edit",
-      "tokens": 81,
-      "at": "2026-05-25T17:07:08.387Z"
-    },
-    {
-      "file": "/Users/erick/dev/banlieue/.claude/SKILL.md",
-      "action": "edit",
-      "tokens": 48,
-      "at": "2026-05-25T17:07:18.918Z"
-    },
-    {
-      "file": "/Users/erick/dev/banlieue/.claude/SKILL.md",
-      "action": "edit",
-      "tokens": 26,
-      "at": "2026-05-25T17:07:27.795Z"
-    },
-    {
-      "file": "/Users/erick/dev/banlieue/.github/workflows/build.yaml",
-      "action": "edit",
-      "tokens": 15,
-      "at": "2026-05-25T17:07:40.943Z"
-    },
-    {
-      "file": "/Users/erick/dev/banlieue/.claude/CHANGELOG.md",
-      "action": "edit",
-      "tokens": 580,
-      "at": "2026-05-25T17:08:57.354Z"
-    },
-    {
-      "file": "/Users/erick/dev/banlieue/.github/workflows/calm-test.yaml",
-      "action": "edit",
-      "tokens": 575,
-      "at": "2026-05-25T19:51:10.756Z"
-    },
-    {
-      "file": "/Users/erick/dev/banlieue/.github/workflows/build.yaml",
-      "action": "edit",
-      "tokens": 265,
-      "at": "2026-05-25T19:58:18.708Z"
-    },
-    {
-      "file": "/Users/erick/dev/banlieue/deny.toml",
+      "file": "/Users/erick/dev/banlieue/crates/banlieue-provider-sdk/src/leader_tests.rs",
       "action": "create",
-      "tokens": 702,
-      "at": "2026-05-25T19:58:59.427Z"
+      "tokens": 1817,
+      "at": "2026-05-26T18:44:46.060Z"
     },
     {
-      "file": "/Users/erick/dev/banlieue/deny.toml",
-      "action": "edit",
-      "tokens": 192,
-      "at": "2026-05-25T20:00:20.243Z"
+      "file": "/Users/erick/dev/banlieue/crates/banlieue-provider-sdk/src/leader.rs",
+      "action": "create",
+      "tokens": 3650,
+      "at": "2026-05-26T18:46:05.665Z"
     },
     {
-      "file": "/Users/erick/dev/banlieue/deny.toml",
+      "file": "/Users/erick/dev/banlieue/crates/banlieue-provider-sdk/src/lib.rs",
       "action": "edit",
-      "tokens": 226,
-      "at": "2026-05-25T20:00:30.169Z"
+      "tokens": 194,
+      "at": "2026-05-26T19:03:29.269Z"
     },
     {
-      "file": "/Users/erick/dev/banlieue/.github/workflows/build.yaml",
-      "action": "edit",
-      "tokens": 120,
-      "at": "2026-05-25T20:01:15.117Z"
+      "file": "/Users/erick/dev/banlieue/crates/banlieue-provider-sdk/src/leader.rs",
+      "action": "create",
+      "tokens": 3641,
+      "at": "2026-05-26T20:19:25.456Z"
     },
     {
-      "file": "/Users/erick/dev/banlieue/.github/workflows/sast.yaml",
-      "action": "edit",
-      "tokens": 105,
-      "at": "2026-05-26T02:55:26.696Z"
+      "file": "/Users/erick/dev/banlieue/crates/banlieue-provider-sdk/src/leader_tests.rs",
+      "action": "create",
+      "tokens": 1731,
+      "at": "2026-05-26T20:19:53.560Z"
     },
     {
-      "file": "/Users/erick/dev/banlieue/.github/workflows/codeql.yaml",
+      "file": "/Users/erick/dev/banlieue/crates/banlieue-provider-sdk/src/leader_tests.rs",
       "action": "edit",
-      "tokens": 91,
-      "at": "2026-05-26T02:55:28.443Z"
+      "tokens": 19,
+      "at": "2026-05-26T20:20:37.957Z"
     },
     {
-      "file": "/Users/erick/dev/banlieue/.github/workflows/scorecard.yaml",
+      "file": "/Users/erick/dev/banlieue/crates/banlieue-provider-sdk/src/leader.rs",
       "action": "edit",
-      "tokens": 172,
-      "at": "2026-05-26T02:55:32.567Z"
+      "tokens": 208,
+      "at": "2026-05-26T20:20:47.758Z"
     },
     {
-      "file": "/Users/erick/dev/banlieue/.github/workflows/build.yaml",
+      "file": "/Users/erick/dev/banlieue/crates/banlieue-controller/src/main.rs",
       "action": "edit",
-      "tokens": 591,
-      "at": "2026-05-26T03:02:01.832Z"
+      "tokens": 1069,
+      "at": "2026-05-26T20:21:31.061Z"
     },
     {
-      "file": "/Users/erick/dev/banlieue/Cargo.toml",
+      "file": "/Users/erick/.claude/projects/-Users-erick-dev-banlieue/memory/feedback_least_privilege.md",
+      "action": "create",
+      "tokens": 983,
+      "at": "2026-05-26T20:21:39.900Z"
+    },
+    {
+      "file": "/Users/erick/.claude/projects/-Users-erick-dev-banlieue/memory/MEMORY.md",
+      "action": "create",
+      "tokens": 62,
+      "at": "2026-05-26T20:21:51.933Z"
+    },
+    {
+      "file": "/Users/erick/dev/banlieue/crates/banlieue-controller/src/main.rs",
       "action": "edit",
-      "tokens": 13,
-      "at": "2026-05-26T03:05:55.999Z"
+      "tokens": 1571,
+      "at": "2026-05-26T20:22:14.671Z"
+    },
+    {
+      "file": "/Users/erick/dev/banlieue/deploy/controller/rbac/clusterrole.yaml",
+      "action": "edit",
+      "tokens": 96,
+      "at": "2026-05-26T20:31:55.001Z"
+    },
+    {
+      "file": "/Users/erick/dev/banlieue/.claude/CHANGELOG.md",
+      "action": "edit",
+      "tokens": 1173,
+      "at": "2026-05-26T20:33:08.492Z"
     }
   ],
   "edit_counts": {
-    ".github/workflows/sast.yaml": 2,
-    ".github/workflows/codeql.yaml": 2,
-    ".github/codeql/codeql-config.yml": 1,
-    ".github/workflows/scorecard.yaml": 2,
-    ".github/workflows/calm.yaml": 1,
-    ".github/workflows/calm-test.yaml": 2,
-    "Cargo.toml": 2,
-    "crates/banlieue-api/src/banlieue/provider_tests.rs": 2,
     ".claude/CHANGELOG.md": 3,
-    "crates/banlieue-api/src/common.rs": 2,
-    "crates/banlieue-api/src/common_tests.rs": 1,
-    "crates/banlieue-api/src/banlieue/vmclass_tests.rs": 3,
-    "crates/banlieue-api/src/infrastructure/vsphere_machine_tests.rs": 3,
-    "examples/03-vmclass-db-prod-large.yaml": 1,
-    ".claude/CLAUDE.md": 4,
-    ".claude/SKILL.md": 4,
-    ".github/workflows/build.yaml": 4,
-    "deny.toml": 3
+    "Makefile": 4,
+    "docs/src/architecture/index.md": 1,
+    "docs/src/reasoning/capi-relationship.md": 1,
+    "docs/mkdocs.yml": 1,
+    "crates/banlieue-provider-sdk/src/leader_tests.rs": 3,
+    "crates/banlieue-provider-sdk/src/leader.rs": 3,
+    "crates/banlieue-provider-sdk/src/lib.rs": 1,
+    "crates/banlieue-controller/src/main.rs": 2,
+    "../../.claude/projects/-Users-erick-dev-banlieue/memory/feedback_least_privilege.md": 1,
+    "../../.claude/projects/-Users-erick-dev-banlieue/memory/MEMORY.md": 1,
+    "deploy/controller/rbac/clusterrole.yaml": 1
   },
-  "anatomy_hits": 9,
-  "anatomy_misses": 15,
-  "repeated_reads_warned": 18,
+  "anatomy_hits": 18,
+  "anatomy_misses": 3,
+  "repeated_reads_warned": 7,
   "cerebrum_warnings": 0,
   "stop_count": 0
 }

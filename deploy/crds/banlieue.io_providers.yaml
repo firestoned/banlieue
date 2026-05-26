@@ -1,0 +1,270 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: providers.banlieue.io
+spec:
+  group: banlieue.io
+  names:
+    categories: []
+    kind: Provider
+    plural: providers
+    shortNames:
+    - prov
+    singular: provider
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.providerClassRef.name
+      name: Class
+      type: string
+    - jsonPath: .spec.connection.endpoint
+      name: Endpoint
+      priority: 1
+      type: string
+    - jsonPath: .status.conditions[?(@.type=='Ready')].status
+      name: Ready
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for ProviderSpec via `CustomResource`
+        properties:
+          spec:
+            properties:
+              capabilities:
+                description: |-
+                  Admin-defined capability mappings. Every storage / network class that
+                  VMClass and VMImage may request MUST be listed here for this provider
+                  to be considered by the scheduler.
+                properties:
+                  features:
+                    description: |-
+                      Feature flags admin asserts are available. Provider's controller may
+                      downgrade these in status if introspection finds otherwise.
+                      Well-known values: hotAddCPU, hotAddMemory, efiSecureBoot,
+                      nestedVirtualization, gpuPassthrough.
+                    items:
+                      type: string
+                    type: array
+                  networkClasses:
+                    description: Network classes the admin asserts are available on this backend.
+                    items:
+                      properties:
+                        name:
+                          description: Abstract name referenced by VMClass.network.interfaces[].networkClass.
+                          type: string
+                        target:
+                          additionalProperties:
+                            type: string
+                          description: |-
+                            Concrete backend target. Free-form per provider class. Examples:
+                              vsphere:  { portGroup: "vmnet-prod" }
+                                        { distributedPortGroup: "dvs-prod-vlan100" }
+                              proxmox:  { bridge: "vmbr0", vlan: "100" }
+                              libvirt:  { network: "br-prod" }
+                          type: object
+                      required:
+                      - name
+                      - target
+                      type: object
+                    type: array
+                  storageClasses:
+                    description: |-
+                      Storage classes the admin asserts are available on this backend.
+                      Each entry maps an abstract class name to a provider-interpreted
+                      concrete target.
+                    items:
+                      properties:
+                        name:
+                          description: Abstract name referenced by VMClass.hardware.disks[].storageClass.
+                          type: string
+                        target:
+                          additionalProperties:
+                            type: string
+                          description: |-
+                            Concrete backend target. Free-form per provider class; the provider's
+                            controller interprets it. Examples by provider class:
+                              vsphere:  { datastore: "ds-fast-01" }
+                                        { datastoreCluster: "dsc-gold" }
+                                        { tagCategory: "tier", tag: "gold" }
+                              proxmox:  { storage: "ceph-pool-1" }
+                              libvirt:  { pool: "nvme-pool" }
+                          type: object
+                      required:
+                      - name
+                      - target
+                      type: object
+                    type: array
+                type: object
+              connection:
+                description: Connection details for the backend.
+                properties:
+                  caBundle:
+                    description: Optional PEM-encoded CA bundle to validate the endpoint.
+                    nullable: true
+                    type: string
+                  credentialsRef:
+                    description: |-
+                      Reference to a Secret in the Provider's namespace containing the
+                      credentials. Required keys depend on provider class:
+                        vsphere:  username, password
+                        proxmox:  username (root@pam!token-id), tokenValue  OR  username, password
+                        libvirt:  optional sshPrivateKey for SSH transports
+                    properties:
+                      name:
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  endpoint:
+                    description: |-
+                      Endpoint URL or URI. Format depends on provider class:
+                        vsphere:  https://vcenter.example.com/sdk
+                        proxmox:  https://pve.example.com:8006
+                        libvirt:  qemu+ssh://kvm-host.example.com/system
+                    type: string
+                  insecureSkipTLSVerify:
+                    description: |-
+                      Skip TLS verification. Applies to vsphere and proxmox.
+
+                      Serialized as `insecureSkipTLSVerify` (matching CAPI convention with
+                      uppercase `TLS`), not the auto-derived `insecureSkipTlsVerify`.
+                    type: boolean
+                required:
+                - credentialsRef
+                - endpoint
+                type: object
+              paused:
+                description: |-
+                  Suspend reconciliation. Equivalent to setting the
+                  `cluster.x-k8s.io/paused` annotation but in-band.
+                type: boolean
+              providerClassRef:
+                description: |-
+                  Reference to a ProviderClass that identifies the backend type.
+
+                  For v1alpha1 the ProviderClass CRD is deferred; treat this as a name
+                  drawn from a well-known set: `vsphere`, `proxmox`, `libvirt`. A future
+                  ProviderClass CRD will provide install metadata (image, RBAC) without
+                  changing this reference.
+                properties:
+                  name:
+                    type: string
+                required:
+                - name
+                type: object
+            required:
+            - connection
+            - providerClassRef
+            type: object
+          status:
+            nullable: true
+            properties:
+              conditions:
+                description: |-
+                  Standard Kubernetes conditions. The `Ready` condition reflects overall
+                  provider health. The `ProviderReachable` condition reflects connection
+                  state to the backend.
+                items:
+                  description: Condition contains details for one aspect of the current state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: lastTransitionTime is the last time the condition transitioned from one status to another. This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: message is a human readable message indicating details about the transition. This may be an empty string.
+                      type: string
+                    observedGeneration:
+                      description: observedGeneration represents the .metadata.generation that the condition was set based upon. For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date with respect to the current state of the instance.
+                      format: int64
+                      type: integer
+                    reason:
+                      description: reason contains a programmatic identifier indicating the reason for the condition's last transition. Producers of specific condition types may define expected values and meanings for this field, and whether the values are considered a guaranteed API. The value should be a CamelCase string. This field may not be empty.
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              failureDomains:
+                description: |-
+                  Failure domains discovered by the provider's controller within this
+                  backend. The scheduler matches against `labels` and filters by
+                  `attributes.availableStorageClasses` / `availableNetworkClasses`.
+                items:
+                  properties:
+                    attributes:
+                      default: {}
+                      description: |-
+                        Attributes the provider's controller resolved for this domain,
+                        including the subset of admin-listed classes that are actually
+                        reachable from here.
+                      properties:
+                        availableNetworkClasses:
+                          description: Subset of spec.capabilities.networkClasses[].name reachable here.
+                          items:
+                            type: string
+                          type: array
+                        availableStorageClasses:
+                          description: Subset of spec.capabilities.storageClasses[].name reachable here.
+                          items:
+                            type: string
+                          type: array
+                        features:
+                          description: |-
+                            Feature flags actually present here. Always a subset of
+                            spec.capabilities.features.
+                          items:
+                            type: string
+                          type: array
+                        raw:
+                          additionalProperties:
+                            type: string
+                          description: |-
+                            Provider-specific resolved attributes; for vSphere this typically
+                            includes datacenter, cluster, resourcePool. Used by the provider's
+                            controller when filling in the infrastructure CR.
+                          type: object
+                      type: object
+                    labels:
+                      additionalProperties:
+                        type: string
+                      description: |-
+                        Labels used by the scheduler's `failureDomainSelector` and by
+                        VirtualMachine anti-affinity `topologyKey` matching.
+                        Recommended keys: `dc`, `cluster`, `rack`, `env`.
+                      type: object
+                    name:
+                      description: Stable name. Conventionally `<provider>-<cluster-or-zone>`.
+                      type: string
+                  required:
+                  - name
+                  type: object
+                type: array
+              observedGeneration:
+                description: The generation of the spec that the controller has reconciled.
+                format: int64
+                nullable: true
+                type: integer
+            type: object
+        required:
+        - spec
+        title: Provider
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
