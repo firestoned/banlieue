@@ -64,14 +64,18 @@ kubectl apply --dry-run=client -f /tmp/banlieue-crds.yaml
 
 **Steps:**
 ```bash
-# (Phase 4 — a crddoc binary will be added under crates/banlieue-api/src/bin/.)
-# Placeholder: regenerate API reference from CRD types
-# cargo run -p banlieue-api --bin crddoc --features crdgen > docs/user/reference/api.md
+# Regenerate the Markdown API reference from the code-first CRD types.
+# Writes docs/src/reference/api.md (one page documenting every CRD, every field).
+make api-docs
+
+# `make crds` already runs this as its last step, so a normal CRD-change flow
+# (regen-crds) refreshes the API reference automatically. Run `make api-docs`
+# standalone only when iterating on docs without re-emitting the CRD YAML.
 ```
 
-**Verification:** `docs/user/reference/api.md` (when it exists) reflects the current CRD schema.
+**Verification:** `docs/src/reference/api.md` reflects the current CRD schema; `cd docs && poetry run mkdocs build --strict` succeeds.
 
-> NOTE: until the `crddoc` binary lands (Phase 4), this skill is a no-op stub — the `regen-crds` output is the de facto API reference.
+> The generator is `crates/banlieue-api/src/bin/crddoc.rs` (rendering logic in `src/crddoc.rs`). It is **generated, never hand-edited** — edit the rustdoc on the Rust types and regenerate.
 
 ---
 

@@ -54,7 +54,7 @@ docs/
     ├── reasoning/            # Why banlieue exists (the case for this project)
     ├── concepts/             # Architecture, VirtualMachine, providers
     ├── getting-started/      # Quick start
-    └── reference/            # Roadmap, license
+    └── reference/            # API reference, license
 ```
 
 ## Adding a new page

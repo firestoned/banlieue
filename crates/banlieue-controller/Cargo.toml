@@ -9,9 +9,8 @@ repository.workspace = true
 homepage.workspace = true
 authors.workspace = true
 
-[[bin]]
-name = "banlieue-controller"
-path = "src/main.rs"
+# Library only: the unified `banlieue` binary (crates/banlieue) drives this via
+# `banlieue_controller::run` for the `controller` subcommand (ADR-0004).
 
 [dependencies]
 banlieue-api = { path = "../banlieue-api" }
@@ -26,11 +25,13 @@ serde_json.workspace = true
 thiserror.workspace = true
 anyhow.workspace = true
 
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "io-util", "signal"] }
+# `macros` backs `tokio::select!`; `rt-multi-thread` backs `tokio::spawn`. The
+# health server / shutdown signal (net/io-util/signal) now live in the SDK's
+# `bootstrap` module, so they are no longer needed here.
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 futures.workspace = true
 
 tracing.workspace = true
-tracing-subscriber.workspace = true
 
 clap.workspace = true
 chrono.workspace = true

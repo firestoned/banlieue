@@ -25,6 +25,49 @@ pub struct InitializationStatus {
     pub provisioned: Option<bool>,
 }
 
+/// CAPI v1beta2 `APIEndpoint` — the reachable address of a cluster's
+/// Kubernetes API server.
+///
+/// Used as `VSphereCluster.spec.controlPlaneEndpoint` (operator-supplied
+/// control-plane VIP) and echoed in `status.controlPlaneEndpoint`. The CAPI
+/// contract marks the enclosing field optional; when present, both `host`
+/// and `port` are meaningful.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ApiEndpoint {
+    /// Hostname or IP on which the API server is serving.
+    pub host: String,
+    /// Port on which the API server is serving.
+    pub port: i32,
+}
+
+/// CAPI v1beta2 `clusterv1.FailureDomain` — one element of an InfraCluster's
+/// `status.failureDomains` list.
+///
+/// In v1beta2 failure domains are a **list** (the v1beta1 map was retired).
+/// banlieue's `VSphereCluster` reconciler translates each selected
+/// `Provider.status.failureDomains[]` entry into one of these, carrying the
+/// banlieue FD `name` through, flattening provider attributes into
+/// `attributes`, and setting `control_plane` from the cluster's
+/// control-plane FD selector.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ClusterFailureDomain {
+    /// Unique failure-domain name (one of the Provider's
+    /// `status.failureDomains[].name`).
+    pub name: String,
+
+    /// Whether this failure domain is eligible to run control-plane nodes.
+    /// `None` is treated by CAPI as "not control-plane eligible".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub control_plane: Option<bool>,
+
+    /// Arbitrary attributes for consumers. banlieue flattens the Provider FD's
+    /// `attributes.raw` plus `dc`/`cluster` labels into this map.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub attributes: BTreeMap<String, String>,
+}
+
 /// A typed machine address. Mirrors CAPI's `clusterv1.MachineAddress`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]

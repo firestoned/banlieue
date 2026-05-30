@@ -168,6 +168,5 @@ for the full version.
   flow in depth.
 - [Provider Model](concepts/providers.md) — what a provider looks like and how
   to write one.
-- [Quick Start](getting-started/quickstart.md) — what you can run today (Phase 0
-  / Phase 1A).
-- [Roadmap](reference/roadmap.md) — what's landing next.
+- [Guides](guides/index.md) — install the controller and the vSphere provider on
+  a real cluster.

@@ -110,6 +110,12 @@
       "description": "Provider controller for libvirt/KVM hosts. Watches LibvirtMachine infrastructure CRs and drives libvirt over TCP/TLS or SSH. Status: PLANNED — Phase 1D."
     },
     {
+      "unique-id": "system-banlieue-binary",
+      "node-type": "system",
+      "name": "banlieue (single binary)",
+      "description": "One Rust executable that packages every controller role. Dispatches subcommands: `banlieue controller` runs the main controller, `banlieue provider <name>` (e.g. `banlieue provider vsphere`) runs a backend provider. Each role lives in an independent library crate with its own dependency graph; providers are gated behind per-provider Cargo features (default = all). One container image ships this binary; Deployments select the role via container args. See ADR-0004."
+    },
+    {
       "unique-id": "network-vsphere-backend",
       "node-type": "network",
       "name": "vSphere / vCenter Backend",
@@ -186,10 +192,43 @@
       "node-type": "data-asset",
       "name": "Infrastructure Machine CR (VSphereMachine, etc.)",
       "description": "Namespaced CRD (infrastructure.banlieue.io/v1alpha1) created by the banlieue-controller as the message to the provider. Satisfies the CAPI v1beta2 InfraMachine contract so the same provider can serve both banlieue and CAPI. Status is owned by the provider; the banlieue controller mirrors it back onto the VirtualMachine."
+    },
+    {
+      "unique-id": "data-asset-infra-cluster-cr",
+      "node-type": "data-asset",
+      "name": "Infrastructure Cluster CR (VSphereCluster)",
+      "description": "Namespaced CRD (infrastructure.banlieue.io/v1alpha1) satisfying the CAPI v1beta2 InfraCluster contract. A CAPI Cluster.spec.infrastructureRef points at it. The banlieue-controller reconciles it by aggregating status.failureDomains[] from one or more Provider CRs into the CAPI v1beta2 failure-domain list — so one Kubernetes cluster can span multiple vCenters. No backend access: pure CRD aggregation of Provider status. See ADR-0002."
+    },
+    {
+      "unique-id": "data-asset-capi-cluster-cr",
+      "node-type": "data-asset",
+      "name": "CAPI Cluster / MachineDeployment (external)",
+      "description": "Upstream Cluster API objects (cluster.x-k8s.io): Cluster, MachineDeployment, and a control-plane object. NOT owned by banlieue — owned by CAPI core and a control-plane provider (k0smotron for k0s). 'replicas: N' on these objects, spread across the InfraCluster's failure domains, is how banlieue provisions a Kubernetes cluster (ADR-0001). banlieue is CAPI's infrastructure provider, not its cluster controller."
+    },
+    {
+      "unique-id": "service-capi-core",
+      "node-type": "service",
+      "name": "Cluster API core + control-plane provider (k0smotron)",
+      "description": "Upstream CAPI controllers (cluster, machineset, machinedeployment) plus a control-plane/bootstrap provider — k0smotron for k0s. Reads VSphereCluster.status.failureDomains, balances Machines across them (count-based round-robin), and mints VSphereMachines from a VSphereMachineTemplate. banlieue does NOT ship these; the platform operator installs them. This is what lets any CAPI consumer (kubeadm, RKE2, k0smotron) use banlieue as an infra provider."
     }
   ],
 
   "relationships": [
+    {
+      "unique-id": "rel-banlieue-binary-composed-of-roles",
+      "description": "The single `banlieue` binary is composed of every controller role. Each role is invoked as a subcommand (`banlieue controller`, `banlieue provider vsphere`, …) and lives in an independent library crate; the binary only dispatches. See ADR-0004.",
+      "relationship-type": {
+        "composed-of": {
+          "container": "system-banlieue-binary",
+          "nodes": [
+            "service-banlieue-controller",
+            "service-provider-vsphere",
+            "service-provider-proxmox",
+            "service-provider-libvirt"
+          ]
+        }
+      }
+    },
     {
       "unique-id": "rel-mgmt-cluster-contains-controllers",
       "description": "The management cluster hosts the banlieue controller, every provider controller, and the Kubernetes API server itself.",
@@ -199,6 +238,7 @@
           "nodes": [
             "service-banlieue-controller",
             "service-kubernetes-api",
+            "service-capi-core",
             "service-provider-vsphere",
             "service-provider-proxmox",
             "service-provider-libvirt"
@@ -217,7 +257,9 @@
             "data-asset-provider-cr",
             "data-asset-vmclass-cr",
             "data-asset-vmimage-cr",
-            "data-asset-infra-machine-cr"
+            "data-asset-infra-machine-cr",
+            "data-asset-infra-cluster-cr",
+            "data-asset-capi-cluster-cr"
           ]
         }
       }
@@ -243,6 +285,16 @@
         "interacts": {
           "actor": "actor-platform-operator",
           "nodes": ["data-asset-provider-cr"]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-operator-authors-capi-cluster",
+      "description": "Platform operator authors the CAPI Cluster, control-plane object, MachineDeployment(s), the VSphereCluster (InfraCluster), and a VSphereMachineTemplate to provision a Kubernetes (k0s) cluster. 'replicas: N' on the CAPI objects drives failure-domain spread.",
+      "relationship-type": {
+        "interacts": {
+          "actor": "actor-platform-operator",
+          "nodes": ["data-asset-capi-cluster-cr", "data-asset-infra-cluster-cr"]
         }
       }
     },
@@ -276,7 +328,7 @@
     },
     {
       "unique-id": "rel-controller-kube-api",
-      "description": "banlieue-controller watches VirtualMachine / Provider / VMClass / VMImage CRs, server-side-applies infrastructure machine CRs, watches their status, and patches VirtualMachine status with the mirrored conditions.",
+      "description": "banlieue-controller watches VirtualMachine / Provider / VMClass / VMImage / VSphereCluster CRs, server-side-applies infrastructure machine CRs, watches their status, and patches VirtualMachine status with the mirrored conditions. It also reconciles VSphereCluster (InfraCluster) by aggregating selected Providers' status.failureDomains[] into the CAPI v1beta2 failure-domain list — reading Provider status only, no backend access.",
       "relationship-type": {
         "connects": {
           "source": { "node": "service-banlieue-controller" },
@@ -322,6 +374,20 @@
       "relationship-type": {
         "connects": {
           "source": { "node": "service-provider-libvirt" },
+          "destination": {
+            "node": "service-kubernetes-api",
+            "interfaces": ["kube-api-https"]
+          }
+        }
+      },
+      "protocol": "HTTPS"
+    },
+    {
+      "unique-id": "rel-capi-core-kube-api",
+      "description": "CAPI core + control-plane provider (k0smotron) watch Cluster / MachineDeployment / VSphereCluster, read VSphereCluster.status.failureDomains, and create Machine + VSphereMachine objects spread across those failure domains. Pure Kubernetes API — banlieue never talks to CAPI out of band.",
+      "relationship-type": {
+        "connects": {
+          "source": { "node": "service-capi-core" },
           "destination": {
             "node": "service-kubernetes-api",
             "interfaces": ["kube-api-https"]
@@ -536,6 +602,62 @@
           ]
         }
       }
+    },
+    {
+      "unique-id": "flow-provision-capi-cluster",
+      "name": "Provision a Kubernetes cluster via CAPI (banlieue as infra provider)",
+      "description": "The platform operator provisions a k0s cluster by applying upstream CAPI objects plus banlieue's VSphereCluster (InfraCluster) and a VSphereMachineTemplate. banlieue does NOT own cluster lifecycle — CAPI + a control-plane provider (k0smotron) do. banlieue's job is to advertise failure domains (VSphereCluster) and realise each machine (VSphereMachine). 'replicas: N' spread across failure domains is how a tier (e.g. 6/6 'platinum') is expressed (ADR-0001).",
+      "transitions": [
+        {
+          "sequence-number": 1,
+          "relationship-unique-id": "rel-operator-kubectl",
+          "description": "Operator applies a CAPI Cluster (infrastructureRef → VSphereCluster), a control-plane object, MachineDeployment(s) with replica counts, the VSphereCluster, and a VSphereMachineTemplate."
+        },
+        {
+          "sequence-number": 2,
+          "relationship-unique-id": "rel-controller-kube-api",
+          "description": "banlieue-controller's VSphereCluster watch fires. It resolves the selected Provider CRs (providerRefs / providerSelector), aggregates their status.failureDomains[] into VSphereCluster.status.failureDomains (CAPI v1beta2 list), applies controlPlaneFailureDomainSelector, and sets initialization.provisioned + Ready. No vCenter access.",
+          "direction": "destination-to-source"
+        },
+        {
+          "sequence-number": 3,
+          "relationship-unique-id": "rel-capi-core-kube-api",
+          "description": "CAPI core + control-plane provider read VSphereCluster.status.failureDomains and balance the requested replicas across them (count-based round-robin), creating one Machine + one VSphereMachine per placement from the VSphereMachineTemplate, each stamped with spec.failureDomain.",
+          "direction": "destination-to-source"
+        },
+        {
+          "sequence-number": 4,
+          "relationship-unique-id": "rel-provider-vsphere-kube-api",
+          "description": "The vSphere provider's VSphereMachine watch fires for each new machine (the existing Create-a-VirtualMachine machine path). It maps the failure domain to a (datacenter, cluster) and reads the resolved spec.",
+          "direction": "destination-to-source"
+        },
+        {
+          "sequence-number": 5,
+          "relationship-unique-id": "rel-provider-vsphere-backend",
+          "description": "Provider clones the VM into the chosen compute cluster's resource pool and powers it on. vSphere DRS selects the ESXi host within that cluster — banlieue does not pick the host."
+        },
+        {
+          "sequence-number": 6,
+          "relationship-unique-id": "rel-capi-core-kube-api",
+          "description": "Provider patches VSphereMachine.status (provisioned, providerID, addresses); CAPI mirrors it up to the Machine, and the control-plane provider (k0smotron) joins the nodes into the k0s cluster once the control plane is reachable.",
+          "direction": "destination-to-source"
+        }
+      ],
+      "controls": {
+        "capi-native-failure-domain-spread": {
+          "description": "Cluster-level replica management and failure-domain spread are delegated to CAPI; banlieue only advertises failure domains (InfraCluster) and realises machines (InfraMachine). banlieue ships NO native cluster/tier controller. This keeps banlieue reusable by any CAPI consumer and avoids duplicating MachineSet/control-plane logic (ADR-0001).",
+          "requirements": [
+            {
+              "requirement-url": "https://cluster-api.sigs.k8s.io/developer/providers/contracts/infra-cluster",
+              "config": {
+                "framework": "Kubernetes Cluster API",
+                "controls": ["v1beta2/InfraCluster"],
+                "evidence": "docs/adr/0001-capi-native-cluster-provisioning.md, docs/adr/0002-infracluster-failure-domain-aggregation.md, crates/banlieue-api/src/infrastructure/vsphere_cluster.rs"
+              }
+            }
+          ]
+        }
+      }
     }
   ],
 
@@ -554,14 +676,27 @@
       ]
     },
     "capi-v1beta2-infra-machine-contract": {
-      "description": "Every banlieue provider's infrastructure CRD satisfies the upstream Cluster API v1beta2 InfraMachine contract. Buys a battle-tested status model AND lets the same provider also serve CAPI Clusters without modification.",
+      "description": "Every banlieue provider's infrastructure CRD satisfies the upstream Cluster API v1beta2 InfraMachine contract. Buys a battle-tested status model AND lets the same provider also serve CAPI Clusters without modification. CAPI discovers compliance via the CRD-level label cluster.x-k8s.io/v1beta2=v1alpha1, emitted onto every infrastructure.banlieue.io CRD by crdgen post-processing (ADR-0005) since kube-derive cannot set CRD labels.",
       "requirements": [
         {
           "requirement-url": "https://cluster-api.sigs.k8s.io/developer/providers/contracts/infra-machine",
           "config": {
             "framework": "Kubernetes Cluster API",
             "controls": ["v1beta2/InfraMachine"],
-            "evidence": "crates/banlieue-api/src/infrastructure/vsphere_machine.rs, docs/src/concepts/infra-crds-capi.md"
+            "evidence": "crates/banlieue-api/src/infrastructure/vsphere_machine.rs, crates/banlieue-api/src/crdgen_support.rs, docs/adr/0005-capi-contract-label-codegen.md, docs/src/concepts/infra-crds-capi.md"
+          }
+        }
+      ]
+    },
+    "capi-v1beta2-infra-cluster-contract": {
+      "description": "banlieue's InfraCluster CRD (VSphereCluster) satisfies the upstream Cluster API v1beta2 InfraCluster contract: status.initialization.provisioned, optional spec.controlPlaneEndpoint, and status.failureDomains as a v1beta2 list ({name, controlPlane, attributes}). It uniquely aggregates failure domains from multiple Provider CRs, so one cluster can span several vCenters. Reconciled by the main controller with no backend access (ADR-0002). The CRD carries the cluster.x-k8s.io/v1beta2=v1alpha1 contract label emitted by crdgen (ADR-0005).",
+      "requirements": [
+        {
+          "requirement-url": "https://cluster-api.sigs.k8s.io/developer/providers/contracts/infra-cluster",
+          "config": {
+            "framework": "Kubernetes Cluster API",
+            "controls": ["v1beta2/InfraCluster"],
+            "evidence": "crates/banlieue-api/src/infrastructure/vsphere_cluster.rs, crates/banlieue-api/src/crdgen_support.rs, docs/adr/0002-infracluster-failure-domain-aggregation.md, docs/adr/0005-capi-contract-label-codegen.md"
           }
         }
       ]
@@ -575,6 +710,48 @@
             "framework": "NIST SP 800-218 SSDF",
             "controls": ["PO.5", "PS.1", "PW.4"],
             "evidence": ".github/workflows/codeql.yaml, .github/workflows/sast.yaml, .github/workflows/scorecard.yaml, deny.toml"
+          }
+        }
+      ]
+    },
+    "release-artifact-provenance": {
+      "description": "Every release ships the `banlieue` binary (multi-arch, signed) plus distroless and Chainguard container images, each with: CycloneDX SBOM (binary via cargo-cyclonedx, image via syft/anchore), Cosign keyless (OIDC) signatures, GitHub build-provenance attestations, SLSA Build L3 provenance (slsa-github-generator) for the binary tarballs, and an OpenVEX document (vexctl-merged from .vex/, Cosign-attested to each image digest and consumed by the Grype scan as `grype --vex`). Grype results upload to GitHub Code Scanning as SARIF. VEX statements are derived automatically by the banlieue-vex crate's auto-vex-presence (SBOM-absence) and auto-vex-reachability (binary symbol-import) tools and merged with curated .vex/*.json. Build logic is Makefile-driven; firestoned/github-actions composites are reused; third-party actions are SHA-pinned (SLSA generator pinned to a release tag).",
+      "requirements": [
+        {
+          "requirement-url": "https://slsa.dev/spec/v1.0/levels",
+          "config": {
+            "framework": "SLSA v1.0",
+            "controls": ["Build L3"],
+            "evidence": ".github/workflows/build.yaml, Dockerfile, Dockerfile.chainguard, .vex/, docs/adr/0006-release-and-supply-chain-pipeline.md"
+          }
+        },
+        {
+          "requirement-url": "https://csrc.nist.gov/pubs/sp/800/218/final",
+          "config": {
+            "framework": "NIST SP 800-218 SSDF",
+            "controls": ["PS.2", "PS.3", "PW.4", "RV.1"],
+            "evidence": ".github/workflows/build.yaml, .vex/README.md, docs/adr/0006-release-and-supply-chain-pipeline.md"
+          }
+        }
+      ]
+    },
+    "admission-policy-validation": {
+      "description": "Invariants the code-first CRD schema cannot express — VirtualMachine.classRef/imageRef and Provider.providerClassRef immutability — are enforced at admission via ValidatingAdmissionPolicy (CEL, evaluated in the API server, GA in Kubernetes 1.30+). No validating webhook: no extra always-on service, no TLS cert rotation, no API-request-path availability dependency — consistent with banlieue's no-RPC / no-extra-services posture. Shipped as optional, separately-applied manifests under deploy/admission/ with Deny bindings (Warn/Audit report-only roll-out path). See ADR-0007.",
+      "requirements": [
+        {
+          "requirement-url": "https://kubernetes.io/docs/reference/access-authn-authz/validating-admission-policy/",
+          "config": {
+            "framework": "Kubernetes ValidatingAdmissionPolicy",
+            "controls": ["banlieue-virtualmachine-immutable-refs", "banlieue-provider-immutable-class"],
+            "evidence": "deploy/admission/, docs/adr/0007-admission-policies.md, docs/src/guides/core-controller.md"
+          }
+        },
+        {
+          "requirement-url": "https://csrc.nist.gov/pubs/sp/800/218/final",
+          "config": {
+            "framework": "NIST SP 800-218 SSDF",
+            "controls": ["PW.5", "RV.1"],
+            "evidence": "deploy/admission/README.md, docs/adr/0007-admission-policies.md"
           }
         }
       ]
@@ -596,10 +773,18 @@
       "infrastructure": {
         "group": "infrastructure.banlieue.io",
         "version": "v1alpha1",
-        "kinds": ["VSphereMachine", "VSphereMachineTemplate"]
+        "kinds": ["VSphereCluster", "VSphereMachine", "VSphereMachineTemplate"]
       }
     }
   },
 
-  "adrs": []
+  "adrs": [
+    "docs/adr/0001-capi-native-cluster-provisioning.md",
+    "docs/adr/0002-infracluster-failure-domain-aggregation.md",
+    "docs/adr/0003-provider-deployment-topology.md",
+    "docs/adr/0004-single-binary-subcommand-dispatch.md",
+    "docs/adr/0005-capi-contract-label-codegen.md",
+    "docs/adr/0006-release-and-supply-chain-pipeline.md",
+    "docs/adr/0007-admission-policies.md"
+  ]
 }

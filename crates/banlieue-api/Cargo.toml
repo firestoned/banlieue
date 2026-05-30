@@ -30,3 +30,8 @@ crdgen = ["dep:serde_yaml", "dep:clap"]
 name = "crdgen"
 path = "src/bin/crdgen.rs"
 required-features = ["crdgen"]
+
+[[bin]]
+name = "crddoc"
+path = "src/bin/crddoc.rs"
+required-features = ["crdgen"]

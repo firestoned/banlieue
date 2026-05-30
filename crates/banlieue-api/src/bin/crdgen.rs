@@ -24,7 +24,8 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use banlieue_api::banlieue::{Provider, VMClass, VMImage, VirtualMachine};
-use banlieue_api::infrastructure::{VSphereMachine, VSphereMachineTemplate};
+use banlieue_api::crdgen_support::prepared;
+use banlieue_api::infrastructure::{VSphereCluster, VSphereMachine, VSphereMachineTemplate};
 use clap::Parser;
 use kube::CustomResourceExt;
 
@@ -46,20 +47,33 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
 
     let crds: Vec<(&str, String)> = vec![
-        ("banlieue.io_providers.yaml", render(&Provider::crd())),
+        (
+            "banlieue.io_providers.yaml",
+            render(prepared(Provider::crd())),
+        ),
         (
             "banlieue.io_virtualmachines.yaml",
-            render(&VirtualMachine::crd()),
+            render(prepared(VirtualMachine::crd())),
         ),
-        ("banlieue.io_vmclasses.yaml", render(&VMClass::crd())),
-        ("banlieue.io_vmimages.yaml", render(&VMImage::crd())),
+        (
+            "banlieue.io_vmclasses.yaml",
+            render(prepared(VMClass::crd())),
+        ),
+        (
+            "banlieue.io_vmimages.yaml",
+            render(prepared(VMImage::crd())),
+        ),
+        (
+            "infrastructure.banlieue.io_vsphereclusters.yaml",
+            render(prepared(VSphereCluster::crd())),
+        ),
         (
             "infrastructure.banlieue.io_vspheremachines.yaml",
-            render(&VSphereMachine::crd()),
+            render(prepared(VSphereMachine::crd())),
         ),
         (
             "infrastructure.banlieue.io_vspheremachinetemplates.yaml",
-            render(&VSphereMachineTemplate::crd()),
+            render(prepared(VSphereMachineTemplate::crd())),
         ),
     ];
 
@@ -69,8 +83,8 @@ fn main() -> ExitCode {
     }
 }
 
-fn render<T: serde::Serialize>(crd: &T) -> String {
-    serde_yaml::to_string(crd).expect("serialize CRD to YAML")
+fn render<T: serde::Serialize>(crd: T) -> String {
+    serde_yaml::to_string(&crd).expect("serialize CRD to YAML")
 }
 
 fn write_stdout(crds: &[(&str, String)]) -> ExitCode {

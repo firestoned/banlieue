@@ -64,7 +64,7 @@ stateDiagram-v2
 
 > The list below is illustrative for Phase 0–1A. Use `kubectl explain
 > virtualmachine.spec` (or
-> [the API reference](../reference/roadmap.md)) for the authoritative shape.
+> [the API reference](../reference/api.md)) for the authoritative shape.
 
 - `class` *(string, required)* — references a `VMClass` (CPU / memory / disks).
 - `image` *(string, required)* — references a `VMImage` (boot image).
@@ -74,8 +74,8 @@ stateDiagram-v2
 
 ## Related CRDs
 
-- **[VMClass](../reference/roadmap.md)** — flavour / size shape (CPU, memory, disk).
-- **[VMImage](../reference/roadmap.md)** — boot image source.
+- **[VMClass](../reference/api.md)** — flavour / size shape (CPU, memory, disk).
+- **[VMImage](../reference/api.md)** — boot image source.
 - **[Provider](providers.md)** — which backend serves this VM.
 
 The infrastructure CRDs (`VSphereMachine`, future `ProxmoxMachine`,

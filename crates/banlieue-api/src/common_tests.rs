@@ -55,6 +55,96 @@ mod tests {
     }
 
     // ----------------------------------------------------------------------
+    // ApiEndpoint
+    // ----------------------------------------------------------------------
+
+    #[test]
+    fn api_endpoint_round_trip() {
+        let e = ApiEndpoint {
+            host: "10.0.0.10".to_string(),
+            port: 6443,
+        };
+        let json = serde_json::to_value(&e).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({ "host": "10.0.0.10", "port": 6443 })
+        );
+        let back: ApiEndpoint = serde_json::from_value(json).unwrap();
+        assert_eq!(back, e);
+    }
+
+    #[test]
+    fn api_endpoint_requires_both_fields() {
+        assert!(serde_json::from_str::<ApiEndpoint>(r#"{"host":"h"}"#).is_err());
+        assert!(serde_json::from_str::<ApiEndpoint>(r#"{"port":6443}"#).is_err());
+    }
+
+    #[test]
+    fn api_endpoint_rejects_string_port() {
+        assert!(serde_json::from_str::<ApiEndpoint>(r#"{"host":"h","port":"6443"}"#).is_err());
+    }
+
+    // ----------------------------------------------------------------------
+    // ClusterFailureDomain
+    // ----------------------------------------------------------------------
+
+    #[test]
+    fn cluster_failure_domain_default_is_empty() {
+        let fd = ClusterFailureDomain::default();
+        assert_eq!(fd.name, "");
+        assert_eq!(fd.control_plane, None);
+        assert!(fd.attributes.is_empty());
+    }
+
+    #[test]
+    fn cluster_failure_domain_omits_empty_optionals() {
+        let fd = ClusterFailureDomain {
+            name: "prod-vsphere-dc0-c0".to_string(),
+            control_plane: None,
+            attributes: BTreeMap::new(),
+        };
+        let json = serde_json::to_value(&fd).unwrap();
+        // Only `name` survives; `controlPlane` and empty `attributes` are skipped.
+        assert_eq!(json, serde_json::json!({ "name": "prod-vsphere-dc0-c0" }));
+    }
+
+    #[test]
+    fn cluster_failure_domain_round_trip_full() {
+        let mut attributes = BTreeMap::new();
+        attributes.insert("datacenter".to_string(), "DC0".to_string());
+        attributes.insert("cluster".to_string(), "C0".to_string());
+        let fd = ClusterFailureDomain {
+            name: "prod-vsphere-dc0-c0".to_string(),
+            control_plane: Some(true),
+            attributes,
+        };
+        let json = serde_json::to_value(&fd).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "name": "prod-vsphere-dc0-c0",
+                "controlPlane": true,
+                "attributes": { "datacenter": "DC0", "cluster": "C0" }
+            })
+        );
+        let back: ClusterFailureDomain = serde_json::from_value(json).unwrap();
+        assert_eq!(back, fd);
+    }
+
+    #[test]
+    fn cluster_failure_domain_uses_camel_case_control_plane() {
+        // Guard against the field serializing as snake_case `control_plane`.
+        let fd = ClusterFailureDomain {
+            name: "fd".to_string(),
+            control_plane: Some(false),
+            attributes: BTreeMap::new(),
+        };
+        let s = serde_json::to_string(&fd).unwrap();
+        assert!(s.contains("\"controlPlane\""), "got: {s}");
+        assert!(!s.contains("control_plane"), "got: {s}");
+    }
+
+    // ----------------------------------------------------------------------
     // MachineAddress / MachineAddressType
     // ----------------------------------------------------------------------
 

@@ -35,6 +35,28 @@ use std::collections::BTreeMap;
     printcolumn = r#"{"name":"Age","type":"date","jsonPath":".metadata.creationTimestamp"}"#
 )]
 #[serde(rename_all = "camelCase")]
+/// Provider — one backend instance registered with banlieue.
+///
+/// A Provider represents a single place VMs can run: one vCenter, one Proxmox
+/// cluster, or one libvirt host. It carries the connection details and an
+/// admin-curated declaration of the storage classes, network classes, and
+/// features that backend exposes. Its controller logs in, verifies those
+/// capabilities, and publishes the reachable `status.failureDomains[]`.
+///
+/// # Why create one
+///
+/// - **Make a backend schedulable.** A VirtualMachine can only be placed on a
+///   Provider — no Provider, nowhere to run.
+/// - **Declare capabilities explicitly.** `spec.capabilities` maps abstract
+///   class names (the ones VMClass / VMImage request) to concrete backend
+///   targets (a datastore, a port group). That mapping is the contract the
+///   scheduler matches against — capabilities are declared, not guessed.
+/// - **Model many backends, including duplicates.** A cluster can hold many
+///   Providers of the same class (`prod-vsphere`, `dr-vsphere`) and mix
+///   classes freely.
+///
+/// The provider's controller talks to the backend; banlieue's main controller
+/// never does. Communication between them is CRD-only.
 pub struct ProviderSpec {
     /// Reference to a ProviderClass that identifies the backend type.
     ///
@@ -59,6 +81,8 @@ pub struct ProviderSpec {
     pub paused: bool,
 }
 
+/// How to reach a backend: endpoint, the Secret holding its credentials, and
+/// TLS handling.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderConnection {
@@ -91,6 +115,10 @@ pub struct ProviderConnection {
     pub ca_bundle: Option<String>,
 }
 
+/// The capability surface an admin asserts a backend exposes. The scheduler
+/// matches VMClass / VMImage requests against these entries; the provider's
+/// controller verifies them and reports per-failure-domain availability in
+/// status.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderCapabilities {
@@ -120,6 +148,7 @@ impl ProviderCapabilities {
     }
 }
 
+/// Maps one abstract storage-class name to a concrete backend target.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct StorageClassMapping {
@@ -135,6 +164,7 @@ pub struct StorageClassMapping {
     pub target: BTreeMap<String, String>,
 }
 
+/// Maps one abstract network-class name to a concrete backend target.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct NetworkClassMapping {
@@ -148,6 +178,8 @@ pub struct NetworkClassMapping {
     pub target: BTreeMap<String, String>,
 }
 
+/// Observed state of a Provider: the failure domains its controller discovered
+/// and the health / reachability conditions.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderStatus {
@@ -168,6 +200,9 @@ pub struct ProviderStatus {
     pub observed_generation: Option<i64>,
 }
 
+/// One placement target within a backend — typically a (datacenter, cluster)
+/// pair or a zone. The scheduler matches VMs to failure domains by `labels`
+/// and filters by the capabilities resolved in `attributes`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct FailureDomain {
@@ -187,6 +222,8 @@ pub struct FailureDomain {
     pub attributes: FailureDomainAttributes,
 }
 
+/// The capabilities and provider-resolved details actually reachable from a
+/// failure domain. Always a subset of what the Provider spec advertises.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct FailureDomainAttributes {

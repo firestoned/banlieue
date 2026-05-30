@@ -64,12 +64,17 @@ are produced by the `crdgen` binary and **never hand-edited**.
 
 | Crate | Phase | Role |
 | --- | --- | --- |
+| `banlieue` | 1A | The single binary. Dispatches `controller` / `provider <name>` subcommands into the role crates ([ADR-0004](https://github.com/firestoned/banlieue/blob/main/docs/adr/0004-single-binary-subcommand-dispatch.md)); no logic of its own. |
 | `banlieue-api` | 0 (done) | CRD types: `Provider`, `VMClass`, `VMImage`, `VirtualMachine`, and infra CRDs. |
-| `banlieue-controller` | 1A | The main controller. Watches `VirtualMachine`, creates infra CRs, mirrors status. |
-| `banlieue-provider-sdk` | 1A | Shared library for provider controllers (status, finalizers, SSA, client). |
-| `banlieue-provider-vsphere` | 1B | First reference provider. |
-| `banlieue-provider-proxmox` | 1C | Second provider. |
-| `banlieue-provider-libvirt` | 1D | Third provider. |
+| `banlieue-controller` | 1A | Library for the main controller. Watches `VirtualMachine`, creates infra CRs, mirrors status. Run via `banlieue controller`. |
+| `banlieue-provider-sdk` | 1A | Shared library for controllers (process bootstrap, status, finalizers, SSA, client, leader election). |
+| `banlieue-provider-vsphere` | 1B | Library for the first reference provider. Run via `banlieue provider vsphere`. |
+| `banlieue-provider-proxmox` | 1C | Second provider (`banlieue provider proxmox`). |
+| `banlieue-provider-libvirt` | 1D | Third provider (`banlieue provider libvirt`). |
+
+Every role ships in **one `banlieue` binary**; the role is chosen at runtime by
+the subcommand (in-cluster, via the container `args`). Providers are gated
+behind per-provider Cargo features (default = all available).
 
 ## Reconcile flow (happy path)
 

@@ -4,10 +4,9 @@
 name: Documentation
 
 on:
-  # Build-only triggers — exercise the docs pipeline so breakage is
-  # caught at PR / merge time, but do NOT publish to GitHub Pages.
-  # Deployment is gated on the Build workflow completing successfully
-  # for a release (see workflow_run trigger and deploy job below).
+  # push to main — builds AND publishes to GitHub Pages (INTERIM policy:
+  # ship docs on every merge to main; the deploy job + Pages steps are
+  # gated on `push` + `refs/heads/main`). PR pushes build only.
   push:
     branches:
       - main
@@ -199,8 +198,11 @@ jobs:
             ${{ runner.os }}-cargo-docs-
 
       - name: Build documentation
-        # CALM diagrams were rendered by the calm-diagrams job and downloaded
-        # above, so skip the local re-render via the Makefile.
+        # `make docs` regenerates the CRD API reference (docs/src/reference/api.md
+        # via the crddoc binary — hence the Rust toolchain above) and then builds
+        # the MkDocs site, so the published reference always matches the committed
+        # CRD types. CALM diagrams were rendered by the calm-diagrams job and
+        # downloaded above, so skip the local re-render via the Makefile.
         env:
           SKIP_CALM_DIAGRAMS: "1"
         run: make docs
@@ -215,30 +217,32 @@ jobs:
           npm install -g "linkinator@${LINKINATOR_VERSION}"
           linkinator docs/site/ --recurse --skip "rustdoc/.*" --verbosity error
 
-      # Pages setup + artifact upload only happen when this workflow was
-      # triggered by a successful Build run for a release. PR / push runs
-      # (and Build completions for non-release events) build the site to
-      # prove it compiles cleanly, but never produce a deploy artifact.
+      # Pages setup + artifact upload happen when this workflow runs on a
+      # direct push to main (INTERIM policy: ship docs on every merge to main)
+      # OR when triggered by a successful Build run for a release. PR runs
+      # (and Build completions for non-release events) build the site to prove
+      # it compiles cleanly, but never produce a deploy artifact.
       - name: Setup Pages
-        if: github.event_name == 'workflow_run' && github.event.workflow_run.event == 'release' && github.event.workflow_run.conclusion == 'success'
+        if: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_run' && github.event.workflow_run.event == 'release' && github.event.workflow_run.conclusion == 'success') }}
         uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
 
       - name: Upload Pages artifact
-        if: github.event_name == 'workflow_run' && github.event.workflow_run.event == 'release' && github.event.workflow_run.conclusion == 'success'
+        if: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_run' && github.event.workflow_run.event == 'release' && github.event.workflow_run.conclusion == 'success') }}
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: docs/site
 
   deploy:
     name: 🚀 Deploy to GitHub Pages
-    # Gated on the Build workflow finishing successfully for a release.
-    # This is stricter than a `release: published` trigger:
-    # if Build fails (e.g., a binary won't compile, a signature step
-    # errors, an SBOM upload breaks), docs no longer publish for that
-    # tag. PR / push-to-main runs and Build completions whose triggering
-    # event was not a release validate the docs pipeline but do NOT
-    # publish.
-    if: github.event_name == 'workflow_run' && github.event.workflow_run.event == 'release' && github.event.workflow_run.conclusion == 'success'
+    # Deploys when EITHER:
+    #   • this workflow ran on a direct push to main — INTERIM policy: publish
+    #     docs on every merge to main; or
+    #   • the Build workflow finished successfully for a release (stricter than
+    #     a raw `release: published` trigger — if Build fails to compile a
+    #     binary / sign / upload an SBOM, docs do not publish for that tag).
+    # PR runs and non-release Build completions validate the pipeline but do
+    # NOT publish.
+    if: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_run' && github.event.workflow_run.event == 'release' && github.event.workflow_run.conclusion == 'success') }}
     needs: build
     runs-on: ubuntu-latest
     environment:

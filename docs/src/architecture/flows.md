@@ -75,3 +75,21 @@ flowchart TD
 
 <sub>Source: flow `flow-delete-virtualmachine` in `architecture.json`.</sub>
 
+
+## Provision a Kubernetes cluster via CAPI (banlieue as infra provider)
+
+The platform operator provisions a k0s cluster by applying upstream CAPI objects plus banlieue's VSphereCluster (InfraCluster) and a VSphereMachineTemplate. banlieue does NOT own cluster lifecycle — CAPI + a control-plane provider (k0smotron) do. banlieue's job is to advertise failure domains (VSphereCluster) and realise each machine (VSphereMachine). 'replicas: N' spread across failure domains is how a tier (e.g. 6/6 'platinum') is expressed (ADR-0001).
+
+```mermaid
+flowchart TD
+    t1["1. Operator applies a CAPI Cluster (infrastructureRef → VSphereCluster), a control-plane object, MachineDeployment(s) with replica counts, the VSphereCluster, and a VSphereMachineTemplate."]
+    t2["2. banlieue-controller's VSphereCluster watch fires. It resolves the selected Provider CRs (providerRefs / providerSelector), aggregates their status.failureDomains[] into VSphereCluster.status.failureDomains (CAPI v1beta2 list), applies controlPlaneFailureDomainSelector, and sets initialization.provisioned + Ready. No vCenter access."]
+    t3["3. CAPI core + control-plane provider read VSphereCluster.status.failureDomains and balance the requested replicas across them (count-based round-robin), creating one Machine + one VSphereMachine per placement from the VSphereMachineTemplate, each stamped with spec.failureDomain."]
+    t4["4. The vSphere provider's VSphereMachine watch fires for each new machine (the existing Create-a-VirtualMachine machine path). It maps the failure domain to a (datacenter, cluster) and reads the resolved spec."]
+    t5["5. Provider clones the VM into the chosen compute cluster's resource pool and powers it on. vSphere DRS selects the ESXi host within that cluster — banlieue does not pick the host."]
+    t6["6. Provider patches VSphereMachine.status (provisioned, providerID, addresses); CAPI mirrors it up to the Machine, and the control-plane provider (k0smotron) joins the nodes into the k0s cluster once the control plane is reachable."]
+    t1 --> t2 --> t3 --> t4 --> t5 --> t6
+```
+
+<sub>Source: flow `flow-provision-capi-cluster` in `architecture.json`.</sub>
+

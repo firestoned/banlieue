@@ -10,3 +10,4 @@ pub mod migration;
 pub mod scheduler;
 pub mod status_mirror;
 pub mod virtualmachine;
+pub mod vsphere_cluster;

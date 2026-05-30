@@ -1,0 +1,30 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "banlieue-vex"
+description = "Auto-VEX derivation CLI tools (presence + reachability) for the banlieue release pipeline."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "auto-vex-presence"
+path = "src/bin/auto_vex_presence.rs"
+
+[[bin]]
+name = "auto-vex-reachability"
+path = "src/bin/auto_vex_reachability.rs"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+clap.workspace = true
+anyhow.workspace = true
+chrono.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

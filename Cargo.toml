@@ -1,15 +1,18 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/banlieue",
     "crates/banlieue-api",
     "crates/banlieue-controller",
     "crates/banlieue-provider-sdk",
+    "crates/banlieue-provider-vsphere",
+    "crates/banlieue-vex",
 ]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 license = "Apache-2.0"
 repository = "https://github.com/firestoned/banlieue"
 homepage = "https://github.com/firestoned/banlieue"
@@ -44,6 +47,13 @@ clap = { version = "4", features = ["derive", "env"] }
 # Misc
 chrono = { version = "0.4", features = ["serde"] }
 async-trait = "0.1"
+
+# vSphere (provider-vsphere only; pinned here so the long compile is cached
+# at workspace level and any future provider that needs it gets the same pin).
+# `default-features = false` drops the `xml` SOAP/ESXi transport — vCenter
+# uses JSON, vcsim supports it, and the XML transport adds ~30–40% to debug
+# compile time. Vendor noclue/vim_rs, Apache-2.0.
+vim_rs = { version = "0.4", default-features = false }
 
 [profile.release]
 lto = "thin"

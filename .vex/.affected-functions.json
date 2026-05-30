@@ -1,0 +1,4 @@
+{
+  "_comment": "Curated CVE -> affected library symbol-name map for the (staged) auto-vex-reachability tool (ADR-0006). Dot-prefixed so the .vex/*.json glob skips it; it is NOT an OpenVEX document. Underscore-prefixed keys are metadata the loader ignores. A CVE present here with NONE of its symbols in the binary's dynamic symbol table is auto-marked not_affected (vulnerable_code_not_in_execute_path). Absence of a CVE here means 'do not auto-derive', not 'reachable'.",
+  "_status": "Scaffold only — no entries yet. Populate as glibc/zlib/etc. advisories surface against the banlieue images."
+}

@@ -1,0 +1,65 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# A CAPI InfraCluster (banlieue's VSphereCluster) that spans TWO vCenters.
+# Each vCenter is a separate Provider; this VSphereCluster aggregates the
+# failure domains of both into one CAPI status.failureDomains list, so a single
+# Kubernetes cluster's machines can spread across all of them.
+#
+# A CAPI Cluster points spec.infrastructureRef at this object:
+#
+#   apiVersion: cluster.x-k8s.io/v1beta1
+#   kind: Cluster
+#   spec:
+#     infrastructureRef:
+#       apiVersion: infrastructure.banlieue.io/v1alpha1
+#       kind: VSphereCluster
+#       name: prod-k0s
+#
+# "platinum = 6/6" is then a MachineDeployment/control-plane `replicas: 6` over
+# the 6 failure domains this object advertises — banlieue ships no tier CRD.
+apiVersion: infrastructure.banlieue.io/v1alpha1
+kind: VSphereCluster
+metadata:
+  name: prod-k0s
+  namespace: banlieue-system
+spec:
+  # Operator-supplied control-plane VIP. Optional — omit when a control-plane
+  # provider (e.g. k0smotron) manages the endpoint itself.
+  controlPlaneEndpoint:
+    host: 10.0.0.10
+    port: 6443
+  # Aggregate failure domains from these Providers (same namespace). Explicit
+  # refs take precedence over providerSelector.
+  providerRefs:
+    - name: vcenter-dc1
+    - name: vcenter-dc2
+  # Equivalent label-based selection (used only when providerRefs is empty):
+  # providerSelector:
+  #   matchLabels:
+  #     env: prod
+  #
+  # Keep the etcd quorum bounded: only failure domains labelled role=cp are
+  # advertised as control-plane eligible; workers may still spread over all.
+  controlPlaneFailureDomainSelector:
+    matchLabels:
+      role: cp
+# Status is written by the banlieue controller (no backend access — it
+# aggregates each Provider.status.failureDomains[]). Shown for reference:
+# status:
+#   initialization:
+#     provisioned: true
+#   controlPlaneEndpoint:
+#     host: 10.0.0.10
+#     port: 6443
+#   failureDomains:
+#     - name: vcenter-dc1-cluster-a
+#       controlPlane: true
+#       attributes: { dc: dc1, cluster: cluster-a, datacenter: DC-East }
+#     - name: vcenter-dc2-cluster-a
+#       controlPlane: true
+#       attributes: { dc: dc2, cluster: cluster-a, datacenter: DC-West }
+#   conditions:
+#     - type: Ready
+#       status: "True"
+#       reason: Reconciled

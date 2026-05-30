@@ -1,4 +1,4 @@
-# Architecture (CALM)
+# Architecture
 
 [![FINOS CALM](https://img.shields.io/badge/FINOS_CALM-1.2-blue?logo=finos)](https://calm.finos.org/)
 
@@ -31,7 +31,7 @@ matches the project's stated principles.
 | Flows | 3 | *Create*, *Swap*, *Delete* a `VirtualMachine` |
 | Controls | 3 | CRD-only contract, code-first CRDs, supply-chain scanning |
 
-Each provider node carries its **roadmap phase** in its display name
+Each provider node carries its **development phase** in its display name
 (`(planned, Phase 1B)`, etc.) so the picture is honest about what's
 implemented today vs the target architecture.
 

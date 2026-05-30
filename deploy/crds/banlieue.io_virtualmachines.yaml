@@ -39,9 +39,56 @@ spec:
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: Auto-generated derived type for VirtualMachineSpec via `CustomResource`
+        description: |-
+          VirtualMachine — the user-facing request for a running VM.
+
+          This is the one resource end users create. It expresses *intent*: which
+          VMClass (shape) and VMImage (OS) to use, optional placement constraints,
+          the desired power state, and optional guest user-data. banlieue's
+          controller schedules it onto a Provider + failure domain, creates the
+          matching provider infrastructure CR (e.g. `VSphereMachine`), and mirrors
+          that CR's status back here.
+
+          # Why create one
+
+          - **Declare a VM the Kubernetes way.** Describe the VM you want; the
+            controller reconciles reality toward it, including power state.
+          - **Stay backend-agnostic.** You reference a class and an image by name,
+            not a datastore or a port group. Where it lands is the scheduler's job.
+          - **Compose with policy.** Label / anti-affinity selectors and a migration
+            policy steer placement and drift handling without coupling to a specific
+            Provider.
+
+          Independent of Cluster API: a VirtualMachine is **not** a `clusterv1.
+          Machine`. It can coexist with CAPI but does not depend on it.
+
+          Namespaced: candidate Providers are drawn from the VM's own namespace.
         properties:
           spec:
+            description: |-
+              VirtualMachine — the user-facing request for a running VM.
+
+              This is the one resource end users create. It expresses *intent*: which
+              VMClass (shape) and VMImage (OS) to use, optional placement constraints,
+              the desired power state, and optional guest user-data. banlieue's
+              controller schedules it onto a Provider + failure domain, creates the
+              matching provider infrastructure CR (e.g. `VSphereMachine`), and mirrors
+              that CR's status back here.
+
+              # Why create one
+
+              - **Declare a VM the Kubernetes way.** Describe the VM you want; the
+                controller reconciles reality toward it, including power state.
+              - **Stay backend-agnostic.** You reference a class and an image by name,
+                not a datastore or a port group. Where it lands is the scheduler's job.
+              - **Compose with policy.** Label / anti-affinity selectors and a migration
+                policy steer placement and drift handling without coupling to a specific
+                Provider.
+
+              Independent of Cluster API: a VirtualMachine is **not** a `clusterv1.
+              Machine`. It can coexist with CAPI but does not depend on it.
+
+              Namespaced: candidate Providers are drawn from the VM's own namespace.
             properties:
               classRef:
                 description: Reference to a (cluster-scoped) VMClass.
@@ -89,6 +136,9 @@ spec:
                       Anti-affinity rules against other VirtualMachines in the same
                       namespace. Evaluated at scheduling time.
                     items:
+                      description: |-
+                        A rule that spreads this VM away from other VirtualMachines across a
+                        failure-domain topology key, evaluated at scheduling time.
                       properties:
                         labelSelector:
                           description: Other VMs (by their own metadata.labels) to spread away from.
@@ -231,6 +281,9 @@ spec:
             - imageRef
             type: object
           status:
+            description: |-
+              Observed state of a VirtualMachine: the scheduling decision, the infra CR
+              it owns, mirrored provisioning / address / power state, and conditions.
             nullable: true
             properties:
               addresses:
@@ -356,6 +409,9 @@ spec:
                   resolvedNetworks:
                     description: Resolved network class → concrete backend identifier mappings.
                     items:
+                      description: |-
+                        One abstract class → concrete backend identifier mapping resolved at
+                        schedule time.
                       properties:
                         backendId:
                           description: Backend identifier the provider resolved to (e.g. "ds-fast-01", "vmnet-prod").
@@ -371,6 +427,9 @@ spec:
                   resolvedStorage:
                     description: Resolved storage class → concrete backend identifier mappings.
                     items:
+                      description: |-
+                        One abstract class → concrete backend identifier mapping resolved at
+                        schedule time.
                       properties:
                         backendId:
                           description: Backend identifier the provider resolved to (e.g. "ds-fast-01", "vmnet-prod").

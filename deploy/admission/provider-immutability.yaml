@@ -1,0 +1,38 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# A Provider's class (vsphere / proxmox / libvirt) determines which provider
+# controller reconciles it and how its connection/capabilities are interpreted.
+# Re-pointing an existing Provider at a different class would orphan everything
+# scheduled onto it, so the class reference is immutable. Enforced in the API
+# server via CEL (no webhook). Requires Kubernetes 1.30+.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: banlieue-provider-immutable-class
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: admission
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["banlieue.io"]
+        apiVersions: ["v1alpha1"]
+        operations: ["UPDATE"]
+        resources: ["providers"]
+  validations:
+    - expression: "object.spec.providerClassRef.name == oldObject.spec.providerClassRef.name"
+      messageExpression: "'spec.providerClassRef.name is immutable (was ' + oldObject.spec.providerClassRef.name + ').'"
+      reason: Invalid
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: banlieue-provider-immutable-class
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: admission
+spec:
+  policyName: banlieue-provider-immutable-class
+  validationActions: ["Deny"]

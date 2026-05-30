@@ -1,0 +1,36 @@
+[package]
+name = "banlieue"
+description = "The unified banlieue binary — dispatches `controller` and `provider <name>` subcommands into the per-role library crates."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "banlieue"
+path = "src/main.rs"
+
+[features]
+# All available providers are bundled by default. Build a slim binary with
+# `--no-default-features --features <provider>` to drop other backends' deps.
+default = ["vsphere"]
+# Bundle the vSphere provider (`banlieue provider vsphere`). Pulls in vim_rs
+# transitively via banlieue-provider-vsphere.
+vsphere = ["dep:banlieue-provider-vsphere"]
+# Enable vcsim compatibility in the bundled vSphere provider (local dev / CI).
+# Implies `vsphere`.
+vcsim = ["vsphere", "banlieue-provider-vsphere/vcsim"]
+
+[dependencies]
+banlieue-controller = { path = "../banlieue-controller" }
+banlieue-provider-vsphere = { path = "../banlieue-provider-vsphere", optional = true }
+
+clap.workspace = true
+# Shell-completion generation for `banlieue completion <shell>`. Part of the
+# clap-rs project; tracks clap's major version.
+clap_complete = "4"
+anyhow.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

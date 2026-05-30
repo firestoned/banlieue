@@ -1,0 +1,87 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# Cluster-wide role for the vSphere provider binary.
+#
+# Multi-tenancy: the role is cluster-wide so the provider can reconcile
+# Provider and VSphereMachine CRs in any tenant namespace. Per-namespace
+# RoleBindings could narrow this if a deployment wants tighter scopes —
+# for now, banlieue ships the cluster-wide pattern matching the main
+# controller.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: banlieue-provider-vsphere
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: provider-vsphere
+rules:
+  # ---------------------------------------------------------------------------
+  # banlieue.io group — read Providers, patch their status
+  # ---------------------------------------------------------------------------
+  - apiGroups: ["banlieue.io"]
+    resources:
+      - providers
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["banlieue.io"]
+    resources:
+      - providers/status
+    verbs: ["get", "update", "patch"]
+
+  # VMImage status: phase 1B iter 2+ flips perProvider[vsphere].ready
+  # when a template is verified or imported. Iteration 1 only reads it.
+  - apiGroups: ["banlieue.io"]
+    resources:
+      - vmimages
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["banlieue.io"]
+    resources:
+      - vmimages/status
+    verbs: ["update", "patch"]
+
+  # ---------------------------------------------------------------------------
+  # infrastructure.banlieue.io group — VSphereMachine lifecycle (iter 2+)
+  # ---------------------------------------------------------------------------
+  - apiGroups: ["infrastructure.banlieue.io"]
+    resources:
+      - vspheremachines
+    verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups: ["infrastructure.banlieue.io"]
+    resources:
+      - vspheremachines/status
+    verbs: ["get", "update", "patch"]
+  - apiGroups: ["infrastructure.banlieue.io"]
+    resources:
+      - vspheremachines/finalizers
+    verbs: ["update"]
+
+  # ---------------------------------------------------------------------------
+  # CAPI IPAM contract — for Pool-based IpamSpec (iter 2+)
+  # ---------------------------------------------------------------------------
+  - apiGroups: ["ipam.cluster.x-k8s.io"]
+    resources:
+      - ipaddressclaims
+      - ipaddresses
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # ---------------------------------------------------------------------------
+  # Core resources
+  # ---------------------------------------------------------------------------
+  # Read Secrets — vCenter credentials referenced by Provider.spec.connection.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch"]
+
+  # Emit Events for state transitions visible via `kubectl describe provider`.
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+  - apiGroups: ["events.k8s.io"]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+
+  # Leases for leader election. Provider uses the same SDK pattern as the
+  # main controller (GET + CREATE + server-side-apply PATCH).
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "create", "update", "patch"]
