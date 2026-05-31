@@ -1,28 +1,33 @@
 // Copyright (c) 2026 Erick Bourgeois, banlieue
 // SPDX-License-Identifier: Apache-2.0
-//! # banlieue-controller entry point
+//! # `banlieue controller` entry point
 //!
-//! 1. Parses CLI flags (with `BANLIEUE_*` env-var fallbacks).
-//! 2. Initialises structured logging via `tracing`.
-//! 3. Builds a [`kube::Client`] via [`banlieue_provider_sdk::client`].
-//! 4. Starts a tiny health server on `:HEALTH_PORT` (livez + readyz).
-//! 5. (Unless `--no-leader-elect`) acquires the
+//! This is the library form of the main controller, invoked by the unified
+//! `banlieue` binary as `banlieue controller` (see ADR-0004). [`run`] owns the
+//! full lifecycle:
+//!
+//! 1. Initialises structured logging via [`banlieue_provider_sdk::bootstrap`].
+//! 2. Builds a [`kube::Client`] via [`banlieue_provider_sdk::client`].
+//! 3. Starts a tiny health server on `:health_port` (livez + readyz).
+//! 4. (Unless `--no-leader-elect`) acquires the
 //!    `coordination.k8s.io/v1.Lease` named `--leader-election-id`
 //!    before any reconciler runs; spawns a background renewer.
-//! 6. Runs the [`kube::runtime::Controller`] for `VirtualMachine`.
+//! 5. Runs the [`kube::runtime::Controller`]s for `VirtualMachine` and
+//!    `VSphereCluster`.
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context as _, Result};
-use banlieue_api::banlieue::{VMImage, VirtualMachine};
-use banlieue_api::infrastructure::VSphereMachine;
+use banlieue_api::banlieue::{Provider, VMImage, VirtualMachine};
+use banlieue_api::infrastructure::{VSphereCluster, VSphereMachine};
+use banlieue_provider_sdk::bootstrap::{init_tracing, serve_health, shutdown_signal};
 use banlieue_provider_sdk::client::build_client;
 use banlieue_provider_sdk::leader::{
     DEFAULT_LEASE_DURATION_SECS, DEFAULT_RENEW_PERIOD_SECS, DEFAULT_RETRY_PERIOD_SECS,
     LeaderConfig, acquire_or_wait, renew_forever,
 };
-use clap::Parser;
+use clap::Args;
 use futures::StreamExt;
 use kube::{
     Api, ResourceExt,
@@ -30,9 +35,10 @@ use kube::{
 };
 use tracing::{error, info};
 
-use banlieue_controller::{
+use crate::{
     context::Context,
     reconciler::virtualmachine::{error_policy, reconcile},
+    reconciler::vsphere_cluster,
 };
 
 const DEFAULT_HEALTH_PORT: u16 = 8081;
@@ -40,41 +46,43 @@ const DEFAULT_METRICS_PORT: u16 = 8080;
 const DEFAULT_LEADER_ELECTION_NAMESPACE: &str = "banlieue-system";
 const DEFAULT_LEADER_ELECTION_ID: &str = "banlieue-controller";
 
-/// Command-line interface for the banlieue main controller.
-#[derive(Debug, Parser)]
-#[command(name = "banlieue-controller", version, about, long_about = None)]
-struct Cli {
+/// Per-crate `tracing` directives layered on top of the base log level.
+const LOG_DIRECTIVES: &[&str] = &["kube=warn"];
+
+/// Command-line arguments for `banlieue controller`.
+#[derive(Debug, Args)]
+pub struct Cli {
     /// Path to a kubeconfig file. Falls back to in-cluster config or
     /// `$KUBECONFIG` / `~/.kube/config` when unset.
     #[arg(long, env = "KUBECONFIG")]
-    kubeconfig: Option<String>,
+    pub kubeconfig: Option<String>,
 
     /// Restrict the controller to a single namespace. Cluster-wide when unset.
     #[arg(long, env = "BANLIEUE_NAMESPACE")]
-    namespace: Option<String>,
+    pub namespace: Option<String>,
 
     /// Health server bind port.
     #[arg(long, env = "BANLIEUE_HEALTH_PORT", default_value_t = DEFAULT_HEALTH_PORT)]
-    health_port: u16,
+    pub health_port: u16,
 
     /// Metrics server bind port (Phase 4 will populate; the port is reserved now).
     #[arg(long, env = "BANLIEUE_METRICS_PORT", default_value_t = DEFAULT_METRICS_PORT)]
-    metrics_port: u16,
+    pub metrics_port: u16,
 
     /// Log format: `json` for SIEM-friendly output, `text` for human-readable
     /// (local development).
     #[arg(long, env = "RUST_LOG_FORMAT", default_value = "text")]
-    log_format: String,
+    pub log_format: String,
 
     /// Log level (`error`, `warn`, `info`, `debug`, `trace`). Overrides
     /// `RUST_LOG`; ignored if `RUST_LOG` is unset and this flag is also unset.
     #[arg(long, env = "BANLIEUE_LOG_LEVEL")]
-    log_level: Option<String>,
+    pub log_level: Option<String>,
 
     /// Disable leader election. Default is to elect a leader before
     /// running reconcilers, so multiple replicas can run safely.
     #[arg(long, env = "BANLIEUE_NO_LEADER_ELECT", default_value_t = false)]
-    no_leader_elect: bool,
+    pub no_leader_elect: bool,
 
     /// Namespace the leader-election Lease lives in.
     #[arg(
@@ -82,7 +90,7 @@ struct Cli {
         env = "BANLIEUE_LEADER_ELECTION_NAMESPACE",
         default_value = DEFAULT_LEADER_ELECTION_NAMESPACE,
     )]
-    leader_election_namespace: String,
+    pub leader_election_namespace: String,
 
     /// Lease object name (the lock).
     #[arg(
@@ -90,19 +98,26 @@ struct Cli {
         env = "BANLIEUE_LEADER_ELECTION_ID",
         default_value = DEFAULT_LEADER_ELECTION_ID,
     )]
-    leader_election_id: String,
+    pub leader_election_id: String,
 
     /// Holder identity to write into the Lease. Falls back to `POD_NAME` /
     /// `HOSTNAME` / "unknown" if unset.
     #[arg(long, env = "BANLIEUE_LEADER_ELECTION_IDENTITY")]
-    leader_election_identity: Option<String>,
+    pub leader_election_identity: Option<String>,
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    let cli = Cli::parse();
-
-    init_tracing(&cli.log_format, cli.log_level.as_deref())?;
+/// Run the main banlieue controller to completion (until a shutdown signal or a
+/// controller stream ends).
+///
+/// # Arguments
+/// * `cli` - parsed `banlieue controller` arguments.
+///
+/// # Errors
+/// Returns an error if logging init, kube client construction, or leader-lease
+/// acquisition fails.
+pub async fn run(cli: Cli) -> Result<()> {
+    init_tracing(&cli.log_format, cli.log_level.as_deref(), LOG_DIRECTIVES)
+        .context("initialising tracing")?;
     info!(
         version = env!("CARGO_PKG_VERSION"),
         namespace = ?cli.namespace,
@@ -174,7 +189,7 @@ async fn main() -> Result<()> {
                 .map(|vm| ObjectRef::from_obj(vm.as_ref()))
                 .collect::<Vec<_>>()
         })
-        .run(reconcile, error_policy, ctx)
+        .run(reconcile, error_policy, ctx.clone())
         .for_each(|res| async move {
             match res {
                 Ok((obj, _)) => info!(?obj, "reconciled"),
@@ -182,18 +197,64 @@ async fn main() -> Result<()> {
             }
         });
 
+    // VSphereCluster (CAPI InfraCluster) controller. Aggregates Provider
+    // failure domains into the CAPI status. A Provider's status changing
+    // (failure domains added/removed) requeues every VSphereCluster — these
+    // events are rare and operator-driven, so requeuing all is cheap.
+    let vsc_api: Api<VSphereCluster> = match cli.namespace.as_deref() {
+        Some(ns) => Api::namespaced(client.clone(), ns),
+        None => Api::all(client.clone()),
+    };
+    let provider_api: Api<Provider> = match cli.namespace.as_deref() {
+        Some(ns) => Api::namespaced(client.clone(), ns),
+        None => Api::all(client.clone()),
+    };
+
+    info!("starting VSphereCluster controller");
+    let vsc_controller = Controller::new(vsc_api, Config::default());
+    let vsc_store = vsc_controller.store();
+
+    let vsc_fut = vsc_controller
+        .watches(
+            provider_api,
+            Config::default(),
+            move |_provider: Provider| {
+                vsc_store
+                    .state()
+                    .into_iter()
+                    .map(|c| ObjectRef::from_obj(c.as_ref()))
+                    .collect::<Vec<_>>()
+            },
+        )
+        .run(
+            vsphere_cluster::reconcile,
+            vsphere_cluster::error_policy,
+            ctx,
+        )
+        .for_each(|res| async move {
+            match res {
+                Ok((obj, _)) => info!(kind = "VSphereCluster", ?obj, "reconciled"),
+                Err(e) => error!(kind = "VSphereCluster", error = %e, "reconcile error"),
+            }
+        });
+
     tokio::select! {
         () = controller_fut => {
-            info!("controller stream ended");
+            info!("VirtualMachine controller stream ended");
+        }
+        () = vsc_fut => {
+            info!("VSphereCluster controller stream ended");
         }
         _ = shutdown_signal() => {
-            info!("shutdown signal received; releasing controller");
+            info!("shutdown signal received; releasing controllers");
         }
     }
 
     Ok(())
 }
 
+/// Build a [`LeaderConfig`] from parsed CLI flags, filling the holder identity
+/// from `--leader-election-identity` or the `POD_NAME` / `HOSTNAME` fallback.
 fn build_leader_config(cli: &Cli) -> LeaderConfig {
     let identity = cli
         .leader_election_identity
@@ -209,83 +270,6 @@ fn build_leader_config(cli: &Cli) -> LeaderConfig {
     }
 }
 
-/// Wait for SIGTERM (containers) or Ctrl-C (local dev). Resolves the
-/// first one that fires; the controller will then exit its select.
-async fn shutdown_signal() {
-    use tokio::signal::unix::{SignalKind, signal};
-
-    let mut term = match signal(SignalKind::terminate()) {
-        Ok(s) => s,
-        Err(e) => {
-            error!(error = %e, "failed to install SIGTERM handler — will only respond to Ctrl-C");
-            let _ = tokio::signal::ctrl_c().await;
-            return;
-        }
-    };
-    tokio::select! {
-        _ = term.recv() => {}
-        _ = tokio::signal::ctrl_c() => {}
-    }
-}
-
-fn init_tracing(format: &str, level: Option<&str>) -> Result<()> {
-    use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
-
-    let filter = if let Some(lvl) = level {
-        // Explicit --log-level takes precedence over RUST_LOG.
-        EnvFilter::try_new(format!("{lvl},kube=warn"))
-            .map_err(|e| anyhow::anyhow!("invalid --log-level {lvl:?}: {e}"))?
-    } else {
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,kube=warn"))
-    };
-
-    let registry = tracing_subscriber::registry().with(filter);
-
-    match format {
-        "json" => registry
-            .with(tracing_subscriber::fmt::layer().json())
-            .try_init()
-            .map_err(|e| anyhow::anyhow!("init json tracing: {e}")),
-        _ => registry
-            .with(tracing_subscriber::fmt::layer())
-            .try_init()
-            .map_err(|e| anyhow::anyhow!("init text tracing: {e}")),
-    }
-}
-
-/// Minimal health server. Returns 200 on `/livez` and `/readyz`.
-async fn serve_health(port: u16) {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::net::TcpListener;
-
-    let listener = match TcpListener::bind(("0.0.0.0", port)).await {
-        Ok(l) => l,
-        Err(e) => {
-            error!(error = %e, port, "failed to bind health port");
-            return;
-        }
-    };
-    info!(port, "health server listening");
-
-    loop {
-        let (mut socket, _) = match listener.accept().await {
-            Ok(s) => s,
-            Err(e) => {
-                error!(error = %e, "health accept failed");
-                continue;
-            }
-        };
-        tokio::spawn(async move {
-            let mut buf = [0u8; 1024];
-            let _ = socket.read(&mut buf).await;
-            let body = "ok";
-            let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{}",
-                body.len(),
-                body,
-            );
-            let _ = socket.write_all(response.as_bytes()).await;
-            let _ = socket.shutdown().await;
-        });
-    }
-}
+#[cfg(test)]
+#[path = "app_tests.rs"]
+mod app_tests;

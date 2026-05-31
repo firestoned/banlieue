@@ -7,7 +7,10 @@
 # regulated environments (SOX, NIST 800-53, PCI-DSS, FedRAMP).
 #
 # Build with:
-#     make docker-build-chainguard BINARY=banlieue-controller
+#     make docker-build-chainguard   # BINARY defaults to banlieue
+#
+# A single `banlieue` binary packages every role; the role is selected at
+# runtime via container args (`["controller"]`, `["provider","vsphere"]`).
 
 # Pinned by digest. Chainguard rebuilds this tag daily with patches;
 # Dependabot opens a PR with the new digest on each rebuild — review and merge.
@@ -20,7 +23,7 @@ ARG VERSION
 ARG GIT_SHA
 ARG TARGETARCH
 ARG BASE_IMAGE
-ARG BINARY=banlieue-controller
+ARG BINARY=banlieue
 
 LABEL org.opencontainers.image.source="https://github.com/firestoned/banlieue" \
       org.opencontainers.image.description="banlieue — Kubernetes-native abstract virtualization API (${BINARY}, Chainguard)" \

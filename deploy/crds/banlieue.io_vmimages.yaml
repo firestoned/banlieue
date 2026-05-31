@@ -32,11 +32,59 @@ spec:
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: Auto-generated derived type for VMImageSpec via `CustomResource`
+        description: |-
+          VMImage — a cluster-scoped, backend-agnostic catalog entry for a bootable
+          guest image.
+
+          A VMImage names an operating system (family / distribution / version /
+          architecture) once, then lists — per provider class — where that image
+          actually lives on each backend (`spec.sources`). A VirtualMachine
+          references a VMImage by name (`spec.imageRef`); the scheduler and the
+          chosen provider resolve it to a concrete template / backing file / import
+          URL at provisioning time.
+
+          # Why create one
+
+          - **One name, many backends.** "ubuntu-22.04" can map to a vSphere
+            template, a Proxmox template VMID, and a libvirt qcow2 — users reference
+            a single VMImage regardless of where the VM lands.
+          - **Explicit, auditable image sourcing.** Sources (and optional checksums)
+            are declared, not auto-discovered, so what actually boots is reviewable.
+          - **Readiness gating.** The image controller records per-Provider
+            readiness in `status`; the scheduler refuses to place a VM until the
+            image is confirmed available (or importable) on a candidate Provider.
+
+          Cluster-scoped: a VMImage is shared by VirtualMachines in any namespace.
         properties:
           spec:
+            description: |-
+              VMImage — a cluster-scoped, backend-agnostic catalog entry for a bootable
+              guest image.
+
+              A VMImage names an operating system (family / distribution / version /
+              architecture) once, then lists — per provider class — where that image
+              actually lives on each backend (`spec.sources`). A VirtualMachine
+              references a VMImage by name (`spec.imageRef`); the scheduler and the
+              chosen provider resolve it to a concrete template / backing file / import
+              URL at provisioning time.
+
+              # Why create one
+
+              - **One name, many backends.** "ubuntu-22.04" can map to a vSphere
+                template, a Proxmox template VMID, and a libvirt qcow2 — users reference
+                a single VMImage regardless of where the VM lands.
+              - **Explicit, auditable image sourcing.** Sources (and optional checksums)
+                are declared, not auto-discovered, so what actually boots is reviewable.
+              - **Readiness gating.** The image controller records per-Provider
+                readiness in `status`; the scheduler refuses to place a VM until the
+                image is confirmed available (or importable) on a candidate Provider.
+
+              Cluster-scoped: a VMImage is shared by VirtualMachines in any namespace.
             properties:
               architecture:
+                description: |-
+                  Guest CPU architecture. Failure domains whose hosts cannot run this
+                  architecture are filtered out by the scheduler.
                 enum:
                 - amd64
                 - arm64
@@ -58,6 +106,9 @@ spec:
                   fedora-coreos, windows-server.
                 type: string
               osFamily:
+                description: |-
+                  Broad operating-system family. Coarser than `osDistribution`; lets
+                  providers apply high-level guest handling.
                 enum:
                 - linux
                 - windows
@@ -72,6 +123,9 @@ spec:
                   Per-provider source mappings. At least one entry per ProviderClass
                   you intend to schedule VMs onto.
                 items:
+                  description: |-
+                    One backend's mapping for a VMImage: which provider class it applies to,
+                    and how to find (or import) the image there.
                   properties:
                     checksum:
                       description: |-
@@ -119,6 +173,9 @@ spec:
             - sources
             type: object
           status:
+            description: |-
+              Observed availability of a VMImage across the Providers that can serve it.
+              Maintained by the image controller; read by the scheduler.
             nullable: true
             properties:
               conditions:
@@ -163,6 +220,7 @@ spec:
                   Per-Provider readiness. One entry per Provider that supports this
                   image's providerClass and has reconciled at least once.
                 items:
+                  description: Readiness of a VMImage on one specific Provider.
                   properties:
                     message:
                       description: Long human-readable detail.

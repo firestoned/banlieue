@@ -165,18 +165,21 @@ extra:
 nav:
   - Home:
       - index.md
-      - Getting Started: getting-started/quickstart.md
-  - Overview: overview.md
+      - Overview: overview.md
+      - Why banlieue?:
+          - Overview: reasoning/index.md
+          - The Problem: reasoning/problem.md
+          - The Abstraction Principle: reasoning/abstraction-principle.md
+          - Least-Touch Workflow: reasoning/least-touch.md
+          - CRD-Only Contract: reasoning/crd-only-contract.md
+          - Relationship to Cluster API: reasoning/capi-relationship.md
+          - Comparisons: reasoning/comparisons.md
+          - Non-Goals: reasoning/non-goals.md
 
-  - Why banlieue?:
-      - Overview: reasoning/index.md
-      - The Problem: reasoning/problem.md
-      - The Abstraction Principle: reasoning/abstraction-principle.md
-      - Least-Touch Workflow: reasoning/least-touch.md
-      - CRD-Only Contract: reasoning/crd-only-contract.md
-      - Relationship to Cluster API: reasoning/capi-relationship.md
-      - Comparisons: reasoning/comparisons.md
-      - Non-Goals: reasoning/non-goals.md
+  - Guides:
+      - Overview: guides/index.md
+      - Core Controller: guides/core-controller.md
+      - vSphere Provider: guides/vsphere-provider.md
 
   - Concepts:
       - Overview: concepts/index.md
@@ -185,11 +188,15 @@ nav:
       - Provider Model: concepts/providers.md
       - Infrastructure CRDs & CAPI: concepts/infra-crds-capi.md
 
-  - Architecture (CALM):
+  - Architecture:
       - Overview: architecture/index.md
       - System Diagram: architecture/system.md
       - Architecture Flows: architecture/flows.md
 
+  - Developer:
+      - Overview: developer/index.md
+      - Local Development: developer/local-development.md
+
   - Reference:
-      - Roadmap: reference/roadmap.md
+      - API Reference (CRDs): reference/api.md
       - License: reference/license.md

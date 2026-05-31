@@ -1,6 +1,8 @@
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
+  labels:
+    cluster.x-k8s.io/v1beta2: v1alpha1
   name: vspheremachinetemplates.infrastructure.banlieue.io
 spec:
   group: infrastructure.banlieue.io
@@ -17,13 +19,32 @@ spec:
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: Auto-generated derived type for VSphereMachineTemplateSpec via `CustomResource`
+        description: |-
+          VSphereMachineTemplate — a stamped-out VSphereMachine spec.
+
+          CAPI requires an InfraMachineTemplate so higher-level controllers (a
+          MachineSet / MachineDeployment) can mint many identical machines from one
+          template. It wraps a single `template.spec` that is the VSphereMachine spec
+          used for each generated machine. banlieue ships it for CAPI compatibility;
+          standalone VirtualMachine users do not need it.
         properties:
           spec:
+            description: |-
+              VSphereMachineTemplate — a stamped-out VSphereMachine spec.
+
+              CAPI requires an InfraMachineTemplate so higher-level controllers (a
+              MachineSet / MachineDeployment) can mint many identical machines from one
+              template. It wraps a single `template.spec` that is the VSphereMachine spec
+              used for each generated machine. banlieue ships it for CAPI compatibility;
+              standalone VirtualMachine users do not need it.
             properties:
               template:
+                description: |-
+                  The VSphereMachine spec stamped into every machine created from this
+                  template.
                 properties:
                   spec:
+                    description: The VSphereMachine spec for machines created from this template.
                     properties:
                       cluster:
                         description: Compute cluster within the datacenter.
@@ -39,18 +60,23 @@ spec:
                           Disks. The first disk is the template's OS disk (grown if needed);
                           subsequent disks are blank.
                         items:
+                          description: One virtual disk on the resulting vSphere VM.
                           properties:
                             name:
+                              description: Stable disk name; echoed in status with resolved backend identifiers.
                               type: string
                             provisioning:
                               default: thin
-                              description: Disk provisioning hint. Providers honor on a best-effort basis.
+                              description: Provisioning hint (thin / thick / eager-zeroed).
                               enum:
                               - thin
                               - thick
                               - eagerZeroed
                               type: string
                             sizeGiB:
+                              description: |-
+                                Disk size in GiB. For the OS disk this is a floor — the template's disk
+                                is grown to at least this size.
                               format: uint32
                               minimum: 0.0
                               type: integer
@@ -85,35 +111,10 @@ spec:
                       network:
                         description: Network interfaces.
                         items:
+                          description: One virtual network interface on the resulting vSphere VM.
                           properties:
                             ipam:
-                              description: |-
-                                IPAM configuration for a network interface.
-
-                                `source` selects the strategy and the matching sibling field
-                                (`static` / `pool`) carries its parameters. `Dhcp` needs no parameters.
-
-                                Wire shape (Kubernetes-idiomatic; chosen over a serde-tagged enum
-                                because kube-derive's CRD schema flattener does not support per-variant
-                                discriminator subschemas — see `.wolf/buglog.json` bug-006):
-
-                                ```yaml
-                                ipam:
-                                  source: dhcp                       # nothing else needed
-                                ipam:
-                                  source: static
-                                  static:
-                                    address: 10.0.0.5
-                                    prefix: 24
-                                    gateway: 10.0.0.1
-                                ipam:
-                                  source: pool
-                                  pool:
-                                    poolRef:
-                                      apiGroup: ipam.cluster.x-k8s.io
-                                      kind: IPAddressClaim
-                                      name: prod-pool
-                                ```
+                              description: IP address management for this interface.
                               properties:
                                 pool:
                                   description: Required when `source == Pool`; ignored otherwise.
@@ -183,6 +184,7 @@ spec:
                               nullable: true
                               type: string
                             name:
+                              description: Stable NIC name; echoed in status.
                               type: string
                             portGroup:
                               description: Resolved port group or distributed port group name.

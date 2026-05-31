@@ -1,6 +1,8 @@
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
+  labels:
+    cluster.x-k8s.io/v1beta2: v1alpha1
   name: vspheremachines.infrastructure.banlieue.io
 spec:
   group: infrastructure.banlieue.io
@@ -34,9 +36,58 @@ spec:
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: Auto-generated derived type for VSphereMachineSpec via `CustomResource`
+        description: |-
+          VSphereMachine — the concrete, scheduled VM request for the vSphere backend.
+
+          This is banlieue's reference implementation of the CAPI v1beta2
+          InfraMachine contract. Where a VirtualMachine is abstract, every field here
+          is already resolved: a real vCenter `template`, `datacenter`, `cluster`,
+          `datastore`, and per-NIC `portGroup`. banlieue's main controller creates it
+          after scheduling; the vSphere provider reconciles it into a real VM and
+          reports CAPI-shaped status.
+
+          # Why it exists
+
+          - **It is the hand-off.** A VirtualMachine says "an ubuntu db-prod VM
+            somewhere reasonable"; a VSphereMachine says "clone template X in DC0 /
+            cluster C0 onto datastore ds-fast-01" — the thing a provider can actually
+            execute.
+          - **CAPI-compatible by contract.** Because it satisfies the InfraMachine
+            contract, it doubles as a Cluster API infrastructure provider: a
+            `clusterv1.Machine` with `infrastructureRef.kind: VSphereMachine` drives
+            it the same way.
+
+          You normally do not create this by hand — the controller does, owned by the
+          VirtualMachine. The CAPI contract label
+          `cluster.x-k8s.io/v1beta2: v1alpha1` is emitted onto the generated CRD by
+          `crdgen`, since kube-derive cannot set CRD-level labels (ADR-0005).
         properties:
           spec:
+            description: |-
+              VSphereMachine — the concrete, scheduled VM request for the vSphere backend.
+
+              This is banlieue's reference implementation of the CAPI v1beta2
+              InfraMachine contract. Where a VirtualMachine is abstract, every field here
+              is already resolved: a real vCenter `template`, `datacenter`, `cluster`,
+              `datastore`, and per-NIC `portGroup`. banlieue's main controller creates it
+              after scheduling; the vSphere provider reconciles it into a real VM and
+              reports CAPI-shaped status.
+
+              # Why it exists
+
+              - **It is the hand-off.** A VirtualMachine says "an ubuntu db-prod VM
+                somewhere reasonable"; a VSphereMachine says "clone template X in DC0 /
+                cluster C0 onto datastore ds-fast-01" — the thing a provider can actually
+                execute.
+              - **CAPI-compatible by contract.** Because it satisfies the InfraMachine
+                contract, it doubles as a Cluster API infrastructure provider: a
+                `clusterv1.Machine` with `infrastructureRef.kind: VSphereMachine` drives
+                it the same way.
+
+              You normally do not create this by hand — the controller does, owned by the
+              VirtualMachine. The CAPI contract label
+              `cluster.x-k8s.io/v1beta2: v1alpha1` is emitted onto the generated CRD by
+              `crdgen`, since kube-derive cannot set CRD-level labels (ADR-0005).
             properties:
               cluster:
                 description: Compute cluster within the datacenter.
@@ -52,18 +103,23 @@ spec:
                   Disks. The first disk is the template's OS disk (grown if needed);
                   subsequent disks are blank.
                 items:
+                  description: One virtual disk on the resulting vSphere VM.
                   properties:
                     name:
+                      description: Stable disk name; echoed in status with resolved backend identifiers.
                       type: string
                     provisioning:
                       default: thin
-                      description: Disk provisioning hint. Providers honor on a best-effort basis.
+                      description: Provisioning hint (thin / thick / eager-zeroed).
                       enum:
                       - thin
                       - thick
                       - eagerZeroed
                       type: string
                     sizeGiB:
+                      description: |-
+                        Disk size in GiB. For the OS disk this is a floor — the template's disk
+                        is grown to at least this size.
                       format: uint32
                       minimum: 0.0
                       type: integer
@@ -98,35 +154,10 @@ spec:
               network:
                 description: Network interfaces.
                 items:
+                  description: One virtual network interface on the resulting vSphere VM.
                   properties:
                     ipam:
-                      description: |-
-                        IPAM configuration for a network interface.
-
-                        `source` selects the strategy and the matching sibling field
-                        (`static` / `pool`) carries its parameters. `Dhcp` needs no parameters.
-
-                        Wire shape (Kubernetes-idiomatic; chosen over a serde-tagged enum
-                        because kube-derive's CRD schema flattener does not support per-variant
-                        discriminator subschemas — see `.wolf/buglog.json` bug-006):
-
-                        ```yaml
-                        ipam:
-                          source: dhcp                       # nothing else needed
-                        ipam:
-                          source: static
-                          static:
-                            address: 10.0.0.5
-                            prefix: 24
-                            gateway: 10.0.0.1
-                        ipam:
-                          source: pool
-                          pool:
-                            poolRef:
-                              apiGroup: ipam.cluster.x-k8s.io
-                              kind: IPAddressClaim
-                              name: prod-pool
-                        ```
+                      description: IP address management for this interface.
                       properties:
                         pool:
                           description: Required when `source == Pool`; ignored otherwise.
@@ -196,6 +227,7 @@ spec:
                       nullable: true
                       type: string
                     name:
+                      description: Stable NIC name; echoed in status.
                       type: string
                     portGroup:
                       description: Resolved port group or distributed port group name.
@@ -250,6 +282,9 @@ spec:
             - template
             type: object
           status:
+            description: |-
+              Observed state of a VSphereMachine, shaped to the CAPI v1beta2 InfraMachine
+              status contract (plus a few vSphere-specific diagnostics).
             nullable: true
             properties:
               addresses:

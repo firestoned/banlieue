@@ -15,25 +15,27 @@
 # Local dev loop (the "ideal" from CLAUDE.md):
 #
 #   make kind-up                                # create cluster + apply CRDs
-#   cargo run -p banlieue-controller            # run controller out-of-cluster
+#   cargo run -p banlieue -- controller         # run controller out-of-cluster
 #
 # Full in-cluster loop (needed for the vSphere provider once 1B lands):
 #
 #   make kind-create                            # create the cluster
 #   make crds                                   # generate deploy/crds/
 #   make kind-deploy-crds                       # apply CRDs
-#   make kind-load BINARY=banlieue-controller   # build + push to kind
+#   make kind-load                              # build the single banlieue image
 #   make kind-deploy-controller                 # apply controller manifests
 
 .DEFAULT_GOAL := help
 
 # ----- Variables ------------------------------------------------------------
 
-# Workspace layout
-WORKSPACE_BINARIES := banlieue-controller
+# Workspace layout. A single binary now packages every role; the controller
+# and each provider are subcommands (`banlieue controller`, `banlieue provider
+# vsphere`). See ADR-0004.
+WORKSPACE_BINARIES := banlieue
 
-# Default binary for docker-build / kind-load when not specified
-BINARY ?= banlieue-controller
+# Default binary for docker-build / kind-load when not specified.
+BINARY ?= banlieue
 
 # Image configuration
 REGISTRY     ?= ghcr.io
@@ -52,6 +54,16 @@ GIT_SHA ?= $(shell git rev-parse HEAD 2>/dev/null || echo "unknown")
 # Container tool (docker or podman)
 CONTAINER_TOOL ?= docker
 
+# Supply chain (SBOM / VEX / scanning). Versions pinned; CI uses the same.
+VEXCTL_VERSION ?= 0.4.1
+GRYPE_VERSION  ?= 0.87.0
+PRODUCT_PURL   ?= pkg:oci/banlieue
+# Inputs for the local auto-vex mirrors (`make vex-auto-*`).
+GRYPE_JSON         ?= grype.json
+AFFECTED_FUNCTIONS ?= .vex/.affected-functions.json
+RELEASE_BINARY     ?= target/release/banlieue
+SBOM_FILES         ?= $(wildcard target/release/*.cdx.json docker-sbom-*.json)
+
 # Kind configuration
 KIND_VERSION       ?= 0.24.0
 KIND_CLUSTER_NAME  ?= banlieue-dev
@@ -60,6 +72,17 @@ KIND_IMAGE          = $(REGISTRY)/$(ORG)/$(BINARY):local-dev
 
 # CRD output
 CRD_OUT_DIR ?= deploy/crds
+
+# Generated CRD API reference (rendered by the docs site)
+API_DOCS_OUT ?= docs/src/reference/api.md
+
+# Logging for the *-run-local targets. `?=` yields to a RUST_LOG passed in the
+# environment, so a CLI override wins, e.g. `RUST_LOG=debug,kube=debug make run-local`.
+# RUST_LOG_VSPHERE derives from RUST_LOG so the same override flows to the
+# provider, while quieting the noisy vim_rs dependency by default; override it
+# directly to control vim_rs verbosity.
+RUST_LOG          ?= info,kube=warn
+RUST_LOG_VSPHERE  ?= $(RUST_LOG),vim_rs=warn
 
 # CALM (FINOS Common Architecture Language Model) configuration
 CALM_CLI_VERSION  ?= 1.37.0
@@ -82,11 +105,16 @@ help: ## Show this help
 
 .PHONY: help install build build-debug build-linux-amd64 build-linux-arm64 \
         prepare-binaries-linux-amd64 prepare-binaries-linux-arm64 \
-        test test-lib lint format clean crds run-local \
+        test test-lib lint format clean crds api-docs run-local \
+        provider-vsphere-run-local \
         docker-build docker-build-amd64 docker-build-arm64 \
         docker-build-chainguard docker-buildx docker-buildx-chainguard docker-push \
+        sbom vexctl-install vex-validate vex-assemble \
+        vex-auto-presence vex-auto-reachability \
         kind-install kind-create kind-delete kind-load \
         kind-deploy-crds kind-deploy-controller kind-up kind-down kind-status \
+        kind-deploy-provider-vsphere \
+        vcsim-up vcsim-down vcsim-logs \
         docs docs-serve docs-clean docs-deploy \
         calm-diagrams calm-docify calm-validate
 
@@ -166,7 +194,7 @@ calm-diagrams: ## Render CALM Mermaid diagrams into $(CALM_DIAGRAMS_OUT)
 
 # ----- Documentation (MkDocs Material) --------------------------------------
 
-docs: calm-diagrams ## Build the MkDocs site into docs/site/ (regenerates CALM diagrams first)
+docs: api-docs calm-diagrams ## Build the MkDocs site into docs/site/ (regenerates the API reference + CALM diagrams first)
 	@command -v poetry >/dev/null 2>&1 || { echo "Error: Poetry not found. Install: curl -sSL https://install.python-poetry.org | python3 -"; exit 1; }
 	@echo "Ensuring documentation dependencies are installed..."
 	@cd docs && poetry install --no-interaction --quiet
@@ -189,21 +217,60 @@ docs-deploy: docs ## Build and deploy docs to GitHub Pages
 	@cd docs && poetry run mkdocs gh-deploy --force
 	@echo "✓ Documentation deployed to GitHub Pages"
 
-run-local: crds ## Run banlieue-controller locally against your current kube-context
-	@echo "Running banlieue-controller locally (KUBECONFIG=$$KUBECONFIG)..."
-	RUST_LOG=info,kube=warn cargo run -p banlieue-controller
+run-local: crds ## Run the controller locally against your current kube-context
+	@echo "Running banlieue controller locally (KUBECONFIG=$$KUBECONFIG)..."
+	RUST_LOG="$(RUST_LOG)" cargo run -p banlieue -- controller
+
+provider-vsphere-run-local: ## Run the vSphere provider locally (point it at $$VSPHERE_ENDPOINT / vcsim)
+	@echo "Running banlieue provider vsphere locally (KUBECONFIG=$$KUBECONFIG)..."
+	@echo "  Provider CRs are read from your kube context;"
+	@echo "  the actual vCenter endpoint comes from Provider.spec.connection.endpoint."
+	@echo "  For vcsim: 'make vcsim-up' first, then create a Provider with endpoint=https://127.0.0.1:8989/sdk."
+	RUST_LOG="$(RUST_LOG_VSPHERE)" \
+	  cargo run -p banlieue --features vcsim -- provider vsphere --no-leader-elect
+
+# ----- vcsim (govmomi vCenter simulator) ------------------------------------
+#
+# Local development against a fake vCenter. Uses the official vmware/vcsim
+# container image; default credentials are user:pass on port 8989.
+
+VCSIM_CONTAINER ?= banlieue-vcsim
+VCSIM_PORT      ?= 8989
+VCSIM_IMAGE     ?= vmware/vcsim:latest
+
+vcsim-up: ## Start a local vcsim container on :$(VCSIM_PORT)
+	@command -v docker >/dev/null 2>&1 || { echo "Error: docker not found"; exit 1; }
+	@if docker ps -a --format '{{.Names}}' | grep -q "^$(VCSIM_CONTAINER)$$"; then \
+	  echo "Container $(VCSIM_CONTAINER) already exists — starting..."; \
+	  docker start $(VCSIM_CONTAINER); \
+	else \
+	  echo "Starting $(VCSIM_CONTAINER) from $(VCSIM_IMAGE) on :$(VCSIM_PORT)..."; \
+	  docker run -d --name $(VCSIM_CONTAINER) -p $(VCSIM_PORT):8989 $(VCSIM_IMAGE); \
+	fi
+	@echo "✓ vcsim listening at https://127.0.0.1:$(VCSIM_PORT)/sdk (user: user / pass: pass)"
+
+vcsim-down: ## Stop and remove the vcsim container
+	@command -v docker >/dev/null 2>&1 || { echo "Error: docker not found"; exit 1; }
+	@docker rm -f $(VCSIM_CONTAINER) 2>/dev/null && echo "✓ removed $(VCSIM_CONTAINER)" || true
+
+vcsim-logs: ## Tail the vcsim container logs
+	@docker logs -f $(VCSIM_CONTAINER)
 
 # ----- Code Generation ------------------------------------------------------
 
-crds: ## Generate CRD YAML files into $(CRD_OUT_DIR)
+crds: ## Generate CRD YAML files into $(CRD_OUT_DIR) (also refreshes the API reference)
 	@cargo run --quiet -p banlieue-api --bin crdgen --features crdgen -- --out-dir $(CRD_OUT_DIR)
+	@$(MAKE) --no-print-directory api-docs
+
+api-docs: ## Generate the CRD API reference Markdown into $(API_DOCS_OUT)
+	@cargo run --quiet -p banlieue-api --bin crddoc --features crdgen -- --out-file $(API_DOCS_OUT)
 
 # ----- Cross-compile binaries (Linux targets for container builds) ---------
 #
 # We never compile inside the container. The Dockerfile expects a pre-built
 # binary at binaries/<arch>/<binary>.
 #
-# Local dev on macOS arm64: `make kind-load BINARY=banlieue-controller`
+# Local dev on macOS arm64: `make kind-load` (BINARY defaults to `banlieue`)
 # transparently cross-compiles to aarch64-unknown-linux-gnu using the GNU
 # cross-toolchain installed via `brew install aarch64-unknown-linux-gnu`.
 
@@ -293,6 +360,75 @@ docker-buildx-chainguard: prepare-binaries-linux-amd64 ## Build and push Chaingu
 
 docker-push: ## Push the locally-built $(BINARY) image
 	$(CONTAINER_TOOL) push $(REGISTRY)/$(ORG)/$(BINARY):$(IMAGE_TAG)
+
+# ----- Supply chain (SBOM / VEX) --------------------------------------------
+# The release pipeline (signing, SLSA provenance, image scanning) lives in
+# .github/workflows/build.yaml via actions; these targets cover the bits that
+# are also useful locally and that CI shells out to (`make sbom`,
+# `make vexctl-install`). See docs/adr/0006-release-and-supply-chain-pipeline.md.
+
+sbom: ## Generate CycloneDX SBOM(s) for the workspace (*.cdx.json per crate)
+	@command -v cargo-cyclonedx >/dev/null 2>&1 || cargo install cargo-cyclonedx --locked
+	@cargo cyclonedx --format json
+	@echo "✓ CycloneDX SBOM(s) generated"
+
+vexctl-install: ## Install openvex/vexctl ($(VEXCTL_VERSION)) if not already present
+	@if command -v vexctl >/dev/null 2>&1; then echo "vexctl already installed"; exit 0; fi; \
+	if [ "$$(uname -s)" = "Darwin" ]; then \
+		brew install vexctl; \
+	else \
+		arch=$$(uname -m); case "$$arch" in x86_64) arch=amd64 ;; aarch64|arm64) arch=arm64 ;; esac; \
+		url="https://github.com/openvex/vexctl/releases/download/v$(VEXCTL_VERSION)/vexctl-linux-$$arch"; \
+		echo "Downloading $$url"; \
+		curl -fsSLo /tmp/vexctl "$$url"; \
+		sudo install -m 0755 /tmp/vexctl /usr/local/bin/vexctl; \
+		rm -f /tmp/vexctl; \
+	fi; \
+	vexctl version
+
+vex-validate: vexctl-install ## Validate that every .vex/*.json parses and merges
+	@vexctl merge --id "https://banlieue/local/validate" --author "local" .vex/*.json > /dev/null
+	@echo "✓ all .vex/*.json parsed successfully"
+
+vex-assemble: vexctl-install ## Merge .vex/*.json into one OpenVEX document on stdout
+	@vexctl merge \
+		--id "https://banlieue/local/assemble" \
+		--author "$$(git config user.email 2>/dev/null || echo local)" \
+		.vex/*.json
+
+vex-auto-presence: ## Run auto-vex-presence locally ($(GRYPE_JSON) + $(SBOM_FILES) required)
+	@if [ ! -f "$(GRYPE_JSON)" ]; then echo "ERROR: $(GRYPE_JSON) not found (run grype --output json --file $(GRYPE_JSON))"; exit 1; fi
+	@if [ -z "$(SBOM_FILES)" ]; then echo "ERROR: no SBOMs found (target/release/*.cdx.json or docker-sbom-*.json)"; exit 1; fi
+	@cargo run --quiet -p banlieue-vex --bin auto-vex-presence -- \
+		--grype-json "$(GRYPE_JSON)" \
+		$(foreach s,$(SBOM_FILES),--sbom "$(s)") \
+		--vex-dir .vex \
+		--product-purl "$(PRODUCT_PURL)" \
+		--id "https://banlieue/local/auto-presence" \
+		--author auto-vex-presence \
+		--output vex.auto-presence.json
+	@echo "✓ wrote vex.auto-presence.json"
+
+vex-auto-reachability: ## Run auto-vex-reachability locally ($(GRYPE_JSON) + $(RELEASE_BINARY) required)
+	@if [ ! -f "$(GRYPE_JSON)" ]; then echo "ERROR: $(GRYPE_JSON) not found"; exit 1; fi
+	@if [ ! -f "$(RELEASE_BINARY)" ]; then echo "ERROR: $(RELEASE_BINARY) not found (cargo build --release -p banlieue)"; exit 1; fi
+	@if [ "$$(uname -s)" = "Darwin" ]; then \
+		nm -gU "$(RELEASE_BINARY)" > /tmp/avr-symbols.txt 2>/dev/null || \
+			nm -D --undefined-only "$(RELEASE_BINARY)" > /tmp/avr-symbols.txt; \
+	else \
+		nm -D --undefined-only "$(RELEASE_BINARY)" > /tmp/avr-symbols.txt; \
+	fi
+	@cargo run --quiet -p banlieue-vex --bin auto-vex-reachability -- \
+		--grype-json "$(GRYPE_JSON)" \
+		--binary-symbols /tmp/avr-symbols.txt \
+		--affected-functions "$(AFFECTED_FUNCTIONS)" \
+		--vex-dir .vex \
+		--product-purl "$(PRODUCT_PURL)" \
+		--id "https://banlieue/local/auto-reachability" \
+		--author auto-vex-reachability \
+		--output vex.auto-reachability.json
+	@rm -f /tmp/avr-symbols.txt
+	@echo "✓ wrote vex.auto-reachability.json"
 
 # ----- kind (local Kubernetes) ---------------------------------------------
 
@@ -394,6 +530,22 @@ kind-deploy-controller: kind-deploy-crds ## Deploy banlieue-controller to the ki
 	@kubectl --context kind-$(KIND_CLUSTER_NAME) -n $(NAMESPACE) rollout status \
 		deployment/banlieue-controller --timeout=180s
 
+kind-deploy-provider-vsphere: kind-deploy-crds ## Deploy banlieue-provider-vsphere to the kind cluster (uses $(KIND_IMAGE))
+	@echo "Applying namespace + RBAC + manifests..."
+	@kubectl --context kind-$(KIND_CLUSTER_NAME) apply -f deploy/controller/namespace.yaml
+	@for i in 1 2 3 4 5 6 7 8 9 10; do \
+		if kubectl --context kind-$(KIND_CLUSTER_NAME) get namespace $(NAMESPACE) >/dev/null 2>&1; then \
+			break; \
+		fi; \
+		echo "  waiting for namespace $(NAMESPACE) ($$i/10)..."; sleep 1; \
+	done
+	@kubectl --context kind-$(KIND_CLUSTER_NAME) apply -R -f deploy/provider-vsphere/
+	@echo "Overriding provider image to $(KIND_IMAGE) (locally built)..."
+	@kubectl --context kind-$(KIND_CLUSTER_NAME) -n $(NAMESPACE) set image \
+		deployment/banlieue-provider-vsphere provider=$(KIND_IMAGE)
+	@kubectl --context kind-$(KIND_CLUSTER_NAME) -n $(NAMESPACE) rollout status \
+		deployment/banlieue-provider-vsphere --timeout=180s
+
 kind-up: kind-create kind-deploy-crds ## One-shot: create cluster + apply CRDs (controller still runs locally)
 	@echo ""
 	@echo "✓ kind cluster '$(KIND_CLUSTER_NAME)' is ready with CRDs applied."
@@ -402,7 +554,7 @@ kind-up: kind-create kind-deploy-crds ## One-shot: create cluster + apply CRDs (
 	@echo "    make run-local"
 	@echo ""
 	@echo "Or build + deploy the controller in-cluster:"
-	@echo "    make kind-load BINARY=banlieue-controller"
+	@echo "    make kind-load"
 	@echo "    make kind-deploy-controller"
 	@echo ""
 	@echo "Apply an example VirtualMachine with:"

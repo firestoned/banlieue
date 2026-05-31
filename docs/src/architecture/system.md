@@ -28,6 +28,7 @@ flowchart LR
     service-provider-vsphere["banlieue-provider-vsphere (planned, Phase 1B)"]
     service-provider-proxmox["banlieue-provider-proxmox (planned, Phase 1C)"]
     service-provider-libvirt["banlieue-provider-libvirt (planned, Phase 1D)"]
+    system-banlieue-binary["banlieue (single binary)"]
     network-vsphere-backend["vSphere / vCenter Backend"]
     network-proxmox-backend["Proxmox VE Backend"]
     network-libvirt-backend["libvirt / KVM Host"]
@@ -36,9 +37,19 @@ flowchart LR
     data-asset-vmclass-cr["VMClass Custom Resource"]
     data-asset-vmimage-cr["VMImage Custom Resource"]
     data-asset-infra-machine-cr["Infrastructure Machine CR (VSphereMachine, etc.)"]
+    data-asset-infra-cluster-cr["Infrastructure Cluster CR (VSphereCluster)"]
+    data-asset-capi-cluster-cr["CAPI Cluster / MachineDeployment (external)"]
+    service-capi-core["Cluster API core + control-plane provider (k0smotron)"]
+    subgraph sg_system-banlieue-binary [System Banlieue Binary]
+        service-banlieue-controller
+        service-provider-vsphere
+        service-provider-proxmox
+        service-provider-libvirt
+    end
     subgraph sg_ecosystem-management-cluster [Ecosystem Management Cluster]
         service-banlieue-controller
         service-kubernetes-api
+        service-capi-core
         service-provider-vsphere
         service-provider-proxmox
         service-provider-libvirt
@@ -49,17 +60,22 @@ flowchart LR
         data-asset-vmclass-cr
         data-asset-vmimage-cr
         data-asset-infra-machine-cr
+        data-asset-infra-cluster-cr
+        data-asset-capi-cluster-cr
     end
     actor-vm-consumer --> data-asset-virtualmachine-cr
     actor-vm-consumer --> data-asset-vmclass-cr
     actor-vm-consumer --> data-asset-vmimage-cr
     actor-platform-operator --> data-asset-provider-cr
+    actor-platform-operator --> data-asset-capi-cluster-cr
+    actor-platform-operator --> data-asset-infra-cluster-cr
     actor-vm-consumer -->|HTTPS| service-kubernetes-api
     actor-platform-operator -->|HTTPS| service-kubernetes-api
     service-banlieue-controller -->|HTTPS| service-kubernetes-api
     service-provider-vsphere -->|HTTPS| service-kubernetes-api
     service-provider-proxmox -->|HTTPS| service-kubernetes-api
     service-provider-libvirt -->|HTTPS| service-kubernetes-api
+    service-capi-core -->|HTTPS| service-kubernetes-api
     service-provider-vsphere -->|HTTPS| network-vsphere-backend
     service-provider-proxmox -->|HTTPS| network-proxmox-backend
     service-provider-libvirt -->|TCP| network-libvirt-backend

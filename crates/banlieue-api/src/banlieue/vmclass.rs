@@ -26,8 +26,42 @@ use serde::{Deserialize, Serialize};
     printcolumn = r#"{"name":"Age","type":"date","jsonPath":".metadata.creationTimestamp"}"#
 )]
 #[serde(rename_all = "camelCase")]
+/// VMClass — a reusable, cluster-scoped catalog of VM "shapes".
+///
+/// A VMClass is to a VirtualMachine what a Kubernetes `StorageClass` is to a
+/// PersistentVolumeClaim: a named, admin-curated template that captures *how
+/// much* machine you get and *what the backend must support*, without naming
+/// any particular backend. A VirtualMachine references a VMClass by name
+/// (`spec.classRef`) instead of restating CPU / memory / disk / network on
+/// every VM.
+///
+/// # Why create one
+///
+/// - **Standardize sizing.** Define a small set of tiers (`small`, `db-prod`,
+///   `gpu-trainer`) once; users pick a tier instead of hand-tuning hardware.
+/// - **Decouple intent from backend.** A VMClass requests *abstract* storage
+///   and network classes plus feature flags (e.g. `efiSecureBoot`). The
+///   scheduler only places a VM on a Provider + failure domain that actually
+///   advertises those capabilities, so a class stays portable across vSphere,
+///   Proxmox, and libvirt.
+/// - **Govern capabilities.** Because requirements live on the class, cluster
+///   admins control which hardware shapes and features tenants may request.
+///
+/// # How it is used
+///
+/// At schedule time the controller intersects this class's requirements with
+/// each candidate Provider's `spec.capabilities` and each failure domain's
+/// resolved attributes. A Provider that lacks the requested storage class,
+/// network class, firmware, or a required feature is filtered out.
+///
+/// Cluster-scoped: a VMClass is shared by VirtualMachines in any namespace.
 pub struct VMClassSpec {
+    /// Virtual hardware shape — CPU, memory, and disks — every VM of this
+    /// class is given.
     pub hardware: HardwareSpec,
+
+    /// Network shape — the ordered interfaces (and their abstract network
+    /// classes) every VM of this class is given.
     pub network: NetworkSpec,
 
     /// Firmware. Providers / failure domains that lack support for the
@@ -43,6 +77,7 @@ pub struct VMClassSpec {
     pub features: Vec<String>,
 }
 
+/// The virtual hardware shape requested by a VMClass: CPU, memory, and disks.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct HardwareSpec {
@@ -58,6 +93,8 @@ pub struct HardwareSpec {
     pub disks: Vec<DiskSpec>,
 }
 
+/// A single virtual disk in a VMClass. Disks are attached in list order; the
+/// first is the OS disk backed by the VM's VMImage.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct DiskSpec {
@@ -74,6 +111,7 @@ pub struct DiskSpec {
     pub provisioning: DiskProvisioning,
 }
 
+/// The network shape requested by a VMClass: its ordered set of interfaces.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct NetworkSpec {
@@ -81,6 +119,8 @@ pub struct NetworkSpec {
     pub interfaces: Vec<NetworkInterfaceSpec>,
 }
 
+/// A single virtual network interface in a VMClass, bound to an abstract
+/// network class that a Provider must advertise.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct NetworkInterfaceSpec {

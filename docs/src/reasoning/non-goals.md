@@ -102,7 +102,7 @@ There is no banlieue.io to call.
 
 ## A meta-rule
 
-> If a feature on the roadmap can only be implemented by **leaking a backend
+> If a planned feature can only be implemented by **leaking a backend
 > concept into the user-facing API**, that feature does not ship in that
 > shape. We either find a uniform contract that serves the use case, or we
 > defer.
@@ -117,5 +117,4 @@ backend-specific behaviour. We will choose the latter every time.
 That closes the *why* section. From here, jump to:
 
 - [Concepts → Architecture](../concepts/architecture.md) — how it's wired.
-- [Quick Start](../getting-started/quickstart.md) — try it.
-- [Roadmap](../reference/roadmap.md) — what's next.
+- [Guides](../guides/index.md) — install it.

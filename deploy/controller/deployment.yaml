@@ -40,12 +40,14 @@ spec:
           type: RuntimeDefault
       containers:
         - name: controller
-          # Pin to a released version tag — NEVER use :latest in production
-          # manifests. Local development uses `kubectl set image` to swap in
-          # ghcr.io/firestoned/banlieue-controller:local-dev (Makefile target
+          # Single banlieue binary; the `controller` subcommand selects this
+          # role (ADR-0004). Pin to a released version tag — NEVER use :latest
+          # in production manifests. Local development uses `kubectl set image`
+          # to swap in ghcr.io/firestoned/banlieue:local-dev (Makefile target
           # kind-deploy-controller).
-          image: ghcr.io/firestoned/banlieue-controller:v0.1.0
+          image: ghcr.io/firestoned/banlieue:v0.1.0
           imagePullPolicy: IfNotPresent
+          args: ["controller"]
           envFrom:
             - configMapRef:
                 name: banlieue-controller-config

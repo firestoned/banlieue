@@ -29,9 +29,68 @@ spec:
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: Auto-generated derived type for VMClassSpec via `CustomResource`
+        description: |-
+          VMClass — a reusable, cluster-scoped catalog of VM "shapes".
+
+          A VMClass is to a VirtualMachine what a Kubernetes `StorageClass` is to a
+          PersistentVolumeClaim: a named, admin-curated template that captures *how
+          much* machine you get and *what the backend must support*, without naming
+          any particular backend. A VirtualMachine references a VMClass by name
+          (`spec.classRef`) instead of restating CPU / memory / disk / network on
+          every VM.
+
+          # Why create one
+
+          - **Standardize sizing.** Define a small set of tiers (`small`, `db-prod`,
+            `gpu-trainer`) once; users pick a tier instead of hand-tuning hardware.
+          - **Decouple intent from backend.** A VMClass requests *abstract* storage
+            and network classes plus feature flags (e.g. `efiSecureBoot`). The
+            scheduler only places a VM on a Provider + failure domain that actually
+            advertises those capabilities, so a class stays portable across vSphere,
+            Proxmox, and libvirt.
+          - **Govern capabilities.** Because requirements live on the class, cluster
+            admins control which hardware shapes and features tenants may request.
+
+          # How it is used
+
+          At schedule time the controller intersects this class's requirements with
+          each candidate Provider's `spec.capabilities` and each failure domain's
+          resolved attributes. A Provider that lacks the requested storage class,
+          network class, firmware, or a required feature is filtered out.
+
+          Cluster-scoped: a VMClass is shared by VirtualMachines in any namespace.
         properties:
           spec:
+            description: |-
+              VMClass — a reusable, cluster-scoped catalog of VM "shapes".
+
+              A VMClass is to a VirtualMachine what a Kubernetes `StorageClass` is to a
+              PersistentVolumeClaim: a named, admin-curated template that captures *how
+              much* machine you get and *what the backend must support*, without naming
+              any particular backend. A VirtualMachine references a VMClass by name
+              (`spec.classRef`) instead of restating CPU / memory / disk / network on
+              every VM.
+
+              # Why create one
+
+              - **Standardize sizing.** Define a small set of tiers (`small`, `db-prod`,
+                `gpu-trainer`) once; users pick a tier instead of hand-tuning hardware.
+              - **Decouple intent from backend.** A VMClass requests *abstract* storage
+                and network classes plus feature flags (e.g. `efiSecureBoot`). The
+                scheduler only places a VM on a Provider + failure domain that actually
+                advertises those capabilities, so a class stays portable across vSphere,
+                Proxmox, and libvirt.
+              - **Govern capabilities.** Because requirements live on the class, cluster
+                admins control which hardware shapes and features tenants may request.
+
+              # How it is used
+
+              At schedule time the controller intersects this class's requirements with
+              each candidate Provider's `spec.capabilities` and each failure domain's
+              resolved attributes. A Provider that lacks the requested storage class,
+              network class, firmware, or a required feature is filtered out.
+
+              Cluster-scoped: a VMClass is shared by VirtualMachines in any namespace.
             properties:
               features:
                 description: |-
@@ -53,6 +112,9 @@ spec:
                 - efi-secure
                 type: string
               hardware:
+                description: |-
+                  Virtual hardware shape — CPU, memory, and disks — every VM of this
+                  class is given.
                 properties:
                   cpus:
                     description: Number of virtual CPUs.
@@ -65,6 +127,9 @@ spec:
                       backed by the VMImage resolved for the VirtualMachine; subsequent
                       disks are blank and created with the requested size and storage class.
                     items:
+                      description: |-
+                        A single virtual disk in a VMClass. Disks are attached in list order; the
+                        first is the OS disk backed by the VM's VMImage.
                       properties:
                         name:
                           description: |-
@@ -108,10 +173,16 @@ spec:
                 - memoryMiB
                 type: object
               network:
+                description: |-
+                  Network shape — the ordered interfaces (and their abstract network
+                  classes) every VM of this class is given.
                 properties:
                   interfaces:
                     description: Network interfaces in attachment order.
                     items:
+                      description: |-
+                        A single virtual network interface in a VMClass, bound to an abstract
+                        network class that a Provider must advertise.
                       properties:
                         ipam:
                           description: IPAM configuration. See `IpamSpec` in common.

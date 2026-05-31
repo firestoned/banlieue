@@ -37,6 +37,29 @@ use serde::{Deserialize, Serialize};
     printcolumn = r#"{"name":"Age","type":"date","jsonPath":".metadata.creationTimestamp"}"#
 )]
 #[serde(rename_all = "camelCase")]
+/// VirtualMachine — the user-facing request for a running VM.
+///
+/// This is the one resource end users create. It expresses *intent*: which
+/// VMClass (shape) and VMImage (OS) to use, optional placement constraints,
+/// the desired power state, and optional guest user-data. banlieue's
+/// controller schedules it onto a Provider + failure domain, creates the
+/// matching provider infrastructure CR (e.g. `VSphereMachine`), and mirrors
+/// that CR's status back here.
+///
+/// # Why create one
+///
+/// - **Declare a VM the Kubernetes way.** Describe the VM you want; the
+///   controller reconciles reality toward it, including power state.
+/// - **Stay backend-agnostic.** You reference a class and an image by name,
+///   not a datastore or a port group. Where it lands is the scheduler's job.
+/// - **Compose with policy.** Label / anti-affinity selectors and a migration
+///   policy steer placement and drift handling without coupling to a specific
+///   Provider.
+///
+/// Independent of Cluster API: a VirtualMachine is **not** a `clusterv1.
+/// Machine`. It can coexist with CAPI but does not depend on it.
+///
+/// Namespaced: candidate Providers are drawn from the VM's own namespace.
 pub struct VirtualMachineSpec {
     /// Reference to a (cluster-scoped) VMClass.
     pub class_ref: LocalObjectReference,
@@ -71,6 +94,9 @@ fn default_power_on() -> PowerState {
     PowerState::PoweredOn
 }
 
+/// Optional constraints that narrow where a VirtualMachine may be placed.
+/// When empty, every Provider in the VM's namespace and every failure domain
+/// is a candidate.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct PlacementSpec {
@@ -91,6 +117,8 @@ pub struct PlacementSpec {
     pub anti_affinity: Vec<AntiAffinityRule>,
 }
 
+/// A rule that spreads this VM away from other VirtualMachines across a
+/// failure-domain topology key, evaluated at scheduling time.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct AntiAffinityRule {
@@ -105,6 +133,8 @@ pub struct AntiAffinityRule {
     pub mode: AffinityMode,
 }
 
+/// Strictness of an [`AntiAffinityRule`]: `Required` filters candidates,
+/// `Preferred` is best-effort.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum AffinityMode {
@@ -113,6 +143,8 @@ pub enum AffinityMode {
     Preferred,
 }
 
+/// Points at a Secret carrying the guest bootstrap payload (cloud-init /
+/// ignition / sysprep), delivered into the guest per the image's `guestAgent`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct UserDataSpec {
@@ -149,6 +181,8 @@ pub enum MigrationPolicy {
     Never,
 }
 
+/// Observed state of a VirtualMachine: the scheduling decision, the infra CR
+/// it owns, mirrored provisioning / address / power state, and conditions.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct VirtualMachineStatus {
@@ -188,6 +222,8 @@ pub struct VirtualMachineStatus {
     pub observed_generation: Option<i64>,
 }
 
+/// The scheduler's current placement decision for a VirtualMachine, with the
+/// abstract storage / network classes resolved to concrete backend identifiers.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ScheduledPlacement {
@@ -208,6 +244,8 @@ pub struct ScheduledPlacement {
     pub scheduled_at: Option<Time>,
 }
 
+/// One abstract class → concrete backend identifier mapping resolved at
+/// schedule time.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ResolvedResource {

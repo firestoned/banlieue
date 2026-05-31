@@ -3,8 +3,10 @@
 > A Kubernetes-native, **provider-agnostic** virtualization API.
 > One CRD. Many backends. No touching the user's workflow when you swap them.
 
+[![Build](https://github.com/firestoned/banlieue/actions/workflows/build.yaml/badge.svg?branch=main)](https://github.com/firestoned/banlieue/actions/workflows/build.yaml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](reference/license.md)
-[![Status](https://img.shields.io/badge/status-Phase%201A-orange.svg)](reference/roadmap.md)
+[![Rust](https://img.shields.io/badge/rust-1.88%2B-orange.svg?logo=rust)](https://www.rust-lang.org/)
+[![Status](https://img.shields.io/badge/status-In%20Development-orange.svg)](https://github.com/firestoned/banlieue)
 
 ---
 
@@ -80,7 +82,7 @@ Kubernetes API; that is the bus. See [Architecture](concepts/architecture.md) an
 
 banlieue is **early**. Phase 0 (the `banlieue-api` type system + CRDs) shipped.
 Phase 1A (main controller + provider SDK + first vSphere provider) is in
-progress. See the [roadmap](reference/roadmap.md) for the full plan.
+progress. Detailed phase plans are maintained outside this repository.
 
 The CRD surface is `v1alpha1` and will break before `v1`. Don't run production
 workloads against it yet.
@@ -89,9 +91,9 @@ workloads against it yet.
 
 - [Overview — what banlieue does, fundamentally](overview.md) ← start here
 - [Why banlieue? — the case for this project](reasoning/index.md)
+- [Guides — install the controller & vSphere provider](guides/index.md)
 - [Architecture](concepts/architecture.md)
-- [Quick Start](getting-started/quickstart.md)
-- [Roadmap](reference/roadmap.md)
+- [Developer — build from source & local dev](developer/local-development.md)
 - [License](reference/license.md)
 
 ## Community & support

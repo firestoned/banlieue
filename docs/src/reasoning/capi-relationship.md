@@ -1,132 +1,166 @@
 # Relationship to Cluster API (CAPI / CAPM)
 
 banlieue and [Cluster API](https://cluster-api.sigs.k8s.io/) are different
-products solving different problems, but they share a contract: banlieue's
-provider infrastructure CRDs satisfy the **CAPI v1beta2 `InfraMachine`
-contract**. That single decision is what lets the same provider binary serve
-both projects, and it deserves an explanation of its own.
+products, but they meet at a contract: banlieue's provider infrastructure CRDs
+satisfy the **CAPI v1beta2 infrastructure contracts** — both the `InfraMachine`
+contract (`VSphereMachine`) and the `InfraCluster` contract (`VSphereCluster`).
+That makes banlieue usable as a CAPI **infrastructure provider**: the same
+provider binary serves banlieue's own `VirtualMachine` *and* CAPI-managed
+clusters.
 
 If you only want to know *what* the contract is, read
 [Concepts → Infrastructure CRDs & CAPI](../concepts/infra-crds-capi.md).
-This page is about *why* — the reasoning, the boundary, and the limits.
+This page is about *why* — the boundary, and where the two products meet.
 
-## Different products
+## Two surfaces, one provider
 
-| | **banlieue** | **Cluster API (CAPI)** |
+banlieue has **two** consumption paths that share the same provider controllers
+and backend credentials:
+
+| | **Standalone `VirtualMachine`** | **CAPI cluster (infra provider)** |
 | --- | --- | --- |
-| What you create | `VirtualMachine` | `Cluster` + `MachineDeployment` + `Machine` |
+| What you create | `VirtualMachine` | CAPI `Cluster` + control-plane + `MachineDeployment` |
 | What you get | one VM, declarative | a Kubernetes cluster |
-| Bootstrap | none — the VM is the deliverable | kubeadm, RKE2, k3s, … |
-| Scope | a single VM lifecycle | the lifecycle of an entire K8s cluster |
-| Tooling assumed | `kubectl` | `clusterctl`, `Cluster`/`Machine` controllers |
-| Conformance | none yet (project is young) | CNCF, large vendor matrix |
+| Who owns lifecycle | banlieue's controller | CAPI core + a control-plane provider (e.g. [k0smotron](https://docs.k0smotron.io/) for k0s) |
+| Tooling | `kubectl` / GitOps | `clusterctl` / CAPI controllers |
+| banlieue's role | the whole thing | the **infrastructure** layer (InfraMachine + InfraCluster) |
 
-banlieue is intentionally **not** a CAPI distribution. A `VirtualMachine`
-is not a `clusterv1.Machine`; it is a peer-level resource that happens to
-*own* a CAPI-shaped infrastructure CR underneath.
+The first surface is banlieue's identity: a `VirtualMachine` is **not** a
+`clusterv1.Machine`; it is a peer-level resource that happens to *own* a
+CAPI-shaped infrastructure CR underneath. The second surface is what the CAPI
+contract buys us — banlieue does not have to *become* CAPI to be *used by* it.
 
-## What banlieue takes from CAPI
+## What banlieue implements from CAPI
 
-Only one thing — the v1beta2
-[`InfraMachine` contract](https://cluster-api.sigs.k8s.io/developer/providers/contracts/infra-machine).
-Concretely, every banlieue provider's infrastructure CRD exposes a status
-shape that an upstream CAPI consumer can read without modification:
+Two contracts, nothing more.
 
-| Field | Source | Meaning |
-| --- | --- | --- |
-| `status.ready` | CAPI | infrastructure provisioning is complete |
-| `status.initialization.provisioned` | CAPI v1beta2 | infrastructure has been provisioned at least once |
-| `status.addresses[]` | CAPI | `MachineAddress` entries (IP, hostname, type) |
-| `status.failureReason` / `status.failureMessage` | CAPI (deprecated in v1beta2) | terminal-failure surface |
-| `status.conditions[]` | CAPI | `metav1.Condition`-shaped, with `Ready` always present |
-| `spec.providerID` | CAPI | backend-stable identifier surfaced after provisioning |
-| Owner-reference & finaliser conventions | CAPI | how cleanup is gated |
+**InfraMachine** (`VSphereMachine`) — the per-machine contract. Every banlieue
+provider's machine CRD exposes a status an upstream CAPI consumer can read
+without modification:
 
-The reconciliation accessor that fronts these fields lives at
+| Field | Meaning |
+| --- | --- |
+| `status.initialization.provisioned` | infrastructure has been provisioned (v1beta2; replaces the deprecated `status.ready`) |
+| `status.addresses[]` | `MachineAddress` entries (IP, hostname, type) |
+| `status.conditions[]` | `metav1.Condition`-shaped, with `Ready` always present |
+| `spec.providerID` | backend-stable identifier surfaced after provisioning |
+| `spec.failureDomain` | which failure domain CAPI placed this machine in |
+| Owner-reference & finaliser conventions | how cleanup is gated |
+
+banlieue follows the v1beta2 convention of expressing terminal failures as
+**conditions** — it does *not* use the deprecated `status.failureReason` /
+`status.failureMessage` fields.
+
+**InfraCluster** (`VSphereCluster`) — the per-cluster contract. It advertises
+where a cluster's machines may be placed:
+
+| Field | Meaning |
+| --- | --- |
+| `status.initialization.provisioned` | the InfraCluster is ready |
+| `status.controlPlaneEndpoint` | the API-server endpoint (operator-supplied VIP, or set by the control-plane provider) |
+| `status.failureDomains[]` | the v1beta2 list (`{name, controlPlane, attributes}`) CAPI spreads machines across |
+
+The reconciliation accessor that fronts the machine fields lives at
 [`crates/banlieue-controller/src/reconciler/status_mirror.rs`](https://github.com/firestoned/banlieue/blob/main/crates/banlieue-controller/src/reconciler/status_mirror.rs)
-(`InfraMachineRead` trait) so that providers added in later phases can
-expose CAPI-shaped status without touching the main reconciler.
+(`InfraMachineRead` trait); the InfraCluster aggregation lives at
+[`crates/banlieue-controller/src/reconciler/vsphere_cluster.rs`](https://github.com/firestoned/banlieue/blob/main/crates/banlieue-controller/src/reconciler/vsphere_cluster.rs).
 
-## What banlieue does **not** take from CAPI
+## How a cluster gets built on banlieue
 
-These omissions are deliberate. Each one would either expand scope or
-constrain users in ways the project explicitly rejects.
+banlieue ships **no** cluster, replica, or upgrade controller of its own — that
+is precisely the work CAPI already does well. To provision a Kubernetes cluster
+you bring CAPI core plus a control-plane/bootstrap provider (k0smotron for k0s)
+and point a CAPI `Cluster` at banlieue's `VSphereCluster`:
 
-- **No `Cluster`.** banlieue never creates a Kubernetes cluster. A
-  `VirtualMachine` is the deliverable, full stop.
-- **No `Machine` / `MachineSet` / `MachineDeployment`.** These types
-  exist to describe machines *as members of a cluster*. banlieue does
-  not model cluster membership at all.
-- **No bootstrap providers.** CAPI's `Bootstrap` contract (kubeadm,
-  RKE2, …) is about preparing a node to join a cluster. banlieue's image
-  + cloud-init story is unconstrained — bring whatever image you want,
-  banlieue will not run kubeadm for you.
-- **No control-plane providers.** Same reasoning: there is no control
-  plane to manage because there is no cluster.
-- **No `clusterctl`.** banlieue uses plain `kubectl` / GitOps. Provider
-  installation is whatever the provider's Helm chart or manifest says.
+1. The `VSphereCluster` aggregates the failure domains of one or more
+   `Provider`s (vCenters) into `status.failureDomains` — so a single cluster can
+   span multiple vCenters.
+2. CAPI's control-plane / `MachineDeployment` controllers spread the requested
+   `replicas` across those failure domains and mint a `VSphereMachine` per
+   placement from a `VSphereMachineTemplate`.
+3. banlieue's vSphere provider realises each `VSphereMachine` on the backend;
+   the control-plane provider joins the nodes into the cluster.
 
-The CAPI components banlieue avoids are excellent at what they do —
-they are simply not what banlieue is for.
+So **"spread a control plane across all six (datacenter, cluster) pairs" is just
+`replicas: 6`** over a `VSphereCluster` that advertises six failure domains.
+There is no banlieue-native "tier" or "cluster" CRD — see
+[ADR-0001](https://github.com/firestoned/banlieue/blob/main/docs/adr/0001-capi-native-cluster-provisioning.md)
+and
+[ADR-0002](https://github.com/firestoned/banlieue/blob/main/docs/adr/0002-infracluster-failure-domain-aggregation.md).
 
-## Why "compatible" instead of "built on"
+## What banlieue does **not** do
 
-A reasonable question: if banlieue is going to wire its providers to a
-CAPI contract anyway, why not adopt CAPI wholesale? Three reasons:
+These are deliberate. banlieue *participates* in CAPI as an infrastructure
+provider; it does not *reimplement* CAPI.
 
-1. **The user surface would change.** Users would create `Cluster` and
-   `Machine` resources to provision a single VM. That is a 1990s vendor
-   joke, not a virtualization API. banlieue's whole point is `kind:
-   VirtualMachine`.
-2. **The lifecycle assumptions don't match.** CAPI is opinionated about
-   how machines come and go (immutability, rolling replace via
-   `MachineDeployment`, surge counts). VM lifecycles are not always
-   that — sometimes you want to *swap a backend* and keep the VM, which
-   has no analogue in CAPI's machine model.
-3. **The dependency would be enormous.** CAPI brings in its own CRDs,
-   webhooks, RBAC, controller, conformance suite. banlieue would inherit
-   all of that to deliver one VM. The contract-only adoption gives us
-   the interop without the install footprint.
+- **No cluster lifecycle controller.** banlieue never reconciles a `Cluster`,
+  `Machine`, `MachineSet`, or `MachineDeployment`. CAPI core owns those; banlieue
+  only owns the infrastructure CRs they reference.
+- **No bootstrap or control-plane provider.** Preparing and joining nodes
+  (kubeadm, k0smotron, RKE2, …) is the control-plane provider's job. banlieue's
+  image + cloud-init story is unconstrained — it will not run a bootstrapper for
+  you.
+- **No native tier / cluster abstraction.** Replica counts and failure-domain
+  spread are expressed with CAPI's own objects, not a banlieue CRD.
+- **`clusterctl` is not required for the `VirtualMachine` surface.** Standalone
+  VMs are plain `kubectl` / GitOps; you only reach for CAPI tooling when you are
+  building clusters.
 
-The cost of compatibility — adopting one external contract for one
-internal type — is small. The cost of full adoption would be the
-project's identity.
+## Why the `VirtualMachine` surface is not "just CAPI"
 
-## What "the same provider serves both" actually means
+A reasonable question: if banlieue wires its providers to CAPI contracts anyway,
+why keep a separate `VirtualMachine` type at all? Three reasons:
 
-Because banlieue's infrastructure CRDs are CAPI-shaped, a provider
-controller that already targets banlieue (e.g. the planned
-`banlieue-provider-vsphere`) can be pointed at CAPI `Cluster` objects
-**with no source changes**. The same goes in the other direction: a team
-already running CAPV (`cluster-api-provider-vsphere`) for cluster
-lifecycle can deploy banlieue alongside it and reuse the same vSphere
-credentials and connectivity.
+1. **The user surface would change.** Creating `Cluster` + `Machine` resources
+   to provision a single VM is a vendor joke, not a virtualization API.
+   banlieue's whole point is `kind: VirtualMachine`.
+2. **The lifecycle assumptions don't match.** CAPI is opinionated about how
+   machines come and go (immutability, rolling replace, surge counts). VM
+   lifecycles are not always that — sometimes you want to *swap a backend* and
+   keep the VM, which has no analogue in CAPI's machine model.
+3. **The dependency would be mandatory.** Forcing CAPI core + webhooks + a
+   control-plane provider just to run one VM is a heavy install. Implementing the
+   *contract* gives interop without making CAPI a hard dependency of the VM path.
 
-This is encoded in the architecture model as the
-`capi-v1beta2-infra-machine-contract` control (see
-[Architecture → Controls](../architecture/index.md#controls-modelled-in-calm)).
-A CI check on the CRD shape — comparing the generated CRDs against the
-contract's required fields — is a Phase 2 deliverable.
+The cost of compatibility — implementing two external contracts — is small. The
+benefit is that the same provider serves both a single VM and an entire CAPI
+cluster.
 
 ## Why pin to v1beta2
 
-CAPI's contract is versioned (`v1beta1` → `v1beta2` → eventually `v1`).
-banlieue tracks v1beta2 because:
+CAPI's contract is versioned (`v1beta1` → `v1beta2` → eventually `v1`). banlieue
+tracks v1beta2 because:
 
 - It is the current contract upstream as of 2026.
-- The `initialization.provisioned` field clarifies a long-running
-  ambiguity in v1beta1 about whether `status.ready` means *first time
-  ready* or *currently ready*. v1beta2 splits the two.
-- `MachineAddress.type` is a discriminated string in v1beta2; v1beta1
-  consumers can still read it.
+- `status.initialization.provisioned` clears up a long-running v1beta1 ambiguity
+  about whether `status.ready` means *first ready* or *currently ready*.
+- `status.failureDomains` is a **list** in v1beta2 (`{name, controlPlane,
+  attributes}`), which is the shape `VSphereCluster` produces.
 
+CAPI discovers which CRD versions conform via the CRD-level label
+`cluster.x-k8s.io/v1beta2: v1alpha1`, emitted onto every
+`infrastructure.banlieue.io` CRD by `crdgen` (see
+[ADR-0005](https://github.com/firestoned/banlieue/blob/main/docs/adr/0005-capi-contract-label-codegen.md)).
 When CAPI moves to `v1`, banlieue moves with it — but only after the
-controller's status-mirror accessor (`InfraMachineRead`) has been
-extended to translate any new fields. The decoupling is intentional.
+status-mirror accessor is extended to translate any new fields.
+
+## What "the same provider serves both" actually means
+
+Because banlieue's infrastructure CRDs are CAPI-shaped, a provider controller
+that targets banlieue (e.g. `banlieue-provider-vsphere`) can be driven by CAPI
+`Cluster` / `Machine` objects **with no source changes** — and a team already
+running CAPV (`cluster-api-provider-vsphere`) can deploy banlieue alongside it
+and reuse the same vSphere credentials and connectivity.
+
+This is encoded in the architecture model as the
+`capi-v1beta2-infra-machine-contract` and `capi-v1beta2-infra-cluster-contract`
+controls (see
+[Architecture → Controls](../architecture/index.md#controls-modelled-in-calm)).
 
 ## Further reading
 
 - [Concepts → Infrastructure CRDs & CAPI](../concepts/infra-crds-capi.md) — the *what*
-- [Architecture → System Diagram](../architecture/system.md) — where the infra CR sits in the model
+- [Architecture → System Diagram](../architecture/system.md) — where the infra CRs sit in the model
 - [CAPI v1beta2 InfraMachine contract](https://cluster-api.sigs.k8s.io/developer/providers/contracts/infra-machine)
+- [CAPI v1beta2 InfraCluster contract](https://cluster-api.sigs.k8s.io/developer/providers/contracts/infra-cluster)
 - [CAPI provider matrix](https://cluster-api.sigs.k8s.io/reference/providers)

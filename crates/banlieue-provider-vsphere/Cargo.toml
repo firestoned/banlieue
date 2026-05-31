@@ -1,0 +1,52 @@
+[package]
+name = "banlieue-provider-vsphere"
+description = "banlieue provider for VMware vSphere / vCenter. Watches Provider and VSphereMachine CRs and reconciles them against vCenter via the VI JSON API."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+# Library only: the unified `banlieue` binary (crates/banlieue) drives this via
+# `banlieue_provider_vsphere::run` for the `provider vsphere` subcommand
+# (ADR-0004).
+
+[features]
+default = []
+# Enable the optional vim_rs `vcsim_compat` feature so the provider tolerates
+# vcsim's known divergences from production vCenter. Off by default — only
+# turned on for local-dev / integration tests. The `banlieue` crate re-exports
+# this as its own `vcsim` feature.
+vcsim = ["vim_rs/vcsim_compat"]
+
+[dependencies]
+banlieue-api = { path = "../banlieue-api" }
+banlieue-provider-sdk = { path = "../banlieue-provider-sdk" }
+
+vim_rs = { workspace = true }
+
+kube.workspace = true
+k8s-openapi.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+thiserror.workspace = true
+anyhow.workspace = true
+
+# `macros` backs `tokio::select!`; `rt-multi-thread` backs `tokio::spawn`. The
+# health server / shutdown signal (net/io-util/signal) now live in the SDK's
+# `bootstrap` module, so they are no longer needed here.
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+futures.workspace = true
+
+tracing.workspace = true
+
+clap.workspace = true
+async-trait.workspace = true
+chrono.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }

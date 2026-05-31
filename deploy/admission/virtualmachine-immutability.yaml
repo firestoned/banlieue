@@ -1,0 +1,42 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# A VirtualMachine's VMClass and VMImage are part of its identity: changing them
+# in place would mean silently rebuilding a running VM on different hardware or a
+# different OS. banlieue treats that as a delete-and-recreate, so the references
+# are immutable. Enforced in the API server via CEL (no webhook). Requires
+# Kubernetes 1.30+ (ValidatingAdmissionPolicy GA).
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: banlieue-virtualmachine-immutable-refs
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: admission
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["banlieue.io"]
+        apiVersions: ["v1alpha1"]
+        operations: ["UPDATE"]
+        resources: ["virtualmachines"]
+  validations:
+    - expression: "object.spec.classRef.name == oldObject.spec.classRef.name"
+      messageExpression: "'spec.classRef.name is immutable (was ' + oldObject.spec.classRef.name + '); delete and recreate the VirtualMachine to change its VMClass.'"
+      reason: Invalid
+    - expression: "object.spec.imageRef.name == oldObject.spec.imageRef.name"
+      messageExpression: "'spec.imageRef.name is immutable (was ' + oldObject.spec.imageRef.name + '); delete and recreate the VirtualMachine to change its VMImage.'"
+      reason: Invalid
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: banlieue-virtualmachine-immutable-refs
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: admission
+spec:
+  policyName: banlieue-virtualmachine-immutable-refs
+  # Deny = enforce. Use ["Warn", "Audit"] to roll out in report-only mode first.
+  validationActions: ["Deny"]

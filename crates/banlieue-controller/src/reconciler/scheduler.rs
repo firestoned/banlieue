@@ -457,7 +457,13 @@ fn first_target_value(
 }
 
 /// Evaluate a [`LabelSelector`]. `None` selector matches everything.
-fn selector_matches(selector: &Option<LabelSelector>, labels: &BTreeMap<String, String>) -> bool {
+///
+/// Shared with the `vsphere_cluster` reconciler (Provider selection and
+/// control-plane failure-domain eligibility).
+pub(crate) fn selector_matches(
+    selector: &Option<LabelSelector>,
+    labels: &BTreeMap<String, String>,
+) -> bool {
     let Some(sel) = selector else {
         return true;
     };

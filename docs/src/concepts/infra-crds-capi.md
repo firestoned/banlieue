@@ -1,10 +1,12 @@
 # Infrastructure CRDs & CAPI
 
 banlieue's provider infrastructure CRDs satisfy the
-[Cluster API (CAPI) v1beta2 InfraMachine contract](https://cluster-api.sigs.k8s.io/developer/providers/contracts/).
+[Cluster API (CAPI) v1beta2 infrastructure contracts](https://cluster-api.sigs.k8s.io/developer/providers/contracts/)
+— the **InfraMachine** contract (`VSphereMachine`) and the **InfraCluster**
+contract (`VSphereCluster`).
 
-This page explains *what that contract is*, *why banlieue uses it*, and *what
-you get for free* by piggybacking on it.
+This page explains *what those contracts are*, *why banlieue uses them*, and
+*what you get for free* by piggybacking on them.
 
 ## What is the CAPI InfraMachine contract?
 
@@ -15,15 +17,24 @@ keep providers interoperable, CAPI defines a versioned **contract** — a set
 of expectations about what an infrastructure CRD's spec and status must look
 like.
 
-The v1beta2 contract specifies, among other things:
+The v1beta2 InfraMachine contract specifies, among other things:
 
 - A `spec` shape that can be templated (machine + machine template).
-- A `status.ready` boolean.
-- A `status.conditions[]` array with `metav1.Condition` shape.
+- `status.initialization.provisioned` — a boolean that replaces the deprecated
+  v1beta1 `status.ready`.
+- A `status.conditions[]` array with `metav1.Condition` shape. Terminal failures
+  are expressed as conditions, **not** the deprecated `status.failureReason` /
+  `status.failureMessage` fields.
 - A `status.addresses[]` list of `MachineAddress` entries (IP, hostname).
-- `status.failureReason` / `status.failureMessage` for terminal errors.
-- `spec.providerID` discoverable after provisioning.
+- `spec.providerID` discoverable after provisioning, and `spec.failureDomain` for
+  placement.
 - Owner-reference and finaliser conventions.
+
+CAPI discovers which CRDs implement a contract via a CRD-level label,
+`cluster.x-k8s.io/v1beta2: v1alpha1`. Since `kube-derive` cannot emit CRD labels,
+banlieue stamps it onto every `infrastructure.banlieue.io` CRD during generation
+(`crdgen`); see
+[ADR-0005](https://github.com/firestoned/banlieue/blob/main/docs/adr/0005-capi-contract-label-codegen.md).
 
 It is, in practical terms, the result of years of CAPI providers converging
 on what an "infrastructure object" actually needs to expose.
@@ -78,6 +89,33 @@ a machine is unhealthy) works on banlieue's CRDs out of the box.
 CAPI's contract is versioned (`v1beta1` → `v1beta2` → eventually `v1`). When
 the contract moves, we move with it — but we don't have to invent a versioning
 discipline from scratch.
+
+## InfraCluster: cluster-side failure-domain spread
+
+The InfraMachine contract covers a single machine. CAPI has a second contract,
+**InfraCluster**, for the cluster-level object a CAPI `Cluster` points its
+`spec.infrastructureRef` at. banlieue implements it as
+`infrastructure.banlieue.io/v1alpha1` **`VSphereCluster`**.
+
+Its job is to advertise the **failure domains** a cluster's machines may be
+spread across, in the CAPI v1beta2 shape (`status.failureDomains` is a *list* of
+`{ name, controlPlane, attributes }`). CAPI's control-plane and MachineSet
+controllers then balance the requested `replicas` across those domains — so
+"spread a control plane across all six (datacenter, cluster) pairs" is just
+`replicas: 6`. banlieue ships **no** cluster or "tier" CRD of its own; cluster
+lifecycle is CAPI's job (with a control-plane provider such as
+[k0smotron](https://docs.k0smotron.io/) for k0s). See
+[ADR-0001](https://github.com/firestoned/banlieue/blob/main/docs/adr/0001-capi-native-cluster-provisioning.md).
+
+What makes banlieue's `VSphereCluster` distinct from CAPV's same-named object:
+it **aggregates failure domains from one or more `Provider`s**, so a single
+Kubernetes cluster can span multiple vCenters (e.g. 2 vCenters × 3 compute
+clusters = 6 failure domains). The banlieue controller builds the list by
+reading each selected `Provider.status.failureDomains[]` — it talks to **no
+backend**, preserving the CRD-only contract. Capacity-awareness is the
+provider's concern (it omits a full cluster from its status) and, within a
+chosen cluster, vSphere DRS picks the host. See
+[ADR-0002](https://github.com/firestoned/banlieue/blob/main/docs/adr/0002-infracluster-failure-domain-aggregation.md).
 
 ## Where the user touches this
 

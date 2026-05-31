@@ -11,8 +11,10 @@ on:
       - 'crates/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
+      - 'Dockerfile*'
       - '.github/workflows/build.yaml'
       - '.github/actions/**'
+      - '.vex/**'
   push:
     branches:
       - main
@@ -21,14 +23,18 @@ on:
       - published
 
 # Top-level GITHUB_TOKEN is read-only by default (OpenSSF Scorecard
-# Token-Permissions rule). Jobs that need elevated scopes declare them
-# explicitly at the job level (package-crds / upload-release-assets).
+# Token-Permissions rule). Jobs that need elevated scopes — packages:write
+# (GHCR push), id-token:write (keyless Cosign / SLSA OIDC), attestations:write
+# (build-provenance), security-events:write (SARIF), contents:write (release
+# asset upload) — declare them explicitly at the job level. See ADR-0006.
 permissions:
   contents: read
 
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  # Grype is installed from the Anchore release tarball, pinned here.
+  GRYPE_VERSION: "0.87.0"
 
 jobs:
 
@@ -124,7 +130,6 @@ jobs:
 
   # ─────────────────────────────────────────────────────────────────────────────
   # Extract version — all events; downstream build/package jobs depend on this.
-  # format/clippy are independent PR quality checks and do not gate the build.
   # ─────────────────────────────────────────────────────────────────────────────
   extract-version:
     name: 🏷️ Extract Version Information
@@ -148,8 +153,9 @@ jobs:
           release-tag: ${{ github.event.release.tag_name }}
 
   # ─────────────────────────────────────────────────────────────────────────────
-  # Build — all events. Cargo workspace build (crates/*).
-  # On release the workspace version is bumped to match the release tag.
+  # Build — all events. Builds the single `banlieue` binary per arch (native
+  # runners, no cross-compile), generates a CycloneDX SBOM, and uploads each as
+  # the `banlieue-linux-<arch>` artifact consumed by docker / sign / SLSA jobs.
   # ─────────────────────────────────────────────────────────────────────────────
   build:
     name: 🦀 Build - ${{ matrix.platform.name }}
@@ -161,8 +167,10 @@ jobs:
         platform:
           - name: Linux x86_64
             runner: ubuntu-24.04
+            artifact_name: banlieue-linux-amd64
           - name: Linux ARM64
             runner: ubuntu-24.04-arm
+            artifact_name: banlieue-linux-arm64
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -180,8 +188,38 @@ jobs:
       - name: Cache cargo dependencies
         uses: firestoned/github-actions/rust/cache-cargo@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
 
-      - name: Build workspace
-        run: cargo build --workspace --release --all-features
+      # Production binary = banlieue's default features (vsphere; no vcsim).
+      - name: Build banlieue binary
+        run: cargo build --release -p banlieue
+
+      - name: Generate CycloneDX SBOM (binary)
+        run: make sbom
+
+      - name: Stage SBOMs next to the binary
+        run: |
+          find . -name "*.cdx.json" -not -path './target/*' -exec mv {} target/release/ \; || true
+          ls -lh target/release/banlieue target/release/*.cdx.json
+
+      - name: Upload binary artifact (PR / push)
+        if: github.event_name != 'release'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ matrix.platform.artifact_name }}
+          path: |
+            target/release/banlieue
+            target/release/*.cdx.json
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Upload binary artifact (release)
+        if: github.event_name == 'release'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ matrix.platform.artifact_name }}
+          path: |
+            target/release/banlieue
+            target/release/*.cdx.json
+          if-no-files-found: error
 
   # ─────────────────────────────────────────────────────────────────────────────
   # Tests — all events; running unconditionally lets package jobs depend on it.
@@ -205,7 +243,6 @@ jobs:
 
   # ─────────────────────────────────────────────────────────────────────────────
   # Security scan — all events (cargo-audit).
-  # Release uploads the audit report as a workflow artifact.
   # ─────────────────────────────────────────────────────────────────────────────
   security:
     name: 🛡️ Security Vulnerability Scan
@@ -233,8 +270,6 @@ jobs:
 
   # ─────────────────────────────────────────────────────────────────────────────
   # cargo-deny — PR + push to main.
-  # Enforces license allow-list, RustSec advisories, and forbids dependencies
-  # from unknown registries or git URLs. Requires deny.toml at repo root.
   # ─────────────────────────────────────────────────────────────────────────────
   cargo-deny:
     name: 🧪 cargo-deny (License + Advisory + Sources)
@@ -250,21 +285,566 @@ jobs:
         with:
           log-level: warn
           command: check
-          # `all-features = true` is set in `deny.toml`. cargo-deny 0.19+ no
-          # longer accepts `--all-features` on the `check` subcommand; relying
-          # on config keeps this forward-compatible with future bumps.
 
   # ─────────────────────────────────────────────────────────────────────────────
-  # CRD generation — all events.
-  #
-  # banlieue is code-first: deploy/crds/ YAML is generated from the Rust types
-  # in `crates/banlieue-api/src/` via the `crdgen` binary (feature-gated). This
-  # job regenerates the manifests, verifies they parse via kubectl --dry-run,
-  # and uploads them as an artifact. On release, they are bundled into the
-  # release assets by upload-release-assets.
+  # Docker — build both image variants (distroless + Chainguard), multi-arch.
+  # Images BUILD on every event (validates both Dockerfiles); they are PUSHED,
+  # Cosign-signed, SBOM'd and attested only on push-to-main + release — so fork
+  # PRs never need packages:write. See ADR-0006.
   # ─────────────────────────────────────────────────────────────────────────────
-  package-crds:
-    name: 📦 Generate CRD Manifests
+  docker:
+    name: 🐳 Image - ${{ matrix.variant.name }}
+    runs-on: ubuntu-latest
+    needs: [build, extract-version, test]
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    outputs:
+      digest-chainguard: ${{ steps.export-digest.outputs.digest-chainguard }}
+      digest-distroless: ${{ steps.export-digest.outputs.digest-distroless }}
+    strategy:
+      fail-fast: false
+      matrix:
+        variant:
+          - name: Chainguard
+            dockerfile: Dockerfile.chainguard
+            suffix: ""
+          - name: Distroless
+            dockerfile: Dockerfile
+            suffix: "-distroless"
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Stage pre-built binaries for the Dockerfiles
+        uses: ./.github/actions/prepare-docker-binaries
+
+      - name: Set up Docker (login + buildx)
+        uses: firestoned/github-actions/docker/setup-docker@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9 # v6.1.0
+        with:
+          images: ghcr.io/${{ github.repository }}
+          flavor: |
+            latest=false
+            suffix=${{ matrix.variant.suffix }}
+          tags: |
+            type=ref,event=pr
+            type=raw,value=sha-${{ needs.extract-version.outputs.short-sha }}
+            type=raw,value=main-{{date 'YYYY-MM-DD'}},enable=${{ github.event_name == 'push' }}
+            type=raw,value=latest,enable=${{ github.event_name == 'push' }}
+            type=semver,pattern={{version}},enable=${{ github.event_name == 'release' }}
+            type=semver,pattern={{major}}.{{minor}},enable=${{ github.event_name == 'release' }}
+
+      - name: Build and push
+        id: docker_build
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        with:
+          context: .
+          file: ${{ matrix.variant.dockerfile }}
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ needs.extract-version.outputs.version }}
+            GIT_SHA=${{ github.sha }}
+          cache-from: type=gha,scope=${{ matrix.variant.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.variant.name }}
+          sbom: true
+          provenance: true
+
+      - name: Install Cosign
+        if: github.event_name != 'pull_request'
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Cosign sign (keyless, by digest)
+        if: github.event_name != 'pull_request'
+        run: cosign sign --yes "ghcr.io/${{ github.repository }}@${{ steps.docker_build.outputs.digest }}"
+
+      - name: Generate image SBOM
+        if: github.event_name != 'pull_request'
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          image: ghcr.io/${{ github.repository }}@${{ steps.docker_build.outputs.digest }}
+          format: cyclonedx-json
+          output-file: docker-sbom-${{ matrix.variant.name }}.json
+          upload-release-assets: false
+
+      - name: Upload image SBOM artifact
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: docker-sbom-${{ matrix.variant.name }}
+          path: docker-sbom-${{ matrix.variant.name }}.json
+          if-no-files-found: error
+
+      - name: Export digest
+        id: export-digest
+        if: github.event_name != 'pull_request'
+        run: |
+          case "${{ matrix.variant.name }}" in
+            Chainguard) echo "digest-chainguard=${{ steps.docker_build.outputs.digest }}" >> "$GITHUB_OUTPUT" ;;
+            Distroless) echo "digest-distroless=${{ steps.docker_build.outputs.digest }}" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Attest — GitHub build-provenance attestation for each pushed image.
+  # ─────────────────────────────────────────────────────────────────────────────
+  attest:
+    name: 🔏 Attest Image - ${{ matrix.variant.name }}
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    needs: [docker]
+    permissions:
+      id-token: write
+      attestations: write
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        variant:
+          - name: Chainguard
+            digest: ${{ needs.docker.outputs.digest-chainguard }}
+          - name: Distroless
+            digest: ${{ needs.docker.outputs.digest-distroless }}
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        with:
+          subject-name: ghcr.io/${{ github.repository }}
+          subject-digest: ${{ matrix.variant.digest }}
+          push-to-registry: true
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Grype triage — raw image scan (NO VEX) whose JSON feeds the auto-vex tools.
+  # Separate from the final `grype` job so the graph stays acyclic.
+  # ─────────────────────────────────────────────────────────────────────────────
+  grype-triage:
+    name: 🔭 Grype Triage - ${{ matrix.variant.name }}
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    needs: [docker, extract-version]
+    permissions:
+      contents: read
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        variant:
+          - name: Chainguard
+            digest: ${{ needs.docker.outputs.digest-chainguard }}
+          - name: Distroless
+            digest: ${{ needs.docker.outputs.digest-distroless }}
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install Grype
+        run: |
+          url="https://github.com/anchore/grype/releases/download/v${GRYPE_VERSION}/grype_${GRYPE_VERSION}_linux_amd64.tar.gz"
+          curl -fsSLo grype.tgz "$url"
+          tar -xzf grype.tgz grype
+          sudo install -m 0755 grype /usr/local/bin/grype
+
+      - name: Raw scan (no VEX)
+        run: |
+          grype "ghcr.io/${{ github.repository }}@${{ matrix.variant.digest }}" \
+            --output json --file "grype-triage-${{ matrix.variant.name }}.json"
+
+      - name: Upload triage artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: grype-triage-${{ matrix.variant.name }}
+          path: grype-triage-${{ matrix.variant.name }}.json
+          if-no-files-found: error
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Auto-VEX (presence) — suppress CVEs whose affected purl is absent from every
+  # image SBOM. Runs the banlieue-vex `auto-vex-presence` binary.
+  # ─────────────────────────────────────────────────────────────────────────────
+  auto-vex-presence:
+    name: 🤖 Auto-VEX (presence)
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    needs: [docker, extract-version, grype-triage]
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (moving ref — re-pin quarterly)
+
+      - name: Cache cargo dependencies
+        uses: firestoned/github-actions/rust/cache-cargo@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
+
+      - name: Build auto-vex-presence
+        run: cargo build --release -p banlieue-vex --bin auto-vex-presence
+
+      - name: Install vexctl
+        run: make vexctl-install
+
+      - name: Download Grype triage
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: grype-triage-*
+          path: ./triage
+          merge-multiple: true
+
+      - name: Download image SBOMs
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: docker-sbom-*
+          path: ./sboms
+          merge-multiple: true
+
+      - name: Derive + merge presence VEX
+        run: |
+          ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          vex_id="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}/auto-vex-presence"
+          for variant in Chainguard Distroless; do
+            triage="triage/grype-triage-${variant}.json"
+            sbom="sboms/docker-sbom-${variant}.json"
+            [ -f "$triage" ] && [ -f "$sbom" ] || continue
+            ./target/release/auto-vex-presence \
+              --grype-json "$triage" --sbom "$sbom" --vex-dir .vex \
+              --product-purl pkg:oci/banlieue \
+              --id "${vex_id}/${variant}" --author auto-vex-presence \
+              --timestamp "$ts" --output "vex.auto-presence-${variant}.json"
+          done
+          shopt -s nullglob
+          parts=(vex.auto-presence-*.json)
+          if [ ${#parts[@]} -gt 0 ]; then
+            vexctl merge --id "$vex_id" --author auto-vex-presence "${parts[@]}" > vex.auto-presence.json
+          else
+            printf '{"@context":"https://openvex.dev/ns/v0.2.0","@id":"%s","author":"auto-vex-presence","timestamp":"%s","version":1,"statements":[]}\n' "$vex_id" "$ts" > vex.auto-presence.json
+          fi
+
+      - name: Upload presence VEX
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: vex-auto-presence
+          path: vex.auto-presence.json
+          if-no-files-found: error
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Auto-VEX (reachability) — suppress CVEs whose curated affected symbols are all
+  # absent from the release binary's dynamic symbol-import table.
+  # ─────────────────────────────────────────────────────────────────────────────
+  auto-vex-reachability:
+    name: 🤖 Auto-VEX (reachability)
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    needs: [build, extract-version, grype-triage]
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (moving ref — re-pin quarterly)
+
+      - name: Cache cargo dependencies
+        uses: firestoned/github-actions/rust/cache-cargo@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
+
+      - name: Build auto-vex-reachability
+        run: cargo build --release -p banlieue-vex --bin auto-vex-reachability
+
+      - name: Install vexctl
+        run: make vexctl-install
+
+      - name: Download release binary (amd64)
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: banlieue-linux-amd64
+          path: ./bin
+
+      - name: Capture dynamic symbol imports
+        run: |
+          chmod +x bin/banlieue
+          nm -D --undefined-only bin/banlieue > symbols.txt
+          wc -l symbols.txt
+
+      - name: Download Grype triage
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: grype-triage-*
+          path: ./triage
+          merge-multiple: true
+
+      - name: Derive + merge reachability VEX
+        run: |
+          ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          vex_id="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}/auto-vex-reachability"
+          for variant in Chainguard Distroless; do
+            triage="triage/grype-triage-${variant}.json"
+            [ -f "$triage" ] || continue
+            ./target/release/auto-vex-reachability \
+              --grype-json "$triage" --binary-symbols symbols.txt \
+              --affected-functions .vex/.affected-functions.json --vex-dir .vex \
+              --product-purl pkg:oci/banlieue \
+              --id "${vex_id}/${variant}" --author auto-vex-reachability \
+              --timestamp "$ts" --output "vex.auto-reachability-${variant}.json"
+          done
+          shopt -s nullglob
+          parts=(vex.auto-reachability-*.json)
+          if [ ${#parts[@]} -gt 0 ]; then
+            vexctl merge --id "$vex_id" --author auto-vex-reachability "${parts[@]}" > vex.auto-reachability.json
+          else
+            printf '{"@context":"https://openvex.dev/ns/v0.2.0","@id":"%s","author":"auto-vex-reachability","timestamp":"%s","version":1,"statements":[]}\n' "$vex_id" "$ts" > vex.auto-reachability.json
+          fi
+
+      - name: Upload reachability VEX
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: vex-auto-reachability
+          path: vex.auto-reachability.json
+          if-no-files-found: error
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Assemble OpenVEX — merge curated .vex/*.json with the auto-derived presence
+  # and reachability documents, attest the result to each image digest, and
+  # publish it for the Grype scan to consume.
+  # ─────────────────────────────────────────────────────────────────────────────
+  build-vex:
+    name: 🧾 Assemble OpenVEX
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    needs: [docker, extract-version, auto-vex-presence, auto-vex-reachability]
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      packages: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install vexctl
+        run: make vexctl-install
+
+      - name: Download auto-derived VEX
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: vex-auto-*
+          path: ./auto
+          merge-multiple: true
+
+      - name: Assemble OpenVEX document
+        id: assemble
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            vex_id="https://github.com/${{ github.repository }}/releases/tag/${{ needs.extract-version.outputs.tag_name }}/vex"
+          else
+            vex_id="https://github.com/${{ github.repository }}/commit/${{ github.sha }}/vex"
+          fi
+          shopt -s nullglob
+          # Curated statements (may be none) + both auto-derived documents.
+          inputs=(.vex/*.json auto/vex.auto-presence.json auto/vex.auto-reachability.json)
+          vexctl merge --id "$vex_id" --author "${{ github.actor }}" "${inputs[@]}" > vex.openvex.json
+          echo "── OpenVEX statements ──"
+          grep -c '"vulnerability"' vex.openvex.json || true
+
+      - name: Upload OpenVEX artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: openvex
+          path: vex.openvex.json
+          if-no-files-found: error
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Log in to GHCR
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Cosign attest OpenVEX (Chainguard)
+        run: cosign attest --yes --predicate vex.openvex.json --type openvex "ghcr.io/${{ github.repository }}@${{ needs.docker.outputs.digest-chainguard }}"
+
+      - name: Cosign attest OpenVEX (Distroless)
+        run: cosign attest --yes --predicate vex.openvex.json --type openvex "ghcr.io/${{ github.repository }}@${{ needs.docker.outputs.digest-distroless }}"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Grype — container vulnerability scan, suppressing CVEs justified in the
+  # OpenVEX document. Results upload to GitHub Code Scanning as SARIF.
+  # Runs only where a pushed image + VEX exist (push-to-main + release).
+  # ─────────────────────────────────────────────────────────────────────────────
+  grype:
+    name: 🔭 Container Scan - ${{ matrix.variant.name }}
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    needs: [docker, extract-version, build-vex]
+    permissions:
+      contents: read
+      packages: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        variant:
+          - name: Chainguard
+            digest: ${{ needs.docker.outputs.digest-chainguard }}
+          - name: Distroless
+            digest: ${{ needs.docker.outputs.digest-distroless }}
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download OpenVEX
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: openvex
+          path: ./vex
+
+      - name: Install Grype
+        run: |
+          url="https://github.com/anchore/grype/releases/download/v${GRYPE_VERSION}/grype_${GRYPE_VERSION}_linux_amd64.tar.gz"
+          curl -fsSLo grype.tgz "$url"
+          tar -xzf grype.tgz grype
+          sudo install -m 0755 grype /usr/local/bin/grype
+          grype version
+
+      - name: Scan image (with VEX)
+        run: |
+          IMAGE_REF="ghcr.io/${{ github.repository }}@${{ matrix.variant.digest }}"
+          SARIF_FILE="grype-${{ github.event_name }}-${{ matrix.variant.name }}.sarif"
+          vex_args=()
+          [ -f vex/vex.openvex.json ] && vex_args+=(--vex vex/vex.openvex.json)
+          grype "$IMAGE_REF" "${vex_args[@]}" --output sarif --file "$SARIF_FILE"
+          echo "SARIF_FILE=$SARIF_FILE" >> "$GITHUB_ENV"
+
+      - name: Upload SARIF to Code Scanning
+        if: always()
+        uses: github/codeql-action/upload-sarif@7211b7c8077ea37d8641b6271f6a365a22a5fbfa # v4.36.0
+        with:
+          sarif_file: ${{ env.SARIF_FILE }}
+          category: grype-${{ github.event_name }}-${{ matrix.variant.name }}
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Sign binary artifacts — tarball each arch's `banlieue`, Cosign-sign (keyless)
+  # and GitHub build-provenance attest.
+  # ─────────────────────────────────────────────────────────────────────────────
+  sign-artifacts:
+    name: ✍️ Sign Binary - ${{ matrix.artifact_name }}
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    needs: [build, extract-version]
+    permissions:
+      id-token: write
+      attestations: write
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        artifact_name: [banlieue-linux-amd64, banlieue-linux-arm64]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Download binary artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: ./artifacts/${{ matrix.artifact_name }}
+
+      - name: Create tarball
+        run: |
+          cd "artifacts/${{ matrix.artifact_name }}"
+          chmod +x banlieue
+          tar czf "${{ matrix.artifact_name }}.tar.gz" banlieue
+
+      - name: Cosign sign tarball
+        uses: firestoned/github-actions/security/cosign-sign@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
+        with:
+          artifact-path: artifacts/${{ matrix.artifact_name }}/${{ matrix.artifact_name }}.tar.gz
+
+      - name: Attest build provenance (tarball)
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        with:
+          subject-path: artifacts/${{ matrix.artifact_name }}/${{ matrix.artifact_name }}.tar.gz
+
+      - name: Upload signed artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ matrix.artifact_name }}-signed
+          path: |
+            artifacts/${{ matrix.artifact_name }}/${{ matrix.artifact_name }}.tar.gz
+            artifacts/${{ matrix.artifact_name }}/${{ matrix.artifact_name }}.tar.gz.bundle
+          if-no-files-found: error
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SLSA provenance — compute subject hashes over the signed tarballs, then run
+  # the official SLSA generator (Build L3). Pinned to a release TAG (slsa-verifier
+  # rejects non-released refs).
+  # ─────────────────────────────────────────────────────────────────────────────
+  generate-provenance-subjects:
+    name: 🔬 SLSA Provenance Subjects
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    needs: [sign-artifacts]
+    outputs:
+      hashes: ${{ steps.hash.outputs.hashes }}
+    steps:
+      - name: Download signed artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: banlieue-linux-*-signed
+          merge-multiple: true
+          path: ./artifacts
+
+      - name: Compute subject hashes
+        id: hash
+        run: |
+          cd artifacts
+          sha256sum ./*.tar.gz > checksums.txt
+          echo "hashes=$(base64 -w0 < checksums.txt)" >> "$GITHUB_OUTPUT"
+
+  slsa-provenance:
+    name: 🏛️ SLSA Provenance
+    if: github.event_name != 'pull_request'
+    needs: [generate-provenance-subjects, extract-version]
+    permissions:
+      actions: read
+      id-token: write
+      contents: write
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
+    with:
+      base64-subjects: "${{ needs.generate-provenance-subjects.outputs.hashes }}"
+      upload-assets: ${{ github.event_name == 'release' }}
+      provenance-name: "banlieue-${{ needs.extract-version.outputs.version }}.intoto.jsonl"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CRD + deploy manifests — code-first CRDs (crdgen) plus deploy/ kustomize.
+  # ─────────────────────────────────────────────────────────────────────────────
+  package-deploy-manifests:
+    name: 📦 Package Deploy Manifests
     runs-on: ubuntu-latest
     needs: [build]
     steps:
@@ -278,102 +858,90 @@ jobs:
         uses: firestoned/github-actions/rust/cache-cargo@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
 
       - name: Generate CRDs
-        run: |
-          mkdir -p deploy/crds
-          cargo run -p banlieue-api --bin crdgen --features crdgen > deploy/crds/banlieue-crds.yaml
-          echo "── Generated CRDs ─────────────────────────────────────────"
-          grep '^kind:' deploy/crds/banlieue-crds.yaml || true
-          wc -l deploy/crds/banlieue-crds.yaml
+        run: make crds
 
-      # Offline validation: parse every YAML document and assert each is a
-      # CustomResourceDefinition with the required top-level fields.
-      #
-      # We deliberately do NOT use `kubectl apply --dry-run=client` here:
-      # even with `--validate=false` (skips OpenAPI fetch), kubectl still
-      # calls the cluster's `/api` discovery endpoint to resolve each kind
-      # to a REST resource. In a CI runner with no cluster, kubectl falls
-      # back to localhost:8080 and connection-refuses. There is no flag to
-      # bypass discovery — it is required for `apply` to function at all.
-      #
-      # `kube-derive` already guarantees structural correctness at compile
-      # time, so we only need to verify the emitted YAML parses and is the
-      # expected shape.
       - name: Validate generated CRDs (offline)
         run: |
           python3 - <<'PY'
           import sys, yaml, pathlib
-          path = pathlib.Path("deploy/crds/banlieue-crds.yaml")
-          docs = list(yaml.safe_load_all(path.read_text()))
-          if not docs:
-              sys.exit("::error::Generated CRD file is empty")
-          for i, doc in enumerate(docs):
-              if not isinstance(doc, dict):
-                  sys.exit(f"::error::Document {i} is not a mapping")
-              if doc.get("apiVersion") != "apiextensions.k8s.io/v1":
-                  sys.exit(f"::error::Document {i} has unexpected apiVersion: {doc.get('apiVersion')!r}")
-              if doc.get("kind") != "CustomResourceDefinition":
-                  sys.exit(f"::error::Document {i} has unexpected kind: {doc.get('kind')!r}")
-              name = doc.get("metadata", {}).get("name")
-              if not name:
-                  sys.exit(f"::error::Document {i} is missing metadata.name")
-              if not doc.get("spec", {}).get("versions"):
-                  sys.exit(f"::error::CRD {name!r} has no spec.versions")
-          print(f"Validated {len(docs)} CustomResourceDefinition document(s):")
-          for d in docs:
-              print(f"  - {d['metadata']['name']}")
+          files = sorted(pathlib.Path("deploy/crds").glob("*.yaml"))
+          if not files:
+              sys.exit("::error::No CRD files generated")
+          count = 0
+          for path in files:
+              for i, doc in enumerate(yaml.safe_load_all(path.read_text())):
+                  if not isinstance(doc, dict):
+                      continue
+                  if doc.get("kind") != "CustomResourceDefinition":
+                      sys.exit(f"::error::{path}#{i} is not a CustomResourceDefinition")
+                  if not doc.get("spec", {}).get("versions"):
+                      sys.exit(f"::error::{path} has no spec.versions")
+                  count += 1
+                  print(f"  - {doc['metadata']['name']}")
+          print(f"Validated {count} CustomResourceDefinition document(s)")
           PY
 
-      - name: Package CRD manifests
-        run: tar czf banlieue-crds.tar.gz deploy/crds/
+      - name: Package manifests
+        run: tar czf deploy-manifests.tar.gz deploy/
 
-      - name: Upload CRD manifests artifact
+      - name: Upload deploy manifests artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: banlieue-crds
+          name: deploy-manifests
           path: |
-            deploy/crds/banlieue-crds.yaml
-            banlieue-crds.tar.gz
+            deploy/crds/
+            deploy-manifests.tar.gz
           if-no-files-found: error
 
   # ─────────────────────────────────────────────────────────────────────────────
-  # Release only: collate artifacts and upload to the GitHub Release.
+  # Release only: collate every artifact and attach to the GitHub Release.
   # ─────────────────────────────────────────────────────────────────────────────
   upload-release-assets:
     name: 🚀 Upload Release Assets
     if: github.event_name == 'release'
     runs-on: ubuntu-latest
-    needs: [extract-version, test, package-crds]
+    needs:
+      - extract-version
+      - test
+      - docker
+      - attest
+      - sign-artifacts
+      - slsa-provenance
+      - package-deploy-manifests
+      - build-vex
     permissions:
       contents: write
     steps:
-      - name: Download CRD manifests
+      - name: Download all artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: banlieue-crds
-          path: ./artifacts/crds
+          path: ./artifacts
 
       - name: Organize release artifacts
         run: |
-          mkdir -p release
-          cp artifacts/crds/banlieue-crds.yaml release/
-          cp artifacts/crds/banlieue-crds.tar.gz release/
-          cd release && sha256sum * > checksums.sha256
+          mkdir -p release sboms signatures
+          # Signed binary tarballs + their Cosign bundles.
+          find artifacts -name '*.tar.gz' -exec cp {} release/ \;
+          find artifacts -name '*.tar.gz.bundle' -exec cp {} signatures/ \;
+          # SBOMs: per-crate binary SBOMs + image SBOMs.
+          find artifacts -name '*.cdx.json' -exec cp {} sboms/ \; || true
+          find artifacts -name 'docker-sbom-*.json' -exec cp {} sboms/ \; || true
+          # OpenVEX document.
+          [ -f artifacts/openvex/vex.openvex.json ] && cp artifacts/openvex/vex.openvex.json release/ || true
+          # Deploy manifests + SLSA provenance.
+          [ -f artifacts/deploy-manifests/deploy-manifests.tar.gz ] && cp artifacts/deploy-manifests/deploy-manifests.tar.gz release/ || true
+          find artifacts -name '*.intoto.jsonl' -exec cp {} release/ \; || true
+          ( cd release && sha256sum ./* > checksums.sha256 )
           echo "── Release artifacts ──"
-          ls -lh
+          ls -lhR release sboms signatures
 
       - name: Upload release assets
         uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
         with:
           files: |
-            release/banlieue-crds.yaml
-            release/banlieue-crds.tar.gz
+            release/*.tar.gz
+            release/vex.openvex.json
+            release/*.intoto.jsonl
             release/checksums.sha256
-
-  # ─────────────────────────────────────────────────────────────────────────────
-  # NOTE: Docker / VEX / Cosign / SLSA / Grype jobs are deliberately NOT
-  # included yet. banlieue is at Phase 0 (`crates/banlieue-api` library +
-  # `crdgen` binary). The full 5-spot-style supply-chain pipeline (image
-  # build, Cosign signing, OpenVEX assembly, Grype scan, SLSA provenance)
-  # lands when banlieue-controller ships a deployable binary in Phase 1A.
-  # (Phase plans are maintained outside this repo.)
-  # ─────────────────────────────────────────────────────────────────────────────
+            sboms/*.json
+            signatures/*.bundle

@@ -28,13 +28,39 @@ use serde::{Deserialize, Serialize};
     printcolumn = r#"{"name":"Age","type":"date","jsonPath":".metadata.creationTimestamp"}"#
 )]
 #[serde(rename_all = "camelCase")]
+/// VMImage — a cluster-scoped, backend-agnostic catalog entry for a bootable
+/// guest image.
+///
+/// A VMImage names an operating system (family / distribution / version /
+/// architecture) once, then lists — per provider class — where that image
+/// actually lives on each backend (`spec.sources`). A VirtualMachine
+/// references a VMImage by name (`spec.imageRef`); the scheduler and the
+/// chosen provider resolve it to a concrete template / backing file / import
+/// URL at provisioning time.
+///
+/// # Why create one
+///
+/// - **One name, many backends.** "ubuntu-22.04" can map to a vSphere
+///   template, a Proxmox template VMID, and a libvirt qcow2 — users reference
+///   a single VMImage regardless of where the VM lands.
+/// - **Explicit, auditable image sourcing.** Sources (and optional checksums)
+///   are declared, not auto-discovered, so what actually boots is reviewable.
+/// - **Readiness gating.** The image controller records per-Provider
+///   readiness in `status`; the scheduler refuses to place a VM until the
+///   image is confirmed available (or importable) on a candidate Provider.
+///
+/// Cluster-scoped: a VMImage is shared by VirtualMachines in any namespace.
 pub struct VMImageSpec {
+    /// Broad operating-system family. Coarser than `osDistribution`; lets
+    /// providers apply high-level guest handling.
     pub os_family: OsFamily,
     /// Free-form distribution string. Examples: ubuntu, rhel, debian,
     /// fedora-coreos, windows-server.
     pub os_distribution: String,
     /// Free-form version string. Examples: "22.04", "9.4", "2022".
     pub os_version: String,
+    /// Guest CPU architecture. Failure domains whose hosts cannot run this
+    /// architecture are filtered out by the scheduler.
     pub architecture: Architecture,
 
     /// Guest agent contract this image is built to support; determines how
@@ -47,6 +73,7 @@ pub struct VMImageSpec {
     pub sources: Vec<ImageSource>,
 }
 
+/// Broad operating-system family of a VMImage.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum OsFamily {
@@ -56,6 +83,7 @@ pub enum OsFamily {
     Other,
 }
 
+/// Guest CPU architecture a VMImage targets.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Architecture {
@@ -63,6 +91,8 @@ pub enum Architecture {
     Arm64,
 }
 
+/// Guest bootstrap-agent contract an image ships with. Determines how
+/// `VirtualMachine.spec.userData` is delivered into the guest.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum GuestAgent {
@@ -73,6 +103,8 @@ pub enum GuestAgent {
     None,
 }
 
+/// One backend's mapping for a VMImage: which provider class it applies to,
+/// and how to find (or import) the image there.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ImageSource {
@@ -102,6 +134,7 @@ pub struct ImageSource {
     pub checksum: Option<String>,
 }
 
+/// What kind of backend artifact an [`ImageSource`]'s `ref` points at.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub enum ImageSourceKind {
     /// A template/clone source pre-existing on the provider backend.
@@ -113,6 +146,8 @@ pub enum ImageSourceKind {
     Url,
 }
 
+/// Observed availability of a VMImage across the Providers that can serve it.
+/// Maintained by the image controller; read by the scheduler.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct VMImageStatus {
@@ -129,6 +164,7 @@ pub struct VMImageStatus {
     pub observed_generation: Option<i64>,
 }
 
+/// Readiness of a VMImage on one specific Provider.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ImagePerProviderStatus {

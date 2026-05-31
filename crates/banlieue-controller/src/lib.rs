@@ -10,10 +10,15 @@
 //! operation lives in a separate `banlieue-provider-*` crate that watches the
 //! corresponding `infrastructure.banlieue.io` kind. Communication between this
 //! controller and providers is **CRD-only** (no RPC).
+//!
+//! This crate is a library: the unified `banlieue` binary calls [`run`] for the
+//! `banlieue controller` subcommand (see ADR-0004). It has no `main`.
 
+pub mod app;
 pub mod context;
 pub mod error;
 pub mod reconciler;
 
+pub use app::{Cli, run};
 pub use context::Context;
 pub use error::{Error, Result};

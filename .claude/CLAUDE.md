@@ -8,7 +8,22 @@
 
 **Source of truth:** `crates/banlieue-api` is the authoritative type system. CRD YAMLs in `deploy/crds/` (once generated) are produced from it via the `crdgen` binary.
 
+## 🏛️ GOVERNING METHODOLOGY: Architecture Driven Development (ADD)
+
+**banlieue is built ADR-first. Architecture is decided, recorded, and visualized BEFORE code.** For any architecturally significant change, follow this order — full details in `rules/architecture-driven-development.md`:
+
+```
+ADR  →  CALM  →  TDD  →  implement  →  docs
+```
+
+1. **ADR** — record the decision in `docs/adr/NNNN-title.md` (Status / Context / Decision / Consequences).
+2. **CALM** — model it in `docs/architecture/calm/architecture.json`; `make calm-validate` + `make calm-diagrams`.
+3. **TDD** — only then write failing tests, then the minimum implementation.
+
+ADRs and CALM diagrams are **first-class deliverables, equal to code and tests.** Applies to new CRDs/controllers/providers/binaries, contract changes, deploy/GitOps topology, and any decision worth a "why A over B." Trivial changes (typos, isolated bugfixes) are TDD-only — but **when unsure whether a change is architectural, write the ADR.**
+
 **CRITICAL Coding Patterns** (full details in `rules/`):
+- **ADD**: ADR → CALM → TDD, in that order — `rules/architecture-driven-development.md`
 - **TDD**: Write tests FIRST — `rules/testing.md` + `tdd-workflow` skill
 - **After ANY Rust change**: run `cargo-quality` skill (NON-NEGOTIABLE)
 - **Early returns / magic numbers / style**: `rules/rust-style.md`

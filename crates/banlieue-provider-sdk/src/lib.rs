@@ -12,6 +12,8 @@
 //!
 //! Modules:
 //!
+//! - [`bootstrap`] — shared process startup: `tracing` init, the health
+//!   server, and the SIGTERM / Ctrl-C shutdown future.
 //! - [`client`] — build a [`kube::Client`] from kubeconfig or in-cluster
 //!   config, with explicit timeouts.
 //! - [`status`] — typed helpers for `metav1.Condition` lists.
@@ -23,6 +25,7 @@
 //!   replica runs reconcilers at a time.
 //! - [`error`] — shared error type re-exported by the rest of the SDK.
 
+pub mod bootstrap;
 pub mod client;
 pub mod error;
 pub mod finalizer;

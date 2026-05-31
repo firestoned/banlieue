@@ -705,6 +705,586 @@
       "related_bugs": [],
       "occurrences": 1,
       "last_seen": "2026-05-26T20:33:08.494Z"
+    },
+    {
+      "id": "bug-043",
+      "timestamp": "2026-05-26T22:43:48.487Z",
+      "error_message": "Significant refactor of ",
+      "file": "crates/banlieue-provider-vsphere/src/reconciler/provider_tests.rs",
+      "root_cause": "21 lines replaced/restructured",
+      "fix": "Rewrote 38→19 lines (21 removed)",
+      "tags": [
+        "auto-detected",
+        "refactor",
+        "rs"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-05-26T22:43:48.487Z"
+    },
+    {
+      "id": "bug-044",
+      "timestamp": "2026-05-26T22:54:15.231Z",
+      "error_message": "Wrong reference: client should be as_client",
+      "file": "crates/banlieue-provider-vsphere/src/reconciler/provider_tests.rs",
+      "root_cause": "Used \"client\" instead of \"as_client\"",
+      "fix": "Changed client → as_client",
+      "tags": [
+        "auto-detected",
+        "wrong-reference",
+        "rs"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-05-26T22:54:15.231Z"
+    },
+    {
+      "id": "bug-045",
+      "timestamp": "2026-05-28T01:15:35.442Z",
+      "error_message": "Significant refactor of ",
+      "file": "crates/banlieue-provider-vsphere/src/client/fake.rs",
+      "root_cause": "3 lines replaced/restructured",
+      "fix": "Rewrote 26→45 lines (3 removed)",
+      "tags": [
+        "auto-detected",
+        "refactor",
+        "rs"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-05-28T01:15:35.442Z"
+    },
+    {
+      "id": "bug-046",
+      "timestamp": "2026-05-28T01:16:41.898Z",
+      "error_message": "Missing await",
+      "file": "crates/banlieue-provider-vsphere/src/client/vim.rs",
+      "root_cause": "Async call without await — returned Promise instead of value",
+      "fix": "Added await to async call",
+      "tags": [
+        "auto-detected",
+        "async-fix",
+        "rs"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-05-28T01:16:41.898Z"
+    },
+    {
+      "id": "bug-047",
+      "timestamp": "2026-05-28T01:21:41.797Z",
+      "error_message": "Significant refactor of ",
+      "file": "crates/banlieue-provider-vsphere/src/main.rs",
+      "root_cause": "8 lines replaced/restructured",
+      "fix": "Rewrote 26→41 lines (8 removed)",
+      "tags": [
+        "auto-detected",
+        "refactor",
+        "rs"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-05-28T01:21:41.797Z"
+    },
+    {
+      "id": "bug-048",
+      "timestamp": "2026-05-30T20:28:42.524Z",
+      "error_message": "Significant refactor of ",
+      "file": "docs/src/concepts/providers.md",
+      "root_cause": "10 lines replaced/restructured",
+      "fix": "Rewrote 26→43 lines (10 removed) | Also: ├── main.rs              # binary entrypoint; ├── vsphere_machine.rs",
+      "tags": [
+        "auto-detected",
+        "refactor",
+        "md"
+      ],
+      "related_bugs": [],
+      "occurrences": 2,
+      "last_seen": "2026-05-30T20:28:49.931Z"
+    },
+    {
+      "id": "bug-049",
+      "timestamp": "2026-05-30T20:44:41.933Z",
+      "error_message": "Significant refactor of ",
+      "file": "crates/banlieue-api/src/bin/crdgen.rs",
+      "root_cause": "2 lines replaced/restructured",
+      "fix": "Rewrote 3→37 lines (2 removed) | Also: use k8s_openapi::apiextensions_apiserver::pkg::api; /// Property name kube-derive uses for the spec su | Also: /// Apply post-generation fix-ups to a CRD before ; fn prepared(mut crd: CustomResourceDefinition) ->  | Also: #[cfg(test)]; #[path = \"crdgen_tests.rs\"]",
+      "tags": [
+        "auto-detected",
+        "refactor",
+        "rs"
+      ],
+      "related_bugs": [],
+      "occurrences": 4,
+      "last_seen": "2026-05-30T20:47:11.566Z"
+    },
+    {
+      "id": "bug-050",
+      "timestamp": "2026-05-30T20:45:45.809Z",
+      "error_message": "Significant refactor of ",
+      "file": "crates/banlieue-api/src/bin/crdgen_tests.rs",
+      "root_cause": "7 lines replaced/restructured",
+      "fix": "Rewrote 10→7 lines (7 removed)",
+      "tags": [
+        "auto-detected",
+        "refactor",
+        "rs"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-05-30T20:45:45.809Z"
+    },
+    {
+      "id": "bug-051",
+      "timestamp": "2026-05-30T21:25:47.011Z",
+      "error_message": "Significant refactor of ",
+      "file": "crates/banlieue-api/src/crddoc.rs",
+      "root_cause": "2 lines replaced/restructured",
+      "fix": "Rewrote 24→30 lines (2 removed)",
+      "tags": [
+        "auto-detected",
+        "refactor",
+        "rs"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-05-30T21:25:47.011Z"
+    },
+    {
+      "id": "bug-052",
+      "timestamp": "2026-05-30T21:27:50.033Z",
+      "error_message": "Significant refactor of ",
+      "file": ".claude/SKILL.md",
+      "root_cause": "5 lines replaced/restructured",
+      "fix": "Rewrote 10→14 lines (5 removed)",
+      "tags": [
+        "auto-detected",
+        "refactor",
+        "md"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-05-30T21:27:50.033Z"
+    },
+    {
+      "id": "bug-053",
+      "timestamp": "2026-05-30T21:36:57.430Z",
+      "error_message": "Significant refactor of ",
+      "file": ".github/workflows/docs.yaml",
+      "root_cause": "2 lines replaced/restructured",
+      "fix": "Rewrote 6→9 lines (2 removed)",
+      "tags": [
+        "auto-detected",
+        "refactor",
+        "yaml"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-05-30T21:36:57.430Z"
+    },
+    {
+      "id": "bug-054",
+      "timestamp": "2026-05-30T21:37:46.790Z",
+      "error_message": "Missing error handling in unknown",
+      "file": ".claude/CHANGELOG.md",
+      "root_cause": "Code path had no error handling — exceptions would propagate uncaught",
+      "fix": "Added try/catch block",
+      "tags": [
+        "auto-detected",
+        "error-handling",
+        "md"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-05-30T21:37:46.790Z"
+    },
+    {
+      "id": "bug-055",
+      "timestamp": "2026-05-30T21:40:40.222Z",
+      "error_message": "Incorrect value in code",
+      "file": "crates/banlieue-api/src/infrastructure/vsphere_cluster.rs",
+      "root_cause": "Had \"LabelSelector_is_empty\"",
+      "fix": "Changed to \"label_selector_is_empty\"",
+      "tags": [
+        "auto-detected",
+        "wrong-value",
+        "rs"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-05-30T21:40:40.222Z"
+    },
+    {
+      "id": "bug-056",
+      "timestamp": "2026-05-30T21:56:35.790Z",
+      "error_message": "Incorrect value in code",
+      "file": "docs/architecture/calm/architecture.json",
+      "root_cause": "Had \"banlieue-controller watches VirtualMachine / Prov",
+      "fix": "Changed to \"banlieue-controller watches VirtualMachine / Prov",
+      "tags": [
+        "auto-detected",
+        "wrong-value",
+        "json"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-05-30T21:56:35.790Z"
+    },
+    {
+      "id": "bug-057",
+      "timestamp": "2026-05-30T21:57:29.883Z",
+      "error_message": "Significant refactor of ",
+      "file": "docs/architecture/calm/architecture.json",
+      "root_cause": "2 lines replaced/restructured",
+      "fix": "Rewrote 10→14 lines (2 removed)",
+      "tags": [
+        "auto-detected",
+        "refactor",
+        "json"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-05-30T21:57:29.883Z"
+    },
+    {
+      "id": "bug-058",
+      "timestamp": "2026-05-30T22:02:47.795Z",
+      "error_message": "Significant refactor of ",
+      "file": "crates/banlieue-controller/src/main.rs",
+      "root_cause": "3 lines replaced/restructured",
+      "fix": "Rewrote 37→77 lines (3 removed)",
+      "tags": [
+        "auto-detected",
+        "refactor",
+        "rs"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-05-30T22:02:47.795Z"
+    },
+    {
+      "id": "bug-059",
+      "timestamp": "2026-05-30T22:06:43.275Z",
+      "error_message": "Wrong reference: 213 should be 261",
+      "file": ".claude/CHANGELOG.md",
+      "root_cause": "Used \"213\" instead of \"261\"",
+      "fix": "Changed 213 → 261",
+      "tags": [
+        "auto-detected",
+        "wrong-reference",
+        "md"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-05-30T22:06:43.275Z"
+    },
+    {
+      "id": "bug-060",
+      "timestamp": "2026-05-30T22:10:54.914Z",
+      "error_message": "Significant refactor of ",
+      "file": "README.md",
+      "root_cause": "24 lines replaced/restructured",
+      "fix": "Rewrote 36→13 lines (24 removed)",
+      "tags": [
+        "auto-detected",
+        "refactor",
+        "md"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-05-30T22:10:54.914Z"
+    },
+    {
+      "id": "bug-061",
+      "timestamp": "2026-05-31T02:34:38.398Z",
+      "error_message": "Significant refactor of ",
+      "file": "crates/banlieue-controller/Cargo.toml",
+      "root_cause": "3 lines replaced/restructured",
+      "fix": "Rewrote 7→6 lines (3 removed) | Also: tokio = { workspace = true, features = [\"macros\", ; tracing-subscriber.workspace = true | Also: [[bin]]; name = \"banlieue-provider-vsphere\"",
+      "tags": [
+        "auto-detected",
+        "refactor",
+        "toml"
+      ],
+      "related_bugs": [],
+      "occurrences": 4,
+      "last_seen": "2026-05-31T02:36:19.902Z"
+    },
+    {
+      "id": "bug-062",
+      "timestamp": "2026-05-31T02:38:53.275Z",
+      "error_message": "Significant refactor of ",
+      "file": "Makefile",
+      "root_cause": "4 lines replaced/restructured",
+      "fix": "Rewrote 5→7 lines (4 removed)",
+      "tags": [
+        "auto-detected",
+        "refactor",
+        "unknown"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-05-31T02:38:53.275Z"
+    },
+    {
+      "id": "bug-063",
+      "timestamp": "2026-05-31T02:39:15.645Z",
+      "error_message": "Incorrect value in code",
+      "file": "Makefile",
+      "root_cause": "Had `make kind-load BINARY=banlieue-controller`",
+      "fix": "Changed to `make kind-load`",
+      "tags": [
+        "auto-detected",
+        "wrong-value",
+        "unknown"
+      ],
+      "related_bugs": [],
+      "occurrences": 2,
+      "last_seen": "2026-05-31T02:39:21.722Z"
+    },
+    {
+      "id": "bug-064",
+      "timestamp": "2026-05-31T02:44:00.435Z",
+      "error_message": "Function not marked async",
+      "file": ".claude/CHANGELOG.md",
+      "root_cause": "Function uses await but wasn't declared async",
+      "fix": "Added async modifier",
+      "tags": [
+        "auto-detected",
+        "async-fix",
+        "md"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-05-31T02:44:00.435Z"
+    },
+    {
+      "id": "bug-065",
+      "timestamp": "2026-05-31T02:44:16.625Z",
+      "error_message": "Significant refactor of ",
+      "file": "docs/src/concepts/architecture.md",
+      "root_cause": "5 lines replaced/restructured",
+      "fix": "Rewrote 8→13 lines (5 removed)",
+      "tags": [
+        "auto-detected",
+        "refactor",
+        "md"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-05-31T02:44:16.625Z"
+    },
+    {
+      "id": "bug-066",
+      "timestamp": "2026-05-31T11:12:35.483Z",
+      "error_message": "Significant refactor of ",
+      "file": "README.md",
+      "root_cause": "4 lines replaced/restructured",
+      "fix": "Rewrote 4→12 lines (4 removed)",
+      "tags": [
+        "auto-detected",
+        "refactor",
+        "md"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-05-31T11:12:35.483Z"
+    },
+    {
+      "id": "bug-067",
+      "timestamp": "2026-05-31T11:20:00.423Z",
+      "error_message": "Significant refactor of ",
+      "file": "docs/adr/0002-infracluster-failure-domain-aggregation.md",
+      "root_cause": "3 lines replaced/restructured",
+      "fix": "Rewrote 3→5 lines (3 removed)",
+      "tags": [
+        "auto-detected",
+        "refactor",
+        "md"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-05-31T11:20:00.423Z"
+    },
+    {
+      "id": "bug-068",
+      "timestamp": "2026-05-31T12:14:35.223Z",
+      "error_message": "Wrong reference: roadmap should be api",
+      "file": "docs/src/concepts/virtualmachine.md",
+      "root_cause": "Used \"roadmap\" instead of \"api\"",
+      "fix": "Changed roadmap → api",
+      "tags": [
+        "auto-detected",
+        "wrong-reference",
+        "md"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-05-31T12:14:35.223Z"
+    },
+    {
+      "id": "bug-069",
+      "timestamp": "2026-05-31T12:16:31.984Z",
+      "error_message": "Wrong reference: roadmap should be planned",
+      "file": "docs/adr/0003-provider-deployment-topology.md",
+      "root_cause": "Used \"roadmap\" instead of \"planned\"",
+      "fix": "Changed roadmap → planned",
+      "tags": [
+        "auto-detected",
+        "wrong-reference",
+        "md"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-05-31T12:16:31.984Z"
+    },
+    {
+      "id": "bug-070",
+      "timestamp": "2026-05-31T12:16:45.542Z",
+      "error_message": "Wrong reference: roadmap should be development",
+      "file": "docs/src/architecture/index.md",
+      "root_cause": "Used \"roadmap\" instead of \"development\"",
+      "fix": "Changed roadmap → development",
+      "tags": [
+        "auto-detected",
+        "wrong-reference",
+        "md"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-05-31T12:16:45.542Z"
+    },
+    {
+      "id": "bug-071",
+      "timestamp": "2026-05-31T12:18:11.691Z",
+      "error_message": "Significant refactor of ",
+      "file": "docs/src/concepts/infra-crds-capi.md",
+      "root_cause": "3 lines replaced/restructured",
+      "fix": "Rewrote 5→7 lines (3 removed) | Also: The v1beta2 contract specifies, among other things; - A `status.ready` boolean.",
+      "tags": [
+        "auto-detected",
+        "refactor",
+        "md"
+      ],
+      "related_bugs": [],
+      "occurrences": 2,
+      "last_seen": "2026-05-31T12:18:21.005Z"
+    },
+    {
+      "id": "bug-072",
+      "timestamp": "2026-05-31T13:08:37.558Z",
+      "error_message": "Incorrect value in code",
+      "file": "Cargo.toml",
+      "root_cause": "Had \"1.85\"",
+      "fix": "Changed to \"1.88\"",
+      "tags": [
+        "auto-detected",
+        "wrong-value",
+        "toml"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-05-31T13:08:37.558Z"
+    },
+    {
+      "id": "bug-073",
+      "timestamp": "2026-05-31T14:24:35.984Z",
+      "error_message": "Significant refactor of ",
+      "file": ".github/workflows/build.yaml",
+      "root_cause": "4 lines replaced/restructured",
+      "fix": "Rewrote 14→20 lines (4 removed)",
+      "tags": [
+        "auto-detected",
+        "refactor",
+        "yaml"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-05-31T14:24:35.984Z"
+    },
+    {
+      "id": "bug-074",
+      "timestamp": "2026-05-31T14:38:54.714Z",
+      "error_message": "Significant refactor of ",
+      "file": "docs/adr/0006-release-and-supply-chain-pipeline.md",
+      "root_cause": "18 lines replaced/restructured",
+      "fix": "Rewrote 21→31 lines (18 removed)",
+      "tags": [
+        "auto-detected",
+        "refactor",
+        "md"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-05-31T14:38:54.714Z"
+    },
+    {
+      "id": "bug-075",
+      "timestamp": "2026-05-31T14:39:26.297Z",
+      "error_message": "Function not marked async",
+      "file": "docs/src/concepts/providers.md",
+      "root_cause": "Function uses await but wasn't declared async",
+      "fix": "Added async modifier",
+      "tags": [
+        "auto-detected",
+        "async-fix",
+        "md"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-05-31T14:39:26.297Z"
+    },
+    {
+      "id": "bug-076",
+      "timestamp": "2026-05-31T14:46:12.175Z",
+      "error_message": "Significant refactor of ",
+      "file": ".github/workflows/build.yaml",
+      "root_cause": "13 lines replaced/restructured",
+      "fix": "Rewrote 43→233 lines (13 removed)",
+      "tags": [
+        "auto-detected",
+        "refactor",
+        "yaml"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-05-31T14:46:12.175Z"
+    },
+    {
+      "id": "bug-077",
+      "timestamp": "2026-05-31T16:00:00Z",
+      "error_message": "clippy: this `if` statement can be collapsed — could not compile banlieue-api / banlieue-provider-vsphere with -D warnings --all-features",
+      "file": "crates/banlieue-api/src/crddoc.rs, crates/banlieue-api/src/bin/crddoc.rs, crates/banlieue-provider-vsphere/src/reconciler/provider.rs, crates/banlieue-provider-vsphere/src/reconciler/vmimage.rs",
+      "root_cause": "Workspace MSRV bumped to Rust 1.88, which stabilized let-chains. clippy::collapsible_if now flags nested `if let X { if Y { .. } }` that it previously allowed. Surfaced only with --all-features (crddoc is gated behind the crdgen feature).",
+      "fix": "Collapsed each nested if into a let-chain: `if let X && Y { .. }` / `if let X && let Err(e) = .. { .. }`.",
+      "tags": [
+        "clippy",
+        "msrv",
+        "rust-1.88",
+        "let-chains",
+        "collapsible_if",
+        "all-features",
+        "crdgen"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-05-31T16:00:00Z"
+    },
+    {
+      "id": "bug-078",
+      "timestamp": "2026-05-31T15:03:50.700Z",
+      "error_message": "Wrong reference: GOVC_ should be GOVC",
+      "file": "docs/src/developer/local-development.md",
+      "root_cause": "Used \"GOVC_\" instead of \"GOVC\"",
+      "fix": "Changed GOVC_ → GOVC",
+      "tags": [
+        "auto-detected",
+        "wrong-reference",
+        "md"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-05-31T15:03:50.700Z"
     }
   ]
 }

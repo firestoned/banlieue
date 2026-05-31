@@ -8,13 +8,14 @@
 # a host gcc cross-toolchain. We never compile inside the container.
 #
 # Build with:
-#     make docker-build BINARY=banlieue-controller          # auto host arch
-#     make docker-build-amd64 BINARY=banlieue-controller    # linux/amd64
-#     make docker-build-arm64 BINARY=banlieue-controller    # linux/arm64
+#     make docker-build           # auto host arch (BINARY defaults to banlieue)
+#     make docker-build-amd64     # linux/amd64
+#     make docker-build-arm64     # linux/arm64
 #
-# The same Dockerfile is reused for every banlieue binary (controller and the
-# upcoming providers) by passing BINARY at build time — keeps the supply-chain
-# story uniform across the workspace.
+# A single `banlieue` binary packages every role (controller + providers); the
+# role is selected at runtime via container args, not by building a different
+# binary. BINARY is still parameterized so the supply-chain plumbing stays
+# generic, but it defaults to `banlieue`.
 
 # Pinned by digest for supply-chain reproducibility. Dependabot (docker
 # ecosystem) opens a PR with the new digest when upstream publishes a patched
@@ -27,9 +28,10 @@ ARG VERSION
 ARG GIT_SHA
 ARG TARGETARCH
 ARG BASE_IMAGE
-# Name of the workspace binary to ship in this image (e.g. banlieue-controller,
-# banlieue-provider-vsphere). Defaults to the main controller.
-ARG BINARY=banlieue-controller
+# Name of the workspace binary to ship. A single `banlieue` binary packages
+# every role; the role is chosen at runtime via container args
+# (`["controller"]`, `["provider","vsphere"]`). See ADR-0004.
+ARG BINARY=banlieue
 
 LABEL org.opencontainers.image.source="https://github.com/firestoned/banlieue" \
       org.opencontainers.image.description="banlieue — Kubernetes-native abstract virtualization API (${BINARY})" \

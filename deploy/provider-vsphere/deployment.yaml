@@ -1,0 +1,99 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# banlieue-provider-vsphere Deployment.
+#
+# Pin image to a released tag for production manifests. Local development
+# overrides this via `kubectl set image` (see the Makefile
+# `kind-deploy-provider-vsphere` target) so the locally-built image is used.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: banlieue-provider-vsphere
+  namespace: banlieue-system
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: provider-vsphere
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: banlieue
+      app.kubernetes.io/component: provider-vsphere
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: banlieue
+        app.kubernetes.io/component: provider-vsphere
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: banlieue-provider-vsphere
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: provider
+          # Single banlieue binary; the `provider vsphere` subcommand selects
+          # this role (ADR-0004). Pin to a released version tag — NEVER use
+          # :latest in production. Local dev uses `kubectl set image` to swap in
+          # ghcr.io/firestoned/banlieue:local-dev.
+          image: ghcr.io/firestoned/banlieue:v0.1.0
+          imagePullPolicy: IfNotPresent
+          args: ["provider", "vsphere"]
+          envFrom:
+            - configMapRef:
+                name: banlieue-provider-vsphere-config
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          ports:
+            - name: metrics
+              containerPort: 8080
+              protocol: TCP
+            - name: health
+              containerPort: 8081
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: health
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+            initialDelaySeconds: 2
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 1000m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+      terminationGracePeriodSeconds: 30
