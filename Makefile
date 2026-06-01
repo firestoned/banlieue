@@ -90,6 +90,20 @@ CALM_ARCH          := docs/architecture/calm/architecture.json
 CALM_TEMPLATES     := docs/architecture/calm/templates/mermaid
 CALM_DIAGRAMS_OUT  := docs/src/architecture
 
+# Vendored upstream vim_rs (noclue/vim_rs, Apache-2.0). We build against a local
+# checkout pinned to VIM_RS_REF with VIM_RS_PATCH applied on top, wired in via
+# [patch.crates-io] in Cargo.toml — a build-time patch instead of a fork.
+#
+# VIM_RS_REF is a commit SHA, not a tag: the crate version we need (0.4.4, the
+# first to carry the `vcsim_compat` feature the provider uses) was published to
+# crates.io and lives on `main`, but was never git-tagged — the newest tag
+# (v0.4.3) predates that feature. Bump VIM_RS_REF in lockstep with the `=0.4.4`
+# pin in Cargo.toml when a newer commit (carrying our upstreamed fix) lands.
+VIM_RS_REPO  := https://github.com/noclue/vim_rs
+VIM_RS_DIR   := third_party/vim_rs
+VIM_RS_REF   := b9e6c61851076cb2742befb6b742537cafe31bdf
+VIM_RS_PATCH := patches/vim_rs.patch
+
 # ----- Help -----------------------------------------------------------------
 
 help: ## Show this help
@@ -106,7 +120,7 @@ help: ## Show this help
 .PHONY: help install build build-debug build-linux-amd64 build-linux-arm64 \
         prepare-binaries-linux-amd64 prepare-binaries-linux-arm64 \
         test test-lib lint format clean crds api-docs run-local \
-        provider-vsphere-run-local \
+        provider-vsphere-run-local vendor-vim-rs \
         docker-build docker-build-amd64 docker-build-arm64 \
         docker-build-chainguard docker-buildx docker-buildx-chainguard docker-push \
         sbom vexctl-install vex-validate vex-assemble \
@@ -124,19 +138,19 @@ install: ## Ensure Rust toolchain is installed
 	@rustup --version 2>/dev/null || { echo "Install Rust from https://rustup.rs"; exit 1; }
 	@echo "✓ rustup: $$(rustup --version)"
 
-build: ## Build all workspace crates (release, native platform)
+build: vendor-vim-rs ## Build all workspace crates (release, native platform)
 	cargo build --release --all
 
-build-debug: ## Build all workspace crates (debug)
+build-debug: vendor-vim-rs ## Build all workspace crates (debug)
 	cargo build --all
 
-test: ## Run all workspace tests
+test: vendor-vim-rs ## Run all workspace tests
 	cargo test --all
 
-test-lib: ## Run library tests only
+test-lib: vendor-vim-rs ## Run library tests only
 	cargo test --all --lib
 
-lint: ## Check formatting and run clippy with -D warnings
+lint: vendor-vim-rs ## Check formatting and run clippy with -D warnings
 	cargo fmt --all -- --check
 	cargo clippy --all-targets --all-features -- -D warnings
 
@@ -145,6 +159,29 @@ format: ## Format all crates
 
 clean: ## Clean build artefacts
 	cargo clean
+
+vendor-vim-rs: ## Clone/pin noclue/vim_rs at VIM_RS_REF and apply patches/vim_rs.patch (idempotent)
+	@if [ ! -d "$(VIM_RS_DIR)/.git" ]; then \
+		echo "vim_rs: cloning $(VIM_RS_REPO) -> $(VIM_RS_DIR)"; \
+		git clone --quiet "$(VIM_RS_REPO)" "$(VIM_RS_DIR)"; \
+	fi
+	@git -C "$(VIM_RS_DIR)" rev-parse --verify --quiet "$(VIM_RS_REF)^{commit}" >/dev/null 2>&1 \
+		|| git -C "$(VIM_RS_DIR)" fetch --tags --quiet origin || true
+	@git -C "$(VIM_RS_DIR)" rev-parse --verify --quiet "$(VIM_RS_REF)^{commit}" >/dev/null \
+		|| { echo "vim_rs: ref $(VIM_RS_REF) not found in $(VIM_RS_REPO)"; exit 1; }
+	@git -C "$(VIM_RS_DIR)" reset --hard --quiet "$(VIM_RS_REF)"   # clean upstream base; drops any prior patch
+	@if [ ! -f "$(VIM_RS_PATCH)" ]; then \
+		echo "vim_rs: no patch at $(VIM_RS_PATCH) — building against upstream $(VIM_RS_REF) as-is"; \
+	elif git -C "$(VIM_RS_DIR)" apply --check "$(CURDIR)/$(VIM_RS_PATCH)" >/dev/null 2>&1; then \
+		git -C "$(VIM_RS_DIR)" apply "$(CURDIR)/$(VIM_RS_PATCH)"; \
+		echo "vim_rs: applied $(VIM_RS_PATCH) onto $(VIM_RS_REF)"; \
+	elif git -C "$(VIM_RS_DIR)" apply --reverse --check "$(CURDIR)/$(VIM_RS_PATCH)" >/dev/null 2>&1; then \
+		echo "vim_rs: patch already present in $(VIM_RS_REF) (merged upstream) — skipping"; \
+	else \
+		echo "vim_rs: ERROR — $(VIM_RS_PATCH) neither applies to nor is present in $(VIM_RS_REF)."; \
+		echo "vim_rs:        Refresh the patch against $(VIM_RS_REF) or bump VIM_RS_REF."; \
+		exit 1; \
+	fi
 
 # ----- CALM (architecture-as-code, FINOS) -----------------------------------
 
@@ -221,7 +258,7 @@ run-local: crds ## Run the controller locally against your current kube-context
 	@echo "Running banlieue controller locally (KUBECONFIG=$$KUBECONFIG)..."
 	RUST_LOG="$(RUST_LOG)" cargo run -p banlieue -- controller
 
-provider-vsphere-run-local: ## Run the vSphere provider locally (point it at $$VSPHERE_ENDPOINT / vcsim)
+provider-vsphere-run-local: vendor-vim-rs ## Run the vSphere provider locally (point it at $$VSPHERE_ENDPOINT / vcsim)
 	@echo "Running banlieue provider vsphere locally (KUBECONFIG=$$KUBECONFIG)..."
 	@echo "  Provider CRs are read from your kube context;"
 	@echo "  the actual vCenter endpoint comes from Provider.spec.connection.endpoint."
@@ -258,11 +295,11 @@ vcsim-logs: ## Tail the vcsim container logs
 
 # ----- Code Generation ------------------------------------------------------
 
-crds: ## Generate CRD YAML files into $(CRD_OUT_DIR) (also refreshes the API reference)
+crds: vendor-vim-rs ## Generate CRD YAML files into $(CRD_OUT_DIR) (also refreshes the API reference)
 	@cargo run --quiet -p banlieue-api --bin crdgen --features crdgen -- --out-dir $(CRD_OUT_DIR)
 	@$(MAKE) --no-print-directory api-docs
 
-api-docs: ## Generate the CRD API reference Markdown into $(API_DOCS_OUT)
+api-docs: vendor-vim-rs ## Generate the CRD API reference Markdown into $(API_DOCS_OUT)
 	@cargo run --quiet -p banlieue-api --bin crddoc --features crdgen -- --out-file $(API_DOCS_OUT)
 
 # ----- Cross-compile binaries (Linux targets for container builds) ---------
@@ -283,14 +320,24 @@ build-linux-arm64: ## Cross-compile $(BINARY) for linux/arm64
 # Internal: shared cross-compile body. Picks up cross if installed, otherwise
 # falls back to native compilation via a host-installed gcc cross-toolchain.
 .PHONY: _build-linux
-_build-linux:
+_build-linux: vendor-vim-rs
 	@if command -v cross >/dev/null 2>&1; then \
 		echo "Building with cross for $$TRIPLE..."; \
 		cross build --release --target $$TRIPLE -p $(BINARY); \
 	elif command -v $$LINKER >/dev/null 2>&1 || [ "$$(uname -s)-$$(uname -m)" = "Linux-$${TRIPLE%%-*}" ]; then \
 		echo "Building natively / via host gcc cross-toolchain for $$TRIPLE..."; \
 		rustup target add $$TRIPLE >/dev/null 2>&1 || true; \
-		cargo build --release --target $$TRIPLE -p $(BINARY); \
+		if command -v $$LINKER >/dev/null 2>&1; then \
+			TRIPLE_ENV=$$(echo $$TRIPLE | tr 'a-z-' 'A-Z_'); \
+			TRIPLE_US=$$(echo $$TRIPLE | tr '-' '_'); \
+			AR_TOOL=$${LINKER%-gcc}-ar; \
+			env CARGO_TARGET_$${TRIPLE_ENV}_LINKER=$$LINKER \
+				CC_$${TRIPLE_US}=$$LINKER \
+				AR_$${TRIPLE_US}=$$AR_TOOL \
+				cargo build --release --target $$TRIPLE -p $(BINARY); \
+		else \
+			cargo build --release --target $$TRIPLE -p $(BINARY); \
+		fi; \
 	else \
 		echo "ERROR: neither 'cross' nor host gcc cross-toolchain found for $$TRIPLE."; \
 		echo "  Install cross: cargo install cross"; \
@@ -367,7 +414,7 @@ docker-push: ## Push the locally-built $(BINARY) image
 # are also useful locally and that CI shells out to (`make sbom`,
 # `make vexctl-install`). See docs/adr/0006-release-and-supply-chain-pipeline.md.
 
-sbom: ## Generate CycloneDX SBOM(s) for the workspace (*.cdx.json per crate)
+sbom: vendor-vim-rs ## Generate CycloneDX SBOM(s) for the workspace (*.cdx.json per crate)
 	@command -v cargo-cyclonedx >/dev/null 2>&1 || cargo install cargo-cyclonedx --locked
 	@cargo cyclonedx --format json
 	@echo "✓ CycloneDX SBOM(s) generated"
@@ -396,7 +443,7 @@ vex-assemble: vexctl-install ## Merge .vex/*.json into one OpenVEX document on s
 		--author "$$(git config user.email 2>/dev/null || echo local)" \
 		.vex/*.json
 
-vex-auto-presence: ## Run auto-vex-presence locally ($(GRYPE_JSON) + $(SBOM_FILES) required)
+vex-auto-presence: vendor-vim-rs ## Run auto-vex-presence locally ($(GRYPE_JSON) + $(SBOM_FILES) required)
 	@if [ ! -f "$(GRYPE_JSON)" ]; then echo "ERROR: $(GRYPE_JSON) not found (run grype --output json --file $(GRYPE_JSON))"; exit 1; fi
 	@if [ -z "$(SBOM_FILES)" ]; then echo "ERROR: no SBOMs found (target/release/*.cdx.json or docker-sbom-*.json)"; exit 1; fi
 	@cargo run --quiet -p banlieue-vex --bin auto-vex-presence -- \
@@ -409,7 +456,7 @@ vex-auto-presence: ## Run auto-vex-presence locally ($(GRYPE_JSON) + $(SBOM_FILE
 		--output vex.auto-presence.json
 	@echo "✓ wrote vex.auto-presence.json"
 
-vex-auto-reachability: ## Run auto-vex-reachability locally ($(GRYPE_JSON) + $(RELEASE_BINARY) required)
+vex-auto-reachability: vendor-vim-rs ## Run auto-vex-reachability locally ($(GRYPE_JSON) + $(RELEASE_BINARY) required)
 	@if [ ! -f "$(GRYPE_JSON)" ]; then echo "ERROR: $(GRYPE_JSON) not found"; exit 1; fi
 	@if [ ! -f "$(RELEASE_BINARY)" ]; then echo "ERROR: $(RELEASE_BINARY) not found (cargo build --release -p banlieue)"; exit 1; fi
 	@if [ "$$(uname -s)" = "Darwin" ]; then \
@@ -483,7 +530,7 @@ kind-deploy-crds: kind-create crds ## Apply CRDs + create $(NAMESPACE) on the ki
 	kubectl --context kind-$(KIND_CLUSTER_NAME) apply -f $(CRD_OUT_DIR)/
 	kubectl --context kind-$(KIND_CLUSTER_NAME) apply -f deploy/controller/namespace.yaml
 
-kind-load: kind-create ## Cross-compile $(BINARY) and load the image into the kind cluster (creates cluster if missing)
+kind-load: kind-create vendor-vim-rs ## Cross-compile $(BINARY) and load the image into the kind cluster (creates cluster if missing)
 	@HOST_ARCH=$$(uname -m); \
 		case "$$HOST_ARCH" in \
 			arm64|aarch64) TRIPLE=aarch64-unknown-linux-gnu; ARCH=arm64; LINKER=aarch64-linux-gnu-gcc ;; \
@@ -491,16 +538,24 @@ kind-load: kind-create ## Cross-compile $(BINARY) and load the image into the ki
 			*) echo "ERROR: unsupported host arch: $$HOST_ARCH"; exit 1 ;; \
 		esac; \
 		echo "Cross-compiling $(BINARY) for $$TRIPLE..."; \
-		if ! command -v $$LINKER >/dev/null 2>&1 && ! command -v cross >/dev/null 2>&1 ; then \
-			if [ "$$(uname -s)" != "Linux" ]; then \
-				echo "ERROR: neither 'cross' nor '$$LINKER' found."; \
-				echo "  macOS: brew tap messense/macos-cross-toolchains && brew install $$TRIPLE"; \
-				echo "  Or:    cargo install cross"; \
-				exit 1; \
-			fi; \
+		if ! command -v $$LINKER >/dev/null 2>&1 && [ "$$(uname -s)" != "Linux" ]; then \
+			echo "ERROR: cross-toolchain '$$LINKER' not found."; \
+			echo "  macOS: brew tap messense/macos-cross-toolchains && brew install $$TRIPLE"; \
+			echo "  (rustls/ring cross-compiles with the gcc cross-toolchain — no OpenSSL, no 'cross' needed.)"; \
+			exit 1; \
 		fi; \
 		rustup target add $$TRIPLE >/dev/null 2>&1 || true; \
-		cargo build --release --target $$TRIPLE -p $(BINARY); \
+		if command -v $$LINKER >/dev/null 2>&1; then \
+			TRIPLE_ENV=$$(echo $$TRIPLE | tr 'a-z-' 'A-Z_'); \
+			TRIPLE_US=$$(echo $$TRIPLE | tr '-' '_'); \
+			AR_TOOL=$${LINKER%-gcc}-ar; \
+			env CARGO_TARGET_$${TRIPLE_ENV}_LINKER=$$LINKER \
+				CC_$${TRIPLE_US}=$$LINKER \
+				AR_$${TRIPLE_US}=$$AR_TOOL \
+				cargo build --release --target $$TRIPLE -p $(BINARY); \
+		else \
+			cargo build --release --target $$TRIPLE -p $(BINARY); \
+		fi; \
 		mkdir -p binaries/$$ARCH; \
 		cp target/$$TRIPLE/release/$(BINARY) binaries/$$ARCH/; \
 		echo "Building image $(KIND_IMAGE) (linux/$$ARCH)..."; \
@@ -514,7 +569,7 @@ kind-load: kind-create ## Cross-compile $(BINARY) and load the image into the ki
 		echo "Loading $(KIND_IMAGE) into kind cluster '$(KIND_CLUSTER_NAME)'..."; \
 		kind load docker-image $(KIND_IMAGE) --name $(KIND_CLUSTER_NAME)
 
-kind-deploy-controller: kind-deploy-crds ## Deploy banlieue-controller to the kind cluster (uses $(KIND_IMAGE))
+kind-deploy-controller: kind-deploy-crds kind-load ## Deploy banlieue-controller to kind (log level: RUST_LOG=debug,kube=debug make kind-deploy-controller)
 	@echo "Applying namespace + RBAC..."
 	@kubectl --context kind-$(KIND_CLUSTER_NAME) apply -f deploy/controller/namespace.yaml
 	@for i in 1 2 3 4 5 6 7 8 9 10; do \
@@ -527,10 +582,13 @@ kind-deploy-controller: kind-deploy-crds ## Deploy banlieue-controller to the ki
 	@echo "Overriding controller image to $(KIND_IMAGE) (locally built)..."
 	@kubectl --context kind-$(KIND_CLUSTER_NAME) -n $(NAMESPACE) set image \
 		deployment/banlieue-controller controller=$(KIND_IMAGE)
+	@echo "Setting RUST_LOG=$(RUST_LOG) (env overrides the ConfigMap; CLI: RUST_LOG=debug,kube=debug make kind-deploy-controller)..."
+	@kubectl --context kind-$(KIND_CLUSTER_NAME) -n $(NAMESPACE) set env \
+		deployment/banlieue-controller RUST_LOG="$(RUST_LOG)"
 	@kubectl --context kind-$(KIND_CLUSTER_NAME) -n $(NAMESPACE) rollout status \
 		deployment/banlieue-controller --timeout=180s
 
-kind-deploy-provider-vsphere: kind-deploy-crds ## Deploy banlieue-provider-vsphere to the kind cluster (uses $(KIND_IMAGE))
+kind-deploy-provider-vsphere: kind-deploy-crds ## Deploy banlieue-provider-vsphere to kind (log level: RUST_LOG=debug,kube=debug make kind-deploy-provider-vsphere)
 	@echo "Applying namespace + RBAC + manifests..."
 	@kubectl --context kind-$(KIND_CLUSTER_NAME) apply -f deploy/controller/namespace.yaml
 	@for i in 1 2 3 4 5 6 7 8 9 10; do \
@@ -543,6 +601,9 @@ kind-deploy-provider-vsphere: kind-deploy-crds ## Deploy banlieue-provider-vsphe
 	@echo "Overriding provider image to $(KIND_IMAGE) (locally built)..."
 	@kubectl --context kind-$(KIND_CLUSTER_NAME) -n $(NAMESPACE) set image \
 		deployment/banlieue-provider-vsphere provider=$(KIND_IMAGE)
+	@echo "Setting RUST_LOG=$(RUST_LOG_VSPHERE) (env overrides the ConfigMap; CLI: RUST_LOG=debug,kube=debug make kind-deploy-provider-vsphere)..."
+	@kubectl --context kind-$(KIND_CLUSTER_NAME) -n $(NAMESPACE) set env \
+		deployment/banlieue-provider-vsphere RUST_LOG="$(RUST_LOG_VSPHERE)"
 	@kubectl --context kind-$(KIND_CLUSTER_NAME) -n $(NAMESPACE) rollout status \
 		deployment/banlieue-provider-vsphere --timeout=180s
 

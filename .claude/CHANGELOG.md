@@ -1,5 +1,125 @@
 # Changelog
 
+## [2026-05-31 19:15] - vim_rs → rustls patch; revert OpenSSL scaffolding
+
+**Author:** Erick Bourgeois
+
+### Added
+- `patches/vim_rs.patch` — one-hunk patch on the vendored `vim_rs` checkout's `vim_rs/Cargo.toml`: `reqwest = { version = "0.12" }` → `{ version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "charset", "http2"] }`. Generated from the pinned commit so `make vendor-vim-rs` applies it cleanly (and reverse-detects it as already-applied). No source changes — `vim_rs`'s client uses only backend-agnostic reqwest APIs (`danger_accept_invalid_certs`/`_hostnames` are `__tls`-gated, not native-tls). **`rustls-tls-native-roots`** (not `rustls-tls`) uses the OS trust store (`rustls-native-certs`, already in the tree via kube) instead of bundling `webpki-roots` — which keeps the lockfile identical to bindy/5-spot and avoids `webpki-roots`'s `CDLA-Permissive-2.0` license tripping `cargo deny check licenses`.
+
+### Changed
+- This makes the whole workspace **OpenSSL-free**: `Cargo.lock` now shows `openssl-sys: 0, native-tls: 0, rustls: 1, webpki-roots: 0, rustls-native-certs: 1` — matching the bindy / 5-spot reference repos (rustls + ring, native trust roots). `cargo metadata` reports no "patch not used" warning; `cargo deny check licenses` → ok.
+- **Reverted the interim OpenSSL scaffolding** (no longer needed): removed the `libssl` build stage + `LD_LIBRARY_PATH` from `Dockerfile` and `Dockerfile.chainguard` (back to plain single-stage COPY); deleted `Cross.toml`; reverted `Makefile` `kind-load` from `cross` back to the host gcc cross-toolchain (rustls/ring cross-compiles with just the cross-gcc + linker/CC env, like bindy); updated the provider crate's TLS comment and the developer doc.
+
+### Why
+`vim_rs` was the lone OpenSSL puller (via reqwest's default native-tls). Patching its reqwest to rustls — via the vendored-checkout + `[patch.crates-io]` mechanism, no fork — removes OpenSSL entirely, so cross-compiling from macOS and the distroless/Chainguard images "just work" with no libssl at build or runtime.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Build / packaging change (run `make vendor-vim-rs` before bare `cargo`; rebuild images)
+- [ ] Documentation only
+
+Verified: patch applies idempotently via `make vendor-vim-rs`; `cargo tree -i openssl-sys` empty; lockfile `openssl-sys: 0 / rustls: 1`; `cargo check -p banlieue` exit 0 (full workspace compiles with rustls).
+
+## [2026-05-31 18:45] - Makefile: RUST_LOG override on kind-deploy-{controller,provider-vsphere}
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `Makefile` — `kind-deploy-controller` and `kind-deploy-provider-vsphere` now `kubectl set env … RUST_LOG=$(RUST_LOG[_VSPHERE])` on the Deployment after applying, so the in-cluster log level is overridable the same way as `run-local`: `RUST_LOG=debug,kube=debug make kind-deploy-controller`. The container `env` overrides the ConfigMap's `RUST_LOG` for that key; default stays `info,kube=warn` (+`vim_rs=warn` for the provider).
+
+### Why
+Parity with `run-local` / `provider-vsphere-run-local` — debug an in-cluster deploy without hand-editing the ConfigMap.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Developer tooling only
+
+Verified by `make -n` for default and overridden `RUST_LOG`.
+
+## [2026-05-31 18:30] - Build vim_rs from a vendored checkout + local patch (no fork)
+
+**Author:** Erick Bourgeois
+
+### Context
+We want to carry a local change to `noclue/vim_rs` that is being submitted
+upstream, without owning a fork. Approach: build against a vendored checkout
+pinned to an upstream commit, with a checked-in patch applied at build time and
+wired in via `[patch.crates-io]`. The mechanism is fork-free and self-retiring —
+once the change ships upstream, the build detects it and skips re-applying.
+
+### Added
+- `Makefile`: `vendor-vim-rs` target — clones `noclue/vim_rs` into
+  `third_party/vim_rs` (gitignored), `reset --hard` to `VIM_RS_REF`, then applies
+  `patches/vim_rs.patch` idempotently: applies if clean, **skips if already
+  present** (merged upstream / reverse-applies), hard-errors if stale. Wired as a
+  prerequisite of every cargo-invoking target — `build`, `build-debug`, `test`,
+  `test-lib`, `lint`, `crds`, `api-docs`, `provider-vsphere-run-local`, `sbom`,
+  `vex-auto-presence`, `vex-auto-reachability`, `_build-linux`, `kind-load`.
+- `Cargo.toml`: `[patch.crates-io]` redirecting `vim_rs` to the crate's
+  subdirectory in the vendored checkout — `third_party/vim_rs/vim_rs` (upstream
+  is a multi-crate repo with no root manifest; the crate lives under `vim_rs/`).
+  Dep pinned to **`=0.4.4`** exact (was `0.4`).
+- `.github/actions/vendor-vim-rs/action.yml`: composite action that runs
+  `make vendor-vim-rs`; dropped into every cargo-using job in `build.yaml`
+  (format, clippy, build, test, security, cargo-deny, auto-vex-presence) right
+  after checkout. `docs.yaml` vendors transitively via `make docs` → `api-docs`.
+- `patches/README.md`: create / refresh / retire workflow for the patch.
+- `.gitignore`: ignore the vendored `third_party/vim_rs/` checkout.
+
+### Why
+Avoids maintaining a full fork: the pin lives in the `Makefile`, the diff lives
+in `patches/vim_rs.patch`, and the upstream-merged check means the build keeps
+working across bumps. The pin is a **commit, not a tag**: the version we need
+(0.4.4 — first to carry the `vcsim_compat` feature the provider uses) was
+published to crates.io and lives on `main` but was never git-tagged; the newest
+tag (v0.4.3) predates that feature. The `=0.4.4` exact pin is required so cargo's
+resolver lands on that version and the patch actually takes effect — a range
+(`0.4`) would let it pick crates.io 0.4.4 and silently ignore the path patch.
+Because the patch source is gitignored and absent after `actions/checkout`, every
+cargo step (local and CI) must vendor first or fail to read the manifest.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Build / packaging change (run `make vendor-vim-rs` after clone; `make`
+      targets and CI do it automatically — a bare `cargo build` needs the
+      checkout first)
+- [ ] Documentation only
+
+> Pairs with the OpenSSL build entry below: if the upstream patch switches
+> `vim_rs` off native-tls (rustls), the libssl runtime/image gymnastics there
+> can later be reverted.
+
+## [2026-05-31 18:00] - Build: system OpenSSL (dynamic) — libssl in images + `cross` for local
+
+**Author:** Erick Bourgeois
+
+### Context
+`vim_rs`'s reqwest uses native-tls → OpenSSL on Linux (kube is rustls; vim_rs is the lone OpenSSL source). Chosen approach: use the **system OpenSSL, dynamically linked** (no vendoring, no vim_rs fork). That requires libssl at build time and `libssl.so.3` in the runtime images.
+
+### Changed
+- `crates/banlieue-provider-vsphere/Cargo.toml` — removed the interim `openssl = { vendored }` dependency; back to plain dynamic system OpenSSL.
+- `Dockerfile` (distroless) and `Dockerfile.chainguard` — added a `libssl` build stage that stages `libssl.so.3` / `libcrypto.so.3` (Debian `libssl3` / Wolfi `openssl`) and copies them into the runtime image under `/usr/local/lib` with `LD_LIBRARY_PATH` (neither base ships OpenSSL, and there's no ldconfig). Fixes the `libssl.so.3: cannot open shared object file` runtime error. Built per-target-platform under buildx so the `.so` arch matches the binary.
+- `Makefile` — `kind-load` now builds the Linux binary with **`cross`** (a Linux container that has `libssl-dev`, per the new `Cross.toml`) instead of the host gcc cross-toolchain, which can't link a Linux libssl from macOS. Native Linux still builds directly.
+- `docs/src/developer/local-development.md` — documents `cargo install cross` for local image builds and why.
+
+### Added
+- `Cross.toml` — installs target-arch `libssl-dev` in `cross`'s build containers for both Linux targets.
+
+### Why
+CI builds the binary natively on Linux (libssl-dev present) — the release pipeline was never blocked. The two real gaps were the **runtime images** (no libssl) and **local macOS image builds** (cross-linking OpenSSL). Both are now closed without a vim_rs fork or vendoring.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Build / packaging change (rebuild images to pick up libssl; `cargo install cross` for local image builds)
+- [ ] Documentation only
+
+> `LIBSSL_IMAGE` (debian:trixie-slim / wolfi-base) is currently a floating tag — pin by digest (Dependabot, docker ecosystem) to match `BASE_IMAGE`.
+
 ## [2026-05-31 17:10] - ADR-0007 + CALM control for admission policies
 
 **Author:** Erick Bourgeois

@@ -5,7 +5,8 @@
 #
 # This Dockerfile expects a pre-built Linux binary at
 # `binaries/<TARGETARCH>/<BINARY>` — built by the Makefile via cross-compile or
-# a host gcc cross-toolchain. We never compile inside the container.
+# a host gcc cross-toolchain. We never compile inside the container. The binary
+# uses rustls (no OpenSSL), so this is a plain single-stage COPY.
 #
 # Build with:
 #     make docker-build           # auto host arch (BINARY defaults to banlieue)
@@ -42,7 +43,8 @@ LABEL org.opencontainers.image.source="https://github.com/firestoned/banlieue" \
       banlieue.io/binary="${BINARY}"
 
 # Copy the pre-built binary for the target architecture. The Makefile stages
-# binaries at `binaries/<arch>/<binary>`.
+# binaries at `binaries/<arch>/<binary>`. The binary uses rustls (no OpenSSL),
+# so the distroless/cc base needs no extra shared libraries.
 COPY --chmod=755 binaries/${TARGETARCH}/${BINARY} /app
 
 USER nonroot

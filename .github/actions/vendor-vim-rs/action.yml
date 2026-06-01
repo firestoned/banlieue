@@ -1,0 +1,23 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# Materialise the vendored `vim_rs` source the workspace builds against.
+#
+# `Cargo.toml` redirects `vim_rs` via `[patch.crates-io]` to a local checkout at
+# `third_party/vim_rs` (gitignored, so absent after `actions/checkout`). Every
+# cargo invocation — build, clippy, test, cargo-deny, SBOM — resolves the
+# dependency graph and therefore needs that checkout present and patched first,
+# or it fails with "failed to read .../third_party/vim_rs/.../Cargo.toml".
+#
+# This action delegates to `make vendor-vim-rs` (the single source of truth for
+# the pinned commit + patch), so CI and local builds stay identical. Drop it in
+# right after `actions/checkout` and before any cargo step.
+name: Vendor vim_rs
+description: Clone/pin noclue/vim_rs and apply the local patch so [patch.crates-io] resolves.
+
+runs:
+  using: composite
+  steps:
+    - name: Vendor + patch vim_rs
+      shell: bash
+      run: make vendor-vim-rs

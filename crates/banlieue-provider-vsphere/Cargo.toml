@@ -50,3 +50,8 @@ chrono.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
+
+# TLS: vim_rs's reqwest is patched to rustls (default-features = false +
+# rustls-tls-native-roots) via patches/vim_rs.patch — so the whole workspace is
+# OpenSSL-free (rustls + ring, native trust roots, like the reference repos). No
+# system libssl/webpki-roots; cross-compiles with the plain gcc cross-toolchain.

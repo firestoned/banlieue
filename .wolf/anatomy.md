@@ -1,23 +1,28 @@
 # anatomy.md
 
-> Auto-maintained by OpenWolf. Last scanned: 2026-05-31T19:59:22.198Z
-> Files: 231 tracked | Anatomy hits: 0 | Misses: 0
+> Auto-maintained by OpenWolf. Last scanned: 2026-06-01T01:07:06.762Z
+> Files: 235 tracked | Anatomy hits: 0 | Misses: 0
+
+## ../../.claude/plans/
+
+- `piped-wobbling-trinket.md` — Add `binaries/` to .gitignore (~144 tok)
 
 ## ./
 
-- `.gitignore` — Git ignore rules (~205 tok)
-- `Cargo.toml` — Rust package manifest (~462 tok)
+- `.gitignore` — Git ignore rules (~264 tok)
+- `Cargo.toml` — Rust package manifest (~795 tok)
 - `CLAUDE.md` — OpenWolf (~57 tok)
+- `Cross.toml` — SPDX-License-Identifier: Apache-2.0 (~275 tok)
 - `deny.toml` — cargo-deny configuration (~782 tok)
-- `Dockerfile` — Docker container definition (~566 tok)
-- `Dockerfile.chainguard` — SPDX-License-Identifier: Apache-2.0 (~402 tok)
+- `Dockerfile` — Docker container definition (~612 tok)
+- `Dockerfile.chainguard` — SPDX-License-Identifier: Apache-2.0 (~423 tok)
 - `LICENSE` — Project license (~3029 tok)
-- `Makefile` — SPDX-License-Identifier: Apache-2.0 (~7055 tok)
+- `Makefile` — SPDX-License-Identifier: Apache-2.0 (~8082 tok)
 - `README.md` — Project documentation (~1876 tok)
 
 ## .claude/
 
-- `CHANGELOG.md` — Changelog (~25678 tok)
+- `CHANGELOG.md` — Changelog (~27805 tok)
 - `CLAUDE.md` — Project Instructions for Claude Code (~2903 tok)
 - `settings.json` (~462 tok)
 - `settings.local.json` (~408 tok)
@@ -40,6 +45,10 @@
 
 - `action.yml` — SPDX-License-Identifier: Apache-2.0 (~325 tok)
 
+## .github/actions/vendor-vim-rs/
+
+- `action.yml` — SPDX-License-Identifier: Apache-2.0 (~287 tok)
+
 ## .github/codeql/
 
 - `codeql-config.yml` — , .github/, etc. (~192 tok)
@@ -51,7 +60,7 @@
 
 ## .github/workflows/
 
-- `build.yaml` — SPDX-License-Identifier: Apache-2.0 (~11054 tok)
+- `build.yaml` — SPDX-License-Identifier: Apache-2.0 (~11245 tok)
 - `calm-test.yaml` — SPDX-License-Identifier: Apache-2.0 (~1952 tok)
 - `calm.yaml` — SPDX-License-Identifier: Apache-2.0 (~2023 tok)
 - `codeql.yaml` — /*.rs (beta in CodeQL; stable enough for (~700 tok)
@@ -154,7 +163,7 @@
 
 ## crates/banlieue-provider-vsphere/
 
-- `Cargo.toml` — Rust package manifest (~495 tok)
+- `Cargo.toml` — Rust package manifest (~547 tok)
 
 ## crates/banlieue-provider-vsphere/src/
 
@@ -433,7 +442,7 @@
 ## docs/src/developer/
 
 - `index.md` — Developer (~254 tok)
-- `local-development.md` — Local Development (~1383 tok)
+- `local-development.md` — Local Development (~1480 tok)
 
 ## docs/src/getting-started/
 
@@ -479,3 +488,7 @@
 - `04-vmimage-ubuntu.yaml` — SPDX-License-Identifier: Apache-2.0 (~282 tok)
 - `05-virtualmachine.yaml` — SPDX-License-Identifier: Apache-2.0 (~402 tok)
 - `06-vspherecluster-multi-vcenter.yaml` — SPDX-License-Identifier: Apache-2.0 (~666 tok)
+
+## patches/
+
+- `README.md` — Project documentation (~885 tok)

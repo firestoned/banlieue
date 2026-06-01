@@ -59,10 +59,17 @@ RUST_LOG=debug,kube=debug make run-local     # RUST_LOG is overridable
 edit-compile-run cycles. To instead build the image and load it into kind:
 
 ```sh
-make kind-load                  # cross-compile + build the single banlieue image
+make kind-load                  # cross-compile the Linux binary + build the image
 make kind-deploy-controller     # apply manifests, override image to the local build
 make kind-deploy-provider-vsphere
 ```
+
+!!! note "Cross-compiling on macOS"
+    The binary uses **rustls** (no OpenSSL), so it cross-compiles with a plain
+    gcc cross-toolchain — no `cross`, no sysroot, no libssl. On Apple Silicon:
+    `brew tap messense/macos-cross-toolchains && brew install aarch64-unknown-linux-gnu`.
+    The distroless / Chainguard runtime images are plain single-stage COPYs (no
+    OpenSSL to ship).
 
 ## vSphere provider against `vcsim`
 

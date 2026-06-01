@@ -53,7 +53,27 @@ async-trait = "0.1"
 # `default-features = false` drops the `xml` SOAP/ESXi transport — vCenter
 # uses JSON, vcsim supports it, and the XML transport adds ~30–40% to debug
 # compile time. Vendor noclue/vim_rs, Apache-2.0.
-vim_rs = { version = "0.4", default-features = false }
+#
+# Pinned to `=0.4.4` (exact) to match VIM_RS_REF in the Makefile. 0.4.4 is the
+# first release to carry the `vcsim_compat` feature the provider uses; it was
+# published to crates.io and lives on `main` but was never git-tagged, so the
+# Makefile pins the commit, not a tag. The exact pin forces resolution onto that
+# version so [patch.crates-io] below actually takes effect (a non-exact `0.4`
+# would let cargo pick any 0.4.x and silently ignore the patch). Bump this in
+# lockstep with VIM_RS_REF when a newer commit carrying our upstreamed fix lands.
+vim_rs = { version = "=0.4.4", default-features = false }
+
+# Build vim_rs from a vendored checkout of noclue/vim_rs carrying a local patch
+# (patches/vim_rs.patch). The upstream repo is a multi-crate workspace, so the
+# crate itself lives in the `vim_rs/` subdirectory of the clone. The version
+# requirement and features stay declared above in [workspace.dependencies]; this
+# only redirects the *source*. The patch is being submitted upstream — once it
+# ships in a released tag, drop this block and bump the version above.
+#
+# Run `make vendor-vim-rs` before building (it clones/pins the tag and applies
+# the patch idempotently). `make build`/`test`/`lint`/`crds` depend on it.
+[patch.crates-io]
+vim_rs = { path = "third_party/vim_rs/vim_rs" }
 
 [profile.release]
 lto = "thin"
