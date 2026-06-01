@@ -671,3 +671,82 @@ Bootstrapped the MkDocs Material doc site at docs/, mirroring the ~/dev/5-spot s
 | 15:58 | Edited deploy/admission/README.md | 3→6 lines | ~91 |
 | 15:59 | Edited .claude/CHANGELOG.md | expanded (+22 lines) | ~356 |
 | 15:59 | Created ADR-0007 (admission policies: VAP over webhook/CRD-CEL); added CALM control admission-policy-validation + registered ADR; calm-validate clean | docs/adr/0007-admission-policies.md, docs/architecture/calm/architecture.json, deploy/admission/README.md | done | ~5k |
+| 16:36 | Edited crates/banlieue-provider-vsphere/Cargo.toml | expanded (+11 lines) | ~207 |
+| 16:39 | Edited Makefile | 4→4 lines | ~52 |
+| 16:39 | Edited Makefile | expanded (+10 lines) | ~155 |
+| 16:40 | Edited Makefile | expanded (+10 lines) | ~184 |
+| 17:42 | Edited crates/banlieue-provider-vsphere/Cargo.toml | 13→9 lines | ~153 |
+| 17:45 | Edited Dockerfile | expanded (+15 lines) | ~253 |
+| 17:45 | Edited Dockerfile | expanded (+6 lines) | ~129 |
+| 17:46 | Edited Dockerfile.chainguard | expanded (+12 lines) | ~229 |
+| 17:46 | Edited Dockerfile.chainguard | 3→8 lines | ~71 |
+| 17:46 | Created Cross.toml | — | ~275 |
+| 17:46 | Edited Makefile | reduced (-6 lines) | ~229 |
+| 17:48 | Edited docs/src/developer/local-development.md | expanded (+10 lines) | ~262 |
+| 17:48 | Edited Dockerfile | 3→4 lines | ~76 |
+| 17:48 | Edited .claude/CHANGELOG.md | expanded (+27 lines) | ~597 |
+| 17:48 | Option C (system OpenSSL dynamic): staged libssl.so.3 into distroless+chainguard images; kind-load uses cross (+Cross.toml libssl-dev); reverted vendored openssl | Dockerfile, Dockerfile.chainguard, Cross.toml, Makefile, provider-vsphere/Cargo.toml | done | ~8k |
+
+## Session: 2026-05-31 18:46
+
+| Time | Action | File(s) | Outcome | ~Tokens |
+|------|--------|---------|---------|--------|
+| 18:48 | Edited .gitignore | 4→7 lines | ~32 |
+| 18:48 | Created ../../.claude/plans/piped-wobbling-trinket.md | — | ~154 |
+| 19:20 | Edited .gitignore | 2→6 lines | ~59 |
+| 19:20 | Edited Cargo.toml | expanded (+11 lines) | ~177 |
+| 19:20 | Created patches/README.md | — | ~504 |
+
+| 13:00 | vendor+patch vim_rs at build time (no fork) | Makefile, Cargo.toml, patches/README.md, .gitignore | added vendor-vim-rs target w/ idempotent patch + upstream-merged detection | ~3k |
+| 19:22 | Edited Makefile | 2→2 lines | ~31 |
+| 19:22 | Edited Makefile | expanded (+10 lines) | ~174 |
+| 19:23 | Edited Makefile | expanded (+22 lines) | ~518 |
+| 19:23 | Edited Makefile | 5→5 lines | ~87 |
+| 19:23 | Edited Makefile | inline fix | ~32 |
+| 19:23 | Edited Makefile | 2→2 lines | ~13 |
+| 19:23 | Edited Makefile | inline fix | ~36 |
+| 19:23 | Edited .claude/CHANGELOG.md | expanded (+41 lines) | ~581 |
+| 19:23 | Edited patches/README.md | 3→3 lines | ~62 |
+| 19:23 | Edited Makefile | inline fix | ~27 |
+| 19:25 | Edited Cargo.toml | 2→2 lines | ~41 |
+| 19:57 | Edited Cargo.toml | 10→11 lines | ~184 |
+| 19:58 | Edited .claude/CHANGELOG.md | 2→4 lines | ~79 |
+| 19:59 | Edited Cargo.toml | expanded (+6 lines) | ~131 |
+| 20:09 | Edited Makefile | 9→13 lines | ~215 |
+| 20:09 | Edited Makefile | 21→22 lines | ~388 |
+| 20:09 | Edited Cargo.toml | 6→8 lines | ~163 |
+| 20:11 | Edited Makefile | inline fix | ~15 |
+| 20:19 | Edited Makefile | 2→2 lines | ~48 |
+| 20:19 | Edited Makefile | inline fix | ~29 |
+| 20:19 | Edited Makefile | inline fix | ~32 |
+| 20:19 | Created .github/actions/vendor-vim-rs/action.yml | — | ~287 |
+| 20:19 | Edited .github/workflows/build.yaml | 5→8 lines | ~55 |
+| 20:19 | Edited .github/workflows/build.yaml | 5→8 lines | ~94 |
+| 20:19 | Edited .github/workflows/build.yaml | 6→9 lines | ~109 |
+| 20:20 | Edited .github/workflows/build.yaml | 5→8 lines | ~88 |
+| 20:20 | Edited .github/workflows/build.yaml | 5→8 lines | ~91 |
+| 20:20 | Edited .github/workflows/build.yaml | 5→10 lines | ~130 |
+| 20:20 | Edited .github/workflows/build.yaml | 5→8 lines | ~96 |
+| 20:25 | Edited .claude/CHANGELOG.md | expanded (+11 lines) | ~810 |
+| 20:25 | Created patches/README.md | — | ~944 |
+
+| 20:15 | pin vim_rs via commit-ref vendoring + CI composite action | Makefile, Cargo.toml, .github/actions/vendor-vim-rs/action.yml, build.yaml, patches/README.md | =0.4.4 exact pin; patch resolves to PATH(local); all cargo make targets + CI jobs vendor first | ~12k |
+| 20:37 | Edited Makefile | cluster() → kind() | ~316 |
+| 20:37 | Edited Makefile | cluster() → kind() | ~332 |
+| 20:38 | Edited .claude/CHANGELOG.md | expanded (+17 lines) | ~255 |
+| 20:38 | kind-deploy-controller/provider-vsphere: RUST_LOG override via kubectl set env (parity with run-local) | Makefile | done | ~1k |
+| 20:48 | Edited Makefile | 16→20 lines | ~249 |
+| 20:48 | Edited Dockerfile | removed 18 lines | ~39 |
+| 20:48 | Edited Dockerfile | LD_LIBRARY_PATH() → rustls() | ~73 |
+| 20:48 | Edited Dockerfile | Makefile() → rustls() | ~75 |
+| 20:49 | Edited Dockerfile.chainguard | removed 15 lines | ~39 |
+| 20:49 | Edited Dockerfile.chainguard | 6→2 lines | ~36 |
+| 20:49 | Edited crates/banlieue-provider-vsphere/Cargo.toml | 9→7 lines | ~105 |
+| 20:49 | Edited docs/src/developer/local-development.md | 18→15 lines | ~202 |
+| 20:50 | Edited .claude/CHANGELOG.md | expanded (+22 lines) | ~562 |
+| 20:51 | Authored patches/vim_rs.patch (reqwest->rustls); workspace now OpenSSL-free (openssl-sys=0, rustls=1, matches bindy/5-spot); reverted cross/libssl Docker scaffolding | patches/vim_rs.patch, Dockerfile(.chainguard), Makefile, Cross.toml(deleted), provider-vsphere/Cargo.toml | done | ~10k |
+| 20:55 | Edited .claude/CHANGELOG.md | inline fix | ~56 |
+| 21:06 | Edited .claude/CHANGELOG.md | inline fix | ~223 |
+| 21:06 | Edited .claude/CHANGELOG.md | inline fix | ~88 |
+| 21:07 | Edited crates/banlieue-provider-vsphere/Cargo.toml | 4→4 lines | ~84 |
+| 21:07 | Fixed cargo-deny license failure: vim_rs patch uses rustls-tls-native-roots (not rustls-tls) -> drops webpki-roots (CDLA-Permissive-2.0); lockfile now matches bindy/5-spot exactly | patches/vim_rs.patch, Cargo.lock | done | ~3k |
