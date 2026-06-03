@@ -111,11 +111,14 @@ mod tests {
                 name: "pve-creds".to_string(),
             },
             insecure_skip_tls_verify: true,
-            ca_bundle: Some("-----BEGIN CERT-----\n...".to_string()),
+            ca_bundle: Some(CABundleSource {
+                inline: Some("-----BEGIN CERT-----\n...".to_string()),
+                ..Default::default()
+            }),
         };
         let json = serde_json::to_value(&c).unwrap();
         assert_eq!(json["insecureSkipTLSVerify"], true);
-        assert_eq!(json["caBundle"], "-----BEGIN CERT-----\n...");
+        assert_eq!(json["caBundle"]["inline"], "-----BEGIN CERT-----\n...");
         let back: ProviderConnection = serde_json::from_value(json).unwrap();
         assert_eq!(back, c);
     }

@@ -1431,5 +1431,74 @@
     "related_bugs": [],
     "occurrences": 1,
     "last_seen": "2026-05-31T20:15:00-04:00"
+  },
+  {
+    "id": "bug-088",
+    "timestamp": "2026-05-31T20:45:00-04:00",
+    "error_message": "vim_rs recompiled (~5min) on every back-to-back make target (e.g. kind-deploy-controller then kind-deploy-provider-vsphere)",
+    "file": "Makefile",
+    "root_cause": "vendor-vim-rs was .PHONY so it ran every invocation; its `git reset --hard` rewrote vendored source mtimes, which cargo's fingerprint saw as changed -> full vim_rs recompile.",
+    "fix": "Move the real recipe to a file target $(VIM_RS_DIR)/.vendor-stamp with prereqs Makefile + $(wildcard patch); vendor-vim-rs becomes a .PHONY alias depending on the stamp. make skips the reset when stamp is fresh -> no mtime churn -> no recompile. Bumping VIM_RS_REF (touches Makefile) or editing the patch re-triggers.",
+    "tags": [
+      "make",
+      "phony",
+      "stamp-file",
+      "cargo",
+      "fingerprint",
+      "vim_rs",
+      "incremental-build",
+      "mtime"
+    ],
+    "related_bugs": [
+      "bug-087"
+    ],
+    "occurrences": 1,
+    "last_seen": "2026-05-31T20:45:00-04:00"
+  },
+  {
+    "id": "bug-089",
+    "timestamp": "2026-06-03T14:00:00-04:00",
+    "error_message": "reqwest 0.13 panic: 'No provider set' on first TLS use (vim_rs 0.5 BYOC tests + runtime)",
+    "file": "crates/banlieue-provider-vsphere/src/client/vim.rs, app.rs",
+    "root_cause": "reqwest 0.13 with feature `rustls-no-provider` resolves the rustls CryptoProvider via CryptoProvider::get_default() and panics if none is installed. We chose rustls-no-provider+ring (to avoid aws-lc-rs cross-compile friction and match kube's ring provider) but nothing installed a process-default provider.",
+    "fix": "Add install_default_crypto_provider() = rustls::crypto::ring::default_provider().install_default() (ignore Err = idempotent); call once at the top of the vsphere provider run() before any TLS (kube client + BYOC vCenter client). Tests that build a reqwest client call it first.",
+    "tags": [
+      "reqwest",
+      "rustls",
+      "ring",
+      "crypto-provider",
+      "tls",
+      "vim_rs",
+      "byoc",
+      "panic",
+      "no-provider-set"
+    ],
+    "related_bugs": [],
+    "occurrences": 1,
+    "last_seen": "2026-06-03T14:00:00-04:00"
+  },
+  {
+    "id": "bug-090",
+    "timestamp": "2026-06-03T15:30:00-04:00",
+    "error_message": "cargo-deny: 'failed to satisfy license requirements' \u2014 CDLA-Permissive-2.0 (webpki-root-certs) not allowed; + phf/phf_shared duplicate warnings",
+    "file": "deny.toml",
+    "root_cause": "reqwest 0.12\u21920.13 bump (ADR-0009) pulls rustls-platform-verifier \u2192 webpki-root-certs (Mozilla CA bundle as DATA, licensed CDLA-Permissive-2.0) which the allowlist lacked. Both reqwest rustls features depend on it (unavoidable). Separately vim_rs 0.5 carries phf 0.11 (vim_macros) + 0.13 (vim_rs) internally.",
+    "fix": "deny.toml: add 'CDLA-Permissive-2.0' to licenses.allow (permissive data license, no copyleft); add phf@0.11.3 + phf_shared@0.11.3 to bans.skip. cargo deny check \u2192 advisories/bans/licenses/sources all ok.",
+    "tags": [
+      "cargo-deny",
+      "license",
+      "CDLA-Permissive-2.0",
+      "webpki-root-certs",
+      "reqwest",
+      "rustls",
+      "phf",
+      "supply-chain",
+      "duplicate-versions"
+    ],
+    "related_bugs": [
+      "bug-089"
+    ],
+    "occurrences": 1,
+    "last_seen": "2026-06-03T15:30:00-04:00"
   }
 ]

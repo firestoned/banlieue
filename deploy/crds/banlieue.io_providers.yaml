@@ -150,9 +150,49 @@ spec:
                 description: Connection details for the backend.
                 properties:
                   caBundle:
-                    description: Optional PEM-encoded CA bundle to validate the endpoint.
+                    description: |-
+                      Optional CA bundle to validate the endpoint's TLS certificate.
+
+                      A value-or-source: inline PEM, or a `configMapRef` / `secretRef` naming a
+                      key (default `ca.crt`) in the Provider's namespace. Exactly one source
+                      must be set; see [`CABundleSource`]. Resolved by the provider controller
+                      and injected into the HTTP client (ADR-0008, BYOC). When unset, the
+                      system trust roots are used.
                     nullable: true
-                    type: string
+                    properties:
+                      configMapRef:
+                        description: Key in a ConfigMap in the referrer's namespace (key defaults to `ca.crt`).
+                        nullable: true
+                        properties:
+                          key:
+                            description: Key within the object's `data`. Defaults are caller-defined.
+                            nullable: true
+                            type: string
+                          name:
+                            description: Name of the ConfigMap / Secret in the referrer's namespace.
+                            type: string
+                        required:
+                        - name
+                        type: object
+                      inline:
+                        description: Inline PEM (one or more concatenated certificates).
+                        nullable: true
+                        type: string
+                      secretRef:
+                        description: Key in a Secret in the referrer's namespace (key defaults to `ca.crt`).
+                        nullable: true
+                        properties:
+                          key:
+                            description: Key within the object's `data`. Defaults are caller-defined.
+                            nullable: true
+                            type: string
+                          name:
+                            description: Name of the ConfigMap / Secret in the referrer's namespace.
+                            type: string
+                        required:
+                        - name
+                        type: object
+                    type: object
                   credentialsRef:
                     description: |-
                       Reference to a Secret in the Provider's namespace containing the

@@ -67,9 +67,16 @@ rules:
   # ---------------------------------------------------------------------------
   # Core resources
   # ---------------------------------------------------------------------------
-  # Read Secrets — vCenter credentials referenced by Provider.spec.connection.
+  # Read Secrets — vCenter credentials referenced by Provider.spec.connection,
+  # and an optional CA bundle via connection.caBundle.secretRef (ADR-0008).
   - apiGroups: [""]
     resources: ["secrets"]
+    verbs: ["get", "list", "watch"]
+
+  # Read ConfigMaps — an optional CA bundle via connection.caBundle.configMapRef
+  # (ADR-0008). Read-only; the provider never writes ConfigMaps.
+  - apiGroups: [""]
+    resources: ["configmaps"]
     verbs: ["get", "list", "watch"]
 
   # Emit Events for state transitions visible via `kubectl describe provider`.

@@ -129,7 +129,21 @@ pub async fn reconcile_for_provider(
             return per_provider_failure(provider, reasons::SECRET_UNAVAILABLE, e.to_string());
         }
     };
-    let client = match ctx.vsphere.build(&provider.spec.connection, &creds).await {
+    let ca_bundle_pem = match crate::reconciler::ca_bundle::resolve_ca_bundle(
+        ctx,
+        &namespace,
+        &provider.spec.connection.ca_bundle,
+    )
+    .await
+    {
+        Ok(p) => p,
+        Err(e) => return per_provider_failure(provider, reasons::CONNECT_FAILED, e.to_string()),
+    };
+    let client = match ctx
+        .vsphere
+        .build(&provider.spec.connection, &creds, ca_bundle_pem.as_deref())
+        .await
+    {
         Ok(c) => c,
         Err(e) => return per_provider_failure(provider, reasons::CONNECT_FAILED, e.to_string()),
     };

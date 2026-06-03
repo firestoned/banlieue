@@ -750,3 +750,106 @@ Bootstrapped the MkDocs Material doc site at docs/, mirroring the ~/dev/5-spot s
 | 21:06 | Edited .claude/CHANGELOG.md | inline fix | ~88 |
 | 21:07 | Edited crates/banlieue-provider-vsphere/Cargo.toml | 4→4 lines | ~84 |
 | 21:07 | Fixed cargo-deny license failure: vim_rs patch uses rustls-tls-native-roots (not rustls-tls) -> drops webpki-roots (CDLA-Permissive-2.0); lockfile now matches bindy/5-spot exactly | patches/vim_rs.patch, Cargo.lock | done | ~3k |
+| 22:22 | Edited .github/workflows/build.yaml | 5→9 lines | ~122 |
+| 22:23 | Edited .claude/CHANGELOG.md | expanded (+18 lines) | ~286 |
+| 22:26 | Edited .github/actions/vendor-vim-rs/action.yml | expanded (+6 lines) | ~217 |
+| 22:26 | Edited .github/workflows/build.yaml | 5→4 lines | ~34 |
+| 22:26 | Edited .github/workflows/build.yaml | 2→3 lines | ~46 |
+| 22:26 | Edited .github/workflows/codeql.yaml | expanded (+7 lines) | ~172 |
+| 22:27 | Edited .github/workflows/docs.yaml | 9→13 lines | ~210 |
+| 22:27 | Edited Cargo.toml | 2→3 lines | ~53 |
+| 22:28 | Edited Makefile | 1→2 lines | ~44 |
+| 22:28 | Edited patches/README.md | 3→5 lines | ~37 |
+| 22:28 | Edited .claude/CHANGELOG.md | 17→19 lines | ~510 |
+| 22:28 | Completed vendor-vim-rs CI coverage (added to auto-vex-reachability + codeql-rust); added pending-upstream NOTE (noclue/vim_rs#37) to all vim_rs vendoring surfaces | .github/workflows/{build,codeql,docs}.yaml, action.yml, Cargo.toml, Makefile, patches/README.md | done | ~4k |
+| 22:31 | Edited Makefile | expanded (+7 lines) | ~171 |
+| 22:31 | Edited Makefile | expanded (+8 lines) | ~526 |
+| 22:32 | Edited Makefile | 6→7 lines | ~142 |
+
+| 20:45 | cache vendor-vim-rs behind stamp file to stop vim_rs rebuilds | Makefile, .claude/CHANGELOG.md | back-to-back make targets no longer recompile vim_rs (verified: cached) | ~4k |
+| 22:39 | Edited .claude/CHANGELOG.md | expanded (+32 lines) | ~429 |
+
+## Session: 2026-06-01 06:37
+
+| Time | Action | File(s) | Outcome | ~Tokens |
+|------|--------|---------|---------|--------|
+| 07:11 | Edited ../vim_rs/vim_rs/Cargo.toml | expanded (+9 lines) | ~164 |
+| 07:11 | Edited ../vim_rs/vim_rs/Cargo.toml | 1→6 lines | ~126 |
+| 07:50 | Edited ../vim_rs/CHANGELOG.md | modified features() | ~298 |
+| 07:50 | Edited ../vim_rs/README.md | expanded (+15 lines) | ~330 |
+| 11:55 | Edited ../roadmaps/banlieue/README.md | 2→3 lines | ~99 |
+| 11:55 | Created ../../.claude/projects/-Users-erick-dev-banlieue/memory/project_availability_zones.md | — | ~592 |
+| 11:55 | Edited ../../.claude/projects/-Users-erick-dev-banlieue/memory/MEMORY.md | 3→4 lines | ~102 |
+| 12:33 | Created docs/adr/0008-byoc-vsphere-http-client.md | — | ~2555 |
+| 12:33 | Edited docs/adr/0008-byoc-vsphere-http-client.md | 3→2 lines | ~24 |
+| 12:34 | Edited docs/adr/0008-byoc-vsphere-http-client.md | from_pem() → from_pem_bundle() | ~127 |
+| 12:35 | Edited docs/architecture/calm/architecture.json | modified transport() | ~480 |
+| 12:35 | Edited .claude/CHANGELOG.md | expanded (+36 lines) | ~497 |
+
+| 10:30 | #2 verify vim_rs#37 + #1 ADR-0008 BYOC for vSphere client | docs/adr/0008-*.md, calm/architecture.json, CHANGELOG | #37 is TLS-backend-only; unpatched 0.4.4 pulls OpenSSL (verified); BYOC honours caBundle but does NOT remove OpenSSL (additive features) → vendoring stays. CALM validates 0/0 | ~10k |
+| 12:36 | Created ../../.claude/projects/-Users-erick-dev-banlieue/memory/project_vsphere_byoc_tls.md | — | ~396 |
+| 12:36 | Edited ../../.claude/projects/-Users-erick-dev-banlieue/memory/MEMORY.md | 3→4 lines | ~106 |
+| 20:12 | Edited docs/adr/0008-byoc-vsphere-http-client.md | 2→2 lines | ~12 |
+| 20:13 | Edited docs/adr/0008-byoc-vsphere-http-client.md | expanded (+12 lines) | ~271 |
+| 20:14 | Edited docs/adr/0008-byoc-vsphere-http-client.md | modified side() | ~1283 |
+| 20:14 | Edited docs/adr/0008-byoc-vsphere-http-client.md | 6→10 lines | ~171 |
+| 20:14 | Edited docs/adr/0008-byoc-vsphere-http-client.md | expanded (+8 lines) | ~219 |
+| 20:14 | Edited docs/adr/0008-byoc-vsphere-http-client.md | expanded (+9 lines) | ~218 |
+| 20:14 | Edited docs/architecture/calm/architecture.json | inline fix | ~269 |
+| 20:16 | Edited crates/banlieue-api/src/common.rs | modified key_or() | ~1139 |
+| 20:17 | Edited crates/banlieue-api/src/common_tests.rs | modified key_selector_omits_none_key() | ~1540 |
+| 20:17 | Edited crates/banlieue-api/src/banlieue/provider.rs | expanded (+6 lines) | ~145 |
+| 20:17 | Edited crates/banlieue-api/src/banlieue/provider_tests.rs | 8→11 lines | ~139 |
+| 20:31 | Edited Cargo.toml | modified client() | ~168 |
+| 20:31 | Edited crates/banlieue-provider-vsphere/Cargo.toml | modified client() | ~89 |
+| 20:32 | Edited crates/banlieue-provider-vsphere/src/client/vim.rs | modified root_certs_from_pem() | ~775 |
+| 20:33 | Edited crates/banlieue-provider-vsphere/src/client/mod.rs | modified build() | ~214 |
+| 20:33 | Edited crates/banlieue-provider-vsphere/src/client/fake.rs | modified build() | ~76 |
+| 20:33 | Created crates/banlieue-provider-vsphere/src/reconciler/ca_bundle.rs | — | ~1127 |
+| 20:34 | Edited crates/banlieue-provider-vsphere/src/reconciler/mod.rs | 2→3 lines | ~15 |
+| 20:34 | Edited crates/banlieue-provider-vsphere/src/reconciler/provider.rs | expanded (+29 lines) | ~357 |
+| 20:34 | Edited crates/banlieue-provider-vsphere/src/reconciler/vmimage.rs | expanded (+14 lines) | ~212 |
+| 20:34 | Edited crates/banlieue-provider-vsphere/src/client/vim.rs | 9→12 lines | ~64 |
+| 20:35 | Created crates/banlieue-provider-vsphere/src/client/vim_tests.rs | — | ~898 |
+| 20:35 | Edited crates/banlieue-provider-vsphere/src/client/vim_tests.rs | 3→3 lines | ~14 |
+| 20:36 | Edited crates/banlieue-provider-vsphere/src/reconciler/ca_bundle.rs | modified plan() | ~701 |
+| 20:36 | Created crates/banlieue-provider-vsphere/src/reconciler/ca_bundle_tests.rs | — | ~611 |
+| 20:36 | Edited crates/banlieue-provider-vsphere/src/reconciler/ca_bundle_tests.rs | 5→5 lines | ~41 |
+| 20:37 | Edited crates/banlieue-provider-vsphere/src/reconciler/ca_bundle_tests.rs | 3→2 lines | ~26 |
+| 20:38 | Edited crates/banlieue-provider-vsphere/src/reconciler/ca_bundle.rs | 2→1 lines | ~22 |
+| 20:50 | Edited crates/banlieue-provider-vsphere/src/client/vim.rs | 2→3 lines | ~14 |
+| 20:51 | Edited crates/banlieue-provider-vsphere/src/reconciler/ca_bundle.rs | 2→3 lines | ~18 |
+| 20:51 | Edited crates/banlieue-provider-vsphere/src/client/vim.rs | modified root_certs_from_pem() | ~333 |
+| 20:51 | Edited crates/banlieue-provider-vsphere/src/client/vim_tests.rs | modified root_certs_from_pem_rejects_garbage() | ~161 |
+| 20:53 | Created deploy/admission/provider-cabundle-source.yaml | — | ~583 |
+| 20:53 | Edited deploy/provider-vsphere/rbac/clusterrole.yaml | expanded (+7 lines) | ~135 |
+| 20:53 | Edited examples/01-provider-vsphere-dc1.yaml | expanded (+14 lines) | ~224 |
+| 20:53 | Edited deploy/admission/README.md | 2→3 lines | ~98 |
+| 20:54 | Edited docs/src/guides/vsphere-provider.md | expanded (+6 lines) | ~107 |
+| 20:54 | Edited deploy/provider-vsphere/README.md | 2→3 lines | ~63 |
+| 20:55 | Edited .claude/CHANGELOG.md | expanded (+40 lines) | ~598 |
+
+| 12:00 | implement ADR-0008 BYOC + value-or-source caBundle (inline/configMapRef/secretRef) | banlieue-api common.rs, provider-vsphere client/vim.rs + reconciler/ca_bundle.rs, RBAC, VAP, examples, docs | fmt+clippy+test green (38 provider tests); CRDs regenerated; caBundle fails closed on empty/garbage PEM | ~40k |
+| 07:07 | Created docs/adr/0009-vim-rs-0.5-rustls-ring-retire-vendoring.md | — | ~2232 |
+| 07:07 | Edited docs/adr/0008-byoc-vsphere-http-client.md | modified Update() | ~267 |
+| 07:07 | Edited docs/architecture/calm/architecture.json | inline fix | ~122 |
+| 07:08 | Edited Cargo.toml | modified mode() | ~406 |
+| 07:08 | Edited crates/banlieue-provider-vsphere/Cargo.toml | reqwest() → startup() | ~100 |
+| 07:10 | Edited crates/banlieue-provider-vsphere/src/client/vim.rs | modified install_default_crypto_provider() | ~270 |
+| 07:10 | Edited crates/banlieue-provider-vsphere/src/client/vim.rs | modified BYOC() | ~201 |
+| 07:11 | Edited crates/banlieue-provider-vsphere/src/app.rs | 2→5 lines | ~40 |
+| 07:11 | Edited crates/banlieue-provider-vsphere/src/client/mod.rs | inline fix | ~18 |
+| 07:11 | Edited crates/banlieue-provider-vsphere/src/app.rs | modified run() | ~115 |
+| 07:17 | Edited crates/banlieue-provider-vsphere/src/client/vim_tests.rs | modified ensure_provider() | ~299 |
+| 07:20 | Edited Makefile | — | ~0 |
+| 07:20 | Edited Makefile | removed 36 lines | ~34 |
+| 07:21 | Edited .github/workflows/docs.yaml | 7→3 lines | ~47 |
+| 07:22 | Edited .gitignore | 8→4 lines | ~24 |
+| 07:32 | Edited docs/adr/0009-vim-rs-0.5-rustls-ring-retire-vendoring.md | 3→4 lines | ~78 |
+| 07:33 | Edited .claude/CHANGELOG.md | expanded (+40 lines) | ~538 |
+
+| 14:00 | adopt vim_rs 0.5 (rustls/ring); delete vendoring pipeline (ADR-0009) | Cargo.toml, vim.rs, app.rs, Makefile, .github, removed patches+third_party | plain crates.io dep; ring single crypto provider; full clean make build green; all tests pass | ~50k |
+| 07:34 | Edited ../../.claude/projects/-Users-erick-dev-banlieue/memory/project_vsphere_byoc_tls.md | modified BYOC() | ~350 |
+| 11:52 | Edited deny.toml | expanded (+7 lines) | ~161 |
+| 11:52 | Edited deny.toml | expanded (+7 lines) | ~168 |
+| 11:53 | Edited .claude/CHANGELOG.md | modified bump() | ~261 |

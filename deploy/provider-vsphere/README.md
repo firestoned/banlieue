@@ -99,7 +99,8 @@ EOF
 > If `GOVC_USERNAME` / `GOVC_PASSWORD` are unset, your credentials may be encoded
 > in `GOVC_URL` as `user:pass@host`, or you can run `govc env` to print the
 > resolved values. For a CA-validated endpoint, drop `insecureSkipTLSVerify` and
-> set `connection.caBundle` to your PEM-encoded CA instead.
+> set `connection.caBundle` to your CA — either inline PEM, or a `configMapRef` /
+> `secretRef` (key defaults to `ca.crt`); set exactly one. See ADR-0008.
 
 ## What you should see
 

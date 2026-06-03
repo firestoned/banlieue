@@ -1,5 +1,195 @@
 # Changelog
 
+## [2026-06-03 15:30] - cargo-deny: allow CDLA-Permissive-2.0; skip vim_rs phf dup
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `deny.toml`: allow `CDLA-Permissive-2.0` (the Mozilla CA root data bundle
+  `webpki-root-certs`, pulled by reqwest 0.13's `rustls-platform-verifier`); add
+  `phf@0.11.3` / `phf_shared@0.11.3` to the duplicate-version skip list (vim_rs
+  0.5's `vim_macros` uses phf 0.11 while `vim_rs` uses 0.13 — internal, can't
+  unify). `cargo deny check` → all four checks ok.
+
+### Why
+Fallout of the reqwest 0.12 → 0.13 bump (ADR-0009): the new rustls platform
+verifier drags in a permissive *data*-licensed CA bundle the allowlist hadn't
+seen, and vim_rs 0.5 carries two phf majors internally. Both are benign; this
+makes the supply-chain gate green again.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Build / CI policy only
+
+## [2026-06-03 14:00] - Adopt vim_rs 0.5 (rustls/ring); delete the vendoring pipeline (ADR-0009)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `Cargo.toml`: `vim_rs = "0.5"` (plain crates.io, `default-features = false` →
+  BYOC mode); **deleted the `[patch.crates-io]` block** and the `=0.4.4` pin.
+  `reqwest` 0.12 → **0.13** (`rustls-no-provider` + charset + http2). Added direct
+  `rustls = "0.23"` (ring) dep.
+- `client/vim.rs`: BYOC call site is now `ClientBuilder::new(endpoint, http)`
+  (2-arg; vim_rs 0.5 has no `.http_client()` in `default-client`-off mode). Added
+  `install_default_crypto_provider()` (ring), called at the top of the provider's
+  `run()` before any TLS — reqwest 0.13 `rustls-no-provider` panics
+  ("No provider set") otherwise. ring is the single crypto provider, shared with
+  kube; no aws-lc-rs, no OpenSSL (verified: `openssl-sys`/`aws-lc-rs` absent).
+
+### Removed
+- The entire vendoring pipeline: `make vendor-vim-rs` (+ all `VIM_RS_*` vars,
+  stamp, and prerequisites on build/test/lint/crds/etc.),
+  `.github/actions/vendor-vim-rs` and its 9 CI invocations (build + codeql),
+  `patches/` (vim_rs.patch + README), `third_party/vim_rs/`, the `.gitignore`
+  entry. `make build` now compiles `vim_rs 0.5.0` from crates.io with no vendor
+  step.
+
+### Why
+The upstream author shipped the fix as vim_rs 0.5.0 (reqwest 0.13/rustls + a
+first-class BYOC mode, noclue/vim_rs#37). That resolves ADR-0008's build-side
+caveat, so the fork-shaped vendor/patch/stamp/CI apparatus is deleted in favour
+of a plain dependency. See ADR-0009.
+
+### Notes
+- The libssl Docker/Cross scaffolding was already removed earlier; nothing left
+  to revert (Dockerfiles are single-stage rustls/no-OpenSSL).
+
+### Impact
+- [x] Breaking change (none for users; build/dev workflow: no more `make
+      vendor-vim-rs`, plain crates.io)
+- [x] Requires cluster rollout (rebuild images on reqwest 0.13/ring)
+- [ ] Documentation only
+
+## [2026-06-01 12:00] - Implement BYOC + value-or-source caBundle (ADR-0008)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `crates/banlieue-api/src/common.rs` — `CABundleSource` (inline / configMapRef /
+  secretRef, exactly-one via `validate()`) + `KeySelector` (name + optional key,
+  `key_or` default) + `DEFAULT_CA_BUNDLE_KEY = "ca.crt"`. Full unit tests.
+- `crates/banlieue-provider-vsphere/src/reconciler/ca_bundle.rs` —
+  `resolve_ca_bundle` (pure `plan()` classifier + namespace-local ConfigMap/Secret
+  reads, failing closed on >1 source / missing object / missing key / non-UTF-8).
+- BYOC in `client/vim.rs` — `build_http_client` builds the `reqwest::Client`
+  (root certs via `from_pem_bundle`, **rejects a zero-cert bundle** so a bad PEM
+  fails closed instead of silently using system roots) and injects it via
+  `ClientBuilder::http_client`. `root_certs_from_pem` / `build_http_client` unit
+  tested with a real self-signed fixture.
+- `deploy/admission/provider-cabundle-source.yaml` — VAP enforcing exactly-one
+  caBundle source at admission (defense-in-depth atop the controller check).
+- `reqwest` as a direct dep of provider-vsphere (workspace-pinned, rustls
+  features matching vim_rs so the graph stays OpenSSL-free).
+
+### Changed
+- `ProviderConnection.ca_bundle`: `Option<String>` → `Option<CABundleSource>`
+  (breaking, pre-GA — caBundle is now an object). CRDs + API reference regenerated.
+- `VSphereClientFactory::build` takes a resolved `ca_bundle_pem: Option<&str>`;
+  both reconcile call sites (provider, vmimage) resolve then pass it.
+- `deploy/provider-vsphere/rbac/clusterrole.yaml` — added `configmaps`
+  get/list/watch (read-only) for `configMapRef`.
+- Examples + guides (`examples/01-*`, vsphere guide, provider-vsphere README)
+  show the value-or-source caBundle.
+
+### Why
+Implements ADR-0008: banlieue owns the HTTP transport (BYOC) so it owns TLS
+trust, and `caBundle` finally works — from inline PEM, a ConfigMap, or a Secret.
+
+### Impact
+- [x] Breaking change (`caBundle` string → object; pre-GA v1alpha1)
+- [x] Requires cluster rollout (provider RBAC adds configmaps; new VAP optional)
+- [ ] Documentation only
+
+## [2026-06-01 10:30] - ADR-0008: BYOC for the vSphere HTTP client (design only)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0008-byoc-vsphere-http-client.md` (Status: Proposed) — decide that
+  the vSphere provider builds and injects its own `reqwest::Client` via
+  `vim_rs` `ClientBuilder::http_client(...)`, owning TLS/transport policy and
+  finally honouring `ProviderConnection.caBundle`.
+- `docs/architecture/calm/architecture.json` — `tls-trust-byoc` control on the
+  `rel-provider-vsphere-backend` relationship (NIST SC-8 / SC-23 / IA-5).
+  `make calm-validate` passes (0/0); `make calm-diagrams` re-rendered.
+
+### Why
+`vim_rs`'s built-in builder exposes only a blunt `insecure` toggle and ignores a
+CA bundle entirely, so `connection.caBundle` is currently dead config and the
+only way to reach a private-CA vCenter is to disable verification — a
+least-privilege violation. `http_client()` is a supported, fork-free seam that
+lets banlieue own TLS trust.
+
+### Notes / corrections
+- BYOC is **independent of** the TLS-backend question. Verified empirically that
+  unpatched `vim_rs` 0.4.4 pulls OpenSSL (`openssl v0.10.80` + native-tls);
+  Cargo's additive features mean BYOC alone does **not** evict it. Removing
+  OpenSSL still depends on the rustls patch / upstream noclue/vim_rs#37, so the
+  `vendor-vim-rs` pipeline stays. (Supersedes an earlier mistaken claim that
+  0.4.4 already used rustls — that read the patched working tree.)
+- noclue/vim_rs#37 is **strictly** TLS-backend selection — no behavioural fixes —
+  so it does not block or alter BYOC.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Documentation / design only (no code yet — TDD of `VimClientFactory::build`
+      is the next step once the ADR is accepted)
+
+## [2026-05-31 20:45] - Cache vendor-vim-rs behind a stamp file (stop rebuilds)
+
+**Author:** Erick Bourgeois
+
+### Context
+`vendor-vim-rs` was `.PHONY`, so it ran on every `make`. Its `git reset --hard`
+rewrote the vendored source mtimes each time, which cargo's fingerprint read as
+"changed" → it recompiled `vim_rs` (~5 min) on every back-to-back target, e.g.
+`make kind-deploy-controller` then `make kind-deploy-provider-vsphere`.
+
+### Changed
+- `Makefile`: the real vendoring recipe now hangs off a file target,
+  `$(VIM_RS_DIR)/.vendor-stamp` (`VIM_RS_STAMP`), with prerequisites `Makefile`
+  (carries `VIM_RS_REF`) and the patch (via `$(wildcard $(VIM_RS_PATCH))`).
+  `vendor-vim-rs` is now a thin `.PHONY` alias depending on the stamp. When the
+  stamp is newer than its inputs, make skips the recipe entirely — no
+  `git reset`, no mtime churn, no cargo rebuild. Editing the patch or bumping
+  `VIM_RS_REF` re-triggers; the resolved REF is written into the stamp.
+
+### Why
+The vendoring must stay a prerequisite of every cargo target (correctness on a
+fresh clone), but doing the work only matters when the pin or patch changes.
+A stamp file is the standard make idiom for "run this side-effecting step at
+most once until its inputs change."
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Build change only (faster incremental builds; `make clean` + re-vendor or
+      deleting `third_party/vim_rs/.vendor-stamp` forces a re-vendor)
+- [ ] Documentation only
+
+## [2026-05-31 19:50] - CI: complete vendor-vim-rs coverage + pending-upstream NOTEs (noclue/vim_rs#37)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/workflows/build.yaml` — added the `vendor-vim-rs` composite to the `auto-vex-reachability` job (the one cargo job missing it; it failed with `failed to read .../third_party/vim_rs/vim_rs/Cargo.toml`).
+- `.github/workflows/codeql.yaml` — added a `vendor-vim-rs` step gated on `matrix.language == 'rust'` before CodeQL init: the Rust extractor resolves the workspace via `cargo metadata`, which needs the `[patch.crates-io]` checkout present.
+- Added a **TEMPORARY / pending-upstream NOTE referencing `https://github.com/noclue/vim_rs/issues/37`** to every place the vendoring surfaces: the composite `action.yml` (name + header), each `Vendor vim_rs` step in `build.yaml`, the new CodeQL step, the `make docs` step in `docs.yaml` (vendors transitively), and the canonical source comments in `Cargo.toml` (`[patch.crates-io]`), `Makefile` (`VIM_RS_*` vars), and `patches/README.md` (Retiring the patch).
+
+### Why
+Every cargo invocation in the workspace needs the gitignored `third_party/vim_rs` checkout materialised first (the rustls `[patch]`). Audited **all** workflows: `format`/`clippy`/`build`/`test`/`auto-vex-presence` already vendored; `auto-vex-reachability` and `codeql` (rust) did not; `docs` vendors transitively via `make docs` → `api-docs`. `calm`/`sast`/`scorecard` run no cargo. The NOTEs make the temporary nature discoverable so the whole apparatus can be retired once #37 ships.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] CI only
+- [ ] Documentation only
+
+Verified: all workflow YAML + `action.yml` parse; every raw-`cargo` job in `build.yaml` has `vendor=1`; CodeQL has the rust-gated vendor step; `#37` NOTE present in action.yml, build.yaml, codeql.yaml, docs.yaml, Cargo.toml, Makefile, patches/README.md.
+
 ## [2026-05-31 19:15] - vim_rs → rustls patch; revert OpenSSL scaffolding
 
 **Author:** Erick Bourgeois

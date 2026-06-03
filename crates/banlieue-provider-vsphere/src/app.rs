@@ -34,7 +34,10 @@ use kube::{
 use tracing::{error, info};
 
 use crate::{
-    client::VimClientFactory, context::Context, reconciler::provider, reconciler::vmimage,
+    client::{VimClientFactory, install_default_crypto_provider},
+    context::Context,
+    reconciler::provider,
+    reconciler::vmimage,
 };
 
 const DEFAULT_HEALTH_PORT: u16 = 8081;
@@ -120,6 +123,11 @@ pub struct Cli {
 /// Returns an error if logging init, kube client construction, or leader-lease
 /// acquisition fails.
 pub async fn run(cli: Cli) -> Result<()> {
+    // Install the rustls ring provider as the process default before ANY TLS use
+    // — the kube client below and the BYOC vCenter client both need it, and
+    // reqwest 0.13 (rustls-no-provider) panics without it (ADR-0009).
+    install_default_crypto_provider();
+
     init_tracing(&cli.log_format, cli.log_level.as_deref(), LOG_DIRECTIVES)
         .context("initialising tracing")?;
     info!(
