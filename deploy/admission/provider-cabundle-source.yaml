@@ -1,0 +1,49 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# A Provider's spec.connection.caBundle is a value-or-source: exactly one of
+# `inline`, `configMapRef`, or `secretRef` must be set (ADR-0008). The provider
+# controller also enforces this at reconcile time (failing closed on status), so
+# this policy is defense-in-depth: it rejects a malformed caBundle at admission
+# instead of letting it reach the controller. Enforced in the API server via CEL
+# (no webhook). Requires Kubernetes 1.30+ (ValidatingAdmissionPolicy GA).
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: banlieue-provider-cabundle-source
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: admission
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["banlieue.io"]
+        apiVersions: ["v1alpha1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["providers"]
+  # Only evaluate when a caBundle is present; absence is valid (system roots).
+  matchConditions:
+    - name: has-cabundle
+      expression: "has(object.spec.connection) && has(object.spec.connection.caBundle)"
+  validations:
+    # Count the set sources; exactly one is required. CEL has() is true only when
+    # the optional field is present, so this is a clean 0/1/many check.
+    - expression: >-
+        [has(object.spec.connection.caBundle.inline),
+         has(object.spec.connection.caBundle.configMapRef),
+         has(object.spec.connection.caBundle.secretRef)].filter(x, x).size() == 1
+      messageExpression: >-
+        'spec.connection.caBundle must set exactly one of inline, configMapRef, secretRef.'
+      reason: Invalid
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: banlieue-provider-cabundle-source
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: admission
+spec:
+  policyName: banlieue-provider-cabundle-source
+  validationActions: ["Deny"]

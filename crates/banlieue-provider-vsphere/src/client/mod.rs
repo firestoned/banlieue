@@ -15,7 +15,7 @@ pub mod fake;
 pub mod vim;
 
 pub use fake::{FakeClient, FakeClientFactory, Inventory, InventoryBuilder};
-pub use vim::VimClientFactory;
+pub use vim::{VimClientFactory, install_default_crypto_provider};
 
 // `Template` is re-exported via the module path `crate::client::Template`
 // (declared above) — listed here as an anchor so future readers see the
@@ -74,11 +74,18 @@ pub struct Credentials {
 #[async_trait]
 pub trait VSphereClientFactory: Send + Sync {
     /// Build a client by connecting to `connection.endpoint` with `creds`.
-    /// `ca_bundle` / `insecure_skip_tls_verify` are taken from `connection`.
+    ///
+    /// `ca_bundle_pem` is the **already-resolved** PEM trust bundle (inline, or
+    /// read from the ConfigMap/Secret named by `connection.ca_bundle`) or `None`
+    /// to use the system trust roots. Resolution happens in the reconciler,
+    /// where the kube client lives; the factory only consumes the PEM so it can
+    /// stay free of cluster access (and trivially faked in tests). The
+    /// `insecureSkipTLSVerify` flag is read from `connection`. See ADR-0008.
     async fn build(
         &self,
         connection: &ProviderConnection,
         creds: &Credentials,
+        ca_bundle_pem: Option<&str>,
     ) -> Result<Box<dyn VSphereClient>>;
 }
 

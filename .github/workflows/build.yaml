@@ -105,9 +105,6 @@ jobs:
         with:
           components: rustfmt
 
-      - name: Vendor vim_rs
-        uses: ./.github/actions/vendor-vim-rs
-
       - name: Check formatting
         run: cargo fmt --all -- --check
 
@@ -127,9 +124,6 @@ jobs:
 
       - name: Cache cargo dependencies
         uses: firestoned/github-actions/rust/cache-cargo@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
-
-      - name: Vendor vim_rs
-        uses: ./.github/actions/vendor-vim-rs
 
       - name: Run clippy
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
@@ -194,9 +188,6 @@ jobs:
       - name: Cache cargo dependencies
         uses: firestoned/github-actions/rust/cache-cargo@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
 
-      - name: Vendor vim_rs
-        uses: ./.github/actions/vendor-vim-rs
-
       # Production binary = banlieue's default features (vsphere; no vcsim).
       - name: Build banlieue binary
         run: cargo build --release -p banlieue
@@ -247,9 +238,6 @@ jobs:
       - name: Cache cargo dependencies
         uses: firestoned/github-actions/rust/cache-cargo@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
 
-      - name: Vendor vim_rs
-        uses: ./.github/actions/vendor-vim-rs
-
       - name: Run tests
         run: cargo test --workspace --all-features --verbose
 
@@ -266,9 +254,6 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (moving ref — re-pin quarterly)
-
-      - name: Vendor vim_rs
-        uses: ./.github/actions/vendor-vim-rs
 
       - name: Run security scan (PR / push)
         if: github.event_name != 'release'
@@ -294,11 +279,6 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      # cargo-deny runs `cargo metadata`, which needs the [patch.crates-io]
-      # source present. Only git is required here (no toolchain).
-      - name: Vendor vim_rs
-        uses: ./.github/actions/vendor-vim-rs
 
       - name: Run cargo-deny
         uses: EmbarkStudios/cargo-deny-action@91bf2b620e09e18d6eb78b92e7861937469acedb # v2.0.17
@@ -515,9 +495,6 @@ jobs:
 
       - name: Cache cargo dependencies
         uses: firestoned/github-actions/rust/cache-cargo@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
-
-      - name: Vendor vim_rs
-        uses: ./.github/actions/vendor-vim-rs
 
       - name: Build auto-vex-presence
         run: cargo build --release -p banlieue-vex --bin auto-vex-presence

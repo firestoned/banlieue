@@ -102,10 +102,44 @@ Connection details for the backend.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `caBundle` | string |  | Optional PEM-encoded CA bundle to validate the endpoint. |
+| `caBundle` | object |  | Optional CA bundle to validate the endpoint's TLS certificate. |
 | `credentialsRef` | object | Yes | Reference to a Secret in the Provider's namespace containing the credentials. Required keys depend on provider class: vsphere: username, password proxmox: username (root@pam!token-id), tokenValue OR username, password libvirt: optional sshPrivateKey for SSH transports |
 | `endpoint` | string | Yes | Endpoint URL or URI. Format depends on provider class: vsphere: https://vcenter.example.com/sdk proxmox: https://pve.example.com:8006 libvirt: qemu+ssh://kvm-host.example.com/system |
 | `insecureSkipTLSVerify` | boolean |  | Skip TLS verification. Applies to vsphere and proxmox. |
+
+##### `.spec.connection.caBundle`
+
+Optional CA bundle to validate the endpoint's TLS certificate.
+
+A value-or-source: inline PEM, or a `configMapRef` / `secretRef` naming a
+key (default `ca.crt`) in the Provider's namespace. Exactly one source
+must be set; see [`CABundleSource`]. Resolved by the provider controller
+and injected into the HTTP client (ADR-0008, BYOC). When unset, the
+system trust roots are used.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `configMapRef` | object |  | Key in a ConfigMap in the referrer's namespace (key defaults to `ca.crt`). |
+| `inline` | string |  | Inline PEM (one or more concatenated certificates). |
+| `secretRef` | object |  | Key in a Secret in the referrer's namespace (key defaults to `ca.crt`). |
+
+###### `.spec.connection.caBundle.configMapRef`
+
+Key in a ConfigMap in the referrer's namespace (key defaults to `ca.crt`).
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `key` | string |  | Key within the object's `data`. Defaults are caller-defined. |
+| `name` | string | Yes | Name of the ConfigMap / Secret in the referrer's namespace. |
+
+###### `.spec.connection.caBundle.secretRef`
+
+Key in a Secret in the referrer's namespace (key defaults to `ca.crt`).
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `key` | string |  | Key within the object's `data`. Defaults are caller-defined. |
+| `name` | string | Yes | Name of the ConfigMap / Secret in the referrer's namespace. |
 
 ##### `.spec.connection.credentialsRef`
 

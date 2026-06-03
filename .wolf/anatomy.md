@@ -1,28 +1,47 @@
 # anatomy.md
 
-> Auto-maintained by OpenWolf. Last scanned: 2026-06-01T01:07:06.762Z
-> Files: 235 tracked | Anatomy hits: 0 | Misses: 0
+> Auto-maintained by OpenWolf. Last scanned: 2026-06-03T15:53:19.288Z
+> Files: 248 tracked | Anatomy hits: 0 | Misses: 0
 
 ## ../../.claude/plans/
 
 - `piped-wobbling-trinket.md` — Add `binaries/` to .gitignore (~144 tok)
 
+## ../../.claude/projects/-Users-erick-dev-banlieue/memory/
+
+- `MEMORY.md` — Memory index (~229 tok)
+- `project_availability_zones.md` (~575 tok)
+- `project_vsphere_byoc_tls.md` — Declares BYOC (~415 tok)
+
+## ../roadmaps/banlieue/
+
+- `README.md` — Project documentation (~694 tok)
+
+## ../vim_rs/
+
+- `CHANGELOG.md` — Changelog (~5601 tok)
+- `README.md` — Project documentation (~8214 tok)
+
+## ../vim_rs/vim_rs/
+
+- `Cargo.toml` — Rust package manifest (~745 tok)
+
 ## ./
 
-- `.gitignore` — Git ignore rules (~264 tok)
-- `Cargo.toml` — Rust package manifest (~795 tok)
+- `.gitignore` — Git ignore rules (~216 tok)
+- `Cargo.toml` — Rust package manifest (~753 tok)
 - `CLAUDE.md` — OpenWolf (~57 tok)
 - `Cross.toml` — SPDX-License-Identifier: Apache-2.0 (~275 tok)
-- `deny.toml` — cargo-deny configuration (~782 tok)
+- `deny.toml` — cargo-deny configuration (~966 tok)
 - `Dockerfile` — Docker container definition (~612 tok)
 - `Dockerfile.chainguard` — SPDX-License-Identifier: Apache-2.0 (~423 tok)
 - `LICENSE` — Project license (~3029 tok)
-- `Makefile` — SPDX-License-Identifier: Apache-2.0 (~8082 tok)
+- `Makefile` — SPDX-License-Identifier: Apache-2.0 (~7481 tok)
 - `README.md` — Project documentation (~1876 tok)
 
 ## .claude/
 
-- `CHANGELOG.md` — Changelog (~27805 tok)
+- `CHANGELOG.md` — Changelog (~30333 tok)
 - `CLAUDE.md` — Project Instructions for Claude Code (~2903 tok)
 - `settings.json` (~462 tok)
 - `settings.local.json` (~408 tok)
@@ -47,7 +66,7 @@
 
 ## .github/actions/vendor-vim-rs/
 
-- `action.yml` — SPDX-License-Identifier: Apache-2.0 (~287 tok)
+- `action.yml` — SPDX-License-Identifier: Apache-2.0 (~409 tok)
 
 ## .github/codeql/
 
@@ -60,10 +79,10 @@
 
 ## .github/workflows/
 
-- `build.yaml` — SPDX-License-Identifier: Apache-2.0 (~11245 tok)
+- `build.yaml` — SPDX-License-Identifier: Apache-2.0 (~11461 tok)
 - `calm-test.yaml` — SPDX-License-Identifier: Apache-2.0 (~1952 tok)
 - `calm.yaml` — SPDX-License-Identifier: Apache-2.0 (~2023 tok)
-- `codeql.yaml` — /*.rs (beta in CodeQL; stable enough for (~700 tok)
+- `codeql.yaml` — /*.rs (beta in CodeQL; stable enough for (~802 tok)
 - `docs.yaml` — SPDX-License-Identifier: Apache-2.0 (~3154 tok)
 - `sast.yaml` — SPDX-License-Identifier: Apache-2.0 (~518 tok)
 - `scorecard.yaml` — SPDX-License-Identifier: Apache-2.0 (~1094 tok)
@@ -79,8 +98,8 @@
 
 ## crates/banlieue-api/src/
 
-- `common_tests.rs` — Unit tests for `common.rs`. (~6650 tok)
-- `common.rs` — Common types shared across banlieue API groups. (~2960 tok)
+- `common_tests.rs` — Unit tests for `common.rs`. (~7707 tok)
+- `common.rs` — Common types shared across banlieue API groups. (~3744 tok)
 - `crddoc_tests.rs` — Tests for the CRD Markdown reference generator. (~1380 tok)
 - `crddoc.rs` — Render banlieue CRDs as a single Markdown API-reference page. (~3153 tok)
 - `crdgen_support_tests.rs` — Tests for the crdgen post-generation fix-ups. (~1257 tok)
@@ -90,8 +109,8 @@
 ## crates/banlieue-api/src/banlieue/
 
 - `mod.rs` — `banlieue.io/v1alpha1` API group. (~250 tok)
-- `provider_tests.rs` — Unit tests for `provider.rs`. (~3457 tok)
-- `provider.rs` — `banlieue.io/v1alpha1` Provider CRD. (~3255 tok)
+- `provider_tests.rs` — Unit tests for `provider.rs`. (~3256 tok)
+- `provider.rs` — `banlieue.io/v1alpha1` Provider CRD. (~3138 tok)
 - `virtualmachine_tests.rs` — Unit tests for `virtualmachine.rs`. (~3646 tok)
 - `virtualmachine.rs` — `banlieue.io/v1alpha1` VirtualMachine CRD. (~3264 tok)
 - `vmclass_tests.rs` — Unit tests for `vmclass.rs`. (~2570 tok)
@@ -163,29 +182,32 @@
 
 ## crates/banlieue-provider-vsphere/
 
-- `Cargo.toml` — Rust package manifest (~547 tok)
+- `Cargo.toml` — Rust package manifest (~641 tok)
 
 ## crates/banlieue-provider-vsphere/src/
 
 - `app_tests.rs` — Unit tests for [`super::super::app`]. (~561 tok)
-- `app.rs` — # `banlieue provider vsphere` entry point (~2387 tok)
+- `app.rs` — # `banlieue provider vsphere` entry point (~2313 tok)
 - `context.rs` — Shared reconcile context for the vSphere provider. (~366 tok)
 - `error.rs` — Typed errors for the vSphere provider's reconcilers. (~351 tok)
 - `lib.rs` — # banlieue-provider-vsphere (~321 tok)
 
 ## crates/banlieue-provider-vsphere/src/client/
 
-- `fake.rs` — In-memory `VSphereClient` used by reconciler tests. (~1345 tok)
-- `mod.rs` — vSphere client surface used by the reconcilers. (~1086 tok)
-- `vim.rs` — Production `VSphereClient` implementation backed by `vim_rs`. (~2266 tok)
+- `fake.rs` — In-memory `VSphereClient` used by reconciler tests. (~1266 tok)
+- `mod.rs` — vSphere client surface used by the reconcilers. (~1140 tok)
+- `vim_tests.rs` — Unit tests for the BYOC HTTP-client helpers in `vim.rs` (ADR-0008). (~1171 tok)
+- `vim.rs` — Production `VSphereClient` implementation backed by `vim_rs`. (~3158 tok)
 
 ## crates/banlieue-provider-vsphere/src/reconciler/
 
-- `mod.rs` — vSphere provider reconcilers. (~104 tok)
+- `ca_bundle_tests.rs` — Unit tests for caBundle classification (`plan`) in `ca_bundle.rs`. (~600 tok)
+- `ca_bundle.rs` — Resolve `Provider.spec.connection.caBundle` to PEM text (ADR-0008). (~1420 tok)
+- `mod.rs` — vSphere provider reconcilers. (~103 tok)
 - `provider_tests.rs` — Unit tests for [`super::super::provider`]. (~1351 tok)
-- `provider.rs` — `Provider` reconciler — capability introspection against vCenter. (~3524 tok)
+- `provider.rs` — `Provider` reconciler — capability introspection against vCenter. (~3731 tok)
 - `vmimage_tests.rs` — Unit tests for [`super::super::vmimage`]. (~3164 tok)
-- `vmimage.rs` — `VMImage` reconciler — template-availability check on vSphere. (~3928 tok)
+- `vmimage.rs` — `VMImage` reconciler — template-availability check on vSphere. (~4024 tok)
 
 ## crates/banlieue-vex/
 
@@ -216,8 +238,9 @@
 
 ## deploy/admission/
 
+- `provider-cabundle-source.yaml` — SPDX-License-Identifier: Apache-2.0 (~583 tok)
 - `provider-immutability.yaml` — SPDX-License-Identifier: Apache-2.0 (~413 tok)
-- `README.md` — Project documentation (~312 tok)
+- `README.md` — Project documentation (~349 tok)
 - `virtualmachine-immutability.yaml` — SPDX-License-Identifier: Apache-2.0 (~526 tok)
 
 ## deploy/controller/
@@ -251,12 +274,12 @@
 
 - `configmap.yaml` — SPDX-License-Identifier: Apache-2.0 (~162 tok)
 - `deployment.yaml` — SPDX-License-Identifier: Apache-2.0 (~890 tok)
-- `README.md` — Project documentation (~1631 tok)
+- `README.md` — Project documentation (~1655 tok)
 - `service.yaml` — SPDX-License-Identifier: Apache-2.0 (~166 tok)
 
 ## deploy/provider-vsphere/rbac/
 
-- `clusterrole.yaml` — SPDX-License-Identifier: Apache-2.0 (~937 tok)
+- `clusterrole.yaml` — SPDX-License-Identifier: Apache-2.0 (~1025 tok)
 - `clusterrolebinding.yaml` — SPDX-License-Identifier: Apache-2.0 (~142 tok)
 - `serviceaccount.yaml` — SPDX-License-Identifier: Apache-2.0 (~84 tok)
 
@@ -277,10 +300,12 @@
 - `0005-capi-contract-label-codegen.md` — 0005 — Emit the CAPI contract label from crdgen (not kustomize) (~1025 tok)
 - `0006-release-and-supply-chain-pipeline.md` — 0006 — Release artifacts and supply-chain pipeline (~1737 tok)
 - `0007-admission-policies.md` — 0007 — ValidatingAdmissionPolicies for CRD invariants (~1527 tok)
+- `0008-byoc-vsphere-http-client.md` — 0008 — Bring-Your-Own-Client (BYOC) for the vSphere HTTP transport (~3752 tok)
+- `0009-vim-rs-0.5-rustls-ring-retire-vendoring.md` — 0009 — Adopt vim_rs 0.5 (rustls/ring, BYOC); retire the vendoring pipeline (~2110 tok)
 
 ## docs/architecture/calm/
 
-- `architecture.json` — Declares by (~11678 tok)
+- `architecture.json` — Declares by (~12132 tok)
 - `README.md` — Project documentation (~999 tok)
 
 ## docs/architecture/calm/templates/mermaid/
@@ -453,7 +478,7 @@
 
 - `core-controller.md` — Guide: Core Controller (~1917 tok)
 - `index.md` — Guides (~413 tok)
-- `vsphere-provider.md` — Guide: vSphere Provider (~2387 tok)
+- `vsphere-provider.md` — Guide: vSphere Provider (~2450 tok)
 
 ## docs/src/javascripts/
 
@@ -482,7 +507,7 @@
 
 ## examples/
 
-- `01-provider-vsphere-dc1.yaml` — SPDX-License-Identifier: Apache-2.0 (~529 tok)
+- `01-provider-vsphere-dc1.yaml` — SPDX-License-Identifier: Apache-2.0 (~706 tok)
 - `02-provider-libvirt-edge.yaml` — SPDX-License-Identifier: Apache-2.0 (~292 tok)
 - `03-vmclass-db-prod-large.yaml` — SPDX-License-Identifier: Apache-2.0 (~230 tok)
 - `04-vmimage-ubuntu.yaml` — SPDX-License-Identifier: Apache-2.0 (~282 tok)
@@ -491,4 +516,4 @@
 
 ## patches/
 
-- `README.md` — Project documentation (~885 tok)
+- `README.md` — Project documentation (~901 tok)

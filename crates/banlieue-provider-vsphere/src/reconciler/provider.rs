@@ -109,8 +109,37 @@ pub async fn reconcile(provider: Arc<Provider>, ctx: Arc<Context>) -> Result<Act
         }
     };
 
+    // Resolve the CA bundle (inline / configMapRef / secretRef) to PEM, if any.
+    let ca_bundle_pem = match crate::reconciler::ca_bundle::resolve_ca_bundle(
+        &ctx,
+        &namespace,
+        &provider.spec.connection.ca_bundle,
+    )
+    .await
+    {
+        Ok(p) => p,
+        Err(e) => {
+            warn!(error = %e, "caBundle resolution failed");
+            patch_status_failed(
+                &ctx,
+                &namespace,
+                &name,
+                generation,
+                condition_types::PROVIDER_REACHABLE,
+                reasons::CONNECT_FAILED,
+                format!("{e}"),
+            )
+            .await?;
+            return Ok(requeue_on_error());
+        }
+    };
+
     // Connect to vCenter.
-    let client = match ctx.vsphere.build(&provider.spec.connection, &creds).await {
+    let client = match ctx
+        .vsphere
+        .build(&provider.spec.connection, &creds, ca_bundle_pem.as_deref())
+        .await
+    {
         Ok(c) => c,
         Err(e) => {
             warn!(error = %e, "vCenter connect failed");

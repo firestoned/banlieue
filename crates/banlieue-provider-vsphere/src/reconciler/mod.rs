@@ -6,5 +6,6 @@
 //! introspection against a real vCenter (or vcsim). The `VSphereMachine`
 //! reconciler (VM lifecycle) lands in iteration 2.
 
+pub mod ca_bundle;
 pub mod provider;
 pub mod vmimage;

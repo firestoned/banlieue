@@ -27,6 +27,13 @@ banlieue-provider-sdk = { path = "../banlieue-provider-sdk" }
 
 vim_rs = { workspace = true }
 
+# BYOC HTTP client (ADR-0008/0009): we build the reqwest::Client ourselves (CA
+# bundle + insecure flag) and inject it into vim_rs 0.5 in BYOC mode. Features
+# pinned in [workspace.dependencies]: reqwest 0.13, rustls with the ring provider
+# installed at startup (no OpenSSL, no aws-lc-rs).
+reqwest = { workspace = true }
+rustls = { workspace = true }
+
 kube.workspace = true
 k8s-openapi.workspace = true
 schemars.workspace = true

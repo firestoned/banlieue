@@ -110,9 +110,15 @@ pub struct ProviderConnection {
     )]
     pub insecure_skip_tls_verify: bool,
 
-    /// Optional PEM-encoded CA bundle to validate the endpoint.
+    /// Optional CA bundle to validate the endpoint's TLS certificate.
+    ///
+    /// A value-or-source: inline PEM, or a `configMapRef` / `secretRef` naming a
+    /// key (default `ca.crt`) in the Provider's namespace. Exactly one source
+    /// must be set; see [`CABundleSource`]. Resolved by the provider controller
+    /// and injected into the HTTP client (ADR-0008, BYOC). When unset, the
+    /// system trust roots are used.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ca_bundle: Option<String>,
+    pub ca_bundle: Option<CABundleSource>,
 }
 
 /// The capability surface an admin asserts a backend exposes. The scheduler

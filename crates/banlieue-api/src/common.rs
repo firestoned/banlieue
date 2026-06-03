@@ -109,6 +109,89 @@ pub struct TypedObjectReference {
     pub namespace: Option<String>,
 }
 
+/// Default key read from a ConfigMap / Secret referenced by a [`KeySelector`]
+/// when `key` is omitted. Matches Kubernetes' own convention (`kube-root-ca.crt`
+/// ConfigMap, service-account CA, webhook `caBundle` all key on `ca.crt`).
+pub const DEFAULT_CA_BUNDLE_KEY: &str = "ca.crt";
+
+/// Reference to a single key within a named object (ConfigMap or Secret) in the
+/// same namespace as the referrer.
+///
+/// `key` is optional; callers that have a well-known default (e.g.
+/// [`CABundleSource`], which defaults to [`DEFAULT_CA_BUNDLE_KEY`]) resolve it
+/// via [`KeySelector::key_or`].
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct KeySelector {
+    /// Name of the ConfigMap / Secret in the referrer's namespace.
+    pub name: String,
+    /// Key within the object's `data`. Defaults are caller-defined.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+}
+
+impl KeySelector {
+    /// The configured `key`, or `default` when omitted.
+    pub fn key_or<'a>(&'a self, default: &'a str) -> &'a str {
+        self.key.as_deref().unwrap_or(default)
+    }
+}
+
+/// Source of a PEM-encoded CA bundle used to validate a backend's TLS
+/// certificate. Exactly one of the three fields must be set.
+///
+/// - `inline` — PEM text directly in the spec (one or more concatenated certs).
+/// - `config_map_ref` — a key in a ConfigMap in the referrer's namespace; the
+///   common case for a centrally-managed, non-secret corporate trust bundle.
+///   Key defaults to [`DEFAULT_CA_BUNDLE_KEY`].
+/// - `secret_ref` — a key in a Secret in the referrer's namespace, for CA
+///   material treated as sensitive. Key defaults to [`DEFAULT_CA_BUNDLE_KEY`].
+///
+/// Resolving the ConfigMap/Secret variants requires cluster access and lives in
+/// the consuming controller; this type only models the spec and validates the
+/// "exactly one" invariant via [`CABundleSource::validate`].
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CABundleSource {
+    /// Inline PEM (one or more concatenated certificates).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inline: Option<String>,
+    /// Key in a ConfigMap in the referrer's namespace (key defaults to `ca.crt`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_map_ref: Option<KeySelector>,
+    /// Key in a Secret in the referrer's namespace (key defaults to `ca.crt`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret_ref: Option<KeySelector>,
+}
+
+impl CABundleSource {
+    /// Number of sources set. The "exactly one" invariant means a valid source
+    /// has a count of `1`.
+    pub fn source_count(&self) -> usize {
+        usize::from(self.inline.is_some())
+            + usize::from(self.config_map_ref.is_some())
+            + usize::from(self.secret_ref.is_some())
+    }
+
+    /// Validate the "exactly one of inline / configMapRef / secretRef" invariant.
+    ///
+    /// # Errors
+    /// Returns a static message when zero or more than one source is set, so the
+    /// caller can surface it on status (controller-side) — the same rule a
+    /// `ValidatingAdmissionPolicy` enforces at admission.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        match self.source_count() {
+            1 => Ok(()),
+            0 => Err(
+                "caBundle: exactly one of inline, configMapRef, secretRef must be set (none were)",
+            ),
+            _ => Err(
+                "caBundle: exactly one of inline, configMapRef, secretRef must be set (more than one was)",
+            ),
+        }
+    }
+}
+
 /// Minimal LabelSelector mirroring the k8s `metav1.LabelSelector` shape.
 ///
 /// We re-declare it here rather than re-exporting `k8s_openapi`'s type because

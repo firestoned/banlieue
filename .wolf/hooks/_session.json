@@ -1,409 +1,676 @@
 {
-  "session_id": "session-2026-05-31-1846",
-  "started": "2026-05-31T22:46:33.416Z",
+  "session_id": "session-2026-06-01-0637",
+  "started": "2026-06-01T10:37:17.496Z",
   "files_read": {
-    "/Users/erick/dev/banlieue/.gitignore": {
-      "count": 2,
-      "tokens": 216,
-      "first_read": "2026-05-31T22:47:14.018Z"
+    "/Users/erick/dev/vim_rs/vim_rs/Cargo.toml": {
+      "count": 1,
+      "tokens": 808,
+      "first_read": "2026-06-01T11:10:04.179Z"
     },
-    "/tmp/vimfeat.txt": {
+    "/Users/erick/dev/vim_rs/CHANGELOG.md": {
       "count": 1,
       "tokens": 0,
-      "first_read": "2026-05-31T22:52:01.918Z"
+      "first_read": "2026-06-01T11:49:53.907Z"
+    },
+    "/Users/erick/dev/vim_rs/README.md": {
+      "count": 1,
+      "tokens": 1876,
+      "first_read": "2026-06-01T11:50:12.549Z"
+    },
+    "/Users/erick/dev/banlieue/third_party/vim_rs/vim_rs/src/core/client.rs": {
+      "count": 2,
+      "tokens": 0,
+      "first_read": "2026-06-01T15:53:51.639Z"
+    },
+    "/Users/erick/dev/banlieue/crates/banlieue-provider-vsphere/src/client/vim.rs": {
+      "count": 3,
+      "tokens": 3148,
+      "first_read": "2026-06-01T15:54:03.879Z"
+    },
+    "/Users/erick/dev/roadmaps/banlieue/README.md": {
+      "count": 1,
+      "tokens": 1876,
+      "first_read": "2026-06-01T15:54:53.757Z"
+    },
+    "/Users/erick/.claude/projects/-Users-erick-dev-banlieue/memory/MEMORY.md": {
+      "count": 2,
+      "tokens": 0,
+      "first_read": "2026-06-01T15:55:45.959Z"
+    },
+    "/Users/erick/dev/banlieue/docs/adr/0007-admission-policies.md": {
+      "count": 1,
+      "tokens": 1527,
+      "first_read": "2026-06-01T16:32:27.373Z"
+    },
+    "/Users/erick/dev/banlieue/docs/adr/0008-byoc-vsphere-http-client.md": {
+      "count": 7,
+      "tokens": 3618,
+      "first_read": "2026-06-01T16:33:34.772Z"
+    },
+    "/Users/erick/dev/banlieue/crates/banlieue-api/src/banlieue/provider.rs": {
+      "count": 2,
+      "tokens": 3255,
+      "first_read": "2026-06-01T16:33:52.061Z"
+    },
+    "/Users/erick/dev/banlieue/docs/architecture/calm/architecture.json": {
+      "count": 1,
+      "tokens": 11678,
+      "first_read": "2026-06-01T16:34:49.684Z"
+    },
+    "/Users/erick/dev/banlieue/.claude/CHANGELOG.md": {
+      "count": 4,
+      "tokens": 30116,
+      "first_read": "2026-06-01T16:35:37.671Z"
+    },
+    "/Users/erick/dev/banlieue/crates/banlieue-api/src/common.rs": {
+      "count": 2,
+      "tokens": 2960,
+      "first_read": "2026-06-01T23:45:15.040Z"
+    },
+    "/Users/erick/dev/banlieue/crates/banlieue-provider-vsphere/src/reconciler/provider.rs": {
+      "count": 3,
+      "tokens": 3524,
+      "first_read": "2026-06-01T23:45:16.323Z"
+    },
+    "/Users/erick/dev/banlieue/deploy/provider-vsphere/rbac/clusterrole.yaml": {
+      "count": 1,
+      "tokens": 937,
+      "first_read": "2026-06-01T23:45:16.609Z"
+    },
+    "/Users/erick/dev/banlieue/crates/banlieue-api/src/common_tests.rs": {
+      "count": 2,
+      "tokens": 6650,
+      "first_read": "2026-06-02T00:15:12.193Z"
+    },
+    "/Users/erick/dev/banlieue/crates/banlieue-api/src/banlieue/provider_tests.rs": {
+      "count": 1,
+      "tokens": 3457,
+      "first_read": "2026-06-02T00:17:35.768Z"
+    },
+    "/Users/erick/dev/banlieue/crates/banlieue-provider-vsphere/src/client/mod.rs": {
+      "count": 1,
+      "tokens": 1086,
+      "first_read": "2026-06-02T00:30:01.525Z"
     },
     "/Users/erick/dev/banlieue/crates/banlieue-provider-vsphere/Cargo.toml": {
       "count": 1,
-      "tokens": 462,
-      "first_read": "2026-05-31T23:11:16.499Z"
+      "tokens": 808,
+      "first_read": "2026-06-02T00:31:23.096Z"
     },
     "/Users/erick/dev/banlieue/Cargo.toml": {
-      "count": 6,
-      "tokens": 619,
-      "first_read": "2026-05-31T23:11:31.158Z"
+      "count": 2,
+      "tokens": 939,
+      "first_read": "2026-06-02T00:31:29.713Z"
+    },
+    "/Users/erick/dev/banlieue/crates/banlieue-provider-vsphere/src/client/fake.rs": {
+      "count": 1,
+      "tokens": 1345,
+      "first_read": "2026-06-02T00:33:13.666Z"
+    },
+    "/Users/erick/dev/banlieue/crates/banlieue-provider-vsphere/src/reconciler/mod.rs": {
+      "count": 1,
+      "tokens": 104,
+      "first_read": "2026-06-02T00:34:10.423Z"
+    },
+    "/Users/erick/dev/banlieue/crates/banlieue-provider-vsphere/src/reconciler/vmimage.rs": {
+      "count": 1,
+      "tokens": 3928,
+      "first_read": "2026-06-02T00:34:34.512Z"
+    },
+    "/Users/erick/dev/banlieue/crates/banlieue-provider-vsphere/src/reconciler/ca_bundle.rs": {
+      "count": 2,
+      "tokens": 1419,
+      "first_read": "2026-06-02T00:36:03.094Z"
+    },
+    "/Users/erick/dev/banlieue/examples/01-provider-vsphere-dc1.yaml": {
+      "count": 1,
+      "tokens": 529,
+      "first_read": "2026-06-02T00:53:26.243Z"
+    },
+    "/Users/erick/dev/banlieue/deploy/admission/README.md": {
+      "count": 1,
+      "tokens": 1876,
+      "first_read": "2026-06-02T00:53:41.362Z"
+    },
+    "/Users/erick/dev/banlieue/docs/src/guides/vsphere-provider.md": {
+      "count": 1,
+      "tokens": 2387,
+      "first_read": "2026-06-02T00:54:19.418Z"
+    },
+    "/Users/erick/dev/banlieue/deploy/provider-vsphere/README.md": {
+      "count": 1,
+      "tokens": 1876,
+      "first_read": "2026-06-02T00:54:40.462Z"
+    },
+    "/Users/erick/dev/banlieue/crates/banlieue/src/main.rs": {
+      "count": 1,
+      "tokens": 228,
+      "first_read": "2026-06-03T11:09:29.812Z"
+    },
+    "/Users/erick/dev/banlieue/crates/banlieue-provider-vsphere/src/app.rs": {
+      "count": 1,
+      "tokens": 2387,
+      "first_read": "2026-06-03T11:10:09.542Z"
+    },
+    "/Users/erick/dev/banlieue/crates/banlieue-provider-vsphere/src/client/vim_tests.rs": {
+      "count": 1,
+      "tokens": 995,
+      "first_read": "2026-06-03T11:17:47.403Z"
     },
     "/Users/erick/dev/banlieue/Makefile": {
-      "count": 14,
-      "tokens": 8046,
-      "first_read": "2026-05-31T23:18:07.934Z"
-    },
-    "/Users/erick/dev/banlieue/.claude/CHANGELOG.md": {
       "count": 3,
-      "tokens": 27189,
-      "first_read": "2026-05-31T23:21:00.111Z"
-    },
-    "/Users/erick/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/vim_rs-0.4.4/Cargo.toml": {
-      "count": 1,
-      "tokens": 619,
-      "first_read": "2026-05-31T23:21:30.245Z"
-    },
-    "/Users/erick/dev/banlieue/third_party/vim_rs/vim_rs/Cargo.toml": {
-      "count": 1,
-      "tokens": 795,
-      "first_read": "2026-06-01T00:10:19.068Z"
-    },
-    "/Users/erick/dev/banlieue/.github/actions/prepare-docker-binaries/action.yml": {
-      "count": 1,
-      "tokens": 325,
-      "first_read": "2026-06-01T00:17:29.627Z"
-    },
-    "/Users/erick/dev/banlieue/.github/workflows/build.yaml": {
-      "count": 4,
-      "tokens": 11245,
-      "first_read": "2026-06-01T00:17:34.135Z"
+      "tokens": 7481,
+      "first_read": "2026-06-03T11:20:14.575Z"
     },
     "/Users/erick/dev/banlieue/.github/workflows/docs.yaml": {
       "count": 1,
-      "tokens": 3154,
-      "first_read": "2026-06-01T00:18:37.117Z"
+      "tokens": 3220,
+      "first_read": "2026-06-03T11:21:49.804Z"
     },
-    "/Users/erick/dev/banlieue/.github/actions/vendor-vim-rs/action.yml": {
+    "/Users/erick/dev/banlieue/.gitignore": {
       "count": 1,
-      "tokens": 287,
-      "first_read": "2026-06-01T00:20:43.881Z"
+      "tokens": 264,
+      "first_read": "2026-06-03T11:22:14.751Z"
     },
-    "/Users/erick/dev/banlieue/patches/README.md": {
+    "/Users/erick/.claude/projects/-Users-erick-dev-banlieue/memory/project_vsphere_byoc_tls.md": {
       "count": 1,
-      "tokens": 1876,
-      "first_read": "2026-06-01T00:25:16.750Z"
+      "tokens": 0,
+      "first_read": "2026-06-03T11:33:48.837Z"
     },
-    "/Users/erick/dev/banlieue/.github/workflows/codeql.yaml": {
+    "/Users/erick/dev/banlieue/deny.toml": {
       "count": 1,
-      "tokens": 700,
-      "first_read": "2026-06-01T00:25:54.289Z"
+      "tokens": 782,
+      "first_read": "2026-06-03T15:52:16.245Z"
     }
   },
   "files_written": [
     {
-      "file": "/Users/erick/dev/banlieue/.gitignore",
+      "file": "/Users/erick/dev/vim_rs/vim_rs/Cargo.toml",
       "action": "edit",
-      "tokens": 34,
-      "at": "2026-05-31T22:48:27.782Z"
+      "tokens": 176,
+      "at": "2026-06-01T11:11:17.842Z"
     },
     {
-      "file": "/Users/erick/.claude/plans/piped-wobbling-trinket.md",
+      "file": "/Users/erick/dev/vim_rs/vim_rs/Cargo.toml",
+      "action": "edit",
+      "tokens": 135,
+      "at": "2026-06-01T11:11:23.718Z"
+    },
+    {
+      "file": "/Users/erick/dev/vim_rs/CHANGELOG.md",
+      "action": "edit",
+      "tokens": 319,
+      "at": "2026-06-01T11:50:01.815Z"
+    },
+    {
+      "file": "/Users/erick/dev/vim_rs/README.md",
+      "action": "edit",
+      "tokens": 354,
+      "at": "2026-06-01T11:50:22.893Z"
+    },
+    {
+      "file": "/Users/erick/dev/roadmaps/banlieue/README.md",
+      "action": "edit",
+      "tokens": 106,
+      "at": "2026-06-01T15:55:12.806Z"
+    },
+    {
+      "file": "/Users/erick/.claude/projects/-Users-erick-dev-banlieue/memory/project_availability_zones.md",
       "action": "create",
-      "tokens": 164,
-      "at": "2026-05-31T22:48:37.093Z"
+      "tokens": 635,
+      "at": "2026-06-01T15:55:42.112Z"
     },
     {
-      "file": "/Users/erick/dev/banlieue/.gitignore",
-      "action": "edit",
-      "tokens": 64,
-      "at": "2026-05-31T23:20:05.869Z"
-    },
-    {
-      "file": "/Users/erick/dev/banlieue/Cargo.toml",
-      "action": "edit",
-      "tokens": 189,
-      "at": "2026-05-31T23:20:11.355Z"
-    },
-    {
-      "file": "/Users/erick/dev/banlieue/patches/README.md",
-      "action": "create",
-      "tokens": 540,
-      "at": "2026-05-31T23:20:48.873Z"
-    },
-    {
-      "file": "/Users/erick/dev/banlieue/Makefile",
-      "action": "edit",
-      "tokens": 34,
-      "at": "2026-05-31T23:22:53.552Z"
-    },
-    {
-      "file": "/Users/erick/dev/banlieue/Makefile",
-      "action": "edit",
-      "tokens": 187,
-      "at": "2026-05-31T23:22:59.114Z"
-    },
-    {
-      "file": "/Users/erick/dev/banlieue/Makefile",
-      "action": "edit",
-      "tokens": 555,
-      "at": "2026-05-31T23:23:11.607Z"
-    },
-    {
-      "file": "/Users/erick/dev/banlieue/Makefile",
-      "action": "edit",
-      "tokens": 93,
-      "at": "2026-05-31T23:23:14.672Z"
-    },
-    {
-      "file": "/Users/erick/dev/banlieue/Makefile",
-      "action": "edit",
-      "tokens": 34,
-      "at": "2026-05-31T23:23:16.176Z"
-    },
-    {
-      "file": "/Users/erick/dev/banlieue/Makefile",
-      "action": "edit",
-      "tokens": 14,
-      "at": "2026-05-31T23:23:17.486Z"
-    },
-    {
-      "file": "/Users/erick/dev/banlieue/Makefile",
-      "action": "edit",
-      "tokens": 38,
-      "at": "2026-05-31T23:23:22.763Z"
-    },
-    {
-      "file": "/Users/erick/dev/banlieue/.claude/CHANGELOG.md",
-      "action": "edit",
-      "tokens": 623,
-      "at": "2026-05-31T23:23:36.620Z"
-    },
-    {
-      "file": "/Users/erick/dev/banlieue/patches/README.md",
-      "action": "edit",
-      "tokens": 66,
-      "at": "2026-05-31T23:23:45.732Z"
-    },
-    {
-      "file": "/Users/erick/dev/banlieue/Makefile",
-      "action": "edit",
-      "tokens": 29,
-      "at": "2026-05-31T23:23:59.585Z"
-    },
-    {
-      "file": "/Users/erick/dev/banlieue/Cargo.toml",
-      "action": "edit",
-      "tokens": 44,
-      "at": "2026-05-31T23:25:59.686Z"
-    },
-    {
-      "file": "/Users/erick/dev/banlieue/Cargo.toml",
-      "action": "edit",
-      "tokens": 197,
-      "at": "2026-05-31T23:57:56.518Z"
-    },
-    {
-      "file": "/Users/erick/dev/banlieue/.claude/CHANGELOG.md",
-      "action": "edit",
-      "tokens": 85,
-      "at": "2026-05-31T23:58:14.779Z"
-    },
-    {
-      "file": "/Users/erick/dev/banlieue/Cargo.toml",
-      "action": "edit",
-      "tokens": 140,
-      "at": "2026-05-31T23:59:24.342Z"
-    },
-    {
-      "file": "/Users/erick/dev/banlieue/Makefile",
-      "action": "edit",
-      "tokens": 230,
-      "at": "2026-06-01T00:09:29.476Z"
-    },
-    {
-      "file": "/Users/erick/dev/banlieue/Makefile",
-      "action": "edit",
-      "tokens": 416,
-      "at": "2026-06-01T00:09:53.711Z"
-    },
-    {
-      "file": "/Users/erick/dev/banlieue/Cargo.toml",
-      "action": "edit",
-      "tokens": 175,
-      "at": "2026-06-01T00:09:58.992Z"
-    },
-    {
-      "file": "/Users/erick/dev/banlieue/Makefile",
-      "action": "edit",
-      "tokens": 16,
-      "at": "2026-06-01T00:11:03.638Z"
-    },
-    {
-      "file": "/Users/erick/dev/banlieue/Makefile",
-      "action": "edit",
-      "tokens": 51,
-      "at": "2026-06-01T00:19:10.427Z"
-    },
-    {
-      "file": "/Users/erick/dev/banlieue/Makefile",
-      "action": "edit",
-      "tokens": 31,
-      "at": "2026-06-01T00:19:12.512Z"
-    },
-    {
-      "file": "/Users/erick/dev/banlieue/Makefile",
-      "action": "edit",
-      "tokens": 34,
-      "at": "2026-06-01T00:19:14.101Z"
-    },
-    {
-      "file": "/Users/erick/dev/banlieue/.github/actions/vendor-vim-rs/action.yml",
-      "action": "create",
-      "tokens": 287,
-      "at": "2026-06-01T00:19:22.545Z"
-    },
-    {
-      "file": "/Users/erick/dev/banlieue/.github/workflows/build.yaml",
-      "action": "edit",
-      "tokens": 55,
-      "at": "2026-06-01T00:19:38.124Z"
-    },
-    {
-      "file": "/Users/erick/dev/banlieue/.github/workflows/build.yaml",
-      "action": "edit",
-      "tokens": 94,
-      "at": "2026-06-01T00:19:41.745Z"
-    },
-    {
-      "file": "/Users/erick/dev/banlieue/.github/workflows/build.yaml",
+      "file": "/Users/erick/.claude/projects/-Users-erick-dev-banlieue/memory/MEMORY.md",
       "action": "edit",
       "tokens": 109,
-      "at": "2026-06-01T00:19:45.049Z"
+      "at": "2026-06-01T15:55:52.018Z"
     },
     {
-      "file": "/Users/erick/dev/banlieue/.github/workflows/build.yaml",
+      "file": "/Users/erick/dev/banlieue/docs/adr/0008-byoc-vsphere-http-client.md",
+      "action": "create",
+      "tokens": 2738,
+      "at": "2026-06-01T16:33:29.294Z"
+    },
+    {
+      "file": "/Users/erick/dev/banlieue/docs/adr/0008-byoc-vsphere-http-client.md",
       "action": "edit",
-      "tokens": 88,
-      "at": "2026-06-01T00:20:01.910Z"
+      "tokens": 26,
+      "at": "2026-06-01T16:33:42.486Z"
     },
     {
-      "file": "/Users/erick/dev/banlieue/.github/workflows/build.yaml",
+      "file": "/Users/erick/dev/banlieue/docs/adr/0008-byoc-vsphere-http-client.md",
       "action": "edit",
-      "tokens": 91,
-      "at": "2026-06-01T00:20:06.431Z"
+      "tokens": 136,
+      "at": "2026-06-01T16:34:09.123Z"
     },
     {
-      "file": "/Users/erick/dev/banlieue/.github/workflows/build.yaml",
+      "file": "/Users/erick/dev/banlieue/docs/architecture/calm/architecture.json",
       "action": "edit",
-      "tokens": 130,
-      "at": "2026-06-01T00:20:11.669Z"
+      "tokens": 480,
+      "at": "2026-06-01T16:35:01.900Z"
     },
     {
-      "file": "/Users/erick/dev/banlieue/.github/workflows/build.yaml",
+      "file": "/Users/erick/dev/banlieue/.claude/CHANGELOG.md",
+      "action": "edit",
+      "tokens": 532,
+      "at": "2026-06-01T16:35:52.755Z"
+    },
+    {
+      "file": "/Users/erick/.claude/projects/-Users-erick-dev-banlieue/memory/project_vsphere_byoc_tls.md",
+      "action": "create",
+      "tokens": 424,
+      "at": "2026-06-01T16:36:17.333Z"
+    },
+    {
+      "file": "/Users/erick/.claude/projects/-Users-erick-dev-banlieue/memory/MEMORY.md",
+      "action": "edit",
+      "tokens": 114,
+      "at": "2026-06-01T16:36:23.667Z"
+    },
+    {
+      "file": "/Users/erick/dev/banlieue/docs/adr/0008-byoc-vsphere-http-client.md",
+      "action": "edit",
+      "tokens": 13,
+      "at": "2026-06-02T00:12:56.911Z"
+    },
+    {
+      "file": "/Users/erick/dev/banlieue/docs/adr/0008-byoc-vsphere-http-client.md",
+      "action": "edit",
+      "tokens": 290,
+      "at": "2026-06-02T00:13:24.474Z"
+    },
+    {
+      "file": "/Users/erick/dev/banlieue/docs/adr/0008-byoc-vsphere-http-client.md",
+      "action": "edit",
+      "tokens": 1375,
+      "at": "2026-06-02T00:14:02.248Z"
+    },
+    {
+      "file": "/Users/erick/dev/banlieue/docs/adr/0008-byoc-vsphere-http-client.md",
+      "action": "edit",
+      "tokens": 184,
+      "at": "2026-06-02T00:14:14.071Z"
+    },
+    {
+      "file": "/Users/erick/dev/banlieue/docs/adr/0008-byoc-vsphere-http-client.md",
+      "action": "edit",
+      "tokens": 235,
+      "at": "2026-06-02T00:14:23.552Z"
+    },
+    {
+      "file": "/Users/erick/dev/banlieue/docs/adr/0008-byoc-vsphere-http-client.md",
+      "action": "edit",
+      "tokens": 233,
+      "at": "2026-06-02T00:14:37.259Z"
+    },
+    {
+      "file": "/Users/erick/dev/banlieue/docs/architecture/calm/architecture.json",
+      "action": "edit",
+      "tokens": 269,
+      "at": "2026-06-02T00:14:48.518Z"
+    },
+    {
+      "file": "/Users/erick/dev/banlieue/crates/banlieue-api/src/common.rs",
+      "action": "edit",
+      "tokens": 1220,
+      "at": "2026-06-02T00:16:36.328Z"
+    },
+    {
+      "file": "/Users/erick/dev/banlieue/crates/banlieue-api/src/common_tests.rs",
+      "action": "edit",
+      "tokens": 1650,
+      "at": "2026-06-02T00:17:07.764Z"
+    },
+    {
+      "file": "/Users/erick/dev/banlieue/crates/banlieue-api/src/banlieue/provider.rs",
+      "action": "edit",
+      "tokens": 155,
+      "at": "2026-06-02T00:17:15.072Z"
+    },
+    {
+      "file": "/Users/erick/dev/banlieue/crates/banlieue-api/src/banlieue/provider_tests.rs",
+      "action": "edit",
+      "tokens": 148,
+      "at": "2026-06-02T00:17:43.050Z"
+    },
+    {
+      "file": "/Users/erick/dev/banlieue/Cargo.toml",
+      "action": "edit",
+      "tokens": 180,
+      "at": "2026-06-02T00:31:38.590Z"
+    },
+    {
+      "file": "/Users/erick/dev/banlieue/crates/banlieue-provider-vsphere/Cargo.toml",
       "action": "edit",
       "tokens": 96,
-      "at": "2026-06-01T00:20:15.104Z"
+      "at": "2026-06-02T00:31:45.460Z"
     },
     {
-      "file": "/Users/erick/dev/banlieue/.claude/CHANGELOG.md",
+      "file": "/Users/erick/dev/banlieue/crates/banlieue-provider-vsphere/src/client/vim.rs",
       "action": "edit",
-      "tokens": 868,
-      "at": "2026-06-01T00:25:07.302Z"
+      "tokens": 830,
+      "at": "2026-06-02T00:32:52.186Z"
     },
     {
-      "file": "/Users/erick/dev/banlieue/patches/README.md",
+      "file": "/Users/erick/dev/banlieue/crates/banlieue-provider-vsphere/src/client/mod.rs",
+      "action": "edit",
+      "tokens": 229,
+      "at": "2026-06-02T00:33:02.652Z"
+    },
+    {
+      "file": "/Users/erick/dev/banlieue/crates/banlieue-provider-vsphere/src/client/fake.rs",
+      "action": "edit",
+      "tokens": 82,
+      "at": "2026-06-02T00:33:25.281Z"
+    },
+    {
+      "file": "/Users/erick/dev/banlieue/crates/banlieue-provider-vsphere/src/reconciler/ca_bundle.rs",
       "action": "create",
-      "tokens": 1011,
-      "at": "2026-06-01T00:25:32.621Z"
+      "tokens": 1208,
+      "at": "2026-06-02T00:33:50.072Z"
     },
     {
-      "file": "/Users/erick/dev/banlieue/Makefile",
+      "file": "/Users/erick/dev/banlieue/crates/banlieue-provider-vsphere/src/reconciler/mod.rs",
       "action": "edit",
-      "tokens": 338,
-      "at": "2026-06-01T00:37:30.871Z"
+      "tokens": 16,
+      "at": "2026-06-02T00:34:16.485Z"
     },
     {
-      "file": "/Users/erick/dev/banlieue/Makefile",
+      "file": "/Users/erick/dev/banlieue/crates/banlieue-provider-vsphere/src/reconciler/provider.rs",
       "action": "edit",
-      "tokens": 356,
-      "at": "2026-06-01T00:37:49.624Z"
+      "tokens": 383,
+      "at": "2026-06-02T00:34:28.676Z"
+    },
+    {
+      "file": "/Users/erick/dev/banlieue/crates/banlieue-provider-vsphere/src/reconciler/vmimage.rs",
+      "action": "edit",
+      "tokens": 227,
+      "at": "2026-06-02T00:34:43.749Z"
+    },
+    {
+      "file": "/Users/erick/dev/banlieue/crates/banlieue-provider-vsphere/src/client/vim.rs",
+      "action": "edit",
+      "tokens": 68,
+      "at": "2026-06-02T00:34:55.844Z"
+    },
+    {
+      "file": "/Users/erick/dev/banlieue/crates/banlieue-provider-vsphere/src/client/vim_tests.rs",
+      "action": "create",
+      "tokens": 962,
+      "at": "2026-06-02T00:35:31.249Z"
+    },
+    {
+      "file": "/Users/erick/dev/banlieue/crates/banlieue-provider-vsphere/src/client/vim_tests.rs",
+      "action": "edit",
+      "tokens": 14,
+      "at": "2026-06-02T00:35:37.797Z"
+    },
+    {
+      "file": "/Users/erick/dev/banlieue/crates/banlieue-provider-vsphere/src/reconciler/ca_bundle.rs",
+      "action": "edit",
+      "tokens": 751,
+      "at": "2026-06-02T00:36:24.301Z"
+    },
+    {
+      "file": "/Users/erick/dev/banlieue/crates/banlieue-provider-vsphere/src/reconciler/ca_bundle_tests.rs",
+      "action": "create",
+      "tokens": 655,
+      "at": "2026-06-02T00:36:37.681Z"
+    },
+    {
+      "file": "/Users/erick/dev/banlieue/crates/banlieue-provider-vsphere/src/reconciler/ca_bundle_tests.rs",
+      "action": "edit",
+      "tokens": 44,
+      "at": "2026-06-02T00:36:47.333Z"
+    },
+    {
+      "file": "/Users/erick/dev/banlieue/crates/banlieue-provider-vsphere/src/reconciler/ca_bundle_tests.rs",
+      "action": "edit",
+      "tokens": 28,
+      "at": "2026-06-02T00:37:44.375Z"
+    },
+    {
+      "file": "/Users/erick/dev/banlieue/crates/banlieue-provider-vsphere/src/reconciler/ca_bundle.rs",
+      "action": "edit",
+      "tokens": 23,
+      "at": "2026-06-02T00:38:04.999Z"
+    },
+    {
+      "file": "/Users/erick/dev/banlieue/crates/banlieue-provider-vsphere/src/client/vim.rs",
+      "action": "edit",
+      "tokens": 15,
+      "at": "2026-06-02T00:50:58.695Z"
+    },
+    {
+      "file": "/Users/erick/dev/banlieue/crates/banlieue-provider-vsphere/src/reconciler/ca_bundle.rs",
+      "action": "edit",
+      "tokens": 19,
+      "at": "2026-06-02T00:51:06.708Z"
+    },
+    {
+      "file": "/Users/erick/dev/banlieue/crates/banlieue-provider-vsphere/src/client/vim.rs",
+      "action": "edit",
+      "tokens": 357,
+      "at": "2026-06-02T00:51:42.511Z"
+    },
+    {
+      "file": "/Users/erick/dev/banlieue/crates/banlieue-provider-vsphere/src/client/vim_tests.rs",
+      "action": "edit",
+      "tokens": 173,
+      "at": "2026-06-02T00:51:49.341Z"
+    },
+    {
+      "file": "/Users/erick/dev/banlieue/deploy/admission/provider-cabundle-source.yaml",
+      "action": "create",
+      "tokens": 583,
+      "at": "2026-06-02T00:53:02.639Z"
+    },
+    {
+      "file": "/Users/erick/dev/banlieue/deploy/provider-vsphere/rbac/clusterrole.yaml",
+      "action": "edit",
+      "tokens": 135,
+      "at": "2026-06-02T00:53:11.635Z"
+    },
+    {
+      "file": "/Users/erick/dev/banlieue/examples/01-provider-vsphere-dc1.yaml",
+      "action": "edit",
+      "tokens": 224,
+      "at": "2026-06-02T00:53:36.422Z"
+    },
+    {
+      "file": "/Users/erick/dev/banlieue/deploy/admission/README.md",
+      "action": "edit",
+      "tokens": 105,
+      "at": "2026-06-02T00:53:48.711Z"
+    },
+    {
+      "file": "/Users/erick/dev/banlieue/docs/src/guides/vsphere-provider.md",
+      "action": "edit",
+      "tokens": 114,
+      "at": "2026-06-02T00:54:29.266Z"
+    },
+    {
+      "file": "/Users/erick/dev/banlieue/deploy/provider-vsphere/README.md",
+      "action": "edit",
+      "tokens": 68,
+      "at": "2026-06-02T00:54:47.640Z"
     },
     {
       "file": "/Users/erick/dev/banlieue/.claude/CHANGELOG.md",
       "action": "edit",
-      "tokens": 273,
-      "at": "2026-06-01T00:38:42.333Z"
+      "tokens": 640,
+      "at": "2026-06-02T00:55:17.725Z"
     },
     {
-      "file": "/Users/erick/dev/banlieue/Makefile",
-      "action": "edit",
-      "tokens": 267,
-      "at": "2026-06-01T00:48:29.440Z"
+      "file": "/Users/erick/dev/banlieue/docs/adr/0009-vim-rs-0.5-rustls-ring-retire-vendoring.md",
+      "action": "create",
+      "tokens": 2391,
+      "at": "2026-06-03T11:07:19.043Z"
     },
     {
-      "file": "/Users/erick/dev/banlieue/Dockerfile",
+      "file": "/Users/erick/dev/banlieue/docs/adr/0008-byoc-vsphere-http-client.md",
       "action": "edit",
-      "tokens": 42,
-      "at": "2026-06-01T00:48:43.176Z"
+      "tokens": 286,
+      "at": "2026-06-03T11:07:42.736Z"
     },
     {
-      "file": "/Users/erick/dev/banlieue/Dockerfile",
+      "file": "/Users/erick/dev/banlieue/docs/architecture/calm/architecture.json",
       "action": "edit",
-      "tokens": 78,
-      "at": "2026-06-01T00:48:50.358Z"
+      "tokens": 122,
+      "at": "2026-06-03T11:07:58.513Z"
     },
     {
-      "file": "/Users/erick/dev/banlieue/Dockerfile",
+      "file": "/Users/erick/dev/banlieue/Cargo.toml",
       "action": "edit",
-      "tokens": 80,
-      "at": "2026-06-01T00:48:59.641Z"
-    },
-    {
-      "file": "/Users/erick/dev/banlieue/Dockerfile.chainguard",
-      "action": "edit",
-      "tokens": 42,
-      "at": "2026-06-01T00:49:11.213Z"
-    },
-    {
-      "file": "/Users/erick/dev/banlieue/Dockerfile.chainguard",
-      "action": "edit",
-      "tokens": 38,
-      "at": "2026-06-01T00:49:18.655Z"
+      "tokens": 435,
+      "at": "2026-06-03T11:08:47.218Z"
     },
     {
       "file": "/Users/erick/dev/banlieue/crates/banlieue-provider-vsphere/Cargo.toml",
       "action": "edit",
-      "tokens": 112,
-      "at": "2026-06-01T00:49:33.887Z"
+      "tokens": 107,
+      "at": "2026-06-03T11:08:56.240Z"
     },
     {
-      "file": "/Users/erick/dev/banlieue/docs/src/developer/local-development.md",
+      "file": "/Users/erick/dev/banlieue/crates/banlieue-provider-vsphere/src/client/vim.rs",
+      "action": "edit",
+      "tokens": 289,
+      "at": "2026-06-03T11:10:26.225Z"
+    },
+    {
+      "file": "/Users/erick/dev/banlieue/crates/banlieue-provider-vsphere/src/client/vim.rs",
       "action": "edit",
       "tokens": 216,
-      "at": "2026-06-01T00:49:45.925Z"
+      "at": "2026-06-03T11:10:46.871Z"
+    },
+    {
+      "file": "/Users/erick/dev/banlieue/crates/banlieue-provider-vsphere/src/app.rs",
+      "action": "edit",
+      "tokens": 43,
+      "at": "2026-06-03T11:11:14.421Z"
+    },
+    {
+      "file": "/Users/erick/dev/banlieue/crates/banlieue-provider-vsphere/src/client/mod.rs",
+      "action": "edit",
+      "tokens": 19,
+      "at": "2026-06-03T11:11:32.994Z"
+    },
+    {
+      "file": "/Users/erick/dev/banlieue/crates/banlieue-provider-vsphere/src/app.rs",
+      "action": "edit",
+      "tokens": 124,
+      "at": "2026-06-03T11:11:42.363Z"
+    },
+    {
+      "file": "/Users/erick/dev/banlieue/crates/banlieue-provider-vsphere/src/client/vim_tests.rs",
+      "action": "edit",
+      "tokens": 320,
+      "at": "2026-06-03T11:17:59.044Z"
+    },
+    {
+      "file": "/Users/erick/dev/banlieue/Makefile",
+      "action": "edit",
+      "tokens": 0,
+      "at": "2026-06-03T11:20:24.013Z"
+    },
+    {
+      "file": "/Users/erick/dev/banlieue/Makefile",
+      "action": "edit",
+      "tokens": 36,
+      "at": "2026-06-03T11:20:49.538Z"
+    },
+    {
+      "file": "/Users/erick/dev/banlieue/.github/workflows/docs.yaml",
+      "action": "edit",
+      "tokens": 47,
+      "at": "2026-06-03T11:21:56.758Z"
+    },
+    {
+      "file": "/Users/erick/dev/banlieue/.gitignore",
+      "action": "edit",
+      "tokens": 25,
+      "at": "2026-06-03T11:22:21.289Z"
+    },
+    {
+      "file": "/Users/erick/dev/banlieue/docs/adr/0009-vim-rs-0.5-rustls-ring-retire-vendoring.md",
+      "action": "edit",
+      "tokens": 84,
+      "at": "2026-06-03T11:32:55.362Z"
     },
     {
       "file": "/Users/erick/dev/banlieue/.claude/CHANGELOG.md",
       "action": "edit",
-      "tokens": 602,
-      "at": "2026-06-01T00:50:44.074Z"
+      "tokens": 576,
+      "at": "2026-06-03T11:33:22.511Z"
+    },
+    {
+      "file": "/Users/erick/.claude/projects/-Users-erick-dev-banlieue/memory/project_vsphere_byoc_tls.md",
+      "action": "edit",
+      "tokens": 375,
+      "at": "2026-06-03T11:34:05.694Z"
+    },
+    {
+      "file": "/Users/erick/dev/banlieue/deny.toml",
+      "action": "edit",
+      "tokens": 172,
+      "at": "2026-06-03T15:52:29.704Z"
+    },
+    {
+      "file": "/Users/erick/dev/banlieue/deny.toml",
+      "action": "edit",
+      "tokens": 180,
+      "at": "2026-06-03T15:52:40.720Z"
     },
     {
       "file": "/Users/erick/dev/banlieue/.claude/CHANGELOG.md",
       "action": "edit",
-      "tokens": 60,
-      "at": "2026-06-01T00:55:25.414Z"
-    },
-    {
-      "file": "/Users/erick/dev/banlieue/.claude/CHANGELOG.md",
-      "action": "edit",
-      "tokens": 238,
-      "at": "2026-06-01T01:06:49.998Z"
-    },
-    {
-      "file": "/Users/erick/dev/banlieue/.claude/CHANGELOG.md",
-      "action": "edit",
-      "tokens": 94,
-      "at": "2026-06-01T01:06:59.588Z"
-    },
-    {
-      "file": "/Users/erick/dev/banlieue/crates/banlieue-provider-vsphere/Cargo.toml",
-      "action": "edit",
-      "tokens": 90,
-      "at": "2026-06-01T01:07:06.794Z"
+      "tokens": 280,
+      "at": "2026-06-03T15:53:19.323Z"
     }
   ],
   "edit_counts": {
-    ".gitignore": 2,
-    "../../.claude/plans/piped-wobbling-trinket.md": 1,
-    "Cargo.toml": 5,
-    "patches/README.md": 3,
-    "Makefile": 17,
-    ".claude/CHANGELOG.md": 8,
-    ".github/actions/vendor-vim-rs/action.yml": 1,
-    ".github/workflows/build.yaml": 7,
-    "Dockerfile": 3,
-    "Dockerfile.chainguard": 2,
+    "../vim_rs/vim_rs/Cargo.toml": 2,
+    "../vim_rs/CHANGELOG.md": 1,
+    "../vim_rs/README.md": 1,
+    "../roadmaps/banlieue/README.md": 1,
+    "../../.claude/projects/-Users-erick-dev-banlieue/memory/project_availability_zones.md": 1,
+    "../../.claude/projects/-Users-erick-dev-banlieue/memory/MEMORY.md": 2,
+    "docs/adr/0008-byoc-vsphere-http-client.md": 10,
+    "docs/architecture/calm/architecture.json": 3,
+    ".claude/CHANGELOG.md": 4,
+    "../../.claude/projects/-Users-erick-dev-banlieue/memory/project_vsphere_byoc_tls.md": 2,
+    "crates/banlieue-api/src/common.rs": 1,
+    "crates/banlieue-api/src/common_tests.rs": 1,
+    "crates/banlieue-api/src/banlieue/provider.rs": 1,
+    "crates/banlieue-api/src/banlieue/provider_tests.rs": 1,
+    "Cargo.toml": 2,
     "crates/banlieue-provider-vsphere/Cargo.toml": 2,
-    "docs/src/developer/local-development.md": 1
+    "crates/banlieue-provider-vsphere/src/client/vim.rs": 6,
+    "crates/banlieue-provider-vsphere/src/client/mod.rs": 2,
+    "crates/banlieue-provider-vsphere/src/client/fake.rs": 1,
+    "crates/banlieue-provider-vsphere/src/reconciler/ca_bundle.rs": 4,
+    "crates/banlieue-provider-vsphere/src/reconciler/mod.rs": 1,
+    "crates/banlieue-provider-vsphere/src/reconciler/provider.rs": 1,
+    "crates/banlieue-provider-vsphere/src/reconciler/vmimage.rs": 1,
+    "crates/banlieue-provider-vsphere/src/client/vim_tests.rs": 4,
+    "crates/banlieue-provider-vsphere/src/reconciler/ca_bundle_tests.rs": 3,
+    "deploy/admission/provider-cabundle-source.yaml": 1,
+    "deploy/provider-vsphere/rbac/clusterrole.yaml": 1,
+    "examples/01-provider-vsphere-dc1.yaml": 1,
+    "deploy/admission/README.md": 1,
+    "docs/src/guides/vsphere-provider.md": 1,
+    "deploy/provider-vsphere/README.md": 1,
+    "docs/adr/0009-vim-rs-0.5-rustls-ring-retire-vendoring.md": 2,
+    "crates/banlieue-provider-vsphere/src/app.rs": 2,
+    "Makefile": 2,
+    ".github/workflows/docs.yaml": 1,
+    ".gitignore": 1,
+    "deny.toml": 2
   },
-  "anatomy_hits": 13,
-  "anatomy_misses": 1,
-  "repeated_reads_warned": 24,
+  "anatomy_hits": 32,
+  "anatomy_misses": 4,
+  "repeated_reads_warned": 22,
   "cerebrum_warnings": 0,
   "stop_count": 0
 }

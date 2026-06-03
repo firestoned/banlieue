@@ -113,6 +113,7 @@ impl VSphereClientFactory for FakeClientFactory {
         &self,
         _connection: &ProviderConnection,
         _creds: &Credentials,
+        _ca_bundle_pem: Option<&str>,
     ) -> Result<Box<dyn VSphereClient>> {
         Ok(Box::new(FakeClient {
             inventory: self.inventory.clone(),

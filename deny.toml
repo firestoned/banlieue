@@ -36,6 +36,13 @@ allow = [
     "MIT",
     "Unicode-3.0",
     "Zlib",
+    # CDLA-Permissive-2.0 — a permissive *data* license (not source code).
+    # Applies only to `webpki-root-certs`, the Mozilla CA root bundle shipped as
+    # X.509 data, pulled transitively by reqwest 0.13's rustls-platform-verifier
+    # (the vSphere BYOC client's OS-trust roots — ADR-0009). Both reqwest rustls
+    # features depend on it, so it is not avoidable, and it carries no copyleft
+    # or patent obligations on our code. https://cdla.dev/permissive-2-0/
+    "CDLA-Permissive-2.0",
 ]
 
 # ─── Bans (multiple versions, wildcards, banned crates) ─────────────────────
@@ -62,6 +69,13 @@ skip = [
     # dependencies pin older windows-sys while newer ones moved to 0.6x.
     # No security or correctness impact; not on a hot path.
     { crate = "windows-sys@0.52" },
+
+    # phf / phf_shared 0.11 vs 0.13 — both originate inside `vim_rs 0.5.0`:
+    # its proc-macro crate `vim_macros` uses phf 0.11 while the `vim_rs` runtime
+    # uses phf 0.13. Internal to the dependency; we cannot unify it. Revisit when
+    # vim_rs aligns the two. (Build/compile-time only; not shipped to runtime.)
+    { crate = "phf@0.11.3" },
+    { crate = "phf_shared@0.11.3" },
 ]
 
 skip-tree = []

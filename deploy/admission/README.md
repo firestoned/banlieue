@@ -14,6 +14,7 @@ rotate.
 | --- | --- |
 | `virtualmachine-immutability.yaml` | `VirtualMachine.spec.classRef` / `spec.imageRef` are immutable after creation. |
 | `provider-immutability.yaml` | `Provider.spec.providerClassRef.name` is immutable after creation. |
+| `provider-cabundle-source.yaml` | `Provider.spec.connection.caBundle` sets exactly one of `inline` / `configMapRef` / `secretRef` (ADR-0008). |
 
 Apply after the CRDs:
 

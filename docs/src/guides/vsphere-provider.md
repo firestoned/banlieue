@@ -108,9 +108,15 @@ spec:
     credentialsRef:
       name: vsphere-creds
     # insecureSkipTLSVerify: true     # self-signed only; prefer caBundle below
-    # caBundle: |
-    #   -----BEGIN CERTIFICATE-----
-    #   ...
+    # Validate against a private CA — set EXACTLY ONE of inline/configMapRef/secretRef
+    # (key defaults to ca.crt). See ADR-0008.
+    # caBundle:
+    #   configMapRef:
+    #     name: corp-ca-bundle
+    #   # secretRef: { name: vcenter-ca }
+    #   # inline: |
+    #   #   -----BEGIN CERTIFICATE-----
+    #   #   ...
   capabilities:
     storageClasses:
       - name: gold

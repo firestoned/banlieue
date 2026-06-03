@@ -19,6 +19,20 @@ spec:
     credentialsRef:
       name: vcenter-dc1-creds
     insecureSkipTLSVerify: false
+    # Validate the vCenter cert against a private/corporate CA (ADR-0008).
+    # Set EXACTLY ONE of inline / configMapRef / secretRef; omit caBundle
+    # entirely to use the system trust roots. `key` defaults to `ca.crt`.
+    #
+    # caBundle:
+    #   configMapRef:           # centrally-managed, non-secret trust bundle
+    #     name: corp-ca-bundle
+    #     # key: ca.crt
+    #   # secretRef:            # for sensitive CA material
+    #   #   name: vcenter-ca
+    #   # inline: |             # or paste the PEM directly
+    #   #   -----BEGIN CERTIFICATE-----
+    #   #   ...
+    #   #   -----END CERTIFICATE-----
   capabilities:
     storageClasses:
       - name: gold

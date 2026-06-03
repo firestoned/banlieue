@@ -91,3 +91,35 @@
 - **[2026-05-30] CAPI-native cluster provisioning; no native cluster/tier abstraction (ADR-0001).** Considered a banlieue-native `VMTier`/`VMCluster` CRD that fans a tier (platinum=6/6 FDs, gold=5/6, …) out into N VirtualMachines. Rejected: that re-implements CAPI MachineSet/control-plane (replica reconciliation, FD spread, rolling upgrades). banlieue is instead a **CAPI infrastructure provider** — cluster lifecycle is CAPI + a control-plane provider (k0smotron for k0s). "platinum = 6/6" is `replicas: 6` over a cluster advertising 6 FDs. Generic: works with any CAPI consumer, not just k0s. `VirtualMachine` stays CAPI-independent (non-negotiable #3); the CAPI path and standalone-VM path are parallel.
 - **[2026-05-30] Add InfraCluster contract via `VSphereCluster` (ADR-0002).** The missing piece for CAPI cluster-side FD spread — banlieue had InfraMachine (`VSphereMachine`) but no InfraCluster. Per-class name (parallels `VSphereMachine`; group disambiguates from CAPV). Rejected a generic `BanlieueCluster` (InfraMachineTemplate is already per-class) and per-Provider InfraCluster (would split a multi-vCenter cluster into multiple CAPI clusters). Topology decision for provider Deployments (per-class vs per-instance vs hybrid, O-003) captured as **Proposed** ADR-0003, not yet locked.
 - **[2026-05-25] Roadmap lives outside the repo.** Moved `docs/roadmap/` to `~/dev/roadmaps/banlieue/` and stripped references from in-repo files (`CLAUDE.md`, `.claude/CLAUDE.md`, `.claude/SKILL.md`, `.github/workflows/build.yaml`, `.wolf/cerebrum.md`). Rationale: OSS projects shouldn't ship the maintainer's planning artifacts. ADRs (`docs/adr/`) and design docs (`docs/design/`) **do** stay in-repo — those are public-facing technical records. Roadmap docs follow the same numeric-prefix convention out of tree.
+
+### Do-Not-Repeat (2026-06-01)
+- DON'T claim a dependency's TLS backend from a vendored working tree — that tree
+  may be PATCHED. Unpatched vim_rs 0.4.4 uses reqwest default-tls → OpenSSL;
+  `patches/vim_rs.patch` (= upstream noclue/vim_rs#37) is what switches it to
+  rustls. Verify with `git show <REF>:vim_rs/Cargo.toml` + `cargo tree -i openssl-sys`.
+- Cargo features are ADDITIVE across the graph: a downstream crate choosing rustls
+  CANNOT subtract OpenSSL while an upstream dep keeps default-tls. BYOC
+  (injecting a reqwest::Client) controls RUNTIME policy only, NOT which TLS
+  backend is compiled in. Keep "who owns the client" and "which TLS backend"
+  as separate decisions.
+
+### Key Learning (2026-06-01)
+- vim_rs supports BYOC natively: `ClientBuilder::http_client(reqwest::Client)`
+  (core/client.rs). `http_client()` and `insecure()` are mutually exclusive
+  (each resets the other). Use BYOC to honour Provider.connection.caBundle —
+  which is currently DEAD CONFIG (only referenced in a doc comment, never wired).
+- noclue/vim_rs#37 = "Make the TLS backend selectable" — strictly TLS backend,
+  no behavioural/vcsim/cert changes. When it ships: bump dep, delete patch +
+  vendoring pipeline (see patches/README.md "Retiring the patch").
+
+### Key Learning (2026-06-03)
+- vim_rs 0.5 is on crates.io: reqwest 0.13/rustls, BYOC via `default-client`
+  feature OFF → `ClientBuilder::new(server, client)` 2-arg (NO `.http_client()`).
+  The entire 0.4.x vendor/patch/[patch.crates-io] pipeline is DELETED — plain
+  `vim_rs = "0.5"` dep. No more `make vendor-vim-rs`.
+- reqwest 0.13 `rustls-no-provider` requires a process-default rustls
+  CryptoProvider or it PANICS "No provider set" at first TLS use. We install ring
+  (rustls::crypto::ring::default_provider().install_default(), idempotent) once at
+  provider run() startup. ring is shared with kube → single crypto provider, no
+  aws-lc-rs, no OpenSSL. Choosing reqwest's plain `rustls` feature instead would
+  pull aws-lc-rs (C/asm, cross-compile friction).

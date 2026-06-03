@@ -408,7 +408,26 @@
           }
         }
       },
-      "protocol": "HTTPS"
+      "protocol": "HTTPS",
+      "controls": {
+        "tls-trust-byoc": {
+          "description": "The vSphere provider owns the HTTP transport (Bring-Your-Own-Client): it builds the reqwest::Client and injects it via vim_rs ClientBuilder::http_client, rather than letting vim_rs construct one. banlieue therefore controls TLS trust establishment end to end — honouring Provider.spec.connection.caBundle (a value-or-source: inline PEM, or a configMapRef / secretRef key defaulting to ca.crt; exactly one, enforced controller-side and by a ValidatingAdmissionPolicy per ADR-0007), added as root certificate(s); insecureSkipTLSVerify is a separate, explicit opt-out. Resolving a configMapRef requires the provider ClusterRole to read configmaps (get/list/watch), alongside the existing secrets read. The transport is OpenSSL-free: vim_rs 0.5 (reqwest 0.13/rustls) is consumed in BYOC mode and the reqwest client uses the rustls ring provider shared with kube, installed once as the process default (ADR-0009). See ADR-0008 (BYOC runtime design) and ADR-0009 (0.5 migration + build end state).",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": [
+                  "SC-8",
+                  "SC-23",
+                  "IA-5"
+                ],
+                "evidence": "docs/adr/0008-byoc-vsphere-http-client.md, crates/banlieue-provider-vsphere/src/client/vim.rs"
+              }
+            }
+          ]
+        }
+      }
     },
     {
       "unique-id": "rel-provider-proxmox-backend",

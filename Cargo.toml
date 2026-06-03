@@ -48,32 +48,27 @@ clap = { version = "4", features = ["derive", "env"] }
 chrono = { version = "0.4", features = ["serde"] }
 async-trait = "0.1"
 
-# vSphere (provider-vsphere only; pinned here so the long compile is cached
-# at workspace level and any future provider that needs it gets the same pin).
-# `default-features = false` drops the `xml` SOAP/ESXi transport — vCenter
-# uses JSON, vcsim supports it, and the XML transport adds ~30–40% to debug
-# compile time. Vendor noclue/vim_rs, Apache-2.0.
-#
-# Pinned to `=0.4.4` (exact) to match VIM_RS_REF in the Makefile. 0.4.4 is the
-# first release to carry the `vcsim_compat` feature the provider uses; it was
-# published to crates.io and lives on `main` but was never git-tagged, so the
-# Makefile pins the commit, not a tag. The exact pin forces resolution onto that
-# version so [patch.crates-io] below actually takes effect (a non-exact `0.4`
-# would let cargo pick any 0.4.x and silently ignore the patch). Bump this in
-# lockstep with VIM_RS_REF when a newer commit carrying our upstreamed fix lands.
-vim_rs = { version = "=0.4.4", default-features = false }
+# vSphere (provider-vsphere only; pinned here so the long compile is cached at
+# workspace level and any future provider that needs it gets the same pin).
+# `default-features = false` turns OFF vim_rs's `default-client` feature so we use
+# it in Bring-Your-Own-Client mode (ADR-0008/0009): banlieue supplies the
+# reqwest::Client and vim_rs never builds one (so `reqwest/default` is never
+# pulled in). vim_rs 0.5 is plain crates.io — the old 0.4.x vendor/patch pipeline
+# that flipped reqwest to rustls is gone (noclue/vim_rs#37 shipped in 0.5).
+vim_rs = { version = "0.5", default-features = false }
 
-# Build vim_rs from a vendored checkout of noclue/vim_rs carrying a local patch
-# (patches/vim_rs.patch). The upstream repo is a multi-crate workspace, so the
-# crate itself lives in the `vim_rs/` subdirectory of the clone. The version
-# requirement and features stay declared above in [workspace.dependencies]; this
-# only redirects the *source*. The patch is being submitted upstream — once it
-# ships in a released tag, drop this block and bump the version above.
-#
-# Run `make vendor-vim-rs` before building (it clones/pins the tag and applies
-# the patch idempotently). `make build`/`test`/`lint`/`crds` depend on it.
-[patch.crates-io]
-vim_rs = { path = "third_party/vim_rs/vim_rs" }
+# reqwest — direct dep of provider-vsphere for the BYOC HTTP client (ADR-0008):
+# banlieue builds the reqwest::Client (CA bundle, insecure flag) and injects it
+# into vim_rs. Must track vim_rs 0.5's reqwest major (0.13) so the injected
+# Client type matches. `rustls-no-provider` links rustls WITHOUT a crypto
+# provider; we install `ring` as the process default at startup (ADR-0009),
+# sharing the single ring provider kube already uses (no aws-lc-rs, no OpenSSL).
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "charset", "http2"] }
+
+# rustls — direct dep so the binary can install the ring CryptoProvider as the
+# process default before any TLS use (reqwest's `rustls-no-provider` panics with
+# "No provider set" otherwise). Version tracks the one kube/hyper-rustls resolve.
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
 
 [profile.release]
 lto = "thin"

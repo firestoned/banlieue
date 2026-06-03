@@ -637,4 +637,185 @@ mod tests {
         assert_eq!(condition_types::IMAGE_READY, "ImageReady");
         assert_eq!(condition_types::PROVIDER_REACHABLE, "ProviderReachable");
     }
+
+    // ----------------------------------------------------------------------
+    // KeySelector
+    // ----------------------------------------------------------------------
+
+    #[test]
+    fn key_selector_omits_none_key() {
+        let s = KeySelector {
+            name: "trust".to_string(),
+            key: None,
+        };
+        let json = serde_json::to_value(&s).unwrap();
+        assert_eq!(json, serde_json::json!({ "name": "trust" }));
+        let back: KeySelector = serde_json::from_value(json).unwrap();
+        assert_eq!(back, s);
+    }
+
+    #[test]
+    fn key_selector_round_trip_with_key() {
+        let s = KeySelector {
+            name: "trust".to_string(),
+            key: Some("tls.crt".to_string()),
+        };
+        let json = serde_json::to_value(&s).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({ "name": "trust", "key": "tls.crt" })
+        );
+        let back: KeySelector = serde_json::from_value(json).unwrap();
+        assert_eq!(back, s);
+    }
+
+    #[test]
+    fn key_selector_requires_name() {
+        let err = serde_json::from_str::<KeySelector>("{}");
+        assert!(err.is_err(), "name is required");
+    }
+
+    #[test]
+    fn key_selector_key_or_uses_default_when_absent() {
+        let s = KeySelector {
+            name: "trust".to_string(),
+            key: None,
+        };
+        assert_eq!(s.key_or(DEFAULT_CA_BUNDLE_KEY), "ca.crt");
+    }
+
+    #[test]
+    fn key_selector_key_or_prefers_explicit_key() {
+        let s = KeySelector {
+            name: "trust".to_string(),
+            key: Some("custom.pem".to_string()),
+        };
+        assert_eq!(s.key_or(DEFAULT_CA_BUNDLE_KEY), "custom.pem");
+    }
+
+    #[test]
+    fn default_ca_bundle_key_is_ca_crt() {
+        assert_eq!(DEFAULT_CA_BUNDLE_KEY, "ca.crt");
+    }
+
+    // ----------------------------------------------------------------------
+    // CABundleSource
+    // ----------------------------------------------------------------------
+
+    #[test]
+    fn ca_bundle_source_inline_round_trip() {
+        let s = CABundleSource {
+            inline: Some("-----BEGIN CERTIFICATE-----\n...".to_string()),
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&s).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({ "inline": "-----BEGIN CERTIFICATE-----\n..." })
+        );
+        let back: CABundleSource = serde_json::from_value(json).unwrap();
+        assert_eq!(back, s);
+    }
+
+    #[test]
+    fn ca_bundle_source_config_map_ref_round_trip() {
+        let s = CABundleSource {
+            config_map_ref: Some(KeySelector {
+                name: "corp-trust".to_string(),
+                key: None,
+            }),
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&s).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({ "configMapRef": { "name": "corp-trust" } })
+        );
+        let back: CABundleSource = serde_json::from_value(json).unwrap();
+        assert_eq!(back, s);
+    }
+
+    #[test]
+    fn ca_bundle_source_secret_ref_round_trip() {
+        let s = CABundleSource {
+            secret_ref: Some(KeySelector {
+                name: "private-ca".to_string(),
+                key: Some("bundle.pem".to_string()),
+            }),
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&s).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({ "secretRef": { "name": "private-ca", "key": "bundle.pem" } })
+        );
+        let back: CABundleSource = serde_json::from_value(json).unwrap();
+        assert_eq!(back, s);
+    }
+
+    #[test]
+    fn ca_bundle_source_default_is_empty_and_invalid() {
+        let s = CABundleSource::default();
+        assert_eq!(s.source_count(), 0);
+        assert!(s.validate().is_err(), "zero sources must be rejected");
+    }
+
+    #[test]
+    fn ca_bundle_source_validate_accepts_exactly_one() {
+        for s in [
+            CABundleSource {
+                inline: Some("pem".to_string()),
+                ..Default::default()
+            },
+            CABundleSource {
+                config_map_ref: Some(KeySelector {
+                    name: "cm".to_string(),
+                    key: None,
+                }),
+                ..Default::default()
+            },
+            CABundleSource {
+                secret_ref: Some(KeySelector {
+                    name: "sec".to_string(),
+                    key: None,
+                }),
+                ..Default::default()
+            },
+        ] {
+            assert_eq!(s.source_count(), 1);
+            assert!(s.validate().is_ok());
+        }
+    }
+
+    #[test]
+    fn ca_bundle_source_validate_rejects_more_than_one() {
+        let s = CABundleSource {
+            inline: Some("pem".to_string()),
+            secret_ref: Some(KeySelector {
+                name: "sec".to_string(),
+                key: None,
+            }),
+            ..Default::default()
+        };
+        assert_eq!(s.source_count(), 2);
+        let err = s.validate().unwrap_err();
+        assert!(err.contains("more than one"), "got: {err}");
+    }
+
+    #[test]
+    fn ca_bundle_source_all_three_set_is_invalid() {
+        let s = CABundleSource {
+            inline: Some("pem".to_string()),
+            config_map_ref: Some(KeySelector {
+                name: "cm".to_string(),
+                key: None,
+            }),
+            secret_ref: Some(KeySelector {
+                name: "sec".to_string(),
+                key: None,
+            }),
+        };
+        assert_eq!(s.source_count(), 3);
+        assert!(s.validate().is_err());
+    }
 }
