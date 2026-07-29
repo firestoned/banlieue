@@ -12,6 +12,7 @@
 //! - `banlieue.io/provider-vsphere` — the vSphere provider binary.
 //! - `banlieue.io/provider-proxmox` — the Proxmox provider binary.
 //! - `banlieue.io/provider-libvirt` — the libvirt provider binary.
+//! - `banlieue.io/imagebuilder` — the `banlieue-imagebuilder` binary.
 
 use kube::{
     Resource, ResourceExt,
@@ -32,6 +33,11 @@ pub const FIELD_MANAGER_PROVIDER_PROXMOX: &str = "banlieue.io/provider-proxmox";
 
 /// Field manager for the libvirt provider.
 pub const FIELD_MANAGER_PROVIDER_LIBVIRT: &str = "banlieue.io/provider-libvirt";
+
+/// Field manager for `banlieue-imagebuilder`. Writes exclusively to
+/// `VMImage.status.rawDiskArtifact` — never `status.perProvider[]`, which
+/// stays owned by each provider's own field manager (ADR-0010).
+pub const FIELD_MANAGER_IMAGEBUILDER: &str = "banlieue.io/imagebuilder";
 
 /// Apply `object` via server-side apply. The owning controller's
 /// `field_manager` must be unique — two managers writing the same fields will

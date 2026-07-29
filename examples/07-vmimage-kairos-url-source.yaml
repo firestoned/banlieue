@@ -1,0 +1,26 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# A VMImage built from a Kairos OCI image rather than a pre-existing vCenter
+# template. `kind: Url` + `importFrom` are resolved by banlieue-imagebuilder
+# (ADR-0010), which server-side-applies an OSArtifact (kairos-operator)
+# requesting a raw disk, then mirrors progress into
+# `status.rawDiskArtifact`. The vsphere provider watches that field and, once
+# it reports `Ready`, imports per zone — see
+# docs/src/guides/using-banlieue-imagebuilder.md for the full walkthrough,
+# including which parts of this pipeline are implemented today.
+apiVersion: banlieue.io/v1alpha1
+kind: VMImage
+metadata:
+  name: kairos-ubuntu-2404
+spec:
+  osFamily: linux
+  osDistribution: ubuntu
+  osVersion: "24.04"
+  architecture: amd64
+  guestAgent: cloud-init
+  sources:
+    - providerClass: vsphere
+      kind: Url
+      ref: unused-for-url-sources # required by the schema; ignored for kind: Url
+      importFrom: quay.io/kairos/ubuntu:24.04-standard-amd64-generic-v3.6.0

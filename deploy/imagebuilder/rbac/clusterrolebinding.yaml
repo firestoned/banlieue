@@ -1,0 +1,17 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: banlieue-imagebuilder
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: imagebuilder
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: banlieue-imagebuilder
+subjects:
+  - kind: ServiceAccount
+    name: banlieue-imagebuilder
+    namespace: banlieue-system

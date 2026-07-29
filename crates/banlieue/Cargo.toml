@@ -16,16 +16,21 @@ path = "src/main.rs"
 [features]
 # All available providers are bundled by default. Build a slim binary with
 # `--no-default-features --features <provider>` to drop other backends' deps.
-default = ["vsphere"]
+default = ["vsphere", "imagebuilder"]
 # Bundle the vSphere provider (`banlieue provider vsphere`). Pulls in vim_rs
 # transitively via banlieue-provider-vsphere.
 vsphere = ["dep:banlieue-provider-vsphere"]
 # Enable vcsim compatibility in the bundled vSphere provider (local dev / CI).
 # Implies `vsphere`.
 vcsim = ["vsphere", "banlieue-provider-vsphere/vcsim"]
+# Bundle the provider-agnostic VMImage build pipeline (`banlieue imagebuilder`,
+# ADR-0010). No heavy backend SDK to gate out — feature exists for consistency
+# with the per-provider gating pattern, not for a real weight saving.
+imagebuilder = ["dep:banlieue-imagebuilder"]
 
 [dependencies]
 banlieue-controller = { path = "../banlieue-controller" }
+banlieue-imagebuilder = { path = "../banlieue-imagebuilder", optional = true }
 banlieue-provider-vsphere = { path = "../banlieue-provider-vsphere", optional = true }
 
 clap.workspace = true

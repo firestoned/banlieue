@@ -1,22 +1,36 @@
 // Copyright (c) 2026 Erick Bourgeois, banlieue
 // SPDX-License-Identifier: Apache-2.0
-//! `VMImage` reconciler — template-availability check on vSphere.
+//! `VMImage` reconciler — template availability and `Url`-source import
+//! progress on vSphere.
 //!
-//! For every `Provider` of class `vsphere` in scope, look up the template
-//! named in `VMImage.spec.sources[]` (where `provider_class == "vsphere"`).
-//! Flip the matching `VMImage.status.perProvider[]` entry to `ready=true`
-//! (with `resolved_ref` populated) when the template is found in every
-//! datacenter the Provider has a failure domain in; `ready=false` otherwise
-//! with a stable [`reasons`] tag.
+//! For every `Provider` of class `vsphere` in scope, resolve the vsphere
+//! `ImageSource` named in `VMImage.spec.sources[]` (where `provider_class ==
+//! "vsphere"`):
 //!
-//! The pure helper [`compute_per_provider_status`] takes a slice of
-//! `(provider, client)` pairs so the reconciler tests can drive it with
-//! `FakeClient` and never touch `kube::Api`.
+//! - `Template` sources: look up the template by name; flip the matching
+//!   `VMImage.status.perProvider[]` entry to `ready=true` (with
+//!   `resolved_ref` populated) when found in every datacenter the Provider
+//!   has a failure domain in.
+//! - `Url` sources (ADR-0010): readiness depends on
+//!   `VMImage.status.rawDiskArtifact`, built by `banlieue-imagebuilder` —
+//!   this reconciler never touches that field, only reads it. Once its
+//!   phase is `Ready`, one not-ready [`ZoneImageStatus`] row is reported per
+//!   `Provider.status.failureDomains[]`; the actual per-zone conversion
+//!   (raw -> VMDK) and `vim_rs` upload/import are tracked as an ADR-0010
+//!   follow-up, not yet implemented.
+//! - `BackingFile` sources are not a vsphere concept and are rejected.
+//!
+//! `ready=false` in every non-terminal case carries a stable [`reasons`] tag.
+//!
+//! The pure helpers ([`compute_template_status`], [`compute_url_source_status`])
+//! take plain values / `&dyn VSphereClient` so the reconciler tests can drive
+//! them with `FakeClient` and never touch `kube::Api`.
 
 use std::sync::Arc;
 
 use banlieue_api::banlieue::{
-    ImagePerProviderStatus, ImageSource, ImageSourceKind, Provider, VMImage, VMImageStatus,
+    FailureDomain, ImagePerProviderStatus, ImageSource, ImageSourceKind, Provider,
+    RawDiskArtifactPhase, RawDiskArtifactStatus, VMImage, VMImageStatus, ZoneImageStatus,
 };
 use banlieue_provider_sdk::reconciler::{requeue_long, requeue_on_error};
 use banlieue_provider_sdk::ssa::FIELD_MANAGER_PROVIDER_VSPHERE;
@@ -59,6 +73,24 @@ pub mod reasons {
     pub const LOOKUP_FAILED: &str = "LookupFailed";
     /// No vSphere ImageSource on this VMImage — nothing to do for this provider class.
     pub const NO_VSPHERE_SOURCE: &str = "NoVSphereSource";
+    /// `Url` source: `VMImage.status.rawDiskArtifact` isn't `Ready` yet
+    /// (missing, `Pending`, or `Building`) — waiting on `banlieue-imagebuilder`.
+    pub const BUILD_PENDING: &str = "BuildPending";
+    /// `Url` source: `VMImage.status.rawDiskArtifact.phase == Failed`.
+    pub const BUILD_FAILED: &str = "BuildFailed";
+    /// `Url` source, raw disk `Ready`: the Provider has no
+    /// `status.failureDomains[]` published yet, so there is nowhere to import
+    /// into.
+    pub const NO_FAILURE_DOMAINS: &str = "NoFailureDomains";
+    /// `Url` source, raw disk `Ready`: per-zone conversion (raw -> VMDK) and
+    /// `vim_rs` upload/import are not yet implemented — tracked as an
+    /// ADR-0010 follow-up.
+    pub const PER_ZONE_IMPORT_NOT_IMPLEMENTED: &str = "PerZoneImportNotImplemented";
+    /// This `ImageSource.kind` is not supported by the vsphere provider
+    /// (`BackingFile` is a libvirt-shaped concept). Defensive — unreachable
+    /// via [`find_vsphere_source`]'s own filter, kept in case that contract
+    /// ever changes.
+    pub const UNSUPPORTED_SOURCE_KIND: &str = "UnsupportedSourceKind";
 }
 
 /// Top-level reconcile entrypoint.
@@ -94,9 +126,14 @@ pub async fn reconcile(image: Arc<VMImage>, ctx: Arc<Context>) -> Result<Action>
         return Ok(requeue_long());
     }
 
+    let raw_disk_artifact = image
+        .status
+        .as_ref()
+        .and_then(|s| s.raw_disk_artifact.as_ref());
+
     let mut rows: Vec<ImagePerProviderStatus> = Vec::with_capacity(providers.len());
     for provider in &providers {
-        let row = reconcile_for_provider(&ctx, provider, vsphere_source).await;
+        let row = reconcile_for_provider(&ctx, provider, vsphere_source, raw_disk_artifact).await;
         rows.push(row);
     }
 
@@ -112,15 +149,30 @@ pub fn error_policy(_image: Arc<VMImage>, err: &Error, _ctx: Arc<Context>) -> Ac
     requeue_on_error()
 }
 
-/// Compute the per-provider status row for one `(Provider, vsphere ImageSource)`
-/// pair. Connects to the Provider's vCenter, walks its failure-domain
-/// datacenters, and confirms the template exists in each. Errors become
-/// `ready=false` rows with a stable `reason`; never returns `Err`.
+/// Resolve the per-provider status row for one `(Provider, vsphere
+/// ImageSource)` pair. `Template` sources connect to the Provider's vCenter,
+/// walk its failure-domain datacenters, and confirm the template exists in
+/// each — errors become `ready=false` rows with a stable `reason`; never
+/// returns `Err`. `Url` sources never touch vCenter — see
+/// [`compute_url_source_status`].
 pub async fn reconcile_for_provider(
     ctx: &Context,
     provider: &Provider,
     source: &ImageSource,
+    raw_disk_artifact: Option<&RawDiskArtifactStatus>,
 ) -> ImagePerProviderStatus {
+    match source.kind {
+        ImageSourceKind::Url => return compute_url_source_status(provider, raw_disk_artifact),
+        ImageSourceKind::BackingFile => {
+            return per_provider_failure(
+                provider,
+                reasons::UNSUPPORTED_SOURCE_KIND,
+                "BackingFile sources are not supported by the vsphere provider".to_string(),
+            );
+        }
+        ImageSourceKind::Template => {}
+    }
+
     let namespace = provider.namespace().unwrap_or_default();
 
     let creds = match read_credentials(ctx, &namespace, provider).await {
@@ -202,15 +254,98 @@ pub async fn compute_template_status(
         resolved_ref: Some(resolved),
         reason: Some(reasons::RECONCILED.to_string()),
         message: None,
+        zones: vec![],
     }
 }
 
-/// Pick the first vsphere `ImageSource` of kind `Template`. Iter 2a does not
-/// support `Url`-import or `BackingFile` — those land in later iterations.
+/// Pick the first vsphere `ImageSource` of kind `Template` or `Url`
+/// (ADR-0010). `BackingFile` is a libvirt-shaped concept vsphere never
+/// declares, and is never matched here.
 pub fn find_vsphere_source(sources: &[ImageSource]) -> Option<&ImageSource> {
-    sources
+    sources.iter().find(|s| {
+        s.provider_class == PROVIDER_CLASS_NAME
+            && matches!(s.kind, ImageSourceKind::Template | ImageSourceKind::Url)
+    })
+}
+
+/// Resolve the per-provider status row for a `Url`-kind vsphere source
+/// (ADR-0010). Never connects to vCenter — readiness depends only on
+/// `VMImage.status.rawDiskArtifact` (written exclusively by
+/// `banlieue-imagebuilder`) and, once that reports `Ready`, on the per-zone
+/// import work tracked as a follow-up.
+pub fn compute_url_source_status(
+    provider: &Provider,
+    raw_disk_artifact: Option<&RawDiskArtifactStatus>,
+) -> ImagePerProviderStatus {
+    let Some(artifact) = raw_disk_artifact else {
+        return per_provider_failure(
+            provider,
+            reasons::BUILD_PENDING,
+            "waiting for banlieue-imagebuilder to build the raw disk (VMImage.status.rawDiskArtifact not set yet)".to_string(),
+        );
+    };
+
+    match artifact.phase {
+        RawDiskArtifactPhase::Pending | RawDiskArtifactPhase::Building => per_provider_failure(
+            provider,
+            reasons::BUILD_PENDING,
+            format!("raw disk build in progress ({:?})", artifact.phase),
+        ),
+        RawDiskArtifactPhase::Failed => per_provider_failure(
+            provider,
+            reasons::BUILD_FAILED,
+            artifact
+                .message
+                .clone()
+                .unwrap_or_else(|| "raw disk build failed".to_string()),
+        ),
+        RawDiskArtifactPhase::Ready => {
+            let failure_domains: &[FailureDomain] = provider
+                .status
+                .as_ref()
+                .map(|s| s.failure_domains.as_slice())
+                .unwrap_or_default();
+            if failure_domains.is_empty() {
+                return per_provider_failure(
+                    provider,
+                    reasons::NO_FAILURE_DOMAINS,
+                    "Provider has no status.failureDomains[] published yet".to_string(),
+                );
+            }
+            let zones = compute_zone_rows(failure_domains);
+            let ready = zones.iter().all(|z| z.ready);
+            ImagePerProviderStatus {
+                provider_name: provider.name_any(),
+                provider_namespace: provider.namespace().unwrap_or_default(),
+                ready,
+                resolved_ref: None,
+                reason: Some(reasons::PER_ZONE_IMPORT_NOT_IMPLEMENTED.to_string()),
+                message: Some(format!(
+                    "raw disk ready; {} zone(s) pending per-zone import",
+                    zones.len()
+                )),
+                zones,
+            }
+        }
+    }
+}
+
+/// One not-ready row per failure domain. Per-zone conversion (raw -> VMDK)
+/// and the `vim_rs` upload/import are not yet implemented — tracked as an
+/// ADR-0010 follow-up, not a bug.
+fn compute_zone_rows(failure_domains: &[FailureDomain]) -> Vec<ZoneImageStatus> {
+    failure_domains
         .iter()
-        .find(|s| s.provider_class == PROVIDER_CLASS_NAME && s.kind == ImageSourceKind::Template)
+        .map(|fd| ZoneImageStatus {
+            name: fd.name.clone(),
+            ready: false,
+            resolved_ref: None,
+            reason: Some(reasons::PER_ZONE_IMPORT_NOT_IMPLEMENTED.to_string()),
+            message: Some(
+                "per-zone conversion (raw -> VMDK) and vim_rs import are not yet implemented — tracked as an ADR-0010 follow-up".to_string(),
+            ),
+        })
+        .collect()
 }
 
 /// Aggregate `Ready` condition value: True only if every per-provider entry
@@ -268,6 +403,11 @@ fn leak(s: &str) -> &'static str {
         reasons::CONNECT_FAILED => reasons::CONNECT_FAILED,
         reasons::LOOKUP_FAILED => reasons::LOOKUP_FAILED,
         reasons::NO_VSPHERE_SOURCE => reasons::NO_VSPHERE_SOURCE,
+        reasons::BUILD_PENDING => reasons::BUILD_PENDING,
+        reasons::BUILD_FAILED => reasons::BUILD_FAILED,
+        reasons::NO_FAILURE_DOMAINS => reasons::NO_FAILURE_DOMAINS,
+        reasons::PER_ZONE_IMPORT_NOT_IMPLEMENTED => reasons::PER_ZONE_IMPORT_NOT_IMPLEMENTED,
+        reasons::UNSUPPORTED_SOURCE_KIND => reasons::UNSUPPORTED_SOURCE_KIND,
         // Unknown reason → bucket as LOOKUP_FAILED so dashboards still match a
         // known string. Never leak arbitrary input.
         _ => reasons::LOOKUP_FAILED,
@@ -286,6 +426,7 @@ fn per_provider_failure(
         resolved_ref: None,
         reason: Some(reason.to_string()),
         message: Some(message),
+        zones: vec![],
     }
 }
 
@@ -391,6 +532,12 @@ async fn patch_vmimage_status(
 
     let status = VMImageStatus {
         per_provider,
+        // Never set by this provider — banlieue-imagebuilder is the sole
+        // writer of rawDiskArtifact (ADR-0010); omitting it here (rather than
+        // writing None explicitly into the SSA-applied JSON) would be
+        // equally correct since it's skip_serializing_if, but staying
+        // explicit documents the field-manager split at the call site.
+        raw_disk_artifact: None,
         conditions,
         observed_generation: Some(generation),
     };

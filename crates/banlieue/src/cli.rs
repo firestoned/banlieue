@@ -11,6 +11,7 @@
 //! ```text
 //! banlieue controller [flags]            -> banlieue_controller::run
 //! banlieue provider vsphere [flags]      -> banlieue_provider_vsphere::run
+//! banlieue imagebuilder [flags]          -> banlieue_imagebuilder::run
 //! banlieue completion <shell>            -> print a shell completion script
 //! ```
 //!
@@ -44,6 +45,12 @@ pub enum Command {
 
     /// Run a backend provider controller.
     Provider(ProviderArgs),
+
+    /// Run the provider-agnostic VMImage build pipeline (ADR-0010): turns an
+    /// OCI/Kairos-referenced VMImage source into a raw disk via
+    /// kairos-operator, for providers to convert and import per zone.
+    #[cfg(feature = "imagebuilder")]
+    Imagebuilder(banlieue_imagebuilder::Cli),
 
     /// Print a shell completion script to stdout.
     ///
@@ -84,6 +91,8 @@ pub async fn dispatch(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
         Command::Controller(args) => banlieue_controller::run(args).await,
         Command::Provider(provider) => dispatch_provider(provider.backend).await,
+        #[cfg(feature = "imagebuilder")]
+        Command::Imagebuilder(args) => banlieue_imagebuilder::run(args).await,
         Command::Completion(args) => {
             write_completion(args.shell, &mut std::io::stdout().lock());
             Ok(())

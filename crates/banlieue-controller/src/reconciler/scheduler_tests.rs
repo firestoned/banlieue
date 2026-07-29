@@ -159,8 +159,10 @@ mod tests {
                         resolved_ref: Some(format!("/tpl/{p}")),
                         reason: None,
                         message: None,
+                        zones: vec![],
                     })
                     .collect(),
+                raw_disk_artifact: None,
                 conditions: vec![],
                 observed_generation: None,
             }),

@@ -1,5 +1,110 @@
 # Changelog
 
+## [2026-07-29 13:30] - Fix anyhow RUSTSEC finding; VEX-exception the unfixable quick-xml one
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `Cargo.lock`: `anyhow` `1.0.102 → 1.0.104`, closing RUSTSEC-2026-0190
+  (`Error::downcast_mut()` unsoundness). Plain `cargo update -p anyhow`.
+- `deny.toml`: added a documented `[advisories] ignore` entry for
+  RUSTSEC-2026-0194 / RUSTSEC-2026-0195 (quick-xml 0.39.4, quadratic-time and
+  unbounded-memory DoS parsing crafted XML; fixed upstream in quick-xml
+  0.41.0). Pulled in transitively via `vim_rs 0.5.0`, which pins
+  `quick-xml = "^0.39"`.
+- `.cargo/audit.toml` (new): the same RUSTSEC-2026-0194 / RUSTSEC-2026-0195
+  ignore, but for `cargo-audit` — the "Security Vulnerability Scan" CI job
+  (`firestoned/github-actions/rust/security-scan`) runs `cargo audit`
+  directly and does not read `deny.toml`, so it was still failing after the
+  cargo-deny fix. Both files must stay in sync for this advisory going
+  forward.
+
+### Why
+A `[patch.crates-io]` override to quick-xml 0.41.0 was tried first but does
+not work: Cargo's patch mechanism still enforces semver compatibility against
+every dependent's declared range, and 0.41.0 doesn't satisfy vim_rs's `^0.39`
+(each 0.x minor is semver-breaking), so Cargo silently drops the patch
+(confirmed via `[[patch.unused]]` in `Cargo.lock`). The newest available
+vim_rs release, 0.6.0 (also checked against its `main` branch), still only
+bumps its own pin to `quick-xml = "0.40"` — short of the 0.41.0 fix — so there
+is no upstream release to adopt yet.
+
+The finding is accepted as a documented exception rather than left failing CI
+because banlieue-provider-vsphere only uses vim_rs to parse SOAP/XML
+responses from the single vCenter endpoint the operator explicitly
+configured as that provider's backend — never attacker-controlled or
+arbitrary network input, which is the threat model both advisories describe
+(e.g. a public-facing RPKI/RRDP relying party).
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-07-28 17:00] - VMImage build pipeline: banlieue-imagebuilder + kairos-operator (ADR-0010)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- **New crate `crates/banlieue-imagebuilder`** (library, per ADR-0004): watches
+  `VMImage` for `spec.sources[].kind == Url`, server-side-applies a
+  kairos-operator `OSArtifact` (`build.kairos.io/v1alpha2`, modeled as a
+  `DynamicObject` — banlieue does not own or generate this CRD), and mirrors
+  its build status into a new `VMImage.status.rawDiskArtifact` field. Wired
+  into the unified `banlieue` binary as `banlieue imagebuilder`, gated behind
+  a default-on `imagebuilder` Cargo feature.
+- `crates/banlieue-api/src/banlieue/vmimage.rs`: added
+  `VMImageStatus.rawDiskArtifact` (`RawDiskArtifactStatus` /
+  `RawDiskArtifactPhase`), and `ImagePerProviderStatus.zones[]`
+  (`ZoneImageStatus`) for per-failure-domain import progress. Both additive;
+  no schema break for existing `Template`-source `VMImage`s.
+- `crates/banlieue-provider-sdk/src/ssa.rs`: added
+  `FIELD_MANAGER_IMAGEBUILDER` (`banlieue.io/imagebuilder`) — writes
+  exclusively to `rawDiskArtifact`, never `perProvider[]`, so the two field
+  managers never contend on the same `VMImage.status`.
+- `crates/banlieue-provider-vsphere/src/reconciler/vmimage.rs`:
+  `find_vsphere_source` now also matches `Url`-kind sources (previously
+  `Template` only). New `compute_url_source_status` gates readiness on
+  `rawDiskArtifact.phase == Ready`, then reports one `ZoneImageStatus` row per
+  `Provider.status.failureDomains[]`. Per-zone conversion (raw → VMDK) and the
+  `vim_rs` upload/import are intentionally **not implemented** in this change
+  — tracked as an ADR-0010 follow-up; zones report
+  `PerZoneImportNotImplemented` rather than falsely claiming readiness.
+- `deploy/imagebuilder/`: RBAC (ServiceAccount/ClusterRole/ClusterRoleBinding
+  — no Secret/ConfigMap access, only `vmimages`, `vmimages/status`, and
+  kairos-operator's `osartifacts`), ConfigMap, Deployment, Service.
+- `docs/adr/0010-vmimage-build-pipeline-imagebuilder.md`: full ADR.
+- `docs/architecture/calm/architecture.json`: added
+  `banlieue-imagebuilder` / `kairos-operator` / `OSArtifact` nodes and
+  relationships, a new `flow-build-vmimage-from-oci` flow; also backfilled
+  the previously-missing ADR-0008/0009 entries in the `adrs[]` list.
+- `docs/src/guides/kairos-operator-setup.md`,
+  `docs/src/guides/using-banlieue-imagebuilder.md`: new guides, verified
+  against kairos-operator's real docs (kustomize install, not Helm — an
+  earlier disconnected prototype of this idea had guessed at nonexistent
+  Helm chart names) and the regenerated CRD's real field names.
+- `examples/07-vmimage-kairos-url-source.yaml`: new example.
+- `deploy/crds/banlieue.io_vmimages.yaml`, `docs/src/reference/api.md`:
+  regenerated via `make crds`.
+
+### Why
+The original design goal for banlieue's image handling — nightly Kairos
+builds tested and distributed as per-zone vSphere templates — needs an
+OCI-image → raw-disk build step that has no vSphere-specific content and
+must be reusable when Proxmox/libvirt providers land later. `VMImage`'s
+schema already anticipated this (`ImageSourceKind::Url` / `importFrom`
+existed but were unimplemented); this change delivers the provider-agnostic
+build half via a new crate, while per-zone import stays each provider's own
+concern per the CRD-only contract.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] New optional component (`banlieue-imagebuilder` + `deploy/imagebuilder/`) — additive, opt-in via a `Url`-kind `VMImage` source
+- [ ] Config change only
+- [x] Documentation
+
 ## [2026-06-03 15:30] - cargo-deny: allow CDLA-Permissive-2.0; skip vim_rs phf dup
 
 **Author:** Erick Bourgeois

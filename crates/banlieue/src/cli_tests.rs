@@ -30,6 +30,13 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "imagebuilder")]
+    fn imagebuilder_subcommand_parses() {
+        let cli = Cli::parse_from(["banlieue", "imagebuilder", "--no-leader-elect"]);
+        assert!(matches!(cli.command, Command::Imagebuilder(_)));
+    }
+
+    #[test]
     fn missing_subcommand_is_an_error() {
         // No role given → clap returns an error rather than a parsed Cli.
         assert!(Cli::try_parse_from(["banlieue"]).is_err());
@@ -85,6 +92,11 @@ mod tests {
             "missing controller subcommand"
         );
         assert!(script.contains("provider"), "missing provider subcommand");
+        #[cfg(feature = "imagebuilder")]
+        assert!(
+            script.contains("imagebuilder"),
+            "missing imagebuilder subcommand"
+        );
         assert!(
             script.contains("completion"),
             "missing completion subcommand"

@@ -432,6 +432,7 @@ Maintained by the image controller; read by the scheduler.
 | `conditions` | object[] |  | `Ready` is True iff every per-provider entry is ready. |
 | `observedGeneration` | integer |  |  |
 | `perProvider` | object[] |  | Per-Provider readiness. One entry per Provider that supports this image's providerClass and has reconciled at least once. |
+| `rawDiskArtifact` | object |  | Progress of the shared, provider-agnostic raw-disk build for `Url`-kind sources — set exclusively by `banlieue-imagebuilder` (field manager `banlieue.io/imagebuilder`), never by a provider. `None` when no `Url` source exists on this `VMImage` or the build hasn't started. See ADR-0010. |
 
 #### `.status.conditions[]`
 
@@ -459,6 +460,49 @@ image's providerClass and has reconciled at least once.
 | `ready` | boolean | Yes | True when the image can be used to clone/create a VM on this provider. |
 | `reason` | string |  | Short reason if not ready. Stable values from `condition_reasons::IMAGE_*`. |
 | `resolvedRef` | string |  | Resolved concrete reference on the backend. vSphere: `[datacenter] folder/template-name`. Proxmox: VMID. Libvirt: path. |
+| `zones` | object[] |  | Per-zone (per-`Provider.status.failureDomains[]`) import progress. Only populated for `Url`-kind sources, where "ready" on this Provider legitimately means "ready in some zones, still importing in others" — `Template` sources report readiness as a single vCenter-wide lookup and leave this empty. |
+
+##### `.status.perProvider[].zones[]`
+
+Per-zone (per-`Provider.status.failureDomains[]`) import progress.
+Only populated for `Url`-kind sources, where "ready" on this Provider
+legitimately means "ready in some zones, still importing in others" —
+`Template` sources report readiness as a single vCenter-wide lookup
+and leave this empty.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `message` | string |  |  |
+| `name` | string | Yes | Name of the failure domain, matching `Provider.status.failureDomains[].name`. |
+| `ready` | boolean | Yes | True once the template/import is usable in this zone. |
+| `reason` | string |  |  |
+| `resolvedRef` | string |  | Resolved concrete reference within this zone once ready. |
+
+#### `.status.rawDiskArtifact`
+
+Progress of the shared, provider-agnostic raw-disk build for
+`Url`-kind sources — set exclusively by `banlieue-imagebuilder`
+(field manager `banlieue.io/imagebuilder`), never by a provider.
+`None` when no `Url` source exists on this `VMImage` or the build
+hasn't started. See ADR-0010.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `diskFile` | string |  | File name of the raw disk within the artifacts PVC (kairos-operator convention: `<osArtifactRef>.raw`). Populated at phase `Ready`. |
+| `message` | string |  | Long human-readable detail, e.g. the `OSArtifact.status.message` on failure. |
+| `osArtifactRef` | string | Yes | Name of the `OSArtifact` CR `banlieue-imagebuilder` created for this `VMImage` (same namespace as the artifacts PVC below). |
+| `phase` | string | Yes | Current build phase. Allowed: `Pending`, `Building`, `Ready`, `Failed`. |
+| `pvcRef` | object |  | Reference to the PVC kairos-operator created holding the built disk, once known. Populated no earlier than phase `Building`. |
+| `reason` | string |  | Short reason, mirroring the stable-string convention used elsewhere in this status (e.g. `ImagePerProviderStatus.reason`). |
+
+##### `.status.rawDiskArtifact.pvcRef`
+
+Reference to the PVC kairos-operator created holding the built disk,
+once known. Populated no earlier than phase `Building`.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | Yes |  |
 
 ---
 

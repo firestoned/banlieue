@@ -20,5 +20,6 @@ pub use vmclass::{
 };
 pub use vmimage::{
     Architecture, GuestAgent, ImagePerProviderStatus, ImageSource, ImageSourceKind, OsFamily,
-    VMImage, VMImageSpec, VMImageStatus,
+    RawDiskArtifactPhase, RawDiskArtifactStatus, VMImage, VMImageSpec, VMImageStatus,
+    ZoneImageStatus,
 };

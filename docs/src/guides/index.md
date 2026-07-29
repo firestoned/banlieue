@@ -17,6 +17,17 @@ on a real cluster, using the released container image
     provider Deployment, credentials, `Provider`, `VMClass`, `VMImage`, and a
     `VirtualMachine` — every file and `kubectl apply`.
 
+- :material-cloud-download: **[Setting up the Kairos Operator](kairos-operator-setup.md)**
+
+    Install the third-party [Kairos operator](https://kairos.io) banlieue's
+    image-build pipeline depends on, and confirm it with a smoke-test build.
+
+- :material-image-sync: **[Using banlieue-imagebuilder](using-banlieue-imagebuilder.md)**
+
+    Turn an OCI/Kairos image into a `VMImage` raw disk automatically (ADR-0010)
+    — install `banlieue-imagebuilder`, watch the build, and see exactly what's
+    implemented today versus tracked as a follow-up.
+
 </div>
 
 !!! info "Looking to hack on banlieue itself?"

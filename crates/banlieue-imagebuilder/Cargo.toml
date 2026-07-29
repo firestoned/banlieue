@@ -1,0 +1,37 @@
+[package]
+name = "banlieue-imagebuilder"
+description = "Provider-agnostic VMImage build pipeline: turns an OCI/Kairos-referenced VMImage source into a raw disk via kairos-operator's OSArtifact CRD. Owns no backend-specific knowledge (see ADR-0010)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+# Library only: the unified `banlieue` binary (crates/banlieue) drives this via
+# `banlieue_imagebuilder::run` for the `imagebuilder` subcommand (ADR-0004).
+
+[dependencies]
+banlieue-api = { path = "../banlieue-api" }
+banlieue-provider-sdk = { path = "../banlieue-provider-sdk" }
+
+kube.workspace = true
+k8s-openapi.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+thiserror.workspace = true
+anyhow.workspace = true
+
+# `macros` backs `tokio::select!`; `rt-multi-thread` backs `tokio::spawn`.
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+futures.workspace = true
+
+tracing.workspace = true
+
+clap.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
