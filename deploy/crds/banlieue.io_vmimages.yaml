@@ -247,12 +247,104 @@ spec:
                         vSphere: `[datacenter] folder/template-name`. Proxmox: VMID. Libvirt: path.
                       nullable: true
                       type: string
+                    zones:
+                      description: |-
+                        Per-zone (per-`Provider.status.failureDomains[]`) import progress.
+                        Only populated for `Url`-kind sources, where "ready" on this Provider
+                        legitimately means "ready in some zones, still importing in others" —
+                        `Template` sources report readiness as a single vCenter-wide lookup
+                        and leave this empty.
+                      items:
+                        description: |-
+                          Import readiness of a `VMImage` in one failure domain (zone) of a
+                          Provider. Only meaningful for `Url`-kind sources built by
+                          `banlieue-imagebuilder` and imported per zone by the owning provider's
+                          controller (e.g. `banlieue-provider-vsphere`, one zone == one vSphere
+                          compute cluster / datastore / network in the current environment). See
+                          ADR-0010.
+                        properties:
+                          message:
+                            nullable: true
+                            type: string
+                          name:
+                            description: Name of the failure domain, matching `Provider.status.failureDomains[].name`.
+                            type: string
+                          ready:
+                            description: True once the template/import is usable in this zone.
+                            type: boolean
+                          reason:
+                            nullable: true
+                            type: string
+                          resolvedRef:
+                            description: Resolved concrete reference within this zone once ready.
+                            nullable: true
+                            type: string
+                        required:
+                        - name
+                        - ready
+                        type: object
+                      type: array
                   required:
                   - providerName
                   - providerNamespace
                   - ready
                   type: object
                 type: array
+              rawDiskArtifact:
+                description: |-
+                  Progress of the shared, provider-agnostic raw-disk build for
+                  `Url`-kind sources — set exclusively by `banlieue-imagebuilder`
+                  (field manager `banlieue.io/imagebuilder`), never by a provider.
+                  `None` when no `Url` source exists on this `VMImage` or the build
+                  hasn't started. See ADR-0010.
+                nullable: true
+                properties:
+                  diskFile:
+                    description: |-
+                      File name of the raw disk within the artifacts PVC (kairos-operator
+                      convention: `<osArtifactRef>.raw`). Populated at phase `Ready`.
+                    nullable: true
+                    type: string
+                  message:
+                    description: |-
+                      Long human-readable detail, e.g. the `OSArtifact.status.message` on
+                      failure.
+                    nullable: true
+                    type: string
+                  osArtifactRef:
+                    description: |-
+                      Name of the `OSArtifact` CR `banlieue-imagebuilder` created for this
+                      `VMImage` (same namespace as the artifacts PVC below).
+                    type: string
+                  phase:
+                    description: Current build phase.
+                    enum:
+                    - Pending
+                    - Building
+                    - Ready
+                    - Failed
+                    type: string
+                  pvcRef:
+                    description: |-
+                      Reference to the PVC kairos-operator created holding the built disk,
+                      once known. Populated no earlier than phase `Building`.
+                    nullable: true
+                    properties:
+                      name:
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  reason:
+                    description: |-
+                      Short reason, mirroring the stable-string convention used elsewhere
+                      in this status (e.g. `ImagePerProviderStatus.reason`).
+                    nullable: true
+                    type: string
+                required:
+                - osArtifactRef
+                - phase
+                type: object
             type: object
         required:
         - spec

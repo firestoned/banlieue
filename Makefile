@@ -116,7 +116,12 @@ help: ## Show this help
         kind-deploy-provider-vsphere \
         vcsim-up vcsim-down vcsim-logs \
         docs docs-serve docs-clean docs-deploy \
-        calm-diagrams calm-docify calm-validate
+        calm-diagrams calm-docify calm-validate \
+        k0s-all k0s-vms k0s-config k0s-apply k0s-kubeconfig k0s-destroy k0s-clean \
+        k0s-sync k0s-remote-all k0s-remote-vms k0s-remote-config k0s-remote-apply \
+        k0s-remote-kubeconfig k0s-remote-destroy k0s-fetch-kubeconfig \
+        debian-image debian-image-clean debian-image-sync debian-image-remote \
+        debian-image-clean-remote
 
 # ----- Development ----------------------------------------------------------
 
@@ -596,3 +601,144 @@ kind-status: ## Show cluster, controller, and CR status
 		echo "--- $$k ---"; \
 		kubectl --context kind-$(KIND_CLUSTER_NAME) get $$k -A 2>/dev/null || echo "(unreachable or CRD missing)"; \
 	done
+
+# ----- Dev VM cluster (k0s on libvirt, for exercising the libvirt provider) -
+
+# Bootstraps a 3-node k0s cluster on virt-install/libvirt VMs via
+# scripts/bootstrap-k0s-cluster.sh + k0sctl. virt-install/qemu-img only run
+# on a Linux libvirt host, so the k0s-remote-* targets rsync the script to
+# K0S_HYPERVISOR and run it there over SSH instead of locally on macOS.
+
+K0S_SCRIPT             := ./scripts/bootstrap-k0s-cluster.sh
+K0S_VM_COUNT           ?= 3
+K0S_VCPUS              ?= 2
+K0S_MEM_MB             ?= 6144
+K0S_DISK_GB            ?= 25
+K0S_VM_PREFIX          ?= k0s
+K0S_CLUSTER_NAME       ?= $(K0S_VM_PREFIX)-cluster
+K0S_NODE_ROLES         ?= controller+worker controller+worker controller+worker
+
+K0S_LIBVIRT_URI        ?= qemu:///system
+K0S_LIBVIRT_NETWORK    ?= default
+K0S_LIBVIRT_POOL       ?= default
+# Left empty by default so bootstrap-k0s-cluster.sh's own default (debian13)
+# applies; set explicitly to override.
+K0S_OS_VARIANT         ?=
+K0S_IMAGE_URL          ?= https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2
+# Path to a locally-built image (e.g. debian-image-*'s output, with k0s
+# pre-baked) to use instead of downloading K0S_IMAGE_URL.
+K0S_BASE_IMAGE_PATH    ?=
+
+K0S_SSH_PUBKEY         ?= $(HOME)/.ssh/id_ed25519.pub
+# Defaults to your own (Mac-side) username -- the VMs get a sudoer account
+# matching it, not root. Override to SSH_USER=root for the old behavior.
+K0S_SSH_USER           ?= $(USER)
+K0S_WORKDIR            ?= $(HOME)/.local/share/k0s-bootstrap
+# Set to join each VM to your tailnet on first boot.
+K0S_TAILSCALE_AUTHKEY  ?=
+# Space-separated extra hostnames/IPs for the API server cert's SANs, e.g.
+# a stable DNS name pointed at whichever address you connect through.
+K0S_EXTRA_SANS         ?=
+
+K0S_HYPERVISOR         ?= grill.jeb.ca
+K0S_HYPERVISOR_USER    ?= root
+K0S_HYPERVISOR_KEY     ?= $(HOME)/.ssh/id_ed25519
+K0S_REMOTE_DIR         ?= /root/k0s-bootstrap
+K0S_REMOTE_WORKDIR     ?= $(K0S_REMOTE_DIR)/work
+# Only the *public* key is synced by k0s-sync. The matching private key must
+# exist at this path on K0S_HYPERVISOR yourself (the script SSHes into the
+# new guest VMs from wherever it runs) -- copy it over only if you're fine
+# with that key living on the hypervisor too:
+#   scp -i $(K0S_HYPERVISOR_KEY) $(K0S_HYPERVISOR_KEY) $(K0S_HYPERVISOR_USER)@$(K0S_HYPERVISOR):$(K0S_REMOTE_DIR)/
+K0S_REMOTE_SSH_PRIVKEY ?= $(K0S_REMOTE_DIR)/$(notdir $(K0S_HYPERVISOR_KEY))
+K0S_SSH                := ssh -i $(K0S_HYPERVISOR_KEY) $(K0S_HYPERVISOR_USER)@$(K0S_HYPERVISOR)
+
+K0S_ENV = VM_COUNT=$(K0S_VM_COUNT) VCPUS=$(K0S_VCPUS) MEM_MB=$(K0S_MEM_MB) DISK_GB=$(K0S_DISK_GB) \
+	VM_PREFIX=$(K0S_VM_PREFIX) CLUSTER_NAME=$(K0S_CLUSTER_NAME) NODE_ROLES="$(K0S_NODE_ROLES)" \
+	LIBVIRT_URI=$(K0S_LIBVIRT_URI) LIBVIRT_NETWORK=$(K0S_LIBVIRT_NETWORK) LIBVIRT_POOL=$(K0S_LIBVIRT_POOL) \
+	OS_VARIANT=$(K0S_OS_VARIANT) IMAGE_URL=$(K0S_IMAGE_URL) \
+	BASE_IMAGE_PATH=$(K0S_BASE_IMAGE_PATH) TAILSCALE_AUTHKEY=$(K0S_TAILSCALE_AUTHKEY) EXTRA_SANS="$(K0S_EXTRA_SANS)" \
+	SSH_PUBKEY=$(K0S_SSH_PUBKEY) SSH_USER=$(K0S_SSH_USER) WORKDIR=$(K0S_WORKDIR)
+
+k0s-all: ## Full idempotent k0s bootstrap: VMs -> k0sctl config -> apply -> kubeconfig (runs virt-install locally)
+	$(K0S_ENV) $(K0S_SCRIPT) all
+
+k0s-vms: ## Create/ensure the k0s dev VMs exist and are running (runs virt-install locally)
+	$(K0S_ENV) $(K0S_SCRIPT) vms
+
+k0s-config: ## (Re)generate k0sctl.yaml from the current k0s VM IPs
+	$(K0S_ENV) $(K0S_SCRIPT) config
+
+k0s-apply: ## Run k0sctl apply for the k0s dev cluster
+	$(K0S_ENV) $(K0S_SCRIPT) apply
+
+k0s-kubeconfig: ## Fetch the k0s dev cluster kubeconfig into $(K0S_WORKDIR)/kubeconfig
+	$(K0S_ENV) $(K0S_SCRIPT) kubeconfig
+
+k0s-destroy: ## Destroy the k0s dev VMs and remove generated config/disks
+	$(K0S_ENV) $(K0S_SCRIPT) destroy
+
+k0s-clean: ## Remove the local k0s bootstrap workdir (downloaded image, disks, seed isos)
+	rm -rf "$(K0S_WORKDIR)"
+
+k0s-sync: ## Copy the bootstrap script + pubkey onto $(K0S_HYPERVISOR)
+	$(K0S_SSH) 'mkdir -p $(K0S_REMOTE_DIR) && command -v rsync >/dev/null || apt-get install -y -qq rsync'
+	rsync -az -e "ssh -i $(K0S_HYPERVISOR_KEY)" $(K0S_SCRIPT) $(K0S_SSH_PUBKEY) $(K0S_HYPERVISOR_USER)@$(K0S_HYPERVISOR):$(K0S_REMOTE_DIR)/
+
+K0S_REMOTE_ENV = VM_COUNT=$(K0S_VM_COUNT) VCPUS=$(K0S_VCPUS) MEM_MB=$(K0S_MEM_MB) DISK_GB=$(K0S_DISK_GB) \
+	VM_PREFIX=$(K0S_VM_PREFIX) CLUSTER_NAME=$(K0S_CLUSTER_NAME) NODE_ROLES="$(K0S_NODE_ROLES)" \
+	LIBVIRT_URI=qemu:///system LIBVIRT_NETWORK=$(K0S_LIBVIRT_NETWORK) LIBVIRT_POOL=$(K0S_LIBVIRT_POOL) \
+	OS_VARIANT=$(K0S_OS_VARIANT) IMAGE_URL=$(K0S_IMAGE_URL) \
+	BASE_IMAGE_PATH=$(K0S_BASE_IMAGE_PATH) TAILSCALE_AUTHKEY=$(K0S_TAILSCALE_AUTHKEY) EXTRA_SANS="$(K0S_EXTRA_SANS)" \
+	SSH_USER=$(K0S_SSH_USER) WORKDIR=$(K0S_REMOTE_WORKDIR) \
+	SSH_PUBKEY=$(K0S_REMOTE_DIR)/$(notdir $(K0S_SSH_PUBKEY)) SSH_PRIVKEY=$(K0S_REMOTE_SSH_PRIVKEY)
+
+k0s-remote-all: k0s-sync ## Run 'k0s-all' on $(K0S_HYPERVISOR) over SSH instead of locally
+	$(K0S_SSH) 'cd $(K0S_REMOTE_DIR) && $(K0S_REMOTE_ENV) ./bootstrap-k0s-cluster.sh all'
+
+k0s-remote-vms: k0s-sync ## Run 'k0s-vms' on $(K0S_HYPERVISOR) over SSH instead of locally
+	$(K0S_SSH) 'cd $(K0S_REMOTE_DIR) && $(K0S_REMOTE_ENV) ./bootstrap-k0s-cluster.sh vms'
+
+k0s-remote-config: k0s-sync ## Run 'k0s-config' on $(K0S_HYPERVISOR) over SSH instead of locally
+	$(K0S_SSH) 'cd $(K0S_REMOTE_DIR) && $(K0S_REMOTE_ENV) ./bootstrap-k0s-cluster.sh config'
+
+k0s-remote-apply: k0s-sync ## Run 'k0s-apply' on $(K0S_HYPERVISOR) over SSH instead of locally
+	$(K0S_SSH) 'cd $(K0S_REMOTE_DIR) && $(K0S_REMOTE_ENV) ./bootstrap-k0s-cluster.sh apply'
+
+k0s-remote-kubeconfig: k0s-sync ## Run 'k0s-kubeconfig' on $(K0S_HYPERVISOR) over SSH instead of locally
+	$(K0S_SSH) 'cd $(K0S_REMOTE_DIR) && $(K0S_REMOTE_ENV) ./bootstrap-k0s-cluster.sh kubeconfig'
+
+k0s-remote-destroy: k0s-sync ## Run 'k0s-destroy' on $(K0S_HYPERVISOR) over SSH instead of locally
+	$(K0S_SSH) 'cd $(K0S_REMOTE_DIR) && $(K0S_REMOTE_ENV) ./bootstrap-k0s-cluster.sh destroy'
+
+k0s-fetch-kubeconfig: ## Pull the generated kubeconfig from $(K0S_HYPERVISOR) into $(K0S_WORKDIR)
+	mkdir -p "$(K0S_WORKDIR)"
+	scp -i $(K0S_HYPERVISOR_KEY) $(K0S_HYPERVISOR_USER)@$(K0S_HYPERVISOR):$(K0S_REMOTE_WORKDIR)/kubeconfig "$(K0S_WORKDIR)/kubeconfig"
+
+# ----- Debian + k0s image build (virt-customize, needs a Linux host) -------
+
+# Builds scripts/build-debian-k0s-image.sh's output: a plain Debian 13
+# cloud-init qcow2 (copied from K0S_SOURCE_IMAGE, never modified in place)
+# with a pinned k0s binary baked in via virt-customize (no VM boot, no
+# systemd unit/enable). Needs libguestfs-tools, so this runs on
+# K0S_HYPERVISOR by default via debian-image-remote, not locally on macOS.
+# K0S_VERSION is required, e.g. K0S_VERSION=v1.31.1+k0s.0.
+K0S_VERSION       ?=
+K0S_SOURCE_IMAGE  ?= /var/lib/libvirt/images/debian-13-genericcloud-amd64.qcow2
+
+debian-image: ## Build the Debian+k0s qcow2 locally (needs virt-customize + qemu-img here)
+	K0S_VERSION=$(K0S_VERSION) SOURCE_IMAGE=$(K0S_SOURCE_IMAGE) WORKDIR=$(K0S_WORKDIR) ./scripts/build-debian-k0s-image.sh build
+
+debian-image-clean: ## Remove the built Debian+k0s image (local)
+	K0S_VERSION=$(K0S_VERSION) WORKDIR=$(K0S_WORKDIR) ./scripts/build-debian-k0s-image.sh clean
+
+debian-image-sync: ## Copy the debian image build script onto $(K0S_HYPERVISOR)
+	$(K0S_SSH) 'mkdir -p $(K0S_REMOTE_DIR) && command -v rsync >/dev/null || apt-get install -y -qq rsync'
+	rsync -az -e "ssh -i $(K0S_HYPERVISOR_KEY)" scripts/build-debian-k0s-image.sh $(K0S_HYPERVISOR_USER)@$(K0S_HYPERVISOR):$(K0S_REMOTE_DIR)/
+
+debian-image-remote: debian-image-sync ## Build the Debian+k0s qcow2 on $(K0S_HYPERVISOR) over SSH (installs libguestfs-tools there if missing)
+	@test -n "$(K0S_VERSION)" || { echo "K0S_VERSION is required, e.g. make debian-image-remote K0S_VERSION=v1.31.1+k0s.0"; exit 1; }
+	$(K0S_SSH) 'cd $(K0S_REMOTE_DIR) && K0S_VERSION=$(K0S_VERSION) SOURCE_IMAGE=$(K0S_SOURCE_IMAGE) WORKDIR=$(K0S_REMOTE_WORKDIR) ./build-debian-k0s-image.sh build'
+
+debian-image-clean-remote: debian-image-sync ## Remove the built Debian+k0s image on $(K0S_HYPERVISOR)
+	$(K0S_SSH) 'cd $(K0S_REMOTE_DIR) && K0S_VERSION=$(K0S_VERSION) WORKDIR=$(K0S_REMOTE_WORKDIR) ./build-debian-k0s-image.sh clean'

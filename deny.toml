@@ -17,7 +17,35 @@ feature-depth = 1
 [advisories]
 db-urls = ["https://github.com/rustsec/advisory-db"]
 yanked = "deny"
-ignore = []
+ignore = [
+    # RUSTSEC-2026-0194 / RUSTSEC-2026-0195 — quick-xml 0.39.4, quadratic-time
+    # and unbounded-memory (NsReader) denial-of-service parsing crafted XML.
+    # Fixed upstream in quick-xml 0.41.0.
+    #
+    # Pulled in transitively: quick-xml <- vim_rs 0.5.0 <- banlieue-provider-vsphere.
+    # vim_rs pins `quick-xml = "^0.39"`; a `[patch.crates-io]` override to 0.41.0
+    # does NOT work here — Cargo's patch mechanism still enforces semver
+    # compatibility against every dependent's declared range, and 0.41.0 doesn't
+    # satisfy a 0.x crate's "^0.39" (each 0.x minor bump is semver-breaking), so
+    # Cargo silently drops the patch (confirmed via `[[patch.unused]]` in
+    # Cargo.lock). The newest available vim_rs release (0.6.0, checked 2026-07-29,
+    # also matches its `main` branch) only bumps its own pin to `quick-xml = "0.40"`,
+    # still short of the 0.41.0 fix, so there is no upstream release to adopt yet.
+    #
+    # Not exploitable in banlieue's actual usage: banlieue-provider-vsphere uses
+    # vim_rs exclusively to parse SOAP/XML *responses* from the single vCenter
+    # endpoint the operator explicitly configured as that provider's backend
+    # (crates/banlieue-provider-vsphere) — never to parse XML from arbitrary or
+    # attacker-controlled network input. Both advisories describe DoS scenarios
+    # against untrusted/adversarial input (e.g. RPKI/RRDP feeds parsed by a
+    # public-facing relying party); that threat model does not apply to a
+    # private, operator-configured vSphere management endpoint.
+    #
+    # Revisit and remove this ignore once vim_rs bumps its own quick-xml
+    # requirement to >=0.41.0 upstream.
+    { id = "RUSTSEC-2026-0194", reason = "quick-xml DoS via vim_rs (vSphere SOAP client); vim_rs pins ^0.39 and cannot be patched past it (see comment above); only parses responses from an operator-configured vCenter endpoint, not attacker-controlled input" },
+    { id = "RUSTSEC-2026-0195", reason = "quick-xml DoS via vim_rs (vSphere SOAP client); vim_rs pins ^0.39 and cannot be patched past it (see comment above); only parses responses from an operator-configured vCenter endpoint, not attacker-controlled input" },
+]
 
 # ─── Licenses ───────────────────────────────────────────────────────────────
 # Allow-list narrowed to the licenses actually present in the current dep tree

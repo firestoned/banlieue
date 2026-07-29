@@ -1,0 +1,56 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# Cluster-wide role for banlieue-imagebuilder (ADR-0010).
+#
+# Least privilege: this role never touches Secrets, ConfigMaps, or any
+# backend/provider CRD — it only creates/reads OSArtifact CRs (kairos-operator,
+# a CRD it does not own) and patches VMImage.status.rawDiskArtifact. It never
+# reads credentials of any kind.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: banlieue-imagebuilder
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: imagebuilder
+rules:
+  # ---------------------------------------------------------------------------
+  # banlieue.io group — read VMImage, patch only status.rawDiskArtifact
+  # ---------------------------------------------------------------------------
+  - apiGroups: ["banlieue.io"]
+    resources:
+      - vmimages
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["banlieue.io"]
+    resources:
+      - vmimages/status
+    verbs: ["get", "update", "patch"]
+
+  # ---------------------------------------------------------------------------
+  # build.kairos.io group — kairos-operator's OSArtifact CRD. banlieue does
+  # NOT own or generate this CRD; the platform operator installs it
+  # separately. Only "patch" is required for server-side apply (create-or-
+  # update in one call); no delete verb — banlieue-imagebuilder never deletes
+  # OSArtifacts (garbage-collected via the owning VMImage's lifecycle later).
+  # ---------------------------------------------------------------------------
+  - apiGroups: ["build.kairos.io"]
+    resources:
+      - osartifacts
+    verbs: ["get", "list", "watch", "patch"]
+
+  # ---------------------------------------------------------------------------
+  # Core resources
+  # ---------------------------------------------------------------------------
+  # Emit Events for state transitions visible via `kubectl describe vmimage`.
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+  - apiGroups: ["events.k8s.io"]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+
+  # Leases for leader election. Same SDK pattern as every other banlieue role.
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "create", "update", "patch"]

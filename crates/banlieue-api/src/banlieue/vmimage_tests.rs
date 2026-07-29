@@ -256,12 +256,14 @@ mod tests {
             resolved_ref: None,
             reason: None,
             message: None,
+            zones: vec![],
         };
         let json = serde_json::to_value(&p).unwrap();
         let obj = json.as_object().unwrap();
         assert!(!obj.contains_key("resolvedRef"));
         assert!(!obj.contains_key("reason"));
         assert!(!obj.contains_key("message"));
+        assert!(!obj.contains_key("zones"));
         let back: ImagePerProviderStatus = serde_json::from_value(json).unwrap();
         assert_eq!(back, p);
     }
@@ -275,6 +277,7 @@ mod tests {
             resolved_ref: Some("[dc1] folder/ubuntu".to_string()),
             reason: Some("ImagePending".to_string()),
             message: Some("Importing from URL".to_string()),
+            zones: vec![],
         };
         let json = serde_json::to_value(&p).unwrap();
         let back: ImagePerProviderStatus = serde_json::from_value(json).unwrap();
@@ -287,6 +290,173 @@ mod tests {
             r#"{"providerName":"p","providerNamespace":"n"}"#,
         );
         assert!(err.is_err());
+    }
+
+    #[test]
+    fn image_per_provider_status_omitted_zones_defaults_empty() {
+        let json = serde_json::json!({
+            "providerName": "p",
+            "providerNamespace": "n",
+            "ready": true
+        });
+        let back: ImagePerProviderStatus = serde_json::from_value(json).unwrap();
+        assert!(back.zones.is_empty());
+    }
+
+    // ----------------------------------------------------------------------
+    // ZoneImageStatus — per-zone import progress within a Provider
+    // ----------------------------------------------------------------------
+
+    #[test]
+    fn zone_image_status_minimal_round_trip() {
+        let z = ZoneImageStatus {
+            name: "az1".to_string(),
+            ready: false,
+            resolved_ref: None,
+            reason: Some("Importing".to_string()),
+            message: None,
+        };
+        let json = serde_json::to_value(&z).unwrap();
+        let obj = json.as_object().unwrap();
+        assert!(!obj.contains_key("resolvedRef"));
+        assert!(!obj.contains_key("message"));
+        let back: ZoneImageStatus = serde_json::from_value(json).unwrap();
+        assert_eq!(back, z);
+    }
+
+    #[test]
+    fn image_per_provider_status_with_zones_round_trip() {
+        let p = ImagePerProviderStatus {
+            provider_name: "vsphere-devnonprod".to_string(),
+            provider_namespace: "infra".to_string(),
+            ready: false,
+            resolved_ref: None,
+            reason: Some("Importing".to_string()),
+            message: None,
+            zones: vec![
+                ZoneImageStatus {
+                    name: "az1".to_string(),
+                    ready: true,
+                    resolved_ref: Some("[az1] kairos-ubuntu-2404".to_string()),
+                    reason: Some("Reconciled".to_string()),
+                    message: None,
+                },
+                ZoneImageStatus {
+                    name: "az2".to_string(),
+                    ready: false,
+                    resolved_ref: None,
+                    reason: Some("Importing".to_string()),
+                    message: Some("uploading to datastore2".to_string()),
+                },
+            ],
+        };
+        let json = serde_json::to_value(&p).unwrap();
+        assert_eq!(json["zones"].as_array().unwrap().len(), 2);
+        let back: ImagePerProviderStatus = serde_json::from_value(json).unwrap();
+        assert_eq!(back, p);
+    }
+
+    // ----------------------------------------------------------------------
+    // RawDiskArtifactPhase / RawDiskArtifactStatus / VMImageStatus.rawDiskArtifact
+    // ----------------------------------------------------------------------
+
+    #[test]
+    fn raw_disk_artifact_phase_all_variants_round_trip() {
+        for (variant, expected) in [
+            (RawDiskArtifactPhase::Pending, "Pending"),
+            (RawDiskArtifactPhase::Building, "Building"),
+            (RawDiskArtifactPhase::Ready, "Ready"),
+            (RawDiskArtifactPhase::Failed, "Failed"),
+        ] {
+            let json = serde_json::to_value(&variant).unwrap();
+            assert_eq!(json, serde_json::json!(expected));
+            let back: RawDiskArtifactPhase = serde_json::from_value(json).unwrap();
+            assert_eq!(back, variant);
+        }
+    }
+
+    #[test]
+    fn raw_disk_artifact_phase_rejects_unknown_variant() {
+        // In particular: kairos-operator's own `Exporting` / `Error` phases are
+        // NOT valid banlieue RawDiskArtifactPhase values — banlieue-imagebuilder
+        // maps Exporting->Building and Error->Failed before writing this field;
+        // the raw kairos strings must never leak through unmapped.
+        let err = serde_json::from_str::<RawDiskArtifactPhase>(r#""Exporting""#);
+        assert!(err.is_err());
+        let err = serde_json::from_str::<RawDiskArtifactPhase>(r#""Error""#);
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn raw_disk_artifact_status_pending_minimal_round_trip() {
+        let s = RawDiskArtifactStatus {
+            phase: RawDiskArtifactPhase::Pending,
+            os_artifact_ref: "kairos-ubuntu-2404-build".to_string(),
+            pvc_ref: None,
+            disk_file: None,
+            reason: None,
+            message: None,
+        };
+        let json = serde_json::to_value(&s).unwrap();
+        let obj = json.as_object().unwrap();
+        assert!(!obj.contains_key("pvcRef"));
+        assert!(!obj.contains_key("diskFile"));
+        let back: RawDiskArtifactStatus = serde_json::from_value(json).unwrap();
+        assert_eq!(back, s);
+    }
+
+    #[test]
+    fn raw_disk_artifact_status_ready_round_trip() {
+        let s = RawDiskArtifactStatus {
+            phase: RawDiskArtifactPhase::Ready,
+            os_artifact_ref: "kairos-ubuntu-2404-build".to_string(),
+            pvc_ref: Some(LocalObjectReference {
+                name: "kairos-ubuntu-2404-build-artifacts".to_string(),
+            }),
+            disk_file: Some("kairos-ubuntu-2404-build.raw".to_string()),
+            reason: Some("Reconciled".to_string()),
+            message: None,
+        };
+        let json = serde_json::to_value(&s).unwrap();
+        assert_eq!(json["pvcRef"]["name"], "kairos-ubuntu-2404-build-artifacts");
+        assert_eq!(json["diskFile"], "kairos-ubuntu-2404-build.raw");
+        let back: RawDiskArtifactStatus = serde_json::from_value(json).unwrap();
+        assert_eq!(back, s);
+    }
+
+    #[test]
+    fn raw_disk_artifact_status_missing_phase_fails() {
+        let err = serde_json::from_str::<RawDiskArtifactStatus>(
+            r#"{"osArtifactRef":"kairos-ubuntu-2404-build"}"#,
+        );
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn vmimage_status_omits_raw_disk_artifact_when_none() {
+        let s = VMImageStatus::default();
+        assert!(s.raw_disk_artifact.is_none());
+        let json = serde_json::to_value(&s).unwrap();
+        assert!(!json.as_object().unwrap().contains_key("rawDiskArtifact"));
+    }
+
+    #[test]
+    fn vmimage_status_with_raw_disk_artifact_round_trip() {
+        let s = VMImageStatus {
+            raw_disk_artifact: Some(RawDiskArtifactStatus {
+                phase: RawDiskArtifactPhase::Building,
+                os_artifact_ref: "kairos-ubuntu-2404-build".to_string(),
+                pvc_ref: None,
+                disk_file: None,
+                reason: None,
+                message: None,
+            }),
+            ..VMImageStatus::default()
+        };
+        let json = serde_json::to_value(&s).unwrap();
+        assert_eq!(json["rawDiskArtifact"]["phase"], "Building");
+        let back: VMImageStatus = serde_json::from_value(json).unwrap();
+        assert_eq!(back, s);
     }
 
     // ----------------------------------------------------------------------

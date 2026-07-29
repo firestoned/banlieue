@@ -93,3 +93,22 @@ flowchart TD
 
 <sub>Source: flow `flow-provision-capi-cluster` in `architecture.json`.</sub>
 
+
+## Build a VMImage from an OCI/Kairos image and import it per zone
+
+A VMImage with a spec.sources[].kind==Url entry (an OCI-referenced Kairos image, e.g. from a nightly build pipeline) is turned into a raw disk by banlieue-imagebuilder via kairos-operator, then converted and imported into every zone of a matching vSphere Provider by banlieue-provider-vsphere. The two controllers never call each other; VMImage.status is the entire handoff. See ADR-0010.
+
+```mermaid
+flowchart TD
+    t1["1. Platform operator (or a nightly CI job authenticated as one) applies/updates a VMImage with a Url source pointing at the newly-built Kairos OCI image."]
+    t2["2. banlieue-imagebuilder's VMImage watch fires. It server-side-applies an OSArtifact CR requesting a cloud image build, and sets VMImage.status.rawDiskArtifact.phase=Building."]
+    t3["3. kairos-operator's OSArtifact watch fires. It pulls the OCI image, builds a raw disk, and writes it to a PVC it creates, progressing status.phase through Building -> Exporting -> Ready."]
+    t4["4. banlieue-imagebuilder's OSArtifact watch fires on the Ready transition. It patches VMImage.status.rawDiskArtifact with phase=Ready, the artifacts PVC reference, and the disk file name."]
+    t5["5. banlieue-provider-vsphere's VMImage watch fires. It finds a Url-kind vsphere source with rawDiskArtifact.phase==Ready and begins a per-zone import for each of its Providers' status.failureDomains[]."]
+    t6["6. For each zone, a conversion+import Job mounts the shared artifacts PVC read-only, converts the raw disk to a streamOptimized VMDK, and uploads it into that zone's datastore, registering it as a template."]
+    t7["7. banlieue-provider-vsphere patches VMImage.status.perProvider[].zones[] with per-zone readiness, using its own field manager — never touching status.rawDiskArtifact."]
+    t1 --> t2 --> t3 --> t4 --> t5 --> t6 --> t7
+```
+
+<sub>Source: flow `flow-build-vmimage-from-oci` in `architecture.json`.</sub>
+

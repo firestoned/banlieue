@@ -28,6 +28,8 @@ flowchart LR
     service-provider-vsphere["banlieue-provider-vsphere (planned, Phase 1B)"]
     service-provider-proxmox["banlieue-provider-proxmox (planned, Phase 1C)"]
     service-provider-libvirt["banlieue-provider-libvirt (planned, Phase 1D)"]
+    service-banlieue-imagebuilder["banlieue-imagebuilder"]
+    service-kairos-operator["kairos-operator (external, not shipped by banlieue)"]
     system-banlieue-binary["banlieue (single binary)"]
     network-vsphere-backend["vSphere / vCenter Backend"]
     network-proxmox-backend["Proxmox VE Backend"]
@@ -36,6 +38,7 @@ flowchart LR
     data-asset-provider-cr["Provider Custom Resource"]
     data-asset-vmclass-cr["VMClass Custom Resource"]
     data-asset-vmimage-cr["VMImage Custom Resource"]
+    data-asset-osartifact-cr["OSArtifact Custom Resource (external, kairos-operator)"]
     data-asset-infra-machine-cr["Infrastructure Machine CR (VSphereMachine, etc.)"]
     data-asset-infra-cluster-cr["Infrastructure Cluster CR (VSphereCluster)"]
     data-asset-capi-cluster-cr["CAPI Cluster / MachineDeployment (external)"]
@@ -45,6 +48,7 @@ flowchart LR
         service-provider-vsphere
         service-provider-proxmox
         service-provider-libvirt
+        service-banlieue-imagebuilder
     end
     subgraph sg_ecosystem-management-cluster [Ecosystem Management Cluster]
         service-banlieue-controller
@@ -53,12 +57,15 @@ flowchart LR
         service-provider-vsphere
         service-provider-proxmox
         service-provider-libvirt
+        service-banlieue-imagebuilder
+        service-kairos-operator
     end
     subgraph sg_service-kubernetes-api [Service Kubernetes Api]
         data-asset-virtualmachine-cr
         data-asset-provider-cr
         data-asset-vmclass-cr
         data-asset-vmimage-cr
+        data-asset-osartifact-cr
         data-asset-infra-machine-cr
         data-asset-infra-cluster-cr
         data-asset-capi-cluster-cr
@@ -76,6 +83,8 @@ flowchart LR
     service-provider-proxmox -->|HTTPS| service-kubernetes-api
     service-provider-libvirt -->|HTTPS| service-kubernetes-api
     service-capi-core -->|HTTPS| service-kubernetes-api
+    service-banlieue-imagebuilder -->|HTTPS| service-kubernetes-api
+    service-kairos-operator -->|HTTPS| service-kubernetes-api
     service-provider-vsphere -->|HTTPS| network-vsphere-backend
     service-provider-proxmox -->|HTTPS| network-proxmox-backend
     service-provider-libvirt -->|TCP| network-libvirt-backend

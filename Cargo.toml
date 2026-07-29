@@ -4,6 +4,7 @@ members = [
     "crates/banlieue",
     "crates/banlieue-api",
     "crates/banlieue-controller",
+    "crates/banlieue-imagebuilder",
     "crates/banlieue-provider-sdk",
     "crates/banlieue-provider-vsphere",
     "crates/banlieue-vex",

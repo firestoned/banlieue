@@ -13,7 +13,7 @@ mod tests {
     use banlieue_api::banlieue::{
         Architecture, FailureDomain, FailureDomainAttributes, GuestAgent, ImageSource,
         ImageSourceKind, OsFamily, Provider, ProviderConnection, ProviderSpec, ProviderStatus,
-        VMImage, VMImageSpec,
+        RawDiskArtifactPhase, RawDiskArtifactStatus, VMImage, VMImageSpec,
     };
     use banlieue_api::common::LocalObjectReference;
     use banlieue_provider_sdk::status::condition_status;
@@ -22,7 +22,8 @@ mod tests {
     use crate::client::{Datacenter, FakeClient, Inventory, VSphereClient};
 
     use super::super::{
-        AggregateReady, aggregate_ready, compute_template_status, find_vsphere_source, reasons,
+        AggregateReady, aggregate_ready, compute_template_status, compute_url_source_status,
+        find_vsphere_source, reasons,
     };
 
     fn dc(name: &str) -> Datacenter {
@@ -114,12 +115,28 @@ mod tests {
     }
 
     #[test]
-    fn find_vsphere_source_returns_none_when_no_vsphere_template() {
+    fn find_vsphere_source_also_picks_url_sources() {
+        // Url sources (banlieue-imagebuilder pipeline, ADR-0010) are now a
+        // supported vsphere source kind, not skipped.
         let sources = vec![ImageSource {
             provider_class: "vsphere".to_string(),
-            kind: ImageSourceKind::Url, // not Template
+            kind: ImageSourceKind::Url,
             reference: String::new(),
-            import_from: Some("https://example.com/ubuntu.ova".to_string()),
+            import_from: Some("quay.io/kairos/ubuntu:24.04".to_string()),
+            checksum: None,
+        }];
+        let picked = find_vsphere_source(&sources).unwrap();
+        assert_eq!(picked.kind, ImageSourceKind::Url);
+    }
+
+    #[test]
+    fn find_vsphere_source_returns_none_for_backing_file_only() {
+        // BackingFile is a libvirt-shaped concept; vsphere never declares one.
+        let sources = vec![ImageSource {
+            provider_class: "vsphere".to_string(),
+            kind: ImageSourceKind::BackingFile,
+            reference: "/var/lib/libvirt/ubuntu.qcow2".to_string(),
+            import_from: None,
             checksum: None,
         }];
         assert!(find_vsphere_source(&sources).is_none());
@@ -198,6 +215,103 @@ mod tests {
         );
     }
 
+    // ---------- compute_url_source_status ---------------------------------
+
+    #[test]
+    fn url_source_no_raw_disk_artifact_yet_is_build_pending() {
+        let row = compute_url_source_status(&provider("p", "ns"), None);
+        assert!(!row.ready);
+        assert_eq!(row.reason.as_deref(), Some(reasons::BUILD_PENDING));
+        assert!(row.zones.is_empty());
+    }
+
+    #[test]
+    fn url_source_pending_or_building_artifact_is_build_pending() {
+        for phase in [
+            RawDiskArtifactPhase::Pending,
+            RawDiskArtifactPhase::Building,
+        ] {
+            let artifact = RawDiskArtifactStatus {
+                phase,
+                os_artifact_ref: "img-build".to_string(),
+                pvc_ref: None,
+                disk_file: None,
+                reason: None,
+                message: None,
+            };
+            let row = compute_url_source_status(&provider("p", "ns"), Some(&artifact));
+            assert!(!row.ready);
+            assert_eq!(row.reason.as_deref(), Some(reasons::BUILD_PENDING));
+        }
+    }
+
+    #[test]
+    fn url_source_failed_artifact_surfaces_build_failed_with_message() {
+        let artifact = RawDiskArtifactStatus {
+            phase: RawDiskArtifactPhase::Failed,
+            os_artifact_ref: "img-build".to_string(),
+            pvc_ref: None,
+            disk_file: None,
+            reason: None,
+            message: Some("pull failed: manifest unknown".to_string()),
+        };
+        let row = compute_url_source_status(&provider("p", "ns"), Some(&artifact));
+        assert!(!row.ready);
+        assert_eq!(row.reason.as_deref(), Some(reasons::BUILD_FAILED));
+        assert_eq!(
+            row.message.as_deref(),
+            Some("pull failed: manifest unknown")
+        );
+    }
+
+    #[test]
+    fn url_source_ready_artifact_with_no_failure_domains() {
+        let mut p = provider("p", "ns");
+        p.status.as_mut().unwrap().failure_domains = vec![];
+        let artifact = RawDiskArtifactStatus {
+            phase: RawDiskArtifactPhase::Ready,
+            os_artifact_ref: "img-build".to_string(),
+            pvc_ref: Some(LocalObjectReference {
+                name: "img-build-artifacts".to_string(),
+            }),
+            disk_file: Some("img-build.raw".to_string()),
+            reason: None,
+            message: None,
+        };
+        let row = compute_url_source_status(&p, Some(&artifact));
+        assert!(!row.ready);
+        assert_eq!(row.reason.as_deref(), Some(reasons::NO_FAILURE_DOMAINS));
+        assert!(row.zones.is_empty());
+    }
+
+    #[test]
+    fn url_source_ready_artifact_reports_one_pending_zone_per_failure_domain() {
+        // provider("p", "ns") seeds exactly one failure domain.
+        let artifact = RawDiskArtifactStatus {
+            phase: RawDiskArtifactPhase::Ready,
+            os_artifact_ref: "img-build".to_string(),
+            pvc_ref: Some(LocalObjectReference {
+                name: "img-build-artifacts".to_string(),
+            }),
+            disk_file: Some("img-build.raw".to_string()),
+            reason: None,
+            message: None,
+        };
+        let p = provider("p", "ns");
+        let expected_zone = p.status.as_ref().unwrap().failure_domains[0].name.clone();
+        let row = compute_url_source_status(&p, Some(&artifact));
+        // Raw disk is built, but per-zone import isn't implemented yet — the
+        // provider-level row must stay not-ready until every zone is.
+        assert!(!row.ready);
+        assert_eq!(row.zones.len(), 1);
+        assert_eq!(row.zones[0].name, expected_zone);
+        assert!(!row.zones[0].ready);
+        assert_eq!(
+            row.zones[0].reason.as_deref(),
+            Some(reasons::PER_ZONE_IMPORT_NOT_IMPLEMENTED)
+        );
+    }
+
     // ---------- aggregate_ready ------------------------------------------
 
     #[test]
@@ -258,6 +372,7 @@ mod tests {
             resolved_ref: Some("[dc] t".to_string()),
             reason: Some(reasons::RECONCILED.to_string()),
             message: None,
+            zones: vec![],
         }
     }
 
@@ -273,6 +388,7 @@ mod tests {
             resolved_ref: None,
             reason: Some(reason.to_string()),
             message: Some(message.to_string()),
+            zones: vec![],
         }
     }
 

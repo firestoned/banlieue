@@ -7,6 +7,7 @@
 //! readiness in status by polling each registered Provider and (where
 //! supported) importing the image on demand.
 
+use crate::common::LocalObjectReference;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Condition;
 use kube::CustomResource;
 use schemars::JsonSchema;
@@ -156,12 +157,72 @@ pub struct VMImageStatus {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub per_provider: Vec<ImagePerProviderStatus>,
 
+    /// Progress of the shared, provider-agnostic raw-disk build for
+    /// `Url`-kind sources — set exclusively by `banlieue-imagebuilder`
+    /// (field manager `banlieue.io/imagebuilder`), never by a provider.
+    /// `None` when no `Url` source exists on this `VMImage` or the build
+    /// hasn't started. See ADR-0010.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_disk_artifact: Option<RawDiskArtifactStatus>,
+
     /// `Ready` is True iff every per-provider entry is ready.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub conditions: Vec<Condition>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub observed_generation: Option<i64>,
+}
+
+/// Progress of the shared raw-disk build driven by `banlieue-imagebuilder`
+/// from a `Url`-kind [`ImageSource`], via a kairos-operator `OSArtifact`
+/// (`build.kairos.io/v1alpha2`). One raw disk per `VMImage`, regardless of
+/// how many provider-class sources reference it — the OCI pull and disk
+/// build are identical no matter which backend eventually imports the
+/// result. See ADR-0010.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RawDiskArtifactStatus {
+    /// Current build phase.
+    pub phase: RawDiskArtifactPhase,
+
+    /// Name of the `OSArtifact` CR `banlieue-imagebuilder` created for this
+    /// `VMImage` (same namespace as the artifacts PVC below).
+    pub os_artifact_ref: String,
+
+    /// Reference to the PVC kairos-operator created holding the built disk,
+    /// once known. Populated no earlier than phase `Building`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pvc_ref: Option<LocalObjectReference>,
+
+    /// File name of the raw disk within the artifacts PVC (kairos-operator
+    /// convention: `<osArtifactRef>.raw`). Populated at phase `Ready`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disk_file: Option<String>,
+
+    /// Short reason, mirroring the stable-string convention used elsewhere
+    /// in this status (e.g. `ImagePerProviderStatus.reason`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+
+    /// Long human-readable detail, e.g. the `OSArtifact.status.message` on
+    /// failure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+/// Build phase of a [`RawDiskArtifactStatus`].
+///
+/// Deliberately a 4-state subset of kairos-operator's own
+/// `OSArtifact.status.phase` (`Pending | Building | Exporting | Ready |
+/// Error`): `banlieue-imagebuilder` maps `Exporting -> Building` and
+/// `Error -> Failed` before writing this field, so consumers never need to
+/// know about kairos-operator's own phase model.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub enum RawDiskArtifactPhase {
+    Pending,
+    Building,
+    Ready,
+    Failed,
 }
 
 /// Readiness of a VMImage on one specific Provider.
@@ -183,6 +244,35 @@ pub struct ImagePerProviderStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
     /// Long human-readable detail.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    /// Per-zone (per-`Provider.status.failureDomains[]`) import progress.
+    /// Only populated for `Url`-kind sources, where "ready" on this Provider
+    /// legitimately means "ready in some zones, still importing in others" —
+    /// `Template` sources report readiness as a single vCenter-wide lookup
+    /// and leave this empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub zones: Vec<ZoneImageStatus>,
+}
+
+/// Import readiness of a `VMImage` in one failure domain (zone) of a
+/// Provider. Only meaningful for `Url`-kind sources built by
+/// `banlieue-imagebuilder` and imported per zone by the owning provider's
+/// controller (e.g. `banlieue-provider-vsphere`, one zone == one vSphere
+/// compute cluster / datastore / network in the current environment). See
+/// ADR-0010.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ZoneImageStatus {
+    /// Name of the failure domain, matching `Provider.status.failureDomains[].name`.
+    pub name: String,
+    /// True once the template/import is usable in this zone.
+    pub ready: bool,
+    /// Resolved concrete reference within this zone once ready.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
 }
