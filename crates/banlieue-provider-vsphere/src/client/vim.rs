@@ -7,6 +7,7 @@
 //! datastores, networks, and the VSphereMachine VM-lifecycle calls.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use banlieue_api::banlieue::ProviderConnection;
@@ -29,6 +30,26 @@ const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 const MO_TYPE_DATACENTER: &str = "Datacenter";
 const MO_TYPE_CLUSTER: &str = "ClusterComputeResource";
 const MO_TYPE_VIRTUAL_MACHINE: &str = "VirtualMachine";
+
+/// Deadline for establishing the TCP+TLS connection to vCenter.
+///
+/// Security review 2026-07-31 (SEC-012): without it, a firewalled or
+/// black-holed endpoint stalls the connect — and the reconcile with it —
+/// indefinitely. 10s is generous for a reachable vCenter.
+const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Ceiling on one complete HTTP request, response body included.
+///
+/// Deliberately independent of `--vsphere-task-timeout-secs` (default 600s):
+/// that flag bounds a whole vCenter *task* (clone, power, reconfigure) once
+/// iter 2+ wires task polling, while this bounds a single SOAP call. The
+/// calls this client makes today — login, container views, property reads —
+/// answer in well under a second on a healthy vCenter, so 120s leaves ample
+/// headroom for slow PropertyCollector responses on large inventories while
+/// still failing a stalled endpoint (SEC-012). When vim_rs grows task
+/// long-polling, that path must carry its own deadline (driven by the task
+/// flag), not this per-request one.
+const HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Factory that talks to a real vCenter via vim_rs.
 #[derive(Default, Clone)]
@@ -91,10 +112,33 @@ fn root_certs_from_pem(pem: &str) -> Result<Vec<reqwest::Certificate>> {
 /// The two are independent — a CA bundle does not imply skipping verification —
 /// but `insecure` is the bigger hammer and is applied regardless.
 ///
+/// Every request carries [`HTTP_CONNECT_TIMEOUT`] / [`HTTP_REQUEST_TIMEOUT`]
+/// (SEC-012): a hostile or stalled vCenter must fail the call, not hang the
+/// reconcile forever.
+///
 /// # Errors
 /// Returns [`Error::Vsphere`] if the PEM is invalid or the client fails to build.
 fn build_http_client(ca_bundle_pem: Option<&str>, insecure: bool) -> Result<reqwest::Client> {
-    let mut builder = reqwest::Client::builder().user_agent(format!("{APP_NAME}/{APP_VERSION}"));
+    build_http_client_with_timeouts(
+        ca_bundle_pem,
+        insecure,
+        HTTP_CONNECT_TIMEOUT,
+        HTTP_REQUEST_TIMEOUT,
+    )
+}
+
+/// As [`build_http_client`], with explicit timeouts. Split out so tests can
+/// prove the deadline fires without waiting out the production values.
+fn build_http_client_with_timeouts(
+    ca_bundle_pem: Option<&str>,
+    insecure: bool,
+    connect_timeout: Duration,
+    request_timeout: Duration,
+) -> Result<reqwest::Client> {
+    let mut builder = reqwest::Client::builder()
+        .user_agent(format!("{APP_NAME}/{APP_VERSION}"))
+        .connect_timeout(connect_timeout)
+        .timeout(request_timeout);
     if let Some(pem) = ca_bundle_pem {
         for cert in root_certs_from_pem(pem)? {
             builder = builder.add_root_certificate(cert);

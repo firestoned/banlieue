@@ -30,7 +30,8 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use banlieue_vex::auto_vex_presence::{
-    GrypeReport, Sbom, build_document, compute_presence_vex, load_triaged_from_vex_dir,
+    GrypeReport, build_document, compute_presence_vex, load_sbom_from_path,
+    load_triaged_from_vex_dir, read_file_capped,
 };
 use clap::Parser;
 
@@ -89,7 +90,7 @@ fn main() -> ExitCode {
 fn run() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
-    let grype_bytes = std::fs::read(&cli.grype_json).map_err(|e| {
+    let grype_bytes = read_file_capped(&cli.grype_json).map_err(|e| {
         anyhow::anyhow!(
             "failed to read --grype-json {}: {}",
             cli.grype_json.display(),
@@ -104,12 +105,10 @@ fn run() -> anyhow::Result<()> {
         )
     })?;
 
-    let mut sboms: Vec<Sbom> = Vec::with_capacity(cli.sbom.len());
+    let mut sboms = Vec::with_capacity(cli.sbom.len());
     for path in &cli.sbom {
-        let bytes = std::fs::read(path)
-            .map_err(|e| anyhow::anyhow!("failed to read --sbom {}: {}", path.display(), e))?;
-        let sbom: Sbom = serde_json::from_slice(&bytes)
-            .map_err(|e| anyhow::anyhow!("failed to parse --sbom {}: {}", path.display(), e))?;
+        let sbom = load_sbom_from_path(path)
+            .map_err(|e| anyhow::anyhow!("failed to load --sbom {}: {}", path.display(), e))?;
         sboms.push(sbom);
     }
 

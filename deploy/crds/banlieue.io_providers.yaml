@@ -289,6 +289,9 @@ spec:
                   - type
                   type: object
                 type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
               failureDomains:
                 description: |-
                   Failure domains discovered by the provider's controller within this
@@ -353,6 +356,48 @@ spec:
                 format: int64
                 nullable: true
                 type: integer
+              workload:
+                description: |-
+                  The provider workload `banlieue-operator` created for this Provider.
+
+                  Written **only** by the operator's field manager
+                  (`banlieue.io/operator`); the provider's own controller never touches
+                  it. This split is deliberate: `conditions` is a plain list with no
+                  `x-kubernetes-list-type: map` marker, so two field managers writing into
+                  it would contend over the whole array rather than merging per entry.
+                  Giving the operator a disjoint field keeps server-side apply
+                  conflict-free (ADR-0012).
+                nullable: true
+                properties:
+                  deploymentName:
+                    description: |-
+                      Name of the Deployment running this Provider's controller.
+                      Conventionally `banlieue-provider-<class>-<provider-name>`.
+                    type: string
+                  namespace:
+                    description: |-
+                      Namespace the Deployment was created in — the ProviderClass's
+                      `workloadNamespace`, or the operator's own namespace when unset.
+                    type: string
+                  observedGeneration:
+                    description: |-
+                      The Provider generation the operator had observed when it last applied
+                      this workload.
+                    format: int64
+                    nullable: true
+                    type: integer
+                  readyReplicas:
+                    description: |-
+                      Ready replicas reported by that Deployment. Zero means the backend's
+                      controller is not currently running, whatever the Provider's other
+                      conditions say.
+                    format: int32
+                    type: integer
+                required:
+                - deploymentName
+                - namespace
+                - readyReplicas
+                type: object
             type: object
         required:
         - spec

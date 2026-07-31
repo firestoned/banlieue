@@ -131,6 +131,9 @@ spec:
                       description: |-
                         Optional checksum for imported images. Format: `<alg>:<hex>`,
                         e.g. `sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b...`.
+                        Supported algorithms: `sha256`, `sha512`. Provider import Jobs verify
+                        the built artifact against this value before writing it to the backend
+                        and fail closed on mismatch or an unsupported algorithm.
                       nullable: true
                       type: string
                     importFrom:
@@ -179,7 +182,14 @@ spec:
             nullable: true
             properties:
               conditions:
-                description: '`Ready` is True iff every per-provider entry is ready.'
+                description: |-
+                  `Ready` is True iff every per-provider entry is ready.
+
+                  Written **only** by `banlieue-controller` (field manager
+                  `banlieue.io/controller`), which is the only component with a
+                  whole-image view. A provider cannot compute "ready everywhere" from
+                  rows it does not own, so it writes its `perProvider` entry and nothing
+                  here (ADR-0015). Merge-keyed on `type`, per Kubernetes convention.
                 items:
                   description: Condition contains details for one aspect of the current state of this API Resource.
                   properties:
@@ -211,6 +221,9 @@ spec:
                   - type
                   type: object
                 type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
               observedGeneration:
                 format: int64
                 nullable: true
@@ -219,6 +232,13 @@ spec:
                 description: |-
                   Per-Provider readiness. One entry per Provider that supports this
                   image's providerClass and has reconciled at least once.
+
+                  **Merge-keyed, and it must stay that way (ADR-0015).** Several
+                  providers write this list concurrently, each applying only its own
+                  entry. Without `x-kubernetes-list-type: map` server-side apply treats
+                  the array as atomic — one manager owns the whole thing and `force()`
+                  hands it over wholesale, silently discarding every other provider's
+                  row. That was a real, reproduced bug, not a theoretical one.
                 items:
                   description: Readiness of a VMImage on one specific Provider.
                   properties:
@@ -290,6 +310,10 @@ spec:
                   - ready
                   type: object
                 type: array
+                x-kubernetes-list-map-keys:
+                - providerName
+                - providerNamespace
+                x-kubernetes-list-type: map
               rawDiskArtifact:
                 description: |-
                   Progress of the shared, provider-agnostic raw-disk build for
@@ -299,6 +323,16 @@ spec:
                   hasn't started. See ADR-0010.
                 nullable: true
                 properties:
+                  checksum:
+                    description: |-
+                      Expected checksum (`<alg>:<hex>`) of the built disk, copied from the
+                      `Url` source the build serves. Consumers that stream the artifact to a
+                      backend MUST verify it against this value and fail closed on mismatch
+                      (security review 2026-07-31, SEC-004) — the value lives here, next to
+                      the PVC reference, so no consumer has to re-derive which source the
+                      shared build came from.
+                    nullable: true
+                    type: string
                   diskFile:
                     description: |-
                       File name of the raw disk within the artifacts PVC (kairos-operator

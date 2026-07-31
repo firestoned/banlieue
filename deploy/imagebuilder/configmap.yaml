@@ -17,5 +17,8 @@ data:
   BANLIEUE_LEADER_ELECTION_NAMESPACE: "banlieue-system"
   # OSArtifact CRs (and the artifacts PVCs kairos-operator creates for them)
   # are placed here. A provider's per-zone import Jobs must run in this same
-  # namespace to mount the shared artifacts PVC (ADR-0010).
-  BANLIEUE_BUILD_NAMESPACE: "banlieue-system"
+  # namespace to mount the shared artifacts PVC (ADR-0010). Deliberately NOT
+  # banlieue-system: kairos-operator's build pods require
+  # securityContext.privileged=true, which banlieue-system's `restricted` Pod
+  # Security level rejects. See deploy/imagebuilder/namespace.yaml.
+  BANLIEUE_BUILD_NAMESPACE: "banlieue-imagebuild"

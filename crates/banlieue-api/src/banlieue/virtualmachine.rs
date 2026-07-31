@@ -216,6 +216,10 @@ pub struct VirtualMachineStatus {
     /// Optional:
     ///   `Migrating`           — true while a migration is in progress
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(extend(
+        "x-kubernetes-list-type" = "map",
+        "x-kubernetes-list-map-keys" = ["type"],
+    ))]
     pub conditions: Vec<Condition>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]

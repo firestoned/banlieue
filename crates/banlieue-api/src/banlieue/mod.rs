@@ -3,13 +3,18 @@
 //! `banlieue.io/v1alpha1` API group.
 
 pub mod provider;
+pub mod providerclass;
 pub mod virtualmachine;
 pub mod vmclass;
 pub mod vmimage;
 
 pub use provider::{
     FailureDomain, FailureDomainAttributes, NetworkClassMapping, Provider, ProviderCapabilities,
-    ProviderConnection, ProviderSpec, ProviderStatus, StorageClassMapping,
+    ProviderConnection, ProviderSpec, ProviderStatus, ProviderWorkloadStatus, StorageClassMapping,
+};
+pub use providerclass::{
+    DEFAULT_PROVIDER_REPLICAS, ImagePullPolicy, LoggingSpec, ProviderClass, ProviderClassSpec,
+    ProviderClassStatus, ProviderImage,
 };
 pub use virtualmachine::{
     AffinityMode, AntiAffinityRule, MigrationPolicy, PlacementSpec, ResolvedResource,

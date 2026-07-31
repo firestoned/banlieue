@@ -23,4 +23,7 @@ spec:
     - providerClass: vsphere
       kind: Url
       ref: unused-for-url-sources # required by the schema; ignored for kind: Url
-      importFrom: quay.io/kairos/ubuntu:24.04-standard-amd64-generic-v3.6.0
+      # Digest-pinned per the banlieue-vmimage-import-source admission policy
+      # (security review 2026-07-31): mutable tags are rejected at admission when the policy is
+      # installed. Digest resolved from quay.io 2026-07-31.
+      importFrom: quay.io/kairos/ubuntu:24.04-standard-amd64-generic-v3.7.2-k0s-v1.34.3-k0s.0@sha256:e4860078c024269e81ce561ce91cf9639a4e75c23ea4cd32d3405005087192a7

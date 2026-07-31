@@ -112,3 +112,56 @@ flowchart TD
 
 <sub>Source: flow `flow-build-vmimage-from-oci` in `architecture.json`.</sub>
 
+
+## Import a built raw disk into libvirt storage pools
+
+The libvirt half of ADR-0010's pipeline: once banlieue-imagebuilder has produced a raw disk, banlieue-provider-libvirt imports it into each storage pool the Provider advertises. Demonstrates the same build-then-import split as the vSphere path, on a backend that needs no proprietary SDK. See ADR-0011.
+
+```mermaid
+flowchart TD
+    t1["1. Platform operator applies a Provider of class `libvirt` (endpoint qemu+tls://host/system, caBundle + client-certificate credentialsRef) declaring the storage pools and networks the host exposes."]
+    t2["2. banlieue-provider-libvirt's Provider watch fires. It reads the CA bundle and client certificate from the referenced ConfigMap/Secret."]
+    t3["3. Provider connects over mutual TLS and lists storage pools and networks, verifying the admin's declared capabilities actually exist on the host. Two in-process RPC calls — no Job."]
+    t4["4. Provider patches status.failureDomains[] (one per libvirt host) carrying the verified pools and networks, and sets Ready."]
+    t5["5. A VMImage with a libvirt Url source reaches status.rawDiskArtifact.phase=Ready (written by banlieue-imagebuilder, never by this provider). The provider's VMImage watch fires and creates one import Job per target pool, running the banlieue binary itself with the artifacts PVC mounted read-only."]
+    t6["6. The import Job creates a raw storage volume sized to the artifact and streams the disk bytes into it over the same TLS connection, using libvirt's stream protocol. Bulk data flows from the Job, never through the controller."]
+    t7["7. Provider patches VMImage.status.perProvider[].zones[] with per-pool readiness, using field manager banlieue.io/provider-libvirt — never touching status.rawDiskArtifact."]
+    t1 --> t2 --> t3 --> t4 --> t5 --> t6 --> t7
+```
+
+<sub>Source: flow `flow-import-vmimage-libvirt` in `architecture.json`.</sub>
+
+
+## Register a backend and have its controller provisioned automatically
+
+The flow that makes banlieue an operator in the strict sense: a platform owner declares a ProviderClass once (image, resources, namespace), then applies a Provider CR per backend instance. banlieue-operator turns each Provider into a dedicated Deployment + ServiceAccount + Role + RoleBinding, so one hung or slow backend cannot stall reconciliation for any other and each pod holds exactly one backend's credentials. Deleting the Provider garbage-collects the whole set via owner references. See ADR-0003 (per-instance topology) and ADR-0012.
+
+```mermaid
+flowchart TD
+    t1["1. Platform operator installs the platform with `banlieue bootstrap operator` — namespace, CRDs built from the binary's own Rust types, controller and operator RBAC and Deployments, plus one ProviderClass per backend compiled into the binary (ADR-0013). `--dry-run` emits the same YAML for a GitOps repo instead of applying it."]
+    t2["2. Platform operator applies a Provider CR naming its ProviderClass, the backend endpoint, and a credentials Secret in the same namespace."]
+    t3["3. banlieue-operator's Provider watch fires. It resolves the referenced ProviderClass and server-side-applies a ServiceAccount, a Role scoped by resourceNames to just that Provider's credentials Secret, a RoleBinding, and a Deployment running `banlieue provider <backend>` — all carrying an ownerReference back to the Provider."]
+    t4["4. The spawned provider pod starts, acquires its own leader-election Lease (banlieue-provider-<class>-<provider-name>), and begins a server-side filtered watch on labelSelector banlieue.io/provider=<name> so its informer cache holds only its own infra objects."]
+    t5["5. The provider logs in to its backend with the one credential it can read, introspects the inventory, and publishes reachable failure domains to Provider.status.failureDomains — the input the main controller's scheduler matches VirtualMachines against."]
+    t6["6. banlieue-operator's Deployment watch fires as replicas become ready and mirrors readiness into Provider.status.workload. It deliberately does not write status.conditions — that list is owned by the provider's own field manager, and a plain list without x-kubernetes-list-type:map cannot be merged per-entry by two managers."]
+    t1 --> t2 --> t3 --> t4 --> t5 --> t6
+```
+
+<sub>Source: flow `flow-provision-provider-workload` in `architecture.json`.</sub>
+
+
+## Upgrade every backend of a class with one edit
+
+The payoff of putting install metadata on a ProviderClass rather than on each Provider: bumping a fleet is a one-object edit, not one edit per backend. banlieue-operator watches ProviderClass and maps each edit back to every Provider referencing it, so the change lands at once instead of waiting on a periodic requeue. The same path makes un-pausing a class immediate. See ADR-0012.
+
+```mermaid
+flowchart TD
+    t1["1. Platform operator edits one field — `kubectl patch providerclass vsphere -p '{"spec":{"image":{"tag":"v0.2.0"}}}'`. To canary a single backend instead, they create a second class pinning the new image and repoint one Provider at it."]
+    t2["2. banlieue-operator's ProviderClass watch fires. kube calls the mapper synchronously, so it cannot list Providers itself — it reads the controller's own reflector store, already maintained for the primary Provider watch, and emits one reconcile request per referencing Provider. Without this the edit would only be noticed on the next periodic requeue."]
+    t3["3. Each Provider reconciles: the workload is re-applied with the new image and the Deployment rolls. If the edit changed the Provider's CLASS rather than the class's contents, the derived name changes too, so the superseded workload is pruned by label — including the ClusterRoleBinding, which no owner reference can reclaim and a name-based cleanup could never find again."]
+    t4["4. The operator publishes ProviderClass.status: how many Providers reference this class, and a Ready condition reporting whether the shared per-backend ClusterRole exists. That surfaces an unusable class in `kubectl get providerclasses` before any Provider is created, rather than as 403s in a provider pod's log afterwards."]
+    t1 --> t2 --> t3 --> t4
+```
+
+<sub>Source: flow `flow-upgrade-provider-fleet` in `architecture.json`.</sub>
+

@@ -113,9 +113,11 @@ pub struct VSphereMachineSpec {
     pub resource_pool: Option<String>,
 
     /// Number of virtual CPUs.
+    #[schemars(range(min = 1, max = 256))]
     pub num_cpus: u32,
 
     /// Memory in MiB.
+    #[schemars(range(min = 128, max = 4_194_304))]
     pub memory_mi_b: u32,
 
     /// Firmware. EFI / EFI Secure require the template to be EFI-capable.
@@ -123,9 +125,11 @@ pub struct VSphereMachineSpec {
 
     /// Disks. The first disk is the template's OS disk (grown if needed);
     /// subsequent disks are blank.
+    #[schemars(length(min = 1, max = 32))]
     pub disks: Vec<VSphereDiskSpec>,
 
     /// Network interfaces.
+    #[schemars(length(min = 1, max = 16))]
     pub network: Vec<VSphereNicSpec>,
 }
 
@@ -137,6 +141,7 @@ pub struct VSphereDiskSpec {
     pub name: String,
     /// Disk size in GiB. For the OS disk this is a floor — the template's disk
     /// is grown to at least this size.
+    #[schemars(range(min = 1, max = 65_536))]
     pub size_gi_b: u32,
     /// Provisioning hint (thin / thick / eager-zeroed).
     #[serde(default)]
@@ -195,6 +200,10 @@ pub struct VSphereMachineStatus {
     /// condition is mirrored as `InfrastructureReady` on the parent
     /// (`clusterv1.Machine` or banlieue `VirtualMachine`) per contract.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(extend(
+        "x-kubernetes-list-type" = "map",
+        "x-kubernetes-list-map-keys" = ["type"],
+    ))]
     pub conditions: Vec<Condition>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -60,4 +60,56 @@ mod tests {
         let cli = parse(&["--vsphere-task-timeout-secs", "120"]);
         assert_eq!(cli.vsphere_task_timeout_secs, 120);
     }
+
+    // ----------------------------------------------------------------------
+    // --provider-name (per-instance topology, ADR-0003)
+    // ----------------------------------------------------------------------
+
+    /// `banlieue-operator` passes `--provider-name` on every spawned workload.
+    /// If this flag is not accepted, clap exits non-zero and the Deployment
+    /// crash-loops.
+    #[test]
+    fn provider_name_flag_is_accepted() {
+        let cli = parse(&["--provider-name", "prod-vc"]);
+        assert_eq!(cli.provider_name.as_deref(), Some("prod-vc"));
+    }
+
+    /// Unset means "watch every Provider of this class" — the pre-ADR-0003
+    /// behaviour, still used by a statically installed provider.
+    #[test]
+    fn provider_name_defaults_to_unset() {
+        assert_eq!(parse(&[]).provider_name, None);
+    }
+
+    /// A per-instance workload must narrow its watch server-side rather than
+    /// filtering in the reconciler, or every pod caches every backend's objects.
+    #[test]
+    fn provider_name_produces_a_field_selector_for_that_object() {
+        let cfg = provider_watch_config(Some("prod-vc"));
+        assert_eq!(cfg.field_selector.as_deref(), Some("metadata.name=prod-vc"));
+    }
+
+    #[test]
+    fn no_provider_name_leaves_the_watch_unscoped() {
+        assert!(provider_watch_config(None).field_selector.is_none());
+    }
+
+    /// The full flag set the operator emits must parse as a unit — this is the
+    /// contract between `banlieue-operator`'s Deployment builder and this CLI.
+    #[test]
+    fn the_flag_set_emitted_by_the_operator_parses() {
+        let cli = parse(&[
+            "--provider-name",
+            "prod-vc",
+            "--namespace",
+            "tenant-a",
+            "--leader-election-id",
+            "banlieue-provider-vsphere-prod-vc",
+            "--leader-election-namespace",
+            "tenant-a",
+        ]);
+        assert_eq!(cli.provider_name.as_deref(), Some("prod-vc"));
+        assert_eq!(cli.namespace.as_deref(), Some("tenant-a"));
+        assert_eq!(cli.leader_election_id, "banlieue-provider-vsphere-prod-vc");
+    }
 }

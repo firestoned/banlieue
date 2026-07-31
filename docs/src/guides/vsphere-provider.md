@@ -47,6 +47,14 @@ kubectl apply -f deploy/provider-vsphere/deployment.yaml
 kubectl apply -f deploy/provider-vsphere/service.yaml
 ```
 
+!!! note "Operator-managed installs are the norm"
+    Applying a `Provider` against a cluster installed with
+    `banlieue bootstrap operator` spawns a dedicated provider workload
+    automatically — see [Provider lifecycle](provider-lifecycle.md). This
+    static install is the standalone shape: it serves every `Provider` **in
+    `banlieue-system`** (its watch and its credential reads are scoped to the
+    install namespace, security review 2026-07-31).
+
 The Deployment (excerpt) — single binary, role-selected by `args`, pinned to the
 release:
 
@@ -55,14 +63,16 @@ release:
 containers:
   - name: provider
     image: ghcr.io/firestoned/banlieue:v0.1.0
-    args: ["provider", "vsphere"]
+    args: ["provider", "vsphere", "--namespace", "banlieue-system"]
     envFrom:
       - configMapRef: { name: banlieue-provider-vsphere-config }
 ```
 
 The provider's ClusterRole is read-only on `providers` (it only patches their
-`status`), reads `secrets` for credentials, and reconciles `vmimages/status` and
-`vspheremachines`. Wait for it:
+`status`) and reconciles `vmimages/status` and `vspheremachines`. Credentials
+and CA bundles are read by name through a **namespaced** Role in
+`banlieue-system` (`rbac/role.yaml`) — no provider identity holds cluster-wide
+Secret access (security review 2026-07-31 CHAIN-002). Wait for it:
 
 ```sh
 kubectl -n banlieue-system rollout status deploy/banlieue-provider-vsphere --timeout=120s

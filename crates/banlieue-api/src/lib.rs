@@ -6,7 +6,8 @@
 //! Two API groups are exposed:
 //!
 //! - [`banlieue`] — the user-facing API group `banlieue.io/v1alpha1`:
-//!   [`Provider`], [`VMClass`], [`VMImage`], [`VirtualMachine`].
+//!   [`Provider`], [`ProviderClass`], [`VMClass`], [`VMImage`],
+//!   [`VirtualMachine`].
 //! - [`infrastructure`] — provider-specific infra CRDs under
 //!   `infrastructure.banlieue.io/v1alpha1`. Currently:
 //!   [`VSphereCluster`] (InfraCluster), [`VSphereMachine`] (InfraMachine,
@@ -18,6 +19,7 @@
 //! controllers.
 //!
 //! [`Provider`]: banlieue::Provider
+//! [`ProviderClass`]: banlieue::ProviderClass
 //! [`VMClass`]: banlieue::VMClass
 //! [`VMImage`]: banlieue::VMImage
 //! [`VirtualMachine`]: banlieue::VirtualMachine
@@ -29,9 +31,12 @@ pub mod banlieue;
 pub mod common;
 pub mod infrastructure;
 
-/// CRD post-processing used by the `crdgen` binary. Only compiled with the
-/// `crdgen` feature.
-#[cfg(feature = "crdgen")]
+/// CRD post-processing shared by the `crdgen` binary and `banlieue bootstrap`.
+///
+/// Deliberately **not** gated behind the `crdgen` feature: bootstrap builds
+/// CRDs from these same Rust types at runtime so the schemas it applies are by
+/// construction the ones the running binary implements (ADR-0013). Only the
+/// `serde_yaml` dependency stays feature-gated.
 pub mod crdgen_support;
 
 /// Markdown API-reference generation used by the `crddoc` binary. Only

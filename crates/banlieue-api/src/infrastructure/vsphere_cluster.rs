@@ -131,6 +131,10 @@ pub struct VSphereClusterStatus {
     /// CAPI-compatible conditions. The `Ready` condition is mirrored to the
     /// parent `Cluster`'s `InfrastructureReady`; `Paused` reflects pause state.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(extend(
+        "x-kubernetes-list-type" = "map",
+        "x-kubernetes-list-map-keys" = ["type"],
+    ))]
     pub conditions: Vec<Condition>,
 
     /// The generation of the spec the controller has reconciled.

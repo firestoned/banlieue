@@ -58,10 +58,23 @@ pub struct Template {
 
 /// Backend-agnostic credential bundle resolved from the Provider's
 /// `credentialsRef` Secret. Plain strings — interpreted by the factory.
-#[derive(Debug, Clone)]
+///
+/// `Debug` is hand-implemented to redact the password (security review
+/// 2026-07-31 SEC-013): one stray `debug!(?creds)` must never put a vCenter
+/// password in the logs.
+#[derive(Clone)]
 pub struct Credentials {
     pub username: String,
     pub password: String,
+}
+
+impl std::fmt::Debug for Credentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Credentials")
+            .field("username", &self.username)
+            .field("password", &"<redacted>")
+            .finish()
+    }
 }
 
 /// Construct a [`VSphereClient`] from a Provider connection spec + creds.
@@ -104,4 +117,26 @@ pub trait VSphereClient: Send + Sync {
     /// no template with that name exists; returns `Err` when the lookup
     /// itself fails (auth / network).
     async fn find_template(&self, dc: &Datacenter, name: &str) -> Result<Option<Template>>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// SEC-013: a formatted `Credentials` must show the username (useful in
+    /// logs) but never the password.
+    #[test]
+    fn credentials_debug_redacts_the_password() {
+        let creds = Credentials {
+            username: "administrator@vsphere.local".to_string(),
+            password: "s3cret-hunter2".to_string(),
+        };
+        let rendered = format!("{creds:?}");
+        assert!(
+            rendered.contains("administrator@vsphere.local"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("<redacted>"), "{rendered}");
+        assert!(!rendered.contains("s3cret-hunter2"), "{rendered}");
+    }
 }

@@ -200,6 +200,7 @@ mod tests {
             status: Some(ProviderStatus {
                 failure_domains: fds,
                 conditions: vec![],
+                workload: None,
                 observed_generation: None,
             }),
         }
@@ -663,6 +664,107 @@ mod tests {
             }
             other => panic!("expected AntiAffinityUnsatisfied, got {other:?}"),
         }
+    }
+
+    // --- Reject-reason capping (SEC-015) -------------------------------------
+
+    #[test]
+    fn reject_reasons_under_cap_render_in_full() {
+        let v = vm("db-01", "ns", BTreeMap::new());
+        let cls = class(
+            vec![("os", "platinum")],
+            vec![("eth0", "prod")],
+            vec![],
+            Firmware::Efi,
+        );
+        let img = image_ready_on(&["vc1"]);
+        let p = provider(
+            "vc1",
+            BTreeMap::new(),
+            vec![
+                fd("fd-a", BTreeMap::new(), &["gold"], &["prod"], &[]),
+                fd("fd-b", BTreeMap::new(), &["gold"], &["prod"], &[]),
+            ],
+            caps_with(
+                &[("gold", "datastore", "ds-1")],
+                &[("prod", "portGroup", "pg-1")],
+            ),
+        );
+
+        let err = schedule(&v, &cls, &img, &[p], &[]).unwrap_err();
+        match err {
+            ScheduleError::NoFailureDomainMatched(msg) => {
+                assert!(msg.contains("vc1/fd-a:"), "first reason kept: {msg}");
+                assert!(msg.contains("vc1/fd-b:"), "second reason kept: {msg}");
+                assert!(!msg.contains("more"), "no summary under the cap: {msg}");
+            }
+            other => panic!("expected NoFailureDomainMatched, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reject_reasons_over_cap_are_summarized() {
+        let extra = 5;
+        let fds: Vec<FailureDomain> = (0..MAX_REJECT_REASONS + extra)
+            .map(|i| {
+                fd(
+                    &format!("fd-{i:02}"),
+                    BTreeMap::new(),
+                    &["gold"],
+                    &["prod"],
+                    &[],
+                )
+            })
+            .collect();
+        let v = vm("db-01", "ns", BTreeMap::new());
+        let cls = class(
+            vec![("os", "platinum")],
+            vec![("eth0", "prod")],
+            vec![],
+            Firmware::Efi,
+        );
+        let img = image_ready_on(&["vc1"]);
+        let p = provider(
+            "vc1",
+            BTreeMap::new(),
+            fds,
+            caps_with(
+                &[("gold", "datastore", "ds-1")],
+                &[("prod", "portGroup", "pg-1")],
+            ),
+        );
+
+        let err = schedule(&v, &cls, &img, &[p], &[]).unwrap_err();
+        match err {
+            ScheduleError::NoFailureDomainMatched(msg) => {
+                let first_omitted = format!("vc1/fd-{MAX_REJECT_REASONS:02}:");
+                assert!(msg.contains("vc1/fd-00:"), "first reason kept: {msg}");
+                assert!(
+                    !msg.contains(&first_omitted),
+                    "reason past the cap is omitted: {msg}"
+                );
+                assert!(
+                    msg.ends_with(&format!("; … and {extra} more")),
+                    "summary appended: {msg}"
+                );
+            }
+            other => panic!("expected NoFailureDomainMatched, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reject_reasons_collector_keeps_exactly_max() {
+        let mut reasons = RejectReasons::default();
+        for i in 0..MAX_REJECT_REASONS * 2 {
+            reasons.push(format!("reason-{i}"));
+        }
+        let msg = reasons.render();
+        assert_eq!(
+            msg.matches("reason-").count(),
+            MAX_REJECT_REASONS,
+            "exactly MAX_REJECT_REASONS kept: {msg}"
+        );
+        assert!(msg.ends_with(&format!("; … and {MAX_REJECT_REASONS} more")));
     }
 
     // --- Tie-break ----------------------------------------------------------

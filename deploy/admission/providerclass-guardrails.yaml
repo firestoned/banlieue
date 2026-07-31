@@ -1,0 +1,63 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# ProviderClass guardrails (security review 2026-07-31 SEC-006). A
+# ProviderClass writer controls what the operator mints for every Provider of
+# that class: `spec.additionalRules` is appended verbatim to each per-instance
+# Role, and `spec.workloadNamespace` decides where the provider pods (and
+# their ServiceAccounts) land. Both are bounded only by the apiserver's
+# escalation prevention — this policy tightens them at admission:
+#
+#   1. additionalRules may not touch Secrets, use '*' resources/verbs, or use
+#      the RBAC-escalation verbs (escalate, bind, impersonate). The sensitive
+#      grants already have a designed path: the resourceNames-scoped
+#      per-instance Role the operator builds (ADR-0003).
+#   2. workloadNamespace may not be a Kubernetes system namespace — a
+#      ProviderClass must not be able to place pods (and their credential-
+#      reading identities) into kube-system & friends.
+#
+# ProviderClass write access remains a platform-admin decision; this is
+# defense in depth, not a tenancy boundary. Enforced in the API server via
+# CEL (no webhook). Requires Kubernetes 1.30+ (ValidatingAdmissionPolicy GA).
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: banlieue-providerclass-guardrails
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: admission
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["banlieue.io"]
+        apiVersions: ["v1alpha1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["providerclasses"]
+  validations:
+    - expression: >-
+        !has(object.spec.additionalRules)
+        || object.spec.additionalRules.all(r,
+             (!has(r.resources) || r.resources.all(res, res != 'secrets' && res != '*'))
+             && r.verbs.all(v, !(v in ['*', 'escalate', 'bind', 'impersonate'])))
+      message: >-
+        spec.additionalRules must not grant on secrets, use '*' resources or verbs,
+        or use the RBAC-escalation verbs (escalate, bind, impersonate); credential
+        access belongs to the operator-built per-instance Role.
+      reason: Invalid
+    - expression: >-
+        !has(object.spec.workloadNamespace)
+        || !(object.spec.workloadNamespace in ['kube-system', 'kube-public', 'kube-node-lease'])
+      message: spec.workloadNamespace must not be a Kubernetes system namespace.
+      reason: Invalid
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: banlieue-providerclass-guardrails
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: admission
+spec:
+  policyName: banlieue-providerclass-guardrails
+  validationActions: ["Deny"]

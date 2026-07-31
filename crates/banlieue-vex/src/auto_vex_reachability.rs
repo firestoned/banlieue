@@ -34,7 +34,7 @@ use std::path::Path;
 // having to reach into both. These types are stable across both tools.
 pub use crate::auto_vex_presence::{
     Document, GrypeArtifact, GrypeMatch, GrypeReport, GrypeVuln, Product, Statement, Vuln,
-    build_document, load_triaged_from_vex_dir,
+    build_document, load_triaged_from_vex_dir, read_file_capped,
 };
 
 /// Fixed impact-statement template for auto-derived statements. The
@@ -88,6 +88,34 @@ pub fn parse_nm_output(input: &str) -> HashSet<String> {
     symbols
 }
 
+/// Load the `nm -D --undefined-only <binary>` symbols file from disk,
+/// enforcing the input size cap and failing closed on an empty parse: an
+/// empty symbol set is never a legitimate "no symbols found" result — it
+/// means the input is truncated or broken, and proceeding would emit
+/// `not_affected` for every mapped CVE (SEC-014).
+pub fn load_imported_symbols_from_path(path: &Path) -> std::io::Result<HashSet<String>> {
+    let bytes = read_file_capped(path)?;
+    let text = String::from_utf8(bytes).map_err(|e| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("{}: {}", path.display(), e),
+        )
+    })?;
+    let symbols = parse_nm_output(&text);
+    if symbols.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "{}: no imported symbols parsed; refusing to derive \
+                 not_affected statements from an empty symbol table (input \
+                 is likely truncated or broken)",
+                path.display()
+            ),
+        ));
+    }
+    Ok(symbols)
+}
+
 /// Read the CVE → [function names] mapping from a JSON file. Keys whose
 /// value is not an array of strings are silently skipped, so the file
 /// can carry sidecar metadata (`_comment: [...]`, `_meta: "..."`) next
@@ -95,7 +123,7 @@ pub fn parse_nm_output(input: &str) -> HashSet<String> {
 pub fn load_affected_functions_from_path(
     path: &Path,
 ) -> std::io::Result<BTreeMap<String, Vec<String>>> {
-    let bytes = std::fs::read(path)?;
+    let bytes = read_file_capped(path)?;
     let raw: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidData,

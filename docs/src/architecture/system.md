@@ -25,9 +25,10 @@ flowchart LR
     actor-platform-operator["Platform Operator"]
     service-kubernetes-api["Kubernetes API Server"]
     service-banlieue-controller["banlieue-controller"]
+    service-banlieue-operator["banlieue-operator"]
     service-provider-vsphere["banlieue-provider-vsphere (planned, Phase 1B)"]
     service-provider-proxmox["banlieue-provider-proxmox (planned, Phase 1C)"]
-    service-provider-libvirt["banlieue-provider-libvirt (planned, Phase 1D)"]
+    service-provider-libvirt["banlieue-provider-libvirt"]
     service-banlieue-imagebuilder["banlieue-imagebuilder"]
     service-kairos-operator["kairos-operator (external, not shipped by banlieue)"]
     system-banlieue-binary["banlieue (single binary)"]
@@ -36,6 +37,7 @@ flowchart LR
     network-libvirt-backend["libvirt / KVM Host"]
     data-asset-virtualmachine-cr["VirtualMachine Custom Resource"]
     data-asset-provider-cr["Provider Custom Resource"]
+    data-asset-providerclass-cr["ProviderClass Custom Resource"]
     data-asset-vmclass-cr["VMClass Custom Resource"]
     data-asset-vmimage-cr["VMImage Custom Resource"]
     data-asset-osartifact-cr["OSArtifact Custom Resource (external, kairos-operator)"]
@@ -45,6 +47,7 @@ flowchart LR
     service-capi-core["Cluster API core + control-plane provider (k0smotron)"]
     subgraph sg_system-banlieue-binary [System Banlieue Binary]
         service-banlieue-controller
+        service-banlieue-operator
         service-provider-vsphere
         service-provider-proxmox
         service-provider-libvirt
@@ -52,6 +55,7 @@ flowchart LR
     end
     subgraph sg_ecosystem-management-cluster [Ecosystem Management Cluster]
         service-banlieue-controller
+        service-banlieue-operator
         service-kubernetes-api
         service-capi-core
         service-provider-vsphere
@@ -63,6 +67,7 @@ flowchart LR
     subgraph sg_service-kubernetes-api [Service Kubernetes Api]
         data-asset-virtualmachine-cr
         data-asset-provider-cr
+        data-asset-providerclass-cr
         data-asset-vmclass-cr
         data-asset-vmimage-cr
         data-asset-osartifact-cr
@@ -74,11 +79,13 @@ flowchart LR
     actor-vm-consumer --> data-asset-vmclass-cr
     actor-vm-consumer --> data-asset-vmimage-cr
     actor-platform-operator --> data-asset-provider-cr
+    actor-platform-operator --> data-asset-providerclass-cr
     actor-platform-operator --> data-asset-capi-cluster-cr
     actor-platform-operator --> data-asset-infra-cluster-cr
     actor-vm-consumer -->|HTTPS| service-kubernetes-api
     actor-platform-operator -->|HTTPS| service-kubernetes-api
     service-banlieue-controller -->|HTTPS| service-kubernetes-api
+    service-banlieue-operator -->|HTTPS| service-kubernetes-api
     service-provider-vsphere -->|HTTPS| service-kubernetes-api
     service-provider-proxmox -->|HTTPS| service-kubernetes-api
     service-provider-libvirt -->|HTTPS| service-kubernetes-api
@@ -87,7 +94,7 @@ flowchart LR
     service-kairos-operator -->|HTTPS| service-kubernetes-api
     service-provider-vsphere -->|HTTPS| network-vsphere-backend
     service-provider-proxmox -->|HTTPS| network-proxmox-backend
-    service-provider-libvirt -->|TCP| network-libvirt-backend
+    service-provider-libvirt -->|TLS| network-libvirt-backend
 ```
 
 <sub>Source: nodes and relationships in `architecture.json`.</sub>

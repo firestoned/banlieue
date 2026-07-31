@@ -247,6 +247,7 @@ mod tests {
                 status: "True".to_string(),
                 type_: "Ready".to_string(),
             }],
+            workload: None,
             observed_generation: Some(1),
         };
         let json = serde_json::to_value(&s).unwrap();
@@ -327,6 +328,71 @@ mod tests {
                 .iter()
                 .any(|v| v.name == "v1alpha1" && v.served && v.storage)
         );
+    }
+
+    // ----------------------------------------------------------------------
+    // status.workload — owned exclusively by banlieue-operator (ADR-0012)
+    // ----------------------------------------------------------------------
+
+    #[test]
+    fn status_workload_defaults_to_absent() {
+        assert!(ProviderStatus::default().workload.is_none());
+    }
+
+    #[test]
+    fn status_workload_serializes_as_camel_case() {
+        let status = ProviderStatus {
+            workload: Some(ProviderWorkloadStatus {
+                deployment_name: "banlieue-provider-vsphere-prod-vc".to_string(),
+                namespace: "banlieue-system".to_string(),
+                ready_replicas: 1,
+                observed_generation: Some(4),
+            }),
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&status).unwrap();
+        let workload = &json["workload"];
+        assert_eq!(
+            workload["deploymentName"],
+            "banlieue-provider-vsphere-prod-vc"
+        );
+        assert_eq!(workload["readyReplicas"], 1);
+        assert_eq!(workload["observedGeneration"], 4);
+        assert!(workload.get("deployment_name").is_none());
+    }
+
+    /// The operator writes `status.workload` while the provider's own field
+    /// manager writes `status.conditions`. Serializing a workload-only status
+    /// must not emit an empty `conditions`, or server-side apply would have the
+    /// operator claim ownership of a list it does not manage.
+    #[test]
+    fn status_with_only_workload_does_not_emit_conditions() {
+        let status = ProviderStatus {
+            workload: Some(ProviderWorkloadStatus {
+                deployment_name: "banlieue-provider-vsphere-prod-vc".to_string(),
+                namespace: "banlieue-system".to_string(),
+                ready_replicas: 0,
+                observed_generation: None,
+            }),
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&status).unwrap();
+        assert!(json.get("conditions").is_none());
+        assert!(json.get("failureDomains").is_none());
+        assert!(json["workload"].get("observedGeneration").is_none());
+    }
+
+    #[test]
+    fn status_workload_round_trips_through_json() {
+        let workload = ProviderWorkloadStatus {
+            deployment_name: "banlieue-provider-libvirt-lab".to_string(),
+            namespace: "tenant-a".to_string(),
+            ready_replicas: 2,
+            observed_generation: Some(9),
+        };
+        let round_tripped: ProviderWorkloadStatus =
+            serde_json::from_str(&serde_json::to_string(&workload).unwrap()).unwrap();
+        assert_eq!(round_tripped, workload);
     }
 
     // Parse an RFC3339 timestamp into the meta/v1 `Time` newtype. Goes through

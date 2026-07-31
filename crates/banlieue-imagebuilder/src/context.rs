@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Shared reconcile context for `banlieue-imagebuilder`.
 
+use banlieue_provider_sdk::scheduling::BuildScheduling;
 use kube::Client;
 
 /// Context passed into every reconcile call.
@@ -16,14 +17,20 @@ pub struct Context {
     /// namespace a provider's per-zone import Jobs must run in to mount the
     /// shared artifacts PVC (ADR-0010).
     pub build_namespace: String,
+
+    /// Where build pods may run. Empty means no constraint (ADR-0016
+    /// follow-up).
+    pub scheduling: BuildScheduling,
 }
 
 impl Context {
     /// Construct a new [`Context`].
-    pub fn new(client: Client, build_namespace: String) -> Self {
+    #[must_use]
+    pub fn new(client: Client, build_namespace: String, scheduling: BuildScheduling) -> Self {
         Self {
             client,
             build_namespace,
+            scheduling,
         }
     }
 }

@@ -6,6 +6,7 @@
 mod tests {
     use super::super::*;
     use banlieue_api::banlieue::{Architecture, ImageSource, ImageSourceKind};
+    use banlieue_provider_sdk::scheduling::BuildScheduling;
 
     fn url_source(import_from: &str) -> ImageSource {
         ImageSource {
@@ -35,7 +36,7 @@ mod tests {
     fn find_url_source_returns_the_url_entry() {
         let sources = vec![
             template_source(),
-            url_source("quay.io/kairos/ubuntu:24.04-standard-amd64-generic-v3.6.0"),
+            url_source("quay.io/kairos/ubuntu:24.04-core-amd64-generic-v3.7.2"),
         ];
         let found = find_url_source(&sources).expect("expected a Url source");
         assert_eq!(found.kind, ImageSourceKind::Url);
@@ -91,12 +92,14 @@ mod tests {
 
     #[test]
     fn desired_os_artifact_requests_only_cloud_image() {
-        let source = url_source("quay.io/kairos/ubuntu:24.04-standard-amd64-generic-v3.6.0");
+        let source = url_source("quay.io/kairos/ubuntu:24.04-core-amd64-generic-v3.7.2");
         let obj = desired_os_artifact(
             "kairos-ubuntu-2404-build",
             "banlieue-system",
             &source,
             &Architecture::Amd64,
+            None,
+            &BuildScheduling::default(),
         );
         assert_eq!(obj["apiVersion"], "build.kairos.io/v1alpha2");
         assert_eq!(obj["kind"], "OSArtifact");
@@ -104,7 +107,7 @@ mod tests {
         assert_eq!(obj["metadata"]["namespace"], "banlieue-system");
         assert_eq!(
             obj["spec"]["image"]["ref"],
-            "quay.io/kairos/ubuntu:24.04-standard-amd64-generic-v3.6.0"
+            "quay.io/kairos/ubuntu:24.04-core-amd64-generic-v3.7.2"
         );
         assert_eq!(obj["spec"]["artifacts"]["cloudImage"], true);
         assert_eq!(obj["spec"]["artifacts"]["arch"], "amd64");
@@ -116,7 +119,14 @@ mod tests {
     #[test]
     fn desired_os_artifact_arm64() {
         let source = url_source("quay.io/kairos/ubuntu:24.04-arm64");
-        let obj = desired_os_artifact("x-build", "ns", &source, &Architecture::Arm64);
+        let obj = desired_os_artifact(
+            "x-build",
+            "ns",
+            &source,
+            &Architecture::Arm64,
+            None,
+            &BuildScheduling::default(),
+        );
         assert_eq!(obj["spec"]["artifacts"]["arch"], "arm64");
     }
 
@@ -187,7 +197,7 @@ mod tests {
     #[test]
     fn compute_status_missing_phase_defaults_pending() {
         let view = KairosArtifactStatusView::default();
-        let s = compute_raw_disk_artifact_status("x-build", &view);
+        let s = compute_raw_disk_artifact_status("x-build", &view, None);
         assert_eq!(s.phase, RawDiskArtifactPhase::Pending);
         assert_eq!(s.os_artifact_ref, "x-build");
         assert!(s.pvc_ref.is_none());
@@ -200,7 +210,7 @@ mod tests {
             phase: Some("Building".to_string()),
             message: Some("pulling image".to_string()),
         };
-        let s = compute_raw_disk_artifact_status("x-build", &view);
+        let s = compute_raw_disk_artifact_status("x-build", &view, None);
         assert_eq!(s.phase, RawDiskArtifactPhase::Building);
         assert!(s.pvc_ref.is_none());
         assert!(s.disk_file.is_none());
@@ -213,7 +223,7 @@ mod tests {
             phase: Some("Ready".to_string()),
             message: None,
         };
-        let s = compute_raw_disk_artifact_status("kairos-ubuntu-2404-build", &view);
+        let s = compute_raw_disk_artifact_status("kairos-ubuntu-2404-build", &view, None);
         assert_eq!(s.phase, RawDiskArtifactPhase::Ready);
         assert_eq!(
             s.pvc_ref.unwrap().name,
@@ -228,7 +238,7 @@ mod tests {
             phase: Some("Error".to_string()),
             message: Some("pull failed: manifest unknown".to_string()),
         };
-        let s = compute_raw_disk_artifact_status("x-build", &view);
+        let s = compute_raw_disk_artifact_status("x-build", &view, None);
         assert_eq!(s.phase, RawDiskArtifactPhase::Failed);
         assert!(s.pvc_ref.is_none());
         assert_eq!(s.message.as_deref(), Some("pull failed: manifest unknown"));
@@ -246,8 +256,89 @@ mod tests {
                 phase: Some(phase_str.to_string()),
                 message: None,
             };
-            let s = compute_raw_disk_artifact_status("x-build", &view);
+            let s = compute_raw_disk_artifact_status("x-build", &view, None);
             assert_eq!(s.reason.as_deref(), Some(expected_reason));
         }
+    }
+
+    // ----------------------------------------------------------------------
+    // SEC-005: owner reference + staleness binding
+    // ----------------------------------------------------------------------
+
+    #[test]
+    fn desired_os_artifact_carries_the_vmimage_owner_reference() {
+        let source = url_source("quay.io/kairos/ubuntu:24.04-core-amd64-generic-v3.7.2");
+        let obj = desired_os_artifact(
+            "kairos-ubuntu-2404-build",
+            "banlieue-system",
+            &source,
+            &Architecture::Amd64,
+            Some(OwnerRef {
+                name: "kairos-ubuntu-2404",
+                uid: "9f2b1c7e-1234-4cde-9abc-def012345678",
+            }),
+            &BuildScheduling::default(),
+        );
+        let owner = &obj["metadata"]["ownerReferences"][0];
+        assert_eq!(owner["apiVersion"], "banlieue.io/v1alpha1");
+        assert_eq!(owner["kind"], "VMImage");
+        assert_eq!(owner["name"], "kairos-ubuntu-2404");
+        assert_eq!(owner["uid"], "9f2b1c7e-1234-4cde-9abc-def012345678");
+        assert_eq!(owner["controller"], true);
+        // No blockOwnerDeletion: it would require finalizers RBAC this
+        // controller does not otherwise need.
+        assert_eq!(owner["blockOwnerDeletion"], false);
+    }
+
+    #[test]
+    fn owner_uid_matches_only_the_exact_uid() {
+        use k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference;
+        let refs = vec![OwnerReference {
+            uid: "aaaa".to_string(),
+            ..Default::default()
+        }];
+        assert!(owner_uid_matches(Some(&refs), "aaaa"));
+        // Same name, new UID — a deleted-and-recreated VMImage must NOT match.
+        assert!(!owner_uid_matches(Some(&refs), "bbbb"));
+        assert!(!owner_uid_matches(None, "aaaa"));
+        assert!(!owner_uid_matches(Some(&[]), "aaaa"));
+    }
+
+    #[test]
+    fn spec_matches_requires_ref_and_arch() {
+        let data = serde_json::json!({
+            "spec": { "image": { "ref": "quay.io/a/b@sha256:x" }, "artifacts": { "arch": "amd64" } }
+        });
+        assert!(spec_matches(&data, "quay.io/a/b@sha256:x", "amd64"));
+        assert!(!spec_matches(&data, "quay.io/a/c@sha256:y", "amd64"));
+        assert!(!spec_matches(&data, "quay.io/a/b@sha256:x", "arm64"));
+    }
+
+    // ----------------------------------------------------------------------
+    // SEC-004: checksum threading
+    // ----------------------------------------------------------------------
+
+    #[test]
+    fn compute_status_threads_the_source_checksum_through() {
+        let view = KairosArtifactStatusView {
+            phase: Some("Ready".to_string()),
+            message: None,
+        };
+        let s = compute_raw_disk_artifact_status(
+            "x-build",
+            &view,
+            Some("sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"),
+        );
+        assert_eq!(
+            s.checksum.as_deref(),
+            Some("sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08")
+        );
+    }
+
+    #[test]
+    fn compute_status_without_a_source_checksum_publishes_none() {
+        let view = KairosArtifactStatusView::default();
+        let s = compute_raw_disk_artifact_status("x-build", &view, None);
+        assert!(s.checksum.is_none());
     }
 }

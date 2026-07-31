@@ -57,7 +57,7 @@ metadata:
   name: smoke-test
 spec:
   image:
-    ref: quay.io/kairos/ubuntu:24.04-standard-amd64-generic-v3.6.0
+    ref: quay.io/kairos/ubuntu:24.04-core-amd64-generic-v3.7.2
   artifacts:
     cloudImage: true
     arch: amd64
@@ -67,6 +67,39 @@ spec:
 kubectl apply -f smoke-test.yaml
 kubectl get osartifact smoke-test -w
 ```
+
+!!! warning "Verify any Kairos image tag before using it"
+    A wrong tag fails late and unhelpfully: the OSArtifact goes to `Error`
+    only *after* kairos-operator has pulled the ~570MB `auroraboot` builder
+    image (2+ minutes), and the real reason —
+    `MANIFEST_UNKNOWN: manifest unknown` — appears only in the
+    `pull-image-baseimage` **init container's** logs, not in the OSArtifact's
+    own status.
+
+    Kairos tags follow
+    `<os-version>-<flavor>-<arch>-<model>-<kairos-version>`, and the two
+    flavors differ in a way that trips people up:
+
+    | Flavor | Shape | Contains |
+    | --- | --- | --- |
+    | `core` | `24.04-core-amd64-generic-v3.7.2` | base OS, **no** Kubernetes |
+    | `standard` | `24.04-standard-amd64-generic-v3.7.2-k0s-v1.34.3-k0s.0` | base OS **plus** a bundled k8s distro |
+
+    A `standard` tag *always* carries the k8s distro suffix — a bare
+    `24.04-standard-amd64-generic-<version>` does not exist, however plausible
+    it looks. Confirm a tag resolves before committing it to a manifest:
+
+    ```sh
+    REPO=kairos/ubuntu
+    TAG=24.04-core-amd64-generic-v3.7.2
+    TOKEN=$(curl -s "https://quay.io/v2/auth?service=quay.io&scope=repository:$REPO:pull" | jq -r .token)
+    curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $TOKEN" \
+      -H "Accept: application/vnd.oci.image.index.v1+json" \
+      "https://quay.io/v2/$REPO/manifests/$TAG"    # 200 = exists, 404 = does not
+    ```
+
+    Browse what actually exists at
+    [quay.io/repository/kairos/ubuntu?tab=tags](https://quay.io/repository/kairos/ubuntu?tab=tags).
 
 `status.phase` progresses `Pending -> Building -> Exporting -> Ready` (or
 `Error`, with `status.message` set). Once it reaches `Ready`, the operator has

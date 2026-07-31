@@ -37,6 +37,16 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "libvirt")]
+    fn provider_libvirt_subcommand_parses() {
+        let cli = Cli::parse_from(["banlieue", "provider", "libvirt", "--no-leader-elect"]);
+        match cli.command {
+            Command::Provider(p) => assert!(matches!(p.backend, ProviderBackend::Libvirt(_))),
+            _ => panic!("expected provider subcommand"),
+        }
+    }
+
+    #[test]
     fn missing_subcommand_is_an_error() {
         // No role given → clap returns an error rather than a parsed Cli.
         assert!(Cli::try_parse_from(["banlieue"]).is_err());
@@ -103,6 +113,76 @@ mod tests {
         );
     }
 
+    // ----------------------------------------------------------------------
+    // operator + bootstrap (ADR-0012 / ADR-0013)
+    // ----------------------------------------------------------------------
+
+    #[test]
+    fn operator_subcommand_parses() {
+        let cli = Cli::parse_from(["banlieue", "operator", "--no-leader-elect"]);
+        assert!(matches!(cli.command, Command::Operator(_)));
+    }
+
+    #[test]
+    fn bootstrap_operator_subcommand_parses() {
+        let cli = Cli::parse_from(["banlieue", "bootstrap", "operator", "--dry-run"]);
+        assert!(matches!(cli.command, Command::Bootstrap(_)));
+    }
+
+    #[test]
+    fn bootstrap_operator_accepts_the_install_flags() {
+        use banlieue_operator::bootstrap::BootstrapTarget;
+        let cli = Cli::parse_from([
+            "banlieue",
+            "bootstrap",
+            "operator",
+            "--namespace",
+            "banlieue-prod",
+            "--version",
+            "v9.9.9",
+            "--registry",
+            "registry.internal:5000",
+        ]);
+        match cli.command {
+            Command::Bootstrap(b) => match b.target {
+                BootstrapTarget::Operator { common, .. } => {
+                    assert_eq!(common.namespace, "banlieue-prod");
+                    assert_eq!(common.version, "v9.9.9");
+                    assert_eq!(common.registry.as_deref(), Some("registry.internal:5000"));
+                    assert!(!common.dry_run);
+                }
+                _ => panic!("expected the operator target"),
+            },
+            _ => panic!("expected bootstrap subcommand"),
+        }
+    }
+
+    #[test]
+    fn bootstrap_provider_requires_a_backend() {
+        assert!(Cli::try_parse_from(["banlieue", "bootstrap", "provider"]).is_err());
+    }
+
+    #[test]
+    fn bootstrap_requires_a_target() {
+        assert!(Cli::try_parse_from(["banlieue", "bootstrap"]).is_err());
+    }
+
+    /// The bootstrap CLI offers backends by name at runtime, so the compiled-in
+    /// list must actually reflect the enabled features.
+    #[test]
+    #[cfg(feature = "vsphere")]
+    fn compiled_backends_includes_vsphere() {
+        assert!(COMPILED_BACKENDS.contains(&"vsphere"));
+    }
+
+    #[test]
+    fn compiled_backends_is_never_empty_in_a_default_build() {
+        assert!(
+            !COMPILED_BACKENDS.is_empty(),
+            "a default build must ship at least one backend"
+        );
+    }
+
     #[test]
     fn bash_completion_script_names_the_binary() {
         let mut buf: Vec<u8> = Vec::new();
@@ -112,6 +192,55 @@ mod tests {
         assert!(
             script.contains("banlieue"),
             "bash script should name the binary"
+        );
+    }
+
+    // ---------- cross-crate contract ------------------------------------
+
+    /// `banlieue-imagebuilder` creates the artifacts PVC in its
+    /// `--build-namespace`; the libvirt provider mounts that PVC into the
+    /// import Job it creates in *its* `--build-namespace`. A PVC cannot be
+    /// mounted across namespaces (ADR-0010), so the two defaults must agree or
+    /// the documented install is broken out of the box.
+    ///
+    /// Each crate's own tests pass regardless — they only ever see one side.
+    /// This is the only crate that links both, so it is the only place the
+    /// disagreement is visible. It was a real bug: the imagebuilder defaulted
+    /// to `banlieue-imagebuild` and the provider to `banlieue-system`, and the
+    /// mismatch only surfaced on a real cluster.
+    #[test]
+    fn imagebuilder_and_libvirt_provider_agree_on_the_build_namespace() {
+        use clap::Parser;
+
+        #[derive(Parser)]
+        struct ImagebuilderWrapper {
+            #[command(flatten)]
+            cli: banlieue_imagebuilder::Cli,
+        }
+        #[derive(Parser)]
+        struct LibvirtWrapper {
+            #[command(flatten)]
+            cli: banlieue_provider_libvirt::Cli,
+        }
+
+        let ib = ImagebuilderWrapper::parse_from(["imagebuilder"]).cli;
+        let lv = LibvirtWrapper::parse_from(["libvirt"]).cli;
+
+        // Tolerations must agree: if the artifacts volume lands on a tainted
+        // build node, both the build pod and the import Job that mounts it
+        // need permission to be there.
+        assert_eq!(
+            ib.build_toleration, lv.build_toleration,
+            "both must accept the same --build-toleration flag"
+        );
+        // The node SELECTOR is deliberately imagebuilder-only. A build pod is
+        // placed by policy; an import Job is placed by the PVC it mounts, and
+        // the scheduler resolves that from the bound PV without our help.
+        assert_eq!(
+            ib.build_namespace, lv.build_namespace,
+            "imagebuilder writes the artifacts PVC into {:?} but the libvirt \
+             provider mounts it from {:?}; a PVC cannot cross namespaces",
+            ib.build_namespace, lv.build_namespace
         );
     }
 }

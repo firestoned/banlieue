@@ -1,0 +1,30 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# Keep the Docker build context to what the Dockerfile actually consumes
+# (security review 2026-07-31 SEC-017): only `binaries/<TARGETARCH>/<BINARY>`
+# is COPYed today, but without this file the whole repo — including .git and
+# target/ — is sent to the daemon on every build, and one future `COPY .`
+# would bake it all into the image.
+
+# VCS + metadata
+.git/
+.github/
+.gitignore
+.wolf/
+.claude/
+.vex/
+.cargo/
+
+# Build outputs and local state
+target/
+.kind-kubeconfig-*
+
+# Documentation sources (not needed to build the binary)
+docs/
+*.md
+
+# Dev-only manifests and scripts — the image ships the binary only
+deploy/
+examples/
+scripts/

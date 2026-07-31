@@ -526,7 +526,7 @@ mod tests {
                 address: "10.0.0.5".to_string(),
                 prefix: 24,
                 gateway: Some("10.0.0.1".to_string()),
-                nameservers: vec!["1.1.1.1".to_string(), "8.8.8.8".to_string()],
+                nameservers: vec!["192.0.2.53".to_string(), "198.51.100.53".to_string()],
             }),
             pool: None,
         };
@@ -535,7 +535,7 @@ mod tests {
         assert_eq!(json["static"]["gateway"], "10.0.0.1");
         assert_eq!(
             json["static"]["nameservers"],
-            serde_json::json!(["1.1.1.1", "8.8.8.8"])
+            serde_json::json!(["192.0.2.53", "198.51.100.53"])
         );
         let back: IpamSpec = serde_json::from_value(json).unwrap();
         assert_eq!(back, s);

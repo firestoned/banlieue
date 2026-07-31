@@ -179,7 +179,9 @@ nav:
   - Guides:
       - Overview: guides/index.md
       - Core Controller: guides/core-controller.md
+      - Provider Lifecycle & Install: guides/provider-lifecycle.md
       - vSphere Provider: guides/vsphere-provider.md
+      - libvirt Provider: guides/libvirt-provider.md
       - Setting up the Kairos Operator: guides/kairos-operator-setup.md
       - Using banlieue-imagebuilder: guides/using-banlieue-imagebuilder.md
       - Building an Alpine VM Template: guides/alpine-vsphere-template.md

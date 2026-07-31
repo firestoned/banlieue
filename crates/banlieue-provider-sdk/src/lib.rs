@@ -26,11 +26,13 @@
 //! - [`error`] — shared error type re-exported by the rest of the SDK.
 
 pub mod bootstrap;
+pub mod ca_bundle;
 pub mod client;
 pub mod error;
 pub mod finalizer;
 pub mod leader;
 pub mod reconciler;
+pub mod scheduling;
 pub mod ssa;
 pub mod status;
 

@@ -1,0 +1,63 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# ProviderClass for libvirt/KVM backends (ADR-0012).
+#
+# `banlieue bootstrap operator` seeds this automatically for every backend
+# compiled into the binary, so you normally do not write it by hand. It is
+# shown because libvirt is the one backend whose class carries extra RBAC —
+# see additionalRules below.
+#
+# Cluster-scoped: one class serves Providers in any namespace.
+---
+apiVersion: banlieue.io/v1alpha1
+kind: ProviderClass
+metadata:
+  name: libvirt
+spec:
+  # Runs `banlieue provider libvirt` in the spawned Deployment.
+  backend: libvirt
+
+  image:
+    repository: ghcr.io/firestoned/banlieue
+    # Never `latest` in production: a mutable tag makes the running version
+    # unknowable and defeats rollback.
+    tag: v0.1.0
+    pullPolicy: IfNotPresent
+
+  # Leader-elected, so replicas buy failover rather than throughput.
+  replicas: 1
+
+  logging:
+    level: info
+    format: json
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 1000m
+      memory: 512Mi
+
+  # ---------------------------------------------------------------------------
+  # Extra Role rules, merged into the per-instance Role the operator builds.
+  # ---------------------------------------------------------------------------
+  # Importing a guest image moves gigabytes, so it runs in a Job rather than in
+  # the reconcile loop (ADR-0011) — which means this provider, alone among the
+  # backends, must be able to create Jobs.
+  #
+  # Deliberately minimal. Creating a Job is the ability to run an arbitrary pod
+  # as this provider's ServiceAccount, so the grant stays at what the reconciler
+  # actually calls:
+  #
+  #   get    — read the Job for a pool by its deterministic name
+  #   create — a server-side apply to a nonexistent Job creates it
+  #   patch  — the verb server-side apply uses
+  #
+  # No list/watch (every read is by name) and no delete (finished Jobs are
+  # reaped by ttlSecondsAfterFinished).
+  additionalRules:
+    - apiGroups: ["batch"]
+      resources: ["jobs"]
+      verbs: ["get", "create", "patch"]

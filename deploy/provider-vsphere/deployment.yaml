@@ -44,9 +44,14 @@ spec:
           # this role (ADR-0004). Pin to a released version tag — NEVER use
           # :latest in production. Local dev uses `kubectl set image` to swap in
           # ghcr.io/firestoned/banlieue:local-dev.
+          #
+          # `--namespace` scopes the watch to banlieue-system (security review
+          # 2026-07-31 CHAIN-002): this static deployment reads credentials
+          # through a namespaced Role there (rbac/role.yaml), so Providers in
+          # other namespaces are out of scope by construction.
           image: ghcr.io/firestoned/banlieue:v0.1.0
           imagePullPolicy: IfNotPresent
-          args: ["provider", "vsphere"]
+          args: ["provider", "vsphere", "--namespace", "banlieue-system"]
           envFrom:
             - configMapRef:
                 name: banlieue-provider-vsphere-config

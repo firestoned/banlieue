@@ -110,7 +110,7 @@ Url`:
 
 1. **Pending → Building.** Server-side-apply an `OSArtifact` named
    `<vmimage-name>-build` in the configured build namespace (default
-   `banlieue-system`), setting `spec.image.ref = importFrom`,
+   `banlieue-imagebuild`, see amendment below), setting `spec.image.ref = importFrom`,
    `spec.artifacts.cloudImage = true`, `spec.artifacts.arch` from
    `VMImage.spec.architecture`. Field manager: `banlieue.io/imagebuilder`
    (new constant in `banlieue-provider-sdk::ssa`).
@@ -170,7 +170,7 @@ Extend the per-provider reconcile to also match `Url` sources, gated on
 
 ### Namespacing and the PVC access requirement
 
-`banlieue-imagebuilder`'s build namespace (default `banlieue-system`,
+`banlieue-imagebuilder`'s build namespace (default `banlieue-imagebuild`,
 configurable via `--build-namespace`) is where the OSArtifact and its PVC
 live. `banlieue-provider-vsphere`'s per-zone import Jobs run in that **same**
 namespace (read from `rawDiskArtifact.pvc_ref`), so this is same-namespace PVC
@@ -182,6 +182,19 @@ PVC to import zones in parallel; on a `ReadWriteOnce`-only default
 rejecting the VMImage — documented as an operational note, not a hard
 requirement, since this dev/qa environment's default `StorageClass` has not
 been confirmed to support `ROX`.
+
+> **Amendment (2026-07-31).** The default build namespace was changed from
+> `banlieue-system` to a new, dedicated `banlieue-imagebuild`
+> (`deploy/imagebuilder/namespace.yaml`). First real (non-smoke-test) build
+> against `banlieue-system` failed: kairos-operator's build pods set
+> `securityContext.privileged: true` (loop-device/mount/chroot to assemble a
+> raw disk image), which the `restricted` Pod Security level enforced on
+> `banlieue-system` (hardening the banlieue controller/provider pods
+> themselves) rejects outright. PSA is enforced per-namespace with no
+> per-pod exception, so build workloads needed their own, separately-labeled
+> (`privileged`) namespace rather than loosening `banlieue-system` for
+> everything running in it. The PVC/Job co-location reasoning above is
+> unaffected — it now just applies to `banlieue-imagebuild` instead.
 
 ## Consequences
 

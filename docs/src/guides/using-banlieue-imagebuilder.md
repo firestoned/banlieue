@@ -86,7 +86,9 @@ spec:
     - providerClass: vsphere
       kind: Url
       ref: unused-for-url-sources # required by the schema; ignored for kind: Url
-      importFrom: quay.io/kairos/ubuntu:24.04-standard-amd64-generic-v3.6.0
+      # Digest-pinned: the banlieue-vmimage-import-source admission policy
+      # (security review 2026-07-31) rejects mutable tags when installed.
+      importFrom: quay.io/kairos/ubuntu:24.04-standard-amd64-generic-v3.7.2-k0s-v1.34.3-k0s.0@sha256:e4860078c024269e81ce561ce91cf9639a4e75c23ea4cd32d3405005087192a7
 ```
 
 (Also available as [`examples/07-vmimage-kairos-url-source.yaml`](https://github.com/firestoned/banlieue/blob/v0.1.0/examples/07-vmimage-kairos-url-source.yaml).)
@@ -153,6 +155,33 @@ perProvider:
 Seeing every zone stuck at `PerZoneImportNotImplemented` once the raw disk is
 `Ready` is expected today (see the warning above) — it means the pipeline
 worked exactly as far as it currently goes.
+
+## Integrity and lifecycle (security review 2026-07-31)
+
+Two guarantees hold over everything above:
+
+- **The build is bound to the `VMImage`.** The `OSArtifact` is owned by its
+  `VMImage` (cluster-scoped owner of a namespaced dependent — deleting the
+  image garbage-collects the build). `banlieue-imagebuilder` only mirrors a
+  `Ready` from an `OSArtifact` that carries the current `VMImage`'s UID
+  **and** requests the current `importFrom`; anything else — a stale object
+  from before a spec change, or a foreign pre-created one — is deleted and
+  rebuilt. kairos' status has no `observedGeneration` or digest to bind a
+  `Ready` to the spec, so object identity is the anchor.
+- **The artifact can be verified end to end.** Set `checksum: <alg>:<hex>`
+  (`sha256` or `sha512`) on the `Url` source. It is copied to
+  `status.rawDiskArtifact.checksum`, and provider import Jobs hash the built
+  disk before any byte reaches a backend — the libvirt import Job fails
+  closed on mismatch or an unsupported algorithm, so a substituted or
+  corrupted artifact never lands in a storage pool. (The vSphere per-zone
+  import is not implemented yet; when it lands it inherits the same check.)
+
+!!! warning "`banlieue-imagebuild` pod-create is node-root-equivalent (SEC-009)"
+    The build namespace enforces PSA `privileged` because kairos' build pods
+    need loop devices. That means anyone granted pod-create there can mount
+    the host filesystem — treat every RoleBinding in `banlieue-imagebuild` as
+    a node-root grant. Nothing but kairos' build pods and the artifacts PVC
+    should ever run there.
 
 ## Troubleshooting
 

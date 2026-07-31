@@ -1,0 +1,39 @@
+[package]
+name = "banlieue-operator"
+description = "Provider lifecycle controller: turns Provider CRs into per-instance provider workloads (ADR-0003/0012), and installs banlieue into a cluster via `banlieue bootstrap` (ADR-0013)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+# Library only: the unified `banlieue` binary (crates/banlieue) drives this via
+# `banlieue_operator::run` for the `operator` subcommand and
+# `banlieue_operator::bootstrap::run` for `bootstrap` (ADR-0004).
+
+[dependencies]
+banlieue-api = { path = "../banlieue-api" }
+banlieue-provider-sdk = { path = "../banlieue-provider-sdk" }
+
+kube.workspace = true
+k8s-openapi.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+
+thiserror.workspace = true
+anyhow.workspace = true
+
+# `macros` backs `tokio::select!`; `rt-multi-thread` backs `tokio::spawn`.
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+futures.workspace = true
+
+tracing.workspace = true
+
+clap.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }

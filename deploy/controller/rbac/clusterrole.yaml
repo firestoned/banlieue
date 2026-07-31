@@ -70,10 +70,12 @@ rules:
   # ---------------------------------------------------------------------------
   # Core resources the controller reads or writes
   # ---------------------------------------------------------------------------
-  # Read Secrets (provider credentials, cloud-init user-data)
-  - apiGroups: [""]
-    resources: ["secrets"]
-    verbs: ["get", "list", "watch"]
+  # NO secrets rule, deliberately (security review 2026-07-31 SEC-008): no code
+  # in banlieue-controller reads a Secret — provider credentials are read by
+  # the providers themselves, user-data is handed to providers via the infra
+  # CRDs. The rule was dead privilege standing by (and aggregated into the CAPI
+  # manager). Re-add scoped (resourceNames/namespace) if a reconciler ever
+  # needs it.
 
   # Emit Events for state transitions visible via `kubectl describe`.
   - apiGroups: [""]

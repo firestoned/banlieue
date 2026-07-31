@@ -7,6 +7,7 @@ Every banlieue Custom Resource Definition, generated from the Rust types that ar
 **`banlieue.io`**
 
 - [Provider](#provider)
+- [ProviderClass](#providerclass)
 - [VMClass](#vmclass)
 - [VMImage](#vmimage)
 - [VirtualMachine](#virtualmachine)
@@ -176,6 +177,7 @@ and the health / reachability conditions.
 | `conditions` | object[] |  | Standard Kubernetes conditions. The `Ready` condition reflects overall provider health. The `ProviderReachable` condition reflects connection state to the backend. |
 | `failureDomains` | object[] |  | Failure domains discovered by the provider's controller within this backend. The scheduler matches against `labels` and filters by `attributes.availableStorageClasses` / `availableNetworkClasses`. |
 | `observedGeneration` | integer |  | The generation of the spec that the controller has reconciled. |
+| `workload` | object |  | The provider workload `banlieue-operator` created for this Provider. |
 
 #### `.status.conditions[]`
 
@@ -216,6 +218,193 @@ reachable from here.
 | `availableStorageClasses` | string[] |  | Subset of spec.capabilities.storageClasses[].name reachable here. |
 | `features` | string[] |  | Feature flags actually present here. Always a subset of spec.capabilities.features. |
 | `raw` | map[string]string |  | Provider-specific resolved attributes; for vSphere this typically includes datacenter, cluster, resourcePool. Used by the provider's controller when filling in the infrastructure CR. |
+
+#### `.status.workload`
+
+The provider workload `banlieue-operator` created for this Provider.
+
+Written **only** by the operator's field manager
+(`banlieue.io/operator`); the provider's own controller never touches
+it. This split is deliberate: `conditions` is a plain list with no
+`x-kubernetes-list-type: map` marker, so two field managers writing into
+it would contend over the whole array rather than merging per entry.
+Giving the operator a disjoint field keeps server-side apply
+conflict-free (ADR-0012).
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `deploymentName` | string | Yes | Name of the Deployment running this Provider's controller. Conventionally `banlieue-provider-<class>-<provider-name>`. |
+| `namespace` | string | Yes | Namespace the Deployment was created in — the ProviderClass's `workloadNamespace`, or the operator's own namespace when unset. |
+| `observedGeneration` | integer |  | The Provider generation the operator had observed when it last applied this workload. |
+| `readyReplicas` | integer | Yes | Ready replicas reported by that Deployment. Zero means the backend's controller is not currently running, whatever the Provider's other conditions say. |
+
+---
+
+## ProviderClass
+
+**API:** `banlieue.io/v1alpha1` · **Kind:** `ProviderClass` · **Scope:** Cluster · **Short names:** `pc`
+
+ProviderClass — what banlieue runs for a class of backends.
+
+A ProviderClass carries the install metadata for one backend type: which
+`banlieue provider <backend>` role to run, from which image, with what pod
+shape and extra permissions. It names no endpoint and holds no credentials
+— that is a [`Provider`](super::Provider)'s job.
+
+**Why create one**
+
+- **Make backends self-provisioning.** With a ProviderClass in place,
+  registering a backend is `kubectl apply` of a Provider CR:
+  `banlieue-operator` creates that Provider's Deployment, ServiceAccount,
+  Role and RoleBinding for you. No manifest editing, no helm values.
+- **Decide the image once.** Every Provider of this class runs the image
+  pinned here, so upgrading a fleet of backends is a one-object edit
+  instead of one edit per backend.
+- **Separate the two jobs.** Deciding *what banlieue runs* (a platform
+  owner, cluster-scoped) is not the same as registering *a vCenter*
+  (a backend admin, namespaced) — different people, different privileges.
+
+**How it is used**
+
+`Provider.spec.providerClassRef.name` points at a ProviderClass by name.
+The operator resolves it, then applies one workload set per Provider, each
+owned by its Provider CR so deleting the Provider garbage-collects the
+workload. Each spawned pod runs a server-side filtered watch scoped to its
+own Provider, so one hung backend cannot stall another (ADR-0003).
+
+Cluster-scoped: one ProviderClass serves Providers in any namespace.
+
+**Printer columns** (`kubectl get`):
+
+| Name | Type | JSON path | Priority |
+| --- | --- | --- | --- |
+| Backend | string | `.spec.backend` | 0 |
+| Image | string | `.spec.image.tag` | 0 |
+| Providers | integer | `.status.providers` | 0 |
+| Ready | string | `.status.conditions[?(@.type=='Ready')].status` | 0 |
+| Age | date | `.metadata.creationTimestamp` | 0 |
+
+### `.spec`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `additionalRules` | object[] |  | Extra RBAC rules appended to the per-instance Role the operator generates for each Provider of this class. |
+| `backend` | string | Yes | Which provider backend this class instantiates — the `banlieue provider <backend>` subcommand spawned Deployments run. |
+| `image` | object | Yes | Container image every provider workload of this class runs. |
+| `logging` | object |  | Log level and format passed to spawned workloads. |
+| `nodeSelector` | map[string]string |  | Node selector applied to provider pods. Useful when backend access is only routable from particular nodes. |
+| `paused` | boolean |  | Suspend lifecycle reconciliation for every Provider of this class. Existing workloads are left running untouched. |
+| `replicas` | integer |  | Replicas for each provider Deployment. Defaults to [`DEFAULT_PROVIDER_REPLICAS`]. Provider controllers are leader-elected, so values above one provide failover, not parallelism. |
+| `resources` | object |  | Resource requests and limits for the provider container. When unset the operator applies its own conservative defaults. |
+| `tolerations` | object[] |  | Tolerations applied to provider pods. |
+| `workloadNamespace` | string |  | Namespace to create provider workloads in. |
+
+#### `.spec.additionalRules[]`
+
+Extra RBAC rules appended to the per-instance Role the operator
+generates for each Provider of this class.
+
+Note that Kubernetes forbids granting permissions the grantor does not
+itself hold: a rule listed here also has to be present in the operator's
+own ClusterRole, or the RoleBinding is rejected (ADR-0012).
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `apiGroups` | string[] |  | APIGroups is the name of the APIGroup that contains the resources. If multiple API groups are specified, any action requested against one of the enumerated resources in any API group will be allowed. "" represents the core API group and "*" represents all API groups. |
+| `nonResourceURLs` | string[] |  | NonResourceURLs is a set of partial urls that a user should have access to. *s are allowed, but only as the full, final step in the path Since non-resource URLs are not namespaced, this field is only applicable for ClusterRoles referenced from a ClusterRoleBinding. Rules can either apply to API resources (such as "pods" or "secrets") or non-resource URL paths (such as "/api"), but not both. |
+| `resourceNames` | string[] |  | ResourceNames is an optional white list of names that the rule applies to. An empty set means that everything is allowed. |
+| `resources` | string[] |  | Resources is a list of resources this rule applies to. '*' represents all resources. |
+| `verbs` | string[] | Yes | Verbs is a list of Verbs that apply to ALL the ResourceKinds contained in this rule. '*' represents all verbs. |
+
+#### `.spec.image`
+
+Container image every provider workload of this class runs.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `digest` | string |  | Image digest, e.g. `sha256:0f756fa0…`. When set it is what actually gets pulled, and any `tag` becomes documentation of intent. |
+| `pullPolicy` | string |  | Image pull policy, spelled exactly as Kubernetes spells it. Allowed: `Always`, `IfNotPresent`, `Never`. |
+| `pullSecrets` | object[] |  | Secrets used to pull the image, for private or mirrored registries. |
+| `repository` | string | Yes | Image repository without a tag, e.g. `ghcr.io/firestoned/banlieue`. |
+| `tag` | string | Yes | Image tag, e.g. `v0.1.0`. Never use `latest` in production — a mutable tag makes the running version unknowable and defeats rollback. |
+
+##### `.spec.image.pullSecrets[]`
+
+Secrets used to pull the image, for private or mirrored registries.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | Yes |  |
+
+#### `.spec.logging`
+
+Log level and format passed to spawned workloads.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `format` | string |  | Log format: `json` for SIEM-friendly structured output, anything else for the human-readable text formatter. |
+| `level` | string |  | Log level, e.g. `info` or `debug,kube=warn`. Passed through as the workload's log-level flag. |
+
+#### `.spec.resources`
+
+Resource requests and limits for the provider container. When unset the
+operator applies its own conservative defaults.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `claims` | object[] |  | Claims lists the names of resources, defined in spec.resourceClaims, that are used by this container. |
+| `limits` | map[string]object |  | Limits describes the maximum amount of compute resources allowed. More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/ |
+| `requests` | map[string]object |  | Requests describes the minimum amount of compute resources required. If Requests is omitted for a container, it defaults to Limits if that is explicitly specified, otherwise to an implementation-defined value. Requests cannot exceed Limits. More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/ |
+
+##### `.spec.resources.claims[]`
+
+Claims lists the names of resources, defined in spec.resourceClaims, that are used by this container.
+
+This field depends on the DynamicResourceAllocation feature gate.
+
+This field is immutable. It can only be set for containers.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | Yes | Name must match the name of one entry in pod.spec.resourceClaims of the Pod where this field is used. It makes that resource available inside a container. |
+| `request` | string |  | Request is the name chosen for a request in the referenced claim. If empty, everything from the claim is made available, otherwise only the result of this request. |
+
+#### `.spec.tolerations[]`
+
+Tolerations applied to provider pods.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `effect` | string |  | Effect indicates the taint effect to match. Empty means match all taint effects. When specified, allowed values are NoSchedule, PreferNoSchedule and NoExecute. |
+| `key` | string |  | Key is the taint key that the toleration applies to. Empty means match all taint keys. If the key is empty, operator must be Exists; this combination means to match all values and all keys. |
+| `operator` | string |  | Operator represents a key's relationship to the value. Valid operators are Exists, Equal, Lt, and Gt. Defaults to Equal. Exists is equivalent to wildcard for value, so that a pod can tolerate all taints of a particular category. Lt and Gt perform numeric comparisons (requires feature gate TaintTolerationComparisonOperators). |
+| `tolerationSeconds` | integer |  | TolerationSeconds represents the period of time the toleration (which must be of effect NoExecute, otherwise this field is ignored) tolerates the taint. By default, it is not set, which means tolerate the taint forever (do not evict). Zero and negative values will be treated as 0 (evict immediately) by the system. |
+| `value` | string |  | Value is the taint value the toleration matches to. If the operator is Exists, the value should be empty, otherwise just a regular string. |
+
+### `.status`
+
+Observed state of a ProviderClass.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `conditions` | object[] |  | Standard Kubernetes conditions. `Ready` reflects whether the class is usable: its backend is compiled into the running operator and its image reference is well-formed. |
+| `observedGeneration` | integer |  | The generation of the spec the operator has reconciled. |
+| `providers` | integer |  | Number of Provider CRs currently referencing this class. |
+
+#### `.status.conditions[]`
+
+Standard Kubernetes conditions. `Ready` reflects whether the class is
+usable: its backend is compiled into the running operator and its image
+reference is well-formed.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `lastTransitionTime` | string | Yes | lastTransitionTime is the last time the condition transitioned from one status to another. This should be when the underlying condition changed. If that is not known, then using the time when the API field changed is acceptable. |
+| `message` | string | Yes | message is a human readable message indicating details about the transition. This may be an empty string. |
+| `observedGeneration` | integer |  | observedGeneration represents the .metadata.generation that the condition was set based upon. For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date with respect to the current state of the instance. |
+| `reason` | string | Yes | reason contains a programmatic identifier indicating the reason for the condition's last transition. Producers of specific condition types may define expected values and meanings for this field, and whether the values are considered a guaranteed API. The value should be a CamelCase string. This field may not be empty. |
+| `status` | string | Yes | status of the condition, one of True, False, Unknown. |
+| `type` | string | Yes | type of condition in CamelCase or in foo.example.com/CamelCase. |
 
 ---
 
@@ -416,7 +605,7 @@ you intend to schedule VMs onto.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `checksum` | string |  | Optional checksum for imported images. Format: `<alg>:<hex>`, e.g. `sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b...`. |
+| `checksum` | string |  | Optional checksum for imported images. Format: `<alg>:<hex>`, e.g. `sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b...`. Supported algorithms: `sha256`, `sha512`. Provider import Jobs verify the built artifact against this value before writing it to the backend and fail closed on mismatch or an unsupported algorithm. |
 | `importFrom` | string |  | Optional source URL. When set, providers that support image import will pull from here if the image isn't already present locally. |
 | `kind` | string | Yes | What kind of backend artifact `ref` refers to. Allowed: `Template`, `BackingFile`, `Url`. |
 | `providerClass` | string | Yes | Name of the ProviderClass this source applies to. Conventional values: `vsphere`, `proxmox`, `libvirt`. |
@@ -438,6 +627,12 @@ Maintained by the image controller; read by the scheduler.
 
 `Ready` is True iff every per-provider entry is ready.
 
+Written **only** by `banlieue-controller` (field manager
+`banlieue.io/controller`), which is the only component with a
+whole-image view. A provider cannot compute "ready everywhere" from
+rows it does not own, so it writes its `perProvider` entry and nothing
+here (ADR-0015). Merge-keyed on `type`, per Kubernetes convention.
+
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `lastTransitionTime` | string | Yes | lastTransitionTime is the last time the condition transitioned from one status to another. This should be when the underlying condition changed. If that is not known, then using the time when the API field changed is acceptable. |
@@ -451,6 +646,13 @@ Maintained by the image controller; read by the scheduler.
 
 Per-Provider readiness. One entry per Provider that supports this
 image's providerClass and has reconciled at least once.
+
+**Merge-keyed, and it must stay that way (ADR-0015).** Several
+providers write this list concurrently, each applying only its own
+entry. Without `x-kubernetes-list-type: map` server-side apply treats
+the array as atomic — one manager owns the whole thing and `force()`
+hands it over wholesale, silently discarding every other provider's
+row. That was a real, reproduced bug, not a theoretical one.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -488,6 +690,7 @@ hasn't started. See ADR-0010.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
+| `checksum` | string |  | Expected checksum (`<alg>:<hex>`) of the built disk, copied from the `Url` source the build serves. Consumers that stream the artifact to a backend MUST verify it against this value and fail closed on mismatch (security review 2026-07-31, SEC-004) — the value lives here, next to the PVC reference, so no consumer has to re-derive which source the shared build came from. |
 | `diskFile` | string |  | File name of the raw disk within the artifacts PVC (kairos-operator convention: `<osArtifactRef>.raw`). Populated at phase `Ready`. |
 | `message` | string |  | Long human-readable detail, e.g. the `OSArtifact.status.message` on failure. |
 | `osArtifactRef` | string | Yes | Name of the `OSArtifact` CR `banlieue-imagebuilder` created for this `VMImage` (same namespace as the artifacts PVC below). |

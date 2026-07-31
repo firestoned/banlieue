@@ -14,7 +14,7 @@
 [![License](https://img.shields.io/github/license/firestoned/banlieue?color=blue)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.88%2B-orange?logo=rust)](https://www.rust-lang.org/)
 [![Docs site](https://img.shields.io/badge/docs-firestoned.github.io%2Fbanlieue-informational?logo=materialformkdocs)](https://firestoned.github.io/banlieue/)
-[![Status](https://img.shields.io/badge/status-In%20Development-orange)](https://firestoned.github.io/banlieue/reference/roadmap/)
+[![Status](https://img.shields.io/badge/status-In%20Development-orange)](#project-status)
 [![Issues](https://img.shields.io/github/issues/firestoned/banlieue)](https://github.com/firestoned/banlieue/issues)
 [![Last commit](https://img.shields.io/github/last-commit/firestoned/banlieue/main)](https://github.com/firestoned/banlieue/commits/main)
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/firestoned/banlieue/pulls)

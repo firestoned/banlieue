@@ -20,6 +20,10 @@
 //!   errors.
 //! - I/O: missing `.vex/` directory is treated as an empty triage set
 //!   (permissive); missing Grype / SBOM file is an error.
+//! - Fail-closed input guards (SEC-014/SEC-016): a valid-but-empty SBOM
+//!   (zero components) is rejected instead of suppressing every finding;
+//!   inputs larger than `MAX_INPUT_FILE_BYTES` are rejected before being
+//!   slurped.
 
 #[cfg(test)]
 #[allow(clippy::module_inception)]
@@ -510,5 +514,91 @@ mod tests {
         let triaged = load_triaged_from_vex_dir(tmp.path()).unwrap();
         assert_eq!(triaged.len(), 1);
         assert!(triaged.contains("CVE-2026-30001"));
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    // read_file_capped / load_sbom_from_path — fail-closed input guards
+    // ────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn read_file_capped_reads_small_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("input.json");
+        std::fs::write(&path, br#"{"matches": []}"#).unwrap();
+        let bytes = read_file_capped(&path).unwrap();
+        assert_eq!(bytes, br#"{"matches": []}"#);
+    }
+
+    #[test]
+    fn read_file_capped_rejects_oversized_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("huge.json");
+        // Sparse file: one byte past the cap, allocated instantly. The
+        // stat-based guard must reject it without slurping the content.
+        let file = std::fs::File::create(&path).unwrap();
+        file.set_len(MAX_INPUT_FILE_BYTES + 1).unwrap();
+        let err = read_file_capped(&path).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        assert!(
+            err.to_string()
+                .contains("exceeding the 256 MiB input limit")
+        );
+        assert!(err.to_string().contains("huge.json"));
+    }
+
+    #[test]
+    fn load_sbom_from_path_parses_sbom_with_components() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("sbom.json");
+        std::fs::write(
+            &path,
+            json!({
+                "bomFormat": "CycloneDX",
+                "components": [{"purl": "pkg:cargo/serde@1.0"}]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let sbom = load_sbom_from_path(&path).unwrap();
+        let comps = sbom.components.as_ref().unwrap();
+        assert_eq!(comps.len(), 1);
+        assert_eq!(comps[0].purl.as_deref(), Some("pkg:cargo/serde@1.0"));
+    }
+
+    #[test]
+    fn load_sbom_from_path_rejects_empty_components() {
+        // SEC-014: a valid-but-empty SBOM would suppress every Grype
+        // finding as component_not_present — fail closed instead.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("sbom.json");
+        std::fs::write(
+            &path,
+            json!({"bomFormat": "CycloneDX", "components": []}).to_string(),
+        )
+        .unwrap();
+        let err = load_sbom_from_path(&path).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("zero components"));
+        assert!(err.to_string().contains("sbom.json"));
+    }
+
+    #[test]
+    fn load_sbom_from_path_rejects_missing_components() {
+        // A document with no `components` key at all is the same broken
+        // input as an explicit empty list — also fail closed.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("sbom.json");
+        std::fs::write(&path, json!({"bomFormat": "CycloneDX"}).to_string()).unwrap();
+        let err = load_sbom_from_path(&path).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("zero components"));
+    }
+
+    #[test]
+    fn load_sbom_from_path_malformed_json_errors() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("sbom.json");
+        std::fs::write(&path, "{ not valid json").unwrap();
+        assert!(load_sbom_from_path(&path).is_err());
     }
 }

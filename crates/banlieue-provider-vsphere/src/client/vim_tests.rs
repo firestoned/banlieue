@@ -8,6 +8,8 @@
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::super::*;
 
     // Two distinct self-signed test CAs (CN=banlieue-test-ca-a / -b), generated
@@ -103,5 +105,37 @@ n17Lktsw0jAZJp1tU1DJPZSYHZPPWLZlJhHftNtpKQ==
     fn build_http_client_fails_on_invalid_pem() {
         let err = build_http_client(Some("garbage"), false).unwrap_err();
         assert!(err.to_string().contains("caBundle"), "got: {err}");
+    }
+
+    /// SEC-012: a vCenter that accepts the connection but never replies must
+    /// fail the request, not hang the reconcile forever. The production
+    /// deadlines are too slow for a test, so this goes through
+    /// `build_http_client_with_timeouts` — the same builder path — with
+    /// millisecond deadlines against a listener that holds the socket open
+    /// and answers nothing.
+    #[tokio::test]
+    async fn request_times_out_against_a_hung_endpoint() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let mut held = Vec::new();
+            for stream in listener.incoming() {
+                held.push(stream); // accepted, never answered
+            }
+        });
+
+        let client = build_http_client_with_timeouts(
+            None,
+            false,
+            Duration::from_millis(200),
+            Duration::from_millis(200),
+        )
+        .expect("client builds");
+        let err = client
+            .get(format!("http://{addr}/sdk"))
+            .send()
+            .await
+            .unwrap_err();
+        assert!(err.is_timeout(), "expected a timeout, got {err:?}");
     }
 }

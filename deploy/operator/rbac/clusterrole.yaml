@@ -1,0 +1,170 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# Cluster-wide role for banlieue-operator — the provider lifecycle controller
+# (ADR-0012).
+#
+# ## Why this role is broad, and why that is the safer choice
+#
+# Kubernetes forbids creating or binding a Role that carries permissions the
+# creator does not itself hold, unless the creator has the `escalate` / `bind`
+# verbs on rbac.authorization.k8s.io. Granting those verbs would effectively
+# make this operator cluster-admin: it could mint a Role for anything.
+#
+# Instead, this ClusterRole holds the **union of the permissions it hands to
+# provider Roles**. The escalation surface is therefore bounded by — and
+# auditable from — this one file: the operator can only ever grant what you can
+# read here.
+#
+# Adding a backend that needs a new permission means adding it here too. That
+# is an intentional speed bump, not an oversight.
+#
+# Note what is absent: the operator never reads Secret *contents*. It only ever
+# names a Secret in a generated Role's resourceNames.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: banlieue-operator
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: operator
+rules:
+  # ---------------------------------------------------------------------------
+  # banlieue.io — the CRs this operator reconciles
+  # ---------------------------------------------------------------------------
+  - apiGroups: ["banlieue.io"]
+    resources:
+      - providers
+      - providerclasses
+    verbs: ["get", "list", "watch"]
+
+  # Add and remove the `banlieue.io/provider-workload` finalizer, which is what
+  # lets the operator delete the ClusterRoleBinding before a Provider
+  # disappears (a cluster-scoped object cannot be garbage-collected by a
+  # namespaced owner).
+  #
+  # This patches `metadata.finalizers` on the MAIN resource, so it needs
+  # update/patch on `providers` itself. That is NOT the same permission as
+  # `providers/finalizers` below — conflating the two makes every reconcile
+  # 403 at ensure_finalizer, which is invisible to unit tests and was caught
+  # only by the kind e2e (ADR-0014).
+  - apiGroups: ["banlieue.io"]
+    resources:
+      - providers
+    verbs: ["update", "patch"]
+
+  # status.workload on Provider; conditions/providers on ProviderClass.
+  # Provider.status.conditions stays owned by each provider's own field
+  # manager — this operator writes only status.workload (ADR-0012).
+  - apiGroups: ["banlieue.io"]
+    resources:
+      - providers/status
+      - providerclasses/status
+    verbs: ["get", "update", "patch"]
+
+  # A DIFFERENT permission from patching `providers` above: the apiserver
+  # requires `update` on the <resource>/finalizers subresource of an OWNER
+  # before it will accept a dependent carrying
+  # `ownerReference.blockOwnerDeletion: true`. Needed because every namespaced
+  # object the operator creates sets that flag.
+  - apiGroups: ["banlieue.io"]
+    resources:
+      - providers/finalizers
+    verbs: ["update"]
+
+  # ---------------------------------------------------------------------------
+  # The workloads this operator creates, one set per Provider
+  # ---------------------------------------------------------------------------
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["serviceaccounts"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources:
+      - roles
+      - rolebindings
+      - clusterrolebindings
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # ClusterRoles are READ-ONLY here on purpose. The ProviderClass reconciler
+  # checks whether the shared `banlieue-provider-<backend>` role exists, to
+  # surface a usable/unusable class before any Provider is created. The operator
+  # must never CREATE or MODIFY a ClusterRole — bootstrap installs those, and
+  # letting the operator mint them is the escalation path ADR-0012 refuses.
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources:
+      - clusterroles
+    verbs: ["get", "list", "watch"]
+
+  # ---------------------------------------------------------------------------
+  # Permissions the operator GRANTS to provider Roles.
+  #
+  # Present here solely so RBAC's privilege-escalation prevention permits the
+  # grant. The operator itself never exercises them. Keep in sync with the
+  # per-instance Role built in crates/banlieue-operator/src/workload.rs and
+  # with each deploy/provider-<backend>/rbac/clusterrole.yaml.
+  # ---------------------------------------------------------------------------
+  # Credentials and CA bundles: `get` only, matching the narrowed grant the
+  # operator writes (resourceNames cannot constrain list/watch, so the
+  # generated Role never asks for them).
+  - apiGroups: [""]
+    resources:
+      - secrets
+      - configmaps
+    verbs: ["get"]
+  # Import Jobs, granted to the libvirt provider (ADR-0011). RBAC refuses to
+  # let a grantor hand out permissions it does not hold, so the operator must
+  # carry these to create that provider's RoleBinding at all — the same trap
+  # that Secrets hit above. The operator never creates a Job itself.
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "create", "patch"]
+  # Per-instance leader-election Leases.
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "create", "update", "patch"]
+  # Events. Unlike the rest of this section, the operator DOES exercise these
+  # itself: it publishes Events against Provider objects so `kubectl describe
+  # provider` shows what the controller did (workload applied, superseded
+  # workload pruned, reconcile skipped, ProviderClass missing). The same grant
+  # also covers the provider controllers it hands permissions to.
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+  - apiGroups: ["events.k8s.io"]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+  # VMImage: cluster-scoped, so it can only be granted via the shared
+  # per-backend ClusterRole this operator binds.
+  - apiGroups: ["banlieue.io"]
+    resources:
+      - vmimages
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["banlieue.io"]
+    resources:
+      - vmimages/status
+    verbs: ["get", "update", "patch"]
+  # Infrastructure CRs each provider reconciles.
+  - apiGroups: ["infrastructure.banlieue.io"]
+    resources:
+      - vspheremachines
+      - vspheremachinetemplates
+      - vsphereclusters
+    verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups: ["infrastructure.banlieue.io"]
+    resources:
+      - vspheremachines/status
+      - vsphereclusters/status
+    verbs: ["get", "update", "patch"]
+  - apiGroups: ["infrastructure.banlieue.io"]
+    resources:
+      - vspheremachines/finalizers
+    verbs: ["update"]
+  # CAPI IPAM contract, used by Pool-based IpamSpec.
+  - apiGroups: ["ipam.cluster.x-k8s.io"]
+    resources:
+      - ipaddressclaims
+      - ipaddresses
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
