@@ -5,6 +5,9 @@ members = [
     "crates/banlieue-api",
     "crates/banlieue-controller",
     "crates/banlieue-imagebuilder",
+    "crates/banlieue-libvirt",
+    "crates/banlieue-operator",
+    "crates/banlieue-provider-libvirt",
     "crates/banlieue-provider-sdk",
     "crates/banlieue-provider-vsphere",
     "crates/banlieue-vex",
@@ -20,9 +23,10 @@ homepage = "https://github.com/firestoned/banlieue"
 authors = ["Erick Bourgeois <erick@jeb.ca>"]
 
 [workspace.dependencies]
-# Kubernetes — versions match kube-rs/controller-rs (2026-05-19)
-kube = { version = "3", features = ["derive", "client", "runtime"] }
-k8s-openapi = { version = "0.27", features = ["latest", "schemars"] }
+# Kubernetes — kube 4.0 pairs with k8s-openapi 0.28 (Kubernetes v1.36 types).
+# Pinned to the 4.0.x line: kube 4.1+ requires rust 1.89, above our MSRV 1.88.
+kube = { version = "~4.0", features = ["derive", "client", "runtime"] }
+k8s-openapi = { version = "0.28", features = ["latest", "schemars"] }
 schemars = "1"
 
 # Serialization
@@ -31,6 +35,9 @@ serde_json = "1"
 serde_yaml = "0.9"
 
 # Errors
+# Scratch directories in tests. Used by banlieue-vex and
+# banlieue-provider-libvirt, so pinned once here per the dependency rule.
+tempfile = "3"
 thiserror = "2"
 anyhow = "1"
 
@@ -48,11 +55,13 @@ clap = { version = "4", features = ["derive", "env"] }
 # Misc
 chrono = { version = "0.4", features = ["serde"] }
 async-trait = "0.1"
+# Artifact integrity for provider import Jobs (SEC-004): the import subcommand
+# hashes the built raw disk before streaming it to a backend.
+sha2 = "0.10"
 
 # vSphere (provider-vsphere only; pinned here so the long compile is cached at
 # workspace level and any future provider that needs it gets the same pin).
-# `default-features = false` turns OFF vim_rs's `default-client` feature so we use
-# it in Bring-Your-Own-Client mode (ADR-0008/0009): banlieue supplies the
+# `default-features = false` turns OFF vim_rs's `default-client` feature so we use# it in Bring-Your-Own-Client mode (ADR-0008/0009): banlieue supplies the
 # reqwest::Client and vim_rs never builds one (so `reqwest/default` is never
 # pulled in). vim_rs 0.5 is plain crates.io — the old 0.4.x vendor/patch pipeline
 # that flipped reqwest to rustls is gone (noclue/vim_rs#37 shipped in 0.5).

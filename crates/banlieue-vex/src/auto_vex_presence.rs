@@ -114,6 +114,59 @@ pub struct Product {
 // Core logic
 // ─────────────────────────────────────────────────────────────────────────
 
+/// Maximum accepted size for any slurped JSON/text input (256 MiB). Grype
+/// reports, SBOMs, symbol dumps, and VEX documents are all orders of
+/// magnitude smaller; anything larger is not the artifact the caller meant
+/// to pass, and slurping it whole would exhaust CI memory (SEC-016).
+pub const MAX_INPUT_FILE_BYTES: u64 = 256 * 1024 * 1024;
+
+/// Read a whole file into memory, rejecting anything larger than
+/// [`MAX_INPUT_FILE_BYTES`] before touching it. All tool inputs go through
+/// this so a runaway or hostile artifact fails fast instead of being
+/// slurped unbounded.
+pub fn read_file_capped(path: &Path) -> std::io::Result<Vec<u8>> {
+    let len = std::fs::metadata(path)?.len();
+    if len > MAX_INPUT_FILE_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "{}: file is {} bytes, exceeding the {} MiB input limit",
+                path.display(),
+                len,
+                MAX_INPUT_FILE_BYTES / (1024 * 1024)
+            ),
+        ));
+    }
+    std::fs::read(path)
+}
+
+/// Load a CycloneDX SBOM from disk, enforcing the input size cap and
+/// failing closed on a valid-but-empty document: an SBOM with zero
+/// components is never a legitimate "nothing present" signal — it means
+/// the input is truncated or broken, and proceeding would emit
+/// `not_affected` for every Grype finding (SEC-014).
+pub fn load_sbom_from_path(path: &Path) -> std::io::Result<Sbom> {
+    let bytes = read_file_capped(path)?;
+    let sbom: Sbom = serde_json::from_slice(&bytes).map_err(|e| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("{}: {}", path.display(), e),
+        )
+    })?;
+    if sbom.components.as_ref().is_none_or(Vec::is_empty) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "{}: SBOM parsed successfully but contains zero components; \
+                 refusing to derive not_affected statements from an empty \
+                 SBOM (input is likely truncated or broken)",
+                path.display()
+            ),
+        ));
+    }
+    Ok(sbom)
+}
+
 /// Compute the set of auto-VEX statements to emit.
 ///
 /// Emits one `not_affected + component_not_present` statement per unique
@@ -219,7 +272,7 @@ pub fn load_triaged_from_vex_dir(vex_dir: &Path) -> std::io::Result<HashSet<Stri
         {
             continue;
         }
-        let bytes = std::fs::read(&path)?;
+        let bytes = read_file_capped(&path)?;
         let doc: Document = serde_json::from_slice(&bytes).map_err(|e| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,

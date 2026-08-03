@@ -348,6 +348,9 @@ spec:
                   - type
                   type: object
                 type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
               infrastructureRef:
                 description: |-
                   Reference to the provider-specific infrastructure CR

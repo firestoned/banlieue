@@ -1,5 +1,1940 @@
 # Changelog
 
+## [2026-08-02 21:15] - Pin provider workloads by digest
+
+**Author:** Erick Bourgeois
+
+### Added
+`ProviderImage.digest` on `ProviderClass`, and `--image-digest` on
+`banlieue bootstrap`. `reference()` emits `repository:tag@digest` when both are
+present — the tag documents what the digest is meant to be, the digest is what
+actually gets pulled. Digest alone (`repository@digest`) and tag alone both
+remain valid; a digest with an empty tag correctly omits the colon, since
+`repo:@sha256:…` is not a valid reference.
+
+### Why
+A Deployment built from a mutable tag has a spec that is byte-identical across
+image pushes, so a new image triggers **no rollout**. `imagePullPolicy: Always`
+does not save it: that only applies when a pod is *created*. On this cluster a
+provider pod ran an hour-old digest while reporting perfectly healthy, and the
+same trap cost time twice in one session — once nearly reporting a fix as
+verified while the old code was still running.
+
+A digest changes the spec, so pushing a new image rolls the workload.
+
+### Verified on hardware
+All four workloads pinned and running the same digest:
+
+```
+controller         sha256:7fe16e14…  OK
+imagebuilder       sha256:7fe16e14…  OK
+operator           sha256:7fe16e14…  OK
+provider-libvirt   sha256:7fe16e14…  OK
+```
+
+The provider Deployment is operator-managed, so its pin comes from the
+`ProviderClass` rather than a direct patch — confirmed propagating end to end.
+Still functional afterwards: `Provider Ready=True`, `VMImage Ready=True`.
+
+### Note
+`docker images` shows a local image **ID** (a digest of the image config);
+registries report the **manifest** digest. They differ for the same image, so
+comparing them means nothing. Kubernetes wants the registry manifest digest,
+retrievable without a container runtime:
+
+```sh
+curl -sI -H "Authorization: Bearer $TOKEN" \
+  https://ghcr.io/v2/<org>/<repo>/manifests/<tag> | grep -i docker-content-digest
+```
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout — CRD field added
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-08-02 20:00] - Verified: imports go only to declared pools
+
+**Author:** Erick Bourgeois
+
+### Verified on hardware
+With the declared-pools fix deployed, the import produced **three** Jobs rather
+than four, one per declared storage class, and left the undeclared pool alone:
+
+```
+default        3.05 GiB   (declared: standard)
+k0s-bootstrap  3.05 GiB   (declared: bootstrap)
+images         3.05 GiB   (declared: images)
+boot           (none)     — exists on the host, never declared
+
+Ready=True (Reconciled): image available on 1 provider(s)
+```
+
+Per-zone status lists exactly the three declared zones; `boot` no longer
+appears at all, because it was never a target rather than a failed one.
+
+### Note on rollout
+The provider Deployment tracks the mutable `local-dev` tag, so pushing a new
+image does not change the Deployment spec and no rollout is triggered —
+`imagePullPolicy: Always` only takes effect when a pod is created. The pod kept
+running the previous digest until explicitly restarted. Worth remembering
+whenever a change appears not to have taken: check the running `imageID`, not
+the tag.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Verification only — no source changes in this entry
+
+## [2026-08-02 19:30] - Import only into declared storage pools
+
+**Author:** Erick Bourgeois
+
+### Fixed
+**Images were imported into every pool on the host, not the declared ones.**
+`target_pools()` read `status.failureDomains[].attributes.raw["pools"]` — the
+*discovery* output, listing every pool libvirtd reports. The declared capability
+list is `spec.capabilities.storageClasses`, narrowed by probing into
+`attributes.availableStorageClasses`.
+
+On the homelab Provider three classes were declared (`default`, `images`,
+`k0s-bootstrap`) but four pools exist, so every import also wrote a full 3 GiB
+copy into `boot` — storage the admin never asked banlieue to use. That
+contradicts non-negotiable #4: capabilities are declared; auto-discovery is a
+status-time concern, not a spec-time one.
+
+`target_pools()` now maps declared storage classes to their `target["pool"]`,
+filtered to those that survived verification, and **deduplicated**: two classes
+may legitimately map to one pool, and without dedup the same multi-gigabyte
+transfer would run twice into the same place with the second Job racing the
+first.
+
+The test that parsed `raw["pools"]` was removed rather than adapted — its
+subject no longer exists.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+Existing volumes in undeclared pools are left alone; banlieue does not delete
+what it did not decide to create.
+
+## [2026-08-02 19:00] - VMImage Ready=True: all four pools imported
+
+**Author:** Erick Bourgeois
+
+### Verified
+With the host's `images` pool repointed from a stale `/root/...` path to
+`/var/lib/libvirt/pools/images` (and built, started, autostarted), the import
+ran cleanly across **all four** storage pools:
+
+```
+default        3.05 GiB
+boot           3.05 GiB
+k0s-bootstrap  3.05 GiB
+images         3.05 GiB
+
+Ready=True (Reconciled): image available on 1 provider(s)
+```
+
+This is the first `Ready=True` on a `VMImage` end to end: OCI reference →
+kairos build on the dedicated node → raw disk on a PVC → four import Jobs →
+four libvirt volumes → per-zone status → aggregate condition.
+
+It also exercises the ADR-0015 aggregate in both directions. Every earlier run
+sat at `Ready=False (ImportFailed)` because one zone was unavailable; the moment
+the last zone succeeded the controller flipped it to `True`. "Ready" means ready
+everywhere, and that is now demonstrated rather than asserted.
+
+Placement remains PVC-driven: the Jobs carry no `nodeSelector`, only a
+toleration, and the scheduler puts them where the artifacts volume is.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Verification only — host pool definition corrected, no source changes
+
+## [2026-08-02 18:30] - Verified: import placement follows the PVC, with no node selector
+
+**Author:** Erick Bourgeois
+
+### Verified on hardware
+Re-ran the import end to end after deploying the PVC-driven correction. The
+generated Job carries **no `nodeSelector`** — only a toleration — and every pod
+still scheduled onto the dedicated build node:
+
+```
+nodeSelector: (none)
+tolerations:  dedicated=imagebuild:NoSchedule
+pods:         all 5 → k0s-04
+```
+
+That is the scheduler resolving placement from the bound PV's own
+`nodeAffinity`, which is precisely what the removed selector had been
+duplicating. The first re-run of the day had accidentally validated the *old*
+design, because the running provider still predated the fix; this one exercises
+the corrected code.
+
+Volumes confirmed on the host at 3.05 GiB in each of `default`, `boot` and
+`k0s-bootstrap`, ~27s per pool.
+
+`images` fails, correctly and informatively: that pool is defined against
+`/root/k0s-bootstrap/test-kairos/images`, a path that does not exist on the
+host, so libvirt refuses to start it. Per-zone status reports `ImportFailed`
+for it and `Reconciled` for the other three, and the ADR-0015 aggregate stays
+`False` — "ready" means ready everywhere.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Verification only — no source changes in this entry
+
+## [2026-08-02 17:30] - VMs autostart; loop-device cloud-config actually applies
+
+**Author:** Erick Bourgeois
+
+### Fixed
+**The loop-device cloud-config would have been silently ignored.** `files:` had
+been written as a *stage name*, a sibling of `after-install:` and `boot:` under
+`stages:`. In Kairos/yip `files:` is a property of a stage **step**, so this
+created a bogus stage whose entries carried `path`/`content` where a step
+expects `name`/`commands`. yip has no such stage: nothing would have been
+written, and nothing would have errored. Moved inside the boot step.
+
+### Added
+`scripts/bootstrap-k0s-cluster.sh` marks every VM `virsh autostart` before its
+first start. libvirt defaults domains to `autostart=disable`, so an unplanned
+host power loss leaves a cluster that is defined, healthy, and entirely down
+until someone starts each VM by hand — which is exactly what happened today.
+Set *before* the first start, so a host that dies mid-bootstrap still recovers.
+
+Teardown needs no change: `virsh undefine` removes the autostart link with the
+domain.
+
+### Notes
+A host power cut demonstrated the loop-device problem within hours of it being
+identified. After the nodes rebooted, `/dev/loop1..7` were gone again — only
+`loop-control` and `loop0` remained — because the earlier `mknod` was never
+persistent and the running nodes predate the cloud-config fix.
+
+The running cluster was brought to the same end state the corrected
+cloud-config produces: `/etc/modules-load.d/banlieue-loop.conf` and
+`/etc/modprobe.d/banlieue-loop.conf` written into Kairos's persistent `/etc` on
+the build node, plus the device nodes recreated for the running kernel. A
+rebuild therefore converges rather than diverges.
+
+`max_loop` still reads `0` on the running kernel: module parameters apply only
+at load time, which is why the `mknod` fallback exists in both the pod and the
+cloud-config.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only — host/VM configuration and node OS config
+- [ ] Documentation only
+
+## [2026-08-02 16:40] - Import Job placement follows its PVC, not a node selector
+
+**Author:** Erick Bourgeois
+
+### Fixed
+**A design error of mine, caught in review rather than by a test.** Import Jobs
+were given a `nodeSelector` pinning them to the build node, and the operator
+forwarded one to every provider to make that possible. That was wrong.
+
+An import Job mounts the artifacts PVC. Kubernetes already decides where such a
+pod may run: the scheduler honours the bound PV's own `nodeAffinity`. On
+node-local storage it confines the Job to the volume's node without any help
+from us; on network-attached storage there is nothing to confine and the volume
+can attach anywhere.
+
+The evidence was in the failure message the whole time:
+
+```
+0/4 nodes are available: 1 node(s) had untolerated taint(s),
+                         3 node(s) didn't match PersistentVolume's node affinity
+```
+
+The scheduler had *already* applied the PV's affinity — that is what excluded
+three nodes. Only the **taint** excluded the fourth. The selector was redundant
+where storage is node-local and actively wrong where it is not, pinning a Job to
+a node it has no reason to be on and making it unschedulable if that node is
+full, cordoned, or gone.
+
+I had generalised from `local-path` happening to be installed on the test
+cluster into a property of the design.
+
+### Changed
+- Import Jobs carry **no** `nodeSelector`. Placement follows the PVC.
+- Tolerations are kept and reframed: not a placement decision, but permission to
+  land on a node the scheduler has already chosen — needed only because a
+  dedicated build node is tainted.
+- The operator forwards only `--build-toleration` to providers; the node
+  selector is imagebuilder-only.
+- ADR-0016 and the SDK docs corrected, including recording that node isolation
+  has now landed and verifying what it does and does not buy.
+
+**Build-pod pinning is unchanged.** That one is a genuine policy decision — the
+pod is `privileged: true`, and confining it is the point of ADR-0016's
+follow-up. The distinction is that a build pod is placed by *policy* and an
+import Job by the *volume it mounts*.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-08-02 16:10] - Loop devices at boot; installer accepts build scheduling
+
+**Author:** Erick Bourgeois
+
+### Fixed
+**`modprobe loop` does not create loop devices.** The Kairos cloud-config
+loaded the module at boot and its comment assumed `/dev/loop0..7` would appear.
+Modern kernels default to `max_loop=0`, which creates loop devices **on demand**
+through `/dev/loop-control` — so the module load yielded `loop-control` and
+little else, and a privileged build container still could not see a device that
+materialised after it started. Builds failed with
+`gen-raw-efi-disk (error: open /dev/loop1: no such file or directory)`.
+
+`scripts/bootstrap-k0s-cluster.sh` now:
+- writes `/etc/modules-load.d/banlieue-loop.conf` and
+  `/etc/modprobe.d/banlieue-loop.conf` (`options loop max_loop=8`), so the
+  setting survives reboots without depending on stage ordering;
+- runs `modprobe loop max_loop=8` at boot, **and** creates `loop0..loop7` with
+  `mknod` if absent. Module parameters only apply at load time, so if anything
+  loaded the module earlier the parameter is ignored — creating the nodes
+  directly is idempotent and works either way.
+
+### Added
+`banlieue bootstrap` accepts `--build-node-selector` and `--build-toleration`
+and passes them to the two roles that place build workloads: the imagebuilder
+(which sets them on the `OSArtifact`) and the operator (which forwards them to
+every provider workload). The controller is deliberately excluded — it schedules
+no build workloads and does not declare the flags, so passing them would stop it
+starting. Unset emits nothing, since clap rejects an empty value.
+
+Previously these could only be patched onto the Deployments after install, which
+meant the documented install path produced a cluster where privileged builds
+could land on control-plane nodes.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout — new install flags; node config applies on rebuild
+- [ ] Config change only
+- [ ] Documentation only
+
+The running homelab cluster keeps the manually created loop devices until it
+reboots; the cloud-config change takes effect on the next rebuild.
+
+## [2026-08-02 15:00] - The ADR-0010 pipeline runs end to end on real hardware
+
+**Author:** Erick Bourgeois
+
+### Verified
+On the rebuilt homelab cluster (Kairos Hadron, k0s v1.35.5, 3 control-plane +
+1 dedicated worker), the whole pipeline ran for the first time:
+
+```
+OCI image → kairos OSArtifact build → raw disk on PVC → import Job → libvirt volume
+```
+
+Volumes confirmed **on the libvirt host**, read back with our own client:
+
+```
+default pool: kairos-ubuntu-2404.raw → /var/lib/libvirt/images/kairos-ubuntu-2404.raw
+boot pool:    kairos-ubuntu-2404.raw → /var/lib/libvirt/boot/kairos-ubuntu-2404.raw
+```
+
+3.27 GB streamed per pool. Three of four pools imported; the fourth reported
+`storage pool 'images' is not active` — a real host condition, surfaced with an
+actionable message rather than a crash.
+
+**ADR-0016 node isolation confirmed in practice.** The build pod ran
+`privileged: true` on the dedicated tainted worker and nowhere else, with the
+`nodeSelector` and `toleration` propagated banlieue-imagebuilder → OSArtifact →
+kairos → pod.
+
+**The status model behaved as designed**: per-zone `ready` for the three that
+worked, `ImportFailed` for the inactive pool, and the ADR-0015 aggregate
+correctly `False` — "ready" means ready everywhere.
+
+### Fixed
+- **The operator never forwarded build scheduling to providers.** Import Jobs
+  carried no `nodeSelector`/`toleration`, and with node-local storage the
+  artifacts PV is pinned to the (tainted) build node — the only node that could
+  mount it was the one the Job could not tolerate. New operator flags forward
+  both; tests assert they are also *omitted* when unset, since clap rejects
+  empty values.
+- **Import Jobs referenced an image that does not exist.** `--import-image`
+  defaulted to the released `:v0.1.0` while the provider ran `:local-dev` —
+  version skew by construction, since the Job runs the *same binary* as the
+  provider. The operator now passes the resolved ProviderClass image.
+
+### Notes
+`/dev/loop*` had to be pre-created on the build node — a recurrence of bug-098
+in a new guise. The module was loaded and `loop0`/`loop1` existed, but
+`max_loop=0` means devices are created on demand, and a privileged container
+only inherits device nodes that existed **at container-creation time**. The old
+fix lived in the Debian cloud-init the Hadron rebuild discarded. The pre-creation
+is **not persistent**; the durable fix belongs in the Kairos cloud-config
+(`/etc/modules-load.d/loop.conf` + `options loop max_loop=8`).
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+### Follow-ups
+- `bootstrap` does not yet accept or forward the build-scheduling flags, so they
+  must be patched onto the operator Deployment after install.
+- Persistent loop-device configuration for Kairos nodes.
+
+## [2026-08-01 10:20] - Two live-only fixes from the homelab import run
+
+**Author:** Erick Bourgeois
+
+### Fixed
+**The import Job mounted a Secret it could not reach.** The manifest projected
+the Provider's credentials Secret as a volume, but the Secret lives with the
+Provider while the Job runs in the build namespace — and a volume mount cannot
+cross namespaces, exactly like the PVC. Pods sat in `ContainerCreating` with
+`MountVolume.SetUp failed ... secret "libvirt-creds" not found`.
+
+ADR-0016 §4 designed cross-namespace RBAC for API *reads* of that Secret; it
+missed that the manifest also *mounted* it. The mount turned out to be
+vestigial — `import.rs` never read the mounted path, it resolves credentials
+through the Kubernetes API. Removed the volume and mount entirely, which is
+strictly better than fixing the path: the Secret is no longer projected into the
+filesystem of a pod running in a namespace with no admission floor. The test now
+asserts **no** Secret is projected at all.
+
+**The operator deleted its own import RBAC in a loop.** `prune_namespaced()`
+took a single `keep` name, but one Provider now legitimately owns two Roles —
+the controller's and the import identity's. The import objects carry the
+provider labels, so the pruner matched them, saw a name it wasn't keeping, and
+deleted them on every reconcile: create → prune → create → prune. `keep` is now
+a slice, and the Role/RoleBinding call sites pass both names. Teardown passes an
+empty slice, so deletion still removes everything.
+
+### Verified on the homelab cluster
+The **build half of ADR-0010 is fully working**:
+
+```
+OSArtifact:      Ready          (build pod admitted in banlieue-imagebuild)
+PVC:             10Gi Bound     (local-path)
+rawDiskArtifact: phase=Ready    diskFile=kairos-ubuntu-2404-build.raw
+```
+
+ADR-0016 verified in practice: the same kairos manifest that `restricted`
+rejected is admitted in the privileged build namespace.
+
+The import half reached: 4 Jobs created, one per storage pool, in the correct
+namespace, with zone status translated onto `perProvider[].zones[]` and the
+ADR-0015 aggregator reporting `Ready=False (Importing): 1 of 1 provider(s)`.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout — image `sha256:92142433…` pushed, not yet deployed
+- [ ] Config change only
+- [ ] Documentation only
+
+### Paused
+The cluster is being rebuilt with a dedicated non-control-plane worker so builds
+can be pinned to it — the node-isolation follow-up ADR-0016 names as the control
+that actually bounds a privileged escape. Resume needs: deploy
+`sha256:92142433…`, then `nodeSelector`/`tolerations` plumbing for build pods.
+
+## [2026-08-01 21:50] - ADR-0016 §4: a dedicated read-only identity for import Jobs
+
+**Author:** Erick Bourgeois
+
+### Added
+- `IMPORT_SERVICE_ACCOUNT` (`banlieue-import`), created in the build namespace
+  by `bootstrap imagebuilder`.
+- `build_import_role()` / `build_import_role_binding()` in the operator: a
+  per-Provider Role in the **Provider's** namespace, bound to a subject in the
+  **build** namespace. Applied for every Provider alongside the existing set.
+- `Context::imagebuild_namespace` on the operator; `--import-service-account`
+  on the libvirt provider.
+
+### Why
+The import Job runs in the privileged build namespace (ADR-0016) but must read
+the `Provider` and its credentials, which live with the Provider. That is a
+cross-namespace read, so the RoleBinding lives with the Role and the Secret it
+grants, and names a subject in the build namespace.
+
+**It does not reuse the provider controller's ServiceAccount.** That identity
+can create Jobs (ADR-0011); a workload in a namespace with no admission floor
+holding it could create further privileged pods. The import identity is
+read-only by construction — every rule is `get` on a named object, pinned by a
+test that walks the rules and rejects any other verb, any unscoped rule, and
+`jobs` outright.
+
+A ConfigMap rule is emitted only when the Provider actually names a CA
+ConfigMap: a rule with an empty `resourceNames` grants access to *every*
+ConfigMap in the namespace, so the absent case must omit the rule rather than
+narrow it.
+
+### Changed
+- The libvirt provider's `import_service_account` is now a plain `String`
+  defaulting to `banlieue-import`, replacing the `POD_SERVICE_ACCOUNT` downward-
+  API lookup and the namespace-match guard. Both existed to hand the
+  controller's own identity down safely; that approach is superseded.
+
+### Verified
+```
+NS: banlieue-imagebuild  enforce=privileged  audit=restricted  warn=restricted
+SA: banlieue-import      in banlieue-imagebuild
+SA: banlieue-imagebuilder in banlieue-system
+```
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout — new ServiceAccount, new per-Provider RBAC
+- [ ] Config change only
+- [ ] Documentation only
+
+### Follow-ups
+- Node-level isolation for build pods (ADR-0016 "what this does NOT buy").
+- Re-run the homelab install end to end on a rebuilt image.
+
+## [2026-08-01 21:20] - ADR-0016: isolate image builds in their own PodSecurity domain
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0016-imagebuild-namespace-isolation.md` — amends ADR-0010.
+- `build_imagebuild_namespace()` + `DEFAULT_IMAGEBUILD_NAMESPACE`; `bootstrap
+  imagebuilder` now creates `banlieue-imagebuild`.
+- A CALM control (`imagebuild-privilege-domain`) on the imagebuilder node,
+  mapped to NIST SP 800-53 AC-6 / SC-39 / CM-7.
+
+### Fixed
+**Namespaces created by `banlieue bootstrap` carried no PodSecurity labels at
+all.** `build_namespace()` set only the app label, while
+`deploy/controller/namespace.yaml` sets `enforce/audit/warn: restricted`. The
+documented CLI install path (ADR-0013) therefore produced a *less hardened*
+cluster than the manifest path, and nothing tested it. That silently voided the
+premise ADR-0016 rests on — that `banlieue-system` is `restricted`.
+
+### Changed
+- `banlieue-system`: `enforce/audit/warn: restricted`, from the CLI path too.
+- `banlieue-imagebuild`: `enforce: privileged`, `audit/warn: restricted`.
+- Both `--build-namespace` defaults → `banlieue-imagebuild` (they must agree; a
+  PVC cannot be mounted across namespaces).
+
+### Why
+kairos-operator's `OSArtifact` builder needs `privileged: true` for loop devices
+and mounts. `privileged` is denied by **`baseline` as well as `restricted`**, so
+there is no intermediate profile — the hosting namespace must enforce
+`privileged`, which is the *absence* of enforcement.
+
+`banlieue-system` holds the controller, the operator (an RBAC **grantor**, so a
+compromise there escalates by design), and one provider pod per backend, each
+holding that backend's credentials. Relaxing it for one workload would remove
+the admission floor from all of them, and the blast radius grows with every
+backend added.
+
+`audit`/`warn` stay `restricted` in the build namespace deliberately:
+enforcement is off, so a *new* privileged workload appearing there must still be
+visible rather than indistinguishable from the one knowingly allowed.
+
+### Security limits — stated explicitly
+This bounds **admission surface, not escape capability.** A privileged container
+can access host devices, mount the host filesystem, and escape to its node
+regardless of namespace, then read every secret the kubelet materialised there.
+The control that actually bounds an escape is scheduling builds onto dedicated,
+tainted nodes — complementary, **not** adopted here (needs a node pool a
+single-node homelab lacks), tracked as a follow-up.
+
+Until that lands the honest posture is: **a compromised kairos build image is a
+node compromise.** The split limits which credentials sit beside it; it does not
+sandbox the build. This should not be described as "isolating" the build in a
+security sense.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout — new namespace, changed namespace labels
+- [ ] Config change only
+- [ ] Documentation only
+
+### Follow-ups
+- The import Job needs a ServiceAccount in `banlieue-imagebuild` plus a
+  `resourceNames`-scoped Role/RoleBinding back into the Provider's namespace
+  (ADR-0016 §4). Not yet implemented — `import_service_account()` still drops
+  the SA on namespace mismatch rather than using the build-namespace identity.
+- Node-level isolation for build pods.
+
+## [2026-07-31 20:20] - Prefer the host cross-linker over `cross`; publish an amd64 image
+
+**Author:** Erick Bourgeois
+
+### Fixed
+`make build-linux-amd64` failed on Apple Silicon with `couldn't install
+toolchain stable-x86_64-unknown-linux-gnu`. `_build-linux` tried `cross` first,
+and `cross` attempted to install a **host** rustup toolchain for a foreign
+architecture — which rustup refuses outright — even with a working cross-linker
+on `PATH`.
+
+Reordered: a host gcc cross-toolchain is now preferred, with `cross` as the
+fallback. That is also what `~/dev/bindy` does, and it avoids a container build,
+so it is substantially faster (26m48s for a cold release build of the whole
+dependency tree).
+
+### Verified
+- `ghcr.io/firestoned/banlieue:local-dev` pushed, `linux/amd64`, digest
+  `sha256:eb9812fd59df…9687`. The homelab k0s nodes are amd64, and the previous
+  `local-dev` image was arm64 from the kind run — it would have failed to run
+  there with an exec-format error.
+- The package is **public**: an unauthenticated manifest fetch returns 200, so
+  the nodes need no `imagePullSecret`.
+
+### Notes
+The x86_64 half of the homebrew `macos-cross-toolchains` pair was not installed
+(only aarch64 was), so `x86_64-unknown-linux-gnu-gcc` was absent under both its
+prefixed and Debian-style names. Installed from the tap that was already
+configured. Worth knowing: that toolchain provides *both* naming conventions, so
+the Makefile's Debian-style `x86_64-linux-gnu-gcc` resolves correctly once it is
+present.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+Build tooling; no shipped code changed.
+
+## [2026-07-31 20:40] - Live validation of the libvirt client against a real host
+
+**Author:** Erick Bourgeois
+
+### Verified
+The whole `banlieue-libvirt` protocol stack, against a real libvirtd over mutual
+TLS — the first time any of it has run outside unit tests and `FakeClient`:
+
+- TLS handshake + the undocumented post-handshake confirmation byte
+- `CONNECT_OPEN` (with the `AUTH_LIST` preamble)
+- `CONNECT_LIST_ALL_STORAGE_POOLS` / `..._NETWORKS` — 4 pools, 1 network decoded
+- `STORAGE_VOL_CREATE_XML` then `STORAGE_VOL_UPLOAD` — 4 MiB streamed as ~16
+  packets, exercising the chunking loop rather than a single-packet path
+- `STORAGE_POOL_LIST_ALL_VOLUMES` — the uploaded volume read back correctly
+
+No protocol defects found. Given that the two bugs found previously (the TLS
+confirmation byte and the missing `AUTH_LIST`) were invisible to 61 unit tests
+*and* 100% mutation coverage, a clean live run is worth more than the same
+assertions repeated in-process.
+
+### Added
+- `crates/banlieue-libvirt/tests/live_libvirtd.rs`: `list_volumes_in_a_real_pool`.
+  `storage_pool_list_all_volumes` had no live coverage, and it is what makes the
+  import idempotent — a decode bug there means re-uploading a multi-gigabyte
+  disk on every retry, or failing because the previous attempt's volume still
+  exists. Asserts every field decodes non-empty and reports the right pool,
+  because a framing error surfaces as a garbled name long before it surfaces as
+  an error.
+
+### Notes
+The upload test deliberately leaves `banlieue-live-upload-test.raw` in the
+target pool so its contents can be compared against the source; remove it with
+`virsh vol-delete`.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Test-only — one new `#[ignore]`d live test, no shipped code changed
+
+## [2026-07-31 21:40] - Upgrade kube 3 → kube 4.0 (+ k8s-openapi 0.28)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `kube = "~4.0"` (resolves to 4.0.0) and `k8s-openapi = "0.28"` in
+  `[workspace.dependencies]`. kube 4.0 pairs with k8s-openapi 0.28
+  (Kubernetes v1.36 types) and requires **rust 1.88 — exactly our MSRV**.
+  The pin is `~4.0` deliberately: kube 4.1/4.2 require rust 1.89, so a bare
+  `4` would silently drift above the MSRV on the next `cargo update`.
+- Only code change required: `RoleRef.api_group` became `Option<String>` in
+  k8s-openapi 0.28 (Kubernetes 1.36 RBAC shape) — four literals wrapped in
+  `Some(...)` in `bootstrap.rs` / `workload.rs`.
+
+### Behaviour notes from the upstream changelog
+- Non-watch queries now retry by default (`RetryPolicy::server_retry`),
+  which suits reconcilers.
+- The global read-timeout default was removed in favour of watcher-level
+  timeouts.
+- kube's own client tracing is now opt-in (`hyper-util-tracing` feature) —
+  left off; `RUST_LOG=kube=debug` no longer emits wire-level spans unless we
+  enable it.
+- kubeconfig YAML parsing moved from serde-yaml to serde-saphyr (internal to
+  kube; our own `serde_yaml` usage is unaffected).
+
+### Verification
+- Full workspace `cargo test` — 706 passed; clippy clean; `cargo deny` all
+  gates ok. Generated CRDs are **byte-identical** under kube-derive 4.0 (no
+  schema drift).
+- Runtime smoke against a throwaway kind cluster (created and deleted for
+  the purpose): imagebuilder reconciles a `VMImage` — OSArtifact created via
+  SSA with the ownerReference, faked `Ready` mirrored into status, and the
+  artifact garbage-collected on `VMImage` delete. No errors or panics.
+- `cargo fmt --check` flags two files owned by in-flight work elsewhere
+  (`bootstrap_tests.rs`, untracked `live_vcenter.rs`) — untouched here.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout — new binary; CRDs unchanged
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-07-31 20:55] - Close out the security review: SEC-006 through SEC-017
+
+**Author:** Erick Bourgeois
+
+### Security
+Every remaining actionable finding from `security-review-2026-07-31.md`:
+
+- **SEC-006** — new admission policy `banlieue-providerclass-guardrails`:
+  `spec.additionalRules` may not grant on `secrets`, use `*` resources/verbs,
+  or use `escalate`/`bind`/`impersonate`; `spec.workloadNamespace` may not be
+  a Kubernetes system namespace. Verified on kind (all three rejections, plus
+  the shipped example classes still apply).
+- **SEC-008** — deleted the controller ClusterRole's cluster-wide
+  `secrets get,list,watch`: no code in `banlieue-controller` reads a Secret
+  (verified by grep); dead privilege, also aggregated into the CAPI manager.
+- **SEC-011** — schema constraints on `VMClass`/`VSphereMachine`: cpus
+  1–256, memoryMiB 128–4 TiB, disks 1–32, NICs 1–16, disk size 1–65536 GiB,
+  MTU 68–65535. CRDs regenerated; a `cpus: 0` object is now rejected by the
+  apiserver schema itself.
+- **SEC-012** — the vSphere HTTP client gains `connect_timeout` 10s /
+  request `timeout` 120s (named constants; the long-running task-polling
+  budget stays a separate knob for iter 2+). The libvirt transport was
+  already timeout-protected on connect/recv (the review's premise was
+  half-stale); the real gap was `Session::send`, which now times out too,
+  and the error names the operation and duration.
+- **SEC-013** — `Credentials` no longer derives `Debug`; a hand impl shows
+  the username and `<redacted>` for the password, with a test.
+- **SEC-014 / CHAIN-004** — the VEX tools fail closed: an empty/truncated
+  `--binary-symbols` file or a valid-but-empty SBOM now exits non-zero
+  instead of emitting `not_affected` for every mapped CVE.
+- **SEC-015** — scheduler reject-reasons are capped at 10
+  (`MAX_REJECT_REASONS`), rendered as first-N plus `"; … and M more"`, so a
+  status condition can no longer exceed etcd's size limits at admin-scale
+  topology.
+- **SEC-016** — VEX input files are stat-capped at 256 MiB before slurping.
+- **SEC-017** — repo-root `.dockerignore` (`.git`, `target/`, docs, deploy,
+  …) so the build context can no longer leak into an image; `binaries/`
+  stays — it is the only thing the Dockerfile COPYs.
+- **SEC-007 / SEC-009 (accepted risks, now documented)** — provider-lifecycle
+  guide documents the operator-audit-alert recommendation (alert on
+  ClusterRoleBindings created by `banlieue-operator` whose roleRef is not
+  `banlieue-provider-*`); the imagebuilder guide and
+  `deploy/imagebuilder/namespace.yaml` now state that pod-create in
+  `banlieue-imagebuild` is node-root-equivalent.
+
+### Verification
+- Full workspace `cargo test` — 704 passed; clippy + fmt clean;
+  `make calm-validate` clean.
+- Against the kind cluster (K8s 1.31): all 8 CRDs re-applied with the new
+  schema constraints; `providerclass-guardrails` rejects secrets rules,
+  `kube-system` workloads, and `escalate`, while allowing the benign
+  per-backend rules; `cpus: 0` rejected by the CRD schema; shipped examples
+  still apply.
+- VEX fail-closed and timeout behavior covered by new unit tests (empty
+  symbols, empty SBOM, oversized input, hung-endpoint request timeout,
+  send-timeout against a non-reading peer).
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout — RBAC + CRD schema + optional admission policies
+- [ ] Config change only
+- [ ] Documentation only
+
+The ClusterRole strips (controller SEC-008, providers earlier) land with the
+next deploy. With this entry, all 17 findings are either fixed or documented
+as accepted-with-monitoring; the only open items are the deferred feature
+follow-ups already tracked in ADRs.
+
+## [2026-07-31 20:25] - SEC-005: bind OSArtifact lifecycle and status to its VMImage
+
+**Author:** Erick Bourgeois
+
+### Security
+**SEC-005 — a mirrored `Ready` is now bound to the build that produced it.**
+kairos' `OSArtifact.status` carries no `observedGeneration` and no digest
+echo (checked the CRD schema: only `phase` and `message`), so there is
+nothing kairos-side to tie a `Ready` to the requested spec. The binding is
+therefore object identity:
+
+- The `OSArtifact` is applied with an ownerReference to its `VMImage` (UID,
+  `controller: true`; a cluster-scoped owner of a namespaced dependent —
+  deleting the image garbage-collects the build).
+- Each reconcile, `banlieue-imagebuilder` deletes and rebuilds any
+  `OSArtifact` that lacks the current `VMImage` UID **or** whose spec does
+  not request the current `importFrom`. A stale `Ready` from before a spec
+  change — or a foreign pre-created `Ready` — is never mirrored.
+- `deploy/imagebuilder/rbac/clusterrole.yaml` gains `delete` on
+  `osartifacts` for exactly this (bootstrap embeds the same file).
+
+### Fixed
+**bug-119 (caught by the kind verification, before it could ship quietly):
+the first cut of the UID check read `ownerReferences` from
+`DynamicObject.data` — where `metadata` never is.** kube parses `metadata`
+into the typed field and out of the flattened JSON, so `owned` was
+permanently false and the controller deleted and recreated every artifact
+on every watch event — ~7000 reconciles in 4 minutes, ending in a
+tracing-subscriber panic under the load. Fixed to read
+`obj.metadata.owner_references`; logged in `.wolf/buglog.json`.
+
+### Changed
+- `status.rawDiskArtifact.checksum` (SEC-004, see the previous entry) is part
+  of the same regenerated CRD; `sha2` hashes in `HASH_CHUNK_BYTES` chunks.
+- Guide: "Integrity and lifecycle" section in
+  `docs/src/guides/using-banlieue-imagebuilder.md`.
+
+### Verification
+- Full workspace `cargo test` green, clippy + fmt clean; new unit tests for
+  owner/spec matching, checksum threading, and `verify_checksum` (published
+  sha256/sha512 vectors, mismatch, unsupported algorithm, malformed input);
+  the import Job's argv is round-tripped through the real clap parser with
+  and without `--checksum`.
+- Against a fresh kind cluster (K8s 1.31) with the kairos CRD installed and
+  `banlieue imagebuilder` running locally: ownerRef present on created
+  artifacts; faked kairos `Ready` mirrors with checksum; changing
+  `importFrom` deletes the stale artifact instead of publishing its `Ready`;
+  a foreign pre-created `Ready` artifact (no ownerRef) is deleted, never
+  mirrored; deleting the `VMImage` garbage-collects the `OSArtifact`; no
+  delete-loop after bug-119.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout — CRD schema + imagebuilder RBAC
+- [ ] Config change only
+- [ ] Documentation only
+
+On first rollout, existing `OSArtifact`s lack the ownerReference and are
+deleted and rebuilt once (a few GB of rebuild per `Url` image).
+
+## [2026-07-31 20:10] - Document the SEC-004 checksum fix and its `sha2` dependency
+
+**Author:** Erick Bourgeois
+
+### Added
+- **Dependency: `sha2 = "0.10"`**, pinned in `[workspace.dependencies]`, used by
+  `banlieue-provider-libvirt`. From RustCrypto, the de-facto standard Rust
+  hashing implementation and already present in the tree transitively. `0.10` is
+  the current stable line (`0.11` is prerelease). This entry exists because the
+  dependency rule in `CLAUDE.md` requires every new dep to be justified in the
+  changelog, and this one landed without it.
+
+### Changed
+- `crates/banlieue-provider-libvirt/src/import.rs`: extracted the hashing read
+  size to `HASH_CHUNK_BYTES`. `rules/rust-style.md` requires buffer sizes to be
+  named constants; `vec![0u8; 1024 * 1024]` was inline.
+
+### Why
+**SEC-004 was recorded as an unaddressed residual and is now actually fixed**,
+but nothing said so. The security-review entry of 2026-07-31 lists "SEC-004
+(checksum never verified)" as a follow-up; the import subcommand now verifies
+the artifact, and the changelog still claimed otherwise.
+
+The chain is complete end to end: `VMImage.spec.sources[].checksum` →
+`banlieue-imagebuilder` threads it to `status.rawDiskArtifact.checksum` → the
+`VMImage` reconciler passes `--checksum` on the import Job → `verify_checksum`
+hashes the artifact before any side effect.
+
+Three properties make it worth trusting, all covered by tests:
+
+- **Verification precedes every side effect.** It runs before the kube client is
+  built, so a substituted artifact fails with no volume created and nothing to
+  clean up.
+- **It fails closed.** An unsupported algorithm is an error, not a skip — a
+  declared-but-unverifiable checksum would defeat the entire point of the field.
+- **It streams** in `HASH_CHUNK_BYTES` chunks, so a multi-gigabyte disk never
+  sits in memory.
+
+Covered by sha256 and sha512 happy paths against published test vectors, plus
+mismatch, unsupported-algorithm, and malformed-format cases.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only — plus one constant extraction, no behaviour change
+
+## [2026-07-31 19:40] - Scope the kind workflow to its own kubeconfig
+
+**Author:** Erick Bourgeois
+
+### Fixed
+`make kind-e2e` failed outright with `error: context "kind-banlieue-dev" does
+not exist`. The kind workflow was only half-scoped to its own kubeconfig: the
+e2e *test* ran under `KUBECONFIG=$(KIND_KUBECONFIG)`, but all 24 other `kubectl`
+invocations used a bare `kubectl --context kind-$(KIND_CLUSTER_NAME)`, which
+resolves against whichever kubeconfig you have selected. When that file has no
+such context — as it did here — every deploy step fails.
+
+The mirror image of that bug is the serious one: `kind create cluster` **writes**
+its context into the selected kubeconfig. Running the local e2e while pointed at
+a real cluster's config would have modified that file as a side effect.
+
+### Changed
+- `Makefile`: added
+  `KIND_KUBECTL = kubectl --kubeconfig $(KIND_KUBECONFIG) --context kind-$(KIND_CLUSTER_NAME)`
+  and routed all 24 call sites through it.
+- `kind-create` now runs `kind create` under `KUBECONFIG=$(KIND_KUBECONFIG)` and
+  always refreshes that file before anything reads it, so a cluster created by
+  an earlier run under a different kubeconfig is still reachable.
+
+### Verification
+- `make kind-e2e`: **7/7 passing**, including the libvirt workload-shape test.
+- `kubectl config get-contexts` afterwards contains no `kind-banlieue-dev` — the
+  workflow no longer touches the selected kubeconfig at all.
+- The ADR-0015 SSA regression re-run against the CRDs **as deployed to the
+  cluster** (not just as generated): `perProvider` reads `["vc-1", "kvm-1"]` and
+  the deployed schema reports `list-type: map` on both lists.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+Developer workflow only; no shipped artefact changes.
+
+## [2026-07-31 17:25] - Break the three High attack chains from the security review
+
+**Author:** Erick Bourgeois
+
+### Security
+Implements the three chain-breakers from `security-review-2026-07-31.md`
+(out-of-repo, per the planning-docs policy):
+
+- **CHAIN-002 — stripped cluster-wide `secrets`/`configmaps` from the shared
+  provider ClusterRoles** (`deploy/provider-vsphere/rbac/clusterrole.yaml`,
+  `deploy/provider-libvirt/rbac/clusterrole.yaml`). Every provider credential
+  / CA-bundle read is by name in the Provider's namespace and was already
+  covered by the operator's `resourceNames`-scoped per-instance Role
+  (ADR-0003); the cluster-wide rules were redundant privilege that defeated
+  that design. `banlieue bootstrap` embeds the same files, so bootstrap
+  installs pick the strip up automatically.
+- **CHAIN-001 — two new ValidatingAdmissionPolicies** in `deploy/admission/`:
+  `provider-connection` (absolute-URL endpoints, `https://` for
+  vsphere/proxmox, no userinfo/fragment, and `insecureSkipTLSVerify: true`
+  gated behind the opt-in annotation `banlieue.io/allow-insecure-tls: "true"`)
+  and `provider-credentialsref-authorization` (CEL `authorizer`: the
+  principal creating/updating a Provider must itself be able to `get` the
+  credentialsRef Secret — the hop endpoint checks alone cannot close).
+- **CHAIN-003 — new ValidatingAdmissionPolicy `vmimage-import-source`**:
+  every `spec.sources[].importFrom` must pin an `@sha256:` digest and
+  reference a registry in the new `banlieue-vmimage-allowed-registries`
+  parameter ConfigMap (binding fails closed when it is missing).
+
+### Changed
+- **Standalone/static provider installs are namespace-scoped.** With no
+  cluster-wide Secret access left, `banlieue bootstrap provider <backend>`
+  now ships a namespaced Role+RoleBinding (secrets/configmaps `get` in the
+  install namespace) and passes `--namespace` so the watch matches;
+  `deploy/provider-vsphere/` gained `rbac/role.yaml` and the same
+  `--namespace banlieue-system` scoping. Providers and their credentials
+  must live in the install namespace on those paths.
+- `examples/07-vmimage-kairos-url-source.yaml` and the imagebuilder guide
+  pin the kairos image by digest (resolved from quay.io today:
+  `sha256:e4860078…92a7`).
+
+### Added
+- Three admission policies under `deploy/admission/` (see its README for the
+  full matrix); guide updates (`vsphere-provider`, `provider-lifecycle`,
+  provider-vsphere README); CALM model updated and revalidated.
+
+### Verification
+- `cargo test -p banlieue-operator` — 109 passed (incl. new tests for the
+  namespaced Role, binding, and `--namespace` args); clippy + fmt clean;
+  `make calm-validate` clean.
+- Against a fresh kind cluster (K8s 1.31): all six policies apply; Provider
+  rejections verified for `http://`, userinfo, non-https vsphere scheme, and
+  unannotated `insecureSkipTLSVerify` (allow with annotation); VMImage
+  rejections for mutable tag, non-allowlisted registry, and malformed digest
+  (allow for digest-pinned quay.io); all shipped examples still apply.
+- CHAIN-001 replayed with an impersonated `team-delegate` user holding
+  `create providers` but Secret `get` on only one named Secret: referencing
+  the unreadable Secret is **denied**, referencing their own is allowed.
+- `kubectl apply` of the stripped ClusterRoles confirms no secrets/configmaps
+  rules remain.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout — RBAC + optional admission policies
+- [ ] Config change only
+- [ ] Documentation only
+
+The admission policies are optional hardening (apply `deploy/admission/`), but
+the ClusterRole strip lands with the next deploy: any install still relying on
+the shared ClusterRole for credential reads must move to the per-instance
+(operator) or namespaced (standalone) Role. Residual from the review, not
+addressed here: SEC-004 (checksum never verified) and SEC-005 (OSArtifact
+ownerRef / generation binding) — follow-ups to ADR-0010.
+
+## [2026-07-31 18:55] - Finish the conditions merge-key sweep (ADR-0015 follow-up)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `x-kubernetes-list-type: map` keyed on `[type]` on every remaining
+  `status.conditions` list: `Provider`, `ProviderClass`, `VirtualMachine`,
+  `VSphereMachine`, `VSphereCluster`. `VMImage` already had it from ADR-0015.
+- Regenerated `deploy/crds/` (5 files, 3 lines each) and the API reference.
+
+### Why
+These are single-writer today, so the contention ADR-0015 fixed was latent here
+rather than live — but the annotation is the Kubernetes standard for condition
+lists, and leaving it off is how the next component to write into one of these
+rediscovers the same bug. `Provider` is the pointed case: it already carries a
+comment explaining that `conditions` is atomic, and the operator was given a
+disjoint field (`workload`) to route around it (ADR-0012). That workaround stays
+correct and is now belt-and-braces rather than load-bearing.
+
+### Verification
+`x-kubernetes-list-map-keys` must name **required** fields or the apiserver
+rejects the schema outright, which is not visible from the Rust types. Checked
+both ways: `type` is required in every generated condition schema, and all eight
+CRDs were applied to a kind cluster and accepted. The ADR-0015 SSA regression
+test still passes against the full regenerated CRD set.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout — CRD schema change
+- [ ] Config change only
+- [ ] Documentation only
+
+Additive schema metadata; no controller behaviour changes.
+
+## [2026-07-31 18:20] - ADR-0015: fix VMImage.status field-manager contention
+
+**Author:** Erick Bourgeois
+
+### Fixed
+**Two providers reconciling one `VMImage` silently erased each other's status.**
+`status.perProvider` and `status.conditions` carried no `x-kubernetes-list-type`,
+so server-side apply treated them as **atomic**: one manager owns the whole
+array, and `force()` hands it over wholesale. Each provider applies the full
+list containing only its own rows, so the last writer won and the rest vanished.
+Reproduced on a real apiserver before the fix:
+
+```
+perProvider rows  : ["kvm-1"]                                  # vSphere's row: gone
+conditions        : [("Ready","False","libvirt importing")]    # vSphere's: gone
+rawDiskArtifact   : Some(Ready)                                # survived
+```
+
+Not a corner case: `examples/04-vmimage-ubuntu.yaml` ships vsphere + proxmox +
+libvirt sources, so it is the documented configuration.
+
+### Added
+- `docs/adr/0015-vmimage-status-merge-strategy.md`.
+- `crates/banlieue-controller/src/reconciler/vmimage.rs` — aggregate-readiness
+  reconciler and its `VMImage` watch. Pure aggregation, no backend calls.
+- `crates/banlieue-provider-libvirt/tests/e2e_vmimage_ssa.rs` — the reproducer,
+  now a regression test covering all four field managers.
+
+### Changed
+- `banlieue-api`: `status.perProvider` → `x-kubernetes-list-type: map` keyed on
+  `[providerName, providerNamespace]`; `status.conditions` → keyed on `[type]`.
+- **Providers no longer write `VMImage.status.conditions`.** A provider sees
+  only its own rows, so any aggregate it computed answered a different question.
+  Both providers' `aggregate_ready` moved to the controller — which also
+  retired vSphere's `leak()` helper, needed only to force per-row `String`
+  reasons into `&'static str`.
+- The aggregate reason is chosen by provider identity, not list position: a
+  merge-keyed list has no ordering guarantee, so "the first blocking provider"
+  is not a stable concept and picking by position would flap the condition.
+
+### Why
+ADR-0010's split was right; the schema did not implement it. The same hazard was
+already known for `Provider` — `provider.rs` documents it and works around it by
+giving the operator a disjoint field (ADR-0012) — but that workaround cannot
+apply where providers genuinely share one list.
+
+Fixing the merge alone would have been insufficient. Both providers would still
+have written `conditions[type=Ready]` from partial data, trading a visible
+flip-flop for a subtler wrong answer. Ownership had to move too.
+
+Blast radius was small because `banlieue-controller` reads only
+`perProvider[].ready` and `.resolvedRef` for scheduling — nothing machine-
+readable consumed `conditions`; it backs the `kubectl get vmimage` READY column.
+
+### Verification
+Re-ran the reproducer on kind against the regenerated CRD: `perProvider` reads
+`["vc-1", "kvm-1"]`, a provider's later write updates its own row in place
+without duplicating it, and the controller's condition survives untouched.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout — CRD schema change plus a new controller watch
+- [ ] Config change only
+- [ ] Documentation only
+
+### Follow-ups
+- Apply `x-kubernetes-list-type: map` to every other `conditions` list in the
+  API. Single-writer today, so latent rather than live; kept out of this change
+  to keep the CRD diff reviewable.
+
+## [2026-07-31 14:10] - Delete-and-recreate semantics, cluster-scoped name collision, ProviderClass status, and e2e coverage for all of it
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- **Cluster-scoped objects collided across namespaces.** The ClusterRoleBinding
+  is cluster-scoped but was named `banlieue-provider-<class>-<provider>`, with
+  no namespace. Two Providers sharing a name and class in different namespaces
+  therefore landed on **one** object and fought over its subject — each
+  server-side-applying its own namespace, last writer wins, and the loser
+  silently lost its permissions. Reachable in any multi-tenant install, which is
+  exactly what per-instance topology exists to serve. Cluster-scoped names are
+  now namespace-qualified via `naming::cluster_scoped_name`; namespaced objects
+  keep the shorter name, since their namespace already disambiguates them.
+- **The operator had no delete-and-recreate semantics.** ADR-0007 ships the
+  `providerClassRef` immutability policy as *optional* hardening and states the
+  controller must not depend on it, "falling back to the controller's
+  delete-and-recreate semantics" — which did not exist. On any cluster that
+  never applied `deploy/admission/`, editing `providerClassRef` changed the
+  derived name, so a second workload appeared while the first kept running: two
+  provider pods for one backend, both holding credentials. The stale
+  ClusterRoleBinding was worse — unowned, so GC could not reclaim it, and a
+  name-based cleanup computed from the *current* class could never find it
+  again, leaking permanently. `prune_orphans` now selects by label (pinned to
+  provider name **and** namespace) across all namespaces, and `cleanup` deletes
+  by the same selector rather than a recomputed name.
+
+### Added
+- **`ProviderClass` status reconciler.** ADR-0012 specified `status.providers`
+  and conditions; the CRD shipped the fields and a `Providers` print column with
+  nothing populating them, so the column was permanently blank. The `Ready`
+  condition additionally reports whether the shared per-backend ClusterRole
+  exists — surfacing bug-110's failure mode in `kubectl get providerclasses`
+  before any Provider is created, instead of as 403s in a pod log afterwards.
+  Reasons are a closed set of identifiers; the message names the exact missing
+  ClusterRole.
+- `clusterroles: get/list/watch` on the operator ClusterRole, **read-only**,
+  with a test asserting it can never create or modify one.
+- e2e coverage: class-change pruning, the update/roll path, `ProviderClass`
+  paused, and the libvirt backend end to end.
+- `make kind-verify-dry-run` — pipes `bootstrap --dry-run` through
+  `kubectl apply --dry-run=server`, so ADR-0013's GitOps output is validated
+  against real schema and admission (`--dry-run=client` would not catch a
+  malformed manifest).
+- `make kind-verify-escape-hatch` — asserts `bootstrap provider <backend>`
+  installs a workload that is **unowned**, since the operator must neither adopt
+  nor garbage-collect it.
+
+### Why
+Checking ADR-0007 before acting changed the fix. The obvious move — have
+bootstrap install `deploy/admission/` — would have contradicted an Accepted ADR
+that deliberately keeps those policies optional and out of the controller's
+dependency graph. The defect was the missing fallback, not the missing install.
+
+### Impact
+- [x] Requires cluster rollout (operator ClusterRole gained a rule; existing
+      ClusterRoleBindings are renamed — the new prune removes the old ones)
+- [ ] Breaking change
+- [x] Tests + CI + documentation
+
+## [2026-07-31 16:40] - Shared caBundle resolver in the SDK; mutation testing closes two real gaps
+
+**Author:** Erick Bourgeois
+
+### Added
+- `crates/banlieue-provider-sdk/src/ca_bundle.rs` — the CA-bundle resolver both
+  TLS-speaking backends were carrying their own copy of. `plan()` classifies a
+  `CABundleSource` with no I/O; `resolve()` reads the ConfigMap/Secret.
+- `Error::Invalid(&'static str)` on the SDK error, carrying the validator's own
+  message (which already names the field).
+- `pem_from_secret_value()` — see below.
+
+### Changed
+- `banlieue-provider-vsphere/src/reconciler/ca_bundle.rs`: 139 → 43 lines.
+- `banlieue-provider-libvirt/src/credentials.rs`: 115 → 76 lines.
+- The six classification tests moved from vSphere to the SDK (with the exact-
+  selector assertions preserved); the vSphere copy is deleted rather than kept
+  as a test of a re-export.
+
+### Why
+The two copies had already drifted — different error types, `String` vs
+`Vec<u8>`, and one enforcing "exactly one source" through a different variant —
+while resolving the identical spec field. What is genuinely per-backend is
+whether a bundle is *required*: vSphere falls back to system trust roots,
+libvirt refuses because libvirtd's certificate comes from a private CA in every
+realistic deployment. So `resolve()` returns `Option` and says nothing about
+whether `None` is acceptable; each provider decides in three lines.
+
+### Fixed
+Mutation testing over the new modules (20 mutations, targeted at the pure
+decision functions) initially left 3 survivors. One was an equivalent mutant —
+`Option::or` against itself on a `Copy` option is a no-op, a bug in the harness,
+not a test gap. The other two were real:
+
+- **`target_pools()` would return a pool named `""`** from a blank or
+  trailing-comma `pools` attribute. The filter dropping empty segments was
+  pinned by nothing, and an import Job targeting `""` fails on the libvirt host
+  rather than at the reconciler where the cause is legible.
+- **The `caBundle` UTF-8 check was pinned by nothing at all.** It sat inside
+  `read_secret_key`, reachable only through a kube API call, so deleting it
+  outright kept the suite green — and a binary DER value would have reached the
+  TLS stack to fail with a far less obvious message. Extracted as
+  `pem_from_secret_value()` and tested both ways.
+
+Re-run after both fixes: **20/20 killed, 0 survivors.**
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+Internal refactor plus test coverage; no behaviour change outside the two fixes
+above, neither of which alters a healthy path.
+
+## [2026-07-31 15:40] - `banlieue provider libvirt import`, and the RBAC + CLI chain it needs to actually run
+
+**Author:** Erick Bourgeois
+
+### Added
+- `crates/banlieue-provider-libvirt/src/import.rs` — the data path of ADR-0010 /
+  ADR-0011. Reads the `Provider`, resolves its TLS material, connects, creates a
+  raw volume sized to the artifact, and streams the disk in over libvirt's
+  stream protocol. Pure decision functions (`volume_name`, `find_pool`, `plan`,
+  `source_length`) with 13 tests; the rest is I/O.
+- `deploy/provider-libvirt/rbac/clusterrole.yaml` — the libvirt provider had no
+  shipped ClusterRole at all, so `banlieue bootstrap provider libvirt` bailed
+  with "no embedded ClusterRole".
+- `banlieue-operator`: `backend_additional_rules()`, seeding the libvirt
+  `ProviderClass` with `batch/jobs: get,create,patch`.
+- `POD_SERVICE_ACCOUNT` via the downward API on every provider Deployment.
+- `examples/09-providerclass-libvirt.yaml`, `docs/src/guides/libvirt-provider.md`
+  (wired into `mkdocs.yml` and the guides index).
+
+### Fixed
+- **The libvirt provider crash-looped under the operator.** `build_args()` emits
+  `--provider-name` for *every* backend, but only the vSphere `Cli` declared it,
+  so the container failed clap parsing at startup and never reconciled. Added
+  the flag and `provider_watch_config()` to narrow the watch server-side, as
+  vSphere does. Neither side's tests could see this: each tested its own half.
+- **The import Job referenced a subcommand that did not exist.** Every test
+  asserted on the manifest as JSON, so nothing ever fed those args to a parser.
+  There is now a round-trip test that pulls argv out of the generated manifest
+  and parses it with the real parser.
+- `examples/02-provider-libvirt-edge.yaml` used `qemu+ssh://` and no `caBundle`
+  — both rejected at reconcile time since ADR-0011.
+
+### Changed
+- `credentials::resolve` takes a `&Client` rather than a `&Context`, so the Job
+  resolves the same material without constructing a reconcile context.
+- `build_import_job` takes an `ImportJobInputs` struct; the Job now carries
+  `--provider-namespace` and `serviceAccountName`.
+- `deploy/operator/rbac/clusterrole.yaml` gains `batch/jobs` — RBAC refuses to
+  let a grantor hand out what it does not hold, the same trap Secrets hit
+  before. The operator never creates a Job itself.
+- `COMPILED_BACKENDS` includes `libvirt`, so `bootstrap operator` seeds its class.
+- `#[allow(clippy::large_enum_variant)]` on `Command` / `ProviderBackend`: clap's
+  `Subcommand` derive needs each payload to impl `Args`, which `Box` does not,
+  and the enum is built once per process from argv.
+
+### Why
+The `VMImage` reconciler was complete but inert — it created Jobs that would
+fail at exec, under a ServiceAccount with no Job permissions, in a binary that
+could not parse the flags the operator passes it. Three separate breaks, each
+invisible to the tests on either side of it, all on the path between "apply a
+libvirt `Provider`" and "an image lands in a storage pool".
+
+Least privilege drove the details. The Job runs as the **controller's own**
+ServiceAccount rather than a fresh one, so it inherits the `resourceNames`
+narrowing the operator already applied and gains nothing extra — and it is
+dropped when the Job's namespace differs from the controller's, since a pod
+cannot reference a ServiceAccount outside its own namespace. `batch/jobs` is
+`get,create,patch` only: reads are by deterministic name so no list/watch, and
+`ttlSecondsAfterFinished` reaps finished Jobs so no delete. Only libvirt gets
+the grant; creating a Job is the ability to run an arbitrary pod as that
+provider's identity.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout — new flags, new RBAC, rebuilt image
+- [ ] Config change only
+- [ ] Documentation only
+
+### Follow-ups
+- Untested against a real libvirt host end-to-end; only `FakeClient` so far.
+- `credentials.rs` still duplicates the vSphere CA-bundle resolver; both belong
+  in `banlieue-provider-sdk`.
+
+## [2026-07-31 14:05] - VMImage reconciler for banlieue-provider-libvirt (ADR-0010 / ADR-0011)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `crates/banlieue-provider-libvirt/src/reconciler/vmimage.rs` — the libvirt half
+  of ADR-0010's pipeline. Gates on `VMImage.status.rawDiskArtifact.phase == Ready`,
+  then creates one import Job per storage pool the Provider advertises in
+  `status.failureDomains[].attributes.raw["pools"]`, and translates Job status
+  into `status.perProvider[].zones[]`.
+- `crates/banlieue-provider-libvirt/src/reconciler/vmimage_tests.rs` — 16 tests
+  over the pure decision functions (`find_libvirt_source`, `gate_on_raw_disk`,
+  `target_pools`, `import_job_name`, `build_import_job`, `zone_from_job`,
+  `aggregate_ready`). No kube, no TLS, no libvirt host.
+- `banlieue-libvirt`: `storage_pool_list_all_volumes` (+ `STORAGE_VOL_LIST_MAX`),
+  needed to tell "already imported" from "needs importing".
+
+### Changed
+- `crates/banlieue-provider-libvirt/src/context.rs`: added `build_namespace` and
+  `import_image`, so the Job's namespace and image are configuration, not
+  constants baked into the reconciler.
+- `crates/banlieue-provider-libvirt/src/app.rs`: `--build-namespace` /
+  `--import-image` flags and a second `Controller` watching `VMImage`.
+
+### Why
+The Provider reconciler proved the host is reachable and its declared pools
+exist; this closes the loop by getting an actual guest image onto it. Three
+decisions are load-bearing:
+
+- **Job names are deterministic** (`import-<image>-<provider>-<pool>`, truncated
+  to 63 chars). A re-reconcile therefore *adopts* a running import rather than
+  starting a second copy of a multi-gigabyte transfer.
+- **`backoffLimit: 1`.** A partial volume upload is not resumable — the retry
+  restarts the whole stream — so retrying indefinitely would hammer the host for
+  no benefit. One retry, then report `ImportFailed` and let a human look.
+- **The Job mounts the artifacts PVC `readOnly` and runs the `banlieue` binary
+  itself**, not a third-party `virsh`/`qemu-img` image (ADR-0011). The data path
+  stays inside banlieue's own supply chain, and the same `banlieue-libvirt` code
+  is exercised in both the controller and the Job.
+
+This reconciler writes **only** `status.perProvider[]`. `status.rawDiskArtifact`
+belongs to `banlieue-imagebuilder`'s field manager (ADR-0010) and
+`status.workload` to the operator's (ADR-0012); the disjoint-field SSA split is
+what keeps three managers off each other's toes.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout — new flags and a new watch; needs a rebuilt image
+- [ ] Config change only
+- [ ] Documentation only
+
+### Follow-ups
+- `banlieue provider libvirt import` — the Job manifest references this
+  subcommand; it is not implemented yet, so Jobs would fail at exec today.
+- `credentials.rs` duplicates the vSphere CA-bundle resolver; both belong in
+  `banlieue-provider-sdk`.
+
+## [2026-07-31 11:20] - kind-based e2e for the operator contract (ADR-0014); scrub a real hostname from the repo
+
+**Author:** Erick Bourgeois
+
+### Added
+- `crates/banlieue-operator/tests/e2e_provider_lifecycle.rs` — e2e suite against
+  a real API server. Asserts the operator's whole contract: workload creation,
+  Deployment shape (`provider vsphere --provider-name …`, selector/template
+  agreement), the `resourceNames`-scoped Role, controlling owner references on
+  the namespaced four, *no* owner reference on the ClusterRoleBinding,
+  `status.workload` publication, and that deletion removes all five objects —
+  garbage collection for the owned ones, the finalizer for the cluster-scoped
+  one. Plus a paused-Provider case. `#[ignore]`d, like `live_libvirtd.rs`.
+- `make kind-e2e` / `kind-e2e-ci` / `kind-e2e-logs` / `kind-kubeconfig`. The CI
+  variant dumps cluster state on failure and always tears the cluster down.
+  `KIND_KUBECONFIG` is cluster-scoped and gitignored, so the suite never depends
+  on — or mutates — whichever context you have selected.
+- `.github/workflows/e2e.yaml` — `workflow_call` + `workflow_dispatch` + path-
+  filtered PR/push. Installs tools and calls `make kind-e2e-ci`; no logic in
+  YAML, per `rules/github-workflows.md`.
+- `.claude/rules/no-real-infrastructure.md` — new rule (below).
+
+### Changed
+- `crates/banlieue-libvirt/tests/live_libvirtd.rs`: a real maintainer hostname →
+  `bar.foo.io`. (Naming the scrubbed value here would republish it — the rule
+  lists the changelog explicitly.)
+- `crates/banlieue-api/src/common_tests.rs`: `1.1.1.1` / `8.8.8.8` →
+  `192.0.2.53` / `198.51.100.53` (RFC 5737 documentation range).
+
+### Why
+**The e2e closes a category of bug unit tests cannot reach.** All 78 operator
+unit tests assert on objects built in memory; none prove the apiserver accepts
+them. A selector that does not match its pod template, a `resourceNames` rule
+RBAC rejects, an `ownerReference` with a wrong `apiVersion`, an SSA patch
+silently dropped because the CRD schema disagrees with the Rust type — every one
+of those is green in `cargo test` and red on first contact with Kubernetes.
+
+**The suite deliberately does not wait for the provider pod to become Ready.**
+Its Provider points at `vcenter.invalid` (RFC 2606 — can never resolve), so the
+pod stays NotReady and `readyReplicas` stays `0` by design. That is correct:
+the operator's contract is *producing a correctly shaped workload*, and it never
+talks to a backend (ADR-0012). Asserting on readiness would be asserting on the
+vSphere provider and on CI's DNS, and would make the job permanently red. This
+is called out in the test's module docs, the ADR, and the guide, because it is
+the one thing a future contributor is likely to "fix" and break.
+
+**Real infrastructure identifiers must never be committed.** A previous session
+wrote a real hypervisor hostname into a tracked test file. This is a public
+repo: publishing a hostname names a host, implies what runs on it, and leaks the
+naming scheme for its neighbours — and a later commit removing it does not
+un-publish it. The new rule mandates `bar.foo.io`-style placeholders and RFC
+5737 IPs, with real values taken from the environment at runtime. The
+`authors = [… erick@jeb.ca]` package metadata is the one documented exception:
+that is an author identity, not a host.
+
+### Fixed
+- **`deploy/operator/rbac/clusterrole.yaml`: the operator could not add its own
+  finalizer** (buglog bug-104). The role granted `update` on
+  `providers/finalizers` on the assumption that covered it. It does not — those
+  are two different permissions:
+  - `<resource>/finalizers` is the admission-time check the apiserver runs
+    before accepting a *dependent* whose `ownerReference` sets
+    `blockOwnerDeletion: true`.
+  - Writing `metadata.finalizers` on the object is an ordinary write to the
+    **main** resource, needing `update`/`patch` on `providers`.
+
+  `ensure_finalizer()` runs first in the reconcile, so every Provider reconcile
+  403'd and retried every 5s forever, creating nothing. A controller that uses a
+  finalizer *and* sets `blockOwnerDeletion` needs both rules. Caught by the
+  first kind e2e run; guarded now by two unit tests that parse the embedded
+  ClusterRole.
+- **`bootstrap::add_role` silently swallowed a missing ClusterRole.** It now
+  errors. Omitting it produced an install that reported success while binding a
+  ServiceAccount to a ClusterRole that does not exist — a pod with no
+  permissions, failing later with opaque 403s instead of at install time.
+- **The shared provider ClusterRole granted `secrets`/`configmaps: list,watch`
+  cluster-wide** (buglog bug-109). Because that role is attached with a
+  *ClusterRoleBinding*, those verbs let any provider pod read every Secret in
+  the cluster — silently defeating the `resourceNames` narrowing per-instance
+  topology exists to provide (ADR-0003). It also blocked the operator from
+  creating the binding at all, since RBAC refuses to let a grantor hand out
+  permissions it lacks. Narrowed to `get`: every call site
+  (`reconciler/{provider,vmimage,ca_bundle}.rs`) reads by name. Widening the
+  operator to match would have propagated the over-grant instead of removing it.
+- **`bootstrap operator` never installed the shared per-backend ClusterRole**
+  (buglog bug-110). The operator *binds* it to every per-instance
+  ServiceAccount but cannot create it — minting the permissions it hands out is
+  precisely the escalation path ADR-0012 refuses. So a real `bootstrap operator`
+  followed by applying a Provider produced a ClusterRoleBinding pointing at a
+  nonexistent role, leaving the provider pod with no permissions while the
+  install looked healthy. Bootstrap now ships one ClusterRole per compiled-in
+  backend and hard-errors, naming the backend, if a manifest is missing.
+  `make kind-deploy-operator` applies `deploy/provider-*/rbac/clusterrole.yaml`
+  so the local flow matches.
+- **The RBAC drift guard compared only apiGroups, not verbs**, so it passed
+  while the provider role granted `secrets: list,watch` and the operator held
+  only `get`. Rewritten to compare `(apiGroup, resource, verb)` triples across
+  every backend that ships a ClusterRole, plus a guard banning blanket Secret
+  enumeration. Both were verified by reintroducing the bug and confirming they
+  fail — after bug-105, an unverified guard is not a guard.
+- **The paused-Provider e2e passed vacuously** (buglog bug-105). It asserted
+  only that no workload appeared, which a dead operator satisfies equally well —
+  and it went green on the very run where the operator was 403ing on everything.
+  It now unpauses the Provider afterwards and requires the workload to appear,
+  which is what makes the absence check mean anything.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (operator ClusterRole gained a rule)
+- [ ] Config change only
+- [x] Tests + CI + documentation
+
+`cargo test --all` → 582 passed, 0 failed, 2 ignored. `actionlint` clean.
+The e2e suite has now been **executed against a live kind cluster**, where it
+found bug-104 on its first run.
+
+## [2026-07-31 09:40] - banlieue becomes a true operator: ProviderClass CRD, `banlieue operator`, `banlieue bootstrap` (ADR-0003/0012/0013)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `crates/banlieue-operator` — new library crate, the provider lifecycle
+  controller. Applying a `Provider` CR now creates that backend's controller:
+  one Deployment, ServiceAccount, Role, RoleBinding and ClusterRoleBinding
+  **per Provider** (ADR-0003). Modules:
+  - `naming` — derived names and labels, capped at 63 chars with a stable
+    FNV-1a suffix. `DefaultHasher` is deliberately not used: it is not stable
+    across Rust releases, and a name that changed with the compiler would
+    orphan the previous Deployment on every upgrade.
+  - `workload` — pure builders for the five objects. Shared with `bootstrap`,
+    so a CLI-installed provider is identically shaped to an operator-spawned one.
+  - `reconciler::provider` — reconcile + finalizer-driven cleanup.
+  - `bootstrap` — the `banlieue bootstrap` install CLI.
+- `ProviderClass` CRD (`banlieue.io/v1alpha1`, cluster-scoped) — install
+  metadata for a backend class: backend, image, workload namespace, replicas,
+  resources, node placement, logging, additional RBAC rules, paused.
+  `Provider.spec.providerClassRef` finally resolves to something.
+- `Provider.status.workload` — `{deploymentName, namespace, readyReplicas,
+  observedGeneration}`, written **only** by `banlieue.io/operator`.
+- `banlieue operator` and `banlieue bootstrap {operator,provider,imagebuilder}`
+  subcommands; `COMPILED_BACKENDS` in the binary crate so a slim build cannot
+  offer to install a backend it does not contain.
+- `--provider-name` on `banlieue provider vsphere`, narrowing its Provider
+  watch **server-side** via a field selector.
+- `deploy/operator/` — ServiceAccount, ClusterRole, ClusterRoleBinding,
+  ConfigMap, Deployment, Service.
+
+### Changed
+- ADR-0003 promoted Proposed → **Accepted**, with the decision changed from the
+  drafted hybrid (`deploymentStrategy: Shared | PerInstance`) to **per-instance
+  only**. The hybrid is recorded as considered-and-rejected: every driver it
+  named is solved by `PerInstance` and none by `Shared`, `Shared` is the status
+  quo rather than a capability, and the knob is a backward-compatible addition
+  later.
+- `docs/architecture/calm/architecture.json` — `service-banlieue-operator`
+  node, `data-asset-providerclass-cr`, `rel-operator-kube-api`, and a
+  `flow-provision-provider-workload` flow. `make calm-validate` → 0 errors,
+  0 warnings; diagrams regenerated.
+- `banlieue_api::crdgen_support` is no longer behind the `crdgen` feature, so
+  `bootstrap` can build CRDs from the Rust types at runtime. Only `serde_yaml`
+  stays gated.
+
+### Why
+Two decisions are worth the reading time.
+
+**Disjoint status ownership.** The operator writes only `status.workload` and
+never `status.conditions`. `conditions` is a plain list with no
+`x-kubernetes-list-type: map` marker (schemars/kube-derive do not emit one), so
+two field managers writing into it contend over the whole array instead of
+merging per entry. A disjoint field keeps server-side apply conflict-free
+without `force` papering over it.
+
+**The operator holds what it grants.** Kubernetes forbids creating or binding a
+Role carrying permissions the creator lacks unless it holds `escalate`/`bind` —
+which would effectively make the operator cluster-admin. Instead
+`deploy/operator/rbac/clusterrole.yaml` contains the union of what it hands to
+provider Roles, so the escalation surface is bounded by, and auditable from,
+one file. A unit test asserts the operator ClusterRole covers every apiGroup
+the provider ClusterRole uses, so the two cannot drift into runtime rejections.
+
+Credential access stays narrow: each generated Role grants `get` on exactly the
+Secret its Provider names, via `resourceNames`. The generated Role never asks
+for `list`/`watch` on Secrets, because Kubernetes ignores `resourceNames` for
+those verbs and the grant would silently widen to every Secret in the namespace.
+
+### Fixed
+- `crates/banlieue-libvirt/tests/live_libvirtd.rs`: `&PathBuf` → `&Path`
+  (`clippy::ptr_arg`). Pre-existing; surfaced by `--all-targets`.
+
+### Impact
+- [x] Requires cluster rollout (new CRD, new Deployment, new ClusterRole)
+- [ ] Breaking change
+- [ ] Config change only
+- [ ] Documentation only
+
+`cargo fmt` + `cargo clippy --all-targets --all-features -D warnings` +
+`cargo test --all` → 572 tests, 0 failures.
+
+## [2026-07-31 00:45] - CALM model for the libvirt provider; XDR codec (ADR-0011)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `crates/banlieue-libvirt` — new crate, the first-party libvirt RPC client.
+  One dependency (`thiserror`, already in the workspace); no `kube` and no
+  banlieue API types, so the future import Job can link it without the
+  controller's dependency graph. Two modules so far, 39 unit tests:
+  - `xdr` — **XDR (RFC 4506) codec**: `Encoder` / `Decoder` for int, unsigned
+    int, hyper, bool, fixed/variable opaque, and string.
+  - `rpc` — **message framing**: `virNetMessageHeader` (the 24-byte,
+    six-field header), `virNetMessageType` / `virNetMessageStatus`, the
+    length-prefix codec, and the procedure numbers banlieue uses.
+  - `transport` — **session + TLS**: `Session<S>` (generic over
+    `AsyncRead + AsyncWrite`, so the whole protocol is testable over
+    `tokio::io::duplex` with a scripted peer — no socket, no libvirtd),
+    serial allocation and reply matching, `virNetMessageError` decoding, and
+    `connect_tls` for mutual-TLS connections.
+
+  **Zero new third-party crates.** `tokio-rustls` and `rustls-pki-types` were
+  already in `Cargo.lock` transitively via the vSphere provider's
+  reqwest/hyper-rustls stack, so promoting them to direct dependencies
+  compiles no additional code — verified: the only entry `Cargo.lock` gained
+  is `banlieue-libvirt` itself. `rustls-pemfile` was deliberately avoided
+  because `rustls-pki-types` already provides PEM parsing under its default
+  `alloc` feature.
+
+  Every constant, enum value, and field ordering was transcribed from
+  libvirt's own `src/rpc/virnetprotocol.x` and `src/remote/remote_protocol.x`,
+  fetched from upstream — not from documentation or memory. These values *are*
+  the contract; a subtly wrong one round-trips against itself forever and only
+  fails on contact with a real libvirtd.
+
+### Changed
+- `docs/architecture/calm/architecture.json`:
+  - `service-provider-libvirt` promoted from "planned, Phase 1D" to the
+    ADR-0011 design (in-process control plane, Job-based data plane).
+  - `network-libvirt-backend` documents TLS-only on 16514 and records that
+    plaintext 16509 is explicitly unsupported.
+  - `rel-provider-libvirt-backend` gained a `libvirt-mutual-tls` control
+    (NIST SP 800-53 SC-8 / SC-23 / IA-5).
+  - New flow `flow-import-vmimage-libvirt` with a
+    `control-plane-data-plane-split` control.
+  - ADR-0011 added to `adrs[]`.
+  `make calm-validate` → 0 errors, 0 warnings; diagrams regenerated.
+
+### Why
+Tests assert **exact encoded bytes**, not just round-trips: a codec that is
+self-consistently wrong round-trips perfectly and still desynchronises against
+a real libvirtd. The decoder also enforces RFC 4506's "padding MUST be zero"
+rather than skipping padding, because non-zero padding is usually the first
+observable symptom of a desynchronised stream.
+
+### Fixed
+- Integer overflow in `Decoder::read_opaque_fixed` (see buglog bug-101):
+  `len + pad` was unchecked, but `len` is public API input *and* is fed a
+  wire-read `u32` by `read_opaque_var`. `padding_for(usize::MAX) == 1`, so the
+  sum overflows — panicking in debug and, worse, **wrapping to a small value in
+  release**, which passes the bounds check and then corrupts the cursor. Now
+  `checked_add`.
+
+  Found by **mutation testing, not by the suite**: deleting the redundant
+  bounds check in `read_opaque_var` left all 21 tests green, which prompted
+  asking why the inner check was load-bearing. The mutation run also confirmed
+  the padding and byte-order tests *do* fail when their logic is broken.
+
+### Verification
+Both modules were mutation-tested rather than trusted for being green. The
+framing layer caught 5 of 6 deliberate defects — length prefix excluding
+itself, swapped header field order, a dropped `VIR_NET_MESSAGE_MAX` bound,
+unknown message types silently treated as `Call`, and a wrong `REMOTE_PROGRAM`
+magic. The survivor (writing `proc` via `write_u32(v as u32)`) is an
+**equivalent mutant**, not a test gap: two's complement makes those bytes
+identical for every `i32`, verified across the full range, so no test could
+distinguish them and there is nothing to fix.
+
+The transport layer caught **6 of 6**: an unchecked reply serial, treating an
+`Error` status as success, accepting any message type as a reply, `read`
+instead of `read_exact` on the length prefix, serials starting at 0, and
+skipping length-prefix validation entirely.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] New crate, not yet wired into any binary — no runtime behaviour changes
+
+### Not yet done
+Nothing in this crate has spoken to a real libvirtd. RPC framing, the
+procedure definitions from `remote_protocol.x`, and the TLS transport are
+still to come, and ADR-0011 records an integration test against a live host as
+non-optional — procedure numbers and struct layouts are where desync bugs will
+actually live.
+
+## [2026-07-31 02:15] - Fix imagebuilder build pods rejected by banlieue-system's restricted PodSecurity (ADR-0010 amendment)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `deploy/imagebuilder/namespace.yaml` (new): `banlieue-imagebuild` namespace,
+  `pod-security.kubernetes.io/enforce: privileged`.
+- `deploy/imagebuilder/configmap.yaml`: `BANLIEUE_BUILD_NAMESPACE` default
+  `banlieue-system` → `banlieue-imagebuild`.
+- `crates/banlieue-imagebuilder/src/app.rs`: `DEFAULT_BUILD_NAMESPACE`
+  constant updated to match; doc comment on `--build-namespace` now states
+  the constraint explicitly.
+- `Makefile` (`imagebuilder-run-local`): updated hint text.
+- `docs/adr/0010-vmimage-build-pipeline-imagebuilder.md`: amendment note —
+  default build namespace changed, with rationale.
+
+### Why
+First real (non-smoke-test) `VMImage` build failed:
+
+```
+pods "kairos-ubuntu-2404-build-lx4b7" is forbidden: violates PodSecurity
+"restricted:latest": privileged (container "build-cloud-image" must not set
+securityContext.privileged=true), allowPrivilegeEscalation != false, ...
+```
+
+kairos-operator's `OSArtifact` build pods set `securityContext.privileged:
+true` unconditionally — assembling a raw disk image needs loop-device
+mount/chroot access, which is inherent to what the build does, not something
+banlieue's manifests control (kairos-operator is a third-party CRD/operator,
+ADR-0010). `banlieue-system`'s `restricted` Pod Security level (correct for
+banlieue's own controller/provider pods) was also, incidentally, the default
+`--build-namespace` since ADR-0010 — so every real build was rejected before
+kairos-operator's controller could even schedule the pod. The earlier smoke
+test (`scripts/bootstrap-kairos-operator.sh`) never caught this because it
+runs its test `OSArtifact` in kairos-operator's own `operator-system`
+namespace, not `banlieue-system`.
+
+PSA is enforced per-namespace with no per-pod exception, so the fix is
+isolating build workloads into their own, separately-labeled namespace —
+never loosening `banlieue-system` itself, which stays `restricted` for the
+controller/provider pods that actually need hardening.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires applying `deploy/imagebuilder/namespace.yaml` (new namespace)
+      before the next `make imagebuilder-run-local` / imagebuilder deployment
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-07-30 23:15] - Fix two bugs in bootstrap-libvirt-tls.sh found while provisioning
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `scripts/bootstrap-libvirt-tls.sh` (`configure_libvirtd`): re-armed socket
+  activation in the correct order — stop `libvirtd.service`, stop all
+  `libvirtd*.socket`, disable the TCP socket, enable the TLS socket, start the
+  wanted sockets, then start the service. Both `systemctl start` calls are now
+  checked and fail loudly with the exact `journalctl` command.
+- `scripts/bootstrap-libvirt-tls.sh` (`set_conf`): patterns no longer match
+  commented lines.
+
+### Why
+1. **`systemctl enable --now libvirtd-tls.socket` failed** with *"Socket
+   service libvirtd.service already active, refusing."* — systemd will not
+   attach a new socket unit to an already-running service, and libvirtd
+   typically has long uptime. Under `set -e` the script aborted there, before
+   the restart, the verification, and the Secret generation. Compounding it,
+   `systemctl disable --now libvirtd-tcp.socket` does **not** close port 16509
+   on a running daemon: libvirtd keeps serving the fd it already inherited
+   (confirmed still LISTENing on pid 1411 fd=6 after the "disable"). So the
+   naive sequence could report success while plaintext stayed open — which is
+   why `verify()` asserts 16509 is *absent* rather than trusting the disable.
+2. **Duplicate config entries.** `libvirtd.conf` documents every option as a
+   commented example far above the real settings; the `#?` in `set_conf`'s
+   patterns matched those and *uncommented* them, leaving two active copies of
+   `listen_tls`/`listen_tcp`. Benign only because both got the same value.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Dev/test tooling only (no banlieue runtime code touched)
+
+### Validated
+libvirt TLS provisioned and verified end to end on the reference host: 16514
+listening, 16509 closed, `qemu+tls://` round-trip OK, guests survived the
+daemon restart, and — from inside the cluster — the server certificate's SANs
+include the libvirt bridge address the provider will actually dial.
+
+## [2026-07-30 22:30] - ADR-0011: own the libvirt client (zero new deps); provision libvirt TLS
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0011-libvirt-provider-own-client.md` — decides that
+  `banlieue-provider-libvirt` speaks libvirt's RPC protocol via a small
+  first-party crate (`banlieue-libvirt`) rather than any third-party client.
+- `scripts/bootstrap-libvirt-tls.sh` — provisions CA + server + client certs,
+  switches libvirtd from plaintext TCP to mutual TLS, and emits a Kubernetes
+  Secret manifest for the client credentials. Subcommands:
+  `all|ca|server|client|configure|verify|secret|status`.
+
+### Why
+No usable libvirt client exists for this project: `virt`/`virt-sys` are FFI to
+the C library (a native dep in a distroless image, and ~11 months stale),
+while `libvirt` (2015) and `libvirt-rpc` (2018) are abandoned. Measured
+against the protocol's actual size — a 24-byte header plus XDR, with stream
+packets carrying raw unencoded bytes — a first-party client is ~750 lines and
+needs **no new dependencies**: XDR/RPC/procedures are written here, and the
+transport reuses `rustls` + `tokio`, already pinned for the vSphere BYOC work.
+
+The reference libvirt host was found listening on plaintext TCP 16509 with
+`auth_tcp = "sasl"` / `mech_list: digest-md5` — a mechanism RFC 6331 declared
+obsolete, over an unencrypted channel carrying every disk-image byte. Moving
+to TLS is both the security fix and a simplification: with libvirt's default
+`auth_tls = "none"` the x509 client certificate *is* the credential, so no
+SASL exchange and no MD5 dependency are needed at all. The provider therefore
+supports **TLS only**, with no plaintext fallback.
+
+An earlier draft of this ADR (run `virsh` inside Jobs for everything) was
+rejected before implementation: it made a CLI's stdout a wire format and
+required a Job per `Provider` probe. Its reasoning about the *data* path
+survives — bulk transfer still runs in a Job, never in the reconcile loop.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires running `bootstrap-libvirt-tls.sh` on the libvirt host before
+      the provider can connect (no plaintext fallback, by design)
+- [ ] Config change only
+- [x] Design/tooling only — no banlieue runtime code written yet
+
+## [2026-07-30 10:30] - Purge stale known_hosts pins before k0sctl apply
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `scripts/bootstrap-k0s-cluster.sh`: `apply_k0sctl` now runs `ssh-keygen -R`
+  for each host address in the generated k0sctl config before invoking
+  `k0sctl apply` (new `purge_known_hosts` helper). Addresses are read back out
+  of `$K0SCTL_CONFIG`, so a standalone `apply` works without a preceding
+  `config` step in the same run.
+
+### Why
+A rebuild aborted with:
+
+```
+ssh: handshake failed: host key mismatch: knownhosts: key mismatch
+  - <vm-ip>:22: retrying aborted
+```
+
+k0sctl brings its own SSH stack (the `rig` library) and reads
+`~/.ssh/known_hosts` directly — it does **not** honour the
+`StrictHostKeyChecking=no` / `UserKnownHostsFile=/dev/null` that the script
+already sets for its own `ssh_run`, and k0sctl v0.32.1 exposes no flag to relax
+it. Because libvirt recycles its DHCP pool across destroy/create cycles, a
+freshly built VM lands on an address a *previous* VM's host key is still pinned
+to; k0sctl then aborts the entire run after a single attempt. Confirmed on the
+hypervisor: the reused address was pinned in root's `known_hosts` (hashed)
+from an earlier VM.
+
+Purging only the addresses about to be used keeps host-key verification on
+everywhere else. `ssh-keygen -R` is used rather than a grep/sed purge because
+the entries are hashed and would not match a literal search.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rebuild
+- [ ] Config change only
+- [x] Dev/test tooling only (no banlieue runtime code touched)
+
+## [2026-07-30 10:00] - Add bootstrap-kairos-operator.sh; stop k0s tainting every node
+
+**Author:** Erick Bourgeois
+
+### Added
+- `scripts/bootstrap-kairos-operator.sh` — installs a default StorageClass
+  (Rancher local-path) + kairos-operator onto an existing cluster, with an
+  optional OSArtifact smoke test. Subcommands:
+  `all|storage|operator|smoke|status|destroy`. **Deliberately never sets
+  `KUBECONFIG`** — the caller exports it, and the script echoes the target
+  context/server before touching anything. Notable behaviour:
+  - Refuses to run when every node carries a `NoSchedule` taint (nothing
+    schedulable could start), printing the exact remediation.
+  - Only claims the default-StorageClass role if the cluster has no default
+    already, then **verifies** it rather than assuming the patch landed.
+  - Deletes any prior smoke-test OSArtifact **and its PVC** before recreating.
+  - On failure, dumps OSArtifact status, PVC events, pod events, and the logs
+    of both the `pull-image-baseimage` init container and `build-cloud-image`.
+
+### Changed
+- `scripts/bootstrap-k0s-cluster.sh`: emit `noTaints: true` on
+  `controller+worker` hosts (new `NO_TAINTS` override, default `true`).
+- `Makefile`: new `K0S_NO_TAINTS` knob, forwarded through `K0S_ENV` and
+  `K0S_REMOTE_ENV`.
+
+### Why
+The rebuilt cluster came up with `node-role.kubernetes.io/control-plane:NoSchedule`
+on all three nodes — k0s's default for `controller+worker`. With *every* node a
+controller, nothing without a matching toleration can schedule anywhere:
+local-path-provisioner sat `Pending` for 12h, so no PVC could ever be
+provisioned. `noTaints: true` is the documented k0sctl fix.
+
+That cascaded into a second, unrecoverable failure. kairos-operator creates each
+OSArtifact's PVC with no `storageClassName`, so it binds to whatever the
+cluster's default StorageClass is *at creation time*. The smoke-test PVC was
+created before any default existed, leaving `storageClassName` empty — and that
+field is immutable, so the claim can never bind no matter what is installed
+afterwards. Hence the script enforcing the ordering (storage ready → default
+verified → only then create an OSArtifact) instead of leaving it to a doc.
+
+### Impact
+- [ ] Breaking change
+- [x] Existing clusters need `kubectl taint nodes --all node-role.kubernetes.io/control-plane-`
+      (no rebuild required); the script change only affects newly-built clusters
+- [ ] Config change only
+- [x] Dev/test tooling only (no banlieue runtime code touched)
+
+## [2026-07-29 16:00] - Fix k0s-destroy leaving VMs defined (UEFI nvram + unmanaged storage)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `scripts/bootstrap-k0s-cluster.sh` (`destroy_all`): `virsh undefine` now passes
+  `--nvram --managed-save` and **no longer passes `--remove-all-storage``**.
+- `scripts/bootstrap-k0s-cluster.sh` (`destroy_all`): stopped swallowing
+  `undefine` errors (was `>/dev/null 2>&1 || true`); failures are now logged and
+  the command exits non-zero. Added a post-teardown verification pass that
+  re-lists domains matching `^$VM_PREFIX-[0-9]+$` and fails if any survive.
+
+### Why
+`make k0s-remote-destroy` reported success while leaving all three VMs defined
+(visible in Cockpit, `shut off`). `virsh destroy` only force-powers-off; the
+`undefine` that actually removes the domain was failing for two stacked reasons,
+both silenced by `|| true`:
+
+1. **UEFI NVRAM.** `create_vm` uses `--boot uefi`, so each domain carries an
+   `<nvram>` varstore (`/var/lib/libvirt/qemu/nvram/k0s-0N_VARS.fd`). libvirt
+   refuses to undefine such a domain unless told what to do with it — verified
+   on the hypervisor: libvirt 11.3.0's `virsh undefine --help` still offers the
+   mutually-exclusive `--nvram` / `--keep-nvram` pair.
+2. **Unmanaged storage.** `vol-list default` shows libvirt manages
+   `/var/lib/libvirt/images/k0s-bootstrap` as a single *directory* volume; the
+   per-VM `k0s-0N.qcow2` / `-seed.iso` files inside it are not pool-managed
+   volumes, so `--remove-all-storage` cannot resolve them and aborts the whole
+   undefine. It was redundant anyway — `destroy_all` already `rm -f`s those
+   files directly on the next lines.
+
+This mattered beyond a messy teardown: `create_vm` short-circuits on any
+already-defined domain (`dominfo` succeeds → just `start` it), so a subsequent
+`k0s-remote-all` would have silently rebuilt "on top of" the old VMs rather than
+fresh ones — masking whether the `externalAddress` fix had actually taken.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires re-running `make k0s-remote-destroy` (the previously-"destroyed"
+      VMs are still defined and must be removed before a clean rebuild)
+- [ ] Config change only
+- [x] Dev/test tooling only (no banlieue runtime code touched)
+
+## [2026-07-29 15:30] - Fix "No agent available" on the k0s dev cluster: pin spec.api.externalAddress
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `scripts/bootstrap-k0s-cluster.sh`: now emits `spec.api.externalAddress` in
+  the generated k0sctl config, defaulting to the **first controller's internal
+  DHCP address** (new `API_EXTERNAL_ADDRESS` override). The address is also
+  force-added to `spec.api.sans` so a hand-set VIP/LB/DNS value is covered
+  without also editing `EXTRA_SANS`.
+- `scripts/bootstrap-k0s-cluster.sh`: `fetch_kubeconfig` now rewrites **only
+  the `server:` line**, to the VPN overlay IP of the *same node*
+  `externalAddress` points at (new `KUBECONFIG_SERVER` override; persisted
+  between invocations via `$WORKDIR/kubeconfig-server`). Replaces a blanket
+  search/replace of every internal IP that had no coordination with where the
+  konnectivity agents actually point.
+- `Makefile`: new `K0S_API_EXTERNAL_ADDRESS` / `K0S_KUBECONFIG_SERVER` knobs,
+  forwarded through both `K0S_ENV` (local) and `K0S_REMOTE_ENV`
+  (`k0s-remote-*` over SSH to the hypervisor).
+- `Makefile`: new `imagebuilder-run-local` target, mirroring
+  `provider-vsphere-run-local`, to run `banlieue imagebuilder` against the
+  current kube-context without building/pushing an image.
+
+### Why
+Every `kubectl logs` / `exec` / `port-forward` against the dev k0s cluster
+failed with `No agent available`, which surfaced while smoke-testing
+kairos-operator (the `OSArtifact` builder pod's init container failed and its
+logs were unreadable). Root cause: k0s's konnectivity agents all dial exactly
+**one** address — `spec.api.externalAddress` when set, otherwise whichever
+controller's own address won the race to write the DaemonSet
+(k0sproject/k0s#600, #5503). With `externalAddress` unset on a 3-controller
+cluster, all three agents pinned to one controller's internal DHCP address
+while the kubeconfig pointed at a different controller's VPN overlay IP — so
+the API server being queried had zero agents registered. `kubectl get` kept
+working (it never leaves etcd), which masked the problem.
+
+The fix aligns the two: in-cluster traffic (including konnectivity) uses the
+internal libvirt DHCP network via `externalAddress`, while the VPN overlay
+stays a pure external kubectl entry point via SANs + the kubeconfig `server:`
+address, pointed at the same node. Konnectivity's port therefore never needs
+exposing on the overlay network.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rebuild (`make k0s-remote-destroy` + `k0s-remote-all`) —
+      the generated k0sctl config changes, and `externalAddress` is baked in at
+      cluster-init time
+- [ ] Config change only
+- [x] Dev/test tooling only (no banlieue runtime code touched)
+
 ## [2026-07-29 13:30] - Fix anyhow RUSTSEC finding; VEX-exception the unfixable quick-xml one
 
 **Author:** Erick Bourgeois

@@ -1,0 +1,92 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# VMImage import-source hardening (security review 2026-07-31 CHAIN-003). `spec.sources[].importFrom` is spliced verbatim into a kairos
+# OSArtifact and pulled by a PRIVILEGED build pod; an attacker registry or a
+# re-pointed mutable tag is a supply-chain path into every VM built from the
+# image. This policy requires every importFrom to (a) pin an immutable
+# @sha256: digest and (b) reference a registry in the allowlist below.
+# Enforced in the API server via CEL with a parameter ConfigMap (no webhook).
+# Requires Kubernetes 1.30+ (ValidatingAdmissionPolicy GA).
+#
+# The ConfigMap comes FIRST in this file: the binding sets
+# parameterNotFoundAction: Deny, so the allowlist must exist before the
+# binding does or every VMImage with an importFrom is rejected.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: banlieue-vmimage-allowed-registries
+  namespace: banlieue-system
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: admission
+data:
+  # One OCI registry host per line (host[:port], no scheme, no path).
+  # EDIT THIS LIST per site — these are convenience defaults, not a
+  # recommendation. A VMImage whose importFrom does not start with one of
+  # these hosts followed by '/' is rejected.
+  registries: |
+    quay.io
+    ghcr.io
+    docker.io
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: banlieue-vmimage-import-source
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: admission
+spec:
+  failurePolicy: Fail
+  paramKind:
+    apiVersion: v1
+    kind: ConfigMap
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["banlieue.io"]
+        apiVersions: ["v1alpha1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["vmimages"]
+  # Only evaluate when at least one source imports; template/backing-file
+  # sources carry no pull risk.
+  matchConditions:
+    - name: has-import-from
+      expression: "object.spec.sources.exists(s, has(s.importFrom))"
+  validations:
+    # A mutable tag can be re-pointed after review; a digest cannot.
+    - expression: >-
+        object.spec.sources.all(s, !has(s.importFrom)
+          || s.importFrom.matches('^[^@ ]+@sha256:[0-9a-f]{64}$'))
+      message: >-
+        spec.sources[].importFrom must pin an immutable digest
+        (registry/repo[:tag]@sha256:<64 lowercase hex>); mutable tags are rejected.
+      reason: Invalid
+    - expression: >-
+        object.spec.sources.all(s, !has(s.importFrom)
+          || (has(params.data) && 'registries' in params.data
+              && params.data.registries.split('\n')
+                   .map(r, r.trim())
+                   .filter(r, r != '')
+                   .exists(r, s.importFrom.startsWith(r + '/'))))
+      messageExpression: >-
+        'spec.sources[].importFrom must reference an allowed registry; see the '
+        + params.metadata.name + ' ConfigMap in namespace '
+        + params.metadata.namespace + '.'
+      reason: Invalid
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: banlieue-vmimage-import-source
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: admission
+spec:
+  policyName: banlieue-vmimage-import-source
+  validationActions: ["Deny"]
+  paramRef:
+    name: banlieue-vmimage-allowed-registries
+    namespace: banlieue-system
+    # Fail closed: no allowlist object, no imports.
+    parameterNotFoundAction: Deny

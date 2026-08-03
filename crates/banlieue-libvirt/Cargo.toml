@@ -1,0 +1,36 @@
+[package]
+name = "banlieue-libvirt"
+description = "Minimal libvirt RPC client: XDR codec, wire framing, TLS transport, and the subset of procedures banlieue needs. Pure Rust, no native libvirt library (see ADR-0011)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+# Deliberately free of `kube` and of every banlieue API type: this crate is
+# pure protocol, so the image-import Job can link it without dragging the
+# controller's dependency graph into the data path (ADR-0011).
+#
+# Every dependency below was ALREADY in Cargo.lock as a transitive dependency
+# of the vSphere provider's reqwest/hyper-rustls stack, so promoting them to
+# direct dependencies compiles no additional code. `rustls-pemfile` is
+# deliberately NOT used: rustls-pki-types provides PEM parsing under its
+# default `alloc` feature, so there is no reason to add a crate for it.
+
+[dependencies]
+thiserror.workspace = true
+
+# `io-util` for AsyncReadExt/AsyncWriteExt, `net` for TcpStream, `time` for
+# the operation timeouts (without which a wedged libvirtd stalls a reconcile
+# loop indefinitely — observed, not theoretical).
+tokio = { workspace = true, features = ["io-util", "net", "time"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
+rustls = { workspace = true }
+rustls-pki-types = "1"
+
+[dev-dependencies]
+# `duplex` (io-util) gives an in-memory bidirectional stream, so the whole
+# protocol layer is testable without a socket or a live libvirtd.
+tokio = { workspace = true, features = ["io-util", "macros", "rt", "rt-multi-thread", "fs"] }

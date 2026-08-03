@@ -35,6 +35,12 @@ pub enum Error {
     /// API-server bug, not a transient condition.
     #[error("missing required field: {0}")]
     Missing(&'static str),
+
+    /// A field was present but unusable — e.g. a `caBundle` naming more than
+    /// one source. Carries the validator's own message, which already names
+    /// the field, so it reads correctly when wrapped by a provider's error.
+    #[error("{0}")]
+    Invalid(&'static str),
 }
 
 /// Convenient alias used throughout the SDK.

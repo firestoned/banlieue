@@ -82,14 +82,17 @@ pub struct VMClassSpec {
 #[serde(rename_all = "camelCase")]
 pub struct HardwareSpec {
     /// Number of virtual CPUs.
+    #[schemars(range(min = 1, max = 256))]
     pub cpus: u32,
 
     /// Memory in MiB.
+    #[schemars(range(min = 128, max = 4_194_304))]
     pub memory_mi_b: u32,
 
     /// Disks in attachment order. The first disk is the OS disk and is
     /// backed by the VMImage resolved for the VirtualMachine; subsequent
     /// disks are blank and created with the requested size and storage class.
+    #[schemars(length(min = 1, max = 32))]
     pub disks: Vec<DiskSpec>,
 }
 
@@ -103,6 +106,7 @@ pub struct DiskSpec {
     pub name: String,
     /// Size in GiB. For the OS disk this is the minimum size; if the image
     /// is larger, the provider grows accordingly.
+    #[schemars(range(min = 1, max = 65_536))]
     pub size_gi_b: u32,
     /// Abstract storage class name. MUST be advertised in the chosen
     /// Provider's `spec.capabilities.storageClasses`.
@@ -116,6 +120,7 @@ pub struct DiskSpec {
 #[serde(rename_all = "camelCase")]
 pub struct NetworkSpec {
     /// Network interfaces in attachment order.
+    #[schemars(length(min = 1, max = 16))]
     pub interfaces: Vec<NetworkInterfaceSpec>,
 }
 
@@ -133,6 +138,7 @@ pub struct NetworkInterfaceSpec {
     pub ipam: IpamSpec,
     /// Optional MTU override. Provider may ignore if unsupported.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 68, max = 65_535))]
     pub mtu: Option<u32>,
 }
 

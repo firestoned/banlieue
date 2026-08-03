@@ -1,0 +1,48 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# Namespaced credential access for the STATICALLY deployed (dev) provider.
+#
+# The shared ClusterRole no longer grants cluster-wide Secret access
+# (security review 2026-07-31 CHAIN-002): the blast radius of a
+# compromised provider must stop at one namespace, not the cluster. This Role
+# is the static deployment's replacement — `get` on Secrets and ConfigMaps in
+# banlieue-system only, matching what `banlieue bootstrap provider <backend>`
+# generates. The Deployment's watch is scoped to the same namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: banlieue-provider-vsphere
+  namespace: banlieue-system
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: provider-vsphere
+rules:
+  # vCenter credentials (Provider.spec.connection.credentialsRef) and an
+  # optional CA bundle via connection.caBundle.secretRef. No resourceNames:
+  # the static provider serves every Provider in this namespace and cannot
+  # know their Secret names up front.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]
+  # Optional CA bundle via connection.caBundle.configMapRef (ADR-0008).
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: banlieue-provider-vsphere
+  namespace: banlieue-system
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: provider-vsphere
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: banlieue-provider-vsphere
+subjects:
+  - kind: ServiceAccount
+    name: banlieue-provider-vsphere
+    namespace: banlieue-system

@@ -21,6 +21,9 @@ kubectl create secret generic vcsim-creds \
 
 # 4. Create a Provider pointing at vcsim. The provider binary picks this up
 #    because spec.providerClassRef.name == "vsphere".
+#    (If the admission policies in deploy/admission/ are installed, also add
+#    the annotation banlieue.io/allow-insecure-tls: "true" — vcsim is
+#    self-signed, and insecureSkipTLSVerify is gated behind that opt-in.)
 cat <<'EOF' | kubectl apply -f -
 apiVersion: banlieue.io/v1alpha1
 kind: Provider
@@ -144,6 +147,13 @@ make kind-load            # builds the single `banlieue` image (all roles)
 make kind-deploy-provider-vsphere
 kubectl -n banlieue-system logs deploy/banlieue-provider-vsphere -f
 ```
+
+The static deployment's watch and credential reads are scoped to
+`banlieue-system` (security review 2026-07-31 CHAIN-002 — the shared ClusterRole no longer grants
+cluster-wide Secret access): create the credentials Secret and the `Provider`
+in `banlieue-system`, not your current namespace. For anything beyond local
+development prefer the operator topology (`make kind-deploy-operator`, then
+just apply a `Provider`) — one isolated workload per backend (ADR-0003).
 
 ## Stopping
 

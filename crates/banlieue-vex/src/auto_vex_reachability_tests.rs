@@ -9,6 +9,10 @@
 //! - load_affected_functions_from_path: valid file, empty `{}`, file with
 //!   non-array values (e.g., `_comment` arrays / strings) silently
 //!   ignored, missing file errors, malformed JSON errors.
+//! - load_imported_symbols_from_path (SEC-014/SEC-016): valid nm output
+//!   parses; an empty or symbol-less file is rejected (fail closed — an
+//!   empty symbol set would suppress every mapped CVE); oversized inputs
+//!   are rejected.
 //! - compute_reachability_vex: empty grype, CVE not in mapping skipped,
 //!   CVE with all affected fns absent from symbols emitted,
 //!   CVE with any affected fn imported NOT emitted,
@@ -176,6 +180,51 @@ mod tests {
         std::fs::write(&path, "{ invalid").unwrap();
         let result = load_affected_functions_from_path(&path);
         assert!(result.is_err());
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    // load_imported_symbols_from_path — fail-closed input guard
+    // ────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn load_imported_symbols_parses_nm_output() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("symbols.txt");
+        std::fs::write(
+            &path,
+            "                 U malloc\n                 U scanf@GLIBC_2.7\n",
+        )
+        .unwrap();
+        let symbols = load_imported_symbols_from_path(&path).unwrap();
+        assert_eq!(symbols.len(), 2);
+        assert!(symbols.contains("malloc"));
+        assert!(symbols.contains("scanf"));
+    }
+
+    #[test]
+    fn load_imported_symbols_rejects_empty_file() {
+        // SEC-014: an empty/truncated symbols file would emit
+        // not_affected for every mapped CVE — fail closed instead.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("symbols.txt");
+        std::fs::write(&path, "").unwrap();
+        let err = load_imported_symbols_from_path(&path).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("no imported symbols parsed"));
+        assert!(err.to_string().contains("symbols.txt"));
+    }
+
+    #[test]
+    fn load_imported_symbols_rejects_file_with_no_undefined_symbols() {
+        // Comments/blanks only, or output of plain `nm -D` without
+        // `--undefined-only`: parses cleanly but yields zero symbols —
+        // same broken-input signature as an empty file.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("symbols.txt");
+        std::fs::write(&path, "# nothing here\n\n0000000000001234 T main\n").unwrap();
+        let err = load_imported_symbols_from_path(&path).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("no imported symbols parsed"));
     }
 
     // ────────────────────────────────────────────────────────────────────

@@ -131,6 +131,9 @@ pub struct ImageSource {
 
     /// Optional checksum for imported images. Format: `<alg>:<hex>`,
     /// e.g. `sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b...`.
+    /// Supported algorithms: `sha256`, `sha512`. Provider import Jobs verify
+    /// the built artifact against this value before writing it to the backend
+    /// and fail closed on mismatch or an unsupported algorithm.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checksum: Option<String>,
 }
@@ -154,7 +157,18 @@ pub enum ImageSourceKind {
 pub struct VMImageStatus {
     /// Per-Provider readiness. One entry per Provider that supports this
     /// image's providerClass and has reconciled at least once.
+    ///
+    /// **Merge-keyed, and it must stay that way (ADR-0015).** Several
+    /// providers write this list concurrently, each applying only its own
+    /// entry. Without `x-kubernetes-list-type: map` server-side apply treats
+    /// the array as atomic — one manager owns the whole thing and `force()`
+    /// hands it over wholesale, silently discarding every other provider's
+    /// row. That was a real, reproduced bug, not a theoretical one.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(extend(
+        "x-kubernetes-list-type" = "map",
+        "x-kubernetes-list-map-keys" = ["providerName", "providerNamespace"],
+    ))]
     pub per_provider: Vec<ImagePerProviderStatus>,
 
     /// Progress of the shared, provider-agnostic raw-disk build for
@@ -166,7 +180,17 @@ pub struct VMImageStatus {
     pub raw_disk_artifact: Option<RawDiskArtifactStatus>,
 
     /// `Ready` is True iff every per-provider entry is ready.
+    ///
+    /// Written **only** by `banlieue-controller` (field manager
+    /// `banlieue.io/controller`), which is the only component with a
+    /// whole-image view. A provider cannot compute "ready everywhere" from
+    /// rows it does not own, so it writes its `perProvider` entry and nothing
+    /// here (ADR-0015). Merge-keyed on `type`, per Kubernetes convention.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(extend(
+        "x-kubernetes-list-type" = "map",
+        "x-kubernetes-list-map-keys" = ["type"],
+    ))]
     pub conditions: Vec<Condition>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -208,6 +232,15 @@ pub struct RawDiskArtifactStatus {
     /// failure.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+
+    /// Expected checksum (`<alg>:<hex>`) of the built disk, copied from the
+    /// `Url` source the build serves. Consumers that stream the artifact to a
+    /// backend MUST verify it against this value and fail closed on mismatch
+    /// (security review 2026-07-31, SEC-004) — the value lives here, next to
+    /// the PVC reference, so no consumer has to re-derive which source the
+    /// shared build came from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checksum: Option<String>,
 }
 
 /// Build phase of a [`RawDiskArtifactStatus`].

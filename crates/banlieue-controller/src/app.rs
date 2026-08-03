@@ -33,11 +33,12 @@ use kube::{
     Api, ResourceExt,
     runtime::{Controller, reflector::ObjectRef, watcher::Config},
 };
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 use crate::{
     context::Context,
     reconciler::virtualmachine::{error_policy, reconcile},
+    reconciler::vmimage,
     reconciler::vsphere_cluster,
 };
 
@@ -229,7 +230,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         .run(
             vsphere_cluster::reconcile,
             vsphere_cluster::error_policy,
-            ctx,
+            ctx.clone(),
         )
         .for_each(|res| async move {
             match res {
@@ -238,9 +239,27 @@ pub async fn run(cli: Cli) -> Result<()> {
             }
         });
 
+    // Aggregate VMImage readiness. Providers each own their perProvider[]
+    // entry; only this controller sees the whole list, so only it can say
+    // whether the image is ready everywhere (ADR-0015). Pure aggregation —
+    // no backend is contacted, so the extra watch is cheap.
+    info!("starting VMImage aggregate-readiness controller");
+    let image_api: Api<VMImage> = Api::all(client.clone());
+    let image_fut = Controller::new(image_api, Config::default())
+        .run(vmimage::reconcile, vmimage::error_policy, ctx.clone())
+        .for_each(|res| async move {
+            match res {
+                Ok((obj, _)) => debug!(kind = "VMImage", ?obj, "aggregated"),
+                Err(e) => error!(kind = "VMImage", error = %e, "reconcile error"),
+            }
+        });
+
     tokio::select! {
         () = controller_fut => {
             info!("VirtualMachine controller stream ended");
+        }
+        () = image_fut => {
+            info!("VMImage controller stream ended");
         }
         () = vsc_fut => {
             info!("VSphereCluster controller stream ended");

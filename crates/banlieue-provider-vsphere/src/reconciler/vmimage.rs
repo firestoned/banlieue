@@ -34,7 +34,6 @@ use banlieue_api::banlieue::{
 };
 use banlieue_provider_sdk::reconciler::{requeue_long, requeue_on_error};
 use banlieue_provider_sdk::ssa::FIELD_MANAGER_PROVIDER_VSPHERE;
-use banlieue_provider_sdk::status::{condition_status, set_condition};
 use k8s_openapi::api::core::v1::Secret;
 use kube::{
     Resource, ResourceExt,
@@ -51,11 +50,6 @@ use crate::error::{Error, Result};
 
 const SECRET_KEY_USERNAME: &str = "username";
 const SECRET_KEY_PASSWORD: &str = "password";
-
-/// Condition types written onto `VMImage.status.conditions`.
-mod condition_types {
-    pub const READY: &str = "Ready";
-}
 
 /// Stable `reason` strings for `ImagePerProviderStatus.reason` and the
 /// aggregate `Ready` condition. Operators match against these.
@@ -137,8 +131,7 @@ pub async fn reconcile(image: Arc<VMImage>, ctx: Arc<Context>) -> Result<Action>
         rows.push(row);
     }
 
-    let aggregate = aggregate_ready(&rows);
-    patch_vmimage_status(&ctx, &name, generation, rows, aggregate).await?;
+    patch_vmimage_status(&ctx, &name, generation, rows).await?;
 
     Ok(requeue_long())
 }
@@ -342,76 +335,10 @@ fn compute_zone_rows(failure_domains: &[FailureDomain]) -> Vec<ZoneImageStatus> 
             resolved_ref: None,
             reason: Some(reasons::PER_ZONE_IMPORT_NOT_IMPLEMENTED.to_string()),
             message: Some(
-                "per-zone conversion (raw -> VMDK) and vim_rs import are not yet implemented — tracked as an ADR-0010 follow-up".to_string(),
+                "per-zone conversion (raw -> VMDK) and vim_rs import are not yet implemented — tracked as a follow-up".to_string(),
             ),
         })
         .collect()
-}
-
-/// Aggregate `Ready` condition value: True only if every per-provider entry
-/// is `ready=true`.
-pub fn aggregate_ready(rows: &[ImagePerProviderStatus]) -> AggregateReady {
-    if rows.is_empty() {
-        return AggregateReady {
-            status: condition_status::UNKNOWN,
-            reason: reasons::NO_VSPHERE_SOURCE,
-            message: "no providers reconciled yet".to_string(),
-        };
-    }
-    let unready: Vec<&ImagePerProviderStatus> = rows.iter().filter(|r| !r.ready).collect();
-    if unready.is_empty() {
-        AggregateReady {
-            status: condition_status::TRUE,
-            reason: reasons::RECONCILED,
-            message: format!("template available on {} provider(s)", rows.len()),
-        }
-    } else {
-        // Inherit the first failure's reason so dashboards can drill in.
-        let reason = unready[0]
-            .reason
-            .as_deref()
-            .unwrap_or(reasons::LOOKUP_FAILED);
-        AggregateReady {
-            status: condition_status::FALSE,
-            reason: leak(reason),
-            message: format!(
-                "{} of {} providers do not have the template",
-                unready.len(),
-                rows.len()
-            ),
-        }
-    }
-}
-
-/// Aggregate result of [`aggregate_ready`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AggregateReady {
-    pub status: &'static str,
-    pub reason: &'static str,
-    pub message: String,
-}
-
-// `reason` strings in `ImagePerProviderStatus` are `String`s; in the aggregate
-// they are `&'static str`s (because [`set_condition`] takes `&str` and we
-// want a stable enum-like set). When promoting a per-row `String` to a
-// `&'static str`, we accept that the leak only happens on transition (rare).
-fn leak(s: &str) -> &'static str {
-    match s {
-        reasons::RECONCILED => reasons::RECONCILED,
-        reasons::TEMPLATE_NOT_FOUND => reasons::TEMPLATE_NOT_FOUND,
-        reasons::SECRET_UNAVAILABLE => reasons::SECRET_UNAVAILABLE,
-        reasons::CONNECT_FAILED => reasons::CONNECT_FAILED,
-        reasons::LOOKUP_FAILED => reasons::LOOKUP_FAILED,
-        reasons::NO_VSPHERE_SOURCE => reasons::NO_VSPHERE_SOURCE,
-        reasons::BUILD_PENDING => reasons::BUILD_PENDING,
-        reasons::BUILD_FAILED => reasons::BUILD_FAILED,
-        reasons::NO_FAILURE_DOMAINS => reasons::NO_FAILURE_DOMAINS,
-        reasons::PER_ZONE_IMPORT_NOT_IMPLEMENTED => reasons::PER_ZONE_IMPORT_NOT_IMPLEMENTED,
-        reasons::UNSUPPORTED_SOURCE_KIND => reasons::UNSUPPORTED_SOURCE_KIND,
-        // Unknown reason → bucket as LOOKUP_FAILED so dashboards still match a
-        // known string. Never leak arbitrary input.
-        _ => reasons::LOOKUP_FAILED,
-    }
 }
 
 fn per_provider_failure(
@@ -518,18 +445,7 @@ async fn patch_vmimage_status(
     name: &str,
     generation: i64,
     per_provider: Vec<ImagePerProviderStatus>,
-    aggregate: AggregateReady,
 ) -> Result<()> {
-    let mut conditions = Vec::new();
-    set_condition(
-        &mut conditions,
-        condition_types::READY,
-        aggregate.status,
-        aggregate.reason,
-        aggregate.message,
-        generation,
-    );
-
     let status = VMImageStatus {
         per_provider,
         // Never set by this provider — banlieue-imagebuilder is the sole
@@ -538,7 +454,10 @@ async fn patch_vmimage_status(
         // equally correct since it's skip_serializing_if, but staying
         // explicit documents the field-manager split at the call site.
         raw_disk_artifact: None,
-        conditions,
+        // Likewise the aggregate Ready, which belongs to banlieue-controller
+        // (ADR-0015): this provider only ever sees its own rows, so any value
+        // it computed would be an answer to a different question.
+        conditions: Vec::new(),
         observed_generation: Some(generation),
     };
 

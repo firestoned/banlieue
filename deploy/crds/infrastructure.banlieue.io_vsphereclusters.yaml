@@ -219,6 +219,9 @@ spec:
                   - type
                   type: object
                 type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
               controlPlaneEndpoint:
                 description: |-
                   CAPI contract field (optional): the resolved API-server endpoint,

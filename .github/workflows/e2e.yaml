@@ -1,0 +1,92 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# End-to-end verification of the operator's contract against a real API server
+# in a kind cluster (ADR-0014).
+#
+# What this proves that unit tests structurally cannot: that the apiserver
+# ACCEPTS what banlieue-operator builds. A Deployment whose selector does not
+# match its pod template, a resourceNames rule RBAC rejects, an ownerReference
+# with a bad apiVersion, an SSA patch silently dropped because the CRD schema
+# disagrees with the Rust type — all pass `cargo test` and fail here.
+#
+# What it deliberately does NOT prove: that a provider can reach a backend. The
+# Provider under test points at `vcenter.invalid` (RFC 2606 — can never
+# resolve), so its pod stays NotReady by design. Asserting on pod readiness
+# would make this job permanently and unfixably red. See ADR-0014.
+#
+# No secrets, no registry, no backend — so this runs on fork PRs, unlike the
+# signing jobs in build.yaml.
+#
+# All logic lives in Makefile targets (`rules/github-workflows.md`); this file
+# only installs tools and calls `make kind-e2e-ci`. The same target runs
+# locally: `make kind-e2e`.
+
+name: E2E
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'crates/**'
+      - 'deploy/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'Makefile'
+      - '.github/workflows/e2e.yaml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'crates/**'
+      - 'deploy/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'Makefile'
+      - '.github/workflows/e2e.yaml'
+  # Reusable: callable from build.yaml or a release pipeline.
+  workflow_call:
+    inputs:
+      kind_node_image:
+        description: 'kind node image (pins the Kubernetes version under test)'
+        required: false
+        type: string
+        default: 'kindest/node:v1.31.0'
+  workflow_dispatch:
+    inputs:
+      kind_node_image:
+        description: 'kind node image (pins the Kubernetes version under test)'
+        required: false
+        type: string
+        default: 'kindest/node:v1.31.0'
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  e2e:
+    name: 🧪 Operator e2e (kind)
+    runs-on: ubuntu-latest
+    # A cold Rust build plus a kind cluster; the suite itself polls with a
+    # 120s convergence budget per wait.
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Cache cargo dependencies
+        uses: firestoned/github-actions/rust/cache-cargo@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
+
+      # `make kind-load` cross-compiles for the runner's own arch (amd64) and
+      # side-loads the image, so no registry and no cross-toolchain is needed.
+      - name: Run e2e suite
+        env:
+          KIND_NODE_IMAGE: ${{ inputs.kind_node_image || 'kindest/node:v1.31.0' }}
+          KIND_CLUSTER_NAME: banlieue-e2e
+        run: make kind-e2e-ci

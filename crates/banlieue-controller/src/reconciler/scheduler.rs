@@ -50,6 +50,14 @@ use kube::ResourceExt;
 /// Feature flag a failure domain must advertise to support EFI secure boot.
 pub const FEATURE_EFI_SECURE_BOOT: &str = "efiSecureBoot";
 
+/// Maximum number of per-candidate reject reasons kept for the
+/// `NoFailureDomainMatched` condition message. At admin-scale topology the
+/// full list can exceed etcd's status-size limit, getting the status patch
+/// rejected and wedging the VM in a requeue loop (SEC-015). Ten reasons
+/// (~1 KB) is enough to debug placement while staying far under the limit;
+/// the remainder is summarized as "… and M more".
+const MAX_REJECT_REASONS: usize = 10;
+
 /// The output of a successful scheduling pass.
 ///
 /// All fields are owned (no lifetimes) so the [`Decision`] can be cached,
@@ -137,6 +145,35 @@ impl ScheduleError {
     }
 }
 
+/// Bounded collector for per-candidate reject reasons. Keeps the first
+/// [`MAX_REJECT_REASONS`] entries and counts the rest, so the rendered
+/// condition message stays bounded no matter how large the topology is.
+#[derive(Default)]
+struct RejectReasons {
+    kept: Vec<String>,
+    omitted: usize,
+}
+
+impl RejectReasons {
+    fn push(&mut self, reason: String) {
+        if self.kept.len() < MAX_REJECT_REASONS {
+            self.kept.push(reason);
+        } else {
+            self.omitted += 1;
+        }
+    }
+
+    /// Render the kept reasons joined by `"; "`, with a trailing
+    /// `"… and M more"` summary when reasons were dropped.
+    fn render(&self) -> String {
+        let mut msg = self.kept.join("; ");
+        if self.omitted > 0 {
+            msg.push_str(&format!("; … and {} more", self.omitted));
+        }
+        msg
+    }
+}
+
 /// Pick a `(provider, failure domain)` placement for `vm`, or return a typed
 /// reason it can't be scheduled.
 ///
@@ -164,7 +201,7 @@ pub fn schedule(
     }
 
     // Walk all (provider, failure_domain) tuples.
-    let mut reject_reasons: Vec<String> = Vec::new();
+    let mut reject_reasons = RejectReasons::default();
     let mut image_ready_seen = false;
     let mut firmware_unsupported_seen = false;
     let mut survivors: Vec<(&Provider, &FailureDomain)> = Vec::new();
@@ -278,7 +315,7 @@ pub fn schedule(
             return Err(ScheduleError::FirmwareUnsupported);
         }
         return Err(ScheduleError::NoFailureDomainMatched(
-            reject_reasons.join("; "),
+            reject_reasons.render(),
         ));
     }
 

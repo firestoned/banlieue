@@ -199,9 +199,52 @@ pub struct ProviderStatus {
     /// provider health. The `ProviderReachable` condition reflects connection
     /// state to the backend.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(extend(
+        "x-kubernetes-list-type" = "map",
+        "x-kubernetes-list-map-keys" = ["type"],
+    ))]
     pub conditions: Vec<Condition>,
 
+    /// The provider workload `banlieue-operator` created for this Provider.
+    ///
+    /// Written **only** by the operator's field manager
+    /// (`banlieue.io/operator`); the provider's own controller never touches
+    /// it. This split is deliberate: `conditions` is a plain list with no
+    /// `x-kubernetes-list-type: map` marker, so two field managers writing into
+    /// it would contend over the whole array rather than merging per entry.
+    /// Giving the operator a disjoint field keeps server-side apply
+    /// conflict-free (ADR-0012).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workload: Option<ProviderWorkloadStatus>,
+
     /// The generation of the spec that the controller has reconciled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_generation: Option<i64>,
+}
+
+/// The per-instance provider workload created for a Provider (ADR-0003).
+///
+/// One Deployment per Provider, so a hung or slow backend cannot stall
+/// reconciliation for any other and each pod holds exactly one backend's
+/// credentials.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderWorkloadStatus {
+    /// Name of the Deployment running this Provider's controller.
+    /// Conventionally `banlieue-provider-<class>-<provider-name>`.
+    pub deployment_name: String,
+
+    /// Namespace the Deployment was created in — the ProviderClass's
+    /// `workloadNamespace`, or the operator's own namespace when unset.
+    pub namespace: String,
+
+    /// Ready replicas reported by that Deployment. Zero means the backend's
+    /// controller is not currently running, whatever the Provider's other
+    /// conditions say.
+    pub ready_replicas: i32,
+
+    /// The Provider generation the operator had observed when it last applied
+    /// this workload.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub observed_generation: Option<i64>,
 }

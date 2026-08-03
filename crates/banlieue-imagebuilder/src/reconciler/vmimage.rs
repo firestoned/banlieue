@@ -24,7 +24,9 @@ use banlieue_api::banlieue::{
 };
 use banlieue_api::common::LocalObjectReference;
 use banlieue_provider_sdk::reconciler::{requeue_default, requeue_long, requeue_on_error};
+use banlieue_provider_sdk::scheduling::BuildScheduling;
 use banlieue_provider_sdk::ssa::FIELD_MANAGER_IMAGEBUILDER;
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference;
 use kube::api::{Api, ApiResource, DynamicObject, GroupVersionKind, Patch, PatchParams};
 use kube::runtime::controller::Action;
 use kube::{Resource, ResourceExt};
@@ -85,23 +87,52 @@ fn arch_str(architecture: &Architecture) -> &'static str {
     }
 }
 
+/// Identity of the `VMImage` owning an `OSArtifact`, for the owner reference
+/// that binds the artifact's lifecycle to the image (SEC-005).
+#[derive(Debug, Clone, Copy)]
+pub struct OwnerRef<'a> {
+    /// `metadata.name` of the owning `VMImage`.
+    pub name: &'a str,
+    /// `metadata.uid` of the owning `VMImage`.
+    pub uid: &'a str,
+}
+
 /// Build the desired `OSArtifact` SSA-apply body for a `Url` source.
 ///
 /// Requests a `cloudImage` (raw disk) build only — ISO / Azure / GCE
 /// artifacts are never requested, since only the raw disk is consumed
 /// downstream by a provider's per-zone import.
+///
+/// The owner reference is what makes garbage collection work: a `VMImage` is
+/// cluster-scoped and an `OSArtifact` namespaced, and a namespaced dependent
+/// with a cluster-scoped owner is valid — deleting the image reaps the build.
+/// `blockOwnerDeletion` stays off: setting it requires `update` on the owner's
+/// `finalizers` subresource, RBAC this controller does not otherwise need.
 pub fn desired_os_artifact(
     name: &str,
     namespace: &str,
     source: &ImageSource,
     architecture: &Architecture,
+    owner: Option<OwnerRef<'_>>,
+    scheduling: &BuildScheduling,
 ) -> Value {
+    let owner_references = owner.map(|o| {
+        json!([{
+            "apiVersion": VMImage::api_version(&()).to_string(),
+            "kind": VMImage::kind(&()).to_string(),
+            "name": o.name,
+            "uid": o.uid,
+            "controller": true,
+            "blockOwnerDeletion": false,
+        }])
+    });
     json!({
         "apiVersion": format!("{OSARTIFACT_GROUP}/{OSARTIFACT_VERSION}"),
         "kind": OSARTIFACT_KIND,
         "metadata": {
             "name": name,
             "namespace": namespace,
+            "ownerReferences": owner_references,
         },
         "spec": {
             "image": {
@@ -111,8 +142,35 @@ pub fn desired_os_artifact(
                 "cloudImage": true,
                 "arch": arch_str(architecture),
             },
+            // Where the privileged build pod may run. Omitted entirely when
+            // unconfigured, so an operator who has not set up a build node
+            // gets kairos' default scheduling rather than an unschedulable
+            // pod (ADR-0016 follow-up).
+            "nodeSelector": (!scheduling.node_selector.is_empty())
+                .then(|| serde_json::to_value(&scheduling.node_selector).unwrap_or(Value::Null)),
+            "tolerations": (!scheduling.tolerations.is_empty())
+                .then(|| serde_json::to_value(&scheduling.tolerations).unwrap_or(Value::Null)),
         },
     })
+}
+
+/// True when the live `OSArtifact` carries an owner reference to this
+/// `VMImage` UID. UID, not name: a deleted-and-recreated `VMImage` reuses the
+/// name but never the UID, and trusting the name is exactly the stale-`Ready`
+/// hole from SEC-005.
+///
+/// Takes the TYPED metadata, not the DynamicObject's `data`: kube parses
+/// `metadata` out of the flattened JSON, so `data["metadata"]` is always
+/// null and reading it there silently reports every object as unowned.
+pub fn owner_uid_matches(refs: Option<&[OwnerReference]>, uid: &str) -> bool {
+    refs.is_some_and(|refs| refs.iter().any(|r| r.uid == uid))
+}
+
+/// True when the live `OSArtifact`'s spec requests exactly this build —
+/// same image ref, same architecture.
+pub fn spec_matches(data: &Value, import_from: &str, arch: &str) -> bool {
+    data["spec"]["image"]["ref"].as_str() == Some(import_from)
+        && data["spec"]["artifacts"]["arch"].as_str() == Some(arch)
 }
 
 /// Minimal view of an `OSArtifact.status` this reconciler needs — extracted
@@ -170,10 +228,12 @@ fn raw_disk_file_name(os_artifact_name: &str) -> String {
 /// Compute the [`RawDiskArtifactStatus`] to publish, given the `OSArtifact`'s
 /// name and its current kairos status view. A missing `phase` (the
 /// `OSArtifact` was just created; status not yet populated) is treated as
-/// `Pending`.
+/// `Pending`. `checksum` is copied from the `Url` source verbatim — consumers
+/// verify the artifact against it (SEC-004).
 pub fn compute_raw_disk_artifact_status(
     os_artifact_name: &str,
     view: &KairosArtifactStatusView,
+    checksum: Option<&str>,
 ) -> RawDiskArtifactStatus {
     let phase = view
         .phase
@@ -199,6 +259,7 @@ pub fn compute_raw_disk_artifact_status(
         pvc_ref,
         disk_file,
         message: view.message.clone(),
+        checksum: checksum.map(str::to_string),
     }
 }
 
@@ -206,11 +267,18 @@ pub fn compute_raw_disk_artifact_status(
 ///
 /// 1. Bail early (long requeue) if this `VMImage` has no `Url` source —
 ///    nothing for `banlieue-imagebuilder` to do.
-/// 2. Server-side-apply the `OSArtifact` (idempotent; field manager
-///    `banlieue.io/imagebuilder`).
-/// 3. Read the `OSArtifact`'s current status and mirror it into
+/// 2. Read the live `OSArtifact`. If it exists but is **not owned by this
+///    `VMImage`'s UID** or **does not request the current build**, delete it
+///    and stop (SEC-005): kairos' status carries no `observedGeneration` and
+///    no digest to bind a `Ready` to the spec, so object identity is the only
+///    anchor — a stale or foreign artifact is rebuilt from scratch rather
+///    than trusted. The next pass recreates it fresh.
+/// 3. Server-side-apply the `OSArtifact` (idempotent; field manager
+///    `banlieue.io/imagebuilder`), owned by this `VMImage` so garbage
+///    collection reaps the build when the image is deleted.
+/// 4. Mirror the `OSArtifact`'s current status into
 ///    `VMImage.status.rawDiskArtifact`.
-/// 4. Requeue based on phase: short while building, long once terminal
+/// 5. Requeue based on phase: short while building, long once terminal
 ///    (`Ready` / `Failed`) so the owning provider's own watch — not a poll
 ///    loop here — drives the next step.
 pub async fn reconcile(image: Arc<VMImage>, ctx: Arc<Context>) -> Result<Action> {
@@ -226,6 +294,7 @@ pub async fn reconcile(image: Arc<VMImage>, ctx: Arc<Context>) -> Result<Action>
 
     info!(build_namespace = %ctx.build_namespace, "reconciling VMImage build");
 
+    let uid = image.metadata.uid.clone().unwrap_or_default();
     let os_name = os_artifact_name(&name);
     let os_api: Api<DynamicObject> = Api::namespaced_with(
         ctx.client.clone(),
@@ -233,24 +302,62 @@ pub async fn reconcile(image: Arc<VMImage>, ctx: Arc<Context>) -> Result<Action>
         &os_artifact_api_resource(),
     );
 
+    let live = match os_api.get(&os_name).await {
+        Ok(obj) => Some(obj),
+        Err(kube::Error::Api(e)) if e.code == 404 => None,
+        Err(e) => return Err(Error::Kube(e)),
+    };
+
+    if let Some(obj) = &live {
+        let owned = owner_uid_matches(obj.metadata.owner_references.as_deref(), &uid);
+        let current = spec_matches(
+            &obj.data,
+            source.import_from.as_deref().unwrap_or_default(),
+            arch_str(&image.spec.architecture),
+        );
+        if !owned || !current {
+            info!(
+                owned,
+                current, "OSArtifact is stale or foreign; deleting for rebuild"
+            );
+            os_api
+                .delete(&os_name, &kube::api::DeleteParams::default())
+                .await?;
+            let view = KairosArtifactStatusView {
+                phase: None,
+                message: Some(
+                    "replaced a stale or foreign OSArtifact; rebuild starts next pass".to_string(),
+                ),
+            };
+            let raw_status =
+                compute_raw_disk_artifact_status(&os_name, &view, source.checksum.as_deref());
+            patch_vmimage_status(&ctx, &name, raw_status).await?;
+            return Ok(requeue_default());
+        }
+    }
+
     let desired = desired_os_artifact(
         &os_name,
         &ctx.build_namespace,
         source,
         &image.spec.architecture,
+        Some(OwnerRef {
+            name: &name,
+            uid: &uid,
+        }),
+        &ctx.scheduling,
     );
     let params = PatchParams::apply(FIELD_MANAGER_IMAGEBUILDER).force();
     os_api
         .patch(&os_name, &params, &Patch::Apply(&desired))
         .await?;
 
-    let view = match os_api.get(&os_name).await {
-        Ok(obj) => extract_kairos_status(&obj.data),
-        Err(kube::Error::Api(e)) if e.code == 404 => KairosArtifactStatusView::default(),
-        Err(e) => return Err(Error::Kube(e)),
-    };
+    let view = live
+        .as_ref()
+        .map(|obj| extract_kairos_status(&obj.data))
+        .unwrap_or_default();
 
-    let raw_status = compute_raw_disk_artifact_status(&os_name, &view);
+    let raw_status = compute_raw_disk_artifact_status(&os_name, &view, source.checksum.as_deref());
     let phase = raw_status.phase.clone();
     patch_vmimage_status(&ctx, &name, raw_status).await?;
 

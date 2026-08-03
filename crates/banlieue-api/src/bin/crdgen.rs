@@ -23,7 +23,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use banlieue_api::banlieue::{Provider, VMClass, VMImage, VirtualMachine};
+use banlieue_api::banlieue::{Provider, ProviderClass, VMClass, VMImage, VirtualMachine};
 use banlieue_api::crdgen_support::prepared;
 use banlieue_api::infrastructure::{VSphereCluster, VSphereMachine, VSphereMachineTemplate};
 use clap::Parser;
@@ -50,6 +50,10 @@ fn main() -> ExitCode {
         (
             "banlieue.io_providers.yaml",
             render(prepared(Provider::crd())),
+        ),
+        (
+            "banlieue.io_providerclasses.yaml",
+            render(prepared(ProviderClass::crd())),
         ),
         (
             "banlieue.io_virtualmachines.yaml",

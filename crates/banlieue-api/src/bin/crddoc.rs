@@ -20,7 +20,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use banlieue_api::banlieue::{Provider, VMClass, VMImage, VirtualMachine};
+use banlieue_api::banlieue::{Provider, ProviderClass, VMClass, VMImage, VirtualMachine};
 use banlieue_api::crddoc::render_reference;
 use banlieue_api::crdgen_support::prepared;
 use banlieue_api::infrastructure::{VSphereCluster, VSphereMachine, VSphereMachineTemplate};
@@ -46,6 +46,7 @@ fn main() -> ExitCode {
     // Order defines the on-page order: user-facing group first, then infra.
     let crds = vec![
         prepared(Provider::crd()),
+        prepared(ProviderClass::crd()),
         prepared(VMClass::crd()),
         prepared(VMImage::crd()),
         prepared(VirtualMachine::crd()),

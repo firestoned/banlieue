@@ -16,14 +16,12 @@ mod tests {
         RawDiskArtifactPhase, RawDiskArtifactStatus, VMImage, VMImageSpec,
     };
     use banlieue_api::common::LocalObjectReference;
-    use banlieue_provider_sdk::status::condition_status;
     use kube::api::ObjectMeta;
 
     use crate::client::{Datacenter, FakeClient, Inventory, VSphereClient};
 
     use super::super::{
-        AggregateReady, aggregate_ready, compute_template_status, compute_url_source_status,
-        find_vsphere_source, reasons,
+        compute_template_status, compute_url_source_status, find_vsphere_source, reasons,
     };
 
     fn dc(name: &str) -> Datacenter {
@@ -69,6 +67,7 @@ mod tests {
                     },
                 }],
                 conditions: vec![],
+                workload: None,
                 observed_generation: Some(1),
             }),
         }
@@ -238,6 +237,7 @@ mod tests {
                 disk_file: None,
                 reason: None,
                 message: None,
+                checksum: None,
             };
             let row = compute_url_source_status(&provider("p", "ns"), Some(&artifact));
             assert!(!row.ready);
@@ -254,6 +254,7 @@ mod tests {
             disk_file: None,
             reason: None,
             message: Some("pull failed: manifest unknown".to_string()),
+            checksum: None,
         };
         let row = compute_url_source_status(&provider("p", "ns"), Some(&artifact));
         assert!(!row.ready);
@@ -277,6 +278,7 @@ mod tests {
             disk_file: Some("img-build.raw".to_string()),
             reason: None,
             message: None,
+            checksum: None,
         };
         let row = compute_url_source_status(&p, Some(&artifact));
         assert!(!row.ready);
@@ -296,6 +298,7 @@ mod tests {
             disk_file: Some("img-build.raw".to_string()),
             reason: None,
             message: None,
+            checksum: None,
         };
         let p = provider("p", "ns");
         let expected_zone = p.status.as_ref().unwrap().failure_domains[0].name.clone();
@@ -312,99 +315,7 @@ mod tests {
         );
     }
 
-    // ---------- aggregate_ready ------------------------------------------
-
-    #[test]
-    fn aggregate_ready_true_when_all_rows_ready() {
-        let rows = vec![ready_row("a"), ready_row("b")];
-        let agg = aggregate_ready(&rows);
-        assert_eq!(agg.status, condition_status::TRUE);
-        assert_eq!(agg.reason, reasons::RECONCILED);
-    }
-
-    #[test]
-    fn aggregate_ready_false_when_any_row_unready() {
-        let rows = vec![
-            ready_row("a"),
-            unready_row("b", reasons::TEMPLATE_NOT_FOUND, "missing"),
-        ];
-        let agg = aggregate_ready(&rows);
-        assert_eq!(agg.status, condition_status::FALSE);
-        assert_eq!(
-            agg.reason,
-            reasons::TEMPLATE_NOT_FOUND,
-            "aggregate reason inherits the first failing row's reason"
-        );
-    }
-
-    #[test]
-    fn aggregate_ready_unknown_when_no_rows() {
-        let agg = aggregate_ready(&[]);
-        assert_eq!(agg.status, condition_status::UNKNOWN);
-        assert_eq!(agg.reason, reasons::NO_VSPHERE_SOURCE);
-    }
-
-    #[test]
-    fn aggregate_ready_buckets_unknown_reason_strings() {
-        // If a row has a reason string we don't know about, the aggregate must
-        // still pick a stable enum value rather than leaking arbitrary text.
-        let rows = vec![unready_row("a", "SomeFutureReason", "future tense")];
-        let agg = aggregate_ready(&rows);
-        assert_eq!(agg.status, condition_status::FALSE);
-        assert!(
-            matches!(
-                agg.reason,
-                reasons::LOOKUP_FAILED
-                    | reasons::TEMPLATE_NOT_FOUND
-                    | reasons::SECRET_UNAVAILABLE
-                    | reasons::CONNECT_FAILED
-            ),
-            "unknown reason should be bucketed; got {:?}",
-            agg.reason
-        );
-    }
-
-    fn ready_row(name: &str) -> banlieue_api::banlieue::ImagePerProviderStatus {
-        banlieue_api::banlieue::ImagePerProviderStatus {
-            provider_name: name.to_string(),
-            provider_namespace: "ns".to_string(),
-            ready: true,
-            resolved_ref: Some("[dc] t".to_string()),
-            reason: Some(reasons::RECONCILED.to_string()),
-            message: None,
-            zones: vec![],
-        }
-    }
-
-    fn unready_row(
-        name: &str,
-        reason: &str,
-        message: &str,
-    ) -> banlieue_api::banlieue::ImagePerProviderStatus {
-        banlieue_api::banlieue::ImagePerProviderStatus {
-            provider_name: name.to_string(),
-            provider_namespace: "ns".to_string(),
-            ready: false,
-            resolved_ref: None,
-            reason: Some(reason.to_string()),
-            message: Some(message.to_string()),
-            zones: vec![],
-        }
-    }
-
     // ---------- Hooks into the rest of the type system -------------------
-
-    #[test]
-    fn aggregate_ready_struct_is_clone_eq() {
-        // Smoke that the surface struct stays Clone/Eq — useful for tests
-        // that snapshot the aggregate value across reconcile passes.
-        let a = AggregateReady {
-            status: condition_status::TRUE,
-            reason: reasons::RECONCILED,
-            message: "ok".into(),
-        };
-        assert_eq!(a, a.clone());
-    }
 
     // Smoke: VMImage construction (rules out future field-rename drift breaking
     // these tests silently).

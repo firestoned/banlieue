@@ -1,0 +1,71 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# ProviderClass — what banlieue runs for a class of backends (ADR-0012).
+#
+# `banlieue bootstrap operator` seeds one of these per backend compiled into the
+# binary, so you normally do not write this by hand. It is shown here because
+# it is what makes a Provider self-provisioning: with a class in place,
+# registering a backend is `kubectl apply` of a Provider CR (see
+# 01-provider-vsphere-dc1.yaml) and banlieue-operator creates that backend's
+# Deployment, ServiceAccount, Role, RoleBinding and ClusterRoleBinding.
+#
+# Cluster-scoped: one class serves Providers in any namespace.
+---
+apiVersion: banlieue.io/v1alpha1
+kind: ProviderClass
+metadata:
+  name: vsphere
+spec:
+  # Which `banlieue provider <backend>` subcommand the spawned Deployment runs.
+  # Kept separate from the object's name so a second class can pin a different
+  # image for the same backend — see the canary example below.
+  backend: vsphere
+
+  image:
+    repository: ghcr.io/firestoned/banlieue
+    # Never `latest` in production: a mutable tag makes the running version
+    # unknowable and defeats rollback.
+    tag: v0.1.0
+    pullPolicy: IfNotPresent
+
+  # Leader-elected, so replicas buy failover rather than throughput.
+  replicas: 1
+
+  logging:
+    level: info
+    format: json
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 1000m
+      memory: 512Mi
+
+---
+# A second class for the same backend, pinning a newer image. Point one
+# Provider at `vsphere-canary` to upgrade a single backend ahead of the fleet;
+# every other Provider keeps running v0.1.0.
+apiVersion: banlieue.io/v1alpha1
+kind: ProviderClass
+metadata:
+  name: vsphere-canary
+spec:
+  backend: vsphere
+  image:
+    repository: ghcr.io/firestoned/banlieue
+    tag: v0.2.0
+    pullPolicy: IfNotPresent
+  logging:
+    level: debug
+    format: json
+
+  # Pin canary workloads to a node pool with backend network reachability.
+  nodeSelector:
+    banlieue.io/backend-access: "true"
+
+  # Suspend lifecycle reconciliation for every Provider of this class without
+  # tearing down what is already running.
+  paused: false

@@ -85,9 +85,12 @@ scoped tightly:
   `vspheremachinetemplates`, but only **watch + status** on `vsphereclusters`
   (CAPI/the operator owns their lifecycle — the controller never creates or
   deletes them).
-- **`secrets`** — read-only (provider credentials, cloud-init user-data).
 - **`events`** — create/patch (state transitions visible in `kubectl describe`).
 - **`coordination.k8s.io/leases`** — leader election.
+
+No `secrets` access at all (security review 2026-07-31 SEC-008): providers read
+their own credentials through their per-instance Roles, and user-data travels
+inside the infrastructure CRDs — the controller never reads a Secret.
 
 ```sh
 kubectl apply -R -f deploy/controller/rbac/

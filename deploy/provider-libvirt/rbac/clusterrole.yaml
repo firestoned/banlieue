@@ -1,0 +1,79 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# Cluster-wide role for the libvirt provider binary.
+#
+# Mirrors deploy/provider-vsphere/rbac/clusterrole.yaml, minus the vSphere
+# infrastructure CRs and IPAM (libvirt machine provisioning is not implemented
+# yet) and plus the Jobs the image import needs.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: banlieue-provider-libvirt
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: provider-libvirt
+rules:
+  # ---------------------------------------------------------------------------
+  # banlieue.io group — read Providers, patch their status
+  # ---------------------------------------------------------------------------
+  - apiGroups: ["banlieue.io"]
+    resources:
+      - providers
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["banlieue.io"]
+    resources:
+      - providers/status
+    verbs: ["get", "update", "patch"]
+
+  # VMImage: the libvirt provider owns status.perProvider[libvirt] (ADR-0010).
+  # status.rawDiskArtifact belongs to banlieue-imagebuilder's field manager;
+  # the split is by field, not by permission, so both need patch here.
+  - apiGroups: ["banlieue.io"]
+    resources:
+      - vmimages
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["banlieue.io"]
+    resources:
+      - vmimages/status
+    verbs: ["update", "patch"]
+
+  # ---------------------------------------------------------------------------
+  # Import Jobs (ADR-0011)
+  # ---------------------------------------------------------------------------
+  # Bulk image transfer runs in a Job so gigabytes never flow through a
+  # reconcile loop. The reconciler reads a Job by name and server-side-applies
+  # it when absent — `create` because an apply to a nonexistent object creates
+  # it, `patch` because that is the verb apply uses.
+  #
+  # No `delete`: finished Jobs are reaped by ttlSecondsAfterFinished, so the
+  # provider never needs to remove one. No `list`/`watch` either — every read
+  # is by the deterministic name from import_job_name().
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "create", "patch"]
+
+  # ---------------------------------------------------------------------------
+  # Core resources
+  # ---------------------------------------------------------------------------
+  # NO secrets / configmaps here, deliberately (security review 2026-07-31
+  # CHAIN-002). This ClusterRole is bound cluster-wide, so any rule
+  # here reaches EVERY Secret in the cluster — defeating the resourceNames-
+  # scoped per-instance Role the operator builds for each Provider (ADR-0003).
+  # The client certificate + key (Provider.spec.connection.credentialsRef) and
+  # the CA that signed libvirtd's server certificate (connection.caBundle,
+  # ADR-0008) are read by name in the Provider's namespace; the per-instance
+  # Role already grants exactly those objects.
+
+  # Emit Events for state transitions visible via `kubectl describe provider`.
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+  - apiGroups: ["events.k8s.io"]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+
+  # Leases for leader election.
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "create", "update", "patch"]

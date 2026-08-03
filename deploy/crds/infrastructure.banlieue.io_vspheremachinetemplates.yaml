@@ -78,12 +78,15 @@ spec:
                                 Disk size in GiB. For the OS disk this is a floor — the template's disk
                                 is grown to at least this size.
                               format: uint32
-                              minimum: 0.0
+                              maximum: 65536.0
+                              minimum: 1.0
                               type: integer
                           required:
                           - name
                           - sizeGiB
                           type: object
+                        maxItems: 32
+                        minItems: 1
                         type: array
                       failureDomain:
                         description: |-
@@ -106,7 +109,8 @@ spec:
                       memoryMiB:
                         description: Memory in MiB.
                         format: uint32
-                        minimum: 0.0
+                        maximum: 4194304.0
+                        minimum: 128.0
                         type: integer
                       network:
                         description: Network interfaces.
@@ -194,11 +198,14 @@ spec:
                           - name
                           - portGroup
                           type: object
+                        maxItems: 16
+                        minItems: 1
                         type: array
                       numCpus:
                         description: Number of virtual CPUs.
                         format: uint32
-                        minimum: 0.0
+                        maximum: 256.0
+                        minimum: 1.0
                         type: integer
                       providerID:
                         description: |-

@@ -17,6 +17,11 @@ on a real cluster, using the released container image
     provider Deployment, credentials, `Provider`, `VMClass`, `VMImage`, and a
     `VirtualMachine` — every file and `kubectl apply`.
 
+- :material-server: **[libvirt Provider](libvirt-provider.md)**
+
+    Register a libvirt/KVM host over mutual TLS and import a guest image onto
+    it — a first-party RPC client, no `libvirt-dev` and no `virsh`.
+
 - :material-cloud-download: **[Setting up the Kairos Operator](kairos-operator-setup.md)**
 
     Install the third-party [Kairos operator](https://kairos.io) banlieue's

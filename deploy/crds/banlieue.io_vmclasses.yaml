@@ -119,7 +119,8 @@ spec:
                   cpus:
                     description: Number of virtual CPUs.
                     format: uint32
-                    minimum: 0.0
+                    maximum: 256.0
+                    minimum: 1.0
                     type: integer
                   disks:
                     description: |-
@@ -149,7 +150,8 @@ spec:
                             Size in GiB. For the OS disk this is the minimum size; if the image
                             is larger, the provider grows accordingly.
                           format: uint32
-                          minimum: 0.0
+                          maximum: 65536.0
+                          minimum: 1.0
                           type: integer
                         storageClass:
                           description: |-
@@ -161,11 +163,14 @@ spec:
                       - sizeGiB
                       - storageClass
                       type: object
+                    maxItems: 32
+                    minItems: 1
                     type: array
                   memoryMiB:
                     description: Memory in MiB.
                     format: uint32
-                    minimum: 0.0
+                    maximum: 4194304.0
+                    minimum: 128.0
                     type: integer
                 required:
                 - cpus
@@ -253,7 +258,8 @@ spec:
                         mtu:
                           description: Optional MTU override. Provider may ignore if unsupported.
                           format: uint32
-                          minimum: 0.0
+                          maximum: 65535.0
+                          minimum: 68.0
                           nullable: true
                           type: integer
                         name:
@@ -269,6 +275,8 @@ spec:
                       - name
                       - networkClass
                       type: object
+                    maxItems: 16
+                    minItems: 1
                     type: array
                 required:
                 - interfaces

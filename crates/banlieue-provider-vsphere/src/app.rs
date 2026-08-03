@@ -111,6 +111,32 @@ pub struct Cli {
         default_value_t = DEFAULT_VSPHERE_TASK_TIMEOUT_SECS,
     )]
     pub vsphere_task_timeout_secs: u64,
+
+    /// Serve exactly one `Provider`, by name — the per-instance topology
+    /// `banlieue-operator` uses for every workload it spawns.
+    ///
+    /// The watch is narrowed **server-side** with a field selector, so this
+    /// process's informer cache holds only its own Provider. Filtering in the
+    /// reconciler instead would still pay the full cluster-wide cache cost and
+    /// leave one hung backend able to stall every other.
+    ///
+    /// Unset means "watch every Provider of this class", which is what a
+    /// statically installed provider (`banlieue bootstrap provider <backend>`)
+    /// wants.
+    #[arg(long, env = "BANLIEUE_PROVIDER_NAME")]
+    pub provider_name: Option<String>,
+}
+
+/// Watch configuration for the `Provider` controller.
+///
+/// Narrows to a single object by name when `--provider-name` is set. Kept as a
+/// standalone function so the scoping rule is unit-testable without a cluster.
+#[must_use]
+pub fn provider_watch_config(provider_name: Option<&str>) -> Config {
+    match provider_name {
+        Some(name) => Config::default().fields(&format!("metadata.name={name}")),
+        None => Config::default(),
+    }
 }
 
 /// Run the vSphere provider to completion (until a shutdown signal or a
@@ -179,15 +205,21 @@ pub async fn run(cli: Cli) -> Result<()> {
     // see every image and every Provider regardless of --namespace.
     let image_api: Api<VMImage> = Api::all(client.clone());
 
-    info!("starting Provider + VMImage controllers (class=vsphere)");
-    let provider_ctrl = Controller::new(provider_api, Config::default())
-        .run(provider::reconcile, provider::error_policy, ctx.clone())
-        .for_each(|res| async move {
-            match res {
-                Ok((obj, _)) => info!(kind = "Provider", ?obj, "reconciled"),
-                Err(e) => error!(kind = "Provider", error = %e, "reconcile error"),
-            }
-        });
+    info!(
+        provider_name = ?cli.provider_name,
+        "starting Provider + VMImage controllers (class=vsphere)"
+    );
+    let provider_ctrl = Controller::new(
+        provider_api,
+        provider_watch_config(cli.provider_name.as_deref()),
+    )
+    .run(provider::reconcile, provider::error_policy, ctx.clone())
+    .for_each(|res| async move {
+        match res {
+            Ok((obj, _)) => info!(kind = "Provider", ?obj, "reconciled"),
+            Err(e) => error!(kind = "Provider", error = %e, "reconcile error"),
+        }
+    });
 
     let image_ctrl = Controller::new(image_api, Config::default())
         .run(vmimage::reconcile, vmimage::error_policy, ctx)

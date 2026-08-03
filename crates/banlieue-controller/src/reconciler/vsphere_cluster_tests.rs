@@ -60,6 +60,7 @@ mod tests {
         p.status = Some(ProviderStatus {
             failure_domains: fds,
             conditions: Vec::new(),
+            workload: None,
             observed_generation: None,
         });
         p

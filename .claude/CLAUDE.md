@@ -22,7 +22,21 @@ ADR  →  CALM  →  TDD  →  implement  →  docs
 
 ADRs and CALM diagrams are **first-class deliverables, equal to code and tests.** Applies to new CRDs/controllers/providers/binaries, contract changes, deploy/GitOps topology, and any decision worth a "why A over B." Trivial changes (typos, isolated bugfixes) are TDD-only — but **when unsure whether a change is architectural, write the ADR.**
 
+## 🚨 NEVER commit real infrastructure identifiers
+
+This is a **public OSS repo**. Never write a real hostname, IP, username, or
+account identifier from the maintainer's environment into any tracked file —
+code, tests, docs, ADRs, examples, scripts, comments, changelog. A later commit
+removing it does not un-publish it.
+
+Use placeholders: **`bar.foo.io`** style names, RFC 5737 IPs (`192.0.2.x`,
+`198.51.100.x`, `203.0.113.x`). Take real values from the environment at runtime
+instead. Full rule + placeholder table: `rules/no-real-infrastructure.md`.
+
+---
+
 **CRITICAL Coding Patterns** (full details in `rules/`):
+- **No real infra identifiers**: public repo — `rules/no-real-infrastructure.md`
 - **ADD**: ADR → CALM → TDD, in that order — `rules/architecture-driven-development.md`
 - **TDD**: Write tests FIRST — `rules/testing.md` + `tdd-workflow` skill
 - **After ANY Rust change**: run `cargo-quality` skill (NON-NEGOTIABLE)

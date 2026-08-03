@@ -30,14 +30,22 @@ rules:
   # ---------------------------------------------------------------------------
   # build.kairos.io group — kairos-operator's OSArtifact CRD. banlieue does
   # NOT own or generate this CRD; the platform operator installs it
-  # separately. Only "patch" is required for server-side apply (create-or-
-  # update in one call); no delete verb — banlieue-imagebuilder never deletes
-  # OSArtifacts (garbage-collected via the owning VMImage's lifecycle later).
+  # separately. "create" AND "patch" are both required: server-side apply is a
+  # patch when the object exists and a CREATE when it does not, so a role with
+  # only "patch" works for updates and 403s the first time it must make the
+  # OSArtifact — which is every fresh build. (Observed on a live cluster; the
+  # previous comment here claimed patch alone "covers server-side apply".)
+  # "delete" is required by the SEC-005 staleness rule (security review
+  # 2026-07-31): an OSArtifact that is not owned by the reconciled VMImage's
+  # UID, or whose spec no longer matches the requested build, is deleted and
+  # rebuilt — kairos' status has no observedGeneration/digest to bind a Ready
+  # to the spec, so a stale Ready must never be mirrored. Owned artifacts are
+  # otherwise garbage-collected with their VMImage (ownerReference).
   # ---------------------------------------------------------------------------
   - apiGroups: ["build.kairos.io"]
     resources:
       - osartifacts
-    verbs: ["get", "list", "watch", "patch"]
+    verbs: ["get", "list", "watch", "create", "patch", "delete"]
 
   # ---------------------------------------------------------------------------
   # Core resources

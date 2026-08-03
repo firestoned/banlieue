@@ -1,0 +1,75 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# Provider connection hardening (security review 2026-07-31 CHAIN-001). A Provider's spec.connection.endpoint is spliced into URLs by
+# the provider's backend client, and the credentials named by credentialsRef
+# are POSTed there every reconcile. Without admission checks, anyone who may
+# create Providers can point a Provider at an attacker host — a confused-deputy
+# credential-theft path. Enforced in the API server via CEL (no webhook).
+# Requires Kubernetes 1.30+ (ValidatingAdmissionPolicy GA).
+#
+# Pair with provider-credentialsref-authorization.yaml, which closes the
+# remaining hop (an attacker endpoint with a *valid* TLS certificate) by
+# requiring the creator to be authorized to read the credentials Secret.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: banlieue-provider-connection
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: admission
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["banlieue.io"]
+        apiVersions: ["v1alpha1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["providers"]
+  validations:
+    - expression: "isURL(object.spec.connection.endpoint)"
+      messageExpression: >-
+        'spec.connection.endpoint must be an absolute URL (got '
+        + object.spec.connection.endpoint + ').'
+      reason: Invalid
+    # vsphere / proxmox speak HTTPS to the backend; libvirt uses its own
+    # schemes (qemu+ssh://, qemu+tls://, ...) and is governed by the URL and
+    # userinfo/fragment checks instead.
+    - expression: >-
+        !(object.spec.providerClassRef.name in ['vsphere', 'proxmox'])
+        || object.spec.connection.endpoint.startsWith('https://')
+      message: spec.connection.endpoint must use https:// for vsphere/proxmox providers.
+      reason: Invalid
+    - expression: "!object.spec.connection.endpoint.startsWith('http://')"
+      message: spec.connection.endpoint must not use plain http.
+      reason: Invalid
+    # No userinfo: credentials in the URL both leak and confuse URL parsers.
+    - expression: "!object.spec.connection.endpoint.contains('@')"
+      message: spec.connection.endpoint must not contain userinfo (user:pass@host).
+      reason: Invalid
+    - expression: "!object.spec.connection.endpoint.contains('#')"
+      message: spec.connection.endpoint must not contain a fragment.
+      reason: Invalid
+    # Skipping TLS verification is what lets an attacker endpoint present any
+    # certificate. Require an explicit, auditable opt-in annotation so the
+    # downgrade is a deliberate act, visible in `kubectl get provider -o yaml`.
+    - expression: >-
+        !(has(object.spec.connection.insecureSkipTLSVerify) && object.spec.connection.insecureSkipTLSVerify)
+        || (has(object.metadata.annotations)
+            && 'banlieue.io/allow-insecure-tls' in object.metadata.annotations
+            && object.metadata.annotations['banlieue.io/allow-insecure-tls'] == 'true')
+      message: >-
+        spec.connection.insecureSkipTLSVerify: true requires the opt-in annotation
+        banlieue.io/allow-insecure-tls: "true".
+      reason: Invalid
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: banlieue-provider-connection
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: admission
+spec:
+  policyName: banlieue-provider-connection
+  validationActions: ["Deny"]

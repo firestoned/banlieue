@@ -1,0 +1,27 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: banlieue-imagebuild
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: imagebuilder
+    # Pod Security Standards — deliberately `privileged`, and deliberately a
+    # SEPARATE namespace from banlieue-system's `restricted` controller
+    # namespace (ADR-0010). kairos-operator's OSArtifact build pods set
+    # securityContext.privileged=true (loop-device/mount/chroot to assemble a
+    # raw disk image), which `restricted` (and even `baseline`) reject
+    # outright. PSA is enforced per-namespace with no per-pod exception, so
+    # the only fix is isolating build workloads to their own, less-hardened
+    # namespace rather than loosening banlieue's own controller/provider
+    # pods. This namespace holds only OSArtifact CRs, their build pods, and
+    # the artifacts PVC — never banlieue's own controller/provider pods.
+    #
+    # RBAC WARNING (security review 2026-07-31 SEC-009): any principal granted
+    # pod-create here is effectively NODE ROOT — a privileged pod can mount
+    # the host filesystem. Treat RoleBindings in this namespace as
+    # node-root-equivalent grants and review them accordingly.
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/audit: privileged
+    pod-security.kubernetes.io/warn: privileged

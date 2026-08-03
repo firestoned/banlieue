@@ -24,13 +24,14 @@ use banlieue_provider_sdk::leader::{
     DEFAULT_LEASE_DURATION_SECS, DEFAULT_RENEW_PERIOD_SECS, DEFAULT_RETRY_PERIOD_SECS,
     LeaderConfig, acquire_or_wait, renew_forever,
 };
+use banlieue_provider_sdk::scheduling::BuildScheduling;
 use clap::Args;
 use futures::StreamExt;
 use kube::{
     Api,
     runtime::{Controller, watcher::Config},
 };
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::{context::Context, reconciler::vmimage};
 
@@ -38,7 +39,17 @@ const DEFAULT_HEALTH_PORT: u16 = 8081;
 const DEFAULT_METRICS_PORT: u16 = 8080;
 const DEFAULT_LEADER_ELECTION_NAMESPACE: &str = "banlieue-system";
 const DEFAULT_LEADER_ELECTION_ID: &str = "banlieue-imagebuilder";
-const DEFAULT_BUILD_NAMESPACE: &str = "banlieue-system";
+// The namespace image builds run in. Deliberately NOT `banlieue-system`:
+// kairos-operator's OSArtifact build pods require `privileged: true`, which
+// `baseline` denies as well as `restricted`, so this namespace enforces
+// `privileged` — no admission floor. Confining that exception keeps the
+// control-plane namespace restricted (ADR-0016).
+//
+// Must match every other component's default: the imagebuilder creates the
+// artifacts PVC here and each provider's import Job mounts it, and a PVC
+// cannot be mounted across namespaces. A cross-crate test in the `banlieue`
+// binary asserts the defaults agree.
+const DEFAULT_BUILD_NAMESPACE: &str = "banlieue-imagebuild";
 
 /// Per-crate `tracing` directives layered on top of the base log level.
 const LOG_DIRECTIVES: &[&str] = &["kube=warn"];
@@ -48,14 +59,32 @@ const LOG_DIRECTIVES: &[&str] = &["kube=warn"];
 pub struct Cli {
     /// Namespace `OSArtifact` CRs (and the artifacts PVCs kairos-operator
     /// creates for them) are placed in. A provider's per-zone import Jobs
-    /// must run in this same namespace to mount the shared artifacts PVC
-    /// (ADR-0010).
+    /// must run in this same namespace to mount the shared artifacts PVC.
+    /// Must NOT be `banlieue-system`: kairos-operator's build
+    /// pods require `securityContext.privileged: true` (loop-device/mount
+    /// operations building a raw disk image), which the `restricted` Pod
+    /// Security level enforced on `banlieue-system` rejects outright.
     #[arg(
         long,
         env = "BANLIEUE_BUILD_NAMESPACE",
         default_value = DEFAULT_BUILD_NAMESPACE,
     )]
     pub build_namespace: String,
+
+    /// Restrict build/import pods to nodes carrying these labels
+    /// (`key=value`, repeatable).
+    ///
+    /// A privileged build pod escapes to its node regardless of namespace
+    /// (ADR-0016), so pinning builds to dedicated nodes is what bounds an
+    /// escape. Unset means no constraint.
+    #[arg(long = "build-node-selector", value_name = "KEY=VALUE")]
+    pub build_node_selector: Vec<String>,
+
+    /// Tolerate these taints on build/import pods (`key[=value]:Effect`,
+    /// repeatable), so a dedicated build node can be tainted to keep other
+    /// workloads off it.
+    #[arg(long = "build-toleration", value_name = "KEY[=VALUE]:EFFECT")]
+    pub build_toleration: Vec<String>,
 
     /// Health server bind port.
     #[arg(long, env = "BANLIEUE_HEALTH_PORT", default_value_t = DEFAULT_HEALTH_PORT)]
@@ -146,7 +175,21 @@ pub async fn run(cli: Cli) -> Result<()> {
         info!("leader election disabled by --no-leader-elect");
     }
 
-    let ctx = Arc::new(Context::new(client.clone(), cli.build_namespace.clone()));
+    // Parsed once at startup: a malformed selector must fail the process, not
+    // silently schedule privileged builds anywhere (ADR-0016 follow-up).
+    let scheduling = BuildScheduling::from_flags(&cli.build_node_selector, &cli.build_toleration)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    if scheduling.is_unconstrained() {
+        warn!(
+            "no --build-node-selector set: privileged build pods may be scheduled \
+             onto any node, including control-plane nodes"
+        );
+    }
+    let ctx = Arc::new(Context::new(
+        client.clone(),
+        cli.build_namespace.clone(),
+        scheduling,
+    ));
 
     // VMImage is cluster-scoped — always watch every namespace.
     let image_api: Api<VMImage> = Api::all(client.clone());

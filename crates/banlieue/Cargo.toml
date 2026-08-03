@@ -16,10 +16,13 @@ path = "src/main.rs"
 [features]
 # All available providers are bundled by default. Build a slim binary with
 # `--no-default-features --features <provider>` to drop other backends' deps.
-default = ["vsphere", "imagebuilder"]
+default = ["vsphere", "imagebuilder", "libvirt"]
 # Bundle the vSphere provider (`banlieue provider vsphere`). Pulls in vim_rs
 # transitively via banlieue-provider-vsphere.
 vsphere = ["dep:banlieue-provider-vsphere"]
+# Bundle the libvirt provider (`banlieue provider libvirt`). Pulls in the
+# first-party banlieue-libvirt client; no native libvirt library (ADR-0011).
+libvirt = ["dep:banlieue-provider-libvirt"]
 # Enable vcsim compatibility in the bundled vSphere provider (local dev / CI).
 # Implies `vsphere`.
 vcsim = ["vsphere", "banlieue-provider-vsphere/vcsim"]
@@ -30,7 +33,9 @@ imagebuilder = ["dep:banlieue-imagebuilder"]
 
 [dependencies]
 banlieue-controller = { path = "../banlieue-controller" }
+banlieue-operator = { path = "../banlieue-operator" }
 banlieue-imagebuilder = { path = "../banlieue-imagebuilder", optional = true }
+banlieue-provider-libvirt = { path = "../banlieue-provider-libvirt", optional = true }
 banlieue-provider-vsphere = { path = "../banlieue-provider-vsphere", optional = true }
 
 clap.workspace = true

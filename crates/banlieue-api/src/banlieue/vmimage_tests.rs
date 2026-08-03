@@ -396,6 +396,7 @@ mod tests {
             disk_file: None,
             reason: None,
             message: None,
+            checksum: None,
         };
         let json = serde_json::to_value(&s).unwrap();
         let obj = json.as_object().unwrap();
@@ -416,6 +417,7 @@ mod tests {
             disk_file: Some("kairos-ubuntu-2404-build.raw".to_string()),
             reason: Some("Reconciled".to_string()),
             message: None,
+            checksum: None,
         };
         let json = serde_json::to_value(&s).unwrap();
         assert_eq!(json["pvcRef"]["name"], "kairos-ubuntu-2404-build-artifacts");
@@ -450,6 +452,7 @@ mod tests {
                 disk_file: None,
                 reason: None,
                 message: None,
+                checksum: None,
             }),
             ..VMImageStatus::default()
         };

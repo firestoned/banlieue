@@ -329,6 +329,10 @@ async fn patch_status_success(
     let status = ProviderStatus {
         failure_domains,
         conditions,
+        // `status.workload` belongs to banlieue-operator's field manager
+        // (ADR-0012). `None` is skipped during serialization, so it never
+        // appears in this server-side-apply patch and ownership is untouched.
+        workload: None,
         observed_generation: Some(generation),
     };
     patch_provider_status(ctx, namespace, name, status).await

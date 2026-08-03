@@ -16,9 +16,22 @@ spec:
   providerClassRef:
     name: libvirt
   connection:
-    endpoint: qemu+ssh://kvm-7.edge.example/system
+    # Mutual TLS only. banlieue speaks libvirt's RPC protocol directly rather
+    # than shelling out to virsh (ADR-0011), so there is no ssh transport to
+    # tunnel over: qemu+ssh:// is rejected at reconcile time, not silently
+    # retried. Set up the host with scripts/bootstrap-libvirt-tls.sh.
+    endpoint: qemu+tls://kvm-7.edge.example/system
+    # Under libvirtd's auth_tls="none", the x509 client certificate IS the
+    # credential — this Secret holds tls.crt and tls.key, and there is no
+    # password anywhere.
     credentialsRef:
       name: libvirt-edge-creds
+    # The CA that signed libvirtd's *server* certificate. Required: a private
+    # CA is used in every realistic deployment, so falling back to public trust
+    # roots would only fail later and less clearly.
+    caBundle:
+      configMapRef:
+        name: libvirt-edge-ca
   capabilities:
     storageClasses:
       - name: gold          # admin asserts: on this host, gold = nvme pool

@@ -67,17 +67,14 @@ rules:
   # ---------------------------------------------------------------------------
   # Core resources
   # ---------------------------------------------------------------------------
-  # Read Secrets — vCenter credentials referenced by Provider.spec.connection,
-  # and an optional CA bundle via connection.caBundle.secretRef (ADR-0008).
-  - apiGroups: [""]
-    resources: ["secrets"]
-    verbs: ["get", "list", "watch"]
-
-  # Read ConfigMaps — an optional CA bundle via connection.caBundle.configMapRef
-  # (ADR-0008). Read-only; the provider never writes ConfigMaps.
-  - apiGroups: [""]
-    resources: ["configmaps"]
-    verbs: ["get", "list", "watch"]
+  # NO secrets / configmaps here, deliberately (security review 2026-07-31
+  # CHAIN-002). This ClusterRole is bound cluster-wide to every
+  # provider pod, so any rule here reaches EVERY Secret in the cluster —
+  # silently defeating the resourceNames-scoped per-instance Role the operator
+  # builds for each Provider (ADR-0003). Every credential and CA-bundle read
+  # in the provider is by name in the Provider's namespace, and that Role
+  # already grants exactly those objects; the rules here were redundant
+  # privilege and have been removed.
 
   # Emit Events for state transitions visible via `kubectl describe provider`.
   - apiGroups: [""]

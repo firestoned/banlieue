@@ -29,7 +29,7 @@ use std::process::ExitCode;
 
 use banlieue_vex::auto_vex_reachability::{
     GrypeReport, build_document, compute_reachability_vex, load_affected_functions_from_path,
-    load_triaged_from_vex_dir, parse_nm_output,
+    load_imported_symbols_from_path, load_triaged_from_vex_dir, read_file_capped,
 };
 use clap::Parser;
 
@@ -92,7 +92,7 @@ fn main() -> ExitCode {
 fn run() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
-    let grype_bytes = std::fs::read(&cli.grype_json).map_err(|e| {
+    let grype_bytes = read_file_capped(&cli.grype_json).map_err(|e| {
         anyhow::anyhow!(
             "failed to read --grype-json {}: {}",
             cli.grype_json.display(),
@@ -107,14 +107,13 @@ fn run() -> anyhow::Result<()> {
         )
     })?;
 
-    let nm_text = std::fs::read_to_string(&cli.binary_symbols).map_err(|e| {
+    let imported_symbols = load_imported_symbols_from_path(&cli.binary_symbols).map_err(|e| {
         anyhow::anyhow!(
-            "failed to read --binary-symbols {}: {}",
+            "failed to load --binary-symbols {}: {}",
             cli.binary_symbols.display(),
             e
         )
     })?;
-    let imported_symbols = parse_nm_output(&nm_text);
 
     let affected = load_affected_functions_from_path(&cli.affected_functions).map_err(|e| {
         anyhow::anyhow!(
