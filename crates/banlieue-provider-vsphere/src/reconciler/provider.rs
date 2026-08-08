@@ -18,6 +18,7 @@ use banlieue_provider_sdk::reconciler::{requeue_long, requeue_on_error};
 use banlieue_provider_sdk::ssa::FIELD_MANAGER_PROVIDER_VSPHERE;
 use banlieue_provider_sdk::status::{condition_status, set_condition};
 use k8s_openapi::api::core::v1::Secret;
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::Condition;
 use kube::{
     Resource, ResourceExt,
     api::{Api, Patch, PatchParams},
@@ -86,6 +87,17 @@ pub async fn reconcile(provider: Arc<Provider>, ctx: Arc<Context>) -> Result<Act
         return Ok(requeue_long());
     }
 
+    // Seed status updates with the conditions already on the object so
+    // `set_condition` preserves each `lastTransitionTime` when the status is
+    // unchanged. Rebuilding from an empty Vec re-stamped `now()` every pass,
+    // so the server-side-apply patch always differed → new resourceVersion →
+    // watch event → reconcile → hot-loop.
+    let existing = provider
+        .status
+        .as_ref()
+        .map(|s| s.conditions.clone())
+        .unwrap_or_default();
+
     // Resolve credentials.
     let creds = match read_credentials(&ctx, &namespace, &provider.spec.connection).await {
         Ok(c) => c,
@@ -100,6 +112,7 @@ pub async fn reconcile(provider: Arc<Provider>, ctx: Arc<Context>) -> Result<Act
                 &namespace,
                 &name,
                 generation,
+                &existing,
                 condition_types::PROVIDER_REACHABLE,
                 reason,
                 msg,
@@ -125,6 +138,7 @@ pub async fn reconcile(provider: Arc<Provider>, ctx: Arc<Context>) -> Result<Act
                 &namespace,
                 &name,
                 generation,
+                &existing,
                 condition_types::PROVIDER_REACHABLE,
                 reasons::CONNECT_FAILED,
                 format!("{e}"),
@@ -148,6 +162,7 @@ pub async fn reconcile(provider: Arc<Provider>, ctx: Arc<Context>) -> Result<Act
                 &namespace,
                 &name,
                 generation,
+                &existing,
                 condition_types::PROVIDER_REACHABLE,
                 reasons::CONNECT_FAILED,
                 format!("{e}"),
@@ -168,6 +183,7 @@ pub async fn reconcile(provider: Arc<Provider>, ctx: Arc<Context>) -> Result<Act
                 &namespace,
                 &name,
                 generation,
+                &existing,
                 condition_types::READY,
                 reasons::INVENTORY_FAILED,
                 format!("{e}"),
@@ -180,7 +196,15 @@ pub async fn reconcile(provider: Arc<Provider>, ctx: Arc<Context>) -> Result<Act
     let fd_count = failure_domains.len();
     info!(fd_count, "vCenter inventory walk complete");
 
-    patch_status_success(&ctx, &namespace, &name, generation, failure_domains).await?;
+    patch_status_success(
+        &ctx,
+        &namespace,
+        &name,
+        generation,
+        &existing,
+        failure_domains,
+    )
+    .await?;
 
     // Capability introspection is comparatively expensive (a few vCenter
     // round-trips). Re-poll on the long requeue cadence rather than the
@@ -210,6 +234,12 @@ pub async fn discover_inventory(
             out.push(build_failure_domain(provider_name, &dc.name, &cluster.name));
         }
     }
+    // Deterministic order: vCenter does not guarantee a stable inventory
+    // ordering across calls, and an unstable order would rewrite
+    // `status.failureDomains` every reconcile — a status change that
+    // re-triggers the watch and hot-loops the controller. Sorting by the
+    // (unique) FD name pins it.
+    out.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(out)
 }
 
@@ -235,16 +265,41 @@ fn build_failure_domain(provider: &str, dc_name: &str, cluster_name: &str) -> Fa
     }
 }
 
-/// Slugify `<provider>-<dc>-<cluster>` into a DNS-label-friendly string.
-/// Truncates to 63 chars (the K8s label-value cap). Pure and unit-tested.
+/// Slugify `<provider>-<dc>-<cluster>` into a DNS-label-friendly string,
+/// capped at 63 chars (the K8s label-value limit). Pure and unit-tested.
+///
+/// When the slug fits it is returned verbatim. When it overflows, a readable
+/// prefix is kept and a short stable hash of the *full* slug is appended, so
+/// two clusters whose names differ only past the truncation point (e.g.
+/// `…-NonReplicated-01` vs `-02`) still get distinct names — otherwise every
+/// failure domain collided on the same truncated string.
 pub fn failure_domain_name(provider: &str, dc: &str, cluster: &str) -> String {
-    let raw = format!("{provider}-{dc}-{cluster}");
-    let slug = slugify(&raw);
-    if slug.len() > MAX_FD_NAME_LEN {
-        slug[..MAX_FD_NAME_LEN].trim_end_matches('-').to_string()
-    } else {
-        slug
+    let slug = slugify(&format!("{provider}-{dc}-{cluster}"));
+    if slug.len() <= MAX_FD_NAME_LEN {
+        return slug;
     }
+    let hash = stable_hash8(&slug);
+    // Reserve room for the separating '-' and the 8-char hash. slug is ASCII
+    // (slugify emits only `[a-z0-9-]`), so byte-slicing is char-safe.
+    let keep = MAX_FD_NAME_LEN - hash.len() - 1;
+    let head = slug[..keep].trim_end_matches('-');
+    format!("{head}-{hash}")
+}
+
+/// Deterministic 32-bit FNV-1a of `s`, as 8 lowercase hex chars.
+///
+/// Hand-rolled on purpose: `std`'s `DefaultHasher` output may change between
+/// Rust releases, which would silently rename every truncated FailureDomain on
+/// a toolchain bump. FNV-1a is fixed forever, so the generated names are stable.
+fn stable_hash8(s: &str) -> String {
+    const FNV_OFFSET_BASIS: u32 = 0x811c_9dc5;
+    const FNV_PRIME: u32 = 0x0100_0193;
+    let mut hash = FNV_OFFSET_BASIS;
+    for byte in s.as_bytes() {
+        hash ^= u32::from(*byte);
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    format!("{hash:08x}")
 }
 
 /// Lowercase the input, replace any run of non-alphanumeric characters with
@@ -306,9 +361,10 @@ async fn patch_status_success(
     namespace: &str,
     name: &str,
     generation: i64,
+    existing_conditions: &[Condition],
     failure_domains: Vec<FailureDomain>,
 ) -> Result<()> {
-    let mut conditions = Vec::new();
+    let mut conditions = existing_conditions.to_vec();
     set_condition(
         &mut conditions,
         condition_types::PROVIDER_REACHABLE,
@@ -342,16 +398,21 @@ async fn patch_status_success(
 /// `Provider.status.conditions`. Preserves any previously-known failure
 /// domains rather than blanking them — that information is still valuable
 /// while we recover.
+// Internal status-patch helper: the arguments are all irreducible plumbing
+// (client, object coordinates, the prior conditions to preserve transition
+// times, and the specific failure to record), so the arg count is expected.
+#[allow(clippy::too_many_arguments)]
 async fn patch_status_failed(
     ctx: &Context,
     namespace: &str,
     name: &str,
     generation: i64,
+    existing_conditions: &[Condition],
     condition_type: &str,
     reason: &str,
     message: String,
 ) -> Result<()> {
-    let mut conditions = Vec::new();
+    let mut conditions = existing_conditions.to_vec();
     set_condition(
         &mut conditions,
         condition_type,

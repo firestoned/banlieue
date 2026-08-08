@@ -37,6 +37,18 @@ mod tests {
             cli.vsphere_task_timeout_secs,
             DEFAULT_VSPHERE_TASK_TIMEOUT_SECS
         );
+        assert_eq!(cli.import_image, DEFAULT_IMPORT_IMAGE);
+    }
+
+    /// `banlieue-operator` passes `--import-image <ref>` to every spawned
+    /// provider (workload.rs) so the whole fleet runs one image. The vSphere
+    /// provider must accept it even though its import path is a later
+    /// iteration — otherwise the operator-spawned Deployment crashes at
+    /// arg-parse with "unexpected argument '--import-image'".
+    #[test]
+    fn import_image_override_parses() {
+        let cli = parse(&["--import-image", "registry.example/banlieue:local-dev"]);
+        assert_eq!(cli.import_image, "registry.example/banlieue:local-dev");
     }
 
     #[test]

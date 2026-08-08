@@ -45,6 +45,7 @@ flowchart LR
     data-asset-infra-cluster-cr["Infrastructure Cluster CR (VSphereCluster)"]
     data-asset-capi-cluster-cr["CAPI Cluster / MachineDeployment (external)"]
     service-capi-core["Cluster API core + control-plane provider (k0smotron)"]
+    system-k0s-bootstrap["k0s Bootstrap Script"]
     subgraph sg_system-banlieue-binary [System Banlieue Binary]
         service-banlieue-controller
         service-banlieue-operator
@@ -95,6 +96,8 @@ flowchart LR
     service-provider-vsphere -->|HTTPS| network-vsphere-backend
     service-provider-proxmox -->|HTTPS| network-proxmox-backend
     service-provider-libvirt -->|TLS| network-libvirt-backend
+    system-k0s-bootstrap --> network-vsphere-backend
+    system-k0s-bootstrap --> network-libvirt-backend
 ```
 
 <sub>Source: nodes and relationships in `architecture.json`.</sub>

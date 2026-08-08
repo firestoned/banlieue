@@ -1,5 +1,286 @@
 # Changelog
 
+## [2026-08-08 14:20] - Fix: unique failure-domain names + stop reconcile hot-loop
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `crates/banlieue-provider-vsphere/src/reconciler/provider.rs`:
+  - **Unique FailureDomain names.** `failure_domain_name` truncated to 63 chars
+    from the front, so long cluster names that differ only in their `-01/-02/-03`
+    suffix all collapsed to the same name (observed live: 3 clusters → 1 name).
+    On overflow it now keeps a readable prefix and appends a stable 32-bit
+    FNV-1a hash (`stable_hash8`) of the full slug — deterministic across Rust
+    versions, unlike `DefaultHasher`.
+  - **Stop the reconcile hot-loop.** `patch_status_success` / `patch_status_failed`
+    now seed their conditions from the object's current `status.conditions` (via
+    a new `existing` snapshot in `reconcile`), so `set_condition` preserves each
+    `lastTransitionTime` when nothing changed. Previously they rebuilt from an
+    empty Vec, re-stamping `now()` every pass → the SSA patch always differed →
+    new resourceVersion → watch event → reconcile, ~1×/sec. `discover_inventory`
+    also now sorts failure domains by name so vCenter's unstable ordering can't
+    churn the status either. Result: steady-state reconcile is a no-op; only the
+    5-min requeue re-polls.
+- `crates/banlieue-provider-vsphere/src/reconciler/provider_tests.rs`: added
+  uniqueness + determinism tests and a sorted-order assertion.
+
+### Why
+Both surfaced running the provider against the real on-prem vCenter: all three
+compute clusters produced one colliding FailureDomain name, and the controller
+reconciled ~once a second forever.
+
+### Impact
+- [ ] Breaking change
+- [x] Bug fix (rebuild the banlieue image for the on-cluster provider path)
+
+## [2026-08-08 13:10] - Fix: vSphere endpoint must be reduced to host for vim_rs
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `crates/banlieue-provider-vsphere/src/client/vim.rs`: added `server_address()`
+  to reduce `Provider.spec.connection.endpoint` (a full URL, e.g.
+  `https://vcenter/sdk`) to the bare `host[:port]` that `vim_rs` 0.5 expects,
+  and used it at the `ClientBuilder::new` call site. vim_rs builds request URLs
+  as `https://{server_address}/api/...`, so passing the full endpoint produced
+  `https://https://vcenter/sdk/api/vcenter/system?action=hello` and every
+  connect failed (`ConnectFailed`). Handles scheme stripping, explicit ports,
+  bare hosts, trailing slash, and IPv6 literals.
+- `crates/banlieue-provider-vsphere/src/client/vim_tests.rs`: 5 `server_address`
+  unit tests.
+
+### Why
+Found running the vSphere provider against the real on-prem vCenter: the
+`Provider` reconciled and wrote status, but `ProviderReachable=False` with a
+mangled `https://https//…` URL. The live harness (`live_vcenter.rs`) shares the
+same `build()` path, so it inherits the fix — it had only ever been given a
+bare host before.
+
+### Impact
+- [ ] Breaking change
+- [x] Bug fix (rebuild the banlieue image for the on-cluster provider path)
+
+## [2026-08-08 12:30] - Fix: vSphere provider must accept `--import-image`
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `crates/banlieue-provider-vsphere/src/app.rs`: added `--import-image`
+  (`BANLIEUE_IMPORT_IMAGE`, default matches libvirt) to the provider `Cli`.
+  `banlieue-operator` (`workload.rs`) passes `--import-image <ref>` to **every**
+  spawned provider so the fleet runs one image, but the vSphere `Cli` didn't
+  define it — so an operator-spawned vSphere provider Deployment crash-looped at
+  arg-parse (`error: unexpected argument '--import-image'`). The flag is accepted
+  for parity (vSphere's own import path is a later iteration), matching the
+  existing `vsphere_task_timeout_secs` "stable flag matrix" convention.
+- `crates/banlieue-provider-vsphere/src/app_tests.rs`: added
+  `import_image_override_parses` + a default assertion.
+
+### Why
+Discovered while testing on the on-prem k0s cluster: `banlieue bootstrap
+operator` (image `:local-dev`) came up, but creating a vSphere `Provider` made
+the operator spawn a provider pod that CrashLoopBackOff'd on the unknown flag.
+libvirt was unaffected (it already accepts `--import-image`).
+
+### Impact
+- [ ] Breaking change
+- [x] Bug fix (requires rebuilding the banlieue image for the on-cluster path)
+- Note: `make provider-vsphere-run-local` was never affected (it invokes the
+  provider directly, without `--import-image`).
+
+## [2026-08-07 11:45] - vSphere bootstrap disables konnectivity by default
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `scripts/bootstrap-k0s-cluster.sh`: new `K0S_DISABLE_KONNECTIVITY` (default
+  `true`); the native controller install now passes
+  `--disable-components=konnectivity-server`. `scripts/bootstrap-cluster.prompt.md`
+  documents the rationale.
+
+### Why
+On a flat, routable on-prem network the API server reaches kubelets directly, so
+the konnectivity tunnel is unnecessary. With it enabled on a multi-controller
+cluster that has no single `externalAddress`/VIP, the konnectivity agents pin to
+one controller and `kubectl logs/exec/port-forward` against any other controller
+fails with "No agent available" (k0s #600/#5503). This bit the live banlieue
+cluster; disabling konnectivity (matching the reference on-prem clusters) removes
+the failure mode. Applied live to all 3 controllers (rolling restart).
+
+### Impact
+- [x] Tooling only (management-cluster bootstrap)
+
+## [2026-08-07 00:00] - Unset proxies unconditionally, on every backend
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `scripts/bootstrap-k0s-cluster.sh`: `unset_proxy` now runs unconditionally at
+  startup instead of only when `BACKEND=vsphere`. Both backends shell out to
+  `kubectl`/`ssh` against on-prem endpoints, and a remote libvirt host
+  (`LIBVIRT_URI=qemu+ssh://...`) is just as exposed to a black-holing corporate
+  proxy as vCenter is.
+- `scripts/bootstrap-cluster.prompt.md`: broadened the proxy guidance to cover
+  `ssh` (not just `govc`/`kubectl`) and note the script now does this itself.
+
+### Why
+Corporate HTTP proxies black-hole direct on-prem calls; this must not depend
+on which backend is selected.
+
+### Impact
+- [x] Tooling only
+
+## [2026-08-04 11:00] - Reusable cluster-bootstrap prompt
+
+**Author:** Erick Bourgeois
+
+### Added
+- `scripts/bootstrap-cluster.prompt.md`: a generic, placeholder-only prompt that
+  drives a full vSphere k0s bootstrap (intake questions → env file → VMs → native
+  k0s → MetalLB → flux-operator/`flux-core`). No real identifiers.
+
+### Why
+Make the ADR-0017 bootstrap repeatable for new clusters: hand the prompt to
+Claude Code, answer the IP / k0s-version / placement questions, and it runs the
+documented flow.
+
+### Impact
+- [x] Documentation/tooling only
+
+## [2026-08-04 09:15] - vSphere bootstrap installs k0s natively (not k0sctl)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `scripts/bootstrap-k0s-cluster.sh`: the vSphere backend now installs k0s
+  **natively** instead of via k0sctl. Each node downloads the k0s binary from
+  `K0S_BINARY_BASEURL` into `/opt/k0s/<ver>-amd64` (sha256-verified) and
+  symlinks `/usr/local/bin/k0s`; the first controller runs `k0s install
+  controller --enable-worker --no-taints -c /etc/k0s/k0s.yaml`, and the rest
+  join via `k0s token create` (controller/worker). New `k0s_{config,apply,
+  kubeconfig}` dispatch keeps libvirt on k0sctl. Generated `k0s.yaml` supports
+  `K0S_NETWORK_PROVIDER` (calico), `K0S_IMAGE_REPOSITORY` (internal mirror),
+  and SANs = `API_SAN` + every node FQDN/IP. Dropped k0sctl from the vSphere
+  dependency check.
+- `docs/adr/0017-vsphere-bootstrap-backend.md`: recorded the native-install
+  decision and why k0sctl can't satisfy the `/opt/k0s` + symlink layout the
+  estate's Kairos image expects.
+
+### Why
+The on-prem Kairos image persists `/opt/k0s`, `/var/lib/k0s`, `/etc/k0s` as
+`COS_PERSISTENT` bind mounts and expects the k0s binary under `/opt/k0s`
+symlinked to `/usr/local/bin/k0s`. k0sctl always installs the binary directly
+to `/usr/local/bin/k0s` and cannot produce that layout, so the vSphere path
+mirrors the maintainer's proven native Ansible flow instead.
+
+### Impact
+- [ ] Breaking change
+- [x] Tooling only (vSphere management-cluster bootstrap)
+- [x] No real infrastructure identifiers committed (Artifactory URL, image
+      mirror, k0s version live in the untracked `BANLIEUE_ENV_FILE`)
+
+## [2026-08-03 12:30] - vSphere backend for the k0s bootstrap script
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0017-vsphere-bootstrap-backend.md`: ADR for a pluggable
+  `BACKEND={libvirt,vsphere}` in the management-cluster bootstrap.
+- `docs/architecture/calm/architecture.json`: `system-k0s-bootstrap` node +
+  `rel-bootstrap-vsphere` / `rel-bootstrap-libvirt` relationships; ADR-0017
+  registered. `make calm-validate` passes; diagrams regenerated
+  (`docs/src/architecture/system.md`).
+- `scripts/bootstrap-k0s-cluster.sh`: vSphere backend — clones cluster-specific
+  Kairos templates via `govc`, pins the NIC to `ens192`, sets static networking
+  via `guestinfo.network.*` + a systemd-networkd cloud-config stage, injects
+  cloud-init via `guestinfo.userdata`, reconfigures CPU/memory/disk, powers on,
+  and waits for the baked installer to finish (root fs on `/dev/loop0`). The
+  k0sctl/kubeconfig/label half is generalized over a shared node table and
+  reused by both backends. Adds `--print-env-template`; unsets HTTP proxies
+  before on-prem `govc`/`kubectl` calls.
+
+### Why
+banlieue now needs to run on-prem in a VMware vSphere estate to exercise the
+vSphere provider against a real vCenter. The libvirt bootstrap can't stand up a
+cluster there; rather than fork the script, the k0s half is shared and only VM
+create/IP/destroy is backend-specific. Spreading nodes across three vSphere
+compute clusters makes each an etcd failure domain (ADR-0002 reasoning).
+
+### Impact
+- [ ] Breaking change
+- [x] Tooling only (management-cluster bootstrap; no CRD/runtime change)
+- [x] No real infrastructure identifiers committed (env-driven + govc
+      discovery; real values live in an untracked `BANLIEUE_ENV_FILE`)
+
+- `docs/src/stylesheets/extra.css`: neutral slate/sky/amber palette (no corporate branding from the 5-spot source), mermaid zoom/pan, TOC, mobile + print styles.
+
+## [2026-08-03 04:30] - Full image-pipeline e2e against a real cluster and libvirt host
+
+**Author:** Erick Bourgeois
+
+### Added
+- `crates/banlieue-provider-libvirt/tests/e2e_import_pipeline.rs` — the whole of
+  ADR-0010 end to end: `VMImage` → `OSArtifact` → artifacts PVC → one import Job
+  per declared pool → a volume on the host → per-zone status → the aggregate
+  condition.
+- `make libvirt-e2e` and `make libvirt-live-test`, both **local only**.
+
+### Why
+The existing suites each covered one half and neither covered the seam: the
+kind-based operator suites have no libvirt, and `live_libvirtd.rs` speaks the
+protocol with no Kubernetes. Everything between them had been verified only by
+hand, so every finding from that work could regress silently.
+
+The assertions encode what the manual runs cost to discover:
+
+- one Job per **declared** pool, and explicitly none for a pool that exists on
+  the host but was never declared;
+- import Jobs carry **no `nodeSelector`** — placement follows the artifacts PVC,
+  which the scheduler resolves from the bound PV;
+- the aggregate flips to `Ready=True` only when every zone is ready;
+- `rawDiskArtifact` (imagebuilder's field manager) survives alongside
+  `perProvider` (the provider's) on one object;
+- ground truth on the host: the volume is present in every declared pool and
+  **absent** from undeclared ones.
+
+### Never runs in CI
+It needs a real libvirt host *and* a cluster with banlieue installed — neither
+of which CI has, and neither of which can be faked, since the seam between them
+is the point. `#[ignore]`d, so `cargo test` skips it, and deliberately not
+referenced from any workflow. Same treatment as `vsphere-live-test`.
+
+### Verified
+Passes against the homelab cluster in 8m38s:
+
+```
+✓ banlieue-imagebuilder publishes a Ready raw disk
+✓ one import Job per declared pool
+✓ every import Job succeeds
+✓ aggregate Ready=True
+✓ default / images / k0s-bootstrap hold the volume
+✓ boot (undeclared) untouched
+```
+
+### Notes
+Two things the first runs taught, now documented in the suite and the make
+target:
+
+- **Disk.** Each run creates a ~10Gi artifacts PVC which, with a node-local
+  provisioner, lands on the build node beside the builder's own multi-gigabyte
+  scratch. Too little space evicts the build pod rather than failing it, showing
+  up as `ContainerStatusUnknown` and an `Error` OSArtifact with no log — the
+  reason is on the *pod*. Budget ~15Gi, and PVCs persist until their `VMImage`
+  is deleted.
+- **Namespaces.** Import Jobs live in the build namespace, not the Provider's
+  (ADR-0016), so the suite searches cluster-wide. Looking in the Provider's
+  namespace finds nothing and looks exactly like the provider never reconciled.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Test-only — one `#[ignore]`d suite and two make targets
+
 ## [2026-08-02 21:15] - Pin provider workloads by digest
 
 **Author:** Erick Bourgeois

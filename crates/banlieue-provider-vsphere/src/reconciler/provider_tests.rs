@@ -64,6 +64,32 @@ mod tests {
         assert!(name.len() <= 63, "name too long: {} chars", name.len());
     }
 
+    #[test]
+    fn failure_domain_name_stays_unique_when_truncated() {
+        // Regression: enterprise cluster names can be long and share a common
+        // prefix, differing only in a trailing `-01/-02/-03`. That suffix falls
+        // past the 63-char cap, so naive front-truncation collapsed every
+        // failure domain onto one identical name.
+        let dc = "dc-example";
+        let base = "compute-cluster-dedicated-nonreplicated-availability-domain";
+        let n1 = failure_domain_name("vcenter-example", dc, &format!("{base}-01"));
+        let n2 = failure_domain_name("vcenter-example", dc, &format!("{base}-02"));
+        let n3 = failure_domain_name("vcenter-example", dc, &format!("{base}-03"));
+        assert!(n1.len() <= 63 && n2.len() <= 63 && n3.len() <= 63);
+        assert_ne!(n1, n2);
+        assert_ne!(n2, n3);
+        assert_ne!(n1, n3);
+    }
+
+    #[test]
+    fn failure_domain_name_is_deterministic() {
+        let huge = "y".repeat(120);
+        assert_eq!(
+            failure_domain_name("p", &huge, "cluster-01"),
+            failure_domain_name("p", &huge, "cluster-01"),
+        );
+    }
+
     #[tokio::test]
     async fn discover_inventory_returns_one_fd_per_dc_cluster_pair() {
         let client = fake_client(small_inventory());
@@ -77,6 +103,16 @@ mod tests {
         assert!(names.contains(&"prod-vsphere-dc-east-cluster-a"));
         assert!(names.contains(&"prod-vsphere-dc-east-cluster-b"));
         assert!(names.contains(&"prod-vsphere-dc-west-cluster-z"));
+
+        // Order must be deterministic (sorted by name): an unstable order would
+        // rewrite status.failureDomains every reconcile and hot-loop the
+        // controller.
+        let mut sorted = names.clone();
+        sorted.sort_unstable();
+        assert_eq!(
+            names, sorted,
+            "failure domains must be returned sorted by name"
+        );
     }
 
     #[tokio::test]
