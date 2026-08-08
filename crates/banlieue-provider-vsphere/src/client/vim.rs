@@ -93,6 +93,29 @@ pub fn install_default_crypto_provider() {
 /// # Errors
 /// Returns [`Error::Vsphere`] if the PEM cannot be parsed or contains no
 /// certificates.
+/// Reduce a `Provider.spec.connection.endpoint` to the bare `host[:port]`
+/// vim_rs 0.5 expects as its `server_address`.
+///
+/// vim_rs builds every request URL as `https://{server_address}/api/...` (and
+/// the SOAP path likewise), so `server_address` must be a host or `host:port`,
+/// never a full URL. The banlieue CRD documents `endpoint` as a full URL
+/// (`https://vcenter/sdk`), so the scheme and any path are stripped here.
+/// Without this the connect target came out as
+/// `https://https://vcenter/sdk/api/vcenter/system?action=hello` and every
+/// request failed with a connect error.
+fn server_address(endpoint: &str) -> &str {
+    // Strip an optional `scheme://` prefix, then everything from the first
+    // `/`, `?`, or `#` — leaving `host` or `host:port` (IPv6 literals keep
+    // their brackets, having no interior delimiter).
+    let after_scheme = endpoint
+        .split_once("://")
+        .map_or(endpoint, |(_scheme, rest)| rest);
+    after_scheme
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or(after_scheme)
+}
+
 fn root_certs_from_pem(pem: &str) -> Result<Vec<reqwest::Certificate>> {
     let certs = reqwest::Certificate::from_pem_bundle(pem.as_bytes())
         .map_err(|e| Error::Vsphere(format!("caBundle: invalid PEM: {e}")))?;
@@ -174,7 +197,7 @@ impl VSphereClientFactory for VimClientFactory {
         // `ClientBuilder::new` (there is no `.http_client()` setter); vim_rs never
         // constructs a reqwest client of its own.
         let http = build_http_client(ca_bundle_pem, connection.insecure_skip_tls_verify)?;
-        let client = ClientBuilder::new(&connection.endpoint, http)
+        let client = ClientBuilder::new(server_address(&connection.endpoint), http)
             .basic_authn(&creds.username, &creds.password)
             .build()
             .await

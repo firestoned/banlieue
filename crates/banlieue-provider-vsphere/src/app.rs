@@ -45,6 +45,10 @@ const DEFAULT_METRICS_PORT: u16 = 8080;
 const DEFAULT_LEADER_ELECTION_NAMESPACE: &str = "banlieue-system";
 const DEFAULT_LEADER_ELECTION_ID: &str = "banlieue-provider-vsphere";
 const DEFAULT_VSPHERE_TASK_TIMEOUT_SECS: u64 = 600;
+/// Default image for VMImage import Jobs. Matches libvirt's default; normally
+/// overridden by `banlieue-operator`, which passes `--import-image` with the
+/// running image so the whole fleet stays on one build.
+const DEFAULT_IMPORT_IMAGE: &str = "ghcr.io/firestoned/banlieue:v0.1.0";
 
 /// Per-crate `tracing` directives layered on top of the base log level.
 const LOG_DIRECTIVES: &[&str] = &["kube=warn", "vim_rs=warn"];
@@ -125,6 +129,15 @@ pub struct Cli {
     /// wants.
     #[arg(long, env = "BANLIEUE_PROVIDER_NAME")]
     pub provider_name: Option<String>,
+
+    /// Image the VMImage import Job runs. `banlieue-operator` passes this on
+    /// every spawned provider (workload.rs) so the whole fleet runs one image;
+    /// the vSphere import path itself lands in a later iteration, so the value
+    /// is accepted here for flag-matrix parity with the libvirt provider (cf.
+    /// `vsphere_task_timeout_secs`). Without it the operator-spawned Deployment
+    /// aborts at arg-parse with "unexpected argument '--import-image'".
+    #[arg(long, env = "BANLIEUE_IMPORT_IMAGE", default_value = DEFAULT_IMPORT_IMAGE)]
+    pub import_image: String,
 }
 
 /// Watch configuration for the `Provider` controller.

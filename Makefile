@@ -244,6 +244,46 @@ vsphere-live-test: ## Run the live vCenter harness against a REAL vCenter (needs
 	cargo test -p banlieue-provider-vsphere --test live_vcenter -- \
 	  --ignored --nocapture --test-threads=1
 
+libvirt-live-test: ## Run the libvirt protocol harness against a REAL libvirtd (needs LIBVIRT_HOST / LIBVIRT_TLS_DIR)
+	@test -n "$$LIBVIRT_HOST" || { \
+	  echo "LIBVIRT_HOST is unset. Example:"; \
+	  echo "  LIBVIRT_HOST=bar.foo.io \\"; \
+	  echo "  LIBVIRT_TLS_DIR=~/.config/banlieue/libvirt \\"; \
+	  echo "    make libvirt-live-test"; \
+	  exit 1; }
+	@echo "Running the libvirt protocol harness against $$LIBVIRT_HOST ..."
+	cargo test -p banlieue-libvirt --test live_libvirtd -- \
+	  --ignored --nocapture --test-threads=1
+
+libvirt-e2e: ## Run the FULL image pipeline against a real cluster + libvirt host (LOCAL ONLY, never CI)
+	@# Deliberately not wired into any GitHub workflow. It needs a real
+	@# libvirt host AND a cluster with banlieue installed and a Ready
+	@# Provider — neither of which CI has, and neither of which can be
+	@# faked: the point of the suite is the seam between them.
+	@#
+	@# The kind-based suites cover the operator with no libvirt; the libvirt
+	@# harness covers the protocol with no Kubernetes. Only this one covers
+	@# VMImage -> OSArtifact -> PVC -> import Job -> volume on the host.
+	@test -n "$$BANLIEUE_E2E_PROVIDER" || { \
+	  echo "BANLIEUE_E2E_PROVIDER is unset. Example:"; \
+	  echo "  export KUBECONFIG=~/dev/kubeconfig/homelab.yaml"; \
+	  echo "  BANLIEUE_E2E_PROVIDER=<provider-name> \\"; \
+	  echo "  LIBVIRT_HOST=bar.foo.io \\"; \
+	  echo "  LIBVIRT_TLS_DIR=~/.config/banlieue/libvirt \\"; \
+	  echo "    make libvirt-e2e"; \
+	  echo ""; \
+	  echo "LIBVIRT_HOST/LIBVIRT_TLS_DIR are optional: without them the suite"; \
+	  echo "still asserts everything Kubernetes can see and skips only the"; \
+	  echo "on-host volume check."; \
+	  exit 1; }
+	@echo "Running the full image pipeline against provider $$BANLIEUE_E2E_PROVIDER ..."
+	@echo "  This builds a real disk image; expect several minutes."
+	@echo "  Needs ~15Gi free on the build node: each run creates a ~10Gi"
+	@echo "  artifacts PVC and the builder needs multi-GB scratch beside it."
+	@echo "  Artifacts from previous runs persist until their VMImage is deleted."
+	cargo test -p banlieue-provider-libvirt --test e2e_import_pipeline -- \
+	  --ignored --nocapture --test-threads=1
+
 provider-vsphere-run-local: ## Run the vSphere provider locally (point it at $$VSPHERE_ENDPOINT / vcsim)
 	@echo "Running banlieue provider vsphere locally (KUBECONFIG=$$KUBECONFIG)..."
 	@echo "  Provider CRs are read from your kube context;"

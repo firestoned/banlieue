@@ -12,6 +12,51 @@ mod tests {
 
     use super::super::*;
 
+    // ----------------------------------------------------------------------
+    // server_address: Provider.spec.connection.endpoint (a full URL) -> the
+    // bare host[:port] vim_rs 0.5 wants (it builds `https://{server_address}/
+    // api/...`). Regression: passing the full URL yielded
+    // `https://https://vcenter/sdk/api/...` and every connect failed.
+    // ----------------------------------------------------------------------
+
+    #[test]
+    fn server_address_strips_scheme_and_sdk_path() {
+        assert_eq!(
+            server_address("https://vcenter.example.com/sdk"),
+            "vcenter.example.com"
+        );
+    }
+
+    #[test]
+    fn server_address_keeps_explicit_port() {
+        assert_eq!(
+            server_address("https://vcenter.example.com:8443/sdk"),
+            "vcenter.example.com:8443"
+        );
+    }
+
+    #[test]
+    fn server_address_passes_through_bare_host() {
+        assert_eq!(server_address("vcenter.example.com"), "vcenter.example.com");
+    }
+
+    #[test]
+    fn server_address_handles_scheme_only_and_trailing_slash() {
+        assert_eq!(
+            server_address("https://vcenter.example.com"),
+            "vcenter.example.com"
+        );
+        assert_eq!(
+            server_address("https://vcenter.example.com/"),
+            "vcenter.example.com"
+        );
+    }
+
+    #[test]
+    fn server_address_keeps_ipv6_literal() {
+        assert_eq!(server_address("https://[2001:db8::1]/sdk"), "[2001:db8::1]");
+    }
+
     // Two distinct self-signed test CAs (CN=banlieue-test-ca-a / -b), generated
     // with `openssl req -x509 -newkey rsa:2048 -nodes`. Used to verify a bundle
     // with multiple concatenated certs is fully parsed (from_pem_bundle, not
