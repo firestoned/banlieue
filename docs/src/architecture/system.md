@@ -35,6 +35,7 @@ flowchart LR
     network-vsphere-backend["vSphere / vCenter Backend"]
     network-proxmox-backend["Proxmox VE Backend"]
     network-libvirt-backend["libvirt / KVM Host"]
+    network-vault-backend["HashiCorp Vault (KV secrets)"]
     data-asset-virtualmachine-cr["VirtualMachine Custom Resource"]
     data-asset-provider-cr["Provider Custom Resource"]
     data-asset-providerclass-cr["ProviderClass Custom Resource"]
@@ -98,6 +99,7 @@ flowchart LR
     service-provider-libvirt -->|TLS| network-libvirt-backend
     system-k0s-bootstrap --> network-vsphere-backend
     system-k0s-bootstrap --> network-libvirt-backend
+    system-k0s-bootstrap --> network-vault-backend
 ```
 
 <sub>Source: nodes and relationships in `architecture.json`.</sub>

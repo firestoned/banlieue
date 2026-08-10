@@ -243,6 +243,14 @@ spec:
                 required:
                 - name
                 type: object
+              useContentLibrary:
+                description: |-
+                  vSphere only: import `Url`-kind VMImages through a vCenter Content
+                  Library rather than the default datastore-upload + `MarkAsTemplate`
+                  path. Defaults to `false` (no Content Library required), matching
+                  environments where CL is not enabled. Ignored by non-vSphere classes.
+                  See ADR-0020.
+                type: boolean
             required:
             - connection
             - providerClassRef

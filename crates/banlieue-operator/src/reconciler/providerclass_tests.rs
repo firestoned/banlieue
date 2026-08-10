@@ -49,6 +49,7 @@ mod tests {
                 },
                 capabilities: Default::default(),
                 paused: false,
+                use_content_library: false,
             },
         );
         p.metadata.namespace = Some("banlieue-system".to_string());

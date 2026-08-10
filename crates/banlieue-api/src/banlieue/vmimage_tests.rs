@@ -25,6 +25,8 @@ mod tests {
             architecture: Architecture::Amd64,
             guest_agent: GuestAgent::default(),
             sources: vec![sample_image_source("vsphere")],
+            cloud_config: None,
+            template: None,
         }
     }
 
@@ -357,43 +359,61 @@ mod tests {
     }
 
     // ----------------------------------------------------------------------
-    // RawDiskArtifactPhase / RawDiskArtifactStatus / VMImageStatus.rawDiskArtifact
+    // BuildArtifactKind / BuildArtifactPhase / BuildArtifactStatus /
+    // VMImageStatus.buildArtifact (ADR-0020: typed, kairos-aligned)
     // ----------------------------------------------------------------------
 
     #[test]
-    fn raw_disk_artifact_phase_all_variants_round_trip() {
+    fn build_artifact_kind_serializes_to_kairos_vocabulary() {
+        // Values MUST match kairos-operator's OSArtifactKind strings so the
+        // vocabulary is not banlieue-invented.
+        assert_eq!(
+            serde_json::to_value(BuildArtifactKind::CloudImage).unwrap(),
+            serde_json::json!("cloudImage")
+        );
+        assert_eq!(
+            serde_json::to_value(BuildArtifactKind::Iso).unwrap(),
+            serde_json::json!("iso")
+        );
+        let back: BuildArtifactKind = serde_json::from_str(r#""iso""#).unwrap();
+        assert_eq!(back, BuildArtifactKind::Iso);
+    }
+
+    #[test]
+    fn build_artifact_phase_all_variants_round_trip() {
         for (variant, expected) in [
-            (RawDiskArtifactPhase::Pending, "Pending"),
-            (RawDiskArtifactPhase::Building, "Building"),
-            (RawDiskArtifactPhase::Ready, "Ready"),
-            (RawDiskArtifactPhase::Failed, "Failed"),
+            (BuildArtifactPhase::Pending, "Pending"),
+            (BuildArtifactPhase::Building, "Building"),
+            (BuildArtifactPhase::Ready, "Ready"),
+            (BuildArtifactPhase::Failed, "Failed"),
         ] {
             let json = serde_json::to_value(&variant).unwrap();
             assert_eq!(json, serde_json::json!(expected));
-            let back: RawDiskArtifactPhase = serde_json::from_value(json).unwrap();
+            let back: BuildArtifactPhase = serde_json::from_value(json).unwrap();
             assert_eq!(back, variant);
         }
     }
 
     #[test]
-    fn raw_disk_artifact_phase_rejects_unknown_variant() {
+    fn build_artifact_phase_rejects_unknown_variant() {
         // In particular: kairos-operator's own `Exporting` / `Error` phases are
-        // NOT valid banlieue RawDiskArtifactPhase values — banlieue-imagebuilder
+        // NOT valid banlieue BuildArtifactPhase values — banlieue-imagebuilder
         // maps Exporting->Building and Error->Failed before writing this field;
         // the raw kairos strings must never leak through unmapped.
-        let err = serde_json::from_str::<RawDiskArtifactPhase>(r#""Exporting""#);
+        let err = serde_json::from_str::<BuildArtifactPhase>(r#""Exporting""#);
         assert!(err.is_err());
-        let err = serde_json::from_str::<RawDiskArtifactPhase>(r#""Error""#);
+        let err = serde_json::from_str::<BuildArtifactPhase>(r#""Error""#);
         assert!(err.is_err());
     }
 
     #[test]
-    fn raw_disk_artifact_status_pending_minimal_round_trip() {
-        let s = RawDiskArtifactStatus {
-            phase: RawDiskArtifactPhase::Pending,
+    fn build_artifact_status_pending_minimal_round_trip() {
+        let s = BuildArtifactStatus {
+            kind: BuildArtifactKind::CloudImage,
+            phase: BuildArtifactPhase::Pending,
             os_artifact_ref: "kairos-ubuntu-2404-build".to_string(),
             pvc_ref: None,
-            disk_file: None,
+            file: None,
             reason: None,
             message: None,
             checksum: None,
@@ -401,55 +421,67 @@ mod tests {
         let json = serde_json::to_value(&s).unwrap();
         let obj = json.as_object().unwrap();
         assert!(!obj.contains_key("pvcRef"));
-        assert!(!obj.contains_key("diskFile"));
-        let back: RawDiskArtifactStatus = serde_json::from_value(json).unwrap();
+        assert!(!obj.contains_key("file"));
+        assert_eq!(json["kind"], "cloudImage");
+        let back: BuildArtifactStatus = serde_json::from_value(json).unwrap();
         assert_eq!(back, s);
     }
 
     #[test]
-    fn raw_disk_artifact_status_ready_round_trip() {
-        let s = RawDiskArtifactStatus {
-            phase: RawDiskArtifactPhase::Ready,
-            os_artifact_ref: "kairos-ubuntu-2404-build".to_string(),
+    fn build_artifact_status_iso_ready_round_trip() {
+        let s = BuildArtifactStatus {
+            kind: BuildArtifactKind::Iso,
+            phase: BuildArtifactPhase::Ready,
+            os_artifact_ref: "kairos-rhel98-build".to_string(),
             pvc_ref: Some(LocalObjectReference {
-                name: "kairos-ubuntu-2404-build-artifacts".to_string(),
+                name: "kairos-rhel98-build-artifacts".to_string(),
             }),
-            disk_file: Some("kairos-ubuntu-2404-build.raw".to_string()),
+            file: Some("kairos-rhel98-build.iso".to_string()),
             reason: Some("Reconciled".to_string()),
             message: None,
             checksum: None,
         };
         let json = serde_json::to_value(&s).unwrap();
-        assert_eq!(json["pvcRef"]["name"], "kairos-ubuntu-2404-build-artifacts");
-        assert_eq!(json["diskFile"], "kairos-ubuntu-2404-build.raw");
-        let back: RawDiskArtifactStatus = serde_json::from_value(json).unwrap();
+        assert_eq!(json["kind"], "iso");
+        assert_eq!(json["pvcRef"]["name"], "kairos-rhel98-build-artifacts");
+        assert_eq!(json["file"], "kairos-rhel98-build.iso");
+        let back: BuildArtifactStatus = serde_json::from_value(json).unwrap();
         assert_eq!(back, s);
     }
 
     #[test]
-    fn raw_disk_artifact_status_missing_phase_fails() {
-        let err = serde_json::from_str::<RawDiskArtifactStatus>(
-            r#"{"osArtifactRef":"kairos-ubuntu-2404-build"}"#,
+    fn build_artifact_status_missing_kind_fails() {
+        let err = serde_json::from_str::<BuildArtifactStatus>(
+            r#"{"phase":"Pending","osArtifactRef":"kairos-ubuntu-2404-build"}"#,
         );
         assert!(err.is_err());
     }
 
     #[test]
-    fn vmimage_status_omits_raw_disk_artifact_when_none() {
-        let s = VMImageStatus::default();
-        assert!(s.raw_disk_artifact.is_none());
-        let json = serde_json::to_value(&s).unwrap();
-        assert!(!json.as_object().unwrap().contains_key("rawDiskArtifact"));
+    fn build_artifact_status_missing_phase_fails() {
+        let err = serde_json::from_str::<BuildArtifactStatus>(
+            r#"{"kind":"iso","osArtifactRef":"kairos-ubuntu-2404-build"}"#,
+        );
+        assert!(err.is_err());
     }
 
     #[test]
-    fn vmimage_status_with_raw_disk_artifact_round_trip() {
+    fn vmimage_status_omits_build_artifact_when_none() {
+        let s = VMImageStatus::default();
+        assert!(s.build_artifact.is_none());
+        let json = serde_json::to_value(&s).unwrap();
+        assert!(!json.as_object().unwrap().contains_key("buildArtifact"));
+    }
+
+    #[test]
+    fn vmimage_status_with_build_artifact_round_trip() {
         let s = VMImageStatus {
-            raw_disk_artifact: Some(RawDiskArtifactStatus {
-                phase: RawDiskArtifactPhase::Building,
+            build_artifact: Some(BuildArtifactStatus {
+                kind: BuildArtifactKind::Iso,
+                phase: BuildArtifactPhase::Building,
                 os_artifact_ref: "kairos-ubuntu-2404-build".to_string(),
                 pvc_ref: None,
-                disk_file: None,
+                file: None,
                 reason: None,
                 message: None,
                 checksum: None,
@@ -457,9 +489,56 @@ mod tests {
             ..VMImageStatus::default()
         };
         let json = serde_json::to_value(&s).unwrap();
-        assert_eq!(json["rawDiskArtifact"]["phase"], "Building");
+        assert_eq!(json["buildArtifact"]["phase"], "Building");
+        assert_eq!(json["buildArtifact"]["kind"], "iso");
         let back: VMImageStatus = serde_json::from_value(json).unwrap();
         assert_eq!(back, s);
+    }
+
+    // ----------------------------------------------------------------------
+    // VMImageSpec.cloudConfig (ADR-0020)
+    // ----------------------------------------------------------------------
+
+    #[test]
+    fn vmimage_spec_omits_cloud_config_when_none() {
+        let s = minimal_vmimage_spec();
+        assert!(s.cloud_config.is_none());
+        let json = serde_json::to_value(&s).unwrap();
+        assert!(!json.as_object().unwrap().contains_key("cloudConfig"));
+    }
+
+    #[test]
+    fn vmimage_spec_with_cloud_config_secret_ref_round_trip() {
+        use crate::common::{CloudConfigSource, KeySelector};
+        let s = VMImageSpec {
+            cloud_config: Some(CloudConfigSource {
+                secret_ref: Some(KeySelector {
+                    name: "kairos-base-cloud-config".to_string(),
+                    key: None,
+                }),
+            }),
+            ..minimal_vmimage_spec()
+        };
+        let json = serde_json::to_value(&s).unwrap();
+        assert_eq!(
+            json["cloudConfig"]["secretRef"]["name"],
+            "kairos-base-cloud-config"
+        );
+        let back: VMImageSpec = serde_json::from_value(json).unwrap();
+        assert_eq!(back, s);
+    }
+
+    #[test]
+    fn cloud_config_source_validate_requires_a_source() {
+        use crate::common::{CloudConfigSource, KeySelector};
+        assert!(CloudConfigSource::default().validate().is_err());
+        let ok = CloudConfigSource {
+            secret_ref: Some(KeySelector {
+                name: "cc".to_string(),
+                key: None,
+            }),
+        };
+        assert!(ok.validate().is_ok());
     }
 
     // ----------------------------------------------------------------------

@@ -105,8 +105,8 @@ mod tests {
     #[test]
     fn the_generated_import_job_argv_parses_into_import_args() {
         use banlieue_api::banlieue::{
-            ProviderCapabilities, ProviderConnection, ProviderSpec, RawDiskArtifactPhase,
-            RawDiskArtifactStatus,
+            BuildArtifactKind, BuildArtifactPhase, BuildArtifactStatus, ProviderCapabilities,
+            ProviderConnection, ProviderSpec,
         };
         use banlieue_api::common::LocalObjectReference;
         use kube::api::ObjectMeta;
@@ -131,16 +131,18 @@ mod tests {
                 },
                 capabilities: ProviderCapabilities::default(),
                 paused: false,
+                use_content_library: false,
             },
             status: None,
         };
-        let artifact = RawDiskArtifactStatus {
-            phase: RawDiskArtifactPhase::Ready,
+        let artifact = BuildArtifactStatus {
+            kind: BuildArtifactKind::CloudImage,
+            phase: BuildArtifactPhase::Ready,
             os_artifact_ref: "build".into(),
             pvc_ref: Some(LocalObjectReference {
                 name: "artifacts".into(),
             }),
-            disk_file: Some("kairos.raw".into()),
+            file: Some("kairos.raw".into()),
             reason: None,
             message: None,
             checksum: None,
@@ -188,7 +190,7 @@ mod tests {
         assert_eq!(args.checksum, None);
 
         // SEC-004: a published checksum must reach the subcommand verbatim.
-        let artifact_with_checksum = RawDiskArtifactStatus {
+        let artifact_with_checksum = BuildArtifactStatus {
             checksum: Some(
                 "sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08".into(),
             ),

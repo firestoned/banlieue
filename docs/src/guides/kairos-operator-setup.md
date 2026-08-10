@@ -105,7 +105,7 @@ kubectl get osartifact smoke-test -w
 `Error`, with `status.message` set). Once it reaches `Ready`, the operator has
 created a PVC named `smoke-test-artifacts` containing `smoke-test.raw` — the
 same naming convention `banlieue-imagebuilder` relies on
-(`VMImage.status.rawDiskArtifact.pvcRef` / `.diskFile`, see ADR-0010).
+(`VMImage.status.buildArtifact.pvcRef` / `.file`, see ADR-0010 / ADR-0020).
 
 ```sh
 kubectl get pvc smoke-test-artifacts

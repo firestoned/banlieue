@@ -272,6 +272,7 @@ fn provider(paused: bool) -> Provider {
             },
             capabilities: Default::default(),
             paused,
+            use_content_library: false,
         },
     );
     p.metadata.namespace = Some(E2E_NAMESPACE.to_string());

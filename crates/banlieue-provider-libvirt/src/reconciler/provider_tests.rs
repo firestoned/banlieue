@@ -66,6 +66,7 @@ mod tests {
                     features: vec!["nestedVirtualization".to_string()],
                 },
                 paused: false,
+                use_content_library: false,
             },
             status: None,
         }

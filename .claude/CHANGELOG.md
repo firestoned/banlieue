@@ -1,5 +1,449 @@
 # Changelog
 
+## [2026-08-09 20:30] - ADR-0020: template network + structured disk (reuse common DiskProvisioning)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- **`spec.template.disk`** is now a structured `VMImageTemplateDisk`
+  (`size` GiB, `type`, `controller`) replacing the flat `diskGib`. `type` reuses
+  the backend-agnostic `common::DiskProvisioning` (`thin` / `thick` /
+  `eagerZeroed`) already shared with `VMClass.disks[]` and
+  `VSphereMachine.disks[]` — eager-zeroing is the `eagerZeroed` variant, **not** a
+  separate `eager` flag (folded in to match the rest of the API and avoid a
+  duplicate `DiskProvisioning` type / ambiguous glob re-export).
+- `IsoImportRequest`, the `image-import` CLI (`--disk-type` now accepts
+  `eagerZeroed`; dropped `--disk-eager`), and `build_template_config_spec`
+  (`DiskProvisioning::EagerZeroed → thin=false, eagerlyScrub=true`) updated to
+  match. Regenerated CRDs + API reference; updated `examples/07`.
+
+### Added
+- **`spec.template.network`**: port group the template's NIC attaches to,
+  overriding the zone's first `availableNetworkClasses` target. Threaded via
+  `image-import --network` → `ImportForce.network` → the NIC backing resolver.
+- **`spec.template.disk.controller`** (`DiskController`: `pvscsi` default /
+  `lsiLogic` / `lsiLogicSas` / `busLogic`) — selects the SCSI controller flavor
+  in `CreateVM_Task`, mirroring `create-kairos-template.sh -disk.controller`.
+
+### Fixed
+- `vim_tests::request_times_out_against_a_hung_endpoint` was missing the
+  `ensure_provider()` call every other client-building test makes, so it panicked
+  ("no rustls crypto provider") whenever it ran before a test that installs the
+  process-global provider. Added the call. (The separate corporate-proxy `127.0.0.1`
+  hijack still requires running localhost tests with the proxy env unset.)
+
+### Impact
+- [x] Breaking (v1alpha1: `spec.template.diskGib` → `spec.template.disk.{size,type,controller}`; added `network`)
+- [x] Requires cluster rollout + CRD re-apply
+
+## [2026-08-09 19:15] - ADR-0020: group template attrs under VMImage.spec.template + folder
+
+**Author:** Erick Bourgeois
+
+### Changed
+- **API reorg**: moved `forceUpload` / `forceCreate` / `templateDiskGib` off the
+  flat `VMImageSpec` into a nested `spec.template` (`VMImageTemplate`), and added
+  `spec.template.folder`. Fields: `folder`, `diskGib`, `forceUpload`,
+  `forceCreate`. Regenerated CRDs + API reference; updated `examples/07`.
+
+### Added
+- **`spec.template.folder`**: vCenter inventory folder (path under the
+  datacenter VM folder, e.g. `templates/kairos`) to place the template in —
+  find-or-created via `Folder.CreateFolder` (`VimClientImpl::ensure_folder`,
+  mirroring `create-kairos-template.sh`'s `govc folder.create`), then used as
+  the `CreateVM_Task` target folder. Threaded via `image-import --folder` +
+  `ImportForce.folder` + `IsoImportRequest.folder`.
+
+### Impact
+- [x] Breaking (v1alpha1 spec reshape: flat force/disk fields → `spec.template`)
+- [x] Requires cluster rollout + CRD re-apply
+
+## [2026-08-09 18:30] - ADR-0020: template NIC + configurable disk + idempotent datastore placement
+
+**Author:** Erick Bourgeois
+
+### Added
+- Template **NIC**: `CreateVM_Task` now adds a vmxnet3 NIC on the zone's port
+  group — distributed-vDS port backing (portgroupKey + switchUuid, resolved via
+  `resolve_dvs_port`) or standard device-name backing — at PCI slot 192
+  (`slot_info`), matching `create-kairos-template.sh`.
+- **Configurable disk**: `VMImageSpec.templateDiskGib` (default 100) + a
+  `--disk-gb` flag on `image-import`; the reconciler threads it via
+  `ImportForce.disk_gib` → `--disk-gb`. `IsoImportRequest` gains
+  `network_moref` / `network_distributed` / `disk_gib`.
+- **Idempotent placement**: `image-import` now scans **all** members of a
+  datastore-cluster for the ISO and reuses the member already holding it;
+  only a fresh placement (or `--force-upload`) falls back to the emptiest
+  member (`candidate_datastores` + `pick_emptiest`). Stops re-uploads on re-run.
+
+### Notes
+- The template's NIC network is the zone's network; the disk is a template
+  default. Per-VM sizing/network belongs to the VirtualMachine / VSphereMachine
+  spec at clone time (future provisioning path), not the template.
+
+### Impact
+- [x] Requires cluster rollout (new provider image for the Job path)
+
+## [2026-08-09 17:30] - ADR-0020: vSphere CreateVM_Task + MarkAsTemplate (template creation)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `VSphereClient::import_iso_template` (`vim.rs`) now actually creates the
+  template: resolve the cluster `resourcePool` + datacenter `vmFolder`, build a
+  `VirtualMachineConfigSpec` (EFI, pvscsi + blank thin 100 GiB disk, IDE CD-ROM
+  backed by the uploaded ISO), `Folder.CreateVM_Task`, poll the task to
+  completion (`Task.info` / `TaskInfoStateEnum`), then `MarkAsTemplate`.
+  Idempotent by name; `forceCreate` destroys the existing VM/template first.
+  Helpers `wait_for_task` + `find_vm_moref_by_name`; `IsoImportRequest` gains
+  `datacenter_moref` / `cluster_moref`.
+- Enabled the vim_rs `defaults` feature (was off under `default-features=false`)
+  so the device structs can be built with `..Default::default()`.
+
+### Not yet
+- **NIC** — the DVS port backing needs the port-group key + switch UUID
+  (extra DVPG/VDS introspection); the template is disk + ISO only for now, which
+  still boots the Kairos installer. Adding the NIC is the immediate follow-up.
+
+### Verification
+- Unit-tested control plane (66 vsphere tests); the vCenter mutation is verified
+  live (ADR-0019 footing) — run-local `image-import` against the real vCenter.
+
+### Impact
+- [x] Requires cluster rollout (new provider image for the Job path)
+
+## [2026-08-09 16:30] - ADR-0020: forceUpload/forceCreate + emptiest-datastore selection
+
+**Author:** Erick Bourgeois
+
+### Added
+- `VMImageSpec.forceUpload` / `forceCreate` (bool, default off) — threaded by the
+  reconciler onto the import Job as `--force-upload` / `--force-create`, and
+  accepted directly on the `image-import` subcommand. Split the old single
+  `--force` into the two independent knobs so a bad ISO or a bad template can be
+  replaced without manual vCenter cleanup.
+- Import is now **idempotent**: default skips the (multi-GB) upload when the ISO
+  is already on the datastore (HEAD check) and skips template creation when it
+  exists; `forceUpload` deletes+re-uploads (the datastore file API does not
+  overwrite in place), `forceCreate` destroys+recreates the template.
+- `Datastore` projection gains `free_space_bytes` (`summary.freeSpace`);
+  `resolve_concrete_datastore` now picks the **emptiest member** of an SDRS
+  datastore-cluster (ties break lexicographically for determinism) instead of
+  the first member.
+- Reconciler force knobs bundled into `ImportForce { reimport, upload, create }`
+  (`reimport` = `banlieue.io/force-reimport` re-run trigger; `upload`/`create`
+  from spec). Regenerated CRDs + API reference.
+
+### Impact
+- [x] Requires cluster rollout (new provider image for the Job path)
+
+## [2026-08-09 12:00] - ADR-0020: vSphere per-zone import control-plane + datastore upload + force
+
+**Author:** Erick Bourgeois
+
+### Added
+- `crates/banlieue-provider-vsphere/src/reconciler/vmimage.rs`: replaced the
+  `PerZoneImportNotImplemented` stub with real per-zone import-Job planning
+  (`gate_on_build_artifact` gates on `iso` + `Ready`; `ensure_import_jobs` /
+  `build_import_job` / `import_job_name` / `zone_from_job` mirror the libvirt
+  pattern; `useContentLibrary` reported as a documented follow-up).
+- `crates/banlieue-provider-vsphere/src/import.rs` (new) + `image-import`
+  subcommand: resolves the zone (datacenter/cluster/datastore/network) from the
+  Provider, verifies the ISO checksum (SEC-004), and **uploads the ISO to the
+  zone's datastore** over the vCenter datastore HTTP API (BYOC reqwest, reusing
+  Provider creds + CA — vim_rs 0.5 has no file-transfer API).
+- `Context` gains `build_namespace` / `import_image` / `import_service_account`
+  / `import_tolerations`; `app.rs` wires them + the subcommand.
+- **Force re-import**: `--force` flag on `image-import` +
+  `banlieue.io/force-reimport` VMImage annotation → the reconciler deletes and
+  recreates the per-zone Jobs with `--force`, and the import deletes an existing
+  template before recreating it.
+- `image-import` gains `--datastore` / `--network` overrides (bypass FD
+  capability introspection); **auto-mkdir** of the upload dir
+  (`VSphereClient::ensure_datastore_dir` → `FileManager.MakeDirectory`); and
+  **datastore-cluster resolution** (`resolve_concrete_datastore`) so an SDRS
+  StoragePod name — or a declarative `storageClasses: { datastoreCluster: … }`
+  — resolves to a concrete member datastore for the upload target.
+- Datastore upload uses a dedicated client with a generous
+  `DATASTORE_UPLOAD_TIMEOUT` (1h) instead of the 120s SOAP timeout — a 1.3 GB
+  ISO cannot upload in 120s. **Streaming**: the ISO is fed from disk via
+  `reqwest::Body::wrap_stream(tokio_util::io::ReaderStream)` with an explicit
+  `Content-Length` (the datastore file API wants a known length, not chunked),
+  so it never buffers multi-GB in memory. Adds the reqwest `stream` feature +
+  `tokio-util` (`io`).
+
+### Not yet (flagged for live-vCenter verification)
+- `VSphereClient::import_iso_template` (CreateVM_Task device tree + MarkAsTemplate)
+  returns a typed "pending live implementation" error. Everything up to it —
+  Job planning, checksum, zone resolution, datastore ISO upload — is implemented
+  and unit-tested (`FakeClient`); the vCenter mutation is verified on-prem like
+  the ADR-0019 introspection walk. No CRD schema change (flag + annotation only).
+
+### Why
+Closes the iter-1 vSphere `Url` stub end-to-end except the final template
+creation, which can only be behaviour-verified against a live vCenter.
+
+### Impact
+- [x] Requires cluster rollout (new image for the on-cluster provider/subcommand)
+
+## [2026-08-08 15:30] - ADR-0020: typed build artifact + ISO build pipeline (CALM + implementation)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `crates/banlieue-api/src/common.rs`: `CloudConfigSource` (secretRef-first,
+  mirrors `CABundleSource`) + `DEFAULT_CLOUD_CONFIG_KEY`.
+- `crates/banlieue-api/src/banlieue/vmimage.rs`: `VMImageSpec.cloudConfig`;
+  `BuildArtifactKind` (`cloudImage | iso`, kairos-`OSArtifactKind`-aligned).
+- `crates/banlieue-api/src/banlieue/provider.rs`: `ProviderSpec.useContentLibrary`
+  (bool, default off).
+- `crates/banlieue-imagebuilder/src/reconciler/vmimage.rs`:
+  `artifact_kind_for_class` — vSphere `Url` sources now request an `iso`
+  artifact (libvirt keeps `cloudImage`); `spec.artifacts.cloudConfigRef` is
+  emitted from `VMImage.spec.cloudConfig`.
+- `docs/architecture/calm/architecture.json` updated (imagebuilder / OSArtifact /
+  vmimage / vsphere-backend nodes+relationships); `make calm-validate` passes,
+  diagrams regenerated.
+
+### Changed
+- **Renamed** `VMImageStatus.rawDiskArtifact` → `buildArtifact`,
+  `RawDiskArtifactStatus` → `BuildArtifactStatus` (gains `kind`),
+  `RawDiskArtifactPhase` → `BuildArtifactPhase`, and the artifact's `diskFile`
+  → `file`. Migrated the writer (`banlieue-imagebuilder`) and readers
+  (`banlieue-provider-libvirt`, `-vsphere`) plus all tests/e2e; regenerated
+  `deploy/crds/banlieue.io_{vmimages,providers}.yaml` + `docs/src/reference/api.md`.
+- `examples/07-vmimage-kairos-url-source.yaml`: documents the ISO/`buildArtifact`
+  flow and a `cloudConfig.secretRef` stanza.
+
+### Why
+Implements the ADR-0020 build side: kairos-operator builds the vSphere ISO
+(`auroraboot build-iso`) with a baked cloud-config from a Secret, banlieue only
+orchestrates and types the artifact. One status field now carries either a raw
+cloud image (libvirt) or an ISO (vSphere).
+
+### Impact
+- [x] Breaking change (v1alpha1 status field rename; regen CRDs applied)
+- [x] Requires cluster rollout (new image with the imagebuilder/provider changes)
+
+### Follow-up (NOT in this change)
+- vSphere per-zone import Job + `image-import` subcommand + the vim_rs
+  datastore-upload / CreateVM / attach-ISO / MarkAsTemplate entrypoint. The
+  vSphere reader is migrated and still reports `PerZoneImportNotImplemented`
+  until that lands; the vim work is verified against a live vCenter (like
+  ADR-0019 introspection), so it is a separate increment.
+
+## [2026-08-08 14:00] - ADR-0020: vSphere per-zone ISO image import (design)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0020-vsphere-per-zone-iso-import.md` (Status: Proposed): decision
+  record for turning a `Url`-kind `VMImage` into a per-failure-domain vCenter
+  template via an ISO, closing the iter-1 `PerZoneImportNotImplemented` stub.
+  - kairos-operator builds the bootable ISO (`OSArtifact.artifacts.iso: true` →
+    `auroraboot build-iso`) with a baked cloud-config (`cloudConfigRef`), stored
+    in the artifacts PVC — no new banlieue build code.
+  - `banlieue-imagebuilder` orchestrates that `OSArtifact` and mirrors status; the
+    vSphere provider does the per-zone push (import Job → datastore-upload +
+    empty EFI VM + attach ISO + `MarkAsTemplate`), mirroring ADR-0011's libvirt
+    import-Job pattern.
+  - API changes decided (not yet implemented): typed `VMImageStatus.buildArtifact`
+    (`kind: cloudImage | iso`, aligned with kairos `OSArtifactKind`) replacing
+    `rawDiskArtifact`; `VMImageSpec.cloudConfig` (`secretRef`-first, mirrors
+    `CABundleSource`); `Provider.spec.useContentLibrary` toggle (default off).
+
+### Why
+Records the architecture before code per ADD. Confirms the build/push split with
+the maintainer: kairos-operator owns the ISO build, banlieue only orchestrates
+and distributes. No RPC — handoff is PVC + status only.
+
+### Impact
+- [x] Documentation only (this entry; implementation follows in later commits)
+
+## [2026-08-09 01:30] - vSphere capability introspection, iteration 2 (ADR-0019)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0019-vsphere-capability-introspection-iter2.md` + CALM update:
+  populate `Provider.status.failureDomains[].attributes` from
+  `spec.capabilities` per failure domain.
+- `crates/banlieue-provider-vsphere/src/client`: `VSphereClient::list_datastores`
+  / `list_networks` + slim `Datastore { datastore_cluster }` / `Network
+  { distributed }` types; vim_rs impl reads `ClusterComputeResource.datastore`/
+  `.network`, resolves SDRS `StoragePod` membership and DVS port groups;
+  `FakeClient`/`Inventory` gain `with_datastore`/`with_network`.
+- `crates/banlieue-provider-vsphere/src/reconciler/provider.rs`:
+  `discover_inventory` now takes `&ProviderCapabilities` and, per (dc, cluster),
+  computes `availableStorageClasses` (`datastore` / `datastoreCluster` targets),
+  `availableNetworkClasses` (`portGroup` / `distributedPortGroup`), and passes
+  `features` through. Pure `compute_failure_domain_attributes` +
+  reachability helpers, unit-tested with `FakeClient`.
+
+### Why
+Iteration 1 accepted `spec.capabilities` but left every failure domain's
+attributes empty, so the scheduler could not filter by storage/network class.
+Verified live against the real vCenter: each of the three failure domains
+reports only its own reachable datastore cluster + DVS port group
+(`dedicated-0N` / `data-0N`), confirming per-failure-domain precision.
+
+### Notes / follow-ups (in ADR-0019)
+- `tagCategory`/`tag` storage targets (need CIS REST) and feature-flag
+  *downgrade* are deferred; features are passed through as asserted.
+- On-cluster population requires rebuilding the banlieue image; run-local
+  verified the behavior.
+
+### Impact
+- [ ] Breaking change
+- [x] Feature (rebuild image for on-cluster effect); cargo fmt/clippy/test green;
+      no real infrastructure identifiers.
+
+## [2026-08-08 18:45] - Generic `bootstrap-operator` install target (any cluster)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `Makefile`: `bootstrap-operator` target — cluster-agnostic wrapper around
+  `banlieue bootstrap operator` (ADR-0013) for any real cluster (`KUBECONFIG`
+  from the env), the on-prem analog of the kind-only `kind-bootstrap-install`.
+  Resolves the `$(ARCH)` image digest of `$(REGISTRY)[/$(ORG)]/banlieue:$(VERSION)`
+  via `crane` and pins it (`--image-digest`), then waits for the operator +
+  controller rollouts. Knobs: `REGISTRY`/`ORG`/`VERSION`/`ARCH`/`NAMESPACE`.
+
+### Why
+Deploying banlieue onto the on-prem k0s cluster from an internal registry needed
+a repeatable, arch-pinned install path; `kind-bootstrap-install` is kind-locked.
+Used to (re)deploy main banlieue with an internal `banlieue:local-dev` image —
+controller, operator, and the operator-spawned vSphere provider all came up on
+the new image with the provider reporting Ready against the real vCenter.
+
+### Impact
+- [x] Tooling only (Makefile; no real infrastructure identifiers — all
+      estate values caller-supplied)
+
+## [2026-08-08 18:15] - Generic `docker-image` build target (ARCH + registry)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `Makefile`: `docker-image` target — one generic, arch-parameterized image
+  build for both `--load` and build+push (`PUSH=true`). Knobs: `ARCH`
+  (amd64|arm64, default amd64), `IMAGE_REF` (derived from
+  `REGISTRY`/`ORG`/`BINARY`/`IMAGE_TAG`, with `ORG` optional so
+  `<registry>/banlieue:<tag>` — the layout `banlieue bootstrap --registry`
+  expects — is producible via `ORG=`). Cross-compiles + stages
+  `binaries/$(ARCH)` first, then `buildx`-builds with `TARGETARCH=$(ARCH)`.
+  New vars `ARCH` / `IMAGE_REF`.
+
+### Why
+The existing `docker-build-amd64` / `docker-build-arm64` / `docker-buildx`
+targets are arch-hardcoded, duplicated, and tag as `$(BINARY):$(IMAGE_TAG)-arch`
+or `$(REGISTRY)/$(ORG)/$(BINARY)` (an `ORG` segment absent from
+artifactory-root refs). `docker-image` collapses build/push × arch × registry
+into one target that can emit an org-less ref for an internal mirror. Existing
+targets are left intact (CI references them).
+
+### Impact
+- [x] Tooling only (Makefile; no real infrastructure identifiers — `REGISTRY`
+      defaults to `ghcr.io`, all estate values are caller-supplied)
+- Image builds/pushes remain operator-run (`rules`: banlieue never builds/pushes
+      images itself).
+
+## [2026-08-08 17:30] - Fix: imagebuilder emitted null nodeSelector/tolerations
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `crates/banlieue-imagebuilder/src/reconciler/vmimage.rs`: `desired_os_artifact`
+  emitted `spec.nodeSelector: null` / `spec.tolerations: null` (and
+  `metadata.ownerReferences: null` when unowned) — a `bool.then(|| …)` `None`
+  becomes JSON `null` inside `json!`, not an omitted key. The OSArtifact CRD
+  types these as object/array and **rejects `null` with a 422**, so every
+  imagebuilder OSArtifact SSA-apply failed when no build scheduling was
+  configured. Now the spec/metadata are built incrementally and the optional
+  keys are omitted unless set.
+- `crates/banlieue-imagebuilder/src/reconciler/vmimage_tests.rs`: regression
+  tests asserting the keys are **absent** (via `contains_key`, since `.is_null()`
+  can't distinguish absent from null) when empty, and present when set.
+
+### Why
+Surfaced running `banlieue imagebuilder` against the real kairos-operator CRD
+on-prem: the VMImage reconcile hot-looped on
+`OSArtifact … is invalid: spec.nodeSelector … must be of type object: "null"`.
+vcsim/unit paths didn't catch it — only a real CRD enforces the field types.
+
+### Impact
+- [ ] Breaking change
+- [x] Bug fix (rebuild the banlieue image for the on-cluster imagebuilder path;
+      run-local already runs the fixed code)
+
+## [2026-08-08 16:10] - Design note: private-CA image pulls for OSArtifact builds
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/design/kairos-operator-private-ca-unpack.md`: design/contribution note
+  for pulling `OSArtifact` `image.ref` sources from an internal registry fronted
+  by a **private CA**, **without** disabling TLS verification. Documents (A) the
+  upstream kairos-operator change — mount a CA volume + set `SSL_CERT_FILE` on
+  the `auroraboot unpack` container (`internal/controller/job.go`
+  `unpackAndPackToArtifactsContainer`), plus the `OSArtifactSpec` field to add —
+  and (B) the banlieue-side workaround available today: a CA-trusting auroraboot
+  `--tool-image` (Dockerfile via `SSL_CERT_FILE`) wired through the operator's
+  `--tool-image` flag. Explains why the existing `caCertificatesVolume` /
+  `buildEnv` knobs cover only the buildah OCI-build path, not the unpack path.
+
+### Why
+Testing `banlieue-imagebuilder` on-prem surfaced that `auroraboot unpack` fails
+`x509: certificate signed by unknown authority` against a private-CA mirror, and
+kairos-operator exposes no CA mount for that path — only `pullInsecureRegistry`,
+which the environment cannot use. Captures the proper upstream fix and the
+no-insecure workaround.
+
+### Impact
+- [x] Documentation only (no code/CRD change; no real infrastructure identifiers)
+
+## [2026-08-08 15:00] - Vault-backed flux-operator automation for k0s bootstrap
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0018-vault-flux-operator-bootstrap.md`: ADR for an opt-in
+  (`FLUX_ENABLED=true`) `flux` step that fetches a registry credential from
+  HashiCorp Vault via the `vault` CLI (token auth only, `vault kv get` —
+  KV v1/v2-agnostic) and pushes flux-operator + `flux-core` manifests onto the
+  cluster. Closes the last gap between `scripts/bootstrap-k0s-cluster.sh` and
+  the `~/dev/mke-build` Ansible playbook it replaces.
+- `scripts/bootstrap-k0s-cluster.sh`: `vault_kv_get`, `check_deps_flux`,
+  `render_flux_{operator_install,prereqs,instance,bootstrap}`, and
+  backend-agnostic `deploy_flux` (reuses `populate_node_table`/`NODE_TABLE`, so
+  no per-backend branching). New `flux` subcommand, wired into `all`. New
+  `VAULT_*`/`FLUX_*` env vars, documented in `--print-env-template` — all
+  operator-supplied, no hardcoded Vault path, registry, or CA source.
+- `docs/architecture/calm/architecture.json`: `network-vault-backend` node +
+  `rel-bootstrap-vault` relationship; `system-k0s-bootstrap` description
+  updated; ADR-0018 added to the `adrs` list.
+
+### Changed
+- `scripts/bootstrap-cluster.prompt.md`: §1 intake and §5 rewritten for the
+  automated flux flow (Vault vars instead of manual secret staging); §3's
+  command list and the intro paragraph mention the new `flux` step.
+
+### Why
+The bash script already mirrored `k0s-control-plane.yaml`'s VM-provisioning
+and native k0s-install flow (ADR-0017); this closes the remaining gap —
+`k0s-deploy-manifests.yaml` + `roles/flux-prereqs` + `roles/vault` — so the
+script + prompt can fully replace the Ansible playbook. The reference repo's
+Vault path, registry hostnames, and CA-bundle source are all environment-specific
+and were generalized to operator-supplied env vars rather than copied.
+
+### Impact
+- [ ] Breaking change
+- [x] Tooling only (opt-in; `FLUX_ENABLED` defaults to `false`)
+- [x] No real infrastructure identifiers committed (Vault mount/path, registry,
+      OCI URL, and CA bundle all come from the untracked `BANLIEUE_ENV_FILE`
+      or ambient `VAULT_ADDR`/`VAULT_TOKEN`)
+
 ## [2026-08-08 14:20] - Fix: unique failure-domain names + stop reconcile hot-loop
 
 **Author:** Erick Bourgeois
@@ -211,75 +655,6 @@ compute clusters makes each an etcd failure domain (ADR-0002 reasoning).
 - [x] Tooling only (management-cluster bootstrap; no CRD/runtime change)
 - [x] No real infrastructure identifiers committed (env-driven + govc
       discovery; real values live in an untracked `BANLIEUE_ENV_FILE`)
-
-- `docs/src/stylesheets/extra.css`: neutral slate/sky/amber palette (no corporate branding from the 5-spot source), mermaid zoom/pan, TOC, mobile + print styles.
-
-## [2026-08-03 04:30] - Full image-pipeline e2e against a real cluster and libvirt host
-
-**Author:** Erick Bourgeois
-
-### Added
-- `crates/banlieue-provider-libvirt/tests/e2e_import_pipeline.rs` — the whole of
-  ADR-0010 end to end: `VMImage` → `OSArtifact` → artifacts PVC → one import Job
-  per declared pool → a volume on the host → per-zone status → the aggregate
-  condition.
-- `make libvirt-e2e` and `make libvirt-live-test`, both **local only**.
-
-### Why
-The existing suites each covered one half and neither covered the seam: the
-kind-based operator suites have no libvirt, and `live_libvirtd.rs` speaks the
-protocol with no Kubernetes. Everything between them had been verified only by
-hand, so every finding from that work could regress silently.
-
-The assertions encode what the manual runs cost to discover:
-
-- one Job per **declared** pool, and explicitly none for a pool that exists on
-  the host but was never declared;
-- import Jobs carry **no `nodeSelector`** — placement follows the artifacts PVC,
-  which the scheduler resolves from the bound PV;
-- the aggregate flips to `Ready=True` only when every zone is ready;
-- `rawDiskArtifact` (imagebuilder's field manager) survives alongside
-  `perProvider` (the provider's) on one object;
-- ground truth on the host: the volume is present in every declared pool and
-  **absent** from undeclared ones.
-
-### Never runs in CI
-It needs a real libvirt host *and* a cluster with banlieue installed — neither
-of which CI has, and neither of which can be faked, since the seam between them
-is the point. `#[ignore]`d, so `cargo test` skips it, and deliberately not
-referenced from any workflow. Same treatment as `vsphere-live-test`.
-
-### Verified
-Passes against the homelab cluster in 8m38s:
-
-```
-✓ banlieue-imagebuilder publishes a Ready raw disk
-✓ one import Job per declared pool
-✓ every import Job succeeds
-✓ aggregate Ready=True
-✓ default / images / k0s-bootstrap hold the volume
-✓ boot (undeclared) untouched
-```
-
-### Notes
-Two things the first runs taught, now documented in the suite and the make
-target:
-
-- **Disk.** Each run creates a ~10Gi artifacts PVC which, with a node-local
-  provisioner, lands on the build node beside the builder's own multi-gigabyte
-  scratch. Too little space evicts the build pod rather than failing it, showing
-  up as `ContainerStatusUnknown` and an `Error` OSArtifact with no log — the
-  reason is on the *pod*. Budget ~15Gi, and PVCs persist until their `VMImage`
-  is deleted.
-- **Namespaces.** Import Jobs live in the build namespace, not the Provider's
-  (ADR-0016), so the suite searches cluster-wide. Looking in the Provider's
-  namespace finds nothing and looks exactly like the provider never reconciled.
-
-### Impact
-- [ ] Breaking change
-- [ ] Requires cluster rollout
-- [ ] Config change only
-- [x] Test-only — one `#[ignore]`d suite and two make targets
 
 ## [2026-08-02 21:15] - Pin provider workloads by digest
 
@@ -3479,7 +3854,7 @@ Two separate issues, fixed together: the examples now target the same default na
 - `docs/src/concepts/`: `index.md`, `architecture.md` (components, reconcile flow, watches, SSA), `virtualmachine.md` (CRD shape, status, lifecycle), `providers.md` (Provider CR + provider controller anatomy + SDK pointers), `infra-crds-capi.md` (why we satisfy the CAPI v1beta2 InfraMachine contract).
 - `docs/src/getting-started/quickstart.md`: stubbed Phase 0/1A quick start with explicit "not production-ready" admonition.
 - `docs/src/reference/roadmap.md` + `docs/src/reference/license.md`: public-facing roadmap (Phase 0 → 1E) and Apache-2.0 summary.
-- `docs/src/stylesheets/extra.css`: neutral slate/sky/amber palette (no RBC branding from the 5-spot source), mermaid zoom/pan, TOC, mobile + print styles.
+- `docs/src/stylesheets/extra.css`: neutral slate/sky/amber palette (no corporate branding from the 5-spot source), mermaid zoom/pan, TOC, mobile + print styles.
 - `docs/src/javascripts/mermaid-init.js`: mermaid initialiser + zoom/pan handlers, supports Material's instant-navigation re-render via `document$`.
 - Root `Makefile`: `docs`, `docs-serve`, `docs-clean`, `docs-deploy` targets — Poetry-based, all logic in the Makefile per the project's "workflows are Makefile-driven" rule.
 - Root `.gitignore`: ignore `docs/site/`, `docs/.venv/`, `docs/__pycache__/`.

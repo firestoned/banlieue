@@ -39,9 +39,14 @@
 # node, uploading the binary over SSH (uploadBinary: true).
 #
 # Usage:
-#   ./bootstrap-k0s-cluster.sh [all|vms|config|apply|kubeconfig|label|destroy]
+#   ./bootstrap-k0s-cluster.sh [all|vms|config|apply|kubeconfig|label|flux|destroy]
 #   BANLIEUE_ENV_FILE=~/.k0s/banlieue.env BACKEND=vsphere ./bootstrap-k0s-cluster.sh all
 #   ./bootstrap-k0s-cluster.sh --print-env-template   # scaffold for the vSphere env file
+#
+#   FLUX_ENABLED=true (in the env file) adds an opt-in `flux` step -- fetches a
+#   registry credential from Vault (token auth via the `vault` CLI; VAULT_ADDR/
+#   VAULT_TOKEN come from your shell, not the env file) and pushes flux-operator
+#   + flux-core manifests onto a controller (ADR-0018).
 #
 # All settings below can be overridden via environment variables (the Makefile
 # forwards its own variables the same way).
@@ -175,6 +180,49 @@ CALICO_REACH="${CALICO_REACH:-}"
 # (k0s #600/#5503). Disabling it removes that failure mode entirely and matches
 # the reference on-prem clusters. Set false only if the network is NOT flat.
 K0S_DISABLE_KONNECTIVITY="${K0S_DISABLE_KONNECTIVITY:-true}"
+
+# ----------------------------------------------------------------------------
+# Vault + flux-operator (opt-in; ADR-0018)
+# ----------------------------------------------------------------------------
+# When true, the `flux` step (and `all`) fetches a registry credential from
+# Vault and pushes flux-operator + flux-core manifests onto the cluster.
+FLUX_ENABLED="${FLUX_ENABLED:-false}"
+
+# The `vault` CLI reads VAULT_ADDR/VAULT_TOKEN from the ambient environment
+# itself -- token auth only, no login/AppRole flow (matches the reference
+# Ansible role this was modeled on: a mandatory pre-existing VAULT_TOKEN, no
+# auth negotiation; see ADR-0018). Mount + secret path are entirely
+# operator-supplied -- no default, since any value here would be a guess at an
+# estate's naming convention.
+VAULT_KV_MOUNT="${VAULT_KV_MOUNT:-}"
+VAULT_SECRET_PATH="${VAULT_SECRET_PATH:-}"
+VAULT_FLUX_USER_KEY="${VAULT_FLUX_USER_KEY:-flux}"
+VAULT_FLUX_PASS_KEY="${VAULT_FLUX_PASS_KEY:-flux-pass}"
+
+# Registry the flux-artifactory imagePullSecret authenticates against, and the
+# OCIRepository flux-core pulls from. No default -- both name a real estate
+# registry.
+FLUX_REGISTRY="${FLUX_REGISTRY:-}"
+FLUX_CORE_OCI_URL="${FLUX_CORE_OCI_URL:-}"
+
+# flux-operator itself: public upstream by default, overridable to an internal
+# mirror the same way K0S_BINARY_BASEURL above is.
+FLUX_OPERATOR_VERSION="${FLUX_OPERATOR_VERSION:-v0.20.0}"
+FLUX_OPERATOR_INSTALL_URL="${FLUX_OPERATOR_INSTALL_URL:-https://github.com/controlplaneio-fluxcd/flux-operator/releases/download}"
+FLUX_OPERATOR_REGISTRY="${FLUX_OPERATOR_REGISTRY:-ghcr.io/controlplaneio-fluxcd}"
+FLUX_DISTRIBUTION_VERSION="${FLUX_DISTRIBUTION_VERSION:-2.x}"
+
+# Optional local file whose contents become the flux-tls CA secret; if unset,
+# no flux-tls secret is created and OCIRepository.certSecretRef is omitted --
+# there is no automated CA-bundle fetch (the reference's equivalent pulls from
+# an org-internal HTTP API out of scope for a public tool; see ADR-0018).
+FLUX_CA_BUNDLE_FILE="${FLUX_CA_BUNDLE_FILE:-}"
+
+# Space-separated KEY=VALUE pairs merged into the flux-core Kustomization's
+# postBuild.substitute, alongside the always-injected CLUSTER_DNS. Substitution
+# keys are entirely operator-defined -- banlieue has no appcode/env convention
+# of its own to default them from.
+FLUX_SUBSTITUTIONS="${FLUX_SUBSTITUTIONS:-}"
 
 WORKDIR="${WORKDIR:-$HOME/.local/share/k0s-bootstrap}"
 POOL_DIR="${POOL_DIR:-/var/lib/libvirt/images/k0s-bootstrap}"
@@ -919,7 +967,7 @@ vsphere_kubeconfig() {
 # ============================================================================
 # Backend dispatch
 # ============================================================================
-check_deps()     { if [[ "$BACKEND" == "vsphere" ]]; then check_deps_vsphere;  else check_deps_libvirt;  fi; }
+check_deps()     { if [[ "$BACKEND" == "vsphere" ]]; then check_deps_vsphere;  else check_deps_libvirt;  fi; check_deps_flux; }
 create_vms()     { if [[ "$BACKEND" == "vsphere" ]]; then create_vms_vsphere;  else create_vms_libvirt;  fi; }
 destroy_all()    { if [[ "$BACKEND" == "vsphere" ]]; then destroy_vsphere;     else destroy_libvirt;     fi; }
 # k0s install half: vSphere installs natively; libvirt keeps k0sctl.
@@ -1140,6 +1188,206 @@ label_imagebuild_node() {
   done
 }
 
+# ============================================================================
+# Vault + flux-operator (backend-agnostic; opt-in via FLUX_ENABLED, ADR-0018)
+# ============================================================================
+# Fetch ONE field from a Vault KV secret. Uses the `vault kv` subcommand (not
+# `vault read`) so this doesn't need to know whether the mount is KV v1 or v2
+# -- unlike a raw API/lookup-plugin path, `vault kv get` handles the /data/
+# nesting itself. VAULT_ADDR/VAULT_TOKEN are read by the vault binary from the
+# ambient environment; no login flow is implemented here.
+vault_kv_get() {
+  local field="$1" attempt out
+  for attempt in 1 2 3; do
+    if out="$(vault kv get -mount="$VAULT_KV_MOUNT" -field="$field" "$VAULT_SECRET_PATH" 2>/dev/null)"; then
+      printf '%s' "$out"
+      return 0
+    fi
+    [[ "$attempt" -lt 3 ]] && sleep 5
+  done
+  log "vault kv get failed for field '$field' at $VAULT_KV_MOUNT/$VAULT_SECRET_PATH after 3 attempts"
+  return 1
+}
+
+check_deps_flux() {
+  [[ "$FLUX_ENABLED" == "true" ]] || return 0
+  command -v vault >/dev/null 2>&1 || { log "FLUX_ENABLED=true requires the vault CLI"; exit 1; }
+  [[ -n "${VAULT_ADDR:-}" ]] || { log "VAULT_ADDR is not set (required when FLUX_ENABLED=true)"; exit 1; }
+  [[ -n "${VAULT_TOKEN:-}" ]] || { log "VAULT_TOKEN is not set (required when FLUX_ENABLED=true)"; exit 1; }
+  [[ -n "$VAULT_KV_MOUNT" ]] || { log "VAULT_KV_MOUNT is empty -- set it in BANLIEUE_ENV_FILE"; exit 1; }
+  [[ -n "$VAULT_SECRET_PATH" ]] || { log "VAULT_SECRET_PATH is empty -- set it in BANLIEUE_ENV_FILE"; exit 1; }
+  [[ -n "$FLUX_REGISTRY" ]] || { log "FLUX_REGISTRY is empty -- set it in BANLIEUE_ENV_FILE"; exit 1; }
+  [[ -n "$FLUX_CORE_OCI_URL" ]] || { log "FLUX_CORE_OCI_URL is empty -- set it in BANLIEUE_ENV_FILE"; exit 1; }
+  if [[ -n "$FLUX_CA_BUNDLE_FILE" && ! -f "$FLUX_CA_BUNDLE_FILE" ]]; then
+    log "FLUX_CA_BUNDLE_FILE=$FLUX_CA_BUNDLE_FILE not found"; exit 1
+  fi
+}
+
+# dockerconfigjson auths entry for one registry.
+_flux_dockerconfigjson() {
+  local user="$1" pass="$2" registry="$3" auth
+  auth="$(printf '%s:%s' "$user" "$pass" | base64 | tr -d '\n')"
+  printf '{"auths":{"%s":{"username":"%s","password":"%s","auth":"%s"}}}' \
+    "$registry" "$user" "$pass" "$auth"
+}
+
+# flux-operator's own install manifest, optionally rewritten to an internal
+# image mirror (generalizes the reference's hardcoded Artifactory rewrite).
+render_flux_operator_install() {
+  local url="$FLUX_OPERATOR_INSTALL_URL/$FLUX_OPERATOR_VERSION/install.yaml"
+  if [[ "$FLUX_OPERATOR_REGISTRY" != "ghcr.io/controlplaneio-fluxcd" ]]; then
+    curl -fsSL "$url" | sed -e "s#ghcr\.io/controlplaneio-fluxcd#${FLUX_OPERATOR_REGISTRY}#"
+  else
+    curl -fsSL "$url"
+  fi
+}
+
+# flux-system namespace, optional flux-tls CA secret, and the flux-artifactory
+# dockerconfigjson image-pull secret built from the Vault-fetched credential.
+render_flux_prereqs() {
+  local flux_user="$1" flux_pass="$2" dockerconfig b64dc ca_b64
+  echo "---"
+  echo "apiVersion: v1"
+  echo "kind: Namespace"
+  echo "metadata:"
+  echo "  name: flux-system"
+  if [[ -n "$FLUX_CA_BUNDLE_FILE" ]]; then
+    ca_b64="$(base64 <"$FLUX_CA_BUNDLE_FILE" | tr -d '\n')"
+    echo "---"
+    echo "apiVersion: v1"
+    echo "kind: Secret"
+    echo "type: Opaque"
+    echo "metadata:"
+    echo "  name: flux-tls"
+    echo "  namespace: flux-system"
+    echo "data:"
+    echo "  ca.crt: $ca_b64"
+  fi
+  dockerconfig="$(_flux_dockerconfigjson "$flux_user" "$flux_pass" "$FLUX_REGISTRY")"
+  b64dc="$(printf '%s' "$dockerconfig" | base64 | tr -d '\n')"
+  echo "---"
+  echo "apiVersion: v1"
+  echo "kind: Secret"
+  echo "type: kubernetes.io/dockerconfigjson"
+  echo "metadata:"
+  echo "  name: flux-artifactory"
+  echo "  namespace: flux-system"
+  echo "data:"
+  echo "  .dockerconfigjson: $b64dc"
+}
+
+# FluxInstance (installs the operator's components) + the flux-core
+# OCIRepository it reconciles from. certSecretRef is only emitted when a CA
+# bundle secret was created.
+render_flux_instance() {
+  local has_ca="$1"
+  echo "---"
+  echo "apiVersion: fluxcd.controlplane.io/v1"
+  echo "kind: FluxInstance"
+  echo "metadata:"
+  echo "  name: flux"
+  echo "  namespace: flux-system"
+  echo "spec:"
+  echo "  distribution:"
+  echo "    version: \"$FLUX_DISTRIBUTION_VERSION\""
+  echo "    registry: \"$FLUX_OPERATOR_REGISTRY\""
+  echo "    imagePullSecret: \"flux-artifactory\""
+  echo "  components:"
+  echo "    - source-controller"
+  echo "    - kustomize-controller"
+  echo "    - helm-controller"
+  echo "    - notification-controller"
+  echo "  cluster:"
+  echo "    type: kubernetes"
+  echo "    multitenant: false"
+  echo "    networkPolicy: false"
+  echo "---"
+  echo "apiVersion: source.toolkit.fluxcd.io/v1"
+  echo "kind: OCIRepository"
+  echo "metadata:"
+  echo "  name: flux-core"
+  echo "  namespace: flux-system"
+  echo "spec:"
+  echo "  interval: 5m0s"
+  echo "  provider: generic"
+  echo "  ref:"
+  echo "    semver: '>= 0.0.0-0'"
+  echo "  secretRef:"
+  echo "    name: flux-artifactory"
+  if [[ "$has_ca" == "true" ]]; then
+    echo "  certSecretRef:"
+    echo "    name: flux-tls"
+  fi
+  echo "  timeout: 60s"
+  echo "  url: $FLUX_CORE_OCI_URL"
+}
+
+# The flux-core Kustomization: reconciles whatever the OCIRepository above
+# pulls, substituting CLUSTER_DNS plus any operator-supplied FLUX_SUBSTITUTIONS.
+render_flux_bootstrap() {
+  echo "---"
+  echo "apiVersion: kustomize.toolkit.fluxcd.io/v1"
+  echo "kind: Kustomization"
+  echo "metadata:"
+  echo "  name: flux-core"
+  echo "  namespace: flux-system"
+  echo "spec:"
+  echo "  sourceRef:"
+  echo "    kind: OCIRepository"
+  echo "    name: flux-core"
+  echo "  path: \"./\""
+  echo "  interval: 10m"
+  echo "  timeout: 5m"
+  echo "  prune: false"
+  echo "  wait: true"
+  echo "  serviceAccountName: kustomize-controller"
+  echo "  targetNamespace: flux-system"
+  echo "  postBuild:"
+  echo "    substitute:"
+  echo "      CLUSTER_DNS: \"${API_SAN:-$CLUSTER_NAME}\""
+  local kv k v
+  for kv in $FLUX_SUBSTITUTIONS; do
+    k="${kv%%=*}"; v="${kv#*=}"
+    echo "      $k: \"$v\""
+  done
+}
+
+# Deploy flux-operator + flux-core onto the cluster. Backend-agnostic: reuses
+# populate_node_table/NODE_TABLE (already resolves a uniform table for both
+# vsphere and libvirt) and drops manifests onto
+# /var/lib/k0s/manifests/flux-operator/ on the first controller -- k0s's
+# manifest deployer auto-applies them regardless of install method (native or
+# k0sctl).
+deploy_flux() {
+  if [[ "$FLUX_ENABLED" != "true" ]]; then
+    log "FLUX_ENABLED is not 'true' -- skipping flux-operator deployment"
+    return 0
+  fi
+  populate_node_table
+  local row name role ip cp_ip=""
+  for row in "${NODE_TABLE[@]}"; do
+    IFS='|' read -r name role ip <<<"$row"
+    if [[ "$role" == controller* ]]; then cp_ip="$ip"; break; fi
+  done
+  [[ -n "$cp_ip" ]] || { log "no controller found in NODE_TABLE"; exit 1; }
+
+  log "[$cp_ip] fetching flux registry credential from Vault ($VAULT_KV_MOUNT/$VAULT_SECRET_PATH)"
+  local flux_user flux_pass
+  flux_user="$(vault_kv_get "$VAULT_FLUX_USER_KEY")" || exit 1
+  flux_pass="$(vault_kv_get "$VAULT_FLUX_PASS_KEY")" || exit 1
+
+  local has_ca="false"
+  [[ -n "$FLUX_CA_BUNDLE_FILE" ]] && has_ca="true"
+
+  log "[$cp_ip] writing flux-operator manifests to /var/lib/k0s/manifests/flux-operator/"
+  ssh_run "$cp_ip" 'mkdir -p /var/lib/k0s/manifests/flux-operator'
+  render_flux_operator_install | ssh_run "$cp_ip" 'cat > /var/lib/k0s/manifests/flux-operator/00-install.yaml'
+  render_flux_prereqs "$flux_user" "$flux_pass" | ssh_run "$cp_ip" 'cat > /var/lib/k0s/manifests/flux-operator/10-pre-reqs.yaml'
+  render_flux_instance "$has_ca" | ssh_run "$cp_ip" 'cat > /var/lib/k0s/manifests/flux-operator/30-flux-instance.yaml'
+  render_flux_bootstrap | ssh_run "$cp_ip" 'cat > /var/lib/k0s/manifests/flux-operator/40-flux-bootstrap.yaml'
+  log "flux-operator manifests staged on $cp_ip -- k0s will apply them automatically"
+}
+
 tailscale_remove_devices() {
   if [[ -z "$TAILSCALE_API_KEY" ]]; then
     return 0
@@ -1211,6 +1459,24 @@ NODES=(
   "node01.example.com 01 10.0.0.90 controller+worker"
   "node02.example.com 01 10.0.0.91 worker"
 )
+
+# Optional: flux-operator + flux-core (ADR-0018). Leave FLUX_ENABLED=false to
+# skip this entirely. VAULT_ADDR/VAULT_TOKEN are exported in your shell, NOT
+# written here. VAULT_KV_MOUNT/VAULT_SECRET_PATH point at YOUR estate's KV
+# secret (no leading/trailing slash, no /data/ segment -- `vault kv get`
+# handles that itself); the example values below are placeholders, not a
+# convention to imitate.
+# FLUX_ENABLED=true
+# VAULT_KV_MOUNT=kv
+# VAULT_SECRET_PATH=myteam/dev/service-ids
+# VAULT_FLUX_USER_KEY=flux                        # field name in that secret
+# VAULT_FLUX_PASS_KEY=flux-pass
+# FLUX_REGISTRY=registry.example.com               # imagePullSecret target
+# FLUX_CORE_OCI_URL=oci://registry.example.com/flux-core/main
+# FLUX_OPERATOR_VERSION=v0.20.0
+# FLUX_OPERATOR_REGISTRY=ghcr.io/controlplaneio-fluxcd   # or your mirror
+# FLUX_CA_BUNDLE_FILE=                             # optional local CA file
+# FLUX_SUBSTITUTIONS="CLUSTER_ENV=dev TEAM=myteam" # operator-defined keys
 TEMPLATE
 }
 
@@ -1239,6 +1505,10 @@ main() {
       check_deps
       label_imagebuild_node
       ;;
+    flux)
+      check_deps
+      deploy_flux
+      ;;
     destroy)
       destroy_all
       ;;
@@ -1250,10 +1520,12 @@ main() {
       k0s_apply
       k0s_kubeconfig
       label_imagebuild_node
+      deploy_flux
       ;;
     *)
-      echo "Usage: $0 [all|vms|config|apply|kubeconfig|label|destroy|--print-env-template]" >&2
+      echo "Usage: $0 [all|vms|config|apply|kubeconfig|label|flux|destroy|--print-env-template]" >&2
       echo "  BACKEND=libvirt (default) | vsphere   (vsphere also needs BANLIEUE_ENV_FILE)" >&2
+      echo "  FLUX_ENABLED=true         to enable the flux/all flux-operator deployment step" >&2
       exit 1
       ;;
   esac

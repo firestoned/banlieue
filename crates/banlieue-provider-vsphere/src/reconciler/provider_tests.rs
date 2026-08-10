@@ -8,9 +8,14 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::client::{Datacenter, FakeClient, Inventory, VSphereClient};
+    use crate::client::{Datacenter, Datastore, FakeClient, Inventory, Network, VSphereClient};
 
-    use super::super::{discover_inventory, failure_domain_name};
+    use banlieue_api::banlieue::{NetworkClassMapping, ProviderCapabilities, StorageClassMapping};
+    use std::collections::BTreeMap;
+
+    use super::super::{
+        compute_failure_domain_attributes, discover_inventory, failure_domain_name,
+    };
 
     fn as_client(c: &FakeClient) -> &dyn VSphereClient {
         c
@@ -93,9 +98,13 @@ mod tests {
     #[tokio::test]
     async fn discover_inventory_returns_one_fd_per_dc_cluster_pair() {
         let client = fake_client(small_inventory());
-        let fds = discover_inventory(as_client(&client), "prod-vsphere")
-            .await
-            .expect("inventory walk succeeds");
+        let fds = discover_inventory(
+            as_client(&client),
+            "prod-vsphere",
+            &ProviderCapabilities::default(),
+        )
+        .await
+        .expect("inventory walk succeeds");
 
         assert_eq!(fds.len(), 3, "two DCs × (2+1) clusters = 3 FDs");
 
@@ -118,7 +127,9 @@ mod tests {
     #[tokio::test]
     async fn discover_inventory_populates_labels_and_raw_attributes() {
         let client = fake_client(small_inventory());
-        let fds = discover_inventory(as_client(&client), "p").await.unwrap();
+        let fds = discover_inventory(as_client(&client), "p", &ProviderCapabilities::default())
+            .await
+            .unwrap();
         let fd = fds
             .iter()
             .find(|f| f.name == "p-dc-east-cluster-a")
@@ -142,7 +153,9 @@ mod tests {
     #[tokio::test]
     async fn discover_inventory_with_no_datacenters_returns_empty() {
         let client = fake_client(Inventory::default());
-        let fds = discover_inventory(as_client(&client), "p").await.unwrap();
+        let fds = discover_inventory(as_client(&client), "p", &ProviderCapabilities::default())
+            .await
+            .unwrap();
         assert!(fds.is_empty());
     }
 
@@ -152,8 +165,127 @@ mod tests {
         // bare DC produces zero FDs — clusters are the scheduling unit.
         let inv = Inventory::builder().with_dc("dc-empty").build();
         let client = fake_client(inv);
-        let fds = discover_inventory(as_client(&client), "p").await.unwrap();
+        let fds = discover_inventory(as_client(&client), "p", &ProviderCapabilities::default())
+            .await
+            .unwrap();
         assert!(fds.is_empty());
+    }
+
+    // ----------------------------------------------------------------------
+    // capability introspection (ADR-0019)
+    // ----------------------------------------------------------------------
+
+    fn target(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn compute_attributes_matches_targets_by_kind() {
+        let caps = ProviderCapabilities {
+            storage_classes: vec![
+                StorageClassMapping {
+                    name: "gold".into(),
+                    target: target(&[("datastoreCluster", "DSC-A")]),
+                },
+                StorageClassMapping {
+                    name: "by-name".into(),
+                    target: target(&[("datastore", "ds-01")]),
+                },
+                StorageClassMapping {
+                    name: "absent".into(),
+                    target: target(&[("datastoreCluster", "DSC-Z")]),
+                },
+                StorageClassMapping {
+                    name: "tagged".into(),
+                    target: target(&[("tagCategory", "tier"), ("tag", "gold")]),
+                },
+            ],
+            network_classes: vec![
+                NetworkClassMapping {
+                    name: "dvs".into(),
+                    target: target(&[("distributedPortGroup", "pg-dvs")]),
+                },
+                NetworkClassMapping {
+                    name: "std".into(),
+                    target: target(&[("portGroup", "pg-std")]),
+                },
+                // portGroup target against a *distributed* net must NOT match.
+                NetworkClassMapping {
+                    name: "wrong-kind".into(),
+                    target: target(&[("portGroup", "pg-dvs")]),
+                },
+            ],
+            features: vec!["hotAddCPU".into(), "efiSecureBoot".into()],
+        };
+        let datastores = vec![
+            Datastore {
+                name: "ds-01".into(),
+                moref: "datastore-1".into(),
+                datastore_cluster: None,
+                free_space_bytes: None,
+            },
+            Datastore {
+                name: "ds-99".into(),
+                moref: "datastore-2".into(),
+                datastore_cluster: Some("DSC-A".into()),
+                free_space_bytes: None,
+            },
+        ];
+        let networks = vec![
+            Network {
+                name: "pg-dvs".into(),
+                moref: "n1".into(),
+                distributed: true,
+            },
+            Network {
+                name: "pg-std".into(),
+                moref: "n2".into(),
+                distributed: false,
+            },
+        ];
+        let a = compute_failure_domain_attributes(&caps, &datastores, &networks, "dc", "cl");
+        assert_eq!(a.available_storage_classes, vec!["gold", "by-name"]);
+        assert_eq!(a.available_network_classes, vec!["dvs", "std"]);
+        assert_eq!(a.features, vec!["hotAddCPU", "efiSecureBoot"]); // passthrough
+        assert_eq!(a.raw.get("datacenter").map(String::as_str), Some("dc"));
+        assert_eq!(a.raw.get("cluster").map(String::as_str), Some("cl"));
+    }
+
+    #[tokio::test]
+    async fn discover_inventory_reports_per_cluster_reachability() {
+        // c1 can reach the gold datastore cluster + the prod DVS port group; c2
+        // reaches neither, so the same declared classes are available only in c1.
+        let inv = Inventory::builder()
+            .with_dc("dc")
+            .with_cluster("dc", "c1")
+            .with_cluster("dc", "c2")
+            .with_datastore("dc", "c1", "ds-gold", Some("DSC-GOLD"))
+            .with_network("dc", "c1", "pg-prod", true)
+            .build();
+        let caps = ProviderCapabilities {
+            storage_classes: vec![StorageClassMapping {
+                name: "gold".into(),
+                target: target(&[("datastoreCluster", "DSC-GOLD")]),
+            }],
+            network_classes: vec![NetworkClassMapping {
+                name: "prod".into(),
+                target: target(&[("distributedPortGroup", "pg-prod")]),
+            }],
+            features: Vec::new(),
+        };
+        let client = fake_client(inv);
+        let fds = discover_inventory(as_client(&client), "p", &caps)
+            .await
+            .unwrap();
+        let c1 = fds.iter().find(|f| f.labels["cluster"] == "c1").unwrap();
+        let c2 = fds.iter().find(|f| f.labels["cluster"] == "c2").unwrap();
+        assert_eq!(c1.attributes.available_storage_classes, vec!["gold"]);
+        assert_eq!(c1.attributes.available_network_classes, vec!["prod"]);
+        assert!(c2.attributes.available_storage_classes.is_empty());
+        assert!(c2.attributes.available_network_classes.is_empty());
     }
 
     // Smoke: make sure the slim domain types stay usable through Clone/Eq —

@@ -4,7 +4,7 @@
 //!
 //! Three controllers write one `VMImage.status`:
 //!
-//! - `banlieue.io/imagebuilder` owns `rawDiskArtifact`
+//! - `banlieue.io/imagebuilder` owns `buildArtifact`
 //! - `banlieue.io/provider-<backend>` owns its own `perProvider[]` rows
 //! - the aggregate `Ready` condition is derived from all of them
 //!
@@ -122,6 +122,8 @@ async fn two_providers_and_the_imagebuilder_can_share_one_vmimage_status() {
                 source("vsphere", ImageSourceKind::Template, "ubuntu-22.04"),
                 source("libvirt", ImageSourceKind::Url, "https://example.com/u.raw"),
             ],
+            cloud_config: None,
+            template: None,
         },
         status: None,
     };
@@ -134,10 +136,11 @@ async fn two_providers_and_the_imagebuilder_can_share_one_vmimage_status() {
         &api,
         FM_IMAGEBUILDER,
         json!({
-            "rawDiskArtifact": {
+            "buildArtifact": {
+                "kind": "cloudImage",
                 "phase": "Ready",
                 "osArtifactRef": "build-1",
-                "diskFile": "u.raw",
+                "file": "u.raw",
             }
         }),
     )
@@ -196,14 +199,14 @@ async fn two_providers_and_the_imagebuilder_can_share_one_vmimage_status() {
             .collect::<Vec<_>>()
     );
     eprintln!(
-        "rawDiskArtifact   : {:?}",
-        status.raw_disk_artifact.as_ref().map(|a| &a.phase)
+        "buildArtifact   : {:?}",
+        status.build_artifact.as_ref().map(|a| &a.phase)
     );
 
     // The imagebuilder's field is a distinct key, so it is expected to survive.
     assert!(
-        status.raw_disk_artifact.is_some(),
-        "the imagebuilder's rawDiskArtifact must not be clobbered by a provider"
+        status.build_artifact.is_some(),
+        "the imagebuilder's buildArtifact must not be clobbered by a provider"
     );
 
     // The original defect: providers erasing each other's rows.

@@ -5,12 +5,25 @@
 #[cfg(test)]
 mod tests {
     use super::super::*;
-    use banlieue_api::banlieue::{Architecture, ImageSource, ImageSourceKind};
+    use banlieue_api::banlieue::{Architecture, BuildArtifactKind, ImageSource, ImageSourceKind};
+    use banlieue_api::common::{CloudConfigSource, KeySelector};
     use banlieue_provider_sdk::scheduling::BuildScheduling;
 
+    /// A vSphere `Url` source (→ `iso` artifact).
     fn url_source(import_from: &str) -> ImageSource {
         ImageSource {
             provider_class: "vsphere".to_string(),
+            kind: ImageSourceKind::Url,
+            reference: "ignored".to_string(),
+            import_from: Some(import_from.to_string()),
+            checksum: None,
+        }
+    }
+
+    /// A libvirt `Url` source (→ `cloudImage` artifact).
+    fn libvirt_url_source(import_from: &str) -> ImageSource {
+        ImageSource {
+            provider_class: "libvirt".to_string(),
             kind: ImageSourceKind::Url,
             reference: "ignored".to_string(),
             import_from: Some(import_from.to_string()),
@@ -66,6 +79,23 @@ mod tests {
     }
 
     // ----------------------------------------------------------------------
+    // artifact_kind_for_class (ADR-0020)
+    // ----------------------------------------------------------------------
+
+    #[test]
+    fn artifact_kind_vsphere_is_iso_others_are_cloud_image() {
+        assert_eq!(artifact_kind_for_class("vsphere"), BuildArtifactKind::Iso);
+        assert_eq!(
+            artifact_kind_for_class("libvirt"),
+            BuildArtifactKind::CloudImage
+        );
+        assert_eq!(
+            artifact_kind_for_class("proxmox"),
+            BuildArtifactKind::CloudImage
+        );
+    }
+
+    // ----------------------------------------------------------------------
     // os_artifact_name / os_artifact_api_resource
     // ----------------------------------------------------------------------
 
@@ -91,29 +121,174 @@ mod tests {
     // ----------------------------------------------------------------------
 
     #[test]
-    fn desired_os_artifact_requests_only_cloud_image() {
-        let source = url_source("quay.io/kairos/ubuntu:24.04-core-amd64-generic-v3.7.2");
+    fn desired_os_artifact_requests_iso_for_vsphere() {
+        let source = url_source("quay.io/kairos/rhel:9.8-core-amd64-generic-v3.7.2");
         let obj = desired_os_artifact(
-            "kairos-ubuntu-2404-build",
-            "banlieue-system",
+            "kairos-rhel98-build",
+            "banlieue-imagebuild",
             &source,
             &Architecture::Amd64,
+            &BuildArtifactKind::Iso,
+            None,
             None,
             &BuildScheduling::default(),
         );
         assert_eq!(obj["apiVersion"], "build.kairos.io/v1alpha2");
         assert_eq!(obj["kind"], "OSArtifact");
-        assert_eq!(obj["metadata"]["name"], "kairos-ubuntu-2404-build");
-        assert_eq!(obj["metadata"]["namespace"], "banlieue-system");
+        assert_eq!(obj["metadata"]["name"], "kairos-rhel98-build");
+        assert_eq!(obj["metadata"]["namespace"], "banlieue-imagebuild");
         assert_eq!(
             obj["spec"]["image"]["ref"],
-            "quay.io/kairos/ubuntu:24.04-core-amd64-generic-v3.7.2"
+            "quay.io/kairos/rhel:9.8-core-amd64-generic-v3.7.2"
+        );
+        assert_eq!(obj["spec"]["artifacts"]["iso"], true);
+        assert_eq!(obj["spec"]["artifacts"]["arch"], "amd64");
+        // Only the ISO is requested — never the raw cloud image or others.
+        assert!(obj["spec"]["artifacts"]["cloudImage"].is_null());
+        assert!(obj["spec"]["artifacts"]["azureImage"].is_null());
+        // No cloud-config source → cloudConfigRef omitted.
+        assert!(
+            !obj["spec"]["artifacts"]
+                .as_object()
+                .unwrap()
+                .contains_key("cloudConfigRef")
+        );
+    }
+
+    #[test]
+    fn desired_os_artifact_requests_cloud_image_for_libvirt() {
+        let source = libvirt_url_source("quay.io/kairos/ubuntu:24.04-core-amd64-generic-v3.7.2");
+        let obj = desired_os_artifact(
+            "kairos-ubuntu-2404-build",
+            "banlieue-imagebuild",
+            &source,
+            &Architecture::Amd64,
+            &BuildArtifactKind::CloudImage,
+            None,
+            None,
+            &BuildScheduling::default(),
         );
         assert_eq!(obj["spec"]["artifacts"]["cloudImage"], true);
         assert_eq!(obj["spec"]["artifacts"]["arch"], "amd64");
-        // Never request other artifact kinds — only the raw disk is consumed.
         assert!(obj["spec"]["artifacts"]["iso"].is_null());
-        assert!(obj["spec"]["artifacts"]["azureImage"].is_null());
+    }
+
+    #[test]
+    fn desired_os_artifact_passes_cloud_config_secret_ref() {
+        let source = url_source("quay.io/kairos/rhel:9.8");
+        let cc = CloudConfigSource {
+            secret_ref: Some(KeySelector {
+                name: "kairos-base-cloud-config".to_string(),
+                key: None,
+            }),
+        };
+        let obj = desired_os_artifact(
+            "kairos-rhel98-build",
+            "banlieue-imagebuild",
+            &source,
+            &Architecture::Amd64,
+            &BuildArtifactKind::Iso,
+            Some(&cc),
+            None,
+            &BuildScheduling::default(),
+        );
+        assert_eq!(
+            obj["spec"]["artifacts"]["cloudConfigRef"]["name"],
+            "kairos-base-cloud-config"
+        );
+        // Key defaults to the kairos convention when omitted.
+        assert_eq!(
+            obj["spec"]["artifacts"]["cloudConfigRef"]["key"],
+            "cloud-config.yaml"
+        );
+    }
+
+    #[test]
+    fn desired_os_artifact_honours_explicit_cloud_config_key() {
+        let source = url_source("quay.io/kairos/rhel:9.8");
+        let cc = CloudConfigSource {
+            secret_ref: Some(KeySelector {
+                name: "cc".to_string(),
+                key: Some("90_base.yaml".to_string()),
+            }),
+        };
+        let obj = desired_os_artifact(
+            "x-build",
+            "ns",
+            &source,
+            &Architecture::Amd64,
+            &BuildArtifactKind::Iso,
+            Some(&cc),
+            None,
+            &BuildScheduling::default(),
+        );
+        assert_eq!(
+            obj["spec"]["artifacts"]["cloudConfigRef"]["key"],
+            "90_base.yaml"
+        );
+    }
+
+    #[test]
+    fn desired_os_artifact_omits_empty_scheduling_keys() {
+        // Regression: the OSArtifact CRD types nodeSelector as object and
+        // tolerations as array; a literal `null` is rejected with a 422. With
+        // no scheduling configured the keys must be ABSENT, not null — and
+        // `.is_null()` cannot tell the two apart, so assert on the spec map's
+        // keys directly.
+        let source = url_source("registry.example/img:v1");
+        let obj = desired_os_artifact(
+            "img-build",
+            "banlieue-imagebuild",
+            &source,
+            &Architecture::Amd64,
+            &BuildArtifactKind::Iso,
+            None,
+            None,
+            &BuildScheduling::default(),
+        );
+        let spec = obj["spec"].as_object().expect("spec is an object");
+        assert!(
+            !spec.contains_key("nodeSelector"),
+            "empty nodeSelector must be omitted, not null"
+        );
+        assert!(
+            !spec.contains_key("tolerations"),
+            "empty tolerations must be omitted, not null"
+        );
+        // No owner → ownerReferences omitted too (same CRD/type rule).
+        assert!(
+            !obj["metadata"]
+                .as_object()
+                .unwrap()
+                .contains_key("ownerReferences"),
+        );
+    }
+
+    #[test]
+    fn desired_os_artifact_includes_scheduling_when_set() {
+        let source = url_source("registry.example/img:v1");
+        let scheduling = BuildScheduling {
+            node_selector: [("banlieue.io/imagebuild".to_string(), "true".to_string())]
+                .into_iter()
+                .collect(),
+            tolerations: Vec::new(),
+        };
+        let obj = desired_os_artifact(
+            "img-build",
+            "banlieue-imagebuild",
+            &source,
+            &Architecture::Amd64,
+            &BuildArtifactKind::Iso,
+            None,
+            None,
+            &scheduling,
+        );
+        assert_eq!(
+            obj["spec"]["nodeSelector"]["banlieue.io/imagebuild"], "true",
+            "configured nodeSelector must be present as an object"
+        );
+        // tolerations still empty → still omitted.
+        assert!(!obj["spec"].as_object().unwrap().contains_key("tolerations"));
     }
 
     #[test]
@@ -124,6 +299,8 @@ mod tests {
             "ns",
             &source,
             &Architecture::Arm64,
+            &BuildArtifactKind::Iso,
+            None,
             None,
             &BuildScheduling::default(),
         );
@@ -158,26 +335,23 @@ mod tests {
 
     #[test]
     fn map_kairos_phase_pending() {
-        assert_eq!(map_kairos_phase("Pending"), RawDiskArtifactPhase::Pending);
+        assert_eq!(map_kairos_phase("Pending"), BuildArtifactPhase::Pending);
     }
 
     #[test]
     fn map_kairos_phase_building_and_exporting_both_map_to_building() {
-        assert_eq!(map_kairos_phase("Building"), RawDiskArtifactPhase::Building);
-        assert_eq!(
-            map_kairos_phase("Exporting"),
-            RawDiskArtifactPhase::Building
-        );
+        assert_eq!(map_kairos_phase("Building"), BuildArtifactPhase::Building);
+        assert_eq!(map_kairos_phase("Exporting"), BuildArtifactPhase::Building);
     }
 
     #[test]
     fn map_kairos_phase_ready() {
-        assert_eq!(map_kairos_phase("Ready"), RawDiskArtifactPhase::Ready);
+        assert_eq!(map_kairos_phase("Ready"), BuildArtifactPhase::Ready);
     }
 
     #[test]
     fn map_kairos_phase_error_fails_closed() {
-        assert_eq!(map_kairos_phase("Error"), RawDiskArtifactPhase::Failed);
+        assert_eq!(map_kairos_phase("Error"), BuildArtifactPhase::Failed);
     }
 
     #[test]
@@ -186,22 +360,23 @@ mod tests {
         // never be silently treated as progress.
         assert_eq!(
             map_kairos_phase("SomeFuturePhase"),
-            RawDiskArtifactPhase::Failed
+            BuildArtifactPhase::Failed
         );
     }
 
     // ----------------------------------------------------------------------
-    // compute_raw_disk_artifact_status
+    // compute_build_artifact_status
     // ----------------------------------------------------------------------
 
     #[test]
     fn compute_status_missing_phase_defaults_pending() {
         let view = KairosArtifactStatusView::default();
-        let s = compute_raw_disk_artifact_status("x-build", &view, None);
-        assert_eq!(s.phase, RawDiskArtifactPhase::Pending);
+        let s = compute_build_artifact_status("x-build", BuildArtifactKind::Iso, &view, None);
+        assert_eq!(s.phase, BuildArtifactPhase::Pending);
+        assert_eq!(s.kind, BuildArtifactKind::Iso);
         assert_eq!(s.os_artifact_ref, "x-build");
         assert!(s.pvc_ref.is_none());
-        assert!(s.disk_file.is_none());
+        assert!(s.file.is_none());
     }
 
     #[test]
@@ -210,26 +385,47 @@ mod tests {
             phase: Some("Building".to_string()),
             message: Some("pulling image".to_string()),
         };
-        let s = compute_raw_disk_artifact_status("x-build", &view, None);
-        assert_eq!(s.phase, RawDiskArtifactPhase::Building);
+        let s = compute_build_artifact_status("x-build", BuildArtifactKind::Iso, &view, None);
+        assert_eq!(s.phase, BuildArtifactPhase::Building);
         assert!(s.pvc_ref.is_none());
-        assert!(s.disk_file.is_none());
+        assert!(s.file.is_none());
         assert_eq!(s.message.as_deref(), Some("pulling image"));
     }
 
     #[test]
-    fn compute_status_ready_populates_pvc_and_disk_file_by_kairos_convention() {
+    fn compute_status_ready_iso_populates_pvc_and_iso_file() {
         let view = KairosArtifactStatusView {
             phase: Some("Ready".to_string()),
             message: None,
         };
-        let s = compute_raw_disk_artifact_status("kairos-ubuntu-2404-build", &view, None);
-        assert_eq!(s.phase, RawDiskArtifactPhase::Ready);
+        let s = compute_build_artifact_status(
+            "kairos-rhel98-build",
+            BuildArtifactKind::Iso,
+            &view,
+            None,
+        );
+        assert_eq!(s.phase, BuildArtifactPhase::Ready);
+        assert_eq!(s.pvc_ref.unwrap().name, "kairos-rhel98-build-artifacts");
+        assert_eq!(s.file.unwrap(), "kairos-rhel98-build.iso");
+    }
+
+    #[test]
+    fn compute_status_ready_cloud_image_uses_raw_extension() {
+        let view = KairosArtifactStatusView {
+            phase: Some("Ready".to_string()),
+            message: None,
+        };
+        let s = compute_build_artifact_status(
+            "kairos-ubuntu-2404-build",
+            BuildArtifactKind::CloudImage,
+            &view,
+            None,
+        );
         assert_eq!(
             s.pvc_ref.unwrap().name,
             "kairos-ubuntu-2404-build-artifacts"
         );
-        assert_eq!(s.disk_file.unwrap(), "kairos-ubuntu-2404-build.raw");
+        assert_eq!(s.file.unwrap(), "kairos-ubuntu-2404-build.raw");
     }
 
     #[test]
@@ -238,8 +434,8 @@ mod tests {
             phase: Some("Error".to_string()),
             message: Some("pull failed: manifest unknown".to_string()),
         };
-        let s = compute_raw_disk_artifact_status("x-build", &view, None);
-        assert_eq!(s.phase, RawDiskArtifactPhase::Failed);
+        let s = compute_build_artifact_status("x-build", BuildArtifactKind::Iso, &view, None);
+        assert_eq!(s.phase, BuildArtifactPhase::Failed);
         assert!(s.pvc_ref.is_none());
         assert_eq!(s.message.as_deref(), Some("pull failed: manifest unknown"));
     }
@@ -256,7 +452,7 @@ mod tests {
                 phase: Some(phase_str.to_string()),
                 message: None,
             };
-            let s = compute_raw_disk_artifact_status("x-build", &view, None);
+            let s = compute_build_artifact_status("x-build", BuildArtifactKind::Iso, &view, None);
             assert_eq!(s.reason.as_deref(), Some(expected_reason));
         }
     }
@@ -270,9 +466,11 @@ mod tests {
         let source = url_source("quay.io/kairos/ubuntu:24.04-core-amd64-generic-v3.7.2");
         let obj = desired_os_artifact(
             "kairos-ubuntu-2404-build",
-            "banlieue-system",
+            "banlieue-imagebuild",
             &source,
             &Architecture::Amd64,
+            &BuildArtifactKind::Iso,
+            None,
             Some(OwnerRef {
                 name: "kairos-ubuntu-2404",
                 uid: "9f2b1c7e-1234-4cde-9abc-def012345678",
@@ -305,13 +503,39 @@ mod tests {
     }
 
     #[test]
-    fn spec_matches_requires_ref_and_arch() {
+    fn spec_matches_requires_ref_arch_and_kind() {
         let data = serde_json::json!({
-            "spec": { "image": { "ref": "quay.io/a/b@sha256:x" }, "artifacts": { "arch": "amd64" } }
+            "spec": {
+                "image": { "ref": "quay.io/a/b@sha256:x" },
+                "artifacts": { "arch": "amd64", "iso": true }
+            }
         });
-        assert!(spec_matches(&data, "quay.io/a/b@sha256:x", "amd64"));
-        assert!(!spec_matches(&data, "quay.io/a/c@sha256:y", "amd64"));
-        assert!(!spec_matches(&data, "quay.io/a/b@sha256:x", "arm64"));
+        assert!(spec_matches(
+            &data,
+            "quay.io/a/b@sha256:x",
+            "amd64",
+            &BuildArtifactKind::Iso
+        ));
+        assert!(!spec_matches(
+            &data,
+            "quay.io/a/c@sha256:y",
+            "amd64",
+            &BuildArtifactKind::Iso
+        ));
+        assert!(!spec_matches(
+            &data,
+            "quay.io/a/b@sha256:x",
+            "arm64",
+            &BuildArtifactKind::Iso
+        ));
+        // Same ref+arch but the requested kind changed (iso live, cloudImage
+        // wanted) → must NOT match, forcing a rebuild.
+        assert!(!spec_matches(
+            &data,
+            "quay.io/a/b@sha256:x",
+            "amd64",
+            &BuildArtifactKind::CloudImage
+        ));
     }
 
     // ----------------------------------------------------------------------
@@ -324,8 +548,9 @@ mod tests {
             phase: Some("Ready".to_string()),
             message: None,
         };
-        let s = compute_raw_disk_artifact_status(
+        let s = compute_build_artifact_status(
             "x-build",
+            BuildArtifactKind::Iso,
             &view,
             Some("sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"),
         );
@@ -338,7 +563,7 @@ mod tests {
     #[test]
     fn compute_status_without_a_source_checksum_publishes_none() {
         let view = KairosArtifactStatusView::default();
-        let s = compute_raw_disk_artifact_status("x-build", &view, None);
+        let s = compute_build_artifact_status("x-build", BuildArtifactKind::Iso, &view, None);
         assert!(s.checksum.is_none());
     }
 }

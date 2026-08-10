@@ -45,7 +45,7 @@ condition vocabulary:
 
 Status is **mirrored** from the underlying infrastructure CR; the main
 controller never sets `provisioned=true` on its own. See
-[Architecture → Reconcile flow](architecture.md#reconcile-flow-happy-path).
+[Architecture → Provision a VM](architecture.md#provision-a-vm).
 
 ## Lifecycle
 

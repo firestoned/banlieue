@@ -192,6 +192,50 @@ impl CABundleSource {
     }
 }
 
+/// Default key read from a Secret referenced by a [`CloudConfigSource`] when
+/// `key` is omitted. Matches kairos-operator's own `cloudConfigRef` convention.
+pub const DEFAULT_CLOUD_CONFIG_KEY: &str = "cloud-config.yaml";
+
+/// Source of a default cloud-config baked into a built image artifact.
+///
+/// Mirrors [`CABundleSource`]'s value-or-source shape, but is **secretRef-first**
+/// (ADR-0020): only `secret_ref` is implemented today, because kairos-operator's
+/// `OSArtifact.spec.cloudConfigRef` is itself Secret-only and
+/// `banlieue-imagebuilder` passes this Secret straight through. The `inline` and
+/// `config_map_ref` variants are reserved for a later change (they will resolve
+/// by materialising an imagebuilder-owned derived Secret); adding them is an
+/// additive, non-breaking CRD change.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudConfigSource {
+    /// Key in a Secret in the imagebuild namespace holding the cloud-config
+    /// YAML (key defaults to [`DEFAULT_CLOUD_CONFIG_KEY`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret_ref: Option<KeySelector>,
+}
+
+impl CloudConfigSource {
+    /// Number of sources set. The "exactly one" invariant means a valid source
+    /// has a count of `1`.
+    pub fn source_count(&self) -> usize {
+        usize::from(self.secret_ref.is_some())
+    }
+
+    /// Validate the "exactly one source" invariant.
+    ///
+    /// # Errors
+    /// Returns a static message when no source is set, so the caller can surface
+    /// it on status. Today only `secretRef` exists; the message names the future
+    /// variants so it stays accurate once they land.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        match self.source_count() {
+            1 => Ok(()),
+            0 => Err("cloudConfig: secretRef must be set (none was)"),
+            _ => Err("cloudConfig: exactly one source must be set (more than one was)"),
+        }
+    }
+}
+
 /// Minimal LabelSelector mirroring the k8s `metav1.LabelSelector` shape.
 ///
 /// We re-declare it here rather than re-exporting `k8s_openapi`'s type because
@@ -232,6 +276,32 @@ pub enum DiskProvisioning {
     Thin,
     Thick,
     EagerZeroed,
+}
+
+impl DiskProvisioning {
+    /// Stable token (matches the serde camelCase wire form), for CLI args/logs.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            DiskProvisioning::Thin => "thin",
+            DiskProvisioning::Thick => "thick",
+            DiskProvisioning::EagerZeroed => "eagerZeroed",
+        }
+    }
+}
+
+impl std::str::FromStr for DiskProvisioning {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "thin" => Ok(Self::Thin),
+            "thick" => Ok(Self::Thick),
+            "eagerzeroed" => Ok(Self::EagerZeroed),
+            other => Err(format!(
+                "unknown disk type {other:?} (expected: thin, thick, eagerZeroed)"
+            )),
+        }
+    }
 }
 
 /// Firmware type. Providers that don't support EFI fall back to BIOS with a

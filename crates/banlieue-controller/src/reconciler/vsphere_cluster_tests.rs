@@ -52,6 +52,7 @@ mod tests {
             },
             capabilities: ProviderCapabilities::default(),
             paused: false,
+            use_content_library: false,
         };
         let mut p = Provider::new(name, spec);
         if !labels.is_empty() {
@@ -241,6 +242,7 @@ mod tests {
                 },
                 capabilities: ProviderCapabilities::default(),
                 paused: false,
+                use_content_library: false,
             },
         );
         let refs = vec![&p1, &p2, &p3];

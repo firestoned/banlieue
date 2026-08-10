@@ -23,6 +23,7 @@ pub mod app;
 pub mod client;
 pub mod context;
 pub mod error;
+pub mod import;
 pub mod reconciler;
 
 pub use app::{Cli, run};

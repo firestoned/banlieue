@@ -25,7 +25,7 @@ use banlieue_provider_sdk::leader::{
     DEFAULT_LEASE_DURATION_SECS, DEFAULT_RENEW_PERIOD_SECS, DEFAULT_RETRY_PERIOD_SECS,
     LeaderConfig, acquire_or_wait, renew_forever,
 };
-use clap::Args;
+use clap::{Args, Subcommand};
 use futures::StreamExt;
 use kube::{
     Api,
@@ -49,6 +49,12 @@ const DEFAULT_VSPHERE_TASK_TIMEOUT_SECS: u64 = 600;
 /// overridden by `banlieue-operator`, which passes `--import-image` with the
 /// running image so the whole fleet stays on one build.
 const DEFAULT_IMPORT_IMAGE: &str = "ghcr.io/firestoned/banlieue:v0.1.0";
+/// Namespace holding the artifacts PVC and per-zone import Jobs. Must match
+/// `banlieue-imagebuilder`'s `--build-namespace` (ADR-0016 / ADR-0020).
+const DEFAULT_BUILD_NAMESPACE: &str = "banlieue-imagebuild";
+/// ServiceAccount the import Job runs as — a dedicated read-only identity,
+/// never this controller's own (ADR-0016 §4).
+const DEFAULT_IMPORT_SERVICE_ACCOUNT: &str = "banlieue-import";
 
 /// Per-crate `tracing` directives layered on top of the base log level.
 const LOG_DIRECTIVES: &[&str] = &["kube=warn", "vim_rs=warn"];
@@ -130,14 +136,56 @@ pub struct Cli {
     #[arg(long, env = "BANLIEUE_PROVIDER_NAME")]
     pub provider_name: Option<String>,
 
-    /// Image the VMImage import Job runs. `banlieue-operator` passes this on
-    /// every spawned provider (workload.rs) so the whole fleet runs one image;
-    /// the vSphere import path itself lands in a later iteration, so the value
-    /// is accepted here for flag-matrix parity with the libvirt provider (cf.
-    /// `vsphere_task_timeout_secs`). Without it the operator-spawned Deployment
-    /// aborts at arg-parse with "unexpected argument '--import-image'".
+    /// Namespace holding the artifacts PVC and per-zone import Jobs. Must match
+    /// banlieue-imagebuilder's `--build-namespace` (ADR-0016 / ADR-0020).
+    #[arg(
+        long,
+        env = "BANLIEUE_BUILD_NAMESPACE",
+        default_value = DEFAULT_BUILD_NAMESPACE,
+    )]
+    pub build_namespace: String,
+
+    /// Taints the per-zone import Jobs may tolerate (`key[=value]:Effect`,
+    /// repeatable). Not a node selector: placement follows the artifacts PVC
+    /// the Job mounts, which the scheduler resolves from the bound PV.
+    #[arg(long = "build-toleration", value_name = "KEY[=VALUE]:EFFECT")]
+    pub build_toleration: Vec<String>,
+
+    /// Image the per-zone import Job runs — the banlieue image itself, so the
+    /// data path stays inside banlieue's own supply chain. `banlieue-operator`
+    /// passes this on every spawned provider so the whole fleet runs one image.
     #[arg(long, env = "BANLIEUE_IMPORT_IMAGE", default_value = DEFAULT_IMPORT_IMAGE)]
     pub import_image: String,
+
+    /// ServiceAccount the import Job runs as, in `--build-namespace`.
+    ///
+    /// Deliberately **not** this controller's own identity: that one can create
+    /// Jobs, so a workload in the privileged build namespace holding it could
+    /// create further privileged pods. The import identity is read-only and the
+    /// operator scopes it to exactly this Provider and its Secret (ADR-0016 §4).
+    #[arg(
+        long,
+        env = "BANLIEUE_IMPORT_SERVICE_ACCOUNT",
+        default_value = DEFAULT_IMPORT_SERVICE_ACCOUNT,
+    )]
+    pub import_service_account: String,
+
+    /// Optional subcommand. When absent, `run` starts the controllers; when
+    /// `image-import`, it runs one per-zone ISO import and exits.
+    #[command(subcommand)]
+    pub command: Option<VsphereCommand>,
+}
+
+/// Subcommands of `banlieue provider vsphere`.
+#[derive(Debug, Subcommand)]
+pub enum VsphereCommand {
+    /// Upload a built ISO to one failure domain's datastore, create an empty
+    /// VM, attach the ISO, and `MarkAsTemplate`, then exit (ADR-0020).
+    ///
+    /// Runs inside the Job the `VMImage` reconciler creates; not normally
+    /// invoked by hand, though the flags are stable so a failed import can be
+    /// reproduced.
+    ImageImport(crate::import::ImportArgs),
 }
 
 /// Watch configuration for the `Provider` controller.
@@ -169,6 +217,13 @@ pub async fn run(cli: Cli) -> Result<()> {
 
     init_tracing(&cli.log_format, cli.log_level.as_deref(), LOG_DIRECTIVES)
         .context("initialising tracing")?;
+
+    // One-shot roles exit when done; only the controller path below needs a
+    // health server, a leader lease, or a watch.
+    if let Some(VsphereCommand::ImageImport(args)) = cli.command {
+        return crate::import::run(args).await;
+    }
+
     info!(
         version = env!("CARGO_PKG_VERSION"),
         namespace = ?cli.namespace,
@@ -203,11 +258,21 @@ pub async fn run(cli: Cli) -> Result<()> {
         info!("leader election disabled by --no-leader-elect");
     }
 
+    // Parsed once at startup: a malformed toleration must fail the process
+    // rather than surface later as an unschedulable Job.
+    let import_tolerations =
+        banlieue_provider_sdk::scheduling::parse_tolerations(&cli.build_toleration)
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+
     let vsphere_factory = Arc::new(VimClientFactory::new());
     let ctx = Arc::new(Context::new(
         client.clone(),
         cli.namespace.clone(),
         vsphere_factory,
+        cli.build_namespace.clone(),
+        cli.import_image.clone(),
+        cli.import_service_account.clone(),
+        import_tolerations,
     ));
 
     let provider_api: Api<Provider> = match cli.namespace.as_deref() {

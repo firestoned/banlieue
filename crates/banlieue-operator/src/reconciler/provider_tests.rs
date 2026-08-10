@@ -30,6 +30,7 @@ mod tests {
             connection: connection(),
             capabilities: Default::default(),
             paused: false,
+            use_content_library: false,
         }
     }
 

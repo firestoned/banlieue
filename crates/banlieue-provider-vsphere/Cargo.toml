@@ -33,6 +33,7 @@ vim_rs = { workspace = true }
 # installed at startup (no OpenSSL, no aws-lc-rs).
 reqwest = { workspace = true }
 rustls = { workspace = true }
+tokio-util = { workspace = true }
 
 kube.workspace = true
 k8s-openapi.workspace = true
@@ -46,8 +47,15 @@ anyhow.workspace = true
 # `macros` backs `tokio::select!`; `rt-multi-thread` backs `tokio::spawn`. The
 # health server / shutdown signal (net/io-util/signal) now live in the SDK's
 # `bootstrap` module, so they are no longer needed here.
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+# `fs`/`io-util` back the image-import subcommand: streaming the ISO off the
+# mounted artifacts PVC to hash it (SEC-004) without holding it in memory.
+# `time` backs the CreateVM_Task poll loop (`tokio::time::sleep`, ADR-0020).
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "fs", "io-util", "time"] }
 futures.workspace = true
+
+# SEC-004: verify the built ISO against its published checksum before it
+# reaches any datastore. Same crate + version the libvirt import path uses.
+sha2 = { workspace = true }
 
 tracing.workspace = true
 
@@ -57,8 +65,3 @@ chrono.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
-
-# TLS: vim_rs's reqwest is patched to rustls (default-features = false +
-# rustls-tls-native-roots) via patches/vim_rs.patch — so the whole workspace is
-# OpenSSL-free (rustls + ring, native trust roots, like the reference repos). No
-# system libssl/webpki-roots; cross-compiles with the plain gcc cross-toolchain.
