@@ -79,6 +79,14 @@ pub struct ProviderSpec {
     /// `cluster.x-k8s.io/paused` annotation but in-band.
     #[serde(default, skip_serializing_if = "is_false")]
     pub paused: bool,
+
+    /// vSphere only: import `Url`-kind VMImages through a vCenter Content
+    /// Library rather than the default datastore-upload + `MarkAsTemplate`
+    /// path. Defaults to `false` (no Content Library required), matching
+    /// environments where CL is not enabled. Ignored by non-vSphere classes.
+    /// See ADR-0020.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub use_content_library: bool,
 }
 
 /// How to reach a backend: endpoint, the Secret holding its credentials, and

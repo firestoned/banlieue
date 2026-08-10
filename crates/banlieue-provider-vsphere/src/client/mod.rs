@@ -7,7 +7,8 @@
 //! real implementation in [`vim`] wraps `vim_rs::core::client::ClientBuilder`.
 
 use async_trait::async_trait;
-use banlieue_api::banlieue::ProviderConnection;
+use banlieue_api::banlieue::{DiskController, ProviderConnection};
+use banlieue_api::common::DiskProvisioning;
 
 use crate::error::Result;
 
@@ -54,6 +55,37 @@ pub struct Template {
     pub moref: String,
     /// `moref` of the Datacenter this template lives in.
     pub datacenter_moref: String,
+}
+
+/// Slim local projection of a vCenter Datastore reachable from a cluster.
+/// `datastore_cluster` is the name of the containing SDRS datastore cluster
+/// (`StoragePod`) when the datastore belongs to one, else `None` — that is how
+/// a `storageClasses[].target.datastoreCluster` mapping is matched.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Datastore {
+    /// Display name (e.g. `ds-fast-01`).
+    pub name: String,
+    /// vCenter managed-object reference (e.g. `datastore-42`). Opaque.
+    pub moref: String,
+    /// Name of the containing SDRS datastore cluster, if any.
+    pub datastore_cluster: Option<String>,
+    /// Free space in bytes (`summary.freeSpace`), when known. Used to pick the
+    /// emptiest member when a datastore-cluster is the import target (ADR-0020).
+    pub free_space_bytes: Option<i64>,
+}
+
+/// Slim local projection of a vCenter network reachable from a cluster — a
+/// standard port group or a distributed virtual port group. `distributed`
+/// selects which of `target.portGroup` / `target.distributedPortGroup` a
+/// `networkClasses[]` mapping matches against.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Network {
+    /// Display name (e.g. `vmnet-prod`).
+    pub name: String,
+    /// vCenter managed-object reference. Opaque.
+    pub moref: String,
+    /// True for a `DistributedVirtualPortgroup` (vDS); false for a standard PG.
+    pub distributed: bool,
 }
 
 /// Backend-agnostic credential bundle resolved from the Provider's
@@ -117,6 +149,86 @@ pub trait VSphereClient: Send + Sync {
     /// no template with that name exists; returns `Err` when the lookup
     /// itself fails (auth / network).
     async fn find_template(&self, dc: &Datacenter, name: &str) -> Result<Option<Template>>;
+
+    /// Datastores reachable from `cluster` (the cluster's `datastore` set),
+    /// each tagged with its SDRS datastore-cluster name when it belongs to one.
+    /// Used for `storageClasses` reachability (ADR-0019).
+    async fn list_datastores(&self, cluster: &Cluster) -> Result<Vec<Datastore>>;
+
+    /// Networks reachable from `cluster` (the cluster's `network` set),
+    /// distinguishing standard port groups from distributed ones. Used for
+    /// `networkClasses` reachability (ADR-0019).
+    async fn list_networks(&self, cluster: &Cluster) -> Result<Vec<Network>>;
+
+    /// Import a bootable ISO into one failure domain as a vCenter template
+    /// (ADR-0020): upload the ISO to `req.datastore`, create an empty EFI VM in
+    /// `req.cluster`'s resource pool with the ISO attached as a CD-ROM and a NIC
+    /// on `req.network`, then `MarkAsTemplate`. Idempotent: an existing template
+    /// of `req.template_name` in the datacenter is left in place. Returns the
+    /// resolved reference (`[datastore] template-name`).
+    ///
+    /// This is the one operation that mutates vCenter for image import; it is
+    /// exercised only by the `image-import` Job (never the reconciler) and
+    /// verified against a live vCenter (like the ADR-0019 introspection walk),
+    /// so it is deliberately absent from the reconciler's own test surface.
+    async fn import_iso_template(&self, req: &IsoImportRequest) -> Result<String>;
+
+    /// Ensure a directory exists on a datastore (`FileManager.MakeDirectory`,
+    /// `createParentDirectories`), so the datastore HTTP upload has somewhere to
+    /// PUT the ISO. Idempotent: an already-present directory is not an error.
+    /// `datacenter_moref` is the containing datacenter's managed-object id.
+    async fn ensure_datastore_dir(
+        &self,
+        datacenter_moref: &str,
+        datastore: &str,
+        dir: &str,
+    ) -> Result<()>;
+}
+
+/// Everything [`VSphereClient::import_iso_template`] needs to turn a local ISO
+/// into a per-zone vCenter template. Resolved by the `image-import` subcommand
+/// from the `Provider` + the target failure domain (ADR-0020).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IsoImportRequest {
+    /// Datacenter name the target cluster lives in.
+    pub datacenter: String,
+    /// Datacenter managed-object id (for `vmFolder` / VM lookup).
+    pub datacenter_moref: String,
+    /// Compute cluster name whose resource pool hosts the created VM.
+    pub cluster: String,
+    /// Compute cluster managed-object id (for `resourcePool`).
+    pub cluster_moref: String,
+    /// Datastore name the ISO is uploaded to and the template is created on.
+    pub datastore: String,
+    /// Port group name the template's NIC attaches to.
+    pub network: String,
+    /// Managed-object id of that port group (for the NIC backing).
+    pub network_moref: String,
+    /// True when the port group is a distributed (vDS) one — selects the
+    /// distributed-port NIC backing over the standard device-name backing.
+    pub network_distributed: bool,
+    /// Template install-disk size, in GiB.
+    pub disk_gib: i64,
+    /// Disk provisioning (thin / thick / eagerZeroed).
+    pub disk_provisioning: DiskProvisioning,
+    /// Disk controller type (pvscsi / lsiLogic / …).
+    pub disk_controller: DiskController,
+    /// vCenter folder path (under the datacenter VM folder) to place the
+    /// template in, created if missing. `None` → the VM-folder root.
+    pub folder: Option<String>,
+    /// Datastore path of the already-uploaded ISO, in vСenter `[datastore]
+    /// folder/file.iso` form. The `image-import` subcommand uploads the ISO to
+    /// the datastore first, then passes this so the created VM's CD-ROM backing
+    /// can reference it.
+    pub iso_datastore_path: String,
+    /// Template (and created-VM) display name.
+    pub template_name: String,
+    /// vCenter `guestId` for the OS (e.g. `rhel9_64Guest`, `ubuntu64Guest`).
+    pub guest_id: String,
+    /// When true, destroy any existing template of `template_name` in the
+    /// datacenter before creating the new one. When false, an existing template
+    /// short-circuits to a no-op.
+    pub force_create: bool,
 }
 
 #[cfg(test)]

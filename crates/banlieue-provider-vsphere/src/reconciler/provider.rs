@@ -12,7 +12,8 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use banlieue_api::banlieue::{
-    FailureDomain, FailureDomainAttributes, Provider, ProviderConnection, ProviderStatus,
+    FailureDomain, FailureDomainAttributes, Provider, ProviderCapabilities, ProviderConnection,
+    ProviderStatus,
 };
 use banlieue_provider_sdk::reconciler::{requeue_long, requeue_on_error};
 use banlieue_provider_sdk::ssa::FIELD_MANAGER_PROVIDER_VSPHERE;
@@ -27,7 +28,7 @@ use kube::{
 use serde_json::json;
 use tracing::{info, warn};
 
-use crate::client::{Credentials, VSphereClient};
+use crate::client::{Credentials, Datastore, Network, VSphereClient};
 use crate::context::Context;
 use crate::error::{Error, Result};
 
@@ -174,7 +175,13 @@ pub async fn reconcile(provider: Arc<Provider>, ctx: Arc<Context>) -> Result<Act
 
     // Walk inventory and build the failure-domain list.
     let provider_name = name.clone();
-    let failure_domains = match discover_inventory(client.as_ref(), &provider_name).await {
+    let failure_domains = match discover_inventory(
+        client.as_ref(),
+        &provider_name,
+        &provider.spec.capabilities,
+    )
+    .await
+    {
         Ok(v) => v,
         Err(e) => {
             warn!(error = %e, "inventory walk failed");
@@ -227,11 +234,28 @@ pub fn error_policy(_provider: Arc<Provider>, err: &Error, _ctx: Arc<Context>) -
 pub async fn discover_inventory(
     client: &dyn VSphereClient,
     provider_name: &str,
+    capabilities: &ProviderCapabilities,
 ) -> Result<Vec<FailureDomain>> {
     let mut out = Vec::new();
     for dc in client.list_datacenters().await? {
         for cluster in client.list_clusters(&dc).await? {
-            out.push(build_failure_domain(provider_name, &dc.name, &cluster.name));
+            // Per-cluster reachability drives which declared storage/network
+            // classes are available in this failure domain (ADR-0019).
+            let datastores = client.list_datastores(&cluster).await?;
+            let networks = client.list_networks(&cluster).await?;
+            let attributes = compute_failure_domain_attributes(
+                capabilities,
+                &datastores,
+                &networks,
+                &dc.name,
+                &cluster.name,
+            );
+            out.push(build_failure_domain(
+                provider_name,
+                &dc.name,
+                &cluster.name,
+                attributes,
+            ));
         }
     }
     // Deterministic order: vCenter does not guarantee a stable inventory
@@ -243,26 +267,89 @@ pub async fn discover_inventory(
     Ok(out)
 }
 
-/// Build a single [`FailureDomain`] from the (provider, dc, cluster) triple.
-fn build_failure_domain(provider: &str, dc_name: &str, cluster_name: &str) -> FailureDomain {
+/// Build a single [`FailureDomain`] from the (provider, dc, cluster) triple and
+/// its already-computed [`FailureDomainAttributes`].
+fn build_failure_domain(
+    provider: &str,
+    dc_name: &str,
+    cluster_name: &str,
+    attributes: FailureDomainAttributes,
+) -> FailureDomain {
     let mut labels = BTreeMap::new();
     labels.insert("dc".to_string(), dc_name.to_string());
     labels.insert("cluster".to_string(), cluster_name.to_string());
+
+    FailureDomain {
+        name: failure_domain_name(provider, dc_name, cluster_name),
+        labels,
+        attributes,
+    }
+}
+
+/// Compute a failure domain's capability attributes from the reachable
+/// datastores/networks and the Provider's declared capabilities (ADR-0019).
+/// Pure and unit-tested with the `FakeClient` fixtures.
+pub fn compute_failure_domain_attributes(
+    capabilities: &ProviderCapabilities,
+    datastores: &[Datastore],
+    networks: &[Network],
+    dc_name: &str,
+    cluster_name: &str,
+) -> FailureDomainAttributes {
+    let available_storage_classes = capabilities
+        .storage_classes
+        .iter()
+        .filter(|sc| storage_class_reachable(&sc.target, datastores))
+        .map(|sc| sc.name.clone())
+        .collect();
+    let available_network_classes = capabilities
+        .network_classes
+        .iter()
+        .filter(|nc| network_class_reachable(&nc.target, networks))
+        .map(|nc| nc.name.clone())
+        .collect();
 
     let mut raw = BTreeMap::new();
     raw.insert("datacenter".to_string(), dc_name.to_string());
     raw.insert("cluster".to_string(), cluster_name.to_string());
 
-    FailureDomain {
-        name: failure_domain_name(provider, dc_name, cluster_name),
-        labels,
-        attributes: FailureDomainAttributes {
-            available_storage_classes: Vec::new(),
-            available_network_classes: Vec::new(),
-            features: Vec::new(),
-            raw,
-        },
+    FailureDomainAttributes {
+        available_storage_classes,
+        available_network_classes,
+        // Admin-asserted features are passed through verbatim; capability-flag
+        // downgrade is an ADR-0019 follow-up.
+        features: capabilities.features.clone(),
+        raw,
     }
+}
+
+/// True when a `storageClasses[].target` is satisfiable by the datastores
+/// reachable from a cluster. Supports `datastore` (exact name) and
+/// `datastoreCluster` (SDRS StoragePod membership). `tagCategory`/`tag` targets
+/// need the CIS REST tagging API and are not evaluated here (ADR-0019).
+fn storage_class_reachable(target: &BTreeMap<String, String>, datastores: &[Datastore]) -> bool {
+    if let Some(name) = target.get("datastore") {
+        return datastores.iter().any(|d| &d.name == name);
+    }
+    if let Some(dsc) = target.get("datastoreCluster") {
+        return datastores
+            .iter()
+            .any(|d| d.datastore_cluster.as_deref() == Some(dsc.as_str()));
+    }
+    false
+}
+
+/// True when a `networkClasses[].target` is satisfiable by the networks
+/// reachable from a cluster. `portGroup` matches a standard port group;
+/// `distributedPortGroup` matches a distributed (vDS) one.
+fn network_class_reachable(target: &BTreeMap<String, String>, networks: &[Network]) -> bool {
+    if let Some(name) = target.get("portGroup") {
+        return networks.iter().any(|n| !n.distributed && &n.name == name);
+    }
+    if let Some(name) = target.get("distributedPortGroup") {
+        return networks.iter().any(|n| n.distributed && &n.name == name);
+    }
+    false
 }
 
 /// Slugify `<provider>-<dc>-<cluster>` into a DNS-label-friendly string,

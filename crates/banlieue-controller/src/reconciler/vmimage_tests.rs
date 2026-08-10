@@ -102,7 +102,7 @@ mod tests {
     #[test]
     fn the_patch_carries_conditions_and_nothing_else() {
         // The whole point of ADR-0015: this manager owns `conditions` alone.
-        // Touching perProvider or rawDiskArtifact here would re-create the
+        // Touching perProvider or buildArtifact here would re-create the
         // contention the ADR removed.
         let patch = build_status_patch("img", &aggregate_ready(&[row("a", true, None)]), 7);
         let status = patch["status"].as_object().expect("status object");
@@ -112,8 +112,8 @@ mod tests {
             "perProvider belongs to the providers"
         );
         assert!(
-            !status.contains_key("rawDiskArtifact"),
-            "rawDiskArtifact belongs to banlieue-imagebuilder"
+            !status.contains_key("buildArtifact"),
+            "buildArtifact belongs to banlieue-imagebuilder"
         );
     }
 

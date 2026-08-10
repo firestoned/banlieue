@@ -3,10 +3,12 @@
 #
 # A VMImage built from a Kairos OCI image rather than a pre-existing vCenter
 # template. `kind: Url` + `importFrom` are resolved by banlieue-imagebuilder
-# (ADR-0010), which server-side-applies an OSArtifact (kairos-operator)
-# requesting a raw disk, then mirrors progress into
-# `status.rawDiskArtifact`. The vsphere provider watches that field and, once
-# it reports `Ready`, imports per zone — see
+# (ADR-0010 / ADR-0020), which server-side-applies an OSArtifact
+# (kairos-operator). For a vSphere source it requests a bootable ISO
+# (`auroraboot build-iso`) with the `cloudConfig` below baked in, then mirrors
+# progress into `status.buildArtifact` (kind: iso). The vsphere provider
+# watches that field and, once it reports `Ready`, imports per zone
+# (datastore-upload + create template) — see
 # docs/src/guides/using-banlieue-imagebuilder.md for the full walkthrough,
 # including which parts of this pipeline are implemented today.
 apiVersion: banlieue.io/v1alpha1
@@ -27,3 +29,31 @@ spec:
       # (security review 2026-07-31): mutable tags are rejected at admission when the policy is
       # installed. Digest resolved from quay.io 2026-07-31.
       importFrom: quay.io/kairos/ubuntu:24.04-standard-amd64-generic-v3.7.2-k0s-v1.34.3-k0s.0@sha256:e4860078c024269e81ce561ce91cf9639a4e75c23ea4cd32d3405005087192a7
+  # Optional default cloud-config baked into the built ISO (ADR-0020).
+  # secretRef-first: names a Secret in the imagebuild namespace; its value is
+  # passed to the OSArtifact as `cloudConfigRef` (auroraboot
+  # `build-iso --cloud-config`). Key defaults to `cloud-config.yaml`.
+  cloudConfig:
+    secretRef:
+      name: kairos-base-cloud-config
+      key: cloud-config.yaml
+  # How the backend template is built from this Url source (ADR-0020). The
+  # per-zone import is idempotent: it skips an already-uploaded ISO / existing
+  # template. The force knobs replace a bad one without manual vCenter cleanup.
+  template:
+    # vCenter folder (under the datacenter VM folder) to place the template in,
+    # created if missing. Omit for the VM-folder root.
+    folder: templates/kairos
+    # Port group the template's NIC attaches to. Overrides the zone's first
+    # availableNetworkClasses target. Omit to use the zone default.
+    network: vmnet-prod
+    # Install disk of the template. `type` reuses the backend-agnostic
+    # provisioning hint shared with VMClass/VSphereMachine: thin (default),
+    # thick, or eagerZeroed. `controller`: pvscsi (default), lsiLogic,
+    # lsiLogicSas, busLogic.
+    disk:
+      size: 100            # GiB; default 100
+      type: thin
+      controller: pvscsi
+    forceUpload: false   # delete + re-upload the ISO even if present
+    forceCreate: false   # destroy + recreate the template even if present

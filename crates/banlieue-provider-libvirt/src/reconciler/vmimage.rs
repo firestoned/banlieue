@@ -6,7 +6,7 @@
 //!
 //! - **`BackingFile`** — a volume expected to already exist on the host. Ready
 //!   when it is actually present in the target pool.
-//! - **`Url`** — gated on `VMImage.status.rawDiskArtifact.phase == Ready`,
+//! - **`Url`** — gated on `VMImage.status.buildArtifact.phase == Ready`,
 //!   which only `banlieue-imagebuilder` ever writes (ADR-0010). Once the raw
 //!   disk exists, one import Job per target pool streams it in.
 //!
@@ -17,7 +17,7 @@
 //! binary itself, so the data path stays inside banlieue's own supply chain —
 //! no third-party tools image to pin or patch (ADR-0011).
 //!
-//! This reconciler writes only `status.perProvider[]`. `status.rawDiskArtifact`
+//! This reconciler writes only `status.perProvider[]`. `status.buildArtifact`
 //! belongs to `banlieue-imagebuilder`'s field manager and is never touched
 //! here; the SSA split from ADR-0010 is what keeps the two controllers from
 //! contending.
@@ -26,8 +26,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use banlieue_api::banlieue::{
-    ImagePerProviderStatus, ImageSource, ImageSourceKind, Provider, RawDiskArtifactPhase,
-    RawDiskArtifactStatus, VMImage, VMImageStatus, ZoneImageStatus,
+    BuildArtifactPhase, BuildArtifactStatus, ImagePerProviderStatus, ImageSource, ImageSourceKind,
+    Provider, VMImage, VMImageStatus, ZoneImageStatus,
 };
 use banlieue_provider_sdk::reconciler::{requeue_default, requeue_long, requeue_on_error};
 use banlieue_provider_sdk::ssa::FIELD_MANAGER_PROVIDER_LIBVIRT;
@@ -51,9 +51,9 @@ pub mod reasons {
     pub const RECONCILED: &str = "Reconciled";
     /// No libvirt source on this VMImage — nothing for us to do.
     pub const NO_LIBVIRT_SOURCE: &str = "NoLibvirtSource";
-    /// `status.rawDiskArtifact` is absent, Pending, or Building.
+    /// `status.buildArtifact` is absent, Pending, or Building.
     pub const BUILD_PENDING: &str = "BuildPending";
-    /// `status.rawDiskArtifact.phase == Failed`.
+    /// `status.buildArtifact.phase == Failed`.
     pub const BUILD_FAILED: &str = "BuildFailed";
     /// The Provider has published no failure domains, so there is nowhere to
     /// import into.
@@ -90,7 +90,7 @@ pub async fn reconcile(image: Arc<VMImage>, ctx: Arc<Context>) -> Result<Action>
     let raw_disk = image
         .status
         .as_ref()
-        .and_then(|s| s.raw_disk_artifact.as_ref());
+        .and_then(|s| s.build_artifact.as_ref());
 
     let mut rows = Vec::with_capacity(providers.len());
     let mut any_pending = false;
@@ -131,7 +131,7 @@ async fn reconcile_for_provider(
     ctx: &Context,
     provider: &Provider,
     source: &ImageSource,
-    raw_disk: Option<&RawDiskArtifactStatus>,
+    raw_disk: Option<&BuildArtifactStatus>,
     image_name: &str,
 ) -> ImagePerProviderStatus {
     match source.kind {
@@ -184,8 +184,8 @@ async fn reconcile_for_provider(
 ///
 /// Pure, so the gating rules are unit-testable without kube.
 pub fn gate_on_raw_disk(
-    raw_disk: Option<&RawDiskArtifactStatus>,
-) -> std::result::Result<&RawDiskArtifactStatus, (&'static str, String)> {
+    raw_disk: Option<&BuildArtifactStatus>,
+) -> std::result::Result<&BuildArtifactStatus, (&'static str, String)> {
     let Some(a) = raw_disk else {
         return Err((
             reasons::BUILD_PENDING,
@@ -193,8 +193,8 @@ pub fn gate_on_raw_disk(
         ));
     };
     match a.phase {
-        RawDiskArtifactPhase::Ready => Ok(a),
-        RawDiskArtifactPhase::Failed => Err((
+        BuildArtifactPhase::Ready => Ok(a),
+        BuildArtifactPhase::Failed => Err((
             reasons::BUILD_FAILED,
             a.message
                 .clone()
@@ -272,7 +272,7 @@ async fn ensure_import_jobs(
     ctx: &Context,
     provider: &Provider,
     image_name: &str,
-    artifact: &RawDiskArtifactStatus,
+    artifact: &BuildArtifactStatus,
     pools: &[String],
 ) -> Vec<ZoneImageStatus> {
     let api: Api<Job> = Api::namespaced(ctx.client.clone(), &ctx.build_namespace);
@@ -392,7 +392,7 @@ pub struct ImportJobInputs<'a> {
     /// Target storage pool.
     pub pool: &'a str,
     /// The raw disk to upload, as published by banlieue-imagebuilder.
-    pub artifact: &'a RawDiskArtifactStatus,
+    pub artifact: &'a BuildArtifactStatus,
     /// Taints the Job may tolerate. **Not** a placement decision — placement
     /// follows the artifacts PVC, which the scheduler resolves on its own.
     /// These only grant permission to land on a node that happens to be
@@ -424,7 +424,7 @@ pub fn build_import_job(inputs: &ImportJobInputs<'_>) -> serde_json::Value {
         .as_ref()
         .map(|r| r.name.clone())
         .unwrap_or_default();
-    let disk_file = artifact.disk_file.clone().unwrap_or_default();
+    let disk_file = artifact.file.clone().unwrap_or_default();
 
     let mut labels = BTreeMap::new();
     labels.insert("app.kubernetes.io/name".to_string(), "banlieue".to_string());
@@ -542,7 +542,7 @@ async fn patch_status(
     let status = VMImageStatus {
         per_provider,
         // Written solely by banlieue-imagebuilder (ADR-0010).
-        raw_disk_artifact: None,
+        build_artifact: None,
         // Written solely by banlieue-controller (ADR-0015). A provider cannot
         // compute "ready everywhere" from rows it does not own, so it reports
         // its own perProvider entry and says nothing about the aggregate.

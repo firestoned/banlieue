@@ -148,6 +148,8 @@ mod tests {
                     import_from: None,
                     checksum: None,
                 }],
+                cloud_config: None,
+                template: None,
             },
             status: Some(VMImageStatus {
                 per_provider: providers
@@ -162,7 +164,7 @@ mod tests {
                         zones: vec![],
                     })
                     .collect(),
-                raw_disk_artifact: None,
+                build_artifact: None,
                 conditions: vec![],
                 observed_generation: None,
             }),
@@ -196,6 +198,7 @@ mod tests {
                 },
                 capabilities: caps,
                 paused: false,
+                use_content_library: false,
             },
             status: Some(ProviderStatus {
                 failure_domains: fds,

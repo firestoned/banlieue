@@ -151,10 +151,15 @@ mod tests {
             },
             capabilities: ProviderCapabilities::default(),
             paused: false,
+            use_content_library: false,
         };
         let json = serde_json::to_value(&s).unwrap();
         let obj = json.as_object().unwrap();
         assert!(!obj.contains_key("paused"), "paused=false must be skipped");
+        assert!(
+            !obj.contains_key("useContentLibrary"),
+            "useContentLibrary=false must be skipped"
+        );
         assert!(
             !obj.contains_key("capabilities"),
             "empty capabilities must be skipped"
@@ -178,6 +183,7 @@ mod tests {
             },
             capabilities: ProviderCapabilities::default(),
             paused: true,
+            use_content_library: false,
         };
         let json = serde_json::to_value(&s).unwrap();
         assert_eq!(json["paused"], true);
@@ -205,8 +211,10 @@ mod tests {
                 features: vec!["hotAddCPU".to_string()],
             },
             paused: false,
+            use_content_library: true,
         };
         let json = serde_json::to_value(&s).unwrap();
+        assert_eq!(json["useContentLibrary"], true);
         let back: ProviderSpec = serde_json::from_value(json).unwrap();
         assert_eq!(back, s);
     }

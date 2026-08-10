@@ -35,7 +35,7 @@ pub const FIELD_MANAGER_PROVIDER_PROXMOX: &str = "banlieue.io/provider-proxmox";
 pub const FIELD_MANAGER_PROVIDER_LIBVIRT: &str = "banlieue.io/provider-libvirt";
 
 /// Field manager for `banlieue-imagebuilder`. Writes exclusively to
-/// `VMImage.status.rawDiskArtifact` — never `status.perProvider[]`, which
+/// `VMImage.status.buildArtifact` — never `status.perProvider[]`, which
 /// stays owned by each provider's own field manager (ADR-0010).
 pub const FIELD_MANAGER_IMAGEBUILDER: &str = "banlieue.io/imagebuilder";
 

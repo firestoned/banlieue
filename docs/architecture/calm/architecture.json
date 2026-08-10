@@ -172,7 +172,7 @@
       "unique-id": "service-banlieue-imagebuilder",
       "node-type": "service",
       "name": "banlieue-imagebuilder",
-      "description": "Provider-agnostic controller that turns a VMImage's OCI/Kairos-referenced source (spec.sources[].kind == Url) into a raw disk. Server-side-applies an OSArtifact CR (kairos-operator) requesting a cloud image, watches its status.phase, and mirrors readiness into VMImage.status.rawDiskArtifact — a new top-level field, distinct from status.perProvider[], so this controller and each provider controller's field manager never contend over the same VMImage.status fields. Has no knowledge of vSphere, Proxmox, or libvirt; backend-specific conversion (e.g. raw -> VMDK) and per-zone import are each provider's own concern. See ADR-0010.",
+      "description": "Provider-agnostic controller that turns a VMImage's OCI/Kairos-referenced source (spec.sources[].kind == Url) into a build artifact. Server-side-applies an OSArtifact CR (kairos-operator) requesting either a cloud image (spec.artifacts.cloudImage, for libvirt) or a bootable ISO (spec.artifacts.iso + cloudConfigRef, for vSphere), watches its status.phase, and mirrors readiness into VMImage.status.buildArtifact — a typed top-level field (kind: cloudImage | iso, aligned with kairos OSArtifactKind) distinct from status.perProvider[], so this controller and each provider controller's field manager never contend over the same VMImage.status fields. When VMImage.spec.cloudConfig is set it passes a cloud-config Secret as the OSArtifact cloudConfigRef, baking a default cloud-config into the artifact. Has no knowledge of vSphere, Proxmox, or libvirt; backend-specific conversion (e.g. raw -> VMDK) and per-zone import are each provider's own concern. See ADR-0010 and ADR-0020.",
       "interfaces": [
         {
           "unique-id": "banlieue-imagebuilder-health",
@@ -187,7 +187,7 @@
       ],
       "controls": {
         "crd-only-contract": {
-          "description": "banlieue-imagebuilder MUST NOT call banlieue-provider-vsphere (or any other provider) directly. The only channel is VMImage.status.rawDiskArtifact, read by whichever provider controller needs it. Same non-negotiable as every other role (CLAUDE.md \"Non-Negotiables\" #1).",
+          "description": "banlieue-imagebuilder MUST NOT call banlieue-provider-vsphere (or any other provider) directly. The only channel is VMImage.status.buildArtifact (+ the artifacts PVC it references), read by whichever provider controller needs it. Same non-negotiable as every other role (CLAUDE.md \"Non-Negotiables\" #1).",
           "requirements": [
             {
               "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
@@ -282,6 +282,22 @@
       ]
     },
     {
+      "unique-id": "network-vault-backend",
+      "node-type": "network",
+      "name": "HashiCorp Vault (KV secrets)",
+      "description": "Operator-run HashiCorp Vault, reached by the k0s bootstrap script's `vault` CLI helper (token auth only, read from ambient VAULT_ADDR/VAULT_TOKEN) to fetch the Flux registry credential used to build the flux-operator image-pull secret. Mount and secret path are operator-supplied (VAULT_KV_MOUNT/VAULT_SECRET_PATH), never hardcoded (ADR-0018).",
+      "interfaces": [
+        {
+          "unique-id": "vault-api-https",
+          "definition-url": "https://calm.finos.org/release/1.2/prototype/interface/http-endpoint.json",
+          "config": {
+            "port": 8200,
+            "protocol": "HTTPS"
+          }
+        }
+      ]
+    },
+    {
       "unique-id": "data-asset-virtualmachine-cr",
       "node-type": "data-asset",
       "name": "VirtualMachine Custom Resource",
@@ -309,13 +325,13 @@
       "unique-id": "data-asset-vmimage-cr",
       "node-type": "data-asset",
       "name": "VMImage Custom Resource",
-      "description": "Cluster-scoped CRD (banlieue.io/v1alpha1) declaring a boot image and its source. Referenced by VirtualMachine.spec.image by name; resolved by the provider against its backend's native image catalog. spec.sources[].kind == Url sources are built by banlieue-imagebuilder; status.rawDiskArtifact (set by banlieue-imagebuilder) and status.perProvider[] (set by each provider) are separate fields owned by separate field managers. See ADR-0010."
+      "description": "Cluster-scoped CRD (banlieue.io/v1alpha1) declaring a boot image and its source. Referenced by VirtualMachine.spec.image by name; resolved by the provider against its backend's native image catalog. spec.sources[].kind == Url sources are built by banlieue-imagebuilder; status.buildArtifact (typed cloudImage | iso, set by banlieue-imagebuilder) and status.perProvider[] (set by each provider, incl. per-zone import progress in .zones[]) are separate fields owned by separate field managers. spec.cloudConfig supplies a default cloud-config baked into the built artifact. See ADR-0010 and ADR-0020."
     },
     {
       "unique-id": "data-asset-osartifact-cr",
       "node-type": "data-asset",
       "name": "OSArtifact Custom Resource (external, kairos-operator)",
-      "description": "Namespaced CRD (build.kairos.io/v1alpha2) owned by kairos-operator, not banlieue. banlieue-imagebuilder server-side-applies one per Url-sourced VMImage (field manager banlieue.io/imagebuilder) requesting spec.artifacts.cloudImage=true, and reads its status.phase / resulting artifacts PVC. banlieue never modifies kairos-operator's own reconciliation of this object."
+      "description": "Namespaced CRD (build.kairos.io/v1alpha2) owned by kairos-operator, not banlieue. banlieue-imagebuilder server-side-applies one per Url-sourced VMImage (field manager banlieue.io/imagebuilder) requesting spec.artifacts.cloudImage=true (libvirt) or spec.artifacts.iso=true with a cloudConfigRef (vSphere; kairos runs `auroraboot build-iso --cloud-config`), and reads its status.phase / resulting artifacts PVC. banlieue never modifies kairos-operator's own reconciliation of this object."
     },
     {
       "unique-id": "data-asset-infra-machine-cr",
@@ -345,7 +361,7 @@
       "unique-id": "system-k0s-bootstrap",
       "node-type": "system",
       "name": "k0s Bootstrap Script",
-      "description": "scripts/bootstrap-k0s-cluster.sh — stands up the MANAGEMENT k0s cluster that runs the banlieue controllers and kairos-operator (the substrate `banlieue bootstrap` later installs onto; not a workload provisioned through banlieue). Pluggable BACKEND: `libvirt` clones/installs Kairos VMs via virt-install on a KVM host; `vsphere` clones cluster-specific Kairos templates via govc against a vCenter, spreading nodes evenly across compute clusters so each is an etcd failure domain. Installs k0s with k0sctl. No environment-specific identifier is committed — every value comes from the GOVC_* environment, govc discovery, or an untracked operator config (ADR-0017)."
+      "description": "scripts/bootstrap-k0s-cluster.sh — stands up the MANAGEMENT k0s cluster that runs the banlieue controllers and kairos-operator (the substrate `banlieue bootstrap` later installs onto; not a workload provisioned through banlieue). Pluggable BACKEND: `libvirt` clones/installs Kairos VMs via virt-install on a KVM host; `vsphere` clones cluster-specific Kairos templates via govc against a vCenter, spreading nodes evenly across compute clusters so each is an etcd failure domain. Installs k0s with k0sctl. No environment-specific identifier is committed — every value comes from the GOVC_* environment, govc discovery, or an untracked operator config (ADR-0017). An opt-in `flux` step (FLUX_ENABLED=true), backend-agnostic, fetches a registry credential from Vault and pushes flux-operator + flux-core manifests onto the first controller node (ADR-0018)."
     }
   ],
   "relationships": [
@@ -592,7 +608,7 @@
     },
     {
       "unique-id": "rel-imagebuilder-kube-api",
-      "description": "banlieue-imagebuilder watches VMImage for spec.sources[].kind==Url entries, server-side-applies the matching OSArtifact CR (field manager banlieue.io/imagebuilder), watches that OSArtifact's status, and patches VMImage.status.rawDiskArtifact. Never calls kairos-operator or any provider controller directly — only the K8s API.",
+      "description": "banlieue-imagebuilder watches VMImage for spec.sources[].kind==Url entries, server-side-applies the matching OSArtifact CR (field manager banlieue.io/imagebuilder; cloudImage or iso artifact + cloudConfigRef resolved from VMImage.spec.cloudConfig), watches that OSArtifact's status, and patches VMImage.status.buildArtifact. Never calls kairos-operator or any provider controller directly — only the K8s API.",
       "relationship-type": {
         "connects": {
           "source": {
@@ -628,7 +644,7 @@
     },
     {
       "unique-id": "rel-provider-vsphere-backend",
-      "description": "vSphere provider talks to vCenter over HTTPS to create, query, update, and destroy VMs.",
+      "description": "vSphere provider talks to vCenter over HTTPS to create, query, update, and destroy VMs.  Iteration 2 also introspects each cluster's reachable datastores (incl. SDRS datastore-cluster membership) and networks (standard + distributed port groups) to populate Provider.status.failureDomains[].attributes.availableStorageClasses / availableNetworkClasses (ADR-0019). Both planes use this one transport: the in-process Provider reconciler for cheap list/introspection calls, and a per-failure-domain image-import Job (for VMImage.status.buildArtifact.kind==iso) that mounts the shared artifacts PVC, uploads the ISO to that zone's datastore, then creates an empty EFI VM, attaches the ISO, and MarkAsTemplate — Content Library optional, default off (ADR-0020).",
       "relationship-type": {
         "connects": {
           "source": {
@@ -747,6 +763,23 @@
             "node": "network-libvirt-backend",
             "interfaces": [
               "libvirt-tls"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "unique-id": "rel-bootstrap-vault",
+      "description": "The bootstrap script's opt-in flux step fetches a registry credential from HashiCorp Vault via the `vault` CLI (token auth, KV mount/path operator-supplied) to build the flux-operator image-pull secret (ADR-0018).",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "system-k0s-bootstrap"
+          },
+          "destination": {
+            "node": "network-vault-backend",
+            "interfaces": [
+              "vault-api-https"
             ]
           }
         }
@@ -1387,6 +1420,8 @@
     "docs/adr/0013-banlieue-bootstrap-cli.md",
     "docs/adr/0014-kind-e2e-operator-contract.md",
     "docs/adr/0015-vmimage-status-merge-strategy.md",
-    "docs/adr/0017-vsphere-bootstrap-backend.md"
+    "docs/adr/0017-vsphere-bootstrap-backend.md",
+    "docs/adr/0018-vault-flux-operator-bootstrap.md",
+    "docs/adr/0019-vsphere-capability-introspection-iter2.md"
   ]
 }

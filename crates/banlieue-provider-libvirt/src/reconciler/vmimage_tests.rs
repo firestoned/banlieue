@@ -10,22 +10,23 @@
 mod tests {
     use super::super::*;
     use banlieue_api::banlieue::{
-        FailureDomain, FailureDomainAttributes, ProviderCapabilities, ProviderConnection,
-        ProviderSpec, ProviderStatus,
+        BuildArtifactKind, FailureDomain, FailureDomainAttributes, ProviderCapabilities,
+        ProviderConnection, ProviderSpec, ProviderStatus,
     };
     use banlieue_api::common::LocalObjectReference;
     use banlieue_provider_sdk::scheduling::parse_tolerations;
     use k8s_openapi::api::batch::v1::{Job, JobStatus};
     use kube::api::ObjectMeta;
 
-    fn artifact(phase: RawDiskArtifactPhase) -> RawDiskArtifactStatus {
-        RawDiskArtifactStatus {
+    fn artifact(phase: BuildArtifactPhase) -> BuildArtifactStatus {
+        BuildArtifactStatus {
+            kind: BuildArtifactKind::CloudImage,
             phase,
             os_artifact_ref: "img-build".into(),
             pvc_ref: Some(LocalObjectReference {
                 name: "img-build-artifacts".into(),
             }),
-            disk_file: Some("img-build.raw".into()),
+            file: Some("img-build.raw".into()),
             reason: None,
             message: None,
             checksum: None,
@@ -53,6 +54,7 @@ mod tests {
                 },
                 capabilities: ProviderCapabilities::default(),
                 paused: false,
+                use_content_library: false,
             },
             status: Some(ProviderStatus {
                 failure_domains: vec![FailureDomain {
@@ -122,10 +124,7 @@ mod tests {
         let (reason, _) = gate_on_raw_disk(None).unwrap_err();
         assert_eq!(reason, reasons::BUILD_PENDING);
 
-        for phase in [
-            RawDiskArtifactPhase::Pending,
-            RawDiskArtifactPhase::Building,
-        ] {
+        for phase in [BuildArtifactPhase::Pending, BuildArtifactPhase::Building] {
             let a = artifact(phase);
             let (reason, _) = gate_on_raw_disk(Some(&a)).unwrap_err();
             assert_eq!(reason, reasons::BUILD_PENDING);
@@ -134,7 +133,7 @@ mod tests {
 
     #[test]
     fn gate_surfaces_a_failed_build_with_its_message() {
-        let mut a = artifact(RawDiskArtifactPhase::Failed);
+        let mut a = artifact(BuildArtifactPhase::Failed);
         a.message = Some("pull failed: manifest unknown".into());
         let (reason, message) = gate_on_raw_disk(Some(&a)).unwrap_err();
         assert_eq!(reason, reasons::BUILD_FAILED);
@@ -143,7 +142,7 @@ mod tests {
 
     #[test]
     fn gate_passes_once_ready() {
-        let a = artifact(RawDiskArtifactPhase::Ready);
+        let a = artifact(BuildArtifactPhase::Ready);
         assert!(gate_on_raw_disk(Some(&a)).is_ok());
     }
 
@@ -243,7 +242,7 @@ mod tests {
         namespace: &'a str,
         vmimage: &'a str,
         provider: &'a Provider,
-        artifact: &'a RawDiskArtifactStatus,
+        artifact: &'a BuildArtifactStatus,
     ) -> ImportJobInputs<'a> {
         ImportJobInputs {
             job_name,
@@ -261,7 +260,7 @@ mod tests {
     #[test]
     fn import_job_mounts_the_artifacts_pvc_read_only() {
         let p = provider_with_pools("default");
-        let a = artifact(RawDiskArtifactPhase::Ready);
+        let a = artifact(BuildArtifactPhase::Ready);
         let job = build_import_job(&inputs(
             "import-x",
             "banlieue-system",
@@ -302,7 +301,7 @@ mod tests {
         // ADR-0011: no external tools image, so the data path stays inside
         // banlieue's own SBOM/signing chain.
         let p = provider_with_pools("default");
-        let a = artifact(RawDiskArtifactPhase::Ready);
+        let a = artifact(BuildArtifactPhase::Ready);
         let job = build_import_job(&inputs("import-x", "ns", "img", &p, &a));
         let c = &job["spec"]["template"]["spec"]["containers"][0];
         assert_eq!(c["image"], IMPORT_IMAGE);
@@ -322,7 +321,7 @@ mod tests {
         // A partial upload is only resumable by starting over; retrying
         // forever would hammer the host.
         let p = provider_with_pools("default");
-        let a = artifact(RawDiskArtifactPhase::Ready);
+        let a = artifact(BuildArtifactPhase::Ready);
         let job = build_import_job(&inputs("j", "ns", "vm", &p, &a));
         assert_eq!(job["spec"]["backoffLimit"], 1);
         assert_eq!(job["spec"]["template"]["spec"]["restartPolicy"], "Never");
@@ -331,7 +330,7 @@ mod tests {
     #[test]
     fn import_job_runs_unprivileged() {
         let p = provider_with_pools("default");
-        let a = artifact(RawDiskArtifactPhase::Ready);
+        let a = artifact(BuildArtifactPhase::Ready);
         let job = build_import_job(&inputs("j", "ns", "vm", &p, &a));
         let pod = &job["spec"]["template"]["spec"];
         assert_eq!(pod["securityContext"]["runAsNonRoot"], true);
@@ -346,7 +345,7 @@ mod tests {
         // Not a fresh identity: the operator already scoped this one to this
         // Provider and its Secret, so the Job gains nothing extra (ADR-0012).
         let p = provider_with_pools("default");
-        let a = artifact(RawDiskArtifactPhase::Ready);
+        let a = artifact(BuildArtifactPhase::Ready);
         let job = build_import_job(&inputs("j", "ns", "vm", &p, &a));
         assert_eq!(
             job["spec"]["template"]["spec"]["serviceAccountName"],
@@ -360,7 +359,7 @@ mod tests {
         // Provider it must read generally lives elsewhere, and defaulting to
         // the Job's own namespace would 404 at runtime.
         let p = provider_with_pools("default");
-        let a = artifact(RawDiskArtifactPhase::Ready);
+        let a = artifact(BuildArtifactPhase::Ready);
         let job = build_import_job(&inputs("j", "build-ns", "vm", &p, &a));
         let args: Vec<String> = job["spec"]["template"]["spec"]["containers"][0]["args"]
             .as_array()
@@ -421,7 +420,7 @@ mod tests {
         // here would add a constraint Kubernetes never needed, and would be
         // wrong the moment the storage is not node-local.
         let p = provider_with_pools("default");
-        let a = artifact(RawDiskArtifactPhase::Ready);
+        let a = artifact(BuildArtifactPhase::Ready);
         let tol = parse_tolerations(&["dedicated=imagebuild:NoSchedule".to_string()])
             .expect("valid toleration");
         let mut i = inputs("j", "ns", "vm", &p, &a);
@@ -442,7 +441,7 @@ mod tests {
         // scheduler already decided, which matters when the volume sits on a
         // dedicated, tainted build node.
         let p = provider_with_pools("default");
-        let a = artifact(RawDiskArtifactPhase::Ready);
+        let a = artifact(BuildArtifactPhase::Ready);
         let tol = parse_tolerations(&["dedicated=imagebuild:NoSchedule".to_string()])
             .expect("valid toleration");
         let mut i = inputs("j", "ns", "vm", &p, &a);
@@ -457,7 +456,7 @@ mod tests {
     #[test]
     fn no_tolerations_means_the_key_is_omitted() {
         let p = provider_with_pools("default");
-        let a = artifact(RawDiskArtifactPhase::Ready);
+        let a = artifact(BuildArtifactPhase::Ready);
         let job = build_import_job(&inputs("j", "ns", "vm", &p, &a));
         assert!(job["spec"]["template"]["spec"]["tolerations"].is_null());
     }

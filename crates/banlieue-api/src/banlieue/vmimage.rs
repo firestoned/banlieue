@@ -7,7 +7,7 @@
 //! readiness in status by polling each registered Provider and (where
 //! supported) importing the image on demand.
 
-use crate::common::LocalObjectReference;
+use crate::common::{CloudConfigSource, DiskProvisioning, LocalObjectReference};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Condition;
 use kube::CustomResource;
 use schemars::JsonSchema;
@@ -72,6 +72,124 @@ pub struct VMImageSpec {
     /// Per-provider source mappings. At least one entry per ProviderClass
     /// you intend to schedule VMs onto.
     pub sources: Vec<ImageSource>,
+
+    /// Optional default cloud-config baked into the built artifact for
+    /// `Url`-kind sources. Resolved by `banlieue-imagebuilder` and passed to
+    /// the kairos-operator `OSArtifact` as `cloudConfigRef`
+    /// (`auroraboot build-iso --cloud-config`). SecretRef-first; see
+    /// [`CloudConfigSource`] and ADR-0020. Ignored for non-`Url` sources.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cloud_config: Option<CloudConfigSource>,
+
+    /// How the backend **template** is built from a `Url` source (folder,
+    /// disk size, force knobs). Only meaningful for `Url` sources; ignored for
+    /// `Template` / `BackingFile`. See [`VMImageTemplate`] and ADR-0020.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template: Option<VMImageTemplate>,
+}
+
+/// Shape of the backend **template** built from a `Url`-kind [`ImageSource`]
+/// (the clone source imported per zone by the owning provider). Actual VMs
+/// size their own disk / choose their own network at provision time; these are
+/// the template defaults. See ADR-0020.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct VMImageTemplate {
+    /// vCenter inventory folder (path under the datacenter's VM folder, e.g.
+    /// `templates/kairos`) to place the template in; created if missing. When
+    /// unset, the datacenter's VM-folder root is used. vSphere-only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder: Option<String>,
+
+    /// Port group the template's NIC attaches to. When unset, the zone's first
+    /// reachable network class (ADR-0019) is used. vSphere-only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network: Option<String>,
+
+    /// Install disk of the template (the clone source's disk). When unset, a
+    /// thin 100 GiB disk on a pvscsi controller is used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disk: Option<VMImageTemplateDisk>,
+
+    /// Re-upload the built ISO even if one of that name already exists on the
+    /// backend, deleting the existing one first (the vСenter datastore file API
+    /// does not overwrite in place). Threaded as `--force-upload`.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub force_upload: bool,
+
+    /// Recreate the template even if one of that name already exists,
+    /// destroying the existing one first. Threaded as `--force-create`.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub force_create: bool,
+}
+
+/// Install-disk shape for a `Url`-source template (mirrors the `govc vm.create
+/// -disk*` flags used by `create-kairos-template.sh`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct VMImageTemplateDisk {
+    /// Disk size, in GiB. Defaults to 100 when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<i64>,
+
+    /// Provisioning hint: `thin` (default), `thick`, or `eagerZeroed`. Reuses
+    /// the backend-agnostic [`DiskProvisioning`] shared with `VMClass` /
+    /// `VSphereMachine`; eager-zeroing is the `eagerZeroed` variant, not a
+    /// separate flag. Providers honor it on a best-effort basis.
+    #[serde(default, rename = "type")]
+    pub provisioning: DiskProvisioning,
+
+    /// Disk controller type. Defaults to `pvscsi`.
+    #[serde(default)]
+    pub controller: DiskController,
+}
+
+/// Disk controller type for the template's install disk.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum DiskController {
+    /// VMware Paravirtual SCSI (what `create-kairos-template.sh` uses).
+    #[default]
+    Pvscsi,
+    /// LSI Logic Parallel.
+    LsiLogic,
+    /// LSI Logic SAS.
+    LsiLogicSas,
+    /// BusLogic Parallel.
+    BusLogic,
+}
+
+impl DiskController {
+    /// Stable token, for CLI args / logs (matches the serde camelCase form).
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            DiskController::Pvscsi => "pvscsi",
+            DiskController::LsiLogic => "lsiLogic",
+            DiskController::LsiLogicSas => "lsiLogicSas",
+            DiskController::BusLogic => "busLogic",
+        }
+    }
+}
+
+impl std::str::FromStr for DiskController {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "pvscsi" => Ok(Self::Pvscsi),
+            "lsilogic" => Ok(Self::LsiLogic),
+            "lsilogicsas" => Ok(Self::LsiLogicSas),
+            "buslogic" => Ok(Self::BusLogic),
+            other => Err(format!(
+                "unknown disk controller {other:?} (expected: pvscsi, lsiLogic, lsiLogicSas, busLogic)"
+            )),
+        }
+    }
+}
+
+/// `skip_serializing_if` predicate: omit a `bool` field when it is `false`.
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 /// Broad operating-system family of a VMImage.
@@ -171,13 +289,14 @@ pub struct VMImageStatus {
     ))]
     pub per_provider: Vec<ImagePerProviderStatus>,
 
-    /// Progress of the shared, provider-agnostic raw-disk build for
-    /// `Url`-kind sources — set exclusively by `banlieue-imagebuilder`
-    /// (field manager `banlieue.io/imagebuilder`), never by a provider.
-    /// `None` when no `Url` source exists on this `VMImage` or the build
-    /// hasn't started. See ADR-0010.
+    /// Progress of the shared, provider-agnostic image build for `Url`-kind
+    /// sources — set exclusively by `banlieue-imagebuilder` (field manager
+    /// `banlieue.io/imagebuilder`), never by a provider. Typed by `kind`
+    /// (`cloudImage` for libvirt, `iso` for vSphere). `None` when no `Url`
+    /// source exists on this `VMImage` or the build hasn't started. See
+    /// ADR-0010 and ADR-0020.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub raw_disk_artifact: Option<RawDiskArtifactStatus>,
+    pub build_artifact: Option<BuildArtifactStatus>,
 
     /// `Ready` is True iff every per-provider entry is ready.
     ///
@@ -197,31 +316,38 @@ pub struct VMImageStatus {
     pub observed_generation: Option<i64>,
 }
 
-/// Progress of the shared raw-disk build driven by `banlieue-imagebuilder`
-/// from a `Url`-kind [`ImageSource`], via a kairos-operator `OSArtifact`
-/// (`build.kairos.io/v1alpha2`). One raw disk per `VMImage`, regardless of
-/// how many provider-class sources reference it — the OCI pull and disk
-/// build are identical no matter which backend eventually imports the
-/// result. See ADR-0010.
+/// Progress of the shared image build driven by `banlieue-imagebuilder` from a
+/// `Url`-kind [`ImageSource`], via a kairos-operator `OSArtifact`
+/// (`build.kairos.io/v1alpha2`). One build artifact per `VMImage`, regardless
+/// of how many provider-class sources reference it — the OCI pull and build are
+/// identical no matter which backend eventually imports the result. The
+/// artifact is typed by [`BuildArtifactKind`]: a raw cloud image (libvirt) or a
+/// bootable ISO (vSphere). See ADR-0010 and ADR-0020.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct RawDiskArtifactStatus {
+pub struct BuildArtifactStatus {
+    /// What kind of artifact was built, aligned with kairos-operator's own
+    /// `OSArtifactKind`. Determines the `file` extension and which provider
+    /// class consumes it.
+    pub kind: BuildArtifactKind,
+
     /// Current build phase.
-    pub phase: RawDiskArtifactPhase,
+    pub phase: BuildArtifactPhase,
 
     /// Name of the `OSArtifact` CR `banlieue-imagebuilder` created for this
     /// `VMImage` (same namespace as the artifacts PVC below).
     pub os_artifact_ref: String,
 
-    /// Reference to the PVC kairos-operator created holding the built disk,
+    /// Reference to the PVC kairos-operator created holding the built artifact,
     /// once known. Populated no earlier than phase `Building`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pvc_ref: Option<LocalObjectReference>,
 
-    /// File name of the raw disk within the artifacts PVC (kairos-operator
-    /// convention: `<osArtifactRef>.raw`). Populated at phase `Ready`.
+    /// File name of the artifact within the artifacts PVC (kairos-operator
+    /// convention: `<osArtifactRef>.raw` for `cloudImage`, `<osArtifactRef>.iso`
+    /// for `iso`). Populated at phase `Ready`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub disk_file: Option<String>,
+    pub file: Option<String>,
 
     /// Short reason, mirroring the stable-string convention used elsewhere
     /// in this status (e.g. `ImagePerProviderStatus.reason`).
@@ -233,7 +359,7 @@ pub struct RawDiskArtifactStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
 
-    /// Expected checksum (`<alg>:<hex>`) of the built disk, copied from the
+    /// Expected checksum (`<alg>:<hex>`) of the built artifact, copied from the
     /// `Url` source the build serves. Consumers that stream the artifact to a
     /// backend MUST verify it against this value and fail closed on mismatch
     /// (security review 2026-07-31, SEC-004) — the value lives here, next to
@@ -243,7 +369,19 @@ pub struct RawDiskArtifactStatus {
     pub checksum: Option<String>,
 }
 
-/// Build phase of a [`RawDiskArtifactStatus`].
+/// Kind of build artifact produced for a `VMImage`, aligned 1:1 with
+/// kairos-operator's `OSArtifactKind` string values so the vocabulary is not
+/// banlieue-invented. `cloudImage` is a raw cloud disk (consumed by libvirt);
+/// `iso` is a bootable install ISO from `auroraboot build-iso` (consumed by
+/// vSphere). See ADR-0020.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum BuildArtifactKind {
+    CloudImage,
+    Iso,
+}
+
+/// Build phase of a [`BuildArtifactStatus`].
 ///
 /// Deliberately a 4-state subset of kairos-operator's own
 /// `OSArtifact.status.phase` (`Pending | Building | Exporting | Ready |
@@ -251,7 +389,7 @@ pub struct RawDiskArtifactStatus {
 /// `Error -> Failed` before writing this field, so consumers never need to
 /// know about kairos-operator's own phase model.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub enum RawDiskArtifactPhase {
+pub enum BuildArtifactPhase {
     Pending,
     Building,
     Ready,

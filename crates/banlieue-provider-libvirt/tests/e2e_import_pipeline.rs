@@ -230,6 +230,8 @@ async fn a_vmimage_is_built_once_and_imported_into_every_declared_pool() {
             import_from: Some(KAIROS_IMAGE.to_string()),
             checksum: None,
         }],
+        cloud_config: None,
+        template: None,
     };
     images
         .create(
@@ -247,12 +249,12 @@ async fn a_vmimage_is_built_once_and_imported_into_every_declared_pool() {
         .expect("create VMImage");
 
     // ---- the imagebuilder half -----------------------------------------
-    wait_for("banlieue-imagebuilder publishes a Ready raw disk", || {
+    wait_for("banlieue-imagebuilder publishes a Ready build artifact", || {
         let api = images.clone();
         async move {
             let s = api.get_status(IMAGE_NAME).await.ok()?.status?;
-            let a = s.raw_disk_artifact?;
-            matches!(a.phase, banlieue_api::banlieue::RawDiskArtifactPhase::Ready).then_some(a)
+            let a = s.build_artifact?;
+            matches!(a.phase, banlieue_api::banlieue::BuildArtifactPhase::Ready).then_some(a)
         }
     })
     .await;
@@ -349,11 +351,11 @@ async fn a_vmimage_is_built_once_and_imported_into_every_declared_pool() {
         "one ready zone per declared pool, and no others"
     );
 
-    // `rawDiskArtifact` belongs to banlieue-imagebuilder's field manager and
+    // `buildArtifact` belongs to banlieue-imagebuilder's field manager and
     // `perProvider` to the provider's; both must survive on one object.
     assert!(
-        status.raw_disk_artifact.is_some(),
-        "the imagebuilder's rawDiskArtifact must coexist with the provider's perProvider"
+        status.build_artifact.is_some(),
+        "the imagebuilder's buildArtifact must coexist with the provider's perProvider"
     );
 
     // ---- ground truth on the host ---------------------------------------

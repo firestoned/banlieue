@@ -13,7 +13,10 @@ use banlieue_api::banlieue::ProviderConnection;
 
 use crate::error::Result;
 
-use super::{Cluster, Credentials, Datacenter, Template, VSphereClient, VSphereClientFactory};
+use super::{
+    Cluster, Credentials, Datacenter, Datastore, Network, Template, VSphereClient,
+    VSphereClientFactory,
+};
 
 /// Synthetic inventory used by [`FakeClient`] tests. Build with [`Inventory::builder`].
 #[derive(Debug, Clone, Default)]
@@ -23,6 +26,10 @@ pub struct Inventory {
     pub clusters_by_dc: HashMap<String, Vec<Cluster>>,
     /// Templates grouped by `Datacenter.moref`.
     pub templates_by_dc: HashMap<String, Vec<Template>>,
+    /// Datastores reachable from a cluster, grouped by `Cluster.moref`.
+    pub datastores_by_cluster: HashMap<String, Vec<Datastore>>,
+    /// Networks reachable from a cluster, grouped by `Cluster.moref`.
+    pub networks_by_cluster: HashMap<String, Vec<Network>>,
 }
 
 impl Inventory {
@@ -77,8 +84,69 @@ impl InventoryBuilder {
         self
     }
 
+    /// Seed a datastore reachable from `(dc_name, cluster_name)`. Pass
+    /// `datastore_cluster` to mark it a member of that SDRS datastore cluster.
+    pub fn with_datastore(
+        mut self,
+        dc_name: &str,
+        cluster_name: &str,
+        ds_name: impl Into<String>,
+        datastore_cluster: Option<&str>,
+    ) -> Self {
+        let cmoref = self.lookup_cluster(dc_name, cluster_name);
+        let ds_name = ds_name.into();
+        let ds = Datastore {
+            moref: format!("datastore-{cluster_name}-{ds_name}"),
+            name: ds_name,
+            datastore_cluster: datastore_cluster.map(str::to_string),
+            free_space_bytes: None,
+        };
+        self.inv
+            .datastores_by_cluster
+            .entry(cmoref)
+            .or_default()
+            .push(ds);
+        self
+    }
+
+    /// Seed a network reachable from `(dc_name, cluster_name)`. `distributed`
+    /// marks it a distributed virtual port group (vs a standard port group).
+    pub fn with_network(
+        mut self,
+        dc_name: &str,
+        cluster_name: &str,
+        net_name: impl Into<String>,
+        distributed: bool,
+    ) -> Self {
+        let cmoref = self.lookup_cluster(dc_name, cluster_name);
+        let net_name = net_name.into();
+        let net = Network {
+            moref: format!("network-{cluster_name}-{net_name}"),
+            name: net_name,
+            distributed,
+        };
+        self.inv
+            .networks_by_cluster
+            .entry(cmoref)
+            .or_default()
+            .push(net);
+        self
+    }
+
     pub fn build(self) -> Inventory {
         self.inv
+    }
+
+    fn lookup_cluster(&self, dc_name: &str, cluster_name: &str) -> String {
+        let dc_moref = self.lookup_dc(dc_name);
+        self.inv
+            .clusters_by_dc
+            .get(&dc_moref)
+            .and_then(|cs| cs.iter().find(|c| c.name == cluster_name))
+            .map(|c| c.moref.clone())
+            .unwrap_or_else(|| {
+                panic!("cluster {cluster_name:?} in {dc_name:?} not seeded — call .with_cluster(...) first")
+            })
     }
 
     fn lookup_dc(&self, dc_name: &str) -> String {
@@ -158,5 +226,39 @@ impl VSphereClient for FakeClient {
             .templates_by_dc
             .get(&dc.moref)
             .and_then(|tpls| tpls.iter().find(|t| t.name == name).cloned()))
+    }
+
+    async fn list_datastores(&self, cluster: &Cluster) -> Result<Vec<Datastore>> {
+        Ok(self
+            .inventory
+            .datastores_by_cluster
+            .get(&cluster.moref)
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    async fn list_networks(&self, cluster: &Cluster) -> Result<Vec<Network>> {
+        Ok(self
+            .inventory
+            .networks_by_cluster
+            .get(&cluster.moref)
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    async fn import_iso_template(&self, req: &crate::client::IsoImportRequest) -> Result<String> {
+        // No vCenter to mutate: return the reference the real client would
+        // resolve to, so import-subcommand tests can assert the plan without a
+        // backend.
+        Ok(format!("[{}] {}", req.datastore, req.template_name))
+    }
+
+    async fn ensure_datastore_dir(
+        &self,
+        _datacenter_moref: &str,
+        _datastore: &str,
+        _dir: &str,
+    ) -> Result<()> {
+        Ok(())
     }
 }

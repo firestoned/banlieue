@@ -89,6 +89,32 @@ spec:
                 - amd64
                 - arm64
                 type: string
+              cloudConfig:
+                description: |-
+                  Optional default cloud-config baked into the built artifact for
+                  `Url`-kind sources. Resolved by `banlieue-imagebuilder` and passed to
+                  the kairos-operator `OSArtifact` as `cloudConfigRef`
+                  (`auroraboot build-iso --cloud-config`). SecretRef-first; see
+                  [`CloudConfigSource`] and ADR-0020. Ignored for non-`Url` sources.
+                nullable: true
+                properties:
+                  secretRef:
+                    description: |-
+                      Key in a Secret in the imagebuild namespace holding the cloud-config
+                      YAML (key defaults to [`DEFAULT_CLOUD_CONFIG_KEY`]).
+                    nullable: true
+                    properties:
+                      key:
+                        description: Key within the object's `data`. Defaults are caller-defined.
+                        nullable: true
+                        type: string
+                      name:
+                        description: Name of the ConfigMap / Secret in the referrer's namespace.
+                        type: string
+                    required:
+                    - name
+                    type: object
+                type: object
               guestAgent:
                 default: cloud-init
                 description: |-
@@ -168,6 +194,71 @@ spec:
                   - ref
                   type: object
                 type: array
+              template:
+                description: |-
+                  How the backend **template** is built from a `Url` source (folder,
+                  disk size, force knobs). Only meaningful for `Url` sources; ignored for
+                  `Template` / `BackingFile`. See [`VMImageTemplate`] and ADR-0020.
+                nullable: true
+                properties:
+                  disk:
+                    description: |-
+                      Install disk of the template (the clone source's disk). When unset, a
+                      thin 100 GiB disk on a pvscsi controller is used.
+                    nullable: true
+                    properties:
+                      controller:
+                        default: pvscsi
+                        description: Disk controller type. Defaults to `pvscsi`.
+                        enum:
+                        - pvscsi
+                        - lsiLogic
+                        - lsiLogicSas
+                        - busLogic
+                        type: string
+                      size:
+                        description: Disk size, in GiB. Defaults to 100 when unset.
+                        format: int64
+                        nullable: true
+                        type: integer
+                      type:
+                        default: thin
+                        description: |-
+                          Provisioning hint: `thin` (default), `thick`, or `eagerZeroed`. Reuses
+                          the backend-agnostic [`DiskProvisioning`] shared with `VMClass` /
+                          `VSphereMachine`; eager-zeroing is the `eagerZeroed` variant, not a
+                          separate flag. Providers honor it on a best-effort basis.
+                        enum:
+                        - thin
+                        - thick
+                        - eagerZeroed
+                        type: string
+                    type: object
+                  folder:
+                    description: |-
+                      vCenter inventory folder (path under the datacenter's VM folder, e.g.
+                      `templates/kairos`) to place the template in; created if missing. When
+                      unset, the datacenter's VM-folder root is used. vSphere-only.
+                    nullable: true
+                    type: string
+                  forceCreate:
+                    description: |-
+                      Recreate the template even if one of that name already exists,
+                      destroying the existing one first. Threaded as `--force-create`.
+                    type: boolean
+                  forceUpload:
+                    description: |-
+                      Re-upload the built ISO even if one of that name already exists on the
+                      backend, deleting the existing one first (the vСenter datastore file API
+                      does not overwrite in place). Threaded as `--force-upload`.
+                    type: boolean
+                  network:
+                    description: |-
+                      Port group the template's NIC attaches to. When unset, the zone's first
+                      reachable network class (ADR-0019) is used. vSphere-only.
+                    nullable: true
+                    type: string
+                type: object
             required:
             - architecture
             - osDistribution
@@ -181,6 +272,83 @@ spec:
               Maintained by the image controller; read by the scheduler.
             nullable: true
             properties:
+              buildArtifact:
+                description: |-
+                  Progress of the shared, provider-agnostic image build for `Url`-kind
+                  sources — set exclusively by `banlieue-imagebuilder` (field manager
+                  `banlieue.io/imagebuilder`), never by a provider. Typed by `kind`
+                  (`cloudImage` for libvirt, `iso` for vSphere). `None` when no `Url`
+                  source exists on this `VMImage` or the build hasn't started. See
+                  ADR-0010 and ADR-0020.
+                nullable: true
+                properties:
+                  checksum:
+                    description: |-
+                      Expected checksum (`<alg>:<hex>`) of the built artifact, copied from the
+                      `Url` source the build serves. Consumers that stream the artifact to a
+                      backend MUST verify it against this value and fail closed on mismatch
+                      (security review 2026-07-31, SEC-004) — the value lives here, next to
+                      the PVC reference, so no consumer has to re-derive which source the
+                      shared build came from.
+                    nullable: true
+                    type: string
+                  file:
+                    description: |-
+                      File name of the artifact within the artifacts PVC (kairos-operator
+                      convention: `<osArtifactRef>.raw` for `cloudImage`, `<osArtifactRef>.iso`
+                      for `iso`). Populated at phase `Ready`.
+                    nullable: true
+                    type: string
+                  kind:
+                    description: |-
+                      What kind of artifact was built, aligned with kairos-operator's own
+                      `OSArtifactKind`. Determines the `file` extension and which provider
+                      class consumes it.
+                    enum:
+                    - cloudImage
+                    - iso
+                    type: string
+                  message:
+                    description: |-
+                      Long human-readable detail, e.g. the `OSArtifact.status.message` on
+                      failure.
+                    nullable: true
+                    type: string
+                  osArtifactRef:
+                    description: |-
+                      Name of the `OSArtifact` CR `banlieue-imagebuilder` created for this
+                      `VMImage` (same namespace as the artifacts PVC below).
+                    type: string
+                  phase:
+                    description: Current build phase.
+                    enum:
+                    - Pending
+                    - Building
+                    - Ready
+                    - Failed
+                    type: string
+                  pvcRef:
+                    description: |-
+                      Reference to the PVC kairos-operator created holding the built artifact,
+                      once known. Populated no earlier than phase `Building`.
+                    nullable: true
+                    properties:
+                      name:
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  reason:
+                    description: |-
+                      Short reason, mirroring the stable-string convention used elsewhere
+                      in this status (e.g. `ImagePerProviderStatus.reason`).
+                    nullable: true
+                    type: string
+                required:
+                - kind
+                - osArtifactRef
+                - phase
+                type: object
               conditions:
                 description: |-
                   `Ready` is True iff every per-provider entry is ready.
@@ -314,71 +482,6 @@ spec:
                 - providerName
                 - providerNamespace
                 x-kubernetes-list-type: map
-              rawDiskArtifact:
-                description: |-
-                  Progress of the shared, provider-agnostic raw-disk build for
-                  `Url`-kind sources — set exclusively by `banlieue-imagebuilder`
-                  (field manager `banlieue.io/imagebuilder`), never by a provider.
-                  `None` when no `Url` source exists on this `VMImage` or the build
-                  hasn't started. See ADR-0010.
-                nullable: true
-                properties:
-                  checksum:
-                    description: |-
-                      Expected checksum (`<alg>:<hex>`) of the built disk, copied from the
-                      `Url` source the build serves. Consumers that stream the artifact to a
-                      backend MUST verify it against this value and fail closed on mismatch
-                      (security review 2026-07-31, SEC-004) — the value lives here, next to
-                      the PVC reference, so no consumer has to re-derive which source the
-                      shared build came from.
-                    nullable: true
-                    type: string
-                  diskFile:
-                    description: |-
-                      File name of the raw disk within the artifacts PVC (kairos-operator
-                      convention: `<osArtifactRef>.raw`). Populated at phase `Ready`.
-                    nullable: true
-                    type: string
-                  message:
-                    description: |-
-                      Long human-readable detail, e.g. the `OSArtifact.status.message` on
-                      failure.
-                    nullable: true
-                    type: string
-                  osArtifactRef:
-                    description: |-
-                      Name of the `OSArtifact` CR `banlieue-imagebuilder` created for this
-                      `VMImage` (same namespace as the artifacts PVC below).
-                    type: string
-                  phase:
-                    description: Current build phase.
-                    enum:
-                    - Pending
-                    - Building
-                    - Ready
-                    - Failed
-                    type: string
-                  pvcRef:
-                    description: |-
-                      Reference to the PVC kairos-operator created holding the built disk,
-                      once known. Populated no earlier than phase `Building`.
-                    nullable: true
-                    properties:
-                      name:
-                        type: string
-                    required:
-                    - name
-                    type: object
-                  reason:
-                    description: |-
-                      Short reason, mirroring the stable-string convention used elsewhere
-                      in this status (e.g. `ImagePerProviderStatus.reason`).
-                    nullable: true
-                    type: string
-                required:
-                - osArtifactRef
-                - phase
-                type: object
             type: object
         required:
         - spec

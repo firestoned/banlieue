@@ -160,6 +160,7 @@ n17Lktsw0jAZJp1tU1DJPZSYHZPPWLZlJhHftNtpKQ==
     /// and answers nothing.
     #[tokio::test]
     async fn request_times_out_against_a_hung_endpoint() {
+        ensure_provider();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         std::thread::spawn(move || {

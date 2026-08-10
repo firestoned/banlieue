@@ -24,7 +24,7 @@ pub use vmclass::{
     DiskSpec, HardwareSpec, NetworkInterfaceSpec, NetworkSpec, VMClass, VMClassSpec,
 };
 pub use vmimage::{
-    Architecture, GuestAgent, ImagePerProviderStatus, ImageSource, ImageSourceKind, OsFamily,
-    RawDiskArtifactPhase, RawDiskArtifactStatus, VMImage, VMImageSpec, VMImageStatus,
-    ZoneImageStatus,
+    Architecture, BuildArtifactKind, BuildArtifactPhase, BuildArtifactStatus, DiskController,
+    GuestAgent, ImagePerProviderStatus, ImageSource, ImageSourceKind, OsFamily, VMImage,
+    VMImageSpec, VMImageStatus, VMImageTemplate, VMImageTemplateDisk, ZoneImageStatus,
 };

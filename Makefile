@@ -43,6 +43,14 @@ ORG          ?= firestoned
 IMAGE_TAG    ?= latest-dev
 NAMESPACE    ?= banlieue-system
 
+# Target architecture for the generic `docker-image` build (amd64 | arm64).
+ARCH         ?= amd64
+# Fully-qualified image reference the generic build tags. ORG is optional — set
+# `ORG=` (empty) for registries that host the image at the repo root
+# (e.g. `<registry>/banlieue:<tag>`), which is what `banlieue bootstrap
+# --registry <registry>` expects.
+IMAGE_REF    ?= $(REGISTRY)$(if $(strip $(ORG)),/$(ORG),)/$(BINARY):$(IMAGE_TAG)
+
 # Base images (pinned by digest in the Dockerfiles)
 BASE_IMAGE            ?= gcr.io/distroless/cc-debian13:nonroot
 CHAINGUARD_BASE_IMAGE ?= cgr.dev/chainguard/glibc-dynamic:latest
@@ -401,6 +409,30 @@ prepare-binaries-linux-arm64: build-linux-arm64 ## Stage $(BINARY) at binaries/a
 docker-build: ## Build distroless image for $(BINARY) (linux/amd64, loads to local docker)
 	@$(MAKE) docker-build-amd64 BINARY=$(BINARY)
 
+# Generic, single knob for both build and build+push, any arch, any registry.
+#   make docker-image ARCH=amd64                       # --load to local docker
+#   make docker-image ARCH=amd64 PUSH=true \           # build + push
+#     REGISTRY=<registry> ORG= IMAGE_TAG=local-dev     # -> <registry>/banlieue:local-dev
+# Cross-compiles + stages binaries/$(ARCH) first (the Dockerfile COPYs
+# binaries/$(TARGETARCH)/$(BINARY)), then buildx-builds $(IMAGE_REF).
+.PHONY: docker-image
+docker-image: ## Generic $(ARCH) image build of $(IMAGE_REF); PUSH=true to push instead of --load
+	@case "$(ARCH)" in \
+	  amd64) $(MAKE) prepare-binaries-linux-amd64 BINARY=$(BINARY) ;; \
+	  arm64) $(MAKE) prepare-binaries-linux-arm64 BINARY=$(BINARY) ;; \
+	  *) echo "ERROR: unsupported ARCH=$(ARCH) (use amd64 or arm64)"; exit 1 ;; \
+	esac
+	@echo "Building $(IMAGE_REF) (linux/$(ARCH), $(if $(filter true,$(PUSH)),push,load))..."
+	$(CONTAINER_TOOL) buildx build $(if $(filter true,$(PUSH)),--push,--load) \
+		--platform=linux/$(ARCH) \
+		-t $(IMAGE_REF) \
+		--build-arg BINARY=$(BINARY) \
+		--build-arg TARGETARCH=$(ARCH) \
+		--build-arg VERSION="$(VERSION)" \
+		--build-arg GIT_SHA="$(GIT_SHA)" \
+		--build-arg BASE_IMAGE="$(BASE_IMAGE)" \
+		-f Dockerfile .
+
 docker-build-amd64: prepare-binaries-linux-amd64 ## Build distroless image for $(BINARY) (linux/amd64)
 	$(CONTAINER_TOOL) buildx build --load --platform=linux/amd64 \
 		-t $(BINARY):$(IMAGE_TAG)-amd64 \
@@ -448,6 +480,29 @@ docker-buildx-chainguard: prepare-binaries-linux-amd64 ## Build and push Chaingu
 
 docker-push: ## Push the locally-built $(BINARY) image
 	$(CONTAINER_TOOL) push $(REGISTRY)/$(ORG)/$(BINARY):$(IMAGE_TAG)
+
+# ----- Install banlieue onto the current kube-context ----------------------
+#
+# Cluster-agnostic wrapper around the documented `banlieue bootstrap operator`
+# install (ADR-0013), for any real cluster (KUBECONFIG from the environment) —
+# the on-prem analog of the kind-only `kind-bootstrap-install`. Pins the
+# ProviderClass image to the $(ARCH) digest of $(REGISTRY)[/$(ORG)]/banlieue:$(VERSION)
+# so a mutable tag still deploys a known, arch-correct image.
+#
+#   KUBECONFIG=~/.kube/config make bootstrap-operator \
+#     REGISTRY=<registry> ORG= VERSION=local-dev ARCH=amd64
+.PHONY: bootstrap-operator
+bootstrap-operator: ## Install banlieue via `banlieue bootstrap operator` on $$KUBECONFIG (REGISTRY/ORG/VERSION/ARCH/NAMESPACE; pins the $(ARCH) digest)
+	@reg="$(REGISTRY)$(if $(strip $(ORG)),/$(ORG),)"; img="$$reg/$(BINARY):$(VERSION)"; \
+	 echo "Resolving linux/$(ARCH) digest for $$img ..."; \
+	 digest=$$(crane digest --platform=linux/$(ARCH) "$$img") || { \
+	   echo "ERROR: cannot resolve $$img — is it pushed for linux/$(ARCH)?"; exit 1; }; \
+	 echo "  pinning $$img@$$digest"; \
+	 cargo run -q -p $(BINARY) -- bootstrap operator \
+	   --namespace $(NAMESPACE) --registry "$$reg" --version $(VERSION) \
+	   --image-digest "$$digest"
+	@kubectl -n $(NAMESPACE) rollout status deployment/banlieue-operator --timeout=180s
+	@kubectl -n $(NAMESPACE) rollout status deployment/banlieue-controller --timeout=180s
 
 # ----- Supply chain (SBOM / VEX) --------------------------------------------
 # The release pipeline (signing, SLSA provenance, image scanning) lives in

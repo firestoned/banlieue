@@ -42,6 +42,7 @@ mod tests {
                 },
                 capabilities: ProviderCapabilities::default(),
                 paused: false,
+                use_content_library: false,
             },
             status: None,
         }
@@ -128,6 +129,8 @@ mod tests {
                     import_from: None,
                     checksum: None,
                 }],
+                cloud_config: None,
+                template: None,
             },
             status: Some(VMImageStatus {
                 per_provider: vec![ImagePerProviderStatus {
@@ -139,7 +142,7 @@ mod tests {
                     message: None,
                     zones: vec![],
                 }],
-                raw_disk_artifact: None,
+                build_artifact: None,
                 conditions: vec![],
                 observed_generation: None,
             }),

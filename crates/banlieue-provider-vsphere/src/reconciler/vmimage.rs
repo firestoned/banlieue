@@ -11,36 +11,42 @@
 //!   `VMImage.status.perProvider[]` entry to `ready=true` (with
 //!   `resolved_ref` populated) when found in every datacenter the Provider
 //!   has a failure domain in.
-//! - `Url` sources (ADR-0010): readiness depends on
-//!   `VMImage.status.rawDiskArtifact`, built by `banlieue-imagebuilder` —
-//!   this reconciler never touches that field, only reads it. Once its
-//!   phase is `Ready`, one not-ready [`ZoneImageStatus`] row is reported per
-//!   `Provider.status.failureDomains[]`; the actual per-zone conversion
-//!   (raw -> VMDK) and `vim_rs` upload/import are tracked as an ADR-0010
-//!   follow-up, not yet implemented.
+//! - `Url` sources (ADR-0010 / ADR-0020): readiness depends on
+//!   `VMImage.status.buildArtifact` (an `iso`, built by `banlieue-imagebuilder`)
+//!   — this reconciler never writes that field, only reads it. Once it reports
+//!   `Ready`, one per-zone import Job is ensured per
+//!   `Provider.status.failureDomains[]` (running the `image-import` subcommand,
+//!   [`crate::import`]); each Job's success/failure is translated into a
+//!   [`ZoneImageStatus`]. `useContentLibrary` is a documented follow-up.
 //! - `BackingFile` sources are not a vsphere concept and are rejected.
 //!
 //! `ready=false` in every non-terminal case carries a stable [`reasons`] tag.
 //!
-//! The pure helpers ([`compute_template_status`], [`compute_url_source_status`])
-//! take plain values / `&dyn VSphereClient` so the reconciler tests can drive
-//! them with `FakeClient` and never touch `kube::Api`.
+//! The pure helpers ([`compute_template_status`], [`gate_on_build_artifact`],
+//! [`build_import_job`], [`import_job_name`], [`zone_from_job`]) take plain
+//! values / `&dyn VSphereClient` so the reconciler tests drive them with
+//! `FakeClient` and never touch `kube::Api`; the Job-creating step
+//! (`ensure_import_jobs`) is the only part that needs a cluster.
 
 use std::sync::Arc;
 
+use std::collections::BTreeMap;
+
 use banlieue_api::banlieue::{
-    FailureDomain, ImagePerProviderStatus, ImageSource, ImageSourceKind, Provider,
-    RawDiskArtifactPhase, RawDiskArtifactStatus, VMImage, VMImageStatus, ZoneImageStatus,
+    BuildArtifactKind, BuildArtifactPhase, BuildArtifactStatus, FailureDomain,
+    ImagePerProviderStatus, ImageSource, ImageSourceKind, Provider, VMImage, VMImageStatus,
+    VMImageTemplateDisk, ZoneImageStatus,
 };
-use banlieue_provider_sdk::reconciler::{requeue_long, requeue_on_error};
+use banlieue_provider_sdk::reconciler::{requeue_default, requeue_long, requeue_on_error};
 use banlieue_provider_sdk::ssa::FIELD_MANAGER_PROVIDER_VSPHERE;
-use k8s_openapi::api::core::v1::Secret;
+use k8s_openapi::api::batch::v1::Job;
+use k8s_openapi::api::core::v1::{Secret, Toleration};
 use kube::{
     Resource, ResourceExt,
     api::{Api, ListParams, Patch, PatchParams},
     runtime::controller::Action,
 };
-use serde_json::json;
+use serde_json::{Value, json};
 use tracing::{info, warn};
 
 use super::provider::PROVIDER_CLASS_NAME;
@@ -50,6 +56,61 @@ use crate::error::{Error, Result};
 
 const SECRET_KEY_USERNAME: &str = "username";
 const SECRET_KEY_PASSWORD: &str = "password";
+
+/// Annotation on a `VMImage` requesting a forced re-import: the per-zone import
+/// Jobs are deleted and recreated, so a completed import re-runs (ADR-0020).
+/// Value is truthy (`"true"`, case-insensitive). Orthogonal to
+/// `spec.forceUpload` / `spec.forceCreate`, which control what the (re)run does.
+pub const ANNOTATION_FORCE_REIMPORT: &str = "banlieue.io/force-reimport";
+
+/// True when the `VMImage` carries a truthy `banlieue.io/force-reimport`
+/// annotation. Pure, so the trigger rule is unit-testable.
+pub fn force_reimport_requested(image: &VMImage) -> bool {
+    image
+        .metadata
+        .annotations
+        .as_ref()
+        .and_then(|a| a.get(ANNOTATION_FORCE_REIMPORT))
+        .is_some_and(|v| v.eq_ignore_ascii_case("true"))
+}
+
+/// The three force knobs that drive the per-zone import, bundled so they thread
+/// through the reconcile chain as one value.
+///
+/// - `reimport` (annotation `banlieue.io/force-reimport`): delete + recreate the
+///   import Job so a completed import re-runs.
+/// - `upload` (`spec.forceUpload`) / `create` (`spec.forceCreate`): baked into
+///   the Job's `--force-upload` / `--force-create` flags — what the run *does*
+///   (replace the ISO / recreate the template).
+#[derive(Debug, Clone, Default)]
+pub struct ImportForce {
+    pub reimport: bool,
+    pub upload: bool,
+    pub create: bool,
+    /// Port group from `spec.template.network`; `None` → zone-derived.
+    pub network: Option<String>,
+    /// Install disk from `spec.template.disk`; `None` → the Job's own default.
+    pub disk: Option<VMImageTemplateDisk>,
+    /// Target vCenter folder from `spec.template.folder`; `None` → datacenter
+    /// VM-folder root. Bundled here so it threads through with the force knobs.
+    pub folder: Option<String>,
+}
+
+impl ImportForce {
+    /// Read the force knobs + template settings off a `VMImage` (the
+    /// `banlieue.io/force-reimport` annotation + `spec.template`).
+    pub fn from_image(image: &VMImage) -> Self {
+        let t = image.spec.template.as_ref();
+        Self {
+            reimport: force_reimport_requested(image),
+            upload: t.is_some_and(|t| t.force_upload),
+            create: t.is_some_and(|t| t.force_create),
+            network: t.and_then(|t| t.network.clone()),
+            disk: t.and_then(|t| t.disk.clone()),
+            folder: t.and_then(|t| t.folder.clone()),
+        }
+    }
+}
 
 /// Stable `reason` strings for `ImagePerProviderStatus.reason` and the
 /// aggregate `Ready` condition. Operators match against these.
@@ -67,19 +128,29 @@ pub mod reasons {
     pub const LOOKUP_FAILED: &str = "LookupFailed";
     /// No vSphere ImageSource on this VMImage — nothing to do for this provider class.
     pub const NO_VSPHERE_SOURCE: &str = "NoVSphereSource";
-    /// `Url` source: `VMImage.status.rawDiskArtifact` isn't `Ready` yet
+    /// `Url` source: `VMImage.status.buildArtifact` isn't `Ready` yet
     /// (missing, `Pending`, or `Building`) — waiting on `banlieue-imagebuilder`.
     pub const BUILD_PENDING: &str = "BuildPending";
-    /// `Url` source: `VMImage.status.rawDiskArtifact.phase == Failed`.
+    /// `Url` source: `VMImage.status.buildArtifact.phase == Failed`.
     pub const BUILD_FAILED: &str = "BuildFailed";
-    /// `Url` source, raw disk `Ready`: the Provider has no
+    /// `Url` source, ISO `Ready`: the Provider has no
     /// `status.failureDomains[]` published yet, so there is nowhere to import
     /// into.
     pub const NO_FAILURE_DOMAINS: &str = "NoFailureDomains";
-    /// `Url` source, raw disk `Ready`: per-zone conversion (raw -> VMDK) and
-    /// `vim_rs` upload/import are not yet implemented — tracked as an
-    /// ADR-0010 follow-up.
-    pub const PER_ZONE_IMPORT_NOT_IMPLEMENTED: &str = "PerZoneImportNotImplemented";
+    /// A per-zone import Job is running (uploading the ISO / creating the
+    /// template) for this failure domain.
+    pub const IMPORTING: &str = "Importing";
+    /// The per-zone import Job for this failure domain failed.
+    pub const IMPORT_FAILED: &str = "ImportFailed";
+    /// `Url` source, artifact `Ready` but its `kind` is not `iso` — the vSphere
+    /// provider only imports ISO artifacts (ADR-0020). Defensive:
+    /// `banlieue-imagebuilder` requests `iso` for vSphere sources, so this
+    /// should not occur unless the build pipeline is misconfigured.
+    pub const WRONG_ARTIFACT_KIND: &str = "WrongArtifactKind";
+    /// `Url` source with `Provider.spec.useContentLibrary: true` — the Content
+    /// Library import path is not implemented yet (ADR-0020 follow-up); the
+    /// default datastore-upload + `MarkAsTemplate` path is the supported one.
+    pub const CONTENT_LIBRARY_NOT_IMPLEMENTED: &str = "ContentLibraryNotImplemented";
     /// This `ImageSource.kind` is not supported by the vsphere provider
     /// (`BackingFile` is a libvirt-shaped concept). Defensive — unreachable
     /// via [`find_vsphere_source`]'s own filter, kept in case that contract
@@ -120,20 +191,39 @@ pub async fn reconcile(image: Arc<VMImage>, ctx: Arc<Context>) -> Result<Action>
         return Ok(requeue_long());
     }
 
-    let raw_disk_artifact = image
+    let build_artifact = image
         .status
         .as_ref()
-        .and_then(|s| s.raw_disk_artifact.as_ref());
+        .and_then(|s| s.build_artifact.as_ref());
+
+    let force = ImportForce::from_image(&image);
 
     let mut rows: Vec<ImagePerProviderStatus> = Vec::with_capacity(providers.len());
+    let mut any_pending = false;
     for provider in &providers {
-        let row = reconcile_for_provider(&ctx, provider, vsphere_source, raw_disk_artifact).await;
+        let row = reconcile_for_provider(
+            &ctx,
+            provider,
+            vsphere_source,
+            build_artifact,
+            &name,
+            &force,
+        )
+        .await;
+        any_pending |= !row.ready;
         rows.push(row);
     }
 
     patch_vmimage_status(&ctx, &name, generation, rows).await?;
 
-    Ok(requeue_long())
+    // Poll while a per-zone import is still running; back off once every
+    // provider row is ready (or terminally stuck on a reason the operator must
+    // act on, in which case a spec/status change re-triggers us anyway).
+    Ok(if any_pending {
+        requeue_default()
+    } else {
+        requeue_long()
+    })
 }
 
 /// `error_policy` invoked on `reconcile` failure.
@@ -152,10 +242,14 @@ pub async fn reconcile_for_provider(
     ctx: &Context,
     provider: &Provider,
     source: &ImageSource,
-    raw_disk_artifact: Option<&RawDiskArtifactStatus>,
+    build_artifact: Option<&BuildArtifactStatus>,
+    image_name: &str,
+    force: &ImportForce,
 ) -> ImagePerProviderStatus {
     match source.kind {
-        ImageSourceKind::Url => return compute_url_source_status(provider, raw_disk_artifact),
+        ImageSourceKind::Url => {
+            return reconcile_url_source(ctx, provider, build_artifact, image_name, force).await;
+        }
         ImageSourceKind::BackingFile => {
             return per_provider_failure(
                 provider,
@@ -262,83 +356,441 @@ pub fn find_vsphere_source(sources: &[ImageSource]) -> Option<&ImageSource> {
 }
 
 /// Resolve the per-provider status row for a `Url`-kind vsphere source
-/// (ADR-0010). Never connects to vCenter — readiness depends only on
-/// `VMImage.status.rawDiskArtifact` (written exclusively by
-/// `banlieue-imagebuilder`) and, once that reports `Ready`, on the per-zone
-/// import work tracked as a follow-up.
-pub fn compute_url_source_status(
+/// (ADR-0010 / ADR-0020). Readiness depends on `VMImage.status.buildArtifact`
+/// (written exclusively by `banlieue-imagebuilder`); once it reports an `iso`
+/// artifact `Ready`, one per-zone import Job is ensured per
+/// `Provider.status.failureDomains[]` and its state translated into a
+/// [`ZoneImageStatus`]. Never writes `buildArtifact` — only reads it.
+async fn reconcile_url_source(
+    ctx: &Context,
     provider: &Provider,
-    raw_disk_artifact: Option<&RawDiskArtifactStatus>,
+    build_artifact: Option<&BuildArtifactStatus>,
+    image_name: &str,
+    force: &ImportForce,
 ) -> ImagePerProviderStatus {
-    let Some(artifact) = raw_disk_artifact else {
-        return per_provider_failure(
-            provider,
-            reasons::BUILD_PENDING,
-            "waiting for banlieue-imagebuilder to build the raw disk (VMImage.status.rawDiskArtifact not set yet)".to_string(),
-        );
+    let artifact = match gate_on_build_artifact(build_artifact) {
+        Err((reason, message)) => return per_provider_failure(provider, reason, message),
+        Ok(a) => a,
     };
 
-    match artifact.phase {
-        RawDiskArtifactPhase::Pending | RawDiskArtifactPhase::Building => per_provider_failure(
+    // ADR-0020: the Content Library import path is a documented follow-up; the
+    // supported path is datastore-upload + MarkAsTemplate (default, CL off).
+    if provider.spec.use_content_library {
+        return per_provider_failure(
             provider,
-            reasons::BUILD_PENDING,
-            format!("raw disk build in progress ({:?})", artifact.phase),
-        ),
-        RawDiskArtifactPhase::Failed => per_provider_failure(
+            reasons::CONTENT_LIBRARY_NOT_IMPLEMENTED,
+            "Provider.spec.useContentLibrary=true, but the Content Library import path is not implemented yet (ADR-0020 follow-up)".to_string(),
+        );
+    }
+
+    let failure_domains: &[FailureDomain] = provider
+        .status
+        .as_ref()
+        .map(|s| s.failure_domains.as_slice())
+        .unwrap_or_default();
+    if failure_domains.is_empty() {
+        return per_provider_failure(
             provider,
-            reasons::BUILD_FAILED,
-            artifact
-                .message
-                .clone()
-                .unwrap_or_else(|| "raw disk build failed".to_string()),
-        ),
-        RawDiskArtifactPhase::Ready => {
-            let failure_domains: &[FailureDomain] = provider
-                .status
-                .as_ref()
-                .map(|s| s.failure_domains.as_slice())
-                .unwrap_or_default();
-            if failure_domains.is_empty() {
-                return per_provider_failure(
-                    provider,
-                    reasons::NO_FAILURE_DOMAINS,
-                    "Provider has no status.failureDomains[] published yet".to_string(),
-                );
-            }
-            let zones = compute_zone_rows(failure_domains);
-            let ready = zones.iter().all(|z| z.ready);
-            ImagePerProviderStatus {
-                provider_name: provider.name_any(),
-                provider_namespace: provider.namespace().unwrap_or_default(),
-                ready,
-                resolved_ref: None,
-                reason: Some(reasons::PER_ZONE_IMPORT_NOT_IMPLEMENTED.to_string()),
-                message: Some(format!(
-                    "raw disk ready; {} zone(s) pending per-zone import",
-                    zones.len()
-                )),
-                zones,
-            }
-        }
+            reasons::NO_FAILURE_DOMAINS,
+            "Provider has no status.failureDomains[] published yet".to_string(),
+        );
+    }
+
+    let zones =
+        ensure_import_jobs(ctx, provider, image_name, artifact, failure_domains, force).await;
+    let ready = zones.iter().all(|z| z.ready);
+    let reason = if ready {
+        reasons::RECONCILED
+    } else if zones
+        .iter()
+        .any(|z| z.reason.as_deref() == Some(reasons::IMPORT_FAILED))
+    {
+        reasons::IMPORT_FAILED
+    } else {
+        reasons::IMPORTING
+    };
+    ImagePerProviderStatus {
+        provider_name: provider.name_any(),
+        provider_namespace: provider.namespace().unwrap_or_default(),
+        ready,
+        resolved_ref: None,
+        reason: Some(reason.to_string()),
+        message: None,
+        zones,
     }
 }
 
-/// One not-ready row per failure domain. Per-zone conversion (raw -> VMDK)
-/// and the `vim_rs` upload/import are not yet implemented — tracked as an
-/// ADR-0010 follow-up, not a bug.
-fn compute_zone_rows(failure_domains: &[FailureDomain]) -> Vec<ZoneImageStatus> {
-    failure_domains
-        .iter()
-        .map(|fd| ZoneImageStatus {
-            name: fd.name.clone(),
-            ready: false,
-            resolved_ref: None,
-            reason: Some(reasons::PER_ZONE_IMPORT_NOT_IMPLEMENTED.to_string()),
-            message: Some(
-                "per-zone conversion (raw -> VMDK) and vim_rs import are not yet implemented — tracked as a follow-up".to_string(),
+/// Decide whether the shared build artifact is usable by the vSphere importer
+/// yet. Pure, so the gating rules are unit-testable without kube or vCenter.
+///
+/// # Errors
+/// A `(reason, message)` pair when the artifact is missing, not `Ready`, or the
+/// wrong kind (vSphere consumes only `iso`, ADR-0020).
+pub fn gate_on_build_artifact(
+    build_artifact: Option<&BuildArtifactStatus>,
+) -> std::result::Result<&BuildArtifactStatus, (&'static str, String)> {
+    let Some(a) = build_artifact else {
+        return Err((
+            reasons::BUILD_PENDING,
+            "waiting for banlieue-imagebuilder (VMImage.status.buildArtifact not set yet)"
+                .to_string(),
+        ));
+    };
+    match a.phase {
+        BuildArtifactPhase::Pending | BuildArtifactPhase::Building => Err((
+            reasons::BUILD_PENDING,
+            format!("ISO build in progress ({:?})", a.phase),
+        )),
+        BuildArtifactPhase::Failed => Err((
+            reasons::BUILD_FAILED,
+            a.message
+                .clone()
+                .unwrap_or_else(|| "ISO build failed".to_string()),
+        )),
+        BuildArtifactPhase::Ready if a.kind != BuildArtifactKind::Iso => Err((
+            reasons::WRONG_ARTIFACT_KIND,
+            format!(
+                "buildArtifact.kind is {:?}, but the vSphere provider imports only iso artifacts",
+                a.kind
             ),
-        })
-        .collect()
+        )),
+        BuildArtifactPhase::Ready => Ok(a),
+    }
+}
+
+/// Deterministic Job name for one (image, provider, failure-domain) import.
+///
+/// Deterministic so a re-reconcile adopts the existing Job instead of starting
+/// a second copy of a multi-gigabyte ISO transfer.
+pub fn import_job_name(image: &str, provider: &str, failure_domain: &str) -> String {
+    let raw = format!("import-{image}-{provider}-{failure_domain}");
+    let cleaned: String = raw
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect::<String>()
+        .to_lowercase();
+    // Kubernetes names cap at 63 characters.
+    cleaned.chars().take(63).collect::<String>()
+}
+
+/// Create the import Job for each failure domain that lacks one, and translate
+/// existing Job state into [`ZoneImageStatus`].
+///
+/// When `force.reimport` (VMImage `banlieue.io/force-reimport` annotation), any
+/// existing Job is deleted first so a completed import re-runs. The (re)created
+/// Job carries `--force-upload` / `--force-create` per `force.upload` /
+/// `force.create` (from `spec`).
+async fn ensure_import_jobs(
+    ctx: &Context,
+    provider: &Provider,
+    image_name: &str,
+    artifact: &BuildArtifactStatus,
+    failure_domains: &[FailureDomain],
+    force: &ImportForce,
+) -> Vec<ZoneImageStatus> {
+    let api: Api<Job> = Api::namespaced(ctx.client.clone(), &ctx.build_namespace);
+    let mut zones = Vec::with_capacity(failure_domains.len());
+
+    for fd in failure_domains {
+        let job_name = import_job_name(image_name, &provider.name_any(), &fd.name);
+
+        // Forced re-import: delete any existing Job so it is recreated and
+        // re-runs. Deletion is not instant — if it is still terminating when we
+        // (re)create below, the apply reports an error and we retry next pass.
+        // A 404 (nothing to delete) is fine.
+        if force.reimport {
+            match api
+                .delete(&job_name, &kube::api::DeleteParams::background())
+                .await
+            {
+                Ok(_) => {}
+                Err(kube::Error::Api(e)) if e.code == 404 => {}
+                Err(e) => {
+                    zones.push(zone_row(
+                        &fd.name,
+                        false,
+                        reasons::IMPORT_FAILED,
+                        &e.to_string(),
+                    ));
+                    continue;
+                }
+            }
+        }
+
+        // On reimport always (re)create; otherwise adopt an existing Job.
+        let zone = if force.reimport {
+            create_import_job(
+                &api, ctx, provider, image_name, &fd.name, &job_name, artifact, force,
+            )
+            .await
+        } else {
+            match api.get(&job_name).await {
+                Ok(job) => zone_from_job(&fd.name, &job_name, &job),
+                Err(kube::Error::Api(e)) if e.code == 404 => {
+                    create_import_job(
+                        &api, ctx, provider, image_name, &fd.name, &job_name, artifact, force,
+                    )
+                    .await
+                }
+                Err(e) => zone_row(&fd.name, false, reasons::IMPORT_FAILED, &e.to_string()),
+            }
+        };
+        zones.push(zone);
+    }
+    zones
+}
+
+/// Server-side-apply one per-zone import Job and translate the outcome into a
+/// zone row. An apply that races a still-terminating prior Job reports
+/// `Importing` (retried next pass), not `ImportFailed`.
+#[allow(clippy::too_many_arguments)]
+async fn create_import_job(
+    api: &Api<Job>,
+    ctx: &Context,
+    provider: &Provider,
+    image_name: &str,
+    failure_domain: &str,
+    job_name: &str,
+    artifact: &BuildArtifactStatus,
+    force: &ImportForce,
+) -> ZoneImageStatus {
+    let spec = build_import_job(&ImportJobInputs {
+        job_name,
+        namespace: &ctx.build_namespace,
+        image: &ctx.import_image,
+        service_account: Some(ctx.import_service_account.as_str()),
+        vmimage: image_name,
+        provider,
+        failure_domain,
+        artifact,
+        tolerations: &ctx.import_tolerations,
+        force_upload: force.upload,
+        force_create: force.create,
+        network: force.network.as_deref(),
+        disk: force.disk.as_ref(),
+        folder: force.folder.as_deref(),
+    });
+    match api
+        .patch(
+            job_name,
+            &PatchParams::apply(FIELD_MANAGER_PROVIDER_VSPHERE).force(),
+            &Patch::Apply(&spec),
+        )
+        .await
+    {
+        Ok(_) => zone_row(
+            failure_domain,
+            false,
+            reasons::IMPORTING,
+            "import Job created",
+        ),
+        Err(e) => zone_row(failure_domain, false, reasons::IMPORTING, &e.to_string()),
+    }
+}
+
+/// Map a Job's status onto a zone row.
+pub fn zone_from_job(failure_domain: &str, job_name: &str, job: &Job) -> ZoneImageStatus {
+    let status = job.status.as_ref();
+    let succeeded = status.and_then(|s| s.succeeded).unwrap_or(0);
+    let failed = status.and_then(|s| s.failed).unwrap_or(0);
+
+    if succeeded > 0 {
+        return ZoneImageStatus {
+            name: failure_domain.to_string(),
+            ready: true,
+            resolved_ref: Some(format!("{failure_domain}/{job_name}")),
+            reason: Some(reasons::RECONCILED.to_string()),
+            message: None,
+        };
+    }
+    if failed > 0 {
+        return zone_row(
+            failure_domain,
+            false,
+            reasons::IMPORT_FAILED,
+            &format!("import Job {job_name} failed"),
+        );
+    }
+    zone_row(
+        failure_domain,
+        false,
+        reasons::IMPORTING,
+        "import Job running",
+    )
+}
+
+fn zone_row(failure_domain: &str, ready: bool, reason: &str, message: &str) -> ZoneImageStatus {
+    ZoneImageStatus {
+        name: failure_domain.to_string(),
+        ready,
+        resolved_ref: None,
+        reason: Some(reason.to_string()),
+        message: Some(message.to_string()),
+    }
+}
+
+/// Everything one per-zone import Job needs to know.
+#[derive(Debug)]
+pub struct ImportJobInputs<'a> {
+    /// Deterministic Job name from [`import_job_name`].
+    pub job_name: &'a str,
+    /// Namespace the Job and the artifacts PVC live in.
+    pub namespace: &'a str,
+    /// Container image to run — the banlieue image itself.
+    pub image: &'a str,
+    /// ServiceAccount to run as. `None` falls back to the namespace default.
+    pub service_account: Option<&'a str>,
+    /// `VMImage` being imported (also the target template name).
+    pub vmimage: &'a str,
+    /// `Provider` whose vCenter receives the template.
+    pub provider: &'a Provider,
+    /// Target failure domain (zone) — one vSphere compute cluster / datastore.
+    pub failure_domain: &'a str,
+    /// The ISO to upload, as published by banlieue-imagebuilder.
+    pub artifact: &'a BuildArtifactStatus,
+    /// Taints the Job may tolerate (placement follows the artifacts PVC).
+    pub tolerations: &'a [Toleration],
+    /// Pass `--force-upload` so the import re-uploads the ISO (spec.forceUpload).
+    pub force_upload: bool,
+    /// Pass `--force-create` so the import recreates the template (spec.forceCreate).
+    pub force_create: bool,
+    /// Port group override (`spec.template.network`); `None` → zone-derived.
+    pub network: Option<&'a str>,
+    /// Install disk (`spec.template.disk`); `None` → the Job's own default.
+    pub disk: Option<&'a VMImageTemplateDisk>,
+    /// Target vCenter folder path; `None` → datacenter VM-folder root.
+    pub folder: Option<&'a str>,
+}
+
+/// Build the per-zone import Job manifest.
+///
+/// Pure, so the manifest is unit-testable without a cluster. The Job runs the
+/// `banlieue` binary's own `provider vsphere image-import` subcommand with the
+/// artifacts PVC mounted read-only at `/artifacts`.
+pub fn build_import_job(inputs: &ImportJobInputs<'_>) -> Value {
+    let ImportJobInputs {
+        job_name,
+        namespace,
+        image,
+        service_account,
+        vmimage,
+        provider,
+        failure_domain,
+        artifact,
+        tolerations,
+        force_upload,
+        force_create,
+        network,
+        disk,
+        folder,
+    } = *inputs;
+
+    let pvc = artifact
+        .pvc_ref
+        .as_ref()
+        .map(|r| r.name.clone())
+        .unwrap_or_default();
+    let iso_file = artifact.file.clone().unwrap_or_default();
+
+    let mut labels = BTreeMap::new();
+    labels.insert("app.kubernetes.io/name".to_string(), "banlieue".to_string());
+    labels.insert(
+        "app.kubernetes.io/component".to_string(),
+        "vsphere-import".to_string(),
+    );
+    labels.insert("banlieue.io/vmimage".to_string(), vmimage.to_string());
+    labels.insert(
+        "banlieue.io/failure-domain".to_string(),
+        failure_domain.to_string(),
+    );
+
+    let mut args = vec![
+        "provider".to_string(),
+        "vsphere".to_string(),
+        "image-import".to_string(),
+        "--vmimage".to_string(),
+        vmimage.to_string(),
+        "--provider".to_string(),
+        provider.name_any(),
+        // The Job runs in the build namespace; the Provider generally does not.
+        "--provider-namespace".to_string(),
+        provider.namespace().unwrap_or_default(),
+        "--failure-domain".to_string(),
+        failure_domain.to_string(),
+        "--source".to_string(),
+        format!("/artifacts/{iso_file}"),
+    ];
+    // SEC-004: verify the ISO against the published checksum before it reaches
+    // any datastore.
+    if let Some(checksum) = artifact.checksum.as_deref() {
+        args.push("--checksum".to_string());
+        args.push(checksum.to_string());
+    }
+    // Re-upload the ISO / recreate the template rather than no-op when present.
+    if force_upload {
+        args.push("--force-upload".to_string());
+    }
+    if force_create {
+        args.push("--force-create".to_string());
+    }
+    if let Some(network) = network {
+        args.push("--network".to_string());
+        args.push(network.to_string());
+    }
+    if let Some(disk) = disk {
+        if let Some(size) = disk.size {
+            args.push("--disk-gb".to_string());
+            args.push(size.to_string());
+        }
+        args.push("--disk-type".to_string());
+        args.push(disk.provisioning.as_str().to_string());
+        args.push("--disk-controller".to_string());
+        args.push(disk.controller.as_str().to_string());
+    }
+    if let Some(folder) = folder {
+        args.push("--folder".to_string());
+        args.push(folder.to_string());
+    }
+
+    let mut pod_spec = json!({
+        "restartPolicy": "Never",
+        "containers": [{
+            "name": "import",
+            "image": image,
+            "args": args,
+            "volumeMounts": [{
+                "name": "artifacts",
+                "mountPath": "/artifacts",
+                "readOnly": true,
+            }],
+        }],
+        "volumes": [{
+            "name": "artifacts",
+            "persistentVolumeClaim": { "claimName": pvc, "readOnly": true },
+        }],
+    });
+    if let Some(sa) = service_account {
+        pod_spec["serviceAccountName"] = json!(sa);
+    }
+    if !tolerations.is_empty() {
+        pod_spec["tolerations"] = serde_json::to_value(tolerations).unwrap_or_else(|_| json!([]));
+    }
+
+    json!({
+        "apiVersion": "batch/v1",
+        "kind": "Job",
+        "metadata": { "name": job_name, "namespace": namespace, "labels": labels },
+        "spec": {
+            // A half-finished upload is resumable only by starting over, and
+            // retrying forever would hammer vCenter; two attempts then stop.
+            "backoffLimit": 1,
+            "ttlSecondsAfterFinished": 86400,
+            "template": {
+                "metadata": { "labels": labels },
+                "spec": pod_spec,
+            },
+        },
+    })
 }
 
 fn per_provider_failure(
@@ -449,11 +901,11 @@ async fn patch_vmimage_status(
     let status = VMImageStatus {
         per_provider,
         // Never set by this provider — banlieue-imagebuilder is the sole
-        // writer of rawDiskArtifact (ADR-0010); omitting it here (rather than
+        // writer of buildArtifact (ADR-0010); omitting it here (rather than
         // writing None explicitly into the SSA-applied JSON) would be
         // equally correct since it's skip_serializing_if, but staying
         // explicit documents the field-manager split at the call site.
-        raw_disk_artifact: None,
+        build_artifact: None,
         // Likewise the aggregate Ready, which belongs to banlieue-controller
         // (ADR-0015): this provider only ever sees its own rows, so any value
         // it computed would be an answer to a different question.

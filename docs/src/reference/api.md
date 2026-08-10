@@ -64,6 +64,7 @@ never does. Communication between them is CRD-only.
 | `connection` | object | Yes | Connection details for the backend. |
 | `paused` | boolean |  | Suspend reconciliation. Equivalent to setting the `cluster.x-k8s.io/paused` annotation but in-band. |
 | `providerClassRef` | object | Yes | Reference to a ProviderClass that identifies the backend type. |
+| `useContentLibrary` | boolean |  | vSphere only: import `Url`-kind VMImages through a vCenter Content Library rather than the default datastore-upload + `MarkAsTemplate` path. Defaults to `false` (no Content Library required), matching environments where CL is not enabled. Ignored by non-vSphere classes. See ADR-0020. |
 
 #### `.spec.capabilities`
 
@@ -592,11 +593,35 @@ Cluster-scoped: a VMImage is shared by VirtualMachines in any namespace.
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `architecture` | string | Yes | Guest CPU architecture. Failure domains whose hosts cannot run this architecture are filtered out by the scheduler. Allowed: `amd64`, `arm64`. |
+| `cloudConfig` | object |  | Optional default cloud-config baked into the built artifact for `Url`-kind sources. Resolved by `banlieue-imagebuilder` and passed to the kairos-operator `OSArtifact` as `cloudConfigRef` (`auroraboot build-iso --cloud-config`). SecretRef-first; see [`CloudConfigSource`] and ADR-0020. Ignored for non-`Url` sources. |
 | `guestAgent` | string |  | Guest agent contract this image is built to support; determines how `VirtualMachine.spec.userData` is delivered. Allowed: `cloud-init`, `ignition`, `sysprep`, `none`. |
 | `osDistribution` | string | Yes | Free-form distribution string. Examples: ubuntu, rhel, debian, fedora-coreos, windows-server. |
 | `osFamily` | string | Yes | Broad operating-system family. Coarser than `osDistribution`; lets providers apply high-level guest handling. Allowed: `linux`, `windows`, `bsd`, `other`. |
 | `osVersion` | string | Yes | Free-form version string. Examples: "22.04", "9.4", "2022". |
 | `sources` | object[] | Yes | Per-provider source mappings. At least one entry per ProviderClass you intend to schedule VMs onto. |
+| `template` | object |  | How the backend **template** is built from a `Url` source (folder, disk size, force knobs). Only meaningful for `Url` sources; ignored for `Template` / `BackingFile`. See [`VMImageTemplate`] and ADR-0020. |
+
+#### `.spec.cloudConfig`
+
+Optional default cloud-config baked into the built artifact for
+`Url`-kind sources. Resolved by `banlieue-imagebuilder` and passed to
+the kairos-operator `OSArtifact` as `cloudConfigRef`
+(`auroraboot build-iso --cloud-config`). SecretRef-first; see
+[`CloudConfigSource`] and ADR-0020. Ignored for non-`Url` sources.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `secretRef` | object |  | Key in a Secret in the imagebuild namespace holding the cloud-config YAML (key defaults to [`DEFAULT_CLOUD_CONFIG_KEY`]). |
+
+##### `.spec.cloudConfig.secretRef`
+
+Key in a Secret in the imagebuild namespace holding the cloud-config
+YAML (key defaults to [`DEFAULT_CLOUD_CONFIG_KEY`]).
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `key` | string |  | Key within the object's `data`. Defaults are caller-defined. |
+| `name` | string | Yes | Name of the ConfigMap / Secret in the referrer's namespace. |
 
 #### `.spec.sources[]`
 
@@ -611,6 +636,31 @@ you intend to schedule VMs onto.
 | `providerClass` | string | Yes | Name of the ProviderClass this source applies to. Conventional values: `vsphere`, `proxmox`, `libvirt`. |
 | `ref` | string | Yes | Provider-interpreted reference: vsphere + Template: template name e.g. "ubuntu-22.04-cloudinit" proxmox + Template: template VMID e.g. "9000" libvirt + BackingFile: path e.g. "/var/lib/libvirt/images/ubuntu.qcow2" * + Url: ignored; uses `importFrom` |
 
+#### `.spec.template`
+
+How the backend **template** is built from a `Url` source (folder,
+disk size, force knobs). Only meaningful for `Url` sources; ignored for
+`Template` / `BackingFile`. See [`VMImageTemplate`] and ADR-0020.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `disk` | object |  | Install disk of the template (the clone source's disk). When unset, a thin 100 GiB disk on a pvscsi controller is used. |
+| `folder` | string |  | vCenter inventory folder (path under the datacenter's VM folder, e.g. `templates/kairos`) to place the template in; created if missing. When unset, the datacenter's VM-folder root is used. vSphere-only. |
+| `forceCreate` | boolean |  | Recreate the template even if one of that name already exists, destroying the existing one first. Threaded as `--force-create`. |
+| `forceUpload` | boolean |  | Re-upload the built ISO even if one of that name already exists on the backend, deleting the existing one first (the vСenter datastore file API does not overwrite in place). Threaded as `--force-upload`. |
+| `network` | string |  | Port group the template's NIC attaches to. When unset, the zone's first reachable network class (ADR-0019) is used. vSphere-only. |
+
+##### `.spec.template.disk`
+
+Install disk of the template (the clone source's disk). When unset, a
+thin 100 GiB disk on a pvscsi controller is used.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `controller` | string |  | Disk controller type. Defaults to `pvscsi`. Allowed: `pvscsi`, `lsiLogic`, `lsiLogicSas`, `busLogic`. |
+| `size` | integer |  | Disk size, in GiB. Defaults to 100 when unset. |
+| `type` | string |  | Provisioning hint: `thin` (default), `thick`, or `eagerZeroed`. Reuses the backend-agnostic [`DiskProvisioning`] shared with `VMClass` / `VSphereMachine`; eager-zeroing is the `eagerZeroed` variant, not a separate flag. Providers honor it on a best-effort basis. Allowed: `thin`, `thick`, `eagerZeroed`. |
+
 ### `.status`
 
 Observed availability of a VMImage across the Providers that can serve it.
@@ -618,10 +668,39 @@ Maintained by the image controller; read by the scheduler.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
+| `buildArtifact` | object |  | Progress of the shared, provider-agnostic image build for `Url`-kind sources — set exclusively by `banlieue-imagebuilder` (field manager `banlieue.io/imagebuilder`), never by a provider. Typed by `kind` (`cloudImage` for libvirt, `iso` for vSphere). `None` when no `Url` source exists on this `VMImage` or the build hasn't started. See ADR-0010 and ADR-0020. |
 | `conditions` | object[] |  | `Ready` is True iff every per-provider entry is ready. |
 | `observedGeneration` | integer |  |  |
 | `perProvider` | object[] |  | Per-Provider readiness. One entry per Provider that supports this image's providerClass and has reconciled at least once. |
-| `rawDiskArtifact` | object |  | Progress of the shared, provider-agnostic raw-disk build for `Url`-kind sources — set exclusively by `banlieue-imagebuilder` (field manager `banlieue.io/imagebuilder`), never by a provider. `None` when no `Url` source exists on this `VMImage` or the build hasn't started. See ADR-0010. |
+
+#### `.status.buildArtifact`
+
+Progress of the shared, provider-agnostic image build for `Url`-kind
+sources — set exclusively by `banlieue-imagebuilder` (field manager
+`banlieue.io/imagebuilder`), never by a provider. Typed by `kind`
+(`cloudImage` for libvirt, `iso` for vSphere). `None` when no `Url`
+source exists on this `VMImage` or the build hasn't started. See
+ADR-0010 and ADR-0020.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `checksum` | string |  | Expected checksum (`<alg>:<hex>`) of the built artifact, copied from the `Url` source the build serves. Consumers that stream the artifact to a backend MUST verify it against this value and fail closed on mismatch (security review 2026-07-31, SEC-004) — the value lives here, next to the PVC reference, so no consumer has to re-derive which source the shared build came from. |
+| `file` | string |  | File name of the artifact within the artifacts PVC (kairos-operator convention: `<osArtifactRef>.raw` for `cloudImage`, `<osArtifactRef>.iso` for `iso`). Populated at phase `Ready`. |
+| `kind` | string | Yes | What kind of artifact was built, aligned with kairos-operator's own `OSArtifactKind`. Determines the `file` extension and which provider class consumes it. Allowed: `cloudImage`, `iso`. |
+| `message` | string |  | Long human-readable detail, e.g. the `OSArtifact.status.message` on failure. |
+| `osArtifactRef` | string | Yes | Name of the `OSArtifact` CR `banlieue-imagebuilder` created for this `VMImage` (same namespace as the artifacts PVC below). |
+| `phase` | string | Yes | Current build phase. Allowed: `Pending`, `Building`, `Ready`, `Failed`. |
+| `pvcRef` | object |  | Reference to the PVC kairos-operator created holding the built artifact, once known. Populated no earlier than phase `Building`. |
+| `reason` | string |  | Short reason, mirroring the stable-string convention used elsewhere in this status (e.g. `ImagePerProviderStatus.reason`). |
+
+##### `.status.buildArtifact.pvcRef`
+
+Reference to the PVC kairos-operator created holding the built artifact,
+once known. Populated no earlier than phase `Building`.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | Yes |  |
 
 #### `.status.conditions[]`
 
@@ -679,33 +758,6 @@ and leave this empty.
 | `ready` | boolean | Yes | True once the template/import is usable in this zone. |
 | `reason` | string |  |  |
 | `resolvedRef` | string |  | Resolved concrete reference within this zone once ready. |
-
-#### `.status.rawDiskArtifact`
-
-Progress of the shared, provider-agnostic raw-disk build for
-`Url`-kind sources — set exclusively by `banlieue-imagebuilder`
-(field manager `banlieue.io/imagebuilder`), never by a provider.
-`None` when no `Url` source exists on this `VMImage` or the build
-hasn't started. See ADR-0010.
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `checksum` | string |  | Expected checksum (`<alg>:<hex>`) of the built disk, copied from the `Url` source the build serves. Consumers that stream the artifact to a backend MUST verify it against this value and fail closed on mismatch (security review 2026-07-31, SEC-004) — the value lives here, next to the PVC reference, so no consumer has to re-derive which source the shared build came from. |
-| `diskFile` | string |  | File name of the raw disk within the artifacts PVC (kairos-operator convention: `<osArtifactRef>.raw`). Populated at phase `Ready`. |
-| `message` | string |  | Long human-readable detail, e.g. the `OSArtifact.status.message` on failure. |
-| `osArtifactRef` | string | Yes | Name of the `OSArtifact` CR `banlieue-imagebuilder` created for this `VMImage` (same namespace as the artifacts PVC below). |
-| `phase` | string | Yes | Current build phase. Allowed: `Pending`, `Building`, `Ready`, `Failed`. |
-| `pvcRef` | object |  | Reference to the PVC kairos-operator created holding the built disk, once known. Populated no earlier than phase `Building`. |
-| `reason` | string |  | Short reason, mirroring the stable-string convention used elsewhere in this status (e.g. `ImagePerProviderStatus.reason`). |
-
-##### `.status.rawDiskArtifact.pvcRef`
-
-Reference to the PVC kairos-operator created holding the built disk,
-once known. Populated no earlier than phase `Building`.
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `name` | string | Yes |  |
 
 ---
 
