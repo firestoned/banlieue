@@ -124,8 +124,8 @@ With a `VMImage` whose source has `providerClass: libvirt` and
 `kind: Url`, the pipeline runs in two halves
 (ADR-0010):
 
-1. `banlieue-imagebuilder` turns the OCI reference into a raw disk on a PVC and
-   publishes `status.rawDiskArtifact`.
+1. `banlieue-imagebuilder` turns the OCI reference into a raw cloud image on a
+   PVC and publishes `status.buildArtifact` (`kind: cloudImage`).
 2. This provider waits for `phase: Ready`, then creates **one import Job per
    storage pool** the `Provider` advertises.
 
@@ -135,9 +135,10 @@ kubectl get vmimage kairos-ubuntu-2404 \
 ```
 
 ```sh
-# Watch the transfer.
-kubectl -n banlieue-system get jobs -l banlieue.io/vmimage=kairos-ubuntu-2404
-kubectl -n banlieue-system logs -l banlieue.io/vmimage=kairos-ubuntu-2404 -f
+# Watch the transfer. Import Jobs run in the build namespace (ADR-0016),
+# where the shared artifacts PVC lives — not in the Provider's namespace.
+kubectl -n banlieue-imagebuild get jobs -l banlieue.io/vmimage=kairos-ubuntu-2404
+kubectl -n banlieue-imagebuild logs -l banlieue.io/vmimage=kairos-ubuntu-2404 -f
 ```
 
 ### Why a Job
@@ -187,7 +188,7 @@ expose it through `/proc` to anything sharing the namespace.
 | `Ready=False`, reason `CapabilitiesIncomplete` | A declared pool or network is not on the host. The message names which. |
 | `Ready=False`, reason `ConnectFailed` | TLS or reachability. Check 16514, then reproduce with `virsh -c qemu+tls://…`. |
 | `Ready=False`, reason `CredentialsUnavailable` | The Secret or CA ConfigMap is missing a key. `tls.crt` / `tls.key` / `ca.crt`. |
-| Zone stuck at `BuildPending` | `status.rawDiskArtifact` is not `Ready` yet — the problem is upstream, in `banlieue-imagebuilder`. |
+| Zone stuck at `BuildPending` | `status.buildArtifact` is not `Ready` yet — the problem is upstream, in `banlieue-imagebuilder`. |
 | Import Job `403` on `jobs` | The `ProviderClass` is missing `additionalRules`. See `examples/09-providerclass-libvirt.yaml`. |
 | Import Job `Pending`, ServiceAccount not found | The Job's namespace and the provider's differ. The provider falls back to that namespace's `default` SA, which needs the grant. |
 

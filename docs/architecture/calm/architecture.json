@@ -1019,50 +1019,50 @@
     {
       "unique-id": "flow-build-vmimage-from-oci",
       "name": "Build a VMImage from an OCI/Kairos image and import it per zone",
-      "description": "A VMImage with a spec.sources[].kind==Url entry (an OCI-referenced Kairos image, e.g. from a nightly build pipeline) is turned into a raw disk by banlieue-imagebuilder via kairos-operator, then converted and imported into every zone of a matching vSphere Provider by banlieue-provider-vsphere. The two controllers never call each other; VMImage.status is the entire handoff. See ADR-0010.",
+      "description": "A VMImage with a spec.sources[].kind==Url entry (an OCI-referenced Kairos image, e.g. from a nightly build pipeline) is turned into a typed build artifact — a raw cloud image for libvirt, a bootable ISO with a baked-in default cloud-config for vSphere — by banlieue-imagebuilder via kairos-operator, then imported into every zone of a matching vSphere Provider by banlieue-provider-vsphere as a marked template. The two controllers never call each other; VMImage.status.buildArtifact is the entire handoff. See ADR-0010 and ADR-0020.",
       "transitions": [
         {
           "sequence-number": 1,
           "relationship-unique-id": "rel-operator-kubectl",
-          "description": "Platform operator (or a nightly CI job authenticated as one) applies/updates a VMImage with a Url source pointing at the newly-built Kairos OCI image."
+          "description": "Platform operator (or a nightly CI job authenticated as one) applies/updates a VMImage with a Url source pointing at the newly-built Kairos OCI image, optionally with spec.cloudConfig (secretRef) and spec.template (folder / network / disk / force knobs) for the vSphere template."
         },
         {
           "sequence-number": 2,
           "relationship-unique-id": "rel-imagebuilder-kube-api",
-          "description": "banlieue-imagebuilder's VMImage watch fires. It server-side-applies an OSArtifact CR requesting a cloud image build, and sets VMImage.status.rawDiskArtifact.phase=Building.",
+          "description": "banlieue-imagebuilder's VMImage watch fires. It server-side-applies an OSArtifact CR requesting a cloud image (libvirt sources) or an ISO with artifacts.cloudConfigRef resolved from spec.cloudConfig (vsphere sources), and sets VMImage.status.buildArtifact.phase=Building.",
           "direction": "destination-to-source"
         },
         {
           "sequence-number": 3,
           "relationship-unique-id": "rel-kairos-operator-kube-api",
-          "description": "kairos-operator's OSArtifact watch fires. It pulls the OCI image, builds a raw disk, and writes it to a PVC it creates, progressing status.phase through Building -> Exporting -> Ready.",
+          "description": "kairos-operator's OSArtifact watch fires. It pulls the OCI image and builds the artifact — a raw disk, or auroraboot build-iso with --cloud-config for an ISO — writing it to a PVC it creates, progressing status.phase through Building -> Exporting -> Ready.",
           "direction": "destination-to-source"
         },
         {
           "sequence-number": 4,
           "relationship-unique-id": "rel-imagebuilder-kube-api",
-          "description": "banlieue-imagebuilder's OSArtifact watch fires on the Ready transition. It patches VMImage.status.rawDiskArtifact with phase=Ready, the artifacts PVC reference, and the disk file name."
+          "description": "banlieue-imagebuilder's OSArtifact watch fires on the Ready transition. It patches VMImage.status.buildArtifact with kind (cloudImage | iso), phase=Ready, the artifacts PVC reference, the artifact file name, and the checksum."
         },
         {
           "sequence-number": 5,
           "relationship-unique-id": "rel-provider-vsphere-kube-api",
-          "description": "banlieue-provider-vsphere's VMImage watch fires. It finds a Url-kind vsphere source with rawDiskArtifact.phase==Ready and begins a per-zone import for each of its Providers' status.failureDomains[].",
+          "description": "banlieue-provider-vsphere's VMImage watch fires. It finds a Url-kind vsphere source with buildArtifact.phase==Ready and kind==iso and begins a per-zone import for each of its Providers' status.failureDomains[].",
           "direction": "destination-to-source"
         },
         {
           "sequence-number": 6,
           "relationship-unique-id": "rel-provider-vsphere-backend",
-          "description": "For each zone, a conversion+import Job mounts the shared artifacts PVC read-only, converts the raw disk to a streamOptimized VMDK, and uploads it into that zone's datastore, registering it as a template."
+          "description": "For each zone, an image-import Job (banlieue binary's image-import subcommand, imagebuild namespace, artifacts PVC mounted read-only) verifies the ISO against buildArtifact.checksum, uploads it to the zone's datastore — reusing the datastore-cluster member already holding it, else the emptiest — ensures the spec.template.folder, and creates the template: empty EFI VM (pvscsi disk from spec.template.disk, vmxnet3 NIC on the spec.template.network or zone port group), ISO attached as CD-ROM, then MarkAsTemplate."
         },
         {
           "sequence-number": 7,
           "relationship-unique-id": "rel-provider-vsphere-kube-api",
-          "description": "banlieue-provider-vsphere patches VMImage.status.perProvider[].zones[] with per-zone readiness, using its own field manager — never touching status.rawDiskArtifact."
+          "description": "banlieue-provider-vsphere patches VMImage.status.perProvider[].zones[] with per-zone readiness and resolvedRef (the template's [datastore] folder/name), using its own field manager — never touching status.buildArtifact."
         }
       ],
       "controls": {
         "crd-only-build-handoff": {
-          "description": "banlieue-imagebuilder and banlieue-provider-vsphere coordinate purely through VMImage.status: rawDiskArtifact (imagebuilder's field) and perProvider[] (each provider's field) never contend because SSA tracks ownership per field, not per object. The only non-CRD coupling is the same-namespace artifacts PVC the raw disk's bytes live in — the control channel (when/whether to act) stays CRD-only; only the artifact's bytes travel outside a CRD field, since a CRD cannot carry a multi-hundred-MB disk image.",
+          "description": "banlieue-imagebuilder and banlieue-provider-vsphere coordinate purely through VMImage.status: buildArtifact (imagebuilder's field) and perProvider[] (each provider's field) never contend because SSA tracks ownership per field, not per object. The only non-CRD coupling is the same-namespace artifacts PVC the artifact's bytes live in — the control channel (when/whether to act) stays CRD-only; only the artifact's bytes travel outside a CRD field, since a CRD cannot carry a multi-hundred-MB disk image or ISO.",
           "requirements": [
             {
               "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
@@ -1109,7 +1109,7 @@
         {
           "sequence-number": 5,
           "relationship-unique-id": "rel-provider-libvirt-kube-api",
-          "description": "A VMImage with a libvirt Url source reaches status.rawDiskArtifact.phase=Ready (written by banlieue-imagebuilder, never by this provider). The provider's VMImage watch fires and creates one import Job per target pool, running the banlieue binary itself with the artifacts PVC mounted read-only.",
+          "description": "A VMImage with a libvirt Url source reaches status.buildArtifact.phase=Ready with kind==cloudImage (written by banlieue-imagebuilder, never by this provider). The provider's VMImage watch fires and creates one import Job per target pool, running the banlieue binary itself with the artifacts PVC mounted read-only.",
           "direction": "destination-to-source"
         },
         {
@@ -1120,7 +1120,7 @@
         {
           "sequence-number": 7,
           "relationship-unique-id": "rel-provider-libvirt-kube-api",
-          "description": "Provider patches VMImage.status.perProvider[].zones[] with per-pool readiness, using field manager banlieue.io/provider-libvirt — never touching status.rawDiskArtifact.",
+          "description": "Provider patches VMImage.status.perProvider[].zones[] with per-pool readiness, using field manager banlieue.io/provider-libvirt — never touching status.buildArtifact.",
           "direction": "destination-to-source"
         }
       ],

@@ -1,10 +1,10 @@
 # Architecture
 
-banlieue is a multi-controller Kubernetes operator. Three kinds of
-controllers share the work: **one main controller** (the banlieue
-controller), **one provider lifecycle operator** (banlieue-operator), and
-**N provider controllers** (one per backend instance: vSphere, libvirt, …).
-Everything else is CRDs.
+banlieue is a multi-controller Kubernetes operator. Four kinds of
+controllers share the work: **one main controller** (banlieue-controller),
+**one provider lifecycle operator** (banlieue-operator), **one image
+builder** (banlieue-imagebuilder), and **N provider controllers** (one per
+backend instance: vSphere, libvirt, …). Everything else is CRDs.
 
 !!! info "Machine-checked architecture"
 
@@ -29,7 +29,10 @@ flowchart TB
       vmc[(VMClass)]
       vmi[(VMImage)]
       prov[(Provider)]
-      infra[(VSphereMachine / ProxmoxMachine / LibvirtMachine)]
+      provc[(ProviderClass)]
+      infra[(VSphereMachine)]
+      infrac[(VSphereCluster)]
+      osa[(OSArtifact — kairos-operator)]
     end
 
     subgraph "Main controller"
@@ -40,53 +43,213 @@ flowchart TB
       op[banlieue-operator]
     end
 
-    subgraph "Provider controllers"
+    subgraph "Image builder"
+      ib[banlieue-imagebuilder]
+    end
+
+    subgraph "Provider controllers (one pod per Provider)"
       pv[banlieue-provider-vsphere]
-      pp[banlieue-provider-proxmox]
       pl[banlieue-provider-libvirt]
     end
 
+    kairos[kairos-operator<br/>external]
+
     u --> vm
     u --> prov
+    u --> provc
+    u --> vmi
     mc -- watch --> vm
     mc -- watch --> prov
     mc -- watch --> infra
     mc -- create/patch --> infra
+    mc -- aggregate failure domains --> infrac
     op -- watch --> prov
+    op -- watch --> provc
     op -- one workload per Provider --> pv
-    op -- one workload per Provider --> pp
     op -- one workload per Provider --> pl
+    ib -- watch --> vmi
+    ib -- create/patch --> osa
+    kairos -- build --> osa
     pv -- watch --> infra
-    pp -- watch --> infra
+    pv -- watch --> vmi
     pl -- watch --> infra
+    pl -- watch --> vmi
     pv -- patch status --> infra
-    pp -- patch status --> infra
+    pv -- patch status --> vmi
     pl -- patch status --> infra
+    pl -- patch status --> vmi
 ```
 
-### Source of truth
+No arrow connects two controllers directly — every interaction is a CRD
+read or write through the API server (the
+[CRD-only contract](../reasoning/crd-only-contract.md)). The single
+exception is bulk data: image artifacts (hundreds of MB) travel on a
+shared PVC between kairos-operator and the per-zone import Jobs, because a
+CRD cannot carry a disk image.
+
+## Controllers
+
+All controllers ship in **one `banlieue` binary**; the role is chosen at
+runtime by the subcommand (ADR-0004). Each writes status with its own
+server-side-apply field manager, so two controllers never contend over the
+same field (ADR-0015).
+
+| Controller | Subcommand | Watches | Creates / owns | Field manager |
+| --- | --- | --- | --- | --- |
+| banlieue-controller | `banlieue controller` | `VirtualMachine`, `Provider`, `VMClass`, `VMImage`, infra CRs | Infra CRs (`VSphereMachine`) per VM; aggregates `Provider.status.failureDomains[]` into `VSphereCluster.status`; mirrors infra status onto `VirtualMachine.status` | `banlieue.io/controller` |
+| banlieue-operator | `banlieue operator` | `Provider`, `ProviderClass`, spawned Deployments | One workload per Provider: Deployment, ServiceAccount, Role, RoleBinding, ClusterRoleBinding; mirrors Deployment readiness into `Provider.status.workload` | `banlieue.io/operator` |
+| banlieue-imagebuilder | `banlieue imagebuilder` | `VMImage`, `OSArtifact` | `OSArtifact` CRs (kairos-operator) for `Url`-kind sources; `VMImage.status.buildArtifact` | `banlieue.io/imagebuilder` |
+| banlieue-provider-vsphere | `banlieue provider vsphere` | Its `Provider`, `VSphereMachine`, `VMImage` | vCenter VMs/templates via the BYOC vim client; per-zone `image-import` Jobs; `Provider.status.failureDomains[]`, `VMImage.status.perProvider[]` | `banlieue.io/provider-vsphere` |
+| banlieue-provider-libvirt | `banlieue provider libvirt` | Its `Provider`, `LibvirtMachine`, `VMImage` | libvirt domains via the pure-Rust `banlieue-libvirt` RPC client; per-pool import Jobs; `Provider.status.failureDomains[]`, `VMImage.status.perProvider[]` | `banlieue.io/provider-libvirt` |
+| kairos-operator (external) | — | `OSArtifact` | Artifact builds (raw cloud image or `auroraboot build-iso` ISO) onto a PVC | — |
+
+Two support libraries factor out the shared machinery:
+`banlieue-provider-sdk` (process bootstrap, SSA helpers, finalizers,
+leader election, status) and `banlieue-libvirt` (the XDR/TLS libvirt wire
+client, ADR-0011). `banlieue-vex` is release tooling, not a runtime
+component.
+
+## CRDs
 
 The Rust types under
 [`crates/banlieue-api/`](https://github.com/firestoned/banlieue/tree/main/crates/banlieue-api)
-are the source of truth for every CRD. The generated YAMLs in `deploy/crds/`
-are produced by the `crdgen` binary and **never hand-edited**.
+are the source of truth for every CRD. The generated YAMLs in
+`deploy/crds/` are produced by the `crdgen` binary and **never
+hand-edited**. The full field-by-field reference is
+[API Reference](../reference/api.md).
 
-### Crates
+### User-facing CRDs (`banlieue.io/v1alpha1`)
 
-| Crate | Phase | Role |
+| CRD | Scope | Written by | Purpose |
+| --- | --- | --- | --- |
+| `VirtualMachine` | namespaced | VM consumer | One VM, backend-agnostic. Spec: `classRef` (→ `VMClass`), `imageRef` (→ `VMImage`), `placement` (provider / failure-domain selectors, anti-affinity), `desiredPowerState`, `userData` (Secret ref), `migrationPolicy`. Status: `scheduled` placement, conditions, addresses — mirrored from the infra CR, never set directly by the controller. |
+| `VMClass` | cluster | VM consumer | Virtual hardware shape: `hardware` (CPUs, memory, `disks[]` with `DiskProvisioning` thin/thick/eagerZeroed), `network.interfaces[]` referencing abstract network classes. |
+| `VMImage` | cluster | VM consumer / CI | Guest image. Spec: `osFamily` / `osDistribution` / `osVersion` / `architecture`, `guestAgent`, `sources[]` (per-provider-class mappings; `kind: Url` triggers the build pipeline), `cloudConfig` (secretRef — default cloud-config baked into the built artifact, ADR-0020), `template` (vSphere template knobs: `folder`, `network`, `disk.{size,type,controller}`, `forceUpload`, `forceCreate`, ADR-0020). Status: `buildArtifact` (see below), `perProvider[].zones[]` readiness, conditions. |
+| `Provider` | namespaced | platform operator | One backend instance. Spec: `providerClassRef`, `connection` (endpoint, `credentialsRef`, `caBundle`, TLS knobs), `capabilities` (declared `storageClasses[]` / `networkClasses[]` with backend `target`s, `features[]`), `paused`, `useContentLibrary` (vSphere, default off, ADR-0020). Status: `failureDomains[]` (verified against the backend — ADR-0019 introspection filters declared classes to what actually exists), `workload` (from the operator), conditions. |
+| `ProviderClass` | cluster | platform operator | Install metadata for a backend type: which `banlieue provider <backend>` subcommand, the image, resources, namespace, logging. One edit upgrades every Provider of the class (ADR-0012). Status: referencing-Provider count, Ready condition. |
+
+### Infrastructure CRDs (`infrastructure.banlieue.io/v1beta2`, CAPI contract)
+
+| CRD | Purpose |
+| --- | --- |
+| `VSphereMachine` | CAPI v1beta2 InfraMachine for vSphere. Created by banlieue-controller per `VirtualMachine` (or by CAPI from a `VSphereMachineTemplate`); realised on vCenter by the vSphere provider. |
+| `VSphereMachineTemplate` | CAPI MachineTemplate form, consumed by CAPI MachineDeployments. |
+| `VSphereCluster` | CAPI v1beta2 InfraCluster. banlieue-controller aggregates the selected Providers' `status.failureDomains[]` into `VSphereCluster.status.failureDomains` so CAPI can spread replicas across zones (ADR-0001, ADR-0002). No vCenter access. |
+
+### External CRDs (not shipped by banlieue)
+
+| CRD | Owner | Role |
 | --- | --- | --- |
-| `banlieue` | 1A | The single binary. Dispatches `controller` / `provider <name>` subcommands into the role crates ([ADR-0004](https://github.com/firestoned/banlieue/blob/main/docs/adr/0004-single-binary-subcommand-dispatch.md)); no logic of its own. |
-| `banlieue-api` | 0 (done) | CRD types: `Provider`, `VMClass`, `VMImage`, `VirtualMachine`, and infra CRDs. |
-| `banlieue-controller` | 1A | Library for the main controller. Watches `VirtualMachine`, creates infra CRs, mirrors status. Run via `banlieue controller`. |
-| `banlieue-operator` | 2 | Provider lifecycle controller. Watches `Provider` / `ProviderClass`, mints one workload (Deployment, ServiceAccount, Role, RoleBinding, ClusterRoleBinding) per Provider. Also hosts `banlieue bootstrap`. Run via `banlieue operator`. |
-| `banlieue-provider-sdk` | 1A | Shared library for controllers (process bootstrap, status, finalizers, SSA, client, leader election). |
-| `banlieue-provider-vsphere` | 1B | Library for the first reference provider. Run via `banlieue provider vsphere`. |
-| `banlieue-provider-proxmox` | 1C | Second provider (`banlieue provider proxmox`). |
-| `banlieue-provider-libvirt` | 1D | Third provider (`banlieue provider libvirt`). |
+| `OSArtifact` | kairos-operator | Build request for a `Url`-kind image: `artifacts.cloudImage` (raw disk, for libvirt) or `artifacts.iso` + `cloudConfigRef` (bootable ISO, for vSphere). Output lands on a PVC in the imagebuild namespace. |
+| `Cluster` / `MachineDeployment` | Cluster API (upstream) | Cluster provisioning: CAPI reads `VSphereCluster.status.failureDomains` and stamps one `VSphereMachine` per placement. |
 
-Every role ships in **one `banlieue` binary**; the role is chosen at runtime by
-the subcommand (in-cluster, via the container `args`). Providers are gated
-behind per-provider Cargo features (default = all available).
+### `VMImage.status` — the build/import handoff
+
+`VMImage.status` is where the image pipeline's two halves meet, with
+server-side apply keeping the writers apart (ADR-0015):
+
+```yaml
+status:
+  buildArtifact:            # written ONLY by banlieue-imagebuilder
+    kind: iso               # cloudImage (libvirt) | iso (vSphere)
+    phase: Ready            # Pending | Building | Ready | Failed
+    pvcRef: { name: …, namespace: banlieue-imagebuild }
+    file: kairos-ubuntu-2404.iso
+    checksum: sha256:…
+  perProvider:              # one row per Provider, written by THAT provider
+    - providerName: vsphere-dc1
+      zones:
+        - name: cluster-a
+          ready: true
+          resolvedRef: "[ds-cluster-a] templates/kairos/kairos-ubuntu-2404"
+```
+
+- **`buildArtifact.kind` mirrors kairos-operator's `OSArtifactKind`**, so
+  one status field carries either artifact type without parallel fields
+  (ADR-0020 §1).
+- **Providers gate on `buildArtifact`, never write it.** The vSphere
+  provider acts when `phase == Ready && kind == iso`; the libvirt provider
+  when `phase == Ready && kind == cloudImage`.
+- **Import Jobs verify `buildArtifact.checksum`** before writing anything
+  to a backend — fail closed on mismatch (SEC-004).
+
+## Interactions
+
+The [Architecture Flows](../architecture/flows.md) page renders each of
+these step by step from the CALM model. In short:
+
+### Provision a VM
+
+1. User applies a `VirtualMachine`.
+2. **Main controller** resolves `classRef` / `imageRef` and filters
+   candidate Providers and failure domains through `placement`
+   (provider selector, failure-domain selector, anti-affinity), then
+   server-side-applies a `VSphereMachine` owned by the `VirtualMachine`.
+3. **Provider controller** (the pod the operator spawned for that
+   Provider) sees the infra CR and provisions on its backend.
+4. **Provider** patches the infra CR's status with CAPI v1beta2-shaped
+   conditions (`Ready`, `addresses`, `providerID`).
+5. **Main controller** mirrors the infra status onto
+   `VirtualMachine.status`. `Ready=true` only when the infra says so.
+
+No step uses any protocol other than the Kubernetes API.
+
+### Build and import an image (`Url` source)
+
+1. Operator (or CI) applies a `VMImage` with a `Url` source, optional
+   `cloudConfig`, optional `template` knobs.
+2. **banlieue-imagebuilder** server-side-applies an `OSArtifact` — a raw
+   cloud image for libvirt sources, or an ISO with `cloudConfigRef` for
+   vSphere sources — and reports `buildArtifact.phase: Building`.
+3. **kairos-operator** builds the artifact onto a PVC in the isolated
+   imagebuild namespace (ADR-0016).
+4. **banlieue-imagebuilder** mirrors the result into
+   `status.buildArtifact` (`kind`, `phase: Ready`, `pvcRef`, `file`,
+   `checksum`).
+5. **Each provider** with a matching source gates on `buildArtifact` and
+   fans out **one import Job per zone** (failure domain / storage pool).
+   The Job runs the banlieue binary itself (`image-import`), mounts the
+   PVC read-only, verifies the checksum, and pushes to the backend:
+   - **vSphere** (ADR-0020): upload the ISO to the zone's datastore
+     (reusing the datastore-cluster member already holding it), ensure
+     `spec.template.folder`, create an empty EFI VM (pvscsi disk from
+     `spec.template.disk`, vmxnet3 NIC on `spec.template.network` or the
+     zone's port group), attach the ISO as CD-ROM, `MarkAsTemplate`.
+   - **libvirt** (ADR-0011): create a raw volume per declared storage
+     pool and stream the disk bytes over the mTLS connection.
+6. **Each provider** reports per-zone readiness into its own
+   `status.perProvider[]` row; the main controller owns the top-level
+   `Ready` condition.
+
+Controllers never call each other — `status.buildArtifact` plus the
+artifacts PVC is the entire handoff.
+
+### Register a backend (provider lifecycle)
+
+1. Operator applies a `ProviderClass` once (image, resources) and a
+   `Provider` per backend instance.
+2. **banlieue-operator** mints the workload: ServiceAccount, Role scoped
+   by `resourceNames` to just that Provider's credentials Secret,
+   RoleBinding, ClusterRoleBinding, Deployment — all owned by the
+   Provider.
+3. The provider pod starts, elects its own leader Lease, watches only its
+   own objects (`banlieue.io/provider=<name>` label filter), introspects
+   the backend, and publishes verified `status.failureDomains[]`
+   (ADR-0019: declared storage/network classes are checked against what
+   the backend actually exposes).
+4. The operator mirrors Deployment readiness into `Provider.status.workload`.
+
+Deleting the Provider garbage-collects the whole workload via owner
+references; editing the ProviderClass rolls every Provider of that class
+at once (ADR-0012).
+
+### Bootstrap (management cluster)
+
+`scripts/bootstrap-k0s-cluster.sh` stands up the management k0s cluster
+itself (libvirt or vSphere backend, ADR-0017). An opt-in `flux` step
+(`FLUX_ENABLED=true`) fetches a registry credential from HashiCorp Vault
+and pushes flux-operator + `flux-core` manifests onto the first controller
+node (ADR-0018) — bootstrap tooling, not a runtime controller.
 
 ## Why the controller and the operator are separate processes
 
@@ -117,7 +280,10 @@ process that holds finalizers on provider workloads.
 The same reasoning extends one level down: the operator never talks to a
 backend SDK and holds no backend credentials — it creates workloads through
 the Kubernetes API, and each spawned provider talks to its own backend with
-its own narrowly-scoped identity.
+its own narrowly-scoped identity. The image pipeline applies the pattern a
+third time: import Jobs run in the isolated `banlieue-imagebuild` namespace
+under a dedicated read-only ServiceAccount, never the provider controller's
+own (ADR-0016).
 
 The role split is recorded in
 [ADR-0012](https://github.com/firestoned/banlieue/blob/main/docs/adr/0012-providerclass-crd-and-operator-role.md),
@@ -126,23 +292,27 @@ the per-instance topology in
 and the single-binary dispatch in
 [ADR-0004](https://github.com/firestoned/banlieue/blob/main/docs/adr/0004-single-binary-subcommand-dispatch.md).
 
-## Reconcile flow (happy path)
+## Crates
 
-1. **User applies a `VirtualMachine`.**
-2. **Main controller** sees the new CR, resolves `class` (→ `VMClass`),
-   `image` (→ `VMImage`), and `providerRef` (→ `Provider`).
-3. **Main controller** creates a provider-specific infra CR
-   (e.g. `VSphereMachine`) carrying the uniform spec, owned by the
-   `VirtualMachine`.
-4. **Provider controller** sees the infra CR, talks to its backend's native
-   API, and provisions the VM.
-5. **Provider controller** patches `.status` on the infra CR with the CAPI
-   v1beta2-shaped conditions (`Ready`, `Provisioned`, `addresses`, etc.).
-6. **Main controller** watches the infra status and **mirrors** it onto the
-   `VirtualMachine.status`. `VirtualMachine.status.ready=true` *only* when the
-   infra says so.
+| Crate | Role |
+| --- | --- |
+| `banlieue` | The single binary. Dispatches `controller` / `operator` / `imagebuilder` / `provider <name>` subcommands into the role crates ([ADR-0004](https://github.com/firestoned/banlieue/blob/main/docs/adr/0004-single-binary-subcommand-dispatch.md)); no logic of its own. |
+| `banlieue-api` | CRD types: `VirtualMachine`, `VMClass`, `VMImage`, `Provider`, `ProviderClass`, and the vSphere infra CRDs. Hosts `crdgen`. |
+| `banlieue-controller` | The main controller. Watches `VirtualMachine`, schedules, creates infra CRs, aggregates failure domains, mirrors status. |
+| `banlieue-operator` | Provider lifecycle controller + `banlieue bootstrap`. Watches `Provider` / `ProviderClass`, mints one workload per Provider. |
+| `banlieue-imagebuilder` | Drives `Url`-kind `VMImage` builds through kairos-operator `OSArtifact`s; owns `status.buildArtifact`. |
+| `banlieue-provider-sdk` | Shared controller machinery (process bootstrap, status, finalizers, SSA, client, leader election). |
+| `banlieue-provider-vsphere` | vSphere provider: BYOC vim client (ADR-0008), capability introspection (ADR-0019), per-zone ISO template import (ADR-0020). |
+| `banlieue-provider-libvirt` | libvirt provider: capability verification, per-pool raw-disk import (ADR-0011). |
+| `banlieue-libvirt` | Pure-Rust libvirt RPC client (XDR codec, TLS transport) — no native libvirt dependency. |
+| `banlieue-vex` | Release tooling: auto-VEX derivation for the supply-chain pipeline. Not deployed. |
 
-No step in that flow uses any protocol other than the Kubernetes API.
+A Proxmox provider is planned (Phase 1C) but not yet implemented; it
+appears in the CALM system diagram as a planned node.
+
+Every role ships in **one `banlieue` binary**; the role is chosen at runtime by
+the subcommand (in-cluster, via the container `args`). Providers are gated
+behind per-provider Cargo features (default = all available).
 
 ## Watches, not polling
 
@@ -160,7 +330,8 @@ changes propagate through K8s watch events.
 - **Server-side apply.** Owned objects are reconciled with SSA so that
   ownership of individual fields is explicit and conflicts are surfaced
   rather than silently overwritten. Each controller uses a distinct field
-  manager (`banlieue.io/controller`, `banlieue.io/provider-vsphere`, …).
+  manager (`banlieue.io/controller`, `banlieue.io/imagebuilder`,
+  `banlieue.io/provider-vsphere`, …).
 
 ## Where the design decisions live
 
@@ -171,3 +342,8 @@ changes propagate through K8s watch events.
     - [CRD-only contract](../reasoning/crd-only-contract.md) — why no RPC.
     - [Infrastructure CRDs & CAPI](infra-crds-capi.md) — why we satisfy CAPI's
       v1beta2 InfraMachine contract.
+- The *how*, decision by decision, is in the
+  [ADRs](https://github.com/firestoned/banlieue/tree/main/docs/adr) — most
+  relevant here: ADR-0010/0015/0016 (image build pipeline, status
+  ownership, namespace isolation), ADR-0017/0018 (bootstrap backends,
+  Vault/flux), ADR-0019/0020 (vSphere introspection, ISO template import).

@@ -249,14 +249,17 @@ async fn a_vmimage_is_built_once_and_imported_into_every_declared_pool() {
         .expect("create VMImage");
 
     // ---- the imagebuilder half -----------------------------------------
-    wait_for("banlieue-imagebuilder publishes a Ready build artifact", || {
-        let api = images.clone();
-        async move {
-            let s = api.get_status(IMAGE_NAME).await.ok()?.status?;
-            let a = s.build_artifact?;
-            matches!(a.phase, banlieue_api::banlieue::BuildArtifactPhase::Ready).then_some(a)
-        }
-    })
+    wait_for(
+        "banlieue-imagebuilder publishes a Ready build artifact",
+        || {
+            let api = images.clone();
+            async move {
+                let s = api.get_status(IMAGE_NAME).await.ok()?.status?;
+                let a = s.build_artifact?;
+                matches!(a.phase, banlieue_api::banlieue::BuildArtifactPhase::Ready).then_some(a)
+            }
+        },
+    )
     .await;
 
     // ---- the provider half ---------------------------------------------
