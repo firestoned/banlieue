@@ -7,7 +7,7 @@
 //! readiness in status by polling each registered Provider and (where
 //! supported) importing the image on demand.
 
-use crate::common::{CloudConfigSource, DiskProvisioning, LocalObjectReference};
+use crate::common::{CloudConfigSource, DiskProvisioning, Firmware, LocalObjectReference};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Condition;
 use kube::CustomResource;
 use schemars::JsonSchema;
@@ -82,8 +82,10 @@ pub struct VMImageSpec {
     pub cloud_config: Option<CloudConfigSource>,
 
     /// How the backend **template** is built from a `Url` source (folder,
-    /// disk size, force knobs). Only meaningful for `Url` sources; ignored for
-    /// `Template` / `BackingFile`. See [`VMImageTemplate`] and ADR-0020.
+    /// network, disk, CPU / memory / firmware / NIC, force knobs). Every field
+    /// is optional and falls back to a built-in default. Only meaningful for
+    /// `Url` sources; ignored for `Template` / `BackingFile`. See
+    /// [`VMImageTemplate`] and ADR-0020.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub template: Option<VMImageTemplate>,
 }
@@ -110,6 +112,40 @@ pub struct VMImageTemplate {
     /// thin 100 GiB disk on a pvscsi controller is used.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disk: Option<VMImageTemplateDisk>,
+
+    /// Virtual CPU count of the template (`govc vm.create -c`). When unset,
+    /// defaults to 2. vSphere-only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpus: Option<i32>,
+
+    /// Memory of the template, in MiB (`govc vm.create -m`). When unset,
+    /// defaults to 4096. vSphere-only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_mib: Option<i64>,
+
+    /// Firmware for the template (`govc vm.create -firmware`). Reuses the
+    /// backend-agnostic [`Firmware`] hint (`bios` / `efi` / `efi-secure`). When
+    /// unset, defaults to `efi`. vSphere maps `efi-secure` to EFI with secure
+    /// boot enabled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub firmware: Option<Firmware>,
+
+    /// vCenter `guestId` for the template (`govc vm.create -g`, e.g.
+    /// `rhel9_64Guest`, `ubuntu64Guest`). When unset, it is derived from the
+    /// VMImage's `osFamily` / `osDistribution` / `osVersion`. vSphere-only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guest_id: Option<String>,
+
+    /// Virtual NIC adapter type (`govc vm.create -net.adapter`). When unset,
+    /// defaults to `vmxnet3`. vSphere-only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network_adapter: Option<NicAdapter>,
+
+    /// PCI slot number for the template's NIC (`ethernet0.pciSlotNumber`). Slot
+    /// 192 yields a stable `ens192` interface name in the guest. When unset,
+    /// defaults to 192. vSphere-only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nic_pci_slot: Option<i32>,
 
     /// Re-upload the built ISO even if one of that name already exists on the
     /// backend, deleting the existing one first (the vСenter datastore file API
@@ -182,6 +218,49 @@ impl std::str::FromStr for DiskController {
             "buslogic" => Ok(Self::BusLogic),
             other => Err(format!(
                 "unknown disk controller {other:?} (expected: pvscsi, lsiLogic, lsiLogicSas, busLogic)"
+            )),
+        }
+    }
+}
+
+/// Virtual NIC adapter type for the template (`govc vm.create -net.adapter`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum NicAdapter {
+    /// VMware Paravirtual (what `create-kairos-template.sh` uses).
+    #[default]
+    Vmxnet3,
+    /// VMware Vmxnet2.
+    Vmxnet2,
+    /// Intel E1000.
+    E1000,
+    /// Intel E1000e.
+    E1000e,
+}
+
+impl NicAdapter {
+    /// Stable token, for CLI args / logs (matches the serde camelCase form).
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            NicAdapter::Vmxnet3 => "vmxnet3",
+            NicAdapter::Vmxnet2 => "vmxnet2",
+            NicAdapter::E1000 => "e1000",
+            NicAdapter::E1000e => "e1000e",
+        }
+    }
+}
+
+impl std::str::FromStr for NicAdapter {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "vmxnet3" => Ok(Self::Vmxnet3),
+            "vmxnet2" => Ok(Self::Vmxnet2),
+            "e1000" => Ok(Self::E1000),
+            "e1000e" => Ok(Self::E1000e),
+            other => Err(format!(
+                "unknown NIC adapter {other:?} (expected: vmxnet3, vmxnet2, e1000, e1000e)"
             )),
         }
     }

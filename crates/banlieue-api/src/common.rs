@@ -315,6 +315,32 @@ pub enum Firmware {
     EfiSecure,
 }
 
+impl Firmware {
+    /// Stable token (matches the serde kebab-case wire form), for CLI args/logs.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Firmware::Bios => "bios",
+            Firmware::Efi => "efi",
+            Firmware::EfiSecure => "efi-secure",
+        }
+    }
+}
+
+impl std::str::FromStr for Firmware {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "bios" => Ok(Self::Bios),
+            "efi" => Ok(Self::Efi),
+            "efi-secure" | "efisecure" => Ok(Self::EfiSecure),
+            other => Err(format!(
+                "unknown firmware {other:?} (expected: bios, efi, efi-secure)"
+            )),
+        }
+    }
+}
+
 /// Power state, used both for desired and observed.
 ///
 /// Wire values are `PoweredOn` / `PoweredOff` / `Suspended` rather than

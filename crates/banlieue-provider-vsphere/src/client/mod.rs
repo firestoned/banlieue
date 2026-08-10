@@ -7,8 +7,8 @@
 //! real implementation in [`vim`] wraps `vim_rs::core::client::ClientBuilder`.
 
 use async_trait::async_trait;
-use banlieue_api::banlieue::{DiskController, ProviderConnection};
-use banlieue_api::common::DiskProvisioning;
+use banlieue_api::banlieue::{DiskController, NicAdapter, ProviderConnection};
+use banlieue_api::common::{DiskProvisioning, Firmware};
 
 use crate::error::Result;
 
@@ -213,6 +213,16 @@ pub struct IsoImportRequest {
     pub disk_provisioning: DiskProvisioning,
     /// Disk controller type (pvscsi / lsiLogic / …).
     pub disk_controller: DiskController,
+    /// Virtual CPU count of the template.
+    pub cpus: i32,
+    /// Memory of the template, in MiB.
+    pub memory_mib: i64,
+    /// Firmware (bios / efi / efi-secure).
+    pub firmware: Firmware,
+    /// Virtual NIC adapter type (vmxnet3 / e1000 / …).
+    pub network_adapter: NicAdapter,
+    /// PCI slot number for the NIC (`ethernet0.pciSlotNumber`).
+    pub nic_pci_slot: i32,
     /// vCenter folder path (under the datacenter VM folder) to place the
     /// template in, created if missing. `None` → the VM-folder root.
     pub folder: Option<String>,

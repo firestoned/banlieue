@@ -10,8 +10,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use banlieue_api::banlieue::{DiskController, ProviderConnection};
-use banlieue_api::common::DiskProvisioning;
+use banlieue_api::banlieue::{DiskController, NicAdapter, ProviderConnection};
+use banlieue_api::common::{DiskProvisioning, Firmware};
 use tracing::{debug, info};
 use vim_rs::core::client::{Client, ClientBuilder};
 use vim_rs::mo::cluster_compute_resource::ClusterComputeResource;
@@ -36,11 +36,11 @@ use vim_rs::types::structs::{
     VirtualBusLogicController, VirtualCdrom, VirtualCdromIsoBackingInfo, VirtualController,
     VirtualDevice, VirtualDeviceConfigSpec, VirtualDeviceConnectInfo,
     VirtualDeviceDeviceBackingInfo, VirtualDeviceFileBackingInfo, VirtualDevicePciBusSlotInfo,
-    VirtualDisk, VirtualDiskFlatVer2BackingInfo, VirtualEthernetCard,
+    VirtualDisk, VirtualDiskFlatVer2BackingInfo, VirtualE1000, VirtualE1000E, VirtualEthernetCard,
     VirtualEthernetCardDistributedVirtualPortBackingInfo, VirtualEthernetCardNetworkBackingInfo,
     VirtualIdeController, VirtualLsiLogicController, VirtualLsiLogicSasController,
-    VirtualMachineConfigSpec, VirtualMachineFileInfo, VirtualScsiController, VirtualVmxnet,
-    VirtualVmxnet3,
+    VirtualMachineBootOptions, VirtualMachineConfigSpec, VirtualMachineFileInfo,
+    VirtualScsiController, VirtualVmxnet, VirtualVmxnet2, VirtualVmxnet3,
 };
 use vim_rs::types::traits::VirtualDeviceBackingInfoTrait;
 
@@ -89,12 +89,10 @@ const DATASTORE_UPLOAD_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 const TASK_POLL_INTERVAL: Duration = Duration::from_secs(3);
 /// Max task-poll attempts before giving up (≈10 min at the interval above).
 const TASK_POLL_MAX_ATTEMPTS: u32 = 200;
-/// CPU / memory / disk of the created template. Small — it is a clone source,
-/// never itself powered on; clones override sizing.
-const TEMPLATE_NUM_CPUS: i32 = 2;
-const TEMPLATE_MEMORY_MB: i64 = 4096;
-/// UEFI firmware — matches the maintainer's `create-kairos-template.sh`.
-const TEMPLATE_FIRMWARE_EFI: &str = "efi";
+/// vCenter firmware tokens (`VirtualMachineConfigSpec.firmware`). vCenter takes
+/// only these two; secure boot is layered on `efi` via `boot_options`.
+const FIRMWARE_BIOS: &str = "bios";
+const FIRMWARE_EFI: &str = "efi";
 const DISK_MODE_PERSISTENT: &str = "persistent";
 // Negative device keys are the vSphere convention for devices being added in a
 // single CreateVM/Reconfigure spec; controllers are referenced by these keys.
@@ -103,9 +101,6 @@ const KEY_DISK: i32 = -1001;
 const KEY_IDE: i32 = -1002;
 const KEY_CDROM: i32 = -1003;
 const KEY_NIC: i32 = -1004;
-/// PCI slot for the NIC — matches `create-kairos-template.sh`
-/// (`ethernet0.pciSlotNumber=192`) so the guest sees a stable NIC.
-const NIC_PCI_SLOT: i32 = 192;
 const KIB_PER_GIB: i64 = 1024 * 1024;
 
 /// Factory that talks to a real vCenter via vim_rs.
@@ -874,32 +869,59 @@ fn build_template_config_spec(
             ..Default::default()
         },
     };
-    // vmxnet3 NIC on the zone port group, at a fixed PCI slot (192) so the
-    // guest's NIC naming is stable — matches `create-kairos-template.sh`.
-    let nic = VirtualVmxnet3 {
-        virtual_vmxnet_: VirtualVmxnet {
-            virtual_ethernet_card_: VirtualEthernetCard {
-                virtual_device_: VirtualDevice {
-                    key: KEY_NIC,
-                    backing: Some(nic_backing),
-                    slot_info: Some(Box::new(VirtualDevicePciBusSlotInfo {
-                        pci_slot_number: NIC_PCI_SLOT,
-                    })),
-                    connectable: Some(VirtualDeviceConnectInfo {
-                        start_connected: true,
-                        allow_guest_control: true,
-                        connected: false,
-                        ..Default::default()
-                    }),
-                    ..Default::default()
-                },
-                // Let vCenter generate the MAC.
-                address_type: Some("generated".to_string()),
+    // NIC on the zone port group, at a configurable PCI slot (default 192) so
+    // the guest's NIC naming is stable (ens192) — matches
+    // `create-kairos-template.sh`'s `-net.adapter` + `ethernet0.pciSlotNumber`.
+    let ethernet = VirtualEthernetCard {
+        virtual_device_: VirtualDevice {
+            key: KEY_NIC,
+            backing: Some(nic_backing),
+            slot_info: Some(Box::new(VirtualDevicePciBusSlotInfo {
+                pci_slot_number: req.nic_pci_slot,
+            })),
+            connectable: Some(VirtualDeviceConnectInfo {
+                start_connected: true,
+                allow_guest_control: true,
+                connected: false,
                 ..Default::default()
-            },
+            }),
+            ..Default::default()
         },
+        // Let vCenter generate the MAC.
+        address_type: Some("generated".to_string()),
         ..Default::default()
     };
+    let nic: Box<dyn vim_rs::types::traits::VirtualDeviceTrait> = match req.network_adapter {
+        NicAdapter::Vmxnet3 => Box::new(VirtualVmxnet3 {
+            virtual_vmxnet_: VirtualVmxnet {
+                virtual_ethernet_card_: ethernet,
+            },
+            ..Default::default()
+        }),
+        NicAdapter::Vmxnet2 => Box::new(VirtualVmxnet2 {
+            virtual_vmxnet_: VirtualVmxnet {
+                virtual_ethernet_card_: ethernet,
+            },
+        }),
+        NicAdapter::E1000 => Box::new(VirtualE1000 {
+            virtual_ethernet_card_: ethernet,
+        }),
+        NicAdapter::E1000e => Box::new(VirtualE1000E {
+            virtual_ethernet_card_: ethernet,
+        }),
+    };
+
+    // Firmware: vCenter takes only "bios" / "efi"; secure boot is a boot option
+    // layered on EFI. `efi-secure` therefore maps to efi + secureBootEnabled.
+    let (firmware_str, secure_boot) = match req.firmware {
+        Firmware::Bios => (FIRMWARE_BIOS, false),
+        Firmware::Efi => (FIRMWARE_EFI, false),
+        Firmware::EfiSecure => (FIRMWARE_EFI, true),
+    };
+    let boot_options = secure_boot.then(|| VirtualMachineBootOptions {
+        efi_secure_boot_enabled: Some(true),
+        ..Default::default()
+    });
 
     let add = |device: Box<dyn vim_rs::types::traits::VirtualDeviceTrait>,
                create_file: bool|
@@ -915,9 +937,10 @@ fn build_template_config_spec(
     VirtualMachineConfigSpec {
         name: Some(req.template_name.clone()),
         guest_id: Some(req.guest_id.clone()),
-        num_cp_us: Some(TEMPLATE_NUM_CPUS),
-        memory_mb: Some(TEMPLATE_MEMORY_MB),
-        firmware: Some(TEMPLATE_FIRMWARE_EFI.to_string()),
+        num_cp_us: Some(req.cpus),
+        memory_mb: Some(req.memory_mib),
+        firmware: Some(firmware_str.to_string()),
+        boot_options,
         files: Some(VirtualMachineFileInfo {
             vm_path_name: Some(format!("[{}]", req.datastore)),
             ..Default::default()
@@ -927,7 +950,7 @@ fn build_template_config_spec(
             add(Box::new(disk), true),
             add(Box::new(ide), false),
             add(Box::new(cdrom), false),
-            add(Box::new(nic), false),
+            add(nic, false),
         ]),
         ..Default::default()
     }

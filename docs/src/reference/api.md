@@ -599,7 +599,7 @@ Cluster-scoped: a VMImage is shared by VirtualMachines in any namespace.
 | `osFamily` | string | Yes | Broad operating-system family. Coarser than `osDistribution`; lets providers apply high-level guest handling. Allowed: `linux`, `windows`, `bsd`, `other`. |
 | `osVersion` | string | Yes | Free-form version string. Examples: "22.04", "9.4", "2022". |
 | `sources` | object[] | Yes | Per-provider source mappings. At least one entry per ProviderClass you intend to schedule VMs onto. |
-| `template` | object |  | How the backend **template** is built from a `Url` source (folder, disk size, force knobs). Only meaningful for `Url` sources; ignored for `Template` / `BackingFile`. See [`VMImageTemplate`] and ADR-0020. |
+| `template` | object |  | How the backend **template** is built from a `Url` source (folder, network, disk, CPU / memory / firmware / NIC, force knobs). Every field is optional and falls back to a built-in default. Only meaningful for `Url` sources; ignored for `Template` / `BackingFile`. See [`VMImageTemplate`] and ADR-0020. |
 
 #### `.spec.cloudConfig`
 
@@ -639,16 +639,24 @@ you intend to schedule VMs onto.
 #### `.spec.template`
 
 How the backend **template** is built from a `Url` source (folder,
-disk size, force knobs). Only meaningful for `Url` sources; ignored for
-`Template` / `BackingFile`. See [`VMImageTemplate`] and ADR-0020.
+network, disk, CPU / memory / firmware / NIC, force knobs). Every field
+is optional and falls back to a built-in default. Only meaningful for
+`Url` sources; ignored for `Template` / `BackingFile`. See
+[`VMImageTemplate`] and ADR-0020.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
+| `cpus` | integer |  | Virtual CPU count of the template (`govc vm.create -c`). When unset, defaults to 2. vSphere-only. |
 | `disk` | object |  | Install disk of the template (the clone source's disk). When unset, a thin 100 GiB disk on a pvscsi controller is used. |
+| `firmware` | string |  | Firmware for the template (`govc vm.create -firmware`). Reuses the backend-agnostic [`Firmware`] hint (`bios` / `efi` / `efi-secure`). When unset, defaults to `efi`. vSphere maps `efi-secure` to EFI with secure boot enabled. Allowed: `bios`, `efi`, `efi-secure`, `null`. |
 | `folder` | string |  | vCenter inventory folder (path under the datacenter's VM folder, e.g. `templates/kairos`) to place the template in; created if missing. When unset, the datacenter's VM-folder root is used. vSphere-only. |
 | `forceCreate` | boolean |  | Recreate the template even if one of that name already exists, destroying the existing one first. Threaded as `--force-create`. |
 | `forceUpload` | boolean |  | Re-upload the built ISO even if one of that name already exists on the backend, deleting the existing one first (the vСenter datastore file API does not overwrite in place). Threaded as `--force-upload`. |
+| `guestId` | string |  | vCenter `guestId` for the template (`govc vm.create -g`, e.g. `rhel9_64Guest`, `ubuntu64Guest`). When unset, it is derived from the VMImage's `osFamily` / `osDistribution` / `osVersion`. vSphere-only. |
+| `memoryMib` | integer |  | Memory of the template, in MiB (`govc vm.create -m`). When unset, defaults to 4096. vSphere-only. |
 | `network` | string |  | Port group the template's NIC attaches to. When unset, the zone's first reachable network class (ADR-0019) is used. vSphere-only. |
+| `networkAdapter` | string |  | Virtual NIC adapter type for the template (`govc vm.create -net.adapter`). Allowed: `vmxnet3`, `vmxnet2`, `e1000`, `e1000e`. |
+| `nicPciSlot` | integer |  | PCI slot number for the template's NIC (`ethernet0.pciSlotNumber`). Slot 192 yields a stable `ens192` interface name in the guest. When unset, defaults to 192. vSphere-only. |
 
 ##### `.spec.template.disk`
 

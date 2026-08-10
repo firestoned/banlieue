@@ -19,8 +19,8 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, anyhow, bail};
-use banlieue_api::banlieue::{DiskController, Provider, VMImage};
-use banlieue_api::common::DiskProvisioning;
+use banlieue_api::banlieue::{DiskController, NicAdapter, Provider, VMImage};
+use banlieue_api::common::{DiskProvisioning, Firmware};
 use banlieue_provider_sdk::client::build_client;
 use clap::Args;
 use kube::api::Api;
@@ -133,6 +133,34 @@ pub struct ImportArgs {
     /// `availableNetworkClasses` target; set from `spec.template.network`.
     #[arg(long)]
     pub network: Option<String>,
+
+    /// Virtual NIC adapter type: `vmxnet3` (default), `vmxnet2`, `e1000`,
+    /// `e1000e`. Set from `spec.template.networkAdapter`.
+    #[arg(long, default_value = "vmxnet3")]
+    pub network_adapter: NicAdapter,
+
+    /// PCI slot for the template's NIC (stable `ens192` naming). Set from
+    /// `spec.template.nicPciSlot`.
+    #[arg(long, default_value_t = 192)]
+    pub nic_pci_slot: i32,
+
+    /// Virtual CPU count of the template. Set from `spec.template.cpus`.
+    #[arg(long, default_value_t = 2)]
+    pub cpus: i32,
+
+    /// Memory of the template, in MiB. Set from `spec.template.memoryMib`.
+    #[arg(long, default_value_t = 4096)]
+    pub memory_mib: i64,
+
+    /// Firmware: `efi` (default), `bios`, `efi-secure`. Set from
+    /// `spec.template.firmware`.
+    #[arg(long, default_value = "efi")]
+    pub firmware: Firmware,
+
+    /// vCenter `guestId` override (e.g. `rhel9_64Guest`). When unset, it is
+    /// derived from the VMImage OS. Set from `spec.template.guestId`.
+    #[arg(long)]
+    pub guest_id: Option<String>,
 
     /// vCenter folder (path under the datacenter VM folder) to place the
     /// template in, created if missing. Set from `VMImage.spec.template.folder`.
@@ -433,10 +461,14 @@ pub async fn run(args: ImportArgs) -> Result<()> {
         .get(&args.vmimage)
         .await
         .with_context(|| format!("reading VMImage {}", args.vmimage))?;
-    let guest_id = guest_id_for(
-        &format!("{:?}", image.spec.os_family).to_ascii_lowercase(),
-        &image.spec.os_distribution,
-    );
+    // An explicit `spec.template.guestId` (threaded as `--guest-id`) wins;
+    // otherwise derive a sensible guest type from the VMImage OS.
+    let guest_id = args.guest_id.clone().unwrap_or_else(|| {
+        guest_id_for(
+            &format!("{:?}", image.spec.os_family).to_ascii_lowercase(),
+            &image.spec.os_distribution,
+        )
+    });
 
     let plan = resolve_zone(
         &provider,
@@ -573,6 +605,11 @@ pub async fn run(args: ImportArgs) -> Result<()> {
         disk_gib: args.disk_gb,
         disk_provisioning: args.disk_type.clone(),
         disk_controller: args.disk_controller,
+        cpus: args.cpus,
+        memory_mib: args.memory_mib,
+        firmware: args.firmware.clone(),
+        network_adapter: args.network_adapter,
+        nic_pci_slot: args.nic_pci_slot,
         folder: args.folder.clone(),
         iso_datastore_path,
         template_name: args.vmimage.clone(),

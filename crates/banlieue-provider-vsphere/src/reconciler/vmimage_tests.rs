@@ -11,18 +11,19 @@ mod tests {
     use std::collections::BTreeMap;
 
     use banlieue_api::banlieue::{
-        Architecture, BuildArtifactKind, BuildArtifactPhase, BuildArtifactStatus, FailureDomain,
-        FailureDomainAttributes, GuestAgent, ImageSource, ImageSourceKind, OsFamily, Provider,
-        ProviderConnection, ProviderSpec, ProviderStatus, VMImage, VMImageSpec,
+        Architecture, BuildArtifactKind, BuildArtifactPhase, BuildArtifactStatus, DiskController,
+        FailureDomain, FailureDomainAttributes, GuestAgent, ImageSource, ImageSourceKind,
+        NicAdapter, OsFamily, Provider, ProviderConnection, ProviderSpec, ProviderStatus, VMImage,
+        VMImageSpec, VMImageTemplate, VMImageTemplateDisk,
     };
-    use banlieue_api::common::LocalObjectReference;
+    use banlieue_api::common::{DiskProvisioning, Firmware, LocalObjectReference};
     use kube::api::ObjectMeta;
 
     use crate::client::{Datacenter, FakeClient, Inventory, VSphereClient};
 
     use super::super::{
-        ImportJobInputs, build_import_job, compute_template_status, find_vsphere_source,
-        gate_on_build_artifact, import_job_name, reasons, zone_from_job,
+        ImportForce, ImportJobInputs, build_import_job, compute_template_status,
+        find_vsphere_source, gate_on_build_artifact, import_job_name, reasons, zone_from_job,
     };
 
     fn dc(name: &str) -> Datacenter {
@@ -310,7 +311,13 @@ mod tests {
             force_upload: false,
             force_create: false,
             network: None,
+            network_adapter: None,
+            nic_pci_slot: None,
             disk: None,
+            cpus: None,
+            memory_mib: None,
+            firmware: None,
+            guest_id: None,
             folder: None,
         });
 
@@ -354,7 +361,13 @@ mod tests {
             force_upload: false,
             force_create: false,
             network: None,
+            network_adapter: None,
+            nic_pci_slot: None,
             disk: None,
+            cpus: None,
+            memory_mib: None,
+            firmware: None,
+            guest_id: None,
             folder: None,
         });
         let args: Vec<String> = job["spec"]["template"]["spec"]["containers"][0]["args"]
@@ -385,7 +398,13 @@ mod tests {
                 force_upload: upload,
                 force_create: create,
                 network: None,
+                network_adapter: None,
+                nic_pci_slot: None,
                 disk: None,
+                cpus: None,
+                memory_mib: None,
+                firmware: None,
+                guest_id: None,
                 folder: None,
             });
             job["spec"]["template"]["spec"]["containers"][0]["args"]
@@ -408,6 +427,114 @@ mod tests {
 
         let both = args_of(true, true);
         assert!(has(&both, "--force-upload") && has(&both, "--force-create"));
+    }
+
+    #[test]
+    fn import_force_reads_the_full_template_off_the_image() {
+        let mut img = VMImage {
+            metadata: ObjectMeta {
+                name: Some("kairos-rhel98".to_string()),
+                ..Default::default()
+            },
+            spec: VMImageSpec {
+                os_family: OsFamily::Linux,
+                os_distribution: "rhel".to_string(),
+                os_version: "9.8".to_string(),
+                architecture: Architecture::Amd64,
+                guest_agent: GuestAgent::CloudInit,
+                sources: vec![vsphere_image_source("kairos-rhel98")],
+                cloud_config: None,
+                template: Some(VMImageTemplate {
+                    folder: Some("templates/kairos".to_string()),
+                    network: Some("vmnet-prod".to_string()),
+                    network_adapter: Some(NicAdapter::E1000),
+                    nic_pci_slot: Some(224),
+                    disk: Some(VMImageTemplateDisk {
+                        size: Some(120),
+                        provisioning: DiskProvisioning::Thick,
+                        controller: DiskController::Pvscsi,
+                    }),
+                    cpus: Some(4),
+                    memory_mib: Some(8192),
+                    firmware: Some(Firmware::EfiSecure),
+                    guest_id: Some("rhel9_64Guest".to_string()),
+                    force_upload: true,
+                    force_create: false,
+                }),
+            },
+            status: None,
+        };
+
+        let force = ImportForce::from_image(&img);
+        assert!(force.upload && !force.create);
+        assert_eq!(force.network.as_deref(), Some("vmnet-prod"));
+        assert_eq!(force.network_adapter, Some(NicAdapter::E1000));
+        assert_eq!(force.nic_pci_slot, Some(224));
+        assert_eq!(force.cpus, Some(4));
+        assert_eq!(force.memory_mib, Some(8192));
+        assert_eq!(force.firmware, Some(Firmware::EfiSecure));
+        assert_eq!(force.guest_id.as_deref(), Some("rhel9_64Guest"));
+        assert_eq!(force.folder.as_deref(), Some("templates/kairos"));
+        assert_eq!(force.disk.as_ref().and_then(|d| d.size), Some(120));
+
+        // No template → all knobs None, no force.
+        img.spec.template = None;
+        let empty = ImportForce::from_image(&img);
+        assert!(!empty.upload && !empty.create);
+        assert!(empty.network.is_none() && empty.disk.is_none() && empty.firmware.is_none());
+    }
+
+    #[test]
+    fn build_import_job_threads_all_template_hardware_knobs() {
+        let p = provider("vc", "banlieue-system");
+        let artifact = iso_artifact(BuildArtifactPhase::Ready);
+        let disk = VMImageTemplateDisk {
+            size: Some(80),
+            provisioning: DiskProvisioning::EagerZeroed,
+            controller: DiskController::LsiLogicSas,
+        };
+        let efi_secure = Firmware::EfiSecure;
+        let job = build_import_job(&ImportJobInputs {
+            job_name: "import-x",
+            namespace: "banlieue-imagebuild",
+            image: "img",
+            service_account: None,
+            vmimage: "kairos-rhel98",
+            provider: &p,
+            failure_domain: "vc-dc-east-cluster-a",
+            artifact: &artifact,
+            tolerations: &[],
+            force_upload: false,
+            force_create: false,
+            network: Some("vmnet-prod"),
+            network_adapter: Some(NicAdapter::E1000e),
+            nic_pci_slot: Some(256),
+            disk: Some(&disk),
+            cpus: Some(8),
+            memory_mib: Some(16384),
+            firmware: Some(&efi_secure),
+            guest_id: Some("rhel9_64Guest"),
+            folder: Some("templates/kairos"),
+        });
+        let args: Vec<String> = job["spec"]["template"]["spec"]["containers"][0]["args"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a.as_str().unwrap().to_string())
+            .collect();
+        // Each knob is emitted as a flag/value pair the image-import CLI parses.
+        let pair = |flag: &str, value: &str| args.windows(2).any(|w| w[0] == flag && w[1] == value);
+        assert!(pair("--network", "vmnet-prod"), "{args:?}");
+        assert!(pair("--network-adapter", "e1000e"), "{args:?}");
+        assert!(pair("--nic-pci-slot", "256"), "{args:?}");
+        assert!(pair("--disk-gb", "80"), "{args:?}");
+        assert!(pair("--disk-type", "eagerZeroed"), "{args:?}");
+        assert!(pair("--disk-controller", "lsiLogicSas"), "{args:?}");
+        assert!(pair("--cpus", "8"), "{args:?}");
+        assert!(pair("--memory-mib", "16384"), "{args:?}");
+        assert!(pair("--firmware", "efi-secure"), "{args:?}");
+        assert!(pair("--guest-id", "rhel9_64Guest"), "{args:?}");
+        assert!(pair("--folder", "templates/kairos"), "{args:?}");
     }
 
     #[test]
