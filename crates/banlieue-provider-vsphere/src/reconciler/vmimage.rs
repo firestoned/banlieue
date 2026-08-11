@@ -34,9 +34,10 @@ use std::collections::BTreeMap;
 
 use banlieue_api::banlieue::{
     BuildArtifactKind, BuildArtifactPhase, BuildArtifactStatus, FailureDomain,
-    ImagePerProviderStatus, ImageSource, ImageSourceKind, Provider, VMImage, VMImageStatus,
-    VMImageTemplateDisk, ZoneImageStatus,
+    ImagePerProviderStatus, ImageSource, ImageSourceKind, NicAdapter, Provider, VMImage,
+    VMImageStatus, VMImageTemplateDisk, ZoneImageStatus,
 };
+use banlieue_api::common::Firmware;
 use banlieue_provider_sdk::reconciler::{requeue_default, requeue_long, requeue_on_error};
 use banlieue_provider_sdk::ssa::FIELD_MANAGER_PROVIDER_VSPHERE;
 use k8s_openapi::api::batch::v1::Job;
@@ -89,8 +90,21 @@ pub struct ImportForce {
     pub create: bool,
     /// Port group from `spec.template.network`; `None` → zone-derived.
     pub network: Option<String>,
+    /// NIC adapter type from `spec.template.networkAdapter`; `None` → Job default.
+    pub network_adapter: Option<NicAdapter>,
+    /// NIC PCI slot from `spec.template.nicPciSlot`; `None` → Job default (192).
+    pub nic_pci_slot: Option<i32>,
     /// Install disk from `spec.template.disk`; `None` → the Job's own default.
     pub disk: Option<VMImageTemplateDisk>,
+    /// CPU count from `spec.template.cpus`; `None` → Job default (2).
+    pub cpus: Option<i32>,
+    /// Memory (MiB) from `spec.template.memoryMib`; `None` → Job default (4096).
+    pub memory_mib: Option<i64>,
+    /// Firmware from `spec.template.firmware`; `None` → Job default (efi).
+    pub firmware: Option<Firmware>,
+    /// vCenter `guestId` override from `spec.template.guestId`; `None` → derived
+    /// from the VMImage OS by the Job.
+    pub guest_id: Option<String>,
     /// Target vCenter folder from `spec.template.folder`; `None` → datacenter
     /// VM-folder root. Bundled here so it threads through with the force knobs.
     pub folder: Option<String>,
@@ -106,7 +120,13 @@ impl ImportForce {
             upload: t.is_some_and(|t| t.force_upload),
             create: t.is_some_and(|t| t.force_create),
             network: t.and_then(|t| t.network.clone()),
+            network_adapter: t.and_then(|t| t.network_adapter),
+            nic_pci_slot: t.and_then(|t| t.nic_pci_slot),
             disk: t.and_then(|t| t.disk.clone()),
+            cpus: t.and_then(|t| t.cpus),
+            memory_mib: t.and_then(|t| t.memory_mib),
+            firmware: t.and_then(|t| t.firmware.clone()),
+            guest_id: t.and_then(|t| t.guest_id.clone()),
             folder: t.and_then(|t| t.folder.clone()),
         }
     }
@@ -567,7 +587,13 @@ async fn create_import_job(
         force_upload: force.upload,
         force_create: force.create,
         network: force.network.as_deref(),
+        network_adapter: force.network_adapter,
+        nic_pci_slot: force.nic_pci_slot,
         disk: force.disk.as_ref(),
+        cpus: force.cpus,
+        memory_mib: force.memory_mib,
+        firmware: force.firmware.as_ref(),
+        guest_id: force.guest_id.as_deref(),
         folder: force.folder.as_deref(),
     });
     match api
@@ -656,8 +682,20 @@ pub struct ImportJobInputs<'a> {
     pub force_create: bool,
     /// Port group override (`spec.template.network`); `None` → zone-derived.
     pub network: Option<&'a str>,
+    /// NIC adapter type (`spec.template.networkAdapter`); `None` → Job default.
+    pub network_adapter: Option<NicAdapter>,
+    /// NIC PCI slot (`spec.template.nicPciSlot`); `None` → Job default (192).
+    pub nic_pci_slot: Option<i32>,
     /// Install disk (`spec.template.disk`); `None` → the Job's own default.
     pub disk: Option<&'a VMImageTemplateDisk>,
+    /// CPU count (`spec.template.cpus`); `None` → Job default (2).
+    pub cpus: Option<i32>,
+    /// Memory in MiB (`spec.template.memoryMib`); `None` → Job default (4096).
+    pub memory_mib: Option<i64>,
+    /// Firmware (`spec.template.firmware`); `None` → Job default (efi).
+    pub firmware: Option<&'a Firmware>,
+    /// `guestId` override (`spec.template.guestId`); `None` → derived by the Job.
+    pub guest_id: Option<&'a str>,
     /// Target vCenter folder path; `None` → datacenter VM-folder root.
     pub folder: Option<&'a str>,
 }
@@ -681,7 +719,13 @@ pub fn build_import_job(inputs: &ImportJobInputs<'_>) -> Value {
         force_upload,
         force_create,
         network,
+        network_adapter,
+        nic_pci_slot,
         disk,
+        cpus,
+        memory_mib,
+        firmware,
+        guest_id,
         folder,
     } = *inputs;
 
@@ -736,6 +780,30 @@ pub fn build_import_job(inputs: &ImportJobInputs<'_>) -> Value {
     if let Some(network) = network {
         args.push("--network".to_string());
         args.push(network.to_string());
+    }
+    if let Some(adapter) = network_adapter {
+        args.push("--network-adapter".to_string());
+        args.push(adapter.as_str().to_string());
+    }
+    if let Some(slot) = nic_pci_slot {
+        args.push("--nic-pci-slot".to_string());
+        args.push(slot.to_string());
+    }
+    if let Some(cpus) = cpus {
+        args.push("--cpus".to_string());
+        args.push(cpus.to_string());
+    }
+    if let Some(memory_mib) = memory_mib {
+        args.push("--memory-mib".to_string());
+        args.push(memory_mib.to_string());
+    }
+    if let Some(firmware) = firmware {
+        args.push("--firmware".to_string());
+        args.push(firmware.as_str().to_string());
+    }
+    if let Some(guest_id) = guest_id {
+        args.push("--guest-id".to_string());
+        args.push(guest_id.to_string());
     }
     if let Some(disk) = disk {
         if let Some(size) = disk.size {
