@@ -1,0 +1,6 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# ClusterFuzzLite project config (Scorecard Fuzzing). The fuzz targets live in
+# crates/banlieue-libvirt/fuzz; the Dockerfile next to this file builds them.
+language: rust

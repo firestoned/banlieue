@@ -197,10 +197,19 @@ spec:
               template:
                 description: |-
                   How the backend **template** is built from a `Url` source (folder,
-                  disk size, force knobs). Only meaningful for `Url` sources; ignored for
-                  `Template` / `BackingFile`. See [`VMImageTemplate`] and ADR-0020.
+                  network, disk, CPU / memory / firmware / NIC, force knobs). Every field
+                  is optional and falls back to a built-in default. Only meaningful for
+                  `Url` sources; ignored for `Template` / `BackingFile`. See
+                  [`VMImageTemplate`] and ADR-0020.
                 nullable: true
                 properties:
+                  cpus:
+                    description: |-
+                      Virtual CPU count of the template (`govc vm.create -c`). When unset,
+                      defaults to 2. vSphere-only.
+                    format: int32
+                    nullable: true
+                    type: integer
                   disk:
                     description: |-
                       Install disk of the template (the clone source's disk). When unset, a
@@ -234,6 +243,19 @@ spec:
                         - eagerZeroed
                         type: string
                     type: object
+                  firmware:
+                    description: |-
+                      Firmware for the template (`govc vm.create -firmware`). Reuses the
+                      backend-agnostic [`Firmware`] hint (`bios` / `efi` / `efi-secure`). When
+                      unset, defaults to `efi`. vSphere maps `efi-secure` to EFI with secure
+                      boot enabled.
+                    enum:
+                    - bios
+                    - efi
+                    - efi-secure
+                    - null
+                    nullable: true
+                    type: string
                   folder:
                     description: |-
                       vCenter inventory folder (path under the datacenter's VM folder, e.g.
@@ -252,12 +274,43 @@ spec:
                       backend, deleting the existing one first (the vСenter datastore file API
                       does not overwrite in place). Threaded as `--force-upload`.
                     type: boolean
+                  guestId:
+                    description: |-
+                      vCenter `guestId` for the template (`govc vm.create -g`, e.g.
+                      `rhel9_64Guest`, `ubuntu64Guest`). When unset, it is derived from the
+                      VMImage's `osFamily` / `osDistribution` / `osVersion`. vSphere-only.
+                    nullable: true
+                    type: string
+                  memoryMib:
+                    description: |-
+                      Memory of the template, in MiB (`govc vm.create -m`). When unset,
+                      defaults to 4096. vSphere-only.
+                    format: int64
+                    nullable: true
+                    type: integer
                   network:
                     description: |-
                       Port group the template's NIC attaches to. When unset, the zone's first
                       reachable network class (ADR-0019) is used. vSphere-only.
                     nullable: true
                     type: string
+                  networkAdapter:
+                    description: Virtual NIC adapter type for the template (`govc vm.create -net.adapter`).
+                    enum:
+                    - vmxnet3
+                    - vmxnet2
+                    - e1000
+                    - e1000e
+                    nullable: true
+                    type: string
+                  nicPciSlot:
+                    description: |-
+                      PCI slot number for the template's NIC (`ethernet0.pciSlotNumber`). Slot
+                      192 yields a stable `ens192` interface name in the guest. When unset,
+                      defaults to 192. vSphere-only.
+                    format: int32
+                    nullable: true
+                    type: integer
                 type: object
             required:
             - architecture

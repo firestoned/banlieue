@@ -1,0 +1,8 @@
+{
+  "name": "linkinator-tool",
+  "private": true,
+  "description": "Hash-pinned linkinator for CI. Bump with: npm --prefix .github/tools/linkinator install linkinator@<version>",
+  "dependencies": {
+    "linkinator": "6.1.2"
+  }
+}

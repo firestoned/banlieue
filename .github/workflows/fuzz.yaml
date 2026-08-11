@@ -1,0 +1,65 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# Continuous fuzzing via ClusterFuzzLite (Scorecard Fuzzing). cargo-fuzz
+# targets live in crates/*/fuzz (excluded from the workspace build); CIFuzz
+# builds and runs them against every PR / push to main, plus a longer
+# scheduled batch run.
+
+name: Fuzzing
+
+on:
+  pull_request:
+    paths:
+      - 'crates/banlieue-libvirt/**'
+      - '.github/workflows/fuzz.yaml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'crates/banlieue-libvirt/**'
+      - '.github/workflows/fuzz.yaml'
+  # Longer batch fuzzing once a week; findings (if any) upload as artifacts.
+  schedule:
+    - cron: '23 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    name: 🐝 cargo-fuzz (banlieue-libvirt)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        fuzz-target: [decode_message]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Build fuzzers
+        id: build
+        # clusterfuzzlite v1 (moving tag — re-pin when bumping).
+        uses: google/clusterfuzzlite/actions/build_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
+        with:
+          language: rust
+
+      - name: Run fuzzers (code-change)
+        if: github.event_name != 'schedule'
+        uses: google/clusterfuzzlite/actions/run_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
+        with:
+          language: rust
+          fuzz-seconds: 300
+          mode: code-change
+          fuzz-target: ${{ matrix.fuzz-target }}
+
+      - name: Run fuzzers (batch)
+        if: github.event_name == 'schedule'
+        uses: google/clusterfuzzlite/actions/run_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
+        with:
+          language: rust
+          fuzz-seconds: 1800
+          mode: batch
+          fuzz-target: ${{ matrix.fuzz-target }}

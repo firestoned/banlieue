@@ -124,15 +124,20 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0  # Full history for git-revision-date-localized plugin
-          # workflow_run executes in the default-branch context (main),
-          # so without an explicit ref the docs would be built from main
-          # even on a release-tagged Build. Pin to the SHA the Build ran
-          # against so released docs reflect released code. For other
-          # events (push / pull_request / workflow_dispatch) fall back to
-          # the workflow's triggering ref. The job-level `if:` above
-          # guarantees this SHA is from the same repository (not a fork)
-          # when the trigger is workflow_run.
-          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.ref }}
+
+      # workflow_run executes in the default-branch context (main), so the
+      # plain checkout above got main — but on a release-tagged Build the docs
+      # must reflect the released code, so check out the exact SHA the Build
+      # ran against. The SHA travels via an env var (never interpolated into
+      # the run script) and the job-level `if:` + verify step above guarantee
+      # it came from THIS repository, not a fork. Keeping this out of
+      # actions/checkout's `ref:` also keeps the untrusted-checkout pattern
+      # (Scorecard Dangerous-Workflow) out of the workflow.
+      - name: Check out the Build's SHA on workflow_run
+        if: github.event_name == 'workflow_run'
+        env:
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: git checkout "$HEAD_SHA"
 
       - name: Download rendered CALM diagrams
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -158,14 +163,14 @@ jobs:
           python-version: '3.11'
 
       - name: Install Poetry
-        env:
-          # Pinned for reproducibility; bump alongside docs/pyproject.toml.
-          POETRY_VERSION: "1.8.4"
-        # pip install (vs curl | python3) because the curl-pipe pattern trips
-        # Scorecard's Pinned-Dependencies downloadThenRun rule; pip uses
-        # PyPI's per-wheel sha256 from the Python package index.
+        # Hash-locked install: every transitive dep carries sha256 hashes in
+        # .github/requirements/poetry.txt (Scorecard Pinned-Dependencies).
+        # Bump POETRY_VERSION in .github/requirements/poetry.in and regenerate
+        # with:
+        #   uv pip compile --python-version 3.11 --python-platform linux --generate-hashes \
+        #     --output-file=.github/requirements/poetry.txt .github/requirements/poetry.in
         run: |
-          python3 -m pip install --user "poetry==${POETRY_VERSION}"
+          python3 -m pip install --user --require-hashes -r .github/requirements/poetry.txt
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Configure Poetry
@@ -210,12 +215,12 @@ jobs:
       - name: Check for broken links
         if: github.event_name == 'pull_request'
         continue-on-error: true
-        env:
-          # Pinned for reproducibility; bump periodically.
-          LINKINATOR_VERSION: "6.1.2"
+        # Hash-pinned via .github/tools/linkinator/package-lock.json (npm ci
+        # verifies integrity hashes). Bump with:
+        #   npm --prefix .github/tools/linkinator install linkinator@<version>
         run: |
-          npm install -g "linkinator@${LINKINATOR_VERSION}"
-          linkinator docs/site/ --recurse --skip "rustdoc/.*" --verbosity error
+          npm --prefix .github/tools/linkinator ci
+          .github/tools/linkinator/node_modules/.bin/linkinator docs/site/ --recurse --skip "rustdoc/.*" --verbosity error
 
       # Pages setup + artifact upload happen when this workflow runs on a
       # direct push to main (INTERIM policy: ship docs on every merge to main)

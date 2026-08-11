@@ -31,12 +31,6 @@ on:
         required: true
         type: string
 
-      cli-version:
-        description: "Version of @finos/calm-cli to install (npm semver)."
-        required: false
-        type: string
-        default: "1.37.0"
-
       node-version:
         description: "Node.js version used to run the CLI."
         required: false
@@ -182,9 +176,13 @@ jobs:
           node-version: ${{ inputs.node-version }}
 
       - name: Install @finos/calm-cli
-        env:
-          CLI_VERSION: ${{ inputs.cli-version }}
-        run: npm install -g "@finos/calm-cli@${CLI_VERSION}"
+        # Hash-pinned via .github/tools/calm-cli/package-lock.json (npm ci
+        # verifies every tarball's integrity hash) -- Scorecard
+        # Pinned-Dependencies. Bump with:
+        #   npm --prefix .github/tools/calm-cli install @finos/calm-cli@<version>
+        run: |
+          npm --prefix .github/tools/calm-cli ci
+          echo "$PWD/.github/tools/calm-cli/node_modules/.bin" >> "$GITHUB_PATH"
 
       - name: Show CLI version
         run: calm --version

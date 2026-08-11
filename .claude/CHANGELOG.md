@@ -1,5 +1,40 @@
 # Changelog
 
+## [2026-08-09 21:15] - ADR-0020: fully parameterize the vSphere template (CPU/mem/firmware/NIC/guestId)
+
+**Author:** Erick Bourgeois
+
+### Added
+- Every hardware value `create-kairos-template.sh` sets is now an **optional**
+  `VMImage.spec.template.*` field; each falls back to the built-in default that
+  was previously hardcoded in `vim.rs`:
+  - `cpus` (`-c`, default 2), `memoryMib` (`-m`, default 4096)
+  - `firmware` (`-firmware`, default `efi`) — reuses backend-agnostic
+    `common::Firmware` (`bios` / `efi` / `efi-secure`); vSphere maps
+    `efi-secure` → EFI + `bootOptions.efiSecureBootEnabled=true`
+  - `networkAdapter` (`-net.adapter`, default `vmxnet3`) — new `NicAdapter`
+    enum (`vmxnet3` / `vmxnet2` / `e1000` / `e1000e`); the config-spec builder
+    picks the matching `vim_rs` device struct
+  - `nicPciSlot` (`ethernet0.pciSlotNumber`, default 192)
+  - `guestId` (`-g`) — override; when unset, derived from the VMImage OS
+- Threaded end-to-end: `image-import` CLI flags (`--cpus` / `--memory-mib` /
+  `--firmware` / `--network-adapter` / `--nic-pci-slot` / `--guest-id`) →
+  `ImportForce` / `ImportJobInputs` → `IsoImportRequest` →
+  `build_template_config_spec`.
+
+### Changed
+- `vim.rs`: dropped the `TEMPLATE_NUM_CPUS` / `TEMPLATE_MEMORY_MB` /
+  `TEMPLATE_FIRMWARE_EFI` / `NIC_PCI_SLOT` constants (defaults now live on the
+  CLI args); NIC built from a shared `VirtualEthernetCard` wrapped per adapter.
+  Added `as_str`/`FromStr` to `common::Firmware` for CLI threading.
+- Regenerated CRDs + API reference; updated `examples/07`. New unit tests:
+  `import_force_reads_the_full_template_off_the_image`,
+  `build_import_job_threads_all_template_hardware_knobs`.
+
+### Impact
+- [x] Breaking (v1alpha1: new optional `spec.template` fields)
+- [x] Requires cluster rollout + CRD re-apply
+
 ## [2026-08-09 20:30] - ADR-0020: template network + structured disk (reuse common DiskProvisioning)
 
 **Author:** Erick Bourgeois

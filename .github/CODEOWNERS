@@ -1,0 +1,6 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# Default owner for the whole repo — every PR requests Erick's review
+# (Scorecard Code-Review). Add finer-grained paths as the team grows.
+* @ebourgeois

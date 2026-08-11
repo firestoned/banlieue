@@ -1,0 +1,8 @@
+{
+  "name": "calm-cli-tool",
+  "private": true,
+  "description": "Hash-pinned @finos/calm-cli for CI. Bump with: npm --prefix .github/tools/calm-cli install @finos/calm-cli@<version>",
+  "dependencies": {
+    "@finos/calm-cli": "1.37.0"
+  }
+}

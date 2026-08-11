@@ -1,0 +1,31 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# cargo-fuzz crate for banlieue-libvirt (Scorecard Fuzzing / CIFuzz).
+# Excluded from the main workspace (see root Cargo.toml `exclude`) — it is
+# built by ClusterFuzzLite in .github/workflows/fuzz.yaml, or locally with:
+#   cargo +nightly fuzz run decode_message
+
+[package]
+name = "banlieue-libvirt-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+# Not part of the main workspace (also excluded in the root Cargo.toml) —
+# built by ClusterFuzzLite in CI or `cargo +nightly fuzz` locally.
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+banlieue-libvirt = { path = ".." }
+
+[[bin]]
+name = "decode_message"
+path = "fuzz_targets/decode_message.rs"
+test = false
+doc = false
+bench = false
