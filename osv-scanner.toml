@@ -1,0 +1,23 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# OSV-scanner ignores (read by `osv-scanner` and the Scorecard
+# Vulnerabilities check). Mirror of the detailed justification in
+# deny.toml [advisories] — keep the two in sync.
+#
+# RUSTSEC-2026-0194 / RUSTSEC-2026-0195: quick-xml 0.39.4 DoS (quadratic
+# start-tag check / unbounded NsReader allocation), fixed in 0.41.0. quick-xml
+# enters the tree transitively via vim_rs (the vSphere SOAP client), which
+# pins quick-xml below the fixed version — no vim_rs release with >=0.41
+# exists yet (checked 0.6.0, 2026-08). Not exploitable here: banlieue only
+# parses SOAP responses from the single operator-configured vCenter endpoint,
+# never attacker-controlled XML, and the advisories' threat model is
+# untrusted-input DoS.
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0194"
+reason = "quick-xml DoS via vim_rs (operator-configured vCenter responses only, no untrusted XML); vim_rs pins quick-xml <0.41, no fixed release available — see deny.toml"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0195"
+reason = "quick-xml DoS via vim_rs (operator-configured vCenter responses only, no untrusted XML); vim_rs pins quick-xml <0.41, no fixed release available — see deny.toml"

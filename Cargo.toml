@@ -12,6 +12,11 @@ members = [
     "crates/banlieue-provider-vsphere",
     "crates/banlieue-vex",
 ]
+# cargo-fuzz crates are built by ClusterFuzzLite (CI) or `cargo +nightly fuzz`,
+# never as part of the normal workspace build.
+exclude = [
+    "crates/banlieue-libvirt/fuzz",
+]
 
 [workspace.package]
 version = "0.1.0"

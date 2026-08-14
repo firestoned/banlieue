@@ -1,0 +1,43 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# Dependency update automation (Scorecard Dependency-Update-Tool). Weekly is
+# frequent enough to stay current without drowning a pre-1.0 repo in PR noise.
+version: 2
+updates:
+  # GitHub Actions — keeps the SHA-pinned actions current.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      actions:
+        patterns: ["*"]
+
+  # Rust workspace.
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+
+  # Docs site (Poetry).
+  - package-ecosystem: "pip"
+    directory: "/docs"
+    schedule:
+      interval: "weekly"
+
+  # Container base image (digest bumps for distroless/cc-debian13:nonroot).
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+
+  # Hash-pinned CI tools (.github/tools/*/package-lock.json).
+  - package-ecosystem: "npm"
+    directory: "/.github/tools/calm-cli"
+    schedule:
+      interval: "weekly"
+  - package-ecosystem: "npm"
+    directory: "/.github/tools/linkinator"
+    schedule:
+      interval: "weekly"

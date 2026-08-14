@@ -21,7 +21,7 @@
 # Pinned by digest for supply-chain reproducibility. Dependabot (docker
 # ecosystem) opens a PR with the new digest when upstream publishes a patched
 # image. Do NOT revert to a floating tag.
-ARG BASE_IMAGE=gcr.io/distroless/cc-debian13:nonroot@sha256:8f960b7fc6a5d6e28bb07f982655925d6206678bd9a6cde2ad00ddb5e2077d78
+ARG BASE_IMAGE=gcr.io/distroless/cc-debian13:nonroot@sha256:d97bc0a941b8d4be647dc0ee75b264ddbb772f1ac5ba690a4309c00723b23775
 
 FROM ${BASE_IMAGE}
 

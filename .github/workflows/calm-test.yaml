@@ -135,7 +135,10 @@ jobs:
           node-version: '20'
 
       - name: Install @finos/calm-cli
-        run: npm install -g "@finos/calm-cli@1.37.0"
+        # Hash-pinned via package-lock.json (npm ci verifies integrity hashes).
+        run: |
+          npm --prefix .github/tools/calm-cli ci
+          echo "$PWD/.github/tools/calm-cli/node_modules/.bin" >> "$GITHUB_PATH"
 
       - name: Render template via calm-args.sh + calm
         env:
