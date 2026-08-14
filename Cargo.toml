@@ -62,7 +62,7 @@ chrono = { version = "0.4", features = ["serde"] }
 async-trait = "0.1"
 # Artifact integrity for provider import Jobs (SEC-004): the import subcommand
 # hashes the built raw disk before streaming it to a backend.
-sha2 = "0.10"
+sha2 = "0.11"
 
 # vSphere (provider-vsphere only; pinned here so the long compile is cached at
 # workspace level and any future provider that needs it gets the same pin).
