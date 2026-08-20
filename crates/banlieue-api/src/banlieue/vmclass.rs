@@ -134,8 +134,11 @@ pub struct NetworkInterfaceSpec {
     /// Abstract network class name. MUST be advertised in the chosen
     /// Provider's `spec.capabilities.networkClasses`.
     pub network_class: String,
-    /// IPAM configuration. See `IpamSpec` in common.
-    pub ipam: IpamSpec,
+    /// IPAM configuration. Uses [`IpamShape`] (not [`IpamSpec`]) because a
+    /// `VMClass` is shared by many VMs — there is no per-VM address at this
+    /// level. Per-VM static addresses are provided via
+    /// `VirtualMachine.spec.networkOverrides`.
+    pub ipam: IpamShape,
     /// Optional MTU override. Provider may ignore if unsupported.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(range(min = 68, max = 65_535))]

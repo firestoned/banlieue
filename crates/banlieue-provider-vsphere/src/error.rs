@@ -27,6 +27,12 @@ pub enum Error {
     /// A required field on the resource being reconciled was missing.
     #[error("missing required field: {0}")]
     Missing(&'static str),
+
+    /// The resource's spec is internally inconsistent in a way no CRD schema
+    /// rule can express (e.g. two `Provider.spec.failureDomainNameOverrides[]`
+    /// entries resolving to the same name, ADR-0023).
+    #[error("invalid spec: {0}")]
+    InvalidSpec(String),
 }
 
 /// Convenient alias.

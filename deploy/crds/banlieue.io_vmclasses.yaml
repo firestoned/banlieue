@@ -190,10 +190,14 @@ spec:
                         network class that a Provider must advertise.
                       properties:
                         ipam:
-                          description: IPAM configuration. See `IpamSpec` in common.
+                          description: |-
+                            IPAM configuration. Uses [`IpamShape`] (not [`IpamSpec`]) because a
+                            `VMClass` is shared by many VMs — there is no per-VM address at this
+                            level. Per-VM static addresses are provided via
+                            `VirtualMachine.spec.networkOverrides`.
                           properties:
                             pool:
-                              description: Required when `source == Pool`; ignored otherwise.
+                              description: Pool-based IPAM parameters.
                               nullable: true
                               properties:
                                 poolRef:
@@ -221,20 +225,18 @@ spec:
                               required:
                               - poolRef
                               type: object
-                            source:
-                              description: |-
-                                IPAM source. `Dhcp` is the default so a freshly-constructed `IpamSpec`
-                                is a valid one.
-                              enum:
-                              - dhcp
-                              - static
-                              - pool
-                              type: string
                             static:
-                              description: Required when `source == Static`; ignored otherwise.
+                              description: |-
+                                Shared subnet parameters (prefix, gateway, nameservers, domain) —
+                                **not** a per-VM address.
                               nullable: true
                               properties:
-                                address:
+                                domain:
+                                  description: |-
+                                    DNS domain, used both as a DNS search domain and (by a
+                                    `VirtualMachine.spec.networkOverrides` consumer, ADR-0024) to build
+                                    an FQDN as `<vm-name>.<domain>`.
+                                  nullable: true
                                   type: string
                                 gateway:
                                   nullable: true
@@ -247,13 +249,9 @@ spec:
                                   format: uint8
                                   maximum: 255.0
                                   minimum: 0.0
+                                  nullable: true
                                   type: integer
-                              required:
-                              - address
-                              - prefix
                               type: object
-                          required:
-                          - source
                           type: object
                         mtu:
                           description: Optional MTU override. Provider may ignore if unsupported.

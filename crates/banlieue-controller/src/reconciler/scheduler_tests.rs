@@ -19,8 +19,7 @@ mod tests {
         VMImageSpec, VMImageStatus, VirtualMachine, VirtualMachineSpec, VirtualMachineStatus,
     };
     use banlieue_api::common::{
-        DiskProvisioning, Firmware, IpamSource, IpamSpec, LabelSelector, LocalObjectReference,
-        PowerState,
+        DiskProvisioning, Firmware, IpamShape, LabelSelector, LocalObjectReference, PowerState,
     };
     use kube::core::ObjectMeta;
 
@@ -45,6 +44,9 @@ mod tests {
                 user_data: None,
                 migration_policy: MigrationPolicy::Automatic,
                 paused: false,
+                network_overrides: Vec::new(),
+                hardware_override: None,
+                folder: None,
             },
             status: None,
         }
@@ -114,11 +116,7 @@ mod tests {
                         .map(|(n, nc)| NetworkInterfaceSpec {
                             name: n.into(),
                             network_class: nc.into(),
-                            ipam: IpamSpec {
-                                source: IpamSource::Dhcp,
-                                static_: None,
-                                pool: None,
-                            },
+                            ipam: IpamShape::default(),
                             mtu: None,
                         })
                         .collect(),
@@ -150,6 +148,7 @@ mod tests {
                 }],
                 cloud_config: None,
                 template: None,
+                iso_overlay: None,
             },
             status: Some(VMImageStatus {
                 per_provider: providers
@@ -199,6 +198,7 @@ mod tests {
                 capabilities: caps,
                 paused: false,
                 use_content_library: false,
+                failure_domain_name_overrides: Vec::new(),
             },
             status: Some(ProviderStatus {
                 failure_domains: fds,
@@ -254,14 +254,16 @@ mod tests {
                 .iter()
                 .map(|(name, k, v)| StorageClassMapping {
                     name: name.to_string(),
-                    target: BTreeMap::from([(k.to_string(), v.to_string())]),
+                    target: Some(BTreeMap::from([(k.to_string(), v.to_string())])),
+                    ..Default::default()
                 })
                 .collect(),
             network_classes: network
                 .iter()
                 .map(|(name, k, v)| NetworkClassMapping {
                     name: name.to_string(),
-                    target: BTreeMap::from([(k.to_string(), v.to_string())]),
+                    target: Some(BTreeMap::from([(k.to_string(), v.to_string())])),
+                    ..Default::default()
                 })
                 .collect(),
             features: vec![],
@@ -282,7 +284,7 @@ mod tests {
         let img = image_ready_on(&["vc1"]);
         let p = provider(
             "vc1",
-            lbls([("dc", "dc1")]),
+            lbls([("datacenter", "dc1")]),
             vec![fd(
                 "vc1-cluster-a",
                 lbls([("cluster", "a")]),
@@ -314,7 +316,7 @@ mod tests {
             "ns",
             BTreeMap::new(),
             PlacementSpec {
-                provider_selector: Some(label_selector(&[("dc", "dc2")])),
+                provider_selector: Some(label_selector(&[("datacenter", "dc2")])),
                 ..Default::default()
             },
         );
@@ -327,7 +329,7 @@ mod tests {
         let img = image_ready_on(&["vc1"]);
         let p = provider(
             "vc1",
-            lbls([("dc", "dc1")]),
+            lbls([("datacenter", "dc1")]),
             vec![],
             ProviderCapabilities::default(),
         );

@@ -1,5 +1,2984 @@
 # Changelog
 
+## [2026-08-24 21:50] - Fix banlieue-controller's own narrow status patches + detect-and-report self-heal (ADR-0034)
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `crates/banlieue-controller/src/reconciler/virtualmachine.rs`: `patch_status`
+  and `patch_status_conditions_only` had the *same* bug class as the
+  vsphere-provider fix earlier today, but worse and pre-existing — they had
+  never forwarded `initialization`/`addresses` at all (confirmed live:
+  `VirtualMachine.status.initialization` stayed `{}` forever even on a
+  fully provisioned VM), and once ADR-0034 added `observedPowerState` to
+  the mirror, that got silently dropped too. Fixed by collapsing both
+  functions into a single `patch_status(api, name, status: &VirtualMachineStatus)`
+  that always sends the complete status object; `patch_scheduling_failure`,
+  `patch_infra_build_failure`, and `patch_placement_invalid` now start from
+  `vm.status.clone()` (not `Vec::new()`) so they preserve every field a
+  prior successful patch had set, instead of retracting/wiping it under
+  SSA's "same manager, narrower field set" semantics. `mirror_only_path`
+  now calls the same unified `patch_status` — `next_status` already
+  carries `scheduled`/`infrastructureRef` forward unchanged from
+  `mirror_status_from_infra`, matching that path's existing "keep the
+  placement" contract.
+- `crates/banlieue-provider-vsphere/src/reconciler/vspheremachine.rs`
+  (`refresh_power_state`): added detect-and-report self-healing for two
+  inconsistent states — `provisioned=true` with no `vmRef`
+  (`BackendRefMissing`) and a stored `vmRef` that no longer resolves in
+  vCenter (`BackendMissing`, detected via the same `ManagedObjectNotFound`
+  string match `destroy_vm` already uses). Both patch `Ready=False` with a
+  descriptive message instead of silently doing nothing or retrying
+  forever on an opaque error; `Ready` is restored to `True`/`Reconciled`
+  automatically the next time a `power_state` read succeeds. Deliberately
+  does **not** rediscover the VM by name or auto-recreate it — see
+  ADR-0034 Decision #7 for why (round-trip cost, risk of adopting/creating
+  the wrong VM).
+- `docs/adr/0034-vspheremachine-observed-power-state.md`: added Decision
+  #6 (full-status-always) and #7 (detect-and-report self-heal).
+
+### Why
+Live report: `kubectl get vm erick-rhel -o yaml | grep observedPowerState`
+came back empty even after redeploying and recreating the VM — the
+provider-side fix from the previous entry was correct, but
+`banlieue-controller`'s own status patch was independently dropping the
+field before it ever reached the parent `VirtualMachine`. Then, asked
+whether startup reconciliation should "grab all CRs and update/remove
+fields" — clarified to mean: make the already-provisioned fast path
+self-healing for status inconsistencies, scoped to detect-and-report only
+(not rediscovery/recreation, per explicit direction).
+
+### Impact
+- [ ] Breaking change (unreleased — no consumers exist yet)
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Requires rebuilding/redeploying both `banlieue-controller` and
+      `banlieue-provider-vsphere`.
+
+### Verification
+- `cargo fmt` / `cargo clippy --all-targets --all-features -- -D warnings`
+  for both crates ✅
+- `cargo test -p banlieue-provider-vsphere -p banlieue-controller` ✅ —
+  `banlieue-controller` 87 passed, `banlieue-provider-vsphere` 179 passed
+  (+3: `is_backend_missing_error_*`,
+  `status_reporting_backend_problem_preserves_every_other_field`,
+  `status_with_observed_power_state_restores_ready_after_a_backend_problem_clears`)
+- `make calm-validate` ✅
+
+## [2026-08-24 21:05] - Fix: ADR-0034's power-state refresh orphaned backend VMs on delete
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `crates/banlieue-provider-vsphere/src/reconciler/vspheremachine.rs`
+  (`refresh_power_state`): the narrow `{observedPowerState,
+  observedGeneration}` JSON patch it applied via SSA was a real data-loss
+  bug, not just a style choice. Live report: after deleting two
+  `VirtualMachine`s, both backend VMs stayed running in vCenter — the CRs
+  themselves deleted cleanly (no stuck finalizer), but `destroy_vm` was
+  never called. Root cause, confirmed from logs: the same field manager
+  (`FIELD_MANAGER_PROVIDER_VSPHERE`) that previously applied the *full*
+  `VSphereMachineStatus` struct (`patch_status_success`: `vmRef`,
+  `conditions`, `initialization`, etc.) later re-applied a narrower object
+  containing only `observedPowerState`/`observedGeneration`. Under SSA,
+  the same manager re-applying a smaller field set makes the apiserver
+  retract that manager's ownership of every omitted field — and since
+  nothing else owned `vmRef`/`conditions`/`initialization`, they were
+  wiped. `finalize()` then read `vm_ref` as `None` and skipped
+  `destroy_vm` entirely. (A separate, real issue compounded this in the
+  live report: the narrow patch had been erroring for a while first —
+  `.status.observedPowerState: field not declared in schema` — meaning the
+  live CRD was temporarily out of sync with the deployed binary; the wipe
+  only actually landed once that schema mismatch got resolved and the
+  patch started succeeding.)
+- Fixed by always re-applying the *entire* current status (cloned from
+  `machine.status`, only `observedPowerState`/`observedGeneration`
+  overridden) rather than a hand-built partial object — extracted as a
+  pure `status_with_observed_power_state` helper specifically so this
+  field-preservation contract is unit-tested without a kube client.
+
+### Why
+Direct consequence of this session's earlier ADR-0034 change
+(2026-08-24 20:10 entry) — found live immediately after deploying it.
+
+### Impact
+- [ ] Breaking change (unreleased — no consumers exist yet)
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Requires rebuilding/redeploying `banlieue-provider-vsphere`. Any
+      `VSphereMachine` that already lost `status.vmRef` to this bug will
+      need its backend VM cleaned up manually in vCenter — banlieue has
+      no way to find/destroy a VM it no longer has a moref for.
+
+### Verification
+- `cargo fmt -p banlieue-provider-vsphere -- --check` ✅
+- `cargo clippy -p banlieue-provider-vsphere --all-targets --all-features -- -D warnings` ✅
+- `cargo test -p banlieue-provider-vsphere` ✅ (176 passed, +1 — the new
+  `status_with_observed_power_state_preserves_every_other_field` regression
+  test)
+
+## [2026-08-24 20:10] - Add observed VM power state (ADR-0034) + more info logging in ensure_vm
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0034-vspheremachine-observed-power-state.md` — new ADR, amending
+  ADR-0024's create-path-only scoping decision.
+- `crates/banlieue-api/src/infrastructure/vsphere_machine.rs`:
+  `VSphereMachineStatus.observed_power_state: Option<PowerState>` + a new
+  `Power` printcolumn (mirrors `VirtualMachine`'s own, which already existed
+  but nothing ever populated it).
+- `VSphereClient::power_state(&self, vm_moref) -> Result<PowerState>` — new
+  read-only trait method reading `VirtualMachine.runtime.powerState`, the
+  read-only counterpart to the existing `set_power_state`. Implemented for
+  `VimClientImpl` (via new pure helper `map_vim_power_state`) and
+  `FakeClient` (reusing its existing `power_states` fixture map).
+- `crates/banlieue-provider-vsphere/src/reconciler/vspheremachine.rs`:
+  once provisioned, `reconcile` now performs exactly one cheap
+  `power_state` read per pass (`refresh_power_state`) and patches
+  `status.observedPowerState` only when it actually changed — narrowing,
+  not reversing, ADR-0024's "no vCenter round-trip once provisioned" rule.
+  `ProvisionOutcome` gained a `power_state` field so the initial
+  post-clone/power-on value is recorded without a second read.
+- `crates/banlieue-controller/src/reconciler/status_mirror.rs`:
+  `InfraMachineRead::observed_power_state()` + mirrored onto the parent
+  `VirtualMachine.status.observedPowerState`.
+- Added `info!` logs across every step of `ensure_vm` (datacenter/cluster/
+  template/datastore/network resolution, clone submission/completion,
+  power-on request/confirmation) — previously zero log lines existed
+  between "reconciling" and "provisioned".
+- CRDs regenerated (`make crds`); `docs/src/reference/api.md` and
+  `docs/site/` rebuilt (`make docs`).
+
+### Why
+Asked for logging across the create-to-boot sequence, then clarified the
+actual need: `VirtualMachine`/`VSphereMachine` never reported the backend
+VM's power state at all (a `Power` printcolumn already existed on
+`VirtualMachine` but nothing ever wrote to it) — live report: two VMs up
+and running in vCenter, `Power` column empty on both.
+
+### Impact
+- [ ] Breaking change (unreleased — no consumers exist yet)
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Requires rebuilding/redeploying `banlieue-provider-vsphere` and
+      `banlieue-controller`, and re-applying regenerated CRDs.
+
+### Verification
+- `cargo fmt` / `cargo clippy --all-targets --all-features -- -D warnings`
+  for `banlieue-api`, `banlieue-controller`, `banlieue-provider-vsphere` ✅
+- `cargo test` ✅ — `banlieue-api` 284 passed, `banlieue-controller` 87
+  passed (+1), `banlieue-provider-vsphere` 175 passed (+2)
+- `make calm-validate` ✅ (no CALM model change needed — this refines an
+  existing node's status/behavior, not the architecture graph)
+
+## [2026-08-24 18:55] - Fix: VirtualMachine.status.Ready stuck at Scheduling forever
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `crates/banlieue-controller/src/reconciler/virtualmachine.rs`: the
+  success path's aggregate `Ready` condition never became `True` even once
+  scheduling, infra provisioning, and the backend VM were all genuinely
+  successful — found live, two VMs fully up and reachable in vCenter, both
+  still reporting `VirtualMachine.status` `Ready=False reason=Scheduling`,
+  `InfrastructureReady=True`, and a fully populated `status.scheduled`.
+  Root cause: `status_mirror.rs`'s `mirror_status_from_infra` computes
+  aggregate `Ready` from a `Scheduled` *condition* in `conditions[]`, not
+  from the `status.scheduled` struct field — but the only two call sites
+  that ever set that condition (`patch_scheduling_failure`,
+  `patch_infra_build_failure`) both set it `False`; nothing on the success
+  path ever set it `True`. The success path now seeds `Scheduled=True` on
+  the pre-mirror status snapshot (`vm.status.clone()`) before calling
+  `mirror_status_from_infra` directly (rather than the `mirror_onto_vm`
+  wrapper), so the aggregate computation sees it in the same reconcile
+  pass rather than one pass late.
+
+### Why
+Live report: two freshly created `VirtualMachine`s were up and running per
+vCenter, but `status.conditions` never reflected it.
+
+### Impact
+- [ ] Breaking change (unreleased — no consumers exist yet)
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Requires rebuilding/redeploying `banlieue-controller`.
+
+### Verification
+- `cargo fmt -p banlieue-controller -- --check` ✅
+- `cargo clippy -p banlieue-controller --all-targets --all-features -- -D warnings` ✅
+- `cargo test -p banlieue-controller` ✅ (86 passed) — the pre-existing pure
+  test `aggregate_ready_is_true_when_scheduled_placement_valid_and_infra_ready`
+  in `status_mirror_tests.rs` already covered the correct aggregation logic
+  given `Scheduled=True`; the gap was entirely in the (deliberately
+  untested-at-this-level, per this crate's own convention) caller never
+  supplying that precondition.
+
+## [2026-08-24 13:15] - Fix: force-reimport annotation caused a delete/recreate storm
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `crates/banlieue-provider-vsphere/src/reconciler/vmimage.rs`: the
+  `banlieue.io/force-reimport` annotation was read on every `reconcile()`
+  pass but never cleared, so it behaved as a standing flag instead of a
+  one-shot trigger. Because the `VMImage` controller also watches the
+  import Job (event-driven reconciliation added earlier this session),
+  every Job status change (a pod flipping `Pending`→`Running`, etc.)
+  re-triggered `reconcile()`, which still saw the annotation `true` and
+  deleted + recreated the Job again — an unbroken delete/recreate storm
+  across all three failure domains, observed live as import pods being
+  created and terminated within the same second, forever, with no import
+  ever surviving long enough to progress.
+- `reconcile()` now clears the annotation via a JSON Merge Patch
+  immediately after acting on it in a given pass. Added
+  `clear_force_reimport_patch()` (pure, unit-tested) building the patch
+  value; `finalizer.rs`'s `ensure_finalizer`/`remove_finalizer` already
+  established this same Merge Patch pattern for exactly this reason
+  (doesn't disturb metadata owned by other controllers).
+- Manually cleared the annotation on the live, already-looping `VMImage` to
+  stop the storm immediately, ahead of deploying this fix.
+
+### Why
+Live report: after annotating `hadron-kairos-dev-v0.1.0` with
+`force-reimport=true` to test the PCI-slot fix (previous two CHANGELOG
+entries), the import Jobs never got past `Pending` — pods were being
+deleted and recreated in a tight loop across all three zones.
+
+### Impact
+- [ ] Breaking change (unreleased — no consumers exist yet)
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Requires rebuilding/redeploying this provider's image before
+      `force-reimport` can be used again without re-triggering the loop.
+
+### Verification
+- `cargo fmt -p banlieue-provider-vsphere -- --check` ✅
+- `cargo clippy -p banlieue-provider-vsphere --all-targets --all-features -- -D warnings` ✅
+- `cargo test -p banlieue-provider-vsphere` ✅ (173 passed)
+
+## [2026-08-24 00:35] - Fix: ethernetN.pciSlotNumber must be set in a separate ReconfigVM_Task
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `crates/banlieue-provider-vsphere/src/client/vim.rs`: live validation via
+  `govc vm.info -e` on templates rebuilt with the previous fix (removing the
+  harmful structured-`slotInfo` post-create reconfigure) still showed
+  `ethernet0.pciSlotNumber: 33`, not the requested `192` — proving that fix
+  was necessary but not sufficient. Root cause: setting
+  `ethernetN.pciSlotNumber` as an ExtraConfig entry *inline*, in the same
+  `CreateVM_Task` that also creates the NIC device via `device_change`,
+  doesn't stick either — the freshly created VM's own config still read
+  back vCenter's auto-assigned slot. `build_template_config_spec` no longer
+  sets `extra_config` at all. Added
+  `build_nic_pci_slot_extra_config_reconfigure_spec` — a new, genuinely
+  separate post-create `ReconfigVM_Task` with `device_change: None`, run
+  after `CreateVM_Task` has already committed the NIC — matching
+  `create-kairos-template.sh`'s own reference sequence exactly: a bare
+  `govc vm.create`, then a wholly separate `govc vm.change -e
+  "ethernet0.pciSlotNumber=192"`.
+- `vim_tests.rs`: replaced
+  `build_template_config_spec_sets_ethernet0_pci_slot_number_as_extra_config`
+  (now asserts the CreateVM_Task spec leaves `extra_config` unset) with
+  `build_nic_pci_slot_extra_config_reconfigure_spec_sets_ethernetn_pci_slot_number`,
+  covering the new post-create-only reconfigure for multiple NICs.
+
+### Why
+Third attempt at the same live bug (`ens33` guest interface instead of the
+requested `ens192`). Each prior attempt was disproven by direct evidence,
+not assumption: `govc vm.info -e` against the actual rebuilt template is
+what caught that the previous fix (this file, 2026-08-23 23:55 entry) was
+incomplete.
+
+### Impact
+- [ ] Breaking change (unreleased — no consumers exist yet)
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Requires rebuilding this provider's image AND force-recreating any
+      existing templates (`banlieue.io/force-reimport`) — every template
+      built before this fix still has the wrong `ethernet0.pciSlotNumber`
+      baked in.
+
+### Verification
+- `cargo fmt -p banlieue-provider-vsphere -- --check` ✅
+- `cargo clippy -p banlieue-provider-vsphere --all-targets --all-features -- -D warnings` ✅
+- `cargo test -p banlieue-provider-vsphere` ✅ (172 passed)
+- Not yet verified live — pending image rebuild/redeploy and a fresh
+  `govc vm.info -e` check against a newly force-reimported template.
+
+## [2026-08-23 23:55] - Fix: template's own PCI-slot fix was clobbering itself
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `crates/banlieue-provider-vsphere/src/client/vim.rs` (`import_iso_template`):
+  removed a leftover post-create `ReconfigVM_Task` that pinned every NIC's
+  *structured* `VirtualDevice.slotInfo` field (`build_nics_pci_slot_reconfigure_spec`,
+  added during an earlier, since-abandoned attempt at this same fix). Editing
+  the NIC device in that separate reconfigure re-triggers vCenter's own slot
+  (re)assignment, which also re-syncs the `ethernetN.pciSlotNumber` ExtraConfig
+  mirror to match — silently overwriting the *correct* ExtraConfig value the
+  initial `CreateVM_Task` had just set moments earlier. Confirmed live via a
+  new diagnostic log: a template built with `pciSlot: 192` had
+  `ethernet0.pciSlotNumber` reading `"33"` in its own live config, and
+  `clone_vm`'s existing (correct) carry-forward logic was faithfully
+  propagating that already-wrong value to every clone.
+- Removed the now-unused `build_nics_pci_slot_reconfigure_spec` helper and its
+  unit test (`vim_tests.rs`); `find_all_nic_keys` is now used only to validate
+  `CreateVM_Task` produced the expected NIC count.
+- Added a diagnostic `info!` log in `clone_vm` at the ExtraConfig carry-forward
+  step, logging the resolved `template_pci_slot_number` (this is what actually
+  pinpointed the bug — the structured-slot log alone didn't distinguish "not
+  written" from "written then clobbered").
+
+### Why
+Live report: a `VirtualMachine` clone still came up as `ens33` in the guest
+despite `VMImage.spec.template.network[].pciSlot: 192` and networking
+otherwise working correctly. The template-creation path was undoing its own
+fix on every template build.
+
+### Impact
+- [ ] Breaking change (unreleased — no consumers exist yet)
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Requires rebuilding this provider's image AND force-recreating any
+      existing templates (`banlieue.io/force-reimport` annotation) — templates
+      built before this fix already have the wrong `ethernet0.pciSlotNumber`
+      baked in; a plain re-clone from an existing bad template will not help.
+
+### Verification
+- `cargo fmt -p banlieue-provider-vsphere -- --check` ✅
+- `cargo clippy -p banlieue-provider-vsphere --all-targets --all-features -- -D warnings` ✅
+- `cargo test -p banlieue-provider-vsphere` ✅ (172 passed, down from 173 —
+  the removed test for the deleted helper)
+
+## [2026-08-23 07:35] - ADR-0033: CAPI IPAM pool integration (deferred, not implemented)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0033-capi-ipam-pool-integration.md`: Proposed, not implemented.
+  Records the design conversation on using CAPI IPAM pools
+  (`cluster-api-ipam-provider-in-cluster`'s range-based `InClusterIPPool`,
+  or `ipam.metal3.io`'s name→address `preAllocations` table) to migrate
+  already-issued VM addresses and hand out fresh ones per drone cluster.
+  Decision: use existing static `networkOverrides` (ADR-0024) +
+  `perZoneSubnet` (ADR-0032) for the active virtrigaud migration — both
+  already fully working and exact by construction, no allocator needed;
+  defers the actual `IPAddressClaim`/`IPAddress` wiring (schema and RBAC
+  already exist, unused) to a follow-up, and explicitly leaves the choice
+  of IPAM provider open pending coordination with the org's existing
+  self-service IPAM system's owning team, to avoid two systems believing
+  they own the same address range.
+
+### Why
+Asked directly whether CAPI IPAM pools could preserve already-known VM→IP
+assignments during a migration. Investigation found range-based pools
+allocate the next free address per claim with no way to request a
+specific one — the wrong tool for preserving an existing mapping — and
+that wiring any upstream IPAM provider in at all risks conflicting with
+the org's own already-authoritative IPAM system. Captured as an ADR now,
+per explicit request, so the reasoning and constraints aren't re-derived
+from scratch whenever this is picked up later.
+
+### Impact
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+## [2026-08-23 07:10] - ADR-0032: per-zone subnet shape for static network classes
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0032-per-zone-network-subnet-shape.md`: Accepted and
+  implemented.
+- `crates/banlieue-api/src/banlieue/provider.rs`: `NetworkClassMapping`
+  gains `subnet: Option<SubnetShape>` (default) and
+  `per_zone_subnet: Vec<ScopedSubnet>` (per-`(datacenter, cluster)`
+  overrides), plus `subnet_for(datacenter, cluster)` mirroring ADR-0030's
+  `target_for` precedence exactly. New `SubnetShape` (gateway,
+  nameservers, domain — deliberately no `prefix`, which stays per-VM) and
+  `ScopedSubnet` types.
+- `crates/banlieue-controller/src/reconciler/infra.rs`:
+  `build_vsphere_machine`'s `_provider` parameter is now genuinely used —
+  each NIC resolves its `networkClass`'s `subnet_for(datacenter, cluster)`
+  and `merge_ipam_override` fills in whichever of
+  `gateway`/`nameservers`/`domain` the per-VM `networkOverrides` entry left
+  unset, field by field. An explicit per-VM value for any of those three
+  still always wins for that field.
+- `deploy/crds/banlieue.io_providers.yaml`, `docs/src/reference/api.md`:
+  regenerated — additive only (`subnet`/`perZoneSubnet`, both optional).
+- `docs/src/guides/environment-provider-isolation.md`: new "Static
+  addressing across the same clusters (no DHCP)" section.
+- Tests (TDD): `subnet_for` precedence tests in `banlieue-api`'s
+  `provider_tests.rs` (mirroring the existing `target_for` tests exactly);
+  `merge_ipam_override` unit tests plus one full `build_vsphere_machine`
+  end-to-end test in `banlieue-controller`'s `infra_tests.rs`.
+
+### Why
+Asked directly, in an environment where DHCP is not usable at all (every
+`VirtualMachine` must be statically addressed): how does one `VMClass`
+work across multiple clusters with different subnets without the
+`VirtualMachine` needing to know each cluster's gateway/DNS/domain?
+Tracing `merge_ipam_override` found the field that looked like the answer
+— `VMClass.network.interfaces[].ipam.static` (`IpamShape.static_` /
+`StaticNetworkShape`) — is **never read** by either branch of that
+function; a per-VM override (required for any static address) discards it
+entirely, and even with no override it's still discarded. Fixing that
+merge alone wouldn't have solved the actual problem anyway: a class-level
+subnet shape is one fixed value for a class ADR-0030 already made
+portable across many clusters with genuinely different subnets. The
+correct fix mirrors ADR-0030 exactly — the subnet facts move to the same
+per-zone place the port group already lives, since a port group implies a
+subnet.
+
+### Impact
+- [x] Requires cluster rollout (updated `banlieue-controller` image;
+      regenerated CRD is additive, no forced re-apply)
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-08-23 06:45] - Document "failure domain" / "availability zone" as synonyms
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `crates/banlieue-api/src/banlieue/provider.rs`: doc comments on
+  `ProviderStatus.failure_domains` and the `FailureDomain` struct now state
+  explicitly that "failure domain" and "availability zone" are synonyms,
+  and that `failureDomain` was kept as the field/type name specifically to
+  align with CAPI v1beta2's own vocabulary (`clusterv1.FailureDomain`,
+  `Machine.spec.failureDomain`), not because it means something distinct
+  from an AZ.
+- `docs/src/concepts/providers.md`: added the same naming note in prose.
+- `docs/src/reference/api.md`: regenerated (`make api-docs`) to pick up the
+  updated doc comment.
+- `docs/site/`: rebuilt (`make docs`) so the naming note reaches the
+  rendered site, not just the Markdown source.
+
+### Why
+Discussed renaming `failureDomain` to `availabilityZone` outright; kept the
+existing name (it's the term CAPI itself uses, and this project's provider
+infra CRDs are built to satisfy the CAPI v1beta2 InfraMachine contract) but
+documented the two terms as interchangeable so docs/CLI help text can use
+whichever reads more naturally without implying a real distinction.
+
+### Impact
+- [ ] Breaking change (unreleased — no consumers exist yet)
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+## [2026-08-23 06:30] - Mirror a failure domain's resolved name into its own labels
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `crates/banlieue-provider-vsphere/src/reconciler/provider.rs`:
+  `build_failure_domain` now inserts `labels["name"] = <the resolved name>`
+  (auto-computed, or an ADR-0023 `failureDomainNameOverrides` entry) —
+  alongside the existing `datacenter`/`cluster` labels.
+- `crates/banlieue-provider-libvirt/src/reconciler/provider.rs`: same fix —
+  the single failure domain a libvirt Provider publishes now also carries
+  `labels["name"]`, overriding any user-supplied `name` label on the
+  Provider itself, since this IS that failure domain's real name.
+- `crates/banlieue-api/src/banlieue/provider.rs`: `FailureDomain.labels`
+  doc comment updated to document the new `name` key; `deploy/crds/banlieue.io_providers.yaml`
+  / `docs/src/reference/api.md` regenerated (doc-only diff, no schema
+  shape change).
+- `docs/src/guides/vsphere-provider.md`: the existing ADR-0023 callout
+  gained a short note + example showing `failureDomainSelector:
+  matchLabels: { name: cluster-01 }`.
+- Tests (TDD): `discover_inventory_labels_each_fd_with_its_own_resolved_name`
+  (vsphere, covers both the override and auto-computed cases) and
+  `failure_domain_labels_itself_with_its_own_name` (libvirt).
+
+### Why
+Asked directly: a `VirtualMachine.spec.placement.failureDomainSelector`
+using `matchLabels: { name: cluster-01 }` (the friendly
+`failureDomainNameOverrides` name from ADR-0023) silently matched zero
+failure domains — `FailureDomain.labels` only ever carried `datacenter`/
+`cluster` (the raw, backend-reported names), never the resolved `name`
+itself, which is a top-level field a `LabelSelector` cannot reach directly.
+The friendly-name feature existed but had no way to actually be selected
+on; this closes that gap.
+
+### Impact
+- [x] Requires cluster rollout (updated vsphere/libvirt provider images;
+      regenerated CRD is additive/doc-only, no live-cluster action needed
+      unless re-applying `deploy/crds/banlieue.io_providers.yaml`)
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-08-23 06:05] - Add "End-to-End Setup" guide (bootstrap to running VMs)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/src/guides/end-to-end-setup.md`: new guide — a single phased Mermaid
+  flowchart (bootstrap script → install banlieue → register a backend →
+  build/register an image → define a VMClass → provision a VirtualMachine
+  → optional CAPI-driven k0s workload cluster), plus a walkthrough section
+  per phase linking out to the existing detailed guide for that step, a
+  short note on why phase 0 (the management-cluster bootstrap) is
+  deliberately the one piece that doesn't go through banlieue's own CRDs
+  (no cluster yet exists to apply them against), and a phase → guide
+  lookup table.
+- `docs/mkdocs.yml`: nav entry, placed first under **Guides** as the entry
+  point.
+- `docs/src/guides/index.md`: card added to the top of the guides grid.
+
+### Why
+Asked directly for "a nice mermaid ... diagram of this whole setup, from
+bootstrapping ... to a providerclass, provider, etc." No existing page
+tied the full chain together — `overview.md`'s diagram covers only the
+steady-state VM-provisioning path, and every other guide is scoped to one
+phase. This synthesizes ADR-0001/0002 (CAPI delegation), ADR-0003/0012
+(provider topology), ADR-0010/0020 (image pipeline), ADR-0013 (bootstrap
+CLI), and ADR-0017/0018 (management-cluster bootstrap) into one navigable
+picture without duplicating their detail.
+
+### Impact
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+## [2026-08-23 05:40] - Fix ADR-0029 numbering collision; rebuild stale docs/site
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `docs/adr/0029-vmimage-template-multiple-nics.md` → renumbered to
+  `docs/adr/0031-vmimage-template-multiple-nics.md`. A concurrent session
+  independently landed its own, unrelated `ADR-0029` (`guestinfo.metadata`
+  hostname/FQDN default) at the same time; `0030` was also already taken
+  (per-zone capability targets), so mine became `0031`. Swept every file
+  the multi-NIC change touched — `vmimage.rs`/`vmimage_tests.rs` (both
+  `banlieue-api` and `banlieue-provider-vsphere`), `nic_flag.rs`/
+  `nic_flag_tests.rs`, `import.rs`/`import_tests.rs`, `client/mod.rs`,
+  `client/vim.rs`/`vim_tests.rs`, `deploy/crds/banlieue.io_vmimages.yaml`,
+  `docs/src/reference/api.md`, `examples/07-vmimage-kairos-url-source.yaml`,
+  `.wolf/anatomy.md`, and this CHANGELOG's own prior entry — fixing every
+  `ADR-0029` reference that was actually about multi-NIC to `ADR-0031`,
+  while leaving the other session's legitimate `ADR-0029`/`ADR-0030`
+  mentions (`reconciler/vspheremachine.rs`,
+  `reconciler/vspheremachine_tests.rs`, the per-zone-targets CALM
+  description) untouched.
+- `docs/site/` (the built MkDocs static site) rebuilt via `make docs` —
+  it was stale after the `VMImageTemplate.network` schema change:
+  `make crds` regenerates the *source* Markdown
+  (`docs/src/reference/api.md`) but not the built HTML, so
+  `docs/site/reference/api/index.html` still showed the old singular
+  `networkAdapter`/`nicPciSlot` fields until this rebuild.
+
+### Why
+Asked directly: "have the docs been sync'ed with all of this
+functionality?" Checking surfaced both issues above — a real ADR-numbering
+collision with a concurrent session's own work, and a real stale-build gap
+in the rendered docs site that `make crds`/`make calm-diagrams` alone don't
+cover.
+
+### Impact
+- [ ] Breaking change (unreleased — no consumers exist yet)
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+### Verification
+- `cargo build -p banlieue-provider-vsphere -p banlieue-api --tests` ✅
+  (confirms the sed-based comment-only rename introduced no breakage).
+- `make calm-validate` ✅.
+- `docs/site/reference/api/index.html`: 0 occurrences of
+  `networkAdapter`/`nicPciSlot` (down from 2), 2 occurrences of the new
+  `VMImageTemplateNic`/`pciSlot` shape (up from 0) — confirms the rebuild
+  actually picked up the schema change.
+- Infra-name sweep across all tracked + untracked files ✅ clean.
+
+## [2026-08-23 05:20] - Add "Environment / Provider Isolation" guide
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/src/guides/environment-provider-isolation.md`: new guide answering
+  "does each environment (dev/qa/prod) need its own `Provider` CR?" — the
+  rule (`Provider` = one backend connection, not a tenancy boundary,
+  ADR-0003), the motivating case (same vCenter, same storage, a different
+  network per environment on the *same* clusters), why ADR-0030's `perZone`
+  alone can't express it (it's keyed by `(datacenter, cluster)`, and dev/qa
+  VMs on the same cluster share that key — the fix is a second class name,
+  not a second `Provider`), and when a separate `Provider` genuinely is the
+  right call (different endpoint, or a deliberate credential/RBAC
+  boundary). All example identifiers are placeholders, not the real
+  on-prem values discussed while diagnosing the underlying issue.
+- `docs/mkdocs.yml`: nav entry under **Guides**.
+
+### Why
+Follow-up to ADR-0030: once per-zone targets exist, the natural next
+question is whether dev/qa/prod each need their own `Provider`. They don't,
+usually — but the reasoning (connection vs. tenancy boundary; why the same
+class name can't hold two different per-cluster targets when the
+environment, not the cluster, is what's actually varying) is exactly the
+kind of thing worth writing down once instead of re-deriving per
+conversation.
+
+### Impact
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+## [2026-08-23 04:45] - ADR-0030: per-zone concrete targets for capability class mappings
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0030-per-zone-capability-targets.md`: Accepted and implemented.
+- `crates/banlieue-api/src/banlieue/provider.rs`: new `ScopedTarget`
+  (`datacenter`, `cluster`, `target`), keyed the same way ADR-0023's
+  `failureDomainNameOverrides` is. `StorageClassMapping`/`NetworkClassMapping`
+  gain `target: Option<BTreeMap<String, String>>` (was mandatory) as the
+  Provider-wide default and `per_zone: Vec<ScopedTarget>` for overrides,
+  plus a shared `target_for(datacenter, cluster)` method resolving the
+  precedence (exact `per_zone` match, else default `target`, else `None`)
+  in one place.
+- `crates/banlieue-provider-vsphere/src/reconciler/provider.rs`:
+  `compute_failure_domain_attributes` now resolves each class's target via
+  `target_for(dc_name, cluster_name)` before checking reachability, instead
+  of checking the Provider-wide default against every zone.
+- `crates/banlieue-provider-vsphere/src/import.rs`: `resolve_storage_target`
+  / `resolve_network_target` take the zone's `(datacenter, cluster)` (already
+  resolved from the failure domain) and call `target_for`.
+- `crates/banlieue-controller/src/reconciler/scheduler.rs`:
+  `first_target_value` (used by `build_decision` to populate
+  `VirtualMachine.status.scheduled.resolvedStorage[]` /
+  `resolvedNetworks[].backendId`) takes the chosen failure domain's
+  `(datacenter, cluster)` from `attributes.raw` and calls `target_for`.
+- `crates/banlieue-provider-libvirt/`: `.target` accesses updated for the
+  new `Option` type — libvirt's failure domains have no
+  `(datacenter, cluster)` concept yet, so these always resolve the
+  Provider-wide default (ADR-0030's explicit out-of-scope note).
+- `deploy/crds/banlieue.io_providers.yaml`, `docs/src/reference/api.md`:
+  regenerated (`make crds`).
+- `docs/architecture/calm/architecture.json`: `rel-provider-vsphere-backend`
+  extended to describe per-zone target resolution; `make calm-validate`
+  passes.
+- Tests (TDD): new `target_for` precedence tests in
+  `banlieue-api/src/banlieue/provider_tests.rs`; new per-zone-override
+  regression tests in `banlieue-provider-vsphere/src/import_tests.rs`
+  (`resolve_zone`/`resolve_nic_networks`); existing construction sites
+  across `banlieue-provider-vsphere`, `banlieue-provider-libvirt`, and
+  `banlieue-controller` test files updated for the new field shape.
+
+### Why
+Found live: a `VMClass` (`hadron-small`) requesting `networkClass:
+network-01` was only ever available on `cluster-01` of a three-cluster
+vCenter Provider (`vcenter-ssc`) — not because `cluster-02`/`03` lack an
+equivalent network, but because `Provider.spec.capabilities.networkClasses[]`
+mapped `network-01` to `cluster-01`'s own specifically-named port group,
+Provider-wide, with no way to declare a different concrete target per
+cluster. The fix makes `VMClass`/`VMImage` genuinely portable across every
+cluster of a Provider, and — since a `VMClass` has no binding to any
+specific `Provider` — across multiple vCenters too, with zero changes to
+`VMClass`, the scheduler's matching logic, or `VirtualMachine`.
+
+### Impact
+- [x] Requires cluster rollout (regenerated CRD + updated
+      controller/provider-vsphere/provider-libvirt images)
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-08-23 04:10] - VMImage templates support multiple NICs (ADR-0031)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0031-vmimage-template-multiple-nics.md` — new ADR.
+- `crates/banlieue-api/src/banlieue/vmimage.rs`: `VMImageTemplateNic {
+  network, adapter, pciSlot }`; `VMImageTemplate.network` changed from
+  `Option<String>` (+ separate `networkAdapter`/`nicPciSlot` fields) to
+  `Vec<VMImageTemplateNic>`. Empty list = today's exact single-NIC default
+  (zone-derived network, vmxnet3, slot 192). An unset `pciSlot` on any
+  entry defaults to `192 + that entry's index`, so a second/third NIC
+  still gets predictable `ens193`/`ens194` naming without hand-picking
+  every slot.
+- `crates/banlieue-provider-vsphere/src/nic_flag.rs` (new module):
+  `serialize_nic_flag`/`parse_nic_flag` — `--nic
+  network=<name>,adapter=<type>,pciSlot=<n>` encoding, mirroring
+  `banlieue_provider_sdk::scheduling`'s existing delimited-string CLI
+  pattern for `--toleration`/`--node-selector`.
+- `crates/banlieue-provider-vsphere/src/import.rs`: `ImportArgs.nics:
+  Vec<String>` (repeatable `--nic`, replacing `--network`/
+  `--network-adapter`/`--nic-pci-slot`); new `ResolvedNic` +
+  `resolve_nic_networks` (per-NIC zone-network resolution, the same
+  override-else-first-reachable-class rule `resolve_zone` used for its one
+  NIC, applied per entry); `ZonePlan` no longer carries `network`.
+- `crates/banlieue-provider-vsphere/src/client/mod.rs`: new `RequestedNic`
+  (network + moref + distributed + adapter + pci_slot, fully resolved);
+  `IsoImportRequest.nics: Vec<RequestedNic>` replaces the five singular
+  network/adapter/slot fields.
+- `crates/banlieue-provider-vsphere/src/client/vim.rs`:
+  `build_template_config_spec` loops over N NICs (N ethernet devices, N
+  `ethernetN.pciSlotNumber` extraConfig entries); new
+  `find_all_nic_keys` (multi-NIC counterpart of `find_first_nic_key`);
+  `build_nics_pci_slot_reconfigure_spec` (renamed from
+  `build_nic_pci_slot_reconfigure_spec`) batches one post-create
+  `ReconfigVM_Task` device_change per NIC instead of one Task per NIC.
+  Removed now-dead `find_nic_key` (single adapter-type-specific lookup,
+  superseded by `find_all_nic_keys`).
+- `examples/07-vmimage-kairos-url-source.yaml`,
+  `deploy/crds/banlieue.io_vmimages.yaml`, `docs/src/reference/api.md`:
+  updated for the new list-shaped field.
+
+### Why
+Asked directly: "we need to support multiple ethernet slots, right now
+there is no way to set more than [one NIC] per template." `VMImageTemplate`
+had only ever modeled a single NIC (three independent singular fields);
+`build_template_config_spec` built exactly one `VirtualEthernetCard`. This
+project has no release and no consumers yet (explicitly confirmed: "i am ok
+with breaking changes until we make an official release"), so the shape
+changed outright rather than adding a parallel field alongside the old one.
+
+### Impact
+- [ ] Breaking change (unreleased — no consumers exist yet) — despite being
+  a genuine breaking schema/CLI change, this box stays unchecked per this
+  project's own standing convention: banlieue has no release or consumers,
+  so "breaking change" framing doesn't apply yet.
+- [x] Requires cluster rollout — rebuild + redeploy `banlieue-provider-vsphere`
+- [ ] Config change only
+- [ ] Documentation only
+
+### Verification
+- New tests: `nic_flag_tests.rs` (12 tests, parse/serialize/round-trip),
+  `import_tests.rs`'s `resolve_nic_networks_*` (4 tests, including the
+  auto-increment-by-index case), `vim_tests.rs`'s
+  `build_template_config_spec_sets_ethernet0_pci_slot_number_as_extra_config`
+  (updated) and `build_nics_pci_slot_reconfigure_spec_edits_each_nic_with_its_own_pinned_slot`
+  (2 NICs, distinct adapters and slots), `vmimage_tests.rs`'s
+  `build_import_job_emits_one_nic_flag_per_declared_nic` (2 NICs, one
+  fully-specified, one partial).
+- `cargo fmt --all -- --check` ✅ / `cargo clippy --all-targets
+  --all-features -- -D warnings` ✅ / `cargo test --all` ✅ (full workspace,
+  0 failures, 169/169 in `banlieue-provider-vsphere` alone).
+- Infra-name sweep across all tracked + untracked files ✅ clean.
+- CRDs regenerated (`make crds`); example YAML re-validated as parseable.
+
+### Not addressed here (see ADR-0031's Follow-ups)
+`clone_vm` remains single-NIC — this ADR scopes multi-NIC support to the
+*template build* path only. `VSphereMachineSpec.network` is already
+`Vec<VSphereNicSpec>` in the schema, so cloning a multi-NIC template today
+would silently only wire up its first interface.
+
+## [2026-08-23 03:15] - Clarify why vSphere gets no per-instance Jobs Role (bootstrap.rs)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `crates/banlieue-operator/src/bootstrap.rs`: `backend_additional_rules`'s
+  doc comment corrected — it previously claimed "vSphere has no such need
+  and must not receive it" (Jobs access), which is false; vSphere's
+  per-zone import Jobs (ADR-0020) do need Jobs access, they just get it
+  entirely from the cluster-wide `ClusterRole`
+  (`deploy/provider-vsphere/rbac/clusterrole.yaml`, already fixed in the
+  previous entry) rather than this per-instance, namespace-scoped `Role`.
+  A rule here could never reach vSphere's Jobs anyway, since they live in
+  `banlieue-imagebuild` (ADR-0016), a different namespace than the one
+  this `Role` is scoped to.
+- `crates/banlieue-operator/src/bootstrap_tests.rs`:
+  `only_libvirt_gets_the_job_grant`'s comment updated to match — empty
+  for vSphere does not mean "no Jobs access," it means "not from here."
+
+### Why
+Investigated as a possible second instance of the RBAC drift found
+earlier this session (the `deploy/provider-vsphere/rbac/clusterrole.yaml`
+missing `list`/`watch` on `jobs`). Turned out NOT to be a permission gap —
+`bootstrap.rs`'s ClusterRoles are `include_str!`-embedded directly from
+`deploy/*/rbac/clusterrole.yaml` (confirmed at `bootstrap.rs:117`), so the
+earlier fix to that file already covers `banlieue bootstrap
+operator`/`provider vsphere` too. The actual problem was just a stale,
+misleading doc comment that could send a future reader chasing a
+non-existent gap, or worse, "fixing" it by adding a redundant/useless Jobs
+rule to the wrong (namespaced) Role.
+
+### Impact
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-08-23 02:55] - Grant list/watch on Jobs to the vsphere provider (and operator) for the new event-driven VMImage watch
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `deploy/provider-vsphere/rbac/clusterrole.yaml`: `jobs` verbs
+  `["get", "create", "patch", "delete"]` → `["get", "list", "watch",
+  "create", "patch", "delete"]`.
+- `deploy/operator/rbac/clusterrole.yaml`: same addition on its own `jobs`
+  rule — a delegating ClusterRole cannot grant a permission it does not
+  itself hold (ADR-0012), same trap as the earlier `vmimages` fix.
+
+### Why
+Found live: applying a `VirtualMachine` started throwing a new RBAC 403 —
+`list` on `jobs` in `banlieue-imagebuild` — for
+`system:serviceaccount:banlieue-system:banlieue-provider-vsphere-vcenter-ssc`.
+Traced to the "event-driven VMImage reconciliation" change earlier this
+session (`crates/banlieue-provider-vsphere/src/app.rs`): the `VMImage`
+`Controller` now `.watches(import_job_api, ..., vmimage_ref_from_job)` the
+per-zone import Job directly instead of polling on a timer. That change
+updated the operator's `vmimages` grant (a different, unrelated resource)
+but never touched either ClusterRole's `jobs` rule — kube-runtime's watcher
+needs `list`+`watch` to build and maintain its informer cache for any
+watched type, same as every other resource a controller watches, and
+neither static YAML had them.
+
+Also noted, not fixed here: `crates/banlieue-operator/src/bootstrap.rs`'s
+`backend_additional_rules()` (the *other* RBAC source of truth, used by
+`banlieue bootstrap operator`) grants Jobs access to the libvirt backend
+only and explicitly comments that vSphere "has no such need" — which has
+been false since ADR-0020 added vSphere's own per-zone import Job. The two
+RBAC-generation paths (static `deploy/*/rbac/*.yaml` vs. `bootstrap.rs`)
+have drifted apart for vSphere; worth a follow-up.
+
+### Impact
+- [x] Requires cluster rollout (reapply both ClusterRoles)
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-08-23 02:40] - Fix ens192 pinning for real: ethernet0.pciSlotNumber is ExtraConfig, not slotInfo
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `crates/banlieue-provider-vsphere/src/client/vim.rs`: `build_template_config_spec`
+  now sets `ethernet0.pciSlotNumber` as an `extraConfig` entry
+  (`OptionValue`/`VimAny::Value(PrimitiveString(...))`) on the template's
+  `CreateVM_Task`, reusing the exact same shape `clone_vm` already uses for
+  `guestinfo.*` keys. `clone_vm` now also carries that same key forward
+  explicitly onto the clone's own `extraConfig`, read off the template's
+  `VirtualMachineConfigInfo.extra_config` (not re-derived from the
+  structured `slotInfo` read, which can legitimately disagree with it).
+
+### Why
+Found live: the previous fix (a separate post-create `ReconfigVM_Task`
+setting the structured `VirtualDevice.slotInfo` field) still produced the
+identical auto-assigned slot both before and after, on two independent
+force-recreated templates. Checking `create-kairos-template.sh` — the
+actual, working reference this whole convention is modeled on — its `govc
+vm.change -vm "${VM_PATH}" -e "ethernet0.pciSlotNumber=192"` call was
+misread as manipulating the structured device object; `govc vm.change -h`'s
+own docs confirm `-e` sets **ExtraConfig** (the same flag used for
+`guestinfo.vmname` in govc's own example), a VMX-file-level key/value pair
+— a completely different data path from `VirtualDevice.slotInfo`. Every
+previous fix in this area (this session's structured-`slotInfo` read/reapply
+on clone, then the post-create structured reconfigure) was correctly
+implemented against the *wrong* mechanism; `ethernet0.pciSlotNumber` as
+ExtraConfig is the field actually governing guest-visible PCI placement.
+
+The structured `slotInfo` reconfigure from the previous fix is left in
+place (harmless) rather than removed, in case it has some independent
+effect on the device model — but it is no longer relied upon for the
+guest-visible interface name.
+
+### Impact
+- [ ] Breaking change (unreleased — no consumers exist yet)
+- [x] Requires cluster rollout — rebuild + redeploy `banlieue-provider-vsphere`,
+  then force-recreate any template built before this fix
+- [ ] Config change only
+- [ ] Documentation only
+
+### Verification
+- New test: `build_template_config_spec_sets_ethernet0_pci_slot_number_as_extra_config`.
+- `cargo fmt --all -- --check` ✅ / `cargo clippy --all-targets
+  --all-features -- -D warnings` ✅ / `cargo test --all` ✅ (full workspace,
+  0 failures, 37/37 in `client::vim`).
+- Infra-name sweep across all tracked + untracked files ✅ clean — also
+  swept the real hostnames/datastore names read from live pod logs while
+  diagnosing this, confirmed none written to any tracked file.
+
+### Not yet confirmed live
+Same as the prior (superseded) fix attempt: needs a force-recreated
+template + fresh clone to confirm the guest actually comes up as `ens192`
+this time. If it still doesn't, the remaining fallback hypothesis is that
+Hadron's stripped-down image doesn't run `systemd-udev`'s `net_id`
+predictable-naming at all, independent of anything vSphere reports.
+
+## [2026-08-23 02:05] - Fix ens192 pinning: PCI slot must be set post-create, not in CreateVM_Task
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `crates/banlieue-provider-vsphere/src/client/vim.rs`: `build_template_config_spec`
+  no longer sets `slot_info` on the NIC device it hands to `CreateVM_Task`.
+  New `build_nic_pci_slot_reconfigure_spec` pins the NIC's PCI slot in a
+  *separate*, post-create `ReconfigVM_Task` instead — run unconditionally
+  right after `CreateVM_Task`, before the (optional) install-then-generalize
+  sequence. Removed `find_nic_key` (adapter-type-specific device lookup),
+  now dead code — the post-create step reuses `find_first_nic_key` instead
+  (already resolves key + concrete adapter type together).
+
+### Why
+Found live, even after setting `nicPciSlot: 192` explicitly and force-
+recreating the template: a diagnostic log added earlier this session
+(`"template NIC resolved for clone"`) showed the *template's own* NIC
+carried `pci_slot=Some(33)`, not 192 — proving the clone-side read/reapply
+logic (this session's earlier fix) was working correctly; the bug was
+upstream, at template-build time. `build_template_config_spec` requested
+slot 192 for the NIC in the same `CreateVM_Task` that also creates the SCSI
+controller, disk, IDE controller, and CD-ROM with no explicit slots of
+their own (auto-assigned). That is exactly the unsupported mix `vim_rs`'s
+own doc comment on `pci_slot_number` warns about: manual slot numbers
+"should ... only [be specified] in a CreateVM operation if they are
+specified for all devices" — vCenter silently reassigned the NIC instead of
+honoring the request or erroring.
+
+The working reference this logic is modeled on
+(`~/dev/vm-build/bin/create-kairos-template.sh`) never actually does it the
+way banlieue's code did: it runs `govc vm.create` first (everything
+auto-assigned), then a *separate* `govc vm.change -e
+"ethernet0.pciSlotNumber=192"` once the VM already exists and every sibling
+device already has a concrete, locked-in slot. This is the same shape of
+vCenter quirk `build_boot_order_reconfigure_spec` already worked around for
+boot order (ADR-0021) — an attribute embedded in the initial `CreateVM_Task`
+isn't reliably honored; it has to be set in a reconfigure once the devices
+have real keys.
+
+### Impact
+- [ ] Breaking change (unreleased — no consumers exist yet)
+- [x] Requires cluster rollout — rebuild + redeploy `banlieue-provider-vsphere`,
+  then force-recreate any template built before this fix (its NIC will
+  still carry whatever slot it got auto-assigned to previously)
+- [ ] Config change only
+- [ ] Documentation only
+
+### Verification
+- New tests: `build_nic_pci_slot_reconfigure_spec_edits_the_given_nic_with_the_pinned_slot`,
+  `build_template_config_spec_leaves_the_nic_slot_unset` (proves the
+  `CreateVM_Task` spec itself carries no `slot_info`, the actual root cause).
+- Deleted `find_nic_key_matches_the_requested_adapter_type_only` along with
+  the now-dead `find_nic_key` it tested.
+- `cargo fmt --all -- --check` ✅ / `cargo clippy --all-targets
+  --all-features -- -D warnings` ✅ / `cargo test --all` ✅ (full workspace,
+  0 failures, 36/36 in `client::vim`) — one transient failure mid-run,
+  caused by a concurrent session's own in-progress edit landing on
+  `vspheremachine_tests.rs` between compile and test execution, not a real
+  regression; re-run clean once settled.
+- Infra-name sweep across all tracked + untracked files ✅ clean.
+
+### Not yet confirmed live
+This fix has not yet been verified against a real vCenter — the next
+force-recreated template + fresh clone needs to actually come up as
+`ens192` in the guest to close this out. If it still doesn't, the next
+hypothesis is that Hadron's stripped-down, no-package-manager image simply
+doesn't run `systemd-udev`'s `net_id` predictable-naming the way a normal
+distro does, independent of what PCI slot vSphere reports.
+
+## [2026-08-23 01:40] - ADR-0029: default hostname/FQDN via guestinfo.metadata
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0029-guestinfo-metadata-hostname-fqdn-default.md`: Accepted and
+  implemented.
+- `crates/banlieue-provider-vsphere/src/reconciler/vspheremachine.rs`:
+  `build_guestinfo` now also sets `guestinfo.metadata` unconditionally on
+  every clone — a base64 YAML document (`instance-id`, `local-hostname`)
+  matching real cloud-init's own VMware GuestInfo datasource schema.
+  `local-hostname` is the FQDN (`<vm-name>.<domain>`) when a static network
+  override resolves a domain, else the plain VM name — no new domain is
+  invented for a plain-DHCP VM. Independent of `spec.userData` entirely: no
+  new CRD field, and the user's own cloud-config is never parsed or merged
+  into.
+- `docs/architecture/calm/architecture.json`: `rel-provider-vsphere-backend`
+  description extended to cover `guestinfo.metadata`; `make calm-validate`
+  passes.
+- Tests (TDD, `vspheremachine_tests.rs`): updated the existing
+  `dhcp_only_and_no_userdata_produces_only_hostname` expectation (now 2
+  unconditional keys, not 1) plus four new tests covering short-hostname
+  vs. FQDN `local-hostname`, independence from `userData`, and that
+  `userData` is never touched.
+
+### Why
+Real cloud-init guests (`VirtualMachine.spec.guestAgent: cloud-init`) never
+got a hostname set unless the user's own `userData` cloud-config happened
+to include a `hostname:`/`fqdn:` directive — `guestinfo.network.hostname`
+(banlieue's own flat convention, read only by the hand-rolled
+`configure-network.sh` script documented in the Kairos Hadron guide) isn't
+part of cloud-init's actual datasource contract. `guestinfo.metadata` is
+the real contract; setting it makes hostname/FQDN a sane, zero-config
+default for every VM without ever risking corrupting hand-authored
+`userData`.
+
+### Impact
+- [x] Requires cluster rollout (new `banlieue-provider-vsphere` binary)
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-08-23 01:05] - Event-driven VMImage reconciliation off the import Job, not a 5-minute poll
+
+**Author:** Erick Bourgeois
+
+### Added
+- `crates/banlieue-provider-vsphere/src/reconciler/vmimage.rs`: extracted
+  `LABEL_VMIMAGE` (`banlieue.io/vmimage`) as a `pub const` — was a bare
+  string literal only `build_import_job` used; now shared with the new
+  watch mapper below.
+- `crates/banlieue-provider-vsphere/src/app.rs`: new pure
+  `vmimage_ref_from_job(Job) -> Option<ObjectRef<VMImage>>`, reading
+  `LABEL_VMIMAGE` off a Job; wired via `.watches(import_job_api,
+  Config::default(), vmimage_ref_from_job)` on the `VMImage` `Controller`.
+  A per-zone import Job's status change (created, completed, failed,
+  deleted-and-recreated by a forced reimport) now re-triggers that
+  `VMImage`'s reconciliation immediately.
+- `deploy/operator/rbac/clusterrole.yaml`: added `update`/`patch` to the
+  operator's own `vmimages` grant, matching the same addition the previous
+  entry made to the provider's ClusterRole — a delegating ClusterRole
+  cannot grant a permission it does not itself hold. Caught by
+  `operator_cluster_role_covers_every_permission_it_grants_to_providers`,
+  an existing test specifically written to catch exactly this class of
+  drift — not a live failure.
+
+### Why
+Asked directly: "the image-import should watch the pod of the build, can
+this be done instead of polling every 5 mins?" Confirmed by reading
+`app.rs`: the `VMImage` `Controller` had no `.watches()`/`.owns()` on the
+Job at all — `Controller::new(image_api, Config::default())` only watches
+`VMImage` itself. Progress advanced solely via `requeue_default()` (30s)
+while an import was in flight, falling back to `requeue_long()` (300s) once
+it went quiet — exactly the "had a 5 min reconciliation timer" delay hit
+earlier this session after deleting an artifact/Jobs to force a rebuild.
+The import Job already carried a `banlieue.io/vmimage` label
+(`build_import_job`) — the label existed for operational visibility
+(`kubectl get jobs -l banlieue.io/vmimage=...`), not yet wired to anything
+that acts on it.
+
+The Job's actual Kubernetes `ownerReference` points at the `OSArtifact` it
+mounts (a separate, unrelated concurrent-session change, ADR-0027) — that
+serves a different purpose (rebuild-triggered garbage collection) and is
+deliberately left untouched. Watching by label rather than by
+`.owns()`/ownership avoids entangling the two mechanisms.
+
+### Impact
+- [ ] Breaking change (unreleased — no consumers exist yet)
+- [x] Requires cluster rollout — rebuild + redeploy `banlieue-provider-vsphere`
+  **and re-apply the operator's updated ClusterRole**
+- [ ] Config change only
+- [ ] Documentation only
+
+### Verification
+- New `app_tests.rs` tests (TDD): `vmimage_ref_from_job_maps_to_the_labeled_image`,
+  `vmimage_ref_from_job_is_empty_when_the_label_is_missing`.
+- `cargo fmt --all -- --check` ✅ / `cargo clippy --all-targets
+  --all-features -- -D warnings` ✅ / `cargo test --all` ✅ (full workspace,
+  0 failures) — caught and fixed one real regression mid-verification: the
+  new `vmimages` `update`/`patch` grant on the provider's ClusterRole (added
+  in the entry above) initially had no matching grant on the operator's own
+  ClusterRole, which an existing RBAC-delegation test correctly failed on
+  before this shipped.
+- Infra-name sweep across all tracked + untracked files ✅ clean.
+
+## [2026-08-23 00:20] - VMImage deletion lifecycle: destroy per-zone templates by default (ADR-0028)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0028-vmimage-template-deletion-lifecycle.md` — new ADR, same
+  shape as ADR-0026 (`VSphereMachine` deletion lifecycle), for `VMImage`.
+  (Originally drafted as ADR-0027; renumbered to 0028 after a concurrent
+  session claimed 0027 for an unrelated change first.)
+- `crates/banlieue-api/src/banlieue/vmimage.rs`: `VMImageTemplate.retainOnDelete`
+  (default `false`) — opt out of the new default-delete behavior.
+- `crates/banlieue-provider-vsphere/src/reconciler/vmimage.rs`: new
+  `banlieue.io/vmimage` finalizer; `reconcile` now checks
+  `deletion_timestamp` first, and (unless `retainOnDelete`) destroys every
+  per-zone template each `status.perProvider[]` row reports, reusing
+  `VSphereClient::destroy_vm` (ADR-0026) — a template is a VM with the
+  template bit set, so the teardown mechanics are identical.
+- `deploy/provider-vsphere/rbac/clusterrole.yaml`: added `update`/`patch`
+  on the main `vmimages` resource (previously `get`/`list`/`watch` only) —
+  required for the finalizer merge-patch, which targets the main resource,
+  not the `/status` subresource. Caught before deploy, not live: without
+  this the finalizer add/remove would 403.
+- `deploy/crds/banlieue.io_vmimages.yaml`, `docs/src/reference/api.md`:
+  regenerated for the new field.
+- `docs/architecture/calm/architecture.json`: vSphere provider node's
+  description now covers both deletion finalizers.
+
+### Why
+Found live: deleting a `VMImage` CR removed it from Kubernetes immediately,
+but every per-zone vCenter template it caused to be built stayed behind,
+orphaned — the vsphere provider's `vmimage` reconciler had no
+`deletion_timestamp` check and no finalizer at all, the same class of gap
+ADR-0026 already found and fixed for `VSphereMachine`/cloned VMs, just for
+the template-build path instead of the clone path. The user wants the
+opposite of today's (accidental) behavior: delete by default, retain only
+when explicitly asked.
+
+### Impact
+- [ ] Breaking change (unreleased — no consumers exist yet)
+- [x] Requires cluster rollout — rebuild + redeploy `banlieue-provider-vsphere`
+  **and re-apply the updated ClusterRole** (RBAC change, not just image)
+- [ ] Config change only
+- [ ] Documentation only
+
+### Verification
+- New `vmimage_finalize_tests.rs` (TDD, written before `destroy_zone_templates`):
+  `destroys_the_template_when_found`, `is_a_noop_when_template_already_absent`,
+  `skips_a_zone_with_no_resolved_ref`, `skips_a_zone_whose_failure_domain_is_gone`,
+  `destroys_multiple_zones_in_their_own_folders_without_cross_zone_collision`
+  (proves the ADR-0020 Decision #5 folder-scoping fix still holds for deletes).
+- New `vmimage_tests.rs` (banlieue-api) tests for `retainOnDelete`'s
+  default/omission/round-trip.
+- `cargo fmt --all -- --check` ✅ / `cargo clippy --all-targets
+  --all-features -- -D warnings` ✅ / `cargo test --all` ✅ (full workspace,
+  0 failures, 31/31 in `reconciler::vmimage`, 52/52 in `banlieue::vmimage`)
+  / `make calm-validate` ✅.
+- Infra-name sweep across all tracked + untracked files ✅ clean.
+
+### Not addressed here
+Already-orphaned templates from before this fix ships (including any from
+this session's own live testing) are not retroactively found or cleaned up
+— their owning `VMImage`/`VSphereMachine` CRs are already gone, so there's
+nothing left in the cluster pointing at them. Same caveat ADR-0026 already
+documents for already-orphaned cloned VMs; needs manual identification and
+cleanup directly in vCenter.
+
+## [2026-08-22 23:40] - Fix unreadably small Mermaid diagram on the Architecture concepts page
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docs/src/stylesheets/extra.css`: `.mermaid svg` no longer capped at
+  `max-width: 100%` — mkdocs-material was scaling every diagram down to
+  the content column width, and a wide `flowchart TB` with 6 subgraphs
+  shrank until its text was unreadable. Now renders at native size with
+  `pre.mermaid`'s existing `overflow-x: auto` providing a horizontal
+  scrollbar, plus a `min-height: 420px` floor and the existing zoom/pan JS
+  (`javascripts/mermaid-init.js`) for whatever still doesn't fit. Affects
+  every Mermaid diagram on the site, including the CALM-generated ones.
+- `docs/src/concepts/architecture.md`: split the single, overloaded
+  "Components" diagram (structure + every watch/create/patch edge, ~24
+  edges) into a structure-only overview plus three small `flowchart LR`
+  diagrams placed directly in the existing "Provision a VM" / "Build and
+  import an image" / "Register a backend" subsections — each now shows
+  only the edges relevant to that one scenario, numbered to match its
+  existing prose steps.
+
+### Why
+User reported the Mermaid diagram at
+`/concepts/architecture/#components` as "way too small" to read on the
+published site. Root cause was two compounding problems: a CSS cap
+shrinking wide diagrams indiscriminately, and one diagram trying to carry
+both the static object/controller graph and every fine-grained interaction
+edge at once.
+
+### Impact
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+## [2026-08-22 23:10] - ADR-0027: own per-zone import Jobs by their OSArtifact
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0027-import-job-owned-by-osartifact.md`: Accepted and
+  implemented. Each provider's per-zone import Job now carries an
+  `ownerReference` to the `OSArtifact` it was created for, so Kubernetes
+  garbage collection reaps a stale Job the moment its `OSArtifact` is
+  deleted, instead of leaving it (and the artifacts PVC mount it holds)
+  around for up to the existing 24h `ttlSecondsAfterFinished`.
+- `crates/banlieue-api/src/banlieue/vmimage.rs`:
+  `BuildArtifactStatus.os_artifact_uid: Option<String>` — the live
+  `OSArtifact`'s `metadata.uid`, once observed.
+- `crates/banlieue-provider-sdk/src/osartifact.rs` (new module):
+  `owner_references(name, uid) -> Option<Value>` — shared by both
+  providers (imagebuilder needs the full `OSArtifact` `ApiResource`
+  for its own reasons and keeps its own separate constants; providers
+  only need the GVK for an owner reference).
+- `crates/banlieue-imagebuilder/src/reconciler/vmimage.rs`:
+  `compute_build_artifact_status` now takes and publishes
+  `os_artifact_uid`, populated from the live `OSArtifact` object read at
+  the top of `reconcile`.
+- `crates/banlieue-provider-vsphere/src/reconciler/vmimage.rs` and
+  `crates/banlieue-provider-libvirt/src/reconciler/vmimage.rs`:
+  `build_import_job` sets `metadata.ownerReferences` from the new helper.
+- `deploy/crds/banlieue.io_vmimages.yaml`, `docs/src/reference/api.md`:
+  regenerated (`make crds`) for the new status field.
+- `docs/architecture/calm/architecture.json`: `import-job-owned-by-osartifact`
+  control added to both `flow-build-vmimage-from-oci` and
+  `flow-import-vmimage-libvirt`.
+- Tests: `banlieue-provider-sdk/src/osartifact_tests.rs` (new),
+  `banlieue-api/src/banlieue/vmimage_tests.rs`,
+  `banlieue-imagebuilder/src/reconciler/vmimage_tests.rs`,
+  `banlieue-provider-vsphere/src/reconciler/vmimage_tests.rs`,
+  `banlieue-provider-libvirt/src/reconciler/vmimage_tests.rs` — written
+  first (TDD), covering the uid-known/uid-unknown owner-reference cases.
+
+### Why
+Found live: retriggering a `VMImage` build whose `OSArtifact` is judged
+stale (source URL/checksum changed) deletes the old `OSArtifact`, whose PVC
+kairos-operator then tries to delete too — but the provider's prior import
+Job for that PVC had no owner reference, so it (and its Pod's mount)
+lingered until its TTL fired. The PVC sat `Terminating` the entire time,
+blocking the rebuild indefinitely with no error surfaced in
+`VMImage.status`.
+
+### Impact
+- [x] Requires cluster rollout (regenerated CRD applied — new optional
+      status field only, additive)
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-08-22 22:15] - Add guestinfo.network.hostname; log resolved NIC PCI slot at clone time
+
+**Author:** Erick Bourgeois
+
+### Added
+- `crates/banlieue-provider-vsphere/src/reconciler/vspheremachine.rs`:
+  `build_guestinfo` now takes `vm_name` and unconditionally sets
+  `guestinfo.network.hostname` (regardless of DHCP or static network) —
+  sourced from the `VirtualMachine`'s own name, the same source as
+  `userData`'s `${VM_NAME}` placeholder.
+- `crates/banlieue-provider-vsphere/src/client/vim.rs`: `clone_vm` now logs
+  the resolved NIC key/adapter type/PCI slot read off the template before
+  cloning — diagnostic only, added because a live retest of the ADR-0026
+  PCI-slot fix (deployed, on a freshly-recloned VM) still came up `ens33`,
+  and there's no way to tell from the outside whether the read of the
+  template's `slot_info` failed or something downstream overrode it
+  without this visibility.
+- `docs/architecture/calm/architecture.json`: updated the vSphere provider
+  node's description to mention the unconditional hostname key.
+
+### Why
+Found live: `/opt/example-org/configure-network` (baked into the `hadron-kairos`
+image, not part of banlieue) reads its hostname from
+`guestinfo.network.hostname` directly — banlieue never set that key, only
+`ip`/`prefix`/`gateway`/`dns`/`domain`. The user explicitly does not want a
+per-host `userData` cloud-config for the k0s drone/worker fleet just to set
+a hostname, so this needed to be a guestinfo key, not a cloud-config field.
+
+Separately: this session's earlier `ens192`→`ens33` PCI-slot-pinning fix
+(ADR-0026 CHANGELOG entry above, "Fix cloned VMs losing the template's
+pinned NIC PCI slot") was confirmed deployed and exercised against a fresh
+clone, and the guest NIC still came up as `ens33`. An investigation agent
+confirmed the native `VMImage` → `import_iso_template` →
+`build_template_config_spec` → `clone_vm` pipeline is correctly wired
+end-to-end and reaches the fixed code — so the remaining unknown is
+whether `vim_rs`'s `slot_info` deserialization/downcast round-trips
+against a *real* vCenter response the way it does against this session's
+synthetic unit-test fixtures. The new log line answers that directly on
+the next live attempt instead of guessing further.
+
+### Impact
+- [ ] Breaking change (unreleased — no consumers exist yet)
+- [x] Requires cluster rollout — rebuild + redeploy `banlieue-provider-vsphere`
+- [ ] Config change only
+- [ ] Documentation only
+
+### Verification
+- `vspheremachine_tests.rs`: new `hostname_is_set_for_both_dhcp_and_static_interfaces`;
+  `dhcp_only_and_no_userdata_produces_nothing` renamed/updated to
+  `..._produces_only_hostname` (hostname is no longer conditional, so the
+  old "produces nothing" premise no longer holds); every other
+  `build_guestinfo` call site updated for the new `vm_name` parameter.
+- `cargo fmt --all -- --check` ✅ / `cargo clippy --all-targets
+  --all-features -- -D warnings` ✅ / `cargo test --all` ✅ (full workspace,
+  0 failures, 24/24 in `reconciler::vspheremachine`) / `make calm-validate` ✅.
+- Infra-name sweep across all tracked + untracked files ✅ clean.
+
+### Not resolved yet
+The `ens33` persistence itself is still open — the new log line
+(`"template NIC resolved for clone"`, includes `pci_slot`) needs to be read
+off the next live clone attempt to know which of the two remaining
+hypotheses (slot read-back failed vs. vCenter overriding it post-edit
+regardless) is actually happening.
+
+## [2026-08-22 21:30] - Add "Building a Kairos Hadron VM Template" guide
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/src/guides/building-kairos-hadron-template.md`: new guide covering
+  the multi-stage Dockerfile pattern for a custom Kairos Hadron (musl,
+  no package manager) OCI image — payload assembly via an Alpine stage
+  (gcompat + third-party agent + vmtoolsd extraction), the layered
+  cloud-config (`90-base`/`91-custom`/`92-k0s`), a POSIX-`sh`
+  guestinfo-driven `configure-network.sh`, building the ISO with
+  `auroraboot`, and manually templating it on vSphere with `govc` as an
+  alternative to the banlieue-native `VMImage` pipeline. Cross-references
+  `using-banlieue-imagebuilder.md` and ADR-0021.
+- `docs/mkdocs.yml`: nav entry under **Guides**.
+
+### Why
+Covers the step upstream of `using-banlieue-imagebuilder.md` — how to
+produce a custom Hadron OCI image in the first place — generalized from a
+real internal build pipeline (hostnames, registries, internal paths, and
+company-specific identifiers replaced with placeholders per
+`rules/no-real-infrastructure.md`).
+
+### Impact
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+## [2026-08-22 21:05] - VSphereMachine deletion lifecycle: finalizer + Destroy_Task (ADR-0026)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0026-vspheremachine-deletion-lifecycle.md` — new ADR amending
+  ADR-0024's own "Follow-ups" (deletion was explicitly named there as
+  deferred, pending the create path being proven).
+- `crates/banlieue-provider-vsphere/src/client/mod.rs`:
+  `VSphereClient::destroy_vm(vm_moref) -> Result<()>` trait method —
+  moref-based (unlike the name+folder-based `destroy_if_present`, which
+  belongs to the template import path).
+- `crates/banlieue-provider-vsphere/src/client/vim.rs`: real implementation,
+  refactored out of `destroy_if_present`'s existing power-off-then-destroy
+  sequence into a shared `power_off_and_destroy` helper; idempotent — a
+  moref vCenter no longer recognizes is treated as already-destroyed
+  success, not an error.
+- `crates/banlieue-provider-vsphere/src/client/fake.rs`: `FakeClient`
+  support (`destroy_vm` + `destroyed_vms()` accessor) for reconciler tests.
+- `crates/banlieue-provider-vsphere/src/reconciler/vspheremachine.rs`: new
+  `banlieue.io/vspheremachine` finalizer (mirrors the parent
+  `VirtualMachine`'s `banlieue.io/virtualmachine`); `reconcile` now checks
+  `deletion_timestamp` first, resolves the vCenter client the same way the
+  create path does, destroys the backend VM via `finalize_vm` if one was
+  ever cloned, then drops the finalizer.
+- `docs/architecture/calm/architecture.json`: updated the
+  `flow-delete-virtualmachine` control's evidence citation to include the
+  provider-side reconciler now that it actually implements what the flow
+  already described.
+
+### Why
+Found live: deleting a `VirtualMachine` CR removed it and its
+`VSphereMachine` from Kubernetes immediately, but the cloned vSphere VM
+behind it kept running, orphaned — nothing had ever added a finalizer to
+`VSphereMachine`, so nothing blocked its deletion long enough to call
+`Destroy_Task`. The parent controller's own `finalize_vm`
+(`banlieue-controller/src/reconciler/virtualmachine.rs`) already documents
+the intended guarantee ("we never leave the backend with a dangling VM")
+and has held up its half since it shipped; this closes the other half.
+`docs/architecture/calm/architecture.json`'s `flow-delete-virtualmachine`
+already modeled the full two-finalizer chain (written ahead of this
+implementation) — the code has now caught up to what was already designed.
+
+### Impact
+- [ ] Breaking change (unreleased — no consumers exist yet)
+- [x] Requires cluster rollout — rebuild + redeploy `banlieue-provider-vsphere`
+- [ ] Config change only
+- [ ] Documentation only
+
+### Verification
+- New `vspheremachine_finalize_tests.rs`: `destroys_the_backend_vm_when_one_exists`,
+  `is_a_noop_when_no_vm_was_ever_created` (TDD — written before `finalize_vm`).
+- `cargo fmt --all -- --check` ✅ / `cargo clippy --all-targets
+  --all-features -- -D warnings` ✅ / `cargo test --all` ✅ (full workspace,
+  0 failures) / `make calm-validate` ✅.
+- Infra-name sweep across all tracked + untracked files ✅ clean (also
+  swept for the registry hostname pasted into chat this session — not
+  written to any tracked file).
+- RBAC: no change needed — `deploy/provider-vsphere/rbac/clusterrole.yaml`
+  already grants `update`/`patch` on `vspheremachines` (the merge-patch
+  finalizer helper targets the main resource, not the `/finalizers`
+  subresource rule already present but unused).
+
+### Not addressed here (deliberately, per user decision this session)
+Power-state reconciliation on an already-provisioned VM (changing
+`desiredPowerState` post-create currently does nothing) and honoring
+`VirtualMachine.spec.paused` (schema-only today, never checked by the
+controller's reconcile loop) — both real gaps, both scoped to a separate
+follow-up ADR rather than folded into this one.
+
+## [2026-08-22 20:10] - Fix cloned VMs losing the template's pinned NIC PCI slot (ens192 → ens33)
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `crates/banlieue-provider-vsphere/src/client/vim.rs`: `find_first_nic_key`
+  now also reads the template NIC's existing `slot_info` (via `vim_rs`'s own
+  documented `AsAny`/`downcast_ref` pattern) and returns it alongside the
+  device key and adapter type; `build_nic_edit_device` takes that PCI slot
+  and re-pins it (`VirtualDevicePciBusSlotInfo`) on the clone's NIC edit,
+  instead of leaving it unset.
+
+### Why
+Found live: a VM cloned from a template built at the project's documented
+default PCI slot 192 (`ens192`, see `VMImage.spec.template.nicPciSlot` /
+`docs/src/reference/api.md`) came up with its NIC as `ens33` — vSphere's
+default auto-assigned slot — inside the guest. Per vim_rs's own upstream doc
+comment on `pci_slot_number`, the slot should be explicitly set "when the
+virtual hardware configuration is duplicated," which is exactly cloning;
+`clone_vm`'s NIC `deviceChange` (added for the prior `InvalidDeviceSpec` fix)
+edits the NIC's backing in the *same* call that creates the destination VM,
+which vCenter evidently treats more like fresh PCI placement than an
+in-place `Reconfigure` of a long-lived VM — omitting `slotInfo` let it fall
+back to auto-assignment rather than keeping the template's slot.
+
+A stable, predictable interface name matters here because every downstream
+piece of static networking (`guestinfo.network.*` + the cloud-config's own
+`systemd-networkd` unit, ADR-0024) is written assuming the guest's primary
+NIC is `ens192` — an unexpected `ens33` means none of that networking ever
+takes effect inside the guest, which was reported live alongside this bug
+(no networking on the cloned VM; CrowdStrike Falcon also failed to install,
+consistent with no network being the root cause rather than a second, separate
+bug).
+
+### Impact
+- [ ] Breaking change (unreleased — no consumers exist yet)
+- [x] Requires cluster rollout — rebuild + redeploy `banlieue-provider-vsphere`
+- [ ] Config change only
+- [ ] Documentation only
+
+### Verification
+- New/updated unit tests in `vim_tests.rs`: `find_first_nic_key_also_reports_the_devices_pinned_pci_slot`,
+  `build_nic_edit_device_pins_the_given_pci_slot_when_the_template_had_one`,
+  `build_nic_edit_device_omits_slot_info_when_the_template_had_none`, plus
+  the existing `find_first_nic_key`/`build_nic_edit_device` tests updated for
+  the new `Option<i32>` slot in their signatures.
+- `cargo fmt --all -- --check` ✅ / `cargo clippy --all-targets
+  --all-features -- -D warnings` ✅ / `cargo test --all` ✅ (full workspace,
+  0 failures)
+- Infra-name sweep across all tracked + untracked files ✅ clean.
+
+### Not addressed here
+The same live report also mentioned a custom GRUB menu entry
+(`install.grub-entry-name`) never taking effect on the clone. That is not a
+banlieue bug: per ADR-0021, `install.*` cloud-config keys are read only by
+Kairos's one-time disk installer, which already ran when the *template* was
+built (from the ISO's own baked-in cloud-config) — a clone boots the
+already-installed disk and never re-runs the installer, so a `userData`
+Secret delivered at clone time (ADR-0024) can never change it. Setting a
+custom GRUB entry name requires baking `install.grub-entry-name` into the
+cloud-config embedded in the source ISO and re-importing the `VMImage`
+template (`forceCreate`), not editing the per-VM `userData`.
+
+## [2026-08-22 19:30] - Fix CloneVM_Task InvalidDeviceSpec: send the NIC's real concrete type
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `crates/banlieue-provider-vsphere/src/client/vim.rs`: `clone_vm`'s NIC
+  reconfigure sent a bare `VirtualEthernetCard` — the abstract base type
+  every NIC adapter (`VirtualVmxnet3`, `VirtualE1000`, etc.) inherits
+  from. vCenter cannot instantiate the abstract base directly; a
+  `deviceChange` entry must name a concrete, creatable subtype.
+- `find_first_nic_key` now also returns the device's concrete
+  `StructType` (previously only its device key); new `build_nic_edit_device`
+  uses that type to construct the exact same concrete struct the
+  template's own NIC already is, changing only `key` and `backing`.
+
+### Why
+Found live: `CloneVM_Task` faulted with `InvalidDeviceSpec`, `"Invalid
+configuration for device '0'"`. Root cause was structural, not a value
+mistake like the two datastore-name/template-folder fixes before it —
+sending the wrong *type* of device object rather than a wrong *value*.
+
+### Impact
+- [ ] Breaking change (unreleased — no consumers exist yet)
+- [x] Requires cluster rollout — rebuild + redeploy `banlieue-provider-vsphere`
+- [ ] Config change only
+- [ ] Documentation only
+
+### Verification
+- 3 new pure-function unit tests in `vim_tests.rs`, reusing the existing
+  `ethernet_device` fixture helper: `find_first_nic_key` reports the
+  correct `(key, StructType)` pair and returns `None` with no NIC present;
+  `build_nic_edit_device` round-trips to the *same* concrete type for
+  every one of the five adapter types `find_first_nic_key` can report,
+  proving the fix directly rather than just re-testing the old behavior.
+- `cargo fmt --all -- --check` ✅ / `cargo clippy --all-targets
+  --all-features -- -D warnings` ✅ / `cargo test --all` ✅ (full
+  workspace, 0 failures)
+- Infra-name sweep across all tracked + untracked files ✅ clean. Caught
+  and fixed during this entry: the *previous* CHANGELOG entry (datastore
+  moref fix) had quoted a real datastore name straight from the live
+  error message pasted into chat — replaced with a placeholder before
+  this landed.
+
+## [2026-08-21 22:15] - Fix CloneVM_Task datastore fault: pass the moref, not the display name
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `crates/banlieue-provider-vsphere/src/client/mod.rs`: `CloneVmRequest.datastore`
+  renamed to `datastore_moref` — its doc comment already said "every
+  reference is already resolved to a concrete vCenter moref by the
+  caller", but the field itself held a **display name**
+  (`resolve_concrete_datastore`'s return value), not a moref. `vim.rs`'s
+  `clone_vm` built a `ManagedObjectReference` directly from it, which
+  vCenter rejected.
+- `crates/banlieue-provider-vsphere/src/reconciler/vspheremachine.rs`:
+  `ensure_vm` now does a second lookup — find the `Datastore` in the
+  already-fetched `list_datastores` result whose `.name` matches the
+  resolved name, and pass its `.moref` into `CloneVmRequest`.
+
+### Why
+Found live: `CloneVM_Task` faulted with `ManagedObjectNotFound` on a
+real datastore's display name (e.g. `compute-cluster-01-DS002`), which
+was referenced by name instead of moref, so vCenter couldn't resolve it
+as a `ManagedObjectReference`. `network_moref`/`template_moref`/
+`cluster_moref`/`datacenter_moref` were all already correct (each came
+directly from a `.moref` field); `datastore` was the one field missing
+the `_moref` suffix that would have made this mismatch obvious at the
+call site.
+
+### Impact
+- [ ] Breaking change (unreleased — no consumers exist yet)
+- [x] Requires cluster rollout — rebuild + redeploy `banlieue-provider-vsphere`
+- [ ] Config change only
+- [ ] Documentation only
+
+### Verification
+- Updated `ensure_vm` tests to assert against the seeded datastore's
+  actual moref (e.g. `datastore-cluster-a-ds-fast-01`) rather than its
+  display name — would have caught this the same way the earlier
+  `find_template` folder-scoping regression tests did, had they checked
+  the field type instead of the value shape.
+- `cargo fmt --all -- --check` ✅ / `cargo clippy --all-targets
+  --all-features -- -D warnings` ✅ / `cargo test --all` ✅ (full
+  workspace, 0 failures)
+- Infra-name sweep across all tracked + untracked files ✅ clean.
+
+## [2026-08-21 11:45] - Fix cross-zone template collision on clone; add clone destination folder override
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `crates/banlieue-provider-vsphere/src/reconciler/vmimage.rs`: `zone_from_job`
+  set `ZoneImageStatus.resolvedRef` to `{failure_domain}/{job_name}` — the
+  Kubernetes Job's own k8s object name, not the vCenter template's actual
+  display name. `find_template` then failed outright (`template ... not
+  found`), since no vCenter object is ever named after its import Job.
+- `crates/banlieue-provider-vsphere/src/client/vim.rs`: even with the right
+  name, `find_template` rooted its `ContainerView` at the whole datacenter,
+  not a folder — the exact cross-zone collision `find_vm_moref_by_name` was
+  already fixed for (ADR-0020 Decision #5) but this separate,
+  clone-source lookup function had not been. Every zone's template shares
+  the same display name, so a `VirtualMachine` in one zone could silently
+  clone from a *different* zone's template instead of failing.
+
+### Added
+- `ZoneImageStatus.templateFolder` (banlieue-api): the per-zone folder a
+  `Url`-kind import's template lives in, kept as a separate structured
+  field rather than encoding folder+name into one string.
+- `VSphereMachineSpec.templateFolder`: threaded through from the above by
+  `resolve_template_ref` (banlieue-controller), which now returns
+  `(name, Option<folder>)` instead of one opaque string.
+- `VSphereClient::find_template` gained a `folder: Option<&str>` parameter
+  — folder-scoped when `Some` (per-zone `Url`-kind), datacenter-wide when
+  `None` (`Template`-kind, unchanged behavior). New read-only
+  `find_folder` helper in `vim.rs` (mirrors `ensure_folder` but never
+  creates a missing segment — a lookup must not have that side effect).
+- `VirtualMachineSpec.folder`: an explicit, user-settable destination
+  placement override for the clone. `build_vsphere_machine` sets
+  `VSphereMachineSpec.folder` (destination) to this override when set,
+  else defaults to the same per-zone folder the source template lives in
+  (`templateFolder`) — so clones land organized the same way templates
+  already are, with an explicit escape hatch when that default isn't
+  right.
+
+### Why
+Found live: `banlieue-provider-vsphere` reported `template "cluster-01/
+import-hadron-kairos-v0-1-0-vcenter-ssc-cluster-01" not found` when
+reconciling a `VSphereMachine` for a `Url`-kind (per-zone-imported)
+`VMImage`. Root cause traced to `resolved_ref` carrying the Job's name
+instead of the template's; fixing that alone would still have left a
+latent, more serious bug (`find_template`'s datacenter-wide search
+matching a different zone's identically-named template), so both are
+fixed together. The destination-folder override was requested directly
+alongside this fix.
+
+### Impact
+- [ ] Breaking change (unreleased — no consumers exist yet)
+- [x] Requires cluster rollout — apply the regenerated CRDs
+      (`VirtualMachine`, `VMImage`, `VSphereMachine`) and rebuild+redeploy
+      both `banlieue-controller` and `banlieue-provider-vsphere`
+- [ ] Config change only
+- [ ] Documentation only
+
+### Verification
+- New/updated tests: `banlieue-api` (`ZoneImageStatus.templateFolder`
+  round-trip/omit, `VirtualMachineSpec.folder` round-trip/omit),
+  `banlieue-controller` (`resolve_template_ref`'s Url-kind test rewritten
+  to assert the bare name + folder, not the old buggy encoded string),
+  `banlieue-provider-vsphere` (`zone_from_job`'s existing test corrected;
+  3 new `ensure_vm` tests: finds the template in its own zone folder,
+  does **not** find an identically-named template seeded in a *different*
+  zone's folder — the exact bug, now a regression test — and the
+  `Template`-kind datacenter-wide fallback still works with
+  `template_folder: None`).
+- `cargo fmt --all -- --check` ✅ / `cargo clippy --all-targets
+  --all-features -- -D warnings` ✅ / `cargo test --all` ✅ (full
+  workspace: 263 banlieue-api, 82 banlieue-controller, 128
+  banlieue-provider-vsphere, 0 failures)
+- `make crds` ✅ / `kubectl apply --dry-run=server` on the three changed
+  CRDs ✅
+- Infra-name sweep across all tracked + untracked files ✅ clean.
+
+## [2026-08-21 10:30] - Wire the hardwareOverride merge into build_vsphere_machine
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `crates/banlieue-api/src/banlieue/mod.rs`: `DiskOverride`/`HardwareOverride`
+  were defined and tested at the type level but never re-exported from
+  `banlieue_api::banlieue` — added to the existing `pub use virtualmachine::
+  {...}` list.
+- `crates/banlieue-controller/src/reconciler/infra.rs`: `build_vsphere_machine`
+  had the schema (`VirtualMachineSpec.hardwareOverride`) but never actually
+  applied it — `num_cpus`/`memory_mi_b`/each disk's `size_gi_b` were reading
+  straight from `VMClass.spec.hardware` unconditionally. Added
+  `merge_disk_size_override` (mirroring the existing `merge_ipam_override`
+  pattern) and wired `hardware_override.cpus`/`.memory_mi_b` /
+  `.disk_overrides` into the three call sites that build `VSphereMachineSpec`.
+
+### Why
+`HardwareOverride`/`DiskOverride` (this project's per-VM delta on a shared
+`VMClass`'s hardware shape, following the same "delta, not the primary
+definition" pattern as `networkOverrides`, ADR-0024) had its schema and
+round-trip tests land, but the actual merge into the infra CR was never
+implemented — the field would silently do nothing if set. Caught while
+verifying this feature end-to-end before testing a live `VirtualMachine`.
+
+### Impact
+- [ ] Breaking change (unreleased — no consumers exist yet)
+- [x] Requires cluster rollout — rebuild + redeploy `banlieue-controller`
+- [ ] Config change only
+- [ ] Documentation only
+
+### Verification
+- 5 new tests in `banlieue-controller` (no-override passthrough, cpus+memory
+  override, partial override — memory still inherited, disk-size override by
+  name, disk override ignored for a non-matching disk name).
+- `cargo fmt --all -- --check` ✅ / `cargo clippy --all-targets
+  --all-features -- -D warnings` ✅ / `cargo test --all` ✅ (full workspace,
+  0 failures)
+- Infra-name sweep across all tracked + untracked files ✅ clean.
+
+## [2026-08-21 09:55] - Fix template resolution for zone-based (Url-kind) VMImages
+
+**Author:** Cascade (Windsurf)
+
+### Fixed
+- `crates/banlieue-controller/src/reconciler/infra.rs`: `resolve_template_ref`
+  now falls back to per-zone `resolvedRef` when the top-level
+  `perProvider[].resolvedRef` is `None`. This fixes `Url`-kind images
+  (imported per failure domain) which only have zone-level refs — previously
+  the controller errored with "has no resolved_ref for provider".
+- `InfraBuildError::MissingResolvedImageRef` now includes the `zone` name
+  for better diagnostics.
+
+### Added
+- `crates/banlieue-controller/src/reconciler/infra_tests.rs`: new test
+  `build_vsphere_machine_resolves_template_from_per_zone_ref` covering the
+  zone-based fallback path.
+
+## [2026-08-21 09:15] - Remove redundant `source` field from IPAM types, make `prefix` optional
+
+**Author:** Cascade (Windsurf)
+
+### Changed
+- `crates/banlieue-api/src/common.rs`: removed `source: IpamSource` field
+  from both `IpamSpec` and `IpamShape`. IPAM mode is now inferred from which
+  optional field is set: `static` → Static, `pool` → Pool, neither → DHCP.
+  Added `pub fn source(&self) -> IpamSource` method to both types.
+- `crates/banlieue-api/src/common.rs`: `StaticNetworkShape.prefix` changed
+  from `u8` to `Option<u8>` — the class only declares shared parameters;
+  per-VM overrides fill in the rest.
+- All test files updated to remove `source:` from IPAM constructors and use
+  `.source()` method for assertions.
+- Provider code (`vspheremachine.rs`): static NIC detection now uses
+  `n.ipam.static_.is_some()` instead of `n.ipam.source == IpamSource::Static`.
+- All CRDs and API docs regenerated. VMClass no longer requires `source` or
+  `prefix` in its IPAM schema.
+
+## [2026-08-21 07:05] - Split VMClass static IPAM: remove per-VM address from class-level type
+
+**Author:** Cascade (Windsurf)
+
+### Added
+- `crates/banlieue-api/src/common.rs`: new `StaticNetworkShape` struct
+  (prefix, gateway, nameservers, domain — **no address**) for `VMClass`-level
+  static IPAM declarations. A class is shared by many VMs, so a concrete
+  address can only be expressed per-VM via `networkOverrides`.
+- `crates/banlieue-api/src/common.rs`: new `IpamShape` struct (like `IpamSpec`
+  but uses `StaticNetworkShape` instead of `StaticIpamConfig`).
+- `crates/banlieue-api/src/common_tests.rs`: four new tests for
+  `StaticNetworkShape` and `IpamShape` round-trips.
+
+### Changed
+- `crates/banlieue-api/src/banlieue/vmclass.rs`: `NetworkInterfaceSpec.ipam`
+  changed from `IpamSpec` to `IpamShape` — VMClass CRD no longer has an
+  `address` field under `ipam.static`.
+- `crates/banlieue-controller/src/reconciler/infra.rs`: `merge_ipam_override`
+  now takes `&IpamShape` (class-level) and returns `IpamSpec` (resolved).
+- `crates/banlieue-api/src/banlieue/vmclass_tests.rs`,
+  `crates/banlieue-controller/src/reconciler/infra_tests.rs`,
+  `crates/banlieue-controller/src/reconciler/scheduler_tests.rs`: updated
+  test helpers from `IpamSpec` to `IpamShape` where they construct VMClass data.
+- `deploy/crds/banlieue.io_vmclasses.yaml`: regenerated (no `address` in static).
+- `deploy/crds/infrastructure.banlieue.io_vspheremachines.yaml`: regenerated
+  (still has `address` — infra CRs use the resolved `StaticIpamConfig`).
+- `docs/src/reference/api.md`: regenerated.
+
+## [2026-08-20 22:50] - Add HardwareOverride to VirtualMachine — per-VM CPU/memory/disk delta on top of VMClass
+
+**Author:** Cascade (Windsurf)
+
+### Added
+- `crates/banlieue-api/src/banlieue/virtualmachine.rs`: new
+  `HardwareOverride` struct (`cpus: Option<u32>`,
+  `memory_mi_b: Option<u32>`, `disk_overrides: Vec<DiskOverride>`) and
+  `hardware_override: Option<HardwareOverride>` field on
+  `VirtualMachineSpec`. All fields optional — absent means "inherit from the
+  VMClass unchanged". New `DiskOverride` struct (`name: String`,
+  `size_gi_b: u32`) for per-VM disk size bumps, using the same
+  `x-kubernetes-list-type: map` pattern as `networkOverrides`.
+  End-user documentation on all override types and fields explains the
+  delta-not-primary-definition contract.
+- `crates/banlieue-api/src/banlieue/virtualmachine_tests.rs`: eight new tests
+  covering hardware_override with cpus-only, memory-only, full, empty-struct,
+  disk-only, cpus+memory+disks round-trips, and `x-kubernetes-list-type`
+  validation for `diskOverrides`.
+
+### Changed
+- `crates/banlieue-api/src/banlieue/virtualmachine.rs`: enriched existing
+  `NetworkInterfaceOverride` and `network_overrides` field docs with the same
+  "delta, not the primary definition" language for consistency.
+- `crates/banlieue-controller/src/reconciler/infra_tests.rs`,
+  `migration_tests.rs`, `scheduler_tests.rs`: added `hardware_override: None`
+  to `VirtualMachineSpec` initializers.
+- `deploy/crds/banlieue.io_virtualmachines.yaml`: regenerated.
+- `docs/src/reference/api.md`: regenerated.
+
+## [2026-08-20 15:00] - Simplify userData RBAC: controller resolves + inlines, no operator changes (ADR-0025 revised)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docs/adr/0025-vspheremachine-userdata-secret-rbac.md`: replaced the
+  first draft's operator-managed, per-Provider, per-VM `Role`
+  recomputation with a far simpler decision — `banlieue-controller`
+  resolves and renders `VirtualMachine.spec.userData` itself and inlines
+  the *content* into `VSphereMachineSpec.userData`, gated by one static
+  namespace-scoped `Role`/`RoleBinding` in `banlieue-system`. Rejected the
+  operator-managed design as overbuilt for this project's current
+  single-Provider, single-namespace reality — revisit if multi-tenancy
+  becomes real.
+- `crates/banlieue-api/src/infrastructure/vsphere_machine.rs`:
+  `VSphereMachineSpec.userData` changed from `Option<UserDataSpec>` (a
+  Secret reference) to `Option<String>` (the resolved, rendered content).
+- `crates/banlieue-controller/src/reconciler/infra.rs`:
+  `build_vsphere_machine` gains a `rendered_user_data: Option<&str>`
+  parameter (still pure/sync — I/O stays in the caller) and inlines it
+  onto `VSphereMachineSpec.userData` directly.
+- `crates/banlieue-controller/src/reconciler/virtualmachine.rs`: new
+  `resolve_rendered_user_data` — reads `spec.userData`'s Secret and
+  placeholder-substitutes it (reusing
+  `banlieue_provider_sdk::guestdata::render_placeholders`, the same
+  ADR-0024 fixed set), called before `build_vsphere_machine`.
+- `crates/banlieue-provider-vsphere/src/reconciler/vspheremachine.rs`:
+  removed `resolve_rendered_userdata` and its Secret read entirely —
+  `reconcile` now passes `machine.spec.user_data.as_deref()` straight
+  through to `ensure_vm`; the provider never touches a Secret for this.
+- `deploy/controller/rbac/role.yaml` + `rolebinding.yaml` (new): the one
+  grant this decision needs — `get` on `secrets` in `banlieue-system`,
+  bound to the `banlieue-controller` ServiceAccount. Not added to the
+  cluster-wide `ClusterRole`.
+
+### Why
+Requested directly: "we should not need multi-tenancy at the moment,
+KISS for now." The original ADR-0025 draft (operator watches
+`VirtualMachine`, recomputes per-Provider `Role`s) is the right shape
+*for* multi-tenancy, which isn't the current reality — a single static
+namespaced `Role` covers 100% of the actual deployment (one Provider, one
+namespace) with far less code and no new operator watch loop. Also
+confirmed this doesn't reverse `banlieue-controller`'s existing "no
+Secrets" stance (security review SEC-008) — that review's own comment
+explicitly anticipated re-adding a *scoped* (namespace or resourceNames)
+Secret rule if a reconciler ever needed one; this is exactly that case.
+
+### Impact
+- [ ] Breaking change (unreleased — no consumers exist yet)
+- [x] Requires cluster rollout — apply `deploy/crds/
+      infrastructure.banlieue.io_vspheremachines.yaml` (schema change),
+      `deploy/controller/rbac/role.yaml` + `rolebinding.yaml` (new), and
+      rebuild+redeploy both `banlieue-controller` and
+      `banlieue-provider-vsphere`
+- [ ] Config change only
+- [ ] Documentation only
+
+### Verification
+- Updated tests: `banlieue-api` (`vsphere_machine_spec_with_user_data_
+  round_trip` now round-trips a plain string), `banlieue-controller`
+  (`build_vsphere_machine_threads_rendered_user_data` /
+  `_omits_user_data_when_none_rendered` replace the old
+  reference-threading test). No unit test for
+  `resolve_rendered_user_data` itself (needs a kube client — same posture
+  as every other Secret-reading reconciler function in this codebase).
+- `cargo fmt --all -- --check` ✅ / `cargo clippy --all-targets
+  --all-features -- -D warnings` ✅ / `cargo test --all` ✅ (full
+  workspace, 0 failures)
+- `make crds` (schema changed) / `make calm-validate` ✅ / `make
+  calm-diagrams` ✅ (both the ADR-0024 clone-path relationship and the
+  `flow-create-virtualmachine` step now describe *this* userData path,
+  not the superseded draft)
+- `kubectl apply --dry-run=server` on the regenerated CRD and the new
+  `Role`/`RoleBinding` ✅
+- Infra-name sweep across all tracked + untracked files ✅ clean.
+- Caught and fixed during the mechanical edit: a scripted insertion
+  (adding the new parameter to every `build_vsphere_machine(...)` test
+  call site) matched `&parent_provider(),` in two tests that already had
+  their own trailing argument on the next line, producing a duplicate/
+  misordered argument — both fixed before the build was confirmed green.
+
+## [2026-08-20 14:00] - VSphereMachine reconciler: clone + guestinfo, wired live (ADR-0024)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `crates/banlieue-api/src/infrastructure/vsphere_machine.rs`:
+  `VSphereMachineSpec.desiredPowerState: PowerState` (defaults `PoweredOn`,
+  mirroring `VirtualMachineSpec`'s own default) — threaded through
+  `build_vsphere_machine` in `banlieue-controller`.
+- `crates/banlieue-provider-vsphere/src/client/mod.rs`: `VSphereClient`
+  gained `clone_vm(&CloneVmRequest) -> Result<String>` and
+  `set_power_state(vm_moref, desired: PowerState) -> Result<()>`.
+  `vim.rs`: real `CloneVM_Task` (relocate onto datastore/pool/folder,
+  override CPU/memory, reconfigure the clone's first NIC device onto the
+  target port group via a device-key edit, set `extraConfig` in the same
+  call, always powered off) + `PowerOnVM_Task`/`PowerOffVM_Task`/
+  `SuspendVM_Task`. New shared helpers extracted for reuse with
+  `import_iso_template`: `build_nic_backing`, `find_first_nic_key`.
+  `fake.rs`: `FakeClient` now records `clone_vm`/`set_power_state` calls
+  (`Mutex`-guarded, since `VSphereClient` methods take `&self`) so
+  reconciler tests can assert against them without a real vCenter.
+- `crates/banlieue-provider-vsphere/src/reconciler/vspheremachine.rs`:
+  `ensure_vm` — resolves `VSphereMachineSpec`'s names to concrete morefs
+  (reusing `import.rs`'s `resolve_concrete_datastore` for SDRS datastore
+  clusters), clones from the per-zone template with `build_guestinfo`'s
+  `extraConfig`, drives `desiredPowerState` — but only on first
+  provision (`status.vmRef` unset; a no-op otherwise, matching ADR-0024's
+  create-path-only scope). `reconcile`/`error_policy`: the
+  `Controller`-facing wrapper — reads the parent `Provider`, resolves
+  credentials/CA bundle (reusing `provider::read_credentials`, now
+  `pub(crate)`), resolves and renders `spec.userData` via the new
+  `guestdata` module, patches `Ready`/`status.vmRef`/
+  `initialization.provisioned`.
+- `crates/banlieue-provider-vsphere/src/app.rs`: registers the
+  `VSphereMachine` `Controller::new()` watch loop alongside `provider`/
+  `vmimage` (namespaced, same `--namespace` scoping as `Provider`).
+- `docs/adr/0025-vspheremachine-userdata-secret-rbac.md` (new ADR,
+  Proposed — not yet implemented): `VSphereMachineSpec.userData` names an
+  arbitrary, user-created Secret that neither the cluster-wide
+  `ClusterRole` (deliberately no Secret access, CHAIN-002) nor the
+  existing per-instance `Role` (ADR-0003, scoped only to the Provider's
+  *own* connection Secrets) can grant access to. Decision: extend
+  `banlieue-operator`'s per-instance Role with a `resourceNames` rule per
+  userData Secret referenced by a `VirtualMachine` currently scheduled to
+  that Provider, recomputed from the full scheduled set (not
+  incrementally) so revoking one VM never drops a Secret another live VM
+  still needs.
+
+### Why
+Continuing ADR-0024 past the TDD-only pass into the actual watch loop and
+vCenter calls — the piece that makes a `VirtualMachine` with a static-IP
+`networkOverride` actually clone and boot. Found the userData RBAC gap
+while wiring `reconcile()`'s Secret read and wrote ADR-0025 rather than
+either widen the cluster-wide ClusterRole (reopens CHAIN-002) or inline
+cloud-config content into the CRD spec (exposes it via `kubectl get -o
+yaml`) — implementation of ADR-0025 is deliberately not in this entry.
+
+### Impact
+- [ ] Breaking change (unreleased — no consumers exist yet)
+- [x] Requires cluster rollout — rebuild + redeploy
+      `banlieue-provider-vsphere` (new watch loop; RBAC for
+      `vspheremachines` was already present in
+      `deploy/provider-vsphere/rbac/clusterrole.yaml` from before this
+      entry, no change needed there)
+- [ ] Config change only
+- [ ] Documentation only
+
+### Verification
+- 9 new tests: 3 in `banlieue-api` (`desiredPowerState` default/omit/
+  round-trip), 2 in `banlieue-controller` (threading), 9 in
+  `banlieue-provider-vsphere` for `ensure_vm` (already-provisioned no-op,
+  first-provision clone+power, desired-power-state drive, SDRS
+  datastore-cluster resolution, guestinfo+userdata passthrough, 4
+  not-found error cases) — `clone_vm`/`set_power_state`'s own vim_rs
+  calls are, like every other real vCenter mutation in this crate,
+  verified live rather than unit tested.
+- `cargo fmt --all -- --check` ✅ / `cargo clippy --all-targets
+  --all-features -- -D warnings` ✅ / `cargo test --all` ✅ (full
+  workspace, 0 failures)
+- `make calm-validate` ✅ (ADR-0025 added to the tracked list)
+- Infra-name sweep across all tracked + untracked files ✅ clean.
+- **Known limitation, tracked in ADR-0025**: `VSphereMachineSpec.userData`
+  resolution will 403 against real RBAC until ADR-0025 is implemented.
+  `networkOverrides` (static IP via `guestinfo.network.*`) is unaffected
+  and works independently of that gap.
+
+## [2026-08-20 12:30] - TDD implementation of ADR-0024's create-path logic (VSphereMachine)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `crates/banlieue-api`: `VirtualMachineSpec.networkOverrides` +
+  `NetworkInterfaceOverride` (keyed by VMClass interface name,
+  `x-kubernetes-list-type: map` on `name`); `common::StaticIpamConfig.domain`;
+  `infrastructure::VSphereMachineSpec.userData` (`Option<UserDataSpec>`).
+- `crates/banlieue-controller/src/reconciler/infra.rs`: pure
+  `merge_ipam_override(class_ipam, override)` — an override always replaces
+  the class's `ipam` outright with an explicit static one; wired into
+  `build_vsphere_machine`'s NIC-building loop (matches override by
+  interface name, falls back to the class's own `ipam` — commonly `dhcp` —
+  when none matches) and threads `vm.spec.userData` onto the new
+  `VSphereMachineSpec.userData` field.
+- `crates/banlieue-provider-sdk/src/guestdata.rs` (new module):
+  `GuestDataContext` + `render_placeholders`, the fixed ADR-0024 placeholder
+  set (`${VM_NAME}`, `${FQDN}`, `${IP}`, `${PREFIX}`, `${GATEWAY}`, `${DNS}`,
+  `${DOMAIN}`) substituted into a raw cloud-config. Backend-agnostic —
+  usable by libvirt/Proxmox once they deliver guest data their own way.
+- `crates/banlieue-provider-vsphere/src/reconciler/vspheremachine.rs` (new
+  module, registered in `reconciler/mod.rs`): pure `build_guestinfo(nics,
+  rendered_userdata)` — the `extraConfig` `guestinfo.*` key/value pairs a
+  `CloneVM_Task` would set, matching this environment's existing
+  hand-provisioned VM convention (`guestinfo.network.*` for the first
+  statically-addressed NIC — the convention is flat/non-indexed, so it
+  cannot represent more than one primary static network — plus
+  `guestinfo.userdata`/`guestinfo.userdata.encoding=base64`).
+- `base64 = "0.22"` added to `banlieue-provider-vsphere` (already present
+  transitively at this exact version via reqwest/vim_rs, so this adds no
+  new third-party code to the build).
+
+### Why
+Continuing ADR-0024 (TDD phase, after the ADR + CALM design pass). This
+covers every piece of the create-path logic that's pure and unit-testable
+today; the `VSphereMachine` watch loop and the actual `CloneVM_Task` /
+`Reconfigure` vCenter calls are deliberately not included — consistent with
+this crate's established posture (see `vim.rs`'s own doc comments) that
+real vCenter mutation is verified live, not unit tested, and is scoped as
+explicit follow-up work in both the ADR and `reconciler/mod.rs`'s doc
+comment.
+
+### Impact
+- [ ] Breaking change (unreleased — no consumers exist yet)
+- [ ] Requires cluster rollout (no watch loop wired in yet — nothing
+      observable changes on a live cluster from this entry alone)
+- [ ] Config change only
+- [ ] Documentation only
+
+### Verification
+- 26 new tests across 4 crates, all TDD (written first, confirmed
+  compiling-red, then green): 6 in `banlieue-api` (schema round-trips +
+  admission-time duplicate rejection on `networkOverrides`), 6 in
+  `banlieue-controller` (`merge_ipam_override` + `build_vsphere_machine`
+  override/no-override/wrong-name/userData threading), 9 in
+  `banlieue-provider-sdk` (`render_placeholders`), 9 in
+  `banlieue-provider-vsphere` (`build_guestinfo`, including the
+  first-static-nic-wins case and the userdata-together case).
+- `cargo fmt --all -- --check` ✅ / `cargo clippy --all-targets
+  --all-features -- -D warnings` ✅ / `cargo test --all` ✅ (full
+  workspace, 0 failures)
+- `make crds` — no new run needed; the schema fields all landed before the
+  regen already captured in the ADR/CALM changelog entry above.
+- Infra-name sweep across all tracked + untracked files ✅ clean.
+- Caught during TDD, both self-corrected before landing: a scripted
+  regex fix for the new `StaticIpamConfig.domain` field duplicated the
+  field in two just-written tests (fixed); a similar scripted fix for
+  `VirtualMachineSpec.network_overrides` incorrectly matched two unrelated
+  `ProviderSpec` literals sharing the `paused: false,` anchor line (fixed).
+
+## [2026-08-20 11:00] - ADR + CALM for the VSphereMachine clone reconciler (design only, no code)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0024-vspheremachine-clone-static-ip-cloud-config.md` (new ADR):
+  scopes the not-yet-implemented `VSphereMachine` reconciler's create path —
+  clone from the per-zone template, static IP + templated cloud-config
+  delivered via vCenter `guestinfo`. Decisions: a per-VM
+  `VirtualMachineSpec.networkOverrides` (keyed by VMClass interface name)
+  for static addressing, since a VMClass-level static IP can't serve more
+  than one VM; a fixed, explicit `${VM_NAME}`/`${FQDN}`/`${IP}`/`${PREFIX}`/
+  `${GATEWAY}`/`${DNS}`/`${DOMAIN}` placeholder set (not a general
+  templating engine) substituted into `spec.userData` before delivery.
+- `docs/architecture/calm/architecture.json`: updated `service-provider-vsphere`
+  (dropped the stale "planned, no code in-tree" description — Provider +
+  VMImage reconcilers are live), `rel-provider-vsphere-kube-api` and
+  `rel-provider-vsphere-backend` (now describe the VSphereMachine clone +
+  guestinfo path alongside the existing introspection/import-Job paths),
+  `flow-create-virtualmachine` step 5, and the `adrs` list (added 0023,
+  which was missing, and 0024). Regenerated `docs/src/architecture/*.md` via
+  `make calm-diagrams`.
+
+### Why
+Following the ADD methodology (ADR → CALM → TDD): the `VSphereMachine`
+clone reconciler is architecturally significant (new watch loop, new
+spec fields, a new guest-data delivery mechanism) and doesn't exist in code
+yet, so this is design-only — no Rust changes in this entry.
+
+### Impact
+- [ ] Breaking change (unreleased — no consumers exist yet)
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+### Verification
+- `make calm-validate` ✅ (0 errors, 0 warnings)
+- `make calm-diagrams` ✅ regenerated cleanly
+- Infra-name sweep across all tracked + untracked files ✅ clean. Caught and
+  fixed during drafting: an early version of the ADR (and, found by the same
+  sweep, ADR-0023 from earlier this session) used a real hostname/IP/domain
+  from the environment as a "confirmed by inspecting a live VM" example —
+  replaced with placeholders before landing.
+
+## [2026-08-20 10:15] - Scope vSphere template lookup-by-name to its own zone folder
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `crates/banlieue-provider-vsphere/src/client/vim.rs`: `find_vm_moref_by_name`
+  now roots its `ContainerView` at a **folder** moref instead of the
+  **datacenter** moref, and searches within it non-recursively-scoped to
+  that folder's contents. `import_iso_template` resolves (`ensure_folder`)
+  its zone's own template folder *before* the idempotency/forceCreate
+  check, and passes that folder to both `find_vm_moref_by_name` calls
+  (the pre-create idempotency check and the post-create relocate). The
+  `VSphereClient::destroy_if_present` trait method gained a `folder: &str`
+  parameter for the same reason, plumbed through from
+  `crates/banlieue-provider-vsphere/src/import.rs`'s `--force-create` path
+  (now computes `effective_folder` once, up front, and reuses it for both
+  the early destroy and the later `IsoImportRequest`).
+
+### Why
+Every zone's template shares the same display name (the `VMImage` name) —
+only the per-zone folder differs (ADR-0020 Decision #5). The old
+datacenter-wide lookup-by-name meant one zone's `forceCreate` "destroy
+anything already named this" check could match — and destroy — a
+*different* zone's in-flight VM. Confirmed live: three concurrent per-zone
+import Jobs for the same `VMImage` repeatedly destroyed each other's
+just-created VMs (`cluster-01`'s job destroyed the exact moref
+`cluster-03`'s job had created moments earlier, then hit the same fate
+itself), surfacing as intermittent `ManagedObjectNotFound` /
+`"already been deleted or has not been completely created"` faults.
+Softening that fault into a warn-and-continue (the initial instinct) would
+have masked the symptom without stopping the underlying cross-zone
+destruction.
+
+Separately (not fixed here — needs a vCenter admin, not code): the
+service account's vCenter role is missing `VirtualMachine.Inventory.Delete`,
+surfaced by the same investigation when a job tried to clean up a
+genuinely stale, pre-fix orphaned template.
+
+### Impact
+- [ ] Breaking change (unreleased — no consumers exist yet)
+- [x] Requires cluster rollout — rebuild + redeploy
+      `banlieue-provider-vsphere`
+- [ ] Config change only
+- [ ] Documentation only
+
+### Verification
+- No new unit tests: this file's own doc comment states the vCenter
+  mutation paths are "verified against a live vCenter, not here" — the
+  fix is a scoping/ordering change to code that talks to `vim_rs`
+  directly, with no pure-function surface to unit test. Verified by
+  re-tracing the exact live log sequence (matching morefs/timestamps
+  across the three zones' pods) that proved the cross-zone destruction,
+  confirming the new folder-scoped lookup would not have matched across
+  zones.
+- `cargo fmt --all -- --check` ✅ / `cargo clippy --all-targets
+  --all-features -- -D warnings` ✅ / `cargo test --all` ✅ (full
+  workspace, 0 failures, no test count change — expected, per above)
+- Pending: live re-run of the three per-zone import Jobs after rebuild to
+  confirm no more cross-zone `ManagedObjectNotFound` faults.
+
+## [2026-08-20 09:30] - Explicit failure-domain name override (ADR-0023)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0023-explicit-failure-domain-name-override.md` (new ADR).
+- `crates/banlieue-api/src/banlieue/provider.rs`: new
+  `FailureDomainNameOverride { datacenter, cluster, name }` struct and
+  `Provider.spec.failureDomainNameOverrides: Vec<FailureDomainNameOverride>`
+  — opt-in, `x-kubernetes-list-type: map` keyed on `[datacenter, cluster]`
+  (rejects two overrides for the same zone at admission, same mechanism as
+  `VMImageSpec.sources[]`'s `providerClass` uniqueness).
+- `crates/banlieue-provider-vsphere/src/reconciler/provider.rs`:
+  `find_failure_domain_name_override` (pure lookup); `build_failure_domain`
+  and `discover_inventory` both gain an `overrides` parameter.
+  `discover_inventory` now also fails closed (`Error::InvalidSpec`, a new
+  variant) if the resulting failure-domain list has two entries with the
+  same `.name` — guards against two *different* `(datacenter, cluster)`
+  pairs being overridden to the same name, which schema-level uniqueness
+  can't express and which would silently reintroduce the ADR-0020
+  Decision #5 cross-zone collision.
+- `docs/src/guides/vsphere-provider.md`: usage note with an example.
+
+### Why
+Requested directly, following ADR-0020 Decision #5 (per-zone template
+folder isolation): the auto-computed, collision-safe failure-domain name is
+correct but ugly for real enterprise vCenter naming schemes, and it's now
+visible in more places than before (a vCenter folder segment, not just an
+internal label) — an explicit, opt-in override lets an admin use whatever
+simpler convention they already have, without losing the collision-safety
+net for zones that don't get one.
+
+### Impact
+- [ ] Breaking change (unreleased — no consumers exist yet)
+- [x] Requires cluster rollout — `kubectl apply -f deploy/crds/` (schema)
+      and a rebuild+redeploy of `banlieue-provider-vsphere` (reconciler
+      logic), same rollout already in flight for the other pending fixes
+- [ ] Config change only
+- [ ] Documentation only
+
+### Verification
+- `cargo test -p banlieue-api --lib` ✅ (237 passed, including 4 new:
+  `failure_domain_name_override_round_trip`,
+  `provider_spec_omits_failure_domain_name_overrides_when_empty`,
+  `provider_spec_with_failure_domain_name_overrides_round_trip`,
+  `failure_domain_name_overrides_rejects_duplicate_zone_at_admission`)
+- `cargo test -p banlieue-provider-vsphere --lib` ✅ (107 passed, including
+  4 new: `discover_inventory_uses_the_override_name_when_one_matches`,
+  `discover_inventory_slugifies_an_override_name`,
+  `discover_inventory_ignores_an_override_for_an_unmatched_zone`,
+  `discover_inventory_fails_when_two_zones_override_to_the_same_name`)
+- `cargo fmt --all -- --check` ✅ / `cargo clippy --all-targets --all-features
+  -- -D warnings` ✅ / `cargo test --all` ✅ (full workspace, 0 failures)
+- `make crds` / `make calm-validate` — CALM diagrams untouched (no new
+  node/relationship, just a spec field on an existing one)
+- `kubectl apply --dry-run=server -f deploy/crds/banlieue.io_providers.yaml` ✅
+- Caught and fixed during review: an earlier draft of
+  `failure_domain_name_override_round_trip` used the maintainer's real
+  vCenter datacenter/cluster names as test fixture data — replaced with
+  generic placeholders before this landed.
+
+## [2026-08-20 08:10] - Reject duplicate `sources[].providerClass` entries at admission
+
+**Author:** Erick Bourgeois
+
+### Added
+- `crates/banlieue-api/src/banlieue/vmimage.rs`: `VMImageSpec.sources` gains
+  `#[schemars(extend("x-kubernetes-list-type" = "map", "x-kubernetes-list-map-keys"
+  = ["providerClass"]))]`. Kubernetes enforces list-map-key uniqueness at
+  admission (not just an SSA-merge hint) — a `VMImage` with two `sources[]`
+  entries for the same `providerClass` is now rejected by the API server,
+  instead of `find_url_source`/`find_vsphere_source` silently picking
+  whichever came first.
+- `deploy/crds/banlieue.io_vmimages.yaml` / `docs/src/reference/api.md`
+  regenerated (`make crds`).
+
+### Why
+Discussed while reviewing why `providerClass` lives per-`sources[]`-entry
+rather than at `spec.providerClass` (intentional — one `VMImage` binds
+multiple backends at once, "one name, many backends"): nothing enforced
+that each backend gets *at most one* entry. `x-kubernetes-list-type: map`
+is the existing Kubernetes-native mechanism for exactly this, already used
+elsewhere on this same CRD (`status.perProvider`, `status.conditions`).
+
+### Impact
+- [ ] Breaking change (unreleased — no consumers exist yet)
+- [ ] Requires cluster rollout (same rebuild+redeploy already in flight)
+- [ ] Config change only
+- [ ] Documentation only
+
+### Verification
+- `cargo test -p banlieue-api --lib` ✅ (233 passed, including new
+  `sources_rejects_duplicate_provider_classes_at_admission` — written first,
+  confirmed failing before the `schemars(extend(...))` attribute was added)
+- `cargo fmt --all -- --check` ✅ / `cargo clippy --all-targets --all-features
+  -- -D warnings` ✅ / `cargo test --all` ✅ (full workspace, 0 failures)
+- `kubectl apply -f deploy/crds/banlieue.io_vmimages.yaml --dry-run=server` ✅
+  confirms the updated schema itself is valid; confirming the actual
+  duplicate-rejection behavior live needs the same CRD reapply the other
+  pending fixes need — not yet done.
+
+## [2026-08-20 07:45] - Rename `template.folder` to `template.rootFolder`
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `VMImageTemplate.folder` → `VMImageTemplate.rootFolder`
+  (`crates/banlieue-api/src/banlieue/vmimage.rs`), and every downstream
+  touchpoint: the `--folder` CLI flag on `image-import` → `--root-folder`
+  (`crates/banlieue-provider-vsphere/src/import.rs`), `ImportForce.folder` /
+  `ImportJobInputs.folder` → `root_folder`
+  (`crates/banlieue-provider-vsphere/src/reconciler/vmimage.rs`), and all
+  doc comments, the imagebuilder guide, `examples/07-vmimage-kairos-url-source.yaml`,
+  the CALM architecture model (`docs/architecture/calm/architecture.json`,
+  regenerated via `make calm-diagrams`), and generated CRDs/API docs
+  (`make crds`).
+
+### Why
+Requested directly, following the folder-collision fix in the entry below:
+`folder` reads as the literal target, which is exactly the wrong impression
+now that it's always a root the per-zone import nests under
+(`<rootFolder>/<failure-domain-name>`) — `rootFolder` says that plainly.
+
+### Impact
+- [ ] Breaking change (unreleased — no consumers exist yet)
+- [ ] Requires cluster rollout (same rebuild+redeploy already in flight)
+- [ ] Config change only
+- [ ] Documentation only
+
+### Verification
+- `cargo test --all` ✅ (full workspace, 0 failures)
+- `cargo fmt --all -- --check` ✅ / `cargo clippy --all-targets --all-features
+  -- -D warnings` ✅
+- `make calm-validate` ✅ / `make calm-diagrams` ✅
+- `kubectl apply --dry-run=client -f deploy/crds/ -f examples/` ✅
+
+## [2026-08-20 07:20] - Fix cross-zone template folder collision (ADR-0020 Decision #5)
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `crates/banlieue-provider-vsphere/src/import.rs`: new `effective_folder`
+  helper — `spec.template.folder` is now a *root*, not the literal target;
+  the template always lands at `<folder>/<failure-domain-name>`. Wired into
+  the `IsoImportRequest` construction in place of `args.folder.clone()`.
+- Doc comments updated to match: `VMImageTemplate.folder`
+  (`crates/banlieue-api/src/banlieue/vmimage.rs`), the `--folder` CLI flag,
+  the imagebuilder guide, `examples/07-vmimage-kairos-url-source.yaml`, and
+  the architecture docs (`flows.md`, `concepts/architecture.md`).
+- `deploy/crds/banlieue.io_vmimages.yaml` / `docs/src/reference/api.md`
+  regenerated (`make crds`) for the updated `folder` field description.
+
+### Why
+Found live, while watching the first-ever automated per-zone import run
+across all three of a Provider's real failure domains: they share one
+datacenter and differ only by cluster, but vSphere's VM/Template folder
+hierarchy is scoped per-datacenter, not per-cluster — so `spec.template
+.folder` resolved to the identical folder for all three zones, and all
+three import Jobs called `CreateVM_Task` for the same template name in
+that one folder, actively racing `--force-create` against each other.
+
+### Impact
+- [ ] Breaking change (unreleased — no prior stable placement contract to break;
+      any template built at the old flat `<folder>/<template-name>` path
+      while testing this feature is orphaned and needs manual cleanup in
+      vCenter)
+- [ ] Requires cluster rollout (same rebuild+redeploy already in flight for
+      the Job-naming/RBAC fixes — no separate rollout needed)
+- [ ] Config change only
+- [ ] Documentation only
+
+### Verification
+- `cargo test -p banlieue-provider-vsphere --lib` ✅ (103 passed, including
+  4 new: `effective_folder_nests_the_zone_under_the_configured_root`,
+  `effective_folder_strips_a_trailing_slash_on_the_root`,
+  `effective_folder_is_just_the_zone_when_no_root_is_configured`,
+  `effective_folder_is_just_the_zone_when_the_root_is_empty`)
+- `cargo fmt --all -- --check` ✅ / `cargo clippy --all-targets --all-features
+  -- -D warnings` ✅ / `cargo test --all` ✅ (full workspace, 0 failures)
+- `kubectl apply --dry-run=client -f examples/ -f deploy/crds/` ✅
+
+## [2026-08-20 06:35] - Add the missing `banlieue-import` ClusterRole for reading VMImage
+
+**Author:** Erick Bourgeois
+
+### Added
+- `deploy/imagebuilder/rbac/clusterrole-import.yaml` (new): `ClusterRole` +
+  `ClusterRoleBinding` granting `banlieue-import` `get` on `vmimages.banlieue.io`
+  (cluster-scoped, ADR-0001 — a namespaced Role cannot grant access to a
+  cluster-scoped kind at all). `image-import`
+  (`crates/banlieue-provider-vsphere/src/import.rs`) reads exactly the one
+  VMImage named on its own `--vmimage` command-line arg, for the OS ->
+  `guestId` mapping — nothing else, so `get` only, not scoped by
+  `resourceNames` (unlike the per-Provider Secret/Provider rules, which stay
+  resourceNames-scoped): VMImage is catalog metadata, not a credential, so a
+  blanket read grant here is proportionate.
+
+### Why
+Found live: with the missing `banlieue-import` ServiceAccount fixed, every
+import Job's pod immediately started and immediately failed with
+`vmimages.banlieue.io "..." is forbidden ... at the cluster scope` — the
+next permission gap in the same never-before-exercised path. Audited every
+other `Api<...>` call in `import.rs` (`Secret`, `Provider`) against the
+operator's existing per-Provider `build_import_role` and confirmed both are
+already covered, so this should be the last RBAC gap in this path.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout — `kubectl apply -f
+      deploy/imagebuilder/rbac/clusterrole-import.yaml`
+- [ ] Config change only
+- [ ] Documentation only
+
+### Verification
+- `kubectl apply --dry-run=client -f deploy/imagebuilder/rbac/clusterrole-import.yaml` ✅
+- Live: confirmed via `kubectl logs` on a failed import Job pod — the exact
+  `vmimages.banlieue.io ... forbidden ... at the cluster scope` error this
+  fixes.
+
+## [2026-08-20 06:10] - Add the missing `banlieue-import` ServiceAccount
+
+**Author:** Erick Bourgeois
+
+### Added
+- `deploy/imagebuilder/rbac/serviceaccount-import.yaml` (new): the
+  `banlieue-import` ServiceAccount, in the `banlieue-imagebuild` namespace.
+  Every per-zone import Job (vsphere ADR-0020, libvirt ADR-0011) sets
+  `serviceAccountName: banlieue-import` in its pod template, and
+  `banlieue-operator` creates a per-Provider Role + RoleBinding naming it as
+  the subject (`workload.rs::IMPORT_SERVICE_ACCOUNT`) — but nothing in
+  `deploy/` ever created the ServiceAccount object itself. Starts with zero
+  permissions of its own by design; the operator grants exactly the
+  credentials-Secret read each import needs, per Provider.
+
+### Why
+Found live: the first per-zone import Jobs ever created by the automated
+reconciler (after today's collision-name and RBAC fixes) all failed pod
+creation with `serviceaccount "banlieue-import" not found`. Invisible until
+now because every prior test in this session used the manual `image-import`
+CLI subcommand directly, which runs as the operator's own kubeconfig
+identity and never creates a Job pod (with a Kubernetes ServiceAccount) at
+all.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout — `kubectl apply -f
+      deploy/imagebuilder/rbac/serviceaccount-import.yaml` (or re-run
+      `kubectl apply -R -f deploy/imagebuilder/rbac/`, which already covers
+      this new file)
+- [ ] Config change only
+- [ ] Documentation only
+
+### Verification
+- `kubectl apply --dry-run=client -f deploy/imagebuilder/rbac/serviceaccount-import.yaml` ✅
+- Live: confirmed via `kubectl describe job` — the exact `FailedCreate` /
+  `serviceaccount "banlieue-import" not found` event this fixes.
+
+## [2026-08-20 02:45] - Fix per-zone import Job name collisions + missing RBAC (ADR-0020)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `crates/banlieue-provider-vsphere/src/k8s_name.rs` (new): `collision_safe_name(parts: &[&str])`
+  — a shared, DNS-1123-safe, collision-resistant Kubernetes name builder.
+  Hashes `parts` as structured, NUL-separated fields (not the
+  already-joined display string) with a hand-rolled, toolchain-stable
+  FNV-1a digest, extracted from `reconciler::provider::failure_domain_name`'s
+  existing implementation (which had already hit and fixed this same bug
+  once before).
+
+### Fixed
+- `crates/banlieue-provider-vsphere/src/reconciler/vmimage.rs`:
+  `import_job_name` naively truncated `import-<image>-<provider>-<zone>` at
+  Kubernetes' 63-char name cap. Found live: real vCenter failure-domain
+  names (datacenter + cluster) routinely exceed 63 chars and share
+  everything except a short trailing suffix, so all three zones for a given
+  `VMImage` truncated to the IDENTICAL Job name — only one zone's import
+  ever actually ran per image, and the other two silently reported that
+  one Job's status as their own. Now delegates to
+  `k8s_name::collision_safe_name`, and takes a new `ImportJobIdentity {
+  image, provider, failure_domain }` struct instead of three positional
+  `&str` params — a call site can no longer silently compile after
+  swapping `image` and `provider`.
+- `reconciler::provider::failure_domain_name` now delegates to the same
+  shared helper (behavior unchanged — all of its existing tests still pass
+  unmodified) and likewise takes a new `FailureDomainIdentity { provider,
+  dc, cluster }` struct instead of three positional `&str` params, for the
+  same reason.
+- `deploy/provider-vsphere/rbac/clusterrole.yaml`: the shared ClusterRole
+  bound to every vSphere provider pod had **no `batch/jobs` permission at
+  all** — this is the first time the automated per-zone-import reconciler
+  ever ran against a real cluster (everything before was manual CLI
+  `image-import`), so this was the first chance for the gap to surface.
+  Added `get`/`create`/`patch`/`delete` — exactly what
+  `ensure_import_jobs`/`create_import_job` use, no more (no `list`/`watch`/
+  `update`, since nothing calls them).
+- `deploy/operator/rbac/clusterrole.yaml`: added `delete` to its existing
+  `batch/jobs` grant (previously `get`/`create`/`patch`, for the libvirt
+  provider only, ADR-0011) so the operator's own ClusterRole covers the
+  superset of what it now hands the vSphere provider too — caught by the
+  existing `operator_cluster_role_covers_every_permission_it_grants_to_providers`
+  test.
+
+### Why
+Both bugs were invisible until this session because the automated
+reconciler path had never been exercised end-to-end before — every prior
+test in this session's live-testing used the manual `image-import` CLI
+subcommand directly, which talks to vCenter without ever creating a Job or
+touching this RBAC at all.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout — `kubectl apply` both changed
+      `clusterrole.yaml` files, and the already-deployed
+      `banlieue-provider-vsphere` image (no code rebuild needed for the RBAC
+      fix; the Job-naming fix needs a rebuild+redeploy to take effect)
+- [ ] Config change only
+- [ ] Documentation only
+
+### Verification
+- `cargo test -p banlieue-provider-vsphere --lib` ✅ (99 passed, including 8
+  new/updated: `k8s_name`'s 6 tests, plus
+  `import_job_name_does_not_collide_across_long_failure_domains_sharing_a_prefix`
+  and `import_job_name_is_stable_for_the_same_inputs`; all pre-existing
+  `failure_domain_name_*` tests pass unmodified against the refactored
+  implementation)
+- `cargo test -p banlieue-operator --lib bootstrap` ✅ (43 passed, including
+  `operator_cluster_role_covers_every_permission_it_grants_to_providers` and
+  `the_job_grant_is_the_minimum_the_reconciler_uses`)
+- `cargo fmt --all -- --check` ✅ / `cargo clippy --all-targets --all-features
+  -- -D warnings` ✅ / `cargo test --all` ✅ (full workspace, proxy unset, 0
+  failures)
+- Live: reconciler observed hitting the exact `403 Forbidden` on
+  `jobs.batch` predicted by the missing RBAC rule, confirming the diagnosis
+  before the fix; the collision was independently reproduced by computing
+  the truncated name for all three of `vcenter-ssc`'s real failure domains
+  (redacted from all tracked files — see `k8s_name_tests.rs` for the
+  synthetic equivalent).
+
+## [2026-08-20 01:30] - Bump `h2` to 0.4.17 to fix RUSTSEC-2026-0258
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `Cargo.lock`: `cargo update -p h2 --precise 0.4.17` (transitive dependency
+  of `hyper` via `kube`/`reqwest`).
+
+### Why
+CI's Security Vulnerability Scan and cargo-deny jobs on PR #20 both failed on
+RUSTSEC-2026-0258 (GHSA-q83h-524g-xf6h), a low-severity DoS advisory against
+`h2` <0.4.16 (unbounded empty DATA frames), published 2026-08-17 — unrelated
+to this branch's own changes, just a newly-published advisory against the
+pinned version. `h2` is not a direct dependency; no source code changed.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only
+- [ ] Documentation only
+
+## [2026-08-18 14:20] - Docs: cloud-config contract also requires an admin-group user (ADR-0021)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docs/adr/0021-vsphere-template-install-and-generalize.md`: Decision #1's
+  cloud-config contract snippet and prose now include a `users` entry (or
+  `install.nousers: true`), documented as found live 2026-08-18.
+- `docs/src/guides/using-banlieue-imagebuilder.md`: the "Cloud-config
+  contract (ADR-0021)" warning block updated the same way.
+- `examples/07-vmimage-kairos-url-source.yaml`: the CONTRACT comment block
+  updated the same way.
+
+### Why
+Live-testing the auto-manage-install flow against a real cloud-config Secret
+that set `install.poweroff`/`reboot` and the identity-wipe stage correctly,
+but no `users` entry, hit: `No users found in any stage that are part of the
+'admin' group ... In Kairos 3.3.x we no longer ship a default hardcoded user
+... require users to provide their own user.` Kairos halts the install stage
+immediately in that case and never reaches `install.poweroff`, so the import
+Job's wait times out with the exact same symptom as a missing
+`poweroff`/`reboot` pair — this is a second, independent way to hit that
+failure mode, not covered by the existing contract text. No banlieue code
+changed: the contract is documentation only, per ADR-0021 Decision #1 and
+non-negotiable #4 (explicit over implicit) — banlieue never reads or edits
+the `cloudConfig` Secret.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+## [2026-08-18 11:30] - Log ISO datastore-upload progress every 10%
+
+**Author:** Erick Bourgeois
+
+### Added
+- `crates/banlieue-provider-vsphere/src/import.rs`: `upload_progress_milestones`
+  (pure helper) computes which 10%-multiples were newly crossed between two
+  cumulative byte counts out of a known total. `upload_iso_to_datastore`'s
+  streaming PUT now taps the `ReaderStream` with `futures::StreamExt::scan`
+  (cumulative bytes sent as state) and logs an `info!` "ISO upload progress"
+  line — `percent`, `bytes_sent`, `total_bytes` — each time a milestone is
+  crossed, without buffering or otherwise altering the stream fed to
+  `reqwest::Body::wrap_stream`.
+- `UPLOAD_PROGRESS_STEP_PERCENT` constant (10) — the log cadence.
+
+### Why
+Multi-gigabyte ISO uploads to a zone's datastore could run for several
+minutes with a single "uploading ISO to datastore (streaming)" line and then
+silence until completion, making it impossible to tell a slow-but-healthy
+upload from a hung one by watching the per-zone import Job's logs.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout (picked up on next `banlieue-provider-vsphere`
+      rebuild, same as any other code change to the import Job)
+- [ ] Config change only
+- [ ] Documentation only
+
+### Verification
+- `cargo test -p banlieue-provider-vsphere --lib import` ✅ (25 passed,
+  including 7 new `upload_progress_*` tests: unknown total size, one
+  milestone per normal chunk, no milestone within the same decile, one large
+  chunk crossing every milestone, reaching exactly 100% at the last byte,
+  capping at 100% if bytes overshoot the total, and a zero-length chunk
+  crossing nothing)
+- `cargo fmt --all -- --check` ✅ / `cargo clippy --all-targets --all-features
+  -- -D warnings` ✅
+- `cargo test --all` ✅ (full workspace, proxy unset — see
+  `onprem-env-constraints` — 0 failures)
+
+## [2026-08-18 09:15] - Configurable OSArtifact importer image + pull secrets (ADR-0022 Decision #4)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `crates/banlieue-imagebuilder/src/importer_image.rs` (new): `ImporterImage {
+  reference, pull_secrets }`, defaulting to the built-in `busybox:1.36` with
+  no pull secrets; `from_flags` builds it from CLI values.
+- `crates/banlieue-imagebuilder/src/app.rs`: two new `Cli` flags —
+  `--build-importer-image` / `BANLIEUE_BUILD_IMPORTER_IMAGE` (full image
+  reference, default `busybox:1.36`) and `--build-importer-image-pull-secret`
+  (repeatable, CLI-only, same precedent as `--build-node-selector`).
+- `crates/banlieue-imagebuilder/src/context.rs`: `Context.importer_image:
+  ImporterImage`, constructed in `app::run` and threaded into the `VMImage`
+  reconciler.
+- `crates/banlieue-imagebuilder/src/reconciler/vmimage.rs`:
+  `desired_os_artifact` gained an `importer_image: &ImporterImage` parameter.
+  The ISO-overlay materializer's `image` now comes from
+  `importer_image.reference` instead of a hardcoded constant, and
+  `importer_image.pull_secrets` (when non-empty) sets the `OSArtifact`'s
+  pod-wide `spec.imagePullSecrets` — unconditionally, not gated on
+  `iso_overlay`, since Kubernetes pull secrets are pod-scoped and the main
+  build container's image may come from the same mirror.
+
+### Why
+The ADR-0022 Decision #3 workaround (dereferencing the ISO-overlay Secret via
+a `busybox` init container) hardcoded a public-registry image with no pull
+secret. A cluster whose nodes cannot reach public registries at all —
+everything pulled through an internal mirror — had no way to run it. This
+follows the same cluster-wide, install-time configuration shape as
+`ProviderClass.spec.image` (`crates/banlieue-api/src/banlieue/providerclass.rs`):
+which registry a cluster can reach is an operator decision made once on the
+`banlieue-imagebuilder` Deployment, not a per-`VMImage` field.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout (no CRD change; existing `banlieue-imagebuilder`
+      deployments keep working unmodified — new flags default to prior
+      hardcoded behavior)
+- [x] Config change only (new optional CLI flags / env var on
+      `banlieue-imagebuilder`)
+- [ ] Documentation only
+
+### Verification
+- `cargo test -p banlieue-imagebuilder --lib` ✅ (46 passed, including 5 new/
+  updated: `importer_image` module's 3 tests, `desired_os_artifact_uses_the_
+  configured_importer_image`, `desired_os_artifact_sets_image_pull_secrets_
+  when_configured`, `desired_os_artifact_omits_image_pull_secrets_when_unset`,
+  `app::build_importer_image_overrides_parse`)
+- `cargo fmt --all -- --check` ✅ / `cargo clippy --all-targets --all-features
+  -- -D warnings` ✅
+- `cargo test --all` ✅ (full workspace, 0 failures with the corporate HTTP
+  proxy unset — `request_times_out_against_a_hung_endpoint` binds a local
+  `TcpListener` and needs a direct loopback connection; the proxy hijacks it)
+
+## [2026-08-17 21:00] - Fix: dereference ISO-overlay Secret before auroraboot sees it (ADR-0022 Decision #3)
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `crates/banlieue-imagebuilder/src/reconciler/vmimage.rs`: `desired_os_artifact`
+  no longer points `spec.artifacts.overlayISOVolume` at the raw Secret volume.
+  It now adds a second `spec.volumes[]` entry (`iso-overlay`, an `emptyDir`)
+  and a `spec.importers[]` init container (`iso-overlay-materialize`,
+  `busybox:1.36`) that runs `find /overlay-src -mindepth 1 -maxdepth 1
+  -not -name '.*' -exec cp -rL -t /overlay-dst/ {} +` to dereference the
+  Secret's symlinks into plain files on the `emptyDir` before the build
+  container runs `auroraboot build-iso --overlay-iso`. `overlayISOVolume` now
+  names the `emptyDir` (`iso-overlay`); the Secret volume was renamed
+  `iso-overlay-source` and is mounted read-only by the importer only.
+
+### Why
+Live-testing ADR-0022 against the real vCenter pipeline hit
+`Failed creating ISO image: exit status 5` on every build with `isoOverlay`
+set. Root-caused with a local, out-of-cluster `docker run
+quay.io/kairos/auroraboot:v0.24.0 build-iso --overlay-iso` reproduction
+(no Kubernetes involved): kubelet mounts Secret/ConfigMap volumes with each
+top-level path component as a symlink into a hidden timestamped directory
+(e.g. `boot -> ..data/boot`); `auroraboot`'s overlay-copy step collides that
+symlink with the ISO's real `boot/` directory (already populated by an
+earlier build step) and silently corrupts it — `xorriso` then fails opaquely
+at `exit status 5`. Confirmed with a paired test: an identical overlay with
+plain files (no symlinks) builds a valid ISO every time; the exact kubelet
+symlink layout reproduces the crash every time. Filed upstream as
+[kairos-io/kairos#4324](https://github.com/kairos-io/kairos/issues/4324) —
+this change is a `banlieue-imagebuilder`-side workaround, kept independent of
+whether/when that gets fixed.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (existing `VMImage`s with `isoOverlay` set pick
+      up the fixed `OSArtifact` wiring on next reconcile; no CRD schema
+      change)
+- [ ] Config change only
+- [ ] Documentation only
+
+### Verification
+- `cargo test -p banlieue-imagebuilder --lib reconciler::vmimage` ✅ (36 passed,
+  including 2 new: `desired_os_artifact_wires_iso_overlay_volume` (updated for
+  the two-volume shape) and `desired_os_artifact_wires_iso_overlay_materialize_importer`)
+- `cargo fmt --all -- --check` ✅ / `cargo clippy --all-targets --all-features -- -D warnings` ✅
+- `cargo test --all` ✅ (full workspace, no regressions)
+- Reproduction: paired `docker run` tests (`overlay-plain` succeeds, exit 0;
+  `overlay-symlinked`, matching the exact kubelet mount structure captured
+  live from a pod, reproduces `exit status 5` verbatim) — see
+  kairos-io/kairos#4324 for the full repro.
+
+## [2026-08-15 12:30] - ADR-0022: vSphere ISO overlay files via OSArtifact volumes
+
+**Author:** Erick Bourgeois
+
+### Added
+- `VMImage.spec.isoOverlay` (optional `IsoOverlaySource`: `secretRef` +
+  `files[]` of `{key, path}`): overlays additional files (e.g. a
+  hand-verified `/boot/grub2/grub.cfg`) onto the ISO `banlieue-imagebuilder`
+  builds for a vSphere `Url` source, via kairos-operator's own
+  `OSArtifact.spec.artifacts.overlayISOVolume` — the same `auroraboot
+  build-iso --overlay-iso` mechanism the maintainer's proven manual
+  ISO-build pipeline (`build-kairos-iso.sh`) already relies on.
+- `crates/banlieue-imagebuilder/src/reconciler/vmimage.rs`:
+  `desired_os_artifact` gained an `iso_overlay` parameter; when set with at
+  least one file, it adds `spec.volumes: [{name: "iso-overlay", secret:
+  {secretName, items: [{key, path}, ...]}}]` and `spec.artifacts.
+  overlayISOVolume: "iso-overlay"` to the `OSArtifact` it already builds.
+
+### Why
+Live-testing ADR-0021 surfaced a VM that never completed install because its
+ISO had a malformed multi-session structure (`xorriso`: "Chain of ISO session
+headers broken at #2") — resolved operationally by deleting the stale
+`OSArtifact`/PVC and letting `banlieue-imagebuilder` rebuild it fresh; no code
+change was needed for that specific defect. While investigating it, the
+maintainer's own proven ISO-build pipeline surfaced a capability
+kairos-operator's plain `OSArtifact`-driven build has no equivalent for: a
+custom `grub.cfg` overlay. This ADR closes that gap using a mechanism
+kairos-operator's CRD already exposes — no kairos-operator changes needed.
+
+### Impact
+- [ ] Breaking change (unreleased — no consumers exist yet)
+- [x] Requires cluster rollout + CRD re-apply
+- [ ] Config change only
+- [ ] Documentation only
+
+### Verification
+- `cargo test -p banlieue-api --lib` ✅ (232 passed) / `cargo test -p banlieue-imagebuilder --lib` ✅ (38 passed)
+- `cargo fmt -p banlieue-api -p banlieue-imagebuilder` ✅ / clippy clean (exit 0, captured directly — not via `tail`)
+- `make crds` ✅ (regenerated `deploy/crds/banlieue.io_vmimages.yaml` + `docs/src/reference/api.md`) — confirmed `isoOverlay` present in the generated CRD
+- `make calm-validate` ✅ / `make calm-diagrams` ✅
+- **No new RBAC for `banlieue-imagebuilder`**: `spec.volumes[].secret.secretName`
+  + `items[].key` need only the Secret's name and the caller-declared key
+  list, never its content — consistent with the "never touches Secrets"
+  posture established for `autoManageInstall` (ADR-0021).
+- Every other `auroraboot --set` flag in `build-kairos-iso.sh` was
+  cross-checked against banlieue's existing `OSArtifact` generation;
+  `iso.overlay_iso` was the only real gap (see conversation for the
+  flag-by-flag comparison table).
+
+## [2026-08-15 09:40] - Fix: boot-order Edit device_change needs controllerKey resent, not just key
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `crates/banlieue-provider-vsphere/src/client/vim.rs`: the CD-ROM-connect
+  `Edit` `device_change` in `build_boot_order_reconfigure_spec` now resends
+  `controllerKey` / `unitNumber` / a rebuilt ISO `backing`, not just `key`.
+  Found live: vCenter's `ReconfigVM_Task` rejected the previous version with
+  `MissingController` ("Device requires a controller") — an `Edit` on a
+  device with a controller apparently requires `controllerKey` to be present
+  in the submitted object even when only an unrelated field
+  (`connectable`) is actually changing, matching `create-vm.sh`'s
+  `govc device.connect` pattern of always re-sending the whole device.
+- An intermediate attempt to fix this by fetching and `.clone()`-ing the
+  live `VirtualDevice` silently miscompiled: `VirtualDevice` does not
+  implement `Clone` (its `backing` field is a boxed trait object), so
+  `.clone()` resolved to cloning the `&VirtualDevice` *reference* instead
+  (always `Clone`/`Copy`) — a false green that `cargo build --all-targets`
+  didn't catch since it doesn't compile `#[cfg(test)]` code; `cargo test`
+  caught the real `E0308` mismatch.
+- New `CdromPlacement` (a small `Copy` struct: `key`, `controller_key`,
+  `unit_number`) replaces the failed clone-the-whole-device approach —
+  `find_cdrom_placement` extracts just those `Copy` fields, and the ISO
+  `backing` is rebuilt from `IsoImportRequest.iso_datastore_path` (already
+  known at the call site) rather than copied off the live device.
+
+### Why
+Two live-test cycles against the real vCenter this session: the boot order
+itself was wrong (fixed earlier), then the CD-ROM connect step needed to
+carry the controller placement along, matching the maintainer's own working
+`create-vm.sh` reference exactly.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only (no CRD/API change; part of the same pending
+      vsphere provider rebuild as the rest of tonight's ADR-0021 work)
+- [ ] Documentation only
+
+### Verification
+- `cargo fmt --all -- --check` ✅ (exit 0) / `cargo clippy --all-targets --all-features -- -D warnings` ✅ (exit 0, full workspace)
+- `cargo test -p banlieue-provider-vsphere --lib` ✅ (83 passed, exit 0) — extended `build_boot_order_reconfigure_spec_connects_cdrom_and_orders_cdrom_disk_ethernet` to assert `controllerKey`/`unitNumber`/`backing` are preserved on the edited device, not just `key`
+- `cargo test --all` — full workspace, verifying now
+- Note: exit codes from prior verification steps this session were
+  momentarily misread when piped through `tail` (which reports its own exit
+  status, not the piped command's) — corrected by capturing real exit codes
+  to files (`cmd > file 2>&1; echo "EXIT=$?" >> file`) for the remainder of
+  this fix.
+
+## [2026-08-15 08:47] - Fix: destroy_if_present must power off a running target first
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `crates/banlieue-provider-vsphere/src/client/vim.rs`: `destroy_if_present`
+  (added earlier this session for the `--force-create` NFC-lock ordering fix)
+  now checks `runtime.powerState` and issues `PowerOffVM_Task` first when the
+  target isn't already `poweredOff`, before `Destroy_Task`. Found live:
+  `Destroy_Task` on a powered-on VM fails closed with `InvalidPowerState`
+  ("cannot be performed in the current state (Powered on)") rather than
+  powering it off implicitly. The specific VM hit this because an earlier
+  live-test run left it stuck powered-on at the (now-fixed) Boot Manager
+  screen, never reaching `install.poweroff`.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only (no CRD/API change; part of the same pending
+      vsphere provider rebuild as the rest of tonight's ADR-0021 work)
+- [ ] Documentation only
+
+### Verification
+- `cargo fmt --all -- --check` ✅ / `cargo clippy --all-targets --all-features -- -D warnings` ✅ (full workspace)
+- `cargo test -p banlieue-provider-vsphere --lib` ✅ (83 passed, proxy unset, no count change — this power-off branch mutates live vCenter and isn't unit-testable, same precedent as the rest of this function)
+- `cargo test --all` ✅ — full workspace, 0 failed
+
+## [2026-08-15 07:55] - Fix: boot order must be set post-create, by real device key, not baked into CreateVM_Task
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `crates/banlieue-provider-vsphere/src/client/vim.rs`: `import_iso_template`
+  now applies boot order via a **separate `ReconfigVM_Task`** right after the
+  VM is created (and before power-on), rather than embedding it in the
+  initial `CreateVM_Task` config spec. Found live: a boot order referencing
+  the create spec's *provisional* (negative) device keys was not reliably
+  honored by EFI firmware — the VM still stopped at the interactive Boot
+  Manager menu (confirmed by console: the menu's device order visibly
+  changed to put the CD-ROM first, proving the boot-order write partially
+  landed, but firmware still never auto-selected it).
+- Fixed by mirroring `~/dev/vm-build/bin/create-vm.sh` exactly: after
+  creation, resolve the CD-ROM/disk/NIC's **real** (positive) device keys
+  from `VirtualMachine.config().hardware.device`, explicitly **connect** the
+  CD-ROM (`connectable.connected = true`, not just `startConnected`), and set
+  `boot_options.boot_order = [cdrom, disk, ethernet]` — matching `govc
+  device.connect` + `device.boot -order cdrom,disk,ethernet` — all in one
+  `ReconfigVM_Task`, one call before `PowerOnVM_Task`.
+- Removed the earlier `boot_retry_enabled`/`boot_retry_delay` attempt (added
+  then reverted this same session): unverified against any working
+  reference, and the maintainer's own proven scripts
+  (`create-kairos-template.sh` / `create-vm.sh`) never use it — the actual
+  fix is the create/reconfigure split above.
+- New pure helpers `find_disk_key`, `find_nic_key` (alongside the existing
+  `find_cdrom_key`) and `build_boot_order_reconfigure_spec`, all
+  unit-tested without a live VM.
+- Added `info!` logging marking entry into the install phase
+  ("entering auto-manage install phase") and the start of the long
+  install-wait poll, so a running Job's logs make it obvious it's waiting on
+  Kairos rather than looking stuck.
+
+### Why
+Live-tested against the real vCenter: after the previous (incorrect)
+`boot_retry_enabled` fix, the VM still stopped at the interactive Boot
+Manager screen. The maintainer identified the actual cause from their own
+working `create-vm.sh`/`create-kairos-template.sh` scripts, which have solved
+this exact problem before by never trusting a boot order set in the same
+call as device creation.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only (no CRD/API change; requires the vsphere provider
+      image to be rebuilt to pick up this and the rest of tonight's ADR-0021 work)
+- [ ] Documentation only
+
+### Verification
+- `cargo fmt --all -- --check` ✅ / `cargo clippy --all-targets --all-features -- -D warnings` ✅ (full workspace)
+- `cargo test -p banlieue-provider-vsphere --lib` ✅ (83 passed, proxy unset) — new tests for `find_disk_key`, `find_nic_key`, `build_boot_order_reconfigure_spec`; the 3 stale `build_template_config_spec` boot-order tests replaced (that function sets no boot order at all now, matching `create-kairos-template.sh`)
+- `cargo test --all` ✅ — full workspace, 0 failed
+- Root-caused by reading the maintainer's own `~/dev/vm-build/bin/create-vm.sh`
+  and `create-kairos-template.sh` scripts directly, per their explicit
+  instruction to replicate that exact approach rather than a generic
+  VMware-quirk guess.
+
+## [2026-08-15 07:10] - Fix: --force-create destroys the stale target too late, wasting a re-upload
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `crates/banlieue-provider-vsphere/src/import.rs`: `--force-create` now
+  destroys any pre-existing VM/template of the target name **before** the
+  datastore upload/reuse-check, not after. Found live: a stale
+  `rhel98-kairos-url` template's CD-ROM still referenced the target ISO on
+  `...DS001`; vCenter holds an NFC lock on any file referenced by a
+  registered VM's config (even powered off, even disconnected), so its
+  datastore HTTP API returned `500 Failed to open disk: NFC_FILE_LOCKED` for
+  GET/HEAD on that file. `datastore_file_exists` correctly treats an
+  inconclusive HEAD as "absent" (a deliberate fail-safe — see ADR-0008/0020),
+  so it silently gave up on the locked datastore member and re-uploaded
+  ~1.2GB fresh onto a different, emptier one instead of reusing what was
+  already there.
+- New `VSphereClient::destroy_if_present(datacenter_moref, name)` (in
+  `client/mod.rs`, implemented in `vim.rs` by reusing the existing
+  `find_vm_moref_by_name` + `wait_for_task` helpers, stubbed in `fake.rs`),
+  called from `import.rs::run()` right after the datacenter resolves and
+  before any datastore work. `import_iso_template`'s own existing-target
+  check (the `!force_create` → skip-as-no-op path) is unchanged.
+
+### Why
+Discovered live while testing ADR-0021's install/generalize flow with
+`--force-create` against a template left over from an earlier test run. Not
+new to ADR-0021 — the upload-before-destroy ordering predates it (ADR-0020)
+— it just never mattered until a real repeat `--force-create` cycle hit a
+template that still locked its own source ISO.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only (no CRD/API change, no image rebuild required beyond
+      the existing ADR-0021 work already pending redeploy)
+- [ ] Documentation only
+
+### Verification
+- `cargo fmt --all -- --check` ✅ / `cargo clippy --all-targets --all-features -- -D warnings` ✅ (full workspace)
+- `cargo test -p banlieue-provider-vsphere --lib` ✅ (79 passed, proxy unset) — no new tests: `destroy_if_present` mutates live vCenter and is verified live only, same precedent as `import_iso_template`/`wait_for_task`
+- `cargo test --all` ✅ — full workspace, 0 failed
+- Root-caused live: confirmed the file existed on DS001 (`govc datastore.ls`)
+  and reproduced the exact `500 NFC_FILE_LOCKED` via a direct `curl` HEAD/GET
+  against vCenter's datastore file API with the real credentials, isolating
+  the bug before writing the fix.
+
+## [2026-08-14 21:50] - ADR-0021 amendment: autoManageInstall opt-out
+
+**Author:** Erick Bourgeois
+
+### Added
+- `VMImage.spec.template.autoManageInstall` (optional `bool`, default `true`):
+  `false` reverts a vSphere `Url` source's per-zone import to ADR-0020's
+  original behavior — create the VM, attach the ISO, `MarkAsTemplate`
+  immediately, no power-on — for a build that isn't Kairos-driven or whose
+  install/generalize is managed some other way.
+- `--auto-manage-install <true|false>` CLI flag on `banlieue provider vsphere
+  image-import`, threaded through `ImportForce` / `ImportJobInputs` /
+  `IsoImportRequest`. Declared `action = clap::ArgAction::Set` explicitly —
+  clap's implicit bare-flag inference for `bool` fields can only ever set
+  `true`, which can't express turning a default-`true` field off.
+
+### Why
+An earlier draft had `banlieue-imagebuilder` auto-inject the ADR-0021
+cloud-config contract (`install.poweroff`/`after-install-chroot`) into the
+user's Secret so they wouldn't have to author it by hand — rejected:
+`banlieue-imagebuilder`'s RBAC is explicitly documented as never touching
+Secrets of any kind (`deploy/imagebuilder/rbac/clusterrole.yaml`), and this
+would have broken that boundary for a convenience served just as well by
+documentation. `autoManageInstall` instead controls *whether the sequence
+runs at all* — the contract itself stays manual and documented
+(`docs/src/guides/using-banlieue-imagebuilder.md`,
+`examples/07-vmimage-kairos-url-source.yaml`), and this flag is the escape
+hatch for VMImages that don't need it.
+
+### Impact
+- [ ] Breaking change (unreleased — no consumers exist yet)
+- [x] Requires cluster rollout + CRD re-apply
+
+### Verification
+- `cargo test -p banlieue-api --lib` ✅ (228 passed) / `cargo test -p banlieue-provider-vsphere --lib` ✅ (79 passed, proxy unset)
+- `cargo fmt -p banlieue-api -p banlieue-provider-vsphere` ✅ / clippy clean
+- `make crds` ✅ (regenerated `deploy/crds/banlieue.io_vmimages.yaml` + `docs/src/reference/api.md`)
+- Verified `--auto-manage-install false` actually parses (not silently
+  ignored) by running the binary directly — clap's bare-bool-flag inference
+  would otherwise have made the field un-settable to `false` from the CLI.
+
+## [2026-08-14 20:30] - ADR-0021: install + generalize the vSphere template before MarkAsTemplate
+
+**Author:** Erick Bourgeois
+
+### Added
+- `VMImage.spec.template.installTimeoutSeconds` (optional `i32`, default 1800):
+  bound on how long the per-zone import Job waits for the unattended Kairos
+  install to finish and the VM to power itself off before failing the Job.
+- `crates/banlieue-provider-vsphere/src/client/vim.rs`: `import_iso_template`
+  now powers the created VM on, confirms it started, polls
+  `runtime.powerState` for `poweredOff` (the cloud-config's
+  `install.poweroff: true` firing once its `after-install-chroot` stage wipes
+  `/etc/machine-id` / SSH host keys and the unattended install completes — the
+  disk is never rebooted by the build), removes the CD-ROM device, and only
+  then `MarkAsTemplate`. New pure helpers `install_poll_max_attempts` and
+  `find_cdrom_key` (the latter identifies the CD-ROM via
+  `VimObjectTrait::data_type()` rather than `Any` downcasting — vim_rs 0.5's
+  generated `AsAny` blanket impl does not round-trip through the
+  `VirtualDeviceTrait` object for every device type; `data_type()`'s
+  `StructType` tag does).
+- `--install-timeout-seconds` CLI flag on `banlieue provider vsphere
+  image-import`, threaded through `ImportForce` / `ImportJobInputs` /
+  `IsoImportRequest` alongside the existing template knobs.
+- `build_template_config_spec` now always sets an explicit
+  `boot_options.boot_order` (`[cdrom, disk]`), for every firmware type, not
+  only when secure boot is requested. **Found via live testing** of this
+  ADR's power-on step (the first time this VM is ever actually started):
+  without it, EFI firmware with a blank disk and no prior successful boot
+  stopped at the interactive UEFI Boot Manager menu instead of auto-booting
+  the installer ISO, hanging the import Job until timeout. Harmless once the
+  CD-ROM is later removed — vSphere skips a boot-order entry whose device no
+  longer exists and falls through to the disk, which is what a real clone
+  wants anyway.
+
+### Changed
+- Previously the "template" produced by the per-zone import was an empty VM
+  with the ISO still attached — every clone had to boot the installer itself.
+  Templates built after this change are fully installed and generalized, with
+  no CD-ROM device at all, closing that gap.
+- Documented the cloud-config **contract** this relies on
+  (`install.poweroff: true` / `install.reboot: false` + an
+  `after-install-chroot` identity-wipe stage) in
+  `docs/src/guides/using-banlieue-imagebuilder.md` and
+  `examples/07-vmimage-kairos-url-source.yaml`, plus a troubleshooting entry
+  for the timeout failure mode.
+- `docs/architecture/calm/architecture.json`: updated `rel-provider-vsphere-backend`
+  and the `flow-build-vmimage-from-oci` flow's step 6 to describe the new
+  sequence; `make calm-validate` passes, diagrams regenerated.
+
+### Why
+ADR-0020's per-zone import created a template that was never actually
+installed, so every clone paid an 8-12 min unattended-install cost and still
+needed the install ISO attached at boot. This closes that gap: install once,
+generalize once, template once.
+
+### Impact
+- [ ] Breaking change (unreleased — no consumers exist yet)
+- [x] Requires cluster rollout + CRD re-apply
+- [ ] Config change only
+- [ ] Documentation only
+
+### Verification
+- `cargo fmt -p banlieue-api -p banlieue-provider-vsphere` ✅
+- `cargo clippy -p banlieue-api -p banlieue-provider-vsphere --all-targets --all-features -- -D warnings` ✅
+- `cargo test -p banlieue-api --lib` ✅ (226 passed) / `cargo test -p banlieue-provider-vsphere --lib` ✅ (79 passed, proxy unset)
+- `cargo test --all` (full workspace) ✅ — all suites green, 0 failed
+- `make calm-validate` ✅ / `make calm-diagrams` ✅ / `make crds` ✅ (regenerated `deploy/crds/banlieue.io_vmimages.yaml` + `docs/src/reference/api.md`)
+- Example YAML **not** live-validated against a running API server this
+  session (no reachable cluster); the new field's name/type were checked
+  against the regenerated CRD instead (camelCase `installTimeoutSeconds`,
+  `integer`/`int32`, nullable) plus the serde round-trip unit tests.
+
 ## [2026-08-09 21:15] - ADR-0020: fully parameterize the vSphere template (CPU/mem/firmware/NIC/guestId)
 
 **Author:** Erick Bourgeois
@@ -32,7 +3011,7 @@
   `build_import_job_threads_all_template_hardware_knobs`.
 
 ### Impact
-- [x] Breaking (v1alpha1: new optional `spec.template` fields)
+- [ ] Breaking change (unreleased — no consumers exist yet)
 - [x] Requires cluster rollout + CRD re-apply
 
 ## [2026-08-09 20:30] - ADR-0020: template network + structured disk (reuse common DiskProvisioning)
@@ -68,7 +3047,7 @@
   hijack still requires running localhost tests with the proxy env unset.)
 
 ### Impact
-- [x] Breaking (v1alpha1: `spec.template.diskGib` → `spec.template.disk.{size,type,controller}`; added `network`)
+- [ ] Breaking change (unreleased — no consumers exist yet)
 - [x] Requires cluster rollout + CRD re-apply
 
 ## [2026-08-09 19:15] - ADR-0020: group template attrs under VMImage.spec.template + folder
@@ -90,7 +3069,7 @@
   `ImportForce.folder` + `IsoImportRequest.folder`.
 
 ### Impact
-- [x] Breaking (v1alpha1 spec reshape: flat force/disk fields → `spec.template`)
+- [ ] Breaking change (unreleased — no consumers exist yet)
 - [x] Requires cluster rollout + CRD re-apply
 
 ## [2026-08-09 18:30] - ADR-0020: template NIC + configurable disk + idempotent datastore placement
@@ -257,7 +3236,7 @@ orchestrates and types the artifact. One status field now carries either a raw
 cloud image (libvirt) or an ISO (vSphere).
 
 ### Impact
-- [x] Breaking change (v1alpha1 status field rename; regen CRDs applied)
+- [ ] Breaking change (unreleased — no consumers exist yet; CRDs regenerated)
 - [x] Requires cluster rollout (new image with the imagebuilder/provider changes)
 
 ### Follow-up (NOT in this change)

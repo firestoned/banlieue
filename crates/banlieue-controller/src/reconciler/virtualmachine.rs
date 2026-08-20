@@ -22,17 +22,19 @@
 
 use std::sync::Arc;
 
-use banlieue_api::banlieue::{Provider, ScheduledPlacement, VMClass, VMImage, VirtualMachine};
+use banlieue_api::banlieue::{Provider, VMClass, VMImage, VirtualMachine, VirtualMachineStatus};
 use banlieue_api::common::{
     LocalObjectReference as _PlaceholderLocalRef, TypedObjectReference, condition_types,
 };
 use banlieue_api::infrastructure::VSphereMachine;
 use banlieue_provider_sdk::{
     finalizer::{ensure_finalizer, remove_finalizer},
+    guestdata::{GuestDataContext, render_placeholders},
     reconciler::{requeue_default, requeue_on_error},
     ssa::{FIELD_MANAGER_CONTROLLER, server_side_apply},
     status::{condition_status, set_condition},
 };
+use k8s_openapi::api::core::v1::Secret;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
 use kube::{
     Resource, ResourceExt,
@@ -45,7 +47,7 @@ use tracing::{debug, info, warn};
 use super::infra::build_vsphere_machine;
 use super::migration::{MigrationAction, PlacementDriftReason, evaluate};
 use super::scheduler::{ScheduleError, reasons, schedule};
-use super::status_mirror::mirror_onto_vm;
+use super::status_mirror::{mirror_onto_vm, mirror_status_from_infra};
 use crate::context::Context;
 use crate::error::{Error, Result};
 
@@ -101,7 +103,7 @@ pub async fn reconcile(vm: Arc<VirtualMachine>, ctx: Arc<Context>) -> Result<Act
         Ok(d) => d,
         Err(err) => {
             warn!(?err, "scheduling failed; surfacing condition");
-            patch_scheduling_failure(&vm_api, &name, generation, &err).await?;
+            patch_scheduling_failure(&vm_api, &vm, &name, generation, &err).await?;
             return Ok(requeue_default());
         }
     };
@@ -127,7 +129,7 @@ pub async fn reconcile(vm: Arc<VirtualMachine>, ctx: Arc<Context>) -> Result<Act
             // and report the drift as a (passive) PlacementValid=True. We
             // still mirror status from whatever is already on the infra CR.
             info!("placement drift but migrationPolicy=Never; sticking to old placement");
-            return mirror_only_path(&vm_api, &vsphere_api, &vm, &name, generation).await;
+            return mirror_only_path(&vm_api, &vsphere_api, &vm, &name).await;
         }
         MigrationAction::SurfaceOnly { reason } => {
             // migrationPolicy=Manual without the annotation. Set
@@ -136,7 +138,7 @@ pub async fn reconcile(vm: Arc<VirtualMachine>, ctx: Arc<Context>) -> Result<Act
                 reason = reason.reason(),
                 "placement drift; manual migration required (set annotation banlieue.io/migrate=true)"
             );
-            patch_placement_invalid(&vm_api, &name, generation, reason).await?;
+            patch_placement_invalid(&vm_api, &vm, &name, generation, reason).await?;
             return Ok(requeue_default());
         }
         MigrationAction::Recreate { reason } => {
@@ -149,17 +151,37 @@ pub async fn reconcile(vm: Arc<VirtualMachine>, ctx: Arc<Context>) -> Result<Act
                 "placement drift; recreating infra CR for new placement"
             );
             delete_existing_infra(&vsphere_api, &vm.name_any()).await?;
-            patch_placement_invalid(&vm_api, &name, generation, reason).await?;
+            patch_placement_invalid(&vm_api, &vm, &name, generation, reason).await?;
             return Ok(requeue_default());
         }
     }
 
+    // ---- Resolve + render userData (ADR-0025) ---------------------------
+    // Read here, not in the provider: banlieue-controller already has a
+    // namespace-scoped Secret Role for this (deploy/controller/rbac/role.
+    // yaml); the provider deliberately has none.
+    let rendered_user_data = match resolve_rendered_user_data(&ctx, &namespace, &name, &vm).await {
+        Ok(u) => u,
+        Err(e) => {
+            warn!(error = %e, "userData resolution failed");
+            patch_infra_build_failure(&vm_api, &vm, &name, generation, &e.to_string()).await?;
+            return Ok(requeue_on_error());
+        }
+    };
+
     // ---- Build + SSA the infra CR --------------------------------------
-    let infra = match build_vsphere_machine(&vm, &class, &image, &decision, chosen_provider) {
+    let infra = match build_vsphere_machine(
+        &vm,
+        &class,
+        &image,
+        &decision,
+        chosen_provider,
+        rendered_user_data.as_deref(),
+    ) {
         Ok(m) => m,
         Err(e) => {
             warn!(error = %e, "infra builder failed; reporting Scheduled=False");
-            patch_infra_build_failure(&vm_api, &name, generation, &e.to_string()).await?;
+            patch_infra_build_failure(&vm_api, &vm, &name, generation, &e.to_string()).await?;
             return Ok(requeue_on_error());
         }
     };
@@ -170,25 +192,41 @@ pub async fn reconcile(vm: Arc<VirtualMachine>, ctx: Arc<Context>) -> Result<Act
     );
 
     // ---- Status mirror -------------------------------------------------
-    let next_status = mirror_onto_vm(&vm, &applied);
-    let scheduled_placement =
-        decision.to_scheduled_placement(Time(k8s_openapi::jiff::Timestamp::now()));
-    let infra_ref = TypedObjectReference {
+    // `mirror_status_from_infra`'s aggregate Ready computation reads the
+    // `Scheduled` *condition* off `current.conditions` — not
+    // `status.scheduled` (the struct patched below) — but the only two
+    // places that ever set that condition are the failure paths
+    // (`patch_scheduling_failure`, `patch_infra_build_failure`), both
+    // `False`. Nothing on the success path ever set it `True`, so `Ready`
+    // stayed stuck at `Scheduling` forever even once `status.scheduled` was
+    // populated and `InfrastructureReady` was `True` (found live: two VMs
+    // fully up and reachable in vCenter, `VirtualMachine.status` still
+    // reporting `Ready=False reason=Scheduling`). Set it here, on the
+    // pre-mirror `current` snapshot — not after calling `mirror_onto_vm` —
+    // so the aggregate computation inside `mirror_status_from_infra`
+    // actually sees it this same pass, rather than one reconcile late.
+    // Reaching this line only happens via `schedule()` returning
+    // `Ok(decision)` above, so it's always correct to set this here.
+    let mut current_status = vm.status.clone().unwrap_or_default();
+    set_condition(
+        &mut current_status.conditions,
+        condition_types::SCHEDULED,
+        condition_status::TRUE,
+        "Scheduled",
+        "VirtualMachine scheduled successfully",
+        generation,
+    );
+    let mut next_status = mirror_status_from_infra(&current_status, &applied, generation);
+    next_status.scheduled =
+        Some(decision.to_scheduled_placement(Time(k8s_openapi::jiff::Timestamp::now())));
+    next_status.infrastructure_ref = Some(TypedObjectReference {
         api_group: VSphereMachine::group(&()).to_string(),
         kind: "VSphereMachine".to_string(),
         name: applied.name_any(),
         namespace: applied.namespace(),
-    };
+    });
 
-    patch_status(
-        &vm_api,
-        &name,
-        generation,
-        &scheduled_placement,
-        &infra_ref,
-        &next_status.conditions,
-    )
-    .await?;
+    patch_status(&vm_api, &name, &next_status).await?;
 
     Ok(requeue_default())
 }
@@ -202,7 +240,6 @@ async fn mirror_only_path(
     vsphere_api: &Api<VSphereMachine>,
     vm: &VirtualMachine,
     name: &str,
-    generation: i64,
 ) -> Result<Action> {
     let infra = match vsphere_api.get_opt(name).await? {
         Some(m) => m,
@@ -213,8 +250,12 @@ async fn mirror_only_path(
             return Ok(requeue_on_error());
         }
     };
+    // mirror_status_from_infra leaves `scheduled`/`infrastructureRef`
+    // untouched from `current` — exactly the "keep the existing placement"
+    // contract this path wants — so `next_status` already carries them
+    // forward unchanged; nothing extra to set here.
     let next_status = mirror_onto_vm(vm, &infra);
-    patch_status_conditions_only(vm_api, name, generation, &next_status.conditions).await?;
+    patch_status(vm_api, name, &next_status).await?;
     Ok(requeue_default())
 }
 
@@ -275,16 +316,23 @@ async fn finalize_vm(
 }
 
 /// Patch the VirtualMachine status with `Scheduled=False reason=<reason>`
-/// for a failed scheduling attempt.
+/// for a failed scheduling attempt. Starts from `vm.status` (not
+/// `Vec::new()`) and patches the whole status object — a conditions-only
+/// narrower apply from the same field manager as the full-status success
+/// path would otherwise make the apiserver retract, and SSA then wipe,
+/// every field this failure patch doesn't mention (`initialization`,
+/// `scheduled`, `observedPowerState`, ...) — the same bug class ADR-0034
+/// found live in the vsphere provider's own status patching.
 async fn patch_scheduling_failure(
     api: &Api<VirtualMachine>,
+    vm: &VirtualMachine,
     name: &str,
     generation: i64,
     err: &ScheduleError,
 ) -> Result<()> {
-    let mut conditions = Vec::new();
+    let mut status = vm.status.clone().unwrap_or_default();
     set_condition(
-        &mut conditions,
+        &mut status.conditions,
         condition_types::SCHEDULED,
         condition_status::FALSE,
         err.reason(),
@@ -292,25 +340,67 @@ async fn patch_scheduling_failure(
         generation,
     );
     set_condition(
-        &mut conditions,
+        &mut status.conditions,
         condition_types::READY,
         condition_status::FALSE,
         "Scheduling",
         "scheduling not yet successful",
         generation,
     );
-    patch_status_conditions_only(api, name, generation, &conditions).await
+    status.observed_generation = Some(generation);
+    patch_status(api, name, &status).await
 }
 
+/// Resolve `vm.spec.userData`'s Secret and render the fixed ADR-0024
+/// placeholder set into it (ADR-0025 — done here, not by the provider,
+/// which has no RBAC for an arbitrary Secret). `None` when `spec.userData`
+/// is unset. The substitution context's static network values come from
+/// the first entry in `spec.networkOverrides`, if any — the same "first
+/// static interface wins" rule `build_guestinfo` (vsphere provider) uses,
+/// since `guestinfo.network.*` is a flat, non-indexed convention.
+async fn resolve_rendered_user_data(
+    ctx: &Context,
+    namespace: &str,
+    vm_name: &str,
+    vm: &VirtualMachine,
+) -> Result<Option<String>> {
+    let Some(user_data) = &vm.spec.user_data else {
+        return Ok(None);
+    };
+    let api: Api<Secret> = Api::namespaced(ctx.client.clone(), namespace);
+    let secret = api.get(&user_data.secret_ref.name).await.map_err(|e| {
+        if let kube::Error::Api(api_err) = &e
+            && api_err.code == 404
+        {
+            return Error::Missing("VirtualMachine.spec.userData.secretRef");
+        }
+        Error::Kube(e)
+    })?;
+    let data = secret.data.unwrap_or_default();
+    let raw = data
+        .get(&user_data.key)
+        .ok_or(Error::Missing("userData secret.data[key]"))?;
+    let raw = String::from_utf8(raw.0.clone())
+        .map_err(|_| Error::Missing("userData secret.data[key] (not utf-8)"))?;
+
+    let static_cfg = vm.spec.network_overrides.first().map(|o| &o.static_);
+    let gd_ctx = GuestDataContext::from_static(vm_name, static_cfg);
+    Ok(Some(render_placeholders(&raw, &gd_ctx)))
+}
+
+/// Starts from `vm.status`, not `Vec::new()` — see `patch_scheduling_failure`'s
+/// doc comment for why a conditions-only narrower patch from the same field
+/// manager as the full-status success path is unsafe under SSA.
 async fn patch_infra_build_failure(
     api: &Api<VirtualMachine>,
+    vm: &VirtualMachine,
     name: &str,
     generation: i64,
     detail: &str,
 ) -> Result<()> {
-    let mut conditions = Vec::new();
+    let mut status = vm.status.clone().unwrap_or_default();
     set_condition(
-        &mut conditions,
+        &mut status.conditions,
         condition_types::SCHEDULED,
         condition_status::FALSE,
         "InfraBuildFailed",
@@ -318,29 +408,34 @@ async fn patch_infra_build_failure(
         generation,
     );
     set_condition(
-        &mut conditions,
+        &mut status.conditions,
         condition_types::READY,
         condition_status::FALSE,
         "InfraBuildFailed",
         "could not construct provider infrastructure CR",
         generation,
     );
-    patch_status_conditions_only(api, name, generation, &conditions).await
+    status.observed_generation = Some(generation);
+    patch_status(api, name, &status).await
 }
 
 /// Patch `PlacementValid=False` with the drift reason. Also marks `Ready=False`
 /// with reason `PlacementInvalid`. Leaves `status.scheduled` untouched — the
 /// previously-recorded placement stays visible until the next pass either
 /// recreates (Automatic) or the user resolves drift manually (Manual).
+/// Starts from `vm.status`, not `Vec::new()` — see `patch_scheduling_failure`'s
+/// doc comment for why a conditions-only narrower patch from the same field
+/// manager as the full-status success path is unsafe under SSA.
 async fn patch_placement_invalid(
     api: &Api<VirtualMachine>,
+    vm: &VirtualMachine,
     name: &str,
     generation: i64,
     reason: &PlacementDriftReason,
 ) -> Result<()> {
-    let mut conditions = Vec::new();
+    let mut status = vm.status.clone().unwrap_or_default();
     set_condition(
-        &mut conditions,
+        &mut status.conditions,
         condition_types::PLACEMENT_VALID,
         condition_status::FALSE,
         reason.reason(),
@@ -348,53 +443,40 @@ async fn patch_placement_invalid(
         generation,
     );
     set_condition(
-        &mut conditions,
+        &mut status.conditions,
         condition_types::READY,
         condition_status::FALSE,
         "PlacementInvalid",
         "current placement no longer satisfies the spec",
         generation,
     );
-    patch_status_conditions_only(api, name, generation, &conditions).await
+    status.observed_generation = Some(generation);
+    patch_status(api, name, &status).await
 }
 
-async fn patch_status_conditions_only(
-    api: &Api<VirtualMachine>,
-    name: &str,
-    generation: i64,
-    conditions: &[k8s_openapi::apimachinery::pkg::apis::meta::v1::Condition],
-) -> Result<()> {
-    let patch = json!({
-        "apiVersion": format!("{}/{}", VirtualMachine::group(&()), VirtualMachine::version(&())),
-        "kind": "VirtualMachine",
-        "status": {
-            "conditions": conditions,
-            "observedGeneration": generation,
-        }
-    });
-    let params = PatchParams::apply(FIELD_MANAGER_CONTROLLER).force();
-    api.patch_status(name, &params, &Patch::Apply(&patch))
-        .await?;
-    Ok(())
-}
-
+/// Apply the *entire* status object, serialized as-is — never a
+/// hand-picked subset of fields. Found live: an earlier version of this
+/// function sent only `{scheduled, infrastructureRef, conditions,
+/// observedGeneration}`, silently dropping `initialization`/`addresses`
+/// (`VirtualMachine.status.initialization` stayed `{}` forever, even fully
+/// provisioned) and, once ADR-0034 added it, `observedPowerState` too.
+/// Beyond just dropping fields on write, the SAME field manager
+/// (`FIELD_MANAGER_CONTROLLER`) re-applying a *narrower* field set on a
+/// later pass makes the apiserver retract this manager's ownership of every
+/// field the narrower payload omits — the identical class of bug found in
+/// the vsphere provider's own `refresh_power_state` (ADR-0034). Every
+/// caller must build its full intended `VirtualMachineStatus` (including
+/// `scheduled`/`infrastructureRef`, which `mirror_status_from_infra`
+/// otherwise leaves untouched from `current`) and pass it here whole.
 async fn patch_status(
     api: &Api<VirtualMachine>,
     name: &str,
-    generation: i64,
-    scheduled: &ScheduledPlacement,
-    infra_ref: &TypedObjectReference,
-    conditions: &[k8s_openapi::apimachinery::pkg::apis::meta::v1::Condition],
+    status: &VirtualMachineStatus,
 ) -> Result<()> {
     let patch = json!({
         "apiVersion": format!("{}/{}", VirtualMachine::group(&()), VirtualMachine::version(&())),
         "kind": "VirtualMachine",
-        "status": {
-            "scheduled": scheduled,
-            "infrastructureRef": infra_ref,
-            "conditions": conditions,
-            "observedGeneration": generation,
-        }
+        "status": status,
     });
     let params = PatchParams::apply(FIELD_MANAGER_CONTROLLER).force();
     api.patch_status(name, &params, &Patch::Apply(&patch))

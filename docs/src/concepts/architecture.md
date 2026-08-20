@@ -18,6 +18,12 @@ backend instance: vSphere, libvirt, …). Everything else is CRDs.
 
 ## Components
 
+This is the structure only — every controller, every CRD, and which
+controller talks to which CRD. The detailed read/write traffic (watch vs.
+create/patch vs. status-patch, one arrow per verb) is broken out per
+scenario in [Interactions](#interactions) below, each with its own small
+diagram — cramming both into one diagram made it unreadably wide.
+
 ```mermaid
 flowchart TB
     subgraph User
@@ -35,49 +41,21 @@ flowchart TB
       osa[(OSArtifact — kairos-operator)]
     end
 
-    subgraph "Main controller"
-      mc[banlieue-controller]
-    end
-
-    subgraph "Provider lifecycle operator"
-      op[banlieue-operator]
-    end
-
-    subgraph "Image builder"
-      ib[banlieue-imagebuilder]
-    end
-
-    subgraph "Provider controllers (one pod per Provider)"
-      pv[banlieue-provider-vsphere]
-      pl[banlieue-provider-libvirt]
-    end
-
+    mc[banlieue-controller]
+    op[banlieue-operator]
+    ib[banlieue-imagebuilder]
+    pv[banlieue-provider-vsphere]
+    pl[banlieue-provider-libvirt]
     kairos[kairos-operator<br/>external]
 
-    u --> vm
-    u --> prov
-    u --> provc
-    u --> vmi
-    mc -- watch --> vm
-    mc -- watch --> prov
-    mc -- watch --> infra
-    mc -- create/patch --> infra
-    mc -- aggregate failure domains --> infrac
-    op -- watch --> prov
-    op -- watch --> provc
-    op -- one workload per Provider --> pv
-    op -- one workload per Provider --> pl
-    ib -- watch --> vmi
-    ib -- create/patch --> osa
-    kairos -- build --> osa
-    pv -- watch --> infra
-    pv -- watch --> vmi
-    pl -- watch --> infra
-    pl -- watch --> vmi
-    pv -- patch status --> infra
-    pv -- patch status --> vmi
-    pl -- patch status --> infra
-    pl -- patch status --> vmi
+    u -- apply --> vm & prov & provc & vmi
+    mc <-- watch / patch --> vm & prov & infra & infrac
+    op <-- watch / patch --> prov & provc
+    op -- mints one workload per Provider --> pv & pl
+    ib <-- watch / patch --> vmi & osa
+    kairos -- builds --> osa
+    pv <-- watch / patch --> infra & vmi
+    pl <-- watch / patch --> infra & vmi
 ```
 
 No arrow connects two controllers directly — every interaction is a CRD
@@ -124,7 +102,7 @@ hand-edited**. The full field-by-field reference is
 | --- | --- | --- | --- |
 | `VirtualMachine` | namespaced | VM consumer | One VM, backend-agnostic. Spec: `classRef` (→ `VMClass`), `imageRef` (→ `VMImage`), `placement` (provider / failure-domain selectors, anti-affinity), `desiredPowerState`, `userData` (Secret ref), `migrationPolicy`. Status: `scheduled` placement, conditions, addresses — mirrored from the infra CR, never set directly by the controller. |
 | `VMClass` | cluster | VM consumer | Virtual hardware shape: `hardware` (CPUs, memory, `disks[]` with `DiskProvisioning` thin/thick/eagerZeroed), `network.interfaces[]` referencing abstract network classes. |
-| `VMImage` | cluster | VM consumer / CI | Guest image. Spec: `osFamily` / `osDistribution` / `osVersion` / `architecture`, `guestAgent`, `sources[]` (per-provider-class mappings; `kind: Url` triggers the build pipeline), `cloudConfig` (secretRef — default cloud-config baked into the built artifact, ADR-0020), `template` (vSphere template knobs: `folder`, `network`, `disk.{size,type,controller}`, `forceUpload`, `forceCreate`, ADR-0020). Status: `buildArtifact` (see below), `perProvider[].zones[]` readiness, conditions. |
+| `VMImage` | cluster | VM consumer / CI | Guest image. Spec: `osFamily` / `osDistribution` / `osVersion` / `architecture`, `guestAgent`, `sources[]` (per-provider-class mappings; `kind: Url` triggers the build pipeline), `cloudConfig` (secretRef — default cloud-config baked into the built artifact, ADR-0020), `template` (vSphere template knobs: `rootFolder`, `network`, `disk.{size,type,controller}`, `forceUpload`, `forceCreate`, ADR-0020). Status: `buildArtifact` (see below), `perProvider[].zones[]` readiness, conditions. |
 | `Provider` | namespaced | platform operator | One backend instance. Spec: `providerClassRef`, `connection` (endpoint, `credentialsRef`, `caBundle`, TLS knobs), `capabilities` (declared `storageClasses[]` / `networkClasses[]` with backend `target`s, `features[]`), `paused`, `useContentLibrary` (vSphere, default off, ADR-0020). Status: `failureDomains[]` (verified against the backend — ADR-0019 introspection filters declared classes to what actually exists), `workload` (from the operator), conditions. |
 | `ProviderClass` | cluster | platform operator | Install metadata for a backend type: which `banlieue provider <backend>` subcommand, the image, resources, namespace, logging. One edit upgrades every Provider of the class (ADR-0012). Status: referencing-Provider count, Ready condition. |
 
@@ -180,6 +158,17 @@ these step by step from the CALM model. In short:
 
 ### Provision a VM
 
+```mermaid
+flowchart LR
+    u[VM consumer] -- 1: apply --> vm[(VirtualMachine)]
+    mc[banlieue-controller] -- 2: watch --> vm
+    mc -- 2: create/patch --> infra[(VSphereMachine)]
+    mc -- 2: aggregate --> infrac[(VSphereCluster)]
+    pv[vSphere provider] -- "3: watch, provision" --> infra
+    pv -- 4: patch status --> infra
+    mc -- "5: mirror status" --> vm
+```
+
 1. User applies a `VirtualMachine`.
 2. **Main controller** resolves `classRef` / `imageRef` and filters
    candidate Providers and failure domains through `placement`
@@ -195,6 +184,17 @@ these step by step from the CALM model. In short:
 No step uses any protocol other than the Kubernetes API.
 
 ### Build and import an image (`Url` source)
+
+```mermaid
+flowchart LR
+    u[Operator / CI] -- 1: apply --> vmi[(VMImage)]
+    ib[banlieue-imagebuilder] -- 2: watch --> vmi
+    ib -- 2: create/patch --> osa[(OSArtifact)]
+    kairos[kairos-operator] -- 3: build --> osa
+    ib -- "4: mirror status" --> vmi
+    pv[vSphere provider] -- "5-6: watch, import Job, patch status" --> vmi
+    pl[libvirt provider] -- "5-6: watch, import Job, patch status" --> vmi
+```
 
 1. Operator (or CI) applies a `VMImage` with a `Url` source, optional
    `cloudConfig`, optional `template` knobs.
@@ -212,7 +212,10 @@ No step uses any protocol other than the Kubernetes API.
    PVC read-only, verifies the checksum, and pushes to the backend:
    - **vSphere** (ADR-0020): upload the ISO to the zone's datastore
      (reusing the datastore-cluster member already holding it), ensure
-     `spec.template.folder`, create an empty EFI VM (pvscsi disk from
+     `<spec.template.rootFolder>/<failure-domain-name>` (every zone gets its
+     own subfolder — vSphere folders are scoped per-datacenter, not
+     per-cluster, and zones commonly share a datacenter), create an empty
+     EFI VM (pvscsi disk from
      `spec.template.disk`, vmxnet3 NIC on `spec.template.network` or the
      zone's port group), attach the ISO as CD-ROM, `MarkAsTemplate`.
    - **libvirt** (ADR-0011): create a raw volume per declared storage
@@ -225,6 +228,17 @@ Controllers never call each other — `status.buildArtifact` plus the
 artifacts PVC is the entire handoff.
 
 ### Register a backend (provider lifecycle)
+
+```mermaid
+flowchart LR
+    u[Platform operator] -- "1: apply once" --> provc[(ProviderClass)]
+    u -- "1: apply per backend" --> prov[(Provider)]
+    op[banlieue-operator] -- 2: watch --> prov & provc
+    op -- "2: mint workload" --> pv[vSphere provider pod]
+    op -- "2: mint workload" --> pl[libvirt provider pod]
+    pv -- "3: introspect, publish failureDomains" --> prov
+    op -- "4: mirror readiness" --> prov
+```
 
 1. Operator applies a `ProviderClass` once (image, resources) and a
    `Provider` per backend instance.

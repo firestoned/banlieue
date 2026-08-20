@@ -173,11 +173,21 @@ pub async fn compute_status(
         join_names(networks.iter().map(|n| n.name.as_str())),
     );
 
+    let name = provider.name_any();
+    // A `failureDomainSelector` only ever matches `labels`, never the
+    // top-level `name` field — mirroring it here (same contract as the
+    // vSphere provider) lets an operator target this specific host by name
+    // via `matchLabels: { name: ... }` instead of whatever labels happen to
+    // be on the Provider itself. Wins over any user-supplied `name` label
+    // on the Provider, since this IS that failure domain's real name.
+    let mut labels = provider.metadata.labels.clone().unwrap_or_default();
+    labels.insert("name".to_string(), name.clone());
+
     let fd = FailureDomain {
         // A libvirt host is one failure boundary; name it after the Provider
         // so the identifier is stable and does not leak the endpoint.
-        name: provider.name_any(),
-        labels: provider.metadata.labels.clone().unwrap_or_default(),
+        name,
+        labels,
         attributes: FailureDomainAttributes {
             available_storage_classes: available_storage,
             available_network_classes: available_network,
@@ -261,6 +271,10 @@ fn partition_declared<T: HasName>(
     let mut missing = Vec::new();
     for name in declared {
         let target = match kind {
+            // libvirt's failure domains are one host per Provider today, with
+            // no (datacenter, cluster) concept to key a per-zone override on
+            // (ADR-0030's out-of-scope note) — the mapping's default `target`
+            // is therefore always what applies.
             Kind::Storage => provider
                 .spec
                 .capabilities
@@ -268,7 +282,8 @@ fn partition_declared<T: HasName>(
                 .iter()
                 .find(|c| c.name == *name)
                 // libvirt storage classes map to a `pool`.
-                .and_then(|c| c.target.get("pool"))
+                .and_then(|c| c.target.as_ref())
+                .and_then(|t| t.get("pool"))
                 .cloned(),
             Kind::Network => provider
                 .spec
@@ -277,7 +292,8 @@ fn partition_declared<T: HasName>(
                 .iter()
                 .find(|c| c.name == *name)
                 // libvirt network classes map to a `network`.
-                .and_then(|c| c.target.get("network"))
+                .and_then(|c| c.target.as_ref())
+                .and_then(|t| t.get("network"))
                 .cloned(),
         };
         match target {

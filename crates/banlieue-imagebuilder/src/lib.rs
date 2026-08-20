@@ -23,8 +23,10 @@
 pub mod app;
 pub mod context;
 pub mod error;
+pub mod importer_image;
 pub mod reconciler;
 
 pub use app::{Cli, run};
 pub use context::Context;
 pub use error::{Error, Result};
+pub use importer_image::ImporterImage;

@@ -209,7 +209,7 @@ async fn find_template_against_real_vcenter() {
     let mut found = None;
     for dc in &datacenters {
         if let Some(template) = client
-            .find_template(dc, &template_name)
+            .find_template(dc, None, &template_name)
             .await
             .unwrap_or_else(|e| panic!("searching {} for {template_name}: {e}", dc.name))
         {
@@ -248,7 +248,7 @@ async fn a_missing_template_is_none_rather_than_an_error() {
     let dc = datacenters.first().expect("at least one datacenter");
 
     let result = client
-        .find_template(dc, "banlieue-definitely-does-not-exist-0000")
+        .find_template(dc, None, "banlieue-definitely-does-not-exist-0000")
         .await;
 
     match result {

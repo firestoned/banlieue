@@ -27,6 +27,7 @@ mod tests {
             sources: vec![sample_image_source("vsphere")],
             cloud_config: None,
             template: None,
+            iso_overlay: None,
         }
     }
 
@@ -315,13 +316,35 @@ mod tests {
             name: "az1".to_string(),
             ready: false,
             resolved_ref: None,
+            template_folder: None,
             reason: Some("Importing".to_string()),
             message: None,
         };
         let json = serde_json::to_value(&z).unwrap();
         let obj = json.as_object().unwrap();
         assert!(!obj.contains_key("resolvedRef"));
+        assert!(!obj.contains_key("templateFolder"));
         assert!(!obj.contains_key("message"));
+        let back: ZoneImageStatus = serde_json::from_value(json).unwrap();
+        assert_eq!(back, z);
+    }
+
+    #[test]
+    fn zone_image_status_with_template_folder_round_trip() {
+        // resolved_ref is the bare template name; template_folder is the
+        // per-zone folder it lives in — two structured fields, not one
+        // decorated/parsed string.
+        let z = ZoneImageStatus {
+            name: "cluster-01".to_string(),
+            ready: true,
+            resolved_ref: Some("hadron-kairos-v0.1.0".to_string()),
+            template_folder: Some("templates/cluster-01".to_string()),
+            reason: Some("Reconciled".to_string()),
+            message: None,
+        };
+        let json = serde_json::to_value(&z).unwrap();
+        assert_eq!(json["resolvedRef"], "hadron-kairos-v0.1.0");
+        assert_eq!(json["templateFolder"], "templates/cluster-01");
         let back: ZoneImageStatus = serde_json::from_value(json).unwrap();
         assert_eq!(back, z);
     }
@@ -339,7 +362,8 @@ mod tests {
                 ZoneImageStatus {
                     name: "az1".to_string(),
                     ready: true,
-                    resolved_ref: Some("[az1] kairos-ubuntu-2404".to_string()),
+                    resolved_ref: Some("kairos-ubuntu-2404".to_string()),
+                    template_folder: Some("templates/az1".to_string()),
                     reason: Some("Reconciled".to_string()),
                     message: None,
                 },
@@ -347,6 +371,7 @@ mod tests {
                     name: "az2".to_string(),
                     ready: false,
                     resolved_ref: None,
+                    template_folder: None,
                     reason: Some("Importing".to_string()),
                     message: Some("uploading to datastore2".to_string()),
                 },
@@ -412,6 +437,7 @@ mod tests {
             kind: BuildArtifactKind::CloudImage,
             phase: BuildArtifactPhase::Pending,
             os_artifact_ref: "kairos-ubuntu-2404-build".to_string(),
+            os_artifact_uid: None,
             pvc_ref: None,
             file: None,
             reason: None,
@@ -433,6 +459,7 @@ mod tests {
             kind: BuildArtifactKind::Iso,
             phase: BuildArtifactPhase::Ready,
             os_artifact_ref: "kairos-rhel98-build".to_string(),
+            os_artifact_uid: None,
             pvc_ref: Some(LocalObjectReference {
                 name: "kairos-rhel98-build-artifacts".to_string(),
             }),
@@ -445,6 +472,46 @@ mod tests {
         assert_eq!(json["kind"], "iso");
         assert_eq!(json["pvcRef"]["name"], "kairos-rhel98-build-artifacts");
         assert_eq!(json["file"], "kairos-rhel98-build.iso");
+        let back: BuildArtifactStatus = serde_json::from_value(json).unwrap();
+        assert_eq!(back, s);
+    }
+
+    // ADR-0027: os_artifact_uid — omitted when unknown, round-trips when set.
+    #[test]
+    fn build_artifact_status_os_artifact_uid_omitted_when_none() {
+        let s = BuildArtifactStatus {
+            kind: BuildArtifactKind::Iso,
+            phase: BuildArtifactPhase::Pending,
+            os_artifact_ref: "kairos-rhel98-build".to_string(),
+            os_artifact_uid: None,
+            pvc_ref: None,
+            file: None,
+            reason: None,
+            message: None,
+            checksum: None,
+        };
+        let json = serde_json::to_value(&s).unwrap();
+        assert!(!json.as_object().unwrap().contains_key("osArtifactUid"));
+    }
+
+    #[test]
+    fn build_artifact_status_os_artifact_uid_round_trips_when_known() {
+        let s = BuildArtifactStatus {
+            kind: BuildArtifactKind::Iso,
+            phase: BuildArtifactPhase::Building,
+            os_artifact_ref: "kairos-rhel98-build".to_string(),
+            os_artifact_uid: Some("11111111-2222-3333-4444-555555555555".to_string()),
+            pvc_ref: None,
+            file: None,
+            reason: None,
+            message: None,
+            checksum: None,
+        };
+        let json = serde_json::to_value(&s).unwrap();
+        assert_eq!(
+            json["osArtifactUid"],
+            "11111111-2222-3333-4444-555555555555"
+        );
         let back: BuildArtifactStatus = serde_json::from_value(json).unwrap();
         assert_eq!(back, s);
     }
@@ -480,6 +547,7 @@ mod tests {
                 kind: BuildArtifactKind::Iso,
                 phase: BuildArtifactPhase::Building,
                 os_artifact_ref: "kairos-ubuntu-2404-build".to_string(),
+                os_artifact_uid: None,
                 pvc_ref: None,
                 file: None,
                 reason: None,
@@ -528,6 +596,137 @@ mod tests {
         assert_eq!(back, s);
     }
 
+    // ----------------------------------------------------------------------
+    // VMImageTemplate.installTimeoutSeconds (ADR-0021)
+    // ----------------------------------------------------------------------
+
+    #[test]
+    fn vmimage_template_omits_install_timeout_when_none() {
+        let t = VMImageTemplate::default();
+        assert!(t.install_timeout_seconds.is_none());
+        let json = serde_json::to_value(&t).unwrap();
+        assert!(
+            !json
+                .as_object()
+                .unwrap()
+                .contains_key("installTimeoutSeconds")
+        );
+    }
+
+    #[test]
+    fn vmimage_template_with_install_timeout_round_trip() {
+        let t = VMImageTemplate {
+            install_timeout_seconds: Some(1800),
+            ..VMImageTemplate::default()
+        };
+        let json = serde_json::to_value(&t).unwrap();
+        assert_eq!(json["installTimeoutSeconds"], 1800);
+        let back: VMImageTemplate = serde_json::from_value(json).unwrap();
+        assert_eq!(back, t);
+    }
+
+    #[test]
+    fn vmimage_template_omits_auto_manage_install_when_none() {
+        let t = VMImageTemplate::default();
+        assert!(t.auto_manage_install.is_none());
+        let json = serde_json::to_value(&t).unwrap();
+        assert!(!json.as_object().unwrap().contains_key("autoManageInstall"));
+    }
+
+    #[test]
+    fn vmimage_template_with_auto_manage_install_false_round_trip() {
+        let t = VMImageTemplate {
+            auto_manage_install: Some(false),
+            ..VMImageTemplate::default()
+        };
+        let json = serde_json::to_value(&t).unwrap();
+        assert_eq!(json["autoManageInstall"], false);
+        let back: VMImageTemplate = serde_json::from_value(json).unwrap();
+        assert_eq!(back, t);
+    }
+
+    // ----------------------------------------------------------------------
+    // VMImageTemplate.retainOnDelete (ADR-0028)
+    // ----------------------------------------------------------------------
+
+    #[test]
+    fn vmimage_template_defaults_to_not_retaining_on_delete() {
+        let t = VMImageTemplate::default();
+        assert!(!t.retain_on_delete);
+    }
+
+    #[test]
+    fn vmimage_template_omits_retain_on_delete_when_false() {
+        let t = VMImageTemplate::default();
+        let json = serde_json::to_value(&t).unwrap();
+        assert!(!json.as_object().unwrap().contains_key("retainOnDelete"));
+    }
+
+    #[test]
+    fn vmimage_template_with_retain_on_delete_true_round_trip() {
+        let t = VMImageTemplate {
+            retain_on_delete: true,
+            ..VMImageTemplate::default()
+        };
+        let json = serde_json::to_value(&t).unwrap();
+        assert_eq!(json["retainOnDelete"], true);
+        let back: VMImageTemplate = serde_json::from_value(json).unwrap();
+        assert_eq!(back, t);
+    }
+
+    // ----------------------------------------------------------------------
+    // VMImageTemplate.network: Vec<VMImageTemplateNic> (ADR-0031)
+    // ----------------------------------------------------------------------
+
+    #[test]
+    fn vmimage_template_defaults_to_no_nics() {
+        let t = VMImageTemplate::default();
+        assert!(t.network.is_empty());
+    }
+
+    #[test]
+    fn vmimage_template_omits_network_when_empty() {
+        let t = VMImageTemplate::default();
+        let json = serde_json::to_value(&t).unwrap();
+        assert!(!json.as_object().unwrap().contains_key("network"));
+    }
+
+    #[test]
+    fn vmimage_template_nic_defaults_are_all_none() {
+        let nic = VMImageTemplateNic::default();
+        assert!(nic.network.is_none());
+        assert!(nic.adapter.is_none());
+        assert!(nic.pci_slot.is_none());
+    }
+
+    #[test]
+    fn vmimage_template_with_multiple_nics_round_trip() {
+        let t = VMImageTemplate {
+            network: vec![
+                VMImageTemplateNic {
+                    network: Some("vmnet-prod".to_string()),
+                    adapter: Some(NicAdapter::Vmxnet3),
+                    pci_slot: Some(192),
+                },
+                VMImageTemplateNic {
+                    network: Some("vmnet-mgmt".to_string()),
+                    adapter: None,
+                    pci_slot: None,
+                },
+            ],
+            ..VMImageTemplate::default()
+        };
+        let json = serde_json::to_value(&t).unwrap();
+        assert_eq!(json["network"][0]["network"], "vmnet-prod");
+        assert_eq!(json["network"][0]["adapter"], "vmxnet3");
+        assert_eq!(json["network"][0]["pciSlot"], 192);
+        assert_eq!(json["network"][1]["network"], "vmnet-mgmt");
+        assert!(json["network"][1].get("adapter").is_none());
+        assert!(json["network"][1].get("pciSlot").is_none());
+        let back: VMImageTemplate = serde_json::from_value(json).unwrap();
+        assert_eq!(back, t);
+    }
+
     #[test]
     fn cloud_config_source_validate_requires_a_source() {
         use crate::common::{CloudConfigSource, KeySelector};
@@ -542,6 +741,60 @@ mod tests {
     }
 
     // ----------------------------------------------------------------------
+    // VMImageSpec.isoOverlay (ADR-0022)
+    // ----------------------------------------------------------------------
+
+    #[test]
+    fn vmimage_spec_omits_iso_overlay_when_none() {
+        let s = minimal_vmimage_spec();
+        assert!(s.iso_overlay.is_none());
+        let json = serde_json::to_value(&s).unwrap();
+        assert!(!json.as_object().unwrap().contains_key("isoOverlay"));
+    }
+
+    #[test]
+    fn vmimage_spec_with_iso_overlay_round_trip() {
+        let s = VMImageSpec {
+            iso_overlay: Some(IsoOverlaySource {
+                secret_ref: LocalObjectReference {
+                    name: "kairos-iso-overlay".to_string(),
+                },
+                files: vec![IsoOverlayFile {
+                    key: "grub.cfg".to_string(),
+                    path: "boot/grub2/grub.cfg".to_string(),
+                }],
+            }),
+            ..minimal_vmimage_spec()
+        };
+        let json = serde_json::to_value(&s).unwrap();
+        assert_eq!(
+            json["isoOverlay"]["secretRef"]["name"],
+            "kairos-iso-overlay"
+        );
+        assert_eq!(json["isoOverlay"]["files"][0]["key"], "grub.cfg");
+        assert_eq!(
+            json["isoOverlay"]["files"][0]["path"],
+            "boot/grub2/grub.cfg"
+        );
+        let back: VMImageSpec = serde_json::from_value(json).unwrap();
+        assert_eq!(back, s);
+    }
+
+    #[test]
+    fn iso_overlay_source_missing_secret_ref_fails() {
+        let err = serde_json::from_str::<IsoOverlaySource>(
+            r#"{"files":[{"key":"grub.cfg","path":"boot/grub2/grub.cfg"}]}"#,
+        );
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn iso_overlay_file_missing_path_fails() {
+        let err = serde_json::from_str::<IsoOverlayFile>(r#"{"key":"grub.cfg"}"#);
+        assert!(err.is_err());
+    }
+
+    // ----------------------------------------------------------------------
     // CRD generation
     // ----------------------------------------------------------------------
 
@@ -553,5 +806,25 @@ mod tests {
         assert_eq!(crd.spec.names.plural, "vmimages");
         // VMImage is cluster-scoped (no `namespaced` attribute on the macro).
         assert_eq!(crd.spec.scope, "Cluster");
+    }
+
+    #[test]
+    fn sources_rejects_duplicate_provider_classes_at_admission() {
+        // `sources[]` is one entry per backend binding for this catalog
+        // entry (ADR: "one name, many backends") — at most one per
+        // providerClass. `x-kubernetes-list-type: map` isn't just an SSA
+        // merge hint: the API server enforces list-map-key uniqueness at
+        // admission, rejecting a second `sources[]` entry for a
+        // providerClass that already has one, instead of `find_url_source`
+        // / `find_vsphere_source` silently picking whichever came first.
+        let crd = VMImage::crd();
+        let json = serde_json::to_value(&crd).unwrap();
+        let sources_schema = &json["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"]
+            ["spec"]["properties"]["sources"];
+        assert_eq!(sources_schema["x-kubernetes-list-type"], "map");
+        assert_eq!(
+            sources_schema["x-kubernetes-list-map-keys"][0],
+            "providerClass"
+        );
     }
 }

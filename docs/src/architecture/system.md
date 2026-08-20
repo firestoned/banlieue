@@ -26,7 +26,7 @@ flowchart LR
     service-kubernetes-api["Kubernetes API Server"]
     service-banlieue-controller["banlieue-controller"]
     service-banlieue-operator["banlieue-operator"]
-    service-provider-vsphere["banlieue-provider-vsphere (planned, Phase 1B)"]
+    service-provider-vsphere["banlieue-provider-vsphere"]
     service-provider-proxmox["banlieue-provider-proxmox (planned, Phase 1C)"]
     service-provider-libvirt["banlieue-provider-libvirt"]
     service-banlieue-imagebuilder["banlieue-imagebuilder"]

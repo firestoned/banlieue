@@ -5,6 +5,8 @@
 use banlieue_provider_sdk::scheduling::BuildScheduling;
 use kube::Client;
 
+use crate::importer_image::ImporterImage;
+
 /// Context passed into every reconcile call.
 #[derive(Clone)]
 pub struct Context {
@@ -21,16 +23,28 @@ pub struct Context {
     /// Where build pods may run. Empty means no constraint (ADR-0016
     /// follow-up).
     pub scheduling: BuildScheduling,
+
+    /// Image (and pull secrets) for `OSArtifact` `spec.importers[]`
+    /// containers, e.g. the ISO-overlay materializer. Defaults to the public
+    /// `busybox` image; overridable for clusters that pull from an internal
+    /// mirror (ADR-0022 Decision #4).
+    pub importer_image: ImporterImage,
 }
 
 impl Context {
     /// Construct a new [`Context`].
     #[must_use]
-    pub fn new(client: Client, build_namespace: String, scheduling: BuildScheduling) -> Self {
+    pub fn new(
+        client: Client,
+        build_namespace: String,
+        scheduling: BuildScheduling,
+        importer_image: ImporterImage,
+    ) -> Self {
         Self {
             client,
             build_namespace,
             scheduling,
+            importer_image,
         }
     }
 }

@@ -1,5 +1,9 @@
 # banlieue
 
+> **Pronunciation:** IPA `/bɑ̃.ljø/` — "bohn-lyuh": a nasalized "bon" (as in
+> French "blanc") followed by "lyuh" with a rounded French **u** (like
+> German ü, or French "tu").
+
 > A Kubernetes-native, **provider-agnostic** virtualization API.
 > One CRD. Many backends. No touching the user's workflow when you swap them.
 

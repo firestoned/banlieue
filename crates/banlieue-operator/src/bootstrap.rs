@@ -991,14 +991,26 @@ pub fn build_provider_class(backend: &str, opts: &InstallOptions) -> ProviderCla
 
 /// Extra per-instance Role rules a backend needs beyond the common set.
 ///
-/// Kept per-backend rather than granted to every provider: the libvirt import
-/// runs guest-image transfer in a Job (ADR-0011), and the ability to create
-/// Jobs is the ability to run arbitrary pods with the provider's own
-/// ServiceAccount. vSphere has no such need and must not receive it.
+/// This Role is namespaced to the Provider's own namespace (typically
+/// `banlieue-system`) — kept per-backend rather than granted to every
+/// provider, since the ability to create Jobs is the ability to run
+/// arbitrary pods with the provider's own ServiceAccount.
 ///
-/// Verbs mirror `deploy/provider-libvirt/rbac/clusterrole.yaml`: reads are by
-/// the deterministic name from `import_job_name`, so no list/watch, and
-/// finished Jobs are reaped by `ttlSecondsAfterFinished`, so no delete.
+/// libvirt's import Jobs run guest-image transfer (ADR-0011) in the same
+/// namespace as the Provider, so this per-instance Role is how it reaches
+/// them. **vSphere's per-zone import Jobs (ADR-0020) live in a *different*
+/// namespace (`banlieue-imagebuild`, ADR-0016 isolation), so a namespaced
+/// Role here could never reach them regardless of what it grants** — its
+/// Jobs access comes entirely from the cluster-wide `ClusterRole`
+/// (`deploy/provider-vsphere/rbac/clusterrole.yaml`, `list`/`watch` added
+/// for the event-driven `VMImage` reconciler's `.watches()` on the Job).
+/// vSphere is therefore deliberately excluded here, not because it needs no
+/// Jobs access at all.
+///
+/// libvirt's verbs mirror `deploy/provider-libvirt/rbac/clusterrole.yaml`:
+/// reads are by the deterministic name from `import_job_name`, so no
+/// list/watch, and finished Jobs are reaped by `ttlSecondsAfterFinished`, so
+/// no delete.
 #[must_use]
 pub fn backend_additional_rules(backend: &str) -> Vec<PolicyRule> {
     match backend {

@@ -628,7 +628,13 @@ mod tests {
     fn only_libvirt_gets_the_job_grant() {
         // Creating a Job is the ability to run an arbitrary pod as the
         // provider's own ServiceAccount. libvirt needs it for image import
-        // (ADR-0011); handing it to every backend would be a quiet escalation.
+        // (ADR-0011) in the Provider's OWN namespace, which this per-instance
+        // Role is scoped to. vSphere's own per-zone import Jobs (ADR-0020)
+        // live in a different namespace (`banlieue-imagebuild`) — a rule
+        // here could never reach them — so its Jobs access comes entirely
+        // from the cluster-wide ClusterRole instead; empty here does NOT
+        // mean vSphere has no Jobs access, see `backend_additional_rules`'s
+        // doc comment.
         assert!(backend_additional_rules("vsphere").is_empty());
         assert!(backend_additional_rules("proxmox").is_empty());
 

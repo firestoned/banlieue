@@ -6,7 +6,9 @@
 mod tests {
     use banlieue_api::banlieue::VirtualMachineStatus;
     use banlieue_api::common::condition_types;
-    use banlieue_api::common::{InitializationStatus, MachineAddress, MachineAddressType};
+    use banlieue_api::common::{
+        InitializationStatus, MachineAddress, MachineAddressType, PowerState,
+    };
     use banlieue_provider_sdk::status::condition_status;
     use k8s_openapi::apimachinery::pkg::apis::meta::v1::{Condition, Time};
 
@@ -19,6 +21,7 @@ mod tests {
         addresses: Vec<MachineAddress>,
         failure_domain: Option<String>,
         provider_id: Option<String>,
+        power_state: Option<PowerState>,
         conditions: Vec<Condition>,
     }
 
@@ -37,6 +40,9 @@ mod tests {
         }
         fn conditions(&self) -> &[Condition] {
             &self.conditions
+        }
+        fn observed_power_state(&self) -> Option<&PowerState> {
+            self.power_state.as_ref()
         }
     }
 
@@ -64,9 +70,10 @@ mod tests {
     // ----------------------------------------------------------------------
 
     #[test]
-    fn mirrors_initialization_and_addresses_verbatim() {
+    fn mirrors_initialization_addresses_and_power_state_verbatim() {
         let current = baseline_status_scheduled();
         let infra = FakeInfra {
+            power_state: Some(PowerState::PoweredOn),
             init: InitializationStatus {
                 provisioned: Some(true),
             },
@@ -87,13 +94,31 @@ mod tests {
         assert_eq!(out.initialization.provisioned, Some(true));
         assert_eq!(out.addresses.len(), 1);
         assert_eq!(out.addresses[0].address, "10.0.0.5");
+        assert_eq!(out.observed_power_state, Some(PowerState::PoweredOn));
         assert_eq!(out.observed_generation, Some(7));
+    }
+
+    #[test]
+    fn observed_power_state_absent_until_infra_reports_one() {
+        let current = baseline_status_scheduled();
+        let infra = FakeInfra {
+            power_state: None,
+            init: InitializationStatus::default(),
+            addresses: vec![],
+            failure_domain: None,
+            provider_id: None,
+            conditions: vec![],
+        };
+
+        let out = mirror_status_from_infra(&current, &infra, 1);
+        assert_eq!(out.observed_power_state, None);
     }
 
     #[test]
     fn maps_infra_ready_to_infrastructure_ready_condition() {
         let current = baseline_status_scheduled();
         let infra = FakeInfra {
+            power_state: None,
             init: InitializationStatus::default(),
             addresses: vec![],
             failure_domain: None,
@@ -119,6 +144,7 @@ mod tests {
     fn missing_infra_ready_condition_yields_pending_reason() {
         let current = baseline_status_scheduled();
         let infra = FakeInfra {
+            power_state: None,
             init: InitializationStatus::default(),
             addresses: vec![],
             failure_domain: None,
@@ -146,6 +172,7 @@ mod tests {
             "Valid",
         ));
         let infra = FakeInfra {
+            power_state: None,
             init: InitializationStatus {
                 provisioned: Some(true),
             },
@@ -173,6 +200,7 @@ mod tests {
     fn aggregate_ready_is_false_when_infra_not_ready() {
         let current = baseline_status_scheduled();
         let infra = FakeInfra {
+            power_state: None,
             init: InitializationStatus::default(),
             addresses: vec![],
             failure_domain: None,
@@ -203,6 +231,7 @@ mod tests {
             "Drift",
         ));
         let infra = FakeInfra {
+            power_state: None,
             init: InitializationStatus::default(),
             addresses: vec![],
             failure_domain: None,
@@ -229,6 +258,7 @@ mod tests {
         // current has no Scheduled=True
         let current = VirtualMachineStatus::default();
         let infra = FakeInfra {
+            power_state: None,
             init: InitializationStatus::default(),
             addresses: vec![],
             failure_domain: None,

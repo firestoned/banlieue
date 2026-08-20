@@ -33,6 +33,8 @@ use kube::{
 };
 use tracing::{error, info, warn};
 
+use crate::importer_image::ImporterImage;
+use crate::reconciler::vmimage::ISO_OVERLAY_IMPORTER_IMAGE;
 use crate::{context::Context, reconciler::vmimage};
 
 const DEFAULT_HEALTH_PORT: u16 = 8081;
@@ -127,6 +129,25 @@ pub struct Cli {
     /// Holder identity. Falls back to `POD_NAME` / `HOSTNAME` / "unknown".
     #[arg(long, env = "BANLIEUE_LEADER_ELECTION_IDENTITY")]
     pub leader_election_identity: Option<String>,
+
+    /// Image for `OSArtifact` `spec.importers[]` containers (e.g. the
+    /// ISO-overlay materializer, ADR-0022 Decision #3), as a full reference
+    /// (`repo[:tag][@sha256:digest]`). Override when nodes cannot reach the
+    /// public default — e.g. an internal registry mirror (ADR-0022 Decision
+    /// #4).
+    #[arg(
+        long,
+        env = "BANLIEUE_BUILD_IMPORTER_IMAGE",
+        default_value = ISO_OVERLAY_IMPORTER_IMAGE,
+    )]
+    pub build_importer_image: String,
+
+    /// Secret used to pull `--build-importer-image` (repeatable). Also
+    /// becomes the `OSArtifact`'s pod-wide `imagePullSecrets`, covering the
+    /// main build container's image too when it comes from the same private
+    /// or mirrored registry — Kubernetes pull secrets are always pod-scoped.
+    #[arg(long = "build-importer-image-pull-secret", value_name = "NAME")]
+    pub build_importer_image_pull_secrets: Vec<String>,
 }
 
 /// Run `banlieue-imagebuilder` to completion (until a shutdown signal or the
@@ -185,10 +206,15 @@ pub async fn run(cli: Cli) -> Result<()> {
              onto any node, including control-plane nodes"
         );
     }
+    let importer_image = ImporterImage::from_flags(
+        &cli.build_importer_image,
+        &cli.build_importer_image_pull_secrets,
+    );
     let ctx = Arc::new(Context::new(
         client.clone(),
         cli.build_namespace.clone(),
         scheduling,
+        importer_image,
     ));
 
     // VMImage is cluster-scoped — always watch every namespace.

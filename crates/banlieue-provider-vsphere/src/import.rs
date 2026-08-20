@@ -19,18 +19,20 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, anyhow, bail};
-use banlieue_api::banlieue::{DiskController, NicAdapter, Provider, VMImage};
+use banlieue_api::banlieue::{DiskController, NicAdapter, Provider, VMImage, VMImageTemplateNic};
 use banlieue_api::common::{DiskProvisioning, Firmware};
 use banlieue_provider_sdk::client::build_client;
 use clap::Args;
+use futures::StreamExt;
 use kube::api::Api;
 use tokio::fs::File;
 use tracing::info;
 
 use crate::client::vim::{build_http_client, build_upload_http_client, server_address};
 use crate::client::{
-    Credentials, Datastore, IsoImportRequest, VSphereClientFactory, VimClientFactory,
+    Credentials, Datastore, IsoImportRequest, RequestedNic, VSphereClientFactory, VimClientFactory,
 };
+use crate::nic_flag::parse_nic_flag;
 
 const SECRET_KEY_USERNAME: &str = "username";
 const SECRET_KEY_PASSWORD: &str = "password";
@@ -59,6 +61,14 @@ const TARGET_DISTRIBUTED_PORT_GROUP: &str = "distributedPortGroup";
 const DEFAULT_LINUX_GUEST_ID: &str = "otherLinux64Guest";
 /// Fallback vCenter `guestId` for a non-Linux image.
 const DEFAULT_GUEST_ID: &str = "otherGuest64";
+
+/// Default bound (seconds) on the unattended-install wait when
+/// `spec.template.installTimeoutSeconds` is unset (ADR-0021).
+const DEFAULT_INSTALL_TIMEOUT_SECS: i32 = 1800;
+
+/// Log ISO upload progress every this many percent — a multi-gigabyte
+/// datastore upload can run for several minutes with no feedback otherwise.
+const UPLOAD_PROGRESS_STEP_PERCENT: u64 = 10;
 
 /// Arguments for `banlieue provider vsphere image-import`.
 ///
@@ -129,20 +139,13 @@ pub struct ImportArgs {
     #[arg(long, default_value = "pvscsi")]
     pub disk_controller: DiskController,
 
-    /// Port group the template's NIC attaches to. Overrides the zone's first
-    /// `availableNetworkClasses` target; set from `spec.template.network`.
-    #[arg(long)]
-    pub network: Option<String>,
-
-    /// Virtual NIC adapter type: `vmxnet3` (default), `vmxnet2`, `e1000`,
-    /// `e1000e`. Set from `spec.template.networkAdapter`.
-    #[arg(long, default_value = "vmxnet3")]
-    pub network_adapter: NicAdapter,
-
-    /// PCI slot for the template's NIC (stable `ens192` naming). Set from
-    /// `spec.template.nicPciSlot`.
-    #[arg(long, default_value_t = 192)]
-    pub nic_pci_slot: i32,
+    /// One NIC: `network=<port-group>,adapter=<type>,pciSlot=<n>` (any
+    /// subset of keys, comma-separated, order-independent — see
+    /// `crate::nic_flag`). Repeatable, one occurrence per NIC; set from
+    /// `spec.template.network` (ADR-0031). No occurrences → one NIC, every
+    /// default applies (zone-derived network, vmxnet3, PCI slot 192).
+    #[arg(long = "nic", value_name = "network=<name>,adapter=<type>,pciSlot=<n>")]
+    pub nics: Vec<String>,
 
     /// Virtual CPU count of the template. Set from `spec.template.cpus`.
     #[arg(long, default_value_t = 2)]
@@ -162,10 +165,35 @@ pub struct ImportArgs {
     #[arg(long)]
     pub guest_id: Option<String>,
 
-    /// vCenter folder (path under the datacenter VM folder) to place the
-    /// template in, created if missing. Set from `VMImage.spec.template.folder`.
+    /// Root vCenter folder (path under the datacenter VM folder), created if
+    /// missing. Set from `VMImage.spec.template.rootFolder`. Not the literal
+    /// target: the template is always placed at
+    /// `<root-folder>/<failure-domain>` ([`effective_folder`]) so zones
+    /// sharing a datacenter (folders are scoped per-datacenter, not
+    /// per-cluster) never collide on the same folder + template name.
     #[arg(long)]
-    pub folder: Option<String>,
+    pub root_folder: Option<String>,
+
+    /// Bound, in seconds, on how long to wait for the created VM to power
+    /// itself off after the unattended Kairos install completes, before
+    /// failing the import (ADR-0021). Set from
+    /// `spec.template.installTimeoutSeconds`.
+    #[arg(long, default_value_t = DEFAULT_INSTALL_TIMEOUT_SECS)]
+    pub install_timeout_seconds: i32,
+
+    /// Run the install-then-generalize sequence (power on, wait for
+    /// self-poweroff, remove the CD-ROM) before marking as a template.
+    /// `false` reverts to creating the VM, attaching the ISO, and marking it
+    /// as a template immediately — no power-on (ADR-0020's original
+    /// behavior) — for a build that isn't Kairos-driven or whose
+    /// install/generalize is managed some other way. Set from
+    /// `spec.template.autoManageInstall` (ADR-0021). Value-taking
+    /// (`--auto-manage-install false`), not a bare switch: clap's implicit
+    /// bare-flag inference for `bool` fields can only ever set `true`, and
+    /// this default is already `true` — the whole point is being able to
+    /// override it to `false`.
+    #[arg(long, action = clap::ArgAction::Set, default_value_t = true)]
+    pub auto_manage_install: bool,
 }
 
 /// The concrete vCenter placement resolved for one failure domain.
@@ -177,8 +205,42 @@ pub struct ZonePlan {
     pub cluster: String,
     /// Datastore the ISO is uploaded to and the template created on.
     pub datastore: String,
-    /// Port group the template's NIC attaches to.
+}
+
+/// One NIC's port group + hardware settings, fully resolved (every field
+/// defaulted, none left `None`) but not yet looked up against vCenter for a
+/// moref (ADR-0031).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedNic {
+    /// Port group this NIC attaches to.
     pub network: String,
+    /// Virtual NIC adapter type.
+    pub adapter: NicAdapter,
+    /// PCI slot number (`ethernetN.pciSlotNumber`).
+    pub pci_slot: i32,
+}
+
+/// Default PCI slot for NIC index 0; each subsequent NIC with no explicit
+/// override defaults to this plus its own index (ADR-0031).
+const DEFAULT_NIC_PCI_SLOT_BASE: i32 = 192;
+
+/// Effective vCenter template folder for one zone: `<root>/<failure_domain>`
+/// when a root is configured, else just `<failure_domain>` — always scoped
+/// per zone, never the bare root.
+///
+/// `spec.template.rootFolder` (`root`) is exactly what its name says: a
+/// *root*, not the literal target. Two failure domains commonly share a
+/// datacenter (only their cluster differs), and vSphere's VM/Template
+/// folder hierarchy is scoped per-datacenter, not per-cluster. Without
+/// this, every zone's import Job raced `CreateVM_Task` against the
+/// identical root folder + template name (found live) — nesting under the
+/// zone is what actually isolates them.
+#[must_use]
+pub fn effective_folder(root: Option<&str>, failure_domain: &str) -> String {
+    match root {
+        Some(r) if !r.is_empty() => format!("{}/{failure_domain}", r.trim_end_matches('/')),
+        _ => failure_domain.to_string(),
+    }
 }
 
 /// Map a VMImage's OS to a vCenter `guestId`.
@@ -213,37 +275,26 @@ pub fn guest_id_for(os_family: &str, os_distribution: &str) -> String {
 ///
 /// Pure, so the zone-selection rules are unit-testable without kube or vCenter.
 /// Datacenter and cluster always come from the failure domain's discovered
-/// `attributes.raw`. The datastore and network come from the explicit
-/// `datastore_override` / `network_override` when given, else from the **first**
-/// available storage/network class in that zone resolved through
-/// `spec.capabilities` — the override path lets operators import into a zone
-/// whose `availableStorageClasses` / `availableNetworkClasses` have not been
-/// enriched yet (ADR-0019).
+/// `attributes.raw`. The datastore comes from the explicit
+/// `datastore_override` when given, else from the **first** available
+/// storage class in that zone resolved through `spec.capabilities` — the
+/// override path lets operators import into a zone whose
+/// `availableStorageClasses` has not been enriched yet (ADR-0019). NIC
+/// network resolution is a separate step, [`resolve_nic_networks`]
+/// (ADR-0031) — a zone can have several NICs, so it doesn't fit one
+/// `ZonePlan` field.
 ///
 /// # Errors
 /// A human-readable message when the failure domain is absent, carries no
-/// datacenter/cluster, or (absent an override) has no reachable storage/network
-/// class to import into — the Job is unattended, so its error text is the whole
-/// diagnostic.
+/// datacenter/cluster, or (absent an override) has no reachable storage
+/// class to import into — the Job is unattended, so its error text is the
+/// whole diagnostic.
 pub fn resolve_zone(
     provider: &Provider,
     failure_domain: &str,
     datastore_override: Option<&str>,
-    network_override: Option<&str>,
 ) -> Result<ZonePlan> {
-    let status = provider
-        .status
-        .as_ref()
-        .ok_or_else(|| anyhow!("Provider has no status yet"))?;
-    let fd = status
-        .failure_domains
-        .iter()
-        .find(|f| f.name == failure_domain)
-        .ok_or_else(|| {
-            anyhow!(
-                "failure domain {failure_domain:?} not found in Provider.status.failureDomains[]"
-            )
-        })?;
+    let fd = failure_domain_of(provider, failure_domain)?;
 
     let datacenter = fd
         .attributes
@@ -266,25 +317,13 @@ pub fn resolve_zone(
                     "failure domain {failure_domain:?} has no available storage class; pass --datastore to import into a specific datastore"
                 )
             })?;
-            resolve_storage_target(provider, storage_class).ok_or_else(|| {
-                anyhow!("storage class {storage_class:?} has no datastore/datastoreCluster target")
-            })?
-        }
-    };
-
-    let network = match network_override {
-        Some(net) => net.to_string(),
-        None => {
-            let network_class = fd.attributes.available_network_classes.first().ok_or_else(|| {
-                anyhow!(
-                    "failure domain {failure_domain:?} has no available network class; pass --network to import onto a specific port group"
-                )
-            })?;
-            resolve_network_target(provider, network_class).ok_or_else(|| {
-                anyhow!(
-                    "network class {network_class:?} has no portGroup/distributedPortGroup target"
-                )
-            })?
+            resolve_storage_target(provider, storage_class, &datacenter, &cluster).ok_or_else(
+                || {
+                    anyhow!(
+                        "storage class {storage_class:?} has no datastore/datastoreCluster target"
+                    )
+                },
+            )?
         }
     };
 
@@ -292,34 +331,148 @@ pub fn resolve_zone(
         datacenter,
         cluster,
         datastore,
-        network,
     })
 }
 
-/// The datastore (or datastore-cluster) name a declared storage class maps to.
-fn resolve_storage_target(provider: &Provider, class_name: &str) -> Option<String> {
-    let target = &provider
+/// Resolve every NIC's port group name (+ defaulted adapter/PCI slot) for
+/// one failure domain (ADR-0031). `nics` is `VMImage.spec.template.network`
+/// as parsed off the repeated `--nic` flags; an empty slice synthesizes
+/// exactly one fully-defaulted entry, preserving the pre-ADR-0031 single-NIC
+/// default. Each entry's `network` is resolved independently: an explicit
+/// override wins, else the zone's first reachable network class — the same
+/// rule the single-NIC field used, just applied per entry rather than once.
+///
+/// Does not look up a moref; that happens once the zone's cluster is
+/// resolved, against every entry this returns.
+///
+/// # Errors
+/// A human-readable message when the failure domain is absent or (for any
+/// entry with no explicit network override) has no reachable network class.
+pub fn resolve_nic_networks(
+    provider: &Provider,
+    failure_domain: &str,
+    nics: &[VMImageTemplateNic],
+) -> Result<Vec<ResolvedNic>> {
+    let fd = failure_domain_of(provider, failure_domain)?;
+    let datacenter =
+        fd.attributes.raw.get(ATTR_DATACENTER).ok_or_else(|| {
+            anyhow!("failure domain {failure_domain:?} has no datacenter attribute")
+        })?;
+    let cluster = fd
+        .attributes
+        .raw
+        .get(ATTR_CLUSTER)
+        .ok_or_else(|| anyhow!("failure domain {failure_domain:?} has no cluster attribute"))?;
+
+    let defaulted: &[VMImageTemplateNic] = if nics.is_empty() {
+        &[VMImageTemplateNic {
+            network: None,
+            adapter: None,
+            pci_slot: None,
+        }]
+    } else {
+        nics
+    };
+
+    defaulted
+        .iter()
+        .enumerate()
+        .map(|(index, nic)| {
+            let network = match nic.network.as_deref() {
+                Some(net) => net.to_string(),
+                None => {
+                    let network_class = fd.attributes.available_network_classes.first().ok_or_else(|| {
+                        anyhow!(
+                            "failure domain {failure_domain:?} has no available network class; pass --nic network=<port-group> to import onto a specific one"
+                        )
+                    })?;
+                    resolve_network_target(provider, network_class, datacenter, cluster)
+                        .ok_or_else(|| {
+                            anyhow!(
+                                "network class {network_class:?} has no portGroup/distributedPortGroup target"
+                            )
+                        })?
+                }
+            };
+            let pci_slot = match nic.pci_slot {
+                Some(slot) => slot,
+                None => {
+                    DEFAULT_NIC_PCI_SLOT_BASE
+                        + i32::try_from(index).unwrap_or(i32::MAX - DEFAULT_NIC_PCI_SLOT_BASE)
+                }
+            };
+            Ok(ResolvedNic {
+                network,
+                adapter: nic.adapter.unwrap_or_default(),
+                pci_slot,
+            })
+        })
+        .collect()
+}
+
+/// Look up a failure domain by name in `Provider.status.failureDomains[]`.
+///
+/// # Errors
+/// When the `Provider` has no status yet, or no failure domain of that name
+/// exists.
+fn failure_domain_of<'a>(
+    provider: &'a Provider,
+    failure_domain: &str,
+) -> Result<&'a banlieue_api::banlieue::FailureDomain> {
+    let status = provider
+        .status
+        .as_ref()
+        .ok_or_else(|| anyhow!("Provider has no status yet"))?;
+    status
+        .failure_domains
+        .iter()
+        .find(|f| f.name == failure_domain)
+        .ok_or_else(|| {
+            anyhow!(
+                "failure domain {failure_domain:?} not found in Provider.status.failureDomains[]"
+            )
+        })
+}
+
+/// The datastore (or datastore-cluster) name a declared storage class maps
+/// to in this specific `(datacenter, cluster)` zone — an exact per-zone
+/// override if one matches, else the mapping's default target (ADR-0030).
+fn resolve_storage_target(
+    provider: &Provider,
+    class_name: &str,
+    datacenter: &str,
+    cluster: &str,
+) -> Option<String> {
+    let target = provider
         .spec
         .capabilities
         .storage_classes
         .iter()
         .find(|c| c.name == class_name)?
-        .target;
+        .target_for(datacenter, cluster)?;
     target
         .get(TARGET_DATASTORE)
         .or_else(|| target.get(TARGET_DATASTORE_CLUSTER))
         .cloned()
 }
 
-/// The port-group (standard or distributed) name a declared network class maps to.
-fn resolve_network_target(provider: &Provider, class_name: &str) -> Option<String> {
-    let target = &provider
+/// The port-group (standard or distributed) name a declared network class
+/// maps to in this specific `(datacenter, cluster)` zone — an exact
+/// per-zone override if one matches, else the mapping's default target
+/// (ADR-0030).
+fn resolve_network_target(
+    provider: &Provider,
+    class_name: &str,
+    datacenter: &str,
+    cluster: &str,
+) -> Option<String> {
+    let target = provider
         .spec
         .capabilities
         .network_classes
         .iter()
         .find(|c| c.name == class_name)?
-        .target;
+        .target_for(datacenter, cluster)?;
     target
         .get(TARGET_PORT_GROUP)
         .or_else(|| target.get(TARGET_DISTRIBUTED_PORT_GROUP))
@@ -470,12 +623,17 @@ pub async fn run(args: ImportArgs) -> Result<()> {
         )
     });
 
-    let plan = resolve_zone(
-        &provider,
-        &args.failure_domain,
-        args.datastore.as_deref(),
-        args.network.as_deref(),
-    )?;
+    let plan = resolve_zone(&provider, &args.failure_domain, args.datastore.as_deref())?;
+
+    // ADR-0031: every --nic flag parses to one VMImageTemplateNic; the
+    // whole list (still name-only, not yet resolved to a moref) resolves
+    // together against this zone.
+    let requested_nics: Vec<VMImageTemplateNic> = args
+        .nics
+        .iter()
+        .map(|s| parse_nic_flag(s).map_err(|e| anyhow!(e)))
+        .collect::<Result<_>>()?;
+    let resolved_nics = resolve_nic_networks(&provider, &args.failure_domain, &requested_nics)?;
 
     let creds = read_credentials(&client, &args.provider_namespace, &provider).await?;
     let ca_bundle_pem = banlieue_provider_sdk::ca_bundle::resolve(
@@ -503,6 +661,30 @@ pub async fn run(args: ImportArgs) -> Result<()> {
         .into_iter()
         .find(|d| d.name == plan.datacenter)
         .ok_or_else(|| anyhow!("datacenter {:?} not found in vCenter", plan.datacenter))?;
+
+    // This zone's own template folder — computed once, ahead of the
+    // datacenter round-trips below, and reused for both the early
+    // force-create destroy and the later `IsoImportRequest`. Every zone
+    // shares the same template display name, so both must scope to this
+    // folder rather than the whole datacenter (ADR-0020 Decision #5).
+    let folder = effective_folder(args.root_folder.as_deref(), &args.failure_domain);
+
+    // --force-create: destroy any existing target now, before the datastore
+    // reuse-check below. A stale template still referencing the target ISO
+    // as its CD-ROM backing holds an NFC lock on that file, which otherwise
+    // makes the reuse-check's HEAD probe indistinguishable from "absent" and
+    // triggers a wasted re-upload onto a different datastore member.
+    if args.force_create {
+        vim.destroy_if_present(&datacenter.moref, &folder, &args.vmimage)
+            .await
+            .with_context(|| {
+                format!(
+                    "destroying existing target {:?} before recreate",
+                    args.vmimage
+                )
+            })?;
+    }
+
     let cluster = vim
         .list_clusters(&datacenter)
         .await
@@ -577,21 +759,35 @@ pub async fn run(args: ImportArgs) -> Result<()> {
     )
     .await?;
 
-    // Resolve the port group moref (+ whether it's a distributed vDS one) for
-    // the template NIC backing.
-    let network = vim
+    // Resolve each NIC's port group moref (+ whether it's a distributed vDS
+    // one) against the zone's cluster — one list_networks call reused for
+    // every NIC (ADR-0031), same as before for the single NIC.
+    let networks = vim
         .list_networks(&cluster)
         .await
-        .context("listing networks")?
+        .context("listing networks")?;
+    let nics: Vec<RequestedNic> = resolved_nics
         .into_iter()
-        .find(|n| n.name == plan.network)
-        .ok_or_else(|| {
-            anyhow!(
-                "network {:?} not reachable from cluster {:?}",
-                plan.network,
-                plan.cluster
-            )
-        })?;
+        .map(|nic| {
+            let network = networks
+                .iter()
+                .find(|n| n.name == nic.network)
+                .ok_or_else(|| {
+                    anyhow!(
+                        "network {:?} not reachable from cluster {:?}",
+                        nic.network,
+                        plan.cluster
+                    )
+                })?;
+            Ok(RequestedNic {
+                network: nic.network,
+                network_moref: network.moref.clone(),
+                network_distributed: network.distributed,
+                adapter: nic.adapter,
+                pci_slot: nic.pci_slot,
+            })
+        })
+        .collect::<Result<_>>()?;
 
     let req = IsoImportRequest {
         datacenter: plan.datacenter,
@@ -599,22 +795,20 @@ pub async fn run(args: ImportArgs) -> Result<()> {
         cluster: plan.cluster,
         cluster_moref: cluster.moref.clone(),
         datastore,
-        network: plan.network,
-        network_moref: network.moref,
-        network_distributed: network.distributed,
+        nics,
         disk_gib: args.disk_gb,
         disk_provisioning: args.disk_type.clone(),
         disk_controller: args.disk_controller,
         cpus: args.cpus,
         memory_mib: args.memory_mib,
         firmware: args.firmware.clone(),
-        network_adapter: args.network_adapter,
-        nic_pci_slot: args.nic_pci_slot,
-        folder: args.folder.clone(),
+        folder: Some(folder),
         iso_datastore_path,
         template_name: args.vmimage.clone(),
         guest_id,
         force_create: args.force_create,
+        install_timeout_seconds: args.install_timeout_seconds,
+        auto_manage_install: args.auto_manage_install,
     };
     let resolved = vim
         .import_iso_template(&req)
@@ -725,6 +919,33 @@ async fn datastore_file_exists(
     }
 }
 
+/// Progress milestones (percent, multiples of [`UPLOAD_PROGRESS_STEP_PERCENT`])
+/// newly crossed by advancing the cumulative upload position from
+/// `prev_bytes` to `prev_bytes + chunk_len` out of `total_bytes`.
+///
+/// Pure so the milestone math is unit-testable without a real upload. Returns
+/// every milestone in the crossed range (not just the last) so a single large
+/// chunk that spans multiple steps still logs each one; empty when
+/// `total_bytes` is 0 (size unknown) or no new milestone was reached.
+fn upload_progress_milestones(prev_bytes: u64, chunk_len: u64, total_bytes: u64) -> Vec<u64> {
+    if total_bytes == 0 {
+        return Vec::new();
+    }
+    let milestone_of = |bytes: u64| -> u64 {
+        (u128::from(bytes) * 100 / u128::from(total_bytes)) as u64 / UPLOAD_PROGRESS_STEP_PERCENT
+    };
+    let max_milestone = 100 / UPLOAD_PROGRESS_STEP_PERCENT;
+    let prev_milestone = milestone_of(prev_bytes).min(max_milestone);
+    let new_bytes = prev_bytes.saturating_add(chunk_len);
+    let new_milestone = milestone_of(new_bytes).min(max_milestone);
+    if new_milestone <= prev_milestone {
+        return Vec::new();
+    }
+    (prev_milestone + 1..=new_milestone)
+        .map(|m| m * UPLOAD_PROGRESS_STEP_PERCENT)
+        .collect()
+}
+
 /// Upload a local ISO to a vCenter datastore over the datastore HTTP file API
 /// and return its `[datastore] folder/file.iso` path.
 ///
@@ -807,7 +1028,22 @@ async fn upload_iso_to_datastore(
         url = %url_str, dc = %datacenter, ds = %datastore, bytes = len,
         "uploading ISO to datastore (streaming)"
     );
-    let body = reqwest::Body::wrap_stream(tokio_util::io::ReaderStream::new(file));
+    // Tap the byte stream to log every UPLOAD_PROGRESS_STEP_PERCENT crossed,
+    // without buffering or otherwise altering it — `scan`'s state is the
+    // cumulative bytes sent so far, computed from chunk lengths as they pass
+    // through, not read ahead of the actual PUT.
+    let progress_url = url_str.clone();
+    let tracked_body = tokio_util::io::ReaderStream::new(file).scan(0u64, move |sent, chunk| {
+        if let Ok(bytes) = &chunk {
+            let chunk_len = bytes.len() as u64;
+            for percent in upload_progress_milestones(*sent, chunk_len, len) {
+                info!(url = %progress_url, percent, bytes_sent = *sent + chunk_len, total_bytes = len, "ISO upload progress");
+            }
+            *sent += chunk_len;
+        }
+        futures::future::ready(Some(chunk))
+    });
+    let body = reqwest::Body::wrap_stream(tracked_body);
 
     let http = build_upload_http_client(ca_bundle_pem, insecure).map_err(|e| anyhow!("{e}"))?;
     let resp = http

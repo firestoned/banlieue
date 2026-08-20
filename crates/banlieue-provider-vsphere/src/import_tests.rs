@@ -11,14 +11,17 @@ mod tests {
     use std::collections::BTreeMap;
 
     use banlieue_api::banlieue::{
-        FailureDomain, FailureDomainAttributes, NetworkClassMapping, Provider,
-        ProviderCapabilities, ProviderConnection, ProviderSpec, ProviderStatus,
-        StorageClassMapping,
+        FailureDomain, FailureDomainAttributes, NetworkClassMapping, NicAdapter, Provider,
+        ProviderCapabilities, ProviderConnection, ProviderSpec, ProviderStatus, ScopedTarget,
+        StorageClassMapping, VMImageTemplateNic,
     };
     use banlieue_api::common::LocalObjectReference;
     use kube::api::ObjectMeta;
 
-    use super::super::{ZonePlan, guest_id_for, resolve_concrete_datastore, resolve_zone};
+    use super::super::{
+        ResolvedNic, ZonePlan, effective_folder, guest_id_for, resolve_concrete_datastore,
+        resolve_nic_networks, resolve_zone, upload_progress_milestones,
+    };
     use crate::client::Datastore;
 
     fn target(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
@@ -54,16 +57,19 @@ mod tests {
                 capabilities: ProviderCapabilities {
                     storage_classes: vec![StorageClassMapping {
                         name: "gold".to_string(),
-                        target: target(&[("datastore", "ds-fast-01")]),
+                        target: Some(target(&[("datastore", "ds-fast-01")])),
+                        ..Default::default()
                     }],
                     network_classes: vec![NetworkClassMapping {
                         name: "prod".to_string(),
-                        target: target(&[("distributedPortGroup", "pg-prod")]),
+                        target: Some(target(&[("distributedPortGroup", "pg-prod")])),
+                        ..Default::default()
                     }],
                     features: Vec::new(),
                 },
                 paused: false,
                 use_content_library: false,
+                failure_domain_name_overrides: Vec::new(),
             },
             status: Some(ProviderStatus {
                 failure_domains: vec![FailureDomain {
@@ -86,14 +92,13 @@ mod tests {
     #[test]
     fn resolve_zone_maps_fd_to_concrete_placement() {
         let p = provider_with_zone();
-        let plan = resolve_zone(&p, "vc-dc-east-cluster-a", None, None).expect("zone resolves");
+        let plan = resolve_zone(&p, "vc-dc-east-cluster-a", None).expect("zone resolves");
         assert_eq!(
             plan,
             ZonePlan {
                 datacenter: "dc-east".to_string(),
                 cluster: "cluster-a".to_string(),
                 datastore: "ds-fast-01".to_string(),
-                network: "pg-prod".to_string(),
             }
         );
     }
@@ -101,7 +106,7 @@ mod tests {
     #[test]
     fn resolve_zone_errors_on_unknown_failure_domain() {
         let p = provider_with_zone();
-        assert!(resolve_zone(&p, "nope", None, None).is_err());
+        assert!(resolve_zone(&p, "nope", None).is_err());
     }
 
     #[test]
@@ -111,37 +116,165 @@ mod tests {
             .attributes
             .available_storage_classes
             .clear();
-        assert!(resolve_zone(&p, "vc-dc-east-cluster-a", None, None).is_err());
+        assert!(resolve_zone(&p, "vc-dc-east-cluster-a", None).is_err());
     }
 
     #[test]
-    fn resolve_zone_overrides_bypass_capability_introspection() {
-        // A failure domain with NO enriched storage/network classes (the
+    fn resolve_zone_override_bypasses_capability_introspection() {
+        // A failure domain with NO enriched storage classes (the
         // on-cluster-before-rebuild case) still resolves when the operator
-        // passes explicit --datastore / --network. datacenter/cluster still
-        // come from the failure domain's discovered attributes.
+        // passes an explicit --datastore. datacenter/cluster still come
+        // from the failure domain's discovered attributes.
         let mut p = provider_with_zone();
-        {
-            let attrs = &mut p.status.as_mut().unwrap().failure_domains[0].attributes;
-            attrs.available_storage_classes.clear();
-            attrs.available_network_classes.clear();
-        }
-        let plan = resolve_zone(
-            &p,
-            "vc-dc-east-cluster-a",
-            Some("DS001"),
-            Some("VM Network"),
-        )
-        .expect("overrides resolve without capability introspection");
+        p.status.as_mut().unwrap().failure_domains[0]
+            .attributes
+            .available_storage_classes
+            .clear();
+        let plan = resolve_zone(&p, "vc-dc-east-cluster-a", Some("DS001"))
+            .expect("override resolves without capability introspection");
         assert_eq!(
             plan,
             ZonePlan {
                 datacenter: "dc-east".to_string(),
                 cluster: "cluster-a".to_string(),
                 datastore: "DS001".to_string(),
-                network: "VM Network".to_string(),
             }
         );
+    }
+
+    // ------------------------------------------------------------------
+    // ADR-0030: per-zone capability targets
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn resolve_zone_uses_the_per_zone_override_datastore_for_this_cluster() {
+        // The SAME abstract "gold" class resolves to a different concrete
+        // datastore on cluster-a (via per_zone) than its Provider-wide
+        // default — exactly the "one class, many clusters" case ADR-0030
+        // exists to fix.
+        let mut p = provider_with_zone();
+        p.spec.capabilities.storage_classes[0].per_zone = vec![ScopedTarget {
+            datacenter: "dc-east".to_string(),
+            cluster: "cluster-a".to_string(),
+            target: target(&[("datastore", "ds-cluster-a-specific")]),
+        }];
+        let plan = resolve_zone(&p, "vc-dc-east-cluster-a", None).expect("zone resolves");
+        assert_eq!(plan.datastore, "ds-cluster-a-specific");
+    }
+
+    #[test]
+    fn resolve_zone_falls_back_to_the_default_target_for_an_uncovered_zone() {
+        // A per_zone entry for a DIFFERENT cluster must not affect this one
+        // — the default target still applies here.
+        let mut p = provider_with_zone();
+        p.spec.capabilities.storage_classes[0].per_zone = vec![ScopedTarget {
+            datacenter: "dc-east".to_string(),
+            cluster: "cluster-b".to_string(),
+            target: target(&[("datastore", "ds-cluster-b-specific")]),
+        }];
+        let plan = resolve_zone(&p, "vc-dc-east-cluster-a", None).expect("zone resolves");
+        assert_eq!(plan.datastore, "ds-fast-01");
+    }
+
+    #[test]
+    fn resolve_nic_networks_uses_the_per_zone_override_network_for_this_cluster() {
+        let mut p = provider_with_zone();
+        p.spec.capabilities.network_classes[0].per_zone = vec![ScopedTarget {
+            datacenter: "dc-east".to_string(),
+            cluster: "cluster-a".to_string(),
+            target: target(&[("distributedPortGroup", "pg-cluster-a-specific")]),
+        }];
+        let nics = resolve_nic_networks(&p, "vc-dc-east-cluster-a", &[]).unwrap();
+        assert_eq!(nics[0].network, "pg-cluster-a-specific");
+    }
+
+    // ----------------------------------------------------------------------
+    // resolve_nic_networks (ADR-0031)
+    // ----------------------------------------------------------------------
+
+    #[test]
+    fn resolve_nic_networks_empty_input_synthesizes_one_default_nic() {
+        let p = provider_with_zone();
+        let nics = resolve_nic_networks(&p, "vc-dc-east-cluster-a", &[]).unwrap();
+        assert_eq!(
+            nics,
+            vec![ResolvedNic {
+                network: "pg-prod".to_string(),
+                adapter: NicAdapter::Vmxnet3,
+                pci_slot: 192,
+            }]
+        );
+    }
+
+    #[test]
+    fn resolve_nic_networks_applies_defaults_per_entry() {
+        let p = provider_with_zone();
+        let nics = resolve_nic_networks(
+            &p,
+            "vc-dc-east-cluster-a",
+            &[
+                VMImageTemplateNic::default(),
+                VMImageTemplateNic {
+                    network: Some("vmnet-mgmt".to_string()),
+                    adapter: Some(NicAdapter::E1000),
+                    pci_slot: Some(300),
+                },
+                VMImageTemplateNic::default(),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            nics,
+            vec![
+                ResolvedNic {
+                    network: "pg-prod".to_string(),
+                    adapter: NicAdapter::Vmxnet3,
+                    pci_slot: 192,
+                },
+                ResolvedNic {
+                    network: "vmnet-mgmt".to_string(),
+                    adapter: NicAdapter::E1000,
+                    pci_slot: 300,
+                },
+                ResolvedNic {
+                    network: "pg-prod".to_string(),
+                    adapter: NicAdapter::Vmxnet3,
+                    // index 2, not 193 — the explicit override on entry 1
+                    // does not shift the auto-increment for entries after it.
+                    pci_slot: 194,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn resolve_nic_networks_errors_when_no_network_class_reachable_and_no_override() {
+        let mut p = provider_with_zone();
+        p.status.as_mut().unwrap().failure_domains[0]
+            .attributes
+            .available_network_classes
+            .clear();
+        assert!(resolve_nic_networks(&p, "vc-dc-east-cluster-a", &[]).is_err());
+    }
+
+    #[test]
+    fn resolve_nic_networks_override_bypasses_capability_introspection() {
+        let mut p = provider_with_zone();
+        p.status.as_mut().unwrap().failure_domains[0]
+            .attributes
+            .available_network_classes
+            .clear();
+        let nics = resolve_nic_networks(
+            &p,
+            "vc-dc-east-cluster-a",
+            &[VMImageTemplateNic {
+                network: Some("VM Network".to_string()),
+                adapter: None,
+                pci_slot: None,
+            }],
+        )
+        .unwrap();
+        assert_eq!(nics[0].network, "VM Network");
     }
 
     fn ds(name: &str, cluster: Option<&str>, free_space_bytes: Option<i64>) -> Datastore {
@@ -206,5 +339,87 @@ mod tests {
         assert_eq!(guest_id_for("linux", "alpine"), "otherLinux64Guest");
         assert_eq!(guest_id_for("windows", "server"), "windows2019srv_64Guest");
         assert_eq!(guest_id_for("bsd", "freebsd"), "otherGuest64");
+    }
+
+    // ----------------------------------------------------------------------
+    // upload_progress_milestones
+    // ----------------------------------------------------------------------
+
+    #[test]
+    fn upload_progress_no_milestones_when_total_size_unknown() {
+        assert!(upload_progress_milestones(0, 10, 0).is_empty());
+    }
+
+    #[test]
+    fn upload_progress_crosses_one_milestone_per_normal_chunk() {
+        assert_eq!(upload_progress_milestones(0, 10, 100), vec![10]);
+        assert_eq!(upload_progress_milestones(50, 10, 100), vec![60]);
+    }
+
+    #[test]
+    fn upload_progress_no_milestone_within_the_same_decile() {
+        assert!(upload_progress_milestones(1, 1, 100).is_empty());
+    }
+
+    #[test]
+    fn upload_progress_one_big_chunk_crosses_every_milestone() {
+        assert_eq!(
+            upload_progress_milestones(0, 100, 100),
+            vec![10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
+        );
+    }
+
+    #[test]
+    fn upload_progress_reaches_100_percent_at_the_last_byte() {
+        assert_eq!(upload_progress_milestones(90, 10, 100), vec![100]);
+    }
+
+    #[test]
+    fn upload_progress_caps_at_100_percent_even_if_bytes_overshoot_total() {
+        // Defensive: should never happen (Content-Length is the file size),
+        // but a stray extra byte must not report >100%.
+        assert_eq!(upload_progress_milestones(90, 50, 100), vec![100]);
+    }
+
+    #[test]
+    fn upload_progress_zero_length_chunk_crosses_nothing() {
+        assert!(upload_progress_milestones(50, 0, 100).is_empty());
+    }
+
+    // ----------------------------------------------------------------------
+    // effective_folder
+    // ----------------------------------------------------------------------
+
+    #[test]
+    fn effective_folder_nests_the_zone_under_the_configured_root() {
+        // Regression: two failure domains commonly share a datacenter (only
+        // their cluster differs), and vSphere's VM/Template folder hierarchy
+        // is scoped per-datacenter, not per-cluster. Without nesting, every
+        // zone's import Job raced CreateVM_Task against the identical
+        // <root> folder + template name (found live).
+        assert_eq!(
+            effective_folder(Some("templates/hadron"), "cluster-01"),
+            "templates/hadron/cluster-01"
+        );
+    }
+
+    #[test]
+    fn effective_folder_strips_a_trailing_slash_on_the_root() {
+        assert_eq!(
+            effective_folder(Some("templates/hadron/"), "cluster-01"),
+            "templates/hadron/cluster-01"
+        );
+    }
+
+    #[test]
+    fn effective_folder_is_just_the_zone_when_no_root_is_configured() {
+        // No root configured still must not collapse every zone onto the
+        // shared datacenter VM-folder root — every zone gets its own folder.
+        assert_eq!(effective_folder(None, "cluster-01"), "cluster-01");
+    }
+
+    #[test]
+    fn effective_folder_is_just_the_zone_when_the_root_is_empty() {
+        assert_eq!(effective_folder(Some(""), "cluster-01"), "cluster-01");
     }
 }

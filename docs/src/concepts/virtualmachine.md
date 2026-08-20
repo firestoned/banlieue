@@ -72,6 +72,51 @@ stateDiagram-v2
   backend).
 - `userData` *(string, optional)* — cloud-init / ignition / sysprep payload.
 
+## Per-VM overrides (deltas, not primary definitions)
+
+A `VirtualMachine` inherits its hardware shape and network topology from the
+`VMClass` it references. Two optional fields let you override specific values
+**for a single VM** without creating a new class:
+
+| Field | What it overrides | Type |
+| --- | --- | --- |
+| `hardwareOverride.cpus` | CPUs from `VMClass.spec.hardware.cpus` | `u32?` |
+| `hardwareOverride.memoryMiB` | Memory from `VMClass.spec.hardware.memoryMiB` | `u32?` |
+| `hardwareOverride.diskOverrides` | Disk sizes from `VMClass.spec.hardware.disks` | list, keyed by `name` |
+| `networkOverrides` | IPAM on a named interface from `VMClass.spec.network.interfaces` | list, keyed by `name` |
+
+**These are deltas, not primary definitions.** The `VMClass` remains the
+authoritative source for the VM's shape. Only the fields you set in an
+override replace the class value; everything else is inherited unchanged.
+
+Use overrides sparingly. Their purpose is to accommodate the rare VM that
+genuinely needs a different budget than its class defines — for example, a
+database primary bumped to 16 CPUs while all other replicas use the 4-CPU
+class shape, one VM that needs a larger data disk, or one VM that needs a
+static IP while the rest use DHCP. If you find yourself setting the same
+override on every VM of a given class, create a new `VMClass` instead.
+
+```yaml
+spec:
+  classRef:
+    name: db-prod-large
+  # Delta: bump memory + data disk for this one VM; CPUs and OS disk stay as
+  # the class defines.
+  hardwareOverride:
+    memoryMiB: 65536
+    diskOverrides:
+      - name: data
+        sizeGiB: 2000
+  # Delta: pin eth0 to a static address; other interfaces use the class IPAM.
+  networkOverrides:
+    - name: eth0
+      static:
+        address: 192.0.2.90
+        prefix: 24
+        gateway: 192.0.2.1
+        nameservers: [192.0.2.53]
+```
+
 ## Related CRDs
 
 - **[VMClass](../reference/api.md)** — flavour / size shape (CPU, memory, disk).

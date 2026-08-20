@@ -456,7 +456,7 @@ mod tests {
     #[test]
     fn ipam_spec_default_is_dhcp_with_no_sub_configs() {
         let s = IpamSpec::default();
-        assert_eq!(s.source, IpamSource::Dhcp);
+        assert_eq!(s.source(), IpamSource::Dhcp);
         assert!(s.static_.is_none());
         assert!(s.pool.is_none());
     }
@@ -483,13 +483,10 @@ mod tests {
 
     #[test]
     fn ipam_spec_dhcp_round_trip_omits_sub_configs() {
-        let s = IpamSpec {
-            source: IpamSource::Dhcp,
-            static_: None,
-            pool: None,
-        };
+        let s = IpamSpec::default();
         let json = serde_json::to_value(&s).unwrap();
-        assert_eq!(json, serde_json::json!({ "source": "dhcp" }));
+        assert_eq!(json, serde_json::json!({}));
+        assert_eq!(s.source(), IpamSource::Dhcp);
         let back: IpamSpec = serde_json::from_value(json).unwrap();
         assert_eq!(back, s);
     }
@@ -497,23 +494,23 @@ mod tests {
     #[test]
     fn ipam_spec_static_minimal_round_trip() {
         let s = IpamSpec {
-            source: IpamSource::Static,
             static_: Some(StaticIpamConfig {
                 address: "10.0.0.5".to_string(),
                 prefix: 24,
                 gateway: None,
                 nameservers: Vec::new(),
+                domain: None,
             }),
-            pool: None,
+            ..Default::default()
         };
         let json = serde_json::to_value(&s).unwrap();
         assert_eq!(
             json,
             serde_json::json!({
-                "source": "static",
                 "static": { "address": "10.0.0.5", "prefix": 24 }
             })
         );
+        assert_eq!(s.source(), IpamSource::Static);
         let back: IpamSpec = serde_json::from_value(json).unwrap();
         assert_eq!(back, s);
     }
@@ -521,17 +518,16 @@ mod tests {
     #[test]
     fn ipam_spec_static_with_gateway_and_dns_round_trip() {
         let s = IpamSpec {
-            source: IpamSource::Static,
             static_: Some(StaticIpamConfig {
                 address: "10.0.0.5".to_string(),
                 prefix: 24,
                 gateway: Some("10.0.0.1".to_string()),
                 nameservers: vec!["192.0.2.53".to_string(), "198.51.100.53".to_string()],
+                domain: None,
             }),
-            pool: None,
+            ..Default::default()
         };
         let json = serde_json::to_value(&s).unwrap();
-        assert_eq!(json["source"], "static");
         assert_eq!(json["static"]["gateway"], "10.0.0.1");
         assert_eq!(
             json["static"]["nameservers"],
@@ -542,10 +538,39 @@ mod tests {
     }
 
     #[test]
+    fn static_ipam_config_domain_round_trip() {
+        let s = StaticIpamConfig {
+            address: "10.0.0.5".to_string(),
+            prefix: 24,
+            gateway: Some("10.0.0.1".to_string()),
+            nameservers: vec!["192.0.2.53".to_string()],
+            domain: Some("k8s.example.internal".to_string()),
+        };
+        let json = serde_json::to_value(&s).unwrap();
+        assert_eq!(json["domain"], "k8s.example.internal");
+        let back: StaticIpamConfig = serde_json::from_value(json).unwrap();
+        assert_eq!(back, s);
+    }
+
+    #[test]
+    fn static_ipam_config_omits_domain_when_absent() {
+        let s = StaticIpamConfig {
+            address: "10.0.0.5".to_string(),
+            prefix: 24,
+            gateway: None,
+            nameservers: Vec::new(),
+            domain: None,
+        };
+        let json = serde_json::to_value(&s).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({ "address": "10.0.0.5", "prefix": 24 })
+        );
+    }
+
+    #[test]
     fn ipam_spec_pool_round_trip() {
         let s = IpamSpec {
-            source: IpamSource::Pool,
-            static_: None,
             pool: Some(PoolIpamConfig {
                 pool_ref: TypedObjectReference {
                     api_group: "ipam.cluster.x-k8s.io".to_string(),
@@ -554,12 +579,13 @@ mod tests {
                     namespace: None,
                 },
             }),
+            ..Default::default()
         };
+        assert_eq!(s.source(), IpamSource::Pool);
         let json = serde_json::to_value(&s).unwrap();
         assert_eq!(
             json,
             serde_json::json!({
-                "source": "pool",
                 "pool": {
                     "poolRef": {
                         "apiGroup": "ipam.cluster.x-k8s.io",
@@ -571,12 +597,6 @@ mod tests {
         );
         let back: IpamSpec = serde_json::from_value(json).unwrap();
         assert_eq!(back, s);
-    }
-
-    #[test]
-    fn ipam_spec_rejects_unknown_source() {
-        let err = serde_json::from_str::<IpamSpec>(r#"{"source":"slaac"}"#);
-        assert!(err.is_err());
     }
 
     #[test]
@@ -592,14 +612,76 @@ mod tests {
     }
 
     #[test]
-    fn ipam_spec_missing_source_field_fails() {
-        // `source` is the only required field on IpamSpec — both `static`
-        // and `pool` are optional sibling configs. Cross-field validation
-        // ("source=Static implies static is set") is intentionally NOT
-        // schema-enforced; it's the controller's job (and a future CEL rule).
-        let err =
-            serde_json::from_str::<IpamSpec>(r#"{"static":{"address":"10.0.0.5","prefix":24}}"#);
-        assert!(err.is_err());
+    fn ipam_spec_empty_object_deserializes_as_dhcp() {
+        let s: IpamSpec = serde_json::from_str(r#"{}"#).unwrap();
+        assert_eq!(s.source(), IpamSource::Dhcp);
+        assert!(s.static_.is_none());
+        assert!(s.pool.is_none());
+    }
+
+    // ----------------------------------------------------------------------
+    // StaticNetworkShape / IpamShape (class-level, no per-VM address)
+    // ----------------------------------------------------------------------
+
+    #[test]
+    fn static_network_shape_round_trip() {
+        let s = StaticNetworkShape {
+            prefix: Some(24),
+            gateway: Some("10.0.0.1".to_string()),
+            nameservers: vec!["8.8.8.8".to_string()],
+            domain: Some("k8s.example.internal".to_string()),
+        };
+        let json = serde_json::to_value(&s).unwrap();
+        assert_eq!(json["prefix"], 24);
+        assert_eq!(json["gateway"], "10.0.0.1");
+        assert!(!json.as_object().unwrap().contains_key("address"));
+        let back: StaticNetworkShape = serde_json::from_value(json).unwrap();
+        assert_eq!(back, s);
+    }
+
+    #[test]
+    fn static_network_shape_accepts_empty_json() {
+        let json = serde_json::json!({});
+        let s: StaticNetworkShape = serde_json::from_value(json).unwrap();
+        assert!(s.prefix.is_none());
+        assert!(s.gateway.is_none());
+    }
+
+    #[test]
+    fn static_network_shape_prefix_is_optional() {
+        let json = serde_json::json!({"gateway": "10.0.0.1"});
+        let s: StaticNetworkShape = serde_json::from_value(json).unwrap();
+        assert!(s.prefix.is_none());
+        assert_eq!(s.gateway.as_deref(), Some("10.0.0.1"));
+    }
+
+    #[test]
+    fn ipam_shape_default_is_dhcp() {
+        let s = IpamShape::default();
+        assert_eq!(s.source(), IpamSource::Dhcp);
+        assert!(s.static_.is_none());
+        assert!(s.pool.is_none());
+    }
+
+    #[test]
+    fn ipam_shape_static_round_trip() {
+        let s = IpamShape {
+            static_: Some(StaticNetworkShape {
+                prefix: Some(24),
+                gateway: Some("10.0.0.1".to_string()),
+                nameservers: Vec::new(),
+                domain: None,
+            }),
+            ..Default::default()
+        };
+        assert_eq!(s.source(), IpamSource::Static);
+        let json = serde_json::to_value(&s).unwrap();
+        // No source field — inferred
+        assert!(!json.as_object().unwrap().contains_key("source"));
+        assert_eq!(json["static"]["prefix"], 24);
+        assert!(!json["static"].as_object().unwrap().contains_key("address"));
+        let back: IpamShape = serde_json::from_value(json).unwrap();
+        assert_eq!(back, s);
     }
 
     // ----------------------------------------------------------------------

@@ -23,6 +23,7 @@ mod tests {
             kind: BuildArtifactKind::CloudImage,
             phase,
             os_artifact_ref: "img-build".into(),
+            os_artifact_uid: None,
             pvc_ref: Some(LocalObjectReference {
                 name: "img-build-artifacts".into(),
             }),
@@ -55,6 +56,7 @@ mod tests {
                 capabilities: ProviderCapabilities::default(),
                 paused: false,
                 use_content_library: false,
+                failure_domain_name_overrides: Vec::new(),
             },
             status: Some(ProviderStatus {
                 failure_domains: vec![FailureDomain {
@@ -80,9 +82,12 @@ mod tests {
             .iter()
             .map(|(name, pool)| banlieue_api::banlieue::StorageClassMapping {
                 name: (*name).to_string(),
-                target: [("pool".to_string(), (*pool).to_string())]
-                    .into_iter()
-                    .collect(),
+                target: Some(
+                    [("pool".to_string(), (*pool).to_string())]
+                        .into_iter()
+                        .collect(),
+                ),
+                ..Default::default()
             })
             .collect();
         if let Some(st) = p.status.as_mut() {
@@ -325,6 +330,34 @@ mod tests {
         let job = build_import_job(&inputs("j", "ns", "vm", &p, &a));
         assert_eq!(job["spec"]["backoffLimit"], 1);
         assert_eq!(job["spec"]["template"]["spec"]["restartPolicy"], "Never");
+    }
+
+    // ------------------------------------------------------------------
+    // ADR-0027: import Job owned by the OSArtifact whose PVC it mounts
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn import_job_has_no_owner_reference_when_os_artifact_uid_unknown() {
+        let p = provider_with_pools("default");
+        let a = artifact(BuildArtifactPhase::Ready);
+        assert!(a.os_artifact_uid.is_none());
+        let job = build_import_job(&inputs("j", "ns", "vm", &p, &a));
+        assert!(job["metadata"]["ownerReferences"].is_null());
+    }
+
+    #[test]
+    fn import_job_is_owned_by_the_os_artifact_when_uid_known() {
+        let p = provider_with_pools("default");
+        let a = BuildArtifactStatus {
+            os_artifact_uid: Some("11111111-2222-3333-4444-555555555555".into()),
+            ..artifact(BuildArtifactPhase::Ready)
+        };
+        let job = build_import_job(&inputs("j", "ns", "vm", &p, &a));
+        let owner = &job["metadata"]["ownerReferences"][0];
+        assert_eq!(owner["apiVersion"], "build.kairos.io/v1alpha2");
+        assert_eq!(owner["kind"], "OSArtifact");
+        assert_eq!(owner["name"], "img-build");
+        assert_eq!(owner["uid"], "11111111-2222-3333-4444-555555555555");
     }
 
     #[test]

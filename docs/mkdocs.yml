@@ -178,13 +178,16 @@ nav:
 
   - Guides:
       - Overview: guides/index.md
+      - End-to-End Setup (Bootstrap to Running VMs): guides/end-to-end-setup.md
       - Core Controller: guides/core-controller.md
       - Provider Lifecycle & Install: guides/provider-lifecycle.md
       - vSphere Provider: guides/vsphere-provider.md
       - libvirt Provider: guides/libvirt-provider.md
+      - Environment / Provider Isolation: guides/environment-provider-isolation.md
       - Setting up the Kairos Operator: guides/kairos-operator-setup.md
       - Using banlieue-imagebuilder: guides/using-banlieue-imagebuilder.md
       - Building an Alpine VM Template: guides/alpine-vsphere-template.md
+      - Building a Kairos Hadron VM Template: guides/building-kairos-hadron-template.md
 
   - Concepts:
       - Overview: concepts/index.md

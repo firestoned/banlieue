@@ -126,6 +126,49 @@ spec:
                 - sysprep
                 - none
                 type: string
+              isoOverlay:
+                description: |-
+                  Additional files overlaid onto a built ISO for `Url`-kind vSphere
+                  sources (e.g. a hand-verified `grub.cfg`). Resolved by
+                  `banlieue-imagebuilder` into the kairos-operator `OSArtifact`'s
+                  `spec.volumes[]` + `spec.artifacts.overlayISOVolume` — the same
+                  `auroraboot build-iso --overlay-iso` mechanism a hand-run ISO-build
+                  pipeline would use. See [`IsoOverlaySource`] and ADR-0022. Ignored for
+                  `cloudImage`-kind builds and non-`Url` sources.
+                nullable: true
+                properties:
+                  files:
+                    default: []
+                    description: |-
+                      Explicit key -> ISO-relative-path mapping. At least one entry expected;
+                      an empty list is accepted but wires nothing into the `OSArtifact`.
+                    items:
+                      description: |-
+                        One overlay file: a key within [`IsoOverlaySource::secret_ref`] mapped to
+                        a destination path relative to the built ISO's root.
+                      properties:
+                        key:
+                          description: Key within the overlay Secret holding this file's content.
+                          type: string
+                        path:
+                          description: Destination path, relative to the ISO root (e.g. `boot/grub2/grub.cfg`).
+                          type: string
+                      required:
+                      - key
+                      - path
+                      type: object
+                    type: array
+                  secretRef:
+                    description: Secret in the imagebuild namespace holding the overlay file contents.
+                    properties:
+                      name:
+                        type: string
+                    required:
+                    - name
+                    type: object
+                required:
+                - secretRef
+                type: object
               osDistribution:
                 description: |-
                   Free-form distribution string. Examples: ubuntu, rhel, debian,
@@ -146,8 +189,14 @@ spec:
                 type: string
               sources:
                 description: |-
-                  Per-provider source mappings. At least one entry per ProviderClass
-                  you intend to schedule VMs onto.
+                  Per-provider source mappings — one backend binding for this catalog
+                  entry per `providerClass` you intend to schedule VMs onto ("one
+                  name, many backends", see the type-level doc comment above).
+
+                  `x-kubernetes-list-type: map` keyed on `providerClass`: the API
+                  server rejects a second entry for a `providerClass` that already
+                  has one, rather than leaving it to `find_url_source` /
+                  `find_vsphere_source` to silently pick whichever came first.
                 items:
                   description: |-
                     One backend's mapping for a VMImage: which provider class it applies to,
@@ -194,15 +243,30 @@ spec:
                   - ref
                   type: object
                 type: array
+                x-kubernetes-list-map-keys:
+                - providerClass
+                x-kubernetes-list-type: map
               template:
                 description: |-
-                  How the backend **template** is built from a `Url` source (folder,
-                  network, disk, CPU / memory / firmware / NIC, force knobs). Every field
+                  How the backend **template** is built from a `Url` source (root
+                  folder, network, disk, CPU / memory / firmware / NIC, force knobs).
+                  Every field
                   is optional and falls back to a built-in default. Only meaningful for
                   `Url` sources; ignored for `Template` / `BackingFile`. See
                   [`VMImageTemplate`] and ADR-0020.
                 nullable: true
                 properties:
+                  autoManageInstall:
+                    description: |-
+                      Run the install-then-generalize sequence (power on, wait for the
+                      unattended install to finish and the VM to power itself off, remove
+                      the CD-ROM, then mark as template) at all. When unset, defaults to
+                      `true`. `false` reverts to creating the VM, attaching the ISO, and
+                      marking it as a template immediately — no power-on — for a build that
+                      isn't Kairos-driven or whose install/generalize is managed some other
+                      way. See ADR-0021.
+                    nullable: true
+                    type: boolean
                   cpus:
                     description: |-
                       Virtual CPU count of the template (`govc vm.create -c`). When unset,
@@ -256,13 +320,6 @@ spec:
                     - null
                     nullable: true
                     type: string
-                  folder:
-                    description: |-
-                      vCenter inventory folder (path under the datacenter's VM folder, e.g.
-                      `templates/kairos`) to place the template in; created if missing. When
-                      unset, the datacenter's VM-folder root is used. vSphere-only.
-                    nullable: true
-                    type: string
                   forceCreate:
                     description: |-
                       Recreate the template even if one of that name already exists,
@@ -281,6 +338,17 @@ spec:
                       VMImage's `osFamily` / `osDistribution` / `osVersion`. vSphere-only.
                     nullable: true
                     type: string
+                  installTimeoutSeconds:
+                    description: |-
+                      Bound, in seconds, on how long the import Job waits for the
+                      unattended Kairos install to finish and the VM to power itself off
+                      (`install.poweroff: true` in the cloud-config) before failing the
+                      Job. When unset, defaults to 1800 (30 min). See ADR-0021: the golden
+                      disk is never rebooted by the build, so this bounds only the
+                      (typically 8-12 min) unattended-install window, not a boot cycle.
+                    format: int32
+                    nullable: true
+                    type: integer
                   memoryMib:
                     description: |-
                       Memory of the template, in MiB (`govc vm.create -m`). When unset,
@@ -290,27 +358,66 @@ spec:
                     type: integer
                   network:
                     description: |-
-                      Port group the template's NIC attaches to. When unset, the zone's first
-                      reachable network class (ADR-0019) is used. vSphere-only.
-                    nullable: true
-                    type: string
-                  networkAdapter:
-                    description: Virtual NIC adapter type for the template (`govc vm.create -net.adapter`).
-                    enum:
-                    - vmxnet3
-                    - vmxnet2
-                    - e1000
-                    - e1000e
-                    nullable: true
-                    type: string
-                  nicPciSlot:
+                      The template's network interfaces. Empty means exactly one NIC, using
+                      every per-entry default below — the same behavior this field had
+                      before it became a list (ADR-0031). vSphere-only.
+                    items:
+                      description: One network interface on a `Url`-source template (ADR-0031).
+                      properties:
+                        adapter:
+                          description: Virtual NIC adapter type for the template (`govc vm.create -net.adapter`).
+                          enum:
+                          - vmxnet3
+                          - vmxnet2
+                          - e1000
+                          - e1000e
+                          nullable: true
+                          type: string
+                        network:
+                          description: |-
+                            Port group this NIC attaches to. When unset, the zone's first
+                            reachable network class (ADR-0019) is used.
+                          nullable: true
+                          type: string
+                        pciSlot:
+                          description: |-
+                            PCI slot number for this NIC (`ethernetN.pciSlotNumber`). Slot 192
+                            on the first NIC yields a stable `ens192` interface name in the
+                            guest. When unset, defaults to `192 + this NIC's index` in
+                            `VMImageTemplate.network` — so a template with several NICs and no
+                            explicit slots still gets predictable, non-colliding
+                            `ens192`/`ens193`/`ens194`/... naming.
+                          format: int32
+                          nullable: true
+                          type: integer
+                      type: object
+                    type: array
+                  retainOnDelete:
                     description: |-
-                      PCI slot number for the template's NIC (`ethernet0.pciSlotNumber`). Slot
-                      192 yields a stable `ens192` interface name in the guest. When unset,
-                      defaults to 192. vSphere-only.
-                    format: int32
+                      Keep the per-zone vCenter template(s) this `VMImage` caused to be
+                      built when the `VMImage` itself is deleted. When unset (the default),
+                      deleting a `VMImage` also destroys every per-zone template it owns —
+                      declarative deletion, matching `VirtualMachine`'s own cascade onto its
+                      `VSphereMachine` (ADR-0026). Set `true` to opt out — e.g. the template
+                      is still referenced by another generation, or its lifecycle is
+                      managed by hand outside banlieue. vSphere-only; ignored by any other
+                      provider. See ADR-0028.
+                    type: boolean
+                  rootFolder:
+                    description: |-
+                      Root vCenter inventory folder (path under the datacenter's VM folder,
+                      e.g. `templates/kairos`); created if missing. When unset, the
+                      datacenter's VM-folder root is the root. vSphere-only.
+
+                      Named `rootFolder`, not `folder`, because it is never the literal
+                      target: the per-zone import always places the template at
+                      `<rootFolder>/<failure-domain-name>` (ADR-0020). Two failure domains
+                      commonly share a datacenter (only their cluster differs), and
+                      vSphere's VM/Template folder hierarchy is scoped per-datacenter, not
+                      per-cluster — without the per-zone subfolder, every zone's import
+                      raced `CreateVM_Task` against the identical folder + template name.
                     nullable: true
-                    type: integer
+                    type: string
                 type: object
             required:
             - architecture
@@ -371,6 +478,17 @@ spec:
                     description: |-
                       Name of the `OSArtifact` CR `banlieue-imagebuilder` created for this
                       `VMImage` (same namespace as the artifacts PVC below).
+                    type: string
+                  osArtifactUid:
+                    description: |-
+                      `metadata.uid` of the `OSArtifact` named by `os_artifact_ref`, once
+                      observed. Each provider's per-zone import Job sets this as its own
+                      `ownerReference` so a rebuilt (deleted-and-recreated) `OSArtifact`
+                      garbage-collects the stale Job — and the artifacts PVC mount it
+                      holds — instead of the Job outliving it for up to its
+                      `ttlSecondsAfterFinished` (ADR-0027). Absent until the `OSArtifact`
+                      has actually been observed once.
+                    nullable: true
                     type: string
                   phase:
                     description: Current build phase.
@@ -517,7 +635,22 @@ spec:
                             nullable: true
                             type: string
                           resolvedRef:
-                            description: Resolved concrete reference within this zone once ready.
+                            description: |-
+                              The template's bare display name within this zone once ready — the
+                              value a provider passes to a name-based template lookup. NOT a
+                              decorated string (no `[dc]`/folder prefix): folder scoping for a
+                              per-zone (`Url`-kind) import lives in [`Self::template_folder`],
+                              kept separate so a lookup can be built from structured fields
+                              instead of parsing this one.
+                            nullable: true
+                            type: string
+                          templateFolder:
+                            description: |-
+                              The vCenter folder path (relative to the datacenter's VM folder,
+                              e.g. `templates/cluster-01`) the template in [`Self::resolved_ref`]
+                              lives in, for a per-zone (`Url`-kind) import (ADR-0020 Decision #5).
+                              `None` for a `Template`-kind image, which has no per-zone folder —
+                              its `resolved_ref` is looked up datacenter-wide.
                             nullable: true
                             type: string
                         required:

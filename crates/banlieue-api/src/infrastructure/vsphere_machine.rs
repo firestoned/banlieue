@@ -35,6 +35,7 @@ use serde::{Deserialize, Serialize};
     derive = "PartialEq",
     printcolumn = r#"{"name":"Provider","type":"string","jsonPath":".spec.providerRef.name"}"#,
     printcolumn = r#"{"name":"Provisioned","type":"boolean","jsonPath":".status.initialization.provisioned"}"#,
+    printcolumn = r#"{"name":"Power","type":"string","jsonPath":".status.observedPowerState"}"#,
     printcolumn = r#"{"name":"ProviderID","type":"string","jsonPath":".spec.providerID","priority":1}"#,
     printcolumn = r#"{"name":"Cluster","type":"string","jsonPath":".spec.cluster","priority":1}"#,
     printcolumn = r#"{"name":"Age","type":"date","jsonPath":".metadata.creationTimestamp"}"#
@@ -91,8 +92,24 @@ pub struct VSphereMachineSpec {
     /// describe the target vCenter.
     pub provider_ref: LocalObjectReference,
 
-    /// vCenter template name (resolved from `VMImage`).
+    /// vCenter template's bare display name (resolved from `VMImage`).
+    /// Never a decorated string (no `[dc]`/folder prefix) — see
+    /// `template_folder` for the scoping the lookup needs.
     pub template: String,
+
+    /// The per-zone vCenter folder the template in `template` lives in
+    /// (resolved from `VMImage.status`, e.g. `templates/cluster-01`,
+    /// ADR-0020 Decision #5). `None` for a `Template`-kind image, which
+    /// has no per-zone folder — its lookup is datacenter-wide.
+    ///
+    /// This is deliberately a separate field from `template`, not a
+    /// `folder/name`-encoded string: every zone's template shares the same
+    /// display `name`, so a lookup that doesn't scope by folder can match
+    /// a *different* zone's template (found live: a datacenter-wide
+    /// lookup let one zone's `VirtualMachine` clone another zone's
+    /// template).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template_folder: Option<String>,
 
     /// Datacenter name.
     pub datacenter: String,
@@ -103,7 +120,10 @@ pub struct VSphereMachineSpec {
     /// Datastore or datastore cluster name (resolved from the storage class).
     pub datastore: String,
 
-    /// VM folder path. Optional; defaults to the datacenter VM root.
+    /// Destination vCenter folder path for the **clone** (not the source
+    /// template — see `template_folder`). Optional; defaults to the
+    /// datacenter VM root, or (once set by `banlieue-controller`) the same
+    /// per-zone folder the template lives in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub folder: Option<String>,
 
@@ -131,6 +151,20 @@ pub struct VSphereMachineSpec {
     /// Network interfaces.
     #[schemars(length(min = 1, max = 16))]
     pub network: Vec<VSphereNicSpec>,
+
+    /// Guest bootstrap payload content — already resolved from the parent
+    /// `VirtualMachine`'s `spec.userData` Secret and placeholder-substituted
+    /// (ADR-0024's `${VM_NAME}`/`${FQDN}`/etc. set) by `banlieue-controller`
+    /// (ADR-0025). The provider delivers this verbatim (base64 into
+    /// `guestinfo.userdata`) — it never reads a Secret itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_data: Option<String>,
+
+    /// Desired power state, resolved from the parent `VirtualMachine`'s
+    /// `spec.desiredPowerState` (ADR-0024). Defaults to `PoweredOn`, matching
+    /// `VirtualMachineSpec`'s own default.
+    #[serde(default)]
+    pub desired_power_state: PowerState,
 }
 
 /// One virtual disk on the resulting vSphere VM.
@@ -195,6 +229,14 @@ pub struct VSphereMachineStatus {
     /// `spec.providerID`. Not part of the CAPI contract.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instance_uuid: Option<String>,
+
+    /// The backend VM's actual power state, as last observed via
+    /// `VirtualMachine.runtime.powerState` (ADR-0034) — the hypervisor's
+    /// view, available immediately on power-on, not a guest-OS-boot signal.
+    /// Absent until first observed. Not part of the CAPI contract; mirrored
+    /// onto the parent `VirtualMachine`'s own `status.observedPowerState`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_power_state: Option<PowerState>,
 
     /// CAPI-compatible conditions (using `metav1.Condition`). The `Ready`
     /// condition is mirrored as `InfrastructureReady` on the parent

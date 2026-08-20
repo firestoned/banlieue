@@ -62,6 +62,7 @@ never does. Communication between them is CRD-only.
 | --- | --- | --- | --- |
 | `capabilities` | object |  | Admin-defined capability mappings. Every storage / network class that VMClass and VMImage may request MUST be listed here for this provider to be considered by the scheduler. |
 | `connection` | object | Yes | Connection details for the backend. |
+| `failureDomainNameOverrides` | object[] |  | Explicit overrides for individual discovered failure domains' generated `name`. The auto-computed, collision-safe name (`<provider>-<datacenter>-<cluster>`, hashed when too long) is always the fallback for any `(datacenter, cluster)` pair with no matching entry here — this is opt-in, never required. See ADR-0023. |
 | `paused` | boolean |  | Suspend reconciliation. Equivalent to setting the `cluster.x-k8s.io/paused` annotation but in-band. |
 | `providerClassRef` | object | Yes | Reference to a ProviderClass that identifies the backend type. |
 | `useContentLibrary` | boolean |  | vSphere only: import `Url`-kind VMImages through a vCenter Content Library rather than the default datastore-upload + `MarkAsTemplate` path. Defaults to `false` (no Content Library required), matching environments where CL is not enabled. Ignored by non-vSphere classes. See ADR-0020. |
@@ -85,7 +86,55 @@ Network classes the admin asserts are available on this backend.
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `name` | string | Yes | Abstract name referenced by VMClass.network.interfaces[].networkClass. |
-| `target` | map[string]string | Yes | Concrete backend target. Free-form per provider class. Examples: vsphere: { portGroup: "vmnet-prod" } { distributedPortGroup: "dvs-prod-vlan100" } proxmox: { bridge: "vmbr0", vlan: "100" } libvirt: { network: "br-prod" } |
+| `perZone` | object[] |  | Per-`(datacenter, cluster)` overrides of `target` (ADR-0030). |
+| `perZoneSubnet` | object[] |  | Per-`(datacenter, cluster)` overrides of `subnet` (ADR-0032). |
+| `subnet` | object |  | Default subnet shape (gateway/nameservers/domain) for this network class, used in any zone `per_zone_subnet` does not cover. A port group implies a subnet, so this lives alongside `target`/`per_zone` rather than on `VMClass` — it lets a static-addressing `VirtualMachine` omit gateway/nameservers/domain entirely and have them resolved from whichever zone the scheduler picked (ADR-0032). |
+| `target` | map[string]string |  | Default concrete target, used in any zone `per_zone` does not cover. `None` means this class resolves ONLY in the zones `per_zone` lists. Free-form per provider class. Examples: vsphere: { portGroup: "vmnet-prod" } { distributedPortGroup: "dvs-prod-vlan100" } proxmox: { bridge: "vmbr0", vlan: "100" } libvirt: { network: "br-prod" } |
+
+###### `.spec.capabilities.networkClasses[].perZone[]`
+
+Per-`(datacenter, cluster)` overrides of `target` (ADR-0030).
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `cluster` | string | Yes | Cluster name as vCenter reports it. |
+| `datacenter` | string | Yes | Datacenter name as vCenter reports it. |
+| `target` | map[string]string | Yes | Concrete backend target for this zone, same shape as [`StorageClassMapping::target`] / [`NetworkClassMapping::target`]. |
+
+###### `.spec.capabilities.networkClasses[].perZoneSubnet[]`
+
+Per-`(datacenter, cluster)` overrides of `subnet` (ADR-0032).
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `cluster` | string | Yes | Cluster name as vCenter reports it. |
+| `datacenter` | string | Yes | Datacenter name as vCenter reports it. |
+| `subnet` | object | Yes | Subnet shape for this zone. |
+
+####### `.spec.capabilities.networkClasses[].perZoneSubnet[].subnet`
+
+Subnet shape for this zone.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `domain` | string |  |  |
+| `gateway` | string |  |  |
+| `nameservers` | string[] |  |  |
+
+###### `.spec.capabilities.networkClasses[].subnet`
+
+Default subnet shape (gateway/nameservers/domain) for this network
+class, used in any zone `per_zone_subnet` does not cover. A port
+group implies a subnet, so this lives alongside `target`/`per_zone`
+rather than on `VMClass` — it lets a static-addressing
+`VirtualMachine` omit gateway/nameservers/domain entirely and have
+them resolved from whichever zone the scheduler picked (ADR-0032).
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `domain` | string |  |  |
+| `gateway` | string |  |  |
+| `nameservers` | string[] |  |  |
 
 ##### `.spec.capabilities.storageClasses[]`
 
@@ -96,7 +145,18 @@ concrete target.
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `name` | string | Yes | Abstract name referenced by VMClass.hardware.disks[].storageClass. |
-| `target` | map[string]string | Yes | Concrete backend target. Free-form per provider class; the provider's controller interprets it. Examples by provider class: vsphere: { datastore: "ds-fast-01" } { datastoreCluster: "dsc-gold" } { tagCategory: "tier", tag: "gold" } proxmox: { storage: "ceph-pool-1" } libvirt: { pool: "nvme-pool" } |
+| `perZone` | object[] |  | Per-`(datacenter, cluster)` overrides of `target` (ADR-0030). |
+| `target` | map[string]string |  | Default concrete target, used in any zone `per_zone` does not cover. `None` means this class resolves ONLY in the zones `per_zone` lists. Free-form per provider class; the provider's controller interprets it. Examples by provider class: vsphere: { datastore: "ds-fast-01" } { datastoreCluster: "dsc-gold" } { tagCategory: "tier", tag: "gold" } proxmox: { storage: "ceph-pool-1" } libvirt: { pool: "nvme-pool" } |
+
+###### `.spec.capabilities.storageClasses[].perZone[]`
+
+Per-`(datacenter, cluster)` overrides of `target` (ADR-0030).
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `cluster` | string | Yes | Cluster name as vCenter reports it. |
+| `datacenter` | string | Yes | Datacenter name as vCenter reports it. |
+| `target` | map[string]string | Yes | Concrete backend target for this zone, same shape as [`StorageClassMapping::target`] / [`NetworkClassMapping::target`]. |
 
 #### `.spec.connection`
 
@@ -155,6 +215,20 @@ credentials. Required keys depend on provider class:
 | --- | --- | --- | --- |
 | `name` | string | Yes |  |
 
+#### `.spec.failureDomainNameOverrides[]`
+
+Explicit overrides for individual discovered failure domains'
+generated `name`. The auto-computed, collision-safe name
+(`<provider>-<datacenter>-<cluster>`, hashed when too long) is
+always the fallback for any `(datacenter, cluster)` pair with no
+matching entry here — this is opt-in, never required. See ADR-0023.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `cluster` | string | Yes | Cluster name as vCenter reports it. |
+| `datacenter` | string | Yes | Datacenter name as vCenter reports it (matches `discover_inventory`'s walk, not an operator-chosen alias). |
+| `name` | string | Yes | The name to use instead of the auto-computed one, e.g. `cluster-01`. Slugified the same way auto-computed names are, so `Cluster 01` still produces a valid Kubernetes name. |
+
 #### `.spec.providerClassRef`
 
 Reference to a ProviderClass that identifies the backend type.
@@ -176,7 +250,7 @@ and the health / reachability conditions.
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `conditions` | object[] |  | Standard Kubernetes conditions. The `Ready` condition reflects overall provider health. The `ProviderReachable` condition reflects connection state to the backend. |
-| `failureDomains` | object[] |  | Failure domains discovered by the provider's controller within this backend. The scheduler matches against `labels` and filters by `attributes.availableStorageClasses` / `availableNetworkClasses`. |
+| `failureDomains` | object[] |  | Failure domains ("availability zones" — the terms are synonyms; `failureDomain` was kept to align with CAPI v1beta2's own vocabulary) discovered by the provider's controller within this backend. The scheduler matches against `labels` and filters by `attributes.availableStorageClasses` / `availableNetworkClasses`. |
 | `observedGeneration` | integer |  | The generation of the spec that the controller has reconciled. |
 | `workload` | object |  | The provider workload `banlieue-operator` created for this Provider. |
 
@@ -197,14 +271,16 @@ state to the backend.
 
 #### `.status.failureDomains[]`
 
-Failure domains discovered by the provider's controller within this
-backend. The scheduler matches against `labels` and filters by
+Failure domains ("availability zones" — the terms are synonyms;
+`failureDomain` was kept to align with CAPI v1beta2's own vocabulary)
+discovered by the provider's controller within this backend. The
+scheduler matches against `labels` and filters by
 `attributes.availableStorageClasses` / `availableNetworkClasses`.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `attributes` | object |  | Attributes the provider's controller resolved for this domain, including the subset of admin-listed classes that are actually reachable from here. |
-| `labels` | map[string]string |  | Labels used by the scheduler's `failureDomainSelector` and by VirtualMachine anti-affinity `topologyKey` matching. Recommended keys: `dc`, `cluster`, `rack`, `env`. |
+| `labels` | map[string]string |  | Labels used by the scheduler's `failureDomainSelector` and by VirtualMachine anti-affinity `topologyKey` matching. Recommended keys: `datacenter`, `cluster`, `rack`, `env`. Every provider also sets `name` to this failure domain's own resolved `name` above (auto-computed, or an ADR-0023 override) — `name` above is a top-level field a `LabelSelector` cannot match directly, so without this mirror, targeting a specific zone by its friendly override name (rather than a raw backend-reported label like `cluster`) would be impossible. |
 | `name` | string | Yes | Stable name. Conventionally `<provider>-<cluster-or-zone>`. |
 
 ##### `.status.failureDomains[].attributes`
@@ -500,24 +576,26 @@ Network interfaces in attachment order.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `ipam` | object | Yes | IPAM configuration. See `IpamSpec` in common. |
+| `ipam` | object | Yes | IPAM configuration. Uses [`IpamShape`] (not [`IpamSpec`]) because a `VMClass` is shared by many VMs — there is no per-VM address at this level. Per-VM static addresses are provided via `VirtualMachine.spec.networkOverrides`. |
 | `mtu` | integer |  | Optional MTU override. Provider may ignore if unsupported. |
 | `name` | string | Yes | Stable name within the VM. |
 | `networkClass` | string | Yes | Abstract network class name. MUST be advertised in the chosen Provider's `spec.capabilities.networkClasses`. |
 
 ###### `.spec.network.interfaces[].ipam`
 
-IPAM configuration. See `IpamSpec` in common.
+IPAM configuration. Uses [`IpamShape`] (not [`IpamSpec`]) because a
+`VMClass` is shared by many VMs — there is no per-VM address at this
+level. Per-VM static addresses are provided via
+`VirtualMachine.spec.networkOverrides`.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `pool` | object |  | Required when `source == Pool`; ignored otherwise. |
-| `source` | string | Yes | IPAM source. `Dhcp` is the default so a freshly-constructed `IpamSpec` is a valid one. Allowed: `dhcp`, `static`, `pool`. |
-| `static` | object |  | Required when `source == Static`; ignored otherwise. |
+| `pool` | object |  | Pool-based IPAM parameters. |
+| `static` | object |  | Shared subnet parameters (prefix, gateway, nameservers, domain) — **not** a per-VM address. |
 
 ####### `.spec.network.interfaces[].ipam.pool`
 
-Required when `source == Pool`; ignored otherwise.
+Pool-based IPAM parameters.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -540,14 +618,15 @@ default) or future banlieue-native pool types.
 
 ####### `.spec.network.interfaces[].ipam.static`
 
-Required when `source == Static`; ignored otherwise.
+Shared subnet parameters (prefix, gateway, nameservers, domain) —
+**not** a per-VM address.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `address` | string | Yes |  |
+| `domain` | string |  | DNS domain, used both as a DNS search domain and (by a `VirtualMachine.spec.networkOverrides` consumer, ADR-0024) to build an FQDN as `<vm-name>.<domain>`. |
 | `gateway` | string |  |  |
 | `nameservers` | string[] |  |  |
-| `prefix` | integer | Yes |  |
+| `prefix` | integer |  |  |
 
 ---
 
@@ -595,11 +674,12 @@ Cluster-scoped: a VMImage is shared by VirtualMachines in any namespace.
 | `architecture` | string | Yes | Guest CPU architecture. Failure domains whose hosts cannot run this architecture are filtered out by the scheduler. Allowed: `amd64`, `arm64`. |
 | `cloudConfig` | object |  | Optional default cloud-config baked into the built artifact for `Url`-kind sources. Resolved by `banlieue-imagebuilder` and passed to the kairos-operator `OSArtifact` as `cloudConfigRef` (`auroraboot build-iso --cloud-config`). SecretRef-first; see [`CloudConfigSource`] and ADR-0020. Ignored for non-`Url` sources. |
 | `guestAgent` | string |  | Guest agent contract this image is built to support; determines how `VirtualMachine.spec.userData` is delivered. Allowed: `cloud-init`, `ignition`, `sysprep`, `none`. |
+| `isoOverlay` | object |  | Additional files overlaid onto a built ISO for `Url`-kind vSphere sources (e.g. a hand-verified `grub.cfg`). Resolved by `banlieue-imagebuilder` into the kairos-operator `OSArtifact`'s `spec.volumes[]` + `spec.artifacts.overlayISOVolume` — the same `auroraboot build-iso --overlay-iso` mechanism a hand-run ISO-build pipeline would use. See [`IsoOverlaySource`] and ADR-0022. Ignored for `cloudImage`-kind builds and non-`Url` sources. |
 | `osDistribution` | string | Yes | Free-form distribution string. Examples: ubuntu, rhel, debian, fedora-coreos, windows-server. |
 | `osFamily` | string | Yes | Broad operating-system family. Coarser than `osDistribution`; lets providers apply high-level guest handling. Allowed: `linux`, `windows`, `bsd`, `other`. |
 | `osVersion` | string | Yes | Free-form version string. Examples: "22.04", "9.4", "2022". |
-| `sources` | object[] | Yes | Per-provider source mappings. At least one entry per ProviderClass you intend to schedule VMs onto. |
-| `template` | object |  | How the backend **template** is built from a `Url` source (folder, network, disk, CPU / memory / firmware / NIC, force knobs). Every field is optional and falls back to a built-in default. Only meaningful for `Url` sources; ignored for `Template` / `BackingFile`. See [`VMImageTemplate`] and ADR-0020. |
+| `sources` | object[] | Yes | Per-provider source mappings — one backend binding for this catalog entry per `providerClass` you intend to schedule VMs onto ("one name, many backends", see the type-level doc comment above). |
+| `template` | object |  | How the backend **template** is built from a `Url` source (root folder, network, disk, CPU / memory / firmware / NIC, force knobs). Every field is optional and falls back to a built-in default. Only meaningful for `Url` sources; ignored for `Template` / `BackingFile`. See [`VMImageTemplate`] and ADR-0020. |
 
 #### `.spec.cloudConfig`
 
@@ -623,10 +703,49 @@ YAML (key defaults to [`DEFAULT_CLOUD_CONFIG_KEY`]).
 | `key` | string |  | Key within the object's `data`. Defaults are caller-defined. |
 | `name` | string | Yes | Name of the ConfigMap / Secret in the referrer's namespace. |
 
+#### `.spec.isoOverlay`
+
+Additional files overlaid onto a built ISO for `Url`-kind vSphere
+sources (e.g. a hand-verified `grub.cfg`). Resolved by
+`banlieue-imagebuilder` into the kairos-operator `OSArtifact`'s
+`spec.volumes[]` + `spec.artifacts.overlayISOVolume` — the same
+`auroraboot build-iso --overlay-iso` mechanism a hand-run ISO-build
+pipeline would use. See [`IsoOverlaySource`] and ADR-0022. Ignored for
+`cloudImage`-kind builds and non-`Url` sources.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `files` | object[] |  | Explicit key -> ISO-relative-path mapping. At least one entry expected; an empty list is accepted but wires nothing into the `OSArtifact`. |
+| `secretRef` | object | Yes | Secret in the imagebuild namespace holding the overlay file contents. |
+
+##### `.spec.isoOverlay.files[]`
+
+Explicit key -> ISO-relative-path mapping. At least one entry expected;
+an empty list is accepted but wires nothing into the `OSArtifact`.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `key` | string | Yes | Key within the overlay Secret holding this file's content. |
+| `path` | string | Yes | Destination path, relative to the ISO root (e.g. `boot/grub2/grub.cfg`). |
+
+##### `.spec.isoOverlay.secretRef`
+
+Secret in the imagebuild namespace holding the overlay file contents.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | Yes |  |
+
 #### `.spec.sources[]`
 
-Per-provider source mappings. At least one entry per ProviderClass
-you intend to schedule VMs onto.
+Per-provider source mappings — one backend binding for this catalog
+entry per `providerClass` you intend to schedule VMs onto ("one
+name, many backends", see the type-level doc comment above).
+
+`x-kubernetes-list-type: map` keyed on `providerClass`: the API
+server rejects a second entry for a `providerClass` that already
+has one, rather than leaving it to `find_url_source` /
+`find_vsphere_source` to silently pick whichever came first.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -638,25 +757,27 @@ you intend to schedule VMs onto.
 
 #### `.spec.template`
 
-How the backend **template** is built from a `Url` source (folder,
-network, disk, CPU / memory / firmware / NIC, force knobs). Every field
+How the backend **template** is built from a `Url` source (root
+folder, network, disk, CPU / memory / firmware / NIC, force knobs).
+Every field
 is optional and falls back to a built-in default. Only meaningful for
 `Url` sources; ignored for `Template` / `BackingFile`. See
 [`VMImageTemplate`] and ADR-0020.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
+| `autoManageInstall` | boolean |  | Run the install-then-generalize sequence (power on, wait for the unattended install to finish and the VM to power itself off, remove the CD-ROM, then mark as template) at all. When unset, defaults to `true`. `false` reverts to creating the VM, attaching the ISO, and marking it as a template immediately — no power-on — for a build that isn't Kairos-driven or whose install/generalize is managed some other way. See ADR-0021. |
 | `cpus` | integer |  | Virtual CPU count of the template (`govc vm.create -c`). When unset, defaults to 2. vSphere-only. |
 | `disk` | object |  | Install disk of the template (the clone source's disk). When unset, a thin 100 GiB disk on a pvscsi controller is used. |
 | `firmware` | string |  | Firmware for the template (`govc vm.create -firmware`). Reuses the backend-agnostic [`Firmware`] hint (`bios` / `efi` / `efi-secure`). When unset, defaults to `efi`. vSphere maps `efi-secure` to EFI with secure boot enabled. Allowed: `bios`, `efi`, `efi-secure`, `null`. |
-| `folder` | string |  | vCenter inventory folder (path under the datacenter's VM folder, e.g. `templates/kairos`) to place the template in; created if missing. When unset, the datacenter's VM-folder root is used. vSphere-only. |
 | `forceCreate` | boolean |  | Recreate the template even if one of that name already exists, destroying the existing one first. Threaded as `--force-create`. |
 | `forceUpload` | boolean |  | Re-upload the built ISO even if one of that name already exists on the backend, deleting the existing one first (the vСenter datastore file API does not overwrite in place). Threaded as `--force-upload`. |
 | `guestId` | string |  | vCenter `guestId` for the template (`govc vm.create -g`, e.g. `rhel9_64Guest`, `ubuntu64Guest`). When unset, it is derived from the VMImage's `osFamily` / `osDistribution` / `osVersion`. vSphere-only. |
+| `installTimeoutSeconds` | integer |  | Bound, in seconds, on how long the import Job waits for the unattended Kairos install to finish and the VM to power itself off (`install.poweroff: true` in the cloud-config) before failing the Job. When unset, defaults to 1800 (30 min). See ADR-0021: the golden disk is never rebooted by the build, so this bounds only the (typically 8-12 min) unattended-install window, not a boot cycle. |
 | `memoryMib` | integer |  | Memory of the template, in MiB (`govc vm.create -m`). When unset, defaults to 4096. vSphere-only. |
-| `network` | string |  | Port group the template's NIC attaches to. When unset, the zone's first reachable network class (ADR-0019) is used. vSphere-only. |
-| `networkAdapter` | string |  | Virtual NIC adapter type for the template (`govc vm.create -net.adapter`). Allowed: `vmxnet3`, `vmxnet2`, `e1000`, `e1000e`. |
-| `nicPciSlot` | integer |  | PCI slot number for the template's NIC (`ethernet0.pciSlotNumber`). Slot 192 yields a stable `ens192` interface name in the guest. When unset, defaults to 192. vSphere-only. |
+| `network` | object[] |  | The template's network interfaces. Empty means exactly one NIC, using every per-entry default below — the same behavior this field had before it became a list (ADR-0031). vSphere-only. |
+| `retainOnDelete` | boolean |  | Keep the per-zone vCenter template(s) this `VMImage` caused to be built when the `VMImage` itself is deleted. When unset (the default), deleting a `VMImage` also destroys every per-zone template it owns — declarative deletion, matching `VirtualMachine`'s own cascade onto its `VSphereMachine` (ADR-0026). Set `true` to opt out — e.g. the template is still referenced by another generation, or its lifecycle is managed by hand outside banlieue. vSphere-only; ignored by any other provider. See ADR-0028. |
+| `rootFolder` | string |  | Root vCenter inventory folder (path under the datacenter's VM folder, e.g. `templates/kairos`); created if missing. When unset, the datacenter's VM-folder root is the root. vSphere-only. |
 
 ##### `.spec.template.disk`
 
@@ -668,6 +789,18 @@ thin 100 GiB disk on a pvscsi controller is used.
 | `controller` | string |  | Disk controller type. Defaults to `pvscsi`. Allowed: `pvscsi`, `lsiLogic`, `lsiLogicSas`, `busLogic`. |
 | `size` | integer |  | Disk size, in GiB. Defaults to 100 when unset. |
 | `type` | string |  | Provisioning hint: `thin` (default), `thick`, or `eagerZeroed`. Reuses the backend-agnostic [`DiskProvisioning`] shared with `VMClass` / `VSphereMachine`; eager-zeroing is the `eagerZeroed` variant, not a separate flag. Providers honor it on a best-effort basis. Allowed: `thin`, `thick`, `eagerZeroed`. |
+
+##### `.spec.template.network[]`
+
+The template's network interfaces. Empty means exactly one NIC, using
+every per-entry default below — the same behavior this field had
+before it became a list (ADR-0031). vSphere-only.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `adapter` | string |  | Virtual NIC adapter type for the template (`govc vm.create -net.adapter`). Allowed: `vmxnet3`, `vmxnet2`, `e1000`, `e1000e`. |
+| `network` | string |  | Port group this NIC attaches to. When unset, the zone's first reachable network class (ADR-0019) is used. |
+| `pciSlot` | integer |  | PCI slot number for this NIC (`ethernetN.pciSlotNumber`). Slot 192 on the first NIC yields a stable `ens192` interface name in the guest. When unset, defaults to `192 + this NIC's index` in `VMImageTemplate.network` — so a template with several NICs and no explicit slots still gets predictable, non-colliding `ens192`/`ens193`/`ens194`/... naming. |
 
 ### `.status`
 
@@ -697,6 +830,7 @@ ADR-0010 and ADR-0020.
 | `kind` | string | Yes | What kind of artifact was built, aligned with kairos-operator's own `OSArtifactKind`. Determines the `file` extension and which provider class consumes it. Allowed: `cloudImage`, `iso`. |
 | `message` | string |  | Long human-readable detail, e.g. the `OSArtifact.status.message` on failure. |
 | `osArtifactRef` | string | Yes | Name of the `OSArtifact` CR `banlieue-imagebuilder` created for this `VMImage` (same namespace as the artifacts PVC below). |
+| `osArtifactUid` | string |  | `metadata.uid` of the `OSArtifact` named by `os_artifact_ref`, once observed. Each provider's per-zone import Job sets this as its own `ownerReference` so a rebuilt (deleted-and-recreated) `OSArtifact` garbage-collects the stale Job — and the artifacts PVC mount it holds — instead of the Job outliving it for up to its `ttlSecondsAfterFinished` (ADR-0027). Absent until the `OSArtifact` has actually been observed once. |
 | `phase` | string | Yes | Current build phase. Allowed: `Pending`, `Building`, `Ready`, `Failed`. |
 | `pvcRef` | object |  | Reference to the PVC kairos-operator created holding the built artifact, once known. Populated no earlier than phase `Building`. |
 | `reason` | string |  | Short reason, mirroring the stable-string convention used elsewhere in this status (e.g. `ImagePerProviderStatus.reason`). |
@@ -765,7 +899,8 @@ and leave this empty.
 | `name` | string | Yes | Name of the failure domain, matching `Provider.status.failureDomains[].name`. |
 | `ready` | boolean | Yes | True once the template/import is usable in this zone. |
 | `reason` | string |  |  |
-| `resolvedRef` | string |  | Resolved concrete reference within this zone once ready. |
+| `resolvedRef` | string |  | The template's bare display name within this zone once ready — the value a provider passes to a name-based template lookup. NOT a decorated string (no `[dc]`/folder prefix): folder scoping for a per-zone (`Url`-kind) import lives in [`Self::template_folder`], kept separate so a lookup can be built from structured fields instead of parsing this one. |
+| `templateFolder` | string |  | The vCenter folder path (relative to the datacenter's VM folder, e.g. `templates/cluster-01`) the template in [`Self::resolved_ref`] lives in, for a per-zone (`Url`-kind) import (ADR-0020 Decision #5). `None` for a `Template`-kind image, which has no per-zone folder — its `resolved_ref` is looked up datacenter-wide. |
 
 ---
 
@@ -815,8 +950,11 @@ Namespaced: candidate Providers are drawn from the VM's own namespace.
 | --- | --- | --- | --- |
 | `classRef` | object | Yes | Reference to a (cluster-scoped) VMClass. |
 | `desiredPowerState` | string |  | Desired power state. Defaults to `PoweredOn`. Allowed: `PoweredOn`, `PoweredOff`, `Suspended`. |
+| `folder` | string |  | Destination folder for the provisioned VM (e.g. `apps/prod` on vSphere). When unset, the provider defaults to organizing the VM the same way it organizes its source template — on vSphere, the same per-zone folder the template lives in (ADR-0020 Decision #5). |
+| `hardwareOverride` | object |  | Per-VM override for the `VMClass`'s hardware shape — CPUs, memory, and disk sizes. |
 | `imageRef` | object | Yes | Reference to a (cluster-scoped) VMImage. |
 | `migrationPolicy` | string |  | What to do when current placement no longer satisfies the spec. Allowed: `automatic`, `manual`, `never`. |
+| `networkOverrides` | object[] |  | Per-VM overrides for specific VMClass-declared network interfaces (ADR-0024). Keyed by `NetworkInterfaceSpec.name`; an interface with no entry here uses its VMClass's own `ipam` verbatim (commonly `dhcp`). Lets many VMs share one VMClass while each still gets its own static address — a VMClass-level `ipam.static` cannot express that, since a class is shared by design. |
 | `paused` | boolean |  | Suspend reconciliation in-band. |
 | `placement` | object |  | Placement intent. If unset, the scheduler considers every Provider in the VM's namespace and every failure domain. |
 | `userData` | object |  | Optional user-data delivered to the guest via the image's `guestAgent` (cloud-init / ignition / sysprep). |
@@ -829,6 +967,44 @@ Reference to a (cluster-scoped) VMClass.
 | --- | --- | --- | --- |
 | `name` | string | Yes |  |
 
+#### `.spec.hardwareOverride`
+
+Per-VM override for the `VMClass`'s hardware shape — CPUs, memory,
+and disk sizes.
+
+**This is a delta, not the primary definition.** The `VMClass` is the
+authoritative source for a VM's hardware shape: its `spec.hardware`
+is fixed and shared by every VM that references the class. This
+field applies *on top of* the class — only the fields you set here
+replace the class value; everything else is inherited verbatim.
+
+Use this sparingly. Its primary purpose is to accommodate the rare
+VM that genuinely needs a different CPU, memory, or disk budget than
+its class defines — for example, a database primary bumped to 16 CPUs
+while all other replicas use the 4-CPU class shape, or one VM that
+needs a larger data disk. If you find yourself setting the same
+override on every VM of a given class, create a new `VMClass` instead.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `cpus` | integer |  | Override the `VMClass`'s `spec.hardware.cpus`. If absent, the class value is used unchanged. |
+| `diskOverrides` | object[] |  | Per-disk size overrides, keyed by `DiskSpec.name`. Only `sizeGiB` can be overridden per VM; the disk's `storageClass` and `provisioning` are class-level concerns. |
+| `memoryMiB` | integer |  | Override the `VMClass`'s `spec.hardware.memoryMiB`. If absent, the class value is used unchanged. |
+
+##### `.spec.hardwareOverride.diskOverrides[]`
+
+Per-disk size overrides, keyed by `DiskSpec.name`.
+Only `sizeGiB` can be overridden per VM; the disk's `storageClass`
+and `provisioning` are class-level concerns.
+
+**This is a delta, not the primary definition.** A disk with no
+entry here inherits the `VMClass`'s size verbatim.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | Yes | Matches a `VMClass.spec.hardware.disks[].name`. |
+| `sizeGiB` | integer | Yes | Override the disk's `sizeGiB`. Must be ≥ the class value (the provider will reject a shrink). If absent, the class size is used. |
+
 #### `.spec.imageRef`
 
 Reference to a (cluster-scoped) VMImage.
@@ -836,6 +1012,38 @@ Reference to a (cluster-scoped) VMImage.
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `name` | string | Yes |  |
+
+#### `.spec.networkOverrides[]`
+
+Per-VM overrides for specific VMClass-declared network interfaces
+(ADR-0024). Keyed by `NetworkInterfaceSpec.name`; an interface with
+no entry here uses its VMClass's own `ipam` verbatim (commonly
+`dhcp`). Lets many VMs share one VMClass while each still gets its
+own static address — a VMClass-level `ipam.static` cannot express
+that, since a class is shared by design.
+
+**This is a delta, not the primary definition.** The VMClass is the
+authoritative source for the VM's network shape. Entries here are
+layered on top: only the named interface's `ipam` is replaced;
+every other interface is inherited from the class unchanged.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | Yes | Matches a `VMClass.spec.network.interfaces[].name`. |
+| `static` | object | Yes | The static address to use for this interface, overriding whatever the `VMClass`'s own `ipam` declares. |
+
+##### `.spec.networkOverrides[].static`
+
+The static address to use for this interface, overriding whatever
+the `VMClass`'s own `ipam` declares.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `address` | string | Yes |  |
+| `domain` | string |  | DNS domain, used both as a DNS search domain and (by a `VirtualMachine.spec.networkOverrides` consumer, ADR-0024) to build an FQDN as `<vm-name>.<domain>`. |
+| `gateway` | string |  |  |
+| `nameservers` | string[] |  |  |
+| `prefix` | integer | Yes |  |
 
 #### `.spec.placement`
 
@@ -1226,6 +1434,7 @@ VirtualMachine. The CAPI contract label
 | --- | --- | --- | --- |
 | Provider | string | `.spec.providerRef.name` | 0 |
 | Provisioned | boolean | `.status.initialization.provisioned` | 0 |
+| Power | string | `.status.observedPowerState` | 0 |
 | ProviderID | string | `.spec.providerID` | 1 |
 | Cluster | string | `.spec.cluster` | 1 |
 | Age | date | `.metadata.creationTimestamp` | 0 |
@@ -1237,17 +1446,20 @@ VirtualMachine. The CAPI contract label
 | `cluster` | string | Yes | Compute cluster within the datacenter. |
 | `datacenter` | string | Yes | Datacenter name. |
 | `datastore` | string | Yes | Datastore or datastore cluster name (resolved from the storage class). |
+| `desiredPowerState` | string |  | Desired power state, resolved from the parent `VirtualMachine`'s `spec.desiredPowerState` (ADR-0024). Defaults to `PoweredOn`, matching `VirtualMachineSpec`'s own default. Allowed: `PoweredOn`, `PoweredOff`, `Suspended`. |
 | `disks` | object[] | Yes | Disks. The first disk is the template's OS disk (grown if needed); subsequent disks are blank. |
 | `failureDomain` | string |  | CAPI contract (optional): failure domain placement. The banlieue scheduler writes the chosen failure domain here; for CAPI users the parent Machine's `spec.failureDomain` is what populates this. |
 | `firmware` | string | Yes | Firmware. EFI / EFI Secure require the template to be EFI-capable. Allowed: `bios`, `efi`, `efi-secure`. |
-| `folder` | string |  | VM folder path. Optional; defaults to the datacenter VM root. |
+| `folder` | string |  | Destination vCenter folder path for the **clone** (not the source template — see `template_folder`). Optional; defaults to the datacenter VM root, or (once set by `banlieue-controller`) the same per-zone folder the template lives in. |
 | `memoryMiB` | integer | Yes | Memory in MiB. |
 | `network` | object[] | Yes | Network interfaces. |
 | `numCpus` | integer | Yes | Number of virtual CPUs. |
 | `providerID` | string |  | CAPI contract: Provider ID for the resulting Node, if this VM becomes a Kubernetes node. Format: `vsphere://<vm-instance-uuid>`. Set by the provider controller after the VM is created. |
 | `providerRef` | object | Yes | Reference to the banlieue `Provider` whose connection details describe the target vCenter. |
 | `resourcePool` | string |  | Resource pool path within the cluster. Optional; defaults to the cluster's root resource pool. |
-| `template` | string | Yes | vCenter template name (resolved from `VMImage`). |
+| `template` | string | Yes | vCenter template's bare display name (resolved from `VMImage`). Never a decorated string (no `[dc]`/folder prefix) — see `template_folder` for the scoping the lookup needs. |
+| `templateFolder` | string |  | The per-zone vCenter folder the template in `template` lives in (resolved from `VMImage.status`, e.g. `templates/cluster-01`, ADR-0020 Decision #5). `None` for a `Template`-kind image, which has no per-zone folder — its lookup is datacenter-wide. |
+| `userData` | string |  | Guest bootstrap payload content — already resolved from the parent `VirtualMachine`'s `spec.userData` Secret and placeholder-substituted (ADR-0024's `${VM_NAME}`/`${FQDN}`/etc. set) by `banlieue-controller` (ADR-0025). The provider delivers this verbatim (base64 into `guestinfo.userdata`) — it never reads a Secret itself. |
 
 #### `.spec.disks[]`
 
@@ -1277,13 +1489,12 @@ IP address management for this interface.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `pool` | object |  | Required when `source == Pool`; ignored otherwise. |
-| `source` | string | Yes | IPAM source. `Dhcp` is the default so a freshly-constructed `IpamSpec` is a valid one. Allowed: `dhcp`, `static`, `pool`. |
-| `static` | object |  | Required when `source == Static`; ignored otherwise. |
+| `pool` | object |  | Pool-based IPAM parameters. |
+| `static` | object |  | Static IPAM parameters (address, prefix, gateway, nameservers, domain). |
 
 ###### `.spec.network[].ipam.pool`
 
-Required when `source == Pool`; ignored otherwise.
+Pool-based IPAM parameters.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -1306,11 +1517,12 @@ default) or future banlieue-native pool types.
 
 ###### `.spec.network[].ipam.static`
 
-Required when `source == Static`; ignored otherwise.
+Static IPAM parameters (address, prefix, gateway, nameservers, domain).
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `address` | string | Yes |  |
+| `domain` | string |  | DNS domain, used both as a DNS search domain and (by a `VirtualMachine.spec.networkOverrides` consumer, ADR-0024) to build an FQDN as `<vm-name>.<domain>`. |
 | `gateway` | string |  |  |
 | `nameservers` | string[] |  |  |
 | `prefix` | integer | Yes |  |
@@ -1337,6 +1549,7 @@ status contract (plus a few vSphere-specific diagnostics).
 | `initialization` | object |  | CAPI contract field: replaces the deprecated v1beta1 `status.ready`. |
 | `instanceUuid` | string |  | VM instance UUID. Stable across vCenter restarts and the source for `spec.providerID`. Not part of the CAPI contract. |
 | `observedGeneration` | integer |  |  |
+| `observedPowerState` | string |  | The backend VM's actual power state, as last observed via `VirtualMachine.runtime.powerState` (ADR-0034) — the hypervisor's view, available immediately on power-on, not a guest-OS-boot signal. Absent until first observed. Not part of the CAPI contract; mirrored onto the parent `VirtualMachine`'s own `status.observedPowerState`. Allowed: `PoweredOn`, `PoweredOff`, `Suspended`, `null`. |
 | `vmRef` | string |  | VMware managed-object reference (vm-NNNN). Useful for operator diagnostics. Not part of the CAPI contract. |
 
 #### `.status.addresses[]`
@@ -1410,17 +1623,20 @@ The VSphereMachine spec for machines created from this template.
 | `cluster` | string | Yes | Compute cluster within the datacenter. |
 | `datacenter` | string | Yes | Datacenter name. |
 | `datastore` | string | Yes | Datastore or datastore cluster name (resolved from the storage class). |
+| `desiredPowerState` | string |  | Desired power state, resolved from the parent `VirtualMachine`'s `spec.desiredPowerState` (ADR-0024). Defaults to `PoweredOn`, matching `VirtualMachineSpec`'s own default. Allowed: `PoweredOn`, `PoweredOff`, `Suspended`. |
 | `disks` | object[] | Yes | Disks. The first disk is the template's OS disk (grown if needed); subsequent disks are blank. |
 | `failureDomain` | string |  | CAPI contract (optional): failure domain placement. The banlieue scheduler writes the chosen failure domain here; for CAPI users the parent Machine's `spec.failureDomain` is what populates this. |
 | `firmware` | string | Yes | Firmware. EFI / EFI Secure require the template to be EFI-capable. Allowed: `bios`, `efi`, `efi-secure`. |
-| `folder` | string |  | VM folder path. Optional; defaults to the datacenter VM root. |
+| `folder` | string |  | Destination vCenter folder path for the **clone** (not the source template — see `template_folder`). Optional; defaults to the datacenter VM root, or (once set by `banlieue-controller`) the same per-zone folder the template lives in. |
 | `memoryMiB` | integer | Yes | Memory in MiB. |
 | `network` | object[] | Yes | Network interfaces. |
 | `numCpus` | integer | Yes | Number of virtual CPUs. |
 | `providerID` | string |  | CAPI contract: Provider ID for the resulting Node, if this VM becomes a Kubernetes node. Format: `vsphere://<vm-instance-uuid>`. Set by the provider controller after the VM is created. |
 | `providerRef` | object | Yes | Reference to the banlieue `Provider` whose connection details describe the target vCenter. |
 | `resourcePool` | string |  | Resource pool path within the cluster. Optional; defaults to the cluster's root resource pool. |
-| `template` | string | Yes | vCenter template name (resolved from `VMImage`). |
+| `template` | string | Yes | vCenter template's bare display name (resolved from `VMImage`). Never a decorated string (no `[dc]`/folder prefix) — see `template_folder` for the scoping the lookup needs. |
+| `templateFolder` | string |  | The per-zone vCenter folder the template in `template` lives in (resolved from `VMImage.status`, e.g. `templates/cluster-01`, ADR-0020 Decision #5). `None` for a `Template`-kind image, which has no per-zone folder — its lookup is datacenter-wide. |
+| `userData` | string |  | Guest bootstrap payload content — already resolved from the parent `VirtualMachine`'s `spec.userData` Secret and placeholder-substituted (ADR-0024's `${VM_NAME}`/`${FQDN}`/etc. set) by `banlieue-controller` (ADR-0025). The provider delivers this verbatim (base64 into `guestinfo.userdata`) — it never reads a Secret itself. |
 
 ###### `.spec.template.spec.disks[]`
 
@@ -1450,13 +1666,12 @@ IP address management for this interface.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `pool` | object |  | Required when `source == Pool`; ignored otherwise. |
-| `source` | string | Yes | IPAM source. `Dhcp` is the default so a freshly-constructed `IpamSpec` is a valid one. Allowed: `dhcp`, `static`, `pool`. |
-| `static` | object |  | Required when `source == Static`; ignored otherwise. |
+| `pool` | object |  | Pool-based IPAM parameters. |
+| `static` | object |  | Static IPAM parameters (address, prefix, gateway, nameservers, domain). |
 
 ######## `.spec.template.spec.network[].ipam.pool`
 
-Required when `source == Pool`; ignored otherwise.
+Pool-based IPAM parameters.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -1479,11 +1694,12 @@ default) or future banlieue-native pool types.
 
 ######## `.spec.template.spec.network[].ipam.static`
 
-Required when `source == Static`; ignored otherwise.
+Static IPAM parameters (address, prefix, gateway, nameservers, domain).
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `address` | string | Yes |  |
+| `domain` | string |  | DNS domain, used both as a DNS search domain and (by a `VirtualMachine.spec.networkOverrides` consumer, ADR-0024) to build an FQDN as `<vm-name>.<domain>`. |
 | `gateway` | string |  |  |
 | `nameservers` | string[] |  |  |
 | `prefix` | integer | Yes |  |

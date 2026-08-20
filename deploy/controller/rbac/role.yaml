@@ -1,0 +1,27 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# Namespace-scoped grant for banlieue-controller to resolve a
+# VirtualMachine.spec.userData Secret before inlining its (rendered)
+# content onto the VSphereMachine it builds (ADR-0025). Deliberately a
+# namespaced Role, not a ClusterRole rule: this project runs single-tenant
+# today (one namespace, banlieue-system), so this is the whole grant — no
+# per-Provider or per-VM Role bookkeeping. Revisit if multiple namespaces
+# / tenants become real (see ADR-0025's Consequences).
+#
+# This is the "scoped (namespace)" case banlieue-controller's own
+# ClusterRole comment (security review 2026-07-31, SEC-008) anticipated:
+# "no code in banlieue-controller reads a Secret... re-add scoped
+# (resourceNames/namespace) if a reconciler ever needs it."
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: banlieue-controller-secrets
+  namespace: banlieue-system
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: controller
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]

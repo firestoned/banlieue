@@ -355,26 +355,27 @@ pub enum PowerState {
     Suspended,
 }
 
-/// IPAM configuration for a network interface.
+/// Resolved IPAM configuration for a network interface (used in infra CRs
+/// like `VSphereMachine`).
 ///
-/// `source` selects the strategy and the matching sibling field
-/// (`static` / `pool`) carries its parameters. `Dhcp` needs no parameters.
+/// The IPAM mode is inferred from which optional field is set:
 ///
-/// Wire shape (Kubernetes-idiomatic; chosen over a serde-tagged enum
-/// because kube-derive's CRD schema flattener does not support per-variant
-/// discriminator subschemas — see `.wolf/buglog.json` bug-006):
+/// | Field present | Mode |
+/// |---|---|
+/// | `static` | Static |
+/// | `pool` | Pool |
+/// | neither | DHCP (default) |
+///
+/// Setting both `static` and `pool` is invalid — the controller rejects it.
 ///
 /// ```yaml
+/// ipam: {}                             # DHCP — nothing else needed
 /// ipam:
-///   source: dhcp                       # nothing else needed
-/// ipam:
-///   source: static
 ///   static:
 ///     address: 10.0.0.5
 ///     prefix: 24
 ///     gateway: 10.0.0.1
 /// ipam:
-///   source: pool
 ///   pool:
 ///     poolRef:
 ///       apiGroup: ipam.cluster.x-k8s.io
@@ -384,19 +385,34 @@ pub enum PowerState {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct IpamSpec {
-    pub source: IpamSource,
-
-    /// Required when `source == Static`; ignored otherwise.
+    /// Static IPAM parameters (address, prefix, gateway, nameservers, domain).
     #[serde(default, skip_serializing_if = "Option::is_none", rename = "static")]
     pub static_: Option<StaticIpamConfig>,
 
-    /// Required when `source == Pool`; ignored otherwise.
+    /// Pool-based IPAM parameters.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pool: Option<PoolIpamConfig>,
 }
 
-/// IPAM source. `Dhcp` is the default so a freshly-constructed `IpamSpec`
-/// is a valid one.
+impl IpamSpec {
+    /// Derive the IPAM source from which optional field is set.
+    ///
+    /// Precedence: `static` > `pool` > DHCP.
+    #[must_use]
+    pub fn source(&self) -> IpamSource {
+        if self.static_.is_some() {
+            IpamSource::Static
+        } else if self.pool.is_some() {
+            IpamSource::Pool
+        } else {
+            IpamSource::Dhcp
+        }
+    }
+}
+
+/// IPAM source, derived from the presence of `static` or `pool` on
+/// [`IpamSpec`] / [`IpamShape`].  Not serialized as a field — call
+/// `.source()` to obtain.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum IpamSource {
@@ -415,6 +431,75 @@ pub struct StaticIpamConfig {
     pub gateway: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub nameservers: Vec<String>,
+    /// DNS domain, used both as a DNS search domain and (by a
+    /// `VirtualMachine.spec.networkOverrides` consumer, ADR-0024) to build
+    /// an FQDN as `<vm-name>.<domain>`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub domain: Option<String>,
+}
+
+/// Shared subnet shape for a `VMClass`-level static IPAM declaration.
+///
+/// **Does NOT include a per-VM address.** A `VMClass` is shared by many VMs,
+/// so a concrete address can only be expressed per-VM via
+/// `VirtualMachine.spec.networkOverrides`. This struct captures the common
+/// subnet parameters that all VMs on this interface share.
+///
+/// Every field is optional — the class only needs to declare the parameters
+/// that are shared; per-VM overrides fill in the rest.
+///
+/// See also [`StaticIpamConfig`], which adds the per-VM `address` field
+/// and is used in `NetworkInterfaceOverride` and the resolved infra CRs.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct StaticNetworkShape {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefix: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gateway: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub nameservers: Vec<String>,
+    /// DNS domain, used both as a DNS search domain and (by a
+    /// `VirtualMachine.spec.networkOverrides` consumer, ADR-0024) to build
+    /// an FQDN as `<vm-name>.<domain>`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub domain: Option<String>,
+}
+
+/// IPAM configuration for a `VMClass` network interface.
+///
+/// Like [`IpamSpec`] but its `static` variant uses [`StaticNetworkShape`]
+/// (no per-VM address), since a class is shared by many VMs. The per-VM
+/// address is provided via `VirtualMachine.spec.networkOverrides`.
+///
+/// The IPAM mode is inferred — see [`IpamSpec`] for the precedence table.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct IpamShape {
+    /// Shared subnet parameters (prefix, gateway, nameservers, domain) —
+    /// **not** a per-VM address.
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "static")]
+    pub static_: Option<StaticNetworkShape>,
+
+    /// Pool-based IPAM parameters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pool: Option<PoolIpamConfig>,
+}
+
+impl IpamShape {
+    /// Derive the IPAM source from which optional field is set.
+    ///
+    /// Precedence: `static` > `pool` > DHCP.
+    #[must_use]
+    pub fn source(&self) -> IpamSource {
+        if self.static_.is_some() {
+            IpamSource::Static
+        } else if self.pool.is_some() {
+            IpamSource::Pool
+        } else {
+            IpamSource::Dhcp
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

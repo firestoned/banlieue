@@ -1,0 +1,60 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# A VirtualMachine pinned to a static address on one VMClass-declared
+# interface, with a per-VM memory bump (ADR-0024). The VMClass
+# ("db-prod-large", see 03-vmclass-db-prod-large.yaml) itself only declares
+# `dhcp` for eth0 — networkOverrides is what lets THIS one VM get a fixed
+# address without needing a class of its own.
+#
+# hardwareOverride is a **delta, not the primary definition**. The VMClass
+# is the authoritative source for a VM's hardware shape. Only the fields
+# you set here replace the class value — everything else is inherited
+# unchanged. Use sparingly: if every VM of a given class needs the same
+# override, create a new VMClass instead.
+#
+# NOTE: as of this revision, applying this schedules successfully (a
+# VSphereMachine infra CR is created with the resolved static ipam), but
+# nothing clones or powers on the VM yet — the vsphere-provider's
+# VSphereMachine reconciler (the vCenter-talking half) isn't wired in yet.
+apiVersion: banlieue.io/v1alpha1
+kind: VirtualMachine
+metadata:
+  name: db-prod-02
+  namespace: banlieue-system
+  labels:
+    app: db-prod
+    role: secondary
+spec:
+  classRef:
+    name: db-prod-large
+  imageRef:
+    name: ubuntu-22.04-cloudinit
+  placement:
+    providerSelector:
+      matchLabels:
+        dc: dc1
+        env: prod
+  # Delta: bump this secondary's memory and data disk while keeping
+  # the VMClass's CPUs and OS disk unchanged.
+  hardwareOverride:
+    memoryMiB: 65536
+    diskOverrides:
+      - name: data
+        sizeGiB: 2000
+  networkOverrides:
+    - name: eth0
+      static:
+        address: 192.0.2.90
+        prefix: 24
+        gateway: 192.0.2.1
+        nameservers:
+          - 192.0.2.53
+          - 198.51.100.53
+        domain: k8s.example.internal
+  desiredPowerState: PoweredOn
+  userData:
+    secretRef:
+      name: db-prod-02-cloudinit
+    key: user-data
+  migrationPolicy: automatic

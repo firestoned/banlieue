@@ -76,6 +76,12 @@ Notes:
   `Provider`s — so a single cluster can span multiple vCenters. See
   [Infrastructure CRDs & CAPI](infra-crds-capi.md#infracluster-cluster-side-failure-domain-spread).
 
+> **Naming note:** "failure domain" and "availability zone" mean the same
+> thing here. The field is called `failureDomain` to align with the CAPI
+> v1beta2 vocabulary (`clusterv1.FailureDomain`, `Machine.spec.failureDomain`)
+> that banlieue's infra CRDs are built to satisfy — read "availability zone"
+> wherever that's more natural.
+
 The authoritative type is in
 [`crates/banlieue-api/src/banlieue/provider.rs`](https://github.com/firestoned/banlieue/blob/main/crates/banlieue-api/src/banlieue/provider.rs).
 For a full deploy walkthrough see the

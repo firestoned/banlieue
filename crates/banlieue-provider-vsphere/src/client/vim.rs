@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use banlieue_api::banlieue::{DiskController, NicAdapter, ProviderConnection};
-use banlieue_api::common::{DiskProvisioning, Firmware};
+use banlieue_api::common::{DiskProvisioning, Firmware, PowerState};
 use tracing::{debug, info};
 use vim_rs::core::client::{Client, ClientBuilder};
 use vim_rs::mo::cluster_compute_resource::ClusterComputeResource;
@@ -27,22 +27,27 @@ use vim_rs::mo::storage_pod::StoragePod as VimStoragePod;
 use vim_rs::mo::task::Task;
 use vim_rs::mo::view_manager::ViewManager;
 use vim_rs::mo::virtual_machine::VirtualMachine as VimVirtualMachine;
+use vim_rs::types::boxed_types::ValueElements;
 use vim_rs::types::enums::{
     MoTypesEnum, TaskInfoStateEnum, VirtualDeviceConfigSpecFileOperationEnum,
-    VirtualDeviceConfigSpecOperationEnum, VirtualScsiSharingEnum,
+    VirtualDeviceConfigSpecOperationEnum, VirtualMachinePowerStateEnum, VirtualScsiSharingEnum,
 };
 use vim_rs::types::structs::{
-    DistributedVirtualSwitchPortConnection, ManagedObjectReference, ParaVirtualScsiController,
-    VirtualBusLogicController, VirtualCdrom, VirtualCdromIsoBackingInfo, VirtualController,
-    VirtualDevice, VirtualDeviceConfigSpec, VirtualDeviceConnectInfo,
+    DistributedVirtualSwitchPortConnection, ManagedObjectReference, OptionValue,
+    ParaVirtualScsiController, VirtualBusLogicController, VirtualCdrom, VirtualCdromIsoBackingInfo,
+    VirtualController, VirtualDevice, VirtualDeviceConfigSpec, VirtualDeviceConnectInfo,
     VirtualDeviceDeviceBackingInfo, VirtualDeviceFileBackingInfo, VirtualDevicePciBusSlotInfo,
     VirtualDisk, VirtualDiskFlatVer2BackingInfo, VirtualE1000, VirtualE1000E, VirtualEthernetCard,
     VirtualEthernetCardDistributedVirtualPortBackingInfo, VirtualEthernetCardNetworkBackingInfo,
     VirtualIdeController, VirtualLsiLogicController, VirtualLsiLogicSasController,
-    VirtualMachineBootOptions, VirtualMachineConfigSpec, VirtualMachineFileInfo,
-    VirtualScsiController, VirtualVmxnet, VirtualVmxnet2, VirtualVmxnet3,
+    VirtualMachineBootOptions, VirtualMachineBootOptionsBootableCdromDevice,
+    VirtualMachineBootOptionsBootableDiskDevice, VirtualMachineBootOptionsBootableEthernetDevice,
+    VirtualMachineCloneSpec, VirtualMachineConfigSpec, VirtualMachineFileInfo,
+    VirtualMachineRelocateSpec, VirtualScsiController, VirtualVmxnet, VirtualVmxnet2,
+    VirtualVmxnet3,
 };
 use vim_rs::types::traits::VirtualDeviceBackingInfoTrait;
+use vim_rs::types::vim_any::VimAny;
 
 use crate::error::{Error, Result};
 
@@ -89,6 +94,15 @@ const DATASTORE_UPLOAD_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 const TASK_POLL_INTERVAL: Duration = Duration::from_secs(3);
 /// Max task-poll attempts before giving up (≈10 min at the interval above).
 const TASK_POLL_MAX_ATTEMPTS: u32 = 200;
+
+// --- Install + generalize before MarkAsTemplate (ADR-0021) ------------------
+/// Poll interval while waiting for the golden-template build VM to power
+/// itself off once the cloud-config's unattended Kairos install completes.
+const INSTALL_POLL_INTERVAL: Duration = Duration::from_secs(5);
+/// Default bound (seconds) on the unattended-install wait when
+/// `VMImage.spec.template.installTimeoutSeconds` is unset or non-positive.
+/// Mirrors the default documented on `VMImageTemplate::install_timeout_seconds`.
+const DEFAULT_INSTALL_TIMEOUT_SECS: u32 = 1800;
 /// vCenter firmware tokens (`VirtualMachineConfigSpec.firmware`). vCenter takes
 /// only these two; secure boot is layered on `efi` via `boot_options`.
 const FIRMWARE_BIOS: &str = "bios";
@@ -368,7 +382,12 @@ impl VSphereClient for VimClientImpl {
         Ok(out)
     }
 
-    async fn find_template(&self, dc: &Datacenter, name: &str) -> Result<Option<Template>> {
+    async fn find_template(
+        &self,
+        dc: &Datacenter,
+        folder: Option<&str>,
+        name: &str,
+    ) -> Result<Option<Template>> {
         let sc = self.client.service_content();
         let view_manager_moref = sc
             .view_manager
@@ -376,13 +395,34 @@ impl VSphereClient for VimClientImpl {
             .ok_or(Error::Missing("ServiceContent.view_manager"))?;
         let vm = ViewManager::new(self.client.clone(), &view_manager_moref.value);
 
-        let dc_moref = ManagedObjectReference {
-            r#type: vim_rs::types::enums::MoTypesEnum::Datacenter,
-            value: dc.moref.clone(),
+        // Root the view at the requested folder (per-zone `Url`-kind
+        // import), or the whole datacenter (`Template`-kind, no per-zone
+        // folder). A missing folder means no template can be in it.
+        let root_moref = match folder {
+            Some(path) if !path.is_empty() => {
+                let dc_client = VimDatacenter::new(self.client.clone(), &dc.moref);
+                let vm_folder = dc_client.vm_folder().await.map_err(|e| {
+                    Error::Vsphere(format!("Datacenter.vmFolder({}): {e}", dc.moref))
+                })?;
+                match self.find_folder(&vm_folder.value, path).await? {
+                    Some(m) => m,
+                    None => return Ok(None),
+                }
+            }
+            _ => dc.moref.clone(),
+        };
+        let root_type = if folder.is_some_and(|p| !p.is_empty()) {
+            vim_rs::types::enums::MoTypesEnum::Folder
+        } else {
+            vim_rs::types::enums::MoTypesEnum::Datacenter
+        };
+        let root_ref = ManagedObjectReference {
+            r#type: root_type,
+            value: root_moref,
         };
         let view_ref = vm
             .create_container_view(
-                &dc_moref,
+                &root_ref,
                 Some(&[MO_TYPE_VIRTUAL_MACHINE.to_string()]),
                 true,
             )
@@ -504,26 +544,6 @@ impl VSphereClient for VimClientImpl {
         // + switch UUID); a disk+ISO template still boots the installer.
         let resolved = format!("[{}] {}", req.datastore, req.template_name);
 
-        // Idempotency + forceCreate: an existing VM/template of this name is a
-        // no-op unless forceCreate, which destroys it first.
-        if let Some(existing) = self
-            .find_vm_moref_by_name(&req.datacenter_moref, &req.template_name)
-            .await?
-        {
-            if !req.force_create {
-                info!(name = %req.template_name, "template already exists; skipping create (set forceCreate to replace)");
-                return Ok(resolved);
-            }
-            info!(name = %req.template_name, "forceCreate: destroying existing VM/template before recreate");
-            let vmm = VimVirtualMachine::new(self.client.clone(), &existing);
-            let task = vmm
-                .destroy_task()
-                .await
-                .map_err(|e| Error::Vsphere(format!("Destroy_Task({existing}): {e}")))?;
-            self.wait_for_task(&task.value, "destroy existing template")
-                .await?;
-        }
-
         // Resource pool (cluster) + VM folder (datacenter) for the create.
         let ccr = ClusterComputeResource::new(self.client.clone(), &req.cluster_moref);
         let pool = ccr
@@ -541,39 +561,50 @@ impl VSphereClient for VimClientImpl {
             ))
         })?;
 
-        // NIC backing: distributed vDS port (portgroupKey + switchUuid) for a
-        // dvPortGroup, else a standard device-name backing.
-        let nic_backing: Box<dyn VirtualDeviceBackingInfoTrait> = if req.network_distributed {
-            let (portgroup_key, switch_uuid) = self.resolve_dvs_port(&req.network_moref).await?;
-            Box::new(VirtualEthernetCardDistributedVirtualPortBackingInfo {
-                port: DistributedVirtualSwitchPortConnection {
-                    switch_uuid,
-                    portgroup_key: Some(portgroup_key),
-                    ..Default::default()
-                },
-            })
-        } else {
-            Box::new(VirtualEthernetCardNetworkBackingInfo {
-                virtual_device_device_backing_info_: VirtualDeviceDeviceBackingInfo {
-                    device_name: req.network.clone(),
-                    ..Default::default()
-                },
-                network: Some(ManagedObjectReference {
-                    r#type: MoTypesEnum::Network,
-                    value: req.network_moref.clone(),
-                }),
-                ..Default::default()
-            })
-        };
-
-        // Place the template in the requested folder (created if missing), else
-        // the datacenter VM-folder root.
+        // Resolve (creating if missing) the zone's own template folder before
+        // any lookup-by-name: every zone shares the same template display
+        // name, so the idempotency/destroy check below must be scoped to
+        // *this* folder, never the whole datacenter (found live: a
+        // datacenter-wide search let one zone's forceCreate destroy a
+        // different zone's in-flight VM).
         let target_folder = match req.folder.as_deref() {
             Some(path) if !path.is_empty() => self.ensure_folder(&vm_folder.value, path).await?,
             _ => vm_folder.value.clone(),
         };
 
-        let config = build_template_config_spec(req, nic_backing);
+        // Idempotency + forceCreate: an existing VM/template of this name in
+        // this zone's folder is a no-op unless forceCreate, which destroys
+        // it first.
+        if let Some(existing) = self
+            .find_vm_moref_by_name(&target_folder, &req.template_name)
+            .await?
+        {
+            if !req.force_create {
+                info!(name = %req.template_name, "template already exists; skipping create (set forceCreate to replace)");
+                return Ok(resolved);
+            }
+            info!(name = %req.template_name, "forceCreate: destroying existing VM/template before recreate");
+            let vmm = VimVirtualMachine::new(self.client.clone(), &existing);
+            let task = vmm
+                .destroy_task()
+                .await
+                .map_err(|e| Error::Vsphere(format!("Destroy_Task({existing}): {e}")))?;
+            self.wait_for_task(&task.value, "destroy existing template")
+                .await?;
+        }
+
+        // NIC backings: distributed vDS port (portgroupKey + switchUuid) for
+        // a dvPortGroup, else a standard device-name backing — one per
+        // declared NIC (ADR-0031).
+        let mut nic_backings = Vec::with_capacity(req.nics.len());
+        for nic in &req.nics {
+            nic_backings.push(
+                self.build_nic_backing(&nic.network, &nic.network_moref, nic.network_distributed)
+                    .await?,
+            );
+        }
+
+        let config = build_template_config_spec(req, nic_backings);
         let folder = Folder::new(self.client.clone(), &target_folder);
         let task = folder
             .create_vm_task(&config, &pool, None)
@@ -581,15 +612,166 @@ impl VSphereClient for VimClientImpl {
             .map_err(|e| Error::Vsphere(format!("CreateVM_Task({}): {e}", req.template_name)))?;
         self.wait_for_task(&task.value, "create VM").await?;
 
-        // Find the just-created VM and mark it as a template.
+        // Find the just-created VM. When auto-managed (ADR-0021), install
+        // Kairos unattended and generalize it before marking as a template;
+        // otherwise fall straight through to MarkAsTemplate (ADR-0020's
+        // original behavior) for a build that isn't Kairos-driven or whose
+        // install/generalize is managed some other way.
         let vm_moref = self
-            .find_vm_moref_by_name(&req.datacenter_moref, &req.template_name)
+            .find_vm_moref_by_name(&target_folder, &req.template_name)
             .await?
             .ok_or(Error::Vsphere(
                 "created VM not found after CreateVM_Task".to_string(),
             ))?;
-        VimVirtualMachine::new(self.client.clone(), &vm_moref)
-            .mark_as_template()
+        let vmm = VimVirtualMachine::new(self.client.clone(), &vm_moref);
+
+        let created_cfg = vmm
+            .config()
+            .await
+            .map_err(|e| Error::Vsphere(format!("VirtualMachine.config({vm_moref}): {e}")))?
+            .ok_or_else(|| Error::Vsphere(format!("{vm_moref}: no config after CreateVM_Task")))?;
+        let created_devices = created_cfg.hardware.device.unwrap_or_default();
+
+        // NIC PCI-slot placement is governed entirely by the
+        // `ethernetN.pciSlotNumber` ExtraConfig entries, pinned below in a
+        // *separate* post-create ReconfigVM_Task — never by the structured
+        // `VirtualDevice.slotInfo` object, and never inline in the
+        // CreateVM_Task above (`build_template_config_spec` deliberately
+        // sets neither). Two earlier attempts at this same fix didn't
+        // stick, both found live: (1) pinning `slotInfo` in a separate
+        // post-create reconfigure — vCenter silently reassigns it — and
+        // additionally clobbered the ExtraConfig value in the same call;
+        // (2) setting the ExtraConfig entry *inline* in the initial
+        // CreateVM_Task, alongside the `device_change` that creates the
+        // NIC itself — the freshly created template's own config still
+        // read back the auto-assigned slot, not the requested one, even
+        // with nothing else touching it afterward. Only a wholly separate
+        // ReconfigVM_Task, with no `device_change` at all, run after
+        // CreateVM_Task has already committed — exactly
+        // `create-kairos-template.sh`'s own two-step `govc vm.create` /
+        // `govc vm.change -e` sequence — actually sticks.
+        let created_nic_keys = find_all_nic_keys(&created_devices);
+        if created_nic_keys.len() != req.nics.len() {
+            return Err(Error::Vsphere(format!(
+                "{vm_moref}: expected {} NIC device(s) after CreateVM_Task, found {}",
+                req.nics.len(),
+                created_nic_keys.len()
+            )));
+        }
+        let pci_slots: Vec<i32> = req.nics.iter().map(|nic| nic.pci_slot).collect();
+        let pci_slot_spec = build_nic_pci_slot_extra_config_reconfigure_spec(&pci_slots);
+        let pci_slot_task = vmm.reconfig_vm_task(&pci_slot_spec).await.map_err(|e| {
+            Error::Vsphere(format!(
+                "ReconfigVM_Task({vm_moref}) [pin NIC PCI slot(s)]: {e}"
+            ))
+        })?;
+        self.wait_for_task(&pci_slot_task.value, "pin NIC PCI slot(s)")
+            .await?;
+
+        if req.auto_manage_install {
+            info!(vm_moref = %vm_moref, "entering auto-manage install phase");
+
+            // Resolve real device keys and apply the boot-order reconfigure
+            // that the initial CreateVM_Task spec deliberately omits (see
+            // build_boot_order_reconfigure_spec): connect the CD-ROM and set
+            // boot order to [cdrom, disk, ethernet], mirroring
+            // create-vm.sh's govc device.connect + device.boot -order.
+            let cdrom_placement = find_cdrom_placement(&created_devices).ok_or_else(|| {
+                Error::Vsphere(format!("{vm_moref}: no CD-ROM device after CreateVM_Task"))
+            })?;
+            let disk_key = find_disk_key(&created_devices).ok_or_else(|| {
+                Error::Vsphere(format!("{vm_moref}: no disk device after CreateVM_Task"))
+            })?;
+            // Boot order only needs the primary (first) NIC — the one
+            // that's the guest's boot-eligible ethernet device, same as
+            // the single-NIC behavior before ADR-0031.
+            let (boot_nic_key, ..) = find_first_nic_key(&created_devices).ok_or_else(|| {
+                Error::Vsphere(format!("{vm_moref}: no NIC device after CreateVM_Task"))
+            })?;
+            let boot_spec = build_boot_order_reconfigure_spec(
+                cdrom_placement,
+                &req.iso_datastore_path,
+                disk_key,
+                boot_nic_key,
+            );
+            let boot_task = vmm.reconfig_vm_task(&boot_spec).await.map_err(|e| {
+                Error::Vsphere(format!("ReconfigVM_Task({vm_moref}) [boot order]: {e}"))
+            })?;
+            self.wait_for_task(&boot_task.value, "set boot order")
+                .await?;
+
+            // Power on and confirm it actually started before settling in for
+            // the (long) install wait.
+            let power_on_task = vmm
+                .power_on_vm_task(None)
+                .await
+                .map_err(|e| Error::Vsphere(format!("PowerOnVM_Task({vm_moref}): {e}")))?;
+            self.wait_for_task(&power_on_task.value, "power on").await?;
+            let runtime = vmm
+                .runtime()
+                .await
+                .map_err(|e| Error::Vsphere(format!("VirtualMachine.runtime({vm_moref}): {e}")))?;
+            if !matches!(runtime.power_state, VirtualMachinePowerStateEnum::PoweredOn) {
+                return Err(Error::Vsphere(format!(
+                    "{vm_moref} did not report poweredOn after PowerOnVM_Task (state: {:?})",
+                    runtime.power_state
+                )));
+            }
+
+            // Wait for the cloud-config's unattended install to finish and the
+            // VM to power itself off (install.poweroff: true, no reboot — the
+            // disk is never booted by the build). A cloud-config missing that
+            // contract times out here rather than hanging the Job forever;
+            // the VM is left powered on for console debugging.
+            info!(
+                vm_moref = %vm_moref,
+                timeout_seconds = req.install_timeout_seconds,
+                "waiting for the unattended Kairos install to finish and the VM to power itself off"
+            );
+            self.wait_for_install_poweroff(&vmm, &vm_moref, req.install_timeout_seconds)
+                .await?;
+
+            // Generalized and shut down: strip the ISO-backed CD-ROM so no
+            // future clone of this template carries it.
+            let cfg = vmm
+                .config()
+                .await
+                .map_err(|e| Error::Vsphere(format!("VirtualMachine.config({vm_moref}): {e}")))?;
+            let cdrom_key = cfg
+                .as_ref()
+                .and_then(|c| c.hardware.device.as_deref())
+                .and_then(find_cdrom_key);
+            match cdrom_key {
+                Some(key) => {
+                    let remove_cdrom = VirtualDeviceConfigSpec {
+                        operation: Some(VirtualDeviceConfigSpecOperationEnum::Remove),
+                        device: Box::new(VirtualCdrom {
+                            virtual_device_: VirtualDevice {
+                                key,
+                                ..Default::default()
+                            },
+                        }),
+                        ..Default::default()
+                    };
+                    let reconfig_spec = VirtualMachineConfigSpec {
+                        device_change: Some(vec![Box::new(remove_cdrom)]),
+                        ..Default::default()
+                    };
+                    let task = vmm.reconfig_vm_task(&reconfig_spec).await.map_err(|e| {
+                        Error::Vsphere(format!("ReconfigVM_Task({vm_moref}) [remove CD-ROM]: {e}"))
+                    })?;
+                    self.wait_for_task(&task.value, "remove CD-ROM").await?;
+                }
+                None => {
+                    tracing::warn!(
+                        moref = %vm_moref,
+                        "no CD-ROM device found to remove; template may still reference the install ISO"
+                    );
+                }
+            }
+        }
+
+        vmm.mark_as_template()
             .await
             .map_err(|e| Error::Vsphere(format!("MarkAsTemplate({vm_moref}): {e}")))?;
 
@@ -623,9 +805,293 @@ impl VSphereClient for VimClientImpl {
             Err(e) => Err(Error::Vsphere(format!("make_directory({name}): {e}"))),
         }
     }
+
+    async fn destroy_if_present(
+        &self,
+        datacenter_moref: &str,
+        folder: &str,
+        name: &str,
+    ) -> Result<()> {
+        // Scoped to the zone's own folder (ADR-0020 Decision #5 / the same
+        // fix as `import_iso_template`'s idempotency check) — every zone
+        // shares this display name, so a datacenter-wide lookup here would
+        // risk destroying a different zone's in-flight VM.
+        let dc = VimDatacenter::new(self.client.clone(), datacenter_moref);
+        let vm_folder = dc
+            .vm_folder()
+            .await
+            .map_err(|e| Error::Vsphere(format!("Datacenter.vmFolder({datacenter_moref}): {e}")))?;
+        let target_folder = self.ensure_folder(&vm_folder.value, folder).await?;
+
+        let Some(existing) = self.find_vm_moref_by_name(&target_folder, name).await? else {
+            return Ok(());
+        };
+        info!(name, moref = %existing, "destroying existing VM/template before recreate");
+        self.power_off_and_destroy(&existing).await
+    }
+
+    async fn clone_vm(&self, req: &crate::client::CloneVmRequest) -> Result<String> {
+        // Resource pool (cluster) + VM folder (datacenter), same resolution
+        // as import_iso_template.
+        let ccr = ClusterComputeResource::new(self.client.clone(), &req.cluster_moref);
+        let pool = ccr
+            .resource_pool()
+            .await
+            .map_err(|e| {
+                Error::Vsphere(format!("Cluster.resourcePool({}): {e}", req.cluster_moref))
+            })?
+            .ok_or(Error::Missing("ClusterComputeResource.resourcePool"))?;
+        let dc = VimDatacenter::new(self.client.clone(), &req.datacenter_moref);
+        let vm_folder = dc.vm_folder().await.map_err(|e| {
+            Error::Vsphere(format!(
+                "Datacenter.vmFolder({}): {e}",
+                req.datacenter_moref
+            ))
+        })?;
+        let target_folder = match req.folder.as_deref() {
+            Some(path) if !path.is_empty() => self.ensure_folder(&vm_folder.value, path).await?,
+            _ => vm_folder.value.clone(),
+        };
+
+        // Read the template's own devices to find its (single) NIC's device
+        // key — the clone reconfigures that same key onto the target zone's
+        // port group rather than adding a new device.
+        let template = VimVirtualMachine::new(self.client.clone(), &req.template_moref);
+        let template_cfg = template
+            .config()
+            .await
+            .map_err(|e| {
+                Error::Vsphere(format!(
+                    "VirtualMachine.config({}): {e}",
+                    req.template_moref
+                ))
+            })?
+            .ok_or_else(|| {
+                Error::Vsphere(format!("{}: no config on template", req.template_moref))
+            })?;
+        let template_devices = template_cfg.hardware.device.unwrap_or_default();
+        let (nic_key, nic_adapter_type, nic_pci_slot) = find_first_nic_key(&template_devices)
+            .ok_or_else(|| {
+                Error::Vsphere(format!(
+                    "{}: template has no NIC to reconfigure",
+                    req.template_moref
+                ))
+            })?;
+        // Diagnostic (found live: a clone came up ens33 despite the template
+        // itself reportedly being pinned to 192, even with the PCI-slot
+        // re-pinning fix deployed) — logs exactly what was read off the
+        // *real* template's NIC so a live retry shows whether slot_info
+        // round-tripped through vim_rs's deserializer/downcast at all,
+        // rather than guessing further from unit-test fixtures alone.
+        info!(
+            template = %req.template_moref,
+            nic_key,
+            adapter_type = ?nic_adapter_type,
+            pci_slot = ?nic_pci_slot,
+            "template NIC resolved for clone"
+        );
+
+        let nic_backing = self
+            .build_nic_backing(&req.network, &req.network_moref, req.network_distributed)
+            .await?;
+        let nic_change = VirtualDeviceConfigSpec {
+            operation: Some(VirtualDeviceConfigSpecOperationEnum::Edit),
+            device: build_nic_edit_device(nic_key, nic_backing, nic_adapter_type, nic_pci_slot),
+            ..Default::default()
+        };
+
+        let mut extra_config: Vec<Box<dyn vim_rs::types::traits::OptionValueTrait>> = req
+            .extra_config
+            .iter()
+            .map(|(key, value)| {
+                Box::new(OptionValue {
+                    key: key.clone(),
+                    value: Some(VimAny::Value(ValueElements::PrimitiveString(value.clone()))),
+                }) as Box<dyn vim_rs::types::traits::OptionValueTrait>
+            })
+            .collect();
+
+        // Carry the template's own `ethernet0.pciSlotNumber` ExtraConfig
+        // entry forward explicitly, rather than relying on CloneVM_Task to
+        // inherit it implicitly from the source VMX. This is the ACTUAL
+        // field governing a stable ens192 in the guest (confirmed via
+        // govc's own -e flag semantics; NOT the structured
+        // VirtualDevice.slotInfo this same function's `nic_change` edits
+        // above, which found live never controlled guest-visible PCI
+        // placement in the first place) — read from the template's own
+        // extraConfig, not re-derived from `nic_pci_slot` (that structured
+        // read can legitimately differ, e.g. if it was silently
+        // reassigned), matching "explicit over implicit" rather than
+        // assuming CloneVM_Task's inheritance behavior is what's wanted.
+        let template_pci_slot_number = template_cfg
+            .extra_config
+            .as_ref()
+            .and_then(|entries| {
+                entries
+                    .iter()
+                    .find(|ov| ov.get_option_value().key == "ethernet0.pciSlotNumber")
+            })
+            .and_then(|ov| match &ov.get_option_value().value {
+                Some(VimAny::Value(ValueElements::PrimitiveString(s))) => Some(s.clone()),
+                _ => None,
+            });
+        // Diagnostic (companion to the structured `pci_slot` log above):
+        // the structured `slotInfo` read never controlled guest-visible PCI
+        // placement, but silently logging "found" vs. "absent" here left no
+        // way to tell, on a live ens33 report, whether the template's own
+        // ExtraConfig actually carried `ethernet0.pciSlotNumber` at all
+        // versus this carry-forward step finding nothing to propagate.
+        info!(
+            template = %req.template_moref,
+            template_pci_slot_number = ?template_pci_slot_number,
+            "template ethernet0.pciSlotNumber ExtraConfig resolved for clone carry-forward"
+        );
+        if let Some(pci_slot_number) = template_pci_slot_number {
+            extra_config.push(Box::new(OptionValue {
+                key: "ethernet0.pciSlotNumber".to_string(),
+                value: Some(VimAny::Value(ValueElements::PrimitiveString(
+                    pci_slot_number,
+                ))),
+            }));
+        }
+
+        let clone_spec = VirtualMachineCloneSpec {
+            location: VirtualMachineRelocateSpec {
+                pool: Some(pool),
+                datastore: Some(ManagedObjectReference {
+                    r#type: MoTypesEnum::Datastore,
+                    value: req.datastore_moref.clone(),
+                }),
+                folder: Some(ManagedObjectReference {
+                    r#type: MoTypesEnum::Folder,
+                    value: target_folder.clone(),
+                }),
+                ..Default::default()
+            },
+            template: false,
+            config: Some(VirtualMachineConfigSpec {
+                num_cp_us: Some(req.num_cpus),
+                memory_mb: Some(req.memory_mib),
+                device_change: Some(vec![Box::new(nic_change)]),
+                extra_config: Some(extra_config),
+                ..Default::default()
+            }),
+            // Always cloned powered off — the caller drives the desired
+            // power state afterward via `set_power_state` (ADR-0024).
+            power_on: false,
+            ..Default::default()
+        };
+
+        let task = template
+            .clone_vm_task(
+                &ManagedObjectReference {
+                    r#type: MoTypesEnum::Folder,
+                    value: vm_folder.value.clone(),
+                },
+                &req.vm_name,
+                &clone_spec,
+            )
+            .await
+            .map_err(|e| Error::Vsphere(format!("CloneVM_Task({}): {e}", req.template_moref)))?;
+        self.wait_for_task(&task.value, "clone VM").await?;
+
+        self.find_vm_moref_by_name(&target_folder, &req.vm_name)
+            .await?
+            .ok_or_else(|| Error::Vsphere("cloned VM not found after CloneVM_Task".to_string()))
+    }
+
+    async fn set_power_state(&self, vm_moref: &str, desired: PowerState) -> Result<()> {
+        let vmm = VimVirtualMachine::new(self.client.clone(), vm_moref);
+        let task = match desired {
+            PowerState::PoweredOn => vmm
+                .power_on_vm_task(None)
+                .await
+                .map_err(|e| Error::Vsphere(format!("PowerOnVM_Task({vm_moref}): {e}")))?,
+            PowerState::PoweredOff => vmm
+                .power_off_vm_task()
+                .await
+                .map_err(|e| Error::Vsphere(format!("PowerOffVM_Task({vm_moref}): {e}")))?,
+            PowerState::Suspended => vmm
+                .suspend_vm_task()
+                .await
+                .map_err(|e| Error::Vsphere(format!("SuspendVM_Task({vm_moref}): {e}")))?,
+        };
+        self.wait_for_task(&task.value, "set power state").await
+    }
+
+    async fn power_state(&self, vm_moref: &str) -> Result<PowerState> {
+        let vmm = VimVirtualMachine::new(self.client.clone(), vm_moref);
+        let runtime = vmm
+            .runtime()
+            .await
+            .map_err(|e| Error::Vsphere(format!("VirtualMachine.runtime({vm_moref}): {e}")))?;
+        map_vim_power_state(&runtime.power_state).ok_or_else(|| {
+            Error::Vsphere(format!(
+                "{vm_moref}: unrecognized power state {:?}",
+                runtime.power_state
+            ))
+        })
+    }
+
+    async fn destroy_vm(&self, vm_moref: &str) -> Result<()> {
+        info!(moref = %vm_moref, "destroying VSphereMachine's backend VM");
+        match self.power_off_and_destroy(vm_moref).await {
+            Ok(()) => Ok(()),
+            Err(e)
+                if e.to_string()
+                    .to_lowercase()
+                    .contains("managedobjectnotfound") =>
+            {
+                info!(moref = %vm_moref, "backend VM already gone; treating as destroyed");
+                Ok(())
+            }
+            Err(e) => Err(e),
+        }
+    }
 }
 
 impl VimClientImpl {
+    /// Power off (if not already) and destroy the VM at `moref`. Shared by
+    /// [`VSphereClient::destroy_if_present`] (name+folder based, template
+    /// rebuilds) and [`VSphereClient::destroy_vm`] (moref-based,
+    /// `VSphereMachine` deletion, ADR-0026) — both need the exact same
+    /// "can't destroy a running VM, and vCenter rejects a redundant
+    /// power-off" sequence once they've settled on a moref.
+    async fn power_off_and_destroy(&self, moref: &str) -> Result<()> {
+        let vmm = VimVirtualMachine::new(self.client.clone(), moref);
+
+        // Destroy_Task rejects a powered-on VM (InvalidPowerState) — e.g. a
+        // prior run left this target stuck mid-install, still running. Power
+        // it off (hard — it's about to be destroyed) before destroying.
+        let runtime = vmm
+            .runtime()
+            .await
+            .map_err(|e| Error::Vsphere(format!("VirtualMachine.runtime({moref}): {e}")))?;
+        if !matches!(
+            runtime.power_state,
+            VirtualMachinePowerStateEnum::PoweredOff
+        ) {
+            info!(
+                moref,
+                power_state = ?runtime.power_state,
+                "powering off existing target before destroy"
+            );
+            let power_off_task = vmm
+                .power_off_vm_task()
+                .await
+                .map_err(|e| Error::Vsphere(format!("PowerOffVM_Task({moref}): {e}")))?;
+            self.wait_for_task(&power_off_task.value, "power off existing target")
+                .await?;
+        }
+
+        let task = vmm
+            .destroy_task()
+            .await
+            .map_err(|e| Error::Vsphere(format!("Destroy_Task({moref}): {e}")))?;
+        self.wait_for_task(&task.value, "destroy existing target")
+            .await
+    }
+
     /// Poll a vCenter task to completion. `Ok(())` on `Success`; `Err` on
     /// `Error` (carrying the fault message) or if it does not settle within
     /// [`TASK_POLL_MAX_ATTEMPTS`]. `what` names the operation for diagnostics.
@@ -659,14 +1125,57 @@ impl VimClientImpl {
         )))
     }
 
+    /// Poll `vmm.runtime().power_state` until it reports `poweredOff` (the
+    /// cloud-config's `install.poweroff: true` firing once the unattended
+    /// Kairos install completes), or fail once
+    /// [`install_poll_max_attempts`] is exhausted. Never destroys or powers
+    /// off the VM itself — a timeout leaves it running for console debugging
+    /// (ADR-0021).
+    async fn wait_for_install_poweroff(
+        &self,
+        vmm: &VimVirtualMachine,
+        vm_moref: &str,
+        install_timeout_seconds: i32,
+    ) -> Result<()> {
+        let max_attempts = install_poll_max_attempts(install_timeout_seconds);
+        for _ in 0..max_attempts {
+            let runtime = vmm
+                .runtime()
+                .await
+                .map_err(|e| Error::Vsphere(format!("VirtualMachine.runtime({vm_moref}): {e}")))?;
+            if matches!(
+                runtime.power_state,
+                VirtualMachinePowerStateEnum::PoweredOff
+            ) {
+                return Ok(());
+            }
+            tokio::time::sleep(INSTALL_POLL_INTERVAL).await;
+        }
+        Err(Error::Vsphere(format!(
+            "{vm_moref} did not power itself off within {}s of the unattended Kairos install \
+             starting; the cloud-config must set install.poweroff: true and an \
+             after-install-chroot identity-wipe stage (ADR-0021) — the VM was left running \
+             for inspection",
+            u64::from(max_attempts) * INSTALL_POLL_INTERVAL.as_secs()
+        )))
+    }
+
     /// Find a VirtualMachine (template or not) by display name within a
-    /// datacenter, returning its moref. Mirrors [`VSphereClient::find_template`]
-    /// but without the `config.template` filter — used to locate the VM created
-    /// by `CreateVM_Task` before `MarkAsTemplate`, and any existing one to
-    /// destroy on `forceCreate`.
+    /// specific VM folder, returning its moref. Mirrors
+    /// [`VSphereClient::find_template`] but without the `config.template`
+    /// filter — used to locate the VM created by `CreateVM_Task` before
+    /// `MarkAsTemplate`, and any existing one to destroy on `forceCreate`.
+    ///
+    /// Deliberately scoped to `folder_moref`, not the whole datacenter: every
+    /// zone's template shares the same display name (the `VMImage` name),
+    /// distinguished only by which zone-specific folder it lives in
+    /// (ADR-0020 Decision #5). A datacenter-wide search would match — and
+    /// `forceCreate` would then destroy — a *different* zone's in-flight
+    /// build that happens to share the name (found live: concurrent per-zone
+    /// import Jobs destroying each other's just-created VMs).
     async fn find_vm_moref_by_name(
         &self,
-        datacenter_moref: &str,
+        folder_moref: &str,
         name: &str,
     ) -> Result<Option<String>> {
         let sc = self.client.service_content();
@@ -675,16 +1184,12 @@ impl VimClientImpl {
             .as_ref()
             .ok_or(Error::Missing("ServiceContent.view_manager"))?;
         let vm = ViewManager::new(self.client.clone(), &view_manager_moref.value);
-        let dc_moref = ManagedObjectReference {
-            r#type: MoTypesEnum::Datacenter,
-            value: datacenter_moref.to_string(),
+        let folder = ManagedObjectReference {
+            r#type: MoTypesEnum::Folder,
+            value: folder_moref.to_string(),
         };
         let view_ref = vm
-            .create_container_view(
-                &dc_moref,
-                Some(&[MO_TYPE_VIRTUAL_MACHINE.to_string()]),
-                true,
-            )
+            .create_container_view(&folder, Some(&[MO_TYPE_VIRTUAL_MACHINE.to_string()]), true)
             .await
             .map_err(|e| Error::Vsphere(format!("create_container_view(VirtualMachine): {e}")))?;
         let view = ContainerView::new(self.client.clone(), &view_ref.value);
@@ -734,6 +1239,41 @@ impl VimClientImpl {
         Ok((key, uuid))
     }
 
+    /// Build a NIC backing for `network`/`network_moref`: distributed vDS
+    /// port (portgroupKey + switchUuid) for a dvPortGroup, else a standard
+    /// device-name backing. Shared by `import_iso_template` and `clone_vm`.
+    async fn build_nic_backing(
+        &self,
+        network: &str,
+        network_moref: &str,
+        network_distributed: bool,
+    ) -> Result<Box<dyn VirtualDeviceBackingInfoTrait>> {
+        if network_distributed {
+            let (portgroup_key, switch_uuid) = self.resolve_dvs_port(network_moref).await?;
+            Ok(Box::new(
+                VirtualEthernetCardDistributedVirtualPortBackingInfo {
+                    port: DistributedVirtualSwitchPortConnection {
+                        switch_uuid,
+                        portgroup_key: Some(portgroup_key),
+                        ..Default::default()
+                    },
+                },
+            ))
+        } else {
+            Ok(Box::new(VirtualEthernetCardNetworkBackingInfo {
+                virtual_device_device_backing_info_: VirtualDeviceDeviceBackingInfo {
+                    device_name: network.to_string(),
+                    ..Default::default()
+                },
+                network: Some(ManagedObjectReference {
+                    r#type: MoTypesEnum::Network,
+                    value: network_moref.to_string(),
+                }),
+                ..Default::default()
+            }))
+        }
+    }
+
     /// Find-or-create a folder `path` (slash-separated, e.g. `templates/kairos`)
     /// under `root_moref`, returning the leaf folder's moref. Each missing
     /// segment is created (`Folder.CreateFolder`), mirroring the
@@ -774,6 +1314,41 @@ impl VimClientImpl {
         }
         Ok(current)
     }
+
+    /// Read-only counterpart to [`Self::ensure_folder`]: walk `path` under
+    /// `root_moref`, returning `Ok(None)` the moment any segment is
+    /// missing rather than creating it. Used by a lookup (`find_template`)
+    /// that must never have the side effect of creating folders.
+    async fn find_folder(&self, root_moref: &str, path: &str) -> Result<Option<String>> {
+        let mut current = root_moref.to_string();
+        for seg in path.split('/').filter(|s| !s.is_empty()) {
+            let folder = Folder::new(self.client.clone(), &current);
+            let children = folder
+                .child_entity()
+                .await
+                .map_err(|e| Error::Vsphere(format!("Folder.childEntity({current}): {e}")))?
+                .unwrap_or_default();
+            let mut found = None;
+            for child in &children {
+                if child.r#type != MoTypesEnum::Folder {
+                    continue;
+                }
+                let name = Folder::new(self.client.clone(), &child.value)
+                    .name()
+                    .await
+                    .unwrap_or_default();
+                if name == seg {
+                    found = Some(child.value.clone());
+                    break;
+                }
+            }
+            match found {
+                Some(m) => current = m,
+                None => return Ok(None),
+            }
+        }
+        Ok(Some(current))
+    }
 }
 
 /// Build the `VirtualMachineConfigSpec` for the template: an EFI VM with a
@@ -781,9 +1356,343 @@ impl VimClientImpl {
 /// CD-ROM backed by the uploaded ISO, and a vmxnet3 NIC (`nic_backing`) at PCI
 /// slot 192. `files.vmPathName` points at the resolved datastore so the VM (and
 /// its disk) land there. Mirrors `create-kairos-template.sh`.
+/// Number of [`INSTALL_POLL_INTERVAL`] polls to attempt before failing the
+/// install wait, derived from a timeout in seconds. A non-positive
+/// `timeout_seconds` (the field's unset zero value) falls back to
+/// [`DEFAULT_INSTALL_TIMEOUT_SECS`]. Pure so the bound is unit-testable
+/// without a live vCenter (ADR-0021).
+fn install_poll_max_attempts(timeout_seconds: i32) -> u32 {
+    let secs = u32::try_from(timeout_seconds).unwrap_or(0);
+    let secs = if secs == 0 {
+        DEFAULT_INSTALL_TIMEOUT_SECS
+    } else {
+        secs
+    };
+    let interval = u32::try_from(INSTALL_POLL_INTERVAL.as_secs())
+        .unwrap_or(1)
+        .max(1);
+    secs.div_ceil(interval).max(1)
+}
+
+/// Map vim_rs's `VirtualMachinePowerStateEnum` onto banlieue's own
+/// `PowerState` (ADR-0034). `None` for `Other_(_)` — vim_rs's catch-all for
+/// values not known at the pinned SDK version; the caller turns that into
+/// an error rather than guessing. Pure — no vCenter I/O — so it's
+/// unit-testable independent of a live VM.
+fn map_vim_power_state(state: &VirtualMachinePowerStateEnum) -> Option<PowerState> {
+    match state {
+        VirtualMachinePowerStateEnum::PoweredOn => Some(PowerState::PoweredOn),
+        VirtualMachinePowerStateEnum::PoweredOff => Some(PowerState::PoweredOff),
+        VirtualMachinePowerStateEnum::Suspended => Some(PowerState::Suspended),
+        VirtualMachinePowerStateEnum::Other_(_) => None,
+    }
+}
+
+/// Find the device key of the first CD-ROM among a VM's hardware devices.
+/// Pure — operates on an already-fetched device list, no vCenter I/O — so
+/// it's unit-testable independent of a live VM (ADR-0021: a generalized
+/// template must not carry an ISO-backed CD-ROM device). Identifies the
+/// CD-ROM via `VimObjectTrait::data_type()` (vCenter's own `StructType` tag)
+/// rather than `Any` downcasting, since vim_rs 0.5's generated `AsAny`
+/// blanket impl does not round-trip through the `VirtualDeviceTrait` object
+/// for every device type.
+fn find_cdrom_key(devices: &[Box<dyn vim_rs::types::traits::VirtualDeviceTrait>]) -> Option<i32> {
+    devices
+        .iter()
+        .find(|d| {
+            matches!(
+                d.data_type(),
+                vim_rs::types::struct_enum::StructType::VirtualCdrom
+            )
+        })
+        .map(|d| d.get_virtual_device().key)
+}
+
+/// A CD-ROM's placement identity — just enough to submit a well-formed
+/// `Edit` `device_change`. vCenter's Reconfigure rejects an edited device
+/// that omits `controllerKey` with `MissingController` ("Device requires a
+/// controller"), even when only an unrelated field (like `connectable`) is
+/// being changed, mirroring `govc device.connect`'s always-re-send-the-
+/// whole-device approach. `VirtualDevice` itself is not `Clone` (its
+/// `backing` is a boxed trait object), so this carries only the `Copy`
+/// fields needed to reconstruct the device; the backing (the ISO path) is
+/// rebuilt from what the caller already knows, not copied off the live one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CdromPlacement {
+    key: i32,
+    controller_key: Option<i32>,
+    unit_number: Option<i32>,
+}
+
+/// Find the first CD-ROM among a VM's hardware devices and return its
+/// [`CdromPlacement`]. Pure — see [`find_cdrom_key`].
+fn find_cdrom_placement(
+    devices: &[Box<dyn vim_rs::types::traits::VirtualDeviceTrait>],
+) -> Option<CdromPlacement> {
+    devices
+        .iter()
+        .find(|d| {
+            matches!(
+                d.data_type(),
+                vim_rs::types::struct_enum::StructType::VirtualCdrom
+            )
+        })
+        .map(|d| {
+            let vd = d.get_virtual_device();
+            CdromPlacement {
+                key: vd.key,
+                controller_key: vd.controller_key,
+                unit_number: vd.unit_number,
+            }
+        })
+}
+
+/// Find the device key of the first virtual disk among a VM's hardware
+/// devices. Pure — see [`find_cdrom_key`].
+fn find_disk_key(devices: &[Box<dyn vim_rs::types::traits::VirtualDeviceTrait>]) -> Option<i32> {
+    devices
+        .iter()
+        .find(|d| {
+            matches!(
+                d.data_type(),
+                vim_rs::types::struct_enum::StructType::VirtualDisk
+            )
+        })
+        .map(|d| d.get_virtual_device().key)
+}
+
+/// Find the device key, adapter type, and pinned PCI slot (if any) of the
+/// first NIC — of any adapter type — among a VM's hardware devices. Pure —
+/// see [`find_cdrom_key`]. Used by `clone_vm` (ADR-0024) to redirect a
+/// clone's existing NIC onto the target zone's port group, whatever adapter
+/// type the source template happens to use. See [`find_all_nic_keys`] for
+/// the multi-NIC counterpart `import_iso_template` uses to validate its
+/// CreateVM_Task produced the expected number of NIC devices (ADR-0031).
+///
+/// The PCI slot is read back out via [`VirtualDeviceBusSlotInfoTrait`]'s
+/// `AsAny` bound (`vim_rs`'s own documented downcast pattern, see the crate
+/// root docs) rather than `find_cdrom_key`'s `data_type()`-only approach —
+/// unlike a device's own adapter type, `slot_info` has no significance to
+/// filter *on*, only a value to read *out*, once found.
+fn find_first_nic_key(
+    devices: &[Box<dyn vim_rs::types::traits::VirtualDeviceTrait>],
+) -> Option<(i32, vim_rs::types::struct_enum::StructType, Option<i32>)> {
+    devices
+        .iter()
+        .find(|d| {
+            matches!(
+                d.data_type(),
+                vim_rs::types::struct_enum::StructType::VirtualVmxnet3
+                    | vim_rs::types::struct_enum::StructType::VirtualVmxnet2
+                    | vim_rs::types::struct_enum::StructType::VirtualVmxnet
+                    | vim_rs::types::struct_enum::StructType::VirtualE1000
+                    | vim_rs::types::struct_enum::StructType::VirtualE1000E
+            )
+        })
+        .map(|d| {
+            let vd = d.get_virtual_device();
+            let pci_slot = vd.slot_info.as_deref().and_then(|si| {
+                si.as_any_ref()
+                    .downcast_ref::<VirtualDevicePciBusSlotInfo>()
+                    .map(|pci| pci.pci_slot_number)
+            });
+            (vd.key, d.data_type(), pci_slot)
+        })
+}
+
+/// Find every NIC's device key and adapter type, in the order they appear
+/// in `devices` (ADR-0031) — the multi-NIC counterpart of
+/// [`find_first_nic_key`], used by `import_iso_template`'s post-create
+/// PCI-slot pin. Correlated with `IsoImportRequest.nics` by that same
+/// order: `CreateVM_Task`'s `deviceChange` list is processed in the order
+/// given, and this project's existing single-NIC code already trusted
+/// device-list order (`find_first_nic_key`/`find_disk_key`/`find_cdrom_key`
+/// all take "the first match," not an identity-correlated one) — this
+/// extends the same trust to "the Nth match is the Nth requested NIC"
+/// rather than introducing per-device backing-network correlation.
+fn find_all_nic_keys(
+    devices: &[Box<dyn vim_rs::types::traits::VirtualDeviceTrait>],
+) -> Vec<(i32, vim_rs::types::struct_enum::StructType)> {
+    devices
+        .iter()
+        .filter(|d| {
+            matches!(
+                d.data_type(),
+                vim_rs::types::struct_enum::StructType::VirtualVmxnet3
+                    | vim_rs::types::struct_enum::StructType::VirtualVmxnet2
+                    | vim_rs::types::struct_enum::StructType::VirtualVmxnet
+                    | vim_rs::types::struct_enum::StructType::VirtualE1000
+                    | vim_rs::types::struct_enum::StructType::VirtualE1000E
+            )
+        })
+        .map(|d| (d.get_virtual_device().key, d.data_type()))
+        .collect()
+}
+
+/// Build the device-edit spec for `clone_vm`'s NIC reconfigure, as the
+/// *same concrete adapter type* the template's own NIC already is
+/// (`adapter_type`, from [`find_first_nic_key`]).
+///
+/// `VirtualEthernetCard` — the abstract base every NIC adapter type
+/// inherits from — cannot itself be sent as a device spec (found live:
+/// vCenter rejected it with `InvalidDeviceSpec`, "Invalid configuration
+/// for device '0'"); a `deviceChange` entry must name a concrete,
+/// instantiable subtype.
+///
+/// `pci_slot` re-pins the template's own PCI slot (also from
+/// [`find_first_nic_key`]) rather than leaving vCenter to assign a fresh
+/// one. Found live: a clone of a `ens192`-pinned template came up as
+/// `ens33` — the clone's `deviceChange` edit changes the NIC's backing
+/// (network) in the same call that creates the destination VM, which
+/// vCenter treats more like a `CreateVM` device placement than an in-place
+/// `Reconfigure` of a long-lived VM; omitting `slotInfo` let it fall back to
+/// auto-assignment instead of keeping the source's slot. `None` when the
+/// template reported no `slot_info` of its own — nothing to reproduce.
+fn build_nic_edit_device(
+    key: i32,
+    backing: Box<dyn VirtualDeviceBackingInfoTrait>,
+    adapter_type: vim_rs::types::struct_enum::StructType,
+    pci_slot: Option<i32>,
+) -> Box<dyn vim_rs::types::traits::VirtualDeviceTrait> {
+    use vim_rs::types::struct_enum::StructType;
+
+    let device = VirtualDevice {
+        key,
+        backing: Some(backing),
+        slot_info: pci_slot.map(|pci_slot_number| {
+            Box::new(VirtualDevicePciBusSlotInfo { pci_slot_number })
+                as Box<dyn vim_rs::types::traits::VirtualDeviceBusSlotInfoTrait>
+        }),
+        ..Default::default()
+    };
+    let ethernet_card = VirtualEthernetCard {
+        virtual_device_: device,
+        ..Default::default()
+    };
+    match adapter_type {
+        StructType::VirtualVmxnet3 => Box::new(VirtualVmxnet3 {
+            virtual_vmxnet_: VirtualVmxnet {
+                virtual_ethernet_card_: ethernet_card,
+            },
+            ..Default::default()
+        }),
+        StructType::VirtualVmxnet2 => Box::new(VirtualVmxnet2 {
+            virtual_vmxnet_: VirtualVmxnet {
+                virtual_ethernet_card_: ethernet_card,
+            },
+        }),
+        StructType::VirtualVmxnet => Box::new(VirtualVmxnet {
+            virtual_ethernet_card_: ethernet_card,
+        }),
+        StructType::VirtualE1000E => Box::new(VirtualE1000E {
+            virtual_ethernet_card_: ethernet_card,
+        }),
+        // find_first_nic_key only ever matches one of the five arms above
+        // (VirtualE1000 is one of them); the wildcard is what actually
+        // covers it, plus any other match, without a `_ => unreachable!()`.
+        _ => Box::new(VirtualE1000 {
+            virtual_ethernet_card_: ethernet_card,
+        }),
+    }
+}
+
+/// Build the post-create reconfigure spec that sets every NIC's
+/// `ethernetN.pciSlotNumber` ExtraConfig entry — and nothing else: no
+/// `device_change` at all. `pci_slots[i]` is NIC `i`'s requested slot,
+/// 0-based in `ethernetN` naming order (matching `req.nics`'s own order,
+/// ADR-0031). Pure — no vCenter I/O — so it's unit-testable independent of
+/// a live VM.
+///
+/// Must run as a genuinely separate `ReconfigVM_Task`, *after*
+/// `CreateVM_Task` has already committed the NIC device with vCenter's own
+/// auto-assigned slot — not folded into that same `CreateVM_Task`'s
+/// `extra_config`. Found live: setting this ExtraConfig entry inline,
+/// alongside the `device_change` that creates the NIC itself, didn't stick
+/// either — the freshly created template's own config still read back the
+/// auto-assigned slot, not the requested one. `create-kairos-template.sh`'s
+/// own reference sequence is the same two-step shape: a bare `govc
+/// vm.create`, then a wholly separate `govc vm.change -e
+/// "ethernet0.pciSlotNumber=192"` once the VM already exists — this is
+/// that second step.
+fn build_nic_pci_slot_extra_config_reconfigure_spec(pci_slots: &[i32]) -> VirtualMachineConfigSpec {
+    let extra_config: Vec<Box<dyn vim_rs::types::traits::OptionValueTrait>> = pci_slots
+        .iter()
+        .enumerate()
+        .map(|(i, pci_slot)| {
+            Box::new(OptionValue {
+                key: format!("ethernet{i}.pciSlotNumber"),
+                value: Some(VimAny::Value(ValueElements::PrimitiveString(
+                    pci_slot.to_string(),
+                ))),
+            }) as Box<dyn vim_rs::types::traits::OptionValueTrait>
+        })
+        .collect();
+    VirtualMachineConfigSpec {
+        extra_config: Some(extra_config),
+        ..Default::default()
+    }
+}
+
+/// Build the post-create reconfigure spec that explicitly connects the
+/// CD-ROM and sets the boot order to `[cdrom, disk, ethernet]` by real
+/// device key — mirroring `create-vm.sh`'s `govc device.connect` +
+/// `device.boot -order cdrom,disk,ethernet`. Pure — takes already-resolved
+/// device keys, no vCenter I/O — so it's unit-testable independent of a live
+/// VM. A boot order embedded in the *initial* `CreateVM_Task` spec
+/// (referencing the provisional negative keys) was not reliably honored by
+/// EFI firmware on a freshly created VM (found live, ADR-0021); this must
+/// run as a *separate* reconfigure once the devices have real keys.
+fn build_boot_order_reconfigure_spec(
+    cdrom: CdromPlacement,
+    iso_datastore_path: &str,
+    disk_key: i32,
+    nic_key: i32,
+) -> VirtualMachineConfigSpec {
+    let connect_cdrom = VirtualDeviceConfigSpec {
+        operation: Some(VirtualDeviceConfigSpecOperationEnum::Edit),
+        device: Box::new(VirtualCdrom {
+            virtual_device_: VirtualDevice {
+                key: cdrom.key,
+                controller_key: cdrom.controller_key,
+                unit_number: cdrom.unit_number,
+                backing: Some(Box::new(VirtualCdromIsoBackingInfo {
+                    virtual_device_file_backing_info_: VirtualDeviceFileBackingInfo {
+                        file_name: iso_datastore_path.to_string(),
+                        ..Default::default()
+                    },
+                })),
+                connectable: Some(VirtualDeviceConnectInfo {
+                    connected: true,
+                    start_connected: true,
+                    allow_guest_control: true,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        }),
+        ..Default::default()
+    };
+    VirtualMachineConfigSpec {
+        device_change: Some(vec![Box::new(connect_cdrom)]),
+        boot_options: Some(VirtualMachineBootOptions {
+            boot_order: Some(vec![
+                Box::new(VirtualMachineBootOptionsBootableCdromDevice {}),
+                Box::new(VirtualMachineBootOptionsBootableDiskDevice {
+                    device_key: disk_key,
+                }),
+                Box::new(VirtualMachineBootOptionsBootableEthernetDevice {
+                    device_key: nic_key,
+                }),
+            ]),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
+
 fn build_template_config_spec(
     req: &crate::client::IsoImportRequest,
-    nic_backing: Box<dyn VirtualDeviceBackingInfoTrait>,
+    nic_backings: Vec<Box<dyn VirtualDeviceBackingInfoTrait>>,
 ) -> VirtualMachineConfigSpec {
     // SCSI controller of the requested type (all compose VirtualScsiController).
     let scsi_base = || VirtualScsiController {
@@ -869,48 +1778,68 @@ fn build_template_config_spec(
             ..Default::default()
         },
     };
-    // NIC on the zone port group, at a configurable PCI slot (default 192) so
-    // the guest's NIC naming is stable (ens192) — matches
-    // `create-kairos-template.sh`'s `-net.adapter` + `ethernet0.pciSlotNumber`.
-    let ethernet = VirtualEthernetCard {
-        virtual_device_: VirtualDevice {
-            key: KEY_NIC,
-            backing: Some(nic_backing),
-            slot_info: Some(Box::new(VirtualDevicePciBusSlotInfo {
-                pci_slot_number: req.nic_pci_slot,
-            })),
-            connectable: Some(VirtualDeviceConnectInfo {
-                start_connected: true,
-                allow_guest_control: true,
-                connected: false,
+    // NICs on their resolved zone port groups (ADR-0031: one or more).
+    // Deliberately NO slot_info on any of them here — the PCI slot (default
+    // 192 + index, for stable ens192/ens193/... in the guest) is pinned via
+    // ExtraConfig below, and the structured slotInfo device property is
+    // additionally pinned in a SEPARATE post-create ReconfigVM_Task
+    // (build_nic_pci_slot_reconfigure_spec), once every other device
+    // already has a concrete, auto-assigned slot. Found live: requesting a
+    // slot inline here, in the SAME CreateVM_Task that also creates the
+    // SCSI controller/disk/CD-ROM with no explicit slots of their own, got
+    // silently reassigned — vim_rs's own doc comment on `pci_slot_number`
+    // says explicit slots should be given to ALL devices in a CreateVM
+    // operation, or none; `create-kairos-template.sh` (the reference this
+    // logic otherwise matches) also does it as a separate `govc vm.change`
+    // after `govc vm.create`, not inline.
+    let build_nic = |backing: Box<dyn VirtualDeviceBackingInfoTrait>,
+                     key: i32,
+                     adapter: NicAdapter|
+     -> Box<dyn vim_rs::types::traits::VirtualDeviceTrait> {
+        let ethernet = VirtualEthernetCard {
+            virtual_device_: VirtualDevice {
+                key,
+                backing: Some(backing),
+                connectable: Some(VirtualDeviceConnectInfo {
+                    start_connected: true,
+                    allow_guest_control: true,
+                    connected: false,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            // Let vCenter generate the MAC.
+            address_type: Some("generated".to_string()),
+            ..Default::default()
+        };
+        match adapter {
+            NicAdapter::Vmxnet3 => Box::new(VirtualVmxnet3 {
+                virtual_vmxnet_: VirtualVmxnet {
+                    virtual_ethernet_card_: ethernet,
+                },
                 ..Default::default()
             }),
-            ..Default::default()
-        },
-        // Let vCenter generate the MAC.
-        address_type: Some("generated".to_string()),
-        ..Default::default()
-    };
-    let nic: Box<dyn vim_rs::types::traits::VirtualDeviceTrait> = match req.network_adapter {
-        NicAdapter::Vmxnet3 => Box::new(VirtualVmxnet3 {
-            virtual_vmxnet_: VirtualVmxnet {
+            NicAdapter::Vmxnet2 => Box::new(VirtualVmxnet2 {
+                virtual_vmxnet_: VirtualVmxnet {
+                    virtual_ethernet_card_: ethernet,
+                },
+            }),
+            NicAdapter::E1000 => Box::new(VirtualE1000 {
                 virtual_ethernet_card_: ethernet,
-            },
-            ..Default::default()
-        }),
-        NicAdapter::Vmxnet2 => Box::new(VirtualVmxnet2 {
-            virtual_vmxnet_: VirtualVmxnet {
+            }),
+            NicAdapter::E1000e => Box::new(VirtualE1000E {
                 virtual_ethernet_card_: ethernet,
-            },
-        }),
-        NicAdapter::E1000 => Box::new(VirtualE1000 {
-            virtual_ethernet_card_: ethernet,
-        }),
-        NicAdapter::E1000e => Box::new(VirtualE1000E {
-            virtual_ethernet_card_: ethernet,
-        }),
+            }),
+        }
     };
-
+    let nics: Vec<Box<dyn vim_rs::types::traits::VirtualDeviceTrait>> = nic_backings
+        .into_iter()
+        .enumerate()
+        .map(|(i, backing)| {
+            let key = KEY_NIC - i32::try_from(i).unwrap_or(0);
+            build_nic(backing, key, req.nics[i].adapter)
+        })
+        .collect();
     // Firmware: vCenter takes only "bios" / "efi"; secure boot is a boot option
     // layered on EFI. `efi-secure` therefore maps to efi + secureBootEnabled.
     let (firmware_str, secure_boot) = match req.firmware {
@@ -918,6 +1847,16 @@ fn build_template_config_spec(
         Firmware::Efi => (FIRMWARE_EFI, false),
         Firmware::EfiSecure => (FIRMWARE_EFI, true),
     };
+    // No boot order set here, deliberately — matches
+    // `create-kairos-template.sh`: boot order is set in a *separate*
+    // reconfigure after the VM exists (`build_boot_order_reconfigure_spec`),
+    // once the CD-ROM/disk/NIC have their real (positive) device keys,
+    // mirroring `create-vm.sh`'s `govc device.connect` + `device.boot
+    // -order cdrom,disk,ethernet`. A boot order embedded in the *initial*
+    // CreateVM_Task spec — referencing the provisional negative keys — was
+    // not reliably honored (found live): EFI firmware on the freshly created
+    // VM still stopped at the interactive Boot Manager menu instead of
+    // auto-booting the CD-ROM.
     let boot_options = secure_boot.then(|| VirtualMachineBootOptions {
         efi_secure_boot_enabled: Some(true),
         ..Default::default()
@@ -945,13 +1884,27 @@ fn build_template_config_spec(
             vm_path_name: Some(format!("[{}]", req.datastore)),
             ..Default::default()
         }),
-        device_change: Some(vec![
-            add(scsi, false),
-            add(Box::new(disk), true),
-            add(Box::new(ide), false),
-            add(Box::new(cdrom), false),
-            add(nic, false),
-        ]),
+        device_change: Some(
+            std::iter::empty()
+                .chain([add(scsi, false), add(Box::new(disk), true)])
+                .chain([add(Box::new(ide), false), add(Box::new(cdrom), false)])
+                .chain(nics.into_iter().map(|n| add(n, false)))
+                .collect(),
+        ),
+        // `ethernetN.pciSlotNumber` — the mechanism actually governing
+        // guest-visible PCI placement — is deliberately NOT set here. Found
+        // live: even as a plain ExtraConfig entry (not the structured
+        // VirtualDevice.slotInfo this file already knows not to trust),
+        // setting it inline in the *same* CreateVM_Task that also creates
+        // the NIC device itself still didn't stick — the live template's
+        // own config read back `ethernet0.pciSlotNumber` as vCenter's
+        // auto-assigned slot, not the requested one, even with no other
+        // reconfigure touching it afterward. `create-kairos-template.sh`'s
+        // reference sequence never attempts this either: it's a bare `govc
+        // vm.create` (no `-e` at all) followed by a wholly separate `govc
+        // vm.change -e "ethernet0.pciSlotNumber=192"` once the VM already
+        // exists. See `build_nic_pci_slot_extra_config_reconfigure_spec`,
+        // applied by `import_iso_template` in that same separate-step shape.
         ..Default::default()
     }
 }

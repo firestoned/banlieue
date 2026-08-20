@@ -114,13 +114,17 @@ rules:
       - secrets
       - configmaps
     verbs: ["get"]
-  # Import Jobs, granted to the libvirt provider (ADR-0011). RBAC refuses to
-  # let a grantor hand out permissions it does not hold, so the operator must
-  # carry these to create that provider's RoleBinding at all — the same trap
-  # that Secrets hit above. The operator never creates a Job itself.
+  # Import Jobs, granted to the libvirt (ADR-0011) and vSphere (ADR-0020)
+  # providers. RBAC refuses to let a grantor hand out permissions it does not
+  # hold, so the operator must carry the union of what both providers need to
+  # create their ClusterRoleBindings at all — the same trap that Secrets hit
+  # above. `delete` is vSphere-only (`banlieue.io/force-reimport`); `list`
+  # and `watch` are vSphere-only too (its VMImage Controller now `.watches()`
+  # the import Job — event-driven, not a 5-minute poll); the operator never
+  # creates, deletes, lists, or watches a Job itself.
   - apiGroups: ["batch"]
     resources: ["jobs"]
-    verbs: ["get", "create", "patch"]
+    verbs: ["get", "list", "watch", "create", "patch", "delete"]
   # Per-instance leader-election Leases.
   - apiGroups: ["coordination.k8s.io"]
     resources: ["leases"]
@@ -137,11 +141,15 @@ rules:
     resources: ["events"]
     verbs: ["create", "patch"]
   # VMImage: cluster-scoped, so it can only be granted via the shared
-  # per-backend ClusterRole this operator binds.
+  # per-backend ClusterRole this operator binds. `update`/`patch` on the
+  # main resource (not just /status) is for the banlieue.io/vmimage
+  # finalizer (ADR-0028) — a delegating ClusterRole cannot grant a
+  # permission it does not itself hold, so this must mirror
+  # deploy/provider-vsphere/rbac/clusterrole.yaml's own grant exactly.
   - apiGroups: ["banlieue.io"]
     resources:
       - vmimages
-    verbs: ["get", "list", "watch"]
+    verbs: ["get", "list", "watch", "update", "patch"]
   - apiGroups: ["banlieue.io"]
     resources:
       - vmimages/status

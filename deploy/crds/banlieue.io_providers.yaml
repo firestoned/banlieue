@@ -97,24 +97,118 @@ spec:
                   networkClasses:
                     description: Network classes the admin asserts are available on this backend.
                     items:
-                      description: Maps one abstract network-class name to a concrete backend target.
+                      description: |-
+                        Maps one abstract network-class name to a concrete backend target.
+
+                        Same per-zone override shape as [`StorageClassMapping`] and for the same
+                        reason: the "same" logical network commonly has a differently-named
+                        port group on each cluster of a Provider (ADR-0030).
                       properties:
                         name:
                           description: Abstract name referenced by VMClass.network.interfaces[].networkClass.
                           type: string
+                        perZone:
+                          description: Per-`(datacenter, cluster)` overrides of `target` (ADR-0030).
+                          items:
+                            description: |-
+                              A concrete backend target scoped to one specific failure domain — a
+                              `(datacenter, cluster)` pair — within a Provider. Keyed the same way
+                              `Provider.spec.failureDomainNameOverrides` is (ADR-0023): the
+                              vCenter-reported identity, not a failure domain's own (possibly
+                              admin-renamed) display name, which would make the mapping fragile to a
+                              rename. Shared by [`StorageClassMapping`] and [`NetworkClassMapping`] —
+                              same shape, same identity key (ADR-0030).
+                            properties:
+                              cluster:
+                                description: Cluster name as vCenter reports it.
+                                type: string
+                              datacenter:
+                                description: Datacenter name as vCenter reports it.
+                                type: string
+                              target:
+                                additionalProperties:
+                                  type: string
+                                description: |-
+                                  Concrete backend target for this zone, same shape as
+                                  [`StorageClassMapping::target`] / [`NetworkClassMapping::target`].
+                                type: object
+                            required:
+                            - cluster
+                            - datacenter
+                            - target
+                            type: object
+                          type: array
+                        perZoneSubnet:
+                          description: Per-`(datacenter, cluster)` overrides of `subnet` (ADR-0032).
+                          items:
+                            description: |-
+                              A subnet's gateway/DNS/domain, scoped to one specific failure domain — a
+                              `(datacenter, cluster)` pair — within a Provider's network class.
+                              Deliberately excludes `prefix`, which stays a per-VM field on
+                              `StaticIpamConfig` rather than becoming zone-derived (ADR-0032).
+                            properties:
+                              cluster:
+                                description: Cluster name as vCenter reports it.
+                                type: string
+                              datacenter:
+                                description: Datacenter name as vCenter reports it.
+                                type: string
+                              subnet:
+                                description: Subnet shape for this zone.
+                                properties:
+                                  domain:
+                                    nullable: true
+                                    type: string
+                                  gateway:
+                                    nullable: true
+                                    type: string
+                                  nameservers:
+                                    items:
+                                      type: string
+                                    type: array
+                                type: object
+                            required:
+                            - cluster
+                            - datacenter
+                            - subnet
+                            type: object
+                          type: array
+                        subnet:
+                          description: |-
+                            Default subnet shape (gateway/nameservers/domain) for this network
+                            class, used in any zone `per_zone_subnet` does not cover. A port
+                            group implies a subnet, so this lives alongside `target`/`per_zone`
+                            rather than on `VMClass` — it lets a static-addressing
+                            `VirtualMachine` omit gateway/nameservers/domain entirely and have
+                            them resolved from whichever zone the scheduler picked (ADR-0032).
+                          nullable: true
+                          properties:
+                            domain:
+                              nullable: true
+                              type: string
+                            gateway:
+                              nullable: true
+                              type: string
+                            nameservers:
+                              items:
+                                type: string
+                              type: array
+                          type: object
                         target:
                           additionalProperties:
                             type: string
                           description: |-
-                            Concrete backend target. Free-form per provider class. Examples:
+                            Default concrete target, used in any zone `per_zone` does not cover.
+                            `None` means this class resolves ONLY in the zones `per_zone` lists.
+                            Free-form per provider class. Examples:
                               vsphere:  { portGroup: "vmnet-prod" }
                                         { distributedPortGroup: "dvs-prod-vlan100" }
                               proxmox:  { bridge: "vmbr0", vlan: "100" }
                               libvirt:  { network: "br-prod" }
+                          nullable: true
                           type: object
                       required:
                       - name
-                      - target
                       type: object
                     type: array
                   storageClasses:
@@ -123,26 +217,69 @@ spec:
                       Each entry maps an abstract class name to a provider-interpreted
                       concrete target.
                     items:
-                      description: Maps one abstract storage-class name to a concrete backend target.
+                      description: |-
+                        Maps one abstract storage-class name to a concrete backend target.
+
+                        A single class name can resolve differently per failure domain of the
+                        same Provider — the "same" storage tier commonly has a differently-named
+                        datastore (cluster) on each vCenter cluster. `target` is the default,
+                        applied to any zone not covered by `per_zone`; `per_zone` overrides it
+                        for the zones it lists. At least one of the two must resolve a target
+                        for a zone, or this class is simply unavailable there — not an error,
+                        the same "not reported available" path an unmatched target already took
+                        before this ADR (ADR-0019, ADR-0030).
                       properties:
                         name:
                           description: Abstract name referenced by VMClass.hardware.disks[].storageClass.
                           type: string
+                        perZone:
+                          description: Per-`(datacenter, cluster)` overrides of `target` (ADR-0030).
+                          items:
+                            description: |-
+                              A concrete backend target scoped to one specific failure domain — a
+                              `(datacenter, cluster)` pair — within a Provider. Keyed the same way
+                              `Provider.spec.failureDomainNameOverrides` is (ADR-0023): the
+                              vCenter-reported identity, not a failure domain's own (possibly
+                              admin-renamed) display name, which would make the mapping fragile to a
+                              rename. Shared by [`StorageClassMapping`] and [`NetworkClassMapping`] —
+                              same shape, same identity key (ADR-0030).
+                            properties:
+                              cluster:
+                                description: Cluster name as vCenter reports it.
+                                type: string
+                              datacenter:
+                                description: Datacenter name as vCenter reports it.
+                                type: string
+                              target:
+                                additionalProperties:
+                                  type: string
+                                description: |-
+                                  Concrete backend target for this zone, same shape as
+                                  [`StorageClassMapping::target`] / [`NetworkClassMapping::target`].
+                                type: object
+                            required:
+                            - cluster
+                            - datacenter
+                            - target
+                            type: object
+                          type: array
                         target:
                           additionalProperties:
                             type: string
                           description: |-
-                            Concrete backend target. Free-form per provider class; the provider's
-                            controller interprets it. Examples by provider class:
+                            Default concrete target, used in any zone `per_zone` does not cover.
+                            `None` means this class resolves ONLY in the zones `per_zone` lists.
+                            Free-form per provider class; the provider's controller interprets
+                            it. Examples by provider class:
                               vsphere:  { datastore: "ds-fast-01" }
                                         { datastoreCluster: "dsc-gold" }
                                         { tagCategory: "tier", tag: "gold" }
                               proxmox:  { storage: "ceph-pool-1" }
                               libvirt:  { pool: "nvme-pool" }
+                          nullable: true
                           type: object
                       required:
                       - name
-                      - target
                       type: object
                     type: array
                 type: object
@@ -224,6 +361,45 @@ spec:
                 - credentialsRef
                 - endpoint
                 type: object
+              failureDomainNameOverrides:
+                description: |-
+                  Explicit overrides for individual discovered failure domains'
+                  generated `name`. The auto-computed, collision-safe name
+                  (`<provider>-<datacenter>-<cluster>`, hashed when too long) is
+                  always the fallback for any `(datacenter, cluster)` pair with no
+                  matching entry here — this is opt-in, never required. See ADR-0023.
+                items:
+                  description: |-
+                    Explicit override for one discovered failure domain's generated `name`,
+                    keyed by the `(datacenter, cluster)` pair `discover_inventory` resolves
+                    it from. Named fields, not a `"dc/cluster"` string key, so a call site
+                    can't accidentally swap them — same reasoning as `ImportJobIdentity`
+                    (ADR-0020-era `import_job_name` fix). See ADR-0023.
+                  properties:
+                    cluster:
+                      description: Cluster name as vCenter reports it.
+                      type: string
+                    datacenter:
+                      description: |-
+                        Datacenter name as vCenter reports it (matches `discover_inventory`'s
+                        walk, not an operator-chosen alias).
+                      type: string
+                    name:
+                      description: |-
+                        The name to use instead of the auto-computed one, e.g. `cluster-01`.
+                        Slugified the same way auto-computed names are, so `Cluster 01`
+                        still produces a valid Kubernetes name.
+                      type: string
+                  required:
+                  - cluster
+                  - datacenter
+                  - name
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - datacenter
+                - cluster
+                x-kubernetes-list-type: map
               paused:
                 description: |-
                   Suspend reconciliation. Equivalent to setting the
@@ -302,14 +478,23 @@ spec:
                 x-kubernetes-list-type: map
               failureDomains:
                 description: |-
-                  Failure domains discovered by the provider's controller within this
-                  backend. The scheduler matches against `labels` and filters by
+                  Failure domains ("availability zones" — the terms are synonyms;
+                  `failureDomain` was kept to align with CAPI v1beta2's own vocabulary)
+                  discovered by the provider's controller within this backend. The
+                  scheduler matches against `labels` and filters by
                   `attributes.availableStorageClasses` / `availableNetworkClasses`.
                 items:
                   description: |-
                     One placement target within a backend — typically a (datacenter, cluster)
                     pair or a zone. The scheduler matches VMs to failure domains by `labels`
                     and filters by the capabilities resolved in `attributes`.
+
+                    "Failure domain" and "availability zone" are synonyms here — this type
+                    names it `failureDomain` to align with the CAPI v1beta2 vocabulary
+                    (`clusterv1.FailureDomain`, `Machine.spec.failureDomain`) that banlieue's
+                    infra CRDs are built to satisfy, not because it means something distinct
+                    from an AZ. Docs and CLI help text are free to say "availability zone"
+                    where that reads more naturally.
                   properties:
                     attributes:
                       default: {}
@@ -350,7 +535,13 @@ spec:
                       description: |-
                         Labels used by the scheduler's `failureDomainSelector` and by
                         VirtualMachine anti-affinity `topologyKey` matching.
-                        Recommended keys: `dc`, `cluster`, `rack`, `env`.
+                        Recommended keys: `datacenter`, `cluster`, `rack`, `env`. Every
+                        provider also sets `name` to this failure domain's own resolved
+                        `name` above (auto-computed, or an ADR-0023 override) — `name` above
+                        is a top-level field a `LabelSelector` cannot match directly, so
+                        without this mirror, targeting a specific zone by its friendly
+                        override name (rather than a raw backend-reported label like
+                        `cluster`) would be impossible.
                       type: object
                     name:
                       description: Stable name. Conventionally `<provider>-<cluster-or-zone>`.
