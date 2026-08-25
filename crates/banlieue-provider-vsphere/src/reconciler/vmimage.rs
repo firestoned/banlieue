@@ -34,10 +34,11 @@ use std::collections::BTreeMap;
 
 use banlieue_api::banlieue::{
     BuildArtifactKind, BuildArtifactPhase, BuildArtifactStatus, FailureDomain,
-    ImagePerProviderStatus, ImageSource, ImageSourceKind, NicAdapter, Provider, VMImage,
-    VMImageStatus, VMImageTemplateDisk, ZoneImageStatus,
+    ImagePerProviderStatus, ImageSource, ImageSourceKind, Provider, VMImage, VMImageStatus,
+    VMImageTemplateDisk, VMImageTemplateNic, ZoneImageStatus,
 };
 use banlieue_api::common::Firmware;
+use banlieue_provider_sdk::finalizer::{ensure_finalizer, remove_finalizer};
 use banlieue_provider_sdk::reconciler::{requeue_default, requeue_long, requeue_on_error};
 use banlieue_provider_sdk::ssa::FIELD_MANAGER_PROVIDER_VSPHERE;
 use k8s_openapi::api::batch::v1::Job;
@@ -64,6 +65,21 @@ const SECRET_KEY_PASSWORD: &str = "password";
 /// `spec.forceUpload` / `spec.forceCreate`, which control what the (re)run does.
 pub const ANNOTATION_FORCE_REIMPORT: &str = "banlieue.io/force-reimport";
 
+/// Label an import Job carries naming the `VMImage` it was created for.
+/// Set by [`build_import_job`]; read by `app::vmimage_ref_from_job` to
+/// re-trigger that `VMImage`'s reconciliation the moment the Job's status
+/// changes, instead of waiting on the next poll interval (event-driven,
+/// not owner-reference-based — the Job's actual `ownerReference` points at
+/// the `OSArtifact` it mounts, for a different, unrelated GC concern).
+pub const LABEL_VMIMAGE: &str = "banlieue.io/vmimage";
+
+/// Finalizer set on every `VMImage` reconciled by this provider (ADR-0028)
+/// — mirrors `VSphereMachine`'s own `banlieue.io/vspheremachine` finalizer
+/// (ADR-0026). Blocks deletion until every per-zone template this provider
+/// caused to be built is confirmed destroyed, unless
+/// `spec.template.retainOnDelete` opts out.
+pub const VM_IMAGE_FINALIZER: &str = "banlieue.io/vmimage";
+
 /// True when the `VMImage` carries a truthy `banlieue.io/force-reimport`
 /// annotation. Pure, so the trigger rule is unit-testable.
 pub fn force_reimport_requested(image: &VMImage) -> bool {
@@ -73,6 +89,21 @@ pub fn force_reimport_requested(image: &VMImage) -> bool {
         .as_ref()
         .and_then(|a| a.get(ANNOTATION_FORCE_REIMPORT))
         .is_some_and(|v| v.eq_ignore_ascii_case("true"))
+}
+
+/// The JSON Merge Patch that clears `banlieue.io/force-reimport` once this
+/// reconcile pass has acted on it. Pure, so the shape is unit-testable
+/// without a kube client.
+///
+/// `force-reimport` must be a one-shot trigger, not a standing flag: found
+/// live, leaving the annotation in place caused every subsequent reconcile
+/// (including ones the Job watch itself fires the instant the just-created
+/// Job's pod changes phase) to see `force.reimport` still true and delete +
+/// recreate the import Job all over again — an unbroken delete/recreate
+/// storm across all three zones, no import ever surviving long enough to
+/// progress past `Pending`.
+fn clear_force_reimport_patch() -> Value {
+    json!({ "metadata": { "annotations": { ANNOTATION_FORCE_REIMPORT: null } } })
 }
 
 /// The three force knobs that drive the per-zone import, bundled so they thread
@@ -88,12 +119,9 @@ pub struct ImportForce {
     pub reimport: bool,
     pub upload: bool,
     pub create: bool,
-    /// Port group from `spec.template.network`; `None` → zone-derived.
-    pub network: Option<String>,
-    /// NIC adapter type from `spec.template.networkAdapter`; `None` → Job default.
-    pub network_adapter: Option<NicAdapter>,
-    /// NIC PCI slot from `spec.template.nicPciSlot`; `None` → Job default (192).
-    pub nic_pci_slot: Option<i32>,
+    /// NICs from `spec.template.network`; empty → the Job's own single-NIC
+    /// default (ADR-0031).
+    pub nics: Vec<VMImageTemplateNic>,
     /// Install disk from `spec.template.disk`; `None` → the Job's own default.
     pub disk: Option<VMImageTemplateDisk>,
     /// CPU count from `spec.template.cpus`; `None` → Job default (2).
@@ -105,9 +133,17 @@ pub struct ImportForce {
     /// vCenter `guestId` override from `spec.template.guestId`; `None` → derived
     /// from the VMImage OS by the Job.
     pub guest_id: Option<String>,
-    /// Target vCenter folder from `spec.template.folder`; `None` → datacenter
-    /// VM-folder root. Bundled here so it threads through with the force knobs.
-    pub folder: Option<String>,
+    /// Root vCenter folder from `spec.template.rootFolder`; `None` →
+    /// datacenter VM-folder root. Bundled here so it threads through with
+    /// the force knobs.
+    pub root_folder: Option<String>,
+    /// Install-wait bound from `spec.template.installTimeoutSeconds`; `None` →
+    /// the Job's own default (ADR-0021).
+    pub install_timeout_seconds: Option<i32>,
+    /// Whether to run the install-then-generalize sequence at all, from
+    /// `spec.template.autoManageInstall`; `None` → the Job's own default
+    /// (`true`) (ADR-0021).
+    pub auto_manage_install: Option<bool>,
 }
 
 impl ImportForce {
@@ -119,15 +155,15 @@ impl ImportForce {
             reimport: force_reimport_requested(image),
             upload: t.is_some_and(|t| t.force_upload),
             create: t.is_some_and(|t| t.force_create),
-            network: t.and_then(|t| t.network.clone()),
-            network_adapter: t.and_then(|t| t.network_adapter),
-            nic_pci_slot: t.and_then(|t| t.nic_pci_slot),
+            nics: t.map(|t| t.network.clone()).unwrap_or_default(),
             disk: t.and_then(|t| t.disk.clone()),
             cpus: t.and_then(|t| t.cpus),
             memory_mib: t.and_then(|t| t.memory_mib),
             firmware: t.and_then(|t| t.firmware.clone()),
             guest_id: t.and_then(|t| t.guest_id.clone()),
-            folder: t.and_then(|t| t.folder.clone()),
+            root_folder: t.and_then(|t| t.root_folder.clone()),
+            install_timeout_seconds: t.and_then(|t| t.install_timeout_seconds),
+            auto_manage_install: t.and_then(|t| t.auto_manage_install),
         }
     }
 }
@@ -200,6 +236,16 @@ pub async fn reconcile(image: Arc<VMImage>, ctx: Arc<Context>) -> Result<Action>
     let _enter = span.enter();
     info!("reconciling VMImage");
 
+    let api: Api<VMImage> = Api::all(ctx.client.clone());
+
+    // ADR-0028: deletion takes priority over every other branch, mirroring
+    // VSphereMachine's own deletion lifecycle (ADR-0026).
+    if image.metadata.deletion_timestamp.is_some() {
+        return finalize(&api, &image, &ctx).await;
+    }
+
+    ensure_finalizer(&api, image.as_ref(), VM_IMAGE_FINALIZER).await?;
+
     let Some(vsphere_source) = find_vsphere_source(&image.spec.sources) else {
         // Not our concern — every other provider handles its own ImageSources.
         return Ok(requeue_long());
@@ -236,6 +282,19 @@ pub async fn reconcile(image: Arc<VMImage>, ctx: Arc<Context>) -> Result<Action>
 
     patch_vmimage_status(&ctx, &name, generation, rows).await?;
 
+    // One-shot: clear the annotation now that every provider's ensure_import_jobs
+    // has seen it this pass, so the next reconcile (including the one the Job
+    // watch fires immediately after the Job we just (re)created changes phase)
+    // doesn't delete + recreate it all over again.
+    if force.reimport {
+        api.patch(
+            &name,
+            &PatchParams::default(),
+            &Patch::Merge(&clear_force_reimport_patch()),
+        )
+        .await?;
+    }
+
     // Poll while a per-zone import is still running; back off once every
     // provider row is ready (or terminally stuck on a reason the operator must
     // act on, in which case a spec/status change re-triggers us anyway).
@@ -250,6 +309,127 @@ pub async fn reconcile(image: Arc<VMImage>, ctx: Arc<Context>) -> Result<Action>
 pub fn error_policy(_image: Arc<VMImage>, err: &Error, _ctx: Arc<Context>) -> Action {
     warn!(error = %err, "vmimage reconcile error policy fired");
     requeue_on_error()
+}
+
+/// Deletion path (ADR-0028): unless `spec.template.retainOnDelete`, destroy
+/// every per-zone template this provider's own `status.perProvider[]` rows
+/// report, then drop the finalizer. Errors propagate to `error_policy` and
+/// leave the finalizer in place — same conservative failure mode ADR-0026
+/// already established for `VSphereMachine`.
+async fn finalize(api: &Api<VMImage>, image: &VMImage, ctx: &Context) -> Result<Action> {
+    info!("finalizing VMImage");
+    let retain = image
+        .spec
+        .template
+        .as_ref()
+        .is_some_and(|t| t.retain_on_delete);
+
+    if !retain {
+        let rows = image
+            .status
+            .as_ref()
+            .map(|s| s.per_provider.as_slice())
+            .unwrap_or_default();
+        for row in rows {
+            if row.zones.is_empty() {
+                continue;
+            }
+            let provider_api: Api<Provider> =
+                Api::namespaced(ctx.client.clone(), &row.provider_namespace);
+            let provider = provider_api.get(&row.provider_name).await?;
+            let namespace = provider.namespace().unwrap_or_default();
+            let creds = read_credentials(ctx, &namespace, &provider).await?;
+            let ca_bundle_pem = crate::reconciler::ca_bundle::resolve_ca_bundle(
+                ctx,
+                &namespace,
+                &provider.spec.connection.ca_bundle,
+            )
+            .await?;
+            let client = ctx
+                .vsphere
+                .build(&provider.spec.connection, &creds, ca_bundle_pem.as_deref())
+                .await?;
+            let datacenters = dcs_from_provider_status(&provider, client.as_ref()).await?;
+            let failure_domains = provider
+                .status
+                .as_ref()
+                .map(|s| s.failure_domains.as_slice())
+                .unwrap_or_default();
+            destroy_zone_templates(client.as_ref(), &datacenters, failure_domains, &row.zones)
+                .await?;
+        }
+    }
+
+    remove_finalizer(api, image, VM_IMAGE_FINALIZER).await?;
+    Ok(requeue_default())
+}
+
+/// Destroy every per-zone template `zones` reports, unless already absent
+/// (idempotent — mirrors `VSphereMachine`'s `destroy_vm`, ADR-0026). Pure
+/// enough to unit test via `FakeClient`: `datacenters` and
+/// `failure_domains` are the same already-resolved values the create path
+/// uses (`dcs_from_provider_status` / `Provider.status.failureDomains`).
+///
+/// A zone whose failure domain no longer exists, or has no resolved
+/// datacenter, is skipped with a warning rather than failing the whole
+/// finalize over one stale zone — the rest of the fleet's templates still
+/// need to come down.
+async fn destroy_zone_templates(
+    client: &dyn VSphereClient,
+    datacenters: &[Datacenter],
+    failure_domains: &[FailureDomain],
+    zones: &[ZoneImageStatus],
+) -> Result<()> {
+    for zone in zones {
+        let Some(template_name) = zone.resolved_ref.as_deref() else {
+            continue;
+        };
+        let Some(fd) = failure_domains.iter().find(|fd| fd.name == zone.name) else {
+            warn!(
+                zone = %zone.name,
+                "failure domain no longer present on Provider; skipping template destroy"
+            );
+            continue;
+        };
+        let Some(dc_name) = fd.attributes.raw.get("datacenter") else {
+            warn!(
+                zone = %zone.name,
+                "failure domain has no resolved datacenter; skipping template destroy"
+            );
+            continue;
+        };
+        let Some(dc) = datacenters.iter().find(|d| &d.name == dc_name) else {
+            warn!(
+                zone = %zone.name,
+                datacenter = %dc_name,
+                "datacenter not found; skipping template destroy"
+            );
+            continue;
+        };
+
+        match client
+            .find_template(dc, zone.template_folder.as_deref(), template_name)
+            .await?
+        {
+            Some(t) => {
+                info!(
+                    zone = %zone.name,
+                    template = template_name,
+                    moref = %t.moref,
+                    "destroying per-zone template"
+                );
+                client.destroy_vm(&t.moref).await?;
+            }
+            None => {
+                info!(
+                    zone = %zone.name,
+                    template = template_name,
+                    "template already absent; nothing to destroy"
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Resolve the per-provider status row for one `(Provider, vsphere
@@ -336,7 +516,7 @@ pub async fn compute_template_status(
 
     let mut hits = Vec::new();
     for dc in datacenters {
-        match client.find_template(dc, template_name).await {
+        match client.find_template(dc, None, template_name).await {
             Ok(Some(t)) => hits.push((dc.name.clone(), t)),
             Ok(None) => {}
             Err(e) => {
@@ -478,19 +658,29 @@ pub fn gate_on_build_artifact(
     }
 }
 
+/// Named fields identifying one per-(image, provider, failure-domain)
+/// import Job — named so a call site can't accidentally swap `image` and
+/// `provider` the way three positional `&str` parameters would silently
+/// allow.
+pub struct ImportJobIdentity<'a> {
+    pub image: &'a str,
+    pub provider: &'a str,
+    pub failure_domain: &'a str,
+}
+
 /// Deterministic Job name for one (image, provider, failure-domain) import.
 ///
 /// Deterministic so a re-reconcile adopts the existing Job instead of starting
-/// a second copy of a multi-gigabyte ISO transfer.
-pub fn import_job_name(image: &str, provider: &str, failure_domain: &str) -> String {
-    let raw = format!("import-{image}-{provider}-{failure_domain}");
-    let cleaned: String = raw
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .collect::<String>()
-        .to_lowercase();
-    // Kubernetes names cap at 63 characters.
-    cleaned.chars().take(63).collect::<String>()
+/// a second copy of a multi-gigabyte ISO transfer. Collision-safe when
+/// truncated to Kubernetes' 63-char limit — see
+/// [`crate::k8s_name::collision_safe_name`]; real failure-domain names
+/// (datacenter + cluster, hyphenated) routinely share everything except a
+/// short trailing suffix, and a naive cut-at-63-chars silently produced the
+/// IDENTICAL name for every zone under such a scheme (found live) — so only
+/// one of several zones' Jobs ever actually got created, and the rest
+/// silently reported that one Job's status instead of their own.
+pub fn import_job_name(id: &ImportJobIdentity<'_>) -> String {
+    crate::k8s_name::collision_safe_name(&["import", id.image, id.provider, id.failure_domain])
 }
 
 /// Create the import Job for each failure domain that lacks one, and translate
@@ -512,7 +702,11 @@ async fn ensure_import_jobs(
     let mut zones = Vec::with_capacity(failure_domains.len());
 
     for fd in failure_domains {
-        let job_name = import_job_name(image_name, &provider.name_any(), &fd.name);
+        let job_name = import_job_name(&ImportJobIdentity {
+            image: image_name,
+            provider: &provider.name_any(),
+            failure_domain: &fd.name,
+        });
 
         // Forced re-import: delete any existing Job so it is recreated and
         // re-runs. Deletion is not instant — if it is still terminating when we
@@ -538,6 +732,7 @@ async fn ensure_import_jobs(
         }
 
         // On reimport always (re)create; otherwise adopt an existing Job.
+        let folder = crate::import::effective_folder(force.root_folder.as_deref(), &fd.name);
         let zone = if force.reimport {
             create_import_job(
                 &api, ctx, provider, image_name, &fd.name, &job_name, artifact, force,
@@ -545,7 +740,7 @@ async fn ensure_import_jobs(
             .await
         } else {
             match api.get(&job_name).await {
-                Ok(job) => zone_from_job(&fd.name, &job_name, &job),
+                Ok(job) => zone_from_job(&fd.name, image_name, &folder, &job_name, &job),
                 Err(kube::Error::Api(e)) if e.code == 404 => {
                     create_import_job(
                         &api, ctx, provider, image_name, &fd.name, &job_name, artifact, force,
@@ -586,15 +781,15 @@ async fn create_import_job(
         tolerations: &ctx.import_tolerations,
         force_upload: force.upload,
         force_create: force.create,
-        network: force.network.as_deref(),
-        network_adapter: force.network_adapter,
-        nic_pci_slot: force.nic_pci_slot,
+        nics: &force.nics,
         disk: force.disk.as_ref(),
         cpus: force.cpus,
         memory_mib: force.memory_mib,
         firmware: force.firmware.as_ref(),
         guest_id: force.guest_id.as_deref(),
-        folder: force.folder.as_deref(),
+        root_folder: force.root_folder.as_deref(),
+        install_timeout_seconds: force.install_timeout_seconds,
+        auto_manage_install: force.auto_manage_install,
     });
     match api
         .patch(
@@ -614,8 +809,21 @@ async fn create_import_job(
     }
 }
 
-/// Map a Job's status onto a zone row.
-pub fn zone_from_job(failure_domain: &str, job_name: &str, job: &Job) -> ZoneImageStatus {
+/// Map a Job's status onto a zone row. `image_name` is the template's own
+/// bare display name (the `VMImage`'s name — never the Job's own k8s
+/// object name, which is a different, longer, collision-safe string,
+/// ADR-0020/0023); `folder` is the effective per-zone folder
+/// ([`crate::import::effective_folder`]) the template actually lives in.
+/// Both together are what a provider needs to find *this* zone's template
+/// unambiguously, since every zone's template shares the same display
+/// name (ADR-0020 Decision #5).
+pub fn zone_from_job(
+    failure_domain: &str,
+    image_name: &str,
+    folder: &str,
+    job_name: &str,
+    job: &Job,
+) -> ZoneImageStatus {
     let status = job.status.as_ref();
     let succeeded = status.and_then(|s| s.succeeded).unwrap_or(0);
     let failed = status.and_then(|s| s.failed).unwrap_or(0);
@@ -624,7 +832,8 @@ pub fn zone_from_job(failure_domain: &str, job_name: &str, job: &Job) -> ZoneIma
         return ZoneImageStatus {
             name: failure_domain.to_string(),
             ready: true,
-            resolved_ref: Some(format!("{failure_domain}/{job_name}")),
+            resolved_ref: Some(image_name.to_string()),
+            template_folder: Some(folder.to_string()),
             reason: Some(reasons::RECONCILED.to_string()),
             message: None,
         };
@@ -650,6 +859,7 @@ fn zone_row(failure_domain: &str, ready: bool, reason: &str, message: &str) -> Z
         name: failure_domain.to_string(),
         ready,
         resolved_ref: None,
+        template_folder: None,
         reason: Some(reason.to_string()),
         message: Some(message.to_string()),
     }
@@ -680,12 +890,9 @@ pub struct ImportJobInputs<'a> {
     pub force_upload: bool,
     /// Pass `--force-create` so the import recreates the template (spec.forceCreate).
     pub force_create: bool,
-    /// Port group override (`spec.template.network`); `None` → zone-derived.
-    pub network: Option<&'a str>,
-    /// NIC adapter type (`spec.template.networkAdapter`); `None` → Job default.
-    pub network_adapter: Option<NicAdapter>,
-    /// NIC PCI slot (`spec.template.nicPciSlot`); `None` → Job default (192).
-    pub nic_pci_slot: Option<i32>,
+    /// NICs (`spec.template.network`, ADR-0031); empty → the Job's own
+    /// single-NIC default.
+    pub nics: &'a [VMImageTemplateNic],
     /// Install disk (`spec.template.disk`); `None` → the Job's own default.
     pub disk: Option<&'a VMImageTemplateDisk>,
     /// CPU count (`spec.template.cpus`); `None` → Job default (2).
@@ -696,8 +903,16 @@ pub struct ImportJobInputs<'a> {
     pub firmware: Option<&'a Firmware>,
     /// `guestId` override (`spec.template.guestId`); `None` → derived by the Job.
     pub guest_id: Option<&'a str>,
-    /// Target vCenter folder path; `None` → datacenter VM-folder root.
-    pub folder: Option<&'a str>,
+    /// Root vCenter folder path (`spec.template.rootFolder`); `None` →
+    /// datacenter VM-folder root.
+    pub root_folder: Option<&'a str>,
+    /// Install-wait bound (`spec.template.installTimeoutSeconds`); `None` →
+    /// the Job's own default (ADR-0021).
+    pub install_timeout_seconds: Option<i32>,
+    /// Whether to run the install-then-generalize sequence at all
+    /// (`spec.template.autoManageInstall`); `None` → the Job's own default
+    /// (`true`) (ADR-0021).
+    pub auto_manage_install: Option<bool>,
 }
 
 /// Build the per-zone import Job manifest.
@@ -718,15 +933,15 @@ pub fn build_import_job(inputs: &ImportJobInputs<'_>) -> Value {
         tolerations,
         force_upload,
         force_create,
-        network,
-        network_adapter,
-        nic_pci_slot,
+        nics,
         disk,
         cpus,
         memory_mib,
         firmware,
         guest_id,
-        folder,
+        root_folder,
+        install_timeout_seconds,
+        auto_manage_install,
     } = *inputs;
 
     let pvc = artifact
@@ -742,7 +957,7 @@ pub fn build_import_job(inputs: &ImportJobInputs<'_>) -> Value {
         "app.kubernetes.io/component".to_string(),
         "vsphere-import".to_string(),
     );
-    labels.insert("banlieue.io/vmimage".to_string(), vmimage.to_string());
+    labels.insert(LABEL_VMIMAGE.to_string(), vmimage.to_string());
     labels.insert(
         "banlieue.io/failure-domain".to_string(),
         failure_domain.to_string(),
@@ -777,17 +992,11 @@ pub fn build_import_job(inputs: &ImportJobInputs<'_>) -> Value {
     if force_create {
         args.push("--force-create".to_string());
     }
-    if let Some(network) = network {
-        args.push("--network".to_string());
-        args.push(network.to_string());
-    }
-    if let Some(adapter) = network_adapter {
-        args.push("--network-adapter".to_string());
-        args.push(adapter.as_str().to_string());
-    }
-    if let Some(slot) = nic_pci_slot {
-        args.push("--nic-pci-slot".to_string());
-        args.push(slot.to_string());
+    // One --nic per declared NIC (ADR-0031) — empty means "no override,
+    // the Job's own single-NIC default applies," so nothing is pushed.
+    for nic in nics {
+        args.push("--nic".to_string());
+        args.push(crate::nic_flag::serialize_nic_flag(nic));
     }
     if let Some(cpus) = cpus {
         args.push("--cpus".to_string());
@@ -815,9 +1024,17 @@ pub fn build_import_job(inputs: &ImportJobInputs<'_>) -> Value {
         args.push("--disk-controller".to_string());
         args.push(disk.controller.as_str().to_string());
     }
-    if let Some(folder) = folder {
-        args.push("--folder".to_string());
-        args.push(folder.to_string());
+    if let Some(root_folder) = root_folder {
+        args.push("--root-folder".to_string());
+        args.push(root_folder.to_string());
+    }
+    if let Some(timeout) = install_timeout_seconds {
+        args.push("--install-timeout-seconds".to_string());
+        args.push(timeout.to_string());
+    }
+    if let Some(auto_manage) = auto_manage_install {
+        args.push("--auto-manage-install".to_string());
+        args.push(auto_manage.to_string());
     }
 
     let mut pod_spec = json!({
@@ -844,10 +1061,24 @@ pub fn build_import_job(inputs: &ImportJobInputs<'_>) -> Value {
         pod_spec["tolerations"] = serde_json::to_value(tolerations).unwrap_or_else(|_| json!([]));
     }
 
+    // ADR-0027: own this Job by the OSArtifact whose PVC it mounts, so a
+    // rebuild's OSArtifact deletion garbage-collects the Job immediately
+    // instead of it outliving the artifact for up to its own
+    // ttlSecondsAfterFinished below.
+    let owner_references = banlieue_provider_sdk::osartifact::owner_references(
+        &artifact.os_artifact_ref,
+        artifact.os_artifact_uid.as_deref(),
+    );
+
     json!({
         "apiVersion": "batch/v1",
         "kind": "Job",
-        "metadata": { "name": job_name, "namespace": namespace, "labels": labels },
+        "metadata": {
+            "name": job_name,
+            "namespace": namespace,
+            "labels": labels,
+            "ownerReferences": owner_references,
+        },
         "spec": {
             // A half-finished upload is resumable only by starting over, and
             // retrying forever would hammer vCenter; two attempts then stop.
@@ -998,3 +1229,7 @@ async fn patch_vmimage_status(
 #[cfg(test)]
 #[path = "vmimage_tests.rs"]
 mod vmimage_tests;
+
+#[cfg(test)]
+#[path = "vmimage_finalize_tests.rs"]
+mod vmimage_finalize_tests;

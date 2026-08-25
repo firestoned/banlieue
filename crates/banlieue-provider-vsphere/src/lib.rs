@@ -24,6 +24,8 @@ pub mod client;
 pub mod context;
 pub mod error;
 pub mod import;
+pub mod k8s_name;
+pub mod nic_flag;
 pub mod reconciler;
 
 pub use app::{Cli, run};

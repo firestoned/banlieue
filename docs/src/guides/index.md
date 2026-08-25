@@ -6,6 +6,12 @@ on a real cluster, using the released container image
 
 <div class="grid cards" markdown>
 
+- :material-map: **[End-to-End Setup](end-to-end-setup.md)**
+
+    The whole chain in one diagram: bootstrapping the management cluster,
+    installing banlieue, registering a backend, building an image, and
+    provisioning a VM — with links out to every guide below.
+
 - :material-engine: **[Core Controller](core-controller.md)**
 
     Install the CRDs, the `banlieue-controller`, RBAC, and the optional

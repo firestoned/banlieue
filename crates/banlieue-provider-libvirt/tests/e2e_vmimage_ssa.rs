@@ -124,6 +124,7 @@ async fn two_providers_and_the_imagebuilder_can_share_one_vmimage_status() {
             ],
             cloud_config: None,
             template: None,
+            iso_overlay: None,
         },
         status: None,
     };

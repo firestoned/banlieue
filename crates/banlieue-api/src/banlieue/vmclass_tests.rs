@@ -19,7 +19,7 @@ mod tests {
         NetworkInterfaceSpec {
             name: name.to_string(),
             network_class: "prod".to_string(),
-            ipam: IpamSpec::default(),
+            ipam: IpamShape::default(),
             mtu: None,
         }
     }
@@ -108,7 +108,7 @@ mod tests {
         let obj = json.as_object().unwrap();
         assert!(!obj.contains_key("mtu"));
         assert_eq!(obj["networkClass"], "prod");
-        assert_eq!(obj["ipam"]["source"], "dhcp");
+        assert_eq!(obj["ipam"], serde_json::json!({}));
         let back: NetworkInterfaceSpec = serde_json::from_value(json).unwrap();
         assert_eq!(back, n);
     }
@@ -118,7 +118,7 @@ mod tests {
         let n = NetworkInterfaceSpec {
             name: "eth0".to_string(),
             network_class: "prod".to_string(),
-            ipam: IpamSpec::default(),
+            ipam: IpamShape::default(),
             mtu: Some(9000),
         };
         let json = serde_json::to_value(&n).unwrap();
@@ -132,21 +132,28 @@ mod tests {
         let n = NetworkInterfaceSpec {
             name: "eth0".to_string(),
             network_class: "prod".to_string(),
-            ipam: IpamSpec {
-                source: IpamSource::Static,
-                static_: Some(StaticIpamConfig {
-                    address: "10.0.0.5".to_string(),
-                    prefix: 24,
+            ipam: IpamShape {
+                static_: Some(StaticNetworkShape {
+                    prefix: Some(24),
                     gateway: Some("10.0.0.1".to_string()),
                     nameservers: Vec::new(),
+                    domain: None,
                 }),
-                pool: None,
+                ..Default::default()
             },
             mtu: None,
         };
         let json = serde_json::to_value(&n).unwrap();
-        assert_eq!(json["ipam"]["source"], "static");
-        assert_eq!(json["ipam"]["static"]["address"], "10.0.0.5");
+        // No `source` field — inferred from presence of `static`
+        assert!(!json["ipam"].as_object().unwrap().contains_key("source"));
+        // No address at the class level — per-VM only
+        assert!(
+            !json["ipam"]["static"]
+                .as_object()
+                .unwrap()
+                .contains_key("address")
+        );
+        assert_eq!(json["ipam"]["static"]["prefix"], 24);
         let back: NetworkInterfaceSpec = serde_json::from_value(json).unwrap();
         assert_eq!(back, n);
     }

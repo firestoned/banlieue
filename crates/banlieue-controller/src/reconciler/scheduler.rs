@@ -420,6 +420,14 @@ fn build_decision(
     provider: &Provider,
     fd: &FailureDomain,
 ) -> Decision {
+    // Backends with a (datacenter, cluster) concept (vSphere) carry both in
+    // `attributes.raw`; a backend without one (libvirt's single-host failure
+    // domains) simply never populates `per_zone` on its mappings either, so
+    // an empty string here never matches anything and `target_for` falls
+    // through to the mapping's default `target` (ADR-0030).
+    let datacenter = fd.attributes.raw.get("datacenter").map_or("", |s| s);
+    let cluster = fd.attributes.raw.get("cluster").map_or("", |s| s);
+
     let resolved_storage = class
         .spec
         .hardware
@@ -431,6 +439,8 @@ fn build_decision(
                 &provider.spec.capabilities,
                 &disk.storage_class,
                 StorageOrNetwork::Storage,
+                datacenter,
+                cluster,
             )
             .unwrap_or_else(|| disk.storage_class.clone()),
         })
@@ -447,6 +457,8 @@ fn build_decision(
                 &provider.spec.capabilities,
                 &nic.network_class,
                 StorageOrNetwork::Network,
+                datacenter,
+                cluster,
             )
             .unwrap_or_else(|| nic.network_class.clone()),
         })
@@ -473,23 +485,31 @@ enum StorageOrNetwork {
 }
 
 /// Resolve a class name to a single concrete backend identifier using the
-/// **first BTreeMap value by key-order** rule. See module docs.
+/// **first BTreeMap value by key-order** rule. See module docs. The target
+/// itself is resolved for this specific `(datacenter, cluster)` zone —
+/// an exact per-zone override if the mapping has one, else its default
+/// target (ADR-0030) — so the same class name can back a different
+/// concrete resource per failure domain of the same Provider.
 fn first_target_value(
     caps: &ProviderCapabilities,
     class_name: &str,
     kind: StorageOrNetwork,
+    datacenter: &str,
+    cluster: &str,
 ) -> Option<String> {
     match kind {
         StorageOrNetwork::Storage => caps
             .storage_classes
             .iter()
             .find(|m: &&StorageClassMapping| m.name == class_name)
-            .and_then(|m| m.target.values().next().cloned()),
+            .and_then(|m| m.target_for(datacenter, cluster))
+            .and_then(|t| t.values().next().cloned()),
         StorageOrNetwork::Network => caps
             .network_classes
             .iter()
             .find(|m: &&NetworkClassMapping| m.name == class_name)
-            .and_then(|m| m.target.values().next().cloned()),
+            .and_then(|m| m.target_for(datacenter, cluster))
+            .and_then(|t| t.values().next().cloned()),
     }
 }
 

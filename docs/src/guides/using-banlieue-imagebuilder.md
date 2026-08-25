@@ -22,10 +22,12 @@ flowchart LR
     `status.buildArtifact.phase: Ready`, and **both** in-tree providers
     complete the per-zone import from there:
 
-    - **vSphere** (ADR-0020): one `image-import` Job per failure domain
-      uploads the ISO to the zone's datastore, creates an EFI VM
-      (pvscsi disk, vmxnet3 NIC), attaches the ISO as a CD-ROM, and marks
-      it as a template. The Content Library path
+    - **vSphere** (ADR-0020, ADR-0021): one `image-import` Job per failure
+      domain uploads the ISO to the zone's datastore, creates an EFI VM
+      (pvscsi disk, vmxnet3 NIC), attaches the ISO as a CD-ROM, powers it on,
+      waits for the cloud-config's unattended Kairos install to generalize
+      the disk and power the VM off itself, removes the CD-ROM, and marks it
+      as a template — clones need no ISO at boot. The Content Library path
       (`Provider.spec.useContentLibrary: true`, default off) is the one
       remaining stub — it reports `ContentLibraryNotImplemented`.
     - **libvirt** (ADR-0011): one import Job per declared storage pool
@@ -80,6 +82,88 @@ for you. For a vSphere source the build produces a **bootable ISO**
 into it, and `spec.template` controls how the per-zone import turns the ISO
 into a vCenter template (ADR-0020):
 
+!!! warning "Cloud-config contract (ADR-0021)"
+    The `cloudConfig` Secret **must** set `install.poweroff: true` /
+    `install.reboot: false`, **at least one `admin`-group user**, and an
+    `after-install-chroot` stage that wipes per-machine identity **before the
+    disk is ever booted**:
+
+    ```yaml
+    install:
+      auto: true
+      device: /dev/sda
+      reboot: false
+      poweroff: true
+    users:
+      - name: kairos-admin
+        groups: ["admin"]
+        passwd: <hashed-or-plaintext-per-your-policy>
+    stages:
+      after-install-chroot:
+        - name: "banlieue: strip per-machine identity before templating"
+          commands:
+            - truncate -s 0 /etc/machine-id
+            - rm -f /etc/ssh/ssh_host_*
+    ```
+
+    This is what lets the import Job know the install finished (the VM
+    powers itself off) and produces a template every clone's first boot
+    generalizes for itself — no post-install reboot, no per-clone install.
+    Without it, the import Job's wait times out after
+    `spec.template.installTimeoutSeconds` (default 1800s) because the VM
+    never powers off.
+
+    **The `users` entry is not optional in Kairos v2.29.4+ (the v3.3.x
+    line):** with none, the install stage halts immediately with `No users
+    found in any stage that are part of the 'admin' group` and — same
+    symptom as a missing `poweroff`/`reboot` pair — the VM never powers off,
+    so the import Job's wait times out. Set `install.nousers: true` instead
+    if a userless system is genuinely intended.
+
+    **Not building a Kairos image, or managing install yourself?** Set
+    `spec.template.autoManageInstall: false` to skip this contract entirely —
+    the import Job reverts to ADR-0020's original behavior: create the VM,
+    attach the ISO, `MarkAsTemplate` immediately, no power-on. `banlieue`
+    never reads or edits your `cloudConfig` Secret either way (only its own
+    default: `true`); the contract above is documentation for what a
+    Kairos-managed install needs, never something banlieue auto-injects.
+
+!!! info "Overlaying extra files onto the ISO (ADR-0022)"
+    `spec.isoOverlay` lets you overlay additional files — e.g. a
+    hand-verified `/boot/grub2/grub.cfg` — onto the built ISO, via
+    kairos-operator's own `overlayISOVolume` mechanism
+    (`auroraboot build-iso --overlay-iso`). As with `cloudConfig`, only the
+    Secret's *name* and the key/path list you declare are ever read —
+    `banlieue-imagebuilder` never reads the Secret's content:
+
+    ```yaml
+    isoOverlay:
+      secretRef:
+        name: kairos-iso-overlay
+      files:
+        - key: grub.cfg
+          path: boot/grub2/grub.cfg
+    ```
+
+    Under the hood this adds a small `busybox` init container (the
+    "materializer") to the `OSArtifact`, to work around an `auroraboot`
+    overlay bug (ADR-0022 Decision #3/#4, kairos-io/kairos#4324). On an
+    air-gapped cluster that image must come from your own mirror — set on
+    `banlieue-imagebuilder` itself (cluster-wide, not per-`VMImage`):
+
+    ```sh
+    banlieue imagebuilder \
+      --build-importer-image your-registry.example.com/mirror/busybox:1.36 \
+      --build-importer-image-pull-secret your-mirror-pull-secret
+    ```
+
+    or via env var (the repeatable pull-secret flag is CLI-only, same as
+    `--build-node-selector`): `BANLIEUE_BUILD_IMPORTER_IMAGE=your-registry
+    .example.com/mirror/busybox:1.36`. The pull secret must be a
+    `kubernetes.io/dockerconfigjson` Secret in the imagebuild namespace — it
+    becomes the `OSArtifact`'s pod-wide `imagePullSecrets`, covering the main
+    build image too if it comes from the same mirror.
+
 ```yaml title="vmimage-kairos.yaml"
 apiVersion: banlieue.io/v1alpha1
 kind: VMImage
@@ -105,9 +189,22 @@ spec:
     secretRef:
       name: kairos-base-cloud-config
       key: cloud-config.yaml
+  # Optional extra files overlaid onto the built ISO (ADR-0022), e.g. a
+  # hand-verified grub.cfg. Only the Secret's name + declared keys are read.
+  isoOverlay:
+    secretRef:
+      name: kairos-iso-overlay
+    files:
+      - key: grub.cfg
+        path: boot/grub2/grub.cfg
   # How the backend template is built from this Url source (ADR-0020).
   template:
-    folder: templates/kairos   # vCenter folder, created if missing
+    rootFolder: templates/kairos  # root vCenter folder, created if missing — the
+                               # template lands at <rootFolder>/<failure-domain-name>,
+                               # never at <rootFolder> itself (every zone gets its own
+                               # subfolder, since two zones commonly share a
+                               # datacenter and vSphere folders are scoped
+                               # per-datacenter, not per-cluster)
     network: vmnet-prod        # template NIC port group (else zone default)
     disk:
       size: 100                # GiB; default 100
@@ -115,6 +212,8 @@ spec:
       controller: pvscsi       # pvscsi | lsiLogic | lsiLogicSas | busLogic
     forceUpload: false         # delete + re-upload the ISO even if present
     forceCreate: false         # destroy + recreate the template even if present
+    installTimeoutSeconds: 1800   # bound on the unattended-install wait (ADR-0021)
+    autoManageInstall: true       # false skips install/generalize entirely (ADR-0021)
 ```
 
 (Also available as [`examples/07-vmimage-kairos-url-source.yaml`](https://github.com/firestoned/banlieue/blob/v0.1.0/examples/07-vmimage-kairos-url-source.yaml).)
@@ -124,7 +223,9 @@ kubectl apply -f vmimage-kairos.yaml
 ```
 
 All of `cloudConfig` and `template` are optional: omit them for a vanilla
-ISO and a thin 100 GiB pvscsi template in the datacenter's VM-folder root.
+ISO and a thin 100 GiB pvscsi template, one per zone, each in its own
+subfolder named after the zone directly under the datacenter's VM-folder
+root.
 The per-zone import is idempotent — it skips an already-uploaded ISO and an
 existing template; the force knobs replace a bad one without manual vCenter
 cleanup.
@@ -256,6 +357,15 @@ Two guarantees hold over everything above:
 | `ImportFailed` | The per-zone import Job failed — check the Job's logs in the build namespace |
 | `ContentLibraryNotImplemented` | `Provider.spec.useContentLibrary: true` — the Content Library import path is a planned follow-up; leave it `false` |
 | `UnsupportedSourceKind` | The vsphere source is `BackingFile` — not a vsphere concept, never supported here |
+
+`ImportFailed` with `"did not power itself off within <N>s of the unattended
+Kairos install starting"` (ADR-0021): the `cloudConfig` Secret is missing the
+`install.poweroff: true` / `install.reboot: false` + `after-install-chroot`
+wipe stage described above — the VM installed fine but never shuts itself
+down, so the Job times out and leaves the VM running (not destroyed) for
+console debugging via `govc vm.console -h5 <vmimage-name>`. Fix the
+cloud-config and re-run (`spec.template.forceCreate: true` to replace the
+half-built VM).
 
 ```sh
 kubectl -n banlieue-system logs deploy/banlieue-imagebuilder

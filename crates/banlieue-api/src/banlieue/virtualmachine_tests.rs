@@ -27,6 +27,9 @@ mod tests {
             user_data: None,
             migration_policy: MigrationPolicy::default(),
             paused: false,
+            network_overrides: Vec::new(),
+            hardware_override: None,
+            folder: None,
         }
     }
 
@@ -174,6 +177,233 @@ mod tests {
         assert_eq!(json["userData"]["key"], "ignition.json");
         let back: VirtualMachineSpec = serde_json::from_value(json).unwrap();
         assert_eq!(back.user_data.unwrap().key, "ignition.json");
+    }
+
+    // ----------------------------------------------------------------------
+    // hardware_override
+    // ----------------------------------------------------------------------
+
+    #[test]
+    fn hardware_override_absent_omits_from_serialization() {
+        let s = minimal_vm_spec();
+        let json = serde_json::to_value(&s).unwrap();
+        assert!(!json.as_object().unwrap().contains_key("hardwareOverride"));
+    }
+
+    #[test]
+    fn hardware_override_cpus_only_round_trip() {
+        let s = VirtualMachineSpec {
+            hardware_override: Some(HardwareOverride {
+                cpus: Some(16),
+                memory_mi_b: None,
+                disk_overrides: Vec::new(),
+            }),
+            ..minimal_vm_spec()
+        };
+        let json = serde_json::to_value(&s).unwrap();
+        assert_eq!(json["hardwareOverride"]["cpus"], 16);
+        assert!(
+            !json["hardwareOverride"]
+                .as_object()
+                .unwrap()
+                .contains_key("memoryMiB")
+        );
+        let back: VirtualMachineSpec = serde_json::from_value(json).unwrap();
+        assert_eq!(back, s);
+    }
+
+    #[test]
+    fn hardware_override_memory_only_round_trip() {
+        let s = VirtualMachineSpec {
+            hardware_override: Some(HardwareOverride {
+                cpus: None,
+                memory_mi_b: Some(65_536),
+                disk_overrides: Vec::new(),
+            }),
+            ..minimal_vm_spec()
+        };
+        let json = serde_json::to_value(&s).unwrap();
+        assert_eq!(json["hardwareOverride"]["memoryMiB"], 65_536);
+        assert!(
+            !json["hardwareOverride"]
+                .as_object()
+                .unwrap()
+                .contains_key("cpus")
+        );
+        let back: VirtualMachineSpec = serde_json::from_value(json).unwrap();
+        assert_eq!(back, s);
+    }
+
+    #[test]
+    fn hardware_override_full_round_trip() {
+        let s = VirtualMachineSpec {
+            hardware_override: Some(HardwareOverride {
+                cpus: Some(8),
+                memory_mi_b: Some(16_384),
+                disk_overrides: Vec::new(),
+            }),
+            ..minimal_vm_spec()
+        };
+        let json = serde_json::to_value(&s).unwrap();
+        assert_eq!(json["hardwareOverride"]["cpus"], 8);
+        assert_eq!(json["hardwareOverride"]["memoryMiB"], 16_384);
+        let back: VirtualMachineSpec = serde_json::from_value(json).unwrap();
+        assert_eq!(back, s);
+    }
+
+    #[test]
+    fn hardware_override_empty_struct_serializes_to_empty_object() {
+        // An explicit Some(HardwareOverride::default()) with no fields set
+        // serializes to `{}` — presence alone signals intent even with no
+        // overridden values. The field still shows up in the JSON because the
+        // Option is Some; the struct body is empty because all inner fields
+        // are None and marked skip_serializing_if.
+        let h = HardwareOverride::default();
+        let json = serde_json::to_value(&h).unwrap();
+        assert_eq!(json, serde_json::json!({}));
+    }
+
+    #[test]
+    fn hardware_override_disk_only_round_trip() {
+        let s = VirtualMachineSpec {
+            hardware_override: Some(HardwareOverride {
+                cpus: None,
+                memory_mi_b: None,
+                disk_overrides: vec![DiskOverride {
+                    name: "data".to_string(),
+                    size_gi_b: 1000,
+                }],
+            }),
+            ..minimal_vm_spec()
+        };
+        let json = serde_json::to_value(&s).unwrap();
+        assert_eq!(json["hardwareOverride"]["diskOverrides"][0]["name"], "data");
+        assert_eq!(
+            json["hardwareOverride"]["diskOverrides"][0]["sizeGiB"],
+            1000
+        );
+        let back: VirtualMachineSpec = serde_json::from_value(json).unwrap();
+        assert_eq!(back, s);
+    }
+
+    #[test]
+    fn hardware_override_cpus_memory_and_disks_round_trip() {
+        let s = VirtualMachineSpec {
+            hardware_override: Some(HardwareOverride {
+                cpus: Some(8),
+                memory_mi_b: Some(16_384),
+                disk_overrides: vec![
+                    DiskOverride {
+                        name: "os".to_string(),
+                        size_gi_b: 100,
+                    },
+                    DiskOverride {
+                        name: "data".to_string(),
+                        size_gi_b: 2000,
+                    },
+                ],
+            }),
+            ..minimal_vm_spec()
+        };
+        let json = serde_json::to_value(&s).unwrap();
+        assert_eq!(json["hardwareOverride"]["cpus"], 8);
+        assert_eq!(json["hardwareOverride"]["memoryMiB"], 16_384);
+        assert_eq!(json["hardwareOverride"]["diskOverrides"][0]["name"], "os");
+        assert_eq!(
+            json["hardwareOverride"]["diskOverrides"][1]["sizeGiB"],
+            2000
+        );
+        let back: VirtualMachineSpec = serde_json::from_value(json).unwrap();
+        assert_eq!(back, s);
+    }
+
+    #[test]
+    fn hardware_override_disk_overrides_uses_map_list_type() {
+        let crd = VirtualMachine::crd();
+        let json = serde_json::to_value(&crd).unwrap();
+        let props = &json["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"]["spec"]
+            ["properties"]["hardwareOverride"]["properties"]["diskOverrides"];
+        assert_eq!(props["x-kubernetes-list-type"], "map");
+        assert_eq!(
+            props["x-kubernetes-list-map-keys"],
+            serde_json::json!(["name"])
+        );
+    }
+
+    // ----------------------------------------------------------------------
+    // network_overrides (ADR-0024)
+    // ----------------------------------------------------------------------
+
+    #[test]
+    fn vm_spec_minimal_omits_network_overrides() {
+        let s = minimal_vm_spec();
+        let json = serde_json::to_value(&s).unwrap();
+        assert!(!json.as_object().unwrap().contains_key("networkOverrides"));
+    }
+
+    #[test]
+    fn vm_spec_with_network_override_round_trip() {
+        let s = VirtualMachineSpec {
+            network_overrides: vec![NetworkInterfaceOverride {
+                name: "eth0".to_string(),
+                static_: StaticIpamConfig {
+                    address: "10.0.0.90".to_string(),
+                    prefix: 24,
+                    gateway: Some("10.0.0.1".to_string()),
+                    nameservers: vec!["10.0.1.53".to_string(), "10.0.1.54".to_string()],
+                    domain: Some("k8s.example.internal".to_string()),
+                },
+            }],
+            ..minimal_vm_spec()
+        };
+        let json = serde_json::to_value(&s).unwrap();
+        assert_eq!(json["networkOverrides"][0]["name"], "eth0");
+        assert_eq!(
+            json["networkOverrides"][0]["static"]["address"],
+            "10.0.0.90"
+        );
+        assert_eq!(
+            json["networkOverrides"][0]["static"]["domain"],
+            "k8s.example.internal"
+        );
+        let back: VirtualMachineSpec = serde_json::from_value(json).unwrap();
+        assert_eq!(back, s);
+    }
+
+    #[test]
+    fn vm_spec_rejects_duplicate_network_override_names_at_admission() {
+        let crd = VirtualMachine::crd();
+        let json = serde_json::to_value(&crd).unwrap();
+        let props = &json["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"]["spec"]
+            ["properties"]["networkOverrides"];
+        assert_eq!(props["x-kubernetes-list-type"], "map");
+        assert_eq!(
+            props["x-kubernetes-list-map-keys"],
+            serde_json::json!(["name"])
+        );
+    }
+
+    // ----------------------------------------------------------------------
+    // folder (destination placement override)
+    // ----------------------------------------------------------------------
+
+    #[test]
+    fn vm_spec_minimal_omits_folder() {
+        let s = minimal_vm_spec();
+        let json = serde_json::to_value(&s).unwrap();
+        assert!(!json.as_object().unwrap().contains_key("folder"));
+    }
+
+    #[test]
+    fn vm_spec_with_folder_round_trip() {
+        let s = VirtualMachineSpec {
+            folder: Some("apps/prod".to_string()),
+            ..minimal_vm_spec()
+        };
+        let json = serde_json::to_value(&s).unwrap();
+        assert_eq!(json["folder"], "apps/prod");
+        let back: VirtualMachineSpec = serde_json::from_value(json).unwrap();
+        assert_eq!(back, s);
     }
 
     #[test]

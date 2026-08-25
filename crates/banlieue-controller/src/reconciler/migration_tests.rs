@@ -45,6 +45,9 @@ mod tests {
                 user_data: None,
                 migration_policy: policy,
                 paused: false,
+                network_overrides: Vec::new(),
+                hardware_override: None,
+                folder: None,
             },
             status: scheduled.map(|s| VirtualMachineStatus {
                 scheduled: Some(s),

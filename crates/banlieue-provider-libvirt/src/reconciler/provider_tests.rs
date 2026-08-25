@@ -53,20 +53,23 @@ mod tests {
                         .into_iter()
                         .map(|(name, pool)| StorageClassMapping {
                             name: name.to_string(),
-                            target: target("pool", pool),
+                            target: Some(target("pool", pool)),
+                            ..Default::default()
                         })
                         .collect(),
                     network_classes: networks
                         .into_iter()
                         .map(|(name, net)| NetworkClassMapping {
                             name: name.to_string(),
-                            target: target("network", net),
+                            target: Some(target("network", net)),
+                            ..Default::default()
                         })
                         .collect(),
                     features: vec!["nestedVirtualization".to_string()],
                 },
                 paused: false,
                 use_content_library: false,
+                failure_domain_name_overrides: Vec::new(),
             },
             status: None,
         }
@@ -146,7 +149,8 @@ mod tests {
         let mut p = provider_with(vec![], vec![]);
         p.spec.capabilities.storage_classes = vec![StorageClassMapping {
             name: "gold".to_string(),
-            target: target("datastore", "ds-fast-01"),
+            target: Some(target("datastore", "ds-fast-01")),
+            ..Default::default()
         }];
         let status = compute_status(&client, &p, 1).await.unwrap();
         assert!(
@@ -171,6 +175,21 @@ mod tests {
         assert_eq!(fd.attributes.raw.get("pools").unwrap(), "default,boot");
         assert_eq!(fd.attributes.raw.get("networks").unwrap(), "default");
         assert_eq!(fd.attributes.features, vec!["nestedVirtualization"]);
+    }
+
+    #[tokio::test]
+    async fn failure_domain_labels_itself_with_its_own_name() {
+        // A `failureDomainSelector` can only ever match `labels`, never the
+        // top-level `name` field directly — without this, this failure
+        // domain was unselectable by name at all.
+        let client = FakeClient::with(&["default"], &["default"]);
+        let p = provider_with(vec![], vec![]);
+        let status = compute_status(&client, &p, 1).await.unwrap();
+        let fd = &status.failure_domains[0];
+        assert_eq!(
+            fd.labels.get("name").map(String::as_str),
+            Some(fd.name.as_str())
+        );
     }
 
     #[tokio::test]

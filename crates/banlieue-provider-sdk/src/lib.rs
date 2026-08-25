@@ -24,13 +24,20 @@
 //! - [`leader`] — lease-based leader election so only one controller
 //!   replica runs reconcilers at a time.
 //! - [`error`] — shared error type re-exported by the rest of the SDK.
+//! - [`guestdata`] — placeholder substitution for a `VirtualMachine.spec.
+//!   userData` cloud-config before a provider delivers it to the guest
+//!   (ADR-0024).
+//! - [`osartifact`] — `ownerReference` helper binding a per-zone import
+//!   Job's lifecycle to the `OSArtifact` whose PVC it mounts (ADR-0027).
 
 pub mod bootstrap;
 pub mod ca_bundle;
 pub mod client;
 pub mod error;
 pub mod finalizer;
+pub mod guestdata;
 pub mod leader;
+pub mod osartifact;
 pub mod reconciler;
 pub mod scheduling;
 pub mod ssa;

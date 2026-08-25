@@ -132,6 +132,7 @@ mod tests {
                 capabilities: ProviderCapabilities::default(),
                 paused: false,
                 use_content_library: false,
+                failure_domain_name_overrides: Vec::new(),
             },
             status: None,
         };
@@ -139,6 +140,7 @@ mod tests {
             kind: BuildArtifactKind::CloudImage,
             phase: BuildArtifactPhase::Ready,
             os_artifact_ref: "build".into(),
+            os_artifact_uid: None,
             pvc_ref: Some(LocalObjectReference {
                 name: "artifacts".into(),
             }),

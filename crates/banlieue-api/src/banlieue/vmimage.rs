@@ -69,8 +69,18 @@ pub struct VMImageSpec {
     #[serde(default)]
     pub guest_agent: GuestAgent,
 
-    /// Per-provider source mappings. At least one entry per ProviderClass
-    /// you intend to schedule VMs onto.
+    /// Per-provider source mappings — one backend binding for this catalog
+    /// entry per `providerClass` you intend to schedule VMs onto ("one
+    /// name, many backends", see the type-level doc comment above).
+    ///
+    /// `x-kubernetes-list-type: map` keyed on `providerClass`: the API
+    /// server rejects a second entry for a `providerClass` that already
+    /// has one, rather than leaving it to `find_url_source` /
+    /// `find_vsphere_source` to silently pick whichever came first.
+    #[schemars(extend(
+        "x-kubernetes-list-type" = "map",
+        "x-kubernetes-list-map-keys" = ["providerClass"],
+    ))]
     pub sources: Vec<ImageSource>,
 
     /// Optional default cloud-config baked into the built artifact for
@@ -81,13 +91,50 @@ pub struct VMImageSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cloud_config: Option<CloudConfigSource>,
 
-    /// How the backend **template** is built from a `Url` source (folder,
-    /// network, disk, CPU / memory / firmware / NIC, force knobs). Every field
+    /// How the backend **template** is built from a `Url` source (root
+    /// folder, network, disk, CPU / memory / firmware / NIC, force knobs).
+    /// Every field
     /// is optional and falls back to a built-in default. Only meaningful for
     /// `Url` sources; ignored for `Template` / `BackingFile`. See
     /// [`VMImageTemplate`] and ADR-0020.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub template: Option<VMImageTemplate>,
+
+    /// Additional files overlaid onto a built ISO for `Url`-kind vSphere
+    /// sources (e.g. a hand-verified `grub.cfg`). Resolved by
+    /// `banlieue-imagebuilder` into the kairos-operator `OSArtifact`'s
+    /// `spec.volumes[]` + `spec.artifacts.overlayISOVolume` — the same
+    /// `auroraboot build-iso --overlay-iso` mechanism a hand-run ISO-build
+    /// pipeline would use. See [`IsoOverlaySource`] and ADR-0022. Ignored for
+    /// `cloudImage`-kind builds and non-`Url` sources.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub iso_overlay: Option<IsoOverlaySource>,
+}
+
+/// Additional files overlaid onto a built ISO, backed by a single Secret.
+/// Only the Secret's name and the declared key/path list are read by
+/// `banlieue-imagebuilder` — never its content (ADR-0022; mirrors the
+/// Secret-free posture established for `autoManageInstall`, ADR-0021).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct IsoOverlaySource {
+    /// Secret in the imagebuild namespace holding the overlay file contents.
+    pub secret_ref: LocalObjectReference,
+    /// Explicit key -> ISO-relative-path mapping. At least one entry expected;
+    /// an empty list is accepted but wires nothing into the `OSArtifact`.
+    #[serde(default)]
+    pub files: Vec<IsoOverlayFile>,
+}
+
+/// One overlay file: a key within [`IsoOverlaySource::secret_ref`] mapped to
+/// a destination path relative to the built ISO's root.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct IsoOverlayFile {
+    /// Key within the overlay Secret holding this file's content.
+    pub key: String,
+    /// Destination path, relative to the ISO root (e.g. `boot/grub2/grub.cfg`).
+    pub path: String,
 }
 
 /// Shape of the backend **template** built from a `Url`-kind [`ImageSource`]
@@ -97,16 +144,25 @@ pub struct VMImageSpec {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct VMImageTemplate {
-    /// vCenter inventory folder (path under the datacenter's VM folder, e.g.
-    /// `templates/kairos`) to place the template in; created if missing. When
-    /// unset, the datacenter's VM-folder root is used. vSphere-only.
+    /// Root vCenter inventory folder (path under the datacenter's VM folder,
+    /// e.g. `templates/kairos`); created if missing. When unset, the
+    /// datacenter's VM-folder root is the root. vSphere-only.
+    ///
+    /// Named `rootFolder`, not `folder`, because it is never the literal
+    /// target: the per-zone import always places the template at
+    /// `<rootFolder>/<failure-domain-name>` (ADR-0020). Two failure domains
+    /// commonly share a datacenter (only their cluster differs), and
+    /// vSphere's VM/Template folder hierarchy is scoped per-datacenter, not
+    /// per-cluster — without the per-zone subfolder, every zone's import
+    /// raced `CreateVM_Task` against the identical folder + template name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub folder: Option<String>,
+    pub root_folder: Option<String>,
 
-    /// Port group the template's NIC attaches to. When unset, the zone's first
-    /// reachable network class (ADR-0019) is used. vSphere-only.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub network: Option<String>,
+    /// The template's network interfaces. Empty means exactly one NIC, using
+    /// every per-entry default below — the same behavior this field had
+    /// before it became a list (ADR-0031). vSphere-only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub network: Vec<VMImageTemplateNic>,
 
     /// Install disk of the template (the clone source's disk). When unset, a
     /// thin 100 GiB disk on a pvscsi controller is used.
@@ -136,17 +192,6 @@ pub struct VMImageTemplate {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub guest_id: Option<String>,
 
-    /// Virtual NIC adapter type (`govc vm.create -net.adapter`). When unset,
-    /// defaults to `vmxnet3`. vSphere-only.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub network_adapter: Option<NicAdapter>,
-
-    /// PCI slot number for the template's NIC (`ethernet0.pciSlotNumber`). Slot
-    /// 192 yields a stable `ens192` interface name in the guest. When unset,
-    /// defaults to 192. vSphere-only.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub nic_pci_slot: Option<i32>,
-
     /// Re-upload the built ISO even if one of that name already exists on the
     /// backend, deleting the existing one first (the vСenter datastore file API
     /// does not overwrite in place). Threaded as `--force-upload`.
@@ -157,6 +202,60 @@ pub struct VMImageTemplate {
     /// destroying the existing one first. Threaded as `--force-create`.
     #[serde(default, skip_serializing_if = "is_false")]
     pub force_create: bool,
+
+    /// Bound, in seconds, on how long the import Job waits for the
+    /// unattended Kairos install to finish and the VM to power itself off
+    /// (`install.poweroff: true` in the cloud-config) before failing the
+    /// Job. When unset, defaults to 1800 (30 min). See ADR-0021: the golden
+    /// disk is never rebooted by the build, so this bounds only the
+    /// (typically 8-12 min) unattended-install window, not a boot cycle.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub install_timeout_seconds: Option<i32>,
+
+    /// Run the install-then-generalize sequence (power on, wait for the
+    /// unattended install to finish and the VM to power itself off, remove
+    /// the CD-ROM, then mark as template) at all. When unset, defaults to
+    /// `true`. `false` reverts to creating the VM, attaching the ISO, and
+    /// marking it as a template immediately — no power-on — for a build that
+    /// isn't Kairos-driven or whose install/generalize is managed some other
+    /// way. See ADR-0021.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_manage_install: Option<bool>,
+
+    /// Keep the per-zone vCenter template(s) this `VMImage` caused to be
+    /// built when the `VMImage` itself is deleted. When unset (the default),
+    /// deleting a `VMImage` also destroys every per-zone template it owns —
+    /// declarative deletion, matching `VirtualMachine`'s own cascade onto its
+    /// `VSphereMachine` (ADR-0026). Set `true` to opt out — e.g. the template
+    /// is still referenced by another generation, or its lifecycle is
+    /// managed by hand outside banlieue. vSphere-only; ignored by any other
+    /// provider. See ADR-0028.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub retain_on_delete: bool,
+}
+
+/// One network interface on a `Url`-source template (ADR-0031).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct VMImageTemplateNic {
+    /// Port group this NIC attaches to. When unset, the zone's first
+    /// reachable network class (ADR-0019) is used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network: Option<String>,
+
+    /// Virtual NIC adapter type (`govc vm.create -net.adapter`). When
+    /// unset, defaults to `vmxnet3`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adapter: Option<NicAdapter>,
+
+    /// PCI slot number for this NIC (`ethernetN.pciSlotNumber`). Slot 192
+    /// on the first NIC yields a stable `ens192` interface name in the
+    /// guest. When unset, defaults to `192 + this NIC's index` in
+    /// `VMImageTemplate.network` — so a template with several NICs and no
+    /// explicit slots still gets predictable, non-colliding
+    /// `ens192`/`ens193`/`ens194`/... naming.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pci_slot: Option<i32>,
 }
 
 /// Install-disk shape for a `Url`-source template (mirrors the `govc vm.create
@@ -417,6 +516,16 @@ pub struct BuildArtifactStatus {
     /// `VMImage` (same namespace as the artifacts PVC below).
     pub os_artifact_ref: String,
 
+    /// `metadata.uid` of the `OSArtifact` named by `os_artifact_ref`, once
+    /// observed. Each provider's per-zone import Job sets this as its own
+    /// `ownerReference` so a rebuilt (deleted-and-recreated) `OSArtifact`
+    /// garbage-collects the stale Job — and the artifacts PVC mount it
+    /// holds — instead of the Job outliving it for up to its
+    /// `ttlSecondsAfterFinished` (ADR-0027). Absent until the `OSArtifact`
+    /// has actually been observed once.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub os_artifact_uid: Option<String>,
+
     /// Reference to the PVC kairos-operator created holding the built artifact,
     /// once known. Populated no earlier than phase `Building`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -518,9 +627,21 @@ pub struct ZoneImageStatus {
     pub name: String,
     /// True once the template/import is usable in this zone.
     pub ready: bool,
-    /// Resolved concrete reference within this zone once ready.
+    /// The template's bare display name within this zone once ready — the
+    /// value a provider passes to a name-based template lookup. NOT a
+    /// decorated string (no `[dc]`/folder prefix): folder scoping for a
+    /// per-zone (`Url`-kind) import lives in [`Self::template_folder`],
+    /// kept separate so a lookup can be built from structured fields
+    /// instead of parsing this one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolved_ref: Option<String>,
+    /// The vCenter folder path (relative to the datacenter's VM folder,
+    /// e.g. `templates/cluster-01`) the template in [`Self::resolved_ref`]
+    /// lives in, for a per-zone (`Url`-kind) import (ADR-0020 Decision #5).
+    /// `None` for a `Template`-kind image, which has no per-zone folder —
+    /// its `resolved_ref` is looked up datacenter-wide.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template_folder: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

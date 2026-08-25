@@ -1,0 +1,47 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# Cluster-wide role for the `banlieue-import` identity (see
+# serviceaccount-import.yaml). VMImage is a cluster-scoped catalog entry —
+# one name means the same thing regardless of which namespace's
+# VirtualMachine references it (see the VMImageSpec doc comment in
+# crates/banlieue-api/src/banlieue/vmimage.rs, and ADR-0003's "Two bindings"
+# section) — so reading it, even by exact name, which every import Job
+# already knows via `--vmimage`, requires a ClusterRole; a namespaced Role
+# cannot grant access to a cluster-scoped kind at all.
+#
+# `get` only, no `list`/`watch`: `image-import` reads exactly the one VMImage
+# named on its own command line, for the OS -> guestId mapping
+# (`crates/banlieue-provider-vsphere/src/import.rs`) — nothing else. VMImage
+# is catalog metadata (OS family/distribution/version, source refs), not a
+# credential, so a blanket (not resourceNames-scoped) grant here is
+# proportionate — unlike the Secrets/Provider access below, which stays
+# resourceNames-scoped per Provider (banlieue-operator's `build_import_role`).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: banlieue-import
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: imagebuilder
+rules:
+  - apiGroups: ["banlieue.io"]
+    resources:
+      - vmimages
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: banlieue-import
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: imagebuilder
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: banlieue-import
+subjects:
+  - kind: ServiceAccount
+    name: banlieue-import
+    namespace: banlieue-imagebuild

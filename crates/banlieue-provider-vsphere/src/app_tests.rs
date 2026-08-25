@@ -106,6 +106,51 @@ mod tests {
         assert!(provider_watch_config(None).field_selector.is_none());
     }
 
+    // ------------------------------------------------------------------
+    // vmimage_ref_from_job — event-driven VMImage reconciliation off the
+    // per-zone import Job's status, instead of polling (found live: after
+    // this Job's status changes, e.g. Failed -> deleted -> recreated, the
+    // owning VMImage sat unreconciled for up to REQUEUE_LONG_SECS with no
+    // watch on the Job at all).
+    // ------------------------------------------------------------------
+
+    fn job_with_vmimage_label(label: Option<&str>) -> k8s_openapi::api::batch::v1::Job {
+        let mut labels = std::collections::BTreeMap::new();
+        if let Some(name) = label {
+            labels.insert(
+                crate::reconciler::vmimage::LABEL_VMIMAGE.to_string(),
+                name.to_string(),
+            );
+        }
+        k8s_openapi::api::batch::v1::Job {
+            metadata: kube::api::ObjectMeta {
+                name: Some("import-hadron-kairos-vc1-cluster-01".to_string()),
+                namespace: Some("banlieue-imagebuild".to_string()),
+                labels: Some(labels),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn vmimage_ref_from_job_maps_to_the_labeled_image() {
+        let job = job_with_vmimage_label(Some("hadron-kairos-v0.1.0"));
+        let refs: Vec<_> = vmimage_ref_from_job(job).into_iter().collect();
+        assert_eq!(
+            refs,
+            vec![ObjectRef::<VMImage>::new("hadron-kairos-v0.1.0")]
+        );
+    }
+
+    #[test]
+    fn vmimage_ref_from_job_is_empty_when_the_label_is_missing() {
+        // A Job this provider doesn't recognize as its own import Job (or
+        // one predating this label) must not spuriously requeue anything.
+        let job = job_with_vmimage_label(None);
+        assert!(vmimage_ref_from_job(job).into_iter().next().is_none());
+    }
+
     /// The full flag set the operator emits must parse as a unit — this is the
     /// contract between `banlieue-operator`'s Deployment builder and this CLI.
     #[test]

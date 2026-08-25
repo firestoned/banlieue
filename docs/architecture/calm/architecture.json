@@ -153,8 +153,8 @@
     {
       "unique-id": "service-provider-vsphere",
       "node-type": "service",
-      "name": "banlieue-provider-vsphere (planned, Phase 1B)",
-      "description": "Provider controller that watches VSphereMachine / VSphereMachineTemplate infrastructure CRs and drives vCenter via the govmomi-equivalent Rust client. Satisfies the CAPI v1beta2 InfraMachine contract so the same provider can also serve CAPI Clusters. Status: PLANNED — Phase 1B in the roadmap; no code in-tree as of this revision."
+      "name": "banlieue-provider-vsphere",
+      "description": "Provider controller drives vCenter via a BYOC vim_rs client (ADR-0008). Live today: the `provider` reconciler (capability introspection, failure-domain discovery, ADR-0019) and the `vmimage` reconciler (per-zone Kairos template build via ISO import, install-once-and-generalize, ADR-0020/0021). The `VSphereMachine` reconciler — watching VSphereMachine / VSphereMachineTemplate infrastructure CRs, cloning a VM from the per-zone template, and delivering static IP + templated cloud-config via vCenter guestinfo — is the next increment (ADR-0024), not yet in-tree. Satisfies the CAPI v1beta2 InfraMachine contract so the same provider can also serve CAPI Clusters."
     },
     {
       "unique-id": "service-provider-proxmox",
@@ -536,7 +536,7 @@
     },
     {
       "unique-id": "rel-provider-vsphere-kube-api",
-      "description": "vSphere provider controller watches VSphereMachine infrastructure CRs and patches their .status. NEVER speaks to the banlieue controller directly — the K8s API is the bus.",
+      "description": "vSphere provider controller watches Provider CRs (capability introspection, ADR-0019), VMImage CRs (per-zone template build, ADR-0020/0021), and — once ADR-0024 lands — VSphereMachine infrastructure CRs, patching each one's .status. NEVER speaks to the banlieue controller directly — the K8s API is the bus.",
       "relationship-type": {
         "connects": {
           "source": {
@@ -644,7 +644,7 @@
     },
     {
       "unique-id": "rel-provider-vsphere-backend",
-      "description": "vSphere provider talks to vCenter over HTTPS to create, query, update, and destroy VMs.  Iteration 2 also introspects each cluster's reachable datastores (incl. SDRS datastore-cluster membership) and networks (standard + distributed port groups) to populate Provider.status.failureDomains[].attributes.availableStorageClasses / availableNetworkClasses (ADR-0019). Both planes use this one transport: the in-process Provider reconciler for cheap list/introspection calls, and a per-failure-domain image-import Job (for VMImage.status.buildArtifact.kind==iso) that mounts the shared artifacts PVC, uploads the ISO to that zone's datastore, then creates an empty EFI VM, attaches the ISO, and MarkAsTemplate — Content Library optional, default off (ADR-0020).",
+      "description": "vSphere provider talks to vCenter over HTTPS to create, query, update, and destroy VMs. Iteration 2 also introspects each cluster's reachable datastores (incl. SDRS datastore-cluster membership) and networks (standard + distributed port groups) to populate Provider.status.failureDomains[].attributes.availableStorageClasses / availableNetworkClasses (ADR-0019). Each storageClasses[]/networkClasses[] mapping resolves its concrete target per (datacenter, cluster) — an exact perZone entry if the admin declared one for that zone, else the mapping's default target — so the same abstract class name (and therefore the same VMClass/VMImage) can back a differently-named datastore/port-group on each cluster of the Provider, and stays portable across every vCenter that declares matching abstract names (ADR-0030). Three planes use this one transport: the in-process Provider reconciler for cheap list/introspection calls; a per-failure-domain image-import Job (for VMImage.status.buildArtifact.kind==iso) that mounts the shared artifacts PVC, uploads the ISO to that zone's datastore, creates an empty EFI VM, attaches the ISO, powers it on, and polls for the VM to power itself off once the cloud-config's unattended Kairos install completes (install.poweroff, no reboot — the disk is never booted by the build), bounded by spec.template.installTimeoutSeconds; on success it removes the CD-ROM device and MarkAsTemplate, on timeout it fails the Job without destroying the VM — Content Library optional, default off (ADR-0020; install/generalize sequence ADR-0021); and the VSphereMachine reconciler's CloneVM_Task from that per-zone template, setting guestinfo.network.hostname unconditionally (from the VirtualMachine's own name — no per-host cloud-config needed just for a hostname) plus guestinfo.network.{ip,prefix,gateway,dns,domain} and guestinfo.userdata (base64 cloud-config, ADR-0024) in the same clone call for any interface with a resolved static address (VirtualMachine.spec.networkOverrides), the latter set omitted for a plain dhcp interface. Also sets guestinfo.metadata unconditionally — a base64 YAML document (instance-id, local-hostname) matching real cloud-init's own VMware GuestInfo datasource schema, independent of spec.userData entirely, so a plain cloud-init guest gets a working hostname/FQDN with no cloud-config authored at all and without banlieue ever parsing or merging into the user's own userData (ADR-0029). The userdata content itself is resolved and placeholder-substituted by banlieue-controller, not this provider (ADR-0025) — the provider only ever sees already-rendered content, never a Secret reference. Both VMImage and VSphereMachine carry their own deletion finalizer (banlieue.io/vmimage, banlieue.io/vspheremachine): deleting either blocks until this provider confirms the backend VM/template it owns is destroyed (Destroy_Task), unless VMImage.spec.template.retainOnDelete opts out (ADR-0028, mirroring ADR-0026's VSphereMachine deletion lifecycle).",
       "relationship-type": {
         "connects": {
           "source": {
@@ -806,7 +806,7 @@
         {
           "sequence-number": 3,
           "relationship-unique-id": "rel-controller-kube-api",
-          "description": "banlieue-controller server-side-applies a VSphereMachine (or ProxmoxMachine / LibvirtMachine) CR with the resolved spec, ownerReference back to the VirtualMachine, and the controller's field manager 'banlieue.io/controller'."
+          "description": "If VirtualMachine.spec.userData is set, banlieue-controller first reads that Secret (namespace-scoped Role in banlieue-system, ADR-0025 — it never gets a cluster-wide Secret grant) and placeholder-substitutes it (ADR-0024's fixed set). It then server-side-applies a VSphereMachine (or ProxmoxMachine / LibvirtMachine) CR with the resolved spec — including the rendered userData content, inlined rather than referenced — ownerReference back to the VirtualMachine, and the controller's field manager 'banlieue.io/controller'."
         },
         {
           "sequence-number": 4,
@@ -817,7 +817,7 @@
         {
           "sequence-number": 5,
           "relationship-unique-id": "rel-provider-vsphere-backend",
-          "description": "Provider talks to its backend (vCenter / Proxmox / libvirt) to create the underlying VM, attach disks, attach network, power on."
+          "description": "Provider talks to its backend (vCenter / Proxmox / libvirt) to create the underlying VM, attach disks, attach network, power on. On vSphere this is a CloneVM_Task from the per-zone template resolved off VMImage.status, with guestinfo network + templated cloud-config set in the same clone call for any statically-addressed interface (ADR-0024)."
         },
         {
           "sequence-number": 6,
@@ -951,7 +951,7 @@
                   "SI-7",
                   "CP-10"
                 ],
-                "evidence": "crates/banlieue-provider-sdk/src/finalizer.rs, crates/banlieue-controller/src/reconciler/virtualmachine.rs"
+                "evidence": "crates/banlieue-provider-sdk/src/finalizer.rs, crates/banlieue-controller/src/reconciler/virtualmachine.rs, crates/banlieue-provider-vsphere/src/reconciler/vspheremachine.rs (provider-side finalizer + Destroy_Task, ADR-0026)"
               }
             }
           ]
@@ -1019,17 +1019,17 @@
     {
       "unique-id": "flow-build-vmimage-from-oci",
       "name": "Build a VMImage from an OCI/Kairos image and import it per zone",
-      "description": "A VMImage with a spec.sources[].kind==Url entry (an OCI-referenced Kairos image, e.g. from a nightly build pipeline) is turned into a typed build artifact — a raw cloud image for libvirt, a bootable ISO with a baked-in default cloud-config for vSphere — by banlieue-imagebuilder via kairos-operator, then imported into every zone of a matching vSphere Provider by banlieue-provider-vsphere as a marked template. The two controllers never call each other; VMImage.status.buildArtifact is the entire handoff. See ADR-0010 and ADR-0020.",
+      "description": "A VMImage with a spec.sources[].kind==Url entry (an OCI-referenced Kairos image, e.g. from a nightly build pipeline) is turned into a typed build artifact — a raw cloud image for libvirt, a bootable ISO with a baked-in default cloud-config for vSphere — by banlieue-imagebuilder via kairos-operator, then imported into every zone of a matching vSphere Provider by banlieue-provider-vsphere as a fully installed, generalized, marked template. The two controllers never call each other; VMImage.status.buildArtifact is the entire handoff. See ADR-0010, ADR-0020, ADR-0021, and ADR-0022.",
       "transitions": [
         {
           "sequence-number": 1,
           "relationship-unique-id": "rel-operator-kubectl",
-          "description": "Platform operator (or a nightly CI job authenticated as one) applies/updates a VMImage with a Url source pointing at the newly-built Kairos OCI image, optionally with spec.cloudConfig (secretRef) and spec.template (folder / network / disk / force knobs) for the vSphere template."
+          "description": "Platform operator (or a nightly CI job authenticated as one) applies/updates a VMImage with a Url source pointing at the newly-built Kairos OCI image, optionally with spec.cloudConfig (secretRef), spec.isoOverlay (secretRef + files[], ADR-0022), and spec.template (rootFolder / network / disk / force knobs) for the vSphere template."
         },
         {
           "sequence-number": 2,
           "relationship-unique-id": "rel-imagebuilder-kube-api",
-          "description": "banlieue-imagebuilder's VMImage watch fires. It server-side-applies an OSArtifact CR requesting a cloud image (libvirt sources) or an ISO with artifacts.cloudConfigRef resolved from spec.cloudConfig (vsphere sources), and sets VMImage.status.buildArtifact.phase=Building.",
+          "description": "banlieue-imagebuilder's VMImage watch fires. It server-side-applies an OSArtifact CR requesting a cloud image (libvirt sources) or an ISO with artifacts.cloudConfigRef resolved from spec.cloudConfig (vsphere sources), sets VMImage.status.buildArtifact.phase=Building, and — when spec.isoOverlay is set — adds spec.volumes[] (a Secret volume named by the declared key/path list) plus artifacts.overlayISOVolume pointing at it, the same auroraboot --overlay-iso mechanism the maintainer's proven manual ISO-build pipeline already relies on (ADR-0022). Only the Secret's name and declared key names are read, never its content.",
           "direction": "destination-to-source"
         },
         {
@@ -1052,7 +1052,7 @@
         {
           "sequence-number": 6,
           "relationship-unique-id": "rel-provider-vsphere-backend",
-          "description": "For each zone, an image-import Job (banlieue binary's image-import subcommand, imagebuild namespace, artifacts PVC mounted read-only) verifies the ISO against buildArtifact.checksum, uploads it to the zone's datastore — reusing the datastore-cluster member already holding it, else the emptiest — ensures the spec.template.folder, and creates the template: empty EFI VM (pvscsi disk from spec.template.disk, vmxnet3 NIC on the spec.template.network or zone port group), ISO attached as CD-ROM, then MarkAsTemplate."
+          "description": "For each zone, an image-import Job (banlieue binary's image-import subcommand, imagebuild namespace, artifacts PVC mounted read-only) verifies the ISO against buildArtifact.checksum, uploads it to the zone's datastore — reusing the datastore-cluster member already holding it, else the emptiest — ensures <spec.template.rootFolder>/<failure-domain-name> (every zone gets its own subfolder, since vSphere folders are scoped per-datacenter, not per-cluster, and zones commonly share a datacenter), and creates the VM: empty EFI VM (pvscsi disk from spec.template.disk, vmxnet3 NIC on the spec.template.network or zone port group), ISO attached as CD-ROM. It then powers the VM on and waits for the cloud-config's unattended Kairos install to run its after-install-chroot identity-wipe stage and power the VM off itself (install.poweroff, no reboot), bounded by spec.template.installTimeoutSeconds; on success it removes the CD-ROM device and MarkAsTemplate — the disk is never booted by the build, so each real clone's first boot generates its own machine-id/SSH host keys (ADR-0021)."
         },
         {
           "sequence-number": 7,
@@ -1073,6 +1073,21 @@
                   "SC-7"
                 ],
                 "evidence": "docs/adr/0010-vmimage-build-pipeline-imagebuilder.md"
+              }
+            }
+          ]
+        },
+        "import-job-owned-by-osartifact": {
+          "description": "PROPOSED (ADR-0027, not yet implemented): the per-zone image-import Job carries an ownerReference to the OSArtifact it was created for (via BuildArtifactStatus.os_artifact_uid), not the VMImage. Retriggering a build judges the live OSArtifact stale and deletes it; garbage collection then reaps the old import Job automatically, releasing its mount on the artifacts PVC so kairos-operator's replacement PVC (same deterministic name) is not blocked behind a 24h Job TTL. The VMImage itself is never deleted/recreated on a rebuild, so it cannot be the owner this mechanism relies on.",
+          "requirements": [
+            {
+              "requirement-url": "https://kubernetes.io/docs/concepts/architecture/garbage-collection/",
+              "config": {
+                "framework": "Kubernetes garbage collection (ownerReferences)",
+                "controls": [
+                  "cascading-deletion"
+                ],
+                "evidence": "docs/adr/0027-import-job-owned-by-osartifact.md"
               }
             }
           ]
@@ -1138,6 +1153,21 @@
                   "SA-8"
                 ],
                 "evidence": "docs/adr/0011-libvirt-provider-own-client.md"
+              }
+            }
+          ]
+        },
+        "import-job-owned-by-osartifact": {
+          "description": "PROPOSED (ADR-0027, not yet implemented): same mechanism as banlieue-provider-vsphere's per-zone import Job (see flow-build-vmimage-from-oci) — this Job's ownerReference points at the OSArtifact it was created for, so a rebuild's OSArtifact deletion cascades to it via Kubernetes garbage collection instead of waiting on its 24h Job TTL.",
+          "requirements": [
+            {
+              "requirement-url": "https://kubernetes.io/docs/concepts/architecture/garbage-collection/",
+              "config": {
+                "framework": "Kubernetes garbage collection (ownerReferences)",
+                "controls": [
+                  "cascading-deletion"
+                ],
+                "evidence": "docs/adr/0027-import-job-owned-by-osartifact.md"
               }
             }
           ]
@@ -1422,6 +1452,12 @@
     "docs/adr/0015-vmimage-status-merge-strategy.md",
     "docs/adr/0017-vsphere-bootstrap-backend.md",
     "docs/adr/0018-vault-flux-operator-bootstrap.md",
-    "docs/adr/0019-vsphere-capability-introspection-iter2.md"
+    "docs/adr/0019-vsphere-capability-introspection-iter2.md",
+    "docs/adr/0020-vsphere-per-zone-iso-import.md",
+    "docs/adr/0021-vsphere-template-install-and-generalize.md",
+    "docs/adr/0022-vsphere-iso-overlay-files.md",
+    "docs/adr/0023-explicit-failure-domain-name-override.md",
+    "docs/adr/0024-vspheremachine-clone-static-ip-cloud-config.md",
+    "docs/adr/0025-vspheremachine-userdata-secret-rbac.md"
   ]
 }

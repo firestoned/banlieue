@@ -34,6 +34,28 @@ mod tests {
         assert_eq!(cli.log_format, "text");
         assert!(!cli.no_leader_elect);
         assert_eq!(cli.leader_election_id, DEFAULT_LEADER_ELECTION_ID);
+        assert_eq!(cli.build_importer_image, ISO_OVERLAY_IMPORTER_IMAGE);
+        assert!(cli.build_importer_image_pull_secrets.is_empty());
+    }
+
+    #[test]
+    fn build_importer_image_overrides_parse() {
+        let cli = parse(&[
+            "--build-importer-image",
+            "mirror.internal/library/busybox:1.36@sha256:abc123",
+            "--build-importer-image-pull-secret",
+            "mirror-pull-secret",
+            "--build-importer-image-pull-secret",
+            "other-secret",
+        ]);
+        assert_eq!(
+            cli.build_importer_image,
+            "mirror.internal/library/busybox:1.36@sha256:abc123"
+        );
+        assert_eq!(
+            cli.build_importer_image_pull_secrets,
+            vec!["mirror-pull-secret".to_string(), "other-secret".to_string()]
+        );
     }
 
     #[test]

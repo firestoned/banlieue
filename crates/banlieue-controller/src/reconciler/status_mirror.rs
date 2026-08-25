@@ -17,7 +17,7 @@
 
 use banlieue_api::banlieue::{VirtualMachine, VirtualMachineStatus};
 use banlieue_api::common::condition_types;
-use banlieue_api::common::{InitializationStatus, MachineAddress};
+use banlieue_api::common::{InitializationStatus, MachineAddress, PowerState};
 use banlieue_api::infrastructure::VSphereMachine;
 use banlieue_provider_sdk::status::{
     condition_status, find_condition, is_condition_true, set_condition,
@@ -40,6 +40,9 @@ pub trait InfraMachineRead {
     fn provider_id(&self) -> Option<&str>;
     /// Conditions on the infra CR.
     fn conditions(&self) -> &[Condition];
+    /// Last-observed backend power state (ADR-0034); `None` until the
+    /// infra CR's own reconciler has read it at least once.
+    fn observed_power_state(&self) -> Option<&PowerState>;
 }
 
 impl InfraMachineRead for VSphereMachine {
@@ -73,6 +76,12 @@ impl InfraMachineRead for VSphereMachine {
             .map(|s| s.conditions.as_slice())
             .unwrap_or(&[])
     }
+
+    fn observed_power_state(&self) -> Option<&PowerState> {
+        self.status
+            .as_ref()
+            .and_then(|s| s.observed_power_state.as_ref())
+    }
 }
 
 // Stable empty status fallbacks so accessors can return references even when
@@ -97,6 +106,7 @@ pub fn mirror_status_from_infra(
     // Mirror the simple fields.
     next.initialization = infra.initialization().clone();
     next.addresses = infra.addresses().to_vec();
+    next.observed_power_state = infra.observed_power_state().cloned();
 
     // Mirror Ready → InfrastructureReady.
     let infra_ready = is_condition_true(infra.conditions(), condition_types::READY);

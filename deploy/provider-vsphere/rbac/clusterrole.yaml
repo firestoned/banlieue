@@ -29,11 +29,15 @@ rules:
     verbs: ["get", "update", "patch"]
 
   # VMImage status: phase 1B iter 2+ flips perProvider[vsphere].ready
-  # when a template is verified or imported. Iteration 1 only reads it.
+  # when a template is verified or imported. `update`/`patch` on the main
+  # resource (not just /status) is for the banlieue.io/vmimage finalizer
+  # (ADR-0028) — ensure_finalizer/remove_finalizer merge-patch
+  # metadata.finalizers on the main resource, a distinct verb grant from
+  # the /status subresource used for the perProvider readiness patches.
   - apiGroups: ["banlieue.io"]
     resources:
       - vmimages
-    verbs: ["get", "list", "watch"]
+    verbs: ["get", "list", "watch", "update", "patch"]
   - apiGroups: ["banlieue.io"]
     resources:
       - vmimages/status
@@ -63,6 +67,28 @@ rules:
       - ipaddressclaims
       - ipaddresses
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # ---------------------------------------------------------------------------
+  # Per-zone image import Jobs (ADR-0020). Job names are computed at runtime
+  # (`import-<image>-<provider>-<zone>`), so a resourceNames-scoped Role can't
+  # express this — same reasoning as vspheremachines/providers above. Lives in
+  # the imagebuild namespace (default `banlieue-imagebuild`), not
+  # banlieue-system, hence cluster-wide here rather than the per-instance Role.
+  # `get` to check for an existing Job, `create`+`patch` for the SSA apply
+  # that creates or adopts it, `delete` for the `banlieue.io/force-reimport`
+  # recreate path. `list`+`watch` are for the VMImage Controller's
+  # `.watches(import_job_api, ...)` — a per-zone Job's status change now
+  # re-triggers its VMImage's reconciliation immediately instead of via a
+  # 5-minute poll; kube-runtime's watcher needs both verbs to build and
+  # maintain that informer cache, same as any other watched type. No
+  # `update`, since nothing here does that. The operator's own ClusterRole
+  # (`deploy/operator/rbac/clusterrole.yaml`) must hold at least this same
+  # set to hand it out via ClusterRoleBinding (RBAC refuses to let a grantor
+  # delegate permissions it does not itself have).
+  - apiGroups: ["batch"]
+    resources:
+      - jobs
+    verbs: ["get", "list", "watch", "create", "patch", "delete"]
 
   # ---------------------------------------------------------------------------
   # Core resources

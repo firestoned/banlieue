@@ -1,0 +1,18 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: banlieue-controller-secrets
+  namespace: banlieue-system
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: controller
+subjects:
+  - kind: ServiceAccount
+    name: banlieue-controller
+    namespace: banlieue-system
+roleRef:
+  kind: Role
+  name: banlieue-controller-secrets
+  apiGroup: rbac.authorization.k8s.io

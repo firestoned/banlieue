@@ -24,7 +24,7 @@ use std::sync::Arc;
 
 use banlieue_api::banlieue::{
     Architecture, BuildArtifactKind, BuildArtifactPhase, BuildArtifactStatus, ImageSource,
-    ImageSourceKind, VMImage, VMImageStatus,
+    ImageSourceKind, IsoOverlaySource, VMImage, VMImageStatus,
 };
 use banlieue_api::common::{CloudConfigSource, DEFAULT_CLOUD_CONFIG_KEY, LocalObjectReference};
 use banlieue_provider_sdk::reconciler::{requeue_default, requeue_long, requeue_on_error};
@@ -39,6 +39,7 @@ use tracing::{info, warn};
 
 use crate::context::Context;
 use crate::error::{Error, Result};
+use crate::importer_image::ImporterImage;
 
 /// `OSArtifact`'s API group (kairos-operator, not banlieue's own).
 pub const OSARTIFACT_GROUP: &str = "build.kairos.io";
@@ -51,6 +52,45 @@ pub const OSARTIFACT_KIND: &str = "OSArtifact";
 pub const OSARTIFACT_PLURAL: &str = "osartifacts";
 
 const OSARTIFACT_NAME_SUFFIX: &str = "-build";
+
+/// Fixed name for the ISO-overlay `spec.volumes[]` entry `overlayISOVolume`
+/// points at (ADR-0022). Always an `emptyDir`, populated by
+/// [`ISO_OVERLAY_IMPORTER_NAME`] from the raw Secret volume — never the
+/// Secret volume directly. `auroraboot build-iso --overlay-iso` corrupts the
+/// ISO's real `/boot` when the overlay dir contains kubelet's Secret-mount
+/// symlink structure (kairos-io/kairos#4324); materializing into a plain
+/// `emptyDir` first works around it.
+const ISO_OVERLAY_VOLUME_NAME: &str = "iso-overlay";
+
+/// Fixed name for the raw Secret-backed `spec.volumes[]` entry. Mounted
+/// read-only by [`ISO_OVERLAY_IMPORTER_NAME`] only — never by the build
+/// container itself.
+const ISO_OVERLAY_SOURCE_VOLUME_NAME: &str = "iso-overlay-source";
+
+/// `spec.importers[]` container name that dereferences
+/// [`ISO_OVERLAY_SOURCE_VOLUME_NAME`]'s kubelet symlinks into plain files on
+/// [`ISO_OVERLAY_VOLUME_NAME`] before the build phase runs
+/// `auroraboot build-iso --overlay-iso` (ADR-0022, kairos-io/kairos#4324).
+const ISO_OVERLAY_IMPORTER_NAME: &str = "iso-overlay-materialize";
+/// Default image providing `sh`, `find`, and `cp -L`/`-t` for the importer,
+/// used when [`crate::ImporterImage`] is not overridden. `pub(crate)` so
+/// `app.rs` can use it as the CLI flag's default value (ADR-0022 Decision
+/// #4 — configurable so a cluster that cannot reach the public registry can
+/// point this at an internal mirror).
+pub(crate) const ISO_OVERLAY_IMPORTER_IMAGE: &str = "busybox:1.36";
+const ISO_OVERLAY_SOURCE_MOUNT_PATH: &str = "/overlay-src";
+const ISO_OVERLAY_DEST_MOUNT_PATH: &str = "/overlay-dst";
+
+/// Shell script run by [`ISO_OVERLAY_IMPORTER_NAME`]: copies only the
+/// caller-declared top-level overlay entries (skipping kubelet's `..data` /
+/// `..<timestamp>` bookkeeping, excluded via `-not -name '.*'`) from the
+/// Secret mount to the `emptyDir`, dereferencing symlinks (`-L`) so the
+/// destination holds plain files/directories.
+fn iso_overlay_materialize_script() -> String {
+    format!(
+        "find {ISO_OVERLAY_SOURCE_MOUNT_PATH} -mindepth 1 -maxdepth 1 -not -name '.*' -exec cp -rL -t {ISO_OVERLAY_DEST_MOUNT_PATH}/ {{}} +"
+    )
+}
 
 /// Stable `reason` strings for `BuildArtifactStatus.reason`.
 pub mod reasons {
@@ -149,10 +189,27 @@ pub struct OwnerRef<'a> {
 /// with a cluster-scoped owner is valid — deleting the image reaps the build.
 /// `blockOwnerDeletion` stays off: setting it requires `update` on the owner's
 /// `finalizers` subresource, RBAC this controller does not otherwise need.
-// Eight parameters: each is a distinct, unrelated input to the manifest
-// (identity, source, arch, artifact kind, cloud-config, owner, scheduling).
-// Bundling them into a struct would only move the same fields behind one more
-// layer without improving call-site clarity.
+///
+/// When `iso_overlay` is set (with at least one file), a Secret-backed
+/// `spec.volumes[]` entry and an `emptyDir` are added, an `importers[]` init
+/// container (running `importer_image.reference`) dereferences the Secret's
+/// kubelet symlinks into the `emptyDir`, and `spec.artifacts.overlayISOVolume`
+/// points at the `emptyDir` — kairos-operator's own
+/// `auroraboot build-iso --overlay-iso` mechanism (ADR-0022). The
+/// dereferencing step works around a bug where `auroraboot`'s overlay-copy
+/// corrupts the ISO's real `/boot` when handed a raw Secret/ConfigMap mount
+/// (kairos-io/kairos#4324). Only the Secret's name and the caller-declared
+/// key list are ever referenced here; its content is never read.
+///
+/// `importer_image.pull_secrets`, when non-empty, is set as the `OSArtifact`'s
+/// pod-wide `spec.imagePullSecrets` regardless of whether `iso_overlay` is
+/// set — Kubernetes pull secrets are always pod-scoped, so the same list
+/// covers the main build container's image when it too comes from a private
+/// or mirrored registry (ADR-0022 Decision #4).
+// Ten parameters: each is a distinct, unrelated input to the manifest
+// (identity, source, arch, artifact kind, cloud-config, owner, scheduling,
+// iso-overlay, importer image). Bundling them into a struct would only move
+// the same fields behind one more layer without improving call-site clarity.
 #[allow(clippy::too_many_arguments)]
 pub fn desired_os_artifact(
     name: &str,
@@ -163,6 +220,8 @@ pub fn desired_os_artifact(
     cloud_config: Option<&CloudConfigSource>,
     owner: Option<OwnerRef<'_>>,
     scheduling: &BuildScheduling,
+    iso_overlay: Option<&IsoOverlaySource>,
+    importer_image: &ImporterImage,
 ) -> Value {
     let owner_references = owner.map(|o| {
         json!([{
@@ -197,6 +256,54 @@ pub fn desired_os_artifact(
             }),
         );
     }
+    // ISO overlay files (ADR-0022): only added when at least one file is
+    // declared — an IsoOverlaySource with an empty `files` would otherwise
+    // wire an `overlayISOVolume` up to a Secret volume with no `items`,
+    // which mounts nothing useful.
+    if let Some(overlay) = iso_overlay.filter(|o| !o.files.is_empty()) {
+        artifacts.insert(
+            "overlayISOVolume".to_string(),
+            json!(ISO_OVERLAY_VOLUME_NAME),
+        );
+        spec.insert(
+            "volumes".to_string(),
+            json!([
+                {
+                    "name": ISO_OVERLAY_SOURCE_VOLUME_NAME,
+                    "secret": {
+                        "secretName": overlay.secret_ref.name,
+                        "items": overlay.files.iter().map(|f| json!({
+                            "key": f.key,
+                            "path": f.path,
+                        })).collect::<Vec<_>>(),
+                    },
+                },
+                {
+                    "name": ISO_OVERLAY_VOLUME_NAME,
+                    "emptyDir": {},
+                },
+            ]),
+        );
+        spec.insert(
+            "importers".to_string(),
+            json!([{
+                "name": ISO_OVERLAY_IMPORTER_NAME,
+                "image": importer_image.reference,
+                "command": ["sh", "-c", iso_overlay_materialize_script()],
+                "volumeMounts": [
+                    {
+                        "name": ISO_OVERLAY_SOURCE_VOLUME_NAME,
+                        "mountPath": ISO_OVERLAY_SOURCE_MOUNT_PATH,
+                        "readOnly": true,
+                    },
+                    {
+                        "name": ISO_OVERLAY_VOLUME_NAME,
+                        "mountPath": ISO_OVERLAY_DEST_MOUNT_PATH,
+                    },
+                ],
+            }]),
+        );
+    }
     spec.insert("artifacts".to_string(), Value::Object(artifacts));
     if !scheduling.node_selector.is_empty() {
         spec.insert(
@@ -208,6 +315,21 @@ pub fn desired_os_artifact(
         spec.insert(
             "tolerations".to_string(),
             serde_json::to_value(&scheduling.tolerations).unwrap_or_else(|_| json!([])),
+        );
+    }
+    // Pod-wide, independent of iso_overlay: any image in this pod (importer
+    // or main build container) may come from the same private/mirrored
+    // registry (ADR-0022 Decision #4).
+    if !importer_image.pull_secrets.is_empty() {
+        spec.insert(
+            "imagePullSecrets".to_string(),
+            json!(
+                importer_image
+                    .pull_secrets
+                    .iter()
+                    .map(|name| json!({ "name": name }))
+                    .collect::<Vec<_>>()
+            ),
         );
     }
 
@@ -306,12 +428,18 @@ fn artifact_file_name(os_artifact_name: &str, kind: &BuildArtifactKind) -> Strin
 /// name, the artifact `kind`, and its current kairos status view. A missing
 /// `phase` (the `OSArtifact` was just created; status not yet populated) is
 /// treated as `Pending`. `checksum` is copied from the `Url` source verbatim —
-/// consumers verify the artifact against it (SEC-004).
+/// consumers verify the artifact against it (SEC-004). `os_artifact_uid` is
+/// the live `OSArtifact`'s `metadata.uid`, once observed — each provider's
+/// per-zone import Job sets it as its own `ownerReference` so a rebuild's
+/// deleted-and-recreated `OSArtifact` garbage-collects the stale Job instead
+/// of it outliving the artifact for up to its `ttlSecondsAfterFinished`
+/// (ADR-0027).
 pub fn compute_build_artifact_status(
     os_artifact_name: &str,
     kind: BuildArtifactKind,
     view: &KairosArtifactStatusView,
     checksum: Option<&str>,
+    os_artifact_uid: Option<&str>,
 ) -> BuildArtifactStatus {
     let phase = view
         .phase
@@ -335,6 +463,7 @@ pub fn compute_build_artifact_status(
         reason: Some(reason_for_phase(&phase).to_string()),
         phase,
         os_artifact_ref: os_artifact_name.to_string(),
+        os_artifact_uid: os_artifact_uid.map(str::to_string),
         pvc_ref,
         file,
         message: view.message.clone(),
@@ -416,6 +545,7 @@ pub async fn reconcile(image: Arc<VMImage>, ctx: Arc<Context>) -> Result<Action>
                 kind.clone(),
                 &view,
                 source.checksum.as_deref(),
+                None,
             );
             patch_vmimage_status(&ctx, &name, build_status).await?;
             return Ok(requeue_default());
@@ -434,6 +564,8 @@ pub async fn reconcile(image: Arc<VMImage>, ctx: Arc<Context>) -> Result<Action>
             uid: &uid,
         }),
         &ctx.scheduling,
+        image.spec.iso_overlay.as_ref(),
+        &ctx.importer_image,
     );
     let params = PatchParams::apply(FIELD_MANAGER_IMAGEBUILDER).force();
     os_api
@@ -444,9 +576,15 @@ pub async fn reconcile(image: Arc<VMImage>, ctx: Arc<Context>) -> Result<Action>
         .as_ref()
         .map(|obj| extract_kairos_status(&obj.data))
         .unwrap_or_default();
+    let os_artifact_uid = live.as_ref().and_then(|obj| obj.metadata.uid.as_deref());
 
-    let build_status =
-        compute_build_artifact_status(&os_name, kind, &view, source.checksum.as_deref());
+    let build_status = compute_build_artifact_status(
+        &os_name,
+        kind,
+        &view,
+        source.checksum.as_deref(),
+        os_artifact_uid,
+    );
     let phase = build_status.phase.clone();
     patch_vmimage_status(&ctx, &name, build_status).await?;
 

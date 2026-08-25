@@ -8,7 +8,7 @@
 
 use async_trait::async_trait;
 use banlieue_api::banlieue::{DiskController, NicAdapter, ProviderConnection};
-use banlieue_api::common::{DiskProvisioning, Firmware};
+use banlieue_api::common::{DiskProvisioning, Firmware, PowerState};
 
 use crate::error::Result;
 
@@ -145,10 +145,26 @@ pub trait VSphereClient: Send + Sync {
     /// All compute clusters under `dc`.
     async fn list_clusters(&self, dc: &Datacenter) -> Result<Vec<Cluster>>;
 
-    /// Find a VM template by display name within `dc`. Returns `None` when
-    /// no template with that name exists; returns `Err` when the lookup
-    /// itself fails (auth / network).
-    async fn find_template(&self, dc: &Datacenter, name: &str) -> Result<Option<Template>>;
+    /// Find a VM template by display name within `dc`, optionally scoped
+    /// to `folder` (a path relative to the datacenter's VM folder, e.g.
+    /// `templates/cluster-01`). Returns `None` when no template with that
+    /// name exists (in `folder`, if given) or when `folder` itself
+    /// doesn't exist; returns `Err` when the lookup itself fails (auth /
+    /// network).
+    ///
+    /// `folder: None` searches the whole datacenter — correct for a
+    /// `Template`-kind image, which has no per-zone folder. `folder:
+    /// Some(_)` is required for a per-zone (`Url`-kind) import: every
+    /// zone's template shares the same display name (ADR-0020 Decision
+    /// #5), so a datacenter-wide search can match a *different* zone's
+    /// template (found live: a `VirtualMachine` cloned from the wrong
+    /// zone's template because the lookup wasn't folder-scoped).
+    async fn find_template(
+        &self,
+        dc: &Datacenter,
+        folder: Option<&str>,
+        name: &str,
+    ) -> Result<Option<Template>>;
 
     /// Datastores reachable from `cluster` (the cluster's `datastore` set),
     /// each tagged with its SDRS datastore-cluster name when it belongs to one.
@@ -163,9 +179,19 @@ pub trait VSphereClient: Send + Sync {
     /// Import a bootable ISO into one failure domain as a vCenter template
     /// (ADR-0020): upload the ISO to `req.datastore`, create an empty EFI VM in
     /// `req.cluster`'s resource pool with the ISO attached as a CD-ROM and a NIC
-    /// on `req.network`, then `MarkAsTemplate`. Idempotent: an existing template
-    /// of `req.template_name` in the datacenter is left in place. Returns the
-    /// resolved reference (`[datastore] template-name`).
+    /// on `req.network`. When `req.auto_manage_install` (ADR-0021), power it
+    /// on and wait for the cloud-config's unattended Kairos install to run its
+    /// `after-install-chroot` identity-wipe stage and power the VM off itself
+    /// (`install.poweroff`, no reboot — the disk is never booted by the
+    /// build), bounded by `req.install_timeout_seconds`; on success, remove
+    /// the CD-ROM device and `MarkAsTemplate`, on timeout fail without
+    /// destroying the VM so it can be inspected via console. When
+    /// `!req.auto_manage_install`, skip straight to `MarkAsTemplate` with no
+    /// power-on — ADR-0020's original behavior, for a build that isn't
+    /// Kairos-driven or whose install/generalize is managed some other way.
+    /// Idempotent: an existing template of `req.template_name` in the
+    /// datacenter is left in place. Returns the resolved reference
+    /// (`[datastore] template-name`).
     ///
     /// This is the one operation that mutates vCenter for image import; it is
     /// exercised only by the `image-import` Job (never the reconciler) and
@@ -183,6 +209,133 @@ pub trait VSphereClient: Send + Sync {
         datastore: &str,
         dir: &str,
     ) -> Result<()>;
+
+    /// Destroy any existing VM/template named `name` in `folder` (a path
+    /// under the datacenter's VM folder, e.g. `templates/cluster-01`) — a
+    /// no-op if absent.
+    ///
+    /// Scoped to `folder`, not the whole datacenter: every zone's target
+    /// shares the same display name (the `VMImage` name), so a
+    /// datacenter-wide lookup would risk destroying a *different* zone's
+    /// in-flight VM that happens to share the name (ADR-0020 Decision #5).
+    ///
+    /// Called early in the `image-import` flow, before the datastore
+    /// upload/reuse-check, specifically for `--force-create`: a template
+    /// whose CD-ROM backing still references the target ISO holds an NFC
+    /// lock on that file, which otherwise makes the datastore reuse-check's
+    /// HEAD probe fail — indistinguishable from the file genuinely being
+    /// absent (an inconclusive check is treated as absent, matching the
+    /// existing fail-open-to-reupload posture) — causing an unnecessary
+    /// re-upload onto a different datastore member even though the file is
+    /// already present. Destroying the stale target first releases the lock
+    /// before the reuse-check ever runs.
+    async fn destroy_if_present(
+        &self,
+        datacenter_moref: &str,
+        folder: &str,
+        name: &str,
+    ) -> Result<()>;
+
+    /// Clone a VM from an already-built per-zone template (ADR-0024's
+    /// create path): relocate onto `req.datastore` / the cluster's resource
+    /// pool / `req.folder`, override CPU/memory, reconfigure the clone's
+    /// first NIC onto `req.network_moref`, and set `req.extra_config` as
+    /// `extraConfig` in the same clone call — matching this environment's
+    /// existing hand-provisioned VM convention (`guestinfo.network.*` /
+    /// `guestinfo.userdata`) built by
+    /// [`crate::reconciler::vspheremachine::build_guestinfo`]. Always clones
+    /// powered off; drive the desired power state afterward with
+    /// [`VSphereClient::set_power_state`]. Returns the new VM's moref.
+    ///
+    /// Deliberately out of scope for this first pass (documented, not
+    /// silently dropped): growing the OS disk to `VSphereDiskSpec.size_gi_b`
+    /// when larger than the template's own disk, additional (non-OS) disks,
+    /// and NICs beyond the first.
+    async fn clone_vm(&self, req: &CloneVmRequest) -> Result<String>;
+
+    /// Drive `vm_moref` to `desired` (`PowerOnVM_Task` / `PowerOffVM_Task` /
+    /// `SuspendVM_Task`). A VM already in `desired`'s state is a no-op
+    /// (vCenter itself rejects a redundant power op with `InvalidState`;
+    /// callers should check `VSphereClient`-reported current state first
+    /// where that matters, e.g. after `clone_vm`, which always clones
+    /// powered off).
+    async fn set_power_state(&self, vm_moref: &str, desired: PowerState) -> Result<()>;
+
+    /// Read-only counterpart to [`VSphereClient::set_power_state`]:
+    /// `vm_moref`'s current `VirtualMachine.runtime.powerState` (ADR-0034).
+    /// The hypervisor's own view — available immediately on power-on, not a
+    /// guest-OS-boot signal (VMware Tools / guest state are out of scope).
+    async fn power_state(&self, vm_moref: &str) -> Result<PowerState>;
+
+    /// Power off (if not already) and destroy the VM at `vm_moref` — the
+    /// backend teardown half of `VSphereMachine`'s deletion finalizer
+    /// (ADR-0026). Moref-based, unlike [`VSphereClient::destroy_if_present`]
+    /// (name+folder based, for the *template* import path): `vm_moref` is
+    /// exactly what `clone_vm` returned and `VSphereMachine.status.vmRef`
+    /// already stored, so no name lookup is needed or wanted — a name-based
+    /// lookup would reintroduce the same cross-zone same-display-name
+    /// collision risk already fixed for templates and VM lookups.
+    ///
+    /// Idempotent: a moref vCenter no longer recognizes (already destroyed,
+    /// e.g. by a prior finalizer attempt that got as far as `Destroy_Task`
+    /// but never observed the response) is success, not an error.
+    async fn destroy_vm(&self, vm_moref: &str) -> Result<()>;
+}
+
+/// Everything [`VSphereClient::clone_vm`] needs to clone a per-zone template
+/// into a running VM (ADR-0024). Every reference is already resolved to a
+/// concrete vCenter moref by the caller — mirrors [`IsoImportRequest`]'s own
+/// shape.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CloneVmRequest {
+    /// Datacenter managed-object id (for `vmFolder` resolution).
+    pub datacenter_moref: String,
+    /// Compute cluster managed-object id (for `resourcePool`).
+    pub cluster_moref: String,
+    /// Managed-object id of the source template to clone from.
+    pub template_moref: String,
+    /// Managed-object id of the concrete datastore (never a
+    /// datastore-cluster/SDRS pod — the caller resolves that down to one
+    /// concrete member first) to relocate the clone onto.
+    pub datastore_moref: String,
+    /// Target port group name for the clone's first NIC (used for the
+    /// standard, non-distributed backing's `deviceName`).
+    pub network: String,
+    /// Managed-object id of the target port group for the clone's first NIC.
+    pub network_moref: String,
+    /// True when `network_moref` is a distributed (vDS) port group.
+    pub network_distributed: bool,
+    /// Virtual CPU count.
+    pub num_cpus: i32,
+    /// Memory, in MiB.
+    pub memory_mib: i64,
+    /// vCenter folder path (under the datacenter VM folder) to place the
+    /// clone in, created if missing. `None` — the VM-folder root.
+    pub folder: Option<String>,
+    /// Display name of the resulting VM.
+    pub vm_name: String,
+    /// `extraConfig` key/value pairs — `guestinfo.network.*` /
+    /// `guestinfo.userdata` (ADR-0024), built by
+    /// [`crate::reconciler::vspheremachine::build_guestinfo`].
+    pub extra_config: Vec<(String, String)>,
+}
+
+/// One template NIC, fully resolved to a concrete port-group moref
+/// (ADR-0031). Built by `crate::import::run` from a [`crate::import::ResolvedNic`]
+/// once the zone's cluster is known.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RequestedNic {
+    /// Port group name this NIC attaches to.
+    pub network: String,
+    /// Managed-object id of that port group (for the NIC backing).
+    pub network_moref: String,
+    /// True when the port group is a distributed (vDS) one — selects the
+    /// distributed-port NIC backing over the standard device-name backing.
+    pub network_distributed: bool,
+    /// Virtual NIC adapter type (vmxnet3 / e1000 / …).
+    pub adapter: NicAdapter,
+    /// PCI slot number for this NIC (`ethernetN.pciSlotNumber`).
+    pub pci_slot: i32,
 }
 
 /// Everything [`VSphereClient::import_iso_template`] needs to turn a local ISO
@@ -200,13 +353,11 @@ pub struct IsoImportRequest {
     pub cluster_moref: String,
     /// Datastore name the ISO is uploaded to and the template is created on.
     pub datastore: String,
-    /// Port group name the template's NIC attaches to.
-    pub network: String,
-    /// Managed-object id of that port group (for the NIC backing).
-    pub network_moref: String,
-    /// True when the port group is a distributed (vDS) one — selects the
-    /// distributed-port NIC backing over the standard device-name backing.
-    pub network_distributed: bool,
+    /// The template's NICs, each already resolved to a concrete port-group
+    /// moref (ADR-0031). Never empty — [`crate::import::resolve_nic_networks`]
+    /// synthesizes exactly one fully-defaulted entry when no `--nic` flags
+    /// were given, preserving the pre-ADR-0031 single-NIC default.
+    pub nics: Vec<RequestedNic>,
     /// Template install-disk size, in GiB.
     pub disk_gib: i64,
     /// Disk provisioning (thin / thick / eagerZeroed).
@@ -219,10 +370,6 @@ pub struct IsoImportRequest {
     pub memory_mib: i64,
     /// Firmware (bios / efi / efi-secure).
     pub firmware: Firmware,
-    /// Virtual NIC adapter type (vmxnet3 / e1000 / …).
-    pub network_adapter: NicAdapter,
-    /// PCI slot number for the NIC (`ethernet0.pciSlotNumber`).
-    pub nic_pci_slot: i32,
     /// vCenter folder path (under the datacenter VM folder) to place the
     /// template in, created if missing. `None` → the VM-folder root.
     pub folder: Option<String>,
@@ -239,6 +386,17 @@ pub struct IsoImportRequest {
     /// datacenter before creating the new one. When false, an existing template
     /// short-circuits to a no-op.
     pub force_create: bool,
+    /// Bound, in seconds, on how long to wait for the created VM to power
+    /// itself off after the unattended Kairos install completes
+    /// (`install.poweroff: true` in the cloud-config), before failing the
+    /// import (ADR-0021). Set from `VMImage.spec.template.installTimeoutSeconds`.
+    pub install_timeout_seconds: i32,
+    /// Run the install-then-generalize sequence (power on, wait for
+    /// self-poweroff, remove the CD-ROM) before `MarkAsTemplate`. `false`
+    /// reverts to ADR-0020's original behavior: create the VM, attach the
+    /// ISO, `MarkAsTemplate` immediately, no power-on. Set from
+    /// `VMImage.spec.template.autoManageInstall` (ADR-0021).
+    pub auto_manage_install: bool,
 }
 
 #[cfg(test)]

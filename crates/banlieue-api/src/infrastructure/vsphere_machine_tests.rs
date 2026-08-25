@@ -31,6 +31,7 @@ mod tests {
                 name: "vsphere-dc1".to_string(),
             },
             template: "ubuntu-22.04-cloudinit".to_string(),
+            template_folder: None,
             datacenter: "dc1".to_string(),
             cluster: "cluster-a".to_string(),
             datastore: "ds-fast-01".to_string(),
@@ -41,6 +42,8 @@ mod tests {
             firmware: Firmware::Efi,
             disks: vec![sample_disk("os", 40)],
             network: vec![sample_nic("eth0")],
+            user_data: None,
+            desired_power_state: PowerState::PoweredOn,
         }
     }
 
@@ -104,8 +107,6 @@ mod tests {
             port_group: "vmnet-prod".to_string(),
             mac_address: None,
             ipam: IpamSpec {
-                source: IpamSource::Pool,
-                static_: None,
                 pool: Some(PoolIpamConfig {
                     pool_ref: TypedObjectReference {
                         api_group: "ipam.cluster.x-k8s.io".to_string(),
@@ -114,10 +115,10 @@ mod tests {
                         namespace: None,
                     },
                 }),
+                ..Default::default()
             },
         };
         let json = serde_json::to_value(&n).unwrap();
-        assert_eq!(json["ipam"]["source"], "pool");
         assert_eq!(json["ipam"]["pool"]["poolRef"]["name"], "pool-a");
         let back: VSphereNicSpec = serde_json::from_value(json).unwrap();
         assert_eq!(back, n);
@@ -151,6 +152,62 @@ mod tests {
         assert!(!obj.contains_key("failureDomain"));
         assert!(!obj.contains_key("folder"));
         assert!(!obj.contains_key("resourcePool"));
+        assert!(!obj.contains_key("userData"));
+    }
+
+    #[test]
+    fn vsphere_machine_spec_with_user_data_round_trip() {
+        // ADR-0025: banlieue-controller resolves + renders
+        // VirtualMachine.spec.userData's Secret and inlines the content
+        // here — the provider never reads a Secret for this.
+        let s = VSphereMachineSpec {
+            user_data: Some("#cloud-config\nhostname: db-01\n".to_string()),
+            ..minimal_spec()
+        };
+        let json = serde_json::to_value(&s).unwrap();
+        assert_eq!(json["userData"], "#cloud-config\nhostname: db-01\n");
+        let back: VSphereMachineSpec = serde_json::from_value(json).unwrap();
+        assert_eq!(back, s);
+    }
+
+    // ----------------------------------------------------------------------
+    // desiredPowerState (ADR-0024)
+    // ----------------------------------------------------------------------
+
+    #[test]
+    fn vsphere_machine_spec_desired_power_state_defaults_to_powered_on() {
+        let s = minimal_spec();
+        assert_eq!(s.desired_power_state, PowerState::PoweredOn);
+    }
+
+    #[test]
+    fn vsphere_machine_spec_missing_desired_power_state_deserializes_to_powered_on() {
+        let json = serde_json::json!({
+            "providerRef": {"name": "p"},
+            "template": "t",
+            "datacenter": "dc",
+            "cluster": "c",
+            "datastore": "ds",
+            "numCpus": 1,
+            "memoryMiB": 1024,
+            "firmware": "efi",
+            "disks": [],
+            "network": []
+        });
+        let s: VSphereMachineSpec = serde_json::from_value(json).unwrap();
+        assert_eq!(s.desired_power_state, PowerState::PoweredOn);
+    }
+
+    #[test]
+    fn vsphere_machine_spec_desired_power_state_powered_off_round_trip() {
+        let s = VSphereMachineSpec {
+            desired_power_state: PowerState::PoweredOff,
+            ..minimal_spec()
+        };
+        let json = serde_json::to_value(&s).unwrap();
+        assert_eq!(json["desiredPowerState"], "PoweredOff");
+        let back: VSphereMachineSpec = serde_json::from_value(json).unwrap();
+        assert_eq!(back, s);
     }
 
     #[test]
@@ -165,6 +222,25 @@ mod tests {
         assert_eq!(json["folder"], "banlieue/prod");
         assert_eq!(json["resourcePool"], "prod-pool");
         assert_eq!(json["failureDomain"], "dc1");
+        let back: VSphereMachineSpec = serde_json::from_value(json).unwrap();
+        assert_eq!(back, s);
+    }
+
+    #[test]
+    fn vsphere_machine_spec_minimal_omits_template_folder() {
+        let s = minimal_spec();
+        let json = serde_json::to_value(&s).unwrap();
+        assert!(!json.as_object().unwrap().contains_key("templateFolder"));
+    }
+
+    #[test]
+    fn vsphere_machine_spec_with_template_folder_round_trip() {
+        let s = VSphereMachineSpec {
+            template_folder: Some("templates/cluster-01".to_string()),
+            ..minimal_spec()
+        };
+        let json = serde_json::to_value(&s).unwrap();
+        assert_eq!(json["templateFolder"], "templates/cluster-01");
         let back: VSphereMachineSpec = serde_json::from_value(json).unwrap();
         assert_eq!(back, s);
     }
@@ -237,12 +313,14 @@ mod tests {
             }],
             vm_ref: Some("vm-1234".to_string()),
             instance_uuid: Some("uuid-1234".to_string()),
+            observed_power_state: Some(PowerState::PoweredOn),
             conditions: Vec::new(),
             observed_generation: Some(2),
         };
         let json = serde_json::to_value(&s).unwrap();
         assert_eq!(json["vmRef"], "vm-1234");
         assert_eq!(json["instanceUuid"], "uuid-1234");
+        assert_eq!(json["observedPowerState"], "PoweredOn");
         let back: VSphereMachineStatus = serde_json::from_value(json).unwrap();
         assert_eq!(back, s);
     }

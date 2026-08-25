@@ -87,6 +87,37 @@ pub struct ProviderSpec {
     /// See ADR-0020.
     #[serde(default, skip_serializing_if = "is_false")]
     pub use_content_library: bool,
+
+    /// Explicit overrides for individual discovered failure domains'
+    /// generated `name`. The auto-computed, collision-safe name
+    /// (`<provider>-<datacenter>-<cluster>`, hashed when too long) is
+    /// always the fallback for any `(datacenter, cluster)` pair with no
+    /// matching entry here — this is opt-in, never required. See ADR-0023.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(extend(
+        "x-kubernetes-list-type" = "map",
+        "x-kubernetes-list-map-keys" = ["datacenter", "cluster"],
+    ))]
+    pub failure_domain_name_overrides: Vec<FailureDomainNameOverride>,
+}
+
+/// Explicit override for one discovered failure domain's generated `name`,
+/// keyed by the `(datacenter, cluster)` pair `discover_inventory` resolves
+/// it from. Named fields, not a `"dc/cluster"` string key, so a call site
+/// can't accidentally swap them — same reasoning as `ImportJobIdentity`
+/// (ADR-0020-era `import_job_name` fix). See ADR-0023.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct FailureDomainNameOverride {
+    /// Datacenter name as vCenter reports it (matches `discover_inventory`'s
+    /// walk, not an operator-chosen alias).
+    pub datacenter: String,
+    /// Cluster name as vCenter reports it.
+    pub cluster: String,
+    /// The name to use instead of the auto-computed one, e.g. `cluster-01`.
+    /// Slugified the same way auto-computed names are, so `Cluster 01`
+    /// still produces a valid Kubernetes name.
+    pub name: String,
 }
 
 /// How to reach a backend: endpoint, the Secret holding its credentials, and
@@ -162,34 +193,160 @@ impl ProviderCapabilities {
     }
 }
 
-/// Maps one abstract storage-class name to a concrete backend target.
+/// A concrete backend target scoped to one specific failure domain — a
+/// `(datacenter, cluster)` pair — within a Provider. Keyed the same way
+/// `Provider.spec.failureDomainNameOverrides` is (ADR-0023): the
+/// vCenter-reported identity, not a failure domain's own (possibly
+/// admin-renamed) display name, which would make the mapping fragile to a
+/// rename. Shared by [`StorageClassMapping`] and [`NetworkClassMapping`] —
+/// same shape, same identity key (ADR-0030).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ScopedTarget {
+    /// Datacenter name as vCenter reports it.
+    pub datacenter: String,
+    /// Cluster name as vCenter reports it.
+    pub cluster: String,
+    /// Concrete backend target for this zone, same shape as
+    /// [`StorageClassMapping::target`] / [`NetworkClassMapping::target`].
+    pub target: BTreeMap<String, String>,
+}
+
+/// Maps one abstract storage-class name to a concrete backend target.
+///
+/// A single class name can resolve differently per failure domain of the
+/// same Provider — the "same" storage tier commonly has a differently-named
+/// datastore (cluster) on each vCenter cluster. `target` is the default,
+/// applied to any zone not covered by `per_zone`; `per_zone` overrides it
+/// for the zones it lists. At least one of the two must resolve a target
+/// for a zone, or this class is simply unavailable there — not an error,
+/// the same "not reported available" path an unmatched target already took
+/// before this ADR (ADR-0019, ADR-0030).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct StorageClassMapping {
     /// Abstract name referenced by VMClass.hardware.disks[].storageClass.
     pub name: String,
-    /// Concrete backend target. Free-form per provider class; the provider's
-    /// controller interprets it. Examples by provider class:
+    /// Default concrete target, used in any zone `per_zone` does not cover.
+    /// `None` means this class resolves ONLY in the zones `per_zone` lists.
+    /// Free-form per provider class; the provider's controller interprets
+    /// it. Examples by provider class:
     ///   vsphere:  { datastore: "ds-fast-01" }
     ///             { datastoreCluster: "dsc-gold" }
     ///             { tagCategory: "tier", tag: "gold" }
     ///   proxmox:  { storage: "ceph-pool-1" }
     ///   libvirt:  { pool: "nvme-pool" }
-    pub target: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<BTreeMap<String, String>>,
+    /// Per-`(datacenter, cluster)` overrides of `target` (ADR-0030).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub per_zone: Vec<ScopedTarget>,
+}
+
+impl StorageClassMapping {
+    /// Effective concrete target for a given `(datacenter, cluster)`: an
+    /// exact `per_zone` match wins, else the default `target`, else `None`
+    /// when this class does not resolve in that zone at all (ADR-0030).
+    #[must_use]
+    pub fn target_for(&self, datacenter: &str, cluster: &str) -> Option<&BTreeMap<String, String>> {
+        self.per_zone
+            .iter()
+            .find(|z| z.datacenter == datacenter && z.cluster == cluster)
+            .map(|z| &z.target)
+            .or(self.target.as_ref())
+    }
 }
 
 /// Maps one abstract network-class name to a concrete backend target.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+///
+/// Same per-zone override shape as [`StorageClassMapping`] and for the same
+/// reason: the "same" logical network commonly has a differently-named
+/// port group on each cluster of a Provider (ADR-0030).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct NetworkClassMapping {
     /// Abstract name referenced by VMClass.network.interfaces[].networkClass.
     pub name: String,
-    /// Concrete backend target. Free-form per provider class. Examples:
+    /// Default concrete target, used in any zone `per_zone` does not cover.
+    /// `None` means this class resolves ONLY in the zones `per_zone` lists.
+    /// Free-form per provider class. Examples:
     ///   vsphere:  { portGroup: "vmnet-prod" }
     ///             { distributedPortGroup: "dvs-prod-vlan100" }
     ///   proxmox:  { bridge: "vmbr0", vlan: "100" }
     ///   libvirt:  { network: "br-prod" }
-    pub target: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<BTreeMap<String, String>>,
+    /// Per-`(datacenter, cluster)` overrides of `target` (ADR-0030).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub per_zone: Vec<ScopedTarget>,
+    /// Default subnet shape (gateway/nameservers/domain) for this network
+    /// class, used in any zone `per_zone_subnet` does not cover. A port
+    /// group implies a subnet, so this lives alongside `target`/`per_zone`
+    /// rather than on `VMClass` — it lets a static-addressing
+    /// `VirtualMachine` omit gateway/nameservers/domain entirely and have
+    /// them resolved from whichever zone the scheduler picked (ADR-0032).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subnet: Option<SubnetShape>,
+    /// Per-`(datacenter, cluster)` overrides of `subnet` (ADR-0032).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub per_zone_subnet: Vec<ScopedSubnet>,
+}
+
+impl NetworkClassMapping {
+    /// Effective concrete target for a given `(datacenter, cluster)`: an
+    /// exact `per_zone` match wins, else the default `target`, else `None`
+    /// when this class does not resolve in that zone at all (ADR-0030).
+    #[must_use]
+    pub fn target_for(&self, datacenter: &str, cluster: &str) -> Option<&BTreeMap<String, String>> {
+        self.per_zone
+            .iter()
+            .find(|z| z.datacenter == datacenter && z.cluster == cluster)
+            .map(|z| &z.target)
+            .or(self.target.as_ref())
+    }
+
+    /// Effective subnet shape for a given `(datacenter, cluster)`: an exact
+    /// `per_zone_subnet` match wins, else the default `subnet`, else `None`
+    /// when this class declares no subnet info for that zone (ADR-0032).
+    #[must_use]
+    pub fn subnet_for(&self, datacenter: &str, cluster: &str) -> Option<&SubnetShape> {
+        self.per_zone_subnet
+            .iter()
+            .find(|z| z.datacenter == datacenter && z.cluster == cluster)
+            .map(|z| &z.subnet)
+            .or(self.subnet.as_ref())
+    }
+}
+
+/// A subnet's gateway/DNS/domain, scoped to one specific failure domain — a
+/// `(datacenter, cluster)` pair — within a Provider's network class.
+/// Deliberately excludes `prefix`, which stays a per-VM field on
+/// `StaticIpamConfig` rather than becoming zone-derived (ADR-0032).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ScopedSubnet {
+    /// Datacenter name as vCenter reports it.
+    pub datacenter: String,
+    /// Cluster name as vCenter reports it.
+    pub cluster: String,
+    /// Subnet shape for this zone.
+    pub subnet: SubnetShape,
+}
+
+/// Gateway/DNS/domain for a subnet, without a per-VM address. Used both as
+/// [`NetworkClassMapping::subnet`]'s default and inside [`ScopedSubnet`]'s
+/// per-zone overrides (ADR-0032). Mirrors the same three fields on
+/// [`StaticNetworkShape`]/[`StaticIpamConfig`] — deliberately excludes
+/// `prefix`, which stays per-VM.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SubnetShape {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gateway: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub nameservers: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub domain: Option<String>,
 }
 
 /// Observed state of a Provider: the failure domains its controller discovered
@@ -197,8 +354,10 @@ pub struct NetworkClassMapping {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderStatus {
-    /// Failure domains discovered by the provider's controller within this
-    /// backend. The scheduler matches against `labels` and filters by
+    /// Failure domains ("availability zones" — the terms are synonyms;
+    /// `failureDomain` was kept to align with CAPI v1beta2's own vocabulary)
+    /// discovered by the provider's controller within this backend. The
+    /// scheduler matches against `labels` and filters by
     /// `attributes.availableStorageClasses` / `availableNetworkClasses`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub failure_domains: Vec<FailureDomain>,
@@ -260,6 +419,13 @@ pub struct ProviderWorkloadStatus {
 /// One placement target within a backend — typically a (datacenter, cluster)
 /// pair or a zone. The scheduler matches VMs to failure domains by `labels`
 /// and filters by the capabilities resolved in `attributes`.
+///
+/// "Failure domain" and "availability zone" are synonyms here — this type
+/// names it `failureDomain` to align with the CAPI v1beta2 vocabulary
+/// (`clusterv1.FailureDomain`, `Machine.spec.failureDomain`) that banlieue's
+/// infra CRDs are built to satisfy, not because it means something distinct
+/// from an AZ. Docs and CLI help text are free to say "availability zone"
+/// where that reads more naturally.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct FailureDomain {
@@ -268,7 +434,13 @@ pub struct FailureDomain {
 
     /// Labels used by the scheduler's `failureDomainSelector` and by
     /// VirtualMachine anti-affinity `topologyKey` matching.
-    /// Recommended keys: `dc`, `cluster`, `rack`, `env`.
+    /// Recommended keys: `datacenter`, `cluster`, `rack`, `env`. Every
+    /// provider also sets `name` to this failure domain's own resolved
+    /// `name` above (auto-computed, or an ADR-0023 override) — `name` above
+    /// is a top-level field a `LabelSelector` cannot match directly, so
+    /// without this mirror, targeting a specific zone by its friendly
+    /// override name (rather than a raw backend-reported label like
+    /// `cluster`) would be impossible.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub labels: BTreeMap<String, String>,
 

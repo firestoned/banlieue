@@ -12,8 +12,8 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use banlieue_api::banlieue::{
-    FailureDomain, FailureDomainAttributes, Provider, ProviderCapabilities, ProviderConnection,
-    ProviderStatus,
+    FailureDomain, FailureDomainAttributes, FailureDomainNameOverride, Provider,
+    ProviderCapabilities, ProviderConnection, ProviderStatus,
 };
 use banlieue_provider_sdk::reconciler::{requeue_long, requeue_on_error};
 use banlieue_provider_sdk::ssa::FIELD_MANAGER_PROVIDER_VSPHERE;
@@ -39,10 +39,6 @@ pub const PROVIDER_CLASS_NAME: &str = "vsphere";
 /// Standard k8s Secret keys we read from `Provider.spec.connection.credentialsRef`.
 const SECRET_KEY_USERNAME: &str = "username";
 const SECRET_KEY_PASSWORD: &str = "password";
-
-/// Maximum length of a generated FailureDomain name. K8s label values are
-/// capped at 63 chars and the FailureDomain name is often used as one.
-const MAX_FD_NAME_LEN: usize = 63;
 
 /// Condition type set on `Provider.status.conditions`.
 mod condition_types {
@@ -179,6 +175,7 @@ pub async fn reconcile(provider: Arc<Provider>, ctx: Arc<Context>) -> Result<Act
         client.as_ref(),
         &provider_name,
         &provider.spec.capabilities,
+        &provider.spec.failure_domain_name_overrides,
     )
     .await
     {
@@ -231,10 +228,19 @@ pub fn error_policy(_provider: Arc<Provider>, err: &Error, _ctx: Arc<Context>) -
 /// Walk the vCenter inventory and produce one [`FailureDomain`] per
 /// (datacenter, cluster). Pure with respect to its `client` argument — used
 /// directly by the reconciler and by unit tests with a [`FakeClient`].
+///
+/// `overrides` (`Provider.spec.failureDomainNameOverrides`, ADR-0023) lets an
+/// admin replace the auto-computed name for specific `(datacenter, cluster)`
+/// pairs with a simpler one; every other pair still gets the auto-computed,
+/// collision-safe name. Fails closed if the result has two failure domains
+/// with the same name — most likely two overrides resolving to the same
+/// name, which would silently reintroduce the cross-zone collision
+/// ADR-0020 Decision #5 fixed.
 pub async fn discover_inventory(
     client: &dyn VSphereClient,
     provider_name: &str,
     capabilities: &ProviderCapabilities,
+    overrides: &[FailureDomainNameOverride],
 ) -> Result<Vec<FailureDomain>> {
     let mut out = Vec::new();
     for dc in client.list_datacenters().await? {
@@ -255,6 +261,7 @@ pub async fn discover_inventory(
                 &dc.name,
                 &cluster.name,
                 attributes,
+                overrides,
             ));
         }
     }
@@ -264,23 +271,67 @@ pub async fn discover_inventory(
     // re-triggers the watch and hot-loops the controller. Sorting by the
     // (unique) FD name pins it.
     out.sort_by(|a, b| a.name.cmp(&b.name));
+
+    let mut seen = std::collections::BTreeSet::new();
+    for fd in &out {
+        if !seen.insert(fd.name.as_str()) {
+            return Err(Error::InvalidSpec(format!(
+                "two failure domains resolved to the same name {:?} — check \
+                 spec.failureDomainNameOverrides for two (datacenter, cluster) \
+                 pairs mapped to the same name",
+                fd.name
+            )));
+        }
+    }
     Ok(out)
 }
 
+/// Find an admin-declared override for `(dc, cluster)`, if any.
+fn find_failure_domain_name_override<'a>(
+    overrides: &'a [FailureDomainNameOverride],
+    dc: &str,
+    cluster: &str,
+) -> Option<&'a str> {
+    overrides
+        .iter()
+        .find(|o| o.datacenter == dc && o.cluster == cluster)
+        .map(|o| o.name.as_str())
+}
+
 /// Build a single [`FailureDomain`] from the (provider, dc, cluster) triple and
-/// its already-computed [`FailureDomainAttributes`].
+/// its already-computed [`FailureDomainAttributes`]. Uses a matching entry in
+/// `overrides` (ADR-0023) verbatim (slugified/hash-guarded the same way any
+/// name is) instead of the auto-computed name, when one matches.
 fn build_failure_domain(
     provider: &str,
     dc_name: &str,
     cluster_name: &str,
     attributes: FailureDomainAttributes,
+    overrides: &[FailureDomainNameOverride],
 ) -> FailureDomain {
     let mut labels = BTreeMap::new();
-    labels.insert("dc".to_string(), dc_name.to_string());
+    labels.insert("datacenter".to_string(), dc_name.to_string());
     labels.insert("cluster".to_string(), cluster_name.to_string());
 
+    let name = match find_failure_domain_name_override(overrides, dc_name, cluster_name) {
+        Some(override_name) => crate::k8s_name::collision_safe_name(&[override_name]),
+        None => failure_domain_name(&FailureDomainIdentity {
+            provider,
+            dc: dc_name,
+            cluster: cluster_name,
+        }),
+    };
+
+    // A `failureDomainSelector` only ever matches `labels` — the resolved
+    // `name` above (auto-computed or an ADR-0023 override) is otherwise
+    // unselectable, since it's a top-level field, not a label. Mirroring it
+    // here lets an operator target a specific zone by its friendly override
+    // name (`matchLabels: { name: cluster-01 }`) instead of the raw,
+    // backend-reported `cluster` label.
+    labels.insert("name".to_string(), name.clone());
+
     FailureDomain {
-        name: failure_domain_name(provider, dc_name, cluster_name),
+        name,
         labels,
         attributes,
     }
@@ -288,7 +339,12 @@ fn build_failure_domain(
 
 /// Compute a failure domain's capability attributes from the reachable
 /// datastores/networks and the Provider's declared capabilities (ADR-0019).
-/// Pure and unit-tested with the `FakeClient` fixtures.
+/// Each class's target is resolved for THIS `(dc_name, cluster_name)`
+/// specifically — an exact `per_zone` entry if one matches, else the
+/// mapping's default `target` — so the same abstract class name can be
+/// reachable via a different concrete datastore/port-group per cluster of
+/// the same Provider (ADR-0030). Pure and unit-tested with the `FakeClient`
+/// fixtures.
 pub fn compute_failure_domain_attributes(
     capabilities: &ProviderCapabilities,
     datastores: &[Datastore],
@@ -299,13 +355,19 @@ pub fn compute_failure_domain_attributes(
     let available_storage_classes = capabilities
         .storage_classes
         .iter()
-        .filter(|sc| storage_class_reachable(&sc.target, datastores))
+        .filter(|sc| {
+            sc.target_for(dc_name, cluster_name)
+                .is_some_and(|target| storage_class_reachable(target, datastores))
+        })
         .map(|sc| sc.name.clone())
         .collect();
     let available_network_classes = capabilities
         .network_classes
         .iter()
-        .filter(|nc| network_class_reachable(&nc.target, networks))
+        .filter(|nc| {
+            nc.target_for(dc_name, cluster_name)
+                .is_some_and(|target| network_class_reachable(target, networks))
+        })
         .map(|nc| nc.name.clone())
         .collect();
 
@@ -352,63 +414,26 @@ fn network_class_reachable(target: &BTreeMap<String, String>, networks: &[Networ
     false
 }
 
-/// Slugify `<provider>-<dc>-<cluster>` into a DNS-label-friendly string,
-/// capped at 63 chars (the K8s label-value limit). Pure and unit-tested.
-///
-/// When the slug fits it is returned verbatim. When it overflows, a readable
-/// prefix is kept and a short stable hash of the *full* slug is appended, so
-/// two clusters whose names differ only past the truncation point (e.g.
-/// `…-NonReplicated-01` vs `-02`) still get distinct names — otherwise every
-/// failure domain collided on the same truncated string.
-pub fn failure_domain_name(provider: &str, dc: &str, cluster: &str) -> String {
-    let slug = slugify(&format!("{provider}-{dc}-{cluster}"));
-    if slug.len() <= MAX_FD_NAME_LEN {
-        return slug;
-    }
-    let hash = stable_hash8(&slug);
-    // Reserve room for the separating '-' and the 8-char hash. slug is ASCII
-    // (slugify emits only `[a-z0-9-]`), so byte-slicing is char-safe.
-    let keep = MAX_FD_NAME_LEN - hash.len() - 1;
-    let head = slug[..keep].trim_end_matches('-');
-    format!("{head}-{hash}")
+/// Named fields identifying one generated `FailureDomain.name` — named so a
+/// call site can't accidentally swap `dc` and `cluster` the way three
+/// positional `&str` parameters would silently allow.
+pub struct FailureDomainIdentity<'a> {
+    pub provider: &'a str,
+    pub dc: &'a str,
+    pub cluster: &'a str,
 }
 
-/// Deterministic 32-bit FNV-1a of `s`, as 8 lowercase hex chars.
-///
-/// Hand-rolled on purpose: `std`'s `DefaultHasher` output may change between
-/// Rust releases, which would silently rename every truncated FailureDomain on
-/// a toolchain bump. FNV-1a is fixed forever, so the generated names are stable.
-fn stable_hash8(s: &str) -> String {
-    const FNV_OFFSET_BASIS: u32 = 0x811c_9dc5;
-    const FNV_PRIME: u32 = 0x0100_0193;
-    let mut hash = FNV_OFFSET_BASIS;
-    for byte in s.as_bytes() {
-        hash ^= u32::from(*byte);
-        hash = hash.wrapping_mul(FNV_PRIME);
-    }
-    format!("{hash:08x}")
-}
-
-/// Lowercase the input, replace any run of non-alphanumeric characters with
-/// a single `-`, and strip leading/trailing dashes.
-fn slugify(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut last_was_dash = true;
-    for ch in s.chars() {
-        if ch.is_ascii_alphanumeric() {
-            out.push(ch.to_ascii_lowercase());
-            last_was_dash = false;
-        } else if !last_was_dash {
-            out.push('-');
-            last_was_dash = true;
-        }
-    }
-    out.trim_end_matches('-').to_string()
+/// DNS-label-friendly `<provider>-<dc>-<cluster>` name, capped at 63 chars
+/// (the K8s label-value limit) and collision-safe when truncated — see
+/// [`crate::k8s_name::collision_safe_name`].
+pub fn failure_domain_name(id: &FailureDomainIdentity<'_>) -> String {
+    crate::k8s_name::collision_safe_name(&[id.provider, id.dc, id.cluster])
 }
 
 /// Fetch the credentials Secret named by `connection.credentials_ref` and
-/// pluck `username` / `password`.
-async fn read_credentials(
+/// pluck `username` / `password`. `pub(crate)` — also used by the
+/// `vspheremachine` reconciler (ADR-0024) to connect for the same Provider.
+pub(crate) async fn read_credentials(
     ctx: &Context,
     namespace: &str,
     connection: &ProviderConnection,

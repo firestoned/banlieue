@@ -55,6 +55,17 @@ spec:
                       datastore:
                         description: Datastore or datastore cluster name (resolved from the storage class).
                         type: string
+                      desiredPowerState:
+                        default: PoweredOn
+                        description: |-
+                          Desired power state, resolved from the parent `VirtualMachine`'s
+                          `spec.desiredPowerState` (ADR-0024). Defaults to `PoweredOn`, matching
+                          `VirtualMachineSpec`'s own default.
+                        enum:
+                        - PoweredOn
+                        - PoweredOff
+                        - Suspended
+                        type: string
                       disks:
                         description: |-
                           Disks. The first disk is the template's OS disk (grown if needed);
@@ -103,7 +114,11 @@ spec:
                         - efi-secure
                         type: string
                       folder:
-                        description: VM folder path. Optional; defaults to the datacenter VM root.
+                        description: |-
+                          Destination vCenter folder path for the **clone** (not the source
+                          template — see `template_folder`). Optional; defaults to the
+                          datacenter VM root, or (once set by `banlieue-controller`) the same
+                          per-zone folder the template lives in.
                         nullable: true
                         type: string
                       memoryMiB:
@@ -121,7 +136,7 @@ spec:
                               description: IP address management for this interface.
                               properties:
                                 pool:
-                                  description: Required when `source == Pool`; ignored otherwise.
+                                  description: Pool-based IPAM parameters.
                                   nullable: true
                                   properties:
                                     poolRef:
@@ -149,20 +164,18 @@ spec:
                                   required:
                                   - poolRef
                                   type: object
-                                source:
-                                  description: |-
-                                    IPAM source. `Dhcp` is the default so a freshly-constructed `IpamSpec`
-                                    is a valid one.
-                                  enum:
-                                  - dhcp
-                                  - static
-                                  - pool
-                                  type: string
                                 static:
-                                  description: Required when `source == Static`; ignored otherwise.
+                                  description: Static IPAM parameters (address, prefix, gateway, nameservers, domain).
                                   nullable: true
                                   properties:
                                     address:
+                                      type: string
+                                    domain:
+                                      description: |-
+                                        DNS domain, used both as a DNS search domain and (by a
+                                        `VirtualMachine.spec.networkOverrides` consumer, ADR-0024) to build
+                                        an FQDN as `<vm-name>.<domain>`.
+                                      nullable: true
                                       type: string
                                     gateway:
                                       nullable: true
@@ -180,8 +193,6 @@ spec:
                                   - address
                                   - prefix
                                   type: object
-                              required:
-                              - source
                               type: object
                             macAddress:
                               description: Optional MAC address (otherwise vCenter generates one).
@@ -231,7 +242,34 @@ spec:
                         nullable: true
                         type: string
                       template:
-                        description: vCenter template name (resolved from `VMImage`).
+                        description: |-
+                          vCenter template's bare display name (resolved from `VMImage`).
+                          Never a decorated string (no `[dc]`/folder prefix) — see
+                          `template_folder` for the scoping the lookup needs.
+                        type: string
+                      templateFolder:
+                        description: |-
+                          The per-zone vCenter folder the template in `template` lives in
+                          (resolved from `VMImage.status`, e.g. `templates/cluster-01`,
+                          ADR-0020 Decision #5). `None` for a `Template`-kind image, which
+                          has no per-zone folder — its lookup is datacenter-wide.
+
+                          This is deliberately a separate field from `template`, not a
+                          `folder/name`-encoded string: every zone's template shares the same
+                          display `name`, so a lookup that doesn't scope by folder can match
+                          a *different* zone's template (found live: a datacenter-wide
+                          lookup let one zone's `VirtualMachine` clone another zone's
+                          template).
+                        nullable: true
+                        type: string
+                      userData:
+                        description: |-
+                          Guest bootstrap payload content — already resolved from the parent
+                          `VirtualMachine`'s `spec.userData` Secret and placeholder-substituted
+                          (ADR-0024's `${VM_NAME}`/`${FQDN}`/etc. set) by `banlieue-controller`
+                          (ADR-0025). The provider delivers this verbatim (base64 into
+                          `guestinfo.userdata`) — it never reads a Secret itself.
+                        nullable: true
                         type: string
                     required:
                     - cluster

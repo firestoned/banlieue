@@ -146,7 +146,7 @@ fn declared_pools(provider: &Provider) -> BTreeSet<String> {
         .storage_classes
         .iter()
         .filter(|c| verified.contains(c.name.as_str()))
-        .filter_map(|c| c.target.get("pool").cloned())
+        .filter_map(|c| c.target.as_ref()?.get("pool").cloned())
         .collect()
 }
 
@@ -232,6 +232,7 @@ async fn a_vmimage_is_built_once_and_imported_into_every_declared_pool() {
         }],
         cloud_config: None,
         template: None,
+        iso_overlay: None,
     };
     images
         .create(

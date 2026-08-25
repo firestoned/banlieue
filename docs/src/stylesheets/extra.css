@@ -68,10 +68,19 @@
    ============================================ */
 
 .mermaid { text-align: center; margin: 1.5rem 0; }
-.mermaid svg { max-width: 100%; height: auto; }
+
+/* Render at native size instead of shrinking to the content column width —
+   a wide flowchart (many subgraphs/nodes side by side) was being scaled
+   down until its text was unreadable. pre.mermaid's overflow-x below
+   supplies a horizontal scrollbar for whatever no longer fits, and the
+   zoom/pan handlers in javascripts/mermaid-init.js cover the rest. A
+   generous min-height keeps a diagram legible even when mermaid itself
+   picks a squat aspect ratio. */
+.mermaid svg { max-width: none; height: auto; min-height: 420px; }
 
 pre.mermaid {
     overflow-x: auto;
+    overflow-y: hidden;
     padding: 1rem;
     border-radius: 0.2rem;
     background-color: var(--md-code-bg-color);

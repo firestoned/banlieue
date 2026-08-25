@@ -273,6 +273,7 @@ fn provider(paused: bool) -> Provider {
             capabilities: Default::default(),
             paused,
             use_content_library: false,
+            failure_domain_name_overrides: Vec::new(),
         },
     );
     p.metadata.namespace = Some(E2E_NAMESPACE.to_string());

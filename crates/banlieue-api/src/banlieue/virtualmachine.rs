@@ -88,6 +88,136 @@ pub struct VirtualMachineSpec {
     /// Suspend reconciliation in-band.
     #[serde(default, skip_serializing_if = "is_false")]
     pub paused: bool,
+
+    /// Per-VM overrides for specific VMClass-declared network interfaces
+    /// (ADR-0024). Keyed by `NetworkInterfaceSpec.name`; an interface with
+    /// no entry here uses its VMClass's own `ipam` verbatim (commonly
+    /// `dhcp`). Lets many VMs share one VMClass while each still gets its
+    /// own static address — a VMClass-level `ipam.static` cannot express
+    /// that, since a class is shared by design.
+    ///
+    /// **This is a delta, not the primary definition.** The VMClass is the
+    /// authoritative source for the VM's network shape. Entries here are
+    /// layered on top: only the named interface's `ipam` is replaced;
+    /// every other interface is inherited from the class unchanged.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(extend(
+        "x-kubernetes-list-type" = "map",
+        "x-kubernetes-list-map-keys" = ["name"],
+    ))]
+    pub network_overrides: Vec<NetworkInterfaceOverride>,
+
+    /// Per-VM override for the `VMClass`'s hardware shape — CPUs, memory,
+    /// and disk sizes.
+    ///
+    /// **This is a delta, not the primary definition.** The `VMClass` is the
+    /// authoritative source for a VM's hardware shape: its `spec.hardware`
+    /// is fixed and shared by every VM that references the class. This
+    /// field applies *on top of* the class — only the fields you set here
+    /// replace the class value; everything else is inherited verbatim.
+    ///
+    /// Use this sparingly. Its primary purpose is to accommodate the rare
+    /// VM that genuinely needs a different CPU, memory, or disk budget than
+    /// its class defines — for example, a database primary bumped to 16 CPUs
+    /// while all other replicas use the 4-CPU class shape, or one VM that
+    /// needs a larger data disk. If you find yourself setting the same
+    /// override on every VM of a given class, create a new `VMClass` instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hardware_override: Option<HardwareOverride>,
+
+    /// Destination folder for the provisioned VM (e.g. `apps/prod` on
+    /// vSphere). When unset, the provider defaults to organizing the VM
+    /// the same way it organizes its source template — on vSphere, the
+    /// same per-zone folder the template lives in (ADR-0020 Decision #5).
+    ///
+    /// Unlike `networkOverrides` / `hardwareOverride`, this has no
+    /// `VMClass`-level counterpart to be a delta *against* — placement is
+    /// purely an infrastructure concern, not part of a VM's abstract
+    /// shape. It is also the one field here that is unavoidably
+    /// backend-flavored (a "folder" is a vSphere concept); other backends
+    /// may interpret it differently or ignore it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder: Option<String>,
+}
+
+/// Per-VM override for the hardware shape declared by the `VMClass`.
+///
+/// **This is a delta, not the primary definition.** The `VMClass` owns the
+/// canonical hardware shape (`spec.hardware`). This struct holds only the
+/// values that deviate from that shape for a specific VM. Absent fields
+/// are inherited from the class unchanged.
+///
+/// Named `HardwareOverride` (rather than reusing `HardwareSpec`) to make
+/// the layered relationship explicit in the type name: a reader can
+/// distinguish "the authoritative class definition" from "this VM's
+/// per-instance delta" without consulting the field docs.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct HardwareOverride {
+    /// Override the `VMClass`'s `spec.hardware.cpus`.
+    /// If absent, the class value is used unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 1, max = 256))]
+    pub cpus: Option<u32>,
+
+    /// Override the `VMClass`'s `spec.hardware.memoryMiB`.
+    /// If absent, the class value is used unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 128, max = 4_194_304))]
+    pub memory_mi_b: Option<u32>,
+
+    /// Per-disk size overrides, keyed by `DiskSpec.name`.
+    /// Only `sizeGiB` can be overridden per VM; the disk's `storageClass`
+    /// and `provisioning` are class-level concerns.
+    ///
+    /// **This is a delta, not the primary definition.** A disk with no
+    /// entry here inherits the `VMClass`'s size verbatim.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(extend(
+        "x-kubernetes-list-type" = "map",
+        "x-kubernetes-list-map-keys" = ["name"],
+    ))]
+    pub disk_overrides: Vec<DiskOverride>,
+}
+
+/// A per-VM size override for one `VMClass`-declared disk.
+///
+/// **This is a delta, not the primary definition.** The `VMClass` defines
+/// the disk set; this struct lets a single VM request a larger size for
+/// one of those disks (e.g. a bigger data volume) without altering the
+/// shared class.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DiskOverride {
+    /// Matches a `VMClass.spec.hardware.disks[].name`.
+    pub name: String,
+    /// Override the disk's `sizeGiB`. Must be ≥ the class value (the
+    /// provider will reject a shrink). If absent, the class size is used.
+    #[schemars(range(min = 1, max = 65_536))]
+    pub size_gi_b: u32,
+}
+
+/// A per-VM static-address override for one `VMClass`-declared network
+/// interface (ADR-0024).
+///
+/// **This is a delta, not the primary definition.** The `VMClass` is the
+/// authoritative source for the VM's network shape. An entry here replaces
+/// only the named interface's `ipam`; every other interface, and all other
+/// attributes of the named interface, are inherited from the class unchanged.
+///
+/// Named `NetworkInterfaceOverride` (rather than reusing
+/// `NetworkInterfaceSpec`) for the same reason as `HardwareOverride`: the
+/// name signals layered intent — "a per-VM delta on top of a shared class"
+/// — rather than a standalone definition.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct NetworkInterfaceOverride {
+    /// Matches a `VMClass.spec.network.interfaces[].name`.
+    pub name: String,
+    /// The static address to use for this interface, overriding whatever
+    /// the `VMClass`'s own `ipam` declares.
+    #[serde(rename = "static")]
+    pub static_: StaticIpamConfig,
 }
 
 fn default_power_on() -> PowerState {

@@ -2,7 +2,8 @@
 
 ## Status
 
-Proposed — 2026-08-08. Extends [ADR-0010](0010-vmimage-build-pipeline-imagebuilder.md)
+Accepted — 2026-08-08, amended 2026-08-20 (Decision #5, per-zone template
+folder isolation). Extends [ADR-0010](0010-vmimage-build-pipeline-imagebuilder.md)
 (the `banlieue-imagebuilder` build/import split), [ADR-0015](0015-vmimage-status-merge-strategy.md)
 (per-provider status ownership), and [ADR-0016](0016-imagebuild-namespace-isolation.md)
 (imagebuild namespace). Builds on [ADR-0008](0008-byoc-vsphere-http-client.md)
@@ -144,6 +145,30 @@ ADR-0011 import-Job shape:
 No RPC is introduced — the handoff is PVC + status only. The provider never
 builds; the imagebuilder never touches vCenter.
 
+### 5. Per-zone template folder isolation (added 2026-08-20)
+
+Found live: `spec.template.folder` was used as the literal target folder for
+every zone's template. vSphere's VM/Template inventory folder hierarchy is
+scoped **per-datacenter, not per-cluster**, and it's common for a Provider's
+failure domains to differ only by cluster within one shared datacenter — so
+every zone's import Job called `CreateVM_Task` against the exact same folder
++ template name, racing `--force-create`/`MarkAsTemplate` against each other
+on the same object.
+
+**Decision:** the field is renamed `spec.template.rootFolder` — it was
+never the literal target, so `folder` was the wrong name. The per-zone
+import always places the template at `<rootFolder>/<failure-domain-name>`
+(`effective_folder` in `crates/banlieue-provider-vsphere/src/import.rs`) —
+unconditionally, even when only one failure domain exists, so behavior
+doesn't change based on zone count. When `rootFolder` is unset, the
+failure-domain name alone is the folder (still under the datacenter's
+VM-folder root), rather than placing the template unscoped at that root.
+
+Any template already sitting at the old flat path (`<rootFolder>/<template-name>`,
+built while testing this feature before the fix) is orphaned by this — it
+won't be found at the new nested path, so `force-create` builds a fresh
+copy alongside it. Clean those up manually in vCenter.
+
 ## Consequences
 
 - **`Url`-source vSphere images become usable.** Per-zone templates are created
@@ -164,6 +189,9 @@ builds; the imagebuilder never touches vCenter.
   writing anything to a backend.
 - **cloud-config secret-first.** Inline/configMap convenience is reserved in the
   API shape but not implemented; users supply a Secret today.
+- **Every zone gets its own template folder, unconditionally** (Decision
+  #5). Fixes a real cross-zone collision when failure domains share a
+  datacenter, at the cost of slightly deeper vCenter inventory nesting.
 
 ## Follow-ups
 

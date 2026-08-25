@@ -154,6 +154,38 @@ kubectl -n banlieue-system get provider prod-vsphere -o yaml | yq '.status.failu
 
 If `READY` is not `True`, jump to [Troubleshooting](#troubleshooting).
 
+!!! info "Simpler failure-domain names (ADR-0023)"
+    The auto-computed name is `<provider>-<datacenter>-<cluster>`, hashed
+    when too long — real enterprise cluster names routinely produce
+    something like `prod-vsphere-dc-east-compute-cluster-a1b2c3d4`. If you
+    already have a simpler convention for these zones, override it per
+    `(datacenter, cluster)` pair:
+
+    ```yaml
+    spec:
+      failureDomainNameOverrides:
+        - datacenter: DC-East
+          cluster: Compute-Cluster-A
+          name: cluster-01
+    ```
+
+    Opt-in only — any `(datacenter, cluster)` pair not listed here still
+    gets the auto-computed name. Two overrides resolving to the same `name`
+    fail the whole Provider reconcile (`Ready=False`), since that name is
+    now also a vCenter template folder segment (ADR-0020) and a Job name.
+
+    The resolved name (override or auto-computed) is also mirrored into
+    `status.failureDomains[].labels.name`, so a `VirtualMachine` can target
+    this exact zone by its friendly name instead of the raw, backend-reported
+    `cluster` label:
+
+    ```yaml
+    placement:
+      failureDomainSelector:
+        matchLabels:
+          name: cluster-01
+    ```
+
 ## 4. Define a `VMClass`
 
 A `VMClass` is the reusable hardware "shape" plus the abstract classes/features a

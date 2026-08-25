@@ -8,9 +8,41 @@
 # (`auroraboot build-iso`) with the `cloudConfig` below baked in, then mirrors
 # progress into `status.buildArtifact` (kind: iso). The vsphere provider
 # watches that field and, once it reports `Ready`, imports per zone
-# (datastore-upload + create template) — see
-# docs/src/guides/using-banlieue-imagebuilder.md for the full walkthrough,
-# including which parts of this pipeline are implemented today.
+# (datastore-upload + create template, install + generalize, MarkAsTemplate —
+# ADR-0021) — see docs/src/guides/using-banlieue-imagebuilder.md for the full
+# walkthrough, including which parts of this pipeline are implemented today.
+#
+# CONTRACT (ADR-0021): the cloud-config referenced by `cloudConfig` below MUST
+# set `install.poweroff: true` / `install.reboot: false`, at least one
+# `admin`-group user, and an `after-install-chroot` stage wiping per-machine
+# identity, e.g.:
+#
+#   install:
+#     auto: true
+#     device: /dev/sda
+#     reboot: false
+#     poweroff: true
+#   users:
+#     - name: kairos-admin
+#       groups: ["admin"]
+#       passwd: <hashed-or-plaintext-per-your-policy>
+#   stages:
+#     after-install-chroot:
+#       - name: "banlieue: strip per-machine identity before templating"
+#         commands:
+#           - truncate -s 0 /etc/machine-id
+#           - rm -f /etc/ssh/ssh_host_*
+#
+# Without `poweroff`/`reboot`, the import Job's install wait times out (see
+# `spec.template.installTimeoutSeconds` below) because the VM never powers
+# itself off. Without a `users` entry, Kairos (agent v2.29.4+) halts the
+# install stage immediately ("No users found ... part of the 'admin' group")
+# — same symptom, same timeout. Set `install.nousers: true` instead of
+# `users` only if a userless system is genuinely intended. Not building a
+# Kairos image, or managing install yourself? Set
+# `spec.template.autoManageInstall: false` to skip this contract entirely —
+# the import reverts to ADR-0020's original create+attach-ISO+MarkAsTemplate
+# behavior, no power-on. banlieue never reads or edits this Secret either way.
 apiVersion: banlieue.io/v1alpha1
 kind: VMImage
 metadata:
@@ -37,20 +69,36 @@ spec:
     secretRef:
       name: kairos-base-cloud-config
       key: cloud-config.yaml
+  # Optional extra files overlaid onto the built ISO (ADR-0022), e.g. a
+  # hand-verified grub.cfg, via kairos-operator's overlayISOVolume mechanism
+  # (auroraboot build-iso --overlay-iso). Only the Secret's name and the
+  # key/path list below are ever read — never its content.
+  isoOverlay:
+    secretRef:
+      name: kairos-iso-overlay
+    files:
+      - key: grub.cfg
+        path: boot/grub2/grub.cfg
   # How the backend template is built from this Url source (ADR-0020). The
   # per-zone import is idempotent: it skips an already-uploaded ISO / existing
   # template. The force knobs replace a bad one without manual vCenter cleanup.
   template:
-    # vCenter folder (under the datacenter VM folder) to place the template in,
-    # created if missing. Omit for the VM-folder root.
-    folder: templates/kairos
-    # Port group the template's NIC attaches to. Overrides the zone's first
-    # availableNetworkClasses target. Omit to use the zone default.
-    network: vmnet-prod
-    # Virtual NIC adapter type: vmxnet3 (default), vmxnet2, e1000, e1000e.
-    networkAdapter: vmxnet3
-    # PCI slot for the NIC — 192 yields a stable ens192 in the guest (default).
-    nicPciSlot: 192
+    # Root vCenter folder (under the datacenter VM folder), created if
+    # missing. Omit for the VM-folder root as the root. Not the literal
+    # target: the template always lands at <rootFolder>/<failure-domain-name>,
+    # since two zones commonly share a datacenter and vSphere folders are
+    # scoped per-datacenter, not per-cluster.
+    rootFolder: templates/kairos
+    # The template's NICs (ADR-0031) — a list, so a template can declare more
+    # than one. Omit entirely for exactly one NIC using every default below
+    # (zone's first availableNetworkClasses target, vmxnet3, PCI slot 192).
+    # An unset pciSlot on any entry defaults to 192 + that entry's index, so
+    # a second/third NIC still gets a predictable, non-colliding
+    # ens193/ens194 without hand-picking every slot.
+    network:
+      - network: vmnet-prod       # port group; overrides the zone default
+        adapter: vmxnet3          # vmxnet3 (default), vmxnet2, e1000, e1000e
+        pciSlot: 192              # 192 yields a stable ens192 in the guest
     # Install disk of the template. `type` reuses the backend-agnostic
     # provisioning hint shared with VMClass/VSphereMachine: thin (default),
     # thick, or eagerZeroed. `controller`: pvscsi (default), lsiLogic,
@@ -69,3 +117,7 @@ spec:
     # guestId: rhel9_64Guest   # -g; when unset, derived from the VMImage OS
     forceUpload: false   # delete + re-upload the ISO even if present
     forceCreate: false   # destroy + recreate the template even if present
+    # Bound on how long the import Job waits for the unattended install to
+    # finish and the VM to power itself off before failing (ADR-0021).
+    installTimeoutSeconds: 1800   # default 1800 (30 min)
+    autoManageInstall: true       # false skips install/generalize entirely; default true

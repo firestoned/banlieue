@@ -245,7 +245,7 @@ pub fn target_pools(provider: &Provider) -> Vec<String> {
         .storage_classes
         .iter()
         .filter(|class| verified.contains(class.name.as_str()))
-        .filter_map(|class| class.target.get("pool").cloned())
+        .filter_map(|class| class.target.as_ref()?.get("pool").cloned())
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect()
@@ -327,6 +327,7 @@ pub fn zone_from_job(pool: &str, job_name: &str, job: &Job) -> ZoneImageStatus {
             name: pool.to_string(),
             ready: true,
             resolved_ref: Some(format!("{pool}/{job_name}")),
+            template_folder: None,
             reason: Some(reasons::RECONCILED.to_string()),
             message: None,
         };
@@ -347,6 +348,7 @@ fn zone(pool: &str, ready: bool, reason: &str, message: &str) -> ZoneImageStatus
         name: pool.to_string(),
         ready,
         resolved_ref: None,
+        template_folder: None,
         reason: Some(reason.to_string()),
         message: Some(message.to_string()),
     }
@@ -459,10 +461,24 @@ pub fn build_import_job(inputs: &ImportJobInputs<'_>) -> serde_json::Value {
         args.push(checksum.to_string());
     }
 
+    // ADR-0027: own this Job by the OSArtifact whose PVC it mounts, so a
+    // rebuild's OSArtifact deletion garbage-collects the Job immediately
+    // instead of it outliving the artifact for up to its own
+    // ttlSecondsAfterFinished below.
+    let owner_references = banlieue_provider_sdk::osartifact::owner_references(
+        &artifact.os_artifact_ref,
+        artifact.os_artifact_uid.as_deref(),
+    );
+
     json!({
         "apiVersion": "batch/v1",
         "kind": "Job",
-        "metadata": { "name": job_name, "namespace": namespace, "labels": labels },
+        "metadata": {
+            "name": job_name,
+            "namespace": namespace,
+            "labels": labels,
+            "ownerReferences": owner_references,
+        },
         "spec": {
             // A half-finished upload is resumable only by starting over, and
             // retrying forever would hammer the host; two attempts then stop.

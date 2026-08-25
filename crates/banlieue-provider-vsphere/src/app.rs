@@ -19,6 +19,7 @@ use std::time::Duration;
 
 use anyhow::{Context as _, Result};
 use banlieue_api::banlieue::{Provider, VMImage};
+use banlieue_api::infrastructure::VSphereMachine;
 use banlieue_provider_sdk::bootstrap::{init_tracing, serve_health, shutdown_signal};
 use banlieue_provider_sdk::client::build_client;
 use banlieue_provider_sdk::leader::{
@@ -27,9 +28,10 @@ use banlieue_provider_sdk::leader::{
 };
 use clap::{Args, Subcommand};
 use futures::StreamExt;
+use k8s_openapi::api::batch::v1::Job;
 use kube::{
-    Api,
-    runtime::{Controller, watcher::Config},
+    Api, ResourceExt,
+    runtime::{Controller, reflector::ObjectRef, watcher::Config},
 };
 use tracing::{error, info};
 
@@ -38,6 +40,7 @@ use crate::{
     context::Context,
     reconciler::provider,
     reconciler::vmimage,
+    reconciler::vspheremachine,
 };
 
 const DEFAULT_HEALTH_PORT: u16 = 8081;
@@ -200,6 +203,28 @@ pub fn provider_watch_config(provider_name: Option<&str>) -> Config {
     }
 }
 
+/// Map a per-zone import `Job` to the `VMImage` it belongs to, via the
+/// [`crate::reconciler::vmimage::LABEL_VMIMAGE`] label every import Job
+/// carries. Feeds `Controller::watches` so a Job's status change (created,
+/// completed, failed, deleted-and-recreated by a forced reimport)
+/// re-triggers that `VMImage`'s reconciliation immediately — event-driven,
+/// not the previous behavior of waiting on the next poll interval (found
+/// live: after deleting a Job to force a rebuild, the owning `VMImage` sat
+/// unreconciled for up to `REQUEUE_LONG_SECS` with nothing watching the Job
+/// at all). `VMImage` is cluster-scoped, so a bare name is a complete ref —
+/// no namespace to carry over from the (namespaced) Job.
+///
+/// A Job missing the label (from a stray unrelated Job in the build
+/// namespace, or a version predating this label) maps to nothing, never
+/// panics.
+#[must_use]
+pub fn vmimage_ref_from_job(job: Job) -> Option<ObjectRef<VMImage>> {
+    let name = job
+        .labels()
+        .get(crate::reconciler::vmimage::LABEL_VMIMAGE)?;
+    Some(ObjectRef::new(name))
+}
+
 /// Run the vSphere provider to completion (until a shutdown signal or a
 /// controller stream ends).
 ///
@@ -282,10 +307,15 @@ pub async fn run(cli: Cli) -> Result<()> {
     // VMImage is cluster-scoped; the per-Provider readiness check needs to
     // see every image and every Provider regardless of --namespace.
     let image_api: Api<VMImage> = Api::all(client.clone());
+    // VSphereMachine is namespaced, same scoping rule as Provider.
+    let machine_api: Api<VSphereMachine> = match cli.namespace.as_deref() {
+        Some(ns) => Api::namespaced(client.clone(), ns),
+        None => Api::all(client.clone()),
+    };
 
     info!(
         provider_name = ?cli.provider_name,
-        "starting Provider + VMImage controllers (class=vsphere)"
+        "starting Provider + VMImage + VSphereMachine controllers (class=vsphere)"
     );
     let provider_ctrl = Controller::new(
         provider_api,
@@ -299,12 +329,29 @@ pub async fn run(cli: Cli) -> Result<()> {
         }
     });
 
+    // Import Jobs live in the (namespaced) build namespace, not wherever
+    // --namespace scopes Provider/VSphereMachine — always Api::all's
+    // cluster-wide equivalent restricted to one namespace, never affected
+    // by cli.namespace.
+    let import_job_api: Api<Job> = Api::namespaced(client.clone(), &cli.build_namespace);
     let image_ctrl = Controller::new(image_api, Config::default())
-        .run(vmimage::reconcile, vmimage::error_policy, ctx)
+        .watches(import_job_api, Config::default(), vmimage_ref_from_job)
+        .run(vmimage::reconcile, vmimage::error_policy, ctx.clone())
         .for_each(|res| async move {
             match res {
                 Ok((obj, _)) => info!(kind = "VMImage", ?obj, "reconciled"),
                 Err(e) => error!(kind = "VMImage", error = %e, "reconcile error"),
+            }
+        });
+
+    // ADR-0024: clone-from-template create path only — see
+    // reconciler::vspheremachine's module doc comment for scope.
+    let machine_ctrl = Controller::new(machine_api, Config::default())
+        .run(vspheremachine::reconcile, vspheremachine::error_policy, ctx)
+        .for_each(|res| async move {
+            match res {
+                Ok((obj, _)) => info!(kind = "VSphereMachine", ?obj, "reconciled"),
+                Err(e) => error!(kind = "VSphereMachine", error = %e, "reconcile error"),
             }
         });
 
@@ -314,6 +361,9 @@ pub async fn run(cli: Cli) -> Result<()> {
         }
         () = image_ctrl => {
             info!("VMImage controller stream ended");
+        }
+        () = machine_ctrl => {
+            info!("VSphereMachine controller stream ended");
         }
         _ = shutdown_signal() => {
             info!("shutdown signal received; releasing controllers");

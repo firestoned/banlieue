@@ -53,6 +53,7 @@ mod tests {
             capabilities: ProviderCapabilities::default(),
             paused: false,
             use_content_library: false,
+            failure_domain_name_overrides: Vec::new(),
         };
         let mut p = Provider::new(name, spec);
         if !labels.is_empty() {
@@ -155,7 +156,7 @@ mod tests {
             &[],
             vec![make_fd(
                 "prod-vsphere-dc0-c0",
-                &[("dc", "DC0"), ("cluster", "C0")],
+                &[("datacenter", "DC0"), ("cluster", "C0")],
                 &[("datacenter", "DC0"), ("resourcePool", "rp-1")],
             )],
         );
@@ -163,8 +164,11 @@ mod tests {
         let fds = aggregate_failure_domains(&refs, None);
         assert_eq!(fds.len(), 1);
         assert_eq!(fds[0].name, "prod-vsphere-dc0-c0");
-        // labels + raw merged; raw `datacenter`/`resourcePool` and label `dc`/`cluster` all present.
-        assert_eq!(fds[0].attributes.get("dc").map(String::as_str), Some("DC0"));
+        // labels + raw merged; raw `datacenter`/`resourcePool` and label `datacenter`/`cluster` all present.
+        assert_eq!(
+            fds[0].attributes.get("datacenter").map(String::as_str),
+            Some("DC0")
+        );
         assert_eq!(
             fds[0].attributes.get("datacenter").map(String::as_str),
             Some("DC0")
@@ -181,8 +185,8 @@ mod tests {
             "p",
             &[],
             vec![
-                make_fd("fd-a", &[("dc", "DC0")], &[]),
-                make_fd("fd-b", &[("dc", "DC1")], &[]),
+                make_fd("fd-a", &[("datacenter", "DC0")], &[]),
+                make_fd("fd-b", &[("datacenter", "DC1")], &[]),
             ],
         );
         let refs = vec![&p];
@@ -216,13 +220,17 @@ mod tests {
 
     #[test]
     fn aggregate_spans_multiple_providers_and_skips_status_less_ones() {
-        let p1 = make_provider("prod", &[], vec![make_fd("prod-c0", &[("dc", "D0")], &[])]);
+        let p1 = make_provider(
+            "prod",
+            &[],
+            vec![make_fd("prod-c0", &[("datacenter", "D0")], &[])],
+        );
         let p2 = make_provider(
             "dr",
             &[],
             vec![
-                make_fd("dr-c0", &[("dc", "D1")], &[]),
-                make_fd("dr-c1", &[("dc", "D1")], &[]),
+                make_fd("dr-c0", &[("datacenter", "D1")], &[]),
+                make_fd("dr-c1", &[("datacenter", "D1")], &[]),
             ],
         );
         // A provider with no status contributes nothing.
@@ -243,6 +251,7 @@ mod tests {
                 capabilities: ProviderCapabilities::default(),
                 paused: false,
                 use_content_library: false,
+                failure_domain_name_overrides: Vec::new(),
             },
         );
         let refs = vec![&p1, &p2, &p3];
@@ -260,7 +269,7 @@ mod tests {
         let all = vec![make_provider(
             "prod",
             &[],
-            vec![make_fd("prod-c0", &[("dc", "D0")], &[])],
+            vec![make_fd("prod-c0", &[("datacenter", "D0")], &[])],
         )];
         let spec = VSphereClusterSpec {
             control_plane_endpoint: Some(ApiEndpoint {
