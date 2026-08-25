@@ -566,7 +566,7 @@ mod tests {
                 architecture: Architecture::Amd64,
                 guest_agent: GuestAgent::CloudInit,
                 sources: vec![vsphere_image_source("kairos-rhel98")],
-                cloud_config: None,
+                cloud_configs: vec![],
                 template: Some(VMImageTemplate {
                     root_folder: Some("templates/kairos".to_string()),
                     network: vec![VMImageTemplateNic {
@@ -791,7 +791,7 @@ mod tests {
                 architecture: Architecture::Amd64,
                 guest_agent: GuestAgent::CloudInit,
                 sources: vec![vsphere_image_source("kairos-rhel98")],
-                cloud_config: None,
+                cloud_configs: vec![],
                 template: None,
                 iso_overlay: None,
             },
@@ -912,7 +912,7 @@ mod tests {
                 architecture: Architecture::Amd64,
                 guest_agent: GuestAgent::CloudInit,
                 sources: vec![vsphere_image_source("ubuntu-22.04")],
-                cloud_config: None,
+                cloud_configs: vec![],
                 template: None,
                 iso_overlay: None,
             },

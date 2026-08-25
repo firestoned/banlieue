@@ -211,6 +211,24 @@ mod tests {
     }
 
     #[test]
+    fn metadata_does_not_double_append_domain_when_vm_name_is_already_fully_qualified() {
+        // metadata.name is a DNS-1123 subdomain and permits dots (confirmed
+        // live: a VirtualMachine named as a full FQDN applies cleanly) — a
+        // VM already named "db-01.k8s.example.internal" must not render as
+        // "db-01.k8s.example.internal.k8s.example.internal".
+        let pairs = build_guestinfo("db-01.k8s.example.internal", &[static_nic("eth0")], None);
+        let metadata = decoded_metadata(&pairs);
+        assert!(
+            metadata.contains("local-hostname: db-01.k8s.example.internal"),
+            "{metadata}"
+        );
+        assert!(
+            !metadata.contains("k8s.example.internal.k8s.example.internal"),
+            "{metadata}"
+        );
+    }
+
+    #[test]
     fn metadata_is_set_regardless_of_userdata() {
         // Independent inputs to cloud-init (datasource metadata vs.
         // userdata module config) — never gated on spec.userData being set.

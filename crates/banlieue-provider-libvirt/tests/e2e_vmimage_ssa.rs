@@ -122,7 +122,7 @@ async fn two_providers_and_the_imagebuilder_can_share_one_vmimage_status() {
                 source("vsphere", ImageSourceKind::Template, "ubuntu-22.04"),
                 source("libvirt", ImageSourceKind::Url, "https://example.com/u.raw"),
             ],
-            cloud_config: None,
+            cloud_configs: vec![],
             template: None,
             iso_overlay: None,
         },

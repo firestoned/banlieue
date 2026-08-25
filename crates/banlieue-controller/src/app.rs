@@ -19,7 +19,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context as _, Result};
-use banlieue_api::banlieue::{Provider, VMImage, VirtualMachine};
+use banlieue_api::banlieue::{Provider, VMClass, VMImage, VirtualMachine};
 use banlieue_api::infrastructure::{VSphereCluster, VSphereMachine};
 use banlieue_provider_sdk::bootstrap::{init_tracing, serve_health, shutdown_signal};
 use banlieue_provider_sdk::client::build_client;
@@ -172,9 +172,30 @@ pub async fn run(cli: Cli) -> Result<()> {
     // referencing an image whose status flipped.
     let image_api: Api<VMImage> = Api::all(client.clone());
 
+    // VMClass is cluster-scoped; the class watcher requeues every VM
+    // referencing a class whose spec changed (ADR-0035).
+    let class_api: Api<VMClass> = Api::all(client.clone());
+
+    // Provider selectors (`spec.placement.providerSelector`/
+    // `failureDomainSelector`) match by label, not by name, so a Provider
+    // edit can change *any* VirtualMachine's scheduling decision — unlike
+    // VMImage/VMClass, there's no name to filter on. Requeue every VM on
+    // any Provider event (ADR-0035); mirrors the VSphereCluster
+    // controller's own identical `.watches(provider_api, ...)` below.
+    // Provider edits are rare and operator-driven, so requeuing all is
+    // cheap. Found live: without this, a Provider label change left an
+    // already-scheduled VirtualMachine's placement stale until the next
+    // periodic `requeue_default` tick instead of reacting immediately.
+    let vm_provider_api: Api<Provider> = match cli.namespace.as_deref() {
+        Some(ns) => Api::namespaced(client.clone(), ns),
+        None => Api::all(client.clone()),
+    };
+
     info!("starting VirtualMachine controller");
     let controller = Controller::new(vm_api, Config::default());
     let vm_store = controller.store();
+    let vm_store_for_class = vm_store.clone();
+    let vm_store_for_provider = vm_store.clone();
 
     let controller_fut = controller
         .owns(vsphere_api, Config::default())
@@ -190,6 +211,28 @@ pub async fn run(cli: Cli) -> Result<()> {
                 .map(|vm| ObjectRef::from_obj(vm.as_ref()))
                 .collect::<Vec<_>>()
         })
+        .watches(class_api, Config::default(), move |class: VMClass| {
+            // Same rationale as the VMImage watcher above, keyed on
+            // spec.class_ref.name instead (ADR-0035).
+            let class_name = class.name_any();
+            vm_store_for_class
+                .state()
+                .into_iter()
+                .filter(move |vm| vm.spec.class_ref.name == class_name)
+                .map(|vm| ObjectRef::from_obj(vm.as_ref()))
+                .collect::<Vec<_>>()
+        })
+        .watches(
+            vm_provider_api,
+            Config::default(),
+            move |_provider: Provider| {
+                vm_store_for_provider
+                    .state()
+                    .into_iter()
+                    .map(|vm| ObjectRef::from_obj(vm.as_ref()))
+                    .collect::<Vec<_>>()
+            },
+        )
         .run(reconcile, error_policy, ctx.clone())
         .for_each(|res| async move {
             match res {

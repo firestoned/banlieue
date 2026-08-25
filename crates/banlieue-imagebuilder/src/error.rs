@@ -16,6 +16,10 @@ pub enum Error {
     /// JSON serialization or deserialization failure.
     #[error("serde: {0}")]
     Serde(#[from] serde_json::Error),
+
+    /// Cloud-config merge failure (ADR-0037).
+    #[error("cloud-config merge: {0}")]
+    CloudConfigMerge(#[from] crate::cloud_config_merge::MergeError),
 }
 
 /// Convenient alias.

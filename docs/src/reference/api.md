@@ -672,7 +672,7 @@ Cluster-scoped: a VMImage is shared by VirtualMachines in any namespace.
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `architecture` | string | Yes | Guest CPU architecture. Failure domains whose hosts cannot run this architecture are filtered out by the scheduler. Allowed: `amd64`, `arm64`. |
-| `cloudConfig` | object |  | Optional default cloud-config baked into the built artifact for `Url`-kind sources. Resolved by `banlieue-imagebuilder` and passed to the kairos-operator `OSArtifact` as `cloudConfigRef` (`auroraboot build-iso --cloud-config`). SecretRef-first; see [`CloudConfigSource`] and ADR-0020. Ignored for non-`Url` sources. |
+| `cloudConfigs` | object[] |  | Layered cloud-configs baked into the built artifact for `Url`-kind sources (ADR-0037). `banlieue-imagebuilder` fetches each referenced Secret in list order, deep-merges their YAML content (maps deep-merge, lists concatenate, type-mismatch errors), SSA-applies a single merged Secret (`<vmimage-name>-cloud-config-merged`), and passes *that* to the kairos-operator `OSArtifact` as `cloudConfigRef` (`auroraboot build-iso --cloud-config`). Empty list = no cloud-config. Index 0 is the base; each subsequent entry layers on top. SecretRef-first; see [`CloudConfigSource`] and ADR-0020. Ignored for non-`Url` sources. |
 | `guestAgent` | string |  | Guest agent contract this image is built to support; determines how `VirtualMachine.spec.userData` is delivered. Allowed: `cloud-init`, `ignition`, `sysprep`, `none`. |
 | `isoOverlay` | object |  | Additional files overlaid onto a built ISO for `Url`-kind vSphere sources (e.g. a hand-verified `grub.cfg`). Resolved by `banlieue-imagebuilder` into the kairos-operator `OSArtifact`'s `spec.volumes[]` + `spec.artifacts.overlayISOVolume` — the same `auroraboot build-iso --overlay-iso` mechanism a hand-run ISO-build pipeline would use. See [`IsoOverlaySource`] and ADR-0022. Ignored for `cloudImage`-kind builds and non-`Url` sources. |
 | `osDistribution` | string | Yes | Free-form distribution string. Examples: ubuntu, rhel, debian, fedora-coreos, windows-server. |
@@ -681,19 +681,24 @@ Cluster-scoped: a VMImage is shared by VirtualMachines in any namespace.
 | `sources` | object[] | Yes | Per-provider source mappings — one backend binding for this catalog entry per `providerClass` you intend to schedule VMs onto ("one name, many backends", see the type-level doc comment above). |
 | `template` | object |  | How the backend **template** is built from a `Url` source (root folder, network, disk, CPU / memory / firmware / NIC, force knobs). Every field is optional and falls back to a built-in default. Only meaningful for `Url` sources; ignored for `Template` / `BackingFile`. See [`VMImageTemplate`] and ADR-0020. |
 
-#### `.spec.cloudConfig`
+#### `.spec.cloudConfigs[]`
 
-Optional default cloud-config baked into the built artifact for
-`Url`-kind sources. Resolved by `banlieue-imagebuilder` and passed to
+Layered cloud-configs baked into the built artifact for `Url`-kind
+sources (ADR-0037). `banlieue-imagebuilder` fetches each referenced
+Secret in list order, deep-merges their YAML content (maps deep-merge,
+lists concatenate, type-mismatch errors), SSA-applies a single merged
+Secret (`<vmimage-name>-cloud-config-merged`), and passes *that* to
 the kairos-operator `OSArtifact` as `cloudConfigRef`
-(`auroraboot build-iso --cloud-config`). SecretRef-first; see
-[`CloudConfigSource`] and ADR-0020. Ignored for non-`Url` sources.
+(`auroraboot build-iso --cloud-config`). Empty list = no cloud-config.
+Index 0 is the base; each subsequent entry layers on top.
+SecretRef-first; see [`CloudConfigSource`] and ADR-0020.
+Ignored for non-`Url` sources.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `secretRef` | object |  | Key in a Secret in the imagebuild namespace holding the cloud-config YAML (key defaults to [`DEFAULT_CLOUD_CONFIG_KEY`]). |
 
-##### `.spec.cloudConfig.secretRef`
+##### `.spec.cloudConfigs[].secretRef`
 
 Key in a Secret in the imagebuild namespace holding the cloud-config
 YAML (key defaults to [`DEFAULT_CLOUD_CONFIG_KEY`]).

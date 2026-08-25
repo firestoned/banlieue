@@ -174,12 +174,29 @@ pub fn build_guestinfo(
 /// `cc_set_hostname` derives both the short hostname and the FQDN from one
 /// dotted value, so no separate `fqdn` key exists to set (ADR-0029).
 fn build_guestinfo_metadata(vm_name: &str, domain: Option<&str>) -> String {
-    let local_hostname = match domain {
-        Some(domain) => format!("{vm_name}.{domain}"),
-        None => vm_name.to_string(),
-    };
+    let local_hostname = local_hostname(vm_name, domain);
     let yaml = format!("instance-id: {vm_name}\nlocal-hostname: {local_hostname}\n");
     base64::engine::general_purpose::STANDARD.encode(yaml)
+}
+
+/// Combine `vm_name` and `domain` into the FQDN `local-hostname` value,
+/// without double-appending the domain when `vm_name` is already fully
+/// qualified with it. `metadata.name` is a DNS-1123 subdomain and permits
+/// dots (confirmed live: a `VirtualMachine` named as a full FQDN applies
+/// cleanly), so a VM already named `db-01.example.com` with `domain =
+/// Some("example.com")` must render as `db-01.example.com`, not
+/// `db-01.example.com.example.com`. Suffix match is case-insensitive — DNS
+/// names are case-insensitive.
+fn local_hostname(vm_name: &str, domain: Option<&str>) -> String {
+    let Some(domain) = domain else {
+        return vm_name.to_string();
+    };
+    let suffix = format!(".{}", domain.to_ascii_lowercase());
+    if vm_name.to_ascii_lowercase().ends_with(&suffix) {
+        vm_name.to_string()
+    } else {
+        format!("{vm_name}.{domain}")
+    }
 }
 
 /// Outcome of [`ensure_vm`] — what the caller should patch onto

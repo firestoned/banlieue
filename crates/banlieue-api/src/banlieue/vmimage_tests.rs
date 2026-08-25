@@ -25,7 +25,7 @@ mod tests {
             architecture: Architecture::Amd64,
             guest_agent: GuestAgent::default(),
             sources: vec![sample_image_source("vsphere")],
-            cloud_config: None,
+            cloud_configs: vec![],
             template: None,
             iso_overlay: None,
         }
@@ -564,33 +564,71 @@ mod tests {
     }
 
     // ----------------------------------------------------------------------
-    // VMImageSpec.cloudConfig (ADR-0020)
+    // VMImageSpec.cloudConfigs (ADR-0037)
     // ----------------------------------------------------------------------
 
     #[test]
-    fn vmimage_spec_omits_cloud_config_when_none() {
+    fn vmimage_spec_omits_cloud_configs_when_empty() {
         let s = minimal_vmimage_spec();
-        assert!(s.cloud_config.is_none());
+        assert!(s.cloud_configs.is_empty());
         let json = serde_json::to_value(&s).unwrap();
-        assert!(!json.as_object().unwrap().contains_key("cloudConfig"));
+        assert!(!json.as_object().unwrap().contains_key("cloudConfigs"));
     }
 
     #[test]
-    fn vmimage_spec_with_cloud_config_secret_ref_round_trip() {
+    fn vmimage_spec_with_single_cloud_config_round_trip() {
         use crate::common::{CloudConfigSource, KeySelector};
         let s = VMImageSpec {
-            cloud_config: Some(CloudConfigSource {
+            cloud_configs: vec![CloudConfigSource {
                 secret_ref: Some(KeySelector {
                     name: "kairos-base-cloud-config".to_string(),
                     key: None,
                 }),
-            }),
+            }],
             ..minimal_vmimage_spec()
         };
         let json = serde_json::to_value(&s).unwrap();
         assert_eq!(
-            json["cloudConfig"]["secretRef"]["name"],
+            json["cloudConfigs"][0]["secretRef"]["name"],
             "kairos-base-cloud-config"
+        );
+        let back: VMImageSpec = serde_json::from_value(json).unwrap();
+        assert_eq!(back, s);
+    }
+
+    #[test]
+    fn vmimage_spec_with_layered_cloud_configs_round_trip() {
+        use crate::common::{CloudConfigSource, KeySelector};
+        let s = VMImageSpec {
+            cloud_configs: vec![
+                CloudConfigSource {
+                    secret_ref: Some(KeySelector {
+                        name: "kairos-base-cloud-config".to_string(),
+                        key: None,
+                    }),
+                },
+                CloudConfigSource {
+                    secret_ref: Some(KeySelector {
+                        name: "kairos-crowdstrike-overlay".to_string(),
+                        key: Some("90_crowdstrike.yaml".to_string()),
+                    }),
+                },
+            ],
+            ..minimal_vmimage_spec()
+        };
+        let json = serde_json::to_value(&s).unwrap();
+        assert_eq!(json["cloudConfigs"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            json["cloudConfigs"][0]["secretRef"]["name"],
+            "kairos-base-cloud-config"
+        );
+        assert_eq!(
+            json["cloudConfigs"][1]["secretRef"]["name"],
+            "kairos-crowdstrike-overlay"
+        );
+        assert_eq!(
+            json["cloudConfigs"][1]["secretRef"]["key"],
+            "90_crowdstrike.yaml"
         );
         let back: VMImageSpec = serde_json::from_value(json).unwrap();
         assert_eq!(back, s);

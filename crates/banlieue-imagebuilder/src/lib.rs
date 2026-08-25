@@ -21,6 +21,7 @@
 //! the `banlieue imagebuilder` subcommand (see ADR-0004). It has no `main`.
 
 pub mod app;
+pub mod cloud_config_merge;
 pub mod context;
 pub mod error;
 pub mod importer_image;
