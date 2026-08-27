@@ -12,7 +12,7 @@
 # ADR-0021) — see docs/src/guides/using-banlieue-imagebuilder.md for the full
 # walkthrough, including which parts of this pipeline are implemented today.
 #
-# CONTRACT (ADR-0021): the cloud-config referenced by `cloudConfig` below MUST
+# CONTRACT (ADR-0021): the cloud-config referenced by `cloudConfigs` below MUST
 # set `install.poweroff: true` / `install.reboot: false`, at least one
 # `admin`-group user, and an `after-install-chroot` stage wiping per-machine
 # identity, e.g.:
@@ -61,14 +61,17 @@ spec:
       # (security review 2026-07-31): mutable tags are rejected at admission when the policy is
       # installed. Digest resolved from quay.io 2026-07-31.
       importFrom: quay.io/kairos/ubuntu:24.04-standard-amd64-generic-v3.7.2-k0s-v1.34.3-k0s.0@sha256:e4860078c024269e81ce561ce91cf9639a4e75c23ea4cd32d3405005087192a7
-  # Optional default cloud-config baked into the built ISO (ADR-0020).
-  # secretRef-first: names a Secret in the imagebuild namespace; its value is
-  # passed to the OSArtifact as `cloudConfigRef` (auroraboot
-  # `build-iso --cloud-config`). Key defaults to `cloud-config.yaml`.
-  cloudConfig:
-    secretRef:
-      name: kairos-base-cloud-config
-      key: cloud-config.yaml
+  # Layered cloud-configs baked into the built ISO (ADR-0037).
+  # banlieue-imagebuilder fetches each Secret in list order, deep-merges
+  # their YAML (maps deep-merge, lists concatenate, type-mismatch errors),
+  # SSA-applies a merged Secret, and passes that to the OSArtifact's
+  # `cloudConfigRef` (`auroraboot build-iso --cloud-config`). Index 0 is the
+  # base; each subsequent entry layers on top. Key defaults to
+  # `cloud-config.yaml`.
+  cloudConfigs:
+    - secretRef:
+        name: kairos-base-cloud-config
+        key: cloud-config.yaml
   # Optional extra files overlaid onto the built ISO (ADR-0022), e.g. a
   # hand-verified grub.cfg, via kairos-operator's overlayISOVolume mechanism
   # (auroraboot build-iso --overlay-iso). Only the Secret's name and the

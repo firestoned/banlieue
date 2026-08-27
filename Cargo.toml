@@ -62,7 +62,7 @@ chrono = { version = "0.4", features = ["serde"] }
 async-trait = "0.1"
 # Artifact integrity for provider import Jobs (SEC-004): the import subcommand
 # hashes the built raw disk before streaming it to a backend.
-sha2 = "0.10"
+sha2 = "0.11"
 
 # vSphere (provider-vsphere only; pinned here so the long compile is cached at
 # workspace level and any future provider that needs it gets the same pin).
@@ -70,7 +70,7 @@ sha2 = "0.10"
 # reqwest::Client and vim_rs never builds one (so `reqwest/default` is never
 # pulled in). vim_rs 0.5 is plain crates.io — the old 0.4.x vendor/patch pipeline
 # that flipped reqwest to rustls is gone (noclue/vim_rs#37 shipped in 0.5).
-vim_rs = { version = "0.5", default-features = false, features = ["defaults"] }
+vim_rs = { version = "0.6", default-features = false, features = ["defaults"] }
 
 # reqwest — direct dep of provider-vsphere for the BYOC HTTP client (ADR-0008):
 # banlieue builds the reqwest::Client (CA bundle, insecure flag) and injects it

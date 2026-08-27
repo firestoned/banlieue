@@ -146,7 +146,7 @@ mod tests {
                     import_from: None,
                     checksum: None,
                 }],
-                cloud_config: None,
+                cloud_configs: vec![],
                 template: None,
                 iso_overlay: None,
             },

@@ -52,6 +52,43 @@ mod tests {
     }
 
     #[test]
+    fn fqdn_does_not_double_append_domain_when_vm_name_is_already_fully_qualified() {
+        // metadata.name is a DNS-1123 subdomain and permits dots (confirmed
+        // live: a VirtualMachine named as a full FQDN applies cleanly) — a
+        // VM already named "bar01.k8s.example.internal" must not render as
+        // "bar01.k8s.example.internal.k8s.example.internal".
+        let cfg = static_cfg();
+        let ctx = GuestDataContext::from_static("bar01.k8s.example.internal", Some(&cfg));
+        assert_eq!(
+            render_placeholders("${FQDN}", &ctx),
+            "bar01.k8s.example.internal"
+        );
+    }
+
+    #[test]
+    fn fqdn_domain_suffix_match_is_case_insensitive() {
+        let cfg = static_cfg();
+        let ctx = GuestDataContext::from_static("bar01.K8S.EXAMPLE.INTERNAL", Some(&cfg));
+        assert_eq!(
+            render_placeholders("${FQDN}", &ctx),
+            "bar01.K8S.EXAMPLE.INTERNAL"
+        );
+    }
+
+    #[test]
+    fn fqdn_still_appends_when_vm_name_only_partially_overlaps_domain() {
+        // "bar01.example.internal" is not suffixed by ".k8s.example.internal"
+        // — a partial/different domain must still get the full domain
+        // appended, not be mistaken for already-qualified.
+        let cfg = static_cfg();
+        let ctx = GuestDataContext::from_static("bar01.example.internal", Some(&cfg));
+        assert_eq!(
+            render_placeholders("${FQDN}", &ctx),
+            "bar01.example.internal.k8s.example.internal"
+        );
+    }
+
+    #[test]
     fn substitutes_all_static_network_placeholders() {
         let cfg = static_cfg();
         let ctx = GuestDataContext::from_static("bar01", Some(&cfg));

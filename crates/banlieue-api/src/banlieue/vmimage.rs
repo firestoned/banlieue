@@ -83,13 +83,18 @@ pub struct VMImageSpec {
     ))]
     pub sources: Vec<ImageSource>,
 
-    /// Optional default cloud-config baked into the built artifact for
-    /// `Url`-kind sources. Resolved by `banlieue-imagebuilder` and passed to
+    /// Layered cloud-configs baked into the built artifact for `Url`-kind
+    /// sources (ADR-0037). `banlieue-imagebuilder` fetches each referenced
+    /// Secret in list order, deep-merges their YAML content (maps deep-merge,
+    /// lists concatenate, type-mismatch errors), SSA-applies a single merged
+    /// Secret (`<vmimage-name>-cloud-config-merged`), and passes *that* to
     /// the kairos-operator `OSArtifact` as `cloudConfigRef`
-    /// (`auroraboot build-iso --cloud-config`). SecretRef-first; see
-    /// [`CloudConfigSource`] and ADR-0020. Ignored for non-`Url` sources.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cloud_config: Option<CloudConfigSource>,
+    /// (`auroraboot build-iso --cloud-config`). Empty list = no cloud-config.
+    /// Index 0 is the base; each subsequent entry layers on top.
+    /// SecretRef-first; see [`CloudConfigSource`] and ADR-0020.
+    /// Ignored for non-`Url` sources.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cloud_configs: Vec<CloudConfigSource>,
 
     /// How the backend **template** is built from a `Url` source (root
     /// folder, network, disk, CPU / memory / firmware / NIC, force knobs).

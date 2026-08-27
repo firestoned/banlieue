@@ -213,7 +213,7 @@ pub async fn verify_checksum(path: &Path, expected: &str) -> Result<()> {
                 }
                 h.update(&buf[..n]);
             }
-            format!("{:x}", h.finalize())
+            hex_encode(&h.finalize())
         }
         "sha512" => {
             let mut h = sha2::Sha512::new();
@@ -227,7 +227,7 @@ pub async fn verify_checksum(path: &Path, expected: &str) -> Result<()> {
                 }
                 h.update(&buf[..n]);
             }
-            format!("{:x}", h.finalize())
+            hex_encode(&h.finalize())
         }
         other => {
             return Err(Error::Invalid {
@@ -252,6 +252,14 @@ pub async fn verify_checksum(path: &Path, expected: &str) -> Result<()> {
     }
     info!(path = %path.display(), algorithm = %alg, "artifact checksum verified");
     Ok(())
+}
+
+/// Lowercase hex encoding of a digest. `sha2`'s `Output` (a `hybrid_array::Array`,
+/// as of `digest` 0.11) does not implement `LowerHex` the way the old
+/// `GenericArray`-backed output did, so this replaces a `format!("{:x}", ...)`
+/// that stopped compiling on the `sha2` 0.11 upgrade.
+fn hex_encode(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Run one import to completion.

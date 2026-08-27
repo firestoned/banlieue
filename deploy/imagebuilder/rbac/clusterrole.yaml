@@ -3,10 +3,12 @@
 #
 # Cluster-wide role for banlieue-imagebuilder (ADR-0010).
 #
-# Least privilege: this role never touches Secrets, ConfigMaps, or any
-# backend/provider CRD — it only creates/reads OSArtifact CRs (kairos-operator,
-# a CRD it does not own) and patches VMImage.status.rawDiskArtifact. It never
-# reads credentials of any kind.
+# Least privilege: this role only reads Secrets referenced by
+# VMImage.spec.cloudConfigs (ADR-0037), creates/reads OSArtifact CRs
+# (kairos-operator, a CRD it does not own), and patches
+# VMImage.status.buildArtifact. It never reads credentials of any kind;
+# Secret access is scoped to the imagebuild namespace (the Secrets
+# containing cloud-config YAML, not provider credentials).
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -57,6 +59,15 @@ rules:
   - apiGroups: ["events.k8s.io"]
     resources: ["events"]
     verbs: ["create", "patch"]
+
+  # Secrets in the imagebuild namespace: read cloud-config Secrets referenced
+  # by VMImage.spec.cloudConfigs, and create/patch the merged cloud-config
+  # Secret owned by each VMImage (ADR-0037). This is the first time
+  # banlieue-imagebuilder reads Secret *content* rather than just referencing
+  # Secrets by name — call this out explicitly.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch", "create", "patch"]
 
   # Leases for leader election. Same SDK pattern as every other banlieue role.
   - apiGroups: ["coordination.k8s.io"]

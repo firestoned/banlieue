@@ -56,12 +56,33 @@ pub fn render_placeholders(raw: &str, ctx: &GuestDataContext<'_>) -> String {
         .unwrap_or_default();
 
     raw.replace("${VM_NAME}", ctx.vm_name)
-        .replace("${FQDN}", &format!("{}.{domain}", ctx.vm_name))
+        .replace("${FQDN}", &fqdn(ctx.vm_name, domain))
         .replace("${IP}", address)
         .replace("${PREFIX}", &prefix)
         .replace("${GATEWAY}", gateway)
         .replace("${DNS}", &dns)
         .replace("${DOMAIN}", domain)
+}
+
+/// Combine `vm_name` and `domain` into an FQDN, matching `${FQDN}`'s
+/// documented "domain empty -> trailing dot" behavior — but without
+/// double-appending the domain when `vm_name` is already fully qualified
+/// with it. `metadata.name` is a DNS-1123 subdomain, which permits dots
+/// (confirmed live: a `VirtualMachine` named as a full FQDN applies
+/// cleanly), so a VM named `db-01.example.com` with `domain =
+/// "example.com"` must render as `db-01.example.com`, not
+/// `db-01.example.com.example.com`. Suffix match is case-insensitive — DNS
+/// names are case-insensitive.
+fn fqdn(vm_name: &str, domain: &str) -> String {
+    if domain.is_empty() {
+        return format!("{vm_name}.");
+    }
+    let suffix = format!(".{}", domain.to_ascii_lowercase());
+    if vm_name.to_ascii_lowercase().ends_with(&suffix) {
+        vm_name.to_string()
+    } else {
+        format!("{vm_name}.{domain}")
+    }
 }
 
 #[cfg(test)]

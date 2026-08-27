@@ -1,5 +1,191 @@
 # Changelog
 
+## [2026-08-25] - VMImage: layered cloud-config (base + overlays) — ADR-0037
+
+**Author:** Cascade (pair-programming with Erick Bourgeois)
+
+### Breaking Change
+- `VMImageSpec.cloudConfig` (singular `Option<CloudConfigSource>`) replaced by
+  `cloudConfigs` (plural `Vec<CloudConfigSource>`). Empty list = no cloud-config.
+
+### Added
+- `crates/banlieue-imagebuilder/src/cloud_config_merge.rs`: pure YAML deep-merge
+  helper — maps deep-merge (later wins), lists concatenate, type-mismatch is a
+  hard error. 10 unit tests.
+- `merge_and_apply_cloud_configs()` in the imagebuilder reconciler: fetches each
+  referenced Secret, merges their YAML, SSA-applies a single
+  `<vmimage-name>-cloud-config-merged` Secret (owner-referenced to the VMImage),
+  and passes *that* to `OSArtifact.spec.artifacts.cloudConfigRef`.
+- `MergeError` variant added to `banlieue_imagebuilder::Error`.
+- RBAC: `deploy/imagebuilder/rbac/clusterrole.yaml` now grants
+  `get/list/watch/create/patch` on `secrets` (cloud-config content + merged
+  Secret, not credentials).
+
+### Changed
+- `crates/banlieue-api/src/banlieue/vmimage.rs`: `cloud_config` → `cloud_configs`.
+- `crates/banlieue-imagebuilder/Cargo.toml`: added `serde_yaml` dependency.
+- Updated all test files across controller, provider-vsphere, provider-libvirt.
+- `examples/07-vmimage-kairos-url-source.yaml`: `cloudConfig` → `cloudConfigs` (list).
+- Regenerated CRDs (`deploy/crds/banlieue.io_vmimages.yaml`) and API docs.
+
+## [2026-08-24 23:30] - Upgrade sha2 to 0.11.0 and vim_rs to 0.6.0
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `Cargo.toml`/`Cargo.lock`: `sha2` 0.10→0.11, `vim_rs` 0.5→0.6 (`digest`
+  0.10→0.11, `block-buffer`/`crypto-common` bumped, `generic-array` replaced
+  by `hybrid-array`, `vim_macros` 0.5→0.6) — this half already landed on
+  this branch via a concurrent commit; verified here rather than re-applied.
+- `crates/banlieue-provider-libvirt/src/import.rs`,
+  `crates/banlieue-provider-vsphere/src/import.rs`: `verify_checksum`'s
+  `format!("{:x}", h.finalize())` no longer compiles under `sha2` 0.11 —
+  `digest`'s `Output` type moved from `generic_array::GenericArray` (which
+  implemented `LowerHex`) to `hybrid_array::Array` (which does not). Added
+  a small local `hex_encode(&[u8]) -> String` helper in each file (no new
+  dependency) and switched both call sites to it.
+- No code changes needed for the `vim_rs` 0.5→0.6 bump — the crate builds
+  and every existing test passes unchanged; the version bump did not touch
+  any API surface `banlieue-provider-vsphere`'s BYOC client actually uses.
+
+### Why
+Both were open, previously-unmerged Dependabot PRs (#13, #12) that failed
+CI as originally opened. Picked up directly in this branch per request:
+bump, let the compiler point at exactly what broke, fix it, verify nothing
+else regressed. `sha2`'s break was real and mechanical (confirmed via the
+actual compiler error, not guessed); `vim_rs`'s bump turned out to be a
+no-op for this codebase's usage despite being a semver-breaking range for
+a pre-1.0 crate (ADR-0008 already flags `vim_rs` as "expect breaking
+changes pre-1.0" — this particular bump just didn't hit anything we call).
+
+### Verification
+- `cargo build --workspace`: clean.
+- `cargo fmt --all -- --check`: clean.
+- `cargo clippy --all-targets --all-features -- -D warnings`: clean.
+- `cargo test --workspace`: every crate passes; the sole failure
+  (`client::vim::vim_tests::request_times_out_against_a_hung_endpoint`) is
+  the same pre-existing local-environment flake (proxy interception on
+  `127.0.0.1`, confirmed via identical HTTP 403 signature) diagnosed
+  earlier this session — reproduced in isolation, unrelated to this
+  upgrade, and in an untouched test file.
+
+### Impact
+- [x] Requires cluster rollout (every provider/controller image rebuilds
+      against the new lockfile)
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-08-24 23:10] - Fix: FQDN placeholders/guestinfo double-appended domain onto an already-qualified VM name
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `crates/banlieue-provider-sdk/src/guestdata.rs` (`render_placeholders`'s
+  `${FQDN}` substitution) and
+  `crates/banlieue-provider-vsphere/src/reconciler/vspheremachine.rs`
+  (`build_guestinfo_metadata`'s `local-hostname`): both unconditionally
+  appended `.{domain}` to the VM name. `metadata.name` is a DNS-1123
+  subdomain and permits dots (confirmed live earlier this session — a
+  `VirtualMachine` named as a full FQDN applies cleanly with zero code
+  changes), so a VM already named e.g. `db-01.example.com` with
+  `domain: example.com` rendered as `db-01.example.com.example.com`.
+  Both now check (case-insensitively, since DNS names are
+  case-insensitive) whether the VM name already ends with `.{domain}`
+  before appending — extracted as a small pure `fqdn`/`local_hostname`
+  helper in each file so the fix is unit-tested directly.
+
+### Why
+Asked to stop double-appending the domain in the guestinfo calls, as a
+direct follow-up to establishing that a `VirtualMachine`'s `metadata.name`
+can itself already be a full FQDN.
+
+### Impact
+- [ ] Breaking change (unreleased — no consumers exist yet)
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Requires rebuilding/redeploying `banlieue-controller` (uses
+      `render_placeholders` for `spec.userData` rendering) and
+      `banlieue-provider-vsphere`.
+
+### Verification
+- `cargo fmt` / `cargo clippy --all-targets --all-features -- -D warnings`
+  for both crates ✅
+- `cargo test -p banlieue-provider-sdk -p banlieue-provider-vsphere` ✅ —
+  `banlieue-provider-sdk` 63 passed (+3), `banlieue-provider-vsphere` 180
+  passed (+1)
+
+## [2026-08-24 22:45] - Scope live migration: same-class first, cross-class deferred (ADR-0036)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0036-live-migration-phased-approach.md` — Proposed. Design-only,
+  no code: splits "live migration" into same-provider-class (Phase A,
+  e.g. vSphere `RelocateVM_Task`/vMotion-equivalent — buildable today) and
+  cross-provider-class (Phase B, e.g. vsphere→libvirt — needs a portable
+  disk artifact contract that doesn't exist anywhere in this codebase
+  yet, explicitly out of scope for now). Also decides: `Recreate` needs
+  its own distinct status reason so it's never visually conflated with a
+  future real `Migrating` state.
+- `~/dev/roadmaps/banlieue/51-LIVE-MIGRATION.md` — Phase A execution plan
+  (preconditions, per-provider-class relocate-capability research,
+  schema/reconciler/provider/test/doc tasks, open questions, gotchas),
+  following the same "deferred feature" shape as `50-IPAM-POOL-INTEGRATION.md`.
+  Added to the roadmap README's index table.
+
+### Why
+Directly motivated by ADR-0035 landing moments earlier: making placement
+drift detection prompt (event-driven) means the existing recreate-only
+migration path (`migration.rs`, already self-documented as "Phase 2 work"
+for live migration) can now fire sooner and more often under
+`migrationPolicy: Automatic` — the gap between detecting drift and
+handling it gracefully is now more consequential than when both were
+equally slow. User asked explicitly to "ADR this up and create a roadmap."
+
+### Impact
+- [ ] Breaking change (unreleased — no consumers exist yet)
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only — no code changes; `migrationPolicy: Automatic`
+      continues to mean destroy-and-rebuild until Phase A is actually
+      implemented per the new roadmap.
+
+## [2026-08-24 22:20] - VirtualMachine controller now watches Provider and VMClass (ADR-0035)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0035-virtualmachine-watches-provider-and-vmclass.md`.
+- `crates/banlieue-controller/src/app.rs`: the `VirtualMachine` `Controller`
+  now `.watches()` `VMClass` (filtered by `spec.classRef.name`, mirroring
+  the existing `VMImage` watcher) and `Provider` (unfiltered — requeues
+  every `VirtualMachine` in the store, mirroring the `VSphereCluster`
+  controller's own existing `Provider` watcher, since
+  `providerSelector`/`failureDomainSelector` match by label with no name
+  to filter on).
+
+### Why
+Live report: editing a `Provider`'s labels to fix a selector mismatch
+against an existing `VirtualMachine` didn't re-trigger scheduling —
+`reconcile()` reads `Provider`/`VMClass` fresh every pass, but nothing
+watched either for changes, so a VM only ever noticed on the next
+`requeue_default()` tick. Confirmed self-corrects eventually via that
+poll, but the point of `.owns()`/`.watches()` elsewhere in this codebase
+is exactly to avoid depending on polling for reactions to real events.
+
+### Impact
+- [ ] Breaking change (unreleased — no consumers exist yet)
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Requires rebuilding/redeploying `banlieue-controller`.
+
+### Verification
+- `cargo fmt -p banlieue-controller -- --check` ✅
+- `cargo clippy -p banlieue-controller --all-targets --all-features -- -D warnings` ✅
+- `cargo test -p banlieue-controller` ✅ (87 passed — watch-wiring itself
+  isn't unit-testable without a fake kube client, per this codebase's own
+  established convention; verified by build + live behavior only)
+
 ## [2026-08-24 21:50] - Fix banlieue-controller's own narrow status patches + detect-and-report self-heal (ADR-0034)
 
 **Author:** Erick Bourgeois

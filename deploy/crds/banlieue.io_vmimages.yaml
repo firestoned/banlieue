@@ -89,32 +89,48 @@ spec:
                 - amd64
                 - arm64
                 type: string
-              cloudConfig:
+              cloudConfigs:
                 description: |-
-                  Optional default cloud-config baked into the built artifact for
-                  `Url`-kind sources. Resolved by `banlieue-imagebuilder` and passed to
+                  Layered cloud-configs baked into the built artifact for `Url`-kind
+                  sources (ADR-0037). `banlieue-imagebuilder` fetches each referenced
+                  Secret in list order, deep-merges their YAML content (maps deep-merge,
+                  lists concatenate, type-mismatch errors), SSA-applies a single merged
+                  Secret (`<vmimage-name>-cloud-config-merged`), and passes *that* to
                   the kairos-operator `OSArtifact` as `cloudConfigRef`
-                  (`auroraboot build-iso --cloud-config`). SecretRef-first; see
-                  [`CloudConfigSource`] and ADR-0020. Ignored for non-`Url` sources.
-                nullable: true
-                properties:
-                  secretRef:
-                    description: |-
-                      Key in a Secret in the imagebuild namespace holding the cloud-config
-                      YAML (key defaults to [`DEFAULT_CLOUD_CONFIG_KEY`]).
-                    nullable: true
-                    properties:
-                      key:
-                        description: Key within the object's `data`. Defaults are caller-defined.
-                        nullable: true
-                        type: string
-                      name:
-                        description: Name of the ConfigMap / Secret in the referrer's namespace.
-                        type: string
-                    required:
-                    - name
-                    type: object
-                type: object
+                  (`auroraboot build-iso --cloud-config`). Empty list = no cloud-config.
+                  Index 0 is the base; each subsequent entry layers on top.
+                  SecretRef-first; see [`CloudConfigSource`] and ADR-0020.
+                  Ignored for non-`Url` sources.
+                items:
+                  description: |-
+                    Source of a default cloud-config baked into a built image artifact.
+
+                    Mirrors [`CABundleSource`]'s value-or-source shape, but is **secretRef-first**
+                    (ADR-0020): only `secret_ref` is implemented today, because kairos-operator's
+                    `OSArtifact.spec.cloudConfigRef` is itself Secret-only and
+                    `banlieue-imagebuilder` passes this Secret straight through. The `inline` and
+                    `config_map_ref` variants are reserved for a later change (they will resolve
+                    by materialising an imagebuilder-owned derived Secret); adding them is an
+                    additive, non-breaking CRD change.
+                  properties:
+                    secretRef:
+                      description: |-
+                        Key in a Secret in the imagebuild namespace holding the cloud-config
+                        YAML (key defaults to [`DEFAULT_CLOUD_CONFIG_KEY`]).
+                      nullable: true
+                      properties:
+                        key:
+                          description: Key within the object's `data`. Defaults are caller-defined.
+                          nullable: true
+                          type: string
+                        name:
+                          description: Name of the ConfigMap / Secret in the referrer's namespace.
+                          type: string
+                      required:
+                      - name
+                      type: object
+                  type: object
+                type: array
               guestAgent:
                 default: cloud-init
                 description: |-

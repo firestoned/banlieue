@@ -11,7 +11,7 @@
 //! `status.phase`, and mirror progress into `VMImage.status.buildArtifact`.
 //! The requested artifact is typed by the `Url` source's provider class:
 //! `iso` for vSphere (`auroraboot build-iso`, with a baked cloud-config from
-//! `spec.cloudConfig`) or `cloudImage` (raw) for libvirt. `VMImage.status
+//! `spec.cloudConfigs` — merged per ADR-0037) or `cloudImage` (raw) for libvirt. `VMImage.status
 //! .perProvider[]` is never touched here — that stays each provider's own
 //! field, written by its own field manager. See ADR-0010 and ADR-0020.
 //!
@@ -26,16 +26,21 @@ use banlieue_api::banlieue::{
     Architecture, BuildArtifactKind, BuildArtifactPhase, BuildArtifactStatus, ImageSource,
     ImageSourceKind, IsoOverlaySource, VMImage, VMImageStatus,
 };
-use banlieue_api::common::{CloudConfigSource, DEFAULT_CLOUD_CONFIG_KEY, LocalObjectReference};
+use banlieue_api::common::{
+    CloudConfigSource, DEFAULT_CLOUD_CONFIG_KEY, KeySelector, LocalObjectReference,
+};
 use banlieue_provider_sdk::reconciler::{requeue_default, requeue_long, requeue_on_error};
 use banlieue_provider_sdk::scheduling::BuildScheduling;
 use banlieue_provider_sdk::ssa::FIELD_MANAGER_IMAGEBUILDER;
+use k8s_openapi::api::core::v1::Secret;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference;
 use kube::api::{Api, ApiResource, DynamicObject, GroupVersionKind, Patch, PatchParams};
 use kube::runtime::controller::Action;
 use kube::{Resource, ResourceExt};
 use serde_json::{Value, json};
 use tracing::{info, warn};
+
+use crate::cloud_config_merge::merge_cloud_configs;
 
 use crate::context::Context;
 use crate::error::{Error, Result};
@@ -52,6 +57,10 @@ pub const OSARTIFACT_KIND: &str = "OSArtifact";
 pub const OSARTIFACT_PLURAL: &str = "osartifacts";
 
 const OSARTIFACT_NAME_SUFFIX: &str = "-build";
+
+/// Suffix for the merged cloud-config Secret created by this reconciler
+/// when `VMImage.spec.cloudConfigs` has entries (ADR-0037).
+const MERGED_CLOUD_CONFIG_SUFFIX: &str = "-cloud-config-merged";
 
 /// Fixed name for the ISO-overlay `spec.volumes[]` entry `overlayISOVolume`
 /// points at (ADR-0022). Always an `emptyDir`, populated by
@@ -145,6 +154,11 @@ pub fn os_artifact_api_resource() -> ApiResource {
 /// Deterministic `OSArtifact` name for a `VMImage`.
 pub fn os_artifact_name(vmimage_name: &str) -> String {
     format!("{vmimage_name}{OSARTIFACT_NAME_SUFFIX}")
+}
+
+/// Deterministic name for the merged cloud-config Secret (ADR-0037).
+pub fn merged_cloud_config_secret_name(vmimage_name: &str) -> String {
+    format!("{vmimage_name}{MERGED_CLOUD_CONFIG_SUFFIX}")
 }
 
 /// Find the first `Url`-kind source with `importFrom` set — the one and only
@@ -471,6 +485,95 @@ pub fn compute_build_artifact_status(
     }
 }
 
+/// Fetch each Secret referenced by `cloud_configs`, merge their YAML
+/// content (ADR-0037 Decision #3), SSA-apply a single merged Secret
+/// (`<vmimage-name>-cloud-config-merged`, owner-referenced to the
+/// `VMImage`), and return a [`CloudConfigSource`] pointing at it.
+///
+/// The merged Secret lives in `namespace` (the imagebuild namespace),
+/// where the `OSArtifact` build pod can mount it.
+///
+/// A single-entry `cloud_configs` list still goes through the merge step
+/// (as a trivial one-document "merge") rather than special-casing "exactly
+/// one" to pass through unchanged — one code path, not two (ADR-0037
+/// Decision #2).
+async fn merge_and_apply_cloud_configs(
+    ctx: &Context,
+    vmimage_name: &str,
+    vmimage_uid: &str,
+    cloud_configs: &[CloudConfigSource],
+) -> Result<CloudConfigSource> {
+    let secrets_api: Api<Secret> = Api::namespaced(ctx.client.clone(), &ctx.build_namespace);
+
+    // 1. Fetch each referenced Secret and extract the cloud-config key.
+    let mut yaml_docs: Vec<String> = Vec::with_capacity(cloud_configs.len());
+    for cc in cloud_configs {
+        let secret_ref = cc.secret_ref.as_ref().ok_or_else(|| {
+            Error::CloudConfigMerge(crate::cloud_config_merge::MergeError::TypeMismatch {
+                key: "secretRef".to_string(),
+                detail: "cloudConfigs entry has no secretRef".to_string(),
+            })
+        })?;
+
+        let secret = secrets_api.get(&secret_ref.name).await?;
+        let key = secret_ref.key_or(DEFAULT_CLOUD_CONFIG_KEY);
+        let data = secret.data.as_ref().and_then(|d| d.get(key));
+        let yaml_bytes = data.ok_or_else(|| {
+            Error::CloudConfigMerge(crate::cloud_config_merge::MergeError::TypeMismatch {
+                key: format!("Secret/{}.data[{key}]", secret_ref.name),
+                detail: "key not found in Secret data".to_string(),
+            })
+        })?;
+        let yaml_str = String::from_utf8_lossy(&yaml_bytes.0).into_owned();
+        yaml_docs.push(yaml_str);
+    }
+
+    // 2. Merge.
+    let doc_refs: Vec<&str> = yaml_docs.iter().map(String::as_str).collect();
+    let merged_yaml = merge_cloud_configs(&doc_refs)?;
+
+    // 3. SSA-apply the merged Secret.
+    let merged_name = merged_cloud_config_secret_name(vmimage_name);
+    let merged_secret = json!({
+        "apiVersion": "v1",
+        "kind": "Secret",
+        "metadata": {
+            "name": merged_name,
+            "namespace": ctx.build_namespace,
+            "ownerReferences": [{
+                "apiVersion": VMImage::api_version(&()).to_string(),
+                "kind": VMImage::kind(&()).to_string(),
+                "name": vmimage_name,
+                "uid": vmimage_uid,
+                "controller": true,
+                "blockOwnerDeletion": false,
+            }],
+        },
+        "stringData": {
+            DEFAULT_CLOUD_CONFIG_KEY: merged_yaml,
+        },
+    });
+
+    let params = PatchParams::apply(FIELD_MANAGER_IMAGEBUILDER).force();
+    secrets_api
+        .patch(&merged_name, &params, &Patch::Apply(&merged_secret))
+        .await?;
+
+    info!(
+        secret = %merged_name,
+        sources = cloud_configs.len(),
+        "SSA-applied merged cloud-config Secret"
+    );
+
+    // 4. Return a CloudConfigSource pointing at the merged Secret.
+    Ok(CloudConfigSource {
+        secret_ref: Some(KeySelector {
+            name: merged_name,
+            key: None, // defaults to DEFAULT_CLOUD_CONFIG_KEY
+        }),
+    })
+}
+
 /// Top-level reconcile entrypoint.
 ///
 /// 1. Bail early (long requeue) if this `VMImage` has no `Url` source —
@@ -552,13 +655,22 @@ pub async fn reconcile(image: Arc<VMImage>, ctx: Arc<Context>) -> Result<Action>
         }
     }
 
+    // ADR-0037: if cloud_configs is non-empty, fetch + merge + SSA a merged
+    // Secret; pass *that* to the OSArtifact, not the user's original
+    // Secrets. If empty, no cloud-config at all.
+    let merged_cc = if !image.spec.cloud_configs.is_empty() {
+        Some(merge_and_apply_cloud_configs(&ctx, &name, &uid, &image.spec.cloud_configs).await?)
+    } else {
+        None
+    };
+
     let desired = desired_os_artifact(
         &os_name,
         &ctx.build_namespace,
         source,
         &image.spec.architecture,
         &kind,
-        image.spec.cloud_config.as_ref(),
+        merged_cc.as_ref(),
         Some(OwnerRef {
             name: &name,
             uid: &uid,

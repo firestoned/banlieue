@@ -230,7 +230,7 @@ async fn a_vmimage_is_built_once_and_imported_into_every_declared_pool() {
             import_from: Some(KAIROS_IMAGE.to_string()),
             checksum: None,
         }],
-        cloud_config: None,
+        cloud_configs: vec![],
         template: None,
         iso_overlay: None,
     };
