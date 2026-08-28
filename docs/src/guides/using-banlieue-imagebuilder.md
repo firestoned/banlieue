@@ -51,8 +51,8 @@ flowchart LR
 `banlieue-imagebuilder` is the same `banlieue` image, run with the
 `imagebuilder` subcommand. Its RBAC is deliberately narrow: it never reads
 backend credentials, and only touches `vmimages`, `vmimages/status`,
-kairos-operator's `osartifacts`, and the `cloudConfig` Secrets you point it
-at — no vCenter or libvirt access of any kind passes through it.
+kairos-operator's `osartifacts`, and the `cloudConfigs[]` Secrets/ConfigMaps
+you point it at — no vCenter or libvirt access of any kind passes through it.
 
 ```sh
 kubectl apply -R -f deploy/imagebuilder/rbac/
@@ -78,12 +78,12 @@ reason to change it, and pass the same value to every provider via its own
 Unlike a `Template` source (which names something that must already exist in
 vCenter), a `Url` source names an OCI image `banlieue-imagebuilder` builds
 for you. For a vSphere source the build produces a **bootable ISO**
-(`auroraboot build-iso`); `spec.cloudConfig` bakes a default cloud-config
+(`auroraboot build-iso`); `spec.cloudConfigs[]` bakes a (layered) cloud-config
 into it, and `spec.template` controls how the per-zone import turns the ISO
 into a vCenter template (ADR-0020):
 
 !!! warning "Cloud-config contract (ADR-0021)"
-    The `cloudConfig` Secret **must** set `install.poweroff: true` /
+    The merged `cloudConfigs[]` result **must** set `install.poweroff: true` /
     `install.reboot: false`, **at least one `admin`-group user**, and an
     `after-install-chroot` stage that wipes per-machine identity **before the
     disk is ever booted**:
@@ -124,7 +124,7 @@ into a vCenter template (ADR-0020):
     `spec.template.autoManageInstall: false` to skip this contract entirely —
     the import Job reverts to ADR-0020's original behavior: create the VM,
     attach the ISO, `MarkAsTemplate` immediately, no power-on. `banlieue`
-    never reads or edits your `cloudConfig` Secret either way (only its own
+    never reads or edits your `cloudConfigs[]` Secrets/ConfigMaps either way (only its own
     default: `true`); the contract above is documentation for what a
     Kairos-managed install needs, never something banlieue auto-injects.
 
@@ -132,7 +132,7 @@ into a vCenter template (ADR-0020):
     `spec.isoOverlay` lets you overlay additional files — e.g. a
     hand-verified `/boot/grub2/grub.cfg` — onto the built ISO, via
     kairos-operator's own `overlayISOVolume` mechanism
-    (`auroraboot build-iso --overlay-iso`). As with `cloudConfig`, only the
+    (`auroraboot build-iso --overlay-iso`). As with `cloudConfigs[]`, only the
     Secret's *name* and the key/path list you declare are ever read —
     `banlieue-imagebuilder` never reads the Secret's content:
 
@@ -182,13 +182,14 @@ spec:
       # Digest-pinned: the banlieue-vmimage-import-source admission policy
       # (security review 2026-07-31) rejects mutable tags when installed.
       importFrom: quay.io/kairos/ubuntu:24.04-standard-amd64-generic-v3.7.2-k0s-v1.34.3-k0s.0@sha256:e4860078c024269e81ce561ce91cf9639a4e75c23ea4cd32d3405005087192a7
-  # Optional default cloud-config baked into the built ISO (ADR-0020).
-  # Names a Secret in the imagebuild namespace; passed to the OSArtifact as
-  # cloudConfigRef (auroraboot build-iso --cloud-config).
-  cloudConfig:
-    secretRef:
-      name: kairos-base-cloud-config
-      key: cloud-config.yaml
+  # Optional, ordered, layered cloud-config sources baked into the built ISO
+  # (ADR-0020/0037). Names Secrets/ConfigMaps in the imagebuild namespace;
+  # merged and passed to the OSArtifact as cloudConfigRef
+  # (auroraboot build-iso --cloud-config).
+  cloudConfigs:
+    - secretRef:
+        name: kairos-base-cloud-config
+        key: cloud-config.yaml
   # Optional extra files overlaid onto the built ISO (ADR-0022), e.g. a
   # hand-verified grub.cfg. Only the Secret's name + declared keys are read.
   isoOverlay:
@@ -205,7 +206,9 @@ spec:
                                # subfolder, since two zones commonly share a
                                # datacenter and vSphere folders are scoped
                                # per-datacenter, not per-cluster)
-    network: vmnet-prod        # template NIC port group (else zone default)
+    network:                   # template NIC(s); omit for zone default (ADR-0031)
+      - network: vmnet-prod
+        adapter: vmxnet3        # vmxnet3 | vmxnet2 | e1000 | e1000e
     disk:
       size: 100                # GiB; default 100
       type: thin               # thin | thick | eagerZeroed
@@ -222,7 +225,7 @@ spec:
 kubectl apply -f vmimage-kairos.yaml
 ```
 
-All of `cloudConfig` and `template` are optional: omit them for a vanilla
+All of `cloudConfigs` and `template` are optional: omit them for a vanilla
 ISO and a thin 100 GiB pvscsi template, one per zone, each in its own
 subfolder named after the zone directly under the datacenter's VM-folder
 root.
@@ -359,7 +362,7 @@ Two guarantees hold over everything above:
 | `UnsupportedSourceKind` | The vsphere source is `BackingFile` — not a vsphere concept, never supported here |
 
 `ImportFailed` with `"did not power itself off within <N>s of the unattended
-Kairos install starting"` (ADR-0021): the `cloudConfig` Secret is missing the
+Kairos install starting"` (ADR-0021): the merged `cloudConfigs[]` result is missing the
 `install.poweroff: true` / `install.reboot: false` + `after-install-chroot`
 wipe stage described above — the VM installed fine but never shuts itself
 down, so the Job times out and leaves the VM running (not destroyed) for

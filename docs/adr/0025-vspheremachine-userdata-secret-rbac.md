@@ -6,6 +6,8 @@ Accepted — 2026-08-20. Extends [ADR-0024](0024-vspheremachine-clone-static-ip-
 (`VSphereMachineSpec.userData`). Revises this ADR's own first draft, which
 proposed operator-managed per-Provider `Role` extensions — superseded
 before implementation; see *History* below.
+Extended by [ADR-0038](0038-userdata-configmap-support.md) (adds ConfigMap
+source alongside Secret).
 
 ## Context
 

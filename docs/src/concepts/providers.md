@@ -24,7 +24,7 @@ The user only ever sees (1). The controller (2) is plumbing.
 
 ```mermaid
 flowchart LR
-    user[User] -->|providerRef.name| vm[(VirtualMachine)]
+    user[User] -->|placement.providerSelector| vm[(VirtualMachine)]
     vm --> mc[banlieue-controller]
     mc -->|creates| infra[(VSphereMachine)]
     infra --> pv[banlieue-provider-vsphere]
@@ -57,9 +57,11 @@ spec:
 
 Notes:
 
-- `providerClassRef.name` identifies the backend type — a name drawn from a
-  well-known set (`vsphere`, `proxmox`, `libvirt`). A future `ProviderClass`
-  CRD will carry install metadata without changing this reference.
+- `providerClassRef.name` references a `ProviderClass` CR, which carries the
+  backend kind (`spec.backend`, drawn from a well-known set — `vsphere`,
+  `libvirt`, and eventually `proxmox`) plus install metadata (image,
+  resources, RBAC) without changing this reference. See
+  [ADR-0012](https://github.com/firestoned/banlieue/blob/main/docs/adr/0012-providerclass-crd-and-operator-role.md).
 - The user never sees the `connection:` / `capabilities:` blocks. They're owned
   by whoever administers the cluster's `Provider`s.
 - `connection.credentialsRef` points at a `Secret`. Credentials are *not*
@@ -94,7 +96,12 @@ A provider controller is a Kubernetes controller. Its responsibilities:
 1. **Watch its infrastructure CRD** (`VSphereMachine`,
    `VSphereMachineTemplate`, etc.).
 2. **Reconcile to the backend.** Translate the uniform spec into native API
-   calls (govmomi for vSphere, proxmoxer for Proxmox, libvirt for libvirt).
+   calls — the first-party `vim_rs`-based BYOC HTTP client for vSphere
+   ([ADR-0008](https://github.com/firestoned/banlieue/blob/main/docs/adr/0008-byoc-vsphere-http-client.md)),
+   the first-party `banlieue-libvirt` RPC/XDR client for libvirt
+   ([ADR-0011](https://github.com/firestoned/banlieue/blob/main/docs/adr/0011-libvirt-provider-own-client.md)),
+   and (once it ships) the Proxmox VE HTTP API for Proxmox. No third-party
+   Go/Python client libraries are vendored — everything is native Rust.
 3. **Report status uniformly.** Patch `.status` on the infra CR with the CAPI
    v1beta2 condition vocabulary, regardless of how the backend natively
    surfaces errors. See [Infrastructure CRDs & CAPI](infra-crds-capi.md).
@@ -127,7 +134,7 @@ crates/banlieue-provider-vsphere/
 ├── Cargo.toml              # [lib] only — no [[bin]]
 └── src/
     ├── lib.rs              # library root; `pub use app::{Cli, run}`
-    ├── app.rs              # the `banlieue provider vsphere` subcommand: Cli (clap::Args) + run()
+    ├── app.rs              # the `banlieue provider vsphere` subcommand: Cli (clap::Args) + run(); wires up the Provider, VMImage, and VSphereMachine controllers
     ├── context.rs          # reconciler Context
     ├── error.rs            # typed errors
     ├── client/             # backend-agnostic vSphere client surface
@@ -137,7 +144,8 @@ crates/banlieue-provider-vsphere/
     └── reconciler/
         ├── mod.rs
         ├── provider.rs     # Provider inventory walk → failureDomains[]
-        └── vmimage.rs      # VMImage template-availability check
+        ├── vmimage.rs      # per-zone Kairos template build/import (ADR-0020/0021)
+        └── vspheremachine.rs  # VSphereMachine create path: CloneVM_Task + PowerOnVM_Task (ADR-0024); create-path only, no update/drift/live-migration yet
 ```
 
 The crate exports `Cli` (a `clap::Args` payload) and `pub async fn run(cli)`;

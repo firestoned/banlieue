@@ -1,5 +1,158 @@
 # Changelog
 
+## [2026-09-03] - Fix vSphere provider hot-loop on desiredPowerState: PoweredOff
+
+**Author:** Erick Bourgeois (found live testing ADR-0038 userData end-to-end)
+
+### Why
+Testing `VirtualMachine.spec.userData` (ADR-0038) end-to-end against the real
+on-prem vCenter surfaced a pre-existing, unrelated bug: `ensure_vm`'s create
+path clones the VM, then unconditionally calls `set_power_state(vm_ref,
+spec.desired_power_state)`. `CloneVM_Task` always clones powered off
+(ADR-0024's clone spec sets `power_on: false`), so requesting
+`desiredPowerState: PoweredOff` drove a redundant `PowerOffVM_Task` on an
+already-off VM. Real vCenter rejects that with `InvalidPowerState`, and
+because that error propagates via `?` before `ensure_vm` returns, the caller
+never learns the new `vm_ref` and never patches `VSphereMachine.status`. Every
+subsequent reconcile re-clones from scratch and immediately fails with
+`DuplicateName` — a hot loop that never self-heals and orphans a real VM in
+vCenter. Every existing example manifest uses `PoweredOn`, which never
+exercises this path (powering on a freshly-off clone is a valid transition),
+so this had gone unnoticed.
+
+### Changed
+- `crates/banlieue-provider-vsphere/src/reconciler/vspheremachine.rs`:
+  `ensure_vm` now skips the `set_power_state` call entirely when
+  `spec.desired_power_state == PowerState::PoweredOff`, since the clone is
+  already in that state.
+- `crates/banlieue-provider-vsphere/src/client/fake.rs`: `FakeClient::set_power_state`
+  now mirrors real vCenter's `InvalidPowerState` fault when asked to
+  transition a VM to the state it's already in, and tracks call counts via
+  the new `power_state_call_count` so tests can assert a redundant call was
+  skipped, not merely that it "succeeded".
+- `crates/banlieue-provider-vsphere/src/reconciler/vspheremachine_ensure_tests.rs`:
+  added `desired_power_off_skips_the_redundant_power_state_call`, a
+  regression test reproducing the hot loop against the now-stricter
+  `FakeClient`.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (rebuild/redeploy `banlieue-provider-vsphere`)
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-08-31] - Docs accuracy audit: align docs/, README, and examples with shipped code
+
+**Author:** Devin (docs audit requested by Erick Bourgeois)
+
+### Why
+A full pass comparing `docs/src/`, `README.md`, `docs/README.md`, and
+`examples/*.yaml` against the actual `crates/banlieue-api` types, controller/
+provider reconciler code, and generated CRDs (`deploy/crds/`) turned up
+several categories of drift accumulated across recent ADRs (0011, 0024,
+0031, 0036, 0037, 0038): stale pre-refactor `VirtualMachine` field names,
+a stale "not yet wired in" claim about the vSphere `VSphereMachine`
+reconciler, `cloudConfig` (singular) vs. the current `cloudConfigs[]` list,
+non-existent schema fields/enum values referenced in guides, and an outdated
+"Proxmox and libvirt next" framing that no longer reflects libvirt's actual
+(partial) implementation state.
+
+### Changed
+- `README.md`: repository layout tree (added the 5 crates missing from it —
+  `banlieue-operator`, `banlieue-imagebuilder`, `banlieue-libvirt`,
+  `banlieue-provider-libvirt`, `banlieue-vex`), CRD table (added
+  `ProviderClass`), project status paragraph, and the vSphere/libvirt/Proxmox
+  maturity framing.
+- `docs/src/index.md`, `docs/src/overview.md`, `docs/src/concepts/virtualmachine.md`:
+  replaced the pre-refactor `spec.class` / `spec.image` / `spec.providerRef`
+  example shape with the actual `classRef` / `imageRef` /
+  `placement.providerSelector`; fixed the condition-type table (`Ready`,
+  `Scheduled`, `PlacementValid`, `InfrastructureReady`, `Migrating` — not
+  `Provisioned`/`ImageReady`/`Failure`); added caveats where diagrams depict
+  `ProxmoxMachine`/`LibvirtMachine` as if they exist today.
+- `docs/src/concepts/providers.md`: removed the "govmomi"/"proxmoxer" claim
+  (neither is usable from Rust; the real clients are the first-party `vim_rs`
+  BYOC client and the first-party `banlieue-libvirt` RPC client);
+  `ProviderClass` is implemented today, not "future"; refreshed the
+  `banlieue-provider-vsphere` reconciler directory listing to include
+  `vspheremachine.rs`.
+- `docs/src/concepts/architecture.md`, `docs/src/guides/using-banlieue-imagebuilder.md`:
+  `cloudConfig` (singular) → `cloudConfigs[]` (ADR-0037); `template.network`
+  scalar → list-of-objects (ADR-0031).
+- `docs/src/guides/vsphere-provider.md`, `docs/src/guides/environment-provider-isolation.md`:
+  removed the non-existent `ipam.source` field; `reason=NoCandidates` →
+  the real `NoProviderMatched`.
+- `docs/src/guides/building-kairos-hadron-template.md`: removed a reference
+  to a non-existent `ImageSourceKind::Oci` variant.
+- `docs/src/guides/core-controller.md`: CRD-apply sample output now includes
+  `providerclasses.banlieue.io`; admission-policy table expanded from 2 to
+  all 7 shipped policies.
+- `docs/README.md`: directory tree corrected (removed a nonexistent
+  `getting-started/`, added `guides/`, `developer/`, `architecture/`).
+- `docs/architecture/calm/architecture.json`: corrected the same
+  class/image/providerRef → classRef/imageRef/placement.providerSelector
+  drift, the stale "VSphereMachine not yet wired in" claim, the swap-provider
+  flow (now framed around `placement.providerSelector` and honest about only
+  being exercisable between two vSphere `Provider`s today), `cloudConfig` →
+  `cloudConfigs[]`, added the missing `banlieue-providerclass-guardrails`
+  admission control and ADRs 0016/0026–0038 to the model, and refreshed
+  `metadata.phase`/`metadata.crds`. Regenerated `docs/src/architecture/{system,flows}.md`
+  via `make calm-diagrams` (validated with `make calm-validate`).
+- `crates/banlieue-provider-vsphere/src/reconciler/mod.rs`: fixed a stale
+  module doc comment claiming the `VSphereMachine` reconciler isn't wired
+  into `app.rs` — it is (create-path only; confirmed against `app.rs`).
+- `examples/10-virtualmachine-static-ip.yaml`: fixed `userData.secretRef.key`
+  being mis-indented as a sibling of `secretRef` instead of nested inside it
+  (silently pruned by the CRD schema); updated the stale "not wired in yet"
+  comment about the vSphere machine reconciler.
+- `examples/03-vmclass-db-prod-large.yaml`: removed the non-existent
+  `ipam.source` field; added a caveat that pool-based IPAM (ADR-0033) is
+  schema-only and not yet reconciled.
+- `examples/04-vmimage-ubuntu.yaml`: labeled the all-zeros `checksum` as an
+  explicit placeholder.
+- Regenerated `docs/src/reference/api.md` and `deploy/crds/*.yaml` via
+  `make crds` to confirm they were already in sync (no diff).
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+## [2026-08-27] - userData: support both Secret and ConfigMap sources — ADR-0038
+
+**Author:** Cascade (pair-programming with Erick Bourgeois)
+
+### Breaking Change
+- `UserDataSpec` shape changed from `{ secretRef: LocalObjectReference, key: String }`
+  to `{ secretRef: Option<KeySelector>, configMapRef: Option<KeySelector> }`. Exactly
+  one must be set (follows `CABundleSource`'s exactly-one-of pattern). The `key` moves
+  inside each ref (via `KeySelector`), defaulting to `user-data`. This is a `v1alpha1`
+  breaking change to existing `VirtualMachine` manifests.
+
+### Added
+- `UserDataSpec.validate()`: enforces the exactly-one-of `secretRef`/`configMapRef`
+  invariant.
+- `DEFAULT_USER_DATA_KEY` constant (`"user-data"`) in `virtualmachine.rs`, exported
+  from `banlieue_api::banlieue`.
+- `resolve_configmap_data()` in `banlieue-controller`'s VM reconciler: reads a single
+  key from a ConfigMap (mirrors the existing `resolve_secret_data` for Secrets).
+- `docs/adr/0038-userdata-configmap-support.md`: records the design decision.
+- `examples/11-virtualmachine-configmap-userdata.yaml`: ConfigMap-based userData example.
+- 7 new/updated tests in `virtualmachine_tests.rs` covering both sources and all
+  `validate()` branches.
+
+### Changed
+- `crates/banlieue-api/src/banlieue/virtualmachine.rs`: redesigned `UserDataSpec`.
+- `crates/banlieue-controller/src/reconciler/virtualmachine.rs`:
+  `resolve_rendered_user_data` now dispatches to `resolve_secret_data` or
+  `resolve_configmap_data` based on which source is set.
+- `deploy/controller/rbac/role.yaml`: added `configmaps` to the `get` grant;
+  renamed `banlieue-controller-secrets` → `banlieue-controller-userdata`.
+- `deploy/controller/rbac/rolebinding.yaml`: updated to match renamed Role.
+- `examples/05-virtualmachine.yaml`: updated to new `UserDataSpec` shape.
+- Regenerated CRDs (`deploy/crds/banlieue.io_virtualmachines.yaml`) and API docs.
+
 ## [2026-08-25] - VMImage: layered cloud-config (base + overlays) — ADR-0037
 
 **Author:** Cascade (pair-programming with Erick Bourgeois)

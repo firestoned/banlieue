@@ -47,14 +47,18 @@ docs/
 ├── pyproject.toml            # Python dependencies (Poetry)
 ├── .python-version           # Python version pin
 ├── .gitignore                # Build artifacts ignored
+├── architecture/             # CALM (architecture-as-code) model, source for src/architecture/
 └── src/                      # Documentation source
     ├── index.md              # Homepage
+    ├── overview.md           # Fundamentals + diagrams
     ├── stylesheets/          # Custom CSS
     ├── javascripts/          # Mermaid init etc.
     ├── reasoning/            # Why banlieue exists (the case for this project)
-    ├── concepts/             # Architecture, VirtualMachine, providers
-    ├── getting-started/      # Quick start
-    └── reference/            # API reference, license
+    ├── concepts/             # Architecture, VirtualMachine, providers, CRDs & CAPI
+    ├── architecture/         # Generated CALM diagrams (system.md, flows.md)
+    ├── guides/               # Install/operate the controller and each provider
+    ├── developer/            # Build from source, local development
+    └── reference/            # API reference (generated), license
 ```
 
 ## Adding a new page

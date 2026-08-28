@@ -60,11 +60,77 @@ mod tests {
     }
 
     #[test]
-    fn vm_user_data_default_key_is_user_dash_data() {
-        // `default_userdata_key` is private; verify via deserialization.
-        let json = serde_json::json!({ "secretRef": { "name": "ud" } });
+    fn vm_user_data_default_key_constant() {
+        assert_eq!(DEFAULT_USER_DATA_KEY, "user-data");
+    }
+
+    #[test]
+    fn vm_user_data_secret_ref_round_trip() {
+        let json = serde_json::json!({ "secretRef": { "name": "ud", "key": "boot" } });
         let ud: UserDataSpec = serde_json::from_value(json).unwrap();
-        assert_eq!(ud.key, "user-data");
+        let sel = ud.secret_ref.as_ref().unwrap();
+        assert_eq!(sel.name, "ud");
+        assert_eq!(sel.key_or(DEFAULT_USER_DATA_KEY), "boot");
+        assert!(ud.config_map_ref.is_none());
+    }
+
+    #[test]
+    fn vm_user_data_configmap_ref_round_trip() {
+        let json = serde_json::json!({ "configMapRef": { "name": "cc" } });
+        let ud: UserDataSpec = serde_json::from_value(json).unwrap();
+        assert!(ud.secret_ref.is_none());
+        let sel = ud.config_map_ref.as_ref().unwrap();
+        assert_eq!(sel.name, "cc");
+        // key defaults via key_or
+        assert_eq!(sel.key_or(DEFAULT_USER_DATA_KEY), "user-data");
+    }
+
+    #[test]
+    fn vm_user_data_validate_secret_ref_ok() {
+        let ud = UserDataSpec {
+            secret_ref: Some(KeySelector {
+                name: "s".to_string(),
+                key: None,
+            }),
+            config_map_ref: None,
+        };
+        assert!(ud.validate().is_ok());
+    }
+
+    #[test]
+    fn vm_user_data_validate_configmap_ref_ok() {
+        let ud = UserDataSpec {
+            secret_ref: None,
+            config_map_ref: Some(KeySelector {
+                name: "cm".to_string(),
+                key: None,
+            }),
+        };
+        assert!(ud.validate().is_ok());
+    }
+
+    #[test]
+    fn vm_user_data_validate_both_set_fails() {
+        let ud = UserDataSpec {
+            secret_ref: Some(KeySelector {
+                name: "s".to_string(),
+                key: None,
+            }),
+            config_map_ref: Some(KeySelector {
+                name: "cm".to_string(),
+                key: None,
+            }),
+        };
+        assert!(ud.validate().is_err());
+    }
+
+    #[test]
+    fn vm_user_data_validate_neither_set_fails() {
+        let ud = UserDataSpec {
+            secret_ref: None,
+            config_map_ref: None,
+        };
+        assert!(ud.validate().is_err());
     }
 
     #[test]
@@ -145,19 +211,51 @@ mod tests {
     }
 
     #[test]
-    fn vm_spec_with_user_data_round_trip() {
+    fn vm_spec_with_user_data_secret_round_trip() {
         let s = VirtualMachineSpec {
             user_data: Some(UserDataSpec {
-                secret_ref: LocalObjectReference {
+                secret_ref: Some(KeySelector {
                     name: "cloud-init".to_string(),
-                },
-                key: "user-data".to_string(),
+                    key: Some("user-data".to_string()),
+                }),
+                config_map_ref: None,
             }),
             ..minimal_vm_spec()
         };
         let json = serde_json::to_value(&s).unwrap();
         assert_eq!(json["userData"]["secretRef"]["name"], "cloud-init");
-        assert_eq!(json["userData"]["key"], "user-data");
+        assert_eq!(json["userData"]["secretRef"]["key"], "user-data");
+        assert!(
+            !json["userData"]
+                .as_object()
+                .unwrap()
+                .contains_key("configMapRef")
+        );
+        let back: VirtualMachineSpec = serde_json::from_value(json).unwrap();
+        assert_eq!(back, s);
+    }
+
+    #[test]
+    fn vm_spec_with_user_data_configmap_round_trip() {
+        let s = VirtualMachineSpec {
+            user_data: Some(UserDataSpec {
+                secret_ref: None,
+                config_map_ref: Some(KeySelector {
+                    name: "cc-base".to_string(),
+                    key: Some("cloud-config.yaml".to_string()),
+                }),
+            }),
+            ..minimal_vm_spec()
+        };
+        let json = serde_json::to_value(&s).unwrap();
+        assert_eq!(json["userData"]["configMapRef"]["name"], "cc-base");
+        assert_eq!(json["userData"]["configMapRef"]["key"], "cloud-config.yaml");
+        assert!(
+            !json["userData"]
+                .as_object()
+                .unwrap()
+                .contains_key("secretRef")
+        );
         let back: VirtualMachineSpec = serde_json::from_value(json).unwrap();
         assert_eq!(back, s);
     }
@@ -166,17 +264,21 @@ mod tests {
     fn vm_spec_with_custom_userdata_key_round_trip() {
         let s = VirtualMachineSpec {
             user_data: Some(UserDataSpec {
-                secret_ref: LocalObjectReference {
+                secret_ref: Some(KeySelector {
                     name: "ignition".to_string(),
-                },
-                key: "ignition.json".to_string(),
+                    key: Some("ignition.json".to_string()),
+                }),
+                config_map_ref: None,
             }),
             ..minimal_vm_spec()
         };
         let json = serde_json::to_value(&s).unwrap();
-        assert_eq!(json["userData"]["key"], "ignition.json");
+        assert_eq!(json["userData"]["secretRef"]["key"], "ignition.json");
         let back: VirtualMachineSpec = serde_json::from_value(json).unwrap();
-        assert_eq!(back.user_data.unwrap().key, "ignition.json");
+        assert_eq!(
+            back.user_data.unwrap().secret_ref.unwrap().key.unwrap(),
+            "ignition.json"
+        );
     }
 
     // ----------------------------------------------------------------------

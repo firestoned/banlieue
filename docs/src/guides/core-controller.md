@@ -36,6 +36,7 @@ kubectl apply -f deploy/crds/
 
 ```text
 customresourcedefinition.apiextensions.k8s.io/providers.banlieue.io created
+customresourcedefinition.apiextensions.k8s.io/providerclasses.banlieue.io created
 customresourcedefinition.apiextensions.k8s.io/virtualmachines.banlieue.io created
 customresourcedefinition.apiextensions.k8s.io/vmclasses.banlieue.io created
 customresourcedefinition.apiextensions.k8s.io/vmimages.banlieue.io created
@@ -170,6 +171,11 @@ CEL, with **no webhook to run or certificates to rotate** (Kubernetes 1.30+):
 | --- | --- |
 | `banlieue-virtualmachine-immutable-refs` | `VirtualMachine.spec.classRef` / `imageRef` are immutable after creation (changing class/image is a delete-and-recreate). |
 | `banlieue-provider-immutable-class` | `Provider.spec.providerClassRef.name` is immutable. |
+| `banlieue-provider-cabundle-source` | `Provider.spec.connection.caBundle` names exactly one of `inline` / `configMapRef` / `secretRef`. |
+| `banlieue-provider-connection` | `Provider.spec.connection.endpoint` is `https://`, has no embedded userinfo, and `insecureSkipTLSVerify` requires an explicit opt-in annotation (CHAIN-001). |
+| `banlieue-provider-credentialsref-authorization` | The principal creating/updating a `Provider` must itself be authorized to `get` the Secret named by `spec.connection.credentialsRef` (CHAIN-001). |
+| `banlieue-providerclass-guardrails` | Bounds what a `ProviderClass` writer can hand a provider Deployment via `spec.additionalRules` / `spec.workloadNamespace` (SEC-006). |
+| `banlieue-vmimage-import-source` | `VMImage.spec.sources[].importFrom` must be digest-pinned (`@sha256:`) and from an allow-listed registry (CHAIN-003). |
 
 ```sh
 kubectl apply -f deploy/admission/

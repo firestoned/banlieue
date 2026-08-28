@@ -27,9 +27,11 @@
 
 **banlieue** lets you declare a virtual machine the same way you declare a
 `Deployment` or `Service` — one Kubernetes Custom Resource — and have it
-scheduled onto whatever hypervisor or VM platform you run: **vSphere** today,
-**Proxmox** and **libvirt** next, or any backend a third party writes. The
-user's manifest never changes when the backend does.
+scheduled onto whatever hypervisor or VM platform you run: **vSphere** can
+create and power on VMs today, **libvirt** can register hosts and import
+images (VM/domain lifecycle is landing next), **Proxmox** is planned, and any
+backend a third party writes. The user's manifest never changes when the
+backend does.
 
 ```yaml
 apiVersion: banlieue.io/v1alpha1
@@ -94,8 +96,9 @@ main controller mirrors that status onto the `VirtualMachine`.
 | `VirtualMachine` | `banlieue.io/v1alpha1` | The user-facing request for a running VM. |
 | `VMClass` | `banlieue.io/v1alpha1` | A reusable hardware "shape" + capability requirements. |
 | `VMImage` | `banlieue.io/v1alpha1` | A backend-agnostic, multi-source OS image catalog entry. |
-| `Provider` | `banlieue.io/v1alpha1` | One registered backend (a vCenter, a Proxmox cluster, …). |
-| `VSphereMachine` / `VSphereCluster` | `infrastructure.banlieue.io/v1alpha1` | Concrete, CAPI-contract infra CRs the vSphere provider reconciles. |
+| `Provider` | `banlieue.io/v1alpha1` | One registered backend instance (a vCenter, a libvirt host, …). |
+| `ProviderClass` | `banlieue.io/v1alpha1` | Cluster-scoped install metadata for a backend class (image, resources, RBAC). |
+| `VSphereMachine` / `VSphereMachineTemplate` / `VSphereCluster` | `infrastructure.banlieue.io/v1alpha1` | Concrete, CAPI-contract infra CRs the vSphere provider reconciles. |
 
 Full schema reference: **[API Reference](https://firestoned.github.io/banlieue/reference/api/)** ·
 Design rationale: **[Concepts](https://firestoned.github.io/banlieue/concepts/)** &
@@ -106,15 +109,19 @@ Design rationale: **[Concepts](https://firestoned.github.io/banlieue/concepts/)*
 ```
 banlieue/
 ├── crates/
-│   ├── banlieue/                # the single binary: dispatches subcommands
-│   ├── banlieue-api/            # authoritative CRD type system (code-first)
-│   ├── banlieue-controller/     # main controller lib: schedule + status mirror
-│   ├── banlieue-provider-sdk/   # shared provider building blocks
-│   └── banlieue-provider-vsphere/  # the vSphere provider lib
+│   ├── banlieue/                    # single binary: dispatches controller/operator/provider/bootstrap/imagebuilder subcommands
+│   ├── banlieue-api/                # authoritative CRD type system (code-first); generates deploy/crds/
+│   ├── banlieue-controller/         # main controller lib: schedules VirtualMachine CRs + mirrors status
+│   ├── banlieue-imagebuilder/       # provider-agnostic VMImage build pipeline (OCI/Kairos → raw disk)
+│   ├── banlieue-libvirt/            # first-party pure-Rust libvirt RPC client (no native libvirt lib)
+│   ├── banlieue-operator/           # provider lifecycle operator: Provider CRs → workloads; `banlieue bootstrap`
+│   ├── banlieue-provider-libvirt/   # libvirt/KVM provider: host capabilities + image import (VM lifecycle: not yet)
+│   ├── banlieue-provider-sdk/       # shared provider/controller building blocks
+│   ├── banlieue-provider-vsphere/   # vSphere provider: capability checks, image build, VM create/power-on
+│   └── banlieue-vex/                # auto-VEX tooling for the release/supply-chain pipeline
 ├── deploy/                      # CRDs (generated) + kustomize manifests
-├── docs/                        # MkDocs site + CALM architecture model
-├── examples/                    # sample CRs
-└── docs/adr/                    # Architecture Decision Records
+├── docs/                        # MkDocs site + CALM architecture model + ADRs (docs/adr/)
+└── examples/                    # sample CRs
 ```
 
 `crates/banlieue-api` is the **source of truth**: CRD YAML in `deploy/crds/` and
@@ -144,10 +151,16 @@ make docs
 
 ## Project status
 
-banlieue is **early**. The `banlieue-api` type system + CRDs are in place and the
-controller, provider SDK, and vSphere provider are landing. The CRD surface is
-`v1alpha1` and **will break before `v1`** — don't run production workloads
-against it yet.
+banlieue is **early**. The `banlieue-api` type system + CRDs, the main
+controller, `banlieue-operator` (provider lifecycle), and the vSphere provider
+are far enough along to create and power on real VMs end-to-end — vSphere's
+create path clones from a template and powers on; update/drift handling
+beyond observed power state, and live migration, are still limited (see
+ADR-0036). The libvirt provider can register a host and import disk images
+into its storage pools, but VM/domain provisioning (a future `LibvirtMachine`
+CRD) is not implemented yet. Proxmox is anticipated in the CRD schema and docs
+but has no provider implementation. The CRD surface is `v1alpha1` and **will
+break before `v1`** — don't run production workloads against it yet.
 
 ## License
 

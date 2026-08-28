@@ -208,8 +208,7 @@ spec:
     interfaces:
       - name: eth0
         networkClass: prod
-        ipam:
-          source: dhcp            # or static / pool — see the API reference
+        ipam: {}                   # omit static/pool for DHCP — see the API reference
   firmware: efi-secure
   features: [hotAddCPU, hotAddMemory, efiSecureBoot]
 ```
@@ -309,7 +308,7 @@ datacenter), `ConnectFailed`, `LookupFailed`, `NoVSphereSource`.
 
 - `reason=ImageNotReady` — the `VMImage` isn't `ready` on any candidate provider
   (step 5).
-- `reason=NoCandidates` — no `Provider` matches `placement.providerSelector`, or
+- `reason=NoProviderMatched` — no `Provider` matches `placement.providerSelector`, or
   none advertises the requested storage/network class or feature. Check the
   `Provider.spec.capabilities` against the `VMClass`.
 

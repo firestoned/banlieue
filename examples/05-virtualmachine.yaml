@@ -42,5 +42,5 @@ spec:
   userData:
     secretRef:
       name: db-prod-01-cloudinit
-    key: user-data
+      key: user-data
   migrationPolicy: automatic

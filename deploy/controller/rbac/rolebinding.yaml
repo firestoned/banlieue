@@ -3,7 +3,7 @@
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: banlieue-controller-secrets
+  name: banlieue-controller-userdata
   namespace: banlieue-system
   labels:
     app.kubernetes.io/name: banlieue
@@ -14,5 +14,5 @@ subjects:
     namespace: banlieue-system
 roleRef:
   kind: Role
-  name: banlieue-controller-secrets
+  name: banlieue-controller-userdata
   apiGroup: rbac.authorization.k8s.io

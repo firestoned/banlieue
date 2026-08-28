@@ -58,6 +58,12 @@ flowchart TB
     P5 -.->|"these VMs can become\nnodes of"| P6
 ```
 
+> Steps 3 and 5 are drawn for both backends to show the target shape. Only
+> the vSphere path is fully wired end-to-end today: `banlieue-provider-libvirt`
+> handles registration + image import (steps 2–3) but has no
+> `LibvirtMachine` reconciler yet, so step 5 only clones/powers on a real VM
+> on vSphere. See [Project status](../index.md#project-status).
+
 ## Walkthrough
 
 ### 0. Bootstrap the management cluster
@@ -139,9 +145,11 @@ portable across every cluster of a `Provider`, and across multiple
 
 A `VirtualMachine` references a `classRef`/`imageRef` and (optionally)
 placement constraints. `banlieue-controller` resolves the scheduling
-decision, server-side-applies the backend-specific infra CR
-(`VSphereMachine`/`LibvirtMachine`) owned by the `VirtualMachine`, and that
-provider clones a real VM from the template resolved in step 3.
+decision and server-side-applies the backend-specific infra CR
+(`VSphereMachine` today; a `LibvirtMachine` is the design target but not
+implemented yet — see [libvirt Provider](libvirt-provider.md)) owned by the
+`VirtualMachine`, and that provider clones a real VM from the template
+resolved in step 3.
 
 **Output:** a running VM, with `VirtualMachine.status` mirroring the infra
 CR's own status. See **[vSphere Provider](vsphere-provider.md)** step 6.

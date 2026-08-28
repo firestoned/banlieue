@@ -28,11 +28,11 @@ User applies a VirtualMachine CR; the banlieue controller resolves its reference
 
 ```mermaid
 flowchart TD
-    t1["1. VM consumer kubectl-applies a VirtualMachine CR with class, image, and providerRef. Persisted in etcd via the management-cluster API server."]
-    t2["2. banlieue-controller watch fires. Controller resolves the named VMClass, VMImage, and Provider; computes the desired infrastructure spec."]
-    t3["3. If VirtualMachine.spec.userData is set, banlieue-controller first reads that Secret (namespace-scoped Role in banlieue-system, ADR-0025 — it never gets a cluster-wide Secret grant) and placeholder-substitutes it (ADR-0024's fixed set). It then server-side-applies a VSphereMachine (or ProxmoxMachine / LibvirtMachine) CR with the resolved spec — including the rendered userData content, inlined rather than referenced — ownerReference back to the VirtualMachine, and the controller's field manager 'banlieue.io/controller'."]
+    t1["1. VM consumer kubectl-applies a VirtualMachine CR with classRef, imageRef, and (optionally) placement.providerSelector. Persisted in etcd via the management-cluster API server."]
+    t2["2. banlieue-controller watch fires. Controller resolves the referenced VMClass and VMImage, matches placement.providerSelector/failureDomainSelector against candidate Provider CRs to pick one, and computes the desired infrastructure spec."]
+    t3["3. If VirtualMachine.spec.userData is set, banlieue-controller first reads that Secret or ConfigMap (namespace-scoped Role in banlieue-system, ADR-0025/ADR-0038 — it never gets a cluster-wide Secret grant) and placeholder-substitutes it (ADR-0024's fixed set). It then server-side-applies a VSphereMachine CR with the resolved spec — including the rendered userData content, inlined rather than referenced — ownerReference back to the VirtualMachine, and the controller's field manager 'banlieue.io/controller'. (VSphereMachine is the only infrastructure CR kind implemented today; a ProxmoxMachine/LibvirtMachine equivalent is future work — see ADR-0011.)"]
     t4["4. The matching provider controller's watch fires on the new infrastructure CR. Provider reads its spec."]
-    t5["5. Provider talks to its backend (vCenter / Proxmox / libvirt) to create the underlying VM, attach disks, attach network, power on. On vSphere this is a CloneVM_Task from the per-zone template resolved off VMImage.status, with guestinfo network + templated cloud-config set in the same clone call for any statically-addressed interface (ADR-0024)."]
+    t5["5. Provider talks to its backend to create the underlying VM. On vSphere (the only backend with a working machine reconciler today) this is a CloneVM_Task from the per-zone template resolved off VMImage.status, with guestinfo network + templated cloud-config set in the same clone call for any statically-addressed interface (ADR-0024), followed by PowerOnVM_Task."]
     t6["6. Provider patches infrastructure-CR .status with CAPI v1beta2 conditions (Ready, addresses[], providerID, etc.) using its own field manager (e.g. 'banlieue.io/provider-vsphere')."]
     t7["7. banlieue-controller watch on infrastructure CRs fires. Controller mirrors the status (Ready, conditions, addresses) onto VirtualMachine.status — never sets Ready=true on its own."]
     t1 --> t2 --> t3 --> t4 --> t5 --> t6 --> t7
@@ -43,15 +43,15 @@ flowchart TD
 
 ## Swap a VirtualMachine&#x27;s backend (least-touch)
 
-User changes a single field — VirtualMachine.spec.providerRef.name — to repoint a VM from one backend to another. The banlieue controller tears down the old infrastructure CR and creates a new one of the right kind on the new provider. The user's manifest does not otherwise change. This is the canonical demonstration of banlieue's abstraction principle.
+User changes VirtualMachine.spec.placement.providerSelector (a label selector, not a direct name reference) to reschedule a VM onto a different Provider. The banlieue controller tears down the old infrastructure CR and creates a new one of the right kind for the newly-matched Provider's backend. The user's manifest does not otherwise change. This is the canonical demonstration of banlieue's abstraction principle. NOTE: because only the vSphere backend has a working machine reconciler today (ADR-0011: libvirt has no LibvirtMachine reconciler yet; Proxmox has no provider at all), this flow is currently only exercisable between two vSphere Providers (e.g. two vCenters) — cross-backend swap (vSphere ↔ libvirt/Proxmox) is the design target but not yet runnable end-to-end.
 
 ```mermaid
 flowchart TD
-    t1["1. VM consumer patches VirtualMachine.spec.providerRef.name (e.g. 'prod-vsphere' → 'prod-proxmox')."]
-    t2["2. banlieue-controller observes the spec change. Detects that the existing infrastructure CR no longer matches the desired provider type."]
-    t3["3. Controller deletes the stale VSphereMachine CR; the vSphere provider observes the deletion and tears down the backend VM via finalizer; ownerReference cascade clears the infra CR."]
-    t4["4. Controller server-side-applies a ProxmoxMachine CR with the same uniform spec. The Proxmox provider observes the new CR and provisions on Proxmox VE."]
-    t5["5. Provider patches new infra-CR status; controller mirrors Ready=true back onto the VirtualMachine. Consumer's manifest still looks identical except for one field."]
+    t1["1. VM consumer patches VirtualMachine.spec.placement.providerSelector.matchLabels (e.g. {dc: dc1} → {dc: dc2}) so it matches a different Provider."]
+    t2["2. banlieue-controller re-schedules on the next reconcile. Detects that the newly-matched Provider requires an infrastructure CR of a different kind (or a different provider instance) than the one that currently exists."]
+    t3["3. Controller deletes the stale infrastructure CR (e.g. VSphereMachine); the owning provider observes the deletion and tears down the backend VM via finalizer; ownerReference cascade clears the infra CR."]
+    t4["4. Controller server-side-applies a new infrastructure CR of the kind implied by the newly-matched Provider's ProviderClass backend, with the same uniform spec. That backend's provider controller observes the new CR and provisions on its own backend."]
+    t5["5. Provider patches new infra-CR status; controller mirrors Ready=true back onto the VirtualMachine. Consumer's manifest still looks identical except for the providerSelector labels."]
     t1 --> t2 --> t3 --> t4 --> t5
 ```
 
@@ -67,7 +67,7 @@ flowchart TD
     t1["1. VM consumer kubectl-deletes the VirtualMachine. API server sets deletionTimestamp; CR persists because the controller finalizer 'banlieue.io/virtualmachine' is still attached."]
     t2["2. banlieue-controller observes deletionTimestamp. Issues a delete on the owned infrastructure machine CR."]
     t3["3. Provider observes deletionTimestamp on its infra CR (its own finalizer is attached). Begins backend teardown."]
-    t4["4. Provider talks to the backend (vCenter / Proxmox / libvirt) to power-off, detach storage, and delete the underlying VM. Confirms via backend API."]
+    t4["4. Provider talks to its backend (vCenter today; the mechanism generalizes once libvirt/Proxmox machine reconcilers exist) to power-off, detach storage, and delete the underlying VM. Confirms via backend API."]
     t5["5. Provider clears its finalizer; infra CR is garbage-collected by the API server."]
     t6["6. banlieue-controller observes the infra CR disappear; clears its own finalizer on the VirtualMachine; CR is garbage-collected. No backend leak."]
     t1 --> t2 --> t3 --> t4 --> t5 --> t6
@@ -100,8 +100,8 @@ A VMImage with a spec.sources[].kind==Url entry (an OCI-referenced Kairos image,
 
 ```mermaid
 flowchart TD
-    t1["1. Platform operator (or a nightly CI job authenticated as one) applies/updates a VMImage with a Url source pointing at the newly-built Kairos OCI image, optionally with spec.cloudConfig (secretRef), spec.isoOverlay (secretRef + files[], ADR-0022), and spec.template (rootFolder / network / disk / force knobs) for the vSphere template."]
-    t2["2. banlieue-imagebuilder's VMImage watch fires. It server-side-applies an OSArtifact CR requesting a cloud image (libvirt sources) or an ISO with artifacts.cloudConfigRef resolved from spec.cloudConfig (vsphere sources), sets VMImage.status.buildArtifact.phase=Building, and — when spec.isoOverlay is set — adds spec.volumes[] (a Secret volume named by the declared key/path list) plus artifacts.overlayISOVolume pointing at it, the same auroraboot --overlay-iso mechanism the maintainer's proven manual ISO-build pipeline already relies on (ADR-0022). Only the Secret's name and declared key names are read, never its content."]
+    t1["1. Platform operator (or a nightly CI job authenticated as one) applies/updates a VMImage with a Url source pointing at the newly-built Kairos OCI image, optionally with spec.cloudConfigs[] (an ordered, layered list of secretRef/configMapRef sources, ADR-0037), spec.isoOverlay (secretRef + files[], ADR-0022), and spec.template (rootFolder / network[] / disk / force knobs) for the vSphere template."]
+    t2["2. banlieue-imagebuilder's VMImage watch fires. It server-side-applies an OSArtifact CR requesting a cloud image (libvirt sources) or an ISO with artifacts.cloudConfigRef resolved from the merged spec.cloudConfigs[] (vsphere sources, ADR-0037), sets VMImage.status.buildArtifact.phase=Building, and — when spec.isoOverlay is set — adds spec.volumes[] (a Secret volume named by the declared key/path list) plus artifacts.overlayISOVolume pointing at it, the same auroraboot --overlay-iso mechanism the maintainer's proven manual ISO-build pipeline already relies on (ADR-0022). Only the Secret's name and declared key names are read, never its content."]
     t3["3. kairos-operator's OSArtifact watch fires. It pulls the OCI image and builds the artifact — a raw disk, or auroraboot build-iso with --cloud-config for an ISO — writing it to a PVC it creates, progressing status.phase through Building -> Exporting -> Ready."]
     t4["4. banlieue-imagebuilder's OSArtifact watch fires on the Ready transition. It patches VMImage.status.buildArtifact with kind (cloudImage | iso), phase=Ready, the artifacts PVC reference, the artifact file name, and the checksum."]
     t5["5. banlieue-provider-vsphere's VMImage watch fires. It finds a Url-kind vsphere source with buildArtifact.phase==Ready and kind==iso and begins a per-zone import for each of its Providers' status.failureDomains[]."]

@@ -16,14 +16,18 @@ kind: VirtualMachine
 metadata:
   name: db-prod-01
 spec:
-  class: db-prod-large       # name of a VMClass (CPU/memory/disk shape)
-  image: ubuntu-22-04         # name of a VMImage (boot image)
-  providerRef:
-    name: prod-vsphere        # name of a Provider (which backend)
-  userData: |                 # optional cloud-init / ignition / sysprep
-    #cloud-config
-    runcmd:
-      - echo hello
+  classRef:
+    name: db-prod-large       # name of a VMClass (CPU/memory/disk shape)
+  imageRef:
+    name: ubuntu-22-04         # name of a VMImage (boot image)
+  placement:
+    providerSelector:
+      matchLabels: { dc: dc1, env: prod }  # which Provider(s) may schedule this VM
+  userData:                   # optional cloud-init / ignition / sysprep
+    secretRef:                 # or configMapRef for non-sensitive data
+      name: db-prod-01-cloudinit
+      key: user-data           # defaults to "user-data" when omitted
+  desiredPowerState: PoweredOn
 ```
 
 Note what is **not** there: no `vsphere:` block, no `proxmox:` block, no
@@ -39,9 +43,13 @@ condition vocabulary:
 | Condition `type` | Meaning |
 | --- | --- |
 | `Ready` | The VM exists, is provisioned, and is reachable. |
-| `Provisioned` | The backend has accepted the spec and the VM exists. |
-| `ImageReady` | The referenced image is resolvable and importable on the backend. |
-| `Failure` | A terminal error has occurred. `reason` and `message` are populated. |
+| `Scheduled` | A `Provider` matching `placement` has been selected. |
+| `PlacementValid` | The requested `VMClass`/`VMImage`/placement combination is resolvable. |
+| `InfrastructureReady` | The backend infrastructure CR reports Ready. |
+| `Migrating` | (optional) A recreate-based migration to a new `Provider`/failure domain is in progress. |
+
+`status.initialization.provisioned` (a boolean, not a condition) tracks
+whether the backend has ever accepted the spec.
 
 Status is **mirrored** from the underlying infrastructure CR; the main
 controller never sets `provisioned=true` on its own. See
@@ -66,11 +74,19 @@ stateDiagram-v2
 > virtualmachine.spec` (or
 > [the API reference](../reference/api.md)) for the authoritative shape.
 
-- `class` *(string, required)* — references a `VMClass` (CPU / memory / disks).
-- `image` *(string, required)* — references a `VMImage` (boot image).
-- `providerRef.name` *(string, required)* — references a `Provider` (which
-  backend).
-- `userData` *(string, optional)* — cloud-init / ignition / sysprep payload.
+- `classRef.name` *(string, required)* — references a `VMClass` (CPU / memory / disks).
+- `imageRef.name` *(string, required)* — references a `VMImage` (boot image).
+- `placement.providerSelector` / `placement.failureDomainSelector` *(label
+  selectors, optional)* — which `Provider`(s)/failure domains may schedule
+  this VM. There is no direct-by-name `Provider` reference; the scheduler
+  matches labels.
+- `desiredPowerState` *(string, optional)* — `PoweredOn` (default) |
+  `PoweredOff` | `Suspended`.
+- `userData` *(object, optional)* — references a Secret (`secretRef`) or
+  ConfigMap (`configMapRef`) carrying the cloud-init / ignition / sysprep
+  payload (exactly one must be set). See
+  [ADR-0025](https://github.com/firestoned/banlieue/blob/main/docs/adr/0025-vspheremachine-userdata-secret-rbac.md)
+  and [ADR-0038](https://github.com/firestoned/banlieue/blob/main/docs/adr/0038-userdata-configmap-support.md).
 
 ## Per-VM overrides (deltas, not primary definitions)
 
