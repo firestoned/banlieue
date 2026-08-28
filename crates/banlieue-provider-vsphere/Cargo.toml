@@ -66,7 +66,7 @@ chrono.workspace = true
 # guestinfo.userdata delivery (ADR-0024): already present transitively
 # (pulled in by reqwest/vim_rs) at 0.22.1, so this adds no new third-party
 # code to the build — just makes it a direct, usable dependency here.
-base64 = "0.22"
+base64 = "0.23"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
