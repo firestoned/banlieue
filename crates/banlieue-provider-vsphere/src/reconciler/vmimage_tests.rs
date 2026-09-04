@@ -13,8 +13,9 @@ mod tests {
     use banlieue_api::banlieue::{
         Architecture, BuildArtifactKind, BuildArtifactPhase, BuildArtifactStatus, DiskController,
         FailureDomain, FailureDomainAttributes, GuestAgent, ImageSource, ImageSourceKind,
-        NicAdapter, OsFamily, Provider, ProviderConnection, ProviderSpec, ProviderStatus, VMImage,
-        VMImageSpec, VMImageTemplate, VMImageTemplateDisk, VMImageTemplateNic,
+        InstallMode, NicAdapter, OsFamily, Provider, ProviderConnection, ProviderSpec,
+        ProviderStatus, VMImage, VMImageSpec, VMImageTemplate, VMImageTemplateDisk,
+        VMImageTemplateNic,
     };
     use banlieue_api::common::{DiskProvisioning, Firmware, LocalObjectReference};
     use kube::api::ObjectMeta;
@@ -371,7 +372,7 @@ mod tests {
             guest_id: None,
             root_folder: None,
             install_timeout_seconds: None,
-            auto_manage_install: None,
+            install_mode: None,
         });
 
         assert_eq!(job["kind"], "Job");
@@ -425,7 +426,7 @@ mod tests {
             guest_id: None,
             root_folder: None,
             install_timeout_seconds: None,
-            auto_manage_install: None,
+            install_mode: None,
         });
         assert!(job["metadata"]["ownerReferences"].is_null());
     }
@@ -457,7 +458,7 @@ mod tests {
             guest_id: None,
             root_folder: None,
             install_timeout_seconds: None,
-            auto_manage_install: None,
+            install_mode: None,
         });
         let owner = &job["metadata"]["ownerReferences"][0];
         assert_eq!(owner["apiVersion"], "build.kairos.io/v1alpha2");
@@ -491,7 +492,7 @@ mod tests {
             guest_id: None,
             root_folder: None,
             install_timeout_seconds: None,
-            auto_manage_install: None,
+            install_mode: None,
         });
         let args: Vec<String> = job["spec"]["template"]["spec"]["containers"][0]["args"]
             .as_array()
@@ -528,7 +529,7 @@ mod tests {
                 guest_id: None,
                 root_folder: None,
                 install_timeout_seconds: None,
-                auto_manage_install: None,
+                install_mode: None,
             });
             job["spec"]["template"]["spec"]["containers"][0]["args"]
                 .as_array()
@@ -586,7 +587,7 @@ mod tests {
                     force_upload: true,
                     force_create: false,
                     install_timeout_seconds: Some(900),
-                    auto_manage_install: Some(false),
+                    install_mode: InstallMode::Deferred,
                     retain_on_delete: false,
                 }),
                 iso_overlay: None,
@@ -607,7 +608,7 @@ mod tests {
         assert_eq!(force.root_folder.as_deref(), Some("templates/kairos"));
         assert_eq!(force.disk.as_ref().and_then(|d| d.size), Some(120));
         assert_eq!(force.install_timeout_seconds, Some(900));
-        assert_eq!(force.auto_manage_install, Some(false));
+        assert_eq!(force.install_mode, Some(InstallMode::Deferred));
 
         // No template → all knobs None, no force.
         img.spec.template = None;
@@ -615,7 +616,7 @@ mod tests {
         assert!(!empty.upload && !empty.create);
         assert!(empty.nics.is_empty() && empty.disk.is_none() && empty.firmware.is_none());
         assert!(empty.install_timeout_seconds.is_none());
-        assert!(empty.auto_manage_install.is_none());
+        assert!(empty.install_mode.is_none());
     }
 
     #[test]
@@ -653,7 +654,7 @@ mod tests {
             guest_id: Some("rhel9_64Guest"),
             root_folder: Some("templates/kairos"),
             install_timeout_seconds: Some(900),
-            auto_manage_install: Some(false),
+            install_mode: Some(InstallMode::Deferred),
         });
         let args: Vec<String> = job["spec"]["template"]["spec"]["containers"][0]["args"]
             .as_array()
@@ -676,7 +677,7 @@ mod tests {
         assert!(pair("--guest-id", "rhel9_64Guest"), "{args:?}");
         assert!(pair("--root-folder", "templates/kairos"), "{args:?}");
         assert!(pair("--install-timeout-seconds", "900"), "{args:?}");
-        assert!(pair("--auto-manage-install", "false"), "{args:?}");
+        assert!(pair("--install-mode", "deferred"), "{args:?}");
     }
 
     #[test]
@@ -717,7 +718,7 @@ mod tests {
             guest_id: None,
             root_folder: None,
             install_timeout_seconds: None,
-            auto_manage_install: None,
+            install_mode: None,
         });
         let args: Vec<String> = job["spec"]["template"]["spec"]["containers"][0]["args"]
             .as_array()
@@ -763,7 +764,7 @@ mod tests {
             guest_id: None,
             root_folder: None,
             install_timeout_seconds: None,
-            auto_manage_install: None,
+            install_mode: None,
         });
         let args: Vec<String> = job["spec"]["template"]["spec"]["containers"][0]["args"]
             .as_array()
@@ -772,7 +773,7 @@ mod tests {
             .map(|a| a.as_str().unwrap().to_string())
             .collect();
         assert!(!args.iter().any(|a| a == "--install-timeout-seconds"));
-        assert!(!args.iter().any(|a| a == "--auto-manage-install"));
+        assert!(!args.iter().any(|a| a == "--install-mode"));
     }
 
     #[test]

@@ -100,11 +100,20 @@ After code changes: run `cargo fmt`, `cargo clippy`, `cargo test`, then inform t
 
 ---
 
-## 🚨 Plans and Roadmaps live outside the repo
+## 🚨 Roadmaps live in `.github/community/`, indexed by `ROADMAPS.md`
 
-This is an OSS project; planning documents are **not** checked in. The maintainer keeps the roadmap in a private directory (`~/dev/roadmaps/banlieue/` on this machine). Do not create roadmap files inside the repository, and do not commit any `docs/roadmap/` directory.
+Reversal of an earlier policy (roadmaps used to live outside the repo,
+in a private directory) — **roadmaps are now checked in.** `ROADMAPS.md`
+at the repo root is the high-level index: one row per roadmap/phase, with
+a completion status (✅ done / 🔶 in progress / ⛔ not started / 📄
+reference doc) and a link to the detail doc. The detail docs themselves
+live in `.github/community/`, following the existing numeric-prefix style
+(`NN-TITLE.md`, `NN-PHASE-N{LETTER}-NAME.md`, UPPERCASE-with-hyphens).
 
-If a planning question requires reading the roadmap, read from `~/dev/roadmaps/banlieue/` directly. New roadmap entries follow the existing numeric-prefix style there (`NN-TITLE.md`, `NN-PHASE-N{LETTER}-NAME.md`, UPPERCASE-with-hyphens).
+Update `ROADMAPS.md`'s status row in the same PR/commit that changes a
+roadmap item's state — it's a status board, not a description of intent.
+Task-level detail stays inside the individual roadmap doc; `ROADMAPS.md`
+only tracks phase-level state.
 
 ADRs are different — those *do* belong in the repo, at `docs/adr/NNNN-title.md` (lowercase-hyphen).
 
@@ -233,7 +242,7 @@ banlieue/
 └── e2e/                             # Phase 4
 ```
 
-Phase plans / roadmap docs live **outside the repo** (`~/dev/roadmaps/banlieue/`).
+Phase plans / roadmap docs live in `.github/community/`, indexed by `ROADMAPS.md` at the repo root.
 
 ---
 
@@ -282,4 +291,4 @@ Documentation is NOT optional — it is a critical requirement equal in importan
 - [Kubernetes API conventions](https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api-conventions.md)
 - [Cluster API v1beta2 contracts](https://cluster-api.sigs.k8s.io/developer/providers/contracts/)
 - [Operator pattern](https://kubernetes.io/docs/concepts/extend-kubernetes/operator/)
-- Phase plans: kept outside the repo (`~/dev/roadmaps/banlieue/` on the maintainer's machine)
+- Phase plans: [`ROADMAPS.md`](../ROADMAPS.md) at the repo root, detail docs in [`.github/community/`](../.github/community/)

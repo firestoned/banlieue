@@ -128,6 +128,71 @@ banlieue/
 the API reference are generated from the Rust types (`make crds`). Never
 hand-edit generated YAML.
 
+## Getting started
+
+There's no banlieue-managed cluster to bootstrap *into* on day one, so
+`scripts/bootstrap-k0s-cluster.sh` stands up the k0s **management** cluster
+banlieue's own controllers will run on — the one piece of the pipeline that
+talks to the backend directly (`govc`/`virt-install`) instead of through a
+banlieue CRD, since no CRD API exists yet at that point.
+
+```sh
+# See every subcommand + env var this script accepts
+./scripts/bootstrap-k0s-cluster.sh --help
+
+# Scaffold the untracked vSphere env file (BACKEND defaults to libvirt
+# otherwise — set it explicitly even for this template-only step)
+BACKEND=vsphere ./scripts/bootstrap-k0s-cluster.sh --print-env-template > ~/.k0s/banlieue.env
+```
+
+<details>
+<summary><b>vSphere backend</b></summary>
+
+Clones cluster-specific Kairos VM templates with `govc`, spreading nodes
+across compute clusters so each is its own etcd failure domain. vCenter
+creds/URL/datacenter come from the ambient `GOVC_*` environment; the node
+table and per-cluster placement come from an **untracked** env file (never
+commit real hostnames/IPs — see
+[`rules/no-real-infrastructure.md`](.claude/rules/no-real-infrastructure.md)):
+
+```sh
+# 1. edit ~/.k0s/banlieue.env: node table (name/cluster/ip/role) + placement maps
+$EDITOR ~/.k0s/banlieue.env
+
+# 2. run the full pipeline (clone -> reconfigure -> power on -> k0sctl)
+BANLIEUE_ENV_FILE=~/.k0s/banlieue.env BACKEND=vsphere \
+  ./scripts/bootstrap-k0s-cluster.sh all
+
+# or drive it phase by phase: vms | config | apply | kubeconfig | label | flux | destroy
+```
+
+</details>
+
+<details>
+<summary><b>libvirt backend (default)</b></summary>
+
+Creates Kairos "Hadron" VMs with `virt-install` on a KVM/libvirt host and
+lets Kairos install itself from its ISO. Run on the hypervisor host, or
+point `LIBVIRT_URI` at a remote one:
+
+```sh
+LIBVIRT_URI=qemu:///system \
+VM_COUNT=4 VCPUS=2 MEM_MB=8192 DISK_GB=25 \
+  ./scripts/bootstrap-k0s-cluster.sh all
+```
+
+</details>
+
+Either backend finishes with [k0sctl](https://github.com/k0sproject/k0sctl)
+installing k0s onto the resulting VMs; an opt-in `flux` step
+(`FLUX_ENABLED=true`) can push `flux-operator`/`flux-core` next.
+
+**Output:** a running k0s management cluster with nothing banlieue-specific
+on it yet — install banlieue itself with `banlieue bootstrap operator`
+(ADR-0013). Full walkthrough, phase by phase:
+[End-to-End Setup](docs/src/guides/end-to-end-setup.md)
+(rendered: [docs](https://firestoned.github.io/banlieue/guides/end-to-end-setup/)).
+
 ## Development
 
 banlieue follows **ADD — Architecture Driven Development**: significant changes

@@ -28,7 +28,9 @@
 //!    `FailureDomain.attributes.features`.
 //! 7. Firmware — `efi-secure` requires the feature `efiSecureBoot`; `bios`
 //!    and `efi` are assumed universally available (vSphere ≥ 6.5).
-//! 8. Anti-affinity (`required`) — drop candidates that would put this VM on
+//! 8. vTPM (ADR-0039) — `VMClass.spec.tpmEnabled` requires the feature
+//!    `vtpm`; unset is universally acceptable (no vTPM is requested).
+//! 9. Anti-affinity (`required`) — drop candidates that would put this VM on
 //!    a failure domain sharing a `topologyKey` value with an already-
 //!    scheduled VM matching the rule's label selector.
 //!
@@ -49,6 +51,12 @@ use kube::ResourceExt;
 
 /// Feature flag a failure domain must advertise to support EFI secure boot.
 pub const FEATURE_EFI_SECURE_BOOT: &str = "efiSecureBoot";
+
+/// Feature flag a failure domain must advertise to support attaching a
+/// vTPM device (`VMClass.spec.tpmEnabled`, ADR-0039). Set by hand on
+/// `Provider.spec.capabilities.features` once the operator confirms KMS +
+/// vTPM actually work end-to-end in that vCenter — never auto-discovered.
+pub const FEATURE_VTPM: &str = "vtpm";
 
 /// Maximum number of per-candidate reject reasons kept for the
 /// `NoFailureDomainMatched` condition message. At admin-scale topology the
@@ -110,6 +118,13 @@ pub enum ScheduleError {
     )]
     FirmwareUnsupported,
 
+    /// Required `vtpm` feature is not advertised by any candidate failure
+    /// domain, but `VMClass.spec.tpmEnabled` is `true` (ADR-0039).
+    #[error(
+        "tpmEnabled requires the vtpm feature; none of the candidate failure domains advertise it"
+    )]
+    TpmUnsupported,
+
     /// Required anti-affinity rule could not be satisfied.
     #[error("required anti-affinity rule on topologyKey={0} left no candidates")]
     AntiAffinityUnsatisfied(String),
@@ -127,6 +142,8 @@ pub mod reasons {
     pub const IMAGE_NOT_READY: &str = "ImageNotReady";
     /// `efi-secure` firmware unsupported.
     pub const FIRMWARE_UNSUPPORTED: &str = "FirmwareUnsupported";
+    /// `tpmEnabled` requested but no candidate advertises `vtpm`.
+    pub const TPM_UNSUPPORTED: &str = "TpmUnsupported";
     /// Required anti-affinity rule could not be satisfied.
     pub const ANTI_AFFINITY_UNSATISFIED: &str = "AntiAffinityUnsatisfied";
 }
@@ -140,6 +157,7 @@ impl ScheduleError {
             ScheduleError::NoFailureDomainMatched(_) => reasons::NO_FAILURE_DOMAIN,
             ScheduleError::ImageNotReady => reasons::IMAGE_NOT_READY,
             ScheduleError::FirmwareUnsupported => reasons::FIRMWARE_UNSUPPORTED,
+            ScheduleError::TpmUnsupported => reasons::TPM_UNSUPPORTED,
             ScheduleError::AntiAffinityUnsatisfied(_) => reasons::ANTI_AFFINITY_UNSATISFIED,
         }
     }
@@ -204,6 +222,7 @@ pub fn schedule(
     let mut reject_reasons = RejectReasons::default();
     let mut image_ready_seen = false;
     let mut firmware_unsupported_seen = false;
+    let mut tpm_unsupported_seen = false;
     let mut survivors: Vec<(&Provider, &FailureDomain)> = Vec::new();
 
     for provider in &provider_candidates {
@@ -303,6 +322,18 @@ pub fn schedule(
                 continue;
             }
 
+            // Step 8: vTPM (ADR-0039)
+            if class.spec.tpm_enabled && !fd.attributes.features.iter().any(|f| f == FEATURE_VTPM) {
+                tpm_unsupported_seen = true;
+                reject_reasons.push(format!(
+                    "{}/{}: tpmEnabled requested but '{}' feature absent",
+                    provider.name_any(),
+                    fd.name,
+                    FEATURE_VTPM,
+                ));
+                continue;
+            }
+
             survivors.push((provider, fd));
         }
     }
@@ -314,12 +345,15 @@ pub fn schedule(
         if firmware_unsupported_seen {
             return Err(ScheduleError::FirmwareUnsupported);
         }
+        if tpm_unsupported_seen {
+            return Err(ScheduleError::TpmUnsupported);
+        }
         return Err(ScheduleError::NoFailureDomainMatched(
             reject_reasons.render(),
         ));
     }
 
-    // Step 8: required anti-affinity.
+    // Step 9: required anti-affinity.
     let pre_aa_len = survivors.len();
     let mut anti_affinity_offending: Option<String> = None;
     for rule in placement

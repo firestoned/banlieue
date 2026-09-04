@@ -839,6 +839,18 @@ jobs:
       base64-subjects: "${{ needs.generate-provenance-subjects.outputs.hashes }}"
       upload-assets: ${{ github.event_name == 'release' }}
       provenance-name: "banlieue-${{ needs.extract-version.outputs.version }}.intoto.jsonl"
+      # This repo is public (verified: `gh api repos/firestoned/banlieue
+      # --jq .private` -> false). The generator's own privacy check still
+      # halted the "final" job with "Repository is private... Set
+      # 'private-repository' to override" (root cause found live,
+      # 2026-09-07, via `gh api .../jobs/<id>/logs` — the job's own log
+      # separately confirms `"private": false` moments later, so this is
+      # the generator's repo-visibility signal lagging the real GitHub API
+      # state, not an actual privacy concern). Since the repo is genuinely
+      # public, this input is a no-op for privacy -- it only removes a
+      # stale-detection false positive that was failing every push-to-main
+      # build.
+      private-repository: true
 
   # ─────────────────────────────────────────────────────────────────────────────
   # CRD + deploy manifests — code-first CRDs (crdgen) plus deploy/ kustomize.

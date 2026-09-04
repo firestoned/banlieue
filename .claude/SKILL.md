@@ -187,7 +187,7 @@ Brief explanation of the business or technical reason.
 3. Update affected pages under `docs/`:
    - Design docs / ADRs (`docs/adr/`, `docs/design/`) for architectural decisions
    - User guides (`docs/user/`, Phase 4)
-   - (Roadmap docs live outside the repo at `~/dev/roadmaps/banlieue/`. Update them there if scope or status shifted.)
+   - (Roadmap docs live in `.github/community/`, indexed by `ROADMAPS.md`. Update the relevant roadmap doc and its `ROADMAPS.md` status row if scope or status shifted.)
 4. Update `examples/*.yaml` to reflect schema or behavior changes.
 5. If CRDs changed: run `regen-crds` skill, then `regen-api-docs` (LAST).
 6. If README getting-started or features changed: update `README.md`.

@@ -44,6 +44,7 @@ mod tests {
             num_cpus: 4,
             memory_mi_b: 8192,
             firmware: Firmware::Efi,
+            tpm_enabled: false,
             disks: vec![VSphereDiskSpec {
                 name: "os".to_string(),
                 size_gi_b: 40,
@@ -117,6 +118,64 @@ mod tests {
             Some(PowerState::PoweredOn)
         );
         assert_eq!(outcome.power_state, Some(PowerState::PoweredOn));
+    }
+
+    #[tokio::test]
+    async fn tpm_enabled_attaches_vtpm_before_power_on() {
+        let client = FakeClient::new(seeded_inventory());
+        let mut s = spec("ds-fast-01", "vmnet-prod");
+        s.tpm_enabled = true;
+        let outcome = ensure_vm(as_client(&client), &s, "db-01", None, None)
+            .await
+            .unwrap();
+
+        assert!(client.tpm_attached(&outcome.vm_ref));
+        assert_eq!(outcome.tpm_attached, Some(true));
+        // Still ends up powered on per spec.desiredPowerState — the vTPM
+        // attach is inserted before this, not instead of it.
+        assert_eq!(
+            client.power_state_of(&outcome.vm_ref),
+            Some(PowerState::PoweredOn)
+        );
+    }
+
+    #[tokio::test]
+    async fn tpm_disabled_never_calls_add_tpm_device() {
+        let client = FakeClient::new(seeded_inventory());
+        let outcome = ensure_vm(
+            as_client(&client),
+            &spec("ds-fast-01", "vmnet-prod"),
+            "db-01",
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert!(!client.tpm_attached(&outcome.vm_ref));
+        assert_eq!(outcome.tpm_attached, None);
+    }
+
+    #[tokio::test]
+    async fn already_provisioned_reports_no_tpm_attach_attempt() {
+        let client = FakeClient::new(seeded_inventory());
+        let mut s = spec("ds-fast-01", "vmnet-prod");
+        s.tpm_enabled = true;
+        let outcome = ensure_vm(
+            as_client(&client),
+            &s,
+            "db-01",
+            Some("vm-existing-123"),
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            outcome.tpm_attached, None,
+            "the already-provisioned early return performs no vCenter mutation of its own"
+        );
+        assert!(!client.tpm_attached("vm-existing-123"));
     }
 
     #[tokio::test]
