@@ -23,8 +23,15 @@ spec:
     interfaces:
       - name: eth0
         networkClass: prod
+        # Presence of `pool` (vs. `static`, vs. neither for DHCP) selects the
+        # IPAM mode — there is no separate `source` field.
+        #
+        # NOTE (ADR-0033): pool-based IPAM is schema-only today. No
+        # reconciler creates an IPAddressClaim, reads back the resulting
+        # IPAddress, or garbage-collects one on delete — this VMClass will
+        # validate and schedule, but the pool reference below is not
+        # currently acted on.
         ipam:
-          source: pool
           pool:
             poolRef:
               apiGroup: ipam.cluster.x-k8s.io

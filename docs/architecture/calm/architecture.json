@@ -39,7 +39,7 @@
       "unique-id": "service-banlieue-controller",
       "node-type": "service",
       "name": "banlieue-controller",
-      "description": "Main Rust kube-rs controller. Watches VirtualMachine CRs, resolves class/image/providerRef references, creates a backend-specific infrastructure CR carrying the resolved spec, and mirrors status from that infra CR back onto the VirtualMachine. Owns no backend credentials — all backend access is delegated to provider controllers via CRDs.",
+      "description": "Main Rust kube-rs controller. Watches VirtualMachine CRs, resolves classRef/imageRef references, schedules the VM onto a Provider matched via placement.providerSelector/failureDomainSelector, creates a backend-specific infrastructure CR carrying the resolved spec, and mirrors status from that infra CR back onto the VirtualMachine. Owns no backend credentials — all backend access is delegated to provider controllers via CRDs.",
       "interfaces": [
         {
           "unique-id": "banlieue-controller-metrics",
@@ -154,7 +154,7 @@
       "unique-id": "service-provider-vsphere",
       "node-type": "service",
       "name": "banlieue-provider-vsphere",
-      "description": "Provider controller drives vCenter via a BYOC vim_rs client (ADR-0008). Live today: the `provider` reconciler (capability introspection, failure-domain discovery, ADR-0019) and the `vmimage` reconciler (per-zone Kairos template build via ISO import, install-once-and-generalize, ADR-0020/0021). The `VSphereMachine` reconciler — watching VSphereMachine / VSphereMachineTemplate infrastructure CRs, cloning a VM from the per-zone template, and delivering static IP + templated cloud-config via vCenter guestinfo — is the next increment (ADR-0024), not yet in-tree. Satisfies the CAPI v1beta2 InfraMachine contract so the same provider can also serve CAPI Clusters."
+      "description": "Provider controller drives vCenter via a BYOC vim_rs client (ADR-0008). Live today: the `provider` reconciler (capability introspection, failure-domain discovery, ADR-0019), the `vmimage` reconciler (per-zone Kairos template build via ISO import, install-once-and-generalize, ADR-0020/0021), and the `VSphereMachine` reconciler — cloning a VM from the per-zone template and delivering static IP + templated cloud-config via vCenter guestinfo on first provision (ADR-0024). The VSphereMachine reconciler is create-path only: it clones and powers on once, then only observes power state; update/drift reconciliation and live migration beyond a recreate-on-change fallback are not yet implemented (ADR-0036). Satisfies the CAPI v1beta2 InfraMachine contract so the same provider can also serve CAPI Clusters."
     },
     {
       "unique-id": "service-provider-proxmox",
@@ -172,7 +172,7 @@
       "unique-id": "service-banlieue-imagebuilder",
       "node-type": "service",
       "name": "banlieue-imagebuilder",
-      "description": "Provider-agnostic controller that turns a VMImage's OCI/Kairos-referenced source (spec.sources[].kind == Url) into a build artifact. Server-side-applies an OSArtifact CR (kairos-operator) requesting either a cloud image (spec.artifacts.cloudImage, for libvirt) or a bootable ISO (spec.artifacts.iso + cloudConfigRef, for vSphere), watches its status.phase, and mirrors readiness into VMImage.status.buildArtifact — a typed top-level field (kind: cloudImage | iso, aligned with kairos OSArtifactKind) distinct from status.perProvider[], so this controller and each provider controller's field manager never contend over the same VMImage.status fields. When VMImage.spec.cloudConfig is set it passes a cloud-config Secret as the OSArtifact cloudConfigRef, baking a default cloud-config into the artifact. Has no knowledge of vSphere, Proxmox, or libvirt; backend-specific conversion (e.g. raw -> VMDK) and per-zone import are each provider's own concern. See ADR-0010 and ADR-0020.",
+      "description": "Provider-agnostic controller that turns a VMImage's OCI/Kairos-referenced source (spec.sources[].kind == Url) into a build artifact. Server-side-applies an OSArtifact CR (kairos-operator) requesting either a cloud image (spec.artifacts.cloudImage, for libvirt) or a bootable ISO (spec.artifacts.iso + cloudConfigRef, for vSphere), watches its status.phase, and mirrors readiness into VMImage.status.buildArtifact — a typed top-level field (kind: cloudImage | iso, aligned with kairos OSArtifactKind) distinct from status.perProvider[], so this controller and each provider controller's field manager never contend over the same VMImage.status fields. When VMImage.spec.cloudConfigs[] is set it layers those cloud-config sources (Secret/ConfigMap, in order) into a single merged cloud-config passed as the OSArtifact cloudConfigRef (ADR-0037). Has no knowledge of vSphere, Proxmox, or libvirt; backend-specific conversion (e.g. raw -> VMDK) and per-zone import are each provider's own concern. See ADR-0010, ADR-0020, and ADR-0037.",
       "interfaces": [
         {
           "unique-id": "banlieue-imagebuilder-health",
@@ -301,13 +301,13 @@
       "unique-id": "data-asset-virtualmachine-cr",
       "node-type": "data-asset",
       "name": "VirtualMachine Custom Resource",
-      "description": "Namespaced CRD (banlieue.io/v1alpha1) declaring a backend-agnostic VM: class (→ VMClass), image (→ VMImage), providerRef (→ Provider), and optional userData. The ONLY user-facing API."
+      "description": "Namespaced CRD (banlieue.io/v1alpha1) declaring a backend-agnostic VM: classRef (→ VMClass), imageRef (→ VMImage), placement.providerSelector/failureDomainSelector (a label selector the scheduler matches against Provider CRs — never a direct Provider name reference), desiredPowerState, and optional userData. The ONLY user-facing API."
     },
     {
       "unique-id": "data-asset-provider-cr",
       "node-type": "data-asset",
       "name": "Provider Custom Resource",
-      "description": "Namespaced CRD (banlieue.io/v1alpha1) declaring the existence of a backend in this cluster: type (vsphere|proxmox|libvirt), endpoint, datacenter, credentialsRef to a Secret. Owned by the platform operator, referenced by VirtualMachine."
+      "description": "Namespaced CRD (banlieue.io/v1alpha1) declaring one backend instance in this cluster: providerClassRef (→ ProviderClass, which carries the backend kind), connection (endpoint, credentialsRef, optional caBundle/insecureSkipTLSVerify), and capabilities (storage/network class mappings). Owned by the platform operator; VirtualMachines never reference a Provider by name — they are matched onto one via placement.providerSelector against the Provider's labels."
     },
     {
       "unique-id": "data-asset-providerclass-cr",
@@ -319,13 +319,13 @@
       "unique-id": "data-asset-vmclass-cr",
       "node-type": "data-asset",
       "name": "VMClass Custom Resource",
-      "description": "Cluster-scoped CRD (banlieue.io/v1alpha1) declaring a flavour: CPU count, memory, disk shape. Referenced by VirtualMachine.spec.class by name."
+      "description": "Cluster-scoped CRD (banlieue.io/v1alpha1) declaring a flavour: CPU count, memory, disk shape, network interfaces/IPAM, firmware. Referenced by VirtualMachine.spec.classRef.name."
     },
     {
       "unique-id": "data-asset-vmimage-cr",
       "node-type": "data-asset",
       "name": "VMImage Custom Resource",
-      "description": "Cluster-scoped CRD (banlieue.io/v1alpha1) declaring a boot image and its source. Referenced by VirtualMachine.spec.image by name; resolved by the provider against its backend's native image catalog. spec.sources[].kind == Url sources are built by banlieue-imagebuilder; status.buildArtifact (typed cloudImage | iso, set by banlieue-imagebuilder) and status.perProvider[] (set by each provider, incl. per-zone import progress in .zones[]) are separate fields owned by separate field managers. spec.cloudConfig supplies a default cloud-config baked into the built artifact. See ADR-0010 and ADR-0020."
+      "description": "Cluster-scoped CRD (banlieue.io/v1alpha1) declaring a boot image and its source. Referenced by VirtualMachine.spec.imageRef.name; resolved by the provider against its backend's native image catalog. spec.sources[].kind == Url sources are built by banlieue-imagebuilder; status.buildArtifact (typed cloudImage | iso, set by banlieue-imagebuilder) and status.perProvider[] (set by each provider, incl. per-zone import progress in .zones[]) are separate fields owned by separate field managers. spec.cloudConfigs[] supplies an ordered, layered list of cloud-config sources baked into the built artifact (ADR-0037, supersedes the earlier single spec.cloudConfig). See ADR-0010, ADR-0020, and ADR-0037."
     },
     {
       "unique-id": "data-asset-osartifact-cr",
@@ -536,7 +536,7 @@
     },
     {
       "unique-id": "rel-provider-vsphere-kube-api",
-      "description": "vSphere provider controller watches Provider CRs (capability introspection, ADR-0019), VMImage CRs (per-zone template build, ADR-0020/0021), and — once ADR-0024 lands — VSphereMachine infrastructure CRs, patching each one's .status. NEVER speaks to the banlieue controller directly — the K8s API is the bus.",
+      "description": "vSphere provider controller watches Provider CRs (capability introspection, ADR-0019), VMImage CRs (per-zone template build, ADR-0020/0021), and VSphereMachine infrastructure CRs (clone-from-template create path + power-state observation, ADR-0024), patching each one's .status. NEVER speaks to the banlieue controller directly — the K8s API is the bus.",
       "relationship-type": {
         "connects": {
           "source": {
@@ -795,18 +795,18 @@
         {
           "sequence-number": 1,
           "relationship-unique-id": "rel-consumer-kubectl",
-          "description": "VM consumer kubectl-applies a VirtualMachine CR with class, image, and providerRef. Persisted in etcd via the management-cluster API server."
+          "description": "VM consumer kubectl-applies a VirtualMachine CR with classRef, imageRef, and (optionally) placement.providerSelector. Persisted in etcd via the management-cluster API server."
         },
         {
           "sequence-number": 2,
           "relationship-unique-id": "rel-controller-kube-api",
-          "description": "banlieue-controller watch fires. Controller resolves the named VMClass, VMImage, and Provider; computes the desired infrastructure spec.",
+          "description": "banlieue-controller watch fires. Controller resolves the referenced VMClass and VMImage, matches placement.providerSelector/failureDomainSelector against candidate Provider CRs to pick one, and computes the desired infrastructure spec.",
           "direction": "destination-to-source"
         },
         {
           "sequence-number": 3,
           "relationship-unique-id": "rel-controller-kube-api",
-          "description": "If VirtualMachine.spec.userData is set, banlieue-controller first reads that Secret (namespace-scoped Role in banlieue-system, ADR-0025 — it never gets a cluster-wide Secret grant) and placeholder-substitutes it (ADR-0024's fixed set). It then server-side-applies a VSphereMachine (or ProxmoxMachine / LibvirtMachine) CR with the resolved spec — including the rendered userData content, inlined rather than referenced — ownerReference back to the VirtualMachine, and the controller's field manager 'banlieue.io/controller'."
+          "description": "If VirtualMachine.spec.userData is set, banlieue-controller first reads that Secret or ConfigMap (namespace-scoped Role in banlieue-system, ADR-0025/ADR-0038 — it never gets a cluster-wide Secret grant) and placeholder-substitutes it (ADR-0024's fixed set). It then server-side-applies a VSphereMachine CR with the resolved spec — including the rendered userData content, inlined rather than referenced — ownerReference back to the VirtualMachine, and the controller's field manager 'banlieue.io/controller'. (VSphereMachine is the only infrastructure CR kind implemented today; a ProxmoxMachine/LibvirtMachine equivalent is future work — see ADR-0011.)"
         },
         {
           "sequence-number": 4,
@@ -817,7 +817,7 @@
         {
           "sequence-number": 5,
           "relationship-unique-id": "rel-provider-vsphere-backend",
-          "description": "Provider talks to its backend (vCenter / Proxmox / libvirt) to create the underlying VM, attach disks, attach network, power on. On vSphere this is a CloneVM_Task from the per-zone template resolved off VMImage.status, with guestinfo network + templated cloud-config set in the same clone call for any statically-addressed interface (ADR-0024)."
+          "description": "Provider talks to its backend to create the underlying VM. On vSphere (the only backend with a working machine reconciler today) this is a CloneVM_Task from the per-zone template resolved off VMImage.status, with guestinfo network + templated cloud-config set in the same clone call for any statically-addressed interface (ADR-0024), followed by PowerOnVM_Task."
         },
         {
           "sequence-number": 6,
@@ -853,38 +853,38 @@
     {
       "unique-id": "flow-swap-provider",
       "name": "Swap a VirtualMachine's backend (least-touch)",
-      "description": "User changes a single field — VirtualMachine.spec.providerRef.name — to repoint a VM from one backend to another. The banlieue controller tears down the old infrastructure CR and creates a new one of the right kind on the new provider. The user's manifest does not otherwise change. This is the canonical demonstration of banlieue's abstraction principle.",
+      "description": "User changes VirtualMachine.spec.placement.providerSelector (a label selector, not a direct name reference) to reschedule a VM onto a different Provider. The banlieue controller tears down the old infrastructure CR and creates a new one of the right kind for the newly-matched Provider's backend. The user's manifest does not otherwise change. This is the canonical demonstration of banlieue's abstraction principle. NOTE: because only the vSphere backend has a working machine reconciler today (ADR-0011: libvirt has no LibvirtMachine reconciler yet; Proxmox has no provider at all), this flow is currently only exercisable between two vSphere Providers (e.g. two vCenters) — cross-backend swap (vSphere ↔ libvirt/Proxmox) is the design target but not yet runnable end-to-end.",
       "transitions": [
         {
           "sequence-number": 1,
           "relationship-unique-id": "rel-consumer-kubectl",
-          "description": "VM consumer patches VirtualMachine.spec.providerRef.name (e.g. 'prod-vsphere' → 'prod-proxmox')."
+          "description": "VM consumer patches VirtualMachine.spec.placement.providerSelector.matchLabels (e.g. {dc: dc1} → {dc: dc2}) so it matches a different Provider."
         },
         {
           "sequence-number": 2,
           "relationship-unique-id": "rel-controller-kube-api",
-          "description": "banlieue-controller observes the spec change. Detects that the existing infrastructure CR no longer matches the desired provider type.",
+          "description": "banlieue-controller re-schedules on the next reconcile. Detects that the newly-matched Provider requires an infrastructure CR of a different kind (or a different provider instance) than the one that currently exists.",
           "direction": "destination-to-source"
         },
         {
           "sequence-number": 3,
           "relationship-unique-id": "rel-controller-kube-api",
-          "description": "Controller deletes the stale VSphereMachine CR; the vSphere provider observes the deletion and tears down the backend VM via finalizer; ownerReference cascade clears the infra CR."
+          "description": "Controller deletes the stale infrastructure CR (e.g. VSphereMachine); the owning provider observes the deletion and tears down the backend VM via finalizer; ownerReference cascade clears the infra CR."
         },
         {
           "sequence-number": 4,
           "relationship-unique-id": "rel-controller-kube-api",
-          "description": "Controller server-side-applies a ProxmoxMachine CR with the same uniform spec. The Proxmox provider observes the new CR and provisions on Proxmox VE."
+          "description": "Controller server-side-applies a new infrastructure CR of the kind implied by the newly-matched Provider's ProviderClass backend, with the same uniform spec. That backend's provider controller observes the new CR and provisions on its own backend."
         },
         {
           "sequence-number": 5,
           "relationship-unique-id": "rel-controller-kube-api",
-          "description": "Provider patches new infra-CR status; controller mirrors Ready=true back onto the VirtualMachine. Consumer's manifest still looks identical except for one field."
+          "description": "Provider patches new infra-CR status; controller mirrors Ready=true back onto the VirtualMachine. Consumer's manifest still looks identical except for the providerSelector labels."
         }
       ],
       "controls": {
         "least-touch": {
-          "description": "Demonstrates banlieue's user-facing invariant: changing the backend MUST NOT require changes outside spec.providerRef.name. Any feature that breaks this is rejected.",
+          "description": "Demonstrates banlieue's user-facing invariant: changing the backend MUST NOT require changes outside spec.placement.providerSelector. Any feature that breaks this is rejected.",
           "requirements": [
             {
               "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
@@ -926,7 +926,7 @@
         {
           "sequence-number": 4,
           "relationship-unique-id": "rel-provider-vsphere-backend",
-          "description": "Provider talks to the backend (vCenter / Proxmox / libvirt) to power-off, detach storage, and delete the underlying VM. Confirms via backend API."
+          "description": "Provider talks to its backend (vCenter today; the mechanism generalizes once libvirt/Proxmox machine reconcilers exist) to power-off, detach storage, and delete the underlying VM. Confirms via backend API."
         },
         {
           "sequence-number": 5,
@@ -1024,12 +1024,12 @@
         {
           "sequence-number": 1,
           "relationship-unique-id": "rel-operator-kubectl",
-          "description": "Platform operator (or a nightly CI job authenticated as one) applies/updates a VMImage with a Url source pointing at the newly-built Kairos OCI image, optionally with spec.cloudConfig (secretRef), spec.isoOverlay (secretRef + files[], ADR-0022), and spec.template (rootFolder / network / disk / force knobs) for the vSphere template."
+          "description": "Platform operator (or a nightly CI job authenticated as one) applies/updates a VMImage with a Url source pointing at the newly-built Kairos OCI image, optionally with spec.cloudConfigs[] (an ordered, layered list of secretRef/configMapRef sources, ADR-0037), spec.isoOverlay (secretRef + files[], ADR-0022), and spec.template (rootFolder / network[] / disk / force knobs) for the vSphere template."
         },
         {
           "sequence-number": 2,
           "relationship-unique-id": "rel-imagebuilder-kube-api",
-          "description": "banlieue-imagebuilder's VMImage watch fires. It server-side-applies an OSArtifact CR requesting a cloud image (libvirt sources) or an ISO with artifacts.cloudConfigRef resolved from spec.cloudConfig (vsphere sources), sets VMImage.status.buildArtifact.phase=Building, and — when spec.isoOverlay is set — adds spec.volumes[] (a Secret volume named by the declared key/path list) plus artifacts.overlayISOVolume pointing at it, the same auroraboot --overlay-iso mechanism the maintainer's proven manual ISO-build pipeline already relies on (ADR-0022). Only the Secret's name and declared key names are read, never its content.",
+          "description": "banlieue-imagebuilder's VMImage watch fires. It server-side-applies an OSArtifact CR requesting a cloud image (libvirt sources) or an ISO with artifacts.cloudConfigRef resolved from the merged spec.cloudConfigs[] (vsphere sources, ADR-0037), sets VMImage.status.buildArtifact.phase=Building, and — when spec.isoOverlay is set — adds spec.volumes[] (a Secret volume named by the declared key/path list) plus artifacts.overlayISOVolume pointing at it, the same auroraboot --overlay-iso mechanism the maintainer's proven manual ISO-build pipeline already relies on (ADR-0022). Only the Secret's name and declared key names are read, never its content.",
           "direction": "destination-to-source"
         },
         {
@@ -1264,7 +1264,7 @@
       ],
       "controls": {
         "least-touch": {
-          "description": "Upgrading N backends is one edit, not N. The image lives on the class precisely so the fleet-wide operation stays a single object change — the same least-touch invariant that keeps a backend swap confined to spec.providerRef.",
+          "description": "Upgrading N backends is one edit, not N. The image lives on the class precisely so the fleet-wide operation stays a single object change — the same least-touch invariant that keeps a backend swap confined to spec.placement.providerSelector.",
           "requirements": [
             {
               "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
@@ -1387,6 +1387,7 @@
               "banlieue-provider-cabundle-source",
               "banlieue-provider-connection",
               "banlieue-provider-credentialsref-authorization",
+              "banlieue-providerclass-guardrails",
               "banlieue-vmimage-import-source"
             ],
             "evidence": "deploy/admission/, docs/adr/0007-admission-policies.md, docs/src/guides/core-controller.md"
@@ -1411,7 +1412,7 @@
     "repository": "https://github.com/firestoned/banlieue",
     "license": "Apache-2.0",
     "calm-schema-version": "1.2",
-    "phase": "Phase 1A in progress — banlieue-api shipped, controller + SDK landing, providers PLANNED",
+    "phase": "Phase 1A — banlieue-api, the main controller, banlieue-operator, and the vSphere provider create and power on real VMs end-to-end (vSphere create-path only: clone-from-template + power-on, no update/drift/live-migration yet). The libvirt provider registers hosts and imports images but has no VM/domain lifecycle (LibvirtMachine) yet. Proxmox is anticipated in the schema only — no provider implementation.",
     "crds": {
       "user-facing": {
         "group": "banlieue.io",
@@ -1419,6 +1420,7 @@
         "kinds": [
           "VirtualMachine",
           "Provider",
+          "ProviderClass",
           "VMClass",
           "VMImage"
         ]
@@ -1450,6 +1452,7 @@
     "docs/adr/0013-banlieue-bootstrap-cli.md",
     "docs/adr/0014-kind-e2e-operator-contract.md",
     "docs/adr/0015-vmimage-status-merge-strategy.md",
+    "docs/adr/0016-imagebuild-namespace-isolation.md",
     "docs/adr/0017-vsphere-bootstrap-backend.md",
     "docs/adr/0018-vault-flux-operator-bootstrap.md",
     "docs/adr/0019-vsphere-capability-introspection-iter2.md",
@@ -1458,6 +1461,19 @@
     "docs/adr/0022-vsphere-iso-overlay-files.md",
     "docs/adr/0023-explicit-failure-domain-name-override.md",
     "docs/adr/0024-vspheremachine-clone-static-ip-cloud-config.md",
-    "docs/adr/0025-vspheremachine-userdata-secret-rbac.md"
+    "docs/adr/0025-vspheremachine-userdata-secret-rbac.md",
+    "docs/adr/0026-vspheremachine-deletion-lifecycle.md",
+    "docs/adr/0027-import-job-owned-by-osartifact.md",
+    "docs/adr/0028-vmimage-template-deletion-lifecycle.md",
+    "docs/adr/0029-guestinfo-metadata-hostname-fqdn-default.md",
+    "docs/adr/0030-per-zone-capability-targets.md",
+    "docs/adr/0031-vmimage-template-multiple-nics.md",
+    "docs/adr/0032-per-zone-network-subnet-shape.md",
+    "docs/adr/0033-capi-ipam-pool-integration.md",
+    "docs/adr/0034-vspheremachine-observed-power-state.md",
+    "docs/adr/0035-virtualmachine-watches-provider-and-vmclass.md",
+    "docs/adr/0036-live-migration-phased-approach.md",
+    "docs/adr/0037-vmimage-layered-cloud-config.md",
+    "docs/adr/0038-userdata-configmap-support.md"
   ]
 }

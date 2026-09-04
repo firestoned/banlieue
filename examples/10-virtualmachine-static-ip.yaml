@@ -13,10 +13,11 @@
 # unchanged. Use sparingly: if every VM of a given class needs the same
 # override, create a new VMClass instead.
 #
-# NOTE: as of this revision, applying this schedules successfully (a
-# VSphereMachine infra CR is created with the resolved static ipam), but
-# nothing clones or powers on the VM yet — the vsphere-provider's
-# VSphereMachine reconciler (the vCenter-talking half) isn't wired in yet.
+# NOTE: applying this schedules a VSphereMachine infra CR with the resolved
+# static ipam, and the vsphere-provider's VSphereMachine reconciler will
+# clone-from-template + power it on (ADR-0024) on first provision. That
+# reconciler is create-path only: it does not yet reconcile drift/updates
+# after the first clone, and live migration is not implemented (ADR-0036).
 apiVersion: banlieue.io/v1alpha1
 kind: VirtualMachine
 metadata:
@@ -56,5 +57,5 @@ spec:
   userData:
     secretRef:
       name: db-prod-02-cloudinit
-    key: user-data
+      key: user-data
   migrationPolicy: automatic

@@ -153,10 +153,11 @@ pub struct VSphereMachineSpec {
     pub network: Vec<VSphereNicSpec>,
 
     /// Guest bootstrap payload content — already resolved from the parent
-    /// `VirtualMachine`'s `spec.userData` Secret and placeholder-substituted
-    /// (ADR-0024's `${VM_NAME}`/`${FQDN}`/etc. set) by `banlieue-controller`
-    /// (ADR-0025). The provider delivers this verbatim (base64 into
-    /// `guestinfo.userdata`) — it never reads a Secret itself.
+    /// `VirtualMachine`'s `spec.userData` Secret or ConfigMap (ADR-0038)
+    /// and placeholder-substituted (ADR-0024's `${VM_NAME}`/`${FQDN}`/etc.
+    /// set) by `banlieue-controller` (ADR-0025). The provider delivers this
+    /// verbatim (base64 into `guestinfo.userdata`) — it never reads a
+    /// Secret or ConfigMap itself.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user_data: Option<String>,
 

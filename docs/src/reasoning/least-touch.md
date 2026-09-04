@@ -21,10 +21,13 @@ kind: VirtualMachine
 metadata:
   name: db-prod-01
 spec:
-  class: db-prod-large
-  image: ubuntu-22-04
-  providerRef:
-    name: prod
+  classRef:
+    name: db-prod-large
+  imageRef:
+    name: ubuntu-22-04
+  placement:
+    providerSelector:
+      matchLabels: { dc: dc1 }
 ```
 
 The verbs are `kubectl apply`, `kubectl get`, `kubectl describe`,
@@ -39,23 +42,30 @@ A workload is running on vSphere. We want to move it to Proxmox.
 **What the user has to do:**
 
 ```diff
--  providerRef:
--    name: prod-vsphere
-+  providerRef:
-+    name: prod-proxmox
+   placement:
+     providerSelector:
+-      matchLabels: { dc: dc1 }
++      matchLabels: { dc: dc2 }
 ```
 
-One line. No retitling. No new SDK. No retraining. The class
+One selector change. No retitling. No new SDK. No retraining. The class
 (`db-prod-large`) and image (`ubuntu-22-04`) reference *names*, and those
 names mean the same thing — by contract — on every provider that resolves them.
 
 **What banlieue does behind the scenes:**
 
-1. The main controller sees `providerRef` changed.
+1. The main controller sees the new `Provider` match under
+   `placement.providerSelector`.
 2. It cleans up the old infrastructure CR (`VSphereMachine`).
-3. It creates a new one (`ProxmoxMachine`) carrying the same uniform spec.
-4. The Proxmox provider watches, sees the new CR, and provisions.
+3. It creates a new one of the kind implied by the newly-matched `Provider`'s
+   backend, carrying the same uniform spec.
+4. That backend's provider watches, sees the new CR, and provisions.
 5. Status propagates back; the user's `VirtualMachine` is `Ready=true` again.
+
+> This is the design target for *every* pair of backends. Today only the
+> vSphere backend has a working machine reconciler, so this flow is only
+> exercisable between two vSphere `Provider`s (e.g. two vCenters) until a
+> `ProxmoxMachine`/`LibvirtMachine` reconciler exists on the other side.
 
 **What the user did NOT have to do:**
 
@@ -85,30 +95,39 @@ kind: VirtualMachine
 metadata:
   name: db-prod-01
 spec:
-  class: db-prod-large
-  image: ubuntu-22-04
-  providerRef:
-    name: prod-vsphere
+  classRef:
+    name: db-prod-large
+  imageRef:
+    name: ubuntu-22-04
+  placement:
+    providerSelector:
+      matchLabels: { tier: prod, backend: vsphere }
 ---
 apiVersion: banlieue.io/v1alpha1
 kind: VirtualMachine
 metadata:
   name: dev-01
 spec:
-  class: dev-small
-  image: ubuntu-22-04
-  providerRef:
-    name: dev-libvirt
+  classRef:
+    name: dev-small
+  imageRef:
+    name: ubuntu-22-04
+  placement:
+    providerSelector:
+      matchLabels: { tier: dev, backend: libvirt }
 ---
 apiVersion: banlieue.io/v1alpha1
 kind: VirtualMachine
 metadata:
   name: edge-store-paris-01
 spec:
-  class: edge-medium
-  image: ubuntu-22-04
-  providerRef:
-    name: edge-paris-proxmox
+  classRef:
+    name: edge-medium
+  imageRef:
+    name: ubuntu-22-04
+  placement:
+    providerSelector:
+      matchLabels: { tier: edge, site: paris, backend: proxmox }
 ```
 
 Three different backends. **One CR kind.** One set of conditions. One
@@ -119,8 +138,8 @@ What this enables, that wasn't easily possible before:
 
 - **Policy-driven placement.** A higher-level controller (yours, written
   later) can decide *which* provider a `VirtualMachine` lands on — based on
-  cost, geography, capacity, compliance — by patching `providerRef`. The user
-  doesn't even pick.
+  cost, geography, capacity, compliance — by patching
+  `placement.providerSelector`. The user doesn't even pick.
 - **Per-environment backends.** Dev is libvirt because it's cheap. Prod is
   vSphere because it's hardened. CI is Proxmox because it's fast to recycle.
   The workloads themselves don't know.
@@ -145,10 +164,10 @@ OpenStack provider. Tomorrow they write one.
 **What every existing user has to do to consume it:**
 
 ```diff
--  providerRef:
--    name: prod-vsphere
-+  providerRef:
-+    name: prod-openstack
+   placement:
+     providerSelector:
+-      matchLabels: { backend: vsphere }
++      matchLabels: { backend: openstack }
 ```
 
 That's it. Their `VirtualMachine` manifests don't change shape. Their

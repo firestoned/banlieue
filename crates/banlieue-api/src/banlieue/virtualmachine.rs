@@ -273,21 +273,57 @@ pub enum AffinityMode {
     Preferred,
 }
 
-/// Points at a Secret carrying the guest bootstrap payload (cloud-init /
-/// ignition / sysprep), delivered into the guest per the image's `guestAgent`.
+/// Default key read from a Secret or ConfigMap referenced by a [`UserDataSpec`]
+/// when `key` is omitted.
+pub const DEFAULT_USER_DATA_KEY: &str = "user-data";
+
+/// Source of guest bootstrap data (cloud-init / ignition / sysprep), delivered
+/// into the guest per the image's `guestAgent`.
+///
+/// Mirrors [`CABundleSource`](crate::common::CABundleSource)'s value-or-source
+/// pattern. Exactly one of the two fields must be set:
+///
+/// - `secret_ref` — a key in a Secret (key defaults to
+///   [`DEFAULT_USER_DATA_KEY`]).
+/// - `config_map_ref` — a key in a ConfigMap (key defaults to
+///   [`DEFAULT_USER_DATA_KEY`]). Use for non-sensitive bootstrap data (e.g.
+///   cloud-config without secrets).
+///
+/// Setting both or neither is invalid — the controller rejects it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct UserDataSpec {
-    /// Secret in the VirtualMachine's namespace.
-    pub secret_ref: LocalObjectReference,
-    /// Key within the Secret containing the user-data blob.
-    /// Default: `user-data`.
-    #[serde(default = "default_userdata_key")]
-    pub key: String,
+    /// Key in a Secret in the VirtualMachine's namespace (key defaults to
+    /// [`DEFAULT_USER_DATA_KEY`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret_ref: Option<KeySelector>,
+    /// Key in a ConfigMap in the VirtualMachine's namespace (key defaults to
+    /// [`DEFAULT_USER_DATA_KEY`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_map_ref: Option<KeySelector>,
 }
 
-fn default_userdata_key() -> String {
-    "user-data".to_string()
+impl UserDataSpec {
+    /// Number of sources set. The "exactly one" invariant means a valid source
+    /// has a count of `1`.
+    pub fn source_count(&self) -> usize {
+        usize::from(self.secret_ref.is_some()) + usize::from(self.config_map_ref.is_some())
+    }
+
+    /// Validate the "exactly one of secretRef / configMapRef" invariant.
+    ///
+    /// # Errors
+    /// Returns a static message when zero or more than one source is set, so
+    /// the caller can surface it on status.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        match self.source_count() {
+            1 => Ok(()),
+            0 => Err("userData: exactly one of secretRef, configMapRef must be set (none were)"),
+            _ => Err(
+                "userData: exactly one of secretRef, configMapRef must be set (more than one was)",
+            ),
+        }
+    }
 }
 
 /// Policy for handling placement drift.

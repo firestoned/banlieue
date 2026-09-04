@@ -191,7 +191,7 @@ spec:
       - { name: root, sizeGiB: 20, storageClass: gold }
   network:
     interfaces:
-      - { name: eth0, networkClass: prod, ipam: { source: dhcp } }
+      - { name: eth0, networkClass: prod, ipam: {} }
 ```
 
 ```yaml title="vmclass-small-qa.yaml (qa)"
@@ -207,7 +207,7 @@ spec:
       - { name: root, sizeGiB: 20, storageClass: gold }   # same storage
   network:
     interfaces:
-      - { name: eth0, networkClass: prod-qa, ipam: { source: dhcp } }   # different network
+      - { name: eth0, networkClass: prod-qa, ipam: {} }   # different network
 ```
 
 Both classes schedule onto any of `cluster-01`/`02`/`03` — `small` lands on

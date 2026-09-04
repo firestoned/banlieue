@@ -240,6 +240,7 @@ pub struct FakeClient {
     inventory: Arc<Inventory>,
     clones: Mutex<Vec<ClonedVm>>,
     power_states: Mutex<HashMap<String, PowerState>>,
+    power_state_calls: Mutex<Vec<String>>,
     destroyed: Mutex<Vec<String>>,
 }
 
@@ -252,6 +253,7 @@ impl FakeClient {
             inventory: Arc::new(inventory),
             clones: Mutex::new(Vec::new()),
             power_states: Mutex::new(HashMap::new()),
+            power_state_calls: Mutex::new(Vec::new()),
             destroyed: Mutex::new(Vec::new()),
         }
     }
@@ -259,6 +261,18 @@ impl FakeClient {
     /// Every `clone_vm` call recorded so far, in call order.
     pub fn cloned_vms(&self) -> Vec<ClonedVm> {
         self.clones.lock().expect("fake client lock").clone()
+    }
+
+    /// Number of `set_power_state` calls made for `vm_moref` so far — lets a
+    /// test assert a redundant power-state transition was skipped entirely,
+    /// not merely that it "succeeded".
+    pub fn power_state_call_count(&self, vm_moref: &str) -> usize {
+        self.power_state_calls
+            .lock()
+            .expect("fake client lock")
+            .iter()
+            .filter(|m| m.as_str() == vm_moref)
+            .count()
     }
 
     /// The last power state driven onto `vm_moref` via `set_power_state`
@@ -369,10 +383,21 @@ impl VSphereClient for FakeClient {
     }
 
     async fn set_power_state(&self, vm_moref: &str, desired: PowerState) -> Result<()> {
-        self.power_states
+        self.power_state_calls
             .lock()
             .expect("fake client lock")
-            .insert(vm_moref.to_string(), desired);
+            .push(vm_moref.to_string());
+        let mut states = self.power_states.lock().expect("fake client lock");
+        // Real vCenter faults `InvalidPowerState` when asked to transition a
+        // VM to the state it's already in (e.g. PowerOffVM_Task on an
+        // already-off VM) — mirror that so tests can catch a caller that
+        // redundantly re-requests the current state.
+        if states.get(vm_moref) == Some(&desired) {
+            return Err(Error::Vsphere(format!(
+                "{vm_moref}: InvalidPowerState (already {desired:?})"
+            )));
+        }
+        states.insert(vm_moref.to_string(), desired);
         Ok(())
     }
 

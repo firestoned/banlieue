@@ -26,8 +26,7 @@ Two independent ways to consume the result:
 1. **Manual / govc**, as shown at the end of this guide — useful for a first
    build, air-gapped environments, or debugging the pipeline itself.
 2. **banlieue-native** — push the OCI image, point a `VMImage` with
-   `sources: [{kind: Url, ...}]` at it (or a Kairos-produced raw image via
-   `kind: Oci`), and let `banlieue-imagebuilder` + the
+   `sources: [{kind: Url, ...}]` at it, and let `banlieue-imagebuilder` + the
    [vSphere provider](vsphere-provider.md) do the ISO build, upload, VM
    creation, install-wait, and templating per the
    [ADR-0021](https://github.com/firestoned/banlieue/blob/main/docs/adr/0021-vsphere-template-install-and-generalize.md)

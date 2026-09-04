@@ -3,9 +3,10 @@
 //! vSphere provider reconcilers.
 //!
 //! [`provider`] — capability introspection; [`vmimage`] — per-zone template
-//! build. [`vspheremachine`] currently ships only the create-path's pure
-//! guestinfo-construction logic (ADR-0024); its watch loop and the actual
-//! `CloneVM_Task` call are follow-up work, not yet wired into `app.rs`.
+//! build. [`vspheremachine`] is wired into `app.rs` and drives the
+//! `CloneVM_Task` + `PowerOnVM_Task` create path (ADR-0024); it is
+//! create-path only — update/drift reconciliation and live migration beyond
+//! a recreate-on-change fallback are not yet implemented (ADR-0036).
 
 pub mod ca_bundle;
 pub mod provider;

@@ -135,6 +135,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn desired_power_off_skips_the_redundant_power_state_call() {
+        // clone_vm always leaves a fresh clone PoweredOff (ADR-0024). Calling
+        // set_power_state(PoweredOff) again is a no-op transition that real
+        // vCenter rejects with InvalidPowerState; if that error propagated
+        // via `?` before ensure_vm returned, the caller would never learn
+        // the new vm_ref and would re-clone (hitting DuplicateName) on every
+        // subsequent reconcile — found live testing ADR-0038 userData with
+        // desiredPowerState: PoweredOff.
+        let client = FakeClient::new(seeded_inventory());
+        let mut s = spec("ds-fast-01", "vmnet-prod");
+        s.desired_power_state = PowerState::PoweredOff;
+        let outcome = ensure_vm(as_client(&client), &s, "db-01", None, None)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            client.power_state_call_count(&outcome.vm_ref),
+            0,
+            "must not call set_power_state when the clone is already in the desired state"
+        );
+        assert_eq!(
+            client.power_state_of(&outcome.vm_ref),
+            Some(PowerState::PoweredOff)
+        );
+        assert_eq!(outcome.power_state, Some(PowerState::PoweredOff));
+    }
+
+    #[tokio::test]
     async fn resolves_a_datastore_cluster_to_a_concrete_member() {
         let inv = Inventory::builder()
             .with_dc("dc1")

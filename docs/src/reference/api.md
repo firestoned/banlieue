@@ -1133,16 +1133,28 @@ Optional user-data delivered to the guest via the image's
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `key` | string |  | Key within the Secret containing the user-data blob. Default: `user-data`. |
-| `secretRef` | object | Yes | Secret in the VirtualMachine's namespace. |
+| `configMapRef` | object |  | Key in a ConfigMap in the VirtualMachine's namespace (key defaults to [`DEFAULT_USER_DATA_KEY`]). |
+| `secretRef` | object |  | Key in a Secret in the VirtualMachine's namespace (key defaults to [`DEFAULT_USER_DATA_KEY`]). |
 
-##### `.spec.userData.secretRef`
+##### `.spec.userData.configMapRef`
 
-Secret in the VirtualMachine's namespace.
+Key in a ConfigMap in the VirtualMachine's namespace (key defaults to
+[`DEFAULT_USER_DATA_KEY`]).
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `name` | string | Yes |  |
+| `key` | string |  | Key within the object's `data`. Defaults are caller-defined. |
+| `name` | string | Yes | Name of the ConfigMap / Secret in the referrer's namespace. |
+
+##### `.spec.userData.secretRef`
+
+Key in a Secret in the VirtualMachine's namespace (key defaults to
+[`DEFAULT_USER_DATA_KEY`]).
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `key` | string |  | Key within the object's `data`. Defaults are caller-defined. |
+| `name` | string | Yes | Name of the ConfigMap / Secret in the referrer's namespace. |
 
 ### `.status`
 
@@ -1464,7 +1476,7 @@ VirtualMachine. The CAPI contract label
 | `resourcePool` | string |  | Resource pool path within the cluster. Optional; defaults to the cluster's root resource pool. |
 | `template` | string | Yes | vCenter template's bare display name (resolved from `VMImage`). Never a decorated string (no `[dc]`/folder prefix) — see `template_folder` for the scoping the lookup needs. |
 | `templateFolder` | string |  | The per-zone vCenter folder the template in `template` lives in (resolved from `VMImage.status`, e.g. `templates/cluster-01`, ADR-0020 Decision #5). `None` for a `Template`-kind image, which has no per-zone folder — its lookup is datacenter-wide. |
-| `userData` | string |  | Guest bootstrap payload content — already resolved from the parent `VirtualMachine`'s `spec.userData` Secret and placeholder-substituted (ADR-0024's `${VM_NAME}`/`${FQDN}`/etc. set) by `banlieue-controller` (ADR-0025). The provider delivers this verbatim (base64 into `guestinfo.userdata`) — it never reads a Secret itself. |
+| `userData` | string |  | Guest bootstrap payload content — already resolved from the parent `VirtualMachine`'s `spec.userData` Secret or ConfigMap (ADR-0038) and placeholder-substituted (ADR-0024's `${VM_NAME}`/`${FQDN}`/etc. set) by `banlieue-controller` (ADR-0025). The provider delivers this verbatim (base64 into `guestinfo.userdata`) — it never reads a Secret or ConfigMap itself. |
 
 #### `.spec.disks[]`
 
@@ -1641,7 +1653,7 @@ The VSphereMachine spec for machines created from this template.
 | `resourcePool` | string |  | Resource pool path within the cluster. Optional; defaults to the cluster's root resource pool. |
 | `template` | string | Yes | vCenter template's bare display name (resolved from `VMImage`). Never a decorated string (no `[dc]`/folder prefix) — see `template_folder` for the scoping the lookup needs. |
 | `templateFolder` | string |  | The per-zone vCenter folder the template in `template` lives in (resolved from `VMImage.status`, e.g. `templates/cluster-01`, ADR-0020 Decision #5). `None` for a `Template`-kind image, which has no per-zone folder — its lookup is datacenter-wide. |
-| `userData` | string |  | Guest bootstrap payload content — already resolved from the parent `VirtualMachine`'s `spec.userData` Secret and placeholder-substituted (ADR-0024's `${VM_NAME}`/`${FQDN}`/etc. set) by `banlieue-controller` (ADR-0025). The provider delivers this verbatim (base64 into `guestinfo.userdata`) — it never reads a Secret itself. |
+| `userData` | string |  | Guest bootstrap payload content — already resolved from the parent `VirtualMachine`'s `spec.userData` Secret or ConfigMap (ADR-0038) and placeholder-substituted (ADR-0024's `${VM_NAME}`/`${FQDN}`/etc. set) by `banlieue-controller` (ADR-0025). The provider delivers this verbatim (base64 into `guestinfo.userdata`) — it never reads a Secret or ConfigMap itself. |
 
 ###### `.spec.template.spec.disks[]`
 

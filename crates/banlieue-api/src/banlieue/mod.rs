@@ -18,9 +18,9 @@ pub use providerclass::{
     ProviderClassStatus, ProviderImage,
 };
 pub use virtualmachine::{
-    AffinityMode, AntiAffinityRule, DiskOverride, HardwareOverride, MigrationPolicy,
-    NetworkInterfaceOverride, PlacementSpec, ResolvedResource, ScheduledPlacement, UserDataSpec,
-    VirtualMachine, VirtualMachineSpec, VirtualMachineStatus,
+    AffinityMode, AntiAffinityRule, DEFAULT_USER_DATA_KEY, DiskOverride, HardwareOverride,
+    MigrationPolicy, NetworkInterfaceOverride, PlacementSpec, ResolvedResource, ScheduledPlacement,
+    UserDataSpec, VirtualMachine, VirtualMachineSpec, VirtualMachineStatus,
 };
 pub use vmclass::{
     DiskSpec, HardwareSpec, NetworkInterfaceSpec, NetworkSpec, VMClass, VMClassSpec,

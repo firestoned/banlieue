@@ -1,0 +1,23 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# A VM using a ConfigMap for non-sensitive cloud-config (ADR-0038).
+# For sensitive bootstrap data (SSH keys, tokens), use secretRef instead.
+apiVersion: banlieue.io/v1alpha1
+kind: VirtualMachine
+metadata:
+  name: web-front-01
+  namespace: banlieue-system
+  labels:
+    app: web-front
+spec:
+  classRef:
+    name: web-standard
+  imageRef:
+    name: ubuntu-24.04-cloudinit
+  desiredPowerState: PoweredOn
+  userData:
+    configMapRef:
+      name: web-front-01-cloud-config
+      # key defaults to "user-data" when omitted
+  migrationPolicy: automatic

@@ -22,6 +22,7 @@
 
 use std::sync::Arc;
 
+use banlieue_api::banlieue::DEFAULT_USER_DATA_KEY;
 use banlieue_api::banlieue::{Provider, VMClass, VMImage, VirtualMachine, VirtualMachineStatus};
 use banlieue_api::common::{
     LocalObjectReference as _PlaceholderLocalRef, TypedObjectReference, condition_types,
@@ -34,7 +35,7 @@ use banlieue_provider_sdk::{
     ssa::{FIELD_MANAGER_CONTROLLER, server_side_apply},
     status::{condition_status, set_condition},
 };
-use k8s_openapi::api::core::v1::Secret;
+use k8s_openapi::api::core::v1::{ConfigMap, Secret};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
 use kube::{
     Resource, ResourceExt,
@@ -351,13 +352,14 @@ async fn patch_scheduling_failure(
     patch_status(api, name, &status).await
 }
 
-/// Resolve `vm.spec.userData`'s Secret and render the fixed ADR-0024
-/// placeholder set into it (ADR-0025 — done here, not by the provider,
-/// which has no RBAC for an arbitrary Secret). `None` when `spec.userData`
-/// is unset. The substitution context's static network values come from
-/// the first entry in `spec.networkOverrides`, if any — the same "first
-/// static interface wins" rule `build_guestinfo` (vsphere provider) uses,
-/// since `guestinfo.network.*` is a flat, non-indexed convention.
+/// Resolve `vm.spec.userData`'s Secret or ConfigMap and render the fixed
+/// ADR-0024 placeholder set into it (ADR-0025 — done here, not by the
+/// provider, which has no RBAC for arbitrary Secrets / ConfigMaps).
+/// `None` when `spec.userData` is unset. The substitution context's static
+/// network values come from the first entry in `spec.networkOverrides`, if
+/// any — the same "first static interface wins" rule `build_guestinfo`
+/// (vsphere provider) uses, since `guestinfo.network.*` is a flat,
+/// non-indexed convention.
 async fn resolve_rendered_user_data(
     ctx: &Context,
     namespace: &str,
@@ -367,8 +369,34 @@ async fn resolve_rendered_user_data(
     let Some(user_data) = &vm.spec.user_data else {
         return Ok(None);
     };
+    if let Err(msg) = user_data.validate() {
+        return Err(Error::Missing(msg));
+    }
+
+    let raw = if let Some(ref sel) = user_data.secret_ref {
+        resolve_secret_data(ctx, namespace, sel).await?
+    } else if let Some(ref sel) = user_data.config_map_ref {
+        resolve_configmap_data(ctx, namespace, sel).await?
+    } else {
+        // Unreachable after validate(), but explicit for safety.
+        return Err(Error::Missing(
+            "userData: exactly one of secretRef, configMapRef must be set",
+        ));
+    };
+
+    let static_cfg = vm.spec.network_overrides.first().map(|o| &o.static_);
+    let gd_ctx = GuestDataContext::from_static(vm_name, static_cfg);
+    Ok(Some(render_placeholders(&raw, &gd_ctx)))
+}
+
+/// Read a single key from a Secret.
+async fn resolve_secret_data(
+    ctx: &Context,
+    namespace: &str,
+    sel: &banlieue_api::common::KeySelector,
+) -> Result<String> {
     let api: Api<Secret> = Api::namespaced(ctx.client.clone(), namespace);
-    let secret = api.get(&user_data.secret_ref.name).await.map_err(|e| {
+    let secret = api.get(&sel.name).await.map_err(|e| {
         if let kube::Error::Api(api_err) = &e
             && api_err.code == 404
         {
@@ -376,16 +404,35 @@ async fn resolve_rendered_user_data(
         }
         Error::Kube(e)
     })?;
+    let key = sel.key_or(DEFAULT_USER_DATA_KEY);
     let data = secret.data.unwrap_or_default();
     let raw = data
-        .get(&user_data.key)
+        .get(key)
         .ok_or(Error::Missing("userData secret.data[key]"))?;
-    let raw = String::from_utf8(raw.0.clone())
-        .map_err(|_| Error::Missing("userData secret.data[key] (not utf-8)"))?;
+    String::from_utf8(raw.0.clone())
+        .map_err(|_| Error::Missing("userData secret.data[key] (not utf-8)"))
+}
 
-    let static_cfg = vm.spec.network_overrides.first().map(|o| &o.static_);
-    let gd_ctx = GuestDataContext::from_static(vm_name, static_cfg);
-    Ok(Some(render_placeholders(&raw, &gd_ctx)))
+/// Read a single key from a ConfigMap.
+async fn resolve_configmap_data(
+    ctx: &Context,
+    namespace: &str,
+    sel: &banlieue_api::common::KeySelector,
+) -> Result<String> {
+    let api: Api<ConfigMap> = Api::namespaced(ctx.client.clone(), namespace);
+    let cm = api.get(&sel.name).await.map_err(|e| {
+        if let kube::Error::Api(api_err) = &e
+            && api_err.code == 404
+        {
+            return Error::Missing("VirtualMachine.spec.userData.configMapRef");
+        }
+        Error::Kube(e)
+    })?;
+    let key = sel.key_or(DEFAULT_USER_DATA_KEY);
+    let data = cm.data.unwrap_or_default();
+    data.get(key)
+        .cloned()
+        .ok_or(Error::Missing("userData configMap.data[key]"))
 }
 
 /// Starts from `vm.status`, not `Vec::new()` — see `patch_scheduling_failure`'s

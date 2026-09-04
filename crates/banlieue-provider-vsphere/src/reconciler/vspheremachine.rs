@@ -341,11 +341,22 @@ pub async fn ensure_vm(
         .await?;
     info!(vm_ref = %vm_ref, "CloneVM_Task complete");
 
-    info!(vm_ref = %vm_ref, desired_power_state = ?spec.desired_power_state, "setting power state");
-    client
-        .set_power_state(&vm_ref, spec.desired_power_state.clone())
-        .await?;
-    info!(vm_ref = %vm_ref, power_state = ?spec.desired_power_state, "power state confirmed");
+    // CloneVM_Task always clones powered off (ADR-0024's clone spec sets
+    // power_on: false). Calling set_power_state(PoweredOff) again is a
+    // redundant no-op transition that real vCenter rejects with
+    // InvalidPowerState; if that propagated via `?` before this function
+    // returns, the caller never learns vm_ref and re-clones every
+    // subsequent reconcile, hitting DuplicateName forever (found live
+    // testing ADR-0038 userData with desiredPowerState: PoweredOff).
+    if spec.desired_power_state == PowerState::PoweredOff {
+        info!(vm_ref = %vm_ref, "clone already powered off, skipping redundant power-state task");
+    } else {
+        info!(vm_ref = %vm_ref, desired_power_state = ?spec.desired_power_state, "setting power state");
+        client
+            .set_power_state(&vm_ref, spec.desired_power_state.clone())
+            .await?;
+        info!(vm_ref = %vm_ref, power_state = ?spec.desired_power_state, "power state confirmed");
+    }
 
     Ok(ProvisionOutcome {
         vm_ref,

@@ -78,7 +78,7 @@ same field (ADR-0015).
 | banlieue-operator | `banlieue operator` | `Provider`, `ProviderClass`, spawned Deployments | One workload per Provider: Deployment, ServiceAccount, Role, RoleBinding, ClusterRoleBinding; mirrors Deployment readiness into `Provider.status.workload` | `banlieue.io/operator` |
 | banlieue-imagebuilder | `banlieue imagebuilder` | `VMImage`, `OSArtifact` | `OSArtifact` CRs (kairos-operator) for `Url`-kind sources; `VMImage.status.buildArtifact` | `banlieue.io/imagebuilder` |
 | banlieue-provider-vsphere | `banlieue provider vsphere` | Its `Provider`, `VSphereMachine`, `VMImage` | vCenter VMs/templates via the BYOC vim client; per-zone `image-import` Jobs; `Provider.status.failureDomains[]`, `VMImage.status.perProvider[]` | `banlieue.io/provider-vsphere` |
-| banlieue-provider-libvirt | `banlieue provider libvirt` | Its `Provider`, `LibvirtMachine`, `VMImage` | libvirt domains via the pure-Rust `banlieue-libvirt` RPC client; per-pool import Jobs; `Provider.status.failureDomains[]`, `VMImage.status.perProvider[]` | `banlieue.io/provider-libvirt` |
+| banlieue-provider-libvirt | `banlieue provider libvirt` | Its `Provider`, `VMImage` (no machine CRD yet) | Host capability verification + per-pool image import over the pure-Rust `banlieue-libvirt` RPC client; `Provider.status.failureDomains[]`, `VMImage.status.perProvider[]`. VM/domain lifecycle (`LibvirtMachine`) is not implemented yet. | `banlieue.io/provider-libvirt` |
 | kairos-operator (external) | — | `OSArtifact` | Artifact builds (raw cloud image or `auroraboot build-iso` ISO) onto a PVC | — |
 
 Two support libraries factor out the shared machinery:
@@ -102,7 +102,7 @@ hand-edited**. The full field-by-field reference is
 | --- | --- | --- | --- |
 | `VirtualMachine` | namespaced | VM consumer | One VM, backend-agnostic. Spec: `classRef` (→ `VMClass`), `imageRef` (→ `VMImage`), `placement` (provider / failure-domain selectors, anti-affinity), `desiredPowerState`, `userData` (Secret ref), `migrationPolicy`. Status: `scheduled` placement, conditions, addresses — mirrored from the infra CR, never set directly by the controller. |
 | `VMClass` | cluster | VM consumer | Virtual hardware shape: `hardware` (CPUs, memory, `disks[]` with `DiskProvisioning` thin/thick/eagerZeroed), `network.interfaces[]` referencing abstract network classes. |
-| `VMImage` | cluster | VM consumer / CI | Guest image. Spec: `osFamily` / `osDistribution` / `osVersion` / `architecture`, `guestAgent`, `sources[]` (per-provider-class mappings; `kind: Url` triggers the build pipeline), `cloudConfig` (secretRef — default cloud-config baked into the built artifact, ADR-0020), `template` (vSphere template knobs: `rootFolder`, `network`, `disk.{size,type,controller}`, `forceUpload`, `forceCreate`, ADR-0020). Status: `buildArtifact` (see below), `perProvider[].zones[]` readiness, conditions. |
+| `VMImage` | cluster | VM consumer / CI | Guest image. Spec: `osFamily` / `osDistribution` / `osVersion` / `architecture`, `guestAgent`, `sources[]` (per-provider-class mappings; `kind: Url` triggers the build pipeline), `cloudConfigs[]` (ordered, layered secretRef/configMapRef sources baked into the built artifact, ADR-0037), `template` (vSphere template knobs: `rootFolder`, `network[]`, `disk.{size,type,controller}`, `forceUpload`, `forceCreate`, ADR-0020/0031). Status: `buildArtifact` (see below), `perProvider[].zones[]` readiness, conditions. |
 | `Provider` | namespaced | platform operator | One backend instance. Spec: `providerClassRef`, `connection` (endpoint, `credentialsRef`, `caBundle`, TLS knobs), `capabilities` (declared `storageClasses[]` / `networkClasses[]` with backend `target`s, `features[]`), `paused`, `useContentLibrary` (vSphere, default off, ADR-0020). Status: `failureDomains[]` (verified against the backend — ADR-0019 introspection filters declared classes to what actually exists), `workload` (from the operator), conditions. |
 | `ProviderClass` | cluster | platform operator | Install metadata for a backend type: which `banlieue provider <backend>` subcommand, the image, resources, namespace, logging. One edit upgrades every Provider of the class (ADR-0012). Status: referencing-Provider count, Ready condition. |
 
@@ -197,7 +197,7 @@ flowchart LR
 ```
 
 1. Operator (or CI) applies a `VMImage` with a `Url` source, optional
-   `cloudConfig`, optional `template` knobs.
+   `cloudConfigs[]`, optional `template` knobs.
 2. **banlieue-imagebuilder** server-side-applies an `OSArtifact` — a raw
    cloud image for libvirt sources, or an ISO with `cloudConfigRef` for
    vSphere sources — and reports `buildArtifact.phase: Building`.

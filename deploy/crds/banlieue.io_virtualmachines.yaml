@@ -417,22 +417,38 @@ spec:
                   `guestAgent` (cloud-init / ignition / sysprep).
                 nullable: true
                 properties:
-                  key:
-                    default: user-data
+                  configMapRef:
                     description: |-
-                      Key within the Secret containing the user-data blob.
-                      Default: `user-data`.
-                    type: string
-                  secretRef:
-                    description: Secret in the VirtualMachine's namespace.
+                      Key in a ConfigMap in the VirtualMachine's namespace (key defaults to
+                      [`DEFAULT_USER_DATA_KEY`]).
+                    nullable: true
                     properties:
+                      key:
+                        description: Key within the object's `data`. Defaults are caller-defined.
+                        nullable: true
+                        type: string
                       name:
+                        description: Name of the ConfigMap / Secret in the referrer's namespace.
                         type: string
                     required:
                     - name
                     type: object
-                required:
-                - secretRef
+                  secretRef:
+                    description: |-
+                      Key in a Secret in the VirtualMachine's namespace (key defaults to
+                      [`DEFAULT_USER_DATA_KEY`]).
+                    nullable: true
+                    properties:
+                      key:
+                        description: Key within the object's `data`. Defaults are caller-defined.
+                        nullable: true
+                        type: string
+                      name:
+                        description: Name of the ConfigMap / Secret in the referrer's namespace.
+                        type: string
+                    required:
+                    - name
+                    type: object
                 type: object
             required:
             - classRef

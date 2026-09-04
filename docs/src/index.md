@@ -25,16 +25,20 @@ kind: VirtualMachine
 metadata:
   name: db-prod-01
 spec:
-  class: db-prod-large       # references a VMClass
-  image: ubuntu-22-04         # references a VMImage
-  providerRef:
-    name: prod-vsphere        # which provider to schedule onto
+  classRef:
+    name: db-prod-large       # references a VMClass
+  imageRef:
+    name: ubuntu-22-04         # references a VMImage
+  placement:
+    providerSelector:
+      matchLabels: { dc: dc1, env: prod }  # which Provider(s) may schedule this VM
 ```
 
-That single CR is then **scheduled** onto whichever hypervisor or VM platform the
-referenced `Provider` knows how to talk to: vSphere today, Proxmox or libvirt
-tomorrow, or some other backend a third party writes — without changing the user's
-manifest.
+That single CR is then **scheduled** onto whichever `Provider` matches
+`placement.providerSelector` and knows how to talk to a real backend: vSphere
+can create and power on VMs today; libvirt can register hosts and import
+images (VM lifecycle is landing next); Proxmox is planned; or any other
+backend a third party writes — without changing the user's manifest.
 
 ## Why does banlieue exist?
 
@@ -48,7 +52,7 @@ you want to understand the design before the code.
 The short version:
 
 - **One declarative API** for VMs, regardless of backend.
-- **Swap or mix providers** without rewriting workloads — vSphere here, Proxmox there, libvirt for dev — all in the same cluster.
+- **Swap or mix providers** without rewriting workloads — vSphere here, libvirt for dev, Proxmox once it lands — all in the same cluster.
 - **Zero new transports**: the contract between the controller and providers is the Kubernetes API itself. No gRPC, no REST, no custom auth.
 - **Reuses an existing, battle-tested status model**: provider CRDs satisfy the [Cluster API v1beta2 InfraMachine contract](https://cluster-api.sigs.k8s.io/developer/providers/contracts/).
 
@@ -82,11 +86,20 @@ The main controller never speaks directly to a provider. Both sides watch the
 Kubernetes API; that is the bus. See [Architecture](concepts/architecture.md) and
 [CRD-Only Contract](reasoning/crd-only-contract.md).
 
+> The diagram shows the target shape of three interchangeable providers. Today
+> only the vSphere provider actually creates VMs; the libvirt provider
+> registers hosts and imports images (no VM lifecycle yet), and Proxmox has no
+> provider implementation yet. See [Project status](#project-status).
+
 ## Project status
 
 banlieue is **early**. Phase 0 (the `banlieue-api` type system + CRDs) shipped.
-Phase 1A (main controller + provider SDK + first vSphere provider) is in
-progress. Detailed phase plans are maintained outside this repository.
+Phase 1A is far enough along that the main controller, `banlieue-operator`,
+and the vSphere provider create and power on real VMs end-to-end (vSphere's
+create path only — no update/drift/live-migration yet). The libvirt provider
+registers hosts and imports images, but has no VM/domain lifecycle yet.
+Proxmox has no provider implementation. Detailed phase plans are maintained
+outside this repository.
 
 The CRD surface is `v1alpha1` and will break before `v1`. Don't run production
 workloads against it yet.

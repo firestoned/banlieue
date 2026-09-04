@@ -2,9 +2,9 @@
 
 > **What banlieue does, in one sentence:** it gives you a single
 > Kubernetes-native API for describing virtual machines, then dispatches each
-> VM to whichever hypervisor backend you've plugged in — vSphere, Proxmox,
-> libvirt, or one you write yourself — without your manifest ever changing
-> shape.
+> VM to whichever hypervisor backend you've plugged in — vSphere today,
+> libvirt and (eventually) Proxmox, or one you write yourself — without your
+> manifest ever changing shape.
 
 This page is the **fundamentals**: what banlieue is, what it does, and how the
 pieces fit together at a single glance. For the *reasoning* behind these
@@ -99,6 +99,13 @@ Three rules to remember when reading the diagram:
 3. **The user only ever interacts with the top-left box.** Everything else is
    plumbing they shouldn't have to see.
 
+> **Current state vs. the diagram:** `VSphereMachine` is the only
+> infrastructure CR that exists and is reconciled today. `ProxmoxMachine` and
+> `LibvirtMachine` (and their provider controllers) are the design target —
+> `banlieue-provider-libvirt` today only registers hosts and imports images
+> (no VM lifecycle yet), and there is no Proxmox provider at all. See
+> [Project status](index.md#project-status).
+
 ## A 10-second walkthrough
 
 1. The user writes:
@@ -109,15 +116,19 @@ Three rules to remember when reading the diagram:
     metadata:
       name: db-prod-01
     spec:
-      class: db-prod-large
-      image: ubuntu-22-04
-      providerRef:
-        name: prod-vsphere
+      classRef:
+        name: db-prod-large
+      imageRef:
+        name: ubuntu-22-04
+      placement:
+        providerSelector:
+          matchLabels: { dc: dc1, env: prod }
     ```
 
-2. The **banlieue controller** sees it, looks up `db-prod-large`,
-   `ubuntu-22-04`, and `prod-vsphere`, and creates a `VSphereMachine` carrying
-   the resolved spec.
+2. The **banlieue controller** sees it, looks up `db-prod-large` and
+   `ubuntu-22-04`, matches `placement.providerSelector` against the available
+   `Provider` CRs to pick one, and creates a `VSphereMachine` carrying the
+   resolved spec.
 
 3. The **vSphere provider controller** sees the new `VSphereMachine`, talks to
    vCenter, provisions the VM, and writes status (`Ready=true`, addresses,
@@ -127,17 +138,21 @@ Three rules to remember when reading the diagram:
    `VirtualMachine.status` so the user can `kubectl get vm db-prod-01` and
    see `READY=true`.
 
-If the user later changes `providerRef` to `prod-proxmox`, the same sequence
-happens — but now the **Proxmox** provider controller picks up the work, on
-the same Kubernetes API, with the same status contract.
+If the user later changes `placement.providerSelector` to match a different
+`Provider`, the same sequence happens — but now that Provider's backend
+controller picks up the work, on the same Kubernetes API, with the same
+status contract. (Today this is only exercisable across two vSphere
+`Provider`s; a cross-backend swap needs a working infrastructure CR/reconciler
+on both sides — see [Project status](index.md#project-status).)
 
 ## What "fundamentally" buys you
 
 Because everything below the user's CR is uniform and pluggable:
 
-- **Swap a backend** by changing one field (`providerRef`).
+- **Swap a backend** by changing one field (`placement.providerSelector`).
 - **Mix backends** in one cluster — prod on vSphere, dev on libvirt, edge on
-  Proxmox — addressed by the same `kind: VirtualMachine`.
+  Proxmox (once its provider ships) — addressed by the same
+  `kind: VirtualMachine`.
 - **Add a new backend** by writing a provider once; every existing
   `VirtualMachine` becomes deployable there with no manifest change.
 - **Audit, RBAC, GitOps, OPA, dashboards, etc.** all work the same way they
