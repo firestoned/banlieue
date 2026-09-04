@@ -279,6 +279,18 @@ spec:
                 required:
                 - interfaces
                 type: object
+              tpmEnabled:
+                description: |-
+                  Attach a virtual TPM (vTPM) device to every VM of this class
+                  (ADR-0039). A class-level capability, like `firmware` — not a
+                  per-VM override (`VirtualMachineSpec.hardwareOverride` has no
+                  `tpmEnabled` counterpart, for the same reason it has none for
+                  `firmware`). The scheduler only selects a Provider/failure domain
+                  advertising the `vtpm` feature when this is `true`. Used by Kairos's
+                  `kcrypt` to seal LUKS keys to the VM's own TPM at install time; the
+                  device must exist before first boot, which the vSphere provider
+                  guarantees by attaching it between clone and power-on.
+                type: boolean
             required:
             - hardware
             - network

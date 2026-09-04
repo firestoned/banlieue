@@ -290,6 +290,80 @@ kubectl -n banlieue-system get vm db-prod-01 -o yaml | yq '.status.scheduled, .s
 A successful schedule populates `status.scheduled` (provider + failure domain +
 resolved storage/network) and creates a `VSphereMachine` in the same namespace.
 
+## 8. (Optional) TPM-sealed disk encryption
+
+If your vCenter has a KMS (Key Management Server) registered under
+Configure → Key Providers, banlieue can attach a virtual TPM (vTPM) to a VM
+so Kairos's `kcrypt` seals its LUKS encryption key to that VM's own TPM at
+install time — no remote unlock server needed (ADR-0039). This needs three
+things wired together; get any one wrong and encryption silently doesn't
+happen:
+
+1. **The `Provider` must advertise the `vtpm` feature** — set by hand once
+   you've confirmed KMS + vTPM actually work end-to-end in that vCenter
+   (never auto-discovered):
+
+   ```yaml
+   spec:
+     capabilities:
+       features: [hotAddCPU, hotAddMemory, efiSecureBoot, vtpm]
+   ```
+
+2. **The `VMClass` requests it** with `tpmEnabled: true` — a class-level
+   capability like `firmware`, not a per-VM override:
+
+   ```yaml
+   spec:
+     firmware: efi
+     features: [vtpm]
+     tpmEnabled: true
+   ```
+
+3. **The `VMImage` must use `installMode: deferred`, not the default
+   `immediate`.** Kairos's `kcrypt` only ever seals a key to a TPM present
+   *during install* — it cannot encrypt an already-installed disk later.
+   banlieue's normal pipeline installs Kairos once into a golden template
+   and clones it for every VM, so a vTPM attached to the clone would have
+   nothing to seal against if the template disk was already installed.
+   `deferred` mode leaves the template un-installed (ISO still attached, no
+   power-on at build time); each clone then runs Kairos's installer itself,
+   at its own first boot, with its own freshly-attached vTPM already
+   present (ADR-0040):
+
+   ```yaml
+   spec:
+     template:
+       firmware: efi
+       installMode: deferred
+     cloudConfigs:
+       - secretRef: { name: kairos-encrypted-install-cloud-config }
+   ```
+
+   The cloud-config for a `deferred`-mode image is the **opposite** contract
+   of a normal template build: `install.reboot: true` / `poweroff: false`
+   (the VM keeps running as the production workload after install, not
+   power itself off for templating) and no `after-install-chroot`
+   identity-wipe stage — each clone installs fresh and gets its own real
+   machine-id/SSH host keys.
+
+Full worked examples:
+[`12-vmclass-tpm-encrypted.yaml`](https://github.com/firestoned/banlieue/blob/v0.1.0/examples/12-vmclass-tpm-encrypted.yaml),
+[`13-vmimage-kairos-deferred-install-tpm.yaml`](https://github.com/firestoned/banlieue/blob/v0.1.0/examples/13-vmimage-kairos-deferred-install-tpm.yaml).
+
+!!! warning "Provisioning time and readiness"
+    A `deferred`-mode VM's `VirtualMachine`/`VSphereMachine` reports
+    `provisioned=true`/`Ready` the instant the clone powers on — which for
+    this mode means "the unattended install just started," not "the VM is
+    ready" (a documented gap, ADR-0034/ADR-0040). Expect the full
+    unattended-install window (typically 8-12 minutes) before the VM is
+    actually usable, every time, for every VM — not just once at
+    template-build time like a normal `immediate`-mode image.
+
+!!! success "Confirmed working end-to-end"
+    Validated live against a real vCenter: a `tpmEnabled: true` VM's disk
+    (`COS_PERSISTENT`) came up as `crypto_LUKS`, mounted and auto-unlocked
+    via its own vTPM on first boot, with no manual intervention.
+
 ## Troubleshooting
 
 `Provider` not `Ready` — read the condition `reason`:
@@ -311,6 +385,8 @@ datacenter), `ConnectFailed`, `LookupFailed`, `NoVSphereSource`.
 - `reason=NoProviderMatched` — no `Provider` matches `placement.providerSelector`, or
   none advertises the requested storage/network class or feature. Check the
   `Provider.spec.capabilities` against the `VMClass`.
+- `reason=TpmUnsupported` — `VMClass.spec.tpmEnabled: true`, but no candidate
+  failure domain's `Provider` advertises the `vtpm` feature (step 8 above).
 
 ```sh
 kubectl -n banlieue-system logs deploy/banlieue-provider-vsphere

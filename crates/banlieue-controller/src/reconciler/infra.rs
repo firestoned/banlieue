@@ -194,6 +194,7 @@ pub fn build_vsphere_machine(
             .and_then(|h| h.memory_mi_b)
             .unwrap_or(class.spec.hardware.memory_mi_b),
         firmware: class.spec.firmware.clone(),
+        tpm_enabled: class.spec.tpm_enabled,
         disks,
         network: nics,
         user_data: rendered_user_data.map(str::to_string),

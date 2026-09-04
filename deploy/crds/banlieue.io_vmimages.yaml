@@ -272,17 +272,6 @@ spec:
                   [`VMImageTemplate`] and ADR-0020.
                 nullable: true
                 properties:
-                  autoManageInstall:
-                    description: |-
-                      Run the install-then-generalize sequence (power on, wait for the
-                      unattended install to finish and the VM to power itself off, remove
-                      the CD-ROM, then mark as template) at all. When unset, defaults to
-                      `true`. `false` reverts to creating the VM, attaching the ISO, and
-                      marking it as a template immediately — no power-on — for a build that
-                      isn't Kairos-driven or whose install/generalize is managed some other
-                      way. See ADR-0021.
-                    nullable: true
-                    type: boolean
                   cpus:
                     description: |-
                       Virtual CPU count of the template (`govc vm.create -c`). When unset,
@@ -353,6 +342,16 @@ spec:
                       `rhel9_64Guest`, `ubuntu64Guest`). When unset, it is derived from the
                       VMImage's `osFamily` / `osDistribution` / `osVersion`. vSphere-only.
                     nullable: true
+                    type: string
+                  installMode:
+                    default: immediate
+                    description: |-
+                      How the template's install step is driven. See [`InstallMode`] and
+                      ADR-0021 / ADR-0040.
+                    enum:
+                    - immediate
+                    - deferred
+                    - manual
                     type: string
                   installTimeoutSeconds:
                     description: |-

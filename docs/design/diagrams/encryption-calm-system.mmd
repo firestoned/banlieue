@@ -1,0 +1,28 @@
+flowchart LR
+    vtpm-encryption-vault-credential["Vault vCenter Credential"]
+    vtpm-encryption-esxi-host-attestation["ESXi Host Physical TPM Attestation"]
+    vtpm-encryption-node-image["Kairos Node Image"]
+    vtpm-encryption-banlieue-scheduler["banlieue Scheduler"]
+    vtpm-encryption-provider-vsphere["banlieue-provider-vsphere"]
+    vtpm-encryption-vcenter-kms["vCenter KMIP Key Provider"]
+    vtpm-encryption-internal-ca["Example Corp Internal CA"]
+    vtpm-encryption-vtpm-device["vTPM Device"]
+    vtpm-encryption-kcrypt["Kairos kcrypt"]
+    vtpm-encryption-cos-persistent["COS_PERSISTENT (LUKS2 volume)"]
+    vtpm-encryption-k0s-controller["k0s Controller (kube-apiserver, etcd)"]
+    vtpm-encryption-sceau["sceau"]
+    vtpm-encryption-etcd-secrets["etcd Secrets (KMSv2 envelope)"]
+    vtpm-encryption-vault-credential --> vtpm-encryption-node-image
+    vtpm-encryption-vault-credential --> vtpm-encryption-provider-vsphere
+    vtpm-encryption-esxi-host-attestation --> vtpm-encryption-provider-vsphere
+    vtpm-encryption-node-image --> vtpm-encryption-k0s-controller
+    vtpm-encryption-banlieue-scheduler --> vtpm-encryption-provider-vsphere
+    vtpm-encryption-provider-vsphere --> vtpm-encryption-vtpm-device
+    vtpm-encryption-vcenter-kms -->|TLS| vtpm-encryption-vtpm-device
+    vtpm-encryption-internal-ca -->|mTLS| vtpm-encryption-vcenter-kms
+    vtpm-encryption-kcrypt --> vtpm-encryption-vtpm-device
+    vtpm-encryption-kcrypt --> vtpm-encryption-cos-persistent
+    vtpm-encryption-cos-persistent --> vtpm-encryption-k0s-controller
+    vtpm-encryption-k0s-controller --> vtpm-encryption-sceau
+    vtpm-encryption-sceau --> vtpm-encryption-vtpm-device
+    vtpm-encryption-k0s-controller --> vtpm-encryption-etcd-secrets

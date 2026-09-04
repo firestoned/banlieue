@@ -1,0 +1,51 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# A VMClass requesting a virtual TPM (vTPM) device on every VM it produces
+# (ADR-0039). Kairos's `kcrypt` seals LUKS keys to the VM's own local TPM at
+# install time — no remote unlock server needed — so a VM's disk encryption
+# survives reboots without any network dependency.
+#
+# PREREQUISITES:
+#   - vCenter has a KMS (Key Management Server) registered under
+#     Configure -> Key Providers, and it is healthy (`govc kms.ls`).
+#   - The Provider this VMClass will schedule onto advertises the `vtpm`
+#     feature by hand (never auto-discovered — see ADR-0039):
+#
+#       apiVersion: banlieue.io/v1alpha1
+#       kind: Provider
+#       spec:
+#         capabilities:
+#           features:
+#             - vtpm
+#
+#   - The VMImage's cloud-config actually tells Kairos to encrypt, e.g. a
+#     Secret referenced by VMImage.spec.cloudConfigs containing:
+#
+#       install:
+#         encrypted_partitions:
+#           - COS_PERSISTENT
+#
+#     `tpmEnabled` only attaches the vTPM hardware device — it does not by
+#     itself cause Kairos to encrypt anything. Both halves are required.
+apiVersion: banlieue.io/v1alpha1
+kind: VMClass
+metadata:
+  name: db-prod-encrypted
+spec:
+  hardware:
+    cpus: 8
+    memoryMiB: 32768
+    disks:
+      - name: root
+        sizeGiB: 80
+        storageClass: gold
+        provisioning: thin
+  network:
+    interfaces:
+      - name: eth0
+        networkClass: prod
+  firmware: efi
+  features:
+    - vtpm
+  tpmEnabled: true

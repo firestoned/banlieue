@@ -217,6 +217,11 @@ pub struct ProvisionOutcome {
     /// separate `refresh_power_state` call is what keeps this current once
     /// provisioned, not this field).
     pub power_state: Option<PowerState>,
+    /// Whether a vTPM device was attached (ADR-0039). `Some(true)` when
+    /// `spec.tpmEnabled` was set and [`VSphereClient::add_tpm_device`]
+    /// succeeded; `None` when `tpmEnabled` was `false` (nothing attempted)
+    /// or this outcome came from the `already_provisioned` early return.
+    pub tpm_attached: Option<bool>,
 }
 
 /// The `VSphereMachine` create path (ADR-0024): resolve every name in
@@ -242,6 +247,7 @@ pub async fn ensure_vm(
             vm_ref: vm_ref.to_string(),
             already_provisioned: true,
             power_state: None,
+            tpm_attached: None,
         });
     }
 
@@ -341,6 +347,20 @@ pub async fn ensure_vm(
         .await?;
     info!(vm_ref = %vm_ref, "CloneVM_Task complete");
 
+    // ADR-0039: attach a vTPM before power-on, not after — Kairos's kcrypt
+    // seals LUKS keys to the TPM during unattended install, so the device
+    // must exist before first boot. CloneVM_Task already clones powered
+    // off (see the comment below), which is exactly what makes this safe
+    // to run as a separate ReconfigVM_Task before the power-on branch.
+    let tpm_attached = if spec.tpm_enabled {
+        info!(vm_ref = %vm_ref, "attaching vTPM device");
+        client.add_tpm_device(&vm_ref).await?;
+        info!(vm_ref = %vm_ref, "vTPM device attached");
+        Some(true)
+    } else {
+        None
+    };
+
     // CloneVM_Task always clones powered off (ADR-0024's clone spec sets
     // power_on: false). Calling set_power_state(PoweredOff) again is a
     // redundant no-op transition that real vCenter rejects with
@@ -362,6 +382,7 @@ pub async fn ensure_vm(
         vm_ref,
         power_state: Some(spec.desired_power_state.clone()),
         already_provisioned: false,
+        tpm_attached,
     })
 }
 
@@ -527,16 +548,7 @@ pub async fn reconcile(machine: Arc<VSphereMachine>, ctx: Arc<Context>) -> Resul
     {
         Ok(outcome) => {
             info!(vm_ref = %outcome.vm_ref, "VSphereMachine provisioned");
-            patch_status_success(
-                &ctx,
-                &namespace,
-                &name,
-                generation,
-                &existing,
-                outcome.vm_ref,
-                outcome.power_state,
-            )
-            .await?;
+            patch_status_success(&ctx, &namespace, &name, generation, &existing, outcome).await?;
             Ok(requeue_long())
         }
         Err(e) => {
@@ -613,16 +625,25 @@ pub fn error_policy(_machine: Arc<VSphereMachine>, err: &Error, _ctx: Arc<Contex
     requeue_on_error()
 }
 
-/// SSA-patch `VSphereMachine.status` on successful provisioning.
+/// SSA-patch `VSphereMachine.status` on successful provisioning. Takes the
+/// whole [`ProvisionOutcome`] (rather than its `vm_ref`/`power_state`/
+/// `tpm_attached` fields as separate parameters) to stay under clippy's
+/// `too_many_arguments` threshold now that ADR-0039 added a third outcome
+/// field.
 async fn patch_status_success(
     ctx: &Context,
     namespace: &str,
     name: &str,
     generation: i64,
     existing_conditions: &[Condition],
-    vm_ref: String,
-    power_state: Option<PowerState>,
+    outcome: ProvisionOutcome,
 ) -> Result<()> {
+    let ProvisionOutcome {
+        vm_ref,
+        power_state,
+        tpm_attached,
+        already_provisioned: _,
+    } = outcome;
     let mut conditions = existing_conditions.to_vec();
     set_condition(
         &mut conditions,
@@ -642,6 +663,7 @@ async fn patch_status_success(
         vm_ref: Some(vm_ref),
         instance_uuid: None,
         observed_power_state: power_state,
+        tpm_attached,
         conditions,
         observed_generation: Some(generation),
     };

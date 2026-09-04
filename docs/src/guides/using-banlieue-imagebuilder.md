@@ -121,12 +121,33 @@ into a vCenter template (ADR-0020):
     if a userless system is genuinely intended.
 
     **Not building a Kairos image, or managing install yourself?** Set
-    `spec.template.autoManageInstall: false` to skip this contract entirely —
-    the import Job reverts to ADR-0020's original behavior: create the VM,
+    `spec.template.installMode: manual` to skip this contract entirely — the
+    import Job reverts to ADR-0020's original behavior: create the VM,
     attach the ISO, `MarkAsTemplate` immediately, no power-on. `banlieue`
-    never reads or edits your `cloudConfigs[]` Secrets/ConfigMaps either way (only its own
-    default: `true`); the contract above is documentation for what a
-    Kairos-managed install needs, never something banlieue auto-injects.
+    never reads or edits your `cloudConfigs[]` Secrets/ConfigMaps either way
+    (`installMode` defaults to `immediate`); the contract above is
+    documentation for what a Kairos-managed install needs, never something
+    banlieue auto-injects.
+
+    **Building a `tpmEnabled: true` VMClass's image?** Use
+    `spec.template.installMode: deferred` instead of `manual` — mechanically
+    identical (no power-on at build time), but it signals intent: the
+    install runs once per **clone**, at that clone's own first boot, with
+    that clone's own vTPM already attached (ADR-0039). Kairos's
+    `install.encrypted_partitions` only ever seals against a TPM present
+    *during* install — it cannot encrypt an already-installed disk — so a
+    `deferred`-mode image's cloud-config needs the **opposite** contract
+    from the one above: `install.reboot: true` / `install.poweroff: false`
+    (the VM must keep running as the production workload after install, not
+    power itself off for templating) and no `after-install-chroot`
+    identity-wipe stage (each clone installs fresh and gets its own
+    machine-id/SSH host keys naturally). See
+    [`examples/13-vmimage-kairos-deferred-install-tpm.yaml`](https://github.com/firestoned/banlieue/blob/v0.1.0/examples/13-vmimage-kairos-deferred-install-tpm.yaml)
+    and ADR-0040. Note that `VSphereMachine.status.initialization.provisioned`
+    still flips `true` the instant the clone powers on — for a
+    `deferred`-mode VM that now means "the 8-12 minute install just
+    started," not "the VM is ready" (a known, documented gap, not solved by
+    ADR-0040).
 
 !!! info "Overlaying extra files onto the ISO (ADR-0022)"
     `spec.isoOverlay` lets you overlay additional files — e.g. a
@@ -216,7 +237,7 @@ spec:
     forceUpload: false         # delete + re-upload the ISO even if present
     forceCreate: false         # destroy + recreate the template even if present
     installTimeoutSeconds: 1800   # bound on the unattended-install wait (ADR-0021)
-    autoManageInstall: true       # false skips install/generalize entirely (ADR-0021)
+    installMode: immediate        # immediate (default) | deferred | manual — see ADR-0040
 ```
 
 (Also available as [`examples/07-vmimage-kairos-url-source.yaml`](https://github.com/firestoned/banlieue/blob/v0.1.0/examples/07-vmimage-kairos-url-source.yaml).)

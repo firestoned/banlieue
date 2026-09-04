@@ -40,6 +40,7 @@ mod tests {
             num_cpus: 4,
             memory_mi_b: 8192,
             firmware: Firmware::Efi,
+            tpm_enabled: false,
             disks: vec![sample_disk("os", 40)],
             network: vec![sample_nic("eth0")],
             user_data: None,
@@ -314,6 +315,7 @@ mod tests {
             vm_ref: Some("vm-1234".to_string()),
             instance_uuid: Some("uuid-1234".to_string()),
             observed_power_state: Some(PowerState::PoweredOn),
+            tpm_attached: Some(true),
             conditions: Vec::new(),
             observed_generation: Some(2),
         };
@@ -321,8 +323,58 @@ mod tests {
         assert_eq!(json["vmRef"], "vm-1234");
         assert_eq!(json["instanceUuid"], "uuid-1234");
         assert_eq!(json["observedPowerState"], "PoweredOn");
+        assert_eq!(json["tpmAttached"], true);
         let back: VSphereMachineStatus = serde_json::from_value(json).unwrap();
         assert_eq!(back, s);
+    }
+
+    // ----------------------------------------------------------------------
+    // tpmEnabled / tpmAttached (ADR-0039)
+    // ----------------------------------------------------------------------
+
+    #[test]
+    fn vsphere_machine_spec_tpm_enabled_defaults_to_false() {
+        let s = minimal_spec();
+        assert!(!s.tpm_enabled);
+        let json = serde_json::to_value(&s).unwrap();
+        assert_eq!(json["tpmEnabled"], false);
+    }
+
+    #[test]
+    fn vsphere_machine_spec_missing_tpm_enabled_deserializes_to_false() {
+        let json = serde_json::json!({
+            "providerRef": {"name": "p"},
+            "template": "t",
+            "datacenter": "dc",
+            "cluster": "c",
+            "datastore": "ds",
+            "numCpus": 1,
+            "memoryMiB": 1024,
+            "firmware": "efi",
+            "disks": [],
+            "network": []
+        });
+        let s: VSphereMachineSpec = serde_json::from_value(json).unwrap();
+        assert!(!s.tpm_enabled);
+    }
+
+    #[test]
+    fn vsphere_machine_spec_tpm_enabled_round_trip() {
+        let s = VSphereMachineSpec {
+            tpm_enabled: true,
+            ..minimal_spec()
+        };
+        let json = serde_json::to_value(&s).unwrap();
+        assert_eq!(json["tpmEnabled"], true);
+        let back: VSphereMachineSpec = serde_json::from_value(json).unwrap();
+        assert_eq!(back, s);
+    }
+
+    #[test]
+    fn vsphere_machine_status_omits_tpm_attached_when_absent() {
+        let s = VSphereMachineStatus::default();
+        let json = serde_json::to_value(&s).unwrap();
+        assert!(!json.as_object().unwrap().contains_key("tpmAttached"));
     }
 
     // ----------------------------------------------------------------------
