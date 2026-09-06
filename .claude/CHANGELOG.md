@@ -1,5 +1,161 @@
 # Changelog
 
+## [2026-09-05] - Fix bootstrap script side effect + document getting-started flow
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `scripts/bootstrap-k0s-cluster.sh`: guard the top-level `mkdir -p "$WORKDIR"` /
+  `mkdir -p "$POOL_DIR"` calls so `--print-env-template` has zero side
+  effects, matching its documented purpose (print a template and exit).
+- `README.md`: new "Getting started" section documenting
+  `bootstrap-k0s-cluster.sh` usage, with vSphere/libvirt subsections.
+- `docs/src/guides/end-to-end-setup.md`: phase 0 now includes concrete
+  per-backend command sequences instead of prose only.
+
+### Why
+`--print-env-template` unconditionally hit the top-level `mkdir -p
+"$POOL_DIR"` (defaulting to `/var/lib/libvirt/images/k0s-bootstrap`) before
+`main()` ever dispatched to the requested subcommand, because `BACKEND`
+defaults to `libvirt` when unset — which it is on a first run, since
+generating the env file via `--print-env-template` is how a vSphere operator
+is meant to get `BACKEND=vsphere` into that file in the first place. This
+failed with a permission error on any host without a real libvirt
+installation (e.g. macOS). The docs gap was separate: the bootstrap script
+existed and was referenced in guides, but had no copy-pasteable command
+sequence for either backend.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only (plus a one-line script bug fix)
+
+## [2026-09-04] - Add deferred install mode for TPM-sealed Kairos encryption (ADR-0040)
+
+**Author:** Erick Bourgeois (found live testing ADR-0039's vTPM attach end-to-end)
+
+### Why
+Live testing of ADR-0039 against the real vCenter failed install with
+`Could not find TPM 2.0 device at /dev/tpmrm0`. Deep research into
+`kairos-io/kcrypt`/`kairos-io/kairos` established that Kairos disk
+encryption is install-phase-only, with no supported mechanism to encrypt an
+already-installed disk later — and banlieue's vSphere pipeline installs
+Kairos once into a golden template, then clones it for every production VM,
+so the clone never re-runs the installer and a post-clone vTPM has nothing
+to seal against. A second finding (vSphere's default clone behavior
+duplicates a source VM's vTPM *and its secrets* onto the clone) ruled out
+the obvious workaround of encrypting the golden template once. The only
+combination giving every VM a genuinely unique, install-time-sealed key is
+deferring the install to each clone's own first boot — which turned out to
+already be `VMImageTemplate.autoManageInstall: false`'s exact mechanics
+(ADR-0020's original template shape, preserved by ADR-0021 as an escape
+hatch), just never named or documented for this use case. See ADR-0040.
+
+### Changed
+- `crates/banlieue-api/src/banlieue/vmimage.rs`: `VMImageTemplate.
+  autoManageInstall: Option<bool>` replaced with `installMode: InstallMode`
+  (`Immediate` default / `Deferred` / `Manual`) — a rename/clarification,
+  not new vSphere mechanics; `Deferred` and `Manual` are mechanically
+  identical to the old `false` today.
+- `crates/banlieue-api/src/banlieue/mod.rs`: re-export `InstallMode`.
+- `crates/banlieue-provider-vsphere/src/client/{mod.rs,vim.rs}`:
+  `IsoImportRequest.autoManageInstall: bool` → `installMode: InstallMode`;
+  `import_iso_template` now branches on `InstallMode::Immediate` instead of
+  a bool.
+- `crates/banlieue-provider-vsphere/src/import.rs`: CLI flag
+  `--auto-manage-install <bool>` → `--install-mode <immediate|deferred|manual>`.
+- `crates/banlieue-provider-vsphere/src/reconciler/vmimage.rs`:
+  `ImportForce`/`ImportJobInputs` thread `Option<InstallMode>` instead of
+  `Option<bool>`.
+- `examples/13-vmimage-kairos-deferred-install-tpm.yaml` (new): a
+  `deferred`-mode `VMImage` pairing with `examples/12-vmclass-tpm-encrypted.
+  yaml`, documenting the inverted cloud-config contract (`install.reboot:
+  true` / `poweroff: false`, no identity-wipe stage — the opposite of
+  `immediate` mode's template-building contract).
+- `examples/07-vmimage-kairos-url-source.yaml`,
+  `docs/src/guides/using-banlieue-imagebuilder.md`: mechanical rename to
+  `installMode`, plus new guidance on `deferred` mode for `tpmEnabled` VMClasses.
+- `docs/adr/0040-deferred-install-for-vtpm-encryption.md` (new, amends
+  ADR-0039's now-wrong claim that no `VMImage` schema change was needed),
+  `docs/architecture/calm/architecture.json` (VMImage data-asset + vSphere
+  backend relationship descriptions updated).
+- `deploy/crds/banlieue.io_vmimages.yaml`, `docs/src/reference/api.md`:
+  regenerated (`make crds`).
+
+### Verified
+Confirmed working end-to-end, live, against the real vCenter (2026-09-04):
+a `VirtualMachine` using a `tpmEnabled: true` `VMClass` paired with a
+`Deferred`-mode `VMImage` was created and validated over SSH on its first
+boot (~1 minute uptime). `/dev/tpm0`/`/dev/tpmrm0` were present, `sda5`
+(`COS_PERSISTENT`) was `crypto_LUKS` and mounted read-write across every
+`/var/lib/*`/`/etc/*` bind target, and `dmsetup ls` showed the LUKS mapping
+open — the encrypted partition was created during that VM's own install and
+auto-unlocked via its own vTPM with no manual intervention. First live
+confirmation that ADR-0039 + ADR-0040 together produce a genuinely unique,
+install-time-sealed encryption key per VM, not just a unit-tested code path.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] New opt-in capability (`installMode` defaults to `Immediate`,
+      identical behavior to the old default `true`; existing `VMImage`s
+      using the old `autoManageInstall` field name need a mechanical rename)
+
+## [2026-09-04] - Add vSphere vTPM support for Kairos disk encryption (ADR-0039)
+
+**Author:** Erick Bourgeois
+
+### Why
+The maintainer's vCenter had a KMS (Key Management Server) newly registered
+under Configure -> Key Providers, unlocking virtual TPM (vTPM) devices —
+which Kairos's `kcrypt` uses to seal LUKS keys locally per-VM, no remote
+unlock server required. Manual `govc` investigation against the real
+environment (checked 0.52.0 and 0.56.0, plus the upstream `USAGE.md`)
+confirmed govc has no subcommand for attaching a vTPM to a VM — the real API
+is a standalone `ReconfigVM_Task` with a `VirtualDeviceConfigSpec`/
+`VirtualTPM` add, the same call the vCenter UI and PowerCLI's `New-VTpm`
+make. See ADR-0039 for the full design (why this is a class-level capability
+like `firmware`, not a per-VM override or a `VMImage` field).
+
+### Changed
+- `crates/banlieue-api/src/banlieue/vmclass.rs`: `VMClassSpec.tpmEnabled: bool`
+  (default `false`), sibling to `firmware`.
+- `crates/banlieue-api/src/infrastructure/vsphere_machine.rs`:
+  `VSphereMachineSpec.tpmEnabled: bool`; `VSphereMachineStatus.tpmAttached:
+  Option<bool>`.
+- `crates/banlieue-controller/src/reconciler/scheduler.rs`: new `FEATURE_VTPM`
+  ("vtpm") constant and filter step — a candidate failure domain must
+  advertise it when `tpmEnabled` is set, else `ScheduleError::TpmUnsupported`.
+- `crates/banlieue-controller/src/reconciler/infra.rs`: resolves
+  `VSphereMachineSpec.tpmEnabled` from `VMClass.spec.tpmEnabled`.
+- `crates/banlieue-provider-vsphere/src/client/{mod.rs,vim.rs,fake.rs}`: new
+  `VSphereClient::add_tpm_device` trait method; `vim.rs` issues the
+  `ReconfigVM_Task`/`VirtualTPM` add; `fake.rs` tracks it for tests.
+- `crates/banlieue-provider-vsphere/src/reconciler/vspheremachine.rs`:
+  `ensure_vm` calls `add_tpm_device` after `clone_vm` (already clones powered
+  off) and before the power-on step, so the device exists before Kairos's
+  first boot — a hard requirement for `kcrypt` to seal against it during
+  unattended install. `ProvisionOutcome.tpm_attached` flows into
+  `VSphereMachineStatus.tpmAttached`. `patch_status_success` now takes the
+  whole `ProvisionOutcome` rather than separate fields, to stay under
+  clippy's `too_many_arguments` threshold.
+- `docs/adr/0039-vsphere-vtpm-support.md` (new), `docs/architecture/calm/
+  architecture.json` (VMClass/Provider/vSphere-backend relationship
+  descriptions updated), `examples/12-vmclass-tpm-encrypted.yaml` (new).
+- `deploy/crds/banlieue.io_vmclasses.yaml`,
+  `deploy/crds/infrastructure.banlieue.io_vspheremachines.yaml`,
+  `deploy/crds/infrastructure.banlieue.io_vspheremachinetemplates.yaml`,
+  `docs/src/reference/api.md`: regenerated (`make crds`).
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] New opt-in capability (`tpmEnabled` defaults to `false`; existing
+      VMClasses/VirtualMachines are unaffected)
+
 ## [2026-09-03] - Fix vSphere provider hot-loop on desiredPowerState: PoweredOff
 
 **Author:** Erick Bourgeois (found live testing ADR-0038 userData end-to-end)

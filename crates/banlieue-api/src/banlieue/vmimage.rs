@@ -217,15 +217,10 @@ pub struct VMImageTemplate {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub install_timeout_seconds: Option<i32>,
 
-    /// Run the install-then-generalize sequence (power on, wait for the
-    /// unattended install to finish and the VM to power itself off, remove
-    /// the CD-ROM, then mark as template) at all. When unset, defaults to
-    /// `true`. `false` reverts to creating the VM, attaching the ISO, and
-    /// marking it as a template immediately — no power-on — for a build that
-    /// isn't Kairos-driven or whose install/generalize is managed some other
-    /// way. See ADR-0021.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub auto_manage_install: Option<bool>,
+    /// How the template's install step is driven. See [`InstallMode`] and
+    /// ADR-0021 / ADR-0040.
+    #[serde(default)]
+    pub install_mode: InstallMode,
 
     /// Keep the per-zone vCenter template(s) this `VMImage` caused to be
     /// built when the `VMImage` itself is deleted. When unset (the default),
@@ -284,6 +279,40 @@ pub struct VMImageTemplateDisk {
     pub controller: DiskController,
 }
 
+/// How a `Url`-source template's install step is driven (ADR-0021, amended
+/// by ADR-0040).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum InstallMode {
+    /// Power on, wait for the unattended install to finish and the VM to
+    /// power itself off (`install.poweroff: true` in the cloud-config),
+    /// remove the CD-ROM, then mark as template (ADR-0021). Produces a
+    /// pre-installed template: every clone boots straight into the already-
+    /// installed OS. Unsuitable for a `VMClass` with `tpmEnabled: true` —
+    /// the disk is installed before any per-VM vTPM exists, so
+    /// `install.encrypted_partitions` has nothing to seal against (ADR-0040).
+    #[default]
+    Immediate,
+    /// Create the VM, attach the ISO (already `startConnected: true`), and
+    /// mark as template immediately — no power-on, and the CD-ROM is never
+    /// stripped. The install runs once per **clone**, at that clone's own
+    /// first boot, with that clone's own already-attached vTPM present
+    /// (ADR-0039's `clone -> add vTPM -> power-on` sequencing in
+    /// `ensure_vm`). This is the sanctioned mode for a `tpmEnabled: true`
+    /// `VMClass` (ADR-0040) — pair it with a cloud-config using
+    /// `install.reboot: true` / `install.poweroff: false` and no
+    /// identity-wipe stage, the opposite of `Immediate`'s template-building
+    /// contract, since each clone is a live production VM, not a disposable
+    /// template.
+    Deferred,
+    /// Identical vSphere mechanics to `Deferred` (create, attach ISO, mark
+    /// as template, no power-on) — kept as a separate name for a build that
+    /// isn't Kairos-driven at all, or whose install/generalize is managed
+    /// some other way, so a reader doesn't confuse "not Kairos's install
+    /// flow" with "deliberately deferred for encryption" (ADR-0040).
+    Manual,
+}
+
 /// Disk controller type for the template's install disk.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -297,6 +326,32 @@ pub enum DiskController {
     LsiLogicSas,
     /// BusLogic Parallel.
     BusLogic,
+}
+
+impl InstallMode {
+    /// Stable token (matches the serde camelCase wire form), for CLI args/logs.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            InstallMode::Immediate => "immediate",
+            InstallMode::Deferred => "deferred",
+            InstallMode::Manual => "manual",
+        }
+    }
+}
+
+impl std::str::FromStr for InstallMode {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "immediate" => Ok(Self::Immediate),
+            "deferred" => Ok(Self::Deferred),
+            "manual" => Ok(Self::Manual),
+            other => Err(format!(
+                "unknown install mode {other:?} (expected: immediate, deferred, manual)"
+            )),
+        }
+    }
 }
 
 impl DiskController {

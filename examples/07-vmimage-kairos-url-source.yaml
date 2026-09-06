@@ -40,9 +40,11 @@
 # — same symptom, same timeout. Set `install.nousers: true` instead of
 # `users` only if a userless system is genuinely intended. Not building a
 # Kairos image, or managing install yourself? Set
-# `spec.template.autoManageInstall: false` to skip this contract entirely —
-# the import reverts to ADR-0020's original create+attach-ISO+MarkAsTemplate
-# behavior, no power-on. banlieue never reads or edits this Secret either way.
+# `spec.template.installMode: manual` (or `deferred` — see
+# 13-vmimage-kairos-deferred-install-tpm.yaml, ADR-0040) to skip this
+# contract entirely — the import reverts to ADR-0020's original
+# create+attach-ISO+MarkAsTemplate behavior, no power-on. banlieue never
+# reads or edits this Secret either way.
 apiVersion: banlieue.io/v1alpha1
 kind: VMImage
 metadata:
@@ -123,4 +125,4 @@ spec:
     # Bound on how long the import Job waits for the unattended install to
     # finish and the VM to power itself off before failing (ADR-0021).
     installTimeoutSeconds: 1800   # default 1800 (30 min)
-    autoManageInstall: true       # false skips install/generalize entirely; default true
+    installMode: immediate        # immediate (default) | deferred | manual — see ADR-0040

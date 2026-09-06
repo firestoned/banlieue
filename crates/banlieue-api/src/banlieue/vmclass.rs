@@ -75,6 +75,23 @@ pub struct VMClassSpec {
     /// Well-known values match those in `Provider.spec.capabilities.features`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub features: Vec<String>,
+
+    /// Attach a virtual TPM (vTPM) device to every VM of this class
+    /// (ADR-0039). A class-level capability, like `firmware` — not a
+    /// per-VM override (`VirtualMachineSpec.hardwareOverride` has no
+    /// `tpmEnabled` counterpart, for the same reason it has none for
+    /// `firmware`). The scheduler only selects a Provider/failure domain
+    /// advertising the `vtpm` feature when this is `true`. Used by Kairos's
+    /// `kcrypt` to seal LUKS keys to the VM's own TPM at install time; the
+    /// device must exist before first boot, which the vSphere provider
+    /// guarantees by attaching it between clone and power-on.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub tpm_enabled: bool,
+}
+
+/// `skip_serializing_if` predicate: omit a `bool` field when it is `false`.
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 /// The virtual hardware shape requested by a VMClass: CPU, memory, and disks.

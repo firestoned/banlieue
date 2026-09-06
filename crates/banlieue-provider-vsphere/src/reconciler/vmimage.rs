@@ -34,8 +34,8 @@ use std::collections::BTreeMap;
 
 use banlieue_api::banlieue::{
     BuildArtifactKind, BuildArtifactPhase, BuildArtifactStatus, FailureDomain,
-    ImagePerProviderStatus, ImageSource, ImageSourceKind, Provider, VMImage, VMImageStatus,
-    VMImageTemplateDisk, VMImageTemplateNic, ZoneImageStatus,
+    ImagePerProviderStatus, ImageSource, ImageSourceKind, InstallMode, Provider, VMImage,
+    VMImageStatus, VMImageTemplateDisk, VMImageTemplateNic, ZoneImageStatus,
 };
 use banlieue_api::common::Firmware;
 use banlieue_provider_sdk::finalizer::{ensure_finalizer, remove_finalizer};
@@ -140,10 +140,9 @@ pub struct ImportForce {
     /// Install-wait bound from `spec.template.installTimeoutSeconds`; `None` →
     /// the Job's own default (ADR-0021).
     pub install_timeout_seconds: Option<i32>,
-    /// Whether to run the install-then-generalize sequence at all, from
-    /// `spec.template.autoManageInstall`; `None` → the Job's own default
-    /// (`true`) (ADR-0021).
-    pub auto_manage_install: Option<bool>,
+    /// How the install step is driven, from `spec.template.installMode`;
+    /// `None` → the Job's own default (`Immediate`) (ADR-0021, ADR-0040).
+    pub install_mode: Option<InstallMode>,
 }
 
 impl ImportForce {
@@ -163,7 +162,7 @@ impl ImportForce {
             guest_id: t.and_then(|t| t.guest_id.clone()),
             root_folder: t.and_then(|t| t.root_folder.clone()),
             install_timeout_seconds: t.and_then(|t| t.install_timeout_seconds),
-            auto_manage_install: t.and_then(|t| t.auto_manage_install),
+            install_mode: t.map(|t| t.install_mode),
         }
     }
 }
@@ -789,7 +788,7 @@ async fn create_import_job(
         guest_id: force.guest_id.as_deref(),
         root_folder: force.root_folder.as_deref(),
         install_timeout_seconds: force.install_timeout_seconds,
-        auto_manage_install: force.auto_manage_install,
+        install_mode: force.install_mode,
     });
     match api
         .patch(
@@ -909,10 +908,9 @@ pub struct ImportJobInputs<'a> {
     /// Install-wait bound (`spec.template.installTimeoutSeconds`); `None` →
     /// the Job's own default (ADR-0021).
     pub install_timeout_seconds: Option<i32>,
-    /// Whether to run the install-then-generalize sequence at all
-    /// (`spec.template.autoManageInstall`); `None` → the Job's own default
-    /// (`true`) (ADR-0021).
-    pub auto_manage_install: Option<bool>,
+    /// How the install step is driven (`spec.template.installMode`); `None`
+    /// → the Job's own default (`Immediate`) (ADR-0021, ADR-0040).
+    pub install_mode: Option<InstallMode>,
 }
 
 /// Build the per-zone import Job manifest.
@@ -941,7 +939,7 @@ pub fn build_import_job(inputs: &ImportJobInputs<'_>) -> Value {
         guest_id,
         root_folder,
         install_timeout_seconds,
-        auto_manage_install,
+        install_mode,
     } = *inputs;
 
     let pvc = artifact
@@ -1032,9 +1030,9 @@ pub fn build_import_job(inputs: &ImportJobInputs<'_>) -> Value {
         args.push("--install-timeout-seconds".to_string());
         args.push(timeout.to_string());
     }
-    if let Some(auto_manage) = auto_manage_install {
-        args.push("--auto-manage-install".to_string());
-        args.push(auto_manage.to_string());
+    if let Some(mode) = install_mode {
+        args.push("--install-mode".to_string());
+        args.push(mode.as_str().to_string());
     }
 
     let mut pod_spec = json!({

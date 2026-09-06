@@ -262,6 +262,16 @@ spec:
                           template).
                         nullable: true
                         type: string
+                      tpmEnabled:
+                        default: false
+                        description: |-
+                          Attach a virtual TPM (vTPM) device to this VM, resolved from the
+                          VM's `VMClass.spec.tpmEnabled` (ADR-0039). Consumed by the provider
+                          controller between `clone_vm` (which always clones powered off) and
+                          the power-on step, so the device exists before first boot — a hard
+                          requirement for Kairos's `kcrypt` to seal LUKS keys to it during
+                          unattended install.
+                        type: boolean
                       userData:
                         description: |-
                           Guest bootstrap payload content — already resolved from the parent

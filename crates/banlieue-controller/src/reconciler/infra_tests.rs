@@ -108,6 +108,7 @@ mod tests {
                 },
                 firmware: Firmware::Efi,
                 features: vec![],
+                tpm_enabled: false,
             },
         }
     }
@@ -202,6 +203,28 @@ mod tests {
         assert_eq!(m.spec.disks.len(), 1);
         assert_eq!(m.spec.disks[0].name, "os");
         assert_eq!(m.spec.disks[0].size_gi_b, 100);
+        assert!(!m.spec.tpm_enabled);
+    }
+
+    #[test]
+    fn tpm_enabled_is_resolved_from_the_vm_class() {
+        let raw = BTreeMap::from([
+            ("datacenter".to_string(), "dc1".to_string()),
+            ("cluster".to_string(), "cluster-a".to_string()),
+        ]);
+        let mut class = parent_class();
+        class.spec.tpm_enabled = true;
+        let m = build_vsphere_machine(
+            &parent_vm(),
+            &class,
+            &parent_image(),
+            &decision_with_raw(raw),
+            &parent_provider(),
+            None,
+        )
+        .expect("ok");
+
+        assert!(m.spec.tpm_enabled);
     }
 
     #[test]

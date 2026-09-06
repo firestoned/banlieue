@@ -1,0 +1,293 @@
+{
+  "$schema": "https://calm.finos.org/release/1.2/meta/calm.json",
+  "$id": "https://github.com/firestoned/banlieue/blob/main/docs/architecture/calm/vtpm-kairos-k0s-encryption.calm.json",
+  "adrs": [
+    "https://github.com/firestoned/banlieue/blob/main/rules/architecture-driven-development.md",
+    "https://github.com/firestoned/banlieue/blob/main/docs/adr/0039-vsphere-vtpm-support.md"
+  ],
+  "metadata": {
+    "owner": "banlieue-maintainers",
+    "last_reviewed": "2026-09-05",
+    "scope": "The two independent encryption-at-rest controls that protect a k0s control-plane node built by this pipeline: vTPM-backed LUKS disk encryption of COS_PERSISTENT (Kairos kcrypt) and vTPM-backed etcd Secrets envelope encryption (sceau, a KMSv2 plugin). Companion model to docs/design/vtpm-kairos-k0s-encryption.md, which also carries the validated command-line proof for every relationship below. Cross-repository detail (banlieue's scheduler internals, sceau's own repo) is summarized here as a single node; the owning repository is the source of truth for it."
+  },
+  "nodes": [
+    {
+      "unique-id": "vtpm-encryption-vault-credential",
+      "node-type": "system",
+      "name": "Vault vCenter Credential",
+      "description": "The vCenter service-account username/password held in Vault -- the actual root of trust for this entire document (\u00a72a). Two independent paths consume it: the image pipeline's govc-driven template build (one-time, out of band, no banlieue involvement) and banlieue-provider-vsphere's Provider.spec.connection.credentialsRef Secret (every clone_vm + add_tpm_device call). VMClass.spec.tpm_enabled and the scheduler's failure-domain gate are authorization policy layered on top of this credential, not a substitute for securing it -- anyone holding it can attach a VirtualTPM directly via govc, bypassing banlieue entirely."
+    },
+    {
+      "unique-id": "vtpm-encryption-esxi-host-attestation",
+      "node-type": "system",
+      "name": "ESXi Host Physical TPM Attestation",
+      "description": "The crypto team's enrollment of each ESXi host's physical TPM 2.0 chip: Intel TXT measured boot, remote attestation against expected PCR values, and host state-encryption sealed to that physical TPM (protectionMode=tpm, requireSecureBoot=true) -- vSphere's TPM-based key persistence for KMS-derived keys the host has already fetched (\u00a73c). Confirmed live via govc host.tpm.info/host.tpm.report across all hosts in the environment. A distinct trust root from the Vault vCenter credential and from vCenter's KMIP Key Provider registration -- owned by a different team, verified independently."
+    },
+    {
+      "unique-id": "vtpm-encryption-node-image",
+      "node-type": "service",
+      "name": "Kairos Node Image",
+      "description": "The Kairos image (from the CI image pipeline in the companion doc's §1) a k0s controller/worker boots from, carrying the cloud-config that declares install.encrypted_partitions (\u00a74) and, once \u00a77's open item lands, sceau's binary and disabled-by-default systemd unit."
+    },
+    {
+      "unique-id": "vtpm-encryption-banlieue-scheduler",
+      "node-type": "service",
+      "name": "banlieue Scheduler",
+      "description": "banlieue-controller's scheduler, which only places a VMClass.spec.tpm_enabled=true workload onto a Provider whose failure domain advertises the 'vtpm' feature (ADR-0039). Owned by the banlieue repository; summarized here as one node."
+    },
+    {
+      "unique-id": "vtpm-encryption-provider-vsphere",
+      "node-type": "service",
+      "name": "banlieue-provider-vsphere",
+      "description": "Sequences clone (powered off) -> add_tpm_device (ReconfigVM_Task with a VirtualTPM device spec) -> power on. Owned by the banlieue repository."
+    },
+    {
+      "unique-id": "vtpm-encryption-vcenter-kms",
+      "node-type": "system",
+      "name": "vCenter KMIP Key Provider",
+      "description": "vCenter's registered Key Provider 'NonProd KMIP', backed by a Thales CipherTrust/KeySecure server at kms.example.com:5696. Gates whether vSphere permits a VirtualTPM device to be created at all; verified live via 'govc kms.ls' (status=green, useAsDefault=true) in \u00a73a. Plays no further role once a VM's vTPM exists."
+    },
+    {
+      "unique-id": "vtpm-encryption-internal-ca",
+      "node-type": "system",
+      "name": "Example Corp Internal CA",
+      "description": "The internal CA that issues both sides of the KMIP mutual-TLS trust: the KMIP server certificate (CN=kmip-server.example.com) and vCenter's client certificate (CN=vcenter-client-01). Confirmed live via 'govc kms.ls -json' in \u00a73a, not assumed from config."
+    },
+    {
+      "unique-id": "vtpm-encryption-vtpm-device",
+      "node-type": "system",
+      "name": "vTPM Device",
+      "description": "The per-VM virtual TPM 2.0 device attached by banlieue-provider-vsphere before first boot. Confirmed as virtual (not host-level) via the ACPI vendor string 'VMWARE VMW_TPM2' in the node's boot log (\u00a74a). Root of trust for both kcrypt (disk) and sceau (etcd Secrets) \u2014 distinct TPM object hierarchies, same hardware."
+    },
+    {
+      "unique-id": "vtpm-encryption-kcrypt",
+      "node-type": "service",
+      "name": "Kairos kcrypt",
+      "description": "Kairos's early-boot disk-encryption component (kairos-immucore). Uses the 'Local TPM NV passphrase' method: seals a passphrase into a TPM NV index (not a LUKS2 metadata token) and unlocks COS_PERSISTENT on every boot with zero human interaction and zero network calls. Confirmed live via boot-log grep in \u00a74a."
+    },
+    {
+      "unique-id": "vtpm-encryption-cos-persistent",
+      "node-type": "database",
+      "name": "COS_PERSISTENT (LUKS2 volume)",
+      "description": "The encrypted ext4-on-LUKS2 volume bind-mounted onto every sensitive k0s/etcd path: /var/lib/etcd, /var/lib/k0s, /etc/k0s, /opt/k0s. Confirmed via 'lsblk -f' in \u00a74a."
+    },
+    {
+      "unique-id": "vtpm-encryption-k0s-controller",
+      "node-type": "service",
+      "name": "k0s Controller (kube-apiserver, etcd)",
+      "description": "The k0s controller process tree running on the node: kube-apiserver (wired with --encryption-provider-config), etcd (the storage backend), and the other control-plane components. Runs kube-apiserver as uid=kube-apiserver, gid=0/root \u2014 a permissions detail that matters for sceau's socket ACL (\u00a75a)."
+    },
+    {
+      "unique-id": "vtpm-encryption-sceau",
+      "node-type": "service",
+      "name": "sceau",
+      "description": "Rust KMSv2 plugin (firestoned/sceau, image at registry.example.com/sceau) serving kube-apiserver over a root-owned unix socket at /run/sceau/sceau.sock. On every start, re-derives the same deterministic RSA-2048 SRK from the vTPM device (TPM2_CreatePrimary) and seals each Secret's DEK as a keyed-hash object under it -- no persisted key-encryption key anywhere. key_id is derived from the SRK's Name, so it is stable per-TPM across restarts (validated in \u00a75a) and rejected if it ever doesn't match."
+    },
+    {
+      "unique-id": "vtpm-encryption-etcd-secrets",
+      "node-type": "database",
+      "name": "etcd Secrets (KMSv2 envelope)",
+      "description": "Kubernetes Secret objects as stored in etcd's key space (/registry/secrets/...). Verified via a raw 'etcdctl get' bypassing the Kubernetes API in \u00a75a: the value carries the k8s:enc:kms:v2:sceau: prefix and binary ciphertext embedding sceau's key_id -- no Secret plaintext appears in the raw record."
+    }
+  ],
+  "relationships": [
+    {
+      "unique-id": "vtpm-encryption-vault-cred-builds-template",
+      "description": "One-time, out of band, before banlieue is involved: the image pipeline's build scripts export GOVC_USERNAME/GOVC_PASSWORD from Vault/CI secrets and call govc directly to create the base Kairos VM template banlieue later clones.",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "vtpm-encryption-vault-credential"
+          },
+          "destination": {
+            "node": "vtpm-encryption-node-image"
+          }
+        }
+      }
+    },
+    {
+      "unique-id": "vtpm-encryption-vault-cred-authorizes-provider",
+      "description": "banlieue-provider-vsphere reads this same class of credential from a Kubernetes Secret (Provider.spec.connection.credentialsRef) for every clone_vm and add_tpm_device ReconfigVM_Task call. In this deployment the Secret is materialized manually from Vault, not kept in sync by an automated External Secrets pull (\u00a77 open item).",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "vtpm-encryption-vault-credential"
+          },
+          "destination": {
+            "node": "vtpm-encryption-provider-vsphere"
+          }
+        }
+      }
+    },
+    {
+      "unique-id": "vtpm-encryption-host-attestation-gates-provider",
+      "description": "Host TPM attestation status (accepted/rejected) is a precondition vSphere associates with trusting a given ESXi host for encrypted-VM operations -- whether it is a hard block or advisory-only in this vSphere version/Trust Authority configuration is an open item (\u00a77), not yet independently confirmed.",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "vtpm-encryption-esxi-host-attestation"
+          },
+          "destination": {
+            "node": "vtpm-encryption-provider-vsphere"
+          }
+        }
+      }
+    },
+    {
+      "unique-id": "vtpm-encryption-node-image-boots-to-controller",
+      "description": "The Kairos node image, once cloned and booted, becomes the running k0s controller node these encryption controls apply to.",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "vtpm-encryption-node-image"
+          },
+          "destination": {
+            "node": "vtpm-encryption-k0s-controller"
+          }
+        }
+      }
+    },
+    {
+      "unique-id": "vtpm-encryption-scheduler-invokes-provider",
+      "description": "A VMClass.spec.tpm_enabled=true workload is only scheduled onto a Provider advertising the 'vtpm' feature; the scheduler hands off to banlieue-provider-vsphere to actually attach the device.",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "vtpm-encryption-banlieue-scheduler"
+          },
+          "destination": {
+            "node": "vtpm-encryption-provider-vsphere"
+          }
+        }
+      }
+    },
+    {
+      "unique-id": "vtpm-encryption-provider-attaches-vtpm",
+      "description": "clone (powered off) -> add_tpm_device (ReconfigVM_Task + VirtualTPM) -> power on. The hard requirement is attaching before first boot, since kcrypt seals against the TPM during the unattended install.",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "vtpm-encryption-provider-vsphere"
+          },
+          "destination": {
+            "node": "vtpm-encryption-vtpm-device"
+          }
+        }
+      }
+    },
+    {
+      "unique-id": "vtpm-encryption-kms-gates-vtpm-creation",
+      "description": "vCenter only permits a VirtualTPM device to be created while its registered Key Provider is healthy. Verified live: govc kms.ls reported status=green. This is the KMS's only role in the whole chain.",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "vtpm-encryption-vcenter-kms"
+          },
+          "destination": {
+            "node": "vtpm-encryption-vtpm-device"
+          }
+        }
+      },
+      "protocol": "TLS"
+    },
+    {
+      "unique-id": "vtpm-encryption-internal-ca-issues-kms-trust",
+      "description": "Both sides of the KMIP mutual-TLS handshake -- the KMIP server's certificate and vCenter's client certificate -- chain to this internal CA. Confirmed via govc kms.ls -json (\u00a73a): clientTrustServer=true and serverTrustClient=true.",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "vtpm-encryption-internal-ca"
+          },
+          "destination": {
+            "node": "vtpm-encryption-vcenter-kms"
+          }
+        }
+      },
+      "protocol": "mTLS"
+    },
+    {
+      "unique-id": "vtpm-encryption-kcrypt-seals-into-vtpm",
+      "description": "kcrypt seals its LUKS unlock passphrase into a TPM NV index on this vTPM at first boot, and unseals it (no human, no remote server) on every subsequent boot. Confirmed via boot-log grep: 'Using local TPM NV passphrase for encryption' (\u00a74a).",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "vtpm-encryption-kcrypt"
+          },
+          "destination": {
+            "node": "vtpm-encryption-vtpm-device"
+          }
+        }
+      }
+    },
+    {
+      "unique-id": "vtpm-encryption-kcrypt-unlocks-persistent",
+      "description": "cryptsetup luksFormat / luksOpen against COS_PERSISTENT using the TPM-unsealed passphrase, before /var/lib/etcd and the rest of k0s's state can be mounted.",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "vtpm-encryption-kcrypt"
+          },
+          "destination": {
+            "node": "vtpm-encryption-cos-persistent"
+          }
+        }
+      }
+    },
+    {
+      "unique-id": "vtpm-encryption-persistent-holds-controller-state",
+      "description": "/var/lib/etcd, /var/lib/k0s, /etc/k0s and /opt/k0s are bind-mounted onto the encrypted volume, so all control-plane state at rest is disk-encrypted independently of whatever sceau does at the Secret-object level.",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "vtpm-encryption-cos-persistent"
+          },
+          "destination": {
+            "node": "vtpm-encryption-k0s-controller"
+          }
+        }
+      }
+    },
+    {
+      "unique-id": "vtpm-encryption-controller-dials-sceau",
+      "description": "kube-apiserver's KMSv2 provider (--encryption-provider-config) dials sceau's unix socket on every Secret read/write. Requires the socket to be group=root (gid=0), matching how k0s runs kube-apiserver -- a gotcha found during validation (\u00a75a).",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "vtpm-encryption-k0s-controller"
+          },
+          "destination": {
+            "node": "vtpm-encryption-sceau"
+          }
+        }
+      }
+    },
+    {
+      "unique-id": "vtpm-encryption-sceau-reseals-from-vtpm",
+      "description": "On every start, sceau recreates the same deterministic SRK from the vTPM (TPM2_CreatePrimary) and uses it to seal/unseal each Secret's DEK -- no key material persists outside the TPM. Confirmed by restarting sceau and observing the identical key_id re-derived (\u00a75a).",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "vtpm-encryption-sceau"
+          },
+          "destination": {
+            "node": "vtpm-encryption-vtpm-device"
+          }
+        }
+      }
+    },
+    {
+      "unique-id": "vtpm-encryption-controller-writes-etcd-secrets",
+      "description": "Once sceau wraps a Secret's DEK, kube-apiserver writes the envelope-encrypted value to etcd. Confirmed via a raw etcdctl read showing the k8s:enc:kms:v2:sceau: prefix and no Secret plaintext (\u00a75a).",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "vtpm-encryption-k0s-controller"
+          },
+          "destination": {
+            "node": "vtpm-encryption-etcd-secrets"
+          }
+        }
+      }
+    }
+  ]
+}

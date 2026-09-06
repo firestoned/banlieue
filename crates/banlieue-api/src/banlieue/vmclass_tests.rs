@@ -36,6 +36,7 @@ mod tests {
             },
             firmware: Firmware::default(),
             features: Vec::new(),
+            tpm_enabled: false,
         }
     }
 
@@ -231,8 +232,45 @@ mod tests {
             },
             firmware: Firmware::EfiSecure,
             features: vec!["efiSecureBoot".to_string()],
+            tpm_enabled: true,
         };
         let json = serde_json::to_value(&s).unwrap();
+        let back: VMClassSpec = serde_json::from_value(json).unwrap();
+        assert_eq!(back, s);
+    }
+
+    // ----------------------------------------------------------------------
+    // tpmEnabled (ADR-0039)
+    // ----------------------------------------------------------------------
+
+    #[test]
+    fn vmclass_spec_tpm_enabled_defaults_to_false_and_is_omitted() {
+        let s = minimal_vmclass_spec();
+        assert!(!s.tpm_enabled);
+        let json = serde_json::to_value(&s).unwrap();
+        assert!(!json.as_object().unwrap().contains_key("tpmEnabled"));
+    }
+
+    #[test]
+    fn vmclass_spec_missing_tpm_enabled_deserializes_to_false() {
+        let json = serde_json::json!({
+            "hardware": {"cpus": 1, "memoryMiB": 512, "disks": [{
+                "name": "os", "sizeGiB": 10, "storageClass": "gold"
+            }]},
+            "network": {"interfaces": []}
+        });
+        let s: VMClassSpec = serde_json::from_value(json).unwrap();
+        assert!(!s.tpm_enabled);
+    }
+
+    #[test]
+    fn vmclass_spec_tpm_enabled_round_trip() {
+        let s = VMClassSpec {
+            tpm_enabled: true,
+            ..minimal_vmclass_spec()
+        };
+        let json = serde_json::to_value(&s).unwrap();
+        assert_eq!(json["tpmEnabled"], true);
         let back: VMClassSpec = serde_json::from_value(json).unwrap();
         assert_eq!(back, s);
     }

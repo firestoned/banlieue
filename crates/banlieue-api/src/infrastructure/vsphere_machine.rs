@@ -143,6 +143,15 @@ pub struct VSphereMachineSpec {
     /// Firmware. EFI / EFI Secure require the template to be EFI-capable.
     pub firmware: Firmware,
 
+    /// Attach a virtual TPM (vTPM) device to this VM, resolved from the
+    /// VM's `VMClass.spec.tpmEnabled` (ADR-0039). Consumed by the provider
+    /// controller between `clone_vm` (which always clones powered off) and
+    /// the power-on step, so the device exists before first boot — a hard
+    /// requirement for Kairos's `kcrypt` to seal LUKS keys to it during
+    /// unattended install.
+    #[serde(default)]
+    pub tpm_enabled: bool,
+
     /// Disks. The first disk is the template's OS disk (grown if needed);
     /// subsequent disks are blank.
     #[schemars(length(min = 1, max = 32))]
@@ -238,6 +247,16 @@ pub struct VSphereMachineStatus {
     /// onto the parent `VirtualMachine`'s own `status.observedPowerState`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub observed_power_state: Option<PowerState>,
+
+    /// Whether a vTPM device was successfully attached, when
+    /// `spec.tpmEnabled` is set (ADR-0039). `None` when `tpmEnabled` is
+    /// `false` (nothing was ever attempted) or the attach hasn't run yet.
+    /// Not part of the CAPI contract; a failed attach surfaces through the
+    /// `Ready`/`InfrastructureReady` conditions rather than a dedicated
+    /// `VirtualMachine`-level mirror (ADR-0034's reasoning for
+    /// `observedPowerState` applies equally here).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tpm_attached: Option<bool>,
 
     /// CAPI-compatible conditions (using `metav1.Condition`). The `Ready`
     /// condition is mirrored as `InfrastructureReady` on the parent

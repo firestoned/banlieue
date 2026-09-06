@@ -123,8 +123,18 @@ mod tests {
                 },
                 firmware,
                 features: features.into_iter().map(String::from).collect(),
+                tpm_enabled: false,
             },
         }
+    }
+
+    /// Wraps [`class`] with `spec.tpmEnabled` overridden (ADR-0039) —
+    /// mirrors [`vm_with_placement`]'s pattern of layering one field on top
+    /// of the base builder rather than threading a new positional
+    /// parameter through every one of `class`'s existing call sites.
+    fn class_with_tpm_enabled(mut cls: VMClass, enabled: bool) -> VMClass {
+        cls.spec.tpm_enabled = enabled;
+        cls
     }
 
     fn image_ready_on(providers: &[&str]) -> VMImage {
@@ -541,6 +551,86 @@ mod tests {
 
         let err = schedule(&v, &cls, &img, &[p], &[]).unwrap_err();
         assert_eq!(err, ScheduleError::FirmwareUnsupported);
+    }
+
+    // --- Filter: vTPM (ADR-0039) --------------------------------------------
+
+    #[test]
+    fn tpm_enabled_without_feature_yields_tpm_unsupported() {
+        let v = vm("db-01", "ns", BTreeMap::new());
+        let cls = class_with_tpm_enabled(
+            class(
+                vec![("os", "gold")],
+                vec![("eth0", "prod")],
+                vec![],
+                Firmware::Efi,
+            ),
+            true,
+        );
+        let img = image_ready_on(&["vc1"]);
+        let p = provider(
+            "vc1",
+            BTreeMap::new(),
+            vec![fd("fd-a", BTreeMap::new(), &["gold"], &["prod"], &[])],
+            caps_with(
+                &[("gold", "datastore", "ds-1")],
+                &[("prod", "portGroup", "pg-1")],
+            ),
+        );
+
+        let err = schedule(&v, &cls, &img, &[p], &[]).unwrap_err();
+        assert_eq!(err, ScheduleError::TpmUnsupported);
+    }
+
+    #[test]
+    fn tpm_enabled_with_feature_is_accepted() {
+        let v = vm("db-01", "ns", BTreeMap::new());
+        let cls = class_with_tpm_enabled(
+            class(
+                vec![("os", "gold")],
+                vec![("eth0", "prod")],
+                vec![],
+                Firmware::Efi,
+            ),
+            true,
+        );
+        let img = image_ready_on(&["vc1"]);
+        let p = provider(
+            "vc1",
+            BTreeMap::new(),
+            vec![fd("fd-a", BTreeMap::new(), &["gold"], &["prod"], &["vtpm"])],
+            caps_with(
+                &[("gold", "datastore", "ds-1")],
+                &[("prod", "portGroup", "pg-1")],
+            ),
+        );
+
+        let decision = schedule(&v, &cls, &img, &[p], &[]).unwrap();
+        assert_eq!(decision.failure_domain_name, "fd-a");
+    }
+
+    #[test]
+    fn tpm_disabled_does_not_require_feature() {
+        let v = vm("db-01", "ns", BTreeMap::new());
+        let cls = class(
+            vec![("os", "gold")],
+            vec![("eth0", "prod")],
+            vec![],
+            Firmware::Efi,
+        );
+        let img = image_ready_on(&["vc1"]);
+        let p = provider(
+            "vc1",
+            BTreeMap::new(),
+            vec![fd("fd-a", BTreeMap::new(), &["gold"], &["prod"], &[])],
+            caps_with(
+                &[("gold", "datastore", "ds-1")],
+                &[("prod", "portGroup", "pg-1")],
+            ),
+        );
+
+        let decision = schedule(&v, &cls, &img, &[p], &[]).unwrap();
+        assert_eq!(decision.failure_domain_name, "fd-a");
     }
 
     #[test]

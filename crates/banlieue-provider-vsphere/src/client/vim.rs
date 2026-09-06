@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use banlieue_api::banlieue::{DiskController, NicAdapter, ProviderConnection};
+use banlieue_api::banlieue::{DiskController, InstallMode, NicAdapter, ProviderConnection};
 use banlieue_api::common::{DiskProvisioning, Firmware, PowerState};
 use tracing::{debug, info};
 use vim_rs::core::client::{Client, ClientBuilder};
@@ -43,7 +43,7 @@ use vim_rs::types::structs::{
     VirtualMachineBootOptions, VirtualMachineBootOptionsBootableCdromDevice,
     VirtualMachineBootOptionsBootableDiskDevice, VirtualMachineBootOptionsBootableEthernetDevice,
     VirtualMachineCloneSpec, VirtualMachineConfigSpec, VirtualMachineFileInfo,
-    VirtualMachineRelocateSpec, VirtualScsiController, VirtualVmxnet, VirtualVmxnet2,
+    VirtualMachineRelocateSpec, VirtualScsiController, VirtualTpm, VirtualVmxnet, VirtualVmxnet2,
     VirtualVmxnet3,
 };
 use vim_rs::types::traits::VirtualDeviceBackingInfoTrait;
@@ -115,6 +115,7 @@ const KEY_DISK: i32 = -1001;
 const KEY_IDE: i32 = -1002;
 const KEY_CDROM: i32 = -1003;
 const KEY_NIC: i32 = -1004;
+const KEY_TPM: i32 = -1005;
 const KIB_PER_GIB: i64 = 1024 * 1024;
 
 /// Factory that talks to a real vCenter via vim_rs.
@@ -668,7 +669,7 @@ impl VSphereClient for VimClientImpl {
         self.wait_for_task(&pci_slot_task.value, "pin NIC PCI slot(s)")
             .await?;
 
-        if req.auto_manage_install {
+        if req.install_mode == InstallMode::Immediate {
             info!(vm_moref = %vm_moref, "entering auto-manage install phase");
 
             // Resolve real device keys and apply the boot-order reconfigure
@@ -1017,6 +1018,16 @@ impl VSphereClient for VimClientImpl {
                 .map_err(|e| Error::Vsphere(format!("SuspendVM_Task({vm_moref}): {e}")))?,
         };
         self.wait_for_task(&task.value, "set power state").await
+    }
+
+    async fn add_tpm_device(&self, vm_moref: &str) -> Result<()> {
+        let vmm = VimVirtualMachine::new(self.client.clone(), vm_moref);
+        let spec = build_add_tpm_reconfigure_spec();
+        let task = vmm
+            .reconfig_vm_task(&spec)
+            .await
+            .map_err(|e| Error::Vsphere(format!("ReconfigVM_Task({vm_moref}) [add vTPM]: {e}")))?;
+        self.wait_for_task(&task.value, "add vTPM device").await
     }
 
     async fn power_state(&self, vm_moref: &str) -> Result<PowerState> {
@@ -1629,6 +1640,33 @@ fn build_nic_pci_slot_extra_config_reconfigure_spec(pci_slots: &[i32]) -> Virtua
         .collect();
     VirtualMachineConfigSpec {
         extra_config: Some(extra_config),
+        ..Default::default()
+    }
+}
+
+/// Build the standalone `ReconfigVM_Task` spec that adds a vTPM device
+/// (ADR-0039). Pure — no vCenter I/O — so it's unit-testable independent of
+/// a live VM, mirroring [`build_nic_pci_slot_extra_config_reconfigure_spec`].
+/// `govc` has no wrapping subcommand for this (checked 0.52.0 and 0.56.0);
+/// this is the same `VirtualDeviceConfigSpec`/`VirtualTPM` add the vCenter
+/// UI and PowerCLI's `New-VTpm` issue.
+fn build_add_tpm_reconfigure_spec() -> VirtualMachineConfigSpec {
+    let tpm = VirtualTpm {
+        virtual_device_: VirtualDevice {
+            key: KEY_TPM,
+            ..Default::default()
+        },
+        endorsement_key_certificate_signing_request: None,
+        endorsement_key_certificate: None,
+    };
+    let device_change: Vec<Box<dyn vim_rs::types::traits::VirtualDeviceConfigSpecTrait>> =
+        vec![Box::new(VirtualDeviceConfigSpec {
+            operation: Some(VirtualDeviceConfigSpecOperationEnum::Add),
+            device: Box::new(tpm),
+            ..Default::default()
+        })];
+    VirtualMachineConfigSpec {
+        device_change: Some(device_change),
         ..Default::default()
     }
 }
