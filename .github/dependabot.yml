@@ -14,11 +14,23 @@ updates:
       actions:
         patterns: ["*"]
 
-  # Rust workspace.
+  # Rust workspace — one weekly PR for the kube ecosystem (which must move as
+  # a unit) and one for everything else, instead of a PR per crate.
   - package-ecosystem: "cargo"
     directory: "/"
     schedule:
       interval: "weekly"
+    groups:
+      # kube and k8s-openapi are tightly version-coupled: kube 4.x requires
+      # k8s-openapi 0.28. Bumping either alone produces two incompatible
+      # k8s-openapi copies, which breaks the build. Group them — including
+      # majors — so they always move together. Must precede the catch-all.
+      kube-ecosystem:
+        patterns: ["kube", "kube-*", "k8s-openapi"]
+        update-types: ["major", "minor", "patch"]
+      rust-dependencies:
+        patterns: ["*"]
+        update-types: ["major", "minor", "patch"]
 
   # Docs site (Poetry).
   - package-ecosystem: "pip"
