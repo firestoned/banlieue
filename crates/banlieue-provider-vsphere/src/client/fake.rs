@@ -242,6 +242,7 @@ pub struct FakeClient {
     power_states: Mutex<HashMap<String, PowerState>>,
     power_state_calls: Mutex<Vec<String>>,
     destroyed: Mutex<Vec<String>>,
+    tpm_attached: Mutex<Vec<String>>,
 }
 
 impl FakeClient {
@@ -255,6 +256,7 @@ impl FakeClient {
             power_states: Mutex::new(HashMap::new()),
             power_state_calls: Mutex::new(Vec::new()),
             destroyed: Mutex::new(Vec::new()),
+            tpm_attached: Mutex::new(Vec::new()),
         }
     }
 
@@ -289,6 +291,15 @@ impl FakeClient {
     /// Every moref `destroy_vm` was called with, in call order (ADR-0026).
     pub fn destroyed_vms(&self) -> Vec<String> {
         self.destroyed.lock().expect("fake client lock").clone()
+    }
+
+    /// Whether `add_tpm_device` was called for `vm_moref` (ADR-0039).
+    pub fn tpm_attached(&self, vm_moref: &str) -> bool {
+        self.tpm_attached
+            .lock()
+            .expect("fake client lock")
+            .iter()
+            .any(|m| m.as_str() == vm_moref)
     }
 }
 
@@ -415,6 +426,14 @@ impl VSphereClient for FakeClient {
             .lock()
             .expect("fake client lock")
             .remove(vm_moref);
+        Ok(())
+    }
+
+    async fn add_tpm_device(&self, vm_moref: &str) -> Result<()> {
+        self.tpm_attached
+            .lock()
+            .expect("fake client lock")
+            .push(vm_moref.to_string());
         Ok(())
     }
 }

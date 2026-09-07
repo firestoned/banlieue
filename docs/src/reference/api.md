@@ -536,6 +536,7 @@ Cluster-scoped: a VMClass is shared by VirtualMachines in any namespace.
 | `firmware` | string |  | Firmware. Providers / failure domains that lack support for the requested firmware are filtered out by the scheduler. Allowed: `bios`, `efi`, `efi-secure`. |
 | `hardware` | object | Yes | Virtual hardware shape — CPU, memory, and disks — every VM of this class is given. |
 | `network` | object | Yes | Network shape — the ordered interfaces (and their abstract network classes) every VM of this class is given. |
+| `tpmEnabled` | boolean |  | Attach a virtual TPM (vTPM) device to every VM of this class (ADR-0039). A class-level capability, like `firmware` — not a per-VM override (`VirtualMachineSpec.hardwareOverride` has no `tpmEnabled` counterpart, for the same reason it has none for `firmware`). The scheduler only selects a Provider/failure domain advertising the `vtpm` feature when this is `true`. Used by Kairos's `kcrypt` to seal LUKS keys to the VM's own TPM at install time; the device must exist before first boot, which the vSphere provider guarantees by attaching it between clone and power-on. |
 
 #### `.spec.hardware`
 
@@ -771,13 +772,13 @@ is optional and falls back to a built-in default. Only meaningful for
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `autoManageInstall` | boolean |  | Run the install-then-generalize sequence (power on, wait for the unattended install to finish and the VM to power itself off, remove the CD-ROM, then mark as template) at all. When unset, defaults to `true`. `false` reverts to creating the VM, attaching the ISO, and marking it as a template immediately — no power-on — for a build that isn't Kairos-driven or whose install/generalize is managed some other way. See ADR-0021. |
 | `cpus` | integer |  | Virtual CPU count of the template (`govc vm.create -c`). When unset, defaults to 2. vSphere-only. |
 | `disk` | object |  | Install disk of the template (the clone source's disk). When unset, a thin 100 GiB disk on a pvscsi controller is used. |
 | `firmware` | string |  | Firmware for the template (`govc vm.create -firmware`). Reuses the backend-agnostic [`Firmware`] hint (`bios` / `efi` / `efi-secure`). When unset, defaults to `efi`. vSphere maps `efi-secure` to EFI with secure boot enabled. Allowed: `bios`, `efi`, `efi-secure`, `null`. |
 | `forceCreate` | boolean |  | Recreate the template even if one of that name already exists, destroying the existing one first. Threaded as `--force-create`. |
 | `forceUpload` | boolean |  | Re-upload the built ISO even if one of that name already exists on the backend, deleting the existing one first (the vСenter datastore file API does not overwrite in place). Threaded as `--force-upload`. |
 | `guestId` | string |  | vCenter `guestId` for the template (`govc vm.create -g`, e.g. `rhel9_64Guest`, `ubuntu64Guest`). When unset, it is derived from the VMImage's `osFamily` / `osDistribution` / `osVersion`. vSphere-only. |
+| `installMode` | string |  | How the template's install step is driven. See [`InstallMode`] and ADR-0021 / ADR-0040. Allowed: `immediate`, `deferred`, `manual`. |
 | `installTimeoutSeconds` | integer |  | Bound, in seconds, on how long the import Job waits for the unattended Kairos install to finish and the VM to power itself off (`install.poweroff: true` in the cloud-config) before failing the Job. When unset, defaults to 1800 (30 min). See ADR-0021: the golden disk is never rebooted by the build, so this bounds only the (typically 8-12 min) unattended-install window, not a boot cycle. |
 | `memoryMib` | integer |  | Memory of the template, in MiB (`govc vm.create -m`). When unset, defaults to 4096. vSphere-only. |
 | `network` | object[] |  | The template's network interfaces. Empty means exactly one NIC, using every per-entry default below — the same behavior this field had before it became a list (ADR-0031). vSphere-only. |
@@ -1476,6 +1477,7 @@ VirtualMachine. The CAPI contract label
 | `resourcePool` | string |  | Resource pool path within the cluster. Optional; defaults to the cluster's root resource pool. |
 | `template` | string | Yes | vCenter template's bare display name (resolved from `VMImage`). Never a decorated string (no `[dc]`/folder prefix) — see `template_folder` for the scoping the lookup needs. |
 | `templateFolder` | string |  | The per-zone vCenter folder the template in `template` lives in (resolved from `VMImage.status`, e.g. `templates/cluster-01`, ADR-0020 Decision #5). `None` for a `Template`-kind image, which has no per-zone folder — its lookup is datacenter-wide. |
+| `tpmEnabled` | boolean |  | Attach a virtual TPM (vTPM) device to this VM, resolved from the VM's `VMClass.spec.tpmEnabled` (ADR-0039). Consumed by the provider controller between `clone_vm` (which always clones powered off) and the power-on step, so the device exists before first boot — a hard requirement for Kairos's `kcrypt` to seal LUKS keys to it during unattended install. |
 | `userData` | string |  | Guest bootstrap payload content — already resolved from the parent `VirtualMachine`'s `spec.userData` Secret or ConfigMap (ADR-0038) and placeholder-substituted (ADR-0024's `${VM_NAME}`/`${FQDN}`/etc. set) by `banlieue-controller` (ADR-0025). The provider delivers this verbatim (base64 into `guestinfo.userdata`) — it never reads a Secret or ConfigMap itself. |
 
 #### `.spec.disks[]`
@@ -1567,6 +1569,7 @@ status contract (plus a few vSphere-specific diagnostics).
 | `instanceUuid` | string |  | VM instance UUID. Stable across vCenter restarts and the source for `spec.providerID`. Not part of the CAPI contract. |
 | `observedGeneration` | integer |  |  |
 | `observedPowerState` | string |  | The backend VM's actual power state, as last observed via `VirtualMachine.runtime.powerState` (ADR-0034) — the hypervisor's view, available immediately on power-on, not a guest-OS-boot signal. Absent until first observed. Not part of the CAPI contract; mirrored onto the parent `VirtualMachine`'s own `status.observedPowerState`. Allowed: `PoweredOn`, `PoweredOff`, `Suspended`, `null`. |
+| `tpmAttached` | boolean |  | Whether a vTPM device was successfully attached, when `spec.tpmEnabled` is set (ADR-0039). `None` when `tpmEnabled` is `false` (nothing was ever attempted) or the attach hasn't run yet. Not part of the CAPI contract; a failed attach surfaces through the `Ready`/`InfrastructureReady` conditions rather than a dedicated `VirtualMachine`-level mirror (ADR-0034's reasoning for `observedPowerState` applies equally here). |
 | `vmRef` | string |  | VMware managed-object reference (vm-NNNN). Useful for operator diagnostics. Not part of the CAPI contract. |
 
 #### `.status.addresses[]`
@@ -1653,6 +1656,7 @@ The VSphereMachine spec for machines created from this template.
 | `resourcePool` | string |  | Resource pool path within the cluster. Optional; defaults to the cluster's root resource pool. |
 | `template` | string | Yes | vCenter template's bare display name (resolved from `VMImage`). Never a decorated string (no `[dc]`/folder prefix) — see `template_folder` for the scoping the lookup needs. |
 | `templateFolder` | string |  | The per-zone vCenter folder the template in `template` lives in (resolved from `VMImage.status`, e.g. `templates/cluster-01`, ADR-0020 Decision #5). `None` for a `Template`-kind image, which has no per-zone folder — its lookup is datacenter-wide. |
+| `tpmEnabled` | boolean |  | Attach a virtual TPM (vTPM) device to this VM, resolved from the VM's `VMClass.spec.tpmEnabled` (ADR-0039). Consumed by the provider controller between `clone_vm` (which always clones powered off) and the power-on step, so the device exists before first boot — a hard requirement for Kairos's `kcrypt` to seal LUKS keys to it during unattended install. |
 | `userData` | string |  | Guest bootstrap payload content — already resolved from the parent `VirtualMachine`'s `spec.userData` Secret or ConfigMap (ADR-0038) and placeholder-substituted (ADR-0024's `${VM_NAME}`/`${FQDN}`/etc. set) by `banlieue-controller` (ADR-0025). The provider delivers this verbatim (base64 into `guestinfo.userdata`) — it never reads a Secret or ConfigMap itself. |
 
 ###### `.spec.template.spec.disks[]`

@@ -1,0 +1,90 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# A VMImage built for TPM-sealed Kairos disk encryption (ADR-0039/ADR-0040).
+# Pair this with a `VMClass` setting `tpmEnabled: true` (see
+# examples/12-vmclass-tpm-encrypted.yaml).
+#
+# WHY `installMode: deferred` INSTEAD OF THE `immediate` DEFAULT
+# (see examples/07-vmimage-kairos-url-source.yaml):
+#
+# Kairos's `kcrypt` only ever seals encryption keys to a TPM that is present
+# DURING install — it has no supported way to encrypt an already-installed
+# disk later. banlieue's vSphere pipeline normally installs Kairos ONCE into
+# a golden template, then clones it for every production VM — but a clone
+# never re-runs the installer, so a vTPM attached to the clone (ADR-0039)
+# would have nothing to seal against if the template's disk was already
+# installed. `deferred` mode skips the build-time install entirely: the
+# template is just an empty VM with the ISO still attached
+# (`MarkAsTemplate` with no power-on). Every clone then runs Kairos's
+# installer itself, at its OWN first boot, with its OWN already-attached
+# vTPM present — giving every VM a genuinely unique, install-time-sealed
+# encryption key. See ADR-0040 for the full reasoning, including why baking
+# the encrypted disk into the shared template instead (and relying on
+# vSphere's default vTPM-secret-duplication on clone) was rejected: every
+# clone would then share one identical TPM identity and encryption key.
+#
+# THE CLOUD-CONFIG CONTRACT IS THE OPPOSITE OF `immediate` MODE'S:
+# `immediate`-mode images use `install.poweroff: true` / `reboot: false`
+# plus an `after-install-chroot` identity-wipe stage, because that install
+# is building a disposable, reusable template that must never boot the
+# installed disk itself. A `deferred`-mode image's install happens on a
+# live production VM that must keep running afterward — so it needs the
+# opposite:
+#
+#   install:
+#     auto: true
+#     device: /dev/sda
+#     reboot: true
+#     poweroff: false
+#     encrypted_partitions:
+#       - COS_PERSISTENT
+#   users:
+#     - name: kairos-admin
+#       groups: ["admin"]
+#       passwd: <hashed-or-plaintext-per-your-policy>
+#   # No after-install-chroot identity-wipe stage: each clone installs fresh
+#   # and generates its own machine-id / SSH host keys naturally — there is
+#   # no shared golden disk to generalize.
+#
+# CONSEQUENCE: per-VM provisioning time for VMs using this image jumps from
+# seconds (cloning an already-installed disk) to the full unattended-install
+# window (typically 8-12 minutes, ADR-0021) — every time, for every VM, not
+# just once at template-build time. `VSphereMachine.status.initialization.
+# provisioned` still flips `true` as soon as the clone powers on, which for
+# this image means "the install just started," not "the VM is ready"
+# (documented gap, ADR-0040 — not solved here).
+apiVersion: banlieue.io/v1alpha1
+kind: VMImage
+metadata:
+  name: kairos-ubuntu-2404-encrypted
+spec:
+  osFamily: linux
+  osDistribution: ubuntu
+  osVersion: "24.04"
+  architecture: amd64
+  guestAgent: cloud-init
+  sources:
+    - providerClass: vsphere
+      kind: Url
+      ref: unused-for-url-sources # required by the schema; ignored for kind: Url
+      importFrom: quay.io/kairos/ubuntu:24.04-standard-amd64-generic-v3.7.2-k0s-v1.34.3-k0s.0@sha256:e4860078c024269e81ce561ce91cf9639a4e75c23ea4cd32d3405005087192a7
+  cloudConfigs:
+    - secretRef:
+        name: kairos-encrypted-install-cloud-config
+        key: cloud-config.yaml
+  template:
+    rootFolder: templates/kairos-encrypted
+    network:
+      - network: vmnet-prod
+        adapter: vmxnet3
+        pciSlot: 192
+    disk:
+      size: 100
+      type: thin
+      controller: pvscsi
+    cpus: 2
+    memoryMib: 4096
+    firmware: efi   # vTPM requires EFI; also required by the Firmware default
+    # The one field that actually differs from example 07's Immediate mode:
+    installMode: deferred   # immediate (default) | deferred | manual — see ADR-0040

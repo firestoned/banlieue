@@ -165,8 +165,16 @@ API_SAN="${API_SAN:-}"
 # for air-gapped estates; defaults to the public GitHub releases).
 K0S_BINARY_BASEURL="${K0S_BINARY_BASEURL:-https://github.com/k0sproject/k0s/releases/download}"
 # If set, becomes spec.images.repository (internal registry mirror) so nodes
-# don't pull k0s system images from the public internet.
+# don't pull k0s system images from the public internet. NOTE: this alone does
+# NOT repoint the CRI sandbox (pause) image -- containerd's sandbox_image is a
+# separate setting, only rewritten via spec.images.pause below. Without that,
+# nodes with no route to quay.io stay NotReady even with repository set.
 K0S_IMAGE_REPOSITORY="${K0S_IMAGE_REPOSITORY:-}"
+# Full override for the CRI sandbox (pause) image, e.g.
+# quay-mirror.example.com/k0sproject/pause -- required in air-gapped estates
+# even when K0S_IMAGE_REPOSITORY is set (see note above).
+K0S_PAUSE_IMAGE="${K0S_PAUSE_IMAGE:-}"
+K0S_PAUSE_VERSION="${K0S_PAUSE_VERSION:-}"
 # CNI: kuberouter (k0s default) or calico.
 K0S_NETWORK_PROVIDER="${K0S_NETWORK_PROVIDER:-kuberouter}"
 # calico only: ipAutodetectionMethod can-reach=<addr> (defaults to first controller IP).
@@ -231,8 +239,10 @@ K0SCTL_CONFIG="${K0SCTL_CONFIG:-$WORKDIR/k0sctl.yaml}"
 KUBECONFIG_OUT="${KUBECONFIG_OUT:-$WORKDIR/kubeconfig}"
 KUBECONFIG_SERVER_FILE="${KUBECONFIG_SERVER_FILE:-$WORKDIR/kubeconfig-server}"
 
-mkdir -p "$WORKDIR"
-[[ "$BACKEND" == "libvirt" ]] && mkdir -p "$POOL_DIR"
+if [[ "${1:-}" != "--print-env-template" ]]; then
+  mkdir -p "$WORKDIR"
+  [[ "$BACKEND" == "libvirt" ]] && mkdir -p "$POOL_DIR"
+fi
 
 log() { echo "==> $*" >&2; }
 warn() { echo "!!! $*" >&2; }
@@ -826,9 +836,14 @@ render_k0s_yaml() {
     echo "      - $_N_NAME"
     echo "      - $_N_IP"
   done
-  if [[ -n "$K0S_IMAGE_REPOSITORY" ]]; then
+  if [[ -n "$K0S_IMAGE_REPOSITORY" || -n "$K0S_PAUSE_IMAGE" ]]; then
     echo "  images:"
-    echo "    repository: $K0S_IMAGE_REPOSITORY"
+    [[ -n "$K0S_IMAGE_REPOSITORY" ]] && echo "    repository: $K0S_IMAGE_REPOSITORY"
+    if [[ -n "$K0S_PAUSE_IMAGE" ]]; then
+      echo "    pause:"
+      echo "      image: $K0S_PAUSE_IMAGE"
+      [[ -n "$K0S_PAUSE_VERSION" ]] && echo "      version: $K0S_PAUSE_VERSION"
+    fi
   fi
   echo "  network:"
   echo "    provider: $K0S_NETWORK_PROVIDER"
@@ -847,7 +862,7 @@ stage_k0s_binary() {
   local ip="$1" tag bn
   tag="$(_k0s_ver_tag)"; bn="k0s-${tag}-amd64"
   log "[$ip] staging k0s $tag into /opt/k0s (symlink /usr/local/bin/k0s)"
-  ssh_run "$ip" 'bash -s' <<EOF
+  ssh_run "$ip" 'sudo bash -s' <<EOF
 set -e
 mkdir -p /opt/k0s
 bn="$bn"; base="$K0S_BINARY_BASEURL"; tag="$tag"
@@ -860,23 +875,34 @@ if [ ! -x "/opt/k0s/\$bn" ]; then
   fi
   chmod 0755 "/opt/k0s/\$bn"
 fi
-ln -sf "/opt/k0s/\$bn" /usr/local/bin/k0s
-/usr/local/bin/k0s version
+# Kairos' root filesystem is a read-only squashfs overlay — /usr/local/bin is
+# not guaranteed writable even as root, so the symlink is best-effort only.
+# /opt/k0s/\$bn (used directly by every later step) is the source of truth.
+ln -sf "/opt/k0s/\$bn" /usr/local/bin/k0s 2>/dev/null || echo "note: /usr/local/bin not writable, using /opt/k0s/\$bn directly"
+"/opt/k0s/\$bn" version
 EOF
 }
 
-# Write the shared cluster config onto a controller node.
+# Write the shared cluster config onto a controller node. Idempotent: only
+# rewrites the file and returns 0 ("changed") when content actually differs
+# from what's already there; returns 1 ("unchanged") otherwise, so callers
+# can decide whether a running k0scontroller needs restarting to pick it up.
 push_k0s_yaml() {
-  local ip="$1" cp_ip="$2"
-  render_k0s_yaml "$cp_ip" | ssh_run "$ip" 'mkdir -p /etc/k0s && cat > /etc/k0s/k0s.yaml'
+  local ip="$1" cp_ip="$2" content new_hash old_hash
+  content="$(render_k0s_yaml "$cp_ip")"
+  new_hash="$(printf '%s\n' "$content" | sha256sum | awk '{print $1}')"
+  old_hash="$(ssh_run "$ip" 'sudo sha256sum /etc/k0s/k0s.yaml 2>/dev/null' | awk '{print $1}')"
+  printf '%s\n' "$content" | ssh_run "$ip" 'sudo mkdir -p /etc/k0s && sudo tee /etc/k0s/k0s.yaml >/dev/null'
+  [[ "$new_hash" != "$old_hash" ]]
 }
 
 # Wait until a controller's kube-api answers and reports the node Ready.
 wait_k0s_api() {
-  local ip="$1"
+  local ip="$1" k0s_bin
+  k0s_bin="/opt/k0s/k0s-$(_k0s_ver_tag)-amd64"
   log "[$ip] waiting for kube-api..."
   for _ in $(seq 1 60); do
-    ssh_run "$ip" 'k0s kubectl get --raw=/readyz' >/dev/null 2>&1 && return 0
+    ssh_run "$ip" "sudo $k0s_bin kubectl get --raw=/readyz" >/dev/null 2>&1 && return 0
     sleep 5
   done
   log "[$ip] kube-api never became ready"; return 1
@@ -892,7 +918,7 @@ vsphere_config() {
   for row in "${NODE_TABLE[@]}"; do
     IFS='|' read -r name role ip <<<"$row"
     stage_k0s_binary "$ip"
-    [[ "$role" == controller* ]] && push_k0s_yaml "$ip" "$cp_ip"
+    [[ "$role" == controller* ]] && { push_k0s_yaml "$ip" "$cp_ip" || true; }
   done
   echo "${KUBECONFIG_SERVER:-${API_SAN:-$cp_ip}}" >"$KUBECONFIG_SERVER_FILE"
   log "vSphere prepare complete (binaries staged, controller configs written)"
@@ -901,9 +927,10 @@ vsphere_config() {
 # apply step (vsphere): init the first controller, then join the rest.
 vsphere_apply() {
   populate_node_table
-  local cp cp_name cp_ip row name role ip
+  local cp cp_name cp_ip row name role ip k0s_bin
   cp="$(first_controller)" || { log "no controller in NODES"; exit 1; }
   cp_name="${cp% *}"; cp_ip="${cp#* }"
+  k0s_bin="/opt/k0s/k0s-$(_k0s_ver_tag)-amd64"
 
   # Disable konnectivity on flat routable networks (default) -- see
   # K0S_DISABLE_KONNECTIVITY. Avoids the multi-controller "No agent available"
@@ -913,10 +940,15 @@ vsphere_apply() {
 
   # First controller.
   if ssh_run "$cp_ip" 'systemctl is-active --quiet k0scontroller' 2>/dev/null; then
-    log "[$cp_name] k0scontroller already active, skipping init"
+    if push_k0s_yaml "$cp_ip" "$cp_ip"; then
+      log "[$cp_name] config changed, restarting k0scontroller"
+      ssh_run "$cp_ip" 'sudo systemctl restart k0scontroller'
+    else
+      log "[$cp_name] k0scontroller already active, config unchanged, skipping"
+    fi
   else
     log "[$cp_name/$cp_ip] installing FIRST controller"
-    ssh_run "$cp_ip" "k0s install controller --force --enable-worker --no-taints -c /etc/k0s/k0s.yaml $konny && k0s start"
+    ssh_run "$cp_ip" "sudo $k0s_bin install controller --force --enable-worker --no-taints -c /etc/k0s/k0s.yaml $konny && sudo $k0s_bin start"
   fi
   wait_k0s_api "$cp_ip"
 
@@ -926,22 +958,29 @@ vsphere_apply() {
     [[ "$ip" == "$cp_ip" ]] && continue
     if [[ "$role" == controller* ]]; then
       if ssh_run "$ip" 'systemctl is-active --quiet k0scontroller' 2>/dev/null; then
-        log "[$name] controller already active, skipping join"; continue
+        if push_k0s_yaml "$ip" "$cp_ip"; then
+          log "[$name] config changed, restarting k0scontroller"
+          ssh_run "$ip" 'sudo systemctl restart k0scontroller'
+          wait_k0s_api "$ip"
+        else
+          log "[$name] controller already active, config unchanged, skipping join"
+        fi
+        continue
       fi
       log "[$name/$ip] joining as controller"
-      push_k0s_yaml "$ip" "$cp_ip"
-      ssh_run "$cp_ip" "k0s token create --role=controller --expiry=15m" | tr -d '\r' \
-        | ssh_run "$ip" 'cat > /etc/k0s/token-file && chmod 600 /etc/k0s/token-file'
-      ssh_run "$ip" "k0s install controller --force --enable-worker --no-taints --token-file /etc/k0s/token-file -c /etc/k0s/k0s.yaml $konny && k0s start"
+      push_k0s_yaml "$ip" "$cp_ip" || true
+      ssh_run "$cp_ip" "sudo $k0s_bin token create --role=controller --expiry=15m" | tr -d '\r' \
+        | ssh_run "$ip" 'sudo tee /etc/k0s/token-file >/dev/null && sudo chmod 600 /etc/k0s/token-file'
+      ssh_run "$ip" "sudo $k0s_bin install controller --force --enable-worker --no-taints --token-file /etc/k0s/token-file -c /etc/k0s/k0s.yaml $konny && sudo $k0s_bin start"
       wait_k0s_api "$ip"
     else
       if ssh_run "$ip" 'systemctl is-active --quiet k0sworker' 2>/dev/null; then
         log "[$name] worker already active, skipping join"; continue
       fi
       log "[$name/$ip] joining as worker"
-      ssh_run "$cp_ip" "k0s token create --role=worker --expiry=15m" | tr -d '\r' \
-        | ssh_run "$ip" 'cat > /etc/k0s/worker-token-file && chmod 600 /etc/k0s/worker-token-file'
-      ssh_run "$ip" "k0s install worker --token-file /etc/k0s/worker-token-file && k0s start"
+      ssh_run "$cp_ip" "sudo $k0s_bin token create --role=worker --expiry=15m" | tr -d '\r' \
+        | ssh_run "$ip" 'sudo tee /etc/k0s/worker-token-file >/dev/null && sudo chmod 600 /etc/k0s/worker-token-file'
+      ssh_run "$ip" "sudo $k0s_bin install worker --token-file /etc/k0s/worker-token-file && sudo $k0s_bin start"
     fi
   done
   log "vSphere k0s install complete"
@@ -950,11 +989,12 @@ vsphere_apply() {
 # kubeconfig step (vsphere): pull admin kubeconfig from the first controller,
 # repoint server: at API_SAN (or the controller IP).
 vsphere_kubeconfig() {
-  local cp cp_ip target
+  local cp cp_ip target k0s_bin
   cp="$(first_controller)" || { log "no controller in NODES"; exit 1; }
   cp_ip="${cp#* }"
+  k0s_bin="/opt/k0s/k0s-$(_k0s_ver_tag)-amd64"
   log "Fetching admin kubeconfig from $cp_ip"
-  ssh_run "$cp_ip" 'k0s kubeconfig admin' >"$KUBECONFIG_OUT"
+  ssh_run "$cp_ip" "sudo $k0s_bin kubeconfig admin" >"$KUBECONFIG_OUT"
   target="${API_SAN:-$cp_ip}"
   [[ -s "$KUBECONFIG_SERVER_FILE" ]] && target="$(<"$KUBECONFIG_SERVER_FILE")"
   log "Pointing kubeconfig server at $target"
@@ -1380,11 +1420,11 @@ deploy_flux() {
   [[ -n "$FLUX_CA_BUNDLE_FILE" ]] && has_ca="true"
 
   log "[$cp_ip] writing flux-operator manifests to /var/lib/k0s/manifests/flux-operator/"
-  ssh_run "$cp_ip" 'mkdir -p /var/lib/k0s/manifests/flux-operator'
-  render_flux_operator_install | ssh_run "$cp_ip" 'cat > /var/lib/k0s/manifests/flux-operator/00-install.yaml'
-  render_flux_prereqs "$flux_user" "$flux_pass" | ssh_run "$cp_ip" 'cat > /var/lib/k0s/manifests/flux-operator/10-pre-reqs.yaml'
-  render_flux_instance "$has_ca" | ssh_run "$cp_ip" 'cat > /var/lib/k0s/manifests/flux-operator/30-flux-instance.yaml'
-  render_flux_bootstrap | ssh_run "$cp_ip" 'cat > /var/lib/k0s/manifests/flux-operator/40-flux-bootstrap.yaml'
+  ssh_run "$cp_ip" 'sudo mkdir -p /var/lib/k0s/manifests/flux-operator'
+  render_flux_operator_install | ssh_run "$cp_ip" 'sudo tee /var/lib/k0s/manifests/flux-operator/00-install.yaml >/dev/null'
+  render_flux_prereqs "$flux_user" "$flux_pass" | ssh_run "$cp_ip" 'sudo tee /var/lib/k0s/manifests/flux-operator/10-pre-reqs.yaml >/dev/null'
+  render_flux_instance "$has_ca" | ssh_run "$cp_ip" 'sudo tee /var/lib/k0s/manifests/flux-operator/30-flux-instance.yaml >/dev/null'
+  render_flux_bootstrap | ssh_run "$cp_ip" 'sudo tee /var/lib/k0s/manifests/flux-operator/40-flux-bootstrap.yaml >/dev/null'
   log "flux-operator manifests staged on $cp_ip -- k0s will apply them automatically"
 }
 
@@ -1441,6 +1481,10 @@ VSPHERE_FOLDER=/DC-EXAMPLE/vm/banlieue          # created if missing
 K0S_VERSION=v1.35.1+k0s.1
 K0S_BINARY_BASEURL=https://github.com/k0sproject/k0s/releases/download   # internal mirror for air-gapped
 K0S_IMAGE_REPOSITORY=                            # e.g. an internal registry mirror
+# K0S_IMAGE_REPOSITORY alone doesn't repoint the CRI sandbox (pause) image --
+# set this too in air-gapped estates or nodes stay NotReady pulling quay.io:
+K0S_PAUSE_IMAGE=                                 # e.g. quay-mirror.example.com/k0sproject/pause
+K0S_PAUSE_VERSION=                               # e.g. 3.9 (match the tag your mirror carries)
 K0S_NETWORK_PROVIDER=calico                      # or kuberouter (k0s default)
 # CALICO_REACH=10.0.0.90                          # can-reach addr (defaults to first controller IP)
 

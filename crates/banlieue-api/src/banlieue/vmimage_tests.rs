@@ -664,21 +664,41 @@ mod tests {
     }
 
     #[test]
-    fn vmimage_template_omits_auto_manage_install_when_none() {
+    fn vmimage_template_defaults_to_immediate_install_mode() {
         let t = VMImageTemplate::default();
-        assert!(t.auto_manage_install.is_none());
+        assert_eq!(t.install_mode, InstallMode::Immediate);
         let json = serde_json::to_value(&t).unwrap();
-        assert!(!json.as_object().unwrap().contains_key("autoManageInstall"));
+        assert_eq!(json["installMode"], "immediate");
     }
 
     #[test]
-    fn vmimage_template_with_auto_manage_install_false_round_trip() {
+    fn vmimage_template_missing_install_mode_deserializes_to_immediate() {
+        let t: VMImageTemplate = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(t.install_mode, InstallMode::Immediate);
+    }
+
+    #[test]
+    fn vmimage_template_deferred_install_mode_round_trip() {
+        // ADR-0040: the sanctioned mode for a tpmEnabled: true VMClass — the
+        // install runs once per clone, at that clone's own first boot.
         let t = VMImageTemplate {
-            auto_manage_install: Some(false),
+            install_mode: InstallMode::Deferred,
             ..VMImageTemplate::default()
         };
         let json = serde_json::to_value(&t).unwrap();
-        assert_eq!(json["autoManageInstall"], false);
+        assert_eq!(json["installMode"], "deferred");
+        let back: VMImageTemplate = serde_json::from_value(json).unwrap();
+        assert_eq!(back, t);
+    }
+
+    #[test]
+    fn vmimage_template_manual_install_mode_round_trip() {
+        let t = VMImageTemplate {
+            install_mode: InstallMode::Manual,
+            ..VMImageTemplate::default()
+        };
+        let json = serde_json::to_value(&t).unwrap();
+        assert_eq!(json["installMode"], "manual");
         let back: VMImageTemplate = serde_json::from_value(json).unwrap();
         assert_eq!(back, t);
     }

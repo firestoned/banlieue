@@ -87,6 +87,41 @@ No environment-specific identifier is ever committed — every value comes
 from the `GOVC_*` environment, `govc` discovery, or an untracked operator
 config (ADR-0017, ADR-0018).
 
+```sh
+./scripts/bootstrap-k0s-cluster.sh --help
+```
+
+#### vSphere
+
+```sh
+# Scaffold the untracked env file (BACKEND must be set explicitly — it
+# defaults to libvirt otherwise, even for this template-only step)
+BACKEND=vsphere ./scripts/bootstrap-k0s-cluster.sh --print-env-template \
+  > ~/.k0s/banlieue.env
+
+# Fill in the node table (name/cluster/ip/role) and per-cluster placement
+# maps (VSPHERE_RP / VSPHERE_DSC / VSPHERE_NET / VSPHERE_TPL), then:
+BANLIEUE_ENV_FILE=~/.k0s/banlieue.env BACKEND=vsphere \
+  ./scripts/bootstrap-k0s-cluster.sh all
+```
+
+Subcommands run individually: `vms | config | apply | kubeconfig | label |
+flux | destroy`. `GOVC_*` (URL/creds/datacenter/CA) comes from the ambient
+environment; nothing environment-specific is ever committed to the env file
+(`rules/no-real-infrastructure.md`).
+
+#### libvirt (default)
+
+```sh
+LIBVIRT_URI=qemu:///system \
+VM_COUNT=4 VCPUS=2 MEM_MB=8192 DISK_GB=25 \
+  ./scripts/bootstrap-k0s-cluster.sh all
+```
+
+Run on the KVM/libvirt host itself, or point `LIBVIRT_URI` at a remote one.
+Kairos installs itself from `IMAGE_URL`'s ISO onto an empty disk before
+`k0sctl` takes over.
+
 **Output of this phase:** a running k0s **management** cluster with nothing
 banlieue-specific on it yet.
 

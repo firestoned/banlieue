@@ -1,0 +1,51 @@
+flowchart TB
+    VAULT(["Vault: vCenter service-account<br/>username/password (§2a)<br/>THE ACTUAL ROOT OF TRUST"])
+    TPMHW(["Crypto team: ESXi host physical<br/>TPM 2.0 enrollment + attestation (§3c)<br/>ANOTHER ROOT OF TRUST"])
+
+    subgraph BUILD["Build pipeline (CI image build + kairos-operator)"]
+        A["CI: glibc/musl Kairos<br/>container image<br/>(base cloud-config baked in)"] --> B["banlieue-imagebuilder<br/>creates OSArtifact CR"]
+        B --> C["kairos-operator<br/>Auroraboot builds ISO<br/>+ layered cloud-config<br/>(install.encrypted_partitions)"]
+        C --> D["VMImage.status.buildArtifact = Ready"]
+    end
+
+    subgraph SCHED["banlieue control plane"]
+        E["VirtualMachine CR<br/>(user-facing desired state)"] --> F["Scheduler resolves<br/>VMClass + VMImage + Provider"]
+        D --> F
+        F --> G{"VMClass.spec.tpm_enabled?"}
+        G -- "true" --> H["Only schedules onto a Provider<br/>whose failure domain advertises<br/>capabilities.features = 'vtpm'"]
+        G -- "false" --> I["Schedules normally, no vTPM"]
+        H --> J["VSphereMachine CR created<br/>spec.tpm_enabled = true"]
+    end
+
+    subgraph KMS["vCenter KMS trust (§3a — validated live via govc)"]
+        KM1["Example Corp Internal CA<br/>(internal CA)"] -.->|issues| KM2["KMIP server cert<br/>CN=kmip-server.example.com<br/>kms.example.com:5696"]
+        KM1 -.->|issues| KM3["vCenter client cert<br/>CN=vcenter-client-01"]
+        KM2 <-->|mutual TLS,<br/>clientTrustServer/<br/>serverTrustClient=true| KM3
+        KM3 --- KM4["Key Provider: 'NonProd KMIP'<br/>status=green, useAsDefault"]
+    end
+
+    subgraph PROV["vSphere provisioning (banlieue-provider-vsphere)"]
+        J --> K["clone_vm (power_on: false)"]
+        KM4 -.->|gates whether<br/>vTPM device can<br/>be created at all| L
+        K --> L["add_tpm_device<br/>ReconfigVM_Task + VirtualTPM"]
+        L --> M["power on<br/>status.tpm_attached = true"]
+    end
+
+    VAULT -->|"govc GOVC_USERNAME/PASSWORD<br/>(one-time, out of band —<br/>builds the base template)"| A
+    VAULT -->|"Provider.spec.connection<br/>.credentialsRef Secret<br/>(every clone + add_tpm_device)"| K
+    TPMHW -->|"host attestation must be<br/>'accepted' for the target<br/>ESXi host (§3c)"| L
+
+    subgraph BOOT["First boot — Kairos install (§4, §4a validated)"]
+        M --> N["kcrypt reads<br/>install.encrypted_partitions"]
+        N --> O["Local TPM NV passphrase<br/>sealed into vTPM<br/>(possession-only; PCR-bound deferred)"]
+        O --> P["cryptsetup luksFormat<br/>COS_PERSISTENT"]
+        P --> Q["/var/lib/etcd, /var/lib/k0s,<br/>/etc/k0s, /opt/k0s<br/>bind-mounted onto encrypted volume"]
+    end
+
+    subgraph RUN["Steady-state runtime — sceau (§5, §5a validated)"]
+        Q --> R["k0s controller starts"]
+        R --> S["sceau (Rust, firestoned/sceau)<br/>TPM2_CreatePrimary re-derives<br/>the SAME deterministic SRK<br/>from the SAME vTPM every start<br/>— no persisted KEK"]
+        S --> T["kube-apiserver KMSv2 provider<br/>dials /run/sceau/sceau.sock"]
+        T --> U["etcd stores Secrets as<br/>k8s:enc:kms:v2:sceau:&lt;ciphertext&gt;<br/>(verified via raw etcdctl read)"]
+        Q -.->|"every subsequent boot"| O2["kairos-immucore:<br/>'Using local TPM NV passphrase'<br/>unlock COS_PERSISTENT<br/>— no human, no remote server"]
+    end

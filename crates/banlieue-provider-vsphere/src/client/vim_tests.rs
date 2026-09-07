@@ -293,7 +293,7 @@ n17Lktsw0jAZJp1tU1DJPZSYHZPPWLZlJhHftNtpKQ==
             guest_id: "rhel9_64Guest".to_string(),
             force_create: false,
             install_timeout_seconds: 1800,
-            auto_manage_install: true,
+            install_mode: InstallMode::Immediate,
         }
     }
 

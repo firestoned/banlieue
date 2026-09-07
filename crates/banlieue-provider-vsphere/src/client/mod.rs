@@ -7,7 +7,7 @@
 //! real implementation in [`vim`] wraps `vim_rs::core::client::ClientBuilder`.
 
 use async_trait::async_trait;
-use banlieue_api::banlieue::{DiskController, NicAdapter, ProviderConnection};
+use banlieue_api::banlieue::{DiskController, InstallMode, NicAdapter, ProviderConnection};
 use banlieue_api::common::{DiskProvisioning, Firmware, PowerState};
 
 use crate::error::Result;
@@ -179,16 +179,17 @@ pub trait VSphereClient: Send + Sync {
     /// Import a bootable ISO into one failure domain as a vCenter template
     /// (ADR-0020): upload the ISO to `req.datastore`, create an empty EFI VM in
     /// `req.cluster`'s resource pool with the ISO attached as a CD-ROM and a NIC
-    /// on `req.network`. When `req.auto_manage_install` (ADR-0021), power it
-    /// on and wait for the cloud-config's unattended Kairos install to run its
-    /// `after-install-chroot` identity-wipe stage and power the VM off itself
-    /// (`install.poweroff`, no reboot — the disk is never booted by the
-    /// build), bounded by `req.install_timeout_seconds`; on success, remove
-    /// the CD-ROM device and `MarkAsTemplate`, on timeout fail without
+    /// on `req.network`. When `req.install_mode` is `Immediate` (ADR-0021),
+    /// power it on and wait for the cloud-config's unattended Kairos install
+    /// to run its `after-install-chroot` identity-wipe stage and power the VM
+    /// off itself (`install.poweroff`, no reboot — the disk is never booted
+    /// by the build), bounded by `req.install_timeout_seconds`; on success,
+    /// remove the CD-ROM device and `MarkAsTemplate`, on timeout fail without
     /// destroying the VM so it can be inspected via console. When
-    /// `!req.auto_manage_install`, skip straight to `MarkAsTemplate` with no
-    /// power-on — ADR-0020's original behavior, for a build that isn't
-    /// Kairos-driven or whose install/generalize is managed some other way.
+    /// `Deferred`/`Manual`, skip straight to `MarkAsTemplate` with no
+    /// power-on and the CD-ROM left attached — ADR-0020's original behavior,
+    /// preserved as the sanctioned per-clone-install path for `tpmEnabled`
+    /// VMClasses (ADR-0040) as well as for a build that isn't Kairos-driven.
     /// Idempotent: an existing template of `req.template_name` in the
     /// datacenter is left in place. Returns the resolved reference
     /// (`[datastore] template-name`).
@@ -280,6 +281,16 @@ pub trait VSphereClient: Send + Sync {
     /// e.g. by a prior finalizer attempt that got as far as `Destroy_Task`
     /// but never observed the response) is success, not an error.
     async fn destroy_vm(&self, vm_moref: &str) -> Result<()>;
+
+    /// Attach a virtual TPM (vTPM) device to `vm_moref` via a standalone
+    /// `ReconfigVM_Task` (ADR-0039) — the same call the vCenter UI and
+    /// PowerCLI's `New-VTpm` make; govc has no wrapping subcommand for it
+    /// (confirmed against 0.52.0/0.56.0). Called from [`crate::reconciler::
+    /// vspheremachine::ensure_vm`] after `clone_vm` (which always clones
+    /// powered off) and before the power-on step, since Kairos's `kcrypt`
+    /// seals LUKS keys to the TPM during unattended install and the device
+    /// must exist before first boot.
+    async fn add_tpm_device(&self, vm_moref: &str) -> Result<()>;
 }
 
 /// Everything [`VSphereClient::clone_vm`] needs to clone a per-zone template
@@ -391,12 +402,13 @@ pub struct IsoImportRequest {
     /// (`install.poweroff: true` in the cloud-config), before failing the
     /// import (ADR-0021). Set from `VMImage.spec.template.installTimeoutSeconds`.
     pub install_timeout_seconds: i32,
-    /// Run the install-then-generalize sequence (power on, wait for
-    /// self-poweroff, remove the CD-ROM) before `MarkAsTemplate`. `false`
-    /// reverts to ADR-0020's original behavior: create the VM, attach the
+    /// How the install step is driven. `Immediate` runs the
+    /// install-then-generalize sequence (power on, wait for self-poweroff,
+    /// remove the CD-ROM) before `MarkAsTemplate`; `Deferred`/`Manual`
+    /// revert to ADR-0020's original behavior: create the VM, attach the
     /// ISO, `MarkAsTemplate` immediately, no power-on. Set from
-    /// `VMImage.spec.template.autoManageInstall` (ADR-0021).
-    pub auto_manage_install: bool,
+    /// `VMImage.spec.template.installMode` (ADR-0021, ADR-0040).
+    pub install_mode: InstallMode,
 }
 
 #[cfg(test)]

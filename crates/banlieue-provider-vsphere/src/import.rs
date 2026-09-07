@@ -19,7 +19,9 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, anyhow, bail};
-use banlieue_api::banlieue::{DiskController, NicAdapter, Provider, VMImage, VMImageTemplateNic};
+use banlieue_api::banlieue::{
+    DiskController, InstallMode, NicAdapter, Provider, VMImage, VMImageTemplateNic,
+};
 use banlieue_api::common::{DiskProvisioning, Firmware};
 use banlieue_provider_sdk::client::build_client;
 use clap::Args;
@@ -181,19 +183,17 @@ pub struct ImportArgs {
     #[arg(long, default_value_t = DEFAULT_INSTALL_TIMEOUT_SECS)]
     pub install_timeout_seconds: i32,
 
-    /// Run the install-then-generalize sequence (power on, wait for
-    /// self-poweroff, remove the CD-ROM) before marking as a template.
-    /// `false` reverts to creating the VM, attaching the ISO, and marking it
-    /// as a template immediately — no power-on (ADR-0020's original
-    /// behavior) — for a build that isn't Kairos-driven or whose
-    /// install/generalize is managed some other way. Set from
-    /// `spec.template.autoManageInstall` (ADR-0021). Value-taking
-    /// (`--auto-manage-install false`), not a bare switch: clap's implicit
-    /// bare-flag inference for `bool` fields can only ever set `true`, and
-    /// this default is already `true` — the whole point is being able to
-    /// override it to `false`.
-    #[arg(long, action = clap::ArgAction::Set, default_value_t = true)]
-    pub auto_manage_install: bool,
+    /// How the install step is driven: `immediate` (default) runs the
+    /// install-then-generalize sequence (power on, wait for self-poweroff,
+    /// remove the CD-ROM) before marking as a template; `deferred` or
+    /// `manual` create the VM, attach the ISO, and mark it as a template
+    /// immediately — no power-on, CD-ROM left attached (ADR-0020's original
+    /// behavior). `deferred` is the sanctioned mode for a `tpmEnabled: true`
+    /// `VMClass` — the install runs once per clone, at that clone's own
+    /// first boot, with that clone's own vTPM present (ADR-0039/ADR-0040).
+    /// Set from `spec.template.installMode`.
+    #[arg(long, default_value = "immediate")]
+    pub install_mode: InstallMode,
 }
 
 /// The concrete vCenter placement resolved for one failure domain.
@@ -816,7 +816,7 @@ pub async fn run(args: ImportArgs) -> Result<()> {
         guest_id,
         force_create: args.force_create,
         install_timeout_seconds: args.install_timeout_seconds,
-        auto_manage_install: args.auto_manage_install,
+        install_mode: args.install_mode,
     };
     let resolved = vim
         .import_iso_template(&req)
