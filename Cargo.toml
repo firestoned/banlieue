@@ -30,7 +30,7 @@ authors = ["Erick Bourgeois <erick@jeb.ca>"]
 [workspace.dependencies]
 # Kubernetes — kube 4.0 pairs with k8s-openapi 0.28 (Kubernetes v1.36 types).
 # Pinned to the 4.0.x line: kube 4.1+ requires rust 1.89, above our MSRV 1.88.
-kube = { version = "~4.0", features = ["derive", "client", "runtime"] }
+kube = { version = "~4.2", features = ["derive", "client", "runtime"] }
 k8s-openapi = { version = "0.28", features = ["latest", "schemars"] }
 schemars = "1"
 
