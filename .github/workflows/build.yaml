@@ -34,7 +34,10 @@ env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
   # Grype is installed from the Anchore release tarball, pinned here.
-  GRYPE_VERSION: "0.87.0"
+  # NOTE: VEX suppression (`grype --vex`) is silently ignored by old releases —
+  # verified 2026-09-07 that 0.87.0 emits VEX-suppressed findings anyway, while
+  # 0.118.0 filters them. Do not downgrade below 0.118.0.
+  GRYPE_VERSION: "0.118.0"
 
 jobs:
 
