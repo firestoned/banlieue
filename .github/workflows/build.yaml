@@ -837,7 +837,16 @@ jobs:
       actions: read
       id-token: write
       contents: write
-    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@f7dd8c54c2067bafc12ca7a55595d5ee9b75204a # v2.1.0
+    # NOT SHA-pinned, deliberately. The SLSA generator resolves its own
+    # `BUILDER_REF` from the ref this workflow is called with and refuses
+    # anything that is not a semver tag:
+    #   "Invalid ref: <sha>. Expected ref of the form refs/tags/vX.Y.Z"
+    # A SHA pin (added 2026-08-13 by the blanket pin sweep) therefore fails the
+    # generator job on every push to main. Upstream requires the tag form so
+    # the builder's provenance identifies a verifiable release; the tag is
+    # protected/immutable on that repo. Keep `@vX.Y.Z` here -- do not let a
+    # pin-all-actions pass rewrite it to a digest.
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
     with:
       base64-subjects: "${{ needs.generate-provenance-subjects.outputs.hashes }}"
       upload-assets: ${{ github.event_name == 'release' }}

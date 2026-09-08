@@ -1,5 +1,51 @@
 # Changelog
 
+## [2026-09-07] - Fix SLSA provenance generator failing on a SHA-pinned builder ref
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/workflows/build.yaml`: reverted the `slsa-provenance` job's `uses:`
+  from the SHA pin
+  `slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@f7dd8c5`
+  back to the semver tag `@v2.1.0`, with a comment explaining why this one
+  reference must not be digest-pinned.
+
+### Why
+Every push to `main` failed the `SLSA Provenance / final` job (run
+`34168810228`, job `101887467433`, exit 27). `final` was only the downstream
+casualty: the raw log for the upstream `generator` job (`101887428557`) shows
+`generate-builder.sh` aborting with
+
+```
+Fetching the builder with ref: f7dd8c54c2067bafc12ca7a55595d5ee9b75204a
+Invalid ref: f7dd8c54c2067bafc12ca7a55595d5ee9b75204a. Expected ref of the form refs/tags/vX.Y.Z
+```
+
+exit code 2, which then cascaded into `Process completed with exit code 127`
+and `Input required and not supplied: path` for the artifact upload.
+
+The SLSA generator reads the ref it was *called* with as its own `BUILDER_REF`
+and requires a `refs/tags/vX.Y.Z` release tag so the emitted provenance names a
+verifiable builder release. A commit digest is rejected outright. The blanket
+"pin every action to a SHA" pass in `041f34b` (2026-08-13) rewrote this
+reference along with all the others, which broke it.
+
+Note this is a *different* failure from the `private-repository` one fixed
+earlier the same day: that `private-repository: true` input is still present and
+still working — the privacy check passes in this run's log. The generator now
+gets past the privacy gate and fails one step later, on the ref format.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only
+- [ ] Documentation only
+
+This one action stays tag-pinned by necessity. All other actions in the repo
+remain SHA-pinned; OSSF Scorecard's Pinned-Dependencies check will flag this
+single line, which is the accepted trade-off for having SLSA provenance at all.
+
 ## [2026-09-07] - Fix false-positive SLSA provenance failure on `main`
 
 **Author:** Erick Bourgeois
