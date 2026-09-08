@@ -15,7 +15,7 @@
 # Pinned by digest. Chainguard rebuilds this tag daily with patches;
 # Dependabot opens a PR with the new digest on each rebuild — review and merge.
 # Do NOT revert to a floating tag.
-ARG BASE_IMAGE=cgr.dev/chainguard/glibc-dynamic:latest@sha256:fa0d07a6a352921b778c4da11d889b41d9ef8e99c69bc2ec1f8c9ec46b2462e9
+ARG BASE_IMAGE=cgr.dev/chainguard/glibc-dynamic:latest@sha256:d49aa7837ef1ef8fae33917f94369294c6d49940d2f0b225beee65a3bb6747ed
 
 FROM ${BASE_IMAGE}
 

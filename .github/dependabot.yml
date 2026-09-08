@@ -3,13 +3,26 @@
 #
 # Dependency update automation (Scorecard Dependency-Update-Tool). Weekly is
 # frequent enough to stay current without drowning a pre-1.0 repo in PR noise.
+#
+# Every entry carries a `cooldown`: Dependabot waits N days after a version is
+# published before proposing it. This is the standard defence against a
+# compromised-maintainer / typo-squat release being auto-merged within hours of
+# publication -- the window in which such a release is normally caught and
+# yanked. Registry ecosystems (cargo/npm/pip/actions) use 7 days.
 version: 2
 updates:
   # GitHub Actions — keeps the SHA-pinned actions current.
+  #
+  # Note: the SLSA generator reusable workflow in build.yaml is deliberately
+  # referenced by tag rather than digest (the generator rejects non-tag refs).
+  # Dependabot preserves each reference's existing style, so it bumps that one
+  # tag-to-tag and leaves the rest SHA-pinned. Do not "fix" it to a digest.
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 7
     groups:
       actions:
         patterns: ["*"]
@@ -20,6 +33,8 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 7
     groups:
       # kube and k8s-openapi are tightly version-coupled: kube 4.x requires
       # k8s-openapi 0.28. Bumping either alone produces two incompatible
@@ -37,19 +52,49 @@ updates:
     directory: "/docs"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 7
 
-  # Container base image (digest bumps for distroless/cc-debian13:nonroot).
+  # Container base images — every Dockerfile in the repo:
+  #   /Dockerfile              gcr.io/distroless/cc-debian13:nonroot   (release image)
+  #   /Dockerfile.chainguard   cgr.dev/chainguard/glibc-dynamic:latest (release image)
+  #   /.clusterfuzzlite/Dockerfile  gcr.io/oss-fuzz-base/base-builder-rust (fuzzing)
+  #
+  # `directories` (plural) is required: a single `directory: "/"` only scans the
+  # repo root, which silently left .clusterfuzzlite/Dockerfile unmanaged. Both
+  # root Dockerfiles are covered by the "/" entry — Dependabot's docker ecosystem
+  # matches any filename containing "dockerfile", so `Dockerfile.chainguard` is
+  # picked up alongside `Dockerfile`.
+  #
+  # Shorter cooldown than the registry ecosystems, deliberately. Cooldown
+  # protects against a hostile *newly published package version*; these are
+  # first-party base images from gcr.io and cgr.dev whose rebuilds exist
+  # precisely to ship OS security patches (glibc, zlib). Holding those for a
+  # week means shipping known-vulnerable libc for a week, which is the larger
+  # risk of the two. Chainguard rebuilds daily, so weekly + 2 days lands at
+  # roughly one PR per week.
   - package-ecosystem: "docker"
-    directory: "/"
+    directories:
+      - "/"
+      - "/.clusterfuzzlite"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 2
+    groups:
+      base-images:
+        patterns: ["*"]
 
   # Hash-pinned CI tools (.github/tools/*/package-lock.json).
   - package-ecosystem: "npm"
     directory: "/.github/tools/calm-cli"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 7
   - package-ecosystem: "npm"
     directory: "/.github/tools/linkinator"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 7

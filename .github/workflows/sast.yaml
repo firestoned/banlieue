@@ -36,7 +36,13 @@ jobs:
       # "Resource not accessible by integration" on the get-a-workflow-run API.
       actions: read
     container:
-      image: returntocorp/semgrep
+      # Pinned to a version tag AND its digest. Was a bare `returntocorp/semgrep`
+      # -- no tag, so implicitly `:latest` -- which is a floating third-party
+      # container that runs with the repo checkout and `security-events: write`.
+      # `returntocorp/*` is also the deprecated namespace (it still mirrors, but
+      # `semgrep/semgrep` is the maintained one). The tag is what Dependabot's
+      # docker ecosystem bumps; the digest is what actually gets pulled.
+      image: semgrep/semgrep:1.176.1@sha256:34ab619bf1391a24bfda3f05debd0d8a6ce3093c2d5f9d39cfc00f83c1397823
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
