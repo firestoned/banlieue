@@ -64,7 +64,7 @@ CONTAINER_TOOL ?= docker
 
 # Supply chain (SBOM / VEX / scanning). Versions pinned; CI uses the same.
 VEXCTL_VERSION ?= 0.4.1
-GRYPE_VERSION  ?= 0.87.0
+GRYPE_VERSION  ?= 0.118.0
 PRODUCT_PURL   ?= pkg:oci/banlieue
 # Inputs for the local auto-vex mirrors (`make vex-auto-*`).
 GRYPE_JSON         ?= grype.json

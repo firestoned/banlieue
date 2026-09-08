@@ -12,7 +12,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use banlieue_api::banlieue::{DiskController, InstallMode, NicAdapter, ProviderConnection};
 use banlieue_api::common::{DiskProvisioning, Firmware, PowerState};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 use vim_rs::core::client::{Client, ClientBuilder};
 use vim_rs::mo::cluster_compute_resource::ClusterComputeResource;
 use vim_rs::mo::container_view::ContainerView;
@@ -252,6 +252,26 @@ fn build_http_client_with_timeouts(
         }
     }
     if insecure {
+        // Opt-in only: reached solely when a ProviderConnection sets
+        // `insecureSkipTLSVerify: true`. It is a supported field (the same
+        // escape hatch CAPV and `kubectl --insecure-skip-tls-verify` expose)
+        // for lab vCenters with self-signed certs, so the code path stays --
+        // but it must never be quiet. `debug!` is off in production, which
+        // would let a cluster run MITM-able for months with nothing in the
+        // logs, so this is `warn!`: one line per client build, naming the
+        // field to unset. The supported fix is `caBundle` (ADR-0008 BYOC).
+        //
+        // Not unit-tested: asserting on a `warn!` needs a tracing-subscriber
+        // capture layer this workspace does not have, and building one for a
+        // single log line costs more than it proves. `build_http_client_
+        // succeeds_insecure` covers the branch itself.
+        warn!(
+            "TLS certificate and hostname verification are DISABLED for this \
+             vSphere connection (insecureSkipTLSVerify: true). The connection \
+             is exposed to man-in-the-middle attacks and vCenter credentials \
+             may be intercepted. Set a trusted caBundle and remove \
+             insecureSkipTLSVerify before using this provider in production."
+        );
         builder = builder
             .danger_accept_invalid_certs(true)
             .danger_accept_invalid_hostnames(true);

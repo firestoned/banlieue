@@ -1,4 +1,127 @@
 {
-  "_comment": "Curated CVE -> affected library symbol-name map for the (staged) auto-vex-reachability tool (ADR-0006). Dot-prefixed so the .vex/*.json glob skips it; it is NOT an OpenVEX document. Underscore-prefixed keys are metadata the loader ignores. A CVE present here with NONE of its symbols in the binary's dynamic symbol table is auto-marked not_affected (vulnerable_code_not_in_execute_path). Absence of a CVE here means 'do not auto-derive', not 'reachable'.",
-  "_status": "Scaffold only — no entries yet. Populate as glibc/zlib/etc. advisories surface against the banlieue images."
+  "_comment": "Curated CVE -> affected library symbol-name map for the auto-vex-reachability tool (ADR-0006). Dot-prefixed so the .vex/*.json glob skips it; it is NOT an OpenVEX document. Underscore-prefixed keys are metadata the loader ignores. A CVE present here with NONE of its symbols in the binary's dynamic symbol table is auto-marked not_affected (vulnerable_code_not_in_execute_path). Absence of a CVE here means 'do not auto-derive', not 'reachable'.",
+  "_method": "Each list is the set of PUBLIC entry points through which the advisory's vulnerable code is documented to be reachable -- not the internal function named in the advisory text, which never appears in a dynamic symbol table. Internal helpers (parse_tilde, gz_vacate) are listed via their exported callers. Verified 2026-09-07 against the release-attested banlieue-linux-amd64 binary from run 34168810228 (BuildID 8effcf700c9373c65a5f9ee8de0e2af891ee62d7): 154 undefined dynsym entries, none of which is any symbol below. Re-verify with `nm -D --undefined-only bin/banlieue`.",
+  "_note_stdio": "The banlieue binary imports no C stdio FILE* API at all (no fopen/fdopen/printf/scanf family) -- Rust std goes straight to open/read/write syscalls. That single fact covers the scanf, ungetwc and fopen-mode advisories below.",
+  "_note_resolver": "The binary DOES import getaddrinfo/freeaddrinfo/gai_strerror/__res_init, so it uses the glibc resolver. The ns_printrr/fp_nquery advisories (CVE-2026-5435, CVE-2026-6238) are in the deprecated DNS record *printing* helpers, which are a separate export surface that the binary does not import.",
+  "_note_locale": "The binary imports NO locale, iconv, gconv or wide-char conversion symbol whatsoever -- not even setlocale. A process that never calls setlocale stays in the \"C\" locale for its whole lifetime, so glibc can never select a multibyte JIS charset and never dlopens the SHIFT_JISX0213 / EUC_JISX0213 gconv converters. The Chainguard image reinforces this: its only locale package is glibc-locale-posix. This covers CVE-2026-77117 and CVE-2026-80489.",
+  "CVE-2026-18374": [
+    "fopen",
+    "fopen64",
+    "freopen",
+    "freopen64",
+    "fdopen"
+  ],
+  "CVE-2026-19499": [
+    "strfmon",
+    "strfmon_l",
+    "__strfmon_l",
+    "vstrfmon",
+    "vstrfmon_l"
+  ],
+  "CVE-2026-19542": [
+    "tdelete",
+    "tsearch",
+    "tfind",
+    "twalk",
+    "twalk_r",
+    "tdestroy"
+  ],
+  "CVE-2026-5435": [
+    "ns_printrrf",
+    "ns_printrr",
+    "fp_nquery",
+    "ns_sprintrr",
+    "ns_sprintrrf",
+    "fp_query",
+    "p_query"
+  ],
+  "CVE-2026-5450": [
+    "scanf",
+    "fscanf",
+    "sscanf",
+    "vscanf",
+    "vfscanf",
+    "vsscanf",
+    "__isoc99_scanf",
+    "__isoc99_fscanf",
+    "__isoc99_sscanf",
+    "__isoc99_vscanf",
+    "__isoc99_vfscanf",
+    "__isoc99_vsscanf"
+  ],
+  "CVE-2026-5928": [
+    "ungetwc",
+    "fgetwc",
+    "getwc",
+    "fgetws",
+    "getwchar"
+  ],
+  "CVE-2026-6238": [
+    "ns_printrrf",
+    "ns_printrr",
+    "fp_nquery",
+    "ns_sprintrr",
+    "ns_sprintrrf",
+    "fp_query",
+    "p_query"
+  ],
+  "CVE-2026-6368": [
+    "wordexp",
+    "wordfree"
+  ],
+  "CVE-2026-6791": [
+    "wordexp",
+    "wordfree",
+    "glob",
+    "glob64",
+    "globfree",
+    "globfree64"
+  ],
+  "CVE-2026-77117": [
+    "iconv",
+    "iconv_open",
+    "iconv_close",
+    "__iconv_open",
+    "__gconv_open",
+    "mbrtowc",
+    "mbsrtowcs",
+    "mbstowcs",
+    "wcrtomb",
+    "wcsrtombs",
+    "wcstombs",
+    "setlocale",
+    "newlocale",
+    "uselocale",
+    "nl_langinfo",
+    "nl_langinfo_l"
+  ],
+  "CVE-2026-80489": [
+    "iconv",
+    "iconv_open",
+    "iconv_close",
+    "__iconv_open",
+    "__gconv_open",
+    "mbrtowc",
+    "mbsrtowcs",
+    "mbstowcs",
+    "wcrtomb",
+    "wcsrtombs",
+    "wcstombs",
+    "setlocale",
+    "newlocale",
+    "uselocale",
+    "nl_langinfo",
+    "nl_langinfo_l"
+  ],
+  "CVE-2026-85091": [
+    "gzprintf",
+    "gzvprintf",
+    "gzwrite",
+    "gzfwrite",
+    "gzputs",
+    "gzputc",
+    "gzopen",
+    "gzopen64",
+    "gzdopen"
+  ]
 }

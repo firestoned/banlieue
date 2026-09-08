@@ -17,8 +17,23 @@ the Grype scan (`grype --vex`) so justified findings do not re-alarm. See
   `vexctl merge` in CI (the `build-vex` job) and locally via `make vex-assemble`.
   Validate with `make vex-validate`.
 - **`.affected-functions.json`** — dot-prefixed (so the `*.json` glob skips it).
-  A curated `CVE → [library symbol names]` map for the *future*
-  `auto-vex-reachability` tool (ADR-0006 "Staged"). Not a VEX document.
+  A curated `CVE → [library symbol names]` map consumed by the
+  `auto-vex-reachability` tool (ADR-0006), which runs in the `auto-vex-reachability`
+  CI job and locally via `make vex-auto-reachability`. Not a VEX document.
+
+  Each list holds the **public entry points** through which the advisory's
+  vulnerable code is reachable — not the internal function named in the advisory
+  text, which never appears in a dynamic symbol table. `parse_tilde` is listed as
+  `wordexp`/`glob`; `gz_vacate` as `gzprintf`/`gzwrite`. If *none* of a CVE's
+  entry points appear in the binary's `nm -D --undefined-only` output, the tool
+  emits `not_affected` / `vulnerable_code_not_in_execute_path` automatically, so
+  no hand-written `.vex/*.json` is needed.
+
+  Prefer adding a CVE here over hand-writing a statement: the claim is then
+  re-derived against every build's actual binary instead of being asserted once
+  and going stale. Hand-write a statement only when the argument is not
+  "this symbol is not linked" (see `CVE-2026-27171.json`, which turns on the
+  absence of a *crate*, not a symbol).
 - **`.gitkeep`** — keeps the directory tracked when no curated statements exist.
 
 When there are no curated statements, CI emits a valid **empty** OpenVEX

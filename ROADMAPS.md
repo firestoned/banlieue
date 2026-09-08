@@ -37,6 +37,7 @@ describes *what* and *why*, it does not skip the ADR for *how*.
 | [40](.github/community/40-PHASE-4-FINOS-READY.md) | Phase 4 — FINOS-ready | 🔶 | `SECURITY.md` and ADRs exist; `GOVERNANCE.md`/`CODE_OF_CONDUCT.md`/`CONTRIBUTING.md` and CAPI integration not yet done |
 | [50](.github/community/50-IPAM-POOL-INTEGRATION.md) | IPAM pool integration (ADR-0033) | ⛔ | Deferred — needs a decision from the existing IPAM system's owning team first |
 | [51](.github/community/51-LIVE-MIGRATION.md) | Live migration (ADR-0036) | ⛔ | Only the `Recreate`-only placeholder exists today (`crates/banlieue-controller/src/reconciler/migration.rs`); graceful live migration itself not started |
+| [60](.github/community/60-SCORECARD-REMEDIATION.md) | OSSF Scorecard remediation | 🔶 | Vulnerabilities check fixed (2026-09-07); Branch-Protection / Code-Review / CII-Best-Practices need repo settings or registration; Pinned-Dependencies capped at 9 by the SLSA generator's tag-only ref |
 
 ## Keeping this current
 

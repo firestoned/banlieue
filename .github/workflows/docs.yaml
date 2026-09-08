@@ -218,6 +218,12 @@ jobs:
         # Hash-pinned via .github/tools/linkinator/package-lock.json (npm ci
         # verifies integrity hashes). Bump with:
         #   npm --prefix .github/tools/linkinator install linkinator@<version>
+        # linkinator 8.x requires Node >= 22 and is used here for the runner's
+        # default Node rather than a setup-node step. It replaced 6.1.2 to drop
+        # the gaxios -> uuid@9 chain (GHSA-w5hq-g745-h8pq, Scorecard
+        # Vulnerabilities); linkinator 8 uses undici and pulls neither. If a
+        # future runner image ships Node < 22 this step soft-fails
+        # (continue-on-error), so add an actions/setup-node step then.
         run: |
           npm --prefix .github/tools/linkinator ci
           .github/tools/linkinator/node_modules/.bin/linkinator docs/site/ --recurse --skip "rustdoc/.*" --verbosity error

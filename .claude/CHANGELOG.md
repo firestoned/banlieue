@@ -1,5 +1,104 @@
 # Changelog
 
+## [2026-09-07] - Clear open code-scanning alerts: base images, VEX reachability, pinned CI containers
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `Dockerfile.chainguard`: base image `cgr.dev/chainguard/glibc-dynamic:latest`
+  bumped `sha256:fa0d07a6…` → `sha256:d49aa783…` (glibc `2.43-r6` → `2.44-r5`).
+- `.vex/.affected-functions.json`: scaffold replaced with 12 curated
+  CVE → entry-point mappings, so `auto-vex-reachability` derives the statements
+  instead of them being hand-written.
+- `.vex/README.md`: the affected-functions map is no longer "future" tooling —
+  documents the entry-point convention and when to prefer it over a hand-written
+  statement.
+- `.github/dependabot.yml`: `cooldown` on every ecosystem; the docker ecosystem
+  moved from `directory: "/"` to `directories: ["/", "/.clusterfuzzlite"]` and
+  grouped as `base-images`.
+- `.github/workflows/sast.yaml`: Semgrep container pinned
+  `returntocorp/semgrep` (bare, implicitly `:latest`) →
+  `semgrep/semgrep:1.176.1@sha256:34ab619b…`.
+- `.github/tools/linkinator/`: linkinator `6.1.2` → `8.1.0`.
+- `.github/workflows/docs.yaml`: comment recording linkinator 8's Node >= 22 floor.
+- `crates/banlieue-provider-vsphere/src/client/vim.rs`: `warn!` when a
+  ProviderConnection disables TLS verification.
+- `Makefile`: `GRYPE_VERSION` `0.87.0` → `0.118.0`.
+
+### Why
+45 open alerts on the code-scanning dashboard. By tool:
+
+**Grype (31 alerts).** Two groups. The 19 Chainguard alerts were all
+`glibc/glibc-locale-posix/ld-linux 2.43-r6` with fixes at `2.43-r7` / `2.43-r10`;
+the current `:latest` digest ships `2.44-r5`, so the digest bump clears every one
+(verified by pulling the new index's layers and reading `/lib/apk/db/installed`
+directly — no container runtime needed). The 12 distroless alerts are
+`libc6 2.41-12+deb13u3` / `zlib1g` with **no fix in trixie**, so a bump cannot
+help; they are handled by reachability instead.
+
+`.vex/.affected-functions.json` existed but was an empty scaffold, which is why
+`auto-vex-reachability` had been emitting zero statements since it was built.
+Populating it required knowing each advisory's *public entry points* — the
+symbol an advisory names is usually internal (`parse_tilde`, `gz_vacate`) and
+never appears in a dynamic symbol table, so each entry lists the exported
+callers instead (`wordexp`/`glob`, `gzprintf`/`gzwrite`).
+
+Three of the twelve (CVE-2026-19499, CVE-2026-77117, CVE-2026-80489) are
+reserved: NVD has no record and GitHub's advisory DB has no entry. Their
+descriptions came from the Debian bug reports the security tracker links
+(#1145891, #1145880, #1145987): a `strfmon` right-justification overflow and two
+JIS gconv converter hangs (SHIFT_JISX0213, EUC_JISX0213). That matters because
+the binary imports **no** locale, iconv, gconv or wide-char symbol at all — not
+even `setlocale`. A process that never calls `setlocale` stays in the "C" locale
+for its whole lifetime and can never select a multibyte JIS charset, so those
+converters are never dlopened.
+
+Every mapping was verified against the release-attested `banlieue-linux-amd64`
+from run 34168810228 (BuildID `8effcf70…`): 154 undefined dynsym entries, and
+none of the 96 mapped symbols is among them. `auto-vex-reachability` then emits
+12/12 statements for the distroless report and 4 for Chainguard (the rest being
+`fixed`-state findings the base bump resolves).
+
+**Semgrep (1 alert).** `dependabot-missing-cooldown`: no ecosystem declared a
+cooldown, so a compromised-maintainer release could be proposed within hours of
+publication. Registry ecosystems get 7 days. Docker deliberately gets 2: cooldown
+guards against a hostile *newly published version*, but these are first-party
+base images whose rebuilds exist to ship glibc/zlib patches — holding those a
+week means shipping known-vulnerable libc for a week, which is the larger risk.
+
+**Scorecard (1 of 5 fixable in-repo).** `Vulnerabilities` flagged
+GHSA-w5hq-g745-h8pq — `uuid@9.0.1`, pulled transitively by
+`linkinator@6.1.2 → gaxios`. `gaxios` caps at `uuid@^9`, so no override reaches
+the fixed `11.1.1`; linkinator 8 dropped gaxios for undici and pulls neither.
+`npm audit` is now clean in both `.github/tools/*` lockfiles.
+
+Separately, `Dockerfile.chainguard` had drifted while `/Dockerfile` stayed
+current, and `.clusterfuzzlite/Dockerfile` was never covered at all — a single
+`directory: "/"` only scans the repo root. `.github/workflows/sast.yaml` was
+running a bare `returntocorp/semgrep` (no tag, so `:latest`) as a job container
+with the repo checkout and `security-events: write` — an unpinned third-party
+container in the security-scanning path.
+
+`Makefile`'s `GRYPE_VERSION` still said `0.87.0` under a comment claiming "CI
+uses the same" — CI moved to `0.118.0`, and `0.87.0` is the exact version
+bug-135 identified as silently ignoring `--vex` for SARIF output.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (new Chainguard base image digest)
+- [x] Config change only (dependabot, VEX, CI pins)
+- [ ] Documentation only
+
+The `warn!` fires once per vSphere client build when `insecureSkipTLSVerify` is
+set; previously that state was only visible at `debug!`, which is off in
+production. It does not change behaviour — the field stays supported and stays
+`false` by default.
+
+Not fixed here (need repo settings or a maintainer decision, not code):
+Scorecard `BranchProtection`, `CodeReview`, `CIIBestPractices`, and
+`PinnedDependencies` (which now permanently reports 9/10 because the SLSA
+generator cannot be digest-pinned), plus the 8 CodeQL alerts.
+
 ## [2026-09-07] - Fix SLSA provenance generator failing on a SHA-pinned builder ref
 
 **Author:** Erick Bourgeois
