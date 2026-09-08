@@ -17,6 +17,17 @@ updates:
   # referenced by tag rather than digest (the generator rejects non-tag refs).
   # Dependabot preserves each reference's existing style, so it bumps that one
   # tag-to-tag and leaves the rest SHA-pinned. Do not "fix" it to a digest.
+  # Two groups, not one. google/clusterfuzzlite publishes only a moving `v1`
+  # tag — no releases, no semver — so Dependabot can only ever propose a
+  # SHA -> SHA bump for it. dependabot/fetch-metadata reports a *group's*
+  # update-type as the highest across its members and classifies a
+  # version-less SHA bump as `semver-major`, which pins the entire `actions`
+  # group at major: auto-merge is skipped and `hold-major` fires instead,
+  # dragging genuine patch bumps along with it.
+  #
+  # Isolating clusterfuzzlite lets the main `actions` group report an honest
+  # update-type again, so patch/minor bumps auto-merge as designed and only
+  # real majors (e.g. actions/checkout v6 -> v7) get held.
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
@@ -24,8 +35,14 @@ updates:
     cooldown:
       default-days: 7
     groups:
+      # Declared first: a dependency joins the first group whose patterns it
+      # matches. exclude-patterns on `actions` below makes the split hold
+      # regardless of evaluation order.
+      clusterfuzzlite:
+        patterns: ["google/clusterfuzzlite*"]
       actions:
         patterns: ["*"]
+        exclude-patterns: ["google/clusterfuzzlite*"]
 
   # Rust workspace — one weekly PR for the kube ecosystem (which must move as
   # a unit) and one for everything else, instead of a PR per crate.

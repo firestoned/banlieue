@@ -1,5 +1,59 @@
 # Changelog
 
+## [2026-09-08] - Base images visible to Dependabot; auto-merge approval releases a held PR
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `Dockerfile`, `Dockerfile.chainguard`: both bases were pinned by digest inside
+  `ARG BASE_IMAGE=...` and consumed via `FROM \${BASE_IMAGE}`. Dependabot's Docker
+  parser reads `FROM` instructions and does **not** expand `ARG` defaults
+  (dependabot/dependabot-core#4597, #10190), so neither base image was visible
+  to dependency updates and no PR ever proposed a new digest — despite the
+  comment claiming it would. Each digest now sits on a literal
+  `FROM ... AS pinned-base`, with `BASE_IMAGE` defaulting to that *stage name*
+  so the air-gap / mirror override still redirects the base. Matches the shape
+  already in 5-spot.
+- `Makefile`: `BASE_IMAGE` and `CHAINGUARD_BASE_IMAGE` defaulted to **floating
+  tags** (`gcr.io/distroless/cc-debian13:nonroot`,
+  `cgr.dev/chainguard/glibc-dynamic:latest`) and were passed unconditionally as
+  `--build-arg` at all 7 build sites, silently overriding the Dockerfiles'
+  digest pins on every build — reproducible in the file, not in practice. Both
+  now default to empty and are forwarded only when set, via
+  `BASE_IMAGE_BUILD_ARG` / `CHAINGUARD_BASE_IMAGE_BUILD_ARG`.
+- `.github/workflows/dependabot-auto-merge.yaml`: added the
+  `pull_request_review: [submitted]` trigger and the `Classify` step (see below).
+
+### Changed
+- `.github/dependabot.yml`: split `google/clusterfuzzlite*` into its own group.
+  That project publishes only a moving `v1` tag — no releases, no semver — so
+  Dependabot can only propose SHA -> SHA bumps for it, which fetch-metadata
+  reports as `semver-major` for the whole group, pinning the `actions` group at
+  major and permanently skipping auto-merge.
+- `.github/workflows/dependabot-auto-merge.yaml`: merge eligibility decided once
+  in `Classify`; `auto-merge` and `hold-major` branch on that single output.
+- `org.opencontainers.image.base.name` is now driven by a `BASE_IMAGE_REF`
+  build-arg that the Makefile resolves to the override when set and otherwise
+  to the pinned `FROM` read out of the matching Dockerfile. An air-gapped build
+  therefore labels itself with the mirror it really pulled from. It must not be
+  a hardcoded upstream registry: that would make every mirrored build ship a
+  label naming a registry it never contacted.
+
+### Why
+banlieue's stated base-image supply-chain posture was not the one in effect:
+the digest pins were documented, unreachable by Dependabot, and overridden at
+build time by floating tags.
+
+### Impact
+- [ ] Breaking change
+- [x] Config change only
+- [ ] Documentation only
+
+`make docker-*` now builds on the digest-pinned bases instead of the floating
+tags. Callers that relied on `BASE_IMAGE` / `CHAINGUARD_BASE_IMAGE` having a
+default must pass one explicitly; callers already passing a mirror are
+unaffected.
+
 ## [2026-09-07] - Clear open code-scanning alerts: base images, VEX reachability, pinned CI containers
 
 **Author:** Erick Bourgeois
