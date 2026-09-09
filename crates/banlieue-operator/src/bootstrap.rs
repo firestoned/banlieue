@@ -594,6 +594,20 @@ fn add_role(
             .role_bindings
             .push(build_namespaced_role_binding(role, opts));
     }
+    // The imagebuilder merges VMImage.spec.cloudConfigs Secrets (ADR-0037),
+    // which is Secret *content* — but only ever in the build namespace. That
+    // grant is a namespaced Role there, never a rule in the shared ClusterRole,
+    // which has no namespace scope at all (ADR-0041). Without this the CLI
+    // install path would diverge from `deploy/imagebuilder/rbac/role.yaml` and
+    // 403 on the first VMImage carrying cloudConfigs — the same GitOps/CLI
+    // parity gap that hid the missing banlieue-import ServiceAccount until it
+    // failed live.
+    if matches!(role, InstallRole::Imagebuilder) {
+        manifests.roles.push(build_cloud_config_role(role));
+        manifests
+            .role_bindings
+            .push(build_cloud_config_role_binding(role, opts));
+    }
     manifests.config_maps.push(build_config_map(role, opts));
     manifests.deployments.push(build_deployment(role, opts));
     Ok(())
@@ -754,6 +768,69 @@ pub fn build_namespaced_role_binding(role: &InstallRole, opts: &InstallOptions) 
             api_group: Some("rbac.authorization.k8s.io".to_string()),
             kind: "Role".to_string(),
             name: role.name().to_string(),
+        },
+        subjects: Some(vec![Subject {
+            kind: "ServiceAccount".to_string(),
+            name: role.name().to_string(),
+            namespace: Some(opts.namespace.clone()),
+            ..Default::default()
+        }]),
+    }
+}
+
+/// Name shared by the imagebuilder's cloud-config `Role` and `RoleBinding`.
+const CLOUD_CONFIG_ROLE_NAME: &str = "banlieue-imagebuilder-cloudconfig";
+
+/// Build the imagebuilder's namespaced cloud-config `Role` (ADR-0041).
+///
+/// Lives in the build namespace — where the Secrets it grants actually are —
+/// not in the install namespace where the workload runs. No `resourceNames`:
+/// the names come from arbitrary `VMImage` authors and are unknowable here.
+#[must_use]
+pub fn build_cloud_config_role(role: &InstallRole) -> Role {
+    Role {
+        metadata: ObjectMeta {
+            name: Some(CLOUD_CONFIG_ROLE_NAME.to_string()),
+            namespace: Some(DEFAULT_IMAGEBUILD_NAMESPACE.to_string()),
+            labels: Some(labels(role)),
+            ..Default::default()
+        },
+        // get/list/watch to read the referenced cloud-configs; create+patch
+        // because a server-side apply is a CREATE when the merged Secret is
+        // absent and a PATCH when it exists. Never delete.
+        rules: Some(vec![PolicyRule {
+            api_groups: Some(vec![String::new()]),
+            resources: Some(vec!["secrets".to_string()]),
+            verbs: vec![
+                "get".to_string(),
+                "list".to_string(),
+                "watch".to_string(),
+                "create".to_string(),
+                "patch".to_string(),
+            ],
+            ..Default::default()
+        }]),
+    }
+}
+
+/// Bind [`build_cloud_config_role`] to the imagebuilder ServiceAccount.
+///
+/// The `RoleBinding` sits in the build namespace with the `Role` it references,
+/// while its subject names the ServiceAccount in the install namespace. Placing
+/// it the other way round produces a binding that silently grants nothing.
+#[must_use]
+pub fn build_cloud_config_role_binding(role: &InstallRole, opts: &InstallOptions) -> RoleBinding {
+    RoleBinding {
+        metadata: ObjectMeta {
+            name: Some(CLOUD_CONFIG_ROLE_NAME.to_string()),
+            namespace: Some(DEFAULT_IMAGEBUILD_NAMESPACE.to_string()),
+            labels: Some(labels(role)),
+            ..Default::default()
+        },
+        role_ref: RoleRef {
+            api_group: Some("rbac.authorization.k8s.io".to_string()),
+            kind: "Role".to_string(),
+            name: CLOUD_CONFIG_ROLE_NAME.to_string(),
         },
         subjects: Some(vec![Subject {
             kind: "ServiceAccount".to_string(),

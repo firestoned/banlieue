@@ -1,0 +1,91 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# userData reference authorization (ADR-0042).
+#
+# banlieue-controller resolves VirtualMachine.spec.userData itself and inlines
+# the RENDERED CONTENT into VSphereMachine.spec.userData as a plain string
+# (ADR-0025, extended to ConfigMaps by ADR-0038). Its Role grants `get` on
+# secrets and configmaps across the whole install namespace, with no
+# resourceNames — it cannot know in advance which objects a VirtualMachine will
+# name.
+#
+# Without this policy those two facts compose into a confused deputy: a
+# principal holding only `create virtualmachines`, and no Secret access at all,
+# can name ANY Secret in the namespace — a Provider's vCenter credentials
+# included — have the controller read it on their behalf, and read the result
+# back out of VSphereMachine.spec.userData. `create virtualmachines` would
+# amount to `get secrets` on the whole namespace.
+#
+# This is structurally the same hazard as CHAIN-001 (a Provider naming
+# credentials its creator could not read), and it takes the same cure: require
+# the REQUESTING PRINCIPAL to be authorized for the read, at admission, while
+# their identity still exists. By reconcile time it is long gone.
+#
+# What this does NOT do: it does not stop someone who can already read the
+# Secret from surfacing it in VSphereMachine.spec. That reflection is ADR-0025's
+# accepted trade-off and is unchanged. VSphereMachine remains a
+# credential-bearing resource — restrict `get` on it accordingly.
+#
+# NOTE: shipped as a separate file from virtualmachine-immutability.yaml
+# because it needs an apiserver new enough to support `authorizer` in admission
+# policies. On an older apiserver this one file is rejected while the rest of
+# deploy/admission/ still applies.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: banlieue-virtualmachine-userdata-authorization
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: admission
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["banlieue.io"]
+        apiVersions: ["v1alpha1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["virtualmachines"]
+  validations:
+    # UserDataSpec requires exactly one of secretRef / configMapRef (enforced in
+    # UserDataSpec::validate), so each check is vacuously true when its source is
+    # unset. Both are expressed rather than one branch, so adding a third source
+    # kind fails visibly here instead of slipping through unchecked.
+    - expression: >-
+        !has(object.spec.userData) || !has(object.spec.userData.secretRef)
+        || authorizer.group('').resource('secrets')
+             .namespace(object.metadata.namespace)
+             .name(object.spec.userData.secretRef.name)
+             .check('get').allowed()
+      messageExpression: >-
+        'spec.userData.secretRef names Secret '
+        + object.spec.userData.secretRef.name + ' in namespace '
+        + object.metadata.namespace
+        + ', which you are not authorized to get; a VirtualMachine may only'
+        + ' reference user-data its creator can read (the controller inlines the'
+        + ' rendered content into VSphereMachine.spec.userData).'
+      reason: Forbidden
+    - expression: >-
+        !has(object.spec.userData) || !has(object.spec.userData.configMapRef)
+        || authorizer.group('').resource('configmaps')
+             .namespace(object.metadata.namespace)
+             .name(object.spec.userData.configMapRef.name)
+             .check('get').allowed()
+      messageExpression: >-
+        'spec.userData.configMapRef names ConfigMap '
+        + object.spec.userData.configMapRef.name + ' in namespace '
+        + object.metadata.namespace
+        + ', which you are not authorized to get; a VirtualMachine may only'
+        + ' reference user-data its creator can read.'
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: banlieue-virtualmachine-userdata-authorization
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: admission
+spec:
+  policyName: banlieue-virtualmachine-userdata-authorization
+  validationActions: ["Deny"]
