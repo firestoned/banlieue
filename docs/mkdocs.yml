@@ -178,6 +178,7 @@ nav:
 
   - Guides:
       - Overview: guides/index.md
+      - Host Bootstrap (Bare Metal to a k0s Cluster): guides/host-bootstrap.md
       - End-to-End Setup (Bootstrap to Running VMs): guides/end-to-end-setup.md
       - Core Controller: guides/core-controller.md
       - Provider Lifecycle & Install: guides/provider-lifecycle.md

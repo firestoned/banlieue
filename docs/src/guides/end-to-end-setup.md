@@ -68,6 +68,12 @@ flowchart TB
 
 ### 0. Bootstrap the management cluster
 
+!!! tip "Starting from bare metal?"
+    `bootstrap-k0s-cluster.sh` assumes its substrate already exists — a working
+    `libvirtd` with storage pools, or a reachable vCenter plus `govc`. If you
+    are starting from a machine with nothing on it, do
+    [Host Bootstrap](host-bootstrap.md) first.
+
 Before any of banlieue's own CRDs exist, *something* has to run the cluster
 banlieue's controllers will live on. `scripts/bootstrap-k0s-cluster.sh`
 does this the old-fashioned way — no banlieue CRDs involved yet, because
