@@ -5,7 +5,6 @@ metadata:
 spec:
   group: banlieue.io
   names:
-    categories: []
     kind: VMImage
     plural: vmimages
     shortNames:
@@ -433,6 +432,33 @@ spec:
                       raced `CreateVM_Task` against the identical folder + template name.
                     nullable: true
                     type: string
+                type: object
+              trustedBoot:
+                description: |-
+                  Requests a Trusted Boot (UKI) artifact instead of a classic
+                  kernel+initrd one, for `Url`-kind vSphere sources. Resolved by
+                  `banlieue-imagebuilder` into the kairos-operator `OSArtifact`'s
+                  `spec.artifacts.uki.{iso,keysVolume}` (replacing the plain
+                  `artifacts.iso` request) — the `auroraboot build-uki` mechanism. See
+                  [`TrustedBootSource`] and ADR-0041. Ignored for `cloudImage`-kind
+                  builds and non-`Url` sources.
+                nullable: true
+                properties:
+                  secretRef:
+                    description: |-
+                      Secret in the imagebuild namespace holding the six files
+                      `auroraboot build-uki` requires: `PK.auth`, `KEK.auth`, `db.auth`,
+                      `db.key`, `db.pem`, `tpm2-pcr-private.pem`. Generated out-of-band via
+                      `auroraboot genkey` — banlieue never generates or manages this key
+                      material.
+                    properties:
+                      name:
+                        type: string
+                    required:
+                    - name
+                    type: object
+                required:
+                - secretRef
                 type: object
             required:
             - architecture

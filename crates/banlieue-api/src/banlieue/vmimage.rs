@@ -114,6 +114,31 @@ pub struct VMImageSpec {
     /// `cloudImage`-kind builds and non-`Url` sources.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub iso_overlay: Option<IsoOverlaySource>,
+
+    /// Requests a Trusted Boot (UKI) artifact instead of a classic
+    /// kernel+initrd one, for `Url`-kind vSphere sources. Resolved by
+    /// `banlieue-imagebuilder` into the kairos-operator `OSArtifact`'s
+    /// `spec.artifacts.uki.{iso,keysVolume}` (replacing the plain
+    /// `artifacts.iso` request) — the `auroraboot build-uki` mechanism. See
+    /// [`TrustedBootSource`] and ADR-0041. Ignored for `cloudImage`-kind
+    /// builds and non-`Url` sources.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trusted_boot: Option<TrustedBootSource>,
+}
+
+/// Requests a Trusted Boot (UKI) artifact for a `VMImage`'s `Url` source.
+/// Only the Secret's name is read by `banlieue-imagebuilder` — never its
+/// content (ADR-0041; mirrors the Secret-free posture established for
+/// `isoOverlay`/ADR-0022 and `cloudConfigRef`/ADR-0020).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TrustedBootSource {
+    /// Secret in the imagebuild namespace holding the six files
+    /// `auroraboot build-uki` requires: `PK.auth`, `KEK.auth`, `db.auth`,
+    /// `db.key`, `db.pem`, `tpm2-pcr-private.pem`. Generated out-of-band via
+    /// `auroraboot genkey` — banlieue never generates or manages this key
+    /// material.
+    pub secret_ref: LocalObjectReference,
 }
 
 /// Additional files overlaid onto a built ISO, backed by a single Secret.

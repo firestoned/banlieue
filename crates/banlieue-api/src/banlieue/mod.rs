@@ -28,6 +28,6 @@ pub use vmclass::{
 pub use vmimage::{
     Architecture, BuildArtifactKind, BuildArtifactPhase, BuildArtifactStatus, DiskController,
     GuestAgent, ImagePerProviderStatus, ImageSource, ImageSourceKind, InstallMode, IsoOverlayFile,
-    IsoOverlaySource, NicAdapter, OsFamily, VMImage, VMImageSpec, VMImageStatus, VMImageTemplate,
-    VMImageTemplateDisk, VMImageTemplateNic, ZoneImageStatus,
+    IsoOverlaySource, NicAdapter, OsFamily, TrustedBootSource, VMImage, VMImageSpec, VMImageStatus,
+    VMImageTemplate, VMImageTemplateDisk, VMImageTemplateNic, ZoneImageStatus,
 };

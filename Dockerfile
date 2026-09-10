@@ -67,10 +67,10 @@ LABEL org.opencontainers.image.source="https://github.com/firestoned/banlieue" \
 # Copy the pre-built binary for the target architecture. The Makefile stages
 # binaries at `binaries/<arch>/<binary>`. The binary uses rustls (no OpenSSL),
 # so the distroless/cc base needs no extra shared libraries.
-COPY --chmod=755 binaries/${TARGETARCH}/${BINARY} /app
+COPY --chmod=755 binaries/${TARGETARCH}/${BINARY} /usr/local/bin/${BINARY}
 
 USER nonroot
 
 EXPOSE 8080 8081
 
-ENTRYPOINT ["/app"]
+ENTRYPOINT ["/usr/local/bin/banlieue"]

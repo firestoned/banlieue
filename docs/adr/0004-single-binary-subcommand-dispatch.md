@@ -79,7 +79,8 @@ Adopt **option 3**. Concretely:
 - One container image (`banlieue`) ships the one binary. Deployments select
   the role via container `args` (`["controller"]`,
   `["provider","vsphere"]`), not via distinct images. The Dockerfile's
-  `ENTRYPOINT ["/app"]` is unchanged; `args` flow through as subcommands.
+  `ENTRYPOINT ["/usr/local/bin/banlieue"]` is unchanged; `args` flow through
+  as subcommands.
 
 Deployment topology (ADR-0003) is unchanged and orthogonal: the same image
 runs as N differently-argued Deployments. `Shared` vs `PerInstance` still

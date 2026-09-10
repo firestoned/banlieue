@@ -1,0 +1,83 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# A VMImage built as a Trusted Boot (UKI) artifact (ADR-0041). Pairs with
+# examples/13-vmimage-kairos-deferred-install-tpm.yaml's TPM-sealed
+# `kcrypt` cloud-config and a VMClass setting `tpmEnabled: true` — this
+# example is the image-build-time half of that same end-to-end feature;
+# ADR-0039/ADR-0040 are the VM-instance-time half (vTPM device attach +
+# deferred install).
+#
+# WHY THIS IS NEEDED AT ALL:
+#
+# The base rootfs OCI image referenced by `importFrom` may be built with
+# Kairos's Trusted Boot enabled (a `TRUSTED_BOOT=true` kairos-init build),
+# which produces a Unified Kernel Image (UKI: kernel + initrd + cmdline
+# bundled into one signed PE binary) instead of discrete
+# `/boot/vmlinuz*`/`/boot/initrd*` files. kairos-operator's default
+# `auroraboot build-iso` path scans for a separate initrd file — with a UKI
+# rootfs that file doesn't exist, and the build fails ("No initrd file
+# found"). Setting `trustedBoot` here switches banlieue-imagebuilder's
+# request to kairos-operator's `spec.artifacts.uki.iso` instead
+# (`auroraboot build-uki`), which understands the UKI shape.
+#
+# THE SECRET `trustedBoot.secretRef` MUST CONTAIN (ADR-0041):
+#
+#   PK.auth  KEK.auth  db.auth  db.key  db.pem  tpm2-pcr-private.pem
+#
+# Generate these out-of-band, once, via:
+#
+#   auroraboot genkey --expiration-in-days 365 -o /keys "banlieue"
+#   kubectl create secret generic kairos-trusted-boot-keys \
+#     --from-file=/keys/PK.auth --from-file=/keys/KEK.auth \
+#     --from-file=/keys/db.auth --from-file=/keys/db.key \
+#     --from-file=/keys/db.pem --from-file=/keys/tpm2-pcr-private.pem \
+#     -n banlieue-imagebuild
+#
+# banlieue never generates, rotates, or reads this Secret's content — only
+# its name, exactly like `cloudConfigRef`/`isoOverlay`. Kairos auto-enrolls
+# this self-signed key set as the VM's UEFI `PK`/`KEK`/`db` on first boot
+# when the firmware starts in UEFI Setup Mode (or you enroll it once
+# manually) — you are both the CA and the enroller, so there is no external
+# PKI/HSM to manage. See ADR-0041's Follow-ups: vSphere's exact Setup-Mode
+# enrollment behavior is not yet live-verified.
+apiVersion: banlieue.io/v1alpha1
+kind: VMImage
+metadata:
+  name: kairos-ubuntu-2404-trusted-boot
+spec:
+  osFamily: linux
+  osDistribution: ubuntu
+  osVersion: "24.04"
+  architecture: amd64
+  guestAgent: cloud-init
+  sources:
+    - providerClass: vsphere
+      kind: Url
+      ref: unused-for-url-sources # required by the schema; ignored for kind: Url
+      # Must point at a TRUSTED_BOOT=true (UKI) build of the base image —
+      # a classic kernel+initrd image has nothing for `build-uki` to bundle.
+      importFrom: quay.io/kairos/ubuntu:24.04-standard-amd64-generic-v3.7.2-trustedboot@sha256:0000000000000000000000000000000000000000000000000000000000000
+  cloudConfigs:
+    - secretRef:
+        name: kairos-encrypted-install-cloud-config
+        key: cloud-config.yaml
+  # The six-file Secure Boot / TPM-sealing key set `auroraboot build-uki`
+  # requires. Only the Secret's name is read by banlieue-imagebuilder.
+  trustedBoot:
+    secretRef:
+      name: kairos-trusted-boot-keys
+  template:
+    rootFolder: templates/kairos-trusted-boot
+    network:
+      - network: vmnet-prod
+        adapter: vmxnet3
+        pciSlot: 192
+    disk:
+      size: 100
+      type: thin
+      controller: pvscsi
+    cpus: 2
+    memoryMib: 4096
+    firmware: efi-secure   # UEFI Secure Boot must be on for a UKI to verify
+    installMode: deferred  # kcrypt seals to a vTPM present at install time — see example 13

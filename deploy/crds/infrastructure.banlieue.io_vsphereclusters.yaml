@@ -7,7 +7,6 @@ metadata:
 spec:
   group: infrastructure.banlieue.io
   names:
-    categories: []
     kind: VSphereCluster
     plural: vsphereclusters
     shortNames:

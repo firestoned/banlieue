@@ -179,6 +179,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn grows_os_disk_to_spec_disks_first_size() {
+        let client = FakeClient::new(seeded_inventory());
+        let outcome = ensure_vm(
+            as_client(&client),
+            &spec("ds-fast-01", "vmnet-prod"),
+            "db-01",
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        // spec()'s disks[0] is 40 GiB.
+        assert_eq!(client.grown_disk_size(&outcome.vm_ref), Some(40));
+    }
+
+    #[tokio::test]
+    async fn already_provisioned_never_calls_grow_os_disk() {
+        let client = FakeClient::new(seeded_inventory());
+        ensure_vm(
+            as_client(&client),
+            &spec("ds-fast-01", "vmnet-prod"),
+            "db-01",
+            Some("vm-existing-123"),
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(client.grown_disk_size("vm-existing-123"), None);
+    }
+
+    #[tokio::test]
     async fn drives_the_desired_power_state_from_spec() {
         let client = FakeClient::new(seeded_inventory());
         let mut s = spec("ds-fast-01", "vmnet-prod");

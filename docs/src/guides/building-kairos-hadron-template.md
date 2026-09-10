@@ -524,3 +524,13 @@ and point a `VMImage` at it; see
 - **Gate the AIDE (or similar integrity-baseline) `--init` on the database
   not already existing.** Re-running it on every boot silently resets any
   real tampering it should have caught.
+- **`TRUSTED_BOOT=true` on vSphere is experimental — expect an extremely
+  slow first boot.** Live `govc`-driven testing (clone → vTPM attach →
+  Secure Boot key pre-seed → cloud-config → power on) against a Debian-based
+  Trusted Boot/UKI image found multi-minute silent stalls at each Secure
+  Boot stage handoff (shim → systemd-boot → UKI), confirmed via ESXi's
+  `vmware.log` showing zero hypervisor-visible activity during the stalls —
+  not vTPM emulation overhead, something inside guest space not yet
+  root-caused. A follow-up attempt with a Hadron-based image also failed to
+  boot cleanly and wasn't further diagnosed. See ADR-0041's follow-ups
+  before relying on this for anything beyond experimentation.

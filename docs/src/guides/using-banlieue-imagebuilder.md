@@ -204,6 +204,76 @@ into a vCenter template (ADR-0020):
     becomes the `OSArtifact`'s pod-wide `imagePullSecrets`, covering the main
     build image too if it comes from the same mirror.
 
+!!! info "Trusted Boot (UKI) artifacts (ADR-0041)"
+    If your `importFrom` image was built with Kairos Trusted Boot
+    (`TRUSTED_BOOT=true`), it's a Unified Kernel Image — no discrete
+    `/boot/vmlinuz`/`/boot/initrd`, so the default `auroraboot build-iso`
+    path fails with `No initrd file found`. Set `spec.trustedBoot` to
+    request `spec.artifacts.uki` instead (`auroraboot build-uki`), which
+    understands the UKI shape:
+
+    ```yaml
+    trustedBoot:
+      secretRef:
+        name: kairos-trusted-boot-keys
+    ```
+
+    The referenced Secret must hold six files `auroraboot build-uki`
+    requires — `PK.auth`, `KEK.auth`, `db.auth`, `db.key`, `db.pem`,
+    `tpm2-pcr-private.pem` — generated **out-of-band, once**, via:
+
+    ```sh
+    auroraboot genkey --expiration-in-days 365 -o /keys "your-org"
+    kubectl create secret generic kairos-trusted-boot-keys \
+      --from-file=/keys/PK.auth --from-file=/keys/KEK.auth \
+      --from-file=/keys/db.auth --from-file=/keys/db.key \
+      --from-file=/keys/db.pem --from-file=/keys/tpm2-pcr-private.pem \
+      -n banlieue-imagebuild
+    ```
+
+    `cloudConfigs[]` keeps working transparently alongside `trustedBoot` —
+    you don't need to change how you declare cloud-config. Under the hood,
+    `banlieue-imagebuilder` stops routing it through `cloudConfigRef` (a
+    kairos-operator bug means `auroraboot build-uki` rejects the
+    `--cloud-config` flag it would otherwise generate) and instead bakes the
+    merged cloud-config into the ISO root via the same `isoOverlay` mechanism
+    (ADR-0041 Decision #4) — the exact file kairos-agent's installer already
+    looks for.
+
+    As with `isoOverlay`/`cloudConfigs`, only the Secret's *name* is ever
+    read by `banlieue-imagebuilder` — never its content. This is a throwaway,
+    self-signed key set (not an enterprise PKI/HSM): Kairos auto-enrolls it
+    as the VM's UEFI `PK`/`KEK`/`db` on first boot when the firmware starts
+    in UEFI Setup Mode, or you enroll it once manually — you are both the CA
+    and the enroller. Pair this with `spec.template.firmware: efi-secure` and
+    a `tpmEnabled: true` `VMClass` (ADR-0039/0040) for TPM-sealed `kcrypt`
+    disk encryption end to end — see
+    [`examples/14-vmimage-kairos-trusted-boot-uki.yaml`](https://github.com/firestoned/banlieue/blob/v0.1.0/examples/14-vmimage-kairos-trusted-boot-uki.yaml).
+    **Live-verified:** vSphere UEFI Secure Boot key enrollment works via the
+    `uefi.secureBoot.{pk,kek,db}Default.file0` VMX `extraConfig` mechanism
+    (Broadcom KB 377306) — upload the three DER-encoded certs
+    (`auroraboot genkey`'s output already has them) to the VM's own datastore
+    folder and set the three `extraConfig` keys plus
+    `uefi.secureBoot.dbDefault.append=FALSE` before first boot. Only takes
+    effect on a VM whose `.nvram` has no existing Secure Boot config, so this
+    must happen before the VM's first power-on.
+
+!!! warning "Experimental — first boot is extremely slow on vSphere"
+    Live-testing Trusted Boot/UKI images against vSphere (govc-driven clone →
+    vTPM attach → Secure Boot key pre-seed → cloud-config → power on,
+    bypassing banlieue entirely to isolate the failure) found the initial
+    UEFI → OS handoff to be **extremely slow** — multi-minute stalls at each
+    Secure Boot stage transition (shim → systemd-boot → UKI). ESXi's own
+    `vmware.log` shows complete silence at the hypervisor level during these
+    stalls (no vTPM command traffic, no disk I/O), which rules out slow vTPM
+    emulation as the cause and points to something inside guest space
+    (kernel/systemd/dracut UKI-stub behavior specific to vSphere's firmware)
+    that has not yet been root-caused. Observed on a Debian-based Trusted
+    Boot image; a follow-up attempt with a Hadron-based image also failed to
+    boot cleanly and was not further diagnosed. **Treat
+    `VMImage.spec.trustedBoot` on the vSphere provider as experimental** until
+    this is root-caused — see ADR-0041's follow-ups.
+
 ```yaml title="vmimage-kairos.yaml"
 apiVersion: banlieue.io/v1alpha1
 kind: VMImage
