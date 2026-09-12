@@ -13,14 +13,15 @@
 **banlieue is built ADR-first. Architecture is decided, recorded, and visualized BEFORE code.** For any architecturally significant change, follow this order — full details in `rules/architecture-driven-development.md`:
 
 ```
-ADR  →  CALM  →  TDD  →  implement  →  docs
+ADR  →  CALM  →  TDD  →  implement  →  docs  →  threat model
 ```
 
 1. **ADR** — record the decision in `docs/adr/NNNN-title.md` (Status / Context / Decision / Consequences).
 2. **CALM** — model it in `docs/architecture/calm/architecture.json`; `make calm-validate` + `make calm-diagrams`.
 3. **TDD** — only then write failing tests, then the minimum implementation.
+4. **Threat model** — after implementing, make a **full pass** over `docs/src/security/threat-model.md` and bump its header stamp (date + ADR range). See `rules/threat-modeling.md`. **An ADR is not implemented until this pass is done.**
 
-ADRs and CALM diagrams are **first-class deliverables, equal to code and tests.** Applies to new CRDs/controllers/providers/binaries, contract changes, deploy/GitOps topology, and any decision worth a "why A over B." Trivial changes (typos, isolated bugfixes) are TDD-only — but **when unsure whether a change is architectural, write the ADR.**
+ADRs, CALM diagrams, and the threat model are **first-class deliverables, equal to code and tests.** Applies to new CRDs/controllers/providers/binaries, contract changes, deploy/GitOps topology, and any decision worth a "why A over B." Trivial changes (typos, isolated bugfixes) are TDD-only — but **when unsure whether a change is architectural, write the ADR.**
 
 ## 🚨 NEVER commit real infrastructure identifiers
 
@@ -38,6 +39,7 @@ instead. Full rule + placeholder table: `rules/no-real-infrastructure.md`.
 **CRITICAL Coding Patterns** (full details in `rules/`):
 - **No real infra identifiers**: public repo — `rules/no-real-infrastructure.md`
 - **ADD**: ADR → CALM → TDD, in that order — `rules/architecture-driven-development.md`
+- **Threat model**: full pass after implementing ANY ADR — `rules/threat-modeling.md`
 - **TDD**: Write tests FIRST — `rules/testing.md` + `tdd-workflow` skill
 - **After ANY Rust change**: run `cargo-quality` skill (NON-NEGOTIABLE)
 - **Early returns / magic numbers / style**: `rules/rust-style.md`

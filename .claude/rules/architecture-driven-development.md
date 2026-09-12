@@ -1,14 +1,15 @@
 # Architecture Driven Development (ADD)
 
 > **ADD is the governing methodology for banlieue.** Architecture is designed,
-> recorded, and visualized **before** code is written. ADRs and CALM diagrams
-> are first-class deliverables — equal in importance to the code and the tests.
+> recorded, and visualized **before** code is written, and its security posture
+> is re-verified **after**. ADRs, CALM diagrams, and the threat model are
+> first-class deliverables — equal in importance to the code and the tests.
 
 ADD layers *on top of* the existing TDD discipline (`rules/testing.md`); it does
 not replace it. The order is fixed:
 
 ```
-ADR  →  CALM  →  TDD  →  implement  →  docs
+ADR  →  CALM  →  TDD  →  implement  →  docs  →  threat model
 ```
 
 ## The ADD cycle
@@ -57,9 +58,27 @@ Update `.claude/CHANGELOG.md` (with `**Author:**`) and any affected
 `docs/src/` pages / examples, per `rules/documentation.md`. CRD changes
 regenerate `deploy/crds/` and the API reference (`make crds`).
 
+### 5. Threat model — full pass (LAST)
+
+Once the ADR is implemented, make a **full pass** over
+`docs/src/security/threat-model.md`, per `rules/threat-modeling.md`. Walk every
+section — components, assets, actors, trust boundaries (including the ASCII
+diagram), STRIDE tables, hardening requirements, accepted risks — not just the
+one table that obviously changed. Map every new or changed threat to a control
+that actually exists in `deploy/` or `crates/`, or record it as an accepted
+risk with a *Revisit when*.
+
+Then bump the document's header stamp — the date **and** the ADR range
+(`Last full pass YYYY-MM-DD, against … ADR-0001 … ADR-NNNN`). That stamp is the
+deliverable: an unchanged stamp means the pass did not happen. "No change" is a
+valid conclusion, but it is still a pass — bump the stamp and say so in the
+CHANGELOG.
+
+**An ADR is not implemented until this pass is done.**
+
 ## When does ADD apply?
 
-**Full ADR + CALM** (architecturally significant):
+**Full ADR + CALM + post-implementation threat-model pass** (architecturally significant):
 
 - New CRDs, controllers, providers, or binaries
 - Changes to a contract (CAPI InfraMachine/InfraCluster, the CRD-only bus)
@@ -84,3 +103,4 @@ regenerate `deploy/crds/` and the API reference (`make crds`).
 - [ ] Tests written **first**, then implementation (TDD)
 - [ ] `cargo-quality` passes (fmt + clippy + test)
 - [ ] CHANGELOG + docs updated
+- [ ] Full threat-model pass done; header stamp bumped (`rules/threat-modeling.md`)
