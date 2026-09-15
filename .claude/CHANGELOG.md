@@ -1,5 +1,210 @@
 # Changelog
 
+## [2026-09-09] - Close two Secret-access findings: imagebuilder ClusterRole, userData authorization
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0041-imagebuilder-namespaced-secret-access.md`: banlieue-imagebuilder
+  reads Secrets through a namespaced Role, never a ClusterRole rule.
+- `docs/adr/0042-userdata-reference-authorization.md`: a VirtualMachine may only
+  reference userData its own creator is authorized to `get`.
+- `deploy/imagebuilder/rbac/role.yaml`: namespaced `Role` +
+  `RoleBinding` for the ADR-0037 cloud-config merge — Role in
+  `banlieue-imagebuild`, subject `ServiceAccount/banlieue-imagebuilder` in
+  `banlieue-system`.
+- `deploy/admission/virtualmachine-userdata-authorization.yaml`:
+  `ValidatingAdmissionPolicy` + binding using the CEL `authorizer`, covering both
+  `spec.userData.secretRef` and `spec.userData.configMapRef`.
+- `crates/banlieue-operator/src/bootstrap.rs`: `build_cloud_config_role` /
+  `build_cloud_config_role_binding`, so `banlieue bootstrap imagebuilder` emits
+  the same namespaced RBAC as the manifests and the CLI and GitOps paths cannot
+  drift.
+- Three tests in `crates/banlieue-operator/src/bootstrap_tests.rs`, written
+  first and confirmed failing:
+  `only_the_operator_cluster_role_may_grant_secret_access` (regression guard),
+  `an_imagebuilder_install_ships_namespaced_cloud_config_rbac`, and
+  `the_imagebuilder_role_binding_crosses_namespaces_in_the_right_direction`.
+
+### Changed
+- `deploy/imagebuilder/rbac/clusterrole.yaml`: **removed** the
+  `secrets: get,list,watch,create,patch` rule.
+- `deploy/admission/README.md`: new policy row; the `authorizer` API-server note
+  now covers both policies; added a rollout warning.
+- `docs/src/guides/using-banlieue-imagebuilder.md`: corrected the "never reads
+  Secret content" claim (untrue since ADR-0037) and documented that overriding
+  `BANLIEUE_BUILD_NAMESPACE` also moves the Role.
+- `docs/architecture/calm/architecture.json`: new `secret-access-least-privilege`
+  control; `admission-policy-validation` extended; controller and imagebuilder
+  node controls corrected; ADR index caught up to 0042 (0039/0040 were missing).
+- `docs/src/security/threat-model.md`: full pass, stamp advanced to ADR-0042.
+  Corrected a factually wrong TB-2 row asserting that no ClusterRole grants
+  Secret access — `banlieue-operator`'s deliberate delegation `get` is a real
+  exception, now stated with its rationale. TB-3 and the §5 diagram corrected:
+  the imagebuilder and provider *pods* run in `banlieue-system`, not the build
+  namespace.
+
+### Why
+The imagebuilder's Secret rule shipped in a `ClusterRole` bound by a
+`ClusterRoleBinding` under a comment claiming it was "scoped to the imagebuild
+namespace". It was not: that grants read **and write** on every Secret in every
+namespace — enough to read any Provider's hypervisor credentials, or overwrite
+them and redirect a provider. The code only ever used one namespace. This was
+the same defect already removed from the provider ClusterRoles (CHAIN-002) and
+the controller's (SEC-008), reintroduced by ADR-0037.
+
+Separately, `banlieue-controller` resolves `VirtualMachine.spec.userData` with a
+namespace-wide, un-scoped `get` and inlines the rendered content into
+`VSphereMachine.spec.userData`. Nothing checked that the VirtualMachine's author
+could read what they named, so `create virtualmachines` amounted to `get
+secrets` across `banlieue-system` — a confused deputy structurally identical to
+CHAIN-001, which the `credentialsRef` policy already solves for `Provider`.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+Re-apply `deploy/imagebuilder/rbac/` (the old ClusterRole rule must be removed
+from the cluster, not just the repo) and `deploy/admission/`. **Applying the new
+admission policy will start denying `VirtualMachine` writes from identities that
+cannot `get` the user-data they reference** — roll out as `["Warn","Audit"]`
+first if that set is not known. Needs an API server supporting the CEL
+`authorizer`. The CEL compiles only at apply time; verify on kind
+(`make kind-e2e`) or with a server-side dry-run before relying on it.
+
+## [2026-09-09] - Threat model full pass: stamp advanced to ADR-0042
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docs/src/security/threat-model.md`: full pass per
+  `.claude/rules/threat-modeling.md`. Stamp advanced **ADR-0040 → ADR-0042**.
+  - **§6/TB-1** — the `User-data reference resolution` row said "see §7, this is
+    a deployment-hardening requirement, **not a code control**". ADR-0042 makes
+    it one: replaced with a control row citing
+    `banlieue-virtualmachine-userdata-authorization`
+    (`deploy/admission/virtualmachine-userdata-authorization.yaml`), plus a
+    separate row for the residual `VSphereMachine.spec` reflection, which is
+    still uncontrolled and points at §7.1/§8.
+  - **§6/TB-2** — recorded ADR-0041: the imagebuilder's cloud-config Secret
+    access is now a namespaced `Role` in the build namespace
+    (`deploy/imagebuilder/rbac/role.yaml`), not a `ClusterRole` rule. Added the
+    controller's `role.yaml` alongside its `clusterrole.yaml`, and stated the
+    now-true invariant that **no `ClusterRole` in `deploy/` grants `secrets`**.
+  - **§7** — requirement 1 rewritten. It read "`VirtualMachine` create in the
+    controller namespace is a privileged grant … those are the same privilege",
+    which ADR-0042 makes false. Split into: (1) `VSphereMachine` is
+    credential-bearing, restrict `get`; (2) `VirtualMachine` create is no longer
+    a Secret-read grant *provided `deploy/admission/` is installed*; (3) the
+    unchanged co-location warning. Items 3-8 renumbered to 4-9.
+  - **§7.6** — "Install the admission policies" now states that
+    `banlieue bootstrap` (ADR-0013) emits none of them: it installs workloads,
+    RBAC and namespaces only, so applying `deploy/admission/` is a separate
+    mandatory step in every install path, GitOps included.
+  - **§8** — the rendered-user-data row now distinguishes the escalation
+    (closed by ADR-0042) from the reflection (unchanged, deliberate). Added the
+    controller's namespace-wide user-data Role as an explicit accepted risk with
+    a *Revisit when*, since admission bounds who can trigger a read, not what a
+    compromised controller identity could read.
+  - **§2, §3, §4, §5 (incl. the ASCII diagram), §9** — walked; **no change**.
+    ADR-0041 and ADR-0042 add no component, asset, actor, namespace or trust
+    boundary: both operate inside boundaries that already existed (TB-2 and
+    TB-1 respectively). Recorded as a conclusion, not a skip.
+
+### Why
+The stamp claimed ADR-0001…ADR-0040 while ADR-0041 (accepted and implemented)
+and ADR-0042 (accepted) both exist, and both land squarely on the two boundaries
+the document is mostly about: TB-2 (pod → Secrets) and TB-1 (tenant → control
+plane). Two statements in the file were actively false as a result — TB-1
+asserting no code control exists for user-data references, and §7.1 asserting
+that `create virtualmachines` and namespace-wide Secret read are "the same
+privilege". A stale threat model asserts a posture nobody has checked and is
+trusted anyway; that is the failure `rules/threat-modeling.md` exists to prevent.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+## [2026-09-09] - ADD: mandatory threat-model pass after implementing an ADR
+
+**Author:** Erick Bourgeois
+
+### Added
+- `.claude/rules/threat-modeling.md`: new project rule. After an ADR is
+  implemented, a **full pass** over `docs/src/security/threat-model.md` is
+  mandatory before the task counts as complete. Defines what "full pass" means
+  (walk all 10 sections, not just the obvious table), a trigger-question table
+  mapping ADR shapes to the sections they move, the requirement that every
+  threat name a control that actually exists in `deploy/` or `crates/` (or be
+  recorded in §8 with a *Revisit when*), and the header stamp — date + ADR
+  range — as the deliverable that proves the pass happened.
+
+### Changed
+- `.claude/rules/architecture-driven-development.md`: ADD cycle extended to
+  `ADR → CALM → TDD → implement → docs → threat model`; new step 5 documenting
+  the pass; checklist gains the threat-model line.
+- `.claude/CLAUDE.md`: ADD section flow diagram and step list updated to match;
+  new CRITICAL-patterns bullet pointing at `rules/threat-modeling.md`.
+- `docs/src/security/threat-model.md`: §10 Maintenance rewritten from "revisit
+  when X changes" (advisory) to the mandatory post-ADR full pass, including the
+  stamp-bump requirement and that "no change" is a conclusion, not a skip.
+
+### Why
+The threat model asserts a posture — "here is what we defend, from whom, and
+with which control in which file" — and its header claims a specific ADR range
+it was last checked against. Every merged ADR not reflected in it makes that
+claim false, and a stale threat model is worse than none: an absent one prompts
+analysis, a stale one is trusted without any having been done. This is exactly
+how the 2026-07-31 security review went stale behind 30 subsequent ADRs; the
+rule exists so that cannot recur silently.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+## [2026-09-09] - Threat model: first formal trust-boundary analysis
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/src/security/threat-model.md`: banlieue's first formal threat model —
+  assets, actors, six trust boundaries (tenant→control-plane, pod→Secrets,
+  restricted→privileged namespace, cluster→hypervisor, cluster→datastore,
+  CI→published artifact), STRIDE per boundary mapped to the concrete control in
+  `deploy/` or `crates/`, an operator-facing hardening section, and an explicit
+  accepted-risk register.
+- `docs/mkdocs.yml`: new top-level `Security` nav section.
+
+### Why
+`SECURITY.md` claimed the trust model was "documented in `deploy/admission/`
+and the ADRs" — 40 ADRs and 7 ValidatingAdmissionPolicies are primary sources,
+not a threat model. The 2026-07-31 security review (all 17 findings closed) was
+a point-in-time audit and now predates 30 of the 40 ADRs, the entire
+`cloudConfigs` merge path (ADR-0037/0038), per-zone ISO import
+(ADR-0020/0021/0022), and vTPM (ADR-0039/0040).
+
+Two operator-facing consequences that were previously implicit are now stated
+outright: `VirtualMachine` create in `banlieue-system` is a privileged grant
+(the controller resolves userData with a namespace-wide Secret `get` and inlines
+the rendered content into `VSphereMachine.spec`, ADR-0025/0038), and anything
+baked into a built ISO is readable by every vCenter datastore-browse principal
+for the life of the image (ADR-0022/0037/0040).
+
+Active findings requiring code or manifest changes are tracked privately, not
+in this repo.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
 ## [2026-09-08] - Base images visible to Dependabot; auto-merge approval releases a held PR
 
 **Author:** Erick Bourgeois

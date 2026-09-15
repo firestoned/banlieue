@@ -205,6 +205,9 @@ nav:
       - Overview: developer/index.md
       - Local Development: developer/local-development.md
 
+  - Security:
+      - Threat Model: security/threat-model.md
+
   - Reference:
       - API Reference (CRDs): reference/api.md
       - License: reference/license.md

@@ -3,12 +3,9 @@
 #
 # Cluster-wide role for banlieue-imagebuilder (ADR-0010).
 #
-# Least privilege: this role only reads Secrets referenced by
-# VMImage.spec.cloudConfigs (ADR-0037), creates/reads OSArtifact CRs
-# (kairos-operator, a CRD it does not own), and patches
-# VMImage.status.buildArtifact. It never reads credentials of any kind;
-# Secret access is scoped to the imagebuild namespace (the Secrets
-# containing cloud-config YAML, not provider credentials).
+# Least privilege: this role creates/reads OSArtifact CRs (kairos-operator, a
+# CRD it does not own) and patches VMImage.status.buildArtifact. It holds NO
+# Secret access at all — see the note where that rule used to be.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -60,14 +57,20 @@ rules:
     resources: ["events"]
     verbs: ["create", "patch"]
 
-  # Secrets in the imagebuild namespace: read cloud-config Secrets referenced
-  # by VMImage.spec.cloudConfigs, and create/patch the merged cloud-config
-  # Secret owned by each VMImage (ADR-0037). This is the first time
-  # banlieue-imagebuilder reads Secret *content* rather than just referencing
-  # Secrets by name — call this out explicitly.
-  - apiGroups: [""]
-    resources: ["secrets"]
-    verbs: ["get", "list", "watch", "create", "patch"]
+  # NO secrets rule, deliberately (ADR-0041). ADR-0037's cloud-config merge
+  # does read and write Secret *content* — but only ever in the build
+  # namespace, and this is a ClusterRole: bound by a ClusterRoleBinding it has
+  # no namespace scope whatsoever, so a rule here would reach every Secret in
+  # every namespace, read AND write. That is how it shipped between 2026-08-27
+  # and 2026-09-09, under a comment asserting it was "scoped to the imagebuild
+  # namespace" — the same defect already removed from the provider ClusterRoles
+  # (CHAIN-002) and the controller's (SEC-008).
+  #
+  # The grant now lives in deploy/imagebuilder/rbac/role.yaml: a namespaced
+  # Role in banlieue-imagebuild, bound to this ServiceAccount in
+  # banlieue-system. Guarded by
+  # `only_the_operator_cluster_role_may_grant_secret_access` in
+  # crates/banlieue-operator/src/bootstrap_tests.rs.
 
   # Leases for leader election. Same SDK pattern as every other banlieue role.
   - apiGroups: ["coordination.k8s.io"]

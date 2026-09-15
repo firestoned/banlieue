@@ -294,6 +294,12 @@ kubectl apply --dry-run=client -f /tmp/banlieue-crds.yaml
 - [ ] New behaviors documented in user docs (and the out-of-repo roadmap if scope shifted)
 - [ ] Status conditions, finalizers, owner references all verified
 
+### If an ADR was implemented (see `rules/architecture-driven-development.md`):
+- [ ] Full pass over `docs/src/security/threat-model.md` — all 10 sections, not just the obvious table (`rules/threat-modeling.md`)
+- [ ] Every new/changed threat maps to a control that exists in `deploy/` or `crates/`, or is recorded in §8 with a *Revisit when*
+- [ ] §5 trust-boundary diagram matches reality
+- [ ] Header stamp bumped — date **and** ADR range (this is the deliverable; "no change" still bumps it)
+
 ### Always:
 - [ ] `.claude/CHANGELOG.md` updated with **Author:** line (MANDATORY)
 - [ ] All YAML examples validate: `kubectl apply --dry-run=client -f examples/`

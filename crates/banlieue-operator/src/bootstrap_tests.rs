@@ -187,6 +187,45 @@ mod tests {
         }
     }
 
+    /// **TM-01 regression guard (ADR-0041).** A `ClusterRole` reached through a
+    /// `ClusterRoleBinding` has no namespace scope, so ANY Secret rule in one
+    /// reaches every Secret in the cluster. `banlieue-imagebuilder` shipped
+    /// exactly that for a month — `secrets: get,list,watch,create,patch`, no
+    /// `resourceNames` — under a comment claiming it was "scoped to the
+    /// imagebuild namespace". It was not, and a comment cannot make it so.
+    ///
+    /// The single legitimate exception is `banlieue-operator`, which must hold
+    /// `secrets: get` solely so RBAC's escalation-prevention permits it to
+    /// delegate that verb into a per-Provider, `resourceNames`-scoped Role. It
+    /// never exercises the grant itself (SEC-007, accepted-with-monitoring).
+    ///
+    /// Every other component reads Secrets through a namespaced Role, or not at
+    /// all. If this test fails, do not add an exception: move the grant to a
+    /// `Role`.
+    #[test]
+    fn only_the_operator_cluster_role_may_grant_secret_access() {
+        let mut roles = vec![InstallRole::Controller, InstallRole::Imagebuilder];
+        roles.extend(
+            BACKENDS_WITH_ROLES
+                .iter()
+                .map(|b| InstallRole::Provider((*b).to_string())),
+        );
+
+        for role in roles {
+            for (group, resource, verb) in granted_triples(&role) {
+                assert!(
+                    !(group.is_empty() && (resource == "secrets" || resource == "configmaps")),
+                    "the {} ClusterRole grants {verb} on {resource} cluster-wide. A ClusterRole \
+                     + ClusterRoleBinding has NO namespace scope, so this reaches every \
+                     {resource} in every namespace — including every Provider's hypervisor \
+                     credentials. Move it to a namespaced Role (ADR-0041), or scope it with \
+                     resourceNames in an operator-minted Role.",
+                    role.name()
+                );
+            }
+        }
+    }
+
     /// The reconciler holds a finalizer on every Provider, which writes
     /// `metadata.finalizers` on the **main** resource. That needs
     /// update/patch on `providers` — NOT the `providers/finalizers`
@@ -506,10 +545,69 @@ mod tests {
     /// Only standalone providers get the namespaced credential Role — other
     /// roles keep their existing permission shape.
     #[test]
-    fn a_non_provider_role_install_ships_no_namespaced_role() {
+    fn an_imagebuilder_install_ships_namespaced_cloud_config_rbac() {
         let manifests = build_role_install(&InstallRole::Imagebuilder, &opts()).unwrap();
-        assert!(manifests.roles.is_empty());
-        assert!(manifests.role_bindings.is_empty());
+
+        assert_eq!(
+            manifests.roles.len(),
+            1,
+            "the imagebuilder reads cloudConfigs Secrets through a namespaced Role (ADR-0041)"
+        );
+        assert_eq!(manifests.role_bindings.len(), 1);
+
+        let role = &manifests.roles[0];
+        assert_eq!(
+            role.metadata.namespace.as_deref(),
+            Some(DEFAULT_IMAGEBUILD_NAMESPACE),
+            "the Role must live where the Secrets do — the build namespace, not the install \
+             namespace"
+        );
+        let rule = &role.rules.as_ref().unwrap()[0];
+        assert_eq!(
+            rule.resources.as_deref(),
+            Some(&["secrets".to_string()][..])
+        );
+        // Read the referenced cloud-configs, then server-side-apply the merged
+        // Secret: apply is a CREATE when absent and a PATCH when present.
+        for verb in ["get", "list", "watch", "create", "patch"] {
+            assert!(
+                rule.verbs.iter().any(|v| v == verb),
+                "cloud-config merge needs {verb} on secrets"
+            );
+        }
+        assert!(
+            !rule.verbs.iter().any(|v| v == "delete"),
+            "nothing in the merge path deletes a Secret"
+        );
+    }
+
+    /// The Role lives with the objects it grants (the build namespace); the
+    /// subject lives with the workload (the install namespace). That asymmetry
+    /// is how cross-namespace RBAC is expressed, and getting it backwards
+    /// produces a binding that silently grants nothing.
+    #[test]
+    fn the_imagebuilder_role_binding_crosses_namespaces_in_the_right_direction() {
+        let manifests = build_role_install(&InstallRole::Imagebuilder, &opts()).unwrap();
+        let binding = &manifests.role_bindings[0];
+
+        assert_eq!(
+            binding.metadata.namespace.as_deref(),
+            Some(DEFAULT_IMAGEBUILD_NAMESPACE),
+            "a RoleBinding must live in the same namespace as the Role it references"
+        );
+        assert_eq!(binding.role_ref.kind, "Role");
+        assert_eq!(
+            binding.role_ref.name,
+            manifests.roles[0].metadata.name.clone().unwrap()
+        );
+
+        let subject = &binding.subjects.as_ref().unwrap()[0];
+        assert_eq!(subject.name, "banlieue-imagebuilder");
+        assert_eq!(
+            subject.namespace.as_deref(),
+            Some(DEFAULT_NAMESPACE),
+            "the imagebuilder pod runs in the install namespace, not the build namespace"
+        );
     }
 
     #[test]

@@ -80,7 +80,7 @@
           ]
         },
         "least-privilege": {
-          "description": "Controller ServiceAccount holds a ClusterRole scoped to banlieue.io/* and infrastructure.banlieue.io/* CRDs plus events. No cluster-admin, and no Secrets access (security review 2026-07-31 SEC-008: the controller never reads Secrets — providers read their own credentials).",
+          "description": "Controller ServiceAccount holds a ClusterRole scoped to banlieue.io/* and infrastructure.banlieue.io/* CRDs plus events, with no cluster-admin and no Secrets rule (security review 2026-07-31 SEC-008). Its one Secret/ConfigMap grant is a namespaced Role in banlieue-system, used solely to resolve VirtualMachine.spec.userData (ADR-0025/0038); ADR-0042 requires the VirtualMachine's own creator to be authorized to get whatever it names, so that resolution cannot be used as a confused deputy.",
           "requirements": [
             {
               "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
@@ -215,6 +215,21 @@
                   "CM-7"
                 ],
                 "evidence": "docs/adr/0016-imagebuild-namespace-isolation.md"
+              }
+            }
+          ]
+        },
+        "least-privilege": {
+          "description": "Imagebuilder ServiceAccount's ClusterRole carries no Secret rule. Cloud-config Secrets referenced by VMImage.spec.cloudConfigs, and the merged Secret it server-side-applies, are reached through a namespaced Role in the build namespace bound cross-namespace to the ServiceAccount in banlieue-system (ADR-0041) — matching the single Api<Secret> in the crate, which is namespaced to --build-namespace.",
+          "requirements": [
+            {
+              "requirement-url": "https://kubernetes.io/docs/concepts/security/rbac-good-practices/",
+              "config": {
+                "framework": "Kubernetes RBAC good practices",
+                "controls": [
+                  "no-cluster-wide-secret-read"
+                ],
+                "evidence": "deploy/imagebuilder/rbac/clusterrole.yaml, deploy/imagebuilder/rbac/role.yaml, crates/banlieue-imagebuilder/src/reconciler/vmimage.rs, docs/adr/0041-imagebuilder-namespaced-secret-access.md"
               }
             }
           ]
@@ -1375,7 +1390,7 @@
       ]
     },
     "admission-policy-validation": {
-      "description": "Invariants the code-first CRD schema cannot express — VirtualMachine.classRef/imageRef and Provider.providerClassRef immutability — are enforced at admission via ValidatingAdmissionPolicy (CEL, evaluated in the API server, GA in Kubernetes 1.30+). The same mechanism carries the security chain-breakers of the 2026-07-31 review: Provider connection hardening (https endpoints, no userinfo, opt-in-gated insecureSkipTLSVerify), credentialsRef authorization via the CEL authorizer variable, and digest-pinned, registry-allowlisted VMImage importFrom sources (parameter ConfigMap). No validating webhook: no extra always-on service, no TLS cert rotation, no API-request-path availability dependency — consistent with banlieue's no-RPC / no-extra-services posture. Shipped as optional, separately-applied manifests under deploy/admission/ with Deny bindings (Warn/Audit report-only roll-out path). See ADR-0007.",
+      "description": "Invariants the code-first CRD schema cannot express — VirtualMachine.classRef/imageRef and Provider.providerClassRef immutability — are enforced at admission via ValidatingAdmissionPolicy (CEL, evaluated in the API server, GA in Kubernetes 1.30+). The same mechanism carries the security chain-breakers of the 2026-07-31 review: Provider connection hardening (https endpoints, no userinfo, opt-in-gated insecureSkipTLSVerify), credentialsRef authorization via the CEL authorizer variable, digest-pinned, registry-allowlisted VMImage importFrom sources (parameter ConfigMap), and userData reference authorization (ADR-0042): a VirtualMachine may only name a Secret or ConfigMap its own creator can get, so the controller's namespace-wide resolution cannot act as a confused deputy for a principal holding no Secret access. No validating webhook: no extra always-on service, no TLS cert rotation, no API-request-path availability dependency — consistent with banlieue's no-RPC / no-extra-services posture. Shipped as optional, separately-applied manifests under deploy/admission/ with Deny bindings (Warn/Audit report-only roll-out path). See ADR-0007.",
       "requirements": [
         {
           "requirement-url": "https://kubernetes.io/docs/reference/access-authn-authz/validating-admission-policy/",
@@ -1388,9 +1403,10 @@
               "banlieue-provider-connection",
               "banlieue-provider-credentialsref-authorization",
               "banlieue-providerclass-guardrails",
-              "banlieue-vmimage-import-source"
+              "banlieue-vmimage-import-source",
+              "banlieue-virtualmachine-userdata-authorization"
             ],
-            "evidence": "deploy/admission/, docs/adr/0007-admission-policies.md, docs/src/guides/core-controller.md"
+            "evidence": "deploy/admission/, docs/adr/0007-admission-policies.md, docs/adr/0042-userdata-reference-authorization.md, docs/src/guides/core-controller.md, docs/src/security/threat-model.md"
           }
         },
         {
@@ -1402,6 +1418,23 @@
               "RV.1"
             ],
             "evidence": "deploy/admission/README.md, docs/adr/0007-admission-policies.md"
+          }
+        }
+      ]
+    },
+    "secret-access-least-privilege": {
+      "description": "No banlieue identity holds cluster-wide Secret access; every identity reads only objects it can name, or only within one namespace. Provider ClusterRoles grant zero Secret/ConfigMap access (CHAIN-002); the main controller's ClusterRole grants none either (SEC-008) and resolves VirtualMachine.spec.userData through a namespaced Role in banlieue-system (ADR-0025/0038), gated at admission so a VirtualMachine can only name user-data its creator can read (ADR-0042); banlieue-imagebuilder reads and writes cloud-config Secrets through a namespaced Role in the build namespace rather than a ClusterRole (ADR-0041); and banlieue-operator mints per-Provider Roles resourceNames-scoped to exactly the credentials Secret and CA bundle that Provider names, refusing to emit a rule with an empty resourceNames list. Trust boundary TB-2 in the threat model.",
+      "requirements": [
+        {
+          "requirement-url": "https://kubernetes.io/docs/concepts/security/rbac-good-practices/",
+          "config": {
+            "framework": "Kubernetes RBAC good practices",
+            "controls": [
+              "no-cluster-wide-secret-read",
+              "resourceNames-scoped-grants",
+              "admission-gated-reference-resolution"
+            ],
+            "evidence": "deploy/controller/rbac/, deploy/imagebuilder/rbac/, deploy/provider-vsphere/rbac/, deploy/provider-libvirt/rbac/, crates/banlieue-operator/src/workload.rs, docs/adr/0041-imagebuilder-namespaced-secret-access.md, docs/adr/0042-userdata-reference-authorization.md, docs/src/security/threat-model.md"
           }
         }
       ]
@@ -1474,6 +1507,10 @@
     "docs/adr/0035-virtualmachine-watches-provider-and-vmclass.md",
     "docs/adr/0036-live-migration-phased-approach.md",
     "docs/adr/0037-vmimage-layered-cloud-config.md",
-    "docs/adr/0038-userdata-configmap-support.md"
+    "docs/adr/0038-userdata-configmap-support.md",
+    "docs/adr/0039-vsphere-vtpm-support.md",
+    "docs/adr/0040-deferred-install-for-vtpm-encryption.md",
+    "docs/adr/0041-imagebuilder-namespaced-secret-access.md",
+    "docs/adr/0042-userdata-reference-authorization.md"
   ]
 }

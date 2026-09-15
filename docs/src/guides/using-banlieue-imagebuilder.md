@@ -53,6 +53,9 @@ flowchart LR
 backend credentials, and only touches `vmimages`, `vmimages/status`,
 kairos-operator's `osartifacts`, and the `cloudConfigs[]` Secrets/ConfigMaps
 you point it at — no vCenter or libvirt access of any kind passes through it.
+Since ADR-0037 it does read Secret *content* (to merge layered cloud-configs),
+but only inside the build namespace, and only through the namespaced `Role`
+described below — never through a `ClusterRole`.
 
 ```sh
 kubectl apply -R -f deploy/imagebuilder/rbac/
@@ -72,6 +75,22 @@ per-zone import Jobs run in this same namespace to reach the shared PVC
 (ADR-0010 / ADR-0016); leave it at the default unless you have a specific
 reason to change it, and pass the same value to every provider via its own
 `--build-namespace` flag so the Jobs land where the PVC is.
+
+!!! warning "Overriding the build namespace also moves an RBAC grant"
+
+    `deploy/imagebuilder/rbac/role.yaml` is a **namespaced** `Role` +
+    `RoleBinding` pinned to `banlieue-imagebuild` — it is what lets the
+    reconciler read your `cloudConfigs[]` Secrets and write the merged one
+    (ADR-0041). The grant is namespaced on purpose: a `ClusterRole` rule for
+    Secrets has no namespace scope at all and would reach every Secret in the
+    cluster, including every `Provider`'s hypervisor credentials.
+
+    If you change `BANLIEUE_BUILD_NAMESPACE`, re-create that `Role` and
+    `RoleBinding` in the new namespace, keeping the subject pointed at
+    `ServiceAccount/banlieue-imagebuilder` in `banlieue-system`. Otherwise the
+    first `VMImage` carrying `cloudConfigs` fails with a `403` on the Secret
+    read. `banlieue bootstrap imagebuilder` emits this pair for the default
+    namespace only.
 
 ## 2. Create a `VMImage` with a `Url` source
 

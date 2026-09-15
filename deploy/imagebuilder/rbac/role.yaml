@@ -1,0 +1,62 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# Namespaced cloud-config Secret access for banlieue-imagebuilder (ADR-0041).
+#
+# ADR-0037 lets a VMImage layer several cloud-config Secrets; the reconciler
+# reads each one and server-side-applies a single merged Secret. All of that
+# happens in the BUILD namespace and nowhere else — there is exactly one
+# `Api<Secret>` in the crate and it is
+# `Api::namespaced(client, &ctx.build_namespace)`.
+#
+# So the grant is a namespaced Role, not a ClusterRole rule. A ClusterRole
+# bound by a ClusterRoleBinding has no namespace scope, and a Secret rule in
+# one reaches every Secret in the cluster — including every Provider's
+# hypervisor credentials, with `create`/`patch` enough to overwrite them.
+#
+# The Role lives with the objects it grants (banlieue-imagebuild); the subject
+# lives with the workload (banlieue-system). That asymmetry is how
+# cross-namespace RBAC is expressed — the same shape banlieue-operator uses for
+# the import identity (`build_import_role_binding`).
+#
+# No resourceNames: the Secret names come from arbitrary VMImage authors and
+# are not knowable when this manifest is written. Namespace scope is the
+# boundary, and this namespace holds only build inputs and outputs.
+#
+# NOTE: if you override `--build-namespace` / BANLIEUE_BUILD_NAMESPACE, move
+# this Role and RoleBinding to that namespace too, or the first VMImage
+# carrying `cloudConfigs` fails with a 403.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: banlieue-imagebuilder-cloudconfig
+  namespace: banlieue-imagebuild
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: imagebuilder
+rules:
+  # get/list/watch: read the Secrets named by VMImage.spec.cloudConfigs.
+  # create/patch: server-side-apply the merged Secret — apply is a CREATE when
+  # the object is absent and a PATCH when it exists, so both are required.
+  # No delete: nothing in the merge path removes a Secret; the merged one is
+  # garbage-collected with its owning VMImage.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch", "create", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: banlieue-imagebuilder-cloudconfig
+  namespace: banlieue-imagebuild
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: imagebuilder
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: banlieue-imagebuilder-cloudconfig
+subjects:
+  - kind: ServiceAccount
+    name: banlieue-imagebuilder
+    namespace: banlieue-system

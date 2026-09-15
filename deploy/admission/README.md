@@ -17,6 +17,7 @@ rotate.
 | `provider-cabundle-source.yaml` | `Provider.spec.connection.caBundle` sets exactly one of `inline` / `configMapRef` / `secretRef` (ADR-0008). |
 | `provider-connection.yaml` | `Provider.spec.connection.endpoint` is an absolute URL, `https://` for vsphere/proxmox, no userinfo or fragment; `insecureSkipTLSVerify: true` requires the opt-in annotation `banlieue.io/allow-insecure-tls: "true"` (security review 2026-07-31). |
 | `provider-credentialsref-authorization.yaml` | The principal creating/updating a `Provider` must be authorized to `get` the Secret named by `spec.connection.credentialsRef` (CEL `authorizer`; security review 2026-07-31). |
+| `virtualmachine-userdata-authorization.yaml` | The principal creating/updating a `VirtualMachine` must be authorized to `get` the Secret or ConfigMap named by `spec.userData` (CEL `authorizer`; [ADR-0042](../../docs/adr/0042-userdata-reference-authorization.md)). |
 | `vmimage-import-source.yaml` | Every `VMImage.spec.sources[].importFrom` is pinned to an `@sha256:` digest and references a registry in the `banlieue-vmimage-allowed-registries` parameter ConfigMap (security review 2026-07-31). |
 | `providerclass-guardrails.yaml` | `ProviderClass.spec.additionalRules` may not grant on `secrets`, use `*` resources/verbs, or use `escalate`/`bind`/`impersonate`; `spec.workloadNamespace` may not be a Kubernetes system namespace (security review 2026-07-31). |
 
@@ -37,10 +38,19 @@ Notes:
   document in the file — the binding fails closed when it is missing). **Edit
   the `registries` list per site** before applying; the defaults are
   convenience values, not a recommendation.
-- `provider-credentialsref-authorization.yaml` needs an apiserver new enough
-  to support the CEL `authorizer` variable in admission policies; on an older
-  apiserver that one file is rejected while the rest still apply.
+- `provider-credentialsref-authorization.yaml` and
+  `virtualmachine-userdata-authorization.yaml` need an apiserver new enough to
+  support the CEL `authorizer` variable in admission policies; on an older
+  apiserver those files are rejected while the rest still apply.
+- **`virtualmachine-userdata-authorization.yaml` changes who may create a
+  `VirtualMachine` that references user-data.** Any automation (CI, GitOps)
+  creating VMs must itself hold `get` on the referenced Secret/ConfigMap.
+  Roll it out as `["Warn","Audit"]` first if you are unsure which identities
+  are affected. Without it, `create virtualmachines` in the controller's
+  namespace is equivalent to reading every Secret in that namespace — see the
+  [threat model](../../docs/src/security/threat-model.md).
 
 Rationale (VAP vs. webhook vs. CRD-embedded CEL) is recorded in
-[ADR-0007](../../docs/adr/0007-admission-policies.md); the attack chains the
-three security policies break are in the 2026-07-31 security review.
+[ADR-0007](../../docs/adr/0007-admission-policies.md); the attack chains these
+policies break are in the 2026-07-31 security review and the
+[threat model](../../docs/src/security/threat-model.md).
