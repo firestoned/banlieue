@@ -6,6 +6,12 @@ on a real cluster, using the released container image
 
 <div class="grid cards" markdown>
 
+- :material-server-plus: **[Host Bootstrap](host-bootstrap.md)**
+
+    Bare metal to a running k0s cluster: provision a KVM hypervisor, or prepare
+    a workstation and discover a vSphere estate — the step before every other
+    guide here.
+
 - :material-map: **[End-to-End Setup](end-to-end-setup.md)**
 
     The whole chain in one diagram: bootstrapping the management cluster,

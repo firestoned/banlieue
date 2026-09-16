@@ -76,19 +76,78 @@ VM_PREFIX="${VM_PREFIX:-k0s}"
 LIBVIRT_URI="${LIBVIRT_URI:-qemu:///system}"
 LIBVIRT_NETWORK="${LIBVIRT_NETWORK:-default}"
 LIBVIRT_POOL="${LIBVIRT_POOL:-default}"
-# No osinfo entry exists for Kairos; `generic` is the right fallback.
-OS_VARIANT="${OS_VARIANT:-generic}"
+# No osinfo entry exists for Kairos, so `generic` is the right fallback there.
+# A distro cloud image DOES have one, and naming it gets the correct virtio
+# defaults and clock/CPU tuning instead of virt-install's "VM performance may
+# suffer" fallback. Resolved after LIBVIRT_IMAGE_KIND is known, further down.
+OS_VARIANT="${OS_VARIANT:-}"
+CLOUD_OS_VARIANT="${CLOUD_OS_VARIANT:-debian13}"
 # Kairos Hadron CORE installer ISO -- deliberately NOT the `standard` flavor,
 # which would bundle its own k0s/k3s at a version we don't control.
 IMAGE_URL="${IMAGE_URL:-https://github.com/kairos-io/kairos/releases/download/v4.1.2/kairos-hadron-v0.4.0-core-amd64-generic-v4.1.2.iso}"
 IP_WAIT_ATTEMPTS="${IP_WAIT_ATTEMPTS:-60}"   # 60 * 5s = 5min
 SSH_WAIT_ATTEMPTS="${SSH_WAIT_ATTEMPTS:-60}" # 60 * 5s = 5min
-TAILSCALE_WAIT_ATTEMPTS="${TAILSCALE_WAIT_ATTEMPTS:-24}" # 24 * 5s = 2min
+# 5min. The Kairos path drops in a prebuilt tarball, but a distro cloud image
+# installs tailscale through apt -- repo add, apt update, apt install -- which
+# routinely outlasts a 2 minute budget on first boot.
+TAILSCALE_WAIT_ATTEMPTS="${TAILSCALE_WAIT_ATTEMPTS:-60}" # 60 * 5s = 5min
 INSTALL_WAIT_ATTEMPTS="${INSTALL_WAIT_ATTEMPTS:-180}" # 180 * 5s = 15min
 
 # Set BASE_IMAGE_PATH to use a locally-downloaded Kairos installer ISO
 # instead of fetching IMAGE_URL.
 BASE_IMAGE_PATH="${BASE_IMAGE_PATH:-}"
+
+# How the libvirt backend gets an OS onto a node (ADR-0017 covers the backend
+# split; this is a choice WITHIN the libvirt backend):
+#
+#   kairos  Boot a Kairos installer ISO against an EMPTY disk and let Kairos
+#           install itself, then power off, eject and reboot. Immutable, but
+#           every node pays a full install -- minutes each, serialised behind
+#           INSTALL_WAIT_ATTEMPTS.
+#
+#   cloud   Boot a prebuilt cloud image directly. cloud-init does first-boot
+#           config from a NoCloud seed ISO. No install phase at all: nodes are
+#           SSH-reachable in well under a minute. A mutable, familiar Debian.
+#
+# `cloud` is the faster path and the one to reach for when you want an
+# ordinary distro; `kairos` remains the default so existing clusters and the
+# imagebuilder's expectations are unchanged.
+LIBVIRT_IMAGE_KIND="${LIBVIRT_IMAGE_KIND:-kairos}"
+
+# Debian 13 "trixie" genericcloud: the slim cloud variant (~323MB). It carries
+# cloud-init and virtio drivers but none of the bare-metal firmware the
+# `generic` build ships, which is dead weight inside KVM. `nocloud` is
+# deliberately NOT the default -- it has no cloud-init datasource, so the seed
+# ISO below would be ignored and the node would come up with no user and no key.
+CLOUD_IMAGE_URL="${CLOUD_IMAGE_URL:-https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2}"
+
+# --- image integrity -------------------------------------------------------
+# Downloaded images are executable content that becomes every node in the
+# cluster, so they are verified before use -- on EVERY run, not just on the run
+# that downloaded them. A cached file is exactly where a tampered image would
+# hide, and re-hashing 300MB costs about a second.
+#
+#   auto (default)  fetch the checksum upstream publishes beside the image
+#                   (Kairos: <asset>.sha256; Debian: SHA512SUMS) and compare
+#   off             skip verification entirely -- for air-gapped mirrors that
+#                   publish no checksum, and nothing else
+#
+# Setting IMAGE_SHA256 / CLOUD_IMAGE_SHA512 explicitly PINS the expected digest
+# and takes precedence over `auto`. That is the strongest option: `auto` trusts
+# whatever the same server serves for the checksum, so it catches corruption
+# and a compromised mirror, but not a compromised origin. A pin in your own env
+# file catches that too. Pin in production.
+IMAGE_VERIFY="${IMAGE_VERIFY:-auto}"
+IMAGE_SHA256="${IMAGE_SHA256:-}"
+CLOUD_IMAGE_SHA512="${CLOUD_IMAGE_SHA512:-}"
+
+# Kairos additionally publishes cosign (sigstore) artifacts: .sig/.pem/.bundle.
+# Opt-in because it needs the cosign binary, and because verifying keylessly
+# means asserting WHICH workflow identity is allowed to sign -- a decision that
+# belongs to the operator, not to a default.
+IMAGE_COSIGN_VERIFY="${IMAGE_COSIGN_VERIFY:-false}"
+IMAGE_COSIGN_IDENTITY="${IMAGE_COSIGN_IDENTITY:-https://github.com/kairos-io/kairos/.*}"
+IMAGE_COSIGN_ISSUER="${IMAGE_COSIGN_ISSUER:-https://token.actions.githubusercontent.com}"
 
 # k0s version k0sctl installs on every node (no leading `v`, matching k0sctl's
 # config convention).
@@ -233,10 +292,51 @@ FLUX_CA_BUNDLE_FILE="${FLUX_CA_BUNDLE_FILE:-}"
 FLUX_SUBSTITUTIONS="${FLUX_SUBSTITUTIONS:-}"
 
 WORKDIR="${WORKDIR:-$HOME/.local/share/k0s-bootstrap}"
-POOL_DIR="${POOL_DIR:-/var/lib/libvirt/images/k0s-bootstrap}"
+# Scratch directory for downloaded ISOs and cloud-init seeds. Defaults to a
+# subdirectory of whatever the `default` storage pool actually points at, NOT
+# to libvirt's stock /var/lib/libvirt/images: bootstrap-libvirt-host.sh places
+# pools on the filesystem with the most free space, because a stock Debian
+# install leaves /var far too small for disk images. Hardcoding the stock path
+# fails with a bare "Permission denied" on any host whose pool lives elsewhere.
+_default_pool_dir() {
+  local path
+  path="$(LIBVIRT_DEFAULT_URI="${LIBVIRT_URI:-qemu:///system}" \
+          virsh pool-dumpxml default 2>/dev/null \
+          | sed -n 's:.*<path>\(.*\)</path>.*:\1:p' | head -1)"
+  echo "${path:-/var/lib/libvirt/images}/k0s-bootstrap"
+}
+POOL_DIR="${POOL_DIR:-$(_default_pool_dir)}"
 INSTALL_ISO="$POOL_DIR/$(basename "${BASE_IMAGE_PATH:-$IMAGE_URL}")"
+CLOUD_IMAGE="$POOL_DIR/$(basename "${BASE_IMAGE_PATH:-$CLOUD_IMAGE_URL}")"
+
+# Fall back to `generic` if this libvirt's osinfo-db predates the named
+# variant -- an unknown --os-variant is a hard error from virt-install, and a
+# stale osinfo-db should not be fatal.
+if [[ -z "$OS_VARIANT" ]]; then
+  OS_VARIANT="generic"
+  if [[ "$LIBVIRT_IMAGE_KIND" == "cloud" ]]; then
+    # Capture first, then match. Piping straight into `grep -q` makes grep exit
+    # at the first hit, which SIGPIPEs virt-install into exit 120 -- and under
+    # `set -o pipefail` that is the pipeline's status, so the test ALWAYS failed
+    # and silently fell back to `generic`.
+    #
+    # The list prints aliases comma-separated on one line ("debian13,
+    # debiantrixie"), so an exact-line match never hits either.
+    _osinfo="$(virt-install --osinfo list 2>/dev/null || true)"
+    if grep -qE "(^|, )${CLOUD_OS_VARIANT}(,|\$)" <<<"$_osinfo"; then
+      OS_VARIANT="$CLOUD_OS_VARIANT"
+    fi
+    unset _osinfo
+  fi
+fi
 K0SCTL_CONFIG="${K0SCTL_CONFIG:-$WORKDIR/k0sctl.yaml}"
-KUBECONFIG_OUT="${KUBECONFIG_OUT:-$WORKDIR/kubeconfig}"
+# Name the kubeconfig after the cluster rather than calling every one of them
+# "kubeconfig". Bootstrapping a second cluster otherwise overwrites the first,
+# and a directory of identically-named files tells you nothing about which is
+# which. KUBECONFIG_NAME also becomes the cluster/context/user name inside the
+# file, so several can be merged into ~/.kube/config without colliding.
+KUBECONFIG_NAME="${KUBECONFIG_NAME:-$CLUSTER_NAME}"
+KUBECONFIG_OUT="${KUBECONFIG_OUT:-$WORKDIR/$KUBECONFIG_NAME.kubeconfig}"
 KUBECONFIG_SERVER_FILE="${KUBECONFIG_SERVER_FILE:-$WORKDIR/kubeconfig-server}"
 
 if [[ "${1:-}" != "--print-env-template" ]]; then
@@ -308,6 +408,90 @@ check_deps_libvirt() {
 
 vm_name() { printf '%s-%02d' "$VM_PREFIX" "$(($1 + 1))"; }
 
+# Compare a file against an expected digest. On mismatch the file is REMOVED:
+# leaving it in place means the next run finds it cached, skips the download,
+# and reuses the very artifact that just failed verification.
+verify_digest() {
+  local file="$1" algo="$2" expected="$3" actual
+  [[ -n "$expected" ]] || { log "no $algo digest available for $(basename "$file")"; return 1; }
+  case "$algo" in
+    sha256) actual="$(sha256sum "$file" | awk '{print $1}')" ;;
+    sha512) actual="$(sha512sum "$file" | awk '{print $1}')" ;;
+    *)      log "unknown digest algorithm '$algo'"; return 1 ;;
+  esac
+  if [[ "$actual" != "$expected" ]]; then
+    log "INTEGRITY FAILURE: $(basename "$file")"
+    log "  expected $algo: $expected"
+    log "  actual   $algo: $actual"
+    log "  removing the file so a retry cannot silently reuse it"
+    rm -f "$file"
+    exit 1
+  fi
+  log "  $algo verified: ${actual:0:16}..."
+}
+
+# Kairos: <asset-url>.sha256, contents "<digest>  <filename>".
+verify_installer_iso() {
+  [[ "$IMAGE_VERIFY" == "off" ]] && { log "IMAGE_VERIFY=off -- skipping ISO verification"; return 0; }
+  local expected="$IMAGE_SHA256"
+  if [[ -z "$expected" && -z "$BASE_IMAGE_PATH" ]]; then
+    log "Fetching published checksum for $(basename "$INSTALL_ISO")"
+    expected="$(curl -fsSL "${IMAGE_URL}.sha256" 2>/dev/null | awk 'NR==1{print $1}' || true)"
+  fi
+  [[ -n "$expected" ]] || { log "no checksum available -- set IMAGE_SHA256 or IMAGE_VERIFY=off"; exit 1; }
+  verify_digest "$INSTALL_ISO" sha256 "$expected"
+
+  if [[ "$IMAGE_COSIGN_VERIFY" == "true" ]]; then
+    command -v cosign >/dev/null 2>&1 || { log "IMAGE_COSIGN_VERIFY=true but cosign is not installed"; exit 1; }
+    log "Verifying the cosign bundle on the checksum file"
+    local tmp; tmp="$(mktemp -d)"
+    curl -fsSL -o "$tmp/sum"    "${IMAGE_URL}.sha256"        || { log "cannot fetch .sha256"; exit 1; }
+    curl -fsSL -o "$tmp/bundle" "${IMAGE_URL}.sha256.bundle" || { log "cannot fetch .sha256.bundle"; exit 1; }
+    cosign verify-blob "$tmp/sum" --bundle "$tmp/bundle" \
+      --certificate-identity-regexp "$IMAGE_COSIGN_IDENTITY" \
+      --certificate-oidc-issuer "$IMAGE_COSIGN_ISSUER" \
+      || { log "cosign verification FAILED"; rm -rf "$tmp"; exit 1; }
+    rm -rf "$tmp"
+    log "  cosign signature verified"
+  fi
+}
+
+# Debian: SHA512SUMS beside the image, "<digest>  <filename>" per line.
+verify_cloud_image() {
+  [[ "$IMAGE_VERIFY" == "off" ]] && { log "IMAGE_VERIFY=off -- skipping cloud image verification"; return 0; }
+  local expected="$CLOUD_IMAGE_SHA512" base
+  base="$(basename "$CLOUD_IMAGE_URL")"
+  if [[ -z "$expected" && -z "$BASE_IMAGE_PATH" ]]; then
+    log "Fetching SHA512SUMS for $base"
+    expected="$(curl -fsSL "$(dirname "$CLOUD_IMAGE_URL")/SHA512SUMS" 2>/dev/null \
+                | awk -v f="$base" '$2 == f {print $1; exit}' || true)"
+  fi
+  [[ -n "$expected" ]] || { log "no checksum available -- set CLOUD_IMAGE_SHA512 or IMAGE_VERIFY=off"; exit 1; }
+  verify_digest "$CLOUD_IMAGE" sha512 "$expected"
+}
+
+fetch_cloud_image() {
+  if [[ -f "$CLOUD_IMAGE" ]]; then
+    log "Cloud image already present at $CLOUD_IMAGE, skipping"
+  elif [[ -n "$BASE_IMAGE_PATH" ]]; then
+    [[ -f "$BASE_IMAGE_PATH" ]] || { log "BASE_IMAGE_PATH=$BASE_IMAGE_PATH not found"; exit 1; }
+    log "Linking local cloud image $BASE_IMAGE_PATH -> $CLOUD_IMAGE"
+    ln -f "$BASE_IMAGE_PATH" "$CLOUD_IMAGE" 2>/dev/null || cp "$BASE_IMAGE_PATH" "$CLOUD_IMAGE"
+  else
+    log "Downloading cloud image from $CLOUD_IMAGE_URL"
+    curl -fL --output "$CLOUD_IMAGE.tmp" "$CLOUD_IMAGE_URL"
+    mv "$CLOUD_IMAGE.tmp" "$CLOUD_IMAGE"
+  fi
+}
+
+fetch_base_image() {
+  if [[ "$LIBVIRT_IMAGE_KIND" == "cloud" ]]; then
+    fetch_cloud_image; verify_cloud_image
+  else
+    fetch_installer_iso; verify_installer_iso
+  fi
+}
+
 fetch_installer_iso() {
   if [[ -f "$INSTALL_ISO" ]]; then
     log "Installer ISO already present at $INSTALL_ISO, skipping"
@@ -322,7 +506,98 @@ fetch_installer_iso() {
   fi
 }
 
+# Standard cloud-init for a distro cloud image. Shares nothing with the Kairos
+# path below: `install:` and `stages:` are Kairos/yip extensions that ordinary
+# cloud-init ignores outright, so a Kairos user-data on Debian yields a node
+# with no user, no key and no way in.
+make_cloud_init_cloud() {
+  local name="$1" seed_dir="$2"
+  mkdir -p "$seed_dir"
+
+  cat >"$seed_dir/meta-data" <<EOF
+instance-id: $name
+local-hostname: $name
+EOF
+
+  : >"$seed_dir/user-data"
+  chmod 600 "$seed_dir/user-data"   # may hold TAILSCALE_AUTHKEY below
+  cat >>"$seed_dir/user-data" <<EOF
+#cloud-config
+hostname: $name
+fqdn: $name
+preserve_hostname: false
+ssh_pwauth: false
+EOF
+
+  if [[ "$SSH_USER" == "root" ]]; then
+    cat >>"$seed_dir/user-data" <<EOF
+disable_root: false
+users:
+  - name: root
+    ssh_authorized_keys:
+      - $(cat "$SSH_PUBKEY")
+EOF
+  else
+    # k0sctl connects as this user and escalates for every privileged step, so
+    # NOPASSWD is required -- without it k0sctl hangs on an invisible password
+    # prompt and eventually times out. Kairos granted this via its `admin`
+    # group; on Debian it has to be spelled out.
+    cat >>"$seed_dir/user-data" <<EOF
+users:
+  - name: $SSH_USER
+    groups: [sudo]
+    shell: /bin/bash
+    sudo: ['ALL=(ALL) NOPASSWD:ALL']
+    ssh_authorized_keys:
+      - $(cat "$SSH_PUBKEY")
+EOF
+  fi
+
+  # Loop devices for the imagebuilder's disk-image work, matching what the
+  # Kairos path arranges in its `boot` stage.
+  cat >>"$seed_dir/user-data" <<EOF
+write_files:
+  - path: /etc/modules-load.d/banlieue-loop.conf
+    permissions: '0644'
+    content: |
+      loop
+  - path: /etc/modprobe.d/banlieue-loop.conf
+    permissions: '0644'
+    content: |
+      options loop max_loop=8
+package_update: true
+packages:
+  - curl
+  - ca-certificates
+runcmd:
+  - modprobe loop max_loop=8 || modprobe loop
+EOF
+
+  if [[ -n "$TAILSCALE_AUTHKEY" ]]; then
+    cat >>"$seed_dir/user-data" <<EOF
+  - curl -fsSL https://tailscale.com/install.sh | sh
+  - tailscale up --authkey=$TAILSCALE_AUTHKEY --hostname=$name --ssh
+EOF
+  fi
+}
+
 make_cloud_init_files() {
+  local seed_dir="$2"
+  if [[ "$LIBVIRT_IMAGE_KIND" == "cloud" ]]; then
+    make_cloud_init_cloud "$@"
+  else
+    make_cloud_init_kairos "$@"
+  fi
+
+  # Build the NoCloud seed ISO here, once, for EVERY image kind. Leaving this
+  # to each generator means a new kind can write its seed files and silently
+  # forget the ISO -- which does not fail here, but much later and obscurely,
+  # as virt-install's "Size must be specified for non existent volume".
+  genisoimage -output "$seed_dir.iso" -volid cidata -joliet -rock \
+    "$seed_dir/user-data" "$seed_dir/meta-data" >/dev/null
+}
+
+make_cloud_init_kairos() {
   local name="$1" seed_dir="$2"
   mkdir -p "$seed_dir"
 
@@ -406,8 +681,6 @@ write_files:
 EOF
   fi
 
-  genisoimage -output "$seed_dir.iso" -volid cidata -joliet -rock \
-    "$seed_dir/user-data" "$seed_dir/meta-data" >/dev/null
 }
 
 wait_for_install() {
@@ -436,6 +709,50 @@ create_vm() {
   local disk="$POOL_DIR/$name.qcow2"
   local seed_dir="$POOL_DIR/$name-seed"
   local seed_iso="$POOL_DIR/$name-seed.iso"
+
+  if [[ "$LIBVIRT_IMAGE_KIND" == "cloud" ]]; then
+    # Copy the base image rather than using it as a qcow2 BACKING FILE. A
+    # backing chain would be faster and thinner, but it leaves every node's
+    # disk depending on a file outside its own storage pool -- which libvirt's
+    # AppArmor profile on Debian does not automatically grant, and which makes
+    # deleting the base image silently destroy every VM. --reflink=auto still
+    # gets copy-on-write for free on btrfs/xfs.
+    log "Cloning cloud image for $name (${DISK_GB}G)"
+    cp --reflink=auto "$CLOUD_IMAGE" "$disk"
+    qemu-img resize "$disk" "${DISK_GB}G" >/dev/null
+
+    log "Building cloud-init seed for $name"
+    make_cloud_init_files "$name" "$seed_dir"
+
+    log "Defining and starting VM $name (${VCPUS} vCPU, ${MEM_MB}MB RAM)"
+    # --import: boot the disk as-is. There is no installer to run and nothing
+    # to eject afterwards; cloud-init does first-boot config from the seed.
+    #
+    # --boot uefi is NOT optional here. Debian's cloud images carry both a BIOS
+    # boot partition and an ESP, so SeaBIOS looks like it should work -- GRUB
+    # even prints "Booting Debian GNU/Linux" -- but the guest then spins at
+    # 100% CPU with a ~64MB working set, never reaching the kernel. No console
+    # output, no ARP, but a DHCP lease from the brief moment it was alive, which
+    # makes it look like a network fault rather than a boot failure. Booting via
+    # OVMF avoids it, and matches the Kairos path on the same host.
+    virt-install \
+      --connect "$LIBVIRT_URI" \
+      --name "$name" \
+      --memory "$MEM_MB" \
+      --vcpus "$VCPUS" \
+      --import \
+      --disk "path=$disk,format=qcow2,bus=virtio" \
+      --disk "path=$seed_iso,device=cdrom,bus=sata" \
+      --os-variant "$OS_VARIANT" \
+      --network "network=$LIBVIRT_NETWORK,model=virtio" \
+      --boot uefi \
+      --graphics none \
+      --console pty,target_type=serial \
+      --noautoconsole
+
+    virsh --connect "$LIBVIRT_URI" autostart "$name"
+    return
+  fi
 
   log "Creating empty disk for $name (${DISK_GB}G -- Kairos installs onto it from the ISO)"
   qemu-img create -f qcow2 "$disk" "${DISK_GB}G" >/dev/null
@@ -467,8 +784,30 @@ create_vm() {
   virsh --connect "$LIBVIRT_URI" start "$name"
 }
 
+# virt-install implicitly DEFINES a libvirt storage pool for whatever directory
+# `--disk path=` points into. Because create_vms_libvirt fans out every VM in
+# parallel, all VM_COUNT of them race to define the SAME pool, and all but the
+# winner die with:
+#
+#   Could not define storage pool: operation failed: pool 'k0s-bootstrap'
+#   already exists with uuid ...
+#
+# The first VM therefore succeeds and the rest fail, which looks like a random
+# per-VM error rather than a race. Defining the pool once, before the fan-out,
+# removes it: the parallel virt-installs then find an existing pool and use it.
+ensure_pool() {
+  local name="${POOL_NAME_OVERRIDE:-$(basename "$POOL_DIR")}"
+  virsh --connect "$LIBVIRT_URI" pool-info "$name" >/dev/null 2>&1 && return 0
+  log "Defining storage pool '$name' at $POOL_DIR"
+  virsh --connect "$LIBVIRT_URI" pool-define-as "$name" dir --target "$POOL_DIR" >/dev/null
+  virsh --connect "$LIBVIRT_URI" pool-build     "$name" >/dev/null 2>&1 || true
+  virsh --connect "$LIBVIRT_URI" pool-start     "$name" >/dev/null 2>&1 || true
+  virsh --connect "$LIBVIRT_URI" pool-autostart "$name" >/dev/null 2>&1 || true
+}
+
 create_vms_libvirt() {
   local idx pids=()
+  ensure_pool
   for idx in $(seq 0 $((VM_COUNT - 1))); do
     create_vm "$idx" &
     pids+=($!)
@@ -1000,8 +1339,23 @@ vsphere_kubeconfig() {
   log "Pointing kubeconfig server at $target"
   sed -i.bak -E "s#^([[:space:]]*server: https://).*:([0-9]+)[[:space:]]*\$#\1${target}:\2#" "$KUBECONFIG_OUT"
   rm -f "$KUBECONFIG_OUT.bak"
+  # k0sctl names the cluster/context/user after the k0sctl config's cluster
+  # name. Force them to KUBECONFIG_NAME so the file is self-describing and can
+  # be merged with other clusters' configs without a name clash.
+  if [[ "$KUBECONFIG_NAME" != "$CLUSTER_NAME" ]]; then
+    sed -i.bak -E "s/\b${CLUSTER_NAME}\b/${KUBECONFIG_NAME}/g" "$KUBECONFIG_OUT"
+    rm -f "$KUBECONFIG_OUT.bak"
+  fi
+
   grep -E '^\s*server:' "$KUBECONFIG_OUT" >&2 || true
   log "export KUBECONFIG=$KUBECONFIG_OUT"
+  log "context: $(kubectl --kubeconfig "$KUBECONFIG_OUT" config current-context 2>/dev/null || echo "$KUBECONFIG_NAME")"
+  log ""
+  log "To use it from your workstation:"
+  log "  scp $(whoami)@$(hostname -f 2>/dev/null || hostname):$KUBECONFIG_OUT ~/.kube/$KUBECONFIG_NAME.yaml"
+  log "  export KUBECONFIG=~/.kube/$KUBECONFIG_NAME.yaml"
+  log "Note: the server address above is on the libvirt NAT network and is"
+  log "reachable only from this host unless you route or tunnel to it."
 }
 
 # ============================================================================
@@ -1095,6 +1449,17 @@ generate_k0sctl_config() {
       if [[ -n "$ts_ip" ]]; then
         echo "$ip $ts_ip" >>"$TAILSCALE_IP_MAP"
         sans+="            - $ts_ip"$'\n'
+      else
+        # Do not let this pass quietly. An auth key was supplied, so the
+        # operator wants the API reachable over the tailnet -- and the SANs are
+        # baked into the serving certificate at install time, so a miss here
+        # cannot be repaired later without reinstalling k0s. Falling back to the
+        # NAT address silently produces a cluster that is unreachable from
+        # anywhere but the hypervisor: the exact problem the key was meant to solve.
+        log "WARNING: $name never reported a tailscale IP after $((TAILSCALE_WAIT_ATTEMPTS * 5))s."
+        log "  Its tailnet address will NOT be in the API server certificate."
+        log "  Check on the node: cloud-init status; systemctl status tailscaled; tailscale status"
+        log "  Then destroy and re-run -- the SANs cannot be added afterwards."
       fi
     fi
     # On vSphere every node has a routable static IP; add each as a SAN so
@@ -1530,7 +1895,7 @@ main() {
     --print-env-template) print_env_template ;;
     vms)
       check_deps
-      [[ "$BACKEND" == "libvirt" ]] && fetch_installer_iso
+      [[ "$BACKEND" == "libvirt" ]] && fetch_base_image
       create_vms
       ;;
     config)
@@ -1558,7 +1923,7 @@ main() {
       ;;
     all)
       check_deps
-      [[ "$BACKEND" == "libvirt" ]] && fetch_installer_iso
+      [[ "$BACKEND" == "libvirt" ]] && fetch_base_image
       create_vms
       k0s_config
       k0s_apply
