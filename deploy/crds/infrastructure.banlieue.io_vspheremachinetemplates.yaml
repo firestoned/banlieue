@@ -7,7 +7,6 @@ metadata:
 spec:
   group: infrastructure.banlieue.io
   names:
-    categories: []
     kind: VSphereMachineTemplate
     plural: vspheremachinetemplates
     shortNames:
@@ -15,8 +14,7 @@ spec:
     singular: vspheremachinetemplate
   scope: Namespaced
   versions:
-  - additionalPrinterColumns: []
-    name: v1alpha1
+  - name: v1alpha1
     schema:
       openAPIV3Schema:
         description: |-
@@ -306,4 +304,3 @@ spec:
         type: object
     served: true
     storage: true
-    subresources: {}

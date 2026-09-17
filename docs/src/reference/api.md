@@ -577,6 +577,7 @@ Network interfaces in attachment order.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
+| `adapter` | string |  | Virtual NIC adapter type. Added after `NetworkInterfaceSpec` first shipped without one — `#[serde(default)]` keeps every VMClass stored before this field existed valid, deserializing to the same vmxnet3 default `VMImageTemplateNic` already uses. Allowed: `vmxnet3`, `vmxnet2`, `e1000`, `e1000e`. |
 | `ipam` | object | Yes | IPAM configuration. Uses [`IpamShape`] (not [`IpamSpec`]) because a `VMClass` is shared by many VMs — there is no per-VM address at this level. Per-VM static addresses are provided via `VirtualMachine.spec.networkOverrides`. |
 | `mtu` | integer |  | Optional MTU override. Provider may ignore if unsupported. |
 | `name` | string | Yes | Stable name within the VM. |
@@ -681,6 +682,7 @@ Cluster-scoped: a VMImage is shared by VirtualMachines in any namespace.
 | `osVersion` | string | Yes | Free-form version string. Examples: "22.04", "9.4", "2022". |
 | `sources` | object[] | Yes | Per-provider source mappings — one backend binding for this catalog entry per `providerClass` you intend to schedule VMs onto ("one name, many backends", see the type-level doc comment above). |
 | `template` | object |  | How the backend **template** is built from a `Url` source (root folder, network, disk, CPU / memory / firmware / NIC, force knobs). Every field is optional and falls back to a built-in default. Only meaningful for `Url` sources; ignored for `Template` / `BackingFile`. See [`VMImageTemplate`] and ADR-0020. |
+| `trustedBoot` | object |  | Requests a Trusted Boot (UKI) artifact instead of a classic kernel+initrd one, for `Url`-kind vSphere sources. Resolved by `banlieue-imagebuilder` into the kairos-operator `OSArtifact`'s `spec.artifacts.uki.{iso,keysVolume}` (replacing the plain `artifacts.iso` request) — the `auroraboot build-uki` mechanism. See [`TrustedBootSource`] and ADR-0041. Ignored for `cloudImage`-kind builds and non-`Url` sources. |
 
 #### `.spec.cloudConfigs[]`
 
@@ -807,6 +809,32 @@ before it became a list (ADR-0031). vSphere-only.
 | `adapter` | string |  | Virtual NIC adapter type for the template (`govc vm.create -net.adapter`). Allowed: `vmxnet3`, `vmxnet2`, `e1000`, `e1000e`. |
 | `network` | string |  | Port group this NIC attaches to. When unset, the zone's first reachable network class (ADR-0019) is used. |
 | `pciSlot` | integer |  | PCI slot number for this NIC (`ethernetN.pciSlotNumber`). Slot 192 on the first NIC yields a stable `ens192` interface name in the guest. When unset, defaults to `192 + this NIC's index` in `VMImageTemplate.network` — so a template with several NICs and no explicit slots still gets predictable, non-colliding `ens192`/`ens193`/`ens194`/... naming. |
+
+#### `.spec.trustedBoot`
+
+Requests a Trusted Boot (UKI) artifact instead of a classic
+kernel+initrd one, for `Url`-kind vSphere sources. Resolved by
+`banlieue-imagebuilder` into the kairos-operator `OSArtifact`'s
+`spec.artifacts.uki.{iso,keysVolume}` (replacing the plain
+`artifacts.iso` request) — the `auroraboot build-uki` mechanism. See
+[`TrustedBootSource`] and ADR-0041. Ignored for `cloudImage`-kind
+builds and non-`Url` sources.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `secretRef` | object | Yes | Secret in the imagebuild namespace holding the six files `auroraboot build-uki` requires: `PK.auth`, `KEK.auth`, `db.auth`, `db.key`, `db.pem`, `tpm2-pcr-private.pem`. Generated out-of-band via `auroraboot genkey` — banlieue never generates or manages this key material. |
+
+##### `.spec.trustedBoot.secretRef`
+
+Secret in the imagebuild namespace holding the six files
+`auroraboot build-uki` requires: `PK.auth`, `KEK.auth`, `db.auth`,
+`db.key`, `db.pem`, `tpm2-pcr-private.pem`. Generated out-of-band via
+`auroraboot genkey` — banlieue never generates or manages this key
+material.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | Yes |  |
 
 ### `.status`
 
@@ -1497,6 +1525,7 @@ Network interfaces.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
+| `adapter` | string |  | Virtual NIC adapter type. Added after `VSphereNicSpec` first shipped without one — `#[serde(default)]` keeps every VSphereMachine stored before this field existed valid, deserializing to the same vmxnet3 default `VMImageTemplateNic` already uses. Allowed: `vmxnet3`, `vmxnet2`, `e1000`, `e1000e`. |
 | `ipam` | object | Yes | IP address management for this interface. |
 | `macAddress` | string |  | Optional MAC address (otherwise vCenter generates one). |
 | `name` | string | Yes | Stable NIC name; echoed in status. |
@@ -1676,6 +1705,7 @@ Network interfaces.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
+| `adapter` | string |  | Virtual NIC adapter type. Added after `VSphereNicSpec` first shipped without one — `#[serde(default)]` keeps every VSphereMachine stored before this field existed valid, deserializing to the same vmxnet3 default `VMImageTemplateNic` already uses. Allowed: `vmxnet3`, `vmxnet2`, `e1000`, `e1000e`. |
 | `ipam` | object | Yes | IP address management for this interface. |
 | `macAddress` | string |  | Optional MAC address (otherwise vCenter generates one). |
 | `name` | string | Yes | Stable NIC name; echoed in status. |

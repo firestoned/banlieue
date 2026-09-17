@@ -28,6 +28,7 @@ mod tests {
             cloud_configs: vec![],
             template: None,
             iso_overlay: None,
+            trusted_boot: None,
         }
     }
 
@@ -849,6 +850,43 @@ mod tests {
     #[test]
     fn iso_overlay_file_missing_path_fails() {
         let err = serde_json::from_str::<IsoOverlayFile>(r#"{"key":"grub.cfg"}"#);
+        assert!(err.is_err());
+    }
+
+    // ----------------------------------------------------------------------
+    // VMImageSpec.trustedBoot (ADR-0041)
+    // ----------------------------------------------------------------------
+
+    #[test]
+    fn vmimage_spec_omits_trusted_boot_when_none() {
+        let s = minimal_vmimage_spec();
+        assert!(s.trusted_boot.is_none());
+        let json = serde_json::to_value(&s).unwrap();
+        assert!(!json.as_object().unwrap().contains_key("trustedBoot"));
+    }
+
+    #[test]
+    fn vmimage_spec_with_trusted_boot_round_trip() {
+        let s = VMImageSpec {
+            trusted_boot: Some(TrustedBootSource {
+                secret_ref: LocalObjectReference {
+                    name: "kairos-trusted-boot-keys".to_string(),
+                },
+            }),
+            ..minimal_vmimage_spec()
+        };
+        let json = serde_json::to_value(&s).unwrap();
+        assert_eq!(
+            json["trustedBoot"]["secretRef"]["name"],
+            "kairos-trusted-boot-keys"
+        );
+        let back: VMImageSpec = serde_json::from_value(json).unwrap();
+        assert_eq!(back, s);
+    }
+
+    #[test]
+    fn trusted_boot_source_missing_secret_ref_fails() {
+        let err = serde_json::from_str::<TrustedBootSource>(r#"{}"#);
         assert!(err.is_err());
     }
 

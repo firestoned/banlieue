@@ -243,6 +243,7 @@ pub struct FakeClient {
     power_state_calls: Mutex<Vec<String>>,
     destroyed: Mutex<Vec<String>>,
     tpm_attached: Mutex<Vec<String>>,
+    grown_disks: Mutex<Vec<(String, u32)>>,
 }
 
 impl FakeClient {
@@ -257,6 +258,7 @@ impl FakeClient {
             power_state_calls: Mutex::new(Vec::new()),
             destroyed: Mutex::new(Vec::new()),
             tpm_attached: Mutex::new(Vec::new()),
+            grown_disks: Mutex::new(Vec::new()),
         }
     }
 
@@ -300,6 +302,18 @@ impl FakeClient {
             .expect("fake client lock")
             .iter()
             .any(|m| m.as_str() == vm_moref)
+    }
+
+    /// The last `size_gi_b` `grow_os_disk` was called with for `vm_moref`,
+    /// `None` if it was never called for that moref.
+    pub fn grown_disk_size(&self, vm_moref: &str) -> Option<u32> {
+        self.grown_disks
+            .lock()
+            .expect("fake client lock")
+            .iter()
+            .rev()
+            .find(|(m, _)| m.as_str() == vm_moref)
+            .map(|(_, size)| *size)
     }
 }
 
@@ -434,6 +448,14 @@ impl VSphereClient for FakeClient {
             .lock()
             .expect("fake client lock")
             .push(vm_moref.to_string());
+        Ok(())
+    }
+
+    async fn grow_os_disk(&self, vm_moref: &str, size_gi_b: u32) -> Result<()> {
+        self.grown_disks
+            .lock()
+            .expect("fake client lock")
+            .push((vm_moref.to_string(), size_gi_b));
         Ok(())
     }
 }

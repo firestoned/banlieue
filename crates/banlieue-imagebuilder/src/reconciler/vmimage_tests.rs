@@ -134,6 +134,7 @@ mod tests {
             &BuildScheduling::default(),
             None,
             &ImporterImage::default(),
+            None,
         );
         assert_eq!(obj["apiVersion"], "build.kairos.io/v1alpha2");
         assert_eq!(obj["kind"], "OSArtifact");
@@ -171,6 +172,7 @@ mod tests {
             &BuildScheduling::default(),
             None,
             &ImporterImage::default(),
+            None,
         );
         assert_eq!(obj["spec"]["artifacts"]["cloudImage"], true);
         assert_eq!(obj["spec"]["artifacts"]["arch"], "amd64");
@@ -197,6 +199,7 @@ mod tests {
             &BuildScheduling::default(),
             None,
             &ImporterImage::default(),
+            None,
         );
         assert_eq!(
             obj["spec"]["artifacts"]["cloudConfigRef"]["name"],
@@ -229,6 +232,7 @@ mod tests {
             &BuildScheduling::default(),
             None,
             &ImporterImage::default(),
+            None,
         );
         assert_eq!(
             obj["spec"]["artifacts"]["cloudConfigRef"]["key"],
@@ -255,6 +259,7 @@ mod tests {
             &BuildScheduling::default(),
             None,
             &ImporterImage::default(),
+            None,
         );
         let spec = obj["spec"].as_object().expect("spec is an object");
         assert!(
@@ -294,6 +299,7 @@ mod tests {
             &scheduling,
             None,
             &ImporterImage::default(),
+            None,
         );
         assert_eq!(
             obj["spec"]["nodeSelector"]["banlieue.io/imagebuild"], "true",
@@ -317,6 +323,7 @@ mod tests {
             &BuildScheduling::default(),
             None,
             &ImporterImage::default(),
+            None,
         );
         assert_eq!(obj["spec"]["artifacts"]["arch"], "arm64");
     }
@@ -351,6 +358,7 @@ mod tests {
             &BuildScheduling::default(),
             Some(&overlay),
             &ImporterImage::default(),
+            None,
         );
         // overlayISOVolume must point at the emptyDir, never the raw Secret
         // volume directly — kairos-io/kairos#4324: auroraboot's overlay-copy
@@ -401,6 +409,7 @@ mod tests {
             &BuildScheduling::default(),
             Some(&overlay),
             &ImporterImage::default(),
+            None,
         );
         let importer = &obj["spec"]["importers"][0];
         assert_eq!(importer["name"], "iso-overlay-materialize");
@@ -449,6 +458,7 @@ mod tests {
             &BuildScheduling::default(),
             Some(&overlay),
             &importer_image,
+            None,
         );
         assert_eq!(
             obj["spec"]["importers"][0]["image"],
@@ -474,6 +484,7 @@ mod tests {
             &BuildScheduling::default(),
             None,
             &importer_image,
+            None,
         );
         // Pod-wide, independent of iso_overlay — the main build container's
         // image may come from the same mirror.
@@ -498,6 +509,7 @@ mod tests {
             &BuildScheduling::default(),
             None,
             &ImporterImage::default(),
+            None,
         );
         assert!(
             !obj["spec"]
@@ -521,6 +533,7 @@ mod tests {
             &BuildScheduling::default(),
             None,
             &ImporterImage::default(),
+            None,
         );
         let spec = obj["spec"].as_object().unwrap();
         assert!(!spec.contains_key("volumes"));
@@ -555,8 +568,360 @@ mod tests {
             &BuildScheduling::default(),
             Some(&overlay),
             &ImporterImage::default(),
+            None,
         );
         assert!(!obj["spec"].as_object().unwrap().contains_key("volumes"));
+    }
+
+    // ----------------------------------------------------------------------
+    // desired_os_artifact — trustedBoot / UKI wiring (ADR-0041)
+    // ----------------------------------------------------------------------
+
+    #[test]
+    fn desired_os_artifact_wires_trusted_boot_uki() {
+        use banlieue_api::banlieue::TrustedBootSource;
+        use banlieue_api::common::LocalObjectReference;
+
+        let source = url_source("quay.io/kairos/rhel:9.8");
+        let trusted_boot = TrustedBootSource {
+            secret_ref: LocalObjectReference {
+                name: "kairos-trusted-boot-keys".to_string(),
+            },
+        };
+        let obj = desired_os_artifact(
+            "kairos-rhel98-build",
+            "banlieue-imagebuild",
+            &source,
+            &Architecture::Amd64,
+            &BuildArtifactKind::Iso,
+            None,
+            None,
+            &BuildScheduling::default(),
+            None,
+            &ImporterImage::default(),
+            Some(&trusted_boot),
+        );
+        // Requests the UKI artifact, not the plain `iso` flag — auroraboot
+        // build-uki instead of build-iso, since the base rootfs is a Unified
+        // Kernel Image with no discrete initrd for build-iso to find.
+        assert!(
+            !obj["spec"]["artifacts"]
+                .as_object()
+                .unwrap()
+                .contains_key("iso")
+        );
+        assert_eq!(obj["spec"]["artifacts"]["uki"]["iso"], true);
+        assert_eq!(
+            obj["spec"]["artifacts"]["uki"]["keysVolume"],
+            "trusted-boot-keys"
+        );
+        assert_eq!(obj["spec"]["volumes"][0]["name"], "trusted-boot-keys");
+        assert_eq!(
+            obj["spec"]["volumes"][0]["secret"]["secretName"],
+            "kairos-trusted-boot-keys"
+        );
+    }
+
+    #[test]
+    fn desired_os_artifact_requests_plain_iso_without_trusted_boot() {
+        let source = url_source("quay.io/kairos/rhel:9.8");
+        let obj = desired_os_artifact(
+            "kairos-rhel98-build",
+            "banlieue-imagebuild",
+            &source,
+            &Architecture::Amd64,
+            &BuildArtifactKind::Iso,
+            None,
+            None,
+            &BuildScheduling::default(),
+            None,
+            &ImporterImage::default(),
+            None,
+        );
+        assert_eq!(obj["spec"]["artifacts"]["iso"], true);
+        assert!(
+            !obj["spec"]["artifacts"]
+                .as_object()
+                .unwrap()
+                .contains_key("uki")
+        );
+        assert!(!obj["spec"].as_object().unwrap().contains_key("volumes"));
+    }
+
+    #[test]
+    fn desired_os_artifact_trusted_boot_combines_with_iso_overlay_volumes() {
+        use banlieue_api::banlieue::{IsoOverlayFile, IsoOverlaySource, TrustedBootSource};
+        use banlieue_api::common::LocalObjectReference;
+
+        let source = url_source("quay.io/kairos/rhel:9.8");
+        let overlay = IsoOverlaySource {
+            secret_ref: LocalObjectReference {
+                name: "kairos-iso-overlay".to_string(),
+            },
+            files: vec![IsoOverlayFile {
+                key: "grub.cfg".to_string(),
+                path: "boot/grub2/grub.cfg".to_string(),
+            }],
+        };
+        let trusted_boot = TrustedBootSource {
+            secret_ref: LocalObjectReference {
+                name: "kairos-trusted-boot-keys".to_string(),
+            },
+        };
+        let obj = desired_os_artifact(
+            "kairos-rhel98-build",
+            "banlieue-imagebuild",
+            &source,
+            &Architecture::Amd64,
+            &BuildArtifactKind::Iso,
+            None,
+            None,
+            &BuildScheduling::default(),
+            Some(&overlay),
+            &ImporterImage::default(),
+            Some(&trusted_boot),
+        );
+        let volumes = obj["spec"]["volumes"].as_array().unwrap();
+        let names: Vec<&str> = volumes
+            .iter()
+            .map(|v| v["name"].as_str().unwrap())
+            .collect();
+        assert!(names.contains(&"iso-overlay-source"));
+        assert!(names.contains(&"iso-overlay"));
+        assert!(names.contains(&"trusted-boot-keys"));
+        assert_eq!(obj["spec"]["artifacts"]["overlayISOVolume"], "iso-overlay");
+        assert_eq!(
+            obj["spec"]["artifacts"]["uki"]["keysVolume"],
+            "trusted-boot-keys"
+        );
+    }
+
+    #[test]
+    fn desired_os_artifact_trusted_boot_without_cloud_config_skips_iso_overlay() {
+        use banlieue_api::banlieue::TrustedBootSource;
+        use banlieue_api::common::LocalObjectReference;
+
+        let source = url_source("quay.io/kairos/rhel:9.8");
+        let trusted_boot = TrustedBootSource {
+            secret_ref: LocalObjectReference {
+                name: "kairos-trusted-boot-keys".to_string(),
+            },
+        };
+        let obj = desired_os_artifact(
+            "kairos-rhel98-build",
+            "banlieue-imagebuild",
+            &source,
+            &Architecture::Amd64,
+            &BuildArtifactKind::Iso,
+            None,
+            None,
+            &BuildScheduling::default(),
+            None,
+            &ImporterImage::default(),
+            Some(&trusted_boot),
+        );
+        assert!(
+            !obj["spec"]["artifacts"]
+                .as_object()
+                .unwrap()
+                .contains_key("overlayISOVolume")
+        );
+        let volumes = obj["spec"]["volumes"].as_array().unwrap();
+        assert_eq!(volumes.len(), 1);
+        assert_eq!(volumes[0]["name"], "trusted-boot-keys");
+    }
+
+    #[test]
+    fn desired_os_artifact_trusted_boot_with_cloud_config_skips_cloud_config_ref_and_uses_iso_overlay()
+     {
+        use banlieue_api::banlieue::TrustedBootSource;
+        use banlieue_api::common::LocalObjectReference;
+
+        let source = url_source("quay.io/kairos/rhel:9.8");
+        let cc = CloudConfigSource {
+            secret_ref: Some(KeySelector {
+                name: "kairos-base-cloud-config".to_string(),
+                key: None,
+            }),
+        };
+        let trusted_boot = TrustedBootSource {
+            secret_ref: LocalObjectReference {
+                name: "kairos-trusted-boot-keys".to_string(),
+            },
+        };
+        let obj = desired_os_artifact(
+            "kairos-rhel98-build",
+            "banlieue-imagebuild",
+            &source,
+            &Architecture::Amd64,
+            &BuildArtifactKind::Iso,
+            Some(&cc),
+            None,
+            &BuildScheduling::default(),
+            None,
+            &ImporterImage::default(),
+            Some(&trusted_boot),
+        );
+        // kairos-operator's buildUKICommand unconditionally appends
+        // `--cloud-config` whenever cloudConfigRef is set, but
+        // `auroraboot build-uki` has no such flag ("flag provided but not
+        // defined: -cloud-config", confirmed live) — so cloudConfigRef must
+        // never be set alongside trustedBoot. Instead the cloud-config is
+        // baked in via the *same* overlayISOVolume mechanism as isoOverlay
+        // (ADR-0022), placed at the ISO root as `config.yaml` — the exact
+        // path/filename `auroraboot build-iso --cloud-config` itself writes
+        // to internally (confirmed against AuroraBoot's source), which
+        // kairos-agent's installer already scans for via
+        // `/run/initramfs/live` (the ISO's own live-boot mount).
+        assert!(
+            !obj["spec"]["artifacts"]
+                .as_object()
+                .unwrap()
+                .contains_key("cloudConfigRef")
+        );
+        assert_eq!(obj["spec"]["artifacts"]["overlayISOVolume"], "iso-overlay");
+        let volumes = obj["spec"]["volumes"].as_array().unwrap();
+        let names: Vec<&str> = volumes
+            .iter()
+            .map(|v| v["name"].as_str().unwrap())
+            .collect();
+        assert!(names.contains(&"trusted-boot-cloud-config-source"));
+        assert!(names.contains(&"iso-overlay"));
+        assert!(names.contains(&"trusted-boot-keys"));
+        let source_volume = volumes
+            .iter()
+            .find(|v| v["name"] == "trusted-boot-cloud-config-source")
+            .unwrap();
+        assert_eq!(
+            source_volume["secret"]["secretName"],
+            "kairos-base-cloud-config"
+        );
+        assert_eq!(
+            source_volume["secret"]["items"][0]["key"],
+            "cloud-config.yaml"
+        );
+        assert_eq!(source_volume["secret"]["items"][0]["path"], "config.yaml");
+        let importer = obj["spec"]["importers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["name"] == "trusted-boot-cloud-config-materialize")
+            .expect("expected the trusted-boot-cloud-config-materialize importer");
+        let mounts = importer["volumeMounts"].as_array().unwrap();
+        assert_eq!(mounts[0]["name"], "trusted-boot-cloud-config-source");
+        assert_eq!(mounts[1]["name"], "iso-overlay");
+    }
+
+    #[test]
+    fn desired_os_artifact_iso_overlay_and_trusted_boot_cloud_config_importers_both_present() {
+        use banlieue_api::banlieue::{IsoOverlayFile, IsoOverlaySource, TrustedBootSource};
+        use banlieue_api::common::LocalObjectReference;
+
+        let source = url_source("quay.io/kairos/rhel:9.8");
+        let overlay = IsoOverlaySource {
+            secret_ref: LocalObjectReference {
+                name: "kairos-iso-overlay".to_string(),
+            },
+            files: vec![IsoOverlayFile {
+                key: "grub.cfg".to_string(),
+                path: "boot/grub2/grub.cfg".to_string(),
+            }],
+        };
+        let cc = CloudConfigSource {
+            secret_ref: Some(KeySelector {
+                name: "kairos-base-cloud-config".to_string(),
+                key: None,
+            }),
+        };
+        let trusted_boot = TrustedBootSource {
+            secret_ref: LocalObjectReference {
+                name: "kairos-trusted-boot-keys".to_string(),
+            },
+        };
+        let obj = desired_os_artifact(
+            "kairos-rhel98-build",
+            "banlieue-imagebuild",
+            &source,
+            &Architecture::Amd64,
+            &BuildArtifactKind::Iso,
+            Some(&cc),
+            None,
+            &BuildScheduling::default(),
+            Some(&overlay),
+            &ImporterImage::default(),
+            Some(&trusted_boot),
+        );
+        // Both importers must survive — a naive `spec.insert("importers", ...)`
+        // per mechanism would let the second silently clobber the first. Both
+        // write into the *same* shared "iso-overlay" emptyDir (only one
+        // overlayISOVolume is possible), at non-colliding paths
+        // (boot/grub2/grub.cfg vs. config.yaml).
+        let importer_names: Vec<&str> = obj["spec"]["importers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["name"].as_str().unwrap())
+            .collect();
+        assert!(importer_names.contains(&"iso-overlay-materialize"));
+        assert!(importer_names.contains(&"trusted-boot-cloud-config-materialize"));
+        assert_eq!(importer_names.len(), 2);
+        // Only one "iso-overlay" emptyDir, not a duplicate per mechanism.
+        let overlay_emptydir_count = obj["spec"]["volumes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|v| v["name"] == "iso-overlay")
+            .count();
+        assert_eq!(overlay_emptydir_count, 1);
+    }
+
+    // ----------------------------------------------------------------------
+    // missing_trusted_boot_keys (ADR-0041 Decision #3 — preflight validation)
+    // ----------------------------------------------------------------------
+
+    #[test]
+    fn missing_trusted_boot_keys_empty_when_all_six_present() {
+        let present: std::collections::BTreeSet<String> = [
+            "PK.auth",
+            "KEK.auth",
+            "db.auth",
+            "db.key",
+            "db.pem",
+            "tpm2-pcr-private.pem",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+        assert!(missing_trusted_boot_keys(&present).is_empty());
+    }
+
+    #[test]
+    fn missing_trusted_boot_keys_reports_all_six_when_secret_empty() {
+        let present = std::collections::BTreeSet::new();
+        assert_eq!(
+            missing_trusted_boot_keys(&present),
+            vec![
+                "PK.auth",
+                "KEK.auth",
+                "db.auth",
+                "db.key",
+                "db.pem",
+                "tpm2-pcr-private.pem",
+            ]
+        );
+    }
+
+    #[test]
+    fn missing_trusted_boot_keys_reports_only_the_absent_ones_in_fixed_order() {
+        let present: std::collections::BTreeSet<String> =
+            ["db.pem", "PK.auth", "unrelated-extra-key"]
+                .into_iter()
+                .map(str::to_string)
+                .collect();
+        assert_eq!(
+            missing_trusted_boot_keys(&present),
+            vec!["KEK.auth", "db.auth", "db.key", "tpm2-pcr-private.pem"]
+        );
     }
 
     // ----------------------------------------------------------------------
@@ -623,7 +988,14 @@ mod tests {
     #[test]
     fn compute_status_missing_phase_defaults_pending() {
         let view = KairosArtifactStatusView::default();
-        let s = compute_build_artifact_status("x-build", BuildArtifactKind::Iso, &view, None, None);
+        let s = compute_build_artifact_status(
+            "x-build",
+            BuildArtifactKind::Iso,
+            &view,
+            None,
+            None,
+            false,
+        );
         assert_eq!(s.phase, BuildArtifactPhase::Pending);
         assert_eq!(s.kind, BuildArtifactKind::Iso);
         assert_eq!(s.os_artifact_ref, "x-build");
@@ -637,7 +1009,14 @@ mod tests {
             phase: Some("Building".to_string()),
             message: Some("pulling image".to_string()),
         };
-        let s = compute_build_artifact_status("x-build", BuildArtifactKind::Iso, &view, None, None);
+        let s = compute_build_artifact_status(
+            "x-build",
+            BuildArtifactKind::Iso,
+            &view,
+            None,
+            None,
+            false,
+        );
         assert_eq!(s.phase, BuildArtifactPhase::Building);
         assert!(s.pvc_ref.is_none());
         assert!(s.file.is_none());
@@ -656,10 +1035,38 @@ mod tests {
             &view,
             None,
             None,
+            false,
         );
         assert_eq!(s.phase, BuildArtifactPhase::Ready);
         assert_eq!(s.pvc_ref.unwrap().name, "kairos-rhel98-build-artifacts");
         assert_eq!(s.file.unwrap(), "kairos-rhel98-build.iso");
+    }
+
+    #[test]
+    fn compute_status_ready_trusted_boot_iso_appends_uki_suffix() {
+        // kairos-operator's buildUKICommand names the auroraboot --name flag
+        // `<osArtifactName>-uki` unconditionally for a UKI build (unless
+        // spec.nameOverride.uki is set — not something banlieue sets), and
+        // AuroraBoot writes exactly `<name>.iso` for output-type iso. So the
+        // real file on the PVC is `<osArtifactName>-uki.iso`, not
+        // `<osArtifactName>.iso` — confirmed against a live import failure
+        // ("cannot read .../debian-tpm-dev-v0.4.0-build.iso") plus
+        // kairos-operator/AuroraBoot source (ADR-0041 Decision #5).
+        let view = KairosArtifactStatusView {
+            phase: Some("Ready".to_string()),
+            message: None,
+        };
+        let s = compute_build_artifact_status(
+            "kairos-rhel98-build",
+            BuildArtifactKind::Iso,
+            &view,
+            None,
+            None,
+            true,
+        );
+        assert_eq!(s.phase, BuildArtifactPhase::Ready);
+        assert_eq!(s.pvc_ref.unwrap().name, "kairos-rhel98-build-artifacts");
+        assert_eq!(s.file.unwrap(), "kairos-rhel98-build-uki.iso");
     }
 
     #[test]
@@ -674,6 +1081,7 @@ mod tests {
             &view,
             None,
             None,
+            false,
         );
         assert_eq!(
             s.pvc_ref.unwrap().name,
@@ -688,7 +1096,14 @@ mod tests {
             phase: Some("Error".to_string()),
             message: Some("pull failed: manifest unknown".to_string()),
         };
-        let s = compute_build_artifact_status("x-build", BuildArtifactKind::Iso, &view, None, None);
+        let s = compute_build_artifact_status(
+            "x-build",
+            BuildArtifactKind::Iso,
+            &view,
+            None,
+            None,
+            false,
+        );
         assert_eq!(s.phase, BuildArtifactPhase::Failed);
         assert!(s.pvc_ref.is_none());
         assert_eq!(s.message.as_deref(), Some("pull failed: manifest unknown"));
@@ -706,8 +1121,14 @@ mod tests {
                 phase: Some(phase_str.to_string()),
                 message: None,
             };
-            let s =
-                compute_build_artifact_status("x-build", BuildArtifactKind::Iso, &view, None, None);
+            let s = compute_build_artifact_status(
+                "x-build",
+                BuildArtifactKind::Iso,
+                &view,
+                None,
+                None,
+                false,
+            );
             assert_eq!(s.reason.as_deref(), Some(expected_reason));
         }
     }
@@ -733,6 +1154,7 @@ mod tests {
             &BuildScheduling::default(),
             None,
             &ImporterImage::default(),
+            None,
         );
         let owner = &obj["metadata"]["ownerReferences"][0];
         assert_eq!(owner["apiVersion"], "banlieue.io/v1alpha1");
@@ -771,19 +1193,22 @@ mod tests {
             &data,
             "quay.io/a/b@sha256:x",
             "amd64",
-            &BuildArtifactKind::Iso
+            &BuildArtifactKind::Iso,
+            None,
         ));
         assert!(!spec_matches(
             &data,
             "quay.io/a/c@sha256:y",
             "amd64",
-            &BuildArtifactKind::Iso
+            &BuildArtifactKind::Iso,
+            None,
         ));
         assert!(!spec_matches(
             &data,
             "quay.io/a/b@sha256:x",
             "arm64",
-            &BuildArtifactKind::Iso
+            &BuildArtifactKind::Iso,
+            None,
         ));
         // Same ref+arch but the requested kind changed (iso live, cloudImage
         // wanted) → must NOT match, forcing a rebuild.
@@ -791,7 +1216,63 @@ mod tests {
             &data,
             "quay.io/a/b@sha256:x",
             "amd64",
-            &BuildArtifactKind::CloudImage
+            &BuildArtifactKind::CloudImage,
+            None,
+        ));
+    }
+
+    #[test]
+    fn spec_matches_detects_trusted_boot_drift() {
+        use banlieue_api::banlieue::TrustedBootSource;
+        use banlieue_api::common::LocalObjectReference;
+
+        let plain_iso = serde_json::json!({
+            "spec": {
+                "image": { "ref": "quay.io/a/b@sha256:x" },
+                "artifacts": { "arch": "amd64", "iso": true }
+            }
+        });
+        let uki_iso = serde_json::json!({
+            "spec": {
+                "image": { "ref": "quay.io/a/b@sha256:x" },
+                "artifacts": {
+                    "arch": "amd64",
+                    "uki": { "iso": true, "keysVolume": "trusted-boot-keys" }
+                }
+            }
+        });
+        let trusted_boot = TrustedBootSource {
+            secret_ref: LocalObjectReference {
+                name: "kairos-trusted-boot-keys".to_string(),
+            },
+        };
+
+        // Live artifact is plain iso, but trustedBoot is now requested ->
+        // stale, must rebuild.
+        assert!(!spec_matches(
+            &plain_iso,
+            "quay.io/a/b@sha256:x",
+            "amd64",
+            &BuildArtifactKind::Iso,
+            Some(&trusted_boot),
+        ));
+        // Live artifact is already uki.iso and trustedBoot is requested ->
+        // current, no rebuild needed.
+        assert!(spec_matches(
+            &uki_iso,
+            "quay.io/a/b@sha256:x",
+            "amd64",
+            &BuildArtifactKind::Iso,
+            Some(&trusted_boot),
+        ));
+        // Live artifact is uki.iso but trustedBoot was removed -> stale,
+        // must rebuild back to plain iso.
+        assert!(!spec_matches(
+            &uki_iso,
+            "quay.io/a/b@sha256:x",
+            "amd64",
+            &BuildArtifactKind::Iso,
+            None,
         ));
     }
 
@@ -811,6 +1292,7 @@ mod tests {
             &view,
             Some("sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"),
             None,
+            false,
         );
         assert_eq!(
             s.checksum.as_deref(),
@@ -821,7 +1303,14 @@ mod tests {
     #[test]
     fn compute_status_without_a_source_checksum_publishes_none() {
         let view = KairosArtifactStatusView::default();
-        let s = compute_build_artifact_status("x-build", BuildArtifactKind::Iso, &view, None, None);
+        let s = compute_build_artifact_status(
+            "x-build",
+            BuildArtifactKind::Iso,
+            &view,
+            None,
+            None,
+            false,
+        );
         assert!(s.checksum.is_none());
     }
 
@@ -841,6 +1330,7 @@ mod tests {
             &view,
             None,
             Some("11111111-2222-3333-4444-555555555555"),
+            false,
         );
         assert_eq!(
             s.os_artifact_uid.as_deref(),
@@ -851,7 +1341,14 @@ mod tests {
     #[test]
     fn compute_status_without_a_known_uid_publishes_none() {
         let view = KairosArtifactStatusView::default();
-        let s = compute_build_artifact_status("x-build", BuildArtifactKind::Iso, &view, None, None);
+        let s = compute_build_artifact_status(
+            "x-build",
+            BuildArtifactKind::Iso,
+            &view,
+            None,
+            None,
+            false,
+        );
         assert!(s.os_artifact_uid.is_none());
     }
 }

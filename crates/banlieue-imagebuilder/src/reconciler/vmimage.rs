@@ -24,7 +24,7 @@ use std::sync::Arc;
 
 use banlieue_api::banlieue::{
     Architecture, BuildArtifactKind, BuildArtifactPhase, BuildArtifactStatus, ImageSource,
-    ImageSourceKind, IsoOverlaySource, VMImage, VMImageStatus,
+    ImageSourceKind, IsoOverlaySource, TrustedBootSource, VMImage, VMImageStatus,
 };
 use banlieue_api::common::{
     CloudConfigSource, DEFAULT_CLOUD_CONFIG_KEY, KeySelector, LocalObjectReference,
@@ -90,14 +90,76 @@ pub(crate) const ISO_OVERLAY_IMPORTER_IMAGE: &str = "busybox:1.36";
 const ISO_OVERLAY_SOURCE_MOUNT_PATH: &str = "/overlay-src";
 const ISO_OVERLAY_DEST_MOUNT_PATH: &str = "/overlay-dst";
 
-/// Shell script run by [`ISO_OVERLAY_IMPORTER_NAME`]: copies only the
-/// caller-declared top-level overlay entries (skipping kubelet's `..data` /
-/// `..<timestamp>` bookkeeping, excluded via `-not -name '.*'`) from the
-/// Secret mount to the `emptyDir`, dereferencing symlinks (`-L`) so the
-/// destination holds plain files/directories.
-fn iso_overlay_materialize_script() -> String {
+/// Fixed name for the `spec.volumes[]` entry `artifacts.uki.keysVolume`
+/// points at (ADR-0041). A direct Secret volume, unlike
+/// [`ISO_OVERLAY_VOLUME_NAME`]: `auroraboot build-uki` reads the six named
+/// key files individually rather than merging a directory tree onto an
+/// already-populated ISO root, so kubelet's Secret-mount symlink layout
+/// (kairos-io/kairos#4324) has no directory to collide with here.
+const TRUSTED_BOOT_KEYS_VOLUME_NAME: &str = "trusted-boot-keys";
+
+/// Fixed name for the Secret-backed `spec.volumes[]` entry holding a
+/// `trustedBoot` build's cloud-config, before it's materialized into the
+/// shared [`ISO_OVERLAY_VOLUME_NAME`] emptyDir (ADR-0041 Decision #4).
+const TRUSTED_BOOT_CLOUD_CONFIG_SOURCE_VOLUME_NAME: &str = "trusted-boot-cloud-config-source";
+
+/// `spec.importers[]` container name that dereferences
+/// [`TRUSTED_BOOT_CLOUD_CONFIG_SOURCE_VOLUME_NAME`]'s kubelet symlinks into
+/// [`ISO_OVERLAY_VOLUME_NAME`] as [`ISO_ROOT_CLOUD_CONFIG_FILENAME`] (ADR-0041
+/// Decision #4).
+const TRUSTED_BOOT_CLOUD_CONFIG_IMPORTER_NAME: &str = "trusted-boot-cloud-config-materialize";
+
+/// Filename `auroraboot build-iso --cloud-config` itself writes onto the ISO
+/// root internally (confirmed against AuroraBoot's source:
+/// `deployer.cloudConfigPath()`, `<dest>/config.yaml`, copied into the ISO's
+/// root overlay). Reused here so a `trustedBoot` build's cloud-config,
+/// injected via `overlayISOVolume` instead (`--cloud-config` doesn't exist
+/// on `build-uki`), lands exactly where kairos-agent's installer already
+/// looks for it — ADR-0041 Decision #4.
+const ISO_ROOT_CLOUD_CONFIG_FILENAME: &str = "config.yaml";
+
+/// The six file names `auroraboot build-uki` requires in a `trustedBoot`
+/// Secret (ADR-0041 Decision #3 — preflight validation), in a fixed order
+/// so error messages are deterministic.
+const REQUIRED_TRUSTED_BOOT_KEYS: [&str; 6] = [
+    "PK.auth",
+    "KEK.auth",
+    "db.auth",
+    "db.key",
+    "db.pem",
+    "tpm2-pcr-private.pem",
+];
+
+/// Reason string for `BuildArtifactStatus.reason` when a `trustedBoot`
+/// Secret is missing one or more required keys (ADR-0041 Decision #3).
+const REASON_TRUSTED_BOOT_KEYS_MISSING: &str = "TrustedBootKeysMissing";
+
+/// Names from [`REQUIRED_TRUSTED_BOOT_KEYS`] absent from `present`, in fixed
+/// declaration order — deterministic regardless of `present`'s iteration
+/// order. Only ever checks key *names*: this and its caller never inspect a
+/// Secret's `data` values (ADR-0041's "never touches Secret content"
+/// posture extends to this preflight check).
+pub fn missing_trusted_boot_keys(
+    present: &std::collections::BTreeSet<String>,
+) -> Vec<&'static str> {
+    REQUIRED_TRUSTED_BOOT_KEYS
+        .into_iter()
+        .filter(|k| !present.contains(*k))
+        .collect()
+}
+
+/// Shell script for a Secret-materializing importer: copies only the
+/// caller-declared top-level entries (skipping kubelet's `..data` /
+/// `..<timestamp>` bookkeeping, excluded via `-not -name '.*'`) from
+/// `src_mount` to `dst_mount`, dereferencing symlinks (`-L`) so the
+/// destination holds plain files/directories. Shared by
+/// [`ISO_OVERLAY_IMPORTER_NAME`] (ADR-0022) and
+/// [`TRUSTED_BOOT_CLOUD_CONFIG_IMPORTER_NAME`] (ADR-0041 Decision #4) — both
+/// work around the same kubelet Secret-mount symlink layout
+/// (kairos-io/kairos#4324), just onto different destinations.
+fn materialize_script(src_mount: &str, dst_mount: &str) -> String {
     format!(
-        "find {ISO_OVERLAY_SOURCE_MOUNT_PATH} -mindepth 1 -maxdepth 1 -not -name '.*' -exec cp -rL -t {ISO_OVERLAY_DEST_MOUNT_PATH}/ {{}} +"
+        "find {src_mount} -mindepth 1 -maxdepth 1 -not -name '.*' -exec cp -rL -t {dst_mount}/ {{}} +"
     )
 }
 
@@ -220,10 +282,11 @@ pub struct OwnerRef<'a> {
 /// set — Kubernetes pull secrets are always pod-scoped, so the same list
 /// covers the main build container's image when it too comes from a private
 /// or mirrored registry (ADR-0022 Decision #4).
-// Ten parameters: each is a distinct, unrelated input to the manifest
+// Eleven parameters: each is a distinct, unrelated input to the manifest
 // (identity, source, arch, artifact kind, cloud-config, owner, scheduling,
-// iso-overlay, importer image). Bundling them into a struct would only move
-// the same fields behind one more layer without improving call-site clarity.
+// iso-overlay, importer image, trusted-boot). Bundling them into a struct
+// would only move the same fields behind one more layer without improving
+// call-site clarity.
 #[allow(clippy::too_many_arguments)]
 pub fn desired_os_artifact(
     name: &str,
@@ -236,6 +299,7 @@ pub fn desired_os_artifact(
     scheduling: &BuildScheduling,
     iso_overlay: Option<&IsoOverlaySource>,
     importer_image: &ImporterImage,
+    trusted_boot: Option<&TrustedBootSource>,
 ) -> Value {
     let owner_references = owner.map(|o| {
         json!([{
@@ -255,58 +319,116 @@ pub fn desired_os_artifact(
     // kairos' default scheduling (ADR-0016 follow-up); present only when set.
     let mut spec = serde_json::Map::new();
     spec.insert("image".to_string(), json!({ "ref": source.import_from }));
-    // Request exactly the one artifact kind this build serves. `cloudConfigRef`
-    // is added only when a cloud-config source is set, and only its `secretRef`
-    // is honoured today (ADR-0020, secretRef-first).
     let mut artifacts = serde_json::Map::new();
-    artifacts.insert(artifacts_flag(kind).to_string(), json!(true));
     artifacts.insert("arch".to_string(), json!(arch_str(architecture)));
-    if let Some(secret_ref) = cloud_config.and_then(|cc| cc.secret_ref.as_ref()) {
-        artifacts.insert(
-            "cloudConfigRef".to_string(),
-            json!({
-                "name": secret_ref.name,
-                "key": secret_ref.key_or(DEFAULT_CLOUD_CONFIG_KEY),
-            }),
-        );
-    }
+    // `spec.volumes[]`/`spec.importers[]` accumulate across the independent
+    // iso_overlay and trusted_boot mechanisms below — each only appends its
+    // own entries, never overwrites, so any combination can be set on the
+    // same build. Both mechanisms may target the *same* shared
+    // `ISO_OVERLAY_VOLUME_NAME` emptyDir (there is only ever one
+    // `overlayISOVolume`), so that emptyDir is added at most once, after
+    // both have had a chance to request it.
+    let mut volumes: Vec<Value> = Vec::new();
+    let mut importers: Vec<Value> = Vec::new();
+    let mut iso_overlay_emptydir_needed = false;
+
     // ISO overlay files (ADR-0022): only added when at least one file is
     // declared — an IsoOverlaySource with an empty `files` would otherwise
     // wire an `overlayISOVolume` up to a Secret volume with no `items`,
     // which mounts nothing useful.
     if let Some(overlay) = iso_overlay.filter(|o| !o.files.is_empty()) {
-        artifacts.insert(
-            "overlayISOVolume".to_string(),
-            json!(ISO_OVERLAY_VOLUME_NAME),
-        );
-        spec.insert(
-            "volumes".to_string(),
-            json!([
+        iso_overlay_emptydir_needed = true;
+        volumes.push(json!({
+            "name": ISO_OVERLAY_SOURCE_VOLUME_NAME,
+            "secret": {
+                "secretName": overlay.secret_ref.name,
+                "items": overlay.files.iter().map(|f| json!({
+                    "key": f.key,
+                    "path": f.path,
+                })).collect::<Vec<_>>(),
+            },
+        }));
+        importers.push(json!({
+            "name": ISO_OVERLAY_IMPORTER_NAME,
+            "image": importer_image.reference,
+            "command": [
+                "sh",
+                "-c",
+                materialize_script(ISO_OVERLAY_SOURCE_MOUNT_PATH, ISO_OVERLAY_DEST_MOUNT_PATH),
+            ],
+            "volumeMounts": [
                 {
                     "name": ISO_OVERLAY_SOURCE_VOLUME_NAME,
-                    "secret": {
-                        "secretName": overlay.secret_ref.name,
-                        "items": overlay.files.iter().map(|f| json!({
-                            "key": f.key,
-                            "path": f.path,
-                        })).collect::<Vec<_>>(),
-                    },
+                    "mountPath": ISO_OVERLAY_SOURCE_MOUNT_PATH,
+                    "readOnly": true,
                 },
                 {
                     "name": ISO_OVERLAY_VOLUME_NAME,
-                    "emptyDir": {},
+                    "mountPath": ISO_OVERLAY_DEST_MOUNT_PATH,
                 },
-            ]),
+            ],
+        }));
+    }
+    // Trusted Boot / UKI (ADR-0041): requests artifacts.uki.iso instead of
+    // the plain artifacts.iso this build would otherwise request — the base
+    // rootfs is a Unified Kernel Image with no discrete initrd for
+    // `auroraboot build-iso` to find. The Secret is referenced directly as
+    // `keysVolume`, unlike isoOverlay's emptyDir indirection: build-uki reads
+    // individual named key files rather than merging a directory tree onto
+    // an already-populated ISO root, so there is no kubelet-symlink/existing
+    // directory collision (kairos-io/kairos#4324) to work around here.
+    if let Some(tb) = trusted_boot {
+        artifacts.insert(
+            "uki".to_string(),
+            json!({
+                "iso": true,
+                "keysVolume": TRUSTED_BOOT_KEYS_VOLUME_NAME,
+            }),
         );
-        spec.insert(
-            "importers".to_string(),
-            json!([{
-                "name": ISO_OVERLAY_IMPORTER_NAME,
+        volumes.push(json!({
+            "name": TRUSTED_BOOT_KEYS_VOLUME_NAME,
+            "secret": {
+                "secretName": tb.secret_ref.name,
+            },
+        }));
+        // ADR-0041 Decision #4: `cloudConfigRef` is never set alongside
+        // `uki` — kairos-operator's `buildUKICommand` unconditionally
+        // appends `--cloud-config` whenever `cloudConfigRef` is set, but
+        // `auroraboot build-uki` has no such flag at all ("flag provided
+        // but not defined: -cloud-config", confirmed against a live build
+        // failure; filed upstream, see ~/dev/issues). Instead the cloud
+        // config is baked in via the *same* `overlayISOVolume` mechanism as
+        // `isoOverlay`, placed at the ISO root as `config.yaml` — the exact
+        // path `auroraboot build-iso --cloud-config` itself writes
+        // internally (confirmed against AuroraBoot's source:
+        // `deployer.cloudConfigPath()` -> `<dest>/config.yaml`, copied onto
+        // the ISO root), which kairos-agent's installer already scans for
+        // via `/run/initramfs/live` (the ISO's own live-boot mount) —
+        // `--overlay-iso` is supported by both `build-iso` and `build-uki`,
+        // so this reproduces `--cloud-config`'s effect for either.
+        if let Some(secret_ref) = cloud_config.and_then(|cc| cc.secret_ref.as_ref()) {
+            iso_overlay_emptydir_needed = true;
+            volumes.push(json!({
+                "name": TRUSTED_BOOT_CLOUD_CONFIG_SOURCE_VOLUME_NAME,
+                "secret": {
+                    "secretName": secret_ref.name,
+                    "items": [{
+                        "key": secret_ref.key_or(DEFAULT_CLOUD_CONFIG_KEY),
+                        "path": ISO_ROOT_CLOUD_CONFIG_FILENAME,
+                    }],
+                },
+            }));
+            importers.push(json!({
+                "name": TRUSTED_BOOT_CLOUD_CONFIG_IMPORTER_NAME,
                 "image": importer_image.reference,
-                "command": ["sh", "-c", iso_overlay_materialize_script()],
+                "command": [
+                    "sh",
+                    "-c",
+                    materialize_script(ISO_OVERLAY_SOURCE_MOUNT_PATH, ISO_OVERLAY_DEST_MOUNT_PATH),
+                ],
                 "volumeMounts": [
                     {
-                        "name": ISO_OVERLAY_SOURCE_VOLUME_NAME,
+                        "name": TRUSTED_BOOT_CLOUD_CONFIG_SOURCE_VOLUME_NAME,
                         "mountPath": ISO_OVERLAY_SOURCE_MOUNT_PATH,
                         "readOnly": true,
                     },
@@ -315,8 +437,39 @@ pub fn desired_os_artifact(
                         "mountPath": ISO_OVERLAY_DEST_MOUNT_PATH,
                     },
                 ],
-            }]),
+            }));
+        }
+    } else {
+        // `cloudConfigRef` is the classic path — only reachable when
+        // `trusted_boot` is unset (see the `uki` branch above for why).
+        if let Some(secret_ref) = cloud_config.and_then(|cc| cc.secret_ref.as_ref()) {
+            artifacts.insert(
+                "cloudConfigRef".to_string(),
+                json!({
+                    "name": secret_ref.name,
+                    "key": secret_ref.key_or(DEFAULT_CLOUD_CONFIG_KEY),
+                }),
+            );
+        }
+        artifacts.insert(artifacts_flag(kind).to_string(), json!(true));
+    }
+    // Added at most once, regardless of how many of the mechanisms above
+    // requested it — `overlayISOVolume` names exactly one volume.
+    if iso_overlay_emptydir_needed {
+        artifacts.insert(
+            "overlayISOVolume".to_string(),
+            json!(ISO_OVERLAY_VOLUME_NAME),
         );
+        volumes.push(json!({
+            "name": ISO_OVERLAY_VOLUME_NAME,
+            "emptyDir": {},
+        }));
+    }
+    if !volumes.is_empty() {
+        spec.insert("volumes".to_string(), json!(volumes));
+    }
+    if !importers.is_empty() {
+        spec.insert("importers".to_string(), json!(importers));
     }
     spec.insert("artifacts".to_string(), Value::Object(artifacts));
     if !scheduling.node_selector.is_empty() {
@@ -380,10 +533,25 @@ pub fn owner_uid_matches(refs: Option<&[OwnerReference]>, uid: &str) -> bool {
 /// same image ref, same architecture, and same artifact kind. A changed kind
 /// (e.g. the `Url` source moved from libvirt to vSphere) forces a rebuild:
 /// the old `cloudImage`/`iso` output is the wrong shape for the new consumer.
-pub fn spec_matches(data: &Value, import_from: &str, arch: &str, kind: &BuildArtifactKind) -> bool {
+pub fn spec_matches(
+    data: &Value,
+    import_from: &str,
+    arch: &str,
+    kind: &BuildArtifactKind,
+    trusted_boot: Option<&TrustedBootSource>,
+) -> bool {
+    // Trusted Boot (ADR-0041) requests `artifacts.uki.iso`, not the plain
+    // `artifacts.iso`/`artifacts.cloudImage` flag `artifacts_flag` names —
+    // toggling `trustedBoot` on or off must be judged stale so the live
+    // OSArtifact gets deleted and rebuilt in the new shape.
+    let artifact_flag_matches = if trusted_boot.is_some() {
+        data["spec"]["artifacts"]["uki"]["iso"].as_bool() == Some(true)
+    } else {
+        data["spec"]["artifacts"][artifacts_flag(kind)].as_bool() == Some(true)
+    };
     data["spec"]["image"]["ref"].as_str() == Some(import_from)
         && data["spec"]["artifacts"]["arch"].as_str() == Some(arch)
-        && data["spec"]["artifacts"][artifacts_flag(kind)].as_bool() == Some(true)
+        && artifact_flag_matches
 }
 
 /// Minimal view of an `OSArtifact.status` this reconciler needs — extracted
@@ -433,9 +601,25 @@ fn artifacts_pvc_name(os_artifact_name: &str) -> String {
 }
 
 /// kairos-operator's file-naming convention for an artifact output:
-/// `<name>.raw` for a `cloudImage`, `<name>.iso` for an `iso`.
-fn artifact_file_name(os_artifact_name: &str, kind: &BuildArtifactKind) -> String {
-    format!("{os_artifact_name}.{}", artifact_extension(kind))
+/// `<name>.raw` for a `cloudImage`, `<name>.iso` for an `iso` — except a
+/// Trusted Boot / UKI build (ADR-0041), where kairos-operator's
+/// `buildUKICommand` always names the `auroraboot build-uki --name` flag
+/// `<name>-uki` (confirmed from source: `ukiArtifactName`,
+/// `kairos-operator/internal/controller/job.go`; the `-uki` suffix applies
+/// regardless of `--output-type`), and `auroraboot` writes exactly
+/// `<--name>.iso` for output-type `iso` (`AuroraBoot/pkg/uki/uki.go`,
+/// `createISO`). So the real file is `<name>-uki.iso`, not `<name>.iso` —
+/// confirmed live (`cannot read .../<name>.iso`, ADR-0041 Decision #5).
+fn artifact_file_name(
+    os_artifact_name: &str,
+    kind: &BuildArtifactKind,
+    trusted_boot: bool,
+) -> String {
+    if trusted_boot {
+        format!("{os_artifact_name}-uki.{}", artifact_extension(kind))
+    } else {
+        format!("{os_artifact_name}.{}", artifact_extension(kind))
+    }
 }
 
 /// Compute the [`BuildArtifactStatus`] to publish, given the `OSArtifact`'s
@@ -454,6 +638,7 @@ pub fn compute_build_artifact_status(
     view: &KairosArtifactStatusView,
     checksum: Option<&str>,
     os_artifact_uid: Option<&str>,
+    trusted_boot: bool,
 ) -> BuildArtifactStatus {
     let phase = view
         .phase
@@ -466,7 +651,7 @@ pub fn compute_build_artifact_status(
             Some(LocalObjectReference {
                 name: artifacts_pvc_name(os_artifact_name),
             }),
-            Some(artifact_file_name(os_artifact_name, &kind)),
+            Some(artifact_file_name(os_artifact_name, &kind, trusted_boot)),
         )
     } else {
         (None, None)
@@ -607,6 +792,50 @@ pub async fn reconcile(image: Arc<VMImage>, ctx: Arc<Context>) -> Result<Action>
 
     let uid = image.metadata.uid.clone().unwrap_or_default();
     let os_name = os_artifact_name(&name);
+    let kind = artifact_kind_for_class(&source.provider_class);
+
+    // ADR-0041 Decision #3: validate a trustedBoot Secret declares all six
+    // required key names *before* touching any OSArtifact — an invalid
+    // Secret would otherwise surface only as an opaque kairos-operator
+    // admission error or a failed build pod.
+    if let Some(trusted_boot) = image.spec.trusted_boot.as_ref() {
+        let secrets_api: Api<Secret> = Api::namespaced(ctx.client.clone(), &ctx.build_namespace);
+        let present: std::collections::BTreeSet<String> =
+            match secrets_api.get(&trusted_boot.secret_ref.name).await {
+                Ok(secret) => secret
+                    .data
+                    .map(|d| d.into_keys().collect())
+                    .unwrap_or_default(),
+                Err(kube::Error::Api(e)) if e.code == 404 => std::collections::BTreeSet::new(),
+                Err(e) => return Err(Error::Kube(e)),
+            };
+        let missing = missing_trusted_boot_keys(&present);
+        if !missing.is_empty() {
+            warn!(
+                secret = %trusted_boot.secret_ref.name,
+                missing = ?missing,
+                "trustedBoot Secret failed preflight validation"
+            );
+            let build_status = BuildArtifactStatus {
+                kind: kind.clone(),
+                reason: Some(REASON_TRUSTED_BOOT_KEYS_MISSING.to_string()),
+                phase: BuildArtifactPhase::Failed,
+                os_artifact_ref: os_name.clone(),
+                os_artifact_uid: None,
+                pvc_ref: None,
+                file: None,
+                message: Some(format!(
+                    "Secret/{} is missing required trustedBoot key(s): {} — generate via `auroraboot genkey` (ADR-0041)",
+                    trusted_boot.secret_ref.name,
+                    missing.join(", "),
+                )),
+                checksum: source.checksum.clone(),
+            };
+            patch_vmimage_status(&ctx, &name, build_status).await?;
+            return Ok(requeue_default());
+        }
+    }
+
     let os_api: Api<DynamicObject> = Api::namespaced_with(
         ctx.client.clone(),
         &ctx.build_namespace,
@@ -619,8 +848,6 @@ pub async fn reconcile(image: Arc<VMImage>, ctx: Arc<Context>) -> Result<Action>
         Err(e) => return Err(Error::Kube(e)),
     };
 
-    let kind = artifact_kind_for_class(&source.provider_class);
-
     if let Some(obj) = &live {
         let owned = owner_uid_matches(obj.metadata.owner_references.as_deref(), &uid);
         let current = spec_matches(
@@ -628,6 +855,7 @@ pub async fn reconcile(image: Arc<VMImage>, ctx: Arc<Context>) -> Result<Action>
             source.import_from.as_deref().unwrap_or_default(),
             arch_str(&image.spec.architecture),
             &kind,
+            image.spec.trusted_boot.as_ref(),
         );
         if !owned || !current {
             info!(
@@ -649,6 +877,7 @@ pub async fn reconcile(image: Arc<VMImage>, ctx: Arc<Context>) -> Result<Action>
                 &view,
                 source.checksum.as_deref(),
                 None,
+                image.spec.trusted_boot.is_some(),
             );
             patch_vmimage_status(&ctx, &name, build_status).await?;
             return Ok(requeue_default());
@@ -678,6 +907,7 @@ pub async fn reconcile(image: Arc<VMImage>, ctx: Arc<Context>) -> Result<Action>
         &ctx.scheduling,
         image.spec.iso_overlay.as_ref(),
         &ctx.importer_image,
+        image.spec.trusted_boot.as_ref(),
     );
     let params = PatchParams::apply(FIELD_MANAGER_IMAGEBUILDER).force();
     os_api
@@ -696,6 +926,7 @@ pub async fn reconcile(image: Arc<VMImage>, ctx: Arc<Context>) -> Result<Action>
         &view,
         source.checksum.as_deref(),
         os_artifact_uid,
+        image.spec.trusted_boot.is_some(),
     );
     let phase = build_status.phase.clone();
     patch_vmimage_status(&ctx, &name, build_status).await?;

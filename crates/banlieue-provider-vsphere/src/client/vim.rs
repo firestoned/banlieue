@@ -34,10 +34,11 @@ use vim_rs::types::enums::{
 };
 use vim_rs::types::structs::{
     DistributedVirtualSwitchPortConnection, ManagedObjectReference, OptionValue,
-    ParaVirtualScsiController, VirtualBusLogicController, VirtualCdrom, VirtualCdromIsoBackingInfo,
-    VirtualController, VirtualDevice, VirtualDeviceConfigSpec, VirtualDeviceConnectInfo,
-    VirtualDeviceDeviceBackingInfo, VirtualDeviceFileBackingInfo, VirtualDevicePciBusSlotInfo,
-    VirtualDisk, VirtualDiskFlatVer2BackingInfo, VirtualE1000, VirtualE1000E, VirtualEthernetCard,
+    ParaVirtualScsiController, PlacementAction, PlacementSpec, VirtualBusLogicController,
+    VirtualCdrom, VirtualCdromIsoBackingInfo, VirtualController, VirtualDevice,
+    VirtualDeviceConfigSpec, VirtualDeviceConnectInfo, VirtualDeviceDeviceBackingInfo,
+    VirtualDeviceFileBackingInfo, VirtualDevicePciBusSlotInfo, VirtualDisk,
+    VirtualDiskFlatVer2BackingInfo, VirtualE1000, VirtualE1000E, VirtualEthernetCard,
     VirtualEthernetCardDistributedVirtualPortBackingInfo, VirtualEthernetCardNetworkBackingInfo,
     VirtualIdeController, VirtualLsiLogicController, VirtualLsiLogicSasController,
     VirtualMachineBootOptions, VirtualMachineBootOptionsBootableCdromDevice,
@@ -117,6 +118,9 @@ const KEY_CDROM: i32 = -1003;
 const KEY_NIC: i32 = -1004;
 const KEY_TPM: i32 = -1005;
 const KIB_PER_GIB: i64 = 1024 * 1024;
+/// `VirtualDisk.capacityInBytes` doc: clients must initialize it (not just
+/// `capacityInKB`) when changing the capacity of an existing disk.
+const BYTES_PER_KIB: i64 = 1024;
 
 /// Factory that talks to a real vCenter via vim_rs.
 #[derive(Default, Clone)]
@@ -976,17 +980,98 @@ impl VSphereClient for VimClientImpl {
             }));
         }
 
+        // DRS host placement (matches govc's own `-cluster` clone path,
+        // read from `cli/vm/clone.go`): govc calls
+        // `ClusterComputeResource.PlaceVm` before cloning and pins the
+        // resulting `Host` in the relocate spec; this code previously left
+        // `location.host` unset and let vCenter pick a host implicitly as
+        // part of `CloneVM_Task` itself, with no DRS placement advisory
+        // step at all — a real difference in the vCenter API call
+        // sequence, not just a config gap. `PlaceVm` is a one-time
+        // placement recommendation for this clone operation only: it
+        // creates no DRS affinity rule, so the resulting VM remains fully
+        // eligible for DRS to vMotion afterward under the cluster's normal
+        // automation level, same as any other VM. Passing `datastore` in
+        // `relocate_spec` already (rather than leaving it unset like
+        // govc's cluster path does) keeps DRS from overriding the
+        // already-resolved target datastore — per `PlacementSpec`'s own
+        // doc comment, "if a target datastore is specified, this datastore
+        // becomes the recommended datastore" — so only `host` comes back
+        // as a new recommendation.
+        let placement_datastore = ManagedObjectReference {
+            r#type: MoTypesEnum::Datastore,
+            value: req.datastore_moref.clone(),
+        };
+        let placement_folder = ManagedObjectReference {
+            r#type: MoTypesEnum::Folder,
+            value: target_folder.clone(),
+        };
+        // `VirtualMachineRelocateSpec` doesn't derive `Clone` — build a
+        // fresh one each time it's needed (here, for the placement probe's
+        // two separate fields that both want it; again below, for the
+        // actual clone) rather than trying to share one value.
+        let build_relocate_spec = || VirtualMachineRelocateSpec {
+            pool: Some(pool.clone()),
+            datastore: Some(placement_datastore.clone()),
+            folder: Some(placement_folder.clone()),
+            ..Default::default()
+        };
+        let placement_spec = PlacementSpec {
+            placement_type: Some("clone".to_string()),
+            vm: Some(ManagedObjectReference {
+                r#type: MoTypesEnum::VirtualMachine,
+                value: req.template_moref.clone(),
+            }),
+            // Found live: vCenter rejects a `"clone"`-type PlacementSpec
+            // with `InvalidArgument`/`"PlacementSpec.Clone"` unless
+            // `cloneName`/`cloneSpec` are also set, not just `relocateSpec`
+            // — matches govc's own `cli/vm/clone.go`, which always builds
+            // the full `CloneSpec` before calling `PlaceVm`. `clone_name`
+            // is never actually used to create anything (this call only
+            // recommends placement); `req.vm_name` is simply a
+            // non-empty, already-available value to satisfy it.
+            clone_name: Some(req.vm_name.clone()),
+            clone_spec: Some(VirtualMachineCloneSpec {
+                location: build_relocate_spec(),
+                power_on: false,
+                template: false,
+                ..Default::default()
+            }),
+            relocate_spec: Some(build_relocate_spec()),
+            ..Default::default()
+        };
+        let placement_result = ccr.place_vm(&placement_spec).await.map_err(|e| {
+            Error::Vsphere(format!(
+                "ClusterComputeResource.PlaceVm({}): {e}",
+                req.cluster_moref
+            ))
+        })?;
+        let recommended_host = placement_result
+            .recommendations
+            .unwrap_or_default()
+            .into_iter()
+            .find_map(|rec| {
+                rec.action?.into_iter().find_map(|action| {
+                    let action = action.as_any_ref().downcast_ref::<PlacementAction>()?;
+                    action
+                        .target_host
+                        .clone()
+                        .or_else(|| action.relocate_spec.as_ref()?.host.clone())
+                })
+            });
+        info!(
+            template = %req.template_moref,
+            cluster = %req.cluster_moref,
+            recommended_host = ?recommended_host,
+            "DRS PlaceVm host recommendation resolved for clone"
+        );
+
         let clone_spec = VirtualMachineCloneSpec {
             location: VirtualMachineRelocateSpec {
+                host: recommended_host,
                 pool: Some(pool),
-                datastore: Some(ManagedObjectReference {
-                    r#type: MoTypesEnum::Datastore,
-                    value: req.datastore_moref.clone(),
-                }),
-                folder: Some(ManagedObjectReference {
-                    r#type: MoTypesEnum::Folder,
-                    value: target_folder.clone(),
-                }),
+                datastore: Some(placement_datastore),
+                folder: Some(placement_folder),
                 ..Default::default()
             },
             template: false,
@@ -1048,6 +1133,89 @@ impl VSphereClient for VimClientImpl {
             .await
             .map_err(|e| Error::Vsphere(format!("ReconfigVM_Task({vm_moref}) [add vTPM]: {e}")))?;
         self.wait_for_task(&task.value, "add vTPM device").await
+    }
+
+    async fn grow_os_disk(&self, vm_moref: &str, size_gi_b: u32) -> Result<()> {
+        let vmm = VimVirtualMachine::new(self.client.clone(), vm_moref);
+        let cfg = vmm
+            .config()
+            .await
+            .map_err(|e| Error::Vsphere(format!("VirtualMachine.config({vm_moref}): {e}")))?
+            .ok_or_else(|| Error::Vsphere(format!("{vm_moref}: no config")))?;
+        let devices = cfg.hardware.device.unwrap_or_default();
+
+        // Full-fidelity read, not just key/controllerKey/capacity — see
+        // this method's doc comment on the trait for why: an edit device
+        // built from scratch with everything else defaulted (no
+        // `unitNumber`, no `backing`) is what an earlier version of this
+        // code sent, bundled into `CloneVM_Task` itself, when the host
+        // disconnects were observed. Matches govc's `vm.disk.change`
+        // exactly: read the live device, mutate only capacity, send the
+        // whole thing back.
+        let disk = devices
+            .iter()
+            .find_map(|d| d.as_any_ref().downcast_ref::<VirtualDisk>())
+            .ok_or_else(|| Error::Vsphere(format!("{vm_moref}: no disk device")))?;
+
+        let requested_kb = i64::from(size_gi_b) * KIB_PER_GIB;
+        if requested_kb <= disk.capacity_in_kb {
+            // Never shrink — a floor, not a resize (VSphereDiskSpec's own
+            // doc comment). Also the common case: most clones already
+            // satisfy the requested size at the template's native
+            // capacity, and issuing a same-size ReconfigVM_Task would be
+            // pure overhead.
+            return Ok(());
+        }
+
+        let file_name = disk
+            .virtual_device_
+            .backing
+            .as_deref()
+            .and_then(|b| {
+                b.as_any_ref()
+                    .downcast_ref::<VirtualDiskFlatVer2BackingInfo>()
+            })
+            .map(|b| b.virtual_device_file_backing_info_.file_name.clone())
+            .ok_or_else(|| Error::Vsphere(format!("{vm_moref}: disk has no flat-v2 backing")))?;
+
+        info!(
+            vm_moref,
+            from_kb = disk.capacity_in_kb,
+            to_kb = requested_kb,
+            "growing OS disk post-clone"
+        );
+
+        let edit_device = VirtualDisk {
+            virtual_device_: VirtualDevice {
+                key: disk.virtual_device_.key,
+                controller_key: disk.virtual_device_.controller_key,
+                unit_number: disk.virtual_device_.unit_number,
+                backing: Some(Box::new(VirtualDiskFlatVer2BackingInfo {
+                    virtual_device_file_backing_info_: VirtualDeviceFileBackingInfo {
+                        file_name,
+                        ..Default::default()
+                    },
+                    disk_mode: DISK_MODE_PERSISTENT.to_string(),
+                    ..Default::default()
+                })),
+                ..Default::default()
+            },
+            capacity_in_kb: requested_kb,
+            capacity_in_bytes: Some(requested_kb * BYTES_PER_KIB),
+            ..Default::default()
+        };
+        let spec = VirtualMachineConfigSpec {
+            device_change: Some(vec![Box::new(VirtualDeviceConfigSpec {
+                operation: Some(VirtualDeviceConfigSpecOperationEnum::Edit),
+                device: Box::new(edit_device),
+                ..Default::default()
+            })]),
+            ..Default::default()
+        };
+        let task = vmm.reconfig_vm_task(&spec).await.map_err(|e| {
+            Error::Vsphere(format!("ReconfigVM_Task({vm_moref}) [grow OS disk]: {e}"))
+        })?;
+        self.wait_for_task(&task.value, "grow OS disk").await
     }
 
     async fn power_state(&self, vm_moref: &str) -> Result<PowerState> {

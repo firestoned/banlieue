@@ -291,6 +291,26 @@ pub trait VSphereClient: Send + Sync {
     /// seals LUKS keys to the TPM during unattended install and the device
     /// must exist before first boot.
     async fn add_tpm_device(&self, vm_moref: &str) -> Result<()>;
+
+    /// Grow `vm_moref`'s OS disk to `size_gi_b` (never shrinks — a no-op if
+    /// the disk is already at least that size) via a standalone
+    /// `ReconfigVM_Task`, issued after `clone_vm` returns — mirrors
+    /// [`VSphereClient::add_tpm_device`]'s own sequencing rationale (one
+    /// discrete vCenter mutation per trait method, called separately from
+    /// the clone itself) and matches govc's own `vm.disk.change`
+    /// (`cli/vm/disk/change.go`): read the disk device's full, live state
+    /// first and send back that same object with only capacity changed,
+    /// rather than a mostly-empty edit spec. Found live: an edit spec built
+    /// from scratch with only `key`/`controllerKey`/capacity set (omitting
+    /// `unitNumber` and the disk's own `backing`) — bundled directly into
+    /// `CloneVM_Task`'s own config, in an earlier version of this code —
+    /// correlated repeatedly with the target ESXi host going `not
+    /// responding` mid-task — not conclusively isolated to a specific
+    /// cause (see `.claude/CHANGELOG.md`). Splitting the grow into its own
+    /// task after the clone settles, matching govc's full-fidelity edit
+    /// exactly, is the current hypothesis under live validation, not yet
+    /// a confirmed fix.
+    async fn grow_os_disk(&self, vm_moref: &str, size_gi_b: u32) -> Result<()>;
 }
 
 /// Everything [`VSphereClient::clone_vm`] needs to clone a per-zone template

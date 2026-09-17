@@ -1,5 +1,491 @@
 # Changelog
 
+## [2026-09-15] - Revert CloneVmRequest gap-audit to main; re-add capabilities one at a time, each live-validated against govc first
+
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `crates/banlieue-provider-vsphere/src/client/{mod,vim,fake}.rs`,
+  `crates/banlieue-provider-vsphere/src/reconciler/vspheremachine.rs`,
+  `crates/banlieue-api/src/banlieue/vmclass.rs`,
+  `crates/banlieue-api/src/infrastructure/vsphere_machine.rs`,
+  `crates/banlieue-controller/src/reconciler/infra.rs`: reverted the entire
+  "audit every `CloneVmRequest` field" effort (firmware/resource_pool/
+  multi-NIC/multi-disk/boot-order/vTPM-in-`CloneVM_Task`) back to `main`.
+  After days of live testing, that work's disk-grow step correlated
+  reliably with the target ESXi host going `not responding`
+  (`HostCommunication` fault) and no isolated-field theory explained it
+  deterministically (see 2026-09-14's entry, itself already a partial
+  retraction). Rather than keep patching an increasingly complex,
+  unverified code path, started over from `main`'s known-working `clone_vm`
+  and re-adding capability one at a time, each validated live via `govc`
+  (or a minimal pyVmomi script mirroring the exact vim25 call) *before*
+  being wired into the reconciler — the process the user asked for
+  directly: "validate all of the same steps we do from
+  `~/dev/vm-build/bin/create-vm.sh`... research code in govc github, find
+  out exactly what VIM/SOAP calls are made."
+- The already-committed Trusted Boot/UKI feature (`VMImage`/`OSArtifact`,
+  ADR-0041) is unrelated to `VSphereMachine` cloning and was left intact.
+
+### Added — increment 1: DRS host placement (`PlaceVm`)
+- `clone_vm` now calls `ClusterComputeResource::place_vm` before
+  `CloneVM_Task`, matching govc's own `cli/vm/clone.go` `-cluster` path
+  exactly (read from the real govmomi source, not guessed): govc always
+  gets a DRS placement recommendation and pins `Host` before cloning;
+  `clone_vm` previously left `location.host` unset, letting vCenter pick
+  implicitly as part of `CloneVM_Task` with no placement-advisory step at
+  all. `PlaceVm` is a one-time placement recommendation, not a lasting
+  pin — it creates no DRS affinity rule, so the resulting VM stays fully
+  eligible for DRS to vMotion afterward. Live-validated first via a
+  minimal pyVmomi script matching this exact call shape (confirmed working
+  against the real vCenter — `drsFault: None`, rating 5, real host
+  returned) before wiring it into `clone_vm`. Confirmed by the user
+  against the real controller: this increment alone let a `VSphereMachine`
+  provision successfully.
+
+### Added — increment 2: `grow_os_disk` as a full-fidelity, standalone `ReconfigVM_Task`
+- New `VSphereClient::grow_os_disk(vm_moref, size_gi_b)` trait method,
+  called from `ensure_vm` right after `clone_vm` returns (mirrors
+  `add_tpm_device`'s own "one discrete vCenter mutation per trait method,
+  called separately from the clone" pattern). Implementation matches
+  govc's `vm.disk.change` (`cli/vm/disk/change.go`) exactly, found live:
+  govc reads the disk device's full current state (`vm.Device(ctx)`) and
+  sends that *entire* object back with only `CapacityInBytes` mutated —
+  backing, unit number, controller key all carried through unchanged. The
+  removed gap-audit code built a minimal edit device from scratch (only
+  `key`/`controllerKey`/capacity set, `backing`/`unitNumber` left at
+  defaults) — a real, mechanistic difference from what actually works,
+  not just a superficial gap. Live-validated by growing a disk on two
+  independently-cloned scratch VMs (landing on two different ESXi hosts)
+  via `govc vm.disk.change` itself — clean both times, host stayed
+  `connected` throughout — before wiring the equivalent full-fidelity Rust
+  implementation into `ensure_vm`.
+
+### Why
+The user made clear the prior debugging approach — patching increasingly
+elaborate code changes and live-testing them directly against the real
+controller — wasn't converging and risked real infrastructure impact.
+Starting from `main` and re-adding one live-validated capability at a time
+keeps every change traceable to a concrete, sourced difference (real govc
+source read, real vim25 call shape) rather than another live-or-die guess.
+
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only — no CRD/schema change; behavior-only changes to
+      the vSphere provider's clone path, ready to build and deploy.
+
+## [2026-09-14] - Restructure clone_vm's post-clone config; root cause of host disconnects remains unresolved (environment-side, not code)
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `crates/banlieue-provider-vsphere/src/client/vim.rs`: `clone_vm` used to
+  bundle the OS disk-grow edit, extra NICs/disks, and boot-order pinning
+  directly into `CloneVM_Task`'s own `config.deviceChange`/`bootOptions`. A
+  `git diff main` audit confirmed none of this existed before — `main`'s
+  `CloneVM_Task` only ever did cpu/memory/a single NIC edit; there was no
+  `disks` field, no disk resize, no bundled boot-order at all. Split
+  `clone_vm` into two steps regardless of the investigation below, since
+  it's a structural improvement on its own merits (matches the sequencing
+  ADR-0021 established for boot-order-after-`CreateVM_Task` and ADR-0039
+  for vTPM-attach-after-clone): the initial `CloneVM_Task` is back to the
+  `main`-era shape; a new `finish_clone_config` (`impl VimClientImpl`)
+  issues everything else as two further separate `ReconfigVM_Task` calls
+  (devices, then boot-order) after the clone settles.
+- `destroy_if_present` is now called at the top of `clone_vm`, clearing any
+  orphaned VM left by a prior failed attempt before cloning. Found live: a
+  failure between `CloneVM_Task` succeeding and `VSphereMachineStatus`
+  ever getting patched leaves an untracked backend VM — `finalize` can't
+  find it (`status.vm_ref` was never set) to destroy on CR deletion, and
+  every retry's `CloneVM_Task` then fails outright with `"name already
+  exists"`, forever, hammering vCenter every few seconds with no way to
+  self-heal even once the underlying fault clears. This part is a real,
+  unambiguous fix, independent of the investigation below.
+
+### Investigation: NOT fixed, root cause still open
+Two `VSphereMachine`s failed provisioning repeatedly with a
+`HostCommunication` fault immediately after the "growing template OS disk
+for clone" step, correlated with the target ESXi host going `not
+responding` — reproduced across several independent test days. Live
+isolation testing (govc + a minimal pyVmomi repro, no banlieue code
+involved) chased two theories, both refuted:
+- **Bundled into `CloneVM_Task`**: refuted — splitting the disk-grow into
+  its own post-clone `ReconfigVM_Task` still failed the same way.
+- **Disk-grow combined with `bootOptions` in one `ReconfigVM_Task`**:
+  initially looked confirmed (two back-to-back repros), but a third,
+  otherwise-identical run of the *same* isolated disk-grow-alone operation
+  against the *same* host — which had succeeded earlier in the same
+  session — also failed. The same request succeeding once and failing once
+  rules out a deterministic field-combination cause. The actual pattern
+  fitting all the data: the target host degrades under repeated heavy
+  storage operations in a short window, regardless of request shape —
+  environment/storage-side instability, not something in banlieue's
+  control flow to fix from here.
+- The code changes above are kept as reasonable structural improvements
+  (less bundling, no orphaned-VM retry trap) but are **not** claimed to
+  resolve the host-disconnect issue. That investigation needs to move to
+  whoever owns the vSphere host/storage infrastructure — host-side
+  performance/latency metrics during a disk-grow, not more API-level
+  request shaping, is the next lever.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only — no CRD/schema change; behavior-only restructure
+      of `clone_vm`'s internal sequencing, ready to build and deploy.
+
+## [2026-09-12] - Escalating backoff for repeated VSphereMachine provisioning failures
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `crates/banlieue-provider-vsphere/src/reconciler/vspheremachine.rs`: the
+  `ensure_vm` failure branch always returned `requeue_on_error()` — a flat
+  5-second retry, forever, with no cap. Found live: two `VSphereMachine`s
+  (`k0s-tpm1`/`k0s-tpm2`) stuck failing `CloneVM_Task` with a
+  `HostCommunication` fault for 7+ hours, retrying every ~5-70s the whole
+  time. Each retry re-submits the full clone, including growing the
+  template's OS disk from 15GB to 100GB with `eagerZeroed` provisioning — a
+  heavy, synchronous operation, not a cheap no-op to repeat. vCenter's own
+  event log showed three different ESXi hosts going `not responding` during
+  the window (each one hosting whichever VM DRS had just retried the clone
+  onto), disconnecting dozens of unrelated VMs each time — consistent with
+  the retry storm itself contributing to host instability, not just an
+  unrelated coincidence.
+- Added `backoff_for_repeated_failure`: escalates past the 5s interval to
+  `requeue_default` (30s) after 1 minute of continuous failure and to
+  `requeue_long` (300s) after 5 minutes, using the existing `Ready`
+  condition's `lastTransitionTime` as a free "how long has this been
+  failing" clock (it only advances when status/reason actually change, so
+  it doesn't move while the identical failure repeats) — no new status
+  field needed.
+
+### Why
+Live-caught during an unrelated investigation (`kubectl describe
+virtualmachine k0s-tpm1.k8s.example.internal`) — the retry storm was still
+running at the time. Stopped it by deleting both `VirtualMachine` CRs
+(finalizers cleaned up the orphaned partial-clone VM objects in vCenter),
+then fixed the underlying backoff gap.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only — no CRD/schema change; behavior-only fix to
+      `error_policy`'s companion failure path, ready to build and deploy.
+
+## [2026-09-11] - ADR-0042: decide against vSphere Instant Clone support
+
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0042-instant-clone-vmfork-not-supported.md`: records live
+  investigation (via `govc vm.instantclone`) into whether vSphere Instant
+  Clone ("vmFork") could serve as a provisioning strategy for
+  `VSphereMachine`. Decision: no — Instant Clone forks a running guest
+  (incompatible with the cold-clone `ensure_vm` sequencing and with
+  `VMClassSpec.tpm_enabled`/vTPM per ADR-0039), and per-clone IP/hostname
+  requires VMware's Guest Customization Engine for Instant Clone
+  (pre-freeze/post-thaw scripts), which duplicates cloud-init with no code
+  reuse. No code or CRD changes.
+
+### Why
+Came up while validating the Trusted Boot boot-stall investigation
+(ADR-0041) live against the real environment. Recording the decision now so
+it isn't re-researched from scratch later.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only — no code, no CRD/schema change.
+
+## [2026-09-10] - Fix `MissingController` fault on the disk-resize edit
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `crates/banlieue-provider-vsphere/src/client/vim.rs`: the disk-resize
+  `Edit` device_change (added earlier today) omitted `controllerKey`.
+  Found live: `CloneVM_Task` failed outright with `MissingController`
+  (`"Device requires a controller."`, `deviceIndex: 1`) — unlike the NIC
+  edit, which vSphere accepts without re-specifying its controller, a
+  `VirtualDisk` edit is rejected without one, even for a pure capacity
+  change with no controller move intended. Now sets
+  `controller_key: disk_controller_key` (already read off the template's
+  disk via `find_disk_info`) on the edit device.
+
+### Why
+Live-testing the disk-resize fix from earlier today: the very first real
+clone attempt with a disk size increase failed the whole `CloneVM_Task`.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only — fixes a fault that made every clone with
+      `disks[0].sizeGiB` larger than the template's disk fail outright;
+      no schema change.
+
+## [2026-09-10] - Pin boot order on every clone (deferred-install first boot)
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `crates/banlieue-provider-vsphere/src/client/vim.rs`: `clone_vm` never set
+  `boot_options.bootOrder` at all. Found live: a `deferred`-installMode
+  clone's *first-ever* power-on (ADR-0040 — the template itself is never
+  booted) hit the exact EFI quirk ADR-0021 already documented for a freshly
+  created template: with no explicit boot order, firmware stops at the
+  interactive Boot Manager menu ("EFI Virtual disk (0.0) ... No Media",
+  "EFI VMware Virtual IDE CDROM Drive ... Not Found") instead of
+  auto-booting the CD-ROM, even though the CD-ROM device is present and
+  connected. `clone_vm`'s own `VirtualMachineConfigSpec` now always sets
+  `boot_options.bootOrder = [cdrom, disk, ethernet]`, merged with the
+  existing Secure Boot flag into one `VirtualMachineBootOptions` (a
+  `VirtualMachineConfigSpec` has only one `boot_options` slot).
+
+### Why
+Live-testing the firmware/resource-pool/multi-NIC/multi-disk fixes: once
+those got far enough to actually power on, the clone hung at vSphere's
+Boot Manager menu on every first boot. Unlike ADR-0021's `CreateVM_Task`
+case (which found referencing *provisional/negative* device keys for a
+freshly-added device unreliable in the same operation, requiring a
+*separate* post-create reconfigure), the boot order here references
+`disk_key`/`nic_key` — the template's own real, positive, pre-existing
+device keys the clone inherits unchanged — so it's set inline in the same
+`CloneVM_Task`. Not yet confirmed live whether vSphere honors it there or
+whether this needs splitting into its own follow-up `ReconfigVM_Task`
+(flagged in code comments either way).
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only — no schema change; every existing clone gets an
+      explicit boot order it previously lacked, harmless for
+      `immediate`/`manual` install modes and the actual fix needed for
+      `deferred` mode's first boot.
+
+## [2026-09-10] - `clone_vm` now applies firmware, resource pool, disks, and every declared NIC
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `crates/banlieue-provider-vsphere/src/client/vim.rs`: `clone_vm` never applied
+  `VSphereMachineSpec.firmware` at all — every clone silently inherited
+  whatever firmware the source *template* happened to have, regardless of
+  `VMClass.spec.firmware`. Found live: setting `firmware: efi-secure` on a
+  `VMClass` had no effect on the resulting clone at all. Extracted
+  `firmware_config()` (shared with template creation) and applied it to the
+  clone's own `VirtualMachineConfigSpec` override.
+- Same file: `clone_vm` always resolved the cluster's *root* resource pool,
+  ignoring `VSphereMachineSpec.resource_pool`'s named-path case entirely.
+  Added `find_resource_pool` (a read-only path walk mirroring `find_folder`,
+  deliberately never creating a missing pool — pool creation involves
+  quotas/shares an operator should decide, not banlieue).
+- Same file: only `spec.network.first()` was ever resolved into the clone
+  request — a second/third declared NIC was silently dropped. `clone_vm` now
+  edits the template's own first NIC in place (unchanged) and adds a real
+  NIC device for every subsequent entry, pinning its PCI slot via
+  `ethernetN.pciSlotNumber` ExtraConfig (the field this codebase already
+  found live controls guest-visible NIC placement, not the structured
+  `slotInfo` device property).
+- Same file: `spec.disks` was never applied either — the template's OS disk
+  was never grown to `disks[0].sizeGiB` ("grown if needed"), and
+  `disks[1..]` ("subsequent disks are blank") were silently dropped.
+  `clone_vm` now grows `disks[0]` when requested larger than the template's
+  current size (never shrinks it) and adds a blank disk on the same SCSI
+  controller for every subsequent entry.
+- `crates/banlieue-api/src/banlieue/vmclass.rs`,
+  `crates/banlieue-api/src/infrastructure/vsphere_machine.rs`: added
+  `adapter: NicAdapter` to `NetworkInterfaceSpec`/`VSphereNicSpec`
+  (`#[serde(default)]`, backward compatible) — needed so a NIC added at
+  clone time (beyond the template's own first one) has a real adapter type
+  to request, matching what `VMImageTemplateNic` (template creation) already
+  had.
+- `deploy/crds/banlieue.io_vmclasses.yaml`,
+  `deploy/crds/infrastructure.banlieue.io_vspheremachines.yaml`,
+  `docs/src/reference/api.md`: regenerated via `make crds`.
+
+### Why
+Found live while getting Trusted Boot / Secure Boot working: setting
+`VMClass.spec.firmware: efi-secure` had no effect on the actual clone — a
+full audit of `CloneVmRequest` then turned up three more `VSphereMachineSpec`
+fields (`resource_pool`, `disks` beyond the first, `network` beyond the
+first) that were declared in the CRD schema — with doc comments describing
+exactly the intended behavior — but never actually wired into `clone_vm`.
+Since the schema already encoded the decision (multi-disk/multi-NIC/
+configurable-pool were designed in from the start), completing the wiring is
+a bugfix, not a new architectural decision — no ADR needed.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only for consumers not opting in — `adapter` is a new,
+      optional field defaulting to `vmxnet3`; existing `VMClass`/
+      `VSphereMachine` objects are unaffected. Every fix here makes a
+      previously-silently-ignored spec field actually take effect — anyone
+      who already set `firmware`/`resourcePool`/a second `disks`/`network`
+      entry expecting it to apply will see new (now-correct) behavior on
+      the next clone. The NIC-add and disk-resize/add paths are not yet
+      verified against a live vCenter with more than one NIC/disk — flagged
+      in code comments as a follow-up.
+
+## [2026-09-10] - Route `trustedBoot` cloud-config through `overlayISOVolume`
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docs/adr/0041-vmimage-trusted-boot-uki-support.md`: amended with Decision
+  #4 — when `spec.trustedBoot` is set, `desired_os_artifact` no longer sets
+  `artifacts.cloudConfigRef`; instead it reuses the existing
+  `isoOverlay`/`overlayISOVolume` mechanism (ADR-0022) to place the merged
+  cloud-config at the ISO root as `config.yaml`, the exact file
+  `auroraboot build-iso --cloud-config` itself writes internally.
+- `crates/banlieue-imagebuilder/src/reconciler/vmimage.rs`: generalized
+  `iso_overlay_materialize_script()` into `materialize_script(src, dst)`
+  (shared by both overlay mechanisms); `desired_os_artifact` now
+  accumulates `spec.volumes[]`/`spec.importers[]` into `Vec`s across both
+  `isoOverlay` and the new trustedBoot cloud-config path (fixing a latent
+  bug where a second `spec.insert("importers", ...)` would have silently
+  clobbered the first), and adds at most one shared `iso-overlay` emptyDir
+  + `overlayISOVolume` regardless of how many mechanisms request it.
+- Filed upstream as [kairos-io/kairos#4586](https://github.com/kairos-io/kairos/issues/4586)
+  (report also kept at `~/dev/issues/kairos-operator-uki-cloud-config-flag.md`) —
+  kairos-operator's `buildUKICommand` unconditionally appends
+  `--cloud-config` for UKI builds, but `auroraboot build-uki` has no such
+  flag.
+- `docs/src/guides/using-banlieue-imagebuilder.md`: noted that
+  `cloudConfigs[]` keeps working transparently alongside `trustedBoot` —
+  no user-facing schema change, only internal wiring changed.
+
+### Why
+Live-testing against the real vCenter pipeline: a `VMImage` with both
+`cloudConfigs` and `trustedBoot` set produced a build pod that failed
+immediately with `Incorrect Usage: flag provided but not defined:
+-cloud-config` — kairos-operator passes `--cloud-config` to
+`auroraboot build-uki` regardless of artifact kind, and that flag doesn't
+exist there. Rather than drop `cloudConfigs` support for trustedBoot builds
+(the user wanted to keep using it unchanged), route it through the
+`isoOverlay` mechanism instead, which both `build-iso` and `build-uki`
+support identically.
+
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only for consumers not opting in — no schema change;
+      `VMImageSpec.cloud_configs` behaves identically whether or not
+      `trustedBoot` is set. Only `banlieue-imagebuilder`'s internal
+      `OSArtifact` wiring changed.
+
+## [2026-09-10] - Preflight-validate the `trustedBoot` Secret's key names
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docs/adr/0041-vmimage-trusted-boot-uki-support.md`: amended with Decision
+  #3 — `banlieue-imagebuilder` never generates or rotates the
+  `auroraboot genkey` key material `spec.trustedBoot` references, so a
+  missing/incomplete Secret is an expected failure mode, not a hypothetical.
+- `crates/banlieue-imagebuilder/src/reconciler/vmimage.rs`: added
+  `missing_trusted_boot_keys` (pure, checks a `BTreeSet<String>` of key
+  *names* — never Secret values) and wired a preflight check into
+  `reconcile()`: when `spec.trustedBoot` is set, the referenced Secret is
+  fetched and checked for all six required keys (`PK.auth`, `KEK.auth`,
+  `db.auth`, `db.key`, `db.pem`, `tpm2-pcr-private.pem`) *before* any
+  `OSArtifact` is created, deleted, or patched. A missing/incomplete Secret
+  publishes `VMImage.status.buildArtifact` with `phase: Failed`,
+  `reason: TrustedBootKeysMissing`, and a message naming the Secret and the
+  exact missing keys, then requeues — instead of surfacing only as an
+  opaque kairos-operator admission rejection or a failed build pod.
+
+### Why
+Asked directly: "will banlieue execute genKey for us if secrets are not
+supplied?" — no, and that's deliberate (key generation would mean writing
+Secret content, which is a bigger RBAC/posture change than ADR-0041 needed,
+and auto-generated security-relevant key material should never be silent
+infrastructure). Given that, an incomplete Secret is a likely real-world
+mistake, so it gets a clear, named-key preflight error instead of failing
+opaquely deep inside kairos-operator or the build pod.
+
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only for consumers not opting in — no schema change,
+      only new validation logic gated on the existing, optional
+      `spec.trustedBoot` field.
+
+## [2026-09-10] - Add VMImage Trusted Boot (UKI) support
+
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docs/adr/0041-vmimage-trusted-boot-uki-support.md`: new ADR — decides to
+  add `VMImageSpec.trustedBoot` and request kairos-operator's
+  `spec.artifacts.uki` (`auroraboot build-uki`) instead of the plain
+  `spec.artifacts.iso` (`auroraboot build-iso`) when set.
+- `docs/architecture/calm/architecture.json`: updated the
+  `service-banlieue-imagebuilder` node and its `rel-imagebuilder-kube-api`
+  flow-step description to cover the new `trustedBoot` -> `artifacts.uki`
+  wiring; `make calm-validate` / `make calm-diagrams` re-run.
+- `crates/banlieue-api/src/banlieue/vmimage.rs`: added
+  `VMImageSpec.trusted_boot: Option<TrustedBootSource>` and the new
+  `TrustedBootSource { secret_ref: LocalObjectReference }` type. Only the
+  Secret's name is read — never its content, mirroring `isoOverlay`/
+  `cloudConfigRef`.
+- `crates/banlieue-imagebuilder/src/reconciler/vmimage.rs`:
+  `desired_os_artifact` gained a `trusted_boot` parameter; when set it
+  requests `spec.artifacts.uki.{iso,keysVolume}` (replacing the plain
+  artifact flag) and wires a direct Secret volume for the six required
+  key files (`PK.auth`, `KEK.auth`, `db.auth`, `db.key`, `db.pem`,
+  `tpm2-pcr-private.pem`). `spec_matches` also now accounts for
+  `trustedBoot`, so toggling it on/off is correctly judged stale and
+  triggers a rebuild (SEC-005) instead of silently patching an immutable
+  `OSArtifact.spec.artifacts` field.
+- `deploy/crds/banlieue.io_vmimages.yaml`, `docs/src/reference/api.md`:
+  regenerated via `make crds`.
+- `examples/14-vmimage-kairos-trusted-boot-uki.yaml`: new worked example.
+- All existing call sites of `desired_os_artifact`/`spec_matches` and
+  `VMImageSpec` struct literals across
+  `banlieue-controller`/`banlieue-provider-vsphere`/`banlieue-provider-libvirt`
+  test fixtures updated for the new field/parameter.
+
+### Why
+`vm-build`'s base rootfs images now default to Kairos Trusted Boot
+(`TRUSTED_BOOT=true`), which produces a Unified Kernel Image with no
+discrete initrd — `auroraboot build-iso`'s classic ISO assembly step
+started failing every vSphere `VMImage` build with "No initrd file found."
+Rather than revert `vm-build`, banlieue now requests the artifact shape
+kairos-operator already supports for UKI rootfs
+(`spec.artifacts.uki`/`auroraboot build-uki`). This is the image-build-time
+half of the TPM/Trusted Boot feature; ADR-0039/ADR-0040 (vTPM device
+attach + deferred install) are the VM-instance-time half.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only for consumers not opting in — `trustedBoot` is a
+      new, optional `VMImageSpec` field; existing `VMImage`s without it are
+      unaffected. Operators who DO opt in must generate a Secure Boot /
+      TPM key set out-of-band via `auroraboot genkey` and store it as a
+      Secret before setting `spec.trustedBoot` (see the example and
+      ADR-0041). vSphere UEFI Setup Mode key-enrollment behavior is not
+      yet live-verified — tracked as an ADR-0041 follow-up.
+
 ## [2026-09-09] - Close two Secret-access findings: imagebuilder ClusterRole, userData authorization
 
 **Author:** Erick Bourgeois
@@ -74,7 +560,9 @@ first if that set is not known. Needs an API server supporting the CEL
 `authorizer`. The CEL compiles only at apply time; verify on kind
 (`make kind-e2e`) or with a server-side dry-run before relying on it.
 
+
 ## [2026-09-09] - Threat model full pass: stamp advanced to ADR-0042
+
 
 **Author:** Erick Bourgeois
 
@@ -123,6 +611,7 @@ that `create virtualmachines` and namespace-wide Secret read are "the same
 privilege". A stale threat model asserts a posture nobody has checked and is
 trusted anyway; that is the failure `rules/threat-modeling.md` exists to prevent.
 
+
 ### Impact
 - [ ] Breaking change
 - [ ] Requires cluster rollout
@@ -130,6 +619,7 @@ trusted anyway; that is the failure `rules/threat-modeling.md` exists to prevent
 - [x] Documentation only
 
 ## [2026-09-09] - ADD: mandatory threat-model pass after implementing an ADR
+
 
 **Author:** Erick Bourgeois
 
@@ -161,6 +651,7 @@ claim false, and a stale threat model is worse than none: an absent one prompts
 analysis, a stale one is trusted without any having been done. This is exactly
 how the 2026-07-31 security review went stale behind 30 subsequent ADRs; the
 rule exists so that cannot recur silently.
+
 
 ### Impact
 - [ ] Breaking change
@@ -198,6 +689,7 @@ for the life of the image (ADR-0022/0037/0040).
 
 Active findings requiring code or manifest changes are tracked privately, not
 in this repo.
+
 
 ### Impact
 - [ ] Breaking change
@@ -260,6 +752,7 @@ default must pass one explicitly; callers already passing a mirror are
 unaffected.
 
 ## [2026-09-07] - Clear open code-scanning alerts: base images, VEX reachability, pinned CI containers
+
 
 **Author:** Erick Bourgeois
 

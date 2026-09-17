@@ -591,6 +591,7 @@ mod tests {
                     retain_on_delete: false,
                 }),
                 iso_overlay: None,
+                trusted_boot: None,
             },
             status: None,
         };
@@ -795,6 +796,7 @@ mod tests {
                 cloud_configs: vec![],
                 template: None,
                 iso_overlay: None,
+                trusted_boot: None,
             },
             status: None,
         };
@@ -916,6 +918,7 @@ mod tests {
                 cloud_configs: vec![],
                 template: None,
                 iso_overlay: None,
+                trusted_boot: None,
             },
             status: None,
         };

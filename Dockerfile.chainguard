@@ -56,10 +56,10 @@ LABEL org.opencontainers.image.source="https://github.com/firestoned/banlieue" \
       banlieue.io/binary="${BINARY}"
 
 # rustls (no OpenSSL), so the minimal glibc-dynamic base needs no extra libs.
-COPY --chmod=755 binaries/${TARGETARCH}/${BINARY} /app
+COPY --chmod=755 binaries/${TARGETARCH}/${BINARY} /usr/local/bin/${BINARY}
 
 USER 65532:65532
 
 EXPOSE 8080 8081
 
-ENTRYPOINT ["/app"]
+ENTRYPOINT ["/usr/local/bin/banlieue"]

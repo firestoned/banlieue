@@ -135,6 +135,7 @@ mod tests {
                 cloud_configs: vec![],
                 template: None,
                 iso_overlay: None,
+                trusted_boot: None,
             },
             status: Some(VMImageStatus {
                 per_provider: vec![ImagePerProviderStatus {

@@ -5,7 +5,6 @@ metadata:
 spec:
   group: banlieue.io
   names:
-    categories: []
     kind: ProviderClass
     plural: providerclasses
     shortNames:

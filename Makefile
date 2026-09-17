@@ -50,6 +50,9 @@ ARCH         ?= amd64
 # (e.g. `<registry>/banlieue:<tag>`), which is what `banlieue bootstrap
 # --registry <registry>` expects.
 IMAGE_REF    ?= $(REGISTRY)$(if $(strip $(ORG)),/$(ORG),)/$(BINARY):$(IMAGE_TAG)
+# Same as IMAGE_REF, minus the tag -- used to print the real pushed digest
+# as a `name@sha256:...` reference (see docker-image below).
+IMAGE_NAME   ?= $(REGISTRY)$(if $(strip $(ORG)),/$(ORG),)/$(BINARY)
 
 # Base image overrides. EMPTY by default so the digest-pinned `pinned-base`
 # stage in each Dockerfile wins and `make docker-*` builds exactly what CI
@@ -447,6 +450,7 @@ docker-image: ## Generic $(ARCH) image build of $(IMAGE_REF); PUSH=true to push 
 	  *) echo "ERROR: unsupported ARCH=$(ARCH) (use amd64 or arm64)"; exit 1 ;; \
 	esac
 	@echo "Building $(IMAGE_REF) (linux/$(ARCH), $(if $(filter true,$(PUSH)),push,load))..."
+	@metafile=$$(mktemp); \
 	$(CONTAINER_TOOL) buildx build $(if $(filter true,$(PUSH)),--push,--load) \
 		--platform=linux/$(ARCH) \
 		-t $(IMAGE_REF) \
@@ -455,7 +459,17 @@ docker-image: ## Generic $(ARCH) image build of $(IMAGE_REF); PUSH=true to push 
 		--build-arg VERSION="$(VERSION)" \
 		--build-arg GIT_SHA="$(GIT_SHA)" \
 		$(BASE_IMAGE_BUILD_ARG) \
-		-f Dockerfile .
+		--metadata-file "$$metafile" \
+		-f Dockerfile .; \
+	rc=$$?; \
+	digest=$$(python3 -c "import json; print(json.load(open('$$metafile')).get('containerimage.digest',''))" 2>/dev/null); \
+	rm -f "$$metafile"; \
+	[ $$rc -eq 0 ] || exit $$rc; \
+	if [ -n "$$digest" ]; then \
+	  echo "==> Pushed: $(IMAGE_NAME)@$$digest"; \
+	else \
+	  echo "==> Warning: buildx metadata had no containerimage.digest -- can't print the real pushed digest"; \
+	fi
 
 docker-build-amd64: prepare-binaries-linux-amd64 ## Build distroless image for $(BINARY) (linux/amd64)
 	$(CONTAINER_TOOL) buildx build --load --platform=linux/amd64 \

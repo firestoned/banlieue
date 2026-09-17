@@ -347,6 +347,15 @@ pub async fn ensure_vm(
         .await?;
     info!(vm_ref = %vm_ref, "CloneVM_Task complete");
 
+    // `spec.disks` is schema-required to have at least one entry
+    // (`VSphereDiskSpec` min length 1) — `disks[0]` is the OS disk, a
+    // floor on the template's own native size. Issued as its own
+    // `ReconfigVM_Task`, after the clone has fully settled, per
+    // `VSphereClient::grow_os_disk`'s own doc comment.
+    if let Some(os_disk) = spec.disks.first() {
+        client.grow_os_disk(&vm_ref, os_disk.size_gi_b).await?;
+    }
+
     // ADR-0039: attach a vTPM before power-on, not after — Kairos's kcrypt
     // seals LUKS keys to the TPM during unattended install, so the device
     // must exist before first boot. CloneVM_Task already clones powered
