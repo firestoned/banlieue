@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use anyhow::{Context as _, Result};
 use banlieue_api::banlieue::{Provider, VMImage};
+use banlieue_api::infrastructure::LibvirtMachine;
 use banlieue_provider_sdk::bootstrap::{init_tracing, serve_health, shutdown_signal};
 use banlieue_provider_sdk::client::build_client;
 use banlieue_provider_sdk::leader::{
@@ -29,7 +30,8 @@ use crate::{
     client::TlsClientFactory,
     context::Context,
     import::ImportArgs,
-    reconciler::{provider, vmimage},
+    machine_client::TlsMachineClientFactory,
+    reconciler::{libvirtmachine, provider, vmimage},
 };
 
 const DEFAULT_HEALTH_PORT: u16 = 8081;
@@ -232,6 +234,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         client.clone(),
         cli.namespace.clone(),
         Arc::new(TlsClientFactory::new()),
+        Arc::new(TlsMachineClientFactory::new()),
         cli.build_namespace.clone(),
         cli.import_image.clone(),
         cli.import_service_account.clone(),
@@ -245,6 +248,7 @@ pub async fn run(cli: Cli) -> Result<()> {
 
     info!("starting Provider controller (class=libvirt)");
     let ctx2 = ctx.clone();
+    let ctx3 = ctx.clone();
     let provider_ctrl = Controller::new(
         provider_api,
         provider_watch_config(cli.provider_name.as_deref()),
@@ -268,9 +272,31 @@ pub async fn run(cli: Cli) -> Result<()> {
             }
         });
 
+    // LibvirtMachine — the VM lifecycle (ADR-0050). Namespaced like the
+    // Provider, because a machine always lives beside the VirtualMachine that
+    // owns it.
+    info!("starting LibvirtMachine controller");
+    let machine_api: Api<LibvirtMachine> = match cli.namespace.as_deref() {
+        Some(ns) => Api::namespaced(client.clone(), ns),
+        None => Api::all(client.clone()),
+    };
+    let machine_ctrl = Controller::new(machine_api, Config::default())
+        .run(
+            libvirtmachine::reconcile,
+            libvirtmachine::error_policy,
+            ctx3,
+        )
+        .for_each(|res| async move {
+            match res {
+                Ok((obj, _)) => info!(kind = "LibvirtMachine", ?obj, "reconciled"),
+                Err(e) => error!(kind = "LibvirtMachine", error = %e, "reconcile error"),
+            }
+        });
+
     tokio::select! {
         () = provider_ctrl => info!("Provider controller stream ended"),
         () = image_ctrl => info!("VMImage controller stream ended"),
+        () = machine_ctrl => info!("LibvirtMachine controller stream ended"),
         _ = shutdown_signal() => info!("shutdown signal received; releasing controllers"),
     }
     Ok(())

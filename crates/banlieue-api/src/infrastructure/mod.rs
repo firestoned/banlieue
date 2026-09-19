@@ -6,9 +6,16 @@
 //! InfraCluster), so they can be referenced from CAPI `Machine` /
 //! `Cluster` objects as well as from banlieue's own VirtualMachine.
 
+pub mod libvirt_machine;
 pub mod vsphere_cluster;
 pub mod vsphere_machine;
 
+pub use libvirt_machine::{
+    LibvirtAddressSource, LibvirtBootSource, LibvirtBootSourceKind, LibvirtDiskBus,
+    LibvirtDiskSpec, LibvirtMachine, LibvirtMachineSpec, LibvirtMachineStatus,
+    LibvirtMachineTemplate, LibvirtMachineTemplateResource, LibvirtMachineTemplateSpec,
+    LibvirtNicSource, LibvirtNicSourceKind, LibvirtNicSpec,
+};
 pub use vsphere_cluster::{VSphereCluster, VSphereClusterSpec, VSphereClusterStatus};
 pub use vsphere_machine::{
     VSphereDiskSpec, VSphereMachine, VSphereMachineSpec, VSphereMachineStatus,

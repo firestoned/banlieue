@@ -12,7 +12,7 @@
 > Deleting the VM frees the address.
 >
 > **Status: not started.** Deferred by explicit decision — see
-> [ADR-0033](../../banlieue/docs/adr/0033-capi-ipam-pool-integration.md)
+> [ADR-0033](../../docs/adr/0033-capi-ipam-pool-integration.md)
 > for the full design conversation, the two upstream provider options
 > considered, and why this was deferred rather than built immediately.
 > **Read that ADR before touching this roadmap** — it is the source of
@@ -153,7 +153,7 @@ instead of a human hand-picking one per VM.
       at an off-the-shelf pool with a carved-out sub-range").
 - [ ] `.claude/CHANGELOG.md` entry, `**Author:**` line, per this
       project's mandatory changelog convention.
-- [ ] Flip [ADR-0033](../../banlieue/docs/adr/0033-capi-ipam-pool-integration.md)'s
+- [ ] Flip [ADR-0033](../../docs/adr/0033-capi-ipam-pool-integration.md)'s
       status from Proposed to Accepted once the provider decision is
       final and implementation lands — record the actual provider choice
       in the ADR itself (its "Decision" section currently, correctly,

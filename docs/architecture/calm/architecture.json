@@ -166,7 +166,7 @@
       "unique-id": "service-provider-libvirt",
       "node-type": "service",
       "name": "banlieue-provider-libvirt",
-      "description": "Provider controller for libvirt/KVM hosts, speaking libvirt's own RPC protocol through the first-party `banlieue-libvirt` crate (XDR codec + message framing) rather than any third-party client — zero new dependencies, no C library, no FFI. Split by plane (ADR-0011): the CONTROL plane runs in-process — the Provider reconciler connects, lists storage pools and networks, verifies the admin-declared spec.capabilities actually exist, and publishes status.failureDomains[] (one per host, with pools as the interesting sub-structure since libvirt has no datacenter/cluster hierarchy). The DATA plane runs as a Kubernetes Job so bulk disk bytes never flow through the controller process; that Job runs the `banlieue` binary itself, so there is no third-party tools image to pin, trust, or patch. VM lifecycle (a LibvirtMachine InfraMachine CRD) is deliberately out of scope for this increment."
+      "description": "Provider controller for libvirt/KVM hosts, speaking libvirt's own RPC protocol through the first-party `banlieue-libvirt` crate (XDR codec + message framing) rather than any third-party client — zero new dependencies, no C library, no FFI. Split by plane (ADR-0011): the CONTROL plane runs in-process — the Provider reconciler connects, lists storage pools and networks, verifies the admin-declared spec.capabilities actually exist, and publishes status.failureDomains[] (one per host, with pools as the interesting sub-structure since libvirt has no datacenter/cluster hierarchy). The DATA plane runs as a Kubernetes Job so bulk disk bytes never flow through the controller process; that Job runs the `banlieue` binary itself, so there is no third-party tools image to pin, trust, or patch. VM lifecycle (a LibvirtMachine InfraMachine CRD) is deliberately out of scope for this increment. A third reconciler (ADR-0050) owns the LibvirtMachine lifecycle: it defines, starts, inspects and undefines domains through the same first-party `banlieue-libvirt` crate, adding domain procedures beside the existing storage ones rather than taking on libvirt's C client. Undefine always passes MANAGED_SAVE|NVRAM|TPM so no varstore or swtpm state outlives a deleted VM. Domain XML is rendered through an escaping-only template module: every value reaching it (domain name, volume paths, bridge names) is user- or admin-influenced."
     },
     {
       "unique-id": "service-banlieue-imagebuilder",
@@ -1511,6 +1511,9 @@
     "docs/adr/0039-vsphere-vtpm-support.md",
     "docs/adr/0040-deferred-install-for-vtpm-encryption.md",
     "docs/adr/0041-imagebuilder-namespaced-secret-access.md",
-    "docs/adr/0042-userdata-reference-authorization.md"
+    "docs/adr/0041-vmimage-trusted-boot-uki-support.md",
+    "docs/adr/0042-instant-clone-vmfork-not-supported.md",
+    "docs/adr/0042-userdata-reference-authorization.md",
+    "docs/adr/0050-libvirtmachine-domain-lifecycle.md"
   ]
 }
