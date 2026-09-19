@@ -1,13 +1,14 @@
 # 0033 — CAPI IPAM pool integration (deferred)
 
-## Status
-
-Proposed — 2026-08-23. Not implemented. Extends [ADR-0024](0024-vspheremachine-clone-static-ip-cloud-config.md)
-(static IP via `networkOverrides`) and [ADR-0032](0032-per-zone-network-subnet-shape.md)
-(per-zone subnet shape). Recorded now, ahead of an active virtrigaud
-migration, to capture a real design conversation and its constraints
-before the details are forgotten — implementation is intentionally
-deferred.
+- **Status:** Accepted
+- **Date:** 2026-09-19
+- **Proposed:** 2026-08-23
+- **Notes:** Not implemented. Extends [ADR-0024](0024-vspheremachine-clone-static-ip-cloud-config.md)
+  (static IP via `networkOverrides`) and [ADR-0032](0032-per-zone-network-subnet-shape.md)
+  (per-zone subnet shape). Recorded now, ahead of an active virtrigaud
+  migration, to capture a real design conversation and its constraints
+  before the details are forgotten — implementation is intentionally
+  deferred.
 
 ## Context
 

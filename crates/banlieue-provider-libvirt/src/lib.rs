@@ -22,12 +22,16 @@
 
 pub mod app;
 pub mod client;
+pub mod cloudinit;
 pub mod context;
 pub mod credentials;
 pub mod error;
 pub mod import;
+pub mod machine_client;
 pub mod reconciler;
+pub mod xml;
 
 pub use app::{Cli, run};
 pub use context::Context;
 pub use error::{Error, Result};
+pub use xml::{XmlError, esc};

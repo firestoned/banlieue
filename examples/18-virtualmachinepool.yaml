@@ -1,0 +1,114 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# A warm pool of ready-to-hand-out VMs (ADR-0046).
+#
+# A pool keeps N already-provisioned VirtualMachines standing by so a
+# consumer does not wait out provisioning at request time. Members are
+# ordinary VirtualMachines: the scheduler places them, providers realise
+# them, and nothing about a provider knows pools exist.
+#
+# Pairs with the Provider and VMImage from 17-virtualmachine-libvirt.yaml.
+#
+# READ THIS BEFORE COPYING
+#
+#   `readiness` has no default, on purpose, and picking the wrong value is
+#   the one mistake that produces no error — see the field's comment below.
+---
+apiVersion: banlieue.io/v1alpha1
+kind: VirtualMachinePool
+metadata:
+  name: sandbox-pool
+  namespace: banlieue-system
+spec:
+  # How many Ready, unclaimed members to keep standing by. Size it at
+  # (peak requests per minute) x (minutes to provision one member): a pool
+  # shallower than that hands out nothing during a burst and the consumer
+  # waits exactly as long as it would have without a pool.
+  warmReplicas: 2
+
+  # Hard ceiling on members of any phase. Leave headroom above warmReplicas,
+  # or an image rollout has to retire warm capacity to build replacements
+  # and `status.available` dips while it does.
+  maxReplicas: 6
+
+  # Most members allowed to provision at once. This is a HOST-protection
+  # knob, not a throughput knob: each provisioning member is a full
+  # install's worth of disk and CPU load on hosts that are also running
+  # members already handed out. If refill is too slow, raise warmReplicas or
+  # shorten the install — not this.
+  maxSurge: 2
+
+  # Which member condition makes it claimable. REQUIRED, with no default.
+  #
+  #   InfrastructureReady — the backend says the VM exists and is running.
+  #                         Correct for `installMode: Immediate` images.
+  #
+  #   GuestReady          — the *installed guest* has booted and said so.
+  #                         The only correct choice for `installMode:
+  #                         Deferred`, where InfrastructureReady fires when
+  #                         the install STARTS, not when it finishes.
+  #
+  # `GuestReady` is not satisfiable yet — ADR-0043 is what publishes that
+  # condition. A pool set to it today reports:
+  #
+  #   Warm=False  reason=ReadinessSignalAbsent
+  #
+  # rather than filling. That condition exists precisely because the
+  # alternative — a pool sitting at zero with no explanation — is
+  # indistinguishable from a slow install.
+  readiness: InfrastructureReady
+
+  # Replace warm members when the referenced VMImage is rebuilt. Defaults
+  # ON, unlike most booleans here: a warm member is an already-installed VM,
+  # so a pool that ignores image rebuilds keeps handing out the unpatched
+  # build indefinitely and nothing says so.
+  recycleOnImageChange: true
+
+  # Replace a Ready member that has sat unclaimed this long. Bounds how
+  # stale an unpatched warm VM can get between image rebuilds. Omit for no
+  # idle expiry.
+  maxIdleSeconds: 86400
+
+  # A member still provisioning after this long is treated as poisoned and
+  # deleted, never repaired — a pool cannot diagnose a half-finished
+  # unattended install, and a warm set is worthless if it can contain one.
+  # Defaults to 1800s, which is generous on purpose: a Deferred member is
+  # not Ready until a full install plus a reboot have finished.
+  provisioningTimeoutSeconds: 1800
+
+  # Template for each member. `spec` is a VirtualMachineSpec, copied
+  # verbatim onto every member — so anything valid on a VirtualMachine is
+  # valid here.
+  template:
+    labels:
+      app.kubernetes.io/part-of: sandbox-pool
+    spec:
+      classRef:
+        name: small
+      imageRef:
+        name: ubuntu-22.04-libvirt
+      placement:
+        providerSelector:
+          matchLabels:
+            env: edge
+      desiredPowerState: PoweredOn
+      # Members are cattle: replace, never move.
+      migrationPolicy: never
+
+  # Optional. Per-member static addressing, stamped into the template's
+  # networkOverrides for the named interface. Omit it (as this example does
+  # by leaving it commented) for DHCP or class-level IPAM.
+  #
+  # Size the range at maxReplicas PLUS spares: an address is held until a
+  # deleted member's backend VM is really gone, not until its delete is
+  # issued.
+  #
+  # addressing:
+  #   interface: eth0
+  #   rangeStart: 192.0.2.10
+  #   rangeEnd: 192.0.2.29     # 20 addresses for maxReplicas: 6
+  #   prefix: 24
+  #   gateway: 192.0.2.1
+  #   nameservers: [192.0.2.53]
+  #   domain: sandbox.example.com

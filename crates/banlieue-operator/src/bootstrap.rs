@@ -31,10 +31,12 @@
 use anyhow::{Context as _, Result};
 use banlieue_api::banlieue::{
     ImagePullPolicy, Provider, ProviderClass, ProviderClassSpec, ProviderImage, VMClass, VMImage,
-    VirtualMachine,
+    VirtualMachine, VirtualMachinePool,
 };
 use banlieue_api::crdgen_support::prepared;
-use banlieue_api::infrastructure::{VSphereCluster, VSphereMachine, VSphereMachineTemplate};
+use banlieue_api::infrastructure::{
+    LibvirtMachine, LibvirtMachineTemplate, VSphereCluster, VSphereMachine, VSphereMachineTemplate,
+};
 use banlieue_provider_sdk::client::build_client;
 use banlieue_provider_sdk::ssa::server_side_apply;
 use clap::{Args, Subcommand};
@@ -462,9 +464,12 @@ pub fn build_crds() -> Vec<CustomResourceDefinition> {
         prepared(VMClass::crd()),
         prepared(VMImage::crd()),
         prepared(VirtualMachine::crd()),
+        prepared(VirtualMachinePool::crd()),
         prepared(VSphereCluster::crd()),
         prepared(VSphereMachine::crd()),
         prepared(VSphereMachineTemplate::crd()),
+        prepared(LibvirtMachine::crd()),
+        prepared(LibvirtMachineTemplate::crd()),
     ]
 }
 

@@ -160,15 +160,19 @@ rules:
       - vspheremachines
       - vspheremachinetemplates
       - vsphereclusters
+      - libvirtmachines
+      - libvirtmachinetemplates
     verbs: ["get", "list", "watch", "update", "patch"]
   - apiGroups: ["infrastructure.banlieue.io"]
     resources:
       - vspheremachines/status
       - vsphereclusters/status
+      - libvirtmachines/status
     verbs: ["get", "update", "patch"]
   - apiGroups: ["infrastructure.banlieue.io"]
     resources:
       - vspheremachines/finalizers
+      - libvirtmachines/finalizers
     verbs: ["update"]
   # CAPI IPAM contract, used by Pool-based IpamSpec.
   - apiGroups: ["ipam.cluster.x-k8s.io"]

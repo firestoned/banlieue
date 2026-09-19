@@ -140,7 +140,7 @@ async fn reconcile_for_provider(
             // without contacting the host: verifying it would need a
             // connection per reconcile for a source the admin asserted is
             // static. The provider's own probe already proves reachability.
-            row(provider, true, reasons::RECONCILED, None, Vec::new())
+            backing_file_row(provider, source)
         }
         ImageSourceKind::Url => match gate_on_raw_disk(raw_disk) {
             Err((reason, message)) => row(provider, false, reason, Some(message), Vec::new()),
@@ -167,7 +167,11 @@ async fn reconcile_for_provider(
                 } else {
                     reasons::IMPORTING
                 };
-                row(provider, ready, reason, None, zones)
+                // Only once every pool has the volume: a half-imported
+                // image that advertised a reference would let a machine
+                // schedule onto a host where the volume does not exist yet.
+                let resolved = ready.then(|| url_volume_name(image_name));
+                row_with_ref(provider, ready, reason, None, zones, resolved)
             }
         },
         ImageSourceKind::Template => row(
@@ -361,15 +365,69 @@ fn row(
     message: Option<String>,
     zones: Vec<ZoneImageStatus>,
 ) -> ImagePerProviderStatus {
+    row_with_ref(provider, ready, reason, message, zones, None)
+}
+
+/// [`row`], plus the `resolvedRef` a machine will boot from.
+///
+/// `status.perProvider[].resolvedRef` is the entire handoff to
+/// `banlieue-controller`: it is what becomes `LibvirtMachine.spec.
+/// bootSource.volume` (ADR-0050). A ready row without one makes every
+/// `VirtualMachine` scheduled onto this provider fail with
+/// `MissingResolvedImageRef`, which is what happened before this existed.
+fn row_with_ref(
+    provider: &Provider,
+    ready: bool,
+    reason: &str,
+    message: Option<String>,
+    zones: Vec<ZoneImageStatus>,
+    resolved_ref: Option<String>,
+) -> ImagePerProviderStatus {
     ImagePerProviderStatus {
         provider_name: provider.name_any(),
         provider_namespace: provider.namespace().unwrap_or_default(),
         ready,
-        resolved_ref: None,
+        resolved_ref,
         reason: Some(reason.to_string()),
         message,
         zones,
     }
+}
+
+/// Volume name for a `BackingFile` source.
+///
+/// `ImageSource.reference` is documented as a path
+/// (`/var/lib/libvirt/images/ubuntu.qcow2`), but every libvirt lookup takes a
+/// volume *name*. For a directory-backed pool — the only kind banlieue
+/// targets — the two differ only by the directory, so the basename is the
+/// answer rather than a guess. A reference that is already a bare name comes
+/// back unchanged.
+#[must_use]
+pub fn backing_file_volume_name(reference: &str) -> &str {
+    reference.rsplit('/').next().unwrap_or(reference)
+}
+
+/// Volume name a `Url` import produces for `image_name`.
+///
+/// Derivable rather than discovered: the import Job names its destination
+/// deterministically (`crate::import::volume_name`) precisely so a retry
+/// targets what the previous attempt created — which also means the
+/// reconciler can state the name without asking the host.
+#[must_use]
+pub fn url_volume_name(image_name: &str) -> String {
+    crate::import::volume_name(image_name, None)
+}
+
+/// The `perProvider` row for a `BackingFile` source.
+fn backing_file_row(provider: &Provider, source: &ImageSource) -> ImagePerProviderStatus {
+    row_with_ref(
+        provider,
+        true,
+        reasons::RECONCILED,
+        None,
+        Vec::new(),
+        Some(backing_file_volume_name(&source.reference).to_string()),
+    )
 }
 
 /// Everything one import Job needs to know.

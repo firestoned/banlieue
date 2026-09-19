@@ -37,6 +37,7 @@ flowchart LR
     network-libvirt-backend["libvirt / KVM Host"]
     network-vault-backend["HashiCorp Vault (KV secrets)"]
     data-asset-virtualmachine-cr["VirtualMachine Custom Resource"]
+    data-asset-virtualmachinepool-cr["VirtualMachinePool Custom Resource"]
     data-asset-provider-cr["Provider Custom Resource"]
     data-asset-providerclass-cr["ProviderClass Custom Resource"]
     data-asset-vmclass-cr["VMClass Custom Resource"]
@@ -100,6 +101,8 @@ flowchart LR
     system-k0s-bootstrap --> network-vsphere-backend
     system-k0s-bootstrap --> network-libvirt-backend
     system-k0s-bootstrap --> network-vault-backend
+    service-banlieue-controller --> data-asset-virtualmachinepool-cr
+    service-banlieue-controller --> data-asset-virtualmachine-cr
 ```
 
 <sub>Source: nodes and relationships in `architecture.json`.</sub>

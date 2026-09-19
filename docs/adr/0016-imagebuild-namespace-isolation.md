@@ -1,10 +1,8 @@
 # 16. Isolate image builds in their own namespace and PodSecurity domain
 
-Date: 2026-07-31
-
-## Status
-
-Accepted — amends ADR-0010 (VMImage build pipeline).
+- **Status:** Accepted
+- **Date:** 2026-07-31
+- **Related:** amends ADR-0010 (VMImage build pipeline).
 
 ## Context
 

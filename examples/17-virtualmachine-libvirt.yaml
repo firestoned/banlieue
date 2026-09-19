@@ -1,0 +1,112 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# A complete, minimal VirtualMachine on a libvirt/KVM host (ADR-0050).
+#
+# Everything needed for one VM, in the order the controllers consume it. The
+# Provider itself is not repeated here — see 02-provider-libvirt-edge.yaml,
+# and note that this file assumes its `standard` storage class (pool
+# `default`) and `mgmt` network class.
+#
+# (Examples 15 and 16 are reserved by roadmap 70 for the VirtualMachinePool
+# and its guest-phase cloud-config, which land later.)
+#
+# WHAT HAPPENS WHEN YOU APPLY THIS
+#
+#   1. banlieue-provider-libvirt sees the VMImage, finds a `libvirt` source,
+#      and — for a BackingFile source — marks it ready immediately and
+#      publishes `status.perProvider[].resolvedRef`, the volume name a
+#      machine will boot from.
+#   2. banlieue-controller schedules the VirtualMachine onto a libvirt
+#      Provider and creates a LibvirtMachine beside it, owned by the VM.
+#   3. banlieue-provider-libvirt creates the OS disk, defines the domain,
+#      starts it, and reports back through `status`.
+#   4. banlieue-controller mirrors that status onto the VirtualMachine as
+#      `InfrastructureReady`, and from there onto `Ready`.
+#
+# WATCHING IT
+#
+#   kubectl get virtualmachine,libvirtmachine -n banlieue-system
+#   kubectl describe libvirtmachine web-01 -n banlieue-system
+#   virsh -c qemu+tls://<host>/system list --all
+#
+# The domain is named `<namespace>-<name>` — `banlieue-system-web-01` here.
+# One libvirt host has a single flat domain namespace while two Kubernetes
+# namespaces can each hold a `web-01`, so the name is qualified.
+---
+# The base image. `BackingFile` means "this volume already exists on the
+# host" — put it there yourself (`virsh vol-create-as`, or copy into the
+# pool's directory and `virsh pool-refresh`). Use a `Url` source instead to
+# have banlieue import it; that path runs through banlieue-imagebuilder and
+# produces a `.raw` volume.
+#
+# `ref` is documented as a path, and the provider takes its basename as
+# the volume name — those are the same string for the directory-backed pools
+# banlieue targets.
+apiVersion: banlieue.io/v1alpha1
+kind: VMImage
+metadata:
+  name: ubuntu-22.04-libvirt
+spec:
+  osFamily: linux
+  osDistribution: ubuntu
+  osVersion: "22.04"
+  architecture: amd64
+  guestAgent: cloud-init
+  sources:
+    - providerClass: libvirt
+      kind: BackingFile
+      ref: /var/lib/libvirt/images/ubuntu-22.04.qcow2
+---
+# A small class. Note what is NOT here: no `bus` on the disk and no libvirt
+# names anywhere. A VMClass is backend-neutral — `storageClass: standard` and
+# `networkClass: mgmt` are resolved to a pool and a network by whichever
+# Provider the scheduler picks.
+apiVersion: banlieue.io/v1alpha1
+kind: VMClass
+metadata:
+  name: small
+spec:
+  hardware:
+    cpus: 2
+    memoryMiB: 2048
+    disks:
+      - name: os
+        sizeGiB: 20
+        storageClass: standard
+        provisioning: thin
+  network:
+    interfaces:
+      - name: eth0
+        networkClass: mgmt
+        # No `static` and no `pool` means DHCP, which is what a
+        # libvirt-managed network provides out of the box.
+        ipam: {}
+  # EFI needs no configuration on libvirt: `<os firmware='efi'>` makes
+  # libvirt select the loader and varstore template from its own firmware
+  # descriptors. Hardcoding an OVMF path is not portable — Debian, Fedora and
+  # Arch each put it somewhere different.
+  firmware: efi
+---
+# The VM itself.
+apiVersion: banlieue.io/v1alpha1
+kind: VirtualMachine
+metadata:
+  name: web-01
+  namespace: banlieue-system
+  labels:
+    app: web
+spec:
+  classRef:
+    name: small
+  imageRef:
+    name: ubuntu-22.04-libvirt
+  placement:
+    providerSelector:
+      matchLabels:
+        env: edge
+  desiredPowerState: PoweredOn
+  # A libvirt failure domain is one host, so there is nothing to migrate
+  # between: live migration is out of scope (ADR-0036) and a placement change
+  # would mean recreating the VM.
+  migrationPolicy: never

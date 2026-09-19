@@ -24,7 +24,7 @@ use crate::error::{Error, Result};
 ///
 /// Distinct from the `qemu+tls://host/system` endpoint used to *reach* the
 /// host: that describes the transport, this names the driver.
-pub(crate) const LOCAL_DRIVER_URI: &str = "qemu:///system";
+pub const LOCAL_DRIVER_URI: &str = "qemu:///system";
 
 /// What the reconcilers need from a libvirt host.
 #[async_trait]

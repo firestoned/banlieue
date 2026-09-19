@@ -1,13 +1,13 @@
 # 0025 — userData resolved by banlieue-controller, namespace-scoped Role
 
-## Status
-
-Accepted — 2026-08-20. Extends [ADR-0024](0024-vspheremachine-clone-static-ip-cloud-config.md)
-(`VSphereMachineSpec.userData`). Revises this ADR's own first draft, which
-proposed operator-managed per-Provider `Role` extensions — superseded
-before implementation; see *History* below.
-Extended by [ADR-0038](0038-userdata-configmap-support.md) (adds ConfigMap
-source alongside Secret).
+- **Status:** Accepted
+- **Date:** 2026-08-20
+- **Related:** Extends [ADR-0024](0024-vspheremachine-clone-static-ip-cloud-config.md)
+  (`VSphereMachineSpec.userData`). Revises this ADR's own first draft, which
+  proposed operator-managed per-Provider `Role` extensions — superseded
+  before implementation; see *History* below.
+  Extended by [ADR-0038](0038-userdata-configmap-support.md) (adds ConfigMap
+  source alongside Secret).
 
 ## Context
 

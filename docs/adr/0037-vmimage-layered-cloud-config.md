@@ -1,10 +1,11 @@
 # 0037 — VMImage: layered cloud-config (base + overlays)
 
-## Status
-
-Proposed — 2026-08-25. Extends `banlieue.io/v1alpha1` `VMImage`
-(`crates/banlieue-api/src/banlieue/vmimage.rs`) and
-`crates/banlieue-imagebuilder`.
+- **Status:** Accepted
+- **Date:** 2026-09-19
+- **Proposed:** 2026-08-25
+- **Related:** Extends `banlieue.io/v1alpha1` `VMImage`
+  (`crates/banlieue-api/src/banlieue/vmimage.rs`) and
+  `crates/banlieue-imagebuilder`.
 
 ## Context
 

@@ -23,11 +23,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use banlieue_api::banlieue::{Provider, ProviderClass, VMClass, VMImage, VirtualMachine};
-use banlieue_api::crdgen_support::prepared;
-use banlieue_api::infrastructure::{VSphereCluster, VSphereMachine, VSphereMachineTemplate};
+use banlieue_api::crdgen_support::all_crds;
 use clap::Parser;
-use kube::CustomResourceExt;
+use k8s_openapi::apiextensions_apiserver::pkg::apis::apiextensions::v1::CustomResourceDefinition;
 
 /// Emit banlieue CRDs as YAML.
 #[derive(Debug, Parser)]
@@ -46,40 +44,13 @@ struct Cli {
 fn main() -> ExitCode {
     let cli = Cli::parse();
 
-    let crds: Vec<(&str, String)> = vec![
-        (
-            "banlieue.io_providers.yaml",
-            render(prepared(Provider::crd())),
-        ),
-        (
-            "banlieue.io_providerclasses.yaml",
-            render(prepared(ProviderClass::crd())),
-        ),
-        (
-            "banlieue.io_virtualmachines.yaml",
-            render(prepared(VirtualMachine::crd())),
-        ),
-        (
-            "banlieue.io_vmclasses.yaml",
-            render(prepared(VMClass::crd())),
-        ),
-        (
-            "banlieue.io_vmimages.yaml",
-            render(prepared(VMImage::crd())),
-        ),
-        (
-            "infrastructure.banlieue.io_vsphereclusters.yaml",
-            render(prepared(VSphereCluster::crd())),
-        ),
-        (
-            "infrastructure.banlieue.io_vspheremachines.yaml",
-            render(prepared(VSphereMachine::crd())),
-        ),
-        (
-            "infrastructure.banlieue.io_vspheremachinetemplates.yaml",
-            render(prepared(VSphereMachineTemplate::crd())),
-        ),
-    ];
+    // Membership comes from `all_crds`, and each file is named after the
+    // CRD itself (`<group>_<plural>.yaml`) rather than from a parallel list
+    // that can disagree with it.
+    let crds: Vec<(String, String)> = all_crds()
+        .into_iter()
+        .map(|crd| (crd_filename(&crd), render(&crd)))
+        .collect();
 
     match cli.out_dir {
         Some(dir) => write_per_file(&dir, &crds),
@@ -87,11 +58,24 @@ fn main() -> ExitCode {
     }
 }
 
+/// `deploy/crds/` filename for a CRD: `<group>_<plural>.yaml`.
+///
+/// Derived from the CRD's own `metadata.name`, which is exactly
+/// `<plural>.<group>` — so a rename cannot leave a stale file behind under
+/// the old name while the new one is written beside it.
+fn crd_filename(crd: &CustomResourceDefinition) -> String {
+    let full = crd.metadata.name.as_deref().unwrap_or_default();
+    match full.split_once('.') {
+        Some((plural, group)) => format!("{group}_{plural}.yaml"),
+        None => format!("{full}.yaml"),
+    }
+}
+
 fn render<T: serde::Serialize>(crd: T) -> String {
     serde_yaml::to_string(&crd).expect("serialize CRD to YAML")
 }
 
-fn write_stdout(crds: &[(&str, String)]) -> ExitCode {
+fn write_stdout(crds: &[(String, String)]) -> ExitCode {
     for (i, (_, doc)) in crds.iter().enumerate() {
         if i > 0 {
             println!("---");
@@ -101,7 +85,7 @@ fn write_stdout(crds: &[(&str, String)]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn write_per_file(dir: &Path, crds: &[(&str, String)]) -> ExitCode {
+fn write_per_file(dir: &Path, crds: &[(String, String)]) -> ExitCode {
     if let Err(e) = fs::create_dir_all(dir) {
         eprintln!("crdgen: failed to create {}: {e}", dir.display());
         return ExitCode::FAILURE;

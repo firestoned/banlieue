@@ -4,7 +4,7 @@
 > per-datastore tiering). Roadmap item: examine, decide, then enforce in the
 > capability model, the scheduler, and the failure-domain mapping.
 >
-> Read alongside `01-DECISIONS.md` (this should land there as a D-NNN once
+> Read alongside `01-decisions.md` (this should land there as a D-NNN once
 > agreed) and the provider phase docs (`11`–`13`).
 
 ## The question
@@ -111,7 +111,7 @@ Consequences:
 
 ## Roadmap actions
 
-1. Lock the principle as a decision in `01-DECISIONS.md` (D-NNN: "Availability
+1. Lock the principle as a decision in `01-decisions.md` (D-NNN: "Availability
    Zones = local compute + local datastore; uniform tiering; no cross-datastore
    access").
 2. Per-provider: define "local datastore" and surface local datastore identity

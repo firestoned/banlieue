@@ -1,5 +1,1017 @@
 # Changelog
 
+## [2026-09-20] - All ADRs on one metadata format
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docs/adr/*.md`: all 48 ADRs now carry metadata as a bullet list under the
+  title — `- **Status:**` and `- **Date:**` on every one — replacing the
+  `## Status` prose section 31 of them used.
+- `.claude/rules/architecture-driven-development.md`, `.claude/CLAUDE.md`:
+  the ADR format guidance now describes the bullet list, so new ADRs match.
+
+### Why
+Three formats were in use: a bullet list (17 files), a `## Status` section
+with the date in prose (31), and two files with a bare `Date:` line above
+their bullets. Status and date were only greppable in the first.
+
+### How it was done safely
+The `## Status` bodies were not just a status word — they carried
+`Extends`/`Amends`/`Depends` relations, amendment records, and implementation
+notes, sometimes several sentences. A script parsed each into
+`Status` / `Date` / `Proposed` / `Related` / `Notes` bullets, choosing
+`Related` when the prose opened with a relation verb and `Notes` otherwise,
+and **refused to write anything unless every word survived** — a token-level
+diff of before and after, per file. It aborted on the first run; the cause
+was the checker treating `2026-08-20.` and `2026-08-20` as different tokens,
+not real loss.
+
+After writing, a second pass diffed every file against `git HEAD` on the same
+basis. One file flagged two words, both traced to an intentional edit earlier
+in the session rather than the conversion.
+
+Three files whose notes opened with an amendment clause were split further
+into `- **Amended:**` + `- **Related:**`: burying an amendment date inside a
+paragraph of relation prose makes neither findable.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+## [2026-09-20] - Renumber duplicate ADRs; lowercase all roadmap filenames
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docs/adr/`: resolved the two number collisions. The earlier-dated Accepted
+  file kept each number:
+  - `0041-vmimage-trusted-boot-uki-support` → **`0051-…`** (Proposed,
+    2026-09-10); `0041-imagebuilder-namespaced-secret-access` (Accepted,
+    2026-09-09) keeps `0041`.
+  - `0042-instant-clone-vmfork-not-supported` → **`0052-…`** (Accepted,
+    2026-09-11); `0042-userdata-reference-authorization` (Accepted,
+    2026-09-09) keeps `0042`.
+
+  That split preserves every existing threat-model and CALM citation, which
+  already read `0041` as the imagebuilder Role and `0042` as userdata
+  authorization.
+- **~40 inbound references disambiguated by sense, not by substitution.** Bare
+  `ADR-0041` was used for two unrelated decisions. All 15 occurrences in
+  `banlieue-imagebuilder` proved to be trusted-boot (each in a `TRUSTED_BOOT_*`
+  context; "Decision #4" exists only in the trusted-boot ADR, which has five
+  decisions to the imagebuilder ADR's three). The imagebuilder-Role sense
+  survives in exactly 12 places: `banlieue-operator` (5),
+  `deploy/imagebuilder/rbac/` (2), `docs/src/security/threat-model.md` (2),
+  `docs/architecture/calm/architecture.json` (2), one guide line.
+  Updated: both imagebuilder/api crates, `examples/14`, two guides,
+  `docs/src/reference/api.md`, `deploy/crds/banlieue.io_vmimages.yaml`,
+  `docs/src/architecture/flows.md`, the CALM model, ADR-0046, ADR-0052.
+- `.github/community/`: **all 15 remaining roadmap files lowercased**
+  (`00-OVERVIEW.md` → `00-overview.md`, …). `70-ephemeral-vm-pools.md` was
+  already lowercase and is now the convention rather than the exception;
+  `README.md` keeps its conventional name. 70 references rewritten across 14
+  files (`ROADMAPS.md`, the community `README`, nine roadmap docs, ADR-0036,
+  ADR-0050, this changelog).
+- `.claude/CLAUDE.md`: roadmap naming convention changed from
+  `NN-TITLE.md`/UPPERCASE-with-hyphens to `NN-title.md` lowercase, matching
+  `docs/adr/NNNN-title.md`.
+- `.github/community/70-ephemeral-vm-pools.md`: "repo reality" item 3 rewritten
+  from the collision warning to its resolution; its own citations moved to
+  ADR-0051/0052; the reserved range note corrected — 0043–0049 stay reserved,
+  but an unrelated new ADR now starts at **0053** (0050–0052 taken).
+- `.github/community/40-phase-4-finos-ready.md`: §4.10's renumber task closed.
+
+### Why
+Two ADR numbers pointed at two documents each, which makes every bare
+"ADR-0041" reference ambiguous and silently wrong half the time. Filename
+casing was inconsistent — one of sixteen roadmap files was lowercase — and
+lowercase is the convention the maintainer chose, matching `docs/adr/`.
+
+### Verification
+- `cargo test --all` — **1292 passed, 0 failed**
+- `cargo fmt --all -- --check` — clean
+- `cargo clippy --all-targets --all-features -- -D warnings` — clean
+- `crdgen` regenerated: **zero drift** against `deploy/crds/` (confirms the
+  ADR-0051 text in the generated VMImage CRD matches its Rust doc comment)
+- `make calm-validate` — no issues; `make calm-diagrams` regenerated
+- `make docs` — builds clean
+- Zero broken relative links across `.github/community/`, `ROADMAPS.md` and all
+  46 ADRs
+- No duplicate ADR numbers remain
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation / file naming only
+
+## [2026-09-20] - ADR-0054 accepted
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docs/adr/0054-nocloud-seed-iso-first-party.md`: **Accepted**, on the
+  stated bar of evidence shown and implemented. Both hold: the module is in
+  `crates/banlieue-provider-libvirt/src/cloudinit/`, wired through `converge`
+  and `finalize_backend`, and Decision 3 carries the live evidence — an
+  Alpine `nocloud_*-bios-cloudinit` guest announcing a `local-hostname` that
+  exists only in the generated ISO, plus macOS reporting the image as
+  `CIDATA` / `ISO Joliet` with both hyphenated filenames readable.
+
+### Note
+`docs/adr/0053-ipam-claims-for-pool-members.md` remains **Proposed**, and
+deliberately so: it is neither implemented nor implementable yet (blocked on
+roadmap 50's IPAM-provider decision, which is not banlieue's to make), and
+it changes an existing `VirtualMachine` CRD field — `NetworkInterfaceOverride`
+gains `pool` and `static` becomes optional. It fails the same bar 0054 just
+passed.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+## [2026-09-19] - cloud-init proven end to end; guide; DHCP lease procedure
+
+**Author:** Erick Bourgeois
+
+### Verified
+**A real guest consumed a banlieue-generated seed.** An Alpine
+`nocloud_*-bios-cloudinit` VM on a real libvirt host mounted the ISO, read
+`meta-data`, took `local-hostname`, and announced it over DHCP:
+
+```
+guest announced "seedcheck-1789860936" at 192.168.…  — it read the seed
+```
+
+That name exists nowhere but in the ISO banlieue produced. Together with the
+earlier independent check (macOS mounting one: `Volume Name: CIDATA`,
+`File System Personality: ISO Joliet`, hyphenated names readable), the format
+and its consumption are both now demonstrated rather than argued.
+
+### Added
+- `crates/banlieue-libvirt`: `NETWORK_GET_DHCP_LEASES` (341) and `DhcpLease`
+  (+ 6 tests). The lease's `hostname` is the name the *guest* announced, so
+  it is evidence the guest's own configuration ran — the only such signal
+  available without shell access or a guest agent.
+- `tests/live_cloudinit.rs`: boots a guest and asserts the lease carries the
+  domain name.
+- `tests/live_libvirtd.rs`: `delete_a_volume_from_a_real_pool`, a cleanup
+  tool for hand-uploaded images.
+- `docs/src/guides/cloud-init-on-libvirt.md`: the full guide.
+
+### Findings from the live runs
+Three things that all look identical from outside — "the guest ignored the
+seed" — and none of which are seed bugs. All three are now in the guide and
+the test's own docs:
+
+1. **Firmware mismatch.** Kairos builds are EFI-only; CirrOS and Alpine
+   `-bios-` images are MBR. The domain reports `Running` forever and never
+   reaches a bootloader.
+2. **Overlay smaller than the backing image's virtual size.** Same symptom;
+   the guest gets a truncated disk.
+3. **Not every guest can prove it.** CirrOS boots but its busybox `udhcpc`
+   sends no hostname; Kairos announces its own `kairos-<hash>` because it
+   consumes yip-format config, not cloud-init's. Only the Alpine image was
+   a usable oracle.
+
+I lost several runs to (1) and (2) by guessing instead of instrumenting.
+Printing domain state and address-discovery results each poll identified
+both immediately, and that instrumentation is now part of the test.
+
+### Known limitation
+A `BackingFile` image in **qcow2** format did not boot in testing, while the
+same image converted to raw did. The test volume was uploaded through a path
+that declares volumes `raw`, so libvirt's metadata disagreed with the file's
+contents — that confound is not eliminated, and the finding is therefore
+*suspect, not confirmed*. banlieue's own pipeline produces raw artifacts
+(ADR-0011), so the shipped path is unaffected; an admin-supplied `.qcow2`
+`BackingFile` is the case that needs proving before it can be trusted.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout — provider-libvirt image (the lease procedure
+      is additive; nothing in the reconcile path changed).
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-09-19 16:10] - Drop the domain-UUID print from the libvirt live test (CodeQL #95)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `crates/banlieue-provider-libvirt/tests/live_machine.rs`: removed
+  `eprintln!("  domain uuid   {:02x?}", &observed.domain.uuid[..4])` from
+  `converge_and_finalize_against_real_libvirtd`.
+
+### Why
+CodeQL `rust/cleartext-logging` (alert #95) flagged the line, failing the
+CodeQL check on PR #46. The finding is a false positive — the value is a
+libvirt domain UUID for a VM the test itself just created on the developer's
+own hypervisor, not a credential, printed to stderr by an `#[ignore]`d test —
+but the rule fires on every new `uuid` print, and six identical alerts
+(52-57, `banlieue-libvirt/tests/live_libvirtd.rs`) had already been dismissed
+by hand. Deleting the line ends the recurrence instead of adding a seventh
+dismissal.
+
+Nothing is lost: the domain is already identified by the `domain_name` printed
+one line above, and the assertions below still prove libvirt returned a real
+UUID (`uuid.iter().any(|&b| b != 0)`) and that a second converge returns the
+same one. Those assertion sites were not flagged — they render only on panic.
+Verified with `cargo fmt --check` and
+`cargo clippy -p banlieue-provider-libvirt --all-targets --all-features -- -D warnings`.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+
+## [2026-09-19] - Roadmap 13 complete: cloud-init user-data reaches a libvirt guest
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0054-nocloud-seed-iso-first-party.md`: **Proposed.** NoCloud
+  seed images are built in-process, with Joliet.
+- `crates/banlieue-provider-libvirt/src/cloudinit/` (+ 25 tests): an
+  ISO9660 writer with a Joliet supplementary descriptor, and the seed
+  builder on top of it.
+- `LibvirtMachineClient::upload_volume`, so the provider can stream the
+  seed into a volume.
+- `tests/live_machine.rs` now asserts the seed volume exists on a real host;
+  `writes_a_seed_for_external_inspection` (ignored) writes one to disk for
+  mounting.
+
+### Changed
+- `reconciler/libvirtmachine.rs`: `converge` builds, uploads and attaches
+  the seed; `finalize_backend` deletes it with the machine's other volumes.
+- `ROADMAPS.md` row 13 → **✅**; `.github/community/13-*.md` tasks ticked.
+- `docs/src/guides/libvirt-provider.md`: a user-data section and two
+  troubleshooting rows. CALM updated and validates.
+
+### Why
+Roadmap 13's stop condition was "provisioned end-to-end **via NoCloud**",
+and `spec.userData` was carried all the way to `LibvirtMachine` and then
+dropped — `converge` passed `cidata_iso_path: None`.
+
+Three decisions, each forced rather than chosen:
+
+1. **Joliet is not optional.** cloud-init looks for `user-data` and
+   `meta-data`. ISO9660 Level 1 names are 8.3, uppercase, and exclude the
+   hyphen, so `meta-data` cannot be written in the primary tree at all — it
+   becomes `META_DATA.`, which cloud-init does not match. This is why the
+   documented `genisoimage` command passes `-joliet`. Confirmed against the
+   official NoCloud docs before writing anything.
+2. **In-process, not `genisoimage`.** ADR-0050 already rejected a system
+   package for the libvirt client; the same reasoning holds. There is also a
+   correctness reason: a subprocess needs the payload on disk to hand it a
+   path, so user-data — bootstrap credential material in many deployments —
+   would be written into the container's filesystem every reconcile.
+3. **The seed is built after the first define.** `instance-id` comes from
+   the domain UUID, which libvirt assigns at define time, so the domain is
+   defined, seeded, then redefined with the CD-ROM attached. Deriving it
+   from the UUID is what makes a rebuilt pool member a *new* instance —
+   reusing an id makes a fresh VM skip every per-instance module as though
+   it had rebooted.
+
+### Verified
+The offline tests read our own bytes back and can only prove
+self-consistency. Two independent checks:
+
+- **A real libvirtd** accepted the generated ISO as a CD-ROM and ran the
+  domain; the seed volume was present in the pool and removed on teardown.
+- **macOS's own ISO9660 driver** mounted the image: `Volume Name: CIDATA`,
+  `File System Personality: ISO Joliet`, with `meta-data` and `user-data`
+  readable under their exact hyphenated names and byte-correct contents.
+  That implementation had nothing to do with generating the file, which is
+  the point.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout — provider-libvirt image.
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-09-19] - ADR-0053: CAPI IPAM for pool members
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0053-ipam-claims-for-pool-members.md`: **Proposed.** Extends
+  ADR-0033 to cover `VirtualMachinePool`, which did not exist when 0033 was
+  written.
+
+### Changed
+- `.github/community/50-ipam-pool-integration.md`: gains a pool half, and is
+  reordered so the `VirtualMachine` half — which the pool half inherits
+  entirely — reads first. Stop condition now names both.
+- `ROADMAPS.md`, `docs/architecture/calm/architecture.json`: row 50 cites
+  both ADRs; CALM ADR register updated. `calm-validate` passes.
+
+### Why
+Three findings shaped the decision:
+
+1. **`VMClass.spec.network.interfaces[].ipam` already carries a `poolRef`**,
+   so a class-level pool would give members claims for free once ADR-0033
+   lands. Not sufficient: a `VMClass` is shared, so using it as a pool's
+   address source couples every other VM of that class to the same IPAM
+   pool. `spec.addressing` exists precisely to avoid editing a shared class.
+2. **`NetworkInterfaceOverride` is static-only** — it can name an address
+   but not a pool to draw one from. That asymmetry is the actual blocker: a
+   pool addresses members by writing `networkOverrides`, so it has no way to
+   say "use this pool". ADR-0053 makes the override mirror `IpamSpec`
+   (additive; relaxing required to optional accepts every existing object).
+3. **The pool must not create claims.** Members do, through the same
+   `VirtualMachine` path ADR-0033 designs — a member is an ordinary
+   `VirtualMachine`. Two controllers creating `IPAddressClaim`s against one
+   pool is the two-sources-of-truth problem ADR-0033 spends half its
+   Decision section avoiding, and it would be worse inside banlieue than
+   between banlieue and an external IPAM system.
+
+Consequence recorded rather than glossed: on the `poolRef` path the pool can
+no longer report address exhaustion, because it genuinely does not know. It
+surfaces as members stuck on unresolved claims and reaped at
+`provisioningTimeoutSeconds` — visible as churn, so the member's
+`Ready=False` message has to name the unresolved claim.
+
+**Still blocked.** ADR-0033 deliberately does not choose an IPAM provider,
+and that decision belongs to the existing IPAM system's owning team. Nothing
+here is implementable until then; what is removed is the banlieue-side
+design gap, so there is no second design conversation about pools later.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only — design record; no code changed.
+
+## [2026-09-19] - All ADRs accepted; VirtualMachinePool guide and example
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docs/adr/*.md`: the eight remaining `Proposed` ADRs are now **Accepted**
+  — 0021, 0024, 0026, 0033, 0036, 0037, 0046, 0051. Each keeps its original
+  proposal date (`Accepted — 2026-09-19 (proposed …)`) and every trailing
+  annotation, including ADR-0033's "Not implemented." — *Accepted* records
+  that the decision is made, not that it shipped.
+- `docs/src/guides/libvirt-provider.md`, `docs/src/guides/index.md`,
+  `docs/mkdocs.yml`: link and list the new pool guide.
+
+### Added
+- `docs/src/guides/virtualmachine-pools.md`: the pool guide. Why a pool
+  exists at all (for a Deferred image the slowness *is* the security
+  property), the `readiness` field and why it has no default, sizing
+  formulas, what the pool does unattended, addressing, how to read status,
+  deletion, and a troubleshooting table.
+- `examples/18-virtualmachinepool.yaml`: a complete pool, pairing with
+  example 17. Validates against the generated CRD schema, as do all 19
+  example documents.
+
+### Why
+There was no pool documentation at all beyond the generated field reference
+— no guide, no example. The two things the guide leads with are the two that
+produce no error when got wrong: `readiness` selecting a condition nothing
+publishes (the pool never warms and keeps creating members up to
+`maxReplicas`), and a `warmReplicas` shallower than
+`peak requests/min × provision minutes`, where the consumer waits exactly as
+long as it would have with no pool at all.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+## [2026-09-19] - VirtualMachinePool (ADR-0046)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0046-virtualmachinepool.md`: **Proposed.** Eleven decisions,
+  one of which overrides roadmap 70 — see Why.
+- `crates/banlieue-api/src/banlieue/virtualmachinepool.rs` (+ 17 tests): the
+  `VirtualMachinePool` CRD. The claim half of the handoff bundle's file is
+  deliberately left out; it is ADR-0047.
+- `crates/banlieue-controller/src/reconciler/pool_plan.rs` (+ 15 tests): the
+  pure planner from the handoff bundle, landed unchanged. No clock reads, no
+  I/O — the same split as `scheduler.rs`.
+- `crates/banlieue-controller/src/reconciler/pool.rs` (+ 5 tests): the
+  reconciler, plus `readiness_condition_type` and `readiness_signal_absent`
+  implementing ADR-0046 Decision 3, which the bundle predates.
+- `crates/banlieue-controller/src/app.rs`: the pool controller, `.owns`ing
+  its members so a member going Ready reaches the pool immediately.
+- `deploy/controller/rbac/clusterrole.yaml`: `virtualmachinepools` read-only
+  plus status and finalizers. **No `create`, no `delete`** — a pool is
+  authored by a user, and each one creates VirtualMachines, so a controller
+  able to mint pools would be an amplification step.
+
+### Why
+`spec.readiness` is **required with no default**, departing from roadmap 70's
+"GuestReady by default". `GuestReady` does not exist: `condition_types` has
+`Ready`, `InfrastructureReady` and `ImageReady`, and ADR-0043 is what would
+publish it. A pool defaulting to it would sit at zero warm members forever,
+reporting no error — silent, and indistinguishable from a slow install.
+
+Decision 3 is what makes that safe rather than merely strict: when no member
+has ever published the chosen condition, the pool reports `Warm=False` /
+`ReadinessSignalAbsent`. Two things are deliberately *not* absent — the
+condition present but `False` (a member coming up, the normal state of a
+filling pool) and a pool with no members at all (every pool starts there;
+firing then would teach operators to ignore the condition).
+
+The honest consequence, recorded in the ADR: until A2 lands, only
+`InfrastructureReady` is usable — correct for `Immediate` images, **wrong for
+Deferred ones**, which is what TPM-sealed sandboxes need. The pool lands
+first anyway because the planner, rollout and capacity logic are identical
+either way and should not be written twice.
+
+### Notes
+- The CRD-drift test added earlier caught the missing `VirtualMachinePool`
+  in `banlieue bootstrap` on the first run, as intended.
+- Two of my own test expectations were wrong and the types were right:
+  `PoolReadiness` serializes PascalCase because the value *is* the condition
+  type it selects, and `recycleOnImageChange` defaults **on** because a warm
+  pool that ignores image rebuilds serves unpatched VMs silently.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout — controller image, the new CRD, and the
+      amended ClusterRole.
+- [ ] Config change only
+- [ ] Documentation only
+
+
+## [2026-09-19] - End-to-end validation: VirtualMachine to a real libvirt domain
+
+**Author:** Erick Bourgeois
+
+### Verified
+Full stack, against a live 3-node k0s v1.35.5 cluster and a real libvirt
+host, with `banlieue controller` and `banlieue provider libvirt` run as local
+processes (no container images):
+
+1. All 10 CRDs accepted by a real 1.35 apiserver — the structural-schema
+   check that `kubectl --dry-run=client` cannot do.
+2. `examples/17-virtualmachine-libvirt.yaml` applied verbatim, unmodified.
+3. `Provider` reached the host, verified its declared capabilities, and
+   published a failure domain: *"connected; 4 pool(s), 1 network(s)"*.
+4. `VMImage` published `resolvedRef: kairos-ubuntu-2404.raw` — the fix from
+   earlier today; it was `null` before, and nothing downstream could proceed.
+5. `banlieue-controller` scheduled the VM and produced a `LibvirtMachine`
+   with `bootSource.kind: backingVolume`, `domainName:
+   banlieue-system-web-01` (namespace-qualified), `pool: images` from the
+   storage-class mapping, and `source.kind: network` read off the Provider's
+   capabilities rather than the flattened `Decision`.
+6. The provider created the overlay volume, defined the domain, started it,
+   and the guest booted and took a DHCP lease. `status.addresses:
+   192.168.…` with `addressSource: dhcpLease` — the agent was unavailable
+   and the fallback chain worked.
+7. Status mirrored to the `VirtualMachine`: `Ready`, `InfrastructureReady`
+   and `Scheduled` all True, `infrastructureRef.kind: LibvirtMachine`.
+8. Deleting the `VirtualMachine` cascaded: destroy → undefine → delete
+   volume → remove finalizer, in that order, with the shared base image
+   untouched. Host verified clean afterwards.
+
+### Note
+The first run of step 6 failed with the "already exists with uuid" error that
+had been fixed an hour earlier — the running binary predated the fix. Rebuilt
+and it converged. Worth recording because a stale binary reproduces a fixed
+bug perfectly and looks exactly like a regression.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only — no code changed in this entry; it records the
+      validation of what landed earlier today.
+
+
+## [2026-09-19] - Live validation against a real libvirtd; DOMAIN_DEFINE_XML is not an upsert
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- **Every second reconcile of every libvirt VM would have failed.**
+  `DOMAIN_DEFINE_XML` is *not* an unconditional upsert, contrary to what
+  ADR-0050 stated and what `reconciler/libvirtmachine.rs` assumed. libvirt
+  identifies a domain by UUID, so a document with no `<uuid>` gets a freshly
+  generated one and the define is refused with *"already exists with uuid
+  …"*. `converge` now looks the domain up first and carries its UUID into the
+  rendered XML. ADR-0050 gains a decision recording this (its decisions are
+  renumbered; every in-repo reference updated).
+- **`FakeMachineClient::define_domain` was more permissive than libvirtd**,
+  which is why no offline test caught the above. It now refuses a redefine
+  that does not name the existing UUID, exactly as the daemon does.
+  Reverting the reconciler fix makes three offline tests fail with the same
+  message the real host produced — verified.
+
+### Added
+- `crates/banlieue-provider-libvirt/tests/live_machine.rs`: drives `converge`
+  and `finalize_backend` against a real libvirtd with **no Kubernetes API
+  server** — the backend half of the reconciler is reachable on its own. It
+  creates a real domain and volume and removes both, including on failure,
+  then verifies the teardown rather than trusting it.
+- `DomainXmlInput::uuid` (+ 2 tests).
+- `converge` is now `pub` so the live test can reach it.
+
+### Verified live against a real libvirt host
+- `connect_open_and_list` — TLS, `CONNECT_OPEN`, 4 pools, 1 network.
+- `domain_lifecycle` — define → start → state → interface addresses from all
+  three sources → destroy → undefine → confirmed gone. Every procedure number
+  and XDR layout transcribed for ADR-0050 is now proven on the wire.
+- `list_volumes` — confirmed `StorageVol.key` is the absolute host path, the
+  assumption the reconciler's domain XML rests on.
+- `converge_and_finalize` — volume creation, domain XML accepted by a real
+  daemon (including EFI firmware autoselection with no OVMF path), idempotent
+  re-converge, full teardown. Host verified clean afterwards.
+
+### Why
+The offline suite was green and the design was wrong. The fake modelled
+define as an overwrite, so the one behaviour that mattered — what libvirt
+does when the domain is already there — was never exercised until a real
+daemon refused it. A test double that is more permissive than the real thing
+hides exactly the bugs it exists to catch; that is the lesson worth keeping,
+more than the UUID itself.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout — provider-libvirt image.
+- [ ] Config change only
+- [ ] Documentation only
+
+
+## [2026-09-19] - libvirt example, guide, and one CRD list instead of three
+
+**Author:** Erick Bourgeois
+
+### Added
+- `examples/17-virtualmachine-libvirt.yaml`: a complete applyable set —
+  `VMImage` + `VMClass` + `VirtualMachine` — for a VM on libvirt. (15 and 16
+  stay reserved for roadmap 70's pool and claim.)
+- `docs/src/guides/libvirt-provider.md`: a "Run a VM" section covering the
+  two disk shapes, domain naming, EFI autoselection, vTPM prerequisites and
+  the deletion contract, plus seven new troubleshooting rows.
+- `crates/banlieue-api/src/crdgen_support.rs`: `all_crds()`.
+
+### Fixed
+- **The libvirt VMImage → LibvirtMachine handoff never worked.**
+  `status.perProvider[].resolvedRef` was hardcoded `None` for every libvirt
+  source, so `banlieue-controller` failed with `MissingResolvedImageRef` and
+  no `VirtualMachine` scheduled onto libvirt ever produced a machine. A
+  `BackingFile` source now publishes the basename of its `ref` (the volume
+  name every libvirt lookup takes); a `Url` source publishes the deterministic
+  name its import Job creates, and only once every pool has it.
+- **The overlay backing format was hardcoded `raw`**, which would have broken
+  the `.qcow2` backing file in `examples/04`. Now taken from the volume's
+  name — never its contents, because probing is exactly what libvirt refuses
+  to do and why.
+- **`crddoc` had its own CRD list too**, so the API reference was missing
+  `LibvirtMachine` the same way the bootstrap was. `crdgen` and `crddoc` now
+  both read `all_crds()`, and `crdgen` derives each filename from the CRD's
+  own `metadata.name` rather than a parallel list. Verified byte-identical
+  output before and after.
+- `examples/12-vmclass-tpm-encrypted.yaml`: added the required `ipam` on its
+  interface. Pre-existing — `kubectl apply` of that file would have failed.
+
+### Why
+Writing the example is what found the handoff bug: there was no point
+documenting a flow that could not complete. Validating it against the
+generated CRD schemas is what found `ref` (I had written the Rust field name,
+`reference`) and the missing `ipam` in example 12 — the exact failure mode
+`rules/documentation.md` warns about, caught by checking rather than reading.
+
+The hardcoded-CRD-list bug appeared three times in two days (bootstrap,
+crddoc, and nearly crdgen). Two lists remain — `all_crds()` and the
+operator's bootstrap, which cannot share it without a feature-flag change —
+and the drift test added earlier guards the second against the first.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout — provider-libvirt image, for the resolvedRef
+      fix.
+- [ ] Config change only
+- [ ] Documentation only
+
+
+## [2026-09-19] - Activate `main` branch ruleset; unblock Dependabot auto-merge
+
+**Author:** Erick Bourgeois
+
+### Changed
+- **GitHub repo settings (not a tracked file):** ruleset `main` (id `20591452`)
+  moved from `enforcement: disabled` to `active`, and gained a
+  `required_status_checks` rule with all six checks from roadmap 60 #1
+  (`🎨 Check Formatting`, `📎 Clippy`, `🧪 Test`, `🧪 cargo-deny`,
+  `🔍 CodeQL - rust`, `🔍 CodeQL - actions`), `strict` (branch must be up to
+  date) enabled, zero bypass actors. `Require a pull request before merging`
+  deliberately left off.
+- `.github/community/60-scorecard-remediation.md`: #1 Branch-Protection marked
+  configured, with the applied configuration, why auto-merge was failing, and a
+  prominent warning about the paths-filter consequence plus the two ways out.
+- `ROADMAPS.md`: row 60 updated.
+
+### Why
+`.github/workflows/dependabot-auto-merge.yaml` failed with
+`GraphQL: Pull request Protected branch rules not configured for this branch
+(enablePullRequestAutoMerge)`. `allow_auto_merge` was already `true`; the base
+branch was the problem. GitHub refuses to enable auto-merge unless the base
+branch has *enforced* protection that actually delays a merge — a disabled
+ruleset does not count, and `deletion`/`non_fast_forward` gate pushes, not
+merges. Adding `required_status_checks` and activating the ruleset supplies the
+pending state auto-merge waits on, and simultaneously moves OSSF Scorecard #1
+off 0.
+
+### Known consequence (accepted by the maintainer, 2026-09-19)
+Four of the six required checks come from `build.yaml`, which is
+`paths:`-filtered to `crates/**` and friends. A PR touching only `docs/`,
+`.github/community/` or root Markdown never triggers it, so those contexts
+never report and the PR blocks indefinitely — with no bypass actors to click
+past it. The fix, when it bites, is an `if: always()` aggregator job in
+`build.yaml` that treats a skipped dependency as a pass, with the ruleset
+requiring that one context instead of four. Documented in roadmap 60 #1.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Repo settings change
+- [ ] Documentation only
+
+## [2026-09-19] - LibvirtMachine reconciler: a scheduled VM becomes a real domain
+
+**Author:** Erick Bourgeois
+
+### Added
+- `crates/banlieue-provider-libvirt/src/reconciler/libvirtmachine.rs`
+  (+ 23 tests): ensure volumes → define → start → observe → patch status,
+  and a `finalize_backend` that tears down in the only safe order
+  (destroy → undefine → delete volumes) and **verifies** the domain is
+  actually gone rather than trusting the undefine.
+- `crates/banlieue-provider-libvirt/src/machine_client.rs` (+ 12 tests): the
+  mutating client trait, a session-backed impl, and a call-recording fake.
+  Separate from `LibvirtClient` because the Provider reconciler's snapshot
+  client holds no connection and cannot express a write.
+- `crates/banlieue-libvirt`: `qcow2_volume_xml` / `qcow2_overlay_volume_xml`,
+  `validate_volume_name`, `is_not_found` + the three `VIR_ERR_NO_*` codes,
+  and the `storage_{pool_lookup_by_name,pool_refresh,vol_lookup_by_name,
+  vol_delete}` procedures (+ 18 tests).
+- `crates/banlieue-operator/src/bootstrap_tests.rs`: a test that
+  `build_crds()` matches `deploy/crds/` exactly, in both directions.
+- `crates/banlieue-provider-libvirt/src/app.rs`: third controller, for
+  `LibvirtMachine`.
+
+### Changed
+- `docs/adr/0050-libvirtmachine-domain-lifecycle.md`: **Accepted.**
+- `crates/banlieue-operator/src/bootstrap.rs`: `build_crds()` now includes
+  `LibvirtMachine` + `LibvirtMachineTemplate`.
+- `crates/banlieue-provider-libvirt/src/xml/domain.rs`: an explicit OVMF
+  loader path is no longer required for EFI.
+- `crates/banlieue-provider-libvirt/src/context.rs`: carries the machine
+  client factory.
+
+### Why
+Three findings, each caught by writing the test rather than by reading code:
+
+1. **`banlieue bootstrap` would have installed every CRD except the two new
+   ones.** The ClusterRoles are `include_str!`-embedded so RBAC edits carry
+   automatically, but `build_crds()` is a hand-written list and nothing
+   checked it against `deploy/crds/`. A CRD present in one path and absent
+   from the other stays invisible until a controller's first patch fails with
+   "no matches for kind". The new test fails with the missing names; verified
+   by reverting the fix.
+2. **`<os firmware='efi'>` makes libvirt select the loader itself** from its
+   firmware descriptors. Requiring an explicit OVMF path would have meant
+   per-host configuration for something that is not portable anyway — Debian,
+   Fedora and Arch each put OVMF somewhere different. Explicit paths remain
+   as the escape hatch.
+3. **A backing store's format must be declared, never probed.** libvirt does
+   not guess, and an undeclared backing format is both a long-standing
+   security advisory and a hard refusal on current libvirt. banlieue's own
+   uploaded artifacts are `raw` (ADR-0011), so the overlay path passes that
+   explicitly.
+
+Volume names are guarded by an allowlist rather than escaped: a mangled but
+accepted volume name creates a file nobody can look up again, and rejecting
+also closes path traversal, which escaping would not.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout — provider-libvirt and controller images, the
+      two CRDs, and the three amended ClusterRoles.
+- [ ] Config change only
+- [ ] Documentation only
+
+
+## [2026-09-19] - banlieue-controller dispatches by provider class (ADR-0050)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `crates/banlieue-controller/src/reconciler/infra.rs`: `build_libvirt_machine`
+  (+ 15 tests) and `InfraKind` (+ 3 tests), the enum every downstream branch
+  keys off so adding Proxmox is a variant and a builder, not an `if` in five
+  places.
+- `crates/banlieue-controller/src/reconciler/status_mirror.rs`:
+  `impl InfraMachineRead for LibvirtMachine` (+ 3 tests). The trait needed no
+  change — which is what it was written for.
+
+### Changed
+- `crates/banlieue-controller/src/reconciler/virtualmachine.rs`: no longer
+  hardwired to `Api<VSphereMachine>`. Build/apply, the migration recreate
+  path, and the mirror-only path all dispatch on `InfraKind`;
+  `status.infrastructureRef.kind` follows. A provider class with no builder
+  now reports `Scheduled=False` instead of scheduling successfully and then
+  silently never producing an infra CR.
+- `crates/banlieue-controller/src/app.rs`: `.owns(libvirt_api)`. Without it a
+  LibvirtMachine going Ready would only reach its parent on the next periodic
+  requeue.
+
+### Why
+Three decisions worth recording:
+
+1. **`finalize_vm` checks both backends and consults neither the Provider nor
+   `status.infrastructureRef`.** At deletion time the Provider CR may be gone,
+   status may never have been written, or the VM may have moved between
+   backends — each makes a "which kind was it?" answer wrong, and being wrong
+   there means dropping the finalizer while a real VM is still running. Two
+   `get_opt` calls are the cheap price of never leaking one.
+2. **The NIC's bridge-vs-network kind is read off the Provider, not the
+   `Decision`.** The scheduler flattens a network class's target map to its
+   first *value*, which loses the key distinguishing `{bridge: br0}` from
+   `{network: default}`. The key survives only on
+   `Provider.spec.capabilities`.
+3. **libvirt domain names are namespace-qualified** (`<ns>-<name>`). One
+   libvirt host has a single flat domain namespace while two Kubernetes
+   namespaces can each hold a `db-01`, and `DOMAIN_DEFINE_XML` is an upsert —
+   so the second would silently redefine the first's domain. vCenter has no
+   equivalent problem because its inventory is a folder tree.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout — controller image, plus the CRDs and
+      ClusterRoles from the previous entry.
+- [ ] Config change only
+- [ ] Documentation only
+
+
+## [2026-09-19] - Threat-model pass for ADR-0050 (LibvirtMachine); redact libvirt client key
+
+**Author:** Erick Bourgeois
+
+### Security
+- `crates/banlieue-libvirt/src/transport.rs`: `TlsIdentity` had a **derived**
+  `Debug` while holding `client_key_pem` — the libvirt credential itself (there
+  is no password in that path). No call site formatted it today, so this was
+  latent rather than an active leak, but it left a private key one `debug!`
+  away from a log line. Replaced with a hand-written redacting `Debug`
+  (`client_key_pem` → `<redacted>`; CA and client cert render as byte counts so
+  the output stays useful). Mirrors the existing redacting `Debug` on the
+  vSphere provider's `Credentials`.
+- `crates/banlieue-libvirt/src/transport_tests.rs`: regression test
+  `tls_identity_debug_redacts_the_private_key` — written first (RED), asserts
+  the key never reaches `{:?}` and that the non-secret fields stay visible.
+
+### Changed
+- `docs/src/security/threat-model.md`: **full pass**, per
+  `rules/threat-modeling.md`. Header stamp advanced to
+  **2026-09-19, ADR-0001 … ADR-0050**.
+  - §1/§3 (A-1): the libvirt credential is an mTLS client certificate and
+    private key, not a username/password.
+  - §2: provider row now realises infra CRs (`VSphereMachine`, `LibvirtMachine`).
+  - §3 (A-2): user-data path extended to `LibvirtMachine.spec.userData` and the
+    NoCloud ISO. (A-6): swtpm state keyed by domain UUID.
+  - §4: hypervisor operator can read storage pools and host swtpm state.
+  - §5: diagram distinguishes vCenter (HTTPS + creds) from libvirtd (mTLS,
+    native RPC), and names storage pools and swtpm.
+  - §6/TB-1: new threat — user-influenced strings (`domainName`, `pool`, disk
+    names) reaching libvirt domain XML; control is `xml/escape.rs`, which
+    escapes all five entities uniformly in text *and* attributes so there is no
+    context-dependent rule to get wrong.
+  - §6/TB-2: `TlsIdentity` redacting `Debug` recorded; the provider libvirt
+    `ClusterRole` granting no `create`/`delete` on `libvirtmachines` recorded.
+  - §6/TB-4: `domain_undefine` cannot forget `MANAGED_SAVE|NVRAM|TPM`
+    (ADR-0050 Decision 4), so deleting a domain destroys its swtpm state;
+    the half-failed-teardown failure mode (libvirt 11.3 fails rather than
+    warns on a UEFI domain without `NVRAM`) is surfaced, not swallowed.
+  - §6/TB-5: extended from vSphere datastores to libvirt storage pools.
+  - §7.1: rewritten from "`VSphereMachine` is credential-bearing" to the
+    contract-level statement — every infra machine CR with a `userData` field
+    is, and a new provider inherits the property automatically.
+  - §7.8: `tpmEnabled` → deferred install now states the *different* reason it
+    holds on each backend (vSphere vTPM clone duplication; libvirt swtpm is
+    per-UUID so only Kairos's install-phase-only encryption forces it), and
+    notes nothing enforces the pairing yet (ADR-0040 Decision 5).
+  - §8: user-data reflection risk extended to `LibvirtMachine`; two new
+    accepted risks — swtpm is host-emulated (so host root can reach sealed-key
+    material), and `LibvirtMachine` has no reconciler yet.
+  - §9/§10: reviewed, no change required.
+
+### Why
+`rules/threat-modeling.md` makes a full pass mandatory after an ADR is
+implemented, and ADR-0050 lands a new infra CRD, a new ClusterRole, a new
+mutating wire path to libvirtd and a second `userData`-bearing resource. The
+pass found one real defect (the derived `Debug` over a private key), which is
+fixed here rather than recorded — an uncontrolled threat is not an accepted
+risk unless someone accepts it.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+- [x] Security fix + documentation
+
+## [2026-09-19] - LibvirtMachine CRD, RBAC, and the domain XML builder (ADR-0050)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `crates/banlieue-api/src/infrastructure/libvirt_machine.rs` (+ 18 tests):
+  `LibvirtMachine` and `LibvirtMachineTemplate`, satisfying the CAPI v1beta2
+  InfraMachine contract. `providerID` is `libvirt://<provider-name>/<uuid>`.
+- `crates/banlieue-provider-libvirt/src/xml/escape.rs` (+ 10 tests): the only
+  way a value enters domain XML. Escapes all five predefined entities so its
+  output is safe in attribute *and* text position, and **rejects** the C0
+  control characters XML 1.0 cannot represent at all rather than dropping
+  them silently.
+- `crates/banlieue-provider-libvirt/src/xml/domain.rs` (+ 27 tests): pure
+  `LibvirtMachineSpec` → domain XML. Covers both boot shapes, BIOS/EFI/EFI
+  Secure, swtpm, per-bus disk target assignment, bridge vs managed network,
+  and four injection attempts.
+- `deploy/crds/infrastructure.banlieue.io_libvirtmachine{s,templates}.yaml`,
+  generated by `crdgen`; both pass `kubectl apply --dry-run=client`.
+
+### Changed
+- `crates/banlieue-api/src/bin/crdgen.rs`: emits the two new CRDs.
+- `deploy/{controller,operator,provider-libvirt}/rbac/clusterrole.yaml`:
+  `libvirtmachines` + `/status` + `/finalizers`. The provider gets no
+  `create` and no `delete` — banlieue-controller owns that lifecycle, and a
+  compromised provider must not be able to mint machines nothing scheduled.
+  The operator's grant mirrors the provider's because a ClusterRole cannot
+  grant a permission it does not itself hold.
+- `docs/adr/0050-libvirtmachine-domain-lifecycle.md`: **Decision 2 corrected.**
+  It claimed `VSphereMachine` had no template sibling and used that to
+  justify shipping no `LibvirtMachineTemplate`. `VSphereMachineTemplate`
+  exists — in the same file, not a separate one. Shipping the machine kind
+  without its template would make libvirt the one backend unusable as a CAPI
+  infra provider, so the template is now in scope and implemented.
+
+### Why
+Two design findings worth recording, both discovered by the tests:
+
+1. **kube 4.2 rejects serde-tagged enums in a CRD schema.** Roadmap 13
+   proposed `#[serde(tag = "type")]` for `LibvirtNicSource`; the structural
+   schema requires a property's schema to be identical across subschemas, and
+   a tag carries a different `enum` per variant. `LibvirtBootSource` and
+   `LibvirtNicSource` are now structs with an explicit `kind` discriminator —
+   which Non-Negotiable #4 prefers anyway.
+2. **No XML crate was added.** The escaper is ~30 lines and fully tested;
+   this codebase already wrote its own libvirt RPC client rather than take a
+   C dependency, and the same reasoning applies to generating markup this
+   simple.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout — the two new CRDs and the three amended
+      ClusterRoles must be applied before the libvirt machine reconciler can
+      run. Nothing consumes them yet, so applying them is safe but not yet
+      useful.
+- [ ] Config change only
+- [ ] Documentation only
+
+
+## [2026-09-19] - Roadmaps: reconcile .github/community with the current tree
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/community/01-decisions.md`: header now points at `docs/adr/NNNN-title.md`
+  and states that the ADR sequence — not this file — is the canonical decision
+  log. Rewrote the entries the codebase had overtaken, each citing the ADR that
+  superseded it: **D-001** (edition 2024 / MSRV 1.88, was 2021 / 1.80),
+  **D-002** (`kube ~4.2` / `k8s-openapi 0.28`, was `0.96` / `0.23` + `v1_31`),
+  **D-006** (libvirt = first-party pure-Rust native-RPC client, ADR-0011/0050,
+  not the `virt` C-FFI crate), **D-007** (`ProviderClass` exists, ADR-0012/0003),
+  **D-018** (ValidatingAdmissionPolicy + schema-level defaulting, ADR-0007 — not
+  webhooks), **D-019**/**D-021** (one `banlieue` image for every role, ADR-0004;
+  distroless cc-debian13), **D-022** (separate `_tests.rs` files, TDD mandatory).
+  Closed **O-003** (ADR-0003 + ADR-0016).
+- `.github/community/01-decisions.md`: **new D-023** locking the availability-zone
+  principle — local compute + local storage, uniform tiering, no cross-datastore
+  access, even spread. Roadmap 03 asked for exactly this entry as its first
+  action; it had never been written.
+- `.github/community/02-conventions.md`: Testing section now states the
+  `_tests.rs` rule; Webhooks section replaced with admission-policy reality;
+  Container-images section corrected to the single binary + CI-built artifact;
+  CI section gains the Makefile-driven and `firestoned/github-actions` rules;
+  the obsolete serde/schemars compatibility patches marked historical.
+- `.github/community/00-overview.md`: repository layout replaced with the actual
+  tree (all 10 crates, `.github/community/`, `docs/adr/`, `deploy/admission/`);
+  added the ADD cycle to the working-with-Claude-Code steps.
+- `.github/community/README.md`: reading-order table gains rows 60 and 70; ADR
+  path corrected; phase-dependency diagram annotated with live status; the
+  "annotate 01-DECISIONS" step now says to write an ADR first.
+- `.github/community/14-phase-1e-docs.md`: reversed the "drop the CALM jobs,
+  banlieue may never need it" guidance — CALM is step 2 of ADD, `make
+  calm-validate` is a hard gate; added the `calm` CI job.
+- `.github/community/40-phase-4-finos-ready.md`: §4.1 no longer says to move
+  roadmaps to a private folder (reversed policy — they are checked in); §4.10
+  rewritten to reflect that ADRs already exist and are canonical, leaving the
+  real remaining work (renumber the duplicate 0041/0042, reconcile 01-DECISIONS,
+  keep the threat model current).
+- `.github/community/50-ipam-pool-integration.md`,
+  `.github/community/51-live-migration.md`: fixed 4 ADR links that pointed at
+  `../../banlieue/docs/adr/…`, which resolved outside the repo.
+- `.github/community/70-ephemeral-vm-pools.md`: repo-reality item 2 updated —
+  libvirt domain procedures landed 2026-09-18 (ADR-0050); what phase D still
+  needs is the `LibvirtMachine` CRD and reconciler. Corrected the ADR-numbering
+  note: 0043–0049 remain reserved by this roadmap, and an unrelated new ADR
+  starts at 0051 (not 0043 — ADR-0050 is taken).
+- `.github/community/13-phase-1d-libvirt-provider.md`: task list reconciled with
+  the tree — the `LibvirtMachine`/`LibvirtMachineTemplate` CRDs are done and
+  generating, `xml/escape.rs` exists (`xml/domain.rs` does not), and the one
+  remaining gap for phase 1D is `reconciler/libvirt_machine.rs`.
+- `ROADMAPS.md`: ADD flow updated to include the threat-model pass; rows 01, 03,
+  13, 30, 40 and 70 corrected against the tree (70 moves ⛔ → 🔶 — its
+  `pool_plan.rs` planner is written and passing); new section listing the five
+  components tracked by ADR rather than by a roadmap doc.
+
+### Why
+The three reference docs (`00`/`01`/`02`) were written at Phase 0 and never
+revisited, so several "locked" decisions stated the opposite of the code —
+most consequentially D-022, which contradicted `rules/testing.md` on where
+unit tests live, and D-018, which described a webhook architecture the project
+deliberately does not have. Four ADR links in roadmaps 50/51 resolved outside
+the repository. `ROADMAPS.md` is a status board, and six of its rows were
+stale.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+## [2026-09-18] - Roadmap 70 (ephemeral VM pools) landed; ADR-0050 and libvirt domain procedures
+
+**Author:** Erick Bourgeois
+
+### Added
+- `.github/community/70-ephemeral-vm-pools.md`: roadmap 70 — ephemeral,
+  single-use VM pools (`VirtualMachinePool` + `VirtualMachineClaim`) for AI
+  agent sandboxes. Imported from an external handoff bundle and re-based from
+  `badc698` onto `8360e19`; the deltas are recorded in its own "Repo reality"
+  section rather than edited silently into each phase.
+- `ROADMAPS.md`: row 70.
+- `docs/adr/0050-libvirtmachine-domain-lifecycle.md`: **Proposed.**
+  `LibvirtMachine` as the CAPI v1beta2 InfraMachine contract on libvirt, and
+  domain lifecycle over libvirt's native RPC protocol.
+- `crates/banlieue-libvirt/src/rpc.rs`: nine domain procedure numbers,
+  transcribed from `remote_protocol.x` at libvirt `master` (fetched
+  2026-09-18), each named after the enum entry it came from.
+- `crates/banlieue-libvirt/src/procs.rs` (+ 19 tests in `procs_tests.rs`):
+  `Domain`, `DomainState`, `DomainInterface`, `DomainIpAddr`,
+  `InterfaceAddressSource`, and the `domain_{lookup_by_name,define_xml,
+  create,shutdown,destroy,undefine,get_state,interface_addresses}`
+  procedures, with pure `encode_*`/`decode_*` halves so the wire format is
+  testable without a daemon.
+- `crates/banlieue-libvirt/tests/live_libvirtd.rs`:
+  `domain_lifecycle_against_real_libvirtd` — define → start → state →
+  addresses → destroy → undefine → *verify gone*. `#[ignore]`d, env-gated,
+  and deliberately diskless so it is safe against a host running real VMs.
+
+### Changed
+- `docs/architecture/calm/architecture.json`: `service-provider-libvirt`
+  gains the machine-lifecycle plane; ADR register gains 0050 (and 0041's
+  trusted-boot / 0042's instant-clone entries, which were missing).
+  `make calm-validate` and `make calm-diagrams` both pass.
+
+### Why
+Roadmap 70's live test needs a backend that can actually realise a pool
+member, and the maintainer has no vSphere access at present. At `8360e19`
+libvirt had no `LibvirtMachine` CRD and `procs.rs` had no domain procedures
+at all — connect, networks and storage volumes only. So phase D stopped
+being an amendment to roadmap 13 and became roadmap 70's prerequisite. This
+commit is the bottom of that stack: the wire procedures, tested offline and
+ready for their first live call.
+
+Roadmap 70's section 0 (the slim-Kairos-UKI experiment) is marked deferred,
+not dropped: the hosts under test have no vTPM configured yet, and both
+numbers that experiment produces are measured on a Trusted Boot guest.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only — *no*: adds library code, but nothing deployed
+      consumes the new procedures yet, so no rollout is implied.
+
+
 ## [2026-09-15] - Revert CloneVmRequest gap-audit to main; re-add capabilities one at a time, each live-validated against govc first
 
 
@@ -1374,10 +2386,10 @@ can itself already be a full FQDN.
   yet, explicitly out of scope for now). Also decides: `Recreate` needs
   its own distinct status reason so it's never visually conflated with a
   future real `Migrating` state.
-- `~/dev/roadmaps/banlieue/51-LIVE-MIGRATION.md` — Phase A execution plan
+- `~/dev/roadmaps/banlieue/51-live-migration.md` — Phase A execution plan
   (preconditions, per-provider-class relocate-capability research,
   schema/reconciler/provider/test/doc tasks, open questions, gotchas),
-  following the same "deferred feature" shape as `50-IPAM-POOL-INTEGRATION.md`.
+  following the same "deferred feature" shape as `50-ipam-pool-integration.md`.
   Added to the roadmap README's index table.
 
 ### Why
@@ -7994,7 +9006,7 @@ Verified by `cargo fmt --all`, `cargo clippy --all-targets --all-features -- -D 
 - `deploy/controller/rbac/clusterrole.yaml` — comment on the `coordination.k8s.io/leases` rule updated to describe banlieue's actual usage (GET + CREATE + SSA PATCH); verbs unchanged (already adequate).
 
 ### Why
-The roadmap's Phase 1A `Definition of done` was met by iteration 3 *except* for leader election and the few remaining CLI flags called out in `~/dev/roadmaps/banlieue/10-PHASE-1A-CONTROLLER-AND-SDK.md`. This iteration closes those out so multi-replica Deployments (or rolling restarts) can run without two controller pods racing to reconcile the same VirtualMachine and SSA-fighting each other's status patches. After this iteration, Phase 1A is fully done; Phases 1B / 1C / 1D / 1E are now unblocked per the dependency graph in `~/dev/roadmaps/banlieue/README.md`.
+The roadmap's Phase 1A `Definition of done` was met by iteration 3 *except* for leader election and the few remaining CLI flags called out in `~/dev/roadmaps/banlieue/10-phase-1a-controller-and-sdk.md`. This iteration closes those out so multi-replica Deployments (or rolling restarts) can run without two controller pods racing to reconcile the same VirtualMachine and SSA-fighting each other's status patches. After this iteration, Phase 1A is fully done; Phases 1B / 1C / 1D / 1E are now unblocked per the dependency graph in `~/dev/roadmaps/banlieue/README.md`.
 
 The decision logic is deliberately pure so it can be exhaustively tested without a kube cluster — the async loop is then a thin wrapper that the controller's smoke test exercises end-to-end (running it locally creates a Lease in `banlieue-system` named `banlieue-controller` and refreshes it on a 5s cadence).
 
@@ -8431,7 +9443,7 @@ The roadmap's Phase 1A goal — "a VirtualMachine can go from creation through s
 **Author:** Erick Bourgeois
 
 ### Changed
-- Moved `docs/roadmap/` → `~/dev/roadmaps/banlieue/` (out-of-repo). Reason: OSS projects should not ship the maintainer's planning artifacts. The numeric-prefix filename convention (`00-OVERVIEW.md`, `10-PHASE-1A-...`, etc.) is preserved at the new location.
+- Moved `docs/roadmap/` → `~/dev/roadmaps/banlieue/` (out-of-repo). Reason: OSS projects should not ship the maintainer's planning artifacts. The numeric-prefix filename convention (`00-overview.md`, `10-PHASE-1A-...`, etc.) is preserved at the new location.
 - `.claude/CLAUDE.md`: Replaced the "Plans and Roadmaps → `docs/roadmap/`" rule with a "Plans and Roadmaps live outside the repo" rule. Updated the target file-organization tree to drop `docs/roadmap/` and add `docs/adr/` instead (ADRs stay in-repo because they're public technical records).
 - `.claude/SKILL.md`: Stripped `docs/roadmap/` references from `regen-api-docs`, `update-docs`, `add-new-crd`, and the pre-commit checklist; clarified that phase plans live out-of-repo.
 - `.github/workflows/build.yaml`: Removed the `# See docs/roadmap/10-PHASE-1A-...` comment pointer.

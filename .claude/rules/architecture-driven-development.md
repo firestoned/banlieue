@@ -20,13 +20,34 @@ starting the next:
 ### 1. ADR — decide and record (FIRST)
 
 Write or update an Architecture Decision Record in
-`docs/adr/NNNN-title.md` (lowercase-hyphen, zero-padded sequential number)
-with the standard sections:
+`docs/adr/NNNN-title.md` (lowercase-hyphen, zero-padded sequential number).
 
-- **Status** — Proposed → Accepted (→ Superseded by NNNN)
+**Metadata is a bullet list under the title, never a `## Status` section** —
+one field per bullet, so status and date stay greppable rather than buried in
+a prose paragraph:
+
+```markdown
+# NNNN — Title
+
+- **Status:** Accepted
+- **Date:** 2026-09-20
+- **Proposed:** 2026-09-19          (when it sat Proposed first)
+- **Deciders:** Erick Bourgeois
+- **Amended:** 2026-09-10 (Decision #3, …)
+- **Supersedes:** ADR-NNNN …
+- **Related:** Extends [ADR-NNNN](…) …
+```
+
+`Status` and `Date` are required; the rest appear only when they apply. Then
+the standard sections:
+
 - **Context** — the forces, constraints, and the problem being solved
 - **Decision** — what we will do, stated plainly
 - **Consequences** — trade-offs, follow-ups, what this rules out
+
+Status runs Proposed → Accepted (→ Superseded by NNNN). *Accepted* records
+that the decision is made, not that it shipped — ADR-0033 is Accepted and
+carries an explicit `Not implemented.` note.
 
 Keep ADRs in the repo (unlike roadmaps, which live outside it). One decision per
 ADR. If a change reverses an earlier ADR, mark the old one *Superseded* and link
@@ -98,7 +119,8 @@ CHANGELOG.
 
 ## Checklist (paste into the work)
 
-- [ ] ADR written/updated in `docs/adr/NNNN-*.md` (Status/Context/Decision/Consequences)
+- [ ] ADR written/updated in `docs/adr/NNNN-*.md` — metadata bullets
+      (`- **Status:**` / `- **Date:**`), then Context/Decision/Consequences
 - [ ] CALM model updated; `make calm-validate` passes; `make calm-diagrams` renders
 - [ ] Tests written **first**, then implementation (TDD)
 - [ ] `cargo-quality` passes (fmt + clippy + test)

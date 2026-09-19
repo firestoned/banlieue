@@ -8,6 +8,7 @@ use k8s_openapi::api::core::v1::Toleration;
 use kube::Client;
 
 use crate::client::LibvirtClientFactory;
+use crate::machine_client::LibvirtMachineClientFactory;
 
 /// Context passed into every reconcile call.
 #[derive(Clone)]
@@ -21,6 +22,12 @@ pub struct Context {
     /// details. Held as `Arc<dyn ...>` so reconciles clone it cheaply and
     /// tests can inject a fake.
     pub libvirt: Arc<dyn LibvirtClientFactory>,
+
+    /// Builds a [`crate::machine_client::LibvirtMachineClient`] — the
+    /// mutating counterpart, holding a live session. Separate from `libvirt`
+    /// because the Provider reconciler's snapshot client cannot express a
+    /// write; see that module's own note.
+    pub libvirt_machine: Arc<dyn LibvirtMachineClientFactory>,
 
     /// Namespace holding the artifacts PVC and the import Jobs.
     ///
@@ -52,10 +59,15 @@ pub struct Context {
 
 impl Context {
     /// Construct a new [`Context`].
+    // Eight fields, all of them independent runtime configuration with no
+    // natural grouping: bundling them into a parameter struct would just move
+    // the same list one level down and add a type nobody reads.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         client: Client,
         namespace: Option<String>,
         libvirt: Arc<dyn LibvirtClientFactory>,
+        libvirt_machine: Arc<dyn LibvirtMachineClientFactory>,
         build_namespace: String,
         import_image: String,
         import_service_account: String,
@@ -65,6 +77,7 @@ impl Context {
             client,
             namespace,
             libvirt,
+            libvirt_machine,
             build_namespace,
             import_image,
             import_service_account,

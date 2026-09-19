@@ -91,7 +91,7 @@ const ISO_OVERLAY_SOURCE_MOUNT_PATH: &str = "/overlay-src";
 const ISO_OVERLAY_DEST_MOUNT_PATH: &str = "/overlay-dst";
 
 /// Fixed name for the `spec.volumes[]` entry `artifacts.uki.keysVolume`
-/// points at (ADR-0041). A direct Secret volume, unlike
+/// points at (ADR-0051). A direct Secret volume, unlike
 /// [`ISO_OVERLAY_VOLUME_NAME`]: `auroraboot build-uki` reads the six named
 /// key files individually rather than merging a directory tree onto an
 /// already-populated ISO root, so kubelet's Secret-mount symlink layout
@@ -100,12 +100,12 @@ const TRUSTED_BOOT_KEYS_VOLUME_NAME: &str = "trusted-boot-keys";
 
 /// Fixed name for the Secret-backed `spec.volumes[]` entry holding a
 /// `trustedBoot` build's cloud-config, before it's materialized into the
-/// shared [`ISO_OVERLAY_VOLUME_NAME`] emptyDir (ADR-0041 Decision #4).
+/// shared [`ISO_OVERLAY_VOLUME_NAME`] emptyDir (ADR-0051 Decision #4).
 const TRUSTED_BOOT_CLOUD_CONFIG_SOURCE_VOLUME_NAME: &str = "trusted-boot-cloud-config-source";
 
 /// `spec.importers[]` container name that dereferences
 /// [`TRUSTED_BOOT_CLOUD_CONFIG_SOURCE_VOLUME_NAME`]'s kubelet symlinks into
-/// [`ISO_OVERLAY_VOLUME_NAME`] as [`ISO_ROOT_CLOUD_CONFIG_FILENAME`] (ADR-0041
+/// [`ISO_OVERLAY_VOLUME_NAME`] as [`ISO_ROOT_CLOUD_CONFIG_FILENAME`] (ADR-0051
 /// Decision #4).
 const TRUSTED_BOOT_CLOUD_CONFIG_IMPORTER_NAME: &str = "trusted-boot-cloud-config-materialize";
 
@@ -115,11 +115,11 @@ const TRUSTED_BOOT_CLOUD_CONFIG_IMPORTER_NAME: &str = "trusted-boot-cloud-config
 /// root overlay). Reused here so a `trustedBoot` build's cloud-config,
 /// injected via `overlayISOVolume` instead (`--cloud-config` doesn't exist
 /// on `build-uki`), lands exactly where kairos-agent's installer already
-/// looks for it — ADR-0041 Decision #4.
+/// looks for it — ADR-0051 Decision #4.
 const ISO_ROOT_CLOUD_CONFIG_FILENAME: &str = "config.yaml";
 
 /// The six file names `auroraboot build-uki` requires in a `trustedBoot`
-/// Secret (ADR-0041 Decision #3 — preflight validation), in a fixed order
+/// Secret (ADR-0051 Decision #3 — preflight validation), in a fixed order
 /// so error messages are deterministic.
 const REQUIRED_TRUSTED_BOOT_KEYS: [&str; 6] = [
     "PK.auth",
@@ -131,13 +131,13 @@ const REQUIRED_TRUSTED_BOOT_KEYS: [&str; 6] = [
 ];
 
 /// Reason string for `BuildArtifactStatus.reason` when a `trustedBoot`
-/// Secret is missing one or more required keys (ADR-0041 Decision #3).
+/// Secret is missing one or more required keys (ADR-0051 Decision #3).
 const REASON_TRUSTED_BOOT_KEYS_MISSING: &str = "TrustedBootKeysMissing";
 
 /// Names from [`REQUIRED_TRUSTED_BOOT_KEYS`] absent from `present`, in fixed
 /// declaration order — deterministic regardless of `present`'s iteration
 /// order. Only ever checks key *names*: this and its caller never inspect a
-/// Secret's `data` values (ADR-0041's "never touches Secret content"
+/// Secret's `data` values (ADR-0051's "never touches Secret content"
 /// posture extends to this preflight check).
 pub fn missing_trusted_boot_keys(
     present: &std::collections::BTreeSet<String>,
@@ -154,7 +154,7 @@ pub fn missing_trusted_boot_keys(
 /// `src_mount` to `dst_mount`, dereferencing symlinks (`-L`) so the
 /// destination holds plain files/directories. Shared by
 /// [`ISO_OVERLAY_IMPORTER_NAME`] (ADR-0022) and
-/// [`TRUSTED_BOOT_CLOUD_CONFIG_IMPORTER_NAME`] (ADR-0041 Decision #4) — both
+/// [`TRUSTED_BOOT_CLOUD_CONFIG_IMPORTER_NAME`] (ADR-0051 Decision #4) — both
 /// work around the same kubelet Secret-mount symlink layout
 /// (kairos-io/kairos#4324), just onto different destinations.
 fn materialize_script(src_mount: &str, dst_mount: &str) -> String {
@@ -369,7 +369,7 @@ pub fn desired_os_artifact(
             ],
         }));
     }
-    // Trusted Boot / UKI (ADR-0041): requests artifacts.uki.iso instead of
+    // Trusted Boot / UKI (ADR-0051): requests artifacts.uki.iso instead of
     // the plain artifacts.iso this build would otherwise request — the base
     // rootfs is a Unified Kernel Image with no discrete initrd for
     // `auroraboot build-iso` to find. The Secret is referenced directly as
@@ -391,7 +391,7 @@ pub fn desired_os_artifact(
                 "secretName": tb.secret_ref.name,
             },
         }));
-        // ADR-0041 Decision #4: `cloudConfigRef` is never set alongside
+        // ADR-0051 Decision #4: `cloudConfigRef` is never set alongside
         // `uki` — kairos-operator's `buildUKICommand` unconditionally
         // appends `--cloud-config` whenever `cloudConfigRef` is set, but
         // `auroraboot build-uki` has no such flag at all ("flag provided
@@ -540,7 +540,7 @@ pub fn spec_matches(
     kind: &BuildArtifactKind,
     trusted_boot: Option<&TrustedBootSource>,
 ) -> bool {
-    // Trusted Boot (ADR-0041) requests `artifacts.uki.iso`, not the plain
+    // Trusted Boot (ADR-0051) requests `artifacts.uki.iso`, not the plain
     // `artifacts.iso`/`artifacts.cloudImage` flag `artifacts_flag` names —
     // toggling `trustedBoot` on or off must be judged stale so the live
     // OSArtifact gets deleted and rebuilt in the new shape.
@@ -602,14 +602,14 @@ fn artifacts_pvc_name(os_artifact_name: &str) -> String {
 
 /// kairos-operator's file-naming convention for an artifact output:
 /// `<name>.raw` for a `cloudImage`, `<name>.iso` for an `iso` — except a
-/// Trusted Boot / UKI build (ADR-0041), where kairos-operator's
+/// Trusted Boot / UKI build (ADR-0051), where kairos-operator's
 /// `buildUKICommand` always names the `auroraboot build-uki --name` flag
 /// `<name>-uki` (confirmed from source: `ukiArtifactName`,
 /// `kairos-operator/internal/controller/job.go`; the `-uki` suffix applies
 /// regardless of `--output-type`), and `auroraboot` writes exactly
 /// `<--name>.iso` for output-type `iso` (`AuroraBoot/pkg/uki/uki.go`,
 /// `createISO`). So the real file is `<name>-uki.iso`, not `<name>.iso` —
-/// confirmed live (`cannot read .../<name>.iso`, ADR-0041 Decision #5).
+/// confirmed live (`cannot read .../<name>.iso`, ADR-0051 Decision #5).
 fn artifact_file_name(
     os_artifact_name: &str,
     kind: &BuildArtifactKind,
@@ -794,7 +794,7 @@ pub async fn reconcile(image: Arc<VMImage>, ctx: Arc<Context>) -> Result<Action>
     let os_name = os_artifact_name(&name);
     let kind = artifact_kind_for_class(&source.provider_class);
 
-    // ADR-0041 Decision #3: validate a trustedBoot Secret declares all six
+    // ADR-0051 Decision #3: validate a trustedBoot Secret declares all six
     // required key names *before* touching any OSArtifact — an invalid
     // Secret would otherwise surface only as an opaque kairos-operator
     // admission error or a failed build pod.
@@ -825,7 +825,7 @@ pub async fn reconcile(image: Arc<VMImage>, ctx: Arc<Context>) -> Result<Action>
                 pvc_ref: None,
                 file: None,
                 message: Some(format!(
-                    "Secret/{} is missing required trustedBoot key(s): {} — generate via `auroraboot genkey` (ADR-0041)",
+                    "Secret/{} is missing required trustedBoot key(s): {} — generate via `auroraboot genkey` (ADR-0051)",
                     trusted_boot.secret_ref.name,
                     missing.join(", "),
                 )),

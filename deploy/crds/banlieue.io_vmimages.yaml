@@ -440,7 +440,7 @@ spec:
                   `banlieue-imagebuilder` into the kairos-operator `OSArtifact`'s
                   `spec.artifacts.uki.{iso,keysVolume}` (replacing the plain
                   `artifacts.iso` request) — the `auroraboot build-uki` mechanism. See
-                  [`TrustedBootSource`] and ADR-0041. Ignored for `cloudImage`-kind
+                  [`TrustedBootSource`] and ADR-0051. Ignored for `cloudImage`-kind
                   builds and non-`Url` sources.
                 nullable: true
                 properties:
