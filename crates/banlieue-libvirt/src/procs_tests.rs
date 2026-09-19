@@ -481,4 +481,556 @@ mod tests {
             "expected Protocol, got {err:?}"
         );
     }
+
+    // ------------------------------------------------------------------
+    // Domain handle (`remote_nonnull_domain`) — ADR-0050
+    // ------------------------------------------------------------------
+
+    /// `remote_nonnull_domain { string name; uuid[16]; int id; }`. The `id`
+    /// is a *trailing* field: an encoder that stops after the UUID (as the
+    /// storage-pool handle legitimately does) shifts every following
+    /// argument, which is the failure this pins.
+    #[test]
+    fn domain_handle_round_trips() {
+        let dom = Domain {
+            name: "sandbox-01".into(),
+            uuid: uuid_bytes(0x40),
+            id: 7,
+        };
+        let mut e = Encoder::new();
+        dom.encode(&mut e);
+        let bytes = e.into_bytes();
+
+        // 4 len + 10 name + 2 pad + 16 uuid + 4 id
+        assert_eq!(bytes.len(), 4 + 12 + UUID_LEN + 4);
+        assert_eq!(&bytes[bytes.len() - 4..], &7i32.to_be_bytes());
+
+        let mut d = Decoder::new(&bytes);
+        assert_eq!(Domain::decode(&mut d).unwrap(), dom);
+        assert!(d.is_empty(), "decode must consume the whole handle");
+    }
+
+    /// An inactive domain is `id == -1` on the wire, not `0`.
+    #[test]
+    fn domain_handle_accepts_inactive_id() {
+        let dom = Domain {
+            name: "off".into(),
+            uuid: uuid_bytes(1),
+            id: -1,
+        };
+        let mut e = Encoder::new();
+        dom.encode(&mut e);
+        let mut d = Decoder::new(e.as_bytes());
+        assert_eq!(Domain::decode(&mut d).unwrap().id, -1);
+    }
+
+    // ------------------------------------------------------------------
+    // Domain argument encoding
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn encodes_domain_lookup_by_name_args() {
+        let mut want = Encoder::new();
+        want.write_string("sandbox-01");
+        assert_eq!(
+            encode_domain_lookup_by_name_args("sandbox-01"),
+            want.into_bytes()
+        );
+    }
+
+    #[test]
+    fn encodes_domain_define_xml_flags_args() {
+        let mut want = Encoder::new();
+        want.write_string("<domain/>");
+        want.write_u32(0);
+        assert_eq!(
+            encode_domain_define_xml_flags_args("<domain/>", 0),
+            want.into_bytes()
+        );
+    }
+
+    #[test]
+    fn encodes_domain_only_args() {
+        let dom = Domain {
+            name: "d".into(),
+            uuid: uuid_bytes(2),
+            id: 3,
+        };
+        let mut want = Encoder::new();
+        dom.encode(&mut want);
+        assert_eq!(encode_domain_args(&dom), want.into_bytes());
+    }
+
+    #[test]
+    fn encodes_domain_flags_args() {
+        let dom = Domain {
+            name: "d".into(),
+            uuid: uuid_bytes(3),
+            id: 4,
+        };
+        let mut want = Encoder::new();
+        dom.encode(&mut want);
+        want.write_u32(DOMAIN_UNDEFINE_EPHEMERAL);
+        assert_eq!(
+            encode_domain_flags_args(&dom, DOMAIN_UNDEFINE_EPHEMERAL),
+            want.into_bytes()
+        );
+    }
+
+    #[test]
+    fn encodes_domain_interface_addresses_args() {
+        let dom = Domain {
+            name: "d".into(),
+            uuid: uuid_bytes(4),
+            id: 5,
+        };
+        let mut want = Encoder::new();
+        dom.encode(&mut want);
+        want.write_u32(InterfaceAddressSource::Agent as u32);
+        want.write_u32(0);
+        assert_eq!(
+            encode_domain_interface_addresses_args(&dom, InterfaceAddressSource::Agent, 0),
+            want.into_bytes()
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // Undefine flags — the teardown-leak guard
+    // ------------------------------------------------------------------
+
+    /// Transcribed from `libvirt-domain.h`: MANAGED_SAVE 1<<0, NVRAM 1<<2,
+    /// TPM 1<<5. A previous live incident had `virsh undefine` silently fail
+    /// on UEFI domains for want of `--nvram`, leaving every VM defined while
+    /// teardown reported success. On libvirt these three flags are what stop
+    /// a deleted single-use sandbox from leaving its varstore and swtpm state
+    /// behind (ADR-0050 Decision 4).
+    #[test]
+    fn undefine_flag_values_match_libvirt() {
+        assert_eq!(DOMAIN_UNDEFINE_MANAGED_SAVE, 1);
+        assert_eq!(DOMAIN_UNDEFINE_NVRAM, 4);
+        assert_eq!(DOMAIN_UNDEFINE_TPM, 32);
+        assert_eq!(DOMAIN_UNDEFINE_EPHEMERAL, 1 | 4 | 32);
+        assert_eq!(DOMAIN_UNDEFINE_EPHEMERAL, 0x25);
+    }
+
+    /// `KEEP_NVRAM` (1<<3) and `KEEP_TPM` (1<<6) are the opposites of what a
+    /// single-use VM wants; this pins that neither ever creeps into the
+    /// composite.
+    #[test]
+    fn undefine_ephemeral_keeps_nothing() {
+        const KEEP_NVRAM: u32 = 1 << 3;
+        const KEEP_TPM: u32 = 1 << 6;
+        assert_eq!(DOMAIN_UNDEFINE_EPHEMERAL & KEEP_NVRAM, 0);
+        assert_eq!(DOMAIN_UNDEFINE_EPHEMERAL & KEEP_TPM, 0);
+    }
+
+    // ------------------------------------------------------------------
+    // Domain reply decoding
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn decodes_domain_ret() {
+        let dom = Domain {
+            name: "sandbox-02".into(),
+            uuid: uuid_bytes(9),
+            id: 11,
+        };
+        let mut e = Encoder::new();
+        dom.encode(&mut e);
+        assert_eq!(decode_domain_ret(e.as_bytes()).unwrap(), dom);
+    }
+
+    #[test]
+    fn decodes_domain_state() {
+        let mut e = Encoder::new();
+        e.write_i32(DOMAIN_STATE_RUNNING);
+        e.write_i32(0); // reason
+        assert_eq!(
+            decode_domain_get_state_ret(e.as_bytes()).unwrap(),
+            DomainState::Running
+        );
+    }
+
+    /// Every state libvirt defines maps to a named variant; an unknown one is
+    /// carried through rather than collapsed onto a guess, so a future
+    /// libvirt state shows up in logs instead of being silently read as
+    /// "running".
+    #[test]
+    fn decodes_every_known_domain_state() {
+        let cases = [
+            (0, DomainState::NoState),
+            (1, DomainState::Running),
+            (2, DomainState::Blocked),
+            (3, DomainState::Paused),
+            (4, DomainState::ShuttingDown),
+            (5, DomainState::ShutOff),
+            (6, DomainState::Crashed),
+            (7, DomainState::PmSuspended),
+            (99, DomainState::Unknown(99)),
+        ];
+        for (wire, want) in cases {
+            let mut e = Encoder::new();
+            e.write_i32(wire);
+            e.write_i32(0);
+            assert_eq!(
+                decode_domain_get_state_ret(e.as_bytes()).unwrap(),
+                want,
+                "state {wire}"
+            );
+        }
+    }
+
+    /// Only `ShutOff` and `Crashed` mean "this domain is not executing".
+    /// `ShuttingDown` is in-progress and must not be read as stopped, or a
+    /// reconciler will undefine a domain that is still running.
+    #[test]
+    fn domain_state_is_running_is_conservative() {
+        assert!(DomainState::Running.is_running());
+        assert!(DomainState::Blocked.is_running());
+        assert!(DomainState::Paused.is_running());
+        assert!(DomainState::ShuttingDown.is_running());
+        assert!(DomainState::PmSuspended.is_running());
+        assert!(!DomainState::ShutOff.is_running());
+        assert!(!DomainState::Crashed.is_running());
+        assert!(!DomainState::NoState.is_running());
+        assert!(!DomainState::Unknown(42).is_running());
+    }
+
+    /// One address in a test fixture: `(type, addr, prefix)`.
+    type FixtureAddr<'a> = (i32, &'a str, u32);
+    /// One interface in a test fixture: `(name, hwaddr, addrs)`.
+    type FixtureIface<'a> = (&'a str, Option<&'a str>, &'a [FixtureAddr<'a>]);
+
+    /// Build a `remote_domain_interface_addresses_ret` payload.
+    fn iface_payload(ifaces: &[FixtureIface<'_>]) -> Vec<u8> {
+        let mut e = Encoder::new();
+        e.write_u32(ifaces.len() as u32);
+        for (name, hwaddr, addrs) in ifaces {
+            e.write_string(name);
+            // remote_string hwaddr — a pointer type, so an optional.
+            match hwaddr {
+                Some(h) => {
+                    e.write_bool(true);
+                    e.write_string(h);
+                }
+                None => e.write_bool(false),
+            }
+            e.write_u32(addrs.len() as u32);
+            for (kind, addr, prefix) in *addrs {
+                e.write_i32(*kind);
+                e.write_string(addr);
+                e.write_u32(*prefix);
+            }
+        }
+        e.into_bytes()
+    }
+
+    #[test]
+    fn decodes_interface_addresses() {
+        let body = iface_payload(&[
+            ("lo", Some("00:00:00:00:00:00"), &[(0, "127.0.0.1", 8)]),
+            (
+                "enp1s0",
+                Some("52:54:00:aa:bb:cc"),
+                &[(0, "192.0.2.24", 24), (1, "2001:db8::24", 64)],
+            ),
+        ]);
+        let ifaces = decode_domain_interface_addresses_ret(&body).unwrap();
+
+        assert_eq!(ifaces.len(), 2);
+        assert_eq!(ifaces[1].name, "enp1s0");
+        assert_eq!(ifaces[1].hwaddr.as_deref(), Some("52:54:00:aa:bb:cc"));
+        assert_eq!(ifaces[1].addrs.len(), 2);
+        assert_eq!(ifaces[1].addrs[0].addr, "192.0.2.24");
+        assert_eq!(ifaces[1].addrs[0].prefix, 24);
+        assert_eq!(ifaces[1].addrs[1].addr, "2001:db8::24");
+    }
+
+    /// `hwaddr` is `remote_string` (a pointer), so it is an optional on the
+    /// wire. Reading it unconditionally shifts every following field — the
+    /// same trap `procs.rs`'s module doc calls out for `connect_open`.
+    #[test]
+    fn decodes_interface_with_absent_hwaddr() {
+        let body = iface_payload(&[("dummy", None, &[(0, "192.0.2.9", 24)])]);
+        let ifaces = decode_domain_interface_addresses_ret(&body).unwrap();
+        assert_eq!(ifaces.len(), 1);
+        assert!(ifaces[0].hwaddr.is_none());
+        assert_eq!(ifaces[0].addrs[0].addr, "192.0.2.9");
+    }
+
+    #[test]
+    fn decodes_interface_with_no_addresses() {
+        let body = iface_payload(&[("enp1s0", Some("52:54:00:00:00:01"), &[])]);
+        let ifaces = decode_domain_interface_addresses_ret(&body).unwrap();
+        assert!(ifaces[0].addrs.is_empty());
+    }
+
+    /// A hostile or corrupt interface count must be rejected against
+    /// `REMOTE_DOMAIN_INTERFACE_MAX` before it reserves capacity, the same
+    /// guard the pool and network lists already apply.
+    #[test]
+    fn rejects_oversized_interface_count() {
+        let mut e = Encoder::new();
+        e.write_u32(DOMAIN_INTERFACE_MAX as u32 + 1);
+        let err = decode_domain_interface_addresses_ret(e.as_bytes()).unwrap_err();
+        assert!(
+            matches!(err, TransportError::Protocol { .. }),
+            "expected Protocol, got {err:?}"
+        );
+    }
+
+    /// Likewise for the per-interface address count against
+    /// `REMOTE_DOMAIN_IP_ADDR_MAX`.
+    #[test]
+    fn rejects_oversized_address_count() {
+        let mut e = Encoder::new();
+        e.write_u32(1);
+        e.write_string("enp1s0");
+        e.write_bool(false);
+        e.write_u32(DOMAIN_IP_ADDR_MAX as u32 + 1);
+        let err = decode_domain_interface_addresses_ret(e.as_bytes()).unwrap_err();
+        assert!(
+            matches!(err, TransportError::Protocol { .. }),
+            "expected Protocol, got {err:?}"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // Volume names — a guard, not an escaper
+    // ------------------------------------------------------------------
+
+    /// Volume names reach libvirt inside XML. banlieue always generates them
+    /// from Kubernetes object names, which are already DNS-1123-restricted,
+    /// so the realistic risk is not injection but a hand-written
+    /// `LibvirtMachine` carrying something odd. Rejecting is better than
+    /// escaping here: a mangled-but-accepted volume name creates a file
+    /// nobody can find again, while an error is visible immediately.
+    #[test]
+    fn accepts_the_volume_names_banlieue_generates() {
+        for ok in [
+            "sandbox-01-os.qcow2",
+            "banlieue-system-db-01-cidata.iso",
+            "a",
+            "ubuntu_22.04-base.img",
+        ] {
+            assert!(validate_volume_name(ok).is_ok(), "{ok} should be accepted");
+        }
+    }
+
+    #[test]
+    fn rejects_volume_names_that_could_reach_xml_or_the_filesystem() {
+        for bad in [
+            "",                    // empty
+            "a/b.qcow2",           // path separator — escapes the pool
+            "../escape.qcow2",     // traversal
+            "disk'/><x a='.qcow2", // markup
+            "disk name.qcow2",     // space
+            "disk\u{0}.qcow2",     // NUL
+        ] {
+            assert!(
+                validate_volume_name(bad).is_err(),
+                "{bad:?} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_an_over_long_volume_name() {
+        let long = "a".repeat(VOLUME_NAME_MAX + 1);
+        assert!(validate_volume_name(&long).is_err());
+        let at_limit = "a".repeat(VOLUME_NAME_MAX);
+        assert!(validate_volume_name(&at_limit).is_ok());
+    }
+
+    // ------------------------------------------------------------------
+    // qcow2 volume XML
+    // ------------------------------------------------------------------
+
+    /// The `Deferred` shape: an empty disk the guest installs itself onto.
+    #[test]
+    fn empty_qcow2_volume_declares_size_and_no_backing_store() {
+        let xml = qcow2_volume_xml("sandbox-01-os.qcow2", 42 * 1024 * 1024 * 1024).unwrap();
+        assert!(xml.contains("<name>sandbox-01-os.qcow2</name>"), "{xml}");
+        assert!(xml.contains("<format type='qcow2'/>"), "{xml}");
+        assert!(xml.contains("45097156608"), "{xml}");
+        assert!(!xml.contains("backingStore"), "{xml}");
+    }
+
+    /// The `Immediate` shape: a copy-on-write overlay. The backing store's
+    /// own format must be declared — libvirt does not probe it, and an
+    /// undeclared backing format is both a security advisory (CVE-2010-2238
+    /// class) and, on modern libvirt, a hard refusal.
+    #[test]
+    fn overlay_qcow2_volume_declares_its_backing_store_and_format() {
+        let xml = qcow2_overlay_volume_xml(
+            "sandbox-01-os.qcow2",
+            42 * 1024 * 1024 * 1024,
+            "/var/lib/libvirt/images/base.qcow2",
+            "qcow2",
+        )
+        .unwrap();
+        assert!(xml.contains("<backingStore>"), "{xml}");
+        assert!(
+            xml.contains("<path>/var/lib/libvirt/images/base.qcow2</path>"),
+            "{xml}"
+        );
+        assert!(xml.contains("<format type='qcow2'/>"), "{xml}");
+        // Both the volume's own format and the backing store's.
+        assert_eq!(xml.matches("<format type=").count(), 2, "{xml}");
+    }
+
+    /// A raw backing image (what `banlieue-imagebuilder` uploads, ADR-0011)
+    /// with a qcow2 overlay on top is the normal combination, so the two
+    /// formats genuinely differ and must not be conflated.
+    #[test]
+    fn overlay_can_sit_on_a_raw_backing_image() {
+        let xml = qcow2_overlay_volume_xml("o.qcow2", 1024, "/img/base.img", "raw").unwrap();
+        assert!(xml.contains("<format type='raw'/>"), "{xml}");
+        assert!(xml.contains("<format type='qcow2'/>"), "{xml}");
+    }
+
+    #[test]
+    fn qcow2_builders_reject_a_bad_volume_name() {
+        assert!(qcow2_volume_xml("a/b", 1024).is_err());
+        assert!(qcow2_overlay_volume_xml("a/b", 1024, "/img/x", "raw").is_err());
+    }
+
+    /// A backing path containing markup would otherwise close the element.
+    /// Paths are not names, so they cannot use the same allowlist — they are
+    /// rejected on the characters XML and shell-free path handling cannot
+    /// carry.
+    #[test]
+    fn overlay_rejects_a_hostile_backing_path() {
+        let err = qcow2_overlay_volume_xml("o.qcow2", 1024, "/img/x'/><x a='", "raw");
+        assert!(err.is_err());
+    }
+
+    // ------------------------------------------------------------------
+    // Storage lookup / delete / refresh
+    // ------------------------------------------------------------------
+
+    fn sample_pool() -> StoragePool {
+        StoragePool {
+            name: "default".into(),
+            uuid: uuid_bytes(0x20),
+        }
+    }
+
+    #[test]
+    fn encodes_storage_pool_lookup_by_name_args() {
+        let mut want = Encoder::new();
+        want.write_string("default");
+        assert_eq!(
+            encode_storage_pool_lookup_by_name_args("default"),
+            want.into_bytes()
+        );
+    }
+
+    /// `remote_nonnull_storage_pool` is name + uuid and, unlike a domain
+    /// handle, has **no trailing id**. Adding one would shift the `name`
+    /// that follows it in the vol-lookup args.
+    #[test]
+    fn encodes_storage_vol_lookup_by_name_args() {
+        let pool = sample_pool();
+        let mut want = Encoder::new();
+        want.write_string(&pool.name);
+        want.write_opaque_fixed(&pool.uuid);
+        want.write_string("disk.qcow2");
+        assert_eq!(
+            encode_storage_vol_lookup_by_name_args(&pool, "disk.qcow2"),
+            want.into_bytes()
+        );
+    }
+
+    #[test]
+    fn encodes_storage_vol_delete_args() {
+        let vol = StorageVol {
+            pool: "default".into(),
+            name: "disk.qcow2".into(),
+            key: "/var/lib/libvirt/images/disk.qcow2".into(),
+        };
+        let mut want = Encoder::new();
+        want.write_string(&vol.pool);
+        want.write_string(&vol.name);
+        want.write_string(&vol.key);
+        want.write_u32(0);
+        assert_eq!(encode_storage_vol_delete_args(&vol), want.into_bytes());
+    }
+
+    #[test]
+    fn encodes_storage_pool_refresh_args() {
+        let pool = sample_pool();
+        let mut want = Encoder::new();
+        want.write_string(&pool.name);
+        want.write_opaque_fixed(&pool.uuid);
+        want.write_u32(0);
+        assert_eq!(encode_storage_pool_refresh_args(&pool), want.into_bytes());
+    }
+
+    #[test]
+    fn decodes_a_storage_pool_reply() {
+        let pool = sample_pool();
+        let mut e = Encoder::new();
+        e.write_string(&pool.name);
+        e.write_opaque_fixed(&pool.uuid);
+        assert_eq!(decode_storage_pool_ret(e.as_bytes()).unwrap(), pool);
+    }
+
+    /// For a directory pool the volume's `key` is its absolute path on the
+    /// host — which is exactly what domain XML needs, so no pool-XML parsing
+    /// is required anywhere.
+    #[test]
+    fn decodes_a_storage_vol_reply_carrying_its_path() {
+        let mut e = Encoder::new();
+        e.write_string("default");
+        e.write_string("disk.qcow2");
+        e.write_string("/var/lib/libvirt/images/disk.qcow2");
+        let vol = decode_storage_vol_ret(e.as_bytes()).unwrap();
+        assert_eq!(vol.key, "/var/lib/libvirt/images/disk.qcow2");
+    }
+
+    // ------------------------------------------------------------------
+    // "Not found" is a normal answer, not a failure
+    // ------------------------------------------------------------------
+
+    /// libvirt reports a missing object as an error reply, not an empty one,
+    /// so a reconciler asking "does this exist?" has to read the code. Three
+    /// codes, transcribed from `virterror.h`.
+    #[test]
+    fn recognises_libvirt_not_found_codes() {
+        for code in [
+            VIR_ERR_NO_DOMAIN,
+            VIR_ERR_NO_STORAGE_POOL,
+            VIR_ERR_NO_STORAGE_VOL,
+        ] {
+            let err = TransportError::Remote {
+                code,
+                message: "not found".into(),
+            };
+            assert!(is_not_found(&err), "code {code} should read as not-found");
+        }
+    }
+
+    #[test]
+    fn not_found_codes_match_libvirt() {
+        assert_eq!(VIR_ERR_NO_DOMAIN, 42);
+        assert_eq!(VIR_ERR_NO_STORAGE_POOL, 49);
+        assert_eq!(VIR_ERR_NO_STORAGE_VOL, 50);
+    }
+
+    /// Any other remote error is a real failure. Swallowing one as "absent"
+    /// would make a reconciler recreate an object that already exists, or
+    /// report a permission problem as an empty pool.
+    #[test]
+    fn other_errors_are_not_not_found() {
+        let other = TransportError::Remote {
+            code: 55,
+            message: "operation failed".into(),
+        };
+        assert!(!is_not_found(&other));
+        assert!(!is_not_found(&TransportError::Protocol {
+            detail: "x".into()
+        }));
+        assert!(!is_not_found(&TransportError::Tls("handshake".into())));
+    }
 }

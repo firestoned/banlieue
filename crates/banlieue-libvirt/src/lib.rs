@@ -32,9 +32,16 @@ pub mod transport;
 pub mod xdr;
 
 pub use procs::{
-    AuthType, CONNECT_RO, Network, StoragePool, StorageVol, UUID_LEN, auth_list, connect_open,
-    list_all_networks, list_all_storage_pools, raw_volume_xml, storage_pool_list_all_volumes,
-    storage_vol_create_xml, storage_vol_upload,
+    AuthType, CONNECT_RO, DOMAIN_INTERFACE_MAX, DOMAIN_IP_ADDR_MAX, DOMAIN_UNDEFINE_EPHEMERAL,
+    DOMAIN_UNDEFINE_MANAGED_SAVE, DOMAIN_UNDEFINE_NVRAM, DOMAIN_UNDEFINE_TPM, Domain,
+    DomainInterface, DomainIpAddr, DomainState, InterfaceAddressSource, Network, StoragePool,
+    StorageVol, UUID_LEN, VIR_ERR_NO_DOMAIN, VIR_ERR_NO_STORAGE_POOL, VIR_ERR_NO_STORAGE_VOL,
+    VOLUME_NAME_MAX, auth_list, connect_open, domain_create, domain_define_xml, domain_destroy,
+    domain_get_state, domain_interface_addresses, domain_lookup_by_name, domain_shutdown,
+    domain_undefine, is_not_found, list_all_networks, list_all_storage_pools,
+    qcow2_overlay_volume_xml, qcow2_volume_xml, raw_volume_xml, storage_pool_list_all_volumes,
+    storage_pool_lookup_by_name, storage_pool_refresh, storage_vol_create_xml, storage_vol_delete,
+    storage_vol_lookup_by_name, storage_vol_upload, validate_volume_name,
 };
 
 pub use rpc::{
@@ -47,7 +54,7 @@ pub use rpc::{
     parse_length_prefix,
 };
 pub use transport::{
-    DEFAULT_TIMEOUT, DEFAULT_TLS_PORT, Session, TlsIdentity, TransportError, connect_tls,
+    DEFAULT_TIMEOUT, DEFAULT_TLS_PORT, Result, Session, TlsIdentity, TransportError, connect_tls,
     connect_tls_with_timeout,
 };
 pub use xdr::{Decoder, Encoder, XdrError};

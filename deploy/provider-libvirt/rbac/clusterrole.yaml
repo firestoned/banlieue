@@ -3,9 +3,9 @@
 #
 # Cluster-wide role for the libvirt provider binary.
 #
-# Mirrors deploy/provider-vsphere/rbac/clusterrole.yaml, minus the vSphere
-# infrastructure CRs and IPAM (libvirt machine provisioning is not implemented
-# yet) and plus the Jobs the image import needs.
+# Mirrors deploy/provider-vsphere/rbac/clusterrole.yaml, with LibvirtMachine
+# in place of VSphereMachine (ADR-0050), minus IPAM (Pool-based IpamSpec is not
+# wired for libvirt yet), plus the Jobs the image import needs.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -37,6 +37,27 @@ rules:
     resources:
       - vmimages/status
     verbs: ["update", "patch"]
+
+  # ---------------------------------------------------------------------------
+  # infrastructure.banlieue.io group — LibvirtMachine lifecycle (ADR-0050)
+  # ---------------------------------------------------------------------------
+  # No `create` and no `delete`: LibvirtMachines are created and deleted by
+  # banlieue-controller, which owns them. This provider only realises them and
+  # reports back, so it can read, patch spec.providerID, own status, and clear
+  # its finalizer — nothing more. Least privilege: a compromised provider must
+  # not be able to mint machines the controller never scheduled.
+  - apiGroups: ["infrastructure.banlieue.io"]
+    resources:
+      - libvirtmachines
+    verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups: ["infrastructure.banlieue.io"]
+    resources:
+      - libvirtmachines/status
+    verbs: ["get", "update", "patch"]
+  - apiGroups: ["infrastructure.banlieue.io"]
+    resources:
+      - libvirtmachines/finalizers
+    verbs: ["update"]
 
   # ---------------------------------------------------------------------------
   # Import Jobs (ADR-0011)

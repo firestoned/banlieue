@@ -20,6 +20,11 @@ This directory holds the roadmap docs for building banlieue.
 | 40 | `40-PHASE-4-FINOS-READY.md` | Polish, governance, CAPI integration, release | Phase 4 |
 | 50 | `50-IPAM-POOL-INTEGRATION.md` | CAPI IPAM pool integration (ADR-0033) — deferred, not started | After the virtrigaud migration; needs a decision from the existing IPAM system's owning team first |
 | 51 | `51-LIVE-MIGRATION.md` | Same-class live migration, e.g. vSphere relocate (ADR-0036) — deferred, not started | After ADR-0035's placement-drift watch made `Recreate` fire more often; cross-class migration explicitly out of scope |
+| 60 | `60-SCORECARD-REMEDIATION.md` | OSSF Scorecard: what to click, and which checks are deliberately capped | Before touching repo settings or "fixing" a Scorecard alert |
+| 70 | `70-ephemeral-vm-pools.md` | `VirtualMachinePool` + `VirtualMachineClaim`: warm, never-reused, TPM-sealed single-use VMs | Largest open initiative; read after 13 (libvirt is its first live target) |
+
+Status for every row above lives in [`ROADMAPS.md`](../../ROADMAPS.md) at the
+repo root — this table is the reading order, that one is the status board.
 
 ## Using these with Claude Code / Windsurf
 
@@ -31,35 +36,49 @@ A suggested working pattern:
    - `02-CONVENTIONS.md`
 2. **Open the phase doc** for the current work and pin it.
 3. **Don't let Claude Code re-litigate locked decisions.** If it
-   suggests changing an architectural call, redirect it to propose
-   an ADR in `docs/design/` instead.
+   suggests changing an architectural call, redirect it to write an
+   ADR in `docs/adr/NNNN-title.md` instead — and note that `docs/adr/`,
+   not `01-DECISIONS.md`, is now the canonical decision log.
 4. **Treat task lists as the source of truth.** When something is
    done, check it off in the file.
-5. **Annotate open questions back into `01-DECISIONS.md`** as they
-   get resolved — this is the durable record.
+5. **Record a resolved open question as an ADR** in `docs/adr/`, then
+   annotate the `01-DECISIONS.md` entry to point at it. The ADR is the
+   durable record; the entry is the breadcrumb.
 
 ## Phase dependencies
 
 ```
-Phase 1A (controller + SDK)
-   ├─→ Phase 1B (vSphere)
-   ├─→ Phase 1C (Proxmox)       can run in parallel after 1A lands
-   ├─→ Phase 1D (libvirt)
-   └─→ Phase 1E (MkDocs site)   no preconditions; can start now
+Phase 1A (controller + SDK)  ✅
+   ├─→ Phase 1B (vSphere)    ✅
+   ├─→ Phase 1C (Proxmox)    ⛔   can run in parallel after 1A lands
+   ├─→ Phase 1D (libvirt)    🔶
+   └─→ Phase 1E (MkDocs)     🔶   no preconditions
          │
          ▼
-   Phase 2 (snapshots)            needs at least one provider
+   Phase 2 (snapshots)       ⛔   needs at least one provider
          │
          ▼
-   Phase 3 (provider lifecycle)   needs the manual Deployment patterns
-         │                        already established
+   Phase 3 (lifecycle)       🔶   ProviderClass + banlieue-operator exist
+         │
          ▼
-   Phase 4 (FINOS-ready)          everything that's left
+   Phase 4 (FINOS-ready)     🔶   everything that's left
+
+   70 (ephemeral VM pools)   ⛔   gated on 1D for live testing
 ```
 
 ## Updates to these docs
 
 These roadmaps are living documents. Update them as design evolves
 during implementation. Significant changes that affect architecture
-should land as ADRs in `docs/design/adr-NNN-*.md` and be cross-linked
-from the relevant phase doc and `01-DECISIONS.md`.
+land as ADRs in **`docs/adr/NNNN-title.md`** (lowercase-hyphen,
+zero-padded, one decision per ADR) and are cross-linked from the relevant
+phase doc.
+
+Two rules that are easy to miss:
+
+- **Update the status row in [`ROADMAPS.md`](../../ROADMAPS.md) in the same
+  commit** that changes an item's state. It is a status board, not a
+  description of intent.
+- **ADRs, not `01-DECISIONS.md`, are the canonical record.** That file is
+  the pre-ADR log, kept and annotated for history; a new decision goes in
+  `docs/adr/`.

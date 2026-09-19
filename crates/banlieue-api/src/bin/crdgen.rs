@@ -25,7 +25,9 @@ use std::process::ExitCode;
 
 use banlieue_api::banlieue::{Provider, ProviderClass, VMClass, VMImage, VirtualMachine};
 use banlieue_api::crdgen_support::prepared;
-use banlieue_api::infrastructure::{VSphereCluster, VSphereMachine, VSphereMachineTemplate};
+use banlieue_api::infrastructure::{
+    LibvirtMachine, LibvirtMachineTemplate, VSphereCluster, VSphereMachine, VSphereMachineTemplate,
+};
 use clap::Parser;
 use kube::CustomResourceExt;
 
@@ -66,6 +68,14 @@ fn main() -> ExitCode {
         (
             "banlieue.io_vmimages.yaml",
             render(prepared(VMImage::crd())),
+        ),
+        (
+            "infrastructure.banlieue.io_libvirtmachines.yaml",
+            render(prepared(LibvirtMachine::crd())),
+        ),
+        (
+            "infrastructure.banlieue.io_libvirtmachinetemplates.yaml",
+            render(prepared(LibvirtMachineTemplate::crd())),
         ),
         (
             "infrastructure.banlieue.io_vsphereclusters.yaml",

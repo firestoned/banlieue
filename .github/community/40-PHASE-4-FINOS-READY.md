@@ -22,8 +22,13 @@ sequenced.
 
 ## 4.1 Documentation
 
-Move `docs/roadmap/` to a private folder (these become internal
-contributor docs) and build out:
+> **Reversed.** This originally said to move `docs/roadmap/` to a private
+> folder. Roadmaps are now **checked in** at `.github/community/`, indexed by
+> [`ROADMAPS.md`](../../ROADMAPS.md) at the repo root. Do not move or privatise
+> them. (The MkDocs scaffold itself already shipped — roadmap 14, Phase 1E —
+> so what is left here is content, not tooling.)
+
+Build out:
 
 ```
 docs/
@@ -225,25 +230,33 @@ requirements when ready):
       CRD API group rename considerations (probably keep
       `banlieue.io` to avoid breaking users).
 
-## 4.10 ADRs (Architecture Decision Records)
+## 4.10 ADRs (Architecture Decision Records) — largely done
 
-Replace `01-DECISIONS.md` with a numbered ADR sequence:
+**This workstream overtook its own plan.** `docs/adr/` exists with ~45 ADRs
+(0001–0050, with 0043–0049 reserved by roadmap 70), each following the
+standard Status / Context / Decision / Consequences template. ADRs are
+already the canonical decision record, and ADD makes writing one **step 1**
+of any architecturally significant change, not a Phase 4 cleanup task
+(`rules/architecture-driven-development.md`).
 
-```
-docs/adr/
-├── 0001-language-rust.md
-├── 0002-no-rpc-providers.md
-├── 0003-capi-contract-shape.md
-├── 0004-explicit-capability-mapping.md
-├── 0005-non-sticky-placement.md
-├── 0006-pluggable-ipam.md
-├── 0007-cluster-vs-namespaced-scopes.md
-├── 0008-gfs-snapshot-retention.md
-└── ...
-```
+The illustrative filenames that were listed here never existed; the real
+sequence numbers its decisions as they were actually made.
 
-Each ADR follows the standard template (context / decision /
-consequences). They become the canonical record once FINOS-donated.
+What remains under this heading:
+
+- [ ] **Renumber the two duplicate ADR numbers.** `0041` and `0042` are each
+      used twice (`0041-imagebuilder-namespaced-secret-access` /
+      `0041-vmimage-trusted-boot-uki-support`,
+      `0042-instant-clone-vmfork-not-supported` /
+      `0042-userdata-reference-authorization`). Roadmap 70 references the
+      trusted-boot and instant-clone ones by those numbers, so fix the
+      references in the same commit.
+- [ ] **Reconcile `01-DECISIONS.md`.** Its entries have been annotated with
+      the ADRs that superseded them; decide whether to retire it entirely or
+      keep it as the annotated pre-ADR record. Do not delete it silently —
+      several entries are still the only statement of their decision.
+- [ ] Keep the threat model current: a **full pass** after every implemented
+      ADR (`rules/threat-modeling.md`), which is ADD's last step.
 
 ## Tasks summary
 

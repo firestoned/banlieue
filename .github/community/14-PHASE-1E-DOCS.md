@@ -47,7 +47,7 @@ backlog still lives in Phase 4 §4.1.
 
 | Source (`~/dev/5-spot/docs/`)      | Destination (`docs/`)         | Adjustments for banlieue                              |
 |---|---|---|
-| `mkdocs.yml`                       | `docs/mkdocs.yml`             | `site_name`, `site_url`, `repo_url`, `nav` rewritten. Drop CALM-specific entries (banlieue may add later). |
+| `mkdocs.yml`                       | `docs/mkdocs.yml`             | `site_name`, `site_url`, `repo_url`, `nav` rewritten. **Keep the CALM entries** — see the CALM note below. |
 | `pyproject.toml`                   | `docs/pyproject.toml`         | Rename package to `banlieue-docs`. Same dep pins. |
 | `poetry.lock`                      | `docs/poetry.lock`            | Regenerated locally via `poetry lock` to ensure reproducibility. |
 | `src/stylesheets/extra.css`        | `docs/src/stylesheets/extra.css` | Keep file structure; brand palette is banlieue's choice (proposed below). |
@@ -150,13 +150,23 @@ docs-clean: ## Remove build artifacts
 
 ## CI workflow (`.github/workflows/docs.yaml`)
 
-Drop the CALM jobs from 5-spot's workflow for now (banlieue doesn't have a
-CALM architecture yet — that lands later if at all). Keep:
+> **CALM is no longer optional.** This section originally said to drop
+> 5-spot's CALM jobs because "banlieue doesn't have a CALM architecture yet —
+> that lands later if at all." It landed: `docs/architecture/calm/architecture.json`
+> is the model, `make calm-validate` is a hard gate and `make calm-diagrams`
+> regenerates the Mermaid diagrams under `docs/src/architecture/`. Modelling a
+> change in CALM is **step 2 of the ADD cycle**, before any code
+> (`rules/architecture-driven-development.md`). Keep the CALM jobs and the
+> CALM nav entries.
+
+Keep:
 
 - `pull_request` + `push: main` triggers, gated on `docs/**`, `crates/**/*.rs`, `.github/workflows/docs.yaml`.
 - `workflow_run: ["Build"]` trigger for deploy on release-only success.
 - `concurrency:` group from 5-spot (cancel-in-progress except on release).
-- Two jobs:
+- Three jobs:
+  0. **`calm`** — `make calm-validate` + `make calm-diagrams`; fails the build
+     on a model that doesn't conform to the meta-schema.
   1. **`build`** — installs Python 3.12 + Poetry, runs `make docs`, uploads `docs/site/` as a Pages artifact.
   2. **`deploy`** — gated on `workflow_run.event == 'release'` and `workflow_run.conclusion == 'success'`, uses `actions/deploy-pages@v4`.
 - Same `permissions:` shape as 5-spot (`contents: read`, `pages: write`, `id-token: write`).
@@ -250,7 +260,7 @@ This phase ships option (1).
 | Item | Goes to |
 |---|---|
 | `crddoc` binary that emits per-CRD Markdown pages | Phase 4 §4.1 |
-| CALM architecture + Mermaid auto-render workflow | Future (banlieue may never need it) |
+| ~~CALM architecture + Mermaid auto-render workflow~~ | **Done** — `make calm-validate` / `make calm-diagrams`; mandatory ADD step |
 | Versioned docs via `mike` | Post-v1.0 |
 | Translations / i18n | Never (out of project scope) |
 | Custom Material plugins beyond the 5-spot set | As needed, per-PR |

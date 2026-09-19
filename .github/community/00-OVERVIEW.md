@@ -59,6 +59,10 @@ for a coding session. Suggested workflow:
 3. Reference the existing `banlieue-api` crate as the source of truth
    for type shapes — do not invent new CRD fields on the fly; if you
    need one, edit `banlieue-api` first and rerun `crdgen`.
+4. Architecturally significant work follows **ADD**:
+   `ADR → CALM → TDD → implement → docs → threat model`, in that order
+   (`rules/architecture-driven-development.md`). A roadmap entry says *what*
+   and *why*; it never substitutes for the ADR on *how*.
 
 Open questions in phase docs are marked **OPEN:** — answer those before
 writing code, and record the answer back in `01-DECISIONS.md`.
@@ -88,32 +92,44 @@ the answer is to find a different tradeoff, not to relax the principle.
    `status.initialization.provisioned=true` on a `VirtualMachine`
    without the underlying infra CR saying so.
 
-## Target repository layout
-
-By end of Phase 1:
+## Repository layout (actual)
 
 ```
 banlieue/
-├── Cargo.toml                  # workspace
-├── README.md
+├── Cargo.toml                       # workspace
+├── ROADMAPS.md                      # status board — one row per roadmap
+├── .github/community/               # ← you are here (roadmap docs)
 ├── docs/
-│   ├── roadmap/                # ← you are here
-│   ├── design/                 # ADRs, contract docs
-│   └── user/                   # user-facing docs (Phase 4)
+│   ├── adr/                         # ADRs, NNNN-title.md — the decision log
+│   ├── architecture/calm/           # FINOS CALM model + generated diagrams
+│   ├── design/                      # contract / design notes
+│   └── src/                         # MkDocs Material site (Phase 1E)
 ├── crates/
-│   ├── banlieue-api/           # Phase 0 ✅
-│   ├── banlieue-controller/    # Phase 1A
-│   ├── banlieue-provider-sdk/  # Phase 1A
-│   ├── banlieue-provider-vsphere/  # Phase 1B
-│   ├── banlieue-provider-proxmox/  # Phase 1C
-│   └── banlieue-provider-libvirt/  # Phase 1D
+│   ├── banlieue/                    # the ONLY binary; subcommand dispatch (ADR-0004)
+│   ├── banlieue-api/                # CRD types — source of truth
+│   ├── banlieue-controller/         # main controller
+│   ├── banlieue-provider-sdk/       # shared runtime helpers
+│   ├── banlieue-provider-vsphere/   # vSphere provider
+│   ├── banlieue-provider-libvirt/   # libvirt provider
+│   ├── banlieue-libvirt/            # pure-Rust libvirt native-RPC client (ADR-0011/0050)
+│   ├── banlieue-operator/           # ProviderClass → workloads (ADR-0012)
+│   ├── banlieue-imagebuilder/       # VMImage build pipeline (ADR-0010)
+│   └── banlieue-vex/                # VEX / supply-chain tooling
 ├── deploy/
-│   ├── crds/                   # generated via crdgen
-│   ├── kustomize/
-│   └── helm/                   # Phase 4
-├── examples/
-└── e2e/                        # Phase 4
+│   ├── crds/                        # generated via crdgen — never hand-edited
+│   ├── admission/                   # ValidatingAdmissionPolicies (ADR-0007)
+│   ├── controller/ operator/ imagebuilder/ provider-*/
+│   └── kind/                        # dev only
+└── examples/
 ```
+
+`banlieue-provider-proxmox` does not exist yet (roadmap 12, ⛔). There is no
+Helm chart yet (Phase 4 §4.6).
+
+> **Note.** `banlieue-libvirt`, `banlieue-operator`, `banlieue-imagebuilder`
+> and `banlieue-vex` grew out of ADRs rather than roadmap phases; their
+> decision record is in `docs/adr/`, not in this directory. See the note at
+> the foot of [`ROADMAPS.md`](../../ROADMAPS.md).
 
 ## Pre-flight checks before starting any phase
 

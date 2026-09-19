@@ -41,6 +41,9 @@ rules:
       - vspheremachines
       - vspheremachines/status
       - vspheremachinetemplates
+      - libvirtmachines
+      - libvirtmachines/status
+      - libvirtmachinetemplates
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   # VSphereCluster (CAPI InfraCluster) — the operator/CAPI owns its lifecycle;
   # the controller only watches it and writes its status (least privilege:
@@ -56,6 +59,7 @@ rules:
   - apiGroups: ["infrastructure.banlieue.io"]
     resources:
       - vspheremachines/finalizers
+      - libvirtmachines/finalizers
     verbs: ["update"]
 
   # ---------------------------------------------------------------------------
