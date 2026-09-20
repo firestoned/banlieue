@@ -226,6 +226,19 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Session<S> {
     /// used to size the read buffer, so a corrupt or hostile prefix cannot
     /// drive a huge allocation.
     pub async fn recv(&mut self) -> Result<(MessageHeader, Vec<u8>)> {
+        self.recv_on_program(REMOTE_PROGRAM, REMOTE_PROTOCOL_VERSION)
+            .await
+    }
+
+    /// As [`recv`](Self::recv), but expecting a reply in an explicit program.
+    ///
+    /// # Errors
+    /// As [`recv`](Self::recv).
+    pub async fn recv_on_program(
+        &mut self,
+        program: u32,
+        version: u32,
+    ) -> Result<(MessageHeader, Vec<u8>)> {
         let mut prefix = [0u8; MESSAGE_LEN_PREFIX_LEN];
         // read_exact, not read: a stream may deliver a message across several
         // reads, and a short read would otherwise be mistaken for a truncated
@@ -240,14 +253,18 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Session<S> {
         let mut d = Decoder::new(&rest);
         let header = MessageHeader::decode(&mut d)?;
 
-        // Cheap desynchronisation tripwire. Every message on this connection
-        // belongs to the same program and version, so a mismatch means we are
-        // reading from the wrong offset — which otherwise surfaces as a
-        // nonsensical length and an indefinite block rather than an error.
-        if header.program != REMOTE_PROGRAM || header.version != REMOTE_PROTOCOL_VERSION {
+        // Cheap desynchronisation tripwire: a reply must come back in the
+        // program it was sent on, so a mismatch means we are reading from the
+        // wrong offset — which otherwise surfaces as a nonsensical length and
+        // an indefinite block rather than an error.
+        //
+        // Parameterised rather than fixed to REMOTE_PROGRAM because one
+        // connection now carries two (ADR-0043): a qemu-program reply would
+        // otherwise trip a check meant to catch corruption.
+        if header.program != program || header.version != version {
             return Err(TransportError::Desynchronised {
-                expected_program: REMOTE_PROGRAM,
-                expected_version: REMOTE_PROTOCOL_VERSION,
+                expected_program: program,
+                expected_version: version,
                 got_program: header.program,
                 got_version: header.version,
             });
@@ -283,10 +300,53 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Session<S> {
         procedure: i32,
         payload: &[u8],
     ) -> Result<(u32, Vec<u8>)> {
+        self.call_with_serial_on_program(
+            REMOTE_PROGRAM,
+            REMOTE_PROTOCOL_VERSION,
+            procedure,
+            payload,
+        )
+        .await
+    }
+
+    /// As [`call`](Self::call), but on an explicit program.
+    ///
+    /// One libvirtd connection carries more than one RPC program: the
+    /// qemu-specific procedures (`virDomainQemuAgentCommand`, which is the
+    /// only route to `qemu-guest-agent`) live in [`QEMU_PROGRAM`], not the
+    /// remote driver's (ADR-0043). Framing is identical; only the header
+    /// differs, which is why this is a parameter rather than a second
+    /// transport.
+    ///
+    /// # Errors
+    /// As [`call`](Self::call).
+    pub async fn call_on_program(
+        &mut self,
+        program: u32,
+        version: u32,
+        procedure: i32,
+        payload: &[u8],
+    ) -> Result<Vec<u8>> {
+        self.call_with_serial_on_program(program, version, procedure, payload)
+            .await
+            .map(|(_, b)| b)
+    }
+
+    /// As [`call_on_program`](Self::call_on_program), returning the serial.
+    ///
+    /// # Errors
+    /// As [`call`](Self::call).
+    pub async fn call_with_serial_on_program(
+        &mut self,
+        program: u32,
+        version: u32,
+        procedure: i32,
+        payload: &[u8],
+    ) -> Result<(u32, Vec<u8>)> {
         let serial = self.next_serial();
         let header = MessageHeader {
-            program: REMOTE_PROGRAM,
-            version: REMOTE_PROTOCOL_VERSION,
+            program,
+            version,
             procedure,
             message_type: MessageType::Call,
             serial,
@@ -294,12 +354,13 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Session<S> {
         };
         self.send(&header, payload).await?;
 
-        let (reply, body) = tokio::time::timeout(self.timeout, self.recv())
-            .await
-            .map_err(|_| TransportError::Timeout {
-                op: "receive",
-                after: self.timeout,
-            })??;
+        let (reply, body) =
+            tokio::time::timeout(self.timeout, self.recv_on_program(program, version))
+                .await
+                .map_err(|_| TransportError::Timeout {
+                    op: "receive",
+                    after: self.timeout,
+                })??;
         if reply.serial != serial {
             return Err(TransportError::SerialMismatch {
                 expected: serial,

@@ -46,6 +46,8 @@ use banlieue_provider_sdk::finalizer::{ensure_finalizer, remove_finalizer};
 use banlieue_provider_sdk::reconciler::{requeue_default, requeue_long, requeue_on_error};
 use banlieue_provider_sdk::ssa::FIELD_MANAGER_PROVIDER_LIBVIRT;
 use banlieue_provider_sdk::status::{condition_status, set_condition};
+
+use crate::guest::MARKER_PATH;
 use kube::{
     ResourceExt,
     api::{Api, Patch, PatchParams},
@@ -177,6 +179,11 @@ pub struct Observed {
     pub addresses: Vec<MachineAddress>,
     /// Which source produced `addresses`, if any did.
     pub address_source: Option<LibvirtAddressSource>,
+    /// Whether the *installed* guest announced itself this pass (ADR-0043).
+    ///
+    /// The raw observation, not the stored one: stickiness is applied in
+    /// [`build_status`], so this stays a fact about right now.
+    pub guest_installed: bool,
 }
 
 /// Bring the host in line with `spec`, and report what was observed.
@@ -303,11 +310,20 @@ pub async fn converge(
         None => (Vec::new(), None),
     };
 
+    // Only ask a running domain: the agent cannot answer otherwise, and a
+    // pointless round trip per reconcile against every stopped VM adds up.
+    let guest_installed = if state.is_running() {
+        client.guest_installed(&domain).await
+    } else {
+        false
+    };
+
     Ok(Observed {
         domain,
         state,
         addresses,
         address_source,
+        guest_installed,
     })
 }
 
@@ -527,6 +543,8 @@ fn build_status(
     status.address_source = observed.address_source.clone();
     status.failure_domain = machine.spec.failure_domain.clone();
     status.tpm_attached = machine.spec.tpm_enabled.then_some(true);
+    status.guest_installed =
+        sticky_guest_installed(status.guest_installed, observed.guest_installed);
     status.observed_generation = Some(generation);
 
     let (cond_status, reason, message) = if provisioned {
@@ -548,6 +566,32 @@ fn build_status(
         cond_status,
         reason,
         message,
+        generation,
+    );
+
+    // GuestReady is additive and independent: `Ready` above does not consult
+    // it, because making it do so would regress every Immediate-mode VM
+    // whose image was never built to send the marker (ADR-0043 Decision 4).
+    let installed = status.guest_installed == Some(true);
+    let (guest_status, guest_reason, guest_message) = if installed {
+        (
+            condition_status::TRUE,
+            "GuestAnnounced",
+            "the installed guest announced itself".to_string(),
+        )
+    } else {
+        (
+            condition_status::FALSE,
+            "GuestNotAnnounced",
+            format!("no {MARKER_PATH} marker reported by qemu-guest-agent"),
+        )
+    };
+    set_condition(
+        &mut status.conditions,
+        condition_types::GUEST_READY,
+        guest_status,
+        guest_reason,
+        guest_message,
         generation,
     );
     status
@@ -691,6 +735,21 @@ async fn patch_status(
     )
     .await?;
     Ok(())
+}
+
+/// Fold a fresh guest observation into the stored one, stickily.
+///
+/// Once `Some(true)`, it stays: the marker lives in the guest's `/run` and
+/// so does not survive a power cycle, but a VM that was stopped has not
+/// become uninstalled (ADR-0043 Decision 5). `None` means nothing has
+/// looked yet, which is the expected state for the whole of a `Deferred`
+/// image's install.
+#[must_use]
+pub fn sticky_guest_installed(previous: Option<bool>, observed: bool) -> Option<bool> {
+    if previous == Some(true) {
+        return Some(true);
+    }
+    Some(observed)
 }
 
 #[cfg(test)]

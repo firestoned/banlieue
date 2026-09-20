@@ -24,6 +24,19 @@ use crate::xdr::{Decoder, Encoder, XdrError};
 /// `REMOTE_PROGRAM` — identifies the libvirt remote driver program.
 pub const REMOTE_PROGRAM: u32 = 0x2000_8086;
 
+/// `QEMU_PROGRAM` — libvirt's qemu-specific program, carried over the *same*
+/// connection as [`REMOTE_PROGRAM`] (ADR-0043).
+///
+/// `virDomainQemuAgentCommand` — the only way to ask `qemu-guest-agent`
+/// anything — lives here rather than in the remote program, so reading the
+/// installed-guest marker means speaking two programs down one socket. The
+/// framing is identical; only the header's `program` and `version` differ.
+pub const QEMU_PROGRAM: u32 = 0x2000_8087;
+
+/// Protocol version of [`QEMU_PROGRAM`]. Versioned independently of
+/// [`REMOTE_PROTOCOL_VERSION`] and, at the time of writing, still 1.
+pub const QEMU_PROTOCOL_VERSION: u32 = 1;
+
 /// `REMOTE_PROTOCOL_VERSION`.
 pub const REMOTE_PROTOCOL_VERSION: u32 = 1;
 
@@ -204,7 +217,8 @@ impl MessageStatus {
 /// `virNetMessageHeader` — six 32-bit fields, in declaration order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MessageHeader {
-    /// Program identifier; always [`REMOTE_PROGRAM`] for the remote driver.
+    /// Program identifier: [`REMOTE_PROGRAM`] for the remote driver,
+    /// [`QEMU_PROGRAM`] for the qemu-specific procedures.
     pub program: u32,
     /// Program version; always [`REMOTE_PROTOCOL_VERSION`].
     pub version: u32,

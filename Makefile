@@ -148,7 +148,11 @@ help: ## Show this help
         vex-auto-presence vex-auto-reachability \
         kind-install kind-create kind-delete kind-load \
         kind-deploy-crds kind-deploy-controller kind-up kind-down kind-status \
-        kind-deploy-provider-vsphere \
+        kind-deploy-provider-vsphere kind-deploy-operator kind-kubeconfig \
+        kind-bootstrap-install kind-e2e-install kind-e2e kind-e2e-ci kind-e2e-logs \
+        kind-e2e-bootstrap kind-e2e-dry-run kind-e2e-escape-hatch \
+        kind-e2e-workload kind-e2e-pause kind-e2e-workload-namespace kind-e2e-class \
+        claim-live-test pool-claim-e2e \
         vcsim-up vcsim-down vcsim-logs \
         docs docs-serve docs-clean docs-deploy \
         calm-diagrams calm-docify calm-validate \
@@ -288,6 +292,62 @@ libvirt-live-test: ## Run the libvirt protocol harness against a REAL libvirtd (
 	  exit 1; }
 	@echo "Running the libvirt protocol harness against $$LIBVIRT_HOST ..."
 	cargo test -p banlieue-libvirt --test live_libvirtd -- \
+	  --ignored --nocapture --test-threads=1
+
+claim-live-test: ## Run the claim reconciler against a REAL API server (needs KUBECONFIG; no libvirt)
+	@# The middle tier. `claim_plan` unit tests prove every decision as a
+	@# pure function; this proves the three things only an apiserver can:
+	@# the resourceVersion precondition really produces a 409, ownership
+	@# really re-parents, and the finalizer really blocks deletion.
+	@#
+	@# Needs the banlieue CRDs installed and NO controller running (a live
+	@# controller races the test). A throwaway kind cluster is the usual
+	@# way:
+	@#
+	@#   kind create cluster --name banlieue-claim-test
+	@#   kubectl --context kind-banlieue-claim-test apply -f deploy/crds/
+	@#   make claim-live-test
+	@test -n "$$KUBECONFIG" -o -f "$$HOME/.kube/config" || { \
+	  echo "No kubeconfig. Point KUBECONFIG at a cluster with the banlieue CRDs."; \
+	  exit 1; }
+	@echo "Running the claim reconciler against $$(kubectl config current-context) ..."
+	cargo test -p banlieue-controller --test live_claim -- \
+	  --ignored --nocapture --test-threads=1
+
+pool-claim-e2e: ## Pool -> real libvirt domains -> claim -> release (LOCAL ONLY, never CI)
+	@# The top tier, and the only one that can check ADR-0047's actual
+	@# promise: after a claim is deleted, libvirtd must not still have the
+	@# domain. Everything below it covers one side of that sentence.
+	@#
+	@# Assumes banlieue is already installed and running, the named
+	@# Provider is Ready, and the named VMImage is already built — this
+	@# tests pools and claims, not the install and not the image pipeline
+	@# (that is `make libvirt-e2e`).
+	@#
+	@# No deployed cluster? A kind cluster plus the controller and provider
+	@# as LOCAL BINARIES is enough and needs no image build; the recipe is
+	@# in e2e_pool_claim.rs's module docs. Verified green that way.
+	@test -n "$$BANLIEUE_E2E_PROVIDER" -a -n "$$BANLIEUE_E2E_IMAGE" -a -n "$$BANLIEUE_E2E_CLASS" || { \
+	  echo "Set all three. Example:"; \
+	  echo "  export KUBECONFIG=~/dev/kubeconfig/homelab.yaml"; \
+	  echo "  BANLIEUE_E2E_PROVIDER=<provider> \\"; \
+	  echo "  BANLIEUE_E2E_IMAGE=<ready VMImage> \\"; \
+	  echo "  BANLIEUE_E2E_CLASS=<VMClass> \\"; \
+	  echo "  LIBVIRT_HOST=bar.foo.io \\"; \
+	  echo "  LIBVIRT_TLS_DIR=~/.config/banlieue/libvirt \\"; \
+	  echo "    make pool-claim-e2e"; \
+	  echo ""; \
+	  echo "BANLIEUE_E2E_NAMESPACE defaults to banlieue-system and must be the"; \
+	  echo "namespace your Provider lives in — members only schedule against"; \
+	  echo "Providers in their own namespace."; \
+	  echo ""; \
+	  echo "LIBVIRT_HOST/LIBVIRT_TLS_DIR are optional, but without them the"; \
+	  echo "on-host checks are skipped and the run proves strictly less."; \
+	  exit 1; }
+	@test -n "$$LIBVIRT_HOST" || echo "⚠ LIBVIRT_HOST unset: on-host domain checks will be SKIPPED."
+	@echo "Running pool -> claim -> release against provider $$BANLIEUE_E2E_PROVIDER ..."
+	@echo "  This provisions real VMs; expect several minutes per test."
+	cargo test -p banlieue-provider-libvirt --test e2e_pool_claim -- \
 	  --ignored --nocapture --test-threads=1
 
 libvirt-e2e: ## Run the FULL image pipeline against a real cluster + libvirt host (LOCAL ONLY, never CI)
@@ -784,10 +844,23 @@ kind-deploy-provider-vsphere: kind-deploy-crds kind-load ## Deploy banlieue-prov
 
 # ----- e2e (ADR-0014) --------------------------------------------------------
 #
-# The suite asserts the OPERATOR's contract — Provider CR in, workload objects
-# out — against a real API server. It deliberately does NOT wait for the spawned
+# The suites assert the OPERATOR's contract — Provider CR in, workload objects
+# out — against a real API server. They deliberately do NOT wait for the spawned
 # provider pod to become Ready: its Provider points at `vcenter.invalid`, so the
-# pod is expected to stay NotReady. See the test's module docs before editing.
+# pod is expected to stay NotReady. See the tests' module docs before editing.
+#
+# The e2e is SPLIT into independent suites, one `kind-e2e-<name>` target each,
+# so CI can run them as parallel jobs on their own clusters and a local run can
+# re-run just the one that broke. `make kind-e2e` runs them all in sequence on
+# one cluster.
+#
+#   kind-e2e-bootstrap           what `banlieue bootstrap operator` installed
+#   kind-e2e-dry-run             `bootstrap --dry-run` output the apiserver accepts
+#   kind-e2e-escape-hatch        `bootstrap provider <backend>` standalone install
+#   kind-e2e-workload            Provider -> workload: shape, RBAC, owners, GC
+#   kind-e2e-pause               spec.paused on a Provider and on a ProviderClass
+#   kind-e2e-workload-namespace  the cross-namespace workloadNamespace override
+#   kind-e2e-class               class swaps prune, class edits roll
 
 # A kubeconfig scoped to the kind cluster, so the suite never depends on (or
 # mutates) whatever context you happen to have selected. Gitignored.
@@ -813,14 +886,64 @@ kind-kubeconfig: kind-create ## Write a kind-scoped kubeconfig to $(KIND_KUBECON
 	@kind get kubeconfig --name $(KIND_CLUSTER_NAME) > $(KIND_KUBECONFIG)
 	@echo "✓ wrote $(KIND_KUBECONFIG)"
 
-kind-e2e: kind-deploy-operator kind-kubeconfig ## Run the operator e2e suite against kind (creates the cluster if missing)
-	@echo "Running e2e suite against kind-$(KIND_CLUSTER_NAME)..."
+# How the operator is installed before a reconcile-contract suite runs.
+#
+#   bootstrap — `banlieue bootstrap operator`, the path ADR-0013 documents and
+#               the one CI must exercise. The two install paths drift silently:
+#               bug-110 (bootstrap never installing the shared per-backend
+#               ClusterRole) was invisible to the manifest path.
+#   manifests — `kubectl apply -R -f deploy/operator/`, the GitOps path. Skips
+#               the `banlieue` CLI build, so it is the faster local loop:
+#               `E2E_INSTALL=manifests make kind-e2e-workload`.
+#
+# The bootstrap-specific suites (kind-e2e-bootstrap / -dry-run / -escape-hatch)
+# ignore this and always install via bootstrap — asserting that installer's
+# output is the whole point of them.
+E2E_INSTALL ?= bootstrap
+
+kind-e2e-install: ## Install the operator into kind via $(E2E_INSTALL) (bootstrap | manifests)
+	@case "$(E2E_INSTALL)" in \
+	  bootstrap) $(MAKE) kind-bootstrap-install ;; \
+	  manifests) $(MAKE) kind-deploy-operator kind-kubeconfig ;; \
+	  *) echo "E2E_INSTALL must be 'bootstrap' or 'manifests', got '$(E2E_INSTALL)'"; exit 1 ;; \
+	esac
+
+# Run one operator e2e test binary. $(1) is its name under
+# crates/banlieue-operator/tests/. Every suite runs identically — same
+# kubeconfig, same side-loaded image, serially — so the only thing a suite
+# target supplies is which binary.
+define run-e2e-suite
+	@echo "Running $(1) against kind-$(KIND_CLUSTER_NAME)..."
 	@KUBECONFIG=$(KIND_KUBECONFIG) \
 	 BANLIEUE_E2E_IMAGE=$(KIND_IMAGE) \
-	 cargo test -p banlieue-operator --test e2e_provider_lifecycle -- \
+	 cargo test -p banlieue-operator --test $(1) -- \
 	   --ignored --nocapture --test-threads=1
+	@echo "✓ $(1) passed"
+endef
+
+kind-e2e-workload: kind-e2e-install ## e2e: Provider -> workload shape, RBAC, ownership, status, GC
+	$(call run-e2e-suite,e2e_provider_workload)
+
+kind-e2e-pause: kind-e2e-install ## e2e: spec.paused on a Provider and on a ProviderClass
+	$(call run-e2e-suite,e2e_provider_pause)
+
+kind-e2e-workload-namespace: kind-e2e-install ## e2e: the cross-namespace workloadNamespace override
+	$(call run-e2e-suite,e2e_workload_namespace)
+
+kind-e2e-class: kind-e2e-install ## e2e: ProviderClass swaps prune, ProviderClass edits roll
+	$(call run-e2e-suite,e2e_provider_class)
+
+# Every suite. CI runs one per job (`make kind-e2e-ci E2E_SUITE=<name>`), each
+# on its own cluster; this list is both the local all-in-one run and the single
+# place CI's job matrix is derived from.
+E2E_SUITES = bootstrap dry-run escape-hatch workload pause workload-namespace class
+
+kind-e2e: ## Run every operator e2e suite, in sequence, against one kind cluster
+	@# Invoked from the recipe rather than as prerequisites: these share one
+	@# cluster and must not be parallelised by `make -j`.
+	@set -e; for suite in $(E2E_SUITES); do $(MAKE) kind-e2e-$$suite; done
 	@echo ""
-	@echo "✓ e2e suite passed"
+	@echo "✓ all e2e suites passed ($(E2E_SUITES))"
 
 kind-bootstrap-install: kind-load kind-kubeconfig ## Install banlieue into kind via `banlieue bootstrap operator` (the documented path)
 	@echo "Installing via 'banlieue bootstrap operator' (ADR-0013)..."
@@ -833,35 +956,36 @@ kind-bootstrap-install: kind-load kind-kubeconfig ## Install banlieue into kind 
 	@kubectl --kubeconfig $(KIND_KUBECONFIG) -n $(NAMESPACE) rollout status \
 	  deployment/banlieue-operator --timeout=180s
 
-kind-e2e-bootstrap: kind-bootstrap-install ## Verify the bootstrap install, then run the operator e2e against it
+kind-e2e-bootstrap: kind-bootstrap-install ## e2e: assert what `banlieue bootstrap operator` installed
+	@# Always the bootstrap path, whatever E2E_INSTALL says — this suite exists
+	@# to assert that installer's output.
 	@echo "Verifying the bootstrap install..."
 	@KUBECONFIG=$(KIND_KUBECONFIG) \
 	 BANLIEUE_E2E_NAMESPACE=$(NAMESPACE) \
 	 BANLIEUE_E2E_BACKENDS=$(E2E_BACKENDS) \
 	 cargo test -p banlieue-operator --test e2e_bootstrap_install -- \
 	   --ignored --nocapture --test-threads=1
-	@$(MAKE) kind-verify-dry-run
-	@$(MAKE) kind-verify-escape-hatch
-	@echo "Running the operator e2e against the bootstrap-installed cluster..."
-	@KUBECONFIG=$(KIND_KUBECONFIG) \
-	 BANLIEUE_E2E_IMAGE=$(KIND_IMAGE) \
-	 cargo test -p banlieue-operator --test e2e_provider_lifecycle -- \
-	   --ignored --nocapture --test-threads=1
-	@echo ""
-	@echo "✓ bootstrap install + e2e suite passed"
+	@echo "✓ e2e_bootstrap_install passed"
 
-kind-verify-dry-run: kind-kubeconfig ## Validate `bootstrap --dry-run` output against the real apiserver
+kind-e2e-dry-run: kind-bootstrap-install ## e2e: `bootstrap --dry-run` output the apiserver accepts
 	@# ADR-0013 sells --dry-run as the GitOps path, so its output has to be
 	@# genuinely applyable. `--dry-run=server` runs full schema validation and
 	@# admission WITHOUT persisting anything, which catches a malformed manifest
 	@# that `--dry-run=client` would happily accept.
+	@#
+	@# That is also why this needs an INSTALLED cluster, not a bare one: since
+	@# nothing is persisted, the Namespace and CRDs carried in this very stream
+	@# do not exist by the time the objects that depend on them are validated.
+	@# Against a bare cluster every ProviderClass fails to map ("no matches for
+	@# kind ProviderClass") and every namespaced object 404s on
+	@# `banlieue-system`. Do not "optimise" this prerequisite away.
 	@echo "Validating bootstrap --dry-run output (server-side)..."
 	@cargo run -q -p banlieue -- bootstrap operator \
 	  --namespace $(NAMESPACE) --version local-dev --dry-run \
 	  | kubectl --kubeconfig $(KIND_KUBECONFIG) apply --dry-run=server -f - >/dev/null
 	@echo "✓ --dry-run manifests are accepted by the apiserver"
 
-kind-verify-escape-hatch: kind-kubeconfig ## Verify `bootstrap provider <backend>` installs a standalone, unowned workload
+kind-e2e-escape-hatch: kind-bootstrap-install ## e2e: `bootstrap provider <backend>` installs a standalone, unowned workload
 	@echo "Installing a standalone $(E2E_ESCAPE_BACKEND) provider (ADR-0013 escape hatch)..."
 	@KUBECONFIG=$(KIND_KUBECONFIG) cargo run -q -p banlieue -- \
 	  bootstrap provider $(E2E_ESCAPE_BACKEND) --namespace $(NAMESPACE) --version local-dev
@@ -927,16 +1051,25 @@ kind-e2e-logs: ## Dump operator + provider workload state (run this when e2e fai
 	-@kubectl --kubeconfig $(KIND_KUBECONFIG) -n banlieue-e2e get providers -o yaml
 	-@kubectl --kubeconfig $(KIND_KUBECONFIG) get providerclasses,clusterrolebindings -l app.kubernetes.io/name=banlieue
 
-kind-e2e-ci: ## Run the e2e suite in CI via the DOCUMENTED install path; dumps diagnostics on failure, always tears the cluster down
-	@# Deliberately `kind-e2e-bootstrap`, not `kind-e2e`: CI must exercise the
+# Suite a `kind-e2e-ci` run executes. CI passes one per job, so a failure names
+# the contract that broke instead of "the e2e". `all` runs every suite on one
+# cluster, which is what a manual workflow_dispatch wants.
+E2E_SUITE ?= all
+
+kind-e2e-ci: ## Run e2e suite $(E2E_SUITE) in CI; dumps diagnostics on failure, always tears the cluster down
+	@# E2E_INSTALL stays at its `bootstrap` default here: CI must exercise the
 	@# install path real users run (`banlieue bootstrap operator`). The
-	@# manifest-apply path stays available locally via `make kind-e2e`.
+	@# manifest-apply path stays available locally via E2E_INSTALL=manifests.
 	@set -e; \
-	if $(MAKE) kind-e2e-bootstrap; then \
+	case "$(E2E_SUITE)" in \
+	  all) target=kind-e2e ;; \
+	  *) target=kind-e2e-$(E2E_SUITE) ;; \
+	esac; \
+	if $(MAKE) $$target; then \
 	  rc=0; \
 	else \
 	  rc=$$?; \
-	  echo "::error::e2e suite failed — dumping cluster state"; \
+	  echo "::error::e2e suite '$(E2E_SUITE)' failed — dumping cluster state"; \
 	  $(MAKE) kind-e2e-logs || true; \
 	fi; \
 	$(MAKE) kind-delete || true; \

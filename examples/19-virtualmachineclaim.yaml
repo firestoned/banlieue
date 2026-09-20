@@ -1,0 +1,85 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# Take one warm VM out of a pool, for one subject, once (ADR-0047).
+#
+# A claim is the only way a member ever leaves a VirtualMachinePool. It
+# binds exactly one member, to exactly one subject, exactly once — and
+# releasing it DESTROYS that VM. There is no unbind and no return-to-pool:
+# the VM itself is the isolation boundary between subjects, so a member that
+# has been exposed to one can never be given to another.
+#
+# Pairs with the pool in 18-virtualmachinepool.yaml.
+#
+# READ THIS BEFORE COPYING
+#
+#   `spec.subject` is an IDENTIFIER, never a credential. Anything you put
+#   here is readable by anyone who can `kubectl get virtualmachineclaim`,
+#   and is copied onto the member as an annotation. See the comment below.
+---
+apiVersion: banlieue.io/v1alpha1
+kind: VirtualMachineClaim
+metadata:
+  name: sandbox-for-alice
+  namespace: banlieue-system
+spec:
+  # The pool to take a member from, in this claim's own namespace.
+  poolRef:
+    name: sandbox-pool
+
+  # Who this VM is for. Opaque to banlieue: recorded, mirrored onto the
+  # member as annotations so "who was this VM for" survives on the object an
+  # operator actually looks at, and never interpreted.
+  #
+  # NEVER put a token, password or session key here. This is a plain API
+  # object — a credential written here is a credential disclosed to every
+  # reader of the namespace, and it lands in the audit log too. Delivering
+  # the subject's token to the guest is the consumer's job, over its own
+  # attested channel, using `status.nonce` to tie that session to this claim.
+  subject:
+    # The issuer that authenticated the subject, e.g. an OIDC issuer URL.
+    issuer: https://issuer.example.com
+    # The stable subject id within that issuer (the `sub` / `oid` claim) —
+    # not a display name and not an e-mail address.
+    id: 0c3b7f2e-1d4a-4b6c-9e8f-5a2d1c0b9e7f
+
+  # Hard lifetime in seconds, counted from BINDING rather than creation — a
+  # claim that waited ten minutes for capacity still gets its full TTL.
+  #
+  # REQUIRED, with no default. At expiry the member is deleted whether or
+  # not the consumer is finished with it; this is a deadline, not a grace
+  # period. There is no number banlieue could pick that is not wrong for
+  # somebody's workload, so it has to be stated.
+  ttlSeconds: 900
+#
+# WHAT HAPPENS NEXT
+#
+#   kubectl get vmclaim -n banlieue-system
+#
+#   NAME                POOL           VM                   PHASE     EXPIRES
+#   sandbox-for-alice   sandbox-pool                        Pending
+#   sandbox-for-alice   sandbox-pool   sandbox-pool-9dmtx   Bound     15m
+#
+# Once Bound, `status` carries everything a consumer needs in one GET:
+#
+#   status:
+#     phase: Bound
+#     virtualMachineRef: { name: sandbox-pool-9dmtx }
+#     addresses:
+#       - type: InternalIP
+#         address: 192.0.2.17
+#     nonce: 7f3a91c2e45b8d06a1f4c9e2b7d05386
+#     boundAt: "2026-09-20T14:02:11Z"
+#     expiresAt: "2026-09-20T14:17:11Z"
+#
+# `nonce` is 128 random bits and is NOT secret. Its only job is to be
+# unpredictable to a guest that has not been told it, so an attestation
+# quote from this VM cannot be replayed against a different claim.
+#
+# ENDING A CLAIM
+#
+#   kubectl delete vmclaim sandbox-for-alice -n banlieue-system
+#
+# This destroys the VM, and the delete BLOCKS until it is really gone from
+# the hypervisor — "claim deleted" means "sandbox destroyed", not "delete
+# issued". The pool then refills on its own.

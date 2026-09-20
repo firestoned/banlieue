@@ -18,9 +18,16 @@
 # No secrets, no registry, no backend — so this runs on fork PRs, unlike the
 # signing jobs in build.yaml.
 #
+# The suite is SPLIT across independent jobs, one per `make kind-e2e-<suite>`
+# target, each on its own kind cluster. A red X then names the contract that
+# broke — "Pause semantics" rather than "the e2e" — and the suites run in
+# parallel instead of end to end. They share nothing, so one failing suite
+# neither hides nor pollutes the others.
+#
 # All logic lives in Makefile targets (`rules/github-workflows.md`); this file
-# only installs tools and calls `make kind-e2e-ci`. The same target runs
-# locally: `make kind-e2e`.
+# only installs tools and calls `make kind-e2e-ci E2E_SUITE=<suite>`. The same
+# targets run locally: `make kind-e2e-<suite>`, or `make kind-e2e` for all of
+# them in sequence on one cluster.
 
 name: E2E
 
@@ -70,11 +77,34 @@ env:
 
 jobs:
   e2e:
-    name: 🧪 Operator e2e (kind)
+    name: 🧪 ${{ matrix.name }}
     runs-on: ubuntu-latest
-    # A cold Rust build plus a kind cluster; the suite itself polls with a
-    # 120s convergence budget per wait.
+    # A cold Rust build plus a kind cluster; the suites poll with a 120s
+    # convergence budget per wait.
     timeout-minutes: 45
+
+    strategy:
+      # One suite failing must not cancel the rest: knowing that ONLY the pause
+      # contract broke is most of the diagnosis.
+      fail-fast: false
+      matrix:
+        # `suite` is the `make kind-e2e-<suite>` target; keep this list in sync
+        # with E2E_SUITES in the Makefile.
+        include:
+          - suite: bootstrap
+            name: Bootstrap install
+          - suite: dry-run
+            name: Bootstrap --dry-run
+          - suite: escape-hatch
+            name: Standalone provider
+          - suite: workload
+            name: Provider workload
+          - suite: pause
+            name: Pause semantics
+          - suite: workload-namespace
+            name: workloadNamespace override
+          - suite: class
+            name: ProviderClass propagation
 
     steps:
       - name: Checkout repository
@@ -85,8 +115,12 @@ jobs:
 
       # `make kind-load` cross-compiles for the runner's own arch (amd64) and
       # side-loads the image, so no registry and no cross-toolchain is needed.
-      - name: Run e2e suite
+      #
+      # Each job gets its own cluster name so nothing is shared even if two
+      # ever land on one runner.
+      - name: Run e2e suite ${{ matrix.suite }}
         env:
           KIND_NODE_IMAGE: ${{ inputs.kind_node_image || 'kindest/node:v1.31.0' }}
-          KIND_CLUSTER_NAME: banlieue-e2e
+          KIND_CLUSTER_NAME: banlieue-e2e-${{ matrix.suite }}
+          E2E_SUITE: ${{ matrix.suite }}
         run: make kind-e2e-ci

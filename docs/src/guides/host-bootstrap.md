@@ -182,6 +182,55 @@ route in the Tailscale admin console afterwards.
     libvirt's default network is `192.168.122.0/24` on *every* host. Advertising
     it from two hypervisors on one tailnet collides. Renumber one of them first.
 
+!!! danger "Join the tailnet *before* issuing TLS certificates"
+    libvirt validates its server certificate against **the address the client
+    dialled**. A host that joins a tailnet after `bootstrap-libvirt-tls.sh`
+    ran has a certificate that does not cover its MagicDNS name, so every
+    connection to `<host>.<tailnet>.ts.net` fails with:
+
+    ```text
+    certificate not valid for name "host.tailnet.ts.net";
+    certificate is only valid for DnsName("host"), DnsName("host.example.com"), ...
+    ```
+
+    Connecting by tailnet *IP* may still work, which makes this look like a
+    DNS fault rather than a certificate one.
+
+    Reissuing is cheap and touches nothing else — see
+    [Adding a SAN to an existing host](#adding-a-san-to-an-existing-host).
+
+### Adding a SAN to an existing host
+
+Check what the certificate would cover, changing nothing:
+
+```sh
+./scripts/bootstrap-libvirt-tls.sh sans
+```
+
+It prints the detected SANs next to the ones currently installed. If the host
+holds the CA private key (`/etc/pki/CA/cakey.pem`):
+
+```sh
+sudo FORCE_SERVER=true ./scripts/bootstrap-libvirt-tls.sh server
+sudo systemctl restart libvirtd
+```
+
+`FORCE_SERVER` reissues **only** the server certificate. Do not reach for
+`FORCE=true` here: that regenerates the CA as well, which invalidates every
+client certificate already distributed.
+
+On a second host that trusts the CA but does not hold its key, no private key
+should ever cross the network. Generate the request where the key lives:
+
+```sh
+# on the host that needs the certificate
+sudo FORCE_SERVER=true ./scripts/bootstrap-libvirt-tls.sh csr
+```
+
+It prints the exact `... sign` command to run on the CA host, including the
+SANs, and the `install` + restart to finish with. Only a signing request and a
+public certificate move.
+
 ---
 
 ## vSphere: workstation and estate
@@ -331,6 +380,8 @@ a host at any point.
 | `sudo: a terminal is required to read the password` | The script was piped or run from a non-interactive shell. `sudo` needs a tty; run it directly in a terminal. |
 | `kvm-ok` reports no acceleration | VT-x/AMD-V is disabled in firmware. VMs will run under emulation, unusably slowly. |
 | `Cannot read CA certificate` from `virsh` | `bootstrap-libvirt-tls.sh` has not run, or `/etc/pki` directories are `drwx------` and unreadable by non-root. |
+| `certificate not valid for name "<host>.<tailnet>.ts.net"` | The server certificate predates the host joining the tailnet. Reissue it: [Adding a SAN to an existing host](#adding-a-san-to-an-existing-host). |
+| TLS works by IP but not by name, or stopped working after a reboot | Same cause, or a DHCP lease moved the host's LAN address out from under a certificate that named the old one. The tailnet name and `100.64/10` address are stable; prefer them. `bootstrap-libvirt-tls.sh sans` shows the drift. |
 | `govc about` fails | Wrong `GOVC_URL`, or a self-signed certificate without `GOVC_INSECURE=true`. |
 | `mkdir: cannot create directory '/var/lib/libvirt/images/...': Permission denied` | `POOL_DIR` resolved to libvirt's stock path on a host whose pool lives elsewhere. Recent versions derive it from the `default` pool; on older ones set `POOL_DIR=<pool path>/k0s-bootstrap` explicitly. |
 | k0sctl cannot reach the nodes | On libvirt, nodes are on the NAT bridge and reachable only from the hypervisor. Run the k0s script *on* the host, or advertise the subnet over Tailscale. |

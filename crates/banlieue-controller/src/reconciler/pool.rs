@@ -5,12 +5,6 @@
 //! Thin on purpose: gather a snapshot, call [`super::pool_plan::plan`], apply
 //! it, publish counts. Every decision lives in `pool_plan.rs`; every helper
 //! below that does not touch the API server is pure and unit-testable.
-//!
-//! NOTE (roadmap 70 handoff): `pool_plan.rs` is compiled and tested. This
-//! file is written against the conventions at `badc698` but has not been
-//! through `cargo check`; land it TDD-style per
-//! `rules/architecture-driven-development.md`, starting with tests for
-//! `member_view`, `build_member` and `image_revision`.
 
 use std::net::Ipv4Addr;
 use std::sync::Arc;
@@ -39,11 +33,6 @@ use tracing::{info, warn};
 use super::pool_plan::{AddressRange, MemberPhase, MemberView, NewMember, PoolInputs, plan};
 use crate::context::Context;
 use crate::error::{Error, Result};
-
-/// New condition type this roadmap adds to `banlieue_api::common::
-/// condition_types` (ADR-0043). Repeated here only so this file reads
-/// standalone; use the shared constant once it lands.
-const GUEST_READY: &str = "GuestReady";
 
 const FIELD_MANAGER: &str = "banlieue.io/pool-controller";
 
@@ -251,7 +240,7 @@ pub fn image_revision(image: &VMImage) -> String {
 #[must_use]
 pub fn member_view(vm: &VirtualMachine, readiness: PoolReadiness, now: Timestamp) -> MemberView {
     let wanted = match readiness {
-        PoolReadiness::GuestReady => GUEST_READY,
+        PoolReadiness::GuestReady => condition_types::GUEST_READY,
         PoolReadiness::InfrastructureReady => condition_types::INFRASTRUCTURE_READY,
     };
     let ready_since = vm.status.as_ref().and_then(|s| {

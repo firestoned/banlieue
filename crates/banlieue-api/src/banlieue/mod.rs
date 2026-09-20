@@ -5,6 +5,7 @@
 pub mod provider;
 pub mod providerclass;
 pub mod virtualmachine;
+pub mod virtualmachineclaim;
 pub mod virtualmachinepool;
 pub mod vmclass;
 pub mod vmimage;
@@ -22,6 +23,11 @@ pub use virtualmachine::{
     AffinityMode, AntiAffinityRule, DEFAULT_USER_DATA_KEY, DiskOverride, HardwareOverride,
     MigrationPolicy, NetworkInterfaceOverride, PlacementSpec, ResolvedResource, ScheduledPlacement,
     UserDataSpec, VirtualMachine, VirtualMachineSpec, VirtualMachineStatus,
+};
+pub use virtualmachineclaim::{
+    ANNOTATION_SUBJECT_ID, ANNOTATION_SUBJECT_ISSUER, CLAIM_FINALIZER, CLAIM_NONCE_BITS,
+    CLAIM_NONCE_BYTES, ClaimPhase, ClaimSubject, VirtualMachineClaim, VirtualMachineClaimSpec,
+    VirtualMachineClaimStatus,
 };
 pub use virtualmachinepool::{
     DEFAULT_POOL_MAX_SURGE, DEFAULT_POOL_PROVISIONING_TIMEOUT_SECS, LABEL_CLAIM, LABEL_POOL,

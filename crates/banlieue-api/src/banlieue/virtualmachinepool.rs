@@ -63,6 +63,10 @@ pub mod pool_condition_reasons {
     pub const NO_MEMBER_AVAILABLE: &str = "NoMemberAvailable";
     pub const POOL_NOT_FOUND: &str = "PoolNotFound";
     pub const EXPIRED: &str = "Expired";
+    /// The claim was deleted; its member is being destroyed. Distinct from
+    /// `Expired` (the TTL ran out) and from `MemberLost` (the member
+    /// vanished on its own) — the three differ in who ended the hold.
+    pub const RELEASED: &str = "Released";
     pub const MEMBER_LOST: &str = "MemberLost";
 }
 

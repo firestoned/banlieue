@@ -209,25 +209,40 @@ exist.
 
 ## Verifying it end to end
 
-The lifecycle above is covered by an e2e suite that runs against a real API
-server in a kind cluster (ADR-0014):
+The lifecycle above is covered by e2e suites that run against a real API server
+in a kind cluster (ADR-0014). Each suite is one `make` target, and CI runs each
+as its own job on its own cluster, so a red X names the contract that broke:
 
 ```sh
-make kind-e2e            # fast loop: installs from deploy/ manifests, runs the suite
-make kind-e2e-bootstrap  # installs via `banlieue bootstrap operator`, then runs both suites
-make kind-e2e-ci         # what CI runs: bootstrap path + teardown + diagnostics on failure
-make kind-e2e-logs       # dump operator + workload state when something fails
+make kind-e2e                        # every suite, in sequence, on one cluster
+make kind-e2e-bootstrap              # what `banlieue bootstrap operator` installed
+make kind-e2e-dry-run                # `bootstrap --dry-run` output the apiserver accepts
+make kind-e2e-escape-hatch           # `bootstrap provider <backend>` standalone install
+make kind-e2e-workload               # Provider -> workload: shape, RBAC, owners, status, GC
+make kind-e2e-pause                  # spec.paused on a Provider and on a ProviderClass
+make kind-e2e-workload-namespace     # the cross-namespace workloadNamespace override
+make kind-e2e-class                  # class swaps prune, class edits roll
+make kind-e2e-logs                   # dump operator + workload state when something fails
 ```
 
-The two install paths are tested separately on purpose. `kind-e2e` applies
-`deploy/operator/` directly — the GitOps path — while `kind-e2e-bootstrap` runs
-the installer real users run. They can drift, and when they do the failure is
-invisible from the other side: an early bug where `bootstrap operator` never
-installed the shared per-backend ClusterRole was caught only because a stale
-copy happened to linger in a reused cluster. CI therefore runs the bootstrap
-path.
+Each suite installs the operator first. By default that is `banlieue bootstrap
+operator` — the path real users run, and the one CI must exercise. For a faster
+local loop, `E2E_INSTALL=manifests` applies `deploy/operator/` directly instead,
+skipping the CLI build:
 
-It asserts what unit tests structurally cannot: that the apiserver *accepts*
+```sh
+E2E_INSTALL=manifests make kind-e2e-workload
+```
+
+The two install paths are tested separately on purpose, because they can drift
+and the failure is invisible from the other side: an early bug where `bootstrap
+operator` never installed the shared per-backend ClusterRole was caught only
+because a stale copy happened to linger in a reused cluster. That is also why
+`kind-e2e-bootstrap`, `kind-e2e-dry-run` and `kind-e2e-escape-hatch` always use
+the bootstrap path whatever `E2E_INSTALL` says — asserting the installer's own
+output is the whole point of them.
+
+They assert what unit tests structurally cannot: that the apiserver *accepts*
 what the operator builds — selector/template agreement, `resourceNames`
 validity, owner-reference correctness, that `metadata.managedFields` shows the
 operator owning `status.workload` and never `status.conditions`, and that

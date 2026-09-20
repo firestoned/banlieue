@@ -460,3 +460,73 @@ async fn delete_a_volume_from_a_real_pool() {
         Err(e) => eprintln!("{pool_name}/{vol_name}: {e} (nothing to delete)"),
     }
 }
+
+/// The qemu-specific RPC program, against a real libvirtd (ADR-0043).
+///
+/// This is the only way to find out whether our reading of libvirt's *second*
+/// program is right. Every offline test asserts our own encoding against
+/// itself; only a real daemon can say whether it recognises program
+/// `0x2000_8087`, procedure 3 at all.
+///
+/// The assertion is deliberately not "the agent replied". Most domains have
+/// no `qemu-guest-agent`, and that is fine — it surfaces as a libvirt *error*
+/// reply, which still proves the daemon parsed the call. What must NOT happen
+/// is a transport-level failure: a desynchronised stream or an undecodable
+/// reply would mean the program number, procedure number or argument encoding
+/// is wrong.
+#[tokio::test]
+#[ignore = "requires a real libvirtd; set LIBVIRT_HOST and LIBVIRT_TLS_DIR"]
+async fn qemu_agent_program_is_understood_by_real_libvirtd() {
+    let Some((host, dir)) = settings() else {
+        panic!("set LIBVIRT_HOST and LIBVIRT_TLS_DIR");
+    };
+    let identity = load_identity(&dir);
+
+    let mut session = connect_tls(&host, DEFAULT_TLS_PORT, &identity)
+        .await
+        .expect("TLS connection failed");
+    connect_open(&mut session, Some("qemu:///system"), false)
+        .await
+        .expect("CONNECT_OPEN failed");
+
+    // Define a throwaway domain so the call has a real target. It is never
+    // started, so the agent is certainly absent — which is the interesting
+    // case: we want libvirtd's error, not a desync.
+    let name = format!(
+        "banlieue-agenttest-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock before epoch")
+            .as_secs()
+    );
+    let domain = banlieue_libvirt::domain_define_xml(&mut session, &diskless_domain_xml(&name))
+        .await
+        .expect("defining the test domain");
+    eprintln!("defined {name}");
+
+    let result = banlieue_libvirt::domain_qemu_agent_command(
+        &mut session,
+        &domain,
+        r#"{"execute":"guest-ping"}"#,
+        banlieue_libvirt::AGENT_TIMEOUT_DEFAULT,
+    )
+    .await;
+
+    // Clean up before asserting, so a failure cannot leave a domain behind.
+    let undefined = banlieue_libvirt::domain_undefine(&mut session, &domain).await;
+
+    match &result {
+        Ok(reply) => eprintln!("  agent replied: {reply:?}"),
+        Err(banlieue_libvirt::TransportError::Remote { message, .. }) => {
+            eprintln!("  libvirtd returned an error, as expected: {message}");
+        }
+        Err(e) => panic!(
+            "libvirtd did not understand the qemu program: {e}\n\
+             A Protocol or Desynchronised error here means the program number, \
+             procedure number or argument encoding is wrong."
+        ),
+    }
+    undefined.expect("undefining the test domain");
+    eprintln!("  ✓ qemu program {:#x} accepted", banlieue_libvirt::QEMU_PROGRAM);
+}
+

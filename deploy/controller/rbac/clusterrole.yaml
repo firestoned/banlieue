@@ -44,6 +44,31 @@ rules:
       - virtualmachinepools/finalizers
     verbs: ["update"]
 
+  # VirtualMachineClaim (ADR-0047). No `create` and no `update`, for the same
+  # reason as pools and then some: creating a claim binds a VM to a named
+  # subject, so a controller that could mint claims could attribute sandboxes
+  # to people who never asked for one — and the audit trail would record it as
+  # genuine. Claims are created by the consumer (or a broker), never here.
+  #
+  # `delete` IS granted: the expiry path destroys the member and then removes
+  # the claim, so an expired hold cannot be mistaken for a live one. That adds
+  # little reachable power, since ending a claim destroys a VirtualMachine the
+  # controller can already delete directly.
+  - apiGroups: ["banlieue.io"]
+    resources:
+      - virtualmachineclaims
+    verbs: ["get", "list", "watch", "delete"]
+  - apiGroups: ["banlieue.io"]
+    resources:
+      - virtualmachineclaims/status
+    verbs: ["get", "update", "patch"]
+  # The claim holds a finalizer of its own (banlieue.io/claim-protection), so
+  # that "claim deleted" means "sandbox destroyed" rather than "delete issued".
+  - apiGroups: ["banlieue.io"]
+    resources:
+      - virtualmachineclaims/finalizers
+    verbs: ["update"]
+
   # Finalizer subresources — required when the controller writes
   # blockOwnerDeletion=true on owned objects' ownerReferences.
   - apiGroups: ["banlieue.io"]

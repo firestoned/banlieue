@@ -31,7 +31,7 @@
 use anyhow::{Context as _, Result};
 use banlieue_api::banlieue::{
     ImagePullPolicy, Provider, ProviderClass, ProviderClassSpec, ProviderImage, VMClass, VMImage,
-    VirtualMachine, VirtualMachinePool,
+    VirtualMachine, VirtualMachineClaim, VirtualMachinePool,
 };
 use banlieue_api::crdgen_support::prepared;
 use banlieue_api::infrastructure::{
@@ -465,6 +465,7 @@ pub fn build_crds() -> Vec<CustomResourceDefinition> {
         prepared(VMImage::crd()),
         prepared(VirtualMachine::crd()),
         prepared(VirtualMachinePool::crd()),
+        prepared(VirtualMachineClaim::crd()),
         prepared(VSphereCluster::crd()),
         prepared(VSphereMachine::crd()),
         prepared(VSphereMachineTemplate::crd()),

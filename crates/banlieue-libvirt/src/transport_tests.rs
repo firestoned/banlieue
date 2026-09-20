@@ -12,7 +12,7 @@ mod tests {
     // `super::super::*` is the `transport` module, which imports only what it
     // itself needs; the scripted peer below needs a few more protocol items.
     use super::super::*;
-    use crate::rpc::{PROC_CONNECT_OPEN, decode_message};
+    use crate::rpc::{PROC_CONNECT_OPEN, QEMU_PROGRAM, QEMU_PROTOCOL_VERSION, decode_message};
     use crate::xdr::Encoder;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -363,5 +363,76 @@ mod tests {
             rendered.contains("ca_pem") && rendered.contains("client_cert_pem"),
             "expected the non-secret fields to remain visible, got {rendered}"
         );
+    }
+
+    // ------------------------------------------------------------------
+    // A second RPC program on the same connection (ADR-0043)
+    // ------------------------------------------------------------------
+
+    /// libvirt's qemu-specific procedures live in a different *program* on
+    /// the same connection. Until `GuestReady` there was only one, so the
+    /// program was hard-coded in the header — this asserts a caller can
+    /// choose it.
+    #[tokio::test]
+    async fn call_on_program_sends_the_requested_program() {
+        let (client, mut peer) = tokio::io::duplex(4096);
+        let mut session = Session::new(client);
+
+        let task = tokio::spawn(async move {
+            let mut buf = vec![0u8; 512];
+            let n = peer.read(&mut buf).await.unwrap();
+            let (header, _) = decode_message(&buf[..n]).unwrap();
+            // Reply in the same program, as libvirtd does.
+            let reply = encode_message(
+                &MessageHeader {
+                    program: header.program,
+                    version: header.version,
+                    procedure: header.procedure,
+                    message_type: MessageType::Reply,
+                    serial: header.serial,
+                    status: MessageStatus::Ok,
+                },
+                &[],
+            );
+            peer.write_all(&reply).await.unwrap();
+            header
+        });
+
+        session
+            .call_on_program(QEMU_PROGRAM, QEMU_PROTOCOL_VERSION, 3, &[])
+            .await
+            .unwrap();
+
+        let sent = task.await.unwrap();
+        assert_eq!(sent.program, QEMU_PROGRAM);
+        assert_eq!(sent.version, QEMU_PROTOCOL_VERSION);
+        assert_ne!(
+            sent.program, REMOTE_PROGRAM,
+            "the qemu program must not be the remote program"
+        );
+    }
+
+    /// The existing entry point must keep speaking the remote program, so
+    /// adding a second one cannot silently retarget every existing call.
+    #[tokio::test]
+    async fn plain_call_still_uses_the_remote_program() {
+        let (client, mut peer) = tokio::io::duplex(4096);
+        let mut session = Session::new(client);
+
+        let task = tokio::spawn(async move {
+            let mut buf = vec![0u8; 512];
+            let n = peer.read(&mut buf).await.unwrap();
+            let (header, _) = decode_message(&buf[..n]).unwrap();
+            peer.write_all(&reply(header.serial, MessageStatus::Ok, &[]))
+                .await
+                .unwrap();
+            header
+        });
+
+        session.call(PROC_CONNECT_OPEN, &[]).await.unwrap();
+
+        let sent = task.await.unwrap();
+        assert_eq!(sent.program, REMOTE_PROGRAM);
+        assert_eq!(sent.version, REMOTE_PROTOCOL_VERSION);
     }
 }

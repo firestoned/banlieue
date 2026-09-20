@@ -148,6 +148,63 @@ If you modify `src/reconcilers/records.rs`:
 
 ---
 
+## The four tiers, and which one to reach for
+
+Each tier can prove things the one below it cannot, and none is a
+substitute for another. Picking the wrong one produces a test that passes
+for the wrong reason.
+
+| Tier | Where | Needs | Proves | Run with |
+| --- | --- | --- | --- | --- |
+| **Unit** | `src/*_tests.rs` | nothing | every decision, as a pure function over a snapshot | `cargo test` |
+| **Live protocol** | `banlieue-libvirt/tests/live_libvirtd.rs`, `banlieue-provider-libvirt/tests/live_{machine,cloudinit}.rs` | a libvirt host | that **libvirtd accepts what we produce** — domain XML is a document a real daemon either parses or rejects | `make libvirt-live-test` |
+| **Live API server** | `banlieue-controller/tests/live_claim.rs` | a cluster with the CRDs, **no controller running** | apiserver semantics: `resourceVersion` preconditions really 409, `ownerReferences` really re-parent, finalizers really block | `make claim-live-test` |
+| **E2E** | `banlieue-provider-libvirt/tests/e2e_*.rs`, `banlieue-operator/tests/e2e_*.rs` | cluster **+** libvirt host, banlieue running | the seams between all of the above | `make pool-claim-e2e`, `make libvirt-e2e`, `make kind-e2e` |
+
+> **An e2e does not need a deployed cluster.** A kind cluster plus the
+> controller and provider as **local binaries** is enough, and needs no
+> container image build — see the recipe in `e2e_pool_claim.rs`'s module
+> docs. Pair it with a `VMImage` whose `BackingFile` source names a volume
+> already in the pool and the image build disappears too, taking the run
+> from tens of minutes to under one.
+
+### Two rules these tiers exist to enforce
+
+1. **A fake that is more permissive than the real thing hides bugs.**
+   `DOMAIN_DEFINE_XML` is not an upsert, but the offline fake accepted a
+   redefine, so every unit test passed while the second reconcile of any
+   machine failed against a real host. Whenever a fake is written, check it
+   rejects what the real system rejects — and when a live test finds a
+   behaviour the fake got wrong, **fix the fake in the same change**.
+
+2. **A test that skips must never report success.** Live and e2e tests are
+   `#[ignore]`d, so running them is already an explicit request to talk to a
+   cluster or a host: an unreachable one is a *failure*. An earlier
+   `live_claim.rs` returned early when no cluster was configured, and all
+   eight tests printed `ok` while doing nothing — which is worse than having
+   no tests at all, because it answers "is this covered?" with a confident
+   yes. Missing fixtures fail loudly and name what is missing.
+
+### A wait that stale state can satisfy is not a wait
+
+The e2e's refill check waited on `available >= warmReplicas` — which is
+still true *from before the claim* until the pool next reconciles. The wait
+returned instantly and the assertion after it raced the very property under
+test. Wait on the thing that is actually new (the replacement member
+existing), so a genuine failure times out and says so, instead of an
+assertion firing before the system had a chance to act.
+
+### What a live tier is not for
+
+Anything decidable offline belongs in a unit test, where it is
+deterministic and free. Live tests are for the questions an offline test
+*cannot* answer — and they earn their cost: `live_claim.rs` found, on its
+first run, that a waiting claim reported `PoolNotFound` for a pool that
+existed but had not been reconciled yet. The unit tests had passed because
+they were written with the same wrong model as the code.
+
+---
+
 ## Integration Tests
 
 Place in `/tests/` directory:

@@ -1,5 +1,440 @@
 # Changelog
 
+## [2026-09-20 21:30] - GuestReady on libvirt (ADR-0043); AgentSandbox designed (ADR-0055)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0055-agentsandbox.md` (Proposed): the agent layer, in its own
+  API group `agent.banlieue.io/v1alpha1` with its own controller.
+  **Composition, not duplication** — an `AgentSandbox` creates and owns a
+  `VirtualMachineClaim` and never touches a pool member, so bind-once stays
+  enforced in exactly one controller and it is *structurally* impossible for
+  the agent layer to violate it. Also: never carries a credential (policy by
+  value, credentials by reference); the runtime comes from the image, not
+  from bind-time provisioning; one TTL, passed through; its own finalizer so
+  "deleted" still means "destroyed" through the wrapper. Attestation
+  explicitly deferred to ADR-0049. **Designed, not implemented** — A2 was a
+  prerequisite.
+- `docs/adr/0043-guestready-installed-guest-signal.md` (Proposed), and its
+  implementation for libvirt:
+  - `common::condition_types::GUEST_READY` — a new shared condition.
+    `Ready` deliberately does **not** depend on it: doing so would regress
+    every `Immediate`-mode VM whose image was never built to send it.
+  - `LibvirtMachineStatus.guestInstalled: Option<bool>`, **sticky once
+    true**. The marker lives in the guest's `/run` so it does not survive a
+    power cycle, but a stopped VM has not become uninstalled — without
+    stickiness a warm member would drop out of its pool on every power
+    cycle.
+  - `crates/banlieue-provider-libvirt/src/guest.rs`: reads
+    `/run/banlieue/phase` via `guest-file-open`/`read`/`close`. Treats the
+    guest as untrusted input throughout — size-capped before *and* after
+    base64 decoding, every parse failure means "not installed" rather than
+    an error, and the handle is closed on every path.
+  - `banlieue-libvirt` now speaks a **second RPC program**:
+    `virDomainQemuAgentCommand` lives in `0x2000_8087`, not the remote
+    program. `Session::call_on_program` / `recv_on_program` replace the
+    hard-coded one.
+  - `examples/16-cloud-config-guest-phase.yaml`.
+- `Cargo.toml`: `base64 = "0.22"` — `guest-file-read` returns file contents
+  base64-encoded. Well-known, actively maintained, decode-only use.
+
+### Changed
+- `status_mirror.rs` mirrors `GuestReady` **only when the provider publishes
+  it**. `pool.rs::readiness_signal_absent` decides by condition *type*, so a
+  blanket `GuestReady=False` would make a pool report `Filling` forever
+  instead of `ReadinessSignalAbsent` — turning "this will never warm" into
+  "wait a little longer", which is the exact diagnostic ADR-0046 Decision 3
+  exists to provide. Has its own test.
+- `pool.rs` now uses the shared `condition_types::GUEST_READY` instead of
+  its local placeholder copy.
+- `FakeMachineClient` gained `guest_installed` as a **set of domain names**,
+  not a flag — so a reconciler reading the wrong domain's marker fails
+  rather than passing. It is infallible even under `fail_with`, matching the
+  real client, because on a real host an unreachable agent is "not yet", not
+  an error.
+- `docs/src/guides/virtualmachine-pools.md`, `virtualmachine-claims.md`,
+  `examples/18-virtualmachinepool.yaml`: the "GuestReady is not satisfiable"
+  warnings were true this morning and are not now. Replaced with what it
+  actually requires (the cloud-config layer *and* `qemu-guest-agent`), and
+  the remaining vSphere gap stated plainly.
+- `.github/community/70-ephemeral-vm-pools.md`, `ROADMAPS.md`: A2 🔶.
+- `docs/src/security/threat-model.md`: **full pass**, stamp to ADR-0055.
+  New asset A-8 (the guest marker), two TB-4 threat rows (a guest asserting
+  readiness early; a guest returning a hostile payload to `guest-file-read`),
+  and a new accepted risk recording that `GuestReady` is liveness and never
+  integrity.
+
+### Verified
+- `qemu_agent_program_is_understood_by_real_libvirtd` — **run against the
+  real host.** libvirtd answered program `0x20008087` procedure 3 with a
+  *semantic* error ("domain is not running") rather than a protocol one,
+  which is what proves the program number, procedure number and argument
+  encoding are all correct. A desync or undecodable reply would have meant
+  the opposite.
+- `cargo test --all` green; clippy clean; `make docs` builds; CRDs and API
+  reference regenerated.
+
+### Why
+`InfrastructureReady` fires when a Deferred install *starts*, so a pool that
+trusted it handed out machines mid-install. Every cheap liveness signal has
+the same flaw — a guest-agent ping, a DHCP lease and an open SSH port are
+all satisfied by the installer while it is still overwriting the disk. The
+distinguishing fact is *which disk booted*, which is why the installed
+system announces itself behind an immucore sentinel guard.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout — `LibvirtMachine` CRD gains
+      `status.guestInstalled`
+- [ ] Config change only
+- [ ] Documentation only
+
+**Adopting `GuestReady` requires rebuilding the image**, not just editing
+the pool: it needs the `cloudConfigs` layer *and* `qemu-guest-agent`.
+A pool asking for a signal nothing sends reports `ReadinessSignalAbsent`,
+which is the honest answer rather than a silent one.
+
+**Not implemented: the vSphere transport.** Deferred for want of an
+environment to verify it against — shipping an unverified read of a channel
+nobody has watched work is how a signal ends up quietly always false. The
+example keeps its vSphere stanza commented out for the same reason.
+
+## [2026-09-20 19:40] - libvirt TLS: tailnet SANs, a force that spares the CA, and a CSR flow
+
+**Author:** Erick Bourgeois
+
+### Added
+- `scripts/bootstrap-libvirt-tls.sh`: **tailnet SAN detection.** The host's
+  MagicDNS name and `100.64/10` address are now read from `tailscale` itself
+  rather than inferred from interface enumeration. The DNS name is not
+  `hostname -f` and appears on no interface, so a tailnet host ended up with
+  a certificate covering its tailnet *address* but not the *name* clients
+  dial — failing as `certificate not valid for name ...`, the exact opaque
+  error the script's own header warns about.
+- `FORCE_SERVER=true`: reissues **only** the server certificate. `FORCE=true`
+  regenerates everything including the CA, which invalidates every client
+  certificate already distributed — so the cheapest, most common maintenance
+  action ("add a SAN") previously carried the most expensive possible side
+  effect, and the `server` subcommand could not avoid it because it calls
+  `make_ca` first.
+- `sans` subcommand: read-only, prints the SANs a certificate *would* get
+  next to the ones installed. The failure this guards against is invisible
+  until a client dials the missing name, by which point the certificate is
+  deployed.
+- `csr` / `sign` subcommands: certify a host that trusts the CA but does not
+  hold its key, **without moving any private key**. The server key is
+  generated on the host that will use it and never leaves; only a signing
+  request and a public certificate cross the wire. `csr` prints the exact
+  `sign` command, SANs included, because certtool takes SANs from the
+  template rather than the request — so they must be passed explicitly and
+  describe the *requesting* host.
+- `docs/src/guides/host-bootstrap.md`: "Adding a SAN to an existing host",
+  a danger admonition about joining a tailnet *after* issuing certificates,
+  and two troubleshooting rows.
+
+### Fixed
+- `make_server_cert` sent `certtool` errors to `/dev/null`. A missing CA key
+  therefore failed **silently**, leaving a stale or empty `servercert.pem`
+  that looked like success — the same class of hidden-teardown-failure as
+  the `virsh undefine` bug in `.wolf/cerebrum.md`. Errors now surface, the
+  output is checked non-empty, and a missing `cakey.pem` is caught up front
+  with a message naming the two safe routes.
+- `detect_sans` now dedupes and normalises, so the SANs logged are exactly
+  the SANs issued. Previously the tailnet address appeared twice in the log
+  while `san_lines()` silently deduped for the template.
+
+### Verified
+Read-only, against both real hosts (no certificate was reissued — that needs
+a sudo password):
+- `sans` on both correctly detects the missing tailnet DNS name.
+- It also surfaced **two pre-existing gaps nobody had noticed**: the second
+  host's certificate has *no tailnet IP at all*, and its LAN address has
+  since drifted (DHCP moved it), so the certificate names an address the
+  host no longer has.
+- CSR generation mechanics confirmed with the exact template the script
+  emits: the request carries all three DNS names and all three addresses.
+- `bash -n` clean; `shellcheck` reports only two pre-existing info-level
+  items in untouched code.
+
+### Why
+A host that joins a tailnet after its certificate was issued is
+unreachable by the name everyone actually uses, and the error names a
+certificate while looking like a DNS fault. Worse, the only existing lever
+to fix it would have rotated the CA.
+
+The durability argument is the one worth keeping: a LAN address is DHCP and
+moves, `hostname -f` depends on resolver config, but a tailnet name and its
+`100.64/10` address are assigned by the tailnet and stay put. Baking them in
+is what makes the certificate outlive the network around it.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Operational tooling — reissuing a server certificate needs a
+      `systemctl restart libvirtd`
+- [ ] Documentation only
+
+## [2026-09-20 18:15] - Live and e2e test tiers for pools and claims; a bug they caught
+
+**Author:** Erick Bourgeois
+
+### Added
+- `crates/banlieue-controller/tests/live_claim.rs`: the claim reconciler
+  against a **real API server** (8 tests, `#[ignore]`d). This is the tier
+  that proves what no offline test can — that the `resourceVersion`
+  precondition really produces a 409 for the loser of a bind race, that
+  `ownerReferences` really end up with the claim as sole controller, and
+  that the finalizer really holds the claim object while its member is
+  terminating. Members are plain CRs carrying a stand-in finalizer, so the
+  deletion-ordering test is deterministic and needs no provider.
+- `crates/banlieue-provider-libvirt/tests/e2e_pool_claim.rs`: pool → **real
+  libvirt domains** → claim → release (2 tests, `#[ignore]`d). The only tier
+  that can check ADR-0047's actual promise: after the claim is gone, ask
+  libvirtd whether the domain is still there. Second test covers Decision 3
+  on real domains — deleting the pool must leave a claimed VM running.
+- `Makefile`: `claim-live-test` and `pool-claim-e2e`, alongside the existing
+  `libvirt-live-test` / `libvirt-e2e`.
+- `.claude/rules/testing.md`: a map of the four tiers — what each proves,
+  what it needs, and which target runs it — plus the two rules they exist to
+  enforce (a fake more permissive than the real thing hides bugs; a test
+  that skips must never report success).
+
+### Fixed
+- `crates/banlieue-controller/src/reconciler/claim_plan.rs`: **`wait_reason`
+  reported `PoolNotFound` for a pool that exists but has not been reconciled
+  yet.** `PoolWaitState.warm` was `None` both when the pool was absent and
+  when it simply had not published a `Warm` condition, so every claim against
+  a brand-new pool said "pool does not exist" — sending whoever debugged it
+  hunting a typo in `poolRef` that was not there. Split into an explicit
+  `pool_exists` field. Found by `live_claim.rs` on its first run; the unit
+  tests had passed because they were written with the same wrong model as the
+  code.
+- `crates/banlieue-controller/tests/live_claim.rs`: an early version returned
+  early when no cluster was configured and all eight tests printed `ok` while
+  doing nothing. A missing or wrong cluster now fails and names what is
+  missing — these tests are `#[ignore]`d, so running them is already an
+  explicit request for a cluster.
+- `crates/banlieue-api/src/banlieue/virtualmachineclaim.rs`: subject
+  annotations renamed to `banlieue.io/claim-subject-{issuer,id}`, grouping
+  them with the `banlieue.io/claim` label and matching what the threat model
+  and guide already documented. Asserted in a test, since these names are API.
+- `crates/banlieue-controller/src/reconciler/pool.rs`: removed a stale
+  handoff note claiming the file had never been through `cargo check`.
+- `crates/banlieue-provider-libvirt/tests/e2e_pool_claim.rs`: the refill
+  check waited on `available >= warmReplicas`, which is **still true from
+  before the claim** until the pool next reconciles — so the wait returned
+  instantly and the assertion that followed raced the property under test.
+  It now waits on the replacement member actually existing, which means a
+  pool that genuinely never refills fails with a timeout instead of an
+  assertion firing before the pool had a chance. Caught on the first real
+  run; the test was wrong, not the pool.
+
+### Verified
+- `make claim-live-test` — **8/8 green** against a throwaway kind cluster
+  (`kind create cluster` + `kubectl apply -f deploy/crds/`), and verified to
+  **fail** when pointed at a cluster without the CRDs, so the skip-as-pass
+  regression cannot come back.
+- `make pool-claim-e2e` — **2/2 green against a real libvirt host.** Run on a
+  kind cluster with the controller and libvirt provider as **local
+  binaries** (no container image build, no change to any deployed cluster),
+  and a `VMImage` with a `BackingFile` source naming a volume already in the
+  pool, which skips the image build entirely. The decisive line:
+
+  ```text
+  ✓ both warm members exist as real domains
+  ✓ the claim to bind a member
+  ✓ the pool to build a replacement for the claimed member
+  ✓ the claim to release
+  ✓ the released domain is gone from the host
+  ```
+
+  and, from the second test, `✓ the claimed domain outlived its pool`.
+  Afterwards the host's `images` pool contained only the original base
+  volume — no leftover overlays, seed ISOs or domains.
+- `cargo test --all` green; `cargo clippy --all-targets --all-features -D
+  warnings` clean.
+
+### Why
+The claim layer landed with 36 unit tests and no way to exercise the three
+behaviours that make it trustworthy, all of which are properties of the
+API server rather than of our code. The first run of the new tier found a
+real bug, which is the argument for it.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+- [x] Test infrastructure, plus one reconciler bug fix
+
+**Note on the homelab cluster:** its CRDs are 49 days stale and have no
+`virtualmachinepools` or `virtualmachineclaims`, so the e2e cannot run
+against it until it is redeployed. The kind + local-binaries recipe above
+(documented in the suite's module docs) needs neither.
+
+## [2026-09-20 16:40] - VirtualMachineClaim: pools become consumable (ADR-0047)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0047-virtualmachineclaim.md`: ADR (Proposed) — bound once,
+  released by deletion. Eleven decisions, of which the load-bearing ones are:
+  binding is a `resourceVersion`-preconditioned merge patch (optimistic
+  concurrency, no lock); `ownerReferences` re-parent from pool to claim so
+  deleting a pool cannot destroy a sandbox in use; `ttlSeconds` is mandatory;
+  a finalizer holds the claim until its member is gone from the API server,
+  so "claim deleted" means "sandbox destroyed"; a vanished member makes the
+  claim terminally `Failed` rather than silently rebinding it.
+- `docs/architecture/calm/architecture.json`: `data-asset-virtualmachineclaim-cr`
+  node and the `rel-claim-binds-pool-member` relationship. `make calm-validate`
+  passes; `make calm-diagrams` regenerated `docs/src/architecture/system.md`.
+- `crates/banlieue-api/src/banlieue/virtualmachineclaim.rs` (+ `_tests.rs`):
+  the CRD — `VirtualMachineClaim`, `ClaimSubject`, `ClaimPhase`,
+  `VirtualMachineClaimStatus`, `CLAIM_FINALIZER`, the subject annotations and
+  `CLAIM_NONCE_BITS`. 10 tests.
+- `crates/banlieue-controller/src/reconciler/claim_plan.rs` (+ `_tests.rs`):
+  every decision as a pure function — `next_step` (the whole state machine),
+  `pick_member`, `expiry`, `is_expired`, `wait_reason`. 22 tests.
+- `crates/banlieue-controller/src/reconciler/claim.rs` (+ `_tests.rs`): the
+  reconciler — gather a snapshot, apply the step, publish status. 3 tests,
+  covering the nonce generator (length, non-repetition, non-zero), whose
+  failure modes are otherwise silent.
+- `crates/banlieue-api/tests/examples.rs`: examples must parse into the types
+  they name, checked by round-tripping and comparing key sets — so a
+  misspelled field (`reference:` for `ref:`) fails the build instead of
+  being silently dropped by serde. Includes a `#[should_panic]` test proving
+  the checker bites.
+- `examples/19-virtualmachineclaim.yaml`, `docs/src/guides/virtualmachine-claims.md`.
+- `deploy/crds/banlieue.io_virtualmachineclaims.yaml` (generated).
+- `Cargo.toml`: `getrandom = "0.3"` pinned in `[workspace.dependencies]` —
+  OS CSPRNG for claim nonces, which must be unpredictable to a guest that
+  has not been told them. Already in the tree transitively; rust-random,
+  actively maintained.
+
+### Changed
+- `crates/banlieue-api/src/crdgen_support.rs` and
+  `crates/banlieue-operator/src/bootstrap.rs`: both CRD lists gained
+  `VirtualMachineClaim`. The drift test between them already existed and
+  covers it.
+- `crates/banlieue-api/src/banlieue/virtualmachinepool.rs`: added the
+  `Released` condition reason. The existing `MemberLost` was being reused for
+  a deliberate release, which means the opposite — the three endings
+  (`Released`, `Expired`, `MemberLost`) differ in who ended the hold.
+- `crates/banlieue-controller/src/app.rs`: the claim controller joins the
+  `tokio::select!`, owning its bound member.
+- `deploy/controller/rbac/clusterrole.yaml`: `virtualmachineclaims` get/list/
+  watch/**delete**, plus status and finalizers. Deliberately **no `create`
+  and no `update`**: minting a claim attributes a sandbox to a named subject,
+  so a controller that could do it could forge the audit trail. `delete` is
+  granted because the expiry path removes the claim after destroying the
+  member.
+- `docs/src/guides/virtualmachine-pools.md`: the "claims are not implemented"
+  scope note, the `claimed` status row and the pool-deletion caveat are all
+  now statements of fact rather than forward references.
+- `.github/community/70-ephemeral-vm-pools.md`, `ROADMAPS.md`: B2 ✅.
+- `docs/mkdocs.yml`: the new guide in the nav.
+- `docs/src/security/threat-model.md`: **full pass**, stamp advanced to
+  ADR-0001 … ADR-0054. New asset A-7 (claim bindings), new actor (claim
+  consumer / broker), the claim in the §5 diagram, five TB-1 threat rows, a
+  new §7.10 hardening requirement, and a new accepted risk for the unpinned
+  `subject`. The pass also caught **two stale claims left by ADR-0050's**:
+  the accepted risk "`LibvirtMachine` has no reconciler yet" and the TB-4
+  note that the `NVRAM|TPM` undefine "is not called by any reconciler yet".
+  Both were false — `reconciler/libvirtmachine.rs::finalize_backend` calls
+  it on every teardown — so the register was claiming a gap that was closed
+  and the table was disclaiming a control that is live.
+
+### Why
+A pool filled, self-healed, rolled on image change and cascaded on delete —
+all proven live — and none of it was reachable, because nothing could take a
+member *out*. B2 was the single thing standing between a warm set and a
+consumable one.
+
+Two things went beyond the roadmap skeleton. `Releasing` is now a real phase
+rather than a dead enum variant, so a consumer can tell "being torn down"
+from "gone". And a `Pending` claim repeats the pool's own `Warm` reason in
+its message, which is what ADR-0047 Decision 11 actually asked for: "the
+pool is busy" and "the pool will never warm" are indistinguishable from a
+claim otherwise, and the second one needs a human.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout — new CRD (`virtualmachineclaims.banlieue.io`)
+      and a widened controller ClusterRole
+- [ ] Config change only
+- [ ] Documentation only
+
+**Known gap, documented in the guide:** nothing yet pins a claim's `subject`
+to the authenticated caller (ADR-0047 Decision 10). Until that
+`ValidatingAdmissionPolicy` exists, any principal who can create a claim can
+attribute one to anybody — so grant `create` on `virtualmachineclaims`
+narrowly.
+
+## [2026-09-20] - Split the operator e2e into one suite per contract, one CI job each
+
+**Author:** Erick Bourgeois
+
+### Added
+- `crates/banlieue-operator/tests/e2e_common/mod.rs`: shared harness for the
+  kind e2e suites — fixture names, `wait_for` / `wait_until_gone`,
+  `setup` / `teardown` / `teardown_pinned`, and the `Provider` /
+  `ProviderClass` builders. Also `create_workload_namespace`, which replaces
+  the namespace-creation block two tests had inline, and `QUIESCE_WINDOW`,
+  which names the 20s the pause cases wait before asserting an absence.
+- `Makefile`: `kind-e2e-workload`, `kind-e2e-pause`,
+  `kind-e2e-workload-namespace`, `kind-e2e-class`, plus `kind-e2e-install` and
+  the `E2E_INSTALL` knob (`bootstrap` | `manifests`) and the `E2E_SUITES` list.
+
+### Changed
+- `crates/banlieue-operator/tests/e2e_provider_lifecycle.rs` (1,291 lines,
+  7 tests) split into four binaries, assertions unchanged:
+  - `e2e_provider_workload.rs` — shape, RBAC, ownership, status, events, GC;
+    vsphere and libvirt
+  - `e2e_provider_pause.rs` — `spec.paused` on a Provider and on a ProviderClass
+  - `e2e_workload_namespace.rs` — the cross-namespace `workloadNamespace` override
+  - `e2e_provider_class.rs` — class swaps prune, class edits roll
+- `Makefile`: `kind-e2e` now runs every suite in sequence on one cluster (from
+  the recipe, not as prerequisites, so `make -j` cannot parallelise suites that
+  share a cluster). `kind-e2e-bootstrap` is now just the bootstrap-install
+  assertions. `kind-e2e-ci` takes `E2E_SUITE`. `kind-verify-dry-run` →
+  `kind-e2e-dry-run` and `kind-verify-escape-hatch` → `kind-e2e-escape-hatch`,
+  so every CI job is `make kind-e2e-<suite>` with no exceptions;
+  `kind-e2e-dry-run` and `kind-e2e-escape-hatch` both now depend on
+  `kind-bootstrap-install` rather than a bare cluster: `--dry-run=server`
+  persists nothing, so the Namespace and CRDs in its own stream do not exist
+  when the objects depending on them are validated; and `bootstrap provider`
+  does not create the install namespace itself.
+  Added the kind e2e targets to `.PHONY`, which they were missing.
+- `.github/workflows/e2e.yaml`: one job per suite via a `fail-fast: false`
+  matrix, each on its own cluster (`banlieue-e2e-<suite>`).
+- `docs/adr/0014-kind-e2e-operator-contract.md`: amended with the new suite
+  topology and the two-places-to-update cost it introduces.
+- `docs/src/guides/provider-lifecycle.md`: the per-suite targets and
+  `E2E_INSTALL=manifests`.
+- `crates/banlieue-operator/src/bootstrap_tests.rs`: a doc comment naming the
+  renamed target.
+
+### Why
+One binary, one target, one job meant a failure reported "e2e failed" rather
+than which of seven independent contracts broke; every test ran serially behind
+one cold build and one cluster; and iterating on one contract re-ran the other
+six. The suites share no state, so nothing about the split is unsafe.
+
+### Threat model
+Full pass done (`rules/threat-modeling.md`): **no change**. The split adds no
+component, actor, identity, boundary, credential, or data flow — the new
+binaries are test code that runs on a developer or CI machine, and the renamed
+kind clusters are ephemeral CI fixtures, not modelled architecture. Stamp
+advanced to 2026-09-20; the ADR range is unchanged, since this amends ADR-0014
+rather than adding an ADR.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only (Makefile targets and CI job names changed)
+- [ ] Documentation only
+
 ## [2026-09-20] - All ADRs on one metadata format
 
 **Author:** Erick Bourgeois

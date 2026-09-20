@@ -32,7 +32,7 @@ stays readable.
    `crates/banlieue-libvirt/src/procs.rs` had connect, network listing and
    storage volumes only. **Updated 2026-09-19:**
    [ADR-0050](../../docs/adr/0050-libvirtmachine-domain-lifecycle.md)
-   (*Proposed*) brought the domain lifecycle (lookup, define, create, shutdown, destroy, undefine
+   (Accepted 2026-09-19) brought the domain lifecycle (lookup, define, create, shutdown, destroy, undefine
    — always `MANAGED_SAVE|NVRAM|TPM` — get_state, interface_addresses, with a
    live lifecycle test), and the `LibvirtMachine`/`LibvirtMachineTemplate`
    CRDs now exist and generate.
@@ -275,14 +275,14 @@ provider can realise (see [Repo reality](#repo-reality-at-8360e19)).
 | Phase | What | ADR | Status |
 |---|---|---|---|
 | 0 | Slim image experiment | none (no code) | ⏸️ deferred (no vTPM on the libvirt hosts yet) |
-| A2 | `GuestReady`: the installed guest reports in | 0043 | ⛔ |
+| A2 | `GuestReady`: the installed guest reports in | 0043 | 🔶 libvirt done (marker + qemu-guest-agent, second RPC program proven live); **vSphere transport deferred — no environment to verify against** |
 | A4 | Detach install media once installed | 0044 | ⛔ |
 | A5 | vTPM EK certificate in machine status | 0045 | ⛔ |
 | A3 | `tpmEnabled` requires `installMode: Deferred` | 0048 | ⛔ |
-| B1 | `VirtualMachinePool` | 0046 | 🔶 planner written and tested |
-| B2 | `VirtualMachineClaim` | 0047 | ⛔ |
+| B1 | `VirtualMachinePool` | 0046 | ✅ landed and validated e2e — fills, self-heals, rolls, cascades on delete |
+| B2 | `VirtualMachineClaim` | 0047 | ✅ landed — bind/hold/release, TTL expiry, finalizer, nonce; a pool is now consumable |
 | C | In-guest agent (separate repo) | own repo | ⛔ |
-| D | libvirt provider: `LibvirtMachine` reconciler | 13 + 0050 | 🔶 procedures + CRD + domain XML done (ADR-0050); reconciler ⛔ — **prerequisite for live test** |
+| D | libvirt provider: `LibvirtMachine` reconciler | 13 + 0050 + 0054 | ✅ complete — CRD, domain XML, reconciler, NoCloud user-data; roadmap 13 closed |
 | E | Proxmox provider, same | amend 12 | ⛔ |
 | F | Attestation trust anchors, threat model | 0049 | ⛔ |
 
@@ -298,6 +298,28 @@ hand out VMs mid-install.
 
 **Why not VMware Tools heartbeat.** The live installer environment can run
 Tools too. A heartbeat proves a guest is up, not that it is the installed one.
+The same objection sinks a `qemu-guest-agent` ping, a DHCP lease and an open
+SSH port: all are satisfied by the installer while it is still overwriting
+the disk.
+
+**Landed 2026-09-20, libvirt only.** `common::condition_types::GUEST_READY`,
+`LibvirtMachineStatus.guestInstalled` (sticky), the marker read in
+`crates/banlieue-provider-libvirt/src/guest.rs`, and conditional mirroring in
+`status_mirror.rs`. The libvirt transport needed a **second RPC program** —
+`virDomainQemuAgentCommand` lives in `0x2000_8087`, not the remote program —
+verified against a real libvirtd in
+`crates/banlieue-libvirt/tests/live_libvirtd.rs`
+(`qemu_agent_program_is_understood_by_real_libvirtd`), which asserts libvirtd
+returns a *semantic* error rather than a protocol one.
+
+Two things beyond the skeleton: the mirror publishes `GuestReady` **only when
+the provider does**, because `readiness_signal_absent` decides by condition
+type and a blanket `False` would turn "this will never warm" into "wait
+longer"; and `examples/16-cloud-config-guest-phase.yaml` keeps the vSphere
+stanza commented out so nobody announces into a channel nothing reads.
+
+**Still open:** the vSphere half (`guestinfo.banlieue.phase` read from
+`config.extraConfig`), deferred for want of a vCenter to verify it against.
 
 **Decision.**
 1. The installed system writes `guestinfo.banlieue.phase=installed` on every
@@ -472,8 +494,29 @@ deletion. There is no unbind and no "return to pool".
   `ValidatingAdmissionPolicy` alongside ADR-0007's pins `subject` to the
   authenticated caller for callers that are not the broker service account.
 
-Code: `crates/banlieue-controller/src/reconciler/claim.rs`. `pick_member`
-checked standalone; the rest needs `cargo check`.
+**Landed 2026-09-20.** `crates/banlieue-api/src/banlieue/virtualmachineclaim.rs`
+(CRD), `crates/banlieue-controller/src/reconciler/claim_plan.rs` (every
+decision, pure) and `claim.rs` (the reconciler: gather, apply, report).
+Guide: `docs/src/guides/virtualmachine-claims.md`; example
+`examples/19-virtualmachineclaim.yaml`.
+
+Two things landed beyond the skeleton above:
+
+- **`Releasing` is a real phase.** The skeleton let expiry jump straight to
+  deletion, which left the variant dead and gave a consumer no way to tell
+  "being torn down" from "gone". Release now publishes `Releasing` with
+  `Released` or `Expired` as the reason, so those three endings are
+  distinguishable — they differ in *who* ended the hold.
+- **A waiting claim repeats the pool's own diagnosis.** Decision 11 asked
+  for "no capacity" and "pool misconfigured" to be distinguishable without
+  reading two objects, so `Pending` carries `PoolNotFound`, or
+  `NoMemberAvailable` with the pool's `Warm` reason inlined — which is what
+  makes a pool stuck on `ReadinessSignalAbsent` visible from the claim.
+
+Still open, and called out in the guide: nothing yet pins `subject` to the
+authenticated caller. Until that `ValidatingAdmissionPolicy` exists, anyone
+who can create a claim can attribute one to anybody, so `create` on
+`virtualmachineclaims` has to be granted narrowly.
 
 ### C: In-guest agent (separate repo under `firestoned`)
 

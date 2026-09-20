@@ -1141,4 +1141,55 @@ mod tests {
         let err = decode_network_get_dhcp_leases_ret(e.as_bytes()).unwrap_err();
         assert!(matches!(err, TransportError::Protocol { .. }), "{err:?}");
     }
+
+    // ------------------------------------------------------------------
+    // qemu-guest-agent: reading the installed-guest marker (ADR-0043)
+    // ------------------------------------------------------------------
+
+    fn a_domain() -> Domain {
+        Domain {
+            name: "ns-vm".to_string(),
+            uuid: [7u8; UUID_LEN],
+            id: -1,
+        }
+    }
+
+    /// `qemu_domain_agent_command_args { domain; string cmd; int timeout; uint flags; }`
+    #[test]
+    fn agent_command_args_encode_domain_then_command() {
+        let args = encode_domain_qemu_agent_command_args(
+            &a_domain(),
+            r#"{"execute":"guest-ping"}"#,
+            AGENT_TIMEOUT_DEFAULT,
+            0,
+        );
+        let mut d = Decoder::new(&args);
+        assert_eq!(d.read_string().unwrap(), "ns-vm");
+        assert_eq!(d.read_opaque_fixed(UUID_LEN).unwrap(), &[7u8; UUID_LEN]);
+        assert_eq!(d.read_i32().unwrap(), -1);
+        assert_eq!(d.read_string().unwrap(), r#"{"execute":"guest-ping"}"#);
+        assert_eq!(d.read_i32().unwrap(), AGENT_TIMEOUT_DEFAULT);
+        assert_eq!(d.read_u32().unwrap(), 0);
+    }
+
+    /// The reply is an *optional* string: libvirt sends a pointer flag then
+    /// the value. A command that returns nothing sends only the flag, and
+    /// decoding that as a string would desynchronise the stream.
+    #[test]
+    fn agent_command_reply_decodes_an_optional_string() {
+        let mut e = Encoder::new();
+        e.write_bool(true);
+        e.write_string(r#"{"return":{}}"#);
+        assert_eq!(
+            decode_domain_qemu_agent_command_ret(&e.into_bytes()).unwrap(),
+            Some(r#"{"return":{}}"#.to_string())
+        );
+
+        let mut e = Encoder::new();
+        e.write_bool(false);
+        assert_eq!(
+            decode_domain_qemu_agent_command_ret(&e.into_bytes()).unwrap(),
+            None
+        );
+    }
 }

@@ -16,6 +16,7 @@ mod tests {
 
     /// Test double — implements [`InfraMachineRead`] without needing a real
     /// VSphereMachine.
+    #[derive(Default)]
     struct FakeInfra {
         init: InitializationStatus,
         addresses: Vec<MachineAddress>,
@@ -330,6 +331,7 @@ mod tests {
                 domain_uuid: Some("0f3c9a1e-0000-4000-8000-000000000001".to_string()),
                 observed_power_state: Some(PowerState::PoweredOn),
                 address_source: Some(LibvirtAddressSource::GuestAgent),
+                guest_installed: None,
                 tpm_attached: None,
                 conditions: vec![Condition {
                     type_: condition_types::READY.to_string(),
@@ -388,5 +390,111 @@ mod tests {
         assert_eq!(status.initialization.provisioned, Some(true));
         assert_eq!(status.addresses.len(), 1);
         assert_eq!(status.observed_power_state, Some(PowerState::PoweredOn));
+    }
+
+    // ------------------------------------------------------------------
+    // GuestReady mirroring (ADR-0043)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn guestready_is_mirrored_from_the_infra_cr_with_its_reason() {
+        let current = baseline_status_scheduled();
+        let infra = FakeInfra {
+            init: InitializationStatus {
+                provisioned: Some(true),
+            },
+            conditions: vec![
+                cond(
+                    condition_types::READY,
+                    condition_status::TRUE,
+                    "DomainRunning",
+                ),
+                cond(
+                    condition_types::GUEST_READY,
+                    condition_status::TRUE,
+                    "GuestAnnounced",
+                ),
+            ],
+            ..Default::default()
+        };
+
+        let next = mirror_status_from_infra(&current, &infra, 1);
+        let g = next
+            .conditions
+            .iter()
+            .find(|c| c.type_ == condition_types::GUEST_READY)
+            .expect("GuestReady mirrored onto the VirtualMachine");
+        assert_eq!(g.status, condition_status::TRUE);
+        assert_eq!(g.reason, "GuestAnnounced");
+    }
+
+    /// **The subtle one.** A provider that does not implement the signal
+    /// must leave the condition *absent*, not publish `False`.
+    ///
+    /// `pool.rs::readiness_signal_absent` decides by condition TYPE, not
+    /// status: it reports `ReadinessSignalAbsent` only when no member
+    /// carries the condition at all. Publishing a blanket `GuestReady=False`
+    /// here would make a pool set to `GuestReady` report `Filling` forever
+    /// instead — turning "this will never warm" into "wait a bit longer",
+    /// which is the exact diagnostic ADR-0046 Decision 3 exists to give.
+    #[test]
+    fn guestready_is_not_published_when_the_infra_cr_is_silent() {
+        let current = baseline_status_scheduled();
+        let infra = FakeInfra {
+            init: InitializationStatus {
+                provisioned: Some(true),
+            },
+            conditions: vec![cond(
+                condition_types::READY,
+                condition_status::TRUE,
+                "DomainRunning",
+            )],
+            ..Default::default()
+        };
+
+        let next = mirror_status_from_infra(&current, &infra, 1);
+        assert!(
+            !next
+                .conditions
+                .iter()
+                .any(|c| c.type_ == condition_types::GUEST_READY),
+            "a silent provider must leave GuestReady absent, not False"
+        );
+    }
+
+    /// ADR-0043 Decision 4, at the VirtualMachine layer.
+    #[test]
+    fn aggregate_ready_does_not_depend_on_guestready() {
+        let current = baseline_status_scheduled();
+        let infra = FakeInfra {
+            init: InitializationStatus {
+                provisioned: Some(true),
+            },
+            conditions: vec![
+                cond(
+                    condition_types::READY,
+                    condition_status::TRUE,
+                    "DomainRunning",
+                ),
+                cond(
+                    condition_types::GUEST_READY,
+                    condition_status::FALSE,
+                    "GuestNotAnnounced",
+                ),
+            ],
+            ..Default::default()
+        };
+
+        let next = mirror_status_from_infra(&current, &infra, 1);
+        let ready = next
+            .conditions
+            .iter()
+            .find(|c| c.type_ == condition_types::READY)
+            .expect("Ready published");
+        assert_eq!(
+            ready.status,
+            condition_status::TRUE,
+            "an Immediate-mode VM with no guest marker must stay Ready"
+        );
     }
 }

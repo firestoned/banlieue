@@ -10,6 +10,7 @@ Every banlieue Custom Resource Definition, generated from the Rust types that ar
 - [ProviderClass](#providerclass)
 - [VirtualMachine](#virtualmachine)
 - [VirtualMachinePool](#virtualmachinepool)
+- [VirtualMachineClaim](#virtualmachineclaim)
 - [VMClass](#vmclass)
 - [VMImage](#vmimage)
 
@@ -1162,6 +1163,111 @@ Key in a Secret in the VirtualMachine's namespace (key defaults to
 
 ---
 
+## VirtualMachineClaim
+
+**API:** `banlieue.io/v1alpha1` · **Kind:** `VirtualMachineClaim` · **Scope:** Namespaced · **Short names:** `vmclaim`
+
+VirtualMachineClaim: one subject's exclusive, time-boxed hold on one
+pool member.
+
+**What a claim guarantees**
+
+- **Bound once, ever.** The member it binds is never handed to another
+  subject, never returned to the warm set, and never reused. Release is
+  always destruction.
+- **Deleting the claim destroys the VM**, and the claim object does not
+  disappear until it has.
+- **`ttlSeconds` is a hard deadline**, not a grace period. At expiry the
+  member is deleted whether or not the consumer is finished.
+
+**What a claim is not**
+
+It is not a credential channel. `spec.subject` records *who* the member
+is for so the binding is auditable in the API server's own audit log; it
+is opaque to banlieue, and a token must never be placed in it. Delivering
+the subject's token to the guest is the consumer's job, over its own
+attested channel, using `status.nonce` to tie that session to this claim.
+
+**Printer columns** (`kubectl get`):
+
+| Name | Type | JSON path | Priority |
+| --- | --- | --- | --- |
+| Pool | string | `.spec.poolRef.name` | 0 |
+| VM | string | `.status.virtualMachineRef.name` | 0 |
+| Phase | string | `.status.phase` | 0 |
+| Expires | date | `.status.expiresAt` | 0 |
+| Age | date | `.metadata.creationTimestamp` | 0 |
+
+### `.spec`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `poolRef` | object | Yes | The pool to take a member from. Same namespace as the claim. |
+| `subject` | object | Yes | Who this member is for. Opaque to banlieue: recorded, mirrored onto the member as annotations, and never interpreted. |
+| `ttlSeconds` | integer | Yes | Hard lifetime in seconds, counted from binding rather than from creation — a claim that waited ten minutes for capacity still gets its full TTL. Required, with no default: a claim without a deadline is a leaked VM, and the right value is a property of the workload. |
+
+#### `.spec.poolRef`
+
+The pool to take a member from. Same namespace as the claim.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | Yes |  |
+
+#### `.spec.subject`
+
+Who this member is for. Opaque to banlieue: recorded, mirrored onto
+the member as annotations, and never interpreted.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | Yes | Stable subject identifier within that issuer (the `sub` / `oid` claim), not a display name or e-mail. |
+| `issuer` | string | Yes | Token issuer the subject was authenticated by, e.g. an OIDC issuer URL. |
+
+### `.status`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `addresses` | object[] |  | Mirrored from the bound member so a consumer needs one GET. |
+| `boundAt` | string |  | Time is a wrapper around time.Time which supports correct marshaling to YAML and JSON. Wrappers are provided for many of the factory methods that the time package offers. |
+| `conditions` | object[] |  |  |
+| `expiresAt` | string |  | `bound_at + spec.ttlSeconds`. The member is deleted at this instant. |
+| `nonce` | string |  | Random, single-use, *not secret*. The consumer's attestation exchange must echo it so a quote cannot be replayed across claims. |
+| `observedGeneration` | integer |  |  |
+| `phase` | string |  | Where a claim is in its one-way lifecycle. Allowed: `Pending`, `Bound`, `Releasing`, `Failed`. |
+| `tpmEndorsementCertificates` | string[] |  | PEM vTPM endorsement key certificate(s) of the bound member, mirrored from the infra CR (ADR-0045). Lets a verifier check that an attestation quote comes from the VM banlieue itself created for this claim. Stays empty until ADR-0045 publishes them. |
+| `virtualMachineRef` | object |  | The bound member. Set once, at bind time, and never rewritten. |
+
+#### `.status.addresses[]`
+
+Mirrored from the bound member so a consumer needs one GET.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `address` | string | Yes | The address itself. |
+| `type` | string | Yes | Address type. Accepted: Hostname, ExternalIP, InternalIP, ExternalDNS, InternalDNS. Allowed: `Hostname`, `ExternalIP`, `InternalIP`, `ExternalDNS`, `InternalDNS`. |
+
+#### `.status.conditions[]`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `lastTransitionTime` | string | Yes | lastTransitionTime is the last time the condition transitioned from one status to another. This should be when the underlying condition changed. If that is not known, then using the time when the API field changed is acceptable. |
+| `message` | string | Yes | message is a human readable message indicating details about the transition. This may be an empty string. |
+| `observedGeneration` | integer |  | observedGeneration represents the .metadata.generation that the condition was set based upon. For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date with respect to the current state of the instance. |
+| `reason` | string | Yes | reason contains a programmatic identifier indicating the reason for the condition's last transition. Producers of specific condition types may define expected values and meanings for this field, and whether the values are considered a guaranteed API. The value should be a CamelCase string. This field may not be empty. |
+| `status` | string | Yes | status of the condition, one of True, False, Unknown. |
+| `type` | string | Yes | type of condition in CamelCase or in foo.example.com/CamelCase. |
+
+#### `.status.virtualMachineRef`
+
+The bound member. Set once, at bind time, and never rewritten.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | Yes |  |
+
+---
+
 ## VMClass
 
 **API:** `banlieue.io/v1alpha1` · **Kind:** `VMClass` · **Scope:** Cluster · **Short names:** `vmc`
@@ -1760,6 +1866,7 @@ InfraMachine status contract (plus libvirt-specific diagnostics).
 | `conditions` | object[] |  | CAPI-compatible conditions. The `Ready` condition is mirrored as `InfrastructureReady` on the parent per contract. |
 | `domainUuid` | string |  | libvirt's UUID for the domain, in its 36-character textual form. The domain's real identity — stable across rename and host restart — and the source for `spec.providerID`. Not part of the CAPI contract. |
 | `failureDomain` | string |  | CAPI contract field (optional): observed failure domain — the host the domain actually landed on. |
+| `guestInstalled` | boolean |  | Whether the *installed* guest has announced itself (ADR-0043). |
 | `initialization` | object |  | CAPI contract field: replaces the deprecated v1beta1 `status.ready`. |
 | `observedGeneration` | integer |  |  |
 | `observedPowerState` | string |  | The domain's last observed run state, mapped onto banlieue's backend-neutral [`PowerState`] (ADR-0034). The hypervisor's view, not a guest-OS-boot signal. Not part of the CAPI contract; mirrored onto the parent `VirtualMachine`'s `status.observedPowerState`. Allowed: `PoweredOn`, `PoweredOff`, `Suspended`, `null`. |

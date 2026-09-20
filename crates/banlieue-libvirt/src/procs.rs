@@ -1017,6 +1017,85 @@ pub struct DomainInterface {
     pub addrs: Vec<DomainIpAddr>,
 }
 
+/// Procedure number of `virDomainQemuAgentCommand` within [`QEMU_PROGRAM`].
+///
+/// A procedure in the *qemu* program, not the remote one, so it must be
+/// issued with `Session::call_on_program` (ADR-0043).
+///
+/// [`QEMU_PROGRAM`]: crate::rpc::QEMU_PROGRAM
+pub const QEMU_PROC_DOMAIN_AGENT_COMMAND: i32 = 3;
+
+/// Default `virDomainQemuAgentCommand` timeout, in seconds.
+///
+/// libvirt reserves negative values for its own sentinels (block, default,
+/// no-wait), so this is a positive, explicit wait. Kept short: the caller is
+/// a reconcile loop and an unresponsive agent must not hold it.
+pub const AGENT_TIMEOUT_DEFAULT: i32 = 5;
+
+/// Encode `qemu_domain_agent_command_args { domain; string cmd; int timeout; uint flags; }`.
+#[must_use]
+pub fn encode_domain_qemu_agent_command_args(
+    dom: &Domain,
+    cmd: &str,
+    timeout: i32,
+    flags: u32,
+) -> Vec<u8> {
+    let mut e = Encoder::new();
+    dom.encode(&mut e);
+    e.write_string(cmd);
+    e.write_i32(timeout);
+    e.write_u32(flags);
+    e.into_bytes()
+}
+
+/// Decode `qemu_domain_agent_command_ret { remote_string result; }`.
+///
+/// The result is an *optional* string: libvirt writes a pointer flag first,
+/// and a command returning nothing sends only that flag. Reading it
+/// unconditionally as a string would desynchronise the connection.
+///
+/// # Errors
+/// [`ProcError`] if the payload is not a well-formed optional string.
+pub fn decode_domain_qemu_agent_command_ret(payload: &[u8]) -> Result<Option<String>> {
+    let mut d = Decoder::new(payload);
+    if !d.read_bool()? {
+        return Ok(None);
+    }
+    Ok(Some(d.read_string()?.to_string()))
+}
+
+/// Send one `qemu-guest-agent` command and return its raw JSON reply.
+///
+/// `cmd` is a QMP-style document, e.g. `{"execute":"guest-ping"}`. The reply
+/// comes back verbatim: this crate speaks the protocol and deliberately does
+/// not interpret guest payloads — that belongs to the provider, which is also
+/// where a JSON parser already lives.
+///
+/// # Errors
+/// [`ProcError`] on a transport failure or a malformed reply. An agent that
+/// is absent or not yet running surfaces as a libvirt error, which the caller
+/// should read as "not ready", not as a fault.
+pub async fn domain_qemu_agent_command<S>(
+    session: &mut Session<S>,
+    dom: &Domain,
+    cmd: &str,
+    timeout: i32,
+) -> Result<Option<String>>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let args = encode_domain_qemu_agent_command_args(dom, cmd, timeout, 0);
+    let payload = session
+        .call_on_program(
+            crate::rpc::QEMU_PROGRAM,
+            crate::rpc::QEMU_PROTOCOL_VERSION,
+            QEMU_PROC_DOMAIN_AGENT_COMMAND,
+            &args,
+        )
+        .await?;
+    decode_domain_qemu_agent_command_ret(&payload)
+}
+
 /// Encode `remote_domain_lookup_by_name_args { remote_nonnull_string name; }`.
 #[must_use]
 pub fn encode_domain_lookup_by_name_args(name: &str) -> Vec<u8> {

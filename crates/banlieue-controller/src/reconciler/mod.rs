@@ -5,6 +5,8 @@
 //! Phase 1A iteration 3: scheduler, infra builder, status mirror, migration
 //! sub-loop, and the main `virtualmachine` reconcile loop.
 
+pub mod claim;
+pub mod claim_plan;
 pub mod infra;
 pub mod migration;
 pub mod pool;

@@ -666,7 +666,7 @@ mod tests {
     /// once: the namespaced Role was emitted into `--dry-run` output but never
     /// applied, so GitOps installs worked while direct installs produced a
     /// provider with no Secret access. This pins the YAML half; the kind e2e
-    /// (`kind-verify-escape-hatch`) pins the apply half, which is what caught it.
+    /// (`kind-e2e-escape-hatch`) pins the apply half, which is what caught it.
     #[test]
     fn dry_run_output_includes_the_namespaced_rbac() {
         let manifests =

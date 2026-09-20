@@ -358,6 +358,19 @@ pub struct LibvirtMachineStatus {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub addresses: Vec<MachineAddress>,
 
+    /// Whether the *installed* guest has announced itself (ADR-0043).
+    ///
+    /// **Sticky once true.** The marker lives in the guest's `/run`, so it
+    /// does not survive a power cycle — but a VM that was stopped has not
+    /// become uninstalled. Without stickiness a warm pool member would drop
+    /// out of the pool every time it was powered off and back on.
+    ///
+    /// `None` means "not observed yet", which is the expected state for the
+    /// whole of a `Deferred` image's install. Not part of the CAPI
+    /// contract.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guest_installed: Option<bool>,
+
     /// libvirt's UUID for the domain, in its 36-character textual form. The
     /// domain's real identity — stable across rename and host restart — and
     /// the source for `spec.providerID`. Not part of the CAPI contract.

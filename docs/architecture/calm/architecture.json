@@ -166,7 +166,7 @@
       "unique-id": "service-provider-libvirt",
       "node-type": "service",
       "name": "banlieue-provider-libvirt",
-      "description": "Provider controller for libvirt/KVM hosts, speaking libvirt's own RPC protocol through the first-party `banlieue-libvirt` crate (XDR codec + message framing) rather than any third-party client — zero new dependencies, no C library, no FFI. Split by plane (ADR-0011): the CONTROL plane runs in-process — the Provider reconciler connects, lists storage pools and networks, verifies the admin-declared spec.capabilities actually exist, and publishes status.failureDomains[] (one per host, with pools as the interesting sub-structure since libvirt has no datacenter/cluster hierarchy). The DATA plane runs as a Kubernetes Job so bulk disk bytes never flow through the controller process; that Job runs the `banlieue` binary itself, so there is no third-party tools image to pin, trust, or patch. VM lifecycle (a LibvirtMachine InfraMachine CRD) is deliberately out of scope for this increment. A third reconciler (ADR-0050) owns the LibvirtMachine lifecycle: it defines, starts, inspects and undefines domains through the same first-party `banlieue-libvirt` crate, adding domain procedures beside the existing storage ones rather than taking on libvirt's C client. Undefine always passes MANAGED_SAVE|NVRAM|TPM so no varstore or swtpm state outlives a deleted VM. Domain XML is rendered through an escaping-only template module: every value reaching it (domain name, volume paths, bridge names) is user- or admin-influenced. User-data reaches a libvirt guest as a cloud-init NoCloud seed: a small ISO labelled CIDATA, built in-process with a Joliet tree (ADR-0054) because ISO9660 Level 1 cannot spell the hyphenated `meta-data`/`user-data` names cloud-init requires. No genisoimage, no subprocess, and the payload never touches the container's filesystem — unlike vSphere, which has guestinfo and needs no disk at all."
+      "description": "Provider controller for libvirt/KVM hosts, speaking libvirt's own RPC protocol through the first-party `banlieue-libvirt` crate (XDR codec + message framing) rather than any third-party client — zero new dependencies, no C library, no FFI. Split by plane (ADR-0011): the CONTROL plane runs in-process — the Provider reconciler connects, lists storage pools and networks, verifies the admin-declared spec.capabilities actually exist, and publishes status.failureDomains[] (one per host, with pools as the interesting sub-structure since libvirt has no datacenter/cluster hierarchy). The DATA plane runs as a Kubernetes Job so bulk disk bytes never flow through the controller process; that Job runs the `banlieue` binary itself, so there is no third-party tools image to pin, trust, or patch. VM lifecycle (a LibvirtMachine InfraMachine CRD) is deliberately out of scope for this increment. A third reconciler (ADR-0050) owns the LibvirtMachine lifecycle: it defines, starts, inspects and undefines domains through the same first-party `banlieue-libvirt` crate, adding domain procedures beside the existing storage ones rather than taking on libvirt's C client. Undefine always passes MANAGED_SAVE|NVRAM|TPM so no varstore or swtpm state outlives a deleted VM. Domain XML is rendered through an escaping-only template module: every value reaching it (domain name, volume paths, bridge names) is user- or admin-influenced. Guest readiness (ADR-0043) adds a SECOND libvirt RPC program to the same connection: virDomainQemuAgentCommand lives in libvirt's qemu-specific program (0x20008087), not the remote program (0x20008086) this crate has spoken until now, so the session and framing code stop assuming one connection means one program. The installed guest writes a marker file that only a system booted from the installed disk writes (guarded on immucore's active/passive sentinels), and the provider reads it with guest-file-open/read/close rather than guest-exec -- three deterministic calls instead of a fire-and-poll with a pid to chase, and no executable required inside the guest. This distinguishes the INSTALLED system from the live installer, which every cheap liveness signal (agent ping, DHCP lease, open SSH port) fails to do because the installer environment satisfies all of them while it is still overwriting the disk. User-data reaches a libvirt guest as a cloud-init NoCloud seed: a small ISO labelled CIDATA, built in-process with a Joliet tree (ADR-0054) because ISO9660 Level 1 cannot spell the hyphenated `meta-data`/`user-data` names cloud-init requires. No genisoimage, no subprocess, and the payload never touches the container's filesystem — unlike vSphere, which has guestinfo and needs no disk at all."
     },
     {
       "unique-id": "service-banlieue-imagebuilder",
@@ -323,6 +323,18 @@
       "node-type": "data-asset",
       "name": "VirtualMachinePool Custom Resource",
       "description": "Namespaced CRD (banlieue.io/v1alpha1) holding a warm set of already-installed, never-used VirtualMachines so a consumer does not wait out a Deferred-mode install (ADR-0040) at request time. Creates nothing but VirtualMachines and reads nothing but their conditions and labels, so no provider learns that pools exist and there is deliberately no per-backend pool kind. Every sizing and rollout decision is a pure function over a snapshot of members; the reconciler only gathers, applies and reports. Two invariants are load-bearing rather than cosmetic: a claimed member is never deleted by the pool, and a member is never returned to the warm set after being claimed — reuse across identities is the one thing this design must not do (ADR-0046)."
+    },
+    {
+      "unique-id": "data-asset-virtualmachineclaim-cr",
+      "node-type": "data-asset",
+      "name": "VirtualMachineClaim Custom Resource",
+      "description": "Namespaced CRD (banlieue.io/v1alpha1) that hands one warm VirtualMachinePool member to one subject, and is the only way a member ever leaves the pool (ADR-0047). A member is bound at most once in its life: there is no unbind and no return-to-pool, because the VM itself is the isolation boundary between subjects. Binding is a resourceVersion-preconditioned merge patch on the member, so two claims racing for one member yield exactly one success and one 409 — optimistic concurrency, never a lock. The bind also re-parents the member's ownerReferences from pool to claim, which is what lets a pool be deleted without destroying sandboxes in use. spec.ttlSeconds is mandatory (a claim without a deadline is a leaked VM) and a finalizer holds the claim until the member is gone from the API server, so \"claim deleted\" means \"sandbox destroyed\". spec.subject carries an opaque issuer+id that banlieue records for audit and never interprets; it is never a credential, and status.nonce (128 random bits) exists only so an attestation quote cannot be replayed across claims."
+    },
+    {
+      "unique-id": "data-asset-agentsandbox-cr",
+      "node-type": "data-asset",
+      "name": "AgentSandbox Custom Resource",
+      "description": "Namespaced CRD in a SEPARATE API group (agent.banlieue.io/v1alpha1), served by its own controller, so a cluster running VMs for CI never installs or reasons about an agent CRD (ADR-0055). It does NOT bind pool members: it creates and owns a VirtualMachineClaim, the way a Deployment owns a ReplicaSet. That is the whole point of the shape — bind-once is enforced by a single resourceVersion-preconditioned patch in one controller, and a second kind binding members would mean two independent implementations of the one invariant that must never break. It carries agent-shaped POLICY (acceptable token issuers and audiences, egress allowlist, tool scopes, runtime selection) and never a credential: a custom resource is readable by anyone with namespace read and lands in the audit log, so the token reaches the guest over the attested channel instead. The agent runtime comes from the image rather than from bind-time provisioning, because installing one at bind time reintroduces exactly the latency the warm pool exists to remove. Status mirrors the claim rather than being derived independently, and a finalizer holds the object until its claim is gone so that \"sandbox deleted\" keeps meaning \"VM destroyed\" through the wrapper."
     },
     {
       "unique-id": "data-asset-provider-cr",
@@ -815,6 +827,33 @@
           "nodes": [
             "data-asset-virtualmachinepool-cr",
             "data-asset-virtualmachine-cr"
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-claim-binds-pool-member",
+      "description": "banlieue-controller's claim reconciler picks one Ready, unclaimed member of the referenced pool (current image revision first, then longest-Ready, then name) and binds it with a resourceVersion-preconditioned merge patch that labels it claimed, records the subject as annotations, and re-parents ownerReferences from the pool to the claim. The pool never learns claims exist — it only sees a member it must no longer delete or count as warm. On deletion or TTL expiry the claim deletes the member and holds its own finalizer until the member is gone, so a released claim means a destroyed VM, never a recycled one (ADR-0047).",
+      "relationship-type": {
+        "interacts": {
+          "actor": "service-banlieue-controller",
+          "nodes": [
+            "data-asset-virtualmachineclaim-cr",
+            "data-asset-virtualmachinepool-cr",
+            "data-asset-virtualmachine-cr"
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-agentsandbox-owns-claim",
+      "description": "The agent controller creates one VirtualMachineClaim per AgentSandbox and owns it through ownerReferences, passing spec.ttlSeconds straight through so a single deadline is enforced by the only layer that can actually destroy the VM. It never patches a pool member and never writes the claim label. Deleting an AgentSandbox garbage-collects its claim, whose own finalizer blocks until the member is gone from the backend; the AgentSandbox holds a finalizer of its own so it cannot vanish first and report success while the VM is still being torn down (ADR-0055).",
+      "relationship-type": {
+        "interacts": {
+          "actor": "service-banlieue-controller",
+          "nodes": [
+            "data-asset-agentsandbox-cr",
+            "data-asset-virtualmachineclaim-cr"
           ]
         }
       }
@@ -1532,6 +1571,9 @@
     "docs/adr/0041-imagebuilder-namespaced-secret-access.md",
     "docs/adr/0042-userdata-reference-authorization.md",
     "docs/adr/0046-virtualmachinepool.md",
+    "docs/adr/0043-guestready-installed-guest-signal.md",
+    "docs/adr/0047-virtualmachineclaim.md",
+    "docs/adr/0055-agentsandbox.md",
     "docs/adr/0050-libvirtmachine-domain-lifecycle.md",
     "docs/adr/0051-vmimage-trusted-boot-uki-support.md",
     "docs/adr/0052-instant-clone-vmfork-not-supported.md",

@@ -595,4 +595,154 @@ mod tests {
             "the seed volume outlived its domain"
         );
     }
+
+    // ------------------------------------------------------------------
+    // GuestReady stickiness (ADR-0043 Decision 5)
+    // ------------------------------------------------------------------
+
+    /// The first observation is recorded either way: `None` means "not
+    /// looked yet", and once we have looked, `false` is a real answer.
+    #[test]
+    fn a_first_observation_is_recorded_whichever_way_it_went() {
+        assert_eq!(sticky_guest_installed(None, false), Some(false));
+        assert_eq!(sticky_guest_installed(None, true), Some(true));
+    }
+
+    /// The decision this function exists for. The marker lives in the
+    /// guest's `/run`, so it vanishes on a power cycle — but a VM that was
+    /// stopped has not become uninstalled. Without stickiness a warm pool
+    /// member would drop out of its pool on every power cycle, and the pool
+    /// would replace a perfectly good VM.
+    #[test]
+    fn installed_never_goes_back_to_not_installed() {
+        assert_eq!(sticky_guest_installed(Some(true), false), Some(true));
+        assert_eq!(sticky_guest_installed(Some(true), true), Some(true));
+    }
+
+    /// Not-installed is not sticky: a guest still installing must be able
+    /// to become installed, which is the entire lifecycle.
+    #[test]
+    fn not_installed_can_still_become_installed() {
+        assert_eq!(sticky_guest_installed(Some(false), true), Some(true));
+        assert_eq!(sticky_guest_installed(Some(false), false), Some(false));
+    }
+
+    // ------------------------------------------------------------------
+    // GuestReady is observed and published (ADR-0043)
+    // ------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn converge_asks_a_running_guest_whether_it_is_installed() {
+        let mut c = ready_host();
+        let s = spec(LibvirtBootSourceKind::InstallMedia);
+        let observed = converge(&mut c, &s).await.expect("converge");
+
+        assert!(!observed.guest_installed, "the fake host reports no marker");
+        assert!(
+            c.calls
+                .iter()
+                .any(|x| x == "guest_installed:sandboxes-agent-01"),
+            "the guest must actually be asked: {:?}",
+            c.calls
+        );
+    }
+
+    #[tokio::test]
+    async fn converge_reports_a_guest_that_has_announced_itself() {
+        let mut c = ready_host();
+        c.guest_installed.insert("sandboxes-agent-01".to_string());
+        let s = spec(LibvirtBootSourceKind::InstallMedia);
+        let observed = converge(&mut c, &s).await.expect("converge");
+        assert!(observed.guest_installed);
+    }
+
+    /// A stopped domain has no agent to answer, so asking is a wasted round
+    /// trip on every reconcile of every powered-off VM.
+    #[tokio::test]
+    async fn converge_does_not_ask_a_stopped_guest() {
+        let mut c = ready_host();
+        let mut s = spec(LibvirtBootSourceKind::InstallMedia);
+        s.desired_power_state = PowerState::PoweredOff;
+        let observed = converge(&mut c, &s).await.expect("converge");
+
+        assert!(!observed.guest_installed);
+        assert!(
+            !c.calls.iter().any(|x| x.starts_with("guest_installed:")),
+            "a stopped domain must not be asked: {:?}",
+            c.calls
+        );
+    }
+
+    /// The signal has to reach the CR, not just the Observed struct.
+    #[test]
+    fn build_status_publishes_guestready_both_ways() {
+        let machine = machine_cr();
+        let mut observed = observed_running();
+
+        observed.guest_installed = false;
+        let st = build_status(&machine, &observed, 1);
+        assert_eq!(st.guest_installed, Some(false));
+        let c = find_condition(&st, condition_types::GUEST_READY).expect("GuestReady published");
+        assert_eq!(c.status, condition_status::FALSE);
+
+        observed.guest_installed = true;
+        let st = build_status(&machine, &observed, 1);
+        assert_eq!(st.guest_installed, Some(true));
+        let c = find_condition(&st, condition_types::GUEST_READY).expect("GuestReady published");
+        assert_eq!(c.status, condition_status::TRUE);
+    }
+
+    /// ADR-0043 Decision 4. If `Ready` started depending on the guest
+    /// signal, every existing Immediate-mode VM whose image has no phase
+    /// stage would regress to not-ready for a marker it never sends.
+    #[test]
+    fn ready_does_not_depend_on_guestready() {
+        let machine = machine_cr();
+        let observed = observed_running();
+        assert!(!observed.guest_installed);
+
+        let st = build_status(&machine, &observed, 1);
+        let ready = find_condition(&st, condition_types::READY).expect("Ready published");
+        assert_eq!(
+            ready.status,
+            condition_status::TRUE,
+            "a running domain is Ready even with no guest marker"
+        );
+    }
+
+    /// A `LibvirtMachine` CR wrapping the shared test spec.
+    fn machine_cr() -> LibvirtMachine {
+        LibvirtMachine {
+            metadata: kube::api::ObjectMeta {
+                name: Some("agent-01".to_string()),
+                namespace: Some("sandboxes".to_string()),
+                ..Default::default()
+            },
+            spec: spec(LibvirtBootSourceKind::InstallMedia),
+            status: None,
+        }
+    }
+
+    /// A running domain with no addresses yet — the state a member is in
+    /// for most of a Deferred install.
+    fn observed_running() -> Observed {
+        Observed {
+            domain: Domain {
+                name: "sandboxes-agent-01".to_string(),
+                uuid: [1u8; 16],
+                id: -1,
+            },
+            state: DomainState::Running,
+            addresses: Vec::new(),
+            address_source: None,
+            guest_installed: false,
+        }
+    }
+
+    fn find_condition(
+        st: &LibvirtMachineStatus,
+        type_: &str,
+    ) -> Option<k8s_openapi::apimachinery::pkg::apis::meta::v1::Condition> {
+        st.conditions.iter().find(|c| c.type_ == type_).cloned()
+    }
 }

@@ -151,6 +151,16 @@ pub trait LibvirtMachineClient: Send {
         &mut self,
         domain: &Domain,
     ) -> Result<Option<(Vec<DomainInterface>, InterfaceAddressSource)>>;
+
+    /// Whether the domain's *installed* guest has announced itself
+    /// (ADR-0043).
+    ///
+    /// Infallible on purpose. No agent, no marker, an unreadable one and a
+    /// guest still installing are indistinguishable from "not yet", and a
+    /// `Deferred` member spends most of its life legitimately in that
+    /// state — so a provider must not treat any of them as an error and
+    /// back off.
+    async fn guest_installed(&mut self, domain: &Domain) -> bool;
 }
 
 /// Diagnostic helper: a domain's addresses as a printable string,
@@ -317,6 +327,10 @@ where
         idempotent(domain_undefine(&mut self.session, domain).await)
     }
 
+    async fn guest_installed(&mut self, domain: &Domain) -> bool {
+        crate::guest::domain_guest_installed(&mut self.session, domain).await
+    }
+
     async fn domain_addresses(
         &mut self,
         domain: &Domain,
@@ -366,6 +380,13 @@ pub struct FakeMachineClient {
     pub uploaded: std::collections::BTreeMap<String, Vec<u8>>,
     /// Every call, in order, as `"<op>:<subject>"`.
     pub calls: Vec<String>,
+    /// Domains whose installed guest has announced itself (ADR-0043).
+    ///
+    /// A set rather than a flag so the fake can distinguish "this domain
+    /// reports installed" from "every domain does" — the bug that would
+    /// otherwise hide is a reconciler reading the wrong domain's marker and
+    /// still passing.
+    pub guest_installed: std::collections::BTreeSet<String>,
     /// When set, every call fails with this message.
     pub fail_with: Option<String>,
 }
@@ -426,6 +447,14 @@ impl FakeMachineClient {
 
 #[async_trait]
 impl LibvirtMachineClient for FakeMachineClient {
+    async fn guest_installed(&mut self, domain: &Domain) -> bool {
+        self.record("guest_installed", &domain.name);
+        // Infallible like the real one, `fail_with` included: on a real host
+        // an unreachable agent is "not yet", not an error, and a fake that
+        // errored here would let a reconciler get that wrong and still pass.
+        self.guest_installed.contains(&domain.name)
+    }
+
     async fn lookup_pool(&mut self, name: &str) -> Result<Option<StoragePool>> {
         self.guard()?;
         self.record("lookup_pool", name);

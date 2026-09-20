@@ -34,7 +34,8 @@ const INFRA_GROUP: &str = "infrastructure.banlieue.io";
 #[must_use]
 pub fn all_crds() -> Vec<CustomResourceDefinition> {
     use crate::banlieue::{
-        Provider, ProviderClass, VMClass, VMImage, VirtualMachine, VirtualMachinePool,
+        Provider, ProviderClass, VMClass, VMImage, VirtualMachine, VirtualMachineClaim,
+        VirtualMachinePool,
     };
     use crate::infrastructure::{
         LibvirtMachine, LibvirtMachineTemplate, VSphereCluster, VSphereMachine,
@@ -47,6 +48,7 @@ pub fn all_crds() -> Vec<CustomResourceDefinition> {
         prepared(ProviderClass::crd()),
         prepared(VirtualMachine::crd()),
         prepared(VirtualMachinePool::crd()),
+        prepared(VirtualMachineClaim::crd()),
         prepared(VMClass::crd()),
         prepared(VMImage::crd()),
         prepared(LibvirtMachine::crd()),
