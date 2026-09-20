@@ -1,10 +1,10 @@
 # 0027 — Per-zone import Jobs are owned by the `OSArtifact`, not orphaned
 
-## Status
-
-Accepted — 2026-08-22. Implemented the same day: `BuildArtifactStatus.os_artifact_uid`
-(`crates/banlieue-api`), `banlieue_provider_sdk::osartifact::owner_references`
-(shared helper), and both providers' import-Job manifests setting it.
+- **Status:** Accepted
+- **Date:** 2026-08-22
+- **Notes:** Implemented the same day: `BuildArtifactStatus.os_artifact_uid`
+  (`crates/banlieue-api`), `banlieue_provider_sdk::osartifact::owner_references`
+  (shared helper), and both providers' import-Job manifests setting it.
 
 ## Context
 

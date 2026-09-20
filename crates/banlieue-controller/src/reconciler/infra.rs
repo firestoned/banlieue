@@ -2,24 +2,76 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Build provider-specific infrastructure CRs from a scheduler [`Decision`].
 //!
-//! Phase 1A iteration 2: only `vsphere` is implemented. Iteration 1B/1C/1D
-//! add Proxmox and libvirt builders behind a shared trait.
+//! Two backends today: `vsphere` ([`build_vsphere_machine`]) and `libvirt`
+//! ([`build_libvirt_machine`], ADR-0050). Proxmox is the third and will slot
+//! in the same way. Dispatch by `Provider.spec.providerClassRef.name` lives
+//! in [`super::virtualmachine`], not here — these builders are pure and know
+//! only their own backend.
 
 use std::collections::BTreeMap;
 
+use banlieue_api::banlieue::InstallMode;
 use banlieue_api::banlieue::{
     DiskSpec, HardwareOverride, ImagePerProviderStatus, Provider, SubnetShape, VMClass, VMImage,
     VirtualMachine,
 };
 use banlieue_api::common::{IpamShape, IpamSpec, MachineAddress, StaticIpamConfig};
 use banlieue_api::infrastructure::{
-    VSphereDiskSpec, VSphereMachine, VSphereMachineSpec, VSphereNicSpec,
+    LibvirtBootSource, LibvirtBootSourceKind, LibvirtDiskBus, LibvirtDiskSpec, LibvirtMachine,
+    LibvirtMachineSpec, LibvirtNicSource, LibvirtNicSourceKind, LibvirtNicSpec, VSphereDiskSpec,
+    VSphereMachine, VSphereMachineSpec, VSphereNicSpec,
 };
 use kube::ResourceExt;
 use kube::api::ObjectMeta;
 use kube::core::Resource;
 
 use super::scheduler::Decision;
+
+/// `Provider.spec.providerClassRef.name` for the vSphere backend.
+pub const PROVIDER_CLASS_VSPHERE: &str = "vsphere";
+/// `Provider.spec.providerClassRef.name` for the libvirt backend.
+pub const PROVIDER_CLASS_LIBVIRT: &str = "libvirt";
+
+/// Which infrastructure CR kind a scheduled `VirtualMachine` becomes.
+///
+/// The one place the controller is allowed to know that backends differ.
+/// Everything downstream — apply, delete, status mirror — branches on this
+/// rather than on a provider-class string, so adding Proxmox means a variant
+/// and a builder, not a new `if` in five places.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InfraKind {
+    /// `infrastructure.banlieue.io/VSphereMachine`.
+    VSphere,
+    /// `infrastructure.banlieue.io/LibvirtMachine` (ADR-0050).
+    Libvirt,
+}
+
+impl InfraKind {
+    /// Map a `Provider.spec.providerClassRef.name` onto its infra kind.
+    ///
+    /// `None` for a provider class this controller has no builder for. That
+    /// is a real state, not an impossible one: a `ProviderClass` can be
+    /// installed for a provider binary that exists while the controller-side
+    /// builder does not — Proxmox will be exactly that for a while — and it
+    /// must surface as a condition rather than a panic or a silent no-op.
+    #[must_use]
+    pub fn from_provider_class(class: &str) -> Option<Self> {
+        match class {
+            PROVIDER_CLASS_VSPHERE => Some(Self::VSphere),
+            PROVIDER_CLASS_LIBVIRT => Some(Self::Libvirt),
+            _ => None,
+        }
+    }
+
+    /// The Kubernetes `kind` string, for `status.infrastructureRef`.
+    #[must_use]
+    pub fn kind_name(self) -> &'static str {
+        match self {
+            Self::VSphere => "VSphereMachine",
+            Self::Libvirt => "LibvirtMachine",
+        }
+    }
+}
 
 /// Failure-domain raw-attribute key for vSphere datacenter name.
 pub const FD_RAW_VSPHERE_DATACENTER: &str = "datacenter";
@@ -315,6 +367,214 @@ fn merge_disk_size_override(disk: &DiskSpec, override_: Option<&HardwareOverride
 /// `template_folder` entries (one per failure domain). This function
 /// checks both, preferring the top-level ref (always set for `Template`
 /// sources) and falling back to the zone that matches
+/// Failure-domain raw-attribute key for the libvirt host a domain lands on.
+/// Optional: a libvirt failure domain is one host, so the domain's placement
+/// is the failure domain itself.
+pub const FD_RAW_LIBVIRT_HOST: &str = "host";
+
+/// `NetworkClassMapping.target` key naming a libvirt-managed network.
+const TARGET_KEY_LIBVIRT_NETWORK: &str = "network";
+/// `NetworkClassMapping.target` key naming a raw host bridge.
+const TARGET_KEY_LIBVIRT_BRIDGE: &str = "bridge";
+
+/// Build a [`LibvirtMachine`] from the scheduler [`Decision`], the original
+/// VM, its class, image, and the chosen [`Provider`] (ADR-0050).
+///
+/// Owner-reference is set to `vm`, so the LibvirtMachine is garbage-collected
+/// with its parent exactly as the vSphere one is.
+///
+/// # How this differs from [`build_vsphere_machine`]
+///
+/// - **No datacenter or cluster.** A libvirt failure domain is a single host,
+///   so `Decision::failure_domain_raw` is legitimately empty. Treating its
+///   absence as an error — as the vSphere builder correctly does — would mean
+///   nothing ever schedules onto libvirt.
+/// - **The image resolves to a volume, not a vCenter template**, and whether
+///   that volume is a backing image or an installer ISO is decided by the
+///   `VMImage`'s install mode rather than by anything the provider knows.
+/// - **The NIC's `kind` comes off the Provider, not the `Decision`.** The
+///   scheduler flattens a network class's target map to its first *value*,
+///   which loses the key that distinguishes `{bridge: br0}` from
+///   `{network: default}`. The key survives only on
+///   `Provider.spec.capabilities`, so that is where this reads it from.
+///
+/// # Errors
+/// [`InfraBuildError::MissingResolvedImageRef`] when the `VMImage` has no
+/// resolved volume for this provider, or
+/// [`InfraBuildError::UnresolvedClass`] when the class declared no disks.
+pub fn build_libvirt_machine(
+    vm: &VirtualMachine,
+    class: &VMClass,
+    image: &VMImage,
+    decision: &Decision,
+    provider: &Provider,
+    rendered_user_data: Option<&str>,
+) -> Result<LibvirtMachine, InfraBuildError> {
+    // The OS disk's resolved backend id is the storage pool.
+    let pool = decision
+        .resolved_storage
+        .first()
+        .ok_or_else(|| InfraBuildError::UnresolvedClass("(no disks)".into()))?
+        .backend_id
+        .clone();
+
+    // libvirt has no per-zone template folder, so only the name is used.
+    let (volume, _folder) = resolve_template_ref(
+        image,
+        &decision.provider_name,
+        &decision.failure_domain_name,
+    )
+    .ok_or_else(|| InfraBuildError::MissingResolvedImageRef {
+        image: image.name_any(),
+        provider: decision.provider_name.clone(),
+        zone: decision.failure_domain_name.clone(),
+    })?;
+
+    let boot_source = LibvirtBootSource {
+        kind: boot_source_kind(image),
+        volume,
+    };
+
+    let hardware_override = vm.spec.hardware_override.as_ref();
+
+    // VMClass disks carry no bus — it is a libvirt-only concept — so every
+    // disk gets the default. Every image banlieue builds has virtio drivers;
+    // a guest that does not is a per-machine edit, not a class-wide one.
+    let disks: Vec<LibvirtDiskSpec> = class
+        .spec
+        .hardware
+        .disks
+        .iter()
+        .map(|d| LibvirtDiskSpec {
+            name: d.name.clone(),
+            size_gi_b: merge_disk_size_override(d, hardware_override),
+            bus: LibvirtDiskBus::default(),
+        })
+        .collect();
+
+    let nics: Vec<LibvirtNicSpec> = class
+        .spec
+        .network
+        .interfaces
+        .iter()
+        .zip(decision.resolved_networks.iter())
+        .map(|(nic, resolved)| {
+            let override_ = vm
+                .spec
+                .network_overrides
+                .iter()
+                .find(|o| o.name == nic.name)
+                .map(|o| &o.static_);
+            // libvirt failure domains carry no datacenter/cluster, so the
+            // per-zone lookup falls through to the mapping's default target
+            // — which is the documented behaviour for a backend with no zone
+            // hierarchy (ADR-0030).
+            let mapping = provider
+                .spec
+                .capabilities
+                .network_classes
+                .iter()
+                .find(|c| c.name == nic.network_class);
+            let zone_subnet = mapping.and_then(|c| c.subnet_for("", ""));
+            LibvirtNicSpec {
+                name: nic.name.clone(),
+                source: LibvirtNicSource {
+                    kind: nic_source_kind(mapping),
+                    name: resolved.backend_id.clone(),
+                },
+                model: None,
+                mac_address: None,
+                ipam: merge_ipam_override(&nic.ipam, override_, zone_subnet),
+            }
+        })
+        .collect();
+
+    let spec = LibvirtMachineSpec {
+        provider_id: None,
+        failure_domain: Some(decision.failure_domain_name.clone()),
+        provider_ref: banlieue_api::common::LocalObjectReference {
+            name: decision.provider_name.clone(),
+        },
+        pool,
+        domain_name: domain_name_for(vm),
+        boot_source,
+        vcpus: hardware_override
+            .and_then(|h| h.cpus)
+            .unwrap_or(class.spec.hardware.cpus),
+        memory_mi_b: hardware_override
+            .and_then(|h| h.memory_mi_b)
+            .unwrap_or(class.spec.hardware.memory_mi_b),
+        firmware: class.spec.firmware.clone(),
+        machine_type: None,
+        tpm_enabled: class.spec.tpm_enabled,
+        disks,
+        network: nics,
+        user_data: rendered_user_data.map(str::to_string),
+        desired_power_state: vm.spec.desired_power_state.clone(),
+    };
+
+    Ok(LibvirtMachine {
+        metadata: ObjectMeta {
+            name: Some(vm.name_any()),
+            namespace: vm.namespace(),
+            owner_references: Some(vec![owner_reference_for(vm)]),
+            labels: Some(propagate_labels(vm)),
+            ..Default::default()
+        },
+        spec,
+        status: None,
+    })
+}
+
+/// The libvirt domain name for `vm`.
+///
+/// Namespace-qualified, unlike the CR's own name. One libvirt host has a
+/// single flat domain namespace, while two Kubernetes namespaces can each
+/// hold a `VirtualMachine` called `db-01` — and `DOMAIN_DEFINE_XML` is an
+/// upsert, so the second one would silently redefine the first's domain
+/// rather than failing. vCenter has no equivalent problem because its
+/// inventory is a folder tree.
+fn domain_name_for(vm: &VirtualMachine) -> String {
+    match vm.namespace() {
+        Some(ns) => format!("{ns}-{}", vm.name_any()),
+        None => vm.name_any(),
+    }
+}
+
+/// Which provisioning shape an image's install mode calls for (ADR-0040).
+///
+/// `Manual` groups with `Deferred` because their mechanics are identical —
+/// attach the media and let the guest install itself; the two names exist to
+/// distinguish *why*, not *what* (ADR-0040's `InstallMode` doc).
+fn boot_source_kind(image: &VMImage) -> LibvirtBootSourceKind {
+    let mode = image
+        .spec
+        .template
+        .as_ref()
+        .map_or(InstallMode::default(), |t| t.install_mode);
+    match mode {
+        InstallMode::Immediate => LibvirtBootSourceKind::BackingVolume,
+        InstallMode::Deferred | InstallMode::Manual => LibvirtBootSourceKind::InstallMedia,
+    }
+}
+
+/// Whether a network class names a bridge or a libvirt-managed network.
+///
+/// Defaults to a managed network when the mapping declares neither, matching
+/// the scheduler's own fallback. Guessing "bridge" would be the worse
+/// default: a raw bridge puts the guest directly onto a host L2 segment,
+/// while a managed network is the contained option.
+fn nic_source_kind(
+    mapping: Option<&banlieue_api::banlieue::NetworkClassMapping>,
+) -> LibvirtNicSourceKind {
+    let target = mapping.and_then(|m| m.target_for("", ""));
+    match target {
+        Some(t) if t.contains_key(TARGET_KEY_LIBVIRT_BRIDGE) => LibvirtNicSourceKind::Bridge,
+        Some(t) if t.contains_key(TARGET_KEY_LIBVIRT_NETWORK) => LibvirtNicSourceKind::Network,
+        _ => LibvirtNicSourceKind::Network,
+    }
+}
+
 /// `failure_domain_name`.
 fn resolve_template_ref(
     image: &VMImage,

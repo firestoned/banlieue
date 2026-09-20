@@ -1,12 +1,12 @@
 # 0022 — vSphere ISO overlay files via OSArtifact volumes
 
-## Status
-
-Accepted — 2026-08-15, amended 2026-08-17 (Decision #3, the Secret-symlink
-workaround) and 2026-08-18 (Decision #4, configurable importer image).
-Extends [ADR-0010](0010-vmimage-build-pipeline-imagebuilder.md) (the
-`banlieue-imagebuilder` build pipeline) and
-[ADR-0020](0020-vsphere-per-zone-iso-import.md) (vSphere ISO import).
+- **Status:** Accepted
+- **Date:** 2026-08-15
+- **Amended:** 2026-08-17 (Decision #3, the Secret-symlink
+  workaround) and 2026-08-18 (Decision #4, configurable importer image).
+- **Related:** Extends [ADR-0010](0010-vmimage-build-pipeline-imagebuilder.md) (the
+  `banlieue-imagebuilder` build pipeline) and
+  [ADR-0020](0020-vsphere-per-zone-iso-import.md) (vSphere ISO import).
 
 ## Context
 

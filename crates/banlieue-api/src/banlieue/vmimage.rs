@@ -120,7 +120,7 @@ pub struct VMImageSpec {
     /// `banlieue-imagebuilder` into the kairos-operator `OSArtifact`'s
     /// `spec.artifacts.uki.{iso,keysVolume}` (replacing the plain
     /// `artifacts.iso` request) — the `auroraboot build-uki` mechanism. See
-    /// [`TrustedBootSource`] and ADR-0041. Ignored for `cloudImage`-kind
+    /// [`TrustedBootSource`] and ADR-0051. Ignored for `cloudImage`-kind
     /// builds and non-`Url` sources.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trusted_boot: Option<TrustedBootSource>,
@@ -128,7 +128,7 @@ pub struct VMImageSpec {
 
 /// Requests a Trusted Boot (UKI) artifact for a `VMImage`'s `Url` source.
 /// Only the Secret's name is read by `banlieue-imagebuilder` — never its
-/// content (ADR-0041; mirrors the Secret-free posture established for
+/// content (ADR-0051; mirrors the Secret-free posture established for
 /// `isoOverlay`/ADR-0022 and `cloudConfigRef`/ADR-0020).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]

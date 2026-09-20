@@ -19,8 +19,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context as _, Result};
-use banlieue_api::banlieue::{Provider, VMClass, VMImage, VirtualMachine};
-use banlieue_api::infrastructure::{VSphereCluster, VSphereMachine};
+use banlieue_api::banlieue::{Provider, VMClass, VMImage, VirtualMachine, VirtualMachinePool};
+use banlieue_api::infrastructure::{LibvirtMachine, VSphereCluster, VSphereMachine};
 use banlieue_provider_sdk::bootstrap::{init_tracing, serve_health, shutdown_signal};
 use banlieue_provider_sdk::client::build_client;
 use banlieue_provider_sdk::leader::{
@@ -37,6 +37,7 @@ use tracing::{debug, error, info};
 
 use crate::{
     context::Context,
+    reconciler::pool,
     reconciler::virtualmachine::{error_policy, reconcile},
     reconciler::vmimage,
     reconciler::vsphere_cluster,
@@ -168,6 +169,16 @@ pub async fn run(cli: Cli) -> Result<()> {
         None => Api::all(client.clone()),
     };
 
+    // The libvirt counterpart (ADR-0050). Owned the same way and for the same
+    // reason: without this watch a LibvirtMachine going Ready would only
+    // reach its parent VirtualMachine on the next periodic requeue, so every
+    // libvirt VM would sit `InfrastructureReady=False` for up to a full
+    // requeue interval after it was in fact running.
+    let libvirt_api: Api<LibvirtMachine> = match cli.namespace.as_deref() {
+        Some(ns) => Api::namespaced(client.clone(), ns),
+        None => Api::all(client.clone()),
+    };
+
     // VMImage is cluster-scoped; the image watcher requeues every VM
     // referencing an image whose status flipped.
     let image_api: Api<VMImage> = Api::all(client.clone());
@@ -199,6 +210,7 @@ pub async fn run(cli: Cli) -> Result<()> {
 
     let controller_fut = controller
         .owns(vsphere_api, Config::default())
+        .owns(libvirt_api, Config::default())
         .watches(image_api, Config::default(), move |image: VMImage| {
             // Requeue every VM whose spec.image_ref.name matches this image.
             // VMImage updates are rare (operator-driven template imports), so
@@ -297,9 +309,34 @@ pub async fn run(cli: Cli) -> Result<()> {
             }
         });
 
+    // VirtualMachinePool (ADR-0046). Owns its members, so a member going
+    // Ready reaches the pool immediately rather than at the next periodic
+    // requeue — the whole point of a warm set is that `available` is current.
+    info!("starting VirtualMachinePool controller");
+    let pool_api: Api<VirtualMachinePool> = match cli.namespace.as_deref() {
+        Some(ns) => Api::namespaced(client.clone(), ns),
+        None => Api::all(client.clone()),
+    };
+    let pool_member_api: Api<VirtualMachine> = match cli.namespace.as_deref() {
+        Some(ns) => Api::namespaced(client.clone(), ns),
+        None => Api::all(client.clone()),
+    };
+    let pool_fut = Controller::new(pool_api, Config::default())
+        .owns(pool_member_api, Config::default())
+        .run(pool::reconcile, pool::error_policy, ctx.clone())
+        .for_each(|res| async move {
+            match res {
+                Ok((obj, _)) => debug!(kind = "VirtualMachinePool", ?obj, "reconciled"),
+                Err(e) => error!(kind = "VirtualMachinePool", error = %e, "reconcile error"),
+            }
+        });
+
     tokio::select! {
         () = controller_fut => {
             info!("VirtualMachine controller stream ended");
+        }
+        () = pool_fut => {
+            info!("VirtualMachinePool controller stream ended");
         }
         () = image_fut => {
             info!("VMImage controller stream ended");

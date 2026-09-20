@@ -1,9 +1,9 @@
 # 0030 — Per-zone concrete targets for storage/network class mappings
 
-## Status
-
-Accepted — 2026-08-23. Extends [ADR-0019](0019-vsphere-capability-introspection-iter2.md)
-(capability reachability per failure domain).
+- **Status:** Accepted
+- **Date:** 2026-08-23
+- **Related:** Extends [ADR-0019](0019-vsphere-capability-introspection-iter2.md)
+  (capability reachability per failure domain).
 
 ## Context
 

@@ -1,18 +1,20 @@
-# 0041 — `VMImage` Trusted Boot (UKI) support
+# 0051 — `VMImage` Trusted Boot (UKI) support
 
-## Status
-
-Proposed — 2026-09-10. Amended 2026-09-10 (Decision #3, preflight key
-validation; Decision #4, route `trustedBoot` cloud-config through
-`overlayISOVolume` instead of `cloudConfigRef`, working around an upstream
-kairos-operator bug). Extends [ADR-0010](0010-vmimage-build-pipeline-imagebuilder.md)
-(the `banlieue-imagebuilder` build pipeline), [ADR-0020](0020-vsphere-per-zone-iso-import.md)
-(vSphere ISO import) and [ADR-0022](0022-vsphere-iso-overlay-files.md) (the
-`OSArtifact` wiring pattern this ADR mirrors). Complements
-[ADR-0039](0039-vsphere-vtpm-support.md) / [ADR-0040](0040-deferred-install-for-vtpm-encryption.md)
-(vTPM device attachment + deferred install for `kcrypt`) — this ADR is the
-image-build-time half of the same end-to-end feature; ADR-0039/0040 are the
-VM-instance-time half.
+- **Status:** Accepted
+- **Date:** 2026-09-19
+- **Proposed:** 2026-09-10
+- **Amended:** 2026-09-10 (Decision #3, preflight key
+  validation; Decision #4, route `trustedBoot` cloud-config through
+  `overlayISOVolume` instead of `cloudConfigRef`, working around an upstream
+  kairos-operator bug).
+- **Related:** Extends [ADR-0010](0010-vmimage-build-pipeline-imagebuilder.md)
+  (the `banlieue-imagebuilder` build pipeline), [ADR-0020](0020-vsphere-per-zone-iso-import.md)
+  (vSphere ISO import) and [ADR-0022](0022-vsphere-iso-overlay-files.md) (the
+  `OSArtifact` wiring pattern this ADR mirrors). Complements
+  [ADR-0039](0039-vsphere-vtpm-support.md) / [ADR-0040](0040-deferred-install-for-vtpm-encryption.md)
+  (vTPM device attachment + deferred install for `kcrypt`) — this ADR is the
+  image-build-time half of the same end-to-end feature; ADR-0039/0040 are the
+  VM-instance-time half.
 
 ## Context
 
@@ -87,7 +89,7 @@ update and TDD implementation.
 ```rust
 /// Requests a Trusted Boot (UKI) artifact instead of a classic
 /// kernel+initrd one for `Url`-kind vSphere sources. Maps to
-/// kairos-operator's `OSArtifact.spec.artifacts.uki` (ADR-0041). Only
+/// kairos-operator's `OSArtifact.spec.artifacts.uki` (ADR-0051). Only
 /// meaningful for the `iso` artifact kind (vSphere); ignored for
 /// `cloudImage`-kind builds and non-`Url` sources, mirroring
 /// `isoOverlay`'s precedent (ADR-0022).

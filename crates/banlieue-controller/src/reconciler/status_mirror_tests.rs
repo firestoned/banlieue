@@ -279,4 +279,114 @@ mod tests {
         assert_eq!(ready.status, "False");
         assert_eq!(ready.reason, "Scheduling");
     }
+
+    // ======================================================================
+    // The concrete LibvirtMachine impl (ADR-0050)
+    // ======================================================================
+    //
+    // The tests above exercise the mirror logic through `FakeInfra`. These
+    // exercise the accessors themselves, which is where a real impl goes
+    // wrong: reading `spec` where `status` was meant, or the other way
+    // round.
+
+    fn libvirt_machine() -> banlieue_api::infrastructure::LibvirtMachine {
+        use banlieue_api::infrastructure::{
+            LibvirtAddressSource, LibvirtBootSource, LibvirtBootSourceKind, LibvirtMachine,
+            LibvirtMachineSpec, LibvirtMachineStatus,
+        };
+        LibvirtMachine {
+            metadata: Default::default(),
+            spec: LibvirtMachineSpec {
+                provider_id: Some("libvirt://kvm-a/0f3c9a1e".to_string()),
+                failure_domain: None,
+                provider_ref: banlieue_api::common::LocalObjectReference {
+                    name: "kvm-a".to_string(),
+                },
+                pool: "default".to_string(),
+                domain_name: "ns-db-01".to_string(),
+                boot_source: LibvirtBootSource {
+                    kind: LibvirtBootSourceKind::BackingVolume,
+                    volume: "base.qcow2".to_string(),
+                },
+                vcpus: 2,
+                memory_mi_b: 2048,
+                firmware: banlieue_api::common::Firmware::Efi,
+                machine_type: None,
+                tpm_enabled: false,
+                disks: vec![],
+                network: vec![],
+                user_data: None,
+                desired_power_state: PowerState::PoweredOn,
+            },
+            status: Some(LibvirtMachineStatus {
+                initialization: InitializationStatus {
+                    provisioned: Some(true),
+                },
+                failure_domain: Some("kvm-a-default".to_string()),
+                addresses: vec![MachineAddress {
+                    address_type: MachineAddressType::InternalIP,
+                    address: "192.0.2.24".to_string(),
+                }],
+                domain_uuid: Some("0f3c9a1e-0000-4000-8000-000000000001".to_string()),
+                observed_power_state: Some(PowerState::PoweredOn),
+                address_source: Some(LibvirtAddressSource::GuestAgent),
+                tpm_attached: None,
+                conditions: vec![Condition {
+                    type_: condition_types::READY.to_string(),
+                    status: "True".to_string(),
+                    reason: "DomainRunning".to_string(),
+                    message: String::new(),
+                    last_transition_time: Time(k8s_openapi::jiff::Timestamp::now()),
+                    observed_generation: None,
+                }],
+                observed_generation: None,
+            }),
+        }
+    }
+
+    /// `providerID` is a **spec** field on every InfraMachine (CAPI puts it
+    /// there), while everything else the trait reads is status. Getting that
+    /// one backwards returns `None` forever and the Node never links up.
+    #[test]
+    fn libvirt_impl_reads_provider_id_from_spec_and_the_rest_from_status() {
+        let m = libvirt_machine();
+        assert_eq!(m.provider_id(), Some("libvirt://kvm-a/0f3c9a1e"));
+        assert_eq!(m.failure_domain(), Some("kvm-a-default"));
+        assert_eq!(m.initialization().provisioned, Some(true));
+        assert_eq!(m.addresses().len(), 1);
+        assert_eq!(m.addresses()[0].address, "192.0.2.24");
+        assert_eq!(m.observed_power_state(), Some(&PowerState::PoweredOn));
+        assert_eq!(m.conditions().len(), 1);
+    }
+
+    /// The first reconcile sees a LibvirtMachine with no status at all. Every
+    /// accessor must return an empty value rather than panicking.
+    #[test]
+    fn libvirt_impl_tolerates_an_absent_status() {
+        let mut m = libvirt_machine();
+        m.status = None;
+        assert_eq!(m.initialization().provisioned, None);
+        assert!(m.addresses().is_empty());
+        assert!(m.failure_domain().is_none());
+        assert!(m.conditions().is_empty());
+        assert!(m.observed_power_state().is_none());
+        // providerID lives on spec, so it survives an absent status.
+        assert_eq!(m.provider_id(), Some("libvirt://kvm-a/0f3c9a1e"));
+    }
+
+    /// End to end through the real impl: a Ready LibvirtMachine projects
+    /// `InfrastructureReady=True` onto its parent, by the same code path
+    /// vSphere uses. The `FakeInfra` tests above prove the projection logic;
+    /// this proves the concrete type is wired into it.
+    #[test]
+    fn libvirt_machine_drives_infrastructure_ready_on_the_parent() {
+        let m = libvirt_machine();
+        let status = mirror_status_from_infra(&VirtualMachineStatus::default(), &m, 1);
+        let cond = find_condition(&status.conditions, condition_types::INFRASTRUCTURE_READY)
+            .expect("InfrastructureReady must be published");
+        assert_eq!(cond.status, condition_status::TRUE);
+        assert_eq!(status.initialization.provisioned, Some(true));
+        assert_eq!(status.addresses.len(), 1);
+        assert_eq!(status.observed_power_state, Some(PowerState::PoweredOn));
+    }
 }

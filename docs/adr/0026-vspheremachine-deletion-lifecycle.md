@@ -1,14 +1,15 @@
 # 0026 — VSphereMachine deletion lifecycle: finalizer + Destroy_Task
 
-## Status
-
-Proposed — 2026-08-22. Amends [ADR-0024](0024-vspheremachine-clone-static-ip-cloud-config.md),
-whose own *Follow-ups* section named this explicitly: "`VSphereMachine`
-reconciler's remaining lifecycle: status mirroring, power-state
-reconciliation, update semantics, **deletion** — separate implementation
-work under this same reconciler, likely its own ADR amendment once the
-create path (this ADR) is proven." The create path is proven (live-tested,
-several rounds of bugfixing); this ADR covers deletion.
+- **Status:** Accepted
+- **Date:** 2026-09-19
+- **Proposed:** 2026-08-22
+- **Related:** Amends [ADR-0024](0024-vspheremachine-clone-static-ip-cloud-config.md),
+  whose own *Follow-ups* section named this explicitly: "`VSphereMachine`
+  reconciler's remaining lifecycle: status mirroring, power-state
+  reconciliation, update semantics, **deletion** — separate implementation
+  work under this same reconciler, likely its own ADR amendment once the
+  create path (this ADR) is proven." The create path is proven (live-tested,
+  several rounds of bugfixing); this ADR covers deletion.
 
 ## Context
 

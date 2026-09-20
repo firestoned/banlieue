@@ -97,7 +97,7 @@ Notes:
 
 - The wrapper's domain types (`Datacenter`, `Cluster`, `Vm`, etc.) are
   **slim Rust structs**, *not* re-exported VIM types. Project from
-  VIM into these at the boundary. (See `01-DECISIONS.md` D-006 for why.)
+  VIM into these at the boundary. (See `01-decisions.md` D-006 for why.)
 - Session refresh: vCenter sessions expire after 30 min idle. The
   client should transparently re-login on session-invalid errors and
   retry once.

@@ -45,6 +45,9 @@ spec:
     interfaces:
       - name: eth0
         networkClass: prod
+        # Required by the schema even when empty: an absent `ipam` is
+        # rejected, while `{}` means DHCP (neither `static` nor `pool` set).
+        ipam: {}
   firmware: efi
   features:
     - vtpm

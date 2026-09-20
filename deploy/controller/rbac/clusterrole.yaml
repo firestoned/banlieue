@@ -25,6 +25,25 @@ rules:
       - vmimages/status
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 
+  # VirtualMachinePool (ADR-0046). No `create` and no `delete`: a pool is
+  # authored by a user, and the controller only maintains its warm set and
+  # reports on it. A compromised controller must not be able to mint pools —
+  # each one creates VirtualMachines, so that would be an amplification step.
+  # It does create and delete the pool's *members*, which the
+  # `virtualmachines` grant above already covers.
+  - apiGroups: ["banlieue.io"]
+    resources:
+      - virtualmachinepools
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["banlieue.io"]
+    resources:
+      - virtualmachinepools/status
+    verbs: ["get", "update", "patch"]
+  - apiGroups: ["banlieue.io"]
+    resources:
+      - virtualmachinepools/finalizers
+    verbs: ["update"]
+
   # Finalizer subresources — required when the controller writes
   # blockOwnerDeletion=true on owned objects' ownerReferences.
   - apiGroups: ["banlieue.io"]
@@ -41,6 +60,9 @@ rules:
       - vspheremachines
       - vspheremachines/status
       - vspheremachinetemplates
+      - libvirtmachines
+      - libvirtmachines/status
+      - libvirtmachinetemplates
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   # VSphereCluster (CAPI InfraCluster) — the operator/CAPI owns its lifecycle;
   # the controller only watches it and writes its status (least privilege:
@@ -56,6 +78,7 @@ rules:
   - apiGroups: ["infrastructure.banlieue.io"]
     resources:
       - vspheremachines/finalizers
+      - libvirtmachines/finalizers
     verbs: ["update"]
 
   # ---------------------------------------------------------------------------

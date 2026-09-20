@@ -334,4 +334,34 @@ mod tests {
             "expected Desynchronised, got {err:?}"
         );
     }
+
+    /// The client private key is the libvirt credential (there is no password).
+    /// A *derived* `Debug` on [`TlsIdentity`] would put that key into any log
+    /// line that formats it, which is the failure the vSphere `Credentials`
+    /// redacting `Debug` already guards against. Keep the two symmetrical.
+    #[test]
+    fn tls_identity_debug_redacts_the_private_key() {
+        let identity = TlsIdentity {
+            ca_pem: b"-----BEGIN CERTIFICATE-----\nCA-MATERIAL\n".to_vec(),
+            client_cert_pem: b"-----BEGIN CERTIFICATE-----\nCLIENT-CERT\n".to_vec(),
+            client_key_pem: b"-----BEGIN PRIVATE KEY-----\nSUPER-SECRET-KEY\n".to_vec(),
+        };
+
+        let rendered = format!("{identity:?}");
+
+        assert!(
+            !rendered.contains("SUPER-SECRET-KEY"),
+            "private key leaked into Debug output: {rendered}"
+        );
+        assert!(
+            rendered.contains("<redacted>"),
+            "expected the key field to render as <redacted>, got {rendered}"
+        );
+        // The non-secret halves stay useful for diagnostics — a redacting
+        // Debug that hides everything makes operators reach for a real one.
+        assert!(
+            rendered.contains("ca_pem") && rendered.contains("client_cert_pem"),
+            "expected the non-secret fields to remain visible, got {rendered}"
+        );
+    }
 }

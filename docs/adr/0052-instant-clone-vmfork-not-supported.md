@@ -1,12 +1,11 @@
-# 0042 — vSphere Instant Clone ("vmFork") is not a banlieue provisioning strategy
+# 0052 — vSphere Instant Clone ("vmFork") is not a banlieue provisioning strategy
 
-## Status
-
-Accepted — 2026-09-11.
+- **Status:** Accepted
+- **Date:** 2026-09-11
 
 ## Context
 
-While validating the Trusted Boot/UKI boot-stall investigation (ADR-0041) via
+While validating the Trusted Boot/UKI boot-stall investigation (ADR-0051) via
 live `govc` commands against the maintainer's real vCenter, the question came
 up of whether this environment supports vSphere **Instant Clone** — the
 productized descendant of VMware's "vmFork" research project — as a faster
@@ -25,7 +24,7 @@ Investigation (live, via `govc`):
   `power_on: false` → attach vTPM per ADR-0039 → set boot options → power on
   → first-boot cloud-init) assumes the cold-clone lifecycle throughout.
 - **Instant Clone does not support a source VM with a vTPM device attached.**
-  ADR-0039 (vTPM support) and ADR-0040/ADR-0041 (deferred install, Trusted
+  ADR-0039 (vTPM support) and ADR-0040/ADR-0051 (deferred install, Trusted
   Boot/UKI) are the current, active investment for `VSphereMachine` — Kairos's
   `kcrypt` requires a vTPM to seal LUKS keys. Any Instant Clone support could
   therefore only ever apply to a non-TPM subset of the fleet, in parallel

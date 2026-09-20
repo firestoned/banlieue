@@ -1,10 +1,10 @@
 # 0029 — Default hostname/FQDN via `guestinfo.metadata`, not `userData`
 
-## Status
-
-Accepted — 2026-08-22. Extends [ADR-0024](0024-vspheremachine-clone-static-ip-cloud-config.md)'s
-`build_guestinfo` (already sets `guestinfo.network.hostname` unconditionally
-on every clone).
+- **Status:** Accepted
+- **Date:** 2026-08-22
+- **Related:** Extends [ADR-0024](0024-vspheremachine-clone-static-ip-cloud-config.md)'s
+  `build_guestinfo` (already sets `guestinfo.network.hostname` unconditionally
+  on every clone).
 
 ## Context
 

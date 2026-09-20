@@ -67,6 +67,10 @@ pub const PROC_STORAGE_POOL_LOOKUP_BY_NAME: i32 = 84;
 pub const PROC_STORAGE_POOL_GET_XML_DESC: i32 = 88;
 /// `REMOTE_PROC_STORAGE_VOL_CREATE_XML`.
 pub const PROC_STORAGE_VOL_CREATE_XML: i32 = 93;
+/// `REMOTE_PROC_STORAGE_VOL_DELETE`.
+pub const PROC_STORAGE_VOL_DELETE: i32 = 94;
+/// `REMOTE_PROC_STORAGE_VOL_LOOKUP_BY_NAME`.
+pub const PROC_STORAGE_VOL_LOOKUP_BY_NAME: i32 = 95;
 /// `REMOTE_PROC_STORAGE_VOL_UPLOAD`.
 pub const PROC_STORAGE_VOL_UPLOAD: i32 = 208;
 /// `REMOTE_PROC_CONNECT_LIST_ALL_STORAGE_POOLS`.
@@ -75,6 +79,31 @@ pub const PROC_CONNECT_LIST_ALL_STORAGE_POOLS: i32 = 281;
 pub const PROC_STORAGE_POOL_LIST_ALL_VOLUMES: i32 = 282;
 /// `REMOTE_PROC_CONNECT_LIST_ALL_NETWORKS`.
 pub const PROC_CONNECT_LIST_ALL_NETWORKS: i32 = 283;
+
+// Domain procedures (ADR-0050). Numbers transcribed from `remote_protocol.x`
+// at libvirt `master`, 2026-09-18 — a wrong one is a silent wire bug, so each
+// is named after the enum entry it came from.
+/// `REMOTE_PROC_DOMAIN_DESTROY` — force power-off. Not a graceful shutdown.
+pub const PROC_DOMAIN_DESTROY: i32 = 12;
+/// `REMOTE_PROC_DOMAIN_LOOKUP_BY_NAME`.
+pub const PROC_DOMAIN_LOOKUP_BY_NAME: i32 = 23;
+/// `REMOTE_PROC_DOMAIN_SHUTDOWN` — ACPI request; the guest may ignore it.
+pub const PROC_DOMAIN_SHUTDOWN: i32 = 33;
+/// `REMOTE_PROC_DOMAIN_CREATE_WITH_FLAGS` — start a defined domain.
+pub const PROC_DOMAIN_CREATE_WITH_FLAGS: i32 = 196;
+/// `REMOTE_PROC_DOMAIN_GET_STATE`.
+pub const PROC_DOMAIN_GET_STATE: i32 = 212;
+/// `REMOTE_PROC_DOMAIN_UNDEFINE_FLAGS`. The flagless `DOMAIN_UNDEFINE` (35)
+/// is deliberately not used: it cannot remove NVRAM or TPM state.
+pub const PROC_DOMAIN_UNDEFINE_FLAGS: i32 = 231;
+/// `REMOTE_PROC_CONNECT_LIST_ALL_DOMAINS`.
+pub const PROC_CONNECT_LIST_ALL_DOMAINS: i32 = 273;
+/// `REMOTE_PROC_DOMAIN_DEFINE_XML_FLAGS`.
+pub const PROC_DOMAIN_DEFINE_XML_FLAGS: i32 = 350;
+/// `REMOTE_PROC_NETWORK_GET_DHCP_LEASES`.
+pub const PROC_NETWORK_GET_DHCP_LEASES: i32 = 341;
+/// `REMOTE_PROC_DOMAIN_INTERFACE_ADDRESSES`.
+pub const PROC_DOMAIN_INTERFACE_ADDRESSES: i32 = 353;
 
 /// Errors from framing and decoding RPC messages.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

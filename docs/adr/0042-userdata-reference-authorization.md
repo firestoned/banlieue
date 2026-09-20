@@ -4,13 +4,13 @@ SPDX-License-Identifier: Apache-2.0
 -->
 # 0042 — A VirtualMachine may only reference userData its creator can read
 
-## Status
-
-Accepted — 2026-09-09. Amends [ADR-0025](0025-vspheremachine-userdata-secret-rbac.md)
-(controller-resolved userData, namespace-scoped Role) and
-[ADR-0038](0038-userdata-configmap-support.md) (ConfigMap sources). Applies the
-CEL-`authorizer` pattern established by
-[ADR-0007](0007-admission-policies.md) for `Provider.spec.connection.credentialsRef`.
+- **Status:** Accepted
+- **Date:** 2026-09-09
+- **Related:** Amends [ADR-0025](0025-vspheremachine-userdata-secret-rbac.md)
+  (controller-resolved userData, namespace-scoped Role) and
+  [ADR-0038](0038-userdata-configmap-support.md) (ConfigMap sources). Applies the
+  CEL-`authorizer` pattern established by
+  [ADR-0007](0007-admission-policies.md) for `Provider.spec.connection.credentialsRef`.
 
 ## Context
 

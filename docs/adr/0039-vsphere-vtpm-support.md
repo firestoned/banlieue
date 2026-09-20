@@ -1,8 +1,7 @@
 # 0039 — vSphere virtual TPM (vTPM) support for Kairos disk encryption
 
-## Status
-
-Accepted — 2026-09-04.
+- **Status:** Accepted
+- **Date:** 2026-09-04
 
 ## Context
 

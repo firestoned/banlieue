@@ -1,12 +1,12 @@
 # 0034 — VSphereMachine/VirtualMachine mirror observed VM power state
 
-## Status
-
-Accepted — 2026-08-24. Amends [ADR-0024](0024-vspheremachine-clone-static-ip-cloud-config.md)'s
-create-path-only scoping decision. Extends `banlieue.io/v1alpha1`
-`VirtualMachine` (`crates/banlieue-api/src/banlieue/virtualmachine.rs`) and
-`infrastructure.banlieue.io/v1alpha1` `VSphereMachine`
-(`crates/banlieue-api/src/infrastructure/vsphere_machine.rs`).
+- **Status:** Accepted
+- **Date:** 2026-08-24
+- **Related:** Amends [ADR-0024](0024-vspheremachine-clone-static-ip-cloud-config.md)'s
+  create-path-only scoping decision. Extends `banlieue.io/v1alpha1`
+  `VirtualMachine` (`crates/banlieue-api/src/banlieue/virtualmachine.rs`) and
+  `infrastructure.banlieue.io/v1alpha1` `VSphereMachine`
+  (`crates/banlieue-api/src/infrastructure/vsphere_machine.rs`).
 
 ## Context
 

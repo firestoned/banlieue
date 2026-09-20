@@ -88,20 +88,29 @@ crates/banlieue-provider-libvirt/
 
 ## Libvirt client choice
 
-Use the `virt` crate (libvirt-rs FFI bindings). It's the most mature
-option. Wrap it behind a safe trait so test code can mock and so
-fewer files have to deal with FFI quirks.
-
-Dependencies:
-
-```toml
-[dependencies]
-virt = "0.4"           # libvirt FFI; pin exactly
-```
-
-The container image must include `libvirt0` (Debian package) or the
-equivalent on the chosen base. Use `debian:bookworm-slim` rather than
-distroless for this provider.
+> **Superseded by [ADR-0050](../../docs/adr/0050-libvirtmachine-domain-lifecycle.md),
+> 2026-09-18.** This section specified the `virt` crate (libvirt FFI
+> bindings), a `libvirt0` system dependency and a `debian:bookworm-slim`
+> base. None of that happened and none of it should: `crates/banlieue-libvirt`
+> is a first-party, pure-Rust implementation of libvirt's **native RPC
+> protocol** — XDR codec, message framing, TLS session and stream handling —
+> and it already carries the hard parts. Adding `virt` now would mean a second
+> libvirt client in the same binary, `unsafe` FFI boundaries, a
+> distroless→`bookworm-slim` base change and a C library in the supply chain,
+> to reach procedures that are ten lines of XDR each in the client that
+> already exists.
+>
+> **Instead:** add procedures to `crates/banlieue-libvirt/src/{rpc,procs}.rs`,
+> following the transcription-comment convention already there. Procedure
+> numbers come from `remote_protocol.x` and are quoted with their source —
+> a wrong number is a silent wire bug. Keep the `encode_*`/`decode_*` halves
+> pure so the wire format is unit-testable without a daemon, and prove each
+> one against a real libvirtd via `tests/live_libvirtd.rs`.
+>
+> The `client/` subtree in the module layout below is likewise replaced by
+> that procedure layer. Everything else in this document — NoCloud
+> cloud-init, IPAM, failure domains, the SSH-key Secret, domain XML escaping
+> — stands.
 
 ## Module layout
 
@@ -272,15 +281,35 @@ Domain XML skeleton:
 
 ## Tasks
 
-- [ ] Add `LibvirtMachine` + template to `banlieue-api`. Regenerate.
-- [ ] Scaffold the provider crate; add the `virt` dependency.
+- [x] ~~Add `LibvirtMachine` + template to `banlieue-api`. Regenerate.~~
+      **Done** — `LibvirtMachine` + `LibvirtMachineTemplate` exist, are wired
+      into `infrastructure/mod.rs` and `crdgen`, and generate
+      `deploy/crds/infrastructure.banlieue.io_libvirtmachine{s,templates}.yaml`.
+- [x] ~~Scaffold the provider crate; add the `virt` dependency.~~ Crate
+      exists; the `virt` dependency is struck (ADR-0050). Domain
+      procedures land in `banlieue-libvirt` instead — **done**
+      2026-09-18: lookup/define/create/shutdown/destroy/undefine/
+      get_state/interface_addresses, with a live lifecycle test.
 - [ ] Implement `client/connection.rs` with URI parsing
       (`qemu+ssh://user@host/system` etc.) and reconnect.
-- [ ] Implement `client/{pools,networks,volume,domain}.rs`.
-- [ ] Implement `xml/domain.rs` with thorough escaping and tests.
-- [ ] Implement `cloudinit.rs` (NoCloud ISO build).
-- [ ] Implement `reconciler/{provider,libvirt_machine,image}.rs`.
-- [ ] Implement deletion finalizer (volumes + ISO cleanup).
+- [ ] Implement the remaining procedures in `banlieue-libvirt`
+      (`storage_vol_lookup_by_name`, `storage_vol_delete`,
+      `list_all_domains`). Pools, networks and volume create/upload
+      are done; domain lifecycle is done (ADR-0050).
+- [x] ~~Implement `xml/domain.rs` with thorough escaping and tests.~~
+      **Done** — `xml/escape.rs` and `xml/domain.rs`, each with its own
+      `_tests.rs`.
+- [x] Implement the NoCloud seed build — `src/cloudinit/` with a
+      first-party ISO9660+Joliet writer (ADR-0054). No `genisoimage`,
+      no subprocess, payload never written to the container's disk.
+      Verified by mounting the output with an independent ISO9660
+      implementation: label `CIDATA`, personality `ISO Joliet`,
+      hyphenated `meta-data`/`user-data` readable.
+- [ ] Implement `reconciler/libvirt_machine.rs` — **the remaining gap for
+      phase 1D.** `reconciler/{provider,vmimage}.rs`, the CRD, the domain XML
+      builder and the `banlieue-libvirt` domain procedures (ADR-0050) are all
+      in place; nothing drives a `LibvirtMachine` from a CR yet.
+- [x] Implement deletion finalizer (domain, disks and seed ISO).
 - [ ] Multi-stage Dockerfile based on `debian:bookworm-slim`,
       installing `libvirt-clients`, `genisoimage`, `qemu-utils`.
 - [ ] RBAC: same shape as other providers, namespaced to
@@ -311,18 +340,21 @@ Domain XML skeleton:
 
 ## Gotchas
 
-- **FFI safety**: the `virt` crate exposes `unsafe` boundaries.
-  Wrap every call in a small safe method on the client struct;
-  don't sprinkle `unsafe` through the reconciler.
-- **Connection lifetime**: libvirt connections are per-thread in C
-  and per-instance in Rust. Don't share a single `virt::Connect`
-  across async tasks without a Mutex. Prefer per-reconcile connections
-  with a short connection pool keyed by URI.
+- ~~**FFI safety**~~: moot — ADR-0050 keeps the native-RPC client, so no
+  `unsafe` and no C library enter the provider at all.
+- **Connection lifetime**: the C client's per-thread rule does not apply to
+  the native-RPC `Session`, but serials are per-session, so a `Session` still
+  must not be driven concurrently from two tasks. Prefer per-reconcile
+  connections.
 - **Pool refresh**: after creating a volume, the pool may need a
   refresh before libvirt sees it. Call `pool.refresh()` defensively.
-- **NVRAM cleanup**: EFI domains have an NVRAM file alongside the
-  domain. `undefine` without `VIR_DOMAIN_UNDEFINE_NVRAM` flag leaves
-  stale files; always pass the flag.
+- **NVRAM cleanup**: EFI domains have an NVRAM file alongside the domain,
+  and an emulated TPM has swtpm state. `undefine` without
+  `VIR_DOMAIN_UNDEFINE_NVRAM` / `_TPM` leaves both behind — and libvirt 11.3
+  *fails* the undefine outright on a UEFI domain rather than warning, which
+  once left every VM defined while teardown reported success. Handled:
+  `domain_undefine` has no flags parameter and always passes
+  `MANAGED_SAVE|NVRAM|TPM` (ADR-0050 Decision 5).
 - **`qemu+ssh` and host keys**: known-hosts is a deployment problem.
   Either pre-populate the container with known-hosts via ConfigMap,
   or set `StrictHostKeyChecking=accept-new` (less safe). Document

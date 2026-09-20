@@ -803,4 +803,397 @@ mod tests {
         .unwrap();
         assert_eq!(m.spec.desired_power_state, PowerState::PoweredOff);
     }
+
+    // ======================================================================
+    // build_libvirt_machine (ADR-0050)
+    // ======================================================================
+
+    fn libvirt_provider(network_target: (&str, &str)) -> Provider {
+        let mut p = parent_provider();
+        p.metadata.name = Some("kvm-a".into());
+        p.spec.provider_class_ref = LocalObjectReference {
+            name: "libvirt".into(),
+        };
+        p.spec.capabilities = ProviderCapabilities {
+            network_classes: vec![banlieue_api::banlieue::NetworkClassMapping {
+                name: "prod".into(),
+                target: Some(BTreeMap::from([(
+                    network_target.0.to_string(),
+                    network_target.1.to_string(),
+                )])),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        p
+    }
+
+    fn libvirt_decision() -> Decision {
+        Decision {
+            provider_name: "kvm-a".into(),
+            provider_namespace: "banlieue-system".into(),
+            provider_class: "libvirt".into(),
+            failure_domain_name: "kvm-a-default".into(),
+            resolved_storage: vec![ResolvedResource {
+                class_name: "gold".into(),
+                backend_id: "nvme-pool".into(),
+            }],
+            resolved_networks: vec![ResolvedResource {
+                class_name: "prod".into(),
+                backend_id: "default".into(),
+            }],
+            // libvirt has no datacenter/cluster hierarchy, so `raw` is empty
+            // — which is exactly what must NOT be treated as an error here.
+            failure_domain_raw: BTreeMap::new(),
+            failure_domain_labels: BTreeMap::new(),
+        }
+    }
+
+    /// The VMImage fixture resolves per-provider; point it at the libvirt
+    /// provider and give it a volume name rather than a vCenter template.
+    fn libvirt_image(install_mode: banlieue_api::banlieue::InstallMode) -> VMImage {
+        let mut img = parent_image();
+        img.spec.template = Some(banlieue_api::banlieue::VMImageTemplate {
+            install_mode,
+            ..Default::default()
+        });
+        if let Some(status) = img.status.as_mut() {
+            status.per_provider = vec![ImagePerProviderStatus {
+                provider_name: "kvm-a".into(),
+                provider_namespace: "banlieue-system".into(),
+                ready: true,
+                resolved_ref: Some("kairos-sandbox.img".into()),
+                reason: None,
+                message: None,
+                zones: vec![],
+            }];
+        }
+        img
+    }
+
+    fn build_libvirt(
+        vm: &VirtualMachine,
+        class: &VMClass,
+        image: &VMImage,
+        provider: &Provider,
+    ) -> Result<banlieue_api::infrastructure::LibvirtMachine, InfraBuildError> {
+        build_libvirt_machine(vm, class, image, &libvirt_decision(), provider, None)
+    }
+
+    #[test]
+    fn libvirt_happy_path_populates_every_required_field() {
+        use banlieue_api::banlieue::InstallMode;
+        let provider = libvirt_provider(("network", "default"));
+        let m = build_libvirt(
+            &parent_vm(),
+            &parent_class(),
+            &libvirt_image(InstallMode::Immediate),
+            &provider,
+        )
+        .expect("ok");
+
+        assert_eq!(m.metadata.name.as_deref(), Some("db-01"));
+        assert_eq!(m.metadata.namespace.as_deref(), Some("banlieue-system"));
+        assert_eq!(m.spec.provider_ref.name, "kvm-a");
+        assert_eq!(m.spec.pool, "nvme-pool");
+        assert_eq!(m.spec.failure_domain.as_deref(), Some("kvm-a-default"));
+        assert_eq!(m.spec.boot_source.volume, "kairos-sandbox.img");
+        assert!(m.spec.provider_id.is_none(), "the provider sets providerID");
+        assert!(!m.spec.disks.is_empty());
+    }
+
+    /// libvirt failure domains carry no `datacenter`/`cluster` in
+    /// `attributes.raw`. The vSphere builder treats their absence as a hard
+    /// error; the libvirt builder must not, or nothing ever schedules.
+    #[test]
+    fn libvirt_does_not_require_datacenter_or_cluster_raw_attributes() {
+        use banlieue_api::banlieue::InstallMode;
+        let provider = libvirt_provider(("network", "default"));
+        assert!(
+            build_libvirt(
+                &parent_vm(),
+                &parent_class(),
+                &libvirt_image(InstallMode::Immediate),
+                &provider,
+            )
+            .is_ok(),
+            "empty failure_domain_raw must be fine on libvirt"
+        );
+    }
+
+    /// One libvirt host has one flat domain namespace, but two Kubernetes
+    /// namespaces can each hold a `VirtualMachine` called `db-01`. Qualifying
+    /// the domain name is what stops the second one silently redefining the
+    /// first's domain.
+    #[test]
+    fn libvirt_domain_name_is_namespace_qualified() {
+        use banlieue_api::banlieue::InstallMode;
+        let provider = libvirt_provider(("network", "default"));
+        let m = build_libvirt(
+            &parent_vm(),
+            &parent_class(),
+            &libvirt_image(InstallMode::Immediate),
+            &provider,
+        )
+        .expect("ok");
+        assert_eq!(m.spec.domain_name, "banlieue-system-db-01");
+    }
+
+    // ------------------------------------------------------------------
+    // Boot source — install mode drives the provisioning shape
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn libvirt_immediate_image_becomes_a_backing_volume() {
+        use banlieue_api::banlieue::InstallMode;
+        use banlieue_api::infrastructure::LibvirtBootSourceKind;
+        let provider = libvirt_provider(("network", "default"));
+        let m = build_libvirt(
+            &parent_vm(),
+            &parent_class(),
+            &libvirt_image(InstallMode::Immediate),
+            &provider,
+        )
+        .expect("ok");
+        assert_eq!(
+            m.spec.boot_source.kind,
+            LibvirtBootSourceKind::BackingVolume
+        );
+        assert!(!m.spec.boot_source.needs_empty_os_disk());
+    }
+
+    /// A Deferred image installs itself per VM — the shape ADR-0040 forces
+    /// for TPM sealing, and the one roadmap 70's pool members use.
+    #[test]
+    fn libvirt_deferred_image_becomes_install_media() {
+        use banlieue_api::banlieue::InstallMode;
+        use banlieue_api::infrastructure::LibvirtBootSourceKind;
+        let provider = libvirt_provider(("network", "default"));
+        let m = build_libvirt(
+            &parent_vm(),
+            &parent_class(),
+            &libvirt_image(InstallMode::Deferred),
+            &provider,
+        )
+        .expect("ok");
+        assert_eq!(m.spec.boot_source.kind, LibvirtBootSourceKind::InstallMedia);
+        assert!(m.spec.boot_source.needs_empty_os_disk());
+    }
+
+    /// `Manual` is the documented escape hatch for a build that is not
+    /// Kairos-driven, and its mechanics match Deferred (ADR-0040).
+    #[test]
+    fn libvirt_manual_image_behaves_like_deferred() {
+        use banlieue_api::banlieue::InstallMode;
+        use banlieue_api::infrastructure::LibvirtBootSourceKind;
+        let provider = libvirt_provider(("network", "default"));
+        let m = build_libvirt(
+            &parent_vm(),
+            &parent_class(),
+            &libvirt_image(InstallMode::Manual),
+            &provider,
+        )
+        .expect("ok");
+        assert_eq!(m.spec.boot_source.kind, LibvirtBootSourceKind::InstallMedia);
+    }
+
+    #[test]
+    fn libvirt_missing_resolved_image_ref_is_an_error() {
+        use banlieue_api::banlieue::InstallMode;
+        let provider = libvirt_provider(("network", "default"));
+        let mut image = libvirt_image(InstallMode::Immediate);
+        if let Some(st) = image.status.as_mut() {
+            st.per_provider.clear();
+        }
+        assert!(matches!(
+            build_libvirt(&parent_vm(), &parent_class(), &image, &provider),
+            Err(InfraBuildError::MissingResolvedImageRef { .. })
+        ));
+    }
+
+    // ------------------------------------------------------------------
+    // NIC source — the target map's KEY is what distinguishes the two
+    // ------------------------------------------------------------------
+
+    /// `Decision.resolved_networks[].backend_id` is the flattened *value* of
+    /// the target map, so it cannot say whether `br-prod` is a bridge or a
+    /// libvirt network. The builder reads the key back off the Provider's
+    /// capabilities, which is the only place it survives.
+    #[test]
+    fn libvirt_bridge_target_key_yields_a_bridge_nic() {
+        use banlieue_api::banlieue::InstallMode;
+        use banlieue_api::infrastructure::LibvirtNicSourceKind;
+        let provider = libvirt_provider(("bridge", "br0"));
+        let m = build_libvirt(
+            &parent_vm(),
+            &parent_class(),
+            &libvirt_image(InstallMode::Immediate),
+            &provider,
+        )
+        .expect("ok");
+        assert_eq!(m.spec.network[0].source.kind, LibvirtNicSourceKind::Bridge);
+    }
+
+    #[test]
+    fn libvirt_network_target_key_yields_a_network_nic() {
+        use banlieue_api::banlieue::InstallMode;
+        use banlieue_api::infrastructure::LibvirtNicSourceKind;
+        let provider = libvirt_provider(("network", "default"));
+        let m = build_libvirt(
+            &parent_vm(),
+            &parent_class(),
+            &libvirt_image(InstallMode::Immediate),
+            &provider,
+        )
+        .expect("ok");
+        assert_eq!(m.spec.network[0].source.kind, LibvirtNicSourceKind::Network);
+        assert_eq!(m.spec.network[0].source.name, "default");
+    }
+
+    /// An admin who declared no target at all gets a managed network rather
+    /// than a failure: that is what the scheduler's own fallback already
+    /// assumes, and a bridge is the more privileged of the two to guess at.
+    #[test]
+    fn libvirt_unknown_target_key_defaults_to_a_managed_network() {
+        use banlieue_api::banlieue::InstallMode;
+        use banlieue_api::infrastructure::LibvirtNicSourceKind;
+        let mut provider = libvirt_provider(("network", "default"));
+        provider.spec.capabilities.network_classes.clear();
+        let m = build_libvirt(
+            &parent_vm(),
+            &parent_class(),
+            &libvirt_image(InstallMode::Immediate),
+            &provider,
+        )
+        .expect("ok");
+        assert_eq!(m.spec.network[0].source.kind, LibvirtNicSourceKind::Network);
+    }
+
+    // ------------------------------------------------------------------
+    // Shared resolution behaviour, same as the vSphere builder
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn libvirt_honours_hardware_overrides() {
+        use banlieue_api::banlieue::InstallMode;
+        let provider = libvirt_provider(("network", "default"));
+        let mut vm = parent_vm();
+        vm.spec.hardware_override = Some(HardwareOverride {
+            cpus: Some(2),
+            memory_mi_b: Some(2048),
+            disk_overrides: vec![],
+        });
+        let m = build_libvirt(
+            &vm,
+            &parent_class(),
+            &libvirt_image(InstallMode::Immediate),
+            &provider,
+        )
+        .expect("ok");
+        assert_eq!(m.spec.vcpus, 2);
+        assert_eq!(m.spec.memory_mi_b, 2048);
+    }
+
+    #[test]
+    fn libvirt_carries_firmware_and_tpm_from_the_class() {
+        use banlieue_api::banlieue::InstallMode;
+        let provider = libvirt_provider(("network", "default"));
+        let mut class = parent_class();
+        class.spec.firmware = Firmware::Efi;
+        class.spec.tpm_enabled = true;
+        let m = build_libvirt(
+            &parent_vm(),
+            &class,
+            &libvirt_image(InstallMode::Deferred),
+            &provider,
+        )
+        .expect("ok");
+        assert_eq!(m.spec.firmware, Firmware::Efi);
+        assert!(m.spec.tpm_enabled);
+    }
+
+    #[test]
+    fn libvirt_sets_an_owner_reference_back_to_the_vm() {
+        use banlieue_api::banlieue::InstallMode;
+        let provider = libvirt_provider(("network", "default"));
+        let m = build_libvirt(
+            &parent_vm(),
+            &parent_class(),
+            &libvirt_image(InstallMode::Immediate),
+            &provider,
+        )
+        .expect("ok");
+        let owners = m.metadata.owner_references.expect("owner refs");
+        assert_eq!(owners.len(), 1);
+        assert_eq!(owners[0].kind, "VirtualMachine");
+        assert_eq!(owners[0].name, "db-01");
+        assert_eq!(owners[0].controller, Some(true));
+    }
+
+    #[test]
+    fn libvirt_carries_rendered_user_data_verbatim() {
+        use banlieue_api::banlieue::InstallMode;
+        let provider = libvirt_provider(("network", "default"));
+        let m = build_libvirt_machine(
+            &parent_vm(),
+            &parent_class(),
+            &libvirt_image(InstallMode::Immediate),
+            &libvirt_decision(),
+            &provider,
+            Some("#cloud-config\nhostname: db-01\n"),
+        )
+        .expect("ok");
+        assert_eq!(
+            m.spec.user_data.as_deref(),
+            Some("#cloud-config\nhostname: db-01\n")
+        );
+    }
+
+    // ======================================================================
+    // InfraKind dispatch
+    // ======================================================================
+
+    #[test]
+    fn infra_kind_maps_known_provider_classes() {
+        assert_eq!(
+            InfraKind::from_provider_class("vsphere"),
+            Some(InfraKind::VSphere)
+        );
+        assert_eq!(
+            InfraKind::from_provider_class("libvirt"),
+            Some(InfraKind::Libvirt)
+        );
+    }
+
+    /// A ProviderClass can exist for a backend whose controller-side builder
+    /// does not — Proxmox, for now. That must be a reportable condition, not
+    /// a panic and not a silent no-op that leaves the VM stuck with no infra
+    /// CR and no explanation.
+    #[test]
+    fn infra_kind_is_none_for_an_unbuilt_provider_class() {
+        assert_eq!(InfraKind::from_provider_class("proxmox"), None);
+        assert_eq!(InfraKind::from_provider_class(""), None);
+        assert_eq!(InfraKind::from_provider_class("VSphere"), None);
+    }
+
+    /// These strings land in `status.infrastructureRef.kind`, which users and
+    /// CAPI both read. They must match the CRD kinds exactly.
+    #[test]
+    fn infra_kind_names_match_the_crd_kinds() {
+        use kube::CustomResourceExt;
+        assert_eq!(
+            InfraKind::VSphere.kind_name(),
+            banlieue_api::infrastructure::VSphereMachine::crd()
+                .spec
+                .names
+                .kind
+        );
+        assert_eq!(
+            InfraKind::Libvirt.kind_name(),
+            banlieue_api::infrastructure::LibvirtMachine::crd()
+                .spec
+                .names
+                .kind
+        );
+    }
 }

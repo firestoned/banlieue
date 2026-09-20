@@ -20,12 +20,9 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use banlieue_api::banlieue::{Provider, ProviderClass, VMClass, VMImage, VirtualMachine};
 use banlieue_api::crddoc::render_reference;
-use banlieue_api::crdgen_support::prepared;
-use banlieue_api::infrastructure::{VSphereCluster, VSphereMachine, VSphereMachineTemplate};
+use banlieue_api::crdgen_support::all_crds;
 use clap::Parser;
-use kube::CustomResourceExt;
 
 /// Generate the banlieue CRD API reference as Markdown.
 #[derive(Debug, Parser)]
@@ -43,17 +40,9 @@ struct Cli {
 fn main() -> ExitCode {
     let cli = Cli::parse();
 
-    // Order defines the on-page order: user-facing group first, then infra.
-    let crds = vec![
-        prepared(Provider::crd()),
-        prepared(ProviderClass::crd()),
-        prepared(VMClass::crd()),
-        prepared(VMImage::crd()),
-        prepared(VirtualMachine::crd()),
-        prepared(VSphereCluster::crd()),
-        prepared(VSphereMachine::crd()),
-        prepared(VSphereMachineTemplate::crd()),
-    ];
+    // Membership *and* on-page order come from `all_crds`, so this
+    // binary cannot drift from `crdgen` or the operator's bootstrap.
+    let crds = all_crds();
 
     let markdown = render_reference(&crds);
 

@@ -1,11 +1,11 @@
 # 0023 — Explicit failure-domain name override
 
-## Status
-
-Accepted — 2026-08-20. Extends [ADR-0019](0019-vsphere-capability-introspection-iter2.md)
-(failure-domain discovery) and [ADR-0020](0020-vsphere-per-zone-iso-import.md)
-Decision #5 (per-zone template folder isolation, which made failure-domain
-names part of a vCenter folder path).
+- **Status:** Accepted
+- **Date:** 2026-08-20
+- **Related:** Extends [ADR-0019](0019-vsphere-capability-introspection-iter2.md)
+  (failure-domain discovery) and [ADR-0020](0020-vsphere-per-zone-iso-import.md)
+  Decision #5 (per-zone template folder isolation, which made failure-domain
+  names part of a vCenter folder path).
 
 ## Context
 

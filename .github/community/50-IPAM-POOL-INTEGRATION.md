@@ -5,14 +5,23 @@
 > `networkOverrides[].static.address`, without banlieue becoming a second
 > source of truth for addresses an external IPAM system already owns.
 >
-> **Stop condition.** A `VirtualMachine` with `ipam.pool` set gets a real
-> `IPAddressClaim` created, waits for it to resolve, and boots with the
-> claimed address/prefix/gateway — merged with `perZoneSubnet` (ADR-0032)
-> for nameservers/domain exactly as a literal static override is today.
-> Deleting the VM frees the address.
+> **Stop condition.** Two halves, and the second falls out of the first:
+>
+> 1. A `VirtualMachine` with `ipam.pool` set gets a real `IPAddressClaim`
+>    created, waits for it to resolve, and boots with the claimed
+>    address/prefix/gateway — merged with `perZoneSubnet` (ADR-0032) for
+>    nameservers/domain exactly as a literal static override is today.
+>    Deleting the VM frees the address.
+> 2. A `VirtualMachinePool` with `spec.addressing.poolRef` set fills its
+>    warm set from that pool, each member holding its own claim, and
+>    deleting a member frees its address. The pool creates **no** claims
+>    itself ([ADR-0053](../../docs/adr/0053-ipam-claims-for-pool-members.md)).
 >
 > **Status: not started.** Deferred by explicit decision — see
-> [ADR-0033](../../banlieue/docs/adr/0033-capi-ipam-pool-integration.md)
+> [ADR-0033](../../docs/adr/0033-capi-ipam-pool-integration.md) for the
+> `VirtualMachine` half and
+> [ADR-0053](../../docs/adr/0053-ipam-claims-for-pool-members.md) for the
+> `VirtualMachinePool` half. ADR-0033
 > for the full design conversation, the two upstream provider options
 > considered, and why this was deferred rather than built immediately.
 > **Read that ADR before touching this roadmap** — it is the source of
@@ -84,7 +93,9 @@ instead of a human hand-picking one per VM.
    provider owns the pool is responsible for freeing the address on its
    own side.
 
-## Tasks
+## The VirtualMachine half (ADR-0033)
+
+Build this first — the pool half below inherits all of it.
 
 ### Schema / plumbing
 
@@ -153,11 +164,74 @@ instead of a human hand-picking one per VM.
       at an off-the-shelf pool with a carved-out sub-range").
 - [ ] `.claude/CHANGELOG.md` entry, `**Author:**` line, per this
       project's mandatory changelog convention.
-- [ ] Flip [ADR-0033](../../banlieue/docs/adr/0033-capi-ipam-pool-integration.md)'s
+- [ ] Flip [ADR-0033](../../docs/adr/0033-capi-ipam-pool-integration.md)'s
       status from Proposed to Accepted once the provider decision is
       final and implementation lands — record the actual provider choice
       in the ADR itself (its "Decision" section currently, correctly,
       leaves this open).
+
+## The pool half (ADR-0053)
+
+`VirtualMachinePool.spec.addressing` hands each member an address. Today
+that is an inline IPv4 range; ADR-0046 Decision 9 always intended a
+`poolRef` alternative once this roadmap lands.
+
+**The pool does not create claims.** Members do, through the very same
+`VirtualMachine` code path built below — a pool member is an ordinary
+`VirtualMachine`. Two controllers creating `IPAddressClaim`s against one
+pool is the two-sources-of-truth problem ADR-0033 exists to avoid, and it
+would be worse inside banlieue than between banlieue and someone else's
+IPAM.
+
+So the pool half is small, and it is small *because* the VM half above is
+built first.
+
+What makes it possible at all is a change to `NetworkInterfaceOverride`,
+which is static-only today and therefore cannot express "draw from this
+pool" — see ADR-0053 Decision 1.
+
+### Tasks (pool half)
+
+- [ ] `NetworkInterfaceOverride` gains `pool: Option<PoolIpamConfig>`;
+      `static_` becomes `Option`. Additive and backward compatible —
+      relaxing required to optional accepts every object that validated
+      before. Precedence follows `IpamSpec::source()`: static > pool > DHCP.
+- [ ] `regen-crds`, update `examples/`, `regen-api-docs` — this is a
+      `VirtualMachine` CRD change, so all three.
+- [ ] Every reader of `NetworkInterfaceOverride.static_` becomes an
+      `Option` match. Mechanical and compile-checked; `merge_ipam_override`
+      is the one that matters.
+- [ ] `PoolAddressing` gains `poolRef: Option<TypedObjectReference>`,
+      **exclusive** with `rangeStart`/`rangeEnd`. Exactly one must be set —
+      validate it and report the violation on the pool, not on a member.
+- [ ] `pool.rs`'s stamping step branches: write
+      `networkOverrides[].pool` for the `poolRef` path,
+      `networkOverrides[].static` for the inline range. Same field, same
+      step.
+- [ ] `PoolInputs` carries no `AddressRange` on the `poolRef` path;
+      `blocked_on_addresses` is always zero there. The planner's invariant 6
+      (an address is held until the backend VM is gone) is inline-range-only
+      — on the `poolRef` path the claim's owner cascade owns that.
+- [ ] A member whose claim has not resolved stays `Provisioning`, so
+      `provisioningTimeoutSeconds` reaps one whose claim never resolves. No
+      new timeout. Its `Ready=False` message must **name the unresolved
+      claim** — otherwise a pool pointed at an exhausted IPAM pool just
+      churns silently.
+- [ ] Docs: `docs/src/guides/virtualmachine-pools.md`'s Addressing section
+      gains the `poolRef` mode, and says where address-exhaustion
+      diagnosis moved to (the member, not the pool's `Capacity` condition).
+
+### Tests (pool half)
+
+- [ ] Pure: `poolRef` and inline range are mutually exclusive, both
+      directions.
+- [ ] Pure: the stamping step writes `pool` for one mode and `static` for
+      the other, and never both.
+- [ ] Pure: `blocked_on_addresses` stays zero on the `poolRef` path even
+      when many members are created at once.
+- [ ] Live (once a provider is chosen): a pool with `poolRef` fills, each
+      member holds a distinct claimed address, and deleting the pool frees
+      every one of them.
 
 ## Open questions (answer before or during implementation)
 

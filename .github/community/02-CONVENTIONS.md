@@ -146,9 +146,18 @@ api.patch_status(
 
 ## Testing
 
-- **Unit tests** live next to code in `#[cfg(test)] mod tests`.
-- **Integration tests** live in `tests/`; use the `kube` mock harness
-  or stand up a `kind` cluster.
+> Binding statement of these rules: `rules/testing.md` + the `tdd-workflow`
+> skill. **Tests are written first** — failing test, then the minimum
+> implementation, then refactor.
+
+- **Unit tests live in a separate `_tests.rs` file — never embedded in the
+  source file.** `src/foo.rs` gets `#[cfg(test)] mod foo_tests;` at the
+  bottom; `src/foo_tests.rs` contains
+  `#[cfg(test)] mod tests { use super::super::*; … }`.
+  (The earlier "next to code in `#[cfg(test)] mod tests`" convention is
+  superseded — see D-022.)
+- **Integration tests** live in `tests/`; use a fake client or stand up a
+  `kind` cluster.
 - For reconcilers, prefer **table-driven tests** that exercise:
   - Happy path (create → ready)
   - Scheduling failure (no candidate)
@@ -157,51 +166,66 @@ api.patch_status(
 - Mock external clients behind a trait so tests don't need a real
   vCenter / Proxmox / libvirt.
 
-## Webhooks
+## Admission control (no webhooks)
 
-- One binary per webhook role (`banlieue-validating-webhook`,
-  `banlieue-mutating-webhook`).
-- Use `kube` runtime support and serve over HTTPS with cert
-  injection via cert-manager.
-- Defaulting fills in `firmware`, `migrationPolicy`,
-  `desiredPowerState`, `provisioning`, IPAM `source` defaults.
-- Validation enforces immutability and reference consistency.
+**There are no admission webhooks in banlieue** — see D-018 and
+[ADR-0007](../../docs/adr/0007-admission-policies.md). Do not add one
+without an ADR that supersedes that decision.
+
+- Validation is CEL **`ValidatingAdmissionPolicy`**, one file per concern
+  under `deploy/admission/`. Keep a rule that needs a newer apiserver
+  capability in its own policy file so it can be gated independently.
+- **Defaulting is schema-level**: `#[serde(default = "…")]` on the Rust type
+  flows into the generated CRD's `default:`, and the apiserver applies it.
+  `firmware`, `migrationPolicy`, `desiredPowerState`, `provisioning` and the
+  IPAM `source` default this way — there is nothing to mutate at admission.
+- Validation enforces immutability, reference consistency and authorization
+  (the `authorizer` CEL variable, so a creator can only name a Secret they
+  can actually read).
 
 ## Container images
 
-- Multi-stage: build in `rust:1.80` image, copy binary to distroless
-  runtime.
-- Set `USER nonroot:nonroot`.
-- `WORKDIR /` and run from there; binary at `/banlieue-controller`,
-  `/banlieue-provider-vsphere`, etc.
+- **One image for every role.** There is a single `banlieue` binary with
+  subcommand dispatch (`banlieue controller`, `banlieue provider vsphere`)
+  per [ADR-0004](../../docs/adr/0004-single-binary-subcommand-dispatch.md);
+  the Deployment selects the role through container `args`. There is no
+  `banlieue-controller` / `banlieue-provider-*` image.
+- The binary is **built in CI** by `firestoned/github-actions`
+  (`rust/build-binary`) and copied in — the `Dockerfile` has no Rust builder
+  stage, so there is no `rust:<version>` base to keep in sync.
+- Runtime base: `gcr.io/distroless/cc-debian13:nonroot`, digest-pinned on a
+  literal `FROM` line (Dependabot's Docker parser does not expand `ARG`).
+  `Dockerfile.chainguard` is the alternate base.
+- `USER nonroot`; `ENTRYPOINT ["/usr/local/bin/banlieue"]`.
 - Health check: `/healthz` (liveness) and `/readyz` (readiness) on
-  port 8081 in every binary.
+  port 8081, provided by `banlieue-provider-sdk::bootstrap` for every role.
 
 ## CI (GitHub Actions, target shape)
 
 - `fmt`, `clippy`, `test` on every PR.
 - `crdgen` runs and verifies the output matches `deploy/crds/`
   (regenerate locally if it doesn't; CI fails otherwise).
-- E2E in Phase 4.
+- E2E on `kind`
+  ([ADR-0014](../../docs/adr/0014-kind-e2e-operator-contract.md)).
 - DCO check via [DCO app](https://github.com/apps/dco).
+
+Two standing rules for workflows (`rules/github-workflows.md`):
+**all logic lives in Makefile targets** — a workflow may install tools, set
+env, and call `make <target>`, nothing more; and **composite actions come
+from `firestoned/github-actions`**, never inlined as direct action calls
+(fix the version in that repo and bump the ref here).
 
 ## Compatibility patches
 
-### serde `rename_all_fields`
+> **Historical.** The two notes that were here — a `serde < 1.0.157`
+> `rename_all_fields` workaround and the matching `schemars` snake_case
+> fallout — predate the edition 2024 / MSRV 1.88 toolchain (D-001) and no
+> longer apply. Kept only so a reader who finds them referenced elsewhere
+> knows they were resolved by the toolchain bump, not by a code workaround.
 
-If `cargo check -p banlieue-api` complains about `rename_all_fields`,
-your serde is < 1.0.157. Either:
-
-- Bump `serde = "1.0.157"` minimum in the workspace `Cargo.toml`, or
-- Remove `rename_all_fields = "camelCase"` from `IpamSpec` in
-  `common.rs` and add explicit `#[serde(rename = "poolRef")]` on the
-  `pool_ref` field of the `Pool` variant.
-
-### schemars output names
-
-If the generated CRD shows snake_case field names where camelCase was
-expected, `schemars` isn't propagating `rename_all_fields`. Apply the
-explicit rename fix above.
+If a generated CRD ever shows snake_case where camelCase was expected, the
+cause is a missing `#[serde(rename_all = "camelCase")]` on the type, not a
+dependency-version problem — fix the type and rerun the `regen-crds` skill.
 
 ## Conventional commits
 

@@ -22,6 +22,41 @@ const CAPI_V1BETA2_LABEL: &str = "cluster.x-k8s.io/v1beta2";
 /// (InfraMachine / InfraCluster). Only these are labelled.
 const INFRA_GROUP: &str = "infrastructure.banlieue.io";
 
+/// Every CRD this crate defines, post-processed by [`prepared`].
+///
+/// **One list, three consumers.** `crdgen` writes `deploy/crds/`, `crddoc`
+/// writes the API reference, and `banlieue-operator`'s bootstrap installs
+/// them. Each of those used to carry its own hand-written list, and adding
+/// `LibvirtMachine` (ADR-0050) missed two of the three — a CRD that reaches
+/// `deploy/crds/` but not the bootstrap installs cleanly under GitOps and
+/// fails under `banlieue bootstrap` with "no matches for kind", which is a
+/// long way from the cause. A new CRD is added here and nowhere else.
+#[must_use]
+pub fn all_crds() -> Vec<CustomResourceDefinition> {
+    use crate::banlieue::{
+        Provider, ProviderClass, VMClass, VMImage, VirtualMachine, VirtualMachinePool,
+    };
+    use crate::infrastructure::{
+        LibvirtMachine, LibvirtMachineTemplate, VSphereCluster, VSphereMachine,
+        VSphereMachineTemplate,
+    };
+    use kube::CustomResourceExt;
+
+    vec![
+        prepared(Provider::crd()),
+        prepared(ProviderClass::crd()),
+        prepared(VirtualMachine::crd()),
+        prepared(VirtualMachinePool::crd()),
+        prepared(VMClass::crd()),
+        prepared(VMImage::crd()),
+        prepared(LibvirtMachine::crd()),
+        prepared(LibvirtMachineTemplate::crd()),
+        prepared(VSphereCluster::crd()),
+        prepared(VSphereMachine::crd()),
+        prepared(VSphereMachineTemplate::crd()),
+    ]
+}
+
 /// Apply post-generation fix-ups to a CRD before serialization.
 pub fn prepared(mut crd: CustomResourceDefinition) -> CustomResourceDefinition {
     promote_spec_description(&mut crd);

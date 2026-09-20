@@ -121,7 +121,7 @@ pub type Result<T> = std::result::Result<T, TransportError>;
 ///
 /// The client certificate is the credential — there is no password field
 /// here, by design.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct TlsIdentity {
     /// PEM CA bundle that signed libvirtd's server certificate.
     pub ca_pem: Vec<u8>,
@@ -129,6 +129,26 @@ pub struct TlsIdentity {
     pub client_cert_pem: Vec<u8>,
     /// PEM client private key.
     pub client_key_pem: Vec<u8>,
+}
+
+/// Hand-written so the private key can never reach a log line.
+///
+/// `client_key_pem` *is* the credential here, so a derived `Debug` would put
+/// it into any `{:?}` — mirroring the redacting `Debug` on the vSphere
+/// provider's `Credentials`. The CA and client certificate are public
+/// material and stay visible, because a `Debug` that redacts everything is one
+/// operators work around.
+impl std::fmt::Debug for TlsIdentity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TlsIdentity")
+            .field("ca_pem", &format_args!("{} bytes", self.ca_pem.len()))
+            .field(
+                "client_cert_pem",
+                &format_args!("{} bytes", self.client_cert_pem.len()),
+            )
+            .field("client_key_pem", &"<redacted>")
+            .finish()
+    }
 }
 
 /// A libvirt RPC session over a byte stream.
