@@ -977,4 +977,52 @@ mod tests {
         let class = build_provider_class("libvirt", &opts());
         assert!(!class.spec.image.reference().contains('@'));
     }
+
+    // ------------------------------------------------------------------
+    // The CRD list must not drift from crdgen's
+    // ------------------------------------------------------------------
+
+    /// `banlieue bootstrap` installs whatever `build_crds` lists, while
+    /// GitOps installs whatever `crdgen` wrote into `deploy/crds/`. Nothing
+    /// links the two but this test — and a CRD present in one and absent
+    /// from the other is invisible until a controller's first patch fails
+    /// with "no matches for kind". Found exactly that way: `LibvirtMachine`
+    /// (ADR-0050) reached `deploy/crds/` and `crdgen`, but not here.
+    #[test]
+    fn bootstrap_installs_every_crd_that_is_generated_into_deploy() {
+        use std::collections::BTreeSet;
+
+        let installed: BTreeSet<String> = build_crds()
+            .iter()
+            .map(|c| c.metadata.name.clone().unwrap_or_default())
+            .collect();
+
+        let generated: BTreeSet<String> =
+            std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/../../deploy/crds"))
+                .expect("deploy/crds must exist")
+                .filter_map(|e| {
+                    let path = e.ok()?.path();
+                    if path.extension()? != "yaml" {
+                        return None;
+                    }
+                    let doc = std::fs::read_to_string(&path).ok()?;
+                    let crd: serde_yaml::Value = serde_yaml::from_str(&doc).ok()?;
+                    Some(crd.get("metadata")?.get("name")?.as_str()?.to_string())
+                })
+                .collect();
+
+        assert!(!generated.is_empty(), "no CRDs found in deploy/crds");
+        let missing: Vec<&String> = generated.difference(&installed).collect();
+        assert!(
+            missing.is_empty(),
+            "these CRDs are in deploy/crds but `banlieue bootstrap` would not \
+             install them: {missing:?}. Add them to build_crds()."
+        );
+        let extra: Vec<&String> = installed.difference(&generated).collect();
+        assert!(
+            extra.is_empty(),
+            "these CRDs are installed by bootstrap but were never generated \
+             into deploy/crds: {extra:?}. Run the regen-crds skill."
+        );
+    }
 }

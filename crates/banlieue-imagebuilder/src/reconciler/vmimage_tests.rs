@@ -574,7 +574,7 @@ mod tests {
     }
 
     // ----------------------------------------------------------------------
-    // desired_os_artifact — trustedBoot / UKI wiring (ADR-0041)
+    // desired_os_artifact — trustedBoot / UKI wiring (ADR-0051)
     // ----------------------------------------------------------------------
 
     #[test]
@@ -876,7 +876,7 @@ mod tests {
     }
 
     // ----------------------------------------------------------------------
-    // missing_trusted_boot_keys (ADR-0041 Decision #3 — preflight validation)
+    // missing_trusted_boot_keys (ADR-0051 Decision #3 — preflight validation)
     // ----------------------------------------------------------------------
 
     #[test]
@@ -1051,7 +1051,7 @@ mod tests {
         // real file on the PVC is `<osArtifactName>-uki.iso`, not
         // `<osArtifactName>.iso` — confirmed against a live import failure
         // ("cannot read .../debian-tpm-dev-v0.4.0-build.iso") plus
-        // kairos-operator/AuroraBoot source (ADR-0041 Decision #5).
+        // kairos-operator/AuroraBoot source (ADR-0051 Decision #5).
         let view = KairosArtifactStatusView {
             phase: Some("Ready".to_string()),
             message: None,

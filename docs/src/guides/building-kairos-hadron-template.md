@@ -532,5 +532,5 @@ and point a `VMImage` at it; see
   `vmware.log` showing zero hypervisor-visible activity during the stalls —
   not vTPM emulation overhead, something inside guest space not yet
   root-caused. A follow-up attempt with a Hadron-based image also failed to
-  boot cleanly and wasn't further diagnosed. See ADR-0041's follow-ups
+  boot cleanly and wasn't further diagnosed. See ADR-0051's follow-ups
   before relying on this for anything beyond experimentation.

@@ -12,7 +12,7 @@ to click and, where a check is deliberately capped, why.
 
 | Alert | Check | Score | Fixable in-repo? |
 | --- | --- | --- | --- |
-| [#1](https://github.com/firestoned/banlieue/security/code-scanning/1) | Branch-Protection | 0 | No — repo settings |
+| [#1](https://github.com/firestoned/banlieue/security/code-scanning/1) | Branch-Protection | 0 | ✅ Configured 2026-09-19 — ruleset `main` active |
 | [#5](https://github.com/firestoned/banlieue/security/code-scanning/5) | Code-Review | 0 | No — process |
 | [#7](https://github.com/firestoned/banlieue/security/code-scanning/7) | CII-Best-Practices | 0 | No — external registration |
 | [#21](https://github.com/firestoned/banlieue/security/code-scanning/21) | Pinned-Dependencies | 9 | **No — permanently capped, see below** |
@@ -20,21 +20,80 @@ to click and, where a check is deliberately capped, why.
 
 ---
 
-## #1 — Branch-Protection (score 0)
+## #1 — Branch-Protection — ✅ configured 2026-09-19
 
 > `branch protection not enabled for branch 'main'`
 
-**Settings → Rules → Rulesets → New branch ruleset**, targeting `main`:
+**Applied.** Ruleset `main` (id `20591452`) had been created but left at
+`enforcement: disabled`, with only `deletion` and `non_fast_forward` rules.
+It is now **active** and requires the six status checks below.
+
+**This also fixed Dependabot auto-merge.** `gh pr merge --auto` failed with
+`GraphQL: Pull request Protected branch rules not configured for this branch
+(enablePullRequestAutoMerge)` — GitHub refuses to enable auto-merge on a base
+branch with no *enforced*, merge-gating protection. A disabled ruleset does not
+count, and `deletion`/`non_fast_forward` gate pushes rather than merges, so
+`required_status_checks` was the missing piece.
+
+> ### ⚠️ Known consequence: docs-only PRs will block
+>
+> Four of the six required checks — `🎨 Check Formatting`, `📎 Clippy`,
+> `🧪 Test`, `🧪 cargo-deny` — come from `build.yaml`, which is
+> **`paths:`-filtered** (`crates/**`, `Cargo.toml`, `Dockerfile*`,
+> `.github/workflows/build.yaml`, `.github/actions/**`, `.vex/**`). A PR that
+> touches only `docs/`, `.github/community/` or a root Markdown file never
+> triggers that workflow, so those four contexts never report — and a
+> required check that never reports blocks the PR **indefinitely**.
+>
+> There are no bypass actors (deliberately — Scorecard penalises admin
+> bypass), so this cannot be clicked past.
+>
+> Two ways out, if and when it bites:
+> 1. **Aggregator gate (preferred).** Add a `required-checks` job to
+>    `build.yaml` that runs with `if: always()` and `needs:` the four real
+>    jobs, failing only if one of them *failed* (a skip is a pass). Require
+>    that single context instead of the four. Docs-only PRs go green; code PRs
+>    stay fully gated.
+> 2. **Widen the path filter** so `build.yaml` also runs on `docs/**` and
+>    `**/*.md`. Simpler, but it runs the whole Rust build on prose changes.
+>
+> `🔍 CodeQL - rust` / `🔍 CodeQL - actions` come from `codeql.yaml`, which has
+> no path filter and runs on every PR to `main` — those two are always safe to
+> require.
+
+> ### Verifying the auto-merge fix
+>
+> `repos/firestoned/banlieue/rules/branches/main` now reports
+> `["deletion", "non_fast_forward", "required_status_checks"]` — the ruleset is
+> live and merge-gating.
+>
+> Note that the **legacy** endpoint `repos/.../branches/main/protection` still
+> returns `404 Branch not protected`. That is expected: rulesets and classic
+> branch protection are separate systems and the legacy API does not report
+> rulesets. It is *not* evidence the fix failed.
+>
+> **Confirm by re-running the failed `Enable auto-merge (patch/minor)` job**, or
+> by pushing a new Dependabot PR. If it still fails with the same
+> `enablePullRequestAutoMerge` error, then GitHub's auto-merge path wants
+> *classic* branch protection specifically rather than a ruleset — in that case
+> add a classic protection rule on `main` with the same required checks
+> (`PUT /repos/{owner}/{repo}/branches/main/protection`) and leave the ruleset
+> in place for Scorecard, which does read rulesets.
+
+The configuration, for reference / reapplication:
 
 - **Restrict deletions** ✅
 - **Block force pushes** ✅
-- **Require a pull request before merging** ✅
-  - Required approvals: **1** (this is also what fixes #5 — see the caveat there)
+- **Require a pull request before merging** — ⚠️ **deliberately NOT enabled.**
+  Requiring an approval would permanently stall Dependabot auto-merge: nobody
+  approves bot PRs, and a solo maintainer cannot self-approve. See #5 for the
+  options if you want that Scorecard point back.
+  - Required approvals: **1** (this is what would fix #5 — read the caveat there first)
   - Dismiss stale approvals on push ✅
   - Require review of the most recent reviewable push ✅
-- **Require status checks to pass** ✅ — at minimum: `🎨 Check Formatting`,
+- **Require status checks to pass** ✅ — all six: `🎨 Check Formatting`,
   `📎 Clippy`, `🧪 Test`, `🧪 cargo-deny (License + Advisory + Sources)`,
-  `🔍 CodeQL - rust`, `🔍 CodeQL - actions`
+  `🔍 CodeQL - rust`, `🔍 CodeQL - actions` (see the warning above)
 - **Require branches to be up to date before merging** ✅
 - **Require signed commits** ✅ — the repo already verifies these in CI
   (`🔐 Verify Signed Commits`), so enforcing at the branch closes the gap where

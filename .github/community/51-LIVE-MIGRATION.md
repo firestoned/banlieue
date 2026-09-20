@@ -15,7 +15,7 @@
 > don't support live relocation but do support offline move.
 >
 > **Status: not started.** Deferred by explicit decision — see
-> [ADR-0036](../../banlieue/docs/adr/0036-live-migration-phased-approach.md)
+> [ADR-0036](../../docs/adr/0036-live-migration-phased-approach.md)
 > for the full design conversation, why same-class and cross-class are
 > split into separate problems, and why cross-class is explicitly
 > unscoped here. **Read that ADR before touching this roadmap** — it is
@@ -24,7 +24,7 @@
 
 ## Why this exists as its own roadmap entry
 
-[ADR-0035](../../banlieue/docs/adr/0035-virtualmachine-watches-provider-and-vmclass.md)
+[ADR-0035](../../docs/adr/0035-virtualmachine-watches-provider-and-vmclass.md)
 made placement-drift detection event-driven (a `Provider` label edit now
 re-triggers scheduling immediately instead of waiting out a poll
 interval). That's strictly a correctness improvement, but it also means
@@ -75,7 +75,7 @@ actually buildable today (same provider class).
 - Only `VSphereMachine`/`VSphereCluster` exist as real infra CRDs
   (`banlieue-api/src/infrastructure/`). `banlieue-provider-proxmox` and
   `banlieue-provider-libvirt` are scaffold-only per
-  `12-PHASE-1C-PROXMOX-PROVIDER.md` / `13-PHASE-1D-LIBVIRT-PROVIDER.md` —
+  `12-phase-1c-proxmox-provider.md` / `13-phase-1d-libvirt-provider.md` —
   Phase A work here should start and stay scoped to vSphere until at
   least one other provider actually has an infra CRD implemented.
 

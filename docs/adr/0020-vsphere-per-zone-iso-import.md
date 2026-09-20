@@ -1,14 +1,15 @@
 # 0020 — vSphere per-zone image import via ISO template creation
 
-## Status
-
-Accepted — 2026-08-08, amended 2026-08-20 (Decision #5, per-zone template
-folder isolation). Extends [ADR-0010](0010-vmimage-build-pipeline-imagebuilder.md)
-(the `banlieue-imagebuilder` build/import split), [ADR-0015](0015-vmimage-status-merge-strategy.md)
-(per-provider status ownership), and [ADR-0016](0016-imagebuild-namespace-isolation.md)
-(imagebuild namespace). Builds on [ADR-0008](0008-byoc-vsphere-http-client.md)
-(BYOC vim client) and mirrors [ADR-0011](0011-libvirt-provider-own-client.md)'s
-per-target import-Job pattern.
+- **Status:** Accepted
+- **Date:** 2026-08-08
+- **Amended:** 2026-08-20 (Decision #5, per-zone template
+  folder isolation).
+- **Related:** Extends [ADR-0010](0010-vmimage-build-pipeline-imagebuilder.md)
+  (the `banlieue-imagebuilder` build/import split), [ADR-0015](0015-vmimage-status-merge-strategy.md)
+  (per-provider status ownership), and [ADR-0016](0016-imagebuild-namespace-isolation.md)
+  (imagebuild namespace). Builds on [ADR-0008](0008-byoc-vsphere-http-client.md)
+  (BYOC vim client) and mirrors [ADR-0011](0011-libvirt-provider-own-client.md)'s
+  per-target import-Job pattern.
 
 ## Context
 

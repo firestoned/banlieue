@@ -1,9 +1,9 @@
 # 0038 — userData supports both Secret and ConfigMap sources
 
-## Status
-
-Accepted — 2026-08-27. Extends [ADR-0025](0025-vspheremachine-userdata-secret-rbac.md)
-(`UserDataSpec` shape and controller-side resolution).
+- **Status:** Accepted
+- **Date:** 2026-08-27
+- **Related:** Extends [ADR-0025](0025-vspheremachine-userdata-secret-rbac.md)
+  (`UserDataSpec` shape and controller-side resolution).
 
 ## Context
 

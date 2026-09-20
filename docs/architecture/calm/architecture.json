@@ -166,13 +166,13 @@
       "unique-id": "service-provider-libvirt",
       "node-type": "service",
       "name": "banlieue-provider-libvirt",
-      "description": "Provider controller for libvirt/KVM hosts, speaking libvirt's own RPC protocol through the first-party `banlieue-libvirt` crate (XDR codec + message framing) rather than any third-party client — zero new dependencies, no C library, no FFI. Split by plane (ADR-0011): the CONTROL plane runs in-process — the Provider reconciler connects, lists storage pools and networks, verifies the admin-declared spec.capabilities actually exist, and publishes status.failureDomains[] (one per host, with pools as the interesting sub-structure since libvirt has no datacenter/cluster hierarchy). The DATA plane runs as a Kubernetes Job so bulk disk bytes never flow through the controller process; that Job runs the `banlieue` binary itself, so there is no third-party tools image to pin, trust, or patch. VM lifecycle (a LibvirtMachine InfraMachine CRD) is deliberately out of scope for this increment."
+      "description": "Provider controller for libvirt/KVM hosts, speaking libvirt's own RPC protocol through the first-party `banlieue-libvirt` crate (XDR codec + message framing) rather than any third-party client — zero new dependencies, no C library, no FFI. Split by plane (ADR-0011): the CONTROL plane runs in-process — the Provider reconciler connects, lists storage pools and networks, verifies the admin-declared spec.capabilities actually exist, and publishes status.failureDomains[] (one per host, with pools as the interesting sub-structure since libvirt has no datacenter/cluster hierarchy). The DATA plane runs as a Kubernetes Job so bulk disk bytes never flow through the controller process; that Job runs the `banlieue` binary itself, so there is no third-party tools image to pin, trust, or patch. VM lifecycle (a LibvirtMachine InfraMachine CRD) is deliberately out of scope for this increment. A third reconciler (ADR-0050) owns the LibvirtMachine lifecycle: it defines, starts, inspects and undefines domains through the same first-party `banlieue-libvirt` crate, adding domain procedures beside the existing storage ones rather than taking on libvirt's C client. Undefine always passes MANAGED_SAVE|NVRAM|TPM so no varstore or swtpm state outlives a deleted VM. Domain XML is rendered through an escaping-only template module: every value reaching it (domain name, volume paths, bridge names) is user- or admin-influenced. User-data reaches a libvirt guest as a cloud-init NoCloud seed: a small ISO labelled CIDATA, built in-process with a Joliet tree (ADR-0054) because ISO9660 Level 1 cannot spell the hyphenated `meta-data`/`user-data` names cloud-init requires. No genisoimage, no subprocess, and the payload never touches the container's filesystem — unlike vSphere, which has guestinfo and needs no disk at all."
     },
     {
       "unique-id": "service-banlieue-imagebuilder",
       "node-type": "service",
       "name": "banlieue-imagebuilder",
-      "description": "Provider-agnostic controller that turns a VMImage's OCI/Kairos-referenced source (spec.sources[].kind == Url) into a build artifact. Server-side-applies an OSArtifact CR (kairos-operator) requesting either a cloud image (spec.artifacts.cloudImage, for libvirt) or a bootable ISO for vSphere — spec.artifacts.iso + cloudConfigRef normally, or spec.artifacts.uki.{iso,keysVolume} instead when spec.trustedBoot is set (a Secret-backed key volume for auroraboot build-uki, ADR-0041) — watches its status.phase, and mirrors readiness into VMImage.status.buildArtifact — a typed top-level field (kind: cloudImage | iso, aligned with kairos OSArtifactKind) distinct from status.perProvider[], so this controller and each provider controller's field manager never contend over the same VMImage.status fields. When VMImage.spec.cloudConfigs[] is set it layers those cloud-config sources (Secret/ConfigMap, in order) into a single merged cloud-config passed as the OSArtifact cloudConfigRef (ADR-0037). Has no knowledge of vSphere, Proxmox, or libvirt; backend-specific conversion (e.g. raw -> VMDK) and per-zone import are each provider's own concern. See ADR-0010, ADR-0020, ADR-0037, and ADR-0041.",
+      "description": "Provider-agnostic controller that turns a VMImage's OCI/Kairos-referenced source (spec.sources[].kind == Url) into a build artifact. Server-side-applies an OSArtifact CR (kairos-operator) requesting either a cloud image (spec.artifacts.cloudImage, for libvirt) or a bootable ISO for vSphere — spec.artifacts.iso + cloudConfigRef normally, or spec.artifacts.uki.{iso,keysVolume} instead when spec.trustedBoot is set (a Secret-backed key volume for auroraboot build-uki, ADR-0051) — watches its status.phase, and mirrors readiness into VMImage.status.buildArtifact — a typed top-level field (kind: cloudImage | iso, aligned with kairos OSArtifactKind) distinct from status.perProvider[], so this controller and each provider controller's field manager never contend over the same VMImage.status fields. When VMImage.spec.cloudConfigs[] is set it layers those cloud-config sources (Secret/ConfigMap, in order) into a single merged cloud-config passed as the OSArtifact cloudConfigRef (ADR-0037). Has no knowledge of vSphere, Proxmox, or libvirt; backend-specific conversion (e.g. raw -> VMDK) and per-zone import are each provider's own concern. See ADR-0010, ADR-0020, ADR-0037, and ADR-0051.",
       "interfaces": [
         {
           "unique-id": "banlieue-imagebuilder-health",
@@ -317,6 +317,12 @@
       "node-type": "data-asset",
       "name": "VirtualMachine Custom Resource",
       "description": "Namespaced CRD (banlieue.io/v1alpha1) declaring a backend-agnostic VM: classRef (→ VMClass), imageRef (→ VMImage), placement.providerSelector/failureDomainSelector (a label selector the scheduler matches against Provider CRs — never a direct Provider name reference), desiredPowerState, and optional userData. The ONLY user-facing API."
+    },
+    {
+      "unique-id": "data-asset-virtualmachinepool-cr",
+      "node-type": "data-asset",
+      "name": "VirtualMachinePool Custom Resource",
+      "description": "Namespaced CRD (banlieue.io/v1alpha1) holding a warm set of already-installed, never-used VirtualMachines so a consumer does not wait out a Deferred-mode install (ADR-0040) at request time. Creates nothing but VirtualMachines and reads nothing but their conditions and labels, so no provider learns that pools exist and there is deliberately no per-backend pool kind. Every sizing and rollout decision is a pure function over a snapshot of members; the reconciler only gathers, applies and reports. Two invariants are load-bearing rather than cosmetic: a claimed member is never deleted by the pool, and a member is never returned to the warm set after being claimed — reuse across identities is the one thing this design must not do (ADR-0046)."
     },
     {
       "unique-id": "data-asset-provider-cr",
@@ -799,6 +805,19 @@
           }
         }
       }
+    },
+    {
+      "unique-id": "rel-pool-creates-virtualmachines",
+      "description": "banlieue-controller's pool reconciler creates and deletes VirtualMachine CRs to hold the warm set at spec.warmReplicas, bounded by maxReplicas and maxSurge. Members are owned by the pool so deleting it garbage-collects them, and carry generateName rather than an ordinal because members are removed from the middle of the set constantly (ADR-0046).",
+      "relationship-type": {
+        "interacts": {
+          "actor": "service-banlieue-controller",
+          "nodes": [
+            "data-asset-virtualmachinepool-cr",
+            "data-asset-virtualmachine-cr"
+          ]
+        }
+      }
     }
   ],
   "flows": [
@@ -1044,7 +1063,7 @@
         {
           "sequence-number": 2,
           "relationship-unique-id": "rel-imagebuilder-kube-api",
-          "description": "banlieue-imagebuilder's VMImage watch fires. It server-side-applies an OSArtifact CR requesting a cloud image (libvirt sources) or an ISO with artifacts.cloudConfigRef resolved from the merged spec.cloudConfigs[] (vsphere sources, ADR-0037), sets VMImage.status.buildArtifact.phase=Building, and — when spec.isoOverlay is set — adds spec.volumes[] (a Secret volume named by the declared key/path list) plus artifacts.overlayISOVolume pointing at it, the same auroraboot --overlay-iso mechanism the maintainer's proven manual ISO-build pipeline already relies on (ADR-0022). When spec.trustedBoot is set instead, it requests artifacts.uki.iso (not artifacts.iso) with keysVolume pointing at a Secret volume named by trustedBoot.secretRef — the six fixed files auroraboot build-uki requires (PK.auth, KEK.auth, db.auth, db.key, db.pem, tpm2-pcr-private.pem), generated out-of-band via auroraboot genkey (ADR-0041). Only the Secret's name (and, for isoOverlay, declared key names) is read, never its content.",
+          "description": "banlieue-imagebuilder's VMImage watch fires. It server-side-applies an OSArtifact CR requesting a cloud image (libvirt sources) or an ISO with artifacts.cloudConfigRef resolved from the merged spec.cloudConfigs[] (vsphere sources, ADR-0037), sets VMImage.status.buildArtifact.phase=Building, and — when spec.isoOverlay is set — adds spec.volumes[] (a Secret volume named by the declared key/path list) plus artifacts.overlayISOVolume pointing at it, the same auroraboot --overlay-iso mechanism the maintainer's proven manual ISO-build pipeline already relies on (ADR-0022). When spec.trustedBoot is set instead, it requests artifacts.uki.iso (not artifacts.iso) with keysVolume pointing at a Secret volume named by trustedBoot.secretRef — the six fixed files auroraboot build-uki requires (PK.auth, KEK.auth, db.auth, db.key, db.pem, tpm2-pcr-private.pem), generated out-of-band via auroraboot genkey (ADR-0051). Only the Secret's name (and, for isoOverlay, declared key names) is read, never its content.",
           "direction": "destination-to-source"
         },
         {
@@ -1511,6 +1530,12 @@
     "docs/adr/0039-vsphere-vtpm-support.md",
     "docs/adr/0040-deferred-install-for-vtpm-encryption.md",
     "docs/adr/0041-imagebuilder-namespaced-secret-access.md",
-    "docs/adr/0042-userdata-reference-authorization.md"
+    "docs/adr/0042-userdata-reference-authorization.md",
+    "docs/adr/0046-virtualmachinepool.md",
+    "docs/adr/0050-libvirtmachine-domain-lifecycle.md",
+    "docs/adr/0051-vmimage-trusted-boot-uki-support.md",
+    "docs/adr/0052-instant-clone-vmfork-not-supported.md",
+    "docs/adr/0053-ipam-claims-for-pool-members.md",
+    "docs/adr/0054-nocloud-seed-iso-first-party.md"
   ]
 }

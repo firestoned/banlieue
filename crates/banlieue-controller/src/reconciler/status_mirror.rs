@@ -2,23 +2,24 @@
 // SPDX-License-Identifier: Apache-2.0
 //! `VirtualMachine` status mirror.
 //!
-//! Pulls status fields from the provider's infrastructure CR (currently
-//! [`VSphereMachine`], soon Proxmox + Libvirt counterparts) and projects them
-//! onto the parent [`VirtualMachine`]:
+//! Pulls status fields from the provider's infrastructure CR ([`VSphereMachine`]
+//! or [`LibvirtMachine`], with Proxmox to follow) and projects them onto the
+//! parent [`VirtualMachine`]:
 //!
 //! - `status.initialization` ← infra.status.initialization
 //! - `status.addresses` ← infra.status.addresses
 //! - `Ready` condition on the infra CR → `InfrastructureReady` on the VM
 //! - Aggregate `Ready` = `Scheduled` && `PlacementValid` && `InfrastructureReady`
 //!
-//! The trait keeps the reconciler decoupled from provider-specific types so
-//! Phase 1C / 1D can add `ProxmoxMachine` / `LibvirtMachine` impls without
-//! touching the reconciler.
+//! The trait keeps the reconciler decoupled from provider-specific types.
+//! Adding libvirt (ADR-0050) needed nothing here but the impl below — which
+//! is the entire point of the trait, and the reason Proxmox will be the same
+//! twenty lines.
 
 use banlieue_api::banlieue::{VirtualMachine, VirtualMachineStatus};
 use banlieue_api::common::condition_types;
 use banlieue_api::common::{InitializationStatus, MachineAddress, PowerState};
-use banlieue_api::infrastructure::VSphereMachine;
+use banlieue_api::infrastructure::{LibvirtMachine, VSphereMachine};
 use banlieue_provider_sdk::status::{
     condition_status, find_condition, is_condition_true, set_condition,
 };
@@ -46,6 +47,45 @@ pub trait InfraMachineRead {
 }
 
 impl InfraMachineRead for VSphereMachine {
+    fn initialization(&self) -> &InitializationStatus {
+        self.status
+            .as_ref()
+            .map(|s| &s.initialization)
+            .unwrap_or(&NO_INIT)
+    }
+
+    fn addresses(&self) -> &[MachineAddress] {
+        self.status
+            .as_ref()
+            .map(|s| s.addresses.as_slice())
+            .unwrap_or(&[])
+    }
+
+    fn failure_domain(&self) -> Option<&str> {
+        self.status
+            .as_ref()
+            .and_then(|s| s.failure_domain.as_deref())
+    }
+
+    fn provider_id(&self) -> Option<&str> {
+        self.spec.provider_id.as_deref()
+    }
+
+    fn conditions(&self) -> &[Condition] {
+        self.status
+            .as_ref()
+            .map(|s| s.conditions.as_slice())
+            .unwrap_or(&[])
+    }
+
+    fn observed_power_state(&self) -> Option<&PowerState> {
+        self.status
+            .as_ref()
+            .and_then(|s| s.observed_power_state.as_ref())
+    }
+}
+
+impl InfraMachineRead for LibvirtMachine {
     fn initialization(&self) -> &InitializationStatus {
         self.status
             .as_ref()

@@ -331,5 +331,5 @@ banlieue-controller [--kubeconfig PATH]
 
 ## Open items
 
-- **O-001 / O-002 / O-003** still open — see `01-DECISIONS.md`. None
+- **O-001 / O-002 / O-003** still open — see `01-decisions.md`. None
   block Phase 1A.

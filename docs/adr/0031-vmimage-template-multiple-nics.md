@@ -1,10 +1,10 @@
 # 0031 — VMImage templates support multiple NICs
 
-## Status
-
-Accepted — 2026-08-23. Amends [ADR-0020](0020-vsphere-per-zone-iso-import.md)
-(per-zone template import), specifically the `network`/`networkAdapter`/
-`nicPciSlot` fields `VMImageTemplate` has carried since that ADR.
+- **Status:** Accepted
+- **Date:** 2026-08-23
+- **Related:** Amends [ADR-0020](0020-vsphere-per-zone-iso-import.md)
+  (per-zone template import), specifically the `network`/`networkAdapter`/
+  `nicPciSlot` fields `VMImageTemplate` has carried since that ADR.
 
 ## Context
 

@@ -1,10 +1,11 @@
 # 0021 — vSphere template: install once, generalize, then mark as template
 
-## Status
-
-Proposed — 2026-08-14. Extends [ADR-0020](0020-vsphere-per-zone-iso-import.md)
-(vSphere per-zone ISO import). Builds on [ADR-0008](0008-byoc-vsphere-http-client.md)
-(BYOC vim client).
+- **Status:** Accepted
+- **Date:** 2026-09-19
+- **Proposed:** 2026-08-14
+- **Related:** Extends [ADR-0020](0020-vsphere-per-zone-iso-import.md)
+  (vSphere per-zone ISO import). Builds on [ADR-0008](0008-byoc-vsphere-http-client.md)
+  (BYOC vim client).
 
 ## Context
 

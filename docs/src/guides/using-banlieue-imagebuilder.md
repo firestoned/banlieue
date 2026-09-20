@@ -204,7 +204,7 @@ into a vCenter template (ADR-0020):
     becomes the `OSArtifact`'s pod-wide `imagePullSecrets`, covering the main
     build image too if it comes from the same mirror.
 
-!!! info "Trusted Boot (UKI) artifacts (ADR-0041)"
+!!! info "Trusted Boot (UKI) artifacts (ADR-0051)"
     If your `importFrom` image was built with Kairos Trusted Boot
     (`TRUSTED_BOOT=true`), it's a Unified Kernel Image — no discrete
     `/boot/vmlinuz`/`/boot/initrd`, so the default `auroraboot build-iso`
@@ -237,7 +237,7 @@ into a vCenter template (ADR-0020):
     kairos-operator bug means `auroraboot build-uki` rejects the
     `--cloud-config` flag it would otherwise generate) and instead bakes the
     merged cloud-config into the ISO root via the same `isoOverlay` mechanism
-    (ADR-0041 Decision #4) — the exact file kairos-agent's installer already
+    (ADR-0051 Decision #4) — the exact file kairos-agent's installer already
     looks for.
 
     As with `isoOverlay`/`cloudConfigs`, only the Secret's *name* is ever
@@ -272,7 +272,7 @@ into a vCenter template (ADR-0020):
     Boot image; a follow-up attempt with a Hadron-based image also failed to
     boot cleanly and was not further diagnosed. **Treat
     `VMImage.spec.trustedBoot` on the vSphere provider as experimental** until
-    this is root-caused — see ADR-0041's follow-ups.
+    this is root-caused — see ADR-0051's follow-ups.
 
 ```yaml title="vmimage-kairos.yaml"
 apiVersion: banlieue.io/v1alpha1

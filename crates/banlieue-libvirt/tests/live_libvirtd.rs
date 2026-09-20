@@ -26,10 +26,13 @@
 use std::path::{Path, PathBuf};
 
 use banlieue_libvirt::{
-    DEFAULT_TLS_PORT, TlsIdentity, connect_open, connect_tls, list_all_networks,
+    DEFAULT_TLS_PORT, Domain, InterfaceAddressSource, Session, TlsIdentity, TransportError,
+    connect_open, connect_tls, domain_create, domain_define_xml, domain_destroy, domain_get_state,
+    domain_interface_addresses, domain_lookup_by_name, domain_undefine, list_all_networks,
     list_all_storage_pools, raw_volume_xml, storage_pool_list_all_volumes, storage_vol_create_xml,
     storage_vol_upload,
 };
+use tokio::io::{AsyncRead, AsyncWrite};
 
 /// Read the connection settings, or explain precisely what is missing.
 fn settings() -> Option<(String, PathBuf)> {
@@ -237,5 +240,223 @@ async fn list_volumes_in_a_real_pool() {
             v.name
         );
         assert_eq!(v.pool, pool.name, "volume reports the wrong pool");
+    }
+}
+
+/// Full domain lifecycle against a real libvirtd: define → start → read state
+/// → read addresses → destroy → undefine → confirm gone (ADR-0050).
+///
+/// This is the test that validates the domain half of `procs.rs`. The offline
+/// unit tests pin our *reading* of `remote_protocol.x`; a self-consistent
+/// misreading passes all of them and fails only here.
+///
+/// **Deliberately diskless.** The domain has no disk, no CD-ROM and no
+/// storage volume of any kind, so it touches nothing on the host but the
+/// domain table. It will not boot anything — that is fine and expected: the
+/// point is the lifecycle transitions, not the guest. A diskless domain is
+/// also the only shape that is safe to run against a host with real VMs on
+/// it, because there is no path by which it can name, open or delete an
+/// existing volume.
+///
+/// Cleans up after itself even on failure, and then *verifies* the cleanup by
+/// looking the domain up again — a teardown that reports success while
+/// leaving the domain defined is the exact failure this project has already
+/// been bitten by once (`.wolf/cerebrum.md`, 2026-07-29).
+///
+/// ```sh
+/// LIBVIRT_HOST=bar.foo.io LIBVIRT_TLS_DIR=~/.config/banlieue/libvirt \
+///   cargo test -p banlieue-libvirt --test live_libvirtd domain_lifecycle \
+///   -- --ignored --nocapture
+/// ```
+///
+/// `LIBVIRT_DOMAIN_TYPE` (default `kvm`) and `LIBVIRT_EMULATOR` (default: let
+/// libvirt choose) override the two host-specific bits.
+#[tokio::test]
+#[ignore = "defines and destroys a real domain; set LIBVIRT_HOST and LIBVIRT_TLS_DIR"]
+async fn domain_lifecycle_against_real_libvirtd() {
+    let Some((host, dir)) = settings() else {
+        panic!("set LIBVIRT_HOST and LIBVIRT_TLS_DIR");
+    };
+    let identity = load_identity(&dir);
+
+    let mut session = connect_tls(&host, DEFAULT_TLS_PORT, &identity)
+        .await
+        .expect("TLS connection failed");
+    // read_only = false: defining a domain is a write.
+    connect_open(&mut session, Some("qemu:///system"), false)
+        .await
+        .expect("CONNECT_OPEN failed");
+
+    let name = format!(
+        "banlieue-livetest-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock before epoch")
+            .as_secs()
+    );
+    let xml = diskless_domain_xml(&name);
+    eprintln!("defining {name}");
+
+    // 1. DEFINE. Returns a handle carrying the UUID libvirt assigned.
+    let dom = domain_define_xml(&mut session, &xml)
+        .await
+        .expect("DOMAIN_DEFINE_XML_FLAGS failed");
+    assert_eq!(dom.name, name, "define returned the wrong domain name");
+    assert!(
+        dom.uuid.iter().any(|&b| b != 0),
+        "define returned a zero UUID — the handle decode is wrong"
+    );
+    eprintln!("  defined, uuid {}", hex(&dom.uuid));
+
+    // Everything from here runs inside a closure so the teardown below
+    // executes whether the body succeeded or panicked.
+    let outcome = run_lifecycle_body(&mut session, &dom).await;
+
+    // 2. TEARDOWN — always, and never swallowed.
+    eprintln!("  tearing down");
+    // destroy() fails if the domain is already off; that is not an error here.
+    if let Err(e) = domain_destroy(&mut session, &dom).await {
+        eprintln!("    destroy: {e} (ignored — domain may already be off)");
+    }
+    domain_undefine(&mut session, &dom)
+        .await
+        .expect("DOMAIN_UNDEFINE_FLAGS failed — the domain is still defined on the host");
+
+    // 3. VERIFY the teardown, rather than trusting it.
+    let after = domain_lookup_by_name(&mut session, &name).await;
+    assert!(
+        after.is_err(),
+        "domain {name} is still defined after undefine — teardown reported success but did nothing"
+    );
+    eprintln!("  undefined and confirmed gone");
+
+    if let Err(msg) = outcome {
+        panic!("{msg}");
+    }
+}
+
+/// The part of the lifecycle test that can fail without leaking a domain.
+/// Returns `Err(message)` instead of panicking so the caller can always run
+/// its teardown first.
+async fn run_lifecycle_body<S>(session: &mut Session<S>, dom: &Domain) -> Result<(), String>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    // A freshly defined domain is not running.
+    let state = domain_get_state(session, dom)
+        .await
+        .map_err(|e| format!("DOMAIN_GET_STATE (before start) failed: {e}"))?;
+    eprintln!("  state before start: {state:?}");
+    if state.is_running() {
+        return Err(format!("a freshly defined domain reported {state:?}"));
+    }
+
+    // START.
+    let started = domain_create(session, dom)
+        .await
+        .map_err(|e| format!("DOMAIN_CREATE_WITH_FLAGS failed: {e}"))?;
+    if started.id < 0 {
+        return Err(format!(
+            "started domain reported id {} — expected a live domain id",
+            started.id
+        ));
+    }
+    eprintln!("  started, live id {}", started.id);
+
+    let state = domain_get_state(session, dom)
+        .await
+        .map_err(|e| format!("DOMAIN_GET_STATE (after start) failed: {e}"))?;
+    eprintln!("  state after start: {state:?}");
+    if !state.is_running() {
+        return Err(format!("started domain reported {state:?}"));
+    }
+
+    // ADDRESSES. A diskless domain has no guest, so every source is expected
+    // to return either an error or an empty list. What is being checked is
+    // that the *reply decodes* — a wrong layout shows up as a Protocol error,
+    // not as an empty list.
+    for source in [
+        InterfaceAddressSource::Lease,
+        InterfaceAddressSource::Agent,
+        InterfaceAddressSource::Arp,
+    ] {
+        match domain_interface_addresses(session, dom, source).await {
+            Ok(ifaces) => eprintln!("  addresses via {source:?}: {} interface(s)", ifaces.len()),
+            Err(TransportError::Protocol { detail }) => {
+                return Err(format!(
+                    "DOMAIN_INTERFACE_ADDRESSES via {source:?} decoded wrongly: {detail}"
+                ));
+            }
+            Err(e) => eprintln!("  addresses via {source:?}: unavailable ({e}) — expected"),
+        }
+    }
+
+    Ok(())
+}
+
+/// Minimal domain XML: no disks, no CD-ROM, no volumes. See the test's own
+/// doc comment for why diskless is the point rather than a shortcut.
+fn diskless_domain_xml(name: &str) -> String {
+    /// Enough RAM for the firmware to start and nothing more.
+    const MEMORY_MIB: u32 = 128;
+
+    let domain_type = std::env::var("LIBVIRT_DOMAIN_TYPE").unwrap_or_else(|_| "kvm".to_string());
+    let emulator = match std::env::var("LIBVIRT_EMULATOR") {
+        Ok(path) => format!("<emulator>{path}</emulator>"),
+        Err(_) => String::new(),
+    };
+    format!(
+        "<domain type='{domain_type}'>\
+<name>{name}</name>\
+<memory unit='MiB'>{MEMORY_MIB}</memory>\
+<vcpu placement='static'>1</vcpu>\
+<os><type arch='x86_64'>hvm</type></os>\
+<features><acpi/><apic/></features>\
+<devices>{emulator}<console type='pty'/></devices>\
+</domain>"
+    )
+}
+
+/// Delete a volume from a pool. A cleanup tool for images an operator or a
+/// test uploaded by hand; banlieue's own reconcilers delete only what they
+/// created.
+///
+/// ```sh
+/// LIBVIRT_HOST=bar.foo.io LIBVIRT_TLS_DIR=~/.config/banlieue/libvirt \
+/// LIBVIRT_POOL=images LIBVIRT_VOL=scratch.raw \
+///   cargo test -p banlieue-libvirt --test live_libvirtd delete_a_volume -- --ignored --nocapture
+/// ```
+#[tokio::test]
+#[ignore = "deletes a volume from a real pool; set LIBVIRT_POOL and LIBVIRT_VOL"]
+async fn delete_a_volume_from_a_real_pool() {
+    use banlieue_libvirt::{
+        storage_pool_lookup_by_name, storage_vol_delete, storage_vol_lookup_by_name,
+    };
+
+    let Some((host, dir)) = settings() else {
+        panic!("set LIBVIRT_HOST and LIBVIRT_TLS_DIR");
+    };
+    let pool_name = std::env::var("LIBVIRT_POOL").unwrap_or_else(|_| "default".to_string());
+    let vol_name = std::env::var("LIBVIRT_VOL").expect("set LIBVIRT_VOL");
+    let identity = load_identity(&dir);
+
+    let mut session = connect_tls(&host, DEFAULT_TLS_PORT, &identity)
+        .await
+        .expect("TLS connection failed");
+    connect_open(&mut session, Some("qemu:///system"), false)
+        .await
+        .expect("CONNECT_OPEN failed");
+
+    let pool = storage_pool_lookup_by_name(&mut session, &pool_name)
+        .await
+        .expect("pool lookup");
+    match storage_vol_lookup_by_name(&mut session, &pool, &vol_name).await {
+        Ok(vol) => {
+            storage_vol_delete(&mut session, &vol)
+                .await
+                .expect("delete");
+            eprintln!("deleted {pool_name}/{vol_name}");
+        }
+        Err(e) => eprintln!("{pool_name}/{vol_name}: {e} (nothing to delete)"),
     }
 }

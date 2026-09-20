@@ -1,12 +1,13 @@
 # 0024 — VSphereMachine clone reconciler: static IP + templated cloud-config via guestinfo
 
-## Status
-
-Proposed — 2026-08-20. Depends on [ADR-0020](0020-vsphere-per-zone-iso-import.md)
-(per-zone template import) and [ADR-0021](0021-vsphere-template-install-and-generalize.md)
-(install-once, generalized templates). Extends `banlieue.io/v1alpha1`
-`VirtualMachine` (`crates/banlieue-api/src/banlieue/virtualmachine.rs`) and
-`VMClass` (`crates/banlieue-api/src/banlieue/vmclass.rs`).
+- **Status:** Accepted
+- **Date:** 2026-09-19
+- **Proposed:** 2026-08-20
+- **Related:** Depends on [ADR-0020](0020-vsphere-per-zone-iso-import.md)
+  (per-zone template import) and [ADR-0021](0021-vsphere-template-install-and-generalize.md)
+  (install-once, generalized templates). Extends `banlieue.io/v1alpha1`
+  `VirtualMachine` (`crates/banlieue-api/src/banlieue/virtualmachine.rs`) and
+  `VMClass` (`crates/banlieue-api/src/banlieue/vmclass.rs`).
 
 ## Context
 

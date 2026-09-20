@@ -83,7 +83,7 @@ crates/banlieue-provider-proxmox/
 
 ## Open decision: which Proxmox client?
 
-**O-001 from `01-DECISIONS.md`.** Survey crates.io first:
+**O-001 from `01-decisions.md`.** Survey crates.io first:
 
 ```sh
 cargo search proxmox
@@ -97,7 +97,7 @@ Possible candidates:
 **Default if nothing fits**: roll a thin client with `reqwest`. The
 Proxmox VE API is well-documented at <https://pve.proxmox.com/pve-docs/api-viewer/>.
 
-Record the decision in `01-DECISIONS.md` D-006 once made.
+Record the decision in `01-decisions.md` D-006 once made.
 
 ## Module layout
 

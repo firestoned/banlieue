@@ -1,12 +1,12 @@
 # 0040 — Deferred (per-clone) install for TPM-sealed Kairos encryption
 
-## Status
-
-Accepted — 2026-09-04. Amends [ADR-0039](0039-vsphere-vtpm-support.md) — its
-claim that `VMImageSpec.cloudConfigs` alone was sufficient for encryption
-(no `VMImage` schema change needed) is **wrong** and superseded here. Reuses
-the deferred-install template shape ADR-0020 originally specified and
-ADR-0021 preserved as the `autoManageInstall: false` escape hatch.
+- **Status:** Accepted
+- **Date:** 2026-09-04
+- **Related:** Amends [ADR-0039](0039-vsphere-vtpm-support.md) — its
+  claim that `VMImageSpec.cloudConfigs` alone was sufficient for encryption
+  (no `VMImage` schema change needed) is **wrong** and superseded here. Reuses
+  the deferred-install template shape ADR-0020 originally specified and
+  ADR-0021 preserved as the `autoManageInstall: false` escape hatch.
 
 ## Context
 

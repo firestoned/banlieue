@@ -4,12 +4,12 @@ SPDX-License-Identifier: Apache-2.0
 -->
 # 0041 — banlieue-imagebuilder reads Secrets through a namespaced Role
 
-## Status
-
-Accepted — 2026-09-09. Amends [ADR-0037](0037-vmimage-layered-cloud-config.md),
-whose RBAC consequence was implemented as a cluster-wide grant. Restores the
-posture established by [ADR-0003](0003-provider-deployment-topology.md) and the
-2026-07-31 security review (CHAIN-002 / SEC-008).
+- **Status:** Accepted
+- **Date:** 2026-09-09
+- **Related:** Amends [ADR-0037](0037-vmimage-layered-cloud-config.md),
+  whose RBAC consequence was implemented as a cluster-wide grant. Restores the
+  posture established by [ADR-0003](0003-provider-deployment-topology.md) and the
+  2026-07-31 security review (CHAIN-002 / SEC-008).
 
 ## Context
 

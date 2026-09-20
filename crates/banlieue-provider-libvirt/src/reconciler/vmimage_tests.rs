@@ -493,4 +493,70 @@ mod tests {
         let job = build_import_job(&inputs("j", "ns", "vm", &p, &a));
         assert!(job["spec"]["template"]["spec"]["tolerations"].is_null());
     }
+
+    // ==================================================================
+    // resolvedRef — the handoff to the LibvirtMachine reconciler
+    // ==================================================================
+    //
+    // `status.perProvider[].resolvedRef` is the only thing that tells
+    // banlieue-controller which volume a machine boots from (ADR-0050). It
+    // was `None` for every libvirt source, so a VirtualMachine scheduled onto
+    // libvirt failed with `MissingResolvedImageRef` and never produced a
+    // LibvirtMachine at all.
+
+    /// `ImageSource.reference` is documented as a path for
+    /// `libvirt + BackingFile`, but every libvirt lookup takes a volume
+    /// *name*. For the directory-backed pools banlieue targets those differ
+    /// only by the directory.
+    #[test]
+    fn backing_file_reference_resolves_to_a_volume_name() {
+        assert_eq!(
+            backing_file_volume_name("/var/lib/libvirt/images/ubuntu-22.04.qcow2"),
+            "ubuntu-22.04.qcow2"
+        );
+    }
+
+    /// An admin who already wrote a bare name gets it back unchanged.
+    #[test]
+    fn a_bare_backing_file_name_is_left_alone() {
+        assert_eq!(
+            backing_file_volume_name("ubuntu-22.04.qcow2"),
+            "ubuntu-22.04.qcow2"
+        );
+    }
+
+    #[test]
+    fn backing_file_name_survives_a_trailing_directory_component() {
+        assert_eq!(backing_file_volume_name("/a/b/c/disk.img"), "disk.img");
+    }
+
+    /// A `BackingFile` source is ready immediately and must publish the
+    /// volume a machine will look up.
+    #[test]
+    fn backing_file_source_publishes_its_resolved_ref() {
+        let source = ImageSource {
+            provider_class: "libvirt".into(),
+            kind: ImageSourceKind::BackingFile,
+            reference: "/var/lib/libvirt/images/ubuntu-22.04.qcow2".into(),
+            import_from: None,
+            checksum: None,
+        };
+        let row = backing_file_row(&provider_with_pools("default"), &source);
+        assert!(row.ready);
+        assert_eq!(row.resolved_ref.as_deref(), Some("ubuntu-22.04.qcow2"));
+    }
+
+    /// A `Url` source's volume is named by the import Job, deterministically,
+    /// so the name is derivable without asking the host.
+    #[test]
+    fn url_source_resolves_to_the_imported_volume_name() {
+        assert_eq!(url_volume_name("kairos-sandbox"), "kairos-sandbox.raw");
+    }
+
+    /// An image whose name already carries the suffix must not gain a second
+    /// one, or the reference names a volume the import never created.
+    #[test]
+    fn url_volume_name_is_not_double_suffixed() {
+        assert_eq!(url_volume_name("kairos-sandbox.raw"), "kairos-sandbox.raw");
+    }
 }

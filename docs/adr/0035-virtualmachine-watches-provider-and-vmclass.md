@@ -1,10 +1,10 @@
 # 0035 — VirtualMachine controller watches Provider and VMClass
 
-## Status
-
-Accepted — 2026-08-24. Extends `banlieue-controller`
-(`crates/banlieue-controller/src/app.rs`,
-`crates/banlieue-controller/src/reconciler/virtualmachine.rs`).
+- **Status:** Accepted
+- **Date:** 2026-08-24
+- **Related:** Extends `banlieue-controller`
+  (`crates/banlieue-controller/src/app.rs`,
+  `crates/banlieue-controller/src/reconciler/virtualmachine.rs`).
 
 ## Context
 

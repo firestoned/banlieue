@@ -16,7 +16,9 @@
 ADR  →  CALM  →  TDD  →  implement  →  docs  →  threat model
 ```
 
-1. **ADR** — record the decision in `docs/adr/NNNN-title.md` (Status / Context / Decision / Consequences).
+1. **ADR** — record the decision in `docs/adr/NNNN-title.md`: metadata
+   bullets (`- **Status:**`, `- **Date:**`, …) then Context / Decision /
+   Consequences.
 2. **CALM** — model it in `docs/architecture/calm/architecture.json`; `make calm-validate` + `make calm-diagrams`.
 3. **TDD** — only then write failing tests, then the minimum implementation.
 4. **Threat model** — after implementing, make a **full pass** over `docs/src/security/threat-model.md` and bump its header stamp (date + ADR range). See `rules/threat-modeling.md`. **An ADR is not implemented until this pass is done.**
@@ -110,7 +112,9 @@ at the repo root is the high-level index: one row per roadmap/phase, with
 a completion status (✅ done / 🔶 in progress / ⛔ not started / 📄
 reference doc) and a link to the detail doc. The detail docs themselves
 live in `.github/community/`, following the existing numeric-prefix style
-(`NN-TITLE.md`, `NN-PHASE-N{LETTER}-NAME.md`, UPPERCASE-with-hyphens).
+(`NN-title.md`, `NN-phase-N{letter}-name.md`) — **lowercase with hyphens**,
+matching `docs/adr/NNNN-title.md`. (`README.md` in that directory keeps its
+conventional uppercase name.)
 
 Update `ROADMAPS.md`'s status row in the same PR/commit that changes a
 roadmap item's state — it's a status board, not a description of intent.
@@ -137,7 +141,8 @@ See `rules/documentation.md` for full workflow.
 
 - Ask "Does documentation need to be updated?" before marking ANY task complete
 - Update `.claude/CHANGELOG.md` with `**Author:**` on EVERY code change (MANDATORY — no exceptions)
-- For ADRs: create `/docs/adr/NNNN-title.md` with Status / Context / Decision / Consequences
+- For ADRs: create `/docs/adr/NNNN-title.md` with metadata bullets
+  (`- **Status:**`, `- **Date:**`) then Context / Decision / Consequences
 
 ---
 

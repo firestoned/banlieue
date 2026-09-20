@@ -1,10 +1,7 @@
 # 15. VMImage.status merge strategy and ownership of aggregate readiness
 
-Date: 2026-07-31
-
-## Status
-
-Accepted
+- **Status:** Accepted
+- **Date:** 2026-07-31
 
 ## Context
 

@@ -1,10 +1,10 @@
 # 0032 — Per-zone subnet shape for static network classes
 
-## Status
-
-Accepted — 2026-08-23. Extends [ADR-0030](0030-per-zone-capability-targets.md)
-(per-zone capability targets) to cover a gap that ADR only partially
-closed for **static** IPAM.
+- **Status:** Accepted
+- **Date:** 2026-08-23
+- **Related:** Extends [ADR-0030](0030-per-zone-capability-targets.md)
+  (per-zone capability targets) to cover a gap that ADR only partially
+  closed for **static** IPAM.
 
 ## Context
 

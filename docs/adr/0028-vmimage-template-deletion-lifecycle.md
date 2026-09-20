@@ -1,11 +1,11 @@
 # 0028 — VMImage deletion lifecycle: destroy per-zone vCenter templates by default
 
-## Status
-
-Accepted — 2026-08-22. Amends [ADR-0020](0020-vsphere-per-zone-iso-import.md)
-(per-zone template import) and follows the same shape as
-[ADR-0026](0026-vspheremachine-deletion-lifecycle.md) (`VSphereMachine`
-deletion lifecycle) — this ADR is the same fix for `VMImage`.
+- **Status:** Accepted
+- **Date:** 2026-08-22
+- **Related:** Amends [ADR-0020](0020-vsphere-per-zone-iso-import.md)
+  (per-zone template import) and follows the same shape as
+  [ADR-0026](0026-vspheremachine-deletion-lifecycle.md) (`VSphereMachine`
+  deletion lifecycle) — this ADR is the same fix for `VMImage`.
 
 ## Context
 
