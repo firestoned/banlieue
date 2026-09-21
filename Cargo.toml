@@ -66,7 +66,7 @@ sha2 = "0.11"
 # OS randomness for VirtualMachineClaim nonces (ADR-0047): a claim's nonce
 # must be unpredictable to a guest that has not been told it, so it comes
 # from the OS CSPRNG and never from a UID or a clock. Already in the tree
-# transitively; pinned here because the attestation work in roadmap 70's
+# transitively; pinned here because the attestation work in roadmap 17's
 # later phases needs the same source.
 getrandom = "0.3"
 # Decoding qemu-guest-agent payloads: `guest-file-read` returns file contents

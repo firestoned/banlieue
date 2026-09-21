@@ -137,7 +137,7 @@ system implementing the CAPI provider contract; Metal3 `IPPool` with
 stops short of choosing, because "which sub-range gets carved out, and does
 that team want to build a CAPI IPAM provider" are decisions outside this
 codebase. That is still true and still blocking: **this ADR is implementable
-only after that choice is made**, exactly as roadmap 50's first precondition
+only after that choice is made**, exactly as roadmap 13's first precondition
 says.
 
 What this ADR removes is the *banlieue-side* design gap. When the provider
@@ -164,5 +164,5 @@ pools.
   correct — the pool genuinely does not know — but it moves a diagnosis from
   one object to another, and the docs must say where it went.
 - **Still blocked on the provider decision.** Nothing here can be
-  implemented until roadmap 50's first precondition is met. This ADR is
+  implemented until roadmap 13's first precondition is met. This ADR is
   recorded now so that when it is, the pool question is already answered.

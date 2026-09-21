@@ -160,7 +160,7 @@ pub trait LibvirtMachineClient: Send {
     /// `Deferred` member spends most of its life legitimately in that
     /// state — so a provider must not treat any of them as an error and
     /// back off.
-    async fn guest_installed(&mut self, domain: &Domain) -> bool;
+    async fn probe_guest(&mut self, domain: &Domain) -> crate::guest::GuestProbe;
 }
 
 /// Diagnostic helper: a domain's addresses as a printable string,
@@ -327,8 +327,8 @@ where
         idempotent(domain_undefine(&mut self.session, domain).await)
     }
 
-    async fn guest_installed(&mut self, domain: &Domain) -> bool {
-        crate::guest::domain_guest_installed(&mut self.session, domain).await
+    async fn probe_guest(&mut self, domain: &Domain) -> crate::guest::GuestProbe {
+        crate::guest::probe_guest(&mut self.session, domain).await
     }
 
     async fn domain_addresses(
@@ -387,6 +387,11 @@ pub struct FakeMachineClient {
     /// otherwise hide is a reconciler reading the wrong domain's marker and
     /// still passing.
     pub guest_installed: std::collections::BTreeSet<String>,
+    /// Domains whose `qemu-guest-agent` answers at all. Membership of
+    /// `guest_installed` implies it; listing a domain here *without* the
+    /// marker is how a test spells "still installing", which is the state
+    /// the fast poll interval exists for.
+    pub guest_agent: std::collections::BTreeSet<String>,
     /// When set, every call fails with this message.
     pub fail_with: Option<String>,
 }
@@ -447,12 +452,18 @@ impl FakeMachineClient {
 
 #[async_trait]
 impl LibvirtMachineClient for FakeMachineClient {
-    async fn guest_installed(&mut self, domain: &Domain) -> bool {
-        self.record("guest_installed", &domain.name);
+    async fn probe_guest(&mut self, domain: &Domain) -> crate::guest::GuestProbe {
+        self.record("probe_guest", &domain.name);
         // Infallible like the real one, `fail_with` included: on a real host
         // an unreachable agent is "not yet", not an error, and a fake that
         // errored here would let a reconciler get that wrong and still pass.
-        self.guest_installed.contains(&domain.name)
+        if self.guest_installed.contains(&domain.name) {
+            crate::guest::GuestProbe::Installed
+        } else if self.guest_agent.contains(&domain.name) {
+            crate::guest::GuestProbe::NotAnnounced
+        } else {
+            crate::guest::GuestProbe::AgentUnreachable
+        }
     }
 
     async fn lookup_pool(&mut self, name: &str) -> Result<Option<StoragePool>> {

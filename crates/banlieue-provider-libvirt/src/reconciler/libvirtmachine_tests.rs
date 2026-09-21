@@ -515,7 +515,7 @@ mod tests {
         );
     }
 
-    /// The gap roadmap 13 was blocked on: `spec.userData` reached
+    /// The gap roadmap 07 was blocked on: `spec.userData` reached
     /// `LibvirtMachine` and then went nowhere. It must end up inside the
     /// seed volume, byte for byte.
     #[tokio::test]
@@ -637,11 +637,14 @@ mod tests {
         let s = spec(LibvirtBootSourceKind::InstallMedia);
         let observed = converge(&mut c, &s).await.expect("converge");
 
-        assert!(!observed.guest_installed, "the fake host reports no marker");
+        assert!(
+            !observed.guest.is_installed(),
+            "the fake host reports no marker"
+        );
         assert!(
             c.calls
                 .iter()
-                .any(|x| x == "guest_installed:sandboxes-agent-01"),
+                .any(|x| x == "probe_guest:sandboxes-agent-01"),
             "the guest must actually be asked: {:?}",
             c.calls
         );
@@ -653,7 +656,7 @@ mod tests {
         c.guest_installed.insert("sandboxes-agent-01".to_string());
         let s = spec(LibvirtBootSourceKind::InstallMedia);
         let observed = converge(&mut c, &s).await.expect("converge");
-        assert!(observed.guest_installed);
+        assert!(observed.guest.is_installed());
     }
 
     /// A stopped domain has no agent to answer, so asking is a wasted round
@@ -665,9 +668,9 @@ mod tests {
         s.desired_power_state = PowerState::PoweredOff;
         let observed = converge(&mut c, &s).await.expect("converge");
 
-        assert!(!observed.guest_installed);
+        assert!(!observed.guest.is_installed());
         assert!(
-            !c.calls.iter().any(|x| x.starts_with("guest_installed:")),
+            !c.calls.iter().any(|x| x.starts_with("probe_guest:")),
             "a stopped domain must not be asked: {:?}",
             c.calls
         );
@@ -675,20 +678,70 @@ mod tests {
 
     /// The signal has to reach the CR, not just the Observed struct.
     #[test]
-    fn build_status_publishes_guestready_both_ways() {
+    fn build_status_publishes_guestready_when_the_agent_can_answer() {
         let machine = machine_cr();
         let mut observed = observed_running();
 
-        observed.guest_installed = false;
+        observed.guest = GuestProbe::NotAnnounced;
         let st = build_status(&machine, &observed, 1);
         assert_eq!(st.guest_installed, Some(false));
         let c = find_condition(&st, condition_types::GUEST_READY).expect("GuestReady published");
         assert_eq!(c.status, condition_status::FALSE);
 
-        observed.guest_installed = true;
+        observed.guest = GuestProbe::Installed;
         let st = build_status(&machine, &observed, 1);
         assert_eq!(st.guest_installed, Some(true));
         let c = find_condition(&st, condition_types::GUEST_READY).expect("GuestReady published");
+        assert_eq!(c.status, condition_status::TRUE);
+    }
+
+    /// **An image whose agent never answers must leave `GuestReady`
+    /// ABSENT, not `False`.**
+    ///
+    /// `pool.rs::readiness_signal_absent` decides by condition *type*. A
+    /// blanket `False` makes a pool set to `readiness: GuestReady` report
+    /// `Warm=False reason=Filling` — "wait a bit" — forever, for an image
+    /// that can never announce. Observed on a real cluster before this was
+    /// fixed, and it is precisely the failure ADR-0046 Decision 3 exists to
+    /// prevent.
+    ///
+    /// Absent is also the honest answer: an unreachable agent means this
+    /// provider cannot evaluate the signal at all, which is the same
+    /// position vSphere is in until its transport lands.
+    #[test]
+    fn an_unreachable_agent_leaves_guestready_absent() {
+        let machine = machine_cr();
+        let mut observed = observed_running();
+        observed.guest = GuestProbe::AgentUnreachable;
+
+        let st = build_status(&machine, &observed, 1);
+        assert!(
+            find_condition(&st, condition_types::GUEST_READY).is_none(),
+            "an image with no guest agent must not publish GuestReady at all"
+        );
+        assert_eq!(
+            st.guest_installed,
+            Some(false),
+            "the status field still records that we looked"
+        );
+    }
+
+    /// A member that announced and was then powered off keeps the
+    /// condition: stickiness must survive the agent going away, or a warm
+    /// member would drop out of its pool on every power cycle.
+    #[test]
+    fn a_previously_installed_guest_keeps_guestready_when_the_agent_goes_away() {
+        let mut machine = machine_cr();
+        machine.status = Some(LibvirtMachineStatus {
+            guest_installed: Some(true),
+            ..Default::default()
+        });
+        let mut observed = observed_running();
+        observed.guest = GuestProbe::AgentUnreachable;
+
+        let st = build_status(&machine, &observed, 1);
+        let c = find_condition(&st, condition_types::GUEST_READY)
+            .expect("a member that has announced keeps GuestReady");
         assert_eq!(c.status, condition_status::TRUE);
     }
 
@@ -699,7 +752,7 @@ mod tests {
     fn ready_does_not_depend_on_guestready() {
         let machine = machine_cr();
         let observed = observed_running();
-        assert!(!observed.guest_installed);
+        assert!(!observed.guest.is_installed());
 
         let st = build_status(&machine, &observed, 1);
         let ready = find_condition(&st, condition_types::READY).expect("Ready published");
@@ -735,7 +788,7 @@ mod tests {
             state: DomainState::Running,
             addresses: Vec::new(),
             address_source: None,
-            guest_installed: false,
+            guest: GuestProbe::AgentUnreachable,
         }
     }
 
@@ -744,5 +797,52 @@ mod tests {
         type_: &str,
     ) -> Option<k8s_openapi::apimachinery::pkg::apis::meta::v1::Condition> {
         st.conditions.iter().find(|c| c.type_ == type_).cloned()
+    }
+
+    // ------------------------------------------------------------------
+    // Poll cadence while waiting for the guest (ADR-0043 Decision 8)
+    // ------------------------------------------------------------------
+
+    /// The window the fast interval exists for: the agent is answering, so
+    /// something is alive in there, but it has not announced yet. That is a
+    /// Deferred install in progress, and the answer is expected to change.
+    #[test]
+    fn an_answering_guest_that_has_not_announced_is_polled_soon() {
+        assert!(should_poll_soon(GuestProbe::NotAnnounced, true));
+    }
+
+    /// Once it has announced there is nothing left to wait for.
+    #[test]
+    fn an_announced_guest_is_not_polled_soon() {
+        assert!(!should_poll_soon(GuestProbe::Installed, true));
+    }
+
+    /// **The case that makes Decision 8 as originally written wrong.** An
+    /// `Immediate` image has no phase stage and usually no guest agent, so
+    /// `guestInstalled` is never true — polling fast "until installed"
+    /// would poll every 30s forever, for every such VM, for a signal that
+    /// is never coming.
+    ///
+    /// An unreachable agent is the signal that nothing will ever announce.
+    #[test]
+    fn a_guest_with_no_agent_is_not_polled_soon_forever() {
+        assert!(!should_poll_soon(GuestProbe::AgentUnreachable, true));
+    }
+
+    /// A domain with no address yet is still booting whatever its image, so
+    /// the existing fast path is preserved — including for an image that
+    /// will never announce.
+    #[test]
+    fn a_domain_with_no_address_is_always_polled_soon() {
+        for probe in [
+            GuestProbe::AgentUnreachable,
+            GuestProbe::NotAnnounced,
+            GuestProbe::Installed,
+        ] {
+            assert!(
+                should_poll_soon(probe, false),
+                "{probe:?} with no address must still be polled soon"
+            );
+        }
     }
 }

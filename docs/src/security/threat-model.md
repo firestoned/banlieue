@@ -6,7 +6,7 @@ SPDX-License-Identifier: Apache-2.0
 
 > **Status:** Living document. Last full pass **2026-09-20**, against the
 > architecture defined by ADR-0001 … ADR-0055 (0044–0045 and 0048–0049 are
-> reserved by roadmap 70 and unissued).
+> reserved by roadmap 17 and unissued).
 > **Method:** asset/actor enumeration, trust-boundary decomposition, STRIDE per
 > boundary, control mapping to the manifests in `deploy/` and the crates in
 > `crates/`.
@@ -282,7 +282,7 @@ a different assumption is unsafe.
 
    Nothing currently *enforces* the pairing — a `tpmEnabled: true` `VMClass`
    with an `installMode: Immediate` image attaches a real TPM and silently
-   encrypts nothing (ADR-0040 Decision 5; roadmap 70 phase A3 proposes
+   encrypts nothing (ADR-0040 Decision 5; roadmap 17 phase A3 proposes
    ADR-0048 to close it). Until then this is an operator responsibility.
 10. **A claim isolates at the VM boundary, not the Kubernetes one — grant
     `create` and `delete` on `virtualmachineclaims` narrowly.** A
@@ -315,7 +315,7 @@ a different assumption is unsafe.
 | `banlieue-imagebuild` runs `privileged` | kairos' builder genuinely requires loop devices and chroot; isolation is by namespace | kairos supports rootless builds |
 | Rendered user-data is visible in `VSphereMachine.spec` **and `LibvirtMachine.spec`** | Single-tenant, single-namespace posture (ADR-0025). ADR-0042 closed the *escalation* (a principal reaching user-data it could not read); the *reflection* to anyone who can already `get` the infra CR is unchanged and deliberate, and ADR-0050 extends it to a second kind rather than introducing a new risk | A second tenant or namespace becomes real — ADR-0025's superseded per-VM Role design is the shape that scales |
 | The controller's user-data Role is namespace-wide, not `resourceNames`-scoped | The names a validly admitted `VirtualMachine` may cite are unknowable when the manifest is written; authorization moves to admission, where the requesting identity still exists (ADR-0042). A compromise of the controller identity itself is still bounded only by the namespace | The install stops shipping `deploy/admission/`, or per-VM RBAC becomes tractable |
-| A libvirt guest's TPM is **emulated by swtpm on the host**, so a host-root adversary can read the sealed-key material that a physical TPM would protect | This is the libvirt trust model, not a banlieue choice; the hypervisor operator is already semi-trusted (§4) and hypervisor compromise is out of scope (§9). EK trust anchors differ per backend, which roadmap 70 phase F (ADR-0049) is the plan to make explicit via `Provider.spec.attestation.ekTrustBundle` | Attestation ships (ADR-0049), or a libvirt host is no longer operator-trusted |
+| A libvirt guest's TPM is **emulated by swtpm on the host**, so a host-root adversary can read the sealed-key material that a physical TPM would protect | This is the libvirt trust model, not a banlieue choice; the hypervisor operator is already semi-trusted (§4) and hypervisor compromise is out of scope (§9). EK trust anchors differ per backend, which roadmap 17 phase F (ADR-0049) is the plan to make explicit via `Provider.spec.attestation.ekTrustBundle` | Attestation ships (ADR-0049), or a libvirt host is no longer operator-trusted |
 | `GuestReady` can be asserted by any code running as root inside the guest, so it proves which disk booted only for a guest that has not been compromised | It is a *liveness* signal by construction (ADR-0043 Decision 9) and is consumed only to decide when a **fresh, unclaimed** VM joins a warm pool — before any subject has touched it. Treating it as integrity would be the error; the document and the ADR both say so explicitly | Attestation ships (ADR-0049), at which point a TPM quote over the claim nonce is the integrity signal and this one stays what it is |
 | A claim's `spec.subject` is not pinned to the authenticated caller, so any principal with `create virtualmachineclaims` can attribute a sandbox to anybody | ADR-0047 Decision 10 specifies the `ValidatingAdmissionPolicy` that closes this; it is not written, and the claim layer is more useful with an imperfect audit trail than absent. The blast radius is bounded by who holds `create` in the namespace (§7.10), and the *isolation* guarantee — one VM, one subject, destroyed on release — does not depend on the attribution being honest | The subject-pinning VAP ships alongside ADR-0007's, or a second tenant makes the namespace boundary load-bearing |
 | Health endpoint binds `0.0.0.0` and returns a fixed `200` | Standard probe trade-off; carries no data | It ever reports real state |

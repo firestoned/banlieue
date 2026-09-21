@@ -6,7 +6,7 @@
 - **Notes:** Implemented and verified live;
   the evidence is in Decision 3. Completes
   [ADR-0050](0050-libvirtmachine-domain-lifecycle.md) (`LibvirtMachine`
-  lifecycle) — the last functional gap in roadmap 13, now closed.
+  lifecycle) — the last functional gap in roadmap 07, now closed.
 
 ## Context
 
@@ -15,7 +15,7 @@ resolved from a Secret or ConfigMap and placeholder-substituted by
 `banlieue-controller` (ADR-0025, ADR-0038). The libvirt provider currently
 does nothing with it: `converge` passes `cidata_iso_path: None` to the
 domain XML builder, so a `VirtualMachine` with `spec.userData` provisions a
-domain that never receives it. Roadmap 13's stop condition — "provisioned
+domain that never receives it. Roadmap 07's stop condition — "provisioned
 end-to-end **via NoCloud**" — is unmet for exactly this reason.
 
 vSphere has no equivalent gap: it delivers user-data through
@@ -44,7 +44,7 @@ filename entries.
 
 ### Why not shell out
 
-Roadmap 13 originally proposed `genisoimage` in the provider image, with a
+Roadmap 07 originally proposed `genisoimage` in the provider image, with a
 `debian:bookworm-slim` base. ADR-0050 already rejected that shape for the
 libvirt client itself, and every reason holds here: the provider image is
 distroless, and adding `genisoimage` means a system package, a base image
@@ -108,7 +108,7 @@ memory.
 
 ## Consequences
 
-- Roadmap 13's stop condition becomes reachable: a `VirtualMachine` with
+- Roadmap 07's stop condition becomes reachable: a `VirtualMachine` with
   `spec.userData` on libvirt boots with cloud-init having consumed it.
 - The provider image stays distroless, with no new system dependency, and
   user-data stays in memory.
@@ -117,7 +117,7 @@ memory.
   format, and the offline tests can only prove self-consistency. Only a
   guest actually booting proves it right, which is why decision 3 names
   that as the acceptance test.
-- Proxmox (roadmap 12) uses NoCloud too. The module is written for libvirt
+- Proxmox (roadmap 06) uses NoCloud too. The module is written for libvirt
   and lives there; when Proxmox needs it, moving it to a shared crate is a
   mechanical change and should be done then, not pre-emptively.
 - vfat remains available as a fallback if a guest is ever found that

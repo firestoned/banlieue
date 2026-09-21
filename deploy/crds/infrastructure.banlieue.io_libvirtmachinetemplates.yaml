@@ -128,7 +128,7 @@ spec:
                           scheduler writes the chosen failure domain here.
 
                           libvirt has no cluster or datacenter hierarchy, so a failure domain is
-                          simply one host (see roadmap 13) — which makes this field carry more
+                          simply one host (see roadmap 07) — which makes this field carry more
                           weight than on vSphere, not less: it is the only placement signal.
                         nullable: true
                         type: string

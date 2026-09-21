@@ -12,7 +12,7 @@
 //!
 //! ```sh
 //! LIBVIRT_HOST=bar.foo.io \
-//! LIBVIRT_TLS_DIR="$HOME/.config/banlieue/libvirt" \
+//! LIBVIRT_TLS_DIR="$HOME/.config/banlieue/<host>/libvirt" \
 //!   cargo test -p banlieue-libvirt --test live_libvirtd -- --ignored --nocapture
 //! ```
 //!
@@ -67,7 +67,7 @@ async fn connect_open_and_list_against_real_libvirtd() {
     let Some((host, dir)) = settings() else {
         panic!(
             "set LIBVIRT_HOST and LIBVIRT_TLS_DIR to run this test\n  \
-             e.g. LIBVIRT_HOST=bar.foo.io LIBVIRT_TLS_DIR=~/.config/banlieue/libvirt"
+             e.g. LIBVIRT_HOST=bar.foo.io LIBVIRT_TLS_DIR=~/.config/banlieue/<host>/libvirt"
         );
     };
     let identity = load_identity(&dir);
@@ -198,7 +198,7 @@ async fn upload_a_real_file_into_a_real_pool() {
 /// Run after `upload_a_real_file_into_a_real_pool` to see its volume listed:
 ///
 /// ```sh
-/// LIBVIRT_HOST=<host> LIBVIRT_TLS_DIR=~/.config/banlieue/libvirt \
+/// LIBVIRT_HOST=<host> LIBVIRT_TLS_DIR=~/.config/banlieue/<host>/libvirt \
 ///   cargo test -p banlieue-libvirt --test live_libvirtd list_volumes -- --ignored --nocapture
 /// ```
 #[tokio::test]
@@ -264,7 +264,7 @@ async fn list_volumes_in_a_real_pool() {
 /// been bitten by once (`.wolf/cerebrum.md`, 2026-07-29).
 ///
 /// ```sh
-/// LIBVIRT_HOST=bar.foo.io LIBVIRT_TLS_DIR=~/.config/banlieue/libvirt \
+/// LIBVIRT_HOST=bar.foo.io LIBVIRT_TLS_DIR=~/.config/banlieue/<host>/libvirt \
 ///   cargo test -p banlieue-libvirt --test live_libvirtd domain_lifecycle \
 ///   -- --ignored --nocapture
 /// ```
@@ -422,7 +422,7 @@ fn diskless_domain_xml(name: &str) -> String {
 /// created.
 ///
 /// ```sh
-/// LIBVIRT_HOST=bar.foo.io LIBVIRT_TLS_DIR=~/.config/banlieue/libvirt \
+/// LIBVIRT_HOST=bar.foo.io LIBVIRT_TLS_DIR=~/.config/banlieue/<host>/libvirt \
 /// LIBVIRT_POOL=images LIBVIRT_VOL=scratch.raw \
 ///   cargo test -p banlieue-libvirt --test live_libvirtd delete_a_volume -- --ignored --nocapture
 /// ```
@@ -527,6 +527,8 @@ async fn qemu_agent_program_is_understood_by_real_libvirtd() {
         ),
     }
     undefined.expect("undefining the test domain");
-    eprintln!("  ✓ qemu program {:#x} accepted", banlieue_libvirt::QEMU_PROGRAM);
+    eprintln!(
+        "  ✓ qemu program {:#x} accepted",
+        banlieue_libvirt::QEMU_PROGRAM
+    );
 }
-

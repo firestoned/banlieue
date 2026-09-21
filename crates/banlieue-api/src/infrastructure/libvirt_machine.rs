@@ -79,7 +79,7 @@ pub struct LibvirtMachineSpec {
     /// scheduler writes the chosen failure domain here.
     ///
     /// libvirt has no cluster or datacenter hierarchy, so a failure domain is
-    /// simply one host (see roadmap 13) — which makes this field carry more
+    /// simply one host (see roadmap 07) — which makes this field carry more
     /// weight than on vSphere, not less: it is the only placement signal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure_domain: Option<String>,
@@ -207,7 +207,7 @@ pub enum LibvirtBootSourceKind {
     ///
     /// Slower — a full unattended install per VM — but the only shape that
     /// can produce a disk sealed to that VM's own vTPM, and the shape
-    /// roadmap 70's pool members use. On libvirt this path is *simpler* than
+    /// roadmap 17's pool members use. On libvirt this path is *simpler* than
     /// `BackingVolume`: no template, no backing chain, nothing to copy.
     InstallMedia,
 }

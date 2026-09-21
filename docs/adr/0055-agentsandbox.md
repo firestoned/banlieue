@@ -8,11 +8,11 @@
   (`VirtualMachinePool`). Depends on ADR-0043 (`GuestReady`) to be
   trustworthy in production — see Consequences. The attestation handshake
   this object eventually carries is **out of scope** and belongs to roadmap
-  70 phase C and ADR-0049.
+  17 phase C and ADR-0049.
 
 ## Context
 
-Roadmap 70's premise is AI agent sandboxes, and everything built so far is
+Roadmap 17's premise is AI agent sandboxes, and everything built so far is
 deliberately not about agents: a pool keeps warm VMs, a claim hands one out
 for one subject and destroys it on release. Both are infrastructure, and
 both are useful to anything that wants a disposable machine — CI, untrusted

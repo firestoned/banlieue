@@ -1,8 +1,21 @@
 # 0043 — `GuestReady`: the installed guest announces itself
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-09-20
+- **Proposed:** 2026-09-20
+- **Amended:** 2026-09-20 (Decision 8 — the first formulation would have
+  polled every `Immediate` VM forever; see the decision for the correction)
 - **Deciders:** Erick Bourgeois
+- **Notes:** Implemented **for libvirt only**, and **the read path is not
+  yet verified against a real guest agent**. The second RPC program *is*
+  verified against a real libvirtd
+  (`qemu_agent_program_is_understood_by_real_libvirtd`). Attempting the full
+  path with `live_guest.rs` established that the available Kairos image
+  boots but ships no `qemu-guest-agent`, so it cannot satisfy `GuestReady`
+  at all — an image gap, not a code one, but it means the open/read/close
+  sequence has never touched a real agent. The vSphere transport is
+  specified and deliberately deferred. *Accepted* records the decision, not
+  completed delivery.
 - **Related:** Closes the gap [ADR-0040](0040-deferred-install-for-vtpm-encryption.md)
   Decision 4 recorded and deferred. Makes
   [ADR-0046](0046-virtualmachinepool.md)'s `readiness: GuestReady`
@@ -107,10 +120,26 @@ booted from**.
    instead of a fire-and-poll with a pid to chase, and it needs no
    executable in the guest.
 
-8. **Requeue at the default interval, not the long one, while
-   `guestInstalled != true`.** This is the one window where the answer is
-   expected to change soon; the long interval would add minutes to every
-   member's time-to-warm for no benefit.
+8. **Requeue at the default interval while the answer is expected to change
+   — which is not the same as "while `guestInstalled != true`".**
+
+   The obvious rule is wrong. `guestInstalled` is never true for an
+   `Immediate` image, which has no phase stage and usually no guest agent,
+   so "poll fast until installed" would poll every 30s forever, per VM, for
+   a signal that is never coming.
+
+   So the probe returns three states, not two, and the extra one carries
+   the distinction: an **unreachable agent** means nothing will ever
+   announce (back off), while an **agent that answers without a marker**
+   means something may be installing right now (poll fast). The states cost
+   nothing to produce — a libvirt-level error versus an `Ok` reply carrying
+   a JSON error already distinguishes them.
+
+   Fast polling matters because the intervals are 30s and 300s: keying off
+   addresses instead, as a first cut did, drops a Deferred member to the
+   long interval as soon as its *installer* picks up a DHCP lease, and then
+   adds up to five minutes between the guest announcing and the pool
+   noticing.
 
 9. **This is a liveness signal and must never be read as an integrity
    one.** It says a fresh, unclaimed guest booted from its installed disk.
@@ -119,10 +148,28 @@ booted from**.
    claim nonce), and conflating the two would make a pool look verified when
    it is merely running.
 
+10. **`GuestReady` is published only when the provider can actually
+    evaluate it.** An unreachable guest agent means the image cannot send
+    the signal at all — the same position vSphere is in until its transport
+    lands — so the condition is left **absent**, not `False`. Once a member
+    has announced it is sticky along with `guestInstalled`, so a power cycle
+    does not drop it.
+
+    `pool.rs::readiness_signal_absent` decides by condition *type*. A
+    blanket `False` makes a pool set to `readiness: GuestReady` report
+    `Warm=False reason=Filling` — "wait a bit" — forever, for an image that
+    can never announce. That is exactly the failure ADR-0046 Decision 3
+    exists to prevent, and the first implementation of *this* ADR
+    reintroduced it: the libvirt provider published `False` unconditionally,
+    so the diagnostic never fired.
+
+    Caught by running a `GuestReady` pool on a real cluster and reading what
+    it said, not in review. Amended the same day.
+
 ## Consequences
 
 - `readiness: GuestReady` becomes satisfiable, so pools of `Deferred`,
-  TPM-sealed VMs are achievable — the case roadmap 70 exists for.
+  TPM-sealed VMs are achievable — the case roadmap 17 exists for.
 - **An image without the phase stage never reports `GuestReady`.** That is
   correct and already handled: the pool says
   `Warm=False reason=ReadinessSignalAbsent` rather than sitting silent.
@@ -144,3 +191,8 @@ booted from**.
   guest-side announcement into a channel nothing is reading.
 - `VirtualMachine` gains a mirrored `GuestReady` condition, so a consumer
   reads one object rather than reaching into the infra CR.
+- An `Immediate` image that *does* ship `qemu-guest-agent` but no phase
+  stage polls at the fast interval for as long as it runs: its agent
+  answers, so it looks like a guest that might yet announce. Accepted —
+  the cost is one agent round trip per 30s per such VM, and the alternative
+  is guessing at `installMode`, which the provider cannot see.

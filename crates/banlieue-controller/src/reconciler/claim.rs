@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Erick Bourgeois, banlieue
 // SPDX-License-Identifier: Apache-2.0
-//! `VirtualMachineClaim` reconciler (roadmap 70, ADR-0047).
+//! `VirtualMachineClaim` reconciler (roadmap 17, ADR-0047).
 //!
 //! Thin on purpose, like the pool: gather a snapshot, call
 //! [`super::claim_plan::next_step`], apply it, publish status. Every

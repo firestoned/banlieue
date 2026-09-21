@@ -1055,7 +1055,8 @@ pub fn encode_domain_qemu_agent_command_args(
 /// unconditionally as a string would desynchronise the connection.
 ///
 /// # Errors
-/// [`ProcError`] if the payload is not a well-formed optional string.
+/// [`TransportError::Protocol`] if the payload is not a well-formed
+/// optional string.
 pub fn decode_domain_qemu_agent_command_ret(payload: &[u8]) -> Result<Option<String>> {
     let mut d = Decoder::new(payload);
     if !d.read_bool()? {
@@ -1072,9 +1073,9 @@ pub fn decode_domain_qemu_agent_command_ret(payload: &[u8]) -> Result<Option<Str
 /// where a JSON parser already lives.
 ///
 /// # Errors
-/// [`ProcError`] on a transport failure or a malformed reply. An agent that
-/// is absent or not yet running surfaces as a libvirt error, which the caller
-/// should read as "not ready", not as a fault.
+/// Any [`TransportError`]. An agent that is absent or not yet running
+/// surfaces as [`TransportError::Remote`] — which the caller should read as
+/// "not ready", not as a fault.
 pub async fn domain_qemu_agent_command<S>(
     session: &mut Session<S>,
     dom: &Domain,

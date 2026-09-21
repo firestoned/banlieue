@@ -19,7 +19,7 @@
 //! ```sh
 //! export KUBECONFIG=~/dev/kubeconfig/homelab.yaml
 //! BANLIEUE_E2E_PROVIDER=homelab-kvm \
-//!   LIBVIRT_HOST=<host> LIBVIRT_TLS_DIR=~/.config/banlieue/libvirt \
+//!   LIBVIRT_HOST=<host> LIBVIRT_TLS_DIR=~/.config/banlieue/<host>/libvirt \
 //!   cargo test -p banlieue-provider-libvirt --test e2e_import_pipeline -- --ignored --nocapture
 //! ```
 //!

@@ -123,7 +123,7 @@ banlieue/
 └── examples/
 ```
 
-`banlieue-provider-proxmox` does not exist yet (roadmap 12, ⛔). There is no
+`banlieue-provider-proxmox` does not exist yet (roadmap 06, ⛔). There is no
 Helm chart yet (Phase 4 §4.6).
 
 > **Note.** `banlieue-libvirt`, `banlieue-operator`, `banlieue-imagebuilder`

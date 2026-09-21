@@ -313,7 +313,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Session<S> {
     ///
     /// One libvirtd connection carries more than one RPC program: the
     /// qemu-specific procedures (`virDomainQemuAgentCommand`, which is the
-    /// only route to `qemu-guest-agent`) live in [`QEMU_PROGRAM`], not the
+    /// only route to `qemu-guest-agent`) live in [`QEMU_PROGRAM`](crate::rpc::QEMU_PROGRAM), not the
     /// remote driver's (ADR-0043). Framing is identical; only the header
     /// differs, which is why this is a parameter rather than a second
     /// transport.

@@ -18,7 +18,7 @@
 //!
 //! ```sh
 //! LIBVIRT_HOST=bar.foo.io \
-//! LIBVIRT_TLS_DIR="$HOME/.config/banlieue/libvirt" \
+//! LIBVIRT_TLS_DIR="$HOME/.config/banlieue/<host>/libvirt" \
 //! LIBVIRT_POOL=images LIBVIRT_SOURCE_VOLUME=cirros-0.6.2.qcow2 \
 //!   cargo test -p banlieue-provider-libvirt --test live_cloudinit -- --ignored --nocapture
 //! ```

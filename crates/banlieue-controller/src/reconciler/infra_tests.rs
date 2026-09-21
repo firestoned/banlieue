@@ -963,7 +963,7 @@ mod tests {
     }
 
     /// A Deferred image installs itself per VM — the shape ADR-0040 forces
-    /// for TPM sealing, and the one roadmap 70's pool members use.
+    /// for TPM sealing, and the one roadmap 17's pool members use.
     #[test]
     fn libvirt_deferred_image_becomes_install_media() {
         use banlieue_api::banlieue::InstallMode;

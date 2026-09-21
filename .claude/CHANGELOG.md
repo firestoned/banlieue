@@ -1,5 +1,185 @@
 # Changelog
 
+## [2026-09-21 01:30] - Full pool+claim e2e on the current tree, and the bug it found
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- **A pool set to `readiness: GuestReady` reported `Filling` forever instead
+  of `ReadinessSignalAbsent`.** The libvirt provider published
+  `GuestReady=False` unconditionally, and
+  `pool.rs::readiness_signal_absent` decides by condition *type* — so the
+  condition always existed and the "nothing sets this signal" diagnostic
+  never fired. An image that can never announce reported "wait a bit",
+  indefinitely.
+
+  That is precisely the failure ADR-0046 Decision 3 exists to prevent, and
+  ADR-0043's first implementation reintroduced it. `GuestReady` is now
+  published only when the provider can actually evaluate it: an unreachable
+  agent leaves it **absent**, the same position vSphere is in until its
+  transport lands. Recorded as ADR-0043 Decision 10 (appended rather than
+  inserted, so existing "Decision N" references stay valid).
+
+  **Found by running it, not by review** — the documentation asserted the
+  correct behaviour and the code did something else.
+
+### Verified — full stack, current tree
+Everything below ran against a **kind cluster + locally-built binaries + a
+real libvirt host**, reached by its **tailnet DNS name** (only possible
+since the certificate reissue — the product code path, not just a test):
+
+- `e2e_pool_claim` — **2/2**, twice: once before the fix and again after, so
+  the `InfrastructureReady` path is known not to have regressed. Pool fills
+  → both members exist as real domains → claim binds → pool builds a
+  replacement → claim releases → **the released domain is gone from the
+  host**; and a claimed domain outlives its pool.
+- `live_claim` — **8/8** against the same API server.
+- A `GuestReady` pool observed directly on the cluster, before and after:
+  `Filling` → `ReadinessSignalAbsent`, with the member no longer publishing
+  the condition at all. `Capacity` also goes false, so the pool stops
+  spawning VMs for a signal that will never arrive.
+- Host left clean: the `images` pool contains only the base volume — no
+  leftover overlays, seed ISOs or domains.
+- `cargo test --all` green, clippy clean.
+
+### Why this run happened
+The e2e had last passed *before* the CRD gained `status.guestInstalled`,
+before the tri-state guest probe and the requeue-cadence change, and before
+the certificate reissue. Nothing had validated the tree as it now stands.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout — provider behaviour change (condition now
+      absent rather than false)
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-09-20 23:55] - Per-host libvirt credential paths, and two docs that were simply wrong
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docs/src/guides/libvirt-provider.md`, `Makefile` (3), and every live/e2e
+  test's module docs (7 files): `~/.config/banlieue/libvirt` →
+  `~/.config/banlieue/<host>/libvirt`. Several hypervisors may share a CA
+  but each has its own server certificate, so a single flat directory
+  quietly becomes "whichever host I set up last".
+
+### Fixed
+Two errors in `libvirt-provider.md` that the path change surfaced, neither
+of which was a formatting nit:
+
+- **It claimed the bootstrap script leaves client credentials in
+  `~/.config/banlieue/libvirt/` on the machine you ran it from.** It does
+  not — it leaves them **on the host**, in `/etc/pki/CA/` and
+  `/etc/pki/libvirt/`. The workstation directory is a convention for the
+  copies, and the guide never said to make them.
+- **The `kubectl create secret` commands pointed at paths that have never
+  existed**, under either convention: they combined the flat workstation
+  directory with the host's filenames.
+
+  The two locations use *different names* — host `cacert.pem` /
+  `clientcert.pem` / `clientkey.pem`, workstation `ca.pem` /
+  `client-cert.pem` / `client-key.pem` — and every live test in this repo
+  reads the workstation three. Copying across without renaming fails with
+  `No such file or directory`, which reads like a missing directory rather
+  than a naming mismatch. The guide now shows the copy-down with the rename
+  and says why.
+
+- Broken rustdoc intra-doc links: `[`ProcError`]` ×2 (a type that does not
+  exist — my own, from the ADR-0043 work) and `[`QEMU_PROGRAM`]` without a
+  path. Also two links to private items, one mine and one pre-existing.
+  `cargo doc` is now warning-free for both libvirt crates.
+
+### Verified
+- `make libvirt-live-test` with no `LIBVIRT_HOST` prints the new path
+  correctly — `<host>` inside a Makefile `echo` is quoted, not a redirect.
+- Connecting to a real host **by its tailnet DNS name** using the documented
+  per-host directory: TLS established, pools and networks listed.
+- `cargo test --all` green, clippy clean, `make docs` builds.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation — including two commands that could not have worked
+
+## [2026-09-20 22:40] - Roadmaps 09 and 15 landed; every roadmap renamed lowercase and renumbered 00–17
+
+**Author:** Erick Bourgeois
+
+### Added
+- `.github/community/09-phase-1f-cloud-hypervisor-provider.md` — Phase 1F, a
+  Cloud Hypervisor provider, moved in from outside the repo. Phase 0 is a
+  **decision gate**, not a formality: either a host-resident provider process
+  (which amends ADR-0003 and ADR-0012, since a daemonless VMM has nothing
+  in-cluster to talk to) or libvirt's `ch` driver through the existing
+  `banlieue-libvirt` client. First consumer is roadmap 17 (agent sandboxes),
+  which is why the smaller-TCB argument carries weight here and not for the
+  QEMU path. Reserves ADR-0059 to ADR-0065.
+- `.github/community/15-vsphere-disk-image-import.md` — import a `Url`-source
+  `VMImage` into each vSphere failure domain from the `cloudImage` raw
+  artifact as a VMDK, with a first-party pure-Rust VMDK writer, instead of an
+  8–12 minute install boot per zone per build. Closes the follow-up ADR-0010
+  left open (OVF/`HttpNfcLease` vs plain datastore PUT) that ADR-0020 stepped
+  around. The ISO path stays, and stays mandatory for `installMode: Deferred`.
+  Reserves ADR-0056 to ADR-0058 — shifted by one from the draft, because
+  roadmap 17 took ADR-0055 (`AgentSandbox`) after it was written and both docs
+  said to renumber at landing if something took their numbers.
+- `.claude/rules/documentation.md` — new **Roadmap Document Naming** section:
+  lowercase-hyphen filenames, contiguous two-digit numbering, and the full
+  list of what a renumbering commit must also fix.
+
+### Changed
+- **Every roadmap renamed to lowercase and renumbered contiguously 00–17.**
+  Fourteen of the eighteen were `UPPERCASE-WITH-HYPHENS`, which also left the
+  git index disagreeing with a case-insensitive filesystem on two of them.
+  Decade grouping is gone: the prefix is now a position in the reading order,
+  not a category.
+
+  | Old | New | Old | New |
+  |---|---|---|---|
+  | `00-OVERVIEW` | `00-overview` | `20-phase-2-snapshots` | `10-phase-2-snapshots` |
+  | `01-DECISIONS` | `01-decisions` | `30-phase-3-provider-lifecycle` | `11-phase-3-provider-lifecycle` |
+  | `02-CONVENTIONS` | `02-conventions` | `40-PHASE-4-FINOS-READY` | `12-phase-4-finos-ready` |
+  | `03-AVAILABILITY-ZONES-…` | `03-availability-zones-…` | `50-IPAM-POOL-INTEGRATION` | `13-ipam-pool-integration` |
+  | `10-PHASE-1A-CONTROLLER-AND-SDK` | `04-phase-1a-controller-and-sdk` | `51-LIVE-MIGRATION` | `14-live-migration` |
+  | `11-PHASE-1B-VSPHERE-PROVIDER` | `05-phase-1b-vsphere-provider` | `52-vsphere-disk-image-import` | `15-vsphere-disk-image-import` |
+  | `12-PHASE-1C-PROXMOX-PROVIDER` | `06-phase-1c-proxmox-provider` | `60-SCORECARD-REMEDIATION` | `16-scorecard-remediation` |
+  | `13-PHASE-1D-LIBVIRT-PROVIDER` | `07-phase-1d-libvirt-provider` | `70-ephemeral-vm-pools` | `17-ephemeral-vm-pools` |
+  | `14-PHASE-1E-DOCS` | `08-phase-1e-docs` | | |
+
+- `ROADMAPS.md`, `.github/community/README.md`: rows for 09 and 15 added, all
+  labels/links/first-column numbers remapped, phase-dependency graph gains
+  Phase 1F after 1D.
+- Every `roadmap NN` prose reference remapped repo-wide — 33 files across
+  `docs/adr/`, `docs/src/security/threat-model.md`, `examples/`, `Cargo.toml`
+  and Rust doc comments in `banlieue-api`, `banlieue-controller` and
+  `banlieue-provider-libvirt`. `make crds` regenerated
+  `infrastructure.banlieue.io_libvirtmachine{s,templates}.yaml`, whose
+  descriptions carry one of those comments; `docs/src/reference/api.md` was
+  unaffected.
+- `.claude/CLAUDE.md`, `~/.claude/CLAUDE.md`: the naming and numbering rule is
+  now stated where roadmaps are described, globally and per-project.
+
+### Why
+The two roadmaps were drafted outside the repo and were invisible to anyone
+but their author — roadmap 09 in particular is a prerequisite read for 17.
+The rename is the older debt: mixed case in one directory means every
+reference is a guess about which form is on disk, and on a case-insensitive
+filesystem git will happily track one case while the working tree holds
+another. Contiguous numbering follows from the same idea — a gap invites the
+question "what was 25?", which has no answer.
+
+**Entries above this line in this file use the old numbers.** They are a
+historical record; the mapping table is the key.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
 ## [2026-09-20 21:30] - GuestReady on libvirt (ADR-0043); AgentSandbox designed (ADR-0055)
 
 **Author:** Erick Bourgeois

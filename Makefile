@@ -287,7 +287,7 @@ libvirt-live-test: ## Run the libvirt protocol harness against a REAL libvirtd (
 	@test -n "$$LIBVIRT_HOST" || { \
 	  echo "LIBVIRT_HOST is unset. Example:"; \
 	  echo "  LIBVIRT_HOST=bar.foo.io \\"; \
-	  echo "  LIBVIRT_TLS_DIR=~/.config/banlieue/libvirt \\"; \
+	  echo "  LIBVIRT_TLS_DIR=~/.config/banlieue/<host>/libvirt \\"; \
 	  echo "    make libvirt-live-test"; \
 	  exit 1; }
 	@echo "Running the libvirt protocol harness against $$LIBVIRT_HOST ..."
@@ -334,7 +334,7 @@ pool-claim-e2e: ## Pool -> real libvirt domains -> claim -> release (LOCAL ONLY,
 	  echo "  BANLIEUE_E2E_IMAGE=<ready VMImage> \\"; \
 	  echo "  BANLIEUE_E2E_CLASS=<VMClass> \\"; \
 	  echo "  LIBVIRT_HOST=bar.foo.io \\"; \
-	  echo "  LIBVIRT_TLS_DIR=~/.config/banlieue/libvirt \\"; \
+	  echo "  LIBVIRT_TLS_DIR=~/.config/banlieue/<host>/libvirt \\"; \
 	  echo "    make pool-claim-e2e"; \
 	  echo ""; \
 	  echo "BANLIEUE_E2E_NAMESPACE defaults to banlieue-system and must be the"; \
@@ -364,7 +364,7 @@ libvirt-e2e: ## Run the FULL image pipeline against a real cluster + libvirt hos
 	  echo "  export KUBECONFIG=~/dev/kubeconfig/homelab.yaml"; \
 	  echo "  BANLIEUE_E2E_PROVIDER=<provider-name> \\"; \
 	  echo "  LIBVIRT_HOST=bar.foo.io \\"; \
-	  echo "  LIBVIRT_TLS_DIR=~/.config/banlieue/libvirt \\"; \
+	  echo "  LIBVIRT_TLS_DIR=~/.config/banlieue/<host>/libvirt \\"; \
 	  echo "    make libvirt-e2e"; \
 	  echo ""; \
 	  echo "LIBVIRT_HOST/LIBVIRT_TLS_DIR are optional: without them the suite"; \

@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Erick Bourgeois, banlieue
 // SPDX-License-Identifier: Apache-2.0
-//! `VirtualMachinePool` reconciler (roadmap 70, ADR-0046).
+//! `VirtualMachinePool` reconciler (roadmap 17, ADR-0046).
 //!
 //! Thin on purpose: gather a snapshot, call [`super::pool_plan::plan`], apply
 //! it, publish counts. Every decision lives in `pool_plan.rs`; every helper

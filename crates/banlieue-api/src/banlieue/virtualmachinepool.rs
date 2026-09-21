@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Erick Bourgeois, banlieue
 // SPDX-License-Identifier: Apache-2.0
-//! `banlieue.io/v1alpha1` VirtualMachinePool CRD (roadmap 70, ADR-0046).
+//! `banlieue.io/v1alpha1` VirtualMachinePool CRD (roadmap 17, ADR-0046).
 //!
 //! A pool keeps a number of *already-installed, never-used* VirtualMachines
 //! warm so that a consumer does not wait out a Deferred-mode install

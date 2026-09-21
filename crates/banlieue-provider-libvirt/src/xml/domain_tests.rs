@@ -91,7 +91,7 @@ mod tests {
     }
 
     /// The guest agent channel is not optional decoration: `GuestReady`
-    /// (roadmap 70 A2) and address discovery both depend on it, and a domain
+    /// (roadmap 17 A2) and address discovery both depend on it, and a domain
     /// defined without the channel cannot grow one without a redefine.
     #[test]
     fn always_includes_the_qemu_guest_agent_channel() {

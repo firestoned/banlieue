@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Erick Bourgeois, banlieue
 // SPDX-License-Identifier: Apache-2.0
-//! Pure planning logic for `VirtualMachinePool` (roadmap 70, ADR-0046).
+//! Pure planning logic for `VirtualMachinePool` (roadmap 17, ADR-0046).
 //!
 //! No Kubernetes I/O and no clock reads: the reconciler in
 //! [`super::pool`] gathers a [`PoolInputs`] snapshot, calls [`plan`], and

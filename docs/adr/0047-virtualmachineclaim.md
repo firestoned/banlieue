@@ -1,8 +1,15 @@
 # 0047 — `VirtualMachineClaim`: bound once, released by deletion
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-09-20
+- **Proposed:** 2026-09-20
 - **Deciders:** Erick Bourgeois
+- **Notes:** Implemented and validated end to end against a real cluster and
+  libvirt host — pool → warm domains → claim → release, with the released
+  domain verified gone from the hypervisor
+  (`crates/banlieue-provider-libvirt/tests/e2e_pool_claim.rs`). Decision 10's
+  `subject`-pinning admission policy is **not** implemented and is recorded
+  as an accepted risk in the threat model.
 - **Related:** Completes [ADR-0046](0046-virtualmachinepool.md)
   (`VirtualMachinePool`), which maintains a warm set but has no way to hand
   one out. Depends on the member lifecycle in
@@ -15,7 +22,7 @@
 A `VirtualMachinePool` fills, self-heals and rolls, and none of that is
 useful yet: nothing can take a member out of it. The pool is inert capacity.
 
-The thing being handed out is not a VM in the ordinary sense. Roadmap 70's
+The thing being handed out is not a VM in the ordinary sense. Roadmap 17's
 premise is **one VM per identity, used once, then destroyed** — the VM *is*
 the isolation boundary, so the moment a member has been exposed to one
 subject it can never be given to another. That single constraint decides

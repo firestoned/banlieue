@@ -1,4 +1,4 @@
-# 70: Ephemeral, single-use VM pools (AI agent sandboxes)
+# 17: Ephemeral, single-use VM pools (AI agent sandboxes)
 
 > **Goal.** A consumer asks for a VM for one identity and gets one in seconds:
 > already installed, disk sealed to its own vTPM, never used by anyone else,
@@ -275,14 +275,14 @@ provider can realise (see [Repo reality](#repo-reality-at-8360e19)).
 | Phase | What | ADR | Status |
 |---|---|---|---|
 | 0 | Slim image experiment | none (no code) | ⏸️ deferred (no vTPM on the libvirt hosts yet) |
-| A2 | `GuestReady`: the installed guest reports in | 0043 | 🔶 libvirt done (marker + qemu-guest-agent, second RPC program proven live); **vSphere transport deferred — no environment to verify against** |
+| A2 | `GuestReady`: the installed guest reports in | 0043 | 🔶 libvirt implemented; RPC program proven live, but the **read path is unverified — the available Kairos image ships no `qemu-guest-agent`**. vSphere transport deferred |
 | A4 | Detach install media once installed | 0044 | ⛔ |
 | A5 | vTPM EK certificate in machine status | 0045 | ⛔ |
 | A3 | `tpmEnabled` requires `installMode: Deferred` | 0048 | ⛔ |
 | B1 | `VirtualMachinePool` | 0046 | ✅ landed and validated e2e — fills, self-heals, rolls, cascades on delete |
 | B2 | `VirtualMachineClaim` | 0047 | ✅ landed — bind/hold/release, TTL expiry, finalizer, nonce; a pool is now consumable |
 | C | In-guest agent (separate repo) | own repo | ⛔ |
-| D | libvirt provider: `LibvirtMachine` reconciler | 13 + 0050 + 0054 | ✅ complete — CRD, domain XML, reconciler, NoCloud user-data; roadmap 13 closed |
+| D | libvirt provider: `LibvirtMachine` reconciler | 13 + 0050 + 0054 | ✅ complete — CRD, domain XML, reconciler, NoCloud user-data; roadmap 07 closed |
 | E | Proxmox provider, same | amend 12 | ⛔ |
 | F | Attestation trust anchors, threat model | 0049 | ⛔ |
 
@@ -318,8 +318,24 @@ type and a blanket `False` would turn "this will never warm" into "wait
 longer"; and `examples/16-cloud-config-guest-phase.yaml` keeps the vSphere
 stanza commented out so nobody announces into a channel nothing reads.
 
-**Still open:** the vSphere half (`guestinfo.banlieue.phase` read from
-`config.extraConfig`), deferred for want of a vCenter to verify it against.
+**Still open:**
+
+1. **The read path is unverified against a real guest agent.**
+   `tests/live_guest.rs` boots a guest and drives the real
+   open/read/close sequence, but the available Kairos Ubuntu 24.04 image
+   **boots and ships no `qemu-guest-agent`** — established after the test
+   was taught to tell "no agent" apart from "never booted", which it
+   initially conflated (and got wrong in both directions before the check
+   became hostname-independent; Kairos announces its own
+   `kairos-<hash>`). Needs an image with the agent, plus the phase layer,
+   to close.
+2. **The vSphere half** (`guestinfo.banlieue.phase` read from
+   `config.extraConfig`), deferred for want of a vCenter to verify against.
+
+Side finding, which retires an earlier suspicion: a qcow2 overlay over a
+**raw** backing volume *does* boot. The guest reached the network in
+`live_guest.rs`, so the "BackingFile does not boot" note recorded earlier
+was an artefact of that test's upload path, not of the shipped one.
 
 **Decision.**
 1. The installed system writes `guestinfo.banlieue.phase=installed` on every
@@ -536,13 +552,13 @@ Out of banlieue. Baked into the sandbox image via `vm-build` and one
    an allowlist proxy only.
 5. On release or TTL: power off. The claim controller deletes the VM.
 
-### D: libvirt (amend roadmap 13)
+### D: libvirt (amend roadmap 07)
 
 State at `badc698`: `Provider` and `VMImage` reconcilers and an own-protocol
 client exist; there is no `LibvirtMachine` CRD, and `banlieue-libvirt/procs.rs`
 has connect and storage procedures but no domain procedures.
 
-Deferred mode makes this provider *simpler* than roadmap 13 assumes: there is
+Deferred mode makes this provider *simpler* than roadmap 07 assumes: there is
 no backing-file template clone at all for TPM classes. Create an empty volume,
 attach the ISO the `VMImage` reconciler already uploads, add the TPM, boot.
 
@@ -569,9 +585,9 @@ Add to 13's task list:
 - EK certificates: read from swtpm's `swtpm_localca`-issued cert; trust anchor
   is per host (phase F).
 
-### E: Proxmox (amend roadmap 12)
+### E: Proxmox (amend roadmap 06)
 
-No crate yet. Roadmap 12 assumes template clone; for TPM classes replace that
+No crate yet. Roadmap 06 assumes template clone; for TPM classes replace that
 with create-from-ISO. Rule to write down: **never clone a VM that has a
 `tpmstate0` volume**, a full clone copies it, which is ADR-0040's shared-vTPM
 problem again. `tpmstate0` v2.0 is added at create. `efidisk0` with

@@ -222,10 +222,20 @@ make_server_cert() {
   log "Generating server certificate (cn=$SERVER_CN)"
   log "  SAN dns: $SAN_DNS"
   log "  SAN ips: $SAN_IPS"
-  certtool --generate-privkey > "$LIBVIRT_PKI/private/serverkey.pem" 2>/dev/null
-  chmod 600 "$LIBVIRT_PKI/private/serverkey.pem"
 
-  local tmpl; tmpl="$(mktemp)"
+  # Build the new key and certificate OUT OF PLACE, and install both only
+  # once both exist. Writing serverkey.pem first and signing afterwards --
+  # the obvious order -- leaves a new key beside the OLD certificate if the
+  # signature fails, and libvirtd then refuses to start TLS at all. Reissuing
+  # a certificate must never be able to take the host offline.
+  local newkey newcert tmpl
+  newkey="$(mktemp)"; newcert="$(mktemp)"; tmpl="$(mktemp)"
+  # shellcheck disable=SC2064  # expand now: these paths must not change
+  trap "rm -f '$newkey' '$newcert' '$tmpl'" RETURN
+
+  certtool --generate-privkey > "$newkey" 2>/dev/null
+  chmod 600 "$newkey"
+
   {
     echo "organization = \"$ORG\""
     echo "cn = \"$SERVER_CN\""
@@ -236,21 +246,28 @@ make_server_cert() {
     echo "signing_key"
   } >"$tmpl"
 
-  # Errors are NOT swallowed here: a failed signature must not leave a stale
-  # or empty servercert.pem looking like a success.
+  # Errors are NOT swallowed: a failed signature must not look like success.
   if ! certtool --generate-certificate \
-    --load-privkey "$LIBVIRT_PKI/private/serverkey.pem" \
+    --load-privkey "$newkey" \
     --load-ca-certificate "$CA_DIR/cacert.pem" \
     --load-ca-privkey "$CA_DIR/cakey.pem" \
     --template "$tmpl" \
-    --outfile "$LIBVIRT_PKI/servercert.pem"; then
-    rm -f "$tmpl"
-    warn "certtool failed to sign the server certificate"
+    --outfile "$newcert"; then
+    warn "certtool failed to sign the server certificate — nothing was changed"
     exit 1
   fi
-  rm -f "$tmpl"
-  [[ -s "$LIBVIRT_PKI/servercert.pem" ]] || { warn "server certificate is empty"; exit 1; }
-  chmod 644 "$LIBVIRT_PKI/servercert.pem"
+  [[ -s "$newcert" ]] || { warn "signed certificate is empty — nothing was changed"; exit 1; }
+
+  # Keep the outgoing pair until the new one is in place, so a bad reissue
+  # can be undone by hand.
+  if [[ -f "$LIBVIRT_PKI/servercert.pem" ]]; then
+    cp -p "$LIBVIRT_PKI/servercert.pem" "$LIBVIRT_PKI/servercert.pem.prev"
+    cp -p "$LIBVIRT_PKI/private/serverkey.pem" "$LIBVIRT_PKI/private/serverkey.pem.prev" 2>/dev/null || true
+    log "  previous pair saved as *.prev"
+  fi
+
+  install -m600 "$newkey" "$LIBVIRT_PKI/private/serverkey.pem"
+  install -m644 "$newcert" "$LIBVIRT_PKI/servercert.pem"
 
   log "  Issued. Restart libvirtd for it to take effect:"
   log "    sudo systemctl restart libvirtd"

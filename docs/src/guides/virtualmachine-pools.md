@@ -85,7 +85,9 @@ overwriting the disk. The distinguishing fact is *which disk booted*
        `examples/16-cloud-config-guest-phase.yaml`, and
     2. `qemu-guest-agent` installed and enabled.
 
-    Without either, nothing publishes the condition and the pool reports:
+    Without `qemu-guest-agent` the provider cannot evaluate the signal at
+    all, so it leaves `GuestReady` **absent** rather than false, and the
+    pool reports:
 
     ```text
     Warm=False   reason=ReadinessSignalAbsent
@@ -99,6 +101,17 @@ overwriting the disk. The distinguishing fact is *which disk booted*
     **On vSphere the transport is specified but not implemented**, so a
     vSphere pool set to `GuestReady` reports `ReadinessSignalAbsent`
     regardless of its image.
+
+    Verified against a real host: a stock **Kairos Ubuntu 24.04** image
+    boots but ships **no `qemu-guest-agent`**, so it cannot satisfy
+    `GuestReady` as-is. Check before adopting it:
+
+    ```sh
+    virsh qemu-agent-command <domain> '{"execute":"guest-ping"}'
+    ```
+
+    An error rather than `{"return":{}}` means the agent is missing, and
+    the pool will report `ReadinessSignalAbsent` forever.
 
 This is also why the field has no default. `GuestReady` is the *right*
 default for the use case pools were built for, and defaulting to it would

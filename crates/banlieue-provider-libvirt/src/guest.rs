@@ -106,6 +106,34 @@ pub fn guest_is_installed(reply: &str) -> bool {
     guest_phase_from_read(reply).is_some_and(|p| p == PHASE_INSTALLED)
 }
 
+/// What a guest probe found.
+///
+/// Three outcomes, not two, because "the agent never answered" and "the
+/// agent answered and there is no marker" call for different behaviour: the
+/// first means nothing will *ever* announce (an image with no guest agent),
+/// the second means something may be installing right now. Collapsing them
+/// into a bool is what makes a poll loop either too slow or infinite
+/// (ADR-0043 Decision 8).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GuestProbe {
+    /// The agent did not answer at all — no `qemu-guest-agent` in the
+    /// image, or the guest is not up far enough to run it.
+    AgentUnreachable,
+    /// The agent answered, but the marker is absent or does not say
+    /// `installed`.
+    NotAnnounced,
+    /// The marker says the installed system is running.
+    Installed,
+}
+
+impl GuestProbe {
+    /// Whether the installed guest has announced itself.
+    #[must_use]
+    pub fn is_installed(self) -> bool {
+        self == Self::Installed
+    }
+}
+
 /// Ask a running domain whether its installed system has announced itself.
 ///
 /// Returns `false` for every negative answer — no agent, no marker, an
@@ -115,18 +143,21 @@ pub fn guest_is_installed(reply: &str) -> bool {
 /// # Errors
 /// Never fails on a guest-side condition. Propagates only transport errors
 /// that mean the *host* connection is unusable.
-pub async fn domain_guest_installed<S>(session: &mut Session<S>, dom: &Domain) -> bool
+pub async fn probe_guest<S>(session: &mut Session<S>, dom: &Domain) -> GuestProbe
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     let open = guest_file_open_cmd(MARKER_PATH);
-    let Ok(Some(reply)) =
-        domain_qemu_agent_command(session, dom, &open, AGENT_TIMEOUT_DEFAULT).await
-    else {
-        return false;
+    // A libvirt-level error means the agent itself did not answer. An Ok
+    // reply — even one carrying a JSON error — means it did, and that
+    // distinction is the whole reason this returns three states.
+    let reply = match domain_qemu_agent_command(session, dom, &open, AGENT_TIMEOUT_DEFAULT).await {
+        Ok(Some(reply)) => reply,
+        Ok(None) | Err(_) => return GuestProbe::AgentUnreachable,
     };
     let Some(handle) = parse_file_handle(&reply) else {
-        return false;
+        // The agent answered; the marker is simply not there yet.
+        return GuestProbe::NotAnnounced;
     };
 
     let read = guest_file_read_cmd(handle);
@@ -137,7 +168,10 @@ where
     let close = guest_file_close_cmd(handle);
     let _ = domain_qemu_agent_command(session, dom, &close, AGENT_TIMEOUT_DEFAULT).await;
 
-    matches!(read_reply, Ok(Some(r)) if guest_is_installed(&r))
+    match read_reply {
+        Ok(Some(r)) if guest_is_installed(&r) => GuestProbe::Installed,
+        _ => GuestProbe::NotAnnounced,
+    }
 }
 
 #[cfg(test)]

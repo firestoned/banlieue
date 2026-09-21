@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Erick Bourgeois, banlieue
 // SPDX-License-Identifier: Apache-2.0
-//! `banlieue.io/v1alpha1` VirtualMachineClaim CRD (roadmap 70, ADR-0047).
+//! `banlieue.io/v1alpha1` VirtualMachineClaim CRD (roadmap 17, ADR-0047).
 //!
 //! A claim is the only way a member ever leaves a [`VirtualMachinePool`],
 //! and it takes exactly one member, for exactly one subject, exactly once.

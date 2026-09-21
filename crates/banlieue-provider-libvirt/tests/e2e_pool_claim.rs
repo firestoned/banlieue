@@ -24,7 +24,7 @@
 //!   BANLIEUE_E2E_IMAGE=<ready VMImage> \
 //!   BANLIEUE_E2E_CLASS=<VMClass> \
 //!   LIBVIRT_HOST=bar.foo.io \
-//!   LIBVIRT_TLS_DIR="$HOME/.config/banlieue/libvirt" \
+//!   LIBVIRT_TLS_DIR="$HOME/.config/banlieue/<host>/libvirt" \
 //!   cargo test -p banlieue-provider-libvirt --test e2e_pool_claim \
 //!     -- --ignored --nocapture --test-threads=1
 //! ```
