@@ -1,0 +1,228 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# VirtualMachineClaim subject authorization (ADR-0047 Decision 10).
+#
+# `spec.subject` records WHO a sandbox VM was handed to, and banlieue never
+# interprets it: the claim controller copies it onto the member as
+# `banlieue.io/claim-subject-{issuer,id}` annotations and reads it no further
+# (ADR-0047 Decision 9 — the claim must never carry a credential, so there is
+# no token here to verify).
+#
+# Without this policy `subject` is therefore a free-text assertion by whoever
+# created the claim. Anyone holding `create virtualmachineclaims` can
+# attribute a VM to any identity they like, and the API server's audit log
+# will record it as genuine. The audit trail becomes fiction precisely when
+# somebody wants to read it.
+#
+# The cure is the same one CHAIN-001 and ADR-0042 take: check at ADMISSION,
+# while the requesting principal still exists. By reconcile time it is gone —
+# the claim controller only ever sees an object, never a caller.
+#
+# WHAT THE API SERVER CAN AND CANNOT VOUCH FOR
+#
+#   It can attest `request.userInfo`: username, groups, uid.
+#   It CANNOT tell us which issuer minted the caller's token.
+#
+# So the two halves of `subject` are checked differently, and neither check
+# is stronger than that split allows:
+#
+#   subject.id     == the authenticated username, once this cluster's
+#                     username prefix is applied. The API server vouches for
+#                     the username, so it is a real binding.
+#
+#                     The field stores the RAW subject the issuer uses, not
+#                     the prefixed Kubernetes username, because the in-guest
+#                     agent compares it against a JWT and nothing in a token
+#                     carries the `oidc:` prefix (ADR-0047 Decision 9,
+#                     amended; ADR-0049).
+#   subject.issuer  in an operator-supplied allowlist. Nobody can verify the
+#                     caller came from that issuer; the allowlist only stops
+#                     a claim naming an issuer the site does not use, which
+#                     would make the recorded attribution meaningless.
+#
+# A BROKER is exempt from the id check, because handing sandboxes out on
+# behalf of other people is its entire job (roadmap phase C). That exemption
+# is the whole trust concentration: a broker can attribute a sandbox to
+# anyone, so its service account is as sensitive as the audit trail itself.
+# List brokers deliberately, and audit changes to the ConfigMap below.
+#
+# Requires Kubernetes 1.30+ (ValidatingAdmissionPolicy GA) and an API server
+# new enough for CEL `variables`. Shipped as its own file for the same reason
+# virtualmachine-userdata-authorization.yaml is: on an older API server this
+# one file is rejected while the rest of deploy/admission/ still applies.
+#
+# The ConfigMap comes FIRST in this file: the binding sets
+# parameterNotFoundAction: Deny, so it must exist before the binding does or
+# every claim is rejected.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: banlieue-claim-subject-policy
+  namespace: banlieue-system
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: admission
+data:
+  # Token issuers a claim's `spec.subject.issuer` may name. One per line,
+  # matched exactly. EDIT THIS PER SITE — the example below is a placeholder,
+  # not a recommendation, and a cluster that leaves it will reject every real
+  # claim.
+  issuers: |
+    https://issuer.example.com
+
+  # The prefix this cluster's API server prepends to authenticated usernames
+  # (`--oidc-username-prefix`; commonly `oidc:`). Empty for certificate or
+  # ServiceAccount auth.
+  #
+  # `spec.subject.id` stores the RAW subject as the issuer spells it, because
+  # that is the value a JWT carries and therefore the only one the in-guest
+  # agent can compare against (ADR-0047 Decision 9, ADR-0049). This policy
+  # adds the prefix when checking rather than making the claim store it.
+  usernamePrefix: |
+    oidc:
+
+  # Principals allowed to set an arbitrary `spec.subject.id` — i.e. to hand a
+  # sandbox to somebody other than themselves. One username per line, matched
+  # exactly, as the API server spells it (a ServiceAccount is
+  # `system:serviceaccount:<namespace>:<name>`).
+  #
+  # Deliberately empty by default. An empty list means every claim must name
+  # its own creator, which is the safe posture; add a broker only when one
+  # actually exists.
+  brokers: |
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: banlieue-virtualmachineclaim-subject-authorization
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: admission
+spec:
+  failurePolicy: Fail
+  paramKind:
+    apiVersion: v1
+    kind: ConfigMap
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["banlieue.io"]
+        apiVersions: ["v1alpha1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["virtualmachineclaims"]
+  variables:
+    # Split on newlines and drop blanks, so a trailing newline or an
+    # intentionally empty list does not produce a phantom "" entry that
+    # would match an empty username.
+    - name: issuers
+      expression: >-
+        params.data.?issuers.orValue('').split('\n')
+          .filter(l, l.trim() != '').map(l, l.trim())
+    - name: brokers
+      expression: >-
+        params.data.?brokers.orValue('').split('\n')
+          .filter(l, l.trim() != '').map(l, l.trim())
+    - name: isBroker
+      expression: "request.userInfo.username in variables.brokers"
+    # Trailing newline stripped, but NOT the whole value trimmed: a prefix is
+    # allowed to be empty (certificate or ServiceAccount auth), and an empty
+    # list entry must not become a phantom match.
+    - name: usernamePrefix
+      expression: "params.data.?usernamePrefix.orValue('').trim()"
+  validations:
+    # 1. The binding the API server can actually vouch for.
+    #
+    #    CREATE only. On UPDATE the requester is whoever is touching the
+    #    object now — and that is normally the CLAIM CONTROLLER adding its
+    #    finalizer, not the person the claim is for. Applying this check to
+    #    updates denies the controller, so claims can be created and then
+    #    never reconciled: Bound is never reached and the VM is never bound.
+    #    Found the hard way, against a real OIDC identity.
+    #
+    #    Nothing is lost by scoping it: validation 3 freezes `subject`, so an
+    #    attribution authorized at creation cannot be changed afterwards by
+    #    anyone, controller included.
+    - expression: >-
+        request.operation != 'CREATE'
+        || variables.isBroker
+        || variables.usernamePrefix + object.spec.subject.id
+             == request.userInfo.username
+      messageExpression: >-
+        'spec.subject.id is ' + object.spec.subject.id
+        + ' (which this cluster would spell '
+        + variables.usernamePrefix + object.spec.subject.id
+        + ') but you are authenticated as ' + request.userInfo.username
+        + '. A claim records who a sandbox VM was handed to, so it may only'
+        + ' name its own creator — otherwise the audit trail says whatever the'
+        + ' author typed. Handing a sandbox to somebody else is a broker'
+        + " privilege: add the broker's username to the 'brokers' list in"
+        + ' ConfigMap banlieue-claim-subject-policy.'
+      reason: Forbidden
+
+    # 2. An issuer the site actually uses. Not proof of provenance — see the
+    #    header — but it keeps the recorded attribution meaningful.
+    #
+    #    CREATE only, for the same reason as 1, and safe for the same reason:
+    #    validation 3 makes the whole of `subject` immutable. It also means
+    #    tightening the allowlist later cannot strand existing claims by
+    #    blocking the controller from reconciling them.
+    - expression: >-
+        request.operation != 'CREATE'
+        || object.spec.subject.issuer in variables.issuers
+      messageExpression: >-
+        'spec.subject.issuer ' + object.spec.subject.issuer
+        + ' is not in this cluster\'s allowlist. Add it to the'
+        + " 'issuers' list in ConfigMap banlieue-claim-subject-policy if it is"
+        + ' a token issuer this site trusts.'
+      reason: Forbidden
+
+    # 3. Immutability. Without this, check 1 is trivially bypassed: create a
+    #    claim naming yourself, then patch `subject` to somebody else. The
+    #    attribution has to be fixed at the moment it was authorized.
+    - expression: >-
+        request.operation != 'UPDATE'
+        || object.spec.subject == oldObject.spec.subject
+      messageExpression: >-
+        'spec.subject is immutable; it records an attribution that was'
+        + ' authorized when the claim was created. Delete the claim and make'
+        + ' a new one (which destroys the bound VM, by design).'
+      reason: Forbidden
+
+    # 4. The rest of the spec is immutable too, and for a plainer reason:
+    #    mutating it does nothing. `expiresAt` is computed once at bind from
+    #    `ttlSeconds`, and `poolRef` is read once to pick a member — so an
+    #    edit here silently appears to work and changes nothing, which is
+    #    worse than being refused.
+    - expression: >-
+        request.operation != 'UPDATE'
+        || object.spec.poolRef == oldObject.spec.poolRef
+      messageExpression: >-
+        'spec.poolRef is immutable; a claim binds one member from one pool'
+        + ' and is never rebound (ADR-0047 Decision 7).'
+      reason: Forbidden
+    - expression: >-
+        request.operation != 'UPDATE'
+        || object.spec.ttlSeconds == oldObject.spec.ttlSeconds
+      messageExpression: >-
+        'spec.ttlSeconds is immutable; status.expiresAt is computed once when'
+        + ' the claim binds, so changing this afterwards would have no effect.'
+        + ' Create a new claim.'
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: banlieue-virtualmachineclaim-subject-authorization
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: admission
+spec:
+  policyName: banlieue-virtualmachineclaim-subject-authorization
+  validationActions: ["Deny"]
+  paramRef:
+    name: banlieue-claim-subject-policy
+    namespace: banlieue-system
+    # Fail closed: no policy object, no claims. A missing allowlist must not
+    # silently degrade to "any subject is fine" — that is the state this
+    # policy exists to end.
+    parameterNotFoundAction: Deny

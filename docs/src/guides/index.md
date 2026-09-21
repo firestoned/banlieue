@@ -45,6 +45,18 @@ on a real cluster, using the released container image
     provisioning — sizing, image rollout, and the one field that fails
     silently if you guess it.
 
+- :material-hand-extended: **[VirtualMachine Claims](virtualmachine-claims.md)**
+
+    Take one warm member out of a pool, for one identity, once — binding,
+    `ttlSeconds`, why release is always deletion, and why `subject` must
+    never carry a credential.
+
+- :material-graph-outline: **[The Claim Flow, End to End](../concepts/virtualmachine-claim-flow.md)**
+
+    The same story as sequence diagrams: kubelogin and the OIDC flow that
+    establishes *who* you are, the admission checks, the bind race, the state
+    machine, and the two finalizers that make release mean something.
+
 - :material-cloud-download: **[Setting up the Kairos Operator](kairos-operator-setup.md)**
 
     Install the third-party [Kairos operator](https://kairos.io) banlieue's

@@ -19,6 +19,7 @@ rotate.
 | `provider-credentialsref-authorization.yaml` | The principal creating/updating a `Provider` must be authorized to `get` the Secret named by `spec.connection.credentialsRef` (CEL `authorizer`; security review 2026-07-31). |
 | `virtualmachine-userdata-authorization.yaml` | The principal creating/updating a `VirtualMachine` must be authorized to `get` the Secret or ConfigMap named by `spec.userData` (CEL `authorizer`; [ADR-0042](../../docs/adr/0042-userdata-reference-authorization.md)). |
 | `vmimage-import-source.yaml` | Every `VMImage.spec.sources[].importFrom` is pinned to an `@sha256:` digest and references a registry in the `banlieue-vmimage-allowed-registries` parameter ConfigMap (security review 2026-07-31). |
+| `virtualmachineclaim-subject-authorization.yaml` | `VirtualMachineClaim.spec.subject.id` must equal the authenticated username (declared brokers exempt), `spec.subject.issuer` must be in the `banlieue-claim-subject-policy` parameter ConfigMap, and `spec` is immutable ([ADR-0047](../../docs/adr/0047-virtualmachineclaim.md) Decision 10). |
 | `providerclass-guardrails.yaml` | `ProviderClass.spec.additionalRules` may not grant on `secrets`, use `*` resources/verbs, or use `escalate`/`bind`/`impersonate`; `spec.workloadNamespace` may not be a Kubernetes system namespace (security review 2026-07-31). |
 
 Apply after the CRDs:
@@ -34,6 +35,12 @@ Switch a binding to `["Warn","Audit"]` to roll out in report-only mode first.
 
 Notes:
 
+- `virtualmachineclaim-subject-authorization.yaml` ships its parameter
+  ConfigMap first, for the same reason, and needs the `authorizer`-era
+  apiserver plus CEL `variables`. **Edit its `issuers` list**: the shipped
+  value is a placeholder, and an unedited cluster rejects every claim. Its
+  `brokers` list is empty by default and is a trust concentration — anyone
+  named there may attribute a sandbox to any identity.
 - `vmimage-import-source.yaml` also ships its parameter ConfigMap (first
   document in the file — the binding fails closed when it is missing). **Edit
   the `registries` list per site** before applying; the defaults are

@@ -58,7 +58,11 @@ pub const CLAIM_NONCE_BYTES: usize = CLAIM_NONCE_BITS / 8;
     printcolumn = r#"{"name":"Pool","type":"string","jsonPath":".spec.poolRef.name"}"#,
     printcolumn = r#"{"name":"VM","type":"string","jsonPath":".status.virtualMachineRef.name"}"#,
     printcolumn = r#"{"name":"Phase","type":"string","jsonPath":".status.phase"}"#,
-    printcolumn = r#"{"name":"Expires","type":"date","jsonPath":".status.expiresAt"}"#,
+    // `string`, not `date`: kubectl renders a `date` column as time SINCE
+    // the timestamp, which is negative for a deadline and prints
+    // `<invalid>`. `Age` below is a `date` and correctly so — it looks
+    // backwards, this one looks forwards.
+    printcolumn = r#"{"name":"Expires","type":"string","jsonPath":".status.expiresAt"}"#,
     printcolumn = r#"{"name":"Age","type":"date","jsonPath":".metadata.creationTimestamp"}"#
 )]
 #[serde(rename_all = "camelCase")]

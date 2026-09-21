@@ -6,16 +6,21 @@
 - **Amended:** 2026-09-20 (Decision 8 — the first formulation would have
   polled every `Immediate` VM forever; see the decision for the correction)
 - **Deciders:** Erick Bourgeois
-- **Notes:** Implemented **for libvirt only**, and **the read path is not
-  yet verified against a real guest agent**. The second RPC program *is*
-  verified against a real libvirtd
-  (`qemu_agent_program_is_understood_by_real_libvirtd`). Attempting the full
-  path with `live_guest.rs` established that the available Kairos image
-  boots but ships no `qemu-guest-agent`, so it cannot satisfy `GuestReady`
-  at all — an image gap, not a code one, but it means the open/read/close
-  sequence has never touched a real agent. The vSphere transport is
-  specified and deliberately deferred. *Accepted* records the decision, not
-  completed delivery.
+- **Notes:** Implemented **for libvirt only**. The read path **is now
+  verified against a real `qemu-guest-agent`** (2026-09-21): `live_guest.rs`
+  drives open/read/close and both halves of the tri-state against a booted
+  Debian 13 guest on a real host. It no longer waits for an image that ships
+  the agent — it installs one at boot through the NoCloud seed (ADR-0054),
+  which is what unblocked it, since neither the Kairos build nor Debian's
+  `genericcloud` carries it. That first green run cost two real bugs, both
+  fixed: an overlay declared `raw` over a `.qcow2` backing image so no guest
+  ever booted, and `probe_guest` reported `AgentUnreachable` for a healthy
+  guest whose marker simply did not exist yet — inverting Decision 8's
+  requeue cadence for the whole install window. **Still open:** a Kairos
+  image carrying the phase layer, to prove the marker is written at the
+  right moment (that its `/run/cos/active_mode` guard keeps it out of the
+  live installer); and the vSphere transport, specified and deliberately
+  deferred. *Accepted* records the decision, not completed delivery.
 - **Related:** Closes the gap [ADR-0040](0040-deferred-install-for-vtpm-encryption.md)
   Decision 4 recorded and deferred. Makes
   [ADR-0046](0046-virtualmachinepool.md)'s `readiness: GuestReady`

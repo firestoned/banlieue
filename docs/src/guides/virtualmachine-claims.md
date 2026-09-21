@@ -9,6 +9,12 @@ A `VirtualMachineClaim` is the only way a member ever leaves a
 Without one, a pool is inert capacity: it fills, self-heals and rolls, and
 nothing can consume it.
 
+!!! tip "Prefer diagrams?"
+    [The Claim Flow, End to End](../concepts/virtualmachine-claim-flow.md) draws this whole path —
+    the `kubelogin` OIDC flow that establishes who you are, admission, the
+    bind race, the state machine, release, and the proposed credential
+    handshake — as eleven Mermaid diagrams.
+
 ## The rule everything else follows from
 
 **A member is bound at most once in its life. Release is always deletion.**
@@ -34,7 +40,7 @@ kubectl get vmclaim -n banlieue-system -w
 ```text
 NAME                POOL           VM                   PHASE     EXPIRES
 sandbox-for-alice   sandbox-pool                        Pending
-sandbox-for-alice   sandbox-pool   sandbox-pool-9dmtx   Bound     15m
+sandbox-for-alice   sandbox-pool   sandbox-pool-9dmtx   Bound     2026-09-20T14:17:11Z
 ```
 
 Once `Bound`, everything a consumer needs is in one GET:
@@ -98,6 +104,11 @@ Two properties worth knowing:
 - **It is not a grace period.** At expiry the member is deleted whether or
   not the consumer is finished with it. Then the claim is deleted too, so an
   expired hold cannot be mistaken for a live one.
+- **`kubectl`'s `EXPIRES` column is the absolute deadline**, not a countdown.
+  It is a `string` printer column on purpose: `kubectl` renders a `date`
+  column as time *since* the timestamp, which for a deadline in the future is
+  negative and prints `<invalid>`. `AGE` beside it is a real `date` column,
+  and correctly so — that one looks backwards, this one looks forwards.
 
 ## Phases
 
@@ -201,14 +212,46 @@ deliberately has **no `create` and no `update`** on them: minting a claim
 attributes a sandbox to a named subject, and a controller that could do that
 could forge the audit trail.
 
-!!! warning "`subject` is not yet enforced against the caller"
-    Nothing currently checks that the `subject` in a claim is the identity
-    that created it. ADR-0047 Decision 10 calls for a
-    `ValidatingAdmissionPolicy` pinning `subject` to the authenticated
-    caller for everyone except a broker service account; until that exists,
-    **any principal who can create a claim can attribute one to anyone**.
+`subject` **is** enforced against the caller, by
+`deploy/admission/virtualmachineclaim-subject-authorization.yaml`:
 
-    Grant `create` on `virtualmachineclaims` narrowly until then.
+- `spec.subject.id` must equal the authenticated username;
+- `spec.subject.issuer` must be in an operator-maintained allowlist;
+- `spec` is immutable, so the check cannot be undone by patching the claim
+  afterwards.
+
+```text
+$ kubectl apply -f claim-for-someone-else.yaml
+Error from server (Forbidden): ... denied request: spec.subject.id is
+alice-uuid but you are authenticated as bob. A claim records who a sandbox
+VM was handed to, so it may only name its own creator ...
+```
+
+A **broker** — a service account whose job is handing sandboxes to other
+people — is exempt from the id check. Add its username to the `brokers` list
+in ConfigMap `banlieue-claim-subject-policy`.
+
+!!! warning "Two things the policy cannot do"
+    **It does not verify the issuer.** The API server does not reveal which
+    issuer minted the caller's token, so the allowlist only stops a claim
+    naming an issuer your site does not use. Verifying the subject's *token*
+    is the in-guest agent's job (roadmap phase C), against `status.nonce`.
+
+    **A broker is trusted for attribution.** Anyone on the `brokers` list can
+    attribute a sandbox to any identity, which is what brokering means.
+    That ConfigMap is as sensitive as the audit trail it underwrites — it is
+    empty by default, and worth alerting on.
+
+To exercise this against a **real identity** rather than a certificate CN,
+see [Testing claim authorization](testing-claim-authorization.md) — it sets
+up a dev cluster that logs you in with your GitHub account.
+
+!!! note "Install it"
+    The policy lives in `deploy/admission/`, which `banlieue bootstrap` does
+    **not** apply. Applying `deploy/admission/` is a separate, mandatory
+    step. The binding is `parameterNotFoundAction: Deny`, so a missing
+    ConfigMap blocks claims rather than silently allowing any subject — and
+    the shipped `issuers` list is a placeholder you must edit.
 
 ## Claims inherit the pool's readiness caveat
 
@@ -240,4 +283,5 @@ trusted. See
 
 - [`VirtualMachineClaim` API reference](../reference/api.md#virtualmachineclaim)
 - [ADR-0047 — `VirtualMachineClaim`: bound once, released by deletion](https://github.com/firestoned/banlieue/blob/main/docs/adr/0047-virtualmachineclaim.md)
+- [The Claim Flow, End to End](../concepts/virtualmachine-claim-flow.md) — every actor and message, end to end
 - [VirtualMachine Pools guide](virtualmachine-pools.md) — where the members come from

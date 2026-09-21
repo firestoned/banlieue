@@ -28,18 +28,32 @@
 //! ```sh
 //! LIBVIRT_HOST=bar.foo.io \
 //! LIBVIRT_TLS_DIR="$HOME/.config/banlieue/<host>/libvirt" \
-//! LIBVIRT_POOL=images LIBVIRT_SOURCE_VOLUME=guest-with-agent.raw \
+//! LIBVIRT_POOL=k0s-bootstrap \
+//! LIBVIRT_SOURCE_VOLUME=debian-13-genericcloud-amd64.qcow2 \
 //! LIBVIRT_FIRMWARE=efi \
 //!   cargo test -p banlieue-provider-libvirt --test live_guest -- --ignored --nocapture
 //! ```
 //!
-//! **The image must ship `qemu-guest-agent`.** If it does not, this test
-//! says so explicitly rather than failing obscurely — that is a real and
-//! common image gap, and on libvirt it means the image cannot satisfy
-//! `GuestReady` at all.
+//! **The image does not have to ship `qemu-guest-agent`** — this test
+//! installs it at boot through the NoCloud seed (ADR-0054), which is why it
+//! can run against a stock cloud image. That was the thing blocking it:
+//! neither the Kairos build nor Debian's `genericcloud` ships the agent, and
+//! waiting for an image that did left the read path unverified indefinitely.
+//!
+//! The image must therefore **run cloud-init and reach a package mirror**.
+//! If the agent never answers, the failure message says whether the guest
+//! booted at all, so "no network" and "never booted" stay distinguishable.
+//!
+//! What this still does not prove: that a real Kairos/immucore `Deferred`
+//! install writes the marker *at the right moment* — that its
+//! `/run/cos/active_mode` guard keeps it out of the live installer. That
+//! needs an image built with the phase layer
+//! (`examples/16-cloud-config-guest-phase.yaml`) and is a separate gap.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
+
+use base64::Engine as _;
 
 use banlieue_api::common::{Firmware, IpamSpec, LocalObjectReference, PowerState};
 use banlieue_api::infrastructure::{
@@ -51,8 +65,8 @@ use banlieue_libvirt::{
     connect_open, connect_tls, domain_interface_addresses, domain_qemu_agent_command,
 };
 use banlieue_provider_libvirt::guest::{
-    GuestProbe, guest_file_close_cmd, guest_file_open_cmd, guest_file_read_cmd,
-    guest_phase_from_read, parse_file_handle, probe_guest,
+    GuestProbe, MARKER_PATH, PHASE_INSTALLED, guest_file_close_cmd, guest_file_open_cmd,
+    guest_file_read_cmd, guest_phase_from_read, parse_file_handle, probe_guest,
 };
 use banlieue_provider_libvirt::machine_client::SessionMachineClient;
 use banlieue_provider_libvirt::reconciler::libvirtmachine::{converge, finalize_backend};
@@ -67,6 +81,22 @@ const KNOWN_FILE: &str = "/etc/hostname";
 /// Overlay size. Must be at least the backing image's virtual size or the
 /// guest gets a truncated disk and never boots.
 const DISK_GIB: u32 = 40;
+
+/// Installs `qemu-guest-agent` on first boot.
+///
+/// The agent is what this whole test needs and what no available image
+/// ships, so the seed supplies it rather than the image. `enable --now` is
+/// belt-and-braces: the Debian package's unit is socket-activated off the
+/// virtio-serial channel the domain XML always emits
+/// (`render_agent_channel`), but an explicit start removes one variable from
+/// a test whose failure mode is "the agent never answered".
+const AGENT_SEED: &str = "#cloud-config\n\
+package_update: true\n\
+packages:\n\
+  - qemu-guest-agent\n\
+runcmd:\n\
+  - [ systemctl, enable, --now, qemu-guest-agent ]\n\
+  - [ mkdir, -p, /run/banlieue ]\n";
 
 fn settings() -> Option<(String, PathBuf, String, String)> {
     let host = std::env::var("LIBVIRT_HOST").ok()?;
@@ -129,7 +159,7 @@ fn spec(domain_name: &str, pool: &str, source_volume: &str) -> LibvirtMachineSpe
             mac_address: None,
             ipam: IpamSpec::default(),
         }],
-        user_data: None,
+        user_data: Some(AGENT_SEED.to_string()),
         desired_power_state: PowerState::PoweredOn,
     }
 }
@@ -311,5 +341,72 @@ where
         ));
     }
     eprintln!("  ✓ probe_guest reported NotAnnounced, not AgentUnreachable");
+
+    // 4. The other half of the tri-state, which only reality can settle:
+    //    with the marker genuinely PRESENT, probe_guest must say Installed.
+    //    Until now nothing had ever produced that verdict from a real agent —
+    //    `guest_tests.rs` decides it from replies we wrote ourselves, so it
+    //    proves our parser agrees with our own fixtures and nothing more.
+    //
+    //    The marker is written here rather than by the seed on purpose: if
+    //    cloud-init wrote it at boot, the absent-marker assertion above could
+    //    never run, and that one is the harder of the two to get right.
+    write_marker(session, domain).await?;
+
+    let probe = probe_guest(session, domain).await;
+    if probe != GuestProbe::Installed {
+        return Err(format!(
+            "wrote {PHASE_INSTALLED:?} to {MARKER_PATH} but probe_guest returned {probe:?}"
+        ));
+    }
+    eprintln!("  ✓ probe_guest reported Installed once the marker existed");
+    Ok(())
+}
+
+/// Write the installed-marker into the guest, through the agent.
+///
+/// Deliberately does not reuse [`guest_file_open_cmd`], which is read-only by
+/// design so a reconcile loop can never modify a guest it is inspecting
+/// (ADR-0043). A test may write; the production path may not, and keeping
+/// that asymmetry visible is the point.
+async fn write_marker<S>(
+    session: &mut Session<S>,
+    domain: &banlieue_libvirt::Domain,
+) -> Result<(), String>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send,
+{
+    let open = serde_json::json!({
+        "execute": "guest-file-open",
+        "arguments": { "path": MARKER_PATH, "mode": "w" }
+    })
+    .to_string();
+    let reply = domain_qemu_agent_command(session, domain, &open, AGENT_TIMEOUT_DEFAULT)
+        .await
+        .map_err(|e| format!("opening {MARKER_PATH} for write failed: {e}"))?
+        .ok_or_else(|| format!("opening {MARKER_PATH} for write returned no payload"))?;
+    let handle = parse_file_handle(&reply).ok_or_else(|| {
+        format!("could not parse a handle from {reply} — does {MARKER_PATH}'s directory exist?")
+    })?;
+
+    let write = serde_json::json!({
+        "execute": "guest-file-write",
+        "arguments": {
+            "handle": handle,
+            "buf-b64": base64::engine::general_purpose::STANDARD.encode(PHASE_INSTALLED),
+        }
+    })
+    .to_string();
+    let wrote = domain_qemu_agent_command(session, domain, &write, AGENT_TIMEOUT_DEFAULT).await;
+
+    // Close before reporting the write: a leaked handle outlives this test
+    // and the next probe would find the agent's table one entry smaller.
+    let close = guest_file_close_cmd(handle);
+    domain_qemu_agent_command(session, domain, &close, AGENT_TIMEOUT_DEFAULT)
+        .await
+        .map_err(|e| format!("closing the written {MARKER_PATH} failed: {e}"))?;
+
+    wrote.map_err(|e| format!("writing {MARKER_PATH} failed: {e}"))?;
+    eprintln!("  ✓ wrote {PHASE_INSTALLED:?} to {MARKER_PATH} through the agent");
     Ok(())
 }

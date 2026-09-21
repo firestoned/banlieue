@@ -50,6 +50,9 @@ flowchart LR
     data-asset-capi-cluster-cr["CAPI Cluster / MachineDeployment (external)"]
     service-capi-core["Cluster API core + control-plane provider (k0smotron)"]
     system-k0s-bootstrap["k0s Bootstrap Script"]
+    network-oidc-issuer["OIDC Token Issuer (JWKS / discovery)"]
+    service-sandbox-broker["Sandbox Broker (planned, roadmap phase C — not shipped by banlieue)"]
+    service-in-guest-agent["In-guest agent (separate repository — not built)"]
     subgraph sg_system-banlieue-binary [System Banlieue Binary]
         service-banlieue-controller
         service-banlieue-operator
@@ -110,6 +113,11 @@ flowchart LR
     service-banlieue-controller --> data-asset-virtualmachine-cr
     service-banlieue-controller --> data-asset-agentsandbox-cr
     service-banlieue-controller --> data-asset-virtualmachineclaim-cr
+    actor-vm-consumer -->|HTTPS| network-oidc-issuer
+    service-kubernetes-api -->|HTTPS| network-oidc-issuer
+    service-sandbox-broker --> data-asset-virtualmachineclaim-cr
+    service-sandbox-broker -->|HTTPS| service-in-guest-agent
+    service-in-guest-agent -->|HTTPS| network-oidc-issuer
 ```
 
 <sub>Source: nodes and relationships in `architecture.json`.</sub>

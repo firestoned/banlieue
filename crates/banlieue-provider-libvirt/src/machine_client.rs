@@ -378,6 +378,14 @@ pub struct FakeMachineClient {
         std::collections::BTreeMap<InterfaceAddressSourceKey, Vec<DomainInterface>>,
     /// Bytes written by `upload_volume`, by volume name.
     pub uploaded: std::collections::BTreeMap<String, Vec<u8>>,
+    /// The XML each volume was created from, by volume name.
+    ///
+    /// Kept because discarding it made this fake more permissive than
+    /// libvirt: `create_volume` used to record only the name, so a test
+    /// asserting a volume's *format* could pass while the document declared
+    /// the wrong one — which is exactly how an overlay went out declaring a
+    /// qcow2 backing file as raw, and booted nothing.
+    pub created_volume_xml: std::collections::BTreeMap<String, String>,
     /// Every call, in order, as `"<op>:<subject>"`.
     pub calls: Vec<String>,
     /// Domains whose installed guest has announced itself (ADR-0043).
@@ -498,6 +506,8 @@ impl LibvirtMachineClient for FakeMachineClient {
                 detail: "no <name> element".to_string(),
             })?;
         self.record("create_volume", &name);
+        self.created_volume_xml
+            .insert(name.clone(), xml.to_string());
         let vol = StorageVol {
             pool: pool.name.clone(),
             name: name.clone(),

@@ -153,6 +153,8 @@ help: ## Show this help
         kind-e2e-bootstrap kind-e2e-dry-run kind-e2e-escape-hatch \
         kind-e2e-workload kind-e2e-pause kind-e2e-workload-namespace kind-e2e-class \
         claim-live-test pool-claim-e2e \
+        dev-oidc-up dev-oidc-attach dev-oidc-github-creds dev-oidc-login \
+        dev-oidc-try-claim dev-oidc-status dev-oidc-down \
         vcsim-up vcsim-down vcsim-logs \
         docs docs-serve docs-clean docs-deploy \
         calm-diagrams calm-docify calm-validate \
@@ -293,6 +295,34 @@ libvirt-live-test: ## Run the libvirt protocol harness against a REAL libvirtd (
 	@echo "Running the libvirt protocol harness against $$LIBVIRT_HOST ..."
 	cargo test -p banlieue-libvirt --test live_libvirtd -- \
 	  --ignored --nocapture --test-threads=1
+
+dev-oidc-up: ## Dev cluster that authenticates you with your real GitHub account (needs GITHUB_CLIENT_ID/SECRET)
+	@# GitHub is OAuth2, not OIDC — no ID token, no discovery document — so
+	@# kube-apiserver cannot trust it directly. Dex bridges the two. Full
+	@# explanation and the GitHub OAuth App setup:
+	@#   docs/src/guides/testing-claim-authorization.md
+	@./scripts/dev-oidc-kind.sh up
+
+dev-oidc-attach: ## Retrofit OIDC onto an EXISTING kind cluster, keeping its pools and VMs (CLUSTER=<name>)
+	@# `up` bakes the flags in at creation; this patches a running cluster's
+	@# API server static pod instead, so a cluster that already has a Provider,
+	@# a warm pool and real VMs keeps them. Needs CLUSTER=<name>.
+	@./scripts/dev-oidc-kind.sh attach
+
+dev-oidc-github-creds: ## Swap real GitHub OAuth App credentials onto an attached cluster and restart Dex
+	@./scripts/dev-oidc-kind.sh github-creds
+
+dev-oidc-login: ## Log in to the dev OIDC cluster through GitHub, and print your identity
+	@./scripts/dev-oidc-kind.sh login
+
+dev-oidc-try-claim: ## Create one honest and one impersonating claim, to see the policy decide
+	@./scripts/dev-oidc-kind.sh try-claim
+
+dev-oidc-status: ## What the dev OIDC cluster looks like and who you are on it
+	@./scripts/dev-oidc-kind.sh status
+
+dev-oidc-down: ## Delete the dev OIDC cluster and its throwaway CA
+	@./scripts/dev-oidc-kind.sh down
 
 claim-live-test: ## Run the claim reconciler against a REAL API server (needs KUBECONFIG; no libvirt)
 	@# The middle tier. `claim_plan` unit tests prove every decision as a

@@ -275,16 +275,16 @@ provider can realise (see [Repo reality](#repo-reality-at-8360e19)).
 | Phase | What | ADR | Status |
 |---|---|---|---|
 | 0 | Slim image experiment | none (no code) | ⏸️ deferred (no vTPM on the libvirt hosts yet) |
-| A2 | `GuestReady`: the installed guest reports in | 0043 | 🔶 libvirt implemented; RPC program proven live, but the **read path is unverified — the available Kairos image ships no `qemu-guest-agent`**. vSphere transport deferred |
+| A2 | `GuestReady`: the installed guest reports in | 0043 | 🔶 libvirt implemented and the **read path is now verified live** against a real `qemu-guest-agent` (the seed installs it, so no special image is needed). Open: a Kairos image with the phase layer, to prove the marker is written at the right *moment*; vSphere transport deferred |
 | A4 | Detach install media once installed | 0044 | ⛔ |
-| A5 | vTPM EK certificate in machine status | 0045 | ⛔ |
+| A5 | vTPM EK certificate in machine status | 0045 | ⛔ — **now the gate for F** (ADR-0049 Decision 4 verifies quotes against it) |
 | A3 | `tpmEnabled` requires `installMode: Deferred` | 0048 | ⛔ |
 | B1 | `VirtualMachinePool` | 0046 | ✅ landed and validated e2e — fills, self-heals, rolls, cascades on delete |
 | B2 | `VirtualMachineClaim` | 0047 | ✅ landed — bind/hold/release, TTL expiry, finalizer, nonce; a pool is now consumable |
 | C | In-guest agent (separate repo) | own repo | ⛔ |
 | D | libvirt provider: `LibvirtMachine` reconciler | 13 + 0050 + 0054 | ✅ complete — CRD, domain XML, reconciler, NoCloud user-data; roadmap 07 closed |
 | E | Proxmox provider, same | amend 12 | ⛔ |
-| F | Attestation trust anchors, threat model | 0049 | ⛔ |
+| F | Attestation trust anchors, threat model | 0049 | 📄 ADR-0049 written (Proposed); **blocked on A5** — without the EK certificate on the claim there is nothing to verify a quote against |
 
 Per `rules/architecture-driven-development.md` each ADR lands before its
 code. Skeleton decisions are below so the ADRs are an hour each, not a day.
@@ -320,15 +320,40 @@ stanza commented out so nobody announces into a channel nothing reads.
 
 **Still open:**
 
-1. **The read path is unverified against a real guest agent.**
-   `tests/live_guest.rs` boots a guest and drives the real
-   open/read/close sequence, but the available Kairos Ubuntu 24.04 image
-   **boots and ships no `qemu-guest-agent`** — established after the test
-   was taught to tell "no agent" apart from "never booted", which it
-   initially conflated (and got wrong in both directions before the check
-   became hostname-independent; Kairos announces its own
-   `kairos-<hash>`). Needs an image with the agent, plus the phase layer,
-   to close.
+1. ~~**The read path is unverified against a real guest agent.**~~
+   **Closed 2026-09-21.** `tests/live_guest.rs` passes against a real
+   host: agent ping, `guest-file-open`/`read`/`close`, and both halves of
+   the tri-state (`NotAnnounced` with the marker absent, `Installed` once
+   it is written through the agent).
+
+   The unlock was to stop waiting for an image that ships
+   `qemu-guest-agent` — neither the Kairos build nor Debian's
+   `genericcloud` does — and have the test **install it at boot through
+   the NoCloud seed** (ADR-0054). Any cloud-init image that can reach a
+   package mirror now works.
+
+   The first green run cost two real bugs, neither of which any offline
+   test could have found:
+
+   - **Overlays declared `raw` over a `.qcow2` backing image.**
+     `ensure_disks` passed the constant instead of calling
+     `backing_format()` — a function that existed, was documented and was
+     unit-tested, but was never called. libvirt does not probe a backing
+     file, so it accepted the lie and every guest read a qcow2 header as
+     its partition table. Nothing booted, and nothing said so: the
+     pool/claim e2e uses `InfrastructureReady`, which fires when the
+     *domain* runs, not when the *guest* boots.
+   - **`probe_guest` conflated "no marker" with "no agent."** libvirtd
+     turns an agent-level error into an RPC fault rather than an `Ok`
+     carrying JSON, so a marker that did not exist yet read as
+     `AgentUnreachable` — inverting the requeue cadence Decision 8 rests
+     on, for the entire install window of every Deferred member. It now
+     pings to classify the failure.
+
+   What this still does **not** prove: that a real Kairos/immucore
+   `Deferred` install writes the marker at the right *moment* — that its
+   `/run/cos/active_mode` guard keeps it out of the live installer. That
+   needs an image built with the phase layer and is a separate gap.
 2. **The vSphere half** (`guestinfo.banlieue.phase` read from
    `config.extraConfig`), deferred for want of a vCenter to verify against.
 

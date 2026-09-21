@@ -501,6 +501,55 @@ mod tests {
             "{:?}",
             c.calls
         );
+
+        // The document, not just the call. Asserting only that *a* volume was
+        // created is what let this ship wrong: libvirt does not probe a
+        // backing file's format, so a declared `raw` over a qcow2 image is
+        // accepted, and the guest then reads the qcow2 header as its
+        // partition table and never boots.
+        let xml = c
+            .created_volume_xml
+            .get("sandboxes-agent-01-os.qcow2")
+            .expect("os disk XML");
+        assert!(
+            xml.contains("<format type='qcow2'/></backingStore>"),
+            "overlay over ubuntu.qcow2 must declare a qcow2 backing format, got {xml}"
+        );
+    }
+
+    /// The other half: a `.raw` backing volume must still declare raw.
+    /// banlieue's own imports are raw (ADR-0011), so this is the common path
+    /// and a fix for the qcow2 case must not invert it.
+    #[tokio::test]
+    async fn a_raw_backing_volume_still_declares_raw() {
+        let pool = StoragePool {
+            name: POOL.to_string(),
+            uuid: [7u8; 16],
+        };
+        let mut c = FakeMachineClient {
+            pools: vec![pool],
+            ..Default::default()
+        };
+        c.volumes.insert(
+            (POOL.to_string(), "kairos.raw".to_string()),
+            StorageVol {
+                pool: POOL.to_string(),
+                name: "kairos.raw".to_string(),
+                key: "/var/lib/libvirt/images/kairos.raw".to_string(),
+            },
+        );
+        let mut s = spec(LibvirtBootSourceKind::BackingVolume);
+        s.boot_source.volume = "kairos.raw".to_string();
+
+        converge(&mut c, &s).await.expect("converge");
+        let xml = c
+            .created_volume_xml
+            .get("sandboxes-agent-01-os.qcow2")
+            .expect("os disk XML");
+        assert!(
+            xml.contains("<format type='raw'/></backingStore>"),
+            "overlay over kairos.raw must declare a raw backing format, got {xml}"
+        );
     }
 
     // ------------------------------------------------------------------

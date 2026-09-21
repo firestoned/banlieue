@@ -58,7 +58,7 @@ spec:
 #
 #   NAME                POOL           VM                   PHASE     EXPIRES
 #   sandbox-for-alice   sandbox-pool                        Pending
-#   sandbox-for-alice   sandbox-pool   sandbox-pool-9dmtx   Bound     15m
+#   sandbox-for-alice   sandbox-pool   sandbox-pool-9dmtx   Bound     2026-09-20T14:17:11Z
 #
 # Once Bound, `status` carries everything a consumer needs in one GET:
 #

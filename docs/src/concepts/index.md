@@ -7,6 +7,10 @@ wired this way, see [Why banlieue?](../reasoning/index.md) first.
   reconcile flow.
 - **[VirtualMachine](virtualmachine.md)** — the user-facing CRD and its
   lifecycle.
+- **[The Claim Flow, End to End](virtualmachine-claim-flow.md)** — eleven
+  diagrams: the `kubelogin` OIDC round trip that establishes *who* a consumer
+  is, the admission checks, the bind race, the claim state machine, and the
+  two finalizers behind release.
 - **[Provider Model](providers.md)** — what a provider is, what it implements,
   and how it's plugged in.
 - **[Infrastructure CRDs & CAPI](infra-crds-capi.md)** — why provider CRDs

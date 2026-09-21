@@ -359,7 +359,16 @@ async fn ensure_disks(
                 qcow2_volume_xml(&os_name, capacity)
             } else {
                 // Immediate: a copy-on-write overlay over the imported image.
-                qcow2_overlay_volume_xml(&os_name, capacity, &source.key, BANLIEUE_BACKING_FORMAT)
+                // The format comes from the backing volume's own name, never
+                // from the constant: libvirt does not probe a backing file,
+                // so declaring raw over a qcow2 image is accepted and the
+                // guest then reads the qcow2 header as its partition table.
+                qcow2_overlay_volume_xml(
+                    &os_name,
+                    capacity,
+                    &source.key,
+                    backing_format(&source.name),
+                )
             }
             .map_err(Error::from)?;
             let v = client.create_volume(pool, &xml).await?;

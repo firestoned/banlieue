@@ -1,5 +1,897 @@
 # Changelog
 
+## [2026-09-22 03:00] - CALM audit: five gaps closed, and one silently broken diagram
+
+**Author:** Erick Bourgeois
+
+### Audited
+Checked `docs/architecture/calm/architecture.json` against every ADR on disk
+and against what actually ships. The model was in much better shape than
+`docs/src/architecture/index.md` claimed — pool, claim and AgentSandbox nodes
+and relationships were all present, and 51 of 52 ADRs were indexed. Five real
+gaps, all now closed.
+
+### Changed
+- `docs/architecture/calm/architecture.json`:
+    1. **ADR-0049 added to the `adrs` index** — the only ADR on disk that was
+       missing, inserted next to the ADR-0047 it completes.
+    2. **Three nodes for the attestation actors**: `network-oidc-issuer`,
+       `service-sandbox-broker`, `service-in-guest-agent`. The claim CR node
+       already described the handshake in prose, but CALM's value is structured
+       data — a reader of the rendered diagrams saw no broker and no agent at
+       all, while ADR-0055's AgentSandbox (equally Proposed, equally unbuilt)
+       had a node. That inconsistency is what made the gap worth closing.
+    3. **Five relationships**: the consumer's OIDC login, the API server's JWKS
+       verification, a broker creating claims for other subjects, the broker →
+       agent attested mTLS push, and the agent's own JWKS fetch.
+    4. **Two flows**: `flow-claim-pool-member` (implemented) with controls
+       `claim-subject-attribution` and `bind-once-optimistic-concurrency`, and
+       `flow-attest-and-deliver-credential` (named *PROPOSED* in the flow title
+       itself) with `no-credential-at-rest`.
+    5. **`admission-policy-validation` now lists
+       `banlieue-virtualmachineclaim-subject-authorization`** and cites
+       ADR-0047. The policy shipped in `deploy/admission/` without the control
+       that is supposed to enumerate it.
+    6. **`metadata.phase` corrected.** It still read "the libvirt provider
+       registers hosts and imports images but has **no VM/domain lifecycle
+       (LibvirtMachine) yet**" — false since ADR-0050, and this session ran a
+       pool+claim e2e against a real libvirt host. It also never mentioned
+       pools or claims.
+- `docs/src/architecture/flows.md`, `system.md`: regenerated (`make calm-diagrams`).
+- `docs/src/architecture/index.md`: the counts table said Nodes 16 /
+  Relationships 13 / Flows 3 / Controls 3; the model held 30 / 25 / 8 / 7
+  before this change and 33 / 30 / 10 / 7 after. Flows were still described as
+  "(Create, Swap, Delete)". Added the four top-level controls the table had
+  never listed, and a note that node-, relationship- and flow-scoped controls
+  exist alongside the top-level ones.
+
+### A diagram had been broken for some time, invisibly
+`flow-upgrade-provider-fleet`'s first transition embedded a kubectl patch:
+
+```
+kubectl patch providerclass vsphere -p '{"spec":{"image":{"tag":"v0.2.0"}}}'
+```
+
+The Handlebars template wraps each transition in `t1["..."]`, so those four
+quote pairs ended the mermaid label at `-p '{` and left the remainder to be
+parsed as graph syntax. The diagram has been failing to render on the
+published site, and nothing caught it: `make calm-validate` checks the model
+against the meta-schema, not the rendered output, and mkdocs never parses
+mermaid at all. Replaced with prose. One of my own new transitions had the
+same defect (`So "claim gone" means "sandbox gone"`) and was caught the same
+way.
+
+### Verified
+- `make calm-validate`: 0 errors, 0 warnings.
+- **All 11 generated diagrams rendered** with `@mermaid-js/mermaid-cli` — the
+  10 flows plus the system diagram. This is the check that found the broken
+  one, and it is the only thing that can: the meta-schema validator and the
+  docs build are both blind to it.
+- `make docs` clean.
+- Threat model needs nothing: its stamp already reads *Last full pass
+  2026-09-22, against ADR-0001 … ADR-0055*, and ADR-0049 appears in eight
+  places including asset A-9 and a STRIDE row for the spoofed-guest case.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation / architecture-model only
+
+## [2026-09-21 14:30] - GuestReady read path verified live; two real bugs it found
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `crates/banlieue-provider-libvirt/src/reconciler/libvirtmachine.rs`:
+  `ensure_disks` declared **`raw`** as the backing format for every overlay,
+  passing the `BANLIEUE_BACKING_FORMAT` constant where it should have called
+  `backing_format(&source.name)` — a function that existed, was documented and
+  was unit-tested, but was never called. libvirt deliberately does not probe a
+  backing file's format, so it accepted `<format type='raw'/>` over a `.qcow2`
+  image and QEMU then handed the guest a qcow2 header as its partition table.
+  **No VM booting from a `.qcow2` backing volume has ever worked.**
+- `crates/banlieue-provider-libvirt/src/guest.rs`: `probe_guest` returned
+  `AgentUnreachable` for a healthy guest whose marker did not exist yet. It
+  assumed libvirtd delivers an agent-level error as an `Ok` payload carrying
+  JSON; it does not — `virDomainQemuAgentCommand` turns a QMP error into an
+  RPC fault. A missing marker and a missing agent were therefore the same
+  answer, inverting the requeue cadence ADR-0043 Decision 8 rests on for the
+  entire install window of every `Deferred` member. Now pings to classify the
+  failure (`guest_ping_cmd`, `classify_open_failure`).
+
+### Changed
+- `crates/banlieue-provider-libvirt/tests/live_guest.rs`: installs
+  `qemu-guest-agent` at boot via the NoCloud seed (ADR-0054) rather than
+  requiring an image that ships it — neither the Kairos build nor Debian's
+  `genericcloud` does, and waiting for one left the read path unverified
+  indefinitely. Added a second assertion: the marker is written *through the
+  agent* and `probe_guest` must then report `Installed`, a verdict no test had
+  ever produced from a real agent.
+- `crates/banlieue-provider-libvirt/src/machine_client.rs`: `FakeMachineClient`
+  now keeps `created_volume_xml`. It recorded only the volume *name*, which is
+  why a test called `an_immediate_machine_declares_its_backing_format` passed
+  for a year without ever looking at the declared format.
+- `docs/adr/0043-guestready-installed-guest-signal.md`,
+  `.github/community/17-ephemeral-vm-pools.md`, `ROADMAPS.md`: A2's open item 1
+  closed; status notes rewritten to say what is and is not proven.
+
+### Why
+ADR-0043's read path had never touched a real `qemu-guest-agent`. Verifying it
+took one change of approach — install the agent instead of hunting for an image
+that ships one — and immediately found two defects that every offline test had
+passed. Neither was findable offline: one needs libvirt to accept a lie about a
+backing file, the other needs libvirtd's real error shape.
+
+The pool/claim e2e did not catch the boot failure because it asserts
+`InfrastructureReady`, which fires when the **domain** runs, not when the
+**guest** boots. A green e2e over a set of VMs that never booted is the sharper
+lesson here.
+
+### Impact
+- [x] Breaking change — any `VirtualMachine` whose `VMImage` `BackingFile`
+      names a `.qcow2` volume was silently producing a VM that never booted;
+      those members must be recreated to pick up a correctly declared overlay
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+### Verification
+`cargo fmt --all --check`, `cargo clippy --all-targets --all-features -D
+warnings`, `cargo test --all` (36 suites) all green, plus `live_guest` green
+against a real libvirt host:
+
+```
+  ✓ qemu-guest-agent answered guest-ping
+  ✓ opened /etc/hostname (handle 1000)
+  ✓ read and decoded /etc/hostname = "guestcheck-…"
+  ✓ closed the handle
+  ✓ probe_guest reported NotAnnounced, not AgentUnreachable
+  ✓ wrote "installed" to /run/banlieue/phase through the agent
+  ✓ probe_guest reported Installed once the marker existed
+```
+
+## [2026-09-22 02:15] - Claim flow in diagrams; fix the docs workflow's force-push race
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/src/concepts/virtualmachine-claim-flow.md`: eleven Mermaid diagrams
+  covering the whole claim path, with the actors named — developer, kubectl,
+  **kubelogin**, browser, GitHub, Dex, API server, admission policy, the three
+  controllers, hypervisor, and the not-yet-built broker and in-guest agent.
+  Sections: the OIDC login that establishes `userInfo.username`; where the
+  `oidc:` prefix does and does not belong; what admission checks and why
+  checks 1–2 are CREATE-only; bind, including the `resourceVersion` 409 race
+  drawn as two concurrent reconciles; the phase state machine; `next_step`
+  precedence; release and the two-finalizer chain; ADR-0049's credential
+  handshake (marked Proposed, in the diagram itself); and one whole-system
+  view with the four trust boundaries named.
+
+### Changed
+- `docs/mkdocs.yml`: nav entry under **Concepts**, after *VirtualMachine*.
+- `docs/src/concepts/index.md`, `guides/index.md`,
+  `guides/virtualmachine-claims.md`,
+  `guides/testing-claim-authorization.md`: cross-links in.
+
+### Why Concepts and not Guides or Architecture
+It is not a task-oriented guide — nobody follows it to get something done —
+so it does not belong beside *Testing claim authorization*. `concepts/` says
+of itself that it "describes *how banlieue is wired*", is hand-written, and
+already carries Mermaid (four diagrams in `concepts/architecture.md`), which
+makes it the right neighbourhood.
+
+`architecture/` would have been wrong for a concrete reason:
+`architecture/index.md` states that "the diagrams under this section are
+rendered from it by the CALM CLI — they are never hand-edited". That section
+is the rendered CALM model (`system.md`, `flows.md`), regenerated by
+`make calm-diagrams` and, in CI, produced by a job with
+`clear-output-directory: true`. A hand-written page there contradicts the
+section's own contract and invites exactly the clobbering the local
+Makefile's surgical `rm -f` currently avoids by luck of naming.
+- `.github/workflows/docs.yaml`: the `workflow_run` SHA checkout no longer
+  fails the run when that SHA has been orphaned.
+
+### Why the docs workflow was failing
+Run 35675118760 died in *Check out the Build's SHA on workflow_run* with:
+
+```
+fatal: unable to read tree (2e8b6dc9a44cfb74c014a9886b240c8a1b2e486a)
+```
+
+`2e8b6dc` is a pre-amend version of the commit that published `.wolf/`. The
+branch was amended and force-pushed, so by the time the chained docs run
+tried to check that SHA out it was reachable from no ref — and
+`fetch-depth: 0` fetches every *ref*, not every object. Both docs failures in
+the recent history are this, and both are `workflow_run` on main; every
+`pull_request` run passed, because the docs themselves were never broken.
+
+The checkout now retries via `git fetch origin <sha>` (no `--depth`, which
+would leave a `.git/shallow` marker and silently push
+`git-revision-date-localized` onto its build-date fallback) and, if the commit
+is genuinely gone, **fails only for a release** — publishing a different tree
+as a release's docs is worse than not publishing. For the non-release run,
+which the workflow's own comments call a redundant sanity check, main is just
+as valid a tree, so it says so with `::notice::` and carries on.
+
+### Verified
+- `make docs` builds clean.
+- All eleven diagrams parse: extracted and rendered individually with
+  `@mermaid-js/mermaid-cli`. Two failed first time — see below.
+- `actionlint` clean on the workflow (it shellchecks the `run:` block too).
+
+### A gotcha worth knowing
+**A semicolon in sequence-diagram message text is a parse error** — mermaid's
+sequence lexer treats `;` as a statement separator, so
+`A->>B: did x; then y` fails with `got 'INVALID'`. Three of these were
+self-inflicted, from swapping parentheses out for semicolons. It matters
+because **mkdocs cannot catch it**: the fences are rendered client-side by
+`mermaid.min.js`, so `make docs` succeeds and the page shows an error box in
+the browser instead. Rendering the blocks with `mmdc` is the only local check.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only (plus one CI workflow fix)
+
+## [2026-09-22 02:00] - Publish the useful parts of .wolf
+
+**Author:** Erick Bourgeois
+
+### Added
+Five files from `.wolf/` are now tracked; the rest of the directory stays
+ignored.
+
+| File | Why public |
+| --- | --- |
+| `OPENWOLF.md` | The operating protocol — explains the rest of the directory. |
+| `cerebrum.md` (84K) | Project conventions, accumulated learnings, and the **Do-Not-Repeat** list. The most useful file here for a contributor. |
+| `buglog.json` (120K, 142 bugs) | Root cause and fix per bug, searchable with `openwolf bug search`. |
+| `anatomy.md` (43K) | The file/symbol index `openwolf find` queries — answers "where is X" for a few hundred tokens instead of a tree-wide grep. |
+| `README.md` | New — what is tracked, what is not, and why. |
+
+### Two of my own exclusions were wrong
+Both were challenged and both were badly reasoned:
+
+- **`anatomy.md`** I had excluded as "generated, so it would churn". That
+  argument does not survive contact with this repo, which already commits
+  `deploy/crds/`, `docs/src/reference/api.md` and the CALM diagrams. And the
+  point of the file is precisely to save an agent tokens, which is a benefit
+  to anyone working here, not just to one machine.
+
+  There *was* a real problem, just not the one I gave: the working copy
+  leaked six out-of-repo sections, including a home-directory name and a
+  session UUID under `/private/tmp`. `openwolf scan` rebuilds from the tree
+  alone and cleared all six — 0 of 84 sections outside the repo, verified.
+  So it is published, with a README caveat to rescan before committing
+  changes to it.
+
+- **`hooks/`** I had excluded for carrying local absolute paths. Wrong: every
+  such file is under `hooks/sessions/`, which is *state*; all 25 `.js` files
+  are clean. The actual reason to exclude them is better — there is no `.ts`
+  or `.map` in the directory, so they are **compiled build artifacts of a
+  separately-installed tool** (`openwolf` comes from Homebrew). Committing
+  them would pin a stale snapshot of somebody else's build, and anyone who
+  installs the tool gets them anyway.
+
+### Fixed before publishing
+- **`cerebrum.md` contained a real hostname** — inside the Do-Not-Repeat
+  entry that forbids committing real hostnames. Replaced with the
+  placeholder that entry itself prescribes. Caught only because the files
+  were swept before being added; the file had been local-only since written.
+- **The `.gitignore` entry had to change shape.** A bare `.wolf` excludes the
+  *directory*, and git never descends into an excluded directory, so
+  `!.wolf/cerebrum.md` would have been silently ineffective. Now `.wolf/*`
+  with per-file re-includes, and a comment recording why.
+
+### Verified
+All five files swept for maintainer-environment identifiers (hostnames,
+tailnet names, usernames, absolute home paths) and non-placeholder IPs —
+clean. `git check-ignore` confirms `memory.md`, `STATUS.md`, `hooks/`,
+`cache/` and the local state files remain ignored. `openwolf find pool_plan`
+returns useful hits from the committed index.
+
+The one remaining `jeb.ca` is the rule quoting its own documented exception
+(`authors = [... erick@jeb.ca]`), already published in `Cargo.toml`.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation / repository contents
+
+## [2026-09-22 01:30] - ADR-0049 attestation; fix a latent `subject.id` bug that would have broken phase C
+
+**Author:** Erick Bourgeois
+
+### Fixed — a latent bug in something already shipped
+- **`spec.subject.id` stored the Kubernetes username, which no JWT carries.**
+  The admission policy pinned it to `request.userInfo.username`, including
+  the prefix the API server adds via `--oidc-username-prefix`. Observed on
+  the live OIDC cluster:
+
+  ```text
+  JWT:   preferred_username = octocat        sub = Cgc4NzAy…
+  Claim: subject.id         = oidc:octocat
+  ```
+
+  Nothing in the token matches that. The in-guest agent's entire job is to
+  check a presented token against the claim, so the field was unusable for
+  the purpose it exists for — and the failure would only have surfaced in
+  phase C, long after shipping.
+
+  `subject.id` now holds the **raw subject as the issuer spells it**, and the
+  policy applies the cluster's prefix when comparing:
+
+  ```cel
+  variables.usernamePrefix + object.spec.subject.id == request.userInfo.username
+  ```
+
+  `usernamePrefix` joins `issuers` and `brokers` in the parameter ConfigMap,
+  because it describes how *this* cluster authenticates, not the claim. The
+  rejected alternative — a second field for the raw subject — would have been
+  unvalidated and settable to anything, defeating the check on the first.
+
+  Verified against the real GitHub identity: the raw form is accepted, the
+  old prefixed form is refused with a message that names the double prefix
+  (`which this cluster would spell oidc:oidc:octocat`), and another user's
+  subject is refused.
+
+### Added
+- `docs/adr/0049-attestation-trust-anchors.md` (Proposed). Nine decisions,
+  of which the load-bearing ones: the credential is **pushed** to the guest
+  over attested mTLS and is never at rest; **banlieue neither carries nor
+  validates it**; `aud` is the agent's own and never read from the claim;
+  the handshake is a TPM quote over `status.nonce` verified against the EK
+  certificate; and a failed handshake leaves the sandbox unused, with no
+  partial-trust mode.
+
+  Two findings worth recording beyond the mechanics:
+
+  - **Injection is impossible, not merely unsafe.** A warm pool member
+    exists *before* any claim does, so at provisioning time there is no
+    subject and no token, and nothing baked in can be subject-specific. That
+    is what forces the push model, independently of the disclosure arguments
+    against cloud-init and `guestinfo`.
+  - **The issuer allowlist added yesterday for audit honesty is load-bearing
+    for verification.** The agent learns which issuer to trust from
+    `subject.issuer`, a CR field; without the allowlist an attacker who can
+    create a claim points the agent at their own JWKS and every forged token
+    validates. That was not apparent when the allowlist was written.
+
+### Corrected
+An earlier claim of mine that baking the agent's identity into an image
+"would mean every VM shares an identity" was wrong about the vTPM. **Each
+pool member's vTPM is unique by construction** — on vSphere because deferred
+install never installs the golden template, so each clone installs itself
+with its own already-unique vTPM (ADR-0040); on libvirt because swtpm state
+is keyed by domain UUID. The shared-identity hazard belongs to `Immediate`
+images, where a pre-installed disk is cloned and a baked-in *software* key
+really is shared — a combination already flagged as an operator
+responsibility. ADR-0049 states it the right way round.
+
+### Changed
+- `docs/adr/0047-virtualmachineclaim.md`: Decision 9 amended, with the
+  observed mismatch recorded.
+- `deploy/admission/virtualmachineclaim-subject-authorization.yaml`:
+  `usernamePrefix` parameter and the prefix-aware comparison.
+- `scripts/dev-oidc-kind.sh`: `raw_subject()` strips the configured prefix;
+  `login` and `try-claim` use it and say which form a claim needs.
+- CALM: the claim node now describes banlieue's side of the attestation
+  contract. `make calm-validate` passes.
+- `docs/src/security/threat-model.md`: **full pass**, stamp 2026-09-22. New
+  asset A-9 (the subject's credential, recorded as deliberately *absent*
+  from banlieue), three TB-4 threats (a wrong responder receiving the token,
+  a wrong-audience token, an attacker-chosen issuer as a key source), a new
+  §8 entry for the broker holding both roles, and a §7.6 warning that
+  **re-applying the policy file resets its ConfigMap** — which bit me during
+  this work and reverts the issuer allowlist to a placeholder that rejects
+  every real claim.
+- `.github/community/17-ephemeral-vm-pools.md`: F is 📄 (ADR written,
+  blocked on A5); A5 marked as the gate for it. Forward-facing references
+  updated for the roadmap's 70 → 17 renumbering.
+
+### Impact
+- [ ] Breaking change
+- [x] **Behaviour change** — `spec.subject.id` semantics changed. Claims
+      created with the prefixed form are now rejected, and existing ones
+      cannot be edited (`spec` is immutable); recreate them.
+- [x] Requires cluster rollout — re-apply `deploy/admission/`, then restore
+      site values in the parameter ConfigMap
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-09-22 00:30] - Claim policy denied the controller; GitHub OIDC now verified end to end
+
+**Author:** Erick Bourgeois
+
+### Fixed — a policy bug that would have broken production
+- **`virtualmachineclaim-subject-authorization` denied the claim
+  controller.** Validations 1 and 2 compared `spec.subject` against
+  `request.userInfo` on **CREATE and UPDATE**. On UPDATE the requester is
+  whoever is touching the object *now* — normally the controller adding its
+  finalizer — so the policy denied it:
+
+  ```text
+  spec.subject.id is oidc:octocat but you are authenticated as kubernetes-admin
+  ```
+
+  Claims could be created and then **never reconciled**: never `Bound`, no VM
+  ever bound. Not a dev-only fault; any cluster with the policy installed
+  would have had unusable claims.
+
+  Both checks are now `CREATE`-only, which loses nothing: validation 3
+  freezes `spec.subject`, so an attribution authorized at creation cannot be
+  changed afterwards by anyone, controller included. Verified that hole is
+  still closed — re-attributing an existing claim is refused even as
+  cluster-admin.
+
+  The earlier verification missed it because every case used
+  `--dry-run=server` and had the same principal create the claim and name
+  itself, so the UPDATE path with a *different* principal was never
+  exercised.
+
+- **`attach` wrote its manifest backup into `/etc/kubernetes/manifests/`.**
+  The kubelet parses every file in that directory regardless of extension, so
+  `kube-apiserver.yaml.pre-oidc` was a second declaration of the same static
+  pod — and it won. The patched OIDC flags never reached the running API
+  server. The backup now goes to `/etc/kubernetes/`.
+
+- **`attach` verified the wrong thing.** It waited for `/healthz`, which
+  passes *precisely when the patch fails*, because the old API server stays
+  up and healthy. It now asserts the `--oidc-*` flags are present in the
+  **running container's args** (`crictl inspect`), and says what to check if
+  they are not.
+
+- `setup_login` clears `~/.kube/cache/oidc-login` and retries when a cached
+  token is rejected. kubelogin decides cache validity from `exp` alone, so a
+  token signed by a rotated-away key is served forever and the flow is never
+  re-run.
+
+### Verified — the whole path, with a real GitHub identity
+```text
+Username    oidc:octocat
+Groups      [system:authenticated]
+```
+
+| Case | Result |
+| --- | --- |
+| CREATE naming someone else | **denied** |
+| CREATE naming self | allowed — **bound a real VM on a libvirt host** |
+| UPDATE by the controller (finalizer) | allowed (the fix) |
+| UPDATE changing `subject` | **denied** (immutability), even as admin |
+
+And the identity reached the hypervisor-backed VM:
+
+```text
+banlieue.io/claim-subject-id     = oidc:octocat
+banlieue.io/claim-subject-issuer = https://127.0.0.1:32000/dex
+ownerReferences                  = VirtualMachineClaim/github-sandbox
+```
+
+GitHub login → Dex → API server → admission → bind → a VM on a real
+hypervisor, with the pool refilling behind it. That is the first time the
+whole chain has run.
+
+### Changed
+- `.wolf/cerebrum.md`: four Do-Not-Repeat entries, all general rather than
+  banlieue-specific — the CREATE-scoping rule for `userInfo` checks, the
+  static-pod-directory backup, `grep /proc/*/cmdline` matching its own
+  shell, and kubelogin's expiry-only cache.
+
+### Impact
+- [x] **Fixes a policy that made claims unusable** wherever it was installed
+- [x] Requires cluster rollout — re-apply `deploy/admission/`
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-09-21 23:50] - Dex storage: signing keys must outlive the pod
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- **`storage: type: memory` made every Dex restart invalidate every issued
+  token.** Dex generates its token-*signing keys* at startup and, with the
+  memory backend, keeps them only in memory — so a pod replacement rotates
+  them and previously-issued ID tokens can no longer be verified. It
+  surfaces as `Unauthorized` / `invalid bearer token` from the API server
+  *hours after* a login that genuinely worked, which reads as token expiry or
+  a clock skew rather than key rotation.
+
+  And as with the port-forward, the harness undermined its own documented
+  sequence: `github-creds` restarts Dex by design, so step 2 invalidated the
+  login step 3 depends on.
+
+  Now `storage: {type: kubernetes, config: {inCluster: true}}` — keys and
+  refresh tokens live in Dex's CRDs — with a ServiceAccount and ClusterRole
+  granting `dex.coreos.com/*` plus `create/get/list/watch` on CRDs.
+
+- **`verify_discovery` failed on a healthy cluster.** It judged on a single
+  probe, and immediately after a rollout the Dex pod is Running before the
+  Service has endpoints for it — so it declared "the API server will reject
+  every OIDC token" about a cluster one second from working. Retries with a
+  60s deadline now.
+
+### Verified
+The signing key is now stable across a restart, which is the property that
+matters and needs no browser login to check:
+
+```text
+kid before restart: e0b2f8862f8007a6
+kid after restart:  e0b2f8862f8007a6
+```
+
+With the memory backend that value changes, and every outstanding token dies
+with it.
+
+### Changed
+- `docs/src/guides/testing-claim-authorization.md`: troubleshooting row for
+  the delayed-`Unauthorized` symptom.
+- `.wolf/cerebrum.md`: both recorded. Also worth noting for its own sake —
+  the first attempt at this fix reintroduced the heredoc-backtick bug
+  recorded in that same file an hour earlier, caught again only by
+  shellcheck.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Dev tooling
+
+## [2026-09-21 20:45] - Two bugs in the OIDC dev harness, both found by using it
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- **`kubectl config set-credentials --exec-arg` splits on commas.**
+  `--exec-arg="--oidc-extra-scope=profile,email,groups"` was stored as three
+  arguments — `--oidc-extra-scope=profile`, `email`, `groups` — and kubelogin
+  read the bare `email` as a subcommand:
+
+  ```text
+  error: unknown command "email" for "kubelogin get-token"
+  ```
+
+  The message names kubelogin, so it points away from the kubeconfig that
+  produced it. One `--exec-arg` per scope now, with a comment recording why.
+
+- **`kubectl port-forward` binds a specific pod, not the Service.** It was
+  publishing Dex for the `attach` topology, and died whenever the Dex pod was
+  replaced — *including* by `dev-oidc-github-creds`, which restarts Dex by
+  design. The documented sequence (attach → github-creds → login) therefore
+  broke itself, surfacing as `connection refused` on the issuer URL, which
+  reads as a cluster fault rather than a forwarder that quietly exited.
+
+  Replaced with a **socat container** on the cluster's Docker network,
+  publishing `127.0.0.1:32000` and targeting the **NodePort** — the same path
+  the API server uses from inside the node. Pod replacements no longer matter,
+  and `--restart unless-stopped` survives a Docker restart. `github-creds`
+  re-checks the port afterwards rather than assuming, and `status` now reports
+  the proxy and whether the port answers.
+
+### Verified
+Proved the second fix rather than assuming it: restarted the Dex deployment
+and confirmed discovery still resolves through the proxy — the exact
+operation that killed the port-forward.
+
+### Changed
+- `docs/src/guides/testing-claim-authorization.md`: describes the socat proxy,
+  explains why it is not a port-forward, and gains troubleshooting rows for
+  both failures — including the misleading kubelogin message.
+- `.wolf/cerebrum.md`: both recorded as Do-Not-Repeat entries. Each is a
+  general trap rather than anything banlieue-specific.
+
+### Why these took a user report to find
+The earlier run exercised `attach` with placeholder GitHub credentials and
+stopped at the redirect. Neither bug is on that path: the comma-splitting only
+bites when `login` builds a kubeconfig, and the port-forward only dies once
+something restarts Dex — which is precisely what `github-creds` does on the
+step after. The harness was verified up to the point where its own documented
+sequence starts.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Dev tooling
+
+## [2026-09-21 14:00] - Developer docs: registering GitHub, Google and Auth0 OAuth clients
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/src/developer/oauth-clients.md` — per-provider setup for the identity
+  provider a dev cluster needs before the claim subject policy (ADR-0047
+  Decision 10) can be tested against a real person. In the nav under
+  **Developer**, and linked from the developer index and the cluster-side
+  guide.
+
+### What the page leads with, because it is the actual fork
+**GitHub is OAuth2 only and needs Dex; Google and Auth0 are real OIDC
+providers and do not.** The API server needs a discovery document, a JWKS
+and an ID token — GitHub serves none of them, and pointing
+`--oidc-issuer-url` at it fails looking like a TLS problem.
+
+Three things the page exists to stop people losing an afternoon to:
+
+- **The redirect URI belongs to whichever component receives the callback.**
+  Via Dex that is `https://127.0.0.1:32000/dex/callback`; direct to the API
+  server it is `kubelogin`'s `http://localhost:8000` *and* `:18000`.
+  Registering the wrong one gives `redirect_uri_mismatch`, the most common
+  failure.
+- **Never use `sub` as the username claim.** It is the spec-correct stable
+  identifier and it is unusable here: Google's is a 21-digit number, Dex's is
+  opaque base64, and neither can be typed into `spec.subject.id` by a human
+  — which loses the claim's whole audit purpose to transcription errors.
+  `email` / `preferred_username`, with the mutability trade-off stated.
+- **Google has no OIDC `groups` claim at all.** Group membership requires a
+  service account with domain-wide delegation, Admin SDK enabled and a
+  `domainToAdminEmail` mapping. Irrelevant for the claim policy, which checks
+  the username — so the page says so rather than sending people down it.
+
+Per-provider gotchas each verified against the provider's own current docs
+rather than written from memory: GitHub private org membership hiding users;
+Google's "Testing" External apps expiring consent every 7 days and the
+test-user list; and Auth0's two traps — its issuer **ends in a trailing
+slash** so `--oidc-issuer-url` must include it or every token is rejected as
+an issuer mismatch (a documented pain in go-oidc, which the API server
+uses), and it **silently drops custom claims that are not namespaced URIs**,
+so a plain `groups` claim never appears and nothing reports an error.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+`scripts/dev-oidc-kind.sh` still ships only the GitHub connector; the page
+gives the Google and Auth0 connector YAML to drop into its `deploy_dex`
+function, since everything else in the script is provider-independent.
+
+## [2026-09-21 13:15] - Dex onto an existing cluster, so one cluster does the whole flow
+
+**Author:** Erick Bourgeois
+
+### Added
+- `scripts/dev-oidc-kind.sh attach` + `make dev-oidc-attach` — retrofit OIDC
+  onto a **running** kind cluster instead of creating a new one. `up` bakes
+  the flags in at creation, which is cleaner, but a cluster that already has
+  a `Provider`, a warm pool and real VMs on a hypervisor is worth more than a
+  clean one and cannot be re-created without losing it.
+
+  Three substitutions for what `up` gets from kind config:
+  - the CA reaches the node via `docker cp` rather than `extraMounts`;
+  - the API server's static-pod manifest is patched in place (kubelet
+    restarts it) rather than via `kubeadmConfigPatches`;
+  - a host-side `kubectl port-forward` stands in for the
+    `extraPortMappings` a running cluster cannot be given — binding
+    `127.0.0.1:32000`, the *same* URL the API server uses inside the node
+    via the NodePort, so `iss` still matches byte-for-byte.
+
+  The manifest is backed up to `kube-apiserver.yaml.pre-oidc` before editing,
+  the patch is idempotent (existing `--oidc-*` flags are dropped and
+  re-added), and a failure to come back prints the single command that
+  restores it.
+- `attach github-creds` + `make dev-oidc-github-creds` — swap real OAuth App
+  credentials onto an already-attached cluster and restart Dex. `attach` is
+  worth running *before* you have a GitHub app, because it proves every link
+  except the redirect, so the credentials arrive second.
+
+### Verified — against the live demo cluster
+Attached to `banlieue-demo`, which was running a warm pool, a bound claim and
+three real VMs on a libvirt host:
+
+- API server came back healthy with all seven `--oidc-*` flags, and the CA is
+  visible **inside the API server pod**.
+- Discovery fetchable and trusted **from inside the node**, and separately
+  from the host through the port-forward — the issuer reported by Dex matches
+  the configured one exactly.
+- **Nothing was lost.** Pool still warm at 2, the claim still `Bound` to its
+  member, all three VMs intact. The controllers logged a burst of
+  `watch stream` errors during the restart and recovered on their own;
+  reconciles and writes confirmed working afterwards.
+- Certificate auth keeps working alongside OIDC, so the locally-run
+  controller and provider binaries were unaffected throughout.
+
+### Changed
+- `docs/src/guides/testing-claim-authorization.md`: both routes documented,
+  with the API-server-restart caveat and the port-forward's role stated.
+  Also corrects the dry-run note — on an attached cluster you can drop
+  `--dry-run=server` and the claim binds a **real** member, giving the whole
+  path in one place: GitHub login → admission → bind → a VM on a hypervisor.
+- `.wolf/cerebrum.md`: this session's Do-Not-Repeat entries and key
+  learnings, at the user's request (the OpenWolf hook had been asking).
+
+### Still needs a browser
+The GitHub redirect and the resulting `oidc:<login>` username. Dex is
+deployed with placeholder credentials; `make dev-oidc-github-creds` swaps in
+real ones without touching the cluster.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Dev tooling and documentation
+
+## [2026-09-21 13:20] - Dev harness: test claim authorization with a real GitHub identity
+
+**Author:** Erick Bourgeois
+
+### Added
+- `scripts/dev-oidc-kind.sh` + `make dev-oidc-{up,login,try-claim,status,down}`:
+  a `kind` cluster that authenticates you as **your GitHub account**, so the
+  claim subject policy can be exercised against a real human identity rather
+  than the `kubernetes-admin` certificate CN — which proves the CEL compiles
+  and nothing about how it behaves for a person.
+- `docs/src/guides/testing-claim-authorization.md`.
+
+### The thing worth knowing
+**GitHub is an OAuth2 provider, not an OIDC provider** — no ID tokens, no
+`/.well-known/openid-configuration` — so `kube-apiserver --oidc-issuer-url`
+cannot point at it, and trying fails in a way that reads like a certificate
+problem. Dex bridges it: it authenticates against GitHub and mints a real
+OIDC ID token.
+
+Two implementation details that cost real time if missed, both now handled
+and commented in the script:
+
+- **One issuer URL for three consumers.** Dex runs on NodePort 32000 with a
+  kind host-port mapping, so `https://127.0.0.1:32000/dex` resolves from the
+  browser, from `kubectl`, and from the API server inside the node. An OIDC
+  issuer must match `iss` byte-for-byte; two spellings means tokens rejected
+  for an issuer mismatch while every component looks correctly configured.
+  Hence an **IP SAN**, not a DNS name.
+- **`--oidc-ca-file` needs the CA across two boundaries**: kind
+  `extraMounts` (host→node) *and* kubeadm `apiServer.extraVolumes`
+  (node→static pod). The API server only sees what kubeadm mounts, so the
+  kind mount alone yields "no such file or directory" from a component that
+  is awkward to debug.
+
+### Verified
+Run end to end with placeholder GitHub credentials (the real flow needs a
+browser), which exercises everything except the GitHub redirect:
+- The API server **starts** with `--oidc-issuer-url` pointing at a Dex that
+  does not exist yet — the chicken-and-egg this ordering depends on.
+- All seven `--oidc-*` flags land in the static-pod manifest, and the CA is
+  visible **inside the API server pod**, confirming the two-mount detail.
+- Discovery is fetchable *and trusted* from inside the control-plane node —
+  checked there rather than from the host, because a browser that reaches
+  Dex proves nothing about the component validating tokens.
+- `down` deletes the cluster, contexts, user and the throwaway CA, then
+  re-checks the cluster is really gone.
+
+### Fixed during that run
+- **Ordering bug:** `install_banlieue` applied the policy — whose parameter
+  ConfigMap lives in `banlieue-system` — before anything created that
+  namespace. Added an explicit `ensure_namespace` step, with a comment
+  saying the ordering is load-bearing.
+- **A live shell bug shellcheck caught:** a comment inside an *unquoted*
+  heredoc contained backticks, so bash would have run `preferred_username`
+  as a command and stripped the text from the generated kind config. Worth
+  recording as a general lesson: SC2006 inside a heredoc is a correctness
+  finding, not a style one.
+
+### Not verified
+The GitHub authorization redirect, the resulting `oidc:<login>` username,
+and `try-claim`'s accept/reject against it. Those need a GitHub OAuth App
+and a browser.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Dev tooling and documentation
+
+## [2026-09-21 12:45] - Pool/claim docs: discoverability and a stale kubectl sample
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docs/src/guides/index.md`: added a card for the **VirtualMachine Claims**
+  guide. The guide was in the mkdocs nav but missing from the guides landing
+  page's card grid, so a reader browsing `guides/index.md` saw pools and never
+  learned claims exist — which is the half that actually hands a VM to a
+  consumer.
+- `README.md`: added `VirtualMachinePool` and `VirtualMachineClaim` rows to the
+  resource table, plus a **Warm pools and single-use sandboxes** section. Both
+  kinds were entirely absent from the README.
+- `docs/src/overview.md`: same section, plus a *Where to go from here* link.
+  The overview walked a reader from `VirtualMachine` to providers and stopped;
+  the sandbox substrate — the reason roadmap 17 exists — was invisible to
+  anyone who had not opened the guides.
+- `docs/src/guides/virtualmachine-claims.md`, `examples/19-virtualmachineclaim.yaml`:
+  corrected the `kubectl get vmclaim` sample output. The `EXPIRES` printer
+  column changed from `date` to `string` (a `date` column renders as time
+  *since* the timestamp, which for a future deadline prints `<invalid>`), so
+  the samples showing `15m` were wrong — it prints the absolute RFC 3339
+  deadline. Documented the why alongside `ttlSeconds`.
+
+### Why
+The pool/claim guides themselves are thorough, but nothing above them pointed
+at claims: not the guides landing page, not the README, not the overview. A
+feature is not documented if the only way to find it is to already know its
+name.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+## [2026-09-21 12:15] - Claim subject authorization: the last security gap on pools/claims
+
+**Author:** Erick Bourgeois
+
+### Added
+- `deploy/admission/virtualmachineclaim-subject-authorization.yaml` —
+  implements ADR-0047 Decision 10, the only outstanding *security* gap on the
+  pool/claim work. Until now `spec.subject` was free text: anyone holding
+  `create virtualmachineclaims` could attribute a VM to any identity, and the
+  audit log recorded it as genuine.
+
+  Five validations, and the split between them matters:
+  - `spec.subject.id` **must equal the authenticated username** — the only
+    part of an identity the API server can actually vouch for. Declared
+    brokers are exempt, because handing sandboxes to other people is a
+    broker's whole purpose.
+  - `spec.subject.issuer` must be in an operator allowlist. The API server
+    does **not** reveal which issuer minted the caller's token, so this is
+    not provenance — it only stops a claim naming an issuer the site does
+    not use, which is what would make the attribution meaningless.
+  - `spec.subject`, `spec.poolRef` and `spec.ttlSeconds` are **immutable**.
+    Without that, the id check is trivially bypassed: create a claim naming
+    yourself, then patch the subject to somebody else. `poolRef` and
+    `ttlSeconds` are immutable for a plainer reason — `expiresAt` is
+    computed once at bind, so editing them silently does nothing, which is
+    worse than being refused.
+
+  Ships its parameter ConfigMap first, binding is
+  `parameterNotFoundAction: Deny` — a missing allowlist blocks claims rather
+  than degrading to "any subject is fine".
+
+### Verified — on a live apiserver
+CEL is only ever correct against a real API server, so all six cases were
+run against the kind cluster:
+
+| Case | Result |
+| --- | --- |
+| subject names someone else | **denied** (id ≠ username) |
+| issuer not in the allowlist | **denied** |
+| names self, allowed issuer | allowed |
+| create as self, then patch subject | **denied** |
+| as a broker, name someone else on CREATE | allowed |
+| as a broker, re-attribute an existing claim | **denied** (immutability) |
+
+The last pair matters: without it, immutability could have been dead code
+shadowed by the id check. As a broker the id check passes, so the denial
+proves check 3 is live.
+
+**No regression on the controller.** Zero admission denials in its log, and
+it bound a *new* claim end-to-end after the policy was installed — the
+policy matches `virtualmachineclaims`, not the `/status` subresource.
+
+### Changed
+- `docs/src/security/threat-model.md`: **full pass**, stamp to 2026-09-21.
+  The TB-1 row "no technical control yet" now names the control; the §8
+  accepted risk for an unpinned subject is **closed** and replaced by the two
+  that genuinely remain (a broker is trusted for attribution; the issuer is
+  allowlisted but unverifiable). New §7.6 hardening requirement. Requirements
+  renumbered 1–11 and the one stale cross-reference fixed.
+- `docs/src/guides/virtualmachine-claims.md`: the "not yet enforced" warning
+  replaced with what the policy does, the denial message, and the two things
+  it cannot do.
+- `deploy/admission/README.md`: policy table and caveats.
+
+### Impact
+- [x] **Breaking for existing workflows** — a claim naming anything other
+      than its creator is now rejected unless the creator is a declared
+      broker, and `spec` can no longer be edited
+- [x] Requires cluster rollout — apply `deploy/admission/`, and **edit the
+      `issuers` list** or every claim is refused
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-09-21 01:30] - Full pool+claim e2e on the current tree, and the bug it found
 
 **Author:** Erick Bourgeois

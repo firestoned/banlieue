@@ -1195,7 +1195,7 @@ attested channel, using `status.nonce` to tie that session to this claim.
 | Pool | string | `.spec.poolRef.name` | 0 |
 | VM | string | `.status.virtualMachineRef.name` | 0 |
 | Phase | string | `.status.phase` | 0 |
-| Expires | date | `.status.expiresAt` | 0 |
+| Expires | string | `.status.expiresAt` | 0 |
 | Age | date | `.metadata.creationTimestamp` | 0 |
 
 ### `.spec`

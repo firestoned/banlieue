@@ -5,7 +5,7 @@
       "unique-id": "actor-vm-consumer",
       "node-type": "actor",
       "name": "VM Consumer",
-      "description": "Application or platform-engineer user who declares VirtualMachine custom resources via kubectl / GitOps. Never interacts with the underlying hypervisor SDKs directly — that is the whole point of banlieue."
+      "description": "Application or platform-engineer user who declares VirtualMachine custom resources via kubectl / GitOps. Never interacts with the underlying hypervisor SDKs directly \u2014 that is the whole point of banlieue."
     },
     {
       "unique-id": "actor-platform-operator",
@@ -39,7 +39,7 @@
       "unique-id": "service-banlieue-controller",
       "node-type": "service",
       "name": "banlieue-controller",
-      "description": "Main Rust kube-rs controller. Watches VirtualMachine CRs, resolves classRef/imageRef references, schedules the VM onto a Provider matched via placement.providerSelector/failureDomainSelector, creates a backend-specific infrastructure CR carrying the resolved spec, and mirrors status from that infra CR back onto the VirtualMachine. Owns no backend credentials — all backend access is delegated to provider controllers via CRDs.",
+      "description": "Main Rust kube-rs controller. Watches VirtualMachine CRs, resolves classRef/imageRef references, schedules the VM onto a Provider matched via placement.providerSelector/failureDomainSelector, creates a backend-specific infrastructure CR carrying the resolved spec, and mirrors status from that infra CR back onto the VirtualMachine. Owns no backend credentials \u2014 all backend access is delegated to provider controllers via CRDs.",
       "interfaces": [
         {
           "unique-id": "banlieue-controller-metrics",
@@ -101,7 +101,7 @@
       "unique-id": "service-banlieue-operator",
       "node-type": "service",
       "name": "banlieue-operator",
-      "description": "Provider lifecycle controller. Watches Provider (one backend instance) and ProviderClass (install metadata: image, resources, workload namespace) CRs, and server-side-applies one Deployment, ServiceAccount, Role, RoleBinding and ClusterRoleBinding per Provider — the per-instance topology of ADR-0003. Each spawned provider pod runs a server-side filtered watch (labelSelector banlieue.io/provider=<name>) so one hung backend cannot stall another. NAMESPACED objects carry an ownerReference to their Provider and are garbage-collected with it; the ClusterRoleBinding cannot (a cluster-scoped dependent with a namespaced owner is deleted immediately by the collector), so a finalizer removes it. Cluster-scoped names are namespace-qualified, because two Providers sharing a name and class in different namespaces would otherwise collide on one binding and fight over its subject. Also prunes superseded workloads by label whenever a Provider's class changes — ADR-0007 ships the immutability policy as OPTIONAL hardening and requires the controller to fall back to delete-and-recreate rather than depend on it. Publishes ProviderClass.status (Providers referencing the class, and a Ready condition reporting whether the shared per-backend ClusterRole exists). Writes only Provider.status.workload — never status.conditions, which the provider's own field manager owns. Holds no backend credentials and never reads Secret contents. See ADR-0012.",
+      "description": "Provider lifecycle controller. Watches Provider (one backend instance) and ProviderClass (install metadata: image, resources, workload namespace) CRs, and server-side-applies one Deployment, ServiceAccount, Role, RoleBinding and ClusterRoleBinding per Provider \u2014 the per-instance topology of ADR-0003. Each spawned provider pod runs a server-side filtered watch (labelSelector banlieue.io/provider=<name>) so one hung backend cannot stall another. NAMESPACED objects carry an ownerReference to their Provider and are garbage-collected with it; the ClusterRoleBinding cannot (a cluster-scoped dependent with a namespaced owner is deleted immediately by the collector), so a finalizer removes it. Cluster-scoped names are namespace-qualified, because two Providers sharing a name and class in different namespaces would otherwise collide on one binding and fight over its subject. Also prunes superseded workloads by label whenever a Provider's class changes \u2014 ADR-0007 ships the immutability policy as OPTIONAL hardening and requires the controller to fall back to delete-and-recreate rather than depend on it. Publishes ProviderClass.status (Providers referencing the class, and a Ready condition reporting whether the shared per-backend ClusterRole exists). Writes only Provider.status.workload \u2014 never status.conditions, which the provider's own field manager owns. Holds no backend credentials and never reads Secret contents. See ADR-0012.",
       "interfaces": [
         {
           "unique-id": "banlieue-operator-health",
@@ -132,7 +132,7 @@
           ]
         },
         "least-privilege": {
-          "description": "The operator ServiceAccount is separate from the main controller's, so the privilege to create Deployments, ServiceAccounts, Roles and RoleBindings never enters the scheduler's identity. Because Kubernetes forbids granting permissions the grantor lacks, the operator ClusterRole holds the union of the permissions it hands to provider Roles rather than the escalate/bind verbs — bounding and making auditable exactly what it can delegate. It can READ ClusterRoles (to report whether a ProviderClass is usable) but never create or modify one; minting the permissions it hands out is the escalation path this design refuses. Per-instance Roles are resourceNames-scoped to the single credentials Secret named by that Provider. No provider identity holds cluster-wide Secret access at all (security review 2026-07-31, CHAIN-002): the shared per-backend ClusterRole is bound cluster-wide to every provider pod, so any Secret rule there would reach every Secret in the cluster and silently defeat the resourceNames narrowing — Secret access therefore lives only in namespaced Roles, `get` only, since resourceNames cannot constrain list/watch.",
+          "description": "The operator ServiceAccount is separate from the main controller's, so the privilege to create Deployments, ServiceAccounts, Roles and RoleBindings never enters the scheduler's identity. Because Kubernetes forbids granting permissions the grantor lacks, the operator ClusterRole holds the union of the permissions it hands to provider Roles rather than the escalate/bind verbs \u2014 bounding and making auditable exactly what it can delegate. It can READ ClusterRoles (to report whether a ProviderClass is usable) but never create or modify one; minting the permissions it hands out is the escalation path this design refuses. Per-instance Roles are resourceNames-scoped to the single credentials Secret named by that Provider. No provider identity holds cluster-wide Secret access at all (security review 2026-07-31, CHAIN-002): the shared per-backend ClusterRole is bound cluster-wide to every provider pod, so any Secret rule there would reach every Secret in the cluster and silently defeat the resourceNames narrowing \u2014 Secret access therefore lives only in namespaced Roles, `get` only, since resourceNames cannot constrain list/watch.",
           "requirements": [
             {
               "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
@@ -154,25 +154,25 @@
       "unique-id": "service-provider-vsphere",
       "node-type": "service",
       "name": "banlieue-provider-vsphere",
-      "description": "Provider controller drives vCenter via a BYOC vim_rs client (ADR-0008). Live today: the `provider` reconciler (capability introspection, failure-domain discovery, ADR-0019), the `vmimage` reconciler (per-zone Kairos template build via ISO import, install-once-and-generalize, ADR-0020/0021), and the `VSphereMachine` reconciler — cloning a VM from the per-zone template and delivering static IP + templated cloud-config via vCenter guestinfo on first provision (ADR-0024). The VSphereMachine reconciler is create-path only: it clones and powers on once, then only observes power state; update/drift reconciliation and live migration beyond a recreate-on-change fallback are not yet implemented (ADR-0036). Satisfies the CAPI v1beta2 InfraMachine contract so the same provider can also serve CAPI Clusters."
+      "description": "Provider controller drives vCenter via a BYOC vim_rs client (ADR-0008). Live today: the `provider` reconciler (capability introspection, failure-domain discovery, ADR-0019), the `vmimage` reconciler (per-zone Kairos template build via ISO import, install-once-and-generalize, ADR-0020/0021), and the `VSphereMachine` reconciler \u2014 cloning a VM from the per-zone template and delivering static IP + templated cloud-config via vCenter guestinfo on first provision (ADR-0024). The VSphereMachine reconciler is create-path only: it clones and powers on once, then only observes power state; update/drift reconciliation and live migration beyond a recreate-on-change fallback are not yet implemented (ADR-0036). Satisfies the CAPI v1beta2 InfraMachine contract so the same provider can also serve CAPI Clusters."
     },
     {
       "unique-id": "service-provider-proxmox",
       "node-type": "service",
       "name": "banlieue-provider-proxmox (planned, Phase 1C)",
-      "description": "Provider controller for Proxmox VE clusters. Watches ProxmoxMachine infrastructure CRs and drives the Proxmox HTTP API. Status: PLANNED — Phase 1C."
+      "description": "Provider controller for Proxmox VE clusters. Watches ProxmoxMachine infrastructure CRs and drives the Proxmox HTTP API. Status: PLANNED \u2014 Phase 1C."
     },
     {
       "unique-id": "service-provider-libvirt",
       "node-type": "service",
       "name": "banlieue-provider-libvirt",
-      "description": "Provider controller for libvirt/KVM hosts, speaking libvirt's own RPC protocol through the first-party `banlieue-libvirt` crate (XDR codec + message framing) rather than any third-party client — zero new dependencies, no C library, no FFI. Split by plane (ADR-0011): the CONTROL plane runs in-process — the Provider reconciler connects, lists storage pools and networks, verifies the admin-declared spec.capabilities actually exist, and publishes status.failureDomains[] (one per host, with pools as the interesting sub-structure since libvirt has no datacenter/cluster hierarchy). The DATA plane runs as a Kubernetes Job so bulk disk bytes never flow through the controller process; that Job runs the `banlieue` binary itself, so there is no third-party tools image to pin, trust, or patch. VM lifecycle (a LibvirtMachine InfraMachine CRD) is deliberately out of scope for this increment. A third reconciler (ADR-0050) owns the LibvirtMachine lifecycle: it defines, starts, inspects and undefines domains through the same first-party `banlieue-libvirt` crate, adding domain procedures beside the existing storage ones rather than taking on libvirt's C client. Undefine always passes MANAGED_SAVE|NVRAM|TPM so no varstore or swtpm state outlives a deleted VM. Domain XML is rendered through an escaping-only template module: every value reaching it (domain name, volume paths, bridge names) is user- or admin-influenced. Guest readiness (ADR-0043) adds a SECOND libvirt RPC program to the same connection: virDomainQemuAgentCommand lives in libvirt's qemu-specific program (0x20008087), not the remote program (0x20008086) this crate has spoken until now, so the session and framing code stop assuming one connection means one program. The installed guest writes a marker file that only a system booted from the installed disk writes (guarded on immucore's active/passive sentinels), and the provider reads it with guest-file-open/read/close rather than guest-exec -- three deterministic calls instead of a fire-and-poll with a pid to chase, and no executable required inside the guest. This distinguishes the INSTALLED system from the live installer, which every cheap liveness signal (agent ping, DHCP lease, open SSH port) fails to do because the installer environment satisfies all of them while it is still overwriting the disk. User-data reaches a libvirt guest as a cloud-init NoCloud seed: a small ISO labelled CIDATA, built in-process with a Joliet tree (ADR-0054) because ISO9660 Level 1 cannot spell the hyphenated `meta-data`/`user-data` names cloud-init requires. No genisoimage, no subprocess, and the payload never touches the container's filesystem — unlike vSphere, which has guestinfo and needs no disk at all."
+      "description": "Provider controller for libvirt/KVM hosts, speaking libvirt's own RPC protocol through the first-party `banlieue-libvirt` crate (XDR codec + message framing) rather than any third-party client \u2014 zero new dependencies, no C library, no FFI. Split by plane (ADR-0011): the CONTROL plane runs in-process \u2014 the Provider reconciler connects, lists storage pools and networks, verifies the admin-declared spec.capabilities actually exist, and publishes status.failureDomains[] (one per host, with pools as the interesting sub-structure since libvirt has no datacenter/cluster hierarchy). The DATA plane runs as a Kubernetes Job so bulk disk bytes never flow through the controller process; that Job runs the `banlieue` binary itself, so there is no third-party tools image to pin, trust, or patch. VM lifecycle (a LibvirtMachine InfraMachine CRD) is deliberately out of scope for this increment. A third reconciler (ADR-0050) owns the LibvirtMachine lifecycle: it defines, starts, inspects and undefines domains through the same first-party `banlieue-libvirt` crate, adding domain procedures beside the existing storage ones rather than taking on libvirt's C client. Undefine always passes MANAGED_SAVE|NVRAM|TPM so no varstore or swtpm state outlives a deleted VM. Domain XML is rendered through an escaping-only template module: every value reaching it (domain name, volume paths, bridge names) is user- or admin-influenced. Guest readiness (ADR-0043) adds a SECOND libvirt RPC program to the same connection: virDomainQemuAgentCommand lives in libvirt's qemu-specific program (0x20008087), not the remote program (0x20008086) this crate has spoken until now, so the session and framing code stop assuming one connection means one program. The installed guest writes a marker file that only a system booted from the installed disk writes (guarded on immucore's active/passive sentinels), and the provider reads it with guest-file-open/read/close rather than guest-exec -- three deterministic calls instead of a fire-and-poll with a pid to chase, and no executable required inside the guest. This distinguishes the INSTALLED system from the live installer, which every cheap liveness signal (agent ping, DHCP lease, open SSH port) fails to do because the installer environment satisfies all of them while it is still overwriting the disk. User-data reaches a libvirt guest as a cloud-init NoCloud seed: a small ISO labelled CIDATA, built in-process with a Joliet tree (ADR-0054) because ISO9660 Level 1 cannot spell the hyphenated `meta-data`/`user-data` names cloud-init requires. No genisoimage, no subprocess, and the payload never touches the container's filesystem \u2014 unlike vSphere, which has guestinfo and needs no disk at all."
     },
     {
       "unique-id": "service-banlieue-imagebuilder",
       "node-type": "service",
       "name": "banlieue-imagebuilder",
-      "description": "Provider-agnostic controller that turns a VMImage's OCI/Kairos-referenced source (spec.sources[].kind == Url) into a build artifact. Server-side-applies an OSArtifact CR (kairos-operator) requesting either a cloud image (spec.artifacts.cloudImage, for libvirt) or a bootable ISO for vSphere — spec.artifacts.iso + cloudConfigRef normally, or spec.artifacts.uki.{iso,keysVolume} instead when spec.trustedBoot is set (a Secret-backed key volume for auroraboot build-uki, ADR-0051) — watches its status.phase, and mirrors readiness into VMImage.status.buildArtifact — a typed top-level field (kind: cloudImage | iso, aligned with kairos OSArtifactKind) distinct from status.perProvider[], so this controller and each provider controller's field manager never contend over the same VMImage.status fields. When VMImage.spec.cloudConfigs[] is set it layers those cloud-config sources (Secret/ConfigMap, in order) into a single merged cloud-config passed as the OSArtifact cloudConfigRef (ADR-0037). Has no knowledge of vSphere, Proxmox, or libvirt; backend-specific conversion (e.g. raw -> VMDK) and per-zone import are each provider's own concern. See ADR-0010, ADR-0020, ADR-0037, and ADR-0051.",
+      "description": "Provider-agnostic controller that turns a VMImage's OCI/Kairos-referenced source (spec.sources[].kind == Url) into a build artifact. Server-side-applies an OSArtifact CR (kairos-operator) requesting either a cloud image (spec.artifacts.cloudImage, for libvirt) or a bootable ISO for vSphere \u2014 spec.artifacts.iso + cloudConfigRef normally, or spec.artifacts.uki.{iso,keysVolume} instead when spec.trustedBoot is set (a Secret-backed key volume for auroraboot build-uki, ADR-0051) \u2014 watches its status.phase, and mirrors readiness into VMImage.status.buildArtifact \u2014 a typed top-level field (kind: cloudImage | iso, aligned with kairos OSArtifactKind) distinct from status.perProvider[], so this controller and each provider controller's field manager never contend over the same VMImage.status fields. When VMImage.spec.cloudConfigs[] is set it layers those cloud-config sources (Secret/ConfigMap, in order) into a single merged cloud-config passed as the OSArtifact cloudConfigRef (ADR-0037). Has no knowledge of vSphere, Proxmox, or libvirt; backend-specific conversion (e.g. raw -> VMDK) and per-zone import are each provider's own concern. See ADR-0010, ADR-0020, ADR-0037, and ADR-0051.",
       "interfaces": [
         {
           "unique-id": "banlieue-imagebuilder-health",
@@ -203,7 +203,7 @@
           ]
         },
         "imagebuild-privilege-domain": {
-          "description": "Image builds run in a dedicated namespace (banlieue-imagebuild) whose Pod Security Standards enforcement is set to `privileged`, because kairos-operator's OSArtifact build pods require privileged:true for loop devices and mounts — which the `baseline` profile denies as well as `restricted`, so no intermediate level exists. Confining that exception keeps enforce:restricted on banlieue-system, where the controller, the operator (an RBAC grantor) and every per-backend provider pod hold cluster-wide or backend credentials. audit/warn remain `restricted` so a NEW privileged workload in the build namespace is still visible. This bounds admission surface, NOT escape capability: a privileged pod can escape to its node regardless of namespace, so node-level isolation (dedicated tainted nodes) remains the outstanding complementary control. See ADR-0016.",
+          "description": "Image builds run in a dedicated namespace (banlieue-imagebuild) whose Pod Security Standards enforcement is set to `privileged`, because kairos-operator's OSArtifact build pods require privileged:true for loop devices and mounts \u2014 which the `baseline` profile denies as well as `restricted`, so no intermediate level exists. Confining that exception keeps enforce:restricted on banlieue-system, where the controller, the operator (an RBAC grantor) and every per-backend provider pod hold cluster-wide or backend credentials. audit/warn remain `restricted` so a NEW privileged workload in the build namespace is still visible. This bounds admission surface, NOT escape capability: a privileged pod can escape to its node regardless of namespace, so node-level isolation (dedicated tainted nodes) remains the outstanding complementary control. See ADR-0016.",
           "requirements": [
             {
               "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
@@ -220,7 +220,7 @@
           ]
         },
         "least-privilege": {
-          "description": "Imagebuilder ServiceAccount's ClusterRole carries no Secret rule. Cloud-config Secrets referenced by VMImage.spec.cloudConfigs, and the merged Secret it server-side-applies, are reached through a namespaced Role in the build namespace bound cross-namespace to the ServiceAccount in banlieue-system (ADR-0041) — matching the single Api<Secret> in the crate, which is namespaced to --build-namespace.",
+          "description": "Imagebuilder ServiceAccount's ClusterRole carries no Secret rule. Cloud-config Secrets referenced by VMImage.spec.cloudConfigs, and the merged Secret it server-side-applies, are reached through a namespaced Role in the build namespace bound cross-namespace to the ServiceAccount in banlieue-system (ADR-0041) \u2014 matching the single Api<Secret> in the crate, which is namespaced to --build-namespace.",
           "requirements": [
             {
               "requirement-url": "https://kubernetes.io/docs/concepts/security/rbac-good-practices/",
@@ -240,7 +240,7 @@
       "unique-id": "service-kairos-operator",
       "node-type": "service",
       "name": "kairos-operator (external, not shipped by banlieue)",
-      "description": "Upstream Kairos controller (kairos-io/kairos-operator). Watches OSArtifact CRs (build.kairos.io/v1alpha2), pulls/builds the referenced OCI image, and produces a raw disk (status.phase: Pending -> Building -> Exporting -> Ready) written to a PVC it creates. banlieue does not fork or vendor this controller — the platform operator installs it independently (kubectl apply -k, per its own docs) alongside banlieue."
+      "description": "Upstream Kairos controller (kairos-io/kairos-operator). Watches OSArtifact CRs (build.kairos.io/v1alpha2), pulls/builds the referenced OCI image, and produces a raw disk (status.phase: Pending -> Building -> Exporting -> Ready) written to a PVC it creates. banlieue does not fork or vendor this controller \u2014 the platform operator installs it independently (kubectl apply -k, per its own docs) alongside banlieue."
     },
     {
       "unique-id": "system-banlieue-binary",
@@ -284,7 +284,7 @@
       "unique-id": "network-libvirt-backend",
       "node-type": "network",
       "name": "libvirt / KVM Host",
-      "description": "libvirt/KVM host reached over libvirt's native RPC protocol on TLS port 16514 (`qemu+tls://host/system`) with mutual TLS. Plaintext TCP 16509 is explicitly NOT supported by this provider even where a host has it enabled: using it would mean implementing SASL DIGEST-MD5 solely to speak an obsolete unencrypted transport — more code for a worse security posture (ADR-0011). The server certificate must carry SANs for every address the host answers on, including the libvirt bridge address (virbr0) that in-cluster workloads dial, because libvirt validates the certificate against the address the client actually dialled.",
+      "description": "libvirt/KVM host reached over libvirt's native RPC protocol on TLS port 16514 (`qemu+tls://host/system`) with mutual TLS. Plaintext TCP 16509 is explicitly NOT supported by this provider even where a host has it enabled: using it would mean implementing SASL DIGEST-MD5 solely to speak an obsolete unencrypted transport \u2014 more code for a worse security posture (ADR-0011). The server certificate must carry SANs for every address the host answers on, including the libvirt bridge address (virbr0) that in-cluster workloads dial, because libvirt validates the certificate against the address the client actually dialled.",
       "interfaces": [
         {
           "unique-id": "libvirt-tls",
@@ -316,31 +316,31 @@
       "unique-id": "data-asset-virtualmachine-cr",
       "node-type": "data-asset",
       "name": "VirtualMachine Custom Resource",
-      "description": "Namespaced CRD (banlieue.io/v1alpha1) declaring a backend-agnostic VM: classRef (→ VMClass), imageRef (→ VMImage), placement.providerSelector/failureDomainSelector (a label selector the scheduler matches against Provider CRs — never a direct Provider name reference), desiredPowerState, and optional userData. The ONLY user-facing API."
+      "description": "Namespaced CRD (banlieue.io/v1alpha1) declaring a backend-agnostic VM: classRef (\u2192 VMClass), imageRef (\u2192 VMImage), placement.providerSelector/failureDomainSelector (a label selector the scheduler matches against Provider CRs \u2014 never a direct Provider name reference), desiredPowerState, and optional userData. The ONLY user-facing API."
     },
     {
       "unique-id": "data-asset-virtualmachinepool-cr",
       "node-type": "data-asset",
       "name": "VirtualMachinePool Custom Resource",
-      "description": "Namespaced CRD (banlieue.io/v1alpha1) holding a warm set of already-installed, never-used VirtualMachines so a consumer does not wait out a Deferred-mode install (ADR-0040) at request time. Creates nothing but VirtualMachines and reads nothing but their conditions and labels, so no provider learns that pools exist and there is deliberately no per-backend pool kind. Every sizing and rollout decision is a pure function over a snapshot of members; the reconciler only gathers, applies and reports. Two invariants are load-bearing rather than cosmetic: a claimed member is never deleted by the pool, and a member is never returned to the warm set after being claimed — reuse across identities is the one thing this design must not do (ADR-0046)."
+      "description": "Namespaced CRD (banlieue.io/v1alpha1) holding a warm set of already-installed, never-used VirtualMachines so a consumer does not wait out a Deferred-mode install (ADR-0040) at request time. Creates nothing but VirtualMachines and reads nothing but their conditions and labels, so no provider learns that pools exist and there is deliberately no per-backend pool kind. Every sizing and rollout decision is a pure function over a snapshot of members; the reconciler only gathers, applies and reports. Two invariants are load-bearing rather than cosmetic: a claimed member is never deleted by the pool, and a member is never returned to the warm set after being claimed \u2014 reuse across identities is the one thing this design must not do (ADR-0046)."
     },
     {
       "unique-id": "data-asset-virtualmachineclaim-cr",
       "node-type": "data-asset",
       "name": "VirtualMachineClaim Custom Resource",
-      "description": "Namespaced CRD (banlieue.io/v1alpha1) that hands one warm VirtualMachinePool member to one subject, and is the only way a member ever leaves the pool (ADR-0047). A member is bound at most once in its life: there is no unbind and no return-to-pool, because the VM itself is the isolation boundary between subjects. Binding is a resourceVersion-preconditioned merge patch on the member, so two claims racing for one member yield exactly one success and one 409 — optimistic concurrency, never a lock. The bind also re-parents the member's ownerReferences from pool to claim, which is what lets a pool be deleted without destroying sandboxes in use. spec.ttlSeconds is mandatory (a claim without a deadline is a leaked VM) and a finalizer holds the claim until the member is gone from the API server, so \"claim deleted\" means \"sandbox destroyed\". spec.subject carries an opaque issuer+id that banlieue records for audit and never interprets; it is never a credential, and status.nonce (128 random bits) exists only so an attestation quote cannot be replayed across claims."
+      "description": "Namespaced CRD (banlieue.io/v1alpha1) that hands one warm VirtualMachinePool member to one subject, and is the only way a member ever leaves the pool (ADR-0047). A member is bound at most once in its life: there is no unbind and no return-to-pool, because the VM itself is the isolation boundary between subjects. Binding is a resourceVersion-preconditioned merge patch on the member, so two claims racing for one member yield exactly one success and one 409 \u2014 optimistic concurrency, never a lock. The bind also re-parents the member's ownerReferences from pool to claim, which is what lets a pool be deleted without destroying sandboxes in use. spec.ttlSeconds is mandatory (a claim without a deadline is a leaked VM) and a finalizer holds the claim until the member is gone from the API server, so \"claim deleted\" means \"sandbox destroyed\". spec.subject carries an opaque issuer+id that banlieue records for audit and never interprets; it is never a credential, and status.nonce (128 random bits) exists only so an attestation quote cannot be replayed across claims. Those three published fields ARE banlieue's side of the attestation contract (ADR-0049): subject.issuer tells the in-guest agent which issuer to trust, subject.id holds the RAW subject as that issuer spells it rather than the prefixed Kubernetes username -- a JWT carries no oidc: prefix, so storing the prefixed form left a value the agent could not compare (fixed as ADR-0047 Decision 9, amended) -- and status.nonce is what a TPM quote is taken over. banlieue neither carries nor validates the credential: a broker pushes {claim, nonce, JWT} to the agent over mTLS, the agent returns a quote over the nonce, and the broker verifies it against the EK certificate mirrored onto the claim. Nothing is at rest -- no disk, no CR, no hypervisor channel -- which is forced rather than chosen, because a warm pool member exists BEFORE any claim does, so nothing baked in at provisioning time can be subject-specific. The per-VM vTPM that anchors the quote is unique by construction on both backends: on vSphere because deferred install never installs the golden template, so each clone installs itself with its own already-unique vTPM (ADR-0040), and on libvirt because swtpm state is keyed by domain UUID."
     },
     {
       "unique-id": "data-asset-agentsandbox-cr",
       "node-type": "data-asset",
       "name": "AgentSandbox Custom Resource",
-      "description": "Namespaced CRD in a SEPARATE API group (agent.banlieue.io/v1alpha1), served by its own controller, so a cluster running VMs for CI never installs or reasons about an agent CRD (ADR-0055). It does NOT bind pool members: it creates and owns a VirtualMachineClaim, the way a Deployment owns a ReplicaSet. That is the whole point of the shape — bind-once is enforced by a single resourceVersion-preconditioned patch in one controller, and a second kind binding members would mean two independent implementations of the one invariant that must never break. It carries agent-shaped POLICY (acceptable token issuers and audiences, egress allowlist, tool scopes, runtime selection) and never a credential: a custom resource is readable by anyone with namespace read and lands in the audit log, so the token reaches the guest over the attested channel instead. The agent runtime comes from the image rather than from bind-time provisioning, because installing one at bind time reintroduces exactly the latency the warm pool exists to remove. Status mirrors the claim rather than being derived independently, and a finalizer holds the object until its claim is gone so that \"sandbox deleted\" keeps meaning \"VM destroyed\" through the wrapper."
+      "description": "Namespaced CRD in a SEPARATE API group (agent.banlieue.io/v1alpha1), served by its own controller, so a cluster running VMs for CI never installs or reasons about an agent CRD (ADR-0055). It does NOT bind pool members: it creates and owns a VirtualMachineClaim, the way a Deployment owns a ReplicaSet. That is the whole point of the shape \u2014 bind-once is enforced by a single resourceVersion-preconditioned patch in one controller, and a second kind binding members would mean two independent implementations of the one invariant that must never break. It carries agent-shaped POLICY (acceptable token issuers and audiences, egress allowlist, tool scopes, runtime selection) and never a credential: a custom resource is readable by anyone with namespace read and lands in the audit log, so the token reaches the guest over the attested channel instead. The agent runtime comes from the image rather than from bind-time provisioning, because installing one at bind time reintroduces exactly the latency the warm pool exists to remove. Status mirrors the claim rather than being derived independently, and a finalizer holds the object until its claim is gone so that \"sandbox deleted\" keeps meaning \"VM destroyed\" through the wrapper."
     },
     {
       "unique-id": "data-asset-provider-cr",
       "node-type": "data-asset",
       "name": "Provider Custom Resource",
-      "description": "Namespaced CRD (banlieue.io/v1alpha1) declaring one backend instance in this cluster: providerClassRef (→ ProviderClass, which carries the backend kind), connection (endpoint, credentialsRef, optional caBundle/insecureSkipTLSVerify), and capabilities (storage/network class mappings plus a free-form features list, e.g. the vtpm well-known value gating VMClass.spec.tpmEnabled, ADR-0039). Owned by the platform operator; VirtualMachines never reference a Provider by name — they are matched onto one via placement.providerSelector against the Provider's labels. features is set by hand, never auto-discovered from the backend (e.g. vtpm requires the operator to confirm KMS + vTPM actually work end-to-end in that vCenter first)."
+      "description": "Namespaced CRD (banlieue.io/v1alpha1) declaring one backend instance in this cluster: providerClassRef (\u2192 ProviderClass, which carries the backend kind), connection (endpoint, credentialsRef, optional caBundle/insecureSkipTLSVerify), and capabilities (storage/network class mappings plus a free-form features list, e.g. the vtpm well-known value gating VMClass.spec.tpmEnabled, ADR-0039). Owned by the platform operator; VirtualMachines never reference a Provider by name \u2014 they are matched onto one via placement.providerSelector against the Provider's labels. features is set by hand, never auto-discovered from the backend (e.g. vtpm requires the operator to confirm KMS + vTPM actually work end-to-end in that vCenter first)."
     },
     {
       "unique-id": "data-asset-providerclass-cr",
@@ -352,7 +352,7 @@
       "unique-id": "data-asset-vmclass-cr",
       "node-type": "data-asset",
       "name": "VMClass Custom Resource",
-      "description": "Cluster-scoped CRD (banlieue.io/v1alpha1) declaring a flavour: CPU count, memory, disk shape, network interfaces/IPAM, firmware, tpmEnabled. Like firmware, tpmEnabled is a class-level capability, not a per-VM override — the scheduler only selects a Provider/failure domain advertising the vtpm feature (Provider.spec.capabilities.features) when set (ADR-0039). Referenced by VirtualMachine.spec.classRef.name."
+      "description": "Cluster-scoped CRD (banlieue.io/v1alpha1) declaring a flavour: CPU count, memory, disk shape, network interfaces/IPAM, firmware, tpmEnabled. Like firmware, tpmEnabled is a class-level capability, not a per-VM override \u2014 the scheduler only selects a Provider/failure domain advertising the vtpm feature (Provider.spec.capabilities.features) when set (ADR-0039). Referenced by VirtualMachine.spec.classRef.name."
     },
     {
       "unique-id": "data-asset-vmimage-cr",
@@ -376,31 +376,69 @@
       "unique-id": "data-asset-infra-cluster-cr",
       "node-type": "data-asset",
       "name": "Infrastructure Cluster CR (VSphereCluster)",
-      "description": "Namespaced CRD (infrastructure.banlieue.io/v1alpha1) satisfying the CAPI v1beta2 InfraCluster contract. A CAPI Cluster.spec.infrastructureRef points at it. The banlieue-controller reconciles it by aggregating status.failureDomains[] from one or more Provider CRs into the CAPI v1beta2 failure-domain list — so one Kubernetes cluster can span multiple vCenters. No backend access: pure CRD aggregation of Provider status. See ADR-0002."
+      "description": "Namespaced CRD (infrastructure.banlieue.io/v1alpha1) satisfying the CAPI v1beta2 InfraCluster contract. A CAPI Cluster.spec.infrastructureRef points at it. The banlieue-controller reconciles it by aggregating status.failureDomains[] from one or more Provider CRs into the CAPI v1beta2 failure-domain list \u2014 so one Kubernetes cluster can span multiple vCenters. No backend access: pure CRD aggregation of Provider status. See ADR-0002."
     },
     {
       "unique-id": "data-asset-capi-cluster-cr",
       "node-type": "data-asset",
       "name": "CAPI Cluster / MachineDeployment (external)",
-      "description": "Upstream Cluster API objects (cluster.x-k8s.io): Cluster, MachineDeployment, and a control-plane object. NOT owned by banlieue — owned by CAPI core and a control-plane provider (k0smotron for k0s). 'replicas: N' on these objects, spread across the InfraCluster's failure domains, is how banlieue provisions a Kubernetes cluster (ADR-0001). banlieue is CAPI's infrastructure provider, not its cluster controller."
+      "description": "Upstream Cluster API objects (cluster.x-k8s.io): Cluster, MachineDeployment, and a control-plane object. NOT owned by banlieue \u2014 owned by CAPI core and a control-plane provider (k0smotron for k0s). 'replicas: N' on these objects, spread across the InfraCluster's failure domains, is how banlieue provisions a Kubernetes cluster (ADR-0001). banlieue is CAPI's infrastructure provider, not its cluster controller."
     },
     {
       "unique-id": "service-capi-core",
       "node-type": "service",
       "name": "Cluster API core + control-plane provider (k0smotron)",
-      "description": "Upstream CAPI controllers (cluster, machineset, machinedeployment) plus a control-plane/bootstrap provider — k0smotron for k0s. Reads VSphereCluster.status.failureDomains, balances Machines across them (count-based round-robin), and mints VSphereMachines from a VSphereMachineTemplate. banlieue does NOT ship these; the platform operator installs them. This is what lets any CAPI consumer (kubeadm, RKE2, k0smotron) use banlieue as an infra provider."
+      "description": "Upstream CAPI controllers (cluster, machineset, machinedeployment) plus a control-plane/bootstrap provider \u2014 k0smotron for k0s. Reads VSphereCluster.status.failureDomains, balances Machines across them (count-based round-robin), and mints VSphereMachines from a VSphereMachineTemplate. banlieue does NOT ship these; the platform operator installs them. This is what lets any CAPI consumer (kubeadm, RKE2, k0smotron) use banlieue as an infra provider."
     },
     {
       "unique-id": "system-k0s-bootstrap",
       "node-type": "system",
       "name": "k0s Bootstrap Script",
-      "description": "scripts/bootstrap-k0s-cluster.sh — stands up the MANAGEMENT k0s cluster that runs the banlieue controllers and kairos-operator (the substrate `banlieue bootstrap` later installs onto; not a workload provisioned through banlieue). Pluggable BACKEND: `libvirt` clones/installs Kairos VMs via virt-install on a KVM host; `vsphere` clones cluster-specific Kairos templates via govc against a vCenter, spreading nodes evenly across compute clusters so each is an etcd failure domain. Installs k0s with k0sctl. No environment-specific identifier is committed — every value comes from the GOVC_* environment, govc discovery, or an untracked operator config (ADR-0017). An opt-in `flux` step (FLUX_ENABLED=true), backend-agnostic, fetches a registry credential from Vault and pushes flux-operator + flux-core manifests onto the first controller node (ADR-0018)."
+      "description": "scripts/bootstrap-k0s-cluster.sh \u2014 stands up the MANAGEMENT k0s cluster that runs the banlieue controllers and kairos-operator (the substrate `banlieue bootstrap` later installs onto; not a workload provisioned through banlieue). Pluggable BACKEND: `libvirt` clones/installs Kairos VMs via virt-install on a KVM host; `vsphere` clones cluster-specific Kairos templates via govc against a vCenter, spreading nodes evenly across compute clusters so each is an etcd failure domain. Installs k0s with k0sctl. No environment-specific identifier is committed \u2014 every value comes from the GOVC_* environment, govc discovery, or an untracked operator config (ADR-0017). An opt-in `flux` step (FLUX_ENABLED=true), backend-agnostic, fetches a registry credential from Vault and pushes flux-operator + flux-core manifests onto the first controller node (ADR-0018)."
+    },
+    {
+      "unique-id": "network-oidc-issuer",
+      "node-type": "network",
+      "name": "OIDC Token Issuer (JWKS / discovery)",
+      "description": "The identity provider whose ID tokens the API server accepts (--oidc-issuer-url) and whose JWKS the in-guest agent needs to verify a subject's credential. External to banlieue and unmanaged by it: any conformant OIDC issuer serves, and a GitHub-backed dev cluster reaches it through Dex because GitHub is OAuth2 and mints no ID tokens at all. It appears in this model because two banlieue decisions are coupled to it. First, VirtualMachineClaim.spec.subject.id stores the RAW subject as this issuer spells it, not the prefixed Kubernetes username, so the claim-subject admission policy has to re-apply --oidc-username-prefix from its params ConfigMap when it compares (ADR-0047 Decision 9, amended). Second, the agent learns WHICH issuer to trust from subject.issuer -- a field on a custom resource -- so the policy's issuer allowlist is what stops a claim author pointing verification at a JWKS they control (ADR-0049 Decision 7). The discovery host must therefore be reachable from inside the sandbox, which is a real constraint on the egress allowlist and on air-gapped sites.",
+      "interfaces": [
+        {
+          "unique-id": "oidc-issuer-https",
+          "definition-url": "https://calm.finos.org/release/1.2/prototype/interface/http-endpoint.json",
+          "config": {
+            "port": 443,
+            "protocol": "HTTPS"
+          }
+        }
+      ]
+    },
+    {
+      "unique-id": "service-sandbox-broker",
+      "node-type": "service",
+      "name": "Sandbox Broker (planned, roadmap phase C \u2014 not shipped by banlieue)",
+      "description": "The party that hands sandboxes out on behalf of other people: it creates a VirtualMachineClaim naming a subject that is not itself, then pushes that subject's credential to the guest. Not built, and not a banlieue binary. It is modelled because it is the one principal the claim-subject admission policy deliberately exempts from the identity check -- attributing a sandbox to somebody else is its entire job -- which makes its service account exactly as sensitive as the audit trail the policy protects. Brokers are listed one per line in the 'brokers' key of ConfigMap banlieue-claim-subject-policy, empty by default, and changes to that ConfigMap deserve auditing. It is load-bearing twice over in ADR-0049: it holds credentials AND it is the party that verifies attestation quotes, so its compromise is that design's worst case."
+    },
+    {
+      "unique-id": "service-in-guest-agent",
+      "node-type": "service",
+      "name": "In-guest agent (separate repository \u2014 not built)",
+      "description": "Runs inside a sandbox VM, receives the subject's credential over an attested channel, and verifies it before starting any workload (ADR-0049). Deliberately NOT a banlieue binary: its release cadence is the image's, nothing in banlieue imports it, and banlieue's side of the contract is only the three fields it publishes on a claim (subject.issuer, subject.id, status.nonce) plus the mirrored EK certificate. Its keypair and AK are generated during the per-VM install rather than shipped in an image, which installMode: Deferred makes natural because the install itself is per-VM (ADR-0040). It checks iss against subject.issuer, the token's subject claim against subject.id, and aud against its OWN configured audience -- never one read from the claim, since whoever wrote the claim would then choose the audience and a token minted for any other service would pass. A failed handshake leaves the sandbox unused and reaped: there is no partial-trust mode, because a sandbox that ran unattested is indistinguishable afterwards from one that did not.",
+      "interfaces": [
+        {
+          "unique-id": "agent-attestation-mtls",
+          "definition-url": "https://calm.finos.org/release/1.2/prototype/interface/http-endpoint.json",
+          "config": {
+            "port": 8443,
+            "protocol": "HTTPS"
+          }
+        }
+      ]
     }
   ],
   "relationships": [
     {
       "unique-id": "rel-banlieue-binary-composed-of-roles",
-      "description": "The single `banlieue` binary is composed of every controller role. Each role is invoked as a subcommand (`banlieue controller`, `banlieue operator`, `banlieue provider vsphere`, …) and lives in an independent library crate; the binary only dispatches. The same binary also installs the platform via `banlieue bootstrap` (ADR-0013), building CRDs from its own Rust types so the schemas applied always match the binary applying them. See ADR-0004.",
+      "description": "The single `banlieue` binary is composed of every controller role. Each role is invoked as a subcommand (`banlieue controller`, `banlieue operator`, `banlieue provider vsphere`, \u2026) and lives in an independent library crate; the binary only dispatches. The same binary also installs the platform via `banlieue bootstrap` (ADR-0013), building CRDs from its own Rust types so the schemas applied always match the binary applying them. See ADR-0004.",
       "relationship-type": {
         "composed-of": {
           "container": "system-banlieue-binary",
@@ -471,7 +509,7 @@
     },
     {
       "unique-id": "rel-operator-authors-provider-cr",
-      "description": "Platform operator authors ProviderClass CRs (what banlieue runs for a backend class), Provider CRs (one backend instance), and the backing credentials Secret. Applying a Provider is what causes banlieue-operator to spawn that backend's controller — no manifest editing required. Consumers never see provider credentials.",
+      "description": "Platform operator authors ProviderClass CRs (what banlieue runs for a backend class), Provider CRs (one backend instance), and the backing credentials Secret. Applying a Provider is what causes banlieue-operator to spawn that backend's controller \u2014 no manifest editing required. Consumers never see provider credentials.",
       "relationship-type": {
         "interacts": {
           "actor": "actor-platform-operator",
@@ -533,7 +571,7 @@
     },
     {
       "unique-id": "rel-controller-kube-api",
-      "description": "banlieue-controller watches VirtualMachine / Provider / VMClass / VMImage / VSphereCluster CRs, server-side-applies infrastructure machine CRs, watches their status, and patches VirtualMachine status with the mirrored conditions. It also reconciles VSphereCluster (InfraCluster) by aggregating selected Providers' status.failureDomains[] into the CAPI v1beta2 failure-domain list — reading Provider status only, no backend access.",
+      "description": "banlieue-controller watches VirtualMachine / Provider / VMClass / VMImage / VSphereCluster CRs, server-side-applies infrastructure machine CRs, watches their status, and patches VirtualMachine status with the mirrored conditions. It also reconciles VSphereCluster (InfraCluster) by aggregating selected Providers' status.failureDomains[] into the CAPI v1beta2 failure-domain list \u2014 reading Provider status only, no backend access.",
       "relationship-type": {
         "connects": {
           "source": {
@@ -551,7 +589,7 @@
     },
     {
       "unique-id": "rel-operator-kube-api",
-      "description": "banlieue-operator watches ProviderClass and Provider CRs and server-side-applies the per-instance provider workload (Deployment, ServiceAccount, Role, RoleBinding) with field manager banlieue.io/operator, then mirrors readiness into Provider.status.workload. It never contacts the spawned provider, the main controller, or any backend — only the K8s API.",
+      "description": "banlieue-operator watches ProviderClass and Provider CRs and server-side-applies the per-instance provider workload (Deployment, ServiceAccount, Role, RoleBinding) with field manager banlieue.io/operator, then mirrors readiness into Provider.status.workload. It never contacts the spawned provider, the main controller, or any backend \u2014 only the K8s API.",
       "relationship-type": {
         "connects": {
           "source": {
@@ -569,7 +607,7 @@
     },
     {
       "unique-id": "rel-provider-vsphere-kube-api",
-      "description": "vSphere provider controller watches Provider CRs (capability introspection, ADR-0019), VMImage CRs (per-zone template build, ADR-0020/0021), and VSphereMachine infrastructure CRs (clone-from-template create path + power-state observation, ADR-0024), patching each one's .status. NEVER speaks to the banlieue controller directly — the K8s API is the bus.",
+      "description": "vSphere provider controller watches Provider CRs (capability introspection, ADR-0019), VMImage CRs (per-zone template build, ADR-0020/0021), and VSphereMachine infrastructure CRs (clone-from-template create path + power-state observation, ADR-0024), patching each one's .status. NEVER speaks to the banlieue controller directly \u2014 the K8s API is the bus.",
       "relationship-type": {
         "connects": {
           "source": {
@@ -623,7 +661,7 @@
     },
     {
       "unique-id": "rel-capi-core-kube-api",
-      "description": "CAPI core + control-plane provider (k0smotron) watch Cluster / MachineDeployment / VSphereCluster, read VSphereCluster.status.failureDomains, and create Machine + VSphereMachine objects spread across those failure domains. Pure Kubernetes API — banlieue never talks to CAPI out of band.",
+      "description": "CAPI core + control-plane provider (k0smotron) watch Cluster / MachineDeployment / VSphereCluster, read VSphereCluster.status.failureDomains, and create Machine + VSphereMachine objects spread across those failure domains. Pure Kubernetes API \u2014 banlieue never talks to CAPI out of band.",
       "relationship-type": {
         "connects": {
           "source": {
@@ -641,7 +679,7 @@
     },
     {
       "unique-id": "rel-imagebuilder-kube-api",
-      "description": "banlieue-imagebuilder watches VMImage for spec.sources[].kind==Url entries, server-side-applies the matching OSArtifact CR (field manager banlieue.io/imagebuilder; cloudImage or iso artifact + cloudConfigRef resolved from VMImage.spec.cloudConfig), watches that OSArtifact's status, and patches VMImage.status.buildArtifact. Never calls kairos-operator or any provider controller directly — only the K8s API.",
+      "description": "banlieue-imagebuilder watches VMImage for spec.sources[].kind==Url entries, server-side-applies the matching OSArtifact CR (field manager banlieue.io/imagebuilder; cloudImage or iso artifact + cloudConfigRef resolved from VMImage.spec.cloudConfig), watches that OSArtifact's status, and patches VMImage.status.buildArtifact. Never calls kairos-operator or any provider controller directly \u2014 only the K8s API.",
       "relationship-type": {
         "connects": {
           "source": {
@@ -677,7 +715,7 @@
     },
     {
       "unique-id": "rel-provider-vsphere-backend",
-      "description": "vSphere provider talks to vCenter over HTTPS to create, query, update, and destroy VMs. Iteration 2 also introspects each cluster's reachable datastores (incl. SDRS datastore-cluster membership) and networks (standard + distributed port groups) to populate Provider.status.failureDomains[].attributes.availableStorageClasses / availableNetworkClasses (ADR-0019). Each storageClasses[]/networkClasses[] mapping resolves its concrete target per (datacenter, cluster) — an exact perZone entry if the admin declared one for that zone, else the mapping's default target — so the same abstract class name (and therefore the same VMClass/VMImage) can back a differently-named datastore/port-group on each cluster of the Provider, and stays portable across every vCenter that declares matching abstract names (ADR-0030). Three planes use this one transport: the in-process Provider reconciler for cheap list/introspection calls; a per-failure-domain image-import Job (for VMImage.status.buildArtifact.kind==iso) that mounts the shared artifacts PVC, uploads the ISO to that zone's datastore, creates an empty EFI VM, attaches the ISO, powers it on, and polls for the VM to power itself off once the cloud-config's unattended Kairos install completes (install.poweroff, no reboot — the disk is never booted by the build), bounded by spec.template.installTimeoutSeconds; on success it removes the CD-ROM device and MarkAsTemplate, on timeout it fails the Job without destroying the VM — Content Library optional, default off (ADR-0020; install/generalize sequence ADR-0021); and the VSphereMachine reconciler's CloneVM_Task from that per-zone template, setting guestinfo.network.hostname unconditionally (from the VirtualMachine's own name — no per-host cloud-config needed just for a hostname) plus guestinfo.network.{ip,prefix,gateway,dns,domain} and guestinfo.userdata (base64 cloud-config, ADR-0024) in the same clone call for any interface with a resolved static address (VirtualMachine.spec.networkOverrides), the latter set omitted for a plain dhcp interface. Also sets guestinfo.metadata unconditionally — a base64 YAML document (instance-id, local-hostname) matching real cloud-init's own VMware GuestInfo datasource schema, independent of spec.userData entirely, so a plain cloud-init guest gets a working hostname/FQDN with no cloud-config authored at all and without banlieue ever parsing or merging into the user's own userData (ADR-0029). The userdata content itself is resolved and placeholder-substituted by banlieue-controller, not this provider (ADR-0025) — the provider only ever sees already-rendered content, never a Secret reference. Both VMImage and VSphereMachine carry their own deletion finalizer (banlieue.io/vmimage, banlieue.io/vspheremachine): deleting either blocks until this provider confirms the backend VM/template it owns is destroyed (Destroy_Task), unless VMImage.spec.template.retainOnDelete opts out (ADR-0028, mirroring ADR-0026's VSphereMachine deletion lifecycle). When VSphereMachineSpec.tpmEnabled is set, a ReconfigVM_Task adding a VirtualTPM device is issued after CloneVM_Task (which already clones powered off) and before the power-on step — the device must exist before Kairos's first boot for kcrypt to seal LUKS keys against it during unattended install. There is no govc subcommand for this (confirmed across 0.52.0/0.56.0 — govc only exposes host.tpm.info/host.tpm.report for physical-host attestation, unrelated to a VM's vTPM); it is the same ReconfigVM_Task + VirtualDeviceConfigSpec/VirtualTPM call the vCenter UI and PowerCLI's New-VTpm make, driven here via the govmomi-derived vim_rs client instead. VSphereMachineStatus.tpmAttached mirrors the outcome, following the observedPowerState precedent (ADR-0034) of a provider-owned diagnostic field outside the CAPI contract proper. See ADR-0039. The image-import Job's power-on/wait/remove-CD-ROM sequence above runs only when VMImage.spec.template.installMode is immediate (the default); for deferred/manual it stops at create-VM-and-attach-ISO and calls MarkAsTemplate directly, leaving the CD-ROM (already startConnected: true) attached and no boot order pinned. CloneVM_Task carries that CD-ROM over to every clone with no special handling, so a deferred-mode clone boots the installer itself at its own first boot, with its own vTPM already attached by the ReconfigVM_Task above — the only way every VM gets a uniquely TPM-sealed encryption key, since Kairos's kcrypt cannot encrypt an already-installed disk and vSphere's default clone behavior would otherwise duplicate a template-baked vTPM's secrets onto every clone. See ADR-0040.",
+      "description": "vSphere provider talks to vCenter over HTTPS to create, query, update, and destroy VMs. Iteration 2 also introspects each cluster's reachable datastores (incl. SDRS datastore-cluster membership) and networks (standard + distributed port groups) to populate Provider.status.failureDomains[].attributes.availableStorageClasses / availableNetworkClasses (ADR-0019). Each storageClasses[]/networkClasses[] mapping resolves its concrete target per (datacenter, cluster) \u2014 an exact perZone entry if the admin declared one for that zone, else the mapping's default target \u2014 so the same abstract class name (and therefore the same VMClass/VMImage) can back a differently-named datastore/port-group on each cluster of the Provider, and stays portable across every vCenter that declares matching abstract names (ADR-0030). Three planes use this one transport: the in-process Provider reconciler for cheap list/introspection calls; a per-failure-domain image-import Job (for VMImage.status.buildArtifact.kind==iso) that mounts the shared artifacts PVC, uploads the ISO to that zone's datastore, creates an empty EFI VM, attaches the ISO, powers it on, and polls for the VM to power itself off once the cloud-config's unattended Kairos install completes (install.poweroff, no reboot \u2014 the disk is never booted by the build), bounded by spec.template.installTimeoutSeconds; on success it removes the CD-ROM device and MarkAsTemplate, on timeout it fails the Job without destroying the VM \u2014 Content Library optional, default off (ADR-0020; install/generalize sequence ADR-0021); and the VSphereMachine reconciler's CloneVM_Task from that per-zone template, setting guestinfo.network.hostname unconditionally (from the VirtualMachine's own name \u2014 no per-host cloud-config needed just for a hostname) plus guestinfo.network.{ip,prefix,gateway,dns,domain} and guestinfo.userdata (base64 cloud-config, ADR-0024) in the same clone call for any interface with a resolved static address (VirtualMachine.spec.networkOverrides), the latter set omitted for a plain dhcp interface. Also sets guestinfo.metadata unconditionally \u2014 a base64 YAML document (instance-id, local-hostname) matching real cloud-init's own VMware GuestInfo datasource schema, independent of spec.userData entirely, so a plain cloud-init guest gets a working hostname/FQDN with no cloud-config authored at all and without banlieue ever parsing or merging into the user's own userData (ADR-0029). The userdata content itself is resolved and placeholder-substituted by banlieue-controller, not this provider (ADR-0025) \u2014 the provider only ever sees already-rendered content, never a Secret reference. Both VMImage and VSphereMachine carry their own deletion finalizer (banlieue.io/vmimage, banlieue.io/vspheremachine): deleting either blocks until this provider confirms the backend VM/template it owns is destroyed (Destroy_Task), unless VMImage.spec.template.retainOnDelete opts out (ADR-0028, mirroring ADR-0026's VSphereMachine deletion lifecycle). When VSphereMachineSpec.tpmEnabled is set, a ReconfigVM_Task adding a VirtualTPM device is issued after CloneVM_Task (which already clones powered off) and before the power-on step \u2014 the device must exist before Kairos's first boot for kcrypt to seal LUKS keys against it during unattended install. There is no govc subcommand for this (confirmed across 0.52.0/0.56.0 \u2014 govc only exposes host.tpm.info/host.tpm.report for physical-host attestation, unrelated to a VM's vTPM); it is the same ReconfigVM_Task + VirtualDeviceConfigSpec/VirtualTPM call the vCenter UI and PowerCLI's New-VTpm make, driven here via the govmomi-derived vim_rs client instead. VSphereMachineStatus.tpmAttached mirrors the outcome, following the observedPowerState precedent (ADR-0034) of a provider-owned diagnostic field outside the CAPI contract proper. See ADR-0039. The image-import Job's power-on/wait/remove-CD-ROM sequence above runs only when VMImage.spec.template.installMode is immediate (the default); for deferred/manual it stops at create-VM-and-attach-ISO and calls MarkAsTemplate directly, leaving the CD-ROM (already startConnected: true) attached and no boot order pinned. CloneVM_Task carries that CD-ROM over to every clone with no special handling, so a deferred-mode clone boots the installer itself at its own first boot, with its own vTPM already attached by the ReconfigVM_Task above \u2014 the only way every VM gets a uniquely TPM-sealed encryption key, since Kairos's kcrypt cannot encrypt an already-installed disk and vSphere's default clone behavior would otherwise duplicate a template-baked vTPM's secrets onto every clone. See ADR-0040.",
       "relationship-type": {
         "connects": {
           "source": {
@@ -694,7 +732,7 @@
       "protocol": "HTTPS",
       "controls": {
         "tls-trust-byoc": {
-          "description": "The vSphere provider owns the HTTP transport (Bring-Your-Own-Client): it builds the reqwest::Client and injects it via vim_rs ClientBuilder::http_client, rather than letting vim_rs construct one. banlieue therefore controls TLS trust establishment end to end — honouring Provider.spec.connection.caBundle (a value-or-source: inline PEM, or a configMapRef / secretRef key defaulting to ca.crt; exactly one, enforced controller-side and by a ValidatingAdmissionPolicy per ADR-0007), added as root certificate(s); insecureSkipTLSVerify is a separate, explicit opt-out (gated behind the banlieue.io/allow-insecure-tls annotation by an admission policy, security review 2026-07-31). Credentials and caBundle sources are read by name in the Provider's namespace through the operator-built per-instance Role (resourceNames-scoped, ADR-0003); the shared provider ClusterRole grants no Secret/ConfigMap access at all (security review 2026-07-31 CHAIN-002). The transport is OpenSSL-free: vim_rs 0.5 (reqwest 0.13/rustls) is consumed in BYOC mode and the reqwest client uses the rustls ring provider shared with kube, installed once as the process default (ADR-0009). See ADR-0008 (BYOC runtime design) and ADR-0009 (0.5 migration + build end state).",
+          "description": "The vSphere provider owns the HTTP transport (Bring-Your-Own-Client): it builds the reqwest::Client and injects it via vim_rs ClientBuilder::http_client, rather than letting vim_rs construct one. banlieue therefore controls TLS trust establishment end to end \u2014 honouring Provider.spec.connection.caBundle (a value-or-source: inline PEM, or a configMapRef / secretRef key defaulting to ca.crt; exactly one, enforced controller-side and by a ValidatingAdmissionPolicy per ADR-0007), added as root certificate(s); insecureSkipTLSVerify is a separate, explicit opt-out (gated behind the banlieue.io/allow-insecure-tls annotation by an admission policy, security review 2026-07-31). Credentials and caBundle sources are read by name in the Provider's namespace through the operator-built per-instance Role (resourceNames-scoped, ADR-0003); the shared provider ClusterRole grants no Secret/ConfigMap access at all (security review 2026-07-31 CHAIN-002). The transport is OpenSSL-free: vim_rs 0.5 (reqwest 0.13/rustls) is consumed in BYOC mode and the reqwest client uses the rustls ring provider shared with kube, installed once as the process default (ADR-0009). See ADR-0008 (BYOC runtime design) and ADR-0009 (0.5 migration + build end state).",
           "requirements": [
             {
               "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
@@ -749,7 +787,7 @@
       "protocol": "TLS",
       "controls": {
         "libvirt-mutual-tls": {
-          "description": "Mutual TLS is the only supported libvirt transport: the client certificate is the authentication mechanism — no password, no SASL, no DIGEST-MD5. The crypto posture is inherited unchanged from the vSphere BYOC work (rustls with the ring provider, no OpenSSL), so libvirt support adds no new TLS stack. Client credentials are provisioned by scripts/bootstrap-libvirt-tls.sh and delivered as a Kubernetes Secret.",
+          "description": "Mutual TLS is the only supported libvirt transport: the client certificate is the authentication mechanism \u2014 no password, no SASL, no DIGEST-MD5. The crypto posture is inherited unchanged from the vSphere BYOC work (rustls with the ring provider, no OpenSSL), so libvirt support adds no new TLS stack. Client credentials are provisioned by scripts/bootstrap-libvirt-tls.sh and delivered as a Kubernetes Secret.",
           "requirements": [
             {
               "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
@@ -833,7 +871,7 @@
     },
     {
       "unique-id": "rel-claim-binds-pool-member",
-      "description": "banlieue-controller's claim reconciler picks one Ready, unclaimed member of the referenced pool (current image revision first, then longest-Ready, then name) and binds it with a resourceVersion-preconditioned merge patch that labels it claimed, records the subject as annotations, and re-parents ownerReferences from the pool to the claim. The pool never learns claims exist — it only sees a member it must no longer delete or count as warm. On deletion or TTL expiry the claim deletes the member and holds its own finalizer until the member is gone, so a released claim means a destroyed VM, never a recycled one (ADR-0047).",
+      "description": "banlieue-controller's claim reconciler picks one Ready, unclaimed member of the referenced pool (current image revision first, then longest-Ready, then name) and binds it with a resourceVersion-preconditioned merge patch that labels it claimed, records the subject as annotations, and re-parents ownerReferences from the pool to the claim. The pool never learns claims exist \u2014 it only sees a member it must no longer delete or count as warm. On deletion or TTL expiry the claim deletes the member and holds its own finalizer until the member is gone, so a released claim means a destroyed VM, never a recycled one (ADR-0047).",
       "relationship-type": {
         "interacts": {
           "actor": "service-banlieue-controller",
@@ -857,6 +895,90 @@
           ]
         }
       }
+    },
+    {
+      "unique-id": "rel-consumer-oidc-login",
+      "description": "The consumer authenticates to the issuer before touching the cluster at all, typically through kubectl's oidc-login exec plugin (kubelogin): a PKCE browser flow returns a signed ID token that kubelogin caches and replays as a bearer token. This is the step that decides what request.userInfo.username will be, and therefore what the claim-subject admission policy will compare spec.subject.id against -- so the claim model's audit guarantee starts here, outside banlieue. Two operational traps live on this wire: kubelogin judges a cached token's freshness from exp alone, so an issuer that rotates signing keys leaves it serving a token the API server will reject forever until the cache is cleared; and iss is compared literally, so browser, kubectl and API server must all reach the issuer at one identical URL.",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "actor-vm-consumer"
+          },
+          "destination": {
+            "node": "network-oidc-issuer",
+            "interfaces": [
+              "oidc-issuer-https"
+            ]
+          }
+        }
+      },
+      "protocol": "HTTPS"
+    },
+    {
+      "unique-id": "rel-kube-api-verifies-token",
+      "description": "The API server fetches the issuer's JWKS and verifies each bearer token's signature, iss, aud and exp, then derives a username by prepending --oidc-username-prefix to the configured claim. That derived username is the ONLY identity assertion anything downstream can trust: the API server can attest who called, but never which issuer minted their token, which is precisely why spec.subject splits into an id that is checked against the caller and an issuer that can only be checked against an operator allowlist.",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "service-kubernetes-api"
+          },
+          "destination": {
+            "node": "network-oidc-issuer",
+            "interfaces": [
+              "oidc-issuer-https"
+            ]
+          }
+        }
+      },
+      "protocol": "HTTPS"
+    },
+    {
+      "unique-id": "rel-broker-creates-claim",
+      "description": "A broker creates VirtualMachineClaims naming subjects other than itself, which the claim-subject admission policy permits only for principals listed in the 'brokers' key of ConfigMap banlieue-claim-subject-policy. Everything else about the claim is unchanged -- the same bind-once path, the same mandatory TTL, the same finalizer -- so a broker concentrates trust without adding mechanism. Not built (roadmap phase C); the exemption exists in the shipped policy so that adding one later does not require rewriting the check.",
+      "relationship-type": {
+        "interacts": {
+          "actor": "service-sandbox-broker",
+          "nodes": [
+            "data-asset-virtualmachineclaim-cr"
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-broker-attests-guest",
+      "description": "The credential reaches the guest here and nowhere else: the broker pushes {claim, nonce, JWT} to the in-guest agent over mTLS, the agent returns a TPM quote taken over status.nonce, and the broker verifies that quote against the EK certificate mirrored onto the claim (ADR-0045, ADR-0049). The nonce is what makes it unreplayable -- 128 bits minted at bind and unique to one claim, so a quote captured from one sandbox proves nothing about another. Nothing is at rest anywhere along this path: not a disk, not a custom resource, not a hypervisor channel. That is forced rather than chosen, because a warm pool member exists BEFORE any claim does, so nothing injected at provisioning time could be subject-specific. Not built.",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "service-sandbox-broker"
+          },
+          "destination": {
+            "node": "service-in-guest-agent",
+            "interfaces": [
+              "agent-attestation-mtls"
+            ]
+          }
+        }
+      },
+      "protocol": "HTTPS"
+    },
+    {
+      "unique-id": "rel-agent-fetches-jwks",
+      "description": "The agent fetches the issuer's JWKS to verify the credential's signature, having learned which issuer to trust from the claim's spec.subject.issuer. That is a field on a custom resource, so this wire is safe only because the claim-subject admission policy allowlists issuers: without it, anyone able to create a claim could aim the agent at their own JWKS and every token they minted would validate. The allowlist was added for audit honesty and turns out to be load-bearing for verification too (ADR-0049 Decision 7). Requires the issuer's discovery host in the sandbox's egress allowlist. Not built.",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "service-in-guest-agent"
+          },
+          "destination": {
+            "node": "network-oidc-issuer",
+            "interfaces": [
+              "oidc-issuer-https"
+            ]
+          }
+        }
+      },
+      "protocol": "HTTPS"
     }
   ],
   "flows": [
@@ -879,7 +1001,7 @@
         {
           "sequence-number": 3,
           "relationship-unique-id": "rel-controller-kube-api",
-          "description": "If VirtualMachine.spec.userData is set, banlieue-controller first reads that Secret or ConfigMap (namespace-scoped Role in banlieue-system, ADR-0025/ADR-0038 — it never gets a cluster-wide Secret grant) and placeholder-substitutes it (ADR-0024's fixed set). It then server-side-applies a VSphereMachine CR with the resolved spec — including the rendered userData content, inlined rather than referenced — ownerReference back to the VirtualMachine, and the controller's field manager 'banlieue.io/controller'. (VSphereMachine is the only infrastructure CR kind implemented today; a ProxmoxMachine/LibvirtMachine equivalent is future work — see ADR-0011.)"
+          "description": "If VirtualMachine.spec.userData is set, banlieue-controller first reads that Secret or ConfigMap (namespace-scoped Role in banlieue-system, ADR-0025/ADR-0038 \u2014 it never gets a cluster-wide Secret grant) and placeholder-substitutes it (ADR-0024's fixed set). It then server-side-applies a VSphereMachine CR with the resolved spec \u2014 including the rendered userData content, inlined rather than referenced \u2014 ownerReference back to the VirtualMachine, and the controller's field manager 'banlieue.io/controller'. (VSphereMachine is the only infrastructure CR kind implemented today; a ProxmoxMachine/LibvirtMachine equivalent is future work \u2014 see ADR-0011.)"
         },
         {
           "sequence-number": 4,
@@ -900,7 +1022,7 @@
         {
           "sequence-number": 7,
           "relationship-unique-id": "rel-controller-kube-api",
-          "description": "banlieue-controller watch on infrastructure CRs fires. Controller mirrors the status (Ready, conditions, addresses) onto VirtualMachine.status — never sets Ready=true on its own.",
+          "description": "banlieue-controller watch on infrastructure CRs fires. Controller mirrors the status (Ready, conditions, addresses) onto VirtualMachine.status \u2014 never sets Ready=true on its own.",
           "direction": "destination-to-source"
         }
       ],
@@ -926,12 +1048,12 @@
     {
       "unique-id": "flow-swap-provider",
       "name": "Swap a VirtualMachine's backend (least-touch)",
-      "description": "User changes VirtualMachine.spec.placement.providerSelector (a label selector, not a direct name reference) to reschedule a VM onto a different Provider. The banlieue controller tears down the old infrastructure CR and creates a new one of the right kind for the newly-matched Provider's backend. The user's manifest does not otherwise change. This is the canonical demonstration of banlieue's abstraction principle. NOTE: because only the vSphere backend has a working machine reconciler today (ADR-0011: libvirt has no LibvirtMachine reconciler yet; Proxmox has no provider at all), this flow is currently only exercisable between two vSphere Providers (e.g. two vCenters) — cross-backend swap (vSphere ↔ libvirt/Proxmox) is the design target but not yet runnable end-to-end.",
+      "description": "User changes VirtualMachine.spec.placement.providerSelector (a label selector, not a direct name reference) to reschedule a VM onto a different Provider. The banlieue controller tears down the old infrastructure CR and creates a new one of the right kind for the newly-matched Provider's backend. The user's manifest does not otherwise change. This is the canonical demonstration of banlieue's abstraction principle. NOTE: because only the vSphere backend has a working machine reconciler today (ADR-0011: libvirt has no LibvirtMachine reconciler yet; Proxmox has no provider at all), this flow is currently only exercisable between two vSphere Providers (e.g. two vCenters) \u2014 cross-backend swap (vSphere \u2194 libvirt/Proxmox) is the design target but not yet runnable end-to-end.",
       "transitions": [
         {
           "sequence-number": 1,
           "relationship-unique-id": "rel-consumer-kubectl",
-          "description": "VM consumer patches VirtualMachine.spec.placement.providerSelector.matchLabels (e.g. {dc: dc1} → {dc: dc2}) so it matches a different Provider."
+          "description": "VM consumer patches VirtualMachine.spec.placement.providerSelector.matchLabels (e.g. {dc: dc1} \u2192 {dc: dc2}) so it matches a different Provider."
         },
         {
           "sequence-number": 2,
@@ -1034,12 +1156,12 @@
     {
       "unique-id": "flow-provision-capi-cluster",
       "name": "Provision a Kubernetes cluster via CAPI (banlieue as infra provider)",
-      "description": "The platform operator provisions a k0s cluster by applying upstream CAPI objects plus banlieue's VSphereCluster (InfraCluster) and a VSphereMachineTemplate. banlieue does NOT own cluster lifecycle — CAPI + a control-plane provider (k0smotron) do. banlieue's job is to advertise failure domains (VSphereCluster) and realise each machine (VSphereMachine). 'replicas: N' spread across failure domains is how a tier (e.g. 6/6 'platinum') is expressed (ADR-0001).",
+      "description": "The platform operator provisions a k0s cluster by applying upstream CAPI objects plus banlieue's VSphereCluster (InfraCluster) and a VSphereMachineTemplate. banlieue does NOT own cluster lifecycle \u2014 CAPI + a control-plane provider (k0smotron) do. banlieue's job is to advertise failure domains (VSphereCluster) and realise each machine (VSphereMachine). 'replicas: N' spread across failure domains is how a tier (e.g. 6/6 'platinum') is expressed (ADR-0001).",
       "transitions": [
         {
           "sequence-number": 1,
           "relationship-unique-id": "rel-operator-kubectl",
-          "description": "Operator applies a CAPI Cluster (infrastructureRef → VSphereCluster), a control-plane object, MachineDeployment(s) with replica counts, the VSphereCluster, and a VSphereMachineTemplate."
+          "description": "Operator applies a CAPI Cluster (infrastructureRef \u2192 VSphereCluster), a control-plane object, MachineDeployment(s) with replica counts, the VSphereCluster, and a VSphereMachineTemplate."
         },
         {
           "sequence-number": 2,
@@ -1062,7 +1184,7 @@
         {
           "sequence-number": 5,
           "relationship-unique-id": "rel-provider-vsphere-backend",
-          "description": "Provider clones the VM into the chosen compute cluster's resource pool and powers it on. vSphere DRS selects the ESXi host within that cluster — banlieue does not pick the host."
+          "description": "Provider clones the VM into the chosen compute cluster's resource pool and powers it on. vSphere DRS selects the ESXi host within that cluster \u2014 banlieue does not pick the host."
         },
         {
           "sequence-number": 6,
@@ -1092,7 +1214,7 @@
     {
       "unique-id": "flow-build-vmimage-from-oci",
       "name": "Build a VMImage from an OCI/Kairos image and import it per zone",
-      "description": "A VMImage with a spec.sources[].kind==Url entry (an OCI-referenced Kairos image, e.g. from a nightly build pipeline) is turned into a typed build artifact — a raw cloud image for libvirt, a bootable ISO with a baked-in default cloud-config for vSphere — by banlieue-imagebuilder via kairos-operator, then imported into every zone of a matching vSphere Provider by banlieue-provider-vsphere as a fully installed, generalized, marked template. The two controllers never call each other; VMImage.status.buildArtifact is the entire handoff. See ADR-0010, ADR-0020, ADR-0021, and ADR-0022.",
+      "description": "A VMImage with a spec.sources[].kind==Url entry (an OCI-referenced Kairos image, e.g. from a nightly build pipeline) is turned into a typed build artifact \u2014 a raw cloud image for libvirt, a bootable ISO with a baked-in default cloud-config for vSphere \u2014 by banlieue-imagebuilder via kairos-operator, then imported into every zone of a matching vSphere Provider by banlieue-provider-vsphere as a fully installed, generalized, marked template. The two controllers never call each other; VMImage.status.buildArtifact is the entire handoff. See ADR-0010, ADR-0020, ADR-0021, and ADR-0022.",
       "transitions": [
         {
           "sequence-number": 1,
@@ -1102,13 +1224,13 @@
         {
           "sequence-number": 2,
           "relationship-unique-id": "rel-imagebuilder-kube-api",
-          "description": "banlieue-imagebuilder's VMImage watch fires. It server-side-applies an OSArtifact CR requesting a cloud image (libvirt sources) or an ISO with artifacts.cloudConfigRef resolved from the merged spec.cloudConfigs[] (vsphere sources, ADR-0037), sets VMImage.status.buildArtifact.phase=Building, and — when spec.isoOverlay is set — adds spec.volumes[] (a Secret volume named by the declared key/path list) plus artifacts.overlayISOVolume pointing at it, the same auroraboot --overlay-iso mechanism the maintainer's proven manual ISO-build pipeline already relies on (ADR-0022). When spec.trustedBoot is set instead, it requests artifacts.uki.iso (not artifacts.iso) with keysVolume pointing at a Secret volume named by trustedBoot.secretRef — the six fixed files auroraboot build-uki requires (PK.auth, KEK.auth, db.auth, db.key, db.pem, tpm2-pcr-private.pem), generated out-of-band via auroraboot genkey (ADR-0051). Only the Secret's name (and, for isoOverlay, declared key names) is read, never its content.",
+          "description": "banlieue-imagebuilder's VMImage watch fires. It server-side-applies an OSArtifact CR requesting a cloud image (libvirt sources) or an ISO with artifacts.cloudConfigRef resolved from the merged spec.cloudConfigs[] (vsphere sources, ADR-0037), sets VMImage.status.buildArtifact.phase=Building, and \u2014 when spec.isoOverlay is set \u2014 adds spec.volumes[] (a Secret volume named by the declared key/path list) plus artifacts.overlayISOVolume pointing at it, the same auroraboot --overlay-iso mechanism the maintainer's proven manual ISO-build pipeline already relies on (ADR-0022). When spec.trustedBoot is set instead, it requests artifacts.uki.iso (not artifacts.iso) with keysVolume pointing at a Secret volume named by trustedBoot.secretRef \u2014 the six fixed files auroraboot build-uki requires (PK.auth, KEK.auth, db.auth, db.key, db.pem, tpm2-pcr-private.pem), generated out-of-band via auroraboot genkey (ADR-0051). Only the Secret's name (and, for isoOverlay, declared key names) is read, never its content.",
           "direction": "destination-to-source"
         },
         {
           "sequence-number": 3,
           "relationship-unique-id": "rel-kairos-operator-kube-api",
-          "description": "kairos-operator's OSArtifact watch fires. It pulls the OCI image and builds the artifact — a raw disk, or auroraboot build-iso with --cloud-config for an ISO — writing it to a PVC it creates, progressing status.phase through Building -> Exporting -> Ready.",
+          "description": "kairos-operator's OSArtifact watch fires. It pulls the OCI image and builds the artifact \u2014 a raw disk, or auroraboot build-iso with --cloud-config for an ISO \u2014 writing it to a PVC it creates, progressing status.phase through Building -> Exporting -> Ready.",
           "direction": "destination-to-source"
         },
         {
@@ -1125,17 +1247,17 @@
         {
           "sequence-number": 6,
           "relationship-unique-id": "rel-provider-vsphere-backend",
-          "description": "For each zone, an image-import Job (banlieue binary's image-import subcommand, imagebuild namespace, artifacts PVC mounted read-only) verifies the ISO against buildArtifact.checksum, uploads it to the zone's datastore — reusing the datastore-cluster member already holding it, else the emptiest — ensures <spec.template.rootFolder>/<failure-domain-name> (every zone gets its own subfolder, since vSphere folders are scoped per-datacenter, not per-cluster, and zones commonly share a datacenter), and creates the VM: empty EFI VM (pvscsi disk from spec.template.disk, vmxnet3 NIC on the spec.template.network or zone port group), ISO attached as CD-ROM. It then powers the VM on and waits for the cloud-config's unattended Kairos install to run its after-install-chroot identity-wipe stage and power the VM off itself (install.poweroff, no reboot), bounded by spec.template.installTimeoutSeconds; on success it removes the CD-ROM device and MarkAsTemplate — the disk is never booted by the build, so each real clone's first boot generates its own machine-id/SSH host keys (ADR-0021)."
+          "description": "For each zone, an image-import Job (banlieue binary's image-import subcommand, imagebuild namespace, artifacts PVC mounted read-only) verifies the ISO against buildArtifact.checksum, uploads it to the zone's datastore \u2014 reusing the datastore-cluster member already holding it, else the emptiest \u2014 ensures <spec.template.rootFolder>/<failure-domain-name> (every zone gets its own subfolder, since vSphere folders are scoped per-datacenter, not per-cluster, and zones commonly share a datacenter), and creates the VM: empty EFI VM (pvscsi disk from spec.template.disk, vmxnet3 NIC on the spec.template.network or zone port group), ISO attached as CD-ROM. It then powers the VM on and waits for the cloud-config's unattended Kairos install to run its after-install-chroot identity-wipe stage and power the VM off itself (install.poweroff, no reboot), bounded by spec.template.installTimeoutSeconds; on success it removes the CD-ROM device and MarkAsTemplate \u2014 the disk is never booted by the build, so each real clone's first boot generates its own machine-id/SSH host keys (ADR-0021)."
         },
         {
           "sequence-number": 7,
           "relationship-unique-id": "rel-provider-vsphere-kube-api",
-          "description": "banlieue-provider-vsphere patches VMImage.status.perProvider[].zones[] with per-zone readiness and resolvedRef (the template's [datastore] folder/name), using its own field manager — never touching status.buildArtifact."
+          "description": "banlieue-provider-vsphere patches VMImage.status.perProvider[].zones[] with per-zone readiness and resolvedRef (the template's [datastore] folder/name), using its own field manager \u2014 never touching status.buildArtifact."
         }
       ],
       "controls": {
         "crd-only-build-handoff": {
-          "description": "banlieue-imagebuilder and banlieue-provider-vsphere coordinate purely through VMImage.status: buildArtifact (imagebuilder's field) and perProvider[] (each provider's field) never contend because SSA tracks ownership per field, not per object. The only non-CRD coupling is the same-namespace artifacts PVC the artifact's bytes live in — the control channel (when/whether to act) stays CRD-only; only the artifact's bytes travel outside a CRD field, since a CRD cannot carry a multi-hundred-MB disk image or ISO.",
+          "description": "banlieue-imagebuilder and banlieue-provider-vsphere coordinate purely through VMImage.status: buildArtifact (imagebuilder's field) and perProvider[] (each provider's field) never contend because SSA tracks ownership per field, not per object. The only non-CRD coupling is the same-namespace artifacts PVC the artifact's bytes live in \u2014 the control channel (when/whether to act) stays CRD-only; only the artifact's bytes travel outside a CRD field, since a CRD cannot carry a multi-hundred-MB disk image or ISO.",
           "requirements": [
             {
               "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
@@ -1186,7 +1308,7 @@
         {
           "sequence-number": 3,
           "relationship-unique-id": "rel-provider-libvirt-backend",
-          "description": "Provider connects over mutual TLS and lists storage pools and networks, verifying the admin's declared capabilities actually exist on the host. Two in-process RPC calls — no Job."
+          "description": "Provider connects over mutual TLS and lists storage pools and networks, verifying the admin's declared capabilities actually exist on the host. Two in-process RPC calls \u2014 no Job."
         },
         {
           "sequence-number": 4,
@@ -1208,7 +1330,7 @@
         {
           "sequence-number": 7,
           "relationship-unique-id": "rel-provider-libvirt-kube-api",
-          "description": "Provider patches VMImage.status.perProvider[].zones[] with per-pool readiness, using field manager banlieue.io/provider-libvirt — never touching status.buildArtifact.",
+          "description": "Provider patches VMImage.status.perProvider[].zones[] with per-pool readiness, using field manager banlieue.io/provider-libvirt \u2014 never touching status.buildArtifact.",
           "direction": "destination-to-source"
         }
       ],
@@ -1231,7 +1353,7 @@
           ]
         },
         "import-job-owned-by-osartifact": {
-          "description": "PROPOSED (ADR-0027, not yet implemented): same mechanism as banlieue-provider-vsphere's per-zone import Job (see flow-build-vmimage-from-oci) — this Job's ownerReference points at the OSArtifact it was created for, so a rebuild's OSArtifact deletion cascades to it via Kubernetes garbage collection instead of waiting on its 24h Job TTL.",
+          "description": "PROPOSED (ADR-0027, not yet implemented): same mechanism as banlieue-provider-vsphere's per-zone import Job (see flow-build-vmimage-from-oci) \u2014 this Job's ownerReference points at the OSArtifact it was created for, so a rebuild's OSArtifact deletion cascades to it via Kubernetes garbage collection instead of waiting on its 24h Job TTL.",
           "requirements": [
             {
               "requirement-url": "https://kubernetes.io/docs/concepts/architecture/garbage-collection/",
@@ -1255,7 +1377,7 @@
         {
           "sequence-number": 1,
           "relationship-unique-id": "rel-operator-kubectl",
-          "description": "Platform operator installs the platform with `banlieue bootstrap operator` — namespace, CRDs built from the binary's own Rust types, controller and operator RBAC and Deployments, plus one ProviderClass per backend compiled into the binary (ADR-0013). `--dry-run` emits the same YAML for a GitOps repo instead of applying it."
+          "description": "Platform operator installs the platform with `banlieue bootstrap operator` \u2014 namespace, CRDs built from the binary's own Rust types, controller and operator RBAC and Deployments, plus one ProviderClass per backend compiled into the binary (ADR-0013). `--dry-run` emits the same YAML for a GitOps repo instead of applying it."
         },
         {
           "sequence-number": 2,
@@ -1265,7 +1387,7 @@
         {
           "sequence-number": 3,
           "relationship-unique-id": "rel-operator-kube-api",
-          "description": "banlieue-operator's Provider watch fires. It resolves the referenced ProviderClass and server-side-applies a ServiceAccount, a Role scoped by resourceNames to just that Provider's credentials Secret, a RoleBinding, and a Deployment running `banlieue provider <backend>` — all carrying an ownerReference back to the Provider.",
+          "description": "banlieue-operator's Provider watch fires. It resolves the referenced ProviderClass and server-side-applies a ServiceAccount, a Role scoped by resourceNames to just that Provider's credentials Secret, a RoleBinding, and a Deployment running `banlieue provider <backend>` \u2014 all carrying an ownerReference back to the Provider.",
           "direction": "destination-to-source"
         },
         {
@@ -1277,12 +1399,12 @@
         {
           "sequence-number": 5,
           "relationship-unique-id": "rel-provider-vsphere-backend",
-          "description": "The provider logs in to its backend with the one credential it can read, introspects the inventory, and publishes reachable failure domains to Provider.status.failureDomains — the input the main controller's scheduler matches VirtualMachines against."
+          "description": "The provider logs in to its backend with the one credential it can read, introspects the inventory, and publishes reachable failure domains to Provider.status.failureDomains \u2014 the input the main controller's scheduler matches VirtualMachines against."
         },
         {
           "sequence-number": 6,
           "relationship-unique-id": "rel-operator-kube-api",
-          "description": "banlieue-operator's Deployment watch fires as replicas become ready and mirrors readiness into Provider.status.workload. It deliberately does not write status.conditions — that list is owned by the provider's own field manager, and a plain list without x-kubernetes-list-type:map cannot be merged per-entry by two managers.",
+          "description": "banlieue-operator's Deployment watch fires as replicas become ready and mirrors readiness into Provider.status.workload. It deliberately does not write status.conditions \u2014 that list is owned by the provider's own field manager, and a plain list without x-kubernetes-list-type:map cannot be merged per-entry by two managers.",
           "direction": "destination-to-source"
         }
       ],
@@ -1314,18 +1436,18 @@
         {
           "sequence-number": 1,
           "relationship-unique-id": "rel-operator-kubectl",
-          "description": "Platform operator edits one field — `kubectl patch providerclass vsphere -p '{\"spec\":{\"image\":{\"tag\":\"v0.2.0\"}}}'`. To canary a single backend instead, they create a second class pinning the new image and repoint one Provider at it."
+          "description": "Platform operator edits one field \u2014 `kubectl patch providerclass vsphere` to set spec.image.tag to v0.2.0. To canary a single backend instead, they create a second class pinning the new image and repoint one Provider at it."
         },
         {
           "sequence-number": 2,
           "relationship-unique-id": "rel-operator-kube-api",
-          "description": "banlieue-operator's ProviderClass watch fires. kube calls the mapper synchronously, so it cannot list Providers itself — it reads the controller's own reflector store, already maintained for the primary Provider watch, and emits one reconcile request per referencing Provider. Without this the edit would only be noticed on the next periodic requeue.",
+          "description": "banlieue-operator's ProviderClass watch fires. kube calls the mapper synchronously, so it cannot list Providers itself \u2014 it reads the controller's own reflector store, already maintained for the primary Provider watch, and emits one reconcile request per referencing Provider. Without this the edit would only be noticed on the next periodic requeue.",
           "direction": "destination-to-source"
         },
         {
           "sequence-number": 3,
           "relationship-unique-id": "rel-operator-kube-api",
-          "description": "Each Provider reconciles: the workload is re-applied with the new image and the Deployment rolls. If the edit changed the Provider's CLASS rather than the class's contents, the derived name changes too, so the superseded workload is pruned by label — including the ClusterRoleBinding, which no owner reference can reclaim and a name-based cleanup could never find again.",
+          "description": "Each Provider reconciles: the workload is re-applied with the new image and the Deployment rolls. If the edit changed the Provider's CLASS rather than the class's contents, the derived name changes too, so the superseded workload is pruned by label \u2014 including the ClusterRoleBinding, which no owner reference can reclaim and a name-based cleanup could never find again.",
           "direction": "destination-to-source"
         },
         {
@@ -1337,7 +1459,7 @@
       ],
       "controls": {
         "least-touch": {
-          "description": "Upgrading N backends is one edit, not N. The image lives on the class precisely so the fleet-wide operation stays a single object change — the same least-touch invariant that keeps a backend swap confined to spec.placement.providerSelector.",
+          "description": "Upgrading N backends is one edit, not N. The image lives on the class precisely so the fleet-wide operation stays a single object change \u2014 the same least-touch invariant that keeps a backend swap confined to spec.placement.providerSelector.",
           "requirements": [
             {
               "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
@@ -1348,6 +1470,130 @@
                   "CM-4"
                 ],
                 "evidence": "docs/adr/0012-providerclass-crd-and-operator-role.md, docs/src/guides/provider-lifecycle.md"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "flow-claim-pool-member",
+      "name": "Claim a warm pool member for one subject",
+      "description": "How a consumer gets a sandbox in seconds instead of waiting out provisioning, and how the cluster records who got it. The interesting property is that nothing in this path locks anything: the API server is already the serialisation point, so a resourceVersion precondition on one merge patch is the whole concurrency story (ADR-0046, ADR-0047).",
+      "transitions": [
+        {
+          "sequence-number": 1,
+          "relationship-unique-id": "rel-consumer-oidc-login",
+          "description": "Consumer authenticates to the issuer (kubectl oidc-login / kubelogin, PKCE browser flow) and receives a signed ID token, cached locally and replayed as a bearer token."
+        },
+        {
+          "sequence-number": 2,
+          "relationship-unique-id": "rel-kube-api-verifies-token",
+          "description": "API server verifies the token against the issuer's JWKS and derives request.userInfo.username by prepending --oidc-username-prefix. This is the only identity assertion the rest of the path can trust."
+        },
+        {
+          "sequence-number": 3,
+          "relationship-unique-id": "rel-consumer-kubectl",
+          "description": "Consumer creates a VirtualMachineClaim naming a pool, a mandatory ttlSeconds, and a subject. Admission compares usernamePrefix + spec.subject.id against the authenticated username and checks spec.subject.issuer against the operator allowlist. CREATE only: on UPDATE the requester is normally the controller adding its own finalizer, and applying the identity check there denies it, leaving claims that are created and then never reconciled."
+        },
+        {
+          "sequence-number": 4,
+          "relationship-unique-id": "rel-claim-binds-pool-member",
+          "description": "Claim reconciler picks one Ready, unclaimed member (current image revision first, then longest-Ready, then name) and binds it with a resourceVersion-preconditioned merge patch: claim label, subject annotations, and ownerReferences re-parented from pool to claim. A second claim racing for the same member gets 409 and picks again. Status then publishes virtualMachineRef, a 128-bit nonce, boundAt and expiresAt = boundAt + ttlSeconds, counted from the bind instant so a claim that waited for capacity still gets its full TTL.",
+          "direction": "destination-to-source"
+        },
+        {
+          "sequence-number": 5,
+          "relationship-unique-id": "rel-pool-creates-virtualmachines",
+          "description": "The pool sees a member it may no longer count as warm and creates a replacement, so the next consumer still finds one Ready. The pool never learns that claims exist.",
+          "direction": "destination-to-source"
+        },
+        {
+          "sequence-number": 6,
+          "relationship-unique-id": "rel-claim-binds-pool-member",
+          "description": "On deletion or at expiresAt the claim deletes its member and holds its own finalizer until that member is gone from the API server, while the member's provider finalizer holds IT until the backend VM is destroyed. So a deleted claim means a destroyed sandbox, transitively. A vanished member fails the claim terminally rather than rebinding it: a consumer holding a claim believes it is talking to one specific VM.",
+          "direction": "destination-to-source"
+        }
+      ],
+      "controls": {
+        "claim-subject-attribution": {
+          "description": "spec.subject is otherwise a free-text assertion by whoever created the claim: anyone holding create virtualmachineclaims could attribute a VM to any identity, and the audit log would record it as genuine -- the trail becoming fiction exactly when somebody wants to read it. ValidatingAdmissionPolicy banlieue-virtualmachineclaim-subject-authorization checks it while the requesting principal still exists, because by reconcile time the controller sees an object and never a caller. The two halves are checked with different strength, honestly: the API server can attest the username, so subject.id is a real binding, while nobody can verify which issuer minted the caller's token, so subject.issuer is only held to an operator allowlist. subject is then frozen for the object's life, without which check one is bypassed by creating a claim naming yourself and patching it afterwards (ADR-0047 Decision 10).",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": [
+                  "AC-3",
+                  "AC-6",
+                  "AU-10",
+                  "IA-2"
+                ],
+                "evidence": "deploy/admission/virtualmachineclaim-subject-authorization.yaml, docs/adr/0047-virtualmachineclaim.md, docs/src/guides/testing-claim-authorization.md, docs/src/concepts/virtualmachine-claim-flow.md"
+              }
+            }
+          ]
+        },
+        "bind-once-optimistic-concurrency": {
+          "description": "A member is handed out at most once in its life -- there is no unbind and no return-to-pool, because the VM itself is the isolation boundary between subjects. Enforced without a lock or a lease: the bind is a single merge patch carrying the member's resourceVersion, which the API server rejects with 409 if anyone wrote that object since it was listed, and a Claimed member is never offered by the picker again. Keeping that in ONE controller is also why AgentSandbox owns a claim rather than binding members itself (ADR-0055): two implementations of the one invariant that must never break is one too many.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": [
+                  "SC-4",
+                  "SI-7"
+                ],
+                "evidence": "crates/banlieue-controller/src/reconciler/claim.rs (bind), crates/banlieue-controller/src/reconciler/claim_plan.rs (pick_member, next_step), crates/banlieue-controller/tests/live_claim.rs"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "flow-attest-and-deliver-credential",
+      "name": "Deliver a subject's credential to its sandbox (PROPOSED \u2014 not implemented)",
+      "description": "The unanswered half of the claim model: a claim deliberately carries no credential, so how does the subject's token reach the guest and what convinces the guest it is genuine? ADR-0049 is Proposed and nothing here ships; it is modelled because banlieue's side of the contract -- subject.issuer, subject.id, status.nonce, and the mirrored EK certificate -- is already implemented and would otherwise look like three fields nobody uses. ADR-0045 (EK certificates) is a hard dependency and is itself not landed: without it there is nothing to verify a quote against, and the handshake degrades to trusting whatever answered on the port.",
+      "transitions": [
+        {
+          "sequence-number": 1,
+          "relationship-unique-id": "rel-broker-creates-claim",
+          "description": "A broker creates a claim naming the subject it is acting for, which admission allows because the broker is allowlisted. The credential itself never enters the claim."
+        },
+        {
+          "sequence-number": 2,
+          "relationship-unique-id": "rel-claim-binds-pool-member",
+          "description": "banlieue binds a member and publishes the attestation anchors: status.nonce, and the member's vTPM EK certificate mirrored from its infra CR. banlieue neither carries nor validates the token, which is what keeps subject credentials out of the controller's compromise radius.",
+          "direction": "destination-to-source"
+        },
+        {
+          "sequence-number": 3,
+          "relationship-unique-id": "rel-broker-attests-guest",
+          "description": "Broker pushes {claim, nonce, JWT} over mTLS; the agent returns a TPM quote over status.nonce; the broker verifies it against the EK certificate on the claim. The per-VM vTPM is unique by construction on both backends -- deferred install on vSphere, domain-UUID-keyed swtpm state on libvirt -- so the anchor exists before any subject was assigned."
+        },
+        {
+          "sequence-number": 4,
+          "relationship-unique-id": "rel-agent-fetches-jwks",
+          "description": "Only now does the agent check the token: iss against subject.issuer, the subject claim against subject.id, aud against its own configured audience, plus exp, nbf and the signature via JWKS. A failure means no workload and the TTL reaps the VM; there is no partial-trust mode."
+        }
+      ],
+      "controls": {
+        "no-credential-at-rest": {
+          "description": "The credential is never at rest: not on a disk, not in a custom resource, not through a hypervisor channel. Every channel banlieue already owns is disqualified on disclosure grounds -- a NoCloud seed sits in a shared storage pool and its rendered payload is readable to anyone who can get libvirtmachines (ADR-0025), vSphere guestinfo is readable with vCenter read access and by any process in the guest, and guest-file-write would make banlieue a credential carrier. GuestReady must not be confused with this: a guest that announced itself has booted from its installed disk (ADR-0043), while only a verified quote says WHICH guest it is.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": [
+                  "IA-5",
+                  "SC-12",
+                  "SC-28",
+                  "IA-3"
+                ],
+                "evidence": "docs/adr/0049-attestation-trust-anchors.md, docs/adr/0047-virtualmachineclaim.md (Decision 9), crates/banlieue-api/src/banlieue/virtualmachineclaim.rs (CLAIM_NONCE_BITS, tpmEndorsementCertificates)"
               }
             }
           ]
@@ -1448,7 +1694,7 @@
       ]
     },
     "admission-policy-validation": {
-      "description": "Invariants the code-first CRD schema cannot express — VirtualMachine.classRef/imageRef and Provider.providerClassRef immutability — are enforced at admission via ValidatingAdmissionPolicy (CEL, evaluated in the API server, GA in Kubernetes 1.30+). The same mechanism carries the security chain-breakers of the 2026-07-31 review: Provider connection hardening (https endpoints, no userinfo, opt-in-gated insecureSkipTLSVerify), credentialsRef authorization via the CEL authorizer variable, digest-pinned, registry-allowlisted VMImage importFrom sources (parameter ConfigMap), and userData reference authorization (ADR-0042): a VirtualMachine may only name a Secret or ConfigMap its own creator can get, so the controller's namespace-wide resolution cannot act as a confused deputy for a principal holding no Secret access. No validating webhook: no extra always-on service, no TLS cert rotation, no API-request-path availability dependency — consistent with banlieue's no-RPC / no-extra-services posture. Shipped as optional, separately-applied manifests under deploy/admission/ with Deny bindings (Warn/Audit report-only roll-out path). See ADR-0007.",
+      "description": "Invariants the code-first CRD schema cannot express \u2014 VirtualMachine.classRef/imageRef and Provider.providerClassRef immutability \u2014 are enforced at admission via ValidatingAdmissionPolicy (CEL, evaluated in the API server, GA in Kubernetes 1.30+). The same mechanism carries the security chain-breakers of the 2026-07-31 review: Provider connection hardening (https endpoints, no userinfo, opt-in-gated insecureSkipTLSVerify), credentialsRef authorization via the CEL authorizer variable, digest-pinned, registry-allowlisted VMImage importFrom sources (parameter ConfigMap), userData reference authorization (ADR-0042): a VirtualMachine may only name a Secret or ConfigMap its own creator can get, so the controller's namespace-wide resolution cannot act as a confused deputy for a principal holding no Secret access; and VirtualMachineClaim subject authorization (ADR-0047 Decision 10), which binds spec.subject.id to the authenticated caller on CREATE -- allowlisted brokers excepted -- holds spec.subject.issuer to an operator allowlist, and then freezes subject, poolRef and ttlSeconds, without which the recorded attribution is whatever the claim's author typed. No validating webhook: no extra always-on service, no TLS cert rotation, no API-request-path availability dependency \u2014 consistent with banlieue's no-RPC / no-extra-services posture. Shipped as optional, separately-applied manifests under deploy/admission/ with Deny bindings (Warn/Audit report-only roll-out path). See ADR-0007.",
       "requirements": [
         {
           "requirement-url": "https://kubernetes.io/docs/reference/access-authn-authz/validating-admission-policy/",
@@ -1462,9 +1708,10 @@
               "banlieue-provider-credentialsref-authorization",
               "banlieue-providerclass-guardrails",
               "banlieue-vmimage-import-source",
-              "banlieue-virtualmachine-userdata-authorization"
+              "banlieue-virtualmachine-userdata-authorization",
+              "banlieue-virtualmachineclaim-subject-authorization"
             ],
-            "evidence": "deploy/admission/, docs/adr/0007-admission-policies.md, docs/adr/0042-userdata-reference-authorization.md, docs/src/guides/core-controller.md, docs/src/security/threat-model.md"
+            "evidence": "deploy/admission/, docs/adr/0007-admission-policies.md, docs/adr/0042-userdata-reference-authorization.md, docs/adr/0047-virtualmachineclaim.md, docs/src/guides/core-controller.md, docs/src/security/threat-model.md"
           }
         },
         {
@@ -1499,11 +1746,11 @@
     }
   },
   "metadata": {
-    "project": "banlieue — Kubernetes-Native Abstract Virtualization API",
+    "project": "banlieue \u2014 Kubernetes-Native Abstract Virtualization API",
     "repository": "https://github.com/firestoned/banlieue",
     "license": "Apache-2.0",
     "calm-schema-version": "1.2",
-    "phase": "Phase 1A — banlieue-api, the main controller, banlieue-operator, and the vSphere provider create and power on real VMs end-to-end (vSphere create-path only: clone-from-template + power-on, no update/drift/live-migration yet). The libvirt provider registers hosts and imports images but has no VM/domain lifecycle (LibvirtMachine) yet. Proxmox is anticipated in the schema only — no provider implementation.",
+    "phase": "Phase 1A/1D \u2014 banlieue-api, the main controller, banlieue-operator, and the vSphere provider create and power on real VMs end-to-end (vSphere create-path only: clone-from-template + power-on, no update/drift/live-migration yet). The libvirt provider now has a full domain lifecycle: LibvirtMachine defines, starts, monitors and destroys domains over libvirt's native RPC, builds its own NoCloud seed ISO in-process, and reports GuestReady from a qemu-guest-agent probe (ADR-0050, ADR-0054, ADR-0043). VirtualMachinePool and VirtualMachineClaim are implemented and verified against a real libvirt host: a pool fills, a claim binds one member for one subject, and deleting the claim destroys the VM. AgentSandbox (ADR-0055) and the attestation handshake (ADR-0049) are designed and modelled but not built, and ADR-0045 gates the latter. Proxmox is anticipated in the schema only \u2014 no provider implementation.",
     "crds": {
       "user-facing": {
         "group": "banlieue.io",
@@ -1573,6 +1820,7 @@
     "docs/adr/0046-virtualmachinepool.md",
     "docs/adr/0043-guestready-installed-guest-signal.md",
     "docs/adr/0047-virtualmachineclaim.md",
+    "docs/adr/0049-attestation-trust-anchors.md",
     "docs/adr/0055-agentsandbox.md",
     "docs/adr/0050-libvirtmachine-domain-lifecycle.md",
     "docs/adr/0051-vmimage-trusted-boot-uki-support.md",

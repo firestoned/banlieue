@@ -4,6 +4,9 @@
 - **Date:** 2026-09-20
 - **Proposed:** 2026-09-20
 - **Deciders:** Erick Bourgeois
+- **Amended:** 2026-09-22 (Decision 9 — `subject.id` stores the raw provider
+  subject, not the Kubernetes username; see the decision for why the first
+  version could not be validated by the in-guest agent)
 - **Notes:** Implemented and validated end to end against a real cluster and
   libvirt host — pool → warm domains → claim → release, with the released
   domain verified gone from the hypervisor
@@ -106,6 +109,45 @@ what is missing is the object that puts the label there.
 9. **The claim records `subject.issuer` + `subject.id`, and never a token.**
    Opaque to banlieue: recorded, mirrored onto the member as annotations for
    audit, never interpreted.
+
+   **`subject.id` holds the raw subject as the issuer spells it** — the
+   value a JWT actually carries (`preferred_username`, `sub`, `email`, per
+   the issuer) — *not* the Kubernetes username.
+
+   The distinction is not cosmetic, and the first implementation got it
+   wrong. `banlieue-virtualmachineclaim-subject-authorization` (Decision 10)
+   pinned `subject.id` to `request.userInfo.username`, which carries the
+   prefix the API server adds via `--oidc-username-prefix`. Observed on a
+   real cluster:
+
+   ```text
+   JWT:   preferred_username = octocat
+   Claim: subject.id         = oidc:octocat
+   ```
+
+   Nothing in the token matches that: `preferred_username` lacks the prefix
+   and `sub` is a third value entirely. The in-guest agent's whole job is to
+   check the presented token against the claim (ADR-0049), so a value it
+   cannot compare makes the claim useless for the purpose it exists for —
+   and the failure would only surface in phase C, long after the field
+   shipped.
+
+   Admission still binds the attribution to the authenticated caller; it
+   applies the cluster's prefix when comparing rather than storing it:
+
+   ```cel
+   params.data.usernamePrefix + object.spec.subject.id
+     == request.userInfo.username
+   ```
+
+   The prefix joins `issuers` and `brokers` in the policy's parameter
+   ConfigMap, because it is a property of how *this* cluster authenticates,
+   not of the claim.
+
+   The rejected alternative was a second field holding the raw subject
+   alongside the Kubernetes username. It would have been unvalidated —
+   settable to anything by whoever created the claim — which defeats the
+   point of checking the first field at all.
 
    Credentials do not travel this way. `guestinfo` is readable by anyone
    with hypervisor read access *and* by processes inside the guest, so a

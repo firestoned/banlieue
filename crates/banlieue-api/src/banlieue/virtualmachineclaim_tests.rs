@@ -180,4 +180,42 @@ mod tests {
         );
         assert_eq!(ANNOTATION_SUBJECT_ID, "banlieue.io/claim-subject-id");
     }
+
+    // ------------------------------------------------------------------
+    // Printer columns
+    // ------------------------------------------------------------------
+
+    /// `EXPIRES` must not be a `date` column.
+    ///
+    /// kubectl renders `type: date` as *time since* the timestamp, which is
+    /// right for `creationTimestamp` and wrong for a deadline: a future
+    /// value gives a negative duration and prints literally `<invalid>`.
+    /// Observed on a real cluster — the one column whose whole job is to say
+    /// when the sandbox dies was the one showing nothing.
+    #[test]
+    fn the_expires_column_is_not_rendered_as_an_age() {
+        use kube::CustomResourceExt as _;
+        let crd = VirtualMachineClaim::crd();
+        let columns = crd.spec.versions[0]
+            .additional_printer_columns
+            .as_ref()
+            .expect("printer columns");
+
+        let expires = columns
+            .iter()
+            .find(|c| c.name == "Expires")
+            .expect("an Expires column");
+        assert_eq!(
+            expires.type_, "string",
+            "a future deadline rendered as a date prints <invalid>"
+        );
+
+        // The contrast that makes the rule memorable: Age *is* a date, and
+        // correctly so — it looks backwards.
+        let age = columns
+            .iter()
+            .find(|c| c.name == "Age")
+            .expect("an Age column");
+        assert_eq!(age.type_, "date");
+    }
 }

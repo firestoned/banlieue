@@ -69,6 +69,31 @@ backend-agnostic Kubernetes object.
   [Cluster API v1beta2 InfraMachine contract](https://cluster-api.sigs.k8s.io/developer/providers/contracts/),
   so they double as reusable CAPI infrastructure providers.
 
+### Warm pools and single-use sandboxes
+
+Some VMs cannot be provisioned on demand. A disk sealed to a per-VM vTPM has to
+install itself on first boot with its own TPM attached, which costs minutes —
+and that slowness *is* the security property, so no provisioning trick removes
+it. The only way to hand such a VM over quickly is to have built it already.
+
+- A **`VirtualMachinePool`** keeps a warm set standing by: it refills, reaps
+  members poisoned mid-install, and rolls the set when the image is rebuilt. It
+  creates nothing but ordinary `VirtualMachine`s, so no provider learns that
+  pools exist.
+- A **`VirtualMachineClaim`** hands one member to one subject, **once**. There
+  is no unbind and no return-to-pool — the VM itself is the isolation boundary,
+  so release is always deletion, and deleting a claim blocks until the backend
+  VM is really gone. `ttlSeconds` is mandatory: a claim without a deadline is a
+  leaked VM.
+
+This is what makes banlieue usable as a sandbox substrate for CI jobs and AI
+agents. Both kinds are implemented and validated end-to-end against a real
+libvirt host; the higher-level `AgentSandbox` wrapper
+([ADR-0055](docs/adr/0055-agentsandbox.md)) is designed but not yet built.
+
+> **Guides:** [VirtualMachine Pools](https://firestoned.github.io/banlieue/guides/virtualmachine-pools/)
+> · [VirtualMachine Claims](https://firestoned.github.io/banlieue/guides/virtualmachine-claims/)
+
 ### What banlieue is **not**
 
 - Not a hypervisor.
@@ -97,6 +122,8 @@ main controller mirrors that status onto the `VirtualMachine`.
 | `VMClass` | `banlieue.io/v1alpha1` | A reusable hardware "shape" + capability requirements. |
 | `VMImage` | `banlieue.io/v1alpha1` | A backend-agnostic, multi-source OS image catalog entry. |
 | `Provider` | `banlieue.io/v1alpha1` | One registered backend instance (a vCenter, a libvirt host, …). |
+| `VirtualMachinePool` | `banlieue.io/v1alpha1` | A self-refilling set of warm, already-provisioned `VirtualMachine`s. |
+| `VirtualMachineClaim` | `banlieue.io/v1alpha1` | One subject's exclusive, time-boxed hold on one pool member. |
 | `ProviderClass` | `banlieue.io/v1alpha1` | Cluster-scoped install metadata for a backend class (image, resources, RBAC). |
 | `VSphereMachine` / `VSphereMachineTemplate` / `VSphereCluster` | `infrastructure.banlieue.io/v1alpha1` | Concrete, CAPI-contract infra CRs the vSphere provider reconciles. |
 

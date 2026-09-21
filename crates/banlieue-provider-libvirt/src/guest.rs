@@ -56,6 +56,15 @@ pub fn guest_file_read_cmd(handle: i64) -> String {
     .to_string()
 }
 
+/// `guest-ping` — "is anybody there".
+///
+/// Carries no information beyond liveness, which is exactly why it is the
+/// right question to ask when an open has already failed.
+#[must_use]
+pub fn guest_ping_cmd() -> String {
+    serde_json::json!({ "execute": "guest-ping" }).to_string()
+}
+
 /// `guest-file-close` for an open handle.
 #[must_use]
 pub fn guest_file_close_cmd(handle: i64) -> String {
@@ -148,12 +157,15 @@ where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     let open = guest_file_open_cmd(MARKER_PATH);
-    // A libvirt-level error means the agent itself did not answer. An Ok
-    // reply — even one carrying a JSON error — means it did, and that
-    // distinction is the whole reason this returns three states.
+    // An agent error is NOT delivered as an Ok payload carrying JSON:
+    // libvirtd turns it into an RPC fault, so `guest-file-open` on a marker
+    // that does not exist yet arrives here as `Err` — indistinguishable, at
+    // this point, from no agent at all. Verified against a real host: the
+    // earlier reading of this (an Ok reply carrying a JSON error) made every
+    // healthy member report `AgentUnreachable` for the whole install window.
     let reply = match domain_qemu_agent_command(session, dom, &open, AGENT_TIMEOUT_DEFAULT).await {
         Ok(Some(reply)) => reply,
-        Ok(None) | Err(_) => return GuestProbe::AgentUnreachable,
+        Ok(None) | Err(_) => return classify_open_failure(session, dom).await,
     };
     let Some(handle) = parse_file_handle(&reply) else {
         // The agent answered; the marker is simply not there yet.
@@ -171,6 +183,24 @@ where
     match read_reply {
         Ok(Some(r)) if guest_is_installed(&r) => GuestProbe::Installed,
         _ => GuestProbe::NotAnnounced,
+    }
+}
+
+/// Decide which of the two negative answers a failed open meant.
+///
+/// The only way to separate "no marker" from "no agent" is to ask the agent
+/// something that succeeds when it is alive. A ping costs one extra round
+/// trip and is paid only on the negative path — which is the common one
+/// while a Deferred member installs, and the reason this distinction exists
+/// at all: `AgentUnreachable` and `NotAnnounced` drive different requeue
+/// cadences (ADR-0043 Decision 8).
+async fn classify_open_failure<S>(session: &mut Session<S>, dom: &Domain) -> GuestProbe
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    match domain_qemu_agent_command(session, dom, &guest_ping_cmd(), AGENT_TIMEOUT_DEFAULT).await {
+        Ok(Some(_)) => GuestProbe::NotAnnounced,
+        Ok(None) | Err(_) => GuestProbe::AgentUnreachable,
     }
 }
 

@@ -133,11 +133,38 @@ jobs:
       # it came from THIS repository, not a fork. Keeping this out of
       # actions/checkout's `ref:` also keeps the untrusted-checkout pattern
       # (Scorecard Dangerous-Workflow) out of the workflow.
+      #
+      # That SHA may no longer exist. `fetch-depth: 0` fetches every *ref*,
+      # and an amended or rebased branch orphans the commit its Build ran
+      # against — `git checkout` then fails with "unable to read tree" and
+      # takes the whole docs run with it. That is the right outcome for a
+      # release (publishing a different tree as the release's docs is worse
+      # than not publishing) but wrong for the redundant non-release sanity
+      # check, where main is just as valid a tree to build.
       - name: Check out the Build's SHA on workflow_run
         if: github.event_name == 'workflow_run'
         env:
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
-        run: git checkout "$HEAD_SHA"
+          BUILD_EVENT: ${{ github.event.workflow_run.event }}
+        run: |
+          set -euo pipefail
+          if ! git checkout --detach "$HEAD_SHA" 2>/dev/null; then
+            # An orphaned commit is often still served by the remote, so ask
+            # for it by OID before concluding it is gone. NOT --depth=1: a
+            # shallow fetch onto a full clone leaves a .git/shallow marker and
+            # git-revision-date-localized would quietly fall back to the build
+            # date for every page.
+            git fetch --no-tags origin "$HEAD_SHA" 2>/dev/null || true
+            if ! git checkout --detach "$HEAD_SHA" 2>/dev/null; then
+              if [ "$BUILD_EVENT" = 'release' ]; then
+                echo "::error::Build SHA $HEAD_SHA is unavailable; refusing to publish release docs built from a different tree."
+                exit 1
+              fi
+              echo "::notice::Build SHA $HEAD_SHA is gone (branch amended or rebased). Running the docs sanity check against $(git rev-parse --short HEAD) instead."
+              exit 0
+            fi
+          fi
+          echo "Building docs from $(git rev-parse HEAD)"
 
       - name: Download rendered CALM diagrams
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
