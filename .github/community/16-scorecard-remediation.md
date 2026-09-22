@@ -2,7 +2,7 @@
 Copyright (c) 2026 Erick Bourgeois, banlieue
 SPDX-License-Identifier: Apache-2.0
 -->
-# 60 — OSSF Scorecard remediation
+# 16 — OSSF Scorecard remediation
 
 Status as of **2026-09-07**. Scorecard runs weekly via
 [`.github/workflows/scorecard.yaml`](../workflows/scorecard.yaml) and reports into
@@ -12,7 +12,7 @@ to click and, where a check is deliberately capped, why.
 
 | Alert | Check | Score | Fixable in-repo? |
 | --- | --- | --- | --- |
-| [#1](https://github.com/firestoned/banlieue/security/code-scanning/1) | Branch-Protection | 0 | ✅ Configured 2026-09-19 — ruleset `main` active |
+| [#1](https://github.com/firestoned/banlieue/security/code-scanning/1) | Branch-Protection | 0 | ✅ Configured 2026-09-19 — ruleset `main` active; aggregator gate landed 2026-09-22 (one ruleset edit outstanding) |
 | [#5](https://github.com/firestoned/banlieue/security/code-scanning/5) | Code-Review | 0 | No — process |
 | [#7](https://github.com/firestoned/banlieue/security/code-scanning/7) | CII-Best-Practices | 0 | No — external registration |
 | [#21](https://github.com/firestoned/banlieue/security/code-scanning/21) | Pinned-Dependencies | 9 | **No — permanently capped, see below** |
@@ -35,31 +35,50 @@ branch with no *enforced*, merge-gating protection. A disabled ruleset does not
 count, and `deletion`/`non_fast_forward` gate pushes rather than merges, so
 `required_status_checks` was the missing piece.
 
-> ### ⚠️ Known consequence: docs-only PRs will block
+> ### ✅ Docs-only PRs blocking — fixed 2026-09-22
 >
-> Four of the six required checks — `🎨 Check Formatting`, `📎 Clippy`,
-> `🧪 Test`, `🧪 cargo-deny` — come from `build.yaml`, which is
+> **The problem.** Four of the six required checks — `🎨 Check Formatting`,
+> `📎 Clippy`, `🧪 Test`, `🧪 cargo-deny` — came from `build.yaml`, which was
 > **`paths:`-filtered** (`crates/**`, `Cargo.toml`, `Dockerfile*`,
 > `.github/workflows/build.yaml`, `.github/actions/**`, `.vex/**`). A PR that
 > touches only `docs/`, `.github/community/` or a root Markdown file never
-> triggers that workflow, so those four contexts never report — and a
-> required check that never reports blocks the PR **indefinitely**.
+> triggered that workflow, so those four contexts never reported — and a
+> required check that never reports blocks the PR **indefinitely**. There are
+> no bypass actors (deliberately — Scorecard penalises admin bypass), so it
+> could not be clicked past.
 >
-> There are no bypass actors (deliberately — Scorecard penalises admin
-> bypass), so this cannot be clicked past.
+> **What this file used to recommend, and why it was not enough.** Option 1
+> below said to "add a `required-checks` job to `build.yaml`". On its own that
+> does not work, and the reason is the same one that caused the bug: a
+> workflow-level `paths:` filter stops the *whole workflow* from triggering,
+> the aggregator job included. The PR would then block on one pending context
+> instead of four — an identical outcome, differently spelled.
 >
-> Two ways out, if and when it bites:
-> 1. **Aggregator gate (preferred).** Add a `required-checks` job to
->    `build.yaml` that runs with `if: always()` and `needs:` the four real
->    jobs, failing only if one of them *failed* (a skip is a pass). Require
->    that single context instead of the four. Docs-only PRs go green; code PRs
->    stay fully gated.
-> 2. **Widen the path filter** so `build.yaml` also runs on `docs/**` and
->    `**/*.md`. Simpler, but it runs the whole Rust build on prose changes.
+> **What actually landed** is both halves together:
+>
+> 1. The workflow-level `paths:` filter is **gone** from `pull_request`, so
+>    `build.yaml` runs on every PR to `main` and always reports.
+> 2. A `changes` job (`🔀 Detect Relevant Changes`) calls
+>    **`make ci-code-changed`**, which diffs against the base ref and applies
+>    the same path list the trigger used to. The list lives in the Makefile so
+>    it is testable locally and the workflow carries no inline logic
+>    (`rules/github-workflows.md`). Non-PR events always report `true`.
+> 3. `format`, `clippy`, `extract-version`, `security` and `cargo-deny` are
+>    gated on `needs.changes.outputs.code == 'true'`. `test`, `docker` and
+>    `package-deploy-manifests` skip transitively through `extract-version`.
+>    `license-check` and `verify-commits` are **never** gated — SPDX headers
+>    and commit signatures matter on a prose PR too.
+> 4. A `required-checks` job (`✅ Required Checks`) runs `if: always()` and
+>    `needs:` the four real jobs plus those two, failing only when one
+>    reports `failure`/`cancelled`. **A skip is a pass.**
+>
+> **The remaining manual step.** The ruleset must now require the single
+> `✅ Required Checks` context *instead of* the four it aggregates. Until that
+> edit is made both sets are required and docs-only PRs still block.
 >
 > `🔍 CodeQL - rust` / `🔍 CodeQL - actions` come from `codeql.yaml`, which has
 > no path filter and runs on every PR to `main` — those two are always safe to
-> require.
+> require directly, and stay as they are.
 
 > ### Verifying the auto-merge fix
 >

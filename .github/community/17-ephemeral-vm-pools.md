@@ -282,7 +282,7 @@ provider can realise (see [Repo reality](#repo-reality-at-8360e19)).
 | B1 | `VirtualMachinePool` | 0046 | ✅ landed and validated e2e — fills, self-heals, rolls, cascades on delete |
 | B2 | `VirtualMachineClaim` | 0047 | ✅ landed — bind/hold/release, TTL expiry, finalizer, nonce; a pool is now consumable |
 | C | In-guest agent (separate repo) | own repo | ⛔ |
-| D | libvirt provider: `LibvirtMachine` reconciler | 13 + 0050 + 0054 | ✅ complete — CRD, domain XML, reconciler, NoCloud user-data; roadmap 07 closed |
+| D | libvirt provider: `LibvirtMachine` reconciler | 07 + 0050 + 0054 | ✅ complete — CRD, domain XML, reconciler, NoCloud user-data; roadmap 07 closed |
 | E | Proxmox provider, same | amend 12 | ⛔ |
 | F | Attestation trust anchors, threat model | 0049 | 📄 ADR-0049 written (Proposed); **blocked on A5** — without the EK certificate on the claim there is nothing to verify a quote against |
 
@@ -554,10 +554,20 @@ Two things landed beyond the skeleton above:
   `NoMemberAvailable` with the pool's `Warm` reason inlined — which is what
   makes a pool stuck on `ReadinessSignalAbsent` visible from the claim.
 
-Still open, and called out in the guide: nothing yet pins `subject` to the
-authenticated caller. Until that `ValidatingAdmissionPolicy` exists, anyone
-who can create a claim can attribute one to anybody, so `create` on
-`virtualmachineclaims` has to be granted narrowly.
+~~Still open: nothing yet pins `subject` to the authenticated caller.~~
+**Closed.** `deploy/admission/virtualmachineclaim-subject-authorization.yaml`
+implements Decision 10: `spec.subject.id` is checked against
+`request.userInfo.username` (once the cluster's username prefix is applied),
+`spec.subject.issuer` against an operator-supplied allowlist in ConfigMap
+`banlieue-claim-subject-policy`, with a broker service account exempt from the
+id check because handing sandboxes out on behalf of other people is its job.
+
+Note what the split buys and what it does not: the API server vouches for the
+username, so the `id` check is a real binding, but nothing can verify which
+issuer minted the caller's token — the `issuer` allowlist only stops a claim
+naming an issuer the site does not use. That asymmetry is now modelled as
+**TB-7** in the threat model, with the `usernamePrefix` operator obligation
+recorded alongside it.
 
 ### C: In-guest agent (separate repo under `firestoned`)
 
@@ -587,7 +597,7 @@ Deferred mode makes this provider *simpler* than roadmap 07 assumes: there is
 no backing-file template clone at all for TPM classes. Create an empty volume,
 attach the ISO the `VMImage` reconciler already uploads, add the TPM, boot.
 
-Add to 13's task list:
+Add to roadmap 07's task list:
 - ~~Domain procedures: define XML, create, destroy, undefine **with
   `VIR_DOMAIN_UNDEFINE_NVRAM | VIR_DOMAIN_UNDEFINE_TPM`** (otherwise swtpm
   state and the vars file leak per deleted sandbox), get state, interface
@@ -650,7 +660,7 @@ media detach is `ide2: none`; destroy with purge.
       deleted at `provisioningTimeoutSeconds` and replaced.
 - [ ] `tpmEnabled` class + `Immediate` image yields `ImageClassMismatch` and no
       infra CR.
-- [ ] `ROADMAPS.md` rows for 12, 13 and 70 reflect reality — keep them
+- [ ] `ROADMAPS.md` rows for 06, 07 and 17 reflect reality — keep them
       current as phases land.
 
 ## Gotchas

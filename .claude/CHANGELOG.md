@@ -1,5 +1,148 @@
 # Changelog
 
+## [2026-09-22 11:15] - CI: aggregator gate so docs-only PRs stop blocking (roadmap 16 #1)
+
+**Author:** Erick Bourgeois
+
+### The problem
+Four of the six required status checks came from `build.yaml`, which carried a
+workflow-level `paths:` filter. A PR touching only `docs/`,
+`.github/community/` or a root Markdown file never triggered that workflow, so
+those four contexts never reported — and a required check that never reports
+blocks a PR **indefinitely**. There are no bypass actors (deliberately —
+Scorecard penalises admin bypass), so it could not be clicked past.
+
+The `update-threat-model` branch is the proof: its only two files are
+`.claude/CHANGELOG.md` and `docs/src/security/threat-model.md`, neither of
+which matches the filter.
+
+### Why the recorded fix was not enough
+Roadmap 16 prescribed "add a `required-checks` job to `build.yaml` with
+`if: always()`". On its own that does not work, for the same reason that
+caused the bug: a workflow-level `paths:` filter stops the *whole workflow*
+from triggering, aggregator job included. The PR would block on one pending
+context instead of four. The fix needs both halves of what roadmap 16 listed
+as two alternatives.
+
+### Changed
+- `.github/workflows/build.yaml`:
+    - **Removed** the `paths:` filter from the `pull_request` trigger, so the
+      workflow runs on every PR to `main` and always reports.
+    - New `changes` job (`🔀 Detect Relevant Changes`) calling
+      `make ci-code-changed`; non-PR events always report `true`.
+    - `format`, `clippy`, `extract-version`, `security`, `cargo-deny` gated on
+      `needs.changes.outputs.code == 'true'`. `test`, `docker` and
+      `package-deploy-manifests` skip transitively via `extract-version`.
+    - `license-check` and `verify-commits` deliberately **not** gated — SPDX
+      headers and commit signatures matter on a prose PR too.
+    - New `required-checks` job (`✅ Required Checks`): `if: always()`,
+      `needs:` the four real jobs plus those two, failing only on
+      `failure`/`cancelled`. A skip is a pass.
+- `Makefile`: new `ci-code-changed` target holding the path list (so it is
+  testable locally and the workflow carries no inline logic, per
+  `rules/github-workflows.md`). Fails open to `true` on a missing or
+  undiffable base ref — an unknown base runs the full build rather than
+  silently skipping it.
+
+### Status lines corrected in the same commit
+These were wrong on the board, not in the code:
+- `ROADMAPS.md` row 17 and `.github/community/17-ephemeral-vm-pools.md` §B2
+  both said the claim-subject `ValidatingAdmissionPolicy` was still open. It
+  **landed** — `deploy/admission/virtualmachineclaim-subject-authorization.yaml`
+  implements ADR-0047 Decision 10 and is modelled as TB-7 in the threat model.
+- `.github/community/README.md`'s dependency graph still showed
+  `Phase 1D (libvirt) 🔶`; `ROADMAPS.md` has it ✅.
+- Two leftover decade numbers survived the 2026-09-19 renumbering:
+  `16-scorecard-remediation.md`'s H1 read `# 60 — …` (now `# 16 — …`), and
+  roadmap 17 referenced "rows for 12, 13 and 70" (now 06, 07 and 17) plus
+  "Add to 13's task list" / phase-table `13` for the libvirt phase (now 07).
+
+### Why
+A stale status board is a planning instrument that lies, and a required check
+that can never report is a merge queue that silently stops. Both were blocking
+the threat-model pass from merging at all.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only — **one manual step outstanding:** the `main` ruleset
+      must require `✅ Required Checks` *instead of* `🎨 Check Formatting`,
+      `📎 Clippy`, `🧪 Test` and `🧪 cargo-deny`. Until that edit is made both
+      sets are required and docs-only PRs still block.
+- [x] Documentation only (for the status-line half)
+
+## [2026-09-22 03:40] - Threat model full pass: TB-7, the identity provider nobody had modelled
+
+**Author:** Erick Bourgeois
+
+### Result of the pass
+Walked all ten sections of `docs/src/security/threat-model.md`, not just the
+tables that obviously moved. The document was already current against
+ADR-0001 … ADR-0055 — ADR-0049 appears in eight places, the claim-subject
+policy is in §6/TB-1 and §7.6, and the broker concentration is in §8. **One
+real gap**, and it was the CALM audit that exposed it.
+
+### The finding
+`spec.subject.id` is checked against `request.userInfo.username`. That
+username is minted by an **external OIDC issuer** — an actor that appeared
+nowhere in §2–§5, had no trust boundary, and whose compromise makes every
+claim attribution in the system meaningless. The strongest attribution
+guarantee banlieue offers was resting on an actor the threat model did not
+name.
+
+§8 already carried "`subject.issuer` is allowlisted but never verified",
+which is the *claim-side* half. The *caller-side* half — that the cluster's
+own authentication is an upstream dependency banlieue cannot check — was
+implicit.
+
+### Changed
+- `docs/src/security/threat-model.md`:
+    - **§3** — asset **A-10**: the consumer's cached ID token
+      (`~/.kube/cache/oidc-login`), which lives outside every boundary the
+      document draws and authenticates as its owner if stolen.
+    - **§4** — new actor: the OIDC identity provider and any bridge in front
+      of it (Dex for GitHub), marked semi-trusted and outside banlieue's
+      control.
+    - **§5** — **TB-7** added to the boundary table and drawn into the ASCII
+      diagram, above TB-1, with the arrow that matters labelled: *the
+      username every claim's `spec.subject.id` is checked against*.
+    - **§6** — a TB-7 STRIDE table with five rows. Three map to a real
+      control (the `issuers` allowlist, doing double duty for audit and for
+      ADR-0049's JWKS trust); two honestly map to **no banlieue control** and
+      are recorded in §8 rather than dressed up.
+    - **§7.6** — a third operator obligation: `usernamePrefix` in the policy
+      ConfigMap must agree with the API server's `--oidc-username-prefix`.
+      Two independently-managed objects that must match, with nothing
+      checking that they do. A mismatch fails safe but silently — too short
+      and every claim is refused, too long and authors must store the
+      prefixed name, which is precisely the shape ADR-0047 Decision 9 was
+      amended to eliminate.
+    - **§8** — two accepted risks with *Revisit when* clauses: the IdP is
+      trusted absolutely, and a stolen cached token creates claims in the
+      victim's name. Both note that the answer, when one is needed, is
+      per-request proof of the subject's intent (ADR-0049's attested
+      channel), not a better check on the caller.
+    - **§10** — records that **auditing the CALM model is itself a trigger**
+      for a pass. The two documents describe one system from different
+      angles, so a component new in one is a prompt to check the other.
+    - Header stamp bumped and made explicit that this is the second pass that
+      day and that TB-7 is new in it — otherwise a same-day re-stamp is
+      invisible.
+
+### Nothing was invented
+Every TB-7 row either names a control that exists in
+`deploy/admission/virtualmachineclaim-subject-authorization.yaml` or says
+plainly that there is none and points at §8, per
+`rules/threat-modeling.md`. No unremediated finding and no real
+infrastructure identifier is recorded here.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only — but it changes what operators must check at
+      install (§7.6) and adds two risks they are now accepting explicitly
+
 ## [2026-09-22 03:00] - CALM audit: five gaps closed, and one silently broken diagram
 
 **Author:** Erick Bourgeois

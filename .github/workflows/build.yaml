@@ -4,17 +4,16 @@
 name: Build
 
 on:
+  # NOTE: deliberately NO `paths:` filter on `pull_request` (roadmap 16 #1).
+  # A workflow-level path filter cannot coexist with a required aggregator
+  # check: a workflow that never triggers reports no contexts at all, so the
+  # required context stays pending forever and the PR blocks with no way to
+  # click past it (there are no bypass actors, by design). The path filter now
+  # lives in `make ci-code-changed` and is applied by the `changes` job below,
+  # per job, so a docs-only PR skips the expensive work and still reports.
   pull_request:
     branches:
       - main
-    paths:
-      - 'crates/**'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - 'Dockerfile*'
-      - '.github/workflows/build.yaml'
-      - '.github/actions/**'
-      - '.vex/**'
   push:
     branches:
       - main
@@ -42,7 +41,38 @@ env:
 jobs:
 
   # ─────────────────────────────────────────────────────────────────────────────
-  # License headers — always runs (PRs are pre-filtered by path at the trigger).
+  # Does this PR touch anything the Rust build cares about? (roadmap 16 #1)
+  #
+  # This replaces the workflow-level `paths:` filter. The path list itself lives
+  # in `make ci-code-changed` so it is testable locally and so the workflow
+  # carries no inline logic (rules/github-workflows.md). Non-PR events always
+  # report `true`: a push to main or a release builds everything regardless.
+  # ─────────────────────────────────────────────────────────────────────────────
+  changes:
+    name: 🔀 Detect Relevant Changes
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.detect.outputs.code }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Detect build-relevant changes
+        id: detect
+        env:
+          BASE_REF: origin/${{ github.base_ref }}
+        run: |
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "code=$(make ci-code-changed)" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # License headers — always runs, on every PR including docs-only ones.
+  # SPDX headers apply to docs and manifests too, so this is never gated.
   # ─────────────────────────────────────────────────────────────────────────────
   license-check:
     name: ⚖️ Verify SPDX License Headers
@@ -96,9 +126,9 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────────
   format:
     name: 🎨 Check Formatting
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' && needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
-    needs: [license-check, verify-commits]
+    needs: [changes, license-check, verify-commits]
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -113,9 +143,9 @@ jobs:
 
   clippy:
     name: 📎 Clippy
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' && needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
-    needs: [format]
+    needs: [changes, format]
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -136,8 +166,9 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────────
   extract-version:
     name: 🏷️ Extract Version Information
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
-    needs: [license-check, verify-commits]
+    needs: [changes, license-check, verify-commits]
     outputs:
       version: ${{ steps.version.outputs.version }}
       tag_name: ${{ steps.version.outputs.tag-name }}
@@ -249,8 +280,9 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────────
   security:
     name: 🛡️ Security Vulnerability Scan
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
-    needs: [verify-commits]
+    needs: [changes, verify-commits]
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -276,9 +308,9 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────────
   cargo-deny:
     name: 🧪 cargo-deny (License + Advisory + Sources)
-    if: github.event_name != 'release'
+    if: github.event_name != 'release' && needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
-    needs: [verify-commits]
+    needs: [changes, verify-commits]
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -969,3 +1001,35 @@ jobs:
             release/checksums.sha256
             sboms/*.json
             signatures/*.bundle
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # The single required status check (roadmap 16 #1).
+  #
+  # Branch ruleset `main` requires THIS context, not the four jobs underneath
+  # it. That indirection is the whole point: a docs-only PR skips format,
+  # clippy, test and cargo-deny, and a skipped job never reports a context of
+  # its own — so requiring them directly blocks such a PR indefinitely, with no
+  # bypass actor to click past it.
+  #
+  # `if: always()` makes this job run even when its dependencies skipped or
+  # failed. The guard then fails ONLY on a real failure or cancellation; a
+  # skip is a pass. Keep `needs:` in sync with the ruleset.
+  # ─────────────────────────────────────────────────────────────────────────────
+  required-checks:
+    name: ✅ Required Checks
+    if: always() && github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    needs: [license-check, verify-commits, format, clippy, test, cargo-deny]
+    steps:
+      - name: Assert no required job failed
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "Dependency results: $RESULTS"
+          for result in $RESULTS; do
+            case "$result" in
+              success|skipped) ;;
+              *) echo "::error::A required job reported '$result'"; exit 1 ;;
+            esac
+          done
+          echo "All required jobs passed or were legitimately skipped."
