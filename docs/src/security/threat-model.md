@@ -4,9 +4,11 @@ SPDX-License-Identifier: Apache-2.0
 -->
 # Threat Model
 
-> **Status:** Living document. Last full pass **2026-09-22**, against the
-> architecture defined by ADR-0001 … ADR-0055 (0044–0045 and 0048 are
-> reserved by roadmap 17 and unissued; 0049 is Proposed, not implemented).
+> **Status:** Living document. Last full pass **2026-09-22** — the second that
+> day, driven by an audit of the CALM model, which surfaced the **identity
+> provider as an actor nobody had modelled**; **TB-7 is new in this pass**.
+> Against the architecture defined by ADR-0001 … ADR-0055 (0044–0045 and 0048
+> are reserved by roadmap 17 and unissued; 0049 is Proposed, not implemented).
 > **Method:** asset/actor enumeration, trust-boundary decomposition, STRIDE per
 > boundary, control mapping to the manifests in `deploy/` and the crates in
 > `crates/`.
@@ -64,6 +66,7 @@ authorization and data-flow, not memory corruption.**
 | A-9 | **The subject's own credential (a JWT)** — the thing a sandbox is handed so it can act as its subject | **Never in banlieue.** Broker → in-guest agent over mTLS, after attestation (ADR-0049). Not on a disk, not in a CR, not in a hypervisor channel | **Critical** — it *is* the subject's identity. Kept out of banlieue entirely, which is why no banlieue compromise discloses it |
 | A-8 | **Guest readiness marker** — `/run/banlieue/phase`, written by the guest and read by the provider | guest tmpfs → `qemu-guest-agent` → `LibvirtMachine.status.guestInstalled` (ADR-0043) | Low on its own, but it gates pool membership: a guest that can assert it early gets handed out early. **Not an integrity signal** — see §6/TB-4 and §8 |
 | A-7 | **Claim bindings** — which subject was given which VM, and when | `VirtualMachineClaim.spec.subject` + `status`, mirrored onto the member as `banlieue.io/claim-subject-*` annotations (ADR-0047) | Medium — discloses who was using which sandbox to every reader of the namespace; a *forged* binding makes the record say someone requested a VM they never asked for |
+| A-10 | **The consumer's cached Kubernetes credential** — the ID token `kubectl oidc-login` writes to disk after a browser flow | `~/.kube/cache/oidc-login` on the consumer's own machine, outside every boundary below | High — it authenticates as that consumer, so it can create claims *attributed to them*. banlieue has no control here; see §8 |
 | A-6 | vTPM identity and sealed disk-encryption keys | vSphere VM, per-clone (ADR-0039/0040); on libvirt, **swtpm state keyed by domain UUID** (ADR-0050) | High — a shared or surviving TPM identity breaks per-VM disk-encryption isolation |
 
 ## 4. Actors
@@ -77,11 +80,20 @@ authorization and data-flow, not memory corruption.**
 | Compromised controller pod | RCE inside one banlieue pod | Untrusted |
 | Compromised hypervisor endpoint | Attacker-controlled host reachable at `spec.connection.endpoint` | Untrusted |
 | External contributor | Opens a PR from a fork | Untrusted |
+| **OIDC identity provider** (and any bridge in front of it, e.g. Dex for GitHub) | Mints the ID tokens the API server accepts, and therefore **decides what `request.userInfo.username` is** | **Semi-trusted, and entirely outside banlieue's control.** Every guarantee the claim-subject policy makes is downstream of this actor: banlieue checks `subject.id` against a username it did not derive. Compromise or misconfiguration here makes every claim attribution meaningless — §8 |
 | Hypervisor operator | vCenter/libvirt privileges outside Kubernetes | Semi-trusted — **can read datastores and storage pools banlieue writes to**, and on libvirt can read swtpm state on the host filesystem |
 
 ## 5. Trust boundaries
 
 ```
+  ┌───────────────────────── TB-7 ───────────────────────────┐
+  │ OIDC identity provider — external, unmanaged by banlieue │
+  │   consumer ──▶ browser flow ──▶ signed ID token          │
+  │   token cached on the consumer's laptop (A-10)           │
+  │   API server verifies via JWKS ──▶ userInfo.username     │
+  └────────────────────────────┬─────────────────────────────┘
+                               │ the username every claim's
+                               ▼ spec.subject.id is checked against
                     ┌──────────────────────── TB-1 ─────────────────────────┐
   tenant namespace  │  banlieue-system (restricted PSA)                     │
   ┌──────────────┐  │  ┌────────────┐   ┌──────────┐   ┌─────────────────┐  │
@@ -119,6 +131,7 @@ authorization and data-flow, not memory corruption.**
 | TB-4 | Cluster → hypervisor | Authenticated API calls carrying A-1 |
 | TB-5 | Cluster → shared datastore | ISO/disk artifacts written to storage other people can read |
 | TB-6 | Contributor / CI → published artifact | Build and release |
+| TB-7 | External identity provider → API server | The assertion of *who the caller is*, on which the whole claim attribution model rests |
 
 ## 6. Threats by boundary
 
@@ -220,6 +233,23 @@ This is the strongest area of the project and is largely already ADR-0006.
 | Auto-merge | Gated on `pull_request.user.login == 'dependabot[bot]'` (the PR author, not `github.actor`); major-version updates are held for human review |
 | Scanning | CodeQL, OpenSSF Scorecard, SAST, grype/OSV, `cargo audit`, `cargo deny`, gitleaks |
 
+### TB-7 — External identity provider → API server
+
+Every other boundary in this document is one banlieue can place a control on.
+This one is not: the API server derives `request.userInfo.username` from a
+token minted elsewhere, and the claim-subject policy compares
+`spec.subject.id` against that derived name. **banlieue's strongest
+attribution guarantee is therefore no stronger than the issuer behind it**,
+which is worth stating plainly rather than leaving implicit in §8.
+
+| Threat | STRIDE | Control |
+| --- | --- | --- |
+| The issuer is compromised, or mints a token for an attacker under a victim's name | S, R | **None in banlieue.** The API server vouches for the username; nothing downstream can second-guess it. Recorded in §8 — the mitigation is issuer-side (MFA, short lifetimes, key custody) and is the operator's, not banlieue's |
+| `usernamePrefix` in the policy's ConfigMap disagrees with the API server's `--oidc-username-prefix` | T | **Fails in the safe direction, but silently.** Too short a prefix makes the comparison unsatisfiable and every claim is refused; too long forces authors to store the *prefixed* name in `subject.id`, which is the exact shape ADR-0047 Decision 9 was amended to eliminate and which leaves the in-guest agent a value it cannot compare to any JWT. Neither is a bypass. It is a configuration coupling between two independently-managed objects, so §7.6 now names it |
+| A stolen cached ID token is used to create claims in the victim's name | S, R | **None in banlieue**, and not specific to claims — a stolen bearer token authenticates as its owner everywhere in Kubernetes. It is called out because the *consequence* here is an audit record that says the victim asked for a sandbox. §8 |
+| An issuer the site does not use is named in `spec.subject.issuer` | S, R | The `issuers` allowlist in `banlieue-virtualmachineclaim-subject-authorization`. This is a check on the *claim*, not on the caller — nothing reveals which issuer actually minted the caller's token (§8) |
+| The agent is pointed at an attacker's JWKS via `spec.subject.issuer` | S, T | Same allowlist, doing double duty — see TB-4. Load-bearing for verification, not merely for audit tidiness (ADR-0049 Decision 7) |
+
 ## 7. Deployment hardening requirements
 
 These are properties of the **current** design that operators must enforce
@@ -266,7 +296,7 @@ a different assumption is unsafe.
    authenticated username, confines `subject.issuer` to an allowlist, and
    makes `spec` immutable so the check cannot be undone by a later patch.
 
-   Two operator obligations come with it:
+   Three operator obligations come with it:
    - **The `issuers` list ships with a placeholder.** A cluster that does not
      edit it rejects every real claim — visibly, which is the intended
      failure direction.
@@ -274,6 +304,15 @@ a different assumption is unsafe.
      may attribute a sandbox to any identity, so that ConfigMap is as
      sensitive as the audit trail it underwrites. It is empty by default;
      alert on changes to it.
+   - **`usernamePrefix` must match the API server's
+     `--oidc-username-prefix`.** These are two independently-managed objects
+     that have to agree, and nothing checks that they do. `spec.subject.id`
+     stores the **raw** subject as the issuer spells it — a JWT carries no
+     `oidc:` prefix, so the prefixed form would leave the in-guest agent a
+     value it cannot compare (ADR-0047 Decision 9, amended; ADR-0049) — and
+     the policy re-applies the prefix at comparison time instead. A mismatch
+     fails safe but silently: see §6/TB-7. Re-check it whenever the cluster's
+     authentication configuration changes, not only at install.
 
    The binding is `parameterNotFoundAction: Deny`, so a missing ConfigMap
    blocks claims rather than degrading to "any subject is fine".
@@ -349,6 +388,8 @@ a different assumption is unsafe.
 | `GuestReady` can be asserted by any code running as root inside the guest, so it proves which disk booted only for a guest that has not been compromised | It is a *liveness* signal by construction (ADR-0043 Decision 9) and is consumed only to decide when a **fresh, unclaimed** VM joins a warm pool — before any subject has touched it. Treating it as integrity would be the error; the document and the ADR both say so explicitly | Attestation ships (ADR-0049), at which point a TPM quote over the claim nonce is the integrity signal and this one stays what it is |
 | A **broker** both holds subject credentials and is the party that verifies TPM quotes, so its compromise is the design's worst case | Somebody has to hold the credential to deliver it, and somebody has to verify the quote; concentrating both in one audited component is preferable to spreading either. banlieue is deliberately not that component (ADR-0049 Decision 2), so a controller compromise discloses no subject credential | The broker is split into deliver/verify roles, or hardware-backed key custody becomes available to it |
 | A declared **broker** may attribute a sandbox to any identity, so the audit trail is only as honest as the broker is | Handing sandboxes out on behalf of other people is a broker's entire purpose (roadmap phase C); a broker that could only name itself could not broker. The concentration is explicit, empty by default, and confined to one auditable ConfigMap (§7.6) rather than diffused across everyone holding `create` | A broker is compromised, or claims need per-request proof of the subject's consent rather than the broker's assertion |
+| **The identity provider is trusted absolutely, and is outside banlieue** | The API server is the only thing that can attest a caller, and it attests whatever the configured issuer asserted. banlieue cannot verify an upstream IdP without becoming an IdP. The claim-subject policy is still worth having: it binds an attribution to *whatever* identity the cluster does authenticate, which is strictly better than free text | banlieue ever needs an attribution stronger than the cluster's own authentication — at which point the answer is per-request proof from the subject (a signed consent, or the attested channel of ADR-0049), not a better check on the caller |
+| A consumer's **cached ID token** sits on their laptop (`~/.kube/cache/oidc-login`) and authenticates as them if stolen | Not specific to claims — every Kubernetes bearer token behaves this way, and client-side credential custody is out of scope (§9). Recorded because the claim-specific consequence is distinctive: the audit trail records the *victim* requesting a sandbox, which is exactly the fiction §6/TB-1 exists to prevent. Short token lifetimes are the issuer-side mitigation | Claims carry per-request proof of the subject's intent rather than only the caller's identity |
 | `subject.issuer` is allowlisted but never *verified*: the API server does not reveal which issuer minted the caller's token | Nothing in Kubernetes can attest it, so an allowlist is the strongest available check — it stops a claim naming an issuer the site does not use, which is what would make the recorded attribution meaningless. The claim deliberately carries no token to verify (ADR-0047 Decision 9) | The in-guest agent's JWT validation lands (roadmap phase C), at which point the *guest* verifies issuer, audience and `oid` against the claim |
 | Health endpoint binds `0.0.0.0` and returns a fixed `200` | Standard probe trade-off; carries no data | It ever reports real state |
 | Provider condition messages are mirrored verbatim onto user-facing `VirtualMachine` status | Useful diagnostics; providers are in-tree | A third-party provider ships |
@@ -383,3 +424,10 @@ Sections most likely to move: a new provider or binary (§2, §4), a new CRD or
 contract (§3, §6), a new namespace or PSA level (§5), a new identity or RBAC
 grant (§6, §7), a new external dependency in the boot path (TB-6), or any
 change to the single-tenant assumption in §7.
+
+**Auditing the CALM model counts as a trigger.** TB-7 exists because
+`architecture.json` gained an `network-oidc-issuer` node and the wires around
+it, and the question "is that actor in the threat model?" answered *no* — for
+an actor every claim attribution already depended on. The two documents
+describe the same system from different angles, so a component that is new in
+one is a prompt to check the other.

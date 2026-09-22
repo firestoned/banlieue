@@ -141,6 +141,7 @@ help: ## Show this help
 .PHONY: help install build build-debug build-linux-amd64 build-linux-arm64 \
         prepare-binaries-linux-amd64 prepare-binaries-linux-arm64 \
         test test-lib lint format clean crds api-docs run-local \
+        ci-code-changed \
         provider-vsphere-run-local imagebuilder-run-local \
         docker-build docker-build-amd64 docker-build-arm64 \
         docker-build-chainguard docker-buildx docker-buildx-chainguard docker-push \
@@ -191,6 +192,34 @@ format: ## Format all crates
 
 clean: ## Clean build artefacts
 	cargo clean
+
+# ----- CI gating ------------------------------------------------------------
+#
+# These paths decide whether a pull request runs the Rust build, test and image
+# jobs. They were `build.yaml`'s workflow-level `paths:` filter until roadmap 16
+# #1 — a workflow-level filter cannot coexist with a required aggregator check,
+# because a workflow that never triggers reports no contexts at all and the PR
+# blocks on a context that is pending forever. The filter therefore moved here
+# and is applied per job instead.
+#
+# Keep this in sync with the `changes` job in .github/workflows/build.yaml.
+CI_CODE_PATHS_RE ?= ^(crates/|Cargo\.toml$$|Cargo\.lock$$|Dockerfile|\.github/workflows/build\.yaml$$|\.github/actions/|\.vex/)
+
+ci-code-changed: ## Print true/false: does the diff against BASE_REF touch build-relevant paths? (CI gating, roadmap 16 #1)
+	@base="$${BASE_REF:-origin/main}"; \
+	if ! git rev-parse --verify --quiet "$$base" >/dev/null; then \
+	  echo "true"; \
+	  exit 0; \
+	fi; \
+	if ! changed="$$(git diff --name-only "$$base...HEAD" 2>/dev/null)"; then \
+	  echo "true"; \
+	  exit 0; \
+	fi; \
+	if printf '%s\n' "$$changed" | grep -Eq '$(CI_CODE_PATHS_RE)'; then \
+	  echo "true"; \
+	else \
+	  echo "false"; \
+	fi
 
 # ----- CALM (architecture-as-code, FINOS) -----------------------------------
 

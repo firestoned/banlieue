@@ -1,6 +1,6 @@
 # anatomy.md
 
-> Auto-maintained by OpenWolf. Last scanned: 2026-09-22T00:59:11.917Z
+> Auto-maintained by OpenWolf. Last scanned: 2026-09-22T12:06:39.567Z
 > Files: 469 tracked | Anatomy hits: 0 | Misses: 0
 
 ## ./
@@ -13,10 +13,10 @@
 - `Dockerfile` — Docker container definition (~959 tok)
 - `Dockerfile.chainguard` — SPDX-License-Identifier: Apache-2.0 (~770 tok)
 - `LICENSE` — Project license (~3029 tok)
-- `Makefile` — SPDX-License-Identifier: Apache-2.0 (~17711 tok)
+- `Makefile` — SPDX-License-Identifier: Apache-2.0 (~18044 tok)
 - `osv-scanner.toml` — SPDX-License-Identifier: Apache-2.0 (~355 tok)
 - `README.md` — Project documentation (~3300 tok)
-- `ROADMAPS.md` — Roadmaps (~2043 tok)
+- `ROADMAPS.md` — Roadmaps (~2149 tok)
 - `SECURITY.md` — Security Policy (~382 tok)
 
 ## .clusterfuzzlite/
@@ -60,8 +60,8 @@
 - `13-ipam-pool-integration.md` — IPAM Pool Integration (CAPI `ipam.cluster.x-k8s.io`) (~3676 tok)
 - `14-live-migration.md` — Live Migration (same-class first, cross-class deferred) (~2970 tok)
 - `15-vsphere-disk-image-import.md` — 15: vSphere disk-image import (raw and VMDK), alongside the ISO path (~4683 tok)
-- `16-scorecard-remediation.md` — 60 — OSSF Scorecard remediation (~2262 tok)
-- `17-ephemeral-vm-pools.md` — 17: Ephemeral, single-use VM pools (AI agent sandboxes) (~8499 tok)
+- `16-scorecard-remediation.md` — 16 — OSSF Scorecard remediation (~2608 tok)
+- `17-ephemeral-vm-pools.md` — 17: Ephemeral, single-use VM pools (AI agent sandboxes) (~9030 tok)
 - `README.md` — Project documentation (~1210 tok)
 
 ## .github/requirements/
@@ -84,7 +84,7 @@
 
 ## .github/workflows/
 
-- `build.yaml` — SPDX-License-Identifier: Apache-2.0 (~11512 tok)
+- `build.yaml` — SPDX-License-Identifier: Apache-2.0 (~12050 tok)
 - `calm-test.yaml` — SPDX-License-Identifier: Apache-2.0 (~2002 tok)
 - `calm.yaml` — SPDX-License-Identifier: Apache-2.0 (~2057 tok)
 - `codeql.yaml` — /*.rs (beta in CodeQL; stable enough for (~700 tok)

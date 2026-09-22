@@ -53,7 +53,7 @@ A suggested working pattern:
 Phase 1A (controller + SDK)  ✅
    ├─→ Phase 1B (vSphere)    ✅
    ├─→ Phase 1C (Proxmox)    ⛔   can run in parallel after 1A lands
-   ├─→ Phase 1D (libvirt)    🔶
+   ├─→ Phase 1D (libvirt)    ✅
    ├─→ Phase 1F (Cloud Hyp.) ⛔   after 1D; reuses its seed + import patterns
    └─→ Phase 1E (MkDocs)     🔶   no preconditions
          │
@@ -66,7 +66,7 @@ Phase 1A (controller + SDK)  ✅
          ▼
    Phase 4 (FINOS-ready)     🔶   everything that's left
 
-   17 (ephemeral VM pools)   🔶   gated on 1D for live testing
+   17 (ephemeral VM pools)   🔶   1D landed; phase A (A3/A4/A5) is what is left
 ```
 
 ## Updates to these docs
