@@ -174,6 +174,25 @@ pub fn mirror_status_from_infra(
         generation,
     );
 
+    // Mirror GuestReady verbatim — but ONLY when the provider publishes it.
+    //
+    // Absence is meaningful: `pool.rs::readiness_signal_absent` decides by
+    // condition *type*, so a blanket `GuestReady=False` from a provider that
+    // does not implement the signal would make a pool set to `GuestReady`
+    // report `Filling` forever instead of `ReadinessSignalAbsent` — turning
+    // "this will never warm" into "wait a little longer" (ADR-0043,
+    // ADR-0046 Decision 3).
+    if let Some(guest) = find_condition(infra.conditions(), condition_types::GUEST_READY) {
+        set_condition(
+            &mut next.conditions,
+            condition_types::GUEST_READY,
+            &guest.status,
+            &guest.reason,
+            guest.message.clone(),
+            generation,
+        );
+    }
+
     // Aggregate Ready.
     let scheduled = is_condition_true(&next.conditions, condition_types::SCHEDULED);
     let placement_valid = !find_condition(&next.conditions, condition_types::PLACEMENT_VALID)

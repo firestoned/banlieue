@@ -7,7 +7,7 @@
   (placement drift is now detected promptly, not just on the next poll).
   Does not change `crates/banlieue-controller/src/reconciler/migration.rs`
   today — this ADR records the phasing decision and scopes Phase A; no code
-  lands with it. Execution plan: `.github/community/51-live-migration.md`.
+  lands with it. Execution plan: `.github/community/14-live-migration.md`.
 
 ## Context
 
@@ -120,5 +120,5 @@ storage assumption that would even hold across classes.
 - Until Phase A ships, `migrationPolicy=Automatic` continues to mean
   "destroy and rebuild," and that should be made more visible in status
   (Decision #2) rather than implied to be something gentler.
-- See `.github/community/51-live-migration.md` for the execution plan
+- See `.github/community/14-live-migration.md` for the execution plan
   once someone picks Phase A up.

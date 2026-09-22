@@ -156,7 +156,7 @@ The payoff of putting install metadata on a ProviderClass rather than on each Pr
 
 ```mermaid
 flowchart TD
-    t1["1. Platform operator edits one field — `kubectl patch providerclass vsphere -p '{"spec":{"image":{"tag":"v0.2.0"}}}'`. To canary a single backend instead, they create a second class pinning the new image and repoint one Provider at it."]
+    t1["1. Platform operator edits one field — `kubectl patch providerclass vsphere` to set spec.image.tag to v0.2.0. To canary a single backend instead, they create a second class pinning the new image and repoint one Provider at it."]
     t2["2. banlieue-operator's ProviderClass watch fires. kube calls the mapper synchronously, so it cannot list Providers itself — it reads the controller's own reflector store, already maintained for the primary Provider watch, and emits one reconcile request per referencing Provider. Without this the edit would only be noticed on the next periodic requeue."]
     t3["3. Each Provider reconciles: the workload is re-applied with the new image and the Deployment rolls. If the edit changed the Provider's CLASS rather than the class's contents, the derived name changes too, so the superseded workload is pruned by label — including the ClusterRoleBinding, which no owner reference can reclaim and a name-based cleanup could never find again."]
     t4["4. The operator publishes ProviderClass.status: how many Providers reference this class, and a Ready condition reporting whether the shared per-backend ClusterRole exists. That surfaces an unusable class in `kubectl get providerclasses` before any Provider is created, rather than as 403s in a provider pod's log afterwards."]
@@ -164,4 +164,38 @@ flowchart TD
 ```
 
 <sub>Source: flow `flow-upgrade-provider-fleet` in `architecture.json`.</sub>
+
+
+## Claim a warm pool member for one subject
+
+How a consumer gets a sandbox in seconds instead of waiting out provisioning, and how the cluster records who got it. The interesting property is that nothing in this path locks anything: the API server is already the serialisation point, so a resourceVersion precondition on one merge patch is the whole concurrency story (ADR-0046, ADR-0047).
+
+```mermaid
+flowchart TD
+    t1["1. Consumer authenticates to the issuer (kubectl oidc-login / kubelogin, PKCE browser flow) and receives a signed ID token, cached locally and replayed as a bearer token."]
+    t2["2. API server verifies the token against the issuer's JWKS and derives request.userInfo.username by prepending --oidc-username-prefix. This is the only identity assertion the rest of the path can trust."]
+    t3["3. Consumer creates a VirtualMachineClaim naming a pool, a mandatory ttlSeconds, and a subject. Admission compares usernamePrefix + spec.subject.id against the authenticated username and checks spec.subject.issuer against the operator allowlist. CREATE only: on UPDATE the requester is normally the controller adding its own finalizer, and applying the identity check there denies it, leaving claims that are created and then never reconciled."]
+    t4["4. Claim reconciler picks one Ready, unclaimed member (current image revision first, then longest-Ready, then name) and binds it with a resourceVersion-preconditioned merge patch: claim label, subject annotations, and ownerReferences re-parented from pool to claim. A second claim racing for the same member gets 409 and picks again. Status then publishes virtualMachineRef, a 128-bit nonce, boundAt and expiresAt = boundAt + ttlSeconds, counted from the bind instant so a claim that waited for capacity still gets its full TTL."]
+    t5["5. The pool sees a member it may no longer count as warm and creates a replacement, so the next consumer still finds one Ready. The pool never learns that claims exist."]
+    t6["6. On deletion or at expiresAt the claim deletes its member and holds its own finalizer until that member is gone from the API server, while the member's provider finalizer holds IT until the backend VM is destroyed. So a deleted claim means a destroyed sandbox, transitively. A vanished member fails the claim terminally rather than rebinding it: a consumer holding a claim believes it is talking to one specific VM."]
+    t1 --> t2 --> t3 --> t4 --> t5 --> t6
+```
+
+<sub>Source: flow `flow-claim-pool-member` in `architecture.json`.</sub>
+
+
+## Deliver a subject&#x27;s credential to its sandbox (PROPOSED — not implemented)
+
+The unanswered half of the claim model: a claim deliberately carries no credential, so how does the subject's token reach the guest and what convinces the guest it is genuine? ADR-0049 is Proposed and nothing here ships; it is modelled because banlieue's side of the contract -- subject.issuer, subject.id, status.nonce, and the mirrored EK certificate -- is already implemented and would otherwise look like three fields nobody uses. ADR-0045 (EK certificates) is a hard dependency and is itself not landed: without it there is nothing to verify a quote against, and the handshake degrades to trusting whatever answered on the port.
+
+```mermaid
+flowchart TD
+    t1["1. A broker creates a claim naming the subject it is acting for, which admission allows because the broker is allowlisted. The credential itself never enters the claim."]
+    t2["2. banlieue binds a member and publishes the attestation anchors: status.nonce, and the member's vTPM EK certificate mirrored from its infra CR. banlieue neither carries nor validates the token, which is what keeps subject credentials out of the controller's compromise radius."]
+    t3["3. Broker pushes {claim, nonce, JWT} over mTLS; the agent returns a TPM quote over status.nonce; the broker verifies it against the EK certificate on the claim. The per-VM vTPM is unique by construction on both backends -- deferred install on vSphere, domain-UUID-keyed swtpm state on libvirt -- so the anchor exists before any subject was assigned."]
+    t4["4. Only now does the agent check the token: iss against subject.issuer, the subject claim against subject.id, aud against its own configured audience, plus exp, nbf and the signature via JWKS. A failure means no workload and the TTL reaps the VM; there is no partial-trust mode."]
+    t1 --> t2 --> t3 --> t4
+```
+
+<sub>Source: flow `flow-attest-and-deliver-credential` in `architecture.json`.</sub>
 

@@ -1,0 +1,89 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# Make the INSTALLED guest announce itself, so a pool can tell it apart from
+# the live installer that is still overwriting the disk (ADR-0043).
+#
+# This is a `cloudConfigs` layer for a Deferred-mode VMImage (ADR-0037), not
+# a standalone object: add it to the image's layers and rebuild.
+#
+# WHY THIS EXISTS
+#
+#   For `installMode: Deferred`, InfrastructureReady fires when the install
+#   STARTS. A pool that trusted it would hand out VMs mid-install. Every
+#   cheap "is the guest up" signal has the same flaw, because the installer
+#   environment satisfies all of them:
+#
+#     - a guest-agent ping        the installer runs one too
+#     - a DHCP lease appears      the installer asks for an address
+#     - an open SSH port          something is listening
+#
+#   The distinguishing fact is not liveness. It is WHICH DISK BOOTED.
+#
+# THE GUARD IS THE WHOLE POINT
+#
+#   Kairos runs `boot` stages in the live installer and in recovery too.
+#   immucore drops exactly one sentinel per boot mode under /run/cos/; only
+#   active/passive mean "booted from the installed disk". Without the guard
+#   the installer announces "installed" WHILE INSTALLING, which is worse
+#   than no signal — it looks like the feature working.
+#
+# RE-ASSERTED EVERY BOOT, ON PURPOSE
+#
+#   The marker lives in /run (tmpfs). It survives a guest reboot but not a
+#   power cycle, so writing it once would silently stop being true. banlieue
+#   makes `status.guestInstalled` sticky for the same reason: a VM that was
+#   powered off has not become uninstalled.
+---
+stages:
+  boot:
+    # ---- libvirt (implemented) --------------------------------------------
+    #
+    # libvirt has no guestinfo channel, so the marker IS the channel: the
+    # provider reads this file back with qemu-guest-agent
+    # (guest-file-open/read/close).
+    #
+    # REQUIREMENT: the image must have `qemu-guest-agent` installed and
+    # enabled. Without it the file is unreadable from the host, GuestReady
+    # stays false, and the pool reports why rather than failing silently.
+    - name: banlieue-guest-phase
+      if: '[ -f /run/cos/active_mode ] || [ -f /run/cos/passive_mode ]'
+      commands:
+        - mkdir -p /run/banlieue
+        - echo installed > /run/banlieue/phase
+
+    # ---- vSphere (specified, NOT yet implemented) -------------------------
+    #
+    # vSphere already has a host-readable guest channel, so the marker goes
+    # there instead of to a file. The provider-side read is not implemented
+    # yet — uncomment this only once ADR-0043's vSphere half lands, or the
+    # guest will announce into a channel nothing is watching.
+    #
+    # - name: banlieue-guest-phase-vsphere
+    #   if: '[ -f /run/cos/active_mode ] || [ -f /run/cos/passive_mode ]'
+    #   commands:
+    #     - vmware-rpctool "info-set guestinfo.banlieue.phase installed"
+#
+# USING IT
+#
+#   1. Add this layer to a Deferred VMImage's `spec.cloudConfigs` and rebuild.
+#   2. Set the pool's readiness to the signal it now sends:
+#
+#        spec:
+#          readiness: GuestReady
+#
+#   3. Watch a member reach it:
+#
+#        kubectl get libvirtmachine <member> \
+#          -o jsonpath='{.status.guestInstalled}{"\n"}'
+#        kubectl get virtualmachine <member> \
+#          -o jsonpath='{range .status.conditions[?(@.type=="GuestReady")]}{.status} {.reason}{"\n"}{end}'
+#
+# IF YOU SET readiness: GuestReady WITHOUT REBUILDING THE IMAGE
+#
+#   Nothing publishes the condition, so the pool says:
+#
+#     Warm=False   reason=ReadinessSignalAbsent
+#
+#   That is the pool telling you the signal it was asked to wait for is one
+#   nothing sends — not a slow install. Rebuild the image with this layer.

@@ -1,4 +1,4 @@
-# 70: Ephemeral, single-use VM pools (AI agent sandboxes)
+# 17: Ephemeral, single-use VM pools (AI agent sandboxes)
 
 > **Goal.** A consumer asks for a VM for one identity and gets one in seconds:
 > already installed, disk sealed to its own vTPM, never used by anyone else,
@@ -32,7 +32,7 @@ stays readable.
    `crates/banlieue-libvirt/src/procs.rs` had connect, network listing and
    storage volumes only. **Updated 2026-09-19:**
    [ADR-0050](../../docs/adr/0050-libvirtmachine-domain-lifecycle.md)
-   (*Proposed*) brought the domain lifecycle (lookup, define, create, shutdown, destroy, undefine
+   (Accepted 2026-09-19) brought the domain lifecycle (lookup, define, create, shutdown, destroy, undefine
    — always `MANAGED_SAVE|NVRAM|TPM` — get_state, interface_addresses, with a
    live lifecycle test), and the `LibvirtMachine`/`LibvirtMachineTemplate`
    CRDs now exist and generate.
@@ -275,16 +275,16 @@ provider can realise (see [Repo reality](#repo-reality-at-8360e19)).
 | Phase | What | ADR | Status |
 |---|---|---|---|
 | 0 | Slim image experiment | none (no code) | ⏸️ deferred (no vTPM on the libvirt hosts yet) |
-| A2 | `GuestReady`: the installed guest reports in | 0043 | ⛔ |
+| A2 | `GuestReady`: the installed guest reports in | 0043 | 🔶 libvirt implemented and the **read path is now verified live** against a real `qemu-guest-agent` (the seed installs it, so no special image is needed). Open: a Kairos image with the phase layer, to prove the marker is written at the right *moment*; vSphere transport deferred |
 | A4 | Detach install media once installed | 0044 | ⛔ |
-| A5 | vTPM EK certificate in machine status | 0045 | ⛔ |
+| A5 | vTPM EK certificate in machine status | 0045 | ⛔ — **now the gate for F** (ADR-0049 Decision 4 verifies quotes against it) |
 | A3 | `tpmEnabled` requires `installMode: Deferred` | 0048 | ⛔ |
-| B1 | `VirtualMachinePool` | 0046 | 🔶 planner written and tested |
-| B2 | `VirtualMachineClaim` | 0047 | ⛔ |
+| B1 | `VirtualMachinePool` | 0046 | ✅ landed and validated e2e — fills, self-heals, rolls, cascades on delete |
+| B2 | `VirtualMachineClaim` | 0047 | ✅ landed — bind/hold/release, TTL expiry, finalizer, nonce; a pool is now consumable |
 | C | In-guest agent (separate repo) | own repo | ⛔ |
-| D | libvirt provider: `LibvirtMachine` reconciler | 13 + 0050 | 🔶 procedures + CRD + domain XML done (ADR-0050); reconciler ⛔ — **prerequisite for live test** |
+| D | libvirt provider: `LibvirtMachine` reconciler | 13 + 0050 + 0054 | ✅ complete — CRD, domain XML, reconciler, NoCloud user-data; roadmap 07 closed |
 | E | Proxmox provider, same | amend 12 | ⛔ |
-| F | Attestation trust anchors, threat model | 0049 | ⛔ |
+| F | Attestation trust anchors, threat model | 0049 | 📄 ADR-0049 written (Proposed); **blocked on A5** — without the EK certificate on the claim there is nothing to verify a quote against |
 
 Per `rules/architecture-driven-development.md` each ADR lands before its
 code. Skeleton decisions are below so the ADRs are an hour each, not a day.
@@ -298,6 +298,69 @@ hand out VMs mid-install.
 
 **Why not VMware Tools heartbeat.** The live installer environment can run
 Tools too. A heartbeat proves a guest is up, not that it is the installed one.
+The same objection sinks a `qemu-guest-agent` ping, a DHCP lease and an open
+SSH port: all are satisfied by the installer while it is still overwriting
+the disk.
+
+**Landed 2026-09-20, libvirt only.** `common::condition_types::GUEST_READY`,
+`LibvirtMachineStatus.guestInstalled` (sticky), the marker read in
+`crates/banlieue-provider-libvirt/src/guest.rs`, and conditional mirroring in
+`status_mirror.rs`. The libvirt transport needed a **second RPC program** —
+`virDomainQemuAgentCommand` lives in `0x2000_8087`, not the remote program —
+verified against a real libvirtd in
+`crates/banlieue-libvirt/tests/live_libvirtd.rs`
+(`qemu_agent_program_is_understood_by_real_libvirtd`), which asserts libvirtd
+returns a *semantic* error rather than a protocol one.
+
+Two things beyond the skeleton: the mirror publishes `GuestReady` **only when
+the provider does**, because `readiness_signal_absent` decides by condition
+type and a blanket `False` would turn "this will never warm" into "wait
+longer"; and `examples/16-cloud-config-guest-phase.yaml` keeps the vSphere
+stanza commented out so nobody announces into a channel nothing reads.
+
+**Still open:**
+
+1. ~~**The read path is unverified against a real guest agent.**~~
+   **Closed 2026-09-21.** `tests/live_guest.rs` passes against a real
+   host: agent ping, `guest-file-open`/`read`/`close`, and both halves of
+   the tri-state (`NotAnnounced` with the marker absent, `Installed` once
+   it is written through the agent).
+
+   The unlock was to stop waiting for an image that ships
+   `qemu-guest-agent` — neither the Kairos build nor Debian's
+   `genericcloud` does — and have the test **install it at boot through
+   the NoCloud seed** (ADR-0054). Any cloud-init image that can reach a
+   package mirror now works.
+
+   The first green run cost two real bugs, neither of which any offline
+   test could have found:
+
+   - **Overlays declared `raw` over a `.qcow2` backing image.**
+     `ensure_disks` passed the constant instead of calling
+     `backing_format()` — a function that existed, was documented and was
+     unit-tested, but was never called. libvirt does not probe a backing
+     file, so it accepted the lie and every guest read a qcow2 header as
+     its partition table. Nothing booted, and nothing said so: the
+     pool/claim e2e uses `InfrastructureReady`, which fires when the
+     *domain* runs, not when the *guest* boots.
+   - **`probe_guest` conflated "no marker" with "no agent."** libvirtd
+     turns an agent-level error into an RPC fault rather than an `Ok`
+     carrying JSON, so a marker that did not exist yet read as
+     `AgentUnreachable` — inverting the requeue cadence Decision 8 rests
+     on, for the entire install window of every Deferred member. It now
+     pings to classify the failure.
+
+   What this still does **not** prove: that a real Kairos/immucore
+   `Deferred` install writes the marker at the right *moment* — that its
+   `/run/cos/active_mode` guard keeps it out of the live installer. That
+   needs an image built with the phase layer and is a separate gap.
+2. **The vSphere half** (`guestinfo.banlieue.phase` read from
+   `config.extraConfig`), deferred for want of a vCenter to verify against.
+
+Side finding, which retires an earlier suspicion: a qcow2 overlay over a
+**raw** backing volume *does* boot. The guest reached the network in
+`live_guest.rs`, so the "BackingFile does not boot" note recorded earlier
+was an artefact of that test's upload path, not of the shipped one.
 
 **Decision.**
 1. The installed system writes `guestinfo.banlieue.phase=installed` on every
@@ -472,8 +535,29 @@ deletion. There is no unbind and no "return to pool".
   `ValidatingAdmissionPolicy` alongside ADR-0007's pins `subject` to the
   authenticated caller for callers that are not the broker service account.
 
-Code: `crates/banlieue-controller/src/reconciler/claim.rs`. `pick_member`
-checked standalone; the rest needs `cargo check`.
+**Landed 2026-09-20.** `crates/banlieue-api/src/banlieue/virtualmachineclaim.rs`
+(CRD), `crates/banlieue-controller/src/reconciler/claim_plan.rs` (every
+decision, pure) and `claim.rs` (the reconciler: gather, apply, report).
+Guide: `docs/src/guides/virtualmachine-claims.md`; example
+`examples/19-virtualmachineclaim.yaml`.
+
+Two things landed beyond the skeleton above:
+
+- **`Releasing` is a real phase.** The skeleton let expiry jump straight to
+  deletion, which left the variant dead and gave a consumer no way to tell
+  "being torn down" from "gone". Release now publishes `Releasing` with
+  `Released` or `Expired` as the reason, so those three endings are
+  distinguishable — they differ in *who* ended the hold.
+- **A waiting claim repeats the pool's own diagnosis.** Decision 11 asked
+  for "no capacity" and "pool misconfigured" to be distinguishable without
+  reading two objects, so `Pending` carries `PoolNotFound`, or
+  `NoMemberAvailable` with the pool's `Warm` reason inlined — which is what
+  makes a pool stuck on `ReadinessSignalAbsent` visible from the claim.
+
+Still open, and called out in the guide: nothing yet pins `subject` to the
+authenticated caller. Until that `ValidatingAdmissionPolicy` exists, anyone
+who can create a claim can attribute one to anybody, so `create` on
+`virtualmachineclaims` has to be granted narrowly.
 
 ### C: In-guest agent (separate repo under `firestoned`)
 
@@ -493,13 +577,13 @@ Out of banlieue. Baked into the sandbox image via `vm-build` and one
    an allowlist proxy only.
 5. On release or TTL: power off. The claim controller deletes the VM.
 
-### D: libvirt (amend roadmap 13)
+### D: libvirt (amend roadmap 07)
 
 State at `badc698`: `Provider` and `VMImage` reconcilers and an own-protocol
 client exist; there is no `LibvirtMachine` CRD, and `banlieue-libvirt/procs.rs`
 has connect and storage procedures but no domain procedures.
 
-Deferred mode makes this provider *simpler* than roadmap 13 assumes: there is
+Deferred mode makes this provider *simpler* than roadmap 07 assumes: there is
 no backing-file template clone at all for TPM classes. Create an empty volume,
 attach the ISO the `VMImage` reconciler already uploads, add the TPM, boot.
 
@@ -526,9 +610,9 @@ Add to 13's task list:
 - EK certificates: read from swtpm's `swtpm_localca`-issued cert; trust anchor
   is per host (phase F).
 
-### E: Proxmox (amend roadmap 12)
+### E: Proxmox (amend roadmap 06)
 
-No crate yet. Roadmap 12 assumes template clone; for TPM classes replace that
+No crate yet. Roadmap 06 assumes template clone; for TPM classes replace that
 with create-from-ISO. Rule to write down: **never clone a VM that has a
 `tpmstate0` volume**, a full clone copies it, which is ADR-0040's shared-vTPM
 problem again. `tpmstate0` v2.0 is added at create. `efidisk0` with

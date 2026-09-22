@@ -4,9 +4,9 @@ SPDX-License-Identifier: Apache-2.0
 -->
 # Threat Model
 
-> **Status:** Living document. Last full pass **2026-09-19**, against the
-> architecture defined by ADR-0001 … ADR-0050 (0043–0049 are reserved by
-> roadmap 70 and unissued).
+> **Status:** Living document. Last full pass **2026-09-22**, against the
+> architecture defined by ADR-0001 … ADR-0055 (0044–0045 and 0048 are
+> reserved by roadmap 17 and unissued; 0049 is Proposed, not implemented).
 > **Method:** asset/actor enumeration, trust-boundary decomposition, STRIDE per
 > boundary, control mapping to the manifests in `deploy/` and the crates in
 > `crates/`.
@@ -45,7 +45,7 @@ authorization and data-flow, not memory corruption.**
 
 | Component | Identity | Namespace | Scope |
 | --- | --- | --- | --- |
-| `banlieue-controller` | `banlieue-controller` | `banlieue-system` | Watches `VirtualMachine`, schedules onto a `Provider`, creates provider infra CRs |
+| `banlieue-controller` | `banlieue-controller` | `banlieue-system` | Watches `VirtualMachine`, schedules onto a `Provider`, creates provider infra CRs. Also runs the `VirtualMachinePool` loop (ADR-0046) and the `VirtualMachineClaim` loop (ADR-0047) — the latter binds a pool member to a subject and destroys it on release |
 | `banlieue-operator` | `banlieue-operator` | `banlieue-system` | Provider lifecycle (ADR-0012): creates provider Deployments, ServiceAccounts, Roles, RoleBindings |
 | `banlieue-provider-vsphere` / `-libvirt` | per-`Provider` SA | `banlieue-system` | Talks to the hypervisor; reconciles infra CRs (`VSphereMachine`, `LibvirtMachine` — ADR-0050) and realises them as real VMs/domains |
 | `banlieue-imagebuilder` | `banlieue-imagebuilder` | `banlieue-system` | Drives kairos `OSArtifact` builds; merges cloud-config (ADR-0037) |
@@ -61,6 +61,9 @@ authorization and data-flow, not memory corruption.**
 | A-3 | VM image artifacts (ISO / raw disk) | `OSArtifact` PVC, then a vSphere datastore under `banlieue-images/` | **Critical** — a tampered image compromises every VM built from it |
 | A-4 | Integrity of the control plane's own decisions | `Provider`, `ProviderClass`, `VMImage`, `VMClass` CRs | High — a forged `Provider` redirects credentials; a forged `VMImage` redirects the fleet's boot media |
 | A-5 | Released binaries and container images | GHCR, GitHub Releases | **Critical** — downstream supply-chain compromise |
+| A-9 | **The subject's own credential (a JWT)** — the thing a sandbox is handed so it can act as its subject | **Never in banlieue.** Broker → in-guest agent over mTLS, after attestation (ADR-0049). Not on a disk, not in a CR, not in a hypervisor channel | **Critical** — it *is* the subject's identity. Kept out of banlieue entirely, which is why no banlieue compromise discloses it |
+| A-8 | **Guest readiness marker** — `/run/banlieue/phase`, written by the guest and read by the provider | guest tmpfs → `qemu-guest-agent` → `LibvirtMachine.status.guestInstalled` (ADR-0043) | Low on its own, but it gates pool membership: a guest that can assert it early gets handed out early. **Not an integrity signal** — see §6/TB-4 and §8 |
+| A-7 | **Claim bindings** — which subject was given which VM, and when | `VirtualMachineClaim.spec.subject` + `status`, mirrored onto the member as `banlieue.io/claim-subject-*` annotations (ADR-0047) | Medium — discloses who was using which sandbox to every reader of the namespace; a *forged* binding makes the record say someone requested a VM they never asked for |
 | A-6 | vTPM identity and sealed disk-encryption keys | vSphere VM, per-clone (ADR-0039/0040); on libvirt, **swtpm state keyed by domain UUID** (ADR-0050) | High — a shared or surviving TPM identity breaks per-VM disk-encryption isolation |
 
 ## 4. Actors
@@ -70,6 +73,7 @@ authorization and data-flow, not memory corruption.**
 | Cluster admin | Full Kubernetes API | Yes — out of scope by policy (`SECURITY.md`) |
 | Platform admin | Creates `ProviderClass`, `Provider`, `VMImage` | **Semi-trusted — must be treated as infrastructure-admin-equivalent** |
 | Tenant / VM author | Creates `VirtualMachine` in a namespace | **Untrusted for confidentiality of A-1/A-2** — see §7 |
+| Claim consumer / sandbox broker | Creates `VirtualMachineClaim`s, holding `create` on them in a namespace | **Bounded by admission**: `spec.subject.id` must equal the authenticated username unless the requester is a declared broker (§7.6). A broker is trusted for attribution by definition |
 | Compromised controller pod | RCE inside one banlieue pod | Untrusted |
 | Compromised hypervisor endpoint | Attacker-controlled host reachable at `spec.connection.endpoint` | Untrusted |
 | External contributor | Opens a PR from a fork | Untrusted |
@@ -82,7 +86,10 @@ authorization and data-flow, not memory corruption.**
   tenant namespace  │  banlieue-system (restricted PSA)                     │
   ┌──────────────┐  │  ┌────────────┐   ┌──────────┐   ┌─────────────────┐  │
   │VirtualMachine├──┼─▶│ controller ├──▶│ operator ├──▶│ provider pod    │  │
-  └──────────────┘  │  └─────┬──────┘   └──────────┘   └────────┬────────┘  │
+  ├──────────────┤  │  └─────┬──────┘   └──────────┘   └────────┬────────┘  │
+  │    Pool /    │  │        │  pool fills; a claim BINDS one   │           │
+  │    Claim     ├──┼───────▶│  member to a subject and         │           │
+  └──────────────┘  │        │  DESTROYS it on release          │           │
                     │        │ TB-2 (Secret read)               │           │
                     │        ▼                                  │ TB-4      │
                     │   ┌─────────┐                             │           │
@@ -127,6 +134,11 @@ authorization and data-flow, not memory corruption.**
 | Resource-exhaustion via absurd specs (`numCpus`, disk counts) | D | schemars `range`/`length`/`maxItems` constraints on `VMClass` and `VSphereMachine` |
 | A `VirtualMachine` names user-data its author cannot read (confused deputy) | E, I | `banlieue-virtualmachine-userdata-authorization` VAP (ADR-0042) uses the CEL `authorizer`: the creating principal must itself be able to `get` the Secret / ConfigMap named by `spec.userData`, in the `VirtualMachine`'s own namespace — `deploy/admission/virtualmachine-userdata-authorization.yaml` |
 | Rendered user-data is readable from `VSphereMachine.spec` / `LibvirtMachine.spec` | I | **No code control — this is the accepted reflection of ADR-0025.** See §7.1 and §8 |
+| **Two claims bind the same warm member**, so one VM is handed to two subjects | I, E | The bind is a JSON merge patch carrying the member's `resourceVersion`, so a member written since the snapshot is rejected `409` and the loser re-picks — `crates/banlieue-controller/src/reconciler/claim.rs`. A member already carrying `banlieue.io/claim` reads as `MemberPhase::Claimed` (`reconciler/pool.rs::member_view`) and `pick_member` filters to `Ready` only (`reconciler/claim_plan.rs`) |
+| **A released member is recycled to a second subject** | I | Release is always deletion: `claim_plan.rs::next_step` has no transition back to an unclaimed state, and `pool_plan`'s invariants 1–2 keep the pool from reclaiming a labelled member. The VM is the isolation boundary, so reuse is the one outcome the design must exclude (ADR-0047) |
+| **A claim attributes a sandbox to a subject that never requested one** | S, R | `banlieue-virtualmachineclaim-subject-authorization` VAP (ADR-0047 Decision 10): `spec.subject.id` must equal the authenticated username, `subject.issuer` must be in an operator allowlist, and `spec` is immutable so the check cannot be undone by a later patch — `deploy/admission/virtualmachineclaim-subject-authorization.yaml`. Declared brokers are exempt from the id check by design (§7.6) |
+| A credential is written into `spec.subject`, which is world-readable in the namespace and copied onto the member | I | Partly controlled: `subject.id` must now equal the authenticated username, so it cannot be an arbitrary string, and `issuer` is allowlisted. Neither stops a determined author from putting a secret in a field shaped like a username — banlieue never reads it as a credential and never forwards it to a guest, but nothing rejects one. See §7.6, §7.10 |
+| `delete virtualmachineclaims` destroys running VMs | D | Equivalent to `delete virtualmachines` by design — releasing a claim *is* destroying the sandbox. RBAC is the only control; §7.10 |
 | User-influenced strings (`domainName`, `pool`, disk/volume names) injected into libvirt domain XML | T, E | Every value is escaped on the way in by `esc()` — all five XML entities, uniformly in text *and* attributes, so there is no context-dependent rule to get wrong — `crates/banlieue-provider-libvirt/src/xml/escape.rs`, applied throughout `xml/domain.rs`; both have dedicated `_tests.rs` |
 
 ### TB-2 — Pods → Secrets
@@ -171,7 +183,12 @@ own identity (which can create Jobs), and starts with zero permissions;
 | MITM / attacker-presented certificate | banlieue owns the `reqwest` client and honours `connection.caBundle` (ADR-0008); CA source validated by `banlieue-provider-cabundle-source` VAP |
 | Hostile or unresponsive endpoint stalls every reconcile | 10 s connect / 120 s request timeouts on the vSphere client; timeouts on libvirt connect, recv, and `Session::send` |
 | Malformed libvirt RPC frames | Wire decoder is continuously fuzzed (`crates/banlieue-libvirt/fuzz`, `.github/workflows/fuzz.yaml`, ClusterFuzzLite); ADR-0050's domain `decode_*` halves are pure and unit-tested against captured wire bytes, so they are in that fuzz surface too |
-| A deleted VM leaves its sealed-key material behind (swtpm state, UEFI NVRAM varstore) | `domain_undefine` takes **no flags parameter** and unconditionally sends `MANAGED_SAVE\|NVRAM\|TPM` (ADR-0050 Decision 5) — the flag cannot be forgotten at a call site — `crates/banlieue-libvirt/src/procs.rs`, proven against a real libvirtd in `tests/live_libvirtd.rs`. **The procedure exists and is correct; no reconciler calls it yet** (§8) — this control is live only once `reconciler/libvirt_machine.rs` lands |
+| A deleted VM leaves its sealed-key material behind (swtpm state, UEFI NVRAM varstore) | `domain_undefine` takes **no flags parameter** and unconditionally sends `MANAGED_SAVE\|NVRAM\|TPM` (ADR-0050 Decision 5) — the flag cannot be forgotten at a call site — `crates/banlieue-libvirt/src/procs.rs`, proven against a real libvirtd in `tests/live_libvirtd.rs`. Live since ADR-0050: `LibvirtMachine`'s finalizer calls it on every teardown — `crates/banlieue-provider-libvirt/src/machine_client.rs` (`undefine`), invoked from `reconciler/libvirtmachine.rs::finalize_backend`, which then verifies the domain is actually gone before deleting its volumes |
+| Something other than the intended guest answers the broker's mTLS connection and receives the subject's token | S | The agent returns a **TPM quote over `status.nonce`**, verified against the EK certificate published on the claim (ADR-0049, ADR-0045). The vTPM is unique per VM by construction — on vSphere because deferred install never installs the golden template so each clone installs with its own vTPM (ADR-0040), on libvirt because swtpm state is keyed by domain UUID. **Not yet implemented**: ADR-0049 is Proposed and ADR-0045 unissued, so today there is nothing to verify a responder against |
+| A token minted for a different service is presented to the agent and accepted | S | `aud` is the agent's **own configured audience** and is deliberately never read from the claim (ADR-0049 Decision 5) — otherwise whoever wrote the claim chooses the audience |
+| A claim names an attacker-controlled issuer, so the agent fetches that attacker's JWKS and every forged token verifies | S, T | The issuer allowlist in `banlieue-virtualmachineclaim-subject-authorization` — added for audit honesty, and load-bearing here: `subject.issuer` is a CR field the agent is asked to trust as a key source (ADR-0049 Decision 7) |
+| A guest asserts `GuestReady` while still installing, or a compromised guest asserts it to be handed out sooner | S, T | **Bounded, not prevented.** The marker is guarded on immucore's active/passive sentinels so the *live installer* cannot assert it (`examples/16-cloud-config-guest-phase.yaml`), but a guest that has already been compromised can write anything. This is why ADR-0043 Decision 9 states the signal is liveness, never integrity: it is not a control against a hostile guest, and the pool hands out fresh, unclaimed VMs. Integrity is ADR-0049's problem (§8) |
+| A guest returns a huge or malformed payload to `guest-file-read`, hoping to fault the provider's reconcile loop | D | The read is capped before decoding (`MARKER_READ_MAX`, checked on the base64 *and* the decoded bytes), every parse failure returns "not installed" rather than an error, and the handle is closed on every path so an agent's handle table cannot be exhausted — `crates/banlieue-provider-libvirt/src/guest.rs`, with dedicated tests for oversize, undecodable and garbage input |
 | A half-failed teardown silently leaves domains defined | libvirt 11.3 *fails* undefine on a UEFI domain without `NVRAM` rather than warning; the error is returned, never swallowed, and the live lifecycle test asserts the domain is actually gone — `crates/banlieue-libvirt/tests/live_libvirtd.rs` |
 | Credentials leak into logs | No secret is ever logged; redacting `Debug`; provider condition messages are the only verbatim text mirrored to user-facing status |
 
@@ -232,7 +249,7 @@ a different assumption is unsafe.
    `banlieue-virtualmachine-userdata-authorization` (ADR-0042) requires the
    *requesting principal* to be authorized for the same read. **A cluster that
    applies `deploy/controller/` without `deploy/admission/` gets the un-checked
-   version of this grant** — see requirement 6. Automation that creates
+   version of this grant** — see requirement 7. Automation that creates
    `VirtualMachine`s must therefore hold `get` on the user-data it names.
 3. **Do not co-locate unrelated Secrets in `banlieue-system`.** The controller's
    grant is namespace-wide, not `resourceNames`-scoped; admission bounds who can
@@ -242,7 +259,33 @@ a different assumption is unsafe.
    hypervisor credentials.
 5. **`Provider` and `ProviderClass` creation is platform-admin-only.** The VAPs
    bound the damage; they do not make these safe to delegate.
-6. **Install the admission policies.** Every control in §6/TB-1 is a
+6. **Install the claim subject policy, and audit its ConfigMap.**
+   `deploy/admission/virtualmachineclaim-subject-authorization.yaml` is what
+   makes `spec.subject` an attribution the API server vouched for rather than
+   free text (ADR-0047 Decision 10). It binds `subject.id` to the
+   authenticated username, confines `subject.issuer` to an allowlist, and
+   makes `spec` immutable so the check cannot be undone by a later patch.
+
+   Two operator obligations come with it:
+   - **The `issuers` list ships with a placeholder.** A cluster that does not
+     edit it rejects every real claim — visibly, which is the intended
+     failure direction.
+   - **The `brokers` list is the trust concentration.** Anyone named there
+     may attribute a sandbox to any identity, so that ConfigMap is as
+     sensitive as the audit trail it underwrites. It is empty by default;
+     alert on changes to it.
+
+   The binding is `parameterNotFoundAction: Deny`, so a missing ConfigMap
+   blocks claims rather than degrading to "any subject is fine".
+
+   **Re-applying the policy file resets the ConfigMap**, because the file
+   ships it — the same property `vmimage-import-source.yaml` has. A
+   `kubectl apply -f deploy/admission/` therefore reverts `issuers`,
+   `brokers` and `usernamePrefix` to their shipped defaults, and the
+   placeholder issuer rejects every real claim. Keep site values in your
+   own overlay or re-apply them after.
+
+7. **Install the admission policies.** Every control in §6/TB-1 is a
    `ValidatingAdmissionPolicy` in `deploy/admission/`. A cluster that skips
    them reverts to the pre-hardening threat surface. **`banlieue bootstrap`
    (ADR-0013) does not emit these policies** — it installs workloads, RBAC and
@@ -251,11 +294,11 @@ a different assumption is unsafe.
    (`*-credentialsref-authorization`, `*-userdata-authorization`) need an API
    server new enough for the CEL `authorizer` variable and are shipped as
    separate files for exactly that reason; both are `failurePolicy: Fail`.
-7. **Pin `VMImage.spec.sources[].importFrom` to digests.** The
+8. **Pin `VMImage.spec.sources[].importFrom` to digests.** The
    `banlieue-vmimage-import-source` VAP enforces a registry allowlist supplied
    as a parameter ConfigMap and **fails closed** if that ConfigMap is absent —
    configure it.
-8. **If you enable `VMClass.spec.tpmEnabled`, use deferred install.** The
+9. **If you enable `VMClass.spec.tpmEnabled`, use deferred install.** The
    requirement is the same on every backend, for different reasons:
    - **vSphere** — the default clone policy duplicates a template's vTPM *and
      its secrets* onto every clone, and banlieue does not set
@@ -269,9 +312,28 @@ a different assumption is unsafe.
 
    Nothing currently *enforces* the pairing — a `tpmEnabled: true` `VMClass`
    with an `installMode: Immediate` image attaches a real TPM and silently
-   encrypts nothing (ADR-0040 Decision 5; roadmap 70 phase A3 proposes
+   encrypts nothing (ADR-0040 Decision 5; roadmap 17 phase A3 proposes
    ADR-0048 to close it). Until then this is an operator responsibility.
-9. **Recommended audit rule:** alert on any `ClusterRoleBinding` created by the
+10. **A claim isolates at the VM boundary, not the Kubernetes one — grant
+    `create` and `delete` on `virtualmachineclaims` narrowly.** A
+    `VirtualMachineClaim` guarantees that one *VM* is used by one subject and
+    then destroyed (ADR-0047). It does **not** partition the Kubernetes
+    namespace: two subjects' sandboxes are ordinary `VirtualMachine`s side by
+    side, so anyone with namespace read sees both bindings, and — per
+    requirement 1 — anyone who can `get` the infra CRs can read the user-data
+    behind either. This is the same single-tenant posture as ADR-0025, applied
+    to a feature whose name invites the opposite assumption.
+
+    Three consequences to enforce by RBAC until Decision 10's policy exists:
+    - `create virtualmachineclaims` lets the holder record **any**
+      `spec.subject`, including someone else's. The binding record (A-7) is
+      only as trustworthy as that grant.
+    - `delete virtualmachineclaims` destroys running VMs.
+    - `spec.subject` is world-readable in the namespace and is copied onto the
+      member as an annotation. Put an identifier there, never a token — the
+      subject's credential belongs on the phase C attested channel, keyed to
+      `status.nonce`.
+11. **Recommended audit rule:** alert on any `ClusterRoleBinding` created by the
    `banlieue-operator` identity whose `roleRef` is not `banlieue-provider-*`
    (accepted-risk monitoring for the operator's RBAC-minting capability).
 
@@ -283,8 +345,11 @@ a different assumption is unsafe.
 | `banlieue-imagebuild` runs `privileged` | kairos' builder genuinely requires loop devices and chroot; isolation is by namespace | kairos supports rootless builds |
 | Rendered user-data is visible in `VSphereMachine.spec` **and `LibvirtMachine.spec`** | Single-tenant, single-namespace posture (ADR-0025). ADR-0042 closed the *escalation* (a principal reaching user-data it could not read); the *reflection* to anyone who can already `get` the infra CR is unchanged and deliberate, and ADR-0050 extends it to a second kind rather than introducing a new risk | A second tenant or namespace becomes real — ADR-0025's superseded per-VM Role design is the shape that scales |
 | The controller's user-data Role is namespace-wide, not `resourceNames`-scoped | The names a validly admitted `VirtualMachine` may cite are unknowable when the manifest is written; authorization moves to admission, where the requesting identity still exists (ADR-0042). A compromise of the controller identity itself is still bounded only by the namespace | The install stops shipping `deploy/admission/`, or per-VM RBAC becomes tractable |
-| A libvirt guest's TPM is **emulated by swtpm on the host**, so a host-root adversary can read the sealed-key material that a physical TPM would protect | This is the libvirt trust model, not a banlieue choice; the hypervisor operator is already semi-trusted (§4) and hypervisor compromise is out of scope (§9). EK trust anchors differ per backend, which roadmap 70 phase F (ADR-0049) is the plan to make explicit via `Provider.spec.attestation.ekTrustBundle` | Attestation ships (ADR-0049), or a libvirt host is no longer operator-trusted |
-| `LibvirtMachine` has no reconciler yet — the CRD is admitted and schedulable but nothing realises it | Not a security exposure: the failure mode is a VM that never appears, not one that appears unsafely. Recorded so the gap is not mistaken for a control | `reconciler/libvirt_machine.rs` lands (roadmap 13) — re-check the deletion/finalizer path at that point, since that is where NVRAM/TPM cleanup is actually invoked |
+| A libvirt guest's TPM is **emulated by swtpm on the host**, so a host-root adversary can read the sealed-key material that a physical TPM would protect | This is the libvirt trust model, not a banlieue choice; the hypervisor operator is already semi-trusted (§4) and hypervisor compromise is out of scope (§9). EK trust anchors differ per backend, which roadmap 17 phase F (ADR-0049) is the plan to make explicit via `Provider.spec.attestation.ekTrustBundle` | Attestation ships (ADR-0049), or a libvirt host is no longer operator-trusted |
+| `GuestReady` can be asserted by any code running as root inside the guest, so it proves which disk booted only for a guest that has not been compromised | It is a *liveness* signal by construction (ADR-0043 Decision 9) and is consumed only to decide when a **fresh, unclaimed** VM joins a warm pool — before any subject has touched it. Treating it as integrity would be the error; the document and the ADR both say so explicitly | Attestation ships (ADR-0049), at which point a TPM quote over the claim nonce is the integrity signal and this one stays what it is |
+| A **broker** both holds subject credentials and is the party that verifies TPM quotes, so its compromise is the design's worst case | Somebody has to hold the credential to deliver it, and somebody has to verify the quote; concentrating both in one audited component is preferable to spreading either. banlieue is deliberately not that component (ADR-0049 Decision 2), so a controller compromise discloses no subject credential | The broker is split into deliver/verify roles, or hardware-backed key custody becomes available to it |
+| A declared **broker** may attribute a sandbox to any identity, so the audit trail is only as honest as the broker is | Handing sandboxes out on behalf of other people is a broker's entire purpose (roadmap phase C); a broker that could only name itself could not broker. The concentration is explicit, empty by default, and confined to one auditable ConfigMap (§7.6) rather than diffused across everyone holding `create` | A broker is compromised, or claims need per-request proof of the subject's consent rather than the broker's assertion |
+| `subject.issuer` is allowlisted but never *verified*: the API server does not reveal which issuer minted the caller's token | Nothing in Kubernetes can attest it, so an allowlist is the strongest available check — it stops a claim naming an issuer the site does not use, which is what would make the recorded attribution meaningless. The claim deliberately carries no token to verify (ADR-0047 Decision 9) | The in-guest agent's JWT validation lands (roadmap phase C), at which point the *guest* verifies issuer, audience and `oid` against the claim |
 | Health endpoint binds `0.0.0.0` and returns a fixed `200` | Standard probe trade-off; carries no data | It ever reports real state |
 | Provider condition messages are mirrored verbatim onto user-facing `VirtualMachine` status | Useful diagnostics; providers are in-tree | A third-party provider ships |
 

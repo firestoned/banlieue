@@ -25,7 +25,7 @@ sequenced.
 > **Reversed.** This originally said to move `docs/roadmap/` to a private
 > folder. Roadmaps are now **checked in** at `.github/community/`, indexed by
 > [`ROADMAPS.md`](../../ROADMAPS.md) at the repo root. Do not move or privatise
-> them. (The MkDocs scaffold itself already shipped — roadmap 14, Phase 1E —
+> them. (The MkDocs scaffold itself already shipped — roadmap 08, Phase 1E —
 > so what is left here is content, not tooling.)
 
 Build out:
@@ -233,7 +233,7 @@ requirements when ready):
 ## 4.10 ADRs (Architecture Decision Records) — largely done
 
 **This workstream overtook its own plan.** `docs/adr/` exists with ~45 ADRs
-(0001–0050, with 0043–0049 reserved by roadmap 70), each following the
+(0001–0050, with 0043–0049 reserved by roadmap 17), each following the
 standard Status / Context / Decision / Consequences template. ADRs are
 already the canonical decision record, and ADD makes writing one **step 1**
 of any architecturally significant change, not a Phase 4 cleanup task
@@ -252,7 +252,7 @@ What remains under this heading:
       imagebuilder-Role meaning of "ADR-0041" and the userdata-authorization
       meaning of "ADR-0042" both stayed put — across the imagebuilder and
       operator crates, RBAC manifests, the CALM model, generated CRDs and API
-      docs, examples, and roadmap 70.
+      docs, examples, and roadmap 17.
 - [ ] **Reconcile `01-decisions.md`.** Its entries have been annotated with
       the ADRs that superseded them; decide whether to retire it entirely or
       keep it as the annotated pre-ADR record. Do not delete it silently —

@@ -151,6 +151,16 @@ pub trait LibvirtMachineClient: Send {
         &mut self,
         domain: &Domain,
     ) -> Result<Option<(Vec<DomainInterface>, InterfaceAddressSource)>>;
+
+    /// Whether the domain's *installed* guest has announced itself
+    /// (ADR-0043).
+    ///
+    /// Infallible on purpose. No agent, no marker, an unreadable one and a
+    /// guest still installing are indistinguishable from "not yet", and a
+    /// `Deferred` member spends most of its life legitimately in that
+    /// state — so a provider must not treat any of them as an error and
+    /// back off.
+    async fn probe_guest(&mut self, domain: &Domain) -> crate::guest::GuestProbe;
 }
 
 /// Diagnostic helper: a domain's addresses as a printable string,
@@ -317,6 +327,10 @@ where
         idempotent(domain_undefine(&mut self.session, domain).await)
     }
 
+    async fn probe_guest(&mut self, domain: &Domain) -> crate::guest::GuestProbe {
+        crate::guest::probe_guest(&mut self.session, domain).await
+    }
+
     async fn domain_addresses(
         &mut self,
         domain: &Domain,
@@ -364,8 +378,28 @@ pub struct FakeMachineClient {
         std::collections::BTreeMap<InterfaceAddressSourceKey, Vec<DomainInterface>>,
     /// Bytes written by `upload_volume`, by volume name.
     pub uploaded: std::collections::BTreeMap<String, Vec<u8>>,
+    /// The XML each volume was created from, by volume name.
+    ///
+    /// Kept because discarding it made this fake more permissive than
+    /// libvirt: `create_volume` used to record only the name, so a test
+    /// asserting a volume's *format* could pass while the document declared
+    /// the wrong one — which is exactly how an overlay went out declaring a
+    /// qcow2 backing file as raw, and booted nothing.
+    pub created_volume_xml: std::collections::BTreeMap<String, String>,
     /// Every call, in order, as `"<op>:<subject>"`.
     pub calls: Vec<String>,
+    /// Domains whose installed guest has announced itself (ADR-0043).
+    ///
+    /// A set rather than a flag so the fake can distinguish "this domain
+    /// reports installed" from "every domain does" — the bug that would
+    /// otherwise hide is a reconciler reading the wrong domain's marker and
+    /// still passing.
+    pub guest_installed: std::collections::BTreeSet<String>,
+    /// Domains whose `qemu-guest-agent` answers at all. Membership of
+    /// `guest_installed` implies it; listing a domain here *without* the
+    /// marker is how a test spells "still installing", which is the state
+    /// the fast poll interval exists for.
+    pub guest_agent: std::collections::BTreeSet<String>,
     /// When set, every call fails with this message.
     pub fail_with: Option<String>,
 }
@@ -426,6 +460,20 @@ impl FakeMachineClient {
 
 #[async_trait]
 impl LibvirtMachineClient for FakeMachineClient {
+    async fn probe_guest(&mut self, domain: &Domain) -> crate::guest::GuestProbe {
+        self.record("probe_guest", &domain.name);
+        // Infallible like the real one, `fail_with` included: on a real host
+        // an unreachable agent is "not yet", not an error, and a fake that
+        // errored here would let a reconciler get that wrong and still pass.
+        if self.guest_installed.contains(&domain.name) {
+            crate::guest::GuestProbe::Installed
+        } else if self.guest_agent.contains(&domain.name) {
+            crate::guest::GuestProbe::NotAnnounced
+        } else {
+            crate::guest::GuestProbe::AgentUnreachable
+        }
+    }
+
     async fn lookup_pool(&mut self, name: &str) -> Result<Option<StoragePool>> {
         self.guard()?;
         self.record("lookup_pool", name);
@@ -458,6 +506,8 @@ impl LibvirtMachineClient for FakeMachineClient {
                 detail: "no <name> element".to_string(),
             })?;
         self.record("create_volume", &name);
+        self.created_volume_xml
+            .insert(name.clone(), xml.to_string());
         let vol = StorageVol {
             pool: pool.name.clone(),
             name: name.clone(),

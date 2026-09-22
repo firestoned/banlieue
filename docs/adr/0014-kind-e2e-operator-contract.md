@@ -6,6 +6,8 @@ SPDX-License-Identifier: Apache-2.0
 
 - **Status:** Accepted
 - **Date:** 2026-07-31
+- **Amended:** 2026-09-20 (suite topology — one test binary split into several,
+  one CI job each)
 - **Deciders:** Erick Bourgeois
 - **Related:** ADR-0003 (per-instance topology — the contract under test);
   ADR-0012 (operator role); ADR-0013 (bootstrap CLI); ADR-0006 (release
@@ -84,19 +86,45 @@ where nothing else created those objects:
 | Shared provider role | `banlieue-provider-<backend>` exists for every compiled-in backend — the operator binds it but cannot create it |
 | Seeding | One ProviderClass per backend, with a non-`latest` image tag |
 
-**`e2e_provider_lifecycle.rs`** — asserts the *reconcile* contract:
+The *reconcile* contract — everything a `Provider` CR makes the operator do —
+is asserted across four more binaries:
 
-| Area | Assertion |
+| Suite | Assertion |
 | --- | --- |
-| Creation | A `Provider` yields Deployment + ServiceAccount + Role + RoleBinding + ClusterRoleBinding, all under the derived name |
-| Shape | Deployment args carry `provider <backend> --provider-name <name>`; selector matches the pod template |
-| Least privilege | The Role grants `get` on exactly the credentials Secret via `resourceNames`, and never `list`/`watch` on Secrets |
-| Ownership | Namespaced objects carry a controlling `ownerReference`; the ClusterRoleBinding carries none |
-| Status ownership | `metadata.managedFields` shows the operator owns `status.workload` and **not** `status.conditions` |
-| Deletion | Deleting the Provider removes all five objects — GC for the owned four, finalizer for the ClusterRoleBinding — and the Provider itself disappears |
-| Pinned namespace | With `workloadNamespace` set, the Deployment and ServiceAccount are left **unowned** (a cross-namespace owner is invalid) and the finalizer deletes them; the Role stays with the Secret, owned |
-| Pause | `spec.paused` stops reconciliation — then unpausing produces the workload, so the absence assertion is not vacuous. Covered for both `Provider` and `ProviderClass` |
-| Class propagation | An image edit reaches existing workloads inside a budget well below the periodic requeue, proving the `ProviderClass` watch — not the timer — delivered it |
+| **`e2e_provider_workload.rs`** | **Creation:** a `Provider` yields Deployment + ServiceAccount + Role + RoleBinding + ClusterRoleBinding, all under the derived name. **Shape:** Deployment args carry `provider <backend> --provider-name <name>`; selector matches the pod template. **Least privilege:** the Role grants `get` on exactly the credentials Secret via `resourceNames`, and never `list`/`watch` on Secrets. **Ownership:** namespaced objects carry a controlling `ownerReference`; the ClusterRoleBinding carries none. **Status ownership:** `metadata.managedFields` shows the operator owns `status.workload` and **not** `status.conditions`. **Deletion:** deleting the Provider removes all five objects — GC for the owned four, finalizer for the ClusterRoleBinding. Run once per backend (vsphere, libvirt) |
+| **`e2e_provider_pause.rs`** | `spec.paused` stops reconciliation — then unpausing produces the workload, so the absence assertion is not vacuous. Covered for both `Provider` and `ProviderClass` |
+| **`e2e_workload_namespace.rs`** | With `workloadNamespace` set, the Deployment and ServiceAccount are left **unowned** (a cross-namespace owner is invalid) and the finalizer deletes them; the Role stays with the Secret, owned |
+| **`e2e_provider_class.rs`** | Swapping `providerClassRef` prunes the superseded workload, including the ClusterRoleBinding GC cannot reach. An image edit reaches existing workloads inside a budget well below the periodic requeue, proving the `ProviderClass` watch — not the timer — delivered it |
+
+### Amendment (2026-09-20): one binary per contract, one CI job per binary
+
+The reconcile assertions above originally lived in a single
+`e2e_provider_lifecycle.rs` — seven tests, 1,291 lines, one `make kind-e2e`
+target, one CI job. That shape had three costs:
+
+- **A failure did not localise.** The job reported "e2e failed"; which of seven
+  independent contracts broke took reading the log.
+- **Everything was serial.** Seven tests, each with a 120s convergence budget
+  per wait and two 20s quiesce windows, ran end to end behind one cold Rust
+  build and one cluster.
+- **A suite could not be re-run alone.** Iterating on the pause contract meant
+  re-running the workloadNamespace and class-propagation tests with it.
+
+The assertions are unchanged; only their packaging is. Each contract is now its
+own cargo test binary with its own `make kind-e2e-<suite>` target, and
+`.github/workflows/e2e.yaml` runs them as a `fail-fast: false` matrix — one job
+per suite, each on its own kind cluster named `banlieue-e2e-<suite>`. The
+fixtures, polling helpers and builders they share live in
+`tests/e2e_common/mod.rs`, so the split costs no duplication.
+
+`make kind-e2e` still runs everything, in sequence, on one cluster — invoked
+from the recipe rather than as prerequisites, so `make -j` cannot parallelise
+suites that share a cluster.
+
+The two shell-driven bootstrap checks were renamed into the same namespace
+(`kind-verify-dry-run` → `kind-e2e-dry-run`, `kind-verify-escape-hatch` →
+`kind-e2e-escape-hatch`) so that every CI job is `make kind-e2e-<suite>` with no
+exceptions.
 
 ### Why the install path gets its own suite
 
@@ -108,9 +136,13 @@ that role lingered in a reused cluster; against a clean one the manifest-based
 suite would have stayed green while every real `bootstrap operator` produced
 provider pods with zero permissions.
 
-CI therefore runs `make kind-e2e-ci`, which installs via **`banlieue bootstrap
-operator`** and then runs both suites. `make kind-e2e` keeps the faster
-manifest-apply path for local iteration.
+CI therefore runs `make kind-e2e-ci E2E_SUITE=<suite>`, which installs via
+**`banlieue bootstrap operator`** before each suite. The manifest-apply path
+stays available for local iteration behind `E2E_INSTALL=manifests`, which skips
+the `banlieue` CLI build. The three bootstrap-specific suites
+(`kind-e2e-bootstrap`, `-dry-run`, `-escape-hatch`) ignore that knob and always
+install via bootstrap — asserting the installer's own output is what they are
+for.
 
 ### Assertions deliberately made over `managedFields`
 
@@ -132,9 +164,11 @@ vacuous-assertion trap as bug-105.
 - **Located in `tests/`**, per `rules/testing.md`. Cargo compiles it as a
   separate crate linking the library externally, so it exercises only the
   public API — appropriate for a black-box test.
-- **All orchestration in the Makefile** (`make kind-e2e`, `make kind-e2e-ci`),
-  per `rules/github-workflows.md`: the workflow installs tools and calls a
-  target, and the identical target runs locally.
+- **All orchestration in the Makefile** (`make kind-e2e-<suite>`, `make
+  kind-e2e-ci`), per `rules/github-workflows.md`: the workflow installs tools
+  and calls a target, and the identical target runs locally. The workflow's job
+  matrix is a transcription of the Makefile's `E2E_SUITES` list, not a second
+  source of truth for what runs.
 
 ### Not modelled in CALM
 
@@ -152,7 +186,9 @@ follows that precedent; the architecture model is unchanged.
 - The suite needs no backend, no credentials and no secrets, so it runs on
   fork PRs — where the release pipeline's signing jobs deliberately do not.
 - A failure localises to the operator, because nothing else is under test.
-- `make kind-e2e` is the same command locally and in CI.
+- `make kind-e2e-<suite>` is the same command locally and in CI.
+- A failure names the contract that broke, and the suites run in parallel
+  rather than end to end.
 
 **Negative / accepted costs**
 
@@ -161,6 +197,13 @@ follows that precedent; the architecture model is unchanged.
   this ADR pretends to close.
 - A kind cluster plus an image build makes this the slowest job in CI; it is
   therefore scoped to paths that can affect it rather than run on every push.
+- Splitting into a matrix pays that cluster-and-build cost **once per suite**
+  rather than once per run. Accepted: the jobs are parallel, so wall-clock time
+  falls even as total runner-minutes rise, and the cargo cache is shared.
+- The suite list now exists in two places — `E2E_SUITES` in the Makefile and the
+  workflow's matrix. A suite added to one and not the other runs locally but not
+  in CI (or names a target that does not exist). Both carry a comment pointing
+  at the other.
 - The suite asserts on derived object names, so renaming the naming scheme
   requires updating it — intentional, since that scheme is public API.
 

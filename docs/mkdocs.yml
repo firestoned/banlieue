@@ -186,6 +186,8 @@ nav:
       - libvirt Provider: guides/libvirt-provider.md
       - cloud-init on libvirt: guides/cloud-init-on-libvirt.md
       - VirtualMachine Pools: guides/virtualmachine-pools.md
+      - VirtualMachine Claims: guides/virtualmachine-claims.md
+      - Testing claim authorization: guides/testing-claim-authorization.md
       - Environment / Provider Isolation: guides/environment-provider-isolation.md
       - Setting up the Kairos Operator: guides/kairos-operator-setup.md
       - Using banlieue-imagebuilder: guides/using-banlieue-imagebuilder.md
@@ -196,6 +198,7 @@ nav:
       - Overview: concepts/index.md
       - Architecture: concepts/architecture.md
       - VirtualMachine: concepts/virtualmachine.md
+      - The Claim Flow, End to End: concepts/virtualmachine-claim-flow.md
       - Provider Model: concepts/providers.md
       - Infrastructure CRDs & CAPI: concepts/infra-crds-capi.md
 
@@ -207,6 +210,7 @@ nav:
   - Developer:
       - Overview: developer/index.md
       - Local Development: developer/local-development.md
+      - OAuth / OIDC Clients: developer/oauth-clients.md
 
   - Security:
       - Threat Model: security/threat-model.md

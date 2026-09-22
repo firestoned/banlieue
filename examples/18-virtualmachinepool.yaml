@@ -49,8 +49,12 @@ spec:
   #                         Deferred`, where InfrastructureReady fires when
   #                         the install STARTS, not when it finishes.
   #
-  # `GuestReady` is not satisfiable yet — ADR-0043 is what publishes that
-  # condition. A pool set to it today reports:
+  # `GuestReady` works on libvirt (ADR-0043), but only for an image built to
+  # send the signal: it needs the cloudConfigs layer from
+  # examples/16-cloud-config-guest-phase.yaml AND qemu-guest-agent installed.
+  # On vSphere the transport is specified but not implemented yet.
+  #
+  # A pool asking for a signal nothing sends reports:
   #
   #   Warm=False  reason=ReadinessSignalAbsent
   #

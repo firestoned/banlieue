@@ -28,7 +28,7 @@ mod tests {
     // readiness: required, no default (ADR-0046 Decision 2)
     // ------------------------------------------------------------------
 
-    /// The decision this CRD exists to encode. Roadmap 70 wanted
+    /// The decision this CRD exists to encode. Roadmap 17 wanted
     /// `GuestReady` as the default, but nothing publishes that condition
     /// until ADR-0043 lands — so a defaulted pool would sit at zero warm
     /// members forever, reporting no error at all. A field whose wrong value

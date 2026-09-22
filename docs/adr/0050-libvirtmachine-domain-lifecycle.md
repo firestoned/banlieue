@@ -5,10 +5,10 @@
 
 ## Context
 
-Roadmap [70](../../.github/community/70-ephemeral-vm-pools.md) wants warm
+Roadmap [17](../../.github/community/17-ephemeral-vm-pools.md) wants warm
 pools of single-use VMs, and the maintainer has **no vSphere access at
 present**, so libvirt is the only backend the work can be tested against. A
-`VirtualMachinePool` creates `VirtualMachine`s and nothing else (roadmap 70,
+`VirtualMachinePool` creates `VirtualMachine`s and nothing else (roadmap 17,
 B1); a `VirtualMachine` is only realised when some provider turns it into an
 infrastructure CR. On libvirt today, nothing does.
 
@@ -32,12 +32,12 @@ State of the libvirt provider at `8360e19`:
 
 So the pool layer is not what is missing. **A pool whose members cannot be
 realised on the backend tests nothing**, and that makes this ADR a
-prerequisite of roadmap 70's live test rather than the phase-D amendment the
+prerequisite of roadmap 17's live test rather than the phase-D amendment the
 roadmap originally described.
 
-### Roadmap 13's client choice is already superseded
+### Roadmap 07's client choice is already superseded
 
-`.github/community/13-phase-1d-libvirt-provider.md` specifies the `virt`
+`.github/community/07-phase-1d-libvirt-provider.md` specifies the `virt`
 crate (libvirt FFI bindings) and a `debian:bookworm-slim` base image carrying
 `libvirt0`. The repo did not go that way: `crates/banlieue-libvirt` is a
 pure-Rust implementation of libvirt's **native RPC protocol** — XDR codec
@@ -114,7 +114,7 @@ reported success.
    provider, which is the opposite of what this ADR is for.
 
 3. **Domain procedures go into `crates/banlieue-libvirt` over the native
-   protocol. Roadmap 13's `virt` FFI choice is superseded** and that document
+   protocol. Roadmap 07's `virt` FFI choice is superseded** and that document
    is amended to say so. Add to `rpc.rs`/`procs.rs`, following the existing
    transcription-comment convention, with pure `encode_*`/`decode_*` halves
    unit-tested against known-good byte sequences and no connection:
@@ -154,7 +154,7 @@ reported success.
    - `Immediate` — overlay a qcow2 on the imported backing file.
    - `Deferred` — create an **empty** volume, attach the image ISO as a
      CD-ROM, boot, let the guest install itself. No template clone at all.
-     This is the shape roadmap 70's pool members need, and on libvirt it is
+     This is the shape roadmap 17's pool members need, and on libvirt it is
      *simpler* than the `Immediate` path rather than harder.
 
 8. **Address discovery is source-ordered, not source-fixed**:
@@ -182,7 +182,7 @@ reported success.
 
 ## Consequences
 
-- Roadmap 13 is amended, not replaced: its NoCloud cloud-init ISO, IPAM,
+- Roadmap 07 is amended, not replaced: its NoCloud cloud-init ISO, IPAM,
   SSH-key Secret and failure-domain sections stand. Its "Libvirt client
   choice" section and the `virt` dependency are struck, and its module layout
   loses `client/` in favour of procedures in `banlieue-libvirt`.
@@ -190,12 +190,12 @@ reported success.
   `genisoimage` system dependency is introduced by this ADR — the NoCloud ISO
   builder remains a pure-Rust concern to be decided when it is written.
 - No `unsafe` enters the provider. The FFI-safety and connection-lifetime
-  gotchas roadmap 13 lists for the `virt` crate stop applying.
+  gotchas roadmap 07 lists for the `virt` crate stop applying.
 - Every domain procedure is unit-testable without libvirtd, because the
   encode/decode halves are plain functions over bytes — the same property
   that made the storage procedures testable.
 - `banlieue-controller` gains its first real multi-provider code path. That
-  is load-bearing beyond libvirt: Proxmox (roadmap 12) becomes a third
+  is load-bearing beyond libvirt: Proxmox (roadmap 06) becomes a third
   builder rather than a second special case.
 - Until ADR-0051 lands, a `VMClass` with `tpmEnabled: true` cannot schedule
   onto a libvirt Provider, because no libvirt failure domain advertises

@@ -46,6 +46,8 @@ use banlieue_provider_sdk::finalizer::{ensure_finalizer, remove_finalizer};
 use banlieue_provider_sdk::reconciler::{requeue_default, requeue_long, requeue_on_error};
 use banlieue_provider_sdk::ssa::FIELD_MANAGER_PROVIDER_LIBVIRT;
 use banlieue_provider_sdk::status::{condition_status, set_condition};
+
+use crate::guest::{GuestProbe, MARKER_PATH};
 use kube::{
     ResourceExt,
     api::{Api, Patch, PatchParams},
@@ -138,13 +140,13 @@ pub async fn reconcile(machine: Arc<LibvirtMachine>, ctx: Arc<Context>) -> Resul
         Ok(observed) => {
             let status = build_status(&machine, &observed, generation);
             patch_status(&api, &name, &status).await?;
-            // A domain with no address yet is still booting, which is the
-            // common case for a Deferred install — check back sooner.
-            Ok(if observed.addresses.is_empty() {
-                requeue_default()
-            } else {
-                requeue_long()
-            })
+            Ok(
+                if should_poll_soon(observed.guest, !observed.addresses.is_empty()) {
+                    requeue_default()
+                } else {
+                    requeue_long()
+                },
+            )
         }
         Err(e) => {
             warn!(error = %e, "libvirt machine convergence failed");
@@ -177,6 +179,11 @@ pub struct Observed {
     pub addresses: Vec<MachineAddress>,
     /// Which source produced `addresses`, if any did.
     pub address_source: Option<LibvirtAddressSource>,
+    /// What the guest probe found this pass (ADR-0043).
+    ///
+    /// The raw observation, not the stored one: stickiness is applied in
+    /// `build_status`, so this stays a fact about right now.
+    pub guest: GuestProbe,
 }
 
 /// Bring the host in line with `spec`, and report what was observed.
@@ -303,11 +310,20 @@ pub async fn converge(
         None => (Vec::new(), None),
     };
 
+    // Only ask a running domain: the agent cannot answer otherwise, and a
+    // pointless round trip per reconcile against every stopped VM adds up.
+    let guest = if state.is_running() {
+        client.probe_guest(&domain).await
+    } else {
+        GuestProbe::AgentUnreachable
+    };
+
     Ok(Observed {
         domain,
         state,
         addresses,
         address_source,
+        guest,
     })
 }
 
@@ -343,7 +359,16 @@ async fn ensure_disks(
                 qcow2_volume_xml(&os_name, capacity)
             } else {
                 // Immediate: a copy-on-write overlay over the imported image.
-                qcow2_overlay_volume_xml(&os_name, capacity, &source.key, BANLIEUE_BACKING_FORMAT)
+                // The format comes from the backing volume's own name, never
+                // from the constant: libvirt does not probe a backing file,
+                // so declaring raw over a qcow2 image is accepted and the
+                // guest then reads the qcow2 header as its partition table.
+                qcow2_overlay_volume_xml(
+                    &os_name,
+                    capacity,
+                    &source.key,
+                    backing_format(&source.name),
+                )
             }
             .map_err(Error::from)?;
             let v = client.create_volume(pool, &xml).await?;
@@ -515,7 +540,7 @@ fn build_status(
 
     // `provisioned` is the CAPI contract's "the infrastructure exists" flag,
     // not "the guest is up". A defined, running domain satisfies it; whether
-    // anything is listening inside is `GuestReady`'s question (roadmap 70 A2),
+    // anything is listening inside is `GuestReady`'s question (roadmap 17 A2),
     // which is deliberately a separate signal.
     let provisioned = observed.state.is_running();
     status.initialization = InitializationStatus {
@@ -527,6 +552,8 @@ fn build_status(
     status.address_source = observed.address_source.clone();
     status.failure_domain = machine.spec.failure_domain.clone();
     status.tpm_attached = machine.spec.tpm_enabled.then_some(true);
+    status.guest_installed =
+        sticky_guest_installed(status.guest_installed, observed.guest.is_installed());
     status.observed_generation = Some(generation);
 
     let (cond_status, reason, message) = if provisioned {
@@ -550,6 +577,43 @@ fn build_status(
         message,
         generation,
     );
+
+    // GuestReady is additive and independent: `Ready` above does not consult
+    // it, because making it do so would regress every Immediate-mode VM
+    // whose image was never built to send the marker (ADR-0043 Decision 4).
+    //
+    // It is published ONLY when this provider can actually evaluate the
+    // signal. An unreachable agent means the image cannot send it at all —
+    // the same position vSphere is in until its transport lands — and
+    // absence is what `pool.rs::readiness_signal_absent` reads to say
+    // `ReadinessSignalAbsent`. Publishing a blanket `False` instead makes a
+    // pool report `Filling` — "wait a bit" — forever for an image that can
+    // never announce, which is the failure ADR-0046 Decision 3 exists to
+    // prevent. Observed on a real cluster before this was fixed.
+    let installed = status.guest_installed == Some(true);
+    if installed || observed.guest == GuestProbe::NotAnnounced {
+        let (guest_status, guest_reason, guest_message) = if installed {
+            (
+                condition_status::TRUE,
+                "GuestAnnounced",
+                "the installed guest announced itself".to_string(),
+            )
+        } else {
+            (
+                condition_status::FALSE,
+                "GuestNotAnnounced",
+                format!("qemu-guest-agent is answering but reports no {MARKER_PATH} marker"),
+            )
+        };
+        set_condition(
+            &mut status.conditions,
+            condition_types::GUEST_READY,
+            guest_status,
+            guest_reason,
+            guest_message,
+            generation,
+        );
+    }
     status
 }
 
@@ -691,6 +755,39 @@ async fn patch_status(
     )
     .await?;
     Ok(())
+}
+
+/// Whether to come back at the short interval rather than the long one.
+///
+/// Fast only while the answer is expected to change soon (ADR-0043
+/// Decision 8): a domain still coming up, or one whose agent is answering
+/// but which has not announced yet — a Deferred install in progress.
+///
+/// An **unreachable agent is not a reason to poll fast**, which is the
+/// correction Decision 8 needed. An `Immediate` image has no phase stage
+/// and usually no guest agent, so "poll until installed" would poll every
+/// 30s forever, per VM, for a signal that is never coming.
+#[must_use]
+pub fn should_poll_soon(guest: GuestProbe, has_addresses: bool) -> bool {
+    if !has_addresses {
+        return true;
+    }
+    guest == GuestProbe::NotAnnounced
+}
+
+/// Fold a fresh guest observation into the stored one, stickily.
+///
+/// Once `Some(true)`, it stays: the marker lives in the guest's `/run` and
+/// so does not survive a power cycle, but a VM that was stopped has not
+/// become uninstalled (ADR-0043 Decision 5). `None` means nothing has
+/// looked yet, which is the expected state for the whole of a `Deferred`
+/// image's install.
+#[must_use]
+pub fn sticky_guest_installed(previous: Option<bool>, observed: bool) -> Option<bool> {
+    if previous == Some(true) {
+        return Some(true);
+    }
+    Some(observed)
 }
 
 #[cfg(test)]

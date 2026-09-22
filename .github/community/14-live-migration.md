@@ -75,7 +75,7 @@ actually buildable today (same provider class).
 - Only `VSphereMachine`/`VSphereCluster` exist as real infra CRDs
   (`banlieue-api/src/infrastructure/`). `banlieue-provider-proxmox` and
   `banlieue-provider-libvirt` are scaffold-only per
-  `12-phase-1c-proxmox-provider.md` / `13-phase-1d-libvirt-provider.md` —
+  `06-phase-1c-proxmox-provider.md` / `07-phase-1d-libvirt-provider.md` —
   Phase A work here should start and stay scoped to vSphere until at
   least one other provider actually has an infra CRD implemented.
 

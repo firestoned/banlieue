@@ -23,7 +23,18 @@ docs/__pycache__/
 
 .DS_Store
 
-.wolf
+# OpenWolf working directory. Most of it is local session state; three files
+# are checked in because they are knowledge other contributors need.
+#
+# NOTE the shape: a bare `.wolf` would exclude the DIRECTORY, and git never
+# descends into an excluded directory — so `!.wolf/cerebrum.md` would be
+# silently ineffective. Exclude the contents, then re-include by name.
+.wolf/*
+!.wolf/README.md
+!.wolf/OPENWOLF.md
+!.wolf/cerebrum.md
+!.wolf/buglog.json
+!.wolf/anatomy.md
 
 # RustRover
 #  JetBrains specific template is maintained in a separate JetBrains.gitignore that can

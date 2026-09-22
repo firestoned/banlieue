@@ -6,7 +6,7 @@
 
 ## Context
 
-Roadmap [70](../../.github/community/70-ephemeral-vm-pools.md) wants a
+Roadmap [17](../../.github/community/17-ephemeral-vm-pools.md) wants a
 consumer to ask for a VM and get one in seconds. Nothing in banlieue can do
 that today, and the reason is not performance work left undone — it is a
 constraint recorded two ADRs ago.
@@ -33,7 +33,7 @@ That is what a pool is: capacity paid for before demand arrives.
 
 ### The ordering problem this ADR has to answer
 
-Roadmap 70 specifies `readiness: GuestReady` as the pool's default, and
+Roadmap 17 specifies `readiness: GuestReady` as the pool's default, and
 phase A2 (ADR-0043) is what would publish that condition: the *installed*
 guest announcing itself, as distinct from `InfrastructureReady`, which for a
 Deferred image fires when the install **starts**.
@@ -60,7 +60,7 @@ worst available failure: silent, and indistinguishable from a slow install.
    later, that is a different kind with a different name and its own ADR.)
 
 2. **`spec.readiness` is required, with no default.** This departs from
-   roadmap 70's "GuestReady by default" for the reason in Context: until
+   roadmap 17's "GuestReady by default" for the reason in Context: until
    ADR-0043 lands, that default silently never warms. Making the field
    required forces the operator to state which signal they mean, which is
    Non-Negotiable #4 applied to the one field where guessing wrong produces
@@ -138,7 +138,7 @@ worst available failure: silent, and indistinguishable from a slow install.
 - Until ADR-0043 lands, the only usable `readiness` value is
   `InfrastructureReady`, which is correct for `Immediate` images and **wrong
   for Deferred ones** — it fires when the install starts. So a pool of
-  TPM-sealed sandboxes, the thing roadmap 70 is ultimately for, is not
+  TPM-sealed sandboxes, the thing roadmap 17 is ultimately for, is not
   achievable until A2. Pools of `Immediate` VMs are achievable immediately.
   This ADR deliberately lands the pool first anyway: the planner, rollout and
   capacity logic are independent of which condition is watched, and none of

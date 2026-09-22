@@ -12,9 +12,8 @@ never will be
 !!! note "Scope"
     A pool **maintains a warm set**. Handing a member out to a specific
     consumer — binding, expiry, and the guarantee that a member is used once
-    and then destroyed — is `VirtualMachineClaim`, which is not implemented
-    yet (ADR-0047). Today you can watch a pool fill, refill and roll; you
-    cannot yet claim from it.
+    and then destroyed — is `VirtualMachineClaim`. See the
+    [VirtualMachine Claims guide](virtualmachine-claims.md).
 
 ## Why a pool exists at all
 
@@ -65,15 +64,30 @@ deliberate.
 | Value | Means | Use when |
 | --- | --- | --- |
 | `InfrastructureReady` | the backend says the VM exists and is running | `installMode: Immediate` |
-| `GuestReady` | the **installed guest** booted and announced itself | `installMode: Deferred` |
+| `GuestReady` | the **installed guest** booted and announced itself | `installMode: Deferred` (libvirt only, for now) |
 
 For a Deferred image, `InfrastructureReady` fires when the install
 **starts**, not when it finishes. A pool using it would hand out VMs that
 are still installing.
 
-!!! warning "`GuestReady` is not satisfiable yet"
-    ADR-0043 is what publishes that condition, and it is not implemented. A
-    pool set to `GuestReady` today reports:
+Every cheap "is the guest up" signal has the same flaw, which is why
+`GuestReady` is not one: a guest-agent ping, a DHCP lease and an open SSH
+port are all satisfied by the installer environment while it is still
+overwriting the disk. The distinguishing fact is *which disk booted*
+([ADR-0043](https://github.com/firestoned/banlieue/blob/main/docs/adr/0043-guestready-installed-guest-signal.md)).
+
+!!! warning "`GuestReady` needs an image built to send the signal"
+    ADR-0043 publishes the condition **on libvirt**, from a marker the
+    installed guest writes and the provider reads back through
+    `qemu-guest-agent`. Two things are required of the image:
+
+    1. the `cloudConfigs` layer from
+       `examples/16-cloud-config-guest-phase.yaml`, and
+    2. `qemu-guest-agent` installed and enabled.
+
+    Without `qemu-guest-agent` the provider cannot evaluate the signal at
+    all, so it leaves `GuestReady` **absent** rather than false, and the
+    pool reports:
 
     ```text
     Warm=False   reason=ReadinessSignalAbsent
@@ -81,12 +95,23 @@ are still installing.
              spec.readiness selects a signal nothing is setting
     ```
 
-    and never fills. That condition exists because the alternative — a pool
-    sitting at zero with no explanation — is indistinguishable from a slow
-    install.
+    That is the pool telling you the signal it was asked to wait for is one
+    nothing sends — not a slow install. Rebuild the image with the layer.
 
-    The practical consequence: **pools of TPM-sealed VMs are not achievable
-    until ADR-0043 lands.** Pools of `Immediate` VMs work today.
+    **On vSphere the transport is specified but not implemented**, so a
+    vSphere pool set to `GuestReady` reports `ReadinessSignalAbsent`
+    regardless of its image.
+
+    Verified against a real host: a stock **Kairos Ubuntu 24.04** image
+    boots but ships **no `qemu-guest-agent`**, so it cannot satisfy
+    `GuestReady` as-is. Check before adopting it:
+
+    ```sh
+    virsh qemu-agent-command <domain> '{"execute":"guest-ping"}'
+    ```
+
+    An error rather than `{"return":{}}` means the agent is missing, and
+    the pool will report `ReadinessSignalAbsent` forever.
 
 This is also why the field has no default. `GuestReady` is the *right*
 default for the use case pools were built for, and defaulting to it would
@@ -188,7 +213,7 @@ kubectl get virtualmachinepool sandbox-pool -n banlieue-system -o yaml
 | `replicas` | members of any phase, excluding ones already being deleted |
 | `available` | Ready and unclaimed — what could be handed out right now |
 | `provisioning` | members still coming up |
-| `claimed` | members held by a claim (always 0 until ADR-0047) |
+| `claimed` | members held by a [claim](virtualmachine-claims.md) |
 | `imageRevision` | the image build new members are being created from |
 
 Conditions:
@@ -218,9 +243,9 @@ garbage-collects them, and each member's own finalizer blocks until the
 backend VM is really gone. The base image the members were built from is
 never touched — it belongs to the `VMImage`.
 
-Once `VirtualMachineClaim` lands (ADR-0047), a claimed member is re-parented
-to its claim at bind time, so deleting a pool will not kill VMs that are in
-use.
+A **claimed** member is re-parented to its claim at bind time, so deleting a
+pool does not kill VMs that are in use — only the warm, unclaimed members go
+with it. See [VirtualMachine Claims](virtualmachine-claims.md).
 
 ## Troubleshooting
 
@@ -239,3 +264,4 @@ use.
 - [`VirtualMachinePool` API reference](../reference/api.md#virtualmachinepool)
 - [ADR-0046 — `VirtualMachinePool`: warm, never-reused VMs](https://github.com/firestoned/banlieue/blob/main/docs/adr/0046-virtualmachinepool.md)
 - [`VirtualMachine` API reference](../reference/api.md#virtualmachine) — a member is one of these
+- [VirtualMachine Claims guide](virtualmachine-claims.md) — how a member leaves the pool

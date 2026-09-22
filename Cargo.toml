@@ -63,6 +63,15 @@ async-trait = "0.1"
 # Artifact integrity for provider import Jobs (SEC-004): the import subcommand
 # hashes the built raw disk before streaming it to a backend.
 sha2 = "0.11"
+# OS randomness for VirtualMachineClaim nonces (ADR-0047): a claim's nonce
+# must be unpredictable to a guest that has not been told it, so it comes
+# from the OS CSPRNG and never from a UID or a clock. Already in the tree
+# transitively; pinned here because the attestation work in roadmap 17's
+# later phases needs the same source.
+getrandom = "0.3"
+# Decoding qemu-guest-agent payloads: `guest-file-read` returns file contents
+# as base64 (ADR-0043). Well-known, actively maintained, decode-only use.
+base64 = "0.22"
 
 # vSphere (provider-vsphere only; pinned here so the long compile is cached at
 # workspace level and any future provider that needs it gets the same pin).

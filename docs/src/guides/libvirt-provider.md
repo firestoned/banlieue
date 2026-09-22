@@ -43,9 +43,40 @@ scp scripts/bootstrap-libvirt-tls.sh kvm-1.example:/tmp/
 ssh kvm-1.example 'sudo /tmp/bootstrap-libvirt-tls.sh'
 ```
 
-It leaves the client credentials in `~/.config/banlieue/libvirt/` on the
-machine you ran it from — **outside any repository**, mode `600`, because they
-include a private key.
+It leaves the credentials **on the host**, in libvirt's documented locations:
+
+```text
+/etc/pki/CA/cacert.pem            the CA that signed the server certificate
+/etc/pki/libvirt/clientcert.pem   the client identity
+/etc/pki/libvirt/private/clientkey.pem
+```
+
+Copy them down to the machine you will run `virsh`, the live tests, or
+`kubectl` from. **Keep one directory per host** — several hypervisors may
+share a CA but each has its own server certificate, and a single flat
+directory quietly becomes "whichever host I set up last":
+
+```sh
+mkdir -p ~/.config/banlieue/<host>/libvirt
+cd ~/.config/banlieue/<host>/libvirt
+scp <host>:/etc/pki/CA/cacert.pem              ca.pem
+scp <host>:/etc/pki/libvirt/clientcert.pem     client-cert.pem
+sudo scp <host>:/etc/pki/libvirt/private/clientkey.pem client-key.pem
+chmod 600 client-key.pem
+```
+
+!!! warning "The filenames change on the way down, and that is deliberate"
+    The host uses libvirt's names (`cacert.pem`, `clientcert.pem`,
+    `clientkey.pem`); the workstation copy uses `ca.pem`, `client-cert.pem`
+    and `client-key.pem`, which is what `LIBVIRT_TLS_DIR` consumers expect —
+    every live test in this repository reads exactly those three.
+
+    Copy them across without renaming and the tests fail with
+    `No such file or directory`, which reads like a missing directory rather
+    than a naming mismatch.
+
+Keep the directory **outside any repository**; `client-key.pem` is a private
+key and is mode `600` above for that reason.
 
 Confirm the host answers before involving Kubernetes:
 
@@ -63,13 +94,20 @@ used in every realistic deployment, so falling back to public trust roots would
 only fail later and less clearly.
 
 ```sh
+CREDS=~/.config/banlieue/<host>/libvirt
+
 kubectl -n banlieue-system create secret generic libvirt-edge-creds \
-  --from-file=tls.crt="$HOME/.config/banlieue/libvirt/clientcert.pem" \
-  --from-file=tls.key="$HOME/.config/banlieue/libvirt/clientkey.pem"
+  --from-file=tls.crt="$CREDS/client-cert.pem" \
+  --from-file=tls.key="$CREDS/client-key.pem"
 
 kubectl -n banlieue-system create configmap libvirt-edge-ca \
-  --from-file=ca.crt="$HOME/.config/banlieue/libvirt/cacert.pem"
+  --from-file=ca.crt="$CREDS/ca.pem"
 ```
+
+The Secret keys are `tls.crt` / `tls.key` regardless of the filenames on
+disk — those are what the provider reads
+(`crates/banlieue-provider-libvirt/src/credentials.rs`), and the CA
+ConfigMap's key defaults to `ca.crt`.
 
 ## 3. Register the `Provider`
 

@@ -341,7 +341,7 @@ fn render_tpm() -> &'static str {
 /// The `qemu-guest-agent` channel.
 ///
 /// Always present, never conditional. It is how `GuestReady` will be
-/// satisfied on libvirt (roadmap 70, A2) and one of the three sources for
+/// satisfied on libvirt (roadmap 17, A2) and one of the three sources for
 /// address discovery — and a domain defined without it cannot grow one
 /// without a redefine, so the cheap thing is to always have it.
 fn render_agent_channel() -> &'static str {

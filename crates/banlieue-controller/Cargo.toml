@@ -36,3 +36,9 @@ tracing.workspace = true
 clap.workspace = true
 chrono.workspace = true
 async-trait.workspace = true
+# Claim nonces (ADR-0047 Decision 8).
+getrandom.workspace = true
+
+[dev-dependencies]
+# `live_claim` drives the claim reconciler against a real API server.
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }

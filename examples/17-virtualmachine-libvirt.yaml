@@ -8,7 +8,7 @@
 # and note that this file assumes its `standard` storage class (pool
 # `default`) and `mgmt` network class.
 #
-# (Examples 15 and 16 are reserved by roadmap 70 for the VirtualMachinePool
+# (Examples 15 and 16 are reserved by roadmap 17 for the VirtualMachinePool
 # and its guest-phase cloud-config, which land later.)
 #
 # WHAT HAPPENS WHEN YOU APPLY THIS

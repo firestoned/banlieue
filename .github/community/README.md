@@ -10,18 +10,20 @@ This directory holds the roadmap docs for building banlieue.
 | 01 | `01-decisions.md` | Locked design decisions with rationale | Before any phase |
 | 02 | `02-conventions.md` | Code style, error handling, testing, observability | Before writing code |
 | 03 | `03-availability-zones-and-datastore-tiering.md` | AZ model: uniform tiering, local-only datastores, no cross-datastore access | Before failure-domain / scheduler work |
-| 10 | `10-phase-1a-controller-and-sdk.md` | Main controller + provider SDK | Phase 1A |
-| 11 | `11-phase-1b-vsphere-provider.md` | vSphere provider (`vim_rs`) | Phase 1B |
-| 12 | `12-phase-1c-proxmox-provider.md` | Proxmox provider | Phase 1C |
-| 13 | `13-phase-1d-libvirt-provider.md` | Libvirt provider | Phase 1D |
-| 14 | `14-phase-1e-docs.md` | MkDocs Material site scaffold (mirrors 5-spot) | Parallel with 1A–1D |
-| 20 | `20-phase-2-snapshots.md` | Snapshots + GFS scheduling | Phase 2 |
-| 30 | `30-phase-3-provider-lifecycle.md` | ProviderClass + auto-Deployment | Phase 3 |
-| 40 | `40-phase-4-finos-ready.md` | Polish, governance, CAPI integration, release | Phase 4 |
-| 50 | `50-ipam-pool-integration.md` | CAPI IPAM pool integration (ADR-0033) — deferred, not started | After the virtrigaud migration; needs a decision from the existing IPAM system's owning team first |
-| 51 | `51-live-migration.md` | Same-class live migration, e.g. vSphere relocate (ADR-0036) — deferred, not started | After ADR-0035's placement-drift watch made `Recreate` fire more often; cross-class migration explicitly out of scope |
-| 60 | `60-scorecard-remediation.md` | OSSF Scorecard: what to click, and which checks are deliberately capped | Before touching repo settings or "fixing" a Scorecard alert |
-| 70 | `70-ephemeral-vm-pools.md` | `VirtualMachinePool` + `VirtualMachineClaim`: warm, never-reused, TPM-sealed single-use VMs | Largest open initiative; read after 13 (libvirt is its first live target) |
+| 04 | `04-phase-1a-controller-and-sdk.md` | Main controller + provider SDK | Phase 1A |
+| 05 | `05-phase-1b-vsphere-provider.md` | vSphere provider (`vim_rs`) | Phase 1B |
+| 06 | `06-phase-1c-proxmox-provider.md` | Proxmox provider | Phase 1C |
+| 07 | `07-phase-1d-libvirt-provider.md` | Libvirt provider | Phase 1D |
+| 08 | `08-phase-1e-docs.md` | MkDocs Material site scaffold (mirrors 5-spot) | Parallel with 1A–1D |
+| 09 | `09-phase-1f-cloud-hypervisor-provider.md` | Cloud Hypervisor provider: daemonless VMM, host-resident provider vs libvirt `ch` driver gate | After 07; read with 17 (its first consumer) |
+| 10 | `10-phase-2-snapshots.md` | Snapshots + GFS scheduling | Phase 2 |
+| 11 | `11-phase-3-provider-lifecycle.md` | ProviderClass + auto-Deployment | Phase 3 |
+| 12 | `12-phase-4-finos-ready.md` | Polish, governance, CAPI integration, release | Phase 4 |
+| 13 | `13-ipam-pool-integration.md` | CAPI IPAM pool integration (ADR-0033) — deferred, not started | After the virtrigaud migration; needs a decision from the existing IPAM system's owning team first |
+| 14 | `14-live-migration.md` | Same-class live migration, e.g. vSphere relocate (ADR-0036) — deferred, not started | After ADR-0035's placement-drift watch made `Recreate` fire more often; cross-class migration explicitly out of scope |
+| 15 | `15-vsphere-disk-image-import.md` | vSphere import from a raw disk as VMDK, next to the ISO path; first-party VMDK writer | Before touching `import.rs` or `BuildArtifactKind`; read ADR-0010, 0020, 0021, 0040 first |
+| 16 | `16-scorecard-remediation.md` | OSSF Scorecard: what to click, and which checks are deliberately capped | Before touching repo settings or "fixing" a Scorecard alert |
+| 17 | `17-ephemeral-vm-pools.md` | `VirtualMachinePool` + `VirtualMachineClaim`: warm, never-reused, TPM-sealed single-use VMs | Largest open initiative; read after 07 (libvirt is its first live target) |
 
 Status for every row above lives in [`ROADMAPS.md`](../../ROADMAPS.md) at the
 repo root — this table is the reading order, that one is the status board.
@@ -52,6 +54,7 @@ Phase 1A (controller + SDK)  ✅
    ├─→ Phase 1B (vSphere)    ✅
    ├─→ Phase 1C (Proxmox)    ⛔   can run in parallel after 1A lands
    ├─→ Phase 1D (libvirt)    🔶
+   ├─→ Phase 1F (Cloud Hyp.) ⛔   after 1D; reuses its seed + import patterns
    └─→ Phase 1E (MkDocs)     🔶   no preconditions
          │
          ▼
@@ -63,7 +66,7 @@ Phase 1A (controller + SDK)  ✅
          ▼
    Phase 4 (FINOS-ready)     🔶   everything that's left
 
-   70 (ephemeral VM pools)   ⛔   gated on 1D for live testing
+   17 (ephemeral VM pools)   🔶   gated on 1D for live testing
 ```
 
 ## Updates to these docs

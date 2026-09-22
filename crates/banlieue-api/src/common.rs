@@ -533,6 +533,16 @@ pub mod condition_reasons {
 pub mod condition_types {
     pub const READY: &str = "Ready";
     pub const INFRASTRUCTURE_READY: &str = "InfrastructureReady";
+    /// The *installed* guest has announced itself (ADR-0043).
+    ///
+    /// Distinct from [`INFRASTRUCTURE_READY`], which for a `Deferred` image
+    /// fires when the install *starts*. Additive and opt-in: `Ready` does
+    /// not depend on it, because making it do so would regress every
+    /// `Immediate`-mode VM whose image was never built to send the signal.
+    ///
+    /// A liveness signal, never an integrity one — a compromised guest can
+    /// write the same marker.
+    pub const GUEST_READY: &str = "GuestReady";
     pub const SCHEDULED: &str = "Scheduled";
     pub const PLACEMENT_VALID: &str = "PlacementValid";
     pub const MIGRATING: &str = "Migrating";

@@ -26,6 +26,7 @@ pub mod cloudinit;
 pub mod context;
 pub mod credentials;
 pub mod error;
+pub mod guest;
 pub mod import;
 pub mod machine_client;
 pub mod reconciler;

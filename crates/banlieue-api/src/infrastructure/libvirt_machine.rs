@@ -79,7 +79,7 @@ pub struct LibvirtMachineSpec {
     /// scheduler writes the chosen failure domain here.
     ///
     /// libvirt has no cluster or datacenter hierarchy, so a failure domain is
-    /// simply one host (see roadmap 13) — which makes this field carry more
+    /// simply one host (see roadmap 07) — which makes this field carry more
     /// weight than on vSphere, not less: it is the only placement signal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure_domain: Option<String>,
@@ -207,7 +207,7 @@ pub enum LibvirtBootSourceKind {
     ///
     /// Slower — a full unattended install per VM — but the only shape that
     /// can produce a disk sealed to that VM's own vTPM, and the shape
-    /// roadmap 70's pool members use. On libvirt this path is *simpler* than
+    /// roadmap 17's pool members use. On libvirt this path is *simpler* than
     /// `BackingVolume`: no template, no backing chain, nothing to copy.
     InstallMedia,
 }
@@ -357,6 +357,19 @@ pub struct LibvirtMachineStatus {
     /// CAPI contract field (optional): VM addresses.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub addresses: Vec<MachineAddress>,
+
+    /// Whether the *installed* guest has announced itself (ADR-0043).
+    ///
+    /// **Sticky once true.** The marker lives in the guest's `/run`, so it
+    /// does not survive a power cycle — but a VM that was stopped has not
+    /// become uninstalled. Without stickiness a warm pool member would drop
+    /// out of the pool every time it was powered off and back on.
+    ///
+    /// `None` means "not observed yet", which is the expected state for the
+    /// whole of a `Deferred` image's install. Not part of the CAPI
+    /// contract.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guest_installed: Option<bool>,
 
     /// libvirt's UUID for the domain, in its 36-character textual form. The
     /// domain's real identity — stable across rename and host restart — and

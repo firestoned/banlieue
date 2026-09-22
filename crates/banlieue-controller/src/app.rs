@@ -19,7 +19,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context as _, Result};
-use banlieue_api::banlieue::{Provider, VMClass, VMImage, VirtualMachine, VirtualMachinePool};
+use banlieue_api::banlieue::{
+    Provider, VMClass, VMImage, VirtualMachine, VirtualMachineClaim, VirtualMachinePool,
+};
 use banlieue_api::infrastructure::{LibvirtMachine, VSphereCluster, VSphereMachine};
 use banlieue_provider_sdk::bootstrap::{init_tracing, serve_health, shutdown_signal};
 use banlieue_provider_sdk::client::build_client;
@@ -37,6 +39,7 @@ use tracing::{debug, error, info};
 
 use crate::{
     context::Context,
+    reconciler::claim,
     reconciler::pool,
     reconciler::virtualmachine::{error_policy, reconcile},
     reconciler::vmimage,
@@ -331,12 +334,37 @@ pub async fn run(cli: Cli) -> Result<()> {
             }
         });
 
+    // VirtualMachineClaim (ADR-0047). Owns its bound member — re-parented
+    // from the pool at bind time — so the member going Ready, or being
+    // destroyed, reaches the claim without waiting for a periodic requeue.
+    info!("starting VirtualMachineClaim controller");
+    let claim_api: Api<VirtualMachineClaim> = match cli.namespace.as_deref() {
+        Some(ns) => Api::namespaced(client.clone(), ns),
+        None => Api::all(client.clone()),
+    };
+    let claim_member_api: Api<VirtualMachine> = match cli.namespace.as_deref() {
+        Some(ns) => Api::namespaced(client.clone(), ns),
+        None => Api::all(client.clone()),
+    };
+    let claim_fut = Controller::new(claim_api, Config::default())
+        .owns(claim_member_api, Config::default())
+        .run(claim::reconcile, claim::error_policy, ctx.clone())
+        .for_each(|res| async move {
+            match res {
+                Ok((obj, _)) => debug!(kind = "VirtualMachineClaim", ?obj, "reconciled"),
+                Err(e) => error!(kind = "VirtualMachineClaim", error = %e, "reconcile error"),
+            }
+        });
+
     tokio::select! {
         () = controller_fut => {
             info!("VirtualMachine controller stream ended");
         }
         () = pool_fut => {
             info!("VirtualMachinePool controller stream ended");
+        }
+        () = claim_fut => {
+            info!("VirtualMachineClaim controller stream ended");
         }
         () = image_fut => {
             info!("VMImage controller stream ended");

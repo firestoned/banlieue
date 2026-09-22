@@ -129,7 +129,7 @@ spec:
                   scheduler writes the chosen failure domain here.
 
                   libvirt has no cluster or datacenter hierarchy, so a failure domain is
-                  simply one host (see roadmap 13) — which makes this field carry more
+                  simply one host (see roadmap 07) — which makes this field carry more
                   weight than on vSphere, not less: it is the only placement signal.
                 nullable: true
                 type: string
@@ -424,6 +424,20 @@ spec:
                   the domain actually landed on.
                 nullable: true
                 type: string
+              guestInstalled:
+                description: |-
+                  Whether the *installed* guest has announced itself (ADR-0043).
+
+                  **Sticky once true.** The marker lives in the guest's `/run`, so it
+                  does not survive a power cycle — but a VM that was stopped has not
+                  become uninstalled. Without stickiness a warm pool member would drop
+                  out of the pool every time it was powered off and back on.
+
+                  `None` means "not observed yet", which is the expected state for the
+                  whole of a `Deferred` image's install. Not part of the CAPI
+                  contract.
+                nullable: true
+                type: boolean
               initialization:
                 default: {}
                 description: 'CAPI contract field: replaces the deprecated v1beta1 `status.ready`.'

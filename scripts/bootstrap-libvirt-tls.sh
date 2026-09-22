@@ -60,7 +60,16 @@ SECRET_OUT="${SECRET_OUT:-./libvirt-client-tls-secret.yaml}"
 SECRET_NAME="${SECRET_NAME:-libvirt-client-creds}"
 SECRET_NAMESPACE="${SECRET_NAMESPACE:-banlieue-system}"
 
+# FORCE regenerates EVERYTHING, the CA included -- which invalidates every
+# client certificate already handed out. FORCE_SERVER reissues only the server
+# certificate, leaving the CA and all client certs alone.
+#
+# That distinction matters because "add a SAN" is by far the most common
+# reason to re-run this (a host joins a tailnet, an address changes), and
+# before FORCE_SERVER existed the only lever also rotated the CA -- so the
+# cheap, routine fix carried the most expensive possible side effect.
 FORCE="${FORCE:-false}"
+FORCE_SERVER="${FORCE_SERVER:-false}"
 
 log()  { echo "==> $*" >&2; }
 warn() { echo "!!! $*" >&2; }
@@ -74,9 +83,16 @@ check_deps() {
 # Skip regeneration unless FORCE -- reissuing a CA silently invalidates every
 # client certificate already handed out.
 keep_existing() {
-  local f="$1"
-  [[ -f "$f" && "$FORCE" != "true" ]] && { log "$f exists, keeping (FORCE=true to regenerate)"; return 0; }
+  local f="$1" force="${2:-$FORCE}"
+  [[ -f "$f" && "$force" != "true" ]] && { log "$f exists, keeping (FORCE=true to regenerate)"; return 0; }
   return 1
+}
+
+# True when the server certificate should be reissued. Deliberately separate
+# from the CA: `$0 server` calls make_ca only to ENSURE a CA exists, so FORCE
+# must not reach it and rotate the thing every client trusts.
+force_server() {
+  [[ "$FORCE" == "true" || "$FORCE_SERVER" == "true" ]] && echo true || echo false
 }
 
 make_ca() {
@@ -110,8 +126,49 @@ EOF
 # the address most easily forgotten. libvirt validates the server certificate
 # against whatever the client dialled, so a cert covering only the hostname
 # fails with an opaque TLS error the moment anything connects by IP.
+# The host's tailnet identity, taken from tailscale itself rather than from
+# interface enumeration.
+#
+# Both are needed and neither is reliably found by `ip addr`. The MagicDNS
+# name is not `hostname -f` and appears on no interface at all, so a
+# tailnet-connected host ends up with a certificate covering its tailnet
+# ADDRESS but not the NAME clients naturally dial -- which fails as
+# `certificate not valid for name ...`, the opaque error this script's header
+# warns about.
+#
+# It is also the most durable of the three identities: a LAN address is DHCP
+# and moves, `hostname -f` depends on local resolver config, but a tailnet
+# name and its 100.64/10 address are assigned by the tailnet and stay put.
+tailnet_dns() {
+  command -v tailscale >/dev/null 2>&1 || return 0
+  command -v python3   >/dev/null 2>&1 || return 0
+  tailscale status --json 2>/dev/null | python3 -c '
+import json, sys
+try:
+    print(json.load(sys.stdin).get("Self", {}).get("DNSName", "").rstrip("."))
+except Exception:
+    pass' 2>/dev/null
+}
+
+tailnet_ip() {
+  command -v tailscale >/dev/null 2>&1 || return 0
+  tailscale ip -4 2>/dev/null | head -1
+}
+
 detect_sans() {
-  [[ -z "$SAN_DNS" ]] && SAN_DNS="$(hostname) $(hostname -f 2>/dev/null || true)"
+  local ts_dns ts_ip
+  ts_dns="$(tailnet_dns)"
+  ts_ip="$(tailnet_ip)"
+
+  # Running on a tailnet but unable to read the name is the one case that
+  # would silently reproduce the bug this function exists to prevent.
+  if command -v tailscale >/dev/null 2>&1 && [[ -z "$ts_dns" ]]; then
+    warn "tailscale is installed but its MagicDNS name could not be read."
+    warn "  The certificate will NOT cover <host>.<tailnet>.ts.net."
+    warn "  Pass it explicitly, e.g. SAN_DNS=\"\$(hostname) \$(hostname -f) host.tailnet.ts.net\""
+  fi
+
+  [[ -z "$SAN_DNS" ]] && SAN_DNS="$(hostname) $(hostname -f 2>/dev/null || true) $ts_dns"
   if [[ -z "$SAN_IPS" ]]; then
     if ! command -v ip >/dev/null 2>&1; then
       warn "\`ip\` not found: cannot auto-detect addresses (is this a Linux libvirt host?)."
@@ -119,8 +176,18 @@ detect_sans() {
       exit 1
     fi
     SAN_IPS="$(ip -4 -o addr show scope global | awk '{split($4,a,"/"); print a[1]}' | tr '\n' ' ')"
+    # Belt and braces: the tailnet address is normally scope-global and so is
+    # already in that list, but it is the one address whose absence is worst
+    # (it is how anything off-LAN reaches this host). san_lines() dedupes.
+    SAN_IPS="$SAN_IPS $ts_ip"
   fi
   [[ -n "${SAN_IPS// /}" ]] || { warn "no addresses detected; set SAN_IPS explicitly"; exit 1; }
+
+  # Normalise so what gets logged is exactly what gets issued. san_lines()
+  # sorts and dedupes for the template anyway; without this the log shows
+  # duplicates and readers reasonably wonder which list is real.
+  SAN_DNS="$(echo "$SAN_DNS" | tr ' ' '\n' | grep -v '^$' | sort -u | tr '\n' ' ')"
+  SAN_IPS="$(echo "$SAN_IPS" | tr ' ' '\n' | grep -v '^$' | sort -u | tr '\n' ' ')"
 }
 
 # Emit the dns_name/ip_address SAN lines for the server template, deduplicated
@@ -132,16 +199,43 @@ san_lines() {
 }
 
 make_server_cert() {
-  keep_existing "$LIBVIRT_PKI/servercert.pem" && return 0
+  keep_existing "$LIBVIRT_PKI/servercert.pem" "$(force_server)" && return 0
+
+  # Signing needs the CA PRIVATE key, which on a multi-host setup lives on
+  # exactly one machine. Without this check certtool fails into 2>/dev/null
+  # below and leaves a missing or truncated certificate behind -- a silent
+  # half-failure that surfaces later as a TLS handshake error on a host
+  # nobody was touching.
+  if [[ ! -f "$CA_DIR/cakey.pem" ]]; then
+    warn "No CA private key at $CA_DIR/cakey.pem -- cannot sign a server certificate here."
+    warn "  This host trusts the CA (cacert.pem) but does not hold it. Either:"
+    warn "    1. run this on the CA host with SERVER_CN/SAN_DNS/SAN_IPS set for THIS"
+    warn "       host, then copy servercert.pem + private/serverkey.pem back, or"
+    warn "    2. copy cakey.pem here temporarily, re-run, and shred it afterwards."
+    warn "  Do not generate a new CA: every client certificate already issued"
+    warn "  chains to the existing one and would stop working."
+    exit 1
+  fi
+
   detect_sans
 
   log "Generating server certificate (cn=$SERVER_CN)"
   log "  SAN dns: $SAN_DNS"
   log "  SAN ips: $SAN_IPS"
-  certtool --generate-privkey > "$LIBVIRT_PKI/private/serverkey.pem" 2>/dev/null
-  chmod 600 "$LIBVIRT_PKI/private/serverkey.pem"
 
-  local tmpl; tmpl="$(mktemp)"
+  # Build the new key and certificate OUT OF PLACE, and install both only
+  # once both exist. Writing serverkey.pem first and signing afterwards --
+  # the obvious order -- leaves a new key beside the OLD certificate if the
+  # signature fails, and libvirtd then refuses to start TLS at all. Reissuing
+  # a certificate must never be able to take the host offline.
+  local newkey newcert tmpl
+  newkey="$(mktemp)"; newcert="$(mktemp)"; tmpl="$(mktemp)"
+  # shellcheck disable=SC2064  # expand now: these paths must not change
+  trap "rm -f '$newkey' '$newcert' '$tmpl'" RETURN
+
+  certtool --generate-privkey > "$newkey" 2>/dev/null
+  chmod 600 "$newkey"
+
   {
     echo "organization = \"$ORG\""
     echo "cn = \"$SERVER_CN\""
@@ -152,18 +246,122 @@ make_server_cert() {
     echo "signing_key"
   } >"$tmpl"
 
-  certtool --generate-certificate \
-    --load-privkey "$LIBVIRT_PKI/private/serverkey.pem" \
+  # Errors are NOT swallowed: a failed signature must not look like success.
+  if ! certtool --generate-certificate \
+    --load-privkey "$newkey" \
     --load-ca-certificate "$CA_DIR/cacert.pem" \
     --load-ca-privkey "$CA_DIR/cakey.pem" \
     --template "$tmpl" \
-    --outfile "$LIBVIRT_PKI/servercert.pem" 2>/dev/null
+    --outfile "$newcert"; then
+    warn "certtool failed to sign the server certificate — nothing was changed"
+    exit 1
+  fi
+  [[ -s "$newcert" ]] || { warn "signed certificate is empty — nothing was changed"; exit 1; }
+
+  # Keep the outgoing pair until the new one is in place, so a bad reissue
+  # can be undone by hand.
+  if [[ -f "$LIBVIRT_PKI/servercert.pem" ]]; then
+    cp -p "$LIBVIRT_PKI/servercert.pem" "$LIBVIRT_PKI/servercert.pem.prev"
+    cp -p "$LIBVIRT_PKI/private/serverkey.pem" "$LIBVIRT_PKI/private/serverkey.pem.prev" 2>/dev/null || true
+    log "  previous pair saved as *.prev"
+  fi
+
+  install -m600 "$newkey" "$LIBVIRT_PKI/private/serverkey.pem"
+  install -m644 "$newcert" "$LIBVIRT_PKI/servercert.pem"
+
+  log "  Issued. Restart libvirtd for it to take effect:"
+  log "    sudo systemctl restart libvirtd"
+}
+
+# ---------------------------------------------------------------------------
+# Two-host flow: certify a host that does NOT hold the CA private key.
+#
+# The alternative people reach for is copying cakey.pem to the other host, or
+# copying a freshly-made server key back from the CA host. Both move a private
+# key across the network; the first moves the ONE key that compromises every
+# certificate this CA will ever issue. With a CSR nothing secret moves at all:
+# the server key is generated on the host that will use it and never leaves,
+# and only a signing request and a public certificate cross the wire.
+# ---------------------------------------------------------------------------
+CSR_OUT="${CSR_OUT:-/tmp/banlieue-server.csr}"
+CERT_OUT="${CERT_OUT:-/tmp/banlieue-server.pem}"
+
+server_template() {
+  echo "organization = \"$ORG\""
+  echo "cn = \"$SERVER_CN\""
+  san_lines
+  echo "expiration_days = $CERT_DAYS"
+  echo "tls_www_server"
+  echo "encryption_key"
+  echo "signing_key"
+}
+
+# Run on the host that NEEDS a certificate.
+make_server_csr() {
+  mkdir -p "$LIBVIRT_PKI/private"; chmod 700 "$LIBVIRT_PKI/private"
+  detect_sans
+
+  local key="$LIBVIRT_PKI/private/serverkey.pem"
+  if [[ ! -f "$key" || "$(force_server)" == "true" ]]; then
+    log "Generating server private key (stays on this host)"
+    certtool --generate-privkey > "$key" 2>/dev/null
+    chmod 600 "$key"
+  else
+    log "$key exists, reusing (FORCE_SERVER=true to regenerate)"
+  fi
+
+  local tmpl; tmpl="$(mktemp)"
+  server_template >"$tmpl"
+  if ! certtool --generate-request --load-privkey "$key" \
+       --template "$tmpl" --outfile "$CSR_OUT"; then
+    rm -f "$tmpl"; warn "certtool failed to generate the request"; exit 1
+  fi
   rm -f "$tmpl"
-  chmod 644 "$LIBVIRT_PKI/servercert.pem"
+
+  log "Request written to $CSR_OUT"
+  log ""
+  log "On the CA host, sign it with these SANs (they describe THIS host):"
+  log "  scp $CSR_OUT <ca-host>:/tmp/"
+  log "  sudo SERVER_CN=\"$SERVER_CN\" \\"
+  log "       SAN_DNS=\"$SAN_DNS\" \\"
+  log "       SAN_IPS=\"$SAN_IPS\" \\"
+  log "       CSR_IN=$CSR_OUT $0 sign"
+  log "  # then copy $CERT_OUT back and install it:"
+  log "  sudo install -m644 $CERT_OUT $LIBVIRT_PKI/servercert.pem"
+  log "  sudo systemctl restart libvirtd"
+}
+
+# Run on the CA host. SANs are NOT read from the request: certtool takes them
+# from the template, so they must be passed explicitly -- which is why
+# `csr` prints the exact command above rather than leaving it to be retyped.
+sign_csr() {
+  local csr="${CSR_IN:-$CSR_OUT}"
+  [[ -f "$csr" ]] || { warn "no request at $csr (set CSR_IN)"; exit 1; }
+  [[ -f "$CA_DIR/cakey.pem" ]] || { warn "no CA private key at $CA_DIR/cakey.pem -- this is not the CA host"; exit 1; }
+  [[ -n "$SAN_DNS" && -n "$SAN_IPS" ]] || {
+    warn "set SAN_DNS and SAN_IPS explicitly: they describe the REQUESTING host,"
+    warn "not this one, so auto-detection would certify the wrong machine."
+    exit 1; }
+
+  log "Signing $csr for cn=$SERVER_CN"
+  log "  SAN dns: $SAN_DNS"
+  log "  SAN ips: $SAN_IPS"
+  local tmpl; tmpl="$(mktemp)"
+  server_template >"$tmpl"
+  if ! certtool --generate-certificate --load-request "$csr" \
+       --load-ca-certificate "$CA_DIR/cacert.pem" \
+       --load-ca-privkey "$CA_DIR/cakey.pem" \
+       --template "$tmpl" --outfile "$CERT_OUT"; then
+    rm -f "$tmpl"; warn "certtool failed to sign the request"; exit 1
+  fi
+  rm -f "$tmpl"
+  [[ -s "$CERT_OUT" ]] || { warn "signed certificate is empty"; exit 1; }
+  chmod 644 "$CERT_OUT"
+  log "Signed certificate at $CERT_OUT -- copy it back to the requesting host."
 }
 
 make_client_cert() {
-  keep_existing "$LIBVIRT_PKI/clientcert.pem" && return 0
+  keep_existing "$LIBVIRT_PKI/clientcert.pem" "$FORCE" && return 0
 
   log "Generating client certificate (cn=$CLIENT_CN)"
   certtool --generate-privkey > "$LIBVIRT_PKI/private/clientkey.pem" 2>/dev/null
@@ -325,9 +523,31 @@ status() {
   done
 }
 
+# Read-only: print exactly the SANs a server certificate would be issued
+# with, and how they compare to the one already installed.
+#
+# Worth having because the failure this script guards against is silent
+# until a client dials the missing name, by which point the certificate is
+# already deployed and a restart away from being noticed.
+show_sans() {
+  detect_sans
+  echo "would issue cn=$SERVER_CN with:"
+  echo "  SAN dns: $SAN_DNS"
+  echo "  SAN ips: $SAN_IPS"
+  local cert="$LIBVIRT_PKI/servercert.pem"
+  if [[ -f "$cert" ]] && command -v openssl >/dev/null 2>&1; then
+    echo "currently installed:"
+    openssl x509 -in "$cert" -noout -ext subjectAltName 2>/dev/null \
+      | tail -n +2 | sed 's/^ */  /'
+  fi
+}
+
 main() {
   case "${1:-all}" in
     ca)        check_deps; make_ca ;;
+    sans)      show_sans ;;
+    csr)       check_deps; make_server_csr ;;
+    sign)      check_deps; sign_csr ;;
     server)    check_deps; make_ca; make_server_cert ;;
     client)    check_deps; make_ca; make_client_cert ;;
     configure) check_deps; configure_libvirtd; verify ;;
@@ -344,7 +564,21 @@ main() {
       write_secret
       ;;
     *)
-      echo "Usage: $0 [all|ca|server|client|configure|verify|secret|status]" >&2
+      echo "Usage: $0 [all|ca|server|client|configure|verify|secret|status|sans|csr|sign]" >&2
+      echo "" >&2
+      echo "Env:" >&2
+      echo "  FORCE=true         regenerate EVERYTHING, CA included (invalidates all client certs)" >&2
+      echo "  FORCE_SERVER=true  reissue only the server certificate (safe: CA and clients untouched)" >&2
+      echo "  SAN_DNS / SAN_IPS  override SAN auto-detection entirely" >&2
+      echo "" >&2
+      echo "  $0 sans            show what SANs would be used, change nothing" >&2
+      echo "" >&2
+      echo "To add a SAN on a host that HOLDS the CA key:" >&2
+      echo "  sudo FORCE_SERVER=true $0 server && sudo systemctl restart libvirtd" >&2
+      echo "" >&2
+      echo "On a host that does NOT hold the CA key, no private key may move:" >&2
+      echo "  sudo FORCE_SERVER=true $0 csr    # here; prints the sign command" >&2
+      echo "  ... sign on the CA host, copy the certificate back ..." >&2
       exit 1
       ;;
   esac

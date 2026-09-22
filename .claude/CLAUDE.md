@@ -116,6 +116,13 @@ live in `.github/community/`, following the existing numeric-prefix style
 matching `docs/adr/NNNN-title.md`. (`README.md` in that directory keeps its
 conventional uppercase name.)
 
+Numbers are **contiguous from `00`, two digits, no gaps and no decade
+grouping** — the prefix is a position in the reading order, not a category.
+Inserting or retiring a roadmap renumbers the run and fixes every reference in
+the same commit, including `roadmap NN` prose in ADRs, `docs/src/`, examples
+and Rust doc comments (which regenerate into `deploy/crds/`). Full rule:
+`rules/documentation.md` → *Roadmap Document Naming*.
+
 Update `ROADMAPS.md`'s status row in the same PR/commit that changes a
 roadmap item's state — it's a status board, not a description of intent.
 Task-level detail stays inside the individual roadmap doc; `ROADMAPS.md`

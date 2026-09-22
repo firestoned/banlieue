@@ -22,6 +22,8 @@ kube.workspace = true
 k8s-openapi.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+# qemu-guest-agent returns file contents base64-encoded (ADR-0043).
+base64.workspace = true
 
 thiserror.workspace = true
 anyhow.workspace = true
@@ -39,3 +41,7 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"
 # Timestamps for the e2e status conditions.
 chrono.workspace = true
 tempfile.workspace = true
+# `e2e_pool_claim` generates scratch namespace suffixes and catches panics so
+# teardown always runs.
+getrandom.workspace = true
+futures.workspace = true

@@ -304,7 +304,7 @@ fn partition_declared<T: HasName>(
     (present, missing)
 }
 
-/// Minimal accessor so pools and networks share [`partition_declared`].
+/// Minimal accessor so pools and networks share `partition_declared`.
 pub trait HasName {
     /// The backend object's name.
     fn name(&self) -> &str;

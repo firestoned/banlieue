@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Erick Bourgeois, banlieue
 // SPDX-License-Identifier: Apache-2.0
-//! `banlieue.io/v1alpha1` VirtualMachinePool CRD (roadmap 70, ADR-0046).
+//! `banlieue.io/v1alpha1` VirtualMachinePool CRD (roadmap 17, ADR-0046).
 //!
 //! A pool keeps a number of *already-installed, never-used* VirtualMachines
 //! warm so that a consumer does not wait out a Deferred-mode install
@@ -63,6 +63,10 @@ pub mod pool_condition_reasons {
     pub const NO_MEMBER_AVAILABLE: &str = "NoMemberAvailable";
     pub const POOL_NOT_FOUND: &str = "PoolNotFound";
     pub const EXPIRED: &str = "Expired";
+    /// The claim was deleted; its member is being destroyed. Distinct from
+    /// `Expired` (the TTL ran out) and from `MemberLost` (the member
+    /// vanished on its own) — the three differ in who ended the hold.
+    pub const RELEASED: &str = "Released";
     pub const MEMBER_LOST: &str = "MemberLost";
 }
 

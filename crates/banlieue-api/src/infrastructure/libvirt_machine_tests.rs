@@ -338,4 +338,34 @@ mod tests {
         let json = serde_json::to_value(&t).unwrap();
         assert!(json["template"]["spec"]["domainName"].is_string(), "{json}");
     }
+
+    // ------------------------------------------------------------------
+    // guestInstalled (ADR-0043)
+    // ------------------------------------------------------------------
+
+    /// Three states, not two. `None` is "not observed yet" — the expected
+    /// state for the whole of a Deferred image's install — and collapsing
+    /// it into `false` would lose the distinction between "still
+    /// installing" and "checked, and it is not installed".
+    #[test]
+    fn guest_installed_is_tri_state_and_absent_by_default() {
+        let st = LibvirtMachineStatus::default();
+        assert_eq!(st.guest_installed, None);
+        let json = serde_json::to_value(&st).unwrap();
+        assert!(
+            json.get("guestInstalled").is_none(),
+            "an unobserved guest must not serialize a value: {json}"
+        );
+    }
+
+    #[test]
+    fn guest_installed_round_trips_as_camel_case() {
+        let json = serde_json::json!({ "guestInstalled": true });
+        let st: LibvirtMachineStatus = serde_json::from_value(json).unwrap();
+        assert_eq!(st.guest_installed, Some(true));
+        assert_eq!(
+            serde_json::to_value(&st).unwrap()["guestInstalled"],
+            serde_json::json!(true)
+        );
+    }
 }

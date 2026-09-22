@@ -8,6 +8,44 @@ Applies to: code changes, CRD changes, API changes, configuration changes, archi
 
 ---
 
+## Roadmap Document Naming (hard rule)
+
+Roadmap docs live in `.github/community/`, indexed by `ROADMAPS.md` at the
+repo root. Their filenames obey three rules, with no exceptions:
+
+1. **Lowercase, hyphens only.** `14-live-migration.md` — never
+   `14-LIVE-MIGRATION.md`, never `14_live_migration.md`. Same rule as
+   `docs/adr/NNNN-title.md`. `README.md` in that directory is the sole
+   uppercase name.
+2. **Zero-padded two-digit prefix, contiguous from `00`.** No gaps, no decade
+   grouping — `00` through `NN` in one run. A number is a position in the
+   reading order, not a category.
+3. **Renumbering is a whole-repo edit.** Inserting or retiring a roadmap
+   renumbers the run after it, so the same commit must also fix:
+   - `ROADMAPS.md` rows (label **and** link target) and
+     `.github/community/README.md` (reading-order table, first column
+     included, plus the phase-dependency graph);
+   - the numbered `# NN: Title` H1 inside any doc that carries one;
+   - cross-links between roadmap docs;
+   - every `roadmap NN` prose reference — these reach well outside the docs,
+     into `docs/adr/`, `docs/src/`, `examples/`, `Cargo.toml` and Rust doc
+     comments. A doc comment under `crates/banlieue-api/src/` also lands in
+     `deploy/crds/*.yaml`, so run the `regen-crds` skill afterwards.
+
+Refer to a roadmap in prose by its padded number — "roadmap 07", not
+"roadmap 7" — so the reference greps against the filename.
+
+Verify with one command; it should return nothing outside the range:
+
+```sh
+rg -ioN 'roadmaps? \[?[0-9]{2}' --glob '!target/**' . | sort -u
+ls .github/community/ | rg -v '^README\.md$'   # must be 00..NN, all lowercase
+```
+
+Past entries in `.claude/CHANGELOG.md` keep the numbers that were true when
+they were written — they are a historical record, not an index. A renumbering
+commit records the old → new mapping there instead.
+
 ## Documentation Update Workflow
 
 1. **Analyze the change**: user-facing impact? architectural implications? new APIs/config?

@@ -163,6 +163,34 @@ of two design choices: the [abstraction principle](reasoning/abstraction-princip
 and the [CRD-only contract](reasoning/crd-only-contract.md). If you only have
 time to read two pages of *Why banlieue?*, read those.
 
+## Warm pools and single-use sandboxes
+
+One class of VM cannot be provisioned on demand at all. A disk sealed to a
+per-VM vTPM can only be produced by letting the guest install itself on first
+boot with its own TPM attached ([ADR-0040](https://github.com/firestoned/banlieue/blob/main/docs/adr/0040-deferred-install-for-vtpm-encryption.md)),
+which costs minutes — and the slowness *is* the security property, so no
+provisioning cleverness removes it. The only way to hand such a VM over
+quickly is to have installed it already.
+
+Two more kinds cover that, built on the same uniform substrate as everything
+above:
+
+- **[`VirtualMachinePool`](guides/virtualmachine-pools.md)** maintains a warm
+  set: it refills as members leave, reaps ones poisoned mid-install, and rolls
+  the set when the image is rebuilt. It creates nothing but ordinary
+  `VirtualMachine`s — which is why there is no `VSpherePool` or `LibvirtPool`
+  and never will be.
+- **[`VirtualMachineClaim`](guides/virtualmachine-claims.md)** hands one member
+  to one subject, **once**. There is no unbind and no return-to-pool: the VM
+  itself is the isolation boundary between subjects, so release is always
+  deletion, and deleting a claim blocks until the backend VM is really gone.
+
+That pair is what makes banlieue usable as a sandbox substrate for CI jobs and
+AI agents. Both are implemented and validated end-to-end against a real libvirt
+host; the higher-level `AgentSandbox` wrapper
+([ADR-0055](https://github.com/firestoned/banlieue/blob/main/docs/adr/0055-agentsandbox.md))
+is designed but not yet built.
+
 ## What banlieue is **not**
 
 - Not a hypervisor — it does not run VMs, it drives existing hypervisors.
@@ -185,3 +213,6 @@ for the full version.
   to write one.
 - [Guides](guides/index.md) — install the controller and the vSphere provider on
   a real cluster.
+- [VirtualMachine Pools](guides/virtualmachine-pools.md) and
+  [Claims](guides/virtualmachine-claims.md) — warm capacity, and handing one
+  member to one subject exactly once.
