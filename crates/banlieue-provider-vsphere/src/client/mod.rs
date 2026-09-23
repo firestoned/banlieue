@@ -311,6 +311,15 @@ pub trait VSphereClient: Send + Sync {
     /// exactly, is the current hypothesis under live validation, not yet
     /// a confirmed fix.
     async fn grow_os_disk(&self, vm_moref: &str, size_gi_b: u32) -> Result<()>;
+
+    /// Read one `extraConfig` value off `vm_moref` (ADR-0043) — the vSphere
+    /// half of the installed-guest signal: a guest sets `guestinfo.*` keys
+    /// with `vmware-rpctool`, and they surface here in
+    /// `VirtualMachineConfigInfo.extraConfig` with no agent protocol to
+    /// negotiate, unlike libvirt's `qemu-guest-agent` transport. `None` when
+    /// `key` is absent — the ordinary case for most of a `Deferred`
+    /// member's life, not an error.
+    async fn guest_info(&self, vm_moref: &str, key: &str) -> Result<Option<String>>;
 }
 
 /// Everything [`VSphereClient::clone_vm`] needs to clone a per-zone template

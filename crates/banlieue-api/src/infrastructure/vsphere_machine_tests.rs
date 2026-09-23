@@ -316,6 +316,7 @@ mod tests {
             instance_uuid: Some("uuid-1234".to_string()),
             observed_power_state: Some(PowerState::PoweredOn),
             tpm_attached: Some(true),
+            guest_installed: Some(true),
             conditions: Vec::new(),
             observed_generation: Some(2),
         };
@@ -375,6 +376,32 @@ mod tests {
         let s = VSphereMachineStatus::default();
         let json = serde_json::to_value(&s).unwrap();
         assert!(!json.as_object().unwrap().contains_key("tpmAttached"));
+    }
+
+    // ----------------------------------------------------------------------
+    // guestInstalled (ADR-0043, vSphere transport)
+    // ----------------------------------------------------------------------
+
+    #[test]
+    fn guest_installed_is_tri_state_and_absent_by_default() {
+        let s = VSphereMachineStatus::default();
+        assert_eq!(s.guest_installed, None);
+        let json = serde_json::to_value(&s).unwrap();
+        assert!(
+            json.get("guestInstalled").is_none(),
+            "default status must not emit guestInstalled at all"
+        );
+    }
+
+    #[test]
+    fn guest_installed_round_trips_as_camel_case() {
+        let json = serde_json::json!({ "guestInstalled": true });
+        let st: VSphereMachineStatus = serde_json::from_value(json).unwrap();
+        assert_eq!(st.guest_installed, Some(true));
+        assert_eq!(
+            serde_json::to_value(&st).unwrap()["guestInstalled"],
+            serde_json::json!(true)
+        );
     }
 
     // ----------------------------------------------------------------------

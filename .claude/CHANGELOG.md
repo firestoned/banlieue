@@ -1,5 +1,92 @@
 # Changelog
 
+## [2026-09-23 20:45] - ADR-0043's vSphere transport: closed end-to-end; CRD drift + admission policy gap fixed
+
+**Author:** Erick Bourgeois
+
+### Context
+Closes out roadmap 17's A2 item on vSphere: rebuilt `debian-tpm-dev-v0.4.0`
+with the vSphere `vmware-rpctool info-set` cloud-config stage
+(`examples/16-cloud-config-guest-phase.yaml`) uncommented, recreated the
+VM, and confirmed live that a real guest driving the channel — not just the
+channel decoding correctly — produces `GuestReady=True`. Two more real
+issues surfaced along the way, both operational rather than code defects.
+
+### Fixed
+- **`VMImage` deletion stuck forever.** `banlieue-vmimage-import-source`'s
+  `ValidatingAdmissionPolicy` re-validates the *entire*
+  `spec.sources[].importFrom` on every `UPDATE` to a `vmimages` object,
+  including a finalizer-only patch during deletion. Once the backend
+  template teardown finished, the finalizer-removal update was rejected
+  forever by the same allowlist check that (correctly) gates `CREATE`,
+  because this environment's internal registry (e.g.
+  `docker.example.internal`) had never been added
+  to the `banlieue-vmimage-allowed-registries` ConfigMap. Fixed by adding
+  it. **Design gap still open**: this policy shape traps *any* `VMImage`
+  whose registry later falls out of the allowlist — it can never be
+  deleted again. Worth a `matchCondition` fix so a finalizer-only removal
+  during deletion skips the full-spec check; not attempted here (an
+  admission-policy change is architecturally significant per this repo's
+  own rules and deserves its own ADR).
+- **`VSphereMachine` reconcile 500ing on every tick after redeploying the
+  new code.** The live cluster's CRD had never been regenerated for
+  `VSphereMachineStatus.guestInstalled` (added in the previous session's
+  entry below) — the binary shipped correctly, the CRD didn't. Every
+  status patch failed with `.status.guestInstalled: field not declared
+  in schema`, which also stopped `Ready`/`observedPowerState` from
+  updating (SSA applies the whole status object atomically). Fixed with
+  `make crds` (regenerates all 12 CRDs + `docs/src/reference/api.md`) and
+  a dry-run-verified `kubectl apply` of the regenerated `VSphereMachine`
+  CRD — diffed first to confirm the only change was the one additive
+  optional field.
+
+### Verified live
+- Guest wrote `guestinfo.banlieue.phase=installed` via `vmware-rpctool`
+  on boot; `guest_info` read it back; `VSphereMachine.status` showed
+  `guestInstalled: true`, `GuestReady=True reason=GuestAnnounced`;
+  correctly mirrored onto the parent `VirtualMachine`'s conditions.
+
+### Changed
+- `docs/adr/0043-guestready-installed-guest-signal.md`: Notes and
+  Consequences updated — vSphere's `GuestReady` transport is now
+  live-verified end-to-end, not just unit-tested/channel-proven.
+- `.github/community/17-ephemeral-vm-pools.md`, `ROADMAPS.md`: A2's
+  vSphere half marked closed; libvirt's own moment-of-write gap (a Kairos
+  image carrying the phase layer) called out as the one still open on
+  that backend.
+- `deploy/crds/infrastructure.banlieue.io_vspheremachines.yaml`,
+  `docs/src/reference/api.md`: regenerated via `make crds` to match what
+  is now also live in the cluster.
+- `.wolf/buglog.json`: bug-158 (CRD drift), bug-159 (admission-policy
+  finalizer trap).
+
+### Why
+The maintainer explicitly asked to close out the vSphere half of roadmap
+17's A2 item and verify it for real, not just unit-test it. Two of these
+three findings (the CRD drift, the admission-policy trap) are exactly the
+kind of gap a `FakeClient`-only test suite structurally cannot see — they
+live entirely in what the cluster has deployed, not in what the code does.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout — the regenerated `VSphereMachine` CRD is
+      now applied live; anyone else's cluster running this code needs the
+      same `make crds` + `kubectl apply`.
+- [ ] Config change only
+- [ ] Documentation only
+
+### Verification
+- Live, against the real cluster and vCenter: a real `Deferred`,
+  `tpmEnabled` `VirtualMachine` shows `GuestReady=True
+  reason=GuestAnnounced` in `status.conditions`, correctly mirrored from
+  `VSphereMachine`.
+- `kubectl apply --dry-run=client` on the regenerated CRD before the real
+  apply; diffed old vs. new schema first (one additive field, nothing
+  removed).
+- `VMImage` `debian-tpm-dev-v0.4.0` deleted cleanly after the ConfigMap fix.
+
+---
+
 ## [2026-09-23 14:20] - ADR-0044: eject install media before GuestReady (libvirt)
 
 **Author:** Erick Bourgeois
@@ -275,6 +362,153 @@ the threat-model pass from merging at all.
       `📎 Clippy`, `🧪 Test` and `🧪 cargo-deny`. Until that edit is made both
       sets are required and docs-only PRs still block.
 - [x] Documentation only (for the status-line half)
+
+## [2026-09-22 10:30] - ADR-0043's vSphere transport: verified live, 3 real bugs fixed
+
+**Author:** Erick Bourgeois
+
+### Context
+Live-verified the same-day `guest_info`/`GuestReady` vSphere implementation
+against a real vCenter (credentials via `GOVC_*`, mapped to the
+`VSPHERE_*` vars `tests/live_vcenter.rs` expects). The first run found three
+real bugs — none in the ADR-0043 decision itself, all in how `vim_rs` 0.6's
+JSON binding handles this specific vCenter's responses.
+
+### Fixed
+- `crates/banlieue-provider-vsphere/tests/live_vcenter.rs`: all three tests
+  changed `#[tokio::test]` → `#[tokio::test(flavor = "multi_thread")]`.
+  Plain `#[tokio::test]`'s single-threaded runtime panicked on client
+  teardown ("can call blocking only when running on the multi-threaded
+  runtime") — a `vim_rs` requirement, not new to this session, just never
+  exercised before this ADR's live test needed the client to actually
+  connect and tear down.
+- `crates/banlieue-provider-vsphere/src/client/vim.rs`: `guest_info` no
+  longer fetches the whole `config` property and decodes it as the typed
+  `VirtualMachineConfigInfo` (`VimVirtualMachine::config()`). That decode
+  failed against the real VM's response ("JSON property decode failed"),
+  which broke **every subsequent reconcile of an already-provisioned
+  `VSphereMachine`** — not just guest probing — since `refresh_power_state`
+  propagates the error via `?`. Root cause:
+  `vim_rs::types::vim_any::VimAny`'s `Deserialize` only implements the
+  polymorphic `{"_typeName": ...}` map shape, and a real vCenter's JSON API
+  sends a bare-string `OptionValue.value` for some `extraConfig` entries;
+  one non-decoding entry sinks the whole struct (miniserde has no
+  per-field fallback). Also confirmed live: this JSON transport has no
+  PropertyCollector-style dotted property paths — `fetch_property_raw(..,
+  "config.extraConfig")` faults with `InvalidType` — so narrowing the
+  *fetch* wasn't an option. Fixed by adding
+  `extra_config_value_from_raw_json`: parse the raw JSON bytes with
+  `serde_json` and pick `extraConfig[].value` out by hand, bypassing
+  `vim_rs`'s typed decode for this property entirely.
+- Same file: a *known-set* key (`guestinfo.network.hostname`, which
+  `build_guestinfo` sets unconditionally on every vSphere clone) still read
+  back `None` after that fix. The real value wrapper is
+  `{"_typeName": "string", "_value": "..."}` — underscore-prefixed
+  `_value`, not the bare `value` first assumed by analogy with
+  `OptionValue`'s own outer field name. Confirmed by dumping the raw JSON
+  for that key against the real VM.
+
+### Added
+- `crates/banlieue-provider-vsphere/tests/live_vcenter.rs`:
+  `guest_info_reads_extra_config_against_real_vcenter` — asserts
+  `guest_info` doesn't error against a real, already-provisioned VM, and
+  (when `VSPHERE_TEST_KNOWN_KEY` names one) that a known-set key comes
+  back non-empty rather than silently `None`.
+- `crates/banlieue-provider-vsphere/src/client/vim_tests.rs`: unit tests
+  for `extra_config_value_from_raw_json` covering the real wrapped shape,
+  the bare-string shape, the `VimAny`-native shape, absent key/property,
+  non-string values, one bad entry not hiding a later good one, and
+  malformed JSON.
+- `.wolf/buglog.json`: bug-155, bug-156, bug-157 for the three fixes above.
+
+### Why
+Building on the same-day ADR-0043 vSphere implementation (previous entry):
+the maintainer had real vCenter access this session (`GOVC_*`) and asked
+for it to be exercised, rather than left "unit-tested only." Two of the
+three bugs (the config decode failure, the `_value` wrapper) would have
+silently broken every already-provisioned `VSphereMachine`'s reconcile
+loop in production — a regression a unit test against `FakeClient` cannot
+catch by construction, since the fake never round-trips real vCenter JSON.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+### Verification
+- `cargo fmt --all -- --check` ✅
+- `cargo clippy -p banlieue-provider-vsphere --all-targets --all-features -- -D warnings` ✅
+- `cargo test -p banlieue-api -p banlieue-provider-vsphere` ✅ — 209 passed, 0 failed
+- Live, against a real vCenter: `connect_and_walk_inventory_against_real_vcenter`
+  and `guest_info_reads_extra_config_against_real_vcenter` (both keys —
+  the absent `guestinfo.banlieue.phase` and the known-set
+  `guestinfo.network.hostname`) ✅
+- ADR-0043 Notes, roadmap 17's A2 row, `ROADMAPS.md`, and the threat
+  model's A-8 row updated from "unverified" to "verified live"
+
+---
+
+## [2026-09-22 09:15] - ADR-0043's vSphere transport: `GuestReady` via `guestinfo`
+
+**Author:** Erick Bourgeois
+
+### Added
+- `crates/banlieue-provider-vsphere/src/guest.rs` (+ `guest_tests.rs`): the
+  vSphere half of ADR-0043's installed-guest signal. `GuestProbe`
+  (`NotEvaluated`/`NotAnnounced`/`Installed`), `probe_guest` (reads
+  `guestinfo.banlieue.phase` from `config.extraConfig` only while the VM is
+  powered on — a stopped VM cannot be evaluated, mirroring
+  `banlieue-provider-libvirt`'s `AgentUnreachable`/`NotAnnounced` split
+  without an agent-reachability concept to drive it), `sticky_guest_installed`,
+  `should_poll_soon`.
+- `VSphereClient::guest_info(vm_moref, key) -> Result<Option<String>>` trait
+  method, `FakeClient::set_guest_info` test seam, and a real implementation
+  in `client/vim.rs` reading `VirtualMachine.config.extraConfig` via
+  `vim_rs`'s `VirtualMachine::config()`.
+- `VSphereMachineStatus.guestInstalled: Option<bool>` (api crate), sticky
+  once `true`, mirroring `LibvirtMachineStatus.guestInstalled` exactly.
+- `crates/banlieue-provider-vsphere/src/reconciler/vspheremachine.rs`:
+  `refresh_power_state` now probes the guest and publishes `GuestReady`
+  (only while evaluable, per ADR-0043 Decision 10 — absent, not `False`,
+  for a stopped VM) and requeues at the default interval while a running
+  guest has not yet announced. Renamed `status_with_observed_power_state` →
+  `status_with_observed_state` to take the guest probe alongside the power
+  state.
+- `examples/16-cloud-config-guest-phase.yaml`: uncommented the vSphere
+  `vmware-rpctool info-set` stage, now that the read half exists.
+
+### Why
+Roadmap 17 (ephemeral VM pools) needs `VirtualMachineClaim` to work on
+vSphere, not just libvirt. `VirtualMachinePool.spec.readiness: GuestReady`
+was unsatisfiable on vSphere because nothing published the condition — a
+`Deferred`, TPM-sealed pool there would sit at `Warm=False
+reason=ReadinessSignalAbsent` forever. ADR-0043 already specified the
+vSphere transport (Decision 6); this lands it.
+
+### Known limitation
+**Unverified against a real vCenter.** There is no environment to confirm
+`config.extraConfig` actually reflects a guest's `vmware-rpctool info-set`
+call the way ADR-0043 assumes. Unit-tested via `FakeClient` only; the first
+live run against vCenter is this decision's actual test, per ADR-0043's
+own notes and roadmap 17's A2 row.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+### Verification
+- `cargo fmt --all -- --check`
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings`
+- `cargo test -p banlieue-api -p banlieue-provider-vsphere`
+- `make calm-validate`
+- Threat model: A-8 and the two `GuestReady` STRIDE rows updated to name
+  both transports; header stamp unchanged (same ADR range, ADR-0001…0055,
+  already covers ADR-0043; no new component or trust boundary).
+
+---
 
 ## [2026-09-22 03:40] - Threat model full pass: TB-7, the identity provider nobody had modelled
 

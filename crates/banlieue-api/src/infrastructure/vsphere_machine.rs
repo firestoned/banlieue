@@ -258,6 +258,20 @@ pub struct VSphereMachineStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tpm_attached: Option<bool>,
 
+    /// Whether the *installed* guest has announced itself, distinct from a
+    /// live installer still overwriting the disk (ADR-0043). Read from
+    /// `guestinfo.banlieue.phase` via `config.extraConfig` — the guest
+    /// writes it with `vmware-rpctool`, the host reads it back here. `None`
+    /// means nothing has looked yet (the whole life of an `Immediate` image,
+    /// or a `Deferred` one before its first observation); sticky at
+    /// `Some(true)` once observed, since the runtime value does not survive
+    /// a power cycle but a stopped VM has not become uninstalled. Not part
+    /// of the CAPI contract; mirrored onto the parent `VirtualMachine` as
+    /// the `GuestReady` condition (`common::condition_types::GUEST_READY`),
+    /// never as `Ready`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guest_installed: Option<bool>,
+
     /// CAPI-compatible conditions (using `metav1.Condition`). The `Ready`
     /// condition is mirrored as `InfrastructureReady` on the parent
     /// (`clusterv1.Machine` or banlieue `VirtualMachine`) per contract.

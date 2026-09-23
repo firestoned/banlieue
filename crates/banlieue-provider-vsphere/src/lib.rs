@@ -23,6 +23,7 @@ pub mod app;
 pub mod client;
 pub mod context;
 pub mod error;
+pub mod guest;
 pub mod import;
 pub mod k8s_name;
 pub mod nic_flag;

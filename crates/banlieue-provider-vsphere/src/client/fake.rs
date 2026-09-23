@@ -244,6 +244,7 @@ pub struct FakeClient {
     destroyed: Mutex<Vec<String>>,
     tpm_attached: Mutex<Vec<String>>,
     grown_disks: Mutex<Vec<(String, u32)>>,
+    guest_info: Mutex<HashMap<(String, String), String>>,
 }
 
 impl FakeClient {
@@ -259,7 +260,18 @@ impl FakeClient {
             destroyed: Mutex::new(Vec::new()),
             tpm_attached: Mutex::new(Vec::new()),
             grown_disks: Mutex::new(Vec::new()),
+            guest_info: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Seed a `guestinfo`/`extraConfig` value for `vm_moref`, as if the
+    /// guest had written it with `vmware-rpctool` (ADR-0043). Absent by
+    /// default — matching a fresh clone before any guest has booted.
+    pub fn set_guest_info(&self, vm_moref: &str, key: &str, value: impl Into<String>) {
+        self.guest_info
+            .lock()
+            .expect("fake client lock")
+            .insert((vm_moref.to_string(), key.to_string()), value.into());
     }
 
     /// Every `clone_vm` call recorded so far, in call order.
@@ -457,5 +469,14 @@ impl VSphereClient for FakeClient {
             .expect("fake client lock")
             .push((vm_moref.to_string(), size_gi_b));
         Ok(())
+    }
+
+    async fn guest_info(&self, vm_moref: &str, key: &str) -> Result<Option<String>> {
+        Ok(self
+            .guest_info
+            .lock()
+            .expect("fake client lock")
+            .get(&(vm_moref.to_string(), key.to_string()))
+            .cloned())
     }
 }

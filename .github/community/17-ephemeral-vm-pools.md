@@ -275,11 +275,11 @@ provider can realise (see [Repo reality](#repo-reality-at-8360e19)).
 | Phase | What | ADR | Status |
 |---|---|---|---|
 | 0 | Slim image experiment | none (no code) | ⏸️ deferred (no vTPM on the libvirt hosts yet) |
-| A2 | `GuestReady`: the installed guest reports in | 0043 | 🔶 libvirt implemented and the **read path is now verified live** against a real `qemu-guest-agent` (the seed installs it, so no special image is needed). Open: a Kairos image with the phase layer, to prove the marker is written at the right *moment*; vSphere transport deferred |
+| A2 | `GuestReady`: the installed guest reports in | 0043 | 🔶 **vSphere closed end-to-end 2026-09-23** — a real `Deferred`, `tpmEnabled` VM ran `vmware-rpctool info-set guestinfo.banlieue.phase installed` at boot, `guest_info` read it back, and `GuestReady=True reason=GuestAnnounced` showed up correctly mirrored onto `VirtualMachine`. Getting there found and fixed three code bugs (tokio runtime flavor, `vim_rs`'s `VimAny` decode, a `_value` wrapper-field mismatch) plus one deployment gap (the live `VSphereMachine` CRD was never regenerated for the new `guestInstalled` field, so status patches 500'd — fixed with `make crds` + `kubectl apply`). **libvirt still open**: its read path is verified against a real `qemu-guest-agent`, but no Kairos image yet carries the phase layer to prove the marker is written at the right *moment* (not just that the channel works) — the same category of gap vSphere just closed, unresolved on that backend |
 | A4 | Detach install media once installed | 0044 | ✅ landed 2026-09-23 (libvirt) — `virDomainUpdateDeviceFlags` (proc 174) ejects the cdrom when `guestInstalled` flips, **before** `GuestReady` is published, so a pool can never bind a member with media attached. Sticky `installMediaDetached`; the ISO is also suppressed from the redefined domain XML. vSphere half deferred for want of a vCenter. **Verified live against a real libvirtd 2026-09-23** — a CONFIG-only eject of a real cdrom was accepted *and applied* |
 | A5 | vTPM EK certificate in machine status | 0045 | ⛔ — **now the gate for F** (ADR-0049 Decision 4 verifies quotes against it) |
 | A3 | `tpmEnabled` requires `installMode: Deferred` | 0048 | ✅ landed 2026-09-23 — pure check in `banlieue-controller`, rejected before scheduling so no infra CR is created; `Manual` passes, and an image with **no `template`** is rejected too (a pre-built disk is a pre-laid one) |
-| B1 | `VirtualMachinePool` | 0046 | ✅ landed and validated e2e — fills, self-heals, rolls, cascades on delete |
+| B1 | `VirtualMachinePool` | 0046 | ✅ landed and validated e2e against a real libvirt host — fills, self-heals, rolls, cascades on delete. **Also validated live against a real vSphere-backed pool (2026-09-23)**: a 2-member `GuestReady`-gated `sandbox-pool` (`debian-dev-v0.4.0`, `Deferred`, `tpmEnabled`, `small-dev` class) went apply→`Warm=True` in **130.3s**, both members within 29ms of each other — ~9.6s clone+vTPM+power-on, ~120.7s guest boot/install/announce, bounded by the 30s `NotAnnounced` poll cadence (ADR-0043 Decision 8) then correctly switching to the 300s interval once `GuestReady`. This is the first live confirmation that a `VirtualMachinePool` set to `readiness: GuestReady` actually reaches `Warm` on vSphere, not just that the signal decodes |
 | B2 | `VirtualMachineClaim` | 0047 | ✅ landed — bind/hold/release, TTL expiry, finalizer, nonce; a pool is now consumable |
 | C | In-guest agent (separate repo) | own repo | ⛔ |
 | D | libvirt provider: `LibvirtMachine` reconciler | 07 + 0050 + 0054 | ✅ complete — CRD, domain XML, reconciler, NoCloud user-data; roadmap 07 closed |
@@ -354,8 +354,49 @@ stanza commented out so nobody announces into a channel nothing reads.
    `Deferred` install writes the marker at the right *moment* — that its
    `/run/cos/active_mode` guard keeps it out of the live installer. That
    needs an image built with the phase layer and is a separate gap.
-2. **The vSphere half** (`guestinfo.banlieue.phase` read from
-   `config.extraConfig`), deferred for want of a vCenter to verify against.
+2. ~~**The vSphere half** (`guestinfo.banlieue.phase` read from
+   `config.extraConfig`), deferred for want of a vCenter to verify
+   against.~~ **Implemented and verified live 2026-09-22:**
+   `VSphereClient::guest_info`, `VSphereMachineStatus.guestInstalled`, and
+   `GuestReady` publication from `refresh_power_state`
+   (`crates/banlieue-provider-vsphere/src/guest.rs` and
+   `reconciler/vspheremachine.rs`). The first live run against a real
+   vCenter found three real bugs, all fixed:
+   - Every `live_vcenter.rs` test panicked on teardown
+     ("can call blocking only when running on the multi-threaded
+     runtime") — plain `#[tokio::test]`'s single-threaded runtime vs.
+     `vim_rs`'s teardown needing multi-threaded. `#[tokio::test(flavor =
+     "multi_thread")]` on all three tests.
+   - `guest_info`'s first cut broke every subsequent reconcile of an
+     already-provisioned `VSphereMachine`: fetching the whole `config`
+     property and decoding it as the typed `VirtualMachineConfigInfo`
+     failed, because `vim_rs`'s `VimAny` deserializer only handles the
+     polymorphic `{"_typeName": ...}` shape and a real vCenter sends a
+     bare-string `OptionValue.value` for some entries. Fixed by parsing
+     the raw JSON by hand instead of through `vim_rs`'s typed decode
+     (`extra_config_value_from_raw_json` in `client/vim.rs`).
+   - A key known to be set (`guestinfo.network.hostname`) still read back
+     `None` after that fix: the real wrapper is `{"_typeName": "string",
+     "_value": "..."}` — underscore-prefixed `_value`, not the bare
+     `value` first assumed.
+
+   `guest_info_reads_extra_config_against_real_vcenter` in
+   `tests/live_vcenter.rs` now asserts both — that reading succeeds, and
+   that a known-set key actually round-trips non-empty.
+
+   **Closed end-to-end 2026-09-23.** Rebuilt `debian-tpm-dev-v0.4.0` with
+   the vSphere stanza of `examples/16-cloud-config-guest-phase.yaml`
+   uncommented, recreated the VM, and confirmed live: the guest ran
+   `vmware-rpctool info-set guestinfo.banlieue.phase installed` at boot,
+   `guest_info` read it back, and `VSphereMachine.status` showed
+   `guestInstalled: true` / `GuestReady=True reason=GuestAnnounced`,
+   correctly mirrored onto `VirtualMachine`. One more bug on the way: the
+   live cluster's `VSphereMachine` CRD had never been regenerated for the
+   new `guestInstalled` field, so every status patch 500'd with
+   `.status.guestInstalled: field not declared in schema` — a deployment
+   gap (binary shipped, CRD didn't), not a code defect. Fixed with
+   `make crds` + a dry-run-verified `kubectl apply` of the regenerated
+   CRD (one additive optional field).
 
 Side finding, which retires an earlier suspicion: a qcow2 overlay over a
 **raw** backing volume *does* boot. The guest reached the network in

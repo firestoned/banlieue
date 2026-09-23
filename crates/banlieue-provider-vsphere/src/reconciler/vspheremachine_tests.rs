@@ -266,7 +266,8 @@ mod tests {
         // retract — and SSA then wipe — vmRef/conditions/initialization,
         // since nothing else owned them. finalize() then read vm_ref as
         // None and skipped destroy_vm, orphaning the backend VM in vCenter.
-        use super::super::status_with_observed_power_state;
+        use super::super::status_with_observed_state;
+        use crate::guest::GuestProbe;
         use banlieue_api::common::InitializationStatus;
 
         let current = VSphereMachineStatus {
@@ -287,7 +288,13 @@ mod tests {
             ..Default::default()
         };
 
-        let next = status_with_observed_power_state(current.clone(), PowerState::PoweredOn, 2);
+        let next = status_with_observed_state(
+            current.clone(),
+            PowerState::PoweredOn,
+            None,
+            GuestProbe::NotEvaluated,
+            2,
+        );
 
         assert_eq!(next.vm_ref, current.vm_ref);
         assert_eq!(next.initialization, current.initialization);
@@ -312,7 +319,8 @@ mod tests {
         // not stay stuck False forever once a power_state read succeeds
         // again — that would misrepresent a healthy VM as permanently
         // broken.
-        use super::super::status_with_observed_power_state;
+        use super::super::status_with_observed_state;
+        use crate::guest::GuestProbe;
         use banlieue_api::common::InitializationStatus;
 
         let current = VSphereMachineStatus {
@@ -331,7 +339,13 @@ mod tests {
             ..Default::default()
         };
 
-        let next = status_with_observed_power_state(current, PowerState::PoweredOn, 2);
+        let next = status_with_observed_state(
+            current,
+            PowerState::PoweredOn,
+            None,
+            GuestProbe::NotEvaluated,
+            2,
+        );
 
         let ready = next
             .conditions
@@ -390,5 +404,105 @@ mod tests {
         assert_eq!(ready.status, "False");
         assert_eq!(ready.reason, "BackendMissing");
         assert_eq!(next.observed_generation, Some(2));
+    }
+
+    // ------------------------------------------------------------------
+    // status_with_observed_state — GuestReady (ADR-0043, vSphere transport)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn guest_ready_stays_absent_while_the_vm_is_stopped() {
+        use super::super::status_with_observed_state;
+        use crate::guest::GuestProbe;
+
+        let current = VSphereMachineStatus::default();
+        let next = status_with_observed_state(
+            current,
+            PowerState::PoweredOff,
+            None,
+            GuestProbe::NotEvaluated,
+            1,
+        );
+
+        assert!(
+            next.conditions.iter().all(|c| c.type_ != "GuestReady"),
+            "an unevaluated guest must leave GuestReady absent, not False — \
+             ReadinessSignalAbsent vs. Filling forever (ADR-0043 Decision 10)"
+        );
+        assert_eq!(next.guest_installed, None);
+    }
+
+    #[test]
+    fn guest_ready_reports_false_while_running_and_not_yet_announced() {
+        use super::super::status_with_observed_state;
+        use crate::guest::GuestProbe;
+
+        let current = VSphereMachineStatus::default();
+        let next = status_with_observed_state(
+            current,
+            PowerState::PoweredOn,
+            Some(false),
+            GuestProbe::NotAnnounced,
+            1,
+        );
+
+        let guest_ready = next
+            .conditions
+            .iter()
+            .find(|c| c.type_ == "GuestReady")
+            .expect("GuestReady present");
+        assert_eq!(guest_ready.status, "False");
+        assert_eq!(guest_ready.reason, "GuestNotAnnounced");
+        assert_eq!(next.guest_installed, Some(false));
+    }
+
+    #[test]
+    fn guest_ready_reports_true_once_installed() {
+        use super::super::status_with_observed_state;
+        use crate::guest::GuestProbe;
+
+        let current = VSphereMachineStatus::default();
+        let next = status_with_observed_state(
+            current,
+            PowerState::PoweredOn,
+            Some(true),
+            GuestProbe::Installed,
+            1,
+        );
+
+        let guest_ready = next
+            .conditions
+            .iter()
+            .find(|c| c.type_ == "GuestReady")
+            .expect("GuestReady present");
+        assert_eq!(guest_ready.status, "True");
+        assert_eq!(guest_ready.reason, "GuestAnnounced");
+        assert_eq!(next.guest_installed, Some(true));
+    }
+
+    #[test]
+    fn guest_ready_never_touches_the_ready_condition() {
+        // GuestReady is additive (ADR-0043 Decision 4): Ready must report
+        // True/Reconciled here regardless of the guest probe outcome, or an
+        // Immediate-mode VM with no phase stage would regress to not-ready.
+        use super::super::status_with_observed_state;
+        use crate::guest::GuestProbe;
+
+        let current = VSphereMachineStatus::default();
+        let next = status_with_observed_state(
+            current,
+            PowerState::PoweredOn,
+            Some(false),
+            GuestProbe::NotAnnounced,
+            1,
+        );
+
+        let ready = next
+            .conditions
+            .iter()
+            .find(|c| c.type_ == "Ready")
+            .expect("Ready present");
+        assert_eq!(ready.status, "True");
+        assert_eq!(ready.reason, "Reconciled");
     }
 }

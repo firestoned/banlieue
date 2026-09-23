@@ -2712,6 +2712,213 @@
       "related_bugs": [],
       "occurrences": 2,
       "last_seen": "2026-09-23T15:10:00Z"
+    },
+    {
+      "id": "bug-151",
+      "timestamp": "2026-09-23T00:20:05.375Z",
+      "error_message": "Significant refactor of vim.rs",
+      "file": "crates/banlieue-provider-vsphere/src/client/vim.rs",
+      "root_cause": "7 lines replaced/restructured",
+      "fix": "Rewrote 25\u219241 lines (7 removed)",
+      "tags": [
+        "auto-detected",
+        "refactor",
+        "rs"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-09-23T00:20:05.375Z"
+    },
+    {
+      "id": "bug-152",
+      "timestamp": "2026-09-23T00:26:41.980Z",
+      "error_message": "Function not marked async",
+      "file": "crates/banlieue-provider-vsphere/tests/live_vcenter.rs",
+      "root_cause": "Function uses await but wasn't declared async",
+      "fix": "Added async modifier",
+      "tags": [
+        "auto-detected",
+        "async-fix",
+        "rs"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-09-23T00:26:41.980Z"
+    },
+    {
+      "id": "bug-153",
+      "timestamp": "2026-09-23T00:35:53.811Z",
+      "error_message": "Null/undefined access in vim.rs",
+      "file": "crates/banlieue-provider-vsphere/src/client/vim.rs",
+      "root_cause": "Property access on potentially null/undefined value",
+      "fix": "Added null safety (optional chaining or null check)",
+      "tags": [
+        "auto-detected",
+        "null-safety",
+        "rs"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-09-23T00:35:53.811Z"
+    },
+    {
+      "id": "bug-154",
+      "timestamp": "2026-09-23T00:52:56.397Z",
+      "error_message": "Significant refactor of vim_tests.rs",
+      "file": "crates/banlieue-provider-vsphere/src/client/vim_tests.rs",
+      "root_cause": "12 lines replaced/restructured",
+      "fix": "Rewrote 73\u219291 lines (12 removed)",
+      "tags": [
+        "auto-detected",
+        "refactor",
+        "rs"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-09-23T00:52:56.397Z"
+    },
+    {
+      "id": "bug-155",
+      "timestamp": "2026-09-23T00:53:03.602Z",
+      "error_message": "Significant refactor of vim.rs",
+      "file": "crates/banlieue-provider-vsphere/src/client/vim.rs",
+      "root_cause": "3 lines replaced/restructured",
+      "fix": "Rewrote 7\u21924 lines (3 removed)",
+      "tags": [
+        "auto-detected",
+        "refactor",
+        "rs"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-09-23T00:53:03.602Z"
+    },
+    {
+      "id": "bug-156",
+      "timestamp": "2026-09-23T00:58:25.096Z",
+      "error_message": "Significant refactor of live_vcenter.rs",
+      "file": "crates/banlieue-provider-vsphere/tests/live_vcenter.rs",
+      "root_cause": "8 lines replaced/restructured",
+      "fix": "Rewrote 24\u219250 lines (8 removed)",
+      "tags": [
+        "auto-detected",
+        "refactor",
+        "rs"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-09-23T00:58:25.096Z"
+    },
+    {
+      "id": "bug-157",
+      "timestamp": "2026-09-23T00:58:40.879Z",
+      "error_message": "Incorrect value in code",
+      "file": "crates/banlieue-provider-vsphere/tests/live_vcenter.rs",
+      "root_cause": "Had `vm-21569`",
+      "fix": "Changed to `VSphereMachine`",
+      "tags": [
+        "auto-detected",
+        "wrong-value",
+        "rs"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-09-23T00:58:40.879Z"
+    },
+    {
+      "id": "bug-158",
+      "timestamp": "2026-09-23T00:00:00.000Z",
+      "error_message": "live_vcenter.rs tests panic: 'can call blocking only when running on the multi-threaded runtime'",
+      "file": "crates/banlieue-provider-vsphere/tests/live_vcenter.rs",
+      "root_cause": "Plain #[tokio::test] defaults to a single-threaded runtime; vim_rs's client teardown calls a blocking primitive that requires the multi-threaded flavor.",
+      "fix": "Changed all three tests to #[tokio::test(flavor = \"multi_thread\")].",
+      "tags": [
+        "auto-detected",
+        "runtime",
+        "tokio",
+        "vsphere",
+        "live-test"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-09-23T00:00:00.000Z"
+    },
+    {
+      "id": "bug-159",
+      "timestamp": "2026-09-23T00:00:00.000Z",
+      "error_message": "VSphereMachine reconcile fails every tick after provisioning: 'vsphere: VirtualMachine.config(vm-...): Parse error: JSON property decode failed for vim_rs::types::structs::VirtualMachineConfigInfo'",
+      "file": "crates/banlieue-provider-vsphere/src/client/vim.rs",
+      "root_cause": "ADR-0043's guest_info() fetched the whole 'config' property and decoded it as the typed VirtualMachineConfigInfo. vim_rs's VimAny Deserialize only implements the polymorphic {_typeName,...} map shape and errors on a bare-string OptionValue.value, which a real vCenter's JSON API sends for some extraConfig entries -- sinking the whole struct decode and breaking refresh_power_state for every already-provisioned VSphereMachine, not just guest probing. Also found live: this JSON transport has no PropertyCollector-style dotted property paths (fetch_property_raw(..., \"config.extraConfig\") faults with InvalidType).",
+      "fix": "guest_info() now fetches the whole 'config' property but parses it as untyped serde_json::Value and reads extraConfig[].value by hand (extra_config_value_from_raw_json), bypassing vim_rs's typed VimAny decode entirely.",
+      "tags": [
+        "auto-detected",
+        "vsphere",
+        "vim_rs",
+        "regression",
+        "adr-0043"
+      ],
+      "related_bugs": [
+        "bug-160"
+      ],
+      "occurrences": 1,
+      "last_seen": "2026-09-23T00:00:00.000Z"
+    },
+    {
+      "id": "bug-160",
+      "timestamp": "2026-09-23T00:00:00.000Z",
+      "error_message": "guest_info() reads back None for a guestinfo key known to be set (e.g. guestinfo.network.hostname) even after bypassing the typed VimAny decode",
+      "file": "crates/banlieue-provider-vsphere/src/client/vim.rs",
+      "root_cause": "extra_config_value_from_raw_json assumed a wrapped primitive value looked like {\"_typeName\": ..., \"value\": \"...\"} (matching VimAny's own field name). A real vCenter's JSON API actually wraps it as {\"_typeName\": \"string\", \"_value\": \"...\"} -- underscore-prefixed _value -- confirmed by dumping the raw JSON for a known-set key.",
+      "fix": "Check _value before the bare value fallback in extra_config_value_from_raw_json; added a unit test using the exact captured shape.",
+      "tags": [
+        "auto-detected",
+        "vsphere",
+        "vim_rs",
+        "adr-0043"
+      ],
+      "related_bugs": [
+        "bug-159"
+      ],
+      "occurrences": 1,
+      "last_seen": "2026-09-23T00:00:00.000Z"
+    },
+    {
+      "id": "bug-161",
+      "timestamp": "2026-09-23T20:40:00.000Z",
+      "error_message": "VSphereMachine reconcile 500s forever after deploying code with a new status field: 'failed to create typed patch object ... .status.guestInstalled: field not declared in schema'",
+      "file": "deploy/crds/infrastructure.banlieue.io_vspheremachines.yaml",
+      "root_cause": "Added VSphereMachineStatus.guestInstalled (ADR-0043) to the Rust type and shipped/deployed the binary, but never ran `make crds` and applied the regenerated CRD to the live cluster. The apiserver's structural schema pruning/validation rejects a server-side-apply patch naming a field the CRD doesn't declare -- a hard 500, not the silent field-drop CLAUDE.md warns about for a schema mismatch in the other direction.",
+      "fix": "Ran `make crds` (regenerates all 12 CRD YAMLs + docs/src/reference/api.md), dry-run applied the updated VSphereMachine CRD against the live cluster, then applied it for real. Confirmed guestInstalled/GuestReady then persisted and mirrored onto VirtualMachine.",
+      "tags": [
+        "auto-detected",
+        "crd-drift",
+        "vsphere",
+        "adr-0043",
+        "deploy"
+      ],
+      "related_bugs": [
+        "bug-159",
+        "bug-160"
+      ],
+      "occurrences": 1,
+      "last_seen": "2026-09-23T20:40:00.000Z"
+    },
+    {
+      "id": "bug-162",
+      "timestamp": "2026-09-23T20:40:00.000Z",
+      "error_message": "VMImage delete stuck forever: finalizer removal 422s with 'ValidatingAdmissionPolicy banlieue-vmimage-import-source ... spec.sources[].importFrom must reference an allowed registry'",
+      "file": "N/A (cluster admission policy config, not repo code)",
+      "root_cause": "banlieue-vmimage-import-source ValidatingAdmissionPolicy matches CREATE+UPDATE and re-validates the FULL spec.sources[].importFrom on every update, including a finalizer-only patch during deletion. The banlieue-vmimage-allowed-registries ConfigMap never listed this environment's actual internal registry (this environment's internal registry (e.g. docker.example.internal)), so once the VMImage's backend template teardown finished, the finalizer-removal UPDATE was rejected forever -- the object could never finish deleting.",
+      "fix": "Added the internal registry to the banlieue-vmimage-allowed-registries ConfigMap. Design gap still open: the VAP should skip full-spec validation on a request that is only removing finalizers during deletion (matchCondition fix), or any VMImage whose registry later falls out of the allowlist becomes permanently undeletable.",
+      "tags": [
+        "auto-detected",
+        "admission-policy",
+        "vmimage",
+        "deploy"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-09-23T20:40:00.000Z"
     }
   ]
 }

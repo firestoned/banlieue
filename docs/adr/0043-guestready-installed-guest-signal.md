@@ -6,7 +6,7 @@
 - **Amended:** 2026-09-20 (Decision 8 — the first formulation would have
   polled every `Immediate` VM forever; see the decision for the correction)
 - **Deciders:** Erick Bourgeois
-- **Notes:** Implemented **for libvirt only**. The read path **is now
+- **Notes:** Implemented for libvirt, verified live. The read path **is now
   verified against a real `qemu-guest-agent`** (2026-09-21): `live_guest.rs`
   drives open/read/close and both halves of the tri-state against a booted
   Debian 13 guest on a real host. It no longer waits for an image that ships
@@ -16,11 +16,75 @@
   fixed: an overlay declared `raw` over a `.qcow2` backing image so no guest
   ever booted, and `probe_guest` reported `AgentUnreachable` for a healthy
   guest whose marker simply did not exist yet — inverting Decision 8's
-  requeue cadence for the whole install window. **Still open:** a Kairos
-  image carrying the phase layer, to prove the marker is written at the
-  right moment (that its `/run/cos/active_mode` guard keeps it out of the
-  live installer); and the vSphere transport, specified and deliberately
-  deferred. *Accepted* records the decision, not completed delivery.
+  requeue cadence for the whole install window. **Still open (libvirt):** a
+  Kairos image carrying the phase layer, to prove the marker is written at
+  the right moment (that its `/run/cos/active_mode` guard keeps it out of
+  the live installer).
+
+  **vSphere transport implemented and verified live, 2026-09-22**, per
+  Decision 6: `VSphereClient::guest_info` reads a `guestinfo.*` key back out
+  of `config.extraConfig`; `VSphereMachineStatus.guestInstalled` mirrors
+  libvirt's own sticky field; `GuestReady` is published from
+  `refresh_power_state` only while the VM is running (a stopped VM's guest
+  cannot be evaluated, mirroring Decision 10's absent-not-false rule with
+  `GuestProbe::NotEvaluated` in place of libvirt's `AgentUnreachable`).
+
+  The first live run against a real vCenter cost three real bugs, all
+  fixed and now regression-tested in `client/vim_tests.rs` and
+  `tests/live_vcenter.rs`:
+
+  1. **Every `live_vcenter.rs` test panicked on teardown**
+     ("can call blocking only when running on the multi-threaded runtime")
+     — plain `#[tokio::test]` defaults to a single-threaded runtime, and
+     `vim_rs`'s client teardown needs the multi-threaded one. Fixed with
+     `#[tokio::test(flavor = "multi_thread")]` on all three.
+  2. **`guest_info`'s first cut broke every subsequent reconcile of an
+     already-provisioned `VSphereMachine`**, not just guest probing:
+     fetching the whole `config` property and decoding it as the typed
+     `VirtualMachineConfigInfo` failed ("JSON property decode failed").
+     Root cause: `vim_rs::types::vim_any::VimAny`'s `Deserialize` only
+     implements the polymorphic `{"_typeName": ..., ...}` map shape, and
+     errors on a bare-string `OptionValue.value` — which a real vCenter's
+     JSON API sends for some `extraConfig` entries. One non-decoding entry
+     sinks the whole struct, since miniserde has no per-field fallback.
+     (This JSON transport also has no PropertyCollector-style dotted
+     property paths — `fetch_property_raw(.., "config.extraConfig")`
+     faults with `InvalidType` — so narrowing the *fetch* wasn't an
+     option either.) Fixed by parsing the raw JSON bytes by hand
+     (`extra_config_value_from_raw_json`), bypassing `vim_rs`'s typed
+     decode for this property entirely.
+  3. **A key known to be set still read back `None`** after that fix:
+     the real wrapper is `{"_typeName": "string", "_value": "..."}` —
+     underscore-prefixed `_value`, not the bare `value` first assumed by
+     analogy with `OptionValue`'s own outer field name. Confirmed by
+     dumping the raw JSON for `guestinfo.network.hostname` (set
+     unconditionally by `build_guestinfo` on every vSphere clone) and
+     fixed by checking `_value` first.
+
+  None of the three are architectural — all fixed within this ADR's
+  existing decision, no amendment needed.
+
+  **End-to-end confirmed live, 2026-09-23**, against a real `Deferred`,
+  `tpmEnabled` VM (`debian-tpm-dev-v0.4.0`, rebuilt with the vSphere
+  `vmware-rpctool info-set` stage from
+  `examples/16-cloud-config-guest-phase.yaml` uncommented): the guest itself
+  ran `vmware-rpctool info-set guestinfo.banlieue.phase installed` on boot,
+  `guest_info` read it back, and `VSphereMachine.status` showed
+  `guestInstalled: true` with `GuestReady=True reason=GuestAnnounced` —
+  correctly mirrored onto the parent `VirtualMachine`. This is the closing
+  proof Decision 6 needed: not just that the channel decodes, but that a
+  real guest driving it produces the right condition.
+
+  That run surfaced one more bug, entirely a deployment gap rather than a
+  code or decision defect: the live cluster's `VSphereMachine` CRD had
+  never been regenerated after `VSphereMachineStatus.guestInstalled` was
+  added, so every status patch 500'd with `.status.guestInstalled: field
+  not declared in schema` — the binary was correct and deployed, but the
+  CRD wasn't. Fixed by `make crds` + `kubectl apply` of the regenerated
+  CRD (one additive optional field, dry-run verified first).
+
+  *Accepted* now records completed, live-verified delivery on both
+  backends.
 - **Related:** Closes the gap [ADR-0040](0040-deferred-install-for-vtpm-encryption.md)
   Decision 4 recorded and deferred. Makes
   [ADR-0046](0046-virtualmachinepool.md)'s `readiness: GuestReady`
@@ -107,12 +171,12 @@ booted from**.
    Nothing above the provider learns which was used, exactly as with
    user-data delivery (ADR-0054).
 
-   **Only the libvirt half is implemented.** The vSphere transport is
-   specified above and deliberately deferred: there is no vSphere
-   environment to verify it against, and shipping an unverified read of a
-   channel nobody has watched work is how a signal ends up quietly always
-   false. The shape is small and recorded; it lands when a vCenter is
-   available.
+   **Both transports are now implemented and confirmed against a real
+   backend.** libvirt's read path is verified against a real
+   `qemu-guest-agent`; the vSphere read (`VSphereClient::guest_info` over
+   `config.extraConfig`) is verified against a real vCenter (see the Notes
+   above) — three real bugs found and fixed on the first live run, none of
+   them in this ADR's decision itself.
 
 7. **libvirt support requires speaking a second RPC program.**
    `virDomainQemuAgentCommand` lives in libvirt's qemu-specific program
@@ -187,13 +251,18 @@ booted from**.
   without `qemu-guest-agent` installed cannot satisfy `GuestReady`. That is
   a documented image requirement, not a silent failure — the condition stays
   false and the pool says why.
-- **A pool of `Deferred` VMs on vSphere still cannot use `GuestReady`**
-  until the vSphere transport lands. It reports `ReadinessSignalAbsent`,
-  which is the correct answer rather than a silent one — but it is a real
-  gap, not a completed backend.
-- `examples/16-cloud-config-guest-phase.yaml` carries the vSphere stanza
-  commented out with that warning attached, so an operator cannot enable a
-  guest-side announcement into a channel nothing is reading.
+- **A pool of `Deferred` VMs on vSphere can now use `GuestReady`, fully
+  verified end-to-end** against a real vCenter and a real guest: not just
+  that `guest_info` reads back a known-set key without erroring, but that
+  a real `Deferred`, `tpmEnabled` VM running `vmware-rpctool info-set
+  guestinfo.banlieue.phase installed` at boot produces `guestInstalled:
+  true` and `GuestReady=True reason=GuestAnnounced`, correctly mirrored
+  onto `VirtualMachine`. This is what closes the case roadmap 17 exists
+  for on vSphere. libvirt's own moment-of-write proof (a Kairos image
+  carrying the phase layer) remains open — that gap is specific to that
+  backend's image, not to this ADR's decision.
+- `examples/16-cloud-config-guest-phase.yaml`'s vSphere stanza is
+  uncommented and confirmed live.
 - `VirtualMachine` gains a mirrored `GuestReady` condition, so a consumer
   reads one object rather than reaching into the infra CR.
 - An `Immediate` image that *does* ship `qemu-guest-agent` but no phase

@@ -1,9 +1,11 @@
 # anatomy.md
 
-> Auto-maintained by OpenWolf. Last scanned: 2026-09-23T13:23:25.605Z
-> Files: 471 tracked | Anatomy hits: 0 | Misses: 0
+> Auto-maintained by OpenWolf. Last scanned: 2026-09-23T22:36:34.115Z
+> Files: 474 tracked | Anatomy hits: 0 | Misses: 0
+
 
 ## ./
+
 
 - `.dockerignore` — Build-context allowlist: only binaries/ is COPYed; .git/target/docs excluded (SEC-017) (~193 tok)
 - `.gitignore` — Git ignore rules (~387 tok)
@@ -16,8 +18,12 @@
 - `Makefile` — SPDX-License-Identifier: Apache-2.0 (~18334 tok)
 - `osv-scanner.toml` — SPDX-License-Identifier: Apache-2.0 (~355 tok)
 - `README.md` — Project documentation (~3300 tok)
-- `ROADMAPS.md` — Roadmaps (~2149 tok)
+- `ROADMAPS.md` — Roadmaps (~2566 tok)
 - `SECURITY.md` — Security Policy (~382 tok)
+
+## .claude/
+
+- `CHANGELOG.md` — Changelog (~157252 tok)
 
 ## .clusterfuzzlite/
 
@@ -44,6 +50,7 @@
 
 ## .github/community/
 
+
 - `00-overview.md` — banlieue — Roadmap Overview (~1742 tok)
 - `01-decisions.md` — banlieue — Locked Design Decisions (~3549 tok)
 - `02-conventions.md` — banlieue — Coding Conventions (~2242 tok)
@@ -60,8 +67,8 @@
 - `13-ipam-pool-integration.md` — IPAM Pool Integration (CAPI `ipam.cluster.x-k8s.io`) (~3676 tok)
 - `14-live-migration.md` — Live Migration (same-class first, cross-class deferred) (~2970 tok)
 - `15-vsphere-disk-image-import.md` — 15: vSphere disk-image import (raw and VMDK), alongside the ISO path (~4683 tok)
-- `16-scorecard-remediation.md` — 16 — OSSF Scorecard remediation (~2608 tok)
-- `17-ephemeral-vm-pools.md` — 17: Ephemeral, single-use VM pools (AI agent sandboxes) (~9030 tok)
+- `16-scorecard-remediation.md` — 60 — OSSF Scorecard remediation (~2262 tok)
+- `17-ephemeral-vm-pools.md` — 17: Ephemeral, single-use VM pools (AI agent sandboxes) (~10147 tok)
 - `README.md` — Project documentation (~1210 tok)
 
 ## .github/requirements/
@@ -153,8 +160,8 @@
 - `mod.rs` — `infrastructure.banlieue.io/v1alpha1` API group. (~308 tok)
 - `vsphere_cluster_tests.rs` — Unit tests for `vsphere_cluster.rs`. (~2185 tok)
 - `vsphere_cluster.rs` — `infrastructure.banlieue.io/v1alpha1` VSphereCluster CRD. (~2166 tok)
-- `vsphere_machine_tests.rs` — Unit tests for `vsphere_machine.rs`. (~4667 tok)
-- `vsphere_machine.rs` — `infrastructure.banlieue.io/v1alpha1` VSphereMachine CRD. (~4088 tok)
+- `vsphere_machine_tests.rs` — Unit tests for `vsphere_machine.rs`. (~4628 tok)
+- `vsphere_machine.rs` — `infrastructure.banlieue.io/v1alpha1` VSphereMachine CRD. (~4049 tok)
 
 ## crates/banlieue-api/tests/
 
@@ -385,20 +392,22 @@
 - `app.rs` — # `banlieue provider vsphere` entry point (~4617 tok)
 - `context.rs` — Shared reconcile context for the vSphere provider. (~846 tok)
 - `error.rs` — Typed errors for the vSphere provider's reconcilers. (~429 tok)
+- `guest_tests.rs` — Unit tests for `guest.rs`. (~1150 tok)
+- `guest.rs` — Reading the installed-guest marker via vSphere `guestinfo` (ADR-0043). (~1233 tok)
 - `import_tests.rs` — Unit tests for the pure helpers of the `image-import` subcommand. (~4662 tok)
 - `import.rs` — `banlieue provider vsphere image-import` — the per-zone data path of (~12196 tok)
 - `k8s_name_tests.rs` — SPDX-License-Identifier: Apache-2.0 (~789 tok)
 - `k8s_name.rs` — Collision-safe Kubernetes object names built from a set of identifying (~873 tok)
-- `lib.rs` — # banlieue-provider-vsphere (~336 tok)
+- `lib.rs` — # banlieue-provider-vsphere (~317 tok)
 - `nic_flag_tests.rs` — Unit tests for [`super::super::nic_flag`] (ADR-0031). (~959 tok)
 - `nic_flag.rs` — `--nic key=value,key=value` CLI flag encoding for `VMImageTemplateNic` (~1060 tok)
 
 ## crates/banlieue-provider-vsphere/src/client/
 
-- `fake.rs` — In-memory `VSphereClient` used by reconciler tests. (~4472 tok)
-- `mod.rs` — vSphere client surface used by the reconcilers. (~6353 tok)
-- `vim_tests.rs` — Unit tests for the BYOC HTTP-client helpers in `vim.rs` (ADR-0008). (~7169 tok)
-- `vim.rs` — Production `VSphereClient` implementation backed by `vim_rs`. (~27505 tok)
+- `fake.rs` — In-memory `VSphereClient` used by reconciler tests. (~4402 tok)
+- `mod.rs` — vSphere client surface used by the reconcilers. (~6077 tok)
+- `vim_tests.rs` — Unit tests for the BYOC HTTP-client helpers in `vim.rs` (ADR-0008). (~7802 tok)
+- `vim.rs` — Production `VSphereClient` implementation backed by `vim_rs`. (~26915 tok)
 
 ## crates/banlieue-provider-vsphere/src/reconciler/
 
@@ -411,12 +420,12 @@
 - `vmimage.rs` — `VMImage` reconciler — template-availability check on vSphere. (~13681 tok)
 - `vspheremachine_ensure_tests.rs` — Unit tests for [`super::super::ensure_vm`]. (~4377 tok)
 - `vspheremachine_finalize_tests.rs` — Unit tests for [`super::super::finalize_vm`] (ADR-0026: `VSphereMachine` (~340 tok)
-- `vspheremachine_tests.rs` — Unit tests for [`super::super::vspheremachine`]. (~4685 tok)
+- `vspheremachine_tests.rs` — Unit tests for [`super::super::vspheremachine`]. (~5327 tok)
 - `vspheremachine.rs` — `VSphereMachine` reconciler — clone a VM from its per-zone template (~10094 tok)
 
 ## crates/banlieue-provider-vsphere/tests/
 
-- `live_vcenter.rs` — Integration test against a **real vCenter** over the production transport. (~2928 tok)
+- `live_vcenter.rs` — Integration test against a **real vCenter** over the production transport. (~3525 tok)
 
 ## crates/banlieue-vex/
 
@@ -547,6 +556,7 @@
 
 ## docs/adr/
 
+
 - `0001-capi-native-cluster-provisioning.md` — 0001 — CAPI-native cluster provisioning (no native cluster/tier abstraction) (~1178 tok)
 - `0002-infracluster-failure-domain-aggregation.md` — 0002 — InfraCluster CRD with multi-Provider failure-domain aggregation (~1837 tok)
 - `0003-provider-deployment-topology.md` — 0003 — Provider deployment topology (per-instance vs per-class) (~2434 tok)
@@ -589,7 +599,7 @@
 - `0040-deferred-install-for-vtpm-encryption.md` — 0040 — Deferred (per-clone) install for TPM-sealed Kairos encryption (~2993 tok)
 - `0041-imagebuilder-namespaced-secret-access.md` — 0041 — banlieue-imagebuilder reads Secrets through a namespaced Role (~1237 tok)
 - `0042-userdata-reference-authorization.md` — 0042 — A VirtualMachine may only reference userData its creator can read (~1508 tok)
-- `0043-guestready-installed-guest-signal.md` — 0043 — `GuestReady`: the installed guest announces itself (~2608 tok)
+- `0043-guestready-installed-guest-signal.md` — 0043 — `GuestReady`: the installed guest announces itself (~3750 tok)
 - `0044-detach-install-media-after-install.md` — 0044 — Detach install media once the guest is installed (~1776 tok)
 - `0046-virtualmachinepool.md` — 0046 — `VirtualMachinePool`: warm, never-reused VMs (~2009 tok)
 - `0047-virtualmachineclaim.md` — 0047 — `VirtualMachineClaim`: bound once, released by deletion (~2282 tok)
@@ -604,7 +614,7 @@
 
 ## docs/architecture/calm/
 
-- `architecture.json` — Declares by (~31070 tok)
+- `architecture.json` — Declares in (~37208 tok)
 - `README.md` — Project documentation (~999 tok)
 - `vtpm-kairos-k0s-encryption.calm.json` — Declares of (~4466 tok)
 
@@ -689,7 +699,8 @@
 
 ## docs/src/security/
 
-- `threat-model.md` — Threat Model (~11223 tok)
+
+- `threat-model.md` — Threat Model (~9440 tok)
 
 ## docs/src/stylesheets/
 
@@ -711,7 +722,7 @@
 - `12-vmclass-tpm-encrypted.yaml` — SPDX-License-Identifier: Apache-2.0 (~488 tok)
 - `13-vmimage-kairos-deferred-install-tpm.yaml` — SPDX-License-Identifier: Apache-2.0 (~1142 tok)
 - `14-vmimage-kairos-trusted-boot-uki.yaml` — SPDX-License-Identifier: Apache-2.0 (~1033 tok)
-- `16-cloud-config-guest-phase.yaml` — SPDX-License-Identifier: Apache-2.0 (~1068 tok)
+- `16-cloud-config-guest-phase.yaml` — SPDX-License-Identifier: Apache-2.0 (~1096 tok)
 - `17-virtualmachine-libvirt.yaml` — SPDX-License-Identifier: Apache-2.0 (~1145 tok)
 - `18-virtualmachinepool.yaml` — SPDX-License-Identifier: Apache-2.0 (~1372 tok)
 - `19-virtualmachineclaim.yaml` — SPDX-License-Identifier: Apache-2.0 (~1008 tok)
