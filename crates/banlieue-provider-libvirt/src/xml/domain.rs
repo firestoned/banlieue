@@ -71,8 +71,21 @@ pub struct DomainXmlInput<'a> {
     /// the first. Must have exactly `spec.disks.len() - 1` entries.
     pub extra_disk_paths: &'a [String],
     /// Absolute host path of the installer ISO. Required when
-    /// `spec.boot_source.kind` is `InstallMedia`, ignored otherwise.
+    /// `spec.boot_source.kind` is `InstallMedia` **and**
+    /// [`Self::install_media_detached`] is false; ignored otherwise.
     pub install_iso_path: Option<&'a str>,
+    /// Whether the install medium has already been ejected (ADR-0044).
+    ///
+    /// Exists so the missing-ISO guard can tell "the caller has not located
+    /// the installer volume yet" — a bug — from "this machine finished
+    /// installing and its medium was deliberately removed". Without the
+    /// distinction the guard would have to be deleted to let an ejected
+    /// machine re-render, which would silently re-admit the bug it catches.
+    ///
+    /// When true the cdrom device is omitted entirely and `<os>` no longer
+    /// offers `<boot dev='cdrom'/>`, so a redefine cannot put the installer
+    /// back or leave the domain preferring to boot it.
+    pub install_media_detached: bool,
     /// Absolute host path of the NoCloud `cidata` ISO, when there is
     /// user-data to deliver.
     pub cidata_iso_path: Option<&'a str>,
@@ -108,6 +121,9 @@ pub fn build_domain_xml(input: &DomainXmlInput<'_>) -> Result<String, DomainXmlE
         });
     }
     let install_iso = match spec.boot_source.kind {
+        // Ejected (ADR-0044): the machine is installed and the medium is
+        // deliberately gone. Not a missing path.
+        LibvirtBootSourceKind::InstallMedia if input.install_media_detached => None,
         LibvirtBootSourceKind::InstallMedia => Some(
             input
                 .install_iso_path
@@ -305,6 +321,33 @@ fn render_cdroms(
         ));
     }
     Ok(out)
+}
+
+/// The install cdrom in its **ejected** end state, for
+/// `virDomainUpdateDeviceFlags` (ADR-0044).
+///
+/// libvirt matches the device to update by its `<target dev=…>` and replaces
+/// the rest of the element, so this is the same drive with no `<source>`:
+/// the tray stays, the medium leaves. It is deliberately not a
+/// `detach-device` — removing the element would renumber the remaining disk
+/// targets and slide the cloud-init seed onto the target the installer used
+/// to own.
+///
+/// The target is [`device_letter`]`(0)` because [`render_cdroms`] always
+/// emits the installer first. That coupling is asserted by
+/// `ejected_cdrom_target_matches_what_the_builder_emitted` rather than left
+/// to a comment, because the two functions failing to agree would eject the
+/// seed and leave the installer bootable — silently.
+#[must_use]
+pub fn ejected_install_cdrom_xml() -> String {
+    format!(
+        "<disk type='file' device='cdrom'>\
+<driver name='qemu' type='raw'/>\
+<target dev='sd{letter}' bus='sata'/>\
+<readonly/>\
+</disk>",
+        letter = device_letter(0),
+    )
 }
 
 /// `<interface>` for each NIC.

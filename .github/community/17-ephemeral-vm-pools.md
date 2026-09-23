@@ -276,9 +276,9 @@ provider can realise (see [Repo reality](#repo-reality-at-8360e19)).
 |---|---|---|---|
 | 0 | Slim image experiment | none (no code) | ⏸️ deferred (no vTPM on the libvirt hosts yet) |
 | A2 | `GuestReady`: the installed guest reports in | 0043 | 🔶 libvirt implemented and the **read path is now verified live** against a real `qemu-guest-agent` (the seed installs it, so no special image is needed). Open: a Kairos image with the phase layer, to prove the marker is written at the right *moment*; vSphere transport deferred |
-| A4 | Detach install media once installed | 0044 | ⛔ |
+| A4 | Detach install media once installed | 0044 | ✅ landed 2026-09-23 (libvirt) — `virDomainUpdateDeviceFlags` (proc 174) ejects the cdrom when `guestInstalled` flips, **before** `GuestReady` is published, so a pool can never bind a member with media attached. Sticky `installMediaDetached`; the ISO is also suppressed from the redefined domain XML. vSphere half deferred for want of a vCenter. **Verified live against a real libvirtd 2026-09-23** — a CONFIG-only eject of a real cdrom was accepted *and applied* |
 | A5 | vTPM EK certificate in machine status | 0045 | ⛔ — **now the gate for F** (ADR-0049 Decision 4 verifies quotes against it) |
-| A3 | `tpmEnabled` requires `installMode: Deferred` | 0048 | ⛔ |
+| A3 | `tpmEnabled` requires `installMode: Deferred` | 0048 | ✅ landed 2026-09-23 — pure check in `banlieue-controller`, rejected before scheduling so no infra CR is created; `Manual` passes, and an image with **no `template`** is rejected too (a pre-built disk is a pre-laid one) |
 | B1 | `VirtualMachinePool` | 0046 | ✅ landed and validated e2e — fills, self-heals, rolls, cascades on delete |
 | B2 | `VirtualMachineClaim` | 0047 | ✅ landed — bind/hold/release, TTL expiry, finalizer, nonce; a pool is now consumable |
 | C | In-guest agent (separate repo) | own repo | ⛔ |

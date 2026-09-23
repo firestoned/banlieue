@@ -4,11 +4,15 @@ SPDX-License-Identifier: Apache-2.0
 -->
 # Threat Model
 
-> **Status:** Living document. Last full pass **2026-09-22** — the second that
-> day, driven by an audit of the CALM model, which surfaced the **identity
-> provider as an actor nobody had modelled**; **TB-7 is new in this pass**.
-> Against the architecture defined by ADR-0001 … ADR-0055 (0044–0045 and 0048
-> are reserved by roadmap 17 and unissued; 0049 is Proposed, not implemented).
+> **Status:** Living document. Last full pass **2026-09-23**, covering
+> **ADR-0048** (closes the `tpmEnabled` + `Immediate` enforcement gap ADR-0040
+> Decision 5 left open) and **ADR-0044** (install media is ejected before
+> `GuestReady`, so a pool cannot bind a member with its installer attached).
+> TB-5 gains five rows; §7 requirement 9 stops describing an operator
+> responsibility that is now code; §8 gains the two residues those ADRs leave
+> deliberately — `installMode: Manual`, and the NoCloud seed staying attached.
+> Against the architecture defined by ADR-0001 … ADR-0055 (0045 is reserved by
+> roadmap 17 and unissued; 0049 is Proposed, not implemented).
 > **Method:** asset/actor enumeration, trust-boundary decomposition, STRIDE per
 > boundary, control mapping to the manifests in `deploy/` and the crates in
 > `crates/`.
@@ -217,6 +221,17 @@ treated as readable by every hypervisor operator, not just by banlieue's own
 principals. Put per-VM secrets in `VirtualMachine.spec.userData`
 (guest-delivered per clone) rather than baking them into a shared image.
 
+A second exposure at this boundary is the guest's **own disk**, which is only
+outside an operator's reach if it was actually encrypted:
+
+| Threat | STRIDE | Control |
+| --- | --- | --- |
+| A VM presents every outward sign of a sealed disk — vTPM attached, `tpmEnabled: true` on its class, `Ready` — while its disk is plaintext on the datastore or storage pool, readable by any hypervisor operator and by the next tenant of the same host | I | **ADR-0048**, since 2026-09-23: `banlieue-controller` rejects `tpmEnabled: true` paired with an `installMode: Immediate` image (or an image with no `template` block, which is a pre-built and therefore pre-laid disk) — `Ready=False`, `reason=ImageClassMismatch`, and **no infrastructure CR is created**, so the machine never reaches a provider that would build it. `crates/banlieue-controller/src/reconciler/virtualmachine.rs` (`image_class_mismatch`), checked after the class and image resolve and before scheduling. This is the only place the combination is visible: `tpmEnabled` is on the `VMClass` and `installMode` on the `VMImage`, so no `ValidatingAdmissionPolicy` can see both |
+| A sandbox workload mounts the still-attached install ISO and reads the build-time cloud-config overlay baked into it (`VMImage.spec.cloudConfigs`, `isoOverlay`) | I | **ADR-0044**, since 2026-09-23: the medium is ejected when the ADR-0043 `guestInstalled` marker flips, via `virDomainUpdateDeviceFlags` with `AFFECT_LIVE\|AFFECT_CONFIG` — `crates/banlieue-libvirt/src/procs.rs` (`DEVICE_MODIFY_EJECT`). `GuestReady` is published only **after** the eject, so a `VirtualMachinePool` — whose sole readiness input is that condition — cannot bind a member whose installer is still attached. `converge()` also suppresses the ISO from the domain XML it redefines each pass, or a redefine would restore it while status claimed otherwise |
+| A guest reboots into its still-attached installer and re-runs the install, re-sealing a fresh disk over the previous tenant's workload | T, D | Same control. Both flags are passed deliberately: a `LIVE`-only eject leaves the medium in the persistent definition, where it returns at the next boot. The rendered `<os>` block also stops offering `<boot dev='cdrom'/>` once detached |
+| A guest holds the cdrom tray locked so the eject fails, and is handed out anyway | D | `VIR_DOMAIN_DEVICE_MODIFY_FORCE` is **not** passed. A failed eject leaves `GuestReady` unpublished, so the member never becomes available and `provisioningTimeoutSeconds` (ADR-0046) reaps it as poisoned. Failing toward an unavailable member rather than an exposed one is the intended direction |
+| An `installMode: Manual` image asserts a deferred install it does not perform, and seals nothing | I | **Not controlled.** `Manual` is ADR-0040's escape hatch for a non-Kairos build and banlieue cannot inspect what such an image does. Recorded in §8 |
+
 ### TB-6 — Supply chain
 
 This is the strongest area of the project and is largely already ADR-0006.
@@ -349,10 +364,15 @@ a different assumption is unsafe.
      partitions to a TPM present *during* install (ADR-0040); an
      already-installed image cannot be encrypted later on any backend.
 
-   Nothing currently *enforces* the pairing — a `tpmEnabled: true` `VMClass`
-   with an `installMode: Immediate` image attaches a real TPM and silently
-   encrypts nothing (ADR-0040 Decision 5; roadmap 17 phase A3 proposes
-   ADR-0048 to close it). Until then this is an operator responsibility.
+   **The pairing is now enforced** (ADR-0048, 2026-09-23), closing what
+   ADR-0040 Decision 5 left open. `banlieue-controller` rejects a
+   `tpmEnabled: true` `VMClass` paired with an `installMode: Immediate`
+   image — or with an image carrying no `template` block, which is a
+   pre-built and therefore pre-laid disk — before scheduling, and creates
+   no infrastructure CR. What used to attach a real TPM and silently
+   encrypt nothing is now `Ready=False`, `reason=ImageClassMismatch`. The
+   residual operator responsibility is `installMode: Manual`, the escape
+   hatch for non-Kairos builds, which banlieue cannot inspect (§8).
 10. **A claim isolates at the VM boundary, not the Kubernetes one — grant
     `create` and `delete` on `virtualmachineclaims` narrowly.** A
     `VirtualMachineClaim` guarantees that one *VM* is used by one subject and
@@ -391,6 +411,8 @@ a different assumption is unsafe.
 | **The identity provider is trusted absolutely, and is outside banlieue** | The API server is the only thing that can attest a caller, and it attests whatever the configured issuer asserted. banlieue cannot verify an upstream IdP without becoming an IdP. The claim-subject policy is still worth having: it binds an attribution to *whatever* identity the cluster does authenticate, which is strictly better than free text | banlieue ever needs an attribution stronger than the cluster's own authentication — at which point the answer is per-request proof from the subject (a signed consent, or the attested channel of ADR-0049), not a better check on the caller |
 | A consumer's **cached ID token** sits on their laptop (`~/.kube/cache/oidc-login`) and authenticates as them if stolen | Not specific to claims — every Kubernetes bearer token behaves this way, and client-side credential custody is out of scope (§9). Recorded because the claim-specific consequence is distinctive: the audit trail records the *victim* requesting a sandbox, which is exactly the fiction §6/TB-1 exists to prevent. Short token lifetimes are the issuer-side mitigation | Claims carry per-request proof of the subject's intent rather than only the caller's identity |
 | `subject.issuer` is allowlisted but never *verified*: the API server does not reveal which issuer minted the caller's token | Nothing in Kubernetes can attest it, so an allowlist is the strongest available check — it stops a claim naming an issuer the site does not use, which is what would make the recorded attribution meaningless. The claim deliberately carries no token to verify (ADR-0047 Decision 9) | The in-guest agent's JWT validation lands (roadmap phase C), at which point the *guest* verifies issuer, audience and `oid` against the claim |
+| An `installMode: Manual` image can claim a deferred install it does not perform, so a `tpmEnabled` VM built from it is unencrypted and says nothing | `Manual` exists precisely for builds banlieue does not drive (ADR-0040), so inspecting it is not possible without becoming its build system. ADR-0048 closes the case banlieue *can* see (`Immediate`, and an absent `template`) and fails closed there; `Manual` is a deliberate operator assertion, narrower than the blanket gap it replaced | A backend reports sealed-partition state back to banlieue, making the assertion verifiable rather than trusted |
+| The NoCloud `cidata` seed stays attached after install, so a guest can read its own rendered user-data (A-2) from inside the sandbox | ADR-0044 Decision 4, deliberate and scoped: cloud-init re-reads its datasource on every boot, so removing the seed risks regressing per-boot modules in a way that needs its own live verification on a reboot — not a first boot. Ejecting the *installer* removes the build-time overlay shared across every VM, which is the broader exposure; what remains is each guest's own material, which that guest's workload could in principle obtain anyway | The seed eject is verified live across a reboot, or user-data delivery stops needing a persistent datasource |
 | Health endpoint binds `0.0.0.0` and returns a fixed `200` | Standard probe trade-off; carries no data | It ever reports real state |
 | Provider condition messages are mirrored verbatim onto user-facing `VirtualMachine` status | Useful diagnostics; providers are in-tree | A third-party provider ships |
 

@@ -1868,6 +1868,7 @@ InfraMachine status contract (plus libvirt-specific diagnostics).
 | `failureDomain` | string |  | CAPI contract field (optional): observed failure domain — the host the domain actually landed on. |
 | `guestInstalled` | boolean |  | Whether the *installed* guest has announced itself (ADR-0043). |
 | `initialization` | object |  | CAPI contract field: replaces the deprecated v1beta1 `status.ready`. |
+| `installMediaDetached` | boolean |  | Whether the install medium has been ejected (ADR-0044). |
 | `observedGeneration` | integer |  |  |
 | `observedPowerState` | string |  | The domain's last observed run state, mapped onto banlieue's backend-neutral [`PowerState`] (ADR-0034). The hypervisor's view, not a guest-OS-boot signal. Not part of the CAPI contract; mirrored onto the parent `VirtualMachine`'s `status.observedPowerState`. Allowed: `PoweredOn`, `PoweredOff`, `Suspended`, `null`. |
 | `tpmAttached` | boolean |  | Whether an emulated TPM was attached, when `spec.tpmEnabled` is set (ADR-0039). `None` when `tpmEnabled` is `false` or the attach has not run yet. A failed attach surfaces through the conditions rather than a dedicated `VirtualMachine`-level mirror. |

@@ -73,11 +73,32 @@ Only now write code, tests first, per `rules/testing.md` and the `tdd-workflow`
 skill: failing test → minimum implementation → refactor. After any `.rs` change,
 run the `cargo-quality` skill.
 
-### 4. Docs
+### 4. Docs — including **both** roadmap artefacts
 
 Update `.claude/CHANGELOG.md` (with `**Author:**`) and any affected
 `docs/src/` pages / examples, per `rules/documentation.md`. CRD changes
 regenerate `deploy/crds/` and the API reference (`make crds`).
+
+**If the work advanced a roadmap item, update both places, in this commit:**
+
+1. the detail doc, `.github/community/NN-*.md` — tick the checkbox or update
+   the phase-table row, and say what actually landed;
+2. **`ROADMAPS.md`** at the repo root — the status board row.
+
+They have different readers. The detail doc is the task list you work from;
+`ROADMAPS.md` is the one-screen answer to "what state is this project in" and
+is what gets read when deciding what to do *next*. A board that lags the tree
+sends the next session to redo finished work, or to plan around a blocker that
+no longer exists.
+
+The trigger is **completion, not change**: if a checkbox is true now, tick it
+now — even when the work that made it true was an earlier session's. And while
+you are in the detail doc, **audit the rest of it against the tree**. Roadmap
+07 accumulated eight stale checkboxes this way, including two that were not
+merely done but *superseded* (a `bookworm-slim`/`genisoimage` Dockerfile, long
+since distroless; `qemu+ssh` support, ruled out by ADR-0011's mTLS-only
+transport). "Done", "superseded" and "still open" are three different answers
+and only the tree knows which applies.
 
 ### 5. Threat model — full pass (LAST)
 
@@ -125,4 +146,6 @@ CHANGELOG.
 - [ ] Tests written **first**, then implementation (TDD)
 - [ ] `cargo-quality` passes (fmt + clippy + test)
 - [ ] CHANGELOG + docs updated
+- [ ] Roadmap detail doc **and** `ROADMAPS.md` both updated for anything that
+      completed (and the rest of the detail doc audited against the tree)
 - [ ] Full threat-model pass done; header stamp bumped (`rules/threat-modeling.md`)

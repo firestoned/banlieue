@@ -1,7 +1,7 @@
 # anatomy.md
 
-> Auto-maintained by OpenWolf. Last scanned: 2026-09-22T12:06:39.567Z
-> Files: 469 tracked | Anatomy hits: 0 | Misses: 0
+> Auto-maintained by OpenWolf. Last scanned: 2026-09-23T13:23:25.605Z
+> Files: 471 tracked | Anatomy hits: 0 | Misses: 0
 
 ## ./
 
@@ -13,7 +13,7 @@
 - `Dockerfile` — Docker container definition (~959 tok)
 - `Dockerfile.chainguard` — SPDX-License-Identifier: Apache-2.0 (~770 tok)
 - `LICENSE` — Project license (~3029 tok)
-- `Makefile` — SPDX-License-Identifier: Apache-2.0 (~18044 tok)
+- `Makefile` — SPDX-License-Identifier: Apache-2.0 (~18334 tok)
 - `osv-scanner.toml` — SPDX-License-Identifier: Apache-2.0 (~355 tok)
 - `README.md` — Project documentation (~3300 tok)
 - `ROADMAPS.md` — Roadmaps (~2149 tok)
@@ -149,7 +149,7 @@
 ## crates/banlieue-api/src/infrastructure/
 
 - `libvirt_machine_tests.rs` — Unit tests for `libvirt_machine.rs`. (~4064 tok)
-- `libvirt_machine.rs` — `infrastructure.banlieue.io/v1alpha1` LibvirtMachine CRD (ADR-0050). (~5678 tok)
+- `libvirt_machine.rs` — `infrastructure.banlieue.io/v1alpha1` LibvirtMachine CRD (ADR-0050). (~5559 tok)
 - `mod.rs` — `infrastructure.banlieue.io/v1alpha1` API group. (~308 tok)
 - `vsphere_cluster_tests.rs` — Unit tests for `vsphere_cluster.rs`. (~2185 tok)
 - `vsphere_cluster.rs` — `infrastructure.banlieue.io/v1alpha1` VSphereCluster CRD. (~2166 tok)
@@ -191,8 +191,8 @@
 - `scheduler.rs` — Scheduler — the pure placement function. (~6507 tok)
 - `status_mirror_tests.rs` — Unit tests for [`super::super::status_mirror`]. (~5241 tok)
 - `status_mirror.rs` — `VirtualMachine` status mirror. (~2436 tok)
-- `virtualmachine_tests.rs` — Unit tests for [`super::super::virtualmachine`]. (~276 tok)
-- `virtualmachine.rs` — `VirtualMachine` reconciler — Phase 1A iteration 2. (~7682 tok)
+- `virtualmachine_tests.rs` — Unit tests for [`super::super::virtualmachine`]. (~1122 tok)
+- `virtualmachine.rs` — `VirtualMachine` reconciler — Phase 1A iteration 2. (~8247 tok)
 - `vmimage_tests.rs` — Unit tests for the `VMImage` aggregate-readiness reconciler. (~1484 tok)
 - `vmimage.rs` — Aggregate readiness for `VMImage` (ADR-0015). (~1808 tok)
 - `vsphere_cluster_tests.rs` — Unit tests for [`super::super::vsphere_cluster`]. (~3379 tok)
@@ -239,10 +239,10 @@
 ## crates/banlieue-libvirt/src/
 
 - `lib.rs` — # banlieue-libvirt (~960 tok)
-- `procs_tests.rs` — Unit tests for `procs.rs`. (~12849 tok)
-- `procs.rs` — The libvirt procedures banlieue actually calls. (~13246 tok)
+- `procs_tests.rs` — Unit tests for `procs.rs`. (~12522 tok)
+- `procs.rs` — The libvirt procedures banlieue actually calls. (~13174 tok)
 - `rpc_tests.rs` — Unit tests for `rpc.rs`. (~2585 tok)
-- `rpc.rs` — libvirt RPC message framing. (~3493 tok)
+- `rpc.rs` — libvirt RPC message framing. (~3425 tok)
 - `transport_tests.rs` — Unit tests for `transport.rs`. (~4805 tok)
 - `transport.rs` — Session handling: framed message exchange over any byte stream, plus the (~6377 tok)
 - `xdr_tests.rs` — Unit tests for `xdr.rs`. (~2771 tok)
@@ -331,8 +331,8 @@
 
 ## crates/banlieue-provider-libvirt/src/xml/
 
-- `domain_tests.rs` — Unit tests for `xml/domain.rs`. (~5659 tok)
-- `domain.rs` — Build libvirt domain XML from a [`LibvirtMachineSpec`] (ADR-0050). (~4113 tok)
+- `domain_tests.rs` — Unit tests for `xml/domain.rs`. (~5980 tok)
+- `domain.rs` — Build libvirt domain XML from a [`LibvirtMachineSpec`] (ADR-0050). (~4130 tok)
 - `escape_tests.rs` — Unit tests for `xml/escape.rs`. (~1386 tok)
 - `escape.rs` — XML escaping for domain XML (ADR-0050 Decision 6). (~966 tok)
 - `mod.rs` — Domain XML construction (ADR-0050 Decision 6). (~199 tok)
@@ -590,8 +590,10 @@
 - `0041-imagebuilder-namespaced-secret-access.md` — 0041 — banlieue-imagebuilder reads Secrets through a namespaced Role (~1237 tok)
 - `0042-userdata-reference-authorization.md` — 0042 — A VirtualMachine may only reference userData its creator can read (~1508 tok)
 - `0043-guestready-installed-guest-signal.md` — 0043 — `GuestReady`: the installed guest announces itself (~2608 tok)
+- `0044-detach-install-media-after-install.md` — 0044 — Detach install media once the guest is installed (~1776 tok)
 - `0046-virtualmachinepool.md` — 0046 — `VirtualMachinePool`: warm, never-reused VMs (~2009 tok)
 - `0047-virtualmachineclaim.md` — 0047 — `VirtualMachineClaim`: bound once, released by deletion (~2282 tok)
+- `0048-tpm-enabled-requires-deferred-install.md` — 0048 — `tpmEnabled` requires a `Deferred` (or `Manual`) install (~2508 tok)
 - `0049-attestation-trust-anchors.md` — 0049 — Attestation: the guest proves itself, banlieue never holds the token (~1947 tok)
 - `0050-libvirtmachine-domain-lifecycle.md` — 0050 — `LibvirtMachine`: the InfraMachine contract on libvirt (~2816 tok)
 - `0051-vmimage-trusted-boot-uki-support.md` — 0051 — `VMImage` Trusted Boot (UKI) support (~4554 tok)
@@ -657,13 +659,13 @@
 - `host-bootstrap.md` — Host Bootstrap: Bare Metal to a k0s Cluster (~3817 tok)
 - `index.md` — Guides (~918 tok)
 - `kairos-operator-setup.md` — Guide: Setting up the Kairos operator (~1136 tok)
-- `libvirt-provider.md` — Guide: libvirt Provider (~4612 tok)
+- `libvirt-provider.md` — Guide: libvirt Provider (~5015 tok)
 - `provider-lifecycle.md` — Guide: Provider lifecycle & install — bootstrap, per-Provider workloads, upgrades, running without the operator, e2e (~2881 tok)
 - `testing-claim-authorization.md` — Guide: testing claim authorization with your real GitHub account (~3287 tok)
 - `using-banlieue-imagebuilder.md` — Guide: Using banlieue-imagebuilder (~5906 tok)
 - `virtualmachine-claims.md` — Guide: VirtualMachine Claims (~2999 tok)
 - `virtualmachine-pools.md` — Guide: VirtualMachine Pools (~2975 tok)
-- `vsphere-provider.md` — Guide: vSphere Provider (~3772 tok)
+- `vsphere-provider.md` — Guide: vSphere Provider (~4098 tok)
 
 ## docs/src/javascripts/
 
@@ -687,7 +689,7 @@
 
 ## docs/src/security/
 
-- `threat-model.md` — Threat Model: assets, actors, 6 trust boundaries, STRIDE per boundary mapped to concrete controls in deploy/ and crates/, operator hardening requirements, accepted-risk register (~9332 tok)
+- `threat-model.md` — Threat Model (~11223 tok)
 
 ## docs/src/stylesheets/
 

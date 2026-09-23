@@ -286,6 +286,40 @@ bytes resemble a qcow2 header would be reinterpreted as one, and the backing
 file it then names can be any path the daemon can read. banlieue does not
 reintroduce that.
 
+### The installer is ejected once the guest reports installed
+
+An `installMedia` machine does **not** keep its CD-ROM forever. When the
+guest's `GuestReady` marker appears (ADR-0043), the provider ejects the medium
+with `virDomainUpdateDeviceFlags` and records
+`status.installMediaDetached: true` (ADR-0044). Two reasons:
+
+- the ISO carries the image's baked cloud-config overlay, and a workload that
+  can still mount it can read that overlay;
+- it is bootable, so a domain that keeps it is one reboot away from re-running
+  the installer over its own disk.
+
+**`GuestReady` is published only after the eject succeeds.** That ordering is
+what lets a `VirtualMachinePool` bind on `GuestReady` alone and still be sure
+no bound member has install media attached. A member whose eject fails
+therefore never becomes available, and is reaped at
+`provisioningTimeoutSeconds` — look for `reason=InstallMediaAttached` on the
+`GuestReady` condition:
+
+```sh
+kubectl get libvirtmachine my-vm -o jsonpath='{.status.installMediaDetached}'
+kubectl describe libvirtmachine my-vm | grep -A3 GuestReady
+```
+
+The tray is never force-ejected. A guest holding it locked is still reading
+the installer, and that is worth surfacing rather than overriding.
+
+!!! note "The cloud-init seed is *not* ejected"
+    Only the installer is removed. The NoCloud `cidata` ISO stays attached,
+    because cloud-init re-reads its datasource on every boot. A guest can
+    therefore still read its own rendered user-data from `CIDATA` — a
+    deliberate, recorded trade-off
+    ([threat model §8](../security/threat-model.md)), not an oversight.
+
 ### EFI needs no configuration
 
 `firmware: efi` on a `VMClass` renders `<os firmware='efi'>`, which makes

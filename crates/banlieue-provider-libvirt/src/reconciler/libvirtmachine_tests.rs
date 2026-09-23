@@ -207,11 +207,103 @@ mod tests {
     // converge
     // ------------------------------------------------------------------
 
+    // ---- install-media eject (ADR-0044) ------------------------------
+
+    #[test]
+    fn eject_is_decided_only_once_the_guest_is_installed() {
+        // The whole point of ADR-0043 was a signal that distinguishes the
+        // INSTALLED system from the live installer. Ejecting before it fires
+        // pulls the ISO out from under a running install.
+        assert!(!should_eject_install_media(true, false, false));
+        assert!(should_eject_install_media(true, false, true));
+    }
+
+    #[test]
+    fn eject_is_skipped_when_there_was_never_install_media() {
+        // An Immediate-mode machine has no cdrom to eject; asking libvirt to
+        // update a device that does not exist is an error, not a no-op.
+        assert!(!should_eject_install_media(false, false, true));
+    }
+
+    #[test]
+    fn eject_is_not_repeated_once_done() {
+        assert!(!should_eject_install_media(true, true, true));
+    }
+
+    #[tokio::test]
+    async fn converge_ejects_install_media_once_the_guest_reports_installed() {
+        let mut c = ready_host();
+        c.guest_agent.insert("sandboxes-agent-01".to_string());
+        c.guest_installed.insert("sandboxes-agent-01".to_string());
+        let s = spec(LibvirtBootSourceKind::InstallMedia);
+
+        let observed = converge(&mut c, &s, false).await.expect("converge");
+
+        assert_eq!(observed.install_media_detached, Some(true));
+        assert!(
+            c.ejected.contains("sandboxes-agent-01"),
+            "calls: {:?}",
+            c.calls
+        );
+    }
+
+    #[tokio::test]
+    async fn converge_does_not_eject_while_the_install_is_still_running() {
+        let mut c = ready_host();
+        // Agent answering, marker absent: the installer is up, not the
+        // installed system.
+        c.guest_agent.insert("sandboxes-agent-01".to_string());
+        let s = spec(LibvirtBootSourceKind::InstallMedia);
+
+        let observed = converge(&mut c, &s, false).await.expect("converge");
+
+        assert_eq!(observed.install_media_detached, Some(false));
+        assert!(!c.ejected.contains("sandboxes-agent-01"));
+    }
+
+    #[tokio::test]
+    async fn an_already_ejected_machine_is_redefined_without_the_install_cdrom() {
+        // converge re-defines the domain XML every pass. If the rendered XML
+        // still carried the installer, the next define would put the medium
+        // straight back and the eject would silently undo itself.
+        let mut c = ready_host();
+        c.guest_agent.insert("sandboxes-agent-01".to_string());
+        c.guest_installed.insert("sandboxes-agent-01".to_string());
+        let s = spec(LibvirtBootSourceKind::InstallMedia);
+
+        converge(&mut c, &s, true).await.expect("converge");
+
+        let defined = c.defined_xml.last().expect("a domain was defined");
+        assert!(
+            !defined.contains("install"),
+            "redefine must not re-attach the installer:\n{defined}"
+        );
+        assert!(
+            !defined.contains("<boot dev='cdrom'/>"),
+            "and must not still prefer booting from it:\n{defined}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_immediate_machine_reports_nothing_to_detach() {
+        let mut c = ready_host();
+        c.guest_agent.insert("sandboxes-agent-01".to_string());
+        c.guest_installed.insert("sandboxes-agent-01".to_string());
+        let s = spec(LibvirtBootSourceKind::BackingVolume);
+
+        let observed = converge(&mut c, &s, false).await.expect("converge");
+
+        // None, not Some(false): "nothing to do" must stay distinguishable
+        // from "attached and still pending", or GuestReady would never fire
+        // for an Immediate machine.
+        assert_eq!(observed.install_media_detached, None);
+    }
+
     #[tokio::test]
     async fn converge_creates_the_os_disk_then_defines_and_starts() {
         let mut c = ready_host();
         let s = spec(LibvirtBootSourceKind::InstallMedia);
-        let observed = converge(&mut c, &s).await.expect("converge");
+        let observed = converge(&mut c, &s, false).await.expect("converge");
 
         assert_eq!(observed.domain.name, "sandboxes-agent-01");
         assert_eq!(observed.state, DomainState::Running);
@@ -243,7 +335,7 @@ mod tests {
     async fn converge_refreshes_the_pool_after_creating_a_volume() {
         let mut c = ready_host();
         let s = spec(LibvirtBootSourceKind::InstallMedia);
-        converge(&mut c, &s).await.expect("converge");
+        converge(&mut c, &s, false).await.expect("converge");
         assert!(
             c.calls.contains(&"refresh_pool:default".to_string()),
             "{:?}",
@@ -257,9 +349,9 @@ mod tests {
     async fn converge_is_idempotent_and_reuses_an_existing_disk() {
         let mut c = ready_host();
         let s = spec(LibvirtBootSourceKind::InstallMedia);
-        converge(&mut c, &s).await.expect("first pass");
+        converge(&mut c, &s, false).await.expect("first pass");
         let after_first = c.calls.len();
-        converge(&mut c, &s).await.expect("second pass");
+        converge(&mut c, &s, false).await.expect("second pass");
 
         // Count the OS disk specifically: a machine also creates a
         // cloud-init seed volume (ADR-0054), and counting every create
@@ -284,8 +376,8 @@ mod tests {
     async fn converge_does_not_restart_a_running_domain() {
         let mut c = ready_host();
         let s = spec(LibvirtBootSourceKind::InstallMedia);
-        converge(&mut c, &s).await.expect("first pass");
-        converge(&mut c, &s).await.expect("second pass");
+        converge(&mut c, &s, false).await.expect("first pass");
+        converge(&mut c, &s, false).await.expect("second pass");
         let starts = c
             .calls
             .iter()
@@ -298,10 +390,10 @@ mod tests {
     async fn converge_stops_a_domain_the_spec_wants_powered_off() {
         let mut c = ready_host();
         let mut s = spec(LibvirtBootSourceKind::InstallMedia);
-        converge(&mut c, &s).await.expect("start it");
+        converge(&mut c, &s, false).await.expect("start it");
 
         s.desired_power_state = PowerState::PoweredOff;
-        let observed = converge(&mut c, &s).await.expect("stop it");
+        let observed = converge(&mut c, &s, false).await.expect("stop it");
         assert_eq!(observed.state, DomainState::ShutOff);
     }
 
@@ -317,7 +409,7 @@ mod tests {
             }],
             ..Default::default()
         };
-        let err = converge(&mut c, &spec(LibvirtBootSourceKind::InstallMedia))
+        let err = converge(&mut c, &spec(LibvirtBootSourceKind::InstallMedia), false)
             .await
             .expect_err("should fail");
         assert!(
@@ -329,7 +421,7 @@ mod tests {
     #[tokio::test]
     async fn converge_fails_clearly_when_the_pool_is_missing() {
         let mut c = FakeMachineClient::default();
-        let err = converge(&mut c, &spec(LibvirtBootSourceKind::InstallMedia))
+        let err = converge(&mut c, &spec(LibvirtBootSourceKind::InstallMedia), false)
             .await
             .expect_err("should fail");
         assert!(err.to_string().contains("storage pool"), "{err}");
@@ -344,7 +436,7 @@ mod tests {
             size_gi_b: 100,
             bus: LibvirtDiskBus::Virtio,
         });
-        converge(&mut c, &s).await.expect("converge");
+        converge(&mut c, &s, false).await.expect("converge");
         assert!(
             c.calls
                 .contains(&"create_volume:sandboxes-agent-01-data.qcow2".to_string()),
@@ -358,7 +450,7 @@ mod tests {
     #[tokio::test]
     async fn converge_reports_no_addresses_while_the_guest_is_booting() {
         let mut c = ready_host();
-        let observed = converge(&mut c, &spec(LibvirtBootSourceKind::InstallMedia))
+        let observed = converge(&mut c, &spec(LibvirtBootSourceKind::InstallMedia), false)
             .await
             .expect("converge");
         assert!(observed.addresses.is_empty());
@@ -372,7 +464,7 @@ mod tests {
             InterfaceAddressSource::Agent as u32,
             ifaces(&["127.0.0.1", "192.0.2.24"]),
         );
-        let observed = converge(&mut c, &spec(LibvirtBootSourceKind::InstallMedia))
+        let observed = converge(&mut c, &spec(LibvirtBootSourceKind::InstallMedia), false)
             .await
             .expect("converge");
         assert_eq!(observed.addresses.len(), 1);
@@ -393,7 +485,7 @@ mod tests {
     async fn finalize_tears_down_in_the_only_safe_order() {
         let mut c = ready_host();
         let s = spec(LibvirtBootSourceKind::InstallMedia);
-        converge(&mut c, &s).await.expect("converge");
+        converge(&mut c, &s, false).await.expect("converge");
         c.calls.clear();
 
         finalize_backend(&mut c, &s).await.expect("finalize");
@@ -411,7 +503,7 @@ mod tests {
     async fn finalize_never_deletes_the_shared_boot_source() {
         let mut c = ready_host();
         let s = spec(LibvirtBootSourceKind::InstallMedia);
-        converge(&mut c, &s).await.expect("converge");
+        converge(&mut c, &s, false).await.expect("converge");
         finalize_backend(&mut c, &s).await.expect("finalize");
 
         assert!(
@@ -430,7 +522,7 @@ mod tests {
             size_gi_b: 10,
             bus: LibvirtDiskBus::Virtio,
         });
-        converge(&mut c, &s).await.expect("converge");
+        converge(&mut c, &s, false).await.expect("converge");
         finalize_backend(&mut c, &s).await.expect("finalize");
 
         assert_eq!(c.volumes.len(), 1, "only the shared image should remain");
@@ -494,7 +586,7 @@ mod tests {
         let mut s = spec(LibvirtBootSourceKind::BackingVolume);
         s.boot_source.volume = "ubuntu.qcow2".to_string();
 
-        converge(&mut c, &s).await.expect("converge");
+        converge(&mut c, &s, false).await.expect("converge");
         assert!(
             c.calls
                 .contains(&"create_volume:sandboxes-agent-01-os.qcow2".to_string()),
@@ -541,7 +633,7 @@ mod tests {
         let mut s = spec(LibvirtBootSourceKind::BackingVolume);
         s.boot_source.volume = "kairos.raw".to_string();
 
-        converge(&mut c, &s).await.expect("converge");
+        converge(&mut c, &s, false).await.expect("converge");
         let xml = c
             .created_volume_xml
             .get("sandboxes-agent-01-os.qcow2")
@@ -573,7 +665,7 @@ mod tests {
         let mut s = spec(LibvirtBootSourceKind::InstallMedia);
         s.user_data = Some("#cloud-config\nruncmd:\n  - [echo, marker]\n".to_string());
 
-        converge(&mut c, &s).await.expect("converge");
+        converge(&mut c, &s, false).await.expect("converge");
 
         let seed = c
             .uploaded
@@ -595,7 +687,7 @@ mod tests {
     async fn the_seed_carries_the_domains_own_uuid() {
         let mut c = ready_host();
         let s = spec(LibvirtBootSourceKind::InstallMedia);
-        let observed = converge(&mut c, &s).await.expect("converge");
+        let observed = converge(&mut c, &s, false).await.expect("converge");
 
         let seed = c.uploaded.get("sandboxes-agent-01-cidata.iso").unwrap();
         let uuid = format_uuid(&observed.domain.uuid);
@@ -612,8 +704,8 @@ mod tests {
     async fn a_second_converge_does_not_rewrite_the_seed() {
         let mut c = ready_host();
         let s = spec(LibvirtBootSourceKind::InstallMedia);
-        converge(&mut c, &s).await.expect("first");
-        converge(&mut c, &s).await.expect("second");
+        converge(&mut c, &s, false).await.expect("first");
+        converge(&mut c, &s, false).await.expect("second");
         let uploads = c
             .calls
             .iter()
@@ -629,7 +721,7 @@ mod tests {
     async fn finalize_removes_the_seed_volume() {
         let mut c = ready_host();
         let s = spec(LibvirtBootSourceKind::InstallMedia);
-        converge(&mut c, &s).await.expect("converge");
+        converge(&mut c, &s, false).await.expect("converge");
         assert!(c.volumes.contains_key(&(
             POOL.to_string(),
             "sandboxes-agent-01-cidata.iso".to_string()
@@ -684,7 +776,7 @@ mod tests {
     async fn converge_asks_a_running_guest_whether_it_is_installed() {
         let mut c = ready_host();
         let s = spec(LibvirtBootSourceKind::InstallMedia);
-        let observed = converge(&mut c, &s).await.expect("converge");
+        let observed = converge(&mut c, &s, false).await.expect("converge");
 
         assert!(
             !observed.guest.is_installed(),
@@ -704,7 +796,7 @@ mod tests {
         let mut c = ready_host();
         c.guest_installed.insert("sandboxes-agent-01".to_string());
         let s = spec(LibvirtBootSourceKind::InstallMedia);
-        let observed = converge(&mut c, &s).await.expect("converge");
+        let observed = converge(&mut c, &s, false).await.expect("converge");
         assert!(observed.guest.is_installed());
     }
 
@@ -715,7 +807,7 @@ mod tests {
         let mut c = ready_host();
         let mut s = spec(LibvirtBootSourceKind::InstallMedia);
         s.desired_power_state = PowerState::PoweredOff;
-        let observed = converge(&mut c, &s).await.expect("converge");
+        let observed = converge(&mut c, &s, false).await.expect("converge");
 
         assert!(!observed.guest.is_installed());
         assert!(
@@ -838,6 +930,10 @@ mod tests {
             addresses: Vec::new(),
             address_source: None,
             guest: GuestProbe::AgentUnreachable,
+            // `None` = nothing to detach, so this helper stays neutral on
+            // ADR-0044 and the GuestReady tests below keep testing only the
+            // ADR-0043 signal. The eject tests set it explicitly.
+            install_media_detached: None,
         }
     }
 

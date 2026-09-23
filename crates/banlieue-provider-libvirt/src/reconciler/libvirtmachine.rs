@@ -59,7 +59,7 @@ use tracing::{debug, info, warn};
 use crate::context::Context;
 use crate::error::{Error, Result};
 use crate::machine_client::LibvirtMachineClient;
-use crate::xml::{DomainXmlInput, build_domain_xml};
+use crate::xml::{DomainXmlInput, build_domain_xml, ejected_install_cdrom_xml};
 
 /// Finalizer holding a `LibvirtMachine` until its domain and volumes are gone.
 pub const MACHINE_FINALIZER: &str = "banlieue.io/libvirtmachine";
@@ -136,7 +136,15 @@ pub async fn reconcile(machine: Arc<LibvirtMachine>, ctx: Arc<Context>) -> Resul
 
     ensure_finalizer(&api, machine.as_ref(), MACHINE_FINALIZER).await?;
 
-    match converge(client.as_mut(), &machine.spec).await {
+    // What the last pass recorded: converge needs it both to decide whether
+    // to eject and to keep the installer out of the XML it redefines.
+    let already_detached = machine
+        .status
+        .as_ref()
+        .and_then(|s| s.install_media_detached)
+        .unwrap_or(false);
+
+    match converge(client.as_mut(), &machine.spec, already_detached).await {
         Ok(observed) => {
             let status = build_status(&machine, &observed, generation);
             patch_status(&api, &name, &status).await?;
@@ -184,6 +192,33 @@ pub struct Observed {
     /// The raw observation, not the stored one: stickiness is applied in
     /// `build_status`, so this stays a fact about right now.
     pub guest: GuestProbe,
+    /// Install-media state after this pass (ADR-0044).
+    ///
+    /// `None` when the machine never had install media — an `Immediate`
+    /// boot source — which must stay distinct from `Some(false)`, "attached
+    /// and not yet ejected", because only the latter withholds `GuestReady`.
+    pub install_media_detached: Option<bool>,
+}
+
+/// Should this pass eject the install medium? (ADR-0044)
+///
+/// Pure, so the ordering rule is testable without a host. All three inputs
+/// are load-bearing:
+///
+/// - `needs_cdrom` — an `Immediate` machine has no cdrom, and asking libvirt
+///   to update a device that does not exist is an error, not a no-op.
+/// - `already_detached` — ejecting twice is an error for the same reason.
+/// - `guest_installed` — the ADR-0043 marker is the whole point: it is the
+///   only signal that distinguishes the *installed* system from the live
+///   installer, and ejecting before it fires pulls the ISO out from under a
+///   running install.
+#[must_use]
+pub fn should_eject_install_media(
+    needs_cdrom: bool,
+    already_detached: bool,
+    guest_installed: bool,
+) -> bool {
+    needs_cdrom && !already_detached && guest_installed
 }
 
 /// Bring the host in line with `spec`, and report what was observed.
@@ -198,6 +233,7 @@ pub struct Observed {
 pub async fn converge(
     client: &mut dyn LibvirtMachineClient,
     spec: &LibvirtMachineSpec,
+    already_detached: bool,
 ) -> Result<Observed> {
     let pool = client
         .lookup_pool(&spec.pool)
@@ -224,10 +260,12 @@ pub async fn converge(
 
     let (os_disk, extra_disks) = ensure_disks(client, &pool, spec, &source).await?;
 
-    let install_iso = spec
-        .boot_source
-        .needs_install_cdrom()
-        .then(|| source.key.clone());
+    // Suppressed once the medium has been ejected (ADR-0044). converge
+    // redefines the domain on every pass, so leaving it in here would put
+    // the installer straight back and undo the eject — silently, and while
+    // status still claimed `installMediaDetached: true`.
+    let install_iso =
+        (spec.boot_source.needs_install_cdrom() && !already_detached).then(|| source.key.clone());
     let extra_paths: Vec<String> = extra_disks.iter().map(|v| v.key.clone()).collect();
 
     // Look first, and carry the existing UUID into the document.
@@ -245,6 +283,7 @@ pub async fn converge(
         os_disk_path: &os_disk.key,
         extra_disk_paths: &extra_paths,
         install_iso_path: install_iso.as_deref(),
+        install_media_detached: already_detached,
         // Rendered only once there is user-data to deliver; see the module
         // note in `xml::domain`.
         cidata_iso_path: None,
@@ -276,6 +315,7 @@ pub async fn converge(
             os_disk_path: &os_disk.key,
             extra_disk_paths: &extra_paths,
             install_iso_path: install_iso.as_deref(),
+            install_media_detached: already_detached,
             cidata_iso_path: Some(&seed_vol.key),
             efi_loader_path: None,
             efi_nvram_template_path: None,
@@ -318,12 +358,34 @@ pub async fn converge(
         GuestProbe::AgentUnreachable
     };
 
+    // Eject the installer once — and only once — the INSTALLED guest has
+    // announced itself (ADR-0044). Ordered before `build_status` publishes
+    // `GuestReady`, which is what makes "a bound pool member never has
+    // install media attached" structural rather than a race the timing
+    // happens to win.
+    let install_media_detached = if spec.boot_source.needs_install_cdrom() {
+        let mut detached = already_detached;
+        if should_eject_install_media(true, already_detached, guest.is_installed()) {
+            info!(domain = %domain.name, "ejecting install media");
+            client
+                .eject_install_media(&domain, &ejected_install_cdrom_xml())
+                .await?;
+            detached = true;
+        }
+        Some(detached)
+    } else {
+        // Never had any. Distinct from Some(false) on purpose: only the
+        // latter withholds GuestReady.
+        None
+    };
+
     Ok(Observed {
         domain,
         state,
         addresses,
         address_source,
         guest,
+        install_media_detached,
     })
 }
 
@@ -554,6 +616,12 @@ fn build_status(
     status.tpm_attached = machine.spec.tpm_enabled.then_some(true);
     status.guest_installed =
         sticky_guest_installed(status.guest_installed, observed.guest.is_installed());
+    // Sticky for the same reason: an ejected ISO does not come back, and a
+    // stopped domain has not become re-armed (ADR-0044).
+    status.install_media_detached = sticky_install_media_detached(
+        status.install_media_detached,
+        observed.install_media_detached,
+    );
     status.observed_generation = Some(generation);
 
     let (cond_status, reason, message) = if provisioned {
@@ -590,9 +658,23 @@ fn build_status(
     // pool report `Filling` — "wait a bit" — forever for an image that can
     // never announce, which is the failure ADR-0046 Decision 3 exists to
     // prevent. Observed on a real cluster before this was fixed.
+    //
+    // ADR-0044 adds one more gate on the TRUE arm: install media must be
+    // gone first. Ordering the eject before the condition is what stops a
+    // pool binding a member whose installer is still attached — the pool has
+    // no other readiness input, so it cannot tell the difference itself.
     let installed = status.guest_installed == Some(true);
+    let media_pending = status.install_media_detached == Some(false);
     if installed || observed.guest == GuestProbe::NotAnnounced {
-        let (guest_status, guest_reason, guest_message) = if installed {
+        let (guest_status, guest_reason, guest_message) = if installed && media_pending {
+            (
+                condition_status::FALSE,
+                "InstallMediaAttached",
+                "the installed guest announced itself, but its install medium \
+                 has not been ejected yet (ADR-0044)"
+                    .to_string(),
+            )
+        } else if installed {
             (
                 condition_status::TRUE,
                 "GuestAnnounced",
@@ -783,6 +865,18 @@ pub fn should_poll_soon(guest: GuestProbe, has_addresses: bool) -> bool {
 /// looked yet, which is the expected state for the whole of a `Deferred`
 /// image's install.
 #[must_use]
+pub fn sticky_install_media_detached(
+    previous: Option<bool>,
+    observed: Option<bool>,
+) -> Option<bool> {
+    match (previous, observed) {
+        // Once ejected, always ejected.
+        (Some(true), _) => Some(true),
+        (_, o) => o,
+    }
+}
+
+/// Sticky `guestInstalled` (ADR-0043).
 pub fn sticky_guest_installed(previous: Option<bool>, observed: bool) -> Option<bool> {
     if previous == Some(true) {
         return Some(true);

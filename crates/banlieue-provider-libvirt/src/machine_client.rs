@@ -24,11 +24,12 @@
 use async_trait::async_trait;
 use banlieue_api::banlieue::ProviderConnection;
 use banlieue_libvirt::{
-    Domain, DomainInterface, DomainState, InterfaceAddressSource, Session, StoragePool, StorageVol,
-    TlsIdentity, connect_open, connect_tls, domain_create, domain_define_xml, domain_destroy,
-    domain_get_state, domain_interface_addresses, domain_lookup_by_name, domain_undefine,
-    is_not_found, storage_pool_lookup_by_name, storage_pool_refresh, storage_vol_create_xml,
-    storage_vol_delete, storage_vol_lookup_by_name, storage_vol_upload,
+    DEVICE_MODIFY_EJECT, Domain, DomainInterface, DomainState, InterfaceAddressSource, Session,
+    StoragePool, StorageVol, TlsIdentity, connect_open, connect_tls, domain_create,
+    domain_define_xml, domain_destroy, domain_get_state, domain_interface_addresses,
+    domain_lookup_by_name, domain_undefine, domain_update_device_flags, is_not_found,
+    storage_pool_lookup_by_name, storage_pool_refresh, storage_vol_create_xml, storage_vol_delete,
+    storage_vol_lookup_by_name, storage_vol_upload,
 };
 use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -136,6 +137,20 @@ pub trait LibvirtMachineClient: Send {
     /// # Errors
     /// [`Error::Libvirt`] on anything but a not-found reply.
     async fn undefine_domain(&mut self, domain: &Domain) -> Result<()>;
+
+    /// Eject the medium from the install cdrom, leaving the drive in place
+    /// (ADR-0044).
+    ///
+    /// `xml` is the whole device element in its ejected end state; libvirt
+    /// matches the existing device by its `<target dev=…>`. Applied to both
+    /// the live domain and its persistent definition, so the medium cannot
+    /// return at the guest's next reboot.
+    ///
+    /// # Errors
+    /// [`Error::Libvirt`] if no device matches, or if the guest holds the
+    /// tray locked — which is deliberately not forced, because a guest still
+    /// reading the installer is a fact worth surfacing.
+    async fn eject_install_media(&mut self, domain: &Domain, xml: &str) -> Result<()>;
 
     /// Read a domain's interface addresses, trying each source in
     /// [`ADDRESS_SOURCE_ORDER`] until one answers with at least one address.
@@ -327,6 +342,12 @@ where
         idempotent(domain_undefine(&mut self.session, domain).await)
     }
 
+    async fn eject_install_media(&mut self, domain: &Domain, xml: &str) -> Result<()> {
+        domain_update_device_flags(&mut self.session, domain, xml, DEVICE_MODIFY_EJECT)
+            .await
+            .map_err(Error::from)
+    }
+
     async fn probe_guest(&mut self, domain: &Domain) -> crate::guest::GuestProbe {
         crate::guest::probe_guest(&mut self.session, domain).await
     }
@@ -400,6 +421,15 @@ pub struct FakeMachineClient {
     /// marker is how a test spells "still installing", which is the state
     /// the fast poll interval exists for.
     pub guest_agent: std::collections::BTreeSet<String>,
+    /// Domains whose install media this fake has ejected (ADR-0044). A set,
+    /// for the same reason as `guest_installed`: a reconciler that ejected
+    /// the wrong domain's media must not pass.
+    pub ejected: std::collections::BTreeSet<String>,
+    /// Every domain XML passed to `define_domain`, in order. `converge`
+    /// redefines on every pass, so what the LAST define contained is what
+    /// the host would actually be left with — the only way to catch an
+    /// eject that a later redefine silently undoes.
+    pub defined_xml: Vec<String>,
     /// When set, every call fails with this message.
     pub fail_with: Option<String>,
 }
@@ -550,6 +580,7 @@ impl LibvirtMachineClient for FakeMachineClient {
             detail: "no <name> element".to_string(),
         })?;
         self.record("define_domain", &name);
+        self.defined_xml.push(xml.to_string());
 
         // Models libvirt's real behaviour, which is NOT an unconditional
         // upsert: a domain is identified by UUID, so redefining one that
@@ -610,6 +641,22 @@ impl LibvirtMachineClient for FakeMachineClient {
         self.guard()?;
         self.record("undefine", &domain.name);
         self.domains.remove(&domain.name);
+        Ok(())
+    }
+
+    async fn eject_install_media(&mut self, domain: &Domain, xml: &str) -> Result<()> {
+        self.guard()?;
+        self.record("eject", &domain.name);
+        // A fake that is more permissive than the real thing hides bugs
+        // (rules/testing.md). libvirtd matches the device to update by its
+        // `<target dev=…>`, so an element without one is rejected there and
+        // must be rejected here too.
+        if !xml.contains("<target dev='") {
+            return Err(Error::Libvirt(format!(
+                "update-device XML names no target device: {xml}"
+            )));
+        }
+        self.ejected.insert(domain.name.clone());
         Ok(())
     }
 

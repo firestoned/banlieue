@@ -350,6 +350,25 @@ Full worked examples:
 [`12-vmclass-tpm-encrypted.yaml`](https://github.com/firestoned/banlieue/blob/v0.1.0/examples/12-vmclass-tpm-encrypted.yaml),
 [`13-vmimage-kairos-deferred-install-tpm.yaml`](https://github.com/firestoned/banlieue/blob/v0.1.0/examples/13-vmimage-kairos-deferred-install-tpm.yaml).
 
+!!! danger "Getting step 3 wrong is now an error, not a silent no-op"
+    Pairing `tpmEnabled: true` with an `immediate` image used to clone
+    successfully, attach a vTPM, and encrypt **nothing** — reporting `Ready`
+    the whole time. Since **ADR-0048** the controller rejects the pairing
+    before scheduling: `Ready=False`, `reason=ImageClassMismatch`, and no
+    infrastructure CR is created, so the VM never reaches a provider.
+
+    ```sh
+    kubectl describe virtualmachine my-vm | grep -A3 ImageClassMismatch
+    ```
+
+    The fix is one field: set `installMode: deferred` on the `VMImage`, or
+    drop `tpmEnabled` from the `VMClass`. `manual` also passes — it is the
+    documented escape hatch for a build that is not Kairos-driven.
+
+    A `VMImage` with **no `template` block at all** (a `Template`- or
+    `BackingFile`-source image) is rejected on the same grounds: it is a
+    pre-built, and therefore pre-laid, disk.
+
 !!! warning "Provisioning time and readiness"
     A `deferred`-mode VM's `VirtualMachine`/`VSphereMachine` reports
     `provisioned=true`/`Ready` the instant the clone powers on — which for
@@ -387,6 +406,11 @@ datacenter), `ConnectFailed`, `LookupFailed`, `NoVSphereSource`.
   `Provider.spec.capabilities` against the `VMClass`.
 - `reason=TpmUnsupported` — `VMClass.spec.tpmEnabled: true`, but no candidate
   failure domain's `Provider` advertises the `vtpm` feature (step 8 above).
+- `reason=ImageClassMismatch` — `VMClass.spec.tpmEnabled: true` paired with a
+  `VMImage` whose `installMode` is `immediate` (or which has no `template`
+  block at all). The vTPM would have nothing to seal against, so the VM is
+  refused rather than built unencrypted (ADR-0048). This one never reaches
+  the scheduler, so `Scheduled` is deliberately left untouched.
 
 ```sh
 kubectl -n banlieue-system logs deploy/banlieue-provider-vsphere

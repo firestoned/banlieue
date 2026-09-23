@@ -1,5 +1,210 @@
 # Changelog
 
+## [2026-09-23 14:20] - ADR-0044: eject install media before GuestReady (libvirt)
+
+**Author:** Erick Bourgeois
+
+Roadmap 17 phase A4. Full ADD cycle: ADR -> CALM -> TDD -> implement -> docs ->
+threat model.
+
+### The defect
+Under `installMode: Deferred` the install ISO stayed attached for the machine's
+whole life. It carries the baked cloud-config overlay, which the threat model
+already treats as readable by every hypervisor operator — a guest that keeps it
+mounted extends that readership to the workload inside the VM, which for a
+roadmap 17 sandbox is by assumption a prompt-injected agent. It is also
+bootable, so the domain was one reboot from re-entering the installer and
+re-sealing a fresh disk over the tenant's workload.
+
+### The ordering is the control
+The eject happens **before** `GuestReady` is published, never after. A
+`VirtualMachinePool` binds on that condition and has no other readiness input,
+so ejecting afterwards would leave a window — one reconcile wide, wider if the
+eject fails — in which a claim binds a member whose installer is still
+attached. Ordering it first makes "a bound member never has install media" true
+by construction rather than by timing.
+
+### Added
+- `docs/adr/0044-detach-install-media-after-install.md` (Accepted).
+- `docs/architecture/calm/architecture.json`: `install-media-lifecycle`
+  control; ADR registered. `make calm-validate` clean.
+- `banlieue-libvirt`: `PROC_DOMAIN_UPDATE_DEVICE_FLAGS` (**174**),
+  `encode_domain_update_device_flags_args`, `domain_update_device_flags`, and
+  the `DEVICE_MODIFY_{LIVE,CONFIG,FORCE,EJECT}` flags.
+- `banlieue-api`: `LibvirtMachineStatus.installMediaDetached` (sticky).
+  `make crds` regenerated.
+- `banlieue-provider-libvirt`: `ejected_install_cdrom_xml()`,
+  `should_eject_install_media()` (pure), `LibvirtMachineClient::eject_install_media`,
+  and the `GuestReady` gate.
+- `crates/banlieue-libvirt/tests/live_libvirtd.rs::update_device_flags_is_understood_by_real_libvirtd`
+  plus a `cdrom_domain_xml` fixture — **passed live 2026-09-23**.
+
+### Wire facts were verified, not recalled
+Procedure number and argument struct both came from primary sources before a
+line was written: the `{dom, xml, flags}` struct from libvirt's own
+`src/remote/remote_protocol.x`, and the number `174` from an independently
+generated constants table whose values for `DOMAIN_UNDEFINE_FLAGS` (231),
+`DOMAIN_GET_STATE` (212), `DOMAIN_INTERFACE_ADDRESSES` (353) and
+`DOMAIN_DEFINE_XML_FLAGS` (350) all match constants this crate had already
+proven live. That agreement is what makes the fifth value trustworthy.
+
+### Three decisions worth flagging
+- **Update, not detach.** Ejecting sets the cdrom to a source-less device.
+  Removing the element would renumber the remaining disk targets and slide the
+  cloud-init seed onto the target the installer used to own.
+- **`AFFECT_LIVE | AFFECT_CONFIG`, never `FORCE`.** A `LIVE`-only eject leaves
+  the medium in the persistent definition, where it returns at the next boot.
+  `FORCE` is withheld because a guest holding the tray locked is information —
+  it is still reading the installer — and forcing past it hides that.
+- **The NoCloud seed stays attached** (Decision 4, chosen deliberately). It
+  would close a real exposure — a sandbox can read its own user-data — but
+  cloud-init re-reads its datasource every boot, so removing it needs its own
+  live verification across a reboot. Recorded in §8 rather than bundled in.
+
+### A bug TDD caught
+`build_domain_xml` rejected an `InstallMedia` machine with no ISO path — an
+invariant that was true until this ADR made it false. Rather than delete the
+guard (which would re-admit the bug it catches: a caller that simply forgot the
+path), `DomainXmlInput` gained an explicit `install_media_detached` flag so the
+builder can tell "not located yet" from "deliberately removed". `converge()`
+also had to suppress the ISO from the XML it redefines each pass, or the next
+redefine would restore the medium while status still claimed
+`installMediaDetached: true` — caught by
+`an_already_ejected_machine_is_redefined_without_the_install_cdrom`.
+
+### Changed
+- `docs/src/security/threat-model.md`: **full pass**, stamp 2026-09-23 now
+  covering ADR-0048 **and** ADR-0044. TB-5 gains three rows (overlay
+  disclosure, re-install on reboot, locked tray); §8 gains the seed as an
+  accepted risk with a revisit condition.
+- `.github/community/17-ephemeral-vm-pools.md`: phase table row A4 -> landed.
+- `docs/adr/0048-…`: new **Expiry** section — kairos-io/kairos#4556
+  (`OpEncryptPending`) would make `Immediate` + per-clone TPM encryption work,
+  at which point ADR-0048 should be **superseded, not amended**, because its
+  decision inverts rather than narrows.
+
+### Outstanding
+- [x] ~~Live test not yet run.~~ **Passed 2026-09-23** against a real
+      libvirtd. The test was strengthened first: it now defines a domain that
+      actually carries a cdrom and ejects it `CONFIG`-only, so libvirtd has to
+      *find and rewrite* the device rather than refusing on `AFFECT_LIVE`
+      before doing any work. Accepted and applied. The earlier version proved
+      the wire format and nothing about whether the eject would locate its
+      target — a test that cannot fail for the reason you care about is not
+      evidence for it.
+- [ ] vSphere half (`build_remove_cdroms_reconfigure_spec`) deferred for want
+      of a vCenter — the same position ADR-0043's vSphere transport is in.
+      `VSphereMachineStatus` gains no field until it can be tested.
+
+### Also fixed: `make libvirt-live-test` could never go green
+The target runs every `#[ignore]`d test, but `upload_a_real_file_into_a_real_pool`
+and `delete_a_volume_from_a_real_pool` need `LIBVIRT_UPLOAD_SRC` / `LIBVIRT_VOL`
+— fixtures the target neither set nor documented. Those two fail loudly on a
+missing fixture, which is correct for the test (`rules/testing.md`) and wrong
+for the target: with the documented invocation it could never exit 0, and a
+gate that always fails is one nobody reads. The target now `--skip`s each one
+whose variable is unset and says so, naming the variable that would include it.
+Verified: 5 passed, 0 failed, 2 filtered out. Logged as bug-150.
+
+### New rule: roadmap updates are part of finishing, not a follow-up
+Erick, 2026-09-23: *"every time we work on a roadmap, go back and update when
+we complete something."* Codified rather than just noted — it is now **step 4
+of the ADD cycle** and a line in its checklist
+(`.claude/rules/architecture-driven-development.md`), plus a Do-Not-Repeat
+entry in `.wolf/cerebrum.md`. Two clarifications beyond the pre-existing
+`CLAUDE.md` line: the trigger is **completion, not change** (tick a box that is
+true now, even if an earlier session made it true), and **audit the rest of the
+detail doc against the tree** while you are in it — "done", "superseded" and
+"still open" are three different answers.
+
+### Roadmap status corrected in the same commit
+`ROADMAPS.md` row 17 did not mention A3 or A4 landing — the status-board rule
+in `CLAUDE.md` requires that in the same commit, and it was missed on the first
+pass. Also corrected eight stale checkboxes in
+`.github/community/07-phase-1d-libvirt-provider.md`, verified against the tree
+rather than assumed: the `LibvirtMachine` reconciler, RBAC, XML tests,
+cloud-init ISO tests and the client mock are **done**; the `bookworm-slim` +
+`genisoimage` Dockerfile and `qemu+ssh` key support are **superseded** (the
+image is distroless and the transport is mTLS-only per ADR-0011/0054);
+`list_all_domains` is genuinely still only a constant.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout — new `LibvirtMachine` CRD field; apply
+      `deploy/crds/` before the provider that writes it.
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-09-23 09:40] - ADR-0048: tpmEnabled + Immediate is now an error, not a silent no-op
+
+**Author:** Erick Bourgeois
+
+Roadmap 17 phase A3. Full ADD cycle: ADR -> CALM -> TDD -> implement -> docs ->
+threat model.
+
+### The defect
+`VMClass.tpmEnabled: true` paired with an `installMode: Immediate` `VMImage`
+cloned fine, attached a real vTPM, and encrypted **nothing** — while reporting
+`Ready`. Kairos partition encryption is install-phase-only (`kcrypt` seals LUKS
+keys during `kairos-agent install`), so sealing can only happen on a disk laid
+down *after* a per-VM vTPM exists. An `Immediate` template is installed once,
+centrally, then cloned: there is no per-clone install, so
+`install.encrypted_partitions` has nothing to seal against.
+
+ADR-0040 Decision 5 recorded this and left it unenforced. For general VMs it is
+a papercut; for roadmap 17's sandboxes it is a security defect — a pool would
+hand out sandboxes whose "sealed" workspace is readable by the next tenant of
+the same host, and report them healthy.
+
+### Added
+- `docs/adr/0048-tpm-enabled-requires-deferred-install.md` (Accepted).
+- `docs/architecture/calm/architecture.json`: new `tpm-encryption-pairing`
+  control; ADR registered. `make calm-validate` clean.
+- `crates/banlieue-controller/src/reconciler/virtualmachine.rs`:
+  `image_class_mismatch(tpm_enabled, mode) -> Option<&'static str>` (pure),
+  `REASON_IMAGE_CLASS_MISMATCH`, and `patch_image_class_mismatch`.
+- `crates/banlieue-controller/src/reconciler/virtualmachine_tests.rs`: six
+  tests, written first and confirmed failing before the implementation existed.
+
+### Changed
+- The check runs after `VMClass`/`VMImage` resolve and **before scheduling** —
+  the first point both are in hand, and early enough that no infra CR is
+  created. That is the operative half: a provider handed this machine would
+  cheerfully build the unencrypted thing.
+- `docs/src/guides/vsphere-provider.md`: a `!!! danger` callout on the vTPM
+  recipe and an `ImageClassMismatch` row in the troubleshooting table.
+- `docs/src/security/threat-model.md`: **full pass**, stamp bumped to
+  2026-09-23. TB-5 gains two rows (the plaintext-disk threat, now controlled;
+  the `Manual` assertion, not controlled); §7 requirement 9 stops describing an
+  operator responsibility that is now code; §8 gains the `Manual` escape hatch
+  as a narrowed accepted risk replacing the blanket gap.
+- `.github/community/17-ephemeral-vm-pools.md`: phase table row A3 -> landed.
+
+### Decision worth flagging: an absent `template` is rejected too
+`VMImageSpec.template` is `Option` — absent for `Template`/`BackingFile`
+sources, i.e. a **pre-built** disk. A pre-built disk is a *pre-laid* disk in
+exactly the sense ADR-0040 rules out, and roadmap 15 reaches the same
+conclusion independently for vSphere disk-image import ("a disk image is a
+pre-laid disk"). The absent case resolves to `InstallMode::default()`, which is
+already `Immediate`, so it is rejected — deliberately, and fail-closed: wrongly
+rejecting a sealable image is visible and one field edit away, while wrongly
+accepting an unsealable one is silent and is the whole defect. Recorded as
+ADR-0048 Decision 6 with a test pinning the default.
+
+### Why
+ADR-0040 Decision 5 has been open since 2026-09 and phase A3 gates nothing
+else, but it is the cheapest of roadmap 17's three remaining A-phase items and
+the only one needing no hypervisor at all.
+
+### Impact
+- [x] Breaking change — a `tpmEnabled` + `Immediate` `VirtualMachine` that
+      reconciles today stops reconciling. Judged correct: those VMs were never
+      encrypted, so nothing true before stops being true; only the reporting
+      changes. The condition message names both fields and the remedy.
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-09-22 11:15] - CI: aggregator gate so docs-only PRs stop blocking (roadmap 16 #1)
 
 **Author:** Erick Bourgeois

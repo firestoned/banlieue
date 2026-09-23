@@ -13,5 +13,5 @@
 pub mod domain;
 pub mod escape;
 
-pub use domain::{DomainXmlError, DomainXmlInput, build_domain_xml};
+pub use domain::{DomainXmlError, DomainXmlInput, build_domain_xml, ejected_install_cdrom_xml};
 pub use escape::{XmlError, esc};

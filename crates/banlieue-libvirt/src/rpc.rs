@@ -106,6 +106,16 @@ pub const PROC_DOMAIN_SHUTDOWN: i32 = 33;
 pub const PROC_DOMAIN_CREATE_WITH_FLAGS: i32 = 196;
 /// `REMOTE_PROC_DOMAIN_GET_STATE`.
 pub const PROC_DOMAIN_GET_STATE: i32 = 212;
+/// `REMOTE_PROC_DOMAIN_UPDATE_DEVICE_FLAGS` — used to eject install media
+/// (ADR-0044) by updating the cdrom to a source-less device.
+///
+/// Verified twice before being trusted, per the note above: the argument
+/// struct against libvirt's own `remote_protocol.x`, and the number against
+/// an independently generated constants table whose values for
+/// `DOMAIN_UNDEFINE_FLAGS` (231), `DOMAIN_GET_STATE` (212),
+/// `DOMAIN_INTERFACE_ADDRESSES` (353) and `DOMAIN_DEFINE_XML_FLAGS` (350)
+/// all match the constants in this file that are already proven live.
+pub const PROC_DOMAIN_UPDATE_DEVICE_FLAGS: i32 = 174;
 /// `REMOTE_PROC_DOMAIN_UNDEFINE_FLAGS`. The flagless `DOMAIN_UNDEFINE` (35)
 /// is deliberately not used: it cannot remove NVRAM or TPM state.
 pub const PROC_DOMAIN_UNDEFINE_FLAGS: i32 = 231;
