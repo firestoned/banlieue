@@ -577,6 +577,55 @@ mod tests {
         );
     }
 
+    // ---- DOMAIN_UPDATE_DEVICE_FLAGS (ADR-0044) --------------------------
+
+    #[test]
+    fn encodes_domain_update_device_flags_args() {
+        // `remote_domain_update_device_flags_args { remote_nonnull_domain
+        // dom; remote_nonnull_string xml; unsigned int flags; }`, quoted from
+        // libvirt's own src/remote/remote_protocol.x. Field ORDER is the
+        // whole contract — dom before xml before flags — and getting it
+        // wrong is a silent wire bug, not a compile error.
+        let dom = Domain {
+            name: "sandbox-01".into(),
+            uuid: uuid_bytes(7),
+            id: 9,
+        };
+        let xml = "<disk type='file' device='cdrom'/>";
+        let mut want = Encoder::new();
+        dom.encode(&mut want);
+        want.write_string(xml);
+        want.write_u32(DEVICE_MODIFY_LIVE | DEVICE_MODIFY_CONFIG);
+        assert_eq!(
+            encode_domain_update_device_flags_args(
+                &dom,
+                xml,
+                DEVICE_MODIFY_LIVE | DEVICE_MODIFY_CONFIG
+            ),
+            want.into_bytes()
+        );
+    }
+
+    #[test]
+    fn device_modify_flags_match_libvirt_domain_h() {
+        // VIR_DOMAIN_AFFECT_LIVE = 1 << 0, VIR_DOMAIN_AFFECT_CONFIG = 1 << 1
+        // and VIR_DOMAIN_DEVICE_MODIFY_FORCE = 1 << 2, read from
+        // libvirt-domain.h. Pinned because an eject that silently applied to
+        // only the live domain would let the ISO return at the guest's next
+        // reboot — the exact failure ADR-0044 exists to prevent.
+        assert_eq!(DEVICE_MODIFY_LIVE, 1);
+        assert_eq!(DEVICE_MODIFY_CONFIG, 2);
+        assert_eq!(DEVICE_MODIFY_FORCE, 4);
+    }
+
+    #[test]
+    fn eject_affects_both_live_and_persistent_config() {
+        // The pairing, not just the constants: a LIVE-only eject is the bug.
+        let both = DEVICE_MODIFY_LIVE | DEVICE_MODIFY_CONFIG;
+        assert_eq!(both, 3);
+        assert_eq!(both & DEVICE_MODIFY_FORCE, 0, "FORCE is never a default");
+    }
+
     #[test]
     fn encodes_domain_interface_addresses_args() {
         let dom = Domain {

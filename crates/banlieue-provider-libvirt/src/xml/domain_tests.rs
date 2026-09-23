@@ -65,6 +65,7 @@ mod tests {
             os_disk_path: "/var/lib/libvirt/images/sandbox-01-os.qcow2",
             extra_disk_paths: &[],
             install_iso_path: None,
+            install_media_detached: false,
             cidata_iso_path: None,
             efi_loader_path: None,
             efi_nvram_template_path: None,
@@ -476,6 +477,66 @@ mod tests {
         let name_end = xml.find("</name>").expect("name");
         let uuid_at = xml.find("<uuid>").expect("uuid");
         assert!(uuid_at > name_end && uuid_at < name_end + 16, "{xml}");
+    }
+
+    // ---- ejected install media (ADR-0044) -------------------------------
+
+    #[test]
+    fn ejected_install_cdrom_keeps_the_drive_and_drops_the_medium() {
+        let xml = ejected_install_cdrom_xml();
+        // Still a cdrom device: this is an UPDATE of the device, not a
+        // detach. Removing it would renumber the remaining targets and
+        // slide the seed ISO onto the installer's target.
+        assert!(xml.contains("device='cdrom'"), "{xml}");
+        // ...with no medium in it. `<source` (not `<source>`) because the
+        // element is self-closing with attributes when present.
+        assert!(!xml.contains("<source"), "medium must be gone: {xml}");
+    }
+
+    #[test]
+    fn ejected_cdrom_targets_the_install_slot_not_the_seed() {
+        // `render_cdroms` emits the installer FIRST, so it always owns
+        // `device_letter(0)`. libvirt matches the device to update by its
+        // `<target dev=…>`, so naming the wrong slot would eject the
+        // cloud-init seed instead — silently, and with the installer left
+        // bootable.
+        let xml = ejected_install_cdrom_xml();
+        assert!(
+            xml.contains(&format!("dev='sd{}'", device_letter(0))),
+            "{xml}"
+        );
+        assert!(xml.contains("bus='sata'"), "bus must match too: {xml}");
+    }
+
+    #[test]
+    fn ejected_cdrom_target_matches_what_the_builder_emitted() {
+        // The contract between the two functions, asserted directly rather
+        // than assumed: whatever target `build_domain_xml` gave the
+        // installer is the target the eject names.
+        let mut spec = bios_spec();
+        spec.boot_source.kind = LibvirtBootSourceKind::InstallMedia;
+        let mut i = input(&spec);
+        i.install_iso_path = Some("/pool/install.iso");
+        i.cidata_iso_path = Some("/pool/cidata.iso");
+        let domain = build_domain_xml(&i).expect("domain renders");
+
+        let eject = ejected_install_cdrom_xml();
+        let target = eject
+            .split("<target dev='")
+            .nth(1)
+            .and_then(|s| s.split('\'').next())
+            .expect("eject names a target");
+
+        // That target exists in the domain, and it is the one carrying the
+        // install ISO rather than the seed.
+        let install_disk = domain
+            .split("<disk ")
+            .find(|d| d.contains("/pool/install.iso"))
+            .expect("domain has the install cdrom");
+        assert!(
+            install_disk.contains(&format!("dev='{target}'")),
+            "eject targets {target}, install ISO is on a different device:\n{install_disk}"
+        );
     }
 
     /// Print a rendered domain for eyeball inspection. Not an assertion —

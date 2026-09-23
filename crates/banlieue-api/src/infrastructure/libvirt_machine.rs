@@ -371,6 +371,25 @@ pub struct LibvirtMachineStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub guest_installed: Option<bool>,
 
+    /// Whether the install medium has been ejected (ADR-0044).
+    ///
+    /// **Sticky once true**, for the same reason as [`Self::guest_installed`]:
+    /// an ejected ISO does not come back, and a stopped domain has not become
+    /// re-armed.
+    ///
+    /// `None` means "nothing to do" — an `Immediate`-mode machine never had
+    /// install media attached — which is deliberately distinct from
+    /// `Some(false)`, "attached and not yet ejected". Collapsing the two
+    /// would make a machine that never needed an eject indistinguishable
+    /// from one whose eject is still pending.
+    ///
+    /// `GuestReady` is published only *after* this is true, so a pool can
+    /// never bind a member that still has its installer attached. That
+    /// ordering is the invariant; this field is what makes it auditable
+    /// from outside the controller.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub install_media_detached: Option<bool>,
+
     /// libvirt's UUID for the domain, in its 36-character textual form. The
     /// domain's real identity — stable across rename and host restart — and
     /// the source for `spec.providerID`. Not part of the CAPI contract.

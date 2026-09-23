@@ -32,7 +32,8 @@ pub mod transport;
 pub mod xdr;
 
 pub use procs::{
-    AGENT_TIMEOUT_DEFAULT, AuthType, CONNECT_RO, DOMAIN_INTERFACE_MAX, DOMAIN_IP_ADDR_MAX,
+    AGENT_TIMEOUT_DEFAULT, AuthType, CONNECT_RO, DEVICE_MODIFY_CONFIG, DEVICE_MODIFY_EJECT,
+    DEVICE_MODIFY_FORCE, DEVICE_MODIFY_LIVE, DOMAIN_INTERFACE_MAX, DOMAIN_IP_ADDR_MAX,
     DOMAIN_UNDEFINE_EPHEMERAL, DOMAIN_UNDEFINE_MANAGED_SAVE, DOMAIN_UNDEFINE_NVRAM,
     DOMAIN_UNDEFINE_TPM, DhcpLease, Domain, DomainInterface, DomainIpAddr, DomainState,
     InterfaceAddressSource, NETWORK_DHCP_LEASES_MAX, Network, QEMU_PROC_DOMAIN_AGENT_COMMAND,
@@ -41,7 +42,8 @@ pub use procs::{
     decode_domain_qemu_agent_command_ret, decode_network_get_dhcp_leases_ret, domain_create,
     domain_define_xml, domain_destroy, domain_get_state, domain_interface_addresses,
     domain_lookup_by_name, domain_qemu_agent_command, domain_shutdown, domain_undefine,
-    encode_domain_qemu_agent_command_args, encode_network_get_dhcp_leases_args, is_not_found,
+    domain_update_device_flags, encode_domain_qemu_agent_command_args,
+    encode_domain_update_device_flags_args, encode_network_get_dhcp_leases_args, is_not_found,
     list_all_networks, list_all_storage_pools, network_get_dhcp_leases, qcow2_overlay_volume_xml,
     qcow2_volume_xml, raw_volume_xml, storage_pool_list_all_volumes, storage_pool_lookup_by_name,
     storage_pool_refresh, storage_vol_create_xml, storage_vol_delete, storage_vol_lookup_by_name,

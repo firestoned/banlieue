@@ -332,6 +332,7 @@ mod tests {
                 observed_power_state: Some(PowerState::PoweredOn),
                 address_source: Some(LibvirtAddressSource::GuestAgent),
                 guest_installed: None,
+                install_media_detached: None,
                 tpm_attached: None,
                 conditions: vec![Condition {
                     type_: condition_types::READY.to_string(),

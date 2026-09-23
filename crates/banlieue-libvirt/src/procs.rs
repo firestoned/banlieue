@@ -22,10 +22,10 @@ use crate::rpc::{
     PROC_CONNECT_OPEN, PROC_DOMAIN_CREATE_WITH_FLAGS, PROC_DOMAIN_DEFINE_XML_FLAGS,
     PROC_DOMAIN_DESTROY, PROC_DOMAIN_GET_STATE, PROC_DOMAIN_INTERFACE_ADDRESSES,
     PROC_DOMAIN_LOOKUP_BY_NAME, PROC_DOMAIN_SHUTDOWN, PROC_DOMAIN_UNDEFINE_FLAGS,
-    PROC_NETWORK_GET_DHCP_LEASES, PROC_STORAGE_POOL_LIST_ALL_VOLUMES,
-    PROC_STORAGE_POOL_LOOKUP_BY_NAME, PROC_STORAGE_POOL_REFRESH, PROC_STORAGE_VOL_CREATE_XML,
-    PROC_STORAGE_VOL_DELETE, PROC_STORAGE_VOL_LOOKUP_BY_NAME, PROC_STORAGE_VOL_UPLOAD,
-    STREAM_CHUNK_MAX,
+    PROC_DOMAIN_UPDATE_DEVICE_FLAGS, PROC_NETWORK_GET_DHCP_LEASES,
+    PROC_STORAGE_POOL_LIST_ALL_VOLUMES, PROC_STORAGE_POOL_LOOKUP_BY_NAME,
+    PROC_STORAGE_POOL_REFRESH, PROC_STORAGE_VOL_CREATE_XML, PROC_STORAGE_VOL_DELETE,
+    PROC_STORAGE_VOL_LOOKUP_BY_NAME, PROC_STORAGE_VOL_UPLOAD, STREAM_CHUNK_MAX,
 };
 use crate::transport::{Result, Session, TransportError};
 use crate::xdr::{Decoder, Encoder};
@@ -865,6 +865,30 @@ pub const DOMAIN_UNDEFINE_TPM: u32 = 1 << 5;
 pub const DOMAIN_UNDEFINE_EPHEMERAL: u32 =
     DOMAIN_UNDEFINE_MANAGED_SAVE | DOMAIN_UNDEFINE_NVRAM | DOMAIN_UNDEFINE_TPM;
 
+/// `VIR_DOMAIN_AFFECT_LIVE` (aliased as `VIR_DOMAIN_DEVICE_MODIFY_LIVE`) —
+/// apply the change to the running domain.
+pub const DEVICE_MODIFY_LIVE: u32 = 1 << 0;
+
+/// `VIR_DOMAIN_AFFECT_CONFIG` (aliased as `VIR_DOMAIN_DEVICE_MODIFY_CONFIG`)
+/// — apply the change to the persistent definition.
+pub const DEVICE_MODIFY_CONFIG: u32 = 1 << 1;
+
+/// `VIR_DOMAIN_DEVICE_MODIFY_FORCE` — "forcibly modify device (ex. force
+/// eject a cdrom)".
+///
+/// Deliberately **not** part of [`DEVICE_MODIFY_EJECT`]. A guest holding the
+/// tray locked is information — it is still reading the installer — and
+/// forcing past it converts a diagnosable state into a silent one.
+pub const DEVICE_MODIFY_FORCE: u32 = 1 << 2;
+
+/// The flags banlieue passes when ejecting install media (ADR-0044).
+///
+/// Both halves, always. A `LIVE`-only eject leaves the medium in the
+/// persistent definition, so it returns at the guest's next reboot — and a
+/// bootable installer that reappears on reboot is exactly the re-install
+/// hazard ADR-0044 exists to close, not a cosmetic leftover.
+pub const DEVICE_MODIFY_EJECT: u32 = DEVICE_MODIFY_LIVE | DEVICE_MODIFY_CONFIG;
+
 /// `VIR_DOMAIN_NOSTATE`.
 pub const DOMAIN_STATE_NOSTATE: i32 = 0;
 /// `VIR_DOMAIN_RUNNING`.
@@ -1134,6 +1158,22 @@ pub fn encode_domain_flags_args(dom: &Domain, flags: u32) -> Vec<u8> {
     e.into_bytes()
 }
 
+/// Encode `remote_domain_update_device_flags_args { remote_nonnull_domain
+/// dom; remote_nonnull_string xml; unsigned int flags; }`.
+///
+/// Field order is transcribed from `src/remote/remote_protocol.x` and is the
+/// entire contract: the wire carries no field names, so a transposed `dom`
+/// and `xml` decodes as a malformed domain reference rather than as an error
+/// anyone can read.
+#[must_use]
+pub fn encode_domain_update_device_flags_args(dom: &Domain, xml: &str, flags: u32) -> Vec<u8> {
+    let mut e = Encoder::new();
+    dom.encode(&mut e);
+    e.write_string(xml);
+    e.write_u32(flags);
+    e.into_bytes()
+}
+
 /// Encode `remote_domain_interface_addresses_args { dom; uint source; uint
 /// flags; }`.
 #[must_use]
@@ -1296,6 +1336,38 @@ where
 {
     let args = encode_domain_flags_args(dom, DOMAIN_UNDEFINE_EPHEMERAL);
     session.call(PROC_DOMAIN_UNDEFINE_FLAGS, &args).await?;
+    Ok(())
+}
+
+/// Eject the medium from a cdrom device, leaving the drive in place
+/// (ADR-0044).
+///
+/// `xml` is the **whole device element** in its desired end state — for an
+/// eject, the same `<disk device='cdrom'>` with its `<source>` omitted.
+/// libvirt matches the existing device by its `<target dev=…>` and replaces
+/// the rest, so this is an *update*, not a detach: the drive survives and no
+/// other disk's target is renumbered. Detaching the device instead would
+/// shift the remaining targets, which is how a seed ISO ends up answering to
+/// the installer's `<target dev=…>`.
+///
+/// Always call with [`DEVICE_MODIFY_EJECT`] so the medium leaves the
+/// persistent definition too, not only the running domain.
+///
+/// # Errors
+/// Any [`TransportError`]; a `Remote` error if no device matches the target
+/// in `xml`, or if the guest holds the tray locked (which is deliberately
+/// not forced — see [`DEVICE_MODIFY_FORCE`]).
+pub async fn domain_update_device_flags<S>(
+    session: &mut Session<S>,
+    dom: &Domain,
+    xml: &str,
+    flags: u32,
+) -> Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let args = encode_domain_update_device_flags_args(dom, xml, flags);
+    session.call(PROC_DOMAIN_UPDATE_DEVICE_FLAGS, &args).await?;
     Ok(())
 }
 

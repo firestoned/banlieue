@@ -417,6 +417,38 @@ fn diskless_domain_xml(name: &str) -> String {
     )
 }
 
+/// A throwaway domain carrying one cdrom, for the eject test (ADR-0044).
+///
+/// The medium path need not exist: libvirt validates a domain's files when it
+/// *starts*, not when it is defined, and this domain is never started.
+fn cdrom_domain_xml(name: &str) -> String {
+    /// Enough RAM for the firmware to start and nothing more.
+    const MEMORY_MIB: u32 = 128;
+
+    let domain_type = std::env::var("LIBVIRT_DOMAIN_TYPE").unwrap_or_else(|_| "kvm".to_string());
+    let emulator = match std::env::var("LIBVIRT_EMULATOR") {
+        Ok(path) => format!("<emulator>{path}</emulator>"),
+        Err(_) => String::new(),
+    };
+    format!(
+        "<domain type='{domain_type}'>\
+<name>{name}</name>\
+<memory unit='MiB'>{MEMORY_MIB}</memory>\
+<vcpu placement='static'>1</vcpu>\
+<os><type arch='x86_64'>hvm</type></os>\
+<features><acpi/><apic/></features>\
+<devices>{emulator}<console type='pty'/>\
+<disk type='file' device='cdrom'>\
+<driver name='qemu' type='raw'/>\
+<source file='/var/lib/libvirt/images/banlieue-livetest-nonexistent.iso'/>\
+<target dev='sda' bus='sata'/>\
+<readonly/>\
+</disk>\
+</devices>\
+</domain>"
+    )
+}
+
 /// Delete a volume from a pool. A cleanup tool for images an operator or a
 /// test uploaded by hand; banlieue's own reconcilers delete only what they
 /// created.
@@ -531,4 +563,104 @@ async fn qemu_agent_program_is_understood_by_real_libvirtd() {
         "  ✓ qemu program {:#x} accepted",
         banlieue_libvirt::QEMU_PROGRAM
     );
+}
+
+/// `DOMAIN_UPDATE_DEVICE_FLAGS` (174) is a procedure real libvirtd
+/// recognises, with the argument order this crate encodes (ADR-0044).
+///
+/// The number was cross-checked against libvirt's `remote_protocol.x` and an
+/// independently generated constants table before it was written down, but
+/// neither of those is a running daemon. Only this can say whether the wire
+/// bytes parse.
+///
+/// As with the qemu-agent test above, the assertion is **not** "the eject
+/// succeeded". The throwaway domain is diskless and has no cdrom, so libvirtd
+/// must reject the update — and that rejection is the proof, because a
+/// *semantic* error means the daemon decoded the call and disagreed with its
+/// content. What must not happen is a `Protocol` or `Desynchronised` error:
+/// that would mean the procedure number or argument encoding is wrong, which
+/// no offline test can detect since every one of them checks our encoder
+/// against itself.
+#[tokio::test]
+#[ignore = "requires a real libvirtd; set LIBVIRT_HOST and LIBVIRT_TLS_DIR"]
+async fn update_device_flags_is_understood_by_real_libvirtd() {
+    let Some((host, dir)) = settings() else {
+        panic!("set LIBVIRT_HOST and LIBVIRT_TLS_DIR");
+    };
+    let identity = load_identity(&dir);
+
+    let mut session = connect_tls(&host, DEFAULT_TLS_PORT, &identity)
+        .await
+        .expect("TLS connection failed");
+    connect_open(&mut session, Some("qemu:///system"), false)
+        .await
+        .expect("CONNECT_OPEN failed");
+
+    let name = format!(
+        "banlieue-ejecttest-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock before epoch")
+            .as_secs()
+    );
+    // A domain that actually HAS a cdrom, so the eject has something to find.
+    let domain = banlieue_libvirt::domain_define_xml(&mut session, &cdrom_domain_xml(&name))
+        .await
+        .expect("defining the test domain");
+    eprintln!("defined {name} with one cdrom on sda");
+
+    // The same document the provider sends: the cdrom with no <source>.
+    let eject = "<disk type='file' device='cdrom'>\
+<driver name='qemu' type='raw'/>\
+<target dev='sda' bus='sata'/>\
+<readonly/>\
+</disk>";
+
+    // CONFIG only. The domain is defined but not running, so AFFECT_LIVE
+    // would be refused before libvirt did any work -- which proves the wire
+    // format and nothing else. CONFIG alone makes libvirtd locate the device
+    // by its target and rewrite the persistent definition, so an Ok here is
+    // evidence the eject actually APPLIES, not merely that it parses.
+    let applied = banlieue_libvirt::domain_update_device_flags(
+        &mut session,
+        &domain,
+        eject,
+        banlieue_libvirt::DEVICE_MODIFY_CONFIG,
+    )
+    .await;
+
+    // And the flags the provider really sends, against the same domain. A
+    // semantic refusal ("domain is not running") is the expected answer for a
+    // stopped domain and still exercises the full decode path.
+    let with_live = banlieue_libvirt::domain_update_device_flags(
+        &mut session,
+        &domain,
+        eject,
+        banlieue_libvirt::DEVICE_MODIFY_EJECT,
+    )
+    .await;
+
+    // Clean up before asserting, so a failure cannot leave a domain behind.
+    let undefined = banlieue_libvirt::domain_undefine(&mut session, &domain).await;
+
+    if let Err(e) = &with_live {
+        assert!(
+            matches!(e, banlieue_libvirt::TransportError::Remote { .. }),
+            "libvirtd did not understand DOMAIN_UPDATE_DEVICE_FLAGS: {e}\n\
+             A Protocol or Desynchronised error here means procedure 174 or the \
+             {{dom, xml, flags}} argument order is wrong."
+        );
+        eprintln!("  LIVE|CONFIG on a stopped domain: {e} (expected)");
+    }
+
+    undefined.expect("undefining the test domain");
+
+    // THE assertion: the persistent-config eject was accepted and applied.
+    applied.expect(
+        "libvirtd refused a CONFIG-only eject of a cdrom it had just been given. \
+         That is not a wire problem -- the call decoded -- it means the device \
+         document in ejected_install_cdrom_xml() does not match the one the \
+         domain builder emits, so ADR-0044's eject would never find its target.",
+    );
+    eprintln!("  ✓ DOMAIN_UPDATE_DEVICE_FLAGS accepted AND applied to the persistent config");
 }

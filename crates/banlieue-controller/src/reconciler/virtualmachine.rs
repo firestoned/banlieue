@@ -23,7 +23,9 @@
 use std::sync::Arc;
 
 use banlieue_api::banlieue::DEFAULT_USER_DATA_KEY;
-use banlieue_api::banlieue::{Provider, VMClass, VMImage, VirtualMachine, VirtualMachineStatus};
+use banlieue_api::banlieue::{
+    InstallMode, Provider, VMClass, VMImage, VirtualMachine, VirtualMachineStatus,
+};
 use banlieue_api::common::{
     LocalObjectReference as _PlaceholderLocalRef, TypedObjectReference, condition_types,
 };
@@ -59,6 +61,38 @@ type _Anchor = _PlaceholderLocalRef;
 
 /// Finalizer set on every `VirtualMachine` reconciled by this controller.
 pub const VM_FINALIZER: &str = "banlieue.io/virtualmachine";
+
+/// Condition reason for a `VMClass`/`VMImage` pairing that cannot work
+/// (ADR-0048).
+pub const REASON_IMAGE_CLASS_MISMATCH: &str = "ImageClassMismatch";
+
+/// `Some(message)` when this class/image pairing would attach a vTPM that
+/// nothing ever seals to (ADR-0048).
+///
+/// Kairos partition encryption is install-phase-only: `kcrypt` seals LUKS
+/// keys to the TPM during `kairos-agent install`, so the sealing can only
+/// happen on a disk written *after* a per-VM vTPM exists (ADR-0040). An
+/// [`InstallMode::Immediate`] template is installed once, centrally, and then
+/// cloned — there is no per-clone install, so `install.encrypted_partitions`
+/// has nothing to seal against. The combination clones fine, attaches a vTPM,
+/// and silently encrypts nothing.
+///
+/// [`InstallMode::Manual`] passes deliberately: ADR-0040 defines it as
+/// identical mechanics to [`InstallMode::Deferred`] for a build that is not
+/// Kairos-driven, so a per-VM vTPM *does* exist when the disk is written.
+/// banlieue cannot verify what such an image actually does with it, and
+/// rejecting it would leave non-Kairos encrypted images no path at all.
+///
+/// Pure and backend-neutral — it reads only provider-agnostic fields, so
+/// every backend is constrained identically without participating.
+#[must_use]
+pub fn image_class_mismatch(tpm_enabled: bool, mode: InstallMode) -> Option<&'static str> {
+    (tpm_enabled && mode == InstallMode::Immediate).then_some(
+        "VMClass.tpmEnabled requires a VMImage with installMode: Deferred; an \
+         Immediate (pre-installed) template cannot be encrypted per VM, because \
+         its disk was installed before any per-VM vTPM existed (ADR-0040, ADR-0048)",
+    )
+}
 
 /// Top-level reconcile entrypoint registered with [`kube::runtime::Controller`].
 ///
@@ -99,6 +133,36 @@ pub async fn reconcile(vm: Arc<VirtualMachine>, ctx: Arc<Context>) -> Result<Act
     let image = image_api.get(&vm.spec.image_ref.name).await?;
     let providers = provider_api.list(&ListParams::default()).await?.items;
     let sibling_vms = vm_api.list(&ListParams::default()).await?.items;
+
+    // ---- Validate the class/image pairing (ADR-0048) --------------------
+    //
+    // Checked here because this is the first point at which BOTH objects are
+    // in hand — `tpmEnabled` lives on the VMClass and `installMode` on the
+    // VMImage, so no admission policy can see the combination. Checked
+    // *before* scheduling so a VM that can never be what it claims to be
+    // never reaches a provider: a provider handed this machine would
+    // cheerfully build the unencrypted thing.
+    // No `template` means a `Template`/`BackingFile` source — a pre-built
+    // disk, with no build step at all. That is a pre-laid disk in exactly
+    // the sense ADR-0040 rules out, so it takes `InstallMode`'s own default
+    // (`Immediate`) and is rejected on the same grounds. Fail closed: the
+    // error of rejecting a sealable image is visible and fixable, while the
+    // error of accepting an unsealable one is silent (ADR-0048 Decision 6).
+    let install_mode = image
+        .spec
+        .template
+        .as_ref()
+        .map_or_else(InstallMode::default, |t| t.install_mode);
+
+    if let Some(detail) = image_class_mismatch(class.spec.tpm_enabled, install_mode) {
+        warn!(
+            class = %vm.spec.class_ref.name,
+            image = %vm.spec.image_ref.name,
+            "class/image pairing would attach a vTPM that nothing seals to"
+        );
+        patch_image_class_mismatch(&vm_api, &vm, &name, generation, detail).await?;
+        return Ok(requeue_long());
+    }
 
     // ---- Schedule ------------------------------------------------------
     let decision = match schedule(&vm, &class, &image, &providers, &sibling_vms) {
@@ -537,6 +601,31 @@ async fn resolve_configmap_data(
 /// Starts from `vm.status`, not `Vec::new()` — see `patch_scheduling_failure`'s
 /// doc comment for why a conditions-only narrower patch from the same field
 /// manager as the full-status success path is unsafe under SSA.
+/// Patch `Ready=False` for a class/image pairing that cannot work (ADR-0048).
+///
+/// Deliberately does **not** touch `Scheduled`: this VM never reached the
+/// scheduler, so claiming anything about its placement would be a second
+/// falsehood on top of the one being reported.
+async fn patch_image_class_mismatch(
+    api: &Api<VirtualMachine>,
+    vm: &VirtualMachine,
+    name: &str,
+    generation: i64,
+    detail: &str,
+) -> Result<()> {
+    let mut status = vm.status.clone().unwrap_or_default();
+    set_condition(
+        &mut status.conditions,
+        condition_types::READY,
+        condition_status::FALSE,
+        REASON_IMAGE_CLASS_MISMATCH,
+        detail,
+        generation,
+    );
+    status.observed_generation = Some(generation);
+    patch_status(api, name, &status).await
+}
+
 async fn patch_infra_build_failure(
     api: &Api<VirtualMachine>,
     vm: &VirtualMachine,

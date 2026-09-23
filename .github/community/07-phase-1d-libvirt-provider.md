@@ -290,12 +290,19 @@ Domain XML skeleton:
       procedures land in `banlieue-libvirt` instead — **done**
       2026-09-18: lookup/define/create/shutdown/destroy/undefine/
       get_state/interface_addresses, with a live lifecycle test.
-- [ ] Implement `client/connection.rs` with URI parsing
-      (`qemu+ssh://user@host/system` etc.) and reconnect.
-- [ ] Implement the remaining procedures in `banlieue-libvirt`
-      (`storage_vol_lookup_by_name`, `storage_vol_delete`,
-      `list_all_domains`). Pools, networks and volume create/upload
-      are done; domain lifecycle is done (ADR-0050).
+- [x] ~~Implement `client/connection.rs` with URI parsing
+      (`qemu+ssh://user@host/system` etc.) and reconnect.~~ **Done elsewhere.**
+      Per the superseded-module note above there is no `client/` subtree:
+      `parse_endpoint` and `connect_tls` live in
+      `banlieue-libvirt/src/transport.rs`. Only `qemu+tls://` is accepted
+      (ADR-0011), so the `qemu+ssh` form in this line never applied.
+- [ ] Implement the remaining procedures in `banlieue-libvirt`. **Two of the
+      three are done** — `storage_vol_lookup_by_name` and `storage_vol_delete`.
+      **`list_all_domains` is still only a constant**
+      (`PROC_CONNECT_LIST_ALL_DOMAINS = 273` in `rpc.rs`, no procedure), and
+      nothing needs it yet: the machine reconciler looks a domain up by name.
+      Pools, networks, volume create/upload, the domain lifecycle (ADR-0050)
+      and `domain_update_device_flags` (ADR-0044) are all in place.
 - [x] ~~Implement `xml/domain.rs` with thorough escaping and tests.~~
       **Done** — `xml/escape.rs` and `xml/domain.rs`, each with its own
       `_tests.rs`.
@@ -305,29 +312,50 @@ Domain XML skeleton:
       Verified by mounting the output with an independent ISO9660
       implementation: label `CIDATA`, personality `ISO Joliet`,
       hyphenated `meta-data`/`user-data` readable.
-- [ ] Implement `reconciler/libvirt_machine.rs` — **the remaining gap for
-      phase 1D.** `reconciler/{provider,vmimage}.rs`, the CRD, the domain XML
-      builder and the `banlieue-libvirt` domain procedures (ADR-0050) are all
-      in place; nothing drives a `LibvirtMachine` from a CR yet.
+- [x] ~~Implement `reconciler/libvirt_machine.rs` — the remaining gap for
+      phase 1D.~~ **Done** — `reconciler/libvirtmachine.rs` drives the full
+      lifecycle from a CR: converge (pool, volumes, domain XML, define, start),
+      status, the deletion finalizer, `GuestReady` (ADR-0043) and the
+      install-media eject (ADR-0044). `ROADMAPS.md` has had roadmap 07 at ✅
+      since ADR-0054 landed; this checkbox was simply left behind.
 - [x] Implement deletion finalizer (domain, disks and seed ISO).
-- [ ] Multi-stage Dockerfile based on `debian:bookworm-slim`,
-      installing `libvirt-clients`, `genisoimage`, `qemu-utils`.
-- [ ] RBAC: same shape as other providers, namespaced to
-      `LibvirtMachine`.
-- [ ] **SSH key Secret support**: when the URI is `qemu+ssh://`, the
-      provider needs a private key. Read from
-      `Provider.spec.connection.credentialsRef` Secret under key
-      `sshPrivateKey`; write to a tmpfs file in the container; export
-      `LIBVIRT_DEFAULT_URI` and `SSH` env appropriately.
+- [x] ~~Multi-stage Dockerfile based on `debian:bookworm-slim`, installing
+      `libvirt-clients`, `genisoimage`, `qemu-utils`.~~ **Superseded** — the
+      image is **distroless** (`gcr.io/distroless/cc-debian13:nonroot`, plus a
+      Chainguard variant). None of those packages is installed or wanted:
+      ADR-0011 keeps the libvirt client first-party and pure Rust, and ADR-0054
+      writes the NoCloud ISO in-process, so `genisoimage` appears in the tree
+      only as a comment explaining why it is *not* used.
+- [x] ~~RBAC: same shape as other providers, namespaced to
+      `LibvirtMachine`.~~ **Done** — `deploy/provider-libvirt/rbac/clusterrole.yaml`,
+      mirrored in `banlieue-operator`'s bootstrap (both paths must change
+      together, per the Do-Not-Repeat note from ADR-0041/0042).
+- [x] ~~**SSH key Secret support** for `qemu+ssh://`.~~ **Superseded by
+      ADR-0011: the transport is mutual TLS only** (`qemu+tls://`, port 16514),
+      and `parse_endpoint` rejects `qemu+ssh://` outright. The credential is an
+      mTLS client certificate and key, not an SSH key — there is deliberately
+      no password or SSH path in the libvirt provider.
 
 ## Tests
 
-- [ ] XML rendering tests with golden files.
-- [ ] Cloud-init ISO content tests (build then re-read).
+- [x] ~~XML rendering tests with golden files.~~ **Done** — `xml/domain_tests.rs`
+      covers shape, disks, boot source, firmware, TPM and the ADR-0044 eject
+      document. Assertions rather than golden files, deliberately: a golden
+      file tells you *that* the output changed, an assertion tells you *which
+      property* broke.
+- [x] ~~Cloud-init ISO content tests (build then re-read).~~ **Done**
+      (ADR-0054) — `cloudinit/iso9660_tests.rs`, plus verification against an
+      independent ISO9660 implementation: label `CIDATA`, Joliet tree, the
+      hyphenated `meta-data`/`user-data` names readable.
 - [ ] Integration against a local libvirt running in CI (KVM nested
       virt in GHA runners is unreliable; use `test-driver` mock OR a
       self-hosted runner with libvirt).
-- [ ] Mock the libvirt client trait for reconciler unit tests.
+- [x] ~~Mock the libvirt client trait for reconciler unit tests.~~ **Done** —
+      `FakeMachineClient` in `machine_client.rs`. It deliberately rejects what
+      the real daemon rejects (a redefine that does not name the existing UUID;
+      an update-device document with no `<target dev=…>`), because a fake more
+      permissive than the real thing hides bugs — which is exactly how the
+      ADR-0050 redefine bug reached a live host.
 
 ## Definition of done
 
