@@ -374,6 +374,13 @@ pub struct VirtualMachineStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub observed_power_state: Option<PowerState>,
 
+    /// Mirrored from the infra CR's `status.tpmEndorsementCertificates`
+    /// (ADR-0045). The anchor a verifier checks an attestation quote
+    /// against; mirrored onward onto a bound `VirtualMachineClaim` so a
+    /// consumer needs one GET.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tpm_endorsement_certificates: Vec<String>,
+
     /// Standard Kubernetes conditions. Required types:
     ///   `Ready`               — overall readiness
     ///   `Scheduled`           — placement decision exists and is current

@@ -628,6 +628,15 @@ spec:
                 - providerClass
                 - providerName
                 type: object
+              tpmEndorsementCertificates:
+                description: |-
+                  Mirrored from the infra CR's `status.tpmEndorsementCertificates`
+                  (ADR-0045). The anchor a verifier checks an attestation quote
+                  against; mirrored onward onto a bound `VirtualMachineClaim` so a
+                  consumer needs one GET.
+                items:
+                  type: string
+                type: array
             type: object
         required:
         - spec

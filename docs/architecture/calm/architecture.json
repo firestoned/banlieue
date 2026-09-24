@@ -1555,7 +1555,7 @@
     {
       "unique-id": "flow-attest-and-deliver-credential",
       "name": "Deliver a subject's credential to its sandbox (PROPOSED — not implemented)",
-      "description": "The unanswered half of the claim model: a claim deliberately carries no credential, so how does the subject's token reach the guest and what convinces the guest it is genuine? ADR-0049 is Proposed and nothing here ships; it is modelled because banlieue's side of the contract -- subject.issuer, subject.id, status.nonce, and the mirrored EK certificate -- is already implemented and would otherwise look like three fields nobody uses. ADR-0045 (EK certificates) is a hard dependency and is itself not landed: without it there is nothing to verify a quote against, and the handshake degrades to trusting whatever answered on the port.",
+      "description": "The unanswered half of the claim model: a claim deliberately carries no credential, so how does the subject's token reach the guest and what convinces the guest it is genuine? ADR-0049 is Proposed and nothing here ships; it is modelled because banlieue's side of the contract -- subject.issuer, subject.id, status.nonce, and the mirrored EK certificate -- is already implemented. ADR-0045 landed 2026-09-23, so the anchor a quote is verified against now exists on the claim; what remains for ADR-0049 is the per-backend trust bundle (Provider.spec.attestation.ekTrustBundle) and the in-guest agent.",
       "transitions": [
         {
           "sequence-number": 1,
@@ -1594,6 +1594,49 @@
                   "IA-3"
                 ],
                 "evidence": "docs/adr/0049-attestation-trust-anchors.md, docs/adr/0047-virtualmachineclaim.md (Decision 9), crates/banlieue-api/src/banlieue/virtualmachineclaim.rs (CLAIM_NONCE_BITS, tpmEndorsementCertificates)"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "flow-publish-vtpm-ek-certificate",
+      "name": "Publish a sandbox's vTPM endorsement key certificate",
+      "description": "ADR-0045. A quote is only as good as the certificate it is checked against, so every tpmEnabled member publishes its vTPM EK certificate before it is bindable. The two backends are not symmetric and cannot be: vCenter issues the certificate and exposes it host-side pre-boot, while on libvirt swtpm_localca issues it into the vTPM's NVRAM and persists it nowhere -- no libvirt RPC and no host file holds a copy -- so the only readable location is inside the guest. banlieue therefore reads it the way it reads ADR-0043's phase marker: read-only, over guest-file-open/guest-file-read, never guest-exec, which would be a host-to-guest RCE primitive acquired to fetch a public key.",
+      "transitions": [
+        {
+          "sequence-number": 1,
+          "relationship-unique-id": "rel-provider-libvirt-backend",
+          "description": "The installed guest writes its EK certificate as PEM to /run/banlieue/ek.pem, beside the phase marker and on the same tmpfs, so a stale assertion cannot survive a power cycle. The provider reads it through qemu-guest-agent with the ADR-0043 read path."
+        },
+        {
+          "sequence-number": 2,
+          "relationship-unique-id": "rel-provider-libvirt-kube-api",
+          "description": "The provider checks the certificate's subject CN against <domain-name>:<domain-uuid> -- both values banlieue itself assigned -- and patches LibvirtMachineStatus.tpmEndorsementCertificates. A mismatch is discarded, not published, and surfaces as Ready=False/TpmEndorsementMismatch. For a tpmEnabled machine this gates GuestReady, exactly as ADR-0044 gates it on media detach, so a pool can never bind a member that cannot attest."
+        },
+        {
+          "sequence-number": 3,
+          "relationship-unique-id": "rel-claim-binds-pool-member",
+          "description": "VirtualMachineStatus mirrors the infra CR and the claim mirrors the bound member, so a verifier needs one GET to obtain both status.nonce and the certificate its quote must chain to.",
+          "direction": "destination-to-source"
+        }
+      ],
+      "controls": {
+        "ek-certificate-is-not-a-trust-decision": {
+          "description": "Publishing an EK certificate is not believing it. On libvirt the value is guest-reported, which is sound because an EK certificate is a public key: a guest that substitutes another member's certificate does not thereby obtain that member's EK private key, and ADR-0049's activation requires exactly that key, so the substitution fails the step it was made to pass. The CN binding catches it one step earlier and without cryptography. Which issuers count is deliberately NOT decided here -- it differs per backend (vCenter; a per-host swtpm_localca) and is admin-supplied via Provider.spec.attestation.ekTrustBundle in ADR-0049. swtpm EK certificates carry notAfter 9999-12-31, so expiry is not a revocation mechanism and removal from the bundle is.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": [
+                  "IA-3",
+                  "IA-5",
+                  "SC-12",
+                  "SI-7"
+                ],
+                "evidence": "docs/adr/0045-vtpm-endorsement-key-certificate.md, crates/banlieue-provider-libvirt/src/guest.rs (EK_PATH, parse_ek_pem, ek_cn_matches), crates/banlieue-api/src/infrastructure/libvirt_machine.rs (tpmEndorsementCertificates)"
               }
             }
           ]
@@ -1858,6 +1901,7 @@
     "docs/adr/0053-ipam-claims-for-pool-members.md",
     "docs/adr/0054-nocloud-seed-iso-first-party.md",
     "docs/adr/0048-tpm-enabled-requires-deferred-install.md",
-    "docs/adr/0044-detach-install-media-after-install.md"
+    "docs/adr/0044-detach-install-media-after-install.md",
+    "docs/adr/0045-vtpm-endorsement-key-certificate.md"
   ]
 }

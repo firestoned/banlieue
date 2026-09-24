@@ -236,33 +236,84 @@ banlieue-provider-vsphere [--kubeconfig PATH]
 
 ## Tasks
 
-- [ ] Scaffold crate and Dockerfile (multi-stage; vim_rs compile is
-      slow, so use `cargo chef` or sccache to cache deps).
-- [ ] Implement `client/connection.rs` with session refresh + retry.
-- [ ] Implement `client/inventory.rs` (datacenter/cluster/datastore/network walks).
-- [ ] Implement `client/template.rs` (find + OVF import).
-- [ ] Implement `client/vm.rs` (clone, power, reconfigure, delete).
-- [ ] Implement `reconciler/provider.rs` (capability introspection).
-- [ ] Implement `reconciler/vsphere_machine.rs` (VM lifecycle).
-- [ ] Implement `reconciler/image.rs` (template availability).
-- [ ] Implement `customize.rs` (cloud-init via guestinfo).
+> **Status (audited against the tree 2026-09-24): complete except the IPAM
+> helper.** The module layout above was flattened during implementation —
+> the four planned `client/*` files landed as one `client/vim.rs` behind a
+> trait in `client/mod.rs`, with `client/fake.rs` as its offline double.
+> `customize.rs` became `guest.rs` plus the SDK's `guestdata.rs`.
+
+- [x] ~~Scaffold crate and Dockerfile (multi-stage; vim_rs compile is
+      slow, so use `cargo chef` or sccache to cache deps).~~ **Done** —
+      `crates/banlieue-provider-vsphere/`, shipped in the single
+      `banlieue` image (ADR-0004) behind the `vsphere` feature, so there
+      is no separate Dockerfile to keep in sync.
+- [x] ~~Implement `client/connection.rs` with session refresh + retry.~~
+      **Done** — in `client/vim.rs`; session-expiry is treated as
+      recoverable and retried after re-login.
+- [x] ~~Implement `client/inventory.rs` (datacenter/cluster/datastore/network walks).~~
+      **Done** — the datacenter → cluster → datastore/network walk that
+      feeds `Provider.status.failureDomains[]`.
+- [x] ~~Implement `client/template.rs` (find + OVF import).~~ **Done** —
+      template lookup in `client/vim.rs`; import moved out to
+      `src/import.rs` and `banlieue-imagebuilder` (ADR-0010, ADR-0027),
+      because import is a Job, not a client call. Raw/VMDK import is
+      roadmap 15.
+- [x] ~~Implement `client/vm.rs` (clone, power, reconfigure, delete).~~
+      **Done** — plus vTPM (ADR-0039), install-media detach (ADR-0044)
+      and EK-certificate read (ADR-0045).
+- [x] ~~Implement `reconciler/provider.rs` (capability introspection).~~
+      **Done** — verified live against real vCenter: three failure
+      domains reported (roadmap 03, D-023).
+- [x] ~~Implement `reconciler/vsphere_machine.rs` (VM lifecycle).~~
+      **Done** — as `reconciler/vspheremachine.rs`, with the deletion
+      lifecycle in ADR-0026.
+- [x] ~~Implement `reconciler/image.rs` (template availability).~~
+      **Done** — as `reconciler/vmimage.rs` (+ `vmimage_finalize_tests.rs`,
+      ADR-0028).
+- [x] ~~Implement `customize.rs` (cloud-init via guestinfo).~~ **Done** —
+      `src/guest.rs` + `banlieue-provider-sdk/src/guestdata.rs`
+      (ADR-0029 hostname/FQDN defaults, ADR-0037 layered cloud-config,
+      ADR-0038 ConfigMap userData, ADR-0043 `GuestReady` read-back).
 - [ ] IPAM claim/wait helper (use `kube::Api` against
-      `ipam.cluster.x-k8s.io/IPAddressClaim`).
-- [ ] Wire main with leader election, signal handling, dual
-      controllers (Provider + VSphereMachine).
-- [ ] RBAC: read/patch `infrastructure.banlieue.io/vspheremachines`,
+      `ipam.cluster.x-k8s.io/IPAddressClaim`). **Still open, deliberately
+      deferred** — roadmap 13 blocks on choosing a CAPI IPAM provider.
+      The CRD surface is designed (ADR-0033, ADR-0053) and
+      `banlieue-api`'s `common.rs` carries the `IPAddressClaim`-shaped
+      types; no provider-side code yet.
+- [x] ~~Wire main with leader election, signal handling, dual
+      controllers (Provider + VSphereMachine).~~ **Done** — `src/app.rs`,
+      now four controllers (Provider, VSphereMachine, VMImage, import
+      Jobs).
+- [x] ~~RBAC: read/patch `infrastructure.banlieue.io/vspheremachines`,
       patch `banlieue.io/providers` status, read Secrets in watched
       namespaces, CRUD `ipam.cluster.x-k8s.io/ipaddressclaims`,
-      patch `banlieue.io/vmimages` status.
+      patch `banlieue.io/vmimages` status.~~ **Done** —
+      `deploy/provider-vsphere/rbac/`, minus the `ipaddressclaims` rule,
+      which waits on the IPAM item above rather than granting a permission
+      nothing uses.
 
 ## Tests
 
-- [ ] Mock client behind a trait; reconciler tests assert correct
-      sequence of client calls for create/update/delete.
-- [ ] Integration against `vcsim` (lightweight vCenter simulator):
-      end-to-end clone + power on + delete.
-- [ ] Capability introspection against `vcsim`: synthesize known
-      inventory, assert expected `failureDomains[]` output.
+- [x] ~~Mock client behind a trait; reconciler tests assert correct
+      sequence of client calls for create/update/delete.~~ **Done** —
+      `client/fake.rs` behind the `client/mod.rs` trait; asserted by
+      `vspheremachine_tests.rs`, `vspheremachine_ensure_tests.rs`,
+      `vspheremachine_finalize_tests.rs`, `provider_tests.rs`,
+      `vmimage_tests.rs`.
+- [x] ~~Integration against `vcsim` (lightweight vCenter simulator):
+      end-to-end clone + power on + delete.~~ **Superseded** — `vcsim`
+      stayed as a local-development convenience (`make vcsim-up`, the
+      `vcsim` cargo feature, `deploy/provider-vsphere/README.md`) but it
+      cannot be the gate: `vim_rs`'s `vcsim_compat` needs its `xml` (SOAP)
+      feature, which production does not use, so a green vcsim suite would
+      prove nothing about the JSON transport we ship. The real coverage is
+      the live harness — `tests/live_vcenter.rs` via `make vsphere-live-test`
+      — see ADR-0014's follow-ups.
+- [x] ~~Capability introspection against `vcsim`: synthesize known
+      inventory, assert expected `failureDomains[]` output.~~
+      **Superseded, same reason** — asserted offline against `client/fake.rs`
+      in `provider_tests.rs`, and live against real vCenter (three failure
+      domains, 2026-09-19).
 
 ## Definition of done
 
@@ -272,6 +323,13 @@ banlieue-provider-vsphere [--kubeconfig PATH]
 - Capability introspection populates `Provider.status.failureDomains[]`
   with the expected entries given known vcsim inventory.
 - Container image builds and runs.
+
+> **Met, against real vCenter rather than vcsim** (see the two superseded
+> test items above). A `VirtualMachine` reaches
+> `initialization.provisioned=true` with addresses populated,
+> `failureDomains[]` reports the three real domains, and the image builds
+> and runs in CI. Phase 1B is ✅ on [`ROADMAPS.md`](../../ROADMAPS.md) on
+> that basis.
 
 ## Gotchas
 

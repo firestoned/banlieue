@@ -190,7 +190,7 @@ async fn a_guest_consumes_the_cloud_init_seed() {
     let spec = spec(&domain_name, &pool, &source_volume);
     eprintln!("booting {domain_name} from {source_volume}");
 
-    let outcome = converge(&mut client, &spec, false).await;
+    let outcome = converge(&mut client, &spec, false, false).await;
 
     // Poll for a lease announcing our hostname. Everything is inside this
     // block so the teardown below always runs.

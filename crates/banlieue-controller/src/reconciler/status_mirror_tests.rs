@@ -45,6 +45,11 @@ mod tests {
         fn observed_power_state(&self) -> Option<&PowerState> {
             self.power_state.as_ref()
         }
+        /// Always empty: the ADR-0045 mirror is proven against a real
+        /// `LibvirtMachine` below, where the field it reads actually lives.
+        fn tpm_endorsement_certificates(&self) -> &[String] {
+            &[]
+        }
     }
 
     fn cond(type_: &str, status: &str, reason: &str) -> Condition {
@@ -334,6 +339,7 @@ mod tests {
                 guest_installed: None,
                 install_media_detached: None,
                 tpm_attached: None,
+                tpm_endorsement_certificates: vec![],
                 conditions: vec![Condition {
                     type_: condition_types::READY.to_string(),
                     status: "True".to_string(),
@@ -497,5 +503,31 @@ mod tests {
             condition_status::TRUE,
             "an Immediate-mode VM with no guest marker must stay Ready"
         );
+    }
+
+    /// ADR-0045: the EK certificate is the anchor a verifier checks an
+    /// attestation quote against, so it has to reach the parent — and from
+    /// there a bound claim — or ADR-0049 has nothing to work with.
+    #[test]
+    fn the_vtpm_endorsement_certificate_is_mirrored_from_the_infra_cr() {
+        const PEM: &str = "-----BEGIN CERTIFICATE-----\nstub\n-----END CERTIFICATE-----";
+        let mut infra = libvirt_machine();
+        infra
+            .status
+            .as_mut()
+            .expect("fixture has status")
+            .tpm_endorsement_certificates = vec![PEM.to_string()];
+
+        let next = mirror_status_from_infra(&VirtualMachineStatus::default(), &infra, 1);
+        assert_eq!(next.tpm_endorsement_certificates, vec![PEM.to_string()]);
+    }
+
+    /// A machine with no vTPM publishes none, and the parent must not invent
+    /// one.
+    #[test]
+    fn no_certificate_on_the_infra_cr_means_none_on_the_parent() {
+        let infra = libvirt_machine();
+        let next = mirror_status_from_infra(&VirtualMachineStatus::default(), &infra, 1);
+        assert!(next.tpm_endorsement_certificates.is_empty());
     }
 }

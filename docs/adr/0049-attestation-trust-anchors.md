@@ -6,7 +6,7 @@
 - **Related:** Completes the delivery half of
   [ADR-0047](0047-virtualmachineclaim.md) Decision 9 (the claim carries no
   credential) and consumes
-  [ADR-0045](https://github.com/firestoned/banlieue/tree/main/docs/adr)'s
+  [ADR-0045](0045-vtpm-endorsement-key-certificate.md)'s
   EK certificates. Depends on the per-VM vTPM that
   [ADR-0040](0040-deferred-install-for-vtpm-encryption.md) exists to
   guarantee, and on the issuer allowlist in
@@ -137,7 +137,14 @@ ADR builds on.
   installed disk; only a verified quote says *which* guest it is.
 - **ADR-0045 becomes a hard dependency.** Without the EK certificate on the
   claim there is nothing to verify a quote against, and the handshake
-  degrades to "trust whatever answered on the port".
+  degrades to "trust whatever answered on the port". **Satisfied
+  2026-09-23**: ADR-0045 is Accepted and implemented, so the anchor is on
+  the claim and a `tpmEnabled` member is not bindable until it publishes
+  one. Note the asymmetry it records — on vSphere the certificate is read
+  from the hypervisor, on libvirt it is reported by the guest, because
+  swtpm persists no host-side copy. That does not weaken the verification
+  here (an EK certificate is a public key; Decision 4's activation is what
+  proves possession), but a verifier should know the provenance differs.
 - The issuer's discovery host must be reachable from inside the sandbox.
   That is a real constraint on the egress allowlist and on air-gapped
   deployments, where a pre-provisioned key set is the alternative.

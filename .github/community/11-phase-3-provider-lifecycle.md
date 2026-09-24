@@ -166,30 +166,75 @@ when the last Provider in that namespace goes away.
 
 ## Tasks
 
-- [ ] Add `ProviderClass` CRD to `banlieue-api`. Regenerate.
-- [ ] Wire admission webhook: `Provider.spec.providerClassRef.name`
-      must reference an existing `ProviderClass`.
-- [ ] Implement `provider_lifecycle/` in the main controller.
-- [ ] Implement manifest builders for Deployment/SA/ClusterRole/
-      ClusterRoleBinding.
-- [ ] Implement the per-namespace RoleBinding dance (watch
-      Provider CRs in addition to ProviderClass).
-- [ ] Wire ownership/finalizers so deletion is clean.
-- [ ] Add startup self-install option: when the main controller boots,
+> **Status (audited against the tree 2026-09-24): the lifecycle itself is
+> built; only the Helm packaging is outstanding.** One structural change
+> from the plan below: lifecycle does **not** live in the main controller.
+> ADR-0012 gave it its own binary, `banlieue-operator`, so the controller
+> stays out of the business of creating Deployments.
+
+- [x] ~~Add `ProviderClass` CRD to `banlieue-api`. Regenerate.~~ **Done** —
+      `crates/banlieue-api/src/banlieue/providerclass.rs` →
+      `deploy/crds/banlieue.io_providerclasses.yaml` (ADR-0012).
+- [x] ~~Wire admission webhook: `Provider.spec.providerClassRef.name`
+      must reference an existing `ProviderClass`.~~ **Done, without a
+      webhook** — ADR-0007 chose `ValidatingAdmissionPolicy` over a
+      webhook (no cert rotation, no extra pod, fails closed on its own):
+      `deploy/admission/providerclass-guardrails.yaml` and
+      `provider-immutability.yaml`. Those policies are optional hardening,
+      so the reconciler does not depend on them — a dangling
+      `providerClassRef` surfaces as a `Provider` condition instead.
+- [x] ~~Implement `provider_lifecycle/` in the main controller.~~ **Done,
+      relocated** — `banlieue-operator`'s `reconciler/provider.rs` and
+      `reconciler/providerclass.rs` (ADR-0012, ADR-0003).
+- [x] ~~Implement manifest builders for Deployment/SA/ClusterRole/
+      ClusterRoleBinding.~~ **Done** — `banlieue-operator/src/workload.rs`,
+      pure functions returning a `WorkloadSet`, shared with
+      `banlieue bootstrap` (ADR-0013) so a CLI install and an
+      operator-spawned one are identically shaped.
+- [x] ~~Implement the per-namespace RoleBinding dance (watch
+      Provider CRs in addition to ProviderClass).~~ **Done** — Option B
+      as designed above: Role + RoleBinding in the Provider's namespace,
+      Deployment and ServiceAccount in the workload namespace, plus the
+      per-Provider import Role/RoleBinding in the build namespace
+      (ADR-0016 §4).
+- [x] ~~Wire ownership/finalizers so deletion is clean.~~ **Done** —
+      owner references plus a `Provider` finalizer that deletes what owner
+      references cannot reach (the cluster-scoped ClusterRoleBinding, and
+      objects in other namespaces).
+- [x] ~~Add startup self-install option: when the main controller boots,
       it can optionally install default ProviderClasses for vsphere,
       proxmox, libvirt pointing at known image tags (`--auto-install`
-      flag). Off by default.
+      flag). Off by default.~~ **Superseded by ADR-0013** — an explicit
+      `banlieue bootstrap operator` subcommand rather than a boot-time
+      side effect, which keeps install auditable and dry-runnable
+      (`--dry-run`). Covered by `make kind-e2e-bootstrap`,
+      `kind-e2e-dry-run` and `kind-e2e-escape-hatch`.
 - [ ] Update Helm chart (Phase 4 work) so banlieue installation only
       needs the main controller; ProviderClasses bring up the rest.
+      **Still open** — no chart exists yet (roadmap 12 §4.6). `banlieue
+      bootstrap` is today's single-command install.
 
 ## Tests
 
-- [ ] Manifest builder unit tests: golden YAML files per provider kind.
-- [ ] Reconciler integration test on `kind`: apply a ProviderClass,
-      assert Deployment becomes Ready.
-- [ ] Upgrade test: change image, observe rollout completes.
-- [ ] Cleanup test: delete ProviderClass, assert all resources GC.
-- [ ] Cross-namespace RoleBinding test.
+- [x] ~~Manifest builder unit tests: golden YAML files per provider kind.~~
+      **Done** — `workload_tests.rs` and `bootstrap_tests.rs` assert the
+      built objects directly rather than against golden files, which is
+      what let them encode *why* (e.g. that a ClusterRoleBinding has no
+      namespace scope, so a Secret rule in it reaches every namespace).
+- [x] ~~Reconciler integration test on `kind`: apply a ProviderClass,
+      assert Deployment becomes Ready.~~ **Done** —
+      `tests/e2e_provider_workload.rs` (`make kind-e2e-workload`), ADR-0014.
+- [x] ~~Upgrade test: change image, observe rollout completes.~~ **Done** —
+      `e2e_provider_class.rs::editing_the_class_image_rolls_the_existing_workload`
+      (`make kind-e2e-class`).
+- [x] ~~Cleanup test: delete ProviderClass, assert all resources GC.~~
+      **Done** —
+      `e2e_provider_class.rs::changing_the_provider_class_prunes_the_previous_workload`
+      covers the harder case: the orphaned ClusterRoleBinding nothing owns,
+      which GC cannot reach.
+- [x] ~~Cross-namespace RoleBinding test.~~ **Done** —
+      `tests/e2e_workload_namespace.rs` (`make kind-e2e-workload-namespace`).
+      `tests/e2e_provider_pause.rs` additionally covers `spec.paused`.
 
 ## Definition of done
 
@@ -198,6 +243,12 @@ when the last Provider in that namespace goes away.
   backend.
 - Upgrading a provider is a YAML edit to `ProviderClass.spec.image`.
 - Removing a backend is `kubectl delete providerclass <kind>`.
+
+> **Two of three met (2026-09-24).** Upgrade-by-edit and
+> delete-the-class both work and are covered by `make kind-e2e-class`.
+> The single-command install exists as `banlieue bootstrap operator`
+> (ADR-0013); the Helm form of it is still roadmap 12 §4.6, which is why
+> this phase stays 🔶 on [`ROADMAPS.md`](../../ROADMAPS.md).
 
 ## Gotchas
 

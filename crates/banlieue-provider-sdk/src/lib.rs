@@ -38,6 +38,7 @@ pub mod finalizer;
 pub mod guestdata;
 pub mod leader;
 pub mod osartifact;
+pub mod pem;
 pub mod reconciler;
 pub mod scheduling;
 pub mod ssa;

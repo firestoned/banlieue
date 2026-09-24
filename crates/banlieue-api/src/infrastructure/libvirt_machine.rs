@@ -414,6 +414,19 @@ pub struct LibvirtMachineStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tpm_attached: Option<bool>,
 
+    /// PEM vTPM endorsement key certificate(s) reported by the guest and
+    /// validated against this domain (ADR-0045).
+    ///
+    /// Empty when `spec.tpmEnabled` is `false`, and while a `tpmEnabled`
+    /// guest has not yet exported one. On libvirt this is necessarily a
+    /// guest-reported value: `swtpm_localca` issues the certificate into the
+    /// vTPM's NVRAM and persists no copy the host or any libvirt RPC can
+    /// read. It is published only after its subject CN is confirmed to be
+    /// `<domain-name>:<domain-uuid>`, and possession of the matching private
+    /// key is what ADR-0049's attestation actually proves.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tpm_endorsement_certificates: Vec<String>,
+
     /// CAPI-compatible conditions. The `Ready` condition is mirrored as
     /// `InfrastructureReady` on the parent per contract.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

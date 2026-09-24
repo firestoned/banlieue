@@ -317,6 +317,11 @@ mod tests {
             observed_power_state: Some(PowerState::PoweredOn),
             tpm_attached: Some(true),
             guest_installed: Some(true),
+            // ADR-0045: round-trips as a list, because vCenter's own field is
+            // one and a TPM may carry both an RSA and an ECC certificate.
+            tpm_endorsement_certificates: vec![
+                "-----BEGIN CERTIFICATE-----\nstub\n-----END CERTIFICATE-----".to_string(),
+            ],
             conditions: Vec::new(),
             observed_generation: Some(2),
         };
