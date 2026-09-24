@@ -5,14 +5,16 @@ SPDX-License-Identifier: Apache-2.0
 # Threat Model
 
 > **Status:** Living document. Last full pass **2026-09-23**, covering
-> **ADR-0048** (closes the `tpmEnabled` + `Immediate` enforcement gap ADR-0040
-> Decision 5 left open) and **ADR-0044** (install media is ejected before
-> `GuestReady`, so a pool cannot bind a member with its installer attached).
-> TB-5 gains five rows; §7 requirement 9 stops describing an operator
-> responsibility that is now code; §8 gains the two residues those ADRs leave
-> deliberately — `installMode: Manual`, and the NoCloud seed staying attached.
-> Against the architecture defined by ADR-0001 … ADR-0055 (0045 is reserved by
-> roadmap 17 and unissued; 0049 is Proposed, not implemented).
+> **ADR-0045** (the vTPM endorsement key certificate is published on the infra
+> CR, mirrored onto a bound claim, and — for a `tpmEnabled` machine — gates
+> `GuestReady`). A-6 is split so the EK certificate is its own asset; TB-4
+> gains three rows for the guest-reported read path libvirt forces; §8 records
+> the two residues it leaves — swtpm certificates that never expire, and a
+> per-host local CA that is only as trustworthy as the host. **banlieue
+> acquires no new privilege in the guest: the certificate is read with
+> ADR-0043's read-only `guest-file-open` path, never `guest-exec`.**
+> Against the architecture defined by ADR-0001 … ADR-0055 (0049 is Proposed,
+> not implemented).
 > **Method:** asset/actor enumeration, trust-boundary decomposition, STRIDE per
 > boundary, control mapping to the manifests in `deploy/` and the crates in
 > `crates/`.
@@ -72,6 +74,7 @@ authorization and data-flow, not memory corruption.**
 | A-7 | **Claim bindings** — which subject was given which VM, and when | `VirtualMachineClaim.spec.subject` + `status`, mirrored onto the member as `banlieue.io/claim-subject-*` annotations (ADR-0047) | Medium — discloses who was using which sandbox to every reader of the namespace; a *forged* binding makes the record say someone requested a VM they never asked for |
 | A-10 | **The consumer's cached Kubernetes credential** — the ID token `kubectl oidc-login` writes to disk after a browser flow | `~/.kube/cache/oidc-login` on the consumer's own machine, outside every boundary below | High — it authenticates as that consumer, so it can create claims *attributed to them*. banlieue has no control here; see §8 |
 | A-6 | vTPM identity and sealed disk-encryption keys | vSphere VM, per-clone (ADR-0039/0040); on libvirt, **swtpm state keyed by domain UUID** (ADR-0050) | High — a shared or surviving TPM identity breaks per-VM disk-encryption isolation |
+| A-6a | **vTPM endorsement key certificate** — the public anchor an attestation quote is checked against | vCenter-issued and read host-side on vSphere; `swtpm_localca`-issued into the vTPM's NVRAM on libvirt, exported by the guest to `/run/banlieue/ek.pem` and mirrored to `VirtualMachineClaim.status` (ADR-0045) | Low confidentiality — it is a **public key**, deliberately readable by every reader of the claim. Its value is *integrity of binding*: it must name the VM banlieue actually created, or ADR-0049 verifies a quote from the wrong machine |
 
 ## 4. Actors
 
@@ -122,6 +125,7 @@ authorization and data-flow, not memory corruption.**
                     │ Hypervisor — vCenter (HTTPS + creds)                    │
                     │             libvirtd (mTLS, native RPC; ADR-0011/0050)  │
                     │  datastores / storage pools, VMs & domains, vTPM/swtpm  │
+                    │  guest → qemu-guest-agent → EK cert, phase (read-only)  │
                     └────────────────────────────────────────────────────────┘
 
   TB-6: GitHub Actions / GHCR ──▶ released images & binaries
@@ -201,11 +205,14 @@ own identity (which can create Jobs), and starts with zero permissions;
 | Hostile or unresponsive endpoint stalls every reconcile | 10 s connect / 120 s request timeouts on the vSphere client; timeouts on libvirt connect, recv, and `Session::send` |
 | Malformed libvirt RPC frames | Wire decoder is continuously fuzzed (`crates/banlieue-libvirt/fuzz`, `.github/workflows/fuzz.yaml`, ClusterFuzzLite); ADR-0050's domain `decode_*` halves are pure and unit-tested against captured wire bytes, so they are in that fuzz surface too |
 | A deleted VM leaves its sealed-key material behind (swtpm state, UEFI NVRAM varstore) | `domain_undefine` takes **no flags parameter** and unconditionally sends `MANAGED_SAVE\|NVRAM\|TPM` (ADR-0050 Decision 5) — the flag cannot be forgotten at a call site — `crates/banlieue-libvirt/src/procs.rs`, proven against a real libvirtd in `tests/live_libvirtd.rs`. Live since ADR-0050: `LibvirtMachine`'s finalizer calls it on every teardown — `crates/banlieue-provider-libvirt/src/machine_client.rs` (`undefine`), invoked from `reconciler/libvirtmachine.rs::finalize_backend`, which then verifies the domain is actually gone before deleting its volumes |
-| Something other than the intended guest answers the broker's mTLS connection and receives the subject's token | S | The agent returns a **TPM quote over `status.nonce`**, verified against the EK certificate published on the claim (ADR-0049, ADR-0045). The vTPM is unique per VM by construction — on vSphere because deferred install never installs the golden template so each clone installs with its own vTPM (ADR-0040), on libvirt because swtpm state is keyed by domain UUID. **Not yet implemented**: ADR-0049 is Proposed and ADR-0045 unissued, so today there is nothing to verify a responder against |
+| Something other than the intended guest answers the broker's mTLS connection and receives the subject's token | S | The agent returns a **TPM quote over `status.nonce`**, verified against the EK certificate published on the claim (ADR-0049, ADR-0045). The vTPM is unique per VM by construction — on vSphere because deferred install never installs the golden template so each clone installs with its own vTPM (ADR-0040), on libvirt because swtpm state is keyed by domain UUID. **Half implemented since 2026-09-23**: ADR-0045 landed, so the anchor now exists on the claim (`status.tpmEndorsementCertificates`) and a `tpmEnabled` member is not bindable until it publishes one. ADR-0049 itself is still Proposed, so nothing yet *performs* the verification — the anchor is in place, the exchange is not |
 | A token minted for a different service is presented to the agent and accepted | S | `aud` is the agent's **own configured audience** and is deliberately never read from the claim (ADR-0049 Decision 5) — otherwise whoever wrote the claim chooses the audience |
 | A claim names an attacker-controlled issuer, so the agent fetches that attacker's JWKS and every forged token verifies | S, T | The issuer allowlist in `banlieue-virtualmachineclaim-subject-authorization` — added for audit honesty, and load-bearing here: `subject.issuer` is a CR field the agent is asked to trust as a key source (ADR-0049 Decision 7) |
 | A guest asserts `GuestReady` while still installing, or a compromised guest asserts it to be handed out sooner | S, T | **Bounded, not prevented.** The marker is guarded on immucore's active/passive sentinels so the *live installer* cannot assert it (`examples/16-cloud-config-guest-phase.yaml`), but a guest that has already been compromised can write anything. This is why ADR-0043 Decision 9 states the signal is liveness, never integrity: it is not a control against a hostile guest, and the pool hands out fresh, unclaimed VMs. Integrity is ADR-0049's problem (§8) |
 | A guest returns a huge or malformed payload to `guest-file-read`, hoping to fault the provider's reconcile loop | D | The read is capped before decoding (`MARKER_READ_MAX`, checked on the base64 *and* the decoded bytes), every parse failure returns "not installed" rather than an error, and the handle is closed on every path so an agent's handle table cannot be exhausted — `crates/banlieue-provider-libvirt/src/guest.rs`, with dedicated tests for oversize, undecodable and garbage input |
+| A guest reports **another member's** EK certificate, so a verifier later checks a quote against the wrong machine | S, T | Two independent checks, and the weaker one runs first. The subject CN must equal `<domain-name>:<domain-uuid>` — both values banlieue itself assigned when it defined the domain — or the certificate is discarded, never published, and the machine reports `GuestReady=False`/`TpmEndorsementMismatch` (`crates/banlieue-provider-libvirt/src/guest.rs`, `ek_cn_matches`). The check that cannot be forged is ADR-0049's: an EK certificate is a **public key**, so a guest presenting one it does not hold the private half of cannot certify an AK under it, and the substitution fails the step it was made to pass |
+| A guest publishes bytes that are not a certificate at all, into a status field consumers feed to a certificate library | T | Parsed as X.509 before publication, with the PEM label required to be `CERTIFICATE` — a `PRIVATE KEY` block is valid PEM and is refused (`parse_ek_pem_str`, `x509-parser`). Size-capped at `EK_READ_MAX` on the base64 *and* the decoded bytes, like the phase marker. Unit-tested against a real `swtpm_localca` certificate and against junk |
+| banlieue's read of the certificate becomes a way to run code inside a sandbox | E | The certificate lives in the vTPM's NVRAM, and the obvious way to fetch it is `tpm2_nvread` over `guest-exec` — **host-to-guest arbitrary code execution**. banlieue does not use `guest-exec` anywhere: the guest exports the certificate to `/run/banlieue/ek.pem` and banlieue reads that file with `guest-file-open` at an explicit `mode: "r"` (ADR-0045 Decision 2). A provider that only ever opens guest files read-only cannot be turned into a remote shell by a compromised controller |
 | A half-failed teardown silently leaves domains defined | libvirt 11.3 *fails* undefine on a UEFI domain without `NVRAM` rather than warning; the error is returned, never swallowed, and the live lifecycle test asserts the domain is actually gone — `crates/banlieue-libvirt/tests/live_libvirtd.rs` |
 | Credentials leak into logs | No secret is ever logged; redacting `Debug`; provider condition messages are the only verbatim text mirrored to user-facing status |
 
@@ -373,6 +380,16 @@ a different assumption is unsafe.
    encrypt nothing is now `Ready=False`, `reason=ImageClassMismatch`. The
    residual operator responsibility is `installMode: Manual`, the escape
    hatch for non-Kairos builds, which banlieue cannot inspect (§8).
+
+   **On libvirt, a `tpmEnabled` image must also export its EK certificate**
+   (ADR-0045). The guest writes the PEM to `/run/banlieue/ek.pem` — two
+   lines of cloud-config beside the ADR-0043 phase marker, needing
+   `tpm2-tools` in the image — because swtpm keeps no host-side copy for
+   banlieue to read. An image that cannot do this never reports
+   `GuestReady` for a `tpmEnabled` class and so is never bound: the failure
+   is a member visibly stuck with `reason=TpmEndorsementPending`, not one
+   handed out without an attestation anchor. Machines with
+   `tpmEnabled: false` are unaffected.
 10. **A claim isolates at the VM boundary, not the Kubernetes one — grant
     `create` and `delete` on `virtualmachineclaims` narrowly.** A
     `VirtualMachineClaim` guarantees that one *VM* is used by one subject and
@@ -405,6 +422,8 @@ a different assumption is unsafe.
 | Rendered user-data is visible in `VSphereMachine.spec` **and `LibvirtMachine.spec`** | Single-tenant, single-namespace posture (ADR-0025). ADR-0042 closed the *escalation* (a principal reaching user-data it could not read); the *reflection* to anyone who can already `get` the infra CR is unchanged and deliberate, and ADR-0050 extends it to a second kind rather than introducing a new risk | A second tenant or namespace becomes real — ADR-0025's superseded per-VM Role design is the shape that scales |
 | The controller's user-data Role is namespace-wide, not `resourceNames`-scoped | The names a validly admitted `VirtualMachine` may cite are unknowable when the manifest is written; authorization moves to admission, where the requesting identity still exists (ADR-0042). A compromise of the controller identity itself is still bounded only by the namespace | The install stops shipping `deploy/admission/`, or per-VM RBAC becomes tractable |
 | A libvirt guest's TPM is **emulated by swtpm on the host**, so a host-root adversary can read the sealed-key material that a physical TPM would protect | This is the libvirt trust model, not a banlieue choice; the hypervisor operator is already semi-trusted (§4) and hypervisor compromise is out of scope (§9). EK trust anchors differ per backend, which roadmap 17 phase F (ADR-0049) is the plan to make explicit via `Provider.spec.attestation.ekTrustBundle` | Attestation ships (ADR-0049), or a libvirt host is no longer operator-trusted |
+| **swtpm EK certificates never expire** — the observed `notAfter` is `9999-12-31` — so validity-period checks are not a revocation mechanism on libvirt | Nothing banlieue controls: `swtpm_localca` issues them that way. Expiry would be a weak control regardless, since a sandbox's whole life is measured in minutes. Revocation on libvirt is removing the issuing host's CA from the trust bundle, which is a per-host decision an administrator makes explicitly (ADR-0049) rather than one a certificate makes for them | The trust bundle lands (ADR-0049) and needs a per-certificate revocation story rather than a per-host one |
+| On libvirt the EK certificate is **reported by the guest**, not read from the hypervisor, because swtpm persists no host-side copy | Forced by swtpm's design, not chosen (ADR-0045): the certificate is loaded into the vTPM's NVRAM and the issuing temp directory is deleted, and no libvirt RPC exposes it. It is sound because an EK certificate is a public key — substituting another member's does not yield its private half, so ADR-0049's activation fails — and the subject-CN binding catches the substitution earlier still. The residue is that a guest can *withhold* its certificate, which denies only its own readiness | libvirt or swtpm grows a host-side read, or a member withholding its certificate becomes something worth distinguishing from one that is merely slow |
 | `GuestReady` can be asserted by any code running as root inside the guest, so it proves which disk booted only for a guest that has not been compromised | It is a *liveness* signal by construction (ADR-0043 Decision 9) and is consumed only to decide when a **fresh, unclaimed** VM joins a warm pool — before any subject has touched it. Treating it as integrity would be the error; the document and the ADR both say so explicitly | Attestation ships (ADR-0049), at which point a TPM quote over the claim nonce is the integrity signal and this one stays what it is |
 | A **broker** both holds subject credentials and is the party that verifies TPM quotes, so its compromise is the design's worst case | Somebody has to hold the credential to deliver it, and somebody has to verify the quote; concentrating both in one audited component is preferable to spreading either. banlieue is deliberately not that component (ADR-0049 Decision 2), so a controller compromise discloses no subject credential | The broker is split into deliver/verify roles, or hardware-backed key custody becomes available to it |
 | A declared **broker** may attribute a sandbox to any identity, so the audit trail is only as honest as the broker is | Handing sandboxes out on behalf of other people is a broker's entire purpose (roadmap phase C); a broker that could only name itself could not broker. The concentration is explicit, empty by default, and confined to one auditable ConfigMap (§7.6) rather than diffused across everyone holding `create` | A broker is compromised, or claims need per-request proof of the subject's consent rather than the broker's assertion |

@@ -292,6 +292,15 @@ pub trait VSphereClient: Send + Sync {
     /// must exist before first boot.
     async fn add_tpm_device(&self, vm_moref: &str) -> Result<()>;
 
+    /// The DER endorsement key certificate(s) of `vm_moref`'s vTPM (ADR-0045).
+    ///
+    /// Empty when the VM has no vTPM, and — possibly — when vCenter has not
+    /// issued the certificate yet, so a caller must treat an empty answer as
+    /// "not yet" and ask again rather than as "never". Read host-side from
+    /// `VirtualTpm.endorsementKeyCertificate`, so no guest cooperation is
+    /// involved and the binding is established before the guest boots.
+    async fn tpm_endorsement_certificates(&self, vm_moref: &str) -> Result<Vec<Vec<u8>>>;
+
     /// Grow `vm_moref`'s OS disk to `size_gi_b` (never shrinks — a no-op if
     /// the disk is already at least that size) via a standalone
     /// `ReconfigVM_Task`, issued after `clone_vm` returns — mirrors

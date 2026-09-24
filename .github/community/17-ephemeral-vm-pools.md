@@ -277,14 +277,14 @@ provider can realise (see [Repo reality](#repo-reality-at-8360e19)).
 | 0 | Slim image experiment | none (no code) | ⏸️ deferred (no vTPM on the libvirt hosts yet) |
 | A2 | `GuestReady`: the installed guest reports in | 0043 | 🔶 libvirt implemented and the **read path is now verified live** against a real `qemu-guest-agent` (the seed installs it, so no special image is needed). Open: a Kairos image with the phase layer, to prove the marker is written at the right *moment*; vSphere transport deferred |
 | A4 | Detach install media once installed | 0044 | ✅ landed 2026-09-23 (libvirt) — `virDomainUpdateDeviceFlags` (proc 174) ejects the cdrom when `guestInstalled` flips, **before** `GuestReady` is published, so a pool can never bind a member with media attached. Sticky `installMediaDetached`; the ISO is also suppressed from the redefined domain XML. vSphere half deferred for want of a vCenter. **Verified live against a real libvirtd 2026-09-23** — a CONFIG-only eject of a real cdrom was accepted *and applied* |
-| A5 | vTPM EK certificate in machine status | 0045 | ⛔ — **now the gate for F** (ADR-0049 Decision 4 verifies quotes against it) |
+| A5 | vTPM EK certificate in machine status | 0045 | ✅ landed 2026-09-23 (libvirt; vSphere code-only) — published on the infra CR, mirrored through `VirtualMachine` onto a bound claim. **The design in phase D below was wrong**: swtpm persists no host-side copy of the certificate, so on libvirt the guest exports it to `/run/banlieue/ek.pem` and banlieue reads it with ADR-0043's read-only path (never `guest-exec`). Subject CN is checked against `<domain-name>:<domain-uuid>`, and for a `tpmEnabled` machine publication **gates `GuestReady`**, the same ordering ADR-0044 uses. The *mechanism* is verified against a real host — certificate read out of NV `0x01c00002` of a live domain, CN confirmed as `<name>:<uuid>` — and `tests/live_ek.rs` exercises the shipped path. **Unblocks F** |
 | A3 | `tpmEnabled` requires `installMode: Deferred` | 0048 | ✅ landed 2026-09-23 — pure check in `banlieue-controller`, rejected before scheduling so no infra CR is created; `Manual` passes, and an image with **no `template`** is rejected too (a pre-built disk is a pre-laid one) |
 | B1 | `VirtualMachinePool` | 0046 | ✅ landed and validated e2e — fills, self-heals, rolls, cascades on delete |
 | B2 | `VirtualMachineClaim` | 0047 | ✅ landed — bind/hold/release, TTL expiry, finalizer, nonce; a pool is now consumable |
 | C | In-guest agent (separate repo) | own repo | ⛔ |
 | D | libvirt provider: `LibvirtMachine` reconciler | 07 + 0050 + 0054 | ✅ complete — CRD, domain XML, reconciler, NoCloud user-data; roadmap 07 closed |
 | E | Proxmox provider, same | amend 12 | ⛔ |
-| F | Attestation trust anchors, threat model | 0049 | 📄 ADR-0049 written (Proposed); **blocked on A5** — without the EK certificate on the claim there is nothing to verify a quote against |
+| F | Attestation trust anchors, threat model | 0049 | 📄 ADR-0049 written (Proposed); **no longer blocked** — A5 landed 2026-09-23, so the anchor exists on the claim. Remaining: `Provider.spec.attestation.ekTrustBundle` (per-backend — vCenter on vSphere, a per-host `swtpm_localca` on libvirt) and the in-guest agent |
 
 Per `rules/architecture-driven-development.md` each ADR lands before its
 code. Skeleton decisions are below so the ADRs are an hour each, not a day.
@@ -407,6 +407,19 @@ hardware version. If vCenter insists on powered-off, fall back to disconnect
 backing, which is always hot-safe, and do the real remove at next power-off.
 
 ### A5: vTPM EK certificate in status (ADR-0045)
+
+> **Landed 2026-09-23, and the design below is only half right.** The vSphere
+> paragraph stands. The libvirt path does **not** exist as this section
+> assumed: swtpm persists no host-side copy of the certificate, so the guest
+> exports it to `/run/banlieue/ek.pem`
+> (`examples/20-cloud-config-guest-ek-certificate.yaml`) and banlieue reads
+> it with ADR-0043's read-only `guest-file-open` path — never `guest-exec`,
+> which would be host-to-guest RCE acquired to fetch a public key. The
+> subject CN is checked against `<domain-name>:<domain-uuid>`, and for a
+> `tpmEnabled` machine publication gates `GuestReady`. Verified live:
+> `make libvirt-ek-live-test`. Full reasoning in
+> [ADR-0045](../../docs/adr/0045-vtpm-endorsement-key-certificate.md).
+
 
 vCenter issues an endorsement key certificate for each vTPM. vim_rs 0.6
 exposes it as `VirtualTpm.endorsement_key_certificate: Option<Vec<Vec<u8>>>`
@@ -617,8 +630,16 @@ Add to roadmap 07's task list:
   UKI back.
 - `GuestReady` from `qemu-guest-agent`; `detach_install_media` =
   `virDomainUpdateDeviceFlags` ejecting the cdrom.
-- EK certificates: read from swtpm's `swtpm_localca`-issued cert; trust anchor
-  is per host (phase F).
+- ~~EK certificates: read from swtpm's `swtpm_localca`-issued cert~~ —
+  **wrong, corrected 2026-09-23 (ADR-0045).** There is no host-side read.
+  libvirt does pass `--createek --create-ek-cert --vmid` to `swtpm_setup`, so
+  the certificate is issued; but `swtpm_localca` writes it to a temp directory
+  which `swtpm_setup` loads into the vTPM's NVRAM and then deletes.
+  `/var/lib/swtpm-localca/` keeps the *issuer* key and a serial counter, not
+  the certificates it issued, and no libvirt RPC exposes it. The only readable
+  copy is inside the guest at NV index `0x01c00002`, so the guest exports it
+  to `/run/banlieue/ek.pem` and banlieue reads that file. The trust anchor is
+  still per host (phase F) — it is the `swtpm_localca` issuer certificate.
 
 ### E: Proxmox (amend roadmap 06)
 
@@ -647,7 +668,7 @@ media detach is `ide2: none`; destroy with purge.
 ## Definition of done
 
 - [ ] Section 0 matrix filled in and linked from ADR-0051.
-- [ ] ADRs 0043 to 0048 accepted; CALM updated.
+- [x] ADRs 0043 to 0048 accepted; CALM updated. **Done 2026-09-23** — 0045 was the last one outstanding; every one of the six is `Accepted` and registered in `docs/architecture/calm/architecture.json`.
 - [ ] `examples/15` applied live: pool reaches `Warm=True`; a claim binds in
       under 5 s; `govc device.ls` on the bound member shows no CD-ROM;
       `status.tpmEndorsementCertificates` parses with `openssl x509`.

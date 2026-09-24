@@ -258,6 +258,16 @@ pub struct VSphereMachineStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tpm_attached: Option<bool>,
 
+    /// PEM vTPM endorsement key certificate(s) issued by vCenter for this
+    /// VM's vTPM (ADR-0045).
+    ///
+    /// Read host-side from `VirtualTpm.endorsementKeyCertificate` (DER,
+    /// converted here) as the first guest step, so the certificate-to-VM
+    /// binding is recorded while the VM is still something only banlieue has
+    /// touched. Empty when `spec.tpmEnabled` is `false`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tpm_endorsement_certificates: Vec<String>,
+
     /// CAPI-compatible conditions (using `metav1.Condition`). The `Ready`
     /// condition is mirrored as `InfrastructureReady` on the parent
     /// (`clusterv1.Machine` or banlieue `VirtualMachine`) per contract.

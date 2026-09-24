@@ -176,6 +176,21 @@ pub trait LibvirtMachineClient: Send {
     /// state — so a provider must not treat any of them as an error and
     /// back off.
     async fn probe_guest(&mut self, domain: &Domain) -> crate::guest::GuestProbe;
+
+    /// The domain's vTPM endorsement key certificate, if its guest has
+    /// exported one (ADR-0045).
+    ///
+    /// Infallible for the same reason `probe_guest` is: a `tpmEnabled`
+    /// member spends its whole install with no certificate to read, and a
+    /// provider that treated that as an error would back off exactly when
+    /// it should be waiting. `domain_name` and `domain_uuid` are what the
+    /// certificate's subject CN is checked against.
+    async fn read_ek_certificate(
+        &mut self,
+        domain: &Domain,
+        domain_name: &str,
+        domain_uuid: &str,
+    ) -> crate::guest::EkProbe;
 }
 
 /// Diagnostic helper: a domain's addresses as a printable string,
@@ -352,6 +367,15 @@ where
         crate::guest::probe_guest(&mut self.session, domain).await
     }
 
+    async fn read_ek_certificate(
+        &mut self,
+        domain: &Domain,
+        domain_name: &str,
+        domain_uuid: &str,
+    ) -> crate::guest::EkProbe {
+        crate::guest::read_ek_certificate(&mut self.session, domain, domain_name, domain_uuid).await
+    }
+
     async fn domain_addresses(
         &mut self,
         domain: &Domain,
@@ -430,6 +454,16 @@ pub struct FakeMachineClient {
     /// the host would actually be left with — the only way to catch an
     /// eject that a later redefine silently undoes.
     pub defined_xml: Vec<String>,
+    /// The PEM the guest of each domain exports at `EK_PATH` (ADR-0045),
+    /// by domain name. Absent means "has not exported one yet", which is
+    /// where a `tpmEnabled` member spends its whole install.
+    ///
+    /// The fake applies the same subject-CN check the real client does, so
+    /// a certificate placed here for the wrong domain reports `Mismatch`
+    /// exactly as a real guest lying would — a fake that published whatever
+    /// it was handed would be more permissive than the thing it stands in
+    /// for, which is how the `DOMAIN_DEFINE_XML` bug got in.
+    pub ek_certificates: std::collections::BTreeMap<String, String>,
     /// When set, every call fails with this message.
     pub fail_with: Option<String>,
 }
@@ -502,6 +536,27 @@ impl LibvirtMachineClient for FakeMachineClient {
         } else {
             crate::guest::GuestProbe::AgentUnreachable
         }
+    }
+
+    async fn read_ek_certificate(
+        &mut self,
+        domain: &Domain,
+        domain_name: &str,
+        domain_uuid: &str,
+    ) -> crate::guest::EkProbe {
+        self.record("read_ek_certificate", &domain.name);
+        let Some(pem) = self.ek_certificates.get(&domain.name) else {
+            return crate::guest::EkProbe::NotPublished;
+        };
+        // The same gate the real client applies, deliberately: see the field
+        // docs. A certificate that does not parse is not published either.
+        if crate::guest::parse_ek_pem_str(pem).is_none() {
+            return crate::guest::EkProbe::NotPublished;
+        }
+        if !crate::guest::ek_cn_matches(pem, domain_name, domain_uuid) {
+            return crate::guest::EkProbe::Mismatch;
+        }
+        crate::guest::EkProbe::Published(pem.clone())
     }
 
     async fn lookup_pool(&mut self, name: &str) -> Result<Option<StoragePool>> {

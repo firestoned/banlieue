@@ -222,6 +222,10 @@ pub struct ProvisionOutcome {
     /// succeeded; `None` when `tpmEnabled` was `false` (nothing attempted)
     /// or this outcome came from the `already_provisioned` early return.
     pub tpm_attached: Option<bool>,
+    /// PEM vTPM endorsement key certificate(s) vCenter issued for this VM
+    /// (ADR-0045). Empty when there is no vTPM, and when vCenter has not
+    /// issued one yet — both mean "ask again", never "never".
+    pub tpm_endorsement_certificates: Vec<String>,
 }
 
 /// The `VSphereMachine` create path (ADR-0024): resolve every name in
@@ -248,6 +252,7 @@ pub async fn ensure_vm(
             already_provisioned: true,
             power_state: None,
             tpm_attached: None,
+            tpm_endorsement_certificates: Vec::new(),
         });
     }
 
@@ -370,6 +375,21 @@ pub async fn ensure_vm(
         None
     };
 
+    // ADR-0045: record the endorsement certificate here, between the attach
+    // and the power-on, so the certificate-to-VM binding is established
+    // while the VM is still something only banlieue has touched. An empty
+    // answer is not an error — vCenter may not have issued it yet — and the
+    // observe path picks it up on a later reconcile.
+    let tpm_endorsement_certificates = if spec.tpm_enabled {
+        let der = client.tpm_endorsement_certificates(&vm_ref).await?;
+        if der.is_empty() {
+            info!(vm_ref = %vm_ref, "no vTPM endorsement certificate yet");
+        }
+        der.iter().map(|d| der_to_pem(d)).collect()
+    } else {
+        Vec::new()
+    };
+
     // CloneVM_Task always clones powered off (ADR-0024's clone spec sets
     // power_on: false). Calling set_power_state(PoweredOff) again is a
     // redundant no-op transition that real vCenter rejects with
@@ -392,6 +412,7 @@ pub async fn ensure_vm(
         power_state: Some(spec.desired_power_state.clone()),
         already_provisioned: false,
         tpm_attached,
+        tpm_endorsement_certificates,
     })
 }
 
@@ -651,6 +672,7 @@ async fn patch_status_success(
         vm_ref,
         power_state,
         tpm_attached,
+        tpm_endorsement_certificates,
         already_provisioned: _,
     } = outcome;
     let mut conditions = existing_conditions.to_vec();
@@ -673,6 +695,7 @@ async fn patch_status_success(
         instance_uuid: None,
         observed_power_state: power_state,
         tpm_attached,
+        tpm_endorsement_certificates,
         conditions,
         observed_generation: Some(generation),
     };
@@ -883,6 +906,28 @@ mod vspheremachine_tests;
 #[cfg(test)]
 #[path = "vspheremachine_ensure_tests.rs"]
 mod vspheremachine_ensure_tests;
+
+/// PEM line length for base64 payloads, per RFC 7468 §2.
+const PEM_LINE_WIDTH: usize = 64;
+
+/// Encode a DER certificate as PEM (ADR-0045).
+///
+/// vCenter hands `VirtualTpm.endorsementKeyCertificate` over as DER; every
+/// consumer of `status.tpmEndorsementCertificates` wants to feed it to a
+/// certificate library, and a CR status is a text document — so the
+/// conversion happens here rather than in each verifier.
+#[must_use]
+pub fn der_to_pem(der: &[u8]) -> String {
+    use base64::Engine as _;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(der);
+    let mut out = String::from("-----BEGIN CERTIFICATE-----\n");
+    for chunk in b64.as_bytes().chunks(PEM_LINE_WIDTH) {
+        out.push_str(std::str::from_utf8(chunk).unwrap_or_default());
+        out.push('\n');
+    }
+    out.push_str("-----END CERTIFICATE-----\n");
+    out
+}
 
 #[cfg(test)]
 #[path = "vspheremachine_finalize_tests.rs"]

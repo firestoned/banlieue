@@ -391,4 +391,49 @@ mod tests {
         assert_eq!(ready.reason, "BackendMissing");
         assert_eq!(next.observed_generation, Some(2));
     }
+
+    // ------------------------------------------------------------------
+    // ADR-0045 — vCenter hands the EK certificate over as DER
+    // ------------------------------------------------------------------
+
+    /// The conversion has to produce something a certificate library will
+    /// actually accept, which means the RFC 7468 framing and 64-character
+    /// lines — not just base64 with a header glued on.
+    #[test]
+    fn der_becomes_well_formed_pem() {
+        use super::super::der_to_pem;
+        // 200 bytes, so the payload is several lines long.
+        let der: Vec<u8> = (0..200u32).map(|i| (i % 251) as u8).collect();
+        let pem = der_to_pem(&der);
+
+        assert!(pem.starts_with("-----BEGIN CERTIFICATE-----\n"), "{pem}");
+        assert!(pem.ends_with("-----END CERTIFICATE-----\n"), "{pem}");
+
+        let body: Vec<&str> = pem.lines().filter(|l| !l.starts_with("-----")).collect();
+        assert!(body.len() > 1, "a 200-byte certificate must wrap");
+        for line in &body[..body.len() - 1] {
+            assert_eq!(line.len(), 64, "every full line is 64 chars: {line:?}");
+        }
+
+        // And it round-trips back to the bytes vCenter gave us.
+        use base64::Engine as _;
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(body.concat())
+            .expect("body is valid base64");
+        assert_eq!(decoded, der);
+    }
+
+    /// A VM with no vTPM has no certificate, and an empty DER must not
+    /// produce a PEM block claiming to be one.
+    #[test]
+    fn an_exact_multiple_of_the_line_width_does_not_emit_a_blank_line() {
+        use super::super::der_to_pem;
+        // 48 bytes -> exactly 64 base64 characters -> exactly one line.
+        let der = vec![7u8; 48];
+        let pem = der_to_pem(&der);
+        assert!(!pem.contains("\n\n"), "{pem}");
+        let body: Vec<&str> = pem.lines().filter(|l| !l.starts_with("-----")).collect();
+        assert_eq!(body.len(), 1, "{pem}");
+        assert_eq!(body[0].len(), 64);
+    }
 }

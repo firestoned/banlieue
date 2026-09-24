@@ -648,6 +648,10 @@ mod tests {
                 address: "10.0.0.10".to_string(),
             }],
             observed_power_state: Some(PowerState::PoweredOn),
+            // ADR-0045: mirrored from the infra CR and on to a bound claim.
+            tpm_endorsement_certificates: vec![
+                "-----BEGIN CERTIFICATE-----\nstub\n-----END CERTIFICATE-----".to_string(),
+            ],
             conditions: Vec::new(),
             observed_generation: Some(5),
         };

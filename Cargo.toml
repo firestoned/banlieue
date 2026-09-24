@@ -73,6 +73,14 @@ getrandom = "0.3"
 # as base64 (ADR-0043). Well-known, actively maintained, decode-only use.
 base64 = "0.22"
 
+# Parsing vTPM endorsement key certificates (ADR-0045). A guest reports its own
+# EK certificate on libvirt, so banlieue must confirm the bytes really are an
+# X.509 certificate issued to the domain it defined before publishing them into
+# a status field consumers treat as one — a subject-CN read, not chain
+# validation (which is ADR-0049's trust bundle). rusticata/x509-parser: 167M
+# downloads, last commit 2026-08-06, parse-only and no_std-capable.
+x509-parser = "0.18"
+
 # vSphere (provider-vsphere only; pinned here so the long compile is cached at
 # workspace level and any future provider that needs it gets the same pin).
 # `default-features = false` turns OFF vim_rs's `default-client` feature so we use# it in Bring-Your-Own-Client mode (ADR-0008/0009): banlieue supplies the

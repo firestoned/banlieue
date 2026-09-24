@@ -1,7 +1,7 @@
 # anatomy.md
 
-> Auto-maintained by OpenWolf. Last scanned: 2026-09-23T13:23:25.605Z
-> Files: 471 tracked | Anatomy hits: 0 | Misses: 0
+> Auto-maintained by OpenWolf. Last scanned: 2026-09-23T21:46:51.084Z
+> Files: 473 tracked | Anatomy hits: 0 | Misses: 0
 
 ## ./
 
@@ -591,6 +591,7 @@
 - `0042-userdata-reference-authorization.md` — 0042 — A VirtualMachine may only reference userData its creator can read (~1508 tok)
 - `0043-guestready-installed-guest-signal.md` — 0043 — `GuestReady`: the installed guest announces itself (~2608 tok)
 - `0044-detach-install-media-after-install.md` — 0044 — Detach install media once the guest is installed (~1776 tok)
+- `0045-vtpm-endorsement-key-certificate.md` — 0045 — Publish the vTPM endorsement key certificate (~2601 tok)
 - `0046-virtualmachinepool.md` — 0046 — `VirtualMachinePool`: warm, never-reused VMs (~2009 tok)
 - `0047-virtualmachineclaim.md` — 0047 — `VirtualMachineClaim`: bound once, released by deletion (~2282 tok)
 - `0048-tpm-enabled-requires-deferred-install.md` — 0048 — `tpmEnabled` requires a `Deferred` (or `Manual`) install (~2508 tok)
@@ -715,6 +716,7 @@
 - `17-virtualmachine-libvirt.yaml` — SPDX-License-Identifier: Apache-2.0 (~1145 tok)
 - `18-virtualmachinepool.yaml` — SPDX-License-Identifier: Apache-2.0 (~1372 tok)
 - `19-virtualmachineclaim.yaml` — SPDX-License-Identifier: Apache-2.0 (~1008 tok)
+- `20-cloud-config-guest-ek-certificate.yaml` — SPDX-License-Identifier: Apache-2.0 (~1348 tok)
 
 ## scripts/
 

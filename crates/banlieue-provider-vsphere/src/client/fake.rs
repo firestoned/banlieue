@@ -243,6 +243,10 @@ pub struct FakeClient {
     power_state_calls: Mutex<Vec<String>>,
     destroyed: Mutex<Vec<String>>,
     tpm_attached: Mutex<Vec<String>>,
+    /// DER endorsement certificates the fake vCenter hands back for a VM
+    /// that has a vTPM (ADR-0045). Empty by default: vCenter may not have
+    /// issued one yet, which a reconciler must treat as "ask again".
+    tpm_endorsement_der: Mutex<Vec<Vec<u8>>>,
     grown_disks: Mutex<Vec<(String, u32)>>,
 }
 
@@ -258,8 +262,15 @@ impl FakeClient {
             power_state_calls: Mutex::new(Vec::new()),
             destroyed: Mutex::new(Vec::new()),
             tpm_attached: Mutex::new(Vec::new()),
+            tpm_endorsement_der: Mutex::new(Vec::new()),
             grown_disks: Mutex::new(Vec::new()),
         }
+    }
+
+    /// Make this fake vCenter issue `der` as the vTPM endorsement
+    /// certificate for every VM that has a vTPM attached.
+    pub fn set_tpm_endorsement_der(&self, der: Vec<Vec<u8>>) {
+        *self.tpm_endorsement_der.lock().expect("fake client lock") = der;
     }
 
     /// Every `clone_vm` call recorded so far, in call order.
@@ -449,6 +460,20 @@ impl VSphereClient for FakeClient {
             .expect("fake client lock")
             .push(vm_moref.to_string());
         Ok(())
+    }
+
+    async fn tpm_endorsement_certificates(&self, vm_moref: &str) -> Result<Vec<Vec<u8>>> {
+        // Only a VM that actually had a vTPM attached has a certificate —
+        // a fake that answered for any moref would be more permissive than
+        // vCenter and would hide a reconciler reading the wrong VM.
+        if !self.tpm_attached(vm_moref) {
+            return Ok(Vec::new());
+        }
+        Ok(self
+            .tpm_endorsement_der
+            .lock()
+            .expect("fake client lock")
+            .clone())
     }
 
     async fn grow_os_disk(&self, vm_moref: &str, size_gi_b: u32) -> Result<()> {

@@ -44,6 +44,10 @@ pub trait InfraMachineRead {
     /// Last-observed backend power state (ADR-0034); `None` until the
     /// infra CR's own reconciler has read it at least once.
     fn observed_power_state(&self) -> Option<&PowerState>;
+    /// PEM vTPM endorsement key certificate(s) this machine published
+    /// (ADR-0045). Empty for a machine with no vTPM, and until its guest
+    /// has produced one.
+    fn tpm_endorsement_certificates(&self) -> &[String];
 }
 
 impl InfraMachineRead for VSphereMachine {
@@ -82,6 +86,13 @@ impl InfraMachineRead for VSphereMachine {
         self.status
             .as_ref()
             .and_then(|s| s.observed_power_state.as_ref())
+    }
+
+    fn tpm_endorsement_certificates(&self) -> &[String] {
+        self.status
+            .as_ref()
+            .map(|s| s.tpm_endorsement_certificates.as_slice())
+            .unwrap_or(&[])
     }
 }
 
@@ -122,6 +133,13 @@ impl InfraMachineRead for LibvirtMachine {
             .as_ref()
             .and_then(|s| s.observed_power_state.as_ref())
     }
+
+    fn tpm_endorsement_certificates(&self) -> &[String] {
+        self.status
+            .as_ref()
+            .map(|s| s.tpm_endorsement_certificates.as_slice())
+            .unwrap_or(&[])
+    }
 }
 
 // Stable empty status fallbacks so accessors can return references even when
@@ -147,6 +165,10 @@ pub fn mirror_status_from_infra(
     next.initialization = infra.initialization().clone();
     next.addresses = infra.addresses().to_vec();
     next.observed_power_state = infra.observed_power_state().cloned();
+    // ADR-0045. Mirrored onward onto a bound VirtualMachineClaim, so a
+    // verifier gets the nonce and the anchor its quote must chain to from
+    // one GET.
+    next.tpm_endorsement_certificates = infra.tpm_endorsement_certificates().to_vec();
 
     // Mirror Ready → InfrastructureReady.
     let infra_ready = is_condition_true(infra.conditions(), condition_types::READY);

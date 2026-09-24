@@ -47,7 +47,7 @@ use banlieue_provider_sdk::reconciler::{requeue_default, requeue_long, requeue_o
 use banlieue_provider_sdk::ssa::FIELD_MANAGER_PROVIDER_LIBVIRT;
 use banlieue_provider_sdk::status::{condition_status, set_condition};
 
-use crate::guest::{GuestProbe, MARKER_PATH};
+use crate::guest::{EK_PATH, EkProbe, GuestProbe, MARKER_PATH, expected_ek_cn};
 use kube::{
     ResourceExt,
     api::{Api, Patch, PatchParams},
@@ -198,6 +198,11 @@ pub struct Observed {
     /// boot source — which must stay distinct from `Some(false)`, "attached
     /// and not yet ejected", because only the latter withholds `GuestReady`.
     pub install_media_detached: Option<bool>,
+    /// What the vTPM EK certificate probe found this pass (ADR-0045).
+    ///
+    /// Always `NotPublished` for a machine with `tpm_enabled: false` — there
+    /// is no vTPM, so nothing is ever asked of the guest.
+    pub ek: EkProbe,
 }
 
 /// Should this pass eject the install medium? (ADR-0044)
@@ -379,6 +384,18 @@ pub async fn converge(
         None
     };
 
+    // Read the vTPM EK certificate (ADR-0045). Only for a machine that has
+    // a vTPM, and only from a running domain: there is no certificate
+    // otherwise, and asking costs a round trip per reconcile against every
+    // VM that can never answer.
+    let ek = if spec.tpm_enabled && state.is_running() {
+        client
+            .read_ek_certificate(&domain, &spec.domain_name, &format_uuid(&domain.uuid))
+            .await
+    } else {
+        EkProbe::NotPublished
+    };
+
     Ok(Observed {
         domain,
         state,
@@ -386,6 +403,7 @@ pub async fn converge(
         address_source,
         guest,
         install_media_detached,
+        ek,
     })
 }
 
@@ -616,6 +634,15 @@ fn build_status(
     status.tpm_attached = machine.spec.tpm_enabled.then_some(true);
     status.guest_installed =
         sticky_guest_installed(status.guest_installed, observed.guest.is_installed());
+    // Sticky (ADR-0045): the certificate is read from tmpfs, so a guest that
+    // stops answering — or reboots before rewriting it — must not retract an
+    // anchor a verifier may already be checking a quote against. A mismatch
+    // never gets here: it is discarded at the probe.
+    if let EkProbe::Published(pem) = &observed.ek
+        && !status.tpm_endorsement_certificates.contains(pem)
+    {
+        status.tpm_endorsement_certificates.push(pem.clone());
+    }
     // Sticky for the same reason: an ejected ISO does not come back, and a
     // stopped domain has not become re-armed (ADR-0044).
     status.install_media_detached = sticky_install_media_detached(
@@ -663,8 +690,16 @@ fn build_status(
     // gone first. Ordering the eject before the condition is what stops a
     // pool binding a member whose installer is still attached — the pool has
     // no other readiness input, so it cannot tell the difference itself.
+    //
+    // ADR-0045 adds the second gate, for the same structural reason: a
+    // `tpmEnabled` member that cannot produce its EK certificate cannot be
+    // attested, so binding one would hand a subject a sandbox it can never
+    // prove anything about. Machines with no vTPM skip this entirely — they
+    // have no certificate to wait for and must not be stranded waiting.
     let installed = status.guest_installed == Some(true);
     let media_pending = status.install_media_detached == Some(false);
+    let ek_pending = machine.spec.tpm_enabled && status.tpm_endorsement_certificates.is_empty();
+    let ek_mismatch = observed.ek == EkProbe::Mismatch;
     if installed || observed.guest == GuestProbe::NotAnnounced {
         let (guest_status, guest_reason, guest_message) = if installed && media_pending {
             (
@@ -673,6 +708,28 @@ fn build_status(
                 "the installed guest announced itself, but its install medium \
                  has not been ejected yet (ADR-0044)"
                     .to_string(),
+            )
+        } else if installed && ek_mismatch {
+            (
+                condition_status::FALSE,
+                "TpmEndorsementMismatch",
+                format!(
+                    "the guest reported a vTPM endorsement certificate that is not \
+                     issued to this domain; expected subject CN {} (ADR-0045)",
+                    expected_ek_cn(
+                        &machine.spec.domain_name,
+                        &format_uuid(&observed.domain.uuid)
+                    )
+                ),
+            )
+        } else if installed && ek_pending {
+            (
+                condition_status::FALSE,
+                "TpmEndorsementPending",
+                format!(
+                    "the installed guest announced itself, but has not exported its \
+                     vTPM endorsement certificate to {EK_PATH} yet (ADR-0045)"
+                ),
             )
         } else if installed {
             (

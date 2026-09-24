@@ -344,6 +344,23 @@ libvirt-live-test: ## Run the libvirt protocol harness against a REAL libvirtd (
 	cargo test -p banlieue-libvirt --test live_libvirtd -- \
 	  --ignored --nocapture --test-threads=1 $$upload_skip $$vol_skip
 
+libvirt-ek-live-test: ## Read a REAL swtpm EK certificate out of a booted guest (ADR-0045; needs LIBVIRT_HOST / LIBVIRT_TLS_DIR / LIBVIRT_SOURCE_VOLUME + swtpm on the host)
+	@test -n "$$LIBVIRT_HOST" -a -n "$$LIBVIRT_SOURCE_VOLUME" || { \
+	  echo "LIBVIRT_HOST and LIBVIRT_SOURCE_VOLUME are required. Example:"; \
+	  echo "  LIBVIRT_HOST=bar.foo.io \\"; \
+	  echo "  LIBVIRT_TLS_DIR=~/.config/banlieue/<host>/libvirt \\"; \
+	  echo "  LIBVIRT_POOL=default \\"; \
+	  echo "  LIBVIRT_SOURCE_VOLUME=debian-13-genericcloud-amd64.qcow2 \\"; \
+	  echo "    make libvirt-ek-live-test"; \
+	  exit 1; }
+	@# Boots a real guest with a vTPM, waits for it to export its EK
+	@# certificate, and asserts the subject CN is <domain-name>:<domain-uuid>.
+	@# The host needs swtpm/swtpm-tools or the domain cannot start at all —
+	@# the test says so rather than blaming the read path.
+	@echo "Reading a real swtpm EK certificate on $$LIBVIRT_HOST ..."
+	cargo test -p banlieue-provider-libvirt --test live_ek -- \
+	  --ignored --nocapture --test-threads=1
+
 dev-oidc-up: ## Dev cluster that authenticates you with your real GitHub account (needs GITHUB_CLIENT_ID/SECRET)
 	@# GitHub is OAuth2, not OIDC — no ID token, no discovery document — so
 	@# kube-apiserver cannot trust it directly. Dex bridges the two. Full

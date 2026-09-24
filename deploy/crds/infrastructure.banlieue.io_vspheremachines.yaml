@@ -460,6 +460,18 @@ spec:
                   `observedPowerState` applies equally here).
                 nullable: true
                 type: boolean
+              tpmEndorsementCertificates:
+                description: |-
+                  PEM vTPM endorsement key certificate(s) issued by vCenter for this
+                  VM's vTPM (ADR-0045).
+
+                  Read host-side from `VirtualTpm.endorsementKeyCertificate` (DER,
+                  converted here) as the first guest step, so the certificate-to-VM
+                  binding is recorded while the VM is still something only banlieue has
+                  touched. Empty when `spec.tpmEnabled` is `false`.
+                items:
+                  type: string
+                type: array
               vmRef:
                 description: |-
                   VMware managed-object reference (vm-NNNN). Useful for operator

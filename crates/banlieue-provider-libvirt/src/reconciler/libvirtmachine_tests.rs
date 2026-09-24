@@ -934,8 +934,16 @@ mod tests {
             // ADR-0044 and the GuestReady tests below keep testing only the
             // ADR-0043 signal. The eject tests set it explicitly.
             install_media_detached: None,
+            // Neutral on ADR-0045 too: the shared spec has `tpm_enabled:
+            // false`, so there is no certificate to wait for.
+            ek: EkProbe::NotPublished,
         }
     }
+
+    /// A PEM certificate issued to the domain `observed_running` describes.
+    /// Only the shape matters to `build_status`; the parsing is proven in
+    /// `guest_tests.rs` against a real `swtpm_localca` certificate.
+    const EK_PEM: &str = "-----BEGIN CERTIFICATE-----\nstub\n-----END CERTIFICATE-----";
 
     fn find_condition(
         st: &LibvirtMachineStatus,
@@ -989,5 +997,113 @@ mod tests {
                 "{probe:?} with no address must still be polled soon"
             );
         }
+    }
+
+    // ------------------------------------------------------------------
+    // ADR-0045 — the EK certificate is published, and gates GuestReady
+    // ------------------------------------------------------------------
+
+    /// A machine with no vTPM has no certificate to wait for, so nothing
+    /// about ADR-0045 may change when it announces itself. This is the
+    /// regression that would otherwise strand every non-TPM member.
+    #[test]
+    fn a_machine_without_a_vtpm_is_unaffected() {
+        let machine = machine_cr();
+        assert!(!machine.spec.tpm_enabled, "fixture must have no vTPM");
+
+        let mut observed = observed_running();
+        observed.guest = GuestProbe::Installed;
+        observed.install_media_detached = Some(true);
+
+        let st = build_status(&machine, &observed, 1);
+        assert!(st.tpm_endorsement_certificates.is_empty());
+        let gr = find_condition(&st, condition_types::GUEST_READY).expect("GuestReady published");
+        assert_eq!(
+            gr.status,
+            condition_status::TRUE,
+            "a member with no vTPM must not wait for a certificate it can never have"
+        );
+    }
+
+    #[test]
+    fn a_reported_certificate_is_published() {
+        let mut machine = machine_cr();
+        machine.spec.tpm_enabled = true;
+
+        let mut observed = observed_running();
+        observed.guest = GuestProbe::Installed;
+        observed.install_media_detached = Some(true);
+        observed.ek = EkProbe::Published(EK_PEM.to_string());
+
+        let st = build_status(&machine, &observed, 1);
+        assert_eq!(st.tpm_endorsement_certificates, vec![EK_PEM.to_string()]);
+        let gr = find_condition(&st, condition_types::GUEST_READY).expect("GuestReady published");
+        assert_eq!(gr.status, condition_status::TRUE);
+    }
+
+    /// The ADR-0044 ordering argument applied to ADR-0045: a pool binds on
+    /// `GuestReady` and has no other readiness input, so a member that
+    /// announced itself but has not yet published its certificate must stay
+    /// unbindable — otherwise a claim binds something that cannot attest.
+    #[test]
+    fn a_tpm_member_without_a_certificate_is_not_guest_ready() {
+        let mut machine = machine_cr();
+        machine.spec.tpm_enabled = true;
+
+        let mut observed = observed_running();
+        observed.guest = GuestProbe::Installed;
+        observed.install_media_detached = Some(true);
+        observed.ek = EkProbe::NotPublished;
+
+        let st = build_status(&machine, &observed, 1);
+        assert!(st.tpm_endorsement_certificates.is_empty());
+        let gr = find_condition(&st, condition_types::GUEST_READY).expect("GuestReady published");
+        assert_eq!(gr.status, condition_status::FALSE);
+        assert_eq!(gr.reason, "TpmEndorsementPending");
+    }
+
+    /// A certificate naming another domain is discarded, not published, and
+    /// says so — this is the one outcome an operator must be able to see.
+    #[test]
+    fn a_mismatched_certificate_is_not_published() {
+        let mut machine = machine_cr();
+        machine.spec.tpm_enabled = true;
+
+        let mut observed = observed_running();
+        observed.guest = GuestProbe::Installed;
+        observed.install_media_detached = Some(true);
+        observed.ek = EkProbe::Mismatch;
+
+        let st = build_status(&machine, &observed, 1);
+        assert!(
+            st.tpm_endorsement_certificates.is_empty(),
+            "a certificate for another domain must never reach status"
+        );
+        let gr = find_condition(&st, condition_types::GUEST_READY).expect("GuestReady published");
+        assert_eq!(gr.status, condition_status::FALSE);
+        assert_eq!(gr.reason, "TpmEndorsementMismatch");
+    }
+
+    /// Sticky, like `guestInstalled` and `installMediaDetached`: the
+    /// certificate is read from tmpfs, so a guest that stops answering (or
+    /// reboots into something that has not written it yet) must not retract
+    /// an anchor a consumer may already be verifying against.
+    #[test]
+    fn a_published_certificate_is_not_retracted() {
+        let mut machine = machine_cr();
+        machine.spec.tpm_enabled = true;
+        machine.status = Some(LibvirtMachineStatus {
+            tpm_endorsement_certificates: vec![EK_PEM.to_string()],
+            guest_installed: Some(true),
+            install_media_detached: Some(true),
+            ..Default::default()
+        });
+
+        let mut observed = observed_running();
+        observed.guest = GuestProbe::AgentUnreachable;
+        observed.ek = EkProbe::NotPublished;
+
+        let st = build_status(&machine, &observed, 1);
+        assert_eq!(st.tpm_endorsement_certificates, vec![EK_PEM.to_string()]);
     }
 }

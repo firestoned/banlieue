@@ -1,0 +1,98 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# Export the guest's vTPM endorsement key certificate, so a verifier has
+# something to check an attestation quote against (ADR-0045).
+#
+# This is a `cloudConfigs` layer for a Deferred-mode VMImage (ADR-0037), not
+# a standalone object: add it to the image's layers and rebuild. It is the
+# companion to 16-cloud-config-guest-phase.yaml and belongs beside it — both
+# write into /run/banlieue, and on libvirt a `tpmEnabled` machine needs BOTH
+# before it will report GuestReady.
+#
+# WHY THE GUEST HAS TO DO THIS
+#
+#   On vSphere it does not: vCenter issues the EK certificate and exposes it
+#   host-side on the VM's VirtualTpm device, so banlieue reads it before the
+#   guest has even booted. This layer is a no-op there.
+#
+#   On libvirt there is no host-side copy to read. libvirt does ask swtpm to
+#   create the certificate (`swtpm_setup --createek --create-ek-cert
+#   --vmid <domain-name>:<domain-uuid>`), but swtpm_localca writes it to a
+#   temporary directory, swtpm_setup loads it into the vTPM's NVRAM, and the
+#   temporary directory is deleted. /var/lib/swtpm-localca/ keeps the ISSUER
+#   key and a serial counter — not the certificates it issued — and no
+#   libvirt RPC exposes it.
+#
+#   So the only readable copy is inside the guest, at NV index 0x01c00002.
+#   The guest exports it; banlieue reads the file.
+#
+# WHY banlieue DOES NOT JUST RUN tpm2_nvread ITSELF
+#
+#   It would have to do that over `guest-exec`, which is host-to-guest
+#   arbitrary code execution. banlieue never calls it. Every guest read it
+#   performs is `guest-file-open` at an explicit `mode: "r"` — a provider
+#   that can only ever read guest files cannot be turned into a remote shell
+#   by a compromised controller. Fetching a public key is not worth that
+#   trade (ADR-0045 Decision 2).
+#
+# IS A GUEST-REPORTED CERTIFICATE WORTH ANYTHING?
+#
+#   Yes, because an EK certificate is a PUBLIC KEY. A guest that reports
+#   some other VM's certificate does not thereby obtain that VM's EK private
+#   key, which never leaves the vTPM that generated it — so it cannot
+#   certify an attestation key under it, which is exactly the step ADR-0049
+#   requires. The lie fails the check it was told to pass.
+#
+#   banlieue also refuses a certificate whose subject CN is not
+#   `<domain-name>:<domain-uuid>` — both values it assigned itself — so the
+#   substitution is caught before any cryptography runs.
+#
+# REQUIREMENT: the image needs a TPM client (`tpm2-tools` or equivalent) and
+# `qemu-guest-agent`. Without them the file never appears, the machine sits
+# at GuestReady=False/TpmEndorsementPending, and the pool says so rather
+# than binding a member that cannot attest.
+---
+stages:
+  boot:
+    # Same guard as the phase marker: only the INSTALLED system should be
+    # exporting anything. /run is tmpfs, so this is re-asserted every boot
+    # and a stale certificate cannot survive a power cycle.
+    - name: banlieue-guest-ek-certificate
+      if: '[ -f /run/cos/active_mode ] || [ -f /run/cos/passive_mode ]'
+      commands:
+        - mkdir -p /run/banlieue
+        # 0x01c00002 is the RSA EK certificate index from the TCG EK
+        # Credential Profile — the one swtpm's --create-ek-cert populates.
+        - tpm2_nvread 0x01c00002 -o /run/banlieue/ek.der
+        - openssl x509 -inform DER -in /run/banlieue/ek.der -out /run/banlieue/ek.pem
+        - rm -f /run/banlieue/ek.der
+#
+# USING IT
+#
+#   1. Add this layer AND 16-cloud-config-guest-phase.yaml to a Deferred
+#      VMImage's `spec.cloudConfigs` and rebuild.
+#   2. Pair it with a VMClass setting `tpmEnabled: true`
+#      (12-vmclass-tpm-encrypted.yaml) and a Deferred image
+#      (13-vmimage-kairos-deferred-install-tpm.yaml) — ADR-0048 rejects
+#      `tpmEnabled` with an Immediate image before scheduling.
+#   3. Watch a member publish it:
+#
+#        kubectl get libvirtmachine <member> \
+#          -o jsonpath='{.status.tpmEndorsementCertificates[0]}{"\n"}'
+#
+#      and, once a claim binds it, straight off the claim:
+#
+#        kubectl get virtualmachineclaim <claim> \
+#          -o jsonpath='{.status.tpmEndorsementCertificates[0]}{"\n"}'
+#
+#   4. Confirm the binding it asserts:
+#
+#        kubectl get virtualmachineclaim <claim> \
+#          -o jsonpath='{.status.tpmEndorsementCertificates[0]}' \
+#          | openssl x509 -noout -subject -issuer
+#
+#      The subject CN is `<domain-name>:<domain-uuid>`; the issuer is the
+#      hypervisor host's own swtpm-localca. That issuer is the trust anchor
+#      an administrator declares in `Provider.spec.attestation.ekTrustBundle`
+#      once ADR-0049 lands — it is per host, and deliberately not discovered.

@@ -1,5 +1,137 @@
 # Changelog
 
+## [2026-09-23 16:40] - ADR-0045: publish the vTPM endorsement key certificate
+
+**Author:** Erick Bourgeois
+
+Roadmap 17 phase A5 — the item that gated phase F. Full ADD cycle: ADR -> CALM
+-> TDD -> implement -> docs -> threat model.
+
+### What gated this, and what unblocked it
+A5 needed a libvirt host with working swtpm. One is now available, and the
+design question it answered changed the shape of the ADR.
+
+### The roadmap's stated design does not exist
+Roadmap 17 phase D said "EK certificates: read from swtpm's
+`swtpm_localca`-issued cert", which implies a host-side read. Established
+empirically against a real host (libvirt 11.3.0, swtpm 0.7.1):
+
+- libvirt *does* pass `--createek --create-ek-cert --create-platform-cert
+  --lock-nvram --vmid` to `swtpm_setup`, so every emulator vTPM gets a
+  certificate issued by the host's `swtpm_localca`.
+- `swtpm_localca` writes it to a temporary directory, `swtpm_setup` loads it
+  into the vTPM's NVRAM, and **the temporary directory is deleted**. Nothing
+  persists it; `/var/lib/swtpm-localca/` keeps the issuer key and a serial
+  counter, not the certificates it issued.
+- No libvirt RPC exposes it, and banlieue speaks only libvirt RPC over mTLS
+  (ADR-0011).
+
+So on libvirt the only readable copy is inside the guest, at NV index
+`0x01c00002`. vSphere is the opposite: vCenter issues it and exposes it
+host-side, pre-boot. The two backends are asymmetric and cannot be made
+symmetric — that asymmetry is now written down rather than assumed away.
+
+### Why a guest-reported certificate is still sound
+An EK certificate is a public key. A guest that reports another member's
+certificate does not thereby obtain that member's EK private key, and
+ADR-0049's activation requires exactly that key — so the substitution fails
+the step it was made to pass. libvirt also passes
+`--vmid <domain-name>:<domain-uuid>`, which lands in the subject CN, so the
+substitution is caught one step earlier and without cryptography.
+
+### banlieue does not use `guest-exec`
+Reading the NV index is a `tpm2_nvread`, and the obvious way to run it is
+`guest-exec` — which is host-to-guest arbitrary code execution. Acquiring an
+RCE primitive into every sandbox to fetch a public key is a bad trade, and it
+would reverse the deliberate read-only property of the ADR-0043 path
+(`guest-file-open` with an explicit `mode: "r"`). Instead the guest writes the
+certificate to `/run/banlieue/ek.pem`, beside the phase marker and on the same
+tmpfs, and banlieue reads it with the existing read-only path.
+
+### Added
+- `docs/adr/0045-vtpm-endorsement-key-certificate.md` (Accepted).
+- `docs/architecture/calm/architecture.json`: new
+  `flow-publish-vtpm-ek-certificate` with an
+  `ek-certificate-is-not-a-trust-decision` control; ADR registered; the
+  attestation flow no longer says ADR-0045 is unlanded. `make calm-validate`
+  clean, `make calm-diagrams` regenerated.
+- `crates/banlieue-provider-libvirt/src/guest.rs`: `EK_PATH`, `EK_READ_MAX`,
+  `parse_ek_pem`, `parse_ek_pem_str`, `expected_ek_cn`, `ek_cn_matches`,
+  `EkProbe`, `read_ek_certificate`.
+- `crates/banlieue-controller/src/reconciler/claim_plan.rs`:
+  `MirroredMemberState` + `mirrored_member_state`, so what a bound claim
+  mirrors is a pure function and testable without a cluster.
+- `crates/banlieue-provider-vsphere/src/reconciler/vspheremachine.rs`:
+  `der_to_pem` (RFC 7468 framing, 64-char lines).
+- `crates/banlieue-provider-libvirt/tests/live_ek.rs` + `make
+  libvirt-ek-live-test`: boots a real guest with a vTPM and asserts the
+  certificate's subject CN is `<domain-name>:<domain-uuid>`. **Verified green
+  against a real libvirtd on 2026-09-23** (1 passed, 121s). If libvirt ever
+  changes what it passes as `--vmid`, every offline test still passes and this
+  one fails — which is why it exists.
+- `examples/20-cloud-config-guest-ek-certificate.yaml`: the guest-side half of
+  Decision 2, beside `16-cloud-config-guest-phase.yaml`.
+
+### Changed
+- `crates/banlieue-api/src/`: `tpmEndorsementCertificates` added to
+  `LibvirtMachineStatus`, `VSphereMachineStatus` and `VirtualMachineStatus`.
+  `VirtualMachineClaimStatus` already had the field reserved for this.
+- `crates/banlieue-provider-libvirt/src/reconciler/libvirtmachine.rs`:
+  `Observed` gains `ek`; the certificate is published stickily, and for a
+  `tpmEnabled` machine it **gates `GuestReady`** — the same ordering argument
+  ADR-0044 makes for install media. Reasons `TpmEndorsementPending` and
+  `TpmEndorsementMismatch`. Machines with no vTPM are untouched.
+- `crates/banlieue-provider-libvirt/src/guest.rs`: `guest_file_read_cmd` now
+  takes an explicit `count` — a marker and a certificate differ by an order of
+  magnitude and one cap cannot serve both.
+- `crates/banlieue-controller/src/reconciler/status_mirror.rs`: new
+  `InfraMachineRead::tpm_endorsement_certificates`, mirrored onto the parent.
+- `crates/banlieue-controller/src/reconciler/claim.rs`: `hold` mirrors the
+  certificate onto a bound claim, replacing the "will be mirrored here once
+  ADR-0045 lands" placeholder.
+- `crates/banlieue-provider-vsphere/src/client/`: new
+  `tpm_endorsement_certificates` on the trait, the vim client and the fake.
+  The fake applies the same subject-CN and parse gates the real client does,
+  per `rules/testing.md` — a fake more permissive than the real thing hides
+  bugs.
+
+### Also
+- `parse_ek_pem_str` returns **only the first PEM block**, not the caller's
+  whole buffer. Found reviewing this change: a guest could append a second
+  block or trailing junk after a valid certificate and have it ride along into
+  a status field consumers treat as a certificate. Regression test:
+  `trailing_bytes_after_a_certificate_are_not_published`.
+- `docs/src/guides/virtualmachine-pools.md`: a `tpmEnabled` class on libvirt
+  needs the new layer and `tpm2-tools`, or its members sit at
+  `GuestReady=False/TpmEndorsementPending` and never join the warm set.
+- `docs/adr/0049-attestation-trust-anchors.md`: its ADR-0045 link pointed at a
+  directory because the file did not exist; the dependency note now records
+  that it is satisfied, and flags the per-backend provenance difference a
+  verifier should know about.
+- `.github/community/17-ephemeral-vm-pools.md`: A5 and F rows updated, phase
+  D's incorrect "read from swtpm's cert" line struck through and corrected,
+  and the "ADRs 0043 to 0048 accepted" checkbox ticked — 0045 was the last one
+  outstanding.
+
+### Dependency
+- `x509-parser` 0.18 (workspace). banlieue must confirm guest-reported bytes
+  really are an X.509 certificate issued to the domain it defined before
+  publishing them into a status field consumers treat as one. Subject-CN read
+  only — chain validation is ADR-0049's trust bundle. rusticata, 167M
+  downloads, last commit 2026-08-06.
+
+### Why
+Roadmap 17's stop condition requires a bound claim to publish its member's EK
+certificate, and ADR-0049 (Proposed) was blocked on it: without the anchor
+there is nothing to verify an attestation quote against, and the handshake
+degrades to trusting whatever answered on the port.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (CRD schema gains a status field)
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-09-23 14:20] - ADR-0044: eject install media before GuestReady (libvirt)
 
 **Author:** Erick Bourgeois
