@@ -1,6 +1,6 @@
 # anatomy.md
 
-> Auto-maintained by OpenWolf. Last scanned: 2026-09-24T16:33:00.850Z
+> Auto-maintained by OpenWolf. Last scanned: 2026-09-24T16:00:46.762Z
 > Files: 477 tracked | Anatomy hits: 0 | Misses: 0
 
 ## ./
@@ -16,12 +16,12 @@
 - `Makefile` — SPDX-License-Identifier: Apache-2.0 (~18334 tok)
 - `osv-scanner.toml` — SPDX-License-Identifier: Apache-2.0 (~355 tok)
 - `README.md` — Project documentation (~3300 tok)
-- `ROADMAPS.md` — Roadmaps (~2566 tok)
+- `ROADMAPS.md` — Roadmaps (~3503 tok)
 - `SECURITY.md` — Security Policy (~382 tok)
 
 ## .claude/
 
-- `CHANGELOG.md` — Changelog (~166664 tok)
+- `CHANGELOG.md` — Changelog (~166508 tok)
 
 ## .clusterfuzzlite/
 
@@ -66,7 +66,8 @@
 - `15-vsphere-disk-image-import.md` — 15: vSphere disk-image import (raw and VMDK), alongside the ISO path (~4683 tok)
 - `16-scorecard-remediation.md` — 60 — OSSF Scorecard remediation (~2262 tok)
 - `17-ephemeral-vm-pools.md` — 17: Ephemeral, single-use VM pools (AI agent sandboxes) (~10147 tok)
-- `README.md` — Project documentation (~1210 tok)
+- `18-split-image-fast-clone.md` — 18: Split-image fast clone — verified base + per-VM sealed volume (~4187 tok)
+- `README.md` — Project documentation (~1317 tok)
 
 ## .github/requirements/
 
