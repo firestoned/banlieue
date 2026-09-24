@@ -9,7 +9,8 @@
 //! ([`super::pool_plan`]), and for the same reason: a state machine that
 //! needs a cluster to exercise is a state machine nobody exercises.
 
-use banlieue_api::banlieue::pool_condition_reasons;
+use banlieue_api::banlieue::{VirtualMachine, pool_condition_reasons};
+use banlieue_api::common::MachineAddress;
 use k8s_openapi::jiff::Timestamp;
 
 use super::pool_plan::{MemberPhase, MemberView};
@@ -186,6 +187,33 @@ pub fn wait_reason(state: &PoolWaitState) -> (&'static str, String) {
 #[must_use]
 pub fn is_expired(expires_at: Timestamp, now: Timestamp) -> bool {
     now >= expires_at
+}
+
+/// What a bound claim mirrors from its member, so a consumer needs one GET
+/// rather than two (ADR-0047, ADR-0045).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MirroredMemberState {
+    /// The member's addresses.
+    pub addresses: Vec<MachineAddress>,
+    /// The member's vTPM EK certificate(s) — the anchor a verifier checks an
+    /// attestation quote against (ADR-0045). Empty for a member with no
+    /// vTPM, which is every member of a pool that does not need attestation.
+    pub tpm_endorsement_certificates: Vec<String>,
+}
+
+/// Project a bound member's observable state onto its claim.
+///
+/// Pure so the mirror is testable without a cluster — `hold` in
+/// [`super::claim`] does nothing but apply this.
+#[must_use]
+pub fn mirrored_member_state(vm: &VirtualMachine) -> MirroredMemberState {
+    let Some(status) = vm.status.as_ref() else {
+        return MirroredMemberState::default();
+    };
+    MirroredMemberState {
+        addresses: status.addresses.clone(),
+        tpm_endorsement_certificates: status.tpm_endorsement_certificates.clone(),
+    }
 }
 
 #[cfg(test)]

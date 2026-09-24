@@ -152,7 +152,9 @@ pub struct VirtualMachineClaimStatus {
     /// PEM vTPM endorsement key certificate(s) of the bound member, mirrored
     /// from the infra CR (ADR-0045). Lets a verifier check that an
     /// attestation quote comes from the VM banlieue itself created for this
-    /// claim. Stays empty until ADR-0045 publishes them.
+    /// claim. Populated since ADR-0045, from the bound member's
+    /// `VirtualMachine.status`, which mirrors its infrastructure CR. Empty
+    /// for a member with no vTPM.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tpm_endorsement_certificates: Vec<String>,
     /// Random, single-use, *not secret*. The consumer's attestation exchange

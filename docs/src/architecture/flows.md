@@ -186,7 +186,7 @@ flowchart TD
 
 ## Deliver a subject&#x27;s credential to its sandbox (PROPOSED — not implemented)
 
-The unanswered half of the claim model: a claim deliberately carries no credential, so how does the subject's token reach the guest and what convinces the guest it is genuine? ADR-0049 is Proposed and nothing here ships; it is modelled because banlieue's side of the contract -- subject.issuer, subject.id, status.nonce, and the mirrored EK certificate -- is already implemented and would otherwise look like three fields nobody uses. ADR-0045 (EK certificates) is a hard dependency and is itself not landed: without it there is nothing to verify a quote against, and the handshake degrades to trusting whatever answered on the port.
+The unanswered half of the claim model: a claim deliberately carries no credential, so how does the subject's token reach the guest and what convinces the guest it is genuine? ADR-0049 is Proposed and nothing here ships; it is modelled because banlieue's side of the contract -- subject.issuer, subject.id, status.nonce, and the mirrored EK certificate -- is already implemented. ADR-0045 landed 2026-09-23, so the anchor a quote is verified against now exists on the claim; what remains for ADR-0049 is the per-backend trust bundle (Provider.spec.attestation.ekTrustBundle) and the in-guest agent.
 
 ```mermaid
 flowchart TD
@@ -198,4 +198,19 @@ flowchart TD
 ```
 
 <sub>Source: flow `flow-attest-and-deliver-credential` in `architecture.json`.</sub>
+
+
+## Publish a sandbox&#x27;s vTPM endorsement key certificate
+
+ADR-0045. A quote is only as good as the certificate it is checked against, so every tpmEnabled member publishes its vTPM EK certificate before it is bindable. The two backends are not symmetric and cannot be: vCenter issues the certificate and exposes it host-side pre-boot, while on libvirt swtpm_localca issues it into the vTPM's NVRAM and persists it nowhere -- no libvirt RPC and no host file holds a copy -- so the only readable location is inside the guest. banlieue therefore reads it the way it reads ADR-0043's phase marker: read-only, over guest-file-open/guest-file-read, never guest-exec, which would be a host-to-guest RCE primitive acquired to fetch a public key.
+
+```mermaid
+flowchart TD
+    t1["1. The installed guest writes its EK certificate as PEM to /run/banlieue/ek.pem, beside the phase marker and on the same tmpfs, so a stale assertion cannot survive a power cycle. The provider reads it through qemu-guest-agent with the ADR-0043 read path."]
+    t2["2. The provider checks the certificate's subject CN against <domain-name>:<domain-uuid> -- both values banlieue itself assigned -- and patches LibvirtMachineStatus.tpmEndorsementCertificates. A mismatch is discarded, not published, and surfaces as Ready=False/TpmEndorsementMismatch. For a tpmEnabled machine this gates GuestReady, exactly as ADR-0044 gates it on media detach, so a pool can never bind a member that cannot attest."]
+    t3["3. VirtualMachineStatus mirrors the infra CR and the claim mirrors the bound member, so a verifier needs one GET to obtain both status.nonce and the certificate its quote must chain to."]
+    t1 --> t2 --> t3
+```
+
+<sub>Source: flow `flow-publish-vtpm-ek-certificate` in `architecture.json`.</sub>
 

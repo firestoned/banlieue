@@ -36,7 +36,8 @@ use serde_json::json;
 use tracing::{info, warn};
 
 use super::claim_plan::{
-    BoundMember, ClaimInputs, ClaimStep, PoolWaitState, expiry, is_expired, next_step, wait_reason,
+    BoundMember, ClaimInputs, ClaimStep, PoolWaitState, expiry, is_expired, mirrored_member_state,
+    next_step, wait_reason,
 };
 use super::pool::member_view;
 use super::pool_plan::MemberView;
@@ -300,14 +301,10 @@ async fn hold(
     vm: &VirtualMachine,
     generation: i64,
 ) -> Result<Action> {
-    let addresses = vm
-        .status
-        .as_ref()
-        .map(|s| s.addresses.clone())
-        .unwrap_or_default();
-    // `tpmEndorsementCertificates` will be mirrored here from the member's
-    // infra CR once ADR-0045 publishes them; the field exists so that
-    // landing it needs no second CRD change.
+    // ADR-0045: the certificate travels with the addresses, so one GET of a
+    // bound claim yields both the nonce and the anchor a quote must chain to
+    // (ADR-0049). Empty for a member with no vTPM.
+    let mirrored = mirrored_member_state(vm);
     patch_status(
         claim_api,
         name,
@@ -315,7 +312,10 @@ async fn hold(
         pool_condition_types::BOUND,
         format!("bound to {member}"),
         generation,
-        json!({ "addresses": addresses }),
+        json!({
+            "addresses": mirrored.addresses,
+            "tpmEndorsementCertificates": mirrored.tpm_endorsement_certificates,
+        }),
     )
     .await?;
     Ok(requeue_default())

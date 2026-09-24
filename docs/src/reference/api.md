@@ -750,6 +750,7 @@ it owns, mirrored provisioning / address / power state, and conditions.
 | `observedGeneration` | integer |  |  |
 | `observedPowerState` | string |  | Observed power state from the provider. Allowed: `PoweredOn`, `PoweredOff`, `Suspended`, `null`. |
 | `scheduled` | object |  | Current scheduling decision. Absent until first successful schedule. |
+| `tpmEndorsementCertificates` | string[] |  | Mirrored from the infra CR's `status.tpmEndorsementCertificates` (ADR-0045). The anchor a verifier checks an attestation quote against; mirrored onward onto a bound `VirtualMachineClaim` so a consumer needs one GET. |
 
 #### `.status.addresses[]`
 
@@ -1235,7 +1236,7 @@ the member as annotations, and never interpreted.
 | `nonce` | string |  | Random, single-use, *not secret*. The consumer's attestation exchange must echo it so a quote cannot be replayed across claims. |
 | `observedGeneration` | integer |  |  |
 | `phase` | string |  | Where a claim is in its one-way lifecycle. Allowed: `Pending`, `Bound`, `Releasing`, `Failed`. |
-| `tpmEndorsementCertificates` | string[] |  | PEM vTPM endorsement key certificate(s) of the bound member, mirrored from the infra CR (ADR-0045). Lets a verifier check that an attestation quote comes from the VM banlieue itself created for this claim. Stays empty until ADR-0045 publishes them. |
+| `tpmEndorsementCertificates` | string[] |  | PEM vTPM endorsement key certificate(s) of the bound member, mirrored from the infra CR (ADR-0045). Lets a verifier check that an attestation quote comes from the VM banlieue itself created for this claim. Populated since ADR-0045, from the bound member's `VirtualMachine.status`, which mirrors its infrastructure CR. Empty for a member with no vTPM. |
 | `virtualMachineRef` | object |  | The bound member. Set once, at bind time, and never rewritten. |
 
 #### `.status.addresses[]`
@@ -1872,6 +1873,7 @@ InfraMachine status contract (plus libvirt-specific diagnostics).
 | `observedGeneration` | integer |  |  |
 | `observedPowerState` | string |  | The domain's last observed run state, mapped onto banlieue's backend-neutral [`PowerState`] (ADR-0034). The hypervisor's view, not a guest-OS-boot signal. Not part of the CAPI contract; mirrored onto the parent `VirtualMachine`'s `status.observedPowerState`. Allowed: `PoweredOn`, `PoweredOff`, `Suspended`, `null`. |
 | `tpmAttached` | boolean |  | Whether an emulated TPM was attached, when `spec.tpmEnabled` is set (ADR-0039). `None` when `tpmEnabled` is `false` or the attach has not run yet. A failed attach surfaces through the conditions rather than a dedicated `VirtualMachine`-level mirror. |
+| `tpmEndorsementCertificates` | string[] |  | PEM vTPM endorsement key certificate(s) reported by the guest and validated against this domain (ADR-0045). |
 
 #### `.status.addresses[]`
 
@@ -2371,6 +2373,7 @@ status contract (plus a few vSphere-specific diagnostics).
 | `observedGeneration` | integer |  |  |
 | `observedPowerState` | string |  | The backend VM's actual power state, as last observed via `VirtualMachine.runtime.powerState` (ADR-0034) — the hypervisor's view, available immediately on power-on, not a guest-OS-boot signal. Absent until first observed. Not part of the CAPI contract; mirrored onto the parent `VirtualMachine`'s own `status.observedPowerState`. Allowed: `PoweredOn`, `PoweredOff`, `Suspended`, `null`. |
 | `tpmAttached` | boolean |  | Whether a vTPM device was successfully attached, when `spec.tpmEnabled` is set (ADR-0039). `None` when `tpmEnabled` is `false` (nothing was ever attempted) or the attach hasn't run yet. Not part of the CAPI contract; a failed attach surfaces through the `Ready`/`InfrastructureReady` conditions rather than a dedicated `VirtualMachine`-level mirror (ADR-0034's reasoning for `observedPowerState` applies equally here). |
+| `tpmEndorsementCertificates` | string[] |  | PEM vTPM endorsement key certificate(s) issued by vCenter for this VM's vTPM (ADR-0045). |
 | `vmRef` | string |  | VMware managed-object reference (vm-NNNN). Useful for operator diagnostics. Not part of the CAPI contract. |
 
 #### `.status.addresses[]`

@@ -85,16 +85,33 @@ pub async fn server_side_apply<K: Resource>(
 
 ### Tasks
 
-- [ ] Create the crate skeleton with the modules above.
-- [ ] Implement `client::build_client()` that respects `KUBECONFIG`,
-      in-cluster config, and a `--kubeconfig` CLI flag.
-- [ ] Implement condition helpers using
-      `banlieue_api::common::condition_types` / `condition_reasons`.
-- [ ] Implement finalizer helpers with patch-based add/remove.
-- [ ] Implement SSA helper with `PatchParams::apply(field_manager).force()`.
-- [ ] Implement leader election using a `coordination.k8s.io/Lease` —
-      run reconcilers only while leader.
-- [ ] Unit tests for condition helpers (idempotency, type uniqueness).
+> **Status (audited against the tree 2026-09-24): complete.** The crate
+> outgrew the layout above — it also carries `bootstrap.rs` (tracing, health
+> server, shutdown), `ca_bundle.rs`, `guestdata.rs`, `osartifact.rs`,
+> `pem.rs` and `scheduling.rs`, all added by later phases.
+
+- [x] ~~Create the crate skeleton with the modules above.~~ **Done** —
+      `crates/banlieue-provider-sdk/src/`.
+- [x] ~~Implement `client::build_client()` that respects `KUBECONFIG`,
+      in-cluster config, and a `--kubeconfig` CLI flag.~~ **Done** —
+      `client.rs` tries in-cluster then `Config::infer()` (which honours
+      `KUBECONFIG`), and sets read/write timeouts so a stuck apiserver
+      cannot hang reconciliation. The `--kubeconfig` flag was dropped:
+      `KUBECONFIG` covers it.
+- [x] ~~Implement condition helpers using
+      `banlieue_api::common::condition_types` / `condition_reasons`.~~
+      **Done** — `status.rs`.
+- [x] ~~Implement finalizer helpers with patch-based add/remove.~~
+      **Done** — `finalizer.rs`.
+- [x] ~~Implement SSA helper with `PatchParams::apply(field_manager).force()`.~~
+      **Done** — `ssa.rs`.
+- [x] ~~Implement leader election using a `coordination.k8s.io/Lease` —
+      run reconcilers only while leader.~~ **Done** — `leader.rs`
+      (`acquire_or_wait` + `renew_forever`); every binary gates its
+      controllers on it unless `--no-leader-elect`.
+- [x] ~~Unit tests for condition helpers (idempotency, type uniqueness).~~
+      **Done** — `status_tests.rs`, alongside `finalizer_tests.rs`,
+      `leader_tests.rs`, `reconciler_tests.rs` and the rest.
 
 ### Definition of done
 
@@ -271,35 +288,63 @@ banlieue-controller [--kubeconfig PATH]
 
 ### Tasks
 
-- [ ] Scaffold the crate, wire workspace.
-- [ ] Implement `context.rs` with shared `Arc<Context>` containing
-      kube client and lister caches.
-- [ ] Implement `reconciler/scheduler.rs` as a pure module with
-      heavy unit-test coverage.
-- [ ] Implement `reconciler/infra.rs` to SSA a `VSphereMachine` from
-      a decision (other provider kinds: TODO, added in 1C/1D).
-- [ ] Implement `reconciler/status_mirror.rs`.
-- [ ] Implement `reconciler/virtualmachine.rs` end-to-end.
-- [ ] Implement deletion finalizer flow.
-- [ ] Implement `migration/` recreate-only path.
-- [ ] Implement `image_watcher.rs` (watches VMImage, requeues affected
-      VMs when image readiness flips).
-- [ ] Wire `main.rs` with tracing, leader election, signal handling
-      (SIGTERM, SIGINT).
-- [ ] Dockerfile (multi-stage) → distroless image.
-- [ ] Helm-less raw manifest under `deploy/controller/`:
-      Deployment + ServiceAccount + ClusterRole + ClusterRoleBinding.
-- [ ] RBAC: full access to `banlieue.io/*`, `infrastructure.banlieue.io/*`,
-      read on Secrets in watched namespaces, write on Events.
+> **Status (audited against the tree 2026-09-24): complete.** The
+> reconciler directory has since grown `pool.rs`/`pool_plan.rs` (ADR-0046),
+> `claim.rs`/`claim_plan.rs` (ADR-0047) and `vsphere_cluster.rs`; those
+> belong to roadmaps 17 and 05, not to this phase.
+
+- [x] ~~Scaffold the crate, wire workspace.~~ **Done** —
+      `crates/banlieue-controller/`.
+- [x] ~~Implement `context.rs` with shared `Arc<Context>` containing
+      kube client and lister caches.~~ **Done**.
+- [x] ~~Implement `reconciler/scheduler.rs` as a pure module with
+      heavy unit-test coverage.~~ **Done** — `scheduler.rs` +
+      `scheduler_tests.rs`.
+- [x] ~~Implement `reconciler/infra.rs` to SSA a `VSphereMachine` from
+      a decision (other provider kinds: TODO, added in 1C/1D).~~ **Done**
+      — and the 1D kind landed with it: `infra.rs` now builds both
+      `VSphereMachine` and `LibvirtMachine` (ADR-0050).
+- [x] ~~Implement `reconciler/status_mirror.rs`.~~ **Done**.
+- [x] ~~Implement `reconciler/virtualmachine.rs` end-to-end.~~ **Done**.
+- [x] ~~Implement deletion finalizer flow.~~ **Done** —
+      `banlieue.io/virtualmachine`, dropped only once every infra CR is
+      gone (`virtualmachine.rs`).
+- [x] ~~Implement `migration/` recreate-only path.~~ **Done** —
+      `reconciler/migration.rs`. Graceful live migration is roadmap 14
+      (ADR-0036), not this phase.
+- [x] ~~Implement `image_watcher.rs` (watches VMImage, requeues affected
+      VMs when image readiness flips).~~ **Done** — landed as
+      `reconciler/vmimage.rs` rather than under that name.
+- [x] ~~Wire `main.rs` with tracing, leader election, signal handling
+      (SIGTERM, SIGINT).~~ **Done** — as `app.rs`, dispatched from the
+      single `banlieue` binary (ADR-0004) instead of a per-crate `main.rs`.
+- [x] ~~Dockerfile (multi-stage) → distroless image.~~ **Done** — the
+      root `Dockerfile` (distroless, digest-pinned) plus
+      `Dockerfile.chainguard` as the second published variant.
+- [x] ~~Helm-less raw manifest under `deploy/controller/`:
+      Deployment + ServiceAccount + ClusterRole + ClusterRoleBinding.~~
+      **Done** — `deploy/controller/{namespace,deployment,configmap,service}.yaml`
+      + `deploy/controller/rbac/`.
+- [x] ~~RBAC: full access to `banlieue.io/*`, `infrastructure.banlieue.io/*`,
+      read on Secrets in watched namespaces, write on Events.~~ **Done** —
+      `deploy/controller/rbac/`, and the same files are `include_str!`-embedded
+      by `banlieue bootstrap` so a CLI install grants exactly these.
 
 ### Tests
 
-- [ ] `scheduler.rs` unit tests for each filter step.
-- [ ] `status_mirror.rs` table-driven tests with fixtures of infra CR
-      status → expected parent status.
-- [ ] Integration test: create a Provider with fake failure domains,
+- [x] ~~`scheduler.rs` unit tests for each filter step.~~ **Done** —
+      `scheduler_tests.rs`.
+- [x] ~~`status_mirror.rs` table-driven tests with fixtures of infra CR
+      status → expected parent status.~~ **Done** — `status_mirror_tests.rs`.
+- [x] ~~Integration test: create a Provider with fake failure domains,
       create a VirtualMachine, assert that a VSphereMachine is created
-      with the expected fields.
+      with the expected fields.~~ **Done, in a different shape** — the
+      VM → infra-CR path is asserted live rather than against fake domains:
+      `banlieue-controller/tests/live_claim.rs` (apiserver semantics against
+      a real cluster) and `banlieue-provider-libvirt/tests/e2e_pool_claim.rs`
+      (`make pool-claim-e2e`: pool → `VirtualMachine`s → `LibvirtMachine`s →
+      real domains). The vSphere half was verified against real vCenter on
+      2026-09-23 (a 2-member pool to `Warm=True`).
 
 ### Definition of done
 

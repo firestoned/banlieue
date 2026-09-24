@@ -93,7 +93,9 @@ Concrete tasks:
 ## 4.3 Observability
 
 - [ ] **Metrics**: implement `controller-runtime`-style metrics in
-      every controller via `prometheus-client`:
+      every controller via `prometheus-client`. **Not started** — every
+      binary already accepts `--metrics-port` (`BANLIEUE_METRICS_PORT`),
+      but the port is reserved, not served:
   - `banlieue_reconcile_total{controller,result}`
   - `banlieue_reconcile_duration_seconds{controller}`
   - `banlieue_reconcile_errors_total{controller,kind}`
@@ -102,41 +104,91 @@ Concrete tasks:
   - `banlieue_snapshot_size_bytes{vm,tier}`
 - [ ] **Tracing**: wire OpenTelemetry exporter; spans for reconcile,
       scheduling, backend API calls.
-- [ ] **Structured logs**: JSON output mode behind a CLI flag.
+- [x] ~~**Structured logs**: JSON output mode behind a CLI flag.~~
+      **Done** — `--log-format json|text` (`BANLIEUE_LOG_FORMAT`) on every
+      binary, via `banlieue-provider-sdk::bootstrap::init_tracing`.
 - [ ] **Healthchecks**: `/healthz` and `/readyz` already in place
       from Phase 1; ensure they reflect leader-election state.
-- [ ] Sample Grafana dashboards in `deploy/dashboards/`.
+      **Half done** — `serve_health` is wired into every binary, but it
+      answers `200 ok` to any request without inspecting the path or the
+      lease, so a non-leader standby reports ready. The reflection half is
+      what is left.
+- [ ] Sample Grafana dashboards in `deploy/dashboards/`. **Blocked on
+      metrics above** — nothing to graph yet.
 
 ## 4.4 Security hardening
 
-- [ ] **Pod Security Standards**: every Deployment runs as nonroot,
+- [x] ~~**Pod Security Standards**: every Deployment runs as nonroot,
       no privilege escalation, drops all capabilities, read-only
-      root FS. Libvirt provider needs an exception documented.
+      root FS. Libvirt provider needs an exception documented.~~ **Done**
+      — `runAsNonRoot` + `seccompProfile` + `readOnlyRootFilesystem` in
+      `deploy/{controller,operator,provider-vsphere,imagebuilder}/deployment.yaml`,
+      and the same `SecurityContext` is built into every operator-spawned
+      workload (`banlieue-operator/src/workload.rs`). No libvirt exception
+      was needed: ADR-0011's own client talks native RPC over mTLS from an
+      ordinary pod, so the provider never needs host access.
 - [ ] **NetworkPolicy** templates restricting controller pods to
       egress only to required endpoints (vCenter, Proxmox, libvirt
-      hosts, the K8s apiserver).
+      hosts, the K8s apiserver). **Still open** — nothing under `deploy/`
+      ships a `NetworkPolicy`, and the threat model does not yet record the
+      gap either; the next full pass should either add the templates or
+      put this in its §8 accepted risks with a *Revisit when*.
 - [ ] **Secret rotation**: providers re-read credentials on Secret
       change events (already watching, just ensure cache invalidates).
-- [ ] **cosign-signed images**: keyless signing in CI via
-      `cosign sign --keyless`.
-- [ ] **SBOM**: generate SPDX SBOM per image via `cargo-sbom` or
-      similar.
-- [ ] **CVE scanning**: trivy in CI; gating on `HIGH`+.
-- [ ] **SECURITY.md** with disclosure policy.
+      **Still open** — the premise turned out to be wrong: providers do
+      **not** watch Secrets. Credentials are read per reconcile, so a
+      rotated Secret is picked up on the next requeue, but a rotation does
+      not itself trigger one.
+- [x] ~~**cosign-signed images**: keyless signing in CI via
+      `cosign sign --keyless`.~~ **Done** — `build.yaml` keyless-signs
+      every pushed digest and `cosign attest`s the OpenVEX predicate for
+      both image variants.
+- [x] ~~**SBOM**: generate SPDX SBOM per image via `cargo-sbom` or
+      similar.~~ **Done** — `make sbom` for the source tree plus
+      `anchore/sbom-action` per image variant, attached to the release
+      (ADR-0006).
+- [x] ~~**CVE scanning**: trivy in CI; gating on `HIGH`+.~~ **Done with a
+      different scanner** — `grype` against the published digests, fed the
+      OpenVEX document so triaged findings do not re-raise (`banlieue-vex`),
+      plus `cargo-audit`, `cargo-deny`, Semgrep, CodeQL and ClusterFuzzLite;
+      `osv-scanner.toml` mirrors the same suppressions for Scorecard's
+      Vulnerabilities check.
+      trivy was not adopted; the VEX loop is what makes gating survivable.
+- [x] ~~**SECURITY.md** with disclosure policy.~~ **Done** — `SECURITY.md`,
+      with private vulnerability reporting.
 
 ## 4.5 E2E testing
 
-- [ ] **`/e2e/`** directory with Rust-based or shell-based scenarios.
-- [ ] Use `kind` + a simulated backend (vcsim, Proxmox in a VM, libvirt
-      in a VM) per provider.
+- [x] ~~**`/e2e/`** directory with Rust-based or shell-based scenarios.~~
+      **Done, elsewhere** — ADR-0014 put e2e suites in the crate that owns
+      the behaviour (`crates/*/tests/e2e_*.rs`) instead of a top-level
+      `/e2e/`, so a suite compiles against the types it exercises. One
+      `make kind-e2e-<suite>` target each, runnable individually.
+- [x] ~~Use `kind` + a simulated backend (vcsim, Proxmox in a VM, libvirt
+      in a VM) per provider.~~ **Partly superseded** — `kind` is the
+      cluster (`make kind-e2e`), but the backend half went the other way:
+      vcsim cannot exercise the JSON transport we ship (roadmap 05), so
+      the backend-touching suites run against a **real** libvirt host
+      (`make pool-claim-e2e`, `make libvirt-e2e`) or real vCenter
+      (`make vsphere-live-test`), and stay out of CI.
 - [ ] Scenarios:
-  - Create/read/update/delete VirtualMachine
-  - Migration policy: Automatic + Manual paths
-  - Snapshot schedule: cron firings + retention
-  - Provider lifecycle: install/upgrade/uninstall ProviderClass
-  - CAPI integration: Machine + VSphereMachine pair
+  - [x] Create/read/update/delete VirtualMachine — `e2e_pool_claim.rs`
+        (pool → VMs → real domains → claim → release) and
+        `e2e_import_pipeline.rs`.
+  - [ ] Migration policy: Automatic + Manual paths — roadmap 14; only the
+        `Recreate` placeholder exists.
+  - [ ] Snapshot schedule: cron firings + retention — roadmap 10; no CRDs
+        yet.
+  - [x] Provider lifecycle: install/upgrade/uninstall ProviderClass —
+        `e2e_provider_{class,workload,pause}.rs`, `e2e_workload_namespace.rs`,
+        `e2e_bootstrap_install.rs` (roadmap 11).
+  - [ ] CAPI integration: Machine + VSphereMachine pair — §4.2 above,
+        not started.
 - [ ] CI matrix per backend; nightly runs against real vCenter/Proxmox
-      where possible (self-hosted runners).
+      where possible (self-hosted runners). **Still open** — `e2e.yaml`
+      fans the `kind` suites out one job each, but every backend-touching
+      suite is `#[ignore]`d and local-only; there are no self-hosted
+      runners.
 
 ## 4.6 Helm chart
 
@@ -187,11 +239,20 @@ Tasks:
 
 ## 4.7 Container images
 
-- [ ] Multi-arch (linux/amd64, linux/arm64) via `docker buildx`.
-- [ ] Distroless base for controller + provider-vsphere +
-      provider-proxmox; thin debian for provider-libvirt.
-- [ ] Signed and SBOM-attested.
-- [ ] Published to `ghcr.io/firestoned/banlieue-*` until donation.
+- [x] ~~Multi-arch (linux/amd64, linux/arm64) via `docker buildx`.~~
+      **Done** — `platforms: linux/amd64,linux/arm64` in `build.yaml`.
+- [x] ~~Distroless base for controller + provider-vsphere +
+      provider-proxmox; thin debian for provider-libvirt.~~ **Done, and the
+      debian exception is gone** — ADR-0004's single binary ships as two
+      variants, `Dockerfile` (digest-pinned distroless) and
+      `Dockerfile.chainguard`. The libvirt provider needed no `virsh` or
+      `genisoimage` in the image: ADR-0011 speaks the RPC protocol itself
+      and ADR-0054 writes the NoCloud seed ISO in-process.
+- [x] ~~Signed and SBOM-attested.~~ **Done** — see §4.4.
+- [x] ~~Published to `ghcr.io/firestoned/banlieue-*` until donation.~~
+      **Done** — `ghcr.io/firestoned/banlieue`, one repository with a
+      variant tag rather than a per-binary repository, because there is one
+      binary.
 
 ## 4.8 Release engineering
 
@@ -204,8 +265,12 @@ Tasks:
       - helm chart package + push (chartmuseum or GH pages)
       - CRD YAMLs attached to GH release
       - changelog entry
-- [ ] Branch protection on `main`: PR with signed-off commits,
-      passing CI required.
+- [x] ~~Branch protection on `main`: PR with signed-off commits,
+      passing CI required.~~ **Done 2026-09-19** — ruleset `main` with
+      required checks; commit signatures are verified in CI by
+      `firestoned/github-actions/security/verify-signed-commits`. See
+      roadmap 16, which also notes the one-time ruleset edit still needed
+      to require the new aggregator context.
 - [ ] Backport policy for `v1.x` once we hit GA.
 
 ## 4.9 Governance and FINOS-readiness
@@ -213,14 +278,18 @@ Tasks:
 FINOS donation checklist (verify current FINOS docs for exact
 requirements when ready):
 
-- [ ] **LICENSE**: Apache-2.0 ✓
+- [x] ~~**LICENSE**: Apache-2.0~~ **Done** — `LICENSE`, and every source
+      file carries an SPDX header (enforced in CI).
 - [ ] **NOTICE**: copyright + attributions
-- [ ] **README.md** with a clear "what this is" + quickstart.
+- [x] ~~**README.md** with a clear "what this is" + quickstart.~~
+      **Done** — `README.md`, with the docs site at `docs/src/` behind it.
 - [ ] **CONTRIBUTING.md** with DCO instructions and dev setup.
 - [ ] **CODE_OF_CONDUCT.md** (Contributor Covenant v2.1).
 - [ ] **GOVERNANCE.md** describing maintainers, decision process,
       maintainer addition criteria.
-- [ ] **SECURITY.md** with disclosure email and supported versions.
+- [x] ~~**SECURITY.md** with disclosure email and supported versions.~~
+      **Done** — `SECURITY.md`, pointing at GitHub private vulnerability
+      reporting rather than an email address.
 - [ ] **MAINTAINERS.md** listing current maintainers with contact.
 - [ ] **DCO** enforced via GitHub app on all commits.
 - [ ] **OWNERS** files for sub-areas (optional but useful).
@@ -232,9 +301,10 @@ requirements when ready):
 
 ## 4.10 ADRs (Architecture Decision Records) — largely done
 
-**This workstream overtook its own plan.** `docs/adr/` exists with ~45 ADRs
-(0001–0050, with 0043–0049 reserved by roadmap 17), each following the
-standard Status / Context / Decision / Consequences template. ADRs are
+**This workstream overtook its own plan.** `docs/adr/` exists with 55 ADRs
+(0001–0055; 0043–0049 were reserved by roadmap 17 and are now all Accepted),
+each following the standard metadata-bullets / Context / Decision /
+Consequences template. ADRs are
 already the canonical decision record, and ADD makes writing one **step 1**
 of any architecturally significant change, not a Phase 4 cleanup task
 (`rules/architecture-driven-development.md`).

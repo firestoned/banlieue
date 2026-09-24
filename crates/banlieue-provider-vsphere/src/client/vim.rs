@@ -1135,6 +1135,27 @@ impl VSphereClient for VimClientImpl {
         self.wait_for_task(&task.value, "add vTPM device").await
     }
 
+    async fn tpm_endorsement_certificates(&self, vm_moref: &str) -> Result<Vec<Vec<u8>>> {
+        let vmm = VimVirtualMachine::new(self.client.clone(), vm_moref);
+        let cfg = vmm
+            .config()
+            .await
+            .map_err(|e| Error::Vsphere(format!("VirtualMachine.config({vm_moref}): {e}")))?
+            .ok_or_else(|| Error::Vsphere(format!("{vm_moref}: no config")))?;
+        let devices = cfg.hardware.device.unwrap_or_default();
+
+        // An absent certificate is NOT an error: a VM with no vTPM has none,
+        // and vCenter may not have issued one the instant the device is
+        // attached. Both are "ask again", which is what an empty Vec means
+        // to the caller (ADR-0045).
+        Ok(devices
+            .iter()
+            .filter_map(|d| d.as_any_ref().downcast_ref::<VirtualTpm>())
+            .filter_map(|tpm| tpm.endorsement_key_certificate.clone())
+            .flatten()
+            .collect())
+    }
+
     async fn grow_os_disk(&self, vm_moref: &str, size_gi_b: u32) -> Result<()> {
         let vmm = VimVirtualMachine::new(self.client.clone(), vm_moref);
         let cfg = vmm

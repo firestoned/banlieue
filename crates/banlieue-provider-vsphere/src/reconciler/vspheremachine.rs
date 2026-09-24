@@ -29,6 +29,7 @@ use banlieue_api::infrastructure::{
     VSphereMachine, VSphereMachineSpec, VSphereMachineStatus, VSphereNicSpec,
 };
 use banlieue_provider_sdk::finalizer::{ensure_finalizer, remove_finalizer};
+use banlieue_provider_sdk::pem::der_to_pem;
 use banlieue_provider_sdk::reconciler::{requeue_default, requeue_long, requeue_on_error};
 use banlieue_provider_sdk::ssa::FIELD_MANAGER_PROVIDER_VSPHERE;
 use banlieue_provider_sdk::status::{condition_status, set_condition};
@@ -40,7 +41,7 @@ use kube::{
     runtime::controller::Action,
 };
 use serde_json::json;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::client::{CloneVmRequest, VSphereClient};
 use crate::context::Context;
@@ -218,6 +219,10 @@ pub struct ProvisionOutcome {
     /// succeeded; `None` when `tpmEnabled` was `false` (nothing attempted)
     /// or this outcome came from the `already_provisioned` early return.
     pub tpm_attached: Option<bool>,
+    /// PEM vTPM endorsement key certificate(s) vCenter issued for this VM
+    /// (ADR-0045). Empty when there is no vTPM, and when vCenter has not
+    /// issued one yet — both mean "ask again", never "never".
+    pub tpm_endorsement_certificates: Vec<String>,
 }
 
 /// The `VSphereMachine` create path (ADR-0024): resolve every name in
@@ -244,6 +249,7 @@ pub async fn ensure_vm(
             already_provisioned: true,
             power_state: None,
             tpm_attached: None,
+            tpm_endorsement_certificates: Vec::new(),
         });
     }
 
@@ -366,6 +372,15 @@ pub async fn ensure_vm(
         None
     };
 
+    // ADR-0045: read it here too, so the binding is recorded before the
+    // guest ever boots when vCenter issues it synchronously with the
+    // attach. It is NOT load-bearing — `refresh_power_state` retries it
+    // every reconcile until something is recorded — which is what makes an
+    // asynchronously-issued certificate a delay rather than a permanent
+    // absence.
+    let tpm_endorsement_certificates =
+        refresh_ek_certificates(client, &vm_ref, spec.tpm_enabled, &[]).await?;
+
     // CloneVM_Task always clones powered off (ADR-0024's clone spec sets
     // power_on: false). Calling set_power_state(PoweredOff) again is a
     // redundant no-op transition that real vCenter rejects with
@@ -388,6 +403,7 @@ pub async fn ensure_vm(
         power_state: Some(spec.desired_power_state.clone()),
         already_provisioned: false,
         tpm_attached,
+        tpm_endorsement_certificates,
     })
 }
 
@@ -422,11 +438,9 @@ pub async fn reconcile(machine: Arc<VSphereMachine>, ctx: Arc<Context>) -> Resul
         .as_ref()
         .is_some_and(|s| s.initialization.provisioned == Some(true));
 
-    let existing = machine
-        .status
-        .as_ref()
-        .map(|s| s.conditions.clone())
-        .unwrap_or_default();
+    // The WHOLE current status, not just its conditions: a failure report
+    // re-applies every field, or SSA retracts the ones it omits.
+    let existing = machine.status.clone().unwrap_or_default();
 
     let provider_api: Api<Provider> = Api::namespaced(ctx.client.clone(), &namespace);
     let provider = match provider_api.get(&machine.spec.provider_ref.name).await {
@@ -438,7 +452,7 @@ pub async fn reconcile(machine: Arc<VSphereMachine>, ctx: Arc<Context>) -> Resul
                 &namespace,
                 &name,
                 generation,
-                &existing,
+                existing.clone(),
                 reasons::PROVIDER_NOT_FOUND,
                 format!("Provider {:?} not found", machine.spec.provider_ref.name),
             )
@@ -463,7 +477,7 @@ pub async fn reconcile(machine: Arc<VSphereMachine>, ctx: Arc<Context>) -> Resul
                 &namespace,
                 &name,
                 generation,
-                &existing,
+                existing.clone(),
                 reason,
                 format!("{e}"),
             )
@@ -487,7 +501,7 @@ pub async fn reconcile(machine: Arc<VSphereMachine>, ctx: Arc<Context>) -> Resul
                 &namespace,
                 &name,
                 generation,
-                &existing,
+                existing.clone(),
                 reasons::CONNECT_FAILED,
                 format!("{e}"),
             )
@@ -509,7 +523,7 @@ pub async fn reconcile(machine: Arc<VSphereMachine>, ctx: Arc<Context>) -> Resul
                 &namespace,
                 &name,
                 generation,
-                &existing,
+                existing.clone(),
                 reasons::CONNECT_FAILED,
                 format!("{e}"),
             )
@@ -553,7 +567,15 @@ pub async fn reconcile(machine: Arc<VSphereMachine>, ctx: Arc<Context>) -> Resul
     {
         Ok(outcome) => {
             info!(vm_ref = %outcome.vm_ref, "VSphereMachine provisioned");
-            patch_status_success(&ctx, &namespace, &name, generation, &existing, outcome).await?;
+            patch_status_success(
+                &ctx,
+                &namespace,
+                &name,
+                generation,
+                &existing.conditions,
+                outcome,
+            )
+            .await?;
             Ok(requeue_long())
         }
         Err(e) => {
@@ -563,7 +585,7 @@ pub async fn reconcile(machine: Arc<VSphereMachine>, ctx: Arc<Context>) -> Resul
                 &namespace,
                 &name,
                 generation,
-                &existing,
+                existing.clone(),
                 reasons::PROVISION_FAILED,
                 format!("{e}"),
             )
@@ -647,6 +669,7 @@ async fn patch_status_success(
         vm_ref,
         power_state,
         tpm_attached,
+        tpm_endorsement_certificates,
         already_provisioned: _,
     } = outcome;
     let mut conditions = existing_conditions.to_vec();
@@ -674,6 +697,7 @@ async fn patch_status_success(
         // a power cycle it hasn't even had its first boot before. The
         // ongoing `refresh_power_state` path is what starts observing it.
         guest_installed: None,
+        tpm_endorsement_certificates,
         conditions,
         observed_generation: Some(generation),
     };
@@ -708,7 +732,7 @@ async fn refresh_power_state(
     // nothing forever, which is what happened before this fix.
     let Some(vm_ref) = current.vm_ref.clone() else {
         warn!("provisioned but status.vmRef is unset — reporting BackendRefMissing");
-        let next = status_reporting_backend_problem(
+        let next = status_reporting_failure(
             current,
             reasons::BACKEND_REF_MISSING,
             "status.initialization.provisioned is true but status.vmRef is unset; this cannot be auto-repaired — recreate this VirtualMachine if the backend VM is actually gone".to_string(),
@@ -723,12 +747,28 @@ async fn refresh_power_state(
             let guest_installed =
                 guest::sticky_guest_installed(current.guest_installed, guest_probe.is_installed());
 
+            // ADR-0045. Read here, not only at create time: vCenter may not
+            // have issued the certificate the instant the vTPM was attached,
+            // and `reconcile` sends every provisioned machine down this path
+            // — so this is the only place a retry can live. Once recorded it
+            // is sticky, so the read stops happening.
+            let ek_certificates = refresh_ek_certificates(
+                client,
+                &vm_ref,
+                machine.spec.tpm_enabled,
+                &current.tpm_endorsement_certificates,
+            )
+            .await?;
+
             let already_reported_healthy = current
                 .conditions
                 .iter()
                 .any(|c| c.type_ == condition_types::READY && c.status == condition_status::TRUE);
+            let ek_changed = ek_certificates != current.tpm_endorsement_certificates;
+            let ek_certificates_pending = ek_certificates.is_empty();
             if current.observed_power_state.as_ref() != Some(&observed)
                 || current.guest_installed != guest_installed
+                || ek_changed
                 || !already_reported_healthy
             {
                 info!(vm_ref, power_state = ?observed, guest = ?guest_probe, "observed state changed");
@@ -737,11 +777,17 @@ async fn refresh_power_state(
                     observed,
                     guest_installed,
                     guest_probe,
+                    ek_certificates,
+                    machine.spec.tpm_enabled,
                     generation,
                 );
                 patch_machine_status(ctx, namespace, name, next).await?;
             }
-            Ok(if guest::should_poll_soon(guest_probe) {
+            // A tpmEnabled machine with no certificate yet is still expecting
+            // the answer to change, exactly like a guest that has not
+            // announced (ADR-0045).
+            let ek_pending = machine.spec.tpm_enabled && ek_certificates_pending;
+            Ok(if guest::should_poll_soon(guest_probe) || ek_pending {
                 requeue_default()
             } else {
                 requeue_long()
@@ -749,7 +795,7 @@ async fn refresh_power_state(
         }
         Err(e) if is_backend_missing_error(&e) => {
             warn!(vm_ref, error = %e, "backend VM no longer exists — reporting BackendMissing");
-            let next = status_reporting_backend_problem(
+            let next = status_reporting_failure(
                 current,
                 reasons::BACKEND_MISSING,
                 format!("backend VM {vm_ref:?} no longer exists in vCenter: {e}"),
@@ -773,11 +819,45 @@ fn is_backend_missing_error(e: &Error) -> bool {
         .contains("managedobjectnotfound")
 }
 
-/// Report a detected backend inconsistency on `Ready`, preserving every
-/// other field of `current` — never a narrow patch (see
-/// `status_with_observed_power_state`'s doc comment for why that's unsafe
-/// under SSA).
-fn status_reporting_backend_problem(
+/// Read this VM's vTPM EK certificates, or keep the ones already recorded
+/// (ADR-0045).
+///
+/// Returns `known` untouched once anything has been recorded — the value is
+/// sticky, so re-reading it every reconcile forever would cost a vCenter
+/// round trip for an answer that cannot change what is published. An empty
+/// answer from vCenter is **not** an error: it may not have issued the
+/// certificate yet, which is precisely why this lives on the observe path
+/// rather than only on the create path.
+async fn refresh_ek_certificates(
+    client: &dyn VSphereClient,
+    vm_ref: &str,
+    tpm_enabled: bool,
+    known: &[String],
+) -> Result<Vec<String>> {
+    if !tpm_enabled || !known.is_empty() {
+        return Ok(known.to_vec());
+    }
+    let der = client.tpm_endorsement_certificates(vm_ref).await?;
+    if der.is_empty() {
+        debug!(vm_ref, "no vTPM endorsement certificate from vCenter yet");
+    }
+    Ok(der.iter().map(|d| der_to_pem(d)).collect())
+}
+
+/// Report a failure on `Ready`, preserving every other field of `current`
+/// — never a narrow patch (see `status_with_observed_state`'s doc comment
+/// for why that is unsafe under SSA).
+///
+/// Used for **every** `Ready=False` report, not only backend
+/// inconsistencies. `patch_status_failed` used to build a narrow
+/// `{conditions, observedGeneration}` object instead, from the same field
+/// manager that applies the whole struct elsewhere — so a single transient
+/// error (a 404 on the Provider, a vCenter blip) made the apiserver retract
+/// `vmRef`, `tpmAttached`, `guestInstalled`, `initialization` and, since
+/// ADR-0045, the attestation anchor `tpmEndorsementCertificates`. That is
+/// the same defect whose `vmRef` half orphaned a VM in vCenter, recorded
+/// below.
+fn status_reporting_failure(
     mut current: VSphereMachineStatus,
     reason: &str,
     message: String,
@@ -814,10 +894,13 @@ fn status_with_observed_state(
     observed_power: PowerState,
     guest_installed: Option<bool>,
     guest: GuestProbe,
+    ek_certificates: Vec<String>,
+    tpm_enabled: bool,
     generation: i64,
 ) -> VSphereMachineStatus {
     current.observed_power_state = Some(observed_power);
     current.guest_installed = guest_installed;
+    current.tpm_endorsement_certificates = ek_certificates;
     current.observed_generation = Some(generation);
     // A successful power_state read means the backend VM demonstrably
     // exists and answered — restore Ready=True/Reconciled here so a
@@ -842,9 +925,23 @@ fn status_with_observed_state(
     // "this will never warm" for an image with no phase stage. Amended into
     // the libvirt half of this ADR after exactly that failure showed up on
     // a real cluster; mirrored here from the start.
+    //
+    // ADR-0045 adds one gate on the TRUE arm, mirroring the libvirt half: a
+    // `tpmEnabled` member that has not published its EK certificate cannot
+    // be attested, so a pool must not bind it. Machines without a vTPM are
+    // unaffected — they have no certificate to wait for.
     let installed = guest_installed == Some(true);
+    let ek_pending = tpm_enabled && current.tpm_endorsement_certificates.is_empty();
     if installed || guest == GuestProbe::NotAnnounced {
-        let (guest_status, guest_reason, guest_message) = if installed {
+        let (guest_status, guest_reason, guest_message) = if installed && ek_pending {
+            (
+                condition_status::FALSE,
+                "TpmEndorsementPending",
+                "the installed guest announced itself, but vCenter has not yet \
+                 issued a vTPM endorsement certificate for it (ADR-0045)"
+                    .to_string(),
+            )
+        } else if installed {
             (
                 condition_status::TRUE,
                 "GuestAnnounced",
@@ -869,36 +966,24 @@ fn status_with_observed_state(
     current
 }
 
-/// SSA-patch a failure condition onto `VSphereMachine.status.conditions`.
+/// Report a failure on `VSphereMachine.status`, applying the **complete**
+/// status.
+///
+/// Takes the current status rather than only its conditions: this field
+/// manager applies the whole struct on the success path, so anything left
+/// out of a payload here is retracted by the apiserver. See
+/// `status_reporting_failure`.
 async fn patch_status_failed(
     ctx: &Context,
     namespace: &str,
     name: &str,
     generation: i64,
-    existing_conditions: &[Condition],
+    current: VSphereMachineStatus,
     reason: &str,
     message: String,
 ) -> Result<()> {
-    let mut conditions = existing_conditions.to_vec();
-    set_condition(
-        &mut conditions,
-        condition_types::READY,
-        condition_status::FALSE,
-        reason,
-        &message,
-        generation,
-    );
-
-    let patch = json!({
-        "apiVersion": VSphereMachine::api_version(&()).to_string(),
-        "kind": VSphereMachine::kind(&()).to_string(),
-        "metadata": { "name": name, "namespace": namespace },
-        "status": {
-            "conditions": conditions,
-            "observedGeneration": generation,
-        },
-    });
-    apply_status_patch(ctx, namespace, name, patch).await
+    let next = status_reporting_failure(current, reason, message, generation);
+    patch_machine_status(ctx, namespace, name, next).await
 }
 
 async fn patch_machine_status(

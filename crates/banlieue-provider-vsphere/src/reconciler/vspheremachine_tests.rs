@@ -259,7 +259,7 @@ mod tests {
     }
 
     #[test]
-    fn status_with_observed_power_state_preserves_every_other_field() {
+    fn status_with_observed_state_preserves_every_other_field() {
         // Regression (ADR-0034, found live): a narrower re-apply of just
         // {observedPowerState, observedGeneration} from the same field
         // manager that had applied the full status made the apiserver
@@ -293,6 +293,8 @@ mod tests {
             PowerState::PoweredOn,
             None,
             GuestProbe::NotEvaluated,
+            Vec::new(),
+            false,
             2,
         );
 
@@ -314,7 +316,7 @@ mod tests {
     }
 
     #[test]
-    fn status_with_observed_power_state_restores_ready_after_a_backend_problem_clears() {
+    fn status_with_observed_state_restores_ready_after_a_backend_problem_clears() {
         // A prior BackendMissing/BackendRefMissing report (ADR-0034) must
         // not stay stuck False forever once a power_state read succeeds
         // again — that would misrepresent a healthy VM as permanently
@@ -344,6 +346,8 @@ mod tests {
             PowerState::PoweredOn,
             None,
             GuestProbe::NotEvaluated,
+            Vec::new(),
+            false,
             2,
         );
 
@@ -373,8 +377,8 @@ mod tests {
     }
 
     #[test]
-    fn status_reporting_backend_problem_preserves_every_other_field() {
-        use super::super::status_reporting_backend_problem;
+    fn reporting_a_backend_problem_preserves_every_other_field() {
+        use super::super::status_reporting_failure;
         use banlieue_api::common::InitializationStatus;
 
         let current = VSphereMachineStatus {
@@ -386,7 +390,7 @@ mod tests {
             ..Default::default()
         };
 
-        let next = status_reporting_backend_problem(
+        let next = status_reporting_failure(
             current.clone(),
             "BackendMissing",
             "backend VM \"vm-1234\" no longer exists in vCenter".to_string(),
@@ -421,6 +425,8 @@ mod tests {
             PowerState::PoweredOff,
             None,
             GuestProbe::NotEvaluated,
+            Vec::new(),
+            false,
             1,
         );
 
@@ -443,6 +449,8 @@ mod tests {
             PowerState::PoweredOn,
             Some(false),
             GuestProbe::NotAnnounced,
+            Vec::new(),
+            false,
             1,
         );
 
@@ -467,6 +475,8 @@ mod tests {
             PowerState::PoweredOn,
             Some(true),
             GuestProbe::Installed,
+            Vec::new(),
+            false,
             1,
         );
 
@@ -494,6 +504,8 @@ mod tests {
             PowerState::PoweredOn,
             Some(false),
             GuestProbe::NotAnnounced,
+            Vec::new(),
+            false,
             1,
         );
 
@@ -504,5 +516,152 @@ mod tests {
             .expect("Ready present");
         assert_eq!(ready.status, "True");
         assert_eq!(ready.reason, "Reconciled");
+    }
+
+    /// Every Ready=False report must preserve the rest of status, not just
+    /// the backend-problem ones. `patch_status_failed` used to SSA-apply a
+    /// narrow `{conditions, observedGeneration}` from the SAME field manager
+    /// that elsewhere applies the whole struct, which makes the apiserver
+    /// retract every field the narrow payload omits — the exact hazard
+    /// `status_with_observed_state`'s doc comment records hitting live
+    /// (it wiped `vmRef`, so `finalize()` skipped `destroy_vm` and orphaned
+    /// the VM). One transient vCenter blip on an already-provisioned machine
+    /// would therefore drop `vmRef`, `tpmAttached` and — since ADR-0045 —
+    /// the attestation anchor a claim is supposed to publish.
+    #[test]
+    fn reporting_a_failure_preserves_every_other_field() {
+        use super::super::status_reporting_failure;
+        use banlieue_api::common::InitializationStatus;
+
+        let current = VSphereMachineStatus {
+            initialization: InitializationStatus {
+                provisioned: Some(true),
+            },
+            vm_ref: Some("vm-1234".to_string()),
+            instance_uuid: Some("uuid-1234".to_string()),
+            failure_domain: Some("dc1".to_string()),
+            observed_power_state: Some(PowerState::PoweredOn),
+            tpm_attached: Some(true),
+            tpm_endorsement_certificates: vec![
+                "-----BEGIN CERTIFICATE-----\nstub\n-----END CERTIFICATE-----".to_string(),
+            ],
+            ..Default::default()
+        };
+
+        let next = status_reporting_failure(
+            current.clone(),
+            "ProvisionFailed",
+            "vCenter connection refused".to_string(),
+            3,
+        );
+
+        assert_eq!(next.vm_ref, current.vm_ref);
+        assert_eq!(next.instance_uuid, current.instance_uuid);
+        assert_eq!(next.failure_domain, current.failure_domain);
+        assert_eq!(next.initialization, current.initialization);
+        assert_eq!(next.observed_power_state, current.observed_power_state);
+        assert_eq!(next.tpm_attached, current.tpm_attached);
+        assert_eq!(
+            next.tpm_endorsement_certificates, current.tpm_endorsement_certificates,
+            "a transient failure must not retract the attestation anchor (ADR-0045)"
+        );
+
+        let ready = next
+            .conditions
+            .iter()
+            .find(|c| c.type_ == "Ready")
+            .expect("Ready present");
+        assert_eq!(ready.status, "False");
+        assert_eq!(ready.reason, "ProvisionFailed");
+        assert_eq!(next.observed_generation, Some(3));
+    }
+
+    /// ADR-0045, mirroring the libvirt half: a tpmEnabled member that has
+    /// announced itself but has no EK certificate yet cannot be attested,
+    /// so a pool must not bind it. Before ADR-0043's vSphere transport
+    /// landed there was no GuestReady here to gate at all — now there is,
+    /// and the asymmetry the ADR originally recorded is gone.
+    #[test]
+    fn guest_ready_waits_for_the_endorsement_certificate_on_a_tpm_machine() {
+        use super::super::status_with_observed_state;
+        use crate::guest::GuestProbe;
+
+        let current = VSphereMachineStatus {
+            guest_installed: Some(true),
+            ..Default::default()
+        };
+        let next = status_with_observed_state(
+            current,
+            PowerState::PoweredOn,
+            Some(true),
+            GuestProbe::Installed,
+            Vec::new(),
+            true,
+            1,
+        );
+
+        let gr = next
+            .conditions
+            .iter()
+            .find(|c| c.type_ == "GuestReady")
+            .expect("GuestReady published");
+        assert_eq!(gr.status, "False");
+        assert_eq!(gr.reason, "TpmEndorsementPending");
+    }
+
+    /// And it goes True once vCenter has issued one.
+    #[test]
+    fn guest_ready_is_true_once_the_endorsement_certificate_is_published() {
+        use super::super::status_with_observed_state;
+        use crate::guest::GuestProbe;
+
+        let next = status_with_observed_state(
+            VSphereMachineStatus {
+                guest_installed: Some(true),
+                ..Default::default()
+            },
+            PowerState::PoweredOn,
+            Some(true),
+            GuestProbe::Installed,
+            vec!["-----BEGIN CERTIFICATE-----\nstub\n-----END CERTIFICATE-----".to_string()],
+            true,
+            1,
+        );
+
+        let gr = next
+            .conditions
+            .iter()
+            .find(|c| c.type_ == "GuestReady")
+            .expect("GuestReady published");
+        assert_eq!(gr.status, "True");
+        assert_eq!(gr.reason, "GuestAnnounced");
+    }
+
+    /// A machine with no vTPM must not be made to wait for a certificate it
+    /// can never have — the regression that would strand every non-TPM VM.
+    #[test]
+    fn guest_ready_ignores_the_certificate_when_there_is_no_vtpm() {
+        use super::super::status_with_observed_state;
+        use crate::guest::GuestProbe;
+
+        let next = status_with_observed_state(
+            VSphereMachineStatus {
+                guest_installed: Some(true),
+                ..Default::default()
+            },
+            PowerState::PoweredOn,
+            Some(true),
+            GuestProbe::Installed,
+            Vec::new(),
+            false,
+            1,
+        );
+
+        let gr = next
+            .conditions
+            .iter()
+            .find(|c| c.type_ == "GuestReady")
+            .expect("GuestReady published");
+        assert_eq!(gr.status, "True");
     }
 }

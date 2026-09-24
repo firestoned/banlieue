@@ -143,7 +143,7 @@ async fn converge_and_finalize_against_real_libvirtd() {
     eprintln!("converging {domain_name} (pool={pool}, source={source_volume})");
 
     // Run the body catching the result, so teardown happens either way.
-    let outcome = converge(&mut client, &spec, false).await;
+    let outcome = converge(&mut client, &spec, false, false).await;
 
     match &outcome {
         Ok(observed) => {
@@ -166,7 +166,7 @@ async fn converge_and_finalize_against_real_libvirtd() {
     // would silently discard a running VM's disk if it were wrong.
     let second = if outcome.is_ok() {
         eprintln!("  second converge (idempotence)");
-        Some(converge(&mut client, &spec, false).await)
+        Some(converge(&mut client, &spec, false, false).await)
     } else {
         None
     };

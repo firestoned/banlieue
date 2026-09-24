@@ -24,6 +24,9 @@ serde.workspace = true
 serde_json.workspace = true
 # qemu-guest-agent returns file contents base64-encoded (ADR-0043).
 base64.workspace = true
+# Validating the guest-reported vTPM EK certificate before publishing it
+# (ADR-0045 Decision 3).
+x509-parser.workspace = true
 
 thiserror.workspace = true
 anyhow.workspace = true

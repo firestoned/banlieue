@@ -343,4 +343,61 @@ mod tests {
         );
         assert!(message.contains("sandbox-pool"), "got: {message}");
     }
+
+    // ------------------------------------------------------------------
+    // ADR-0045 — the claim mirrors its member's attestation anchor
+    // ------------------------------------------------------------------
+
+    /// Without this the claim carries a nonce a verifier cannot use: ADR-0049
+    /// checks a quote against the EK certificate, and one GET of the claim is
+    /// supposed to yield both.
+    #[test]
+    fn a_bound_claim_mirrors_its_members_endorsement_certificate() {
+        const PEM: &str = "-----BEGIN CERTIFICATE-----\nstub\n-----END CERTIFICATE-----";
+        let mut vm = member_vm();
+        vm.status = Some(banlieue_api::banlieue::VirtualMachineStatus {
+            tpm_endorsement_certificates: vec![PEM.to_string()],
+            ..Default::default()
+        });
+
+        let got = mirrored_member_state(&vm);
+        assert_eq!(got.tpm_endorsement_certificates, vec![PEM.to_string()]);
+    }
+
+    /// A member with no vTPM mirrors nothing, and a member with no status at
+    /// all must not panic the reconciler.
+    #[test]
+    fn a_member_without_a_vtpm_mirrors_no_certificate() {
+        let vm = member_vm();
+        let got = mirrored_member_state(&vm);
+        assert!(got.tpm_endorsement_certificates.is_empty());
+        assert!(got.addresses.is_empty());
+    }
+
+    /// A pool member with no status yet.
+    fn member_vm() -> banlieue_api::banlieue::VirtualMachine {
+        use banlieue_api::banlieue::{
+            MigrationPolicy, PlacementSpec, VirtualMachine, VirtualMachineSpec,
+        };
+        use banlieue_api::common::{LocalObjectReference, PowerState};
+        VirtualMachine {
+            metadata: kube::api::ObjectMeta {
+                name: Some("member-1".to_string()),
+                ..Default::default()
+            },
+            spec: VirtualMachineSpec {
+                class_ref: LocalObjectReference { name: "c".into() },
+                image_ref: LocalObjectReference { name: "i".into() },
+                placement: PlacementSpec::default(),
+                desired_power_state: PowerState::PoweredOn,
+                user_data: None,
+                migration_policy: MigrationPolicy::Automatic,
+                paused: false,
+                network_overrides: Vec::new(),
+                hardware_override: None,
+                folder: None,
+            },
+            status: None,
+        }
+    }
 }

@@ -85,6 +85,21 @@ overwriting the disk. The distinguishing fact is *which disk booted*
        `examples/16-cloud-config-guest-phase.yaml`, and
     2. `qemu-guest-agent` installed and enabled.
 
+    A **`tpmEnabled` class needs a third thing** on libvirt: the layer from
+    `examples/20-cloud-config-guest-ek-certificate.yaml`, plus `tpm2-tools`
+    in the image. The guest exports its vTPM endorsement certificate, which
+    banlieue publishes and a claim mirrors, because swtpm keeps no
+    host-side copy for the provider to read
+    ([ADR-0045](https://github.com/firestoned/banlieue/blob/main/docs/adr/0045-vtpm-endorsement-key-certificate.md)).
+    Until it appears, the member reports:
+
+    ```text
+    GuestReady=False   reason=TpmEndorsementPending
+    ```
+
+    which keeps it out of the warm set — a member that cannot attest is not
+    one a claim should bind.
+
     Without `qemu-guest-agent` the provider cannot evaluate the signal at
     all, so it leaves `GuestReady` **absent** rather than false, and the
     pool reports:
