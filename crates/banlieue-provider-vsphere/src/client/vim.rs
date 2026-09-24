@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use banlieue_api::banlieue::{DiskController, InstallMode, NicAdapter, ProviderConnection};
 use banlieue_api::common::{DiskProvisioning, Firmware, PowerState};
 use tracing::{debug, info, warn};
-use vim_rs::core::client::{Client, ClientBuilder};
+use vim_rs::core::client::{Client, ClientBuilder, VimClient};
 use vim_rs::mo::cluster_compute_resource::ClusterComputeResource;
 use vim_rs::mo::container_view::ContainerView;
 use vim_rs::mo::datacenter::Datacenter as VimDatacenter;
@@ -1232,6 +1232,52 @@ impl VSphereClient for VimClientImpl {
         })
     }
 
+    // ADR-0043's vSphere transport: `key` is a `guestinfo.*` name the guest
+    // set with `vmware-rpctool`, which vCenter reflects into this same
+    // `config.extraConfig` list (the same property `clone_vm` writes
+    // `guestinfo.userdata` into, read back the other direction). Unverified
+    // against a real vCenter — see ADR-0043's Notes — so treat a first live
+    // run as the actual test.
+    async fn guest_info(&self, vm_moref: &str, key: &str) -> Result<Option<String>> {
+        // Two things ruled out `VimVirtualMachine::config()` /
+        // `extract_property::<VirtualMachineConfigInfo>`, both found live
+        // against a real vCenter:
+        //
+        // 1. This JSON transport has no PropertyCollector-style dotted
+        //    paths — `fetch_property_raw(.., "config.extraConfig")` faults
+        //    with `InvalidType: "... doesn't have a 'config.extraConfig'
+        //    property"`. Only whole top-level properties ("config",
+        //    "runtime", ...) are fetchable, matching every other read in
+        //    this file (`power_state` fetches all of "runtime").
+        // 2. Fetching the whole "config" and decoding it as
+        //    `VirtualMachineConfigInfo` fails ("JSON property decode
+        //    failed") — which broke every subsequent reconcile of an
+        //    already-provisioned VSphereMachine, not just guest probing.
+        //    The cause: `vim_rs::types::vim_any::VimAny`'s `Deserialize`
+        //    only implements `Visitor::map()` — the polymorphic
+        //    `{"_typeName": ..., "value": ...}` shape — with no fallback
+        //    for a bare JSON primitive. Real vCenter's JSON API sends a
+        //    plain string for `OptionValue.value` (e.g.
+        //    `{"key": "...", "value": "installed"}`), which `VimAny` cannot
+        //    parse — and one non-decoding `extraConfig` entry sinks the
+        //    entire `VirtualMachineConfigInfo`, since miniserde has no
+        //    "skip this field" fallback either.
+        //
+        // Sidestep both: fetch the whole "config" property but read it as
+        // untyped JSON, and pick `extraConfig[].value` out by hand —
+        // accepting either shape rather than assuming vim_rs's.
+        let pv = self
+            .client
+            .fetch_property_raw("", "VirtualMachine", vm_moref, "config")
+            .await
+            .map_err(|e| Error::Vsphere(format!("VirtualMachine.config({vm_moref}): {e}")))?;
+        let Some(vim_rs::core::client::PropertyValue::Json(bytes)) = pv else {
+            return Ok(None);
+        };
+        extra_config_value_from_raw_json(&bytes, key)
+            .map_err(|e| Error::Vsphere(format!("VirtualMachine.config({vm_moref}): {e}")))
+    }
+
     async fn destroy_vm(&self, vm_moref: &str) -> Result<()> {
         info!(moref = %vm_moref, "destroying VSphereMachine's backend VM");
         match self.power_off_and_destroy(vm_moref).await {
@@ -1247,6 +1293,46 @@ impl VSphereClient for VimClientImpl {
             Err(e) => Err(e),
         }
     }
+}
+
+/// Pick one `extraConfig[].value` out of a raw `VirtualMachineConfigInfo`
+/// JSON document by `key` (ADR-0043), without deserializing the typed
+/// struct at all.
+///
+/// `value` is read defensively in both shapes a real vCenter might send:
+/// a bare JSON string (`"value": "installed"` — what this JSON transport
+/// actually sends, and the shape `vim_rs::types::vim_any::VimAny`'s
+/// `Deserialize` cannot parse) and the polymorphic
+/// `{"_typeName": ..., "value": "installed"}` object `VimAny` expects.
+/// Any other value type (bool, number, object without a nested string) is
+/// treated as "not a string we understand", same as an absent key —
+/// `guestinfo.banlieue.phase` is only ever meaningful as a string.
+fn extra_config_value_from_raw_json(
+    bytes: &[u8],
+    key: &str,
+) -> std::result::Result<Option<String>, String> {
+    let doc: serde_json::Value =
+        serde_json::from_slice(bytes).map_err(|e| format!("parsing raw JSON: {e}"))?;
+    let Some(entries) = doc.get("extraConfig").and_then(serde_json::Value::as_array) else {
+        return Ok(None);
+    };
+    Ok(entries.iter().find_map(|entry| {
+        if entry.get("key")?.as_str()? != key {
+            return None;
+        }
+        let value = entry.get("value")?;
+        // Found live against a real vCenter: a primitive `Any` value is
+        // wrapped as `{"_typeName": "string", "_value": "..."}` — the
+        // underscore-prefixed `_value` is this JSON transport's actual key,
+        // not the bare `value` `vim_rs::types::vim_any::VimAny`'s own
+        // (de)serializer names its field after. `value` is still checked
+        // first in case a future property ever sends the bare-string shape.
+        value
+            .as_str()
+            .or_else(|| value.get("_value").and_then(serde_json::Value::as_str))
+            .or_else(|| value.get("value").and_then(serde_json::Value::as_str))
+            .map(str::to_string)
+    }))
 }
 
 impl VimClientImpl {

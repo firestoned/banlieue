@@ -414,6 +414,21 @@ spec:
                   Surfaced to the parent Machine's `status.failureDomain`.
                 nullable: true
                 type: string
+              guestInstalled:
+                description: |-
+                  Whether the *installed* guest has announced itself, distinct from a
+                  live installer still overwriting the disk (ADR-0043). Read from
+                  `guestinfo.banlieue.phase` via `config.extraConfig` — the guest
+                  writes it with `vmware-rpctool`, the host reads it back here. `None`
+                  means nothing has looked yet (the whole life of an `Immediate` image,
+                  or a `Deferred` one before its first observation); sticky at
+                  `Some(true)` once observed, since the runtime value does not survive
+                  a power cycle but a stopped VM has not become uninstalled. Not part
+                  of the CAPI contract; mirrored onto the parent `VirtualMachine` as
+                  the `GuestReady` condition (`common::condition_types::GUEST_READY`),
+                  never as `Ready`.
+                nullable: true
+                type: boolean
               initialization:
                 default: {}
                 description: 'CAPI contract field: replaces the deprecated v1beta1 `status.ready`.'

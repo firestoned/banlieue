@@ -52,17 +52,18 @@ stages:
         - mkdir -p /run/banlieue
         - echo installed > /run/banlieue/phase
 
-    # ---- vSphere (specified, NOT yet implemented) -------------------------
+    # ---- vSphere (implemented, unverified against a real vCenter) --------
     #
     # vSphere already has a host-readable guest channel, so the marker goes
-    # there instead of to a file. The provider-side read is not implemented
-    # yet — uncomment this only once ADR-0043's vSphere half lands, or the
-    # guest will announce into a channel nothing is watching.
-    #
-    # - name: banlieue-guest-phase-vsphere
-    #   if: '[ -f /run/cos/active_mode ] || [ -f /run/cos/passive_mode ]'
-    #   commands:
-    #     - vmware-rpctool "info-set guestinfo.banlieue.phase installed"
+    # there instead of to a file: the guest sets it with vmware-rpctool, and
+    # VSphereClient::guest_info reads it back from config.extraConfig. The
+    # provider-side read has no vCenter to verify it against yet (ADR-0043
+    # Notes) — the first live run of a Deferred pool on vSphere is this
+    # layer's actual test.
+    - name: banlieue-guest-phase-vsphere
+      if: '[ -f /run/cos/active_mode ] || [ -f /run/cos/passive_mode ]'
+      commands:
+        - vmware-rpctool "info-set guestinfo.banlieue.phase installed"
 #
 # USING IT
 #

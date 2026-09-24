@@ -635,4 +635,101 @@ n17Lktsw0jAZJp1tU1DJPZSYHZPPWLZlJhHftNtpKQ==
             None
         );
     }
+
+    // ----------------------------------------------------------------------
+    // extra_config_value_from_raw_json (ADR-0043): reads guestinfo.* out of
+    // a real VirtualMachineConfigInfo document by hand, bypassing vim_rs's
+    // typed VimAny deserializer.
+    //
+    // Found live against `vm-21569` on a real vCenter, in two rounds:
+    // first that `VimAny::Deserialize` only implements the polymorphic map
+    // shape and errors on a bare string; then, once this function existed,
+    // that the *real* wrapper is `{"_typeName": "string", "_value": "..."}`
+    // — underscore-prefixed `_value`, not the bare `value` first assumed by
+    // analogy with `vim_rs::types::structs::OptionValue`'s own outer field
+    // name. `guestinfo.network.hostname` (set unconditionally by
+    // `build_guestinfo`, so guaranteed present) round-tripped as `None`
+    // until this was fixed.
+    // ----------------------------------------------------------------------
+
+    /// The actual shape captured live: `{"_typeName": "string", "_value":
+    /// "..."}`.
+    #[test]
+    fn reads_the_real_vcenter_wrapped_value() {
+        let json = br#"{"extraConfig":[{"_typeName":"OptionValue","key":"guestinfo.network.hostname","value":{"_typeName":"string","_value":"k0s-tpm1.example.com"}}]}"#;
+        assert_eq!(
+            extra_config_value_from_raw_json(json, "guestinfo.network.hostname").unwrap(),
+            Some("k0s-tpm1.example.com".to_string())
+        );
+    }
+
+    /// A bare JSON string is also accepted, in case some property ever
+    /// sends the unwrapped primitive directly.
+    #[test]
+    fn reads_a_bare_string_value() {
+        let json = br#"{"extraConfig":[{"key":"guestinfo.banlieue.phase","value":"installed"}]}"#;
+        assert_eq!(
+            extra_config_value_from_raw_json(json, "guestinfo.banlieue.phase").unwrap(),
+            Some("installed".to_string())
+        );
+    }
+
+    /// The shape `VimAny` itself expects (`value`, not `_value`) — accepted
+    /// too, so a future vCenter (or a different property) that does send
+    /// this form still works.
+    #[test]
+    fn reads_the_vim_any_shape_too() {
+        let json = br#"{"extraConfig":[{"key":"guestinfo.banlieue.phase","value":{"_typeName":"xsd:string","value":"installed"}}]}"#;
+        assert_eq!(
+            extra_config_value_from_raw_json(json, "guestinfo.banlieue.phase").unwrap(),
+            Some("installed".to_string())
+        );
+    }
+
+    #[test]
+    fn returns_none_when_the_key_is_absent() {
+        let json = br#"{"extraConfig":[{"key":"guestinfo.userdata","value":{"_typeName":"string","_value":"c29tZQ=="}}]}"#;
+        assert_eq!(
+            extra_config_value_from_raw_json(json, "guestinfo.banlieue.phase").unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn returns_none_when_extra_config_is_absent_entirely() {
+        let json = br#"{"name":"db-01"}"#;
+        assert_eq!(
+            extra_config_value_from_raw_json(json, "guestinfo.banlieue.phase").unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn returns_none_for_a_non_string_value_rather_than_erroring() {
+        let json = br#"{"extraConfig":[{"key":"guestinfo.banlieue.phase","value":true}]}"#;
+        assert_eq!(
+            extra_config_value_from_raw_json(json, "guestinfo.banlieue.phase").unwrap(),
+            None
+        );
+    }
+
+    /// One entry that neither shape can parse (a nested array) must not
+    /// sink every *other* entry in the same document — the exact failure
+    /// mode a whole-struct typed decode had.
+    #[test]
+    fn one_unparseable_entry_does_not_hide_a_later_matching_one() {
+        let json = br#"{"extraConfig":[
+            {"key":"weird.entry","value":["not","a","string"]},
+            {"key":"guestinfo.banlieue.phase","value":{"_typeName":"string","_value":"installed"}}
+        ]}"#;
+        assert_eq!(
+            extra_config_value_from_raw_json(json, "guestinfo.banlieue.phase").unwrap(),
+            Some("installed".to_string())
+        );
+    }
+
+    #[test]
+    fn malformed_json_is_an_error_not_a_panic() {
+        assert!(extra_config_value_from_raw_json(b"not json", "any.key").is_err());
+    }
 }

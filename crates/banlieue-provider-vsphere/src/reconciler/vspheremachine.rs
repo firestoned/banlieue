@@ -24,7 +24,7 @@
 use std::sync::Arc;
 
 use banlieue_api::banlieue::Provider;
-use banlieue_api::common::{InitializationStatus, PowerState};
+use banlieue_api::common::{InitializationStatus, PowerState, condition_types};
 use banlieue_api::infrastructure::{
     VSphereMachine, VSphereMachineSpec, VSphereMachineStatus, VSphereNicSpec,
 };
@@ -45,12 +45,8 @@ use tracing::{info, warn};
 use crate::client::{CloneVmRequest, VSphereClient};
 use crate::context::Context;
 use crate::error::{Error, Result};
+use crate::guest::{self, GuestProbe, PHASE_INSTALLED, PHASE_KEY};
 use crate::import::resolve_concrete_datastore;
-
-/// Condition type set on `VSphereMachine.status.conditions`.
-mod condition_types {
-    pub const READY: &str = "Ready";
-}
 
 /// Stable `reason` strings on the conditions. Keep these stable — operators
 /// match against them in alerts and tests.
@@ -673,6 +669,11 @@ async fn patch_status_success(
         instance_uuid: None,
         observed_power_state: power_state,
         tpm_attached,
+        // Nothing has looked yet — the clone just came into existence this
+        // reconcile and, per ADR-0043 Decision 3, the marker cannot survive
+        // a power cycle it hasn't even had its first boot before. The
+        // ongoing `refresh_power_state` path is what starts observing it.
+        guest_installed: None,
         conditions,
         observed_generation: Some(generation),
     };
@@ -681,13 +682,12 @@ async fn patch_status_success(
 
 /// ADR-0034: once provisioned, `reconcile` no longer resolves
 /// template/datastore/network or clones — that ADR-0024 reasoning still
-/// holds. It does perform exactly one cheap read (`VSphereClient::
-/// power_state`) so `status.observedPowerState` (and the parent
-/// VirtualMachine's own Power printcolumn) reflect a VM manually powered
-/// off/suspended out-of-band in vCenter, rather than staying frozen at
-/// whatever was true at creation. Only patches when the observed value
-/// actually changed, to avoid a no-op status write every `requeue_long`
-/// tick.
+/// holds. It does perform two cheap reads — `VSphereClient::power_state`
+/// (ADR-0034) and, while the VM is running, `VSphereClient::guest_info` for
+/// the installed-guest marker (ADR-0043) — so `status.observedPowerState`
+/// and `status.guestInstalled`/`GuestReady` reflect reality rather than
+/// staying frozen at whatever was true at creation. Only patches when
+/// something actually changed, to avoid a no-op status write every requeue.
 async fn refresh_power_state(
     ctx: &Context,
     namespace: &str,
@@ -719,17 +719,33 @@ async fn refresh_power_state(
     };
     match client.power_state(&vm_ref).await {
         Ok(observed) => {
+            let guest_probe = guest::probe_guest(client, &vm_ref, observed.clone()).await?;
+            let guest_installed =
+                guest::sticky_guest_installed(current.guest_installed, guest_probe.is_installed());
+
             let already_reported_healthy = current
                 .conditions
                 .iter()
                 .any(|c| c.type_ == condition_types::READY && c.status == condition_status::TRUE);
-            if current.observed_power_state.as_ref() != Some(&observed) || !already_reported_healthy
+            if current.observed_power_state.as_ref() != Some(&observed)
+                || current.guest_installed != guest_installed
+                || !already_reported_healthy
             {
-                info!(vm_ref, power_state = ?observed, "observed power state changed");
-                let next = status_with_observed_power_state(current, observed, generation);
+                info!(vm_ref, power_state = ?observed, guest = ?guest_probe, "observed state changed");
+                let next = status_with_observed_state(
+                    current,
+                    observed,
+                    guest_installed,
+                    guest_probe,
+                    generation,
+                );
                 patch_machine_status(ctx, namespace, name, next).await?;
             }
-            Ok(requeue_long())
+            Ok(if guest::should_poll_soon(guest_probe) {
+                requeue_default()
+            } else {
+                requeue_long()
+            })
         }
         Err(e) if is_backend_missing_error(&e) => {
             warn!(vm_ref, error = %e, "backend VM no longer exists — reporting BackendMissing");
@@ -779,8 +795,8 @@ fn status_reporting_backend_problem(
     current
 }
 
-/// Build the status to (re-)apply after observing a new power state —
-/// starting from the *entire current* status, not a narrow
+/// Build the status to (re-)apply after observing a new power state and
+/// guest probe — starting from the *entire current* status, not a narrow
 /// `{observedPowerState, observedGeneration}` object. Pure, so this
 /// preservation contract is unit-testable without a kube client.
 ///
@@ -793,12 +809,15 @@ fn status_reporting_backend_problem(
 /// that point) — `finalize()` then read `vm_ref` as `None` and skipped
 /// `destroy_vm` entirely, orphaning the backend VM in vCenter on delete.
 /// The same field manager must always apply the same complete field set.
-fn status_with_observed_power_state(
+fn status_with_observed_state(
     mut current: VSphereMachineStatus,
-    observed: PowerState,
+    observed_power: PowerState,
+    guest_installed: Option<bool>,
+    guest: GuestProbe,
     generation: i64,
 ) -> VSphereMachineStatus {
-    current.observed_power_state = Some(observed);
+    current.observed_power_state = Some(observed_power);
+    current.guest_installed = guest_installed;
     current.observed_generation = Some(generation);
     // A successful power_state read means the backend VM demonstrably
     // exists and answered — restore Ready=True/Reconciled here so a
@@ -813,6 +832,40 @@ fn status_with_observed_power_state(
         "VSphereMachine provisioned",
         generation,
     );
+
+    // GuestReady is additive and independent of Ready (ADR-0043 Decision
+    // 4): making Ready depend on it would regress every Immediate-mode VM
+    // whose image never sends this marker. It is published ONLY when this
+    // provider can actually evaluate it — a stopped VM cannot be, since the
+    // marker does not survive a power cycle — because a blanket `False`
+    // makes `pool.rs::readiness_signal_absent` read "wait a bit" instead of
+    // "this will never warm" for an image with no phase stage. Amended into
+    // the libvirt half of this ADR after exactly that failure showed up on
+    // a real cluster; mirrored here from the start.
+    let installed = guest_installed == Some(true);
+    if installed || guest == GuestProbe::NotAnnounced {
+        let (guest_status, guest_reason, guest_message) = if installed {
+            (
+                condition_status::TRUE,
+                "GuestAnnounced",
+                "the installed guest announced itself".to_string(),
+            )
+        } else {
+            (
+                condition_status::FALSE,
+                "GuestNotAnnounced",
+                format!("vCenter reports no {PHASE_KEY}={PHASE_INSTALLED} extraConfig entry yet"),
+            )
+        };
+        set_condition(
+            &mut current.conditions,
+            condition_types::GUEST_READY,
+            guest_status,
+            guest_reason,
+            guest_message,
+            generation,
+        );
+    }
     current
 }
 

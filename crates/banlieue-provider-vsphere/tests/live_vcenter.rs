@@ -116,7 +116,12 @@ async fn connect(settings: &Settings) -> Box<dyn VSphereClient> {
 /// This is the assertion that matters: it is the only place the JSON transport,
 /// the TLS/BYOC path, and `vim_rs`'s decoding of vCenter's object model are all
 /// exercised together against a real server.
-#[tokio::test]
+///
+/// `flavor = "multi_thread"`: found live against a real vCenter — plain
+/// `#[tokio::test]`'s single-threaded runtime panics on client teardown
+/// with "can call blocking only when running on the multi-threaded
+/// runtime" (`vim_rs::core::client`), so every test in this file needs it.
+#[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires a real vCenter; set VSPHERE_ENDPOINT / VSPHERE_USERNAME / VSPHERE_PASSWORD"]
 async fn connect_and_walk_inventory_against_real_vcenter() {
     let settings = require_settings();
@@ -193,7 +198,7 @@ async fn connect_and_walk_inventory_against_real_vcenter() {
 ///
 /// Separate because it needs a template name that exists in *your* inventory,
 /// and there is no environment-independent default.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires a real vCenter and VSPHERE_TEMPLATE naming a template in it"]
 async fn find_template_against_real_vcenter() {
     let settings = require_settings();
@@ -236,7 +241,7 @@ async fn find_template_against_real_vcenter() {
 /// Guards the "not found" path the `VMImage` reconciler branches on — if it
 /// surfaced as an error instead, an image would report a hard failure rather
 /// than `TemplateNotFound`.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires a real vCenter; set VSPHERE_ENDPOINT / VSPHERE_USERNAME / VSPHERE_PASSWORD"]
 async fn a_missing_template_is_none_rather_than_an_error() {
     let settings = require_settings();
@@ -255,5 +260,57 @@ async fn a_missing_template_is_none_rather_than_an_error() {
         Ok(None) => eprintln!("  absent template correctly reported as None"),
         Ok(Some(t)) => panic!("vCenter returned a template for a bogus name: {}", t.moref),
         Err(e) => panic!("a missing template must be Ok(None), not an error: {e}"),
+    }
+}
+
+/// ADR-0043's vSphere transport: reading `config.extraConfig` off a real VM.
+///
+/// Found live against a real, already-provisioned `VSphereMachine`
+/// (2026-09-22), in two rounds:
+///
+/// 1. The first implementation fetched the *whole* `config` property
+///    (`VimVirtualMachine::config()`); `VirtualMachineConfigInfo` failed to
+///    decode against the real response ("JSON property decode failed"),
+///    breaking every subsequent reconcile of an already-provisioned
+///    `VSphereMachine`, not just guest probing. Root cause:
+///    `vim_rs::types::vim_any::VimAny`'s `Deserialize` only implements the
+///    polymorphic map shape and cannot parse a bare-string `OptionValue`
+///    value.
+/// 2. Once `guest_info` bypassed that (parsing raw JSON by hand), a *known*
+///    key still round-tripped as `None`: the real wrapper is
+///    `{"_typeName": "string", "_value": "..."}` — underscore-prefixed
+///    `_value`, not the bare `value` first assumed.
+///
+/// This test checks both: that reading succeeds at all (`guestinfo.banlieue.
+/// phase`, expected absent on most VMs), and — when `VSPHERE_TEST_KNOWN_KEY`
+/// names a key known to exist on this VM (e.g. `guestinfo.network.hostname`,
+/// which `build_guestinfo` sets unconditionally on any VM banlieue itself
+/// cloned) — that its value actually comes back non-empty, not silently
+/// `None`.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires a real vCenter and VSPHERE_TEST_VM_MOREF naming an existing VM (e.g. vm-1234)"]
+async fn guest_info_reads_extra_config_against_real_vcenter() {
+    let settings = require_settings();
+    let vm_moref = std::env::var("VSPHERE_TEST_VM_MOREF")
+        .expect("set VSPHERE_TEST_VM_MOREF to an existing VM's moref, e.g. vm-1234");
+
+    let client = connect(&settings).await;
+    let value = client
+        .guest_info(&vm_moref, "guestinfo.banlieue.phase")
+        .await
+        .unwrap_or_else(|e| panic!("guest_info({vm_moref}) failed: {e}"));
+    eprintln!("  guestinfo.banlieue.phase = {value:?}");
+
+    if let Ok(known_key) = std::env::var("VSPHERE_TEST_KNOWN_KEY") {
+        let known_value = client
+            .guest_info(&vm_moref, &known_key)
+            .await
+            .unwrap_or_else(|e| panic!("guest_info({vm_moref}, {known_key}) failed: {e}"));
+        eprintln!("  {known_key} = {known_value:?}");
+        assert!(
+            known_value.is_some_and(|v| !v.is_empty()),
+            "{known_key} was expected to be set on {vm_moref} but read back as None/empty — \
+             the extraConfig value-wrapper shape may have changed again"
+        );
     }
 }
