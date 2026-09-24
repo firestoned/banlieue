@@ -221,7 +221,7 @@ dependencies = [
 
 [[package]]
 name = "banlieue"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "banlieue-controller",
@@ -236,7 +236,7 @@ dependencies = [
 
 [[package]]
 name = "banlieue-api"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "clap",
  "k8s-openapi",
@@ -249,7 +249,7 @@ dependencies = [
 
 [[package]]
 name = "banlieue-controller"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -271,7 +271,7 @@ dependencies = [
 
 [[package]]
 name = "banlieue-imagebuilder"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "banlieue-api",
@@ -291,7 +291,7 @@ dependencies = [
 
 [[package]]
 name = "banlieue-libvirt"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "rustls",
  "rustls-pki-types",
@@ -302,7 +302,7 @@ dependencies = [
 
 [[package]]
 name = "banlieue-operator"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "banlieue-api",
@@ -322,7 +322,7 @@ dependencies = [
 
 [[package]]
 name = "banlieue-provider-libvirt"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -348,10 +348,11 @@ dependencies = [
 
 [[package]]
 name = "banlieue-provider-sdk"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "banlieue-api",
+ "base64 0.22.1",
  "chrono",
  "futures",
  "k8s-openapi",
@@ -367,7 +368,7 @@ dependencies = [
 
 [[package]]
 name = "banlieue-provider-vsphere"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -394,7 +395,7 @@ dependencies = [
 
 [[package]]
 name = "banlieue-vex"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "chrono",

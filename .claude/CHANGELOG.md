@@ -126,8 +126,59 @@ certificate, and ADR-0049 (Proposed) was blocked on it: without the anchor
 there is nothing to verify an attestation quote against, and the handshake
 degrades to trusting whatever answered on the port.
 
+### Review fixes (code review, before commit)
+- **`parse_ek_pem_str` stripped trailing junk but not leading junk.** The
+  first fix sliced the input by what `x509_parser` did not consume — but the
+  parser *skips* lines that do not begin a PEM block and counts them in its
+  position, so `"EVIL-PREFIX: pwned\n<valid cert>"` sliced back to a string
+  that still carried the prefix, still matched on CN, and was published.
+  Confirmed empirically against x509-parser 0.18.1. Publication now
+  **re-encodes from the parsed DER**, so no input layout can smuggle bytes
+  through. Test covers all four wrappings (leading, trailing, both, extra
+  block).
+- **`der_to_pem` moved to `banlieue-provider-sdk::pem`.** Both providers now
+  need it — vSphere for vCenter's DER, libvirt for the re-encode above — so
+  there is one definition of "what we publish" rather than two that can
+  drift.
+- **`should_poll_soon` gained `ek_pending`.** A `tpmEnabled` member dropped to
+  the 300s requeue the moment its phase marker landed, and the example
+  cloud-config writes the certificate *after* that marker — so it sat
+  unbindable at `TpmEndorsementPending` for up to five minutes, which is the
+  entire latency budget a warm pool exists to remove.
+- **The EK probe is skipped once the certificate is recorded**, instead of
+  costing three guest-agent round trips per reconcile forever for an answer
+  that cannot change what is published.
+- **A mismatch after publication is now a test**, not an accident: it
+  withdraws `GuestReady` while leaving the published certificate intact.
+- **Corrected two overclaims.** The threat model said "a `tpmEnabled` member
+  is not bindable until it publishes one" — true on libvirt only; vSphere
+  neither publishes `GuestReady` nor gates on the certificate. And a code
+  comment said the vSphere observe path retries the read; it does not.
+
+### Known gaps, recorded not fixed
+- **vSphere reads the certificate once, on the create path.** `reconcile`
+  short-circuits provisioned machines to `refresh_power_state`, which does not
+  read it, so if vCenter populates `endorsementKeyCertificate` asynchronously
+  the first read returns empty and nothing retries. Unresolvable without a
+  vCenter to determine which behaviour is real. **Treat the vSphere path as
+  unproven**; libvirt is the verified one.
+- **`patch_status_failed` retracts fields (pre-existing).** It applies only
+  `{conditions, observedGeneration}` from the same field manager that
+  elsewhere applies the whole status — the exact hazard
+  `status_with_observed_power_state`'s own comment documents hitting live.
+  One transient vCenter error therefore retracts `vmRef`, `tpmAttached` and
+  now `tpmEndorsementCertificates`. **Predates this change and is not fixed
+  here** — it affects the vSphere error path generally and deserves its own
+  change against an environment that can verify it.
+
 ### Impact
-- [ ] Breaking change
+- [x] **Breaking change** — an existing `tpmEnabled` libvirt machine whose
+      image lacks the new EK-export cloud-config layer flips from
+      `GuestReady=True` to `False/TpmEndorsementPending` on controller
+      upgrade and falls out of its warm pool. Add the layer from
+      `examples/20-cloud-config-guest-ek-certificate.yaml` (and `tpm2-tools`)
+      and rebuild the image before rolling this out. Machines with
+      `tpmEnabled: false` are unaffected.
 - [x] Requires cluster rollout (CRD schema gains a status field)
 - [ ] Config change only
 - [ ] Documentation only

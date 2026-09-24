@@ -183,7 +183,7 @@ async fn a_real_swtpm_certificate_is_read_and_bound_to_its_domain() {
     let spec = spec(&domain_name, &pool, &source_volume);
     eprintln!("booting {domain_name} (vTPM enabled) from {source_volume}");
 
-    let outcome = converge(&mut client, &spec, false).await;
+    let outcome = converge(&mut client, &spec, false, false).await;
     let result = match &outcome {
         Ok(observed) => exercise(&mut agent_session, &observed.domain, &spec.domain_name).await,
         // A host without swtpm fails here, at domain start — say so, rather

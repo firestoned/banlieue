@@ -15,6 +15,7 @@
 //! bound, or retry forever.
 
 use banlieue_libvirt::{AGENT_TIMEOUT_DEFAULT, Domain, Session, domain_qemu_agent_command};
+use banlieue_provider_sdk::pem::der_to_pem;
 use base64::Engine as _;
 use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -171,20 +172,22 @@ pub fn parse_ek_pem(reply: &str) -> Option<String> {
 /// text rather than an agent reply.
 #[must_use]
 pub fn parse_ek_pem_str(text: &str) -> Option<String> {
-    let (rest, pem) = x509_parser::pem::parse_x509_pem(text.as_bytes()).ok()?;
+    let (_, pem) = x509_parser::pem::parse_x509_pem(text.as_bytes()).ok()?;
     // A `PRIVATE KEY` block is valid PEM and is not a certificate.
     if pem.label != "CERTIFICATE" {
         return None;
     }
     // Parses as X.509, or it is not a certificate whatever its label says.
     pem.parse_x509().ok()?;
-    // Return ONLY the first block, never the caller's whole buffer. Anything
-    // the guest appended after a valid certificate — a second block, or
-    // trailing junk — would otherwise ride along into a status field that
-    // consumers treat as a certificate. `rest` is what the parser did not
-    // consume, so the block ends where it begins.
-    let end = text.len().checked_sub(rest.len())?;
-    Some(text.get(..end)?.trim().to_string())
+    // Re-encode from the DER that actually parsed, rather than returning any
+    // slice of the guest's buffer. Slicing is what an earlier version did and
+    // it was wrong in a way that is easy to miss: `x509_parser` SKIPS leading
+    // lines that do not begin a PEM block and counts them in its position, so
+    // "junk\n<valid cert>" sliced back to a string that still carried the
+    // junk, still matched on CN, and was published. Re-encoding makes the
+    // published value exactly one certificate by construction — there is no
+    // input layout that can smuggle bytes past it.
+    Some(der_to_pem(&pem.contents))
 }
 
 /// Whether `pem` is a certificate issued to exactly this domain.

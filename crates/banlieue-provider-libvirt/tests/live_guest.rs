@@ -201,7 +201,7 @@ async fn a_real_guest_agent_serves_the_read_path() {
     let spec = spec(&domain_name, &pool, &source_volume);
     eprintln!("booting {domain_name} from {source_volume}");
 
-    let outcome = converge(&mut client, &spec, false).await;
+    let outcome = converge(&mut client, &spec, false, false).await;
     let result = match &outcome {
         Ok(observed) => exercise(&mut agent_session, &observed.domain).await,
         Err(e) => Err(format!("converge failed: {e}")),

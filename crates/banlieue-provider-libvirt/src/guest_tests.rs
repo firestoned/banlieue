@@ -315,20 +315,48 @@ mod tests {
         );
     }
 
-    /// A guest may append anything after a valid certificate. Only the
-    /// certificate is published — the rest never reaches a status field
-    /// consumers feed to a certificate library.
+    /// A guest may wrap anything around a valid certificate. Only the
+    /// certificate is published — nothing the guest bolted on reaches a
+    /// status field consumers feed to a certificate library.
+    ///
+    /// Both directions, because the first fix here only handled one. Slicing
+    /// the input by what the parser did not consume dropped trailing bytes
+    /// but kept LEADING ones: `x509_parser` skips lines that do not start a
+    /// PEM block and counts them in its position, so the slice still carried
+    /// them and `ek_cn_matches` still passed. Publication now re-encodes from
+    /// the parsed DER, so no input layout can smuggle bytes through.
     #[test]
-    fn trailing_bytes_after_a_certificate_are_not_published() {
-        let padded = format!("{SWTPM_EK_PEM}-----BEGIN EVIL-----\ngotcha\n-----END EVIL-----\n");
-        let got = parse_ek_pem(&ek_reply(&padded)).expect("the certificate still parses");
-        assert!(!got.contains("EVIL"), "trailing block leaked: {got}");
-        assert!(!got.contains("gotcha"), "trailing junk leaked: {got}");
-        assert!(
-            got.trim_end().ends_with("-----END CERTIFICATE-----"),
-            "{got}"
-        );
-        // And it is still the certificate it claims to be.
-        assert!(ek_cn_matches(&got, FIXTURE_DOMAIN, FIXTURE_UUID));
+    fn bytes_wrapped_around_a_certificate_are_not_published() {
+        let cases = [
+            (
+                "trailing block",
+                format!("{SWTPM_EK_PEM}-----BEGIN EVIL-----\ngotcha\n-----END EVIL-----\n"),
+            ),
+            ("trailing junk", format!("{SWTPM_EK_PEM}gotcha\n")),
+            (
+                "leading junk",
+                format!("EVIL-PREFIX: gotcha\nsecond line\n{SWTPM_EK_PEM}"),
+            ),
+            (
+                "both",
+                format!("EVIL-PREFIX: gotcha\n{SWTPM_EK_PEM}trailing gotcha\n"),
+            ),
+        ];
+        for (what, raw) in cases {
+            let got = parse_ek_pem(&ek_reply(&raw))
+                .unwrap_or_else(|| panic!("{what}: the certificate should still parse"));
+            assert!(
+                got.starts_with("-----BEGIN CERTIFICATE-----"),
+                "{what}: leading bytes leaked: {got}"
+            );
+            assert!(
+                got.trim_end().ends_with("-----END CERTIFICATE-----"),
+                "{what}: trailing bytes leaked: {got}"
+            );
+            assert!(!got.contains("gotcha"), "{what}: junk leaked: {got}");
+            assert!(!got.contains("EVIL"), "{what}: junk leaked: {got}");
+            // And it is still the certificate it claims to be.
+            assert!(ek_cn_matches(&got, FIXTURE_DOMAIN, FIXTURE_UUID), "{what}");
+        }
     }
 }

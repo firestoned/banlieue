@@ -144,12 +144,29 @@ pub async fn reconcile(machine: Arc<LibvirtMachine>, ctx: Arc<Context>) -> Resul
         .and_then(|s| s.install_media_detached)
         .unwrap_or(false);
 
-    match converge(client.as_mut(), &machine.spec, already_detached).await {
+    let ek_already_published = machine
+        .status
+        .as_ref()
+        .is_some_and(|s| !s.tpm_endorsement_certificates.is_empty());
+
+    match converge(
+        client.as_mut(),
+        &machine.spec,
+        already_detached,
+        ek_already_published,
+    )
+    .await
+    {
         Ok(observed) => {
             let status = build_status(&machine, &observed, generation);
+            // Read the EK gate off the status we just built, not off the CR:
+            // a certificate published on THIS pass must not also buy a
+            // five-minute wait (ADR-0045).
+            let ek_pending =
+                machine.spec.tpm_enabled && status.tpm_endorsement_certificates.is_empty();
             patch_status(&api, &name, &status).await?;
             Ok(
-                if should_poll_soon(observed.guest, !observed.addresses.is_empty()) {
+                if should_poll_soon(observed.guest, !observed.addresses.is_empty(), ek_pending) {
                     requeue_default()
                 } else {
                     requeue_long()
@@ -239,6 +256,7 @@ pub async fn converge(
     client: &mut dyn LibvirtMachineClient,
     spec: &LibvirtMachineSpec,
     already_detached: bool,
+    ek_already_published: bool,
 ) -> Result<Observed> {
     let pool = client
         .lookup_pool(&spec.pool)
@@ -388,7 +406,11 @@ pub async fn converge(
     // a vTPM, and only from a running domain: there is no certificate
     // otherwise, and asking costs a round trip per reconcile against every
     // VM that can never answer.
-    let ek = if spec.tpm_enabled && state.is_running() {
+    // Only while there is still something to learn: once the certificate is
+    // recorded it is sticky, so continuing to ask costs three guest-agent
+    // round trips per reconcile, forever, for an answer that cannot change
+    // what is published (ADR-0045).
+    let ek = if spec.tpm_enabled && state.is_running() && !ek_already_published {
         client
             .read_ek_certificate(&domain, &spec.domain_name, &format_uuid(&domain.uuid))
             .await
@@ -906,9 +928,17 @@ async fn patch_status(
 /// correction Decision 8 needed. An `Immediate` image has no phase stage
 /// and usually no guest agent, so "poll until installed" would poll every
 /// 30s forever, per VM, for a signal that is never coming.
+///
+/// A `tpmEnabled` machine that has announced itself but not yet published
+/// its EK certificate is also "expecting the answer to change" (ADR-0045).
+/// Without this it falls to `requeue_long()` the moment the phase marker
+/// lands, and the example cloud-config writes the certificate *after* that
+/// marker — so a warm pool member would sit unbindable at
+/// `TpmEndorsementPending` for up to five minutes, which is the whole
+/// latency budget a pool exists to eliminate.
 #[must_use]
-pub fn should_poll_soon(guest: GuestProbe, has_addresses: bool) -> bool {
-    if !has_addresses {
+pub fn should_poll_soon(guest: GuestProbe, has_addresses: bool, ek_pending: bool) -> bool {
+    if !has_addresses || ek_pending {
         return true;
     }
     guest == GuestProbe::NotAnnounced

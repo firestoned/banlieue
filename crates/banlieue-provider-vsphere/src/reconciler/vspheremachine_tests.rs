@@ -392,48 +392,61 @@ mod tests {
         assert_eq!(next.observed_generation, Some(2));
     }
 
-    // ------------------------------------------------------------------
-    // ADR-0045 — vCenter hands the EK certificate over as DER
-    // ------------------------------------------------------------------
-
-    /// The conversion has to produce something a certificate library will
-    /// actually accept, which means the RFC 7468 framing and 64-character
-    /// lines — not just base64 with a header glued on.
+    /// Every Ready=False report must preserve the rest of status, not just
+    /// the backend-problem ones. `patch_status_failed` used to SSA-apply a
+    /// narrow `{conditions, observedGeneration}` from the SAME field manager
+    /// that elsewhere applies the whole struct, which makes the apiserver
+    /// retract every field the narrow payload omits — the exact hazard
+    /// `status_with_observed_power_state`'s doc comment records hitting live
+    /// (it wiped `vmRef`, so `finalize()` skipped `destroy_vm` and orphaned
+    /// the VM). One transient vCenter blip on an already-provisioned machine
+    /// would therefore drop `vmRef`, `tpmAttached` and — since ADR-0045 —
+    /// the attestation anchor a claim is supposed to publish.
     #[test]
-    fn der_becomes_well_formed_pem() {
-        use super::super::der_to_pem;
-        // 200 bytes, so the payload is several lines long.
-        let der: Vec<u8> = (0..200u32).map(|i| (i % 251) as u8).collect();
-        let pem = der_to_pem(&der);
+    fn reporting_a_failure_preserves_every_other_field() {
+        use super::super::status_reporting_failure;
+        use banlieue_api::common::InitializationStatus;
 
-        assert!(pem.starts_with("-----BEGIN CERTIFICATE-----\n"), "{pem}");
-        assert!(pem.ends_with("-----END CERTIFICATE-----\n"), "{pem}");
+        let current = VSphereMachineStatus {
+            initialization: InitializationStatus {
+                provisioned: Some(true),
+            },
+            vm_ref: Some("vm-1234".to_string()),
+            instance_uuid: Some("uuid-1234".to_string()),
+            failure_domain: Some("dc1".to_string()),
+            observed_power_state: Some(PowerState::PoweredOn),
+            tpm_attached: Some(true),
+            tpm_endorsement_certificates: vec![
+                "-----BEGIN CERTIFICATE-----\nstub\n-----END CERTIFICATE-----".to_string(),
+            ],
+            ..Default::default()
+        };
 
-        let body: Vec<&str> = pem.lines().filter(|l| !l.starts_with("-----")).collect();
-        assert!(body.len() > 1, "a 200-byte certificate must wrap");
-        for line in &body[..body.len() - 1] {
-            assert_eq!(line.len(), 64, "every full line is 64 chars: {line:?}");
-        }
+        let next = status_reporting_failure(
+            current.clone(),
+            "ProvisionFailed",
+            "vCenter connection refused".to_string(),
+            3,
+        );
 
-        // And it round-trips back to the bytes vCenter gave us.
-        use base64::Engine as _;
-        let decoded = base64::engine::general_purpose::STANDARD
-            .decode(body.concat())
-            .expect("body is valid base64");
-        assert_eq!(decoded, der);
-    }
+        assert_eq!(next.vm_ref, current.vm_ref);
+        assert_eq!(next.instance_uuid, current.instance_uuid);
+        assert_eq!(next.failure_domain, current.failure_domain);
+        assert_eq!(next.initialization, current.initialization);
+        assert_eq!(next.observed_power_state, current.observed_power_state);
+        assert_eq!(next.tpm_attached, current.tpm_attached);
+        assert_eq!(
+            next.tpm_endorsement_certificates, current.tpm_endorsement_certificates,
+            "a transient failure must not retract the attestation anchor (ADR-0045)"
+        );
 
-    /// A VM with no vTPM has no certificate, and an empty DER must not
-    /// produce a PEM block claiming to be one.
-    #[test]
-    fn an_exact_multiple_of_the_line_width_does_not_emit_a_blank_line() {
-        use super::super::der_to_pem;
-        // 48 bytes -> exactly 64 base64 characters -> exactly one line.
-        let der = vec![7u8; 48];
-        let pem = der_to_pem(&der);
-        assert!(!pem.contains("\n\n"), "{pem}");
-        let body: Vec<&str> = pem.lines().filter(|l| !l.starts_with("-----")).collect();
-        assert_eq!(body.len(), 1, "{pem}");
-        assert_eq!(body[0].len(), 64);
+        let ready = next
+            .conditions
+            .iter()
+            .find(|c| c.type_ == "Ready")
+            .expect("Ready present");
+        assert_eq!(ready.status, "False");
+        assert_eq!(ready.reason, "ProvisionFailed");
+        assert_eq!(next.observed_generation, Some(3));
     }
 }

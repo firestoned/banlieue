@@ -193,10 +193,27 @@ libvirt. A compromised host's local CA is revoked by removing it from the
 trust bundle, which is ADR-0049's problem and another reason that bundle is
 explicit and admin-supplied rather than discovered.
 
-**vSphere's half is unverifiable for now.** There is no vCenter available to
-this project, so Decision 4 ships as code with unit tests and without a live
-run, the same position ADR-0043's and ADR-0044's vSphere halves are in. The
-libvirt path is verified end-to-end against a real host.
+**vSphere's half is unverifiable, and is read once.** There is no vCenter
+available to this project, so Decision 4 ships as code with unit tests and
+without a live run — the same position ADR-0043's and ADR-0044's vSphere
+halves are in. It carries a known gap on top of that: the read happens only
+on the create path, because `reconcile` short-circuits every provisioned
+machine to a power-state refresh that does not read it. If vCenter populates
+`endorsementKeyCertificate` asynchronously with the vTPM attach, the first
+read returns empty and nothing retries, so the machine publishes no anchor
+at all. Which behaviour is real is precisely what no environment has been
+available to determine. **Treat the vSphere path as unproven.** The libvirt
+path is verified end-to-end against a real host.
+
+**A pre-existing SSA retraction reaches this field.**
+`patch_status_failed` applies only `{conditions, observedGeneration}` from
+the same field manager that elsewhere applies the whole status — the exact
+hazard `status_with_observed_power_state`'s own comment documents having hit
+live ("the same field manager must always apply the same complete field
+set"). So one transient vCenter error retracts `vmRef`, `tpmAttached` and
+now `tpmEndorsementCertificates`. This predates this ADR and is not fixed
+here; it is recorded because it makes the vSphere anchor strictly less
+durable than this document otherwise implies.
 
 **This unblocks phase F.** ADR-0049 was Proposed and blocked on exactly this
 field. With the certificate on the claim, the remaining work there is the

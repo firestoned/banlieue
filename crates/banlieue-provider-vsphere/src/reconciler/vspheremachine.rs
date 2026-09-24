@@ -29,6 +29,7 @@ use banlieue_api::infrastructure::{
     VSphereMachine, VSphereMachineSpec, VSphereMachineStatus, VSphereNicSpec,
 };
 use banlieue_provider_sdk::finalizer::{ensure_finalizer, remove_finalizer};
+use banlieue_provider_sdk::pem::der_to_pem;
 use banlieue_provider_sdk::reconciler::{requeue_default, requeue_long, requeue_on_error};
 use banlieue_provider_sdk::ssa::FIELD_MANAGER_PROVIDER_VSPHERE;
 use banlieue_provider_sdk::status::{condition_status, set_condition};
@@ -377,9 +378,16 @@ pub async fn ensure_vm(
 
     // ADR-0045: record the endorsement certificate here, between the attach
     // and the power-on, so the certificate-to-VM binding is established
-    // while the VM is still something only banlieue has touched. An empty
-    // answer is not an error — vCenter may not have issued it yet — and the
-    // observe path picks it up on a later reconcile.
+    // while the VM is still something only banlieue has touched.
+    //
+    // KNOWN GAP: this is the ONLY place it is read. `reconcile` short-
+    // circuits every already-provisioned machine to `refresh_power_state`,
+    // which does not read it, so an empty answer here is never retried and
+    // the machine publishes no anchor for its whole life. Whether vCenter
+    // populates `VirtualTpm.endorsementKeyCertificate` synchronously with
+    // the attach is exactly the question no environment has been available
+    // to answer. Until one is, treat the vSphere half as unproven rather
+    // than working — the libvirt path is the verified one.
     let tpm_endorsement_certificates = if spec.tpm_enabled {
         let der = client.tpm_endorsement_certificates(&vm_ref).await?;
         if der.is_empty() {
@@ -447,11 +455,9 @@ pub async fn reconcile(machine: Arc<VSphereMachine>, ctx: Arc<Context>) -> Resul
         .as_ref()
         .is_some_and(|s| s.initialization.provisioned == Some(true));
 
-    let existing = machine
-        .status
-        .as_ref()
-        .map(|s| s.conditions.clone())
-        .unwrap_or_default();
+    // The WHOLE current status, not just its conditions: a failure report
+    // re-applies every field, or SSA retracts the ones it omits.
+    let existing = machine.status.clone().unwrap_or_default();
 
     let provider_api: Api<Provider> = Api::namespaced(ctx.client.clone(), &namespace);
     let provider = match provider_api.get(&machine.spec.provider_ref.name).await {
@@ -463,7 +469,7 @@ pub async fn reconcile(machine: Arc<VSphereMachine>, ctx: Arc<Context>) -> Resul
                 &namespace,
                 &name,
                 generation,
-                &existing,
+                existing.clone(),
                 reasons::PROVIDER_NOT_FOUND,
                 format!("Provider {:?} not found", machine.spec.provider_ref.name),
             )
@@ -488,7 +494,7 @@ pub async fn reconcile(machine: Arc<VSphereMachine>, ctx: Arc<Context>) -> Resul
                 &namespace,
                 &name,
                 generation,
-                &existing,
+                existing.clone(),
                 reason,
                 format!("{e}"),
             )
@@ -512,7 +518,7 @@ pub async fn reconcile(machine: Arc<VSphereMachine>, ctx: Arc<Context>) -> Resul
                 &namespace,
                 &name,
                 generation,
-                &existing,
+                existing.clone(),
                 reasons::CONNECT_FAILED,
                 format!("{e}"),
             )
@@ -534,7 +540,7 @@ pub async fn reconcile(machine: Arc<VSphereMachine>, ctx: Arc<Context>) -> Resul
                 &namespace,
                 &name,
                 generation,
-                &existing,
+                existing.clone(),
                 reasons::CONNECT_FAILED,
                 format!("{e}"),
             )
@@ -578,7 +584,7 @@ pub async fn reconcile(machine: Arc<VSphereMachine>, ctx: Arc<Context>) -> Resul
     {
         Ok(outcome) => {
             info!(vm_ref = %outcome.vm_ref, "VSphereMachine provisioned");
-            patch_status_success(&ctx, &namespace, &name, generation, &existing, outcome).await?;
+            patch_status_success(&ctx, &namespace, &name, generation, &existing.conditions, outcome).await?;
             Ok(requeue_long())
         }
         Err(e) => {
@@ -588,7 +594,7 @@ pub async fn reconcile(machine: Arc<VSphereMachine>, ctx: Arc<Context>) -> Resul
                 &namespace,
                 &name,
                 generation,
-                &existing,
+                existing.clone(),
                 reasons::PROVISION_FAILED,
                 format!("{e}"),
             )
@@ -731,7 +737,7 @@ async fn refresh_power_state(
     // nothing forever, which is what happened before this fix.
     let Some(vm_ref) = current.vm_ref.clone() else {
         warn!("provisioned but status.vmRef is unset — reporting BackendRefMissing");
-        let next = status_reporting_backend_problem(
+        let next = status_reporting_failure(
             current,
             reasons::BACKEND_REF_MISSING,
             "status.initialization.provisioned is true but status.vmRef is unset; this cannot be auto-repaired — recreate this VirtualMachine if the backend VM is actually gone".to_string(),
@@ -756,7 +762,7 @@ async fn refresh_power_state(
         }
         Err(e) if is_backend_missing_error(&e) => {
             warn!(vm_ref, error = %e, "backend VM no longer exists — reporting BackendMissing");
-            let next = status_reporting_backend_problem(
+            let next = status_reporting_failure(
                 current,
                 reasons::BACKEND_MISSING,
                 format!("backend VM {vm_ref:?} no longer exists in vCenter: {e}"),
@@ -780,11 +786,19 @@ fn is_backend_missing_error(e: &Error) -> bool {
         .contains("managedobjectnotfound")
 }
 
-/// Report a detected backend inconsistency on `Ready`, preserving every
-/// other field of `current` — never a narrow patch (see
-/// `status_with_observed_power_state`'s doc comment for why that's unsafe
-/// under SSA).
-fn status_reporting_backend_problem(
+/// Report a failure on `Ready`, preserving every other field of `current`
+/// — never a narrow patch (see `status_with_observed_power_state`'s doc
+/// comment for why that is unsafe under SSA).
+///
+/// Used for **every** `Ready=False` report, not only backend
+/// inconsistencies. `patch_status_failed` used to build a narrow
+/// `{conditions, observedGeneration}` object instead, from the same field
+/// manager that applies the whole struct elsewhere — so a single transient
+/// error (a 404 on the Provider, a vCenter blip) made the apiserver retract
+/// `vmRef`, `tpmAttached`, `initialization` and, since ADR-0045, the
+/// attestation anchor `tpmEndorsementCertificates`. That is the same defect
+/// whose `vmRef` half orphaned a VM in vCenter, recorded below.
+fn status_reporting_failure(
     mut current: VSphereMachineStatus,
     reason: &str,
     message: String,
@@ -839,36 +853,24 @@ fn status_with_observed_power_state(
     current
 }
 
-/// SSA-patch a failure condition onto `VSphereMachine.status.conditions`.
+/// Report a failure on `VSphereMachine.status`, applying the **complete**
+/// status.
+///
+/// Takes the current status rather than only its conditions: this field
+/// manager applies the whole struct on the success path, so anything left
+/// out of a payload here is retracted by the apiserver. See
+/// `status_reporting_failure`.
 async fn patch_status_failed(
     ctx: &Context,
     namespace: &str,
     name: &str,
     generation: i64,
-    existing_conditions: &[Condition],
+    current: VSphereMachineStatus,
     reason: &str,
     message: String,
 ) -> Result<()> {
-    let mut conditions = existing_conditions.to_vec();
-    set_condition(
-        &mut conditions,
-        condition_types::READY,
-        condition_status::FALSE,
-        reason,
-        &message,
-        generation,
-    );
-
-    let patch = json!({
-        "apiVersion": VSphereMachine::api_version(&()).to_string(),
-        "kind": VSphereMachine::kind(&()).to_string(),
-        "metadata": { "name": name, "namespace": namespace },
-        "status": {
-            "conditions": conditions,
-            "observedGeneration": generation,
-        },
-    });
-    apply_status_patch(ctx, namespace, name, patch).await
+    let next = status_reporting_failure(current, reason, message, generation);
+    patch_machine_status(ctx, namespace, name, next).await
 }
 
 async fn patch_machine_status(
@@ -906,28 +908,6 @@ mod vspheremachine_tests;
 #[cfg(test)]
 #[path = "vspheremachine_ensure_tests.rs"]
 mod vspheremachine_ensure_tests;
-
-/// PEM line length for base64 payloads, per RFC 7468 §2.
-const PEM_LINE_WIDTH: usize = 64;
-
-/// Encode a DER certificate as PEM (ADR-0045).
-///
-/// vCenter hands `VirtualTpm.endorsementKeyCertificate` over as DER; every
-/// consumer of `status.tpmEndorsementCertificates` wants to feed it to a
-/// certificate library, and a CR status is a text document — so the
-/// conversion happens here rather than in each verifier.
-#[must_use]
-pub fn der_to_pem(der: &[u8]) -> String {
-    use base64::Engine as _;
-    let b64 = base64::engine::general_purpose::STANDARD.encode(der);
-    let mut out = String::from("-----BEGIN CERTIFICATE-----\n");
-    for chunk in b64.as_bytes().chunks(PEM_LINE_WIDTH) {
-        out.push_str(std::str::from_utf8(chunk).unwrap_or_default());
-        out.push('\n');
-    }
-    out.push_str("-----END CERTIFICATE-----\n");
-    out
-}
 
 #[cfg(test)]
 #[path = "vspheremachine_finalize_tests.rs"]

@@ -16,6 +16,8 @@ k8s-openapi.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+# Re-encoding DER certificates as PEM for CR status (ADR-0045).
+base64.workspace = true
 thiserror.workspace = true
 # `net` + `io-util` back the health server, `signal` backs the shutdown future
 # (both live in `bootstrap`); `macros` + `rt-multi-thread` are the base runtime.
