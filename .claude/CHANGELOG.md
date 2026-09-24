@@ -1,5 +1,42 @@
 # Changelog
 
+## [2026-09-24 13:00] - Roadmap 18: split-image fast clone (verified base + per-VM sealed volume)
+
+**Author:** Erick Bourgeois
+
+### Context
+ADR-0052 rejected vSphere Instant Clone because memory forking is
+incompatible with per-VM vTPM sealing, but left the underlying want — fast
+provisioning — open. Roadmap 17's live pool numbers show the real cost is
+the per-clone Deferred install (~120.7s of a 130.3s warm-up), which exists
+only because Kairos encrypts at install time (ADR-0040). This roadmap plans
+the alternative: stop encrypting the fleet-shared base OS (it holds no
+secrets — integrity-protect it with dm-verity instead) and seal only an
+empty per-VM LUKS volume, created at first boot against that member's own
+fresh vTPM. Disk-only fast cloning (qcow2 backing file / vSphere linked
+clone / Proxmox linked clone / Cloud Hypervisor reflink) across all four
+providers; memory forking stays rejected.
+
+### Changed
+- `.github/community/18-split-image-fast-clone.md`: new roadmap — model,
+  five security invariants (incl. the cross-member unseal negative test as
+  a live-test deliverable), phases 0/A–G, per-provider paths, testing tiers,
+  explicit out-of-scope list. Reserves ADR-0066–0071 (0056–0058 and
+  0059–0065 are already held by roadmaps 15 and 09).
+- `ROADMAPS.md`: row 18 added, ⛔ not started.
+- `.github/community/README.md`: reading-order row 18 and
+  phase-dependency-graph node added.
+
+### Why
+Recording the design before any ADR/code, per ADD; ADR-0066 (the image
+contract, amending ADR-0040/0048) is the roadmap's own phase 0 gate.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
 ## [2026-09-24 12:10] - Roadmap audit: reconcile 04, 05, 08, 11, 12 and 17 with the tree
 
 **Author:** Erick Bourgeois
