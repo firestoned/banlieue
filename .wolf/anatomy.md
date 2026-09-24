@@ -1,11 +1,9 @@
 # anatomy.md
 
-> Auto-maintained by OpenWolf. Last scanned: 2026-09-23T22:36:34.115Z
-> Files: 474 tracked | Anatomy hits: 0 | Misses: 0
-
+> Auto-maintained by OpenWolf. Last scanned: 2026-09-24T16:00:46.762Z
+> Files: 477 tracked | Anatomy hits: 0 | Misses: 0
 
 ## ./
-
 
 - `.dockerignore` — Build-context allowlist: only binaries/ is COPYed; .git/target/docs excluded (SEC-017) (~193 tok)
 - `.gitignore` — Git ignore rules (~387 tok)
@@ -18,12 +16,12 @@
 - `Makefile` — SPDX-License-Identifier: Apache-2.0 (~18334 tok)
 - `osv-scanner.toml` — SPDX-License-Identifier: Apache-2.0 (~355 tok)
 - `README.md` — Project documentation (~3300 tok)
-- `ROADMAPS.md` — Roadmaps (~2566 tok)
+- `ROADMAPS.md` — Roadmaps (~3503 tok)
 - `SECURITY.md` — Security Policy (~382 tok)
 
 ## .claude/
 
-- `CHANGELOG.md` — Changelog (~157252 tok)
+- `CHANGELOG.md` — Changelog (~166508 tok)
 
 ## .clusterfuzzlite/
 
@@ -50,7 +48,6 @@
 
 ## .github/community/
 
-
 - `00-overview.md` — banlieue — Roadmap Overview (~1742 tok)
 - `01-decisions.md` — banlieue — Locked Design Decisions (~3549 tok)
 - `02-conventions.md` — banlieue — Coding Conventions (~2242 tok)
@@ -69,7 +66,8 @@
 - `15-vsphere-disk-image-import.md` — 15: vSphere disk-image import (raw and VMDK), alongside the ISO path (~4683 tok)
 - `16-scorecard-remediation.md` — 60 — OSSF Scorecard remediation (~2262 tok)
 - `17-ephemeral-vm-pools.md` — 17: Ephemeral, single-use VM pools (AI agent sandboxes) (~10147 tok)
-- `README.md` — Project documentation (~1210 tok)
+- `18-split-image-fast-clone.md` — 18: Split-image fast clone — verified base + per-VM sealed volume (~4187 tok)
+- `README.md` — Project documentation (~1317 tok)
 
 ## .github/requirements/
 
@@ -556,7 +554,6 @@
 
 ## docs/adr/
 
-
 - `0001-capi-native-cluster-provisioning.md` — 0001 — CAPI-native cluster provisioning (no native cluster/tier abstraction) (~1178 tok)
 - `0002-infracluster-failure-domain-aggregation.md` — 0002 — InfraCluster CRD with multi-Provider failure-domain aggregation (~1837 tok)
 - `0003-provider-deployment-topology.md` — 0003 — Provider deployment topology (per-instance vs per-class) (~2434 tok)
@@ -699,7 +696,6 @@
 - `license.md` — License (~250 tok)
 
 ## docs/src/security/
-
 
 - `threat-model.md` — Threat Model (~9440 tok)
 

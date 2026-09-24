@@ -24,6 +24,7 @@ This directory holds the roadmap docs for building banlieue.
 | 15 | `15-vsphere-disk-image-import.md` | vSphere import from a raw disk as VMDK, next to the ISO path; first-party VMDK writer | Before touching `import.rs` or `BuildArtifactKind`; read ADR-0010, 0020, 0021, 0040 first |
 | 16 | `16-scorecard-remediation.md` | OSSF Scorecard: what to click, and which checks are deliberately capped | Before touching repo settings or "fixing" a Scorecard alert |
 | 17 | `17-ephemeral-vm-pools.md` | `VirtualMachinePool` + `VirtualMachineClaim`: warm, never-reused, TPM-sealed single-use VMs | Largest open initiative; read after 07 (libvirt is its first live target) |
+| 18 | `18-split-image-fast-clone.md` | Fast disk cloning with encryption: verified (dm-verity) shared base + per-VM LUKS volume sealed at first boot to a fresh vTPM; no memory forking (ADR-0052 stands) | After 17 (its first consumer); read ADR-0040, 0045, 0048, 0052 first; phase D also needs 15 |
 
 Status for every row above lives in [`ROADMAPS.md`](../../ROADMAPS.md) at the
 repo root — this table is the reading order, that one is the status board.
@@ -67,6 +68,9 @@ Phase 1A (controller + SDK)  ✅
    Phase 4 (FINOS-ready)     🔶   everything that's left
 
    17 (ephemeral VM pools)   🔶   1D landed; phase A (A3/A4/A5) is what is left
+         │
+         ▼
+   18 (split-image fast clone) ⛔ after 17; phase D needs 15; phases E/F land with 1C/1F
 ```
 
 ## Updates to these docs
