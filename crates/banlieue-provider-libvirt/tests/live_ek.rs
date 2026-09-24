@@ -230,7 +230,8 @@ where
                 // issued, whose CN is what banlieue named the domain.
                 assert!(
                     pem.contains("BEGIN CERTIFICATE"),
-                    "published value must be PEM: {pem}"
+                    "published value must be PEM (missing header, len={})",
+                    pem.len()
                 );
                 eprintln!("  ✓ certificate published, CN matches {expected}");
                 return Ok(());
