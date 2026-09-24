@@ -104,14 +104,17 @@ spec:
   # networkOverrides for the named interface. Omit it (as this example does
   # by leaving it commented) for DHCP or class-level IPAM.
   #
-  # Size the range at maxReplicas PLUS spares: an address is held until a
+  # `pool` is a list, drawn in the order written, each entry low to high
+  # (ADR-0056): a single address, an inclusive "low-high" range, or a CIDR
+  # block. Size it at maxReplicas PLUS spares: an address is held until a
   # deleted member's backend VM is really gone, not until its delete is
   # issued.
   #
   # addressing:
   #   interface: eth0
-  #   rangeStart: 192.0.2.10
-  #   rangeEnd: 192.0.2.29     # 20 addresses for maxReplicas: 6
+  #   pool:
+  #     - 192.0.2.10-192.0.2.29   # 20 addresses for maxReplicas: 6
+  #     - 192.0.2.40              # a single spare address
   #   prefix: 24
   #   gateway: 192.0.2.1
   #   nameservers: [192.0.2.53]

@@ -192,30 +192,36 @@ leaves no room to build the replacement first. Give it headroom and
 ## Addressing
 
 Omit `spec.addressing` for DHCP or class-level IPAM. Set it to stamp a
-static address per member into the template's `networkOverrides`:
+static address per member into the template's `networkOverrides`. `pool` is
+a list of entries drawn in the order written, each low to high
+([ADR-0056](https://github.com/firestoned/banlieue/blob/main/docs/adr/0056-vmpool-address-pool-entries.md)) —
+familiar to anyone who has set up MetalLB's `IPAddressPool.spec.addresses`:
 
 ```yaml
 addressing:
   interface: eth0          # matches a VMClass network interface name
-  rangeStart: 192.0.2.10
-  rangeEnd: 192.0.2.29     # 20 addresses for maxReplicas: 6
+  pool:
+    - 192.0.2.10-192.0.2.29   # an inclusive range: 20 addresses
+    - 192.0.2.40              # a single address
+    - 192.0.2.50/31           # a CIDR block, network + broadcast included
   prefix: 24
   gateway: 192.0.2.1
 ```
 
-**Size the range above `maxReplicas`, with spares.** An address is held
+**Size the pool above `maxReplicas`, with spares.** An address is held
 until a deleted member's backend VM is really gone, not until its delete is
 issued — so a pool churning members needs more addresses than it has
-members. When the range runs out the pool reports:
+members. When every entry runs out the pool reports:
 
 ```text
 Capacity=False   reason=AddressRangeExhausted
 ```
 
-This inline range is interim. CAPI IPAM
+This inline addressing is interim. CAPI IPAM
 ([ADR-0033](https://github.com/firestoned/banlieue/blob/main/docs/adr/0033-capi-ipam-pool-integration.md))
 is recorded but not implemented; when it lands this field gains a `poolRef`
-alternative and the inline range stays as the zero-dependency option.
+alternative ([ADR-0053](https://github.com/firestoned/banlieue/blob/main/docs/adr/0053-ipam-claims-for-pool-members.md))
+and the inline list stays as the zero-dependency option.
 
 ## Reading a pool's status
 

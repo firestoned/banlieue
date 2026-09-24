@@ -81,9 +81,10 @@ pub struct PoolInputs {
     pub max_idle_secs: Option<u64>,
     pub recycle_on_image_change: bool,
     pub current_image_revision: String,
-    /// `None` means the pool does not stamp addresses (DHCP, or the class's
-    /// own IPAM).
-    pub address_range: Option<AddressRange>,
+    /// Candidate addresses, in the order to draw from them (ADR-0056). Empty
+    /// means the pool does not stamp addresses (DHCP, or the class's own
+    /// IPAM).
+    pub address_ranges: Vec<AddressRange>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -226,23 +227,27 @@ pub fn plan(inputs: &PoolInputs, members: &[MemberView]) -> PoolPlan {
 
     // Pass 7: addresses. Every member that still exists holds its address,
     // including ones this plan deletes and ones already Deleting: the
-    // backend VM is there until the provider finalizer finishes.
-    match inputs.address_range {
-        None => {
-            for _ in 0..to_create {
-                out.create.push(NewMember { address: None });
-            }
+    // backend VM is there until the provider finalizer finishes. Entries are
+    // drawn in list order, each low to high (ADR-0056), so the plan stays
+    // deterministic and an operator controls draw order by list order.
+    if inputs.address_ranges.is_empty() {
+        for _ in 0..to_create {
+            out.create.push(NewMember { address: None });
         }
-        Some(range) => {
-            let used: BTreeSet<u32> = members
-                .iter()
-                .filter_map(|m| m.address)
-                .map(u32::from)
-                .collect();
+    } else {
+        let used: BTreeSet<u32> = members
+            .iter()
+            .filter_map(|m| m.address)
+            .map(u32::from)
+            .collect();
+        let mut granted: u32 = 0;
+        'ranges: for range in &inputs.address_ranges {
             let (lo, hi) = (u32::from(range.start), u32::from(range.end));
             let mut next = lo;
-            let mut granted: u32 = 0;
-            while granted < to_create && lo <= hi && next <= hi {
+            while lo <= hi && next <= hi {
+                if granted >= to_create {
+                    break 'ranges;
+                }
                 if !used.contains(&next) {
                     out.create.push(NewMember {
                         address: Some(Ipv4Addr::from(next)),
@@ -254,8 +259,8 @@ pub fn plan(inputs: &PoolInputs, members: &[MemberView]) -> PoolPlan {
                 }
                 next += 1;
             }
-            out.blocked_on_addresses = to_create - granted;
         }
+        out.blocked_on_addresses = to_create - granted;
     }
 
     out

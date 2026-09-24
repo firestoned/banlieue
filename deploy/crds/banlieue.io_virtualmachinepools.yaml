@@ -91,25 +91,30 @@ spec:
                     items:
                       type: string
                     type: array
+                  pool:
+                    description: |-
+                      The addresses members are drawn from, in the order to draw them
+                      (ADR-0056). Each entry is one of:
+
+                      - a single address (`"192.0.2.40"`)
+                      - an inclusive range, low-high (`"192.0.2.10-192.0.2.29"`)
+                      - a CIDR block (`"192.0.2.50/31"`), every address in the block
+                        included
+
+                      Size the list at `maxReplicas` plus a few spares: an address stays
+                      held until a deleted member's backend VM is actually gone.
+                    items:
+                      type: string
+                    type: array
                   prefix:
                     format: uint8
                     maximum: 255.0
                     minimum: 0.0
                     type: integer
-                  rangeEnd:
-                    description: |-
-                      Last address of the inclusive range. Size it at `maxReplicas` plus a
-                      few spares: an address stays held until a deleted member's backend VM
-                      is actually gone.
-                    type: string
-                  rangeStart:
-                    description: First address of the inclusive range.
-                    type: string
                 required:
                 - interface
+                - pool
                 - prefix
-                - rangeEnd
-                - rangeStart
                 type: object
               maxIdleSeconds:
                 description: |-

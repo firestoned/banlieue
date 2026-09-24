@@ -285,22 +285,71 @@ pub fn member_view(vm: &VirtualMachine, readiness: PoolReadiness, now: Timestamp
     }
 }
 
+/// One entry of `PoolAddressing.pool`, expanded into an inclusive
+/// `AddressRange` (ADR-0056). Accepts the same three shapes MetalLB's
+/// `IPAddressPool.spec.addresses` does:
+///
+/// - a single address: `"192.0.2.40"`
+/// - an inclusive range, low-high: `"192.0.2.10-192.0.2.29"`
+/// - a CIDR block: `"192.0.2.50/31"`, every address in the block included
+fn parse_address_pool_entry(entry: &str) -> std::result::Result<AddressRange, String> {
+    if let Some((network, prefix_len)) = entry.split_once('/') {
+        let addr: Ipv4Addr = network
+            .parse()
+            .map_err(|e| format!("{entry:?}: invalid network {network:?}: {e}"))?;
+        let prefix_len: u32 = prefix_len
+            .parse()
+            .map_err(|e| format!("{entry:?}: invalid prefix length {prefix_len:?}: {e}"))?;
+        const MAX_IPV4_PREFIX_LEN: u32 = 32;
+        if prefix_len > MAX_IPV4_PREFIX_LEN {
+            return Err(format!(
+                "{entry:?}: prefix length {prefix_len} exceeds {MAX_IPV4_PREFIX_LEN}"
+            ));
+        }
+        let host_bits = MAX_IPV4_PREFIX_LEN - prefix_len;
+        let mask = if host_bits == MAX_IPV4_PREFIX_LEN {
+            0
+        } else {
+            u32::MAX << host_bits
+        };
+        let base = u32::from(addr) & mask;
+        return Ok(AddressRange {
+            start: Ipv4Addr::from(base),
+            end: Ipv4Addr::from(base | !mask),
+        });
+    }
+    if let Some((start, end)) = entry.split_once('-') {
+        return Ok(AddressRange {
+            start: start
+                .parse()
+                .map_err(|e| format!("{entry:?}: invalid range start {start:?}: {e}"))?,
+            end: end
+                .parse()
+                .map_err(|e| format!("{entry:?}: invalid range end {end:?}: {e}"))?,
+        });
+    }
+    let addr: Ipv4Addr = entry
+        .parse()
+        .map_err(|e| format!("{entry:?}: not a single address, range, or CIDR: {e}"))?;
+    Ok(AddressRange {
+        start: addr,
+        end: addr,
+    })
+}
+
 fn pool_inputs(
     pool: &VirtualMachinePool,
     revision: &str,
 ) -> std::result::Result<PoolInputs, String> {
-    let address_range = match &pool.spec.addressing {
-        None => None,
-        Some(a) => Some(AddressRange {
-            start: a
-                .range_start
-                .parse()
-                .map_err(|e| format!("addressing.rangeStart {:?}: {e}", a.range_start))?,
-            end: a
-                .range_end
-                .parse()
-                .map_err(|e| format!("addressing.rangeEnd {:?}: {e}", a.range_end))?,
-        }),
+    let address_ranges = match &pool.spec.addressing {
+        None => Vec::new(),
+        Some(a) => a
+            .pool
+            .iter()
+            .map(|entry| {
+                parse_address_pool_entry(entry).map_err(|e| format!("addressing.pool: {e}"))
+            })
+            .collect::<std::result::Result<Vec<_>, _>>()?,
     };
     Ok(PoolInputs {
         warm_replicas: pool.spec.warm_replicas,
@@ -310,7 +359,7 @@ fn pool_inputs(
         max_idle_secs: pool.spec.max_idle_seconds,
         recycle_on_image_change: pool.spec.recycle_on_image_change,
         current_image_revision: revision.to_string(),
-        address_range,
+        address_ranges,
     })
 }
 

@@ -14,7 +14,7 @@ fn inputs() -> PoolInputs {
         max_idle_secs: None,
         recycle_on_image_change: true,
         current_image_revision: REV.to_string(),
-        address_range: None,
+        address_ranges: Vec::new(),
     }
 }
 
@@ -177,10 +177,10 @@ fn scale_down_trims_oldest_fresh_surplus() {
 #[test]
 fn addresses_skip_every_existing_holder_including_deleting() {
     let mut i = inputs();
-    i.address_range = Some(AddressRange {
+    i.address_ranges = vec![AddressRange {
         start: Ipv4Addr::new(10, 0, 0, 10),
         end: Ipv4Addr::new(10, 0, 0, 13),
-    });
+    }];
     let mut gone = member("gone", MemberPhase::Deleting, 50, REV);
     gone.address = Some(Ipv4Addr::new(10, 0, 0, 10));
     let mut held = member("held", MemberPhase::Claimed, 50, REV);
@@ -197,10 +197,10 @@ fn addresses_skip_every_existing_holder_including_deleting() {
 #[test]
 fn address_exhaustion_is_reported_not_silently_dropped() {
     let mut i = inputs();
-    i.address_range = Some(AddressRange {
+    i.address_ranges = vec![AddressRange {
         start: Ipv4Addr::new(10, 0, 0, 10),
         end: Ipv4Addr::new(10, 0, 0, 10),
-    });
+    }];
     let p = plan(&i, &[]);
     assert_eq!(p.create.len(), 1);
     assert_eq!(p.blocked_on_addresses, 1);
@@ -209,13 +209,60 @@ fn address_exhaustion_is_reported_not_silently_dropped() {
 #[test]
 fn inverted_range_allocates_nothing() {
     let mut i = inputs();
-    i.address_range = Some(AddressRange {
+    i.address_ranges = vec![AddressRange {
         start: Ipv4Addr::new(10, 0, 0, 20),
         end: Ipv4Addr::new(10, 0, 0, 10),
-    });
+    }];
     let p = plan(&i, &[]);
     assert!(p.create.is_empty());
     assert_eq!(p.blocked_on_addresses, 2);
+}
+
+/// ADR-0056: multiple entries are drawn in list order, each low to high —
+/// not sorted or merged. An operator relies on this to exhaust a small
+/// range of spares before drawing from a larger one.
+#[test]
+fn multiple_ranges_are_drawn_in_list_order() {
+    let mut i = inputs();
+    i.address_ranges = vec![
+        AddressRange {
+            start: Ipv4Addr::new(10, 0, 0, 10),
+            end: Ipv4Addr::new(10, 0, 0, 10),
+        },
+        AddressRange {
+            start: Ipv4Addr::new(10, 0, 1, 0),
+            end: Ipv4Addr::new(10, 0, 1, 5),
+        },
+    ];
+    let p = plan(&i, &[]);
+    let got: Vec<Ipv4Addr> = p.create.iter().filter_map(|c| c.address).collect();
+    assert_eq!(
+        got,
+        vec![Ipv4Addr::new(10, 0, 0, 10), Ipv4Addr::new(10, 0, 1, 0)],
+        "warm=3 but max_surge=2, so only 2 are drawn despite 7 being free"
+    );
+    assert_eq!(p.blocked_on_addresses, 0);
+}
+
+/// An inverted entry earlier in the list contributes nothing, but must not
+/// stop the planner from drawing from a valid entry that follows it.
+#[test]
+fn an_inverted_entry_is_skipped_not_fatal_to_the_rest_of_the_list() {
+    let mut i = inputs();
+    i.address_ranges = vec![
+        AddressRange {
+            start: Ipv4Addr::new(10, 0, 0, 20),
+            end: Ipv4Addr::new(10, 0, 0, 10),
+        },
+        AddressRange {
+            start: Ipv4Addr::new(10, 0, 1, 0),
+            end: Ipv4Addr::new(10, 0, 1, 0),
+        },
+    ];
+    let p = plan(&i, &[]);
+    let got: Vec<Ipv4Addr> = p.create.iter().filter_map(|c| c.address).collect();
+    assert_eq!(got, vec![Ipv4Addr::new(10, 0, 1, 0)]);
+    assert_eq!(p.blocked_on_addresses, 1, "warm=3 but max_surge=2");
 }
 
 #[test]

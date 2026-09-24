@@ -1,11 +1,9 @@
 # anatomy.md
 
-> Auto-maintained by OpenWolf. Last scanned: 2026-09-23T22:36:34.115Z
-> Files: 474 tracked | Anatomy hits: 0 | Misses: 0
-
+> Auto-maintained by OpenWolf. Last scanned: 2026-09-24T16:33:00.850Z
+> Files: 477 tracked | Anatomy hits: 0 | Misses: 0
 
 ## ./
-
 
 - `.dockerignore` — Build-context allowlist: only binaries/ is COPYed; .git/target/docs excluded (SEC-017) (~193 tok)
 - `.gitignore` — Git ignore rules (~387 tok)
@@ -23,7 +21,7 @@
 
 ## .claude/
 
-- `CHANGELOG.md` — Changelog (~157252 tok)
+- `CHANGELOG.md` — Changelog (~166664 tok)
 
 ## .clusterfuzzlite/
 
@@ -49,7 +47,6 @@
 - `codeql-config.yml` — , .github/, etc. (~192 tok)
 
 ## .github/community/
-
 
 - `00-overview.md` — banlieue — Roadmap Overview (~1742 tok)
 - `01-decisions.md` — banlieue — Locked Design Decisions (~3549 tok)
@@ -141,8 +138,8 @@
 - `virtualmachine.rs` — `banlieue.io/v1alpha1` VirtualMachine CRD. (~5602 tok)
 - `virtualmachineclaim_tests.rs` — Unit tests for `virtualmachineclaim.rs`. (~2593 tok)
 - `virtualmachineclaim.rs` — `banlieue.io/v1alpha1` VirtualMachineClaim CRD (roadmap 17, ADR-0047). (~2377 tok)
-- `virtualmachinepool_tests.rs` — Unit tests for `virtualmachinepool.rs`. (~3285 tok)
-- `virtualmachinepool.rs` — `banlieue.io/v1alpha1` VirtualMachinePool CRD (roadmap 17, ADR-0046). (~3174 tok)
+- `virtualmachinepool_tests.rs` — Unit tests for `virtualmachinepool.rs`. (~3282 tok)
+- `virtualmachinepool.rs` — `banlieue.io/v1alpha1` VirtualMachinePool CRD (roadmap 17, ADR-0046). (~3020 tok)
 - `vmclass_tests.rs` — Unit tests for `vmclass.rs`. (~3027 tok)
 - `vmclass.rs` — `banlieue.io/v1alpha1` VMClass CRD. (~2082 tok)
 - `vmimage_tests.rs` — Unit tests for `vmimage.rs`. (~9848 tok)
@@ -190,10 +187,10 @@
 - `migration_tests.rs` — Unit tests for [`super::super::migration`]. (~2925 tok)
 - `migration.rs` — Migration sub-loop — recreate-only path for Phase 1A iteration 3. (~2242 tok)
 - `mod.rs` — Controller reconcilers. (~134 tok)
-- `pool_plan_tests.rs` — SPDX-License-Identifier: Apache-2.0 (~2635 tok)
-- `pool_plan.rs` — Pure planning logic for `VirtualMachinePool` (roadmap 17, ADR-0046). (~3117 tok)
-- `pool_tests.rs` — Unit tests for `pool.rs`. (~1380 tok)
-- `pool.rs` — `VirtualMachinePool` reconciler (roadmap 17, ADR-0046). (~4533 tok)
+- `pool_plan_tests.rs` — SPDX-License-Identifier: Apache-2.0 (~2911 tok)
+- `pool_plan.rs` — Pure planning logic for `VirtualMachinePool` (roadmap 17, ADR-0046). (~2985 tok)
+- `pool_tests.rs` — Unit tests for `pool.rs`. (~2398 tok)
+- `pool.rs` — `VirtualMachinePool` reconciler (roadmap 17, ADR-0046). (~4734 tok)
 - `scheduler_tests.rs` — Unit tests for [`super::super::scheduler`]. (~9527 tok)
 - `scheduler.rs` — Scheduler — the pure placement function. (~6507 tok)
 - `status_mirror_tests.rs` — Unit tests for [`super::super::status_mirror`]. (~5241 tok)
@@ -556,7 +553,6 @@
 
 ## docs/adr/
 
-
 - `0001-capi-native-cluster-provisioning.md` — 0001 — CAPI-native cluster provisioning (no native cluster/tier abstraction) (~1178 tok)
 - `0002-infracluster-failure-domain-aggregation.md` — 0002 — InfraCluster CRD with multi-Provider failure-domain aggregation (~1837 tok)
 - `0003-provider-deployment-topology.md` — 0003 — Provider deployment topology (per-instance vs per-class) (~2434 tok)
@@ -612,6 +608,7 @@
 - `0053-ipam-claims-for-pool-members.md` — 0053 — CAPI IPAM for pool members: one claim path, not two (~2059 tok)
 - `0054-nocloud-seed-iso-first-party.md` — 0054 — NoCloud seed ISOs are built in-process, with Joliet (~1556 tok)
 - `0055-agentsandbox.md` — 0055 — `AgentSandbox`: the agent layer owns a claim, not a member (~1761 tok)
+- `0056-vmpool-address-pool-entries.md` — 0056 — VirtualMachinePool inline addressing: a list of IPs/ranges, not one range (~1344 tok)
 
 ## docs/architecture/calm/
 
@@ -675,7 +672,7 @@
 - `testing-claim-authorization.md` — Guide: testing claim authorization with your real GitHub account (~3287 tok)
 - `using-banlieue-imagebuilder.md` — Guide: Using banlieue-imagebuilder (~5906 tok)
 - `virtualmachine-claims.md` — Guide: VirtualMachine Claims (~2999 tok)
-- `virtualmachine-pools.md` — Guide: VirtualMachine Pools (~2975 tok)
+- `virtualmachine-pools.md` — Guide: VirtualMachine Pools (~3265 tok)
 - `vsphere-provider.md` — Guide: vSphere Provider (~4098 tok)
 
 ## docs/src/javascripts/
@@ -700,8 +697,7 @@
 
 ## docs/src/security/
 
-
-- `threat-model.md` — Threat Model (~9440 tok)
+- `threat-model.md` — Threat Model (~13723 tok)
 
 ## docs/src/stylesheets/
 
@@ -725,7 +721,7 @@
 - `14-vmimage-kairos-trusted-boot-uki.yaml` — SPDX-License-Identifier: Apache-2.0 (~1033 tok)
 - `16-cloud-config-guest-phase.yaml` — SPDX-License-Identifier: Apache-2.0 (~1096 tok)
 - `17-virtualmachine-libvirt.yaml` — SPDX-License-Identifier: Apache-2.0 (~1145 tok)
-- `18-virtualmachinepool.yaml` — SPDX-License-Identifier: Apache-2.0 (~1372 tok)
+- `18-virtualmachinepool.yaml` — SPDX-License-Identifier: Apache-2.0 (~1428 tok)
 - `19-virtualmachineclaim.yaml` — SPDX-License-Identifier: Apache-2.0 (~1008 tok)
 - `20-cloud-config-guest-ek-certificate.yaml` — SPDX-License-Identifier: Apache-2.0 (~1348 tok)
 
