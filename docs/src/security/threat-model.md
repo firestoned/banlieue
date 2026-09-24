@@ -20,7 +20,15 @@ SPDX-License-Identifier: Apache-2.0
 > flagged on vSphere were fixed rather than accepted. **banlieue
 > acquires no new privilege in the guest: the certificate is read with
 > ADR-0043's read-only `guest-file-open` path, never `guest-exec`.**
-> Against the architecture defined by ADR-0001 … ADR-0055 (0049 is Proposed,
+> A second 09-24 pass covers **ADR-0056** (`VirtualMachinePool.spec.addressing`
+> gains a list of address-pool entries in place of one range): **no new
+> component, actor, asset or trust boundary**. The entries are parsed
+> entirely inside `banlieue-controller`, still tenant-namespace-scoped
+> `VirtualMachinePool` spec data, and a malformed or wide entry (e.g. a `/0`
+> CIDR) cannot be used to force unbounded work — `pool_plan::plan()` only
+> ever walks as many addresses as `max_surge` lets it create in one pass,
+> so the CIDR's declared size never drives iteration by itself.
+> Against the architecture defined by ADR-0001 … ADR-0056 (0049 is Proposed,
 > not implemented).
 > **Method:** asset/actor enumeration, trust-boundary decomposition, STRIDE per
 > boundary, control mapping to the manifests in `deploy/` and the crates in

@@ -11,7 +11,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"/Users/erick/dev/banlieue/.wolf/hooks/session-start.js\"",
+            "command": "node \"/Users/eribourg/dev/banlieue/.wolf/hooks/session-start.js\"",
             "timeout": 5
           }
         ]
@@ -23,7 +23,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"/Users/erick/dev/banlieue/.wolf/hooks/pre-read.js\"",
+            "command": "node \"/Users/eribourg/dev/banlieue/.wolf/hooks/pre-read.js\"",
             "timeout": 5
           }
         ]
@@ -33,7 +33,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"/Users/erick/dev/banlieue/.wolf/hooks/pre-write.js\"",
+            "command": "node \"/Users/eribourg/dev/banlieue/.wolf/hooks/pre-write.js\"",
             "timeout": 5
           }
         ]
@@ -43,7 +43,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"/Users/erick/dev/banlieue/.wolf/hooks/pre-bash.js\"",
+            "command": "node \"/Users/eribourg/dev/banlieue/.wolf/hooks/pre-bash.js\"",
             "timeout": 5
           }
         ]
@@ -55,7 +55,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"/Users/erick/dev/banlieue/.wolf/hooks/post-read.js\"",
+            "command": "node \"/Users/eribourg/dev/banlieue/.wolf/hooks/post-read.js\"",
             "timeout": 5
           }
         ]
@@ -65,7 +65,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"/Users/erick/dev/banlieue/.wolf/hooks/post-write.js\"",
+            "command": "node \"/Users/eribourg/dev/banlieue/.wolf/hooks/post-write.js\"",
             "timeout": 10
           }
         ]
@@ -75,7 +75,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"/Users/erick/dev/banlieue/.wolf/hooks/post-bash.js\"",
+            "command": "node \"/Users/eribourg/dev/banlieue/.wolf/hooks/post-bash.js\"",
             "timeout": 10
           }
         ]
@@ -87,7 +87,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"/Users/erick/dev/banlieue/.wolf/hooks/stop.js\"",
+            "command": "node \"/Users/eribourg/dev/banlieue/.wolf/hooks/stop.js\"",
             "timeout": 10
           }
         ]
@@ -99,7 +99,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"/Users/erick/dev/banlieue/.wolf/hooks/user-prompt-submit.js\"",
+            "command": "node \"/Users/eribourg/dev/banlieue/.wolf/hooks/user-prompt-submit.js\"",
             "timeout": 5
           }
         ]
@@ -111,7 +111,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"/Users/erick/dev/banlieue/.wolf/hooks/post-batch.js\"",
+            "command": "node \"/Users/eribourg/dev/banlieue/.wolf/hooks/post-batch.js\"",
             "timeout": 5
           }
         ]
@@ -123,7 +123,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"/Users/erick/dev/banlieue/.wolf/hooks/precompact.js\"",
+            "command": "node \"/Users/eribourg/dev/banlieue/.wolf/hooks/precompact.js\"",
             "timeout": 5
           }
         ]
@@ -135,7 +135,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"/Users/erick/dev/banlieue/.wolf/hooks/session-end.js\"",
+            "command": "node \"/Users/eribourg/dev/banlieue/.wolf/hooks/session-end.js\"",
             "timeout": 10
           }
         ]

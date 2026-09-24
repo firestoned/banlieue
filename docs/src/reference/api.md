@@ -892,9 +892,8 @@ zero-dependency option.
 | `gateway` | string |  |  |
 | `interface` | string | Yes | Name of the `VMClass` network interface to stamp, matching `NetworkInterfaceOverride.name`. |
 | `nameservers` | string[] |  |  |
+| `pool` | string[] | Yes | The addresses members are drawn from, in the order to draw them (ADR-0056). Each entry is one of: |
 | `prefix` | integer | Yes |  |
-| `rangeEnd` | string | Yes | Last address of the inclusive range. Size it at `maxReplicas` plus a few spares: an address stays held until a deleted member's backend VM is actually gone. |
-| `rangeStart` | string | Yes | First address of the inclusive range. |
 
 #### `.spec.template`
 

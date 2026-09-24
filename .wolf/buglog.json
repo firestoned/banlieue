@@ -23,7 +23,7 @@
       "error_message": "Wrong reference: mod should be path",
       "file": "crates/banlieue-api/src/common.rs",
       "root_cause": "Used \"mod\" instead of \"path\"",
-      "fix": "Changed mod \u2192 path",
+      "fix": "Changed mod → path",
       "tags": [
         "auto-detected",
         "wrong-reference",
@@ -39,7 +39,7 @@
       "error_message": "Significant refactor of ",
       "file": "crates/banlieue-api/src/common_tests.rs",
       "root_cause": "4 lines replaced/restructured",
-      "fix": "Rewrote 20\u219226 lines (4 removed)",
+      "fix": "Rewrote 20→26 lines (4 removed)",
       "tags": [
         "auto-detected",
         "refactor",
@@ -90,7 +90,7 @@
       "error_message": "panic in kube-core schema flattener: Property \"source\" has the schema [enum: \"static\"] but was already defined as [enum: \"dhcp\", description: ...]",
       "file": "crates/banlieue-api/src/common.rs (IpamSpec)",
       "root_cause": "kube-derive's CRD schema flattener is fundamentally incompatible with `#[serde(tag = \"...\")]` enums. By construction each variant subschema fixes the discriminator property to a *different* enum value (`dhcp`, `static`, `pool`), and kube-core's flattener demands an identical schema for any property used in multiple subschemas. The schemars 0.8 panic surfaced a description-metadata mismatch first; on schemars 1 + kube 3 the discriminator-value mismatch is what panics. Tagged enums cannot survive CRD generation either way. Stripping doc comments removed one symptom but not the cause.",
-      "fix": "FIXED 2026-05-25 by restructuring `IpamSpec` from a serde-tagged enum into a flat struct: `IpamSpec { source: IpamSource, static: Option<StaticIpamConfig>, pool: Option<PoolIpamConfig> }`. New `IpamSource` is a plain `Dhcp|Static|Pool` enum that serializes as a lower-case string. Wire format changed (sub-config now nested under a sibling field named after the discriminator), which is Kubernetes-idiomatic and matches how CAPI structures similar shapes. Cross-field validation (`source=Static implies static is set`) is intentionally NOT schema-enforced \u2014 left to the controller and/or a future CEL rule. The three `*_currently_panics_due_to_ipam_spec_bug` tests were replaced with positive CRD-metadata assertions. Verified end-to-end: `cargo run -p banlieue-api --bin crdgen --features crdgen` now emits 6 valid CRDs.",
+      "fix": "FIXED 2026-05-25 by restructuring `IpamSpec` from a serde-tagged enum into a flat struct: `IpamSpec { source: IpamSource, static: Option<StaticIpamConfig>, pool: Option<PoolIpamConfig> }`. New `IpamSource` is a plain `Dhcp|Static|Pool` enum that serializes as a lower-case string. Wire format changed (sub-config now nested under a sibling field named after the discriminator), which is Kubernetes-idiomatic and matches how CAPI structures similar shapes. Cross-field validation (`source=Static implies static is set`) is intentionally NOT schema-enforced — left to the controller and/or a future CEL rule. The three `*_currently_panics_due_to_ipam_spec_bug` tests were replaced with positive CRD-metadata assertions. Verified end-to-end: `cargo run -p banlieue-api --bin crdgen --features crdgen` now emits 6 valid CRDs.",
       "tags": [
         "kube-derive",
         "schemars",
@@ -124,7 +124,7 @@
       "timestamp": "2026-05-25T14:45:17.156Z",
       "error_message": "Missing error handling in unknown",
       "file": ".claude/CHANGELOG.md",
-      "root_cause": "Code path had no error handling \u2014 exceptions would propagate uncaught",
+      "root_cause": "Code path had no error handling — exceptions would propagate uncaught",
       "fix": "Added try/catch block",
       "tags": [
         "auto-detected",
@@ -141,7 +141,7 @@
       "error_message": "Significant refactor of ",
       "file": "crates/banlieue-api/src/common.rs",
       "root_cause": "10 lines replaced/restructured",
-      "fix": "Rewrote 29\u219237 lines (10 removed) | Also: /// IPAM configuration for a network interface. Th; /// Variants:",
+      "fix": "Rewrote 29→37 lines (10 removed) | Also: /// IPAM configuration for a network interface. Th; /// Variants:",
       "tags": [
         "auto-detected",
         "refactor",
@@ -157,7 +157,7 @@
       "error_message": "Significant refactor of ",
       "file": "crates/banlieue-api/src/common_tests.rs",
       "root_cause": "18 lines replaced/restructured",
-      "fix": "Rewrote 106\u2192156 lines (18 removed)",
+      "fix": "Rewrote 106→156 lines (18 removed)",
       "tags": [
         "auto-detected",
         "refactor",
@@ -205,7 +205,7 @@
       "error_message": "Significant refactor of ",
       "file": ".claude/SKILL.md",
       "root_cause": "2 lines replaced/restructured",
-      "fix": "Rewrote 4\u21924 lines (2 removed)",
+      "fix": "Rewrote 4→4 lines (2 removed)",
       "tags": [
         "auto-detected",
         "refactor",
@@ -221,7 +221,7 @@
       "error_message": "Wrong operator: != should be ==",
       "file": ".github/workflows/calm-test.yaml",
       "root_cause": "Used \"!=\" instead of \"==\"",
-      "fix": "Changed operator != \u2192 ==",
+      "fix": "Changed operator != → ==",
       "tags": [
         "auto-detected",
         "operator-fix",
@@ -237,7 +237,7 @@
       "error_message": "Significant refactor of ",
       "file": ".github/workflows/build.yaml",
       "root_cause": "2 lines replaced/restructured",
-      "fix": "Rewrote 5\u219217 lines (2 removed)",
+      "fix": "Rewrote 5→17 lines (2 removed)",
       "tags": [
         "auto-detected",
         "refactor",
@@ -254,7 +254,7 @@
       "timestamp": "2026-05-25T19:58:00.000Z",
       "error_message": "error validating \"deploy/crds/banlieue-crds.yaml\": error validating data: failed to download openapi: Get \"http://localhost:8080/openapi/v2?timeout=32s\": dial tcp [::1]:8080: connect: connection refused",
       "file": ".github/workflows/build.yaml (package-crds job)",
-      "root_cause": "`kubectl apply --dry-run=client` performs server-side OpenAPI validation by default: it tries to fetch the cluster's /openapi/v2 to validate the manifest. In a GitHub Actions runner there is no cluster and no kubeconfig, so kubectl falls back to localhost:8080 (the legacy default) and connection-refuses. `--dry-run=client` controls *application* mode, not *validation* mode \u2014 they are independent flags.",
+      "root_cause": "`kubectl apply --dry-run=client` performs server-side OpenAPI validation by default: it tries to fetch the cluster's /openapi/v2 to validate the manifest. In a GitHub Actions runner there is no cluster and no kubeconfig, so kubectl falls back to localhost:8080 (the legacy default) and connection-refuses. `--dry-run=client` controls *application* mode, not *validation* mode — they are independent flags.",
       "fix": "Added `--validate=false` to skip the OpenAPI fetch (kubectl still structurally parses and shape-checks the manifest), then added a `grep -c '^kind: CustomResourceDefinition'` sanity check to assert the generator produced at least one CRD. Locally verifies: 6 CRDs generated and parsed.",
       "tags": [
         "ci",
@@ -276,7 +276,7 @@
       "error_message": "Significant refactor of ",
       "file": ".github/workflows/scorecard.yaml",
       "root_cause": "2 lines replaced/restructured",
-      "fix": "Rewrote 8\u219212 lines (2 removed)",
+      "fix": "Rewrote 8→12 lines (2 removed)",
       "tags": [
         "auto-detected",
         "refactor",
@@ -294,7 +294,7 @@
       "error_message": "Error: Resource not accessible by integration - https://docs.github.com/rest/actions/workflow-runs#get-a-workflow-run (in github/codeql-action/upload-sarif step of the SAST/Semgrep job)",
       "file": ".github/workflows/sast.yaml (also codeql.yaml, scorecard.yaml)",
       "root_cause": "`github/codeql-action/upload-sarif` calls the GitHub REST API `GET /repos/{owner}/{repo}/actions/runs/{run_id}` to gather workflow-run metadata used for SARIF fingerprinting (deduplication of repeat findings across runs). That endpoint requires the `actions:read` permission, which is NOT included in the default GITHUB_TOKEN scope and was not declared at the job level. The job had `security-events: write` (lets it upload SARIF) but not `actions: read` (lets it look up the workflow run).",
-      "fix": "Added `actions: read` to the job-level `permissions:` block in sast.yaml (semgrep job), codeql.yaml (analyze job), and scorecard.yaml (analysis job \u2014 replaced the commented-out hint). All three workflows use upload-sarif and would hit the same failure on later runs.",
+      "fix": "Added `actions: read` to the job-level `permissions:` block in sast.yaml (semgrep job), codeql.yaml (analyze job), and scorecard.yaml (analysis job — replaced the commented-out hint). All three workflows use upload-sarif and would hit the same failure on later runs.",
       "tags": [
         "ci",
         "github-actions",
@@ -316,7 +316,7 @@
       "error_message": "Wrong operator: || should be !=",
       "file": ".github/workflows/build.yaml",
       "root_cause": "Used \"||\" instead of \"!=\"",
-      "fix": "Changed operator || \u2192 !=",
+      "fix": "Changed operator || → !=",
       "tags": [
         "auto-detected",
         "operator-fix",
@@ -333,8 +333,8 @@
       "timestamp": "2026-05-26T03:02:00.000Z",
       "error_message": "unable to recognize \"deploy/crds/banlieue-crds.yaml\": Get \"http://localhost:8080/api?timeout=32s\": dial tcp [::1]:8080: connect: connection refused",
       "file": ".github/workflows/build.yaml (package-crds job)",
-      "root_cause": "Sequel to bug-016. `kubectl apply --validate=false` skipped OpenAPI schema validation but kubectl still calls the cluster's `/api` discovery endpoint to *resolve* each kind/apiVersion to a REST resource (the \"mapper\" phase). Discovery has no offline flag in kubectl \u2014 `apply` cannot function without contacting an API server. `--dry-run=client` only controls whether the resolved operation is executed; it does not bypass discovery.",
-      "fix": "Replaced the kubectl validation step entirely with an inline Python YAML validator: parse every document with yaml.safe_load_all, assert each has apiVersion=apiextensions.k8s.io/v1, kind=CustomResourceDefinition, a non-empty metadata.name, and at least one spec.versions[]. Removed the azure/setup-kubectl install step. Python 3 is preinstalled on ubuntu-latest, so no install. `kube-derive` already guarantees structural correctness at compile time, so the validator only needs to verify generator output shape \u2014 not enforce K8s-API-server semantics.",
+      "root_cause": "Sequel to bug-016. `kubectl apply --validate=false` skipped OpenAPI schema validation but kubectl still calls the cluster's `/api` discovery endpoint to *resolve* each kind/apiVersion to a REST resource (the \"mapper\" phase). Discovery has no offline flag in kubectl — `apply` cannot function without contacting an API server. `--dry-run=client` only controls whether the resolved operation is executed; it does not bypass discovery.",
+      "fix": "Replaced the kubectl validation step entirely with an inline Python YAML validator: parse every document with yaml.safe_load_all, assert each has apiVersion=apiextensions.k8s.io/v1, kind=CustomResourceDefinition, a non-empty metadata.name, and at least one spec.versions[]. Removed the azure/setup-kubectl install step. Python 3 is preinstalled on ubuntu-latest, so no install. `kube-derive` already guarantees structural correctness at compile time, so the validator only needs to verify generator output shape — not enforce K8s-API-server semantics.",
       "tags": [
         "ci",
         "kubectl",
@@ -387,7 +387,7 @@
       "error_message": "Significant refactor of ",
       "file": "crates/banlieue-api/src/common.rs",
       "root_cause": "3 lines replaced/restructured",
-      "fix": "Rewrote 9\u219213 lines (3 removed)",
+      "fix": "Rewrote 9→13 lines (3 removed)",
       "tags": [
         "auto-detected",
         "refactor",
@@ -403,7 +403,7 @@
       "error_message": "Significant refactor of ",
       "file": "crates/banlieue-api/src/common_tests.rs",
       "root_cause": "7 lines replaced/restructured",
-      "fix": "Rewrote 29\u219239 lines (7 removed)",
+      "fix": "Rewrote 29→39 lines (7 removed)",
       "tags": [
         "auto-detected",
         "refactor",
@@ -435,7 +435,7 @@
       "error_message": "Wrong reference: vm_spec_default_power_state_is_on should be vm_spec_default_power_state_is_powered_on",
       "file": "crates/banlieue-api/src/banlieue/virtualmachine_tests.rs",
       "root_cause": "Used \"vm_spec_default_power_state_is_on\" instead of \"vm_spec_default_power_state_is_powered_on\"",
-      "fix": "Changed vm_spec_default_power_state_is_on \u2192 vm_spec_default_power_state_is_powered_on",
+      "fix": "Changed vm_spec_default_power_state_is_on → vm_spec_default_power_state_is_powered_on",
       "tags": [
         "auto-detected",
         "wrong-reference",
@@ -472,7 +472,7 @@
       "error_message": "Wrong reference: ops should be banlieue",
       "file": "examples/01-provider-vsphere-dc1.yaml",
       "root_cause": "Used \"ops\" instead of \"banlieue\"",
-      "fix": "Changed ops \u2192 banlieue",
+      "fix": "Changed ops → banlieue",
       "tags": [
         "auto-detected",
         "wrong-reference",
@@ -488,7 +488,7 @@
       "error_message": "Wrong reference: ops should be banlieue",
       "file": "examples/02-provider-libvirt-edge.yaml",
       "root_cause": "Used \"ops\" instead of \"banlieue\"",
-      "fix": "Changed ops \u2192 banlieue",
+      "fix": "Changed ops → banlieue",
       "tags": [
         "auto-detected",
         "wrong-reference",
@@ -504,7 +504,7 @@
       "error_message": "Wrong reference: ops should be banlieue",
       "file": "examples/05-virtualmachine.yaml",
       "root_cause": "Used \"ops\" instead of \"banlieue\"",
-      "fix": "Changed ops \u2192 banlieue",
+      "fix": "Changed ops → banlieue",
       "tags": [
         "auto-detected",
         "wrong-reference",
@@ -536,7 +536,7 @@
       "error_message": "Wrong reference: virtualmachine should be scheduler",
       "file": "crates/banlieue-controller/src/reconciler/mod.rs",
       "root_cause": "Used \"virtualmachine\" instead of \"scheduler\"",
-      "fix": "Changed virtualmachine \u2192 scheduler",
+      "fix": "Changed virtualmachine → scheduler",
       "tags": [
         "auto-detected",
         "wrong-reference",
@@ -552,7 +552,7 @@
       "error_message": "Wrong reference: status_mirror should be mirror_status_from_infra",
       "file": "crates/banlieue-controller/src/reconciler/status_mirror_tests.rs",
       "root_cause": "Used \"status_mirror\" instead of \"mirror_status_from_infra\"",
-      "fix": "Changed status_mirror \u2192 mirror_status_from_infra",
+      "fix": "Changed status_mirror → mirror_status_from_infra",
       "tags": [
         "auto-detected",
         "wrong-reference",
@@ -568,7 +568,7 @@
       "error_message": "Significant refactor of ",
       "file": "crates/banlieue-controller/src/reconciler/infra.rs",
       "root_cause": "2 lines replaced/restructured",
-      "fix": "Rewrote 9\u219218 lines (2 removed)",
+      "fix": "Rewrote 9→18 lines (2 removed)",
       "tags": [
         "auto-detected",
         "refactor",
@@ -584,7 +584,7 @@
       "error_message": "Significant refactor of ",
       "file": "crates/banlieue-controller/src/reconciler/infra_tests.rs",
       "root_cause": "2 lines replaced/restructured",
-      "fix": "Rewrote 18\u219225 lines (2 removed) | Also: let err =; build_vsphere_machine(&parent_vm(), &parent_class(",
+      "fix": "Rewrote 18→25 lines (2 removed) | Also: let err =; build_vsphere_machine(&parent_vm(), &parent_class(",
       "tags": [
         "auto-detected",
         "refactor",
@@ -599,7 +599,7 @@
       "timestamp": "2026-05-26T06:02:16.075Z",
       "error_message": "Missing await",
       "file": "crates/banlieue-controller/src/reconciler/virtualmachine.rs",
-      "root_cause": "Async call without await \u2014 returned Promise instead of value",
+      "root_cause": "Async call without await — returned Promise instead of value",
       "fix": "Added await to async call",
       "tags": [
         "auto-detected",
@@ -616,7 +616,7 @@
       "error_message": "Significant refactor of ",
       "file": "crates/banlieue-controller/src/reconciler/virtualmachine.rs",
       "root_cause": "4 lines replaced/restructured",
-      "fix": "Rewrote 8\u219244 lines (4 removed)",
+      "fix": "Rewrote 8→44 lines (4 removed)",
       "tags": [
         "auto-detected",
         "refactor",
@@ -632,7 +632,7 @@
       "error_message": "Significant refactor of ",
       "file": "crates/banlieue-controller/src/main.rs",
       "root_cause": "3 lines replaced/restructured",
-      "fix": "Rewrote 10\u219211 lines (3 removed)",
+      "fix": "Rewrote 10→11 lines (3 removed)",
       "tags": [
         "auto-detected",
         "refactor",
@@ -648,7 +648,7 @@
       "error_message": "Wrong reference: validate should be docify",
       "file": "Makefile",
       "root_cause": "Used \"validate\" instead of \"docify\"",
-      "fix": "Changed validate \u2192 docify",
+      "fix": "Changed validate → docify",
       "tags": [
         "auto-detected",
         "wrong-reference",
@@ -663,7 +663,7 @@
       "timestamp": "2026-05-26T20:22:14.673Z",
       "error_message": "Missing await",
       "file": "crates/banlieue-controller/src/main.rs",
-      "root_cause": "Async call without await \u2014 returned Promise instead of value",
+      "root_cause": "Async call without await — returned Promise instead of value",
       "fix": "Added await to async call",
       "tags": [
         "auto-detected",
@@ -680,7 +680,7 @@
       "error_message": "Significant refactor of ",
       "file": "deploy/controller/rbac/clusterrole.yaml",
       "root_cause": "2 lines replaced/restructured",
-      "fix": "Rewrote 5\u21926 lines (2 removed)",
+      "fix": "Rewrote 5→6 lines (2 removed)",
       "tags": [
         "auto-detected",
         "refactor",
@@ -712,7 +712,7 @@
       "error_message": "Significant refactor of ",
       "file": "crates/banlieue-provider-vsphere/src/reconciler/provider_tests.rs",
       "root_cause": "21 lines replaced/restructured",
-      "fix": "Rewrote 38\u219219 lines (21 removed)",
+      "fix": "Rewrote 38→19 lines (21 removed)",
       "tags": [
         "auto-detected",
         "refactor",
@@ -728,7 +728,7 @@
       "error_message": "Wrong reference: client should be as_client",
       "file": "crates/banlieue-provider-vsphere/src/reconciler/provider_tests.rs",
       "root_cause": "Used \"client\" instead of \"as_client\"",
-      "fix": "Changed client \u2192 as_client",
+      "fix": "Changed client → as_client",
       "tags": [
         "auto-detected",
         "wrong-reference",
@@ -744,7 +744,7 @@
       "error_message": "Significant refactor of ",
       "file": "crates/banlieue-provider-vsphere/src/client/fake.rs",
       "root_cause": "3 lines replaced/restructured",
-      "fix": "Rewrote 26\u219245 lines (3 removed)",
+      "fix": "Rewrote 26→45 lines (3 removed)",
       "tags": [
         "auto-detected",
         "refactor",
@@ -759,7 +759,7 @@
       "timestamp": "2026-05-28T01:16:41.898Z",
       "error_message": "Missing await",
       "file": "crates/banlieue-provider-vsphere/src/client/vim.rs",
-      "root_cause": "Async call without await \u2014 returned Promise instead of value",
+      "root_cause": "Async call without await — returned Promise instead of value",
       "fix": "Added await to async call",
       "tags": [
         "auto-detected",
@@ -776,7 +776,7 @@
       "error_message": "Significant refactor of ",
       "file": "crates/banlieue-provider-vsphere/src/main.rs",
       "root_cause": "8 lines replaced/restructured",
-      "fix": "Rewrote 26\u219241 lines (8 removed)",
+      "fix": "Rewrote 26→41 lines (8 removed)",
       "tags": [
         "auto-detected",
         "refactor",
@@ -792,7 +792,7 @@
       "error_message": "Significant refactor of ",
       "file": "docs/src/concepts/providers.md",
       "root_cause": "10 lines replaced/restructured",
-      "fix": "Rewrote 26\u219243 lines (10 removed) | Also: \u251c\u2500\u2500 main.rs              # binary entrypoint; \u251c\u2500\u2500 vsphere_machine.rs",
+      "fix": "Rewrote 26→43 lines (10 removed) | Also: ├── main.rs              # binary entrypoint; ├── vsphere_machine.rs",
       "tags": [
         "auto-detected",
         "refactor",
@@ -808,7 +808,7 @@
       "error_message": "Significant refactor of ",
       "file": "crates/banlieue-api/src/bin/crdgen.rs",
       "root_cause": "2 lines replaced/restructured",
-      "fix": "Rewrote 3\u219237 lines (2 removed) | Also: use k8s_openapi::apiextensions_apiserver::pkg::api; /// Property name kube-derive uses for the spec su | Also: /// Apply post-generation fix-ups to a CRD before ; fn prepared(mut crd: CustomResourceDefinition) ->  | Also: #[cfg(test)]; #[path = \"crdgen_tests.rs\"]",
+      "fix": "Rewrote 3→37 lines (2 removed) | Also: use k8s_openapi::apiextensions_apiserver::pkg::api; /// Property name kube-derive uses for the spec su | Also: /// Apply post-generation fix-ups to a CRD before ; fn prepared(mut crd: CustomResourceDefinition) ->  | Also: #[cfg(test)]; #[path = \"crdgen_tests.rs\"]",
       "tags": [
         "auto-detected",
         "refactor",
@@ -824,7 +824,7 @@
       "error_message": "Significant refactor of ",
       "file": "crates/banlieue-api/src/bin/crdgen_tests.rs",
       "root_cause": "7 lines replaced/restructured",
-      "fix": "Rewrote 10\u21927 lines (7 removed)",
+      "fix": "Rewrote 10→7 lines (7 removed)",
       "tags": [
         "auto-detected",
         "refactor",
@@ -840,7 +840,7 @@
       "error_message": "Significant refactor of ",
       "file": "crates/banlieue-api/src/crddoc.rs",
       "root_cause": "2 lines replaced/restructured",
-      "fix": "Rewrote 24\u219230 lines (2 removed)",
+      "fix": "Rewrote 24→30 lines (2 removed)",
       "tags": [
         "auto-detected",
         "refactor",
@@ -856,7 +856,7 @@
       "error_message": "Significant refactor of ",
       "file": ".claude/SKILL.md",
       "root_cause": "5 lines replaced/restructured",
-      "fix": "Rewrote 10\u219214 lines (5 removed)",
+      "fix": "Rewrote 10→14 lines (5 removed)",
       "tags": [
         "auto-detected",
         "refactor",
@@ -872,7 +872,7 @@
       "error_message": "Significant refactor of ",
       "file": ".github/workflows/docs.yaml",
       "root_cause": "2 lines replaced/restructured",
-      "fix": "Rewrote 6\u21929 lines (2 removed)",
+      "fix": "Rewrote 6→9 lines (2 removed)",
       "tags": [
         "auto-detected",
         "refactor",
@@ -887,7 +887,7 @@
       "timestamp": "2026-05-30T21:37:46.790Z",
       "error_message": "Missing error handling in unknown",
       "file": ".claude/CHANGELOG.md",
-      "root_cause": "Code path had no error handling \u2014 exceptions would propagate uncaught",
+      "root_cause": "Code path had no error handling — exceptions would propagate uncaught",
       "fix": "Added try/catch block",
       "tags": [
         "auto-detected",
@@ -936,7 +936,7 @@
       "error_message": "Significant refactor of ",
       "file": "docs/architecture/calm/architecture.json",
       "root_cause": "2 lines replaced/restructured",
-      "fix": "Rewrote 10\u219214 lines (2 removed)",
+      "fix": "Rewrote 10→14 lines (2 removed)",
       "tags": [
         "auto-detected",
         "refactor",
@@ -952,7 +952,7 @@
       "error_message": "Significant refactor of ",
       "file": "crates/banlieue-controller/src/main.rs",
       "root_cause": "3 lines replaced/restructured",
-      "fix": "Rewrote 37\u219277 lines (3 removed)",
+      "fix": "Rewrote 37→77 lines (3 removed)",
       "tags": [
         "auto-detected",
         "refactor",
@@ -968,7 +968,7 @@
       "error_message": "Wrong reference: 213 should be 261",
       "file": ".claude/CHANGELOG.md",
       "root_cause": "Used \"213\" instead of \"261\"",
-      "fix": "Changed 213 \u2192 261",
+      "fix": "Changed 213 → 261",
       "tags": [
         "auto-detected",
         "wrong-reference",
@@ -984,7 +984,7 @@
       "error_message": "Significant refactor of ",
       "file": "README.md",
       "root_cause": "24 lines replaced/restructured",
-      "fix": "Rewrote 36\u219213 lines (24 removed)",
+      "fix": "Rewrote 36→13 lines (24 removed)",
       "tags": [
         "auto-detected",
         "refactor",
@@ -1000,7 +1000,7 @@
       "error_message": "Significant refactor of ",
       "file": "crates/banlieue-controller/Cargo.toml",
       "root_cause": "3 lines replaced/restructured",
-      "fix": "Rewrote 7\u21926 lines (3 removed) | Also: tokio = { workspace = true, features = [\"macros\", ; tracing-subscriber.workspace = true | Also: [[bin]]; name = \"banlieue-provider-vsphere\"",
+      "fix": "Rewrote 7→6 lines (3 removed) | Also: tokio = { workspace = true, features = [\"macros\", ; tracing-subscriber.workspace = true | Also: [[bin]]; name = \"banlieue-provider-vsphere\"",
       "tags": [
         "auto-detected",
         "refactor",
@@ -1016,7 +1016,7 @@
       "error_message": "Significant refactor of ",
       "file": "Makefile",
       "root_cause": "4 lines replaced/restructured",
-      "fix": "Rewrote 5\u21927 lines (4 removed)",
+      "fix": "Rewrote 5→7 lines (4 removed)",
       "tags": [
         "auto-detected",
         "refactor",
@@ -1064,7 +1064,7 @@
       "error_message": "Significant refactor of ",
       "file": "docs/src/concepts/architecture.md",
       "root_cause": "5 lines replaced/restructured",
-      "fix": "Rewrote 8\u219213 lines (5 removed)",
+      "fix": "Rewrote 8→13 lines (5 removed)",
       "tags": [
         "auto-detected",
         "refactor",
@@ -1080,7 +1080,7 @@
       "error_message": "Significant refactor of ",
       "file": "README.md",
       "root_cause": "4 lines replaced/restructured",
-      "fix": "Rewrote 4\u219212 lines (4 removed)",
+      "fix": "Rewrote 4→12 lines (4 removed)",
       "tags": [
         "auto-detected",
         "refactor",
@@ -1096,7 +1096,7 @@
       "error_message": "Significant refactor of ",
       "file": "docs/adr/0002-infracluster-failure-domain-aggregation.md",
       "root_cause": "3 lines replaced/restructured",
-      "fix": "Rewrote 3\u21925 lines (3 removed)",
+      "fix": "Rewrote 3→5 lines (3 removed)",
       "tags": [
         "auto-detected",
         "refactor",
@@ -1112,7 +1112,7 @@
       "error_message": "Wrong reference: roadmap should be api",
       "file": "docs/src/concepts/virtualmachine.md",
       "root_cause": "Used \"roadmap\" instead of \"api\"",
-      "fix": "Changed roadmap \u2192 api",
+      "fix": "Changed roadmap → api",
       "tags": [
         "auto-detected",
         "wrong-reference",
@@ -1128,7 +1128,7 @@
       "error_message": "Wrong reference: roadmap should be planned",
       "file": "docs/adr/0003-provider-deployment-topology.md",
       "root_cause": "Used \"roadmap\" instead of \"planned\"",
-      "fix": "Changed roadmap \u2192 planned",
+      "fix": "Changed roadmap → planned",
       "tags": [
         "auto-detected",
         "wrong-reference",
@@ -1144,7 +1144,7 @@
       "error_message": "Wrong reference: roadmap should be development",
       "file": "docs/src/architecture/index.md",
       "root_cause": "Used \"roadmap\" instead of \"development\"",
-      "fix": "Changed roadmap \u2192 development",
+      "fix": "Changed roadmap → development",
       "tags": [
         "auto-detected",
         "wrong-reference",
@@ -1160,7 +1160,7 @@
       "error_message": "Significant refactor of ",
       "file": "docs/src/concepts/infra-crds-capi.md",
       "root_cause": "3 lines replaced/restructured",
-      "fix": "Rewrote 5\u21927 lines (3 removed) | Also: The v1beta2 contract specifies, among other things; - A `status.ready` boolean.",
+      "fix": "Rewrote 5→7 lines (3 removed) | Also: The v1beta2 contract specifies, among other things; - A `status.ready` boolean.",
       "tags": [
         "auto-detected",
         "refactor",
@@ -1192,7 +1192,7 @@
       "error_message": "Significant refactor of ",
       "file": ".github/workflows/build.yaml",
       "root_cause": "4 lines replaced/restructured",
-      "fix": "Rewrote 14\u219220 lines (4 removed)",
+      "fix": "Rewrote 14→20 lines (4 removed)",
       "tags": [
         "auto-detected",
         "refactor",
@@ -1208,7 +1208,7 @@
       "error_message": "Significant refactor of ",
       "file": "docs/adr/0006-release-and-supply-chain-pipeline.md",
       "root_cause": "18 lines replaced/restructured",
-      "fix": "Rewrote 21\u219231 lines (18 removed)",
+      "fix": "Rewrote 21→31 lines (18 removed)",
       "tags": [
         "auto-detected",
         "refactor",
@@ -1240,7 +1240,7 @@
       "error_message": "Significant refactor of ",
       "file": ".github/workflows/build.yaml",
       "root_cause": "13 lines replaced/restructured",
-      "fix": "Rewrote 43\u2192233 lines (13 removed)",
+      "fix": "Rewrote 43→233 lines (13 removed)",
       "tags": [
         "auto-detected",
         "refactor",
@@ -1253,7 +1253,7 @@
     {
       "id": "bug-077",
       "timestamp": "2026-05-31T16:00:00Z",
-      "error_message": "clippy: this `if` statement can be collapsed \u2014 could not compile banlieue-api / banlieue-provider-vsphere with -D warnings --all-features",
+      "error_message": "clippy: this `if` statement can be collapsed — could not compile banlieue-api / banlieue-provider-vsphere with -D warnings --all-features",
       "file": "crates/banlieue-api/src/crddoc.rs, crates/banlieue-api/src/bin/crddoc.rs, crates/banlieue-provider-vsphere/src/reconciler/provider.rs, crates/banlieue-provider-vsphere/src/reconciler/vmimage.rs",
       "root_cause": "Workspace MSRV bumped to Rust 1.88, which stabilized let-chains. clippy::collapsible_if now flags nested `if let X { if Y { .. } }` that it previously allowed. Surfaced only with --all-features (crddoc is gated behind the crdgen feature).",
       "fix": "Collapsed each nested if into a let-chain: `if let X && Y { .. }` / `if let X && let Err(e) = .. { .. }`.",
@@ -1276,7 +1276,7 @@
       "error_message": "Wrong reference: GOVC_ should be GOVC",
       "file": "docs/src/developer/local-development.md",
       "root_cause": "Used \"GOVC_\" instead of \"GOVC\"",
-      "fix": "Changed GOVC_ \u2192 GOVC",
+      "fix": "Changed GOVC_ → GOVC",
       "tags": [
         "auto-detected",
         "wrong-reference",
@@ -1292,7 +1292,7 @@
       "error_message": "Significant refactor of ",
       "file": "Dockerfile",
       "root_cause": "2 lines replaced/restructured",
-      "fix": "Rewrote 3\u21924 lines (2 removed)",
+      "fix": "Rewrote 3→4 lines (2 removed)",
       "tags": [
         "auto-detected",
         "refactor",
@@ -1308,7 +1308,7 @@
       "error_message": "Significant refactor of ",
       "file": "Makefile",
       "root_cause": "5 lines replaced/restructured",
-      "fix": "Rewrote 21\u219243 lines (5 removed)",
+      "fix": "Rewrote 21→43 lines (5 removed)",
       "tags": [
         "auto-detected",
         "refactor",
@@ -1356,7 +1356,7 @@
       "error_message": "Significant refactor of ",
       "file": "Makefile",
       "root_cause": "5 lines replaced/restructured",
-      "fix": "Rewrote 9\u219213 lines (5 removed)",
+      "fix": "Rewrote 9→13 lines (5 removed)",
       "tags": [
         "auto-detected",
         "refactor",
@@ -1372,7 +1372,7 @@
       "error_message": "Significant refactor of ",
       "file": "Cargo.toml",
       "root_cause": "6 lines replaced/restructured",
-      "fix": "Rewrote 6\u21928 lines (6 removed)",
+      "fix": "Rewrote 6→8 lines (6 removed)",
       "tags": [
         "auto-detected",
         "refactor",
@@ -1388,7 +1388,7 @@
       "error_message": "Wrong reference: e1cbc149bc1e9c87267d3b5c4d8c7d3b8f8e6f1a should be b9e6c61851076cb2742befb6b742537cafe31bdf",
       "file": "Makefile",
       "root_cause": "Used \"e1cbc149bc1e9c87267d3b5c4d8c7d3b8f8e6f1a\" instead of \"b9e6c61851076cb2742befb6b742537cafe31bdf\"",
-      "fix": "Changed e1cbc149bc1e9c87267d3b5c4d8c7d3b8f8e6f1a \u2192 b9e6c61851076cb2742befb6b742537cafe31bdf",
+      "fix": "Changed e1cbc149bc1e9c87267d3b5c4d8c7d3b8f8e6f1a → b9e6c61851076cb2742befb6b742537cafe31bdf",
       "tags": [
         "auto-detected",
         "wrong-reference",
@@ -1404,7 +1404,7 @@
       "error_message": "Significant refactor of ",
       "file": ".claude/CHANGELOG.md",
       "root_cause": "13 lines replaced/restructured",
-      "fix": "Rewrote 42\u219253 lines (13 removed)",
+      "fix": "Rewrote 42→53 lines (13 removed)",
       "tags": [
         "auto-detected",
         "refactor",
@@ -1482,10 +1482,10 @@
     {
       "id": "bug-090",
       "timestamp": "2026-06-03T15:30:00-04:00",
-      "error_message": "cargo-deny: 'failed to satisfy license requirements' \u2014 CDLA-Permissive-2.0 (webpki-root-certs) not allowed; + phf/phf_shared duplicate warnings",
+      "error_message": "cargo-deny: 'failed to satisfy license requirements' — CDLA-Permissive-2.0 (webpki-root-certs) not allowed; + phf/phf_shared duplicate warnings",
       "file": "deny.toml",
-      "root_cause": "reqwest 0.12\u21920.13 bump (ADR-0009) pulls rustls-platform-verifier \u2192 webpki-root-certs (Mozilla CA bundle as DATA, licensed CDLA-Permissive-2.0) which the allowlist lacked. Both reqwest rustls features depend on it (unavoidable). Separately vim_rs 0.5 carries phf 0.11 (vim_macros) + 0.13 (vim_rs) internally.",
-      "fix": "deny.toml: add 'CDLA-Permissive-2.0' to licenses.allow (permissive data license, no copyleft); add phf@0.11.3 + phf_shared@0.11.3 to bans.skip. cargo deny check \u2192 advisories/bans/licenses/sources all ok.",
+      "root_cause": "reqwest 0.12→0.13 bump (ADR-0009) pulls rustls-platform-verifier → webpki-root-certs (Mozilla CA bundle as DATA, licensed CDLA-Permissive-2.0) which the allowlist lacked. Both reqwest rustls features depend on it (unavoidable). Separately vim_rs 0.5 carries phf 0.11 (vim_macros) + 0.13 (vim_rs) internally.",
+      "fix": "deny.toml: add 'CDLA-Permissive-2.0' to licenses.allow (permissive data license, no copyleft); add phf@0.11.3 + phf_shared@0.11.3 to bans.skip. cargo deny check → advisories/bans/licenses/sources all ok.",
       "tags": [
         "cargo-deny",
         "license",
@@ -1753,7 +1753,7 @@
       "error_message": "banlieue-libvirt procs: connect_open(read_only=true) could silently open a READ-WRITE connection and every test still passed",
       "file": "crates/banlieue-libvirt/src/procs_tests.rs",
       "root_cause": "Test gap, not a code defect. `encode_connect_open_args(None, CONNECT_RO)` was asserted in isolation, but nothing asserted that `connect_open(.., read_only: true)` actually PLUMBS CONNECT_RO into the args it sends. Mutation testing exposed it: replacing `let flags = if read_only { CONNECT_RO } else { 0 };` with `let flags = 0;` left all 60 tests green. A silent downgrade from read-only to read-write is a least-privilege failure that would never have surfaced in review.",
-      "fix": "Added `connect_open_plumbs_read_only_through_to_the_wire`, which drives connect_open over a scripted duplex peer and asserts the ARGUMENT BYTES that actually reached the peer equal encode_connect_open_args(uri, CONNECT_RO) \u2014 and, for read_only=false, equal the flags-0 encoding. Verified the new test FAILS under the original mutation and passes with correct code; the procedures layer now catches 6/6 mutations. General lesson: testing an encoder in isolation does not test that callers use it correctly \u2014 assert on what reaches the wire.",
+      "fix": "Added `connect_open_plumbs_read_only_through_to_the_wire`, which drives connect_open over a scripted duplex peer and asserts the ARGUMENT BYTES that actually reached the peer equal encode_connect_open_args(uri, CONNECT_RO) — and, for read_only=false, equal the flags-0 encoding. Verified the new test FAILS under the original mutation and passes with correct code; the procedures layer now catches 6/6 mutations. General lesson: testing an encoder in isolation does not test that callers use it correctly — assert on what reaches the wire.",
       "tags": [
         "mutation-testing",
         "test-gap",
@@ -1773,9 +1773,9 @@
     {
       "id": "bug-105",
       "timestamp": "2026-07-31T10:20:00-04:00",
-      "error_message": "procs::procs_tests::tests::connect_open_plumbs_read_only_through_to_the_wire panicked: called `Result::unwrap()` on an `Err` value: Xdr(UnexpectedEof) \u2014 at crates/banlieue-libvirt/src/procs_tests.rs:204",
+      "error_message": "procs::procs_tests::tests::connect_open_plumbs_read_only_through_to_the_wire panicked: called `Result::unwrap()` on an `Err` value: Xdr(UnexpectedEof) — at crates/banlieue-libvirt/src/procs_tests.rs:204",
       "file": "crates/banlieue-libvirt/src/procs_tests.rs",
-      "root_cause": "NOT YET DIAGNOSED \u2014 intermittent. Failed once during `cargo test --all`, then passed 11/11 runs of the test alone and of `cargo test -p banlieue-libvirt --lib`, and 4/4 further `cargo test --all` runs. Reproduces only under whole-workspace parallelism, so the suspicion is a timing/ordering assumption in the mock byte-stream the test reads from (an UnexpectedEof means the reader observed a short read), not a defect in `procs.rs` itself. Unrelated to the ADR-0012 operator work \u2014 that touched no file in banlieue-libvirt except the &PathBuf->&Path lint fix in tests/live_libvirtd.rs.",
+      "root_cause": "NOT YET DIAGNOSED — intermittent. Failed once during `cargo test --all`, then passed 11/11 runs of the test alone and of `cargo test -p banlieue-libvirt --lib`, and 4/4 further `cargo test --all` runs. Reproduces only under whole-workspace parallelism, so the suspicion is a timing/ordering assumption in the mock byte-stream the test reads from (an UnexpectedEof means the reader observed a short read), not a defect in `procs.rs` itself. Unrelated to the ADR-0012 operator work — that touched no file in banlieue-libvirt except the &PathBuf->&Path lint fix in tests/live_libvirtd.rs.",
       "fix": "NOT FIXED. Logged so the next occurrence is recognised as recurring rather than new. When it reappears: run with `--test-threads=1` to confirm it is a concurrency artefact, and check whether the test's duplex/mock stream can return a partial read that the decoder treats as EOF instead of retrying.",
       "tags": [
         "flaky",
@@ -1795,9 +1795,9 @@
     {
       "id": "bug-103",
       "timestamp": "2026-07-31T10:00:00-04:00",
-      "error_message": "banlieue-libvirt: connect_tls succeeded ('TLS established') but the first RPC never returned \u2014 hung indefinitely with no error from either side; libvirtd logged nothing",
+      "error_message": "banlieue-libvirt: connect_tls succeeded ('TLS established') but the first RPC never returned — hung indefinitely with no error from either side; libvirtd logged nothing",
       "file": "crates/banlieue-libvirt/src/transport.rs",
-      "root_cause": "libvirt's TLS transport has a mandatory post-handshake step that appears in NO protocol document \u2014 only in libvirt's own client source (src/rpc/virnetclient.c): after the TLS handshake the server validates the client certificate and source address and, if satisfied, sends a single 0x01 byte. Its comment: 'At this point, the server is verifying _our_ certificate, IP address, etc. If we make the grade, it will send us a \\1 byte.' We never read it, so the byte stayed in the receive buffer; the first reply's 4-byte length prefix was then parsed one byte out of alignment, producing a garbage length, and read_exact blocked forever waiting for bytes that would never arrive. Fails silently by construction: libvirtd answered correctly and logged nothing, and TLS/auth/framing were all individually correct.",
+      "root_cause": "libvirt's TLS transport has a mandatory post-handshake step that appears in NO protocol document — only in libvirt's own client source (src/rpc/virnetclient.c): after the TLS handshake the server validates the client certificate and source address and, if satisfied, sends a single 0x01 byte. Its comment: 'At this point, the server is verifying _our_ certificate, IP address, etc. If we make the grade, it will send us a \\1 byte.' We never read it, so the byte stayed in the receive buffer; the first reply's 4-byte length prefix was then parsed one byte out of alignment, producing a garbage length, and read_exact blocked forever waiting for bytes that would never arrive. Fails silently by construction: libvirtd answered correctly and logged nothing, and TLS/auth/framing were all individually correct.",
       "fix": "After the handshake in connect_tls, read exactly one byte and require it to equal 0x01, else return TransportError::Tls describing a server-side rejection of our certificate or source address. Verified against the live host: CONNECT_OPEN now returns and LIST_ALL_STORAGE_POOLS decodes 4 pools whose names and UUIDs match `virsh pool-list`/`pool-info` exactly.",
       "tags": [
         "libvirt",
@@ -1821,7 +1821,7 @@
       "timestamp": "2026-07-31T10:05:00-04:00",
       "error_message": "banlieue-libvirt: CONNECT_OPEN sent as the first message on a session; real libvirt clients always send AUTH_LIST (proc 66) first",
       "file": "crates/banlieue-libvirt/src/procs.rs",
-      "root_cause": "The client jumped straight to CONNECT_OPEN. A real client traced with `LIBVIRT_DEBUG=1 virsh list` shows its first message is proc=66 (REMOTE_PROC_AUTH_LIST), serial=0, len=28 \u2014 authentication negotiation precedes CONNECT_OPEN on every connection. The same trace also disproved the documentation on serials: libvirt's RPC kbase says serials 'start at 1', but the reference client sends serial=0 first and serial=1 second.",
+      "root_cause": "The client jumped straight to CONNECT_OPEN. A real client traced with `LIBVIRT_DEBUG=1 virsh list` shows its first message is proc=66 (REMOTE_PROC_AUTH_LIST), serial=0, len=28 — authentication negotiation precedes CONNECT_OPEN on every connection. The same trace also disproved the documentation on serials: libvirt's RPC kbase says serials 'start at 1', but the reference client sends serial=0 first and serial=1 second.",
       "fix": "Added PROC_AUTH_LIST (66), an AuthType enum (None/Sasl/Polkit/Unknown), decode_auth_list, and auth_list(). connect_open() now negotiates first and refuses with TransportError::Protocol if REMOTE_AUTH_NONE is not offered (banlieue supports x509 client-cert auth only). Session serials now start at 0 to match the reference implementation rather than its prose. Unit tests updated; the two-call handshake required rewriting the scripted-peer helper to answer AUTH_LIST before capturing the call under test.",
       "tags": [
         "libvirt",
@@ -1842,7 +1842,7 @@
     {
       "id": "bug-104",
       "timestamp": "2026-07-31T11:20:00-04:00",
-      "error_message": "providers.banlieue.io \"e2e-vc\" is forbidden: User \"system:serviceaccount:banlieue-system:banlieue-operator\" cannot patch resource \"providers\" in API group \"banlieue.io\" in the namespace \"banlieue-e2e\" \u2014 every Provider reconcile 403'd, no workload was ever created",
+      "error_message": "providers.banlieue.io \"e2e-vc\" is forbidden: User \"system:serviceaccount:banlieue-system:banlieue-operator\" cannot patch resource \"providers\" in API group \"banlieue.io\" in the namespace \"banlieue-e2e\" — every Provider reconcile 403'd, no workload was ever created",
       "file": "deploy/operator/rbac/clusterrole.yaml",
       "root_cause": "Conflated two DIFFERENT Kubernetes permissions. The operator ClusterRole granted `update` on `providers/finalizers` and assumed that covered adding its `banlieue.io/provider-workload` finalizer. It does not. `<resource>/finalizers` is the admission-time permission the apiserver requires before it will accept a DEPENDENT carrying `ownerReference.blockOwnerDeletion: true`. Writing `metadata.finalizers` on the object itself is an ordinary write to the MAIN resource and needs update/patch on `providers`. The reconciler calls ensure_finalizer() before anything else, so every reconcile failed at the first step and retried every 5s forever.",
       "fix": "Added a rule granting update/patch on `providers` (kept separate from the /status and /finalizers rules, each with a comment explaining which permission it is and why). Added two unit guards in bootstrap_tests.rs that parse the embedded ClusterRole: operator_cluster_role_can_write_the_provider_finalizer and operator_cluster_role_can_set_block_owner_deletion.",
@@ -1862,7 +1862,7 @@
     {
       "id": "bug-105",
       "timestamp": "2026-07-31T11:25:00-04:00",
-      "error_message": "e2e test `a_paused_provider_gets_no_workload` PASSED while the operator was completely broken (every reconcile 403ing) \u2014 a false green",
+      "error_message": "e2e test `a_paused_provider_gets_no_workload` PASSED while the operator was completely broken (every reconcile 403ing) — a false green",
       "file": "crates/banlieue-operator/tests/e2e_provider_lifecycle.rs",
       "root_cause": "The test asserted only the ABSENCE of a workload after pausing a Provider. Absence is satisfied just as well by an operator that is dead, crash-looping, or 403ing on every reconcile, so the assertion carried no information. It passed on the very run where bug-104 made the operator entirely non-functional.",
       "fix": "After asserting absence, the test now unpauses the Provider (merge patch spec.paused=false) and waits for the workload to actually appear. That establishes the operator was alive and willing, which is what makes the absence check meaningful. General rule: an assertion that something did NOT happen needs a paired positive control, or it is untestable-by-construction.",
@@ -1942,8 +1942,8 @@
       "timestamp": "2026-07-31T12:00:00-04:00",
       "error_message": "clusterrolebindings ... forbidden: banlieue-operator is attempting to grant RBAC permissions not currently held: {APIGroups:[\"\"], Resources:[\"secrets\"], Verbs:[\"list\" \"watch\"]}",
       "file": "deploy/provider-vsphere/rbac/clusterrole.yaml",
-      "root_cause": "The shared per-backend provider ClusterRole granted secrets/configmaps get+list+watch. It is attached with a ClusterRoleBinding, so list/watch means read EVERY Secret in the cluster \u2014 silently defeating the resourceNames narrowing that per-instance topology (ADR-0003) exists to provide. It also blocked the operator from creating the binding at all, since RBAC refuses to let a grantor hand out permissions it does not hold.",
-      "fix": "Narrowed to `get` on secrets and configmaps: every call site (reconciler/provider.rs, vmimage.rs, ca_bundle.rs) reads by name via api.get(name), so list/watch bought nothing. The tempting fix \u2014 widening the operator ClusterRole to match \u2014 would have PROPAGATED the over-grant instead of removing it. Guarded by no_provider_cluster_role_grants_blanket_secret_enumeration, which iterates every backend.",
+      "root_cause": "The shared per-backend provider ClusterRole granted secrets/configmaps get+list+watch. It is attached with a ClusterRoleBinding, so list/watch means read EVERY Secret in the cluster — silently defeating the resourceNames narrowing that per-instance topology (ADR-0003) exists to provide. It also blocked the operator from creating the binding at all, since RBAC refuses to let a grantor hand out permissions it does not hold.",
+      "fix": "Narrowed to `get` on secrets and configmaps: every call site (reconciler/provider.rs, vmimage.rs, ca_bundle.rs) reads by name via api.get(name), so list/watch bought nothing. The tempting fix — widening the operator ClusterRole to match — would have PROPAGATED the over-grant instead of removing it. Guarded by no_provider_cluster_role_grants_blanket_secret_enumeration, which iterates every backend.",
       "tags": [
         "rbac",
         "security",
@@ -1963,7 +1963,7 @@
       "timestamp": "2026-07-31T12:00:00-04:00",
       "error_message": "Provider workload never functional: the ClusterRoleBinding the operator creates referenced ClusterRole banlieue-provider-<backend>, which nothing had installed",
       "file": "crates/banlieue-operator/src/bootstrap.rs",
-      "root_cause": "build_operator_install installed ClusterRoles for the Controller and Operator roles only. The operator BINDS the shared per-backend provider ClusterRole to every per-instance ServiceAccount but cannot create it (minting the permissions it hands out is the escalation path ADR-0012 refuses), so bootstrap had to \u2014 and did not. A real `bootstrap operator` plus `kubectl apply` of a Provider produced a binding pointing at a nonexistent role: a provider pod with zero permissions while the install reported success. The kind e2e surfaced it because a STALE copy of the role lingered from an earlier deploy \u2014 exactly how this would bite a real upgrade.",
+      "root_cause": "build_operator_install installed ClusterRoles for the Controller and Operator roles only. The operator BINDS the shared per-backend provider ClusterRole to every per-instance ServiceAccount but cannot create it (minting the permissions it hands out is the escalation path ADR-0012 refuses), so bootstrap had to — and did not. A real `bootstrap operator` plus `kubectl apply` of a Provider produced a binding pointing at a nonexistent role: a provider pod with zero permissions while the install reported success. The kind e2e surfaced it because a STALE copy of the role lingered from an earlier deploy — exactly how this would bite a real upgrade.",
       "fix": "build_operator_install now pushes InstallRole::Provider(backend).cluster_role() for every compiled-in backend, hard-erroring (naming the backend and expected path) when a manifest is missing. make kind-deploy-operator applies deploy/provider-*/rbac/clusterrole.yaml via glob. Guarded by operator_install_ships_the_shared_cluster_role_each_backend_needs and the_installed_cluster_role_name_matches_what_the_binding_references.",
       "tags": [
         "rbac",
@@ -2019,7 +2019,7 @@
       "timestamp": "2026-07-31T20:06:11.091448+00:00",
       "error_message": "the caBundle UTF-8 check was pinned by no test at all",
       "file": "crates/banlieue-provider-sdk/src/ca_bundle.rs",
-      "root_cause": "The check lived inside read_secret_key, reachable only through a kube API call, so no unit test could touch it. Deleting it entirely kept the suite green \u2014 a binary DER value would have reached the TLS stack and failed with a far less obvious message.",
+      "root_cause": "The check lived inside read_secret_key, reachable only through a kube API call, so no unit test could touch it. Deleting it entirely kept the suite green — a binary DER value would have reached the TLS stack and failed with a far less obvious message.",
       "fix": "Extracted pem_from_secret_value() as a pure function and tested both the PEM and DER paths. Found by mutation testing.",
       "tags": [
         "sdk",
@@ -2073,7 +2073,7 @@
       "error_message": "two providers reconciling one VMImage silently erase each other's status.perProvider rows and conditions",
       "file": "crates/banlieue-api/src/banlieue/vmimage.rs",
       "root_cause": "status.perProvider and status.conditions are plain arrays with no x-kubernetes-list-type, so server-side apply treats them as ATOMIC: the whole array is owned by one field manager. Each provider applies the full list containing only its own rows, with force(), so it takes ownership and discards the other's. Reproduced on a real apiserver (kind): after vsphere then libvirt applied, perProvider was ['kvm-1'] only and conditions held only libvirt's. rawDiskArtifact survived because it is a distinct key with skip_serializing_if. examples/04-vmimage-ubuntu.yaml ships vsphere+proxmox+libvirt sources, so this is the documented case, not a corner.",
-      "fix": "FIXED (ADR-0015). (1) status.perProvider gets x-kubernetes-list-type=map keyed on [providerName, providerNamespace]; status.conditions gets list-type=map keyed on [type], via #[schemars(extend(...))] in banlieue-api. (2) Providers no longer write VMImage.status.conditions at all \u2014 a provider cannot compute 'ready everywhere' from rows it does not own. (3) banlieue-controller gains a VMImage reconciler owning the aggregate Ready under field manager banlieue.io/controller. Verified on kind: perProvider now reads ['vc-1','kvm-1'] and a provider's later write neither duplicates its own row nor disturbs the controller's condition.",
+      "fix": "FIXED (ADR-0015). (1) status.perProvider gets x-kubernetes-list-type=map keyed on [providerName, providerNamespace]; status.conditions gets list-type=map keyed on [type], via #[schemars(extend(...))] in banlieue-api. (2) Providers no longer write VMImage.status.conditions at all — a provider cannot compute 'ready everywhere' from rows it does not own. (3) banlieue-controller gains a VMImage reconciler owning the aggregate Ready under field manager banlieue.io/controller. Verified on kind: perProvider now reads ['vc-1','kvm-1'] and a provider's later write neither duplicates its own row nor disturbs the controller's condition.",
       "tags": [
         "ssa",
         "field-manager",
@@ -2092,8 +2092,8 @@
       "timestamp": "2026-07-31T14:25:00-04:00",
       "error_message": "e2e `a_paused_class_suspends_its_providers` timed out after 120s waiting for the workload to appear once the ProviderClass was unpaused",
       "file": "crates/banlieue-operator/src/reconciler/provider.rs",
-      "root_cause": "The skip path (Provider or ProviderClass paused) returned requeue_long() = 300s. Nothing watches ProviderClass \u2014 mapping a class back to its Providers needs an async lookup kube's synchronous watch mapper cannot do without a reflector store \u2014 so a paused Provider is only re-examined when that timer fires. Un-pausing therefore took up to FIVE MINUTES to take effect, with no event in between to shorten it. Not a correctness bug (it converges) but a bad enough UX bug that an operator would reasonably conclude un-pausing was broken.",
-      "fix": "Return requeue_default() (30s) on the skip path instead. Checking a paused resource is a cheap no-op \u2014 two API reads and an early return \u2014 so the longer interval bought nothing and cost responsiveness. Proper follow-up is a reflector store so ProviderClass edits trigger affected Providers immediately, which would also remove the 30s lag on class image edits.",
+      "root_cause": "The skip path (Provider or ProviderClass paused) returned requeue_long() = 300s. Nothing watches ProviderClass — mapping a class back to its Providers needs an async lookup kube's synchronous watch mapper cannot do without a reflector store — so a paused Provider is only re-examined when that timer fires. Un-pausing therefore took up to FIVE MINUTES to take effect, with no event in between to shorten it. Not a correctness bug (it converges) but a bad enough UX bug that an operator would reasonably conclude un-pausing was broken.",
+      "fix": "Return requeue_default() (30s) on the skip path instead. Checking a paused resource is a cheap no-op — two API reads and an early return — so the longer interval bought nothing and cost responsiveness. Proper follow-up is a reflector store so ProviderClass edits trigger affected Providers immediately, which would also remove the 30s lag on class image edits.",
       "tags": [
         "ux",
         "requeue",
@@ -2111,9 +2111,9 @@
     {
       "id": "bug-118",
       "timestamp": "2026-07-31T21:43:15.522734+00:00",
-      "error_message": "error: context \"kind-banlieue-dev\" does not exist \u2014 make kind-e2e failed at kind-create",
+      "error_message": "error: context \"kind-banlieue-dev\" does not exist — make kind-e2e failed at kind-create",
       "file": "Makefile",
-      "root_cause": "The kind workflow was only half-scoped to its own kubeconfig. `kind-e2e` ran the test with KUBECONFIG=$(KIND_KUBECONFIG), but all 24 other kubectl invocations used bare `kubectl --context kind-$(KIND_CLUSTER_NAME)`, which resolves against whatever $KUBECONFIG is selected. If that file lacks the context \u2014 which it did, because the cluster had been created under a different selected kubeconfig \u2014 every deploy step fails. The mirror-image hazard is worse: `kind create cluster` WRITES its context into the selected kubeconfig, so running the local e2e while pointed at the homelab config would have mutated that file.",
+      "root_cause": "The kind workflow was only half-scoped to its own kubeconfig. `kind-e2e` ran the test with KUBECONFIG=$(KIND_KUBECONFIG), but all 24 other kubectl invocations used bare `kubectl --context kind-$(KIND_CLUSTER_NAME)`, which resolves against whatever $KUBECONFIG is selected. If that file lacks the context — which it did, because the cluster had been created under a different selected kubeconfig — every deploy step fails. The mirror-image hazard is worse: `kind create cluster` WRITES its context into the selected kubeconfig, so running the local e2e while pointed at the homelab config would have mutated that file.",
       "fix": "Added KIND_KUBECTL = kubectl --kubeconfig $(KIND_KUBECONFIG) --context kind-$(KIND_CLUSTER_NAME) and routed all 24 call sites through it; kind-create now runs `kind create` under KUBECONFIG=$(KIND_KUBECONFIG) and always refreshes that file before anything reads it. Verified: `make kind-e2e` passes and kind-banlieue-dev never appears in the default kubeconfig's contexts.",
       "tags": [
         "makefile",
@@ -2133,15 +2133,15 @@
       "file": "crates/banlieue-imagebuilder/src/reconciler/vmimage.rs",
       "root_cause": "kube's DynamicObject parses `metadata` into the typed `metadata` field and OUT of the flattened `data` Value, so `obj.data[\"metadata\"][\"ownerReferences\"]` is always Null. The SEC-005 staleness check read ownerReferences from `data`, making owner_uid_matches permanently false; the reconcile then deleted and recreated the artifact on every watch event.",
       "fix": "Read `obj.metadata.owner_references` (typed) instead; owner_uid_matches now takes Option<&[OwnerReference]>. Verified on kind: owned artifacts survive, forged/stale ones are still deleted.",
-      "learning": "With kube's DynamicObject, never read metadata from `.data` \u2014 apiVersion/kind/spec/status live there, metadata does not. Any DynamicObject metadata check must go through the typed `.metadata` field."
+      "learning": "With kube's DynamicObject, never read metadata from `.data` — apiVersion/kind/spec/status live there, metadata does not. Any DynamicObject metadata check must go through the typed `.metadata` field."
     },
     {
       "id": "bug-120",
       "timestamp": "2026-08-01T00:45:55.354266+00:00",
-      "error_message": "namespaces \"banlieue-imagebuild\" not found \u2014 banlieue-imagebuilder error-loops immediately after the documented install",
+      "error_message": "namespaces \"banlieue-imagebuild\" not found — banlieue-imagebuilder error-loops immediately after the documented install",
       "file": "crates/banlieue-imagebuilder/src/app.rs",
       "root_cause": "The imagebuilder defaulted --build-namespace to banlieue-imagebuild, but `banlieue bootstrap imagebuilder` only ever creates banlieue-system. The documented install path therefore produced a deployment that could never reconcile.",
-      "fix": "PARTIAL \u2014 default changed to banlieue-system so the namespace exists, but see the PodSecurity finding: banlieue-system enforces restricted and kairos build pods need privileged, so the build namespace must ultimately be separate AND created by bootstrap with appropriate labels.",
+      "fix": "PARTIAL — default changed to banlieue-system so the namespace exists, but see the PodSecurity finding: banlieue-system enforces restricted and kairos build pods need privileged, so the build namespace must ultimately be separate AND created by bootstrap with appropriate labels.",
       "tags": [
         "imagebuilder",
         "bootstrap",
@@ -2157,7 +2157,7 @@
       "timestamp": "2026-08-01T00:45:55.354266+00:00",
       "error_message": "imagebuilder and libvirt provider disagreed on --build-namespace (banlieue-imagebuild vs banlieue-system)",
       "file": "crates/banlieue/src/cli_tests.rs",
-      "root_cause": "Two crates, each internally consistent, disagreeing on a shared contract. The imagebuilder creates the artifacts PVC in its build namespace; the provider mounts that PVC into an import Job in ITS build namespace. A PVC cannot be mounted across namespaces \u2014 ADR-0010 says so in a comment \u2014 so the import could never work. Neither crate's tests could see it; only the binary crate links both.",
+      "root_cause": "Two crates, each internally consistent, disagreeing on a shared contract. The imagebuilder creates the artifacts PVC in its build namespace; the provider mounts that PVC into an import Job in ITS build namespace. A PVC cannot be mounted across namespaces — ADR-0010 says so in a comment — so the import could never work. Neither crate's tests could see it; only the binary crate links both.",
       "fix": "Added a cross-crate contract test in crates/banlieue/src/cli_tests.rs asserting the two defaults are equal, and aligned them. The test is the durable part: the correct VALUE is still open pending the PodSecurity decision.",
       "tags": [
         "contract-drift",
@@ -2173,10 +2173,10 @@
     {
       "id": "bug-122",
       "timestamp": "2026-08-01T00:45:55.354266+00:00",
-      "error_message": "osartifacts.build.kairos.io is forbidden: cannot create resource \"osartifacts\" \u2014 every OSArtifact creation 403d",
+      "error_message": "osartifacts.build.kairos.io is forbidden: cannot create resource \"osartifacts\" — every OSArtifact creation 403d",
       "file": "deploy/imagebuilder/rbac/clusterrole.yaml",
       "root_cause": "The ClusterRole granted get/list/watch/patch/delete on osartifacts but NOT create, with a comment asserting that 'patch covers server-side apply (create-or-update in one call)'. That is false: SSA is a patch when the object exists and a CREATE when it does not. The imagebuilder's entire purpose is creating OSArtifacts, so nothing worked.",
-      "fix": "Added `create`. Added a bootstrap test asserting that any role which server-side-applies an object also holds create on it \u2014 the general form of the mistake.",
+      "fix": "Added `create`. Added a bootstrap test asserting that any role which server-side-applies an object also holds create on it — the general form of the mistake.",
       "tags": [
         "rbac",
         "ssa",
@@ -2195,7 +2195,7 @@
       "error_message": "kairos build pod rejected: violates PodSecurity \"restricted:latest\": privileged, allowPrivilegeEscalation, unrestricted capabilities, runAsNonRoot, seccompProfile",
       "file": "docs/adr/0016-imagebuild-namespace-isolation.md",
       "root_cause": "ADR-0010 named a --build-namespace but never said what it must PERMIT. kairos-operator's OSArtifact builder needs privileged:true for loop devices; privileged is denied by `baseline` as well as `restricted`, so the hosting namespace must enforce `privileged` (no admission floor). Pointing the build at banlieue-system would have removed that floor from the controller, the operator (an RBAC grantor) and every per-backend provider pod.",
-      "fix": "ADR-0016: dedicated banlieue-imagebuild namespace with enforce=privileged and audit/warn=restricted; both components default --build-namespace there; bootstrap creates it. NOTE the split bounds admission surface, NOT escape capability \u2014 a privileged pod escapes to its node regardless of namespace; node isolation is tracked as the outstanding complementary control.",
+      "fix": "ADR-0016: dedicated banlieue-imagebuild namespace with enforce=privileged and audit/warn=restricted; both components default --build-namespace there; bootstrap creates it. NOTE the split bounds admission surface, NOT escape capability — a privileged pod escapes to its node regardless of namespace; node isolation is tracked as the outstanding complementary control.",
       "tags": [
         "podsecurity",
         "privileged",
@@ -2231,10 +2231,10 @@
     {
       "id": "bug-125",
       "timestamp": "2026-08-01T10:15:52.658630+00:00",
-      "error_message": "MountVolume.SetUp failed for volume \"creds\": secret \"libvirt-creds\" not found \u2014 import pods stuck in ContainerCreating",
+      "error_message": "MountVolume.SetUp failed for volume \"creds\": secret \"libvirt-creds\" not found — import pods stuck in ContainerCreating",
       "file": "crates/banlieue-provider-libvirt/src/reconciler/vmimage.rs",
-      "root_cause": "The import Job manifest mounted the Provider's credentials Secret as a volume. The Secret lives with the Provider (banlieue-system); the Job runs in the build namespace (ADR-0016). A volume mount cannot cross namespaces, exactly like the PVC. ADR-0016 \u00a74 designed cross-namespace RBAC for API READS of the Secret but I missed that the manifest also mounted it.",
-      "fix": "Removed the volume and mount entirely \u2014 they were vestigial. import.rs never read the mounted path; it resolves credentials through the Kubernetes API via credentials::resolve, which the ADR-0016 \u00a74 RBAC already permits. Strictly better: the Secret is no longer projected into the filesystem of a pod running in a namespace with no admission floor. Test now asserts NO secret is projected.",
+      "root_cause": "The import Job manifest mounted the Provider's credentials Secret as a volume. The Secret lives with the Provider (banlieue-system); the Job runs in the build namespace (ADR-0016). A volume mount cannot cross namespaces, exactly like the PVC. ADR-0016 §4 designed cross-namespace RBAC for API READS of the Secret but I missed that the manifest also mounted it.",
+      "fix": "Removed the volume and mount entirely — they were vestigial. import.rs never read the mounted path; it resolves credentials through the Kubernetes API via credentials::resolve, which the ADR-0016 §4 RBAC already permits. Strictly better: the Secret is no longer projected into the filesystem of a pod running in a namespace with no admission floor. Test now asserts NO secret is projected.",
       "tags": [
         "cross-namespace",
         "volume-mount",
@@ -2252,7 +2252,7 @@
       "timestamp": "2026-08-01T10:15:52.658630+00:00",
       "error_message": "operator created the import Role/RoleBinding then immediately deleted them: 'pruned workload object no longer part of this Provider', in a loop",
       "file": "crates/banlieue-operator/src/reconciler/provider.rs",
-      "root_cause": "prune_namespaced() took `keep: Option<&str>` \u2014 a SINGLE name. One Provider legitimately owns two Roles now: the controller's and the import identity's (ADR-0016 \u00a74). The import objects carry the provider labels, so the pruner matched them, found their names != the one kept name, and deleted them on every reconcile. Create -> prune -> create -> prune.",
+      "root_cause": "prune_namespaced() took `keep: Option<&str>` — a SINGLE name. One Provider legitimately owns two Roles now: the controller's and the import identity's (ADR-0016 §4). The import objects carry the provider labels, so the pruner matched them, found their names != the one kept name, and deleted them on every reconcile. Create -> prune -> create -> prune.",
       "fix": "prune_namespaced() now takes `keep: &[String]`; the Role/RoleBinding call sites pass both the workload name and its `-import` sibling. The teardown path passes an empty slice so deletion still removes everything.",
       "tags": [
         "operator",
@@ -2269,10 +2269,10 @@
     {
       "id": "bug-127",
       "timestamp": "2026-08-02T14:47:22.126308+00:00",
-      "error_message": "gen-raw-efi-disk (error: open /dev/loop1: no such file or directory) \u2014 kairos build failed on Hadron Linux nodes",
-      "file": "(node OS config \u2014 Kairos Hadron)",
+      "error_message": "gen-raw-efi-disk (error: open /dev/loop1: no such file or directory) — kairos build failed on Hadron Linux nodes",
+      "file": "(node OS config — Kairos Hadron)",
       "root_cause": "Recurrence of bug-098 in a new guise. The loop MODULE was loaded and /dev/loop0+loop1 existed at inspection time, but max_loop=0 means the kernel creates loop devices ON DEMAND. A privileged container only inherits device nodes that existed at container-creation time, so the build container started before loop1 existed and could never see it. The previous fix lived in the Debian cloud-init, which the Hadron rebuild discarded.",
-      "fix": "Pre-created /dev/loop0..loop7 on the build node via a one-shot privileged pod (mknod b 7 N). Build then succeeded. NOT PERSISTENT \u2014 lost on reboot. Persistent fix belongs in the Kairos cloud-config: /etc/modules-load.d/loop.conf plus /etc/modprobe.d/loop.conf with `options loop max_loop=8`.",
+      "fix": "Pre-created /dev/loop0..loop7 on the build node via a one-shot privileged pod (mknod b 7 N). Build then succeeded. NOT PERSISTENT — lost on reboot. Persistent fix belongs in the Kairos cloud-config: /etc/modules-load.d/loop.conf plus /etc/modprobe.d/loop.conf with `options loop max_loop=8`.",
       "tags": [
         "loop-device",
         "kairos",
@@ -2293,7 +2293,7 @@
       "timestamp": "2026-08-02T14:47:22.126308+00:00",
       "error_message": "import pods Pending: 0/4 nodes available: 1 node had untolerated taint, 3 nodes didn't match PersistentVolume's node affinity",
       "file": "crates/banlieue-operator/src/workload.rs",
-      "root_cause": "Build scheduling was given to banlieue-imagebuilder but never reached the provider, so its import Jobs carried no nodeSelector or toleration. With node-local storage the artifacts PV is pinned to the node the build ran on \u2014 the tainted build node \u2014 so the only node that could mount it was the one the Job could not tolerate.",
+      "root_cause": "Build scheduling was given to banlieue-imagebuilder but never reached the provider, so its import Jobs carried no nodeSelector or toleration. With node-local storage the artifacts PV is pinned to the node the build ran on — the tainted build node — so the only node that could mount it was the one the Job could not tolerate.",
       "fix": "The operator now forwards --build-node-selector/--build-toleration to every provider workload (new operator CLI flags -> Context -> build_args). Tests assert both that the flags are forwarded and that they are OMITTED when unset, since clap rejects empty values.",
       "tags": [
         "scheduling",
@@ -2310,7 +2310,7 @@
     {
       "id": "bug-129",
       "timestamp": "2026-08-02T14:47:22.126308+00:00",
-      "error_message": "ImagePullBackOff: ghcr.io/firestoned/banlieue:v0.1.0: not found \u2014 every import Job",
+      "error_message": "ImagePullBackOff: ghcr.io/firestoned/banlieue:v0.1.0: not found — every import Job",
       "file": "crates/banlieue-operator/src/workload.rs",
       "root_cause": "The provider's --import-image defaulted to the released tag ghcr.io/firestoned/banlieue:v0.1.0 and nothing overrode it, so a provider running :local-dev spawned Jobs referencing a tag that does not exist. Version skew by construction: the Job runs the SAME binary as the provider, so it must run the same image.",
       "fix": "The operator now passes --import-image with the resolved ProviderClass image. Test asserts the flag matches the image the provider itself runs.",
@@ -2328,9 +2328,9 @@
     {
       "id": "bug-130",
       "timestamp": "2026-08-02T16:28:00.794995+00:00",
-      "error_message": "build scheduling could not be set through `banlieue bootstrap` \u2014 it had to be patched onto Deployments by hand after install",
+      "error_message": "build scheduling could not be set through `banlieue bootstrap` — it had to be patched onto Deployments by hand after install",
       "file": "crates/banlieue-operator/src/bootstrap.rs",
-      "root_cause": "The imagebuilder and operator both grew --build-node-selector/--build-toleration, but InstallRole::args() returned a fixed vec per role, so the installer could not pass them. The documented install path therefore produced a cluster where privileged build pods could be scheduled onto control-plane nodes \u2014 the exact thing ADR-0016's follow-up exists to prevent.",
+      "root_cause": "The imagebuilder and operator both grew --build-node-selector/--build-toleration, but InstallRole::args() returned a fixed vec per role, so the installer could not pass them. The documented install path therefore produced a cluster where privileged build pods could be scheduled onto control-plane nodes — the exact thing ADR-0016's follow-up exists to prevent.",
       "fix": "InstallOptions carries both; InstallRole::args_with(opts) appends them for Operator and Imagebuilder only. Tests assert the controller does NOT receive them (it does not declare the flags and would fail to start) and that unset emits nothing (clap rejects empty values).",
       "tags": [
         "bootstrap",
@@ -2366,7 +2366,7 @@
       "timestamp": "2026-08-02T17:55:59.290207+00:00",
       "error_message": "the loop-device cloud-config would have been silently ignored: `files:` was written as a STAGE NAME",
       "file": "scripts/bootstrap-k0s-cluster.sh",
-      "root_cause": "In Kairos/yip, `files:` is a property of a stage STEP, not a stage of its own. I added it as a sibling of `after-install:` and `boot:` under `stages:`, creating a bogus stage named 'files' whose entries carry path/permissions/content where a step expects name/commands/files. yip has no such stage, so nothing would ever have been written \u2014 and nothing would have errored either.",
+      "root_cause": "In Kairos/yip, `files:` is a property of a stage STEP, not a stage of its own. I added it as a sibling of `after-install:` and `boot:` under `stages:`, creating a bogus stage named 'files' whose entries carry path/permissions/content where a step expects name/commands/files. yip has no such stage, so nothing would ever have been written — and nothing would have errored either.",
       "fix": "Moved the `files:` block inside the boot stage's step, alongside its `commands:`. Confirmed the surrounding shell still parses.",
       "tags": [
         "kairos",
@@ -2383,7 +2383,7 @@
     {
       "id": "bug-133",
       "timestamp": "2026-08-02T17:55:59.290207+00:00",
-      "error_message": "after a power cut and node reboot, /dev/loop1..7 were gone again \u2014 only loop-control and loop0 remained",
+      "error_message": "after a power cut and node reboot, /dev/loop1..7 were gone again — only loop-control and loop0 remained",
       "file": "(node runtime state)",
       "root_cause": "The manual mknod applied to unblock the first build was never persistent, and the running nodes were installed BEFORE the cloud-config fix, so they carry neither the modprobe.d parameter nor the modules-load.d entry. An unplanned host power loss demonstrated this within hours.",
       "fix": "Wrote /etc/modules-load.d/banlieue-loop.conf and /etc/modprobe.d/banlieue-loop.conf into the node's persistent /etc via a privileged pod, plus recreated the device nodes for the running kernel. Nodes built from the corrected cloud-config get this at install time.",
@@ -2406,7 +2406,7 @@
       "timestamp": "2026-08-02T18:34:55.991907+00:00",
       "error_message": "images were imported into every pool on the host, including one the admin never declared (3 GiB written into `boot`)",
       "file": "crates/banlieue-provider-libvirt/src/reconciler/vmimage.rs",
-      "root_cause": "target_pools() read status.failureDomains[].attributes.raw['pools'], which is DISCOVERY output \u2014 every pool libvirtd reports. The declared capability list is spec.capabilities.storageClasses, verified into attributes.availableStorageClasses. On the homelab Provider three classes were declared (default, images, k0s-bootstrap) but four pools exist, so every import also wrote a full copy into `boot`. Contradicts non-negotiable #4: capabilities are declared, discovery is a status-time concern.",
+      "root_cause": "target_pools() read status.failureDomains[].attributes.raw['pools'], which is DISCOVERY output — every pool libvirtd reports. The declared capability list is spec.capabilities.storageClasses, verified into attributes.availableStorageClasses. On the homelab Provider three classes were declared (default, images, k0s-bootstrap) but four pools exist, so every import also wrote a full copy into `boot`. Contradicts non-negotiable #4: capabilities are declared, discovery is a status-time concern.",
       "fix": "target_pools() now maps declared storageClasses -> target['pool'], filtered to classes present in availableStorageClasses (i.e. verified on the host), and deduplicated via BTreeSet because two classes may map to one pool and would otherwise run the same multi-gigabyte transfer twice, racing each other. Removed the now-meaningless test that parsed raw['pools'].",
       "tags": [
         "declared-vs-discovered",
@@ -2425,7 +2425,7 @@
       "timestamp": "2026-09-07T21:56:51.233707+00:00",
       "error_message": "Grype code-scanning alerts (11 CVEs) stay open even though curated .vex/*.json statements exist and the CI grype job passes --vex",
       "file": ".github/workflows/build.yaml",
-      "root_cause": "CI pins GRYPE_VERSION=0.87.0, which silently ignores --vex: findings with matching VEX statements are still emitted to SARIF (verified by scanning the published image with 0.87.0 +/- VEX \u2014 identical 11 results). grype 0.115.0/0.118.0 filter correctly.",
+      "root_cause": "CI pins GRYPE_VERSION=0.87.0, which silently ignores --vex: findings with matching VEX statements are still emitted to SARIF (verified by scanning the published image with 0.87.0 +/- VEX — identical 11 results). grype 0.115.0/0.118.0 filter correctly.",
       "fix": "Bump GRYPE_VERSION to 0.118.0 in build.yaml (plus distroless base digest bump in Dockerfile to clear libssl3t64 CVEs the newer schema-6 DB flags). Verified 0.118.0 filters all 8 curated VEX CVEs when scanning from the registry.",
       "tags": [
         "grype",
@@ -2685,7 +2685,7 @@
       "error_message": "Significant refactor of virtualmachine.rs",
       "file": "crates/banlieue-controller/src/reconciler/virtualmachine.rs",
       "root_cause": "3 lines replaced/restructured",
-      "fix": "Rewrote 3\u219213 lines (3 removed)",
+      "fix": "Rewrote 3→13 lines (3 removed)",
       "tags": [
         "auto-detected",
         "refactor",
@@ -2719,7 +2719,7 @@
       "error_message": "Significant refactor of vim.rs",
       "file": "crates/banlieue-provider-vsphere/src/client/vim.rs",
       "root_cause": "7 lines replaced/restructured",
-      "fix": "Rewrote 25\u219241 lines (7 removed)",
+      "fix": "Rewrote 25→41 lines (7 removed)",
       "tags": [
         "auto-detected",
         "refactor",
@@ -2767,7 +2767,7 @@
       "error_message": "Significant refactor of vim_tests.rs",
       "file": "crates/banlieue-provider-vsphere/src/client/vim_tests.rs",
       "root_cause": "12 lines replaced/restructured",
-      "fix": "Rewrote 73\u219291 lines (12 removed)",
+      "fix": "Rewrote 73→91 lines (12 removed)",
       "tags": [
         "auto-detected",
         "refactor",
@@ -2783,7 +2783,7 @@
       "error_message": "Significant refactor of vim.rs",
       "file": "crates/banlieue-provider-vsphere/src/client/vim.rs",
       "root_cause": "3 lines replaced/restructured",
-      "fix": "Rewrote 7\u21924 lines (3 removed)",
+      "fix": "Rewrote 7→4 lines (3 removed)",
       "tags": [
         "auto-detected",
         "refactor",
@@ -2799,7 +2799,7 @@
       "error_message": "Significant refactor of live_vcenter.rs",
       "file": "crates/banlieue-provider-vsphere/tests/live_vcenter.rs",
       "root_cause": "8 lines replaced/restructured",
-      "fix": "Rewrote 24\u219250 lines (8 removed)",
+      "fix": "Rewrote 24→50 lines (8 removed)",
       "tags": [
         "auto-detected",
         "refactor",
@@ -2919,6 +2919,70 @@
       "related_bugs": [],
       "occurrences": 1,
       "last_seen": "2026-09-23T20:40:00.000Z"
+    },
+    {
+      "id": "bug-163",
+      "timestamp": "2026-09-24T16:23:43.731Z",
+      "error_message": "Significant refactor of virtualmachinepool_tests.rs",
+      "file": "crates/banlieue-api/src/banlieue/virtualmachinepool_tests.rs",
+      "root_cause": "4 lines replaced/restructured",
+      "fix": "Rewrote 16→37 lines (4 removed)",
+      "tags": [
+        "auto-detected",
+        "refactor",
+        "rs"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-09-24T16:23:43.731Z"
+    },
+    {
+      "id": "bug-164",
+      "timestamp": "2026-09-24T16:23:49.930Z",
+      "error_message": "Significant refactor of pool_plan.rs",
+      "file": "crates/banlieue-controller/src/reconciler/pool_plan.rs",
+      "root_cause": "3 lines replaced/restructured",
+      "fix": "Rewrote 4→5 lines (3 removed)",
+      "tags": [
+        "auto-detected",
+        "refactor",
+        "rs"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-09-24T16:23:49.930Z"
+    },
+    {
+      "id": "bug-165",
+      "timestamp": "2026-09-24T16:24:26.160Z",
+      "error_message": "Significant refactor of pool_plan_tests.rs",
+      "file": "crates/banlieue-controller/src/reconciler/pool_plan_tests.rs",
+      "root_cause": "4 lines replaced/restructured",
+      "fix": "Rewrote 22→72 lines (4 removed)",
+      "tags": [
+        "auto-detected",
+        "refactor",
+        "rs"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-09-24T16:24:26.160Z"
+    },
+    {
+      "id": "bug-166",
+      "timestamp": "2026-09-24T16:24:47.058Z",
+      "error_message": "Significant refactor of pool.rs",
+      "file": "crates/banlieue-controller/src/reconciler/pool.rs",
+      "root_cause": "11 lines replaced/restructured",
+      "fix": "Rewrote 28→77 lines (11 removed)",
+      "tags": [
+        "auto-detected",
+        "refactor",
+        "rs"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-09-24T16:24:47.058Z"
     }
   ]
 }

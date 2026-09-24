@@ -146,16 +146,37 @@ mod tests {
         let mut json = minimal_pool_json();
         json["addressing"] = serde_json::json!({
             "interface": "eth0",
-            "rangeStart": "192.0.2.10",
-            "rangeEnd": "192.0.2.69",
+            "pool": ["192.0.2.10-192.0.2.69"],
             "prefix": 24,
             "gateway": "192.0.2.1",
         });
         let spec: VirtualMachinePoolSpec = serde_json::from_value(json).unwrap();
         let a = spec.addressing.as_ref().expect("addressing");
         assert_eq!(a.interface, "eth0");
-        assert_eq!(a.range_start, "192.0.2.10");
-        assert_eq!(a.range_end, "192.0.2.69");
+        assert_eq!(a.pool, vec!["192.0.2.10-192.0.2.69".to_string()]);
+    }
+
+    /// ADR-0056: the field is a list, not a single range, so it must accept
+    /// entries of every shape MetalLB's `IPAddressPool.spec.addresses` does
+    /// in the same request.
+    #[test]
+    fn addressing_pool_accepts_mixed_entry_shapes() {
+        let mut json = minimal_pool_json();
+        json["addressing"] = serde_json::json!({
+            "interface": "eth0",
+            "pool": ["192.0.2.10-192.0.2.29", "192.0.2.40", "192.0.2.50/31"],
+            "prefix": 24,
+        });
+        let spec: VirtualMachinePoolSpec = serde_json::from_value(json).unwrap();
+        let a = spec.addressing.as_ref().expect("addressing");
+        assert_eq!(
+            a.pool,
+            vec![
+                "192.0.2.10-192.0.2.29".to_string(),
+                "192.0.2.40".to_string(),
+                "192.0.2.50/31".to_string(),
+            ]
+        );
     }
 
     // ------------------------------------------------------------------

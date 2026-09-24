@@ -1,5 +1,52 @@
 # Changelog
 
+## [2026-09-24 13:30] - VirtualMachinePool inline addressing: MetalLB-style address pool (ADR-0056)
+
+**Author:** Erick Bourgeois
+
+### Why
+`spec.addressing` (ADR-0046 Decision 9) could only express one contiguous
+`rangeStart`..`rangeEnd`. Real allocations are rarely one clean block —
+disjoint spare ranges, or a mix of individual pinned addresses and a range
+for the rest — and a single range can't express any of that.
+
+### Changed
+- `crates/banlieue-api/src/banlieue/virtualmachinepool.rs`: `PoolAddressing`
+  drops `rangeStart`/`rangeEnd` for `pool: Vec<String>`. Each entry is a
+  single address, an inclusive `low-high` range, or a CIDR block —
+  MetalLB's `IPAddressPool.spec.addresses` shape.
+- `crates/banlieue-controller/src/reconciler/pool.rs`: new
+  `parse_address_pool_entry()` expands one entry into an `AddressRange`;
+  `pool_inputs()` resolves the whole list, failing (and naming the bad
+  entry) if any entry doesn't parse.
+- `crates/banlieue-controller/src/reconciler/pool_plan.rs`:
+  `PoolInputs.address_range: Option<AddressRange>` becomes
+  `address_ranges: Vec<AddressRange>`; the allocation pass draws from each
+  range in list order, low to high, skipping an inverted entry rather than
+  failing the whole plan.
+- `deploy/crds/banlieue.io_virtualmachinepools.yaml`,
+  `docs/src/reference/api.md`: regenerated (`make crds`).
+- `examples/18-virtualmachinepool.yaml`,
+  `docs/src/guides/virtualmachine-pools.md`: addressing examples updated to
+  the list form.
+- `docs/adr/0056-vmpool-address-pool-entries.md`: new ADR recording the
+  decision.
+- Tests: `virtualmachinepool_tests.rs` (mixed entry shapes round-trip),
+  `pool_tests.rs` (entry parsing: single IP, range, CIDR incl. `/0` and
+  `/32`, malformed-entry error naming, `pool_inputs` end to end),
+  `pool_plan_tests.rs` (multi-range draw order, inverted entry mid-list).
+
+### Impact
+- [ ] Breaking change (unreleased, no consumers yet — see `.claude/rules`)
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+### Threat model
+Full pass done against `docs/src/security/threat-model.md`; no boundary or
+control change — this only reshapes which addresses `pool_plan::plan()`
+draws member addresses from, still resolved entirely inside the pool
+controller. Header stamp advanced to ADR-0056.
 ## [2026-09-24 13:00] - Roadmap 18: split-image fast clone (verified base + per-VM sealed volume)
 
 **Author:** Erick Bourgeois

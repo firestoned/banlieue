@@ -202,12 +202,17 @@ pub struct PoolAddressing {
     /// Name of the `VMClass` network interface to stamp, matching
     /// `NetworkInterfaceOverride.name`.
     pub interface: String,
-    /// First address of the inclusive range.
-    pub range_start: String,
-    /// Last address of the inclusive range. Size it at `maxReplicas` plus a
-    /// few spares: an address stays held until a deleted member's backend VM
-    /// is actually gone.
-    pub range_end: String,
+    /// The addresses members are drawn from, in the order to draw them
+    /// (ADR-0056). Each entry is one of:
+    ///
+    /// - a single address (`"192.0.2.40"`)
+    /// - an inclusive range, low-high (`"192.0.2.10-192.0.2.29"`)
+    /// - a CIDR block (`"192.0.2.50/31"`), every address in the block
+    ///   included
+    ///
+    /// Size the list at `maxReplicas` plus a few spares: an address stays
+    /// held until a deleted member's backend VM is actually gone.
+    pub pool: Vec<String>,
     pub prefix: u8,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gateway: Option<String>,

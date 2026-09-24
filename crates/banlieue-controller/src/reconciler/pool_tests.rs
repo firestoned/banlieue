@@ -120,4 +120,119 @@ mod tests {
             pool_condition_reasons::WARM
         );
     }
+
+    // ------------------------------------------------------------------
+    // addressing.pool entry parsing (ADR-0056)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn a_single_address_is_a_range_of_one() {
+        let r = parse_address_pool_entry("192.0.2.40").unwrap();
+        assert_eq!(r.start, Ipv4Addr::new(192, 0, 2, 40));
+        assert_eq!(r.end, Ipv4Addr::new(192, 0, 2, 40));
+    }
+
+    #[test]
+    fn a_low_high_range_parses_both_ends() {
+        let r = parse_address_pool_entry("192.0.2.10-192.0.2.29").unwrap();
+        assert_eq!(r.start, Ipv4Addr::new(192, 0, 2, 10));
+        assert_eq!(r.end, Ipv4Addr::new(192, 0, 2, 29));
+    }
+
+    #[test]
+    fn a_cidr_expands_to_its_full_block_network_and_broadcast_included() {
+        let r = parse_address_pool_entry("192.0.2.4/30").unwrap();
+        assert_eq!(r.start, Ipv4Addr::new(192, 0, 2, 4));
+        assert_eq!(r.end, Ipv4Addr::new(192, 0, 2, 7));
+    }
+
+    #[test]
+    fn a_slash_32_cidr_is_a_single_address() {
+        let r = parse_address_pool_entry("192.0.2.9/32").unwrap();
+        assert_eq!(r.start, Ipv4Addr::new(192, 0, 2, 9));
+        assert_eq!(r.end, Ipv4Addr::new(192, 0, 2, 9));
+    }
+
+    #[test]
+    fn a_slash_0_cidr_covers_every_address() {
+        let r = parse_address_pool_entry("0.0.0.0/0").unwrap();
+        assert_eq!(r.start, Ipv4Addr::new(0, 0, 0, 0));
+        assert_eq!(r.end, Ipv4Addr::new(255, 255, 255, 255));
+    }
+
+    #[test]
+    fn a_malformed_entry_names_itself_in_the_error() {
+        let err = parse_address_pool_entry("not-an-ip").unwrap_err();
+        assert!(err.contains("not-an-ip"), "{err}");
+    }
+
+    #[test]
+    fn a_prefix_length_over_32_is_rejected() {
+        let err = parse_address_pool_entry("192.0.2.0/33").unwrap_err();
+        assert!(err.contains('3'), "{err}");
+    }
+
+    #[test]
+    fn pool_inputs_rejects_a_pool_naming_the_bad_entry() {
+        let mut json = serde_json::json!({
+            "warmReplicas": 1,
+            "maxReplicas": 2,
+            "readiness": "InfrastructureReady",
+            "template": {
+                "spec": {
+                    "classRef": { "name": "sandbox" },
+                    "imageRef": { "name": "kairos" }
+                }
+            },
+            "addressing": {
+                "interface": "eth0",
+                "pool": ["192.0.2.10-192.0.2.29", "garbage"],
+                "prefix": 24
+            }
+        });
+        let spec: banlieue_api::banlieue::VirtualMachinePoolSpec =
+            serde_json::from_value(json.take()).unwrap();
+        let pool = VirtualMachinePool::new("test", spec);
+        let err = pool_inputs(&pool, "rev").unwrap_err();
+        assert!(err.contains("garbage"), "{err}");
+    }
+
+    /// Multiple valid entries all resolve, each independently, in list order
+    /// — the reconciler-side half of ADR-0056's ordering guarantee.
+    #[test]
+    fn pool_inputs_resolves_every_valid_entry_in_order() {
+        let mut json = serde_json::json!({
+            "warmReplicas": 1,
+            "maxReplicas": 2,
+            "readiness": "InfrastructureReady",
+            "template": {
+                "spec": {
+                    "classRef": { "name": "sandbox" },
+                    "imageRef": { "name": "kairos" }
+                }
+            },
+            "addressing": {
+                "interface": "eth0",
+                "pool": ["192.0.2.40", "192.0.2.10-192.0.2.11"],
+                "prefix": 24
+            }
+        });
+        let spec: banlieue_api::banlieue::VirtualMachinePoolSpec =
+            serde_json::from_value(json.take()).unwrap();
+        let pool = VirtualMachinePool::new("test", spec);
+        let inputs = pool_inputs(&pool, "rev").unwrap();
+        assert_eq!(
+            inputs.address_ranges,
+            vec![
+                AddressRange {
+                    start: Ipv4Addr::new(192, 0, 2, 40),
+                    end: Ipv4Addr::new(192, 0, 2, 40),
+                },
+                AddressRange {
+                    start: Ipv4Addr::new(192, 0, 2, 10),
+                    end: Ipv4Addr::new(192, 0, 2, 11),
+                },
+            ]
+        );
+    }
 }
