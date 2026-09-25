@@ -5,7 +5,7 @@
 # this image, then runs /src/build.sh inside it to produce fuzzer binaries in
 # $OUT. Base image pinned by digest (Scorecard Pinned-Dependencies); bump when
 # oss-fuzz-base rolls forward. Pinned 2026-08: base-builder-rust:latest
-FROM gcr.io/oss-fuzz-base/base-builder-rust@sha256:433319ea1a6bbea6c1db1915a5d385021908cc62026d9f0efda2270ef6060de3
+FROM gcr.io/oss-fuzz-base/base-builder-rust@sha256:1fea2c5bb1f452563710429f195f1d9661032866489dbcd9767aa8a1d1238758
 
 COPY . $SRC/banlieue
 COPY .clusterfuzzlite/build.sh $SRC/build.sh
