@@ -1,7 +1,7 @@
 # anatomy.md
 
-> Auto-maintained by OpenWolf. Last scanned: 2026-09-24T16:00:46.762Z
-> Files: 477 tracked | Anatomy hits: 0 | Misses: 0
+> Auto-maintained by OpenWolf. Last scanned: 2026-09-26T05:49:15.371Z
+> Files: 479 tracked | Anatomy hits: 0 | Misses: 0
 
 ## ./
 
@@ -548,7 +548,7 @@
 
 - `.gitignore` — Git ignore rules (~37 tok)
 - `.python-version` (~2 tok)
-- `mkdocs.yml` — SPDX-License-Identifier: Apache-2.0 (~1792 tok)
+- `mkdocs.yml` — SPDX-License-Identifier: Apache-2.0 (~1836 tok)
 - `pyproject.toml` — Python project configuration (~255 tok)
 - `README.md` — Project documentation (~560 tok)
 
@@ -666,10 +666,11 @@
 - `end-to-end-setup.md` — Guide: End-to-End Setup — Bootstrap to Running VMs (~2754 tok)
 - `environment-provider-isolation.md` — Guide: Environment / Provider Isolation (~2545 tok)
 - `host-bootstrap.md` — Host Bootstrap: Bare Metal to a k0s Cluster (~3817 tok)
-- `index.md` — Guides (~918 tok)
+- `index.md` — Guides (~1088 tok)
 - `kairos-operator-setup.md` — Guide: Setting up the Kairos operator (~1136 tok)
 - `libvirt-provider.md` — Guide: libvirt Provider (~5015 tok)
 - `provider-lifecycle.md` — Guide: Provider lifecycle & install — bootstrap, per-Provider workloads, upgrades, running without the operator, e2e (~2881 tok)
+- `sandbox-identity-mediatore.md` — Guide: Sandbox Identity with mediatore (~862 tok)
 - `testing-claim-authorization.md` — Guide: testing claim authorization with your real GitHub account (~3287 tok)
 - `using-banlieue-imagebuilder.md` — Guide: Using banlieue-imagebuilder (~5906 tok)
 - `virtualmachine-claims.md` — Guide: VirtualMachine Claims (~2999 tok)
