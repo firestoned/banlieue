@@ -1,5 +1,35 @@
 # Changelog
 
+## [2026-09-26 01:30] - Docs: sandbox-identity entry point for mediatore
+
+**Author:** Erick Bourgeois
+
+### Why
+mediatore (the sandbox identity broker, now its own repo) and its enterprise
+SPIRE topology (mediatore ADR-0005: root SPIRE server on a dedicated identity
+cluster, downstream server per environment) needed a discoverable entry point
+from banlieue's docs — banlieue is the first thing a reader meets. Per the
+maintainer: banlieue is the initial foray into mediatore and links out instead
+of duplicating docs.
+
+### Changed
+- `docs/src/guides/sandbox-identity-mediatore.md`: new short guide — what
+  mediatore adds after the bind (front door, SPIFFE binding, delegation,
+  cut-off), plus the enterprise "split SPIRE onto its own identity tier"
+  summary with links to mediatore's running-workloads guide (user / OBO-agent /
+  app-only paths), enterprise guide, ADR-0005 and threat model. No content
+  duplicated from the mediatore repo.
+- `docs/mkdocs.yml`: nav entry under Guides, after "Testing claim
+  authorization".
+- `docs/src/guides/index.md`: card added between VirtualMachine Claims and
+  The Claim Flow.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
 ## [2026-09-24 13:30] - VirtualMachinePool inline addressing: MetalLB-style address pool (ADR-0056)
 
 **Author:** Erick Bourgeois

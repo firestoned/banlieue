@@ -51,6 +51,13 @@ on a real cluster, using the released container image
     `ttlSeconds`, why release is always deletion, and why `subject` must
     never carry a credential.
 
+- :material-shield-account: **[Sandbox Identity with mediatore](sandbox-identity-mediatore.md)**
+
+    What happens *after* the bind: the companion broker that turns a claim
+    into an attested, delegated identity — and why the SPIRE server belongs
+    on its own cluster in an enterprise. An entry point; the deep docs live
+    in the mediatore repo.
+
 - :material-graph-outline: **[The Claim Flow, End to End](../concepts/virtualmachine-claim-flow.md)**
 
     The same story as sequence diagrams: kubelogin and the OIDC flow that
