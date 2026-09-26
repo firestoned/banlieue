@@ -68,10 +68,10 @@ sha2 = "0.11"
 # from the OS CSPRNG and never from a UID or a clock. Already in the tree
 # transitively; pinned here because the attestation work in roadmap 17's
 # later phases needs the same source.
-getrandom = "0.3"
+getrandom = "0.4"
 # Decoding qemu-guest-agent payloads: `guest-file-read` returns file contents
 # as base64 (ADR-0043). Well-known, actively maintained, decode-only use.
-base64 = "0.22"
+base64 = "0.23"
 
 # Parsing vTPM endorsement key certificates (ADR-0045). A guest reports its own
 # EK certificate on libvirt, so banlieue must confirm the bytes really are an
