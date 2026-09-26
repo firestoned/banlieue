@@ -1,5 +1,388 @@
 # Changelog
 
+## [2026-09-26 08:05] - Stop tracking `.claude/settings.json`
+
+**Author:** Erick Bourgeois
+
+### Why
+OpenWolf writes its hook and status-line commands into
+`.claude/settings.json` as absolute paths under the maintainer's home
+directory, so every `openwolf init` rewrote a tracked file with a
+machine-local path. That is a local identifier in a public repo
+(`rules/no-real-infrastructure.md`).
+
+### Changed
+- `.claude/settings.json`: removed from the index (`git rm --cached`); the
+  local copy stays in place.
+- `.gitignore`: ignores `.claude/settings.json`, plus `node_modules/` and a
+  root-level `package.json` / `package-lock.json` left by a local
+  `npm install openwolf`. The package files are root-anchored so the tracked
+  ones under `.github/tools/*/` are unaffected.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only
+- [ ] Documentation only
+
+## [2026-09-26 06:45] - Bootstrap installs the Cloud Hypervisor CRDs; one CRD list for everything
+
+**Author:** Erick Bourgeois
+
+### Why
+PR #61's `🧪 Test` failed:
+`bootstrap_installs_every_crd_that_is_generated_into_deploy` found
+`cloudhypervisormachines` and `cloudhypervisormachinetemplates` in
+`deploy/crds/` but not in `banlieue bootstrap`'s install.
+`banlieue-operator`'s `build_crds()` was still a second hand-written list,
+although `crdgen_support::all_crds()` says it is the single list every
+consumer reads. The same drift happened with `LibvirtMachine` before.
+
+### Changed
+- `crates/banlieue-operator/src/bootstrap.rs`: `build_crds()` returns
+  `all_crds()`, so a CRD added there reaches `crdgen`, the API reference and
+  `banlieue bootstrap` at once. Unused CRD-type imports removed.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-09-26 12:00] - Cloud Hypervisor: API, controller dispatch and VMM client
+
+**Author:** Erick Bourgeois
+
+### Why
+First code for roadmap 09's vertical slice (ADR-0061, ADR-0062, both still
+Proposed): everything up to the provider itself.
+
+### Changed
+- `crates/banlieue-api/src/infrastructure/cloud_hypervisor_machine.rs`
+  (+ tests): `CloudHypervisorMachine` and `CloudHypervisorMachineTemplate`,
+  CAPI InfraMachine contract.
+  - `providerID` is `cloudhypervisor://<provider>/<machine-uid>`.
+  - `storageClass` and per-NIC `networkClass` are host class names, never
+    paths or bridges.
+  - `osDiskSizeGiB` is required; there is no disk list.
+  - Status matches `LibvirtMachineStatus`, plus `hostUid`.
+
+  Registered in `crdgen_support::all_crds()`.
+- `deploy/crds/…cloudhypervisormachine{s,templates}.yaml`,
+  `docs/src/reference/api.md`: generated (`make crds`).
+- `crates/banlieue-controller`:
+  - `infra.rs`: `PROVIDER_CLASS_CLOUD_HYPERVISOR`,
+    `InfraKind::CloudHypervisor`, `build_cloud_hypervisor_machine`.
+    Resolved storage and network ids are the host's class names; a class
+    with data disks gets `InfraBuildError::Unsupported`.
+  - `status_mirror.rs`: `InfraMachineRead` impl.
+  - `virtualmachine.rs`: apply, mirror, delete and the finalizer's cascade
+    wait cover the new kind. The per-kind `Api` handles are gathered into an
+    `InfraApis` struct.
+  - `app.rs`: owns `CloudHypervisorMachine`.
+- `deploy/controller/rbac/clusterrole.yaml`: `cloudhypervisormachines`,
+  `/status`, `/finalizers`, and `cloudhypervisormachinetemplates`.
+- `crates/banlieue-cloud-hypervisor`: new, ADR-0061.
+  - HTTP/1.1 over a Unix socket (hyper; no new crates in `Cargo.lock`).
+  - The `vm.create` body can only be built from a `GuestPlan`, which forces
+    `image_type: Raw`, `nested: false` and virtio-rng.
+  - Version gate against 53.0.
+  - The socket's type, owner, group and mode (≤ 0660) are checked before
+    connecting, without following symlinks.
+  - `vm.info` on a VMM with no VM is `None`; API errors keep the VMM's
+    message chain.
+  - The v53.0 OpenAPI document is vendored with a sha256 `PIN`, and a test
+    checks every field sent, every enum value and every endpoint against it.
+  - Fixtures captured from a real v53.0 VMM, with local paths removed.
+  - `tests/live_vmm.rs` plus `make ch-live-test`: create, read back, delete
+    and shutdown against a real VMM, without booting a guest. It fails
+    loudly without `CH_BINARY`/`CH_FIRMWARE`.
+- `.github/community/09-phase-1f-cloud-hypervisor-provider.md`,
+  `ROADMAPS.md`: two task boxes ticked; row 09 notes code has started.
+
+Tests: api 376, controller 196, client 46 + 1 live, all passing; clippy and
+fmt clean. CALM and the threat-model pass wait for the ADRs' acceptance and
+the provider.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-09-26 10:00] - Guide: Cloud Hypervisor host bootstrap on Debian
+
+**Author:** Erick Bourgeois
+
+### Why
+`scripts/bootstrap-cloud-hypervisor-host.sh` had no user-facing guide, and
+the one step it deliberately leaves out, the guest bridge, is the step most
+likely to lock someone out of a remote host.
+
+### Changed
+- `docs/src/guides/cloud-hypervisor-host.md`: new. It covers:
+  - requirements, and the chain from the host or a workstation (`--remote`);
+  - a guest bridge on Debian with an ifupdown example and a self-reverting
+    `systemd-run` rollback timer, or reusing libvirt's `virbr0`;
+  - the settings, and what each step does and where it puts things;
+  - why the EK CA key is `banlieue`-only, and the `FORCE` CA-rotation
+    warning;
+  - verifying, a hand smoke-boot with a Kairos disk and a NoCloud seed;
+  - the spike's gotchas, upgrading the pinned VMM, and troubleshooting.
+
+  It states up front that the provider is not released yet.
+- `docs/mkdocs.yml`, `docs/src/guides/index.md`: nav entry and card.
+- `.github/community/09-phase-1f-cloud-hypervisor-provider.md`: the host
+  half of the guide item is noted as done.
+
+`mkdocs build` clean apart from the theme's banner.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+## [2026-09-25 15:00] - Cloud Hypervisor host bootstrap script
+
+**Author:** Erick Bourgeois
+
+### Why
+A Cloud Hypervisor host needs the same one-command preparation a libvirt
+host gets from `bootstrap-libvirt-host.sh`, and it has to work against a
+remote bare-metal machine.
+
+### Changed
+- `scripts/bootstrap-cloud-hypervisor-host.sh`: new. Steps are `preflight`,
+  `packages`, `vmm`, `host`, `tpm`, `polkit`, `provider`, `selftest`,
+  `status` and `all`, plus `--remote user@host` (copies itself and
+  `BANLIEUE_ENV_FILE`, runs under sudo, cleans up) and
+  `--print-env-template`.
+  - Installs cloud-hypervisor and ch-remote v53.0 and CLOUDHV.fd
+    `ch-97eeb7b09`, sha256-pinned; a mismatch installs nothing.
+  - Creates the `banlieue` system user; a tmpfiles.d run root; storage
+    classes at 0750; the host-local config
+    `/etc/banlieue/cloud-hypervisor.toml` (ADR-0062 D4).
+  - Creates a per-host swtpm_localca whose keys only `banlieue` can read.
+  - Writes a polkit rule limiting `banlieue` to
+    `banlieue-{ch,swtpm,swtpm-setup,ch-import}-<uid>.service`.
+  - Writes the provider's systemd unit, which starts only once its binary
+    and kubeconfig exist.
+  - Checks: bare metal (override for labs), `/dev/kvm`, declared bridges
+    exist (never creates or changes one), and the guest uid range is free
+    of accounts and subuid ranges.
+  - Self-test: the VMM runs, the firmware matches its pin, the provider
+    user can open `/dev/kvm`, and a vTPM gets an EK certificate with a
+    `<name>:<uid>` CN.
+
+  shellcheck-clean. Tested as root in a Debian 13 container; `preflight`
+  run on a bare-metal host.
+- `docs/adr/0065-cloud-hypervisor-vtpm-and-deferred-install.md` Decision 1:
+  the TPM is manufactured by a one-shot `banlieue-swtpm-setup-<uid>` unit
+  running as the provider user, not by `ExecStartPre=` as the guest uid.
+  `swtpm_setup` signs with the host EK CA's key, so any guest uid able to
+  manufacture a TPM could mint certificates the CA vouches for. Found while
+  writing the script.
+- `.github/community/09-phase-1f-cloud-hypervisor-provider.md`: the host
+  bootstrap item ticked.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-09-25 13:00] - Roadmap 09 spike: swtpm and Deferred install verified on Cloud Hypervisor
+
+**Author:** Erick Bourgeois
+
+### Why
+ADR-0065 had four decisions that depended on behaviour no one had yet seen
+on this VMM. The phase 0 spike ran them against Cloud Hypervisor v53.0,
+swtpm 0.7.1 and the Kairos Hadron v0.4.0 core ISO.
+
+### Changed
+- `docs/adr/0065-cloud-hypervisor-vtpm-and-deferred-install.md`: every
+  spike-gated point is now **verified**, with what was observed:
+  - vTPM present in the guest, EK CN `<name>:<uid>`;
+  - the firmware falls through from the empty disk to the installer, the
+    install seals `COS_PERSISTENT` to the vTPM, and the reboot lands on the
+    installed disk;
+  - installer hot-unplug works live and survives a guest reboot;
+  - UEFI variables do not persist.
+
+  New: swtpm paths must be absolute; swtpm puts the ECC EK certificate at
+  `0x01c00016` (P-384), not ADR-0045's `0x01c0000a`; guest disk names shift
+  after the unplug. ADR-0065 stays Proposed, pending review.
+- `.github/community/09-phase-1f-cloud-hypervisor-provider.md`: the swtpm,
+  Deferred and UEFI checks ticked, with results; four new gotchas; status
+  says only the QEMU comparison is open.
+- `ROADMAPS.md`: row 09 says the same.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+## [2026-09-25 12:30] - ADR-0061 to ADR-0065: the Cloud Hypervisor provider design
+
+**Author:** Erick Bourgeois
+
+### Why
+ADR-0060 settled that Cloud Hypervisor is a first-class, host-resident
+provider. Roadmap 09 phase 1 needs the rest of the design recorded before
+any code (ADD: ADR → CALM → TDD).
+
+### Changed
+- `docs/adr/0061-banlieue-cloud-hypervisor-vmm-client.md`: first-party
+  client over the VMM's Unix-socket REST API; hand-written types checked
+  against a vendored, pinned v53.0 spec; `image_type=raw`, `nested=false`
+  and virtio-rng are forced by the builder (spike findings); version gate;
+  socket ownership checked before connect.
+- `docs/adr/0062-cloudhypervisormachine-inframachine-contract.md`: the CAPI
+  InfraMachine CRD and template; identity is the machine UID; the provider
+  orders disks and grows the OS disk before first boot; host paths stay in a
+  host-local config and machines name storage and network classes.
+- `docs/adr/0063-cloud-hypervisor-host-supervision.md`: transient systemd
+  units over D-Bus (`zbus`), re-adoption on start, a uid per guest with
+  hardened units, taps over netlink, a non-root provider limited by a
+  polkit rule to its own units.
+- `docs/adr/0064-artifact-delivery-to-host-resident-providers.md`: the
+  imagebuilder pushes the raw disk or ISO to an OCI registry from a Job;
+  the host pulls by digest in its own transient unit; pull credentials on
+  the host, no cluster Secret reads.
+- `docs/adr/0065-cloud-hypervisor-vtpm-and-deferred-install.md`: one swtpm
+  unit per machine with a `<name>:<uid>` EK CN; `Deferred` disk order;
+  installer ejected live and for future starts; `GuestReady` and the EK
+  certificate reported by the guest over vsock, read-only; per-host EK CA
+  on `Provider.status`. Three decisions are spike-gated.
+- `.github/community/09-phase-1f-cloud-hypervisor-provider.md`,
+  `ROADMAPS.md`: the ADR table links each draft.
+
+All six ADRs are **Proposed**. CALM and the threat-model pass follow
+acceptance and implementation.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+## [2026-09-25 11:45] - ADR-0060: Cloud Hypervisor is a first-class, host-resident provider
+
+**Author:** Erick Bourgeois
+
+### Why
+Roadmap 09 left a gate open between a host-resident provider (A) and
+libvirt's `ch` driver (B). The maintainer decided: Cloud Hypervisor gets
+first-class support as its own provider. The spike backs that up — the
+driver is not packaged on Debian 13 — and B would keep libvirtd in the
+sandbox TCB that is the reason for Cloud Hypervisor in the first place.
+
+### Changed
+- `docs/adr/0060-cloud-hypervisor-first-class-provider-topology.md`: new,
+  **Proposed**. Decision 1 (own provider class, not the `ch` driver) is the
+  maintainer's call; the rest awaits review: host-resident provider, one
+  `Provider` per host, outbound-only; `ProviderClass.spec.deployment:
+  Managed | External` (identity and RBAC, no Deployment); optional
+  `connection.credentialsRef`; a bound, self-renewing ServiceAccount token
+  on the host with no Secret reads; the Lease kept as a fence against two
+  hosts claiming one `Provider`; upgrades as host packages. Amends ADR-0003
+  and ADR-0012.
+- `.github/community/09-phase-1f-cloud-hypervisor-provider.md`: gate decided
+  (A); B's checks and "If the gate picks B" marked superseded; the seed
+  checkbox ticked (its text already recorded the pass).
+- `ROADMAPS.md`: row 09 says the same.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+## [2026-09-25 11:20] - Roadmap 09: record phase 0 spike results so far
+
+**Author:** Erick Bourgeois
+
+### Why
+The phase 0 spike ran on a bare-metal Debian 13 KVM host. Two native checks
+and one `ch` driver check now have answers, and it turned up four provider
+gotchas the roadmap did not list.
+
+### Changed
+- `.github/community/09-phase-1f-cloud-hypervisor-provider.md`: boot and
+  seed checks ticked with the versions used; the Cloud Hypervisor half of the
+  timing check recorded; "driver packaged?" answered (no, on Debian 13).
+  Gotchas gain `image_type=raw`, `nested=off`, grow-before-first-boot and
+  label-only seed discovery. Status line says the spike is in progress.
+- `ROADMAPS.md`: row 09 moves ⛔ → 🔶 with the same summary.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+## [2026-09-25 11:05] - NoCloud seed: real volume dates so old go-diskfs can read the label
+
+**Author:** Erick Bourgeois
+
+### Why
+The seed ISO wrote all four volume descriptor dates as all-'0' ("not
+specified"). That is legal ECMA-119, but go-diskfs before v1.9 parses the
+creation date literally, fails on month 00 and rejects the whole volume.
+kairos-agent v2.26.0 bundles go-diskfs v1.7.0 (through yip), and yip uses it
+to find a `CIDATA` seed by label on any block device. Under libvirt nobody
+noticed: the seed is a CD-ROM there, and `/dev/sr*` is mounted without a
+label read. Cloud Hypervisor has no CD-ROM device, so on that backend the
+label lookup is the only path, and the guest booted with no user-data
+(found by the roadmap 09 phase 0 spike).
+
+### Changed
+- `crates/banlieue-provider-libvirt/src/cloudinit/iso9660.rs`: creation,
+  modification and effective dates carry a fixed 1970-01-01 00:00:00.00
+  (GMT offset 0), the same epoch the directory records already use, so the
+  output stays deterministic. Expiration stays unspecified, as
+  `genisoimage` leaves it. Date field offsets are named constants now.
+- `crates/banlieue-provider-libvirt/src/cloudinit/iso9660_tests.rs`: new
+  `descriptor_dates_are_fixed_and_parseable_except_expiration`, over both
+  the primary and the Joliet descriptor.
+
+Verified: go-diskfs v1.7.0 rejected the old seed and accepts the new one; a
+Kairos guest on Cloud Hypervisor v53.0 with the seed as a read-only
+virtio-blk disk now applies its user-data (hostname, SSH key, `boot` stage).
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-09-24 17:00] - Renumber reserved ADR ranges after ADR-0056 was taken
+
+**Author:** Erick Bourgeois
+
+### Why
+ADR-0056 went to the `VirtualMachinePool` address pool, but roadmap 15 had
+reserved 0056–0058, and roadmaps 09 and 18 had reserved the next ranges up
+on the assumption that 15 held them. Two ADRs would have shared a number.
+
+### Changed
+- `.github/community/15-vsphere-disk-image-import.md`: reserves ADR-0057 to
+  ADR-0059 (was 0056–0058); the numbering note says why.
+- `.github/community/09-phase-1f-cloud-hypervisor-provider.md`: reserves
+  ADR-0060 to ADR-0066 (was 0059–0065).
+- `.github/community/18-split-image-fast-clone.md`: reserves ADR-0067 to
+  ADR-0072 (was 0066–0071).
+- `ROADMAPS.md`: the three status rows match.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
 ## [2026-09-26 01:30] - Docs: sandbox-identity entry point for mediatore
 
 **Author:** Erick Bourgeois
@@ -77,6 +460,7 @@ Full pass done against `docs/src/security/threat-model.md`; no boundary or
 control change — this only reshapes which addresses `pool_plan::plan()`
 draws member addresses from, still resolved entirely inside the pool
 controller. Header stamp advanced to ADR-0056.
+
 ## [2026-09-24 13:00] - Roadmap 18: split-image fast clone (verified base + per-VM sealed volume)
 
 **Author:** Erick Bourgeois
@@ -2717,7 +3101,6 @@ Verified with `cargo fmt --check` and
 - [ ] Config change only
 - [ ] Documentation only
 
-
 ## [2026-09-19] - Roadmap 13 complete: cloud-init user-data reaches a libvirt guest
 
 **Author:** Erick Bourgeois
@@ -2933,7 +3316,6 @@ either way and should not be written twice.
 - [ ] Config change only
 - [ ] Documentation only
 
-
 ## [2026-09-19] - End-to-end validation: VirtualMachine to a real libvirt domain
 
 **Author:** Erick Bourgeois
@@ -2977,7 +3359,6 @@ bug perfectly and looks exactly like a regression.
 - [ ] Config change only
 - [x] Documentation only — no code changed in this entry; it records the
       validation of what landed earlier today.
-
 
 ## [2026-09-19] - Live validation against a real libvirtd; DOMAIN_DEFINE_XML is not an upsert
 
@@ -3032,7 +3413,6 @@ more than the UUID itself.
 - [ ] Config change only
 - [ ] Documentation only
 
-
 ## [2026-09-19] - libvirt example, guide, and one CRD list instead of three
 
 **Author:** Erick Bourgeois
@@ -3084,7 +3464,6 @@ and the drift test added earlier guards the second against the first.
       fix.
 - [ ] Config change only
 - [ ] Documentation only
-
 
 ## [2026-09-19] - Activate `main` branch ruleset; unblock Dependabot auto-merge
 
@@ -3193,7 +3572,6 @@ also closes path traversal, which escaping would not.
 - [ ] Config change only
 - [ ] Documentation only
 
-
 ## [2026-09-19] - banlieue-controller dispatches by provider class (ADR-0050)
 
 **Author:** Erick Bourgeois
@@ -3244,7 +3622,6 @@ Three decisions worth recording:
       ClusterRoles from the previous entry.
 - [ ] Config change only
 - [ ] Documentation only
-
 
 ## [2026-09-19] - Threat-model pass for ADR-0050 (LibvirtMachine); redact libvirt client key
 
@@ -3371,7 +3748,6 @@ Two design findings worth recording, both discovered by the tests:
 - [ ] Config change only
 - [ ] Documentation only
 
-
 ## [2026-09-19] - Roadmaps: reconcile .github/community with the current tree
 
 **Author:** Erick Bourgeois
@@ -3496,7 +3872,6 @@ numbers that experiment produces are measured on a Trusted Boot guest.
 - [ ] Config change only
 - [x] Documentation only — *no*: adds library code, but nothing deployed
       consumes the new procedures yet, so no rollout is implied.
-
 
 ## [2026-09-15] - Revert CloneVmRequest gap-audit to main; re-add capabilities one at a time, each live-validated against govc first
 
@@ -4057,7 +4432,6 @@ cannot `get` the user-data they reference** — roll out as `["Warn","Audit"]`
 first if that set is not known. Needs an API server supporting the CEL
 `authorizer`. The CEL compiles only at apply time; verify on kind
 (`make kind-e2e`) or with a server-side dry-run before relying on it.
-
 
 ## [2026-09-09] - Threat model full pass: stamp advanced to ADR-0042
 

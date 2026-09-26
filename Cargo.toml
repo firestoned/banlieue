@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/banlieue",
     "crates/banlieue-api",
+    "crates/banlieue-cloud-hypervisor",
     "crates/banlieue-controller",
     "crates/banlieue-imagebuilder",
     "crates/banlieue-libvirt",

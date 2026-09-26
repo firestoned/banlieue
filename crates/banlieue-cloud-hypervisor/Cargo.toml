@@ -1,0 +1,37 @@
+[package]
+name = "banlieue-cloud-hypervisor"
+description = "Minimal client for Cloud Hypervisor's REST API over its per-VM Unix socket: hand-written types checked against a pinned upstream spec. Pure Rust, no ch-remote subprocess (ADR-0061)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+# Deliberately free of `kube` and of every banlieue API type, like
+# banlieue-libvirt: this crate is protocol only.
+#
+# Every dependency below was ALREADY in Cargo.lock (hyper and friends via
+# kube's HTTP stack), so promoting them to direct dependencies compiles no
+# additional code.
+
+[dependencies]
+bytes = "1"
+http = "1"
+http-body-util = "0.1"
+hyper = { version = "1", default-features = false, features = ["client", "http1"] }
+hyper-util = { version = "0.1", default-features = false, features = ["tokio"] }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+# `net` for UnixStream, `time` for per-call timeouts: without one, a wedged
+# VMM stalls the reconcile loop that asked it something.
+tokio = { workspace = true, features = ["net", "time"] }
+tracing.workspace = true
+
+[dev-dependencies]
+serde_yaml.workspace = true
+sha2.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "io-util"] }

@@ -1,0 +1,6 @@
+# The upstream Cloud Hypervisor API document banlieue-cloud-hypervisor is
+# written against (ADR-0061 Decision 2). Changing either line is a deliberate
+# upgrade: replace the vendored file, update both lines, and let
+# `spec_tests.rs` report every field that moved.
+version = v53.0
+sha256 = 004e2d5ab70d9d95a1de3289a70ca116c7592da62765e009232c85506cd0e6c4

@@ -1,0 +1,265 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  labels:
+    cluster.x-k8s.io/v1beta2: v1alpha1
+  name: cloudhypervisormachinetemplates.infrastructure.banlieue.io
+spec:
+  group: infrastructure.banlieue.io
+  names:
+    kind: CloudHypervisorMachineTemplate
+    plural: cloudhypervisormachinetemplates
+    shortNames:
+    - chmt
+    singular: cloudhypervisormachinetemplate
+  scope: Namespaced
+  versions:
+  - name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          CloudHypervisorMachineTemplate — a stamped-out CloudHypervisorMachine spec.
+
+          CAPI requires an InfraMachineTemplate so a MachineSet or MachineDeployment
+          can mint identical machines. A spec template, not a disk template: nothing
+          clones a guest, which is what keeps per-VM vTPMs unique (ADR-0040).
+        properties:
+          spec:
+            description: |-
+              CloudHypervisorMachineTemplate — a stamped-out CloudHypervisorMachine spec.
+
+              CAPI requires an InfraMachineTemplate so a MachineSet or MachineDeployment
+              can mint identical machines. A spec template, not a disk template: nothing
+              clones a guest, which is what keeps per-VM vTPMs unique (ADR-0040).
+            properties:
+              template:
+                description: The spec stamped into every machine created from this template.
+                properties:
+                  spec:
+                    description: The CloudHypervisorMachine spec for machines created from this template.
+                    properties:
+                      bootSource:
+                        description: Where the OS disk comes from.
+                        properties:
+                          image:
+                            description: |-
+                              The image in the host's image cache: an installed raw disk for
+                              [`Image`](ChBootSourceKind::Image), the installer ISO for
+                              [`InstallMedia`](ChBootSourceKind::InstallMedia).
+                            type: string
+                          kind:
+                            description: Which provisioning shape this machine uses.
+                            enum:
+                            - image
+                            - installMedia
+                            type: string
+                        required:
+                        - image
+                        - kind
+                        type: object
+                      cpus:
+                        description: Virtual CPUs.
+                        properties:
+                          boot:
+                            description: vCPUs the guest boots with.
+                            format: uint32
+                            maximum: 256.0
+                            minimum: 1.0
+                            type: integer
+                          max:
+                            description: |-
+                              Hotplug headroom: the most vCPUs the guest may be resized to. Fixed
+                              when the VM is created. `None` means no headroom.
+                            format: uint32
+                            maximum: 256.0
+                            minimum: 1.0
+                            nullable: true
+                            type: integer
+                        required:
+                        - boot
+                        type: object
+                      desiredPowerState:
+                        default: PoweredOn
+                        description: Desired power state, resolved from the parent `VirtualMachine`.
+                        enum:
+                        - PoweredOn
+                        - PoweredOff
+                        - Suspended
+                        type: string
+                      failureDomain:
+                        description: |-
+                          CAPI contract (optional): failure domain placement. One host is one
+                          failure domain on this backend, as on libvirt.
+                        nullable: true
+                        type: string
+                      memory:
+                        description: Guest memory.
+                        properties:
+                          hugepages:
+                            default: false
+                            description: |-
+                              Back guest memory with hugepages. The host reports hugepages as their
+                              own capacity, since they are reserved rather than allocated on demand.
+                            type: boolean
+                          sizeMiB:
+                            description: Guest memory in MiB.
+                            format: uint32
+                            maximum: 4194304.0
+                            minimum: 128.0
+                            type: integer
+                        required:
+                        - sizeMiB
+                        type: object
+                      nics:
+                        description: Network interfaces.
+                        items:
+                          description: One network interface.
+                          properties:
+                            ipam:
+                              description: IP address management for this interface.
+                              properties:
+                                pool:
+                                  description: Pool-based IPAM parameters.
+                                  nullable: true
+                                  properties:
+                                    poolRef:
+                                      description: |-
+                                        Typed reference (apiGroup + kind + name + optional namespace).
+
+                                        Used wherever the referenced kind is pluggable — e.g. IPAM pools, where we
+                                        want to accept either `ipam.cluster.x-k8s.io/IPAddressClaim` (CAPI's
+                                        default) or future banlieue-native pool types.
+                                      properties:
+                                        apiGroup:
+                                          type: string
+                                        kind:
+                                          type: string
+                                        name:
+                                          type: string
+                                        namespace:
+                                          nullable: true
+                                          type: string
+                                      required:
+                                      - apiGroup
+                                      - kind
+                                      - name
+                                      type: object
+                                  required:
+                                  - poolRef
+                                  type: object
+                                static:
+                                  description: Static IPAM parameters (address, prefix, gateway, nameservers, domain).
+                                  nullable: true
+                                  properties:
+                                    address:
+                                      type: string
+                                    domain:
+                                      description: |-
+                                        DNS domain, used both as a DNS search domain and (by a
+                                        `VirtualMachine.spec.networkOverrides` consumer, ADR-0024) to build
+                                        an FQDN as `<vm-name>.<domain>`.
+                                      nullable: true
+                                      type: string
+                                    gateway:
+                                      nullable: true
+                                      type: string
+                                    nameservers:
+                                      items:
+                                        type: string
+                                      type: array
+                                    prefix:
+                                      format: uint8
+                                      maximum: 255.0
+                                      minimum: 0.0
+                                      type: integer
+                                  required:
+                                  - address
+                                  - prefix
+                                  type: object
+                              type: object
+                            macAddress:
+                              description: |-
+                                Optional MAC address. The provider derives a stable one from the
+                                machine UID otherwise, so the address survives a restart.
+                              nullable: true
+                              type: string
+                            name:
+                              description: Stable NIC name; echoed in status.
+                              type: string
+                            networkClass:
+                              description: |-
+                                Network class: a name the host resolves to one of its bridges. Never
+                                a bridge name from the cluster.
+                              type: string
+                          required:
+                          - ipam
+                          - name
+                          - networkClass
+                          type: object
+                        maxItems: 16
+                        type: array
+                      osDiskSizeGiB:
+                        description: |-
+                          OS disk size in GiB. Required, and grown to before first boot; never
+                          shrunk. Must be at least the image's size.
+                        format: uint32
+                        maximum: 65536.0
+                        minimum: 1.0
+                        type: integer
+                      providerID:
+                        description: |-
+                          CAPI contract: Provider ID for the resulting Node, if this VM becomes
+                          a Kubernetes node. Format:
+                          `cloudhypervisor://<provider-name>/<machine-uid>`. Set by the provider
+                          once the guest exists.
+                        nullable: true
+                        type: string
+                      providerRef:
+                        description: The `Provider` for the one host that runs this machine (ADR-0060).
+                        properties:
+                          name:
+                            type: string
+                        required:
+                        - name
+                        type: object
+                      storageClass:
+                        description: |-
+                          Storage class the machine's disks live in. A name the host declares
+                          in its local config and publishes on its failure domain; never a
+                          path.
+                        type: string
+                      tpmEnabled:
+                        default: false
+                        description: |-
+                          Attach a vTPM (swtpm), resolved from the VM's `VMClass.spec.tpmEnabled`.
+                          Requires [`ChBootSourceKind::InstallMedia`] (ADR-0040, ADR-0048,
+                          ADR-0065).
+                        type: boolean
+                      userData:
+                        description: |-
+                          Guest bootstrap payload, already resolved and placeholder-substituted
+                          by `banlieue-controller` (ADR-0025, ADR-0038). Rendered into a
+                          NoCloud `CIDATA` seed disk; the provider reads no Secret or ConfigMap.
+                        nullable: true
+                        type: string
+                    required:
+                    - bootSource
+                    - cpus
+                    - memory
+                    - nics
+                    - osDiskSizeGiB
+                    - providerRef
+                    - storageClass
+                    type: object
+                required:
+                - spec
+                type: object
+            required:
+            - template
+            type: object
+        required:
+        - spec
+        title: CloudHypervisorMachineTemplate
+        type: object
+    served: true
+    storage: true

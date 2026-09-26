@@ -1,6 +1,6 @@
 # anatomy.md
 
-> Auto-maintained by OpenWolf. Last scanned: 2026-09-26T05:49:15.371Z
+> Auto-maintained by OpenWolf. Last scanned: 2026-09-26T12:07:12.980Z
 > Files: 479 tracked | Anatomy hits: 0 | Misses: 0
 
 ## ./
@@ -21,7 +21,7 @@
 
 ## .claude/
 
-- `CHANGELOG.md` — Changelog (~166508 tok)
+- `CHANGELOG.md` — Changelog (~171525 tok)
 
 ## .clusterfuzzlite/
 

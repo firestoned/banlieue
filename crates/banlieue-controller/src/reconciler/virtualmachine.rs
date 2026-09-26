@@ -29,7 +29,7 @@ use banlieue_api::banlieue::{
 use banlieue_api::common::{
     LocalObjectReference as _PlaceholderLocalRef, TypedObjectReference, condition_types,
 };
-use banlieue_api::infrastructure::{LibvirtMachine, VSphereMachine};
+use banlieue_api::infrastructure::{CloudHypervisorMachine, LibvirtMachine, VSphereMachine};
 use banlieue_provider_sdk::{
     finalizer::{ensure_finalizer, remove_finalizer},
     guestdata::{GuestDataContext, render_placeholders},
@@ -47,7 +47,9 @@ use kube::{
 use serde_json::json;
 use tracing::{debug, info, warn};
 
-use super::infra::{InfraKind, build_libvirt_machine, build_vsphere_machine};
+use super::infra::{
+    InfraKind, build_cloud_hypervisor_machine, build_libvirt_machine, build_vsphere_machine,
+};
 use super::migration::{MigrationAction, PlacementDriftReason, evaluate};
 use super::scheduler::{ScheduleError, reasons, schedule};
 use super::status_mirror::{InfraMachineRead, mirror_onto_vm, mirror_status_from_infra};
@@ -115,11 +117,10 @@ pub async fn reconcile(vm: Arc<VirtualMachine>, ctx: Arc<Context>) -> Result<Act
     info!("reconciling VirtualMachine");
 
     let vm_api: Api<VirtualMachine> = Api::namespaced(ctx.client.clone(), &namespace);
-    let vsphere_api: Api<VSphereMachine> = Api::namespaced(ctx.client.clone(), &namespace);
-    let libvirt_api: Api<LibvirtMachine> = Api::namespaced(ctx.client.clone(), &namespace);
+    let infra_apis = InfraApis::namespaced(&ctx.client, &namespace);
 
     if vm.metadata.deletion_timestamp.is_some() {
-        return finalize_vm(&vm_api, &vsphere_api, &libvirt_api, &vm).await;
+        return finalize_vm(&vm_api, &infra_apis, &vm).await;
     }
 
     ensure_finalizer(&vm_api, vm.as_ref(), VM_FINALIZER).await?;
@@ -217,8 +218,7 @@ pub async fn reconcile(vm: Arc<VirtualMachine>, ctx: Arc<Context>) -> Result<Act
             // and report the drift as a (passive) PlacementValid=True. We
             // still mirror status from whatever is already on the infra CR.
             info!("placement drift but migrationPolicy=Never; sticking to old placement");
-            return mirror_only_path(&vm_api, &vsphere_api, &libvirt_api, infra_kind, &vm, &name)
-                .await;
+            return mirror_only_path(&vm_api, &infra_apis, infra_kind, &vm, &name).await;
         }
         MigrationAction::SurfaceOnly { reason } => {
             // migrationPolicy=Manual without the annotation. Set
@@ -239,7 +239,7 @@ pub async fn reconcile(vm: Arc<VirtualMachine>, ctx: Arc<Context>) -> Result<Act
                 reason = reason.reason(),
                 "placement drift; recreating infra CR for new placement"
             );
-            delete_existing_infra(&vsphere_api, &libvirt_api, infra_kind, &vm.name_any()).await?;
+            delete_existing_infra(&infra_apis, infra_kind, &vm.name_any()).await?;
             patch_placement_invalid(&vm_api, &vm, &name, generation, reason).await?;
             return Ok(requeue_default());
         }
@@ -279,7 +279,8 @@ pub async fn reconcile(vm: Arc<VirtualMachine>, ctx: Arc<Context>) -> Result<Act
                     return Ok(requeue_on_error());
                 }
             };
-            let m = server_side_apply(&vsphere_api, FIELD_MANAGER_CONTROLLER, &infra).await?;
+            let m =
+                server_side_apply(&infra_apis.vsphere, FIELD_MANAGER_CONTROLLER, &infra).await?;
             debug!(vsphere_machine = %m.name_any(), "applied VSphereMachine via SSA");
             Box::new(m)
         }
@@ -300,8 +301,35 @@ pub async fn reconcile(vm: Arc<VirtualMachine>, ctx: Arc<Context>) -> Result<Act
                     return Ok(requeue_on_error());
                 }
             };
-            let m = server_side_apply(&libvirt_api, FIELD_MANAGER_CONTROLLER, &infra).await?;
+            let m =
+                server_side_apply(&infra_apis.libvirt, FIELD_MANAGER_CONTROLLER, &infra).await?;
             debug!(libvirt_machine = %m.name_any(), "applied LibvirtMachine via SSA");
+            Box::new(m)
+        }
+        InfraKind::CloudHypervisor => {
+            let infra = match build_cloud_hypervisor_machine(
+                &vm,
+                &class,
+                &image,
+                &decision,
+                chosen_provider,
+                rendered_user_data.as_deref(),
+            ) {
+                Ok(m) => m,
+                Err(e) => {
+                    warn!(error = %e, "infra builder failed; reporting Scheduled=False");
+                    patch_infra_build_failure(&vm_api, &vm, &name, generation, &e.to_string())
+                        .await?;
+                    return Ok(requeue_on_error());
+                }
+            };
+            let m = server_side_apply(
+                &infra_apis.cloud_hypervisor,
+                FIELD_MANAGER_CONTROLLER,
+                &infra,
+            )
+            .await?;
+            debug!(cloud_hypervisor_machine = %m.name_any(), "applied CloudHypervisorMachine via SSA");
             Box::new(m)
         }
     };
@@ -354,18 +382,24 @@ pub async fn reconcile(vm: Arc<VirtualMachine>, ctx: Arc<Context>) -> Result<Act
 /// drift is acceptable for this VM.
 async fn mirror_only_path(
     vm_api: &Api<VirtualMachine>,
-    vsphere_api: &Api<VSphereMachine>,
-    libvirt_api: &Api<LibvirtMachine>,
+    apis: &InfraApis,
     infra_kind: InfraKind,
     vm: &VirtualMachine,
     name: &str,
 ) -> Result<Action> {
     let infra: Option<Box<dyn InfraMachineRead + Send>> = match infra_kind {
-        InfraKind::VSphere => vsphere_api
+        InfraKind::VSphere => apis
+            .vsphere
             .get_opt(name)
             .await?
             .map(|m| Box::new(m) as Box<dyn InfraMachineRead + Send>),
-        InfraKind::Libvirt => libvirt_api
+        InfraKind::Libvirt => apis
+            .libvirt
+            .get_opt(name)
+            .await?
+            .map(|m| Box::new(m) as Box<dyn InfraMachineRead + Send>),
+        InfraKind::CloudHypervisor => apis
+            .cloud_hypervisor
             .get_opt(name)
             .await?
             .map(|m| Box::new(m) as Box<dyn InfraMachineRead + Send>),
@@ -387,15 +421,32 @@ async fn mirror_only_path(
 
 /// Delete the owned infra CR of `infra_kind` by name. 404 is treated as
 /// success so the call is idempotent across retries.
-async fn delete_existing_infra(
-    vsphere_api: &Api<VSphereMachine>,
-    libvirt_api: &Api<LibvirtMachine>,
-    infra_kind: InfraKind,
-    name: &str,
-) -> Result<()> {
+async fn delete_existing_infra(apis: &InfraApis, infra_kind: InfraKind, name: &str) -> Result<()> {
     match infra_kind {
-        InfraKind::VSphere => delete_ignoring_404(vsphere_api, name).await,
-        InfraKind::Libvirt => delete_ignoring_404(libvirt_api, name).await,
+        InfraKind::VSphere => delete_ignoring_404(&apis.vsphere, name).await,
+        InfraKind::Libvirt => delete_ignoring_404(&apis.libvirt, name).await,
+        InfraKind::CloudHypervisor => delete_ignoring_404(&apis.cloud_hypervisor, name).await,
+    }
+}
+
+/// The typed API for every infra kind, in one namespace.
+///
+/// One value to pass around instead of one parameter per backend, so a new
+/// backend is a field here rather than a new argument on every function
+/// that might touch an infra CR.
+struct InfraApis {
+    vsphere: Api<VSphereMachine>,
+    libvirt: Api<LibvirtMachine>,
+    cloud_hypervisor: Api<CloudHypervisorMachine>,
+}
+
+impl InfraApis {
+    fn namespaced(client: &kube::Client, namespace: &str) -> Self {
+        Self {
+            vsphere: Api::namespaced(client.clone(), namespace),
+            libvirt: Api::namespaced(client.clone(), namespace),
+            cloud_hypervisor: Api::namespaced(client.clone(), namespace),
+        }
     }
 }
 
@@ -426,7 +477,7 @@ where
 /// of the parent VirtualMachine blocks at the K8s API until the provider has
 /// confirmed the backend resource is gone.
 ///
-/// # Why both kinds are checked rather than the scheduled one
+/// # Why every kind is checked rather than the scheduled one
 ///
 /// This runs before scheduling, and deliberately does not consult
 /// `status.infrastructureRef` or the `Provider`. At deletion time the
@@ -434,28 +485,34 @@ where
 /// (a VM deleted mid-first-reconcile), or the VM may have been migrated
 /// between backends. Every one of those makes a "which kind was it?" answer
 /// wrong, and being wrong here means dropping the finalizer while a real VM
-/// is still running on a hypervisor. Two `get_opt` calls are the cheap price
+/// is still running on a hypervisor. One `get_opt` per kind is the cheap price
 /// of never leaking one.
 async fn finalize_vm(
     api: &Api<VirtualMachine>,
-    vsphere_api: &Api<VSphereMachine>,
-    libvirt_api: &Api<LibvirtMachine>,
+    apis: &InfraApis,
     vm: &VirtualMachine,
 ) -> Result<Action> {
     info!("finalizing VirtualMachine");
     let owned_name = vm.name_any();
 
     // (exists, already terminating) for each backend.
-    let vsphere = vsphere_api
+    let vsphere = apis
+        .vsphere
         .get_opt(&owned_name)
         .await?
         .map(|m| m.metadata.deletion_timestamp.is_some());
-    let libvirt = libvirt_api
+    let libvirt = apis
+        .libvirt
+        .get_opt(&owned_name)
+        .await?
+        .map(|m| m.metadata.deletion_timestamp.is_some());
+    let cloud_hypervisor = apis
+        .cloud_hypervisor
         .get_opt(&owned_name)
         .await?
         .map(|m| m.metadata.deletion_timestamp.is_some());
 
-    if vsphere.is_none() && libvirt.is_none() {
+    if vsphere.is_none() && libvirt.is_none() && cloud_hypervisor.is_none() {
         info!("infra CRs cleared; removing VirtualMachine finalizer");
         remove_finalizer(api, vm, VM_FINALIZER).await?;
         return Ok(requeue_default());
@@ -464,16 +521,20 @@ async fn finalize_vm(
     // Issue a delete for anything present that is not already terminating.
     // The provider's own finalizer keeps it around until the backend VM is
     // really gone; this is never `|| true`-ed, so a failure surfaces instead
-    // of leaving a domain defined while teardown claims success.
+    // of leaving a guest running while teardown claims success.
     if vsphere == Some(false) {
         info!(vsphere_machine = %owned_name, "requesting VSphereMachine deletion; waiting for cascade");
-        delete_ignoring_404(vsphere_api, &owned_name).await?;
+        delete_ignoring_404(&apis.vsphere, &owned_name).await?;
     }
     if libvirt == Some(false) {
         info!(libvirt_machine = %owned_name, "requesting LibvirtMachine deletion; waiting for cascade");
-        delete_ignoring_404(libvirt_api, &owned_name).await?;
+        delete_ignoring_404(&apis.libvirt, &owned_name).await?;
     }
-    if vsphere == Some(true) || libvirt == Some(true) {
+    if cloud_hypervisor == Some(false) {
+        info!(cloud_hypervisor_machine = %owned_name, "requesting CloudHypervisorMachine deletion; waiting for cascade");
+        delete_ignoring_404(&apis.cloud_hypervisor, &owned_name).await?;
+    }
+    if vsphere == Some(true) || libvirt == Some(true) || cloud_hypervisor == Some(true) {
         debug!("infra CR still terminating; will recheck");
     }
     Ok(requeue_on_error())

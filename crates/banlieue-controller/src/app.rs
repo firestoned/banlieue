@@ -22,7 +22,9 @@ use anyhow::{Context as _, Result};
 use banlieue_api::banlieue::{
     Provider, VMClass, VMImage, VirtualMachine, VirtualMachineClaim, VirtualMachinePool,
 };
-use banlieue_api::infrastructure::{LibvirtMachine, VSphereCluster, VSphereMachine};
+use banlieue_api::infrastructure::{
+    CloudHypervisorMachine, LibvirtMachine, VSphereCluster, VSphereMachine,
+};
 use banlieue_provider_sdk::bootstrap::{init_tracing, serve_health, shutdown_signal};
 use banlieue_provider_sdk::client::build_client;
 use banlieue_provider_sdk::leader::{
@@ -182,6 +184,12 @@ pub async fn run(cli: Cli) -> Result<()> {
         None => Api::all(client.clone()),
     };
 
+    // And the Cloud Hypervisor counterpart (ADR-0062), for the same reason.
+    let cloud_hypervisor_api: Api<CloudHypervisorMachine> = match cli.namespace.as_deref() {
+        Some(ns) => Api::namespaced(client.clone(), ns),
+        None => Api::all(client.clone()),
+    };
+
     // VMImage is cluster-scoped; the image watcher requeues every VM
     // referencing an image whose status flipped.
     let image_api: Api<VMImage> = Api::all(client.clone());
@@ -214,6 +222,7 @@ pub async fn run(cli: Cli) -> Result<()> {
     let controller_fut = controller
         .owns(vsphere_api, Config::default())
         .owns(libvirt_api, Config::default())
+        .owns(cloud_hypervisor_api, Config::default())
         .watches(image_api, Config::default(), move |image: VMImage| {
             // Requeue every VM whose spec.image_ref.name matches this image.
             // VMImage updates are rare (operator-driven template imports), so

@@ -100,6 +100,36 @@ mod tests {
         }
     }
 
+    /// Creation, modification and effective dates carry a real, fixed date
+    /// (1970-01-01 00:00:00.00, GMT offset 0) and only expiration is left
+    /// "not specified". All-'0' is legal ECMA-119 for every one of them,
+    /// but go-diskfs before v1.9 parses the creation date as a real date,
+    /// fails on month 00 and rejects the whole volume. Kairos's datasource
+    /// uses exactly that to find a `CIDATA` seed by label on a virtio disk,
+    /// which is the only way a seed reaches a guest on Cloud Hypervisor
+    /// (no CD-ROM device). `genisoimage` fills the same three fields.
+    #[test]
+    fn descriptor_dates_are_fixed_and_parseable_except_expiration() {
+        let img = seed();
+        for n in [16, 17] {
+            let d = sector(&img, n);
+            for (field, start) in [("creation", 813), ("modification", 830), ("effective", 864)] {
+                assert_eq!(
+                    &d[start..start + 16],
+                    b"1970010100000000",
+                    "{field} date, sector {n}"
+                );
+                assert_eq!(d[start + 16], 0, "{field} GMT offset, sector {n}");
+            }
+            assert_eq!(
+                &d[847..863],
+                b"0000000000000000",
+                "expiration unspecified, sector {n}"
+            );
+            assert_eq!(d[863], 0, "expiration GMT offset, sector {n}");
+        }
+    }
+
     // ------------------------------------------------------------------
     // Names — the entire reason Joliet is here (ADR-0054)
     // ------------------------------------------------------------------

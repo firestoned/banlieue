@@ -1,0 +1,69 @@
+{
+  "config": {
+    "cpus": {
+      "boot_vcpus": 2,
+      "max_vcpus": 2,
+      "kvm_hyperv": false,
+      "max_phys_bits": 46,
+      "features": {
+        "amx": false
+      },
+      "nested": false,
+      "core_scheduling": "Vm",
+      "profile": "Host"
+    },
+    "memory": {
+      "size": 1073741824,
+      "mergeable": false,
+      "hotplug_method": "Acpi",
+      "shared": false,
+      "hugepages": false,
+      "prefault": false,
+      "reserve": false,
+      "thp": true
+    },
+    "payload": {
+      "firmware": "/opt/banlieue/firmware/ch-97eeb7b09/CLOUDHV.fd"
+    },
+    "disks": [
+      {
+        "id": "os",
+        "pci_segment": 0,
+        "path": "/srv/banlieue/ch/0f3c9a1e-0000-4000-8000-000000000001/os.raw",
+        "readonly": false,
+        "direct": false,
+        "num_queues": 1,
+        "queue_size": 128,
+        "vhost_user": false,
+        "disable_io_uring": false,
+        "disable_aio": false,
+        "backing_files": false,
+        "sparse": true,
+        "image_type": "Raw",
+        "lock_granularity": "ByteRange"
+      }
+    ],
+    "rng": {
+      "pci_segment": 0,
+      "src": "/dev/urandom"
+    },
+    "serial": {
+      "file": "/srv/banlieue/ch/0f3c9a1e-0000-4000-8000-000000000001/serial.log",
+      "mode": "File"
+    },
+    "console": {
+      "mode": "Off",
+      "pci_segment": 0
+    },
+    "debug_console": {
+      "mode": "Off",
+      "iobase": 233
+    },
+    "pvpanic": false,
+    "iommu": false,
+    "watchdog": false,
+    "landlock_enable": false
+  },
+  "state": "Created",
+  "memory_actual_size": 1073741824
+}

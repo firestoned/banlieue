@@ -34,6 +34,12 @@ on a real cluster, using the released container image
     Register a libvirt/KVM host over mutual TLS and import a guest image onto
     it — a first-party RPC client, no `libvirt-dev` and no `virsh`.
 
+- :material-server-security: **[Cloud Hypervisor Host Bootstrap](cloud-hypervisor-host.md)**
+
+    Prepare a bare-metal Debian host for the host-resident Cloud Hypervisor
+    provider: pinned VMM and firmware, per-guest uids, a per-host EK CA, and a
+    safe way to add a bridge to a remote machine.
+
 - :material-cloud-check: **[cloud-init on libvirt](cloud-init-on-libvirt.md)**
 
     How `spec.userData` reaches a guest as a NoCloud seed, why the image is

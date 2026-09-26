@@ -38,8 +38,8 @@ pub fn all_crds() -> Vec<CustomResourceDefinition> {
         VirtualMachinePool,
     };
     use crate::infrastructure::{
-        LibvirtMachine, LibvirtMachineTemplate, VSphereCluster, VSphereMachine,
-        VSphereMachineTemplate,
+        CloudHypervisorMachine, CloudHypervisorMachineTemplate, LibvirtMachine,
+        LibvirtMachineTemplate, VSphereCluster, VSphereMachine, VSphereMachineTemplate,
     };
     use kube::CustomResourceExt;
 
@@ -51,6 +51,8 @@ pub fn all_crds() -> Vec<CustomResourceDefinition> {
         prepared(VirtualMachineClaim::crd()),
         prepared(VMClass::crd()),
         prepared(VMImage::crd()),
+        prepared(CloudHypervisorMachine::crd()),
+        prepared(CloudHypervisorMachineTemplate::crd()),
         prepared(LibvirtMachine::crd()),
         prepared(LibvirtMachineTemplate::crd()),
         prepared(VSphereCluster::crd()),

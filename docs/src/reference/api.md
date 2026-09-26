@@ -16,6 +16,8 @@ Every banlieue Custom Resource Definition, generated from the Rust types that ar
 
 **`infrastructure.banlieue.io`**
 
+- [CloudHypervisorMachine](#cloudhypervisormachine)
+- [CloudHypervisorMachineTemplate](#cloudhypervisormachinetemplate)
 - [LibvirtMachine](#libvirtmachine)
 - [LibvirtMachineTemplate](#libvirtmachinetemplate)
 - [VSphereCluster](#vspherecluster)
@@ -1717,6 +1719,324 @@ and leave this empty.
 | `reason` | string |  |  |
 | `resolvedRef` | string |  | The template's bare display name within this zone once ready — the value a provider passes to a name-based template lookup. NOT a decorated string (no `[dc]`/folder prefix): folder scoping for a per-zone (`Url`-kind) import lives in [`Self::template_folder`], kept separate so a lookup can be built from structured fields instead of parsing this one. |
 | `templateFolder` | string |  | The vCenter folder path (relative to the datacenter's VM folder, e.g. `templates/cluster-01`) the template in [`Self::resolved_ref`] lives in, for a per-zone (`Url`-kind) import (ADR-0020 Decision #5). `None` for a `Template`-kind image, which has no per-zone folder — its `resolved_ref` is looked up datacenter-wide. |
+
+---
+
+## CloudHypervisorMachine
+
+**API:** `infrastructure.banlieue.io/v1alpha1` · **Kind:** `CloudHypervisorMachine` · **Scope:** Namespaced · **Short names:** `chm`
+
+CloudHypervisorMachine — the concrete, scheduled VM request for a Cloud
+Hypervisor host.
+
+You normally do not create this by hand: banlieue's controller does, owned
+by the `VirtualMachine` it was scheduled from, and the host-resident
+provider on the chosen host runs it as a Cloud Hypervisor guest.
+
+**Printer columns** (`kubectl get`):
+
+| Name | Type | JSON path | Priority |
+| --- | --- | --- | --- |
+| Provider | string | `.spec.providerRef.name` | 0 |
+| Provisioned | boolean | `.status.initialization.provisioned` | 0 |
+| Power | string | `.status.observedPowerState` | 0 |
+| Image | string | `.spec.bootSource.image` | 1 |
+| ProviderID | string | `.spec.providerID` | 1 |
+| Age | date | `.metadata.creationTimestamp` | 0 |
+
+### `.spec`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `bootSource` | object | Yes | Where the OS disk comes from. |
+| `cpus` | object | Yes | Virtual CPUs. |
+| `desiredPowerState` | string |  | Desired power state, resolved from the parent `VirtualMachine`. Allowed: `PoweredOn`, `PoweredOff`, `Suspended`. |
+| `failureDomain` | string |  | CAPI contract (optional): failure domain placement. One host is one failure domain on this backend, as on libvirt. |
+| `memory` | object | Yes | Guest memory. |
+| `nics` | object[] | Yes | Network interfaces. |
+| `osDiskSizeGiB` | integer | Yes | OS disk size in GiB. Required, and grown to before first boot; never shrunk. Must be at least the image's size. |
+| `providerID` | string |  | CAPI contract: Provider ID for the resulting Node, if this VM becomes a Kubernetes node. Format: `cloudhypervisor://<provider-name>/<machine-uid>`. Set by the provider once the guest exists. |
+| `providerRef` | object | Yes | The `Provider` for the one host that runs this machine (ADR-0060). |
+| `storageClass` | string | Yes | Storage class the machine's disks live in. A name the host declares in its local config and publishes on its failure domain; never a path. |
+| `tpmEnabled` | boolean |  | Attach a vTPM (swtpm), resolved from the VM's `VMClass.spec.tpmEnabled`. Requires [`ChBootSourceKind::InstallMedia`] (ADR-0040, ADR-0048, ADR-0065). |
+| `userData` | string |  | Guest bootstrap payload, already resolved and placeholder-substituted by `banlieue-controller` (ADR-0025, ADR-0038). Rendered into a NoCloud `CIDATA` seed disk; the provider reads no Secret or ConfigMap. |
+
+#### `.spec.bootSource`
+
+Where the OS disk comes from.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `image` | string | Yes | The image in the host's image cache: an installed raw disk for [`Image`](ChBootSourceKind::Image), the installer ISO for [`InstallMedia`](ChBootSourceKind::InstallMedia). |
+| `kind` | string | Yes | Which provisioning shape this machine uses. Allowed: `image`, `installMedia`. |
+
+#### `.spec.cpus`
+
+Virtual CPUs.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `boot` | integer | Yes | vCPUs the guest boots with. |
+| `max` | integer |  | Hotplug headroom: the most vCPUs the guest may be resized to. Fixed when the VM is created. `None` means no headroom. |
+
+#### `.spec.memory`
+
+Guest memory.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `hugepages` | boolean |  | Back guest memory with hugepages. The host reports hugepages as their own capacity, since they are reserved rather than allocated on demand. |
+| `sizeMiB` | integer | Yes | Guest memory in MiB. |
+
+#### `.spec.nics[]`
+
+Network interfaces.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `ipam` | object | Yes | IP address management for this interface. |
+| `macAddress` | string |  | Optional MAC address. The provider derives a stable one from the machine UID otherwise, so the address survives a restart. |
+| `name` | string | Yes | Stable NIC name; echoed in status. |
+| `networkClass` | string | Yes | Network class: a name the host resolves to one of its bridges. Never a bridge name from the cluster. |
+
+##### `.spec.nics[].ipam`
+
+IP address management for this interface.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `pool` | object |  | Pool-based IPAM parameters. |
+| `static` | object |  | Static IPAM parameters (address, prefix, gateway, nameservers, domain). |
+
+###### `.spec.nics[].ipam.pool`
+
+Pool-based IPAM parameters.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `poolRef` | object | Yes | Typed reference (apiGroup + kind + name + optional namespace). |
+
+####### `.spec.nics[].ipam.pool.poolRef`
+
+Typed reference (apiGroup + kind + name + optional namespace).
+
+Used wherever the referenced kind is pluggable — e.g. IPAM pools, where we
+want to accept either `ipam.cluster.x-k8s.io/IPAddressClaim` (CAPI's
+default) or future banlieue-native pool types.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `apiGroup` | string | Yes |  |
+| `kind` | string | Yes |  |
+| `name` | string | Yes |  |
+| `namespace` | string |  |  |
+
+###### `.spec.nics[].ipam.static`
+
+Static IPAM parameters (address, prefix, gateway, nameservers, domain).
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `address` | string | Yes |  |
+| `domain` | string |  | DNS domain, used both as a DNS search domain and (by a `VirtualMachine.spec.networkOverrides` consumer, ADR-0024) to build an FQDN as `<vm-name>.<domain>`. |
+| `gateway` | string |  |  |
+| `nameservers` | string[] |  |  |
+| `prefix` | integer | Yes |  |
+
+#### `.spec.providerRef`
+
+The `Provider` for the one host that runs this machine (ADR-0060).
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | Yes |  |
+
+### `.status`
+
+Observed state of a CloudHypervisorMachine, shaped to the CAPI v1beta2
+InfraMachine status contract. The non-contract fields mean what they mean
+on `LibvirtMachineStatus`, so the controller's status mirror treats both
+backends alike.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `addressSource` | string |  | Which source answered the provider's address lookup. Allowed: `static`, `neighbour`. |
+| `addresses` | object[] |  | CAPI contract field (optional): VM addresses. |
+| `conditions` | object[] |  | Standard Kubernetes conditions. |
+| `failureDomain` | string |  | CAPI contract field (optional): observed failure domain. |
+| `guestInstalled` | boolean |  | Whether the installed guest has announced itself (ADR-0043). Sticky once true. |
+| `hostUid` | integer |  | The unprivileged host uid this machine's units run as (ADR-0063 Decision 3). Recorded so the provider re-adopts a running guest without trusting its own memory. |
+| `initialization` | object |  | CAPI contract field. |
+| `installMediaDetached` | boolean |  | Whether the installer has been removed, live and for future starts (ADR-0044, ADR-0065 Decision 4). Sticky once true; `None` when there was never an installer. |
+| `observedGeneration` | integer |  | The `metadata.generation` this status was computed from. |
+| `observedPowerState` | string |  | The VM's last observed run state. Allowed: `PoweredOn`, `PoweredOff`, `Suspended`, `null`. |
+| `tpmAttached` | boolean |  | Whether a vTPM was attached, when `spec.tpmEnabled` is set. |
+| `tpmEndorsementCertificates` | string[] |  | PEM EK certificates, validated against this machine (ADR-0045, ADR-0065). |
+
+#### `.status.addresses[]`
+
+CAPI contract field (optional): VM addresses.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `address` | string | Yes | The address itself. |
+| `type` | string | Yes | Address type. Accepted: Hostname, ExternalIP, InternalIP, ExternalDNS, InternalDNS. Allowed: `Hostname`, `ExternalIP`, `InternalIP`, `ExternalDNS`, `InternalDNS`. |
+
+#### `.status.conditions[]`
+
+Standard Kubernetes conditions.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `lastTransitionTime` | string | Yes | lastTransitionTime is the last time the condition transitioned from one status to another. This should be when the underlying condition changed. If that is not known, then using the time when the API field changed is acceptable. |
+| `message` | string | Yes | message is a human readable message indicating details about the transition. This may be an empty string. |
+| `observedGeneration` | integer |  | observedGeneration represents the .metadata.generation that the condition was set based upon. For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date with respect to the current state of the instance. |
+| `reason` | string | Yes | reason contains a programmatic identifier indicating the reason for the condition's last transition. Producers of specific condition types may define expected values and meanings for this field, and whether the values are considered a guaranteed API. The value should be a CamelCase string. This field may not be empty. |
+| `status` | string | Yes | status of the condition, one of True, False, Unknown. |
+| `type` | string | Yes | type of condition in CamelCase or in foo.example.com/CamelCase. |
+
+#### `.status.initialization`
+
+CAPI contract field.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `provisioned` | boolean |  | True when the infrastructure provider reports that the resource's infrastructure is fully provisioned. |
+
+---
+
+## CloudHypervisorMachineTemplate
+
+**API:** `infrastructure.banlieue.io/v1alpha1` · **Kind:** `CloudHypervisorMachineTemplate` · **Scope:** Namespaced · **Short names:** `chmt`
+
+CloudHypervisorMachineTemplate — a stamped-out CloudHypervisorMachine spec.
+
+CAPI requires an InfraMachineTemplate so a MachineSet or MachineDeployment
+can mint identical machines. A spec template, not a disk template: nothing
+clones a guest, which is what keeps per-VM vTPMs unique (ADR-0040).
+
+### `.spec`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `template` | object | Yes | The spec stamped into every machine created from this template. |
+
+#### `.spec.template`
+
+The spec stamped into every machine created from this template.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `spec` | object | Yes | The CloudHypervisorMachine spec for machines created from this template. |
+
+##### `.spec.template.spec`
+
+The CloudHypervisorMachine spec for machines created from this template.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `bootSource` | object | Yes | Where the OS disk comes from. |
+| `cpus` | object | Yes | Virtual CPUs. |
+| `desiredPowerState` | string |  | Desired power state, resolved from the parent `VirtualMachine`. Allowed: `PoweredOn`, `PoweredOff`, `Suspended`. |
+| `failureDomain` | string |  | CAPI contract (optional): failure domain placement. One host is one failure domain on this backend, as on libvirt. |
+| `memory` | object | Yes | Guest memory. |
+| `nics` | object[] | Yes | Network interfaces. |
+| `osDiskSizeGiB` | integer | Yes | OS disk size in GiB. Required, and grown to before first boot; never shrunk. Must be at least the image's size. |
+| `providerID` | string |  | CAPI contract: Provider ID for the resulting Node, if this VM becomes a Kubernetes node. Format: `cloudhypervisor://<provider-name>/<machine-uid>`. Set by the provider once the guest exists. |
+| `providerRef` | object | Yes | The `Provider` for the one host that runs this machine (ADR-0060). |
+| `storageClass` | string | Yes | Storage class the machine's disks live in. A name the host declares in its local config and publishes on its failure domain; never a path. |
+| `tpmEnabled` | boolean |  | Attach a vTPM (swtpm), resolved from the VM's `VMClass.spec.tpmEnabled`. Requires [`ChBootSourceKind::InstallMedia`] (ADR-0040, ADR-0048, ADR-0065). |
+| `userData` | string |  | Guest bootstrap payload, already resolved and placeholder-substituted by `banlieue-controller` (ADR-0025, ADR-0038). Rendered into a NoCloud `CIDATA` seed disk; the provider reads no Secret or ConfigMap. |
+
+###### `.spec.template.spec.bootSource`
+
+Where the OS disk comes from.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `image` | string | Yes | The image in the host's image cache: an installed raw disk for [`Image`](ChBootSourceKind::Image), the installer ISO for [`InstallMedia`](ChBootSourceKind::InstallMedia). |
+| `kind` | string | Yes | Which provisioning shape this machine uses. Allowed: `image`, `installMedia`. |
+
+###### `.spec.template.spec.cpus`
+
+Virtual CPUs.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `boot` | integer | Yes | vCPUs the guest boots with. |
+| `max` | integer |  | Hotplug headroom: the most vCPUs the guest may be resized to. Fixed when the VM is created. `None` means no headroom. |
+
+###### `.spec.template.spec.memory`
+
+Guest memory.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `hugepages` | boolean |  | Back guest memory with hugepages. The host reports hugepages as their own capacity, since they are reserved rather than allocated on demand. |
+| `sizeMiB` | integer | Yes | Guest memory in MiB. |
+
+###### `.spec.template.spec.nics[]`
+
+Network interfaces.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `ipam` | object | Yes | IP address management for this interface. |
+| `macAddress` | string |  | Optional MAC address. The provider derives a stable one from the machine UID otherwise, so the address survives a restart. |
+| `name` | string | Yes | Stable NIC name; echoed in status. |
+| `networkClass` | string | Yes | Network class: a name the host resolves to one of its bridges. Never a bridge name from the cluster. |
+
+####### `.spec.template.spec.nics[].ipam`
+
+IP address management for this interface.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `pool` | object |  | Pool-based IPAM parameters. |
+| `static` | object |  | Static IPAM parameters (address, prefix, gateway, nameservers, domain). |
+
+######## `.spec.template.spec.nics[].ipam.pool`
+
+Pool-based IPAM parameters.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `poolRef` | object | Yes | Typed reference (apiGroup + kind + name + optional namespace). |
+
+######### `.spec.template.spec.nics[].ipam.pool.poolRef`
+
+Typed reference (apiGroup + kind + name + optional namespace).
+
+Used wherever the referenced kind is pluggable — e.g. IPAM pools, where we
+want to accept either `ipam.cluster.x-k8s.io/IPAddressClaim` (CAPI's
+default) or future banlieue-native pool types.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `apiGroup` | string | Yes |  |
+| `kind` | string | Yes |  |
+| `name` | string | Yes |  |
+| `namespace` | string |  |  |
+
+######## `.spec.template.spec.nics[].ipam.static`
+
+Static IPAM parameters (address, prefix, gateway, nameservers, domain).
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `address` | string | Yes |  |
+| `domain` | string |  | DNS domain, used both as a DNS search domain and (by a `VirtualMachine.spec.networkOverrides` consumer, ADR-0024) to build an FQDN as `<vm-name>.<domain>`. |
+| `gateway` | string |  |  |
+| `nameservers` | string[] |  |  |
+| `prefix` | integer | Yes |  |
+
+###### `.spec.template.spec.providerRef`
+
+The `Provider` for the one host that runs this machine (ADR-0060).
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | Yes |  |
 
 ---
 

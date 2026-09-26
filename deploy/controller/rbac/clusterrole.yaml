@@ -88,6 +88,9 @@ rules:
       - libvirtmachines
       - libvirtmachines/status
       - libvirtmachinetemplates
+      - cloudhypervisormachines
+      - cloudhypervisormachines/status
+      - cloudhypervisormachinetemplates
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   # VSphereCluster (CAPI InfraCluster) — the operator/CAPI owns its lifecycle;
   # the controller only watches it and writes its status (least privilege:
@@ -104,6 +107,7 @@ rules:
     resources:
       - vspheremachines/finalizers
       - libvirtmachines/finalizers
+      - cloudhypervisormachines/finalizers
     verbs: ["update"]
 
   # ---------------------------------------------------------------------------
