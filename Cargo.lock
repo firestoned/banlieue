@@ -248,6 +248,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "banlieue-cloud-hypervisor"
+version = "0.3.0"
+dependencies = [
+ "bytes",
+ "http",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "banlieue-controller"
 version = "0.3.0"
 dependencies = [

@@ -17,9 +17,10 @@ use banlieue_api::banlieue::{
 };
 use banlieue_api::common::{IpamShape, IpamSpec, MachineAddress, StaticIpamConfig};
 use banlieue_api::infrastructure::{
-    LibvirtBootSource, LibvirtBootSourceKind, LibvirtDiskBus, LibvirtDiskSpec, LibvirtMachine,
-    LibvirtMachineSpec, LibvirtNicSource, LibvirtNicSourceKind, LibvirtNicSpec, VSphereDiskSpec,
-    VSphereMachine, VSphereMachineSpec, VSphereNicSpec,
+    ChBootSource, ChBootSourceKind, ChCpuSpec, ChMemorySpec, ChNicSpec, CloudHypervisorMachine,
+    CloudHypervisorMachineSpec, LibvirtBootSource, LibvirtBootSourceKind, LibvirtDiskBus,
+    LibvirtDiskSpec, LibvirtMachine, LibvirtMachineSpec, LibvirtNicSource, LibvirtNicSourceKind,
+    LibvirtNicSpec, VSphereDiskSpec, VSphereMachine, VSphereMachineSpec, VSphereNicSpec,
 };
 use kube::ResourceExt;
 use kube::api::ObjectMeta;
@@ -31,6 +32,9 @@ use super::scheduler::Decision;
 pub const PROVIDER_CLASS_VSPHERE: &str = "vsphere";
 /// `Provider.spec.providerClassRef.name` for the libvirt backend.
 pub const PROVIDER_CLASS_LIBVIRT: &str = "libvirt";
+/// `Provider.spec.providerClassRef.name` for the Cloud Hypervisor backend
+/// (ADR-0060).
+pub const PROVIDER_CLASS_CLOUD_HYPERVISOR: &str = "cloud-hypervisor";
 
 /// Which infrastructure CR kind a scheduled `VirtualMachine` becomes.
 ///
@@ -44,6 +48,8 @@ pub enum InfraKind {
     VSphere,
     /// `infrastructure.banlieue.io/LibvirtMachine` (ADR-0050).
     Libvirt,
+    /// `infrastructure.banlieue.io/CloudHypervisorMachine` (ADR-0062).
+    CloudHypervisor,
 }
 
 impl InfraKind {
@@ -59,6 +65,7 @@ impl InfraKind {
         match class {
             PROVIDER_CLASS_VSPHERE => Some(Self::VSphere),
             PROVIDER_CLASS_LIBVIRT => Some(Self::Libvirt),
+            PROVIDER_CLASS_CLOUD_HYPERVISOR => Some(Self::CloudHypervisor),
             _ => None,
         }
     }
@@ -69,6 +76,7 @@ impl InfraKind {
         match self {
             Self::VSphere => "VSphereMachine",
             Self::Libvirt => "LibvirtMachine",
+            Self::CloudHypervisor => "CloudHypervisorMachine",
         }
     }
 }
@@ -99,6 +107,12 @@ pub enum InfraBuildError {
     /// the scheduler resolves all classes before returning.
     #[error("decision did not resolve class '{0}' to a backend identifier")]
     UnresolvedClass(String),
+
+    /// The VMClass asks for something this backend does not support yet.
+    /// Reported rather than silently dropped, so a VM never comes up with
+    /// less than its class promised.
+    #[error("{backend} does not support {what} yet")]
+    Unsupported { backend: &'static str, what: String },
 }
 
 /// Build a [`VSphereMachine`] from the scheduler [`Decision`], the original
@@ -555,6 +569,159 @@ fn boot_source_kind(image: &VMImage) -> LibvirtBootSourceKind {
     match mode {
         InstallMode::Immediate => LibvirtBootSourceKind::BackingVolume,
         InstallMode::Deferred | InstallMode::Manual => LibvirtBootSourceKind::InstallMedia,
+    }
+}
+
+/// Build a [`CloudHypervisorMachine`] from the scheduler [`Decision`], the
+/// original VM, its class, image, and the chosen [`Provider`] (ADR-0062).
+///
+/// Owner-reference is set to `vm`, as for the other backends.
+///
+/// # How this differs from [`build_libvirt_machine`]
+///
+/// - **Classes stay names.** The scheduler resolves the VMClass's storage
+///   and network classes through `Provider.spec.capabilities`, and on this
+///   backend the resolved ids are the host's own class names. The host
+///   turns them into a directory and a bridge from its local config; a path
+///   or a bridge name never crosses into the cluster (ADR-0062 Decision 4).
+/// - **One disk.** The first class disk is the OS disk, grown to its size
+///   before first boot. Data disks are not in the first slice, and a class
+///   that declares one is refused rather than silently shortened.
+/// - **No domain name.** Nothing on the host outlives the VMM process; the
+///   provider names everything after the machine's UID.
+///
+/// # Errors
+/// [`InfraBuildError::MissingResolvedImageRef`] when the `VMImage` has no
+/// resolved image for this provider, [`InfraBuildError::UnresolvedClass`]
+/// when the class declared no disk, and [`InfraBuildError::Unsupported`]
+/// when it declared more than one.
+pub fn build_cloud_hypervisor_machine(
+    vm: &VirtualMachine,
+    class: &VMClass,
+    image: &VMImage,
+    decision: &Decision,
+    provider: &Provider,
+    rendered_user_data: Option<&str>,
+) -> Result<CloudHypervisorMachine, InfraBuildError> {
+    let hardware_override = vm.spec.hardware_override.as_ref();
+
+    let disks = &class.spec.hardware.disks;
+    let os_disk = disks
+        .first()
+        .ok_or_else(|| InfraBuildError::UnresolvedClass("(no disks)".into()))?;
+    if disks.len() > 1 {
+        return Err(InfraBuildError::Unsupported {
+            backend: PROVIDER_CLASS_CLOUD_HYPERVISOR,
+            what: format!(
+                "data disks (class {} declares {})",
+                class.name_any(),
+                disks.len()
+            ),
+        });
+    }
+    let storage_class = decision
+        .resolved_storage
+        .first()
+        .ok_or_else(|| InfraBuildError::UnresolvedClass(os_disk.storage_class.clone()))?
+        .backend_id
+        .clone();
+
+    let (image_ref, _folder) = resolve_template_ref(
+        image,
+        &decision.provider_name,
+        &decision.failure_domain_name,
+    )
+    .ok_or_else(|| InfraBuildError::MissingResolvedImageRef {
+        image: image.name_any(),
+        provider: decision.provider_name.clone(),
+        zone: decision.failure_domain_name.clone(),
+    })?;
+
+    let nics: Vec<ChNicSpec> = class
+        .spec
+        .network
+        .interfaces
+        .iter()
+        .zip(decision.resolved_networks.iter())
+        .map(|(nic, resolved)| {
+            let override_ = vm
+                .spec
+                .network_overrides
+                .iter()
+                .find(|o| o.name == nic.name)
+                .map(|o| &o.static_);
+            // One host is one failure domain, with no zone hierarchy, so the
+            // mapping's default subnet applies (ADR-0030), as on libvirt.
+            let zone_subnet = provider
+                .spec
+                .capabilities
+                .network_classes
+                .iter()
+                .find(|c| c.name == nic.network_class)
+                .and_then(|c| c.subnet_for("", ""));
+            ChNicSpec {
+                name: nic.name.clone(),
+                network_class: resolved.backend_id.clone(),
+                mac_address: None,
+                ipam: merge_ipam_override(&nic.ipam, override_, zone_subnet),
+            }
+        })
+        .collect();
+
+    let spec = CloudHypervisorMachineSpec {
+        provider_id: None,
+        failure_domain: Some(decision.failure_domain_name.clone()),
+        provider_ref: banlieue_api::common::LocalObjectReference {
+            name: decision.provider_name.clone(),
+        },
+        cpus: ChCpuSpec {
+            boot: hardware_override
+                .and_then(|h| h.cpus)
+                .unwrap_or(class.spec.hardware.cpus),
+            max: None,
+        },
+        memory: ChMemorySpec {
+            size_mi_b: hardware_override
+                .and_then(|h| h.memory_mi_b)
+                .unwrap_or(class.spec.hardware.memory_mi_b),
+            hugepages: false,
+        },
+        storage_class,
+        boot_source: ChBootSource {
+            kind: ch_boot_source_kind(image),
+            image: image_ref,
+        },
+        os_disk_size_gi_b: merge_disk_size_override(os_disk, hardware_override),
+        nics,
+        tpm_enabled: class.spec.tpm_enabled,
+        user_data: rendered_user_data.map(str::to_string),
+        desired_power_state: vm.spec.desired_power_state.clone(),
+    };
+
+    Ok(CloudHypervisorMachine {
+        metadata: ObjectMeta {
+            name: Some(vm.name_any()),
+            namespace: vm.namespace(),
+            owner_references: Some(vec![owner_reference_for(vm)]),
+            labels: Some(propagate_labels(vm)),
+            ..Default::default()
+        },
+        spec,
+        status: None,
+    })
+}
+
+/// Which provisioning shape an image's install mode calls for on Cloud
+/// Hypervisor, the counterpart of [`boot_source_kind`] (ADR-0040, ADR-0065).
+fn ch_boot_source_kind(image: &VMImage) -> ChBootSourceKind {
+    let mode = image
+        .spec
+        .template
+        .as_ref()
+        .map_or(InstallMode::default(), |t| t.install_mode);
+    match mode {
+        InstallMode::Immediate => ChBootSourceKind::Image,
+        InstallMode::Deferred | InstallMode::Manual => ChBootSourceKind::InstallMedia,
     }
 }
 

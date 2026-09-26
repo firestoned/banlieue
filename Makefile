@@ -344,6 +344,15 @@ libvirt-live-test: ## Run the libvirt protocol harness against a REAL libvirtd (
 	cargo test -p banlieue-libvirt --test live_libvirtd -- \
 	  --ignored --nocapture --test-threads=1 $$upload_skip $$vol_skip
 
+ch-live-test: ## Run the Cloud Hypervisor client against a REAL VMM, no guest boot (ADR-0061; needs CH_BINARY / CH_FIRMWARE)
+	@test -n "$$CH_BINARY" -a -n "$$CH_FIRMWARE" || { \
+	  echo "CH_BINARY and CH_FIRMWARE are required. Example:"; \
+	  echo "  CH_BINARY=/usr/local/bin/cloud-hypervisor \\"; \
+	  echo "  CH_FIRMWARE=/opt/banlieue/firmware/ch-97eeb7b09/CLOUDHV.fd \\"; \
+	  echo "    make ch-live-test"; \
+	  exit 1; }
+	@cargo test -p banlieue-cloud-hypervisor --test live_vmm -- --ignored --nocapture
+
 libvirt-ek-live-test: ## Read a REAL swtpm EK certificate out of a booted guest (ADR-0045; needs LIBVIRT_HOST / LIBVIRT_TLS_DIR / LIBVIRT_SOURCE_VOLUME + swtpm on the host)
 	@test -n "$$LIBVIRT_HOST" -a -n "$$LIBVIRT_SOURCE_VOLUME" || { \
 	  echo "LIBVIRT_HOST and LIBVIRT_SOURCE_VOLUME are required. Example:"; \

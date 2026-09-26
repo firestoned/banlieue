@@ -57,6 +57,17 @@ const LBA_ROOT: u32 = 23;
 const LBA_ROOT_JOLIET: u32 = 24;
 const LBA_FIRST_FILE: u32 = 25;
 
+/// Volume descriptor date fields: offset of each 17-byte field (16 ASCII
+/// digits, then a GMT offset byte).
+const PVD_CREATION_DATE: usize = 813;
+const PVD_MODIFICATION_DATE: usize = 830;
+const PVD_EXPIRATION_DATE: usize = 847;
+const PVD_EFFECTIVE_DATE: usize = 864;
+/// Digits in a volume descriptor date, before the GMT offset byte.
+const DATE_DIGITS: usize = 16;
+/// 1970-01-01 00:00:00.00 — fixed so identical inputs give identical bytes.
+const FIXED_VOLUME_DATE: &[u8; DATE_DIGITS] = b"1970010100000000";
+
 /// Why a seed image could not be built.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum IsoError {
@@ -326,12 +337,24 @@ fn volume_descriptor(kind: DescriptorKind, label: &str, total_sectors: u32) -> V
     for range in [318..446, 446..574, 574..702, 702..739] {
         padded(&mut s[range], b"", b' ');
     }
-    // Dates: "no date specified" is 16 zeros followed by a zero offset,
-    // which the standard spells as all-'0' ASCII.
-    for start in [813, 830, 847, 864] {
-        padded(&mut s[start..start + 16], b"", b'0');
-        s[start + 16] = 0;
+    // Dates: 16 ASCII digits then a GMT offset byte. Creation, modification
+    // and effective get a fixed real date — the same epoch the directory
+    // records use, so the bytes stay deterministic. All-'0' ("not
+    // specified") is legal for these too, but go-diskfs before v1.9 parses
+    // the creation date literally and rejects the volume, and Kairos uses
+    // it to find a `CIDATA` seed by label when there is no CD-ROM (Cloud
+    // Hypervisor). Only expiration stays unspecified, as `genisoimage`
+    // leaves it.
+    for start in [PVD_CREATION_DATE, PVD_MODIFICATION_DATE, PVD_EFFECTIVE_DATE] {
+        s[start..start + DATE_DIGITS].copy_from_slice(FIXED_VOLUME_DATE);
+        s[start + DATE_DIGITS] = 0;
     }
+    padded(
+        &mut s[PVD_EXPIRATION_DATE..PVD_EXPIRATION_DATE + DATE_DIGITS],
+        b"",
+        b'0',
+    );
+    s[PVD_EXPIRATION_DATE + DATE_DIGITS] = 0;
     s[881] = 1; // file structure version
     s
 }

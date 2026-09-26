@@ -1196,4 +1196,220 @@ mod tests {
                 .kind
         );
     }
+
+    // ======================================================================
+    // build_cloud_hypervisor_machine (ADR-0062)
+    // ======================================================================
+
+    fn ch_provider() -> Provider {
+        let mut p = parent_provider();
+        p.metadata.name = Some("ch-a".into());
+        p.spec.provider_class_ref = LocalObjectReference {
+            name: "cloud-hypervisor".into(),
+        };
+        p.spec.capabilities = ProviderCapabilities::default();
+        p
+    }
+
+    /// The scheduler resolves the VMClass's storage and network classes to
+    /// backend ids through `Provider.spec.capabilities`. On this backend
+    /// those ids are the host's own class names, never paths or bridges.
+    fn ch_decision() -> Decision {
+        Decision {
+            provider_name: "ch-a".into(),
+            provider_namespace: "banlieue-system".into(),
+            provider_class: "cloud-hypervisor".into(),
+            failure_domain_name: "ch-a".into(),
+            resolved_storage: vec![ResolvedResource {
+                class_name: "gold".into(),
+                backend_id: "fast".into(),
+            }],
+            resolved_networks: vec![ResolvedResource {
+                class_name: "prod".into(),
+                backend_id: "lan".into(),
+            }],
+            failure_domain_raw: BTreeMap::new(),
+            failure_domain_labels: BTreeMap::new(),
+        }
+    }
+
+    fn ch_image(install_mode: banlieue_api::banlieue::InstallMode) -> VMImage {
+        let mut img = parent_image();
+        img.spec.template = Some(banlieue_api::banlieue::VMImageTemplate {
+            install_mode,
+            ..Default::default()
+        });
+        if let Some(status) = img.status.as_mut() {
+            status.per_provider = vec![ImagePerProviderStatus {
+                provider_name: "ch-a".into(),
+                provider_namespace: "banlieue-system".into(),
+                ready: true,
+                resolved_ref: Some("kairos-ubuntu-2404".into()),
+                reason: None,
+                message: None,
+                zones: vec![],
+            }];
+        }
+        img
+    }
+
+    fn build_ch(
+        vm: &VirtualMachine,
+        class: &VMClass,
+        image: &VMImage,
+    ) -> Result<banlieue_api::infrastructure::CloudHypervisorMachine, InfraBuildError> {
+        build_cloud_hypervisor_machine(vm, class, image, &ch_decision(), &ch_provider(), None)
+    }
+
+    #[test]
+    fn ch_happy_path_populates_every_required_field() {
+        use banlieue_api::banlieue::InstallMode;
+        let m = build_ch(
+            &parent_vm(),
+            &parent_class(),
+            &ch_image(InstallMode::Immediate),
+        )
+        .expect("ok");
+        assert_eq!(m.metadata.name.as_deref(), Some("db-01"));
+        assert_eq!(m.metadata.namespace.as_deref(), Some("banlieue-system"));
+        assert_eq!(m.spec.provider_ref.name, "ch-a");
+        assert_eq!(m.spec.failure_domain.as_deref(), Some("ch-a"));
+        assert_eq!(m.spec.boot_source.image, "kairos-ubuntu-2404");
+        assert!(m.spec.provider_id.is_none(), "the provider sets providerID");
+        assert_eq!(m.spec.cpus.boot, parent_class().spec.hardware.cpus);
+        assert_eq!(m.spec.cpus.max, None);
+        assert_eq!(
+            m.spec.memory.size_mi_b,
+            parent_class().spec.hardware.memory_mi_b
+        );
+        assert_eq!(m.spec.os_disk_size_gi_b, 100);
+    }
+
+    /// Classes resolve to the host's class *names*. A path or a bridge name
+    /// never crosses into the cluster (ADR-0062 Decision 4).
+    #[test]
+    fn ch_storage_and_network_are_host_class_names() {
+        use banlieue_api::banlieue::InstallMode;
+        let m = build_ch(
+            &parent_vm(),
+            &parent_class(),
+            &ch_image(InstallMode::Immediate),
+        )
+        .expect("ok");
+        assert_eq!(m.spec.storage_class, "fast");
+        assert_eq!(m.spec.nics.len(), 1);
+        assert_eq!(m.spec.nics[0].name, "eth0");
+        assert_eq!(m.spec.nics[0].network_class, "lan");
+        assert!(
+            m.spec.nics[0].mac_address.is_none(),
+            "the provider derives it"
+        );
+    }
+
+    #[test]
+    fn ch_install_mode_picks_the_boot_source_kind() {
+        use banlieue_api::banlieue::InstallMode;
+        use banlieue_api::infrastructure::ChBootSourceKind;
+        for (mode, want) in [
+            (InstallMode::Immediate, ChBootSourceKind::Image),
+            (InstallMode::Deferred, ChBootSourceKind::InstallMedia),
+            (InstallMode::Manual, ChBootSourceKind::InstallMedia),
+        ] {
+            let m = build_ch(&parent_vm(), &parent_class(), &ch_image(mode)).expect("ok");
+            assert_eq!(m.spec.boot_source.kind, want, "{mode:?}");
+        }
+    }
+
+    #[test]
+    fn ch_honours_hardware_and_os_disk_overrides() {
+        use banlieue_api::banlieue::InstallMode;
+        let mut vm = parent_vm();
+        vm.spec.hardware_override = Some(HardwareOverride {
+            cpus: Some(2),
+            memory_mi_b: Some(2048),
+            disk_overrides: vec![DiskOverride {
+                name: "os".into(),
+                size_gi_b: 150,
+            }],
+        });
+        let m = build_ch(&vm, &parent_class(), &ch_image(InstallMode::Immediate)).expect("ok");
+        assert_eq!(m.spec.cpus.boot, 2);
+        assert_eq!(m.spec.memory.size_mi_b, 2048);
+        assert_eq!(m.spec.os_disk_size_gi_b, 150);
+    }
+
+    /// Data disks are not in the first slice of this backend. A class that
+    /// asks for one must be told so, not have its disk silently dropped.
+    #[test]
+    fn ch_rejects_a_class_with_data_disks() {
+        use banlieue_api::banlieue::InstallMode;
+        let mut class = parent_class();
+        let mut extra = class.spec.hardware.disks[0].clone();
+        extra.name = "data".into();
+        class.spec.hardware.disks.push(extra);
+        let err = build_ch(&parent_vm(), &class, &ch_image(InstallMode::Immediate))
+            .expect_err("data disks are not supported yet");
+        assert!(
+            matches!(err, InfraBuildError::Unsupported { .. }),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn ch_missing_resolved_image_ref_is_an_error() {
+        use banlieue_api::banlieue::InstallMode;
+        let mut img = ch_image(InstallMode::Immediate);
+        if let Some(s) = img.status.as_mut() {
+            s.per_provider.clear();
+        }
+        assert!(matches!(
+            build_ch(&parent_vm(), &parent_class(), &img),
+            Err(InfraBuildError::MissingResolvedImageRef { .. })
+        ));
+    }
+
+    #[test]
+    fn ch_carries_tpm_user_data_and_owner_reference() {
+        use banlieue_api::banlieue::InstallMode;
+        let mut class = parent_class();
+        class.spec.tpm_enabled = true;
+        let m = build_cloud_hypervisor_machine(
+            &parent_vm(),
+            &class,
+            &ch_image(InstallMode::Deferred),
+            &ch_decision(),
+            &ch_provider(),
+            Some("#cloud-config\nhostname: db-01\n"),
+        )
+        .expect("ok");
+        assert!(m.spec.tpm_enabled);
+        assert_eq!(
+            m.spec.user_data.as_deref(),
+            Some("#cloud-config\nhostname: db-01\n")
+        );
+        let owners = m.metadata.owner_references.expect("owner refs");
+        assert_eq!(owners[0].kind, "VirtualMachine");
+        assert_eq!(owners[0].controller, Some(true));
+    }
+
+    #[test]
+    fn infra_kind_maps_the_cloud_hypervisor_class() {
+        assert_eq!(
+            InfraKind::from_provider_class("cloud-hypervisor"),
+            Some(InfraKind::CloudHypervisor)
+        );
+        assert_eq!(PROVIDER_CLASS_CLOUD_HYPERVISOR, "cloud-hypervisor");
+    }
+
+    #[test]
+    fn cloud_hypervisor_kind_name_matches_the_crd() {
+        use kube::CustomResourceExt;
+        assert_eq!(
+            InfraKind::CloudHypervisor.kind_name(),
+            banlieue_api::infrastructure::CloudHypervisorMachine::crd()
+                .spec
+                .names
+                .kind
+        );
+    }
 }

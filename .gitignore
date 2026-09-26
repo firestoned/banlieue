@@ -36,6 +36,11 @@ docs/__pycache__/
 !.wolf/buglog.json
 !.wolf/anatomy.md
 
+# Claude Code project settings. OpenWolf writes its hook commands with
+# absolute paths into the maintainer's home directory, so this file is
+# machine-local and must never be committed (rules/no-real-infrastructure.md).
+.claude/settings.json
+
 # RustRover
 #  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
 #  be found at https://github.com/github/gitignore/blob/main/Global/JetBrains.gitignore
@@ -46,3 +51,9 @@ docs/__pycache__/
 # Per-cluster kubeconfig written by `make kind-e2e` (ADR-0014). Scoped to the
 # kind cluster so the suite never depends on — or mutates — your current context.
 .kind-kubeconfig-*
+
+# Local npm install of tooling (e.g. `npm install openwolf`) at the repo root.
+# Root-anchored so a real package.json elsewhere in the tree stays trackable.
+node_modules/
+/package.json
+/package-lock.json

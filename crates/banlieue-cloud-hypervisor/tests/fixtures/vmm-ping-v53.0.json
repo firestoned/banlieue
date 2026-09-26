@@ -1,0 +1,10 @@
+{
+  "build_version": "v53.0",
+  "version": "53.0.0",
+  "pid": 4242,
+  "features": [
+    "io_uring",
+    "kvm",
+    "mshv"
+  ]
+}

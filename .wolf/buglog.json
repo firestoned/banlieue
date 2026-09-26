@@ -2983,6 +2983,26 @@
       "related_bugs": [],
       "occurrences": 1,
       "last_seen": "2026-09-24T16:24:47.058Z"
+    },
+    {
+      "id": "bug-167",
+      "timestamp": "2026-09-25T11:05:00.000Z",
+      "error_message": "Kairos datasource: 'CIDATA devices to be checked: []' / 'no metadata/userdata found' with a CIDATA seed on virtio-blk; go-diskfs v1.7.0: 'unable to convert creation date/time from bytes: parsing time \"0000-00-00T00:00:00.00+00:00\": month out of range'",
+      "file": "crates/banlieue-provider-libvirt/src/cloudinit/iso9660.rs",
+      "root_cause": "Seed ISO wrote all four volume descriptor dates as all-'0' ('not specified'). Legal ECMA-119, but go-diskfs < v1.9 (bundled by kairos-agent v2.26.0 via yip) parses the creation date literally and rejects the volume, so yip's FindCIs never sees the CIDATA label. Hidden under libvirt because the seed is a CD-ROM there and /dev/sr* is mounted without a label read; surfaced on Cloud Hypervisor, which has no CD-ROM device.",
+      "fix": "Write a fixed 1970-01-01 00:00:00.00 (offset 0) into creation/modification/effective dates, leave expiration unspecified (what genisoimage does). Still deterministic. Test: descriptor_dates_are_fixed_and_parseable_except_expiration.",
+      "tags": [
+        "iso9660",
+        "cloud-init",
+        "nocloud",
+        "kairos",
+        "go-diskfs",
+        "cloud-hypervisor",
+        "interop"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-09-25T11:05:00.000Z"
     }
   ]
 }

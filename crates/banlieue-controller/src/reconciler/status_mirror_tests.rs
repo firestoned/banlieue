@@ -530,4 +530,96 @@ mod tests {
         let next = mirror_status_from_infra(&VirtualMachineStatus::default(), &infra, 1);
         assert!(next.tpm_endorsement_certificates.is_empty());
     }
+
+    // ======================================================================
+    // The concrete CloudHypervisorMachine impl (ADR-0062)
+    // ======================================================================
+
+    fn cloud_hypervisor_machine() -> banlieue_api::infrastructure::CloudHypervisorMachine {
+        use banlieue_api::infrastructure::{
+            ChAddressSource, ChBootSource, ChBootSourceKind, ChCpuSpec, ChMemorySpec,
+            CloudHypervisorMachine, CloudHypervisorMachineSpec, CloudHypervisorMachineStatus,
+        };
+        CloudHypervisorMachine {
+            metadata: Default::default(),
+            spec: CloudHypervisorMachineSpec {
+                provider_id: Some("cloudhypervisor://ch-a/0f3c9a1e".to_string()),
+                failure_domain: None,
+                provider_ref: banlieue_api::common::LocalObjectReference {
+                    name: "ch-a".to_string(),
+                },
+                cpus: ChCpuSpec { boot: 2, max: None },
+                memory: ChMemorySpec {
+                    size_mi_b: 2048,
+                    hugepages: false,
+                },
+                storage_class: "default".to_string(),
+                boot_source: ChBootSource {
+                    kind: ChBootSourceKind::Image,
+                    image: "kairos".to_string(),
+                },
+                os_disk_size_gi_b: 20,
+                nics: vec![],
+                tpm_enabled: false,
+                user_data: None,
+                desired_power_state: PowerState::PoweredOn,
+            },
+            status: Some(CloudHypervisorMachineStatus {
+                initialization: InitializationStatus {
+                    provisioned: Some(true),
+                },
+                failure_domain: Some("ch-a".to_string()),
+                addresses: vec![MachineAddress {
+                    address_type: MachineAddressType::InternalIP,
+                    address: "192.0.2.25".to_string(),
+                }],
+                address_source: Some(ChAddressSource::Neighbour),
+                observed_power_state: Some(PowerState::PoweredOn),
+                conditions: vec![Condition {
+                    type_: condition_types::READY.to_string(),
+                    status: "True".to_string(),
+                    reason: "GuestRunning".to_string(),
+                    message: String::new(),
+                    last_transition_time: Time(k8s_openapi::jiff::Timestamp::now()),
+                    observed_generation: None,
+                }],
+                ..Default::default()
+            }),
+        }
+    }
+
+    #[test]
+    fn cloud_hypervisor_impl_reads_provider_id_from_spec_and_the_rest_from_status() {
+        let m = cloud_hypervisor_machine();
+        assert_eq!(m.provider_id(), Some("cloudhypervisor://ch-a/0f3c9a1e"));
+        assert_eq!(m.failure_domain(), Some("ch-a"));
+        assert_eq!(m.initialization().provisioned, Some(true));
+        assert_eq!(m.addresses()[0].address, "192.0.2.25");
+        assert_eq!(m.observed_power_state(), Some(&PowerState::PoweredOn));
+        assert_eq!(m.conditions().len(), 1);
+        assert!(m.tpm_endorsement_certificates().is_empty());
+    }
+
+    #[test]
+    fn cloud_hypervisor_impl_tolerates_an_absent_status() {
+        let mut m = cloud_hypervisor_machine();
+        m.status = None;
+        assert_eq!(m.initialization().provisioned, None);
+        assert!(m.addresses().is_empty());
+        assert!(m.failure_domain().is_none());
+        assert!(m.conditions().is_empty());
+        assert!(m.observed_power_state().is_none());
+        assert_eq!(m.provider_id(), Some("cloudhypervisor://ch-a/0f3c9a1e"));
+    }
+
+    #[test]
+    fn cloud_hypervisor_machine_drives_infrastructure_ready_on_the_parent() {
+        let m = cloud_hypervisor_machine();
+        let status = mirror_status_from_infra(&VirtualMachineStatus::default(), &m, 1);
+        let cond = find_condition(&status.conditions, condition_types::INFRASTRUCTURE_READY)
+            .expect("InfrastructureReady must be published");
+        assert_eq!(cond.status, condition_status::TRUE);
+        assert_eq!(status.initialization.provisioned, Some(true));
+        assert_eq!(status.addresses.len(), 1);
+    }
 }

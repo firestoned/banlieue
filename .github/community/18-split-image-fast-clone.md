@@ -16,8 +16,8 @@
 > vTPM. Memory forking stays rejected (ADR-0052 stands).
 
 Baseline when written: `677be59` (2026-09-24). ADRs 0001–0055 exist;
-0056–0058 are reserved by roadmap 15 and 0059–0065 by roadmap 09. **This
-roadmap reserves ADR-0066 to ADR-0071.**
+0057–0059 are reserved by roadmap 15 and 0060–0066 by roadmap 09. **This
+roadmap reserves ADR-0067 to ADR-0072.**
 
 ## Why
 
@@ -94,14 +94,14 @@ about the base image that today only "banlieue built it" provides.
 
 | ADR | Decision it will record | Phase |
 |---|---|---|
-| 0066 | Split-image mode: the `VMImage` contract (base artifact + verity root hash + per-VM volume spec) and how it amends ADR-0040's install modes and ADR-0048's `tpmEnabled ⇒ Deferred` gate — split becomes the second sealed mode | 0 |
-| 0067 | First-boot sealing mechanism: what runs in the guest to create, seal and mount the per-VM volume (candidates: `systemd-repart` `Encrypt=tpm2` + `systemd-cryptenroll`; Kairos `kcrypt` if it grows first-boot support; custom initramfs hook) and how failure holds back `GuestReady` | A |
-| 0068 | Base integrity: dm-verity layout, root-hash pinning, and the interim non-UKI trust statement (what an unsigned cmdline does and does not prove) — successor to the ADR-0051 stall | A |
-| 0069 | vSphere linked-clone provisioning path (`createNewChildDiskBacking` off a frozen template snapshot) and its interaction with the imported pre-laid base (roadmap 15) | D |
-| 0070 | Proxmox split-image provisioning (linked clone `full=0`, fresh `tpmstate0`) — written with roadmap 06 when that provider starts | E |
-| 0071 | Cloud Hypervisor split-image provisioning (reflink base, raw per-VM volume) — written with roadmap 09 phase 0's outcome | F |
+| 0067 | Split-image mode: the `VMImage` contract (base artifact + verity root hash + per-VM volume spec) and how it amends ADR-0040's install modes and ADR-0048's `tpmEnabled ⇒ Deferred` gate — split becomes the second sealed mode | 0 |
+| 0068 | First-boot sealing mechanism: what runs in the guest to create, seal and mount the per-VM volume (candidates: `systemd-repart` `Encrypt=tpm2` + `systemd-cryptenroll`; Kairos `kcrypt` if it grows first-boot support; custom initramfs hook) and how failure holds back `GuestReady` | A |
+| 0069 | Base integrity: dm-verity layout, root-hash pinning, and the interim non-UKI trust statement (what an unsigned cmdline does and does not prove) — successor to the ADR-0051 stall | A |
+| 0070 | vSphere linked-clone provisioning path (`createNewChildDiskBacking` off a frozen template snapshot) and its interaction with the imported pre-laid base (roadmap 15) | D |
+| 0071 | Proxmox split-image provisioning (linked clone `full=0`, fresh `tpmstate0`) — written with roadmap 06 when that provider starts | E |
+| 0072 | Cloud Hypervisor split-image provisioning (reflink base, raw per-VM volume) — written with roadmap 09 phase 0's outcome | F |
 
-## 0. Decision gate (ADR-0066)
+## 0. Decision gate (ADR-0067)
 
 The whole roadmap hangs on one contract decision, so it goes first and alone:
 
@@ -122,12 +122,12 @@ The whole roadmap hangs on one contract decision, so it goes first and alone:
 - [ ] **What happens to `Deferred`.** Nothing — it remains the mode for
       persistent, fully-encrypted-disk VMs. Split is for cattle: pools,
       sandboxes, anything where the base being fleet-shared is acceptable.
-      The two modes coexist; ADR-0066 says which classes may use which.
+      The two modes coexist; ADR-0067 says which classes may use which.
 
-**Exit:** ADR-0066 Accepted; ADR-0048's check updated in the same change
+**Exit:** ADR-0067 Accepted; ADR-0048's check updated in the same change
 (`image_class_mismatch` learns the new mode); threat-model pass for the ADR.
 
-## A. Image build + first boot (ADR-0067, ADR-0068)
+## A. Image build + first boot (ADR-0068, ADR-0069)
 
 - [ ] Extend the image pipeline (`banlieue-imagebuilder` / `vm-build`) to
       produce the split artifact: base disk with verity hash tree, root hash
@@ -149,7 +149,7 @@ backend, it seals an empty volume in single-digit seconds and announces.
 
 ## B. Core: API, controller, pool (no new controller)
 
-- [ ] `banlieue-api`: the ADR-0066 fields on `VMImage` (and whatever the
+- [ ] `banlieue-api`: the ADR-0067 fields on `VMImage` (and whatever the
       per-VM volume contract needs on `VMClass`); `regen-crds`.
 - [ ] `banlieue-controller`: amend `image_class_mismatch` (ADR-0048) —
       `tpmEnabled` + split is valid; `tpmEnabled` + `Immediate` stays
@@ -174,7 +174,7 @@ it was banned because the installed disk was sealed, and a split base is not.
       (backing file), plus one empty per-VM volume, plus the existing fresh
       swtpm (domain UUID keying, ADR-0050 teardown flags — both unchanged).
 - [ ] Verity root hash into the domain's kernel cmdline / boot config per
-      ADR-0068.
+      ADR-0069.
 - [ ] `VMImage` reconciler: upload/refcount the base volume per pool the way
       ISO artifacts are handled today; never delete a base that overlays
       still reference.
@@ -186,7 +186,7 @@ it was banned because the installed disk was sealed, and a split base is not.
 **Exit:** stop-condition numbers on a real libvirt host, negative test
 included.
 
-## D. vSphere (ADR-0069)
+## D. vSphere (ADR-0070)
 
 - [ ] Linked clone: template imported as a pre-laid disk (this is roadmap
       15's import path — the two roadmaps meet here; the base is *supposed*
@@ -205,7 +205,7 @@ included.
 **Exit:** stop-condition numbers against a real vCenter; roadmap 17's pool
 re-measured with a split class.
 
-## E. Proxmox (ADR-0070 — blocked on roadmap 06)
+## E. Proxmox (ADR-0071 — blocked on roadmap 06)
 
 No crate exists. When roadmap 06 starts, it should start *here*: linked
 clone (`full=0`) of a split-base template, fresh `tpmstate0` at create,
@@ -213,14 +213,14 @@ never copy `tpmstate0` (roadmap 17 §E's rule, unchanged), empty per-VM
 volume attached at clone. Recorded now so roadmap 06 doesn't build the
 install-per-clone path first and this one second.
 
-## F. Cloud Hypervisor (ADR-0071 — blocked on roadmap 09 phase 0)
+## F. Cloud Hypervisor (ADR-0072 — blocked on roadmap 09 phase 0)
 
 Roadmap 09 already plans reflink (`FICLONE`) base copies and refcounted
 images; the split model slots straight in: reflink the base, raw per-VM
 volume, swtpm per VM, and keep roadmap 09's "no fork-from-golden" line —
 snapshot-restore fan-out is memory forking and stays out (ADR-0052).
 
-## G. Docs + threat model (the pass ADR-0066 through 0071 each owe)
+## G. Docs + threat model (the pass ADR-0067 through 0072 each owe)
 
 - [ ] Guides: what a split class does and does not encrypt, in plain terms —
       "your data volume is sealed to your VM; the OS is shared, verified,
@@ -228,7 +228,7 @@ snapshot-restore fan-out is memory forking and stays out (ADR-0052).
 - [ ] Threat model full pass per `rules/threat-modeling.md`: asset A-6 gains
       the per-VM-volume distinction; a new asset row for the verity root
       hash (integrity, not confidentiality); §8 accepted risk for the
-      unsigned-cmdline interim (ADR-0068) with *Revisit when: UKI lands*;
+      unsigned-cmdline interim (ADR-0069) with *Revisit when: UKI lands*;
       TB rows wherever the base-volume refcounting adds a shared-storage
       write. Header stamp bumped.
 - [ ] `ROADMAPS.md` row + this doc's checkboxes, same commit as each landing
@@ -269,4 +269,4 @@ pass with a fleet-shared key.
 | 15 (vSphere disk import) | Prerequisite for phase D: the split base *is* an imported pre-laid disk. |
 | 09 (Cloud Hypervisor) | Phase F lands inside it; reserve the interaction in its phase 0 gate. |
 | 06 (Proxmox) | Phase E should be its starting shape for TPM classes. |
-| ADR-0051 (UKI) | ADR-0068's interim integrity story is honest about not having it; a resolved UKI stall upgrades verity from "pinned hash" to "signed, measured chain" with no re-architecture. |
+| ADR-0051 (UKI) | ADR-0069's interim integrity story is honest about not having it; a resolved UKI stall upgrades verity from "pinned hash" to "signed, measured chain" with no re-architecture. |

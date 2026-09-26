@@ -19,7 +19,7 @@
 //! # Object sources
 //!
 //! - **CRDs** are generated at runtime from the Rust types via the same
-//!   `crdgen_support::prepared()` path `crdgen` uses.
+//!   `crdgen_support::all_crds()` list `crdgen` uses.
 //! - **ClusterRoles** are `include_str!`-embedded from `deploy/*/rbac/`, so the
 //!   shipped manifests stay the single source of truth and a GitOps install
 //!   grants exactly the same permissions as a bootstrap install. Moving one of
@@ -29,14 +29,8 @@
 //!   namespace, image tag, and registry.
 
 use anyhow::{Context as _, Result};
-use banlieue_api::banlieue::{
-    ImagePullPolicy, Provider, ProviderClass, ProviderClassSpec, ProviderImage, VMClass, VMImage,
-    VirtualMachine, VirtualMachineClaim, VirtualMachinePool,
-};
-use banlieue_api::crdgen_support::prepared;
-use banlieue_api::infrastructure::{
-    LibvirtMachine, LibvirtMachineTemplate, VSphereCluster, VSphereMachine, VSphereMachineTemplate,
-};
+use banlieue_api::banlieue::{ImagePullPolicy, ProviderClass, ProviderClassSpec, ProviderImage};
+use banlieue_api::crdgen_support::all_crds;
 use banlieue_provider_sdk::client::build_client;
 use banlieue_provider_sdk::ssa::server_side_apply;
 use clap::{Args, Subcommand};
@@ -53,7 +47,7 @@ use k8s_openapi::apiextensions_apiserver::pkg::apis::apiextensions::v1::CustomRe
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{LabelSelector, ObjectMeta};
 use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
-use kube::{Api, CustomResourceExt};
+use kube::Api;
 use std::collections::BTreeMap;
 use tracing::info;
 
@@ -456,22 +450,15 @@ pub fn resolve_image(opts: &InstallOptions) -> String {
 }
 
 /// Every CRD this binary implements, post-processed exactly as `crdgen` does.
+///
+/// Delegates to [`all_crds`], the one list `crdgen` and the API reference
+/// also read. This used to be a second hand-written list, and adding a CRD
+/// to one and not the other went unnoticed until
+/// `bootstrap_installs_every_crd_that_is_generated_into_deploy` failed in CI
+/// (`CloudHypervisorMachine`, ADR-0062, after `LibvirtMachine` before it).
 #[must_use]
 pub fn build_crds() -> Vec<CustomResourceDefinition> {
-    vec![
-        prepared(Provider::crd()),
-        prepared(ProviderClass::crd()),
-        prepared(VMClass::crd()),
-        prepared(VMImage::crd()),
-        prepared(VirtualMachine::crd()),
-        prepared(VirtualMachinePool::crd()),
-        prepared(VirtualMachineClaim::crd()),
-        prepared(VSphereCluster::crd()),
-        prepared(VSphereMachine::crd()),
-        prepared(VSphereMachineTemplate::crd()),
-        prepared(LibvirtMachine::crd()),
-        prepared(LibvirtMachineTemplate::crd()),
-    ]
+    all_crds()
 }
 
 /// Build the full platform install.

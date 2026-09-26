@@ -14,9 +14,12 @@
 > `Provider.status` reports the host's real CPU, memory, storage targets and
 > bridges.
 >
-> **Status: not started.** Phase 0 is a decision gate, not a formality. Read
-> [The defining problem](#the-defining-problem-there-is-no-daemon) before
-> anything else.
+> **Status: gate decided, native spike nearly done** (2026-09-25; only the
+> QEMU timing comparison is open). Cloud
+> Hypervisor is a **first-class, host-resident provider** (shape A below),
+> not libvirt's `ch` driver: [ADR-0060](../../docs/adr/0060-cloud-hypervisor-first-class-provider-topology.md).
+> Read [The defining problem](#the-defining-problem-there-is-no-daemon)
+> before anything else.
 
 ## Why a third KVM path when libvirt already works
 
@@ -54,13 +57,16 @@ disk files.
 | | Shape | For | Against |
 |---|---|---|---|
 | **A** | **Host-resident provider.** `banlieue provider cloud-hypervisor` runs on the KVM host as a systemd service with a scoped kubeconfig. One `Provider` is one host. | No new wire protocol and no listener on the hypervisor. The host pulls, nothing pushes. Non-negotiable 1 holds literally. Per-instance (ADR-0003) by construction. | Amends ADR-0003 and ADR-0012: the operator must support a `ProviderClass` it does not deploy. A cluster credential lives on a hypervisor. Upgrades become host package management. Artifacts must leave the cluster (phase 4). |
-| **B** | **libvirt's `ch` driver**, reached with the `banlieue-libvirt` client that already exists (`ch+tls://host/system`). | Days, not weeks. `LibvirtMachine`, the XML builder, the import Job and the NoCloud seed are all reused. No topology change at all. | The driver exposes a subset of Cloud Hypervisor. vTPM, hotplug and snapshot coverage are unverified, as is packaging on RHEL-family hosts. It puts libvirtd back in the trusted computing base, which is half of what reason 1 above was for. |
+| ~~B~~ | **libvirt's `ch` driver** (rejected, ADR-0060), reached with the `banlieue-libvirt` client that already exists (`ch+tls://host/system`). | Days, not weeks. `LibvirtMachine`, the XML builder, the import Job and the NoCloud seed are all reused. No topology change at all. | The driver exposes a subset of Cloud Hypervisor. vTPM, hotplug and snapshot coverage are unverified, as is packaging on RHEL-family hosts. It puts libvirtd back in the trusted computing base, which is half of what reason 1 above was for. |
 | C | A first-party host daemon with an mTLS API. | Leaves ADR-0003 alone. | Invents a wire protocol and a privileged network listener. This is writing libvirtd again. Rejected. |
 | D | SSH exec from an in-cluster provider. | None worth the cost. | ADR-0011 already rejected this shape: a CLI's stdout becomes a wire format. Rejected. |
 
-**Recommendation.** Test B first because it is nearly free and the answer is
-informative either way. Plan for A. The phases below are written for A, and
-[If the gate picks B](#if-the-gate-picks-b) says what collapses.
+**Decision (2026-09-25): A.** Cloud Hypervisor gets first-class support as
+its own provider. B is rejected: it is not packaged on Debian 13, it keeps
+libvirtd in the sandbox TCB that reason 1 exists to shrink, and it exposes
+only a subset of the VMM. Recorded in
+[ADR-0060](../../docs/adr/0060-cloud-hypervisor-first-class-provider-topology.md).
+The phases below are written for A.
 
 ## Fixed constraints (not up for re-litigation here)
 
@@ -83,50 +89,75 @@ One bare-metal KVM host, a shell, no code in the tree.
 
 **Native checks (inform A):**
 
-- [ ] Boot a Kairos `cloudImage` raw disk under `CLOUDHV.fd` (edk2) with a tap
-      on a bridge and a serial console to a file.
-- [ ] Deliver user-data with a seed ISO built by the existing
+- [x] Boot a Kairos `cloudImage` raw disk under `CLOUDHV.fd` (edk2) with a tap
+      on a bridge and a serial console to a file. *2026-09-25, Cloud
+      Hypervisor v53.0, edk2 `ch-97eeb7b09`, Debian 13 host.* The firmware runs
+      the image's own GRUB; DHCP on the bridge; the host neighbour table maps
+      the guest MAC to its address, so phase 5's netlink approach holds. Needs
+      the disk grown first, see Gotchas.
+- [x] Deliver user-data with a seed ISO built by the existing
       `banlieue-provider-libvirt::cloudinit` module, attached as a read-only
-      virtio-blk device. Confirm the guest mounts `CIDATA`.
-- [ ] Attach swtpm through `--tpm socket=...`. Confirm `/dev/tpmrm0` in the
-      guest.
-- [ ] **Deferred install.** Empty disk first, Kairos install ISO second, both
+      virtio-blk device. Confirm the guest mounts `CIDATA`. *2026-09-25: works
+      after a writer fix.* The seed's all-'0' volume dates are legal
+      ECMA-119, but kairos-agent v2.26.0 finds a `CIDATA` disk through
+      go-diskfs v1.7.0, which rejects them; on libvirt the seed is a CD-ROM
+      and never took that path. With real dates the guest applies hostname,
+      SSH key and `boot` stages. See the 2026-09-25 CHANGELOG entry.
+- [x] Attach swtpm through `--tpm socket=...`. Confirm `/dev/tpmrm0` in the
+      guest. *2026-09-25, swtpm 0.7.1:* `/dev/tpm0` and `/dev/tpmrm0` present;
+      EK certificates `CN=<name>:<uid>` (RSA-2048 and ECC P-384) from
+      `swtpm_localca`. swtpm paths must be absolute (see Gotchas).
+- [x] **Deferred install.** Empty disk first, Kairos install ISO second, both
       virtio-blk. Confirm the firmware falls through the unbootable empty disk
       to the ISO, the install seals to the TPM, and the reboot lands on the
-      installed disk and not back in the installer.
-- [ ] Confirm what the firmware does about UEFI variables. If, as expected,
+      installed disk and not back in the installer. *2026-09-25, Kairos Hadron
+      v0.4.0 core ISO:* all three hold. `COS_PERSISTENT` is LUKS2 with its
+      passphrase in the vTPM's NV storage; `vm.remove-device` drops the
+      installer from a running guest and it stays gone across a guest reboot;
+      a full VMM and swtpm restart unlocks again. Details in ADR-0065.
+- [x] Confirm what the firmware does about UEFI variables. If, as expected,
       there is no persistent variable store, Secure Boot key enrolment is not
       possible and Trusted Boot/UKI images are out of scope on this class.
       That matches where ADR-0051 already left sandboxes (classic GRUB).
+      *2026-09-25: as expected.* A new NV variable is accepted at runtime and
+      gone after a guest reset; edk2's `NvVars` fallback does not keep it.
 - [ ] Record boot-to-login time and resident memory next to the same image
-      under libvirt/QEMU on the same host.
+      under libvirt/QEMU on the same host. *Cloud Hypervisor half done
+      (2026-09-25, 2 vCPU / 4 GiB):* first boot of a fresh `cloudImage`
+      including layout expand, auto-reset install and in-place reboot, 146 s
+      to login; recovery-only boot, about 30 s (10 s is the GRUB countdown).
+      VMM RSS 1.33 GiB after boot, high-water 4.0 GiB. QEMU half open.
 
-**`ch` driver checks (inform B):**
+**`ch` driver checks (inform B):** *superseded 2026-09-25, B rejected in
+ADR-0060. Kept for the record.*
 
-- [ ] Is the driver packaged for the target host OS at all?
-- [ ] Does `virtchd` accept the remote TLS transport the existing client uses?
-- [ ] Which of these does it support today: `<tpm>` with an emulator backend,
-      a cdrom-less ISO disk, CPU and memory hotplug, managed save?
+- [x] Is the driver packaged for the target host OS at all? **No on Debian
+      13** (2026-09-25): libvirt 11.3.0 there ships no `ch` connection driver
+      package, so B means building libvirt from source. RHEL-family packaging
+      not yet checked.
+- ~~Does `virtchd` accept the remote TLS transport the existing client uses?~~
+  Superseded.
+- ~~Which of these does it support today: `<tpm>` with an emulator backend,
+  a cdrom-less ISO disk, CPU and memory hotplug, managed save?~~ Superseded.
 
-**Gate.** Pick B only if every box in its list is ticked **and** the TCB
-argument is judged not to matter for the first consumer. Otherwise A. Write
-the outcome into ADR-0059.
+**Gate.** Decided: A, in ADR-0060. The native checks above still run, since
+they inform ADR-0063 (supervision) and ADR-0065 (vTPM and `Deferred`).
 
 ## 1. ADRs, then CALM
 
 Numbers are next-free as of 2026-09-20, after the three roadmap
-[15](15-vsphere-disk-image-import.md) reserves (`0056` to `0058`). `0043` to
+[15](15-vsphere-disk-image-import.md) reserves (`0057` to `0059`). `0043` to
 `0049` stay with roadmap 17, which also holds `0055`.
 
 | ADR | Decides |
 |---|---|
-| 0059 | **Provider topology for daemonless backends.** Outcome of the gate. For A: `ProviderClass.spec.deployment: Managed \| External`, where `External` makes `banlieue-operator` create the ServiceAccount, Role, RoleBinding and credential but no Deployment. Amends ADR-0003 and ADR-0012. Also: how an out-of-cluster process keeps its credential fresh. |
-| 0060 | **`banlieue-cloud-hypervisor`**, a first-party client for the VMM's REST API over a Unix socket. Hand-written types for the endpoints actually used, pinned to a named upstream release of `cloud-hypervisor.yaml`. |
-| 0061 | **`CloudHypervisorMachine`** and its `Template`: the InfraMachine contract on this backend. |
-| 0062 | **Host process supervision.** Transient systemd units created over D-Bus, not child processes and not `systemd-run`. |
-| 0063 | **Artifact delivery to a provider outside the cluster.** Revisits the alternative ADR-0010 deferred ("revisit if a future provider needs to consume the artifact from outside the build namespace/cluster"). This is that provider. |
-| 0064 | **vTPM through swtpm, and `Deferred` install on Cloud Hypervisor.** |
-| 0065 | **Snapshot-to-disk for warm pool members.** Optional. Only if phase 7 goes ahead. |
+| 0060 | **Provider topology for daemonless backends.** *Drafted as [Proposed](../../docs/adr/0060-cloud-hypervisor-first-class-provider-topology.md), 2026-09-25.* Outcome of the gate. For A: `ProviderClass.spec.deployment: Managed \| External`, where `External` makes `banlieue-operator` create the ServiceAccount, Role, RoleBinding and credential but no Deployment. Amends ADR-0003 and ADR-0012. Also: how an out-of-cluster process keeps its credential fresh. |
+| 0061 | *[Proposed](../../docs/adr/0061-banlieue-cloud-hypervisor-vmm-client.md), 2026-09-25.* **`banlieue-cloud-hypervisor`**, a first-party client for the VMM's REST API over a Unix socket. Hand-written types for the endpoints actually used, pinned to a named upstream release of `cloud-hypervisor.yaml`. |
+| 0062 | *[Proposed](../../docs/adr/0062-cloudhypervisormachine-inframachine-contract.md), 2026-09-25.* **`CloudHypervisorMachine`** and its `Template`: the InfraMachine contract on this backend. |
+| 0063 | *[Proposed](../../docs/adr/0063-cloud-hypervisor-host-supervision.md), 2026-09-25.* **Host process supervision.** Transient systemd units created over D-Bus, not child processes and not `systemd-run`. |
+| 0064 | *[Proposed](../../docs/adr/0064-artifact-delivery-to-host-resident-providers.md), 2026-09-25.* **Artifact delivery to a provider outside the cluster.** Revisits the alternative ADR-0010 deferred ("revisit if a future provider needs to consume the artifact from outside the build namespace/cluster"). This is that provider. |
+| 0065 | *[Proposed](../../docs/adr/0065-cloud-hypervisor-vtpm-and-deferred-install.md), 2026-09-25.* **vTPM through swtpm, and `Deferred` install on Cloud Hypervisor.** |
+| 0066 | **Snapshot-to-disk for warm pool members.** Optional. Only if phase 7 goes ahead. |
 
 CALM: a new node class (host-resident provider), its relationship to the API
 server (outbound only), to the registry or artifact endpoint, and to the local
@@ -180,7 +211,7 @@ pub struct CloudHypervisorMachineSpec {
 - `vmm.ping` returns the VMM version. Refuse to manage a VMM older than the
   pin, with a clear condition on the `Provider`.
 
-### Supervision (ADR-0062)
+### Supervision (ADR-0063)
 
 - One transient unit per guest, `banlieue-ch-<machine-uid>.service`, created
   with `StartTransientUnit` over D-Bus (`zbus`, pure Rust). A sibling
@@ -210,7 +241,7 @@ already on the host, and `kubectl delete` removes unit, tap and state.
 
 ## 4. Images and disks
 
-**Getting the artifact to the host (ADR-0063).** The `cloudImage` raw file
+**Getting the artifact to the host (ADR-0064).** The `cloudImage` raw file
 sits in a PVC the host cannot mount. Two candidates:
 
 1. **OCI registry.** A post-build step (kairos-operator's `spec.exporters`
@@ -281,7 +312,7 @@ The defensible use is narrower: a member that installed **itself**, with its
 **own** vTPM, snapshots **itself** to disk once `GuestReady`, and is restored
 on claim. That converts a warm member's RAM cost into disk. It needs VMM
 state and swtpm state captured as one consistent pair. It is an optimisation
-with a real consistency hazard, so it is ADR-0065 and optional.
+with a real consistency hazard, so it is ADR-0066 and optional.
 
 ## 8. Day 2
 
@@ -297,8 +328,20 @@ with a real consistency hazard, so it is ADR-0065 and optional.
 
 - [ ] `guides/cloud-hypervisor-provider.md`: host preparation (KVM, bridge,
       firmware, swtpm, the systemd unit for the provider, the credential).
-- [ ] Extend `scripts/` with a host bootstrap, in the spirit of
-      `bootstrap-libvirt-tls.sh`.
+      *Host half done 2026-09-26:* `guides/cloud-hypervisor-host.md` covers
+      KVM, a remote-safe bridge on Debian, the pinned VMM and firmware, swtpm
+      and the EK CA, the provider unit, and a hand smoke-boot. The credential
+      section waits for `banlieue bootstrap` (ADR-0060 Decision 5).
+- [x] Extend `scripts/` with a host bootstrap, in the spirit of
+      `bootstrap-libvirt-tls.sh`. *2026-09-25:*
+      `scripts/bootstrap-cloud-hypervisor-host.sh`, local or `--remote
+      user@host`. It installs the pinned VMM and firmware (sha256, fail
+      closed), the `banlieue` user, the storage and run layout, the host
+      config file (ADR-0062 D4), a per-host EK CA readable by `banlieue`
+      only, the polkit rule (ADR-0063 D6) and the provider unit (installed,
+      enabled only once the binary and kubeconfig exist). It never touches
+      a bridge. Tested as root in a Debian 13 container; `preflight` on a
+      bare-metal host.
 - [ ] Threat model pass. New: a cluster credential on a hypervisor. Bound it:
       server-side filtered watch on its own `Provider` and machines, status
       patch on those, its own `VMImage` row, its Lease, events, and **no
@@ -311,29 +354,39 @@ with a real consistency hazard, so it is ADR-0065 and optional.
 
 ## If the gate picks B
 
+*Superseded 2026-09-25: the gate picked A (ADR-0060). Kept so the rejected
+path's cost stays visible.*
+
 Phases 3, 4 and most of 5 collapse into the libvirt provider: accept the
 `ch+tls` scheme in `banlieue-libvirt`, add a domain XML variant, add a
 capability probe for the driver's feature subset, and teach the scheduler
 that a libvirt `Provider` may be of VMM kind `cloud-hypervisor`. No new CRD,
-no ADR-0059, no ADR-0063. Phase 7's snapshot idea is off the table unless the
+no ADR-0060, no ADR-0064. Phase 7's snapshot idea is off the table unless the
 driver exposes it. Keep this roadmap, mark phases 3 to 5 superseded, and
 revisit A when a consumer needs what the driver cannot do.
 
 ## Tasks
 
-- [ ] Spike, both lists, gate decision written down.
-- [ ] ADR-0059 to ADR-0064 accepted. CALM updated.
+- [ ] Spike native checks (gate decision written down: ADR-0060, A).
+- [ ] ADR-0060 to ADR-0065 accepted. CALM updated. *All six drafted as
+      Proposed 2026-09-25; ADR-0065 has three spike-gated decisions.*
 - [ ] `ProviderClass.spec.deployment` and the operator's `External` path.
-- [ ] `CloudHypervisorMachine`, `CloudHypervisorMachineTemplate`, controller
-      `infra.rs` arm. `make crds`.
-- [ ] `crates/banlieue-cloud-hypervisor` with the pinned spec check.
+- [x] `CloudHypervisorMachine`, `CloudHypervisorMachineTemplate`, controller
+      `infra.rs` arm. `make crds`. *2026-09-26:* API per ADR-0062 (no host
+      paths, no disk list, required OS disk size); the controller builds it
+      for `cloud-hypervisor` Providers, mirrors its status, waits on it at
+      deletion, and has RBAC for it. Data disks are refused for now.
+- [x] `crates/banlieue-cloud-hypervisor` with the pinned spec check.
+      *2026-09-26:* ADR-0061. v53.0 spec vendored with a sha256 `PIN`;
+      fixtures captured from a real VMM; `make ch-live-test` runs it against
+      one.
 - [ ] `crates/banlieue-provider-cloud-hypervisor`: `reconciler/provider.rs`,
       `reconciler/machine.rs`, `reconciler/vmimage.rs`, `supervisor.rs`
       (D-Bus), `net.rs` (netlink), `import.rs`.
 - [ ] `banlieue provider cloud-hypervisor` subcommand behind a Cargo feature
       (ADR-0004).
 - [ ] Shared NoCloud seed crate, libvirt provider migrated onto it.
-- [ ] Artifact delivery per ADR-0063.
+- [ ] Artifact delivery per ADR-0064.
 - [ ] Deletion finalizer: unit, swtpm unit, tap, disks, seed, state directory.
 - [ ] swtpm and `Deferred`.
 - [ ] Host bootstrap script, guide, example manifests, threat model.
@@ -377,3 +430,27 @@ revisit A when a consumer needs what the driver cannot do.
   own capacity figure or the scheduler will overcommit a host that looks half
   empty.
 - **Reflinks tie image eviction to machine lifetime.** See phase 4.
+- **Always pass `image_type=raw`.** Found in the phase 0 spike: v53 otherwise
+  auto-detects, warns that auto-detection is deprecated, and **disables
+  sector-0 writes** on the disk, which breaks anything that rewrites the
+  partition table.
+- **`nested` defaults to on.** `vm.info` reports `cpus.nested: true` unless
+  `nested=off` is passed. The environment constraint needs it off.
+- **Growing the disk before first boot is required.** The Kairos
+  `cloudImage` is exactly its payload size; its reset config adds a ~9 GiB
+  `COS_STATE` and, with no free space, fails and leaves the guest in
+  recovery with no user-data applied.
+- **swtpm paths must be absolute.** Daemonized swtpm changes directory to
+  `/`; a relative `--tpmstate` fails `CmdInit` (error `0x9`) and the VMM
+  will not boot.
+- **The serial log file is truncated on every guest reboot.** The VMM
+  reopens it, so it only ever holds the current boot.
+- **Guest disk names shift once the installer is unplugged** (the seed moves
+  from `vdc` to `vdb` on the next boot). Address guest disks by label, never
+  by `/dev/vdX`.
+- **The `GuestReady` marker lands a few seconds after the guest answers
+  SSH.** Kairos's `boot` stage runs late; "reachable" is not "announced".
+- **No CD-ROM means the seed is found by label only.** Kairos probes
+  `/dev/sr*` first, then every block device's filesystem label. On this
+  backend only the second path exists, so the seed must be readable by the
+  guest's label reader, not only mountable by the kernel.

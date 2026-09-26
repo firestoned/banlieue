@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 //! `VirtualMachine` status mirror.
 //!
-//! Pulls status fields from the provider's infrastructure CR ([`VSphereMachine`]
-//! or [`LibvirtMachine`], with Proxmox to follow) and projects them onto the
-//! parent [`VirtualMachine`]:
+//! Pulls status fields from the provider's infrastructure CR ([`VSphereMachine`],
+//! [`LibvirtMachine`] or [`CloudHypervisorMachine`], with Proxmox to follow) and
+//! projects them onto the parent [`VirtualMachine`]:
 //!
 //! - `status.initialization` ← infra.status.initialization
 //! - `status.addresses` ← infra.status.addresses
@@ -19,7 +19,7 @@
 use banlieue_api::banlieue::{VirtualMachine, VirtualMachineStatus};
 use banlieue_api::common::condition_types;
 use banlieue_api::common::{InitializationStatus, MachineAddress, PowerState};
-use banlieue_api::infrastructure::{LibvirtMachine, VSphereMachine};
+use banlieue_api::infrastructure::{CloudHypervisorMachine, LibvirtMachine, VSphereMachine};
 use banlieue_provider_sdk::status::{
     condition_status, find_condition, is_condition_true, set_condition,
 };
@@ -97,6 +97,52 @@ impl InfraMachineRead for VSphereMachine {
 }
 
 impl InfraMachineRead for LibvirtMachine {
+    fn initialization(&self) -> &InitializationStatus {
+        self.status
+            .as_ref()
+            .map(|s| &s.initialization)
+            .unwrap_or(&NO_INIT)
+    }
+
+    fn addresses(&self) -> &[MachineAddress] {
+        self.status
+            .as_ref()
+            .map(|s| s.addresses.as_slice())
+            .unwrap_or(&[])
+    }
+
+    fn failure_domain(&self) -> Option<&str> {
+        self.status
+            .as_ref()
+            .and_then(|s| s.failure_domain.as_deref())
+    }
+
+    fn provider_id(&self) -> Option<&str> {
+        self.spec.provider_id.as_deref()
+    }
+
+    fn conditions(&self) -> &[Condition] {
+        self.status
+            .as_ref()
+            .map(|s| s.conditions.as_slice())
+            .unwrap_or(&[])
+    }
+
+    fn observed_power_state(&self) -> Option<&PowerState> {
+        self.status
+            .as_ref()
+            .and_then(|s| s.observed_power_state.as_ref())
+    }
+
+    fn tpm_endorsement_certificates(&self) -> &[String] {
+        self.status
+            .as_ref()
+            .map(|s| s.tpm_endorsement_certificates.as_slice())
+            .unwrap_or(&[])
+    }
+}
+
+impl InfraMachineRead for CloudHypervisorMachine {
     fn initialization(&self) -> &InitializationStatus {
         self.status
             .as_ref()

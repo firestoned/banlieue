@@ -128,11 +128,13 @@ or self-signed, which needs thumbprint pinning).
 
 ## 1. ADRs, then CALM
 
-ADR numbers are the next free as of 2026-09-20: `0055` went to roadmap 17's
-`AgentSandbox`, so this roadmap starts at `0056`. `0043` to `0049` stay
-reserved by roadmap 17. Renumber at landing if something else takes them.
+ADR numbers were next-free as of 2026-09-20 (`0055` went to roadmap 17's
+`AgentSandbox`), and were renumbered on 2026-09-24 after `0056` went to the
+`VirtualMachinePool` address pool (ADR-0056), so this roadmap starts at `0057`. `0043` to
+`0049` stay reserved by roadmap 17. Renumber at landing if something else
+takes them.
 
-### ADR-0056: `importMethod` on a vSphere template
+### ADR-0057: `importMethod` on a vSphere template
 
 - `VMImageTemplate.importMethod: Iso | DiskImage`, default `Iso`. Existing
   `VMImage`s do not change behaviour.
@@ -145,14 +147,14 @@ reserved by roadmap 17. Renumber at landing if something else takes them.
   positive. `installTimeoutSeconds` is ignored for `DiskImage` and says so.
 - Extend the admission policy (ADR-0007) to match.
 
-### ADR-0057: a first-party VMDK writer
+### ADR-0058: a first-party VMDK writer
 
 Same reasoning as the ISO9660 writer in ADR-0054: a small, fully specified
 binary format, every structure at a known offset, versus a system package, a
 base image change and a subprocess in the import path. Decision content is
 [phase 2](#2-banlieue-vmdk-first-party-pure-rust).
 
-### ADR-0058: NFC lease import and ESXi host trust
+### ADR-0059: NFC lease import and ESXi host trust
 
 Which method is the default, when the fallback applies, how the BYOC client
 (ADR-0008) trusts an ESXi host, and the NetworkPolicy change for the
@@ -310,7 +312,7 @@ Two consequences need writing down rather than implementing:
 ## Tasks
 
 - [ ] Spike, Q1 to Q5 answered in writing.
-- [ ] ADR-0056, ADR-0057, ADR-0058 accepted. CALM updated.
+- [ ] ADR-0057, ADR-0058, ADR-0059 accepted. CALM updated.
 - [ ] `VMImageTemplate.importMethod`, `ZoneImageStatus.importMethod`,
       `Provider.spec.diskImageTransport` in `banlieue-api`. `make crds`.
 - [ ] Admission policy for the rejected combinations.
@@ -318,7 +320,7 @@ Two consequences need writing down rather than implementing:
       `importMethod`.
 - [ ] `crates/banlieue-vmdk` with both writers and the test suite above.
 - [ ] `VSphereClient::import_disk_template`, method A.
-- [ ] ESXi host trust in the BYOC client per ADR-0058.
+- [ ] ESXi host trust in the BYOC client per ADR-0059.
 - [ ] Method B, behind the transport field.
 - [ ] `imageImport --method disk-image`.
 - [ ] NetworkPolicy for imagebuild namespace egress to ESXi hosts.
