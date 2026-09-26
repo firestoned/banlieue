@@ -185,6 +185,7 @@ nav:
       - vSphere Provider: guides/vsphere-provider.md
       - libvirt Provider: guides/libvirt-provider.md
       - Cloud Hypervisor Host Bootstrap (Debian): guides/cloud-hypervisor-host.md
+      - 'Cloud Hypervisor Host: systemd, polkit, identities': guides/cloud-hypervisor-host-systemd.md
       - cloud-init on libvirt: guides/cloud-init-on-libvirt.md
       - VirtualMachine Pools: guides/virtualmachine-pools.md
       - VirtualMachine Claims: guides/virtualmachine-claims.md
@@ -219,4 +220,5 @@ nav:
 
   - Reference:
       - API Reference (CRDs): reference/api.md
+      - Provider Comparison: reference/provider-comparison.md
       - License: reference/license.md

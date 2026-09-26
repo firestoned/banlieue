@@ -1,0 +1,46 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# Namespaced permissions the operator GRANTS to External providers
+# (ADR-0060 Decision 5) and so must hold itself: RBAC refuses a grantor a
+# permission it does not have.
+#
+# `serviceaccounts/token` `create` lets an External provider (a Cloud
+# Hypervisor host) renew its own bound token; the operator writes it into
+# each such provider's Role scoped by resourceNames to that provider's own
+# ServiceAccount. Held here in the install namespace ONLY, never in the
+# operator's ClusterRole: cluster-wide it would let the operator mint a
+# token for any ServiceAccount in the cluster. External Providers must
+# therefore live in this namespace. The operator never exercises it itself.
+#
+# Mirrored by `banlieue bootstrap operator` (bootstrap.rs,
+# build_operator_token_role); a unit test keeps the two identical.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: banlieue-operator-external-tokens
+  namespace: banlieue-system
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: operator
+rules:
+  - apiGroups: [""]
+    resources: ["serviceaccounts/token"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: banlieue-operator-external-tokens
+  namespace: banlieue-system
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: operator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: banlieue-operator-external-tokens
+subjects:
+  - kind: ServiceAccount
+    name: banlieue-operator
+    namespace: banlieue-system

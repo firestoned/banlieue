@@ -1,0 +1,43 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# banlieue's host-resident Cloud Hypervisor provider (ADR-0060).
+# Installed by scripts/bootstrap-cloud-hypervisor-host.sh, which fills in the
+# at-sign placeholders. Every setting is explained in
+# docs/src/guides/cloud-hypervisor-host-systemd.md
+[Unit]
+Description=banlieue Cloud Hypervisor provider
+Documentation=https://github.com/firestoned/banlieue
+# It dials the Kubernetes API, and talks to systemd over D-Bus.
+Wants=network-online.target
+After=network-online.target dbus.service systemd-tmpfiles-setup.service
+# Refuse to start half-installed, rather than crash-looping.
+ConditionPathExists=@PROVIDER_BINARY@
+ConditionPathExists=@KUBECONFIG_PATH@
+
+[Service]
+User=@BANLIEUE_USER@
+Group=@BANLIEUE_USER@
+ExecStart=@PROVIDER_BINARY@ provider cloud-hypervisor --config @HOST_CONFIG@
+# The only privileges it holds (ADR-0063 Decision 6):
+#   CAP_NET_ADMIN  create, own and persist taps; enslave them; bring them up
+#   CAP_CHOWN      hand machine directories, disks and seeds to guest uids
+#   CAP_FOWNER     re-mode guest-owned directories and the VMM's API socket
+AmbientCapabilities=CAP_NET_ADMIN CAP_CHOWN CAP_FOWNER
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_CHOWN CAP_FOWNER
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+# Written: per-guest run directories, machine directories under each storage
+# class, and its credentials directory, where it renews its own token
+# (ADR-0060 Decision 5). Everything else (config, firmware) is read-only.
+ReadWritePaths=@PROVIDER_RW_PATHS@ @CREDENTIALS_DIR@
+# Guests are template-unit instances owned by systemd, not children of this process:
+# stopping or upgrading the provider must not stop them (ADR-0063 Decision 1).
+KillMode=process
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

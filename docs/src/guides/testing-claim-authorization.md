@@ -181,6 +181,80 @@ The username comes from Dex's `preferred_username` claim — your GitHub login
 rewrites the policy's issuer allowlist to this cluster's real issuer, since
 the shipped value is a placeholder.
 
+### On an existing k0s cluster instead
+
+`scripts/dev-oidc-k0s.sh` does the same thing on a k0s cluster: the same
+issuer URL, the same `oidc:` identities. What differs is how it gets there.
+
+```sh
+export BANLIEUE_GITHUB_APP_CLIENT_ID=... BANLIEUE_GITHUB_APP_CLIENT_SECRET=...
+SSH_USER=admin make dev-oidc-k0s-up     # KUBECONFIG selects the cluster
+make dev-oidc-k0s-login
+make dev-oidc-k0s-grant
+```
+
+- **A GitHub App, not an OAuth App.** Its callback URL is
+  `https://127.0.0.1:32000/dex/callback`. Give it the account permission
+  **Email addresses: Read-only**. Dex reads `/user/emails` when a profile's
+  email is private, and without that permission the login fails *after*
+  GitHub has already approved it.
+- **The API server gets structured authentication.** Each controller gets
+  `/etc/k0s/oidc/authentication-config.yaml`, and `/etc/k0s/k0s.yaml` gets
+  `spec.api.extraArgs.authentication-config` pointing at it. The CA is
+  inline in that file, and kube-apiserver re-reads the file when it changes,
+  so only the first enablement restarts anything. On Kairos both paths
+  survive a reboot.
+- **Controllers restart one at a time.** First every controller must fetch
+  and trust `https://127.0.0.1:32000/dex` itself. kube-proxy answers
+  NodePorts on localhost, and on k0s kube-apiserver is a host process, so
+  this is the URL the API server really uses. Only then is `k0scontroller`
+  restarted on each controller in turn. Each one must come back with
+  `/readyz` passing **and** `--authentication-config` in the running
+  process before the next is touched. A controller that does not come back
+  is restored from `k0s.yaml.pre-oidc`.
+- **SSH as root, or as a user with passwordless sudo** (`SSH_USER`).
+  Controllers are discovered from the cluster, or set with `CONTROLLERS`.
+- **Nobody is granted anything by default.** Unlike the kind cluster, this
+  one is reachable by anyone who can reach its nodes, and any GitHub
+  account can finish a Dex login. `dev-oidc-k0s-grant` binds claim access
+  to the one identity you logged in as, never to `system:authenticated`.
+- **The kubelogin client is public.** It uses PKCE and has no client secret,
+  so there is no secret to publish.
+- **Two ways to reach the issuer (`EXPOSE`).**
+    - **`local`** (the default): `https://127.0.0.1:32000/dex`, served by a
+      socat container on the workstation, with the dev CA. If the browser is
+      on another machine, both the issuer and kubelogin's callback port must
+      be tunnelled:
+      `ssh -L 8000:127.0.0.1:8000 -L 32000:127.0.0.1:32000 bar.foo.io`.
+    - **`tailscale`**: `https://<workstation's MagicDNS name>/dex`, served by
+      `tailscale serve`. Tailscale terminates TLS with the tailnet's
+      Let's Encrypt certificate, so there is no private CA for any browser,
+      kubelogin or kube-apiserver to trust. Any device on the tailnet logs in
+      directly, and nothing needs tunnelling. The controllers must be on the
+      tailnet to resolve the name, and the up-front discovery check proves
+      they can. It needs `tailscale set --operator=$USER` once, as root.
+
+  Switching is just re-running `up` with the other `EXPOSE`. That restarts
+  Dex with the new issuer and rewrites each controller's authentication
+  file. kube-apiserver reloads that file, so no controller restarts.
+  Update the GitHub App's callback URL to `<issuer>/callback` and log in
+  again, because tokens from the old issuer no longer validate.
+- **Logging in from a laptop.** Generate a kubeconfig that holds the
+  cluster's address and CA plus a kubelogin user, and no admin credential:
+
+  ```sh
+  EXPOSE=tailscale ./scripts/dev-oidc-k0s.sh kubeconfig > grill-oidc.yaml
+  ```
+
+  Copy it to the laptop, install kubelogin there
+  (`brew install kubelogin`), and run
+  `KUBECONFIG=grill-oidc.yaml kubectl auth whoami`. Then grant from the
+  workstation with `GRANT_USER=oidc:<login> make dev-oidc-k0s-grant`.
+
+`make dev-oidc-k0s-down` reverses all of it. It restores every controller's
+`k0s.yaml` (again one at a time), then removes Dex, the proxy, the kubectl
+context and the CA.
+
 ## Watch the policy decide
 
 ```sh

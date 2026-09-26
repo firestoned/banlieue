@@ -105,6 +105,7 @@ async fn create_read_back_delete_against_a_real_vmm() {
         }],
         nics: vec![],
         tpm_socket: None,
+        vsock_socket: None,
         serial_file: dir.path().join("serial.log"),
         landlock: false,
     };

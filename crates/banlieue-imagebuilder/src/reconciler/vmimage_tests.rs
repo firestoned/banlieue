@@ -95,6 +95,35 @@ mod tests {
         );
     }
 
+    /// ADR-0065 Decision 3: a Cloud Hypervisor `Deferred` install boots the
+    /// installer ISO onto an empty disk, so its build is an ISO; an
+    /// `Immediate` one clones a raw disk.
+    #[test]
+    fn a_kvm_deferred_image_builds_an_iso() {
+        use banlieue_api::banlieue::InstallMode;
+        assert_eq!(
+            artifact_kind_for("cloud-hypervisor", &InstallMode::Deferred),
+            BuildArtifactKind::Iso
+        );
+        assert_eq!(
+            artifact_kind_for("cloud-hypervisor", &InstallMode::Immediate),
+            BuildArtifactKind::CloudImage
+        );
+        assert_eq!(
+            artifact_kind_for("vsphere", &InstallMode::Immediate),
+            BuildArtifactKind::Iso
+        );
+        // libvirt attaches the same installer as a CD-ROM.
+        assert_eq!(
+            artifact_kind_for("libvirt", &InstallMode::Deferred),
+            BuildArtifactKind::Iso
+        );
+        assert_eq!(
+            artifact_kind_for("libvirt", &InstallMode::Immediate),
+            BuildArtifactKind::CloudImage
+        );
+    }
+
     // ----------------------------------------------------------------------
     // os_artifact_name / os_artifact_api_resource
     // ----------------------------------------------------------------------

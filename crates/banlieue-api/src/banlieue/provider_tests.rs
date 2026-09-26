@@ -87,9 +87,9 @@ mod tests {
     fn provider_connection_minimal_round_trip() {
         let c = ProviderConnection {
             endpoint: "https://vc.example.com/sdk".to_string(),
-            credentials_ref: LocalObjectReference {
+            credentials_ref: Some(LocalObjectReference {
                 name: "vc-creds".to_string(),
-            },
+            }),
             insecure_skip_tls_verify: false,
             ca_bundle: None,
         };
@@ -109,9 +109,9 @@ mod tests {
     fn provider_connection_with_optional_ca_and_insecure_round_trip() {
         let c = ProviderConnection {
             endpoint: "https://pve:8006".to_string(),
-            credentials_ref: LocalObjectReference {
+            credentials_ref: Some(LocalObjectReference {
                 name: "pve-creds".to_string(),
-            },
+            }),
             insecure_skip_tls_verify: true,
             ca_bundle: Some(CABundleSource {
                 inline: Some("-----BEGIN CERT-----\n...".to_string()),
@@ -131,10 +131,40 @@ mod tests {
         assert!(err.is_err());
     }
 
+    /// ADR-0060 Decision 4: a host-resident provider has nothing to
+    /// authenticate to and must read no Secret, so the reference is optional
+    /// — and absent from the serialized form, not `null`.
     #[test]
-    fn provider_connection_missing_credentials_ref_fails() {
-        let err = serde_json::from_str::<ProviderConnection>(r#"{"endpoint":"https://x"}"#);
-        assert!(err.is_err());
+    fn provider_connection_without_credentials_ref_is_valid_and_omits_it() {
+        let c = serde_json::from_str::<ProviderConnection>(r#"{"endpoint":"bar.foo.io"}"#)
+            .expect("credentialsRef is optional");
+        assert!(c.credentials_ref.is_none());
+        let v = serde_json::to_value(&c).unwrap();
+        assert!(v.get("credentialsRef").is_none(), "{v}");
+    }
+
+    /// ADR-0060 Decision 3: an External workload has no Deployment, so its
+    /// status says so and carries no Deployment name or replica count.
+    #[test]
+    fn an_external_workload_status_has_no_deployment() {
+        let s = ProviderWorkloadStatus {
+            mode: WorkloadMode::External,
+            deployment_name: None,
+            namespace: "banlieue-system".into(),
+            ready_replicas: None,
+            observed_generation: Some(3),
+        };
+        let v = serde_json::to_value(&s).unwrap();
+        assert_eq!(v["mode"], "External");
+        assert!(
+            v.get("deploymentName").is_none() && v.get("readyReplicas").is_none(),
+            "{v}"
+        );
+        // An object written before `mode` existed reads as Managed.
+        let old: ProviderWorkloadStatus =
+            serde_json::from_str(r#"{"deploymentName":"d","namespace":"n","readyReplicas":1}"#)
+                .unwrap();
+        assert_eq!(old.mode, WorkloadMode::Managed);
     }
 
     #[test]
@@ -145,9 +175,9 @@ mod tests {
             },
             connection: ProviderConnection {
                 endpoint: "https://vc.example.com/sdk".to_string(),
-                credentials_ref: LocalObjectReference {
+                credentials_ref: Some(LocalObjectReference {
                     name: "vc-creds".to_string(),
-                },
+                }),
                 insecure_skip_tls_verify: false,
                 ca_bundle: None,
             },
@@ -178,9 +208,9 @@ mod tests {
             },
             connection: ProviderConnection {
                 endpoint: "qemu+ssh://host/system".to_string(),
-                credentials_ref: LocalObjectReference {
+                credentials_ref: Some(LocalObjectReference {
                     name: "ssh-key".to_string(),
-                },
+                }),
                 insecure_skip_tls_verify: false,
                 ca_bundle: None,
             },
@@ -203,9 +233,9 @@ mod tests {
             },
             connection: ProviderConnection {
                 endpoint: "https://vc/sdk".to_string(),
-                credentials_ref: LocalObjectReference {
+                credentials_ref: Some(LocalObjectReference {
                     name: "vc".to_string(),
-                },
+                }),
                 insecure_skip_tls_verify: false,
                 ca_bundle: None,
             },
@@ -262,6 +292,7 @@ mod tests {
             }],
             workload: None,
             observed_generation: Some(1),
+            ek_ca_certificates: vec![],
         };
         let json = serde_json::to_value(&s).unwrap();
         let back: ProviderStatus = serde_json::from_value(json).unwrap();
@@ -612,9 +643,9 @@ mod tests {
             },
             connection: ProviderConnection {
                 endpoint: "https://vc.example.com/sdk".to_string(),
-                credentials_ref: LocalObjectReference {
+                credentials_ref: Some(LocalObjectReference {
                     name: "vc-creds".to_string(),
-                },
+                }),
                 insecure_skip_tls_verify: false,
                 ca_bundle: None,
             },
@@ -641,9 +672,9 @@ mod tests {
             },
             connection: ProviderConnection {
                 endpoint: "https://vc.example.com/sdk".to_string(),
-                credentials_ref: LocalObjectReference {
+                credentials_ref: Some(LocalObjectReference {
                     name: "vc-creds".to_string(),
-                },
+                }),
                 insecure_skip_tls_verify: false,
                 ca_bundle: None,
             },
@@ -675,9 +706,10 @@ mod tests {
     fn status_workload_serializes_as_camel_case() {
         let status = ProviderStatus {
             workload: Some(ProviderWorkloadStatus {
-                deployment_name: "banlieue-provider-vsphere-prod-vc".to_string(),
+                mode: WorkloadMode::Managed,
+                deployment_name: Some("banlieue-provider-vsphere-prod-vc".to_string()),
                 namespace: "banlieue-system".to_string(),
-                ready_replicas: 1,
+                ready_replicas: Some(1),
                 observed_generation: Some(4),
             }),
             ..Default::default()
@@ -701,9 +733,10 @@ mod tests {
     fn status_with_only_workload_does_not_emit_conditions() {
         let status = ProviderStatus {
             workload: Some(ProviderWorkloadStatus {
-                deployment_name: "banlieue-provider-vsphere-prod-vc".to_string(),
+                mode: WorkloadMode::Managed,
+                deployment_name: Some("banlieue-provider-vsphere-prod-vc".to_string()),
                 namespace: "banlieue-system".to_string(),
-                ready_replicas: 0,
+                ready_replicas: Some(0),
                 observed_generation: None,
             }),
             ..Default::default()
@@ -717,9 +750,10 @@ mod tests {
     #[test]
     fn status_workload_round_trips_through_json() {
         let workload = ProviderWorkloadStatus {
-            deployment_name: "banlieue-provider-libvirt-lab".to_string(),
+            mode: WorkloadMode::Managed,
+            deployment_name: Some("banlieue-provider-libvirt-lab".to_string()),
             namespace: "tenant-a".to_string(),
-            ready_replicas: 2,
+            ready_replicas: Some(2),
             observed_generation: Some(9),
         };
         let round_tripped: ProviderWorkloadStatus =

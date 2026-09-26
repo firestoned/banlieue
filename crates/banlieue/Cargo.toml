@@ -16,13 +16,17 @@ path = "src/main.rs"
 [features]
 # All available providers are bundled by default. Build a slim binary with
 # `--no-default-features --features <provider>` to drop other backends' deps.
-default = ["vsphere", "imagebuilder", "libvirt"]
+default = ["vsphere", "imagebuilder", "libvirt", "cloud-hypervisor"]
 # Bundle the vSphere provider (`banlieue provider vsphere`). Pulls in vim_rs
 # transitively via banlieue-provider-vsphere.
 vsphere = ["dep:banlieue-provider-vsphere"]
 # Bundle the libvirt provider (`banlieue provider libvirt`). Pulls in the
 # first-party banlieue-libvirt client; no native libvirt library (ADR-0011).
 libvirt = ["dep:banlieue-provider-libvirt"]
+# Bundle the host-resident Cloud Hypervisor provider (`banlieue provider
+# cloud-hypervisor`, ADR-0060). Linux-only at runtime: it talks to systemd
+# over D-Bus and creates taps on the KVM host it runs on.
+cloud-hypervisor = ["dep:banlieue-provider-cloud-hypervisor"]
 # Enable vcsim compatibility in the bundled vSphere provider (local dev / CI).
 # Implies `vsphere`.
 vcsim = ["vsphere", "banlieue-provider-vsphere/vcsim"]
@@ -36,6 +40,7 @@ banlieue-controller = { path = "../banlieue-controller" }
 banlieue-operator = { path = "../banlieue-operator" }
 banlieue-imagebuilder = { path = "../banlieue-imagebuilder", optional = true }
 banlieue-provider-libvirt = { path = "../banlieue-provider-libvirt", optional = true }
+banlieue-provider-cloud-hypervisor = { path = "../banlieue-provider-cloud-hypervisor", optional = true }
 banlieue-provider-vsphere = { path = "../banlieue-provider-vsphere", optional = true }
 
 clap.workspace = true

@@ -36,6 +36,59 @@ mod tests {
         assert_eq!(cli.leader_election_id, DEFAULT_LEADER_ELECTION_ID);
         assert_eq!(cli.build_importer_image, ISO_OVERLAY_IMPORTER_IMAGE);
         assert!(cli.build_importer_image_pull_secrets.is_empty());
+        assert!(cli.command.is_none());
+        assert!(
+            registry_config(&cli).unwrap().is_none(),
+            "no registry by default"
+        );
+    }
+
+    #[test]
+    fn registry_flags_build_a_registry_config() {
+        let cli = parse(&[
+            "--registry-repository",
+            "registry.internal:5000/banlieue/disks",
+            "--registry-credentials-secret",
+            "registry-push",
+            "--registry-plain-http",
+            "--push-image",
+            "mirror.internal/banlieue:v0.1.0",
+        ]);
+        let r = registry_config(&cli).unwrap().unwrap();
+        assert_eq!(
+            r.repository.to_string(),
+            "registry.internal:5000/banlieue/disks"
+        );
+        assert_eq!(r.credentials_secret.as_deref(), Some("registry-push"));
+        assert!(r.plain_http);
+        assert_eq!(r.image, "mirror.internal/banlieue:v0.1.0");
+    }
+
+    /// A bad repository fails startup, not the first push.
+    #[test]
+    fn a_malformed_registry_repository_is_a_startup_error() {
+        let cli = parse(&["--registry-repository", "disks"]);
+        assert!(registry_config(&cli).is_err());
+    }
+
+    #[test]
+    fn push_subcommand_parses() {
+        let cli = parse(&[
+            "push",
+            "--source",
+            "/artifacts/x.raw",
+            "--target",
+            "registry.internal:5000/d:t",
+            "--artifact-type",
+            "application/vnd.banlieue.disk.raw.v1",
+            "--scratch-dir",
+            "/scratch",
+        ]);
+        let Some(ImagebuilderCommand::Push(args)) = cli.command else {
+            panic!("expected push");
+        };
+        assert_eq!(args.target, "registry.internal:5000/d:t");
+        assert_eq!(args.scratch_dir, std::path::PathBuf::from("/scratch"));
     }
 
     #[test]

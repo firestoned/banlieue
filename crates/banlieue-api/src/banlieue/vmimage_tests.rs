@@ -444,6 +444,7 @@ mod tests {
             reason: None,
             message: None,
             checksum: None,
+            oci_artifact: None,
         };
         let json = serde_json::to_value(&s).unwrap();
         let obj = json.as_object().unwrap();
@@ -468,6 +469,7 @@ mod tests {
             reason: Some("Reconciled".to_string()),
             message: None,
             checksum: None,
+            oci_artifact: None,
         };
         let json = serde_json::to_value(&s).unwrap();
         assert_eq!(json["kind"], "iso");
@@ -490,6 +492,7 @@ mod tests {
             reason: None,
             message: None,
             checksum: None,
+            oci_artifact: None,
         };
         let json = serde_json::to_value(&s).unwrap();
         assert!(!json.as_object().unwrap().contains_key("osArtifactUid"));
@@ -507,6 +510,7 @@ mod tests {
             reason: None,
             message: None,
             checksum: None,
+            oci_artifact: None,
         };
         let json = serde_json::to_value(&s).unwrap();
         assert_eq!(
@@ -554,6 +558,7 @@ mod tests {
                 reason: None,
                 message: None,
                 checksum: None,
+                oci_artifact: None,
             }),
             ..VMImageStatus::default()
         };

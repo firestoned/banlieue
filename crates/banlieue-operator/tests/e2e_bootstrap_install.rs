@@ -196,11 +196,12 @@ async fn bootstrap_seeds_a_provider_class_per_backend() {
             "ProviderClass {backend} must name its own backend"
         );
         assert!(
-            !class.spec.image.tag.is_empty(),
+            !class.spec.image.as_ref().expect("image").tag.is_empty(),
             "ProviderClass {backend} has no image tag"
         );
         assert_ne!(
-            class.spec.image.tag, "latest",
+            class.spec.image.as_ref().expect("image").tag,
+            "latest",
             "a mutable tag makes the running version unknowable and defeats rollback"
         );
     }

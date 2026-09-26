@@ -214,3 +214,40 @@ flowchart TD
 
 <sub>Source: flow `flow-publish-vtpm-ek-certificate` in `architecture.json`.</sub>
 
+
+## Create a VirtualMachine on a Cloud Hypervisor host
+
+Same front half as every backend; the back half runs on the KVM host. Verified end to end against a k0s cluster and a bare-metal host (2026-09-26).
+
+```mermaid
+flowchart TD
+    t1["1. VM consumer applies a VirtualMachine whose placement selects a cloud-hypervisor Provider."]
+    t2["2. banlieue-controller schedules it onto the host's failure domain and server-side-applies a CloudHypervisorMachine naming a storage class, network classes and the image file from the VMImage's perProvider row."]
+    t3["3. The host's provider sees the machine, records a guest uid on status before any host work, sets spec.providerID, and prepares directories, the OS disk, the seed and the tap."]
+    t4["4. The provider starts banlieue-ch@<guest uid>.service, then creates and boots the VM through the VMM's API socket."]
+    t5["5. The provider publishes Ready=True and the guest's DHCP address from the host neighbour table; banlieue-controller mirrors it onto the VirtualMachine."]
+    t1 --> t2 --> t3 --> t4 --> t5
+```
+
+<sub>Source: flow `flow-create-virtualmachine-cloud-hypervisor` in `architecture.json`.</sub>
+
+
+## Deliver a built image to a Cloud Hypervisor host through a registry
+
+ADR-0064's registry path: a host-resident provider cannot mount the artifacts PVC, so the build is pushed to an OCI registry and each host pulls it by digest into its own image cache.
+
+```mermaid
+flowchart TD
+    t1["1. A VMImage with a cloud-hypervisor Url source reaches status.buildArtifact.phase=Ready. banlieue-imagebuilder server-side-applies a push Job in the build namespace, owned by the OSArtifact."]
+    t2["2. The push Job gzips the artifact and pushes it as a single-layer OCI artifact tagged with the OSArtifact uid, then writes the digest-pinned reference as its termination message."]
+    t3["3. The imagebuilder reads the termination message, checks it is a digest in the configured repository, and records it on status.buildArtifact.ociArtifact (phase Ready)."]
+    t4["4. The host provider's VMImage watch fires. It checks the reference against its host config's [registry] repository and starts the import unit over D-Bus."]
+    t5["5. The import unit pulls the manifest and layer by digest, verifies both, writes sha256-<hex>.raw sparse into one storage class and reflinks or sparse-copies it into the rest."]
+    t6["6. Once every storage class holds the file, the provider publishes its perProvider row ready with resolvedRef sha256-<hex>.raw, which the controller copies into CloudHypervisorMachine.spec.bootSource.image."]
+    t7["7. On deletion, each host stops any import, removes its cache file unless another image or machine there uses it, and publishes reason Released; superseded pulls beyond keep_unreferenced are evicted after each import."]
+    t8["8. banlieue-controller, which holds the banlieue.io/host-image-cache finalizer (ADR-0064 Decision 4), removes it once every existing Cloud Hypervisor Provider with a row reports Released."]
+    t1 --> t2 --> t3 --> t4 --> t5 --> t6 --> t7 --> t8
+```
+
+<sub>Source: flow `flow-import-vmimage-cloud-hypervisor` in `architecture.json`.</sub>
+

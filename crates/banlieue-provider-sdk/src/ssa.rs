@@ -34,6 +34,9 @@ pub const FIELD_MANAGER_PROVIDER_PROXMOX: &str = "banlieue.io/provider-proxmox";
 /// Field manager for the libvirt provider.
 pub const FIELD_MANAGER_PROVIDER_LIBVIRT: &str = "banlieue.io/provider-libvirt";
 
+/// Field manager for the host-resident Cloud Hypervisor provider (ADR-0060).
+pub const FIELD_MANAGER_PROVIDER_CLOUD_HYPERVISOR: &str = "banlieue.io/provider-cloud-hypervisor";
+
 /// Field manager for `banlieue-imagebuilder`. Writes exclusively to
 /// `VMImage.status.buildArtifact` — never `status.perProvider[]`, which
 /// stays owned by each provider's own field manager (ADR-0010).

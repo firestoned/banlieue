@@ -25,7 +25,7 @@ use banlieue_provider_sdk::leader::{
     LeaderConfig, acquire_or_wait, renew_forever,
 };
 use banlieue_provider_sdk::scheduling::BuildScheduling;
-use clap::Args;
+use clap::{Args, Subcommand};
 use futures::StreamExt;
 use kube::{
     Api,
@@ -34,6 +34,8 @@ use kube::{
 use tracing::{error, info, warn};
 
 use crate::importer_image::ImporterImage;
+use crate::oci_push::PushArgs;
+use crate::reconciler::push::RegistryConfig;
 use crate::reconciler::vmimage::ISO_OVERLAY_IMPORTER_IMAGE;
 use crate::{context::Context, reconciler::vmimage};
 
@@ -53,12 +55,19 @@ const DEFAULT_LEADER_ELECTION_ID: &str = "banlieue-imagebuilder";
 // binary asserts the defaults agree.
 const DEFAULT_BUILD_NAMESPACE: &str = "banlieue-imagebuild";
 
+/// Image the registry push Job runs: the banlieue image itself.
+const DEFAULT_PUSH_IMAGE: &str = "ghcr.io/firestoned/banlieue:v0.1.0";
+
 /// Per-crate `tracing` directives layered on top of the base log level.
 const LOG_DIRECTIVES: &[&str] = &["kube=warn"];
 
 /// Command-line arguments for `banlieue imagebuilder`.
 #[derive(Debug, Args)]
 pub struct Cli {
+    /// One-shot subcommand. Without one, this runs the controller.
+    #[command(subcommand)]
+    pub command: Option<ImagebuilderCommand>,
+
     /// Namespace `OSArtifact` CRs (and the artifacts PVCs kairos-operator
     /// creates for them) are placed in. A provider's per-zone import Jobs
     /// must run in this same namespace to mount the shared artifacts PVC.
@@ -148,6 +157,56 @@ pub struct Cli {
     /// or mirrored registry — Kubernetes pull secrets are always pod-scoped.
     #[arg(long = "build-importer-image-pull-secret", value_name = "NAME")]
     pub build_importer_image_pull_secrets: Vec<String>,
+
+    /// OCI repository build artifacts are pushed to for host-resident
+    /// providers, `registry/path` with no tag (ADR-0064). Unset means no
+    /// push: a `cloud-hypervisor` `Url` source then reports that the
+    /// registry is not configured.
+    #[arg(long, env = "BANLIEUE_REGISTRY_REPOSITORY")]
+    pub registry_repository: Option<String>,
+
+    /// `kubernetes.io/basic-auth` Secret in the build namespace holding the
+    /// push credentials. Unset pushes anonymously.
+    #[arg(long, env = "BANLIEUE_REGISTRY_CREDENTIALS_SECRET")]
+    pub registry_credentials_secret: Option<String>,
+
+    /// Push over `http://`. Only for a registry on a private network or a
+    /// test.
+    #[arg(long, env = "BANLIEUE_REGISTRY_PLAIN_HTTP", default_value_t = false)]
+    pub registry_plain_http: bool,
+
+    /// Image the push Job runs. Defaults to the banlieue image itself.
+    #[arg(long, env = "BANLIEUE_PUSH_IMAGE", default_value = DEFAULT_PUSH_IMAGE)]
+    pub push_image: String,
+}
+
+/// Subcommands of `banlieue imagebuilder`.
+#[derive(Debug, Subcommand)]
+pub enum ImagebuilderCommand {
+    /// Push one build artifact to an OCI registry and exit.
+    ///
+    /// Runs inside the Job the `VMImage` reconciler creates; not normally
+    /// invoked by hand, though the flags are stable so a failed push can be
+    /// reproduced.
+    Push(PushArgs),
+}
+
+/// The registry configuration from `cli`, if a repository is set.
+///
+/// # Errors
+/// A malformed `--registry-repository`.
+pub fn registry_config(cli: &Cli) -> Result<Option<RegistryConfig>> {
+    let Some(repository) = cli.registry_repository.as_deref() else {
+        return Ok(None);
+    };
+    RegistryConfig::new(
+        repository,
+        cli.registry_credentials_secret.clone(),
+        cli.registry_plain_http,
+        cli.push_image.clone(),
+    )
+    .map(Some)
+    .map_err(|e| anyhow::anyhow!("--registry-repository: {e}"))
 }
 
 /// Run `banlieue-imagebuilder` to completion (until a shutdown signal or the
@@ -162,6 +221,12 @@ pub struct Cli {
 pub async fn run(cli: Cli) -> Result<()> {
     init_tracing(&cli.log_format, cli.log_level.as_deref(), LOG_DIRECTIVES)
         .context("initialising tracing")?;
+
+    // One-shot roles exit when their work is done.
+    if let Some(ImagebuilderCommand::Push(args)) = cli.command {
+        return crate::oci_push::run(args).await;
+    }
+
     info!(
         version = env!("CARGO_PKG_VERSION"),
         build_namespace = %cli.build_namespace,
@@ -210,11 +275,17 @@ pub async fn run(cli: Cli) -> Result<()> {
         &cli.build_importer_image,
         &cli.build_importer_image_pull_secrets,
     );
+    let registry = registry_config(&cli)?;
+    match &registry {
+        Some(r) => info!(repository = %r.repository, "registry push enabled"),
+        None => info!("no --registry-repository: build artifacts are not pushed"),
+    }
     let ctx = Arc::new(Context::new(
         client.clone(),
         cli.build_namespace.clone(),
         scheduling,
         importer_image,
+        registry,
     ));
 
     // VMImage is cluster-scoped — always watch every namespace.

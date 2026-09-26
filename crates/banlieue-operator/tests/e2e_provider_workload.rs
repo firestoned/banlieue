@@ -186,7 +186,7 @@ async fn provider_lifecycle_creates_shapes_and_garbage_collects_its_workload() {
         }
     })
     .await;
-    assert_eq!(observed.deployment_name, E2E_WORKLOAD);
+    assert_eq!(observed.deployment_name.as_deref(), Some(E2E_WORKLOAD));
     assert_eq!(observed.namespace, E2E_NAMESPACE);
 
     // ── Disjoint status ownership — the central claim of ADR-0012 ───────────
@@ -361,13 +361,15 @@ async fn the_libvirt_backend_produces_a_correctly_shaped_workload() {
         LIBVIRT_CLASS,
         ProviderClassSpec {
             backend: "libvirt".to_string(),
-            image: ProviderImage {
+            image: Some(ProviderImage {
                 repository,
                 tag,
                 digest: None,
                 pull_policy: Some(ImagePullPolicy::IfNotPresent),
                 pull_secrets: Vec::new(),
-            },
+            }),
+
+            deployment: None,
             workload_namespace: None,
             replicas: None,
             resources: None,

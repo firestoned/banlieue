@@ -33,10 +33,13 @@
 pub mod bootstrap;
 pub mod ca_bundle;
 pub mod client;
+pub mod cloudinit;
+pub mod ek;
 pub mod error;
 pub mod finalizer;
 pub mod guestdata;
 pub mod leader;
+pub mod naming;
 pub mod osartifact;
 pub mod pem;
 pub mod reconciler;

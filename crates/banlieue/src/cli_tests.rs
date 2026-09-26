@@ -47,6 +47,35 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "cloud-hypervisor")]
+    fn provider_cloud_hypervisor_subcommand_parses() {
+        let cli = Cli::parse_from([
+            "banlieue",
+            "provider",
+            "cloud-hypervisor",
+            "--config",
+            "/etc/banlieue/cloud-hypervisor.toml",
+            "--bus",
+            "session",
+        ]);
+        match cli.command {
+            Command::Provider(p) => {
+                assert!(matches!(p.backend, ProviderBackend::CloudHypervisor(_)));
+            }
+            _ => panic!("expected provider subcommand"),
+        }
+    }
+
+    /// Since ADR-0060's External mode, `banlieue bootstrap` installs the
+    /// cluster half of cloud-hypervisor (its ClusterRole and an External
+    /// class); the host script installs the host half.
+    #[test]
+    #[cfg(feature = "cloud-hypervisor")]
+    fn cloud_hypervisor_is_a_cluster_bootstrap_backend() {
+        assert!(COMPILED_BACKENDS.contains(&"cloud-hypervisor"));
+    }
+
+    #[test]
     fn missing_subcommand_is_an_error() {
         // No role given → clap returns an error rather than a parsed Cli.
         assert!(Cli::try_parse_from(["banlieue"]).is_err());

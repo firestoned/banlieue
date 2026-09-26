@@ -335,7 +335,13 @@ spec:
                       credentials. Required keys depend on provider class:
                         vsphere:  username, password
                         proxmox:  username (root@pam!token-id), tokenValue  OR  username, password
-                        libvirt:  optional sshPrivateKey for SSH transports
+                        libvirt:  tls.crt, tls.key (mutual TLS, ADR-0011)
+
+                      Required by every backend that authenticates to a remote endpoint, and
+                      refused by `cloud-hypervisor`, whose provider runs on the hypervisor
+                      host and must read no Secret at all (ADR-0060 Decision 4). When unset
+                      the operator grants no Secret access whatsoever.
+                    nullable: true
                     properties:
                       name:
                         type: string
@@ -357,7 +363,6 @@ spec:
                       uppercase `TLS`), not the auto-derived `insecureSkipTlsVerify`.
                     type: boolean
                 required:
-                - credentialsRef
                 - endpoint
                 type: object
               failureDomainNameOverrides:
@@ -475,6 +480,17 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              ekCaCertificates:
+                description: |-
+                  PEM certificates of the CAs that issue this backend's vTPM
+                  endorsement key certificates: on a Cloud Hypervisor host, the host's
+                  own `swtpm_localca` (ADR-0065 Decision 6). A verifier trusts a
+                  guest's EK only through the host that created it; this is the input
+                  `ekTrustBundle` needs (ADR-0049). Empty when the backend offers no
+                  vTPM or publishes no anchor.
+                items:
+                  type: string
+                type: array
               failureDomains:
                 description: |-
                   Failure domains ("availability zones" — the terms are synonyms;
@@ -570,7 +586,19 @@ spec:
                   deploymentName:
                     description: |-
                       Name of the Deployment running this Provider's controller.
-                      Conventionally `banlieue-provider-<class>-<provider-name>`.
+                      Conventionally `banlieue-provider-<class>-<provider-name>`. Unset for
+                      `External`: there is no Deployment.
+                    nullable: true
+                    type: string
+                  mode:
+                    default: Managed
+                    description: |-
+                      Whether the operator runs this provider (`Managed`) or only gave it an
+                      identity (`External`, ADR-0060 Decision 3). Absent on objects written
+                      before the field existed, which were all Managed.
+                    enum:
+                    - Managed
+                    - External
                     type: string
                   namespace:
                     description: |-
@@ -588,13 +616,14 @@ spec:
                     description: |-
                       Ready replicas reported by that Deployment. Zero means the backend's
                       controller is not currently running, whatever the Provider's other
-                      conditions say.
+                      conditions say. Unset for `External`: whether an external provider is
+                      running is its own `Ready` condition and Lease to say, not the
+                      operator's.
                     format: int32
+                    nullable: true
                     type: integer
                 required:
-                - deploymentName
                 - namespace
-                - readyReplicas
                 type: object
             type: object
         required:

@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Erick Bourgeois, banlieue
 // SPDX-License-Identifier: Apache-2.0
-//! cloud-init NoCloud seed images (ADR-0054).
+//! cloud-init NoCloud seed images (ADR-0054), shared by every provider that
+//! delivers user-data as a disk: libvirt and Cloud Hypervisor.
 //!
 //! vSphere delivers user-data through `guestinfo.userdata`, a hypervisor
 //! channel with no filesystem involved. libvirt has no such channel, so the

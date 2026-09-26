@@ -26,7 +26,7 @@ use banlieue_api::infrastructure::{
     CloudHypervisorMachine, LibvirtMachine, VSphereCluster, VSphereMachine,
 };
 use banlieue_provider_sdk::bootstrap::{init_tracing, serve_health, shutdown_signal};
-use banlieue_provider_sdk::client::build_client;
+use banlieue_provider_sdk::client::build_client_with;
 use banlieue_provider_sdk::leader::{
     DEFAULT_LEASE_DURATION_SECS, DEFAULT_RENEW_PERIOD_SECS, DEFAULT_RETRY_PERIOD_SECS,
     LeaderConfig, acquire_or_wait, renew_forever,
@@ -59,8 +59,10 @@ const LOG_DIRECTIVES: &[&str] = &["kube=warn"];
 /// Command-line arguments for `banlieue controller`.
 #[derive(Debug, Args)]
 pub struct Cli {
-    /// Path to a kubeconfig file. Falls back to in-cluster config or
-    /// `$KUBECONFIG` / `~/.kube/config` when unset.
+    /// Kubeconfig path, or a `KUBECONFIG`-style list (also read from
+    /// `$KUBECONFIG`). When set it wins over every other source, in-cluster
+    /// config included; when unset: in-cluster config, then
+    /// `~/.kube/config`.
     #[arg(long, env = "KUBECONFIG")]
     pub kubeconfig: Option<String>,
 
@@ -132,7 +134,9 @@ pub async fn run(cli: Cli) -> Result<()> {
         "banlieue-controller starting"
     );
 
-    let client = build_client().await.context("constructing kube client")?;
+    let client = build_client_with(cli.kubeconfig.as_deref().map(std::ffi::OsStr::new))
+        .await
+        .context("constructing kube client")?;
 
     tokio::spawn(serve_health(cli.health_port));
 

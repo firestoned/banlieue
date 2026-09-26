@@ -250,6 +250,7 @@ pub async fn compute_status(
         // would contend over the same field.
         workload: None,
         observed_generation: Some(generation),
+        ek_ca_certificates: vec![],
     })
 }
 
@@ -355,6 +356,7 @@ pub fn failed_status(generation: i64, reason: &str, message: String) -> Provider
         // would contend over the same field.
         workload: None,
         observed_generation: Some(generation),
+        ek_ca_certificates: vec![],
     }
 }
 

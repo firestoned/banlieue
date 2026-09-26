@@ -7,6 +7,8 @@ SPDX-License-Identifier: Apache-2.0
 - **Status:** Proposed
 - **Date:** 2026-09-25
 - **Deciders:** Erick Bourgeois
+- **Amended:** 2026-09-26 (Decision 5: the neighbour table is read from
+  `/proc/net/arp`, not netlink)
 - **Related:** [ADR-0050](0050-libvirtmachine-domain-lifecycle.md) (the
   `LibvirtMachine` this mirrors), [ADR-0005](0005-capi-contract-label-codegen.md)
   (contract label), [ADR-0060](0060-cloud-hypervisor-first-class-provider-topology.md)
@@ -112,8 +114,12 @@ and nothing else.
 
 - `addressSource`: `Static` (known before boot from IPAM, ADR-0024 and
   ADR-0033) or `Neighbour` (the host's neighbour table for the NIC's MAC,
-  read over netlink). There is no guest agent source. The spike confirmed
-  the neighbour table sees a DHCP guest on the bridge.
+  read from `/proc/net/arp`, complete entries only, on the machine's
+  bridge). There is no guest agent source. The spike confirmed the
+  neighbour table sees a DHCP guest on the bridge. *Amended 2026-09-26:*
+  this said netlink. `/proc/net/arp` carries the same IPv4 entries,
+  needs no privilege and no netlink dependency; an IPv6 source, when one is
+  needed, is the point to revisit.
 - `observedPowerState`, `guestInstalled`, `installMediaDetached`,
   `tpmAttached`, `tpmEndorsementCertificates`, with the meanings ADR-0043,
   ADR-0044 and ADR-0045 give them on libvirt, so `status_mirror.rs` treats

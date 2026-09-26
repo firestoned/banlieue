@@ -47,6 +47,11 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # `unsafe-usage` is an audit note on every `unsafe` keyword, not a
+      # finding, and `// nosemgrep` does not keep it out of the SARIF upload.
+      # The audit is enforced at compile time instead: crates that use
+      # `unsafe` deny `clippy::undocumented_unsafe_blocks`, so a block without
+      # a `// SAFETY:` justification fails the Clippy job.
       - name: Run Semgrep
         run: |
           semgrep scan \
@@ -55,6 +60,7 @@ jobs:
             --config=p/secrets \
             --config=p/owasp-top-ten \
             --sarif --output=semgrep.sarif \
+            --exclude-rule=rust.lang.security.unsafe-usage.unsafe-usage \
             --metrics=off \
             --error || true
 

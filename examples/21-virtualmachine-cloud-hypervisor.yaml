@@ -1,0 +1,149 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# A complete, minimal VirtualMachine on a Cloud Hypervisor host (ADR-0060 to
+# ADR-0064).
+#
+# The host runs `banlieue provider cloud-hypervisor` itself, installed by
+# scripts/bootstrap-cloud-hypervisor-host.sh. That script writes the host
+# config, /etc/banlieue/cloud-hypervisor.toml, which is the only place host
+# paths and bridges exist. Everything below names classes:
+#
+#   host config                         this file
+#   [storage_classes] default = <dir>   Provider storageClass `standard`
+#                                       -> target.hostClass: default
+#   [network_classes] default = <br>    Provider networkClass `mgmt`
+#                                       -> target.hostClass: default
+#
+# WHAT HAPPENS WHEN YOU APPLY THIS
+#
+#   1. The provider publishes the Provider's failure domain: the classes the
+#      host really serves, and none at all if it lacks KVM, the VMM or its
+#      firmware.
+#   2. It finds `kairos-ubuntu-2404.raw` in the `default` class's image cache
+#      (<dir>/images/, put there by an admin) and marks the VMImage ready for
+#      this Provider (ADR-0064 Decision 5).
+#   3. banlieue-controller schedules the VirtualMachine here and creates a
+#      CloudHypervisorMachine beside it.
+#   4. The provider allocates a guest uid, clones and grows the OS disk,
+#      writes the NoCloud seed, creates a tap on the bridge, and starts the
+#      VMM as banlieue-ch@<guest uid>.service, an instance of a root-owned template.
+#   5. The guest's DHCP address appears in status from the host's neighbour
+#      table.
+#
+# WATCHING IT
+#
+#   kubectl get virtualmachine,cloudhypervisormachine -n banlieue-system
+#   systemctl list-units 'banlieue-ch@*'          # on the host
+#
+# Deleting the VirtualMachine stops the unit and removes the tap, disk, seed
+# and directories; the finalizer is released only once all of that is gone.
+---
+apiVersion: banlieue.io/v1alpha1
+kind: Provider
+metadata:
+  # One Provider is one host; must match [provider].name in the host config.
+  name: ch-host-1
+  namespace: banlieue-system
+  labels:
+    env: edge
+spec:
+  providerClassRef:
+    name: cloud-hypervisor
+  connection:
+    # Informational only — shown in status, never dialled: the host dials
+    # out and nothing dials the host (ADR-0060). A URL because the admission
+    # policy requires one; the `ch://` scheme says it is not an API.
+    endpoint: ch://bar.foo.io
+    # No credentialsRef: this provider runs on the hypervisor and must read
+    # no Secret. Setting one is refused (ADR-0060 Decision 4).
+  capabilities:
+    storageClasses:
+      - name: standard
+        target:
+          hostClass: default
+    networkClasses:
+      - name: mgmt
+        target:
+          hostClass: default
+---
+# `BackingFile`: the file is already in a storage class's image cache on the
+# host. The last path component is the name.
+apiVersion: banlieue.io/v1alpha1
+kind: VMImage
+metadata:
+  name: kairos-ubuntu-2404-ch
+spec:
+  osFamily: linux
+  osDistribution: ubuntu
+  osVersion: "24.04"
+  architecture: amd64
+  guestAgent: cloud-init
+  sources:
+    - providerClass: cloud-hypervisor
+      kind: BackingFile
+      ref: kairos-ubuntu-2404.raw
+---
+apiVersion: banlieue.io/v1alpha1
+kind: VMClass
+metadata:
+  name: ch-small
+spec:
+  hardware:
+    cpus: 2
+    memoryMiB: 4096
+    disks:
+      # One disk on this backend: the OS disk, grown to this size before
+      # first boot. It must be at least the image's size.
+      - name: os
+        sizeGiB: 20
+        storageClass: standard
+        provisioning: thin
+  network:
+    interfaces:
+      - name: eth0
+        networkClass: mgmt
+        ipam: {}
+  firmware: efi
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ch-01-cloud-config
+  namespace: banlieue-system
+data:
+  user-data: |
+    #cloud-config
+    hostname: ch-01
+    users:
+      - name: kairos
+        groups: [admin]
+        ssh_authorized_keys:
+          - ssh-ed25519 AAAA...replace-me admin@bar.foo.io
+    stages:
+      boot:
+        - name: banlieue seed marker
+          files:
+            - path: /run/banlieue-seed
+              content: "seed consumed"
+              permissions: 0644
+---
+apiVersion: banlieue.io/v1alpha1
+kind: VirtualMachine
+metadata:
+  name: ch-01
+  namespace: banlieue-system
+spec:
+  classRef:
+    name: ch-small
+  imageRef:
+    name: kairos-ubuntu-2404-ch
+  placement:
+    providerSelector:
+      matchLabels:
+        env: edge
+  userData:
+    configMapRef:
+      name: ch-01-cloud-config
+  desiredPowerState: PoweredOn
+  migrationPolicy: never

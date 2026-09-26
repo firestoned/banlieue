@@ -438,7 +438,9 @@ pub(crate) async fn read_credentials(
     namespace: &str,
     connection: &ProviderConnection,
 ) -> Result<Credentials> {
-    let secret_name = &connection.credentials_ref.name;
+    let secret_name = connection
+        .credentials_secret()
+        .ok_or(Error::Missing("Provider.spec.connection.credentialsRef"))?;
     let api: Api<Secret> = Api::namespaced(ctx.client.clone(), namespace);
     let secret = api.get(secret_name).await.map_err(|e| {
         // 404 → missing; everything else surfaces as the raw kube error.
@@ -502,6 +504,7 @@ async fn patch_status_success(
         // appears in this server-side-apply patch and ownership is untouched.
         workload: None,
         observed_generation: Some(generation),
+        ek_ca_certificates: vec![],
     };
     patch_provider_status(ctx, namespace, name, status).await
 }

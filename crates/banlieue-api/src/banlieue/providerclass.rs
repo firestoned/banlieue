@@ -42,6 +42,7 @@ pub const DEFAULT_PROVIDER_REPLICAS: i32 = 1;
     derive = "PartialEq",
     printcolumn = r#"{"name":"Backend","type":"string","jsonPath":".spec.backend"}"#,
     printcolumn = r#"{"name":"Image","type":"string","jsonPath":".spec.image.tag"}"#,
+    printcolumn = r#"{"name":"Deployment","type":"string","jsonPath":".spec.deployment"}"#,
     printcolumn = r#"{"name":"Providers","type":"integer","jsonPath":".status.providers"}"#,
     printcolumn = r#"{"name":"Ready","type":"string","jsonPath":".status.conditions[?(@.type=='Ready')].status"}"#,
     printcolumn = r#"{"name":"Age","type":"date","jsonPath":".metadata.creationTimestamp"}"#
@@ -86,7 +87,25 @@ pub struct ProviderClassSpec {
     pub backend: String,
 
     /// Container image every provider workload of this class runs.
-    pub image: ProviderImage,
+    ///
+    /// Required when `deployment` is `Managed` (the default), and must be
+    /// unset when it is `External`: nothing is deployed, so there is no image
+    /// to run. The operator and the admission policy both enforce this
+    /// (ADR-0060 Decision 3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<ProviderImage>,
+
+    /// Whether the operator runs this class's providers, or only gives them
+    /// an identity (ADR-0060 Decision 3). Defaults to `Managed`.
+    ///
+    /// - `Managed`: the operator applies the whole per-Provider workload —
+    ///   Deployment, ServiceAccount, Role, bindings (ADR-0003).
+    /// - `External`: the provider process runs elsewhere (a Cloud Hypervisor
+    ///   host runs it itself); the operator applies only its ServiceAccount,
+    ///   Role and bindings, and no Deployment. `image`, `replicas`,
+    ///   `resources`, `nodeSelector` and `tolerations` must be unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deployment: Option<ProviderDeployment>,
 
     /// Namespace to create provider workloads in.
     ///
@@ -144,7 +163,24 @@ pub struct ProviderClassSpec {
     pub paused: bool,
 }
 
+/// How a class's providers run (ADR-0060 Decision 3).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub enum ProviderDeployment {
+    /// The operator deploys and runs each provider.
+    #[default]
+    Managed,
+    /// The provider runs outside the cluster; the operator applies only its
+    /// identity and RBAC.
+    External,
+}
+
 impl ProviderClassSpec {
+    /// The effective deployment mode: `Managed` unless set.
+    #[must_use]
+    pub fn deployment_mode(&self) -> ProviderDeployment {
+        self.deployment.unwrap_or_default()
+    }
+
     /// Replica count to use for a provider Deployment.
     ///
     /// Falls back to [`DEFAULT_PROVIDER_REPLICAS`] when unset, and clamps

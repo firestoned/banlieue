@@ -11,13 +11,14 @@ mod tests {
     fn class_spec() -> ProviderClassSpec {
         ProviderClassSpec {
             backend: "vsphere".to_string(),
-            image: ProviderImage {
+            image: Some(ProviderImage {
                 repository: "ghcr.io/firestoned/banlieue".to_string(),
                 tag: "v0.1.0".to_string(),
                 digest: None,
                 pull_policy: None,
                 pull_secrets: Vec::new(),
-            },
+            }),
+            deployment: None,
             workload_namespace: None,
             replicas: None,
             resources: None,
@@ -36,7 +37,7 @@ mod tests {
             provider_name: "prod-vc",
             provider_namespace: "banlieue-system",
             workload_namespace: "banlieue-system",
-            credentials_secret: "prod-vc-creds",
+            credentials_secret: Some("prod-vc-creds"),
             build_toleration: &[],
             ca_bundle_config_map: None,
             ca_bundle_secret: None,
@@ -104,7 +105,7 @@ mod tests {
     #[test]
     fn deployment_honours_the_class_pull_policy() {
         let mut class = class_spec();
-        class.image.pull_policy = Some(ImagePullPolicy::Always);
+        class.image.as_mut().expect("image").pull_policy = Some(ImagePullPolicy::Always);
         let deployment = build_deployment(&inputs(&class));
         assert_eq!(
             container(&deployment).image_pull_policy.as_deref(),
@@ -541,7 +542,10 @@ mod tests {
 
         for (kind, meta) in [
             ("ServiceAccount", &set.service_account.metadata),
-            ("Deployment", &set.deployment.metadata),
+            (
+                "Deployment",
+                &set.deployment.as_ref().expect("Managed deploys").metadata,
+            ),
             ("Role", &set.role.metadata),
             ("RoleBinding", &set.role_binding.metadata),
         ] {
@@ -568,7 +572,12 @@ mod tests {
         let set = build_workload(&input, "banlieue-imagebuild");
 
         assert!(
-            set.deployment.metadata.owner_references.is_none(),
+            set.deployment
+                .as_ref()
+                .expect("Managed deploys")
+                .metadata
+                .owner_references
+                .is_none(),
             "Deployment is in another namespace than its Provider"
         );
         assert!(set.service_account.metadata.owner_references.is_none());
@@ -590,7 +599,15 @@ mod tests {
         let expected = "banlieue-provider-vsphere-prod-vc";
 
         assert_eq!(set.service_account.metadata.name.as_deref(), Some(expected));
-        assert_eq!(set.deployment.metadata.name.as_deref(), Some(expected));
+        assert_eq!(
+            set.deployment
+                .as_ref()
+                .expect("Managed deploys")
+                .metadata
+                .name
+                .as_deref(),
+            Some(expected)
+        );
         assert_eq!(set.role.metadata.name.as_deref(), Some(expected));
         assert_eq!(set.role_binding.metadata.name.as_deref(), Some(expected));
     }
@@ -638,7 +655,12 @@ mod tests {
 
         for labels in [
             set.service_account.metadata.labels.as_ref(),
-            set.deployment.metadata.labels.as_ref(),
+            set.deployment
+                .as_ref()
+                .expect("Managed deploys")
+                .metadata
+                .labels
+                .as_ref(),
             set.role.metadata.labels.as_ref(),
             set.role_binding.metadata.labels.as_ref(),
             set.cluster_role_binding.metadata.labels.as_ref(),
@@ -801,7 +823,7 @@ mod tests {
         let class = class_spec();
         let deployment = build_deployment(&inputs(&class));
         let args = container(&deployment).args.as_ref().unwrap();
-        let want = class.image.reference();
+        let want = class.image.as_ref().expect("image").reference();
 
         assert!(
             args.windows(2)
@@ -812,6 +834,134 @@ mod tests {
             container(&deployment).image.as_deref(),
             Some(want.as_str()),
             "and it must be the image the provider itself runs"
+        );
+    }
+
+    // ----------------------------------------------------------------------
+    // External (ADR-0060 Decision 3)
+    // ----------------------------------------------------------------------
+
+    fn external_class() -> ProviderClassSpec {
+        ProviderClassSpec {
+            backend: "cloud-hypervisor".to_string(),
+            image: None,
+            deployment: Some(banlieue_api::banlieue::ProviderDeployment::External),
+            additional_rules: vec![PolicyRule {
+                api_groups: Some(vec!["infrastructure.banlieue.io".into()]),
+                resources: Some(vec!["cloudhypervisormachines".into()]),
+                verbs: vec!["get".into(), "list".into(), "watch".into()],
+                ..Default::default()
+            }],
+            ..class_spec()
+        }
+    }
+
+    fn external_inputs(class: &ProviderClassSpec) -> WorkloadInputs<'_> {
+        WorkloadInputs {
+            class_name: "cloud-hypervisor",
+            provider_name: "grill-a",
+            credentials_secret: None,
+            ..inputs(class)
+        }
+    }
+
+    fn rule_for<'r>(role: &'r Role, group: &str, resource: &str) -> Vec<&'r PolicyRule> {
+        role.rules
+            .as_ref()
+            .unwrap()
+            .iter()
+            .filter(|r| {
+                r.api_groups.as_deref() == Some(&[group.to_string()])
+                    && r.resources.as_deref() == Some(&[resource.to_string()])
+            })
+            .collect()
+    }
+
+    #[test]
+    fn external_gets_an_identity_and_rbac_but_no_deployment_or_import_access() {
+        let class = external_class();
+        let set = build_workload(&external_inputs(&class), "banlieue-imagebuild");
+        assert!(set.deployment.is_none(), "nothing is deployed for External");
+        assert!(set.import_role.is_none() && set.import_role_binding.is_none());
+        assert_eq!(
+            set.service_account.metadata.name.as_deref(),
+            Some("banlieue-provider-cloud-hypervisor-grill-a")
+        );
+        assert!(set.cluster_role_binding.metadata.name.is_some());
+    }
+
+    /// No credentialsRef means no Secret rule at all — never one with an
+    /// empty resourceNames list, which would grant every Secret.
+    #[test]
+    fn no_credentials_means_no_secret_rule() {
+        let class = external_class();
+        let role = build_role(&external_inputs(&class));
+        assert!(rule_for(&role, "", "secrets").is_empty());
+    }
+
+    /// The External Role is scoped to this one Provider by name, which a
+    /// name-filtered watch honours, and lets the provider renew only its own
+    /// token.
+    #[test]
+    fn the_external_role_is_scoped_to_its_own_provider_and_token() {
+        let class = external_class();
+        let i = external_inputs(&class);
+        let role = build_role(&i);
+        for resource in ["providers", "providers/status"] {
+            let rules = rule_for(&role, "banlieue.io", resource);
+            assert!(!rules.is_empty(), "{resource}");
+            for r in rules {
+                assert_eq!(
+                    r.resource_names.as_deref(),
+                    Some(&["grill-a".to_string()][..]),
+                    "{resource}"
+                );
+            }
+        }
+        let token = rule_for(&role, "", "serviceaccounts/token");
+        assert_eq!(token.len(), 1);
+        assert_eq!(token[0].verbs, vec!["create".to_string()]);
+        assert_eq!(
+            token[0].resource_names.as_deref(),
+            Some(&["banlieue-provider-cloud-hypervisor-grill-a".to_string()][..])
+        );
+        // The class's own rules are appended, as for Managed.
+        assert_eq!(
+            rule_for(
+                &role,
+                "infrastructure.banlieue.io",
+                "cloudhypervisormachines"
+            )
+            .len(),
+            1
+        );
+    }
+
+    /// Nothing runs in a workload namespace for External, so the identity
+    /// always lives with the Provider, where its Role is.
+    #[test]
+    fn external_ignores_workload_namespace() {
+        let mut class = external_class();
+        class.workload_namespace = Some("elsewhere".into());
+        let i = WorkloadInputs {
+            workload_namespace: "elsewhere",
+            ..external_inputs(&class)
+        };
+        let sa = build_service_account(&i);
+        assert_eq!(sa.metadata.namespace.as_deref(), Some("banlieue-system"));
+    }
+
+    #[test]
+    fn managed_is_unchanged_it_still_deploys_and_reads_its_credentials() {
+        let class = class_spec();
+        let set = build_workload(&inputs(&class), "banlieue-imagebuild");
+        assert!(set.deployment.is_some());
+        assert!(set.import_role.is_some());
+        let role = build_role(&inputs(&class));
+        assert_eq!(rule_for(&role, "", "secrets").len(), 1);
+        assert!(
+            rule_for(&role, "", "serviceaccounts/token").is_empty(),
+            "Managed pods use projected tokens"
         );
     }
 }

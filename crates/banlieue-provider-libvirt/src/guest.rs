@@ -15,7 +15,6 @@
 //! bound, or retry forever.
 
 use banlieue_libvirt::{AGENT_TIMEOUT_DEFAULT, Domain, Session, domain_qemu_agent_command};
-use banlieue_provider_sdk::pem::der_to_pem;
 use base64::Engine as _;
 use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -142,17 +141,9 @@ pub fn guest_phase_from_read(reply: &str) -> Option<String> {
     guest_text_from_read(reply, MARKER_READ_MAX).map(|t| t.trim().to_string())
 }
 
-/// The subject CN a domain's EK certificate must carry (ADR-0045 Decision 3).
-///
-/// libvirt invokes `swtpm_setup --vmid <domain-name>:<domain-uuid>`, and
-/// `swtpm_localca` puts that string in the certificate's subject CN. Both
-/// halves are values banlieue itself assigned when it defined the domain,
-/// which is what makes the check meaningful: a guest reporting another
-/// member's certificate is caught without any cryptography.
-#[must_use]
-pub fn expected_ek_cn(domain_name: &str, domain_uuid: &str) -> String {
-    format!("{domain_name}:{domain_uuid}")
-}
+// Shared with the Cloud Hypervisor provider (ADR-0065), which mints the
+// same `<name>:<uuid>` CN with `swtpm_setup --vmid`.
+pub use banlieue_provider_sdk::ek::{ek_cn_matches, expected_ek_cn, parse_ek_pem_str};
 
 /// The EK certificate PEM from a `guest-file-read` reply, or `None`.
 ///
@@ -164,49 +155,6 @@ pub fn expected_ek_cn(domain_name: &str, domain_uuid: &str) -> String {
 pub fn parse_ek_pem(reply: &str) -> Option<String> {
     let text = guest_text_from_read(reply, EK_READ_MAX)?;
     parse_ek_pem_str(&text)
-}
-
-/// Normalise and validate a PEM certificate, or `None`.
-///
-/// The string form of [`parse_ek_pem`], for callers that already have the
-/// text rather than an agent reply.
-#[must_use]
-pub fn parse_ek_pem_str(text: &str) -> Option<String> {
-    let (_, pem) = x509_parser::pem::parse_x509_pem(text.as_bytes()).ok()?;
-    // A `PRIVATE KEY` block is valid PEM and is not a certificate.
-    if pem.label != "CERTIFICATE" {
-        return None;
-    }
-    // Parses as X.509, or it is not a certificate whatever its label says.
-    pem.parse_x509().ok()?;
-    // Re-encode from the DER that actually parsed, rather than returning any
-    // slice of the guest's buffer. Slicing is what an earlier version did and
-    // it was wrong in a way that is easy to miss: `x509_parser` SKIPS leading
-    // lines that do not begin a PEM block and counts them in its position, so
-    // "junk\n<valid cert>" sliced back to a string that still carried the
-    // junk, still matched on CN, and was published. Re-encoding makes the
-    // published value exactly one certificate by construction — there is no
-    // input layout that can smuggle bytes past it.
-    Some(der_to_pem(&pem.contents))
-}
-
-/// Whether `pem` is a certificate issued to exactly this domain.
-///
-/// False for anything that is not a parseable certificate, so a caller can
-/// use this as the single gate before publishing (ADR-0045 Decision 3).
-#[must_use]
-pub fn ek_cn_matches(pem: &str, domain_name: &str, domain_uuid: &str) -> bool {
-    let Ok((_, parsed)) = x509_parser::pem::parse_x509_pem(pem.as_bytes()) else {
-        return false;
-    };
-    let Ok(cert) = parsed.parse_x509() else {
-        return false;
-    };
-    let expected = expected_ek_cn(domain_name, domain_uuid);
-    cert.subject()
-        .iter_common_name()
-        .filter_map(|cn| cn.as_str().ok())
-        .any(|cn| cn == expected)
 }
 
 /// Whether a `guest-file-read` reply says the installed system is running.

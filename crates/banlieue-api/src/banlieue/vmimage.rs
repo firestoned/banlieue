@@ -640,6 +640,46 @@ pub struct BuildArtifactStatus {
     /// shared build came from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checksum: Option<String>,
+
+    /// The same artifact, pushed to an OCI registry for providers that run
+    /// outside the cluster and cannot mount the artifacts PVC (ADR-0064).
+    /// Set only when a `cloud-hypervisor` `Url` source exists; `None`
+    /// otherwise, so installs without a host-resident provider need no
+    /// registry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oci_artifact: Option<OciArtifactStatus>,
+}
+
+/// Progress of pushing the build artifact to an OCI registry (ADR-0064
+/// Decision 2). Written by `banlieue-imagebuilder` alongside the rest of
+/// [`BuildArtifactStatus`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct OciArtifactStatus {
+    /// Current push phase.
+    pub phase: OciArtifactPhase,
+
+    /// Digest-pinned reference, `registry/repository@sha256:<hex>`, once the
+    /// push succeeded. Consumers pull **by this digest** and nothing else:
+    /// integrity comes from content addressing, so a tag moved after the
+    /// push cannot change what a host boots.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference: Option<String>,
+
+    /// Human-readable detail, e.g. why the push failed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+/// Phase of an [`OciArtifactStatus`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub enum OciArtifactPhase {
+    /// The push Job exists and has not finished.
+    Pushing,
+    /// Pushed; `reference` is set.
+    Ready,
+    /// The push failed, or no registry is configured.
+    Failed,
 }
 
 /// Kind of build artifact produced for a `VMImage`, aligned 1:1 with

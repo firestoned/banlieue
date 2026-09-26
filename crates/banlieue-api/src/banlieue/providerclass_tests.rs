@@ -20,7 +20,8 @@ mod tests {
     fn sample_spec() -> ProviderClassSpec {
         ProviderClassSpec {
             backend: "vsphere".to_string(),
-            image: sample_image(),
+            image: Some(sample_image()),
+            deployment: None,
             workload_namespace: None,
             replicas: None,
             resources: None,
@@ -172,7 +173,10 @@ mod tests {
         )
         .expect("minimal spec deserializes");
         assert_eq!(spec.backend, "vsphere");
-        assert_eq!(spec.image.reference(), "ghcr.io/firestoned/banlieue:v0.1.0");
+        assert_eq!(
+            spec.image.as_ref().expect("image").reference(),
+            "ghcr.io/firestoned/banlieue:v0.1.0"
+        );
         assert!(!spec.paused);
         assert!(spec.replicas.is_none());
     }
@@ -307,5 +311,26 @@ mod tests {
         let r = image("", Some("sha256:abc123")).reference();
         assert_eq!(r, "ghcr.io/firestoned/banlieue@sha256:abc123");
         assert!(!r.contains(":@"), "{r}");
+    }
+
+    /// ADR-0060 Decision 3: `deployment` defaults to Managed, so every
+    /// existing ProviderClass keeps its behaviour.
+    #[test]
+    fn deployment_defaults_to_managed_and_external_parses() {
+        let managed: ProviderClassSpec = serde_json::from_value(serde_json::json!({
+            "backend": "vsphere",
+            "image": {"repository": "ghcr.io/firestoned/banlieue", "tag": "v0.1.0"}
+        }))
+        .unwrap();
+        assert_eq!(managed.deployment_mode(), ProviderDeployment::Managed);
+
+        // External: no image, because nothing is deployed.
+        let external: ProviderClassSpec = serde_json::from_value(serde_json::json!({
+            "backend": "cloud-hypervisor",
+            "deployment": "External"
+        }))
+        .unwrap();
+        assert_eq!(external.deployment_mode(), ProviderDeployment::External);
+        assert!(external.image.is_none());
     }
 }

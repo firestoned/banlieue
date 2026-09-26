@@ -9,7 +9,7 @@ mod tests {
     /// Every backend with a shipped `deploy/provider-<backend>/rbac/` manifest.
     /// Add a backend here when its ClusterRole lands, so the RBAC-coverage
     /// guards below start policing it too.
-    const BACKENDS_WITH_ROLES: [&str; 2] = ["vsphere", "libvirt"];
+    const BACKENDS_WITH_ROLES: [&str; 3] = ["vsphere", "libvirt", "cloud-hypervisor"];
 
     fn opts() -> InstallOptions {
         InstallOptions {
@@ -365,12 +365,19 @@ mod tests {
             .iter()
             .filter_map(|c| c.metadata.name.clone())
             .collect();
-        assert_eq!(names, vec!["vsphere".to_string(), "libvirt".to_string()]);
+        assert_eq!(
+            names,
+            vec![
+                "vsphere".to_string(),
+                "libvirt".to_string(),
+                "cloud-hypervisor".to_string()
+            ]
+        );
 
         let vsphere = &manifests.provider_classes[0];
         assert_eq!(vsphere.spec.backend, "vsphere");
         assert_eq!(
-            vsphere.spec.image.reference(),
+            vsphere.spec.image.as_ref().expect("image").reference(),
             "ghcr.io/firestoned/banlieue:v0.1.0"
         );
     }
@@ -607,6 +614,37 @@ mod tests {
             subject.namespace.as_deref(),
             Some(DEFAULT_NAMESPACE),
             "the imagebuilder pod runs in the install namespace, not the build namespace"
+        );
+    }
+
+    /// The registry push (ADR-0064) runs as a Job beside the artifacts PVC:
+    /// the imagebuilder creates, reads and replaces it, and reads its pod's
+    /// termination message — in the build namespace only, never a Secret
+    /// verb beyond the cloud-config ones.
+    #[test]
+    fn the_imagebuilder_build_namespace_role_covers_the_push_job() {
+        let manifests = build_role_install(&InstallRole::Imagebuilder, &opts()).unwrap();
+        let rules = manifests.roles[0].rules.as_ref().unwrap();
+        let verbs = |group: &str, resource: &str| -> Vec<String> {
+            rules
+                .iter()
+                .filter(|r| {
+                    r.api_groups.as_deref() == Some(&[group.to_string()][..])
+                        && r.resources
+                            .as_deref()
+                            .is_some_and(|rs| rs.contains(&resource.to_string()))
+                })
+                .flat_map(|r| r.verbs.clone())
+                .collect()
+        };
+        let jobs = verbs("batch", "jobs");
+        for v in ["get", "create", "patch", "delete"] {
+            assert!(jobs.contains(&v.to_string()), "jobs {v}: {jobs:?}");
+        }
+        assert_eq!(verbs("", "pods"), vec!["list".to_string()]);
+        assert_eq!(
+            manifests.roles[0].metadata.namespace.as_deref(),
+            Some(DEFAULT_IMAGEBUILD_NAMESPACE)
         );
     }
 
@@ -961,7 +999,7 @@ mod tests {
             ..opts()
         };
         let class = build_provider_class("libvirt", &opts);
-        let reference = class.spec.image.reference();
+        let reference = class.spec.image.as_ref().expect("image").reference();
         assert!(
             reference.ends_with("@sha256:0f756fa0"),
             "the class must pin the digest: {reference}"
@@ -975,7 +1013,15 @@ mod tests {
     #[test]
     fn without_a_digest_a_class_still_references_its_tag() {
         let class = build_provider_class("libvirt", &opts());
-        assert!(!class.spec.image.reference().contains('@'));
+        assert!(
+            !class
+                .spec
+                .image
+                .as_ref()
+                .expect("image")
+                .reference()
+                .contains('@')
+        );
     }
 
     // ------------------------------------------------------------------
@@ -1023,6 +1069,117 @@ mod tests {
             extra.is_empty(),
             "these CRDs are installed by bootstrap but were never generated \
              into deploy/crds: {extra:?}. Run the regen-crds skill."
+        );
+    }
+
+    // ----------------------------------------------------------------------
+    // cloud-hypervisor: External (ADR-0060 Decisions 3 and 5)
+    // ----------------------------------------------------------------------
+
+    fn triples(rules: &[PolicyRule]) -> Vec<(String, String, String)> {
+        let mut out = Vec::new();
+        for r in rules {
+            for g in r.api_groups.clone().unwrap_or_default() {
+                for res in r.resources.clone().unwrap_or_default() {
+                    for v in &r.verbs {
+                        out.push((g.clone(), res.clone(), v.clone()));
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn the_seeded_cloud_hypervisor_class_is_external_and_carries_its_machine_rules() {
+        let class = build_provider_class("cloud-hypervisor", &opts());
+        assert_eq!(
+            class.spec.deployment_mode(),
+            banlieue_api::banlieue::ProviderDeployment::External
+        );
+        assert!(
+            class.spec.image.is_none(),
+            "nothing is deployed, so no image"
+        );
+        let t = triples(&class.spec.additional_rules);
+        for want in [
+            ("cloudhypervisormachines", "patch"),
+            ("cloudhypervisormachines/status", "patch"),
+            ("cloudhypervisormachines/finalizers", "update"),
+        ] {
+            assert!(
+                t.iter().any(|(g, r, v)| g == "infrastructure.banlieue.io"
+                    && r == want.0
+                    && v == want.1),
+                "{want:?} missing from {t:?}"
+            );
+        }
+        assert!(
+            !t.iter().any(|(_, _, v)| v == "create" || v == "delete"),
+            "the controller owns machines; the provider never creates or deletes them"
+        );
+        assert!(
+            crate::reconciler::providerclass::assess(&class.spec, true).is_ready(),
+            "the seeded class must pass the operator's own readiness check"
+        );
+    }
+
+    /// RBAC refuses a grantor any permission it does not hold. Every rule the
+    /// operator writes into an External provider's Role must therefore be in
+    /// its ClusterRole — except the token rule, which it holds only in its
+    /// namespaced Role so it can never mint tokens cluster-wide.
+    #[test]
+    fn the_operator_holds_every_rule_it_grants_an_external_provider() {
+        let class = build_provider_class("cloud-hypervisor", &opts());
+        let inputs = crate::workload::WorkloadInputs {
+            class_name: "cloud-hypervisor",
+            class: &class.spec,
+            provider_name: "host-a",
+            provider_namespace: "banlieue-system",
+            workload_namespace: "banlieue-system",
+            credentials_secret: None,
+            build_toleration: &[],
+            ca_bundle_config_map: None,
+            ca_bundle_secret: None,
+            owner: None,
+        };
+        let role = crate::workload::build_role(&inputs);
+        let cluster = granted_triples(&InstallRole::Operator);
+        let namespaced = triples(&build_operator_token_role(&opts()).rules.unwrap_or_default());
+        for (g, r, v) in triples(&role.rules.unwrap_or_default()) {
+            let held = cluster.contains(&(g.clone(), r.clone(), v.clone()))
+                || namespaced.contains(&(g.clone(), r.clone(), v.clone()));
+            assert!(held, "operator cannot grant {v} on {r:?} (group {g:?})");
+            if r == "serviceaccounts/token" {
+                assert!(
+                    !cluster.contains(&(g.clone(), r.clone(), v.clone())),
+                    "token minting must never be cluster-wide for the operator"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn bootstrap_emits_the_operator_token_role_as_the_manifest_declares() {
+        let manifest = include_str!("../../../deploy/operator/rbac/role.yaml");
+        let first = manifest.split("\n---\n").next().unwrap();
+        let declared: Role = serde_yaml::from_str(first).unwrap();
+        let built = build_operator_token_role(&opts());
+        assert_eq!(built.metadata.name, declared.metadata.name);
+        assert_eq!(built.rules, declared.rules);
+
+        let install = build_operator_install(&opts(), &["cloud-hypervisor"], false).unwrap();
+        assert!(
+            install
+                .roles
+                .iter()
+                .any(|r| r.metadata.name == declared.metadata.name)
+        );
+        assert!(
+            install
+                .role_bindings
+                .iter()
+                .any(|b| b.metadata.name == declared.metadata.name)
         );
     }
 }

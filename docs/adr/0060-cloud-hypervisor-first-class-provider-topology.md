@@ -79,7 +79,8 @@ one host.** It talks to:
 
 - the Kubernetes API server, **outbound only**, with its own scoped
   identity (Decision 5);
-- the local VMM sockets and systemd (ADR-0063), and netlink for taps.
+- the local VMM sockets and systemd (ADR-0063), and the tun and bridge
+  ioctls for taps.
 
 It opens no listening socket. The host pulls; nothing pushes to it.
 Non-negotiable 1 (no RPC between controller and providers) holds as
@@ -160,6 +161,48 @@ The provider binary on the host is upgraded like any other host package
 units, not children of the provider (ADR-0063), so a provider restart or
 upgrade does not restart them. The provider refuses to start against a
 `ProviderClass` whose `spec.backend` it was not built with.
+
+### Implementation notes (2026-09-26)
+
+Decisions 3–5 are implemented. Where the code settled a detail the text
+left open, or differs from it:
+
+- **`image` is optional in the schema**, required for `Managed` and
+  forbidden for `External` by the operator (`ClassReadiness::InvalidImage`,
+  `PodFieldsOnExternal`) and by admission
+  (`deploy/admission/providerclass-guardrails.yaml`). Existing classes are
+  unaffected: `deployment` defaults to `Managed`.
+- **`status.workload`** gains `mode`; `deploymentName` and `readyReplicas`
+  became optional and are absent for `External`.
+- **An External ServiceAccount always lives in the Provider's namespace**,
+  whatever `workloadNamespace` says: nothing runs in a workload namespace.
+- **The operator does not create the Lease**; the Role lets the provider
+  create it. Its name is the operator's workload name for the Provider,
+  which the provider derives from its own `providerClassRef` — the naming
+  moved to `banlieue-provider-sdk::naming` so both compute it one way.
+- **Renewal replaces a token file, not the kubeconfig.** The host
+  kubeconfig names `tokenFile: /etc/banlieue/credentials/token`; the kube
+  client re-reads it every minute, so the kubeconfig holds no secret and
+  never changes. The provider learns its ServiceAccount and expiry from
+  its own token's claims.
+- **The operator holds `serviceaccounts/token` only in its install
+  namespace** (`deploy/operator/rbac/role.yaml`), never in its ClusterRole,
+  so External Providers must live in that namespace.
+- **`banlieue bootstrap cloud-hypervisor-host`** issues the first
+  credential into a directory for `scripts/ch-host-provider-up.sh` to
+  install. `banlieue bootstrap operator` installs the cluster half —
+  `deploy/provider-cloud-hypervisor/rbac/clusterrole.yaml` and a seeded
+  `cloud-hypervisor` class carrying the machine rules — so
+  `cloud-hypervisor` is now a bootstrap backend.
+- **Admission** requires `credentialsRef` for every class except
+  `cloud-hypervisor` and forbids it there
+  (`deploy/admission/provider-connection.yaml`); the provider also refuses
+  one at runtime (`Ready=False`, `CredentialsNotAllowed`, no failure
+  domain).
+
+A consequence this ADR did not state: **a stolen token can renew itself**,
+so it does not die on its own. Revocation is deleting the ServiceAccount,
+which invalidates every token bound to it (threat model §8, §7.11).
 
 ## Consequences
 

@@ -248,6 +248,10 @@ into `ipconfigN`.
       (test cluster maintained by the project).
 - [ ] Snippet lifecycle test: create-VM-then-delete leaves no
       orphaned snippets.
+- [ ] The `proxmox` column of the provider comparison
+      (`docs/src/reference/provider-comparison.md`): `make provider-bench`
+      with `BANLIEUE_BENCH_LABEL=proxmox` once a VM reaches `Ready`. Added
+      2026-09-27 from roadmap 09.
 
 ## Definition of done
 

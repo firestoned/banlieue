@@ -15,6 +15,7 @@ authors.workspace = true
 [dependencies]
 banlieue-api = { path = "../banlieue-api" }
 banlieue-provider-sdk = { path = "../banlieue-provider-sdk" }
+banlieue-oci = { path = "../banlieue-oci" }
 
 kube.workspace = true
 k8s-openapi.workspace = true
@@ -33,6 +34,8 @@ futures.workspace = true
 tracing.workspace = true
 
 clap.workspace = true
+# The push Job's HTTP client, handed to banlieue-oci.
+reqwest.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }

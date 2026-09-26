@@ -1,0 +1,39 @@
+[package]
+name = "banlieue-oci"
+description = "Minimal first-party OCI distribution client: push one file as a single-layer OCI artifact, and pull it back by digest into a sparse file. Pure Rust (ADR-0064)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+# Protocol only, like banlieue-libvirt and banlieue-cloud-hypervisor: no
+# `kube`, no banlieue API types. Everything but flate2 (and its pure-Rust
+# backends) was already in Cargo.lock.
+
+[dependencies]
+reqwest.workspace = true
+tokio = { workspace = true, features = ["fs", "io-util"] }
+tokio-util.workspace = true
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+base64.workspace = true
+# gzip for the layer: OCI's default layer compression, and pure Rust through
+# its default `miniz_oxide` backend — no native library (roadmap 09's "no
+# new native dependency"). ADR-0064 said zstd; the amendment explains.
+flate2 = "1"
+# Only to install the ring provider reqwest's `rustls-no-provider` needs.
+rustls.workspace = true
+# The compressed layer copy: an unpredictable name, mode 0600, created with
+# O_EXCL and removed on drop — so concurrent pushes cannot collide and a
+# failed push leaves nothing behind. Already a workspace dependency.
+tempfile.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

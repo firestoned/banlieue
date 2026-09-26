@@ -126,4 +126,55 @@ mod tests {
         );
         assert_eq!(patch["status"]["conditions"][0]["type"], "Ready");
     }
+
+    fn source(class: &str, kind: banlieue_api::banlieue::ImageSourceKind) -> ImageSource {
+        ImageSource {
+            provider_class: class.to_string(),
+            kind,
+            reference: "k".to_string(),
+            import_from: None,
+            checksum: None,
+        }
+    }
+
+    /// Only a cloud-hypervisor `Url` source puts files in host caches.
+    #[test]
+    fn only_cloud_hypervisor_url_images_need_host_release() {
+        use banlieue_api::banlieue::ImageSourceKind::{BackingFile, Url};
+        assert!(needs_host_release(&[
+            source("libvirt", Url),
+            source("cloud-hypervisor", Url)
+        ]));
+        assert!(!needs_host_release(&[source(
+            "cloud-hypervisor",
+            BackingFile
+        )]));
+        assert!(!needs_host_release(&[source("libvirt", Url)]));
+    }
+
+    /// The finalizer waits for every existing cloud-hypervisor host that
+    /// reported a row to say `Released`. A host whose Provider is gone, or
+    /// another backend's row, is not waited on.
+    #[test]
+    fn deletion_waits_only_for_existing_hosts_that_have_not_released() {
+        let hosts = std::collections::BTreeSet::from([
+            ("banlieue-system".to_string(), "ch-a".to_string()),
+            ("banlieue-system".to_string(), "ch-b".to_string()),
+        ]);
+        let rows = [
+            row("ch-a", false, Some(HOST_RELEASED)),
+            row("ch-b", true, Some("Reconciled")),
+            row("ch-gone", true, Some("Reconciled")),
+            row("vc-1", true, None),
+        ];
+        assert_eq!(
+            hosts_pending_release(&rows, &hosts),
+            vec!["banlieue-system/ch-b"]
+        );
+        let released = [
+            row("ch-a", false, Some(HOST_RELEASED)),
+            row("ch-b", false, Some(HOST_RELEASED)),
+        ];
+        assert!(hosts_pending_release(&released, &hosts).is_empty());
+    }
 }

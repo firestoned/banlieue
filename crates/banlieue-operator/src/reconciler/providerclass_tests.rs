@@ -14,13 +14,14 @@ mod tests {
     fn class(backend: &str, tag: &str) -> ProviderClassSpec {
         ProviderClassSpec {
             backend: backend.to_string(),
-            image: ProviderImage {
+            image: Some(ProviderImage {
                 repository: "ghcr.io/firestoned/banlieue".to_string(),
                 tag: tag.to_string(),
                 digest: None,
                 pull_policy: Some(ImagePullPolicy::IfNotPresent),
                 pull_secrets: Vec::new(),
-            },
+            }),
+            deployment: None,
             workload_namespace: None,
             replicas: None,
             resources: None,
@@ -41,9 +42,9 @@ mod tests {
                 },
                 connection: ProviderConnection {
                     endpoint: "https://vcenter.invalid/sdk".to_string(),
-                    credentials_ref: LocalObjectReference {
+                    credentials_ref: Some(LocalObjectReference {
                         name: "creds".to_string(),
-                    },
+                    }),
                     insecure_skip_tls_verify: false,
                     ca_bundle: None,
                 },
@@ -119,6 +120,46 @@ mod tests {
     }
 
     #[test]
+    fn a_managed_class_without_an_image_is_not_ready() {
+        let mut c = class("vsphere", "v0.1.0");
+        c.image = None;
+        assert_eq!(assess(&c, true), ClassReadiness::InvalidImage);
+    }
+
+    /// ADR-0060 Decision 3: an External class deploys nothing, so an image
+    /// or any pod shape on it is a mistake to surface, not to ignore.
+    #[test]
+    fn an_external_class_is_ready_without_an_image_and_refuses_pod_fields() {
+        let mut c = class("cloud-hypervisor", "v0.1.0");
+        c.deployment = Some(banlieue_api::banlieue::ProviderDeployment::External);
+        assert_eq!(
+            assess(&c, true),
+            ClassReadiness::PodFieldsOnExternal,
+            "image set"
+        );
+        c.image = None;
+        assert_eq!(assess(&c, true), ClassReadiness::Ready);
+        c.replicas = Some(2);
+        assert_eq!(
+            assess(&c, true),
+            ClassReadiness::PodFieldsOnExternal,
+            "replicas set"
+        );
+        c.replicas = None;
+        c.node_selector.insert("k".into(), "v".into());
+        assert_eq!(
+            assess(&c, true),
+            ClassReadiness::PodFieldsOnExternal,
+            "nodeSelector set"
+        );
+        assert!(
+            ClassReadiness::PodFieldsOnExternal
+                .message("cloud-hypervisor")
+                .contains("External")
+        );
+    }
+
+    #[test]
     fn a_complete_class_is_ready() {
         let assessment = assess(&class("vsphere", "v0.1.0"), true);
         assert_eq!(assessment, ClassReadiness::Ready);
@@ -144,6 +185,7 @@ mod tests {
             (ClassReadiness::Ready, "Ready"),
             (ClassReadiness::MissingClusterRole, "MissingClusterRole"),
             (ClassReadiness::InvalidImage, "InvalidImage"),
+            (ClassReadiness::PodFieldsOnExternal, "PodFieldsOnExternal"),
         ] {
             assert_eq!(assessment.reason(), expected);
             assert!(

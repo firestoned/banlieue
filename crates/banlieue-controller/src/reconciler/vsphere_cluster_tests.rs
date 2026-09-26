@@ -44,9 +44,9 @@ mod tests {
             },
             connection: ProviderConnection {
                 endpoint: "https://vc.example.com/sdk".to_string(),
-                credentials_ref: LocalObjectReference {
+                credentials_ref: Some(LocalObjectReference {
                     name: "creds".to_string(),
-                },
+                }),
                 insecure_skip_tls_verify: false,
                 ca_bundle: None,
             },
@@ -64,6 +64,7 @@ mod tests {
             conditions: Vec::new(),
             workload: None,
             observed_generation: None,
+            ek_ca_certificates: vec![],
         });
         p
     }
@@ -242,9 +243,9 @@ mod tests {
                 },
                 connection: ProviderConnection {
                     endpoint: "https://x/sdk".to_string(),
-                    credentials_ref: LocalObjectReference {
+                    credentials_ref: Some(LocalObjectReference {
                         name: "c".to_string(),
-                    },
+                    }),
                     insecure_skip_tls_verify: false,
                     ca_bundle: None,
                 },

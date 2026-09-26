@@ -404,6 +404,36 @@ Jobs themselves live in the build namespace:
 kubectl -n banlieue-imagebuild get jobs -l banlieue.io/vmimage=kairos-ubuntu-2404
 ```
 
+### Cloud Hypervisor hosts: pushed to a registry
+
+A Cloud Hypervisor provider runs on its KVM host, outside the cluster, and
+cannot mount the artifacts PVC. For a `Url` source with `providerClass:
+cloud-hypervisor`, the imagebuilder pushes the finished artifact to an OCI
+registry instead (ADR-0064), and each host pulls it by digest:
+
+```sh
+# banlieue-imagebuilder-config (or the matching flags)
+BANLIEUE_REGISTRY_REPOSITORY: "registry.internal:5000/banlieue/disks"   # --registry-repository
+BANLIEUE_REGISTRY_CREDENTIALS_SECRET: "banlieue-registry-push"          # --registry-credentials-secret
+```
+
+The Secret is `kubernetes.io/basic-auth` (`username`, `password`) in the
+build namespace; leave it unset for an anonymous registry.
+`--registry-plain-http` is for a registry on a private network or a test.
+The push Job runs the banlieue image itself (`--push-image`) with no
+ServiceAccount token, and each build is tagged with its `OSArtifact` uid:
+
+```sh
+kubectl -n banlieue-imagebuild get jobs -l app.kubernetes.io/component=registry-push
+kubectl get vmimage kairos-ubuntu-2404-ch -o jsonpath='{.status.buildArtifact.ociArtifact}'
+# {"phase":"Ready","reference":"registry.internal:5000/banlieue/disks@sha256:…"}
+```
+
+With no repository configured, a `cloud-hypervisor` `Url` source reports
+`ociArtifact.phase: Failed` saying so; installs without one need no
+registry. The host side is in the
+[Cloud Hypervisor host guide](cloud-hypervisor-host.md#images-from-a-registry-url-sources).
+
 ## Integrity and lifecycle (security review 2026-07-31)
 
 Two guarantees hold over everything above:
@@ -429,7 +459,8 @@ Two guarantees hold over everything above:
     need loop devices. That means anyone granted pod-create there can mount
     the host filesystem — treat every RoleBinding in `banlieue-imagebuild` as
     a node-root grant. Nothing but kairos' build pods, the providers' import
-    Jobs, and the artifacts PVC should ever run there. The import Jobs
+    Jobs, the registry push Jobs, and the artifacts PVC should ever run
+    there. The import Jobs
     mitigate this by running under a dedicated read-only ServiceAccount,
     never the provider controller's own identity (ADR-0016 §4).
 

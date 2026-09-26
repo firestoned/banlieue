@@ -15,8 +15,8 @@
 use std::sync::Arc;
 
 use banlieue_api::banlieue::{
-    Provider, ProviderClass, ProviderClassSpec, ProviderConnection, ProviderSpec,
-    ProviderWorkloadStatus,
+    Provider, ProviderClass, ProviderClassSpec, ProviderConnection, ProviderDeployment,
+    ProviderSpec, ProviderWorkloadStatus, WorkloadMode,
 };
 use banlieue_provider_sdk::finalizer::{ensure_finalizer, remove_finalizer};
 use banlieue_provider_sdk::reconciler::{requeue_default, requeue_on_error};
@@ -114,11 +114,41 @@ pub fn workload_status(
         .unwrap_or(0);
 
     ProviderWorkloadStatus {
-        deployment_name: name.to_string(),
+        mode: WorkloadMode::Managed,
+        deployment_name: Some(name.to_string()),
         namespace: namespace.to_string(),
-        ready_replicas,
+        ready_replicas: Some(ready_replicas),
         observed_generation,
     }
+}
+
+/// The status stanza for an External provider (ADR-0060 Decision 3): its
+/// mode and the namespace its identity lives in, and nothing about a
+/// Deployment — there is none. Whether the process is running is the
+/// provider's own `Ready` condition and Lease to say.
+#[must_use]
+pub fn external_workload_status(
+    namespace: &str,
+    observed_generation: Option<i64>,
+) -> ProviderWorkloadStatus {
+    ProviderWorkloadStatus {
+        mode: WorkloadMode::External,
+        deployment_name: None,
+        namespace: namespace.to_string(),
+        ready_replicas: None,
+        observed_generation,
+    }
+}
+
+/// Why a class cannot produce a workload for its mode, if it cannot.
+///
+/// A Managed class needs an image to run; an External one runs nothing.
+/// The class's own status reports this too (`providerclass::assess`); this
+/// check stops the Provider reconciler from applying a half-built set.
+#[must_use]
+pub fn missing_image(class: &ProviderClassSpec) -> Option<&'static str> {
+    (class.deployment_mode() == ProviderDeployment::Managed && class.image.is_none())
+        .then_some("ProviderClass.spec.image is required for a Managed class")
 }
 
 /// Reconcile one `Provider` into its workload.
@@ -149,6 +179,11 @@ pub async fn reconcile(provider: Arc<Provider>, ctx: Arc<Context>) -> Result<Act
         emit(&ctx, &provider, events::class_not_found(class_name)).await;
         return Ok(requeue_default());
     };
+
+    if let Some(why) = missing_image(&class.spec) {
+        warn!(provider = %name, class = %class_name, "{why}");
+        return Ok(requeue_default());
+    }
 
     if let Some(reason) = skip_reason(&provider.spec, &class.spec) {
         info!(provider = %name, reason = reason.as_str(), "skipping workload reconcile");
@@ -226,18 +261,29 @@ async fn prune_orphans(
     let name = provider.name_any();
     let selector = owned_by_selector(provider_namespace, &name);
 
-    let keep_namespaced = vec![workload_name(&class.name_any(), &name)];
-    // Roles and RoleBindings come in pairs: the controller's, and the
-    // read-only import identity's (ADR-0016 §4).
-    let keep_rbac = vec![
-        workload_name(&class.name_any(), &name),
-        format!("{}-import", workload_name(&class.name_any(), &name)),
-    ];
+    let external = class.spec.deployment_mode() == ProviderDeployment::External;
+    let identity = vec![workload_name(&class.name_any(), &name)];
+    // External deploys nothing: any Deployment left from a Managed past is
+    // an orphan to remove, not something to keep.
+    let keep_deployments = if external {
+        Vec::new()
+    } else {
+        identity.clone()
+    };
+    // Roles and RoleBindings come in pairs for Managed: the controller's, and
+    // the read-only import identity's (ADR-0016 §4). External has no import.
+    let mut keep_rbac = identity.clone();
+    if !external {
+        keep_rbac.push(format!(
+            "{}-import",
+            workload_name(&class.name_any(), &name)
+        ));
+    }
     let keep_cluster_scoped = cluster_scoped_name(&class.name_any(), provider_namespace, &name);
 
     let mut pruned = Vec::new();
-    pruned.extend(prune_namespaced::<Deployment>(ctx, &selector, &keep_namespaced).await?);
-    pruned.extend(prune_namespaced::<ServiceAccount>(ctx, &selector, &keep_namespaced).await?);
+    pruned.extend(prune_namespaced::<Deployment>(ctx, &selector, &keep_deployments).await?);
+    pruned.extend(prune_namespaced::<ServiceAccount>(ctx, &selector, &identity).await?);
     pruned.extend(prune_namespaced::<Role>(ctx, &selector, &keep_rbac).await?);
     pruned.extend(prune_namespaced::<RoleBinding>(ctx, &selector, &keep_rbac).await?);
     pruned.extend(prune_cluster_role_bindings(ctx, &selector, Some(&keep_cluster_scoped)).await?);
@@ -334,7 +380,7 @@ async fn apply_workload(
         provider_name: &provider.name_any(),
         provider_namespace,
         workload_namespace: &workload_namespace,
-        credentials_secret: &provider.spec.connection.credentials_ref.name,
+        credentials_secret: provider.spec.connection.credentials_secret(),
         build_toleration: &ctx.build_toleration,
         ca_bundle_config_map: ca_config_map.as_deref(),
         ca_bundle_secret: ca_secret.as_deref(),
@@ -342,8 +388,15 @@ async fn apply_workload(
     };
     let set = build_workload(&inputs, &ctx.imagebuild_namespace);
 
+    // External keeps its ServiceAccount with the Provider (workload.rs).
+    let service_account_namespace = set
+        .service_account
+        .metadata
+        .namespace
+        .clone()
+        .unwrap_or_else(|| workload_namespace.clone());
     let service_accounts: Api<ServiceAccount> =
-        Api::namespaced(ctx.client.clone(), &workload_namespace);
+        Api::namespaced(ctx.client.clone(), &service_account_namespace);
     let deployments: Api<Deployment> = Api::namespaced(ctx.client.clone(), &workload_namespace);
     let roles: Api<Role> = Api::namespaced(ctx.client.clone(), provider_namespace);
     let role_bindings: Api<RoleBinding> = Api::namespaced(ctx.client.clone(), provider_namespace);
@@ -357,20 +410,27 @@ async fn apply_workload(
     // The import identity: read-only, cross-namespace, so the import Job can
     // reach this Provider and its credentials from the build namespace
     // (ADR-0016 §4).
-    server_side_apply(&roles, FIELD_MANAGER, &set.import_role).await?;
-    server_side_apply(&role_bindings, FIELD_MANAGER, &set.import_role_binding).await?;
+    if let Some(import_role) = &set.import_role {
+        server_side_apply(&roles, FIELD_MANAGER, import_role).await?;
+    }
+    if let Some(import_role_binding) = &set.import_role_binding {
+        server_side_apply(&role_bindings, FIELD_MANAGER, import_role_binding).await?;
+    }
     server_side_apply(
         &cluster_role_bindings,
         FIELD_MANAGER,
         &set.cluster_role_binding,
     )
     .await?;
-    server_side_apply(&deployments, FIELD_MANAGER, &set.deployment).await?;
+    if let Some(deployment) = &set.deployment {
+        server_side_apply(&deployments, FIELD_MANAGER, deployment).await?;
+    }
 
     debug!(
         provider = %provider.name_any(),
         namespace = %workload_namespace,
-        workload = %set.deployment.name_any(),
+        workload = %set.service_account.name_any(),
+        external = set.deployment.is_none(),
         "workload applied"
     );
     Ok(())
@@ -384,18 +444,20 @@ async fn publish_status(
     providers: &Api<Provider>,
     ctx: &Context,
 ) -> Result<()> {
-    let workload_namespace = class.spec.workload_namespace_or(provider_namespace);
-    let name = workload_name(&class.name_any(), &provider.name_any());
-
-    let deployments: Api<Deployment> = Api::namespaced(ctx.client.clone(), workload_namespace);
-    let deployment = deployments.get_opt(&name).await?;
-
-    let status = workload_status(
-        deployment.as_ref(),
-        workload_namespace,
-        &name,
-        provider.meta().generation,
-    );
+    let status = if class.spec.deployment_mode() == ProviderDeployment::External {
+        external_workload_status(provider_namespace, provider.meta().generation)
+    } else {
+        let workload_namespace = class.spec.workload_namespace_or(provider_namespace);
+        let name = workload_name(&class.name_any(), &provider.name_any());
+        let deployments: Api<Deployment> = Api::namespaced(ctx.client.clone(), workload_namespace);
+        let deployment = deployments.get_opt(&name).await?;
+        workload_status(
+            deployment.as_ref(),
+            workload_namespace,
+            &name,
+            provider.meta().generation,
+        )
+    };
 
     // Patch only `status.workload`; `status.conditions` stays owned by the
     // provider's own field manager (ADR-0012).

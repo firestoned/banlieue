@@ -1,0 +1,31 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# Shared ClusterRole for the host-resident Cloud Hypervisor provider
+# (ADR-0060). Installed by `banlieue bootstrap operator`; the operator binds
+# it to each cloud-hypervisor Provider's ServiceAccount and never creates it
+# (ADR-0012).
+#
+# Only what a namespaced Role cannot hold: VMImage is cluster-scoped. Read
+# images; patch status to publish this host's perProvider[] row (merge-keyed,
+# ADR-0015). No create, no delete, no spec writes, no Secrets.
+#
+# Everything else the provider needs — its own Provider and status by name,
+# its CloudHypervisorMachines, its Lease, renewing its own token — is in the
+# per-instance Role the operator builds for an External class
+# (crates/banlieue-operator/src/workload.rs, the ProviderClass's
+# additionalRules).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: banlieue-provider-cloud-hypervisor
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: provider-cloud-hypervisor
+rules:
+  - apiGroups: ["banlieue.io"]
+    resources: ["vmimages"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["banlieue.io"]
+    resources: ["vmimages/status"]
+    verbs: ["patch"]

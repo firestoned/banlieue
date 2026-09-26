@@ -25,6 +25,7 @@ pub mod cloud_config_merge;
 pub mod context;
 pub mod error;
 pub mod importer_image;
+pub mod oci_push;
 pub mod reconciler;
 
 pub use app::{Cli, run};

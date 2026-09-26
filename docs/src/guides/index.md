@@ -40,6 +40,11 @@ on a real cluster, using the released container image
     provider: pinned VMM and firmware, per-guest uids, a per-host EK CA, and a
     safe way to add a bridge to a remote machine.
 
+- :material-shield-lock: **[Cloud Hypervisor Host: systemd, polkit, identities](cloud-hypervisor-host-systemd.md)**
+
+    Every unit setting, polkit rule, tmpfiles entry and guest identity the
+    Cloud Hypervisor host needs, why each is there, and what breaks without it.
+
 - :material-cloud-check: **[cloud-init on libvirt](cloud-init-on-libvirt.md)**
 
     How `spec.userData` reaches a guest as a NoCloud seed, why the image is

@@ -79,6 +79,7 @@ mod tests {
             disks: vec![],
             nics: vec![],
             tpm_socket: None,
+            vsock_socket: None,
             serial_file: PathBuf::from("/srv/serial.log"),
             landlock: false,
         }

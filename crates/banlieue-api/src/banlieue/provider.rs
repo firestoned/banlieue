@@ -135,8 +135,14 @@ pub struct ProviderConnection {
     /// credentials. Required keys depend on provider class:
     ///   vsphere:  username, password
     ///   proxmox:  username (root@pam!token-id), tokenValue  OR  username, password
-    ///   libvirt:  optional sshPrivateKey for SSH transports
-    pub credentials_ref: LocalObjectReference,
+    ///   libvirt:  tls.crt, tls.key (mutual TLS, ADR-0011)
+    ///
+    /// Required by every backend that authenticates to a remote endpoint, and
+    /// refused by `cloud-hypervisor`, whose provider runs on the hypervisor
+    /// host and must read no Secret at all (ADR-0060 Decision 4). When unset
+    /// the operator grants no Secret access whatsoever.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credentials_ref: Option<LocalObjectReference>,
 
     /// Skip TLS verification. Applies to vsphere and proxmox.
     ///
@@ -384,6 +390,15 @@ pub struct ProviderStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workload: Option<ProviderWorkloadStatus>,
 
+    /// PEM certificates of the CAs that issue this backend's vTPM
+    /// endorsement key certificates: on a Cloud Hypervisor host, the host's
+    /// own `swtpm_localca` (ADR-0065 Decision 6). A verifier trusts a
+    /// guest's EK only through the host that created it; this is the input
+    /// `ekTrustBundle` needs (ADR-0049). Empty when the backend offers no
+    /// vTPM or publishes no anchor.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ek_ca_certificates: Vec<String>,
+
     /// The generation of the spec that the controller has reconciled.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub observed_generation: Option<i64>,
@@ -397,9 +412,17 @@ pub struct ProviderStatus {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderWorkloadStatus {
+    /// Whether the operator runs this provider (`Managed`) or only gave it an
+    /// identity (`External`, ADR-0060 Decision 3). Absent on objects written
+    /// before the field existed, which were all Managed.
+    #[serde(default)]
+    pub mode: WorkloadMode,
+
     /// Name of the Deployment running this Provider's controller.
-    /// Conventionally `banlieue-provider-<class>-<provider-name>`.
-    pub deployment_name: String,
+    /// Conventionally `banlieue-provider-<class>-<provider-name>`. Unset for
+    /// `External`: there is no Deployment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deployment_name: Option<String>,
 
     /// Namespace the Deployment was created in — the ProviderClass's
     /// `workloadNamespace`, or the operator's own namespace when unset.
@@ -407,13 +430,40 @@ pub struct ProviderWorkloadStatus {
 
     /// Ready replicas reported by that Deployment. Zero means the backend's
     /// controller is not currently running, whatever the Provider's other
-    /// conditions say.
-    pub ready_replicas: i32,
+    /// conditions say. Unset for `External`: whether an external provider is
+    /// running is its own `Ready` condition and Lease to say, not the
+    /// operator's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ready_replicas: Option<i32>,
 
     /// The Provider generation the operator had observed when it last applied
     /// this workload.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub observed_generation: Option<i64>,
+}
+
+impl ProviderConnection {
+    /// Name of the credentials Secret, when one is referenced.
+    ///
+    /// Backends that authenticate to a remote endpoint treat `None` as a
+    /// configuration error; `cloud-hypervisor` treats `Some` as one
+    /// (ADR-0060 Decision 4).
+    #[must_use]
+    pub fn credentials_secret(&self) -> Option<&str> {
+        self.credentials_ref.as_ref().map(|r| r.name.as_str())
+    }
+}
+
+/// Mirror of [`ProviderDeployment`](crate::banlieue::ProviderDeployment) on
+/// status: how the operator is handling this Provider's workload.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub enum WorkloadMode {
+    /// The operator runs a Deployment for this Provider.
+    #[default]
+    Managed,
+    /// The provider runs outside the cluster; the operator applied only its
+    /// identity and RBAC.
+    External,
 }
 
 /// One placement target within a backend — typically a (datacenter, cluster)

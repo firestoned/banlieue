@@ -48,9 +48,9 @@ mod tests {
                 },
                 connection: ProviderConnection {
                     endpoint: "https://vc/sdk".to_string(),
-                    credentials_ref: LocalObjectReference {
+                    credentials_ref: Some(LocalObjectReference {
                         name: "creds".to_string(),
-                    },
+                    }),
                     insecure_skip_tls_verify: false,
                     ca_bundle: None,
                 },
@@ -85,6 +85,7 @@ mod tests {
                 conditions: vec![],
                 workload: None,
                 observed_generation: Some(1),
+                ek_ca_certificates: vec![],
             }),
         }
     }

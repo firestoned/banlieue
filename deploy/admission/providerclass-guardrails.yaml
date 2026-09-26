@@ -45,6 +45,22 @@ spec:
         or use the RBAC-escalation verbs (escalate, bind, impersonate); credential
         access belongs to the operator-built per-instance Role.
       reason: Invalid
+    # ADR-0060 Decision 3: a Managed class (the default) runs an image; an
+    # External one deploys nothing, so pod-shaping fields on it are mistakes.
+    - expression: >-
+        (has(object.spec.deployment) && object.spec.deployment == 'External')
+        || has(object.spec.image)
+      message: spec.image is required unless spec.deployment is External.
+      reason: Invalid
+    - expression: >-
+        !(has(object.spec.deployment) && object.spec.deployment == 'External')
+        || (!has(object.spec.image) && !has(object.spec.replicas)
+            && !has(object.spec.resources) && !has(object.spec.nodeSelector)
+            && !has(object.spec.tolerations))
+      message: >-
+        spec.deployment is External, so nothing is deployed: remove spec.image,
+        replicas, resources, nodeSelector and tolerations.
+      reason: Invalid
     - expression: >-
         !has(object.spec.workloadNamespace)
         || !(object.spec.workloadNamespace in ['kube-system', 'kube-public', 'kube-node-lease'])

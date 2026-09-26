@@ -314,6 +314,11 @@ banlieue-provider-vsphere [--kubeconfig PATH]
       **Superseded, same reason** — asserted offline against `client/fake.rs`
       in `provider_tests.rs`, and live against real vCenter (three failure
       domains, 2026-09-19).
+- [ ] The `vsphere` column of the provider comparison
+      (`docs/src/reference/provider-comparison.md`): `make provider-bench`
+      with `BANLIEUE_BENCH_LABEL=vsphere`, same shape and image as the other
+      columns; paste the table, add the environment line, move the status
+      mark. Added 2026-09-27 from roadmap 09.
 
 ## Definition of done
 

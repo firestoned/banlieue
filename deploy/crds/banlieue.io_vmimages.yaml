@@ -515,6 +515,37 @@ spec:
                       failure.
                     nullable: true
                     type: string
+                  ociArtifact:
+                    description: |-
+                      The same artifact, pushed to an OCI registry for providers that run
+                      outside the cluster and cannot mount the artifacts PVC (ADR-0064).
+                      Set only when a `cloud-hypervisor` `Url` source exists; `None`
+                      otherwise, so installs without a host-resident provider need no
+                      registry.
+                    nullable: true
+                    properties:
+                      message:
+                        description: Human-readable detail, e.g. why the push failed.
+                        nullable: true
+                        type: string
+                      phase:
+                        description: Current push phase.
+                        enum:
+                        - Pushing
+                        - Ready
+                        - Failed
+                        type: string
+                      reference:
+                        description: |-
+                          Digest-pinned reference, `registry/repository@sha256:<hex>`, once the
+                          push succeeded. Consumers pull **by this digest** and nothing else:
+                          integrity comes from content addressing, so a tag moved after the
+                          push cannot change what a host boots.
+                        nullable: true
+                        type: string
+                    required:
+                    - phase
+                    type: object
                   osArtifactRef:
                     description: |-
                       Name of the `OSArtifact` CR `banlieue-imagebuilder` created for this

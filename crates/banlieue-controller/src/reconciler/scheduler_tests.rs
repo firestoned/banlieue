@@ -200,9 +200,9 @@ mod tests {
                 },
                 connection: ProviderConnection {
                     endpoint: "https://vcenter/sdk".into(),
-                    credentials_ref: LocalObjectReference {
+                    credentials_ref: Some(LocalObjectReference {
                         name: "creds".into(),
-                    },
+                    }),
                     insecure_skip_tls_verify: false,
                     ca_bundle: None,
                 },
@@ -216,6 +216,7 @@ mod tests {
                 conditions: vec![],
                 workload: None,
                 observed_generation: None,
+                ek_ca_certificates: vec![],
             }),
         }
     }

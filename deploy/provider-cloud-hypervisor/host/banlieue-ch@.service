@@ -1,0 +1,34 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# One Cloud Hypervisor VMM per guest; the instance is the guest's host uid
+# (ADR-0063 Decision 1, amended). Installed root-owned by
+# scripts/bootstrap-cloud-hypervisor-host.sh. The provider may only start,
+# stop and reset instances, and set MemoryMax at runtime: everything that
+# decides what runs and as whom is fixed here, so the provider's user
+# cannot start anything else as anyone else (polkit rule
+# 60-banlieue-cloud-hypervisor.rules). Every setting is explained in
+# docs/src/guides/cloud-hypervisor-host-systemd.md.
+
+[Unit]
+Description=banlieue Cloud Hypervisor guest (uid %i)
+# A failed guest stays loaded so the provider can read why.
+CollectMode=inactive
+
+[Service]
+ExecStart=@VMM_BINARY@ --api-socket path=@RUN_ROOT@/%i/api.sock
+User=%i
+Group=%i
+SupplementaryGroups=kvm
+TasksMax=1024
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+# Its run directory, and the storage roots: each guest's machine directory
+# is 2770 guest:banlieue under a 0711 root, so file permissions confine it
+# to its own; the list here only lifts ProtectSystem.
+ReadWritePaths=@RUN_ROOT@/%i @STORAGE_DIRS@
+DevicePolicy=closed
+DeviceAllow=/dev/kvm rw
+DeviceAllow=/dev/net/tun rw

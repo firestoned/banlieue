@@ -24,7 +24,8 @@ use std::sync::Arc;
 
 use banlieue_api::banlieue::{
     Architecture, BuildArtifactKind, BuildArtifactPhase, BuildArtifactStatus, ImageSource,
-    ImageSourceKind, IsoOverlaySource, TrustedBootSource, VMImage, VMImageStatus,
+    ImageSourceKind, InstallMode, IsoOverlaySource, OciArtifactPhase, OciArtifactStatus,
+    TrustedBootSource, VMImage, VMImageStatus,
 };
 use banlieue_api::common::{
     CloudConfigSource, DEFAULT_CLOUD_CONFIG_KEY, KeySelector, LocalObjectReference,
@@ -32,9 +33,12 @@ use banlieue_api::common::{
 use banlieue_provider_sdk::reconciler::{requeue_default, requeue_long, requeue_on_error};
 use banlieue_provider_sdk::scheduling::BuildScheduling;
 use banlieue_provider_sdk::ssa::FIELD_MANAGER_IMAGEBUILDER;
-use k8s_openapi::api::core::v1::Secret;
+use k8s_openapi::api::batch::v1::Job;
+use k8s_openapi::api::core::v1::{Pod, Secret};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference;
-use kube::api::{Api, ApiResource, DynamicObject, GroupVersionKind, Patch, PatchParams};
+use kube::api::{
+    Api, ApiResource, DeleteParams, DynamicObject, GroupVersionKind, ListParams, Patch, PatchParams,
+};
 use kube::runtime::controller::Action;
 use kube::{Resource, ResourceExt};
 use serde_json::{Value, json};
@@ -45,6 +49,7 @@ use crate::cloud_config_merge::merge_cloud_configs;
 use crate::context::Context;
 use crate::error::{Error, Result};
 use crate::importer_image::ImporterImage;
+use crate::reconciler::push;
 
 /// `OSArtifact`'s API group (kairos-operator, not banlieue's own).
 pub const OSARTIFACT_GROUP: &str = "build.kairos.io";
@@ -184,6 +189,21 @@ pub fn artifact_kind_for_class(provider_class: &str) -> BuildArtifactKind {
     } else {
         BuildArtifactKind::CloudImage
     }
+}
+
+/// KVM provider classes whose `Deferred` install boots the installer ISO
+/// onto an empty OS disk: libvirt attaches it as a CD-ROM (ADR-0040), Cloud
+/// Hypervisor as a read-only disk (ADR-0065 Decision 3).
+const DEFERRED_ISO_CLASSES: [&str; 2] = ["libvirt", "cloud-hypervisor"];
+
+/// [`artifact_kind_for_class`], refined by install mode: a `Deferred`
+/// install on a KVM class needs the installer `iso`, not a raw disk.
+#[must_use]
+pub fn artifact_kind_for(provider_class: &str, install_mode: &InstallMode) -> BuildArtifactKind {
+    if DEFERRED_ISO_CLASSES.contains(&provider_class) && *install_mode == InstallMode::Deferred {
+        return BuildArtifactKind::Iso;
+    }
+    artifact_kind_for_class(provider_class)
 }
 
 /// The `spec.artifacts` boolean key kairos-operator uses to request this kind:
@@ -667,6 +687,7 @@ pub fn compute_build_artifact_status(
         file,
         message: view.message.clone(),
         checksum: checksum.map(str::to_string),
+        oci_artifact: None,
     }
 }
 
@@ -792,7 +813,12 @@ pub async fn reconcile(image: Arc<VMImage>, ctx: Arc<Context>) -> Result<Action>
 
     let uid = image.metadata.uid.clone().unwrap_or_default();
     let os_name = os_artifact_name(&name);
-    let kind = artifact_kind_for_class(&source.provider_class);
+    let install_mode = image
+        .spec
+        .template
+        .as_ref()
+        .map_or(InstallMode::default(), |t| t.install_mode);
+    let kind = artifact_kind_for(&source.provider_class, &install_mode);
 
     // ADR-0051 Decision #3: validate a trustedBoot Secret declares all six
     // required key names *before* touching any OSArtifact — an invalid
@@ -830,6 +856,7 @@ pub async fn reconcile(image: Arc<VMImage>, ctx: Arc<Context>) -> Result<Action>
                     missing.join(", "),
                 )),
                 checksum: source.checksum.clone(),
+                oci_artifact: None,
             };
             patch_vmimage_status(&ctx, &name, build_status).await?;
             return Ok(requeue_default());
@@ -920,7 +947,7 @@ pub async fn reconcile(image: Arc<VMImage>, ctx: Arc<Context>) -> Result<Action>
         .unwrap_or_default();
     let os_artifact_uid = live.as_ref().and_then(|obj| obj.metadata.uid.as_deref());
 
-    let build_status = compute_build_artifact_status(
+    let mut build_status = compute_build_artifact_status(
         &os_name,
         kind,
         &view,
@@ -928,14 +955,132 @@ pub async fn reconcile(image: Arc<VMImage>, ctx: Arc<Context>) -> Result<Action>
         os_artifact_uid,
         image.spec.trusted_boot.is_some(),
     );
+    // ADR-0064: a host-resident provider cannot mount the PVC, so a Ready
+    // artifact it needs goes to the registry too.
+    if build_status.phase == BuildArtifactPhase::Ready && push::needs_push(&image.spec.sources) {
+        build_status.oci_artifact =
+            Some(reconcile_push(&ctx, &name, generation, &build_status).await?);
+    }
     let phase = build_status.phase.clone();
+    let pushing = build_status
+        .oci_artifact
+        .as_ref()
+        .is_some_and(|o| o.phase == OciArtifactPhase::Pushing);
     patch_vmimage_status(&ctx, &name, build_status).await?;
 
+    if pushing {
+        return Ok(requeue_default());
+    }
     Ok(match phase {
         BuildArtifactPhase::Ready | BuildArtifactPhase::Failed => requeue_long(),
         BuildArtifactPhase::Pending => requeue_default(),
         BuildArtifactPhase::Building => requeue_default(),
     })
+}
+
+/// Label the Job controller puts on a Job's pods.
+const JOB_NAME_LABEL: &str = "batch.kubernetes.io/job-name";
+
+/// Drive the registry push for a `Ready` artifact (ADR-0064 Decision 2) and
+/// return its status row: create the push Job if absent, and once it
+/// succeeds read and check the reference its pod reported.
+async fn reconcile_push(
+    ctx: &Context,
+    vmimage: &str,
+    generation: i64,
+    artifact: &BuildArtifactStatus,
+) -> Result<OciArtifactStatus> {
+    let Some(registry) = ctx.registry.as_ref() else {
+        return Ok(push::failed_status(
+            "a cloud-hypervisor source needs a registry: set --registry-repository (ADR-0064)",
+        ));
+    };
+    let Some(uid) = artifact.os_artifact_uid.as_deref() else {
+        return Ok(OciArtifactStatus {
+            phase: OciArtifactPhase::Pushing,
+            reference: None,
+            message: Some("waiting to observe the OSArtifact".to_string()),
+        });
+    };
+    let job_name = push::push_job_name(&artifact.os_artifact_ref);
+    let jobs: Api<Job> = Api::namespaced(ctx.client.clone(), &ctx.build_namespace);
+
+    let existing = match jobs.get(&job_name).await {
+        Ok(job) => Some(job),
+        Err(kube::Error::Api(e)) if e.code == 404 => None,
+        Err(e) => return Err(Error::Kube(e)),
+    };
+    let Some(job) = existing else {
+        let desired = push::build_push_job(&push::PushJobInputs {
+            job_name: &job_name,
+            namespace: &ctx.build_namespace,
+            vmimage,
+            generation,
+            registry,
+            artifact,
+            os_artifact_uid: uid,
+            tolerations: &ctx.scheduling.tolerations,
+        });
+        jobs.patch(
+            &job_name,
+            &PatchParams::apply(FIELD_MANAGER_IMAGEBUILDER).force(),
+            &Patch::Apply(&desired),
+        )
+        .await?;
+        info!(job = %job_name, "created registry push Job");
+        return Ok(OciArtifactStatus {
+            phase: OciArtifactPhase::Pushing,
+            reference: None,
+            message: Some(format!("push Job {job_name} created")),
+        });
+    };
+
+    // A previous build's Job, not yet garbage-collected: its result is for
+    // a different artifact.
+    if !owner_uid_matches(job.metadata.owner_references.as_deref(), uid) {
+        jobs.delete(&job_name, &DeleteParams::background()).await?;
+        return Ok(OciArtifactStatus {
+            phase: OciArtifactPhase::Pushing,
+            reference: None,
+            message: Some("replacing a previous build's push Job".to_string()),
+        });
+    }
+
+    let message = if job_succeeded(&job) {
+        push_termination_message(ctx, &job_name).await?
+    } else {
+        None
+    };
+    let status = push::oci_status(registry, &job, message.as_deref());
+    // Succeeded but its pod, and so its result, is gone: push again. The
+    // blobs are already there, so the rerun is a manifest PUT.
+    if status.phase == OciArtifactPhase::Pushing && message.is_none() && job_succeeded(&job) {
+        jobs.delete(&job_name, &DeleteParams::background()).await?;
+    }
+    Ok(status)
+}
+
+fn job_succeeded(job: &Job) -> bool {
+    job.status.as_ref().and_then(|s| s.succeeded).unwrap_or(0) > 0
+}
+
+/// The termination message of the push Job's successful pod, if any.
+async fn push_termination_message(ctx: &Context, job_name: &str) -> Result<Option<String>> {
+    let pods: Api<Pod> = Api::namespaced(ctx.client.clone(), &ctx.build_namespace);
+    let list = pods
+        .list(&ListParams::default().labels(&format!("{JOB_NAME_LABEL}={job_name}")))
+        .await?;
+    Ok(list.items.iter().find_map(|pod| {
+        pod.status
+            .as_ref()?
+            .container_statuses
+            .as_ref()?
+            .iter()
+            .find_map(|c| {
+                let t = c.state.as_ref()?.terminated.as_ref()?;
+                (t.exit_code == 0).then(|| t.message.clone()).flatten()
+            })
+    }))
 }
 
 /// `error_policy` invoked on `reconcile` failure.

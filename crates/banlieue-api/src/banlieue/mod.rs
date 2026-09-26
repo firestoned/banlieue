@@ -14,10 +14,11 @@ pub use provider::{
     FailureDomain, FailureDomainAttributes, FailureDomainNameOverride, NetworkClassMapping,
     Provider, ProviderCapabilities, ProviderConnection, ProviderSpec, ProviderStatus,
     ProviderWorkloadStatus, ScopedSubnet, ScopedTarget, StorageClassMapping, SubnetShape,
+    WorkloadMode,
 };
 pub use providerclass::{
     DEFAULT_PROVIDER_REPLICAS, ImagePullPolicy, LoggingSpec, ProviderClass, ProviderClassSpec,
-    ProviderClassStatus, ProviderImage,
+    ProviderClassStatus, ProviderDeployment, ProviderImage,
 };
 pub use virtualmachine::{
     AffinityMode, AntiAffinityRule, DEFAULT_USER_DATA_KEY, DiskOverride, HardwareOverride,
@@ -41,6 +42,7 @@ pub use vmclass::{
 pub use vmimage::{
     Architecture, BuildArtifactKind, BuildArtifactPhase, BuildArtifactStatus, DiskController,
     GuestAgent, ImagePerProviderStatus, ImageSource, ImageSourceKind, InstallMode, IsoOverlayFile,
-    IsoOverlaySource, NicAdapter, OsFamily, TrustedBootSource, VMImage, VMImageSpec, VMImageStatus,
-    VMImageTemplate, VMImageTemplateDisk, VMImageTemplateNic, ZoneImageStatus,
+    IsoOverlaySource, NicAdapter, OciArtifactPhase, OciArtifactStatus, OsFamily, TrustedBootSource,
+    VMImage, VMImageSpec, VMImageStatus, VMImageTemplate, VMImageTemplateDisk, VMImageTemplateNic,
+    ZoneImageStatus,
 };

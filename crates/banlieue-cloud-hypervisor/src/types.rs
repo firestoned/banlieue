@@ -28,6 +28,10 @@ use std::path::PathBuf;
 
 /// Bytes in one MiB, for converting the plan's memory size to the API's.
 const BYTES_PER_MIB: u64 = 1024 * 1024;
+/// The guest's vsock CID. Hybrid vsock connects the guest to a Unix socket
+/// on the host, so the CID is local to one VM and needs no allocation; 3
+/// is the lowest the VMM accepts (0–2 are reserved).
+pub const VSOCK_GUEST_CID: u64 = 3;
 /// Entropy source for the guest's virtio-rng device.
 const RNG_SOURCE: &str = "/dev/urandom";
 
@@ -50,6 +54,9 @@ pub struct GuestPlan {
     pub nics: Vec<PlannedNic>,
     /// swtpm control socket, when the guest has a vTPM.
     pub tpm_socket: Option<PathBuf>,
+    /// Host end of the guest's vsock device (ADR-0065 Decision 5): a guest
+    /// connecting to host port `P` reaches `<socket>_P`.
+    pub vsock_socket: Option<PathBuf>,
     /// File the serial console is written to.
     pub serial_file: PathBuf,
     /// Enable the VMM's Landlock sandbox (ADR-0063 Decision 3).
@@ -78,6 +85,13 @@ pub struct PlannedNic {
     pub mac: String,
 }
 
+/// Where a tap's sysfs directory really lives. `/sys/class/net/<tap>` is a
+/// symlink here, and Landlock checks the resolved path, so a rule on the
+/// symlink does not match.
+const SYSFS_VIRTUAL_NET: &str = "/sys/devices/virtual/net";
+/// Landlock access string for read-only.
+const LANDLOCK_READ: &str = "r";
+
 // ----------------------------------------------------------------------
 // vm.create
 // ----------------------------------------------------------------------
@@ -95,7 +109,17 @@ pub struct VmConfigRequest {
     console: ConsoleRequest,
     #[serde(skip_serializing_if = "Option::is_none")]
     tpm: Option<TpmRequest>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    vsock: Option<VsockRequest>,
     landlock_enable: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    landlock_rules: Vec<LandlockRule>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+struct LandlockRule {
+    path: PathBuf,
+    access: &'static str,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -145,6 +169,12 @@ struct ConsoleRequest {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 struct TpmRequest {
+    socket: PathBuf,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+struct VsockRequest {
+    cid: u64,
     socket: PathBuf,
 }
 
@@ -205,7 +235,22 @@ impl VmConfigRequest {
                 .tpm_socket
                 .as_ref()
                 .map(|s| TpmRequest { socket: s.clone() }),
+            vsock: plan.vsock_socket.as_ref().map(|s| VsockRequest {
+                cid: VSOCK_GUEST_CID,
+                socket: s.clone(),
+            }),
             landlock_enable: plan.landlock,
+            landlock_rules: if plan.landlock {
+                plan.nics
+                    .iter()
+                    .map(|n| LandlockRule {
+                        path: PathBuf::from(SYSFS_VIRTUAL_NET).join(&n.tap),
+                        access: LANDLOCK_READ,
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            },
         }
     }
 }

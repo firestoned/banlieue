@@ -14,9 +14,9 @@ mod tests {
     fn connection() -> ProviderConnection {
         ProviderConnection {
             endpoint: "https://vcenter.example.com/sdk".to_string(),
-            credentials_ref: LocalObjectReference {
+            credentials_ref: Some(LocalObjectReference {
                 name: "prod-vc-creds".to_string(),
-            },
+            }),
             insecure_skip_tls_verify: false,
             ca_bundle: None,
         }
@@ -38,13 +38,14 @@ mod tests {
     fn class_spec() -> ProviderClassSpec {
         ProviderClassSpec {
             backend: "vsphere".to_string(),
-            image: ProviderImage {
+            image: Some(ProviderImage {
                 repository: "ghcr.io/firestoned/banlieue".to_string(),
                 tag: "v0.1.0".to_string(),
                 digest: None,
                 pull_policy: None,
                 pull_secrets: Vec::new(),
-            },
+            }),
+            deployment: None,
             workload_namespace: None,
             replicas: None,
             resources: None,
@@ -180,9 +181,10 @@ mod tests {
         };
         let status = workload_status(Some(&deployment), "banlieue-system", "wl", Some(3));
 
-        assert_eq!(status.deployment_name, "wl");
+        assert_eq!(status.mode, banlieue_api::banlieue::WorkloadMode::Managed);
+        assert_eq!(status.deployment_name.as_deref(), Some("wl"));
         assert_eq!(status.namespace, "banlieue-system");
-        assert_eq!(status.ready_replicas, 1);
+        assert_eq!(status.ready_replicas, Some(1));
         assert_eq!(status.observed_generation, Some(3));
     }
 
@@ -191,7 +193,7 @@ mod tests {
     #[test]
     fn workload_status_treats_a_missing_deployment_as_zero_ready() {
         let status = workload_status(None, "banlieue-system", "wl", None);
-        assert_eq!(status.ready_replicas, 0);
+        assert_eq!(status.ready_replicas, Some(0));
         assert_eq!(status.observed_generation, None);
     }
 
@@ -202,7 +204,30 @@ mod tests {
             ..Default::default()
         };
         let status = workload_status(Some(&deployment), "ns", "wl", None);
-        assert_eq!(status.ready_replicas, 0);
+        assert_eq!(status.ready_replicas, Some(0));
+    }
+
+    /// ADR-0060 Decision 3: External reports its mode and nothing about a
+    /// Deployment — liveness is the provider's own Ready condition and Lease.
+    #[test]
+    fn external_workload_status_names_no_deployment() {
+        let status = external_workload_status("banlieue-system", Some(2));
+        assert_eq!(status.mode, banlieue_api::banlieue::WorkloadMode::External);
+        assert!(status.deployment_name.is_none() && status.ready_replicas.is_none());
+        assert_eq!(status.namespace, "banlieue-system");
+        assert_eq!(status.observed_generation, Some(2));
+    }
+
+    /// A Managed class with no image cannot produce a Deployment; the
+    /// reconciler must stop before applying anything.
+    #[test]
+    fn a_managed_class_needs_an_image_and_an_external_one_does_not() {
+        let mut class = class_spec();
+        assert!(missing_image(&class).is_none());
+        class.image = None;
+        assert!(missing_image(&class).is_some());
+        class.deployment = Some(banlieue_api::banlieue::ProviderDeployment::External);
+        assert!(missing_image(&class).is_none());
     }
 
     // ----------------------------------------------------------------------

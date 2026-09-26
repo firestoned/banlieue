@@ -1,0 +1,44 @@
+// Copyright (c) 2026 Erick Bourgeois, banlieue
+// SPDX-License-Identifier: Apache-2.0
+//
+// Installed by scripts/bootstrap-cloud-hypervisor-host.sh (ADR-0063
+// Decision 6); see docs/src/guides/cloud-hypervisor-host-systemd.md.
+//
+// The provider's user may start, stop and reset instances of banlieue's own
+// root-owned TEMPLATE units, and nothing else. What an instance runs, as
+// whom, and in which sandbox is fixed by the template file; the provider
+// chooses only the instance, so it cannot start anything as root or as a
+// user outside the guest range:
+//
+//   banlieue-ch@<uid>, banlieue-swtpm@<uid>, banlieue-swtpm-setup@<uid>
+//       <uid> must be inside the guest uid range;
+//   banlieue-ch-import@<VMImage UID>.
+//
+// A transient unit cannot take these names (each has a unit file), so
+// StartTransientUnit under an allowed name is refused by systemd itself.
+// `set-property` is allowed on VMM instances only, for their MemoryMax:
+// systemd accepts nothing but resource limits on a unit with a file.
+polkit.addRule(function(action, subject) {
+    if (action.id != "org.freedesktop.systemd1.manage-units" ||
+        subject.user != "@BANLIEUE_USER@") {
+        return polkit.Result.NOT_HANDLED;
+    }
+    var unit = action.lookup("unit") || "";
+    var verb = action.lookup("verb") || "";
+    var lifecycle = ["start", "stop", "reset-failed"].indexOf(verb) >= 0;
+
+    var guest = /^banlieue-(ch|swtpm|swtpm-setup)@([0-9]{1,10})\.service$/.exec(unit);
+    if (guest) {
+        var uid = parseInt(guest[2], 10);
+        var inRange = uid >= @GUEST_UID_BASE@ && uid < @GUEST_UID_BASE@ + @GUEST_UID_COUNT@;
+        var allowed = lifecycle || (verb == "set-property" && guest[1] == "ch");
+        if (inRange && allowed) {
+            return polkit.Result.YES;
+        }
+        return polkit.Result.NOT_HANDLED;
+    }
+    if (/^banlieue-ch-import@[0-9a-f-]{36}\.service$/.test(unit) && lifecycle) {
+        return polkit.Result.YES;
+    }
+    return polkit.Result.NOT_HANDLED;
+});

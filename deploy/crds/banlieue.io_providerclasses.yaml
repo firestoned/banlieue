@@ -19,6 +19,9 @@ spec:
     - jsonPath: .spec.image.tag
       name: Image
       type: string
+    - jsonPath: .spec.deployment
+      name: Deployment
+      type: string
     - jsonPath: .status.providers
       name: Providers
       type: integer
@@ -143,8 +146,22 @@ spec:
                   the object's name so two classes can pin different images or pod shapes
                   for the same backend (e.g. a canary class).
                 type: string
+              deployment:
+                description: How a class's providers run (ADR-0060 Decision 3).
+                enum:
+                - Managed
+                - External
+                nullable: true
+                type: string
               image:
-                description: Container image every provider workload of this class runs.
+                description: |-
+                  Container image every provider workload of this class runs.
+
+                  Required when `deployment` is `Managed` (the default), and must be
+                  unset when it is `External`: nothing is deployed, so there is no image
+                  to run. The operator and the admission policy both enforce this
+                  (ADR-0060 Decision 3).
+                nullable: true
                 properties:
                   digest:
                     description: |-
@@ -314,7 +331,6 @@ spec:
                 type: string
             required:
             - backend
-            - image
             type: object
           status:
             description: Observed state of a ProviderClass.

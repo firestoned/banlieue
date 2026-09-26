@@ -1,0 +1,27 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# Manufactures a guest's vTPM once, before its first start (ADR-0065
+# Decision 1): creates the state and signs the EK and platform certificates
+# with this host's swtpm_localca. Runs as the provider's user, never the
+# guest's: signing reads the CA key. The instance is the guest's uid; the
+# machine-specific --vmid and EK directory come from an environment file
+# the provider writes (it runs as the provider's own user, so the file
+# grants it nothing it lacks).
+
+[Unit]
+Description=banlieue vTPM manufacture (uid %i)
+CollectMode=inactive
+
+[Service]
+Type=oneshot
+User=@BANLIEUE_USER@
+Group=@BANLIEUE_USER@
+EnvironmentFile=@STATE_ROOT@/units/swtpm-setup-%i.env
+ExecStart=@SWTPM_SETUP@ --tpm2 --tpmstate @STATE_ROOT@/tpm/%i --create-ek-cert --create-platform-cert --vmid ${VMID} --config @SWTPM_SETUP_CONF@ --write-ek-cert-files ${EK_DIR}
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=@STATE_ROOT@/tpm/%i @STATE_ROOT@/ek @EK_CA_DIR@
+DevicePolicy=closed

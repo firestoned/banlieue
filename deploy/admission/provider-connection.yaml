@@ -40,6 +40,22 @@ spec:
         || object.spec.connection.endpoint.startsWith('https://')
       message: spec.connection.endpoint must use https:// for vsphere/proxmox providers.
       reason: Invalid
+    # credentialsRef became optional in the schema for ADR-0060 Decision 4;
+    # every backend that authenticates to a remote endpoint still needs one,
+    # and cloud-hypervisor — which runs on the host and must read no Secret —
+    # must not have one.
+    - expression: >-
+        object.spec.providerClassRef.name == 'cloud-hypervisor'
+        || has(object.spec.connection.credentialsRef)
+      message: spec.connection.credentialsRef is required for this provider class.
+      reason: Invalid
+    - expression: >-
+        object.spec.providerClassRef.name != 'cloud-hypervisor'
+        || !has(object.spec.connection.credentialsRef)
+      message: >-
+        spec.connection.credentialsRef must not be set for cloud-hypervisor: the
+        provider runs on the host and reads no Secret (ADR-0060 Decision 4).
+      reason: Invalid
     - expression: "!object.spec.connection.endpoint.startsWith('http://')"
       message: spec.connection.endpoint must not use plain http.
       reason: Invalid

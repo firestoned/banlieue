@@ -1120,7 +1120,11 @@ async fn read_credentials(
     namespace: &str,
     provider: &Provider,
 ) -> Result<Credentials> {
-    let secret_name = &provider.spec.connection.credentials_ref.name;
+    let secret_name = provider
+        .spec
+        .connection
+        .credentials_secret()
+        .ok_or(Error::Missing("Provider.spec.connection.credentialsRef"))?;
     let api: Api<Secret> = Api::namespaced(ctx.client.clone(), namespace);
     let secret = api.get(secret_name).await.map_err(|e| {
         if let kube::Error::Api(api_err) = &e

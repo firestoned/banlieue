@@ -64,6 +64,24 @@ stages:
       if: '[ -f /run/cos/active_mode ] || [ -f /run/cos/passive_mode ]'
       commands:
         - vmware-rpctool "info-set guestinfo.banlieue.phase installed"
+
+    # ---- Cloud Hypervisor (implemented, ADR-0065) --------------------------
+    #
+    # No guest agent and no guestinfo: the report goes over vsock, to the
+    # host (CID 2) on port 1024, where the provider listens. It sends nothing
+    # back. Only an exact `phase=installed` line counts. The EK certificate
+    # is NOT sent: this provider reads it on the host, where it was minted.
+    #
+    # REQUIREMENT: systemd 256 or later (Kairos Hadron has it), whose
+    # `systemd-notify` can write to a vsock stream; no extra package. On an
+    # older image use any vsock client instead, for example
+    #   echo phase=installed | socat -u - VSOCK-CONNECT:2:1024
+    # `vsock-stream:` because Cloud Hypervisor's vsock is stream only. The
+    # `/dev/vsock` guard keeps this stage a no-op on backends without one.
+    - name: banlieue-guest-phase-cloud-hypervisor
+      if: '([ -f /run/cos/active_mode ] || [ -f /run/cos/passive_mode ]) && [ -e /dev/vsock ]'
+      commands:
+        - NOTIFY_SOCKET=vsock-stream:2:1024 systemd-notify phase=installed || true
 #
 # USING IT
 #

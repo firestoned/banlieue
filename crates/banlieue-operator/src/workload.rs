@@ -29,7 +29,7 @@
 
 use std::collections::BTreeMap;
 
-use banlieue_api::banlieue::{ImagePullPolicy, Provider, ProviderClassSpec};
+use banlieue_api::banlieue::{ImagePullPolicy, Provider, ProviderClassSpec, ProviderDeployment};
 use k8s_openapi::api::apps::v1::{Deployment, DeploymentSpec};
 use k8s_openapi::api::core::v1::{
     Capabilities, Container, ContainerPort, EnvVar, EnvVarSource, HTTPGetAction,
@@ -108,8 +108,10 @@ pub struct WorkloadInputs<'a> {
     pub provider_namespace: &'a str,
     /// Namespace the Deployment and ServiceAccount are created in.
     pub workload_namespace: &'a str,
-    /// Name of the Secret holding this backend's credentials.
-    pub credentials_secret: &'a str,
+    /// Name of the Secret holding this backend's credentials, when the
+    /// Provider names one. `None` grants no Secret access at all
+    /// (ADR-0060 Decision 4).
+    pub credentials_secret: Option<&'a str>,
     /// Taint tolerations to forward to the provider for its import Jobs.
     ///
     /// No node selector is forwarded: an import Job's placement follows the
@@ -151,10 +153,25 @@ impl WorkloadInputs<'_> {
         )
     }
 
+    /// Whether this Provider's process runs outside the cluster.
+    fn is_external(&self) -> bool {
+        self.class.deployment_mode() == ProviderDeployment::External
+    }
+
+    /// Namespace of the ServiceAccount. External runs nothing in a workload
+    /// namespace, so its identity always lives with the Provider, next to
+    /// the Role that grants it.
+    fn service_account_namespace(&self) -> &str {
+        if self.is_external() {
+            return self.provider_namespace;
+        }
+        self.workload_namespace
+    }
+
     /// Whether the workload objects share the Provider's namespace, and can
     /// therefore carry an owner reference.
     fn workload_is_owned(&self) -> bool {
-        self.workload_namespace == self.provider_namespace
+        self.service_account_namespace() == self.provider_namespace
     }
 
     /// Owner reference for objects in the Provider's own namespace.
@@ -179,13 +196,15 @@ pub struct WorkloadSet {
     /// the cluster-scoped resources a Role cannot reach.
     pub cluster_role_binding: ClusterRoleBinding,
     /// Read-only, cross-namespace access for the import Job (ADR-0016 §4).
-    /// Present for every provider; harmless for backends that never import.
-    pub import_role: Role,
+    /// Present for every Managed provider; harmless for backends that never
+    /// import. `None` for External: nothing imports through the cluster.
+    pub import_role: Option<Role>,
     /// Binds [`WorkloadSet::import_role`] to the import ServiceAccount in the
     /// build namespace.
-    pub import_role_binding: RoleBinding,
-    /// The provider controller itself.
-    pub deployment: Deployment,
+    pub import_role_binding: Option<RoleBinding>,
+    /// The provider controller itself. `None` for External (ADR-0060
+    /// Decision 3): the process runs elsewhere.
+    pub deployment: Option<Deployment>,
 }
 
 /// Build every object backing one Provider.
@@ -195,14 +214,15 @@ pub struct WorkloadSet {
 /// RoleBinding; no object is created there by this function.
 #[must_use]
 pub fn build_workload(inputs: &WorkloadInputs<'_>, build_namespace: &str) -> WorkloadSet {
+    let managed = !inputs.is_external();
     WorkloadSet {
         service_account: build_service_account(inputs),
         role: build_role(inputs),
         role_binding: build_role_binding(inputs),
         cluster_role_binding: build_cluster_role_binding(inputs),
-        import_role: build_import_role(inputs),
-        import_role_binding: build_import_role_binding(inputs, build_namespace),
-        deployment: build_deployment(inputs),
+        import_role: managed.then(|| build_import_role(inputs)),
+        import_role_binding: managed.then(|| build_import_role_binding(inputs, build_namespace)),
+        deployment: managed.then(|| build_deployment(inputs)),
     }
 }
 
@@ -231,20 +251,20 @@ pub fn import_role_name(inputs: &WorkloadInputs<'_>) -> String {
 /// exactly which Provider it serves. No write of any kind, and no `jobs`.
 #[must_use]
 pub fn build_import_role(inputs: &WorkloadInputs<'_>) -> Role {
-    let mut rules = vec![
-        named_rule(
-            "banlieue.io",
-            "providers",
-            &["get"],
-            &[inputs.provider_name.to_string()],
-        ),
-        named_rule(
+    let mut rules = vec![named_rule(
+        "banlieue.io",
+        "providers",
+        &["get"],
+        &[inputs.provider_name.to_string()],
+    )];
+    if let Some(credentials) = inputs.credentials_secret {
+        rules.push(named_rule(
             "",
             "secrets",
             &["get"],
-            &[inputs.credentials_secret.to_string()],
-        ),
-    ];
+            &[credentials.to_string()],
+        ));
+    }
     // Only when the Provider actually names one: a rule with an empty
     // resourceNames list grants access to EVERY ConfigMap in the namespace.
     if let Some(cm) = inputs.ca_bundle_config_map {
@@ -253,7 +273,7 @@ pub fn build_import_role(inputs: &WorkloadInputs<'_>) -> Role {
     // A CA bundle delivered as a Secret is already covered by the secrets rule
     // above only if it is the credentials Secret; otherwise add it by name.
     if let Some(ca_secret) = inputs.ca_bundle_secret
-        && ca_secret != inputs.credentials_secret
+        && Some(ca_secret) != inputs.credentials_secret
     {
         rules.push(named_rule(
             "",
@@ -327,7 +347,7 @@ pub fn build_service_account(inputs: &WorkloadInputs<'_>) -> ServiceAccount {
     ServiceAccount {
         metadata: ObjectMeta {
             name: Some(inputs.name()),
-            namespace: Some(inputs.workload_namespace.to_string()),
+            namespace: Some(inputs.service_account_namespace().to_string()),
             labels: Some(inputs.labels()),
             owner_references: inputs.owner_for(inputs.workload_is_owned()),
             ..Default::default()
@@ -347,11 +367,17 @@ pub fn build_role(inputs: &WorkloadInputs<'_>) -> Role {
     // Credentials, and the CA bundle when it is a Secret. `get` only: a
     // resourceNames-scoped rule is meaningless for list/watch, and the provider
     // reads both by name.
-    let mut secret_names = vec![inputs.credentials_secret.to_string()];
-    if let Some(ca_secret) = inputs.ca_bundle_secret {
-        secret_names.push(ca_secret.to_string());
+    // Only names that exist: a rule with an empty resourceNames list would
+    // grant EVERY Secret in the namespace.
+    let secret_names: Vec<String> = inputs
+        .credentials_secret
+        .into_iter()
+        .chain(inputs.ca_bundle_secret)
+        .map(str::to_string)
+        .collect();
+    if !secret_names.is_empty() {
+        rules.push(named_rule("", "secrets", &["get"], &secret_names));
     }
-    rules.push(named_rule("", "secrets", &["get"], &secret_names));
 
     if let Some(ca_config_map) = inputs.ca_bundle_config_map {
         rules.push(named_rule(
@@ -387,6 +413,10 @@ pub fn build_role(inputs: &WorkloadInputs<'_>) -> Role {
         });
     }
 
+    if inputs.is_external() {
+        rules.extend(external_rules(inputs));
+    }
+
     rules.extend(inputs.class.additional_rules.iter().cloned());
 
     Role {
@@ -399,6 +429,31 @@ pub fn build_role(inputs: &WorkloadInputs<'_>) -> Role {
         },
         rules: Some(rules),
     }
+}
+
+/// What an External provider needs on top of the common rules, each scoped
+/// to its own objects (ADR-0060 Decision 5):
+///
+/// - its own `Provider` and `Provider` status, by name. `resourceNames`
+///   covers `list` and `watch` too when the request filters on
+///   `metadata.name`, which is exactly the provider's watch;
+/// - `create` on its own ServiceAccount's `token` subresource, to renew the
+///   bound token it authenticates with.
+///
+/// A Managed provider needs none of this: its Provider access comes from
+/// the backend's ClusterRole, and its pod gets a projected token.
+fn external_rules(inputs: &WorkloadInputs<'_>) -> Vec<PolicyRule> {
+    let me = [inputs.provider_name.to_string()];
+    vec![
+        named_rule("banlieue.io", "providers", &["get", "list", "watch"], &me),
+        named_rule(
+            "banlieue.io",
+            "providers/status",
+            &["get", "update", "patch"],
+            &me,
+        ),
+        named_rule("", "serviceaccounts/token", &["create"], &[inputs.name()]),
+    ]
 }
 
 /// Build the RoleBinding tying the per-instance Role to the ServiceAccount.
@@ -493,17 +548,19 @@ fn build_pod_spec(inputs: &WorkloadInputs<'_>) -> PodSpec {
             .then(|| inputs.class.node_selector.clone()),
         tolerations: (!inputs.class.tolerations.is_empty())
             .then(|| inputs.class.tolerations.clone()),
-        image_pull_secrets: (!inputs.class.image.pull_secrets.is_empty()).then(|| {
-            inputs
-                .class
-                .image
-                .pull_secrets
-                .iter()
-                .map(|r| LocalObjectReference {
-                    name: r.name.clone(),
-                })
-                .collect()
-        }),
+        image_pull_secrets: inputs
+            .class
+            .image
+            .as_ref()
+            .filter(|i| !i.pull_secrets.is_empty())
+            .map(|i| {
+                i.pull_secrets
+                    .iter()
+                    .map(|r| LocalObjectReference {
+                        name: r.name.clone(),
+                    })
+                    .collect()
+            }),
         security_context: Some(PodSecurityContext {
             run_as_non_root: Some(true),
             run_as_user: Some(RUN_AS_NONROOT_UID),
@@ -525,12 +582,12 @@ fn build_pod_spec(inputs: &WorkloadInputs<'_>) -> PodSpec {
 fn build_container(inputs: &WorkloadInputs<'_>) -> Container {
     Container {
         name: CONTAINER_NAME.to_string(),
-        image: Some(inputs.class.image.reference()),
+        image: inputs.class.image.as_ref().map(|i| i.reference()),
         image_pull_policy: inputs
             .class
             .image
-            .pull_policy
             .as_ref()
+            .and_then(|i| i.pull_policy.as_ref())
             .map(|p| pull_policy_str(p).to_string()),
         args: Some(build_args(inputs)),
         env: Some(downward_api_env()),
@@ -606,8 +663,10 @@ fn build_args(inputs: &WorkloadInputs<'_>) -> Vec<String> {
     // The Jobs a provider spawns run the same binary it does, so they run the
     // same image. Without this the provider falls back to its compiled-in
     // default and a provider on one image spawns Jobs on another.
-    args.push("--import-image".to_string());
-    args.push(inputs.class.image.reference());
+    if let Some(image) = inputs.class.image.as_ref() {
+        args.push("--import-image".to_string());
+        args.push(image.reference());
+    }
 
     // Only tolerations. Placement of an import Job follows its PVC, so a node
     // selector here would over-constrain: harmless on node-local storage,
@@ -704,7 +763,7 @@ fn service_account_subject(inputs: &WorkloadInputs<'_>) -> Subject {
     Subject {
         kind: "ServiceAccount".to_string(),
         name: inputs.name(),
-        namespace: Some(inputs.workload_namespace.to_string()),
+        namespace: Some(inputs.service_account_namespace().to_string()),
         ..Default::default()
     }
 }

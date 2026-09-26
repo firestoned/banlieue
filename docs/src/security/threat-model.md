@@ -4,7 +4,63 @@ SPDX-License-Identifier: Apache-2.0
 -->
 # Threat Model
 
-> **Status:** Living document. Last full pass **2026-09-24**, covering
+> **Status:** Living document. Last full pass **2026-09-27**, against the
+> architecture defined by **ADR-0001 … ADR-0065** (0057–0059 unallocated;
+> 0060–0065 Proposed). This pass covers the **host-resident Cloud Hypervisor
+> provider** (ADR-0060 to ADR-0065), the first banlieue component that runs
+> **outside** the cluster, on the hypervisor host itself: **a new component,
+> a new actor (a compromised VMM), two new assets and two new trust
+> boundaries** (TB-8 host ↔ cluster, TB-9 guest VMM ↔ host and other
+> guests), a new hardening requirement (§7.11) and five new accepted risks.
+> It also corrects §1: the workspace is no longer `unsafe`-free — the new
+> provider has **two audited `ioctl` blocks**, compiler-confined to one
+> module. What is implemented and what is not is stated per row: ADR-0061,
+> 0062, 0063 and ADR-0064 Decision 5 are live-verified; ADR-0060's
+> `External` mode and token self-renewal, the rest of ADR-0064 and all of
+> ADR-0065 are not built, and the rows that depend on them say so.
+>
+>
+> **Amended 2026-09-26 for ADR-0060 Decisions 3–5 (External mode and token
+> self-renewal), now implemented:** A-11, TB-8 and §7.11 updated; the §8
+> "namespace-wide Role" entry narrowed to machines (Providers are now
+> `resourceNames`-scoped); the "token not renewed" entry replaced by two new
+> ones — a stolen token can renew itself (revocation: delete the
+> ServiceAccount), and the operator's namespaced token grant.
+>
+> **Amended 2026-09-26 for ADR-0064 Decisions 1–3 (registry delivery),
+> now implemented:** two components (the registry push Job, the host's
+> image import unit), A-3 extended and a new asset A-13 (registry
+> credentials), a new actor (the registry), a new boundary **TB-10** (build
+> namespace → OCI registry → host) with its STRIDE table, rows added to
+> TB-3 and TB-8, hardening item §7.13, and four §8 entries. Every section
+> was re-walked; TB-1, TB-2, TB-4, TB-6, TB-7 and TB-9 are unchanged. A
+> second pass the same night covers **Decision 4** (cache eviction, and the
+> `banlieue.io/host-image-cache` finalizer, held by the controller so host
+> tokens gain no `VMImage` write): two TB-8 rows, TB-10 and §8 updated.
+> A third pass (2026-09-27) covers **ADR-0065's vTPM** (Decisions 1, 2, 6):
+> two components (swtpm and its one-shot manufacture), A-6 and A-6a
+> extended, the TB-8 vTPM row rewritten and four TB-9 rows added. The EK
+> certificate is read host-side, from a provider-only directory, so this
+> backend avoids libvirt's guest-reported residue. The same pass covers
+> `Deferred` install and the vsock report (Decisions 3–5): the report is
+> a new guest → host input path, with three TB-9 rows.
+> A fourth pass (2026-09-27) covers **ADR-0063's amendment**: guests, their
+> vTPMs and image imports are instances of **root-owned template units**,
+> not transient units. The transient design let the provider's user start
+> a unit as root, because polkit sees only a unit's name; that is closed
+> (verified on a host) and recorded as two TB-9 rows. Components, A-12, the
+> §5 diagram and the §8 "compromised provider" entry are updated. The
+> decompressed size of a pulled image is now capped by a digest-covered
+> annotation, which removes that §8 entry.
+> A fifth pass (2026-09-27) covers **ADR-0065 Decision 3's amendment**,
+> found by the first live `Deferred` run: the VMM, running as the guest,
+> could not read the provider's image cache, so each machine now gets its
+> own read-only copy of its installer, deleted after the eject. A-12 lists
+> it and TB-9 gains one row; no component, actor or boundary changes, and
+> §8 is unchanged. `Deferred` install and the vsock report are now
+> verified live (`make ch-deferred-e2e`).
+>
+> Previous full pass **2026-09-24**, covering
 > **ADR-0045** (the vTPM endorsement key certificate is published on the infra
 > CR, mirrored onto a bound claim, and — for a `tpmEnabled` machine — gates
 > `GuestReady`). A-6 is split so the EK certificate is its own asset; TB-4
@@ -60,9 +116,23 @@ Proxmox). It holds two things an attacker wants:
    intermediate representations.
 
 Everything below follows from those two facts. The memory-safety surface is
-small and well-controlled (no `unsafe`, no subprocess execution anywhere in the
-workspace, a fuzzed libvirt wire decoder); **the meaningful risk in banlieue is
-authorization and data-flow, not memory corruption.**
+small and well-controlled: no subprocess execution anywhere in the workspace,
+a fuzzed libvirt wire decoder, and `unsafe` in exactly **two** places — the
+tap and bridge `ioctl`s of the Cloud Hypervisor provider, which have no safe
+wrapper in any crate. Both are in
+`crates/banlieue-provider-cloud-hypervisor/src/sys.rs`, take their request
+number from a closed enum so no request can be paired with the wrong
+argument, and are confined there by `#![deny(unsafe_code)]` on the crate.
+**The meaningful risk in banlieue is authorization and data-flow, not memory
+corruption.**
+
+The Cloud Hypervisor provider (ADR-0060) changes the first fact's shape
+rather than adding to it. It holds **no hypervisor credential** — the
+hypervisor is local — but it runs **on the hypervisor host**, holding a
+**cluster** credential there, and it manages guests with host capabilities
+(`CAP_NET_ADMIN`, `CAP_CHOWN`, `CAP_FOWNER`). Its two boundaries, TB-8 and
+TB-9, are the host's relationship to the cluster and each guest's
+relationship to the host.
 
 ## 2. Components
 
@@ -71,8 +141,14 @@ authorization and data-flow, not memory corruption.**
 | `banlieue-controller` | `banlieue-controller` | `banlieue-system` | Watches `VirtualMachine`, schedules onto a `Provider`, creates provider infra CRs. Also runs the `VirtualMachinePool` loop (ADR-0046) and the `VirtualMachineClaim` loop (ADR-0047) — the latter binds a pool member to a subject and destroys it on release |
 | `banlieue-operator` | `banlieue-operator` | `banlieue-system` | Provider lifecycle (ADR-0012): creates provider Deployments, ServiceAccounts, Roles, RoleBindings |
 | `banlieue-provider-vsphere` / `-libvirt` | per-`Provider` SA | `banlieue-system` | Talks to the hypervisor; reconciles infra CRs (`VSphereMachine`, `LibvirtMachine` — ADR-0050) and realises them as real VMs/domains |
+| `banlieue-provider-cloud-hypervisor` | ServiceAccount `banlieue-provider-cloud-hypervisor` (a bound token in a kubeconfig **on the host**); host user `banlieue` | **Not in the cluster** — a systemd service on the KVM host; its Provider lives in `banlieue-system` | Watches its own `Provider`, `CloudHypervisorMachine`s and `VMImage`s over the API; creates taps, disks, seeds and one transient systemd unit per guest (ADR-0060, ADR-0063). Holds `CAP_NET_ADMIN`, `CAP_CHOWN`, `CAP_FOWNER` and nothing else — `deploy/provider-cloud-hypervisor/host/banlieue-provider-cloud-hypervisor.service` |
+| Cloud Hypervisor VMM, one per guest | Its own host uid **and private gid** (`banlieue-g<uid>`, registered in `/etc/userdb`), plus `kvm` | The host, as `banlieue-ch@<guest uid>.service`, an instance of a root-owned template | Runs one guest. No capabilities; seccomp and Landlock on; systemd sandbox — `deploy/provider-cloud-hypervisor/host/banlieue-ch-guest.example.service` |
 | `banlieue-imagebuilder` | `banlieue-imagebuilder` | `banlieue-system` | Drives kairos `OSArtifact` builds; merges cloud-config (ADR-0037) |
+| swtpm, one per `tpmEnabled` Cloud Hypervisor guest | The guest's uid and private group | The host, as `banlieue-swtpm@<guest uid>.service` | Emulates the guest's TPM from state in `/var/lib/banlieue/tpm/<guest uid>/` (ADR-0065) — `plan.rs::swtpm_unit` |
+| vTPM manufacture, once per guest | Host user `banlieue` | The host, as `banlieue-swtpm-setup@<guest uid>.service` | Runs `swtpm_setup`: creates the TPM and signs its EK and platform certificates with the host's `swtpm_localca` key — `plan.rs::swtpm_setup_unit` |
 | per-zone import Job | `banlieue-import` | `banlieue-imagebuild` | Uploads a built ISO to a datastore, creates a template (ADR-0020) |
+| registry push Job | **None** — `automountServiceAccountToken: false` | `banlieue-imagebuild` | Pushes a `Ready` build to the operator's OCI registry for host-resident providers (ADR-0064); reads the artifacts PVC read-only and the push Secret, nothing else — `crates/banlieue-imagebuilder/src/reconciler/push.rs` |
+| image import unit (Cloud Hypervisor) | Host user `banlieue` | The host, as `banlieue-ch-import@<vmimage uid>.service` | Pulls one image by digest into the storage classes' image caches and exits; sandboxed, writable only in `images/` — `crates/banlieue-provider-cloud-hypervisor/src/vmimage.rs` (`import_unit`), `import.rs` |
 | kairos build pod | kairos-operator's SA | `banlieue-imagebuild` | **Privileged** — loop devices, mount, chroot |
 
 ## 3. Assets
@@ -80,16 +156,19 @@ authorization and data-flow, not memory corruption.**
 | ID | Asset | Where it lives | Impact if lost |
 | --- | --- | --- | --- |
 | A-1 | Hypervisor credentials — vCenter username/password, or a libvirt **mTLS client key** | Secret named by `Provider.spec.connection.credentialsRef` | **Critical** — full virtualization-layer compromise, independent of Kubernetes |
-| A-2 | Guest bootstrap material (cloud-config, SSH keys, join tokens) | Secrets/ConfigMaps → `VSphereMachine.spec.userData` / `LibvirtMachine.spec.userData` → `guestinfo.userdata` or a NoCloud ISO → built image | High — guest compromise, lateral movement into provisioned fleet |
-| A-3 | VM image artifacts (ISO / raw disk) | `OSArtifact` PVC, then a vSphere datastore under `banlieue-images/` | **Critical** — a tampered image compromises every VM built from it |
+| A-2 | Guest bootstrap material (cloud-config, SSH keys, join tokens) | Secrets/ConfigMaps → `VSphereMachine.spec.userData` / `LibvirtMachine.spec.userData` / `CloudHypervisorMachine.spec.userData` → `guestinfo.userdata` or a NoCloud ISO (on Cloud Hypervisor, `seed.iso` in the machine directory on the host) → built image | High — guest compromise, lateral movement into provisioned fleet |
+| A-3 | VM image artifacts (ISO / raw disk) | `OSArtifact` PVC, then a vSphere datastore under `banlieue-images/`; on Cloud Hypervisor, the operator's **OCI registry** (a single-layer artifact, addressed by digest) and then each storage class's image cache on the host (`<storage class>/images/sha256-<hex>.raw`, `0750 banlieue`), or a file an admin placed there (ADR-0064) | **Critical** — a tampered image compromises every VM built from it |
 | A-4 | Integrity of the control plane's own decisions | `Provider`, `ProviderClass`, `VMImage`, `VMClass` CRs | High — a forged `Provider` redirects credentials; a forged `VMImage` redirects the fleet's boot media |
 | A-5 | Released binaries and container images | GHCR, GitHub Releases | **Critical** — downstream supply-chain compromise |
 | A-9 | **The subject's own credential (a JWT)** — the thing a sandbox is handed so it can act as its subject | **Never in banlieue.** Broker → in-guest agent over mTLS, after attestation (ADR-0049). Not on a disk, not in a CR, not in a hypervisor channel | **Critical** — it *is* the subject's identity. Kept out of banlieue entirely, which is why no banlieue compromise discloses it |
 | A-8 | **Guest readiness marker** — a value the guest writes and the provider reads back: `/run/banlieue/phase` on libvirt, `guestinfo.banlieue.phase` on vSphere | guest tmpfs → `qemu-guest-agent` → `LibvirtMachine.status.guestInstalled`, or guest `vmware-rpctool` → `config.extraConfig` → `VSphereMachineStatus.guestInstalled` (ADR-0043; both transports verified against a real backend) | Low on its own, but it gates pool membership: a guest that can assert it early gets handed out early. **Not an integrity signal** — see §6/TB-4 and §8 |
 | A-7 | **Claim bindings** — which subject was given which VM, and when | `VirtualMachineClaim.spec.subject` + `status`, mirrored onto the member as `banlieue.io/claim-subject-*` annotations (ADR-0047) | Medium — discloses who was using which sandbox to every reader of the namespace; a *forged* binding makes the record say someone requested a VM they never asked for |
 | A-10 | **The consumer's cached Kubernetes credential** — the ID token `kubectl oidc-login` writes to disk after a browser flow | `~/.kube/cache/oidc-login` on the consumer's own machine, outside every boundary below | High — it authenticates as that consumer, so it can create claims *attributed to them*. banlieue has no control here; see §8 |
-| A-6 | vTPM identity and sealed disk-encryption keys | vSphere VM, per-clone (ADR-0039/0040); on libvirt, **swtpm state keyed by domain UUID** (ADR-0050) | High — a shared or surviving TPM identity breaks per-VM disk-encryption isolation |
-| A-6a | **vTPM endorsement key certificate** — the public anchor an attestation quote is checked against | vCenter-issued and read host-side on vSphere; `swtpm_localca`-issued into the vTPM's NVRAM on libvirt, exported by the guest to `/run/banlieue/ek.pem` and mirrored to `VirtualMachineClaim.status` (ADR-0045) | Low confidentiality — it is a **public key**, deliberately readable by every reader of the claim. Its value is *integrity of binding*: it must name the VM banlieue actually created, or ADR-0049 verifies a quote from the wrong machine |
+| A-11 | **The Cloud Hypervisor provider's cluster credential** — a bound ServiceAccount token, renewed by the provider itself at half-life | `/etc/banlieue/credentials/token` on the host, beside a kubeconfig that only points at it; directory `0700 banlieue` (ADR-0060 Decision 5) | High — it is the provider's cluster identity: its own `Provider` and status, every `CloudHypervisorMachine` in the namespace, and **minting further tokens for itself**. **No Secret access** — the operator-built Role (`crates/banlieue-operator/src/workload.rs`) and `deploy/provider-cloud-hypervisor/rbac/clusterrole.yaml` — so it discloses no other credential |
+| A-12 | **Guest disks, seeds and API sockets on a Cloud Hypervisor host** | `<storage class>/<machine uid>/` (`os.raw`, `seed.iso`, `serial.log`, and `install.iso` while a `Deferred` installer is attached) and `/run/banlieue/ch/<guest uid>/api.sock`, each directory `2770 guest-uid:banlieue` | High — a guest's whole disk, its rendered user-data (A-2) in the seed, and control of its VMM. Encrypted at rest only for a `tpmEnabled` machine installed `Deferred` (ADR-0065), which seals to its own vTPM; otherwise plaintext, and ADR-0048 refuses `tpmEnabled` with an `Immediate` image |
+| A-13 | **Registry credentials** (ADR-0064) — push: a `kubernetes.io/basic-auth` Secret in `banlieue-imagebuild`; pull: `username`/`password` files in the host's `[registry] credentials_dir` (`0750 root:banlieue`) | Build namespace; each Cloud Hypervisor host | Push: **High** — combined with a `VMImage` status write, it chooses what hosts boot (TB-10). Pull: Medium — reads every pushed image, including cloud-config baked into it (A-2) |
+| A-6 | vTPM identity and sealed disk-encryption keys | vSphere VM, per-clone (ADR-0039/0040); on libvirt, **swtpm state keyed by domain UUID** (ADR-0050); on Cloud Hypervisor, swtpm state in `<storage class>/<machine uid>/tpm/`, owned by the guest's uid, deleted with the machine (ADR-0065) | High — a shared or surviving TPM identity breaks per-VM disk-encryption isolation |
+| A-6a | **vTPM endorsement key certificate** — the public anchor an attestation quote is checked against | vCenter-issued and read host-side on vSphere; `swtpm_localca`-issued into the vTPM's NVRAM on libvirt, exported by the guest to `/run/banlieue/ek.pem` and mirrored to `VirtualMachineClaim.status` (ADR-0045); on Cloud Hypervisor, written by `swtpm_setup` at manufacture to `<state_root>/ek/<machine uid>/` (`0700 banlieue`) and read **host-side** (ADR-0065) | Low confidentiality — it is a **public key**, deliberately readable by every reader of the claim. Its value is *integrity of binding*: it must name the VM banlieue actually created, or ADR-0049 verifies a quote from the wrong machine |
 
 ## 4. Actors
 
@@ -101,9 +180,12 @@ authorization and data-flow, not memory corruption.**
 | Claim consumer / sandbox broker | Creates `VirtualMachineClaim`s, holding `create` on them in a namespace | **Bounded by admission**: `spec.subject.id` must equal the authenticated username unless the requester is a declared broker (§7.6). A broker is trusted for attribution by definition |
 | Compromised controller pod | RCE inside one banlieue pod | Untrusted |
 | Compromised hypervisor endpoint | Attacker-controlled host reachable at `spec.connection.endpoint` | Untrusted |
+| **Compromised VMM** (Cloud Hypervisor) | A guest that has escaped into its VMM process: code execution as that guest's host uid, with `kvm` and write access to its own two directories | **Untrusted.** The unit's sandbox and the per-guest identity are what contain it (TB-9); the provider must never act on anything it can influence without checking |
+| **Stolen host credential** (Cloud Hypervisor) | Holds A-11 — the provider's ServiceAccount token — without the host | Untrusted; bounded by the provider's namespaced RBAC (TB-8) and the token's lifetime |
+| **OCI registry** and whoever operates it (ADR-0064) | Stores every pushed build; can read, withhold or delete one | **Untrusted for integrity** — hosts pull by digest and verify it, so the registry cannot substitute content. **Trusted for confidentiality and availability**: it sees every image in full (§7.13) |
 | External contributor | Opens a PR from a fork | Untrusted |
 | **OIDC identity provider** (and any bridge in front of it, e.g. Dex for GitHub) | Mints the ID tokens the API server accepts, and therefore **decides what `request.userInfo.username` is** | **Semi-trusted, and entirely outside banlieue's control.** Every guarantee the claim-subject policy makes is downstream of this actor: banlieue checks `subject.id` against a username it did not derive. Compromise or misconfiguration here makes every claim attribution meaningless — §8 |
-| Hypervisor operator | vCenter/libvirt privileges outside Kubernetes | Semi-trusted — **can read datastores and storage pools banlieue writes to**, and on libvirt can read swtpm state on the host filesystem |
+| Hypervisor operator | vCenter/libvirt privileges outside Kubernetes; root on a Cloud Hypervisor host | Semi-trusted — **can read datastores and storage pools banlieue writes to**, and on libvirt can read swtpm state on the host filesystem. On a Cloud Hypervisor host, root can read every guest's disk, seed and memory, and the provider's cluster token (A-11) |
 
 ## 5. Trust boundaries
 
@@ -144,6 +226,22 @@ authorization and data-flow, not memory corruption.**
                     └────────────────────────────────────────────────────────┘
 
   TB-6: GitHub Actions / GHCR ──▶ released images & binaries
+
+  TB-10: push Job (banlieue-imagebuild, no SA token) ──▶ OCI registry
+         ──▶ banlieue-ch-import@<V>.service on a KVM host (by digest, host-pinned repository)
+
+  ┌──────────── KVM host running banlieue-provider-cloud-hypervisor ────────────┐
+  │                                                                             │
+  │  provider (user banlieue, CAP_NET_ADMIN/CHOWN/FOWNER) ──TB-8──▶ API server   │
+  │     │  dials out with a bound SA token (A-11); nothing dials in             │
+  │     │ D-Bus + polkit: start/stop/reset-failed root-owned template instances │
+  │     ▼   for uids in the guest range only                                    │
+  │  systemd ──▶ banlieue-ch@<A>.service          banlieue-ch@<B>.service        │
+  │              VMM as guest A (uid:gid A)        VMM as guest B (uid:gid B)    │
+  │              seccomp · Landlock · sandbox  ─ TB-9 ─  seccomp · Landlock      │
+  │              <storage>/<A>/ 2770 A:banlieue   <storage>/<B>/ 2770 B:banlieue │
+  │              tap A ─────────── host bridge ─────────── tap B                 │
+  └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
 | ID | Boundary | Crossing |
@@ -155,6 +253,9 @@ authorization and data-flow, not memory corruption.**
 | TB-5 | Cluster → shared datastore | ISO/disk artifacts written to storage other people can read |
 | TB-6 | Contributor / CI → published artifact | Build and release |
 | TB-7 | External identity provider → API server | The assertion of *who the caller is*, on which the whole claim attribution model rests |
+| TB-8 | Cloud Hypervisor host ↔ cluster | A process on the hypervisor holds a cluster credential and acts on cluster state; cluster state tells a host what to run |
+| TB-9 | Guest VMM → host and other guests | Guest code that escapes into its VMM runs on the host, next to the provider and every other guest |
+| TB-10 | Build namespace → OCI registry → Cloud Hypervisor host | A build leaves the cluster for a registry the operator runs, and enters a host that cannot mount cluster storage (ADR-0064) |
 
 ## 6. Threats by boundary
 
@@ -211,6 +312,16 @@ The `banlieue-import` identity is deliberately *not* the provider controller's
 own identity (which can create Jobs), and starts with zero permissions;
 `banlieue-operator` grants it narrowly-scoped, per-Provider read access. See
 §7 for the hardening this still requires.
+
+Since ADR-0064 the **imagebuilder itself** creates a Job here: the registry
+push Job. Its build-namespace Role therefore holds `jobs`
+get/create/patch/delete and `pods` list (`deploy/imagebuilder/rbac/role.yaml`,
+`crates/banlieue-operator/src/bootstrap.rs::build_cloud_config_role`). By the
+statement above, that makes the imagebuilder's identity node-root-equivalent
+in this namespace. It already was in effect — it creates `OSArtifact`s,
+which kairos turns into privileged pods — but the grant is now direct. §8.
+The push Job it creates runs with no ServiceAccount token, non-root, with a
+read-only root filesystem and all capabilities dropped.
 
 ### TB-4 — Cluster → hypervisor
 
@@ -287,6 +398,79 @@ which is worth stating plainly rather than leaving implicit in §8.
 | An issuer the site does not use is named in `spec.subject.issuer` | S, R | The `issuers` allowlist in `banlieue-virtualmachineclaim-subject-authorization`. This is a check on the *claim*, not on the caller — nothing reveals which issuer actually minted the caller's token (§8) |
 | The agent is pointed at an attacker's JWKS via `spec.subject.issuer` | S, T | Same allowlist, doing double duty — see TB-4. Load-bearing for verification, not merely for audit tidiness (ADR-0049 Decision 7) |
 
+### TB-8 — Cloud Hypervisor host ↔ cluster
+
+The provider runs on the hypervisor and dials the API server; nothing
+dials the host (ADR-0060). Two directions matter: what a stolen host
+credential can do in the cluster, and what cluster state can make the host
+do.
+
+| Threat | STRIDE | Control |
+| --- | --- | --- |
+| A stolen host token reads Secrets or other credentials | I, E | The provider's identity has **no Secret or ConfigMap access at all**. It is the operator-built per-Provider `Role` of an External class (ADR-0060 Decision 3), which never emits a Secret rule without a `credentialsRef` and a `cloud-hypervisor` Provider may not have one — `crates/banlieue-operator/src/workload.rs` (`build_role`, `external_rules`), `deploy/admission/provider-connection.yaml`, and the provider's own `CredentialsNotAllowed` refusal (`provider.rs`) — plus a `ClusterRole` limited to reading `VMImage`s and patching their status, `deploy/provider-cloud-hypervisor/rbac/clusterrole.yaml` |
+| A stolen host token mints or deletes machines | T, D | No `create` or `delete` on `cloudhypervisormachines`; the controller owns their lifecycle — same file |
+| A stolen host token patches **another** host's `Provider` or its status | S, T | The External Role scopes `providers` and `providers/status` by `resourceNames` to the one Provider; the provider's watch filters on `metadata.name`, which `resourceNames` honours for `list`/`watch` — `workload.rs::external_rules`, tested in `workload_tests.rs` |
+| A stolen host token patches **another host's machines** in the same namespace | T, D | **Not controlled** — machine names are unknowable when the Role is written, so `cloudhypervisormachines` is namespace-wide. §8 |
+| A stolen token is renewed by the thief and never expires | S | **Revocable, not self-limiting.** The token can create tokens for its own ServiceAccount (that is how the host renews), so a thief who holds it can too. The control is revocation: bound tokens are tied to the ServiceAccount's UID, so deleting the ServiceAccount invalidates every token ever issued for it at once, and the operator recreates it for a fresh `banlieue bootstrap cloud-hypervisor-host` (§7.11). Token creation appears in the API server's audit log. §8 |
+| A host's token outlives the host | S | Bound, 24 h by default, renewed only while the provider runs: a host down for longer than one lifetime comes back with a dead token and must be re-issued one — `crates/banlieue-provider-cloud-hypervisor/src/token.rs` |
+| Cluster state chooses a host path or bridge | T, E | Machines name **classes**, never paths: the host resolves a class through its own `/etc/banlieue/cloud-hypervisor.toml`, which is `0640 root:banlieue` and read-only to the provider (`ProtectSystem=strict`) — `crates/banlieue-provider-cloud-hypervisor/src/host_config.rs`, `plan.rs`. An unknown class is refused (`PlanError::UnknownStorageClass`, `UnknownNetworkClass`) |
+| Cluster state injects a path through an image name, MAC or machine UID | T, E | `plan.rs` accepts an image only as a plain file name (no `/`, no leading `.`), a MAC as six hex octets, and the machine UID as a canonical UUID before any of them reaches a path, unit name or tap name; tap names are derived, never taken from the spec |
+| A machine for another host is realised here | T | `reconciler.rs::is_ours`: only machines whose `providerRef` names this host's Provider, in its namespace, are reconciled |
+| Cluster state chooses **where a host downloads what it boots** — a `VMImage` status naming an attacker's registry | T, E | The host pulls only a **digest in the one repository its own config names** (`[registry] repository`); anything else is `ForeignReference` and never fetched — `vmimage.rs::check_reference`, re-checked by the import itself (`import.rs`). The cache file name is derived from the digest, never taken from the cluster. See TB-10 |
+| Host paths leak into the cluster through status | I | The `Provider` failure domain and the `VMImage` row carry **class names only**; unit tests assert no `/` in either — `provider_tests.rs`, `vmimage_tests.rs` |
+| A stolen host token holds a `VMImage` in `Terminating` by never reporting `Released`, or reports it falsely | D, R | The host token writes only its **own** `perProvider` row (it has `vmimages/status` patch, no `vmimages` write). Withholding blocks deletion of images that host held — removing that `Provider` releases it; a false `Released` only leaves a file on that host. The finalizer itself is the controller's (`crates/banlieue-controller/src/reconciler/vmimage.rs`, `HOST_CACHE_FINALIZER`), so no host token needed `VMImage` metadata write, which would also reach the spec |
+| A cluster author asks for a vTPM or install media the host cannot provide | I | `vtpm` is advertised only when the host config has `[tpm]` and its swtpm binaries, setup configuration and CA certificate exist (`provider.rs::gather_facts`); `plan.rs` refuses `tpmEnabled` on a host without `[tpm]`. A `tpmEnabled` VM with an `Immediate` image is refused before scheduling (ADR-0048), so none boots unsealed while claiming otherwise |
+
+### TB-9 — Guest VMM → host and other guests
+
+Assume a guest has escaped into its VMM process. What contains it:
+
+| Threat | STRIDE | Control |
+| --- | --- | --- |
+| The VMM reads or writes another guest's disk, seed or socket | I, T | Each guest runs as **its own uid and its own private group** (`User=<uid>`, `Group=<uid>`, registered in `/etc/userdb` by the bootstrap); machine and run directories are `2770 guest-uid:banlieue` under `0711` roots, and no guest is ever in the `banlieue` group — `plan.rs::vmm_unit`, `hostfs.rs::prepare_dirs`, `scripts/bootstrap-cloud-hypervisor-host.sh`. Live-verified: another user cannot even list a guest's directory |
+| The VMM writes anywhere else on the host | T, E | `ProtectSystem=strict` with `ReadWritePaths=` its own two directories, `ProtectHome`, `PrivateTmp`, `NoNewPrivileges`; Cloud Hypervisor's own seccomp filters and Landlock, with Landlock widened only by one read-only rule per tap on `/sys/devices/virtual/net/<tap>` — `systemd.rs`, `banlieue-cloud-hypervisor/src/types.rs`; reference unit `deploy/provider-cloud-hypervisor/host/banlieue-ch-guest.example.service` |
+| The VMM opens other devices | E | `DevicePolicy=closed` with only `/dev/kvm` and `/dev/net/tun` allowed |
+| The VMM exhausts host memory or PIDs | D | `MemoryMax=` guest memory + 512 MiB, `TasksMax=1024` in the unit's cgroup |
+| **The VMM plants a symlink** in its own directory so the provider's privileged `chown`/`chmod`/truncate lands on another guest's disk or the shared image | T, E | **Every privileged change the provider makes inside a guest's directory goes through a file handle, never a path**: disks and seeds are created `O_CREAT\|O_EXCL`, then grown, owned and re-moded through that handle (`fchown`, `fchmod`, `set_len`); directories are opened `O_NOFOLLOW\|O_DIRECTORY` before being re-owned; the seed is read `O_NOFOLLOW` — `hostfs.rs` (`own`, `ensure_os_disk`, `write_seed`, `prepare_dirs`), `sys.rs::clone_file`. Tests plant symlinks and assert their targets are untouched (`hostfs_tests.rs`, `sys_tests.rs`) |
+| The VMM replaces its API socket so the provider talks to something else, or so the provider's `CAP_FOWNER` re-modes an arbitrary file | S, E | `hostfs::grant_api_socket` opens the path `O_PATH\|O_NOFOLLOW`, requires a **socket** owned by the guest uid in the `banlieue` group with no bits for others, and changes only that opened inode via `/proc/self/fd`; the VMM client re-checks owner and mode before every connect — `banlieue-cloud-hypervisor/src/socket.rs` |
+| The VMM returns a malformed or huge API response to the provider | D, T | Typed decoding into bounded structs; errors are reported on the machine's status, never panics — `banlieue-cloud-hypervisor/src/wire.rs`. **Not fuzzed**, unlike the libvirt decoder. §8 |
+| The guest (or its VMM) replaces its **EK certificate** with one it made, carrying the expected CN | S, T | The certificate is written by `swtpm_setup`, run by the provider's user, to `<state_root>/ek/<uid>/` (`0700 banlieue`), outside every directory a guest uid owns, and read from there — `plan.rs` (`TpmPlan::ek_dir`), `hostfs.rs::ek_certificates`. Nothing a guest sends is published as its EK |
+| The guest deletes its TPM state to get a TPM **manufactured again**, this time with symlinks planted where `swtpm_setup` (run as the provider's user, which can read the CA key) will write | T, E | Whether a TPM was manufactured is the provider-only EK directory, not the guest-owned state: a machine with EK files is never manufactured again; lost state is an error (`hostfs.rs::tpm_manufactured`, `machine.rs::ensure_tpm`, tested in `machine_tests.rs`) |
+| A symlink in the TPM state directory turns the provider's `CAP_CHOWN` onto another file when the state is handed to the guest | T, E | Each entry is opened `O_NOFOLLOW` relative to the directory handle and re-owned through that handle; anything but a regular file is refused — `hostfs.rs::adopt_tpm_state`, tested with a planted symlink in `hostfs_tests.rs` |
+| A guest's swtpm reads another guest's TPM state, or the CA key | I, E | swtpm runs as the guest's own uid and private group, writing only its state directory and run directory (`plan.rs::swtpm_unit`); the CA key is `0600 banlieue` in a `0700` directory, and manufacture — the only step that reads it — runs as the provider's user (`plan.rs::swtpm_setup_unit`) |
+| A guest floods or stalls the **vsock report** listener, or sends crafted bytes | D, T | Each connection is read with a 10 s timeout and a 16 KiB cap; only an exact `phase=installed` line counts, everything else is ignored, and nothing is ever sent back or executed — `report.rs` (`parse_report`, `Listeners`), tested in `report_tests.rs`. The listener is a Unix socket in the guest's own run directory, never a network port |
+| A guest claims **another** guest's installation, or claims "installed" while its installer is still running | S | A report can only arrive on the socket in the reporting guest's own run directory, so it speaks for itself only. A guest that lies about itself makes only itself `GuestReady` early — the same bound as ADR-0043's marker (§8); with `tpmEnabled`, `GuestReady` also waits for the host-minted EK |
+| A symlink planted at the report socket path turns the provider's `CAP_CHOWN` onto another file | T, E | The path is unlinked (a link, never its target) before binding; the bound socket is opened `O_PATH\|O_NOFOLLOW`, checked to be a socket the provider owns, and re-owned through `/proc/self/fd` — `report.rs::hand_to_guest`, tested with a planted symlink |
+| The installer survives into the installed system and re-runs on a reboot | T, D | When the installed system reports, `vm.remove-device install` in the same pass, `installMediaDetached` sticky, every later start planned without it — `machine.rs`, `plan.rs::without_install_media`, `reconciler.rs`; `GuestReady` stays `False, InstallMediaAttached` until then |
+| A guest's VMM reads the shared image cache, or another guest's installer, or follows a symlink the guest planted where its installer copy goes | I, T | The cache stays `0750 banlieue`, closed to guest uids; each `Deferred` machine gets its own copy in its own directory, `0440` owned by the guest, created `O_EXCL` under a temporary name and re-owned by handle; anything but a regular file at the path is removed, never followed, and the copy is deleted on the pass after the eject — `hostfs.rs::ensure_install_media`, tested with a planted symlink in `hostfs_tests.rs`; verified live by `tests/e2e_deferred.rs` |
+| The VMM starts, stops or changes **other** systemd units | E | It holds no D-Bus authority; only the provider's user may manage units, through the polkit rule below — `deploy/provider-cloud-hypervisor/host/60-banlieue-cloud-hypervisor.rules` |
+| **The provider's user starts a unit as root, or as a user outside the guest range** (a compromised provider process, or anyone holding its uid) | E | Units are instances of **root-owned templates** that fix `User=`, `ExecStart=` and the sandbox (`deploy/provider-cloud-hypervisor/host/*@.service`); the provider chooses only the instance. polkit allows start/stop/reset-failed only on those templates' instances, with the uid instance **inside the guest range** (so not `banlieue-ch@0`), and `set-property` only on VMM instances; systemd itself refuses a transient unit under a name with a unit file and refuses `User`/`ExecStart` changes through `set-property`. Tested by `scripts/test-cloud-hypervisor-polkit.js` (22 cases) and verified on a host as the `banlieue` user (ADR-0063, amended 2026-09-27). Previously the provider created transient units, which polkit could only check by name, so this was possible |
+| The provider passes crafted arguments through a template's environment file | T, E | Only the two templates that run **as the provider's own user** read one, so nothing is gained; values are refused unless single safe words (no whitespace, quotes, `$`, `\\`), and reach `ExecStart` as `${NAME}` — `systemd.rs::EnvFile::render` |
+| A guest spoofs its address, or another guest's, on the bridge | S | **Not controlled at L2**: the tap is a plain bridge port. The provider reports only complete neighbour entries for the guest's own MAC on its own bridge (`neigh.rs`), but a guest chooses what IP it answers for. §8 |
+| A failed VMM loops silently, hiding a fault | R | Failed units are kept (`CollectMode=inactive`), their systemd result is reported as `Ready=False, VmmExited`, then cleared and retried with backoff — `machine.rs`, `systemd.rs::failure` |
+| Deleting a machine leaves its disk, seed, tap or unit behind | I | `machine.rs::teardown` stops the unit, deletes the taps and removes both directories, then **verifies** each is gone before the finalizer is released (`hostfs::remove_machine`, `host.rs::remove_taps`) — live-verified repeatedly |
+
+### TB-10 — Build namespace → OCI registry → Cloud Hypervisor host
+
+A Cloud Hypervisor host cannot mount the artifacts PVC, so a build it needs
+is pushed to an OCI registry and pulled by digest (ADR-0064). Integrity
+rests on content addressing; confidentiality and availability rest on the
+registry.
+
+| Threat | STRIDE | Control |
+| --- | --- | --- |
+| The registry, or anyone with push access, substitutes an image's content | T | **Digest pinning end to end.** The push Job reports the manifest digest; the imagebuilder records the reference only if it is a digest in its configured repository (`push.rs::pushed_reference`); the host pulls that digest, verifies the manifest and the layer against their digests while streaming, and renames into place only on a match — `crates/banlieue-oci/src/client.rs` (`manifest`, `pull_file`). A moved tag changes nothing |
+| A `VMImage` status writer points hosts at another registry or repository | T, E | Host-pinned repository — TB-8 |
+| A `VMImage` status writer points hosts at **another digest in the same repository** | T | **RBAC only.** `vmimages/status` patch (the imagebuilder, every Cloud Hypervisor provider's token, cluster admins) together with push access to the repository chooses what hosts boot. Digest pinning gives integrity, not provenance; signature verification is ADR-0064's follow-up. §8 |
+| A compromised push Job redirects hosts | T, S | It has no API credential at all (`automountServiceAccountToken: false`); its only output is a termination message the imagebuilder validates as above — `push.rs::build_push_job` |
+| The push Job escalates or tampers with the build | E, T | Non-root, `readOnlyRootFilesystem`, `allowPrivilegeEscalation: false`, all capabilities dropped, PVC mounted **read-only**, an `emptyDir` for the compressed copy — `push.rs::build_push_job`, tested in `push_tests.rs` |
+| The registry reads images, including cloud-config baked into them (A-2) | I | **Not controlled by banlieue.** Treat the registry as holding A-2 (§7.13); per-VM secrets belong in `VirtualMachine.spec.userData`, delivered per clone, not in a shared image — as TB-5 says for datastores |
+| The registry withholds or deletes an image | D | The import unit fails, the row reports `ImportFailed` with systemd's reason, and the next reconcile retries. Images already cached, and running guests, are unaffected |
+| An oversized or hostile layer exhausts the host | D | The layer is capped at its manifest-declared size while streaming, and so is the **decompressed** stream: the push records the uncompressed length as a layer annotation (`io.banlieue.disk.size`), covered by the manifest digest the host pins, and the pull refuses to write past it or to finish short of it — `crates/banlieue-oci/src/sparse.rs` (`with_limit`), `client.rs::pull_file`. Superseded pulls are evicted beyond `[registry] keep_unreferenced`, and a deleted image's file is removed (`vmimage.rs::eviction_candidates`, `release`), so steady-state growth is bounded by the images in use. §8 |
+| Eviction deletes an image a guest depends on | D, T | Only digest-named pulls are candidates, never admin-placed files; a file is kept while this host's row of a live `VMImage` resolves to it or one of its machines names it (`referenced_files`). A running guest's OS disk is its own file (reflink or sparse copy), so removing the cache file cannot touch it |
+| The import process writes outside the image cache | T, E | Its own unit, an instance of the root-owned `banlieue-ch-import@.service`, as the provider's user: `ProtectSystem=strict`, `ReadWritePaths=` only the storage classes' `images/`, `ProtectHome`, `PrivateTmp`, `NoNewPrivileges`, `DevicePolicy=closed` with no devices — the template file, checked by `systemd_tests.rs`. Writes go through a temporary name and a rename; a copy into a second class is created `O_EXCL` (`sys.rs::clone_file`) |
+| Registry credentials leak | I | Push: a Secret in `banlieue-imagebuild`, mounted only into the push Job. Pull: files readable by `root:banlieue` only, never a cluster Secret, so ADR-0060's "no Secret reads" holds for the host (`host_config.rs`, bootstrap script) |
+
 ## 7. Deployment hardening requirements
 
 These are properties of the **current** design that operators must enforce
@@ -297,7 +481,8 @@ a different assumption is unsafe.
    on all of them.** `banlieue-controller` resolves `spec.userData` references
    and inlines the *rendered content* into the infra CR in plaintext
    (ADR-0025/ADR-0038) — `VSphereMachine.spec.userData` and, since ADR-0050,
-   `LibvirtMachine.spec.userData`, both built by the same
+   `LibvirtMachine.spec.userData` — and, since ADR-0062,
+   `CloudHypervisorMachine.spec.userData` — all built by the same
    `build_*_machine` path in `crates/banlieue-controller/src/reconciler/infra.rs`.
    Anyone who can read one of these can read the user-data that produced it,
    SSH keys and join tokens included. This reflection is ADR-0025's accepted
@@ -424,9 +609,44 @@ a different assumption is unsafe.
       member as an annotation. Put an identifier there, never a token — the
       subject's credential belongs on the phase C attested channel, keyed to
       `status.nonce`.
-11. **Recommended audit rule:** alert on any `ClusterRoleBinding` created by the
+11. **Cloud Hypervisor hosts are part of the trust base; bootstrap them with
+    the script and keep them to it.** The provider on the host is only as
+    contained as the host configuration around it
+    (`docs/src/guides/cloud-hypervisor-host-systemd.md`):
+    - Install with `scripts/bootstrap-cloud-hypervisor-host.sh`, which
+      registers per-guest uids and private groups, sets `0711`/`2770`
+      directories, and installs the polkit rule and the sandboxed provider
+      unit. A host set up by hand without the userdb records cannot start
+      guests; one set up without the directory modes loses guest-to-guest
+      isolation.
+    - `/etc/banlieue/kubeconfig` is `0600 banlieue`; the host config is
+      `0640 root:banlieue`. Nothing else on the host should read either.
+    - The provider **renews its own token** (ADR-0060 Decision 5). To
+      **revoke** a host — decommissioned, stolen disk, suspected compromise —
+      delete its ServiceAccount; every token for it dies at once and the
+      operator recreates the account. Alert on `serviceaccounts/token`
+      creation for these accounts from anywhere but their host.
+    - **Do not put two hosts' Providers in one namespace unless they are
+      equally trusted** — each host's Role reaches every
+      `CloudHypervisorMachine` in its namespace (§8). External Providers
+      must live in the operator's install namespace, the only one where it
+      holds the token grant.
+    - Keep `nsswitch.conf`'s `passwd`/`group` lines including `systemd`;
+      `preflight` refuses a host without it.
+12. **Recommended audit rule:** alert on any `ClusterRoleBinding` created by the
    `banlieue-operator` identity whose `roleRef` is not `banlieue-provider-*`
    (accepted-risk monitoring for the operator's RBAC-minting capability).
+13. **Treat the OCI registry used for Cloud Hypervisor images as holding
+    guest bootstrap material** (ADR-0064, TB-10). Images can carry
+    cloud-config baked in by `VMImage.spec.cloudConfigs`. Use a private
+    repository with access control and TLS; give the imagebuilder a push
+    credential scoped to that one repository, and hosts a **pull-only**
+    credential. Push access to that repository, together with `VMImage`
+    status write, decides what hosts boot: keep both lists short. Configure
+    retention yourself — banlieue never deletes from the registry. On
+    hosts, `keep_unreferenced` bounds superseded pulls; a host that is
+    down holds deleted images in `Terminating` until it returns or its
+    `Provider` is removed.
 
 ## 8. Accepted risks
 
@@ -447,13 +667,23 @@ a different assumption is unsafe.
 | `subject.issuer` is allowlisted but never *verified*: the API server does not reveal which issuer minted the caller's token | Nothing in Kubernetes can attest it, so an allowlist is the strongest available check — it stops a claim naming an issuer the site does not use, which is what would make the recorded attribution meaningless. The claim deliberately carries no token to verify (ADR-0047 Decision 9) | The in-guest agent's JWT validation lands (roadmap phase C), at which point the *guest* verifies issuer, audience and `oid` against the claim |
 | An `installMode: Manual` image can claim a deferred install it does not perform, so a `tpmEnabled` VM built from it is unencrypted and says nothing | `Manual` exists precisely for builds banlieue does not drive (ADR-0040), so inspecting it is not possible without becoming its build system. ADR-0048 closes the case banlieue *can* see (`Immediate`, and an absent `template`) and fails closed there; `Manual` is a deliberate operator assertion, narrower than the blanket gap it replaced | A backend reports sealed-partition state back to banlieue, making the assertion verifiable rather than trusted |
 | The NoCloud `cidata` seed stays attached after install, so a guest can read its own rendered user-data (A-2) from inside the sandbox | ADR-0044 Decision 4, deliberate and scoped: cloud-init re-reads its datasource on every boot, so removing the seed risks regressing per-boot modules in a way that needs its own live verification on a reboot — not a first boot. Ejecting the *installer* removes the build-time overlay shared across every VM, which is the broader exposure; what remains is each guest's own material, which that guest's workload could in principle obtain anyway | The seed eject is verified live across a reboot, or user-data delivery stops needing a persistent datasource |
+| A stolen host token (A-11) can patch **any `CloudHypervisorMachine`** in its namespace — another host's included — clearing finalizers or rewriting status | Machine names are not known when the Role is written, so `resourceNames` cannot scope them. Providers and their status *are* scoped since External mode (2026-09-26). The token still cannot read Secrets or create or delete machines. Operators bound it by namespace (§7.11) | Per-host machine scoping becomes possible (a label-selector authorization, or one namespace per host) |
+| A stolen host token can **renew itself**, so it does not expire on its own | Renewal by TokenRequest is what lets a host run unattended (ADR-0060 Decision 5), and the API cannot tell the host's request from a thief's. Revocation is immediate and total — delete the ServiceAccount (§7.11) — and every renewal is an audited API call | Token requests can be bound to a host attestation (a TPM-bound key), or the API server gains per-token revocation |
+| `banlieue-operator` holds `serviceaccounts/token` `create` in its install namespace, so a compromised operator can mint tokens for **other** ServiceAccounts there, the controller's included | RBAC requires a grantor to hold what it grants, and each External provider's Role carries renewal on its own ServiceAccount. Held namespaced, never cluster-wide (`deploy/operator/rbac/role.yaml`; a test fails if the ClusterRole ever gains it). The operator already holds broader grants (SEC-007) | The operator stops needing to delegate token creation — e.g. the provider renews through a narrower API |
+| Guest addresses reported on status come from the host's neighbour table, which **the guest influences**; the tap is a plain bridge port with no MAC/IP filtering | Same posture as a libvirt NAT network. Addresses are a convenience for consumers, not an identity — the same reasoning as `GuestReady` (ADR-0043 Decision 9). Static IPAM (ADR-0024) gives an address the guest did not choose | Bridge-level anti-spoofing (nftables `bridge` family) is added, or an address becomes load-bearing for authorization |
+| A **compromised provider process** reaches every guest on its host: it can read their disks and reconfigure taps (`CAP_NET_ADMIN`) | Inherent in a host-resident hypervisor manager — something on the host has to own guests' storage and networking, and the alternative (root) is strictly worse. It holds three capabilities and no others, can manage only instances of its root-owned templates for uids in the guest range (so it cannot start anything as root), and writes only the run root, the storage classes and its own state directories | A split into a minimal privileged helper and an unprivileged reconciler becomes worth its complexity |
+| Hosts verify an image's **integrity** (digest) but not its **provenance**: whoever can write `VMImage` status and push to the configured repository chooses what hosts boot | Digest pinning already defeats a registry that substitutes content, and the host pins the repository. Signing needs a key-management story of its own, which ADR-0064 defers to its own ADR (cosign/sigstore) | Signature verification on pull lands, or the repository is shared with parties outside the platform team |
+| The imagebuilder's identity can **create Jobs in `banlieue-imagebuild`**, a privileged namespace, so its compromise is node-root-equivalent there | It already drove privileged builds through `OSArtifact`s; the push Job must run beside the PVC it reads. The Job it creates holds no API credential and no privilege | The push can run outside the privileged namespace (e.g. a restricted namespace with a read-only clone of the artifacts volume) |
+| Images in the registry can carry cloud-config (A-2), readable by the registry's operator | The registry is the operator's, like the datastore in TB-5; banlieue cannot encrypt what a host must boot without a key-distribution scheme it does not have | Per-VM secrets move entirely out of shared images, or images are encrypted for their hosts |
+| The Cloud Hypervisor API decoder (`banlieue-cloud-hypervisor`) is **not fuzzed** | The peer is a local VMM the provider started, not a network endpoint; decoding is into typed, bounded structs and failure is reported, not fatal. The libvirt decoder is fuzzed because its peer is remote | A fuzz target is added alongside the libvirt one, or the client ever talks to a VMM it did not start |
 | Health endpoint binds `0.0.0.0` and returns a fixed `200` | Standard probe trade-off; carries no data | It ever reports real state |
 | Provider condition messages are mirrored verbatim onto user-facing `VirtualMachine` status | Useful diagnostics; providers are in-tree | A third-party provider ships |
 
 ## 9. Out of scope
 
 - Anything requiring cluster-admin as a starting position (`SECURITY.md` policy).
-- Compromise of the hypervisor itself, or of vCenter/libvirt authorization.
+- Compromise of the hypervisor itself, or of vCenter/libvirt authorization —
+  including root on a Cloud Hypervisor host, which owns every guest on it.
 - Guest-OS hardening after boot; banlieue's responsibility ends at delivering
   the bootstrap material.
 - `deploy/kind/` — development-only, not held to production standard.

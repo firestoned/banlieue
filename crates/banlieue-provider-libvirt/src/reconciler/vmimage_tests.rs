@@ -31,6 +31,7 @@ mod tests {
             reason: None,
             message: None,
             checksum: None,
+            oci_artifact: None,
         }
     }
 
@@ -47,9 +48,9 @@ mod tests {
                 },
                 connection: ProviderConnection {
                     endpoint: "qemu+tls://libvirt-host.example/system".into(),
-                    credentials_ref: LocalObjectReference {
+                    credentials_ref: Some(LocalObjectReference {
                         name: "libvirt-creds".into(),
-                    },
+                    }),
                     insecure_skip_tls_verify: false,
                     ca_bundle: None,
                 },
@@ -550,13 +551,45 @@ mod tests {
     /// so the name is derivable without asking the host.
     #[test]
     fn url_source_resolves_to_the_imported_volume_name() {
-        assert_eq!(url_volume_name("kairos-sandbox"), "kairos-sandbox.raw");
+        assert_eq!(
+            url_volume_name("kairos-sandbox", &BuildArtifactKind::CloudImage),
+            "kairos-sandbox.raw"
+        );
     }
 
     /// An image whose name already carries the suffix must not gain a second
     /// one, or the reference names a volume the import never created.
     #[test]
     fn url_volume_name_is_not_double_suffixed() {
-        assert_eq!(url_volume_name("kairos-sandbox.raw"), "kairos-sandbox.raw");
+        assert_eq!(
+            url_volume_name("kairos-sandbox.raw", &BuildArtifactKind::CloudImage),
+            "kairos-sandbox.raw"
+        );
+    }
+
+    /// A Deferred image's build is the installer ISO (ADR-0040): its volume
+    /// is named `.iso`, and the import Job is told that name, so what the
+    /// machine attaches as its install CD-ROM really is the installer.
+    #[test]
+    fn an_iso_build_is_imported_as_an_iso_volume() {
+        assert_eq!(
+            url_volume_name("kairos-sandbox", &BuildArtifactKind::Iso),
+            "kairos-sandbox.iso"
+        );
+        let p = provider_with_pools("default");
+        let a = BuildArtifactStatus {
+            kind: BuildArtifactKind::Iso,
+            ..artifact(BuildArtifactPhase::Ready)
+        };
+        let job = build_import_job(&inputs("j", "ns", "kairos-sandbox", &p, &a));
+        let args: Vec<String> = serde_json::from_value(
+            job["spec"]["template"]["spec"]["containers"][0]["args"].clone(),
+        )
+        .unwrap();
+        let i = args
+            .iter()
+            .position(|a| a == "--volume-name")
+            .expect("--volume-name");
+        assert_eq!(args[i + 1], "kairos-sandbox.iso");
     }
 }

@@ -134,6 +134,7 @@ mod tests {
                 mac: "52:54:00:00:00:01".into(),
             }],
             tpm_socket: Some(PathBuf::from("/run/swtpm.sock")),
+            vsock_socket: Some(PathBuf::from("/run/vsock.sock")),
             serial_file: PathBuf::from("/srv/serial.log"),
             landlock: true,
         }

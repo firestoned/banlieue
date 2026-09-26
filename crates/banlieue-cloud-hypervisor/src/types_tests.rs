@@ -32,6 +32,7 @@ mod tests {
                 mac: "52:54:00:12:34:56".into(),
             }],
             tpm_socket: None,
+            vsock_socket: None,
             serial_file: PathBuf::from("/srv/banlieue/ch/m/serial.log"),
             landlock: true,
         }
@@ -128,6 +129,22 @@ mod tests {
         assert_eq!(c["net"][0]["id"], "eth0");
     }
 
+    /// v53 reads a tap's flags from sysfs when it opens it, and Landlock
+    /// denies that unless allowed: the NIC then fails to open. Each tap's
+    /// own sysfs directory is allowed, read-only, and nothing wider.
+    #[test]
+    fn landlock_allows_reading_each_taps_sysfs_directory_only() {
+        let c = config();
+        assert_eq!(
+            c["landlock_rules"],
+            serde_json::json!([{"path": "/sys/devices/virtual/net/bch0f3c9a1e00", "access": "r"}])
+        );
+        let mut p = plan();
+        p.landlock = false;
+        let off = serde_json::to_value(VmConfigRequest::for_guest(&p)).unwrap();
+        assert!(off.get("landlock_rules").is_none());
+    }
+
     #[test]
     fn tpm_is_absent_without_a_socket_and_present_with_one() {
         assert!(config().get("tpm").is_none());
@@ -135,6 +152,18 @@ mod tests {
         p.tpm_socket = Some(PathBuf::from("/run/banlieue/ch/m/swtpm.sock"));
         let c = serde_json::to_value(VmConfigRequest::for_guest(&p)).unwrap();
         assert_eq!(c["tpm"]["socket"], "/run/banlieue/ch/m/swtpm.sock");
+    }
+
+    /// ADR-0065 Decision 5: hybrid vsock, a guest CID and the host-side
+    /// Unix socket; absent without one.
+    #[test]
+    fn vsock_is_absent_without_a_socket_and_present_with_one() {
+        assert!(config().get("vsock").is_none());
+        let mut p = plan();
+        p.vsock_socket = Some(PathBuf::from("/run/banlieue/ch/m/vsock.sock"));
+        let c = serde_json::to_value(VmConfigRequest::for_guest(&p)).unwrap();
+        assert_eq!(c["vsock"]["socket"], "/run/banlieue/ch/m/vsock.sock");
+        assert_eq!(c["vsock"]["cid"], VSOCK_GUEST_CID);
     }
 
     #[test]

@@ -329,6 +329,201 @@ rm -rf /root/ch-smoke
 
 ---
 
+## What gets installed, and why
+
+Every systemd unit setting, the polkit rule, the tmpfiles entry, the guest
+identities in `/etc/userdb` and the directory permissions are explained,
+setting by setting, in
+[Cloud Hypervisor host: systemd, polkit, identities](cloud-hypervisor-host-systemd.md).
+The files themselves are templates in `deploy/provider-cloud-hypervisor/host/`,
+which this script renders; running it against a remote host (`--remote`)
+copies them along.
+
+## Connect it to a cluster
+
+The host is a `Provider` whose `ProviderClass` is **External** (ADR-0060):
+the operator gives it an identity in the cluster but runs nothing, and the
+process runs here. Three steps, in order.
+
+1. **In the cluster**, install banlieue if you have not: `banlieue bootstrap
+   operator` installs the `cloud-hypervisor` ProviderClass (`deployment:
+   External`) and its ClusterRole alongside everything else. Then apply the
+   host's `Provider` and what its VMs use — example 21 is a complete set.
+   The Provider names **no** `credentialsRef` (this provider reads no
+   Secret; one set is refused) and its name must be the host's
+   `PROVIDER_NAME`:
+
+    ```sh
+    kubectl apply -f examples/21-virtualmachine-cloud-hypervisor.yaml
+    ```
+
+    The operator creates the Provider's ServiceAccount and a Role scoped to
+    that one Provider, its machines, its Lease and renewing its own token.
+    External Providers live in the operator's install namespace
+    (`banlieue-system`): that is the only namespace where it may grant token
+    renewal.
+
+2. **Issue the host its first credential**, as a cluster admin, anywhere
+   your kubeconfig works:
+
+    ```sh
+    banlieue bootstrap cloud-hypervisor-host --provider <PROVIDER_NAME> --output-dir /tmp/creds
+    ```
+
+    This writes `kubeconfig` (your cluster's server and CA, reading its token
+    from `/etc/banlieue/credentials/token` on the host) and `token`, both
+    `0600`. Copy the directory to the host.
+
+3. **On the host, as root**, in one step: bootstrap, install the
+   credentials, seed the image cache, start the provider.
+
+    ```sh
+    sudo PROVIDER_CREDENTIALS=/tmp/creds \
+         BASE_IMAGE=/var/lib/libvirt/images/kairos-ubuntu-2404.raw \
+         STORAGE_CLASSES="default=/srv/banlieue/ch" \
+         NETWORK_CLASSES="default=virbr0" \
+         scripts/ch-host-provider-up.sh
+    ```
+
+From then on the provider **renews its own token** at half its lifetime
+(24 h by default) and replaces the token file in place; the kubeconfig
+never changes. A host down for longer than one lifetime comes back with an
+expired token — run step 2 again. To **revoke** a host's credential, delete
+its ServiceAccount: every token issued for it stops working at once, and
+the operator recreates the account for a fresh step 2.
+
+Within seconds the `Provider` reports its failure domain and the `VMImage`
+row for this host turns ready:
+
+```sh
+kubectl get provider -n banlieue-system -o yaml   # status.failureDomains, status.workload.mode: External
+kubectl get vmimage kairos-ubuntu-2404-ch -o jsonpath='{.status.perProvider}'
+```
+
+## Images from a registry (`Url` sources)
+
+A `BackingFile` source names a file you copied into a storage class's
+`images/` directory yourself. A `Url` source is built in the cluster by
+banlieue-imagebuilder like any other, and reaches this host through an OCI
+registry, since the host cannot mount the cluster's artifacts volume
+(ADR-0064):
+
+1. **In the cluster**, give the imagebuilder a repository to push to. In
+   `banlieue-imagebuilder-config`:
+
+    ```yaml
+    BANLIEUE_REGISTRY_REPOSITORY: "registry.internal:5000/banlieue/disks"
+    BANLIEUE_REGISTRY_CREDENTIALS_SECRET: "banlieue-registry-push"
+    ```
+
+    The Secret is `kubernetes.io/basic-auth`, in the build namespace
+    (`banlieue-imagebuild`). Once a `VMImage` with a `cloud-hypervisor`
+    `Url` source finishes building, a push Job uploads it and
+    `status.buildArtifact.ociArtifact.reference` names it by digest.
+
+2. **On the host**, name the same repository, and give pull credentials if
+   the registry needs them:
+
+    ```sh
+    sudo REGISTRY_REPOSITORY=registry.internal:5000/banlieue/disks \
+         scripts/bootstrap-cloud-hypervisor-host.sh host
+    # only if the registry needs credentials:
+    sudo install -m 0640 -o root -g banlieue /dev/stdin /etc/banlieue/registry/username <<<'robot'
+    sudo install -m 0640 -o root -g banlieue /dev/stdin /etc/banlieue/registry/password <<<'…'
+    sudo systemctl restart banlieue-provider-cloud-hypervisor
+    ```
+
+    This writes a `[registry]` section into the host config. **The host
+    pulls only from that repository, only by digest.** `VMImage` status is
+    written in the cluster; which registry a host trusts is the host
+    owner's decision, so a reference naming anything else is refused
+    (`ForeignReference`).
+
+The provider then starts `banlieue-ch-import-<vmimage uid>.service`, which
+pulls the image once, verifies it, writes it sparse as
+`images/sha256-<digest>.raw` in one storage class, and reflinks (or
+sparse-copies) it into the others. The row turns ready when every storage
+class holds it:
+
+```sh
+kubectl get vmimage <name> -o jsonpath='{.status.buildArtifact.ociArtifact}'
+kubectl get vmimage <name> -o jsonpath='{.status.perProvider}'   # reason: Importing, then Reconciled
+systemctl status 'banlieue-ch-import-*'                           # while it runs
+```
+
+| `perProvider[].reason` | Meaning |
+| --- | --- |
+| `RegistryNotConfigured` | This host's config has no `[registry]` |
+| `AwaitingArtifact` | The build is not pushed yet; see `status.buildArtifact.ociArtifact` |
+| `ForeignReference` | The pushed reference is not a digest in this host's repository |
+| `Importing` | The import unit is running |
+| `ImportFailed` | The unit failed; the message carries systemd's reason. It is retried on the next reconcile |
+| `Released` | The `VMImage` is being deleted and this host has let go of it |
+
+**Cache housekeeping.** After each import the host deletes pulled images
+nothing uses any more (a rebuild's previous digest), keeping the newest
+`keep_unreferenced` of them (`REGISTRY_KEEP_UNREFERENCED`, default 1).
+Files you placed yourself for `BackingFile` sources are never touched.
+Deleting a `VMImage` removes its file from every host (reason `Released`)
+unless another image or a machine there still uses it; running guests are
+unaffected either way, because each OS disk is its own file. The image
+stays in `Terminating` until every Cloud Hypervisor host with a row has
+released it. For a host that is gone for good, delete its `Provider` or
+remove the finalizer by hand:
+
+```sh
+kubectl patch vmimage <name> --type json \
+  -p '[{"op":"remove","path":"/metadata/finalizers/0"}]'   # check the index first
+```
+
+## vTPM and Deferred install
+
+A `VMClass` with `tpmEnabled: true` needs a host that offers `vtpm` and an
+image installed `Deferred`, so the disk is sealed to that guest's own TPM
+(ADR-0048, ADR-0065):
+
+1. **Host:** the bootstrap's `tpm` step creates the host's EK CA; the host
+   config's `[tpm]` section points at it. Declare the feature on the
+   `Provider`:
+
+    ```yaml
+    spec:
+      capabilities:
+        features: [vtpm]
+    ```
+
+    The provider publishes `vtpm` only if the host can really run one, and
+    publishes its EK CA on `status.ekCaCertificates`.
+
+2. **Image:** `spec.template.installMode: Deferred`. For a `Url` source the
+   imagebuilder builds the installer ISO; for `BackingFile`, put the ISO in
+   the image cache yourself. Add example 16's
+   `banlieue-guest-phase-cloud-hypervisor` stage, so the installed system
+   reports over vsock (`systemd-notify`, systemd 256 or later; `socat` on
+   older images).
+
+What happens per machine: `swtpm_setup` manufactures the TPM once, as
+`banlieue`, and writes the EK certificate to `/var/lib/banlieue/ek/<uid>/`;
+the guest's own `swtpm` starts; the provider copies the installer into the
+machine's directory (guests cannot read the cache), and the VMM boots it
+from an empty disk; the installed system reports `phase=installed`; the
+provider hot-unplugs the installer, deletes the copy and marks
+`GuestReady`:
+
+```sh
+kubectl get cloudhypervisormachine <m> -o jsonpath='{.status.tpmEndorsementCertificates[0]}' \
+  | openssl x509 -noout -subject -issuer        # CN=<machine>:<uid>, issuer swtpm-localca
+kubectl get cloudhypervisormachine <m> -o jsonpath='{.status.guestInstalled} {.status.installMediaDetached}'
+systemctl status 'banlieue-swtpm@*'
+```
+
+`make ch-vtpm-e2e` checks the vTPM half on a host (it creates a
+`tpmEnabled` machine directly, since the controller refuses `tpmEnabled`
+with an `Immediate` image). `make ch-deferred-e2e` checks the whole path
+with a Kairos installer ISO in the cache: install, sealing, the vsock
+report, the eject, and a clean delete. It runs its test binary as root,
+since it reads the guest's disk and the provider's state.
+
 ## Gotchas
 
 Found in the roadmap 09 phase 0 spike, and handled by banlieue's provider so

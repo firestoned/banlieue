@@ -1,7 +1,8 @@
 # Copyright (c) 2026 Erick Bourgeois, banlieue
 # SPDX-License-Identifier: Apache-2.0
 #
-# Namespaced cloud-config Secret access for banlieue-imagebuilder (ADR-0041).
+# Namespaced access for banlieue-imagebuilder in the build namespace:
+# cloud-config Secrets (ADR-0041) and the registry push Job (ADR-0064).
 #
 # ADR-0037 lets a VMImage layer several cloud-config Secrets; the reconciler
 # reads each one and server-side-applies a single merged Secret. All of that
@@ -43,6 +44,18 @@ rules:
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["get", "list", "watch", "create", "patch"]
+  # The registry push Job (ADR-0064): a build a host-resident provider needs
+  # is pushed to an OCI registry by a Job beside the artifacts PVC. Created
+  # by server-side apply (create + patch), deleted when a previous build's
+  # Job or one whose result was lost must be replaced. The Job itself runs
+  # with no ServiceAccount token.
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "create", "patch", "delete"]
+  # The push Job's only output is its pod's termination message.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["list"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

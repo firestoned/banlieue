@@ -42,3 +42,5 @@ getrandom.workspace = true
 [dev-dependencies]
 # `live_claim` drives the claim reconciler against a real API server.
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+# `bench_provider` keeps its throwaway SSH key in a temporary directory.
+tempfile.workspace = true

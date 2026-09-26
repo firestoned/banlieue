@@ -13,6 +13,7 @@
 //! banlieue operator [flags]              -> banlieue_operator::run
 //! banlieue provider vsphere [flags]      -> banlieue_provider_vsphere::run
 //! banlieue provider libvirt [flags]      -> banlieue_provider_libvirt::run
+//! banlieue provider cloud-hypervisor     -> banlieue_provider_cloud_hypervisor::run
 //! banlieue imagebuilder [flags]          -> banlieue_imagebuilder::run
 //! banlieue bootstrap <target> [flags]    -> banlieue_operator::bootstrap::run
 //! banlieue completion <shell>            -> print a shell completion script
@@ -101,6 +102,11 @@ pub const COMPILED_BACKENDS: &[&str] = &[
     "vsphere",
     #[cfg(feature = "libvirt")]
     "libvirt",
+    // Host-resident: bootstrap installs its cluster half (the shared
+    // ClusterRole and an External ProviderClass); the host half is
+    // scripts/bootstrap-cloud-hypervisor-host.sh (ADR-0060).
+    #[cfg(feature = "cloud-hypervisor")]
+    "cloud-hypervisor",
 ];
 
 /// `banlieue provider <backend>` — selects which backend provider to run.
@@ -125,6 +131,10 @@ pub enum ProviderBackend {
     /// libvirt / KVM provider.
     #[cfg(feature = "libvirt")]
     Libvirt(banlieue_provider_libvirt::Cli),
+
+    /// Cloud Hypervisor provider. Runs on the KVM host itself (ADR-0060).
+    #[cfg(feature = "cloud-hypervisor")]
+    CloudHypervisor(banlieue_provider_cloud_hypervisor::Cli),
 }
 
 /// Dispatch a parsed [`Cli`] to the selected role's `run` entry point.
@@ -165,6 +175,10 @@ async fn dispatch_provider(backend: ProviderBackend) -> anyhow::Result<()> {
         ProviderBackend::Vsphere(args) => banlieue_provider_vsphere::run(args).await,
         #[cfg(feature = "libvirt")]
         ProviderBackend::Libvirt(args) => banlieue_provider_libvirt::run(args).await,
+        #[cfg(feature = "cloud-hypervisor")]
+        ProviderBackend::CloudHypervisor(args) => {
+            banlieue_provider_cloud_hypervisor::run(args).await
+        }
     }
 }
 

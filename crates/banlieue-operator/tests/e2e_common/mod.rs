@@ -195,15 +195,16 @@ pub async fn setup(client: &Client) {
             backend: "vsphere".to_string(),
             image: {
                 let (repository, tag) = split_image(&e2e_image());
-                ProviderImage {
+                Some(ProviderImage {
                     repository,
                     tag,
                     digest: None,
                     // The image is side-loaded into the node, never pulled.
                     pull_policy: Some(ImagePullPolicy::IfNotPresent),
                     pull_secrets: Vec::new(),
-                }
+                })
             },
+            deployment: None,
             workload_namespace: None,
             replicas: None,
             resources: None,
@@ -286,9 +287,9 @@ pub fn provider(paused: bool) -> Provider {
             },
             connection: ProviderConnection {
                 endpoint: UNREACHABLE_ENDPOINT.to_string(),
-                credentials_ref: LocalObjectReference {
+                credentials_ref: Some(LocalObjectReference {
                     name: E2E_SECRET.to_string(),
-                },
+                }),
                 insecure_skip_tls_verify: true,
                 ca_bundle: None,
             },
@@ -310,13 +311,14 @@ pub fn pinned_class() -> ProviderClass {
         E2E_PINNED_CLASS,
         ProviderClassSpec {
             backend: "vsphere".to_string(),
-            image: ProviderImage {
+            image: Some(ProviderImage {
                 repository,
                 tag,
                 digest: None,
                 pull_policy: Some(ImagePullPolicy::IfNotPresent),
                 pull_secrets: Vec::new(),
-            },
+            }),
+            deployment: None,
             workload_namespace: Some(E2E_WORKLOAD_NAMESPACE.to_string()),
             replicas: None,
             resources: None,

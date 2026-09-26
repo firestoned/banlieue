@@ -22,3 +22,9 @@ data:
   # securityContext.privileged=true, which banlieue-system's `restricted` Pod
   # Security level rejects. See deploy/imagebuilder/namespace.yaml.
   BANLIEUE_BUILD_NAMESPACE: "banlieue-imagebuild"
+  # Registry push for host-resident providers (ADR-0064). Unset: nothing is
+  # pushed, and a cloud-hypervisor Url source reports that no registry is
+  # configured. The credentials Secret is kubernetes.io/basic-auth, in the
+  # build namespace.
+  # BANLIEUE_REGISTRY_REPOSITORY: "registry.internal:5000/banlieue/disks"
+  # BANLIEUE_REGISTRY_CREDENTIALS_SECRET: "banlieue-registry-push"

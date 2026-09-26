@@ -19,7 +19,7 @@
 
 use std::sync::Arc;
 
-use banlieue_api::banlieue::{Provider, ProviderClass, ProviderClassSpec};
+use banlieue_api::banlieue::{Provider, ProviderClass, ProviderClassSpec, ProviderDeployment};
 use banlieue_provider_sdk::reconciler::{requeue_default, requeue_on_error};
 use k8s_openapi::api::rbac::v1::ClusterRole;
 use kube::api::{ListParams, Patch, PatchParams};
@@ -44,8 +44,11 @@ pub enum ClassReadiness {
     /// The shared per-backend ClusterRole the operator binds does not exist, so
     /// every workload of this class would run with no permissions.
     MissingClusterRole,
-    /// The image reference is not usable.
+    /// The image reference is not usable, or a Managed class has none.
     InvalidImage,
+    /// An External class sets a field that only shapes a Deployment it will
+    /// never get (ADR-0060 Decision 3).
+    PodFieldsOnExternal,
 }
 
 impl ClassReadiness {
@@ -65,6 +68,7 @@ impl ClassReadiness {
             Self::Ready => "Ready",
             Self::MissingClusterRole => "MissingClusterRole",
             Self::InvalidImage => "InvalidImage",
+            Self::PodFieldsOnExternal => "PodFieldsOnExternal",
         }
     }
 
@@ -85,8 +89,12 @@ impl ClassReadiness {
                 shared_cluster_role_name(backend)
             ),
             Self::InvalidImage => {
-                "spec.image is incomplete — repository and tag are both required".to_string()
+                "spec.image is missing or incomplete — a Managed class needs a repository and a tag"
+                    .to_string()
             }
+            Self::PodFieldsOnExternal => "spec.deployment is External, so nothing is deployed: \
+                 remove spec.image, replicas, resources, nodeSelector and tolerations"
+                .to_string(),
         }
     }
 }
@@ -101,7 +109,21 @@ pub fn assess(spec: &ProviderClassSpec, cluster_role_present: bool) -> ClassRead
     if !cluster_role_present {
         return ClassReadiness::MissingClusterRole;
     }
-    if spec.image.repository.trim().is_empty() || spec.image.tag.trim().is_empty() {
+    if spec.deployment_mode() == ProviderDeployment::External {
+        let shapes_a_pod = spec.image.is_some()
+            || spec.replicas.is_some()
+            || spec.resources.is_some()
+            || !spec.node_selector.is_empty()
+            || !spec.tolerations.is_empty();
+        if shapes_a_pod {
+            return ClassReadiness::PodFieldsOnExternal;
+        }
+        return ClassReadiness::Ready;
+    }
+    let Some(image) = spec.image.as_ref() else {
+        return ClassReadiness::InvalidImage;
+    };
+    if image.repository.trim().is_empty() || image.tag.trim().is_empty() {
         return ClassReadiness::InvalidImage;
     }
     ClassReadiness::Ready

@@ -566,7 +566,11 @@ async fn read_credentials(
     namespace: &str,
     provider: &Provider,
 ) -> Result<Credentials> {
-    let secret_name = &provider.spec.connection.credentials_ref.name;
+    let secret_name = provider
+        .spec
+        .connection
+        .credentials_secret()
+        .context("Provider.spec.connection.credentialsRef is required for vsphere")?;
     let api: Api<k8s_openapi::api::core::v1::Secret> = Api::namespaced(client.clone(), namespace);
     let secret = api
         .get(secret_name)

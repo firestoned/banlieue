@@ -26,8 +26,8 @@
 #             classes to paths and bridges                     (ADR-0062 D4)
 #   tpm       swtpm, and a per-host swtpm_localca that signs EK
 #             certificates, its key readable by `banlieue` only (ADR-0065)
-#   polkit    a rule letting `banlieue` manage only banlieue-ch-* and
-#             banlieue-swtpm-* units                            (ADR-0063 D6)
+#   polkit    a rule letting `banlieue` start/stop only instances of its
+#             own template units, for uids in the guest range    (ADR-0063 D6)
 #   provider  the provider's own systemd unit. Installed, NOT enabled until
 #             the binary and its kubeconfig exist           (ADR-0060 D5/D7)
 #   selftest  proves the pieces work together without booting a guest
@@ -57,6 +57,7 @@ if [[ "${1:-}" == "--remote" ]]; then
   # shellcheck disable=SC2029  # the path is chosen here, on purpose
   ssh "$target" "mkdir -m 0700 -p $remote_dir"
   scp -q "$0" "$target:$remote_dir/bootstrap.sh"
+  scp -q -r "$(cd "$(dirname "$0")/.." && pwd)/deploy/provider-cloud-hypervisor/host" "$target:$remote_dir/host"
   if [[ -n "${BANLIEUE_ENV_FILE:-}" ]]; then
     [[ -f "$BANLIEUE_ENV_FILE" ]] || { echo "BANLIEUE_ENV_FILE=$BANLIEUE_ENV_FILE not found" >&2; exit 1; }
     scp -q "$BANLIEUE_ENV_FILE" "$target:$remote_dir/host.env"
@@ -65,7 +66,7 @@ if [[ "${1:-}" == "--remote" ]]; then
   echo "==> running '$step' on $target (sudo may prompt)" >&2
   rc=0
   # -t: sudo needs a terminal to ask for a password.
-  ssh -t "$target" "sudo $env_arg bash $remote_dir/bootstrap.sh $step" || rc=$?
+  ssh -t "$target" "sudo HOST_TEMPLATES=$remote_dir/host $env_arg bash $remote_dir/bootstrap.sh $step" || rc=$?
   # shellcheck disable=SC2029  # the path is chosen here, on purpose
   ssh "$target" "rm -rf $remote_dir" || true
   exit "$rc"
@@ -97,7 +98,12 @@ CONF_DIR="${CONF_DIR:-/etc/banlieue}"
 STATE_ROOT="${STATE_ROOT:-/var/lib/banlieue}"
 RUN_ROOT="${RUN_ROOT:-/run/banlieue/ch}"
 HOST_CONFIG="${HOST_CONFIG:-$CONF_DIR/cloud-hypervisor.toml}"
-KUBECONFIG_PATH="${KUBECONFIG_PATH:-$CONF_DIR/kubeconfig}"
+# The provider's cluster credential: a kubeconfig that reads its token from a
+# file beside it, both issued by `banlieue bootstrap cloud-hypervisor-host`.
+# The directory is the provider's: it renews the token there itself
+# (ADR-0060 Decision 5).
+CREDENTIALS_DIR="${CREDENTIALS_DIR:-$CONF_DIR/credentials}"
+KUBECONFIG_PATH="${KUBECONFIG_PATH:-$CREDENTIALS_DIR/kubeconfig}"
 PROVIDER_BINARY="${PROVIDER_BINARY:-$BIN_DIR/banlieue}"
 # A banlieue binary to install as PROVIDER_BINARY. Empty = leave it alone.
 BANLIEUE_BINARY_SRC="${BANLIEUE_BINARY_SRC:-}"
@@ -108,7 +114,13 @@ BANLIEUE_USER="${BANLIEUE_USER:-banlieue}"
 # One uid per guest, from this range (ADR-0063 Decision 3). Must not overlap
 # real accounts or container subuid ranges; `preflight` checks both.
 GUEST_UID_BASE="${GUEST_UID_BASE:-2000000}"
-GUEST_UID_COUNT="${GUEST_UID_COUNT:-10000}"
+GUEST_UID_COUNT="${GUEST_UID_COUNT:-1024}"
+# Guests are registered with NSS as systemd userdb drop-ins, one user and one
+# private group per uid, named <prefix><uid>. systemd refuses User=/Group=
+# for a uid NSS does not know (status 217/USER), so the range must exist
+# before any guest starts. /etc/userdb needs `systemd` in nsswitch.conf.
+GUEST_NAME_PREFIX="${GUEST_NAME_PREFIX:-banlieue-g}"
+USERDB_DIR="${USERDB_DIR:-/etc/userdb}"
 
 # Storage and network classes: name=path and name=bridge, space-separated.
 # Machines name a class; only this host knows what it means (ADR-0062 D4).
@@ -122,6 +134,18 @@ NETWORK_CLASSES="${NETWORK_CLASSES:-}"
 PROVIDER_NAME="${PROVIDER_NAME:-$(hostname -s 2>/dev/null || hostname)}"
 PROVIDER_NAMESPACE="${PROVIDER_NAMESPACE:-banlieue-system}"
 
+# Registry for Url images (ADR-0064): the ONE repository this host pulls
+# from, by digest. Empty = no [registry] section; the host then serves
+# BackingFile images only. Credentials, if the registry needs them, are
+# `username` and `password` files in REGISTRY_CREDENTIALS_DIR, written by
+# the admin (this script creates the directory only).
+REGISTRY_REPOSITORY="${REGISTRY_REPOSITORY:-}"
+REGISTRY_CREDENTIALS_DIR="${REGISTRY_CREDENTIALS_DIR:-$CONF_DIR/registry}"
+REGISTRY_PLAIN_HTTP="${REGISTRY_PLAIN_HTTP:-false}"
+# Superseded pulls (a rebuild's previous image) kept for a quick rollback;
+# older ones are deleted. Images still in use are never deleted.
+REGISTRY_KEEP_UNREFERENCED="${REGISTRY_KEEP_UNREFERENCED:-1}"
+
 # The environment constraint is "bare-metal KVM only". Set true for a lab VM
 # with nested virtualization, knowing it is unsupported.
 ALLOW_VIRTUALIZED_HOST="${ALLOW_VIRTUALIZED_HOST:-false}"
@@ -131,12 +155,42 @@ ALLOW_VIRTUALIZED_HOST="${ALLOW_VIRTUALIZED_HOST:-false}"
 # already issued on this host.
 FORCE="${FORCE:-false}"
 
-UNIT_PREFIX_VMM="banlieue-ch-"
-UNIT_PREFIX_TPM="banlieue-swtpm-"
+# Instances of the templates below: banlieue-ch@<uid>, banlieue-swtpm@<uid>,
+# banlieue-swtpm-setup@<uid>, banlieue-ch-import@<VMImage UID>.
+UNIT_GLOBS="banlieue-ch@* banlieue-swtpm@* banlieue-swtpm-setup@* banlieue-ch-import@*"
 PROVIDER_UNIT="banlieue-provider-cloud-hypervisor.service"
 
 log()  { echo "==> $*" >&2; }
 warn() { echo "!!! $*" >&2; }
+die()  { warn "$*"; exit 1; }
+
+# The systemd, polkit and tmpfiles files this script installs live in the
+# repository as templates (deploy/provider-cloud-hypervisor/host/), so they are
+# reviewed as files and documented once
+# (docs/src/guides/cloud-hypervisor-host-systemd.md). @NAME@ placeholders are
+# replaced with the variable NAME below.
+HOST_TEMPLATES="${HOST_TEMPLATES:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." 2>/dev/null && pwd)/deploy/provider-cloud-hypervisor/host}"
+
+# render <template> <destination> <mode>
+render() {
+  local src="$HOST_TEMPLATES/$1" dst="$2" mode="$3" tmp var val
+  [[ -f "$src" ]] || die "template $src not found (set HOST_TEMPLATES)"
+  tmp="$(mktemp)"
+  cp "$src" "$tmp"
+  for var in BANLIEUE_USER PROVIDER_BINARY KUBECONFIG_PATH CREDENTIALS_DIR HOST_CONFIG \
+             RUN_ROOT RUN_PARENT PROVIDER_RW_PATHS STATE_ROOT VMM_BINARY STORAGE_DIRS \
+             STORAGE_IMAGE_DIRS SWTPM SWTPM_SETUP SWTPM_SETUP_CONF EK_CA_DIR \
+             GUEST_UID_BASE GUEST_UID_COUNT; do
+    val="${!var-}"
+    val="${val//\\/\\\\}"; val="${val//&/\\&}"; val="${val//|/\\|}"
+    sed -i "s|@$var@|$val|g" "$tmp"
+  done
+  if grep -q '@[A-Z_]*@' "$tmp"; then
+    rm -f "$tmp"; die "unreplaced placeholder in $src"
+  fi
+  install -m "$mode" "$tmp" "$dst"
+  rm -f "$tmp"
+}
 
 require_root() {
   [[ $EUID -eq 0 ]] || { warn "must run as root (installs packages, writes /etc, $OPT_ROOT)"; exit 1; }
@@ -211,9 +265,19 @@ preflight() {
 
   # The guest uid range must be free of real accounts and container ranges.
   local end=$(( GUEST_UID_BASE + GUEST_UID_COUNT - 1 ))
-  if getent passwd | awk -F: -v a="$GUEST_UID_BASE" -v b="$end" '$3>=a && $3<=b {f=1} END {exit !f}'; then
+  # Our own guest records (a re-run) are not a conflict.
+  if getent passwd | awk -F: -v a="$GUEST_UID_BASE" -v b="$end" -v p="$GUEST_NAME_PREFIX" \
+       '$3>=a && $3<=b && index($1,p)!=1 {f=1} END {exit !f}'; then
     warn "  an account already uses a uid in $GUEST_UID_BASE-$end"; ok=false
   fi
+  local db
+  for db in passwd group; do
+    if grep -Eq "^${db}:.*\bsystemd\b" /etc/nsswitch.conf; then
+      log "  nsswitch $db: systemd (guest uids resolvable)"
+    else
+      warn "  nsswitch.conf $db has no 'systemd' source: guest uids would not resolve"; ok=false
+    fi
+  done
   local f start count
   for f in /etc/subuid /etc/subgid; do
     [[ -f "$f" ]] || continue
@@ -301,26 +365,70 @@ setup_host() {
   fi
 
   install -d -m 0755 -o root -g root "$CONF_DIR"
-  install -d -m 0750 -o "$BANLIEUE_USER" -g "$BANLIEUE_USER" "$STATE_ROOT"
+  # The provider's own: it replaces the token here at half-life.
+  install -d -m 0700 -o "$BANLIEUE_USER" -g "$BANLIEUE_USER" "$CREDENTIALS_DIR"
+  if [[ -n "$REGISTRY_REPOSITORY" ]]; then
+    # Read by the import unit, which runs as $BANLIEUE_USER; written by root.
+    install -d -m 0750 -o root -g "$BANLIEUE_USER" "$REGISTRY_CREDENTIALS_DIR"
+  fi
+  # 0751: traversable, not listable. Each tpmEnabled guest's swtpm runs as
+  # that guest and must reach its own tpm/<uid>/; everything else in here
+  # (the EK CA, EK certificates, unit environment files) is 0700.
+  install -d -m 0751 -o "$BANLIEUE_USER" -g "$BANLIEUE_USER" "$STATE_ROOT"
+  # Host-minted vTPM EK certificates, one directory per machine (ADR-0065):
+  # provider-only, outside the guest-owned machine directories.
+  install -d -m 0700 -o "$BANLIEUE_USER" -g "$BANLIEUE_USER" "$STATE_ROOT/ek"
+  # Each tpmEnabled guest's swtpm state, <uid>/ under it, keyed by the
+  # guest's uid because the swtpm template derives it from its instance;
+  # 0711 so a guest reaches its own and cannot list the others.
+  install -d -m 0711 -o "$BANLIEUE_USER" -g "$BANLIEUE_USER" "$STATE_ROOT/tpm"
+  # Environment files the manufacture and import templates read: the
+  # provider writes them, nobody else reads them.
+  install -d -m 0700 -o "$BANLIEUE_USER" -g "$BANLIEUE_USER" "$STATE_ROOT/units"
 
   # /run is tmpfs; tmpfiles.d recreates the run root at every boot.
-  cat >/etc/tmpfiles.d/banlieue-cloud-hypervisor.conf <<EOF
-# Written by bootstrap-cloud-hypervisor-host.sh (ADR-0063 Decision 5).
-d $(dirname "$RUN_ROOT") 0755 root root -
-d $RUN_ROOT 0750 $BANLIEUE_USER $BANLIEUE_USER -
-EOF
+  RUN_PARENT="$(dirname "$RUN_ROOT")"
+  render banlieue-cloud-hypervisor.tmpfiles.conf /etc/tmpfiles.d/banlieue-cloud-hypervisor.conf 0644
   systemd-tmpfiles --create /etc/tmpfiles.d/banlieue-cloud-hypervisor.conf
 
   local pair name path
   for pair in $STORAGE_CLASSES; do
     name="${pair%%=*}"; path="${pair#*=}"
-    # 0750: guests' per-machine directories live under here, each 0700 and
-    # owned by its own uid; nobody else lists them.
-    install -d -m 0750 -o "$BANLIEUE_USER" -g "$BANLIEUE_USER" "$path" "$path/images"
+    # 0711: guests traverse to their own directory but cannot list the
+    # others. Each per-machine directory is 2770 guest-uid:$BANLIEUE_USER, so
+    # the provider can tear it down and no other guest can enter it
+    # (ADR-0063 Decision 5, amended). The image cache stays provider-only.
+    install -d -m 0711 -o "$BANLIEUE_USER" -g "$BANLIEUE_USER" "$path"
+    install -d -m 0750 -o "$BANLIEUE_USER" -g "$BANLIEUE_USER" "$path/images"
     log "  storage class $name -> $path ($(df -h --output=avail "$path" | tail -1 | tr -d ' ') free)"
   done
 
+  register_guest_uids
   write_host_config
+}
+
+# One userdb user and one private group per guest uid (gid == uid). A guest
+# never shares a group with another guest or with the provider.
+register_guest_uids() {
+  local end=$(( GUEST_UID_BASE + GUEST_UID_COUNT - 1 )) uid name
+  log "Registering guest uids $GUEST_UID_BASE-$end in $USERDB_DIR"
+  install -d -m 0755 "$USERDB_DIR"
+  for (( uid = GUEST_UID_BASE; uid <= end; uid++ )); do
+    name="$GUEST_NAME_PREFIX$uid"
+    [[ -f "$USERDB_DIR/$name.user" ]] && continue
+    printf '{"userName":"%s","uid":%d,"gid":%d,"realName":"banlieue guest","homeDirectory":"/","shell":"/usr/sbin/nologin","locked":true}\n' \
+      "$name" "$uid" "$uid" >"$USERDB_DIR/$name.user"
+    printf '{"groupName":"%s","gid":%d}\n' "$name" "$uid" >"$USERDB_DIR/$name.group"
+    chmod 0644 "$USERDB_DIR/$name.user" "$USERDB_DIR/$name.group"
+    ln -sfn "$name.user" "$USERDB_DIR/$uid.user"
+    ln -sfn "$name.group" "$USERDB_DIR/$uid.group"
+  done
+  if [[ "$(getent passwd "$GUEST_UID_BASE" | cut -d: -f1)" == "$GUEST_NAME_PREFIX$GUEST_UID_BASE" &&
+        "$(getent group "$end" | cut -d: -f1)" == "$GUEST_NAME_PREFIX$end" ]]; then
+    log "  NSS resolves $GUEST_NAME_PREFIX$GUEST_UID_BASE .. $GUEST_NAME_PREFIX$end"
+  else
+    die "NSS does not resolve the guest records in $USERDB_DIR (is 'systemd' in nsswitch.conf?)"
+  fi
 }
 
 write_host_config() {
@@ -337,7 +445,8 @@ write_host_config() {
 # choose among what this file declares and nothing else. Machines name a
 # class; the provider publishes the class names on its failure domain.
 #
-# Proposed schema; the provider crate owns it once it exists.
+# Schema: crates/banlieue-provider-cloud-hypervisor/src/host_config.rs
+# (unknown keys are refused, so a typo fails the provider at startup).
 
 [provider]
 name = "$PROVIDER_NAME"
@@ -370,6 +479,14 @@ EOF
     echo
     echo "[network_classes]"
     for pair in $NETWORK_CLASSES; do echo "${pair%%=*} = \"${pair#*=}\""; done
+    if [[ -n "$REGISTRY_REPOSITORY" ]]; then
+      echo
+      echo "[registry]"
+      echo "repository = \"$REGISTRY_REPOSITORY\""
+      echo "credentials_dir = \"$REGISTRY_CREDENTIALS_DIR\""
+      echo "keep_unreferenced = $REGISTRY_KEEP_UNREFERENCED"
+      if [[ "$REGISTRY_PLAIN_HTTP" == "true" ]]; then echo "plain_http = true"; fi
+    fi
   } >"$tmp"
   install -m 0640 -o root -g "$BANLIEUE_USER" "$tmp" "$HOST_CONFIG"
   rm -f "$tmp"
@@ -431,29 +548,37 @@ EOF
 setup_polkit() {
   require_root
   local rule=/etc/polkit-1/rules.d/60-banlieue-cloud-hypervisor.rules
+  # The guest uid range goes into the rule: an instance outside it (0 is
+  # root) is refused.
   log "Writing $rule"
   install -d -m 0755 /etc/polkit-1/rules.d
-  cat >"$rule" <<EOF
-// Written by bootstrap-cloud-hypervisor-host.sh (ADR-0063 Decision 6).
-// The provider user may manage ITS OWN transient units and nothing else:
-// per machine a VMM, an swtpm and a one-shot TPM-setup unit, and per image an
-// import unit, each named by Kubernetes UID (ADR-0063, ADR-0064, ADR-0065).
-polkit.addRule(function(action, subject) {
-    if (action.id != "org.freedesktop.systemd1.manage-units" ||
-        subject.user != "$BANLIEUE_USER") {
-        return polkit.Result.NOT_HANDLED;
-    }
-    var unit = action.lookup("unit") || "";
-    var verb = action.lookup("verb") || "";
-    var ours = /^banlieue-(ch|swtpm|swtpm-setup|ch-import)-[0-9a-f-]{36}\\.service\$/;
-    if (ours.test(unit) &&
-        ["start", "stop", "restart", "kill", "reset-failed"].indexOf(verb) >= 0) {
-        return polkit.Result.YES;
-    }
-    return polkit.Result.NOT_HANDLED;
-});
-EOF
-  chmod 0644 "$rule"
+  render 60-banlieue-cloud-hypervisor.rules "$rule" 0644
+}
+
+# ------------------------------------------------------------- templates ---
+# The units the provider starts, one instance per guest (ADR-0063 Decision
+# 1, amended). Root-owned: what they run, as whom, and in which sandbox is
+# decided here, never by the provider, which may only start, stop and reset
+# instances (the polkit rule).
+UNIT_TEMPLATES="banlieue-ch@.service banlieue-swtpm@.service banlieue-swtpm-setup@.service banlieue-ch-import@.service"
+install_unit_templates() {
+  require_root
+  resolve_classes
+  VMM_BINARY="$BIN_DIR/cloud-hypervisor"
+  STORAGE_DIRS="$(for p in $STORAGE_CLASSES; do printf '%s ' "${p#*=}"; done)"
+  STORAGE_DIRS="${STORAGE_DIRS% }"
+  STORAGE_IMAGE_DIRS="$(for p in $STORAGE_CLASSES; do printf '%s/images ' "${p#*=}"; done)"
+  STORAGE_IMAGE_DIRS="${STORAGE_IMAGE_DIRS% }"
+  SWTPM="$(command -v swtpm || echo /usr/bin/swtpm)"
+  SWTPM_SETUP="$(command -v swtpm_setup || echo /usr/bin/swtpm_setup)"
+  SWTPM_SETUP_CONF="$CONF_DIR/swtpm/swtpm_setup.conf"
+  EK_CA_DIR="$STATE_ROOT/swtpm-localca"
+  local t
+  for t in $UNIT_TEMPLATES; do
+    log "Writing /etc/systemd/system/$t"
+    render "$t" "/etc/systemd/system/$t" 0644
+  done
+  systemctl daemon-reload
 }
 
 # --------------------------------------------------------------- provider ---
@@ -467,45 +592,18 @@ setup_provider_unit() {
 
   local unit="/etc/systemd/system/$PROVIDER_UNIT"
   log "Writing $unit"
-  cat >"$unit" <<EOF
-# Written by bootstrap-cloud-hypervisor-host.sh.
-# banlieue's host-resident Cloud Hypervisor provider (ADR-0060).
-[Unit]
-Description=banlieue Cloud Hypervisor provider
-Documentation=https://github.com/firestoned/banlieue
-Wants=network-online.target
-After=network-online.target dbus.service systemd-tmpfiles-setup.service
-ConditionPathExists=$PROVIDER_BINARY
-ConditionPathExists=$KUBECONFIG_PATH
-
-[Service]
-User=$BANLIEUE_USER
-Group=$BANLIEUE_USER
-ExecStart=$PROVIDER_BINARY provider cloud-hypervisor --config $HOST_CONFIG
-# Taps over netlink, and handing files to guest uids (ADR-0063 Decision 6).
-AmbientCapabilities=CAP_NET_ADMIN CAP_CHOWN CAP_FOWNER
-CapabilityBoundingSet=CAP_NET_ADMIN CAP_CHOWN CAP_FOWNER
-NoNewPrivileges=yes
-ProtectSystem=strict
-ProtectHome=yes
-PrivateTmp=yes
-ReadWritePaths=$RUN_ROOT $STATE_ROOT $(for p in $STORAGE_CLASSES; do printf '%s ' "${p#*=}"; done)$KUBECONFIG_PATH
-# Guests are transient units owned by systemd, not children of this process,
-# so stopping or upgrading the provider must not touch them (ADR-0063 D1).
-KillMode=process
-Restart=on-failure
-RestartSec=5s
-
-[Install]
-WantedBy=multi-user.target
-EOF
+  # Written: run directories, each storage class's machine directories and
+  # image cache, and the per-machine EK certificate directories.
+  PROVIDER_RW_PATHS="$RUN_ROOT$(for p in $STORAGE_CLASSES; do printf ' %s' "${p#*=}"; done) $STATE_ROOT/ek $STATE_ROOT/tpm $STATE_ROOT/units"
+  install_unit_templates
+  render banlieue-provider-cloud-hypervisor.service "$unit" 0644
   systemctl daemon-reload
   if [[ -x "$PROVIDER_BINARY" && -f "$KUBECONFIG_PATH" ]]; then
     systemctl enable --now "$PROVIDER_UNIT"
     log "  $PROVIDER_UNIT enabled"
   else
     log "  unit installed, NOT enabled: needs $PROVIDER_BINARY and $KUBECONFIG_PATH"
-    log "  (the kubeconfig comes from \`banlieue bootstrap\`, ADR-0060 Decision 5)"
+    log "  (issue it with \`banlieue bootstrap cloud-hypervisor-host\`, ADR-0060 Decision 5)"
   fi
 }
 
@@ -527,6 +625,11 @@ selftest() {
     log "  CLOUDHV.fd matches its pin"
   else
     warn "  CLOUDHV.fd checksum drifted"; ok=false
+  fi
+  if [[ "$(getent passwd "$GUEST_UID_BASE" | cut -d: -f3)" == "$GUEST_UID_BASE" ]]; then
+    log "  guest uid $GUEST_UID_BASE resolves"
+  else
+    warn "  guest uid $GUEST_UID_BASE does not resolve (systemd would fail it with 217/USER)"; ok=false
   fi
   if runuser -u "$BANLIEUE_USER" -- test -r /dev/kvm -a -w /dev/kvm; then
     log "  $BANLIEUE_USER can open /dev/kvm"
@@ -571,7 +674,8 @@ status() {
   echo "--- provider ---"
   printf '  %-18s %s\n' unit "$(systemctl is-active "$PROVIDER_UNIT" 2>/dev/null || true)"
   echo "--- guests ---"
-  systemctl list-units --no-legend --plain "${UNIT_PREFIX_VMM}*" "${UNIT_PREFIX_TPM}*" 2>/dev/null \
+  # shellcheck disable=SC2086  # the globs are passed to systemctl as-is
+  systemctl list-units --no-legend --plain $UNIT_GLOBS 2>/dev/null \
     | awk '{print "  " $1 "  " $3 "/" $4}' | head -20
 }
 
@@ -598,7 +702,7 @@ print_env_template() {
 
 # Guest uid range (one uid per guest). Must not overlap accounts or subuids.
 #GUEST_UID_BASE=2000000
-#GUEST_UID_COUNT=10000
+#GUEST_UID_COUNT=1024
 
 # Pinned VMM. Change the version only together with its checksums.
 #CH_VERSION=v53.0
@@ -606,6 +710,14 @@ print_env_template() {
 #CH_REMOTE_SHA256=
 #FIRMWARE_TAG=ch-97eeb7b09
 #FIRMWARE_SHA256=
+
+# Registry for Url images, pulled by digest from this repository only.
+# Unset = BackingFile images only. Put `username`/`password` files in
+# REGISTRY_CREDENTIALS_DIR if the registry needs them.
+#REGISTRY_REPOSITORY=registry.internal:5000/banlieue/disks
+#REGISTRY_CREDENTIALS_DIR=/etc/banlieue/registry
+#REGISTRY_PLAIN_HTTP=false
+#REGISTRY_KEEP_UNREFERENCED=1
 
 # A banlieue binary to install as the provider. Unset = leave it alone.
 #BANLIEUE_BINARY_SRC=/tmp/banlieue

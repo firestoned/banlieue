@@ -433,6 +433,76 @@
           }
         }
       ]
+    },
+    {
+      "unique-id": "service-provider-cloud-hypervisor",
+      "node-type": "service",
+      "name": "banlieue-provider-cloud-hypervisor",
+      "description": "Host-resident provider for Cloud Hypervisor (ADR-0060): the first banlieue component that runs OUTSIDE the management cluster, as a systemd service on the KVM host, as the unprivileged `banlieue` user with CAP_NET_ADMIN, CAP_CHOWN and CAP_FOWNER only. It dials the API server with a bound ServiceAccount token from the host (nothing dials the host), watches its own Provider, CloudHypervisorMachines and VMImages, and realises each machine as one instance of a root-owned template unit, started over D-Bus (ADR-0063, amended), a persistent tap on a host bridge, an OS disk cloned from the host image cache and a NoCloud seed. Machines name storage and network CLASSES; the host resolves them through its own root-owned config, so a path or bridge never crosses into the cluster (ADR-0062 Decision 4). Holds no hypervisor credential: the hypervisor is local. Every privileged file change inside a guest's directory goes through a file handle, never a path, so a compromised guest cannot redirect it with a symlink. Code: crates/banlieue-provider-cloud-hypervisor. Host files: deploy/provider-cloud-hypervisor/host/.",
+      "interfaces": [
+        {
+          "unique-id": "guest-report-unix-socket",
+          "definition-url": "https://calm.finos.org/release/1.2/prototype/interface/host-port.json",
+          "config": {
+            "host": "unix:/run/banlieue/ch/<uid>/vsock.sock_1024",
+            "port": 1024
+          }
+        }
+      ]
+    },
+    {
+      "unique-id": "service-cloud-hypervisor-vmm",
+      "node-type": "service",
+      "name": "Cloud Hypervisor VMM (one per guest)",
+      "description": "One cloud-hypervisor process per guest, run by systemd as banlieue-ch@<guest uid>.service (an instance of a root-owned template) under the guest's OWN host uid and private group (registered as systemd userdb records by the host bootstrap), plus kvm. No capabilities; the VMM's own seccomp filters and Landlock (widened by one read-only rule per tap on /sys/devices/virtual/net/<tap>); systemd sandbox: ProtectSystem=strict with writes only to its machine and run directories, DevicePolicy=closed with /dev/kvm and /dev/net/tun, MemoryMax and TasksMax. It starts with only its REST API on a Unix socket; the provider creates and boots the VM through it (ADR-0061). Pinned to v53.0.",
+      "interfaces": [
+        {
+          "unique-id": "vmm-api-unix-socket",
+          "definition-url": "https://calm.finos.org/release/1.2/prototype/interface/host-port.json",
+          "config": {
+            "protocol": "HTTP/1.1 over a Unix socket",
+            "path": "/run/banlieue/ch/<guest uid>/api.sock"
+          }
+        }
+      ]
+    },
+    {
+      "unique-id": "network-cloud-hypervisor-host",
+      "node-type": "network",
+      "name": "Cloud Hypervisor KVM Host",
+      "description": "A bare-metal KVM host prepared by scripts/bootstrap-cloud-hypervisor-host.sh: the pinned VMM and CLOUDHV.fd firmware, the `banlieue` user, a guest uid range registered in /etc/userdb (one user and private group per guest), storage class directories (0711, per-guest 2770), root-owned template units for guests, vTPMs and image imports, a polkit rule limiting the provider to start/stop/reset-failed instances of those templates for uids in the guest range, and the provider's own sandboxed unit. One host is one Provider and one failure domain (ADR-0060)."
+    },
+    {
+      "unique-id": "service-oci-registry",
+      "node-type": "service",
+      "name": "OCI Registry (operator-provided, external)",
+      "description": "Any OCI distribution-spec registry the platform operator runs or rents (ADR-0064). Carries built VMImage artifacts from the imagebuild namespace to host-resident providers, which cannot mount the artifacts PVC. banlieue installs nothing here; the registry is needed only when a cloud-hypervisor Url source exists. Integrity comes from digest addressing, not from trusting the registry: a host pulls a manifest and a layer by digest and verifies both. Retention is the operator's; manifests carry io.banlieue.vmimage annotations so pushed artifacts trace back to their VMImage.",
+      "interfaces": [
+        {
+          "unique-id": "oci-distribution-https",
+          "definition-url": "https://calm.finos.org/release/1.2/prototype/interface/http-endpoint.json",
+          "config": {
+            "port": 443,
+            "protocol": "HTTPS"
+          }
+        }
+      ]
+    },
+    {
+      "unique-id": "service-swtpm",
+      "node-type": "service",
+      "name": "swtpm (one per tpmEnabled Cloud Hypervisor guest)",
+      "description": "The guest's vTPM (ADR-0065): banlieue-swtpm@<guest uid>.service, running as the guest's own uid and private group, serving TPM 2.0 on a Unix control socket in the guest's run directory, with state in its machine directory. The TPM is manufactured once, before first boot, by banlieue-swtpm-setup@<guest uid>.service running swtpm_setup as the provider's user, which signs the EK certificate with the host's swtpm_localca and writes it to a provider-only directory the provider publishes from.",
+      "interfaces": [
+        {
+          "unique-id": "swtpm-ctrl-unix-socket",
+          "definition-url": "https://calm.finos.org/release/1.2/prototype/interface/host-port.json",
+          "config": {
+            "host": "unix:/run/banlieue/ch/<uid>/swtpm.sock",
+            "port": 0
+          }
+        }
+      ]
     }
   ],
   "relationships": [
@@ -979,6 +1049,247 @@
         }
       },
       "protocol": "HTTPS"
+    },
+    {
+      "unique-id": "rel-provider-cloud-hypervisor-kube-api",
+      "description": "The host-resident provider dials the management-cluster API server from the KVM host: watches its Provider (by name), CloudHypervisorMachines in its namespace and VMImages; server-side-applies Provider status, its perProvider VMImage row, and machine status and spec.providerID. Same CRD-only contract as every provider; the only difference is where the process runs.",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "service-provider-cloud-hypervisor"
+          },
+          "destination": {
+            "node": "service-kubernetes-api",
+            "interfaces": [
+              "kube-api-https"
+            ]
+          }
+        }
+      },
+      "protocol": "HTTPS",
+      "controls": {
+        "ch-provider-namespaced-rbac": {
+          "description": "The host identity is the per-Provider Role the operator builds for an External class (ADR-0060 Decision 3): its own Provider and status by resourceNames, its CloudHypervisorMachines without create/delete (namespace-wide: machine names are unknowable, threat model §8), the finalizer, its Lease, and token creation on its own ServiceAccount only; plus a ClusterRole limited to reading VMImages and patching their status. No Secret or ConfigMap access at all. crates/banlieue-operator/src/workload.rs, deploy/provider-cloud-hypervisor/rbac/clusterrole.yaml.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53",
+                "control": "AC-6 Least Privilege"
+              }
+            }
+          ]
+        },
+        "ch-provider-bound-token": {
+          "description": "Authenticates with a bound ServiceAccount token read from a file beside a secret-free kubeconfig in a 0700 credentials directory; the provider renews it itself at half-life through TokenRequest on its own ServiceAccount and replaces the file atomically (ADR-0060 Decision 5). Revocation: delete the ServiceAccount. crates/banlieue-provider-cloud-hypervisor/src/token.rs, crates/banlieue-operator/src/host_credential.rs.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53",
+                "control": "IA-5 Authenticator Management"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-provider-cloud-hypervisor-vmm",
+      "description": "The provider starts each VMM as an instance of the root-owned template banlieue-ch@.service over D-Bus (polkit allows only instances of its own templates, for uids in the guest range; ADR-0063 amended 2026-09-27), then drives it through the VMM's REST API on its Unix socket: ping (version pin), create, boot, info, power-button. Guests are systemd's children, not the provider's, so a provider restart or upgrade leaves them running (ADR-0063 Decision 1).",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "service-provider-cloud-hypervisor"
+          },
+          "destination": {
+            "node": "service-cloud-hypervisor-vmm",
+            "interfaces": [
+              "vmm-api-unix-socket"
+            ]
+          }
+        }
+      },
+      "protocol": "HTTP",
+      "controls": {
+        "ch-guest-isolation": {
+          "description": "Each VMM runs as its own uid and private gid, never in the provider's group; machine and run directories are 2770 guest-uid:banlieue under 0711 roots. crates/banlieue-provider-cloud-hypervisor/src/plan.rs (vmm_unit), hostfs.rs.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53",
+                "control": "SC-39 Process Isolation"
+              }
+            }
+          ]
+        },
+        "ch-fd-based-privileged-ops": {
+          "description": "The provider's CAP_CHOWN/CAP_FOWNER changes inside guest-writable directories act only on handles it created (O_CREAT|O_EXCL) or opened without following links (O_NOFOLLOW, O_PATH), via fchown/fchmod; the API socket is verified as the guest's socket before it is opened to the provider's group. crates/banlieue-provider-cloud-hypervisor/src/hostfs.rs, sys.rs.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53",
+                "control": "SI-10 Information Input Validation"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-cloud-hypervisor-host-runs-provider-and-guests",
+      "description": "The Cloud Hypervisor provider and its guests' VMMs run on the KVM host, not in the management cluster — the one place in banlieue where a controller runs outside Kubernetes (ADR-0060).",
+      "relationship-type": {
+        "deployed-in": {
+          "container": "network-cloud-hypervisor-host",
+          "nodes": [
+            "service-provider-cloud-hypervisor",
+            "service-cloud-hypervisor-vmm",
+            "service-swtpm"
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-imagebuilder-push-registry",
+      "description": "When a VMImage has a cloud-hypervisor Url source and its build is Ready, banlieue-imagebuilder creates a push Job in the build namespace (ADR-0064 Decision 2). The Job mounts the artifacts PVC read-only and pushes the file as a single-layer gzip OCI artifact tagged with the OSArtifact uid, using the kubernetes.io/basic-auth Secret named by --registry-credentials-secret. It has no ServiceAccount token; its only output is the digest-pinned reference, written as its termination message, which the imagebuilder checks names the configured repository before recording it on status.buildArtifact.ociArtifact. Code: crates/banlieue-imagebuilder/src/reconciler/push.rs, oci_push.rs; crates/banlieue-oci.",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "service-banlieue-imagebuilder"
+          },
+          "destination": {
+            "node": "service-oci-registry",
+            "interfaces": [
+              "oci-distribution-https"
+            ]
+          }
+        }
+      },
+      "protocol": "HTTPS",
+      "controls": {
+        "registry-push-least-privilege": {
+          "description": "The push Job has automountServiceAccountToken=false, runs non-root with a read-only root filesystem and all capabilities dropped, mounts the PVC read-only and gets an emptyDir for the compressed copy. The imagebuilder accepts its termination message only as a digest in the configured repository. crates/banlieue-imagebuilder/src/reconciler/push.rs (build_push_job, pushed_reference).",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53",
+                "control": "AC-6 Least Privilege"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-provider-cloud-hypervisor-registry",
+      "description": "For a Url source, the host provider starts banlieue-ch-import@<vmimage uid>.service, which pulls the pushed artifact BY DIGEST into one storage class's image cache (sha256-<hex>.raw) and reflinks or sparse-copies it into the others (ADR-0064 Decision 3). The pull streams through gzip into holes, verifies the layer digest and renames into place only on a match. Registry credentials are files in the host config's credentials directory, never a cluster Secret. Code: crates/banlieue-provider-cloud-hypervisor/src/vmimage.rs, import.rs; crates/banlieue-oci.",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "service-provider-cloud-hypervisor"
+          },
+          "destination": {
+            "node": "service-oci-registry",
+            "interfaces": [
+              "oci-distribution-https"
+            ]
+          }
+        }
+      },
+      "protocol": "HTTPS",
+      "controls": {
+        "host-pinned-registry-repository": {
+          "description": "The host pulls only a digest in the one repository its root-owned config names ([registry] repository); a reference written into VMImage status that names any other registry, repository or a tag is refused before and inside the import unit. Whoever can write VMImage status cannot choose what a host boots. crates/banlieue-provider-cloud-hypervisor/src/vmimage.rs (check_reference), host_config.rs.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53",
+                "control": "CM-7 Least Functionality"
+              }
+            }
+          ]
+        },
+        "digest-verified-pull": {
+          "description": "Manifest and layer are verified against their digests while streaming; a mismatch fails the unit and nothing is renamed into place (fail closed, SEC-004). crates/banlieue-oci/src/client.rs (pull_file).",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53",
+                "control": "SI-7 Software, Firmware, and Information Integrity"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-cloud-hypervisor-vmm-swtpm",
+      "description": "The VMM is created with --tpm socket=<run dir>/swtpm.sock and exposes a TPM 2.0 device to the guest; swtpm is started, and its socket checked, before the VMM (ADR-0065 Decision 1).",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "service-cloud-hypervisor-vmm"
+          },
+          "destination": {
+            "node": "service-swtpm",
+            "interfaces": [
+              "swtpm-ctrl-unix-socket"
+            ]
+          }
+        }
+      },
+      "protocol": "TCP",
+      "controls": {
+        "ek-minted-and-read-host-side": {
+          "description": "The EK certificate is written by swtpm_setup, as the provider's user, to <state_root>/ek/<uid>/ (0700 banlieue), outside every guest-owned directory, and published from there; its presence also records that the TPM was manufactured, so a guest can never get a second manufacture. crates/banlieue-provider-cloud-hypervisor/src/plan.rs (swtpm_setup_unit), hostfs.rs (tpm_manufactured, ek_certificates, adopt_tpm_state).",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53",
+                "control": "SC-12 Cryptographic Key Establishment and Management"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-cloud-hypervisor-vmm-guest-report",
+      "description": "The guest's hybrid vsock (ADR-0065 Decision 5): the installed system's boot stage connects to host port 1024, which the VMM forwards to <run dir>/vsock.sock_1024, where the provider listens, and writes phase=installed. The provider sends nothing back. On that report it hot-unplugs the installer (vm.remove-device install) and publishes GuestReady.",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "service-cloud-hypervisor-vmm"
+          },
+          "destination": {
+            "node": "service-provider-cloud-hypervisor",
+            "interfaces": [
+              "guest-report-unix-socket"
+            ]
+          }
+        }
+      },
+      "controls": {
+        "guest-report-untrusted-input": {
+          "description": "Read with a 10 s timeout and a 16 KiB cap; only an exact phase=installed line counts; the socket is in the reporting guest's own run directory, bound and handed to its uid through an O_PATH|O_NOFOLLOW handle. crates/banlieue-provider-cloud-hypervisor/src/report.rs.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53",
+                "control": "SI-10 Information Input Validation"
+              }
+            }
+          ]
+        }
+      }
     }
   ],
   "flows": [
@@ -1642,6 +1953,89 @@
           ]
         }
       }
+    },
+    {
+      "unique-id": "flow-create-virtualmachine-cloud-hypervisor",
+      "name": "Create a VirtualMachine on a Cloud Hypervisor host",
+      "description": "Same front half as every backend; the back half runs on the KVM host. Verified end to end against a k0s cluster and a bare-metal host (2026-09-26).",
+      "transitions": [
+        {
+          "sequence-number": 1,
+          "relationship-unique-id": "rel-consumer-kubectl",
+          "description": "VM consumer applies a VirtualMachine whose placement selects a cloud-hypervisor Provider."
+        },
+        {
+          "sequence-number": 2,
+          "relationship-unique-id": "rel-controller-kube-api",
+          "description": "banlieue-controller schedules it onto the host's failure domain and server-side-applies a CloudHypervisorMachine naming a storage class, network classes and the image file from the VMImage's perProvider row.",
+          "direction": "destination-to-source"
+        },
+        {
+          "sequence-number": 3,
+          "relationship-unique-id": "rel-provider-cloud-hypervisor-kube-api",
+          "description": "The host's provider sees the machine, records a guest uid on status before any host work, sets spec.providerID, and prepares directories, the OS disk, the seed and the tap.",
+          "direction": "destination-to-source"
+        },
+        {
+          "sequence-number": 4,
+          "relationship-unique-id": "rel-provider-cloud-hypervisor-vmm",
+          "description": "The provider starts banlieue-ch@<guest uid>.service, then creates and boots the VM through the VMM's API socket."
+        },
+        {
+          "sequence-number": 5,
+          "relationship-unique-id": "rel-provider-cloud-hypervisor-kube-api",
+          "description": "The provider publishes Ready=True and the guest's DHCP address from the host neighbour table; banlieue-controller mirrors it onto the VirtualMachine."
+        }
+      ]
+    },
+    {
+      "unique-id": "flow-import-vmimage-cloud-hypervisor",
+      "name": "Deliver a built image to a Cloud Hypervisor host through a registry",
+      "description": "ADR-0064's registry path: a host-resident provider cannot mount the artifacts PVC, so the build is pushed to an OCI registry and each host pulls it by digest into its own image cache.",
+      "transitions": [
+        {
+          "sequence-number": 1,
+          "relationship-unique-id": "rel-imagebuilder-kube-api",
+          "description": "A VMImage with a cloud-hypervisor Url source reaches status.buildArtifact.phase=Ready. banlieue-imagebuilder server-side-applies a push Job in the build namespace, owned by the OSArtifact."
+        },
+        {
+          "sequence-number": 2,
+          "relationship-unique-id": "rel-imagebuilder-push-registry",
+          "description": "The push Job gzips the artifact and pushes it as a single-layer OCI artifact tagged with the OSArtifact uid, then writes the digest-pinned reference as its termination message."
+        },
+        {
+          "sequence-number": 3,
+          "relationship-unique-id": "rel-imagebuilder-kube-api",
+          "description": "The imagebuilder reads the termination message, checks it is a digest in the configured repository, and records it on status.buildArtifact.ociArtifact (phase Ready)."
+        },
+        {
+          "sequence-number": 4,
+          "relationship-unique-id": "rel-provider-cloud-hypervisor-kube-api",
+          "description": "The host provider's VMImage watch fires. It checks the reference against its host config's [registry] repository and starts the import unit over D-Bus.",
+          "direction": "destination-to-source"
+        },
+        {
+          "sequence-number": 5,
+          "relationship-unique-id": "rel-provider-cloud-hypervisor-registry",
+          "description": "The import unit pulls the manifest and layer by digest, verifies both, writes sha256-<hex>.raw sparse into one storage class and reflinks or sparse-copies it into the rest."
+        },
+        {
+          "sequence-number": 6,
+          "relationship-unique-id": "rel-provider-cloud-hypervisor-kube-api",
+          "description": "Once every storage class holds the file, the provider publishes its perProvider row ready with resolvedRef sha256-<hex>.raw, which the controller copies into CloudHypervisorMachine.spec.bootSource.image."
+        },
+        {
+          "sequence-number": 7,
+          "relationship-unique-id": "rel-provider-cloud-hypervisor-kube-api",
+          "description": "On deletion, each host stops any import, removes its cache file unless another image or machine there uses it, and publishes reason Released; superseded pulls beyond keep_unreferenced are evicted after each import.",
+          "direction": "destination-to-source"
+        },
+        {
+          "sequence-number": 8,
+          "relationship-unique-id": "rel-controller-kube-api",
+          "description": "banlieue-controller, which holds the banlieue.io/host-image-cache finalizer (ADR-0064 Decision 4), removes it once every existing Cloud Hypervisor Provider with a row reports Released."
+        }
+      ]
     }
   ],
   "controls": {
@@ -1902,6 +2296,12 @@
     "docs/adr/0054-nocloud-seed-iso-first-party.md",
     "docs/adr/0048-tpm-enabled-requires-deferred-install.md",
     "docs/adr/0044-detach-install-media-after-install.md",
-    "docs/adr/0045-vtpm-endorsement-key-certificate.md"
+    "docs/adr/0045-vtpm-endorsement-key-certificate.md",
+    "docs/adr/0060-cloud-hypervisor-first-class-provider-topology.md",
+    "docs/adr/0061-banlieue-cloud-hypervisor-vmm-client.md",
+    "docs/adr/0062-cloudhypervisormachine-inframachine-contract.md",
+    "docs/adr/0063-cloud-hypervisor-host-supervision.md",
+    "docs/adr/0064-artifact-delivery-to-host-resident-providers.md",
+    "docs/adr/0065-cloud-hypervisor-vtpm-and-deferred-install.md"
   ]
 }

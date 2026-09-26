@@ -10,7 +10,12 @@ SPDX-License-Identifier: Apache-2.0
 - **Amended:** 2026-09-25 (phase 0 spike results folded in; the four
   spike-gated points are verified); Decision 1 moves TPM manufacture out of
   the guest uid, into a one-shot unit run as the provider user, so the EK CA
-  key is never readable by a guest uid
+  key is never readable by a guest uid; 2026-09-27 (Decisions 1, 2, 5 and
+  6 as implemented: the EK certificate is read host-side at manufacture,
+  outside the guest's directory, and manufacture happens once; see
+  *Implementation notes*); 2026-09-27 (Decision 3: the VMM attaches the
+  machine's own read-only copy of the installer, not the cache file;
+  `Deferred` verified live)
 - **Related:** [ADR-0040](0040-deferred-install-for-vtpm-encryption.md)
   (`Deferred` install), [ADR-0043](0043-guestready-installed-guest-signal.md)
   (`GuestReady`), [ADR-0044](0044-detach-install-media-after-install.md)
@@ -214,6 +219,97 @@ check does.
 and it is gone after a guest reset in the same VMM process. edk2's `NvVars`
 fallback is present but does not keep it.
 
+## Implementation notes (2026-09-27)
+
+All seven decisions are implemented. vTPM (Decisions 1, 2, 6) is covered
+by unit tests and `make ch-vtpm-e2e`, **passed live on 2026-09-27** (two
+EK certificates, RSA-2048 and ECC P-384, CN `<machine>:<uid>`; nothing
+left after delete). The live run found that the manufacture unit must run
+with the provider's **gid** (uid ≠ gid on real hosts) and that a failed
+manufacture must stay failed rather than be retried in a loop; `Deferred` install and the vsock
+report (Decisions 3–5) **passed live on 2026-09-27** with `make
+ch-deferred-e2e`: a `tpmEnabled` machine installed Kairos Hadron v0.4.0
+from its installer, sealed `COS_PERSISTENT` (LUKS2 on the OS disk, key in
+its vTPM), reported `phase=installed` over vsock, had the installer
+ejected and its copy deleted, and became `GuestReady` with the host-minted
+EK, in 341 s; delete left no unit, disk or TPM state. The first live
+attempt found that the VMM could not have opened the installer at all:
+see Decision 3 below. A Hadron v0.5.1 development build did not start its
+unattended install with the same user-data plus a `kcrypt:` block; not
+diagnosed, and not a provider issue (the VMM, disks and seed were as
+planned).
+
+- **The EK certificate is read host-side, not reported by the guest.**
+  `swtpm_setup --write-ek-cert-files` writes the certificates it just
+  minted, so the provider publishes on
+  `CloudHypervisorMachine.status.tpmEndorsementCertificates` what the host
+  itself created. That is stronger than Decision 5's guest report, which
+  libvirt needs only because swtpm keeps no host-side copy there
+  (ADR-0045). The vsock channel therefore narrows to `phase=installed`.
+- **Outside the guest's reach.** The certificates go to
+  `<state_root>/ek/<machine uid>/` (`0700 banlieue`), not the machine
+  directory: the guest's uid owns that directory and could replace a file
+  there with a self-made certificate carrying the right CN.
+- **Manufactured once, recorded by the provider.** Whether a machine's TPM
+  was manufactured is the presence of those files, not of the guest-owned
+  state. A guest that deletes its own state gets an error, never a second
+  `swtpm_setup` run as the provider inside a directory the guest could
+  have filled with symlinks. The `ConditionPathExists=!` of Decision 1 is
+  replaced by this check in the reconciler.
+- **Handing the state to the guest.** After manufacture the provider
+  re-owns the state directory and each file in it to the guest's uid,
+  through handles opened `O_NOFOLLOW` relative to the directory
+  (`hostfs.rs::adopt_tpm_state`); anything but a regular file is refused.
+- **Order.** Manufacture (`banlieue-swtpm-setup@<guest uid>`), then
+  `banlieue-swtpm@<guest uid>` as the guest, then the VMM once swtpm's socket
+  exists. Power-off and teardown stop swtpm after the VMM; teardown also
+  removes the EK directory and verifies it is gone. *Since ADR-0063's
+  2026-09-27 amendment* both are root-owned template instances named by the
+  guest's host uid; TPM state is `<state root>/tpm/<uid>/` (the state root
+  is `0751` so the guest can reach it), cleared only just before a fresh
+  manufacture, because guest uids are reused.
+- **Decision 2 / 6.** `vtpm` is passed through from the Provider's
+  declared features only when `[tpm]` exists and `swtpm`, `swtpm_setup`,
+  the setup configuration and the CA certificate are all present; the CA
+  certificate is published on the new `Provider.status.ekCaCertificates`.
+- **Decision 3.** `bootSource.kind: installMedia` plans an empty, sparse
+  OS disk (created `O_EXCL` and owned by handle, never from the image),
+  the installer read-only as device `install`, then the seed.
+  **Amended 2026-09-27:** the installer attached is
+  `<machine dir>/install.iso`, the machine's own copy (reflink where the
+  filesystem supports it, else a sparse copy, like an `Immediate` OS
+  disk), `0440` and owned by the guest. The VMM runs as the guest's uid,
+  which cannot read the provider's `0750` image cache, and must not: one
+  guest's VMM would otherwise hold a shared cache file open. The copy is
+  staged before the VMM starts and deleted on the first pass after the
+  eject (`hostfs.rs::ensure_install_media`); a planted symlink at its path
+  is replaced, never followed. For a
+  `Url` source the imagebuilder now builds an `iso` when the class is
+  `cloud-hypervisor` and the template is `Deferred`; other classes are
+  unchanged.
+- **Decision 4.** When the installed system reports, the same pass calls
+  `vm.remove-device install`, and `status.installMediaDetached` becomes
+  `true` (sticky). Every later start is planned without the installer.
+  `GuestReady` is `False, InstallMediaAttached` until then.
+- **Decision 5.** Every guest gets a hybrid vsock (`cid` 3,
+  `<run dir>/vsock.sock`). The provider listens on
+  `vsock.sock_1024` before starting the VMM, so a first-boot report is
+  never lost, and hands that socket to the guest's uid through an
+  `O_PATH | O_NOFOLLOW` handle. Reports are capped at 16 KiB, read with a
+  10 s timeout, and only an exact `phase=installed` line counts; nothing
+  is sent back. `GuestReady` is published only for `Deferred` machines or
+  once a guest has reported, so an `Immediate` image without a sender
+  leaves it absent and a pool reports the signal absent (ADR-0046
+  Decision 3) instead of waiting. The sender is example 16's
+  `banlieue-guest-phase-cloud-hypervisor` stage. It needs **no extra
+  package** on an image with systemd 256 or later:
+  `NOTIFY_SOCKET=vsock-stream:2:1024 systemd-notify phase=installed`
+  (verified live; Cloud Hypervisor's hybrid vsock is stream only, so the
+  plain `vsock:` form, which tries `SOCK_SEQPACKET` first, is not used).
+  `socat` remains an alternative for older images.
+- **Shared code.** `expected_ek_cn`, `ek_cn_matches` and `parse_ek_pem_str`
+  moved from the libvirt provider to `banlieue-provider-sdk::ek`.
+
 ## Consequences
 
 **Positive**
@@ -228,9 +324,12 @@ fallback is present but does not keep it.
 
 **Negative / accepted costs**
 
-- The guest image needs a vsock sender in its `boot` stage (for example
-  `socat`, until the phase C agent). That is a new image requirement for
-  this class.
+- The guest image needs a vsock sender in its `boot` stage. With systemd
+  256 or later that is `systemd-notify` (see *Implementation notes*);
+  older images need `socat` until the phase C agent.
+- Each `Deferred` machine holds a copy of its installer until the eject:
+  free with reflinks, one ISO of disk space per installing machine
+  without.
 - A per-host EK CA means verifiers need one anchor per host. Accepted: that
   is what `ekTrustBundle` is for.
 - No Secure Boot or UKI on this class.

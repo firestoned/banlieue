@@ -1,5 +1,684 @@
 # Changelog
 
+## [2026-09-27 14:40] - Cloud Hypervisor `Deferred` install verified live; per-machine installer copy; comparison handed to roadmaps 05/06
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `crates/banlieue-provider-cloud-hypervisor/src/{plan.rs,hostfs.rs,host.rs,fake.rs,machine.rs}`:
+  a `Deferred` machine attached the installer straight from the image
+  cache, which the VMM, running as the guest's uid, cannot read (`0750
+  banlieue`). Found by the first live run. The plan now attaches
+  `<machine dir>/install.iso`, the machine's own copy (reflink or sparse
+  copy, `0440`, owned by the guest, created `O_EXCL` and acted on by
+  handle); `ensure_install_media` stages it before the VMM starts and
+  deletes it on the pass after the eject. Tests in `plan_tests.rs`,
+  `hostfs_tests.rs` (including a planted symlink) and `machine_tests.rs`.
+
+### Added
+- `crates/banlieue-provider-cloud-hypervisor/tests/e2e_deferred.rs` and
+  `make ch-deferred-e2e`: a `tpmEnabled` machine installs from a Kairos
+  ISO, seals `COS_PERSISTENT`, reports over vsock; the test checks the
+  eject, `GuestReady`, the host-minted EK, LUKS on the OS disk (read from
+  its GPT), the installer copy's deletion, and that delete leaves no unit,
+  disk, TPM state or EK files. Builds as the user and runs only the test
+  binary through `sudo` (it reads the guest's disk). **Passed live**:
+  Kairos Hadron v0.4.0, `GuestReady` after 341 s.
+
+### Changed
+- `examples/16-cloud-config-guest-phase.yaml`: the Cloud Hypervisor sender
+  is `NOTIFY_SOCKET=vsock-stream:2:1024 systemd-notify phase=installed`
+  (systemd 256+, no extra package; verified live) instead of `socat`,
+  which stays documented for older images.
+- ADR-0065 amended (Decision 3: per-machine installer copy; implementation
+  notes: live results, the sender). Threat model: fifth 2026-09-27 pass
+  (A-12, one TB-9 row), stamp moved to 2026-09-27.
+  `docs/src/guides/cloud-hypervisor-host.md`: the copy, `make
+  ch-deferred-e2e`, and the swtpm unit glob (`banlieue-swtpm@*`).
+- Provider comparison: roadmap 09's item closed; the vSphere and Proxmox
+  columns are tasks in roadmaps 05 and 06, and the doc says so.
+  Roadmap 09 (phase 5 item and one Definition-of-done item ticked) and
+  `ROADMAPS.md` updated.
+
+### Why
+Close roadmap 09's last open live check: `Deferred` install with a vTPM
+on this backend had never run through banlieue.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires host update: the provider binary (reinstalled on the test host)
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-09-27 11:40] - Close the Cloud Hypervisor host root escalation; deferred fixes; provider comparison
+
+**Author:** Erick Bourgeois
+
+### Security fix (ADR-0063, amended)
+- polkit sees only a unit's name, and the provider created **transient**
+  units it described itself, so its user could start
+  `banlieue-ch-<uuid>.service` with `User=root`: root on the host. Guests,
+  vTPMs, TPM manufacture and image imports are now instances of four
+  **root-owned template units** (`deploy/provider-cloud-hypervisor/host/`
+  `banlieue-ch@`, `banlieue-swtpm@`, `banlieue-swtpm-setup@`,
+  `banlieue-ch-import@`), installed by the bootstrap. The provider chooses
+  only the instance (the guest's uid, or the VMImage UID) and sets
+  `MemoryMax` at runtime; the two templates that run as the provider's own
+  user read their arguments from an environment file it writes
+  (`<state root>/units/`, `0600`, single safe words only).
+- `60-banlieue-cloud-hypervisor.rules`: start/stop/reset-failed only on
+  those instances, **with the uid inside the guest range** (rendered from
+  `[guests]`), `set-property` on VMM instances only.
+  `scripts/test-cloud-hypervisor-polkit.js` (`make ch-polkit-test`, 22
+  cases).
+- Verified on a host as the `banlieue` user: a transient unit under the old
+  name with `User=root`, a transient unit under a template name,
+  `banlieue-ch@0`, `set-property User=root`, `set-property` on swtpm and
+  stopping `cron.service` are all refused; `make ch-e2e` and
+  `make ch-vtpm-e2e` pass; registry import through the template passes.
+- Consequences: per-guest run directories and TPM state are keyed by guest
+  uid (`/run/banlieue/ch/<uid>`, `/var/lib/banlieue/tpm/<uid>`); the state
+  root is `0751`; TPM state is cleared only just before a fresh manufacture
+  (found live: clearing on every pass deleted it under `swtpm_setup`); the
+  import environment file is removed once the image is cached or released.
+- Code: `systemd.rs` (`UnitStart`, `EnvFile`; `StartUnit` +
+  `SetUnitProperties` instead of `StartTransientUnit`), `plan.rs`,
+  `hostfs.rs` (`write_env_file`, `reset_tpm_state`), `machine.rs`,
+  `vmimage.rs`, `host.rs`, `fake.rs`, `reconciler.rs`; tests rewritten to
+  read the template files (`systemd_tests.rs`); `tests/live_systemd.rs`
+  runs against a real template on the user bus.
+- Bootstrap: installs the templates, creates `$STATE_ROOT/{tpm,units}`,
+  renders the uid range into the polkit rule.
+
+### Other fixes
+- `banlieue-oci`: a pulled layer's **decompressed** size is capped by the
+  `io.banlieue.disk.size` layer annotation the push records (covered by the
+  manifest digest); a pull that decompresses to more, or ends short, fails.
+  Removes that §8 accepted risk.
+- `banlieue-oci`: `push_file` takes an explicit scratch directory instead
+  of `std::env::temp_dir()` (Semgrep `rust.lang.security.temp-dir`);
+  `banlieue imagebuilder push --scratch-dir` (env `TMPDIR` default), and
+  the push Job passes its emptyDir.
+- libvirt `Deferred` images from a `Url` source: the imagebuilder now builds
+  the installer **ISO** (it built a raw disk, which libvirt then attached
+  as the install CD-ROM), and the libvirt import names the volume `.iso`
+  (`--volume-name`).
+
+### Provider comparison (living doc)
+- `docs/src/reference/provider-comparison.md` (new, in the nav): capability
+  matrix for Cloud Hypervisor, libvirt, vSphere and Proxmox; results
+  through banlieue's API; the earlier hypervisor-only CH vs QEMU table; how
+  to add a column.
+- `crates/banlieue-controller/tests/bench_provider.rs` (`make
+  provider-bench`): provider-agnostic benchmark — create a VirtualMachine,
+  time scheduled / provisioned / Ready / address / sshd / login / settled
+  (boot stable 60 s) / delete, run one fixed workload as root over SSH;
+  JSON lines, no host names or addresses. `scripts/provider-bench-table.py`
+  renders the table. `tempfile` added as a controller dev-dependency.
+- Benchmark user-data comes from a Secret (`secretRef`), and scheduling
+  fails fast after 2 minutes with the VM's conditions (or a hint that no
+  controller is running) instead of waiting 15 minutes.
+- libvirt column measured (3 runs, Debian 13, a second libvirt host);
+  status ✅ for Cloud Hypervisor and libvirt, vSphere and Proxmox pending.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires host update (templates, polkit rule, state directories): rerun the bootstrap `host`, `polkit` and `provider` steps
+- [x] Requires cluster rollout (imagebuilder)
+- [ ] Documentation only
+
+## [2026-09-27 08:20] - Live verification of ADR-0064 and ADR-0065 vTPM; three fixes it found
+
+**Author:** Erick Bourgeois
+
+### Verified live (this host, throwaway kind cluster)
+- **Registry delivery, end to end:** a 20 GiB Kairos disk pushed with
+  `banlieue imagebuilder push` (3.1 GB gzip layer, ~5.5 min); a `Url`
+  `VMImage` naming it by digest; the host's import unit pulled and verified
+  it in 62 s, sparse (4.5 GB allocated); `make ch-e2e` booted a VM from it
+  to an address and left nothing behind (121 s). Deleting the `VMImage`:
+  the controller held `banlieue.io/host-image-cache`, the host removed the
+  pulled file (the admin-placed image untouched) and reported `Released`,
+  the finalizer dropped within a second.
+- **vTPM:** `make ch-vtpm-e2e` passes (25 s): own swtpm, two host-minted EK
+  certificates (RSA-2048, ECC P-384) with CN `<machine>:<uid>`, nothing
+  left after delete. Every guest now has vsock, and VMs boot with it under
+  Landlock.
+
+### Fixed (each found only by the live run)
+- `plan.rs::swtpm_setup_unit`: ran with `Group=` the provider's **uid**; on
+  a host where uid ≠ gid (999/989 here) `swtpm_setup` could not enter the
+  machine directory. Now takes the gid; the test uses distinct values.
+- `machine.rs::ensure_tpm`: a failed manufacture was cleared and retried
+  every ~3 s (the provider's own status write re-triggers the reconcile),
+  so status flipped between the error and `StartingTpm`. It now stays
+  failed and is reported on every pass, with how to retry
+  (`systemctl reset-failed`).
+- `import.rs`: pulled cache files were `0644` (default umask); now `0640`,
+  like an admin-placed image.
+- `tests/e2e_vtpm.rs`: deletes the machine even when a check fails.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Host binary update
+- [ ] Documentation only
+
+## [2026-09-27 02:30] - Cloud Hypervisor Deferred install and guest report (ADR-0065 Decisions 3–5)
+
+**Author:** Erick Bourgeois
+
+### Why
+Completes ADR-0065: a `tpmEnabled` machine must install itself onto an
+empty disk and seal to its own vTPM, which needs an installer, a signal
+that the installed system booted, and an eject.
+
+### Changed
+- `crates/banlieue-cloud-hypervisor`: `GuestPlan.vsock_socket`, encoded as
+  `vsock { cid: 3, socket }`; `spec_tests.rs` checks it against the pinned
+  v53.0 spec.
+- `crates/banlieue-provider-cloud-hypervisor/src/plan.rs`: `InstallMedia`
+  plans an empty OS disk, the installer read-only as `install`, then the
+  seed; `without_install_media`; every guest gets a vsock and a
+  `report_socket` (`vsock.sock_1024`).
+- `report.rs` (new): strict `phase=installed` parser (16 KiB cap, exact
+  line) and a per-machine Unix listener, handed to the guest's uid through
+  an `O_PATH|O_NOFOLLOW` handle; tested with a real socket and a planted
+  symlink. Cargo: tokio `net`, `io-util`, `time` for this crate.
+- `hostfs.rs`: empty, sparse OS disk for `Deferred`
+  (`DiskOutcome::CreatedEmpty`).
+- `machine.rs`: listener before the VMM; on the report, `vm.remove-device
+  install` in the same pass; `guestInstalled` and `installMediaDetached`
+  sticky; `GuestReady` (`GuestNotAnnounced`, `InstallMediaAttached`,
+  `TpmEndorsementPending`, `GuestAnnounced`) published for `Deferred`
+  machines or once a guest reported. `reconciler.rs` plans without the
+  installer once detached. `host.rs`/`fake.rs`: report and remove-device
+  operations.
+- `crates/banlieue-imagebuilder`: `artifact_kind_for` builds an `iso` for a
+  `cloud-hypervisor` `Deferred` image; other classes unchanged.
+- `examples/16-cloud-config-guest-phase.yaml`: the Cloud Hypervisor stage
+  (`socat` to vsock CID 2, port 1024, guarded on `/dev/vsock`).
+- `tests/e2e_vtpm.rs` and `make ch-vtpm-e2e`: a `tpmEnabled` machine gets
+  its own swtpm and a host-minted EK named `<machine>:<uid>`, and deleting
+  it leaves no TPM unit or state.
+- Docs: ADR-0065 notes (all decisions), CALM (report relationship and
+  control), host guide ("vTPM and Deferred install"), threat model (four
+  TB-9 rows, A-12), roadmap 09.
+
+### Verified
+- Unit tests only for Decisions 3–5; a live Deferred run needs an
+  installer image with a vsock client. The vTPM half has
+  `make ch-vtpm-e2e`, pending the host update.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (imagebuilder)
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-09-27 01:30] - Cloud Hypervisor vTPM (ADR-0065 Decisions 1, 2, 6)
+
+**Author:** Erick Bourgeois
+
+### Why
+`tpmEnabled` machines were refused on Cloud Hypervisor. This gives each one
+its own swtpm, manufactured once, with a host-minted EK certificate.
+
+### Changed
+- `crates/banlieue-provider-cloud-hypervisor/src/plan.rs`: `TpmPlan`
+  (state in the machine directory, EK certificates in
+  `<state_root>/ek/<uid>/`, socket in the run directory, `vmid`
+  `<name>:<uid>`); `swtpm_setup_unit` (as the provider user,
+  `--create-ek-cert --create-platform-cert --write-ek-cert-files`) and
+  `swtpm_unit` (as the guest). `plan_machine` takes the machine name;
+  `tpmEnabled` is refused only on a host without `[tpm]`.
+- `hostfs.rs`: `prepare_tpm`, `tpm_manufactured` (the provider-only EK
+  files, so a guest deleting its state never gets a second manufacture),
+  `adopt_tpm_state` (re-own each file through an `O_NOFOLLOW` handle
+  relative to the directory; symlinks refused), `ek_certificates`,
+  `tpm_socket_ready`; removal also takes the EK directory.
+- `machine.rs`: `ensure_tpm` before the VMM (manufacture → adopt → swtpm
+  → socket), `Phase::StartingTpm`, failed units reported; power-off and
+  teardown stop swtpm after the VMM; status publishes `tpmAttached` and
+  `tpmEndorsementCertificates`. `host.rs`/`fake.rs`: the new operations;
+  the fake's `vm.create` refuses a TPM with no swtpm running.
+- `provider.rs`: `vtpm` passed through only when `[tpm]` and its binaries,
+  setup configuration and CA certificate exist; the CA certificate is
+  published. `crates/banlieue-api`: `ProviderStatus.ekCaCertificates`;
+  CRDs and API reference regenerated.
+- `crates/banlieue-provider-sdk/src/ek.rs` (new): `expected_ek_cn`,
+  `ek_cn_matches`, `parse_ek_pem_str` moved from the libvirt provider,
+  which re-exports them. `x509-parser` is now also an SDK dependency
+  (already in the workspace).
+- Polkit rule: `banlieue-(ch|ch-import|swtpm|swtpm-setup)-<uuid>.service`;
+  `plan_tests.rs` reads the rule file and checks every unit name the
+  provider builds against it. Bootstrap: `$STATE_ROOT/ek` (`0700`), in the
+  provider unit's `ReadWritePaths`.
+- Docs: ADR-0065 implementation notes (EK read host-side, so the vsock
+  channel narrows to `phase`), CALM (swtpm node and control), systemd
+  guide, threat model third pass (components, A-6/A-6a/A-12, TB-8, four
+  TB-9 rows), roadmap 09.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (CRD field)
+- [x] Config change only (host: polkit rule, `$STATE_ROOT/ek`, provider unit)
+- [ ] Documentation only
+
+## [2026-09-27 00:40] - Host image cache eviction and deletion finalizer (ADR-0064 Decision 4)
+
+**Author:** Erick Bourgeois
+
+### Why
+Completes ADR-0064: pulled images accumulated on hosts forever, and
+deleting a `VMImage` left its file on every host.
+
+### Changed
+- `crates/banlieue-provider-cloud-hypervisor/src/vmimage.rs`: a deleted
+  `Url` image is **released** — any import unit stopped, the cache file
+  removed from every storage class unless another live image or a machine
+  on this host uses it — and the row reports `reason: Released`. After each
+  successful import, unreferenced pulls beyond `keep_unreferenced` are
+  deleted, newest kept; admin-placed `BackingFile` files are never
+  candidates. Pure helpers `is_pulled_cache_name`, `referenced_files`,
+  `eviction_candidates`, `release_row`, with tests.
+- `crates/banlieue-provider-cloud-hypervisor/src/host_config.rs`:
+  `[registry] keep_unreferenced` (default 1).
+- `crates/banlieue-controller/src/reconciler/vmimage.rs`: holds
+  `banlieue.io/host-image-cache` on images with a `cloud-hypervisor` `Url`
+  source and removes it once every existing Cloud Hypervisor Provider with
+  a row reports `Released`. Held by the controller, not the hosts, so host
+  tokens gain no `vmimages` write (which would reach the spec). No RBAC
+  change: the controller already patches `vmimages`.
+- `scripts/bootstrap-cloud-hypervisor-host.sh`: `REGISTRY_KEEP_UNREFERENCED`.
+- Docs: ADR-0064 notes (Decisions 1–4), CALM flow steps 7–8, host guide
+  (housekeeping, `Released`, removing the finalizer for a lost host),
+  threat model (TB-8 and TB-10 rows, §7.13, §8 narrowed to the uncapped
+  decompressed size), roadmap 09 and `ROADMAPS.md` (ADR-0064 done).
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (controller)
+- [x] Config change only (host `keep_unreferenced`, optional)
+- [ ] Documentation only
+
+## [2026-09-27 00:12] - OCI push: private, unpredictable compressed layer copy
+
+**Author:** Erick Bourgeois
+
+### Why
+Semgrep `rust.lang.security.temp-dir` (code-scanning #129, PR #63) flagged
+the compressed-copy path `.<name>.<pid>.gz` in the temp directory. That name
+is predictable and the same for every push of a given file name within a
+process, so two concurrent pushes collide (`create_new` fails the second
+one), and a local user could pre-create the name to block pushes. A failed
+compression also left the file behind.
+
+The copy stays in the temp directory. A first version of this fix moved it
+beside the source, which would have broken every registry push. In the push
+Job the source is on a read-only PVC, and `TMPDIR` names the only writable
+place, an `emptyDir` (`banlieue-imagebuilder` `reconciler/push.rs`).
+
+### Changed
+- `crates/banlieue-oci/src/client.rs`: `compressed_copy_in(dir, source)`
+  returns a `tempfile::NamedTempFile`: random name, mode 0600, created
+  exclusively, and removed on drop on every exit path. `push_file` passes
+  `std::env::temp_dir()`, which honours `TMPDIR`. `gzip_and_hash` now writes
+  to a `File` rather than creating its destination.
+- `crates/banlieue-oci/Cargo.toml`: `tempfile` moves from dev-dependencies
+  to dependencies (already a workspace dependency, already in `Cargo.lock`).
+- `crates/banlieue-oci/src/client_tests.rs`: created in the given directory
+  even when the source's directory is read-only; distinct names; 0600;
+  removed on drop.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-09-26 23:50] - Registry image delivery to Cloud Hypervisor hosts (ADR-0064 Decisions 1–3)
+
+**Author:** Erick Bourgeois
+
+### Why
+A Cloud Hypervisor provider runs on its KVM host and cannot mount the
+artifacts PVC, so a `Url` source was reported `UnsupportedSourceKind`.
+ADR-0064 routes the build through an OCI registry, pulled by digest.
+
+### Changed
+- `crates/banlieue-oci` (new): first-party OCI distribution client. Push one
+  file as a single-layer gzip artifact; pull by digest into a sparse file,
+  verified before rename; Basic and Bearer auth; no implicit Docker Hub;
+  `Credentials::from_dir` (a mounted basic-auth Secret), and
+  `install_crypto_provider`. **New dependency:** `flate2` (pure-Rust
+  backends `miniz_oxide`/`zlib-rs`); gzip rather than ADR-0064's zstd,
+  because the `zstd` crate binds C. `cargo deny check` passes.
+- `crates/banlieue-api`: `BuildArtifactStatus.ociArtifact`
+  (`OciArtifactStatus`: phase `Pushing|Ready|Failed`, digest `reference`,
+  `message`). CRDs and API reference regenerated.
+- `crates/banlieue-imagebuilder`: `reconciler/push.rs` builds the push Job
+  (no ServiceAccount token, read-only PVC and root filesystem, `emptyDir`
+  scratch, owned by the `OSArtifact`, tagged by its uid) and validates the
+  Job's termination message as a digest in the configured repository;
+  `reconcile` drives it when a `cloud-hypervisor` `Url` source's build is
+  `Ready`. `oci_push.rs`: `banlieue imagebuilder push`. Flags
+  `--registry-repository`, `--registry-credentials-secret`,
+  `--registry-plain-http`, `--push-image`.
+- `crates/banlieue-operator/src/bootstrap.rs`,
+  `deploy/imagebuilder/rbac/role.yaml`: the imagebuilder's build-namespace
+  Role adds `jobs` get/create/patch/delete and `pods` list.
+  `deploy/imagebuilder/configmap.yaml`: commented registry settings.
+- `crates/banlieue-provider-cloud-hypervisor`: host config `[registry]`
+  (`repository`, `credentials_dir`, `plain_http`); `vmimage.rs` serves `Url`
+  sources — the host accepts only a digest in its own repository
+  (`ForeignReference` otherwise), starts
+  `banlieue-ch-import-<vmimage uid>.service`, and is ready once every
+  storage class holds `sha256-<hex>.raw`; `import.rs` is the unit's
+  `import` subcommand (pull once, reflink or copy into the other classes);
+  `error.rs` gains `Import`.
+- `crates/banlieue-provider-cloud-hypervisor/src/sys.rs`: **fix** —
+  `clone_file`'s fallback (no reflink: ext4, tmpfs) now copies data extents
+  only (`SEEK_DATA`/`SEEK_HOLE`). It filled every hole before, so each OS
+  disk cloned from a 20 GiB image allocated 20 GiB. Found live.
+- `crates/banlieue-provider-sdk/src/naming.rs`: `truncate_with_hash` public.
+- `deploy/provider-cloud-hypervisor/host/60-banlieue-cloud-hypervisor.rules`:
+  also `banlieue-ch-import-<uuid>.service`.
+- `scripts/bootstrap-cloud-hypervisor-host.sh`: `REGISTRY_REPOSITORY`,
+  `REGISTRY_CREDENTIALS_DIR`, `REGISTRY_PLAIN_HTTP` write `[registry]` and
+  create the credentials directory (`0750 root:banlieue`).
+- Docs: ADR-0064 implementation notes; CALM (registry node, push and pull
+  relationships and controls, delivery flow); guides
+  (`cloud-hypervisor-host.md`, `cloud-hypervisor-host-systemd.md`,
+  `using-banlieue-imagebuilder.md`); roadmap 09 and `ROADMAPS.md`.
+- Threat model pass: two components, A-3 extended, A-13 registry
+  credentials, the registry as an actor, **TB-10** with its STRIDE table,
+  TB-3 and TB-8 rows, §7.13, four §8 entries (no provenance check, no
+  eviction or decompressed-size cap, imagebuilder Job creation in the
+  privileged namespace, images readable by the registry).
+
+### Verified
+- Unit tests: `banlieue-oci` 18, `banlieue-imagebuilder` (push Job, flags),
+  `banlieue-provider-cloud-hypervisor` 147, operator bootstrap.
+- Live against a local `registry:2`: `banlieue imagebuilder push` of a
+  64 MiB disk (65 KiB layer, digest-pinned termination message); host
+  `import` refuses a wrong file name and a foreign repository, pulls and
+  verifies into one class, copies into the second, both sparse (16
+  blocks), and a rerun is a no-op.
+- Token self-renewal (ADR-0060 Decision 5) proven live: six minutes after
+  the first 60-minute token expired, the provider was active and
+  `make ch-e2e` passed.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (CRD field, imagebuilder RBAC)
+- [x] Config change only (host `[registry]`, polkit rule, imagebuilder flags)
+- [ ] Documentation only
+
+## [2026-09-26 22:47] - GitHub login via Dex on an existing k0s cluster (`dev-oidc-k0s`)
+
+**Author:** Erick Bourgeois
+
+### Why
+`dev-oidc-kind.sh` only works on kind. Testing claim authorization against
+a real GitHub identity on the k0s management cluster needs the same Dex
+bridge, applied to a cluster whose API server is a k0s host process rather
+than a kubeadm static pod, and whose login comes from a GitHub App rather
+than an OAuth App.
+
+### Changed
+- `scripts/dev-oidc-k0s.sh` (new): deploys Dex (`v2.45.1`, non-root with a
+  read-only root filesystem, Kubernetes storage, public PKCE client) with a
+  GitHub App connector, credentials from
+  `BANLIEUE_GITHUB_APP_CLIENT_ID`/`_SECRET`. It checks that every controller
+  can fetch and trust `https://127.0.0.1:32000/dex` before touching any of
+  them. It then writes `/etc/k0s/oidc/authentication-config.yaml` (structured
+  authentication, CA inline) and adds `spec.api.extraArgs.authentication-config`
+  to `/etc/k0s/k0s.yaml`, restarting `k0scontroller` one controller at a time.
+  Each controller must pass `/readyz` with the flag present in the running
+  process, or it is restored from `k0s.yaml.pre-oidc`. It also runs a socat
+  proxy for `127.0.0.1:32000` on the workstation. `grant` binds claim access
+  to the logged-in identity only; `down` reverses everything. Remote commands
+  travel base64-encoded (Kairos has a non-GNU `sed`, so the edit uses `awk`),
+  and `SSH_USER` is root or any user with passwordless sudo.
+- `scripts/dev-oidc-k0s.sh`: `EXPOSE=tailscale` serves the issuer at
+  `https://<MagicDNS name>/dex` via `tailscale serve`, using the tailnet's
+  public certificate. The authentication config then carries no CA, and a
+  laptop logs in with no SSH tunnels. Re-running `up` switches the issuer
+  without restarting any controller (the file is reloaded), and the file is
+  now written aside and renamed into place, because an in-place write caused
+  one failed reload per controller. Also: `kubeconfig` prints a
+  workstation kubeconfig with no admin credential; `GRANT_USER` grants an
+  identity that logged in elsewhere.
+- `Makefile`: `dev-oidc-k0s-{up,login,grant,status,down}`.
+- `docs/src/guides/testing-claim-authorization.md`: "On an existing k0s
+  cluster instead".
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+- Dev tooling only. Applying it restarts each k0s controller once.
+
+## [2026-09-26 22:20] - CodeQL: stop scanning test code
+
+**Author:** Erick Bourgeois
+
+### Why
+Every CodeQL alert raised on test code has been the same false positive.
+`rust/cleartext-logging` treats any `*uid*` name as sensitive, so a test
+that prints a Kubernetes `metadata.uid`, or a tap name or path derived from
+one, raises an alert. That's four batches so far: #52–#57, #104–#105,
+#120–#125, and #127–#128 on PR #63 (`e2e_machine.rs`). Test code never
+ships, and dismissing each batch by hand does not stop the next one.
+
+### Changed
+- `.github/codeql/codeql-config.yml`: `paths-ignore` adds `**/*_tests.rs`
+  (all 98 unit-test files) and `crates/*/tests/**` (all 25 live and e2e
+  tests). Shipped code under `crates/*/src/`, including the `fake` test
+  doubles compiled into the libraries, is still scanned.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only
+- [ ] Documentation only
+
+## [2026-09-26 16:05] - SAST: exclude Semgrep's `unsafe-usage` note
+
+**Author:** Erick Bourgeois
+
+### Why
+Semgrep's `rust.lang.security.unsafe-usage.unsafe-usage` fires on the
+`unsafe` keyword itself, so every new or moved block reopens an alert
+(#126 appeared after `sys.rs` was narrowed to two typed ioctls).
+`// nosemgrep` did not keep it out of the SARIF upload. The only way to
+satisfy the rule in code is to move the ioctls into dependencies
+(`rtnetlink` plus a tun crate), which hides the same calls in code nobody
+here audits and would mean amending ADR-0063 Decision 4. Clippy already
+enforces the audit the note asks for (`#![deny(unsafe_code)]` crate-wide,
+`clippy::undocumented_unsafe_blocks`, and a scoped allow in `sys.rs`).
+
+### Changed
+- `.github/workflows/sast.yaml`: `--exclude-rule=rust.lang.security.unsafe-usage.unsafe-usage`
+  on the Semgrep scan, with a comment naming the Clippy lints that replace it.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only
+- [ ] Documentation only
+
+## [2026-09-26 21:30] - ADR-0060 Decisions 3–5: External provider mode and self-renewing host credential
+
+**Author:** Erick Bourgeois
+
+### Why
+The Cloud Hypervisor host ran on a hand-applied RBAC file and a
+hand-minted 24 h token nobody renewed, and its Role could patch any
+Provider in its namespace. ADR-0060 decided the fix; this implements it.
+
+### Changed
+- **API** (`banlieue-api`): `ProviderClass.spec.deployment`
+  (`Managed` default | `External`); `spec.image` optional (required for
+  Managed, forbidden for External); `ProviderConnection.credentialsRef`
+  optional, with `credentials_secret()`; `ProviderWorkloadStatus.mode`,
+  `deploymentName`/`readyReplicas` optional. CRDs and the API reference
+  regenerated.
+- **SDK**: `naming` (workload/cluster-scoped names) moved here from the
+  operator so an External provider derives the same names; the operator
+  re-exports it.
+- **Operator**: External builds ServiceAccount, Role, RoleBinding and
+  ClusterRoleBinding and no Deployment or import identity; its Role adds
+  `providers`/`providers/status` by `resourceNames` and
+  `serviceaccounts/token` `create` on its own ServiceAccount; no Secret
+  rule without a `credentialsRef` (never an empty `resourceNames`);
+  External ServiceAccounts live with the Provider; pruning and
+  `status.workload` (`mode: External`) follow the mode; class readiness
+  gains `PodFieldsOnExternal`, and a Managed class without an image is
+  refused before anything is applied.
+- **Operator RBAC**: `cloudhypervisormachines` (+status, finalizers) in
+  its ClusterRole; new namespaced `deploy/operator/rbac/role.yaml`
+  (`serviceaccounts/token` `create`, install namespace only), emitted by
+  bootstrap and tested equal to the file.
+- **Bootstrap**: `cloud-hypervisor` is a bootstrap backend — its ClusterRole
+  (`deploy/provider-cloud-hypervisor/rbac/clusterrole.yaml`, replacing the
+  static `rbac.yaml`) and a seeded External class carrying its machine
+  rules; new `banlieue bootstrap cloud-hypervisor-host` issues a host's
+  first credential (a secret-free kubeconfig with `tokenFile`, and the
+  token), `host_credential.rs`.
+- **Providers**: libvirt and vSphere refuse a Provider without
+  `credentialsRef` with their existing `Missing` error.
+- **Cloud Hypervisor provider**: `token.rs` renews its own token at
+  half-life and replaces the token file atomically; `CredentialsNotAllowed`
+  (`Ready=False`, no failure domain) when a Provider names credentials;
+  its Lease is the operator's workload name.
+- **Admission**: `credentialsRef` required except for cloud-hypervisor and
+  forbidden there; External classes may not set pod fields; Managed ones
+  need an image; the credentialsRef-authorization policy guards the
+  absent case.
+- **Host**: `/etc/banlieue/credentials/` (`0700 banlieue`) for the
+  kubeconfig and token; the provider unit may write it (the audit's
+  removed kubeconfig write path comes back as this, with its reason);
+  `ch-host-provider-up.sh` takes `PROVIDER_CREDENTIALS`.
+- Example 21: no `credentialsRef`; endpoint `ch://bar.foo.io` (the
+  provider-connection policy requires a URL).
+- Docs: host guide "Connect it to a cluster" rewritten; systemd guide
+  gains the credentials directory; threat model A-11, TB-8, §7.11, §8
+  (Providers now scoped by name; a stolen token can renew itself —
+  revocation is deleting the ServiceAccount; the operator's namespaced
+  token grant); CALM controls; ADR-0060 implementation notes; roadmap 09.
+
+### Impact
+- [ ] Breaking change — existing Managed classes and Providers are
+      unaffected (`deployment` defaults to Managed; admission keeps
+      `credentialsRef` required for remote backends)
+- [x] Requires cluster rollout (CRDs, operator RBAC, admission policies)
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-09-26 19:40] - Cloud Hypervisor: automated end-to-end and leak test
+
+**Author:** Erick Bourgeois
+
+### Why
+The lifecycle had been proven by hand on a real host several times; an
+automated test keeps it proven. Several of its checks guard bugs the hand
+runs found (unregistered guest uids, a NIC dropped by Landlock, a per-pass
+tap re-attach).
+
+### Changed
+- `crates/banlieue-provider-cloud-hypervisor/tests/e2e_machine.rs`
+  (`#[ignore]`d, runs on the host): checks the Provider is Ready and the
+  image ready for it; creates a ConfigMap and a `VirtualMachine` pinned to
+  the host by its failure-domain label; waits for `Ready` with an address
+  and a matching `spec.providerID`, and for the `VirtualMachine` to mirror
+  it; requires sshd to answer; checks the unit is active and the tap and
+  both directories exist; deletes, then fails naming every leftover unit,
+  tap or directory. Always deletes what it created. Settings from
+  environment only (no real identifiers).
+- `Makefile`: `ch-e2e`, with the settings check and an example.
+- Roadmap 09: leak-test and live-lifecycle items ticked.
+
+### Verified
+Green against a k0s cluster and a bootstrapped host in 82 s.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-09-26 19:05] - Fix: `--kubeconfig` was parsed and ignored (controller, libvirt, vSphere)
+
+**Author:** Erick Bourgeois
+
+### Why
+`banlieue controller`, `provider libvirt` and `provider vsphere` declared a
+`--kubeconfig` flag but always built their client with inference, so the
+flag did nothing: without `KUBECONFIG` in the environment or a
+`~/.kube/config`, `--kubeconfig <file>` still failed with "failed to infer
+config". Found while running the controller locally for the Cloud
+Hypervisor end-to-end run.
+
+### Changed
+- `crates/banlieue-provider-sdk/src/client.rs`: `build_client_with(Option<&OsStr>)`
+  — an explicit kubeconfig (one path, or a `KUBECONFIG`-style list merged
+  as kubectl does) wins over every other source; `None` keeps the old
+  order (in-cluster, then inferred). `config_from_kubeconfig` is the pure
+  half; a missing file is an error, never a silent fall-back.
+  `build_client()` is `build_client_with(None)`. New `client_tests.rs`.
+- Controller, libvirt and vSphere apps pass `--kubeconfig` through; help
+  text states the precedence. The Cloud Hypervisor provider uses the same
+  function instead of its own single-path loader.
+
+### Behaviour change
+`--kubeconfig` (and therefore `$KUBECONFIG`, which clap feeds into it) now
+takes precedence over in-cluster config. That is kubectl's convention;
+banlieue's Deployments do not set `KUBECONFIG`, so in-cluster behaviour is
+unchanged.
+
+### Verified
+The controller binary with `--kubeconfig` and no `KUBECONFIG` or
+`~/.kube/config` now dials the file's server instead of failing at start.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-09-26 17:40] - Threat-model full pass and CALM for ADR-0060..0065 (Cloud Hypervisor)
+
+**Author:** Erick Bourgeois
+
+### Why
+The last step of the ADD cycle for the Cloud Hypervisor provider, and the
+one thing blocking PR #63: neither the threat model nor the CALM model
+mentioned the first banlieue component that runs outside the cluster.
+
+### Changed
+- `docs/src/security/threat-model.md`: full pass, stamp now ADR-0001 …
+  ADR-0065 (0057–0059 unallocated). §1 corrected — the workspace is no
+  longer `unsafe`-free (two audited ioctl blocks, compiler-confined) and
+  the Cloud Hypervisor provider holds a cluster credential on the host
+  instead of a hypervisor credential. §2 new components (the provider, the
+  per-guest VMM); §3 assets A-11 (host token) and A-12 (guest files on the
+  host), A-2/A-3 extended; §4 actors (compromised VMM, stolen host token)
+  and host root; §5 diagram and TB-8 (host ↔ cluster), TB-9 (guest VMM →
+  host and other guests); §6 STRIDE tables for both, every control mapped
+  to a file; §7.11 host hardening requirements; §8 five accepted risks
+  (namespace-wide Role, manual token rotation, guest-influenced addresses
+  and no L2 filtering, a compromised provider reaches its host's guests,
+  unfuzzed VMM decoder); §9 host root out of scope.
+- `docs/architecture/calm/architecture.json`: nodes for the provider, the
+  per-guest VMM and the KVM host; relationships (provider → API server,
+  provider → VMM socket, deployed-in host) with controls; flow
+  `flow-create-virtualmachine-cloud-hypervisor`; ADR-0060..0065 listed.
+  `make calm-validate` clean; `make calm-diagrams` regenerated
+  `docs/src/architecture/{system,flows}.md`.
+- Roadmap 09: CALM and threat-model items updated.
 ## [2026-09-26] - Roadmap 09 phase 10: host install as a `banlieue host` subcommand
 
 **Author:** Erick Bourgeois
@@ -45,6 +724,295 @@ binary that is a single constant with a unit test.
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Documentation only
+
+## [2026-09-26 17:05] - Cloud Hypervisor provider: security audit of `unsafe` and privileged file operations
+
+**Author:** Erick Bourgeois
+
+### Why
+Semgrep flagged every `unsafe` block in the new crate. Auditing them, and
+the privileged calls around them, found that the FFI itself was sound but
+the provider — which holds `CAP_CHOWN`, `CAP_FOWNER` and `CAP_NET_ADMIN` —
+changed files by path inside directories the guest can write.
+
+### Findings and fixes
+- **High — path-based chown/chmod/set_len in guest-writable directories**
+  (`hostfs::ensure_os_disk`, `write_seed`, `prepare_dirs`): a compromised
+  VMM could swap a temp path for a symlink between create and chown, and
+  the provider would give it (or truncate) another guest's disk or the
+  shared base image. Now every change goes through the handle created
+  `O_CREAT|O_EXCL` (`fchown`, `fchmod`, `set_len`); directories are opened
+  `O_NOFOLLOW|O_DIRECTORY` first; the seed is read `O_NOFOLLOW`.
+- **Medium — `sys::clone_file` fallback** removed the temp file and reopened
+  it by path without `O_EXCL`. Now copies into the file already open and
+  returns it.
+- **Medium — `sys::tun_set` accepted any ioctl number** with an integer
+  argument; a pointer-taking request would have let the kernel write
+  through an arbitrary address. Replaced by `ioctl_tun_int` over a closed
+  enum (`Owner`, `Persist`); `struct ifreq` ioctls go through
+  `ioctl_ifreq` over another (`TunSetIff`, `GetFlags`, `SetFlags`,
+  `BridgeAddIf`).
+- **Low — interface names** now follow the kernel's `dev_valid_name`
+  (`sys::valid_ifname`: not `.`/`..`, no `/`, `:`, whitespace), shared with
+  the host-config validation; `interface_exists("..")` was true.
+- **Unsafe surface:** 13 blocks → 2. `rustix` (already built for zbus)
+  replaces the socket, `if_nametoindex`, `FICLONE` and effective-id calls;
+  an own `#[repr(C)] IfReq`, compile-time asserted to match `libc::ifreq`'s
+  size and alignment, replaces `mem::zeroed` and union reads.
+  `#![deny(unsafe_code)]` on the crate with `sys` the only exception, so
+  "unsafe only in sys.rs" is enforced by the compiler; the two remaining
+  blocks carry `SAFETY` and per-line `nosemgrep` after audit. A comment
+  claiming the SAST job excluded Semgrep's unsafe rule was false and is
+  corrected.
+
+### Tests
+- New: kernel interface-name rules; `IfReq` layout and field encoding;
+  `clone_file` refuses a planted symlink and leaves its target alone; a
+  symlink planted at the disk temp path leaves its target's content, mode
+  and size alone; a symlinked seed is replaced by a real file; a symlinked
+  machine directory is refused. The last two fail against the old code.
+- `tests/live_sys.rs` (user+net namespace): all tap and bridge ioctls pass
+  through the new wrappers against the real kernel.
+- Live, on a bootstrapped host with the rebuilt provider: a VM booted with
+  its seed and a DHCP address in 69 s (the VMM, as the guest uid, opened
+  the fd-owned disk and seed; the provider reached the fd-granted API
+  socket); directories came out `2770 banlieue-g<uid>:banlieue` under
+  `0711` roots, unlistable by any other user; delete removed everything
+  in 5 s.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-09-26 16:10] - Cloud Hypervisor host systemd config: files in deploy/, audited, documented
+
+**Author:** Erick Bourgeois
+
+### Why
+The host's systemd, polkit and tmpfiles configuration lived only as
+heredocs in the bootstrap script, and the guest unit only in Rust, so
+nobody could review it as files or see why each setting existed. Auditing
+it for this found settings nothing used.
+
+### Changed
+- `deploy/provider-cloud-hypervisor/host/` (new): the provider unit, the
+  polkit rule and the tmpfiles entry as templates (`@VAR@` placeholders),
+  each commented; `banlieue-ch-guest.example.service`, a reference copy of
+  the transient guest unit.
+- `systemd.rs`: `UnitSpec::to_unit_file()` renders a unit as unit-file
+  text; a test keeps its keys equal to the D-Bus properties, and a golden
+  test (`plan_tests.rs`) keeps the reference file equal to what the
+  provider starts.
+- Removed, as unused: guest `UMask=0007` (Cloud Hypervisor forces `0077`);
+  provider `ReadWritePaths=` for the state directory and the kubeconfig
+  (not written until vTPM and token renewal land); polkit verbs `restart`
+  and `kill`, and unit names for swtpm, swtpm-setup and import units that
+  do not exist yet.
+- `scripts/bootstrap-cloud-hypervisor-host.sh`: renders those templates
+  (`render`, refuses unreplaced placeholders) instead of heredocs;
+  `--remote` copies them to the target.
+- `docs/src/guides/cloud-hypervisor-host-systemd.md` (new, in the nav):
+  every setting, why it is needed, what breaks without it, the userdb
+  records, directory modes, what was removed and why, how to inspect.
+- ADR-0063 amended (Decisions 3, 5, 6) to match.
+- Verified live after re-rendering on a bootstrapped host: a VM was
+  created (polkit `start`), booted with its seed and got an address in
+  74 s, and was deleted (`stop` + `reset-failed`) in 6 s with nothing left
+  behind — the removed settings were not needed.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only
+- [ ] Documentation only
+
+## [2026-09-26 15:35] - Cloud Hypervisor: enforce SAFETY comments on unsafe; PR #63 alert triage
+
+**Author:** Erick Bourgeois
+
+### Why
+PR #63 raised 19 code-scanning alerts, none of them real. CodeQL
+`rust/cleartext-logging` (#120–#125) treats any `*uid*` name as sensitive,
+so the `HOST_UID` constant in `plan_tests.rs` tainted the tap names and MACs
+built from it. Those values appear only in `assert!` messages in unit tests.
+Semgrep `unsafe-usage` (#107–#119) flags every `unsafe` block in `sys.rs`
+as an audit note. To make that audit a compile-time guarantee rather than a
+note, the crate now denies undocumented `unsafe`.
+
+### Changed
+- `crates/banlieue-provider-cloud-hypervisor/src/lib.rs`:
+  `#![deny(clippy::undocumented_unsafe_blocks)]`, so an `unsafe` block
+  without a `// SAFETY:` justification fails the Clippy job.
+- `crates/banlieue-provider-cloud-hypervisor/tests/live_sys.rs`: the same
+  lint, plus the one missing `// SAFETY:` comment (`mem::zeroed` ifreq).
+- Code scanning: CodeQL #120–#125 dismissed as false positives; Semgrep
+  #107–#119 dismissed as won't-fix (audited, with each block justified and
+  lint-enforced).
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-09-26 15:10] - Cloud Hypervisor provider verified end to end; QEMU comparison recorded
+
+**Author:** Erick Bourgeois
+
+### Why
+Roadmap 09's phase 3 exit, and the open QEMU half of the phase 0 timing
+item.
+
+### Changed
+- `.github/community/09-phase-1f-cloud-hypervisor-provider.md`: phase 3
+  exit met (a `VirtualMachine` on a k0s cluster scheduled onto a
+  bare-metal host, booted with its seed, got an address, `Ready=True`, and
+  deleted cleanly in 6 s); finalizer and leak items annotated; QEMU vs
+  Cloud Hypervisor results recorded (boot 40.1 vs 41.4 s, VMM RSS 1395 vs
+  1855 MiB, 4 KiB direct I/O 55/91 vs 38/52 MB/s write/read, CPU and
+  sequential I/O equal).
+- `ROADMAPS.md`: roadmap 09 row updated.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+## [2026-09-26 13:10] - Cloud Hypervisor: first live run fixes (guest identity, isolation, failure reporting)
+
+**Author:** Erick Bourgeois
+
+### Why
+The first end-to-end run on a bootstrapped host scheduled the VM, allocated
+its guest uid and started its unit, then looped: systemd failed every start
+with status 217/USER, because a numeric `User=` that NSS cannot resolve is
+refused, and `CollectMode=inactive-or-failed` collected each failed unit
+before the provider could see it, so status said "waiting for its API"
+forever. Reading the unit spec for that turned up a worse bug: the VMM's
+primary group was the provider's group, so every guest shared it and could
+open every other guest's `0770` directories.
+
+### Changed
+- `plan.rs`: the VMM runs as `User=<uid>` `Group=<uid>` (its own private
+  group) plus `kvm`; `vmm_unit` no longer takes the provider gid.
+- `hostfs.rs`: machine and run directories are `2770` (setgid) guest-uid:
+  provider-group, so the API socket and serial log the VMM creates land in
+  the provider's group without the guest being in it.
+- `systemd.rs`: `CollectMode=inactive` keeps a failed unit loaded;
+  `Systemd::failure` reads its `Result`/`ExecMainStatus`; `describe_exit`
+  names systemd's pre-exec steps (217 USER, 203 EXEC, …).
+- `machine.rs`: a failed VMM unit is reported as `VmmExited` with that
+  reason, cleared, and retried on the reconciler's error backoff instead of
+  a silent 3-second loop. `converge` lost its unused `group` parameter.
+- `host.rs` / `fake.rs`: `HostOps::unit_failure`; the fake can fail a unit.
+- `tests/live_systemd.rs`: a unit that cannot start stays `failed` with its
+  reason, and stop frees the name (session bus, no root).
+- `provider_tests.rs`: `gather_facts` test made hermetic (it assumed a host
+  path did not exist).
+- `scripts/bootstrap-cloud-hypervisor-host.sh`: registers the guest range as
+  systemd userdb drop-ins (`/etc/userdb`, one user + private group per uid,
+  verified with `getent`); preflight requires `systemd` in nsswitch.conf and
+  ignores its own records on a re-run; selftest resolves the first guest
+  uid; storage and run roots are `0711`; default range 1024; adds `die`.
+- `scripts/ch-host-provider-up.sh` (new): one root step from bootstrap to a
+  running provider — kubeconfig, image cache seed, service start.
+- `docs/src/guides/cloud-hypervisor-host.md`: "Connect it to a cluster".
+- `hostfs.rs`: `grant_api_socket` — Cloud Hypervisor v53 forces umask
+  `0077`, so its API socket is always `0700`; the provider (`CAP_FOWNER`)
+  sets it to `0660` after verifying, on an `O_PATH|O_NOFOLLOW` fd, that it
+  is a socket owned by the guest uid and the provider group with no bits
+  for others, and changes that same inode via `/proc/self/fd` (a planted
+  symlink is refused and its target untouched). `HostOps::api_socket_ready`
+  now returns `Result<bool>`, so a refused socket shows in status.
+- `banlieue-cloud-hypervisor` `types.rs`: with Landlock on, v53 cannot read
+  a tap's flags from sysfs and the NIC silently drops out of the VM (the
+  guest booted with no network). `vm.create` now adds one read-only
+  `landlock_rules` entry per tap on `/sys/devices/virtual/net/<tap>` (the
+  resolved path; `/sys/class/net` is a symlink Landlock does not follow).
+  Checked against the pinned v53 spec; verified by booting the Kairos image
+  in a user+net namespace with Landlock on.
+- `sys.rs`: `ensure_tap` creates a tap only when absent and never attaches
+  to an existing one — the old per-pass `TUNSETIFF` would fail with `EBUSY`
+  once the VMM holds the tap's single queue. Live-tested in a namespace
+  with a held queue (`tests/live_sys.rs`).
+- ADR-0063 amended: Decision 3 (userdb registration, private groups),
+  Decision 4 (ensure without attaching; per-tap Landlock rule) and
+  Decision 5 (2770 setgid, 0711 roots, the VMM's forced umask).
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-09-26 12:30] - Host-resident Cloud Hypervisor provider (`banlieue provider cloud-hypervisor`)
+
+**Author:** Erick Bourgeois
+
+### Why
+Roadmap 09 §3: the process that turns a `CloudHypervisorMachine` into a
+running guest on the KVM host (ADR-0060 to ADR-0063). Built bottom-up with
+TDD against a strict in-memory host fake; the syscall and systemd seams are
+live-tested without root.
+
+### Changed
+- `crates/banlieue-provider-sdk/src/cloudinit/`: the NoCloud seed builder
+  moved here from `banlieue-provider-libvirt` so both KVM providers share
+  it; libvirt re-exports it (`pub use banlieue_provider_sdk::cloudinit`).
+- `crates/banlieue-provider-sdk/src/ssa.rs`:
+  `FIELD_MANAGER_PROVIDER_CLOUD_HYPERVISOR`.
+- New crate `crates/banlieue-provider-cloud-hypervisor`:
+  - `host_config.rs` — `/etc/banlieue/cloud-hypervisor.toml`, strict
+    (`deny_unknown_fields`), the only source of host paths and bridges.
+  - `plan.rs` — pure planning: unit, tap, MAC, paths, disk size,
+    providerID, VMM config; `vtpm` and `InstallMedia` refused as
+    `Unsupported` for now.
+  - `sys.rs` — tap create/delete/up, bridge enslave (tun and bridge
+    ioctls), reflink clone; the crate's only `unsafe`.
+  - `systemd.rs` — transient units over D-Bus (zbus), hardened properties.
+  - `hostfs.rs`, `neigh.rs`, `host.rs` (`HostOps` + `RealHost`), `fake.rs`.
+  - `machine.rs` — one converge step per pass, power-off, verified teardown.
+  - `reconciler.rs` — guest uid allocated and persisted to status before
+    any host work; `spec.providerID` by server-side apply; finalizer.
+  - `provider.rs` — `Provider.status`: one failure domain per host, a class
+    published only when its `target.hostClass` exists in the host config
+    **and** on the host; `vtpm` never advertised; no failure domain at all
+    without KVM, the VMM or the firmware.
+  - `vmimage.rs` — this host's `VMImage.status.perProvider[]` row for
+    `BackingFile` sources held in a storage class's `images/` cache
+    (ADR-0064 Decision 5, new); `Url` reported `UnsupportedSourceKind`.
+  - `app.rs` — entry point: kube client from the host config's kubeconfig
+    only, systemd bus, per-Provider lease, Provider + machine + VMImage
+    controllers.
+  - `tests/live_sys.rs` (user+net namespace), `tests/live_systemd.rs`
+    (user session bus).
+- `crates/banlieue`: `cloud-hypervisor` feature (default on) and the
+  `provider cloud-hypervisor` subcommand. Not a `banlieue bootstrap`
+  backend: the host bootstrap script installs it.
+- `deploy/provider-cloud-hypervisor/rbac.yaml`: ServiceAccount, a
+  namespaced Role for Providers/machines/lease, a ClusterRole for VMImage
+  read + status patch only, no Secrets; interim until the operator's
+  `External` mode (ADR-0060 Decision 3) applies it.
+- `scripts/bootstrap-cloud-hypervisor-host.sh`: config comment points at the
+  schema's owner.
+- ADR-0064 amended: Decision 5, `BackingFile` from the host image cache.
+- ADR-0060/0062/0063 amended: taps by ioctl not `rtnetlink` (14-char names
+  with the NIC index); addresses from `/proc/net/arp`, not netlink; machine
+  and run directories `0770` guest-uid:banlieue so the provider can tear
+  down.
+
+### Dependencies
+- `zbus` 5 (tokio, no default features): systemd over D-Bus. `toml` 1.
+  Maintained, pure Rust; `cargo deny` clean, no duplicate versions added.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
 
 ## [2026-09-26 08:05] - Stop tracking `.claude/settings.json`
 

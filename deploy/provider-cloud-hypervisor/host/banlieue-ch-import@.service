@@ -1,0 +1,25 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# Pulls one registry image by digest into every storage class's image cache
+# (ADR-0064 Decision 3). The instance is the VMImage's UID; the reference
+# and cache file come from an environment file the provider writes, and the
+# import re-checks both against the host config. Runs as the provider's
+# user, writing only the image caches.
+
+[Unit]
+Description=banlieue image import (VMImage %i)
+CollectMode=inactive
+
+[Service]
+Type=oneshot
+User=@BANLIEUE_USER@
+Group=@BANLIEUE_USER@
+EnvironmentFile=@STATE_ROOT@/units/import-%i.env
+ExecStart=@PROVIDER_BINARY@ provider cloud-hypervisor --config @HOST_CONFIG@ import --reference ${REFERENCE} --file ${FILE}
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=@STORAGE_IMAGE_DIRS@
+DevicePolicy=closed

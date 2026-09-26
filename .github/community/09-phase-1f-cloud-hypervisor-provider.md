@@ -121,8 +121,17 @@ One bare-metal KVM host, a shell, no code in the tree.
       That matches where ADR-0051 already left sandboxes (classic GRUB).
       *2026-09-25: as expected.* A new NV variable is accepted at runtime and
       gone after a guest reset; edk2's `NvVars` fallback does not keep it.
-- [ ] Record boot-to-login time and resident memory next to the same image
-      under libvirt/QEMU on the same host. *Cloud Hypervisor half done
+- [x] Record boot-to-login time and resident memory next to the same image
+      under libvirt/QEMU on the same host. *QEMU half done 2026-09-26:* same
+      installed Kairos disk, 2 vCPU / 4 GiB, virtio-blk raw on the host page
+      cache, DHCP on a private bridge, QEMU 10.0 `q35` + OVMF vs Cloud
+      Hypervisor v53 + `CLOUDHV.fd`, 5 alternating runs each, medians.
+      Boot to login 40.1 s vs 41.4 s (both include the 10 s GRUB countdown).
+      VMM RSS at login **1395 vs 1855 MiB** (-25%). CPU and memory
+      bandwidth within noise; sequential direct I/O equal; 4 KiB direct
+      I/O **55 vs 38 MB/s write, 91 vs 52 MB/s read**. Not measured:
+      network throughput, parallel-start density, direct kernel boot, a
+      tuned QEMU (`io_uring`, iothreads, `microvm`). *Cloud Hypervisor half done
       (2026-09-25, 2 vCPU / 4 GiB):* first boot of a fresh `cloudImage`
       including layout expand, auto-reset install and in-place reboot, 146 s
       to login; recovery-only boot, about 30 s (10 s is the GRUB countdown).
@@ -224,9 +233,10 @@ pub struct CloudHypervisorMachineSpec {
 - Each unit runs as an unprivileged per-guest user with `kvm` as a
   supplementary group, a private state directory, and cgroup limits taken from
   the machine spec. Leave the VMM's seccomp and Landlock on.
-- Tap devices are created by the provider over netlink (`rtnetlink`), owned by
-  the guest's uid, enslaved to the bridge, and passed to the VMM by name. The
-  VMM itself never holds `CAP_NET_ADMIN`.
+- Tap devices are created by the provider with the tun and bridge ioctls
+  (ADR-0063 Decision 4, amended 2026-09-26: netlink cannot set a tap's owner
+  or persistence), owned by the guest's uid, enslaved to the bridge, and
+  passed to the VMM by name. The VMM itself never holds `CAP_NET_ADMIN`.
 
 ### Provider reconciler: capability introspection
 
@@ -239,6 +249,16 @@ regardless of what the CPU can do, per the environment constraint.
 
 **Exit:** a hand-written `CloudHypervisorMachine` boots a guest from a disk
 already on the host, and `kubectl delete` removes unit, tap and state.
+*Met 2026-09-26, and more:* a `VirtualMachine` (not a hand-written machine)
+on a k0s cluster was scheduled onto a bare-metal host running the provider
+under systemd; the Kairos guest booted with its seed applied (hostname, SSH
+key, a boot-stage marker), got a DHCP address in 69 s, went through
+Kairos's install-and-reboot into `active_boot`, and reported `Ready=True`.
+Deleting it removed unit, tap, disk, seed and both directories in 6 s. The
+run found five bugs no offline test could: unregistered guest uids
+(217/USER), a group shared by all guests, the VMM's forced `0077` umask,
+Landlock blocking the tap's sysfs read, and a per-pass tap re-attach —
+all fixed, each with a test, and recorded in ADR-0063.
 
 ## 4. Images and disks
 
@@ -510,7 +530,17 @@ revisit A when a consumer needs what the driver cannot do.
 - [ ] Spike native checks (gate decision written down: ADR-0060, A).
 - [ ] ADR-0060 to ADR-0065 accepted. CALM updated. *All six drafted as
       Proposed 2026-09-25; ADR-0065 has three spike-gated decisions.*
-- [ ] `ProviderClass.spec.deployment` and the operator's `External` path.
+      *2026-09-26: CALM updated* (provider, per-guest VMM and KVM host
+      nodes; API, VMM and deployed-in relationships with controls; a
+      create flow), `make calm-validate` clean. Acceptance is the
+      maintainer's call.
+- [x] `ProviderClass.spec.deployment` and the operator's `External` path.
+      *2026-09-26:* ADR-0060 Decisions 3–5 — External class (identity and
+      RBAC, no Deployment; Role scoped to its own Provider by name),
+      optional `credentialsRef` (refused for cloud-hypervisor), token
+      self-renewal via a token file, `banlieue bootstrap
+      cloud-hypervisor-host` for the first credential. See ADR-0060
+      "Implementation notes".
 - [x] `CloudHypervisorMachine`, `CloudHypervisorMachineTemplate`, controller
       `infra.rs` arm. `make crds`. *2026-09-26:* API per ADR-0062 (no host
       paths, no disk list, required OS disk size); the controller builds it
@@ -520,16 +550,62 @@ revisit A when a consumer needs what the driver cannot do.
       *2026-09-26:* ADR-0061. v53.0 spec vendored with a sha256 `PIN`;
       fixtures captured from a real VMM; `make ch-live-test` runs it against
       one.
-- [ ] `crates/banlieue-provider-cloud-hypervisor`: `reconciler/provider.rs`,
+- [x] `crates/banlieue-provider-cloud-hypervisor`: `reconciler/provider.rs`,
       `reconciler/machine.rs`, `reconciler/vmimage.rs`, `supervisor.rs`
-      (D-Bus), `net.rs` (netlink), `import.rs`.
-- [ ] `banlieue provider cloud-hypervisor` subcommand behind a Cargo feature
-      (ADR-0004).
-- [ ] Shared NoCloud seed crate, libvirt provider migrated onto it.
-- [ ] Artifact delivery per ADR-0064.
-- [ ] Deletion finalizer: unit, swtpm unit, tap, disks, seed, state directory.
-- [ ] swtpm and `Deferred`.
-- [ ] Host bootstrap script, guide, example manifests, threat model.
+      (D-Bus), `net.rs` (netlink), `import.rs`. *2026-09-26:* landed flat as
+      `provider.rs`, `reconciler.rs` + `machine.rs`, `vmimage.rs`
+      (`BackingFile` and registry `Url` sources), `systemd.rs`, `sys.rs`
+      (ioctls, not netlink) and `import.rs` (the import unit's subcommand).
+      Host effects sit behind `host::HostOps` with a strict `fake.rs`.
+- [x] `banlieue provider cloud-hypervisor` subcommand behind a Cargo feature
+      (ADR-0004). *2026-09-26:* feature `cloud-hypervisor`, on by default;
+      not a `banlieue bootstrap` backend (host-installed).
+- [x] Shared NoCloud seed crate, libvirt provider migrated onto it.
+      *2026-09-26:* `banlieue-provider-sdk::cloudinit`; libvirt re-exports.
+- [x] Artifact delivery per ADR-0064. *2026-09-26/27, Decisions 1–5:*
+      `crates/banlieue-oci` (first-party, pure Rust, gzip layer);
+      `banlieue imagebuilder push` run by a token-less push Job,
+      `status.buildArtifact.ociArtifact`; host `[registry]` pinning one
+      repository; `banlieue-ch-import-<uid>.service` pulls by digest into
+      every storage class (`sha256-<hex>.raw`, sparse); eviction beyond
+      `keep_unreferenced`; the controller's `banlieue.io/host-image-cache`
+      finalizer releases a deleted image once every host reports
+      `Released`. Verified live end to end 2026-09-27: push, pull by digest,
+      VM boot from the pulled image, release on delete.
+- [x] Deletion finalizer: unit, swtpm unit, tap, disks, seed, state directory.
+      *2026-09-26:* all but the swtpm unit, verified live. *2026-09-27:*
+      swtpm and its manufacture unit stopped, EK directory removed and
+      verified (unit tests; live run pending).
+- [x] swtpm and `Deferred`. *2026-09-27, ADR-0065 Decisions 1–7:*
+      one-shot manufacture as the provider user, EK certificates read
+      host-side from `<state_root>/ek/<uid>/`, state handed to the guest by
+      handle, swtpm before the VMM; `vtpm` advertised only when usable;
+      `Provider.status.ekCaCertificates`. `Deferred`: empty sparse OS disk,
+      installer second, ejected with `vm.remove-device` when the installed
+      system reports `phase=installed` over vsock, `GuestReady` after.
+      Unit-tested; `make ch-vtpm-e2e` passed live 2026-09-27, and `make
+      ch-deferred-e2e` the same day: Kairos Hadron v0.4.0 installed,
+      `COS_PERSISTENT` sealed to the vTPM, reported with `systemd-notify`
+      over `vsock-stream:2:1024` (no extra package), installer ejected,
+      `GuestReady` in 341 s, clean delete. The first live run found the
+      VMM could not read the installer in the cache: each machine now gets
+      its own read-only copy, deleted after the eject (ADR-0065 amended).
+- [x] Host units as root-owned templates. *2026-09-27:* transient units let
+      the provider's user start a unit as root (polkit sees only names);
+      `banlieue-ch@`, `banlieue-swtpm@`, `banlieue-swtpm-setup@`,
+      `banlieue-ch-import@` templates, polkit restricted to guest-range
+      instances (ADR-0063 amended). Verified on a host; `make
+      ch-polkit-test`.
+- [x] Provider comparison. *2026-09-27:* living doc
+      `docs/src/reference/provider-comparison.md` and `make provider-bench`;
+      Cloud Hypervisor measured (Debian and Kairos), libvirt measured the
+      same day on a second host. The vSphere and Proxmox columns are tasks
+      in roadmaps 05 and 06, where the doc stays open until they land.
+- [x] Host bootstrap script, guide, example manifests, threat model.
+      *2026-09-26:* `scripts/bootstrap-cloud-hypervisor-host.sh` and
+      `ch-host-provider-up.sh`; two guides (bootstrap; systemd, polkit,
+      identities); example 21; full threat-model pass through ADR-0065
+      (TB-8, TB-9, §7.11, five §8 entries).
 - [ ] ADR-0067, then `banlieue host {preflight,status,selftest,install}`
       behind a Cargo feature; the shell script shrinks to a `--remote` wrapper
       (phase 10).
@@ -538,20 +614,31 @@ revisit A when a consumer needs what the driver cannot do.
 
 ## Tests
 
-- [ ] Client, supervisor and netlink behind traits, mocked in unit tests.
+- [x] Client, supervisor and netlink behind traits, mocked in unit tests.
+      *2026-09-26:* `HostOps` over all of them, faked strictly (it rejects
+      what systemd and the VMM reject); the syscalls and systemd are also
+      live-tested without root (`tests/live_sys.rs` in a user+net
+      namespace, `tests/live_systemd.rs` on the session bus).
 - [ ] VMM configuration JSON asserted against the vendored spec.
 - [ ] Restart test: kill the provider mid-provision and mid-delete, assert it
       re-adopts and converges.
-- [ ] Leak test: create then delete leaves no unit, tap, file or directory.
-- [ ] Live lifecycle test, as ADR-0050 has for libvirt. GitHub's hosted Linux
+- [x] Leak test: create then delete leaves no unit, tap, file or directory.
+      *2026-09-26:* `tests/e2e_machine.rs` (`make ch-e2e`), run on the host:
+      VM → `Ready` with an address → sshd answers → unit, tap and
+      directories present → delete → all of them gone. Green in 82 s.
+- [x] Live lifecycle test, as ADR-0050 has for libvirt. *2026-09-26:* the
+      same `e2e_machine.rs`; plus `live_sys.rs` and `live_systemd.rs` for the
+      syscall and D-Bus halves without root. CI on a hosted runner with
+      `/dev/kvm` is still unexplored. GitHub's hosted Linux
       runners expose `/dev/kvm`, which would put a real guest boot in CI
       without a self-hosted runner. Confirm before relying on it.
 
 ## Definition of done
 
 - [ ] The stop condition holds live on a real host.
-- [ ] A `tpmEnabled` class installs `Deferred`, seals to its own vTPM, and
-      leaves no swtpm state behind on delete.
+- [x] A `tpmEnabled` class installs `Deferred`, seals to its own vTPM, and
+      leaves no swtpm state behind on delete. *2026-09-27, `make
+      ch-deferred-e2e` on a host (the machine created directly).*
 - [ ] Provider upgrade with guests running: zero guest restarts.
 - [ ] `cargo deny` clean. No new native dependency in the binary.
 - [ ] Roadmap 17 amended with phase G. Roadmap 14's per-class table updated.

@@ -171,7 +171,7 @@ Connection details for the backend.
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `caBundle` | object |  | Optional CA bundle to validate the endpoint's TLS certificate. |
-| `credentialsRef` | object | Yes | Reference to a Secret in the Provider's namespace containing the credentials. Required keys depend on provider class: vsphere: username, password proxmox: username (root@pam!token-id), tokenValue OR username, password libvirt: optional sshPrivateKey for SSH transports |
+| `credentialsRef` | object |  | Reference to a Secret in the Provider's namespace containing the credentials. Required keys depend on provider class: vsphere: username, password proxmox: username (root@pam!token-id), tokenValue OR username, password libvirt: tls.crt, tls.key (mutual TLS, ADR-0011) |
 | `endpoint` | string | Yes | Endpoint URL or URI. Format depends on provider class: vsphere: https://vcenter.example.com/sdk proxmox: https://pve.example.com:8006 libvirt: qemu+ssh://kvm-host.example.com/system |
 | `insecureSkipTLSVerify` | boolean |  | Skip TLS verification. Applies to vsphere and proxmox. |
 
@@ -215,7 +215,12 @@ Reference to a Secret in the Provider's namespace containing the
 credentials. Required keys depend on provider class:
   vsphere:  username, password
   proxmox:  username (root@pam!token-id), tokenValue  OR  username, password
-  libvirt:  optional sshPrivateKey for SSH transports
+  libvirt:  tls.crt, tls.key (mutual TLS, ADR-0011)
+
+Required by every backend that authenticates to a remote endpoint, and
+refused by `cloud-hypervisor`, whose provider runs on the hypervisor
+host and must read no Secret at all (ADR-0060 Decision 4). When unset
+the operator grants no Secret access whatsoever.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -256,6 +261,7 @@ and the health / reachability conditions.
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `conditions` | object[] |  | Standard Kubernetes conditions. The `Ready` condition reflects overall provider health. The `ProviderReachable` condition reflects connection state to the backend. |
+| `ekCaCertificates` | string[] |  | PEM certificates of the CAs that issue this backend's vTPM endorsement key certificates: on a Cloud Hypervisor host, the host's own `swtpm_localca` (ADR-0065 Decision 6). A verifier trusts a guest's EK only through the host that created it; this is the input `ekTrustBundle` needs (ADR-0049). Empty when the backend offers no vTPM or publishes no anchor. |
 | `failureDomains` | object[] |  | Failure domains ("availability zones" — the terms are synonyms; `failureDomain` was kept to align with CAPI v1beta2's own vocabulary) discovered by the provider's controller within this backend. The scheduler matches against `labels` and filters by `attributes.availableStorageClasses` / `availableNetworkClasses`. |
 | `observedGeneration` | integer |  | The generation of the spec that the controller has reconciled. |
 | `workload` | object |  | The provider workload `banlieue-operator` created for this Provider. |
@@ -316,10 +322,11 @@ conflict-free (ADR-0012).
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `deploymentName` | string | Yes | Name of the Deployment running this Provider's controller. Conventionally `banlieue-provider-<class>-<provider-name>`. |
+| `deploymentName` | string |  | Name of the Deployment running this Provider's controller. Conventionally `banlieue-provider-<class>-<provider-name>`. Unset for `External`: there is no Deployment. |
+| `mode` | string |  | Whether the operator runs this provider (`Managed`) or only gave it an identity (`External`, ADR-0060 Decision 3). Absent on objects written before the field existed, which were all Managed. Allowed: `Managed`, `External`. |
 | `namespace` | string | Yes | Namespace the Deployment was created in — the ProviderClass's `workloadNamespace`, or the operator's own namespace when unset. |
 | `observedGeneration` | integer |  | The Provider generation the operator had observed when it last applied this workload. |
-| `readyReplicas` | integer | Yes | Ready replicas reported by that Deployment. Zero means the backend's controller is not currently running, whatever the Provider's other conditions say. |
+| `readyReplicas` | integer |  | Ready replicas reported by that Deployment. Zero means the backend's controller is not currently running, whatever the Provider's other conditions say. Unset for `External`: whether an external provider is running is its own `Ready` condition and Lease to say, not the operator's. |
 
 ---
 
@@ -363,6 +370,7 @@ Cluster-scoped: one ProviderClass serves Providers in any namespace.
 | --- | --- | --- | --- |
 | Backend | string | `.spec.backend` | 0 |
 | Image | string | `.spec.image.tag` | 0 |
+| Deployment | string | `.spec.deployment` | 0 |
 | Providers | integer | `.status.providers` | 0 |
 | Ready | string | `.status.conditions[?(@.type=='Ready')].status` | 0 |
 | Age | date | `.metadata.creationTimestamp` | 0 |
@@ -373,7 +381,8 @@ Cluster-scoped: one ProviderClass serves Providers in any namespace.
 | --- | --- | --- | --- |
 | `additionalRules` | object[] |  | Extra RBAC rules appended to the per-instance Role the operator generates for each Provider of this class. |
 | `backend` | string | Yes | Which provider backend this class instantiates — the `banlieue provider <backend>` subcommand spawned Deployments run. |
-| `image` | object | Yes | Container image every provider workload of this class runs. |
+| `deployment` | string |  | How a class's providers run (ADR-0060 Decision 3). Allowed: `Managed`, `External`. |
+| `image` | object |  | Container image every provider workload of this class runs. |
 | `logging` | object |  | Log level and format passed to spawned workloads. |
 | `nodeSelector` | map[string]string |  | Node selector applied to provider pods. Useful when backend access is only routable from particular nodes. |
 | `paused` | boolean |  | Suspend lifecycle reconciliation for every Provider of this class. Existing workloads are left running untouched. |
@@ -402,6 +411,11 @@ own ClusterRole, or the RoleBinding is rejected (ADR-0012).
 #### `.spec.image`
 
 Container image every provider workload of this class runs.
+
+Required when `deployment` is `Managed` (the default), and must be
+unset when it is `External`: nothing is deployed, so there is no image
+to run. The operator and the admission policy both enforce this
+(ADR-0060 Decision 3).
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -1647,11 +1661,26 @@ ADR-0010 and ADR-0020.
 | `file` | string |  | File name of the artifact within the artifacts PVC (kairos-operator convention: `<osArtifactRef>.raw` for `cloudImage`, `<osArtifactRef>.iso` for `iso`). Populated at phase `Ready`. |
 | `kind` | string | Yes | What kind of artifact was built, aligned with kairos-operator's own `OSArtifactKind`. Determines the `file` extension and which provider class consumes it. Allowed: `cloudImage`, `iso`. |
 | `message` | string |  | Long human-readable detail, e.g. the `OSArtifact.status.message` on failure. |
+| `ociArtifact` | object |  | The same artifact, pushed to an OCI registry for providers that run outside the cluster and cannot mount the artifacts PVC (ADR-0064). Set only when a `cloud-hypervisor` `Url` source exists; `None` otherwise, so installs without a host-resident provider need no registry. |
 | `osArtifactRef` | string | Yes | Name of the `OSArtifact` CR `banlieue-imagebuilder` created for this `VMImage` (same namespace as the artifacts PVC below). |
 | `osArtifactUid` | string |  | `metadata.uid` of the `OSArtifact` named by `os_artifact_ref`, once observed. Each provider's per-zone import Job sets this as its own `ownerReference` so a rebuilt (deleted-and-recreated) `OSArtifact` garbage-collects the stale Job — and the artifacts PVC mount it holds — instead of the Job outliving it for up to its `ttlSecondsAfterFinished` (ADR-0027). Absent until the `OSArtifact` has actually been observed once. |
 | `phase` | string | Yes | Current build phase. Allowed: `Pending`, `Building`, `Ready`, `Failed`. |
 | `pvcRef` | object |  | Reference to the PVC kairos-operator created holding the built artifact, once known. Populated no earlier than phase `Building`. |
 | `reason` | string |  | Short reason, mirroring the stable-string convention used elsewhere in this status (e.g. `ImagePerProviderStatus.reason`). |
+
+##### `.status.buildArtifact.ociArtifact`
+
+The same artifact, pushed to an OCI registry for providers that run
+outside the cluster and cannot mount the artifacts PVC (ADR-0064).
+Set only when a `cloud-hypervisor` `Url` source exists; `None`
+otherwise, so installs without a host-resident provider need no
+registry.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `message` | string |  | Human-readable detail, e.g. why the push failed. |
+| `phase` | string | Yes | Current push phase. Allowed: `Pushing`, `Ready`, `Failed`. |
+| `reference` | string |  | Digest-pinned reference, `registry/repository@sha256:<hex>`, once the push succeeded. Consumers pull **by this digest** and nothing else: integrity comes from content addressing, so a tag moved after the push cannot change what a host boots. |
 
 ##### `.status.buildArtifact.pvcRef`
 

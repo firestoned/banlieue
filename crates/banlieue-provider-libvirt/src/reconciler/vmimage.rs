@@ -26,8 +26,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use banlieue_api::banlieue::{
-    BuildArtifactPhase, BuildArtifactStatus, ImagePerProviderStatus, ImageSource, ImageSourceKind,
-    Provider, VMImage, VMImageStatus, ZoneImageStatus,
+    BuildArtifactKind, BuildArtifactPhase, BuildArtifactStatus, ImagePerProviderStatus,
+    ImageSource, ImageSourceKind, Provider, VMImage, VMImageStatus, ZoneImageStatus,
 };
 use banlieue_provider_sdk::reconciler::{requeue_default, requeue_long, requeue_on_error};
 use banlieue_provider_sdk::ssa::FIELD_MANAGER_PROVIDER_LIBVIRT;
@@ -170,7 +170,7 @@ async fn reconcile_for_provider(
                 // Only once every pool has the volume: a half-imported
                 // image that advertised a reference would let a machine
                 // schedule onto a host where the volume does not exist yet.
-                let resolved = ready.then(|| url_volume_name(image_name));
+                let resolved = ready.then(|| url_volume_name(image_name, &artifact.kind));
                 row_with_ref(provider, ready, reason, None, zones, resolved)
             }
         },
@@ -407,15 +407,24 @@ pub fn backing_file_volume_name(reference: &str) -> &str {
     reference.rsplit('/').next().unwrap_or(reference)
 }
 
-/// Volume name a `Url` import produces for `image_name`.
+/// Volume name a `Url` import produces for `image_name` built as `kind`:
+/// `<image>.raw` for a cloud image, `<image>.iso` for a `Deferred`
+/// installer (ADR-0040).
 ///
-/// Derivable rather than discovered: the import Job names its destination
-/// deterministically (`crate::import::volume_name`) precisely so a retry
-/// targets what the previous attempt created — which also means the
-/// reconciler can state the name without asking the host.
+/// Derivable rather than discovered: the import Job is given this name
+/// (`--volume-name`) precisely so a retry targets what the previous attempt
+/// created — which also means the reconciler can state the name without
+/// asking the host.
 #[must_use]
-pub fn url_volume_name(image_name: &str) -> String {
-    crate::import::volume_name(image_name, None)
+pub fn url_volume_name(image_name: &str, kind: &BuildArtifactKind) -> String {
+    let suffix = match kind {
+        BuildArtifactKind::CloudImage => ".raw",
+        BuildArtifactKind::Iso => ".iso",
+    };
+    if image_name.ends_with(suffix) {
+        return image_name.to_string();
+    }
+    format!("{image_name}{suffix}")
 }
 
 /// The `perProvider` row for a `BackingFile` source.
@@ -513,6 +522,10 @@ pub fn build_import_job(inputs: &ImportJobInputs<'_>) -> serde_json::Value {
         pool.to_string(),
         "--source".to_string(),
         format!("/artifacts/{disk_file}"),
+        // Named for what the build is: an installer ISO is `.iso`, so what
+        // a Deferred machine attaches as its CD-ROM is the installer.
+        "--volume-name".to_string(),
+        url_volume_name(vmimage, &artifact.kind),
     ];
     if let Some(checksum) = artifact.checksum.as_deref() {
         args.push("--checksum".to_string());

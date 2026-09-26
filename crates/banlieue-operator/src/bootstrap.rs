@@ -29,7 +29,9 @@
 //!   namespace, image tag, and registry.
 
 use anyhow::{Context as _, Result};
-use banlieue_api::banlieue::{ImagePullPolicy, ProviderClass, ProviderClassSpec, ProviderImage};
+use banlieue_api::banlieue::{
+    ImagePullPolicy, ProviderClass, ProviderClassSpec, ProviderDeployment, ProviderImage,
+};
 use banlieue_api::crdgen_support::all_crds;
 use banlieue_provider_sdk::client::build_client;
 use banlieue_provider_sdk::ssa::server_side_apply;
@@ -113,6 +115,8 @@ const PROVIDER_VSPHERE_CLUSTER_ROLE: &str =
     include_str!("../../../deploy/provider-vsphere/rbac/clusterrole.yaml");
 const PROVIDER_LIBVIRT_CLUSTER_ROLE: &str =
     include_str!("../../../deploy/provider-libvirt/rbac/clusterrole.yaml");
+const PROVIDER_CLOUD_HYPERVISOR_CLUSTER_ROLE: &str =
+    include_str!("../../../deploy/provider-cloud-hypervisor/rbac/clusterrole.yaml");
 
 /// `banlieue bootstrap <target>`.
 #[derive(Debug, Args)]
@@ -163,6 +167,12 @@ pub enum BootstrapTarget {
         #[command(flatten)]
         common: CommonArgs,
     },
+
+    /// Issue a Cloud Hypervisor host its first credential: a kubeconfig and
+    /// a bound token for the ServiceAccount the operator created for that
+    /// host's External Provider (ADR-0060 Decision 5). The provider renews
+    /// the token itself from then on.
+    CloudHypervisorHost(crate::host_credential::HostCredentialArgs),
 }
 
 /// Flags shared by every bootstrap target.
@@ -279,6 +289,7 @@ impl InstallRole {
             Self::Provider(backend) => match backend.as_str() {
                 "vsphere" => "banlieue-provider-vsphere",
                 "libvirt" => "banlieue-provider-libvirt",
+                "cloud-hypervisor" => "banlieue-provider-cloud-hypervisor",
                 _ => "banlieue-provider",
             },
         }
@@ -350,6 +361,7 @@ impl InstallRole {
             Self::Provider(backend) => match backend.as_str() {
                 "vsphere" => PROVIDER_VSPHERE_CLUSTER_ROLE,
                 "libvirt" => PROVIDER_LIBVIRT_CLUSTER_ROLE,
+                "cloud-hypervisor" => PROVIDER_CLOUD_HYPERVISOR_CLUSTER_ROLE,
                 other => anyhow::bail!("no embedded ClusterRole for backend {other:?}"),
             },
         };
@@ -581,6 +593,15 @@ fn add_role(
     // namespaced Role in the install namespace — the shared
     // ClusterRole no longer grants cluster-wide Secret access, and the
     // per-instance resourceNames Role exists only under the operator.
+    // The operator grants External providers `serviceaccounts/token` on
+    // their own ServiceAccount (ADR-0060 Decision 5), so it must hold it —
+    // but only in the install namespace, never cluster-wide.
+    if matches!(role, InstallRole::Operator) {
+        manifests.roles.push(build_operator_token_role(opts));
+        manifests
+            .role_bindings
+            .push(build_operator_token_role_binding(opts));
+    }
     if matches!(role, InstallRole::Provider(_)) {
         manifests.roles.push(build_namespaced_role(role, opts));
         manifests
@@ -747,6 +768,56 @@ pub fn build_namespaced_role(role: &InstallRole, opts: &InstallOptions) -> Role 
     }
 }
 
+/// Name of the operator's namespaced token Role and its binding.
+const OPERATOR_TOKEN_ROLE_NAME: &str = "banlieue-operator-external-tokens";
+
+/// The operator's namespaced Role holding `serviceaccounts/token` `create`,
+/// which it grants each External provider on its own ServiceAccount
+/// (ADR-0060 Decision 5). Namespaced on purpose: cluster-wide, it would let
+/// the operator mint a token for any ServiceAccount. Mirrors
+/// `deploy/operator/rbac/role.yaml`; a test keeps the two equal.
+#[must_use]
+pub fn build_operator_token_role(opts: &InstallOptions) -> Role {
+    Role {
+        metadata: ObjectMeta {
+            name: Some(OPERATOR_TOKEN_ROLE_NAME.to_string()),
+            namespace: Some(opts.namespace.clone()),
+            labels: Some(labels(&InstallRole::Operator)),
+            ..Default::default()
+        },
+        rules: Some(vec![PolicyRule {
+            api_groups: Some(vec![String::new()]),
+            resources: Some(vec!["serviceaccounts/token".to_string()]),
+            verbs: vec!["create".to_string()],
+            ..Default::default()
+        }]),
+    }
+}
+
+/// Bind [`build_operator_token_role`] to the operator's ServiceAccount.
+#[must_use]
+pub fn build_operator_token_role_binding(opts: &InstallOptions) -> RoleBinding {
+    RoleBinding {
+        metadata: ObjectMeta {
+            name: Some(OPERATOR_TOKEN_ROLE_NAME.to_string()),
+            namespace: Some(opts.namespace.clone()),
+            labels: Some(labels(&InstallRole::Operator)),
+            ..Default::default()
+        },
+        role_ref: RoleRef {
+            api_group: Some("rbac.authorization.k8s.io".to_string()),
+            kind: "Role".to_string(),
+            name: OPERATOR_TOKEN_ROLE_NAME.to_string(),
+        },
+        subjects: Some(vec![Subject {
+            kind: "ServiceAccount".to_string(),
+            name: InstallRole::Operator.name().to_string(),
+            namespace: Some(opts.namespace.clone()),
+            ..Default::default()
+        }]),
+    }
+}
+
 /// Build the RoleBinding tying [`build_namespaced_role`] to the ServiceAccount.
 #[must_use]
 pub fn build_namespaced_role_binding(role: &InstallRole, opts: &InstallOptions) -> RoleBinding {
@@ -774,7 +845,9 @@ pub fn build_namespaced_role_binding(role: &InstallRole, opts: &InstallOptions) 
 /// Name shared by the imagebuilder's cloud-config `Role` and `RoleBinding`.
 const CLOUD_CONFIG_ROLE_NAME: &str = "banlieue-imagebuilder-cloudconfig";
 
-/// Build the imagebuilder's namespaced cloud-config `Role` (ADR-0041).
+/// Build the imagebuilder's namespaced `Role` in the build namespace:
+/// cloud-config Secrets (ADR-0041) and the registry push Job (ADR-0064).
+/// Keeps its original name so existing installs update in place.
 ///
 /// Lives in the build namespace — where the Secrets it grants actually are —
 /// not in the install namespace where the workload runs. No `resourceNames`:
@@ -791,18 +864,41 @@ pub fn build_cloud_config_role(role: &InstallRole) -> Role {
         // get/list/watch to read the referenced cloud-configs; create+patch
         // because a server-side apply is a CREATE when the merged Secret is
         // absent and a PATCH when it exists. Never delete.
-        rules: Some(vec![PolicyRule {
-            api_groups: Some(vec![String::new()]),
-            resources: Some(vec!["secrets".to_string()]),
-            verbs: vec![
-                "get".to_string(),
-                "list".to_string(),
-                "watch".to_string(),
-                "create".to_string(),
-                "patch".to_string(),
-            ],
-            ..Default::default()
-        }]),
+        rules: Some(vec![
+            PolicyRule {
+                api_groups: Some(vec![String::new()]),
+                resources: Some(vec!["secrets".to_string()]),
+                verbs: vec![
+                    "get".to_string(),
+                    "list".to_string(),
+                    "watch".to_string(),
+                    "create".to_string(),
+                    "patch".to_string(),
+                ],
+                ..Default::default()
+            },
+            // The registry push Job (ADR-0064): created by server-side
+            // apply, deleted when a previous build's Job or a Job whose
+            // result was lost must be replaced.
+            PolicyRule {
+                api_groups: Some(vec!["batch".to_string()]),
+                resources: Some(vec!["jobs".to_string()]),
+                verbs: vec![
+                    "get".to_string(),
+                    "create".to_string(),
+                    "patch".to_string(),
+                    "delete".to_string(),
+                ],
+                ..Default::default()
+            },
+            // The push Job's only output is its pod's termination message.
+            PolicyRule {
+                api_groups: Some(vec![String::new()]),
+                resources: Some(vec!["pods".to_string()]),
+                verbs: vec!["list".to_string()],
+                ..Default::default()
+            },
+        ]),
     }
 }
 
@@ -1028,17 +1124,21 @@ fn http_probe(path: &str, initial_delay: i32, period: i32) -> Probe {
 #[must_use]
 pub fn build_provider_class(backend: &str, opts: &InstallOptions) -> ProviderClass {
     let (repository, tag) = split_image(&resolve_image(opts));
+    // A host-resident backend runs on the hypervisor, not in the cluster: the
+    // operator gives it an identity and nothing else (ADR-0060 Decision 3).
+    let external = backend == "cloud-hypervisor";
     let mut class = ProviderClass::new(
         backend,
         ProviderClassSpec {
             backend: backend.to_string(),
-            image: ProviderImage {
+            image: (!external).then(|| ProviderImage {
                 repository,
                 tag,
                 digest: opts.image_digest.clone(),
                 pull_policy: Some(ImagePullPolicy::IfNotPresent),
                 pull_secrets: Vec::new(),
-            },
+            }),
+            deployment: external.then_some(ProviderDeployment::External),
             workload_namespace: None,
             replicas: None,
             resources: None,
@@ -1093,6 +1193,27 @@ pub fn backend_additional_rules(backend: &str) -> Vec<PolicyRule> {
                 .collect(),
             ..Default::default()
         }],
+        // Its machines, namespaced like the Role (ADR-0062): no create, no
+        // delete — the controller owns their lifecycle.
+        "cloud-hypervisor" => {
+            let rule = |resource: &str, verbs: &[&str]| PolicyRule {
+                api_groups: Some(vec!["infrastructure.banlieue.io".to_string()]),
+                resources: Some(vec![resource.to_string()]),
+                verbs: verbs.iter().map(|v| (*v).to_string()).collect(),
+                ..Default::default()
+            };
+            vec![
+                rule(
+                    "cloudhypervisormachines",
+                    &["get", "list", "watch", "update", "patch"],
+                ),
+                rule(
+                    "cloudhypervisormachines/status",
+                    &["get", "update", "patch"],
+                ),
+                rule("cloudhypervisormachines/finalizers", &["update"]),
+            ]
+        }
         _ => Vec::new(),
     }
 }
@@ -1123,6 +1244,10 @@ fn split_image(image: &str) -> (String, String) {
 /// Returns an error if a requested backend is not compiled in, if manifests
 /// fail to serialize, or if the cluster rejects an apply.
 pub async fn run(cli: Cli, backends: &[&str]) -> Result<()> {
+    // Not an install: it issues a credential and writes files.
+    if let BootstrapTarget::CloudHypervisorHost(args) = &cli.target {
+        return crate::host_credential::run(args).await;
+    }
     let (manifests, dry_run) = match &cli.target {
         BootstrapTarget::Operator {
             common,
@@ -1154,6 +1279,7 @@ pub async fn run(cli: Cli, backends: &[&str]) -> Result<()> {
                 dry_run,
             )
         }
+        BootstrapTarget::CloudHypervisorHost(_) => unreachable!("handled above"),
     };
 
     if dry_run {

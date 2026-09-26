@@ -73,9 +73,9 @@ fn settings() -> Option<Settings> {
             // Unused on this path: the factory takes the resolved PEM directly,
             // because credential/CA resolution belongs to the reconciler where
             // the kube client lives (ADR-0008).
-            credentials_ref: LocalObjectReference {
+            credentials_ref: Some(LocalObjectReference {
                 name: "unused-in-this-harness".to_string(),
-            },
+            }),
             insecure_skip_tls_verify: insecure,
             ca_bundle: None,
         },

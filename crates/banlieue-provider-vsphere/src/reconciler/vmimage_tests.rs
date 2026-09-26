@@ -59,9 +59,9 @@ mod tests {
                 },
                 connection: ProviderConnection {
                     endpoint: "https://vc".to_string(),
-                    credentials_ref: LocalObjectReference {
+                    credentials_ref: Some(LocalObjectReference {
                         name: "creds".to_string(),
-                    },
+                    }),
                     insecure_skip_tls_verify: true,
                     ca_bundle: None,
                 },
@@ -82,6 +82,7 @@ mod tests {
                 conditions: vec![],
                 workload: None,
                 observed_generation: Some(1),
+                ek_ca_certificates: vec![],
             }),
         }
     }
@@ -242,6 +243,7 @@ mod tests {
             reason: None,
             message: None,
             checksum: None,
+            oci_artifact: None,
         }
     }
 

@@ -22,7 +22,9 @@
 
 pub mod app;
 pub mod client;
-pub mod cloudinit;
+/// The NoCloud seed writer, now shared with the Cloud Hypervisor provider
+/// (ADR-0054 anticipated the move). Re-exported so existing paths still work.
+pub use banlieue_provider_sdk::cloudinit;
 pub mod context;
 pub mod credentials;
 pub mod error;

@@ -6,6 +6,7 @@ use banlieue_provider_sdk::scheduling::BuildScheduling;
 use kube::Client;
 
 use crate::importer_image::ImporterImage;
+use crate::reconciler::push::RegistryConfig;
 
 /// Context passed into every reconcile call.
 #[derive(Clone)]
@@ -29,6 +30,10 @@ pub struct Context {
     /// `busybox` image; overridable for clusters that pull from an internal
     /// mirror (ADR-0022 Decision #4).
     pub importer_image: ImporterImage,
+
+    /// Where build artifacts are pushed for host-resident providers
+    /// (ADR-0064). `None`: no registry configured, nothing is pushed.
+    pub registry: Option<RegistryConfig>,
 }
 
 impl Context {
@@ -39,12 +44,14 @@ impl Context {
         build_namespace: String,
         scheduling: BuildScheduling,
         importer_image: ImporterImage,
+        registry: Option<RegistryConfig>,
     ) -> Self {
         Self {
             client,
             build_namespace,
             scheduling,
             importer_image,
+            registry,
         }
     }
 }

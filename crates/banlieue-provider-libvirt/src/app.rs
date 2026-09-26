@@ -13,7 +13,7 @@ use anyhow::{Context as _, Result};
 use banlieue_api::banlieue::{Provider, VMImage};
 use banlieue_api::infrastructure::LibvirtMachine;
 use banlieue_provider_sdk::bootstrap::{init_tracing, serve_health, shutdown_signal};
-use banlieue_provider_sdk::client::build_client;
+use banlieue_provider_sdk::client::build_client_with;
 use banlieue_provider_sdk::leader::{
     DEFAULT_LEASE_DURATION_SECS, DEFAULT_RENEW_PERIOD_SECS, DEFAULT_RETRY_PERIOD_SECS,
     LeaderConfig, acquire_or_wait, renew_forever,
@@ -64,7 +64,10 @@ pub struct Cli {
     #[command(subcommand)]
     pub command: Option<LibvirtCommand>,
 
-    /// Path to a kubeconfig file. Falls back to in-cluster config.
+    /// Kubeconfig path, or a `KUBECONFIG`-style list (also read from
+    /// `$KUBECONFIG`). When set it wins over every other source, in-cluster
+    /// config included; when unset: in-cluster config, then
+    /// `~/.kube/config`.
     #[arg(long, env = "KUBECONFIG")]
     pub kubeconfig: Option<String>,
 
@@ -205,7 +208,9 @@ pub async fn run(cli: Cli) -> Result<()> {
         "banlieue-provider-libvirt starting"
     );
 
-    let client = build_client().await.context("constructing kube client")?;
+    let client = build_client_with(cli.kubeconfig.as_deref().map(std::ffi::OsStr::new))
+        .await
+        .context("constructing kube client")?;
     tokio::spawn(serve_health(cli.health_port));
 
     if !cli.no_leader_elect {

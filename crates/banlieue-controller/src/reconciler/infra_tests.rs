@@ -36,9 +36,9 @@ mod tests {
                 },
                 connection: ProviderConnection {
                     endpoint: "https://vcenter.example.com".into(),
-                    credentials_ref: LocalObjectReference {
+                    credentials_ref: Some(LocalObjectReference {
                         name: "vc1-creds".into(),
-                    },
+                    }),
                     ca_bundle: None,
                     insecure_skip_tls_verify: false,
                 },

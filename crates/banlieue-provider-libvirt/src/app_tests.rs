@@ -123,9 +123,9 @@ mod tests {
                 },
                 connection: ProviderConnection {
                     endpoint: "qemu+tls://kvm-1.example/system".into(),
-                    credentials_ref: LocalObjectReference {
+                    credentials_ref: Some(LocalObjectReference {
                         name: "creds".into(),
-                    },
+                    }),
                     insecure_skip_tls_verify: false,
                     ca_bundle: None,
                 },
@@ -148,6 +148,7 @@ mod tests {
             reason: None,
             message: None,
             checksum: None,
+            oci_artifact: None,
         };
 
         let job = crate::reconciler::vmimage::build_import_job(

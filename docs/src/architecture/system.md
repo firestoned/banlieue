@@ -53,6 +53,11 @@ flowchart LR
     network-oidc-issuer["OIDC Token Issuer (JWKS / discovery)"]
     service-sandbox-broker["Sandbox Broker (planned, roadmap phase C — not shipped by banlieue)"]
     service-in-guest-agent["In-guest agent (separate repository — not built)"]
+    service-provider-cloud-hypervisor["banlieue-provider-cloud-hypervisor"]
+    service-cloud-hypervisor-vmm["Cloud Hypervisor VMM (one per guest)"]
+    network-cloud-hypervisor-host["Cloud Hypervisor KVM Host"]
+    service-oci-registry["OCI Registry (operator-provided, external)"]
+    service-swtpm["swtpm (one per tpmEnabled Cloud Hypervisor guest)"]
     subgraph sg_system-banlieue-binary [System Banlieue Binary]
         service-banlieue-controller
         service-banlieue-operator
@@ -118,6 +123,17 @@ flowchart LR
     service-sandbox-broker --> data-asset-virtualmachineclaim-cr
     service-sandbox-broker -->|HTTPS| service-in-guest-agent
     service-in-guest-agent -->|HTTPS| network-oidc-issuer
+    service-provider-cloud-hypervisor -->|HTTPS| service-kubernetes-api
+    service-provider-cloud-hypervisor -->|HTTP| service-cloud-hypervisor-vmm
+    subgraph sg_network-cloud-hypervisor-host [Network Cloud Hypervisor Host]
+        service-provider-cloud-hypervisor
+        service-cloud-hypervisor-vmm
+        service-swtpm
+    end
+    service-banlieue-imagebuilder -->|HTTPS| service-oci-registry
+    service-provider-cloud-hypervisor -->|HTTPS| service-oci-registry
+    service-cloud-hypervisor-vmm -->|TCP| service-swtpm
+    service-cloud-hypervisor-vmm --> service-provider-cloud-hypervisor
 ```
 
 <sub>Source: nodes and relationships in `architecture.json`.</sub>

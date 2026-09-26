@@ -1,0 +1,21 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# One swtpm per tpmEnabled guest, as the guest's own uid; the instance is
+# that uid (ADR-0065 Decision 1). The VMM connects to its control socket.
+# Every path is absolute: swtpm changes directory to /.
+
+[Unit]
+Description=banlieue vTPM (uid %i)
+CollectMode=inactive
+
+[Service]
+ExecStart=@SWTPM@ socket --tpm2 --tpmstate dir=@STATE_ROOT@/tpm/%i --ctrl type=unixio,path=@RUN_ROOT@/%i/swtpm.sock
+User=%i
+Group=%i
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=@STATE_ROOT@/tpm/%i @RUN_ROOT@/%i
+DevicePolicy=closed

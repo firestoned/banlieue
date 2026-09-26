@@ -153,9 +153,11 @@ help: ## Show this help
         kind-bootstrap-install kind-e2e-install kind-e2e kind-e2e-ci kind-e2e-logs \
         kind-e2e-bootstrap kind-e2e-dry-run kind-e2e-escape-hatch \
         kind-e2e-workload kind-e2e-pause kind-e2e-workload-namespace kind-e2e-class \
-        claim-live-test pool-claim-e2e \
+        claim-live-test pool-claim-e2e ch-e2e ch-vtpm-e2e ch-deferred-e2e ch-polkit-test provider-bench \
         dev-oidc-up dev-oidc-attach dev-oidc-github-creds dev-oidc-login \
         dev-oidc-try-claim dev-oidc-status dev-oidc-down \
+        dev-oidc-k0s-up dev-oidc-k0s-login dev-oidc-k0s-grant \
+        dev-oidc-k0s-status dev-oidc-k0s-down \
         vcsim-up vcsim-down vcsim-logs \
         docs docs-serve docs-clean docs-deploy \
         calm-diagrams calm-docify calm-validate \
@@ -398,6 +400,25 @@ dev-oidc-status: ## What the dev OIDC cluster looks like and who you are on it
 dev-oidc-down: ## Delete the dev OIDC cluster and its throwaway CA
 	@./scripts/dev-oidc-kind.sh down
 
+dev-oidc-k0s-up: ## GitHub login (via Dex + a GitHub App) on an EXISTING k0s cluster; rolls each controller (SSH_USER=<sudoer>)
+	@# Uses KUBECONFIG for the cluster and BANLIEUE_GITHUB_APP_CLIENT_ID/SECRET
+	@# for the App. Restarts k0scontroller one controller at a time, after
+	@# proving each one can reach Dex. Guide:
+	@#   docs/src/guides/testing-claim-authorization.md
+	@./scripts/dev-oidc-k0s.sh up
+
+dev-oidc-k0s-login: ## Log in to the k0s cluster through GitHub and print your identity
+	@./scripts/dev-oidc-k0s.sh login
+
+dev-oidc-k0s-grant: ## Grant claim access to the identity you logged in as (nobody else)
+	@./scripts/dev-oidc-k0s.sh grant
+
+dev-oidc-k0s-status: ## Per-controller OIDC state, Dex, the local proxy, and who you are
+	@./scripts/dev-oidc-k0s.sh status
+
+dev-oidc-k0s-down: ## Restore every controller, remove Dex, the proxy and the dev CA
+	@./scripts/dev-oidc-k0s.sh down
+
 claim-live-test: ## Run the claim reconciler against a REAL API server (needs KUBECONFIG; no libvirt)
 	@# The middle tier. `claim_plan` unit tests prove every decision as a
 	@# pure function; this proves the three things only an apiserver can:
@@ -452,6 +473,61 @@ pool-claim-e2e: ## Pool -> real libvirt domains -> claim -> release (LOCAL ONLY,
 	@echo "Running pool -> claim -> release against provider $$BANLIEUE_E2E_PROVIDER ..."
 	@echo "  This provisions real VMs; expect several minutes per test."
 	cargo test -p banlieue-provider-libvirt --test e2e_pool_claim -- \
+	  --ignored --nocapture --test-threads=1
+
+provider-bench: ## Benchmark one provider through the VirtualMachine API (docs/src/reference/provider-comparison.md; LOCAL ONLY)
+	@# Creates VirtualMachines on the cluster in KUBECONFIG and logs in over
+	@# SSH; the runner must reach the guests' addresses. Results are appended
+	@# to target/provider-bench/<label>.jsonl; render them with
+	@# scripts/provider-bench-table.py.
+	@test -n "$$BANLIEUE_BENCH_PROVIDER" -a -n "$$BANLIEUE_BENCH_IMAGE" -a -n "$$BANLIEUE_BENCH_CLASS" -a -n "$$BANLIEUE_BENCH_LABEL" || { \
+	  echo "Set BANLIEUE_BENCH_PROVIDER, BANLIEUE_BENCH_IMAGE, BANLIEUE_BENCH_CLASS and"; \
+	  echo "BANLIEUE_BENCH_LABEL (cloud-hypervisor | libvirt | vsphere | proxmox)."; \
+	  echo "See crates/banlieue-controller/tests/bench_provider.rs."; \
+	  exit 1; }
+	cargo test -p banlieue-controller --test bench_provider -- --ignored --nocapture
+
+ch-polkit-test: ## Cloud Hypervisor: run the host polkit rule against its allow/deny cases (needs node)
+	node scripts/test-cloud-hypervisor-polkit.js
+
+ch-e2e: ## Cloud Hypervisor: VM -> guest with an address -> delete leaves nothing on the host (ON THE HOST, never CI)
+	@# Runs on the Cloud Hypervisor host itself: the unit, the tap and the
+	@# directories it checks are there. Assumes the controller and this
+	@# host's provider are running, the Provider is Ready, and the VMImage is
+	@# ready for it (tests/e2e_machine.rs module docs).
+	@test -n "$$BANLIEUE_E2E_PROVIDER" -a -n "$$BANLIEUE_E2E_IMAGE" -a -n "$$BANLIEUE_E2E_CLASS" -a -n "$$BANLIEUE_E2E_STORAGE_DIR" || { \
+	  echo "Set all four. Example:"; \
+	  echo "  export KUBECONFIG=~/.kube/<cluster>.yaml"; \
+	  echo "  BANLIEUE_E2E_PROVIDER=<this host's Provider> \\"; \
+	  echo "  BANLIEUE_E2E_IMAGE=<VMImage ready for it> \\"; \
+	  echo "  BANLIEUE_E2E_CLASS=<VMClass> \\"; \
+	  echo "  BANLIEUE_E2E_STORAGE_DIR=/srv/banlieue/ch \\"; \
+	  echo "    make ch-e2e"; \
+	  exit 1; }
+	cargo test -p banlieue-provider-cloud-hypervisor --test e2e_machine -- \
+	  --ignored --nocapture --test-threads=1
+
+ch-vtpm-e2e: ## Cloud Hypervisor: tpmEnabled machine -> own swtpm, host-minted EK -> delete leaves no TPM unit (ON THE HOST, never CI)
+	@# Creates a CloudHypervisorMachine directly (tests/e2e_vtpm.rs module
+	@# docs). Needs this host's Provider declaring `vtpm` and a [tpm] section.
+	@test -n "$$BANLIEUE_E2E_PROVIDER" -a -n "$$BANLIEUE_E2E_BOOT_IMAGE" -a -n "$$BANLIEUE_E2E_STORAGE_CLASS" -a -n "$$BANLIEUE_E2E_NETWORK_CLASS" -a -n "$$BANLIEUE_E2E_STORAGE_DIR" || { \
+	  echo "Set BANLIEUE_E2E_PROVIDER, BANLIEUE_E2E_BOOT_IMAGE, BANLIEUE_E2E_STORAGE_CLASS,"; \
+	  echo "BANLIEUE_E2E_NETWORK_CLASS and BANLIEUE_E2E_STORAGE_DIR (see tests/e2e_vtpm.rs)."; \
+	  exit 1; }
+	cargo test -p banlieue-provider-cloud-hypervisor --test e2e_vtpm -- \
+	  --ignored --nocapture --test-threads=1
+
+ch-deferred-e2e: ## Cloud Hypervisor: tpmEnabled Deferred install -> sealed, reported, installer ejected -> delete leaves nothing (ON THE HOST, as root, never CI)
+	@# Creates a CloudHypervisorMachine directly (tests/e2e_deferred.rs
+	@# module docs). Builds as you; only the test binary runs through sudo,
+	@# because it reads the guest's disk and the provider's state.
+	@test -n "$$BANLIEUE_E2E_PROVIDER" -a -n "$$BANLIEUE_E2E_INSTALLER" -a -n "$$BANLIEUE_E2E_STORAGE_CLASS" -a -n "$$BANLIEUE_E2E_NETWORK_CLASS" -a -n "$$BANLIEUE_E2E_STORAGE_DIR" -a -n "$$BANLIEUE_E2E_STATE_ROOT" -a -n "$$KUBECONFIG" || { \
+	  echo "Set KUBECONFIG, BANLIEUE_E2E_PROVIDER, BANLIEUE_E2E_INSTALLER, BANLIEUE_E2E_STORAGE_CLASS,"; \
+	  echo "BANLIEUE_E2E_NETWORK_CLASS, BANLIEUE_E2E_STORAGE_DIR and BANLIEUE_E2E_STATE_ROOT"; \
+	  echo "(see tests/e2e_deferred.rs)."; \
+	  exit 1; }
+	CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER="sudo --preserve-env=KUBECONFIG,BANLIEUE_E2E_PROVIDER,BANLIEUE_E2E_INSTALLER,BANLIEUE_E2E_STORAGE_CLASS,BANLIEUE_E2E_NETWORK_CLASS,BANLIEUE_E2E_STORAGE_DIR,BANLIEUE_E2E_STATE_ROOT,BANLIEUE_E2E_SSH_AUTHORIZED_KEY" \
+	  cargo test -p banlieue-provider-cloud-hypervisor --test e2e_deferred -- \
 	  --ignored --nocapture --test-threads=1
 
 libvirt-e2e: ## Run the FULL image pipeline against a real cluster + libvirt host (LOCAL ONLY, never CI)

@@ -15,3 +15,11 @@ paths-ignore:
   - target/**
   # Generated CRD manifests (produced by the crdgen binary).
   - deploy/crds/**
+  # Test code: unit `*_tests.rs` files and `crates/*/tests/` (live and e2e).
+  # Never built into a shipped binary. Scanning it only produced
+  # `rust/cleartext-logging` false positives: the query treats any `*uid*`
+  # name as sensitive, so every test that prints a Kubernetes `metadata.uid`
+  # or a tap name derived from one raised an alert (#52-#57, #104-#105,
+  # #120-#125, #127-#128).
+  - "**/*_tests.rs"
+  - crates/*/tests/**
