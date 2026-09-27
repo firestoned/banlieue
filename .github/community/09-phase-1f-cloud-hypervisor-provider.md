@@ -158,6 +158,7 @@ Numbers are next-free as of 2026-09-20, after the three roadmap
 | 0064 | *[Proposed](../../docs/adr/0064-artifact-delivery-to-host-resident-providers.md), 2026-09-25.* **Artifact delivery to a provider outside the cluster.** Revisits the alternative ADR-0010 deferred ("revisit if a future provider needs to consume the artifact from outside the build namespace/cluster"). This is that provider. |
 | 0065 | *[Proposed](../../docs/adr/0065-cloud-hypervisor-vtpm-and-deferred-install.md), 2026-09-25.* **vTPM through swtpm, and `Deferred` install on Cloud Hypervisor.** |
 | 0066 | **Snapshot-to-disk for warm pool members.** Optional. Only if phase 7 goes ahead. |
+| 0067 | **`banlieue host`: host install as a subcommand.** Phase 10. Extends ADR-0004's dispatch with a verb you run as root on a hypervisor, and states what stays in shell (the bridge, `--remote`). Next free number: `0066` is reserved above, so this takes `0067`. |
 
 CALM: a new node class (host-resident provider), its relationship to the API
 server (outbound only), to the registry or artifact endpoint, and to the local
@@ -352,6 +353,145 @@ with a real consistency hazard, so it is ADR-0066 and optional.
 - [ ] Update [`ROADMAPS.md`](../../ROADMAPS.md) in the same commit as each
       state change.
 
+## 10. `banlieue host`: the install as a subcommand
+
+> **Goal.** The init story for a hypervisor host is the one `k0s install` has:
+> fetch one verified binary, run one subcommand, and the host is ready. Today
+> it is `scripts/bootstrap-cloud-hypervisor-host.sh` plus an env file plus the
+> `banlieue` binary — three artifacts to deliver and three ways to get it wrong.
+>
+> **Status: planned, not started.** Needs ADR-0067 first: this is a CLI contract
+> and it makes the same binary something you run as root on a hypervisor.
+
+### Why it should not stay in shell
+
+1. **The init path gets one artifact instead of three.** A cloud-init `runcmd`
+   or a CAPI bootstrap payload can `curl` the binary it already needs, check one
+   sha256, and run `banlieue host install`. No script to fetch, no env file to
+   template, no shell to quote.
+2. **The script and the provider already have to agree, by hand, in two
+   languages.** Every row below is a constant the installer writes and the
+   provider later reads or derives. Drift here is silent until a guest fails to
+   start — and this repository has already been bitten once by prose that
+   disagreed with the YAML beside it (ADR-0041).
+
+   | Agreement | Written by | Read by |
+   | --- | --- | --- |
+   | `/etc/banlieue/cloud-hypervisor.toml` schema | `host` stage | provider, ADR-0062 D4 |
+   | Guest uid range | `host` stage | `status.hostUid`, ADR-0062 D4 |
+   | Storage and run directory layout | `host` stage | `ReadWritePaths=`, ADR-0063 D3 |
+   | Unit naming `banlieue-ch-*` / `banlieue-swtpm-*` | polkit rule | `ListUnitsByPatterns` re-adoption, ADR-0063 D2 |
+   | EK CA path, `banlieue`-only | `tpm` stage | swtpm unit, ADR-0065 |
+   | Pinned VMM version | `vmm` stage | vendored REST spec `PIN`, ADR-0061 |
+
+3. **`selftest` can use the real code.** In Rust it opens the actual VMM client
+   (ADR-0061) and the actual `zbus` supervisor (ADR-0063) instead of
+   re-implementing their checks in shell, so a passing selftest means the
+   provider's own code paths work on this host.
+4. **The strongest reason: one version constant.** The `vmm` stage pins
+   `cloud-hypervisor` by sha256; ADR-0061 pins the vendored `cloud-hypervisor.yaml`
+   to a named release. Those are the same upstream release and today nothing
+   enforces it. In one binary it is one constant and a unit test.
+
+### What deliberately does not move
+
+| Stays | Why |
+| --- | --- |
+| **The bridge.** The script never touches one, and neither should the binary. | A bridge mistake over SSH locks you out of the host. The guide's `systemd-run --on-active=5min` rollback is the right shape and it belongs in a human's hands, not in an unattended installer. |
+| **`--remote user@host`.** | SSH as a one-shot install convenience is fine; SSH as a *control path* is shape D, rejected by ADR-0011. The binary gets no SSH client. The script survives as a thin wrapper that copies the binary and runs it. |
+| **Installing packages by default.** | `apt-get` is Debian-family only. `packages` **verifies** by default and prints what is missing; `--install-packages` opts into installing. That also makes the binary safe to run on a host you do not own. |
+
+### Surface
+
+Read-only verbs and the mutating verb are separate words, so "look at this host"
+can never change it:
+
+```sh
+banlieue host preflight            # changes nothing
+banlieue host status               # changes nothing
+banlieue host selftest            # changes nothing, boots nothing
+banlieue host install [all]        # the only mutating verb
+banlieue host install --only vmm --install-packages
+banlieue host install --dry-run    # prints the diff, touches nothing
+```
+
+`--dry-run` mirrors `banlieue bootstrap --dry-run` (ADR-0013), which is already
+the project's answer to "show me what you would apply".
+
+### Stages, with their prerequisites
+
+`--only <stage>` fails fast when a prerequisite is missing rather than half
+applying. The order is the DAG, not a preference.
+
+| Stage | Needs | Mutates |
+| --- | --- | --- |
+| `preflight` | — | nothing |
+| `packages` | — | dpkg state (only with `--install-packages`) |
+| `vmm` | — | `/opt/banlieue/cloud-hypervisor/<version>/`, `/opt/banlieue/firmware/<tag>/`, symlinks |
+| `host` | — | `banlieue` user, storage and run dirs, `/etc/banlieue/cloud-hypervisor.toml` |
+| `tpm` | `packages`, `host` | per-host EK CA, `banlieue`-only |
+| `polkit` | `packages`, `host` | one polkit rule (ADR-0063 D6) |
+| `provider` | `host` | the provider unit, installed and left disabled |
+| `selftest` | `vmm`, `host`, `tpm`, `polkit` | nothing |
+
+### Invariants, each one a test
+
+1. **Fail closed on a pin mismatch.** Download to a temp path, verify, and on
+   mismatch install nothing, leave the previous symlink intact, exit non-zero.
+   *Test: serve a corrupt artifact, assert the symlink and `/opt` tree are
+   byte-identical afterwards.*
+2. **Idempotence is equality, not absence of error.** *Test: run, snapshot the
+   filesystem and the unit list, run again, assert the snapshots are equal.*
+3. **No partial stage.** Every file lands by write-to-temp then `rename`, so a
+   crash leaves either the old state or the new one.
+4. **Read-only verbs write nothing.** *Test: snapshot, run `preflight`,
+   `status`, `selftest`, assert equality.*
+5. **`provider` never enables the unit** unless both the binary and a kubeconfig
+   exist. Already the script's behaviour; encode it.
+6. **One pinned release.** *Test: the VMM download constant equals the release
+   the vendored REST spec is pinned to (ADR-0061).*
+7. **A reconciler cannot reach the installer.** Structural, not documentary: the
+   `host` module lives behind a Cargo feature in the `banlieue` binary crate
+   only, so `banlieue-provider-cloud-hypervisor` cannot call it even by mistake.
+
+### On subprocesses, before a reviewer flags it
+
+ADR-0011 forbids "no subprocess **in a reconcile path**". `apt-get`,
+`swtpm_localca` and `openssl` in a one-shot root install are not a reconcile
+path, and invariant 7 is what keeps that true structurally rather than by
+convention. Nothing here weakens the rule that the *provider* speaks only
+first-party Rust over documented APIs.
+
+### Config
+
+One file, two consumers: `banlieue host install` writes and validates
+`/etc/banlieue/cloud-hypervisor.toml`, the provider reads it (ADR-0062 D4).
+Values come from flags, `--set key=value`, or `BANLIEUE_HOST_*` environment
+variables so a cloud-init payload needs no file of its own. The env-file the
+script uses today becomes one of several inputs, not the interface.
+
+### Tests
+
+- **Unit:** every stage behind `HostFs`, `PackageManager`, `Systemd` and
+  `Downloader` traits, faked — the same shape the client, supervisor and
+  netlink already use.
+- **Live protocol, new counterparty:** the tier table's second row is about a
+  real daemon accepting what we produce. Here the daemons are systemd, polkit
+  and dpkg. `make ch-host-install-test` runs the stages as root in a Debian 13
+  container, mirroring `make ch-live-test`; that is how the shell version was
+  validated and it stays valid.
+- No cluster and no libvirt needed for either.
+
+### Open questions for ADR-0067
+
+- **`uninstall` and `drain`.** A harvested host that goes back to an incumbent
+  workload needs both, and the day-2 list already has host drain against
+  `migrationPolicy`. Is teardown part of this subcommand or of the provider?
+- **Distro scope.** Verify-only on non-Debian, or a second package backend?
+- **Naming.** `banlieue bootstrap` installs into a *cluster* (ADR-0013);
+  `banlieue host install` installs onto a *host*. Two words for one idea is a
+  papercut, but renaming a shipped verb is worse. Decide and write it down.
+
 ## If the gate picks B
 
 *Superseded 2026-09-25: the gate picked A (ADR-0060). Kept so the rejected
@@ -390,6 +530,11 @@ revisit A when a consumer needs what the driver cannot do.
 - [ ] Deletion finalizer: unit, swtpm unit, tap, disks, seed, state directory.
 - [ ] swtpm and `Deferred`.
 - [ ] Host bootstrap script, guide, example manifests, threat model.
+- [ ] ADR-0067, then `banlieue host {preflight,status,selftest,install}`
+      behind a Cargo feature; the shell script shrinks to a `--remote` wrapper
+      (phase 10).
+- [ ] `make ch-host-install-test`: the stages as root in a Debian 13 container.
+- [ ] Test asserting the VMM pin equals ADR-0061's vendored-spec release.
 
 ## Tests
 

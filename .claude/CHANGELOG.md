@@ -1,5 +1,51 @@
 # Changelog
 
+## [2026-09-26] - Roadmap 09 phase 10: host install as a `banlieue host` subcommand
+
+**Author:** Erick Bourgeois
+
+### Added
+- `.github/community/09-phase-1f-cloud-hypervisor-provider.md`: new **phase 10**,
+  planning the move of `scripts/bootstrap-cloud-hypervisor-host.sh` into the
+  single binary as `banlieue host {preflight,status,selftest,install}`. Appended
+  as section 10 rather than inserted, so no `phase N` prose reference moves.
+  Covers: the four reasons to leave shell (one artifact in the init path; a table
+  of the six constants the installer and the provider currently agree on by hand;
+  `selftest` using the real VMM client and `zbus` supervisor; and one pinned
+  release shared with ADR-0061's vendored spec); what deliberately stays in shell
+  (the bridge, because a bridge mistake over SSH locks you out, and `--remote`,
+  because SSH as a control path is the shape ADR-0011 rejected); the verb split
+  so read-only words can never mutate; the stage DAG with prerequisites; seven
+  invariants each written as a test, including idempotence as snapshot *equality*
+  and a structural guard that a reconciler cannot reach the installer; why
+  subprocesses are legitimate here and not an ADR-0011 violation; and three open
+  questions for the ADR (`uninstall`/`drain` for a host going back to an
+  incumbent, distro scope, and the `bootstrap`/`host install` naming overlap).
+- Same file, ADR table: **ADR-0067** reserved for the CLI contract, with the
+  reasoning for the number recorded inline (`0066` is already reserved above for
+  phase 7's optional snapshot decision).
+- Same file, Tasks: four new items — the ADR and subcommand, the shell script
+  shrinking to a `--remote` wrapper, `make ch-host-install-test`, and the test
+  asserting the VMM download pin equals ADR-0061's vendored-spec release.
+
+### Changed
+- `ROADMAPS.md`: roadmap 09's row records phase 10 and widens the reservation to
+  ADR-0060 → ADR-0067.
+
+### Why
+The host bootstrap works but is delivered as a shell script plus an env file plus
+the binary — three artifacts for an init path that wants one, which is what
+`k0s install` gets right. The sharper reason is drift: the `vmm` stage pins a
+`cloud-hypervisor` release by sha256 and ADR-0061 pins the vendored REST spec to
+a release, and nothing currently enforces that they are the same one. In one
+binary that is a single constant with a unit test.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
 ## [2026-09-26 08:05] - Stop tracking `.claude/settings.json`
 
 **Author:** Erick Bourgeois
