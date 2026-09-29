@@ -23,6 +23,27 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
+    // member_bound_to: a claim never binds a second member
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn finds_the_member_already_labelled_for_this_claim() {
+        let members = [("m1", None), ("m2", Some("c1")), ("m3", Some("other"))];
+        assert_eq!(member_bound_to(members, "c1").as_deref(), Some("m2"));
+    }
+
+    #[test]
+    fn a_member_of_another_claim_is_not_ours() {
+        let members = [("m1", Some("other")), ("m2", None)];
+        assert_eq!(member_bound_to(members, "c1"), None);
+    }
+
+    #[test]
+    fn an_unbound_claim_owns_no_member() {
+        assert_eq!(member_bound_to([("m1", None), ("m2", None)], "c1"), None);
+    }
+
+    // ------------------------------------------------------------------
     // pick_member (ADR-0047 Decision 4)
     // ------------------------------------------------------------------
 

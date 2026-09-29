@@ -27,8 +27,9 @@ use banlieue_api::infrastructure::{
     ChBootSourceKind, CloudHypervisorMachineSpec, cloud_hypervisor_provider_id,
 };
 use banlieue_cloud_hypervisor::{GuestPlan, PlannedDisk, PlannedNic};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
+use std::sync::{Mutex, PoisonError};
 
 /// Bytes in one GiB.
 const BYTES_PER_GIB: u64 = 1024 * 1024 * 1024;
@@ -427,6 +428,52 @@ pub fn allocate_host_uid(used: &BTreeSet<u32>, guests: GuestsSection) -> Option<
     (0..guests.uid_count)
         .map(|offset| guests.uid_base + offset)
         .find(|uid| !used.contains(uid))
+}
+
+/// The guest uids this process has handed out, by machine UID.
+///
+/// A uid is recorded in the machine's status, and other machines learn it by
+/// listing. That alone races: two machines reconciled at once list before
+/// either has written, and both take the same lowest free uid; a reconcile
+/// working from a stale cache sees no uid in its own status and allocates a
+/// second one. One provider process serves a host (ADR-0060), so allocating
+/// under this lock, and remembering each grant, makes the uid unique on the
+/// host and stable per machine.
+#[derive(Debug, Default)]
+pub struct UidLedger {
+    given: Mutex<BTreeMap<String, u32>>,
+}
+
+impl UidLedger {
+    /// The guest uid for `machine`: the one already given to it, else the
+    /// lowest one neither in `recorded` (other machines' statuses) nor given
+    /// by this process. `None` when the range is full.
+    pub fn assign(
+        &self,
+        machine: &str,
+        recorded: &BTreeSet<u32>,
+        guests: GuestsSection,
+    ) -> Option<u32> {
+        // A panic while holding the lock cannot leave the map half-written:
+        // every change is a single insert or remove.
+        let mut given = self.given.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(uid) = given.get(machine) {
+            return Some(*uid);
+        }
+        let mut used = recorded.clone();
+        used.extend(given.values());
+        let uid = allocate_host_uid(&used, guests)?;
+        given.insert(machine.to_string(), uid);
+        Some(uid)
+    }
+
+    /// Forget `machine`'s grant, once nothing is left on the host for it.
+    pub fn release(&self, machine: &str) {
+        self.given
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(machine);
+    }
 }
 
 pub(crate) fn require_uuid(uid: &str) -> Result<(), PlanError> {

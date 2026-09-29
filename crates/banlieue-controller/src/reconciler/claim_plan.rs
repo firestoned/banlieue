@@ -90,6 +90,26 @@ pub fn next_step(inputs: &ClaimInputs, candidate: Option<String>) -> ClaimStep {
     }
 }
 
+/// The member already labelled for `claim`, if any: `(name, claim label)`
+/// pairs, as listed fresh from the API server.
+///
+/// The member's label is written first, under a `resourceVersion`
+/// precondition, and the claim's `virtualMachineRef` second. A reconcile
+/// from a cached claim that predates its own status patch sees no ref and
+/// would pick again; checking the members first makes it finish the bind it
+/// already made instead of taking a second member (one claim held both warm
+/// members of a pool in the roadmap 17 phase G run, 2026-09-28).
+#[must_use]
+pub fn member_bound_to<'a>(
+    members: impl IntoIterator<Item = (&'a str, Option<&'a str>)>,
+    claim: &str,
+) -> Option<String> {
+    members
+        .into_iter()
+        .find(|(_, label)| *label == Some(claim))
+        .map(|(name, _)| name.to_string())
+}
+
 /// Choose the member to bind.
 ///
 /// Ready only — a `Claimed` member is never offered again, which is the

@@ -20,7 +20,7 @@ use crate::error::{Error, Result};
 use crate::host::HostOps;
 use crate::host_config::HostConfig;
 use crate::machine::{Observed, Phase, build_status, converge, failure_status, teardown};
-use crate::plan::{PlanError, allocate_host_uid, plan_machine};
+use crate::plan::{PlanError, UidLedger, plan_machine};
 use banlieue_api::infrastructure::{CloudHypervisorMachine, CloudHypervisorMachineStatus};
 use banlieue_provider_sdk::finalizer::{ensure_finalizer, remove_finalizer};
 use banlieue_provider_sdk::reconciler::{requeue_default, requeue_long, requeue_on_error};
@@ -49,6 +49,9 @@ pub struct Context {
     pub host: Arc<dyn HostOps>,
     /// The provider's gid, shared with guests (ADR-0063 Decision 5).
     pub group: u32,
+    /// Guest uids handed out by this process, so concurrent reconciles
+    /// never share one.
+    pub uids: UidLedger,
 }
 
 /// Whether `machine` is for this host: its Provider is ours and it lives in
@@ -138,7 +141,7 @@ pub async fn reconcile(machine: Arc<CloudHypervisorMachine>, ctx: Arc<Context>) 
     let Some(host_uid) = previous.and_then(|s| s.host_uid) else {
         let all = api.list(&ListParams::default()).await?.items;
         let used = used_host_uids(&all, &ctx.config, &uid);
-        let Some(host_uid) = allocate_host_uid(&used, ctx.config.guests) else {
+        let Some(host_uid) = ctx.uids.assign(&uid, &used, ctx.config.guests) else {
             let st = failure_status(
                 previous,
                 &Error::UidRangeFull.to_string(),
@@ -251,6 +254,8 @@ async fn finalize(
     remove_finalizer(api, machine, MACHINE_FINALIZER)
         .await
         .map_err(|e| Error::Io(std::io::Error::other(e.to_string())))?;
+    // Nothing is left on the host for it, so its uid is free again.
+    ctx.uids.release(uid);
     Ok(Action::await_change())
 }
 

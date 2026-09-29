@@ -325,9 +325,12 @@ pub async fn run(cli: Cli) -> Result<()> {
             }
         });
 
-    // VirtualMachinePool (ADR-0046). Owns its members, so a member going
-    // Ready reaches the pool immediately rather than at the next periodic
-    // requeue — the whole point of a warm set is that `available` is current.
+    // VirtualMachinePool (ADR-0046). Watches its members by label, so a
+    // member going Ready — or being claimed — reaches the pool immediately
+    // rather than at the next periodic requeue: the whole point of a warm set
+    // is that `available` is current. Not `.owns`: a bind re-parents the
+    // member to its claim, and an owner-based watch would then tell only the
+    // claim that the pool is a member short.
     info!("starting VirtualMachinePool controller");
     let pool_api: Api<VirtualMachinePool> = match cli.namespace.as_deref() {
         Some(ns) => Api::namespaced(client.clone(), ns),
@@ -338,7 +341,9 @@ pub async fn run(cli: Cli) -> Result<()> {
         None => Api::all(client.clone()),
     };
     let pool_fut = Controller::new(pool_api, Config::default())
-        .owns(pool_member_api, Config::default())
+        .watches(pool_member_api, Config::default(), |vm: VirtualMachine| {
+            pool::pool_for_member(&vm)
+        })
         .run(pool::reconcile, pool::error_policy, ctx.clone())
         .for_each(|res| async move {
             match res {

@@ -1,5 +1,158 @@
 # Changelog
 
+## [2026-09-28 23:10] - Pools and claims: one claim one member; refill and GuestReady are event-driven
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- **One claim bound two members** (`crates/banlieue-controller/src/reconciler/claim.rs`,
+  `claim_plan.rs`). The bind writes the member's label first and the
+  claim's `virtualMachineRef` second; a reconcile from a cached claim that
+  predated its own status patch saw no ref and picked a second member. In
+  the roadmap 17 phase G run one claim took both warm members. `pick` now
+  first finds a member already labelled for this claim
+  (`claim_plan::member_bound_to`) and finishes that bind.
+- **A claimed member's pool heard about it only on its periodic requeue**
+  (`crates/banlieue-controller/src/app.rs`, `reconciler/pool.rs`). The pool
+  controller `.owns` its members, and a bind re-parents the member to the
+  claim, so the refill started 295 s after the bind. Members now map to
+  their pool by `LABEL_POOL` (`pool::pool_for_member`), which a claimed
+  member keeps.
+- **A guest's `phase=installed` waited for the next periodic reconcile**
+  (`crates/banlieue-provider-cloud-hypervisor/src/report.rs`, `host.rs`,
+  `app.rs`). Every member sat 180–204 s between reporting and `GuestReady`,
+  more than its ~150 s install. The first report per machine now wakes the
+  machine controller (`Listeners::waking`, `RealHost::with_report_wake`,
+  `reconcile_all_on` — stable, where `reconcile_on` needs kube's unstable
+  feature).
+
+### Added
+- Tests, each written first and failing before its fix:
+  `claim_plan_tests.rs` (3), `tests/live_claim.rs::a_stale_copy_of_a_bound_claim_does_not_bind_a_second_member`
+  (real API server: kind + CRDs, no controller — reproduced `["m1","m2"]`
+  before the fix), `pool_tests.rs` (3), `report_tests.rs::the_first_report_wakes_the_reconciler_once`.
+
+### Changed
+- `docs/adr/0047-virtualmachineclaim.md`: Decision 2 amended — the member's
+  label, not the claim's status, is the record of a bind.
+- `docs/src/security/threat-model.md`: new row, "one claim binds two warm
+  members" (D, E), with its control and regression test.
+
+### Why
+Found by `make ch-pool-claim-e2e` (roadmap 17 phase G). The double bind is
+a correctness bug in ADR-0047's exclusivity; the other two are the
+project's event-driven rule broken at two seams, and together they more
+than doubled a pool's warm-up and refill.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (controller image; provider binary on each Cloud Hypervisor host)
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-09-28 21:20] - Cloud Hypervisor: guest uid allocation is atomic
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `crates/banlieue-provider-cloud-hypervisor/src/plan.rs`: new `UidLedger`.
+  A guest uid was chosen from a `List` of machines' `status.hostUid` and
+  written to the machine's own status, with nothing claimed atomically. In
+  the roadmap 17 phase G run two pool members created together both took
+  2000002, then — reconciling again from a stale cache — both took 2000003;
+  they ended on different uids by luck. A shared uid is a shared unit name,
+  userdb record and directory owner, i.e. the per-guest isolation of
+  ADR-0063 Decision 3. The ledger allocates under one lock, remembers each
+  grant (so a re-ask returns the same uid), and releases it when the
+  machine's finalizer is removed. One provider process serves a host
+  (ADR-0060), so an in-process lock covers every allocator.
+- `src/reconciler.rs`: `Context.uids`; allocation goes through
+  `UidLedger::assign`, `finalize` releases. `src/app.rs` constructs it.
+- `docs/src/security/threat-model.md`: the cross-guest disk/seed/socket row
+  cites `plan.rs::UidLedger` as part of its control.
+
+### Added
+- `src/plan_tests.rs`: six ledger tests, including the two observed
+  failures (same listing → different uids; a re-ask → the same uid) and 16
+  threads allocating at once with no collision. Written first; they failed
+  to compile before `UidLedger` existed.
+
+### Why
+Uid uniqueness is what keeps one guest's VMM out of another guest's files.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (reinstall the provider binary on each Cloud Hypervisor host)
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-09-28 19:55] - Cloud Hypervisor: `stop` waits for its stop job
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `crates/banlieue-provider-cloud-hypervisor/src/systemd.rs`: `Systemd::stop`
+  returned as soon as `StopUnit` had *queued* the job, and reset the failed
+  state before the stop had finished. Teardown then found the guest unit
+  still `deactivating` and failed with "`banlieue-ch@N.service` is still
+  loaded after stop", at ERROR level, one to five times per deleted guest
+  (every 5 s until systemd finished; 0–22 s observed). Found by the first
+  `make ch-pool-claim-e2e` run. `connect` now calls `Subscribe`; `stop`
+  listens for `JobRemoved` before `StopUnit`, waits for its own job (bounded
+  by `STOP_JOB_TIMEOUT`, 120 s, above systemd's default 90 s
+  `TimeoutStopSec`), then resets the failed state. `Subscribe` is open to
+  every client in systemd's bus policy: no new polkit grant.
+- `src/host.rs`: `HostOps::stop_unit` documents the contract (returns once
+  the unit is unloaded); `src/fake.rs` lists it among its observed rules —
+  the fake already behaved this way, the real host did not.
+
+### Added
+- `tests/live_systemd.rs`: `stop_returns_only_once_a_slow_stopping_unit_is_gone`
+  (a 3 s `ExecStop`) and `stop_frees_the_name_of_a_unit_that_fails_as_it_stops`.
+  Neither waits after `stop`: the existing tests polled for the unit to go,
+  which is what hid this. Both failed before the fix, pass after (5 runs).
+
+### Why
+Every guest delete logged spurious ERRORs and cleanup latency was
+quantized to the 5 s requeue.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (reinstall the provider binary on each Cloud Hypervisor host)
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-09-28 19:40] - Cloud Hypervisor pool → claim → release e2e (roadmap 17 phase G)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `crates/banlieue-provider-cloud-hypervisor/tests/e2e_pool_claim.rs`: the
+  pool/claim e2e for a Cloud Hypervisor host, counterpart of the libvirt
+  suite. A 2-member pool warms, every warm member is checked to be a
+  running guest here (unit active, tap, machine and run directories), a
+  claim binds one as its sole owner, the pool refills, and releasing the
+  claim must leave **no** unit, tap or directory for that guest (ADR-0047
+  Decision 6). A second case deletes the pool and requires the claimed
+  guest to keep running while the collected members leave the host.
+  `BANLIEUE_E2E_READINESS` (default `InfrastructureReady`) and
+  `BANLIEUE_E2E_USER_DATA` make the same suite the phase G run
+  (`GuestReady`, `tpmEnabled` class, `Deferred` image); it prints the pool
+  warm-up and one-member refill times.
+- `Makefile`: `ch-pool-claim-e2e`.
+
+### Why
+Roadmap 17 phase G's open box: a pool on the Cloud Hypervisor Provider was
+never run, and its warm-up time was never recorded next to vSphere's
+130.3 s. The libvirt suite's host checks speak libvirt RPC, so they cannot
+see a Cloud Hypervisor guest.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only (test-only: an `#[ignore]`d e2e and a make target)
+
 ## [2026-09-28] - `VirtualMachine.spec.paused` is now honored
 
 **Author:** Erick Bourgeois

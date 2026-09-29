@@ -3003,6 +3003,107 @@
       "related_bugs": [],
       "occurrences": 1,
       "last_seen": "2026-09-25T11:05:00.000Z"
+    },
+    {
+      "id": "bug-168",
+      "timestamp": "2026-09-28T23:55:00.000Z",
+      "error_message": "CloudHypervisorMachine reconcile error error=systemd: banlieue-ch@N.service is still loaded after stop (repeated 1-5 times per guest delete, ERROR level)",
+      "file": "crates/banlieue-provider-cloud-hypervisor/src/systemd.rs",
+      "root_cause": "Systemd::stop returned as soon as StopUnit queued the stop job, and called ResetFailedUnit before the job finished. teardown() then checked unit_state immediately and found the unit still deactivating (a VMM stop took 0-22 s), so it errored and requeued every 5 s. The fake removed the unit synchronously, so no unit test could see it; live_systemd.rs polled after stop, which hid it too.",
+      "fix": "Subscribe() once at connect; stop() listens for JobRemoved before calling StopUnit, waits for its own job (bounded by STOP_JOB_TIMEOUT, 120 s > systemd's 90 s TimeoutStopSec), then resets failed state. Tests: live_systemd.rs stop_returns_only_once_a_slow_stopping_unit_is_gone, stop_frees_the_name_of_a_unit_that_fails_as_it_stops (no wait after stop).",
+      "tags": [
+        "cloud-hypervisor",
+        "systemd",
+        "dbus",
+        "teardown",
+        "fake-too-permissive",
+        "roadmap-17"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-09-28T23:55:00.000Z"
+    },
+    {
+      "id": "bug-169",
+      "timestamp": "2026-09-29T01:20:00.000Z",
+      "error_message": "guest uid allocated machine=<A> host_uid=2000002 / machine=<B> host_uid=2000002, then both host_uid=2000003 (two pool members created together)",
+      "file": "crates/banlieue-provider-cloud-hypervisor/src/reconciler.rs",
+      "root_cause": "The guest uid was chosen from a List of machines' status.hostUid and written to the machine's own status; nothing was claimed atomically. Two machines reconciled concurrently both listed before either wrote and took the same lowest free uid; a following reconcile from a stale cache saw no uid in its own status and allocated again. Distinct final uids were luck; a shared uid means a shared unit name, userdb record and directories.",
+      "fix": "plan.rs::UidLedger (Mutex<BTreeMap<machine UID, uid>>) on the reconciler Context: assign() returns the machine's existing grant or the lowest uid not recorded and not granted here; released in finalize after the finalizer is removed. Sound because one provider process serves a host (ADR-0060). Tests: plan_tests.rs two_machines_allocating_from_the_same_listing_get_different_uids, asking_again_returns_the_uid_already_given, concurrent_assignments_never_collide, +3.",
+      "tags": [
+        "cloud-hypervisor",
+        "uid",
+        "race",
+        "concurrency",
+        "isolation",
+        "roadmap-17"
+      ],
+      "related_bugs": [
+        "bug-168"
+      ],
+      "occurrences": 1,
+      "last_seen": "2026-09-29T01:20:00.000Z"
+    },
+    {
+      "id": "bug-170",
+      "timestamp": "2026-09-29T03:10:00.000Z",
+      "error_message": "claim bound claim=C member=M1 ... 100 ms later: claim bound claim=C member=M2 (one VirtualMachineClaim bound both warm members)",
+      "file": "crates/banlieue-controller/src/reconciler/claim.rs",
+      "root_cause": "bind() writes the member's claim label first (resourceVersion precondition) and the claim's status.virtualMachineRef second. The re-parented member re-triggers the claim; that reconcile ran from a cached claim that predated its own status patch, saw no ref, listed members fresh and picked another Ready one. The rv precondition makes a member exclusive to one claim, not a claim to one member.",
+      "fix": "claim_plan.rs::member_bound_to: pick() first looks in the fresh member list for a member labelled for this claim and finishes that bind. Tests: claim_plan_tests (3) + live_claim.rs a_stale_copy_of_a_bound_claim_does_not_bind_a_second_member (failed before, passes after, kind cluster). ADR-0047 Decision 2 amended; threat-model row added.",
+      "tags": [
+        "claim",
+        "pool",
+        "stale-cache",
+        "race",
+        "adr-0047",
+        "roadmap-17"
+      ],
+      "related_bugs": [
+        "bug-169"
+      ],
+      "occurrences": 1,
+      "last_seen": "2026-09-29T03:10:00.000Z"
+    },
+    {
+      "id": "bug-171",
+      "timestamp": "2026-09-29T03:10:00.000Z",
+      "error_message": "guest reported phase=installed ... 180-204 s later: installed system reported; ejecting the installer (GuestReady late by a full requeue)",
+      "file": "crates/banlieue-provider-cloud-hypervisor/src/report.rs",
+      "root_cause": "The vsock report listener only set an AtomicBool; nothing woke the machine reconciler, which saw it on its next periodic pass (requeue_long). Warm-up of a Deferred member was ~150 s install + ~190 s idle.",
+      "fix": "Listeners::waking(tx) sends () on the first phase=installed per machine; RealHost::with_report_wake; app.rs feeds the channel to the machine Controller with reconcile_all_on (stable API; reconcile_on is behind kube's unstable feature). Test: report_tests.rs the_first_report_wakes_the_reconciler_once.",
+      "tags": [
+        "cloud-hypervisor",
+        "event-driven",
+        "vsock",
+        "guestready",
+        "latency",
+        "roadmap-17"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-09-29T03:10:00.000Z"
+    },
+    {
+      "id": "bug-172",
+      "timestamp": "2026-09-29T03:10:00.000Z",
+      "error_message": "pool created its replacement member 295 s after the claim bound",
+      "file": "crates/banlieue-controller/src/app.rs",
+      "root_cause": "The pool controller used .owns(VirtualMachine). A bind re-parents the member from the pool to the claim, so the member event maps only to the claim; the pool learned it was a member short on its periodic requeue.",
+      "fix": "pool.rs::pool_for_member maps a member event to its pool by LABEL_POOL (kept on claimed members); the pool controller uses .watches(..., pool_for_member). Tests: pool_tests.rs a_claimed_member_still_reaches_its_pool (+2).",
+      "tags": [
+        "pool",
+        "watch",
+        "owns",
+        "event-driven",
+        "latency",
+        "roadmap-17"
+      ],
+      "related_bugs": [
+        "bug-170"
+      ],
+      "occurrences": 1,
+      "last_seen": "2026-09-29T03:10:00.000Z"
     }
   ]
 }

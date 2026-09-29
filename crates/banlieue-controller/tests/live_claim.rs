@@ -47,7 +47,7 @@ use banlieue_controller::context::Context;
 use banlieue_controller::reconciler::claim;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
 use k8s_openapi::jiff::Timestamp;
-use kube::api::{Api, DeleteParams, Patch, PatchParams, PostParams};
+use kube::api::{Api, DeleteParams, ListParams, Patch, PatchParams, PostParams};
 use kube::{Client, Resource, ResourceExt};
 use serde_json::json;
 
@@ -658,6 +658,46 @@ async fn a_claimed_member_is_never_offered_to_a_second_claim() {
             .map(|c| c.reason.clone())
             .unwrap_or_default();
         assert_eq!(reason, pool_condition_reasons::NO_MEMBER_AVAILABLE);
+        s
+    })
+    .await;
+}
+
+/// A reconcile from a stale copy of the claim — one that predates its own
+/// bind — must not bind a second member. The controller's cache can lag the
+/// claim's status patch; in the roadmap 17 phase G run (2026-09-28) the
+/// re-parented member re-triggered the claim 100 ms after the first bind,
+/// from a copy with no `virtualMachineRef`, and one claim took both warm
+/// members.
+#[tokio::test]
+#[ignore = "needs a cluster with the banlieue CRDs"]
+async fn a_stale_copy_of_a_bound_claim_does_not_bind_a_second_member() {
+    with_scratch("stalebind", |s| async move {
+        let pool = make_pool(&s, "p", Some("rev-1")).await;
+        make_member(&s, &pool, "m1", "rev-1", false).await;
+        make_member(&s, &pool, "m2", "rev-1", false).await;
+        let stale = make_claim(&s, "c1", "p", 900).await;
+        reconcile(&s, "c1").await;
+
+        claim::reconcile(Arc::new(stale), s.ctx())
+            .await
+            .expect("reconcile from the stale copy");
+
+        let bound: Vec<String> = s
+            .vms()
+            .list(&ListParams::default().labels(&format!("{LABEL_CLAIM}=c1")))
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|vm| vm.name_any())
+            .collect();
+        assert_eq!(bound.len(), 1, "one claim, one member: {bound:?}");
+        let claim = s.claims().get("c1").await.unwrap();
+        let referenced = claim
+            .status
+            .and_then(|st| st.virtual_machine_ref)
+            .map(|r| r.name);
+        assert_eq!(referenced.as_deref(), Some(bound[0].as_str()));
         s
     })
     .await;

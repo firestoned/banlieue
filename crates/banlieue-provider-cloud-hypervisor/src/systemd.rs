@@ -15,13 +15,19 @@
 //!
 //! No `systemd-run`, no subprocess.
 
+use futures::StreamExt as _;
 use std::path::PathBuf;
+use std::time::Duration;
 use zbus::zvariant::{OwnedObjectPath, Value};
 
 /// systemd's job mode: fail rather than queue behind a conflicting job.
 const JOB_MODE_FAIL: &str = "fail";
 /// Job mode for stop: replace any queued start.
 const JOB_MODE_REPLACE: &str = "replace";
+/// Longest `stop` waits for its stop job. Above systemd's default
+/// `TimeoutStopSec=` (90 s), so systemd's own escalation to `SIGKILL`
+/// always comes first and this only bounds a manager that never answers.
+const STOP_JOB_TIMEOUT: Duration = Duration::from_secs(120);
 /// systemd's exit statuses for a step it failed before exec
 /// (`systemd.exec(5)`, "Process Exit Codes"), the ones a guest unit can hit.
 const SYSTEMD_EXIT_STEPS: &[(i32, &str)] = &[
@@ -162,6 +168,20 @@ trait Manager {
 
     fn reset_failed_unit(&self, name: &str) -> zbus::Result<()>;
 
+    /// Ask the manager to emit its signals to this connection; without it
+    /// systemd does not send `JobRemoved`.
+    fn subscribe(&self) -> zbus::Result<()>;
+
+    /// A job finished, successfully or not.
+    #[zbus(signal)]
+    fn job_removed(
+        &self,
+        id: u32,
+        job: OwnedObjectPath,
+        unit: String,
+        result: String,
+    ) -> zbus::Result<()>;
+
     fn list_units_by_patterns(
         &self,
         states: &[&str],
@@ -218,10 +238,9 @@ impl Systemd {
             Bus::System => zbus::Connection::system().await?,
             Bus::Session => zbus::Connection::session().await?,
         };
-        Ok(Self {
-            manager: ManagerProxy::new(&conn).await?,
-            conn,
-        })
+        let manager = ManagerProxy::new(&conn).await?;
+        manager.subscribe().await?;
+        Ok(Self { conn, manager })
     }
 
     /// Set `spec`'s runtime limits, then start the instance. The
@@ -242,14 +261,39 @@ impl Systemd {
             .map(drop)
     }
 
-    /// Stop `name` and clear any failed state so the name is free again.
-    /// A unit that is not loaded is success.
+    /// Stop `name`, wait for the stop to finish, and clear any failed state
+    /// so the name is free again. A unit that is not loaded is success.
+    ///
+    /// `StopUnit` only queues a job; a VMM takes seconds to stop. Returning
+    /// before the job finishes left callers checking a unit that was still
+    /// `deactivating`, and a reset of a failure that had not happened yet.
     ///
     /// # Errors
-    /// Any D-Bus error other than "not loaded".
+    /// Any D-Bus error other than "not loaded", or a stop job that did not
+    /// finish within [`STOP_JOB_TIMEOUT`].
     pub async fn stop(&self, name: &str) -> zbus::Result<()> {
+        // Listen before asking, so a fast job cannot finish unseen.
+        let mut removed = self.manager.receive_job_removed().await?;
         match self.manager.stop_unit(name, JOB_MODE_REPLACE).await {
-            Ok(_) => {}
+            Ok(job) => {
+                tokio::time::timeout(STOP_JOB_TIMEOUT, async {
+                    while let Some(signal) = removed.next().await {
+                        if signal.args()?.job == job {
+                            return Ok(());
+                        }
+                    }
+                    Err(zbus::Error::Failure(format!(
+                        "signal stream ended while stopping {name}"
+                    )))
+                })
+                .await
+                .map_err(|_| {
+                    zbus::Error::Failure(format!(
+                        "{name}: stop job still running after {}s",
+                        STOP_JOB_TIMEOUT.as_secs()
+                    ))
+                })??;
+            }
             Err(e) if is_no_such_unit(&e) => {}
             Err(e) => return Err(e),
         }

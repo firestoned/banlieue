@@ -71,13 +71,28 @@ struct Entry {
     installed: Arc<AtomicBool>,
 }
 
+/// Sent when a guest first reports, so the machine reconciler runs now
+/// instead of on its next periodic pass.
+pub type Wake = tokio::sync::mpsc::UnboundedSender<()>;
+
 /// One listener per machine, keyed by machine UID.
 #[derive(Default)]
 pub struct Listeners {
     inner: Mutex<HashMap<String, Entry>>,
+    wake: Option<Wake>,
 }
 
 impl Listeners {
+    /// Listeners that send on `wake` when a guest first reports
+    /// `phase=installed`.
+    #[must_use]
+    pub fn waking(wake: Wake) -> Self {
+        Self {
+            inner: Mutex::default(),
+            wake: Some(wake),
+        }
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, Entry>> {
         self.inner
             .lock()
@@ -117,10 +132,12 @@ impl Listeners {
             .map_or_else(|| Arc::new(AtomicBool::new(false)), |e| e.installed.clone());
         let heard = installed.clone();
         let name = key.to_string();
+        let wake = self.wake.clone();
         let task = tokio::spawn(async move {
             while let Ok((mut stream, _)) = listener.accept().await {
                 let heard = heard.clone();
                 let name = name.clone();
+                let wake = wake.clone();
                 tokio::spawn(async move {
                     let mut buf = Vec::new();
                     let limit = u64::try_from(MAX_REPORT_BYTES).unwrap_or(u64::MAX) + 1;
@@ -135,6 +152,11 @@ impl Listeners {
                     }
                     if parse_report(&buf).installed && !heard.swap(true, Ordering::SeqCst) {
                         info!(machine = %name, "guest reported phase=installed");
+                        // A closed channel means the controller is gone;
+                        // the periodic pass is all that is left.
+                        if let Some(wake) = wake {
+                            let _ = wake.send(());
+                        }
                     }
                 });
             }

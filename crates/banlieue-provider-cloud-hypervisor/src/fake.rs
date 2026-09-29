@@ -8,6 +8,9 @@
 //! lesson). The rules below were each observed on a real host or VMM:
 //!
 //! - a second start of a loaded unit fails (live systemd test);
+//! - `stop_unit` returns once the unit is unloaded, as `Systemd::stop`
+//!   does by waiting for its stop job (live systemd test; before that wait,
+//!   a real host still had the unit `deactivating` when teardown checked);
 //! - the VMM API is unreachable until the unit is running and its socket
 //!   exists (connect fails with an I/O error);
 //! - `vm.create` twice, and `vm.power-button` on a VM that is not running,

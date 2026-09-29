@@ -30,6 +30,7 @@ use tracing::{error, info, warn};
 
 use crate::host::RealHost;
 use crate::host_config::HostConfig;
+use crate::plan::UidLedger;
 use crate::reconciler::{self, Context};
 use crate::{provider, sys, systemd, token, vmimage};
 
@@ -202,9 +203,13 @@ pub async fn run(cli: Cli) -> Result<()> {
     // Guests share the provider's gid so it can manage their files
     // (ADR-0063 Decision 5).
     let group = sys::effective_gid();
+    // A guest's report wakes the machine reconciler (ADR-0065 Decision 5):
+    // publishing GuestReady must not wait for the next periodic pass.
+    let (report_wake, report_woken) = tokio::sync::mpsc::unbounded_channel();
     let host = RealHost::connect(cli.bus.into(), group)
         .await
-        .context("connecting to systemd")?;
+        .context("connecting to systemd")?
+        .with_report_wake(report_wake);
     tokio::spawn(serve_health(cli.health_port));
 
     if cli.no_leader_elect {
@@ -229,6 +234,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         config: config.clone(),
         host: Arc::new(host),
         group,
+        uids: UidLedger::default(),
     });
 
     let provider_api: Api<Provider> = Api::namespaced(client.clone(), &config.provider.namespace);
@@ -245,7 +251,14 @@ pub async fn run(cli: Cli) -> Result<()> {
     // any whose providerRef names another host.
     let machine_api: Api<CloudHypervisorMachine> =
         Api::namespaced(client.clone(), &config.provider.namespace);
+    // Reports are once per machine, when its install finishes, and the
+    // controller dedups what is queued, so waking every machine is cheap and
+    // needs no unstable `reconcile_on`.
+    let woken = futures::stream::unfold(report_woken, |mut rx| async move {
+        rx.recv().await.map(|()| ((), rx))
+    });
     let machine_ctrl = Controller::new(machine_api, WatchConfig::default())
+        .reconcile_all_on(woken)
         .run(reconciler::reconcile, reconciler::error_policy, ctx.clone())
         .for_each(|res| async move {
             match res {
