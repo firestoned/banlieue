@@ -91,6 +91,42 @@ quote produced by this VM cannot be replayed against a different claim.
 It is drawn from the OS CSPRNG, never derived from the claim's UID, name or
 the clock — all three of which a guest could guess.
 
+### Verifying a quote: where the trust anchor comes from
+
+A bound `tpmEnabled` member publishes its vTPM's endorsement-key certificate
+on the claim (`status.tpmEndorsementCertificates`,
+[ADR-0045](https://github.com/firestoned/banlieue/blob/main/docs/adr/0045-vtpm-endorsement-key-certificate.md)).
+That certificate is what a verifier checks a TPM quote against — but a
+certificate is only as good as its issuer, and which issuers count is a
+per-backend decision the administrator makes explicitly on the **Provider**:
+
+```yaml
+spec:
+  attestation:
+    ekTrustBundle:          # exactly one of inline / configMapRef / secretRef
+      configMapRef:
+        name: swtpm-localca-issuers
+        # key: ca.crt
+```
+
+`ekTrustBundle`
+([ADR-0049](https://github.com/firestoned/banlieue/blob/main/docs/adr/0049-attestation-trust-anchors.md)
+Decision 10) is the same value-or-source shape as `connection.caBundle`. The
+issuing CA differs by backend: on vSphere it is vCenter's; on libvirt it is
+each host's own `swtpm_localca` issuer certificate
+(`/var/lib/swtpm-localca/issuercert.pem`), one entry per host.
+
+Three things it deliberately is **not**:
+
+- **Not discovered.** An anchor read off the hypervisor would let whoever
+  controls the hypervisor choose the anchor that vouches for its own guests.
+- **Not verified by banlieue.** banlieue publishes configuration; the
+  verifier (the broker of ADR-0055) resolves the referenced
+  ConfigMap/Secret in the Provider's namespace and does the checking.
+- **Not subject to expiry.** swtpm EK certificates carry
+  `notAfter 9999-12-31`, so removing a host's issuer from this bundle *is*
+  the revocation mechanism on libvirt.
+
 ## `ttlSeconds` is mandatory, and it is a deadline
 
 No default, on purpose. A claim without a deadline is a leaked VM waiting to
@@ -261,10 +297,10 @@ pool's `spec.readiness`. `InfrastructureReady` is correct for
 fires when the install *starts*.
 
 `GuestReady` ([ADR-0043](https://github.com/firestoned/banlieue/blob/main/docs/adr/0043-guestready-installed-guest-signal.md))
-is the correct choice for a Deferred pool, and works on libvirt provided the
-image carries the guest-phase layer and `qemu-guest-agent`. On vSphere the
-transport is not implemented yet, so a Deferred vSphere pool still cannot be
-trusted. See
+is the correct choice for a Deferred pool, and works on both backends: on
+libvirt provided the image carries the guest-phase layer and
+`qemu-guest-agent`, and on vSphere from `guestinfo.banlieue.phase`
+(verified live against a real vCenter, 2026-09-23). See
 [VirtualMachine Pools](virtualmachine-pools.md#the-one-field-that-can-fail-silently).
 
 ## Troubleshooting
@@ -277,7 +313,7 @@ trusted. See
 | `kubectl delete vmclaim` hangs | Expected while the backend VM is being destroyed. Check the member: `kubectl get virtualmachine <name> -o yaml`. If its own finalizer is stuck, the provider cannot reach the backend. |
 | Claim bound to an old image | Nothing fresher was Ready. Expected; see "Which member you get". |
 | Bound, but `status.addresses` is empty | The member has no address yet. The claim mirrors what the VM reports. |
-| `status.tpmEndorsementCertificates` always empty | Expected until ADR-0045 publishes them. |
+| `status.tpmEndorsementCertificates` always empty | The member's class is not `tpmEnabled` — publication gates `GuestReady` for `tpmEnabled` members (ADR-0045), so a bound one always carries its certificate. |
 
 ## Reference
 

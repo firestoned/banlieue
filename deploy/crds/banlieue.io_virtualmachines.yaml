@@ -490,6 +490,8 @@ spec:
                     `InfrastructureReady` — mirrors the infra CR's Ready condition
                   Optional:
                     `Migrating`           — true while a migration is in progress
+                    `Paused`              — present (True) only while `spec.paused`
+                                            suspends reconciliation
                 items:
                   description: Condition contains details for one aspect of the current state of this API Resource.
                   properties:

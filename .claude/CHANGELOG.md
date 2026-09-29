@@ -1,5 +1,192 @@
 # Changelog
 
+## [2026-09-28] - `VirtualMachine.spec.paused` is now honored
+
+**Author:** Erick Bourgeois
+
+### Added
+- `crates/banlieue-controller/src/reconciler/virtualmachine.rs`: the
+  reconciler now honors `spec.paused` — previously the field was declared
+  in the API but read by nothing (dead config). While paused, the guard
+  (checked first, before the deletion path, per the CAPI paused convention)
+  patches `Paused=True` / `Ready=False reason=Paused` and does nothing
+  else; deletion is suspended too (the VM stays `Terminating` until
+  unpaused). The paused patch carries the full prior status forward — the
+  whole-status SSA rule — so pausing retracts no mirrored field. On resume
+  the `Paused` condition disappears rather than flipping False: every
+  ordinary status write funnels through `patch_status`, which only runs
+  while not paused and drops the condition (`clear_paused`), the same
+  disappears-on-resume semantics `VSphereCluster` gets from rebuilding its
+  conditions fresh. Pure helpers `paused_status`/`clear_paused` +
+  six unit tests (TDD, `virtualmachine_tests.rs`). Same in-band pause
+  convention as ADR-0002 (`VSphereCluster.spec.paused`) and ADR-0012
+  (`ProviderClass.paused`) — an existing recorded decision wired into one
+  more reconciler, so TDD-only, no new ADR.
+- `crates/banlieue-api/src/banlieue/virtualmachine.rs`: `Paused` listed in
+  the status conditions doc comment; `deploy/crds/banlieue.io_virtualmachines.yaml`
+  and `docs/src/reference/api.md` regenerated (`make crds`) —
+  description-only CRD change.
+
+### Why
+Found while closing roadmap 17: `VirtualMachine.spec.paused` was the one
+`paused` field in the API that no reconciler read, so setting it silently
+did nothing.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (controller binary; CRD description-only)
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-09-28] - Roadmap 17: pool rollout + sabotage e2e green on libvirt; ADR-0043 Decision 8 cadence fix
+
+**Author:** Erick Bourgeois
+
+### Added
+- `crates/banlieue-libvirt`: `domain_get_xml_desc` (`REMOTE_PROC_DOMAIN_GET_XML_DESC` = 14,
+  `virsh dumpxml` over the wire) — encoder shared with the existing
+  domain+flags shape, string-ret decoder, TDD'd (`procs_tests.rs`), exercised
+  live by the sabotage e2e.
+- `crates/banlieue-provider-libvirt/tests/e2e_pool_claim.rs`: two new
+  `#[ignore]` tests closing roadmap 17's last untested DoD items, both
+  **green against a real libvirt host + cluster (grill, 2026-09-28)**:
+  - `bumping_the_image_rolls_the_pool_without_dropping_below_warm` — scratch
+    `VMImage` copy, generation bump via inert spec patch, every-poll
+    assertion of `available ≥ warmReplicas`; completion keyed on the new
+    revision labels, never on recovered availability (32.8s).
+  - `a_sabotaged_member_is_reaped_at_provisioning_timeout_and_replaced` —
+    `GuestReady` pool whose agent arrives via the NoCloud seed; the first
+    running member's NIC is forced `link state='down'` (live-only, device
+    XML read back for its auto-assigned MAC), it never announces, is reaped
+    at `provisioningTimeoutSeconds=300` and replaced (353s).
+
+### Fixed
+- **ADR-0043 Decision 8, amended 2026-09-28** (`docs/adr/0043-…`,
+  `crates/banlieue-provider-libvirt/src/reconciler/libvirtmachine.rs`): an
+  unreachable guest agent now backs off to the long requeue only once the
+  machine is older than `AGENT_BOOTSTRAP_GRACE_SECS` (600s). Before, a
+  seed-installed agent (unreachable for its first ~60–90s) got exactly one
+  probe at ~T+38s with the next due at ~T+338s — past the pool's
+  `provisioningTimeoutSeconds` — so a `GuestReady` pool reaped every member
+  it ever created (8 generations churned in one 17-minute run). Found by the
+  first live run of the sabotage e2e; `live_guest` (70.5s green on grill)
+  isolated the reconciler cadence as the sole cause. Four new unit tests pin
+  the matrix; the age is computed saturating so clock skew errs toward
+  polling fast.
+- `e2e_pool_claim.rs` teardown: a failed member LIST no longer reads as "no
+  members left" — `try_member_names` distinguishes an unreachable API from
+  an empty pool. The old check reported "every member deleted" while the
+  cluster was down mid-teardown and nothing had been deleted (found when the
+  host died mid-run).
+
+### Why
+Roadmap 17 definition-of-done. The sabotage test exists to prove the
+poisoned-member path; its first failure proved something better — a real
+production bug in the reconcile cadence that only two controllers' clocks
+racing on real infrastructure could surface.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (provider binary; no CRD change)
+- [ ] Config change only
+- [ ] Documentation only
+
+Threat model: full pass for the ADR-0043 amendment — **no change** (cadence
+only; no new component, asset, boundary or control); stamp advanced to
+2026-09-28 per `rules/threat-modeling.md` §5.
+
+## [2026-09-27] - Roadmap 17 phase F: EK trust anchors on the Provider (ADR-0049 Decision 10)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `crates/banlieue-api/src/banlieue/provider.rs`: `ProviderSpec.attestation`
+  (`Option<ProviderAttestation>`) with required `ek_trust_bundle:
+  CABundleSource` — the admin-supplied, never-discovered set of CAs trusted to
+  issue a backend's vTPM EK certificates (vCenter's CA on vSphere, per-host
+  `swtpm_localca` issuer on libvirt). banlieue neither resolves nor verifies
+  against it (ADR-0049 Decision 2); it is published for the attestation broker.
+- `crates/banlieue-api/src/banlieue/provider_tests.rs`: five tests, written
+  first (TDD) — skip-when-absent, camelCase round-trip, inline-PEM YAML
+  deserialization, exactly-one-source invariant reuse, CRD schema presence.
+- `deploy/admission/provider-attestation-ektrustbundle.yaml`: VAP enforcing
+  exactly one of `inline`/`configMapRef`/`secretRef`. Unlike
+  `connection.caBundle` there is no controller to fail closed at reconcile —
+  banlieue never reads the bundle — so admission is the only banlieue-side
+  check; noted in the policy header. `deploy/admission/README.md` row added.
+- `.claude/skills/cargo-quality/SKILL.md`: the skill CLAUDE.md has referenced
+  all along now exists (fmt + clippy `-D warnings` + workspace tests, plus the
+  post-gate verification list).
+
+### Changed
+- `docs/adr/0049-attestation-trust-anchors.md`: **Proposed → Accepted**
+  (amended with Decision 10 and two consequences: broker RBAC, and the
+  banlieue-side-complete inventory).
+- `docs/architecture/calm/architecture.json`: Provider CR node, the
+  attest-and-deliver flow, evidence list and metadata phase updated for the
+  landed field; `make calm-validate` and `make calm-diagrams` clean
+  (regenerated `docs/src/architecture/flows.md`).
+- `deploy/crds/banlieue.io_providers.yaml` + `docs/src/reference/api.md`:
+  regenerated (`make crds`); additive-only, server-dry-run-verified against
+  the lenny cluster. **The live CRD needs a `kubectl apply` on deploy.**
+- `examples/01-provider-vsphere-dc1.yaml`, `examples/02-provider-libvirt-edge.yaml`:
+  commented `attestation.ekTrustBundle` stanzas with per-backend provenance.
+- `docs/src/guides/virtualmachine-claims.md`: new "Verifying a quote: where
+  the trust anchor comes from" section; fixed two stale statements (vSphere
+  `GuestReady` transport landed 2026-09-23; `tpmEndorsementCertificates` is
+  published since ADR-0045).
+- `docs/src/security/threat-model.md`: **full pass** per
+  `rules/threat-modeling.md`; stamp bumped to 2026-09-27. Added A-15 (EK
+  trust bundle; A-11 was taken by the Cloud Hypervisor host token when this
+  entry was rebased onto roadmap 09's passes), the sandbox-workload actor
+  (§4), TB-1 rows for bundle
+  tampering and stale-image members, §7.14 (bundle custody) and §7.15
+  (vSphere VM Encryption on sandbox storage classes), updated TB-4's
+  anchor row and both §8 trust-anchor residues. No new component, namespace
+  or boundary; §5 diagram unchanged (conclusion, not skip). ADR-0060…0065
+  (Proposed, roadmap 09) are explicitly outside this stamp.
+- `.github/community/17-ephemeral-vm-pools.md` phase table row F +
+  section F, and `ROADMAPS.md` row 17: phase F's banlieue side complete;
+  remaining ADR-0049 work (agent, broker) is deliberately not banlieue code.
+
+### Why
+Roadmap 17 phase F. The EK certificate on a claim (ADR-0045) is only as good
+as its issuer; which issuers count is now an explicit per-backend admin
+assertion instead of an implicit deployment fact.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (re-apply `deploy/crds/banlieue.io_providers.yaml`
+      and `deploy/admission/provider-attestation-ektrustbundle.yaml`; additive)
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-09-27] - Roadmap 18 ADR reservations shifted +1 (0067–0072 → 0068–0073)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/community/18-split-image-fast-clone.md`: roadmap 09 phase 10
+  (2026-09-26) took **ADR-0067** for the `banlieue host` CLI contract, which
+  collided with this roadmap's reservation. All six planned ADRs shift up by
+  one — old → new: 0067→0068 (split-image `VMImage` contract), 0068→0069
+  (first-boot sealing), 0069→0070 (dm-verity base integrity), 0070→0071
+  (vSphere linked clone), 0071→0072 (Proxmox), 0072→0073 (Cloud Hypervisor).
+  The baseline note now records roadmap 09 as reserving 0060–0067.
+- `ROADMAPS.md`: roadmap 18 row updated to match (phase 0 gate is ADR-0068;
+  reserves ADR-0068 to ADR-0073).
+
+### Why
+Two roadmaps had reserved ADR-0067. No ADR files exist yet in either range,
+so this is a paper-only renumber; roadmap 09 keeps 0067 because its claim was
+the deliberate later decision (#64).
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
 ## [2026-09-27 19:30] - `banlieue host`: prepare a Cloud Hypervisor host from the binary (ADR-0067); roadmap 09 done
 
 **Author:** Erick Bourgeois

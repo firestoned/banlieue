@@ -66,12 +66,62 @@ never does. Communication between them is CRD-only.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
+| `attestation` | object |  | Attestation trust anchors for this backend's vTPMs (ADR-0049 Decision 10). Admin-supplied, never discovered: an anchor read off the hypervisor would let whoever controls the hypervisor choose the anchor that vouches for its own guests. Optional — a Provider that runs no `tpmEnabled` classes has no reason to set it. |
 | `capabilities` | object |  | Admin-defined capability mappings. Every storage / network class that VMClass and VMImage may request MUST be listed here for this provider to be considered by the scheduler. |
 | `connection` | object | Yes | Connection details for the backend. |
 | `failureDomainNameOverrides` | object[] |  | Explicit overrides for individual discovered failure domains' generated `name`. The auto-computed, collision-safe name (`<provider>-<datacenter>-<cluster>`, hashed when too long) is always the fallback for any `(datacenter, cluster)` pair with no matching entry here — this is opt-in, never required. See ADR-0023. |
 | `paused` | boolean |  | Suspend reconciliation. Equivalent to setting the `cluster.x-k8s.io/paused` annotation but in-band. |
 | `providerClassRef` | object | Yes | Reference to a ProviderClass that identifies the backend type. |
 | `useContentLibrary` | boolean |  | vSphere only: import `Url`-kind VMImages through a vCenter Content Library rather than the default datastore-upload + `MarkAsTemplate` path. Defaults to `false` (no Content Library required), matching environments where CL is not enabled. Ignored by non-vSphere classes. See ADR-0020. |
+
+#### `.spec.attestation`
+
+Attestation trust anchors for this backend's vTPMs (ADR-0049
+Decision 10). Admin-supplied, never discovered: an anchor read off
+the hypervisor would let whoever controls the hypervisor choose the
+anchor that vouches for its own guests. Optional — a Provider that
+runs no `tpmEnabled` classes has no reason to set it.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `ekTrustBundle` | object | Yes | PEM bundle of CA certificates trusted to issue this backend's vTPM endorsement-key certificates. Provenance differs per backend (ADR-0045): on vSphere the issuing CA is vCenter's; on libvirt it is each host's `swtpm_localca` issuer certificate, one entry per host. |
+
+##### `.spec.attestation.ekTrustBundle`
+
+PEM bundle of CA certificates trusted to issue this backend's vTPM
+endorsement-key certificates. Provenance differs per backend
+(ADR-0045): on vSphere the issuing CA is vCenter's; on libvirt it is
+each host's `swtpm_localca` issuer certificate, one entry per host.
+
+Same value-or-source shape as `connection.caBundle`: exactly one of
+`inline`, `configMapRef`, `secretRef` must be set (see
+[`CABundleSource`]); references resolve in the Provider's namespace.
+Removal of an issuer from this bundle is the revocation mechanism on
+libvirt — swtpm EK certificates never expire.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `configMapRef` | object |  | Key in a ConfigMap in the referrer's namespace (key defaults to `ca.crt`). |
+| `inline` | string |  | Inline PEM (one or more concatenated certificates). |
+| `secretRef` | object |  | Key in a Secret in the referrer's namespace (key defaults to `ca.crt`). |
+
+###### `.spec.attestation.ekTrustBundle.configMapRef`
+
+Key in a ConfigMap in the referrer's namespace (key defaults to `ca.crt`).
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `key` | string |  | Key within the object's `data`. Defaults are caller-defined. |
+| `name` | string | Yes | Name of the ConfigMap / Secret in the referrer's namespace. |
+
+###### `.spec.attestation.ekTrustBundle.secretRef`
+
+Key in a Secret in the referrer's namespace (key defaults to `ca.crt`).
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `key` | string |  | Key within the object's `data`. Defaults are caller-defined. |
+| `name` | string | Yes | Name of the ConfigMap / Secret in the referrer's namespace. |
 
 #### `.spec.capabilities`
 
@@ -760,7 +810,7 @@ it owns, mirrored provisioning / address / power state, and conditions.
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `addresses` | object[] |  | Mirrored from the infra CR's `status.addresses`. |
-| `conditions` | object[] |  | Standard Kubernetes conditions. Required types: `Ready` — overall readiness `Scheduled` — placement decision exists and is current `PlacementValid` — current placement satisfies the spec `InfrastructureReady` — mirrors the infra CR's Ready condition Optional: `Migrating` — true while a migration is in progress |
+| `conditions` | object[] |  | Standard Kubernetes conditions. Required types: `Ready` — overall readiness `Scheduled` — placement decision exists and is current `PlacementValid` — current placement satisfies the spec `InfrastructureReady` — mirrors the infra CR's Ready condition Optional: `Migrating` — true while a migration is in progress `Paused` — present (True) only while `spec.paused` suspends reconciliation |
 | `infrastructureRef` | object |  | Reference to the provider-specific infrastructure CR (e.g. `infrastructure.banlieue.io/v1alpha1/VSphereMachine`). Set after scheduling, owned by this VirtualMachine. |
 | `initialization` | object |  | Mirrored from the infra CR's `status.initialization`. |
 | `observedGeneration` | integer |  |  |
@@ -786,6 +836,8 @@ Standard Kubernetes conditions. Required types:
   `InfrastructureReady` — mirrors the infra CR's Ready condition
 Optional:
   `Migrating`           — true while a migration is in progress
+  `Paused`              — present (True) only while `spec.paused`
+                          suspends reconciliation
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |

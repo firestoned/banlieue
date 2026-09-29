@@ -388,6 +388,8 @@ pub struct VirtualMachineStatus {
     ///   `InfrastructureReady` — mirrors the infra CR's Ready condition
     /// Optional:
     ///   `Migrating`           — true while a migration is in progress
+    ///   `Paused`              — present (True) only while `spec.paused`
+    ///                           suspends reconciliation
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[schemars(extend(
         "x-kubernetes-list-type" = "map",

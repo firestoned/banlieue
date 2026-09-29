@@ -20,9 +20,9 @@
 use crate::rpc::{
     PROC_AUTH_LIST, PROC_CONNECT_LIST_ALL_NETWORKS, PROC_CONNECT_LIST_ALL_STORAGE_POOLS,
     PROC_CONNECT_OPEN, PROC_DOMAIN_CREATE_WITH_FLAGS, PROC_DOMAIN_DEFINE_XML_FLAGS,
-    PROC_DOMAIN_DESTROY, PROC_DOMAIN_GET_STATE, PROC_DOMAIN_INTERFACE_ADDRESSES,
-    PROC_DOMAIN_LOOKUP_BY_NAME, PROC_DOMAIN_SHUTDOWN, PROC_DOMAIN_UNDEFINE_FLAGS,
-    PROC_DOMAIN_UPDATE_DEVICE_FLAGS, PROC_NETWORK_GET_DHCP_LEASES,
+    PROC_DOMAIN_DESTROY, PROC_DOMAIN_GET_STATE, PROC_DOMAIN_GET_XML_DESC,
+    PROC_DOMAIN_INTERFACE_ADDRESSES, PROC_DOMAIN_LOOKUP_BY_NAME, PROC_DOMAIN_SHUTDOWN,
+    PROC_DOMAIN_UNDEFINE_FLAGS, PROC_DOMAIN_UPDATE_DEVICE_FLAGS, PROC_NETWORK_GET_DHCP_LEASES,
     PROC_STORAGE_POOL_LIST_ALL_VOLUMES, PROC_STORAGE_POOL_LOOKUP_BY_NAME,
     PROC_STORAGE_POOL_REFRESH, PROC_STORAGE_VOL_CREATE_XML, PROC_STORAGE_VOL_DELETE,
     PROC_STORAGE_VOL_LOOKUP_BY_NAME, PROC_STORAGE_VOL_UPLOAD, STREAM_CHUNK_MAX,
@@ -1382,6 +1382,39 @@ where
     let args = encode_domain_flags_args(dom, 0);
     let body = session.call(PROC_DOMAIN_GET_STATE, &args).await?;
     decode_domain_get_state_ret(&body)
+}
+
+/// Decode `remote_domain_get_xml_desc_ret { remote_nonnull_string xml; }`.
+///
+/// # Errors
+/// [`TransportError::Protocol`] if the payload is short or malformed.
+pub fn decode_domain_get_xml_desc_ret(body: &[u8]) -> Result<String> {
+    let mut d = Decoder::new(body);
+    Ok(d.read_string()?.to_string())
+}
+
+/// Fetch a domain's XML description — `virsh dumpxml`, over the wire.
+///
+/// The argument struct is `{ remote_nonnull_domain dom; unsigned int
+/// flags; }`, the same shape `DOMAIN_GET_STATE` uses, so the encoder is
+/// shared. `flags` takes the `VIR_DOMAIN_XML_*` values; `0` returns the
+/// live description of a running domain, which is the one that carries
+/// runtime-assigned detail (auto-generated MAC addresses, actual target
+/// device names) that the persistent definition may omit.
+///
+/// # Errors
+/// Any [`TransportError`]; a `Remote` error if the domain no longer exists.
+pub async fn domain_get_xml_desc<S>(
+    session: &mut Session<S>,
+    dom: &Domain,
+    flags: u32,
+) -> Result<String>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let args = encode_domain_flags_args(dom, flags);
+    let body = session.call(PROC_DOMAIN_GET_XML_DESC, &args).await?;
+    decode_domain_get_xml_desc_ret(&body)
 }
 
 /// List a domain's interfaces and their addresses, from one source.

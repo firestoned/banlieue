@@ -4,6 +4,10 @@
 //!
 //! Reconcile loop:
 //!
+//! 0. If `spec.paused` → report `Paused=True` / `Ready=False` and do nothing
+//!    else — including the deletion path, per the CAPI paused convention a
+//!    paused resource is not finalized either (it stays `Terminating` until
+//!    unpaused). Same in-band pause as `VSphereCluster` (ADR-0002).
 //! 1. If `deletion_timestamp` is set → finalize path (drop finalizer; iter 3
 //!    will add cascade-wait on the owned infra CR).
 //! 2. Ensure the controller finalizer (`banlieue.io/virtualmachine`).
@@ -38,7 +42,7 @@ use banlieue_provider_sdk::{
     status::{condition_status, set_condition},
 };
 use k8s_openapi::api::core::v1::{ConfigMap, Secret};
-use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::{Condition, Time};
 use kube::{
     Resource, ResourceExt,
     api::{Api, DeleteParams, ListParams, Patch, PatchParams},
@@ -63,6 +67,55 @@ type _Anchor = _PlaceholderLocalRef;
 
 /// Finalizer set on every `VirtualMachine` reconciled by this controller.
 pub const VM_FINALIZER: &str = "banlieue.io/virtualmachine";
+
+/// Condition type reflecting the in-band pause state (`spec.paused`).
+/// Mirrors the CAPI `Paused` condition; same convention as
+/// `VSphereCluster` (ADR-0002) and `ProviderClass` (ADR-0012).
+pub const CONDITION_PAUSED: &str = "Paused";
+
+/// Stable `reason` on the `Paused` / `Ready` conditions while paused.
+pub const REASON_PAUSED: &str = "Paused";
+
+/// Build the status a paused `VirtualMachine` reports: `Paused=True`,
+/// `Ready=False reason=Paused`, with everything previously mirrored
+/// (`scheduled`, `addresses`, `observedPowerState`, …) carried forward
+/// unchanged — the whole-status SSA rule ([`patch_status`]'s doc comment)
+/// applies to the paused patch too, or pausing a VM would retract this
+/// manager's ownership of every mirrored field. Pure.
+#[must_use]
+pub fn paused_status(
+    current: Option<&VirtualMachineStatus>,
+    generation: i64,
+) -> VirtualMachineStatus {
+    let mut status = current.cloned().unwrap_or_default();
+    set_condition(
+        &mut status.conditions,
+        CONDITION_PAUSED,
+        condition_status::TRUE,
+        REASON_PAUSED,
+        "reconciliation paused via spec.paused",
+        generation,
+    );
+    set_condition(
+        &mut status.conditions,
+        condition_types::READY,
+        condition_status::FALSE,
+        REASON_PAUSED,
+        "reconciliation paused",
+        generation,
+    );
+    status.observed_generation = Some(generation);
+    status
+}
+
+/// Remove the `Paused` condition. Applied inside the [`patch_status`]
+/// funnel, which only ever runs while *not* paused — so unpausing needs no
+/// dedicated resume path, and the condition disappears on resume rather
+/// than flipping to `False` (the same semantics `VSphereCluster` gets from
+/// rebuilding its condition list fresh each pass). Pure.
+pub fn clear_paused(conditions: &mut Vec<Condition>) {
+    conditions.retain(|c| c.type_ != CONDITION_PAUSED);
+}
 
 /// Condition reason for a `VMClass`/`VMImage` pairing that cannot work
 /// (ADR-0048).
@@ -118,6 +171,22 @@ pub async fn reconcile(vm: Arc<VirtualMachine>, ctx: Arc<Context>) -> Result<Act
 
     let vm_api: Api<VirtualMachine> = Api::namespaced(ctx.client.clone(), &namespace);
     let infra_apis = InfraApis::namespaced(&ctx.client, &namespace);
+
+    // Checked before the deletion path on purpose: per the CAPI paused
+    // convention a paused resource is not reconciled *at all*, deletion
+    // included — an operator who paused a VM ahead of backend maintenance
+    // must not have a stray `kubectl delete` tear the guest down mid-window.
+    // The finalizer keeps the object visible until it is unpaused.
+    if vm.spec.paused {
+        info!("VirtualMachine is paused — skipping reconciliation");
+        patch_status_raw(
+            &vm_api,
+            &name,
+            &paused_status(vm.status.as_ref(), generation),
+        )
+        .await?;
+        return Ok(requeue_long());
+    }
 
     if vm.metadata.deletion_timestamp.is_some() {
         return finalize_vm(&vm_api, &infra_apis, &vm).await;
@@ -765,6 +834,24 @@ async fn patch_placement_invalid(
 /// `scheduled`/`infrastructureRef`, which `mirror_status_from_infra`
 /// otherwise leaves untouched from `current`) and pass it here whole.
 async fn patch_status(
+    api: &Api<VirtualMachine>,
+    name: &str,
+    status: &VirtualMachineStatus,
+) -> Result<()> {
+    // Every caller of this funnel runs only while NOT paused (the paused
+    // guard returns before any of them), so dropping the `Paused` condition
+    // here is what makes resume work with no dedicated path: the next
+    // ordinary status write after `spec.paused` flips back simply stops
+    // asserting the condition and SSA removes it.
+    let mut status = status.clone();
+    clear_paused(&mut status.conditions);
+    patch_status_raw(api, name, &status).await
+}
+
+/// The raw SSA apply behind [`patch_status`]. Only [`patch_status`] and the
+/// paused guard call this directly — the guard is the one writer that must
+/// keep the `Paused` condition.
+async fn patch_status_raw(
     api: &Api<VirtualMachine>,
     name: &str,
     status: &VirtualMachineStatus,

@@ -81,6 +81,7 @@ lan = "br0"
                 paused: false,
                 failure_domain_name_overrides: Default::default(),
                 use_content_library: Default::default(),
+                attestation: None,
             },
         );
         p.metadata = ObjectMeta {

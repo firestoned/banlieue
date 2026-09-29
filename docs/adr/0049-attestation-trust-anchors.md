@@ -1,8 +1,10 @@
 # 0049 — Attestation: the guest proves itself, banlieue never holds the token
 
-- **Status:** Proposed
-- **Date:** 2026-09-22
+- **Status:** Accepted
+- **Date:** 2026-09-27
+- **Proposed:** 2026-09-22
 - **Deciders:** Erick Bourgeois
+- **Amended:** 2026-09-27 (Decision 10: `Provider.spec.attestation.ekTrustBundle`)
 - **Related:** Completes the delivery half of
   [ADR-0047](0047-virtualmachineclaim.md) Decision 9 (the claim carries no
   credential) and consumes
@@ -127,6 +129,34 @@ ADR builds on.
    nothing in banlieue imports it. banlieue's side of the contract is the
    three fields it publishes.
 
+10. **EK trust anchors are admin-supplied on the Provider —
+    `spec.attestation.ekTrustBundle`, a `CABundleSource` — and never
+    discovered.** The roots differ per backend for the provenance reasons
+    ADR-0045 records: on vSphere the issuing CA is vCenter's, on libvirt
+    (and Proxmox, when it exists) it is each host's `swtpm_localca` issuer
+    certificate — one entry per host, concatenated PEM being exactly what a
+    `CABundleSource` already carries for `connection.caBundle`.
+
+    Discovery is rejected deliberately, not deferred: an anchor fished off
+    the hypervisor would let whoever controls the hypervisor choose the
+    anchor that vouches for its own guests, collapsing the verification
+    into "trust whatever the host says". The administrator who installed
+    the host asserts its issuer explicitly, the same way they assert
+    `connection.caBundle`.
+
+    banlieue neither resolves nor verifies against the bundle — Decision 2
+    keeps it out of the verification path entirely. The field is
+    configuration published *for the broker*, which resolves the referenced
+    ConfigMap/Secret in the Provider's namespace when it verifies a quote
+    (Decision 4). The "exactly one of inline / configMapRef / secretRef"
+    invariant is enforced at admission
+    (`deploy/admission/provider-attestation-ektrustbundle.yaml`), the same
+    defense-in-depth split `connection.caBundle` has.
+
+    Revocation on libvirt is removal of a host's issuer from the bundle:
+    swtpm EK certificates carry `notAfter 9999-12-31`, so expiry is not a
+    control and membership in this bundle is (threat model §8).
+
 ## Consequences
 
 - The claim model becomes usable end to end: a subject's credential reaches
@@ -151,6 +181,14 @@ ADR builds on.
 - A broker is now load-bearing twice over: it holds credentials *and* it is
   the party that verifies quotes. Its compromise is the design's worst case,
   which the threat model records rather than mitigates.
+- The broker needs read access to the Provider (for
+  `spec.attestation.ekTrustBundle`) and to whatever ConfigMap/Secret it
+  references in the Provider's namespace — an RBAC grant that belongs to the
+  broker's deployment (ADR-0055), not to any banlieue component.
+- Of banlieue's obligations under this ADR, everything now exists: the three
+  claim fields (ADR-0047), the mirrored EK certificate (ADR-0045), and the
+  trust-anchor field (Decision 10). What remains — the in-guest agent
+  (Decision 9) and the broker (ADR-0055) — is by design not banlieue code.
 - Nothing here is provider-specific. The vTPM's uniqueness is guaranteed by
   different mechanisms on vSphere and libvirt, but the anchor it provides is
   the same and the handshake does not know which backend it is on.

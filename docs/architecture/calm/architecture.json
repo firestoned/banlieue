@@ -340,7 +340,7 @@
       "unique-id": "data-asset-provider-cr",
       "node-type": "data-asset",
       "name": "Provider Custom Resource",
-      "description": "Namespaced CRD (banlieue.io/v1alpha1) declaring one backend instance in this cluster: providerClassRef (→ ProviderClass, which carries the backend kind), connection (endpoint, credentialsRef, optional caBundle/insecureSkipTLSVerify), and capabilities (storage/network class mappings plus a free-form features list, e.g. the vtpm well-known value gating VMClass.spec.tpmEnabled, ADR-0039). Owned by the platform operator; VirtualMachines never reference a Provider by name — they are matched onto one via placement.providerSelector against the Provider's labels. features is set by hand, never auto-discovered from the backend (e.g. vtpm requires the operator to confirm KMS + vTPM actually work end-to-end in that vCenter first)."
+      "description": "Namespaced CRD (banlieue.io/v1alpha1) declaring one backend instance in this cluster: providerClassRef (→ ProviderClass, which carries the backend kind), connection (endpoint, credentialsRef, optional caBundle/insecureSkipTLSVerify), and capabilities (storage/network class mappings plus a free-form features list, e.g. the vtpm well-known value gating VMClass.spec.tpmEnabled, ADR-0039). spec.attestation.ekTrustBundle (ADR-0049 Decision 10) is the admin-supplied, never-discovered EK trust anchor for this backend's vTPMs — vCenter's CA on vSphere, each host's swtpm_localca issuer on libvirt — published for the broker, which banlieue itself never verifies against. Owned by the platform operator; VirtualMachines never reference a Provider by name — they are matched onto one via placement.providerSelector against the Provider's labels. features is set by hand, never auto-discovered from the backend (e.g. vtpm requires the operator to confirm KMS + vTPM actually work end-to-end in that vCenter first)."
     },
     {
       "unique-id": "data-asset-providerclass-cr",
@@ -1903,8 +1903,8 @@
     },
     {
       "unique-id": "flow-attest-and-deliver-credential",
-      "name": "Deliver a subject's credential to its sandbox (PROPOSED — not implemented)",
-      "description": "The unanswered half of the claim model: a claim deliberately carries no credential, so how does the subject's token reach the guest and what convinces the guest it is genuine? ADR-0049 is Proposed and nothing here ships; it is modelled because banlieue's side of the contract -- subject.issuer, subject.id, status.nonce, and the mirrored EK certificate -- is already implemented. ADR-0045 landed 2026-09-23, so the anchor a quote is verified against now exists on the claim; what remains for ADR-0049 is the per-backend trust bundle (Provider.spec.attestation.ekTrustBundle) and the in-guest agent.",
+      "name": "Deliver a subject's credential to its sandbox (banlieue side implemented; agent and broker are not banlieue code)",
+      "description": "The unanswered half of the claim model: a claim deliberately carries no credential, so how does the subject's token reach the guest and what convinces the guest it is genuine? ADR-0049 is Accepted (2026-09-27) and banlieue's whole side of the contract exists: subject.issuer, subject.id, status.nonce, the mirrored EK certificate (ADR-0045, landed 2026-09-23), and the per-backend trust anchor Provider.spec.attestation.ekTrustBundle (Decision 10, admin-supplied, never discovered -- an anchor fished off the hypervisor would let the host vouch for its own guests). What does not exist -- the in-guest agent (Decision 9) and the broker (ADR-0055) -- is by design not banlieue code, so this flow stays unexercised until they are built elsewhere.",
       "transitions": [
         {
           "sequence-number": 1,
@@ -1942,7 +1942,7 @@
                   "SC-28",
                   "IA-3"
                 ],
-                "evidence": "docs/adr/0049-attestation-trust-anchors.md, docs/adr/0047-virtualmachineclaim.md (Decision 9), crates/banlieue-api/src/banlieue/virtualmachineclaim.rs (CLAIM_NONCE_BITS, tpmEndorsementCertificates)"
+                "evidence": "docs/adr/0049-attestation-trust-anchors.md, docs/adr/0047-virtualmachineclaim.md (Decision 9), crates/banlieue-api/src/banlieue/virtualmachineclaim.rs (CLAIM_NONCE_BITS, tpmEndorsementCertificates), crates/banlieue-api/src/banlieue/provider.rs (ProviderAttestation.ekTrustBundle), deploy/admission/provider-attestation-ektrustbundle.yaml"
               }
             }
           ]
@@ -2255,7 +2255,7 @@
     "repository": "https://github.com/firestoned/banlieue",
     "license": "Apache-2.0",
     "calm-schema-version": "1.2",
-    "phase": "Phase 1A/1D — banlieue-api, the main controller, banlieue-operator, and the vSphere provider create and power on real VMs end-to-end (vSphere create-path only: clone-from-template + power-on, no update/drift/live-migration yet). The libvirt provider now has a full domain lifecycle: LibvirtMachine defines, starts, monitors and destroys domains over libvirt's native RPC, builds its own NoCloud seed ISO in-process, and reports GuestReady from a qemu-guest-agent probe (ADR-0050, ADR-0054, ADR-0043). VirtualMachinePool and VirtualMachineClaim are implemented and verified against a real libvirt host: a pool fills, a claim binds one member for one subject, and deleting the claim destroys the VM. AgentSandbox (ADR-0055) and the attestation handshake (ADR-0049) are designed and modelled but not built, and ADR-0045 gates the latter. Proxmox is anticipated in the schema only — no provider implementation.",
+    "phase": "Phase 1A/1D — banlieue-api, the main controller, banlieue-operator, and the vSphere provider create and power on real VMs end-to-end (vSphere create-path only: clone-from-template + power-on, no update/drift/live-migration yet). The libvirt provider now has a full domain lifecycle: LibvirtMachine defines, starts, monitors and destroys domains over libvirt's native RPC, builds its own NoCloud seed ISO in-process, and reports GuestReady from a qemu-guest-agent probe (ADR-0050, ADR-0054, ADR-0043). VirtualMachinePool and VirtualMachineClaim are implemented and verified against a real libvirt host: a pool fills, a claim binds one member for one subject, and deleting the claim destroys the VM. banlieue's side of the attestation handshake (ADR-0049, Accepted) is complete — claim subject fields, nonce, mirrored EK certificate (ADR-0045) and the admin-supplied Provider.spec.attestation.ekTrustBundle trust anchor — while the in-guest agent and the AgentSandbox broker (ADR-0055) are designed, modelled and deliberately not banlieue code. Proxmox is anticipated in the schema only — no provider implementation.",
     "crds": {
       "user-facing": {
         "group": "banlieue.io",

@@ -165,8 +165,23 @@ pub async fn reconcile(machine: Arc<LibvirtMachine>, ctx: Arc<Context>) -> Resul
             let ek_pending =
                 machine.spec.tpm_enabled && status.tpm_endorsement_certificates.is_empty();
             patch_status(&api, &name, &status).await?;
+            // Age from the API server's own clock, saturating: a clock skew
+            // that makes the machine "from the future" reads as age 0, which
+            // errs toward polling fast, never toward abandoning it.
+            let now = k8s_openapi::jiff::Timestamp::now();
+            let age_secs = machine
+                .metadata
+                .creation_timestamp
+                .as_ref()
+                .and_then(|t| u64::try_from(now.as_second() - t.0.as_second()).ok())
+                .unwrap_or(0);
             Ok(
-                if should_poll_soon(observed.guest, !observed.addresses.is_empty(), ek_pending) {
+                if should_poll_soon(
+                    observed.guest,
+                    !observed.addresses.is_empty(),
+                    ek_pending,
+                    within_agent_bootstrap_grace(age_secs),
+                ) {
                     requeue_default()
                 } else {
                     requeue_long()
@@ -918,16 +933,41 @@ async fn patch_status(
     Ok(())
 }
 
+/// How long an unreachable guest agent is read as "not yet" rather than
+/// "never" (ADR-0043 Decision 8, amended 2026-09-28).
+///
+/// Covers a first boot that installs the agent through cloud-init
+/// (`packages: [qemu-guest-agent]`): boot, `apt-get update`, install and
+/// socket activation land within a couple of minutes on a healthy host,
+/// so ten is generous without being unbounded. An `Immediate` image with
+/// no agent pays at most this window of 30s polls per member, then
+/// settles at the long interval exactly as before.
+pub const AGENT_BOOTSTRAP_GRACE_SECS: u64 = 600;
+
+/// Whether a machine of this age is still inside
+/// [`AGENT_BOOTSTRAP_GRACE_SECS`].
+#[must_use]
+pub fn within_agent_bootstrap_grace(age_secs: u64) -> bool {
+    age_secs < AGENT_BOOTSTRAP_GRACE_SECS
+}
+
 /// Whether to come back at the short interval rather than the long one.
 ///
 /// Fast only while the answer is expected to change soon (ADR-0043
 /// Decision 8): a domain still coming up, or one whose agent is answering
 /// but which has not announced yet — a Deferred install in progress.
 ///
-/// An **unreachable agent is not a reason to poll fast**, which is the
-/// correction Decision 8 needed. An `Immediate` image has no phase stage
-/// and usually no guest agent, so "poll until installed" would poll every
-/// 30s forever, per VM, for a signal that is never coming.
+/// An **unreachable agent on a *settled* machine is not a reason to poll
+/// fast** — an `Immediate` image has no phase stage and usually no guest
+/// agent, so "poll until installed" would poll every 30s forever, per VM,
+/// for a signal that is never coming. But on a machine still inside the
+/// agent-bootstrap grace window (`in_bootstrap_grace`), unreachable means
+/// "cloud-init may still be installing it", and backing off there loses a
+/// race this reconciler is the only input to: one probe at ~T+38s, the
+/// next at ~T+338s, and a pool's `provisioningTimeoutSeconds` reaps the
+/// member in between — every member, forever, as the first live run of a
+/// seed-installed-agent `GuestReady` pool proved (Decision 8, amended
+/// 2026-09-28).
 ///
 /// A `tpmEnabled` machine that has announced itself but not yet published
 /// its EK certificate is also "expecting the answer to change" (ADR-0045).
@@ -937,11 +977,20 @@ async fn patch_status(
 /// `TpmEndorsementPending` for up to five minutes, which is the whole
 /// latency budget a pool exists to eliminate.
 #[must_use]
-pub fn should_poll_soon(guest: GuestProbe, has_addresses: bool, ek_pending: bool) -> bool {
+pub fn should_poll_soon(
+    guest: GuestProbe,
+    has_addresses: bool,
+    ek_pending: bool,
+    in_bootstrap_grace: bool,
+) -> bool {
     if !has_addresses || ek_pending {
         return true;
     }
-    guest == GuestProbe::NotAnnounced
+    match guest {
+        GuestProbe::NotAnnounced => true,
+        GuestProbe::AgentUnreachable => in_bootstrap_grace,
+        _ => false,
+    }
 }
 
 /// Fold a fresh guest observation into the stored one, stickily.

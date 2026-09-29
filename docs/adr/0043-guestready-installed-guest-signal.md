@@ -3,6 +3,9 @@
 - **Status:** Accepted
 - **Date:** 2026-09-20
 - **Proposed:** 2026-09-20
+- **Amended:** 2026-09-28 (Decision 8 again — an unreachable agent backs off
+  only after an agent-bootstrap grace window; found live when a `GuestReady`
+  pool whose agent is seed-installed reaped every member it created)
 - **Amended:** 2026-09-20 (Decision 8 — the first formulation would have
   polled every `Immediate` VM forever; see the decision for the correction)
 - **Deciders:** Erick Bourgeois
@@ -209,6 +212,24 @@ booted from**.
    long interval as soon as its *installer* picks up a DHCP lease, and then
    adds up to five minutes between the guest announcing and the pool
    noticing.
+
+   **Amended 2026-09-28:** "an unreachable agent means nothing will ever
+   announce" is only true of a *settled* guest. A guest whose image does
+   not ship the agent but installs it at first boot through cloud-init
+   (`packages: [qemu-guest-agent]` — the shape every live test uses, and a
+   legitimate production shape) is unreachable for its first minute or two
+   and announces shortly after. Backing off on the first unreachable probe
+   gave such a member exactly one look, at ~T+38s, and the next at
+   ~T+338s — past any `provisioningTimeoutSeconds` a pool plausibly sets,
+   so the pool reaped every member it created, forever, on the first live
+   run of a `GuestReady` pool whose agent came from the seed. The reconcile
+   cadence must never lose a race it is the only input to: an unreachable
+   agent now backs off only once the machine is older than an
+   agent-bootstrap grace window (`AGENT_BOOTSTRAP_GRACE_SECS`, 10 minutes).
+   Within it, unreachable polls fast, because "not yet" and "never" are
+   indistinguishable while cloud-init may still be running. An `Immediate`
+   image with no agent costs at most the grace window of 30s polls per
+   member, then settles at the long interval as before.
 
 9. **This is a liveness signal and must never be read as an integrity
    one.** It says a fresh, unclaimed guest booted from its installed disk.

@@ -297,6 +297,7 @@ pub fn provider(paused: bool) -> Provider {
             paused,
             use_content_library: false,
             failure_domain_name_overrides: Vec::new(),
+            attestation: None,
         },
     );
     p.metadata.namespace = Some(E2E_NAMESPACE.to_string());

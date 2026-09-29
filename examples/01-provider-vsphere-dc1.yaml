@@ -33,6 +33,19 @@ spec:
     #   #   -----BEGIN CERTIFICATE-----
     #   #   ...
     #   #   -----END CERTIFICATE-----
+  # EK trust anchors for this backend's vTPMs (ADR-0049 Decision 10).
+  # Admin-supplied, never discovered; only meaningful when tpmEnabled
+  # classes run here. On vSphere the issuing CA is vCenter's — export it
+  # from vCenter's Certificate Management. banlieue never verifies against
+  # this bundle; the attestation broker (ADR-0055) resolves and uses it.
+  # Same value-or-source shape as caBundle: EXACTLY ONE of
+  # inline / configMapRef / secretRef.
+  #
+  # attestation:
+  #   ekTrustBundle:
+  #     configMapRef:
+  #       name: vcenter-ek-ca
+  #       # key: ca.crt
   capabilities:
     storageClasses:
       - name: gold

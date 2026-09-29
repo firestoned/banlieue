@@ -79,6 +79,113 @@ mod tests {
         assert!(image_class_mismatch(true, InstallMode::default()).is_some());
     }
 
+    // ---- spec.paused (in-band pause) ------------------------------------
+    //
+    // Same convention as `VSphereCluster.spec.paused` (ADR-0002) and
+    // `ProviderClass.spec.paused` (ADR-0012): while paused the reconciler
+    // does nothing but report `Paused=True` / `Ready=False`; on resume the
+    // `Paused` condition disappears rather than flipping to False, exactly
+    // like the fresh-built condition list in vsphere_cluster's
+    // `build_status`.
+
+    #[test]
+    fn paused_status_reports_paused_and_not_ready() {
+        let status = paused_status(None, 7);
+
+        let paused = status
+            .conditions
+            .iter()
+            .find(|c| c.type_ == CONDITION_PAUSED)
+            .expect("paused status must carry a Paused condition");
+        assert_eq!(paused.status, condition_status::TRUE);
+        assert_eq!(paused.reason, REASON_PAUSED);
+
+        let ready = status
+            .conditions
+            .iter()
+            .find(|c| c.type_ == condition_types::READY)
+            .expect("paused status must carry a Ready condition");
+        assert_eq!(ready.status, condition_status::FALSE);
+        assert_eq!(ready.reason, REASON_PAUSED);
+
+        assert_eq!(status.observed_generation, Some(7));
+    }
+
+    #[test]
+    fn paused_status_preserves_previously_mirrored_fields() {
+        // The whole-status SSA rule (`patch_status`'s doc comment): a paused
+        // patch that dropped `observedPowerState` / `scheduled` / other
+        // mirrored fields would make the apiserver retract this manager's
+        // ownership of them, wiping them for as long as the VM stays paused.
+        use banlieue_api::common::PowerState;
+
+        let mut current = VirtualMachineStatus {
+            observed_power_state: Some(PowerState::PoweredOn),
+            ..Default::default()
+        };
+        set_condition(
+            &mut current.conditions,
+            condition_types::SCHEDULED,
+            condition_status::TRUE,
+            "Scheduled",
+            "VirtualMachine scheduled successfully",
+            3,
+        );
+
+        let status = paused_status(Some(&current), 4);
+
+        assert_eq!(status.observed_power_state, Some(PowerState::PoweredOn));
+        let scheduled = status
+            .conditions
+            .iter()
+            .find(|c| c.type_ == condition_types::SCHEDULED)
+            .expect("pre-existing conditions must survive the paused patch");
+        assert_eq!(scheduled.status, condition_status::TRUE);
+    }
+
+    #[test]
+    fn clear_paused_removes_the_condition_on_resume() {
+        let mut status = paused_status(None, 2);
+        clear_paused(&mut status.conditions);
+        assert!(
+            !status
+                .conditions
+                .iter()
+                .any(|c| c.type_ == CONDITION_PAUSED),
+            "resume must drop the Paused condition entirely"
+        );
+    }
+
+    #[test]
+    fn clear_paused_leaves_other_conditions_alone() {
+        let mut status = paused_status(None, 2);
+        let before: Vec<String> = status
+            .conditions
+            .iter()
+            .filter(|c| c.type_ != CONDITION_PAUSED)
+            .map(|c| c.type_.clone())
+            .collect();
+
+        clear_paused(&mut status.conditions);
+
+        // Only Paused is removed; Ready (stale, from the paused patch) is
+        // left for the resumed reconcile pass to overwrite with a real value.
+        let after: Vec<String> = status.conditions.iter().map(|c| c.type_.clone()).collect();
+        assert_eq!(after, before);
+
+        // And on a list that was never paused it is a no-op.
+        let mut untouched = VirtualMachineStatus::default();
+        clear_paused(&mut untouched.conditions);
+        assert!(untouched.conditions.is_empty());
+    }
+
+    #[test]
+    fn paused_wire_strings_are_stable() {
+        // Stable wire values — operators and tests match on these.
+        assert_eq!(CONDITION_PAUSED, "Paused");
+        assert_eq!(REASON_PAUSED, "Paused");
+    }
+
     #[test]
     fn tpm_disabled_accepts_every_install_mode() {
         // Without a vTPM there is nothing to seal to, so no pairing is a

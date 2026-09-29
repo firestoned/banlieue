@@ -989,13 +989,18 @@ mod tests {
     /// Deferred install in progress, and the answer is expected to change.
     #[test]
     fn an_answering_guest_that_has_not_announced_is_polled_soon() {
-        assert!(should_poll_soon(GuestProbe::NotAnnounced, true, false));
+        assert!(should_poll_soon(
+            GuestProbe::NotAnnounced,
+            true,
+            false,
+            false
+        ));
     }
 
     /// Once it has announced there is nothing left to wait for.
     #[test]
     fn an_announced_guest_is_not_polled_soon() {
-        assert!(!should_poll_soon(GuestProbe::Installed, true, false));
+        assert!(!should_poll_soon(GuestProbe::Installed, true, false, false));
     }
 
     /// **The case that makes Decision 8 as originally written wrong.** An
@@ -1004,10 +1009,48 @@ mod tests {
     /// would poll every 30s forever, for every such VM, for a signal that
     /// is never coming.
     ///
-    /// An unreachable agent is the signal that nothing will ever announce.
+    /// A *settled* guest with an unreachable agent is the signal that
+    /// nothing will ever announce.
     #[test]
     fn a_guest_with_no_agent_is_not_polled_soon_forever() {
-        assert!(!should_poll_soon(GuestProbe::AgentUnreachable, true, false));
+        assert!(!should_poll_soon(
+            GuestProbe::AgentUnreachable,
+            true,
+            false,
+            false
+        ));
+    }
+
+    /// **The case that made the 2026-09-20 formulation wrong in turn**
+    /// (ADR-0043 Decision 8, amended 2026-09-28). A guest whose agent is
+    /// installed at first boot through the seed is unreachable for its
+    /// first minute or two — "not yet", not "never". Backing off on that
+    /// first probe gave a member one look at ~T+38s and the next at
+    /// ~T+338s, past any plausible `provisioningTimeoutSeconds`, so a
+    /// `GuestReady` pool reaped every member it ever created. Found on the
+    /// first live run of exactly that shape.
+    #[test]
+    fn an_unreachable_agent_on_a_young_machine_is_polled_soon() {
+        assert!(should_poll_soon(
+            GuestProbe::AgentUnreachable,
+            true,
+            false,
+            true
+        ));
+    }
+
+    /// The grace window changes nothing for the other probe outcomes — it
+    /// exists only to reinterpret "unreachable" on a machine still young
+    /// enough to be installing its agent.
+    #[test]
+    fn the_bootstrap_grace_window_does_not_affect_settled_answers() {
+        assert!(should_poll_soon(
+            GuestProbe::NotAnnounced,
+            true,
+            false,
+            true
+        ));
+        assert!(!should_poll_soon(GuestProbe::Installed, true, false, true));
     }
 
     /// A domain with no address yet is still booting whatever its image, so
@@ -1021,10 +1064,22 @@ mod tests {
             GuestProbe::Installed,
         ] {
             assert!(
-                should_poll_soon(probe, false, false),
+                should_poll_soon(probe, false, false, false),
                 "{probe:?} with no address must still be polled soon"
             );
         }
+    }
+
+    /// The grace window is a duration comparison, pinned so a unit slip
+    /// (secs vs millis) cannot silently shrink it to nothing.
+    #[test]
+    fn bootstrap_grace_covers_a_first_boot_agent_install() {
+        assert!(within_agent_bootstrap_grace(0));
+        assert!(within_agent_bootstrap_grace(AGENT_BOOTSTRAP_GRACE_SECS - 1));
+        assert!(!within_agent_bootstrap_grace(AGENT_BOOTSTRAP_GRACE_SECS));
+        assert!(!within_agent_bootstrap_grace(
+            AGENT_BOOTSTRAP_GRACE_SECS * 10
+        ));
     }
 
     // ------------------------------------------------------------------
@@ -1143,13 +1198,13 @@ mod tests {
     /// latency budget a warm pool exists to remove.
     #[test]
     fn a_member_waiting_for_its_certificate_is_polled_soon() {
-        assert!(should_poll_soon(GuestProbe::Installed, true, true));
+        assert!(should_poll_soon(GuestProbe::Installed, true, true, false));
     }
 
     /// And once it is published, nothing is left to wait for.
     #[test]
     fn a_member_that_published_its_certificate_is_not_polled_soon() {
-        assert!(!should_poll_soon(GuestProbe::Installed, true, false));
+        assert!(!should_poll_soon(GuestProbe::Installed, true, false, false));
     }
 
     /// A mismatch is the ONE input that can take an already-True GuestReady

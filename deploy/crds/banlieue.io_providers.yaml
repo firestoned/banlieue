@@ -78,6 +78,64 @@ spec:
               The provider's controller talks to the backend; banlieue's main controller
               never does. Communication between them is CRD-only.
             properties:
+              attestation:
+                description: |-
+                  Attestation trust anchors for this backend's vTPMs (ADR-0049
+                  Decision 10). Admin-supplied, never discovered: an anchor read off
+                  the hypervisor would let whoever controls the hypervisor choose the
+                  anchor that vouches for its own guests. Optional — a Provider that
+                  runs no `tpmEnabled` classes has no reason to set it.
+                nullable: true
+                properties:
+                  ekTrustBundle:
+                    description: |-
+                      PEM bundle of CA certificates trusted to issue this backend's vTPM
+                      endorsement-key certificates. Provenance differs per backend
+                      (ADR-0045): on vSphere the issuing CA is vCenter's; on libvirt it is
+                      each host's `swtpm_localca` issuer certificate, one entry per host.
+
+                      Same value-or-source shape as `connection.caBundle`: exactly one of
+                      `inline`, `configMapRef`, `secretRef` must be set (see
+                      [`CABundleSource`]); references resolve in the Provider's namespace.
+                      Removal of an issuer from this bundle is the revocation mechanism on
+                      libvirt — swtpm EK certificates never expire.
+                    properties:
+                      configMapRef:
+                        description: Key in a ConfigMap in the referrer's namespace (key defaults to `ca.crt`).
+                        nullable: true
+                        properties:
+                          key:
+                            description: Key within the object's `data`. Defaults are caller-defined.
+                            nullable: true
+                            type: string
+                          name:
+                            description: Name of the ConfigMap / Secret in the referrer's namespace.
+                            type: string
+                        required:
+                        - name
+                        type: object
+                      inline:
+                        description: Inline PEM (one or more concatenated certificates).
+                        nullable: true
+                        type: string
+                      secretRef:
+                        description: Key in a Secret in the referrer's namespace (key defaults to `ca.crt`).
+                        nullable: true
+                        properties:
+                          key:
+                            description: Key within the object's `data`. Defaults are caller-defined.
+                            nullable: true
+                            type: string
+                          name:
+                            description: Name of the ConfigMap / Secret in the referrer's namespace.
+                            type: string
+                        required:
+                        - name
+                        type: object
+                    type: object
+                required:
+                - ekTrustBundle
+                type: object
               capabilities:
                 description: |-
                   Admin-defined capability mappings. Every storage / network class that

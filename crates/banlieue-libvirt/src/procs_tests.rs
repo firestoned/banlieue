@@ -626,6 +626,45 @@ mod tests {
         assert_eq!(both & DEVICE_MODIFY_FORCE, 0, "FORCE is never a default");
     }
 
+    // ---- DOMAIN_GET_XML_DESC --------------------------------------------
+
+    #[test]
+    fn domain_get_xml_desc_reuses_the_domain_flags_argument_shape() {
+        // `remote_domain_get_xml_desc_args { remote_nonnull_domain dom;
+        // unsigned int flags; }` — the same wire shape DOMAIN_GET_STATE and
+        // DOMAIN_UNDEFINE_FLAGS use, so the encoder is shared rather than
+        // duplicated. Pinned here so a future divergence in either caller
+        // grows its own encoder instead of silently changing this one.
+        let dom = Domain {
+            name: "sandbox-02".into(),
+            uuid: uuid_bytes(11),
+            id: 3,
+        };
+        let mut want = Encoder::new();
+        dom.encode(&mut want);
+        want.write_u32(0);
+        assert_eq!(encode_domain_flags_args(&dom, 0), want.into_bytes());
+    }
+
+    #[test]
+    fn decodes_domain_get_xml_desc_ret() {
+        // `remote_domain_get_xml_desc_ret { remote_nonnull_string xml; }`.
+        let xml = "<domain type='kvm'><name>d</name></domain>";
+        let mut e = Encoder::new();
+        e.write_string(xml);
+        assert_eq!(
+            decode_domain_get_xml_desc_ret(&e.into_bytes()).unwrap(),
+            xml
+        );
+    }
+
+    #[test]
+    fn decode_domain_get_xml_desc_ret_rejects_a_short_payload() {
+        // A truncated reply must be a Protocol error, never an empty string
+        // a caller would go on to parse as a domain with no devices.
+        assert!(decode_domain_get_xml_desc_ret(&[0, 0]).is_err());
+    }
+
     #[test]
     fn encodes_domain_interface_addresses_args() {
         let dom = Domain {

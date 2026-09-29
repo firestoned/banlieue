@@ -46,6 +46,7 @@ mod tests {
                 paused: false,
                 use_content_library: false,
                 failure_domain_name_overrides: Vec::new(),
+                attestation: None,
             },
             status: None,
         }

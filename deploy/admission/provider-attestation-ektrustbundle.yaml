@@ -1,0 +1,52 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# A Provider's spec.attestation.ekTrustBundle is a value-or-source: exactly one
+# of `inline`, `configMapRef`, or `secretRef` must be set (ADR-0049 Decision 10,
+# same CABundleSource shape as spec.connection.caBundle). banlieue itself never
+# resolves or verifies against this bundle — it is admin-supplied configuration
+# for the attestation broker — so admission is the only banlieue-side check a
+# malformed bundle would ever meet; there is no controller to fail closed on it.
+# Enforced in the API server via CEL (no webhook). Requires Kubernetes 1.30+
+# (ValidatingAdmissionPolicy GA).
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: banlieue-provider-attestation-ektrustbundle
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: admission
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["banlieue.io"]
+        apiVersions: ["v1alpha1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["providers"]
+  # Only evaluate when an attestation block is present; absence is valid (a
+  # Provider running no tpmEnabled classes has no reason to set one).
+  matchConditions:
+    - name: has-attestation
+      expression: "has(object.spec.attestation)"
+  validations:
+    # Count the set sources; exactly one is required. CEL has() is true only when
+    # the optional field is present, so this is a clean 0/1/many check.
+    - expression: >-
+        [has(object.spec.attestation.ekTrustBundle.inline),
+         has(object.spec.attestation.ekTrustBundle.configMapRef),
+         has(object.spec.attestation.ekTrustBundle.secretRef)].filter(x, x).size() == 1
+      messageExpression: >-
+        'spec.attestation.ekTrustBundle must set exactly one of inline, configMapRef, secretRef.'
+      reason: Invalid
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: banlieue-provider-attestation-ektrustbundle
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: admission
+spec:
+  policyName: banlieue-provider-attestation-ektrustbundle
+  validationActions: ["Deny"]

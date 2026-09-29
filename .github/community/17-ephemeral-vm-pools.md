@@ -284,7 +284,7 @@ provider can realise (see [Repo reality](#repo-reality-at-8360e19)).
 | C | In-guest agent (separate repo) | own repo | ⛔ |
 | D | libvirt provider: `LibvirtMachine` reconciler | 07 + 0050 + 0054 | ✅ complete — CRD, domain XML, reconciler, NoCloud user-data; roadmap 07 closed |
 | E | Proxmox provider, same | amend 12 | ⛔ |
-| F | Attestation trust anchors, threat model | 0049 | 📄 ADR-0049 written (Proposed); **no longer blocked** — A5 landed 2026-09-23, so the anchor exists on the claim. Remaining: `Provider.spec.attestation.ekTrustBundle` (per-backend — vCenter on vSphere, a per-host `swtpm_localca` on libvirt) and the in-guest agent |
+| F | Attestation trust anchors, threat model | 0049 | ✅ **banlieue's side complete 2026-09-27** — ADR-0049 Accepted with Decision 10: `Provider.spec.attestation.ekTrustBundle` (a `CABundleSource`, admin-supplied, never discovered; per-backend — vCenter's CA on vSphere, per-host `swtpm_localca` issuer on libvirt), shape-validated at admission (`deploy/admission/provider-attestation-ektrustbundle.yaml`), documented in the claims guide, examples annotated. Threat-model full pass done same day: A-15 (the bundle — zero confidentiality, high integrity), the sandbox workload named as an actor, TB-1 rows for bundle tampering and stale-image members, §7.14 (bundle custody) and §7.15 (vSphere VM Encryption on sandbox storage classes), §8 residues updated. What remains of ADR-0049 — the in-guest agent (Decision 9) and the broker — is deliberately **not banlieue code**: phase C / ADR-0055 |
 | G | Cloud Hypervisor backend, same | 09 + 0060–0065 | 🔶 **Prerequisites landed and verified live 2026-09-27** (roadmap 09): A2's `GuestReady` over vsock (the installed system runs `systemd-notify`, no extra package), A4's eject (`vm.remove-device`, and a per-machine installer copy deleted after it), A5's EK certificate read host-side where it was minted, A3 unchanged (controller-side), all through `make ch-deferred-e2e`. **Open:** a `VirtualMachinePool` with `readiness: GuestReady` reaching `Warm` on this class, and its warm-up time against vSphere's 130.3 s |
 
 Per `rules/architecture-driven-development.md` each ADR lands before its
@@ -726,18 +726,33 @@ To finish G:
 
 ### F: Attestation anchors and threat model (ADR-0049)
 
-- EK trust roots differ by backend: vCenter-issued on vSphere, per-host
+- ~~EK trust roots differ by backend: vCenter-issued on vSphere, per-host
   `swtpm_localca` on libvirt and Proxmox. Add
   `Provider.spec.attestation.ekTrustBundle` (a `CABundleSource`, same shape as
-  `connection.caBundle`). Explicit, admin-supplied, not discovered.
-- Extend the threat model (#39) with: prompt-injected agent as the adversary
+  `connection.caBundle`). Explicit, admin-supplied, not discovered.~~
+  **Done 2026-09-27** (ADR-0049 Decision 10) —
+  `crates/banlieue-api/src/banlieue/provider.rs` (`ProviderAttestation`),
+  exactly-one-source invariant enforced at admission
+  (`deploy/admission/provider-attestation-ektrustbundle.yaml`; banlieue never
+  resolves the bundle itself, so admission is the only banlieue-side check it
+  meets). Documented in `docs/src/guides/virtualmachine-claims.md` and both
+  provider examples.
+- ~~Extend the threat model (#39) with: prompt-injected agent as the adversary
   inside the guest; credential theft via guestinfo (mitigated: never there);
   pool poisoning via a member that lies about `installed` (bounded: it is
   pre-claim, and attestation does not depend on that signal); stale-image
   members (bounded by `maxIdleSeconds` and rollout); claim subject spoofing
-  (admission policy).
-- vSphere VM Encryption on the sandbox storage class so that deleting the VM
-  is a cryptographic erase at the datastore layer as well.
+  (admission policy).~~ **Done 2026-09-27** — the middle three were already
+  covered (A-9 / no-credential-at-rest; the TB-4 `GuestReady` liveness rows;
+  TB-1's subject-authorization row). This pass added what was missing: the
+  sandbox workload as a named §4 actor (hostile by design, prompt injection
+  included) and the stale-image-member row in TB-1 (bounded by pick order,
+  `maxIdleSeconds`, the mandatory claim TTL, and rollout).
+- ~~vSphere VM Encryption on the sandbox storage class so that deleting the VM
+  is a cryptographic erase at the datastore layer as well.~~ **Recorded
+  2026-09-27** as threat-model hardening requirement §7.15 — it is a property
+  of the storage policy the platform admin maps the class to, not something
+  banlieue configures.
 
 ## Definition of done
 
@@ -763,9 +778,32 @@ To finish G:
 > - **`tpmEnabled` + `Immediate` → `ImageClassMismatch`** — unit-tested per
 >   ADR-0048, never run live.
 >
-> Genuinely untested on **either** backend: the image-bump rollout holding
+> ~~Genuinely untested on **either** backend: the image-bump rollout holding
 > `available ≥ warmReplicas`, and the sabotaged-install member being deleted
-> at `provisioningTimeoutSeconds` and replaced.
+> at `provisioningTimeoutSeconds` and replaced.~~ **Both green on libvirt
+> 2026-09-28** (`e2e_pool_claim.rs`, against a real host and cluster):
+>
+> - **Image-bump rollout** — `bumping_the_image_rolls_the_pool_without_dropping_below_warm`:
+>   both members replaced with the new revision, `available ≥ warmReplicas`
+>   asserted at every poll throughout (32.8s end to end on a `BackingFile`
+>   image).
+> - **Sabotaged member reaped and replaced** —
+>   `a_sabotaged_member_is_reaped_at_provisioning_timeout_and_replaced`:
+>   the first member to boot has its NIC forced link-down (via the new
+>   `domain_get_xml_desc`, since MACs are auto-assigned) before apt can
+>   install the seed-delivered guest agent, never announces, is deleted at
+>   `provisioningTimeoutSeconds=300` and the pool warms on its replacement
+>   without it (353s). On libvirt's no-install `BackingFile` images the
+>   "detach the ISO mid-install" phrasing maps to severing the agent
+>   install, the same category of injury with a far wider race window.
+>
+> The first sabotage run failed productively: it exposed that ADR-0043
+> Decision 8's back-off on `AgentUnreachable` gave a seed-installed agent
+> exactly one probe before the pool's reaper won the race — every member
+> churned, eight generations in 17 minutes. Fixed with the
+> `AGENT_BOOTSTRAP_GRACE_SECS` amendment (Decision 8, amended 2026-09-28);
+> the vSphere-phrased checkboxes below stay unticked until run against a
+> vCenter.
 
 - [ ] Section 0 matrix filled in and linked from ADR-0051.
 - [x] ADRs 0043 to 0048 accepted; CALM updated. **Done 2026-09-23** — 0045 was the last one outstanding; every one of the six is `Accepted` and registered in `docs/architecture/calm/architecture.json`.

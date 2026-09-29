@@ -185,6 +185,7 @@ mod tests {
             paused: false,
             use_content_library: false,
             failure_domain_name_overrides: Vec::new(),
+            attestation: None,
         };
         let json = serde_json::to_value(&s).unwrap();
         let obj = json.as_object().unwrap();
@@ -218,6 +219,7 @@ mod tests {
             paused: true,
             use_content_library: false,
             failure_domain_name_overrides: Vec::new(),
+            attestation: None,
         };
         let json = serde_json::to_value(&s).unwrap();
         assert_eq!(json["paused"], true);
@@ -247,6 +249,7 @@ mod tests {
             paused: false,
             use_content_library: true,
             failure_domain_name_overrides: Vec::new(),
+            attestation: None,
         };
         let json = serde_json::to_value(&s).unwrap();
         assert_eq!(json["useContentLibrary"], true);
@@ -653,6 +656,7 @@ mod tests {
             paused: false,
             use_content_library: false,
             failure_domain_name_overrides: Vec::new(),
+            attestation: None,
         };
         let json = serde_json::to_value(&s).unwrap();
         assert!(
@@ -686,11 +690,126 @@ mod tests {
                 cluster: "cluster-example".to_string(),
                 name: "cluster-01".to_string(),
             }],
+            attestation: None,
         };
         let json = serde_json::to_value(&s).unwrap();
         assert_eq!(json["failureDomainNameOverrides"][0]["name"], "cluster-01");
         let back: ProviderSpec = serde_json::from_value(json).unwrap();
         assert_eq!(back, s);
+    }
+
+    // ----------------------------------------------------------------------
+    // spec.attestation — EK trust anchors (ADR-0049 Decision 10)
+    // ----------------------------------------------------------------------
+
+    fn minimal_spec() -> ProviderSpec {
+        ProviderSpec {
+            provider_class_ref: LocalObjectReference {
+                name: "libvirt".to_string(),
+            },
+            connection: ProviderConnection {
+                endpoint: "qemu://kvm-host.example.com/system".to_string(),
+                credentials_ref: Some(LocalObjectReference {
+                    name: "libvirt-creds".to_string(),
+                }),
+                insecure_skip_tls_verify: false,
+                ca_bundle: None,
+            },
+            capabilities: ProviderCapabilities::default(),
+            paused: false,
+            use_content_library: false,
+            failure_domain_name_overrides: Vec::new(),
+            attestation: None,
+        }
+    }
+
+    #[test]
+    fn provider_spec_omits_attestation_when_absent() {
+        let json = serde_json::to_value(minimal_spec()).unwrap();
+        assert!(
+            !json.as_object().unwrap().contains_key("attestation"),
+            "absent attestation must be skipped, not serialized as null"
+        );
+    }
+
+    #[test]
+    fn attestation_ek_trust_bundle_round_trips_and_uses_camel_case_keys() {
+        let s = ProviderSpec {
+            attestation: Some(ProviderAttestation {
+                ek_trust_bundle: CABundleSource {
+                    config_map_ref: Some(KeySelector {
+                        name: "swtpm-issuers".to_string(),
+                        key: Some("ek-ca.crt".to_string()),
+                    }),
+                    ..Default::default()
+                },
+            }),
+            ..minimal_spec()
+        };
+        let json = serde_json::to_value(&s).unwrap();
+        assert_eq!(
+            json["attestation"]["ekTrustBundle"]["configMapRef"]["name"], "swtpm-issuers",
+            "field must serialize as attestation.ekTrustBundle (camelCase)"
+        );
+        let back: ProviderSpec = serde_json::from_value(json).unwrap();
+        assert_eq!(back, s);
+    }
+
+    #[test]
+    fn attestation_ek_trust_bundle_accepts_inline_pem() {
+        let yaml = r#"
+attestation:
+  ekTrustBundle:
+    inline: |
+      -----BEGIN CERTIFICATE-----
+      MIIB...
+      -----END CERTIFICATE-----
+"#;
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Partial {
+            attestation: ProviderAttestation,
+        }
+        let p: Partial = serde_yaml::from_str(yaml).unwrap();
+        assert!(p.attestation.ek_trust_bundle.inline.is_some());
+        assert!(p.attestation.ek_trust_bundle.validate().is_ok());
+    }
+
+    #[test]
+    fn attestation_ek_trust_bundle_reuses_the_exactly_one_source_invariant() {
+        let a = ProviderAttestation {
+            ek_trust_bundle: CABundleSource {
+                inline: Some("pem".to_string()),
+                config_map_ref: Some(KeySelector {
+                    name: "also-set".to_string(),
+                    key: None,
+                }),
+                ..Default::default()
+            },
+        };
+        assert!(
+            a.ek_trust_bundle.validate().is_err(),
+            "two sources must fail the CABundleSource invariant"
+        );
+    }
+
+    #[test]
+    fn provider_crd_schema_declares_attestation_ek_trust_bundle() {
+        let crd = Provider::crd();
+        let json = serde_json::to_value(&crd).unwrap();
+        let spec_props = &json["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"]["spec"]
+            ["properties"];
+        let bundle = &spec_props["attestation"]["properties"]["ekTrustBundle"];
+        assert!(
+            bundle.is_object(),
+            "CRD schema must declare spec.attestation.ekTrustBundle"
+        );
+        for source in ["inline", "configMapRef", "secretRef"] {
+            assert!(
+                bundle["properties"][source].is_object(),
+                "ekTrustBundle must carry the CABundleSource shape ({source})"
+            );
+        }
     }
 
     // ----------------------------------------------------------------------

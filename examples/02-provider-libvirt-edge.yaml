@@ -32,6 +32,18 @@ spec:
     caBundle:
       configMapRef:
         name: libvirt-edge-ca
+  # EK trust anchors for this host's vTPMs (ADR-0049 Decision 10). On libvirt
+  # the issuer is this host's own `swtpm_localca` certificate
+  # (/var/lib/swtpm-localca/issuercert.pem) — one entry per host, concatenated
+  # PEM for multi-host bundles. Admin-supplied, never discovered; banlieue
+  # never verifies against it (the attestation broker does). swtpm EK
+  # certificates never expire, so removing a host's issuer from this bundle
+  # IS the revocation mechanism. EXACTLY ONE of inline/configMapRef/secretRef.
+  #
+  # attestation:
+  #   ekTrustBundle:
+  #     configMapRef:
+  #       name: swtpm-localca-issuers
   capabilities:
     storageClasses:
       - name: gold          # admin asserts: on this host, gold = nvme pool

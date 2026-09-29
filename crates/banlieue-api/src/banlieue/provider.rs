@@ -99,6 +99,37 @@ pub struct ProviderSpec {
         "x-kubernetes-list-map-keys" = ["datacenter", "cluster"],
     ))]
     pub failure_domain_name_overrides: Vec<FailureDomainNameOverride>,
+
+    /// Attestation trust anchors for this backend's vTPMs (ADR-0049
+    /// Decision 10). Admin-supplied, never discovered: an anchor read off
+    /// the hypervisor would let whoever controls the hypervisor choose the
+    /// anchor that vouches for its own guests. Optional — a Provider that
+    /// runs no `tpmEnabled` classes has no reason to set it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attestation: Option<ProviderAttestation>,
+}
+
+/// Attestation configuration for one backend (ADR-0049 Decision 10).
+///
+/// banlieue itself neither resolves nor verifies against anything here —
+/// ADR-0049 Decision 2 keeps it out of the verification path. The fields are
+/// configuration published *for the broker* (ADR-0055), which verifies TPM
+/// quotes against the EK certificates that `tpmEnabled` machines publish
+/// (ADR-0045) and needs to know which issuers the administrator trusts.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderAttestation {
+    /// PEM bundle of CA certificates trusted to issue this backend's vTPM
+    /// endorsement-key certificates. Provenance differs per backend
+    /// (ADR-0045): on vSphere the issuing CA is vCenter's; on libvirt it is
+    /// each host's `swtpm_localca` issuer certificate, one entry per host.
+    ///
+    /// Same value-or-source shape as `connection.caBundle`: exactly one of
+    /// `inline`, `configMapRef`, `secretRef` must be set (see
+    /// [`CABundleSource`]); references resolve in the Provider's namespace.
+    /// Removal of an issuer from this bundle is the revocation mechanism on
+    /// libvirt — swtpm EK certificates never expire.
+    pub ek_trust_bundle: CABundleSource,
 }
 
 /// Explicit override for one discovered failure domain's generated `name`,

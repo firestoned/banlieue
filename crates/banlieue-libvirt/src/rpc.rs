@@ -98,6 +98,8 @@ pub const PROC_CONNECT_LIST_ALL_NETWORKS: i32 = 283;
 // is named after the enum entry it came from.
 /// `REMOTE_PROC_DOMAIN_DESTROY` — force power-off. Not a graceful shutdown.
 pub const PROC_DOMAIN_DESTROY: i32 = 12;
+/// `REMOTE_PROC_DOMAIN_GET_XML_DESC` — `virsh dumpxml`.
+pub const PROC_DOMAIN_GET_XML_DESC: i32 = 14;
 /// `REMOTE_PROC_DOMAIN_LOOKUP_BY_NAME`.
 pub const PROC_DOMAIN_LOOKUP_BY_NAME: i32 = 23;
 /// `REMOTE_PROC_DOMAIN_SHUTDOWN` — ACPI request; the guest may ignore it.
