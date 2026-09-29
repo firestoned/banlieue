@@ -14,7 +14,10 @@ SPDX-License-Identifier: Apache-2.0
   Decision 3: guest uids are registered with NSS as userdb records, each
   with a private group — all found while implementing, the last two on the
   first live run); 2026-09-27 (Decision 1: **root-owned template units, not transient
-  units** — a security fix; see *Amendment 2026-09-27*)
+  units** — a security fix; see *Amendment 2026-09-27*); 2026-09-30
+  (Decision 3, **proposed**: guest memory is bounded by one slice for all
+  guests, not a `MemoryMax` per guest — a per-guest limit throttles the
+  guest's own disk writes; see *Amendment 2026-09-30*)
 - **Related:** [ADR-0060](0060-cloud-hypervisor-first-class-provider-topology.md)
   (host-resident provider), [ADR-0061](0061-banlieue-cloud-hypervisor-vmm-client.md)
   (the socket this ADR places), [ADR-0062](0062-cloudhypervisormachine-inframachine-contract.md)
@@ -108,6 +111,87 @@ are not enabled, so nothing starts on boot until the provider starts it.
 the provider orders them (swtpm, then its socket, then the VMM) and stops
 the VMM first.
 
+## Amendment 2026-09-30: one memory bound for all guests, not one per guest
+
+*Proposed 2026-09-30; accepted when implemented.*
+
+**Why.** Decision 3 gave every VMM unit a `MemoryMax` of guest memory plus
+a 512 MiB overhead. A cgroup memory limit appears to do more than cap
+memory: the kernel sizes that cgroup's dirty page-cache allowance from its
+own budget instead of the host's. (Inferred from the measurements below,
+which fit it; not traced in the kernel.) The VMM writes guest disks through the host
+page cache (its default, and the fast path on these hosts), so with a
+per-guest limit a guest writing a few hundred megabytes is throttled by its
+own unit long before memory is anywhere near the limit.
+
+Measured on one host (2026-09-29/30), one Debian 13 guest, 2 vCPU, 4 GiB,
+the VMM started exactly as the provider starts it, eight rounds of the
+`make provider-bench` disk workload per boot, two boots per row:
+
+| Memory limit on the VMM's cgroup | 4 KiB direct writes, collapsed rounds | Typical |
+| --- | --- | --- |
+| None | 0 of 16 | 50–82 MB/s |
+| `MemoryMax` = guest + 512 MiB (Decision 3) | 8 of 14 (5–37 MB/s) | 49–79 MB/s |
+| `MemoryMax` = guest + 1.5 GiB / + 2 GiB (one boot each) | 2 / 1 of 8 | 65–84 MB/s |
+| `MemoryHigh` = guest + 512 MiB, `MemoryMax` = guest + 2 GiB (one boot) | 4 of 8 | 69–84 MB/s |
+| None on the guest; `MemoryMax` = 48 GiB on a parent slice | **0 of 16** | 62–83 MB/s |
+
+In every limited run where they were captured, the cgroup recorded no
+`high` or `max` events, and the guest peaked at 1.85 GB against a 4.5 GiB
+limit: the limit was never reached, and its presence alone produced the
+stalls. Sequential 1 MiB writes collapsed the same way (250–350 MB/s in
+those rounds, 500–900 otherwise). Two result lines were lost on the serial
+console in the 512 MiB boots, hence 14. Opening the disk `O_DIRECT` instead (`direct=on`) avoids the page
+cache and was worse everywhere (4 KiB writes 3–6 MB/s, reads about 10 MB/s).
+This is what `make provider-bench` recorded as 8.2 MB/s for Cloud
+Hypervisor on 2026-09-27.
+
+**Decision.**
+
+1. The guest templates (`banlieue-ch@.service`, `banlieue-swtpm@.service`)
+   run in **`banlieue-guests.slice`**, a root-owned slice unit that
+   `banlieue host install` writes beside them (`Slice=` in the template, so
+   the provider cannot choose another).
+2. The slice carries the one hard bound: `MemoryMax` = the host's **guest
+   memory budget**, a host setting `banlieue host install` renders into the
+   slice. It is explicit: printed by `banlieue host status`, and set by
+   the operator or, if they leave it unset, computed once at install from
+   the host's memory minus a named reserve for the host itself, and written
+   down, never recomputed behind the operator's back.
+3. **No per-guest `MemoryMax`.** The provider stops calling
+   `SetUnitProperties`, and the polkit rule loses the `set-property` grant
+   the *Amendment 2026-09-27* added for it. The provider's authority on the
+   host shrinks to `start`, `stop` and `reset-failed`.
+4. Unchanged: `TasksMax` per guest, hugepage accounting, and guest memory
+   itself, which the VMM fixes at `vm.create` (`--memory size`) and the
+   guest cannot grow.
+
+**What is given up.** Decision 3's per-guest bound limited a VMM process
+that leaked or was compromised to its own guest's memory plus 512 MiB.
+Under the slice, such a process can take memory from the other guests on
+the host until the slice limit, and can no longer take it from the host
+itself or its services. The guest's RAM is unaffected: it is set by the
+VMM, not by the cgroup. A compromised VMM already runs as an unprivileged
+uid under seccomp and Landlock (Decisions 3 and 5), which is what keeps it
+from the other guests' files and processes; memory contention between
+guests on one host becomes a noisy-neighbour concern rather than a
+hard-isolated one. The shared budget is exactly what removes the stalls,
+so this trade is the fix, not a side effect of it.
+
+**Rejected.** More headroom per guest only moves the cliff (+2 GiB still
+collapsed) and reserves memory that is mostly idle. `MemoryHigh` per guest
+collapsed as often (4 of 8). `direct=on` removes the page cache and was
+worse. Host-wide `vm.dirty_*` tuning was not tried: it would change every
+workload on the host to fix one.
+
+**Follow-ups, in the implementing change.** The slice unit and the budget
+setting in `banlieue-host`; `Slice=` in both guest templates; the
+per-guest `MemoryMax` removed from `plan.rs` and from the polkit rule and
+its test cases; the CALM host node; the threat model's cross-guest rows and
+the polkit row; `docs/src/guides/cloud-hypervisor-host-systemd.md`; and a
+`make provider-bench` rerun to replace the Cloud Hypervisor column in
+`docs/src/reference/provider-comparison.md`.
+
 ## Decision
 
 ### 1. Option 4, with `zbus`
@@ -172,7 +256,9 @@ which a test keeps equal to what the provider sends.
 
 cgroup limits come from the spec: `MemoryMax` is guest memory plus a named
 overhead constant, `TasksMax` is bounded, and hugepages are accounted
-separately. The VMM runs with `--seccomp true` and `--landlock`.
+separately. (*Amended 2026-09-30, proposed:* the per-guest `MemoryMax` is
+replaced by one bound on `banlieue-guests.slice`, because a per-guest limit
+throttles the guest's own disk writes; see *Amendment 2026-09-30*.) The VMM runs with `--seccomp true` and `--landlock`.
 
 ### 4. Taps are created by the provider, with the tun and bridge ioctls
 

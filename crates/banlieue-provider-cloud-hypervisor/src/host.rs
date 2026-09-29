@@ -68,7 +68,8 @@ pub trait HostOps: Send + Sync {
     /// Start an instance of a template unit.
     /// Write the unit's environment file, if any, then start it.
     async fn start_unit(&self, spec: &UnitStart) -> Result<()>;
-    /// Stop a unit and clear its failed state. Not loaded is success.
+    /// Stop a unit and clear its failed state, returning once the stop has
+    /// finished, so the unit is no longer loaded. Not loaded is success.
     async fn stop_unit(&self, name: &str) -> Result<()>;
     /// Loaded units matching a glob, with state.
     async fn list_units(&self, pattern: &str) -> Result<Vec<(String, UnitState)>>;
@@ -122,6 +123,14 @@ impl RealHost {
             arp_table: neigh::PROC_NET_ARP.into(),
             reports: crate::report::Listeners::default(),
         })
+    }
+
+    /// Wake the machine reconciler through `wake` when a guest first
+    /// reports, instead of leaving the report for its next periodic pass.
+    #[must_use]
+    pub fn with_report_wake(mut self, wake: crate::report::Wake) -> Self {
+        self.reports = crate::report::Listeners::waking(wake);
+        self
     }
 
     fn client(&self, plan: &MachinePlan) -> Client {

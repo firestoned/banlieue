@@ -501,6 +501,92 @@ lan = "br0"
     }
 
     // ------------------------------------------------------------------
+    // The uid ledger: allocation without races
+    // ------------------------------------------------------------------
+
+    const MACHINE_A: &str = "0f3c9a1e-5b7d-4e2a-9c11-3f2b7a5d9e0a";
+    const MACHINE_B: &str = "0f3c9a1e-5b7d-4e2a-9c11-3f2b7a5d9e0b";
+
+    /// Two pool members reconciled at once both list the machines before
+    /// either has written its uid, so both see the same `recorded` set. On a
+    /// real host both then wrote uid 2000002 (roadmap 17 phase G run,
+    /// 2026-09-28). The ledger must hand out different uids anyway.
+    #[test]
+    fn two_machines_allocating_from_the_same_listing_get_different_uids() {
+        let g = config().guests;
+        let ledger = UidLedger::default();
+        let recorded = BTreeSet::new();
+        let a = ledger.assign(MACHINE_A, &recorded, g);
+        let b = ledger.assign(MACHINE_B, &recorded, g);
+        assert_eq!(a, Some(2_000_000));
+        assert_eq!(b, Some(2_000_001));
+    }
+
+    /// A reconcile working from a stale cache sees no uid in its own status
+    /// and asks again. It must get the uid it was already given, not a new
+    /// one: on the host that re-ask moved both machines to 2000003.
+    #[test]
+    fn asking_again_returns_the_uid_already_given() {
+        let g = config().guests;
+        let ledger = UidLedger::default();
+        let first = ledger.assign(MACHINE_A, &BTreeSet::new(), g);
+        let other: BTreeSet<u32> = [2_000_005].into();
+        assert_eq!(ledger.assign(MACHINE_A, &other, g), first);
+    }
+
+    #[test]
+    fn uids_other_machines_recorded_are_skipped() {
+        let g = config().guests;
+        let ledger = UidLedger::default();
+        let recorded: BTreeSet<u32> = [2_000_000, 2_000_001].into();
+        assert_eq!(ledger.assign(MACHINE_A, &recorded, g), Some(2_000_002));
+    }
+
+    #[test]
+    fn a_released_uid_can_be_given_again() {
+        let g = config().guests;
+        let ledger = UidLedger::default();
+        let a = ledger.assign(MACHINE_A, &BTreeSet::new(), g);
+        ledger.release(MACHINE_A);
+        assert_eq!(ledger.assign(MACHINE_B, &BTreeSet::new(), g), a);
+    }
+
+    #[test]
+    fn the_ledger_counts_towards_a_full_range() {
+        let mut g = config().guests;
+        g.uid_count = 1;
+        let ledger = UidLedger::default();
+        assert_eq!(
+            ledger.assign(MACHINE_A, &BTreeSet::new(), g),
+            Some(2_000_000)
+        );
+        assert_eq!(ledger.assign(MACHINE_B, &BTreeSet::new(), g), None);
+    }
+
+    /// The reconciler runs machines concurrently; allocation is atomic.
+    #[test]
+    fn concurrent_assignments_never_collide() {
+        const MACHINES: u32 = 16;
+        let mut g = config().guests;
+        g.uid_count = MACHINES;
+        let ledger = std::sync::Arc::new(UidLedger::default());
+        let handles: Vec<_> = (0..MACHINES)
+            .map(|i| {
+                let ledger = ledger.clone();
+                std::thread::spawn(move || {
+                    let machine = format!("0f3c9a1e-5b7d-4e2a-9c11-3f2b7a5d{i:04x}");
+                    ledger.assign(&machine, &BTreeSet::new(), g)
+                })
+            })
+            .collect();
+        let given: BTreeSet<u32> = handles
+            .into_iter()
+            .map(|h| h.join().unwrap().expect("range has room"))
+            .collect();
+        assert_eq!(given.len(), MACHINES as usize);
+    }
+
+    // ------------------------------------------------------------------
     // The VMM unit (ADR-0063)
     // ------------------------------------------------------------------
 

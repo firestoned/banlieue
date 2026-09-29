@@ -194,6 +194,17 @@ async fn pick(
         .await?
         .items;
 
+    // Finish a bind this claim already made before picking another.
+    let labelled = members.iter().map(|vm| {
+        (
+            vm.metadata.name.as_deref().unwrap_or_default(),
+            vm.labels().get(LABEL_CLAIM).map(String::as_str),
+        )
+    });
+    if let Some(ours) = super::claim_plan::member_bound_to(labelled, &claim.name_any()) {
+        return Ok((Some(ours), Some(pool)));
+    }
+
     let now = Timestamp::now();
     let views: Vec<MemberView> = members
         .iter()

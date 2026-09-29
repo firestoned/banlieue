@@ -6,7 +6,9 @@
 - **Deciders:** Erick Bourgeois
 - **Amended:** 2026-09-22 (Decision 9 — `subject.id` stores the raw provider
   subject, not the Kubernetes username; see the decision for why the first
-  version could not be validated by the in-guest agent)
+  version could not be validated by the in-guest agent); 2026-09-28
+  (Decision 2 — a claim that already labels a member finishes that bind
+  instead of picking again; one claim took two members from a stale cache)
 - **Notes:** Implemented and validated end to end against a real cluster and
   libvirt host — pool → warm domains → claim → release, with the released
   domain verified gone from the hypervisor
@@ -64,6 +66,16 @@ what is missing is the object that puts the label there.
    Optimistic concurrency, not a lock. The API server is already the
    serialisation point and it is the only one that cannot disagree with
    itself.
+
+   *Amended 2026-09-28, from a live run on Cloud Hypervisor.* The
+   precondition makes a member exclusive to one claim; it does not make a
+   claim exclusive to one member. The member's label is written first and
+   the claim's `virtualMachineRef` second, so a reconcile from a cached
+   claim that predates its own status patch saw no ref and picked again —
+   one claim took both warm members of a pool. Picking therefore first
+   looks, in the fresh member list, for a member already labelled for this
+   claim, and finishes that bind instead (`claim_plan.rs::member_bound_to`).
+   The label, not the claim's status, is the record of a bind.
 
 3. **`ownerReferences` move from pool to claim at bind time.** This is what
    lets a pool be deleted without destroying sandboxes that are in use —

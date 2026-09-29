@@ -571,6 +571,17 @@ hand.
 | Addressing guest disks as `/dev/vdX` | Names shift once a disk is unplugged | Use filesystem labels |
 | Looking for guests in `virsh` | Cloud Hypervisor guests are processes, not libvirt domains | `pgrep -a cloud-hypervisor`, or `status` |
 
+One gotcha the provider cannot handle for you, because it lives in your
+user-data: a **`Deferred` Kairos install whose `#cloud-config` has no
+`users:` entry never starts**. The installer ISO boots, auto-logs in as root
+on the serial console, and waits; `GuestReady` never comes, and a pool stays
+at zero warm members until `provisioningTimeoutSeconds`. Observed with Kairos
+Hadron v0.4.0 in the roadmap 17 phase G runs (2026-09-28): four of four
+members idle without a `users:` entry; with one, installs ran (the few
+stalls seen since are a separate vTPM fault, tracked in roadmap 17 phase G). Give the install at least one user, as the host-side smoke test above
+does; a login is also the only way to read the installer's journal when an
+install does stall.
+
 ---
 
 ## Upgrading the VMM

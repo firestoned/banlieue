@@ -716,13 +716,43 @@ has, each verified on a host on 2026-09-27:
 
 To finish G:
 
-- [ ] A `VirtualMachinePool` of a `tpmEnabled`, `Deferred` class on a
+- [x] A `VirtualMachinePool` of a `tpmEnabled`, `Deferred` class on a
       Cloud Hypervisor `Provider`, `readiness: GuestReady`, reaches `Warm`;
-      claim, release and replacement work. Needs the controller deployed
-      where the host's provider reports.
-- [ ] Record the warm-up time next to vSphere's 130.3 s. The install is
-      most of it (341 s for one Kairos Hadron install in `make
-      ch-deferred-e2e`); roadmap 18 is the lever.
+      claim, release and replacement work. **Done 2026-09-28** —
+      `make ch-pool-claim-e2e` (`banlieue-provider-cloud-hypervisor/tests/e2e_pool_claim.rs`)
+      green on both cases on the host: a claimed guest's unit, tap and
+      directories are gone after release; deleting the pool leaves a
+      claimed guest running. Controller run locally against the cluster.
+      Getting there found and fixed five bugs, each with a test written
+      first: one claim binding two members (ADR-0047 Decision 2 amended),
+      a racy guest-uid allocation, `stop` not waiting for its job, a pool
+      that heard about a claimed member only on its periodic requeue, and a
+      `phase=installed` report that waited for one (the last two are the
+      event-driven rule, broken at two seams).
+- [x] Record the warm-up time next to vSphere's 130.3 s. **145 s** for a
+      2-member pool (twice; 140 s once), **115–120 s** to refill one member,
+      claim bound in 5 s. The install itself is ~140 s from machine
+      creation to `phase=installed`; `make ch-deferred-e2e`'s 341 s was
+      ~150 s of install plus ~190 s of waiting for a periodic reconcile,
+      which is gone. Roadmap 18 remains the lever for the install.
+
+Still open on this backend:
+
+- [ ] **Cloud Hypervisor vTPM I/O error, about one install in seven.**
+      Mid-install, sealing `COS_PERSISTENT`, the guest gets
+      `tpm_transmit: tpm_recv: error -5`; the TPM stays dead for that boot
+      (`GetRandom` fails), the Kairos installer exits 1 and the guest never
+      reports. `swtpm` is healthy and logs nothing; the VMM logs nothing.
+      Captured live 2026-09-28 on one member; two earlier members stalled
+      the same way (installed nothing, never reported) before a login
+      existed to look, so their cause is likely but not confirmed. Three
+      stalls in about twenty Deferred members across four runs.
+      Needs a minimal reproduction against the VMM for an upstream report.
+      banlieue's side is covered: ADR-0046's `provisioningTimeoutSeconds`
+      replaces the member, so a pool heals.
+- A `Deferred` Kairos user-data **must declare a user**, or the installer
+  never starts (4 of 4 idle without one). Documented in
+  `docs/src/guides/cloud-hypervisor-host.md`.
 
 ### F: Attestation anchors and threat model (ADR-0049)
 

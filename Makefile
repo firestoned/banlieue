@@ -514,6 +514,18 @@ ch-e2e: ## Cloud Hypervisor: VM -> guest with an address -> delete leaves nothin
 	cargo test -p banlieue-provider-cloud-hypervisor --test e2e_machine -- \
 	  --ignored --nocapture --test-threads=1
 
+ch-pool-claim-e2e: ## Cloud Hypervisor: pool -> warm guests -> claim -> release leaves nothing on the host; prints the warm-up time (ON THE HOST, never CI)
+	@# Roadmap 17 phase G (ADR-0046/0047). Assumes the controller and this
+	@# host's provider are running (tests/e2e_pool_claim.rs module docs).
+	@# Phase G itself: BANLIEUE_E2E_READINESS=GuestReady with a tpmEnabled
+	@# class, a Deferred image and BANLIEUE_E2E_USER_DATA=<install cloud-config>.
+	@test -n "$$BANLIEUE_E2E_PROVIDER" -a -n "$$BANLIEUE_E2E_IMAGE" -a -n "$$BANLIEUE_E2E_CLASS" -a -n "$$BANLIEUE_E2E_STORAGE_DIR" || { \
+	  echo "Set BANLIEUE_E2E_PROVIDER, BANLIEUE_E2E_IMAGE, BANLIEUE_E2E_CLASS and"; \
+	  echo "BANLIEUE_E2E_STORAGE_DIR (see tests/e2e_pool_claim.rs)."; \
+	  exit 1; }
+	cargo test -p banlieue-provider-cloud-hypervisor --test e2e_pool_claim -- \
+	  --ignored --nocapture --test-threads=1
+
 ch-vtpm-e2e: ## Cloud Hypervisor: tpmEnabled machine -> own swtpm, host-minted EK -> delete leaves no TPM unit (ON THE HOST, never CI)
 	@# Creates a CloudHypervisorMachine directly (tests/e2e_vtpm.rs module
 	@# docs). Needs this host's Provider declaring `vtpm` and a [tpm] section.

@@ -59,6 +59,39 @@ mod tests {
         assert!(!listeners.installed("m1"));
     }
 
+    /// A report wakes the reconciler at once rather than waiting for its next
+    /// periodic pass: in the roadmap 17 phase G run (2026-09-28) every
+    /// member sat 180–204 s between reporting and `GuestReady`, more than the
+    /// install itself. Once per machine: the boot stage reports on every
+    /// boot, and only the first changes anything.
+    #[tokio::test]
+    async fn the_first_report_wakes_the_reconciler_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vsock.sock_1024");
+        let me = crate::sys::effective_uid();
+        let group = crate::sys::effective_gid();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let listeners = Listeners::waking(tx);
+        listeners.ensure("m1", &path, me, group).await.unwrap();
+
+        for _ in 0..2 {
+            let mut guest = std::os::unix::net::UnixStream::connect(&path).unwrap();
+            guest.write_all(b"phase=installed\n").unwrap();
+        }
+        let woke = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv()).await;
+        assert_eq!(
+            woke.ok().flatten(),
+            Some(()),
+            "a report wakes the reconciler"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert!(
+            rx.try_recv().is_err(),
+            "a second report does not wake it again"
+        );
+        listeners.stop("m1", &path);
+    }
+
     /// Something planted at the socket path that is not ours is refused.
     #[tokio::test]
     async fn a_planted_symlink_at_the_socket_path_is_replaced_not_followed() {

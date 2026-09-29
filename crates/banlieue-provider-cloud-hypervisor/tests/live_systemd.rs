@@ -23,6 +23,9 @@ use banlieue_provider_cloud_hypervisor::systemd::{Bus, Systemd, UnitStart, UnitS
 const POLLS: u32 = 50;
 const POLL_STEP: Duration = Duration::from_millis(100);
 const MIB: u64 = 1024 * 1024;
+/// How long the slow unit's `ExecStop` takes: long enough that a `stop`
+/// that returns before the stop job finishes is caught every time.
+const SLOW_STOP: &str = "ExecStop=/usr/bin/sleep 3\n";
 
 async fn wait_for(sd: &Systemd, name: &str, want: impl Fn(Option<&UnitState>) -> bool) {
     for _ in 0..POLLS {
@@ -41,6 +44,11 @@ struct Template {
 
 impl Template {
     fn install(name: &str, exec: &str) -> Self {
+        Self::install_with(name, exec, "")
+    }
+
+    /// A template with `service` appended to its `[Service]` section.
+    fn install_with(name: &str, exec: &str, service: &str) -> Self {
         let home = std::env::var("HOME").expect("HOME");
         let dir = std::env::var("XDG_CONFIG_HOME")
             .map(PathBuf::from)
@@ -50,7 +58,7 @@ impl Template {
         let path = dir.join(format!("{name}@.service"));
         std::fs::write(
             &path,
-            format!("[Unit]\nCollectMode=inactive\n[Service]\nExecStart={exec}\n"),
+            format!("[Unit]\nCollectMode=inactive\n[Service]\nExecStart={exec}\n{service}"),
         )
         .unwrap();
         reload();
@@ -120,4 +128,56 @@ async fn an_instance_that_cannot_start_is_kept_failed_with_its_reason() {
     sd.stop(&name).await.expect("stop");
     wait_for(&sd, &name, |s| s.is_none()).await;
     assert!(sd.failure(&name).await.unwrap().is_none());
+}
+
+/// `stop` returns only once the unit is gone, not when systemd has merely
+/// queued the stop job. A guest VMM takes seconds to stop; teardown checks
+/// the unit is unloaded right after `stop`, and on a real host that check
+/// failed and requeued the delete one to five times per guest (roadmap 17
+/// phase G run, 2026-09-28).
+#[tokio::test]
+#[ignore = "needs a systemd user session bus (DBUS_SESSION_BUS_ADDRESS)"]
+async fn stop_returns_only_once_a_slow_stopping_unit_is_gone() {
+    let template = format!("banlieue-liveslow-{}", std::process::id());
+    let _t = Template::install_with(&template, "/usr/bin/sleep 300", SLOW_STOP);
+    let sd = Systemd::connect(Bus::Session).await.expect("user manager");
+    let name = format!("{template}@1.service");
+    let spec = UnitStart {
+        name: name.clone(),
+        memory_max: None,
+        environment: None,
+    };
+
+    sd.start(&spec).await.expect("StartUnit");
+    wait_for(&sd, &name, |s| s.is_some_and(|s| s.is_running())).await;
+
+    sd.stop(&name).await.expect("stop");
+    // No waiting here: that is the property under test.
+    assert_eq!(sd.state(&name).await.unwrap(), None, "{name} still loaded");
+}
+
+/// A unit that fails *as it stops* is left `failed`, so still loaded. `stop`
+/// clears that too, after the stop has finished rather than before it.
+#[tokio::test]
+#[ignore = "needs a systemd user session bus (DBUS_SESSION_BUS_ADDRESS)"]
+async fn stop_frees_the_name_of_a_unit_that_fails_as_it_stops() {
+    let template = format!("banlieue-livestopfail-{}", std::process::id());
+    let _t = Template::install_with(
+        &template,
+        "/bin/sh -c 'trap \"sleep 1; exit 3\" TERM; sleep 300 & wait'",
+        "",
+    );
+    let sd = Systemd::connect(Bus::Session).await.expect("user manager");
+    let name = format!("{template}@1.service");
+    let spec = UnitStart {
+        name: name.clone(),
+        memory_max: None,
+        environment: None,
+    };
+
+    sd.start(&spec).await.expect("StartUnit");
+    wait_for(&sd, &name, |s| s.is_some_and(|s| s.is_running())).await;
+
+    sd.stop(&name).await.expect("stop");
+    assert_eq!(sd.state(&name).await.unwrap(), None, "{name} still loaded");
 }

@@ -25,7 +25,7 @@ use k8s_openapi::jiff::Timestamp;
 use kube::{
     Resource, ResourceExt,
     api::{Api, DeleteParams, ListParams, ObjectMeta, Patch, PatchParams, PostParams},
-    runtime::controller::Action,
+    runtime::{controller::Action, reflector::ObjectRef},
 };
 use serde_json::json;
 use tracing::{info, warn};
@@ -35,6 +35,22 @@ use crate::context::Context;
 use crate::error::{Error, Result};
 
 const FIELD_MANAGER: &str = "banlieue.io/pool-controller";
+
+/// The pool a member event belongs to, by the member's `LABEL_POOL`.
+///
+/// Not by owner: binding re-parents a member from its pool to the claim
+/// (ADR-0047 Decision 3), after which an owner-based watch tells only the
+/// claim. The pool must hear it too — it is now a member short — and the
+/// label stays on a claimed member.
+#[must_use]
+pub fn pool_for_member(vm: &VirtualMachine) -> Option<ObjectRef<VirtualMachinePool>> {
+    let pool = vm.labels().get(LABEL_POOL)?;
+    let r = ObjectRef::new(pool);
+    Some(match vm.namespace() {
+        Some(ns) => r.within(&ns),
+        None => r,
+    })
+}
 
 pub async fn reconcile(pool: Arc<VirtualMachinePool>, ctx: Arc<Context>) -> Result<Action> {
     let namespace = pool.namespace().ok_or(Error::Missing("namespace"))?;

@@ -235,4 +235,50 @@ mod tests {
             ]
         );
     }
+    // ------------------------------------------------------------------
+    // pool_for_member: which pool hears about a member event
+    // ------------------------------------------------------------------
+
+    fn member_vm(labels: &[(&str, &str)]) -> VirtualMachine {
+        let mut vm = VirtualMachine::new(
+            "m1",
+            serde_json::from_value(serde_json::json!({
+                "classRef": {"name": "c"},
+                "imageRef": {"name": "i"},
+            }))
+            .unwrap(),
+        );
+        vm.metadata.namespace = Some("ns1".into());
+        vm.metadata.labels = Some(
+            labels
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+                .collect(),
+        );
+        vm
+    }
+
+    #[test]
+    fn a_member_event_reaches_its_pool_by_label() {
+        let vm = member_vm(&[(LABEL_POOL, "p1")]);
+        let r = pool_for_member(&vm).expect("a pool");
+        assert_eq!(r.name, "p1");
+        assert_eq!(r.namespace.as_deref(), Some("ns1"));
+    }
+
+    /// Binding re-parents the member from the pool to the claim, so an
+    /// owner-based watch stops telling the pool about it. The pool then
+    /// learned it was a member short only on its periodic requeue: 295 s in
+    /// the roadmap 17 phase G run (2026-09-28). The label stays on a
+    /// claimed member, so mapping by label reaches the pool at once.
+    #[test]
+    fn a_claimed_member_still_reaches_its_pool() {
+        let vm = member_vm(&[(LABEL_POOL, "p1"), (LABEL_CLAIM, "c1")]);
+        assert_eq!(pool_for_member(&vm).map(|r| r.name), Some("p1".into()));
+    }
+
+    #[test]
+    fn a_vm_outside_any_pool_reaches_none() {
+        assert!(pool_for_member(&member_vm(&[])).is_none());
+    }
 }
