@@ -216,6 +216,10 @@ nav:
       - OAuth / OIDC Clients: developer/oauth-clients.md
 
   - Security:
+      - Security Boundary: security/sandbox-boundary.md
+      - vSphere Least Privilege: security/vsphere-least-privilege.md
+      - vTPM per Provider: security/vtpm-per-provider.md
+      - Guest Configuration Hygiene: security/guest-configuration.md
       - Threat Model: security/threat-model.md
 
   - Reference:

@@ -1,6 +1,6 @@
 # anatomy.md
 
-> Auto-maintained by OpenWolf. Last scanned: 2026-09-30T16:00:00.407Z
+> Auto-maintained by OpenWolf. Last scanned: 2026-09-30T22:00:00.341Z
 > Files: 509 tracked | Anatomy hits: 0 | Misses: 0
 
 ## ./
@@ -16,7 +16,7 @@
 - `Makefile` — Make build targets (~20840 tok)
 - `osv-scanner.toml` — SPDX-License-Identifier: Apache-2.0 (~355 tok)
 - `README.md` — Project documentation (~3300 tok)
-- `ROADMAPS.md` — Roadmaps (~4161 tok)
+- `ROADMAPS.md` — Roadmaps (~4160 tok)
 - `SECURITY.md` — Security Policy (~382 tok)
 
 ## .clusterfuzzlite/
@@ -63,7 +63,7 @@
 - `16-scorecard-remediation.md` — 60 — OSSF Scorecard remediation (~2608 tok)
 - `17-ephemeral-vm-pools.md` — 17: Ephemeral, single-use VM pools (AI agent sandboxes) (~12407 tok)
 - `18-split-image-fast-clone.md` — 18: Split-image fast clone — verified base + per-VM sealed volume (~4187 tok)
-- `19-port-groups.md` — 19: Port groups — declared, reconciled, and safe to delete (~4110 tok)
+- `19-port-groups.md` — 19: Port groups: declared, reconciled, and safe to delete (~4109 tok)
 - `README.md` — Project documentation (~1406 tok)
 
 ## .github/requirements/
@@ -713,7 +713,7 @@
 
 - `.gitignore` — Git ignore rules (~37 tok)
 - `.python-version` (~2 tok)
-- `mkdocs.yml` — SPDX-License-Identifier: Apache-2.0 (~1906 tok)
+- `mkdocs.yml` — SPDX-License-Identifier: Apache-2.0 (~1978 tok)
 - `pyproject.toml` — Python project configuration (~257 tok)
 - `README.md` — Project documentation (~560 tok)
 
