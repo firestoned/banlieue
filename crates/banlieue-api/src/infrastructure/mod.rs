@@ -8,6 +8,7 @@
 
 pub mod cloud_hypervisor_machine;
 pub mod libvirt_machine;
+pub mod proxmox_machine;
 pub mod vsphere_cluster;
 pub mod vsphere_machine;
 
@@ -22,6 +23,11 @@ pub use libvirt_machine::{
     LibvirtDiskSpec, LibvirtMachine, LibvirtMachineSpec, LibvirtMachineStatus,
     LibvirtMachineTemplate, LibvirtMachineTemplateResource, LibvirtMachineTemplateSpec,
     LibvirtNicSource, LibvirtNicSourceKind, LibvirtNicSpec,
+};
+pub use proxmox_machine::{
+    MAX_DATA_DISKS, ProxmoxAddressSource, ProxmoxDataDisk, ProxmoxMachine, ProxmoxMachineSpec,
+    ProxmoxMachineStatus, ProxmoxMachineTemplate, ProxmoxMachineTemplateResource,
+    ProxmoxMachineTemplateSpec, ProxmoxNicModel, ProxmoxNicSpec, proxmox_provider_id,
 };
 pub use vsphere_cluster::{VSphereCluster, VSphereClusterSpec, VSphereClusterStatus};
 pub use vsphere_machine::{

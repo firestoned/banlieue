@@ -1,5 +1,218 @@
 # Changelog
 
+## [2026-09-30 10:00] - Proxmox: first live lifecycle run; two protocol fixes, seed storage, lifecycle e2e
+
+**Author:** Erick Bourgeois
+
+### Added
+- `crates/banlieue-provider-proxmox/tests/live_lifecycle.rs` and
+  `make proxmox-lifecycle-test`: the provider's own `allocate_vmid`,
+  `converge` and `finalize_backend` against a real node — clone, configure,
+  grow, seed upload, start, idempotent second pass, delete — and a foreign VM
+  sharing the machine's name that must survive. **Creates and destroys VMs.**
+- `scripts/bootstrap-proxmox-host.sh` `seed` step: a `dir` storage,
+  `banlieue-seed`, holding only seed ISOs, and a `BanlieueSeed` role
+  (`Datastore.{Allocate,AllocateTemplate,Audit}`) granted on it alone.
+
+### Verification
+`make proxmox-lifecycle-test` **passed** against a real node (28 s), leaving
+no VM and no seed ISO; `make proxmox-live-test` still passes.
+
+### Fixed (found by the first live run)
+- **`resize` is a task on PVE 9.** `ProxmoxApi::resize_disk` returns
+  `Option<Upid>` (a UPID on PVE 9, `None` on older releases) and the provider
+  waits on it before starting the guest. The fake treated resize as
+  synchronous, which is how the bug hid (`rules/testing.md` rule 1): it now
+  answers with a task, and a failed task leaves the disk unchanged.
+- **Seed ISOs could never be deleted.** Proxmox needs `Datastore.Allocate`
+  to remove any non-backup volume; ADR-0074's role lacked it. Rather than
+  grant it on `local` (where it also deletes backups and templates and edits
+  the storage definition), it is granted only on the dedicated seed storage.
+  The token no longer holds any grant on `local`. ADR-0074 Decisions 4 and 7
+  amended.
+- **The lifecycle test did not clean up after a failed assertion**: a panic
+  unwound past the cleanup. Now `catch_unwind`, clean up, re-raise.
+
+### Changed
+- ADR-0075, the guide, `examples/22-virtualmachine-proxmox.yaml` (`seed-iso`
+  targets `banlieue-seed`), the threat model (TB-4 rows, stolen-token actor,
+  §7.16) and the CALM least-privilege control.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only (re-run the bootstrap script on each node: `role seed token`)
+- [ ] Documentation only
+
+## [2026-09-28 20:00] - Proxmox provider, controller dispatch, docs and threat-model pass (ADR-0074, ADR-0075); roadmap 06 implemented
+
+**Author:** Erick Bourgeois
+
+### Added
+- `crates/banlieue-provider-proxmox` (new crate; no new third-party
+  dependency): `Provider` reconciler (one failure domain per node, storages,
+  bridges and the `seed-iso` storage verified, fails loudly), `ProxmoxMachine`
+  reconciler (ADR-0075 lifecycle: VMID recorded before the clone, full clone,
+  configure, grow-only OS disk, NoCloud seed ISO via the SDK's `cloudinit`
+  writer, power, addresses from IPAM or the guest agent, finalizer that
+  removes the VM and the seed), `VMImage` `Template` verification that
+  publishes `resolvedRef`. Wired as `banlieue provider proxmox`
+  (`proxmox` feature, default on) and listed in `COMPILED_BACKENDS`.
+- `banlieue-controller`: `PROVIDER_CLASS_PROXMOX`, `build_proxmox_machine`
+  (`templateVmid` from the image's per-provider `resolvedRef`, `isoStorage`
+  from the well-known `seed-iso` storage class, bridge/vlan read from the
+  Provider mapping), the `InfraMachineRead` impl, apply/mirror/delete paths,
+  `.owns(ProxmoxMachine)`, and RBAC in the controller, operator and new
+  `deploy/provider-proxmox/rbac/clusterrole.yaml`.
+- `banlieue-proxmox`: a response-size cap (`ClientConfig::max_response_bytes`,
+  16 MiB default, `Error::ResponseTooLarge`), checked against the declared
+  length and while streaming; `CloneParams::description`; `FakeProxmox`
+  helpers.
+- `docs/src/guides/proxmox-provider.md` (nav and index entries),
+  `examples/22-virtualmachine-proxmox.yaml` with a typed test in
+  `crates/banlieue-api/tests/examples.rs` that fails on any dropped key.
+- CALM: `rel-provider-proxmox-backend` gains four controls.
+
+### Changed
+- **VM ownership is the machine UID, not its name** (ADR-0075 Decision 4,
+  amended). The name was not unique across namespaces, and Proxmox allows
+  duplicate names and administrator-made VMs, so a machine could adopt,
+  reconfigure and finally destroy a VM it never created. The clone now writes
+  `banlieue-machine-uid=<uid>` into the description, atomically; adopt and
+  delete require an exact line match; a same-named VM is left alone.
+- ADR-0075 amended (also: a static address needs a seed even without
+  `userData`; NIC MACs derived from the UID for that case).
+- `ProviderConnection` docs: Proxmox credentials are token-only.
+- Three operator tests used `proxmox` as their "unsupported backend"; now
+  `hyperv`.
+- `scripts/bootstrap-proxmox-host.sh`: the `cert` step aborted with
+  `work: unbound variable` after installing the certificate. Found on first
+  use against a real node. A `trap ... RETURN` set inside `step_cert` outlives
+  the function and fires when `main` returns, where the `local` is gone, so
+  `set -u` aborts and the cleanup `rm -rf` never runs, leaving the private key
+  copy in a temp directory. The issuing block now runs in a subshell with its
+  own `EXIT` trap.
+- `.gitignore`: the token Secret manifest and CA files the script writes
+  (`proxmox-provider-token-secret.yaml`, `proxmox-ca.pem`, `pve-root-ca.pem`)
+  are ignored, since the first holds a live API token.
+- `docs/src/security/threat-model.md`: **full pass**, stamp advanced to
+  **2026-09-28 / ADR-0001 … ADR-0075** (see below).
+- Roadmap 06 detail doc and `ROADMAPS.md`.
+
+### Threat-model pass (ADR-0074, ADR-0075)
+Renumbered on rebase onto main, which took A-15 and §7.14–15 for the EK
+trust bundle (ADR-0049 Decision 10): the Proxmox asset is A-16 and its
+hardening item §7.16.
+All ten sections walked. New: component, actor (stolen Proxmox token), asset
+A-16 (VM ownership marker), a Proxmox block under TB-4 (11 STRIDE rows), rows
+in TB-1/TB-2/TB-5, §7.16, five §8 entries, §5 diagram line. **No new trust
+boundary.** The pass found and fixed two defects in the work itself: the
+name-based ownership above, and an unbounded response read.
+
+### Verification
+`cargo fmt --all --check`, `cargo clippy --workspace --all-targets
+--all-features -D warnings` and `cargo test --workspace` (2141 passed, 0
+failed, 55 ignored: live/e2e tiers) are clean. `make calm-validate` and
+`make calm-diagrams` ran (Node LTS installed under `~/.local/opt`).
+**Live, read-only tier: passed** against a real Proxmox node
+(`make proxmox-live-test`, 2026-09-28: verified TLS against the node CA,
+token auth, inventory decoding, reason phrase on a 401). **Not verified live:**
+mutating calls, task polling and UPID path encoding, ISO upload, the e2e, and
+`make provider-bench` for the `proxmox` column. `make docs` was not run.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (new CRDs and RBAC: re-apply `deploy/crds/`, `deploy/controller/`, `deploy/operator/`)
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-09-28 15:00] - `ProxmoxMachine` and `ProxmoxMachineTemplate` CRDs (ADR-0075)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0075-proxmoxmachine-inframachine-contract.md` (**Accepted**):
+  fully resolved spec like `VSphereMachine`; `providerID`
+  `proxmox://<provider>/<vmid>` (supersedes roadmap 06's `<vmid>@<node>`);
+  no `spec.vmid`, the provider records `status.vmid` before cloning and the
+  VM's name is the ownership marker; cloud-init as a NoCloud ISO because the
+  API cannot upload `cicustom` snippets; lifecycle and controller dispatch.
+- `crates/banlieue-api/src/infrastructure/proxmox_machine.rs`: the two CRDs,
+  `proxmox_provider_id`, firmware/NIC rendering helpers and
+  `ProxmoxMachineSpec::validate` (seed needs `isoStorage`, unique NIC and disk
+  names, VLAN range, disk-slot limit). Registered in `all_crds()`, so
+  crdgen, the API reference and `banlieue bootstrap` all pick them up.
+  28 unit tests.
+- `deploy/crds/infrastructure.banlieue.io_proxmoxmachine{s,templates}.yaml`
+  and `docs/src/reference/api.md`, regenerated with `make crds`. No existing
+  CRD changed.
+
+### Changed
+- `docs/architecture/calm/architecture.json`: `service-provider-proxmox`
+  describes the client, the resolved spec, the VMID rule and the seed ISO.
+  JSON parses; **`make calm-validate` was not run** (no `npx` on this host).
+- Roadmap 06 detail doc and `ROADMAPS.md`: CRD tasks ticked.
+
+### Not done
+- Provider crate, controller dispatch (`infra.rs`, `status_mirror.rs`,
+  controller RBAC), `VMImage` integration, examples.
+- **Threat-model pass still deferred** to the provider change (no new
+  binary, identity or boundary exists yet).
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-09-28 12:00] - `banlieue-proxmox`: first-party Proxmox VE client (ADR-0074); roadmap 06 started
+
+**Author:** Erick Bourgeois
+
+### Added
+- `crates/banlieue-proxmox` (new crate, **no new third-party code** — every
+  dependency was already in `Cargo.lock`): the `ProxmoxApi` trait reconcilers
+  will depend on; `Client`, its HTTPS implementation (API token only, verified
+  TLS with an optional CA bundle, redirects never followed, connect and
+  request timeouts, errors carrying Proxmox's reason phrase plus per-parameter
+  validation errors); `Upid` and bounded `wait_task` (a task that never
+  finishes is `TaskTimeout`, a non-`OK` exit status is `TaskFailed`);
+  `ApiToken` (validated at construction, secret redacted from `Debug`);
+  `FakeProxmox`, an in-memory implementation that refuses what the real API
+  refuses (clone onto an existing VMID, delete/start of a running VM,
+  disk shrink, ISO upload to a storage without `iso` content).
+  117 unit tests.
+- `crates/banlieue-proxmox/tests/live_proxmox.rs` and `make proxmox-live-test`:
+  read-only live tier against a real node. Fails loudly when its environment
+  is unset. **Not yet run against a node.**
+- `docs/adr/0074-banlieue-proxmox-rest-client.md` and
+  `scripts/bootstrap-proxmox-host.sh` (already drafted) are now part of the tree.
+
+### Changed
+- `.github/community/01-decisions.md`: D-006 records the first-party client;
+  O-001 closed.
+- `.github/community/06-phase-1c-proxmox-provider.md`, `ROADMAPS.md`: client
+  tasks ticked; row 06 moves ⛔ → 🔶.
+
+### Why
+ADR-0074 chose a first-party client over community crates (own TLS/HTTP
+stacks, hundreds of endpoints for twenty used).
+
+### Not done (deliberately)
+- **Threat-model pass deferred.** The client is a library nothing links yet:
+  no new binary, credential path, identity or boundary exists until the
+  provider (ADR-0075) lands. The pass, and the header-stamp bump, belong to
+  that change; ADR-0074 is not fully implemented until then.
+- CALM: no node changes; the planned `service-provider-proxmox` description
+  still applies. To be updated with ADR-0075.
+- Provider crate, `ProxmoxMachine` CRD, ADR-0075.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-09-30] - ADR-0081/0082 and the sandbox security documentation
 
 **Author:** Erick Bourgeois

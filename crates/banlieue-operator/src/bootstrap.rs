@@ -115,6 +115,8 @@ const PROVIDER_VSPHERE_CLUSTER_ROLE: &str =
     include_str!("../../../deploy/provider-vsphere/rbac/clusterrole.yaml");
 const PROVIDER_LIBVIRT_CLUSTER_ROLE: &str =
     include_str!("../../../deploy/provider-libvirt/rbac/clusterrole.yaml");
+const PROVIDER_PROXMOX_CLUSTER_ROLE: &str =
+    include_str!("../../../deploy/provider-proxmox/rbac/clusterrole.yaml");
 const PROVIDER_CLOUD_HYPERVISOR_CLUSTER_ROLE: &str =
     include_str!("../../../deploy/provider-cloud-hypervisor/rbac/clusterrole.yaml");
 
@@ -289,6 +291,7 @@ impl InstallRole {
             Self::Provider(backend) => match backend.as_str() {
                 "vsphere" => "banlieue-provider-vsphere",
                 "libvirt" => "banlieue-provider-libvirt",
+                "proxmox" => "banlieue-provider-proxmox",
                 "cloud-hypervisor" => "banlieue-provider-cloud-hypervisor",
                 _ => "banlieue-provider",
             },
@@ -361,6 +364,7 @@ impl InstallRole {
             Self::Provider(backend) => match backend.as_str() {
                 "vsphere" => PROVIDER_VSPHERE_CLUSTER_ROLE,
                 "libvirt" => PROVIDER_LIBVIRT_CLUSTER_ROLE,
+                "proxmox" => PROVIDER_PROXMOX_CLUSTER_ROLE,
                 "cloud-hypervisor" => PROVIDER_CLOUD_HYPERVISOR_CLUSTER_ROLE,
                 other => anyhow::bail!("no embedded ClusterRole for backend {other:?}"),
             },

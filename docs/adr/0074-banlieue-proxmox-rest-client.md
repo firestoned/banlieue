@@ -7,6 +7,9 @@ SPDX-License-Identifier: Apache-2.0
 - **Status:** Accepted
 - **Date:** 2026-09-28
 - **Deciders:** Erick Bourgeois
+- **Amended:** 2026-09-30 (Decisions 4 and 7, from the first live lifecycle run:
+  seed deletion needs `Datastore.Allocate`, granted by a second role on a
+  dedicated seed storage only; `resize` is a task on PVE 9)
 - **Related:** Closes O-001 and completes D-006 in
   [roadmap 01](../../.github/community/01-decisions.md);
   [roadmap 06](../../.github/community/06-phase-1c-proxmox-provider.md);
@@ -105,6 +108,18 @@ Three properties of this API shape the client more than its size does:
    `Permissions.Modify`. `scripts/bootstrap-proxmox-host.sh` creates exactly
    this, and the provider guide documents it.
 
+   *Amended 2026-09-30.* Deleting a seed ISO needs **`Datastore.Allocate`**:
+   Proxmox gates removal of every non-backup volume on it, which the first
+   live lifecycle run found (`Permission check failed (/storage/local,
+   Datastore.Allocate)`), so without it no seed could ever be cleaned up. On a
+   shared storage that privilege also deletes backups, templates and other
+   ISOs, and edits the storage definition. So it lives in a **second role,
+   `BanlieueSeed`** (`Datastore.{Allocate,AllocateTemplate,Audit}`), granted
+   **only on a dedicated `dir` storage holding nothing but seeds**
+   (`banlieue-seed`, content `iso`, created by the script's `seed` step). The
+   `BanlieueProvider` role no longer needs any grant on the ISO storage, and
+   the token holds nothing on `local`.
+
 5. **TLS is verified by default, against a supplied CA.** Proxmox serves a
    certificate issued by the node's own `PVE Cluster Manager CA`. The
    Provider's `connection.caBundle` carries that CA
@@ -123,7 +138,10 @@ Three properties of this API shape the client more than its size does:
 
 7. **UPIDs are awaited, bounded.** Every asynchronous call returns a typed
    `Upid`; `wait_task` polls `…/tasks/{upid}/status` until `stopped` and
-   treats any `exitstatus` other than `OK` as an error carrying it. Polling
+   treats any `exitstatus` other than `OK` as an error carrying it.
+   *Amended 2026-09-30:* `PUT …/resize` is one of these on PVE 9 (it returns
+   a UPID; older releases returned `null`), so the client returns
+   `Option<Upid>` for it and the provider waits before starting the guest. Polling
    is bounded by a caller-supplied timeout and a fixed interval, and a
    timeout is an error rather than a silent return — a clone that never
    finishes must not look like one that did. This is polling a remote task

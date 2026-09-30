@@ -9,7 +9,7 @@ mod tests {
     /// Every backend with a shipped `deploy/provider-<backend>/rbac/` manifest.
     /// Add a backend here when its ClusterRole lands, so the RBAC-coverage
     /// guards below start policing it too.
-    const BACKENDS_WITH_ROLES: [&str; 3] = ["vsphere", "libvirt", "cloud-hypervisor"];
+    const BACKENDS_WITH_ROLES: [&str; 4] = ["vsphere", "libvirt", "proxmox", "cloud-hypervisor"];
 
     fn opts() -> InstallOptions {
         InstallOptions {
@@ -370,6 +370,7 @@ mod tests {
             vec![
                 "vsphere".to_string(),
                 "libvirt".to_string(),
+                "proxmox".to_string(),
                 "cloud-hypervisor".to_string()
             ]
         );
@@ -424,10 +425,10 @@ mod tests {
     /// rather than produce one where that backend can never work.
     #[test]
     fn a_compiled_backend_without_a_cluster_role_fails_the_operator_install() {
-        let result = build_operator_install(&opts(), &["vsphere", "proxmox"], false);
+        let result = build_operator_install(&opts(), &["vsphere", "hyperv"], false);
         let err = result.expect_err("a backend with no ClusterRole must fail the install");
         assert!(
-            format!("{err:#}").contains("proxmox"),
+            format!("{err:#}").contains("hyperv"),
             "error should name the offending backend, got: {err:#}"
         );
     }
@@ -666,7 +667,7 @@ mod tests {
     /// with a clear message.
     #[test]
     fn a_backend_without_a_cluster_role_fails_the_install() {
-        let result = build_role_install(&InstallRole::Provider("proxmox".to_string()), &opts());
+        let result = build_role_install(&InstallRole::Provider("hyperv".to_string()), &opts());
         let err = result.expect_err("a backend with no embedded ClusterRole must error");
         assert!(
             format!("{err:#}").contains("ClusterRole"),

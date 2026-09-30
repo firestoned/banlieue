@@ -27,7 +27,7 @@ flowchart LR
     service-banlieue-controller["banlieue-controller"]
     service-banlieue-operator["banlieue-operator"]
     service-provider-vsphere["banlieue-provider-vsphere"]
-    service-provider-proxmox["banlieue-provider-proxmox (planned, Phase 1C)"]
+    service-provider-proxmox["banlieue-provider-proxmox"]
     service-provider-libvirt["banlieue-provider-libvirt"]
     service-banlieue-imagebuilder["banlieue-imagebuilder"]
     service-kairos-operator["kairos-operator (external, not shipped by banlieue)"]

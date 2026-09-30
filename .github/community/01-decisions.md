@@ -65,8 +65,13 @@
 - **vSphere**: `vim_rs` (VI-JSON API). Isolate in its own crate due to
   multi-minute compile times. Pin to exact version; expect breaking
   changes pre-1.0.
-- **Proxmox**: TBD. Decision in Phase 1C. Default: roll a thin HTTP
-  client with `reqwest`. Swap if a mature crate appears.
+- **Proxmox**: **first-party pure-Rust client**, `crates/banlieue-proxmox` —
+  a thin `reqwest` client over the ~20 endpoints the provider needs, API
+  tokens only, UPID-awaiting, with an in-memory fake that refuses what the
+  real API refuses
+  ([ADR-0074](../../docs/adr/0074-banlieue-proxmox-rest-client.md)). No
+  community crate: each brings its own HTTP/TLS stack for hundreds of
+  endpoints banlieue never calls.
 - **Libvirt**: **first-party pure-Rust client**, `crates/banlieue-libvirt` —
   libvirt's native RPC protocol (XDR codec, framing, TLS session, streams),
   no C FFI and no `libvirt0` in the image
@@ -301,7 +306,7 @@ remain in the roadmap doc; they refine this decision, they do not reopen it.
 
 | ID | Topic | Resolution deadline |
 |---|---|---|
-| O-001 | Proxmox Rust client choice | Start of Phase 1C |
+| ~~O-001~~ | ~~Proxmox Rust client choice~~ | **Closed** by [ADR-0074](../../docs/adr/0074-banlieue-proxmox-rest-client.md) (accepted 2026-09-28) |
 | O-002 | Live migration semantics across providers | Phase 2 design review |
 | ~~O-003~~ | ~~Multi-tenancy boundaries within a single Provider~~ | **Closed** by [ADR-0003](../../docs/adr/0003-provider-deployment-topology.md) (accepted 2026-07-31) + [ADR-0016](../../docs/adr/0016-imagebuild-namespace-isolation.md) |
 | O-004 | CAPI `clusterctl` integration shape | Phase 4 |

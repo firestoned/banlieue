@@ -124,3 +124,61 @@ ttlSeconds: 900
     .unwrap();
     assert_no_dropped_keys(&spec_doc, &claim);
 }
+
+/// Every document in `22-virtualmachine-proxmox.yaml` must parse into the
+/// type its `kind` names, and no key may be dropped on the way. The Provider
+/// also has to declare the storage class the controller looks up by its
+/// well-known name for the seed ISO (ADR-0075 Decision 5).
+#[test]
+fn proxmox_example_matches_the_types() {
+    use banlieue_api::banlieue::{Provider, VMClass, VMImage, VirtualMachine};
+
+    let path = format!("{EXAMPLES}/22-virtualmachine-proxmox.yaml");
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
+    let mut seen = Vec::new();
+
+    for de in serde_yaml::Deserializer::from_str(&text) {
+        let doc: serde_yaml::Value = serde::Deserialize::deserialize(de).expect("valid YAML");
+        let kind = doc["kind"].as_str().expect("kind").to_string();
+        let spec = doc.get("spec").cloned();
+        match kind.as_str() {
+            "Provider" => {
+                let p: Provider = serde_yaml::from_value(doc.clone()).expect("Provider");
+                assert_no_dropped_keys(&spec.unwrap(), &p.spec);
+                let classes = &p.spec.capabilities.storage_classes;
+                assert!(
+                    classes.iter().any(|c| c.name == "seed-iso"),
+                    "the example must declare the `seed-iso` storage class"
+                );
+                assert!(
+                    classes
+                        .iter()
+                        .all(|c| c.target.as_ref().is_some_and(|t| t.contains_key("storage"))),
+                    "Proxmox storage classes name a `storage` target"
+                );
+            }
+            "VMImage" => {
+                let i: VMImage = serde_yaml::from_value(doc.clone()).expect("VMImage");
+                assert_no_dropped_keys(&spec.unwrap(), &i.spec);
+                assert!(
+                    i.spec.sources.iter().any(|s| s.provider_class == "proxmox"),
+                    "the image needs a proxmox source"
+                );
+            }
+            "VMClass" => {
+                let c: VMClass = serde_yaml::from_value(doc.clone()).expect("VMClass");
+                assert_no_dropped_keys(&spec.unwrap(), &c.spec);
+            }
+            "VirtualMachine" => {
+                let v: VirtualMachine =
+                    serde_yaml::from_value(doc.clone()).expect("VirtualMachine");
+                assert_no_dropped_keys(&spec.unwrap(), &v.spec);
+            }
+            _ => {}
+        }
+        seen.push(kind);
+    }
+    for kind in ["Provider", "VMImage", "VMClass", "VirtualMachine"] {
+        assert!(seen.iter().any(|k| k == kind), "example lacks a {kind}");
+    }
+}

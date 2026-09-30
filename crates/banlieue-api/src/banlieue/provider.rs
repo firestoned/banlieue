@@ -165,7 +165,8 @@ pub struct ProviderConnection {
     /// Reference to a Secret in the Provider's namespace containing the
     /// credentials. Required keys depend on provider class:
     ///   vsphere:  username, password
-    ///   proxmox:  username (root@pam!token-id), tokenValue  OR  username, password
+    ///   proxmox:  username (the full API token id, user@realm!tokenid), tokenValue
+    ///             (API tokens only; password/ticket auth is not supported, ADR-0074)
     ///   libvirt:  tls.crt, tls.key (mutual TLS, ADR-0011)
     ///
     /// Required by every backend that authenticates to a remote endpoint, and

@@ -70,6 +70,24 @@ mod tests {
     /// cluster half of cloud-hypervisor (its ClusterRole and an External
     /// class); the host script installs the host half.
     #[test]
+    #[cfg(feature = "proxmox")]
+    fn provider_proxmox_subcommand_parses() {
+        let cli = Cli::parse_from(["banlieue", "provider", "proxmox", "--no-leader-elect"]);
+        match cli.command {
+            Command::Provider(p) => assert!(matches!(p.backend, ProviderBackend::Proxmox(_))),
+            _ => panic!("expected provider subcommand"),
+        }
+    }
+
+    /// `banlieue bootstrap` seeds a ProviderClass and installs a ClusterRole
+    /// only for backends compiled in.
+    #[test]
+    #[cfg(feature = "proxmox")]
+    fn proxmox_is_a_bootstrap_backend() {
+        assert!(COMPILED_BACKENDS.contains(&"proxmox"));
+    }
+
+    #[test]
     #[cfg(feature = "cloud-hypervisor")]
     fn cloud_hypervisor_is_a_cluster_bootstrap_backend() {
         assert!(COMPILED_BACKENDS.contains(&"cloud-hypervisor"));

@@ -1,0 +1,35 @@
+[package]
+name = "banlieue-proxmox"
+description = "First-party Proxmox VE REST client: API-token auth, UPID task waiting, reason-phrase errors, and an in-memory fake that refuses what the real API refuses (ADR-0074)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+# Protocol only, like banlieue-libvirt and banlieue-cloud-hypervisor: no
+# `kube`, no banlieue API types. Every dependency below is already locked, so
+# this crate compiles no new third-party code (ADR-0074 Decision 1). reqwest's
+# `form`, `query`, `json` and `multipart` features stay off on purpose: request
+# bodies are built with `form_urlencoded` and by hand.
+
+[dependencies]
+async-trait.workspace = true
+form_urlencoded = "1"
+# Direct only for `hyper::ext::ReasonPhrase`, where Proxmox puts its error
+# messages (ADR-0074 Decision 6). Already linked through reqwest.
+hyper = { version = "1", default-features = false, features = ["http1"] }
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["net", "time"] }
+tracing.workspace = true
+
+[dev-dependencies]
+# reqwest's `rustls-no-provider` panics at client build without a process
+# default provider; the binary installs it, tests do it themselves.
+rustls.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "io-util", "time"] }

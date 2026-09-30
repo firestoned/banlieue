@@ -1,0 +1,146 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# A complete, minimal VirtualMachine on a Proxmox VE node (ADR-0074, ADR-0075).
+#
+# Prepare the node first, as root ON the node:
+#
+#   ./scripts/bootstrap-proxmox-host.sh all
+#
+# That creates the least-privilege `BanlieueProvider` role, a
+# `banlieue-seed` storage for NoCloud seeds with its own narrow role, a privilege-
+# separated API token (written to ./proxmox-provider-token-secret.yaml as the
+# `proxmox-creds` Secret), a pveproxy certificate, the CA bundle
+# (./proxmox-ca.pem) and a cloud-image template at VMID 9000.
+#
+#   kubectl -n banlieue-system apply -f proxmox-provider-token-secret.yaml
+#   kubectl -n banlieue-system create configmap proxmox-ca \
+#     --from-file=ca.crt=proxmox-ca.pem
+#
+# WHAT HAPPENS WHEN YOU APPLY THIS
+#
+#   1. The provider connects with the token, checks every storage and bridge
+#      declared below on each online node, and publishes one failure domain
+#      per node. A storage that does not allow the content it is used for, or
+#      a missing bridge, makes the Provider Ready=False with the reason.
+#   2. It verifies VMID 9000 is a template and marks the VMImage ready.
+#   3. banlieue-controller schedules the VirtualMachine and creates a
+#      ProxmoxMachine beside it.
+#   4. The provider records the VMID in status, full-clones the template
+#      under the machine's name, configures it, grows the OS disk, uploads a
+#      NoCloud seed ISO to the `seed-iso` storage (banlieue-seed), attaches it and starts it.
+#   5. The guest agent's addresses appear in status.
+#
+# Deleting the VirtualMachine stops and destroys the VM and deletes the seed
+# ISO; the finalizer is released only after both are gone.
+---
+apiVersion: banlieue.io/v1alpha1
+kind: Provider
+metadata:
+  name: pve-1
+  namespace: banlieue-system
+  labels:
+    env: lab
+spec:
+  providerClassRef:
+    name: proxmox
+  connection:
+    endpoint: https://bar.foo.io:8006
+    # Secret keys: `username` (the full user@realm!tokenid) and `tokenValue`.
+    # API tokens only: password and ticket auth are not supported.
+    credentialsRef:
+      name: proxmox-creds
+    # The node's own CA (/etc/pve/pve-root-ca.pem). TLS is verified by
+    # default; insecureSkipTLSVerify is gated by admission policy.
+    caBundle:
+      configMapRef:
+        name: proxmox-ca
+  capabilities:
+    storageClasses:
+      - name: standard
+        target:
+          storage: local-lvm       # must allow `images` content
+      # Well-known name: where the NoCloud seed ISO goes. A storage holding
+      # nothing but seeds, created by the bootstrap script's `seed` step:
+      # deleting a seed needs Datastore.Allocate, which on a shared storage
+      # would also reach backups and templates (ADR-0074 Decision 4).
+      # Required for any VM with userData or a static address.
+      - name: seed-iso
+        target:
+          storage: banlieue-seed
+    networkClasses:
+      - name: mgmt
+        target:
+          bridge: vmbr0
+---
+# `Template`: ref is the VMID of a Proxmox template VM on the node.
+apiVersion: banlieue.io/v1alpha1
+kind: VMImage
+metadata:
+  name: debian-13-pve
+spec:
+  osFamily: linux
+  osDistribution: debian
+  osVersion: "13"
+  architecture: amd64
+  guestAgent: cloud-init
+  sources:
+    - providerClass: proxmox
+      kind: Template
+      ref: "9000"
+---
+apiVersion: banlieue.io/v1alpha1
+kind: VMClass
+metadata:
+  name: pve-small
+spec:
+  hardware:
+    cpus: 2
+    memoryMiB: 4096
+    disks:
+      # The OS disk: the template's scsi0, grown to this size, never shrunk.
+      - name: os
+        sizeGiB: 20
+        storageClass: standard
+        provisioning: thin
+  network:
+    interfaces:
+      - name: eth0
+        networkClass: mgmt
+        ipam: {}
+  firmware: efi
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pve-01-cloud-config
+  namespace: banlieue-system
+data:
+  user-data: |
+    #cloud-config
+    hostname: pve-01
+    users:
+      - name: debian
+        sudo: ALL=(ALL) NOPASSWD:ALL
+        ssh_authorized_keys:
+          - ssh-ed25519 AAAA...replace-me admin@bar.foo.io
+---
+apiVersion: banlieue.io/v1alpha1
+kind: VirtualMachine
+metadata:
+  name: pve-01
+  namespace: banlieue-system
+spec:
+  classRef:
+    name: pve-small
+  imageRef:
+    name: debian-13-pve
+  placement:
+    providerSelector:
+      matchLabels:
+        env: lab
+  userData:
+    configMapRef:
+      name: pve-01-cloud-config
+  desiredPowerState: PoweredOn
+  migrationPolicy: never

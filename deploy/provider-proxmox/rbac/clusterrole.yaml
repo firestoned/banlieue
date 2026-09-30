@@ -1,0 +1,87 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# Cluster-wide role for the Proxmox provider binary (ADR-0075).
+#
+# Mirrors deploy/provider-libvirt/rbac/clusterrole.yaml with ProxmoxMachine in
+# place of LibvirtMachine, and without the Jobs: the Proxmox provider spawns
+# none, because there is no bulk data path (a template is a VMID that already
+# exists on the cluster).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: banlieue-provider-proxmox
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: provider-proxmox
+rules:
+  # ---------------------------------------------------------------------------
+  # banlieue.io group — read Providers, patch their status
+  # ---------------------------------------------------------------------------
+  - apiGroups: ["banlieue.io"]
+    resources:
+      - providers
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["banlieue.io"]
+    resources:
+      - providers/status
+    verbs: ["get", "update", "patch"]
+
+  # VMImage: the Proxmox provider verifies a Template source's VMID and owns
+  # status.perProvider rows for its own Providers (keyed list, ADR-0010).
+  # buildArtifact and the aggregate Ready belong to other field managers; no
+  # finalizer, since banlieue creates no template.
+  - apiGroups: ["banlieue.io"]
+    resources:
+      - vmimages
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["banlieue.io"]
+    resources:
+      - vmimages/status
+    verbs: ["update", "patch"]
+
+  # ---------------------------------------------------------------------------
+  # infrastructure.banlieue.io group — ProxmoxMachine lifecycle (ADR-0075)
+  # ---------------------------------------------------------------------------
+  # No `create` and no `delete`: ProxmoxMachines are created and deleted by
+  # banlieue-controller, which owns them. This provider only realises them and
+  # reports back: it can read, patch spec.providerID, own status, and clear its
+  # finalizer. A compromised provider must not be able to mint machines the
+  # controller never scheduled.
+  - apiGroups: ["infrastructure.banlieue.io"]
+    resources:
+      - proxmoxmachines
+    verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups: ["infrastructure.banlieue.io"]
+    resources:
+      - proxmoxmachines/status
+    verbs: ["get", "update", "patch"]
+  - apiGroups: ["infrastructure.banlieue.io"]
+    resources:
+      - proxmoxmachines/finalizers
+    verbs: ["update"]
+
+  # ---------------------------------------------------------------------------
+  # Core resources
+  # ---------------------------------------------------------------------------
+  # NO secrets / configmaps here, deliberately (security review 2026-07-31
+  # CHAIN-002). This ClusterRole is bound cluster-wide, so any rule here
+  # reaches EVERY Secret in the cluster, defeating the resourceNames-scoped
+  # per-instance Role the operator builds for each Provider (ADR-0003). The API
+  # token (Provider.spec.connection.credentialsRef: keys `username` and
+  # `tokenValue`) and the CA bundle (connection.caBundle) are read by name in
+  # the Provider's namespace; the per-instance Role already grants exactly
+  # those objects.
+
+  # Emit Events for state transitions visible via `kubectl describe provider`.
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+  - apiGroups: ["events.k8s.io"]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+
+  # Leases for leader election.
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "create", "update", "patch"]

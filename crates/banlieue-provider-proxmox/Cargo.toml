@@ -1,0 +1,43 @@
+[package]
+name = "banlieue-provider-proxmox"
+description = "banlieue provider for Proxmox VE. Watches Provider and ProxmoxMachine CRs and reconciles them against the Proxmox REST API through the first-party banlieue-proxmox client."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+# Library only: the unified `banlieue` binary drives this via
+# `banlieue_provider_proxmox::run` for the `provider proxmox` subcommand
+# (ADR-0004).
+
+[dependencies]
+banlieue-api = { path = "../banlieue-api" }
+banlieue-proxmox = { path = "../banlieue-proxmox" }
+banlieue-provider-sdk = { path = "../banlieue-provider-sdk" }
+
+kube.workspace = true
+k8s-openapi.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+futures.workspace = true
+tracing.workspace = true
+clap.workspace = true
+async-trait.workspace = true
+# Stable per-NIC MAC derivation for statically addressed machines.
+sha2.workspace = true
+# Installs the ring crypto provider reqwest's `rustls-no-provider` needs
+# (ADR-0009), before the first TLS handshake.
+rustls.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
+# The live lifecycle tier builds a real client, which needs a process-default
+# rustls provider; the binary installs it, tests do it themselves.
+rustls.workspace = true

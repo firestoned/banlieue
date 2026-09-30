@@ -1167,12 +1167,12 @@ mod tests {
     }
 
     /// A ProviderClass can exist for a backend whose controller-side builder
-    /// does not — Proxmox, for now. That must be a reportable condition, not
+    /// does not — any future backend. That must be a reportable condition, not
     /// a panic and not a silent no-op that leaves the VM stuck with no infra
     /// CR and no explanation.
     #[test]
     fn infra_kind_is_none_for_an_unbuilt_provider_class() {
-        assert_eq!(InfraKind::from_provider_class("proxmox"), None);
+        assert_eq!(InfraKind::from_provider_class("hyperv"), None);
         assert_eq!(InfraKind::from_provider_class(""), None);
         assert_eq!(InfraKind::from_provider_class("VSphere"), None);
     }
@@ -1408,6 +1408,408 @@ mod tests {
         assert_eq!(
             InfraKind::CloudHypervisor.kind_name(),
             banlieue_api::infrastructure::CloudHypervisorMachine::crd()
+                .spec
+                .names
+                .kind
+        );
+    }
+
+    // ======================================================================
+    // build_proxmox_machine (ADR-0075)
+    // ======================================================================
+
+    fn pve_provider() -> Provider {
+        use banlieue_api::banlieue::{NetworkClassMapping, StorageClassMapping};
+        let mut p = parent_provider();
+        p.metadata.name = Some("pve-a".into());
+        p.spec.provider_class_ref = LocalObjectReference {
+            name: "proxmox".into(),
+        };
+        p.spec.capabilities = ProviderCapabilities {
+            storage_classes: vec![
+                StorageClassMapping {
+                    name: "gold".into(),
+                    target: Some(BTreeMap::from([("storage".into(), "ceph-a".into())])),
+                    per_zone: vec![],
+                },
+                StorageClassMapping {
+                    name: PROXMOX_SEED_STORAGE_CLASS.into(),
+                    target: Some(BTreeMap::from([("storage".into(), "local".into())])),
+                    per_zone: vec![],
+                },
+            ],
+            network_classes: vec![NetworkClassMapping {
+                name: "prod".into(),
+                target: Some(BTreeMap::from([
+                    ("bridge".into(), "vmbr1".into()),
+                    ("vlan".into(), "30".into()),
+                ])),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        p
+    }
+
+    fn pve_decision() -> Decision {
+        Decision {
+            provider_name: "pve-a".into(),
+            provider_namespace: "banlieue-system".into(),
+            provider_class: "proxmox".into(),
+            failure_domain_name: "pve-a-pve1".into(),
+            resolved_storage: vec![ResolvedResource {
+                class_name: "gold".into(),
+                backend_id: "ceph-a".into(),
+            }],
+            resolved_networks: vec![ResolvedResource {
+                class_name: "prod".into(),
+                backend_id: "vmbr1".into(),
+            }],
+            failure_domain_raw: BTreeMap::from([("node".to_string(), "pve1".to_string())]),
+            failure_domain_labels: BTreeMap::new(),
+        }
+    }
+
+    fn pve_image(resolved_ref: Option<&str>) -> VMImage {
+        let mut img = parent_image();
+        if let Some(status) = img.status.as_mut() {
+            status.per_provider = vec![ImagePerProviderStatus {
+                provider_name: "pve-a".into(),
+                provider_namespace: "banlieue-system".into(),
+                ready: true,
+                resolved_ref: resolved_ref.map(str::to_string),
+                reason: None,
+                message: None,
+                zones: vec![],
+            }];
+        }
+        img
+    }
+
+    fn build_pve(
+        vm: &VirtualMachine,
+        class: &VMClass,
+        user_data: Option<&str>,
+    ) -> Result<banlieue_api::infrastructure::ProxmoxMachine, InfraBuildError> {
+        build_proxmox_machine(
+            vm,
+            class,
+            &pve_image(Some("9000")),
+            &pve_decision(),
+            &pve_provider(),
+            user_data,
+        )
+    }
+
+    #[test]
+    fn pve_happy_path_populates_every_required_field() {
+        let m = build_pve(&parent_vm(), &parent_class(), None).expect("ok");
+        assert_eq!(m.metadata.name.as_deref(), Some("db-01"));
+        assert_eq!(m.metadata.namespace.as_deref(), Some("banlieue-system"));
+        assert_eq!(m.spec.provider_ref.name, "pve-a");
+        assert_eq!(m.spec.failure_domain.as_deref(), Some("pve-a-pve1"));
+        assert_eq!(m.spec.node, "pve1");
+        assert_eq!(m.spec.template_vmid, 9000);
+        assert_eq!(m.spec.storage, "ceph-a");
+        assert_eq!(m.spec.cores, 8);
+        assert_eq!(m.spec.sockets, 1);
+        assert_eq!(m.spec.memory_mi_b, 32_768);
+        assert_eq!(m.spec.os_disk_size_gi_b, 100);
+        assert!(m.spec.data_disks.is_empty());
+        assert!(m.spec.provider_id.is_none(), "the provider sets providerID");
+        m.spec.validate().expect("the built spec must validate");
+    }
+
+    #[test]
+    fn pve_node_comes_from_the_failure_domain_raw_attribute() {
+        let mut d = pve_decision();
+        d.failure_domain_raw.clear();
+        let e = build_proxmox_machine(
+            &parent_vm(),
+            &parent_class(),
+            &pve_image(Some("9000")),
+            &d,
+            &pve_provider(),
+            None,
+        )
+        .unwrap_err();
+        assert!(matches!(e, InfraBuildError::MissingFdRaw(_, "node")), "{e}");
+    }
+
+    /// The template VMID is the VMImage's per-provider `resolvedRef`, as
+    /// vSphere's template name is (ADR-0075 Decision 5a).
+    #[test]
+    fn pve_missing_resolved_ref_is_an_error() {
+        let e = build_proxmox_machine(
+            &parent_vm(),
+            &parent_class(),
+            &pve_image(None),
+            &pve_decision(),
+            &pve_provider(),
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(e, InfraBuildError::MissingResolvedImageRef { .. }),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn pve_non_numeric_resolved_ref_is_an_error_naming_it() {
+        let e = build_proxmox_machine(
+            &parent_vm(),
+            &parent_class(),
+            &pve_image(Some("ubuntu-template")),
+            &pve_decision(),
+            &pve_provider(),
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(e, InfraBuildError::InvalidTemplateVmid { .. }),
+            "{e}"
+        );
+        assert!(e.to_string().contains("ubuntu-template"), "{e}");
+    }
+
+    #[test]
+    fn pve_nic_reads_bridge_and_vlan_from_the_network_class_target() {
+        let m = build_pve(&parent_vm(), &parent_class(), None).expect("ok");
+        assert_eq!(m.spec.nics.len(), 1);
+        assert_eq!(m.spec.nics[0].name, "eth0");
+        assert_eq!(m.spec.nics[0].bridge, "vmbr1");
+        assert_eq!(m.spec.nics[0].vlan, Some(30));
+    }
+
+    #[test]
+    fn pve_nic_without_a_vlan_key_has_no_tag() {
+        let mut p = pve_provider();
+        p.spec.capabilities.network_classes[0].target =
+            Some(BTreeMap::from([("bridge".into(), "vmbr0".into())]));
+        let mut d = pve_decision();
+        d.resolved_networks[0].backend_id = "vmbr0".into();
+        let m = build_proxmox_machine(
+            &parent_vm(),
+            &parent_class(),
+            &pve_image(Some("9000")),
+            &d,
+            &p,
+            None,
+        )
+        .expect("ok");
+        assert_eq!(m.spec.nics[0].bridge, "vmbr0");
+        assert_eq!(m.spec.nics[0].vlan, None);
+    }
+
+    #[test]
+    fn pve_non_numeric_vlan_is_an_error() {
+        let mut p = pve_provider();
+        p.spec.capabilities.network_classes[0].target = Some(BTreeMap::from([
+            ("bridge".into(), "vmbr0".into()),
+            ("vlan".into(), "prod".into()),
+        ]));
+        let e = build_proxmox_machine(
+            &parent_vm(),
+            &parent_class(),
+            &pve_image(Some("9000")),
+            &pve_decision(),
+            &p,
+            None,
+        )
+        .unwrap_err();
+        assert!(matches!(e, InfraBuildError::InvalidVlan { .. }), "{e}");
+    }
+
+    #[test]
+    fn pve_extra_class_disks_become_data_disks_on_their_own_storage() {
+        let mut class = parent_class();
+        class.spec.hardware.disks.push(DiskSpec {
+            name: "data".into(),
+            size_gi_b: 500,
+            storage_class: "gold".into(),
+            provisioning: DiskProvisioning::Thin,
+        });
+        let mut d = pve_decision();
+        d.resolved_storage.push(ResolvedResource {
+            class_name: "gold".into(),
+            backend_id: "ceph-b".into(),
+        });
+        let m = build_proxmox_machine(
+            &parent_vm(),
+            &class,
+            &pve_image(Some("9000")),
+            &d,
+            &pve_provider(),
+            None,
+        )
+        .expect("ok");
+        assert_eq!(m.spec.data_disks.len(), 1);
+        assert_eq!(m.spec.data_disks[0].name, "data");
+        assert_eq!(m.spec.data_disks[0].size_gi_b, 500);
+        assert_eq!(m.spec.data_disks[0].storage.as_deref(), Some("ceph-b"));
+    }
+
+    #[test]
+    fn pve_data_disk_on_the_os_storage_leaves_storage_unset() {
+        let mut class = parent_class();
+        class.spec.hardware.disks.push(DiskSpec {
+            name: "data".into(),
+            size_gi_b: 50,
+            storage_class: "gold".into(),
+            provisioning: DiskProvisioning::Thin,
+        });
+        let mut d = pve_decision();
+        d.resolved_storage.push(d.resolved_storage[0].clone());
+        let m = build_proxmox_machine(
+            &parent_vm(),
+            &class,
+            &pve_image(Some("9000")),
+            &d,
+            &pve_provider(),
+            None,
+        )
+        .expect("ok");
+        assert_eq!(m.spec.data_disks[0].storage, None);
+    }
+
+    #[test]
+    fn pve_no_user_data_means_no_seed_storage_is_needed() {
+        let mut p = pve_provider();
+        p.spec
+            .capabilities
+            .storage_classes
+            .retain(|c| c.name != PROXMOX_SEED_STORAGE_CLASS);
+        let m = build_proxmox_machine(
+            &parent_vm(),
+            &parent_class(),
+            &pve_image(Some("9000")),
+            &pve_decision(),
+            &p,
+            None,
+        )
+        .expect("ok");
+        assert_eq!(m.spec.iso_storage, None);
+        assert_eq!(m.spec.user_data, None);
+    }
+
+    /// ADR-0075 Decision 3: `isoStorage` is set whenever `userData` is, and
+    /// comes from the Provider's `seed-iso` storage class.
+    #[test]
+    fn pve_user_data_carries_the_seed_storage_from_the_provider() {
+        let m = build_pve(&parent_vm(), &parent_class(), Some("#cloud-config\n")).expect("ok");
+        assert_eq!(m.spec.user_data.as_deref(), Some("#cloud-config\n"));
+        assert_eq!(m.spec.iso_storage.as_deref(), Some("local"));
+        m.spec.validate().expect("validates");
+    }
+
+    #[test]
+    fn pve_user_data_without_a_seed_iso_class_is_an_error_naming_the_class() {
+        let mut p = pve_provider();
+        p.spec
+            .capabilities
+            .storage_classes
+            .retain(|c| c.name != PROXMOX_SEED_STORAGE_CLASS);
+        let e = build_proxmox_machine(
+            &parent_vm(),
+            &parent_class(),
+            &pve_image(Some("9000")),
+            &pve_decision(),
+            &p,
+            Some("#cloud-config\n"),
+        )
+        .unwrap_err();
+        assert!(matches!(e, InfraBuildError::UnresolvedClass(_)), "{e}");
+        assert!(e.to_string().contains(PROXMOX_SEED_STORAGE_CLASS), "{e}");
+    }
+
+    #[test]
+    fn pve_honours_hardware_and_os_disk_overrides() {
+        let mut vm = parent_vm();
+        vm.spec.hardware_override = Some(HardwareOverride {
+            cpus: Some(4),
+            memory_mi_b: Some(8192),
+            disk_overrides: vec![DiskOverride {
+                name: "os".into(),
+                size_gi_b: 200,
+            }],
+        });
+        let m = build_pve(&vm, &parent_class(), None).expect("ok");
+        assert_eq!(m.spec.cores, 4);
+        assert_eq!(m.spec.memory_mi_b, 8192);
+        assert_eq!(m.spec.os_disk_size_gi_b, 200);
+    }
+
+    #[test]
+    fn pve_carries_firmware_tpm_power_state_and_the_owner_reference() {
+        let mut class = parent_class();
+        class.spec.firmware = Firmware::EfiSecure;
+        class.spec.tpm_enabled = true;
+        let mut vm = parent_vm();
+        vm.spec.desired_power_state = PowerState::PoweredOff;
+        let m = build_pve(&vm, &class, None).expect("ok");
+        assert_eq!(m.spec.firmware, Firmware::EfiSecure);
+        assert!(m.spec.tpm_enabled);
+        assert_eq!(m.spec.desired_power_state, PowerState::PoweredOff);
+        let o = &m.metadata.owner_references.as_ref().unwrap()[0];
+        assert_eq!(o.kind, "VirtualMachine");
+        assert_eq!(o.controller, Some(true));
+    }
+
+    #[test]
+    fn pve_static_override_fills_the_zone_subnet_like_the_other_backends() {
+        let mut vm = parent_vm();
+        vm.spec.network_overrides = vec![static_override("eth0", "192.0.2.10")];
+        let m = build_pve(&vm, &parent_class(), None).expect("ok");
+        let s = m.spec.nics[0].ipam.static_.as_ref().expect("static ipam");
+        assert_eq!(s.address, "192.0.2.10");
+    }
+
+    #[test]
+    fn pve_a_class_with_no_disks_is_an_error() {
+        let mut class = parent_class();
+        class.spec.hardware.disks.clear();
+        let e = build_pve(&parent_vm(), &class, None).unwrap_err();
+        assert!(matches!(e, InfraBuildError::UnresolvedClass(_)), "{e}");
+    }
+
+    #[test]
+    fn pve_a_spec_that_fails_validation_is_reported_not_applied() {
+        let mut class = parent_class();
+        class
+            .spec
+            .network
+            .interfaces
+            .push(class.spec.network.interfaces[0].clone());
+        let mut d = pve_decision();
+        d.resolved_networks.push(d.resolved_networks[0].clone());
+        let e = build_proxmox_machine(
+            &parent_vm(),
+            &class,
+            &pve_image(Some("9000")),
+            &d,
+            &pve_provider(),
+            None,
+        )
+        .unwrap_err();
+        assert!(matches!(e, InfraBuildError::InvalidSpec(_)), "{e}");
+    }
+
+    #[test]
+    fn infra_kind_maps_the_proxmox_class() {
+        assert_eq!(
+            InfraKind::from_provider_class("proxmox"),
+            Some(InfraKind::Proxmox)
+        );
+        assert_eq!(PROVIDER_CLASS_PROXMOX, "proxmox");
+    }
+
+    #[test]
+    fn proxmox_kind_name_matches_the_crd() {
+        use kube::CustomResourceExt;
+        assert_eq!(
+            InfraKind::Proxmox.kind_name(),
+            banlieue_api::infrastructure::ProxmoxMachine::crd()
                 .spec
                 .names
                 .kind

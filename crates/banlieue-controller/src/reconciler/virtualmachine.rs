@@ -33,7 +33,9 @@ use banlieue_api::banlieue::{
 use banlieue_api::common::{
     LocalObjectReference as _PlaceholderLocalRef, TypedObjectReference, condition_types,
 };
-use banlieue_api::infrastructure::{CloudHypervisorMachine, LibvirtMachine, VSphereMachine};
+use banlieue_api::infrastructure::{
+    CloudHypervisorMachine, LibvirtMachine, ProxmoxMachine, VSphereMachine,
+};
 use banlieue_provider_sdk::{
     finalizer::{ensure_finalizer, remove_finalizer},
     guestdata::{GuestDataContext, render_placeholders},
@@ -52,7 +54,8 @@ use serde_json::json;
 use tracing::{debug, info, warn};
 
 use super::infra::{
-    InfraKind, build_cloud_hypervisor_machine, build_libvirt_machine, build_vsphere_machine,
+    InfraKind, build_cloud_hypervisor_machine, build_libvirt_machine, build_proxmox_machine,
+    build_vsphere_machine,
 };
 use super::migration::{MigrationAction, PlacementDriftReason, evaluate};
 use super::scheduler::{ScheduleError, reasons, schedule};
@@ -245,7 +248,7 @@ pub async fn reconcile(vm: Arc<VirtualMachine>, ctx: Arc<Context>) -> Result<Act
     };
 
     // Look up the chosen provider; threaded into the infra builder so future
-    // providers (Proxmox, libvirt) can pull spec-level fields like the API
+    // providers can pull spec-level fields like the API
     // endpoint or SSH transport from it.
     let chosen_provider = providers
         .iter()
@@ -401,6 +404,28 @@ pub async fn reconcile(vm: Arc<VirtualMachine>, ctx: Arc<Context>) -> Result<Act
             debug!(cloud_hypervisor_machine = %m.name_any(), "applied CloudHypervisorMachine via SSA");
             Box::new(m)
         }
+        InfraKind::Proxmox => {
+            let infra = match build_proxmox_machine(
+                &vm,
+                &class,
+                &image,
+                &decision,
+                chosen_provider,
+                rendered_user_data.as_deref(),
+            ) {
+                Ok(m) => m,
+                Err(e) => {
+                    warn!(error = %e, "infra builder failed; reporting Scheduled=False");
+                    patch_infra_build_failure(&vm_api, &vm, &name, generation, &e.to_string())
+                        .await?;
+                    return Ok(requeue_on_error());
+                }
+            };
+            let m =
+                server_side_apply(&infra_apis.proxmox, FIELD_MANAGER_CONTROLLER, &infra).await?;
+            debug!(proxmox_machine = %m.name_any(), "applied ProxmoxMachine via SSA");
+            Box::new(m)
+        }
     };
 
     // ---- Status mirror -------------------------------------------------
@@ -472,6 +497,11 @@ async fn mirror_only_path(
             .get_opt(name)
             .await?
             .map(|m| Box::new(m) as Box<dyn InfraMachineRead + Send>),
+        InfraKind::Proxmox => apis
+            .proxmox
+            .get_opt(name)
+            .await?
+            .map(|m| Box::new(m) as Box<dyn InfraMachineRead + Send>),
     };
     let Some(infra) = infra else {
         // The infra CR vanished out from under us (manual delete, GC
@@ -495,6 +525,7 @@ async fn delete_existing_infra(apis: &InfraApis, infra_kind: InfraKind, name: &s
         InfraKind::VSphere => delete_ignoring_404(&apis.vsphere, name).await,
         InfraKind::Libvirt => delete_ignoring_404(&apis.libvirt, name).await,
         InfraKind::CloudHypervisor => delete_ignoring_404(&apis.cloud_hypervisor, name).await,
+        InfraKind::Proxmox => delete_ignoring_404(&apis.proxmox, name).await,
     }
 }
 
@@ -507,6 +538,7 @@ struct InfraApis {
     vsphere: Api<VSphereMachine>,
     libvirt: Api<LibvirtMachine>,
     cloud_hypervisor: Api<CloudHypervisorMachine>,
+    proxmox: Api<ProxmoxMachine>,
 }
 
 impl InfraApis {
@@ -515,6 +547,7 @@ impl InfraApis {
             vsphere: Api::namespaced(client.clone(), namespace),
             libvirt: Api::namespaced(client.clone(), namespace),
             cloud_hypervisor: Api::namespaced(client.clone(), namespace),
+            proxmox: Api::namespaced(client.clone(), namespace),
         }
     }
 }
@@ -580,8 +613,13 @@ async fn finalize_vm(
         .get_opt(&owned_name)
         .await?
         .map(|m| m.metadata.deletion_timestamp.is_some());
+    let proxmox = apis
+        .proxmox
+        .get_opt(&owned_name)
+        .await?
+        .map(|m| m.metadata.deletion_timestamp.is_some());
 
-    if vsphere.is_none() && libvirt.is_none() && cloud_hypervisor.is_none() {
+    if vsphere.is_none() && libvirt.is_none() && cloud_hypervisor.is_none() && proxmox.is_none() {
         info!("infra CRs cleared; removing VirtualMachine finalizer");
         remove_finalizer(api, vm, VM_FINALIZER).await?;
         return Ok(requeue_default());
@@ -603,7 +641,15 @@ async fn finalize_vm(
         info!(cloud_hypervisor_machine = %owned_name, "requesting CloudHypervisorMachine deletion; waiting for cascade");
         delete_ignoring_404(&apis.cloud_hypervisor, &owned_name).await?;
     }
-    if vsphere == Some(true) || libvirt == Some(true) || cloud_hypervisor == Some(true) {
+    if proxmox == Some(false) {
+        info!(proxmox_machine = %owned_name, "requesting ProxmoxMachine deletion; waiting for cascade");
+        delete_ignoring_404(&apis.proxmox, &owned_name).await?;
+    }
+    if vsphere == Some(true)
+        || libvirt == Some(true)
+        || cloud_hypervisor == Some(true)
+        || proxmox == Some(true)
+    {
         debug!("infra CR still terminating; will recheck");
     }
     Ok(requeue_on_error())

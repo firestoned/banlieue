@@ -59,7 +59,7 @@ Notes:
 
 - `providerClassRef.name` references a `ProviderClass` CR, which carries the
   backend kind (`spec.backend`, drawn from a well-known set — `vsphere`,
-  `libvirt`, and eventually `proxmox`) plus install metadata (image,
+  `libvirt`, `cloud-hypervisor` and `proxmox`) plus install metadata (image,
   resources, RBAC) without changing this reference. See
   [ADR-0012](https://github.com/firestoned/banlieue/blob/main/docs/adr/0012-providerclass-crd-and-operator-role.md).
 - The user never sees the `connection:` / `capabilities:` blocks. They're owned
@@ -100,7 +100,8 @@ A provider controller is a Kubernetes controller. Its responsibilities:
    ([ADR-0008](https://github.com/firestoned/banlieue/blob/main/docs/adr/0008-byoc-vsphere-http-client.md)),
    the first-party `banlieue-libvirt` RPC/XDR client for libvirt
    ([ADR-0011](https://github.com/firestoned/banlieue/blob/main/docs/adr/0011-libvirt-provider-own-client.md)),
-   and (once it ships) the Proxmox VE HTTP API for Proxmox. No third-party
+   and the first-party `banlieue-proxmox` REST client for Proxmox VE
+   ([ADR-0074](https://github.com/firestoned/banlieue/blob/main/docs/adr/0074-banlieue-proxmox-rest-client.md)). No third-party
    Go/Python client libraries are vendored — everything is native Rust.
 3. **Report status uniformly.** Patch `.status` on the infra CR with the CAPI
    v1beta2 condition vocabulary, regardless of how the backend natively

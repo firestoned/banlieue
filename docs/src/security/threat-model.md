@@ -5,9 +5,29 @@ SPDX-License-Identifier: Apache-2.0
 # Threat Model
 
 > **Status:** Living document. Last full pass **2026-09-28**, against the
-> architecture defined by **ADR-0001 … ADR-0067** (0057–0059 unallocated,
-> 0066 reserved; 0060–0065 and 0067 Accepted 2026-09-27). The 2026-09-28
-> pass covers **ADR-0043 Decision 8 as amended 2026-09-28** (an unreachable
+> architecture defined by **ADR-0001 … ADR-0075** (0057–0059 unallocated,
+> 0066 and 0068–0073 reserved; 0060–0065 and 0067 Accepted 2026-09-27; 0074
+> and 0075 Accepted 2026-09-28).
+>
+> **2026-09-28 pass — Proxmox VE (ADR-0074, ADR-0075).** A third
+> hypervisor backend, reached over HTTPS with a **privilege-separated API
+> token**. One new component (`banlieue-provider-proxmox`), one new actor (a
+> stolen Proxmox token), one new asset (A-16, which of a Proxmox cluster's VMs
+> banlieue considers its own), a Proxmox block under TB-4, rows added to
+> TB-1, TB-2 and TB-5, hardening item §7.16 and five §8 entries. **No new
+> trust boundary**: the provider is an in-cluster pod like the vSphere and
+> libvirt ones, so it sits on TB-4. Every section was re-walked; TB-3, TB-6
+> to TB-11 are unchanged. What is verified: the client and the provider are
+> unit-tested against an in-memory Proxmox that refuses what the real API
+> refuses, and the **read-only live tier (`make proxmox-live-test`) passed
+> against a real node on 2026-09-28**: token auth, TLS verified against the
+> node's own CA, inventory decoding, and the reason phrase on a 401. On 2026-09-30 the **lifecycle tier
+> (`make proxmox-lifecycle-test`) passed** too: clone, configure, resize (a
+> task), multipart seed upload, start, stop, delete, task polling with real
+> UPIDs, and a same-named foreign VM surviving the machine's delete.
+>
+> A 2026-09-28 pass
+> covered **ADR-0043 Decision 8 as amended 2026-09-28** (an unreachable
 > guest agent backs off only after a 10-minute agent-bootstrap grace window,
 > so the machine reconciler's cadence can no longer lose the race against a
 > pool's `provisioningTimeoutSeconds`): **no change** — no new component,
@@ -139,7 +159,9 @@ Proxmox). It holds two things an attacker wants:
 1. **Hypervisor credentials.** A `Provider` names a Secret containing
    infrastructure-admin credentials for a vCenter or libvirtd — a username and
    password for vCenter, an **mTLS client certificate and private key** for
-   libvirtd (there is no password in the libvirt path by design). Those
+   libvirtd (there is no password in the libvirt path by design), and a
+   **privilege-separated API token** for Proxmox VE (there is no password or
+   ticket path there either, ADR-0074). Those
    credentials are, by construction, more powerful than the Kubernetes cluster
    banlieue runs in — they can create, delete, and read the disks of every VM
    on the backend, including VMs banlieue never created.
@@ -174,6 +196,7 @@ relationship to the host.
 | `banlieue-controller` | `banlieue-controller` | `banlieue-system` | Watches `VirtualMachine`, schedules onto a `Provider`, creates provider infra CRs. Also runs the `VirtualMachinePool` loop (ADR-0046) and the `VirtualMachineClaim` loop (ADR-0047) — the latter binds a pool member to a subject and destroys it on release |
 | `banlieue-operator` | `banlieue-operator` | `banlieue-system` | Provider lifecycle (ADR-0012): creates provider Deployments, ServiceAccounts, Roles, RoleBindings |
 | `banlieue-provider-vsphere` / `-libvirt` | per-`Provider` SA | `banlieue-system` | Talks to the hypervisor; reconciles infra CRs (`VSphereMachine`, `LibvirtMachine` — ADR-0050) and realises them as real VMs/domains |
+| `banlieue-provider-proxmox` | per-`Provider` SA | `banlieue-system` | Talks to Proxmox VE through the first-party `banlieue-proxmox` client (ADR-0074); reconciles `ProxmoxMachine`s (ADR-0075) into full clones of a template VM, verifies the template VMIDs `VMImage`s name, and publishes one failure domain per node. Spawns no Jobs — `deploy/provider-proxmox/rbac/clusterrole.yaml` |
 | `banlieue-provider-cloud-hypervisor` | ServiceAccount `banlieue-provider-cloud-hypervisor` (a bound token in a kubeconfig **on the host**); host user `banlieue` | **Not in the cluster** — a systemd service on the KVM host; its Provider lives in `banlieue-system` | Watches its own `Provider`, `CloudHypervisorMachine`s and `VMImage`s over the API; creates taps, disks, seeds and one transient systemd unit per guest (ADR-0060, ADR-0063). Holds `CAP_NET_ADMIN`, `CAP_CHOWN`, `CAP_FOWNER` and nothing else — `deploy/provider-cloud-hypervisor/host/banlieue-provider-cloud-hypervisor.service` |
 | Cloud Hypervisor VMM, one per guest | Its own host uid **and private gid** (`banlieue-g<uid>`, registered in `/etc/userdb`), plus `kvm` | The host, as `banlieue-ch@<guest uid>.service`, an instance of a root-owned template | Runs one guest. No capabilities; seccomp and Landlock on; systemd sandbox — `deploy/provider-cloud-hypervisor/host/banlieue-ch-guest.example.service` |
 | `banlieue-imagebuilder` | `banlieue-imagebuilder` | `banlieue-system` | Drives kairos `OSArtifact` builds; merges cloud-config (ADR-0037) |
@@ -189,8 +212,8 @@ relationship to the host.
 
 | ID | Asset | Where it lives | Impact if lost |
 | --- | --- | --- | --- |
-| A-1 | Hypervisor credentials — vCenter username/password, or a libvirt **mTLS client key** | Secret named by `Provider.spec.connection.credentialsRef` | **Critical** — full virtualization-layer compromise, independent of Kubernetes |
-| A-2 | Guest bootstrap material (cloud-config, SSH keys, join tokens) | Secrets/ConfigMaps → `VSphereMachine.spec.userData` / `LibvirtMachine.spec.userData` / `CloudHypervisorMachine.spec.userData` → `guestinfo.userdata` or a NoCloud ISO (on Cloud Hypervisor, `seed.iso` in the machine directory on the host) → built image | High — guest compromise, lateral movement into provisioned fleet |
+| A-1 | Hypervisor credentials — vCenter username/password, a libvirt **mTLS client key**, or a Proxmox **API token** (`username` = `user@realm!tokenid`, `tokenValue`) | Secret named by `Provider.spec.connection.credentialsRef` | **Critical** — full virtualization-layer compromise, independent of Kubernetes |
+| A-2 | Guest bootstrap material (cloud-config, SSH keys, join tokens) | Secrets/ConfigMaps → `VSphereMachine.spec.userData` / `LibvirtMachine.spec.userData` / `CloudHypervisorMachine.spec.userData` / `ProxmoxMachine.spec.userData` → `guestinfo.userdata` or a NoCloud ISO (on Cloud Hypervisor, `seed.iso` in the machine directory on the host; on Proxmox, `banlieue-<machine uid>.iso` on an `iso`-content storage, attached for the machine's life) → built image | High — guest compromise, lateral movement into provisioned fleet |
 | A-3 | VM image artifacts (ISO / raw disk) | `OSArtifact` PVC, then a vSphere datastore under `banlieue-images/`; on Cloud Hypervisor, the operator's **OCI registry** (a single-layer artifact, addressed by digest) and then each storage class's image cache on the host (`<storage class>/images/sha256-<hex>.raw`, `0750 banlieue`), or a file an admin placed there (ADR-0064) | **Critical** — a tampered image compromises every VM built from it |
 | A-4 | Integrity of the control plane's own decisions | `Provider`, `ProviderClass`, `VMImage`, `VMClass` CRs | High — a forged `Provider` redirects credentials; a forged `VMImage` redirects the fleet's boot media |
 | A-5 | Released binaries and container images | GHCR, GitHub Releases | **Critical** — downstream supply-chain compromise |
@@ -202,6 +225,7 @@ relationship to the host.
 | A-12 | **Guest disks, seeds and API sockets on a Cloud Hypervisor host** | `<storage class>/<machine uid>/` (`os.raw`, `seed.iso`, `serial.log`, and `install.iso` while a `Deferred` installer is attached) and `/run/banlieue/ch/<guest uid>/api.sock`, each directory `2770 guest-uid:banlieue` | High — a guest's whole disk, its rendered user-data (A-2) in the seed, and control of its VMM. Encrypted at rest only for a `tpmEnabled` machine installed `Deferred` (ADR-0065), which seals to its own vTPM; otherwise plaintext, and ADR-0048 refuses `tpmEnabled` with an `Immediate` image |
 | A-13 | **Registry credentials** (ADR-0064) — push: a `kubernetes.io/basic-auth` Secret in `banlieue-imagebuild`; pull: `username`/`password` files in the host's `[registry] credentials_dir` (`0750 root:banlieue`) | Build namespace; each Cloud Hypervisor host | Push: **High** — combined with a `VMImage` status write, it chooses what hosts boot (TB-10). Pull: Medium — reads every pushed image, including cloud-config baked into it (A-2) |
 | A-14 | **What makes a Cloud Hypervisor host safe to run guests on** — the VMM and firmware, the template units, the polkit rule, the host config, the userdb records and directory modes | `/opt/banlieue/`, `/etc/systemd/system/`, `/etc/polkit-1/rules.d/`, `/etc/banlieue/`, `/etc/userdb/`, placed by `banlieue host install` (ADR-0067) | **Critical** — a tampered unit or polkit rule is root on the host, a tampered VMM runs every guest; integrity comes from the banlieue binary (A-5) and the sha256 pins compiled into it |
+| A-16 | **Which Proxmox VMs banlieue considers its own** — the `banlieue-machine-uid=<uid>` line in a VM's description (ADR-0075 Decision 4) | Each VM's `description` on the Proxmox cluster, written by the clone itself | High for **integrity**: it is what stops a machine adopting, reconfiguring and finally destroying a VM it did not create (a same-named VM in another namespace, or an administrator's own). Not a secret |
 | A-6 | vTPM identity and sealed disk-encryption keys | vSphere VM, per-clone (ADR-0039/0040); on libvirt, **swtpm state keyed by domain UUID** (ADR-0050); on Cloud Hypervisor, swtpm state in `<storage class>/<machine uid>/tpm/`, owned by the guest's uid, deleted with the machine (ADR-0065) | High — a shared or surviving TPM identity breaks per-VM disk-encryption isolation |
 | A-6a | **vTPM endorsement key certificate** — the public anchor an attestation quote is checked against | vCenter-issued and read host-side on vSphere; `swtpm_localca`-issued into the vTPM's NVRAM on libvirt, exported by the guest to `/run/banlieue/ek.pem` and mirrored to `VirtualMachineClaim.status` (ADR-0045); on Cloud Hypervisor, written by `swtpm_setup` at manufacture to `<state_root>/ek/<machine uid>/` (`0700 banlieue`) and read **host-side** (ADR-0065) | Low confidentiality — it is a **public key**, deliberately readable by every reader of the claim. Its value is *integrity of binding*: it must name the VM banlieue actually created, or ADR-0049 verifies a quote from the wrong machine |
 | A-15 | **EK trust-anchor bundle** — the set of CA certificates trusted to issue this backend's vTPM EK certificates | `Provider.spec.attestation.ekTrustBundle` — inline PEM, or a ConfigMap/Secret it names in the Provider's namespace. Admin-supplied, never discovered; resolved by the **broker**, never by any banlieue identity (ADR-0049 Decision 10) | Zero confidentiality — public CA material. **High integrity**: a rogue CA added here makes every EK certificate that CA forges verify, defeating the whole attestation chain; and on libvirt *removing* a host's issuer is the revocation mechanism, so an entry an attacker can re-add is a revocation undone |
@@ -218,12 +242,13 @@ relationship to the host.
 | **Sandbox workload** — the AI agent (or anything else) running inside a claimed VM, including one gone hostile via prompt injection | Arbitrary code as root inside its own guest: can write the readiness marker, present or withhold an EK certificate, answer on any port, read the still-attached NoCloud seed | **Untrusted, by design** — the VM boundary is the isolation model (ADR-0047), and every TB-4/TB-5 control involving the guest assumes it is hostile. What it cannot do from inside: escape its vTPM identity (the EK private key is the one thing it cannot substitute — TB-4), reach another member's claim, or make banlieue carry a credential to it (A-9) |
 | Compromised hypervisor endpoint | Attacker-controlled host reachable at `spec.connection.endpoint` | Untrusted |
 | **Compromised VMM** (Cloud Hypervisor) | A guest that has escaped into its VMM process: code execution as that guest's host uid, with `kvm` and write access to its own two directories | **Untrusted.** The unit's sandbox and the per-guest identity are what contain it (TB-9); the provider must never act on anything it can influence without checking |
+| **Stolen Proxmox API token** | Holds A-1 for Proxmox, without the cluster | Untrusted; bounded by the token's **ACLs**, not the user's: it is privilege-separated and holds only the `BanlieueProvider` role on `/vms`, one node, one SDN zone and the ISO storage — it can create and destroy VMs there, and cannot open a console, run commands in a guest, migrate, snapshot, or change permissions (`scripts/bootstrap-proxmox-host.sh`, `ROLE_PRIVS`). Its one storage-deleting privilege, `Datastore.Allocate`, is held **only on `banlieue-seed`**, a storage holding nothing but seed ISOs (`SEED_ROLE_PRIVS`): it cannot delete backups, templates or ISOs elsewhere, nor edit another storage's definition |
 | **Stolen host credential** (Cloud Hypervisor) | Holds A-11 — the provider's ServiceAccount token — without the host | Untrusted; bounded by the provider's namespaced RBAC (TB-8) and the token's lifetime |
 | **OCI registry** and whoever operates it (ADR-0064) | Stores every pushed build; can read, withhold or delete one | **Untrusted for integrity** — hosts pull by digest and verify it, so the registry cannot substitute content. **Trusted for confidentiality and availability**: it sees every image in full (§7.13) |
 | **Host operator running `banlieue host install`** | Root on the host, for one command | Trusted, like the hypervisor operator; the installer's controls protect the host **from the provider's user** during that run, not from the operator |
 | External contributor | Opens a PR from a fork | Untrusted |
 | **OIDC identity provider** (and any bridge in front of it, e.g. Dex for GitHub) | Mints the ID tokens the API server accepts, and therefore **decides what `request.userInfo.username` is** | **Semi-trusted, and entirely outside banlieue's control.** Every guarantee the claim-subject policy makes is downstream of this actor: banlieue checks `subject.id` against a username it did not derive. Compromise or misconfiguration here makes every claim attribution meaningless — §8 |
-| Hypervisor operator | vCenter/libvirt privileges outside Kubernetes; root on a Cloud Hypervisor host | Semi-trusted — **can read datastores and storage pools banlieue writes to**, and on libvirt can read swtpm state on the host filesystem. On a Cloud Hypervisor host, root can read every guest's disk, seed and memory, and the provider's cluster token (A-11) |
+| Hypervisor operator | vCenter/libvirt/Proxmox privileges outside Kubernetes; root on a Cloud Hypervisor host | Semi-trusted — **can read datastores, storage pools and Proxmox storages banlieue writes to** (including a Proxmox machine's seed ISO), **can edit or copy the ownership marker on a Proxmox VM** (§8), and on libvirt can read swtpm state on the host filesystem. On a Cloud Hypervisor host, root can read every guest's disk, seed and memory, and the provider's cluster token (A-11) |
 
 ## 5. Trust boundaries
 
@@ -259,6 +284,7 @@ relationship to the host.
                     ┌───────────────────▼────────────────────────────────────┐
                     │ Hypervisor — vCenter (HTTPS + creds)                    │
                     │             libvirtd (mTLS, native RPC; ADR-0011/0050)  │
+                    │             Proxmox VE (HTTPS + API token; ADR-0074)    │
                     │  datastores / storage pools, VMs & domains, vTPM/swtpm  │
                     │  guest → qemu-guest-agent → EK cert, phase (read-only)  │
                     └────────────────────────────────────────────────────────┘
@@ -291,7 +317,7 @@ relationship to the host.
 | TB-1 | Tenant namespace → `banlieue-system` | A `VirtualMachine` causes privileged work in another namespace |
 | TB-2 | Control-plane pod → Kubernetes Secrets | Credential and user-data reads |
 | TB-3 | `banlieue-system` (restricted) → `banlieue-imagebuild` (privileged) | Image builds and per-zone imports. The imagebuilder and provider **pods** run in `banlieue-system`; what sits across the boundary is the build inputs (cloud-config Secrets), the import Job and kairos' privileged builder — so both the imagebuilder's cloud-config `Role` (ADR-0041) and the operator-minted import `Role` are cross-namespace bindings |
-| TB-4 | Cluster → hypervisor | Authenticated API calls carrying A-1 |
+| TB-4 | Cluster → hypervisor | Authenticated API calls carrying A-1 (vCenter, libvirtd, Proxmox VE) |
 | TB-5 | Cluster → shared datastore | ISO/disk artifacts written to storage other people can read |
 | TB-6 | Contributor / CI → published artifact | Build and release |
 | TB-7 | External identity provider → API server | The assertion of *who the caller is*, on which the whole claim attribution model rests |
@@ -311,7 +337,7 @@ relationship to the host.
 | A `Provider` names a Secret its author cannot read (confused deputy) | E, I | `banlieue-provider-credentialsref-authorization` VAP uses the CEL `authorizer` — the creating principal must itself be able to `get` that Secret |
 | A `ProviderClass` mints RBAC or places pods in `kube-system` | E | `banlieue-providerclass-guardrails` VAP: `additionalRules` may not name `secrets`, `*`, `escalate`, `bind`, `impersonate`; system namespaces rejected for `workloadNamespace` |
 | Ref-swapping an existing VM onto another class/image | T | `banlieue-virtualmachine-immutable-refs`, `banlieue-provider-immutable-class` VAPs |
-| Resource-exhaustion via absurd specs (`numCpus`, disk counts) | D | schemars `range`/`length`/`maxItems` constraints on `VMClass` and `VSphereMachine` |
+| Resource-exhaustion via absurd specs (`numCpus`, disk counts) | D | schemars `range`/`length`/`maxItems` constraints on `VMClass`, `VSphereMachine` and `ProxmoxMachine` (`cores`, `memoryMiB`, `dataDisks` ≤ 30, `nics` ≤ 16); cross-field rules (a seed needs `isoStorage`, unique NIC and disk names, VLAN 1–4094) in `ProxmoxMachineSpec::validate`, called by the controller when it builds the machine — `crates/banlieue-api/src/infrastructure/proxmox_machine.rs` |
 | A `VirtualMachine` names user-data its author cannot read (confused deputy) | E, I | `banlieue-virtualmachine-userdata-authorization` VAP (ADR-0042) uses the CEL `authorizer`: the creating principal must itself be able to `get` the Secret / ConfigMap named by `spec.userData`, in the `VirtualMachine`'s own namespace — `deploy/admission/virtualmachine-userdata-authorization.yaml` |
 | Rendered user-data is readable from `VSphereMachine.spec` / `LibvirtMachine.spec` | I | **No code control — this is the accepted reflection of ADR-0025.** See §7.1 and §8 |
 | **Two claims bind the same warm member**, so one VM is handed to two subjects | I, E | The bind is a JSON merge patch carrying the member's `resourceVersion`, so a member written since the snapshot is rejected `409` and the loser re-picks — `crates/banlieue-controller/src/reconciler/claim.rs`. A member already carrying `banlieue.io/claim` reads as `MemberPhase::Claimed` (`reconciler/pool.rs::member_view`) and `pick_member` filters to `Ready` only (`reconciler/claim_plan.rs`) |
@@ -341,6 +367,8 @@ access**, and each identity reads only the objects it can name.
 | The CLI install path emits the same namespaced RBAC as the manifests, so `banlieue bootstrap` and GitOps cannot drift apart | `crates/banlieue-operator/src/bootstrap.rs` (`build_cloud_config_role`) |
 | `Credentials` has a hand-written redacting `Debug` | `crates/banlieue-provider-vsphere/src/client/mod.rs` |
 | `TlsIdentity` likewise — the libvirt credential *is* the client private key, so `client_key_pem` renders as `<redacted>` and the public CA/cert halves render as byte counts. A regression test asserts the key never reaches `{:?}` | `crates/banlieue-libvirt/src/transport.rs`, `transport_tests.rs` (`tls_identity_debug_redacts_the_private_key`) |
+| The Proxmox provider `ClusterRole` grants **no Secret or ConfigMap access, no `create` and no `delete`** on `proxmoxmachines`; the API token and CA bundle are read by name through the operator's per-`Provider` `resourceNames` Role — `deploy/provider-proxmox/rbac/clusterrole.yaml`, `crates/banlieue-operator/src/bootstrap.rs` |
+| `ApiToken` and `ClientConfig` have hand-written redacting `Debug`; the token is validated (`user@realm!tokenid`, no whitespace in the secret) before any request, so a mis-pasted value is reported as such and never echoed. Regression tests assert the secret never reaches `{:?}` | `crates/banlieue-proxmox/src/token.rs`, `client.rs` (`token_tests.rs`, `client_tests.rs`) |
 | The libvirt provider `ClusterRole` grants **no `create` and no `delete`** on `libvirtmachines` — the controller owns their lifecycle; a compromised provider cannot mint machines the scheduler never placed | `deploy/provider-libvirt/rbac/clusterrole.yaml` |
 
 ### TB-3 — Restricted → privileged namespace
@@ -388,6 +416,27 @@ read-only root filesystem and all capabilities dropped.
 | A half-failed teardown silently leaves domains defined | libvirt 11.3 *fails* undefine on a UEFI domain without `NVRAM` rather than warning; the error is returned, never swallowed, and the live lifecycle test asserts the domain is actually gone — `crates/banlieue-libvirt/tests/live_libvirtd.rs` |
 | Credentials leak into logs | No secret is ever logged; redacting `Debug`; provider condition messages are the only verbatim text mirrored to user-facing status |
 
+#### Proxmox VE (ADR-0074, ADR-0075)
+
+The same boundary, with a credential shaped differently: an **API token**
+rather than a password or a client certificate, and a protocol whose errors
+live in the HTTP reason phrase and whose mutations are asynchronous tasks.
+
+| Threat | STRIDE | Control |
+| --- | --- | --- |
+| MITM / attacker-presented certificate, so the token is sent to the wrong host | S, I | TLS is verified by default against `connection.caBundle` (the node's own CA, written by the bootstrap script) or the system roots; a bundle that does not parse is a configuration error, never a silent fallback. The endpoint must be `https://` (`banlieue-provider-connection` VAP, which names `proxmox`); `insecureSkipTLSVerify` needs the audited annotation — `crates/banlieue-proxmox/src/client.rs` (`Client::new`), `deploy/admission/provider-connection.yaml` |
+| A redirect carries the `Authorization` header to another host | I | Redirects are **never followed** (`redirect::Policy::none()`); a 3xx is an error — `client.rs`, test `redirects_are_not_followed_so_the_token_stays_put` |
+| A hostile or wedged endpoint stalls every reconcile | D | 10 s connect and 30 s whole-request timeouts on every call; every task wait is bounded, and a task still running at the deadline is `TaskTimeout`, never a silent return — `client.rs` (`DEFAULT_*_TIMEOUT`), `api.rs` (`wait_task_with`) |
+| A hostile endpoint returns an unbounded response body | D | The body is read through a hard cap and refused beyond it — `client.rs` (`MAX_RESPONSE_BYTES`), test `an_oversized_response_is_refused` |
+| A stolen or over-privileged token | E | The token is **privilege-separated** and the role holds only what ADR-0074 Decision 4 lists, on `/vms`, one node, one SDN zone and the ISO storage. Absent by design: console, guest exec, migrate, snapshot, backup, `Sys.Modify`, `Permissions.Modify`. **Revocation** is `pveum user token remove` and takes effect immediately. Deleting a seed needs `Datastore.Allocate` — on a shared storage that also deletes backups and templates and edits the storage definition — so it is a separate `BanlieueSeed` role granted on the dedicated `banlieue-seed` storage alone (ADR-0074 Decision 4, amended after the first live run found the missing privilege). The privilege list is a contract: a client change that needs a new privilege must update the role, the script, the guide and this table together — `scripts/bootstrap-proxmox-host.sh` |
+| A machine adopts, reconfigures or destroys a VM banlieue did not create (a same-named VM in another namespace, an administrator's own VM) | T, E, D | Ownership is the machine's **UID**, carried in the VM description by the clone itself (A-16), and every adopt and delete checks it; a VM that shares only the name is never touched — `crates/banlieue-provider-proxmox/src/reconciler/proxmoxmachine.rs` (`allocate_vmid`, `finalize_backend`) |
+| Two controllers allocate the same VMID | T | Proxmox refuses the second clone onto an existing id; the provider records `status.vmid` **before** cloning, abandons an id whose VM is not its own, and retries — `proxmoxmachine.rs` (`allocate_vmid`) |
+| A hostile node, storage or volume name injects a path component or a header | T | Every path segment is percent-encoded, `..` and `/` included (`wire.rs::encode_segment`); an upload filename containing a quote, CR/LF, `/`, `\` or a leading dot is refused before any request (`client.rs::check_filename`) |
+| A `Template` source names a VMID that is a running guest, and banlieue clones it | T, I | The provider verifies `template=1` before publishing the image and again before cloning, and fails naming the VMID — `reconciler/image.rs`, `proxmoxmachine.rs` |
+| A half-failed delete leaves the VM or its seed ISO behind | I | The finalizer is released only after the VM is destroyed (with its unreferenced disks) **and** the seed volume is deleted; "already gone" is success at each step and every other failure keeps the finalizer — `proxmoxmachine.rs` (`finalize_backend`), tested for orphaned volumes against the fake |
+| A Proxmox error message, which the hypervisor authors, is mirrored onto user-facing status | I | Same posture as §8's verbatim condition messages; the message is the reason phrase plus parameter names, and never the request body or the token — `wire.rs::api_message` |
+| Proxmox's wire behaviour differs from what the client assumes | — | The first live lifecycle run (2026-09-30) found two drifts the fake had hidden, both fixed with the fake corrected in the same change: `resize` is a **task** on PVE 9 (it was treated as synchronous, so a start could race it), and seed deletion needs `Datastore.Allocate` (above). **Partly verified live (2026-09-28):** the read-only tier passed against a real node — verified TLS against the node CA, token auth, inventory decoding, and Proxmox's reason phrase surfacing on a 401. The lifecycle tier then passed live (2026-09-30): clone, resize, upload, start/stop/delete and UPID polling. **Still unverified live:** the Kubernetes-side reconcile loop (the provider binary in a cluster), guest-agent addresses, EFI/vTPM, and a *failed* task's exit status. The fake refuses what the real API is documented to refuse. Recorded in §8 |
+
 ### TB-5 — Cluster → shared datastore
 
 Built ISOs are uploaded to `banlieue-images/<vmimage>.iso` on a vSphere
@@ -409,6 +458,7 @@ outside an operator's reach if it was actually encrypted:
 | A sandbox workload mounts the still-attached install ISO and reads the build-time cloud-config overlay baked into it (`VMImage.spec.cloudConfigs`, `isoOverlay`) | I | **ADR-0044**, since 2026-09-23: the medium is ejected when the ADR-0043 `guestInstalled` marker flips, via `virDomainUpdateDeviceFlags` with `AFFECT_LIVE\|AFFECT_CONFIG` — `crates/banlieue-libvirt/src/procs.rs` (`DEVICE_MODIFY_EJECT`). `GuestReady` is published only **after** the eject, so a `VirtualMachinePool` — whose sole readiness input is that condition — cannot bind a member whose installer is still attached. `converge()` also suppresses the ISO from the domain XML it redefines each pass, or a redefine would restore it while status claimed otherwise |
 | A guest reboots into its still-attached installer and re-runs the install, re-sealing a fresh disk over the previous tenant's workload | T, D | Same control. Both flags are passed deliberately: a `LIVE`-only eject leaves the medium in the persistent definition, where it returns at the next boot. The rendered `<os>` block also stops offering `<boot dev='cdrom'/>` once detached |
 | A guest holds the cdrom tray locked so the eject fails, and is handed out anyway | D | `VIR_DOMAIN_DEVICE_MODIFY_FORCE` is **not** passed. A failed eject leaves `GuestReady` unpublished, so the member never becomes available and `provisioningTimeoutSeconds` (ADR-0046) reaps it as poisoned. Failing toward an unavailable member rather than an exposed one is the intended direction |
+| A Proxmox machine's rendered user-data (A-2) sits in a seed ISO on an `iso` storage that anyone with storage-audit rights on the Proxmox side can read | I | Uploaded as `banlieue-<machine uid>.iso`, so it traces to one machine; deleted with the VM (`finalize_backend`); stays attached for the machine's life like the libvirt and Cloud Hypervisor seeds (§8). Put per-VM secrets in `userData`, not in the shared template |
 | An `installMode: Manual` image asserts a deferred install it does not perform, and seals nothing | I | **Not controlled.** `Manual` is ADR-0040's escape hatch for a non-Kairos build and banlieue cannot inspect what such an image does. Recorded in §8 |
 
 ### TB-6 — Supply chain
@@ -547,12 +597,13 @@ a different assumption is unsafe.
    and inlines the *rendered content* into the infra CR in plaintext
    (ADR-0025/ADR-0038) — `VSphereMachine.spec.userData` and, since ADR-0050,
    `LibvirtMachine.spec.userData` — and, since ADR-0062,
-   `CloudHypervisorMachine.spec.userData` — all built by the same
+   `CloudHypervisorMachine.spec.userData`, and, since ADR-0075,
+   `ProxmoxMachine.spec.userData` — all built by the same
    `build_*_machine` path in `crates/banlieue-controller/src/reconciler/infra.rs`.
    Anyone who can read one of these can read the user-data that produced it,
    SSH keys and join tokens included. This reflection is ADR-0025's accepted
-   trade-off (§8), not a bug — but it makes `get vspheremachines` **or `get
-   libvirtmachines`** equivalent to reading every user-data Secret any VM in
+   trade-off (§8), not a bug — but it makes `get vspheremachines`, `get
+   libvirtmachines` **or `get proxmoxmachines`** equivalent to reading every user-data Secret any VM in
    that namespace has referenced. **A new provider inherits this property the
    moment it gains a `userData` field; it is a contract-level consequence, not
    a per-provider one.**
@@ -734,6 +785,23 @@ a different assumption is unsafe.
     one that still holds for the disk regions Kairos never encrypts.
     banlieue does not configure this; it is a property of the datastore /
     storage policy the platform admin maps the class to.
+16. **Prepare a Proxmox node with `scripts/bootstrap-proxmox-host.sh`, and
+    keep the token privilege-separated.** The script creates the
+    `BanlieueProvider` role with exactly the privileges ADR-0074 Decision 4
+    lists, a user and a token whose own ACLs are the only permissions it holds
+    (privilege separation), and grants them on `/vms`, the node, the SDN zone
+    and the image storages, plus a `BanlieueSeed` role on the dedicated
+    `banlieue-seed` storage alone. Do not point the `seed-iso` class at a
+    shared storage, and do not widen the ACLs to `/` or add
+    `VM.Console`, guest-exec or `Permissions.Modify` "to make it work": with
+    them, a leaked token stops being "can create and destroy VMs on this node"
+    and becomes a way into guests. The token's secret cannot be read back, so
+    the Secret in `banlieue-system` is the only copy — treat `get secret` on it
+    as `A-1` (§7.2, §7.3). Supply the node's own CA as `caBundle` rather than
+    setting `insecureSkipTLSVerify`, and re-issue the certificate when the
+    names clients connect by change. Leave the `banlieue-machine-uid=` line in
+    a banlieue VM's description alone (§8).
+
 
 ## 8. Accepted risks
 
@@ -764,13 +832,18 @@ a different assumption is unsafe.
 | Images in the registry can carry cloud-config (A-2), readable by the registry's operator | The registry is the operator's, like the datastore in TB-5; banlieue cannot encrypt what a host must boot without a key-distribution scheme it does not have | Per-VM secrets move entirely out of shared images, or images are encrypted for their hosts |
 | The Cloud Hypervisor API decoder (`banlieue-cloud-hypervisor`) is **not fuzzed** | The peer is a local VMM the provider started, not a network endpoint; decoding is into typed, bounded structs and failure is reported, not fatal. The libvirt decoder is fuzzed because its peer is remote | A fuzz target is added alongside the libvirt one, or the client ever talks to a VMM it did not start |
 | The installer's `O_NOFOLLOW` protects only a path's **last component**: a directory the provider's user owns could be swapped for a symlink between the installer's check and its use, one level up | The window is one run of a root command started by an operator; the directories are created (and a symlink there refused) earlier in the same run; `openat2(RESOLVE_NO_SYMLINKS)` would forbid legitimate symlinks on the path, such as a storage class under a linked mount | A host where the provider's user is untrusted while an install runs; then resolve beneath each banlieue-owned root with `openat2(RESOLVE_BENEATH)` |
+| The Proxmox provider's `ClusterRole` can `update`/`patch` **any `ProxmoxMachine` in any namespace**, so a compromised provider pod can clear finalizers or rewrite status on machines placed on other Providers | Machine names are not known when the role is written, so `resourceNames` cannot scope them, exactly as for libvirt. It still cannot read Secrets it is not named for, and cannot create or delete machines (`deploy/provider-proxmox/rbac/clusterrole.yaml`); its **Proxmox** reach is bounded by its own Provider's token ACLs | Per-provider machine scoping becomes possible (a label-selector authorization, or one namespace per Provider) |
+| **The ownership marker is not a secret and is not signed**: anyone with `VM.Config.Options` on the Proxmox side can delete the `banlieue-machine-uid=` line (orphaning a VM — banlieue then clones a second) or copy it onto another VM (which banlieue would then treat as its own, and configure, start and finally destroy) | The party who can do that is the Proxmox operator, already semi-trusted and already able to destroy any VM directly (§4); the marker exists to stop *accidental* collisions between namespaces and with unrelated VMs, which the name could not, not to defend against the hypervisor's own administrators. The token itself holds `VM.Config.Options` on `/vms`, so a compromised provider can edit descriptions too (bounded by §4's stolen-token row). A *tenant* cannot plant a marker ahead of time: a machine's UID is assigned by the API server, not chosen by whoever writes the `VirtualMachine` | A machine's UID becomes something a tag ACL can protect, or a per-VM signed marker is worth its key management |
+| A `Template` source trusts **whatever the administrator put in that VMID**: banlieue verifies only that it is a template, not what boots from it | Proxmox has no image provenance to check, and banlieue builds none of these templates (the bootstrap script imports a cloud image over HTTPS from its published URL). The same posture as vSphere `Template` sources and as ADR-0064's deferred signing | Template provenance (a signed image reference recorded on the template) is available, or images are imported by banlieue |
+| **The Proxmox provider has not run as a deployed controller**: the lifecycle passed live through the reconciler functions (2026-09-30), but not through a cluster (finalizers, SSA status, controller dispatch), and not with EFI, vTPM, guest-agent addresses or a failing task | Each of those is unit-tested against the fake and the API calls under them are now observed live | A kind-cluster e2e runs a `VirtualMachine` to `Ready` on a Proxmox node |
+| The Proxmox seed ISO stays attached for the machine's life (as for libvirt and Cloud Hypervisor), so a guest can read its own rendered user-data | Same reasoning as the NoCloud entry above: cloud-init re-reads its datasource on every boot, and ejecting it needs its own live verification across a reboot. What remains is each guest's own material | Detaching the seed is verified live across a reboot on Proxmox, or delivery stops needing a persistent datasource |
 | Health endpoint binds `0.0.0.0` and returns a fixed `200` | Standard probe trade-off; carries no data | It ever reports real state |
 | Provider condition messages are mirrored verbatim onto user-facing `VirtualMachine` status | Useful diagnostics; providers are in-tree | A third-party provider ships |
 
 ## 9. Out of scope
 
 - Anything requiring cluster-admin as a starting position (`SECURITY.md` policy).
-- Compromise of the hypervisor itself, or of vCenter/libvirt authorization —
+- Compromise of the hypervisor itself, or of vCenter/libvirt/Proxmox authorization —
   including root on a Cloud Hypervisor host, which owns every guest on it.
 - Guest-OS hardening after boot; banlieue's responsibility ends at delivering
   the bootstrap material.

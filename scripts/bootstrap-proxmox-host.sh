@@ -30,12 +30,20 @@ set -euo pipefail
 PVE_USER="${PVE_USER:-banlieue@pve}"
 TOKEN_ID="${TOKEN_ID:-provider}"
 ROLE="${ROLE:-BanlieueProvider}"
+SEED_ROLE="${SEED_ROLE:-BanlieueSeed}"
 NODE="${NODE:-$(hostname)}"
 
-# Storage the provider may allocate disks on, and the storage it uploads
-# NoCloud seed ISOs to (must carry `iso` content). Space separated.
+# Storage the provider may allocate disks on. Space separated.
 IMAGE_STORAGES="${IMAGE_STORAGES:-local-lvm}"
-ISO_STORAGE="${ISO_STORAGE:-local}"
+# A storage used for nothing but NoCloud seed ISOs, created by the `seed` step.
+# Dedicated because deleting a seed needs Datastore.Allocate, which on a
+# shared storage such as `local` would also let the token delete backups,
+# templates and every other ISO there, and edit the storage's definition.
+SEED_STORAGE="${SEED_STORAGE:-banlieue-seed}"
+SEED_DIR="${SEED_DIR:-/var/lib/banlieue/seed}"
+# Where the template step stages the cloud image for import (root only; the
+# token holds no ACL here).
+IMPORT_STORAGE="${IMPORT_STORAGE:-local}"
 # SDN zone holding the bridges VMs attach to. `localnetwork` is the implicit
 # zone every plain Linux bridge (vmbr0, ...) belongs to.
 SDN_ZONE="${SDN_ZONE:-localnetwork}"
@@ -61,6 +69,9 @@ CA_OUT="${CA_OUT:-./proxmox-ca.pem}"
 # Everything the provider does, and nothing else. Deliberately absent:
 # VM.Console, VM.GuestAgent.{FileRead,FileWrite,Unrestricted} (guest exec),
 # VM.Migrate, VM.Snapshot*, VM.Backup, Sys.Modify, Permissions.Modify.
+# The seed role: upload (AllocateTemplate), delete (Allocate), list (Audit).
+# Granted on SEED_STORAGE alone.
+SEED_ROLE_PRIVS="Datastore.Allocate,Datastore.AllocateTemplate,Datastore.Audit"
 ROLE_PRIVS="VM.Allocate,VM.Audit,VM.Clone,VM.Config.CDROM,VM.Config.CPU,VM.Config.Cloudinit,VM.Config.Disk,VM.Config.HWType,VM.Config.Memory,VM.Config.Network,VM.Config.Options,VM.PowerMgmt,VM.GuestAgent.Audit,Datastore.AllocateSpace,Datastore.AllocateTemplate,Datastore.Audit,SDN.Audit,SDN.Use,Sys.Audit"
 
 log() { printf '==> %s\n' "$*" >&2; }
@@ -72,18 +83,24 @@ require_pve() {
 }
 
 acl_paths() {
-  echo /vms "/nodes/${NODE}" "/sdn/zones/${SDN_ZONE}" "/storage/${ISO_STORAGE}"
+  echo /vms "/nodes/${NODE}" "/sdn/zones/${SDN_ZONE}"
   for s in ${IMAGE_STORAGES}; do echo "/storage/${s}"; done
 }
 
-step_role() {
-  if pveum role list --output-format json | grep -q "\"roleid\":\"${ROLE}\""; then
-    log "role ${ROLE}: re-syncing privileges"
-    pveum role modify "${ROLE}" --privs "${ROLE_PRIVS}"
+sync_role() {
+  local role="$1" privs="$2"
+  if pveum role list --output-format json | grep -q "\"roleid\":\"${role}\""; then
+    log "role ${role}: re-syncing privileges"
+    pveum role modify "${role}" --privs "${privs}"
   else
-    log "role ${ROLE}: creating"
-    pveum role add "${ROLE}" --privs "${ROLE_PRIVS}"
+    log "role ${role}: creating"
+    pveum role add "${role}" --privs "${privs}"
   fi
+}
+
+step_role() {
+  sync_role "${ROLE}" "${ROLE_PRIVS}"
+  sync_role "${SEED_ROLE}" "${SEED_ROLE_PRIVS}"
 }
 
 step_token() {
@@ -138,6 +155,19 @@ grant_acls() {
     pveum acl modify "${p}" --users "${PVE_USER}" --roles "${ROLE}"
   done
   log "ACLs: ${ROLE} on $(acl_paths | tr '\n' ' ')"
+  pveum acl modify "/storage/${SEED_STORAGE}" --tokens "${full}" --roles "${SEED_ROLE}"
+  pveum acl modify "/storage/${SEED_STORAGE}" --users "${PVE_USER}" --roles "${SEED_ROLE}"
+  log "ACLs: ${SEED_ROLE} on /storage/${SEED_STORAGE} only"
+}
+
+step_seed() {
+  if pvesm status --storage "${SEED_STORAGE}" >/dev/null 2>&1; then
+    log "seed: storage ${SEED_STORAGE} exists, leaving it alone"
+    return
+  fi
+  log "seed: creating dir storage ${SEED_STORAGE} at ${SEED_DIR} (content: iso only)"
+  mkdir -p "${SEED_DIR}"
+  pvesm add dir "${SEED_STORAGE}" --path "${SEED_DIR}" --content iso --nodes "${NODE}"
 }
 
 detect_sans() {
@@ -168,10 +198,15 @@ step_cert() {
   if [ -f "${dir}/pveproxy-ssl.pem" ] && [ "${FORCE_CERT}" != "true" ]; then
     log "cert: custom pveproxy certificate exists, keeping it (FORCE_CERT=true replaces)"
   else
-    local sans work
+    local sans
     sans="$(detect_sans)"
+    # A subshell, so the cleanup trap dies with it. A `trap ... RETURN` in
+    # this function outlives it, fires on the *next* function to return
+    # (`log`), and by then `work` is out of scope: `set -u` aborts the script
+    # after the certificate is already installed.
+    (
     work="$(mktemp -d)"
-    trap 'rm -rf "${work}"' RETURN
+    trap 'rm -rf "${work}"' EXIT
     cat >"${work}/req.cnf" <<EOF
 [req]
 distinguished_name=dn
@@ -195,6 +230,7 @@ EOF
     cp "${work}/key.pem" "${dir}/pveproxy-ssl.key"
     cp "${work}/cert.pem" "${dir}/pveproxy-ssl.pem"
     systemctl restart pveproxy
+    )
   fi
   cp /etc/pve/pve-root-ca.pem "${CA_OUT}"
   log "cert: CA bundle for the Provider's caBundle written to ${CA_OUT}"
@@ -219,7 +255,7 @@ step_template() {
     --machine q35 --cpu host --cores 2 --memory 2048 \
     --net0 "virtio,bridge=${TEMPLATE_BRIDGE}" \
     --scsihw virtio-scsi-single \
-    --scsi0 "${storage}:0,import-from=${ISO_STORAGE}:import/${TEMPLATE_NAME}.qcow2,discard=on,iothread=1" \
+    --scsi0 "${storage}:0,import-from=${IMPORT_STORAGE}:import/${TEMPLATE_NAME}.qcow2,discard=on,iothread=1" \
     --boot order=scsi0 --serial0 socket --vga serial0 --agent enabled=1
   qm template "${TEMPLATE_VMID}"
 }
@@ -227,11 +263,12 @@ step_template() {
 usage() {
   cat >&2 <<EOF
 usage: $0 <step>...
-  role       create/re-sync the ${ROLE} role
+  role       create/re-sync the ${ROLE} and ${SEED_ROLE} roles
+  seed       create the ${SEED_STORAGE} storage (iso only) for NoCloud seeds
   token      create ${PVE_USER} and its privilege-separated API token; grant ACLs
   cert       issue a pveproxy certificate carrying every node address as a SAN
   template   import ${TEMPLATE_NAME} as template VMID ${TEMPLATE_VMID}
-  all        role token cert template
+  all        role seed token cert template
 EOF
   exit 2
 }
@@ -242,10 +279,11 @@ main() {
   for s in "$@"; do
     case "${s}" in
       role) step_role ;;
-      token) step_role; step_token ;;
+      seed) step_seed ;;
+      token) step_role; step_seed; step_token ;;
       cert) step_cert ;;
       template) step_template ;;
-      all) step_role; step_token; step_cert; step_template ;;
+      all) step_role; step_seed; step_token; step_cert; step_template ;;
       *) usage ;;
     esac
   done

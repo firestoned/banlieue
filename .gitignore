@@ -57,3 +57,9 @@ docs/__pycache__/
 node_modules/
 /package.json
 /package-lock.json
+
+# Written by scripts/bootstrap-proxmox-host.sh: a live API token and the node CA.
+# Never commit these (public repo, rules/no-real-infrastructure.md).
+/proxmox-provider-token-secret.yaml
+/proxmox-ca.pem
+/pve-root-ca.pem

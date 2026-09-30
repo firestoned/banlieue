@@ -34,6 +34,11 @@ on a real cluster, using the released container image
     Register a libvirt/KVM host over mutual TLS and import a guest image onto
     it — a first-party RPC client, no `libvirt-dev` and no `virsh`.
 
+- :material-server: **[Proxmox VE Provider](proxmox-provider.md)**
+
+    Register a Proxmox node with a least-privilege API token and run VMs as
+    full clones of a template, with cloud-init delivered as a NoCloud ISO.
+
 - :material-server-security: **[Cloud Hypervisor Host Bootstrap](cloud-hypervisor-host.md)**
 
     Prepare a bare-metal Debian host for the host-resident Cloud Hypervisor

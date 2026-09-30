@@ -247,6 +247,7 @@ dependencies = [
  "banlieue-operator",
  "banlieue-provider-cloud-hypervisor",
  "banlieue-provider-libvirt",
+ "banlieue-provider-proxmox",
  "banlieue-provider-vsphere",
  "clap",
  "clap_complete",
@@ -456,6 +457,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "banlieue-provider-proxmox"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "banlieue-api",
+ "banlieue-provider-sdk",
+ "banlieue-proxmox",
+ "clap",
+ "futures",
+ "k8s-openapi",
+ "kube",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "banlieue-provider-sdk"
 version = "0.3.0"
 dependencies = [
@@ -502,6 +525,22 @@ dependencies = [
  "tokio-util",
  "tracing",
  "vim_rs",
+]
+
+[[package]]
+name = "banlieue-proxmox"
+version = "0.3.0"
+dependencies = [
+ "async-trait",
+ "form_urlencoded",
+ "hyper",
+ "reqwest",
+ "rustls",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -3657,9 +3696,9 @@ dependencies = [
 
 [[package]]
 name = "yoke-derive"
-version = "0.8.3"
+version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "33811428bee40dbceb6d545e95754741d17a6aef9a4849f0fd62e2ba4f412a78"
+checksum = "ec8ebde2db3681e8c9980cc27822030e68752690ddfa9473e739aeb4dbde6d71"
 dependencies = [
  "proc-macro2",
  "quote",

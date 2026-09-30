@@ -159,8 +159,8 @@
     {
       "unique-id": "service-provider-proxmox",
       "node-type": "service",
-      "name": "banlieue-provider-proxmox (planned, Phase 1C)",
-      "description": "Provider controller for Proxmox VE clusters. Watches ProxmoxMachine infrastructure CRs and drives the Proxmox HTTP API. Status: PLANNED — Phase 1C."
+      "name": "banlieue-provider-proxmox",
+      "description": "Provider controller for Proxmox VE clusters. Watches ProxmoxMachine infrastructure CRs and drives the Proxmox REST API through the first-party `banlieue-proxmox` crate (ADR-0074): API tokens only, privilege-separated to the BanlieueProvider role, TLS verified against the node's own CA, every mutation awaited as a bounded UPID task. The machine spec arrives fully resolved (node, storage, bridge, template VMID), like VSphereMachine (ADR-0075). The VMID is recorded in status before the clone so a crash cannot duplicate a VM, and ownership is the machine's UID in the VM description, set atomically by the clone and checked before any adopt or delete, so a same-named VM is never touched. Guest bootstrap is a NoCloud CIDATA ISO built in-process (ADR-0054) and uploaded to an iso-capable storage, because the API cannot upload cicustom snippets; the provider deletes it with the VM. Verifies each Template VMID a VMImage names and publishes one failure domain per node. Status: implemented and unit-tested against an in-memory Proxmox; not yet run against a real node (ADR-0074, ADR-0075)."
     },
     {
       "unique-id": "service-provider-libvirt",
@@ -842,7 +842,57 @@
           }
         }
       },
-      "protocol": "HTTPS"
+      "protocol": "HTTPS",
+      "controls": {
+        "proxmox-token-least-privilege": {
+          "description": "The credential is a privilege-separated API token holding only the BanlieueProvider role (VM allocate/clone/config/power, datastore allocate, SDN use, node audit) on /vms, one node, one SDN zone and the image storages; its only volume-deleting privilege (Datastore.Allocate, in a separate BanlieueSeed role) is granted on a dedicated seed-only storage, never on a shared one. No console, guest exec, migrate, snapshot or permission-modify. Revocation is immediate. scripts/bootstrap-proxmox-host.sh (ROLE_PRIVS), crates/banlieue-proxmox/src/token.rs.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53",
+                "control": "AC-6 Least Privilege"
+              }
+            }
+          ]
+        },
+        "proxmox-tls-verified-no-redirect": {
+          "description": "TLS is verified by default against the node's own CA (connection.caBundle); a bad bundle is a configuration error; redirects are never followed so the Authorization header stays with the endpoint. crates/banlieue-proxmox/src/client.rs.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53",
+                "control": "SC-8 Transmission Confidentiality and Integrity"
+              }
+            }
+          ]
+        },
+        "proxmox-ownership-marker": {
+          "description": "A machine adopts or deletes only a VM whose description carries its own UID, written by the clone itself; a same-named VM is never touched. crates/banlieue-provider-proxmox/src/reconciler/proxmoxmachine.rs.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53",
+                "control": "SI-10 Information Input Validation"
+              }
+            }
+          ]
+        },
+        "proxmox-bounded-calls": {
+          "description": "Every request has connect and total timeouts and every asynchronous task wait is bounded; a task that outlasts its deadline is an error. crates/banlieue-proxmox/src/client.rs, api.rs.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53",
+                "control": "SC-5 Denial-of-Service Protection"
+              }
+            }
+          ]
+        }
+      }
     },
     {
       "unique-id": "rel-provider-libvirt-backend",

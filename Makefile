@@ -316,6 +316,24 @@ vsphere-live-test: ## Run the live vCenter harness against a REAL vCenter (needs
 	cargo test -p banlieue-provider-vsphere --test live_vcenter -- \
 	  --ignored --nocapture --test-threads=1
 
+proxmox-live-test: ## Run the Proxmox client against a REAL node, read-only (needs PROXMOX_ENDPOINT / PROXMOX_TOKEN_ID / PROXMOX_TOKEN_SECRET)
+	@test -n "$$PROXMOX_ENDPOINT" || { \
+	  echo "PROXMOX_ENDPOINT is unset. Example:"; \
+	  echo "  PROXMOX_ENDPOINT=https://bar.foo.io:8006 \\"; \
+	  echo "  PROXMOX_TOKEN_ID='banlieue@pve!provider' PROXMOX_TOKEN_SECRET=<uuid> \\"; \
+	  echo "  PROXMOX_CA_FILE=./pve-root-ca.pem \\"; \
+	  echo "    make proxmox-live-test"; \
+	  exit 1; }
+	@echo "Running the Proxmox client against $$PROXMOX_ENDPOINT ..."
+	@cargo test -p banlieue-proxmox --test live_proxmox -- --ignored --nocapture --test-threads=1
+
+proxmox-lifecycle-test: ## CREATES AND DESTROYS VMs on a REAL Proxmox node: clone, seed, start, delete (needs PROXMOX_* incl. PROXMOX_NODE, PROXMOX_TEMPLATE_VMID)
+	@for v in PROXMOX_ENDPOINT PROXMOX_TOKEN_ID PROXMOX_TOKEN_SECRET PROXMOX_NODE PROXMOX_TEMPLATE_VMID; do \
+	  eval "test -n \"\$$$$v\"" || { echo "$$v is unset. See crates/banlieue-provider-proxmox/tests/live_lifecycle.rs"; exit 1; }; \
+	done
+	@echo "Running the Proxmox machine lifecycle against $$PROXMOX_ENDPOINT (node $$PROXMOX_NODE, template $$PROXMOX_TEMPLATE_VMID) ..."
+	@cargo test -p banlieue-provider-proxmox --test live_lifecycle -- --ignored --nocapture --test-threads=1
+
 libvirt-live-test: ## Run the libvirt protocol harness against a REAL libvirtd (needs LIBVIRT_HOST / LIBVIRT_TLS_DIR)
 	@test -n "$$LIBVIRT_HOST" || { \
 	  echo "LIBVIRT_HOST is unset. Example:"; \

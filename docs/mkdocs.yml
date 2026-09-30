@@ -184,6 +184,7 @@ nav:
       - Provider Lifecycle & Install: guides/provider-lifecycle.md
       - vSphere Provider: guides/vsphere-provider.md
       - libvirt Provider: guides/libvirt-provider.md
+      - Proxmox VE Provider: guides/proxmox-provider.md
       - Cloud Hypervisor Host Bootstrap (Debian): guides/cloud-hypervisor-host.md
       - 'Cloud Hypervisor Host: systemd, polkit, identities': guides/cloud-hypervisor-host-systemd.md
       - cloud-init on libvirt: guides/cloud-init-on-libvirt.md

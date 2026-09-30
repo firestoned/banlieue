@@ -224,30 +224,31 @@ into `ipconfigN`.
 
 ## Tasks
 
-- [ ] Decide and document Proxmox client (O-001).
-- [ ] Add `ProxmoxMachine` + `ProxmoxMachineTemplate` to `banlieue-api`.
-- [ ] Regenerate CRD YAML.
-- [ ] Scaffold the provider crate.
-- [ ] Implement `client/auth.rs` (token + ticket).
-- [ ] Implement `client/tasks.rs` (UPID polling utility).
-- [ ] Implement `client/{nodes,storage,networks,vm}.rs`.
-- [ ] Implement `reconciler/provider.rs`.
-- [ ] Implement `reconciler/proxmox_machine.rs`.
+- [x] Decide and document Proxmox client (O-001) — ADR-0074: first-party `crates/banlieue-proxmox`.
+- [x] Add `ProxmoxMachine` + `ProxmoxMachineTemplate` to `banlieue-api` (ADR-0075; the resolved-spec shape, no `vmid`, `status.vmid`, NoCloud seed ISO).
+- [x] Regenerate CRD YAML.
+- [x] Scaffold the provider crate (`crates/banlieue-provider-proxmox`, wired as `banlieue provider proxmox`).
+- [x] Implement token auth (`banlieue-proxmox/src/token.rs`). Ticket auth is **not** implemented (ADR-0074 Decision 3).
+- [x] Implement UPID parsing and bounded waiting (`upid.rs`, `ProxmoxApi::wait_task`).
+- [x] Implement the node/storage/network/VM/media/agent calls (`client.rs`, behind the `ProxmoxApi` trait; in-memory `fake.rs`).
+- [x] Implement `reconciler/provider.rs` (one failure domain per node; storage/bridge/`seed-iso` verified).
+- [x] Implement `reconciler/proxmoxmachine.rs` (ADR-0075 lifecycle; controller dispatch in `banlieue-controller`).
 - [ ] Implement `reconciler/image.rs` (template clone-source check;
       optional import via `qm importdisk` proxy — usually requires
       shell access, so document as out-of-scope for v1).
-- [ ] Implement `customize.rs` (snippet upload + cicustom wiring).
-- [ ] Implement deletion finalizer including snippet cleanup.
-- [ ] Container image (small, debian-slim or alpine).
-- [ ] RBAC: as per vSphere provider.
+- [x] ~~`customize.rs` (snippet upload + cicustom)~~ **Superseded** by ADR-0075 Decision 5: the API cannot upload snippets, so cloud-init is a NoCloud seed ISO built with the SDK's `cloudinit` writer and uploaded to the `seed-iso` storage.
+- [x] Implement deletion finalizer including seed-ISO cleanup.
+- [x] ~~Container image~~ **Superseded**: `banlieue provider proxmox` is a subcommand of the single binary (ADR-0004); no separate image.
+- [x] RBAC (`deploy/provider-proxmox/rbac/clusterrole.yaml`, controller and operator roles).
 
 ## Tests
 
-- [ ] Mock client behind a trait.
-- [ ] If possible, integration against a real Proxmox VE node in CI
+- [x] Mock client behind a trait (`ProxmoxApi` + `FakeProxmox`).
+- [x] Read-only live tier: `make proxmox-live-test` passed against a real node (2026-09-28).
+- [x] Lifecycle against a real node: `make proxmox-lifecycle-test` passed (2026-09-30) — found and fixed async `resize` and the seed-delete privilege.
+- [ ] Cluster e2e: a `VirtualMachine` to `Ready` through the deployed controller and provider. If possible, integration against a real Proxmox VE node in CI
       (test cluster maintained by the project).
-- [ ] Snippet lifecycle test: create-VM-then-delete leaves no
-      orphaned snippets.
+- [x] Seed lifecycle: create-then-delete leaves no orphaned seed ISO (live, `live_lifecycle.rs`).
 - [ ] The `proxmox` column of the provider comparison
       (`docs/src/reference/provider-comparison.md`): `make provider-bench`
       with `BANLIEUE_BENCH_LABEL=proxmox` once a VM reaches `Ready`. Added

@@ -20,6 +20,8 @@ Every banlieue Custom Resource Definition, generated from the Rust types that ar
 - [CloudHypervisorMachineTemplate](#cloudhypervisormachinetemplate)
 - [LibvirtMachine](#libvirtmachine)
 - [LibvirtMachineTemplate](#libvirtmachinetemplate)
+- [ProxmoxMachine](#proxmoxmachine)
+- [ProxmoxMachineTemplate](#proxmoxmachinetemplate)
 - [VSphereCluster](#vspherecluster)
 - [VSphereMachine](#vspheremachine)
 - [VSphereMachineTemplate](#vspheremachinetemplate)
@@ -221,7 +223,7 @@ Connection details for the backend.
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `caBundle` | object |  | Optional CA bundle to validate the endpoint's TLS certificate. |
-| `credentialsRef` | object |  | Reference to a Secret in the Provider's namespace containing the credentials. Required keys depend on provider class: vsphere: username, password proxmox: username (root@pam!token-id), tokenValue OR username, password libvirt: tls.crt, tls.key (mutual TLS, ADR-0011) |
+| `credentialsRef` | object |  | Reference to a Secret in the Provider's namespace containing the credentials. Required keys depend on provider class: vsphere: username, password proxmox: username (the full API token id, user@realm!tokenid), tokenValue (API tokens only; password/ticket auth is not supported, ADR-0074) libvirt: tls.crt, tls.key (mutual TLS, ADR-0011) |
 | `endpoint` | string | Yes | Endpoint URL or URI. Format depends on provider class: vsphere: https://vcenter.example.com/sdk proxmox: https://pve.example.com:8006 libvirt: qemu+ssh://kvm-host.example.com/system |
 | `insecureSkipTLSVerify` | boolean |  | Skip TLS verification. Applies to vsphere and proxmox. |
 
@@ -264,7 +266,8 @@ Key in a Secret in the referrer's namespace (key defaults to `ca.crt`).
 Reference to a Secret in the Provider's namespace containing the
 credentials. Required keys depend on provider class:
   vsphere:  username, password
-  proxmox:  username (root@pam!token-id), tokenValue  OR  username, password
+  proxmox:  username (the full API token id, user@realm!tokenid), tokenValue
+            (API tokens only; password/ticket auth is not supported, ADR-0074)
   libvirt:  tls.crt, tls.key (mutual TLS, ADR-0011)
 
 Required by every backend that authenticates to a remote endpoint, and
@@ -2449,6 +2452,311 @@ Resolved bridge or libvirt network.
 
 Reference to the banlieue `Provider` whose connection details describe
 the target libvirt host.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | Yes |  |
+
+---
+
+## ProxmoxMachine
+
+**API:** `infrastructure.banlieue.io/v1alpha1` · **Kind:** `ProxmoxMachine` · **Scope:** Namespaced · **Short names:** `pvem`
+
+ProxmoxMachine — the concrete, scheduled VM request for the Proxmox backend.
+
+You normally do not create this by hand: banlieue's controller does, owned
+by the `VirtualMachine` it was scheduled from, and the Proxmox provider
+clones the template into a VM and reports CAPI-shaped status.
+
+**Printer columns** (`kubectl get`):
+
+| Name | Type | JSON path | Priority |
+| --- | --- | --- | --- |
+| Provider | string | `.spec.providerRef.name` | 0 |
+| Node | string | `.status.node` | 0 |
+| VMID | integer | `.status.vmid` | 0 |
+| Provisioned | boolean | `.status.initialization.provisioned` | 0 |
+| Power | string | `.status.observedPowerState` | 0 |
+| ProviderID | string | `.spec.providerID` | 1 |
+| Age | date | `.metadata.creationTimestamp` | 0 |
+
+### `.spec`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `cores` | integer | Yes | Cores per socket. |
+| `cpuType` | string |  | CPU model (`host`, `x86-64-v2-AES`, …). Proxmox's default applies when absent. |
+| `dataDisks` | object[] |  | Additional blank disks, attached after the OS disk. |
+| `desiredPowerState` | string |  | Desired power state, resolved from the parent `VirtualMachine`. Allowed: `PoweredOn`, `PoweredOff`, `Suspended`. |
+| `failureDomain` | string |  | CAPI contract (optional): failure domain placement. One node is one failure domain (roadmap 06). |
+| `firmware` | string |  | Firmware: `bios` selects SeaBIOS; `efi` and `efi-secure` select OVMF, the latter with Microsoft/distribution keys pre-enrolled. The template must be able to boot the chosen firmware. Allowed: `bios`, `efi`, `efi-secure`. |
+| `isoStorage` | string |  | Storage the NoCloud seed ISO is uploaded to. Must allow `iso` content. Required whenever `userData` is set. |
+| `memoryMiB` | integer | Yes | Memory in MiB. |
+| `nics` | object[] | Yes | Network interfaces. |
+| `node` | string | Yes | Node the VM is created on (resolved from the failure domain). |
+| `osDiskSizeGiB` | integer | Yes | OS disk size in GiB: the cloned disk is grown to at least this, never shrunk. |
+| `pool` | string |  | Proxmox resource pool to place the VM in. |
+| `providerID` | string |  | CAPI contract: Provider ID for the resulting Node, if this VM becomes a Kubernetes node. Format: `proxmox://<provider-name>/<vmid>`. Set by the provider once the VM exists. |
+| `providerRef` | object | Yes | The `Provider` whose connection describes the target Proxmox cluster. |
+| `sockets` | integer |  | CPU sockets. |
+| `storage` | string | Yes | Storage id for the cloned and new disks (resolved from the storage class). Must allow `images` content. |
+| `templateVmid` | integer | Yes | VMID of the template VM to clone. Must be a template (ADR-0075 Decision 5a); the provider checks before cloning. |
+| `tpmEnabled` | boolean |  | Attach a vTPM 2.0 (`tpmstate0` on `storage`), resolved from `VMClass.spec.tpmEnabled` and attached before first boot. |
+| `userData` | string |  | Guest bootstrap payload, already resolved and placeholder-substituted by `banlieue-controller` (ADR-0025, ADR-0038). Rendered into a NoCloud `CIDATA` ISO (ADR-0054); the provider reads no Secret or ConfigMap. |
+
+#### `.spec.dataDisks[]`
+
+Additional blank disks, attached after the OS disk.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `discard` | boolean |  | Pass TRIM/discard to the storage. |
+| `iothread` | boolean |  | Dedicated I/O thread (virtio-scsi-single). |
+| `name` | string | Yes | Stable disk name; echoed in status. |
+| `sizeGiB` | integer | Yes | Size in GiB. |
+| `ssd` | boolean |  | Present as an SSD to the guest. |
+| `storage` | string |  | Storage id; defaults to the machine's `storage`. |
+
+#### `.spec.nics[]`
+
+Network interfaces.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `bridge` | string | Yes | Bridge on the node (resolved from the network class), e.g. `vmbr0`. |
+| `ipam` | object | Yes | IP address management for this interface. |
+| `macAddress` | string |  | Optional MAC address (Proxmox generates one otherwise). |
+| `model` | string |  | Emulated NIC model. Allowed: `virtio`, `e1000`, `rtl8139`, `vmxnet3`. |
+| `name` | string | Yes | Stable NIC name; echoed in status. |
+| `vlan` | integer |  | 802.1Q VLAN tag. |
+
+##### `.spec.nics[].ipam`
+
+IP address management for this interface.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `pool` | object |  | Pool-based IPAM parameters. |
+| `static` | object |  | Static IPAM parameters (address, prefix, gateway, nameservers, domain). |
+
+###### `.spec.nics[].ipam.pool`
+
+Pool-based IPAM parameters.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `poolRef` | object | Yes | Typed reference (apiGroup + kind + name + optional namespace). |
+
+####### `.spec.nics[].ipam.pool.poolRef`
+
+Typed reference (apiGroup + kind + name + optional namespace).
+
+Used wherever the referenced kind is pluggable — e.g. IPAM pools, where we
+want to accept either `ipam.cluster.x-k8s.io/IPAddressClaim` (CAPI's
+default) or future banlieue-native pool types.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `apiGroup` | string | Yes |  |
+| `kind` | string | Yes |  |
+| `name` | string | Yes |  |
+| `namespace` | string |  |  |
+
+###### `.spec.nics[].ipam.static`
+
+Static IPAM parameters (address, prefix, gateway, nameservers, domain).
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `address` | string | Yes |  |
+| `domain` | string |  | DNS domain, used both as a DNS search domain and (by a `VirtualMachine.spec.networkOverrides` consumer, ADR-0024) to build an FQDN as `<vm-name>.<domain>`. |
+| `gateway` | string |  |  |
+| `nameservers` | string[] |  |  |
+| `prefix` | integer | Yes |  |
+
+#### `.spec.providerRef`
+
+The `Provider` whose connection describes the target Proxmox cluster.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | Yes |  |
+
+### `.status`
+
+Observed state of a ProxmoxMachine, shaped to the CAPI v1beta2 InfraMachine
+status contract. The non-contract fields mean what they mean on the
+siblings, so the controller's status mirror treats backends alike.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `addressSource` | string |  | Which source produced a machine's addresses. Allowed: `static`, `guestAgent`. |
+| `addresses` | object[] |  | CAPI contract field (optional): VM addresses. |
+| `conditions` | object[] |  | Standard Kubernetes conditions. |
+| `failureDomain` | string |  | CAPI contract field (optional): observed failure domain. |
+| `initialization` | object |  | CAPI contract field. |
+| `node` | string |  | The node the VM was last seen on; a migration changes it. |
+| `observedGeneration` | integer |  | The `metadata.generation` this status was computed from. |
+| `observedPowerState` | string |  | The VM's last observed run state. Allowed: `PoweredOn`, `PoweredOff`, `Suspended`, `null`. |
+| `tpmAttached` | boolean |  | Whether a vTPM was attached, when `spec.tpmEnabled` is set. |
+| `vmid` | integer |  | The VMID, recorded before the clone so a crash cannot allocate a second VM (ADR-0075 Decision 4). A cache, not the source of truth: the VM's name is the ownership marker. |
+
+#### `.status.addresses[]`
+
+CAPI contract field (optional): VM addresses.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `address` | string | Yes | The address itself. |
+| `type` | string | Yes | Address type. Accepted: Hostname, ExternalIP, InternalIP, ExternalDNS, InternalDNS. Allowed: `Hostname`, `ExternalIP`, `InternalIP`, `ExternalDNS`, `InternalDNS`. |
+
+#### `.status.conditions[]`
+
+Standard Kubernetes conditions.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `lastTransitionTime` | string | Yes | lastTransitionTime is the last time the condition transitioned from one status to another. This should be when the underlying condition changed. If that is not known, then using the time when the API field changed is acceptable. |
+| `message` | string | Yes | message is a human readable message indicating details about the transition. This may be an empty string. |
+| `observedGeneration` | integer |  | observedGeneration represents the .metadata.generation that the condition was set based upon. For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date with respect to the current state of the instance. |
+| `reason` | string | Yes | reason contains a programmatic identifier indicating the reason for the condition's last transition. Producers of specific condition types may define expected values and meanings for this field, and whether the values are considered a guaranteed API. The value should be a CamelCase string. This field may not be empty. |
+| `status` | string | Yes | status of the condition, one of True, False, Unknown. |
+| `type` | string | Yes | type of condition in CamelCase or in foo.example.com/CamelCase. |
+
+#### `.status.initialization`
+
+CAPI contract field.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `provisioned` | boolean |  | True when the infrastructure provider reports that the resource's infrastructure is fully provisioned. |
+
+---
+
+## ProxmoxMachineTemplate
+
+**API:** `infrastructure.banlieue.io/v1alpha1` · **Kind:** `ProxmoxMachineTemplate` · **Scope:** Namespaced · **Short names:** `pvemt`
+
+ProxmoxMachineTemplate — a stamped-out ProxmoxMachine spec.
+
+CAPI requires an InfraMachineTemplate so a MachineSet or MachineDeployment
+can mint identical machines. banlieue ships it for CAPI compatibility;
+standalone VirtualMachine users do not need it.
+
+### `.spec`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `template` | object | Yes | The spec stamped into every machine created from this template. |
+
+#### `.spec.template`
+
+The spec stamped into every machine created from this template.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `spec` | object | Yes | The ProxmoxMachine spec for machines created from this template. |
+
+##### `.spec.template.spec`
+
+The ProxmoxMachine spec for machines created from this template.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `cores` | integer | Yes | Cores per socket. |
+| `cpuType` | string |  | CPU model (`host`, `x86-64-v2-AES`, …). Proxmox's default applies when absent. |
+| `dataDisks` | object[] |  | Additional blank disks, attached after the OS disk. |
+| `desiredPowerState` | string |  | Desired power state, resolved from the parent `VirtualMachine`. Allowed: `PoweredOn`, `PoweredOff`, `Suspended`. |
+| `failureDomain` | string |  | CAPI contract (optional): failure domain placement. One node is one failure domain (roadmap 06). |
+| `firmware` | string |  | Firmware: `bios` selects SeaBIOS; `efi` and `efi-secure` select OVMF, the latter with Microsoft/distribution keys pre-enrolled. The template must be able to boot the chosen firmware. Allowed: `bios`, `efi`, `efi-secure`. |
+| `isoStorage` | string |  | Storage the NoCloud seed ISO is uploaded to. Must allow `iso` content. Required whenever `userData` is set. |
+| `memoryMiB` | integer | Yes | Memory in MiB. |
+| `nics` | object[] | Yes | Network interfaces. |
+| `node` | string | Yes | Node the VM is created on (resolved from the failure domain). |
+| `osDiskSizeGiB` | integer | Yes | OS disk size in GiB: the cloned disk is grown to at least this, never shrunk. |
+| `pool` | string |  | Proxmox resource pool to place the VM in. |
+| `providerID` | string |  | CAPI contract: Provider ID for the resulting Node, if this VM becomes a Kubernetes node. Format: `proxmox://<provider-name>/<vmid>`. Set by the provider once the VM exists. |
+| `providerRef` | object | Yes | The `Provider` whose connection describes the target Proxmox cluster. |
+| `sockets` | integer |  | CPU sockets. |
+| `storage` | string | Yes | Storage id for the cloned and new disks (resolved from the storage class). Must allow `images` content. |
+| `templateVmid` | integer | Yes | VMID of the template VM to clone. Must be a template (ADR-0075 Decision 5a); the provider checks before cloning. |
+| `tpmEnabled` | boolean |  | Attach a vTPM 2.0 (`tpmstate0` on `storage`), resolved from `VMClass.spec.tpmEnabled` and attached before first boot. |
+| `userData` | string |  | Guest bootstrap payload, already resolved and placeholder-substituted by `banlieue-controller` (ADR-0025, ADR-0038). Rendered into a NoCloud `CIDATA` ISO (ADR-0054); the provider reads no Secret or ConfigMap. |
+
+###### `.spec.template.spec.dataDisks[]`
+
+Additional blank disks, attached after the OS disk.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `discard` | boolean |  | Pass TRIM/discard to the storage. |
+| `iothread` | boolean |  | Dedicated I/O thread (virtio-scsi-single). |
+| `name` | string | Yes | Stable disk name; echoed in status. |
+| `sizeGiB` | integer | Yes | Size in GiB. |
+| `ssd` | boolean |  | Present as an SSD to the guest. |
+| `storage` | string |  | Storage id; defaults to the machine's `storage`. |
+
+###### `.spec.template.spec.nics[]`
+
+Network interfaces.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `bridge` | string | Yes | Bridge on the node (resolved from the network class), e.g. `vmbr0`. |
+| `ipam` | object | Yes | IP address management for this interface. |
+| `macAddress` | string |  | Optional MAC address (Proxmox generates one otherwise). |
+| `model` | string |  | Emulated NIC model. Allowed: `virtio`, `e1000`, `rtl8139`, `vmxnet3`. |
+| `name` | string | Yes | Stable NIC name; echoed in status. |
+| `vlan` | integer |  | 802.1Q VLAN tag. |
+
+####### `.spec.template.spec.nics[].ipam`
+
+IP address management for this interface.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `pool` | object |  | Pool-based IPAM parameters. |
+| `static` | object |  | Static IPAM parameters (address, prefix, gateway, nameservers, domain). |
+
+######## `.spec.template.spec.nics[].ipam.pool`
+
+Pool-based IPAM parameters.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `poolRef` | object | Yes | Typed reference (apiGroup + kind + name + optional namespace). |
+
+######### `.spec.template.spec.nics[].ipam.pool.poolRef`
+
+Typed reference (apiGroup + kind + name + optional namespace).
+
+Used wherever the referenced kind is pluggable — e.g. IPAM pools, where we
+want to accept either `ipam.cluster.x-k8s.io/IPAddressClaim` (CAPI's
+default) or future banlieue-native pool types.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `apiGroup` | string | Yes |  |
+| `kind` | string | Yes |  |
+| `name` | string | Yes |  |
+| `namespace` | string |  |  |
+
+######## `.spec.template.spec.nics[].ipam.static`
+
+Static IPAM parameters (address, prefix, gateway, nameservers, domain).
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `address` | string | Yes |  |
+| `domain` | string |  | DNS domain, used both as a DNS search domain and (by a `VirtualMachine.spec.networkOverrides` consumer, ADR-0024) to build an FQDN as `<vm-name>.<domain>`. |
+| `gateway` | string |  |  |
+| `nameservers` | string[] |  |  |
+| `prefix` | integer | Yes |  |
+
+###### `.spec.template.spec.providerRef`
+
+The `Provider` whose connection describes the target Proxmox cluster.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |

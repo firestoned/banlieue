@@ -13,6 +13,7 @@
 //! banlieue operator [flags]              -> banlieue_operator::run
 //! banlieue provider vsphere [flags]      -> banlieue_provider_vsphere::run
 //! banlieue provider libvirt [flags]      -> banlieue_provider_libvirt::run
+//! banlieue provider proxmox [flags]      -> banlieue_provider_proxmox::run
 //! banlieue provider cloud-hypervisor     -> banlieue_provider_cloud_hypervisor::run
 //! banlieue imagebuilder [flags]          -> banlieue_imagebuilder::run
 //! banlieue bootstrap <target> [flags]    -> banlieue_operator::bootstrap::run
@@ -109,6 +110,8 @@ pub const COMPILED_BACKENDS: &[&str] = &[
     "vsphere",
     #[cfg(feature = "libvirt")]
     "libvirt",
+    #[cfg(feature = "proxmox")]
+    "proxmox",
     // Host-resident: bootstrap installs its cluster half (the shared
     // ClusterRole and an External ProviderClass); the host half is
     // `banlieue host install` (ADR-0060, ADR-0067).
@@ -138,6 +141,10 @@ pub enum ProviderBackend {
     /// libvirt / KVM provider.
     #[cfg(feature = "libvirt")]
     Libvirt(banlieue_provider_libvirt::Cli),
+
+    /// Proxmox VE provider.
+    #[cfg(feature = "proxmox")]
+    Proxmox(banlieue_provider_proxmox::Cli),
 
     /// Cloud Hypervisor provider. Runs on the KVM host itself (ADR-0060).
     #[cfg(feature = "cloud-hypervisor")]
@@ -184,6 +191,8 @@ async fn dispatch_provider(backend: ProviderBackend) -> anyhow::Result<()> {
         ProviderBackend::Vsphere(args) => banlieue_provider_vsphere::run(args).await,
         #[cfg(feature = "libvirt")]
         ProviderBackend::Libvirt(args) => banlieue_provider_libvirt::run(args).await,
+        #[cfg(feature = "proxmox")]
+        ProviderBackend::Proxmox(args) => banlieue_provider_proxmox::run(args).await,
         #[cfg(feature = "cloud-hypervisor")]
         ProviderBackend::CloudHypervisor(args) => {
             banlieue_provider_cloud_hypervisor::run(args).await

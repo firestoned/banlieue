@@ -302,6 +302,15 @@ Skills: `regen-crds`, `regen-api-docs`, `validate-examples`, `cargo-quality`, `v
 
 **Run `pre-commit-checklist` skill before EVERY commit. A task is NOT complete until it passes.**
 
+**Every commit is signed off AND signed: `git commit -s -S`.** No exceptions —
+this includes amends (`git commit --amend -s -S`), squashes, and rebases
+(`git rebase --signoff` with `commit.gpgsign=true`). Any commit command written
+for the user must show both flags. CI verifies signatures
+(`firestoned/github-actions/security/verify-signed-commits`).
+
+**Never add an AI co-author.** No `Co-Authored-By: Claude …` trailer and no
+"Generated with Claude Code" line in commits or PR descriptions.
+
 Documentation is NOT optional — it is a critical requirement equal in importance to the code.
 
 ---

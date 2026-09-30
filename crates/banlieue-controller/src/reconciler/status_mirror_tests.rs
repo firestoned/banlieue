@@ -622,4 +622,96 @@ mod tests {
         assert_eq!(status.initialization.provisioned, Some(true));
         assert_eq!(status.addresses.len(), 1);
     }
+
+    // ======================================================================
+    // The concrete ProxmoxMachine impl (ADR-0075)
+    // ======================================================================
+
+    fn proxmox_machine() -> banlieue_api::infrastructure::ProxmoxMachine {
+        use banlieue_api::infrastructure::{
+            ProxmoxAddressSource, ProxmoxMachine, ProxmoxMachineSpec, ProxmoxMachineStatus,
+        };
+        ProxmoxMachine {
+            metadata: Default::default(),
+            spec: ProxmoxMachineSpec {
+                provider_id: Some("proxmox://pve-a/100".to_string()),
+                failure_domain: None,
+                provider_ref: banlieue_api::common::LocalObjectReference {
+                    name: "pve-a".to_string(),
+                },
+                node: "pve1".to_string(),
+                template_vmid: 9000,
+                storage: "local-lvm".to_string(),
+                pool: None,
+                cores: 2,
+                sockets: 1,
+                memory_mi_b: 2048,
+                cpu_type: None,
+                firmware: banlieue_api::common::Firmware::Efi,
+                tpm_enabled: false,
+                os_disk_size_gi_b: 20,
+                data_disks: vec![],
+                nics: vec![],
+                iso_storage: None,
+                user_data: None,
+                desired_power_state: PowerState::PoweredOn,
+            },
+            status: Some(ProxmoxMachineStatus {
+                initialization: InitializationStatus {
+                    provisioned: Some(true),
+                },
+                failure_domain: Some("pve-a-pve1".to_string()),
+                addresses: vec![MachineAddress {
+                    address_type: MachineAddressType::InternalIP,
+                    address: "192.0.2.30".to_string(),
+                }],
+                address_source: Some(ProxmoxAddressSource::GuestAgent),
+                observed_power_state: Some(PowerState::PoweredOn),
+                conditions: vec![Condition {
+                    type_: condition_types::READY.to_string(),
+                    status: "True".to_string(),
+                    reason: "VMRunning".to_string(),
+                    message: String::new(),
+                    last_transition_time: Time(k8s_openapi::jiff::Timestamp::now()),
+                    observed_generation: None,
+                }],
+                ..Default::default()
+            }),
+        }
+    }
+
+    #[test]
+    fn proxmox_impl_reads_provider_id_from_spec_and_the_rest_from_status() {
+        let m = proxmox_machine();
+        assert_eq!(m.provider_id(), Some("proxmox://pve-a/100"));
+        assert_eq!(m.failure_domain(), Some("pve-a-pve1"));
+        assert_eq!(m.initialization().provisioned, Some(true));
+        assert_eq!(m.addresses()[0].address, "192.0.2.30");
+        assert_eq!(m.observed_power_state(), Some(&PowerState::PoweredOn));
+        assert_eq!(m.conditions().len(), 1);
+        assert!(m.tpm_endorsement_certificates().is_empty());
+    }
+
+    #[test]
+    fn proxmox_impl_tolerates_an_absent_status() {
+        let mut m = proxmox_machine();
+        m.status = None;
+        assert_eq!(m.initialization().provisioned, None);
+        assert!(m.addresses().is_empty());
+        assert!(m.failure_domain().is_none());
+        assert!(m.conditions().is_empty());
+        assert!(m.observed_power_state().is_none());
+        assert_eq!(m.provider_id(), Some("proxmox://pve-a/100"));
+    }
+
+    #[test]
+    fn proxmox_machine_drives_infrastructure_ready_on_the_parent() {
+        let m = proxmox_machine();
+        let status = mirror_status_from_infra(&VirtualMachineStatus::default(), &m, 1);
+        let cond = find_condition(&status.conditions, condition_types::INFRASTRUCTURE_READY)
+            .expect("InfrastructureReady must be published");
+        assert_eq!(cond.status, condition_status::TRUE);
+        assert_eq!(status.initialization.provisioned, Some(true));
+        assert_eq!(status.addresses.len(), 1);
+    }
 }

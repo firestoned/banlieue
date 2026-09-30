@@ -2,11 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Build provider-specific infrastructure CRs from a scheduler [`Decision`].
 //!
-//! Two backends today: `vsphere` ([`build_vsphere_machine`]) and `libvirt`
-//! ([`build_libvirt_machine`], ADR-0050). Proxmox is the third and will slot
-//! in the same way. Dispatch by `Provider.spec.providerClassRef.name` lives
-//! in [`super::virtualmachine`], not here — these builders are pure and know
-//! only their own backend.
+//! Four backends: `vsphere` ([`build_vsphere_machine`]), `libvirt`
+//! ([`build_libvirt_machine`], ADR-0050), `cloud-hypervisor`
+//! ([`build_cloud_hypervisor_machine`], ADR-0062) and `proxmox`
+//! ([`build_proxmox_machine`], ADR-0075). Dispatch by
+//! `Provider.spec.providerClassRef.name` lives in [`super::virtualmachine`],
+//! not here — these builders are pure and know only their own backend.
 
 use std::collections::BTreeMap;
 
@@ -20,7 +21,8 @@ use banlieue_api::infrastructure::{
     ChBootSource, ChBootSourceKind, ChCpuSpec, ChMemorySpec, ChNicSpec, CloudHypervisorMachine,
     CloudHypervisorMachineSpec, LibvirtBootSource, LibvirtBootSourceKind, LibvirtDiskBus,
     LibvirtDiskSpec, LibvirtMachine, LibvirtMachineSpec, LibvirtNicSource, LibvirtNicSourceKind,
-    LibvirtNicSpec, VSphereDiskSpec, VSphereMachine, VSphereMachineSpec, VSphereNicSpec,
+    LibvirtNicSpec, ProxmoxDataDisk, ProxmoxMachine, ProxmoxMachineSpec, ProxmoxNicModel,
+    ProxmoxNicSpec, VSphereDiskSpec, VSphereMachine, VSphereMachineSpec, VSphereNicSpec,
 };
 use kube::ResourceExt;
 use kube::api::ObjectMeta;
@@ -35,6 +37,9 @@ pub const PROVIDER_CLASS_LIBVIRT: &str = "libvirt";
 /// `Provider.spec.providerClassRef.name` for the Cloud Hypervisor backend
 /// (ADR-0060).
 pub const PROVIDER_CLASS_CLOUD_HYPERVISOR: &str = "cloud-hypervisor";
+/// `Provider.spec.providerClassRef.name` for the Proxmox VE backend
+/// (ADR-0074, ADR-0075).
+pub const PROVIDER_CLASS_PROXMOX: &str = "proxmox";
 
 /// Which infrastructure CR kind a scheduled `VirtualMachine` becomes.
 ///
@@ -50,6 +55,8 @@ pub enum InfraKind {
     Libvirt,
     /// `infrastructure.banlieue.io/CloudHypervisorMachine` (ADR-0062).
     CloudHypervisor,
+    /// `infrastructure.banlieue.io/ProxmoxMachine` (ADR-0075).
+    Proxmox,
 }
 
 impl InfraKind {
@@ -66,6 +73,7 @@ impl InfraKind {
             PROVIDER_CLASS_VSPHERE => Some(Self::VSphere),
             PROVIDER_CLASS_LIBVIRT => Some(Self::Libvirt),
             PROVIDER_CLASS_CLOUD_HYPERVISOR => Some(Self::CloudHypervisor),
+            PROVIDER_CLASS_PROXMOX => Some(Self::Proxmox),
             _ => None,
         }
     }
@@ -77,6 +85,7 @@ impl InfraKind {
             Self::VSphere => "VSphereMachine",
             Self::Libvirt => "LibvirtMachine",
             Self::CloudHypervisor => "CloudHypervisorMachine",
+            Self::Proxmox => "ProxmoxMachine",
         }
     }
 }
@@ -113,6 +122,19 @@ pub enum InfraBuildError {
     /// less than its class promised.
     #[error("{backend} does not support {what} yet")]
     Unsupported { backend: &'static str, what: String },
+
+    /// A Proxmox image's `resolvedRef` is the template's VMID (ADR-0075
+    /// Decision 5a), and this one is not a number.
+    #[error("VMImage {image} resolvedRef {resolved_ref:?} is not a Proxmox template VMID")]
+    InvalidTemplateVmid { image: String, resolved_ref: String },
+
+    /// A Proxmox network class's `vlan` target key is not a VLAN id.
+    #[error("network class {class} has vlan {value:?}, which is not a VLAN id")]
+    InvalidVlan { class: String, value: String },
+
+    /// The assembled infra spec failed its own cross-field validation.
+    #[error("built spec is invalid: {0}")]
+    InvalidSpec(String),
 }
 
 /// Build a [`VSphereMachine`] from the scheduler [`Decision`], the original
@@ -709,6 +731,232 @@ pub fn build_cloud_hypervisor_machine(
         spec,
         status: None,
     })
+}
+
+/// Failure-domain raw-attribute key for the Proxmox node a domain is.
+pub const FD_RAW_PROXMOX_NODE: &str = "node";
+/// Name of the `Provider` storage class that holds the NoCloud seed ISO
+/// (ADR-0075 Decision 3). Looked up only when the VM has user data.
+///
+/// The seed's storage is a Provider-level fact, not a per-VM disk, so it is
+/// not a `VMClass` disk class; a well-known class name on
+/// `Provider.spec.capabilities` needs no new API field.
+pub const PROXMOX_SEED_STORAGE_CLASS: &str = "seed-iso";
+/// Target key naming a Proxmox storage id.
+const TARGET_KEY_PROXMOX_STORAGE: &str = "storage";
+/// Target key naming a Proxmox bridge.
+const TARGET_KEY_PROXMOX_BRIDGE: &str = "bridge";
+/// Target key carrying an optional 802.1Q tag.
+const TARGET_KEY_PROXMOX_VLAN: &str = "vlan";
+/// CPU sockets per VM. The class declares total vCPUs, so all of them go in
+/// `cores` on one socket.
+const PROXMOX_SOCKETS: u32 = 1;
+
+/// Build a [`ProxmoxMachine`] from the scheduler [`Decision`], the original
+/// VM, its class, image, and the chosen [`Provider`] (ADR-0075).
+///
+/// Owner-reference is set to `vm`, as for the other backends.
+///
+/// # Where each resolved field comes from
+///
+/// - **`node`**: the failure domain's raw `node` attribute (one node is one
+///   failure domain, roadmap 06).
+/// - **`templateVmid`**: the `VMImage`'s per-provider `resolvedRef`, parsed
+///   as a VMID, exactly as vSphere takes its template name from the same
+///   field. The Proxmox provider's image reconciler is what publishes it.
+/// - **`storage`**: the OS disk's resolved backend id (`{storage: <id>}`).
+///   Class disks after the first become `dataDisks`, on their own storage
+///   when it differs from the OS disk's.
+/// - **NIC `bridge` / `vlan`**: read off the Provider's network class target
+///   by key. The scheduler flattens a target map to its first value, which
+///   would lose `vlan`, so the mapping itself is consulted (as libvirt does
+///   for `bridge` vs `network`).
+/// - **`isoStorage`**: the Provider's `seed-iso` storage class, only when
+///   there is user data to deliver.
+///
+/// # Errors
+/// [`InfraBuildError::MissingFdRaw`] without a `node`;
+/// [`InfraBuildError::MissingResolvedImageRef`] /
+/// [`InfraBuildError::InvalidTemplateVmid`] for the image;
+/// [`InfraBuildError::UnresolvedClass`] for a class with no disks or user
+/// data without a `seed-iso` class; [`InfraBuildError::InvalidVlan`]; and
+/// [`InfraBuildError::InvalidSpec`] when the result fails
+/// [`ProxmoxMachineSpec::validate`].
+pub fn build_proxmox_machine(
+    vm: &VirtualMachine,
+    class: &VMClass,
+    image: &VMImage,
+    decision: &Decision,
+    provider: &Provider,
+    rendered_user_data: Option<&str>,
+) -> Result<ProxmoxMachine, InfraBuildError> {
+    let node = decision
+        .failure_domain_raw
+        .get(FD_RAW_PROXMOX_NODE)
+        .cloned()
+        .ok_or_else(|| {
+            InfraBuildError::MissingFdRaw(decision.failure_domain_name.clone(), FD_RAW_PROXMOX_NODE)
+        })?;
+
+    let disks = &class.spec.hardware.disks;
+    let os_disk = disks
+        .first()
+        .ok_or_else(|| InfraBuildError::UnresolvedClass("(no disks)".into()))?;
+    let storage = decision
+        .resolved_storage
+        .first()
+        .ok_or_else(|| InfraBuildError::UnresolvedClass(os_disk.storage_class.clone()))?
+        .backend_id
+        .clone();
+
+    // The template is a VMID, published as the image's resolvedRef; the
+    // per-zone folder vSphere needs has no Proxmox counterpart.
+    let (resolved_ref, _folder) = resolve_template_ref(
+        image,
+        &decision.provider_name,
+        &decision.failure_domain_name,
+    )
+    .ok_or_else(|| InfraBuildError::MissingResolvedImageRef {
+        image: image.name_any(),
+        provider: decision.provider_name.clone(),
+        zone: decision.failure_domain_name.clone(),
+    })?;
+    let template_vmid =
+        resolved_ref
+            .parse::<u32>()
+            .map_err(|_| InfraBuildError::InvalidTemplateVmid {
+                image: image.name_any(),
+                resolved_ref: resolved_ref.clone(),
+            })?;
+
+    let hardware_override = vm.spec.hardware_override.as_ref();
+
+    let data_disks = disks
+        .iter()
+        .zip(decision.resolved_storage.iter())
+        .skip(1)
+        .map(|(d, resolved)| ProxmoxDataDisk {
+            name: d.name.clone(),
+            size_gi_b: merge_disk_size_override(d, hardware_override),
+            storage: (resolved.backend_id != storage).then(|| resolved.backend_id.clone()),
+            iothread: false,
+            discard: false,
+            ssd: false,
+        })
+        .collect::<Vec<_>>();
+    if data_disks.len() + 1 < disks.len() {
+        let unresolved = &disks[decision.resolved_storage.len()];
+        return Err(InfraBuildError::UnresolvedClass(
+            unresolved.storage_class.clone(),
+        ));
+    }
+
+    let nics = class
+        .spec
+        .network
+        .interfaces
+        .iter()
+        .zip(decision.resolved_networks.iter())
+        .map(|(nic, resolved)| {
+            let override_ = vm
+                .spec
+                .network_overrides
+                .iter()
+                .find(|o| o.name == nic.name)
+                .map(|o| &o.static_);
+            // A Proxmox node has no datacenter/cluster hierarchy, so the
+            // mapping's default target and subnet apply (ADR-0030).
+            let mapping = provider
+                .spec
+                .capabilities
+                .network_classes
+                .iter()
+                .find(|c| c.name == nic.network_class);
+            let target = mapping.and_then(|m| m.target_for("", ""));
+            let bridge = target
+                .and_then(|t| t.get(TARGET_KEY_PROXMOX_BRIDGE))
+                .cloned()
+                .unwrap_or_else(|| resolved.backend_id.clone());
+            let vlan = match target.and_then(|t| t.get(TARGET_KEY_PROXMOX_VLAN)) {
+                None => None,
+                Some(v) => Some(v.parse::<u16>().map_err(|_| InfraBuildError::InvalidVlan {
+                    class: nic.network_class.clone(),
+                    value: v.clone(),
+                })?),
+            };
+            let zone_subnet = mapping.and_then(|c| c.subnet_for("", ""));
+            Ok(ProxmoxNicSpec {
+                name: nic.name.clone(),
+                bridge,
+                vlan,
+                model: ProxmoxNicModel::default(),
+                mac_address: None,
+                ipam: merge_ipam_override(&nic.ipam, override_, zone_subnet),
+            })
+        })
+        .collect::<Result<Vec<_>, InfraBuildError>>()?;
+
+    // The seed ISO's storage is only needed when there is user data.
+    let iso_storage = match rendered_user_data {
+        None => None,
+        Some(_) => Some(seed_storage(provider)?),
+    };
+
+    let spec = ProxmoxMachineSpec {
+        provider_id: None,
+        failure_domain: Some(decision.failure_domain_name.clone()),
+        provider_ref: banlieue_api::common::LocalObjectReference {
+            name: decision.provider_name.clone(),
+        },
+        node,
+        template_vmid,
+        storage,
+        pool: None,
+        cores: hardware_override
+            .and_then(|h| h.cpus)
+            .unwrap_or(class.spec.hardware.cpus),
+        sockets: PROXMOX_SOCKETS,
+        memory_mi_b: hardware_override
+            .and_then(|h| h.memory_mi_b)
+            .unwrap_or(class.spec.hardware.memory_mi_b),
+        cpu_type: None,
+        firmware: class.spec.firmware.clone(),
+        tpm_enabled: class.spec.tpm_enabled,
+        os_disk_size_gi_b: merge_disk_size_override(os_disk, hardware_override),
+        data_disks,
+        nics,
+        iso_storage,
+        user_data: rendered_user_data.map(str::to_string),
+        desired_power_state: vm.spec.desired_power_state.clone(),
+    };
+    spec.validate().map_err(InfraBuildError::InvalidSpec)?;
+
+    Ok(ProxmoxMachine {
+        metadata: ObjectMeta {
+            name: Some(vm.name_any()),
+            namespace: vm.namespace(),
+            owner_references: Some(vec![owner_reference_for(vm)]),
+            labels: Some(propagate_labels(vm)),
+            ..Default::default()
+        },
+        spec,
+        status: None,
+    })
+}
+
+/// The storage id the NoCloud seed ISO is uploaded to: the `storage` key of
+/// the Provider's [`PROXMOX_SEED_STORAGE_CLASS`] class.
+fn seed_storage(provider: &Provider) -> Result<String, InfraBuildError> {
+    provider
+        .spec
+        .capabilities
+        .storage_classes
+        .iter()
+        .find(|c| c.name == PROXMOX_SEED_STORAGE_CLASS)
+        .and_then(|c| c.target_for("", ""))
+        .and_then(|t| t.get(TARGET_KEY_PROXMOX_STORAGE))
+        .cloned()
+        .ok_or_else(|| InfraBuildError::UnresolvedClass(PROXMOX_SEED_STORAGE_CLASS.into()))
 }
 
 /// Which provisioning shape an image's install mode calls for on Cloud
