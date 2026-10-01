@@ -135,6 +135,20 @@ impl Client {
             }
         }
         if config.insecure_skip_tls_verify {
+            // Opt-in only: `insecureSkipTLSVerify` defaults to false and needs
+            // the audited `banlieue.io/allow-insecure-tls` annotation at
+            // admission (deploy/admission/provider-connection.yaml). Kept for
+            // lab nodes still on Proxmox's self-signed certificate; `caBundle`
+            // is the supported path (ADR-0074 Decision 5). Same posture as the
+            // vSphere client (code-scanning alerts #58/#59, won't fix).
+            tracing::warn!(
+                endpoint,
+                "TLS certificate and hostname verification are DISABLED for this \
+                 Proxmox connection (insecureSkipTLSVerify: true). The connection \
+                 is exposed to man-in-the-middle attacks and the API token may be \
+                 intercepted. Set the node's CA as caBundle and remove \
+                 insecureSkipTLSVerify before using this provider in production."
+            );
             builder = builder
                 .danger_accept_invalid_certs(true)
                 .danger_accept_invalid_hostnames(true);
