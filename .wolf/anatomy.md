@@ -16,7 +16,7 @@
 - `Makefile` — Make build targets (~20840 tok)
 - `osv-scanner.toml` — SPDX-License-Identifier: Apache-2.0 (~355 tok)
 - `README.md` — Project documentation (~3300 tok)
-- `ROADMAPS.md` — Roadmaps (~4160 tok)
+- `ROADMAPS.md` — Roadmaps (~4161 tok)
 - `SECURITY.md` — Security Policy (~382 tok)
 
 ## .clusterfuzzlite/
@@ -63,7 +63,7 @@
 - `16-scorecard-remediation.md` — 60 — OSSF Scorecard remediation (~2608 tok)
 - `17-ephemeral-vm-pools.md` — 17: Ephemeral, single-use VM pools (AI agent sandboxes) (~12407 tok)
 - `18-split-image-fast-clone.md` — 18: Split-image fast clone — verified base + per-VM sealed volume (~4187 tok)
-- `19-port-groups.md` — 19: Port groups: declared, reconciled, and safe to delete (~4109 tok)
+- `19-port-groups.md` — 19: Port groups — declared, reconciled, and safe to delete (~4110 tok)
 - `README.md` — Project documentation (~1406 tok)
 
 ## .github/requirements/
