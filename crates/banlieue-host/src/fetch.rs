@@ -64,7 +64,7 @@ impl Fetch for Download {
             .client
             .get_or_try_init(|| async { self.client() })
             .await
-            .map_err(&fail)?;
+            .map_err(fail)?;
         let mut resp = client
             .get(&artifact.url)
             .send()

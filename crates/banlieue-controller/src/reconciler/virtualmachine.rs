@@ -13,6 +13,9 @@
 //! 2. Ensure the controller finalizer (`banlieue.io/virtualmachine`).
 //! 3. Resolve cluster-scoped refs (`VMClass`, `VMImage`).
 //! 4. List `Provider`s and sibling `VirtualMachine`s in the VM's namespace.
+//!    Reject a `VMClass`/`VMImage` pairing that cannot work (ADR-0048), and
+//!    a static address another VM already claims (ADR-0083), both before
+//!    scheduling, so neither reaches a provider.
 //! 5. Call [`schedule`] (pure function) → [`Decision`].
 //! 6. SSA the provider-specific infra CR (currently `VSphereMachine`),
 //!    owner-referenced to the parent VM.
@@ -53,6 +56,10 @@ use kube::{
 use serde_json::json;
 use tracing::{debug, info, warn};
 
+use super::address_conflict::{
+    DuplicateAddress, REASON_DUPLICATE_ADDRESS, contending_vms, find_duplicate_address,
+    held_addresses,
+};
 use super::infra::{
     InfraKind, build_cloud_hypervisor_machine, build_libvirt_machine, build_proxmox_machine,
     build_vsphere_machine,
@@ -235,6 +242,24 @@ pub async fn reconcile(vm: Arc<VirtualMachine>, ctx: Arc<Context>) -> Result<Act
         );
         patch_image_class_mismatch(&vm_api, &vm, &name, generation, detail).await?;
         return Ok(requeue_long());
+    }
+
+    // ---- Duplicate static address (ADR-0083) -----------------------------
+    //
+    // Before scheduling, so a contested address never reaches a provider. A
+    // VM with no static override did not choose its address and is never
+    // checked. Scope is whatever this controller watches: cluster-wide, or
+    // its `--namespace`.
+    if !vm.spec.network_overrides.is_empty()
+        && let Some(dup) = duplicate_address(&ctx, &class_api, &vm, &class).await?
+    {
+        warn!(
+            address = %dup.address,
+            network_class = %dup.network_class,
+            "static address already claimed by another VirtualMachine"
+        );
+        block_on_duplicate_address(&vm_api, &infra_apis, &vm, &name, generation, &dup).await?;
+        return Ok(requeue_default());
     }
 
     // ---- Schedule ------------------------------------------------------
@@ -456,6 +481,9 @@ pub async fn reconcile(vm: Arc<VirtualMachine>, ctx: Arc<Context>) -> Result<Act
     let mut next_status = mirror_status_from_infra(&current_status, applied.as_ref(), generation);
     next_status.scheduled =
         Some(decision.to_scheduled_placement(Time(k8s_openapi::jiff::Timestamp::now())));
+    // The infra CR was just applied with these addresses: from now on they
+    // are held (ADR-0083). Written only here, carried forward everywhere else.
+    next_status.held_addresses = held_addresses(&vm, &class);
     // Both infra kinds live in the same API group and are named after their
     // parent VM, so only `kind` actually varies here.
     next_status.infrastructure_ref = Some(TypedObjectReference {
@@ -800,6 +828,165 @@ async fn patch_image_class_mismatch(
     );
     status.observed_generation = Some(generation);
     patch_status(api, name, &status).await
+}
+
+/// `Some` when `vm`'s static addresses are claimed by a VM that outranks it
+/// (ADR-0083).
+///
+/// Reads the controller's `VirtualMachine` store when running under it (no
+/// API LIST), and GETs only the `VMClass`es of the VMs that share an address
+/// with `vm`. Outside the controller (tests driving `reconcile` directly) it
+/// lists the VMs in scope instead.
+///
+/// # Errors
+/// Propagates API errors from the fallback LIST or a `VMClass` GET, and
+/// fails if the store's writer has gone away.
+async fn duplicate_address(
+    ctx: &Context,
+    class_api: &Api<VMClass>,
+    vm: &VirtualMachine,
+    class: &VMClass,
+) -> Result<Option<DuplicateAddress>> {
+    let contenders = match &ctx.vm_store {
+        Some(store) => {
+            // Before the initial list completes the store is partial, and a
+            // VM missing from it would look like a free address.
+            store
+                .wait_until_ready()
+                .await
+                .map_err(|_| Error::Missing("VirtualMachine store (writer dropped)"))?;
+            let state = store.state();
+            contending_vms(vm, state.iter().map(AsRef::as_ref))
+        }
+        None => {
+            let scope_api: Api<VirtualMachine> = match ctx.namespace.as_deref() {
+                Some(ns) => Api::namespaced(ctx.client.clone(), ns),
+                None => Api::all(ctx.client.clone()),
+            };
+            let all = scope_api.list(&ListParams::default()).await?.items;
+            contending_vms(vm, all.iter())
+        }
+    };
+    if contenders.is_empty() {
+        return Ok(None);
+    }
+
+    // One GET per distinct class among the contenders. A class that no
+    // longer exists is left out, and its VMs then claim on every network.
+    let mut classes = vec![class.clone()];
+    let mut wanted: Vec<&str> = contenders
+        .iter()
+        .map(|c| c.spec.class_ref.name.as_str())
+        .filter(|n| *n != class.name_any())
+        .collect();
+    wanted.sort_unstable();
+    wanted.dedup();
+    for name in wanted {
+        if let Some(c) = class_api.get_opt(name).await? {
+            classes.push(c);
+        }
+    }
+    Ok(find_duplicate_address(vm, &contenders, &classes))
+}
+
+/// Report a VM blocked on a duplicate address (ADR-0083).
+///
+/// A VM with no infra CR yet gets `Ready=False reason=DuplicateAddress` and
+/// nothing else: it never reaches a provider. A VM that is **already
+/// provisioned** is not frozen. Its infra CR is not re-applied (that would
+/// push the contested address), but `spec.desiredPowerState` is still
+/// patched onto it and its status is still mirrored, so an operator can
+/// power it off. Like `patch_image_class_mismatch`, `Scheduled` is not
+/// touched.
+async fn block_on_duplicate_address(
+    api: &Api<VirtualMachine>,
+    apis: &InfraApis,
+    vm: &VirtualMachine,
+    name: &str,
+    generation: i64,
+    dup: &DuplicateAddress,
+) -> Result<()> {
+    let existing = existing_infra(apis, name).await?;
+    let (mut status, message) = match &existing {
+        None => (vm.status.clone().unwrap_or_default(), dup.message()),
+        Some((kind, infra)) => {
+            if infra.desired_power_state() != &vm.spec.desired_power_state {
+                info!(
+                    power = ?vm.spec.desired_power_state,
+                    "applying desiredPowerState to the infra CR of a blocked VM"
+                );
+                patch_infra_power(apis, *kind, name, &vm.spec.desired_power_state).await?;
+            }
+            (
+                mirror_onto_vm(vm, infra.as_ref()),
+                format!(
+                    "{} This VM is already provisioned: its guest is unchanged, and spec \
+                     changes other than desiredPowerState are withheld until the conflict \
+                     is resolved.",
+                    dup.message()
+                ),
+            )
+        }
+    };
+    set_condition(
+        &mut status.conditions,
+        condition_types::READY,
+        condition_status::FALSE,
+        REASON_DUPLICATE_ADDRESS,
+        message,
+        generation,
+    );
+    status.observed_generation = Some(generation);
+    patch_status(api, name, &status).await
+}
+
+/// The infra CR named `name`, of whichever kind exists. Every kind is
+/// checked for the same reason as in [`finalize_vm`]: `status` may not say.
+async fn existing_infra(
+    apis: &InfraApis,
+    name: &str,
+) -> Result<Option<(InfraKind, Box<dyn InfraMachineRead + Send + Sync>)>> {
+    if let Some(m) = apis.vsphere.get_opt(name).await? {
+        return Ok(Some((InfraKind::VSphere, Box::new(m))));
+    }
+    if let Some(m) = apis.libvirt.get_opt(name).await? {
+        return Ok(Some((InfraKind::Libvirt, Box::new(m))));
+    }
+    if let Some(m) = apis.cloud_hypervisor.get_opt(name).await? {
+        return Ok(Some((InfraKind::CloudHypervisor, Box::new(m))));
+    }
+    if let Some(m) = apis.proxmox.get_opt(name).await? {
+        return Ok(Some((InfraKind::Proxmox, Box::new(m))));
+    }
+    Ok(None)
+}
+
+/// Merge-patch only `spec.desiredPowerState` onto an infra CR. A merge patch,
+/// not SSA: an apply from the controller's field manager carrying one field
+/// would release its ownership of every other field it has applied.
+async fn patch_infra_power(
+    apis: &InfraApis,
+    kind: InfraKind,
+    name: &str,
+    power: &banlieue_api::common::PowerState,
+) -> Result<()> {
+    let patch = Patch::Merge(json!({ "spec": { "desiredPowerState": power } }));
+    let params = PatchParams::default();
+    match kind {
+        InfraKind::VSphere => {
+            apis.vsphere.patch(name, &params, &patch).await?;
+        }
+        InfraKind::Libvirt => {
+            apis.libvirt.patch(name, &params, &patch).await?;
+        }
+        InfraKind::CloudHypervisor => {
+            apis.cloud_hypervisor.patch(name, &params, &patch).await?;
+        }
+        InfraKind::Proxmox => {
+            apis.proxmox.patch(name, &params, &patch).await?;
+        }
+    }
+    Ok(())
 }
 
 async fn patch_infra_build_failure(

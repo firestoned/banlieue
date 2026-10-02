@@ -217,6 +217,14 @@ members. When every entry runs out the pool reports:
 Capacity=False   reason=AddressRangeExhausted
 ```
 
+**Keep the range clear of standalone VMs.** The pool avoids addresses held
+by its *own* members only. A member stamped with an address that a
+standalone `VirtualMachine` already claims is blocked with
+`Ready=False reason=DuplicateAddress`
+([ADR-0083](https://github.com/firestoned/banlieue/blob/main/docs/adr/0083-block-duplicate-static-address.md)),
+is reaped at `provisioningTimeoutSeconds`, and the same address can be drawn
+again. Nothing collides, but the pool churns until the overlap is removed.
+
 This inline addressing is interim. CAPI IPAM
 ([ADR-0033](https://github.com/firestoned/banlieue/blob/main/docs/adr/0033-capi-ipam-pool-integration.md))
 is recorded but not implemented; when it lands this field gains a `poolRef`

@@ -3104,6 +3104,24 @@
       ],
       "occurrences": 1,
       "last_seen": "2026-09-29T03:10:00.000Z"
+    },
+    {
+      "id": "bug-173",
+      "timestamp": "2026-09-30T23:40:00.000Z",
+      "error_message": "error[yanked]: detected yanked crate (try `cargo update -p yoke-derive`); cargo-deny advisories FAILED and cargo-audit '1 denied warning found!' on PR #72",
+      "file": "Cargo.lock",
+      "root_cause": "yoke-derive 0.8.3 (transitive) was yanked from crates.io after main's lockfile pinned it; both CI jobs deny yanked crates, so every PR fails regardless of its diff.",
+      "fix": "cargo update -p yoke-derive (0.8.3 -> 0.8.4, the only package that moved). Verified locally: cargo deny check all ok, cargo audit -D warnings exit 0.",
+      "tags": [
+        "ci",
+        "cargo-deny",
+        "cargo-audit",
+        "yanked",
+        "lockfile"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-09-30T23:40:00.000Z"
     }
   ]
 }

@@ -526,6 +526,33 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              heldAddresses:
+                description: |-
+                  Static addresses this VM's infrastructure CR was last applied with
+                  (ADR-0083). Written by the controller **only** when it applies the
+                  infra CR, and carried forward unchanged otherwise, so it records what
+                  the guest is configured with: it survives guest reboots and is the
+                  same on every backend. A held address is never given to another VM.
+                items:
+                  description: |-
+                    One static address a `VirtualMachine`'s infra CR was applied with
+                    (ADR-0083).
+                  properties:
+                    address:
+                      description: The address, normalised (an IP is re-printed in canonical form).
+                      type: string
+                    interface:
+                      description: The `VMClass` interface the address is on.
+                      type: string
+                    networkClass:
+                      description: 'That interface''s `networkClass`: the network the address is unique on.'
+                      type: string
+                  required:
+                  - address
+                  - interface
+                  - networkClass
+                  type: object
+                type: array
               infrastructureRef:
                 description: |-
                   Reference to the provider-specific infrastructure CR

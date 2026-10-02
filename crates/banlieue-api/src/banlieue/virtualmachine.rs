@@ -381,6 +381,14 @@ pub struct VirtualMachineStatus {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tpm_endorsement_certificates: Vec<String>,
 
+    /// Static addresses this VM's infrastructure CR was last applied with
+    /// (ADR-0083). Written by the controller **only** when it applies the
+    /// infra CR, and carried forward unchanged otherwise, so it records what
+    /// the guest is configured with: it survives guest reboots and is the
+    /// same on every backend. A held address is never given to another VM.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub held_addresses: Vec<HeldAddress>,
+
     /// Standard Kubernetes conditions. Required types:
     ///   `Ready`               — overall readiness
     ///   `Scheduled`           — placement decision exists and is current
@@ -432,6 +440,19 @@ pub struct ResolvedResource {
     pub class_name: String,
     /// Backend identifier the provider resolved to (e.g. "ds-fast-01", "vmnet-prod").
     pub backend_id: String,
+}
+
+/// One static address a `VirtualMachine`'s infra CR was applied with
+/// (ADR-0083).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct HeldAddress {
+    /// The `VMClass` interface the address is on.
+    pub interface: String,
+    /// That interface's `networkClass`: the network the address is unique on.
+    pub network_class: String,
+    /// The address, normalised (an IP is re-printed in canonical form).
+    pub address: String,
 }
 
 #[inline]

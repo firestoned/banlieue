@@ -133,6 +133,55 @@ spec:
         nameservers: [192.0.2.53]
 ```
 
+### Static addresses are checked against other banlieue VMs only
+
+**banlieue checks that no other banlieue `VirtualMachine` claims a static
+address. It does not check the network itself.** The check runs in
+`banlieue-controller` against the Kubernetes API and never asks the hypervisor,
+an IPAM or the network. A VM created directly in vCenter, a machine managed by
+another tool, or a physical host on the same subnet is invisible to it. A
+provider-side lookup that would catch those is deferred; see *Not decided
+here* in
+[ADR-0083](https://github.com/firestoned/banlieue/blob/main/docs/adr/0083-block-duplicate-static-address.md).
+
+A VM whose `networkOverrides` address is already claimed by another
+`VirtualMachine` on the **same `networkClass`** reports:
+
+```text
+Ready=False  reason=DuplicateAddress
+message: address 192.0.2.90 on interface eth0 (networkClass prod) is already
+         claimed by VirtualMachine apps/db-01; choose a free address or
+         delete the holder (ADR-0083)
+```
+
+- **Who counts as a claimant:** any VM the controller watches, in any
+  namespace, that declares the address in `networkOverrides`, or that
+  **holds** it. A VM holds the addresses recorded in its
+  `status.heldAddresses`, which the controller writes when it applies the VM's
+  infrastructure CR. Guest-reported `status.addresses` play no part, so a
+  DHCP VM's lease is not checked: keep static addresses outside DHCP scopes.
+- **Who wins:** a VM that holds the address keeps it, even while its guest is
+  rebooting. Otherwise the older VM wins. Editing a running VM onto an address
+  another VM holds blocks the edited VM.
+- **Behaviour is the same on every provider.** Holding comes from what the
+  controller applied, not from what a provider reports, so it works on
+  vSphere (which publishes no guest addresses today) exactly as on libvirt
+  and Cloud Hypervisor (whose guest-reported addresses disappear while a
+  guest reboots).
+- **A blocked VM that was never provisioned** gets no infrastructure CR, so
+  the address never reaches a provider.
+- **A blocked VM that is already running is not frozen.** Its guest keeps its
+  current address and its status keeps updating. `desiredPowerState` is still
+  applied, so you can power it off. Other spec changes are held back until the
+  conflict is resolved, and the condition message says so.
+- **Different networks:** the same address on two different `networkClass`es
+  is allowed, because isolated networks may reuse a subnet.
+- **Other namespaces:** a holder in another namespace blocks too, but the
+  message says "a VirtualMachine in another namespace" instead of naming it.
+- **Unblocking:** delete the holder or choose a free address. The blocked VM
+  rechecks every 30 seconds and proceeds on the first check after the
+  conflict is gone.
+
 ## Related CRDs
 
 - **[VMClass](../reference/api.md)** — flavour / size shape (CPU, memory, disk).

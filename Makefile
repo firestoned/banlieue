@@ -153,7 +153,7 @@ help: ## Show this help
         kind-bootstrap-install kind-e2e-install kind-e2e kind-e2e-ci kind-e2e-logs \
         kind-e2e-bootstrap kind-e2e-dry-run kind-e2e-escape-hatch \
         kind-e2e-workload kind-e2e-pause kind-e2e-workload-namespace kind-e2e-class \
-        claim-live-test pool-claim-e2e ch-e2e ch-vtpm-e2e ch-deferred-e2e ch-restart-e2e ch-host-install-test ch-polkit-test provider-bench \
+        claim-live-test address-live-test pool-claim-e2e ch-e2e ch-vtpm-e2e ch-deferred-e2e ch-restart-e2e ch-host-install-test ch-polkit-test provider-bench \
         dev-oidc-up dev-oidc-attach dev-oidc-github-creds dev-oidc-login \
         dev-oidc-try-claim dev-oidc-status dev-oidc-down \
         dev-oidc-k0s-up dev-oidc-k0s-login dev-oidc-k0s-grant \
@@ -455,6 +455,25 @@ claim-live-test: ## Run the claim reconciler against a REAL API server (needs KU
 	  exit 1; }
 	@echo "Running the claim reconciler against $$(kubectl config current-context) ..."
 	cargo test -p banlieue-controller --test live_claim -- \
+	  --ignored --nocapture --test-threads=1
+
+address-live-test: ## Run duplicate-address blocking (ADR-0083) against a REAL API server (needs KUBECONFIG; no libvirt)
+	@# `address_conflict` unit tests prove every decision as a pure function;
+	@# this proves the reconcile acts on it: the blocked VM gets
+	@# Ready=False reason=DuplicateAddress and NO infra CR, while the holder
+	@# really does get a LibvirtMachine, and the block lifts once the holder
+	@# is gone.
+	@#
+	@# Needs the banlieue CRDs installed and NO controller running:
+	@#
+	@#   kind create cluster --name banlieue-address-test
+	@#   kubectl --context kind-banlieue-address-test apply -f deploy/crds/
+	@#   make address-live-test
+	@test -n "$$KUBECONFIG" -o -f "$$HOME/.kube/config" || { \
+	  echo "No kubeconfig. Point KUBECONFIG at a cluster with the banlieue CRDs."; \
+	  exit 1; }
+	@echo "Running duplicate-address blocking against $$(kubectl config current-context) ..."
+	cargo test -p banlieue-controller --test live_duplicate_address -- \
 	  --ignored --nocapture --test-threads=1
 
 pool-claim-e2e: ## Pool -> real libvirt domains -> claim -> release (LOCAL ONLY, never CI)

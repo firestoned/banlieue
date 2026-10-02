@@ -4,10 +4,28 @@ SPDX-License-Identifier: Apache-2.0
 -->
 # Threat Model
 
-> **Status:** Living document. Last full pass **2026-09-28**, against the
-> architecture defined by **ADR-0001 … ADR-0075** (0057–0059 unallocated,
-> 0066 and 0068–0073 reserved; 0060–0065 and 0067 Accepted 2026-09-27; 0074
-> and 0075 Accepted 2026-09-28).
+> **Status:** Living document. Last full pass **2026-10-01**, against the
+> architecture defined by **ADR-0001 … ADR-0083** (0057–0059 unallocated,
+> 0066 and 0068–0073 reserved; 0074 and 0075 Accepted 2026-09-28; 0076–0080
+> reserved by roadmap 19; 0081–0082 recorded but not implemented in banlieue,
+> so they move nothing here). The 2026-10-01 pass covers **ADR-0083** as revised in
+> review: a `VirtualMachine` whose static address another banlieue VM already
+> claims on the same `networkClass` is blocked before scheduling
+> (`Ready=False reason=DuplicateAddress`, no infra CR), on all four infra
+> kinds including Proxmox (ADR-0075); incumbency comes from
+> the new, controller-written `status.heldAddresses`, never from
+> guest-reported addresses; a blocked VM that is already provisioned keeps
+> its infra CR but still has power applied. **No new component, asset, actor
+> or trust boundary**, so the §5 diagram is unchanged. The controller reads
+> `VirtualMachine`s across every namespace it watches, from its existing
+> reflector store. §2's controller row names the check. TB-1 gains three
+> rows: the traffic hijack/denial a declared duplicate enabled (controlled),
+> cross-namespace disclosure through the condition message (controlled), and
+> a forged `status.heldAddresses` (bounded by RBAC). §7 gains 17 (one
+> `networkClass` per real segment). §8 gains two residues: first-come address
+> squatting and a one-bit "address in use" oracle across namespaces.
+> Guest-reported addresses do not feed the check, so it adds no
+> guest-influenced residue. §9 gains machines banlieue did not create.
 >
 > **2026-09-28 pass — Proxmox VE (ADR-0074, ADR-0075).** A third
 > hypervisor backend, reached over HTTPS with a **privilege-separated API
@@ -193,7 +211,7 @@ relationship to the host.
 
 | Component | Identity | Namespace | Scope |
 | --- | --- | --- | --- |
-| `banlieue-controller` | `banlieue-controller` | `banlieue-system` | Watches `VirtualMachine`, schedules onto a `Provider`, creates provider infra CRs. Also runs the `VirtualMachinePool` loop (ADR-0046) and the `VirtualMachineClaim` loop (ADR-0047) — the latter binds a pool member to a subject and destroys it on release |
+| `banlieue-controller` | `banlieue-controller` | `banlieue-system` | Watches `VirtualMachine`, schedules onto a `Provider`, creates provider infra CRs. Refuses a VM whose static address another VM already claims (ADR-0083), which reads `VirtualMachine`s across every namespace it watches. Also runs the `VirtualMachinePool` loop (ADR-0046) and the `VirtualMachineClaim` loop (ADR-0047) — the latter binds a pool member to a subject and destroys it on release |
 | `banlieue-operator` | `banlieue-operator` | `banlieue-system` | Provider lifecycle (ADR-0012): creates provider Deployments, ServiceAccounts, Roles, RoleBindings |
 | `banlieue-provider-vsphere` / `-libvirt` | per-`Provider` SA | `banlieue-system` | Talks to the hypervisor; reconciles infra CRs (`VSphereMachine`, `LibvirtMachine` — ADR-0050) and realises them as real VMs/domains |
 | `banlieue-provider-proxmox` | per-`Provider` SA | `banlieue-system` | Talks to Proxmox VE through the first-party `banlieue-proxmox` client (ADR-0074); reconciles `ProxmoxMachine`s (ADR-0075) into full clones of a template VM, verifies the template VMIDs `VMImage`s name, and publishes one failure domain per node. Spawns no Jobs — `deploy/provider-proxmox/rbac/clusterrole.yaml` |
@@ -349,6 +367,9 @@ relationship to the host.
 | `delete virtualmachineclaims` destroys running VMs | D | Equivalent to `delete virtualmachines` by design — releasing a claim *is* destroying the sandbox. RBAC is the only control; §7.10 |
 | User-influenced strings (`domainName`, `pool`, disk/volume names) injected into libvirt domain XML | T, E | Every value is escaped on the way in by `esc()` — all five XML entities, uniformly in text *and* attributes, so there is no context-dependent rule to get wrong — `crates/banlieue-provider-libvirt/src/xml/escape.rs`, applied throughout `xml/domain.rs`; both have dedicated `_tests.rs` |
 | A rogue CA is slipped into `attestation.ekTrustBundle` (A-15) — on the `Provider` spec, or by editing the ConfigMap/Secret it references — so an attacker-forged EK certificate verifies | S, T | **Bounded, not prevented.** The `banlieue-provider-attestation-ektrustbundle` VAP validates *shape* (exactly one of inline/configMapRef/secretRef — `deploy/admission/provider-attestation-ektrustbundle.yaml`); content cannot be validated by banlieue, which has no idea which CAs are legitimate (ADR-0049 Decision 10 makes that an explicit admin assertion, the same posture as `capabilities.features`). `Provider` writes are platform-admin-only (§7.5), and the referenced object lives in the Provider's own namespace, out of tenant reach. Custody of that object is §7.14 |
+| A `VirtualMachine` **declares another VM's address** in `spec.networkOverrides`, by mistake or to intercept traffic meant for it and knock it off the network (ARP contention on the shared segment) | S, T, I, D | **ADR-0083**: `banlieue-controller` blocks the later claimant on the same `networkClass` before scheduling: `Ready=False reason=DuplicateAddress`, and **no infra CR** for a VM never provisioned, so the address never reaches a provider. A VM that **holds** the address (`status.heldAddresses`, written by the controller only when it applies the infra CR) keeps it whatever its age, including while its guest reboots and on vSphere, which reports no guest addresses; a running VM edited onto a held address is blocked and its infra CR is not re-applied. `crates/banlieue-controller/src/reconciler/address_conflict.rs` (`find_duplicate_address`), called from `reconciler/virtualmachine.rs` before `schedule`; unit tests in `address_conflict_tests.rs`, reconcile wiring in `tests/live_duplicate_address.rs` against a real API server. **Banlieue VMs and declared addresses only:** a machine banlieue did not create is not seen (§9), and root in a guest can still configure any address on its NIC, which is the existing no-anti-spoofing residue in §8 |
+| The duplicate-address condition message **discloses another namespace's VM**: its name, namespace, or that it exists | I | The message names a holder as `namespace/name` only when it shares the blocked VM's namespace; otherwise it says "a VirtualMachine in another namespace" (`address_conflict.rs` (`Holder::OtherNamespace`), tested by `collision_across_namespaces_is_detected_but_holder_is_not_named` and `tests/live_duplicate_address.rs::holder_in_another_namespace_blocks_without_being_named`). The residual one-bit oracle ("is this address in use on this `networkClass`?") is §8 |
+| A principal forges `status.heldAddresses` to reserve addresses it was never given, or to release one a running guest still uses | T, D | **Bounded by RBAC, not prevented.** Only the controller writes VM status; writing it takes `update`/`patch` on `virtualmachines/status`, which no tenant role needs and which is already infrastructure-admin-equivalent (it can rewrite `status.infrastructureRef` and every mirrored field). The controller rewrites the field from its own spec on every successful apply, so a forgery lasts until the next one. `deploy/controller/rbac/clusterrole.yaml` is the only shipped grant |
 
 ### TB-2 — Pods → Secrets
 
@@ -801,7 +822,14 @@ a different assumption is unsafe.
     setting `insecureSkipTLSVerify`, and re-issue the certificate when the
     names clients connect by change. Leave the `banlieue-machine-uid=` line in
     a banlieue VM's description alone (§8).
-
+17. **Give each real network segment its own `networkClass`.** The
+    duplicate-address check (ADR-0083) keys on `(networkClass, address)`,
+    because `networkClass` is the finest network identity the controller has.
+    Two `networkClass`es mapped to one segment let two VMs collide
+    undetected. One `networkClass` mapped to isolated segments on different
+    `Provider`s makes a legitimate reuse of a subnet read as a collision. The
+    mapping lives in `Provider.spec.capabilities.networkClasses` and is a
+    platform-admin decision (§7.5).
 
 ## 8. Accepted risks
 
@@ -837,6 +865,8 @@ a different assumption is unsafe.
 | A `Template` source trusts **whatever the administrator put in that VMID**: banlieue verifies only that it is a template, not what boots from it | Proxmox has no image provenance to check, and banlieue builds none of these templates (the bootstrap script imports a cloud image over HTTPS from its published URL). The same posture as vSphere `Template` sources and as ADR-0064's deferred signing | Template provenance (a signed image reference recorded on the template) is available, or images are imported by banlieue |
 | **The Proxmox provider has not run as a deployed controller**: the lifecycle passed live through the reconciler functions (2026-09-30), but not through a cluster (finalizers, SSA status, controller dispatch), and not with EFI, vTPM, guest-agent addresses or a failing task | Each of those is unit-tested against the fake and the API calls under them are now observed live | A kind-cluster e2e runs a `VirtualMachine` to `Ready` on a Proxmox node |
 | The Proxmox seed ISO stays attached for the machine's life (as for libvirt and Cloud Hypervisor), so a guest can read its own rendered user-data | Same reasoning as the NoCloud entry above: cloud-init re-reads its datasource on every boot, and ejecting it needs its own live verification across a reboot. What remains is each guest's own material | Detaching the seed is verified live across a reboot on Proxmox, or delivery stops needing a persistent datasource |
+| **Address squatting:** anyone who can create a `VirtualMachine` on a `networkClass` can claim an address on it first, and ADR-0083 then blocks everyone after them | First-come-first-served is how the network itself behaves. ADR-0083 makes that visible rather than creating it. The alternative (pre-assigned address ownership) is IPAM, and CAPI IPAM pools (ADR-0033/0053) are where per-tenant address ownership belongs | A `networkClass` is shared between tenants who do not trust each other, or CAPI IPAM lands and static overrides can be restricted to IPAM-issued addresses |
+| **Cross-namespace "address in use" oracle:** a tenant can learn whether an address is claimed on a `networkClass` by any VM in any namespace, by declaring it and reading the condition | One bit per probe, never a name (the holder is unnamed across namespaces, §6/TB-1). The same fact is observable on the wire by anyone on the segment, which is where the address actually lives. Consistent with the single-tenant posture (ADR-0025) | A second tenant becomes real on a shared `networkClass`; then scope the check per tenant or move address ownership into IPAM |
 | Health endpoint binds `0.0.0.0` and returns a fixed `200` | Standard probe trade-off; carries no data | It ever reports real state |
 | Provider condition messages are mirrored verbatim onto user-facing `VirtualMachine` status | Useful diagnostics; providers are in-tree | A third-party provider ships |
 
@@ -847,6 +877,10 @@ a different assumption is unsafe.
   including root on a Cloud Hypervisor host, which owns every guest on it.
 - Guest-OS hardening after boot; banlieue's responsibility ends at delivering
   the bootstrap material.
+- Address conflicts with machines **banlieue did not create**. ADR-0083
+  checks `VirtualMachine`s only; the provider-side lookup that would catch
+  another writer on the same segment is deferred until it can be verified
+  against a real backend.
 - `deploy/kind/` — development-only, not held to production standard.
 - The MkDocs documentation toolchain (`docs/`), which ships nothing at runtime.
 - Removing banlieue from a Cloud Hypervisor host (`uninstall`, host drain):

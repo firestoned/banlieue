@@ -1,5 +1,93 @@
 # Changelog
 
+## [2026-10-01] - ADR-0083: block a VirtualMachine on a duplicate static address (#49)
+
+**Author:** Daniel Guns
+
+### Added
+- `docs/adr/0083-block-duplicate-static-address.md` (Accepted): the first
+  of issue #49's two checks, "another banlieue `VirtualMachine` claims this
+  address". The provider-side lookup is deferred until it can be verified
+  against a real backend. Numbered 0083 because 0068-0080 are reserved by
+  roadmaps 18/19 and 0081/0082 are the sandbox security ADRs.
+- `VirtualMachine.status.heldAddresses` (`HeldAddress`: `interface`,
+  `networkClass`, `address`) in `crates/banlieue-api`. Written by the
+  controller only when it applies the infra CR, carried forward otherwise.
+  CRDs and `docs/src/reference/api.md` regenerated (additive).
+- `crates/banlieue-controller/src/reconciler/address_conflict.rs`:
+  `find_duplicate_address` (declared and held `(networkClass, address)`
+  claims; held claims reserved first and never reassigned, then VMs admitted
+  oldest first; blocked VMs reserve nothing new; a holder in another
+  namespace is not named), `contending_vms` (the VMs transitively sharing an
+  address) and `held_addresses`. 27 unit tests in `address_conflict_tests.rs`.
+- `crates/banlieue-controller/src/context_tests.rs`: `Context::with_vm_store`.
+- `crates/banlieue-controller/tests/live_duplicate_address.rs` and
+  `make address-live-test`: four `#[ignore]`d tests driving
+  `virtualmachine::reconcile` against a real API server (CRDs only, no
+  controller, no hypervisor).
+- CALM: `duplicate-static-address` control in
+  `docs/architecture/calm/architecture.json`.
+
+### Changed
+- `crates/banlieue-controller/src/reconciler/virtualmachine.rs`: VMs with a
+  static override are checked after the ADR-0048 pairing check and before
+  `schedule()`. A blocked VM that was never provisioned gets
+  `Ready=False reason=DuplicateAddress` and no infra CR. A blocked VM that is
+  already provisioned keeps its infra CR un-reapplied but still has its
+  status mirrored and `desiredPowerState` merge-patched onto it, for all four
+  infra kinds (vSphere, libvirt, Cloud Hypervisor, Proxmox). The success
+  path records `status.heldAddresses`.
+- `crates/banlieue-controller/src/context.rs`, `app.rs`: the VM controller's
+  reflector store is passed through `Context`, so the check makes no LISTs
+  (it GETs only the `VMClass`es of VMs sharing an address).
+- `crates/banlieue-controller/src/reconciler/status_mirror.rs`:
+  `InfraMachineRead::desired_power_state`, implemented for all four kinds.
+- `crates/banlieue-host/src/fetch.rs`: `.map_err(&fail)` -> `.map_err(fail)`.
+  CI's stable toolchain moved to Rust 1.99, whose clippy flags
+  `needless_borrows_for_generic_args` there, failing `make lint` on every
+  PR. The closure captures only shared references, so it is `Copy` and the
+  later `fail(..)` calls are unaffected. Not reproducible on macOS (the crate
+  is Linux-only) or on a 1.98 toolchain.
+- `docs/src/concepts/virtualmachine.md`: "Static addresses are checked
+  against other banlieue VMs only", with the scope limit first and the
+  per-provider behaviour spelled out.
+- `docs/src/guides/virtualmachine-pools.md`: keep pool ranges clear of
+  standalone VMs (an overlapping member is blocked and churns).
+- `docs/src/security/threat-model.md`: full pass for ADR-0083, stamp
+  advanced to 2026-10-01 / ADR-0083. §2 controller row, three TB-1 rows
+  (declared duplicate, cross-namespace disclosure, forged
+  `heldAddresses`), §7.17, two §8 residues (squatting, cross-namespace
+  oracle), §9 non-banlieue writers. No new component or boundary, so the
+  §5 diagram is unchanged.
+
+### Review changes (PR #72)
+Holding was first derived from guest-reported `status.addresses`, which is
+empty while a libvirt guest reboots and never set on vSphere, so a reboot
+could hand a held address to an older claimant (review #1, #2). It is now
+the controller-written `status.heldAddresses`, matched on network (#7), and
+guest-reported addresses play no part (so a stray override can no longer
+hide one, #6). A blocked, provisioned VM is no longer frozen (#3). One
+global greedy order replaces per-address winners, so VMs sharing several
+addresses cannot block each other and blocked VMs reserve nothing (#4, #5).
+The second `VirtualMachine` watch and its mapper are gone; a blocked VM
+rechecks on the default requeue against the in-memory store (#9, #10).
+kube-runtime 4.2's shared-stream subscribers never receive `Delete`, so
+`watches_shared_stream` could not have woken a VM on its holder's deletion.
+ADR title and new prose follow the no-em-dash convention (#11).
+
+### Why
+Two VMs declaring one address on one network both provisioned and both
+reported `Ready` while the guests fought over the address.
+
+### Impact
+- [x] Breaking change: of two existing VMs that already share a static
+  address on one `networkClass`, the newer reports `DuplicateAddress` after
+  upgrade. Its guest keeps running and its power state still applies; other
+  spec edits are withheld until the conflict is resolved.
+- [x] Requires cluster rollout (controller binary **and** the regenerated
+  `VirtualMachine` CRD: against the old schema every status apply carrying
+  `heldAddresses` is rejected, `field not declared in schema`)
+
 ## [2026-09-30 10:00] - Proxmox: first live lifecycle run; two protocol fixes, seed storage, lifecycle e2e
 
 **Author:** Erick Bourgeois

@@ -648,6 +648,7 @@ mod tests {
                 address: "10.0.0.10".to_string(),
             }],
             observed_power_state: Some(PowerState::PoweredOn),
+            held_addresses: Vec::new(),
             // ADR-0045: mirrored from the infra CR and on to a bound claim.
             tpm_endorsement_certificates: vec![
                 "-----BEGIN CERTIFICATE-----\nstub\n-----END CERTIFICATE-----".to_string(),
@@ -658,6 +659,48 @@ mod tests {
         let json = serde_json::to_value(&s).unwrap();
         let back: VirtualMachineStatus = serde_json::from_value(json).unwrap();
         assert_eq!(back, s);
+    }
+
+    // ----------------------------------------------------------------------
+    // status.heldAddresses (ADR-0083)
+    // ----------------------------------------------------------------------
+
+    #[test]
+    fn held_addresses_omitted_when_empty() {
+        let json = serde_json::to_value(VirtualMachineStatus::default()).unwrap();
+        assert!(json.get("heldAddresses").is_none(), "{json}");
+    }
+
+    #[test]
+    fn held_addresses_round_trip_in_camel_case() {
+        let s = VirtualMachineStatus {
+            held_addresses: vec![HeldAddress {
+                interface: "eth0".into(),
+                network_class: "lan".into(),
+                address: "192.0.2.10".into(),
+            }],
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&s).unwrap();
+        assert_eq!(
+            json["heldAddresses"][0],
+            serde_json::json!({
+                "interface": "eth0", "networkClass": "lan", "address": "192.0.2.10",
+            })
+        );
+        let back: VirtualMachineStatus = serde_json::from_value(json).unwrap();
+        assert_eq!(back, s);
+    }
+
+    #[test]
+    fn held_addresses_are_in_the_crd_status_schema() {
+        let crd = serde_json::to_value(VirtualMachine::crd()).unwrap();
+        let status = &crd["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"]["status"]
+            ["properties"];
+        assert!(
+            status.get("heldAddresses").is_some(),
+            "a status apply naming a field the CRD schema lacks is rejected by the apiserver"
+        );
     }
 
     // ----------------------------------------------------------------------

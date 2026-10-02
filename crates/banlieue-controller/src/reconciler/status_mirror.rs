@@ -50,6 +50,10 @@ pub trait InfraMachineRead {
     /// (ADR-0045). Empty for a machine with no vTPM, and until its guest
     /// has produced one.
     fn tpm_endorsement_certificates(&self) -> &[String];
+    /// The power state this infra CR's spec currently asks for. Read by the
+    /// duplicate-address path (ADR-0083), which must still apply a VM's
+    /// `desiredPowerState` to an infra CR it otherwise leaves untouched.
+    fn desired_power_state(&self) -> &PowerState;
 }
 
 impl InfraMachineRead for VSphereMachine {
@@ -95,6 +99,10 @@ impl InfraMachineRead for VSphereMachine {
             .as_ref()
             .map(|s| s.tpm_endorsement_certificates.as_slice())
             .unwrap_or(&[])
+    }
+
+    fn desired_power_state(&self) -> &PowerState {
+        &self.spec.desired_power_state
     }
 }
 
@@ -142,6 +150,10 @@ impl InfraMachineRead for LibvirtMachine {
             .map(|s| s.tpm_endorsement_certificates.as_slice())
             .unwrap_or(&[])
     }
+
+    fn desired_power_state(&self) -> &PowerState {
+        &self.spec.desired_power_state
+    }
 }
 
 impl InfraMachineRead for CloudHypervisorMachine {
@@ -188,6 +200,10 @@ impl InfraMachineRead for CloudHypervisorMachine {
             .map(|s| s.tpm_endorsement_certificates.as_slice())
             .unwrap_or(&[])
     }
+
+    fn desired_power_state(&self) -> &PowerState {
+        &self.spec.desired_power_state
+    }
 }
 
 impl InfraMachineRead for ProxmoxMachine {
@@ -232,6 +248,10 @@ impl InfraMachineRead for ProxmoxMachine {
     /// volume with no host-side certificate read (ADR-0075 Decision 6).
     fn tpm_endorsement_certificates(&self) -> &[String] {
         &[]
+    }
+
+    fn desired_power_state(&self) -> &PowerState {
+        &self.spec.desired_power_state
     }
 }
 

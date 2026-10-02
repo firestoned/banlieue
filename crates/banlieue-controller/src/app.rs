@@ -163,8 +163,6 @@ pub async fn run(cli: Cli) -> Result<()> {
         info!("leader election disabled by --no-leader-elect");
     }
 
-    let ctx = Arc::new(Context::new(client.clone(), cli.namespace.clone()));
-
     let vm_api: Api<VirtualMachine> = match cli.namespace.as_deref() {
         Some(ns) => Api::namespaced(client.clone(), ns),
         None => Api::all(client.clone()),
@@ -226,6 +224,11 @@ pub async fn run(cli: Cli) -> Result<()> {
     info!("starting VirtualMachine controller");
     let controller = Controller::new(vm_api, Config::default());
     let vm_store = controller.store();
+    // The duplicate-address check (ADR-0083) reads every VM from this store
+    // rather than listing them from the API on each reconcile.
+    let ctx = Arc::new(
+        Context::new(client.clone(), cli.namespace.clone()).with_vm_store(vm_store.clone()),
+    );
     let vm_store_for_class = vm_store.clone();
     let vm_store_for_provider = vm_store.clone();
 

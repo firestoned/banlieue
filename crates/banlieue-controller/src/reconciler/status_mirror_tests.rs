@@ -50,6 +50,9 @@ mod tests {
         fn tpm_endorsement_certificates(&self) -> &[String] {
             &[]
         }
+        fn desired_power_state(&self) -> &PowerState {
+            &PowerState::PoweredOn
+        }
     }
 
     fn cond(type_: &str, status: &str, reason: &str) -> Condition {
@@ -623,6 +626,28 @@ mod tests {
         assert_eq!(status.addresses.len(), 1);
     }
 
+    // ---- desired_power_state (ADR-0083) ----------------------------------
+
+    #[test]
+    fn libvirt_machine_reports_its_spec_power_state() {
+        let mut m = libvirt_machine();
+        m.spec.desired_power_state = PowerState::PoweredOff;
+        assert_eq!(
+            InfraMachineRead::desired_power_state(&m),
+            &PowerState::PoweredOff
+        );
+    }
+
+    #[test]
+    fn cloud_hypervisor_machine_reports_its_spec_power_state() {
+        let mut m = cloud_hypervisor_machine();
+        m.spec.desired_power_state = PowerState::Suspended;
+        assert_eq!(
+            InfraMachineRead::desired_power_state(&m),
+            &PowerState::Suspended
+        );
+    }
+
     // ======================================================================
     // The concrete ProxmoxMachine impl (ADR-0075)
     // ======================================================================
@@ -713,5 +738,15 @@ mod tests {
         assert_eq!(cond.status, condition_status::TRUE);
         assert_eq!(status.initialization.provisioned, Some(true));
         assert_eq!(status.addresses.len(), 1);
+    }
+
+    #[test]
+    fn proxmox_machine_reports_its_spec_power_state() {
+        let mut m = proxmox_machine();
+        m.spec.desired_power_state = PowerState::PoweredOff;
+        assert_eq!(
+            InfraMachineRead::desired_power_state(&m),
+            &PowerState::PoweredOff
+        );
     }
 }

@@ -814,6 +814,7 @@ it owns, mirrored provisioning / address / power state, and conditions.
 | --- | --- | --- | --- |
 | `addresses` | object[] |  | Mirrored from the infra CR's `status.addresses`. |
 | `conditions` | object[] |  | Standard Kubernetes conditions. Required types: `Ready` — overall readiness `Scheduled` — placement decision exists and is current `PlacementValid` — current placement satisfies the spec `InfrastructureReady` — mirrors the infra CR's Ready condition Optional: `Migrating` — true while a migration is in progress `Paused` — present (True) only while `spec.paused` suspends reconciliation |
+| `heldAddresses` | object[] |  | Static addresses this VM's infrastructure CR was last applied with (ADR-0083). Written by the controller **only** when it applies the infra CR, and carried forward unchanged otherwise, so it records what the guest is configured with: it survives guest reboots and is the same on every backend. A held address is never given to another VM. |
 | `infrastructureRef` | object |  | Reference to the provider-specific infrastructure CR (e.g. `infrastructure.banlieue.io/v1alpha1/VSphereMachine`). Set after scheduling, owned by this VirtualMachine. |
 | `initialization` | object |  | Mirrored from the infra CR's `status.initialization`. |
 | `observedGeneration` | integer |  |  |
@@ -850,6 +851,20 @@ Optional:
 | `reason` | string | Yes | reason contains a programmatic identifier indicating the reason for the condition's last transition. Producers of specific condition types may define expected values and meanings for this field, and whether the values are considered a guaranteed API. The value should be a CamelCase string. This field may not be empty. |
 | `status` | string | Yes | status of the condition, one of True, False, Unknown. |
 | `type` | string | Yes | type of condition in CamelCase or in foo.example.com/CamelCase. |
+
+#### `.status.heldAddresses[]`
+
+Static addresses this VM's infrastructure CR was last applied with
+(ADR-0083). Written by the controller **only** when it applies the
+infra CR, and carried forward unchanged otherwise, so it records what
+the guest is configured with: it survives guest reboots and is the
+same on every backend. A held address is never given to another VM.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `address` | string | Yes | The address, normalised (an IP is re-printed in canonical form). |
+| `interface` | string | Yes | The `VMClass` interface the address is on. |
+| `networkClass` | string | Yes | That interface's `networkClass`: the network the address is unique on. |
 
 #### `.status.infrastructureRef`
 

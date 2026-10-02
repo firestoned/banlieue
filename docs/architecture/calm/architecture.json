@@ -2284,6 +2284,21 @@
         }
       ]
     },
+    "duplicate-static-address": {
+      "description": "A VirtualMachine takes a static address through spec.networkOverrides[].static.address (ADR-0024), written by a user or stamped by a VirtualMachinePool (ADR-0056), and nothing previously checked it was free: two VMs naming one address on one network both scheduled, both booted, and both reported Ready while ARP flapped between them. ADR-0083 checks this in banlieue-controller's VirtualMachine reconcile, after VMClass/VMImage resolve and BEFORE scheduling, against banlieue's own VirtualMachines only (it never asks a hypervisor, IPAM or the network). A claim is a (networkClass, address) pair: declared from networkOverrides resolved through the VM's VMClass, or held from status.heldAddresses, which the controller writes only when it applies the VM's infra CR and carries forward otherwise, so incumbency survives guest reboots, is the same on every backend, and is never guest-reported. Held claims are reserved first and never reassigned; then VMs are admitted oldest first (creationTimestamp, then namespace/name) if none of their declared claims is reserved by another VM. One global order means no cycles between VMs with several shared addresses, and a blocked VM reserves nothing new. A never-provisioned blocked VM gets Ready=False reason=DuplicateAddress and no infra CR; an already-provisioned one keeps its infra CR un-reapplied but still has status mirrored and desiredPowerState applied. Inputs come from the controller's VirtualMachine reflector store (no LISTs) plus VMClass GETs for the few VMs sharing an address; recovery is by default requeue. A holder is named only within the blocked VM's own namespace. It cannot be an admission policy: a policy sees one object and can neither list other VMs nor resolve a VMClass. The provider-side lookup (catching non-banlieue writers) is deferred until a backend is available to verify it against.",
+      "requirements": [
+        {
+          "requirement-url": "https://github.com/firestoned/banlieue/issues/49",
+          "config": {
+            "framework": "banlieue-controller reconcile-time cross-reference validation",
+            "controls": [
+              "duplicate-static-address-blocked-before-schedule"
+            ],
+            "evidence": "docs/adr/0083-block-duplicate-static-address.md, crates/banlieue-controller/src/reconciler/address_conflict.rs (find_duplicate_address, contending_vms), crates/banlieue-controller/src/reconciler/address_conflict_tests.rs, crates/banlieue-controller/tests/live_duplicate_address.rs"
+          }
+        }
+      ]
+    },
     "install-media-lifecycle": {
       "description": "Under installMode: Deferred (ADR-0040) the install ISO stays attached to a machine for its entire life -- correct during the install, wrong immediately after. The ISO carries the baked cloud-config overlay (VMImage.spec.cloudConfigs, isoOverlay), which the threat model already treats as readable by every hypervisor operator; a guest that keeps it mounted extends that readership to the workload inside the VM, which for a roadmap 17 sandbox is by assumption a prompt-injected agent. It is also bootable by construction, so a domain that keeps it -- and keeps <boot dev='cdrom'/> -- is one reboot from re-entering the installer and re-sealing a fresh disk. ADR-0044 ejects it at the only trustworthy edge: when the ADR-0043 guestInstalled marker flips, which is the one signal that distinguishes the INSTALLED system from the live installer. On libvirt the eject is virDomainUpdateDeviceFlags (procedure 174) updating the cdrom to a source-less device with AFFECT_LIVE|AFFECT_CONFIG -- an update rather than a detach, because removing the element renumbers the remaining disk targets and would slide the cloud-init seed onto the installer's target, and both flags because a LIVE-only eject lets the medium return at the guest's next reboot. FORCE is deliberately not passed: a guest holding the tray locked is information, not an obstacle. The ordering is the actual control: GuestReady is published only AFTER the eject succeeds, so a VirtualMachinePool -- whose only readiness input is that condition -- cannot bind a member that still has its installer attached. A failed eject therefore presents as a member that never becomes available and is reaped by provisioningTimeoutSeconds, which is the correct direction to fail. converge() also suppresses the ISO from the domain XML it redefines each pass, since a redefine would otherwise put the medium straight back while status still claimed installMediaDetached: true. Scope is the installer only: the NoCloud cidata seed stays attached, because cloud-init re-reads its datasource every boot -- so a guest can still read its own rendered user-data, recorded as an accepted risk rather than bundled in silently.",
       "requirements": [
@@ -2391,6 +2406,7 @@
     "docs/adr/0063-cloud-hypervisor-host-supervision.md",
     "docs/adr/0064-artifact-delivery-to-host-resident-providers.md",
     "docs/adr/0065-cloud-hypervisor-vtpm-and-deferred-install.md",
-    "docs/adr/0067-banlieue-host-install-subcommand.md"
+    "docs/adr/0067-banlieue-host-install-subcommand.md",
+    "docs/adr/0083-block-duplicate-static-address.md"
   ]
 }
