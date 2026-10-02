@@ -42,7 +42,7 @@ spec:
           # Single banlieue binary; the `imagebuilder` subcommand selects this
           # role (ADR-0004). Pin to a released version tag — NEVER use :latest
           # in production.
-          image: ghcr.io/firestoned/banlieue:v0.1.0
+          image: ghcr.io/firestoned/banlieue:v0.3.0
           imagePullPolicy: IfNotPresent
           args: ["imagebuilder"]
           envFrom:

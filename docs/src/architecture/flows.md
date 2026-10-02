@@ -156,7 +156,7 @@ The payoff of putting install metadata on a ProviderClass rather than on each Pr
 
 ```mermaid
 flowchart TD
-    t1["1. Platform operator edits one field — `kubectl patch providerclass vsphere` to set spec.image.tag to v0.2.0. To canary a single backend instead, they create a second class pinning the new image and repoint one Provider at it."]
+    t1["1. Platform operator edits one field: `kubectl patch providerclass vsphere` to set spec.image.tag to v0.4.0. To canary a single backend instead, they create a second class pinning the new image and repoint one Provider at it."]
     t2["2. banlieue-operator's ProviderClass watch fires. kube calls the mapper synchronously, so it cannot list Providers itself — it reads the controller's own reflector store, already maintained for the primary Provider watch, and emits one reconcile request per referencing Provider. Without this the edit would only be noticed on the next periodic requeue."]
     t3["3. Each Provider reconciles: the workload is re-applied with the new image and the Deployment rolls. If the edit changed the Provider's CLASS rather than the class's contents, the derived name changes too, so the superseded workload is pruned by label — including the ClusterRoleBinding, which no owner reference can reclaim and a name-based cleanup could never find again."]
     t4["4. The operator publishes ProviderClass.status: how many Providers reference this class, and a Ready condition reporting whether the shared per-backend ClusterRole exists. That surfaces an unusable class in `kubectl get providerclasses` before any Provider is created, rather than as 403s in a provider pod's log afterwards."]

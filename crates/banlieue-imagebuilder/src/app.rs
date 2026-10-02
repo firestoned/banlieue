@@ -56,7 +56,8 @@ const DEFAULT_LEADER_ELECTION_ID: &str = "banlieue-imagebuilder";
 const DEFAULT_BUILD_NAMESPACE: &str = "banlieue-imagebuild";
 
 /// Image the registry push Job runs: the banlieue image itself.
-const DEFAULT_PUSH_IMAGE: &str = "ghcr.io/firestoned/banlieue:v0.1.0";
+const DEFAULT_PUSH_IMAGE: &str =
+    concat!("ghcr.io/firestoned/banlieue:v", env!("CARGO_PKG_VERSION"));
 
 /// Per-crate `tracing` directives layered on top of the base log level.
 const LOG_DIRECTIVES: &[&str] = &["kube=warn"];

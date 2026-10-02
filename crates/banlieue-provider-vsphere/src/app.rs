@@ -51,7 +51,8 @@ const DEFAULT_VSPHERE_TASK_TIMEOUT_SECS: u64 = 600;
 /// Default image for VMImage import Jobs. Matches libvirt's default; normally
 /// overridden by `banlieue-operator`, which passes `--import-image` with the
 /// running image so the whole fleet stays on one build.
-const DEFAULT_IMPORT_IMAGE: &str = "ghcr.io/firestoned/banlieue:v0.1.0";
+const DEFAULT_IMPORT_IMAGE: &str =
+    concat!("ghcr.io/firestoned/banlieue:v", env!("CARGO_PKG_VERSION"));
 /// Namespace holding the artifacts PVC and per-zone import Jobs. Must match
 /// `banlieue-imagebuilder`'s `--build-namespace` (ADR-0016 / ADR-0020).
 const DEFAULT_BUILD_NAMESPACE: &str = "banlieue-imagebuild";

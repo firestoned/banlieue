@@ -1,5 +1,44 @@
 # Changelog
 
+## [2026-10-02 07:58] - Release image tags keep the leading `v`
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/workflows/build.yaml`: the two `type=semver` tags in the docker
+  metadata step now carry `prefix=v`, so a `v0.4.0` release publishes
+  `:v0.4.0` and `:v0.4` (plus `-distroless`), matching the git tag, bindy,
+  and the `:v0.1.0` pins in `deploy/` and `docs/src/guides/`. The prefix is
+  per tag rather than in `flavor`, which would also have prefixed `sha-*`,
+  `main-*` and `latest`.
+- Released images v0.1.0 to v0.3.0 retagged on GHCR with `v` tags
+  (`v0.3.0`, `v0.3`, `-distroless`, ...), same digests as the unprefixed tags,
+  verified with `crane digest`.
+- `deploy/{operator,controller,provider-vsphere,imagebuilder}/deployment.yaml`,
+  `examples/0{8,9}-providerclass-*.yaml` and the `docs/src/guides/` pages
+  (`index`, `core-controller`, `vsphere-provider`,
+  `using-banlieue-imagebuilder`): pinned to `v0.3.0`, including
+  `git clone --branch` and `blob/` links. Upgrade/canary narratives
+  (`provider-lifecycle.md`, example 08, the CALM ProviderClass upgrade flow and
+  regenerated `docs/src/architecture/flows.md`) now go v0.3.0 to v0.4.0.
+- `crates/banlieue-provider-{libvirt,vsphere}/src/app.rs`
+  (`DEFAULT_IMPORT_IMAGE`) and `crates/banlieue-imagebuilder/src/app.rs`
+  (`DEFAULT_PUSH_IMAGE`): derived from `CARGO_PKG_VERSION` like the
+  operator's `DEFAULT_IMAGE_TAG`, instead of a hardcoded `v0.1.0` that went
+  stale with every release.
+
+### Why
+`metadata-action`'s semver type strips the `v`, so releases v0.1.0 to v0.3.0
+were published only as `:0.1.0`, `:0.1`, etc. The pinned `:v0.1.0` in the
+deploy manifests and guides did not exist. Existing releases are retagged by
+hand (same digests, so signatures and attestations still apply).
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only
+- [ ] Documentation only
+
 ## [2026-10-01] - ADR-0083: block a VirtualMachine on a duplicate static address (#49)
 
 **Author:** Daniel Guns

@@ -373,8 +373,8 @@ jobs:
             type=raw,value=sha-${{ needs.extract-version.outputs.short-sha }}
             type=raw,value=main-{{date 'YYYY-MM-DD'}},enable=${{ github.event_name == 'push' }}
             type=raw,value=latest,enable=${{ github.event_name == 'push' }}
-            type=semver,pattern={{version}},enable=${{ github.event_name == 'release' }}
-            type=semver,pattern={{major}}.{{minor}},enable=${{ github.event_name == 'release' }}
+            type=semver,pattern={{version}},prefix=v,enable=${{ github.event_name == 'release' }}
+            type=semver,pattern={{major}}.{{minor}},prefix=v,enable=${{ github.event_name == 'release' }}
 
       - name: Build and push
         id: docker_build
