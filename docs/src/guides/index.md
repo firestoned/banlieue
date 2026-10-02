@@ -2,7 +2,7 @@
 
 Production-oriented, step-by-step guides for installing and operating banlieue
 on a real cluster, using the released container image
-`ghcr.io/firestoned/banlieue:v0.1.0`. No build-from-source, no simulators.
+`ghcr.io/firestoned/banlieue:v0.3.0`. No build-from-source, no simulators.
 
 <div class="grid cards" markdown>
 
@@ -99,8 +99,8 @@ on a real cluster, using the released container image
 
 ## Conventions used in these guides
 
-- Everything is pinned to the released tag **`v0.1.0`**. Manifests live in the
-  repository under [`deploy/`](https://github.com/firestoned/banlieue/tree/v0.1.0/deploy)
+- Everything is pinned to the released tag **`v0.3.0`**. Manifests live in the
+  repository under [`deploy/`](https://github.com/firestoned/banlieue/tree/v0.3.0/deploy)
   at that tag; the guides apply them directly.
 - All workloads run in the **`banlieue-system`** namespace under the
   Pod Security **restricted** profile.
@@ -110,6 +110,6 @@ on a real cluster, using the released container image
 
 ```sh
 # Pin the repo to the release so the manifests match the image.
-git clone --branch v0.1.0 --depth 1 https://github.com/firestoned/banlieue
+git clone --branch v0.3.0 --depth 1 https://github.com/firestoned/banlieue
 cd banlieue
 ```

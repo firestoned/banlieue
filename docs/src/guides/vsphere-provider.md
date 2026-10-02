@@ -4,7 +4,7 @@ This guide takes you from a cluster that already runs the
 [core controller](core-controller.md) to a **scheduled `VirtualMachine` on
 vCenter** — installing the vSphere provider, registering a vCenter, and applying
 every `VMClass`, `VMImage`, and `VirtualMachine` along the way. Everything uses
-the released image `ghcr.io/firestoned/banlieue:v0.1.0`; nothing is built
+the released image `ghcr.io/firestoned/banlieue:v0.3.0`; nothing is built
 locally and there is no simulator. (For `vcsim`/local development, see
 [Developer → Local Development](../developer/local-development.md).)
 
@@ -30,7 +30,7 @@ flowchart LR
 - The repo checked out at the release tag (for the provider manifests):
 
     ```sh
-    git clone --branch v0.1.0 --depth 1 https://github.com/firestoned/banlieue
+    git clone --branch v0.3.0 --depth 1 https://github.com/firestoned/banlieue
     cd banlieue
     ```
 
@@ -62,7 +62,7 @@ release:
 # deploy/provider-vsphere/deployment.yaml (excerpt)
 containers:
   - name: provider
-    image: ghcr.io/firestoned/banlieue:v0.1.0
+    image: ghcr.io/firestoned/banlieue:v0.3.0
     args: ["provider", "vsphere", "--namespace", "banlieue-system"]
     envFrom:
       - configMapRef: { name: banlieue-provider-vsphere-config }
@@ -347,8 +347,8 @@ happen:
    machine-id/SSH host keys.
 
 Full worked examples:
-[`12-vmclass-tpm-encrypted.yaml`](https://github.com/firestoned/banlieue/blob/v0.1.0/examples/12-vmclass-tpm-encrypted.yaml),
-[`13-vmimage-kairos-deferred-install-tpm.yaml`](https://github.com/firestoned/banlieue/blob/v0.1.0/examples/13-vmimage-kairos-deferred-install-tpm.yaml).
+[`12-vmclass-tpm-encrypted.yaml`](https://github.com/firestoned/banlieue/blob/v0.3.0/examples/12-vmclass-tpm-encrypted.yaml),
+[`13-vmimage-kairos-deferred-install-tpm.yaml`](https://github.com/firestoned/banlieue/blob/v0.3.0/examples/13-vmimage-kairos-deferred-install-tpm.yaml).
 
 !!! danger "Getting step 3 wrong is now an error, not a silent no-op"
     Pairing `tpmEnabled: true` with an `immediate` image used to clone

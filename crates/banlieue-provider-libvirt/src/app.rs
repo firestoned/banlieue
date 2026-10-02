@@ -49,7 +49,8 @@ const DEFAULT_LEADER_ELECTION_ID: &str = "banlieue-provider-libvirt";
 // cannot be mounted across namespaces. A cross-crate test in the `banlieue`
 // binary asserts the defaults agree.
 const DEFAULT_BUILD_NAMESPACE: &str = "banlieue-imagebuild";
-const DEFAULT_IMPORT_IMAGE: &str = "ghcr.io/firestoned/banlieue:v0.1.0";
+const DEFAULT_IMPORT_IMAGE: &str =
+    concat!("ghcr.io/firestoned/banlieue:v", env!("CARGO_PKG_VERSION"));
 /// Identity import Jobs run as, created in the build namespace by
 /// `banlieue bootstrap imagebuilder` (ADR-0016 §4).
 const DEFAULT_IMPORT_SERVICE_ACCOUNT: &str = "banlieue-import";
