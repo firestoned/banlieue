@@ -4,11 +4,54 @@ SPDX-License-Identifier: Apache-2.0
 -->
 # Threat Model
 
-> **Status:** Living document. Last full pass **2026-10-02**, against the
-> architecture defined by **ADR-0001 … ADR-0085** (0057–0059 unallocated,
+> **Status:** Living document. Last full pass **2026-10-03**, against the
+> architecture defined by **ADR-0001 … ADR-0087** (0057–0059 unallocated,
 > 0066 and 0068–0073 reserved; 0074 and 0075 Accepted 2026-09-28; 0076–0080
 > reserved by roadmap 19; 0081–0082 recorded but not implemented in banlieue,
-> so they move nothing here). The second 2026-10-02 pass covers
+> so they move nothing here). A third 2026-10-03 pass is driven by evidence
+> rather than an ADR: an OIDC issuer (Dex) and workload identity (SPIRE) were
+> deployed on a reference management cluster, and every link's cryptography
+> was measured by offering one TLS group at a time. It changes no component or
+> boundary. It adds TB-7 rows for an issuer that runs **on** the management
+> cluster (its signing keys become cluster resources; its default token
+> lifetime; any upstream account can log in; the API server's own read access
+> to its authentication config), corrects TB-12 (`sslmode=require` encrypts
+> but does not authenticate the server; PostgreSQL 17 cannot negotiate
+> post-quantum key exchange), adds two TB-13 rows (the default allow-all
+> tailnet policy, and a roaming client whose VIP route is not yet approved),
+> adds §7.20 (post-quantum key exchange on every link that carries cluster
+> secrets) and records three §8 risks: banlieue's own TLS clients use rustls
+> with the `ring` provider (ADR-0009), which has no ML-KEM, so **every
+> connection banlieue makes is classical**; classical key exchange on links
+> banlieue does not terminate; and no post-quantum signatures anywhere. The
+> 2026-10-03 ADR pass covers **ADR-0086**: a
+> management cluster with more than one controller puts its API behind a
+> keepalived VRRP virtual IP that k0s's reverse proxy balances over every
+> controller, and runs without konnectivity. No banlieue component, asset or
+> actor changes: keepalived and the proxy run inside k0s, and the VRRP
+> password is not a secret by design. It adds one trust boundary (TB-13, the
+> LAN to the VIP), with a §5 diagram line, a STRIDE table, a TB-8 row (host
+> providers now dial the VIP), §7.19 and two §8 entries (VIP takeover from
+> the LAN, and API servers reaching kubelets directly). It removes a
+> single-controller availability dependency that was never recorded.
+>
+> The later 2026-10-03 pass covers **ADR-0087**: a field manager names one
+> writer, not a provider class. No component, asset, actor or boundary
+> changes, because the writers and what they write are unchanged. What
+> changes is that **this document previously asserted something false**: the
+> TB-8 row for a stolen host token said the token "writes only its own
+> `perProvider` row", which was true of the RBAC and of the intent but not of
+> the effect. Every host applied under one class-wide field manager, and
+> because a manager owns exactly the field set it last applied, each host's
+> single-row apply made the API server delete every other host's row; the
+> resulting watch storm was a write loop any host could cause with its own
+> legitimate credential, observed at ~170 writes/sec sustained on one object.
+> That row is corrected and a new TB-8 row records the threat and its control.
+> The `force` on that apply is removed, so a cross-manager claim is now a
+> conflict rather than a silent takeover. §§1–5 and 7–10 are unchanged: this
+> was never a boundary that was missing, it was a control that did not do what
+> the table claimed. The
+> second 2026-10-02 pass covers
 > **ADR-0085**: the management cluster's bootstrap can keep cluster state in
 > an external SQL database through kine (PostgreSQL on the hypervisor host),
 > put its nodes on a host bridge, and boot Kairos on Debian. It adds one asset
@@ -341,6 +384,10 @@ relationship to the host.
   TB-12: management cluster controllers (kine) ──▶ SQL datastore on the host
          (A-17; TLS, password from an untracked env file; ADR-0085)
 
+  TB-13: LAN / tailnet clients ──▶ control plane VIP (keepalived, VRRP)
+         ──▶ k0s reverse proxy ──▶ any controller's API server
+         (TLS passes through; konnectivity off, API servers reach kubelets directly; ADR-0086)
+
   TB-10: push Job (banlieue-imagebuild, no SA token) ──▶ OCI registry
          ──▶ banlieue-ch-import@<V>.service on a KVM host (by digest, host-pinned repository)
 
@@ -376,6 +423,7 @@ relationship to the host.
 | TB-9 | Guest VMM → host and other guests | Guest code that escapes into its VMM runs on the host, next to the provider and every other guest |
 | TB-10 | Build namespace → OCI registry → Cloud Hypervisor host | A build leaves the cluster for a registry the operator runs, and enters a host that cannot mount cluster storage (ADR-0064) |
 | TB-12 | Management cluster controllers → external datastore | With kine (ADR-0085), cluster state leaves the controllers for a database on another host; whoever reaches that database with the credential holds the cluster |
+| TB-13 | LAN and tailnet → management cluster control plane VIP | With `API_VIP` (ADR-0086), every client outside the cluster, kube-proxy and joining workers reach the API through an address that VRRP elects among the controllers, an election anything on the LAN can take part in |
 | TB-11 | Installer (root, once) → Cloud Hypervisor host | A root process writes the host's trust base (A-14), in part inside directories the provider's user owns, from artifacts downloaded from upstream or an operator's mirror (ADR-0067, ADR-0084) |
 
 ## 6. Threats by boundary
@@ -548,6 +596,10 @@ which is worth stating plainly rather than leaving implicit in §8.
 | A stolen cached ID token is used to create claims in the victim's name | S, R | **None in banlieue**, and not specific to claims — a stolen bearer token authenticates as its owner everywhere in Kubernetes. It is called out because the *consequence* here is an audit record that says the victim asked for a sandbox. §8 |
 | An issuer the site does not use is named in `spec.subject.issuer` | S, R | The `issuers` allowlist in `banlieue-virtualmachineclaim-subject-authorization`. This is a check on the *claim*, not on the caller — nothing reveals which issuer actually minted the caller's token (§8) |
 | The agent is pointed at an attacker's JWKS via `spec.subject.issuer` | S, T | Same allowlist, doing double duty — see TB-4. Load-bearing for verification, not merely for audit tidiness (ADR-0049 Decision 7) |
+| The issuer runs **on the management cluster** (e.g. Dex with `storage: kubernetes`), so its signing keys are cluster resources; anyone who can read them mints a token for any username | S, E | **Not a banlieue control.** Operator requirement (§7.20): read on the issuer's storage API group only for `cluster-admin`, and the issuer in its own namespace at Pod Security `restricted`. Residual: a cluster admin can mint any identity, which is consistent with cluster-admin being out of scope (§9); §8 records when to move the issuer off the cluster |
+| A stolen cached ID token stays valid for the issuer's default lifetime (24 h for Dex) | S | Operator requirement (§7.20): a short ID-token lifetime with refresh tokens. Observed on a reference deployment: 24 h until configured |
+| Any account at the upstream identity provider (e.g. any GitHub user, through Dex) can complete a login | S, E | Authentication is not authorization: nothing is bound to `system:authenticated` beyond the Kubernetes defaults, and `scripts/dev-oidc-k0s.sh grant` (`grant_me`) binds one named identity to one namespaced Role. Verified: a freshly logged-in identity is forbidden from listing namespaces |
+| The API server cannot read its authentication configuration and crash-loops on every controller | D | `scripts/dev-oidc-k0s.sh` (`attach_controller`) owns the file by the API server's user, because k0s runs kube-apiserver unprivileged **with gid 0 and no supplementary groups** (group ownership does not help), restarts one controller at a time, and restores the previous config if the flag is not in the running process within `RESTART_TIMEOUT_SECS` |
 
 ### TB-8 — Cloud Hypervisor host ↔ cluster
 
@@ -562,6 +614,7 @@ do.
 | A stolen host token mints or deletes machines | T, D | No `create` or `delete` on `cloudhypervisormachines`; the controller owns their lifecycle — same file |
 | A stolen host token patches **another** host's `Provider` or its status | S, T | The External Role scopes `providers` and `providers/status` by `resourceNames` to the one Provider; the provider's watch filters on `metadata.name`, which `resourceNames` honours for `list`/`watch` — `workload.rs::external_rules`, tested in `workload_tests.rs` |
 | A stolen host token patches **another host's machines** in the same namespace | T, D | **Not controlled** — machine names are unknowable when the Role is written, so `cloudhypervisormachines` is namespace-wide. §8 |
+| The host loses the cluster when the one controller its kubeconfig names goes down | D | With ADR-0086 the host's kubeconfig names the control plane VIP, which moves between controllers; the host still verifies the API server's certificate against the cluster CA (TB-13) |
 | A stolen token is renewed by the thief and never expires | S | **Revocable, not self-limiting.** The token can create tokens for its own ServiceAccount (that is how the host renews), so a thief who holds it can too. The control is revocation: bound tokens are tied to the ServiceAccount's UID, so deleting the ServiceAccount invalidates every token ever issued for it at once, and the operator recreates it for a fresh `banlieue bootstrap cloud-hypervisor-host` (§7.11). Token creation appears in the API server's audit log. §8 |
 | A host's token outlives the host | S | Bound, 24 h by default, renewed only while the provider runs: a host down for longer than one lifetime comes back with a dead token and must be re-issued one — `crates/banlieue-provider-cloud-hypervisor/src/token.rs` |
 | Cluster state chooses a host path or bridge | T, E | Machines name **classes**, never paths: the host resolves a class through its own `/etc/banlieue/cloud-hypervisor.toml`, which is `0640 root:banlieue` and read-only to the provider (`ProtectSystem=strict`) — `crates/banlieue-provider-cloud-hypervisor/src/host_config.rs`, `plan.rs`. An unknown class is refused (`PlanError::UnknownStorageClass`, `UnknownNetworkClass`) |
@@ -569,7 +622,8 @@ do.
 | A machine for another host is realised here | T | `reconciler.rs::is_ours`: only machines whose `providerRef` names this host's Provider, in its namespace, are reconciled |
 | Cluster state chooses **where a host downloads what it boots** — a `VMImage` status naming an attacker's registry | T, E | The host pulls only a **digest in the one repository its own config names** (`[registry] repository`); anything else is `ForeignReference` and never fetched — `vmimage.rs::check_reference`, re-checked by the import itself (`import.rs`). The cache file name is derived from the digest, never taken from the cluster. See TB-10 |
 | Host paths leak into the cluster through status | I | The `Provider` failure domain and the `VMImage` row carry **class names only**; unit tests assert no `/` in either — `provider_tests.rs`, `vmimage_tests.rs` |
-| A stolen host token holds a `VMImage` in `Terminating` by never reporting `Released`, or reports it falsely | D, R | The host token writes only its **own** `perProvider` row (it has `vmimages/status` patch, no `vmimages` write). Withholding blocks deletion of images that host held — removing that `Provider` releases it; a false `Released` only leaves a file on that host. The finalizer itself is the controller's (`crates/banlieue-controller/src/reconciler/vmimage.rs`, `HOST_CACHE_FINALIZER`), so no host token needed `VMImage` metadata write, which would also reach the spec |
+| A stolen host token holds a `VMImage` in `Terminating` by never reporting `Released`, or reports it falsely | D, R | The host token writes only its **own** `perProvider` row (it has `vmimages/status` patch, no `vmimages` write), and since ADR-0087 that is true of the *effect* as well as the intent: it applies under a field manager scoped to its own `Provider`, so the write cannot reach another host's row. Withholding blocks deletion of images that host held (removing that `Provider` releases it); a false `Released` only leaves a file on that host. The finalizer itself is the controller's (`crates/banlieue-controller/src/reconciler/vmimage.rs`, `HOST_CACHE_FINALIZER`), so no host token needed `VMImage` metadata write, which would also reach the spec |
+| A stolen host token **erases every other host's** `VMImage` readiness rows, or holds the object in a write loop | T, D | **ADR-0087.** `status.perProvider` is merge-keyed on `providerName`/`providerNamespace` (ADR-0015), and each host applies under `banlieue.io/provider-cloud-hypervisor/<ns>/<provider>` built by `provider_field_manager` in `crates/banlieue-provider-sdk/src/ssa.rs`, via `host_config.rs::field_manager`. A field manager owns exactly the field set it last applied, so under the former class-wide manager one host's single-row apply made the API server delete every other host's row; each host's watch then fired and re-applied, which is a write loop reachable with nothing but a host's own legitimate credential. The single-row apply no longer passes `force`, so claiming a row owned by another manager is a conflict rather than a silent takeover. Pinned by `crates/banlieue-provider-libvirt/tests/e2e_vmimage_ssa.rs` in both directions |
 | A cluster author asks for a vTPM or install media the host cannot provide | I | `vtpm` is advertised only when the host config has `[tpm]` and its swtpm binaries, setup configuration and CA certificate exist (`provider.rs::gather_facts`); `plan.rs` refuses `tpmEnabled` on a host without `[tpm]`. A `tpmEnabled` VM with an `Immediate` image is refused before scheduling (ADR-0048), so none boots unsealed while claiming otherwise |
 
 ### TB-9 — Guest VMM → host and other guests
@@ -656,9 +710,30 @@ controls here are requirements (§7.18), not code.
 | --- | --- | --- |
 | The data source's password leaks from the bootstrap host | I | It is read from the operator's untracked env file (`BANLIEUE_ENV_FILE`), never a flag; the generated `k0sctl.yaml` that carries it is created `0600` before it is written: `scripts/bootstrap-k0s-cluster.sh` (`generate_k0sctl_config`). k0sctl then writes it into each controller's root-owned `/etc/k0s/k0s.yaml` |
 | A crafted data source breaks out of the YAML string into k0s's config | T | A `KINE_DATASOURCE` containing `"` or `\` is refused: `generate_k0sctl_config` |
-| Traffic between controllers and database is read or altered on the LAN | I, T | Operator requirement: `sslmode=require` or stronger in the data source, and a TLS-only `hostssl` rule on the server (§7.18). Not enforced by the script |
+| Traffic between controllers and database is read or altered on the LAN | I, T | Operator requirement: `sslmode=verify-full` with a CA the operator controls, and a TLS-only `hostssl` rule on the server (§7.18). `sslmode=require` **encrypts but does not authenticate the server**: a LAN host presenting any certificate can intercept the session, the kine password included. Not enforced by the script |
+| Recorded datastore traffic is decrypted later by a quantum-capable adversary ("harvest now, decrypt later") | I | Operator requirement (§7.20): PostgreSQL 18 or later with `ssl_groups` offering `X25519MLKEM768`, TLS 1.3 minimum. **PostgreSQL 17 cannot**: its `ssl_ecdh_curve` takes exactly one classical curve (default `prime256v1`), which a reference deployment confirmed by refusing both X25519 and X25519MLKEM768. Residual: §8 |
 | Anyone on the LAN connects to the database | S, E | Operator requirement: the database listens only where the controllers reach it, and allows only the k0s role from the controllers' addresses with SCRAM (§7.18). Residual: §8 |
 | The database is lost or corrupted | D | Operator requirement: backups of the database are the cluster's backups (§7.18). Residual: §8 |
+
+### TB-13: LAN and tailnet → management cluster control plane VIP
+
+Only with `API_VIP` (ADR-0086), which the bootstrap script requires for a
+cluster with more than one controller. keepalived and the reverse proxy are
+k0s components, configured by `scripts/bootstrap-k0s-cluster.sh`
+(`render_cplb`, `require_api_vip`).
+
+| Threat | STRIDE | Control |
+| --- | --- | --- |
+| A LAN host sends VRRP adverts and takes the VIP, then impersonates the API server | S | The proxy passes TLS through without terminating it, and the VIP is only a SAN on the controllers' own certificates: a client that verifies against the cluster CA (every generated kubeconfig, kube-proxy, kubelets, the host providers' kubeconfig) rejects any other server. The VRRP password does not authenticate and is not relied on. Residual (denial of service): §8 |
+| The same takeover blackholes the API | D | **Not controlled** beyond VRRP re-election once the impostor stops. §8 |
+| A second cluster on the LAN claims the same virtual router ID and fights over the VIP | D | A per-cluster VRRP password, generated once into `$WORKDIR/api-vip-authpass` (`0600`) and identical on every controller, so keepalived ignores the other cluster's adverts; `API_VIP_ROUTER_ID` to separate them outright (§7.19). `api_vip_auth_pass` in the script |
+| The VIP collides with an address something else holds | D | Operator requirement: reserve it outside DHCP and every MetalLB pool (§7.19). The script has no default VIP and refuses one without a prefix length: `validate_api_vip` |
+| A crafted `API_VIP` or password breaks out of the YAML string into k0s's config, or out of the cloud-init `tailscale up` line | T | `validate_api_vip` accepts only `[0-9A-Fa-f.:]+/<digits>` for the VIP, digits for the router ID, and 1-8 letters or digits for the password |
+| One controller's loss takes the API away from clients outside the cluster | D | The VIP moves to a surviving controller, and the proxy balances over the `kubernetes` endpoints, which each API server publishes for itself once control plane load balancing is on. A multi-controller cluster without a VIP is refused unless `NO_API_VIP=true`: `require_api_vip` |
+| A tailnet member reaches the API through the advertised `/32` route | S, E | Only the VIP's `/32` is advertised, and only after an admin approves it. Reaching the address grants nothing: the API server authenticates every request. Tailnet ACLs decide who may route to it (§7.19) |
+| The tailnet's policy is the default allow-all, so every member device and every tagged device (for example a Kubernetes operator's ingress proxies) reaches the VIP | S, E | Reaching the address grants nothing (the API server authenticates every request), but the reachable population is the whole tailnet. Operator requirement (§7.19): grants by group and tag instead of `src * dst *` |
+| The VIP's route is advertised but not yet approved, so a client off the LAN sends API traffic to whatever local network it is on | I, S | The kubeconfig pins the cluster CA: the TLS handshake fails before any client credential is sent (client certificates and bearer tokens both follow server verification). Approve the route before switching kubeconfigs to the VIP (§7.19) |
+| With konnectivity off, the API servers dial kubelets (10250) and pods directly | I | The kubelet authenticates and authorizes the API server's client certificate; the nodes were already reachable on the LAN (§8, ADR-0085). Konnectivity stays available (`K0S_DISABLE_KONNECTIVITY=false`) where the controllers cannot reach the nodes |
 
 ## 7. Deployment hardening requirements
 
@@ -895,8 +970,9 @@ a different assumption is unsafe.
       k0s role from the controllers' addresses: `hostssl` with
       `scram-sha-256`, never `trust` or `md5`. Narrow the rule to the node
       addresses once they are reserved.
-    - Require TLS in the data source (`sslmode=require`, or `verify-full`
-      with a CA you control).
+    - Require an authenticated TLS session: `sslmode=verify-full` with a CA
+      you control. `sslmode=require` encrypts but accepts any server
+      certificate. Set `ssl_min_protocol_version = TLSv1.3`.
     - Back the database up, encrypt the backups, and test a restore: they
       are the only copy of the cluster's state, Secrets included.
     - Consider API-server encryption at rest, so a copy of the database or
@@ -904,6 +980,46 @@ a different assumption is unsafe.
     - Reserve each node's address in DHCP (`VM_MACS` fixes the MACs): a
       node that changes address breaks its k0s install and the API
       server's certificate names.
+19. **Treat the control plane VIP as an address you own (TB-13, ADR-0086).**
+    - Reserve `API_VIP` outside every DHCP range and MetalLB pool. k0s does
+      no address management, and a collision is silent.
+    - Give each cluster on a LAN its own `API_VIP_ROUTER_ID`, and keep the
+      generated `api-vip-authpass` file with the cluster's other secrets.
+    - Keep kubeconfigs verifying the cluster CA. Never set
+      `insecure-skip-tls-verify`: certificate verification is what stops a
+      host that takes the VIP from impersonating the API.
+    - Approve only the VIP's `/32` route on the tailnet, and restrict who may
+      reach it with tailnet ACLs.
+    - When converting a cluster built before ADR-0086, move
+      `/var/lib/k0s/manifests/konnectivity` off every controller and delete
+      the objects labelled `k0s.k0sproject.io/stack=konnectivity` (agent
+      DaemonSet, its ServiceAccount, the `system:konnectivity-server`
+      ClusterRoleBinding): k0s prunes none of them, and the binding keeps
+      granting `system:auth-delegator` to an identity nothing uses.
+    - Replace a default allow-all tailnet policy with grants by group and
+      tag before relying on the tailnet as an access boundary.
+20. **Negotiate post-quantum key exchange on every link that carries cluster
+    secrets, and an issuer on the cluster is a cluster secret.** Recorded
+    traffic and stored backups can be decrypted later; signatures cannot be
+    forged retroactively, so key exchange comes first.
+    - Verify each endpoint by offering only the hybrid group:
+      `openssl s_client -connect <host>:<port> -groups X25519MLKEM768`
+      (OpenSSL 3.5 or later; add `-starttls postgres` for the datastore). A
+      completed handshake proves the server negotiates it.
+    - Datastore (TB-12): PostgreSQL 18 or later, `ssl_groups` including
+      `X25519MLKEM768`. PostgreSQL 17 cannot.
+    - Backups of the datastore (A-17): encrypt to a hybrid ML-KEM recipient
+      (age 1.3 or later `mlkem768x25519`, or GnuPG 2.5 or later composite
+      keys), not a classical OpenPGP key.
+    - An issuer on the management cluster (TB-7): restrict read on its
+      storage API group to `cluster-admin`, give it its own `restricted`
+      namespace, and shorten its ID-token lifetime (15 minutes with refresh
+      tokens, not Dex's 24 hour default).
+    - Observed on a reference deployment (2026-10-03): kube-apiserver,
+      kubelet, the SPIRE server, an issuer behind a Go TLS proxy, and
+      OpenSSH 10 all negotiate ML-KEM hybrids by default; PostgreSQL 17,
+      libvirtd's GnuTLS build, WireGuard and banlieue's own clients (§8) do
+      not.
 
 ## 8. Accepted risks
 
@@ -936,6 +1052,12 @@ a different assumption is unsafe.
 | A **non-pinned VMM release** is verified against GitHub's published digest or the operator's flag, not a pin reviewed in a banlieue change, so a release **replaced on GitHub itself** (a compromised upstream account) would verify | Only when an operator names a version other than the pinned one, per host and explicitly (ADR-0084 Decision 4). It still catches a corrupted or substituted download from any mirror, and Cloud Hypervisor publishes no signatures to check instead. The pinned release keeps its compiled digests | Cloud Hypervisor signs its releases (then verify the signature), or a fleet needs non-pinned releases routinely enough to pin them in banlieue instead |
 | A **newer VMM** than the pinned one runs against client types checked only against the pinned release's API document | The client sends only fields that exist in the pinned schema (`spec_tests.rs`), and the gate refuses older releases, which is where removals would bite. A newer release could still change a field's meaning; the operator chose it, and the guide says to try a new major on one host first | A newer release is pinned in banlieue (vendored spec, digests, tests), or the client learns to read the running VMM's API document |
 | With kine, **the management cluster's datastore is one database on one host**: if it is down the API server cannot read or write, and if it is lost so is the cluster's state | A choice the operator makes per cluster (`K0S_STORAGE_TYPE=kine`, ADR-0085), for state outside the VMs and ordinary database backups; etcd remains the default. Running guests are unaffected while the API is down; controllers resume when it returns | The management cluster needs to survive its database host, then a replicated database or etcd |
+| **Every TLS connection banlieue itself makes uses classical key exchange.** All binaries use rustls with the `ring` crypto provider (ADR-0009), which implements X25519, P-256 and P-384 but no ML-KEM, so the controller's and operator's API traffic, the providers' sessions with vCenter, Proxmox and libvirtd (carrying A-1), and the Cloud Hypervisor provider's cluster token (A-11) can be recorded now and decrypted by a future quantum-capable adversary | ADR-0009 chose `ring` to avoid aws-lc-rs and OpenSSL in the build; post-quantum key exchange was not a requirement then. Changing the provider is an architectural decision that needs its own ADR | An ADR supersedes ADR-0009's provider choice with rustls's aws-lc-rs provider (X25519MLKEM768 by default), or `ring` gains ML-KEM |
+| **Classical key exchange on links banlieue does not terminate**: the kine datastore on PostgreSQL 17, libvirtd's mutual TLS (GnuTLS builds without ML-KEM negotiate X25519 only), and the WireGuard tailnet (Curve25519, no pre-shared key) | Each is fixed upstream or by the operator, not in banlieue: PostgreSQL 18's `ssl_groups`, a distribution GnuTLS with ML-KEM, Tailscale post-quantum key exchange. Inside the tailnet, API traffic is itself post-quantum TLS where the endpoints support it (§7.20) | The operator moves to PostgreSQL 18; a GnuTLS with ML-KEM reaches the hypervisor distributions; Tailscale ships post-quantum key exchange |
+| **No post-quantum signatures anywhere**: the cluster CA, kubelet and libvirt certificates, SPIRE's X.509 CA, OIDC ID tokens (RS256) and public CA certificates are all RSA or ECDSA | Forgery needs a quantum computer at the time of the attack, not a recording, and ML-DSA is not yet supported by Kubernetes, Go's `crypto/x509` issuance paths, SPIRE or JOSE implementations | ML-DSA (FIPS 204) is supported by Kubernetes certificates, SPIRE, the OIDC issuer and the API server's JWT verification |
+| **An OIDC issuer running on the management cluster lets a cluster admin mint any identity**, so claim attribution (TB-7) is no stronger than the cluster-admin boundary | Cluster-admin is already out of scope (§9), and a separate identity cluster is more infrastructure than a single-operator site needs | Management-cluster admins and claim subjects become different trust populations; then run the issuer outside the management cluster |
+| **Any LAN host can take the control plane VIP** by sending VRRP adverts at a higher priority, and blackhole the API until it stops (ADR-0086) | VRRP's simple password is not authentication, and keepalived offers nothing stronger that k0s exposes. The takeover cannot impersonate the API (TLS is end to end, §6/TB-13); it is the same class of LAN denial of service as ARP spoofing a node's own address, which the bridged nodes already accept | The LAN carries hosts that should not be able to disturb the cluster, then a dedicated VLAN, or unicast VRRP with a host firewall admitting only the controllers |
+| With konnectivity disabled, **the API servers reach every kubelet and pod directly** (ADR-0086) | Both backends build flat networks where that reach exists anyway; the kubelet authenticates the API server; konnectivity's alternative pinned every agent to one controller and broke webhooks on the others | A node joins from a network the controllers cannot reach, then `K0S_DISABLE_KONNECTIVITY=false` with node-local load balancing |
 | With `LIBVIRT_BRIDGE`, the **management cluster's nodes are on the LAN**, so every LAN host reaches their API server, kubelet and node ports | Needed for host-resident providers and DNS clients to reach the cluster without tailscale (ADR-0085). The API server and kubelet authenticate every request; nothing banlieue adds listens unauthenticated | The LAN carries hosts that should not reach the cluster at all, then a dedicated VLAN or host firewall rules |
 | The installer's `O_NOFOLLOW` protects only a path's **last component**: a directory the provider's user owns could be swapped for a symlink between the installer's check and its use, one level up | The window is one run of a root command started by an operator; the directories are created (and a symlink there refused) earlier in the same run; `openat2(RESOLVE_NO_SYMLINKS)` would forbid legitimate symlinks on the path, such as a storage class under a linked mount | A host where the provider's user is untrusted while an install runs; then resolve beneath each banlieue-owned root with `openat2(RESOLVE_BENEATH)` |
 | The Proxmox provider's `ClusterRole` can `update`/`patch` **any `ProxmoxMachine` in any namespace**, so a compromised provider pod can clear finalizers or rewrite status on machines placed on other Providers | Machine names are not known when the role is written, so `resourceNames` cannot scope them, exactly as for libvirt. It still cannot read Secrets it is not named for, and cannot create or delete machines (`deploy/provider-proxmox/rbac/clusterrole.yaml`); its **Proxmox** reach is bounded by its own Provider's token ACLs | Per-provider machine scoping becomes possible (a label-selector authorization, or one namespace per Provider) |

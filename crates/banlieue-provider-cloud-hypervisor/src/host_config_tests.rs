@@ -214,4 +214,59 @@ default = "br-test"
             assert!(HostConfig::parse(&with_registry(bad)).is_err(), "{bad}");
         }
     }
+
+    // ========================================================================
+    // field_manager (ADR-0087)
+    // ========================================================================
+
+    /// Each host must present a different field manager, because each applies
+    /// only its OWN `VMImage.status.perProvider` row. Sharing one made every
+    /// host's apply delete the other hosts' rows, which showed up as a
+    /// permanent write loop rather than an error.
+    #[test]
+    fn two_hosts_get_distinct_field_managers() {
+        let a = HostConfig::parse(&FROM_BOOTSTRAP.replace(r#"name = "bar""#, r#"name = "host-a""#))
+            .expect("loads");
+        let b = HostConfig::parse(&FROM_BOOTSTRAP.replace(r#"name = "bar""#, r#"name = "host-b""#))
+            .expect("loads");
+        assert_ne!(
+            a.field_manager(),
+            b.field_manager(),
+            "two Cloud Hypervisor hosts must not share a field manager"
+        );
+    }
+
+    /// The manager names this host's Provider, which is what makes
+    /// `managedFields` answer "which host wrote this row".
+    #[test]
+    fn the_field_manager_names_this_hosts_provider() {
+        let config = HostConfig::parse(FROM_BOOTSTRAP).expect("loads");
+        let manager = config.field_manager();
+        assert!(
+            manager.contains("bar"),
+            "must name the Provider, got {manager}"
+        );
+        assert!(
+            manager.contains("banlieue-system"),
+            "must name the namespace, got {manager}"
+        );
+        assert!(
+            manager.starts_with("banlieue.io/provider-cloud-hypervisor"),
+            "must stay greppable by class, got {manager}"
+        );
+    }
+
+    #[test]
+    fn the_field_manager_is_stable_across_loads() {
+        let once = HostConfig::parse(FROM_BOOTSTRAP)
+            .expect("loads")
+            .field_manager();
+        let twice = HostConfig::parse(FROM_BOOTSTRAP)
+            .expect("loads")
+            .field_manager();
+        assert_eq!(
+            once, twice,
+            "an unstable manager would orphan every row the last process owned"
+        );
+    }
 }

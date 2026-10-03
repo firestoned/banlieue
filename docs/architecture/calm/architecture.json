@@ -541,6 +541,22 @@
           }
         }
       ]
+    },
+    {
+      "unique-id": "network-control-plane-vip",
+      "node-type": "network",
+      "name": "Management cluster control plane VIP",
+      "description": "With API_VIP set (ADR-0086), a keepalived VRRP virtual IP that k0s's control plane load balancing floats between the management cluster's controllers. On the holder, k0s's userspace reverse proxy balances the API port over every controller in the kubernetes Service's endpoints. It is spec.api.externalAddress, so kube-proxy, joining workers, kubeconfigs and host-resident providers all dial it; with Tailscale each node advertises it as a /32 subnet route. Konnectivity is disabled because the VIP does not balance its port. Configured by scripts/bootstrap-k0s-cluster.sh.",
+      "interfaces": [
+        {
+          "unique-id": "control-plane-vip-https",
+          "definition-url": "https://calm.finos.org/release/1.2/prototype/interface/http-endpoint.json",
+          "config": {
+            "port": 6443,
+            "protocol": "HTTPS"
+          }
+        }
+      ]
     }
   ],
   "relationships": [
@@ -1459,6 +1475,53 @@
                   "host-vmm-version-floor"
                 ],
                 "evidence": "docs/adr/0084-host-install-release-sources-and-versions.md, crates/banlieue-host/src/release.rs, crates/banlieue-host/src/release_tests.rs, crates/banlieue-host/src/stages.rs (vmm), crates/banlieue-host/src/stages_tests.rs (a_pin_mismatch_installs_nothing)"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-control-plane-vip-kube-api",
+      "description": "The VIP holder's k0s reverse proxy forwards each API connection to one of the controllers' API servers, chosen from the kubernetes Service's endpoints, which every API server publishes for itself once control plane load balancing is on (ADR-0086). TLS is end to end: the proxy does not terminate it, and the VIP is a SAN on every API server's certificate.",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "network-control-plane-vip",
+            "interfaces": [
+              "control-plane-vip-https"
+            ]
+          },
+          "destination": {
+            "node": "service-kubernetes-api",
+            "interfaces": [
+              "kube-api-https"
+            ]
+          }
+        }
+      },
+      "protocol": "TCP",
+      "controls": {
+        "control-plane-vip-failover": {
+          "description": "VRRP moves the VIP to a surviving controller and the proxy drops unhealthy API servers from its backend list, so losing one controller does not lose the API (ADR-0086). scripts/bootstrap-k0s-cluster.sh (render_cplb, require_api_vip refuses a multi-controller cluster without a VIP).",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53",
+                "control": "SC-36 Distributed Processing and Storage"
+              }
+            }
+          ]
+        },
+        "control-plane-vip-api-authn": {
+          "description": "The VRRP password only prevents accidental collisions; anything on the LAN can claim the VIP. The control is that the proxy passes TLS through: a client verifies the API server's certificate against the cluster CA and the API server authenticates every request, so a hijacked VIP can deny service but cannot impersonate the API (threat model TB-13).",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53",
+                "control": "SC-8 Transmission Confidentiality and Integrity"
               }
             }
           ]
@@ -2495,6 +2558,8 @@
     "docs/adr/0067-banlieue-host-install-subcommand.md",
     "docs/adr/0083-block-duplicate-static-address.md",
     "docs/adr/0084-host-install-release-sources-and-versions.md",
-    "docs/adr/0085-management-cluster-kine-bridge-kairos-debian.md"
+    "docs/adr/0085-management-cluster-kine-bridge-kairos-debian.md",
+    "docs/adr/0086-management-cluster-control-plane-vip.md",
+    "docs/adr/0087-field-manager-identity-per-writer.md"
   ]
 }

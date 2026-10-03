@@ -86,10 +86,17 @@ controller per failure domain. If the API SAN has no DNS yet, make a kubeconfig
 copy whose `server:` is a controller IP (it's already in the cert SANs).
 
 Konnectivity: on a flat, routable network keep `K0S_DISABLE_KONNECTIVITY=true`
-(the default). With it enabled on a multi-controller cluster that has no single
-`externalAddress`/VIP, the agents pin to one controller and `kubectl logs/exec`
-against any other returns **"No agent available"**. Disabling it makes the API
-server reach kubelets directly. Set it `false` only if the network is not flat.
+(the default, on both backends). With it enabled, the agents all dial the
+external address and hold connections to one controller only, so webhooks,
+`metrics.k8s.io` and `kubectl logs/exec` against any other API server return
+**"No agent available"**. A VIP does not fix that: k0s balances only the API
+port. Disabling it makes the API server reach kubelets directly. Set it `false`
+only if the network is not flat.
+
+Control plane VIP (ADR-0086): with more than one controller, set
+`API_VIP=<address>/<prefix>` to a free address on the nodes' network, outside
+DHCP and any MetalLB pool. Ask the operator for it; never guess. The script
+refuses a multi-controller cluster without one unless `NO_API_VIP=true`.
 
 ## 4. MetalLB (mirror the reference cluster)
 

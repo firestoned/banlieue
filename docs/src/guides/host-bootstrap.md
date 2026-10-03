@@ -331,6 +331,14 @@ NODES=(
 `NODE_ROLES="controller+worker controller+worker controller+worker worker"` —
 three controllers plus a dedicated image-build worker.
 
+More than one controller needs a control plane VIP (ADR-0086): set
+`API_VIP=<address>/<prefix>` to a free address on the nodes' network, outside
+DHCP and any MetalLB pool. On libvirt's default NAT network that is an
+address in `192.168.122.0/24` outside the network's DHCP range. The script
+refuses a multi-controller cluster without one, unless `NO_API_VIP=true` says
+a single entry point is intended. See
+[End-to-End Setup](end-to-end-setup.md#libvirt-a-long-lived-cluster-kine-bridge-kairos-on-debian).
+
 !!! danger "Lowering VM_COUNT without NODE_ROLES"
     `NODE_ROLES` is consumed positionally. Setting `VM_COUNT=3` alone takes the
     first three entries — two controllers and one worker — giving an etcd

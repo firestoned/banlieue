@@ -36,7 +36,6 @@ use banlieue_api::infrastructure::CloudHypervisorMachine;
 use banlieue_oci::Reference;
 use banlieue_oci::reference::{SHA256_PREFIX, require_digest};
 use banlieue_provider_sdk::reconciler::{requeue_default, requeue_long, requeue_on_error};
-use banlieue_provider_sdk::ssa::FIELD_MANAGER_PROVIDER_CLOUD_HYPERVISOR;
 use kube::api::{Api, ListParams, Patch, PatchParams};
 use kube::runtime::controller::Action;
 use kube::{Resource, ResourceExt};
@@ -649,9 +648,15 @@ async fn patch_row(ctx: &Context, name: &str, row: &ImagePerProviderStatus) -> R
         "status": { "perProvider": [row] },
     });
     let api: Api<VMImage> = Api::all(ctx.client.clone());
+    // Scoped to this host's Provider, and deliberately NOT forced
+    // (ADR-0087). `perProvider` is merge-keyed, so this host owns only its own
+    // row; a conflict here would mean another writer is claiming our row, which
+    // is a defect that must surface rather than be steamrolled. Forcing under a
+    // class-wide manager is what erased every other host's row and produced a
+    // permanent write loop.
     api.patch_status(
         name,
-        &PatchParams::apply(FIELD_MANAGER_PROVIDER_CLOUD_HYPERVISOR).force(),
+        &PatchParams::apply(&ctx.config.field_manager()),
         &Patch::Apply(&patch),
     )
     .await

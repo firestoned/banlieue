@@ -77,6 +77,11 @@ SSH_USER="${SSH_USER:-root}"
 CONTROLLERS="${CONTROLLERS:-}"
 AUTHN_DIR="${AUTHN_DIR:-/etc/k0s/oidc}"
 AUTHN_FILE="${AUTHN_DIR}/authentication-config.yaml"
+# k0s runs kube-apiserver as this unprivileged user (installConfig.users.
+# kubeAPIserverUser) with gid 0 and no supplementary groups, so the
+# authentication config is owned by that user. Where the user does not exist
+# (an API server running as root) the file stays root-owned.
+APISERVER_USER="${APISERVER_USER:-kube-apiserver}"
 K0S_CONFIG="${K0S_CONFIG:-/etc/k0s/k0s.yaml}"
 K0S_BACKUP="${K0S_CONFIG}.pre-oidc"
 PROXY_NAME="${PROXY_NAME:-banlieue-dex-proxy}"
@@ -357,9 +362,14 @@ attach_controller() {
   log "controller $host"
   # Written aside and renamed into place: kube-apiserver watches this file,
   # and writing it in place let it read a half-written file (one failed
-  # reload per controller, observed in its reload metrics).
-  authn_config | on "$host" "install -d -m 0700 $AUTHN_DIR && \
-    cat >$AUTHN_FILE.tmp && chmod 0600 $AUTHN_FILE.tmp && mv -f $AUTHN_FILE.tmp $AUTHN_FILE"
+  # reload per controller, observed in its reload metrics). Owned
+  # APISERVER_USER:root, 0750/0640: kube-apiserver is not root under k0s, and
+  # a root-only file fails it at startup with "permission denied". Its group
+  # is 0, not kube-apiserver, so group ownership alone does not help.
+  authn_config | on "$host" "u=$APISERVER_USER; id -u \$u >/dev/null 2>&1 || u=root; \
+    install -d -m 0750 $AUTHN_DIR && chown \$u:root $AUTHN_DIR && chmod 0750 $AUTHN_DIR && \
+    cat >$AUTHN_FILE.tmp && chown \$u:root $AUTHN_FILE.tmp && chmod 0640 $AUTHN_FILE.tmp && \
+    mv -f $AUTHN_FILE.tmp $AUTHN_FILE"
 
   if on "$host" "grep -q 'authentication-config:' $K0S_CONFIG"; then
     log "  $K0S_CONFIG already names the file; the API server reloads it on change"
@@ -486,7 +496,7 @@ print_kubeconfig() {
     --exec-arg="--oidc-extra-scope=profile" \
     --exec-arg="--oidc-extra-scope=email" \
     --exec-arg="--oidc-extra-scope=groups" \
-    "${ca_arg[@]}" >/dev/null
+    ${ca_arg[@]+"${ca_arg[@]}"} >/dev/null
   "${kc[@]}" set-context "$OIDC_USER" --cluster="$cluster" \
     --user="$OIDC_USER" --namespace="$NAMESPACE" >/dev/null
   "${kc[@]}" use-context "$OIDC_USER" >/dev/null
@@ -514,7 +524,7 @@ setup_login() {
     --exec-arg="--oidc-extra-scope=profile" \
     --exec-arg="--oidc-extra-scope=email" \
     --exec-arg="--oidc-extra-scope=groups" \
-    "${ca_arg[@]}" >/dev/null
+    ${ca_arg[@]+"${ca_arg[@]}"} >/dev/null
   kubectl config set-context "$OIDC_USER" --cluster="$cluster" \
     --user="$OIDC_USER" --namespace="$NAMESPACE" >/dev/null
   if [[ "$EXPOSE" != "tailscale" ]]; then

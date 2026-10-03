@@ -24,7 +24,6 @@ use crate::plan::{PlanError, UidLedger, plan_machine};
 use banlieue_api::infrastructure::{CloudHypervisorMachine, CloudHypervisorMachineStatus};
 use banlieue_provider_sdk::finalizer::{ensure_finalizer, remove_finalizer};
 use banlieue_provider_sdk::reconciler::{requeue_default, requeue_long, requeue_on_error};
-use banlieue_provider_sdk::ssa::FIELD_MANAGER_PROVIDER_CLOUD_HYPERVISOR;
 use kube::api::{Api, ListParams, Patch, PatchParams};
 use kube::runtime::controller::Action;
 use kube::{Client, ResourceExt};
@@ -128,6 +127,9 @@ pub async fn reconcile(machine: Arc<CloudHypervisorMachine>, ctx: Arc<Context>) 
     let uid = machine.uid().ok_or(Error::Missing("metadata.uid"))?;
     let generation = machine.metadata.generation.unwrap_or(0);
     let api: Api<CloudHypervisorMachine> = Api::namespaced(ctx.client.clone(), &ns);
+    // This host's own manager (ADR-0087): computed once so every apply below
+    // writes under the same identity.
+    let field_manager = ctx.config.field_manager();
     let previous = machine.status.as_ref();
 
     if machine.metadata.deletion_timestamp.is_some() {
@@ -148,14 +150,14 @@ pub async fn reconcile(machine: Arc<CloudHypervisorMachine>, ctx: Arc<Context>) 
                 "GuestUidRangeFull",
                 generation,
             );
-            patch_status(&api, &name, &st).await?;
+            patch_status(&api, &name, &st, &field_manager).await?;
             return Ok(requeue_long());
         };
         let st = CloudHypervisorMachineStatus {
             host_uid: Some(host_uid),
             ..previous.cloned().unwrap_or_default()
         };
-        patch_status(&api, &name, &st).await?;
+        patch_status(&api, &name, &st, &field_manager).await?;
         info!(machine = %name, host_uid, "guest uid allocated");
         return Ok(Action::requeue(Duration::ZERO));
     };
@@ -173,7 +175,7 @@ pub async fn reconcile(machine: Arc<CloudHypervisorMachine>, ctx: Arc<Context>) 
             let e = Error::Plan(e);
             warn!(machine = %name, error = %e, "cannot plan machine");
             let st = failure_status(previous, &e.to_string(), failure_reason(&e), generation);
-            patch_status(&api, &name, &st).await?;
+            patch_status(&api, &name, &st, &field_manager).await?;
             return Ok(requeue_long());
         }
     };
@@ -187,7 +189,7 @@ pub async fn reconcile(machine: Arc<CloudHypervisorMachine>, ctx: Arc<Context>) 
     };
 
     if machine.spec.provider_id.as_deref() != Some(plan.provider_id.as_str()) {
-        patch_provider_id(&api, &name, &plan.provider_id).await?;
+        patch_provider_id(&api, &name, &plan.provider_id, &field_manager).await?;
     }
 
     match converge(
@@ -201,13 +203,13 @@ pub async fn reconcile(machine: Arc<CloudHypervisorMachine>, ctx: Arc<Context>) 
     {
         Ok(o) => {
             let st = build_status(previous, &o, &plan, &ctx.config.provider.name, generation);
-            patch_status(&api, &name, &st).await?;
+            patch_status(&api, &name, &st, &field_manager).await?;
             Ok(requeue_for(&o))
         }
         Err(e) => {
             warn!(machine = %name, error = %e, "converge failed");
             let st = failure_status(previous, &e.to_string(), failure_reason(&e), generation);
-            patch_status(&api, &name, &st).await?;
+            patch_status(&api, &name, &st, &field_manager).await?;
             Ok(if is_permanent(&e) {
                 requeue_long()
             } else {
@@ -263,6 +265,7 @@ async fn patch_status(
     api: &Api<CloudHypervisorMachine>,
     name: &str,
     status: &CloudHypervisorMachineStatus,
+    field_manager: &str,
 ) -> Result<()> {
     let patch = json!({
         "apiVersion": "infrastructure.banlieue.io/v1alpha1",
@@ -271,7 +274,9 @@ async fn patch_status(
     });
     api.patch_status(
         name,
-        &PatchParams::apply(FIELD_MANAGER_PROVIDER_CLOUD_HYPERVISOR).force(),
+        // Scoped per ADR-0087. A CloudHypervisorMachine is reconciled by the
+        // one host that owns it, so force remains correct.
+        &PatchParams::apply(field_manager).force(),
         &Patch::Apply(&patch),
     )
     .await?;
@@ -281,7 +286,12 @@ async fn patch_status(
 /// CAPI puts `providerID` on spec and the provider sets it. Applied as its
 /// own field under the provider's field manager, so it never contends with
 /// the controller's ownership of the rest of spec.
-async fn patch_provider_id(api: &Api<CloudHypervisorMachine>, name: &str, id: &str) -> Result<()> {
+async fn patch_provider_id(
+    api: &Api<CloudHypervisorMachine>,
+    name: &str,
+    id: &str,
+    field_manager: &str,
+) -> Result<()> {
     let patch = json!({
         "apiVersion": "infrastructure.banlieue.io/v1alpha1",
         "kind": "CloudHypervisorMachine",
@@ -289,7 +299,7 @@ async fn patch_provider_id(api: &Api<CloudHypervisorMachine>, name: &str, id: &s
     });
     api.patch(
         name,
-        &PatchParams::apply(FIELD_MANAGER_PROVIDER_CLOUD_HYPERVISOR),
+        &PatchParams::apply(field_manager),
         &Patch::Apply(&patch),
     )
     .await?;

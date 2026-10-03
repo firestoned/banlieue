@@ -131,7 +131,8 @@ Kairos installs itself from `IMAGE_URL`'s ISO onto an empty disk before
 #### libvirt: a long-lived cluster (kine, bridge, Kairos on Debian)
 
 For a management cluster you keep, three options change what the defaults
-give you (ADR-0085). Put them in an untracked env file
+give you (ADR-0085), and a fourth puts the control plane behind a virtual IP
+(ADR-0086). Put them in an untracked env file
 (`BANLIEUE_ENV_FILE`), since one holds a password:
 
 ```sh
@@ -153,6 +154,9 @@ VM_MACS="52:54:00:00:00:01 52:54:00:00:00:02 52:54:00:00:00:03"
 # Cluster state in PostgreSQL through kine, instead of etcd on the nodes.
 K0S_STORAGE_TYPE=kine
 KINE_DATASOURCE="postgres://k0s:<password>@db.example.com:5432/k0s?sslmode=require"
+
+# A free LAN address for the API, outside DHCP and every MetalLB pool.
+API_VIP=192.0.2.10/24
 ```
 
 ```sh
@@ -167,10 +171,47 @@ VM_COUNT=3 NODE_ROLES="controller+worker controller+worker controller+worker" \
 | `VM_MACS` | empty (libvirt picks) | One MAC per VM, in order. Reserve them in your DHCP server: k0s nodes must not change address. |
 | `K0S_STORAGE_TYPE` | `etcd` | `kine` stores cluster state in the database `KINE_DATASOURCE` names. |
 | `KINE_DATASOURCE` | none | The kine data source, password included. The generated `k0sctl.yaml` is written `0600`. |
+| `API_VIP` | none; **required** with more than one controller | A virtual IP (`address/prefix`) keepalived floats between the controllers. k0s's reverse proxy on the holder balances the API over every controller. It becomes `externalAddress`, a certificate SAN and the kubeconfig server. With `TAILSCALE_AUTHKEY`, each node advertises it as a `/32` subnet route. |
+| `API_VIP_ROUTER_ID` | `51` | VRRP virtual router ID. Must be unique on the LAN. |
+| `API_VIP_AUTH_PASS` | generated into `$WORKDIR/api-vip-authpass` | VRRP password (up to 8 letters or digits), identical on every controller. It prevents collisions between clusters; it is not authentication. |
+| `NO_API_VIP` | `false` | `true` accepts a multi-controller cluster with one controller as its only entry point. |
+| `K0S_DISABLE_KONNECTIVITY` | `true` | Konnectivity's agents can only hold connections to one controller, which breaks webhooks, `metrics.k8s.io` and `kubectl logs` on the others. Both backends build flat networks where it is not needed. |
 
 The database is then the cluster's single point of failure, and its backups
-are the cluster's backups. With no load balancer, the API server's external
-address is the first controller's.
+are the cluster's backups. The API itself survives losing any one
+controller: the VIP moves, and the `kubernetes` Service lists every
+controller.
+
+If the tailnet routes are not auto-approved, approve `<VIP>/32` once per node
+in the Tailscale admin console. Clients off the LAN reach the VIP through
+whichever node is up.
+
+##### Converting an existing cluster to a VIP
+
+A cluster built before ADR-0086 has its first controller as
+`externalAddress` and konnectivity running. Setting `API_VIP` and rerunning
+`config` then `apply` rewrites each controller's `k0s.yaml` and, through
+k0sctl's reinstall phase, its install flags. Two steps remain by hand:
+
+1. Remove what konnectivity left behind. k0s stops managing the stack but
+   does not delete it, and removing its manifest directory does not prune it
+   either. On **every** controller, move the directory away so a restart
+   cannot reapply it:
+   `sudo mv /var/lib/k0s/manifests/konnectivity /var/lib/k0s/konnectivity-manifests.removed`
+   Then delete the objects the stack created (label
+   `k0s.k0sproject.io/stack=konnectivity`):
+
+   ```sh
+   kubectl -n kube-system delete daemonset/konnectivity-agent serviceaccount/konnectivity-agent
+   kubectl delete clusterrolebinding system:konnectivity-server
+   ```
+2. Point existing kubeconfigs, and the host-resident providers'
+   `/etc/banlieue/credentials/kubeconfig`, at the VIP.
+
+Check the result with `kubectl get endpointslices -n default -l
+kubernetes.io/service-name=kubernetes`, which should list every controller,
+and `kubectl get apiservice v1beta1.metrics.k8s.io`, which should stay
+`True`.
 
 **Output of this phase:** a running k0s **management** cluster with nothing
 banlieue-specific on it yet.

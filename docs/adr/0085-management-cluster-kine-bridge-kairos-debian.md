@@ -86,4 +86,4 @@ existing `BASE_IMAGE_PATH` with its digest pinned in `IMAGE_SHA256`.
 - `kube-apiserver`'s `externalAddress` is the first controller's address;
   with no load balancer in front, clients that use it lose the API if that
   node is down. k0s's control-plane load balancing (a virtual IP) is the
-  follow-up.
+  follow-up, taken by [ADR-0086](0086-management-cluster-control-plane-vip.md).

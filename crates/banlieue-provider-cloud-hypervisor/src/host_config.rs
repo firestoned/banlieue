@@ -14,6 +14,7 @@
 //! mistake here would otherwise surface much later as a guest that fails to
 //! start, or as one that starts somewhere it should not.
 
+use banlieue_provider_sdk::ssa::{FIELD_MANAGER_PROVIDER_CLOUD_HYPERVISOR, provider_field_manager};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -41,7 +42,6 @@ pub enum HostConfigError {
     #[error("invalid host config: {0}")]
     Invalid(String),
 }
-
 /// The whole host config.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -65,6 +65,25 @@ pub struct HostConfig {
     pub storage_classes: BTreeMap<String, PathBuf>,
     /// Network class name to bridge.
     pub network_classes: BTreeMap<String, String>,
+}
+
+impl HostConfig {
+    /// This host's field manager: the Cloud Hypervisor class scoped to the
+    /// `Provider` this host serves (ADR-0087).
+    ///
+    /// One systemd unit per host (ADR-0060) means one writer per host, and
+    /// every host runs the same class. Applying under the bare class constant
+    /// made each host's apply delete the other hosts' `VMImage.status`
+    /// `perProvider` rows, which produced a permanent write loop rather than
+    /// an error.
+    #[must_use]
+    pub fn field_manager(&self) -> String {
+        provider_field_manager(
+            FIELD_MANAGER_PROVIDER_CLOUD_HYPERVISOR,
+            &self.provider.namespace,
+            &self.provider.name,
+        )
+    }
 }
 
 /// `[provider]`.
