@@ -13,6 +13,44 @@ mod tests {
         Cli::command().debug_assert();
     }
 
+    /// `banlieue host` names the backend it prepares (ADR-0084 Decision 7),
+    /// spelled out or as the `ch` alias.
+    #[test]
+    #[cfg(feature = "host")]
+    fn host_cloud_hypervisor_verbs_parse() {
+        use banlieue_host::{Backend, Verb};
+        for argv in [
+            ["banlieue", "host", "cloud-hypervisor", "install"],
+            ["banlieue", "host", "ch", "install"],
+        ] {
+            let cli = Cli::parse_from(argv);
+            let Command::Host(host) = cli.command else {
+                panic!("expected host subcommand");
+            };
+            let Backend::CloudHypervisor(ch) = host.backend;
+            assert!(matches!(ch.verb, Verb::Install(_)), "{argv:?}");
+        }
+        for verb in ["preflight", "status", "selftest"] {
+            assert!(
+                Cli::try_parse_from(["banlieue", "host", "cloud-hypervisor", verb]).is_ok(),
+                "{verb}"
+            );
+        }
+    }
+
+    /// The backend-less form is gone, not aliased: it did not say what it
+    /// prepares.
+    #[test]
+    #[cfg(feature = "host")]
+    fn host_without_a_backend_is_refused() {
+        for verb in ["install", "preflight", "status", "selftest"] {
+            assert!(
+                Cli::try_parse_from(["banlieue", "host", verb]).is_err(),
+                "{verb}"
+            );
+        }
+    }
+
     #[test]
     fn controller_subcommand_parses() {
         let cli = Cli::parse_from(["banlieue", "controller", "--no-leader-elect"]);

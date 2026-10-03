@@ -4,11 +4,39 @@ SPDX-License-Identifier: Apache-2.0
 -->
 # Threat Model
 
-> **Status:** Living document. Last full pass **2026-10-01**, against the
-> architecture defined by **ADR-0001 … ADR-0083** (0057–0059 unallocated,
+> **Status:** Living document. Last full pass **2026-10-02**, against the
+> architecture defined by **ADR-0001 … ADR-0085** (0057–0059 unallocated,
 > 0066 and 0068–0073 reserved; 0074 and 0075 Accepted 2026-09-28; 0076–0080
 > reserved by roadmap 19; 0081–0082 recorded but not implemented in banlieue,
-> so they move nothing here). The 2026-10-01 pass covers **ADR-0083** as revised in
+> so they move nothing here). The second 2026-10-02 pass covers
+> **ADR-0085**: the management cluster's bootstrap can keep cluster state in
+> an external SQL database through kine (PostgreSQL on the hypervisor host),
+> put its nodes on a host bridge, and boot Kairos on Debian. It adds one asset
+> (A-17, the datastore, which holds every object including every Secret) and
+> one trust boundary (TB-12, controllers to datastore), with a §5 diagram
+> line, a STRIDE table, §7.18 and two §8 entries (the datastore as a single
+> point of failure, and nodes reachable from the LAN). Etcd, the default,
+> was already inside the nodes and moves nothing. No component, actor or
+> other boundary changes. The first 2026-10-02 pass covers **ADR-0084**:
+> the installer is now `banlieue host cloud-hypervisor <verb>` (alias
+> `ch`; it was `banlieue host <verb>`); it no longer installs OS packages
+> on any distribution (the host's package manager supplies systemd and
+> swtpm; `preflight` checks for them by command); and the VMM, `ch-remote` and
+> firmware each come from a URL (github.com by default, or an operator's
+> mirror) at the pinned release or any release at or above the client's
+> version gate, still verified against a sha256 before anything is
+> installed. **No new component, actor or trust boundary**: TB-11 gains a
+> second source (a mirror) and, for a non-pinned release without a digest
+> flag, a read of GitHub's published digest from `api.github.com`; the §5
+> diagram's TB-11 line says so. §2's installer row and A-14 name the new
+> digest sources. TB-11 gains five rows (a version or tag escaping
+> `/opt/banlieue`, a plain-HTTP mirror, a hostile release document, the
+> `[vmm]` rewrite, and a spoofed GitHub digest) and its two pin rows are
+> revised. §7.11 gains one bullet, §8 two entries (a non-pinned release
+> trusts GitHub's or the operator's digest; a newer VMM runs against types
+> checked only against the pinned API), §9 one (the host's OS packages).
+>
+> **2026-10-01 pass.** Covers **ADR-0083** as revised in
 > review: a `VirtualMachine` whose static address another banlieue VM already
 > claims on the same `networkClass` is blocked before scheduling
 > (`Ready=False reason=DuplicateAddress`, no infra CR), on all four infra
@@ -224,7 +252,7 @@ relationship to the host.
 | registry push Job | **None** — `automountServiceAccountToken: false` | `banlieue-imagebuild` | Pushes a `Ready` build to the operator's OCI registry for host-resident providers (ADR-0064); reads the artifacts PVC read-only and the push Secret, nothing else — `crates/banlieue-imagebuilder/src/reconciler/push.rs` |
 | image import unit (Cloud Hypervisor) | Host user `banlieue` | The host, as `banlieue-ch-import@<vmimage uid>.service` | Pulls one image by digest into the storage classes' image caches and exits; sandboxed, writable only in `images/` — `crates/banlieue-provider-cloud-hypervisor/src/vmimage.rs` (`import_unit`), `import.rs` |
 | kairos build pod | kairos-operator's SA | `banlieue-imagebuild` | **Privileged** — loop devices, mount, chroot |
-| `banlieue host` (installer) | **root**, once, at an operator's request; no cluster identity | A Cloud Hypervisor host, as a command, never a service | Installs the pinned VMM and firmware, the `banlieue` user, guest uid records, directories, the host config, the EK CA, the polkit rule and the units (ADR-0067). A separate crate no provider depends on — `crates/banlieue-host/` |
+| `banlieue host cloud-hypervisor` (installer) | **root**, once, at an operator's request; no cluster identity | A Cloud Hypervisor host, as a command, never a service | Installs the VMM and firmware (the pinned release, or one the operator names at or above the client's gate, from github.com or a mirror; ADR-0084), the `banlieue` user, guest uid records, directories, the host config, the EK CA, the polkit rule and the units (ADR-0067). Installs no OS packages. A separate crate no provider depends on: `crates/banlieue-host/` |
 
 ## 3. Assets
 
@@ -242,10 +270,11 @@ relationship to the host.
 | A-11 | **The Cloud Hypervisor provider's cluster credential** — a bound ServiceAccount token, renewed by the provider itself at half-life | `/etc/banlieue/credentials/token` on the host, beside a kubeconfig that only points at it; directory `0700 banlieue` (ADR-0060 Decision 5) | High — it is the provider's cluster identity: its own `Provider` and status, every `CloudHypervisorMachine` in the namespace, and **minting further tokens for itself**. **No Secret access** — the operator-built Role (`crates/banlieue-operator/src/workload.rs`) and `deploy/provider-cloud-hypervisor/rbac/clusterrole.yaml` — so it discloses no other credential |
 | A-12 | **Guest disks, seeds and API sockets on a Cloud Hypervisor host** | `<storage class>/<machine uid>/` (`os.raw`, `seed.iso`, `serial.log`, and `install.iso` while a `Deferred` installer is attached) and `/run/banlieue/ch/<guest uid>/api.sock`, each directory `2770 guest-uid:banlieue` | High — a guest's whole disk, its rendered user-data (A-2) in the seed, and control of its VMM. Encrypted at rest only for a `tpmEnabled` machine installed `Deferred` (ADR-0065), which seals to its own vTPM; otherwise plaintext, and ADR-0048 refuses `tpmEnabled` with an `Immediate` image |
 | A-13 | **Registry credentials** (ADR-0064) — push: a `kubernetes.io/basic-auth` Secret in `banlieue-imagebuild`; pull: `username`/`password` files in the host's `[registry] credentials_dir` (`0750 root:banlieue`) | Build namespace; each Cloud Hypervisor host | Push: **High** — combined with a `VMImage` status write, it chooses what hosts boot (TB-10). Pull: Medium — reads every pushed image, including cloud-config baked into it (A-2) |
-| A-14 | **What makes a Cloud Hypervisor host safe to run guests on** — the VMM and firmware, the template units, the polkit rule, the host config, the userdb records and directory modes | `/opt/banlieue/`, `/etc/systemd/system/`, `/etc/polkit-1/rules.d/`, `/etc/banlieue/`, `/etc/userdb/`, placed by `banlieue host install` (ADR-0067) | **Critical** — a tampered unit or polkit rule is root on the host, a tampered VMM runs every guest; integrity comes from the banlieue binary (A-5) and the sha256 pins compiled into it |
+| A-14 | **What makes a Cloud Hypervisor host safe to run guests on**: the VMM and firmware, the template units, the polkit rule, the host config, the userdb records and directory modes | `/opt/banlieue/`, `/etc/systemd/system/`, `/etc/polkit-1/rules.d/`, `/etc/banlieue/`, `/etc/userdb/`, placed by `banlieue host cloud-hypervisor install` (ADR-0067, ADR-0084) | **Critical**: a tampered unit or polkit rule is root on the host, a tampered VMM runs every guest; integrity comes from the banlieue binary (A-5) and a sha256 per file: the pins compiled into it for the pinned release, otherwise the operator's digest flag or GitHub's published digest (ADR-0084) |
 | A-16 | **Which Proxmox VMs banlieue considers its own** — the `banlieue-machine-uid=<uid>` line in a VM's description (ADR-0075 Decision 4) | Each VM's `description` on the Proxmox cluster, written by the clone itself | High for **integrity**: it is what stops a machine adopting, reconfiguring and finally destroying a VM it did not create (a same-named VM in another namespace, or an administrator's own). Not a secret |
 | A-6 | vTPM identity and sealed disk-encryption keys | vSphere VM, per-clone (ADR-0039/0040); on libvirt, **swtpm state keyed by domain UUID** (ADR-0050); on Cloud Hypervisor, swtpm state in `<storage class>/<machine uid>/tpm/`, owned by the guest's uid, deleted with the machine (ADR-0065) | High — a shared or surviving TPM identity breaks per-VM disk-encryption isolation |
 | A-6a | **vTPM endorsement key certificate** — the public anchor an attestation quote is checked against | vCenter-issued and read host-side on vSphere; `swtpm_localca`-issued into the vTPM's NVRAM on libvirt, exported by the guest to `/run/banlieue/ek.pem` and mirrored to `VirtualMachineClaim.status` (ADR-0045); on Cloud Hypervisor, written by `swtpm_setup` at manufacture to `<state_root>/ek/<machine uid>/` (`0700 banlieue`) and read **host-side** (ADR-0065) | Low confidentiality — it is a **public key**, deliberately readable by every reader of the claim. Its value is *integrity of binding*: it must name the VM banlieue actually created, or ADR-0049 verifies a quote from the wrong machine |
+| A-17 | **The management cluster's datastore**: every Kubernetes object, Secrets included (A-1 hypervisor credentials, A-13 registry credentials, ServiceAccount signing material references), in plaintext unless API-server encryption at rest is configured | etcd on the controllers by default; with ADR-0085's kine, an external SQL database (PostgreSQL on the hypervisor host), reached over the network | **Critical**: read access is every Secret in the cluster, write access is cluster-admin. With kine it also lives outside every node, so it is backed up, and must be protected, as a database |
 | A-15 | **EK trust-anchor bundle** — the set of CA certificates trusted to issue this backend's vTPM EK certificates | `Provider.spec.attestation.ekTrustBundle` — inline PEM, or a ConfigMap/Secret it names in the Provider's namespace. Admin-supplied, never discovered; resolved by the **broker**, never by any banlieue identity (ADR-0049 Decision 10) | Zero confidentiality — public CA material. **High integrity**: a rogue CA added here makes every EK certificate that CA forges verify, defeating the whole attestation chain; and on libvirt *removing* a host's issuer is the revocation mechanism, so an entry an attacker can re-add is a revocation undone |
 
 ## 4. Actors
@@ -263,7 +292,7 @@ relationship to the host.
 | **Stolen Proxmox API token** | Holds A-1 for Proxmox, without the cluster | Untrusted; bounded by the token's **ACLs**, not the user's: it is privilege-separated and holds only the `BanlieueProvider` role on `/vms`, one node, one SDN zone and the ISO storage — it can create and destroy VMs there, and cannot open a console, run commands in a guest, migrate, snapshot, or change permissions (`scripts/bootstrap-proxmox-host.sh`, `ROLE_PRIVS`). Its one storage-deleting privilege, `Datastore.Allocate`, is held **only on `banlieue-seed`**, a storage holding nothing but seed ISOs (`SEED_ROLE_PRIVS`): it cannot delete backups, templates or ISOs elsewhere, nor edit another storage's definition |
 | **Stolen host credential** (Cloud Hypervisor) | Holds A-11 — the provider's ServiceAccount token — without the host | Untrusted; bounded by the provider's namespaced RBAC (TB-8) and the token's lifetime |
 | **OCI registry** and whoever operates it (ADR-0064) | Stores every pushed build; can read, withhold or delete one | **Untrusted for integrity** — hosts pull by digest and verify it, so the registry cannot substitute content. **Trusted for confidentiality and availability**: it sees every image in full (§7.13) |
-| **Host operator running `banlieue host install`** | Root on the host, for one command | Trusted, like the hypervisor operator; the installer's controls protect the host **from the provider's user** during that run, not from the operator |
+| **Host operator running `banlieue host cloud-hypervisor install`** | Root on the host, for one command | Trusted, like the hypervisor operator; the installer's controls protect the host **from the provider's user** during that run, not from the operator |
 | External contributor | Opens a PR from a fork | Untrusted |
 | **OIDC identity provider** (and any bridge in front of it, e.g. Dex for GitHub) | Mints the ID tokens the API server accepts, and therefore **decides what `request.userInfo.username` is** | **Semi-trusted, and entirely outside banlieue's control.** Every guarantee the claim-subject policy makes is downstream of this actor: banlieue checks `subject.id` against a username it did not derive. Compromise or misconfiguration here makes every claim attribution meaningless — §8 |
 | Hypervisor operator | vCenter/libvirt/Proxmox privileges outside Kubernetes; root on a Cloud Hypervisor host | Semi-trusted — **can read datastores, storage pools and Proxmox storages banlieue writes to** (including a Proxmox machine's seed ISO), **can edit or copy the ownership marker on a Proxmox VM** (§8), and on libvirt can read swtpm state on the host filesystem. On a Cloud Hypervisor host, root can read every guest's disk, seed and memory, and the provider's cluster token (A-11) |
@@ -309,6 +338,9 @@ relationship to the host.
 
   TB-6: GitHub Actions / GHCR ──▶ released images & binaries
 
+  TB-12: management cluster controllers (kine) ──▶ SQL datastore on the host
+         (A-17; TLS, password from an untracked env file; ADR-0085)
+
   TB-10: push Job (banlieue-imagebuild, no SA token) ──▶ OCI registry
          ──▶ banlieue-ch-import@<V>.service on a KVM host (by digest, host-pinned repository)
 
@@ -324,9 +356,10 @@ relationship to the host.
   │              <storage>/<A>/ 2770 A:banlieue   <storage>/<B>/ 2770 B:banlieue │
   │              tap A ─────────── host bridge ─────────── tap B                 │
   │                                                                             │
-  │  banlieue host install (root, once) ──TB-11──▶ /opt, /etc, units, polkit,    │
-  │     ▲    acts in banlieue-owned dirs by O_NOFOLLOW handle   userdb, EK CA    │
-  │     └── upstream release assets, HTTPS, sha256-pinned in the binary          │
+  │  banlieue host cloud-hypervisor install (root, once) ──TB-11──▶ /opt, /etc, │
+  │     ▲  in banlieue-owned dirs by O_NOFOLLOW   units, polkit, userdb, EK CA  │
+  │     └── release assets: github.com or an operator mirror, HTTPS, each file   │
+  │         sha256-verified (compiled pin, operator flag, or api.github.com)     │
   └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -342,7 +375,8 @@ relationship to the host.
 | TB-8 | Cloud Hypervisor host ↔ cluster | A process on the hypervisor holds a cluster credential and acts on cluster state; cluster state tells a host what to run |
 | TB-9 | Guest VMM → host and other guests | Guest code that escapes into its VMM runs on the host, next to the provider and every other guest |
 | TB-10 | Build namespace → OCI registry → Cloud Hypervisor host | A build leaves the cluster for a registry the operator runs, and enters a host that cannot mount cluster storage (ADR-0064) |
-| TB-11 | Installer (root, once) → Cloud Hypervisor host | A root process writes the host's trust base (A-14), in part inside directories the provider's user owns, from artifacts downloaded from upstream (ADR-0067) |
+| TB-12 | Management cluster controllers → external datastore | With kine (ADR-0085), cluster state leaves the controllers for a database on another host; whoever reaches that database with the credential holds the cluster |
+| TB-11 | Installer (root, once) → Cloud Hypervisor host | A root process writes the host's trust base (A-14), in part inside directories the provider's user owns, from artifacts downloaded from upstream or an operator's mirror (ADR-0067, ADR-0084) |
 
 ## 6. Threats by boundary
 
@@ -590,7 +624,7 @@ registry.
 
 ### TB-11 — Installer (root, once) → Cloud Hypervisor host
 
-`banlieue host install` runs as root, at an operator's request, and places
+`banlieue host cloud-hypervisor install` runs as root, at an operator's request, and places
 everything A-14 names. It is the one piece of banlieue that is root by
 design, so its controls are about two things: what it installs is what
 banlieue pinned, and a provider's user that was compromised earlier cannot
@@ -598,14 +632,33 @@ use a later run as a lever.
 
 | Threat | STRIDE | Control |
 | --- | --- | --- |
-| A tampered or substituted VMM or firmware download | T | HTTPS only (rustls), and **sha256 pins compiled into the binary**: every artifact is fetched and verified before any is installed; on a mismatch nothing is written and the previous symlinks stay — `crates/banlieue-host/src/pins.rs`, `stages.rs::vmm`, tested (`a_pin_mismatch_installs_nothing`, `make ch-host-install-test` step 5) |
-| The installed VMM drifts from the release the client is written against | T | One pinned release: `pins_tests.rs` asserts the installer's version equals `spec/PIN` and the client's version gate |
+| A tampered or substituted VMM or firmware download, from upstream or a mirror | T | HTTPS only (rustls), and a **sha256 per file**, every file fetched and verified before any is installed; on a mismatch nothing is written and the previous symlinks stay: `stages.rs::vmm`, tested (`a_pin_mismatch_installs_nothing`, `make ch-host-install-test` step 5). For the pinned release the digest is **compiled in** whatever URL is used, and a digest flag for a pinned file is refused, so a mirror chooses where bytes come from, never what they must be: `release.rs::resolve`, tested (`a_mirror_url_keeps_the_compiled_pins`, `a_digest_flag_for_a_pinned_file_is_refused`). Any other release: §8 |
+| The installed VMM is older than the release the client is written against | T | The default is the pinned release (`pins_tests.rs` asserts it equals `spec/PIN` and the client's gate). A chosen `--vmm-version` below the gate's `major.minor` is refused **before any fetch**, by the comparison the provider makes at runtime: `release.rs::check_vmm_version`, tested (`a_vmm_older_than_the_client_gate_is_refused`, `make ch-host-install-test` step 6). The provider's own gate still refuses an older VMM at runtime (ADR-0061 Decision 5). A newer one: §8 |
+| A `--vmm-version` or `--firmware-tag` names a path outside `/opt/banlieue` (`../..`), so root writes or links there | T, E | Both become one directory name: letters, digits, `.`, `_`, `-`, not starting with `.`, refused otherwise before anything is fetched: `release.rs::check_dir_name`, tested (`unsafe_or_unparseable_versions_and_tags_are_refused`) |
+| A mirror URL downgrades the transport (`http://`, another scheme) | T, I | Refused when the flag is read (`release.rs::check_url`, tested `a_url_that_is_not_https_is_refused`), and the client is `https_only` regardless (`fetch.rs::https_client`). The sha256 check above holds even over a hostile transport |
+| A spoofed digest for a non-pinned release, from `api.github.com` | S, T | Read over HTTPS verified against the system trust store, only when no digest flag was given, and only by the installer, never the provider: `fetch.rs::GitHubDigests`. An unreachable or unparseable answer stops the install before any fetch and names the flag to pass (`an_unreachable_github_names_the_digest_flag`, `githubs_release_json_yields_each_assets_digest`). What GitHub itself publishes is trusted: §8 |
+| A hostile server makes the installer buffer a release document without bound | D | `fetch.rs::MAX_RELEASE_DOCUMENT_BYTES`, enforced while streaming (`get_capped`) |
+| Following a VMM change rewrites more of the host config than `[vmm]`, or a file an admin broke | T | Only `[vmm]` is replaced, through the provider's own type, and the result is parsed back before it is written (`render.rs::with_vmm`, tested `with_vmm_replaces_only_the_vmm_section`); a file that does not parse is left untouched (`the_host_config_is_kept_unless_forced`); the EK CA is not rotated (`the_host_configs_vmm_section_follows_the_release`). The file lives in root-owned `/etc/banlieue/`, so this write gives the provider's user no lever |
 | The provider's user (compromised earlier) plants a symlink in a directory it owns — state root, EK CA directory, storage class — so the root installer chowns, chmods or writes another file | T, E | Every ownership and mode change acts on a handle opened `O_NOFOLLOW`; every write is a temporary file created `O_EXCL` beside its target and renamed over it; `mkdir` refuses anything but a directory — `real.rs`, tested with a planted symlink (`a_symlink_planted_where_a_directory_goes_is_refused`). Residual: §8 |
 | The installer weakens a directory another package owns (polkit's `rules.d` is `root:polkitd`) | T | Directories the OS or a package owns are created when missing and otherwise never re-moded or re-owned — `stages.rs::shared_dir`, tested; found by a dry run on a host |
 | A read-only verb changes a host | T | `preflight` and `status` take `ops::Probe`, which has no mutating methods; `selftest` removes its scratch directory; asserted in unit tests and in the container test (step 3) |
 | A reconcile path reaches root installer code, or its subprocesses | E | Crate boundary: no provider crate depends on `banlieue-host` (`boundary_tests.rs`); the subcommand is behind the binary's `host` feature |
 | A setting (flag, cloud-init environment) breaks out of the TOML or a unit file it is rendered into | T, E | Class names are `[a-z0-9-]`, values refuse whitespace and quotes; the host config is serialized from the provider's `HostConfig` and parsed back before it is written; a template placeholder left unfilled is an error — `settings.rs`, `render.rs`, tested |
 | A hostile server makes the installer buffer without bound | D | Downloads stop at `fetch.rs::MAX_ARTIFACT_BYTES` before the digest check |
+
+### TB-12: Management cluster controllers → external datastore
+
+Only with `K0S_STORAGE_TYPE=kine` (ADR-0085). The datastore is A-17. The
+database itself is configured by the operator, not by banlieue, so most
+controls here are requirements (§7.18), not code.
+
+| Threat | STRIDE | Control |
+| --- | --- | --- |
+| The data source's password leaks from the bootstrap host | I | It is read from the operator's untracked env file (`BANLIEUE_ENV_FILE`), never a flag; the generated `k0sctl.yaml` that carries it is created `0600` before it is written: `scripts/bootstrap-k0s-cluster.sh` (`generate_k0sctl_config`). k0sctl then writes it into each controller's root-owned `/etc/k0s/k0s.yaml` |
+| A crafted data source breaks out of the YAML string into k0s's config | T | A `KINE_DATASOURCE` containing `"` or `\` is refused: `generate_k0sctl_config` |
+| Traffic between controllers and database is read or altered on the LAN | I, T | Operator requirement: `sslmode=require` or stronger in the data source, and a TLS-only `hostssl` rule on the server (§7.18). Not enforced by the script |
+| Anyone on the LAN connects to the database | S, E | Operator requirement: the database listens only where the controllers reach it, and allows only the k0s role from the controllers' addresses with SCRAM (§7.18). Residual: §8 |
+| The database is lost or corrupted | D | Operator requirement: backups of the database are the cluster's backups (§7.18). Residual: §8 |
 
 ## 7. Deployment hardening requirements
 
@@ -747,10 +800,10 @@ a different assumption is unsafe.
       subject's credential belongs on the phase C attested channel, keyed to
       `status.nonce`.
 11. **Cloud Hypervisor hosts are part of the trust base; prepare them with
-    `banlieue host install` and keep them to it.** The provider on the host is only as
+    `banlieue host cloud-hypervisor install` and keep them to it.** The provider on the host is only as
     contained as the host configuration around it
     (`docs/src/guides/cloud-hypervisor-host-systemd.md`):
-    - Install with `banlieue host install` from a banlieue binary you
+    - Install with `banlieue host cloud-hypervisor install` from a banlieue binary you
       verified (A-5: its signature and SBOM), since it is what places A-14
       (ADR-0067; the script is now an SSH wrapper around it), which
       registers per-guest uids and private groups, sets `0711`/`2770`
@@ -772,6 +825,12 @@ a different assumption is unsafe.
       holds the token grant.
     - Keep `nsswitch.conf`'s `passwd`/`group` lines including `systemd`;
       `preflight` refuses a host without it.
+    - **Prefer the pinned VMM release.** For another one (ADR-0084), get
+      each file's sha256 from the upstream release page on a machine that
+      can reach GitHub, and pass it with `--vmm-sha256` /
+      `--ch-remote-sha256` / `--firmware-sha256`, rather than trusting a
+      mirror or the host's own view of `api.github.com`. Try a new major
+      version on one host first.
 12. **Recommended audit rule:** alert on any `ClusterRoleBinding` created by the
    `banlieue-operator` identity whose `roleRef` is not `banlieue-provider-*`
    (accepted-risk monitoring for the operator's RBAC-minting capability).
@@ -831,6 +890,21 @@ a different assumption is unsafe.
     mapping lives in `Provider.spec.capabilities.networkClasses` and is a
     platform-admin decision (§7.5).
 
+18. **Protect a kine datastore as the cluster itself (A-17, ADR-0085).**
+    - Listen only on the address the controllers use, and allow only the
+      k0s role from the controllers' addresses: `hostssl` with
+      `scram-sha-256`, never `trust` or `md5`. Narrow the rule to the node
+      addresses once they are reserved.
+    - Require TLS in the data source (`sslmode=require`, or `verify-full`
+      with a CA you control).
+    - Back the database up, encrypt the backups, and test a restore: they
+      are the only copy of the cluster's state, Secrets included.
+    - Consider API-server encryption at rest, so a copy of the database or
+      a backup does not disclose Secrets in plaintext.
+    - Reserve each node's address in DHCP (`VM_MACS` fixes the MACs): a
+      node that changes address breaks its k0s install and the API
+      server's certificate names.
+
 ## 8. Accepted risks
 
 | Risk | Why accepted | Revisit when |
@@ -859,6 +933,10 @@ a different assumption is unsafe.
 | The imagebuilder's identity can **create Jobs in `banlieue-imagebuild`**, a privileged namespace, so its compromise is node-root-equivalent there | It already drove privileged builds through `OSArtifact`s; the push Job must run beside the PVC it reads. The Job it creates holds no API credential and no privilege | The push can run outside the privileged namespace (e.g. a restricted namespace with a read-only clone of the artifacts volume) |
 | Images in the registry can carry cloud-config (A-2), readable by the registry's operator | The registry is the operator's, like the datastore in TB-5; banlieue cannot encrypt what a host must boot without a key-distribution scheme it does not have | Per-VM secrets move entirely out of shared images, or images are encrypted for their hosts |
 | The Cloud Hypervisor API decoder (`banlieue-cloud-hypervisor`) is **not fuzzed** | The peer is a local VMM the provider started, not a network endpoint; decoding is into typed, bounded structs and failure is reported, not fatal. The libvirt decoder is fuzzed because its peer is remote | A fuzz target is added alongside the libvirt one, or the client ever talks to a VMM it did not start |
+| A **non-pinned VMM release** is verified against GitHub's published digest or the operator's flag, not a pin reviewed in a banlieue change, so a release **replaced on GitHub itself** (a compromised upstream account) would verify | Only when an operator names a version other than the pinned one, per host and explicitly (ADR-0084 Decision 4). It still catches a corrupted or substituted download from any mirror, and Cloud Hypervisor publishes no signatures to check instead. The pinned release keeps its compiled digests | Cloud Hypervisor signs its releases (then verify the signature), or a fleet needs non-pinned releases routinely enough to pin them in banlieue instead |
+| A **newer VMM** than the pinned one runs against client types checked only against the pinned release's API document | The client sends only fields that exist in the pinned schema (`spec_tests.rs`), and the gate refuses older releases, which is where removals would bite. A newer release could still change a field's meaning; the operator chose it, and the guide says to try a new major on one host first | A newer release is pinned in banlieue (vendored spec, digests, tests), or the client learns to read the running VMM's API document |
+| With kine, **the management cluster's datastore is one database on one host**: if it is down the API server cannot read or write, and if it is lost so is the cluster's state | A choice the operator makes per cluster (`K0S_STORAGE_TYPE=kine`, ADR-0085), for state outside the VMs and ordinary database backups; etcd remains the default. Running guests are unaffected while the API is down; controllers resume when it returns | The management cluster needs to survive its database host, then a replicated database or etcd |
+| With `LIBVIRT_BRIDGE`, the **management cluster's nodes are on the LAN**, so every LAN host reaches their API server, kubelet and node ports | Needed for host-resident providers and DNS clients to reach the cluster without tailscale (ADR-0085). The API server and kubelet authenticate every request; nothing banlieue adds listens unauthenticated | The LAN carries hosts that should not reach the cluster at all, then a dedicated VLAN or host firewall rules |
 | The installer's `O_NOFOLLOW` protects only a path's **last component**: a directory the provider's user owns could be swapped for a symlink between the installer's check and its use, one level up | The window is one run of a root command started by an operator; the directories are created (and a symlink there refused) earlier in the same run; `openat2(RESOLVE_NO_SYMLINKS)` would forbid legitimate symlinks on the path, such as a storage class under a linked mount | A host where the provider's user is untrusted while an install runs; then resolve beneath each banlieue-owned root with `openat2(RESOLVE_BENEATH)` |
 | The Proxmox provider's `ClusterRole` can `update`/`patch` **any `ProxmoxMachine` in any namespace**, so a compromised provider pod can clear finalizers or rewrite status on machines placed on other Providers | Machine names are not known when the role is written, so `resourceNames` cannot scope them, exactly as for libvirt. It still cannot read Secrets it is not named for, and cannot create or delete machines (`deploy/provider-proxmox/rbac/clusterrole.yaml`); its **Proxmox** reach is bounded by its own Provider's token ACLs | Per-provider machine scoping becomes possible (a label-selector authorization, or one namespace per Provider) |
 | **The ownership marker is not a secret and is not signed**: anyone with `VM.Config.Options` on the Proxmox side can delete the `banlieue-machine-uid=` line (orphaning a VM — banlieue then clones a second) or copy it onto another VM (which banlieue would then treat as its own, and configure, start and finally destroy) | The party who can do that is the Proxmox operator, already semi-trusted and already able to destroy any VM directly (§4); the marker exists to stop *accidental* collisions between namespaces and with unrelated VMs, which the name could not, not to defend against the hypervisor's own administrators. The token itself holds `VM.Config.Options` on `/vms`, so a compromised provider can edit descriptions too (bounded by §4's stolen-token row). A *tenant* cannot plant a marker ahead of time: a machine's UID is assigned by the API server, not chosen by whoever writes the `VirtualMachine` | A machine's UID becomes something a tag ACL can protect, or a per-VM signed marker is worth its key management |
@@ -883,8 +961,12 @@ a different assumption is unsafe.
   against a real backend.
 - `deploy/kind/` — development-only, not held to production standard.
 - The MkDocs documentation toolchain (`docs/`), which ships nothing at runtime.
+- The Cloud Hypervisor host's **OS packages** (systemd, polkit, swtpm,
+  `ca-certificates`): installed and kept current by the host's own package
+  manager or image build, never by banlieue (ADR-0084 Decision 1).
+  `preflight` checks that the commands exist, not where they came from.
 - Removing banlieue from a Cloud Hypervisor host (`uninstall`, host drain):
-  not built (ADR-0067 Decision 8); `banlieue host status` shows what a
+  not built (ADR-0067 Decision 8); `banlieue host cloud-hypervisor status` shows what a
   manual removal must cover.
 
 ## 10. Maintenance

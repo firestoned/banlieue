@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //! The host-local configuration (ADR-0062 Decision 4).
 //!
-//! Written once by `banlieue host install` (ADR-0067, which renders it from
+//! Written once by `banlieue host cloud-hypervisor install` (ADR-0067, which renders it from
 //! this very type and parses it back), read by the provider at start. It is the **only** source of host paths and bridge
 //! names: machines name a storage or network *class*, and this file alone
 //! says what directory or bridge that class means on this host. A cluster

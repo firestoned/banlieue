@@ -7,7 +7,7 @@ mod tests {
     use super::super::*;
     use std::path::Path;
 
-    /// Exactly what the shell bootstrap wrote before `banlieue host install`
+    /// Exactly what the shell bootstrap wrote before `banlieue host cloud-hypervisor install`
     /// replaced it (ADR-0067), comments included. Hosts prepared then still
     /// carry this file, so it must keep loading.
     const FROM_BOOTSTRAP: &str = r#"# banlieue Cloud Hypervisor host configuration.

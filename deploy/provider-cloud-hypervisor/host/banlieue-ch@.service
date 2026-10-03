@@ -3,7 +3,7 @@
 #
 # One Cloud Hypervisor VMM per guest; the instance is the guest's host uid
 # (ADR-0063 Decision 1, amended). Installed root-owned by
-# `banlieue host install` (ADR-0067). The provider may only start,
+# `banlieue host cloud-hypervisor install` (ADR-0067). The provider may only start,
 # stop and reset instances, and set MemoryMax at runtime: everything that
 # decides what runs and as whom is fixed here, so the provider's user
 # cannot start anything else as anyone else (polkit rule

@@ -1,6 +1,7 @@
-# Cloud Hypervisor Host Bootstrap (Debian)
+# Cloud Hypervisor Host Bootstrap
 
-This guide turns a bare-metal Debian machine into a Cloud Hypervisor host for
+This guide turns a bare-metal Linux machine running systemd into a Cloud
+Hypervisor host for
 banlieue's host-resident provider (roadmap 09,
 [ADR-0060](https://github.com/firestoned/banlieue/blob/main/docs/adr/0060-cloud-hypervisor-first-class-provider-topology.md)
 to ADR-0065).
@@ -31,16 +32,33 @@ provider is not root, and the credential can read no Secrets.
 
 ## Requirements
 
-- **Bare metal.** Debian 13 (trixie) or Ubuntu 24.04, x86_64, with VT-x or
-  AMD-V enabled in firmware. Nested virtualization is unsupported; `preflight`
-  refuses a host that is itself a VM.
+- **Bare metal.** An x86_64 Linux distribution running systemd, with VT-x
+  or AMD-V enabled in firmware. Debian 13 (trixie) is what
+  `make ch-host-install-test` exercises; nothing in the installer is
+  specific to it. Nested virtualization is unsupported; `preflight` refuses
+  a host that is itself a VM.
+- **The host's own packages.** banlieue installs no OS packages (ADR-0084).
+  Install these first, with whatever your OS uses (`apt-get`, `dnf`,
+  `zypper`, a Kairos image build):
+
+    | Needed for | Debian / Ubuntu / Kairos (Debian base) | Fedora / RHEL |
+    | --- | --- | --- |
+    | Guests are systemd units, guest uids resolve through NSS (ADR-0063) | `systemd`, `libnss-systemd`, `dbus` | `systemd`, `dbus` |
+    | The provider starts its own units | `polkitd` | `polkit` |
+    | vTPMs (ADR-0065) | `swtpm`, `swtpm-tools` | `swtpm`, `swtpm-tools` |
+    | HTTPS downloads | `ca-certificates` | `ca-certificates` |
+
+    `preflight` checks for `systemctl`, `systemd-tmpfiles`, `swtpm`,
+    `swtpm_setup` and `swtpm_localca` on `PATH`, and names every one that is
+    missing.
 - **systemd, D-Bus and polkit.** Guests are systemd units (ADR-0063).
 - **A Linux bridge** for guest networking. banlieue never creates one; see
   [Step 1](#step-1-a-bridge-for-guests).
 - **Root on the host**, directly or through `sudo`.
-- **Outbound HTTPS** to `github.com` to fetch the pinned VMM and firmware,
+- **Outbound HTTPS** to `github.com` to fetch the VMM and firmware, or to a
+  mirror you name for each file (see [Choosing the VMM](#choosing-the-vmm-version-and-where-it-comes-from)),
   or the release assets in a local directory (`--artifacts-dir`).
-- **The `banlieue` binary.** It prepares the host (`banlieue host`, ADR-0067)
+- **The `banlieue` binary.** It prepares the host (`banlieue host cloud-hypervisor`, ADR-0067)
   and then runs on it as the provider.
 
 ---
@@ -50,11 +68,34 @@ provider is not root, and the credential can read no Secrets.
 === "On the host"
 
     ```sh
+    # 0. the host's own packages (see Requirements), e.g. on Debian:
+    sudo apt-get install -y --no-install-recommends \
+        systemd libnss-systemd dbus polkitd swtpm swtpm-tools ca-certificates
     # 1. a bridge (once; see Step 1)
     # 2. everything else, from the binary the host will run
-    sudo banlieue host install --install-packages \
+    sudo banlieue host cloud-hypervisor install \
         --provider-name bar --network-class default=br0
     ```
+
+=== "Air-gapped host (Artifactory)"
+
+    ```sh
+    # 0. packages from your internal OS mirror; 1. a bridge (see Step 1)
+    # 2. the three Cloud Hypervisor files from your GitHub proxy
+    MIRROR=https://internal.example.com/artifactory/vcs-github
+    sudo banlieue host cloud-hypervisor install \
+        --provider-name bar --network-class default=br0 \
+        --vmm-url       "$MIRROR/cloud-hypervisor/cloud-hypervisor/v53.0/cloud-hypervisor-static" \
+        --ch-remote-url "$MIRROR/cloud-hypervisor/cloud-hypervisor/v53.0/ch-remote-static" \
+        --firmware-url  "$MIRROR/cloud-hypervisor/edk2/ch-97eeb7b09/CLOUDHV.fd"
+    ```
+
+    The URL layout is your Artifactory's; write each one exactly as your
+    repository serves it. For the pinned release (v53.0 and `ch-97eeb7b09`
+    here) the sha256 compiled into banlieue still applies, so the mirror
+    decides only where the bytes come from. See
+    [Choosing the VMM](#choosing-the-vmm-version-and-where-it-comes-from)
+    for another release.
 
 === "From a workstation (remote host)"
 
@@ -71,8 +112,8 @@ provider is not root, and the credential can read no Secrets.
     ```
 
     The script is a thin wrapper: `--remote` copies the binary to a private
-    temporary directory on the host, turns the env file into `banlieue host`
-    flags, runs `sudo banlieue host install --install-packages` there (it asks
+    temporary directory on the host, turns the env file into `banlieue host cloud-hypervisor`
+    flags, runs `sudo banlieue host cloud-hypervisor install` there (it asks
     for your password in the terminal), installs the same binary as the
     provider, and removes the copy whether the step succeeded or not.
 
@@ -145,7 +186,7 @@ Pick one:
     If the host already runs libvirt (for example after
     [`bootstrap-libvirt-host.sh`](host-bootstrap.md)), its `virbr0` bridge
     works as it is: guests get a NAT address from libvirt's `dnsmasq`. With
-    no `--network-class`, `banlieue host` uses `virbr0` as the `default`
+    no `--network-class`, `banlieue host cloud-hypervisor` uses `virbr0` as the `default`
     class automatically.
 
     Guests on a NAT bridge are reachable only from the host. That is fine for
@@ -163,7 +204,7 @@ ip -br link show type bridge
 
 Every setting is a flag, and each flag has a `BANLIEUE_HOST_*` environment
 variable, so a cloud-init payload needs no file of its own
-(`banlieue host install --help` lists them all):
+(`banlieue host cloud-hypervisor install --help` lists them all):
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
@@ -172,13 +213,35 @@ variable, so a cloud-init payload needs no file of its own
 | `--network-class name=bridge` | `default=virbr0` if it exists | Each bridge must exist. Repeat, or comma-separate. |
 | `--guest-uid-base`, `--guest-uid-count` | `2000000`, `1024` | One unprivileged uid per guest. Must not overlap real accounts or `/etc/subuid`. |
 | `--registry-repository` | none | The one repository `Url` images are pulled from, by digest (ADR-0064). |
-| `--install-packages` | off | Install missing packages with `apt-get`; otherwise `packages` lists what is missing. |
+| `--vmm-version`, `--firmware-tag` | the pinned release | Which Cloud Hypervisor release and edk2 firmware tag to install. See [Choosing the VMM](#choosing-the-vmm-version-and-where-it-comes-from). |
+| `--vmm-url`, `--ch-remote-url`, `--firmware-url` | the GitHub release asset | Where each file is downloaded from, for a mirror. HTTPS only. |
+| `--vmm-sha256`, `--ch-remote-sha256`, `--firmware-sha256` | the pin, or GitHub's digest | The sha256 of a file that is not the pinned release. |
 | `--artifacts-dir` | none (download) | Take `cloud-hypervisor-static`, `ch-remote-static` and `CLOUDHV.fd` from here, verified the same way. |
 | `--allow-virtualized-host` | off | Lab use only: run on a host that is itself a VM. |
 
-The VMM release and its digests are not settings: they are pinned in the
-binary, to the release its client is written against (ADR-0061, ADR-0067).
-Upgrading the VMM is upgrading banlieue.
+By default the VMM is the release pinned in the binary, the one its client
+is written against (ADR-0061), downloaded from GitHub and checked against the
+sha256 compiled in.
+
+The release flags, their variables, and the names the `--remote` script reads
+from its env file (`--print-env-template` prints them all). `install` takes
+every one; `selftest` takes all but `--artifacts-dir`, so it checks the
+release you installed:
+
+| Flag | Variable | Env file |
+| --- | --- | --- |
+| `--vmm-version` | `BANLIEUE_HOST_VMM_VERSION` | `VMM_VERSION` |
+| `--firmware-tag` | `BANLIEUE_HOST_FIRMWARE_TAG` | `FIRMWARE_TAG` |
+| `--vmm-url` | `BANLIEUE_HOST_VMM_URL` | `VMM_URL` |
+| `--ch-remote-url` | `BANLIEUE_HOST_CH_REMOTE_URL` | `CH_REMOTE_URL` |
+| `--firmware-url` | `BANLIEUE_HOST_FIRMWARE_URL` | `FIRMWARE_URL` |
+| `--vmm-sha256` | `BANLIEUE_HOST_VMM_SHA256` | `VMM_SHA256` |
+| `--ch-remote-sha256` | `BANLIEUE_HOST_CH_REMOTE_SHA256` | `CH_REMOTE_SHA256` |
+| `--firmware-sha256` | `BANLIEUE_HOST_FIRMWARE_SHA256` | `FIRMWARE_SHA256` |
+| `--artifacts-dir` | `BANLIEUE_HOST_ARTIFACTS_DIR` | `ARTIFACTS_DIR` |
+
+`--artifacts-dir` cannot be combined with a URL flag: the files come from one
+place or the other.
 
 Storage and network classes are the only things a machine gets to choose.
 Machines name a class; the host alone knows the path or bridge behind it
@@ -190,8 +253,12 @@ what you declare here, and nothing else on the host.
 ## Step 3: run it
 
 ```sh
-sudo banlieue host install --install-packages --network-class default=br0
+sudo banlieue host cloud-hypervisor install --network-class default=br0
 ```
+
+`ch` is a short alias for the backend: `banlieue host ch install` is the same
+command. The backend is part of the command (ADR-0084 Decision 7) because
+`host` only says *this machine*, not what it is being prepared for.
 
 Every stage also runs on its own (`--only <stage>`, which refuses if a stage
 it builds on has not run), and a second `install` changes nothing.
@@ -200,23 +267,22 @@ intended way to change a setting.
 
 | Stage | Does |
 | --- | --- |
-| `preflight` | Bare metal, `/dev/kvm`, the `kvm` group, x86_64, systemd, every declared bridge exists, the guest uid range is free, NSS has its `systemd` module. Changes nothing (also `banlieue host preflight`). |
-| `packages` | `swtpm`, `swtpm-tools`, `polkitd`, `dbus`, `systemd`, `libnss-systemd`, `iproute2`, `ca-certificates`: verified, or installed with `--install-packages`. No QEMU, no libvirt. |
-| `vmm` | Downloads `cloud-hypervisor`, `ch-remote` and `CLOUDHV.fd`, checks each against its pinned sha256, and installs nothing, leaving the previous release as it was, on any mismatch. |
-| `host` | The `banlieue` system user, one userdb user and private group per guest uid, state, storage and run directories, and `/etc/banlieue/cloud-hypervisor.toml` (rendered from the provider's own config type and parsed back before it is written). |
+| `preflight` | Bare metal, `/dev/kvm`, the `kvm` group, x86_64, the commands the host supplies (`systemctl`, `systemd-tmpfiles`, `swtpm`, `swtpm_setup`, `swtpm_localca`), every declared bridge exists, the guest uid range is free, NSS has its `systemd` module. Changes nothing (also `banlieue host cloud-hypervisor preflight`). |
+| `vmm` | Downloads `cloud-hypervisor`, `ch-remote` and `CLOUDHV.fd`, checks each against its sha256, and installs nothing, leaving the previous release as it was, on any mismatch. |
+| `host` | The `banlieue` system user, one userdb user and private group per guest uid, state, storage and run directories, and `/etc/banlieue/cloud-hypervisor.toml` (rendered from the provider's own config type and parsed back before it is written). An existing file is kept, except that its `[vmm]` section follows the release just installed. |
 | `tpm` | A per-host EK certificate authority for `swtpm_localca`, created as `banlieue`, readable by `banlieue` only. |
 | `polkit` | A rule letting `banlieue` manage instances of its own templates, for uids in the guest range, and nothing else. |
 | `provider` | The four template units and the provider unit. The provider is enabled only once its binary and kubeconfig exist. |
-| `selftest` | The VMM runs, the firmware matches its pin, guest uids resolve, `banlieue` can open `/dev/kvm`, the provider's own host checks pass, and a test vTPM gets an EK certificate with a `<name>:<uid>` CN. Boots nothing (also `banlieue host selftest`). |
+| `selftest` | The VMM runs, the firmware matches its sha256, guest uids resolve, `banlieue` can open `/dev/kvm`, the provider's own host checks pass, and a test vTPM gets an EK certificate with a `<name>:<uid>` CN. Boots nothing (also `banlieue host cloud-hypervisor selftest`). |
 
-`banlieue host status` reports what is installed and changes nothing.
+`banlieue host cloud-hypervisor status` reports what is installed and changes nothing.
 
 ### What ends up where
 
 | Path | Owner, mode | What |
 | --- | --- | --- |
-| `/opt/banlieue/cloud-hypervisor/<version>/` | root, 0755 | Pinned `cloud-hypervisor` and `ch-remote`, linked from `/usr/local/bin` |
-| `/opt/banlieue/firmware/<tag>/CLOUDHV.fd` | root, 0644 | Pinned firmware |
+| `/opt/banlieue/cloud-hypervisor/<version>/` | root, 0755 | `cloud-hypervisor` and `ch-remote`, one directory per release, the current one linked from `/usr/local/bin` |
+| `/opt/banlieue/firmware/<tag>/CLOUDHV.fd` | root, 0644 | Firmware, one directory per tag |
 | `/etc/banlieue/cloud-hypervisor.toml` | root:banlieue, 0640 | Host config: classes, paths, uid range, firmware |
 | `/etc/banlieue/swtpm/` | root, 0644 | `swtpm_setup` and `swtpm_localca` configuration |
 | `/var/lib/banlieue/swtpm-localca/` | banlieue, 0700 | The EK CA. Keys 0600; only `issuercert.pem` is 0644 |
@@ -248,7 +314,7 @@ vouches for.
 ## Verifying
 
 ```sh
-sudo banlieue host status
+sudo banlieue host cloud-hypervisor status
 ```
 
 ```text
@@ -455,7 +521,7 @@ registry, since the host cannot mount the cluster's artifacts volume
     # Regenerates the host config with the registry section. Repeat the
     # storage and network classes you installed with: the file is rewritten
     # from these flags. Only the host stage runs, so the EK CA is untouched.
-    sudo banlieue host install --only host --force \
+    sudo banlieue host cloud-hypervisor install --only host --force \
          --network-class default=br0 \
          --registry-repository registry.internal:5000/banlieue/disks
     # only if the registry needs credentials:
@@ -584,22 +650,151 @@ install does stall.
 
 ---
 
-## Upgrading the VMM
+## Image-based hosts (Kairos)
 
-The VMM release is pinned in banlieue itself, to the release its client is
-written against (ADR-0061, ADR-0067): upgrading the VMM is upgrading
-banlieue. With the new binary in place:
+!!! warning "Not yet exercised by banlieue's tests"
+    `make ch-host-install-test` runs on Debian 13. This recipe follows from
+    Kairos's documented layout and from what `install` writes; try it on one
+    host, reboot it, and run `banlieue host cloud-hypervisor selftest` before relying on it.
+
+Nothing in `banlieue host cloud-hypervisor install` is Debian-specific, but an image-based OS
+changes **what survives a reboot**. On Kairos, `/etc`, `/var` and `/srv` are
+ephemeral; `/opt`, `/usr/local`, `/etc/systemd` and a fixed list of other
+paths are bind-mounted from the persistent partition
+([Kairos: immutable](https://kairos.io/docs/architecture/immutable/)).
+`install` writes into both kinds:
+
+| Path | On Kairos | Consequence if left ephemeral |
+| --- | --- | --- |
+| `/opt/banlieue/` (VMM, firmware), `/usr/local/bin/` (links, provider binary) | persistent | none |
+| `/etc/systemd/system/` (units) | persistent | none |
+| `/var/lib/banlieue/` (EK CA, vTPM state, provider state) | **ephemeral** | a new EK CA every boot: every guest's EK certificate stops verifying |
+| `/etc/banlieue/` (host config, kubeconfig, credentials) | **ephemeral** | the provider loses its cluster credential at every boot |
+| the default storage class (`/srv/banlieue/ch`, if `/srv` is roomiest) | **ephemeral** | every guest disk is lost at reboot |
+| `/etc/userdb/`, `/etc/polkit-1/rules.d/`, `/etc/tmpfiles.d/`, the `banlieue` user | ephemeral | recreated by re-running `install`, which is idempotent |
+
+So, on Kairos:
+
+1. **Build the packages and the `banlieue` user into the image.** The user
+   must have the same uid on every boot, or the persistent state it owns
+   stops being its own. In the image's Dockerfile (Debian-based Kairos):
+
+    ```dockerfile
+    RUN apt-get update && apt-get install -y --no-install-recommends \
+          systemd libnss-systemd dbus polkitd swtpm swtpm-tools ca-certificates \
+     && useradd --system --home-dir /var/lib/banlieue --no-create-home \
+          --shell /usr/sbin/nologin --user-group banlieue
+    ```
+
+    `install` keeps an existing `banlieue` user and adds it to `kvm`.
+
+2. **Make banlieue's state persistent**, with a file under `/oem`
+   ([Kairos: persistent paths](https://kairos.io/docs/examples/extra_persistent_paths_after_install/)),
+   then reboot once:
+
+    ```yaml
+    # /oem/91_banlieue_paths.yaml
+    stages:
+      rootfs:
+        - name: "banlieue persistent paths"
+          environment_file: /run/cos/cos-layout.env
+          environment:
+            CUSTOM_BIND_MOUNTS: "/var/lib/banlieue /etc/banlieue"
+    ```
+
+3. **Put storage classes on a persistent path**, never the default:
+   `--storage-class default=/usr/local/banlieue/ch`.
+
+4. **Re-run `install` at every boot**, so the ephemeral pieces come back.
+   A second `install` changes nothing that is already right: the EK CA, the
+   host config and the guest records are kept.
+
+    ```yaml
+    # /oem/92_banlieue_host.yaml
+    stages:
+      network:
+        - name: "banlieue host cloud-hypervisor install"
+          commands:
+            - >-
+              /usr/local/bin/banlieue host cloud-hypervisor install
+              --provider-name bar
+              --network-class default=br0
+              --storage-class default=/usr/local/banlieue/ch
+    ```
+
+    Add the release flags here too (`--vmm-url` and the rest) for an
+    air-gapped host, or the `--vmm-version` you chose: a boot-time install
+    without them puts the host back on the pinned release.
+
+The first time, run the same command by hand and copy the provider's
+kubeconfig into `/etc/banlieue/credentials` (see
+[Connect it to a cluster](#connect-it-to-a-cluster)); from then on the boot
+stage keeps the host as it is.
+
+---
+
+## Choosing the VMM version and where it comes from
+
+`install` places three files banlieue does not build: `cloud-hypervisor-static`
+and `ch-remote-static` from a
+[cloud-hypervisor release](https://github.com/cloud-hypervisor/cloud-hypervisor/releases),
+and `CLOUDHV.fd` from an
+[edk2 release](https://github.com/cloud-hypervisor/edk2/releases)
+(ADR-0084). By default they are the release pinned in banlieue, downloaded
+from github.com and checked against the sha256 compiled into the binary.
+
+**A newer release.** Name it, and `install` takes GitHub's published sha256
+for each file:
 
 ```sh
-sudo banlieue host install --only vmm
+sudo banlieue host cloud-hypervisor install --only vmm --vmm-version v54.0
 ```
 
-It downloads the new release, verifies every artifact against its pinned
-sha256, and only then installs it and moves the `cloud-hypervisor` and
-`ch-remote` links. On any mismatch it installs nothing and leaves the links
-where they were. Old versions stay under `/opt/banlieue/cloud-hypervisor/`
-until you remove them, so rolling back is the previous banlieue binary's
-`install --only vmm`.
+A release older than the pinned one is refused before anything is
+downloaded: the provider would refuse to drive it (`VmmVersionUnsupported`,
+ADR-0061). A newer one is accepted, but banlieue's client is checked against
+the pinned release's API, so try a new major version on one host first.
+
+**An air-gapped host.** Name a mirror for each file, for example an
+Artifactory remote repository proxying GitHub. The URL is used exactly as
+written:
+
+```sh
+MIRROR=https://internal.example.com/artifactory/vcs-github
+sudo banlieue host cloud-hypervisor install \
+    --vmm-url       "$MIRROR/cloud-hypervisor/cloud-hypervisor/v53.0/cloud-hypervisor-static" \
+    --ch-remote-url "$MIRROR/cloud-hypervisor/cloud-hypervisor/v53.0/ch-remote-static" \
+    --firmware-url  "$MIRROR/cloud-hypervisor/edk2/ch-97eeb7b09/CLOUDHV.fd" \
+    --network-class default=br0
+```
+
+For the pinned release the compiled sha256 still applies, so the mirror
+only decides where the bytes come from. For any other release, a host that
+cannot reach `api.github.com` needs the digests too:
+
+```sh
+sudo banlieue host cloud-hypervisor install --only vmm --vmm-version v54.0 \
+    --vmm-url "$MIRROR/…/cloud-hypervisor-static" --vmm-sha256 <64 hex digits> \
+    --ch-remote-url "$MIRROR/…/ch-remote-static" --ch-remote-sha256 <64 hex digits>
+```
+
+Take the digests from the release page on a machine that can reach GitHub
+(each asset lists its `sha256:`), not from the mirror. Every flag has a
+`BANLIEUE_HOST_*` variable (`BANLIEUE_HOST_VMM_URL`,
+`BANLIEUE_HOST_VMM_SHA256`, …), and the `--remote` script reads
+`VMM_VERSION`, `VMM_URL`, `VMM_SHA256` and the rest from its env file.
+
+**How it lands.** Every file is downloaded and verified before any is
+installed. On any mismatch nothing is installed and the links stay where
+they were. Each release gets its own `/opt/banlieue/cloud-hypervisor/<version>/`
+(and firmware `/opt/banlieue/firmware/<tag>/`); only the `cloud-hypervisor`
+and `ch-remote` links move, and old releases stay until you remove them, so
+rolling back is `install --only vmm --vmm-version <old>`. A running guest
+keeps the VMM process it started with. The host config's `[vmm]` section
+is updated to name the new release, and the rest of the file is kept;
+restart `banlieue-provider-cloud-hypervisor.service` so the provider reads
+it. Run `selftest` with the same `--vmm-version`/`--firmware-tag` flags, so
+it checks the firmware you installed.
 
 Upgrading the provider itself is replacing `/usr/local/bin/banlieue` and
 restarting its unit; guests keep running (`make ch-restart-e2e`).
@@ -615,7 +810,11 @@ restarting its unit; guests keep running (`make ch-restart-e2e`).
 | `network class default -> br0: not a bridge on this host` | The bridge does not exist yet, or has a different name. See [Step 1](#step-1-a-bridge-for-guests). |
 | `no network class, and no virbr0 bridge` | No bridge was named and libvirt's isn't present. Create one and pass `--network-class`. |
 | `account ... uses uid ..., inside the guest range` or `... overlaps guest uids` | Move `--guest-uid-base` to a free range, clear of `/etc/subuid` and `/etc/subgid` (rootless containers). |
-| `...: sha256 ..., pinned ...; nothing was installed` | The download (or the file in `--artifacts-dir`) is not the pinned artifact. Nothing was installed. |
+| `...: sha256 ..., expected ...; nothing was installed` | The download (or the file in `--artifacts-dir`) is not the file its digest names: a wrong mirror URL, or a wrong `--*-sha256`. Nothing was installed. |
+| `... is not on PATH: install it with this host's package manager` in `preflight` | banlieue installs no packages. Install `systemd`, `swtpm` and `swtpm-tools` (see [Requirements](#requirements)). |
+| `invalid --vmm-version: ... is older than v53.0` | The provider cannot drive that release. Pick the pinned one or newer. |
+| `invalid --vmm-sha256: ... GitHub's digest for it could not be read` | A non-pinned release on a host that cannot reach `api.github.com`. Pass `--vmm-sha256` (and `--ch-remote-sha256`, `--firmware-sha256` as needed). |
+| `invalid --vmm-sha256: ... is the pinned release; its sha256 is compiled in` | Digest flags are only for other releases. Drop the flag. |
 | `swtpm_setup as banlieue: ...` in `selftest` | The EK CA directory has the wrong owner, often after copying `/var/lib/banlieue` by hand. Re-run `install --only tpm`. |
 | `sudo: a terminal is required to read the password` with `--remote` | The workstation side ran without a terminal (piped, or from CI). Run it in an interactive terminal. |
 | Provider unit `inactive` | Expected until the provider binary and `/etc/banlieue/kubeconfig` exist. |

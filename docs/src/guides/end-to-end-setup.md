@@ -128,6 +128,50 @@ Run on the KVM/libvirt host itself, or point `LIBVIRT_URI` at a remote one.
 Kairos installs itself from `IMAGE_URL`'s ISO onto an empty disk before
 `k0sctl` takes over.
 
+#### libvirt: a long-lived cluster (kine, bridge, Kairos on Debian)
+
+For a management cluster you keep, three options change what the defaults
+give you (ADR-0085). Put them in an untracked env file
+(`BANLIEUE_ENV_FILE`), since one holds a password:
+
+```sh
+# Kairos v4 ships ISOs only for Hadron; build one on Debian 13 instead.
+OUT_DIR=$HOME/builds/kairos-iso ./scripts/build-kairos-debian-iso.sh
+```
+
+```sh
+# ~/.config/banlieue/hosts/<name>.env  (never committed)
+LIBVIRT_IMAGE_KIND=kairos
+BASE_IMAGE_PATH=$HOME/builds/kairos-iso/<the ISO it printed>
+IMAGE_SHA256=<the digest it printed>
+
+# Nodes on a host bridge, with addresses from the LAN's DHCP. Fixed MACs
+# let the DHCP server reserve each node's address.
+LIBVIRT_BRIDGE=br0
+VM_MACS="52:54:00:00:00:01 52:54:00:00:00:02 52:54:00:00:00:03"
+
+# Cluster state in PostgreSQL through kine, instead of etcd on the nodes.
+K0S_STORAGE_TYPE=kine
+KINE_DATASOURCE="postgres://k0s:<password>@db.example.com:5432/k0s?sslmode=require"
+```
+
+```sh
+BANLIEUE_ENV_FILE=~/.config/banlieue/hosts/<name>.env \
+VM_COUNT=3 NODE_ROLES="controller+worker controller+worker controller+worker" \
+  ./scripts/bootstrap-k0s-cluster.sh all
+```
+
+| Setting | Default | Effect |
+| --- | --- | --- |
+| `LIBVIRT_BRIDGE` | empty (use `LIBVIRT_NETWORK`) | Attach the VMs to this host bridge. Their addresses are read from the guest agent (the Debian ISO carries `qemu-guest-agent`), then the host's neighbour table. |
+| `VM_MACS` | empty (libvirt picks) | One MAC per VM, in order. Reserve them in your DHCP server: k0s nodes must not change address. |
+| `K0S_STORAGE_TYPE` | `etcd` | `kine` stores cluster state in the database `KINE_DATASOURCE` names. |
+| `KINE_DATASOURCE` | none | The kine data source, password included. The generated `k0sctl.yaml` is written `0600`. |
+
+The database is then the cluster's single point of failure, and its backups
+are the cluster's backups. With no load balancer, the API server's external
+address is the first controller's.
+
 **Output of this phase:** a running k0s **management** cluster with nothing
 banlieue-specific on it yet.
 

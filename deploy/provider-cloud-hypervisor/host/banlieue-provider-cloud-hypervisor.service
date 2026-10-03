@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # banlieue's host-resident Cloud Hypervisor provider (ADR-0060).
-# Installed by `banlieue host install` (ADR-0067), which fills in the
+# Installed by `banlieue host cloud-hypervisor install` (ADR-0067), which fills in the
 # at-sign placeholders. Every setting is explained in
 # docs/src/guides/cloud-hypervisor-host-systemd.md
 [Unit]

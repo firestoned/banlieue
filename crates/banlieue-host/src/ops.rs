@@ -145,7 +145,7 @@ pub trait Probe {
     /// Whether systemd is the running init.
     fn systemd_running(&self) -> bool;
     /// Standard output of a command that only reports (`--version`,
-    /// `dpkg-query`, `systemctl is-active`); `None` if it cannot run or
+    /// `systemctl is-active`); `None` if it cannot run or
     /// fails.
     fn query(&self, cmd: &Cmd) -> Option<String>;
     /// Whether the process runs as root.

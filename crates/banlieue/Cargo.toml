@@ -30,7 +30,7 @@ proxmox = ["dep:banlieue-provider-proxmox"]
 # cloud-hypervisor`, ADR-0060). Linux-only at runtime: it talks to systemd
 # over D-Bus and creates taps on the KVM host it runs on.
 cloud-hypervisor = ["dep:banlieue-provider-cloud-hypervisor"]
-# Bundle `banlieue host {preflight,status,selftest,install}`, which prepares a
+# Bundle `banlieue host cloud-hypervisor {preflight,status,selftest,install}`, which prepares a
 # Cloud Hypervisor host from this binary (ADR-0067). Runs as root, once; never
 # reachable from a reconciler, since no provider crate depends on it.
 host = ["dep:banlieue-host"]
