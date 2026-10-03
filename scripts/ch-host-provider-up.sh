@@ -17,7 +17,7 @@
 #   BASE_IMAGE           raw image to put in the first storage class's cache;
 #                        optional
 #   STORAGE_CLASSES      name=dir ...    (bootstrap-cloud-hypervisor-host.sh
-#                        translates these to `banlieue host` flags)
+#                        translates these to `banlieue host cloud-hypervisor` flags)
 #   NETWORK_CLASSES      name=bridge ...
 #   PROVIDER_NAME        the Provider object this host is; default: hostname
 #

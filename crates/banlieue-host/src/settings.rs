@@ -30,7 +30,7 @@ pub const DEFAULT_CLASS: &str = "default";
 /// Interfaces, as the kernel lists them.
 pub const SYS_CLASS_NET: &str = "/sys/class/net";
 
-/// Settings shared by every `banlieue host` verb.
+/// Settings shared by every `banlieue host cloud-hypervisor` verb.
 #[derive(Clone, Debug, Default, Args)]
 pub struct HostArgs {
     /// The `Provider` this host is. Default: the host's short name.

@@ -1,6 +1,6 @@
 [package]
 name = "banlieue-host"
-description = "`banlieue host`: prepares a KVM host for banlieue's Cloud Hypervisor provider from the binary itself (ADR-0067). Run once, as root; never part of a reconcile path."
+description = "`banlieue host cloud-hypervisor`: prepares a KVM host for banlieue's Cloud Hypervisor provider from the binary itself (ADR-0067, ADR-0084). Run once, as root; never part of a reconcile path."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

@@ -8,6 +8,11 @@ SPDX-License-Identifier: Apache-2.0
 - **Date:** 2026-09-27
 - **Proposed:** 2026-09-27
 - **Deciders:** Erick Bourgeois
+- **Amended:** 2026-10-02 by [ADR-0084](0084-host-install-release-sources-and-versions.md)
+  (Decisions 1 and 8: the command is `banlieue host cloud-hypervisor <verb>`,
+  alias `ch`; Decision 2: no `packages` stage; Decision 4: the VMM and
+  firmware come from any URL at any version the client's gate accepts;
+  Decisions 7 and 8: no package installation on any distribution)
 - **Related:** [ADR-0004](0004-single-binary-subcommand-dispatch.md) (one
   binary, subcommands), [ADR-0011](0011-libvirt-provider-own-client.md) (no
   subprocess in a reconcile path), [ADR-0013](0013-banlieue-bootstrap-cli.md)

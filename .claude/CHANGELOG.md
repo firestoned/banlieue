@@ -1,5 +1,146 @@
 # Changelog
 
+## [2026-10-02 23:00] - ADR-0085: management cluster on kine/PostgreSQL, bridged nodes, Kairos on Debian
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0085-management-cluster-kine-bridge-kairos-debian.md` (Accepted).
+- `scripts/build-kairos-debian-iso.sh`: builds a Kairos installer ISO on a
+  Debian base with `kairos-init` (v0.17.3) and AuroraBoot (v0.27.1), both
+  pinned, plus `qemu-guest-agent`; prints the ISO's sha256 to pin. Kairos v4
+  publishes ISOs only for Hadron.
+- `scripts/bootstrap-k0s-cluster.sh`:
+  - `K0S_STORAGE_TYPE=etcd|kine` and `KINE_DATASOURCE`: kine writes k0s's
+    `spec.storage`; a data source containing `"` or `\` is refused; the
+    k0sctl config is now always written `0600`.
+  - `LIBVIRT_BRIDGE`: attach VMs to a host bridge instead of a libvirt
+    network; their addresses come from the guest agent, then the host's
+    neighbour table, since there is no libvirt lease.
+  - `VM_MACS`: a fixed MAC per VM, for DHCP reservations.
+  - Every VM gets a `qemu-guest-agent` channel.
+
+### Changed
+- `docs/src/guides/end-to-end-setup.md`: a "long-lived cluster" section for
+  the three options.
+- `scripts/bootstrap-k0s-cluster.sh`: on a bridge every node's address is an
+  API server SAN (as on vSphere), so kubectl can reach any controller; the
+  address wait no longer says "DHCP lease".
+- `docs/src/security/threat-model.md`: full pass, stamp advanced to
+  ADR-0085. New asset A-17 (the datastore: every object, Secrets included),
+  new boundary TB-12 (controllers to external datastore) with a §5 diagram
+  line and a STRIDE table, §7.18 (protecting a kine datastore), two §8
+  entries (the datastore as a single point of failure; bridged nodes on the
+  LAN).
+
+### Why
+A management cluster kept for months wants its state outside the VMs, nodes
+the LAN can reach (host-resident providers and DNS clients), and Kairos on a
+familiar base.
+
+### Impact
+- [ ] Breaking change (every new option is opt-in; defaults unchanged)
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-10-02 19:30] - ADR-0084: `banlieue host cloud-hypervisor` takes the VMM from any URL and version, installs no packages
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0084-host-install-release-sources-and-versions.md` (Accepted),
+  amending ADR-0067 Decisions 2, 4, 7 and 8. ADR-0067 carries an
+  `Amended:` line.
+- `crates/banlieue-host/src/release.rs`: `ReleaseArgs` (`--vmm-version`,
+  `--firmware-tag`, `--vmm-url`, `--ch-remote-url`, `--firmware-url`,
+  `--vmm-sha256`, `--ch-remote-sha256`, `--firmware-sha256`, each with a
+  `BANLIEUE_HOST_*` variable) and `resolve`: the compiled pin for the pinned
+  release whatever URL is used (a digest flag for it is refused), otherwise
+  the flag, otherwise GitHub's published asset digest. A version below the
+  client's gate, a version or tag that is not a plain directory name, a
+  non-HTTPS URL or a malformed digest is refused before anything is
+  fetched. 15 tests in `release_tests.rs`.
+- `crates/banlieue-host/src/fetch.rs`: `GitHubDigests` (reads
+  `api.github.com/repos/<org>/<repo>/releases/tags/<tag>`, capped at
+  `MAX_RELEASE_DOCUMENT_BYTES`); downloads and the API share one
+  `https_client` and a size-capped `get_capped`.
+- `crates/banlieue-host/src/render.rs`: `with_vmm`, which rewrites only an
+  existing host config's `[vmm]` section, parsed back before it is written.
+- CALM: `service-vmm-release-source` node,
+  `rel-host-installer-fetches-vmm-release` with the `host-release-integrity`
+  control; diagrams regenerated.
+
+### Changed
+- **The command is now `banlieue host cloud-hypervisor <verb>`**, alias
+  `banlieue host ch <verb>` (ADR-0084 Decision 7); `banlieue host <verb>` is
+  removed, not aliased. `crates/banlieue-host/src/lib.rs` gains a `Backend`
+  level (`Backend::CloudHypervisor(CloudHypervisorCli)`);
+  `crates/banlieue/src/cli_tests.rs` asserts both spellings parse and the
+  backend-less form is refused. Every script, guide, example, unit-file
+  header, crate doc comment, the CALM node name and the threat model now
+  use the new form; `.github/community/09-…` phase 10 records it.
+- `crates/banlieue-host/src/pins.rs`: `Release::new(version, tag, sources)`
+  lays out any release (`vmm_dir(version)`, `firmware_path(tag)`);
+  `Release::pinned()` is the compiled one. `Release` gains `version` and
+  `firmware_tag`.
+- `crates/banlieue-host/src/stages.rs`: the `packages` stage, `PACKAGES`,
+  every `apt-get`/`dpkg-query` call and `Options::install_packages` are
+  removed. `preflight` checks `REQUIRED_COMMANDS` on `PATH` and names each
+  missing one; `tpm` and `polkit` now need `preflight` (the commands) and
+  `host`. The `host` stage keeps an existing host config but brings its
+  `[vmm]` section in line with the installed release (no `--force`, no EK
+  CA rotation). `status` shows the installed version from the host config.
+- `crates/banlieue-host/src/lib.rs`: `--install-packages` /
+  `BANLIEUE_HOST_INSTALL_PACKAGES` removed; `install` and `selftest` take
+  the release flags; `--artifacts-dir` conflicts with the URL flags.
+- `crates/banlieue-host/src/error.rs`: `Error::Missing` removed; `Error::Pin`
+  says "expected", not "pinned".
+- `scripts/bootstrap-cloud-hypervisor-host.sh`: no `packages` step; env file
+  gains `VMM_VERSION`, `FIRMWARE_TAG`, `*_URL`, `*_SHA256`, passed to
+  `install` and `selftest`.
+- `Makefile` (`ch-host-install-test`): from a non-Linux workstation it now
+  stops at once with a message instead of failing to compile the Linux-only
+  provider crate, and `CH_HOST_TEST_REMOTE=user@host` syncs the tree to a
+  Linux KVM host (`CH_HOST_TEST_DIR`, default `builds/banlieue`) and runs
+  the build and the test there over `ssh -t`, rootful by default.
+- `scripts/test-ch-host-install.sh` (`make ch-host-install-test`): step 1 now
+  checks `preflight` names the missing commands, then installs them with
+  the container's own `apt-get`, as an operator would; new step 6 checks a
+  VMM below the gate is refused and nothing changes.
+- `docs/src/guides/cloud-hypervisor-host.md`: any systemd distribution, a
+  per-OS package table, the new flags, and "Choosing the VMM version and
+  where it comes from" (newer releases, Artifactory mirrors, digests)
+  replacing "Upgrading the VMM"; troubleshooting rows for the new errors.
+  Title and nav no longer say "(Debian)". "The whole chain" starts with the
+  host's packages and gains an air-gapped (Artifactory) tab; Step 2 maps
+  every release flag to its `BANLIEUE_HOST_*` variable and env-file name.
+  New "Image-based hosts (Kairos)" section, marked untested: which install
+  paths Kairos keeps across a reboot, building the packages and the
+  `banlieue` user into the image, `CUSTOM_BIND_MOUNTS` for
+  `/var/lib/banlieue` and `/etc/banlieue`, a persistent storage class, and
+  re-running `install` from a `network` boot stage.
+- `docs/src/guides/index.md`: the Cloud Hypervisor card no longer says
+  Debian-only or pinned-only.
+- `.github/community/09-phase-1f-cloud-hypervisor-provider.md`: phase 10
+  records the ADR-0084 amendment.
+- `docs/src/security/threat-model.md`: full pass, stamp advanced to
+  2026-10-02 / ADR-0084. TB-11 gains five rows and revises two, §5 diagram
+  line, §2 and A-14 updated, §7.11 one bullet, §8 two entries, §9 one.
+
+### Why
+Cloud Hypervisor hosts are not all Debian, air-gapped hosts reach GitHub
+only through a proxy such as Artifactory, and a host should be able to take
+a Cloud Hypervisor fix without a banlieue release. The packages banlieue
+used to install have no GitHub binary releases, so the host's own package
+manager is the right owner.
+
+### Impact
+- [x] Breaking change (`banlieue host <verb>` is now `banlieue host cloud-hypervisor <verb>`; `--install-packages` and the `packages` stage are gone)
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-10-02 07:58] - Release image tags keep the leading `v`
 
 **Author:** Erick Bourgeois

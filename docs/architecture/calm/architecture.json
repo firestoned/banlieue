@@ -394,7 +394,23 @@
       "unique-id": "system-k0s-bootstrap",
       "node-type": "system",
       "name": "k0s Bootstrap Script",
-      "description": "scripts/bootstrap-k0s-cluster.sh — stands up the MANAGEMENT k0s cluster that runs the banlieue controllers and kairos-operator (the substrate `banlieue bootstrap` later installs onto; not a workload provisioned through banlieue). Pluggable BACKEND: `libvirt` clones/installs Kairos VMs via virt-install on a KVM host; `vsphere` clones cluster-specific Kairos templates via govc against a vCenter, spreading nodes evenly across compute clusters so each is an etcd failure domain. Installs k0s with k0sctl. No environment-specific identifier is committed — every value comes from the GOVC_* environment, govc discovery, or an untracked operator config (ADR-0017). An opt-in `flux` step (FLUX_ENABLED=true), backend-agnostic, fetches a registry credential from Vault and pushes flux-operator + flux-core manifests onto the first controller node (ADR-0018)."
+      "description": "scripts/bootstrap-k0s-cluster.sh — stands up the MANAGEMENT k0s cluster that runs the banlieue controllers and kairos-operator (the substrate `banlieue bootstrap` later installs onto; not a workload provisioned through banlieue). Pluggable BACKEND: `libvirt` clones/installs Kairos VMs via virt-install on a KVM host; `vsphere` clones cluster-specific Kairos templates via govc against a vCenter, spreading nodes evenly across compute clusters so each is an etcd failure domain. Installs k0s with k0sctl. No environment-specific identifier is committed — every value comes from the GOVC_* environment, govc discovery, or an untracked operator config (ADR-0017). An opt-in `flux` step (FLUX_ENABLED=true), backend-agnostic, fetches a registry credential from Vault and pushes flux-operator + flux-core manifests onto the first controller node (ADR-0018). ADR-0085 adds three opt-in libvirt options: K0S_STORAGE_TYPE=kine with KINE_DATASOURCE keeps cluster state in an external SQL database instead of etcd on the controllers (the generated k0sctl config, which carries the password, is written 0600); LIBVIRT_BRIDGE puts the nodes on a host bridge, their addresses read from the guest agent, with VM_MACS for DHCP reservations; and a Kairos-on-Debian installer ISO built by scripts/build-kairos-debian-iso.sh (kairos-init + AuroraBoot)."
+    },
+    {
+      "unique-id": "database-kine-datastore",
+      "node-type": "database",
+      "name": "kine datastore (external SQL, operator-provided)",
+      "description": "With K0S_STORAGE_TYPE=kine (ADR-0085), the management cluster's state (every Kubernetes object, Secrets included) lives in an external SQL database, e.g. PostgreSQL on the hypervisor host, reached by each controller's kine over TLS. Its availability and backups are the cluster's. Operator-configured; banlieue only writes the data source into k0s's config. Threat model A-17, TB-12.",
+      "interfaces": [
+        {
+          "unique-id": "kine-sql-tls",
+          "definition-url": "https://calm.finos.org/release/1.2/prototype/interface/host-port.json",
+          "config": {
+            "port": 5432,
+            "protocol": "TLS"
+          }
+        }
+      ]
     },
     {
       "unique-id": "network-oidc-issuer",
@@ -470,7 +486,7 @@
       "unique-id": "network-cloud-hypervisor-host",
       "node-type": "network",
       "name": "Cloud Hypervisor KVM Host",
-      "description": "A bare-metal KVM host prepared by `banlieue host install` (ADR-0067; the script is now an SSH wrapper around it): the pinned VMM and CLOUDHV.fd firmware, the `banlieue` user, a guest uid range registered in /etc/userdb (one user and private group per guest), storage class directories (0711, per-guest 2770), root-owned template units for guests, vTPMs and image imports, a polkit rule limiting the provider to start/stop/reset-failed instances of those templates for uids in the guest range, and the provider's own sandboxed unit. One host is one Provider and one failure domain (ADR-0060)."
+      "description": "A bare-metal KVM host prepared by `banlieue host cloud-hypervisor install` (ADR-0067, ADR-0084; the script is now an SSH wrapper around it): the pinned VMM and CLOUDHV.fd firmware, the `banlieue` user, a guest uid range registered in /etc/userdb (one user and private group per guest), storage class directories (0711, per-guest 2770), root-owned template units for guests, vTPMs and image imports, a polkit rule limiting the provider to start/stop/reset-failed instances of those templates for uids in the guest range, and the provider's own sandboxed unit. One host is one Provider and one failure domain (ADR-0060)."
     },
     {
       "unique-id": "service-oci-registry",
@@ -507,8 +523,24 @@
     {
       "unique-id": "service-banlieue-host-installer",
       "node-type": "service",
-      "name": "banlieue host (installer)",
-      "description": "`banlieue host {preflight,status,selftest,install}` (ADR-0067): the same banlieue binary, run once as root by an operator or a cloud-init payload, prepares a KVM host for the Cloud Hypervisor provider. Stages: packages (apt, opt-in), the sha256-pinned VMM and firmware (one pin, equal to the vendored REST spec's, ADR-0061), the banlieue user, guest uid records, directories and the host config (rendered from the provider's own HostConfig type), the per-host EK CA, the polkit rule, the template units and the provider unit. Read-only verbs cannot write by construction; install is idempotent and writes every file by temp-and-rename. Lives in the banlieue-host crate, which the provider crate does not depend on, so no reconcile path can reach it (ADR-0011). Never creates a bridge, has no SSH client, and exits when done: it is not a daemon."
+      "name": "banlieue host cloud-hypervisor (installer)",
+      "description": "`banlieue host cloud-hypervisor {preflight,status,selftest,install}` (alias `ch`; ADR-0067, amended by ADR-0084, which also put the backend in the command): the same banlieue binary, run once as root by an operator or a cloud-init payload, prepares a KVM host for the Cloud Hypervisor provider. It installs no OS packages on any distribution (ADR-0084 Decision 1): preflight checks, by command, for the systemd, swtpm and swtpm-tools pieces the host supplies through its own package manager or image build. Stages: the VMM, ch-remote and firmware, each from its own URL (github.com by default, or an operator mirror such as an Artifactory VCS remote), at the pinned version or any version the client's version gate accepts, and verified against a sha256 before any is installed (compiled pin, operator flag, or GitHub's published asset digest); the banlieue user, guest uid records, directories and the host config (rendered from the provider's own HostConfig type, with its [vmm] section kept in step with the installed release); the per-host EK CA, the polkit rule, the template units and the provider unit. Read-only verbs cannot write by construction; install is idempotent and writes every file by temp-and-rename. Lives in the banlieue-host crate, which the provider crate does not depend on, so no reconcile path can reach it (ADR-0011). Never creates a bridge, has no SSH client, and exits when done: it is not a daemon."
+    },
+    {
+      "unique-id": "service-vmm-release-source",
+      "node-type": "service",
+      "name": "Cloud Hypervisor release source (github.com or operator mirror, external)",
+      "description": "Where banlieue host cloud-hypervisor install fetches the three host artifacts banlieue does not build: cloud-hypervisor-static and ch-remote-static (cloud-hypervisor/cloud-hypervisor releases) and CLOUDHV.fd (cloud-hypervisor/edk2 releases). github.com by default; an air-gapped host names an internal mirror per file with --vmm-url, --ch-remote-url and --firmware-url (ADR-0084 Decision 2). For a non-pinned version without a digest flag, the installer also reads GitHub's published asset digest from api.github.com. Integrity comes from the sha256 check, not from trusting the source: nothing is installed unless every file matches. Only the installer talks to it, never the provider.",
+      "interfaces": [
+        {
+          "unique-id": "release-download-https",
+          "definition-url": "https://calm.finos.org/release/1.2/prototype/interface/http-endpoint.json",
+          "config": {
+            "port": 443,
+            "protocol": "HTTPS"
+          }
+        }
+      ]
     }
   ],
   "relationships": [
@@ -966,6 +998,24 @@
       }
     },
     {
+      "unique-id": "rel-management-api-kine-datastore",
+      "description": "With kine, every k0s controller of the management cluster reads and writes cluster state in the external datastore instead of etcd, over TLS with a password-authenticated role (ADR-0085). The data source comes from the operator's untracked env file through scripts/bootstrap-k0s-cluster.sh.",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "service-kubernetes-api"
+          },
+          "destination": {
+            "node": "database-kine-datastore",
+            "interfaces": [
+              "kine-sql-tls"
+            ]
+          }
+        }
+      },
+      "protocol": "TLS"
+    },
+    {
       "unique-id": "rel-bootstrap-vault",
       "description": "The bootstrap script's opt-in flux step fetches a registry credential from HashiCorp Vault via the `vault` CLI (token auth, KV mount/path operator-supplied) to build the flux-operator image-pull secret (ADR-0018).",
       "relationship-type": {
@@ -1374,6 +1424,42 @@
             {
               "requirement-url": "https://calm.finos.org/release/1.2/meta/control-requirement.json",
               "config-url": "crates/banlieue-host"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-host-installer-fetches-vmm-release",
+      "description": "During the vmm stage the installer downloads the VMM, ch-remote and firmware over HTTPS (rustls, https_only), each from its default github.com release URL or an operator-supplied URL, capped at MAX_ARTIFACT_BYTES, and verifies every file's sha256 before installing any (ADR-0067 Decision 4, ADR-0084 Decision 4). A version below the client's gate is refused before any fetch. Code: crates/banlieue-host/src/fetch.rs, pins.rs, release.rs, stages.rs::vmm.",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "service-banlieue-host-installer"
+          },
+          "destination": {
+            "node": "service-vmm-release-source",
+            "interfaces": [
+              "release-download-https"
+            ]
+          }
+        }
+      },
+      "protocol": "HTTPS",
+      "controls": {
+        "host-release-integrity": {
+          "description": "Every host artifact is verified against a sha256 before any is installed: the digest compiled into the binary for the pinned release (a URL flag changes where the bytes come from, never what they must hash to, and a digest flag for a pinned file is refused); for any other version, the operator's --vmm-sha256/--ch-remote-sha256/--firmware-sha256, or GitHub's published asset digest. A VMM older than the client's version gate is refused before any fetch. On a mismatch nothing is written and the previous symlinks stay.",
+          "requirements": [
+            {
+              "requirement-url": "https://github.com/firestoned/banlieue/blob/main/docs/adr/0084-host-install-release-sources-and-versions.md",
+              "config": {
+                "framework": "banlieue-host verify-before-install",
+                "controls": [
+                  "host-artifact-sha256-before-install",
+                  "host-vmm-version-floor"
+                ],
+                "evidence": "docs/adr/0084-host-install-release-sources-and-versions.md, crates/banlieue-host/src/release.rs, crates/banlieue-host/src/release_tests.rs, crates/banlieue-host/src/stages.rs (vmm), crates/banlieue-host/src/stages_tests.rs (a_pin_mismatch_installs_nothing)"
+              }
             }
           ]
         }
@@ -2407,6 +2493,8 @@
     "docs/adr/0064-artifact-delivery-to-host-resident-providers.md",
     "docs/adr/0065-cloud-hypervisor-vtpm-and-deferred-install.md",
     "docs/adr/0067-banlieue-host-install-subcommand.md",
-    "docs/adr/0083-block-duplicate-static-address.md"
+    "docs/adr/0083-block-duplicate-static-address.md",
+    "docs/adr/0084-host-install-release-sources-and-versions.md",
+    "docs/adr/0085-management-cluster-kine-bridge-kairos-debian.md"
   ]
 }

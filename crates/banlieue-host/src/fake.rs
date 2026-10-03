@@ -7,7 +7,7 @@
 //! directory fails, `mkdir` refuses a symlink, changing the mode of a
 //! symlink fails, and an owner must be a user and group that exist. The
 //! commands the stages run are simulated: `useradd` creates the user,
-//! `apt-get install` installs the packages, `swtpm_setup` creates the CA
+//! `swtpm_setup` creates the CA
 //! and writes an EK certificate, `systemctl enable --now` starts a unit.
 
 use crate::ops::{Cmd, Host, Kind, Owner, Probe, Stat};
@@ -47,8 +47,6 @@ pub struct State {
     pub users: BTreeMap<String, (u32, u32)>,
     /// Groups: name → (gid, members).
     pub groups: BTreeMap<String, (u32, BTreeSet<String>)>,
-    /// Installed packages; `None` means the host has no dpkg.
-    pub dpkg: Option<BTreeSet<String>>,
     /// Units and their state.
     pub units: BTreeMap<String, String>,
 }
@@ -119,7 +117,6 @@ impl FakeHost {
             s.groups.insert("root".into(), (0, BTreeSet::new()));
             s.groups
                 .insert("kvm".into(), (FAKE_KVM_GID, BTreeSet::new()));
-            s.dpkg = Some(BTreeSet::new());
         }
         for d in [
             "/",
@@ -176,15 +173,11 @@ impl FakeHost {
         );
     }
 
-    /// Install `packages` as dpkg would, putting their commands on `PATH`.
+    /// What the host's own package manager would have installed: the
+    /// commands of `packages`, on `PATH`. banlieue installs none of them
+    /// (ADR-0084 Decision 1).
     pub fn install_packages(&self, packages: &[&str]) {
         for p in packages {
-            self.state
-                .lock()
-                .unwrap()
-                .dpkg
-                .get_or_insert_with(BTreeSet::new)
-                .insert((*p).to_string());
             for cmd in commands_of(p) {
                 self.put_file(&format!("/usr/bin/{cmd}"), b"", Kind::File);
             }
@@ -296,15 +289,7 @@ impl FakeHost {
                     .ok_or_else(|| io::Error::other(format!("usermod: no group {group}")))?;
                 g.1.insert((*user).to_string());
             }
-            ("apt-get", ["install", rest @ ..]) => {
-                let pkgs: Vec<&str> = rest
-                    .iter()
-                    .copied()
-                    .filter(|a| !a.starts_with('-'))
-                    .collect();
-                self.install_packages(&pkgs);
-            }
-            ("apt-get", _) | ("systemctl", ["daemon-reload"]) => {}
+            ("systemctl", ["daemon-reload"]) => {}
             ("systemctl", ["enable", "--now", unit]) => {
                 self.state
                     .lock()
@@ -393,7 +378,7 @@ impl FakeHost {
     }
 }
 
-/// The commands a package puts on `PATH`, for the fake dpkg.
+/// The commands a package puts on `PATH`.
 fn commands_of(package: &str) -> &'static [&'static str] {
     match package {
         "swtpm" => &["swtpm"],
@@ -471,15 +456,6 @@ impl Probe for FakeHost {
     fn query(&self, cmd: &Cmd) -> Option<String> {
         let args: Vec<&str> = cmd.args.iter().map(String::as_str).collect();
         match (cmd.program.as_str(), args.as_slice()) {
-            ("dpkg-query", [.., pkg]) => {
-                let s = self.state.lock().unwrap();
-                let dpkg = s.dpkg.as_ref()?;
-                Some(if dpkg.contains(*pkg) {
-                    "install ok installed".into()
-                } else {
-                    "unknown ok not-installed".into()
-                })
-            }
             ("systemctl", ["is-active", unit]) => Some(
                 self.state
                     .lock()

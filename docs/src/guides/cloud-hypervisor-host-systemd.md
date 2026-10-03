@@ -12,7 +12,7 @@ not to be needed has been removed (see
 [Deliberately not set](#deliberately-not-set)).
 
 The files live in the repository as templates, compiled into the `banlieue`
-binary and rendered and installed by `banlieue host install` (ADR-0067;
+binary and rendered and installed by `banlieue host cloud-hypervisor install` (ADR-0067;
 [bootstrap guide](cloud-hypervisor-host.md)). A placeholder left unfilled
 is an error, never an installed unit:
 

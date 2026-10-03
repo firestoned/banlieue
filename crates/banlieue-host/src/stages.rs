@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Erick Bourgeois, banlieue
 // SPDX-License-Identifier: Apache-2.0
-//! The stages of `banlieue host install`, and the read-only verbs
+//! The stages of `banlieue host cloud-hypervisor install`, and the read-only verbs
 //! (ADR-0067 Decisions 1, 2 and 5).
 //!
 //! Each stage leaves the host as it should be and changes nothing that
@@ -57,21 +57,8 @@ const SCRATCH_DIR: &str = ".host-scratch";
 /// checks for a machine.
 const SELFTEST_VMID_NAME: &str = "banlieue-selftest";
 const SELFTEST_VMID_UUID: &str = "00000000-0000-4000-8000-000000000000";
-/// What dpkg reports for an installed package.
-const DPKG_INSTALLED: &str = "install ok installed";
-
-/// Packages a host needs (Debian names). No qemu, no libvirt.
-pub const PACKAGES: [&str; 8] = [
-    "ca-certificates",
-    "dbus",
-    "iproute2",
-    "libnss-systemd",
-    "polkitd",
-    "swtpm",
-    "swtpm-tools",
-    "systemd",
-];
-/// What must be on `PATH` when packages cannot be checked by name.
+/// The commands the host supplies, from whatever its OS installs packages
+/// with (ADR-0084 Decision 1). banlieue installs none of them.
 pub const REQUIRED_COMMANDS: [&str; 5] = [
     "swtpm",
     "swtpm_setup",
@@ -83,12 +70,10 @@ pub const REQUIRED_COMMANDS: [&str; 5] = [
 /// A stage of `install`, in its order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 pub enum Stage {
-    /// Is this host fit for guests? Changes nothing.
+    /// Is this host fit for guests, with the commands it must supply?
+    /// Changes nothing.
     Preflight,
-    /// swtpm, polkit, dbus, NSS's systemd module: verified, or installed
-    /// with `--install-packages`.
-    Packages,
-    /// The pinned VMM, `ch-remote` and firmware, verified.
+    /// The VMM, `ch-remote` and firmware, verified.
     Vmm,
     /// The provider's user, guest uid records, directories, host config.
     Host,
@@ -108,7 +93,6 @@ impl Stage {
     pub fn name(self) -> &'static str {
         match self {
             Self::Preflight => "preflight",
-            Self::Packages => "packages",
             Self::Vmm => "vmm",
             Self::Host => "host",
             Self::Tpm => "tpm",
@@ -124,8 +108,6 @@ impl Stage {
 pub struct Options {
     /// One stage only.
     pub only: Option<Stage>,
-    /// Install missing packages through `apt-get`.
-    pub install_packages: bool,
     /// Regenerate the host config and rotate the EK CA.
     pub force: bool,
     /// A banlieue binary to install as the provider.
@@ -230,8 +212,12 @@ pub fn preflight(probe: &dyn Probe, s: &Settings) -> Result<(), Error> {
     if arch != PINNED_ARCH {
         bad.push(format!("{arch}: only {PINNED_ARCH} is pinned"));
     }
-    if probe.which("systemctl").is_none() {
-        bad.push("systemd is required (ADR-0063)".into());
+    for c in REQUIRED_COMMANDS {
+        if probe.which(c).is_none() {
+            bad.push(format!(
+                "{c} is not on PATH: install it with this host's package manager (systemd, swtpm, swtpm-tools)"
+            ));
+        }
     }
     if s.network.is_empty() {
         bad.push(format!(
@@ -307,61 +293,9 @@ pub fn preflight(probe: &dyn Probe, s: &Settings) -> Result<(), Error> {
     Ok(())
 }
 
-// ----------------------------------------------------------------- packages
-
-/// Verify the packages a host needs, or install the missing ones.
-///
-/// # Errors
-/// [`Error::Missing`] naming what is missing (without `--install-packages`),
-/// [`Error::Unsupported`] for `--install-packages` without `apt-get`.
-pub fn packages(host: &dyn Host, install: bool) -> Result<(), Error> {
-    log("Packages");
-    if host.which("dpkg-query").is_none() {
-        let missing: Vec<String> = REQUIRED_COMMANDS
-            .iter()
-            .filter(|c| host.which(c).is_none())
-            .map(ToString::to_string)
-            .collect();
-        if missing.is_empty() {
-            note("no dpkg here; the commands banlieue needs are present");
-            return Ok(());
-        }
-        if install {
-            return Err(Error::Unsupported(
-                "--install-packages needs apt-get; install the packages by hand".into(),
-            ));
-        }
-        return Err(Error::Missing(missing));
-    }
-    let missing: Vec<&str> = PACKAGES
-        .iter()
-        .copied()
-        .filter(|p| {
-            !host
-                .query(&Cmd::new("dpkg-query", &["-W", "-f=${Status}", p]))
-                .is_some_and(|s| s.contains(DPKG_INSTALLED))
-        })
-        .collect();
-    if missing.is_empty() {
-        note("all present");
-        return Ok(());
-    }
-    if !install {
-        return Err(Error::Missing(
-            missing.iter().map(ToString::to_string).collect(),
-        ));
-    }
-    host.run(&Cmd::new("apt-get", &["update", "-qq"]).env("DEBIAN_FRONTEND", "noninteractive"))?;
-    let mut args = vec!["install", "-y", "-qq", "--no-install-recommends"];
-    args.extend(&missing);
-    host.run(&Cmd::new("apt-get", &args).env("DEBIAN_FRONTEND", "noninteractive"))?;
-    note(format!("installed {}", missing.join(" ")));
-    Ok(())
-}
-
 // ---------------------------------------------------------------------- vmm
 
-/// Install the pinned VMM, `ch-remote` and firmware. Every artifact is
+/// Install the release's VMM, `ch-remote` and firmware. Every artifact is
 /// fetched and verified before any is installed; on a mismatch nothing is
 /// written and the symlinks stay as they were (invariant 1).
 ///
@@ -375,8 +309,7 @@ pub async fn vmm(
 ) -> Result<(), Error> {
     log(format!(
         "VMM: cloud-hypervisor {}, firmware {}",
-        pins::VMM_VERSION,
-        pins::FIRMWARE_TAG
+        release.version, release.firmware_tag
     ));
     let mut verified = Vec::new();
     for a in &release.artifacts {
@@ -420,11 +353,12 @@ pub async fn vmm(
 // --------------------------------------------------------------------- host
 
 /// The provider's user, the guest uid records, every directory, and the
-/// host config.
+/// host config, whose `[vmm]` section names `release` (ADR-0084
+/// Decision 5).
 ///
 /// # Errors
 /// The I/O error, or [`Error::Config`] if the host config would not load.
-pub fn host(host: &dyn Host, s: &Settings, o: &Options) -> Result<(), Error> {
+pub fn host(host: &dyn Host, s: &Settings, release: &Release, o: &Options) -> Result<(), Error> {
     log("Host");
     if host.getent("passwd", BANLIEUE_USER).is_none() {
         note(format!("creating system user {BANLIEUE_USER}"));
@@ -509,12 +443,8 @@ pub fn host(host: &dyn Host, s: &Settings, o: &Options) -> Result<(), Error> {
 
     register_guest_uids(host, s, o)?;
 
-    if host.exists(Path::new(HOST_CONFIG)) && !o.force {
-        note(format!(
-            "{HOST_CONFIG} exists, keeping it (--force regenerates)"
-        ));
-    } else {
-        let text = render::host_config(s, host)?;
+    if !host.exists(Path::new(HOST_CONFIG)) || o.force {
+        let text = render::host_config(s, host, release)?;
         put(
             host,
             Path::new(HOST_CONFIG),
@@ -523,7 +453,49 @@ pub fn host(host: &dyn Host, s: &Settings, o: &Options) -> Result<(), Error> {
             &root_banlieue(),
         )?;
         note(format!("wrote {HOST_CONFIG}"));
+        return Ok(());
     }
+    note(format!(
+        "{HOST_CONFIG} exists, keeping it (--force regenerates)"
+    ));
+    refresh_vmm_section(host, release, o)
+}
+
+/// An existing host config keeps everything but `[vmm]`, which follows
+/// the release just installed, so changing the VMM never needs `--force`
+/// and its EK CA rotation (ADR-0084 Decision 5). A file that does not
+/// parse is the admin's to fix, and is left as it is.
+fn refresh_vmm_section(host: &dyn Host, release: &Release, o: &Options) -> Result<(), Error> {
+    let existing = match host.read(Path::new(HOST_CONFIG)) {
+        Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+        Err(e) if o.dry_run => {
+            note(format!("{HOST_CONFIG}: {e}; [vmm] not checked"));
+            return Ok(());
+        }
+        Err(e) => return Err(e.into()),
+    };
+    let updated = match render::with_vmm(&existing, release) {
+        Ok(Some(text)) => text,
+        Ok(None) => return Ok(()),
+        Err(e) => {
+            note(format!(
+                "!!! {HOST_CONFIG} is left as it is, its [vmm] not updated: {e}"
+            ));
+            return Ok(());
+        }
+    };
+    put(
+        host,
+        Path::new(HOST_CONFIG),
+        updated.as_bytes(),
+        MODE_HOST_CONFIG,
+        &root_banlieue(),
+    )?;
+    note(format!(
+        "[vmm] in {HOST_CONFIG} now names cloud-hypervisor {} and firmware {}; \
+         restart {PROVIDER_UNIT} so it reads them",
+        release.version, release.firmware_tag
+    ));
     Ok(())
 }
 
@@ -796,8 +768,8 @@ pub fn certificate_cn(der: &[u8]) -> Option<String> {
         .map(str::to_string)
 }
 
-/// Prove the pieces work together without booting a guest: the pinned VMM
-/// runs, the firmware matches its pin, guest uids resolve, the provider's
+/// Prove the pieces work together without booting a guest: the VMM runs,
+/// the firmware matches the release's digest, guest uids resolve, the provider's
 /// user can open `/dev/kvm`, the host config loads and passes the
 /// provider's own host checks, and a vTPM can be manufactured with the EK
 /// CN a machine's would carry. Leaves nothing behind.
@@ -967,10 +939,28 @@ pub fn status(probe: &dyn Probe) {
             .as_deref()
             .map_or("MISSING", |v| v.lines().next().unwrap_or_default()),
     );
+    // What the host config says was installed; unreadable without root.
+    let configured = probe
+        .read(Path::new(HOST_CONFIG))
+        .ok()
+        .and_then(|b| HostConfig::parse(&String::from_utf8_lossy(&b)).ok())
+        .map(|c| c.vmm);
+    row(
+        "installed",
+        configured
+            .as_ref()
+            .map_or("unknown (no readable host config)", |v| v.version.as_str()),
+    );
     row("pinned", pins::VMM_VERSION);
+    let firmware =
+        configured.map_or_else(|| pins::firmware_path(pins::FIRMWARE_TAG), |v| v.firmware);
     row(
         "firmware",
-        present(probe, &pins::firmware_path().display().to_string()),
+        &format!(
+            "{} ({})",
+            present(probe, &firmware.display().to_string()),
+            firmware.display()
+        ),
     );
     row(
         "swtpm",
@@ -1015,15 +1005,15 @@ pub fn status(probe: &dyn Probe) {
 /// What `stage` builds on, if it is missing (ADR-0067 Decision 2).
 #[must_use]
 pub fn missing_prerequisites(stage: Stage, probe: &dyn Probe, release: &Release) -> Vec<String> {
-    let packages = || REQUIRED_COMMANDS.iter().all(|c| probe.which(c).is_some());
+    let commands = || REQUIRED_COMMANDS.iter().all(|c| probe.which(c).is_some());
     let vmm = || probe.exists(Path::new(VMM_BINARY)) && probe.exists(&release.firmware);
     let host =
         || probe.getent("passwd", BANLIEUE_USER).is_some() && probe.exists(Path::new(HOST_CONFIG));
     let tpm = || probe.exists(Path::new(EK_CA_CERT));
     let polkit = || probe.exists(Path::new(POLKIT_RULE));
     let needs: &[(Stage, &dyn Fn() -> bool)] = match stage {
-        Stage::Preflight | Stage::Packages | Stage::Vmm | Stage::Host => &[],
-        Stage::Tpm | Stage::Polkit => &[(Stage::Packages, &packages), (Stage::Host, &host)],
+        Stage::Preflight | Stage::Vmm | Stage::Host => &[],
+        Stage::Tpm | Stage::Polkit => &[(Stage::Preflight, &commands), (Stage::Host, &host)],
         Stage::Provider => &[(Stage::Host, &host)],
         Stage::Selftest => &[
             (Stage::Vmm, &vmm),
@@ -1039,9 +1029,7 @@ pub fn missing_prerequisites(stage: Stage, probe: &dyn Probe, release: &Release)
         .collect()
 }
 
-/// The stages `install` runs, in order. With `--install-packages` the
-/// packages come first: what preflight checks (the kvm group, NSS's systemd
-/// module) can come from them.
+/// The stages `install` runs, in order.
 #[must_use]
 pub fn plan(o: &Options) -> Vec<Stage> {
     if let Some(only) = o.only {
@@ -1049,7 +1037,6 @@ pub fn plan(o: &Options) -> Vec<Stage> {
     }
     let mut order = vec![
         Stage::Preflight,
-        Stage::Packages,
         Stage::Vmm,
         Stage::Host,
         Stage::Tpm,
@@ -1057,9 +1044,6 @@ pub fn plan(o: &Options) -> Vec<Stage> {
         Stage::Provider,
         Stage::Selftest,
     ];
-    if o.install_packages {
-        order.swap(0, 1);
-    }
     if o.dry_run {
         // The self-test manufactures a TPM: an action, not a report.
         order.retain(|s| *s != Stage::Selftest);
@@ -1067,7 +1051,7 @@ pub fn plan(o: &Options) -> Vec<Stage> {
     order
 }
 
-/// `banlieue host install`.
+/// `banlieue host cloud-hypervisor install`.
 ///
 /// # Errors
 /// The first stage's error; or [`Error::Prerequisite`] for `--only` a
@@ -1092,9 +1076,8 @@ pub async fn install(
     for stage in plan(o) {
         match stage {
             Stage::Preflight => preflight(host, s)?,
-            Stage::Packages => packages(host, o.install_packages)?,
             Stage::Vmm => vmm(host, fetch, release, o).await?,
-            Stage::Host => self::host(host, s, o)?,
+            Stage::Host => self::host(host, s, release, o)?,
             Stage::Tpm => tpm(host, o)?,
             Stage::Polkit => polkit(host, s)?,
             Stage::Provider => provider(host, s, o)?,
