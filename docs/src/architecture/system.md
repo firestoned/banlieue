@@ -50,6 +50,7 @@ flowchart LR
     data-asset-capi-cluster-cr["CAPI Cluster / MachineDeployment (external)"]
     service-capi-core["Cluster API core + control-plane provider (k0smotron)"]
     system-k0s-bootstrap["k0s Bootstrap Script"]
+    database-kine-datastore["kine datastore (external SQL, operator-provided)"]
     network-oidc-issuer["OIDC Token Issuer (JWKS / discovery)"]
     service-sandbox-broker["Sandbox Broker (planned, roadmap phase C — not shipped by banlieue)"]
     service-in-guest-agent["In-guest agent (separate repository — not built)"]
@@ -58,7 +59,8 @@ flowchart LR
     network-cloud-hypervisor-host["Cloud Hypervisor KVM Host"]
     service-oci-registry["OCI Registry (operator-provided, external)"]
     service-swtpm["swtpm (one per tpmEnabled Cloud Hypervisor guest)"]
-    service-banlieue-host-installer["banlieue host (installer)"]
+    service-banlieue-host-installer["banlieue host cloud-hypervisor (installer)"]
+    service-vmm-release-source["Cloud Hypervisor release source (github.com or operator mirror, external)"]
     subgraph sg_system-banlieue-binary [System Banlieue Binary]
         service-banlieue-controller
         service-banlieue-operator
@@ -111,6 +113,7 @@ flowchart LR
     service-provider-libvirt -->|TLS| network-libvirt-backend
     system-k0s-bootstrap --> network-vsphere-backend
     system-k0s-bootstrap --> network-libvirt-backend
+    service-kubernetes-api -->|TLS| database-kine-datastore
     system-k0s-bootstrap --> network-vault-backend
     service-banlieue-controller --> data-asset-virtualmachinepool-cr
     service-banlieue-controller --> data-asset-virtualmachine-cr
@@ -138,6 +141,7 @@ flowchart LR
     subgraph sg_network-cloud-hypervisor-host [Network Cloud Hypervisor Host]
         service-banlieue-host-installer
     end
+    service-banlieue-host-installer -->|HTTPS| service-vmm-release-source
 ```
 
 <sub>Source: nodes and relationships in `architecture.json`.</sub>

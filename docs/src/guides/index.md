@@ -41,9 +41,11 @@ on a real cluster, using the released container image
 
 - :material-server-security: **[Cloud Hypervisor Host Bootstrap](cloud-hypervisor-host.md)**
 
-    Prepare a bare-metal Debian host for the host-resident Cloud Hypervisor
-    provider: pinned VMM and firmware, per-guest uids, a per-host EK CA, and a
-    safe way to add a bridge to a remote machine.
+    Prepare a bare-metal Linux host (Debian, Kairos, any systemd
+    distribution) for the host-resident Cloud Hypervisor provider: the VMM
+    and firmware from GitHub or your own mirror, at the pinned or a newer
+    release, per-guest uids, a per-host EK CA, and a safe way to add a bridge
+    to a remote machine.
 
 - :material-shield-lock: **[Cloud Hypervisor Host: systemd, polkit, identities](cloud-hypervisor-host-systemd.md)**
 

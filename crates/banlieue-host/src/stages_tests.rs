@@ -9,7 +9,7 @@ mod tests {
     use crate::dryrun::DryRun;
     use crate::fake::{FakeHost, State};
     use crate::fetch::Fetch;
-    use crate::pins::{Artifact, Release};
+    use crate::pins::{Artifact, Release, Source};
     use crate::settings::{Settings, resolve};
     use async_trait::async_trait;
     use banlieue_provider_cloud_hypervisor::provider::HostFacts;
@@ -22,19 +22,41 @@ mod tests {
     /// Few guest uids, so the tests stay fast.
     const TEST_UID_COUNT: u32 = 4;
 
+    const NEWER_VMM_BYTES: &[u8] = b"cloud-hypervisor v54.0";
+    const NEWER_REMOTE_BYTES: &[u8] = b"ch-remote v54.0";
+    const NEWER_FIRMWARE_BYTES: &[u8] = b"CLOUDHV.fd, newer";
+
+    fn known(url: &str, bytes: &[u8]) -> Source {
+        Source {
+            url: url.into(),
+            sha256: pins::sha256_hex(bytes),
+        }
+    }
+
     /// The pinned release's layout with known bytes: no test can produce
     /// bytes matching the real digests.
     fn release() -> Release {
-        let mut r = Release::pinned();
-        for (a, bytes) in r
-            .artifacts
-            .iter_mut()
-            .zip([VMM_BYTES, REMOTE_BYTES, FIRMWARE_BYTES])
-        {
-            a.sha256 = pins::sha256_hex(bytes);
-        }
-        r.firmware_sha256 = pins::sha256_hex(FIRMWARE_BYTES);
-        r
+        Release::new(
+            pins::VMM_VERSION,
+            pins::FIRMWARE_TAG,
+            known("https://github.com/vmm", VMM_BYTES),
+            known("https://github.com/ch-remote", REMOTE_BYTES),
+            known("https://github.com/firmware", FIRMWARE_BYTES),
+        )
+    }
+
+    /// Another release, as `--vmm-version` and `--firmware-tag` choose.
+    fn newer() -> Release {
+        Release::new(
+            "v54.0",
+            "ch-0123456789",
+            known("https://internal.example.com/vmm", NEWER_VMM_BYTES),
+            known("https://internal.example.com/ch-remote", NEWER_REMOTE_BYTES),
+            known(
+                "https://internal.example.com/firmware",
+                NEWER_FIRMWARE_BYTES,
+            ),
+        )
     }
 
     /// Serves artifacts by name, and counts fetches.
@@ -51,6 +73,17 @@ mod tests {
                     ("cloud-hypervisor-static", VMM_BYTES.to_vec()),
                     ("ch-remote-static", REMOTE_BYTES.to_vec()),
                     ("CLOUDHV.fd", FIRMWARE_BYTES.to_vec()),
+                ]),
+                ..Self::default()
+            }
+        }
+
+        fn newer() -> Self {
+            Self {
+                files: BTreeMap::from([
+                    ("cloud-hypervisor-static", NEWER_VMM_BYTES.to_vec()),
+                    ("ch-remote-static", NEWER_REMOTE_BYTES.to_vec()),
+                    ("CLOUDHV.fd", NEWER_FIRMWARE_BYTES.to_vec()),
                 ]),
                 ..Self::default()
             }
@@ -80,10 +113,10 @@ mod tests {
         }
     }
 
+    /// A host whose own package manager installed what banlieue needs.
     fn fake_host() -> FakeHost {
         let h = FakeHost::debian();
-        h.put_file("/usr/bin/dpkg-query", b"", Kind::File);
-        h.put_file("/usr/bin/apt-get", b"", Kind::File);
+        h.install_packages(&["swtpm", "swtpm-tools", "systemd"]);
         h
     }
 
@@ -99,10 +132,7 @@ mod tests {
     }
 
     fn opts() -> Options {
-        Options {
-            install_packages: true,
-            ..Options::default()
-        }
+        Options::default()
     }
 
     async fn install_all(h: &FakeHost, s: &Settings, o: &Options) -> Result<(), Error> {
@@ -143,7 +173,26 @@ mod tests {
     #[test]
     fn preflight_passes_on_a_ready_host() {
         let h = fake_host();
-        h.install_packages(&["systemd"]);
+        preflight(&h, &settings(&h)).unwrap();
+    }
+
+    /// banlieue installs no packages (ADR-0084 Decision 1): preflight
+    /// names every command the host must supply, by command, on any OS.
+    #[test]
+    fn preflight_names_every_command_the_host_must_supply() {
+        let h = FakeHost::debian();
+        let Err(Error::Preflight(problems)) = preflight(&h, &settings(&h)) else {
+            panic!("preflight passed without swtpm or systemd");
+        };
+        let all = problems.join("\n");
+        for c in REQUIRED_COMMANDS {
+            assert!(
+                all.contains(&format!("{c} is not on PATH")),
+                "{c} in:\n{all}"
+            );
+        }
+        assert!(h.commands().is_empty(), "preflight installs nothing");
+        h.install_packages(&["swtpm", "swtpm-tools", "systemd"]);
         preflight(&h, &settings(&h)).unwrap();
     }
 
@@ -156,6 +205,7 @@ mod tests {
             let mut st = h.state.lock().unwrap();
             st.fs.remove(Path::new("/dev/kvm"));
             st.users.insert("mallory".into(), (2_000_001, 2_000_001));
+            st.fs.remove(Path::new("/usr/bin/systemctl"));
         }
         h.put_file(
             "/etc/nsswitch.conf",
@@ -172,7 +222,7 @@ mod tests {
         for expected in [
             "inside a VM",
             "/dev/kvm",
-            "systemd is required",
+            "systemctl is not on PATH",
             "br9: not a bridge",
             "account mallory",
             "nsswitch.conf passwd",
@@ -186,37 +236,10 @@ mod tests {
     #[test]
     fn a_virtualized_lab_host_passes_when_allowed() {
         let h = fake_host();
-        h.install_packages(&["systemd"]);
         h.env.lock().unwrap().virt = Some("kvm".into());
         let mut s = settings(&h);
         s.allow_virtualized = true;
         preflight(&h, &s).unwrap();
-    }
-
-    // ------------------------------------------------------------- packages
-
-    #[test]
-    fn packages_are_verified_unless_installing_is_asked_for() {
-        let h = fake_host();
-        match packages(&h, false) {
-            Err(Error::Missing(m)) => assert_eq!(m.len(), PACKAGES.len()),
-            other => panic!("{other:?}"),
-        }
-        assert_eq!(count(&h, "apt-get"), 0);
-        packages(&h, true).unwrap();
-        assert_eq!(count(&h, "apt-get install"), 1);
-        packages(&h, false).unwrap();
-    }
-
-    /// Only apt-get installs; elsewhere the stage verifies commands.
-    #[test]
-    fn without_dpkg_packages_only_verifies() {
-        let h = FakeHost::debian();
-        h.state.lock().unwrap().dpkg = None;
-        assert!(matches!(packages(&h, true), Err(Error::Unsupported(_))));
-        assert!(matches!(packages(&h, false), Err(Error::Missing(_))));
-        h.install_packages(&["swtpm", "swtpm-tools", "systemd"]);
-        packages(&h, false).unwrap();
     }
 
     // ------------------------------------------------------------------ vmm
@@ -242,6 +265,45 @@ mod tests {
             .await
             .unwrap();
         assert!(again.fetched.lock().unwrap().is_empty());
+    }
+
+    /// Another release installs beside the pinned one: its own directories,
+    /// the symlinks moved, the old files kept for a rollback (ADR-0084
+    /// Decision 3).
+    #[tokio::test]
+    async fn another_release_installs_beside_the_pinned_one() {
+        let h = fake_host();
+        vmm(&h, &Canned::good(), &release(), &Options::default())
+            .await
+            .unwrap();
+        let fetch = Canned::newer();
+        vmm(&h, &fetch, &newer(), &Options::default())
+            .await
+            .unwrap();
+        let n = newer();
+        for a in &n.artifacts {
+            assert_eq!(
+                pins::sha256_hex(&h.read(&a.dest).unwrap()),
+                a.sha256,
+                "{}",
+                a.name
+            );
+        }
+        for (at, target) in &n.symlinks {
+            assert_eq!(h.stat(at).unwrap().kind, Kind::Symlink(target.clone()));
+        }
+        for a in &release().artifacts {
+            assert!(h.exists(&a.dest), "{} kept", a.dest.display());
+        }
+        // Rolling back fetches nothing: the old files are still verified.
+        let back = Canned::good();
+        vmm(&h, &back, &release(), &Options::default())
+            .await
+            .unwrap();
+        assert!(back.fetched.lock().unwrap().is_empty());
+        for (at, target) in &release().symlinks {
+            assert_eq!(h.stat(at).unwrap().kind, Kind::Symlink(target.clone()));
+        }
     }
 
     /// Invariant 1: a corrupt artifact installs nothing and leaves the
@@ -353,14 +415,67 @@ mod tests {
         let edited = b"# the admin's\n".to_vec();
         h.write(Path::new(HOST_CONFIG), &edited, 0o640, &root_banlieue())
             .unwrap();
-        super::super::host(&h, &s, &Options::default()).unwrap();
+        super::super::host(&h, &s, &release(), &Options::default()).unwrap();
+        assert_eq!(h.read(Path::new(HOST_CONFIG)).unwrap(), edited);
+        // Not even a release change touches a file that does not parse.
+        super::super::host(&h, &s, &newer(), &Options::default()).unwrap();
         assert_eq!(h.read(Path::new(HOST_CONFIG)).unwrap(), edited);
         let forced = Options {
             force: true,
             ..Options::default()
         };
-        super::super::host(&h, &s, &forced).unwrap();
+        super::super::host(&h, &s, &release(), &forced).unwrap();
         assert_ne!(h.read(Path::new(HOST_CONFIG)).unwrap(), edited);
+    }
+
+    /// Changing the VMM never needs `--force` and its EK CA rotation: an
+    /// existing host config keeps every key but `[vmm]`, which follows the
+    /// release (ADR-0084 Decision 5).
+    #[tokio::test]
+    async fn the_host_configs_vmm_section_follows_the_release() {
+        let h = fake_host();
+        let s = settings(&h);
+        install_all(&h, &s, &opts()).await.unwrap();
+        let read = || {
+            HostConfig::parse(&String::from_utf8(h.read(Path::new(HOST_CONFIG)).unwrap()).unwrap())
+                .unwrap()
+        };
+        let mut admin = read();
+        admin.guests.uid_count = TEST_UID_COUNT - 1;
+        admin.network_classes.insert("lab".into(), "virbr0".into());
+        h.write(
+            Path::new(HOST_CONFIG),
+            toml::to_string(&admin).unwrap().as_bytes(),
+            0o640,
+            &root_banlieue(),
+        )
+        .unwrap();
+        let manufactures = count(&h, "(as banlieue) swtpm_setup");
+
+        super::super::host(&h, &s, &newer(), &Options::default()).unwrap();
+        let after = read();
+        assert_eq!(after.vmm.version, "v54.0");
+        assert_eq!(after.vmm.firmware, newer().firmware);
+        assert_eq!(
+            after.guests.uid_count,
+            TEST_UID_COUNT - 1,
+            "the admin's edit is kept"
+        );
+        assert_eq!(after.bridge("lab"), Some("virbr0"));
+        assert_eq!(
+            mode_owner(&h, HOST_CONFIG),
+            (0o640, "root".into(), "banlieue".into())
+        );
+        assert_eq!(
+            count(&h, "(as banlieue) swtpm_setup"),
+            manufactures,
+            "no EK CA rotation"
+        );
+
+        // Already naming it: a second run rewrites nothing.
+        let before = h.snapshot();
+        super::super::host(&h, &s, &newer(), &Options::default()).unwrap();
+        assert_eq!(h.snapshot(), before);
     }
 
     /// The provider's user owns its state root, and could plant a symlink
@@ -572,7 +687,6 @@ mod tests {
     #[tokio::test]
     async fn a_dry_run_changes_nothing() {
         let h = fake_host();
-        h.install_packages(&PACKAGES);
         let s = settings(&h);
         let before = h.snapshot();
         let dry = DryRun::new(&h);
@@ -592,12 +706,8 @@ mod tests {
         use Stage::*;
         assert_eq!(
             plan(&Options::default()),
-            vec![
-                Preflight, Packages, Vmm, Host, Tpm, Polkit, Provider, Selftest
-            ]
+            vec![Preflight, Vmm, Host, Tpm, Polkit, Provider, Selftest]
         );
-        // What preflight checks can come from the packages.
-        assert_eq!(plan(&opts())[..2], [Packages, Preflight]);
         assert!(
             !plan(&Options {
                 dry_run: true,
@@ -626,7 +736,14 @@ mod tests {
         match install_all(&h, &s, &only(Stage::Tpm)).await {
             Err(Error::Prerequisite { stage, missing }) => {
                 assert_eq!(stage, "tpm");
-                assert_eq!(missing, vec!["packages".to_string(), "host".to_string()]);
+                assert_eq!(missing, vec!["host".to_string()]);
+            }
+            other => panic!("{other:?}"),
+        }
+        let bare = FakeHost::debian();
+        match install_all(&bare, &s, &only(Stage::Polkit)).await {
+            Err(Error::Prerequisite { missing, .. }) => {
+                assert_eq!(missing, vec!["preflight".to_string(), "host".to_string()]);
             }
             other => panic!("{other:?}"),
         }

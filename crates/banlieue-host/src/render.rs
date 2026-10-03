@@ -17,7 +17,7 @@ use crate::paths::{
     PROVIDER_BINARY, REGISTRY_CREDENTIALS_DIR, RUN_ROOT, STATE_ROOT, SWTPM_CONF_DIR,
     SWTPM_SETUP_CONF, VMM_BINARY,
 };
-use crate::pins;
+use crate::pins::Release;
 use crate::settings::Settings;
 use banlieue_provider_cloud_hypervisor::host_config::{
     GuestsSection, HostConfig, PathsSection, ProviderSection, RegistrySection, TpmSection,
@@ -159,7 +159,7 @@ fn leftover_placeholder(text: &str) -> Option<String> {
 
 const HOST_CONFIG_HEADER: &str = "\
 # banlieue Cloud Hypervisor host configuration.
-# Written by `banlieue host install` (ADR-0067).
+# Written by `banlieue host cloud-hypervisor install` (ADR-0067).
 #
 # Host-local BY DESIGN (ADR-0062 Decision 4): paths and bridges are resolved
 # here and never taken from the cluster, so a stolen cluster credential can
@@ -171,22 +171,55 @@ const HOST_CONFIG_HEADER: &str = "\
 
 ";
 
-/// The host config for `s`, as the provider will load it.
+/// The `[vmm]` section naming `release`.
+fn vmm_section(release: &Release) -> VmmSection {
+    VmmSection {
+        binary: VMM_BINARY.into(),
+        version: release.version.clone(),
+        firmware: release.firmware.clone(),
+    }
+}
+
+/// `config` as the file the provider loads: the header, then the TOML,
+/// parsed back before it is returned.
+fn serialize(config: &HostConfig) -> Result<String, Error> {
+    let body = toml::to_string(config).map_err(|e| Error::Config(e.to_string()))?;
+    let text = format!("{HOST_CONFIG_HEADER}{body}");
+    let parsed = HostConfig::parse(&text).map_err(|e| Error::Config(e.to_string()))?;
+    if &parsed != config {
+        return Err(Error::Config("it does not read back as written".into()));
+    }
+    Ok(text)
+}
+
+/// An existing host config with its `[vmm]` section naming `release`, or
+/// `None` when it already does (ADR-0084 Decision 5). Every other key
+/// keeps its value; comments an admin added are not kept.
+///
+/// # Errors
+/// [`Error::Config`] if `existing` does not parse as the provider would.
+pub fn with_vmm(existing: &str, release: &Release) -> Result<Option<String>, Error> {
+    let mut config = HostConfig::parse(existing).map_err(|e| Error::Config(e.to_string()))?;
+    let vmm = vmm_section(release);
+    if config.vmm == vmm {
+        return Ok(None);
+    }
+    config.vmm = vmm;
+    serialize(&config).map(Some)
+}
+
+/// The host config for `s` and `release`, as the provider will load it.
 ///
 /// # Errors
 /// [`Error::Config`] if it does not survive the provider's own parser.
-pub fn host_config(s: &Settings, probe: &dyn Probe) -> Result<String, Error> {
+pub fn host_config(s: &Settings, probe: &dyn Probe, release: &Release) -> Result<String, Error> {
     let config = HostConfig {
         provider: ProviderSection {
             name: s.provider_name.clone(),
             namespace: s.namespace.clone(),
             kubeconfig: KUBECONFIG_PATH.into(),
         },
-        vmm: VmmSection {
-            binary: VMM_BINARY.into(),
-            version: pins::VMM_VERSION.into(),
-            firmware: pins::firmware_path(),
-        },
+        vmm: vmm_section(release),
         paths: PathsSection {
             run_root: RUN_ROOT.into(),
             state_root: STATE_ROOT.into(),
@@ -210,13 +243,7 @@ pub fn host_config(s: &Settings, probe: &dyn Probe) -> Result<String, Error> {
         storage_classes: s.storage.iter().cloned().collect(),
         network_classes: s.network.iter().cloned().collect(),
     };
-    let body = toml::to_string(&config).map_err(|e| Error::Config(e.to_string()))?;
-    let text = format!("{HOST_CONFIG_HEADER}{body}");
-    let parsed = HostConfig::parse(&text).map_err(|e| Error::Config(e.to_string()))?;
-    if parsed != config {
-        return Err(Error::Config("it does not read back as written".into()));
-    }
-    Ok(text)
+    serialize(&config)
 }
 
 /// The swtpm and swtpm_localca configuration: `(path, text)`.

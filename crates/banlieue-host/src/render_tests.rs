@@ -8,6 +8,13 @@ mod tests {
     use crate::fake::FakeHost;
     use crate::settings::{Registry, Settings};
 
+    fn source(a: &crate::pins::Artifact) -> crate::pins::Source {
+        crate::pins::Source {
+            url: a.url.clone(),
+            sha256: a.sha256.clone(),
+        }
+    }
+
     fn settings() -> Settings {
         Settings {
             provider_name: "bar".into(),
@@ -82,12 +89,15 @@ mod tests {
     fn the_host_config_is_what_the_provider_loads() {
         let h = FakeHost::debian();
         h.install_packages(&["swtpm", "swtpm-tools"]);
-        let text = host_config(&settings(), &h).unwrap();
+        let text = host_config(&settings(), &h, &Release::pinned()).unwrap();
         assert!(text.starts_with("# banlieue Cloud Hypervisor host configuration."));
         let c = HostConfig::parse(&text).unwrap();
         assert_eq!(c.provider.name, "bar");
         assert_eq!(c.vmm.version, crate::pins::VMM_VERSION);
-        assert_eq!(c.vmm.firmware, crate::pins::firmware_path());
+        assert_eq!(
+            c.vmm.firmware,
+            crate::pins::firmware_path(crate::pins::FIRMWARE_TAG)
+        );
         assert_eq!(c.guests.uid_base, 2_000_000);
         assert_eq!(c.storage_path("fast"), Some(Path::new("/nvme/banlieue/ch")));
         assert_eq!(c.bridge("default"), Some("virbr0"));
@@ -106,7 +116,7 @@ mod tests {
             plain_http: true,
             keep_unreferenced: 3,
         });
-        let c = HostConfig::parse(&host_config(&s, &h).unwrap()).unwrap();
+        let c = HostConfig::parse(&host_config(&s, &h, &Release::pinned()).unwrap()).unwrap();
         let r = c.registry.unwrap();
         assert_eq!(r.repository, "registry.internal:5000/banlieue/disks");
         assert!(r.plain_http);
@@ -115,6 +125,48 @@ mod tests {
             r.credentials_dir.as_deref(),
             Some(Path::new(REGISTRY_CREDENTIALS_DIR))
         );
+    }
+
+    /// `[vmm]` follows the release; every other key keeps its value, and a
+    /// file already naming the release is not rewritten (ADR-0084
+    /// Decision 5).
+    #[test]
+    fn with_vmm_replaces_only_the_vmm_section() {
+        let h = FakeHost::debian();
+        let pinned = Release::pinned();
+        let text = host_config(&settings(), &h, &pinned).unwrap();
+        assert_eq!(with_vmm(&text, &pinned).unwrap(), None);
+
+        let newer = Release::new(
+            "v54.0",
+            "ch-0123456789",
+            source(&pinned.artifacts[0]),
+            source(&pinned.artifacts[1]),
+            source(&pinned.artifacts[2]),
+        );
+        let updated = with_vmm(&text, &newer).unwrap().unwrap();
+        let (before, after) = (
+            HostConfig::parse(&text).unwrap(),
+            HostConfig::parse(&updated).unwrap(),
+        );
+        assert_eq!(after.vmm.version, "v54.0");
+        assert_eq!(
+            after.vmm.firmware,
+            Path::new("/opt/banlieue/firmware/ch-0123456789/CLOUDHV.fd")
+        );
+        assert_eq!(after.vmm.binary, before.vmm.binary);
+        assert_eq!(
+            HostConfig {
+                vmm: before.vmm.clone(),
+                ..after
+            },
+            before
+        );
+        assert!(updated.starts_with("# banlieue Cloud Hypervisor host configuration."));
+        assert!(matches!(
+            with_vmm("not = [toml", &newer),
+            Err(Error::Config(_))
+        ));
     }
 
     #[test]

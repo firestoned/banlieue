@@ -524,10 +524,36 @@ provider-bench: ## Benchmark one provider through the VirtualMachine API (docs/s
 	  exit 1; }
 	cargo test -p banlieue-controller --test bench_provider -- --ignored --nocapture
 
-ch-host-install-test: ## Cloud Hypervisor: `banlieue host install` as root in a Debian 13 container: install, idempotence, read-only verbs, selftest, fail-closed pin (needs /dev/kvm and a rootful container runtime)
-	@# ADR-0067; roadmap 09 phase 10. Builds as you; the container runs as
+# ch-host-install-test from a non-Linux workstation: a Linux KVM host
+# (user@host) to sync the tree to and run on. Empty runs locally. Never
+# commit a real host here; pass it on the command line.
+CH_HOST_TEST_REMOTE      ?=
+# Where the tree goes on that host, relative to its home directory.
+CH_HOST_TEST_DIR         ?= builds/banlieue
+# Prepended to PATH there, so cargo is found in a non-login shell.
+CH_HOST_TEST_REMOTE_PATH ?= $$HOME/.cargo/bin
+
+ch-host-install-test: ## Cloud Hypervisor: `banlieue host cloud-hypervisor install` as root in a Debian 13 container: host-supplied packages, install, idempotence, read-only verbs, selftest, fail-closed pin, version floor (needs /dev/kvm and a rootful container runtime)
+	@# ADR-0067, ADR-0084; roadmap 09 phase 10. Builds as you; the container runs as
 	@# root and is removed afterwards. CH_HOST_ARTIFACTS_DIR=<dir> installs
 	@# the pinned release from local files instead of downloading it.
+	@# The provider crate is Linux-only and the test needs /dev/kvm: from a
+	@# Mac, set CH_HOST_TEST_REMOTE=user@host to sync the tree to a Linux KVM
+	@# host and run it there.
+	@if [ -n "$(CH_HOST_TEST_REMOTE)" ]; then \
+	  echo "==> syncing to $(CH_HOST_TEST_REMOTE):$(CH_HOST_TEST_DIR)"; \
+	  rsync -az --delete --exclude target --exclude docs/site ./ "$(CH_HOST_TEST_REMOTE):$(CH_HOST_TEST_DIR)/" && \
+	  ssh -t "$(CH_HOST_TEST_REMOTE)" 'cd $(CH_HOST_TEST_DIR) && export PATH="$(CH_HOST_TEST_REMOTE_PATH):$$PATH" && \
+	    cargo build -p banlieue && \
+	    BANLIEUE_BINARY=target/debug/banlieue CH_HOST_ARTIFACTS_DIR="$(CH_HOST_ARTIFACTS_DIR)" \
+	    CONTAINER_RUNTIME="$(or $(CONTAINER_RUNTIME),sudo podman)" scripts/test-ch-host-install.sh'; \
+	  exit $$?; \
+	fi; \
+	if [ "$$(uname -s)" != Linux ]; then \
+	  echo "ch-host-install-test needs Linux and /dev/kvm (the Cloud Hypervisor provider is Linux-only)."; \
+	  echo "From this machine: make ch-host-install-test CH_HOST_TEST_REMOTE=user@kvm-host"; \
+	  exit 1; \
+	fi
 	cargo build -p banlieue
 	BANLIEUE_BINARY=target/debug/banlieue scripts/test-ch-host-install.sh
 

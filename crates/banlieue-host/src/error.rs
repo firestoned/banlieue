@@ -1,10 +1,10 @@
 // Copyright (c) 2026 Erick Bourgeois, banlieue
 // SPDX-License-Identifier: Apache-2.0
-//! Why a `banlieue host` verb failed.
+//! Why a `banlieue host cloud-hypervisor` verb failed.
 
 use std::io;
 
-/// Why a `banlieue host` verb failed.
+/// Why a `banlieue host cloud-hypervisor` verb failed.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// A filesystem operation or command failed.
@@ -32,14 +32,14 @@ pub enum Error {
         /// What is missing.
         missing: Vec<String>,
     },
-    /// A downloaded or supplied artifact does not match its pin.
-    #[error("{name}: sha256 {got}, pinned {want}; nothing was installed")]
+    /// A downloaded or supplied artifact does not match its digest.
+    #[error("{name}: sha256 {got}, expected {want}; nothing was installed")]
     Pin {
         /// The artifact.
         name: &'static str,
         /// What it hashed to.
         got: String,
-        /// What it is pinned to.
+        /// What it must hash to.
         want: String,
     },
     /// An artifact could not be fetched.
@@ -50,9 +50,6 @@ pub enum Error {
         /// Why.
         why: String,
     },
-    /// Packages or commands the host needs are missing.
-    #[error("missing: {}; install them, or rerun with --install-packages", .0.join(" "))]
-    Missing(Vec<String>),
     /// A template kept a placeholder no value filled.
     #[error("template {template}: no value for {placeholder}")]
     Template {

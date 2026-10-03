@@ -1,22 +1,22 @@
 # anatomy.md
 
-> Auto-maintained by OpenWolf. Last scanned: 2026-09-30T22:00:00.341Z
-> Files: 509 tracked | Anatomy hits: 0 | Misses: 0
+> Auto-maintained by OpenWolf. Last scanned: 2026-10-03T04:00:00.396Z
+> Files: 510 tracked | Anatomy hits: 0 | Misses: 0
 
 ## ./
 
 - `.dockerignore` — Build-context allowlist: only binaries/ is COPYed; .git/target/docs excluded (SEC-017) (~193 tok)
-- `.gitignore` — Git ignore rules (~512 tok)
+- `.gitignore` — Git ignore rules (~571 tok)
 - `AGENTS.md` — OpenWolf (~174 tok)
-- `Cargo.toml` — Rust package manifest (~1417 tok)
+- `Cargo.toml` — Rust package manifest (~1437 tok)
 - `deny.toml` — cargo-deny configuration (~1551 tok)
 - `Dockerfile` — Docker container definition (~959 tok)
 - `Dockerfile.chainguard` — SPDX-License-Identifier: Apache-2.0 (~770 tok)
 - `LICENSE` — Project license (~3029 tok)
-- `Makefile` — Make build targets (~20840 tok)
+- `Makefile` — Make build targets (~21870 tok)
 - `osv-scanner.toml` — SPDX-License-Identifier: Apache-2.0 (~355 tok)
 - `README.md` — Project documentation (~3300 tok)
-- `ROADMAPS.md` — Roadmaps (~4161 tok)
+- `ROADMAPS.md` — Roadmaps (~4219 tok)
 - `SECURITY.md` — Security Policy (~382 tok)
 
 ## .clusterfuzzlite/
@@ -45,15 +45,15 @@
 ## .github/community/
 
 - `00-overview.md` — banlieue — Roadmap Overview (~1742 tok)
-- `01-decisions.md` — banlieue — Locked Design Decisions (~3549 tok)
+- `01-decisions.md` — banlieue — Locked Design Decisions (~3646 tok)
 - `02-conventions.md` — banlieue — Coding Conventions (~2242 tok)
 - `03-availability-zones-and-datastore-tiering.md` — banlieue — Availability Zones, Datastore & Compute Tiering (~1841 tok)
 - `04-phase-1a-controller-and-sdk.md` — Phase 1A — Main Controller + Provider SDK (~3671 tok)
 - `05-phase-1b-vsphere-provider.md` — Phase 1B — vSphere Provider (~3966 tok)
-- `06-phase-1c-proxmox-provider.md` — Phase 1C — Proxmox Provider (~2573 tok)
+- `06-phase-1c-proxmox-provider.md` — Phase 1C — Proxmox Provider (~2872 tok)
 - `07-phase-1d-libvirt-provider.md` — Phase 1D — Libvirt Provider (~4174 tok)
 - `08-phase-1e-docs.md` — Phase 1E — Documentation site (MkDocs Material) (~4186 tok)
-- `09-phase-1f-cloud-hypervisor-provider.md` — 09: Phase 1F, Cloud Hypervisor provider (~11324 tok)
+- `09-phase-1f-cloud-hypervisor-provider.md` — 09: Phase 1F, Cloud Hypervisor provider (~11501 tok)
 - `10-phase-2-snapshots.md` — Phase 2 — Snapshots with GFS Scheduling (~2904 tok)
 - `11-phase-3-provider-lifecycle.md` — Phase 3 — Provider Lifecycle Automation (~3041 tok)
 - `12-phase-4-finos-ready.md` — Phase 4 — FINOS-Ready Polish (~4125 tok)
@@ -63,7 +63,7 @@
 - `16-scorecard-remediation.md` — 60 — OSSF Scorecard remediation (~2608 tok)
 - `17-ephemeral-vm-pools.md` — 17: Ephemeral, single-use VM pools (AI agent sandboxes) (~12407 tok)
 - `18-split-image-fast-clone.md` — 18: Split-image fast clone — verified base + per-VM sealed volume (~4187 tok)
-- `19-port-groups.md` — 19: Port groups — declared, reconciled, and safe to delete (~4110 tok)
+- `19-port-groups.md` — 19: Port groups — declared, reconciled, and safe to delete (~4109 tok)
 - `README.md` — Project documentation (~1406 tok)
 
 ## .github/requirements/
@@ -86,7 +86,7 @@
 
 ## .github/workflows/
 
-- `build.yaml` — SPDX-License-Identifier: Apache-2.0 (~12465 tok)
+- `build.yaml` — SPDX-License-Identifier: Apache-2.0 (~12470 tok)
 - `calm-test.yaml` — SPDX-License-Identifier: Apache-2.0 (~2002 tok)
 - `calm.yaml` — SPDX-License-Identifier: Apache-2.0 (~2057 tok)
 - `codeql.yaml` — /*.rs (beta in CodeQL; stable enough for (~700 tok)
@@ -122,18 +122,18 @@
 - `crddoc_tests.rs` — Tests for the CRD Markdown reference generator. (~1380 tok)
 - `crddoc.rs` — Render banlieue CRDs as a single Markdown API-reference page. (~3378 tok)
 - `crdgen_support_tests.rs` — Tests for the crdgen post-generation fix-ups. (~1351 tok)
-- `crdgen_support.rs` — Post-generation fix-ups applied to CRDs by the `crdgen` binary. (~1594 tok)
+- `crdgen_support.rs` — Post-generation fix-ups applied to CRDs by the `crdgen` binary. (~1633 tok)
 - `lib.rs` — API types and CRD generation for **banlieue**, a Kubernetes-native (~592 tok)
 
 ## crates/banlieue-api/src/banlieue/
 
-- `mod.rs` — `banlieue.io/v1alpha1` API group. (~628 tok)
+- `mod.rs` — `banlieue.io/v1alpha1` API group. (~632 tok)
 - `provider_tests.rs` — Unit tests for `provider.rs`. (~9623 tok)
-- `provider.rs` — `banlieue.io/v1alpha1` Provider CRD. (~7717 tok)
+- `provider.rs` — `banlieue.io/v1alpha1` Provider CRD. (~7742 tok)
 - `providerclass_tests.rs` — Unit tests for `providerclass.rs`. (~3356 tok)
 - `providerclass.rs` — `banlieue.io/v1alpha1` ProviderClass CRD. (~4099 tok)
-- `virtualmachine_tests.rs` — Unit tests for `virtualmachine.rs`. (~7052 tok)
-- `virtualmachine.rs` — `banlieue.io/v1alpha1` VirtualMachine CRD. (~5743 tok)
+- `virtualmachine_tests.rs` — Unit tests for `virtualmachine.rs`. (~7512 tok)
+- `virtualmachine.rs` — `banlieue.io/v1alpha1` VirtualMachine CRD. (~6027 tok)
 - `virtualmachineclaim_tests.rs` — Unit tests for `virtualmachineclaim.rs`. (~2593 tok)
 - `virtualmachineclaim.rs` — `banlieue.io/v1alpha1` VirtualMachineClaim CRD (roadmap 17, ADR-0047). (~2410 tok)
 - `virtualmachinepool_tests.rs` — Unit tests for `virtualmachinepool.rs`. (~3517 tok)
@@ -154,7 +154,9 @@
 - `cloud_hypervisor_machine.rs` — `infrastructure.banlieue.io/v1alpha1` CloudHypervisorMachine CRD (ADR-0062). (~4270 tok)
 - `libvirt_machine_tests.rs` — Unit tests for `libvirt_machine.rs`. (~4064 tok)
 - `libvirt_machine.rs` — `infrastructure.banlieue.io/v1alpha1` LibvirtMachine CRD (ADR-0050). (~6172 tok)
-- `mod.rs` — `infrastructure.banlieue.io/v1alpha1` API group. (~420 tok)
+- `mod.rs` — `infrastructure.banlieue.io/v1alpha1` API group. (~511 tok)
+- `proxmox_machine_tests.rs` — Unit tests for `proxmox_machine.rs`. (~3405 tok)
+- `proxmox_machine.rs` — `infrastructure.banlieue.io/v1alpha1` ProxmoxMachine CRD (ADR-0075). (~4619 tok)
 - `vsphere_cluster_tests.rs` — Unit tests for `vsphere_cluster.rs`. (~2185 tok)
 - `vsphere_cluster.rs` — `infrastructure.banlieue.io/v1alpha1` VSphereCluster CRD. (~2166 tok)
 - `vsphere_machine_tests.rs` — Unit tests for `vsphere_machine.rs`. (~5047 tok)
@@ -162,7 +164,7 @@
 
 ## crates/banlieue-api/tests/
 
-- `examples.rs` — Every `examples/*.yaml` must parse into the types it names. (~1403 tok)
+- `examples.rs` — Every `examples/*.yaml` must parse into the types it names. (~2158 tok)
 
 ## crates/banlieue-cloud-hypervisor/
 
@@ -206,32 +208,35 @@
 ## crates/banlieue-controller/src/
 
 - `app_tests.rs` — Unit tests for [`super::super::app`]. (~584 tok)
-- `app.rs` — # `banlieue controller` entry point (~4913 tok)
-- `context.rs` — Shared reconcile context — the only value that all reconcilers receive. (~238 tok)
+- `app.rs` — # `banlieue controller` entry point (~5056 tok)
+- `context_tests.rs` — Unit tests for [`super::Context`]. (~357 tok)
+- `context.rs` — Shared reconcile context — the only value that all reconcilers receive. (~468 tok)
 - `error.rs` — Typed errors for the main controller. (~302 tok)
 - `lib.rs` — # banlieue-controller (~269 tok)
 
 ## crates/banlieue-controller/src/reconciler/
 
+- `address_conflict_tests.rs` — Unit tests for [`super::super::address_conflict`] (ADR-0083). (~5908 tok)
+- `address_conflict.rs` — Duplicate static-address detection (ADR-0083). (~3151 tok)
 - `claim_plan_tests.rs` — Unit tests for `claim_plan.rs`. (~4622 tok)
 - `claim_plan.rs` — Pure decisions behind the `VirtualMachineClaim` reconciler (ADR-0047). (~2686 tok)
 - `claim_tests.rs` — Unit tests for `claim.rs`. (~495 tok)
 - `claim.rs` — `VirtualMachineClaim` reconciler (roadmap 17, ADR-0047). (~4601 tok)
-- `infra_tests.rs` — Unit tests for [`super::super::infra`]. (~14940 tok)
-- `infra.rs` — Build provider-specific infrastructure CRs from a scheduler [`Decision`]. (~8801 tok)
+- `infra_tests.rs` — Unit tests for [`super::super::infra`]. (~18877 tok)
+- `infra.rs` — Build provider-specific infrastructure CRs from a scheduler [`Decision`]. (~11627 tok)
 - `migration_tests.rs` — Unit tests for [`super::super::migration`]. (~2925 tok)
 - `migration.rs` — Migration sub-loop — recreate-only path for Phase 1A iteration 3. (~2242 tok)
-- `mod.rs` — Controller reconcilers. (~134 tok)
+- `mod.rs` — Controller reconcilers. (~141 tok)
 - `pool_plan_tests.rs` — SPDX-License-Identifier: Apache-2.0 (~3119 tok)
 - `pool_plan.rs` — Pure planning logic for `VirtualMachinePool` (roadmap 17, ADR-0046). (~3198 tok)
 - `pool_tests.rs` — Unit tests for `pool.rs`. (~3070 tok)
 - `pool.rs` — `VirtualMachinePool` reconciler (roadmap 17, ADR-0046). (~5253 tok)
 - `scheduler_tests.rs` — Unit tests for [`super::super::scheduler`]. (~9551 tok)
 - `scheduler.rs` — Scheduler — the pure placement function. (~6507 tok)
-- `status_mirror_tests.rs` — Unit tests for [`super::super::status_mirror`]. (~6863 tok)
-- `status_mirror.rs` — `VirtualMachine` status mirror. (~3037 tok)
+- `status_mirror_tests.rs` — Unit tests for [`super::super::status_mirror`]. (~8314 tok)
+- `status_mirror.rs` — `VirtualMachine` status mirror. (~3571 tok)
 - `virtualmachine_tests.rs` — Unit tests for [`super::super::virtualmachine`]. (~2337 tok)
-- `virtualmachine.rs` — `VirtualMachine` reconciler — Phase 1A iteration 2. (~10520 tok)
+- `virtualmachine.rs` — `VirtualMachine` reconciler — Phase 1A iteration 2. (~13084 tok)
 - `vmimage_tests.rs` — Unit tests for the `VMImage` aggregate-readiness reconciler. (~2021 tok)
 - `vmimage.rs` — Aggregate readiness for `VMImage` (ADR-0015). (~2949 tok)
 - `vsphere_cluster_tests.rs` — Unit tests for [`super::super::vsphere_cluster`]. (~3413 tok)
@@ -241,30 +246,33 @@
 
 - `bench_provider.rs` — Provider benchmark: the same `VirtualMachine`, measured the same way, on (~5719 tok)
 - `live_claim.rs` — `VirtualMachineClaim` against a **real API server** (ADR-0047). (~7552 tok)
+- `live_duplicate_address.rs` — Duplicate static-address blocking against a **real API server** (~5936 tok)
 
 ## crates/banlieue-host/
 
-- `Cargo.toml` — Rust package manifest (~496 tok)
+- `Cargo.toml` — Rust package manifest (~504 tok)
 
 ## crates/banlieue-host/src/
 
 - `boundary_tests.rs` — ADR-0067 Decision 3 / roadmap 09 phase 10, invariant 7: no reconcile path (~295 tok)
 - `dryrun.rs` — `install --dry-run`: look at the real host, change nothing, and print (~856 tok)
-- `error.rs` — Why a `banlieue host` verb failed. (~677 tok)
-- `fake.rs` — An in-memory host for the unit tests. (~5795 tok)
-- `fetch.rs` — Where the pinned artifacts come from: the upstream releases over HTTPS, (~1100 tok)
-- `lib.rs` — # banlieue-host (~1615 tok)
-- `ops.rs` — What the installer may do to a host, split in two (ADR-0067 Decision 1). (~1910 tok)
+- `error.rs` — Why a `banlieue host cloud-hypervisor` verb failed. (~639 tok)
+- `fake.rs` — An in-memory host for the unit tests. (~5520 tok)
+- `fetch.rs` — Where the pinned artifacts come from: the upstream releases over HTTPS, (~1668 tok)
+- `lib.rs` — # banlieue-host (~1880 tok)
+- `ops.rs` — What the installer may do to a host, split in two (ADR-0067 Decision 1). (~1906 tok)
 - `paths.rs` — Where everything goes on a host. (~1059 tok)
-- `pins_tests.rs` — Unit tests for `pins.rs`: one pinned release, everywhere. (~622 tok)
-- `pins.rs` — The one pinned VMM release (ADR-0067 Decision 4). (~1395 tok)
+- `pins_tests.rs` — Unit tests for `pins.rs`: one pinned release, everywhere. (~890 tok)
+- `pins.rs` — The pinned VMM release (ADR-0067 Decision 4), and the layout of any (~1966 tok)
 - `real.rs` — The real host: the filesystem, NSS through `getent`, and commands. (~3262 tok)
-- `render_tests.rs` — Unit tests for `render.rs`. (~1639 tok)
-- `render.rs` — The files `install` writes (ADR-0067 Decision 5). (~2919 tok)
+- `release_tests.rs` — Unit tests for `release.rs` (ADR-0084 Decisions 2 to 4). (~4410 tok)
+- `release.rs` — Which VMM release `install` and `selftest` mean (ADR-0084 Decisions 2 (~3183 tok)
+- `render_tests.rs` — Unit tests for `render.rs`. (~2139 tok)
+- `render.rs` — The files `install` writes (ADR-0067 Decision 5). (~3202 tok)
 - `settings_tests.rs` — Unit tests for `settings.rs`. (~1130 tok)
-- `settings.rs` — What a host is to be (ADR-0067 Decision 6): flags, each with a (~2504 tok)
-- `stages_tests.rs` — Unit tests for `stages.rs`, against the in-memory host. The numbered (~6432 tok)
-- `stages.rs` — The stages of `banlieue host install`, and the read-only verbs (~10455 tok)
+- `settings.rs` — What a host is to be (ADR-0067 Decision 6): flags, each with a (~2509 tok)
+- `stages_tests.rs` — Unit tests for `stages.rs`, against the in-memory host. The numbered (~7728 tok)
+- `stages.rs` — The stages of `banlieue host cloud-hypervisor install`, and the read-only verbs (~10344 tok)
 
 ## crates/banlieue-host/src/fixtures/
 
@@ -277,7 +285,7 @@
 ## crates/banlieue-imagebuilder/src/
 
 - `app_tests.rs` — Unit tests for [`super::super::app`]. (~1282 tok)
-- `app.rs` — # `banlieue imagebuilder` entry point (~3757 tok)
+- `app.rs` — # `banlieue imagebuilder` entry point (~3767 tok)
 - `cloud_config_merge_tests.rs` — Unit tests for `cloud_config_merge.rs` (ADR-0037). (~2264 tok)
 - `cloud_config_merge.rs` — Cloud-config YAML deep-merge (ADR-0037). (~1642 tok)
 - `context.rs` — Shared reconcile context for `banlieue-imagebuilder`. (~535 tok)
@@ -355,8 +363,8 @@
 
 - `app_tests.rs` — Unit tests for `app.rs` — flag parsing + leader config. (~1015 tok)
 - `app.rs` — `banlieue operator` entry point: health, leader election, Provider controller. (~3032 tok)
-- `bootstrap_tests.rs` — Unit tests for `bootstrap.rs`. (~14103 tok)
-- `bootstrap.rs` — `banlieue bootstrap` — self-contained cluster install (ADR-0013). (~15766 tok)
+- `bootstrap_tests.rs` — Unit tests for `bootstrap.rs`. (~14117 tok)
+- `bootstrap.rs` — `banlieue bootstrap` — self-contained cluster install (ADR-0013). (~15834 tok)
 - `context.rs` — Shared reconcile context (client + operator namespace). (~966 tok)
 - `error.rs` — Typed reconcile errors. (~240 tok)
 - `events_tests.rs` — Unit tests for `events.rs`. (~1274 tok)
@@ -397,8 +405,8 @@
 - `app.rs` — # `banlieue provider cloud-hypervisor` entry point (~3472 tok)
 - `error.rs` — Errors from the Cloud Hypervisor provider. (~484 tok)
 - `fake.rs` — An in-memory [`HostOps`] for unit tests. (~4970 tok)
-- `host_config_tests.rs` — Unit tests for `host_config.rs`. (~2146 tok)
-- `host_config.rs` — The host-local configuration (ADR-0062 Decision 4). (~3290 tok)
+- `host_config_tests.rs` — Unit tests for `host_config.rs`. (~2151 tok)
+- `host_config.rs` — The host-local configuration (ADR-0062 Decision 4). (~3294 tok)
 - `host.rs` — The seam the machine reconciler is tested through. (~3643 tok)
 - `hostfs_tests.rs` — Unit tests for `hostfs.rs`, against a temporary directory. The guest uid (~6672 tok)
 - `hostfs.rs` — A machine's files on the host: directories, OS disk, seed, and removal. (~6001 tok)
@@ -443,7 +451,7 @@
 ## crates/banlieue-provider-libvirt/src/
 
 - `app_tests.rs` — Unit tests for [`super::super::app`]. (~2522 tok)
-- `app.rs` — # `banlieue provider libvirt` entry point (~3653 tok)
+- `app.rs` — # `banlieue provider libvirt` entry point (~3663 tok)
 - `client_tests.rs` — Unit tests for `client.rs`. (~640 tok)
 - `client.rs` — The libvirt-facing seam. (~2129 tok)
 - `context.rs` — Shared reconcile context for the libvirt provider. (~953 tok)
@@ -483,6 +491,38 @@
 - `live_ek.rs` — The vTPM endorsement-certificate read path, against a **real guest with a (~3515 tok)
 - `live_guest.rs` — The guest-readiness read path, against a **real running guest** (ADR-0043). (~4984 tok)
 - `live_machine.rs` — The `LibvirtMachine` reconciler's convergence and teardown, against a (~2694 tok)
+
+## crates/banlieue-provider-proxmox/
+
+- `Cargo.toml` — Rust package manifest (~452 tok)
+
+## crates/banlieue-provider-proxmox/src/
+
+- `app_tests.rs` — Unit tests for `app.rs`. (~770 tok)
+- `app.rs` — # `banlieue provider proxmox` entry point (~2669 tok)
+- `client_tests.rs` — Unit tests for `client.rs`. (~612 tok)
+- `client.rs` — The Proxmox-facing seam. (~843 tok)
+- `config_tests.rs` — Unit tests for `config.rs`. (~2479 tok)
+- `config.rs` — Rendering a `ProxmoxMachineSpec` into Proxmox VM config keys. (~1761 tok)
+- `context.rs` — Shared reconcile context for the Proxmox provider. (~392 tok)
+- `error.rs` — Typed errors for the Proxmox provider's reconcilers. (~355 tok)
+- `lib.rs` — # banlieue-provider-proxmox (~348 tok)
+- `network_tests.rs` — Unit tests for `network.rs`. (~1158 tok)
+- `network.rs` — Guest network configuration for the NoCloud seed. (~1097 tok)
+
+## crates/banlieue-provider-proxmox/src/reconciler/
+
+- `image_tests.rs` — Unit tests for the `VMImage` reconciler's pure core. (~1537 tok)
+- `image.rs` — `VMImage` reconciler: verify the template a `VMImage` names and publish (~2457 tok)
+- `mod.rs` — Proxmox provider reconcilers. (~113 tok)
+- `provider_tests.rs` — Unit tests for the `Provider` reconciler. (~3191 tok)
+- `provider.rs` — `Provider` reconciler for backend class `proxmox`. (~3730 tok)
+- `proxmoxmachine_tests.rs` — Unit tests for the `ProxmoxMachine` reconciler. (~9910 tok)
+- `proxmoxmachine.rs` — `ProxmoxMachine` reconciler: a scheduled VM becomes a real Proxmox VM (~7841 tok)
+
+## crates/banlieue-provider-proxmox/tests/
+
+- `live_lifecycle.rs` — Live lifecycle tier (rules/testing.md): the provider's own reconciler (~2655 tok)
 
 ## crates/banlieue-provider-sdk/
 
@@ -534,7 +574,7 @@
 ## crates/banlieue-provider-vsphere/src/
 
 - `app_tests.rs` — Unit tests for [`super::super::app`]. (~1888 tok)
-- `app.rs` — # `banlieue provider vsphere` entry point (~4672 tok)
+- `app.rs` — # `banlieue provider vsphere` entry point (~4682 tok)
 - `context.rs` — Shared reconcile context for the vSphere provider. (~846 tok)
 - `error.rs` — Typed errors for the vSphere provider's reconcilers. (~429 tok)
 - `guest_tests.rs` — Unit tests for `guest.rs`. (~1251 tok)
@@ -572,6 +612,34 @@
 
 - `live_vcenter.rs` — Integration test against a **real vCenter** over the production transport. (~3778 tok)
 
+## crates/banlieue-proxmox/
+
+- `Cargo.toml` — Rust package manifest (~434 tok)
+
+## crates/banlieue-proxmox/src/
+
+- `api_tests.rs` — Unit tests for `api.rs` (`wait_task`), driven through the fake. (~825 tok)
+- `api.rs` — The client interface reconcilers depend on (ADR-0074 Decision 2). (~1578 tok)
+- `client_tests.rs` — Unit tests for `client.rs`, against a one-shot local HTTP server that can (~5112 tok)
+- `client.rs` — The HTTPS implementation of [`ProxmoxApi`] (ADR-0074). (~4774 tok)
+- `error_tests.rs` — Unit tests for `error.rs`. (~474 tok)
+- `error.rs` — Errors from talking to Proxmox VE. (~1049 tok)
+- `fake_tests.rs` — Unit tests for `fake.rs`: every case is a refusal the real API makes. (~4021 tok)
+- `fake.rs` — An in-memory Proxmox for unit tests. (~5366 tok)
+- `lib.rs` — A first-party client for the Proxmox VE REST API (ADR-0074). (~300 tok)
+- `token_tests.rs` — Unit tests for `token.rs`. (~666 tok)
+- `token.rs` — API-token credentials (ADR-0074 Decision 3): the only auth scheme. (~828 tok)
+- `types_tests.rs` — Unit tests for `types.rs`. Bodies are shaped like real PVE 9 responses. (~2225 tok)
+- `types.rs` — Request and response types for the endpoints banlieue uses (ADR-0074). (~3142 tok)
+- `upid_tests.rs` — Unit tests for `upid.rs`. (~483 tok)
+- `upid.rs` — Unique process ids: the handle every asynchronous Proxmox call returns. (~821 tok)
+- `wire_tests.rs` — Unit tests for `wire.rs`. (~1218 tok)
+- `wire.rs` — Pure encode/decode halves of the client: form bodies, path segments, the (~1400 tok)
+
+## crates/banlieue-proxmox/tests/
+
+- `live_proxmox.rs` — Live protocol tier (rules/testing.md): does a REAL Proxmox VE accept and (~822 tok)
+
 ## crates/banlieue-vex/
 
 - `Cargo.toml` — Rust package manifest (~214 tok)
@@ -591,12 +659,12 @@
 
 ## crates/banlieue/
 
-- `Cargo.toml` — Rust package manifest (~791 tok)
+- `Cargo.toml` — Rust package manifest (~882 tok)
 
 ## crates/banlieue/src/
 
-- `cli_tests.rs` — Unit tests for the unified `banlieue` CLI dispatch tree. (~2814 tok)
-- `cli.rs` — Top-level command-line interface for the unified `banlieue` binary. (~2178 tok)
+- `cli_tests.rs` — Unit tests for the unified `banlieue` CLI dispatch tree. (~3382 tok)
+- `cli.rs` — Top-level command-line interface for the unified `banlieue` binary. (~2305 tok)
 - `main.rs` — # banlieue (~228 tok)
 
 ## deploy/admission/
@@ -621,7 +689,7 @@
 
 ## deploy/controller/rbac/
 
-- `clusterrole.yaml` — SPDX-License-Identifier: Apache-2.0 (~1712 tok)
+- `clusterrole.yaml` — SPDX-License-Identifier: Apache-2.0 (~1746 tok)
 - `clusterrolebinding.yaml` — SPDX-License-Identifier: Apache-2.0 (~135 tok)
 - `role.yaml` — SPDX-License-Identifier: Apache-2.0 (~330 tok)
 - `rolebinding.yaml` — SPDX-License-Identifier: Apache-2.0 (~144 tok)
@@ -630,16 +698,18 @@
 ## deploy/crds/
 
 - `banlieue.io_providerclasses.yaml` — K8s CustomResourceDefinition: providerclasses.banlieue.io (~7486 tok)
-- `banlieue.io_providers.yaml` — K8s CustomResourceDefinition: providers.banlieue.io (~10571 tok)
+- `banlieue.io_providers.yaml` — K8s CustomResourceDefinition: providers.banlieue.io (~10600 tok)
 - `banlieue.io_virtualmachineclaims.yaml` — K8s CustomResourceDefinition: virtualmachineclaims.banlieue.io (~2995 tok)
 - `banlieue.io_virtualmachinepools.yaml` — K8s CustomResourceDefinition: virtualmachinepools.banlieue.io (~9412 tok)
-- `banlieue.io_virtualmachines.yaml` — K8s CustomResourceDefinition: virtualmachines.banlieue.io (~8498 tok)
+- `banlieue.io_virtualmachines.yaml` — K8s CustomResourceDefinition: virtualmachines.banlieue.io (~8886 tok)
 - `banlieue.io_vmclasses.yaml` — K8s CustomResourceDefinition: vmclasses.banlieue.io (~4000 tok)
 - `banlieue.io_vmimages.yaml` — K8s CustomResourceDefinition: vmimages.banlieue.io (~10920 tok)
 - `infrastructure.banlieue.io_cloudhypervisormachines.yaml` — K8s CustomResourceDefinition: cloudhypervisormachines.infrastructure.banlieue.io (~4992 tok)
 - `infrastructure.banlieue.io_cloudhypervisormachinetemplates.yaml` — K8s CustomResourceDefinition: cloudhypervisormachinetemplates.infrastructure.banlieue.io (~3603 tok)
 - `infrastructure.banlieue.io_libvirtmachines.yaml` — K8s CustomResourceDefinition: libvirtmachines.infrastructure.banlieue.io (~6684 tok)
 - `infrastructure.banlieue.io_libvirtmachinetemplates.yaml` — K8s CustomResourceDefinition: libvirtmachinetemplates.infrastructure.banlieue.io (~4809 tok)
+- `infrastructure.banlieue.io_proxmoxmachines.yaml` — K8s CustomResourceDefinition: proxmoxmachines.infrastructure.banlieue.io (~5202 tok)
+- `infrastructure.banlieue.io_proxmoxmachinetemplates.yaml` — K8s CustomResourceDefinition: proxmoxmachinetemplates.infrastructure.banlieue.io (~4096 tok)
 - `infrastructure.banlieue.io_vsphereclusters.yaml` — K8s CustomResourceDefinition: vsphereclusters.infrastructure.banlieue.io (~3954 tok)
 - `infrastructure.banlieue.io_vspheremachines.yaml` — K8s CustomResourceDefinition: vspheremachines.infrastructure.banlieue.io (~6697 tok)
 - `infrastructure.banlieue.io_vspheremachinetemplates.yaml` — K8s CustomResourceDefinition: vspheremachinetemplates.infrastructure.banlieue.io (~4336 tok)
@@ -672,18 +742,18 @@
 
 ## deploy/operator/rbac/
 
-- `clusterrole.yaml` — SPDX-License-Identifier: Apache-2.0 (~2298 tok)
+- `clusterrole.yaml` — SPDX-License-Identifier: Apache-2.0 (~2333 tok)
 - `clusterrolebinding.yaml` — Binds banlieue-operator SA to its ClusterRole (~133 tok)
 - `role.yaml` — SPDX-License-Identifier: Apache-2.0 (~469 tok)
 - `serviceaccount.yaml` — banlieue-operator identity, separate from the controller's (~142 tok)
 
 ## deploy/provider-cloud-hypervisor/host/
 
-- `60-banlieue-cloud-hypervisor.rules` — SPDX-License-Identifier: Apache-2.0 (~531 tok)
+- `60-banlieue-cloud-hypervisor.rules` — SPDX-License-Identifier: Apache-2.0 (~535 tok)
 - `banlieue-ch-import@.service` — SPDX-License-Identifier: Apache-2.0 (~232 tok)
-- `banlieue-ch@.service` — SPDX-License-Identifier: Apache-2.0 (~340 tok)
-- `banlieue-cloud-hypervisor.tmpfiles.conf` — SPDX-License-Identifier: Apache-2.0 (~117 tok)
-- `banlieue-provider-cloud-hypervisor.service` — SPDX-License-Identifier: Apache-2.0 (~496 tok)
+- `banlieue-ch@.service` — SPDX-License-Identifier: Apache-2.0 (~344 tok)
+- `banlieue-cloud-hypervisor.tmpfiles.conf` — SPDX-License-Identifier: Apache-2.0 (~121 tok)
+- `banlieue-provider-cloud-hypervisor.service` — SPDX-License-Identifier: Apache-2.0 (~500 tok)
 - `banlieue-swtpm-setup@.service` — SPDX-License-Identifier: Apache-2.0 (~289 tok)
 - `banlieue-swtpm@.service` — SPDX-License-Identifier: Apache-2.0 (~171 tok)
 
@@ -694,6 +764,10 @@
 ## deploy/provider-libvirt/rbac/
 
 - `clusterrole.yaml` — SPDX-License-Identifier: Apache-2.0 (~1244 tok)
+
+## deploy/provider-proxmox/rbac/
+
+- `clusterrole.yaml` — SPDX-License-Identifier: Apache-2.0 (~1034 tok)
 
 ## deploy/provider-vsphere/
 
@@ -708,58 +782,3 @@
 - `clusterrolebinding.yaml` — SPDX-License-Identifier: Apache-2.0 (~142 tok)
 - `role.yaml` — Namespaced Role+RoleBinding: static provider gets secrets/configmaps get in banlieue-system only (security review 2026-07-31) (~494 tok)
 - `serviceaccount.yaml` — SPDX-License-Identifier: Apache-2.0 (~84 tok)
-
-## docs/
-
-- `.gitignore` — Git ignore rules (~37 tok)
-- `.python-version` (~2 tok)
-- `mkdocs.yml` — SPDX-License-Identifier: Apache-2.0 (~1978 tok)
-- `pyproject.toml` — Python project configuration (~257 tok)
-- `README.md` — Project documentation (~560 tok)
-
-## docs/adr/
-
-- `0001-capi-native-cluster-provisioning.md` — 0001 — CAPI-native cluster provisioning (no native cluster/tier abstraction) (~1178 tok)
-- `0002-infracluster-failure-domain-aggregation.md` — 0002 — InfraCluster CRD with multi-Provider failure-domain aggregation (~1837 tok)
-- `0003-provider-deployment-topology.md` — 0003 — Provider deployment topology (per-instance vs per-class) (~2434 tok)
-- `0004-single-binary-subcommand-dispatch.md` — 0004 — Single `banlieue` binary with subcommand dispatch (~1464 tok)
-- `0005-capi-contract-label-codegen.md` — 0005 — Emit the CAPI contract label from crdgen (not kustomize) (~1025 tok)
-- `0006-release-and-supply-chain-pipeline.md` — 0006 — Release artifacts and supply-chain pipeline (~1737 tok)
-- `0007-admission-policies.md` — 0007 — ValidatingAdmissionPolicies for CRD invariants (~1527 tok)
-- `0008-byoc-vsphere-http-client.md` — 0008 — Bring-Your-Own-Client (BYOC) for the vSphere HTTP transport (~3752 tok)
-- `0009-vim-rs-0.5-rustls-ring-retire-vendoring.md` — 0009 — Adopt vim_rs 0.5 (rustls/ring, BYOC); retire the vendoring pipeline (~2110 tok)
-- `0010-vmimage-build-pipeline-imagebuilder.md` — 0010 — VMImage build pipeline: `banlieue-imagebuilder` + kairos-operator (~3786 tok)
-- `0011-libvirt-provider-own-client.md` — 0011 — `banlieue-provider-libvirt`: own the libvirt client, zero new dependencies (~4450 tok)
-- `0012-providerclass-crd-and-operator-role.md` — 0012 — `ProviderClass` CRD and the `banlieue operator` role (~1748 tok)
-- `0013-banlieue-bootstrap-cli.md` — 0013 — `banlieue bootstrap` — self-contained cluster install (~1600 tok)
-- `0014-kind-e2e-operator-contract.md` — 0014 — kind-based e2e: test the operator contract, not backend connectivity (~3281 tok)
-- `0015-vmimage-status-merge-strategy.md` — 15. VMImage.status merge strategy and ownership of aggregate readiness (~1636 tok)
-- `0016-imagebuild-namespace-isolation.md` — 16. Isolate image builds in their own namespace and PodSecurity domain (~2260 tok)
-- `0017-vsphere-bootstrap-backend.md` — 0017 — vSphere backend for the k0s bootstrap script (~2043 tok)
-- `0018-vault-flux-operator-bootstrap.md` — 0018 — Vault-backed flux-operator automation for the k0s bootstrap script (~1860 tok)
-- `0019-vsphere-capability-introspection-iter2.md` — 0019 — vSphere capability introspection (iteration 2) (~1358 tok)
-- `0020-vsphere-per-zone-iso-import.md` — 0020 — vSphere per-zone image import via ISO template creation (~2864 tok)
-- `0021-vsphere-template-install-and-generalize.md` — 0021 — vSphere template: install once, generalize, then mark as template (~3159 tok)
-- `0022-vsphere-iso-overlay-files.md` — 0022 — vSphere ISO overlay files via OSArtifact volumes (~3064 tok)
-- `0023-explicit-failure-domain-name-override.md` — 0023 — Explicit failure-domain name override (~1272 tok)
-- `0024-vspheremachine-clone-static-ip-cloud-config.md` — 0024 — VSphereMachine clone reconciler: static IP + templated cloud-config via guestinfo (~2347 tok)
-- `0025-vspheremachine-userdata-secret-rbac.md` — 0025 — userData resolved by banlieue-controller, namespace-scoped Role (~1358 tok)
-- `0026-vspheremachine-deletion-lifecycle.md` — 0026 — VSphereMachine deletion lifecycle: finalizer + Destroy_Task (~1401 tok)
-- `0027-import-job-owned-by-osartifact.md` — 0027 — Per-zone import Jobs are owned by the `OSArtifact`, not orphaned (~2096 tok)
-- `0028-vmimage-template-deletion-lifecycle.md` — 0028 — VMImage deletion lifecycle: destroy per-zone vCenter templates by default (~1212 tok)
-- `0029-guestinfo-metadata-hostname-fqdn-default.md` — 0029 — Default hostname/FQDN via `guestinfo.metadata`, not `userData` (~1385 tok)
-- `0030-per-zone-capability-targets.md` — 0030 — Per-zone concrete targets for storage/network class mappings (~2151 tok)
-- `0031-vmimage-template-multiple-nics.md` — 0031 — VMImage templates support multiple NICs (~1210 tok)
-- `0032-per-zone-network-subnet-shape.md` — 0032 — Per-zone subnet shape for static network classes (~1994 tok)
-- `0033-capi-ipam-pool-integration.md` — 0033 — CAPI IPAM pool integration (deferred) (~1624 tok)
-- `0034-vspheremachine-observed-power-state.md` — 0034 — VSphereMachine/VirtualMachine mirror observed VM power state (~1878 tok)
-- `0035-virtualmachine-watches-provider-and-vmclass.md` — 0035 — VirtualMachine controller watches Provider and VMClass (~907 tok)
-- `0036-live-migration-phased-approach.md` — 0036 — Live migration: phased approach, same-class first (~1732 tok)
-- `0037-vmimage-layered-cloud-config.md` — 0037 — VMImage: layered cloud-config (base + overlays) (~1802 tok)
-- `0038-userdata-configmap-support.md` — 0038 — userData supports both Secret and ConfigMap sources (~683 tok)
-- `0039-vsphere-vtpm-support.md` — 0039 — vSphere virtual TPM (vTPM) support for Kairos disk encryption (~1960 tok)
-- `0040-deferred-install-for-vtpm-encryption.md` — 0040 — Deferred (per-clone) install for TPM-sealed Kairos encryption (~2993 tok)
-- `0041-imagebuilder-namespaced-secret-access.md` — 0041 — banlieue-imagebuilder reads Secrets through a namespaced Role (~1237 tok)
-- `0042-userdata-reference-authorization.md` — 0042 — A VirtualMachine may only reference userData its creator can read (~1508 tok)
-- `0043-guestready-installed-guest-signal.md` — 0043 — `GuestReady`: the installed guest announces itself (~4110 tok)
-- `0044-detach-install-media-after-install.md` — 0044 — Detach install media once the guest is installed (~1999 tok)

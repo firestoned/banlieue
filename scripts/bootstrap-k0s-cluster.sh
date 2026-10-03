@@ -75,6 +75,17 @@ VM_PREFIX="${VM_PREFIX:-k0s}"
 
 LIBVIRT_URI="${LIBVIRT_URI:-qemu:///system}"
 LIBVIRT_NETWORK="${LIBVIRT_NETWORK:-default}"
+# A host bridge to attach the VMs to instead of a libvirt network, e.g. br0.
+# The nodes then take addresses from the LAN's DHCP, so other machines can
+# reach the API server without tailscale. libvirt has no lease for them, so
+# their addresses are read from the guest agent (the Kairos-on-Debian image
+# built by scripts/build-kairos-debian-iso.sh carries qemu-guest-agent), with
+# the host's neighbour table as a fallback.
+LIBVIRT_BRIDGE="${LIBVIRT_BRIDGE:-}"
+# Space-separated MAC addresses, one per VM in order. Empty lets libvirt pick.
+# Fixed MACs let a LAN DHCP server reserve each node's address, which a
+# cluster needs: k0s does not survive its nodes changing address.
+VM_MACS="${VM_MACS:-}"
 LIBVIRT_POOL="${LIBVIRT_POOL:-default}"
 # No osinfo entry exists for Kairos, so `generic` is the right fallback there.
 # A distro cloud image DOES have one, and naming it gets the correct virtio
@@ -152,6 +163,16 @@ IMAGE_COSIGN_ISSUER="${IMAGE_COSIGN_ISSUER:-https://token.actions.githubusercont
 # k0s version k0sctl installs on every node (no leading `v`, matching k0sctl's
 # config convention).
 K0S_VERSION="${K0S_VERSION:-1.35.5+k0s.0}"
+
+# The controllers' datastore. `etcd` is k0s's default: an etcd member on each
+# controller. `kine` keeps cluster state in an external SQL database instead,
+# named by KINE_DATASOURCE, so the controllers hold no state of their own and
+# the database's backups are the cluster's.
+K0S_STORAGE_TYPE="${K0S_STORAGE_TYPE:-etcd}"
+# kine only, e.g. postgres://k0s:<password>@db.example.com:5432/k0s?sslmode=require.
+# It holds a password: set it in BANLIEUE_ENV_FILE, never on a command line.
+# The generated k0sctl config is written 0600 because it carries it.
+KINE_DATASOURCE="${KINE_DATASOURCE:-}"
 
 # k0sctl's OS registry doesn't know Kairos (ID=kairos / ID=hadron) -- the `os:`
 # host field overrides detection. Every Linux configurer in current k0sctl is
@@ -407,6 +428,20 @@ check_deps_libvirt() {
 }
 
 vm_name() { printf '%s-%02d' "$VM_PREFIX" "$(($1 + 1))"; }
+
+# virt-install's --network value for VM index $1: a host bridge or a libvirt
+# network, with that VM's fixed MAC when VM_MACS names one.
+vm_network() {
+  local macs net
+  read -r -a macs <<<"$VM_MACS"
+  if [[ -n "$LIBVIRT_BRIDGE" ]]; then
+    net="bridge=$LIBVIRT_BRIDGE,model=virtio"
+  else
+    net="network=$LIBVIRT_NETWORK,model=virtio"
+  fi
+  [[ -n "${macs[$1]:-}" ]] && net+=",mac=${macs[$1]}"
+  printf '%s' "$net"
+}
 
 # Compare a file against an expected digest. On mismatch the file is REMOVED:
 # leaving it in place means the next run finds it cached, skips the download,
@@ -744,7 +779,8 @@ create_vm() {
       --disk "path=$disk,format=qcow2,bus=virtio" \
       --disk "path=$seed_iso,device=cdrom,bus=sata" \
       --os-variant "$OS_VARIANT" \
-      --network "network=$LIBVIRT_NETWORK,model=virtio" \
+      --network "$(vm_network "$idx")" \
+      --channel unix,target_type=virtio,name=org.qemu.guest_agent.0 \
       --boot uefi \
       --graphics none \
       --console pty,target_type=serial \
@@ -770,7 +806,8 @@ create_vm() {
     --disk "path=$INSTALL_ISO,device=cdrom,bus=sata,boot_order=1" \
     --disk "path=$seed_iso,device=cdrom,bus=sata" \
     --os-variant "$OS_VARIANT" \
-    --network "network=$LIBVIRT_NETWORK,model=virtio" \
+    --network "$(vm_network "$idx")" \
+    --channel unix,target_type=virtio,name=org.qemu.guest_agent.0 \
     --boot uefi \
     --graphics none \
     --console pty,target_type=serial \
@@ -820,14 +857,25 @@ create_vms_libvirt() {
 }
 
 vm_ip_libvirt() {
-  local name="$1"
-  virsh --connect "$LIBVIRT_URI" domifaddr "$name" --source lease 2>/dev/null \
-    | awk '/ipv4/ {print $4}' | cut -d/ -f1 | head -n1
+  local name="$1" source ip
+  if [[ -z "$LIBVIRT_BRIDGE" ]]; then
+    virsh --connect "$LIBVIRT_URI" domifaddr "$name" --source lease 2>/dev/null \
+      | awk '/ipv4/ {print $4}' | cut -d/ -f1 | head -n1
+    return
+  fi
+  # On a bridge the LAN's DHCP server hands out the address, so libvirt has
+  # no lease: ask the guest agent, then the host's neighbour table.
+  for source in agent arp; do
+    ip="$(virsh --connect "$LIBVIRT_URI" domifaddr "$name" --source "$source" 2>/dev/null \
+      | awk '$1 != "lo" && /ipv4/ {print $4}' | cut -d/ -f1 \
+      | grep -v -E '^(127\.|169\.254\.)' | head -n1)"
+    [[ -n "$ip" ]] && { echo "$ip"; return 0; }
+  done
 }
 
 wait_for_ip_libvirt() {
   local name="$1" ip=""
-  log "Waiting for $name to get a DHCP lease..."
+  log "Waiting for $name's address..."
   for _ in $(seq 1 "$IP_WAIT_ATTEMPTS"); do
     ip="$(vm_ip_libvirt "$name")"
     [[ -n "$ip" ]] && { echo "$ip"; return 0; }
@@ -1462,9 +1510,11 @@ generate_k0sctl_config() {
         log "  Then destroy and re-run -- the SANs cannot be added afterwards."
       fi
     fi
-    # On vSphere every node has a routable static IP; add each as a SAN so
-    # kubectl can land on any controller.
-    [[ "$BACKEND" == "vsphere" ]] && sans+="            - $ip"$'\n'
+    # On vSphere, and on a libvirt host bridge, every node has a routable
+    # address; add each as a SAN so kubectl can land on any controller.
+    if [[ "$BACKEND" == "vsphere" || -n "$LIBVIRT_BRIDGE" ]]; then
+      sans+="            - $ip"$'\n'
+    fi
 
     if [[ -z "$cp_ip" && "$role" == controller* ]]; then
       cp_ip="$ip"; cp_ts_ip="$ts_ip"
@@ -1496,8 +1546,25 @@ generate_k0sctl_config() {
   # node's Tailscale IP -> its internal/static address.
   echo "${KUBECONFIG_SERVER:-${API_SAN:-${cp_ts_ip:-$api_external}}}" >"$KUBECONFIG_SERVER_FILE"
 
+  local storage=""
+  case "$K0S_STORAGE_TYPE" in
+    etcd) ;;
+    kine)
+      [[ -n "$KINE_DATASOURCE" ]] || { log "K0S_STORAGE_TYPE=kine needs KINE_DATASOURCE"; exit 1; }
+      case "$KINE_DATASOURCE" in
+        *'"'*|*\\*) log "KINE_DATASOURCE must not contain a double quote or backslash"; exit 1 ;;
+      esac
+      storage="        storage:"$'\n'
+      storage+="          type: kine"$'\n'
+      storage+="          kine:"$'\n'
+      storage+="            dataSource: \"$KINE_DATASOURCE\""$'\n'
+      ;;
+    *) log "K0S_STORAGE_TYPE must be etcd or kine, not '$K0S_STORAGE_TYPE'"; exit 1 ;;
+  esac
+
   log "Control-plane entry: in-cluster=$api_external kubeconfig=$(cat "$KUBECONFIG_SERVER_FILE")"
-  log "Writing k0sctl config to $K0SCTL_CONFIG"
+  log "Writing k0sctl config to $K0SCTL_CONFIG (datastore: $K0S_STORAGE_TYPE)"
+  ( umask 077; : >"$K0SCTL_CONFIG" )
   {
     cat <<EOF
 apiVersion: k0sctl.k0sproject.io/v1beta1
@@ -1517,7 +1584,7 @@ $hosts  k0s:
         api:
           externalAddress: $api_external
           sans:
-$sans
+$sans$storage
 EOF
   } >"$K0SCTL_CONFIG"
 }
