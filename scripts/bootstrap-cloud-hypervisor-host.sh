@@ -4,18 +4,18 @@
 #
 # Prepare a Cloud Hypervisor host for banlieue's host-resident provider.
 #
-# The work is `banlieue host` (ADR-0067): the same binary the host then runs
-# as its provider. This script is a thin wrapper around it, kept for two
-# things the binary deliberately does not do:
+# The work is `banlieue host cloud-hypervisor` (ADR-0067, ADR-0084): the same
+# binary the host then runs as its provider. This script is a thin wrapper
+# around it, kept for two things the binary deliberately does not do:
 #
 #   --remote user@host   copy the binary to a host over SSH and run it there
 #                        under sudo (the binary has no SSH client, ADR-0011);
 #   BANLIEUE_ENV_FILE    the environment file earlier versions of this script
-#                        read, translated to `banlieue host` flags.
+#                        read, translated to `banlieue host cloud-hypervisor` flags.
 #
 # On the host itself, run the binary directly:
 #
-#   sudo banlieue host install --install-packages
+#   sudo banlieue host cloud-hypervisor install
 #
 # From a workstation:
 #
@@ -23,8 +23,9 @@
 #   BANLIEUE_ENV_FILE=~/.config/banlieue/hosts/bar.env \
 #     ./scripts/bootstrap-cloud-hypervisor-host.sh --remote admin@bar.foo.io all
 #
-# Steps, as before: all (= install --install-packages), preflight, packages,
-# vmm, host, tpm, polkit, provider, selftest, status. Keep per-host values
+# Steps: all (= install), preflight, vmm, host, tpm, polkit, provider,
+# selftest, status. There is no packages step: the host's own package manager
+# supplies systemd, swtpm and swtpm-tools (ADR-0084). Keep per-host values
 # OUTSIDE this repository (they name real hosts); see --print-env-template.
 set -euo pipefail
 
@@ -36,17 +37,17 @@ Usage: bootstrap-cloud-hypervisor-host.sh [step]
        bootstrap-cloud-hypervisor-host.sh --remote <user@host> [step]
        bootstrap-cloud-hypervisor-host.sh --print-env-template
 
-  all        banlieue host install --install-packages
-  preflight  banlieue host preflight          (changes nothing)
-  packages   banlieue host install --only packages --install-packages
+  all        banlieue host cloud-hypervisor install
+  preflight  banlieue host cloud-hypervisor preflight  (changes nothing)
   vmm|host|tpm|polkit|provider
-             banlieue host install --only <step>
-  selftest   banlieue host selftest           (boots nothing)
-  status     banlieue host status             (changes nothing)
+             banlieue host cloud-hypervisor install --only <step>
+  selftest   banlieue host cloud-hypervisor selftest   (boots nothing)
+  status     banlieue host cloud-hypervisor status     (changes nothing)
 
 BANLIEUE_BINARY is the banlieue binary to run (default: banlieue on PATH,
 then target/release/banlieue). BANLIEUE_ENV_FILE is a file of settings; see
---print-env-template. Any other `banlieue host` flag: run the binary.
+--print-env-template. Any other `banlieue host cloud-hypervisor` flag: run
+the binary.
 USAGE
   exit 1
 }
@@ -55,8 +56,9 @@ print_env_template() {
   cat <<'TEMPLATE'
 # banlieue Cloud Hypervisor host settings, for
 # scripts/bootstrap-cloud-hypervisor-host.sh (BANLIEUE_ENV_FILE). Each maps to
-# a `banlieue host` flag. Keep this file OUTSIDE the repository: it names
-# real hosts. Convention: $HOME/.config/banlieue/hosts/<name>.env.
+# a `banlieue host cloud-hypervisor` flag. Keep this file OUTSIDE the
+# repository: it names real hosts. Convention:
+# $HOME/.config/banlieue/hosts/<name>.env.
 
 # The Provider this host is (one Provider, one host -- ADR-0060).  --provider-name
 #PROVIDER_NAME=bar
@@ -83,18 +85,31 @@ print_env_template() {
 # Regenerate the host config and ROTATE THE EK CA.
 #FORCE=false
 
-# The pinned VMM is part of banlieue now (ADR-0067 Decision 4); CH_VERSION
-# and its checksums are no longer settings. ARTIFACTS_DIR installs it from
-# local copies of the release assets instead of downloading them.
+# The VMM and firmware (ADR-0084). Unset = the release pinned in banlieue,
+# from github.com. A version older than the pinned one is refused.
+#VMM_VERSION=v54.0
+#FIRMWARE_TAG=ch-97eeb7b09
+
+# An air-gapped host: one HTTPS URL per file, e.g. an Artifactory remote.
+#VMM_URL=https://internal.example.com/artifactory/vcs-github/cloud-hypervisor/cloud-hypervisor/v54.0/cloud-hypervisor-static
+#CH_REMOTE_URL=https://internal.example.com/artifactory/vcs-github/cloud-hypervisor/cloud-hypervisor/v54.0/ch-remote-static
+#FIRMWARE_URL=https://internal.example.com/artifactory/vcs-github/cloud-hypervisor/edk2/ch-97eeb7b09/CLOUDHV.fd
+
+# sha256 of each file, for a version other than the pinned one, when the
+# host cannot read GitHub's published digests (refused for a pinned file).
+#VMM_SHA256=
+#CH_REMOTE_SHA256=
+#FIRMWARE_SHA256=
+
+# Or no network at all: local copies of the three release assets.
 #ARTIFACTS_DIR=/srv/banlieue/artifacts
 TEMPLATE
 }
 
-# The step's `banlieue host` verb and flags.
+# The step's `banlieue host cloud-hypervisor` verb and flags.
 step_args() {
   case "$1" in
-    all)       echo "install --install-packages" ;;
-    packages)  echo "install --only packages --install-packages" ;;
+    all)       echo "install" ;;
     vmm|host|tpm|polkit|provider) echo "install --only $1" ;;
     preflight|selftest|status) echo "$1" ;;
     *) usage ;;
@@ -115,6 +130,21 @@ settings_args() {
   [[ "${REGISTRY_PLAIN_HTTP:-false}" == "true" ]] && out+=(--registry-plain-http)
   [[ -n "${REGISTRY_KEEP_UNREFERENCED:-}" ]] && out+=(--registry-keep-unreferenced "$REGISTRY_KEEP_UNREFERENCED")
   [[ "${ALLOW_VIRTUALIZED_HOST:-false}" == "true" ]] && out+=(--allow-virtualized-host)
+  (( ${#out[@]} )) && printf '%q ' "${out[@]}"
+  return 0
+}
+
+# The release flags `install` and `selftest` take.
+release_args() {
+  local out=()
+  [[ -n "${VMM_VERSION:-}" ]] && out+=(--vmm-version "$VMM_VERSION")
+  [[ -n "${FIRMWARE_TAG:-}" ]] && out+=(--firmware-tag "$FIRMWARE_TAG")
+  [[ -n "${VMM_URL:-}" ]] && out+=(--vmm-url "$VMM_URL")
+  [[ -n "${CH_REMOTE_URL:-}" ]] && out+=(--ch-remote-url "$CH_REMOTE_URL")
+  [[ -n "${FIRMWARE_URL:-}" ]] && out+=(--firmware-url "$FIRMWARE_URL")
+  [[ -n "${VMM_SHA256:-}" ]] && out+=(--vmm-sha256 "$VMM_SHA256")
+  [[ -n "${CH_REMOTE_SHA256:-}" ]] && out+=(--ch-remote-sha256 "$CH_REMOTE_SHA256")
+  [[ -n "${FIRMWARE_SHA256:-}" ]] && out+=(--firmware-sha256 "$FIRMWARE_SHA256")
   (( ${#out[@]} )) && printf '%q ' "${out[@]}"
   return 0
 }
@@ -149,7 +179,10 @@ command_line() {
   local binary="$1" step="$2" verb
   verb="$(step_args "$step")"
   local line
-  line="$(printf '%q' "$binary") host $verb $(settings_args)"
+  line="$(printf '%q' "$binary") host cloud-hypervisor $verb $(settings_args)"
+  if [[ "$verb" == install* || "$verb" == selftest ]]; then
+    line+=" $(release_args)"
+  fi
   if [[ "$verb" == install* ]]; then
     # The binary being run is the one to install as the provider when asked.
     local install_bin=""

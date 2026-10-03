@@ -31,7 +31,7 @@ mod tests {
 
     #[test]
     fn every_pin_is_a_sha256() {
-        for a in artifacts() {
+        for a in Release::pinned().artifacts {
             assert_eq!(a.sha256.len(), 64, "{}", a.name);
             assert!(
                 a.sha256
@@ -49,10 +49,33 @@ mod tests {
     /// install is what the commands run.
     #[test]
     fn symlinks_point_at_installed_artifacts() {
-        let dests: Vec<_> = artifacts().into_iter().map(|a| a.dest).collect();
-        for (_, target) in symlinks() {
-            assert!(dests.contains(&target), "{}", target.display());
+        let r = Release::pinned();
+        let dests: Vec<_> = r.artifacts.iter().map(|a| a.dest.clone()).collect();
+        for (_, target) in &r.symlinks {
+            assert!(dests.contains(target), "{}", target.display());
         }
+    }
+
+    /// The pinned release is laid out under its own version and tag, so
+    /// another release installs beside it, never over it.
+    #[test]
+    fn the_pinned_release_is_laid_out_by_version_and_tag() {
+        let r = Release::pinned();
+        assert_eq!(r.version, VMM_VERSION);
+        assert_eq!(r.firmware_tag, FIRMWARE_TAG);
+        assert_eq!(
+            r.artifacts[0].dest,
+            std::path::Path::new("/opt/banlieue/cloud-hypervisor/v53.0/cloud-hypervisor")
+        );
+        assert_eq!(
+            r.firmware,
+            std::path::Path::new("/opt/banlieue/firmware/ch-97eeb7b09/CLOUDHV.fd")
+        );
+        assert_eq!(r.firmware_sha256, FIRMWARE_SHA256);
+        assert_eq!(
+            github_url(FIRMWARE_REPO, FIRMWARE_TAG, FIRMWARE_ASSET),
+            "https://github.com/cloud-hypervisor/edk2/releases/download/ch-97eeb7b09/CLOUDHV.fd"
+        );
     }
 
     #[test]

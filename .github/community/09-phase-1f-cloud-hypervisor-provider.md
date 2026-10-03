@@ -390,6 +390,19 @@ with a real consistency hazard, so it is ADR-0066 and optional.
 > the binary's `host` feature; `make ch-host-install-test` runs it as root in a
 > Debian 13 container; the script is now a `--remote` wrapper. Every invariant
 > below is a test. The open questions are answered in ADR-0067 Decision 8.
+>
+> **Amended 2026-10-02 by [ADR-0084](../../docs/adr/0084-host-install-release-sources-and-versions.md).**
+> The `packages` stage and `--install-packages` are gone: the host's own
+> package manager supplies systemd, swtpm and swtpm-tools on any
+> distribution, and `preflight` checks for them by command. The VMM,
+> `ch-remote` and firmware each take a URL (github.com by default, or a
+> mirror such as an Artifactory remote), and `--vmm-version` /
+> `--firmware-tag` choose any release at or above the client's gate, still
+> sha256-verified before install. The command now names its backend:
+> `banlieue host cloud-hypervisor <verb>` (alias `ch`), where it was
+> `banlieue host <verb>`. The tables below are the 2026-09-27 plan as
+> built, with the amended rows marked; the surface below shows the old
+> command shape.
 
 ### Why it should not stay in shell
 
@@ -427,7 +440,7 @@ with a real consistency hazard, so it is ADR-0066 and optional.
 | --- | --- |
 | **The bridge.** The script never touches one, and neither should the binary. | A bridge mistake over SSH locks you out of the host. The guide's `systemd-run --on-active=5min` rollback is the right shape and it belongs in a human's hands, not in an unattended installer. |
 | **`--remote user@host`.** | SSH as a one-shot install convenience is fine; SSH as a *control path* is shape D, rejected by ADR-0011. The binary gets no SSH client. The script survives as a thin wrapper that copies the binary and runs it. |
-| **Installing packages by default.** | `apt-get` is Debian-family only. `packages` **verifies** by default and prints what is missing; `--install-packages` opts into installing. That also makes the binary safe to run on a host you do not own. |
+| **Installing packages.** | *(Amended, ADR-0084: not at all.)* The host's own package manager supplies them on any distribution; `preflight` names any missing command. |
 
 ### Surface
 
@@ -439,7 +452,7 @@ banlieue host preflight            # changes nothing
 banlieue host status               # changes nothing
 banlieue host selftest            # changes nothing, boots nothing
 banlieue host install [all]        # the only mutating verb
-banlieue host install --only vmm --install-packages
+banlieue host install --only vmm --vmm-version v54.0
 banlieue host install --dry-run    # prints the diff, touches nothing
 ```
 
@@ -454,11 +467,10 @@ applying. The order is the DAG, not a preference.
 | Stage | Needs | Mutates |
 | --- | --- | --- |
 | `preflight` | — | nothing |
-| `packages` | — | dpkg state (only with `--install-packages`) |
 | `vmm` | — | `/opt/banlieue/cloud-hypervisor/<version>/`, `/opt/banlieue/firmware/<tag>/`, symlinks |
 | `host` | — | `banlieue` user, storage and run dirs, `/etc/banlieue/cloud-hypervisor.toml` |
-| `tpm` | `packages`, `host` | per-host EK CA, `banlieue`-only |
-| `polkit` | `packages`, `host` | one polkit rule (ADR-0063 D6) |
+| `tpm` | `preflight` (commands), `host` | per-host EK CA, `banlieue`-only |
+| `polkit` | `preflight` (commands), `host` | one polkit rule (ADR-0063 D6) |
 | `provider` | `host` | the provider unit, installed and left disabled |
 | `selftest` | `vmm`, `host`, `tpm`, `polkit` | nothing |
 

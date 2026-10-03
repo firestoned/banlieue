@@ -2,21 +2,23 @@
 # Copyright (c) 2026 Erick Bourgeois, banlieue
 # SPDX-License-Identifier: Apache-2.0
 #
-# `make ch-host-install-test`: run `banlieue host install` as root in a
-# Debian 13 container, against real dpkg, useradd, NSS, swtpm and the real
-# pinned downloads (ADR-0067; roadmap 09 phase 10). The container stands in
+# `make ch-host-install-test`: run `banlieue host cloud-hypervisor install` as root in a
+# Debian 13 container, against real useradd, NSS, swtpm and the real pinned
+# downloads (ADR-0067, ADR-0084; roadmap 09 phase 10). The container stands in
 # for a fresh host; nothing on the machine running it changes.
 #
 # It checks what the unit tests cannot: that the real counterparties accept
 # what the installer does.
 #
-#   1. packages install through apt-get;
+#   1. preflight names the commands the host must supply, then the host's
+#      own package manager supplies them (banlieue installs none);
 #   2. a full install succeeds, then a second one changes nothing
 #      (idempotence is equality: every path, mode, owner and digest);
 #   3. the read-only verbs write nothing;
 #   4. selftest passes (VMM, firmware pin, guest uids through NSS, /dev/kvm,
 #      the provider's own host checks, a vTPM with the right EK CN);
-#   5. a corrupt artifact installs nothing and leaves the release as it was.
+#   5. a corrupt artifact installs nothing and leaves the release as it was;
+#   6. a VMM older than the client's gate is refused before any download.
 #
 # Needs a rootful container runtime (the provider's user must open the
 # host's /dev/kvm) and the banlieue binary to test:
@@ -58,8 +60,16 @@ snapshot() {
     | grep -v "/swtpm-localca/certserial$" | sort
 }
 
-say "1. packages, through apt-get"
-$B host install --only packages --install-packages
+say "1. the host supplies its packages; banlieue installs none"
+if $B host cloud-hypervisor preflight --allow-virtualized-host 2>/tmp/preflight; then
+  echo "FAIL: preflight passed without swtpm"; exit 1
+fi
+grep -q "swtpm_setup is not on PATH" /tmp/preflight || { cat /tmp/preflight; echo "FAIL: preflight did not name swtpm_setup"; exit 1; }
+echo "ok: preflight named what is missing"
+# What an operator does, with the package manager of the host.
+apt-get update -qq
+DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
+  ca-certificates dbus iproute2 libnss-systemd polkitd swtpm swtpm-tools systemd >/dev/null
 # A bridge for the network class; the installer never makes one.
 ip link add br0 type bridge
 # On a host, udev creates the kvm group and owns /dev/kvm by it. A
@@ -68,9 +78,9 @@ ip link add br0 type bridge
 getent group kvm >/dev/null || groupadd --system -g "$(stat -c %g /dev/kvm)" kvm
 
 say "2. full install, from a host with no banlieue on it"
-$B host install --network-class default=br0 --provider-name ch-test $ARTIFACTS_FLAG
+$B host cloud-hypervisor install --network-class default=br0 --provider-name ch-test $ARTIFACTS_FLAG
 first=$(snapshot)
-$B host install --network-class default=br0 --provider-name ch-test $ARTIFACTS_FLAG
+$B host cloud-hypervisor install --network-class default=br0 --provider-name ch-test $ARTIFACTS_FLAG
 second=$(snapshot)
 if [[ "$first" != "$second" ]]; then
   diff <(echo "$first") <(echo "$second") || true
@@ -80,9 +90,9 @@ echo "ok: a second install changed nothing ($(echo "$first" | wc -l) entries com
 
 say "3. the read-only verbs write nothing"
 before=$(snapshot)
-$B host preflight --network-class default=br0
-$B host status
-$B host selftest --network-class default=br0
+$B host cloud-hypervisor preflight --network-class default=br0
+$B host cloud-hypervisor status
+$B host cloud-hypervisor selftest --network-class default=br0
 after=$(snapshot)
 if [[ "$before" != "$after" ]]; then
   diff <(echo "$before") <(echo "$after") || true
@@ -105,12 +115,21 @@ echo "ok: modes, owners, guest uids"
 say "5. a corrupt artifact installs nothing"
 release=$(find /opt/banlieue /usr/local/bin -xdev -printf "%p %l\n" | sort; sha256sum /opt/banlieue/*/*/* | sort)
 mkdir -p /bad && for f in cloud-hypervisor-static ch-remote-static CLOUDHV.fd; do echo tampered > /bad/$f; done
-if $B host install --only vmm --force --artifacts-dir /bad; then
+if $B host cloud-hypervisor install --only vmm --force --artifacts-dir /bad; then
   echo "FAIL: a corrupt artifact was accepted"; exit 1
 fi
 after=$(find /opt/banlieue /usr/local/bin -xdev -printf "%p %l\n" | sort; sha256sum /opt/banlieue/*/*/* | sort)
 [[ "$release" == "$after" ]] || { echo "FAIL: the release changed"; exit 1; }
 echo "ok: refused, and the installed release is byte-identical"
+
+say "6. a VMM the provider would refuse is refused before any download"
+if $B host cloud-hypervisor install --only vmm --vmm-version v52.0 2>/tmp/old; then
+  echo "FAIL: v52.0 was accepted"; exit 1
+fi
+grep -q "older than" /tmp/old || { cat /tmp/old; echo "FAIL: wrong refusal"; exit 1; }
+after=$(find /opt/banlieue /usr/local/bin -xdev -printf "%p %l\n" | sort; sha256sum /opt/banlieue/*/*/* | sort)
+[[ "$release" == "$after" ]] || { echo "FAIL: the release changed"; exit 1; }
+echo "ok: refused, nothing changed"
 
 say "PASS"
 '

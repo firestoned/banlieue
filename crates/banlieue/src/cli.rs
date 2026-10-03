@@ -78,7 +78,9 @@ pub enum Command {
     #[cfg(feature = "imagebuilder")]
     Imagebuilder(banlieue_imagebuilder::Cli),
 
-    /// Prepare this machine as a Cloud Hypervisor host (ADR-0067).
+    /// Prepare this machine as a host for a backend:
+    /// `banlieue host cloud-hypervisor <verb>` (alias `ch`; ADR-0067,
+    /// ADR-0084).
     ///
     /// `preflight`, `status` and `selftest` change nothing; `install` runs
     /// every stage, as root. It never creates a network bridge.
@@ -114,7 +116,7 @@ pub const COMPILED_BACKENDS: &[&str] = &[
     "proxmox",
     // Host-resident: bootstrap installs its cluster half (the shared
     // ClusterRole and an External ProviderClass); the host half is
-    // `banlieue host install` (ADR-0060, ADR-0067).
+    // `banlieue host cloud-hypervisor install` (ADR-0060, ADR-0067).
     #[cfg(feature = "cloud-hypervisor")]
     "cloud-hypervisor",
 ];
