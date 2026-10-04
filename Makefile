@@ -1432,14 +1432,26 @@ K0S_EXTRA_SANS         ?=
 # banlieue -- schedules on the controllers. Set to false to keep the stock
 # taint, e.g. with additional general-purpose workers.
 K0S_NO_TAINTS          ?= true
-# The single address every in-cluster component (notably the konnectivity
-# agents behind kubectl logs/exec/port-forward) dials. Defaults to the first
-# controller's internal DHCP address, keeping node-to-node traffic on the
-# libvirt network. Set to a load balancer / CPLB VIP for a real HA entry point.
+# Control plane VIP in CIDR form, e.g. 192.0.2.10/24 (ADR-0086): keepalived
+# floats it between the controllers and k0s balances the API behind it. It
+# becomes the external address, a cert SAN and the kubeconfig server. Required
+# when K0S_NODE_ROLES has more than one controller; pick a free address on the
+# nodes' network, outside DHCP and any MetalLB pool. The VRRP password is
+# generated into the work dir (or set API_VIP_AUTH_PASS in BANLIEUE_ENV_FILE).
+K0S_API_VIP            ?=
+# VRRP virtual router ID; unique on the broadcast domain. Empty = 51.
+K0S_API_VIP_ROUTER_ID  ?=
+# true to accept a multi-controller cluster with no VIP (one entry point).
+K0S_NO_API_VIP         ?=
+# Empty = true: disable konnectivity, as both backends build flat networks
+# where the API servers reach kubelets and pods directly (ADR-0086).
+K0S_DISABLE_KONNECTIVITY ?=
+# The address every in-cluster component dials, when there is no VIP.
+# Defaults to the first controller's address. With K0S_API_VIP set, leave
+# empty: the VIP is the external address.
 K0S_API_EXTERNAL_ADDRESS ?=
-# Address the generated kubeconfig points at. Defaults to the Tailscale IP of
-# the same node K0S_API_EXTERNAL_ADDRESS resolves to, so kubectl reaches the
-# API server whose konnectivity server holds the agent connections.
+# Address the generated kubeconfig points at. Defaults to the VIP, else the
+# first controller's Tailscale IP, else its internal address.
 K0S_KUBECONFIG_SERVER  ?=
 # Worker node to dedicate to image builds (label banlieue.io/imagebuild=true,
 # taint dedicated=imagebuild:NoSchedule). Empty = the script picks the last
@@ -1466,6 +1478,8 @@ K0S_ENV = VM_COUNT=$(K0S_VM_COUNT) VCPUS=$(K0S_VCPUS) MEM_MB=$(K0S_MEM_MB) DISK_
 	BASE_IMAGE_PATH=$(K0S_BASE_IMAGE_PATH) TAILSCALE_AUTHKEY=$(K0S_TAILSCALE_AUTHKEY) EXTRA_SANS="$(K0S_EXTRA_SANS)" \
 	TAILSCALE_API_KEY=$(K0S_TAILSCALE_API_KEY) TAILSCALE_TAILNET=$(K0S_TAILSCALE_TAILNET) \
 	API_EXTERNAL_ADDRESS=$(K0S_API_EXTERNAL_ADDRESS) KUBECONFIG_SERVER=$(K0S_KUBECONFIG_SERVER) \
+	API_VIP=$(K0S_API_VIP) API_VIP_ROUTER_ID=$(K0S_API_VIP_ROUTER_ID) NO_API_VIP=$(K0S_NO_API_VIP) \
+	K0S_DISABLE_KONNECTIVITY=$(K0S_DISABLE_KONNECTIVITY) \
 	NO_TAINTS=$(K0S_NO_TAINTS) K0S_VERSION=$(K0S_VERSION) IMAGEBUILD_NODE=$(K0S_IMAGEBUILD_NODE) \
 	K0SCTL_OS_OVERRIDE=$(K0SCTL_OS_OVERRIDE) \
 	SSH_PUBKEY=$(K0S_SSH_PUBKEY) SSH_USER=$(K0S_SSH_USER) WORKDIR=$(K0S_WORKDIR)
@@ -1505,6 +1519,8 @@ K0S_REMOTE_ENV = VM_COUNT=$(K0S_VM_COUNT) VCPUS=$(K0S_VCPUS) MEM_MB=$(K0S_MEM_MB
 	BASE_IMAGE_PATH=$(K0S_BASE_IMAGE_PATH) TAILSCALE_AUTHKEY=$(K0S_TAILSCALE_AUTHKEY) EXTRA_SANS="$(K0S_EXTRA_SANS)" \
 	TAILSCALE_API_KEY=$(K0S_TAILSCALE_API_KEY) TAILSCALE_TAILNET=$(K0S_TAILSCALE_TAILNET) \
 	API_EXTERNAL_ADDRESS=$(K0S_API_EXTERNAL_ADDRESS) KUBECONFIG_SERVER=$(K0S_KUBECONFIG_SERVER) \
+	API_VIP=$(K0S_API_VIP) API_VIP_ROUTER_ID=$(K0S_API_VIP_ROUTER_ID) NO_API_VIP=$(K0S_NO_API_VIP) \
+	K0S_DISABLE_KONNECTIVITY=$(K0S_DISABLE_KONNECTIVITY) \
 	NO_TAINTS=$(K0S_NO_TAINTS) K0S_VERSION=$(K0S_VERSION) IMAGEBUILD_NODE=$(K0S_IMAGEBUILD_NODE) \
 	K0SCTL_OS_OVERRIDE=$(K0SCTL_OS_OVERRIDE) \
 	SSH_USER=$(K0S_SSH_USER) WORKDIR=$(K0S_REMOTE_WORKDIR) \

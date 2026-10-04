@@ -61,6 +61,7 @@ flowchart LR
     service-swtpm["swtpm (one per tpmEnabled Cloud Hypervisor guest)"]
     service-banlieue-host-installer["banlieue host cloud-hypervisor (installer)"]
     service-vmm-release-source["Cloud Hypervisor release source (github.com or operator mirror, external)"]
+    network-control-plane-vip["Management cluster control plane VIP"]
     subgraph sg_system-banlieue-binary [System Banlieue Binary]
         service-banlieue-controller
         service-banlieue-operator
@@ -142,6 +143,7 @@ flowchart LR
         service-banlieue-host-installer
     end
     service-banlieue-host-installer -->|HTTPS| service-vmm-release-source
+    network-control-plane-vip -->|TCP| service-kubernetes-api
 ```
 
 <sub>Source: nodes and relationships in `architecture.json`.</sub>

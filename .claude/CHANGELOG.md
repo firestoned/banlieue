@@ -1,5 +1,225 @@
 # Changelog
 
+## [2026-10-03 19:45] - Threat model pass: identity plane deployed and cryptography measured
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docs/src/security/threat-model.md`: evidence-driven pass (no ADR; stamp
+  stays 2026-10-03 against ADR-0001 … ADR-0087). An OIDC issuer (Dex) and
+  workload identity (SPIRE) were deployed on a reference management cluster
+  and every link's key exchange measured by offering one TLS group at a time.
+  - TB-7: four rows for an issuer running on the management cluster (signing
+    keys as cluster resources; 24 h default ID-token lifetime; any upstream
+    account can log in, authorization stays zero; the API server's read
+    access to its authentication config under k0s's gid 0).
+  - TB-12: `sslmode=require` encrypts but does not authenticate the server
+    (now `verify-full`); PostgreSQL 17 cannot negotiate post-quantum key
+    exchange (`ssl_ecdh_curve` is one classical curve).
+  - TB-13: the default allow-all tailnet policy; a roaming client whose VIP
+    route is not yet approved (protected by CA pinning).
+  - §7.18 now requires `verify-full` and TLS 1.3; §7.19 adds tailnet grants;
+    new §7.20: post-quantum key exchange on every link carrying cluster
+    secrets, with the verification command and the observed results.
+  - §8: banlieue's own TLS clients use rustls with `ring` (ADR-0009), which
+    has no ML-KEM, so every connection banlieue makes is classical (revisit:
+    an ADR moving to the aws-lc-rs provider); classical key exchange on
+    links banlieue does not terminate (PostgreSQL 17, libvirtd's GnuTLS,
+    WireGuard); no post-quantum signatures anywhere; an in-cluster issuer
+    lets a cluster admin mint any identity.
+
+### Why
+The owner's requirement is that all cryptography be post-quantum. Measuring
+it found the gaps above; the threat model records them with revisit
+conditions instead of leaving them implicit.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+## [2026-10-03 18:43] - ADR-0087: a field manager names a writer, not a provider class
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `crates/banlieue-provider-sdk/src/ssa.rs`: new `provider_field_manager(class,
+  provider_namespace, provider_name)` building `banlieue.io/provider-<class>/<ns>/<name>`,
+  plus `FIELD_MANAGER_MAX_LEN` (the API server's 128-character cap) and a
+  deterministic FNV-1a suffix for identities that would exceed it. `DefaultHasher`
+  is deliberately not used: it is not stable across Rust releases and this value
+  lands in cluster state.
+- `crates/banlieue-provider-cloud-hypervisor/src/host_config.rs`: `HostConfig::field_manager()`,
+  since the host config already holds the `Provider` identity.
+- All four Cloud Hypervisor apply sites (`vmimage.rs`, `provider.rs`,
+  `reconciler.rs` x2) now apply under that scoped manager. `reconciler.rs`'s
+  `patch_status`/`patch_provider_id` take it as a parameter, computed once per
+  reconcile. **`.force()` is dropped on the single-row `perProvider` write**;
+  the other three keep it, because each solely owns the object it writes.
+- `crates/banlieue-provider-sdk/src/ssa.rs` module docs: the old text asserted
+  "each CRD has exactly one controller writing each subresource", which ADR-0060
+  made false. Replaced with a table of which managers are scoped and why.
+- `docs/src/security/threat-model.md`: the TB-8 row claiming a stolen host token
+  "writes only its own `perProvider` row" was **false in effect**; corrected, and
+  a new TB-8 row records cross-host row erasure and the write loop. Stamp to
+  ADR-0087.
+
+### Added
+- `docs/adr/0087-field-manager-identity-per-writer.md`; registered in the CALM
+  model's `adrs` list (`make calm-validate` clean, no node or relationship
+  change by design).
+- `crates/banlieue-provider-sdk/src/ssa_tests.rs`: 11 tests (distinct managers
+  per writer and per namespace, determinism, the 128-char cap, and that
+  truncation cannot collapse two writers back into one manager).
+- `crates/banlieue-provider-cloud-hypervisor/src/host_config_tests.rs`: 3 tests
+  for `field_manager()`.
+- `crates/banlieue-provider-libvirt/tests/e2e_vmimage_ssa.rs`: the two cases that
+  were missing. `two_writers_sharing_one_manager_erase_each_other` asserts the
+  broken mechanism on purpose, so a change in SSA semantics tells us;
+  `two_writers_with_scoped_managers_coexist` asserts the fix, including that one
+  host's re-reconcile leaves the other's row alone.
+
+### Why
+One `VMImage` visible to three host-resident Cloud Hypervisor providers went
+into a permanent write loop: `resourceVersion` 366324 to 728405 in ~35 minutes
+(~362,000 writes, ~170/sec), `Ready` flapping, and `perProvider` holding one row
+at a time rotating between the hosts. No error was logged; every host cheerfully
+reported `ready=true reason=Reconciled` tens of times per second.
+
+This is `bug-116`'s failure mode reached by a different route, and `bug-175`
+records the recurrence. ADR-0015 fixed the schema half (the lists are
+merge-keyed) and stated the model as "each provider owns only the entry it
+applies". That is true of *managers*, not providers, and in 2026-07 the two
+coincided: one class meant one writer. ADR-0060's host-resident provider broke
+that silently, because a merge key separates owners and cannot separate two
+writers presenting the same owner name. `.force()` suppressed the conflict that
+would have surfaced it immediately.
+
+libvirt, vSphere and Proxmox are **not** affected and keep their class
+constants: each applies its class's *complete* row set in one patch, so several
+replicas under one manager are idempotent. The rule is therefore stated as
+"scope when a writer applies a subset of what the manager could own", which is
+the question a new provider must answer, rather than a process count.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+Needs the Cloud Hypervisor providers rebuilt and restarted on every host. During
+a rolling upgrade both manager shapes are in flight and rows written under the
+old class manager are not taken over, so stale rows survive until something
+prunes them; this is accepted in the ADR rather than papered over by keeping
+`.force()`.
+
+Verified on a linux/amd64 build host (the Cloud Hypervisor crate does not
+compile on macOS):
+`cargo build`, `cargo clippy --all-targets --all-features -D warnings` and
+`cargo fmt --all --check` all clean; the new e2e compiles. The e2e itself is
+`#[ignore]`d and needs a cluster with the `VMImage` CRD.
+
+## [2026-10-03 18:40] - dev-oidc-k0s.sh: authentication config readable by k0s's kube-apiserver
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `scripts/dev-oidc-k0s.sh` (`attach_controller`): the AuthenticationConfiguration
+  was written `0600 root:root` in a `0700` directory, which k0s's kube-apiserver
+  cannot read: k0s runs it as the unprivileged `kube-apiserver` user with gid 0
+  and no supplementary groups. Every controller then crash-looped with
+  `open /etc/k0s/oidc/authentication-config.yaml: permission denied` until the
+  script's 300 s rollback restored it. The directory and file are now owned by
+  `APISERVER_USER` (default `kube-apiserver`, falling back to `root` where the
+  user does not exist), group `root`, modes `0750`/`0640`. Group ownership by
+  `kube-apiserver` alone was tried and does not work, because of the gid 0.
+- `scripts/dev-oidc-k0s.sh` (`setup_login`, `print_kubeconfig`): with
+  `EXPOSE=tailscale` the `ca_arg` array is empty, and macOS's bash 3.2 under
+  `set -u` aborts on `"${ca_arg[@]}"` (`ca_arg[@]: unbound variable`). Expanded
+  as `${ca_arg[@]+"${ca_arg[@]}"}`, which is empty-safe on every bash.
+
+### Why
+Found attaching a Dex issuer to a three-controller k0s cluster; the script had
+only been exercised where kube-apiserver ran as root.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only
+- [ ] Documentation only
+
+## [2026-10-03 16:45] - ADR-0086: management cluster control plane behind a keepalived VIP, no konnectivity
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0086-management-cluster-control-plane-vip.md` (Accepted).
+- `scripts/bootstrap-k0s-cluster.sh`:
+  - `API_VIP=<address>/<prefix>`: enables k0s control plane load balancing
+    (keepalived VRRP, userspace reverse proxy) and makes the VIP
+    `spec.api.externalAddress`, a certificate SAN and the default kubeconfig
+    server, on both backends (`render_cplb`, used by `generate_k0sctl_config`
+    and `render_k0s_yaml`).
+  - `API_VIP_ROUTER_ID` (default 51) and `API_VIP_AUTH_PASS`; with no
+    password one is generated once into `$WORKDIR/api-vip-authpass` (`0600`)
+    so reruns render the same value. `validate_api_vip` refuses a malformed
+    VIP, router ID or password.
+  - `require_api_vip`: a cluster with more than one controller and no
+    `API_VIP` is refused unless `NO_API_VIP=true`.
+  - With `TAILSCALE_AUTHKEY`, each node runs `tailscale up` with
+    `--advertise-routes=<VIP>/32` (or `/128`), so the VIP is reachable off the
+    LAN once the routes are approved.
+- `Makefile`: `K0S_API_VIP`, `K0S_API_VIP_ROUTER_ID`, `K0S_NO_API_VIP` and
+  `K0S_DISABLE_KONNECTIVITY`, passed to local and remote runs.
+- `docs/architecture/calm/architecture.json`: node
+  `network-control-plane-vip`, relationship `rel-control-plane-vip-kube-api`
+  with failover and TLS-passthrough controls; ADR-0086 listed. Diagrams
+  regenerated.
+
+### Changed
+- `scripts/bootstrap-k0s-cluster.sh`: `K0S_DISABLE_KONNECTIVITY` (default
+  `true`) now applies to the libvirt backend too, as
+  `--disable-components=konnectivity-server` in each controller's k0sctl
+  `installFlags`. Before, every agent dialled the first controller only, so
+  webhooks, `metrics.k8s.io` and `kubectl logs` failed on the other API
+  servers with "No agent available".
+- `docs/src/guides/end-to-end-setup.md`: the VIP settings, and how to convert
+  an existing cluster (including removing the leftover konnectivity
+  manifests).
+- `docs/src/concepts/architecture.md`, `scripts/bootstrap-cluster.prompt.md`:
+  the VIP and the konnectivity posture.
+- `docs/adr/0085-management-cluster-kine-bridge-kairos-debian.md`: its
+  control-plane-load-balancing follow-up now links ADR-0086.
+- `docs/src/security/threat-model.md`: full pass, stamp advanced to
+  2026-10-03 and ADR-0086. New boundary TB-13 (LAN and tailnet to the VIP)
+  with a §5 diagram line and a STRIDE table, a TB-8 row (host providers dial
+  the VIP), §7.19 (owning the VIP), two §8 entries (VIP takeover from the
+  LAN; API servers reaching kubelets directly). No component, asset or actor
+  changes.
+
+### Why
+A live three-controller management cluster had `externalAddress` set to its
+first controller. The `kubernetes` endpoints, kube-proxy and every client
+named that one node, and konnectivity agents all held connections to its
+konnectivity server only, so the `metrics.k8s.io` APIService flapped and
+any admission webhook (SPIRE's, next) would fail two calls in three. With
+control plane load balancing on, k0s stops publishing `externalAddress` as
+the only endpoint, each API server publishes itself, and the VIP's proxy
+balances over all three.
+
+### Impact
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
+- [x] Requires cluster rollout (existing clusters: rerun `config` + `apply`
+      with `API_VIP`, then move `/var/lib/k0s/manifests/konnectivity` off
+      every controller and delete the `k0s.k0sproject.io/stack=konnectivity`
+      objects, which k0s does not prune)
+- [ ] Config change only
+- [ ] Documentation only
+
+Behaviour change: `make k0s-all` and the script now refuse a
+multi-controller topology without `API_VIP` (or `NO_API_VIP=true`).
+
 ## [2026-10-02 23:00] - ADR-0085: management cluster on kine/PostgreSQL, bridged nodes, Kairos on Debian
 
 **Author:** Erick Bourgeois
@@ -175,7 +395,7 @@ deploy manifests and guides did not exist. Existing releases are retagged by
 hand (same digests, so signatures and attestations still apply).
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [x] Config change only
 - [ ] Documentation only
@@ -307,7 +527,7 @@ no VM and no seed ISO; `make proxmox-live-test` still passes.
   §7.16) and the CALM least-privilege control.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [x] Config change only (re-run the bootstrap script on each node: `role seed token`)
 - [ ] Documentation only
@@ -389,7 +609,7 @@ mutating calls, task polling and UPID path encoding, ISO upload, the e2e, and
 `make provider-bench` for the `proxmox` column. `make docs` was not run.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [x] Requires cluster rollout (new CRDs and RBAC: re-apply `deploy/crds/`, `deploy/controller/`, `deploy/operator/`)
 - [ ] Config change only
 - [ ] Documentation only
@@ -428,7 +648,7 @@ mutating calls, task polling and UPID path encoding, ISO upload, the e2e, and
   binary, identity or boundary exists yet).
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [ ] Documentation only
@@ -476,7 +696,7 @@ stacks, hundreds of endpoints for twenty used).
 - Provider crate, `ProxmoxMachine` CRD, ADR-0075.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [ ] Documentation only
@@ -516,7 +736,7 @@ separately and no code changed. No threat-model pass: neither ADR is
 implemented in banlieue yet.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Documentation only
@@ -547,7 +767,7 @@ work around that. Reachability (ADR-0019) matches names only, so it passes
 for a port group on the wrong VLAN.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Documentation only
@@ -597,7 +817,7 @@ project's event-driven rule broken at two seams, and together they more
 than doubled a pool's warm-up and refill.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [x] Requires cluster rollout (controller image; provider binary on each Cloud Hypervisor host)
 - [ ] Config change only
 - [ ] Documentation only
@@ -633,7 +853,7 @@ than doubled a pool's warm-up and refill.
 Uid uniqueness is what keeps one guest's VMM out of another guest's files.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [x] Requires cluster rollout (reinstall the provider binary on each Cloud Hypervisor host)
 - [ ] Config change only
 - [ ] Documentation only
@@ -669,7 +889,7 @@ Every guest delete logged spurious ERRORs and cleanup latency was
 quantized to the 5 s requeue.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [x] Requires cluster rollout (reinstall the provider binary on each Cloud Hypervisor host)
 - [ ] Config change only
 - [ ] Documentation only
@@ -700,7 +920,7 @@ never run, and its warm-up time was never recorded next to vSphere's
 see a Cloud Hypervisor guest.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [ ] Documentation only (test-only: an `#[ignore]`d e2e and a make target)
@@ -738,7 +958,7 @@ Found while closing roadmap 17: `VirtualMachine.spec.paused` was the one
 did nothing.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [x] Requires cluster rollout (controller binary; CRD description-only)
 - [ ] Config change only
 - [ ] Documentation only
@@ -791,7 +1011,7 @@ production bug in the reconcile cadence that only two controllers' clocks
 racing on real infrastructure could surface.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [x] Requires cluster rollout (provider binary; no CRD change)
 - [ ] Config change only
 - [ ] Documentation only
@@ -860,7 +1080,7 @@ as its issuer; which issuers count is now an explicit per-backend admin
 assertion instead of an implicit deployment fact.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [x] Requires cluster rollout (re-apply `deploy/crds/banlieue.io_providers.yaml`
       and `deploy/admission/provider-attestation-ektrustbundle.yaml`; additive)
 - [ ] Config change only
@@ -887,7 +1107,7 @@ so this is a paper-only renumber; roadmap 09 keeps 0067 because its claim was
 the deliberate later decision (#64).
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Documentation only
@@ -976,7 +1196,7 @@ the deliberate later decision (#64).
   per `rules/no-real-infrastructure.md`. It remains in git history.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [x] Documentation only (and test data)
 
 ## [2026-09-27 16:30] - Roadmap 09: ADR-0060 to ADR-0065 accepted; restart, pin and user-data tests; host capacity on the Provider
@@ -1022,7 +1242,7 @@ the deliberate later decision (#64).
 - `cargo deny check`: advisories, bans, licenses, sources ok.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [x] Requires host update: the provider binary (reinstalled on the test host)
 - [ ] Config change only
 - [ ] Documentation only
@@ -1072,7 +1292,7 @@ Close roadmap 09's last open live check: `Deferred` install with a vTPM
 on this backend had never run through banlieue.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [x] Requires host update: the provider binary (reinstalled on the test host)
 - [ ] Config change only
 - [ ] Documentation only
@@ -1149,7 +1369,7 @@ on this backend had never run through banlieue.
   status ✅ for Cloud Hypervisor and libvirt, vSphere and Proxmox pending.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [x] Requires host update (templates, polkit rule, state directories): rerun the bootstrap `host`, `polkit` and `provider` steps
 - [x] Requires cluster rollout (imagebuilder)
 - [ ] Documentation only
@@ -1186,7 +1406,7 @@ on this backend had never run through banlieue.
 - `tests/e2e_vtpm.rs`: deletes the machine even when a check fails.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [x] Host binary update
 - [ ] Documentation only
@@ -1238,7 +1458,7 @@ that the installed system booted, and an eject.
   `make ch-vtpm-e2e`, pending the host update.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [x] Requires cluster rollout (imagebuilder)
 - [ ] Config change only
 - [ ] Documentation only
@@ -1287,7 +1507,7 @@ its own swtpm, manufactured once, with a host-minted EK certificate.
   TB-9 rows), roadmap 09.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [x] Requires cluster rollout (CRD field)
 - [x] Config change only (host: polkit rule, `$STATE_ROOT/ek`, provider unit)
 - [ ] Documentation only
@@ -1324,7 +1544,7 @@ deleting a `VMImage` left its file on every host.
   decompressed size), roadmap 09 and `ROADMAPS.md` (ADR-0064 done).
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [x] Requires cluster rollout (controller)
 - [x] Config change only (host `keep_unreferenced`, optional)
 - [ ] Documentation only
@@ -1359,7 +1579,7 @@ place, an `emptyDir` (`banlieue-imagebuilder` `reconciler/push.rs`).
   removed on drop.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [ ] Documentation only
@@ -1437,7 +1657,7 @@ ADR-0064 routes the build through an OCI registry, pulled by digest.
   `make ch-e2e` passed.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [x] Requires cluster rollout (CRD field, imagebuilder RBAC)
 - [x] Config change only (host `[registry]`, polkit rule, imagebuilder flags)
 - [ ] Documentation only
@@ -1482,7 +1702,7 @@ than an OAuth App.
   cluster instead".
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [ ] Documentation only
@@ -1507,7 +1727,7 @@ ships, and dismissing each batch by hand does not stop the next one.
   doubles compiled into the libraries, is still scanned.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [x] Config change only
 - [ ] Documentation only
@@ -1532,7 +1752,7 @@ enforces the audit the note asks for (`#![deny(unsafe_code)]` crate-wide,
   on the Semgrep scan, with a comment naming the Clippy lints that replace it.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [x] Config change only
 - [ ] Documentation only
@@ -1632,7 +1852,7 @@ tap re-attach).
 Green against a k0s cluster and a bootstrapped host in 82 s.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [ ] Documentation only
@@ -1671,7 +1891,7 @@ The controller binary with `--kubeconfig` and no `KUBECONFIG` or
 `~/.kube/config` now dials the file's server instead of failing at start.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [ ] Documentation only
@@ -1747,7 +1967,7 @@ a release, and nothing currently enforces that they are the same one. In one
 binary that is a single constant with a unit test.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Documentation only
@@ -1808,7 +2028,7 @@ changed files by path inside directories the guest can write.
   in 5 s.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [ ] Documentation only
@@ -1850,7 +2070,7 @@ it for this found settings nothing used.
   behind — the removed settings were not needed.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [x] Config change only
 - [ ] Documentation only
@@ -1879,7 +2099,7 @@ note, the crate now denies undocumented `unsafe`.
   lint-enforced).
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [ ] Documentation only
@@ -1903,7 +2123,7 @@ item.
 - `ROADMAPS.md`: roadmap 09 row updated.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Documentation only
@@ -1970,7 +2190,7 @@ open every other guest's `0770` directories.
   Decision 5 (2770 setgid, 0711 roots, the VMM's forced umask).
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [ ] Documentation only
@@ -2036,7 +2256,7 @@ live-tested without root.
   Maintained, pure Rust; `cargo deny` clean, no duplicate versions added.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [ ] Documentation only
@@ -2061,7 +2281,7 @@ machine-local path. That is a local identifier in a public repo
   ones under `.github/tools/*/` are unaffected.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [x] Config change only
 - [ ] Documentation only
@@ -2085,7 +2305,7 @@ consumer reads. The same drift happened with `LibvirtMachine` before.
   `banlieue bootstrap` at once. Unused CRD-type imports removed.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [ ] Documentation only
@@ -2146,7 +2366,7 @@ fmt clean. CALM and the threat-model pass wait for the ADRs' acceptance and
 the provider.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [ ] Documentation only
@@ -2179,7 +2399,7 @@ likely to lock someone out of a remote host.
 `mkdocs build` clean apart from the theme's banner.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Documentation only
@@ -2228,7 +2448,7 @@ remote bare-metal machine.
   bootstrap item ticked.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [ ] Documentation only
@@ -2261,7 +2481,7 @@ swtpm 0.7.1 and the Kairos Hadron v0.4.0 core ISO.
 - `ROADMAPS.md`: row 09 says the same.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Documentation only
@@ -2305,7 +2525,7 @@ All six ADRs are **Proposed**. CALM and the threat-model pass follow
 acceptance and implementation.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Documentation only
@@ -2337,7 +2557,7 @@ sandbox TCB that is the reason for Cloud Hypervisor in the first place.
 - `ROADMAPS.md`: row 09 says the same.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Documentation only
@@ -2360,7 +2580,7 @@ gotchas the roadmap did not list.
 - `ROADMAPS.md`: row 09 moves ⛔ → 🔶 with the same summary.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Documentation only
@@ -2395,7 +2615,7 @@ Kairos guest on Cloud Hypervisor v53.0 with the seed as a read-only
 virtio-blk disk now applies its user-data (hostname, SSH key, `boot` stage).
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [ ] Documentation only
@@ -2419,7 +2639,7 @@ on the assumption that 15 held them. Two ADRs would have shared a number.
 - `ROADMAPS.md`: the three status rows match.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Documentation only
@@ -2449,7 +2669,7 @@ of duplicating docs.
   The Claim Flow.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Documentation only
@@ -2534,7 +2754,7 @@ Recording the design before any ADR/code, per ADD; ADR-0066 (the image
 contract, amending ADR-0040/0048) is the roadmap's own phase 0 gate.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Documentation only
@@ -2616,7 +2836,7 @@ completion, not change — a box true now gets ticked now, even when an earlier
 session made it true.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Documentation only
@@ -2689,7 +2909,7 @@ kind of gap a `FakeClient`-only test suite structurally cannot see — they
 live entirely in what the cluster has deployed, not in what the code does.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [x] Requires cluster rollout — the regenerated `VSphereMachine` CRD is
       now applied live; anyone else's cluster running this code needs the
       same `make crds` + `kubectl apply`.
@@ -3038,7 +3258,7 @@ image is distroless and the transport is mTLS-only per ADR-0011/0054);
 `list_all_domains` is genuinely still only a constant.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [x] Requires cluster rollout — new `LibvirtMachine` CRD field; apply
       `deploy/crds/` before the provider that writes it.
 - [ ] Config change only
@@ -3177,7 +3397,7 @@ that can never report is a merge queue that silently stops. Both were blocking
 the threat-model pass from merging at all.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [x] Config change only — **one manual step outstanding:** the `main` ruleset
       must require `✅ Required Checks` *instead of* `🎨 Check Formatting`,
@@ -3253,7 +3473,7 @@ loop in production — a regression a unit test against `FakeClient` cannot
 catch by construction, since the fake never round-trips real vCenter JSON.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [ ] Documentation only
@@ -3316,7 +3536,7 @@ live run against vCenter is this decision's actual test, per ADR-0043's
 own notes and roadmap 17's A2 row.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [ ] Documentation only
@@ -3398,7 +3618,7 @@ plainly that there is none and points at §8, per
 infrastructure identifier is recorded here.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Documentation only — but it changes what operators must check at
@@ -3477,7 +3697,7 @@ way.
   places including asset A-9 and a STRIDE row for the spoofed-guest case.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Documentation / architecture-model only
@@ -3634,7 +3854,7 @@ because **mkdocs cannot catch it**: the fences are rendered client-side by
 the browser instead. Rendering the blocks with `mmdc` is the only local check.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Documentation only (plus one CI workflow fix)
@@ -3700,7 +3920,7 @@ The one remaining `jeb.ca` is the rule quoting its own documented exception
 (`authors = [... erick@jeb.ca]`), already published in `Cargo.toml`.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Documentation / repository contents
@@ -3797,7 +4017,7 @@ responsibility. ADR-0049 states it the right way round.
   updated for the roadmap's 70 → 17 renumbering.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [x] **Behaviour change** — `spec.subject.id` semantics changed. Claims
       created with the prefixed form are now rejected, and existing ones
       cannot be edited (`spec` is immutable); recreate them.
@@ -3938,7 +4158,7 @@ with it.
   shellcheck.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Dev tooling
@@ -3995,7 +4215,7 @@ step after. The harness was verified up to the point where its own documented
 sequence starts.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Dev tooling
@@ -4044,7 +4264,7 @@ uses), and it **silently drops custom claims that are not namespaced URIs**,
 so a plain `groups` claim never appears and nothing reports an error.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Documentation only
@@ -4113,7 +4333,7 @@ deployed with placeholder credentials; `make dev-oidc-github-creds` swaps in
 real ones without touching the cluster.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Dev tooling and documentation
@@ -4182,7 +4402,7 @@ and `try-claim`'s accept/reject against it. Those need a GitHub OAuth App
 and a browser.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Dev tooling and documentation
@@ -4218,7 +4438,7 @@ feature is not documented if the only way to find it is to already know its
 name.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Documentation only
@@ -4344,7 +4564,7 @@ before the tri-state guest probe and the requeue-cadence change, and before
 the certificate reissue. Nothing had validated the tree as it now stands.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [x] Requires cluster rollout — provider behaviour change (condition now
       absent rather than false)
 - [ ] Config change only
@@ -4395,7 +4615,7 @@ of which was a formatting nit:
 - `cargo test --all` green, clippy clean, `make docs` builds.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Documentation — including two commands that could not have worked
@@ -4471,7 +4691,7 @@ question "what was 25?", which has no answer.
 historical record; the mapping table is the key.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Documentation only
@@ -4560,7 +4780,7 @@ distinguishing fact is *which disk booted*, which is why the installed
 system announces itself behind an immucore sentinel guard.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [x] Requires cluster rollout — `LibvirtMachine` CRD gains
       `status.guestInstalled`
 - [ ] Config change only
@@ -4645,7 +4865,7 @@ moves, `hostname -f` depends on resolver config, but a tailnet name and its
 is what makes the certificate outlive the network around it.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [x] Operational tooling — reissuing a server certificate needs a
       `systemctl restart libvirtd`
@@ -4738,7 +4958,7 @@ API server rather than of our code. The first run of the new tier found a
 real bug, which is the argument for it.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [ ] Documentation only
@@ -4835,7 +5055,7 @@ pool is busy" and "the pool will never warm" are indistinguishable from a
 claim otherwise, and the second one needs a human.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [x] Requires cluster rollout — new CRD (`virtualmachineclaims.banlieue.io`)
       and a widened controller ClusterRole
 - [ ] Config change only
@@ -4906,7 +5126,7 @@ advanced to 2026-09-20; the ADR range is unchanged, since this amends ADR-0014
 rather than adding an ADR.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [x] Config change only (Makefile targets and CI job names changed)
 - [ ] Documentation only
@@ -4947,7 +5167,7 @@ into `- **Amended:**` + `- **Related:**`: burying an amendment date inside a
 paragraph of relation prose makes neither findable.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Documentation only
@@ -5014,7 +5234,7 @@ lowercase is the convention the maintainer chose, matching `docs/adr/`.
 - No duplicate ADR numbers remain
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Documentation / file naming only
@@ -5041,7 +5261,7 @@ gains `pool` and `static` becomes optional. It fails the same bar 0054 just
 passed.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Documentation only
@@ -5104,7 +5324,7 @@ contents — that confound is not eliminated, and the finding is therefore
 `BackingFile` is the case that needs proving before it can be trusted.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [x] Requires cluster rollout — provider-libvirt image (the lease procedure
       is additive; nothing in the reconcile path changed).
 - [ ] Config change only
@@ -5137,7 +5357,7 @@ Verified with `cargo fmt --check` and
 `cargo clippy -p banlieue-provider-libvirt --all-targets --all-features -- -D warnings`.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [ ] Documentation only
@@ -5203,7 +5423,7 @@ self-consistency. Two independent checks:
   the point.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [x] Requires cluster rollout — provider-libvirt image.
 - [ ] Config change only
 - [ ] Documentation only
@@ -5256,7 +5476,7 @@ here is implementable until then; what is removed is the banlieue-side
 design gap, so there is no second design conversation about pools later.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Documentation only — design record; no code changed.
@@ -5294,7 +5514,7 @@ publishes (the pool never warms and keeps creating members up to
 long as it would have with no pool at all.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Documentation only
@@ -5351,7 +5571,7 @@ either way and should not be written twice.
   pool that ignores image rebuilds serves unpatched VMs silently.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [x] Requires cluster rollout — controller image, the new CRD, and the
       amended ClusterRole.
 - [ ] Config change only
@@ -5395,7 +5615,7 @@ and it converged. Worth recording because a stale binary reproduces a fixed
 bug perfectly and looks exactly like a regression.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Documentation only — no code changed in this entry; it records the
@@ -5449,7 +5669,7 @@ hides exactly the bugs it exists to catch; that is the lesson worth keeping,
 more than the UUID itself.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [x] Requires cluster rollout — provider-libvirt image.
 - [ ] Config change only
 - [ ] Documentation only
@@ -5500,7 +5720,7 @@ operator's bootstrap, which cannot share it without a feature-flag change —
 and the drift test added earlier guards the second against the first.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [x] Requires cluster rollout — provider-libvirt image, for the resolvedRef
       fix.
 - [ ] Config change only
@@ -5544,7 +5764,7 @@ past it. The fix, when it bites, is an `if: always()` aggregator job in
 requiring that one context instead of four. Documented in roadmap 60 #1.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [x] Repo settings change
 - [ ] Documentation only
@@ -5607,7 +5827,7 @@ accepted volume name creates a file nobody can look up again, and rejecting
 also closes path traversal, which escaping would not.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [x] Requires cluster rollout — provider-libvirt and controller images, the
       two CRDs, and the three amended ClusterRoles.
 - [ ] Config change only
@@ -5658,7 +5878,7 @@ Three decisions worth recording:
    equivalent problem because its inventory is a folder tree.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [x] Requires cluster rollout — controller image, plus the CRDs and
       ClusterRoles from the previous entry.
 - [ ] Config change only
@@ -5725,7 +5945,7 @@ fixed here rather than recorded — an uncontrolled threat is not an accepted
 risk unless someone accepts it.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [ ] Documentation only
@@ -5781,7 +6001,7 @@ Two design findings worth recording, both discovered by the tests:
    simple.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [x] Requires cluster rollout — the two new CRDs and the three amended
       ClusterRoles must be applied before the libvirt machine reconciler can
       run. Nothing consumes them yet, so applying them is safe but not yet
@@ -5855,7 +6075,7 @@ the repository. `ROADMAPS.md` is a status board, and six of its rows were
 stale.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Documentation only
@@ -5908,7 +6128,7 @@ not dropped: the hosts under test have no vTPM configured yet, and both
 numbers that experiment produces are measured on a Trusted Boot guest.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Documentation only — *no*: adds library code, but nothing deployed
@@ -5986,7 +6206,7 @@ source read, real vim25 call shape) rather than another live-or-die guess.
 
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Documentation only — no CRD/schema change; behavior-only changes to
@@ -6047,7 +6267,7 @@ involved) chased two theories, both refuted:
   request shaping, is the next lever.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Documentation only — no CRD/schema change; behavior-only restructure
@@ -6087,7 +6307,7 @@ running at the time. Stopped it by deleting both `VirtualMachine` CRs
 then fixed the underlying backoff gap.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Documentation only — no CRD/schema change; behavior-only fix to
@@ -6115,7 +6335,7 @@ Came up while validating the Trusted Boot boot-stall investigation
 it isn't re-researched from scratch later.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Documentation only — no code, no CRD/schema change.
@@ -6140,7 +6360,7 @@ Live-testing the disk-resize fix from earlier today: the very first real
 clone attempt with a disk size increase failed the whole `CloneVM_Task`.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Documentation only — fixes a fault that made every clone with
@@ -6179,7 +6399,7 @@ whether this needs splitting into its own follow-up `ReconfigVM_Task`
 (flagged in code comments either way).
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Documentation only — no schema change; every existing clone gets an
@@ -6240,7 +6460,7 @@ configurable-pool were designed in from the start), completing the wiring is
 a bugfix, not a new architectural decision — no ADR needed.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Documentation only for consumers not opting in — `adapter` is a new,
@@ -6294,7 +6514,7 @@ support identically.
 
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Documentation only for consumers not opting in — no schema change;
@@ -6334,7 +6554,7 @@ opaquely deep inside kairos-operator or the build pod.
 
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Documentation only for consumers not opting in — no schema change,
@@ -6389,7 +6609,7 @@ half of the TPM/Trusted Boot feature; ADR-0039/ADR-0040 (vTPM device
 attach + deferred install) are the VM-instance-time half.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Documentation only for consumers not opting in — `trustedBoot` is a
@@ -6461,7 +6681,7 @@ secrets` across `banlieue-system` — a confused deputy structurally identical t
 CHAIN-001, which the `credentialsRef` policy already solves for `Provider`.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [x] Requires cluster rollout
 - [ ] Config change only
 - [ ] Documentation only
@@ -6526,7 +6746,7 @@ trusted anyway; that is the failure `rules/threat-modeling.md` exists to prevent
 
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Documentation only
@@ -6567,7 +6787,7 @@ rule exists so that cannot recur silently.
 
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Documentation only
@@ -6605,7 +6825,7 @@ in this repo.
 
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Documentation only
@@ -6655,7 +6875,7 @@ the digest pins were documented, unreachable by Dependabot, and overridden at
 build time by floating tags.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [x] Config change only
 - [ ] Documentation only
 
@@ -6749,7 +6969,7 @@ uses the same" — CI moved to `0.118.0`, and `0.87.0` is the exact version
 bug-135 identified as silently ignoring `--vex` for SARIF output.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [x] Requires cluster rollout (new Chainguard base image digest)
 - [x] Config change only (dependabot, VEX, CI pins)
 - [ ] Documentation only
@@ -6801,7 +7021,7 @@ still working — the privacy check passes in this run's log. The generator now
 gets past the privacy gate and fails one step later, on the ref format.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [x] Config change only
 - [ ] Documentation only
@@ -6844,7 +7064,7 @@ job entirely), which is why `tpm-support`'s own PR runs were green while
 `main`'s push-triggered badge stayed red.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [x] Config change only -- CI workflow, no code change. Confirmed the
       failure was isolated to SLSA provenance signing/attestation, not the
@@ -6877,7 +7097,7 @@ existed and was referenced in guides, but had no copy-pasteable command
 sequence for either backend.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Documentation only (plus a one-line script bug fix)
@@ -6947,7 +7167,7 @@ confirmation that ADR-0039 + ADR-0040 together produce a genuinely unique,
 install-time-sealed encryption key per VM, not just a unit-tested code path.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] New opt-in capability (`installMode` defaults to `Immediate`,
@@ -7001,7 +7221,7 @@ like `firmware`, not a per-VM override or a `VMImage` field).
   `docs/src/reference/api.md`: regenerated (`make crds`).
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] New opt-in capability (`tpmEnabled` defaults to `false`; existing
@@ -7043,7 +7263,7 @@ so this had gone unnoticed.
   `FakeClient`.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [x] Requires cluster rollout (rebuild/redeploy `banlieue-provider-vsphere`)
 - [ ] Config change only
 - [ ] Documentation only
@@ -7121,7 +7341,7 @@ non-existent schema fields/enum values referenced in guides, and an outdated
   `make crds` to confirm they were already in sync (no diff).
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Documentation only
@@ -9648,7 +9868,7 @@ operator's existing per-Provider `build_import_role` and confirmed both are
 already covered, so this should be the last RBAC gap in this path.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [x] Requires cluster rollout — `kubectl apply -f
       deploy/imagebuilder/rbac/clusterrole-import.yaml`
 - [ ] Config change only
@@ -9685,7 +9905,7 @@ identity and never creates a Job pod (with a Kubernetes ServiceAccount) at
 all.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [x] Requires cluster rollout — `kubectl apply -f
       deploy/imagebuilder/rbac/serviceaccount-import.yaml` (or re-run
       `kubectl apply -R -f deploy/imagebuilder/rbac/`, which already covers
@@ -9752,7 +9972,7 @@ subcommand directly, which talks to vCenter without ever creating a Job or
 touching this RBAC at all.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [x] Requires cluster rollout — `kubectl apply` both changed
       `clusterrole.yaml` files, and the already-deployed
       `banlieue-provider-vsphere` image (no code rebuild needed for the RBAC
@@ -9796,7 +10016,7 @@ to this branch's own changes, just a newly-published advisory against the
 pinned version. `h2` is not a direct dependency; no source code changed.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [x] Config change only
 - [ ] Documentation only
@@ -9829,7 +10049,7 @@ non-negotiable #4 (explicit over implicit) — banlieue never reads or edits
 the `cloudConfig` Secret.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Documentation only
@@ -9856,7 +10076,7 @@ silence until completion, making it impossible to tell a slow-but-healthy
 upload from a hung one by watching the per-zone import Job's logs.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout (picked up on next `banlieue-provider-vsphere`
       rebuild, same as any other code change to the import Job)
 - [ ] Config change only
@@ -9909,7 +10129,7 @@ which registry a cluster can reach is an operator decision made once on the
 `banlieue-imagebuilder` Deployment, not a per-`VMImage` field.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout (no CRD change; existing `banlieue-imagebuilder`
       deployments keep working unmodified — new flags default to prior
       hardcoded behavior)
@@ -9963,7 +10183,7 @@ this change is a `banlieue-imagebuilder`-side workaround, kept independent of
 whether/when that gets fixed.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [x] Requires cluster rollout (existing `VMImage`s with `isoOverlay` set pick
       up the fixed `OSArtifact` wiring on next reconcile; no CRD schema
       change)
@@ -10064,7 +10284,7 @@ carry the controller placement along, matching the maintainer's own working
 `create-vm.sh` reference exactly.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [x] Config change only (no CRD/API change; part of the same pending
       vsphere provider rebuild as the rest of tonight's ADR-0021 work)
@@ -10096,7 +10316,7 @@ carry the controller placement along, matching the maintainer's own working
   screen, never reaching `install.poweroff`.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [x] Config change only (no CRD/API change; part of the same pending
       vsphere provider rebuild as the rest of tonight's ADR-0021 work)
@@ -10150,7 +10370,7 @@ this exact problem before by never trusting a boot order set in the same
 call as device creation.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [x] Config change only (no CRD/API change; requires the vsphere provider
       image to be rebuilt to pick up this and the rest of tonight's ADR-0021 work)
@@ -10197,7 +10417,7 @@ new to ADR-0021 — the upload-before-destroy ordering predates it (ADR-0020)
 template that still locked its own source ISO.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [x] Config change only (no CRD/API change, no image rebuild required beyond
       the existing ADR-0021 work already pending redeploy)
@@ -10654,7 +10874,7 @@ reports only its own reachable datastore cluster + DVS port group
   verified the behavior.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [x] Feature (rebuild image for on-cluster effect); cargo fmt/clippy/test green;
       no real infrastructure identifiers.
 
@@ -10733,7 +10953,7 @@ on-prem: the VMImage reconcile hot-looped on
 vcsim/unit paths didn't catch it — only a real CRD enforces the field types.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [x] Bug fix (rebuild the banlieue image for the on-cluster imagebuilder path;
       run-local already runs the fixed code)
 
@@ -10798,7 +11018,7 @@ Vault path, registry hostnames, and CA-bundle source are all environment-specifi
 and were generalized to operator-supplied env vars rather than copied.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [x] Tooling only (opt-in; `FLUX_ENABLED` defaults to `false`)
 - [x] No real infrastructure identifiers committed (Vault mount/path, registry,
       OCI URL, and CA bundle all come from the untracked `BANLIEUE_ENV_FILE`
@@ -10834,7 +11054,7 @@ compute clusters produced one colliding FailureDomain name, and the controller
 reconciled ~once a second forever.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [x] Bug fix (rebuild the banlieue image for the on-cluster provider path)
 
 ## [2026-08-08 13:10] - Fix: vSphere endpoint must be reduced to host for vim_rs
@@ -10861,7 +11081,7 @@ same `build()` path, so it inherits the fix — it had only ever been given a
 bare host before.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [x] Bug fix (rebuild the banlieue image for the on-cluster provider path)
 
 ## [2026-08-08 12:30] - Fix: vSphere provider must accept `--import-image`
@@ -10887,7 +11107,7 @@ the operator spawn a provider pod that CrashLoopBackOff'd on the unknown flag.
 libvirt was unaffected (it already accepts `--import-image`).
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [x] Bug fix (requires rebuilding the banlieue image for the on-cluster path)
 - Note: `make provider-vsphere-run-local` was never affected (it invokes the
   provider directly, without `--import-image`).
@@ -10978,7 +11198,7 @@ to `/usr/local/bin/k0s` and cannot produce that layout, so the vSphere path
 mirrors the maintainer's proven native Ansible flow instead.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [x] Tooling only (vSphere management-cluster bootstrap)
 - [x] No real infrastructure identifiers committed (Artifactory URL, image
       mirror, k0s version live in the untracked `BANLIEUE_ENV_FILE`)
@@ -11011,7 +11231,7 @@ create/IP/destroy is backend-specific. Spreading nodes across three vSphere
 compute clusters makes each an etcd failure domain (ADR-0002 reasoning).
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [x] Tooling only (management-cluster bootstrap; no CRD/runtime change)
 - [x] No real infrastructure identifiers committed (env-driven + govc
       discovery; real values live in an untracked `BANLIEUE_ENV_FILE`)
@@ -11064,7 +11284,7 @@ curl -sI -H "Authorization: Bearer $TOKEN" \
 ```
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [x] Requires cluster rollout — CRD field added
 - [ ] Config change only
 - [ ] Documentation only
@@ -11098,7 +11318,7 @@ whenever a change appears not to have taken: check the running `imageID`, not
 the tag.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Verification only — no source changes in this entry
@@ -11130,7 +11350,7 @@ The test that parsed `raw["pools"]` was removed rather than adapted — its
 subject no longer exists.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [x] Requires cluster rollout
 - [ ] Config change only
 - [ ] Documentation only
@@ -11169,7 +11389,7 @@ Placement remains PVC-driven: the Jobs carry no `nodeSelector`, only a
 toleration, and the scheduler puts them where the artifacts volume is.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Verification only — host pool definition corrected, no source changes
@@ -11205,7 +11425,7 @@ for it and `Reconciled` for the other three, and the ADR-0015 aggregate stays
 `False` — "ready" means ready everywhere.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Verification only — no source changes in this entry
@@ -11249,7 +11469,7 @@ at load time, which is why the `mknod` fallback exists in both the pod and the
 cloud-config.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [x] Config change only — host/VM configuration and node OS config
 - [ ] Documentation only
@@ -11301,7 +11521,7 @@ follow-up. The distinction is that a build pod is placed by *policy* and an
 import Job by the *volume it mounts*.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [x] Requires cluster rollout
 - [ ] Config change only
 - [ ] Documentation only
@@ -11341,7 +11561,7 @@ meant the documented install path produced a cluster where privileged builds
 could land on control-plane nodes.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [x] Requires cluster rollout — new install flags; node config applies on rebuild
 - [ ] Config change only
 - [ ] Documentation only
@@ -11403,7 +11623,7 @@ is **not persistent**; the durable fix belongs in the Kairos cloud-config
 (`/etc/modules-load.d/loop.conf` + `options loop max_loop=8`).
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [x] Requires cluster rollout
 - [ ] Config change only
 - [ ] Documentation only
@@ -11457,7 +11677,7 @@ namespace, with zone status translated onto `perProvider[].zones[]` and the
 ADR-0015 aggregator reporting `Ready=False (Importing): 1 of 1 provider(s)`.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [x] Requires cluster rollout — image `sha256:92142433…` pushed, not yet deployed
 - [ ] Config change only
 - [ ] Documentation only
@@ -11513,7 +11733,7 @@ SA: banlieue-imagebuilder in banlieue-system
 ```
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [x] Requires cluster rollout — new ServiceAccount, new per-Provider RBAC
 - [ ] Config change only
 - [ ] Documentation only
@@ -11577,7 +11797,7 @@ sandbox the build. This should not be described as "isolating" the build in a
 security sense.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [x] Requires cluster rollout — new namespace, changed namespace labels
 - [ ] Config change only
 - [ ] Documentation only
@@ -11622,7 +11842,7 @@ the Makefile's Debian-style `x86_64-linux-gnu-gcc` resolves correctly once it is
 present.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [ ] Documentation only
@@ -11664,7 +11884,7 @@ target pool so its contents can be compared against the source; remove it with
 `virsh vol-delete`.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Test-only — one new `#[ignore]`d live test, no shipped code changed
@@ -11706,7 +11926,7 @@ target pool so its contents can be compared against the source; remove it with
   (`bootstrap_tests.rs`, untracked `live_vcenter.rs`) — untouched here.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [x] Requires cluster rollout — new binary; CRDs unchanged
 - [ ] Config change only
 - [ ] Documentation only
@@ -11769,7 +11989,7 @@ Every remaining actionable finding from `security-review-2026-07-31.md`:
   send-timeout against a non-reading peer).
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [x] Requires cluster rollout — RBAC + CRD schema + optional admission policies
 - [ ] Config change only
 - [ ] Documentation only
@@ -11831,7 +12051,7 @@ tracing-subscriber panic under the load. Fixed to read
   delete-loop after bug-119.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [x] Requires cluster rollout — CRD schema + imagebuilder RBAC
 - [ ] Config change only
 - [ ] Documentation only
@@ -11881,7 +12101,7 @@ Covered by sha256 and sha512 happy paths against published test vectors, plus
 mismatch, unsupported-algorithm, and malformed-format cases.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Documentation only — plus one constant extraction, no behaviour change
@@ -11919,7 +12139,7 @@ a real cluster's config would have modified that file as a side effect.
   the deployed schema reports `list-type: map` on both lists.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [ ] Documentation only
@@ -11987,7 +12207,7 @@ Implements the three chain-breakers from `security-review-2026-07-31.md`
   rules remain.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [x] Requires cluster rollout — RBAC + optional admission policies
 - [ ] Config change only
 - [ ] Documentation only
@@ -12026,7 +12246,7 @@ CRDs were applied to a kind cluster and accepted. The ADR-0015 SSA regression
 test still passes against the full regenerated CRD set.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [x] Requires cluster rollout — CRD schema change
 - [ ] Config change only
 - [ ] Documentation only
@@ -12093,7 +12313,7 @@ Re-ran the reproducer on kind against the regenerated CRD: `perProvider` reads
 without duplicating it, and the controller's condition survives untouched.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [x] Requires cluster rollout — CRD schema change plus a new controller watch
 - [ ] Config change only
 - [ ] Documentation only
@@ -12160,7 +12380,7 @@ dependency graph. The defect was the missing fallback, not the missing install.
 ### Impact
 - [x] Requires cluster rollout (operator ClusterRole gained a rule; existing
       ClusterRoleBindings are renamed — the new prune removes the old ones)
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [x] Tests + CI + documentation
 
 ## [2026-07-31 16:40] - Shared caBundle resolver in the SDK; mutation testing closes two real gaps
@@ -12210,7 +12430,7 @@ not a test gap. The other two were real:
 Re-run after both fixes: **20/20 killed, 0 survivors.**
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [ ] Documentation only
@@ -12281,7 +12501,7 @@ the grant; creating a Job is the ability to run an arbitrary pod as that
 provider's identity.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [x] Requires cluster rollout — new flags, new RBAC, rebuilt image
 - [ ] Config change only
 - [ ] Documentation only
@@ -12337,7 +12557,7 @@ belongs to `banlieue-imagebuilder`'s field manager (ADR-0010) and
 what keeps three managers off each other's toes.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [x] Requires cluster rollout — new flags and a new watch; needs a rebuilt image
 - [ ] Config change only
 - [ ] Documentation only
@@ -12455,7 +12675,7 @@ that is an author identity, not a host.
   which is what makes the absence check mean anything.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [x] Requires cluster rollout (operator ClusterRole gained a rule)
 - [ ] Config change only
 - [x] Tests + CI + documentation
@@ -12539,7 +12759,7 @@ those verbs and the grant would silently widen to every Secret in the namespace.
 
 ### Impact
 - [x] Requires cluster rollout (new CRD, new Deployment, new ClusterRole)
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Config change only
 - [ ] Documentation only
 
@@ -12629,7 +12849,7 @@ instead of `read_exact` on the length prefix, serials starting at 0, and
 skipping length-prefix validation entirely.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] New crate, not yet wired into any binary — no runtime behaviour changes
@@ -12684,7 +12904,7 @@ never loosening `banlieue-system` itself, which stays `restricted` for the
 controller/provider pods that actually need hardening.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [x] Requires applying `deploy/imagebuilder/namespace.yaml` (new namespace)
       before the next `make imagebuilder-run-local` / imagebuilder deployment
 - [ ] Config change only
@@ -12720,7 +12940,7 @@ controller/provider pods that actually need hardening.
    `listen_tls`/`listen_tcp`. Benign only because both got the same value.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Dev/test tooling only (no banlieue runtime code touched)
@@ -12767,7 +12987,7 @@ required a Job per `Provider` probe. Its reasoning about the *data* path
 survives — bulk transfer still runs in a Job, never in the reconcile loop.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [x] Requires running `bootstrap-libvirt-tls.sh` on the libvirt host before
       the provider can connect (no plaintext fallback, by design)
 - [ ] Config change only
@@ -12807,7 +13027,7 @@ everywhere else. `ssh-keygen -R` is used rather than a grep/sed purge because
 the entries are hashed and would not match a literal search.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rebuild
 - [ ] Config change only
 - [x] Dev/test tooling only (no banlieue runtime code touched)
@@ -12853,7 +13073,7 @@ afterwards. Hence the script enforcing the ordering (storage ready → default
 verified → only then create an OSArtifact) instead of leaving it to a doc.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [x] Existing clusters need `kubectl taint nodes --all node-role.kubernetes.io/control-plane-`
       (no rebuild required); the script change only affects newly-built clusters
 - [ ] Config change only
@@ -12895,7 +13115,7 @@ already-defined domain (`dominfo` succeeds → just `start` it), so a subsequent
 fresh ones — masking whether the `externalAddress` fix had actually taken.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [x] Requires re-running `make k0s-remote-destroy` (the previously-"destroyed"
       VMs are still defined and must be removed before a clean rebuild)
 - [ ] Config change only
@@ -12944,7 +13164,7 @@ address, pointed at the same node. Konnectivity's port therefore never needs
 exposing on the overlay network.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [x] Requires cluster rebuild (`make k0s-remote-destroy` + `k0s-remote-all`) —
       the generated k0sctl config changes, and `externalAddress` is baked in at
       cluster-init time
@@ -12988,7 +13208,7 @@ arbitrary network input, which is the threat model both advisories describe
 (e.g. a public-facing RPKI/RRDP relying party).
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [ ] Documentation only
@@ -13050,7 +13270,7 @@ build half via a new crate, while per-zone import stays each provider's own
 concern per the CRD-only contract.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [x] New optional component (`banlieue-imagebuilder` + `deploy/imagebuilder/`) — additive, opt-in via a `Url`-kind `VMImage` source
 - [ ] Config change only
@@ -13074,7 +13294,7 @@ seen, and vim_rs 0.5 carries two phf majors internally. Both are benign; this
 makes the supply-chain gate green again.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [x] Build / CI policy only
 
@@ -13189,7 +13409,7 @@ lets banlieue own TLS trust.
   so it does not block or alter BYOC.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [x] Documentation / design only (no code yet — TDD of `VimClientFactory::build`
       is the next step once the ADR is accepted)
@@ -13220,7 +13440,7 @@ A stamp file is the standard make idiom for "run this side-effecting step at
 most once until its inputs change."
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [x] Build change only (faster incremental builds; `make clean` + re-vendor or
       deleting `third_party/vim_rs/.vendor-stamp` forces a re-vendor)
@@ -13239,7 +13459,7 @@ most once until its inputs change."
 Every cargo invocation in the workspace needs the gitignored `third_party/vim_rs` checkout materialised first (the rustls `[patch]`). Audited **all** workflows: `format`/`clippy`/`build`/`test`/`auto-vex-presence` already vendored; `auto-vex-reachability` and `codeql` (rust) did not; `docs` vendors transitively via `make docs` → `api-docs`. `calm`/`sast`/`scorecard` run no cargo. The NOTEs make the temporary nature discoverable so the whole apparatus can be retired once #37 ships.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [x] CI only
 - [ ] Documentation only
@@ -13261,7 +13481,7 @@ Verified: all workflow YAML + `action.yml` parse; every raw-`cargo` job in `buil
 `vim_rs` was the lone OpenSSL puller (via reqwest's default native-tls). Patching its reqwest to rustls — via the vendored-checkout + `[patch.crates-io]` mechanism, no fork — removes OpenSSL entirely, so cross-compiling from macOS and the distroless/Chainguard images "just work" with no libssl at build or runtime.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [x] Build / packaging change (run `make vendor-vim-rs` before bare `cargo`; rebuild images)
 - [ ] Documentation only
@@ -13279,7 +13499,7 @@ Verified: patch applies idempotently via `make vendor-vim-rs`; `cargo tree -i op
 Parity with `run-local` / `provider-vsphere-run-local` — debug an in-cluster deploy without hand-editing the ConfigMap.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [x] Developer tooling only
 
@@ -13328,7 +13548,7 @@ Because the patch source is gitignored and absent after `actions/checkout`, ever
 cargo step (local and CI) must vendor first or fail to read the manifest.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [x] Build / packaging change (run `make vendor-vim-rs` after clone; `make`
       targets and CI do it automatically — a bare `cargo build` needs the
@@ -13359,7 +13579,7 @@ cargo step (local and CI) must vendor first or fail to read the manifest.
 CI builds the binary natively on Linux (libssl-dev present) — the release pipeline was never blocked. The two real gaps were the **runtime images** (no libssl) and **local macOS image builds** (cross-linking OpenSSL). Both are now closed without a vim_rs fork or vendoring.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [x] Build / packaging change (rebuild images to pick up libssl; `cargo install cross` for local image builds)
 - [ ] Documentation only
@@ -13381,7 +13601,7 @@ CI builds the binary natively on Linux (libssl-dev present) — the release pipe
 ADD requires architecturally significant changes (a new security/deploy artifact) to be recorded as an ADR and modeled in CALM. This backfills both for `deploy/admission/`, added in the previous entry at the maintainer's direction.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Documentation / architecture record only
@@ -13405,7 +13625,7 @@ Requested: deploy the documentation on merge to main "for now." Previously docs 
 
 ### Impact
 - [x] CI / docs deployment only
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 
 ### Verification
@@ -13431,7 +13651,7 @@ Requested: deploy the documentation on merge to main "for now." Previously docs 
 The getting-started docs conflated production install with local development and predated the single-binary/v0.1.0 model. Splitting into release-oriented **Guides** and **Developer** local-dev, with admission hardening documented and shipped, gives a clean install path for the upcoming `v0.1.0` release.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Documentation + optional deploy artifacts (admission policies)
@@ -13461,7 +13681,7 @@ The maintainer corrected the prior turn's staging decision — the auto-vex bina
 
 ### Impact
 - [x] CI / release tooling (two new release binaries + three new CI jobs)
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 
 ### Verification
@@ -13478,7 +13698,7 @@ The maintainer corrected the prior turn's staging decision — the auto-vex bina
 Audit of docs vs. the single-binary model found this one stale section; everything else (architecture crates table, CALM system diagram, quickstart `banlieue completion`, vSphere guide, deploy manifests) already reflected ADR-0004.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Documentation only
@@ -13508,7 +13728,7 @@ Images **build** on PRs (validates both Dockerfiles) but **push/sign/attest/scan
 
 ### Impact
 - [x] CI / release tooling (new GHCR images, signing, SLSA, VEX on release + push-to-main)
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 
 ### Verification
@@ -13526,7 +13746,7 @@ Images **build** on PRs (validates both Dockerfiles) but **push/sign/attest/scan
 The lockfile already resolves `kube 3.1.0`, which declares `rust-version = 1.88`, so the previous `1.85` MSRV was inaccurate (it slipped through because `resolver = "2"` is not MSRV-aware). `cargo upgrade` — which *is* MSRV-aware — was flagging `kube` as "incompatible" because the newest kube compatible with a declared 1.85 MSRV is `2.0.1`. Bumping the declared MSRV to `1.88` makes it match what the project actually requires; `cargo upgrade` no longer flags `kube`.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [x] Config change only (toolchain MSRV)
 - [ ] Documentation only
@@ -13549,7 +13769,7 @@ Verified: `cargo check --workspace --all-features` clean; `cargo upgrade --incom
 Convenience: lets users install tab-completion (`banlieue completion zsh > "${fpath[1]}/_banlieue"`). Classified as a non-architectural CLI addition under the ADD methodology (no contract/topology/data-flow change), so TDD-only — no ADR/CALM.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [x] CLI / tooling only
 
@@ -13572,7 +13792,7 @@ Convenience: lets users install tab-completion (`banlieue completion zsh > "${fp
 The user asked to remove roadmaps from the published docs and to ensure all new changes are comprehensively documented. The CAPI relationship page materially contradicted ADR-0001/0002 (it predated the InfraCluster/cluster-provisioning work) and listed CAPI fields deprecated under D-005.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [x] Documentation only
 
@@ -13598,7 +13818,7 @@ Closes the contract gap flagged in ADR-0002: without this label CAPI core does n
 
 ### Impact
 - [x] Requires cluster rollout (CRDs must be re-applied to gain the label)
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Config change only
 
 ### Verification
@@ -13616,7 +13836,7 @@ Closes the contract gap flagged in ADR-0002: without this label CAPI core does n
 The project had only stub badges. Comprehensive, mostly-dynamic badges surface CI/security health and project signals at a glance on GitHub; the docs landing page gets a light, non-cluttered subset.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Documentation only
@@ -13667,7 +13887,7 @@ One artifact to build, sign, scan, publish, and install — while keeping each r
 The repo had no README. ADD is the maintainer's coined, governing methodology — architecture is decided (ADR) and visualized (CALM) before code (TDD) — and must steer all future work, so it's recorded in CLAUDE.md, a dedicated rule, and persistent memory.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Documentation / process only
@@ -13690,7 +13910,7 @@ Implements ADR-0001/0002 (this turn) following the ADD methodology (ADR → CALM
 
 ### Impact
 - [x] Requires cluster rollout (new CRD + RBAC; controller now runs a second controller loop)
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Config change only
 
 ### Follow-ups
@@ -13710,7 +13930,7 @@ Implements ADR-0001/0002 (this turn) following the ADD methodology (ADR → CALM
 Decision to keep cluster provisioning as close to CAPI as possible so banlieue works with k0s + k0smotron and any other CAPI consumer, rather than building a parallel native cluster/tier abstraction. Implementation of the `VSphereCluster` CRD and its reconciler follows.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Documentation only (ADRs; code lands in follow-up entries)
@@ -13727,7 +13947,7 @@ Decision to keep cluster provisioning as close to CAPI as possible so banlieue w
 The published docs site must never show a stale CRD reference. Wiring `api-docs` into `make docs` means the Documentation workflow — which already runs `make docs` with cargo available — regenerates the reference from the committed types on every docs build (PR, push, and release deploy), catching any drift if a contributor forgets to run `make crds`.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] CI / docs tooling only
@@ -13751,7 +13971,7 @@ Verified locally: `SKIP_CALM_DIAGRAMS=1 make docs` exits 0, regenerates `api.md`
 Users (and the docs site) had no browsable schema reference — only raw CRD YAML. This renders the full CRD surface as HTML the docs site can navigate, generated from the Rust source of truth so it can never drift, and auto-refreshed whenever CRDs change.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Documentation only (new generated reference page + tooling)
@@ -13775,7 +13995,7 @@ Verified: `cargo fmt --all --check`, `cargo clippy --all-targets --all-features 
 The generated CRDs are the schema users see via `kubectl explain` and IDE tooling. They previously carried kube-derive's placeholder root description and several undocumented fields. Documenting the Rust types (the code-first source of truth) is the only correct place to fix this — the YAML is generated, never hand-edited.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Documentation only (schema descriptions; no field shape changes)
@@ -13798,7 +14018,7 @@ Verified: `cargo fmt --all --check`, `cargo clippy --all-targets --all-features 
 The GOVC Secret-creation how-to was only in `deploy/provider-vsphere/README.md`; the user asked for it in the published docs. While there, `concepts/providers.md` still documented an old `Provider` shape (`type:`/`vsphere:`) that no longer matches `crates/banlieue-api/src/banlieue/provider.rs`, so YAML copied from the docs would have been rejected by the CRD.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Documentation only
@@ -13816,7 +14036,7 @@ Verified with `mkdocs build --strict` (exit 0, no broken-link/nav warnings). All
 The provider is intentionally CRD/Secret-driven and does **not** read `GOVC_*` itself (explicit-over-implicit). Operators who already use `govc` had no documented path from their existing env to a working Provider; this closes that gap without weakening the spec-is-source-of-truth invariant.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Documentation only
@@ -13832,7 +14052,7 @@ The provider is intentionally CRD/Secret-driven and does **not** read `GOVC_*` i
 The previous recipes hardcoded `RUST_LOG`, silently overriding any value the user set on the CLI — so `RUST_LOG=debug make run-local` had no effect.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Developer tooling only
@@ -13855,7 +14075,7 @@ After Phase 1A iteration 4 the smoke-test boundary was stuck at `Scheduled=False
 Scope was deliberately constrained: only `ImageSourceKind::Template` is supported (no `Url`-import, no `BackingFile`); only the per-Provider readiness check (no template fingerprint / OVF re-import path). Both deferrals are recorded with `NoVSphereSource` / `TemplateNotFound` reasons so operators get actionable feedback instead of silent failures.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [ ] Documentation only
@@ -13884,7 +14104,7 @@ Verified by `cargo fmt --all`, `cargo clippy --all-targets --all-features -- -D 
 The roadmap's smoke-test boundary after Phase 1A iteration 3 was: "stops at `Scheduled=False reason=ImageNotReady` because no provider populates `VMImage.status.perProvider[].ready=true`." Phase 1B closes that. Iteration 1 ships the *capability-introspection* half — the binary connects to vCenter (real or `vcsim`), walks inventory, and writes `failureDomains[]` so the main controller's scheduler can place VMs. The VSphereMachine VM-lifecycle half (clone-from-template → power-on → status mirror) is iteration 2. Choosing `vim_rs` over hand-rolling VI bindings: actively maintained (v0.4.4 April 2026), tokio/reqwest async, ships a `vcsim_compat` feature for the simulator; the 3-5 minute cold compile is mitigated by isolating the dep to this one crate.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [ ] Documentation only
@@ -13912,7 +14132,7 @@ The roadmap's Phase 1A `Definition of done` was met by iteration 3 *except* for 
 The decision logic is deliberately pure so it can be exhaustively tested without a kube cluster — the async loop is then a thin wrapper that the controller's smoke test exercises end-to-end (running it locally creates a Lease in `banlieue-system` named `banlieue-controller` and refreshes it on a 5s cadence).
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Documentation only
@@ -13939,7 +14159,7 @@ The CALM rendering targets already existed (system.md / flows.md) and were in sy
 The Makefile fix is load-bearing: without it the new section index would silently disappear the next time anyone ran `make docs` or `make calm-diagrams`.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Documentation only
@@ -13992,7 +14212,7 @@ The migration sub-loop is the load-bearing piece: it's the user-visible enforcem
 - ⏳ CLI flags `--leader-election-namespace` / `--leader-election-id`. Tied to leader election above.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [x] Requires cluster rollout (controller behaviour materially changes; existing kind-deployed controllers should be redeployed)
 - [ ] Config change only
 - [ ] Documentation only
@@ -14029,7 +14249,7 @@ GHAS surfaced 8 findings on PR #2 (https://github.com/firestoned/banlieue/pull/2
 - Inspected the rendered workflow: `build.if` carries the fork-blocking expression; the first step (`Verify trusted workflow_run source`) is gated on `workflow_run` events and exits non-zero on a fork mismatch before the checkout step runs.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Documentation only (Semgrep fix is internal tooling; CodeQL fix only changes CI workflow behaviour for fork-originated chained workflow_run events, which had no legitimate need to ever run)
@@ -14079,7 +14299,7 @@ Iteration 1 shipped controller scaffolding + a stub reconciler that only wrote `
   - Requeues continuously (default 30 s), no `VSphereMachine` created (correct — scheduling failed pre-build).
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [x] Requires cluster rollout (manifests unchanged but the controller behaviour materially changes; if you have an old controller running, redeploy)
 - [ ] Config change only
 - [ ] Documentation only
@@ -14114,7 +14334,7 @@ Iteration 1 shipped controller scaffolding + a stub reconciler that only wrote `
 - `cd docs && poetry run mkdocs build` ✅ rebuilds in 1.74s with the new nav; warnings are the unrelated `git-revision-date-localized` plugin chatter about pages without git history, which clears once the files are committed.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Documentation only
@@ -14152,7 +14372,7 @@ The Swap flow is deliberately included even though no provider exists yet (Phase
 - `make calm-diagrams` not run here for the same reason; the stub `system.md` / `flows.md` files keep `mkdocs build` working until it runs.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Documentation only
@@ -14225,7 +14445,7 @@ The repository shipped with an empty `docs/` directory and a stub `README.md`. T
 A follow-up request added an `overview.md` page sitting between the home page and the `Why banlieue?` section: a fundamentals-first explainer with a single high-level mermaid diagram showing the three actors (user, banlieue controller, provider controllers) and the K8s API as the bus.
 
 ### Impact
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Documentation only
@@ -14327,7 +14547,7 @@ The roadmap's Phase 1A goal — "a VirtualMachine can go from creation through s
 
 ### Impact
 - [x] Adds new crates (`banlieue-controller`, `banlieue-provider-sdk`); no API/CRD breaking changes.
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [x] Requires cluster rollout (new Deployment manifests; users running an earlier dev build should re-apply `deploy/controller/`).
 - [ ] Config change only
 - [x] Documentation only — CHANGELOG only here; the next iteration will add `docs/user/` getting-started content and link the Makefile + kind dev loop from `README.md`.
@@ -14476,7 +14696,7 @@ Adds a comprehensive unit test floor (139 tests) per the project's TDD rules, an
 
 ### Impact
 - [x] Documentation only / non-breaking
-- [ ] Breaking change
+- [x] Breaking change (default multi-controller topology now needs `API_VIP`)
 - [ ] Requires cluster rollout
 - [x] Config change only (Cargo.toml / Cargo.toml of `banlieue-api`)
 - [ ] Documentation only

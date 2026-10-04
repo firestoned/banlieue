@@ -1,6 +1,6 @@
 # anatomy.md
 
-> Auto-maintained by OpenWolf. Last scanned: 2026-10-03T04:00:00.396Z
+> Auto-maintained by OpenWolf. Last scanned: 2026-10-04T04:00:00.444Z
 > Files: 510 tracked | Anatomy hits: 0 | Misses: 0
 
 ## ./
@@ -13,7 +13,7 @@
 - `Dockerfile` — Docker container definition (~959 tok)
 - `Dockerfile.chainguard` — SPDX-License-Identifier: Apache-2.0 (~770 tok)
 - `LICENSE` — Project license (~3029 tok)
-- `Makefile` — Make build targets (~21870 tok)
+- `Makefile` — Make build targets (~22126 tok)
 - `osv-scanner.toml` — SPDX-License-Identifier: Apache-2.0 (~355 tok)
 - `README.md` — Project documentation (~3300 tok)
 - `ROADMAPS.md` — Roadmaps (~4219 tok)
@@ -405,8 +405,8 @@
 - `app.rs` — # `banlieue provider cloud-hypervisor` entry point (~3472 tok)
 - `error.rs` — Errors from the Cloud Hypervisor provider. (~484 tok)
 - `fake.rs` — An in-memory [`HostOps`] for unit tests. (~4970 tok)
-- `host_config_tests.rs` — Unit tests for `host_config.rs`. (~2151 tok)
-- `host_config.rs` — The host-local configuration (ADR-0062 Decision 4). (~3294 tok)
+- `host_config_tests.rs` — Unit tests for `host_config.rs`. (~2758 tok)
+- `host_config.rs` — The host-local configuration (ADR-0062 Decision 4). (~3525 tok)
 - `host.rs` — The seam the machine reconciler is tested through. (~3643 tok)
 - `hostfs_tests.rs` — Unit tests for `hostfs.rs`, against a temporary directory. The guest uid (~6672 tok)
 - `hostfs.rs` — A machine's files on the host: directories, OS disk, seed, and removal. (~6001 tok)
@@ -420,9 +420,9 @@
 - `plan_tests.rs` — Unit tests for `plan.rs`. (~6382 tok)
 - `plan.rs` — Planning: from a `CloudHypervisorMachine` and the host config to every (~5728 tok)
 - `provider_tests.rs` — Unit tests for `provider.rs`. (~3740 tok)
-- `provider.rs` — `Provider.status` for this host: one failure domain, the classes it can (~4548 tok)
+- `provider.rs` — `Provider.status` for this host: one failure domain, the classes it can (~4578 tok)
 - `reconciler_tests.rs` — Unit tests for the pure decisions in `reconciler.rs`. (~1626 tok)
-- `reconciler.rs` — The `CloudHypervisorMachine` reconciler: Kubernetes glue around (~3114 tok)
+- `reconciler.rs` — The `CloudHypervisorMachine` reconciler: Kubernetes glue around (~3212 tok)
 - `report_tests.rs` — Unit tests for `report.rs`: the parser, and a listener on a real socket (~1402 tok)
 - `report.rs` — The guest's `phase` report over vsock (ADR-0065 Decision 5). (~2292 tok)
 - `sys_tests.rs` — Unit tests for `sys.rs` that need no privilege. Tap and bridge calls are (~1580 tok)
@@ -432,7 +432,7 @@
 - `token_tests.rs` — Unit tests for `token.rs`. (~1298 tok)
 - `token.rs` — The provider renews its own cluster credential (ADR-0060 Decision 5). (~2378 tok)
 - `vmimage_tests.rs` — Unit tests for `vmimage.rs`. (~3962 tok)
-- `vmimage.rs` — `VMImage`: this host's row in `status.perProvider[]`. (~6895 tok)
+- `vmimage.rs` — `VMImage`: this host's row in `status.perProvider[]`. (~6987 tok)
 
 ## crates/banlieue-provider-cloud-hypervisor/tests/
 
@@ -486,7 +486,7 @@
 
 - `e2e_import_pipeline.rs` — Full ADR-0010 pipeline against a real cluster and a real libvirt host. (~4137 tok)
 - `e2e_pool_claim.rs` — Pool → real libvirt domains → claim → release, end to end (ADR-0046/0047). (~12338 tok)
-- `e2e_vmimage_ssa.rs` — e2e: the `VMImage.status` field-manager split of ADR-0010. (~2434 tok)
+- `e2e_vmimage_ssa.rs` — e2e: the `VMImage.status` field-manager split of ADR-0010. (~4198 tok)
 - `live_cloudinit.rs` — Proof that a **guest consumes** the cloud-init seed (ADR-0054). (~3171 tok)
 - `live_ek.rs` — The vTPM endorsement-certificate read path, against a **real guest with a (~3515 tok)
 - `live_guest.rs` — The guest-readiness read path, against a **real running guest** (ADR-0043). (~4984 tok)
@@ -556,7 +556,8 @@
 - `reconciler.rs` — Small helpers around [`kube::runtime::controller::Action`]. (~457 tok)
 - `scheduling_tests.rs` — Unit tests for build-pod scheduling constraints. (~1099 tok)
 - `scheduling.rs` — Where image-build workloads are allowed to run (ADR-0016 follow-up). (~1649 tok)
-- `ssa.rs` — Server-side apply helper. (~771 tok)
+- `ssa_tests.rs` — Unit tests for field-manager naming (ADR-0087). (~2383 tok)
+- `ssa.rs` — Server-side apply helper. (~1962 tok)
 - `status_tests.rs` — Unit tests for [`super::super::status`]. (~1014 tok)
 - `status.rs` — Helpers for managing `metav1.Condition` lists on CR status. (~965 tok)
 
@@ -781,4 +782,3 @@
 - `clusterrole.yaml` — SPDX-License-Identifier: Apache-2.0 (~1524 tok)
 - `clusterrolebinding.yaml` — SPDX-License-Identifier: Apache-2.0 (~142 tok)
 - `role.yaml` — Namespaced Role+RoleBinding: static provider gets secrets/configmaps get in banlieue-system only (security review 2026-07-31) (~494 tok)
-- `serviceaccount.yaml` — SPDX-License-Identifier: Apache-2.0 (~84 tok)

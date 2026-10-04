@@ -260,13 +260,15 @@ K0S_NETWORK_PROVIDER="${K0S_NETWORK_PROVIDER:-kuberouter}"
 # calico only: ipAutodetectionMethod can-reach=<addr> (defaults to first controller IP).
 CALICO_REACH="${CALICO_REACH:-}"
 
-# Disable the konnectivity server (default true on vSphere). On a flat, routable
-# on-prem network the API server reaches kubelets directly (:10250) for
-# logs/exec/port-forward, so the konnectivity tunnel is unnecessary -- and on a
-# multi-controller cluster with no single externalAddress/VIP its agents pin to
-# ONE controller, so kubectl hitting any other returns "No agent available"
-# (k0s #600/#5503). Disabling it removes that failure mode entirely and matches
-# the reference on-prem clusters. Set false only if the network is NOT flat.
+# Disable the konnectivity server (default true, on both backends: ADR-0017 for
+# vSphere, ADR-0086 for libvirt). On a flat, routable network the API server
+# reaches kubelets (:10250) and pods directly for logs/exec/port-forward,
+# webhooks and aggregated APIs such as metrics.k8s.io, so the tunnel is
+# unnecessary. Kept on, its agents all dial externalAddress:8132 and so hold a
+# connection to ONE controller's konnectivity server (a CPLB VIP does not
+# change that: it balances only the API port). Any request that lands on
+# another API server then fails with "No agent available" (k0s #600/#5503).
+# Set false only if the controllers cannot reach the nodes directly.
 K0S_DISABLE_KONNECTIVITY="${K0S_DISABLE_KONNECTIVITY:-true}"
 
 # ----------------------------------------------------------------------------
@@ -386,6 +388,129 @@ TAILSCALE_IP_MAP="${TAILSCALE_IP_MAP:-$WORKDIR/tailscale-ips.map}"
 EXTRA_SANS="${EXTRA_SANS:-}"
 API_EXTERNAL_ADDRESS="${API_EXTERNAL_ADDRESS:-}"
 KUBECONFIG_SERVER="${KUBECONFIG_SERVER:-}"
+
+# ----------------------------------------------------------------------------
+# Control plane VIP (ADR-0086)
+# ----------------------------------------------------------------------------
+# A virtual IP in CIDR form, e.g. 192.0.2.10/24, that k0s's control plane load
+# balancing (keepalived VRRP + k0s's userspace reverse proxy) floats between
+# the controllers. It becomes spec.api.externalAddress, a certificate SAN and
+# the default kubeconfig server, so losing any one controller no longer takes
+# the API away. It must be on the controllers' network, outside every DHCP
+# range and MetalLB pool: k0s does no address management, and there is no
+# default because any default would be a guess at somebody's LAN.
+API_VIP="${API_VIP:-}"
+# VRRP virtual router ID; must be unique on the broadcast domain.
+API_VIP_ROUTER_ID="${API_VIP_ROUTER_ID:-51}"
+# VRRP password, identical on every controller. Empty generates one on first
+# use and keeps it in $WORKDIR so reruns don't change it. keepalived reads at
+# most 8 characters. It prevents accidental collisions between clusters; it is
+# not authentication.
+API_VIP_AUTH_PASS="${API_VIP_AUTH_PASS:-}"
+API_VIP_AUTH_PASS_FILE="${API_VIP_AUTH_PASS_FILE:-$WORKDIR/api-vip-authpass}"
+readonly API_VIP_AUTH_PASS_MAX_LEN=8
+# A multi-controller cluster without API_VIP is refused: its whole control
+# plane would sit behind one controller's address. Set true only when that
+# single entry point is intended (e.g. a disposable test cluster).
+NO_API_VIP="${NO_API_VIP:-false}"
+
+# api_vip_addr: API_VIP without its prefix length.
+api_vip_addr() { printf '%s' "${API_VIP%/*}"; }
+
+# api_vip_host_route: the VIP as a single-host route (/32 or /128), the form a
+# Tailscale subnet route takes.
+api_vip_host_route() {
+  local addr; addr="$(api_vip_addr)"
+  case "$addr" in
+    *:*) printf '%s/128' "$addr" ;;
+    *)   printf '%s/32' "$addr" ;;
+  esac
+}
+
+# validate_api_vip: refuse a malformed API_VIP / API_VIP_AUTH_PASS before they
+# reach a YAML file or a cloud-init seed.
+validate_api_vip() {
+  [[ -n "$API_VIP" ]] || return 0
+  if [[ ! "$API_VIP" =~ ^[0-9A-Fa-f.:]+/[0-9]{1,3}$ ]]; then
+    log "API_VIP must be an address with a prefix length, e.g. 192.0.2.10/24 (got '$API_VIP')"
+    exit 1
+  fi
+  if [[ -n "$API_EXTERNAL_ADDRESS" && "$API_EXTERNAL_ADDRESS" != "$(api_vip_addr)" ]]; then
+    log "API_VIP and API_EXTERNAL_ADDRESS disagree; with a VIP the external address IS the VIP, so unset API_EXTERNAL_ADDRESS"
+    exit 1
+  fi
+  if [[ ! "$API_VIP_ROUTER_ID" =~ ^[0-9]+$ ]]; then
+    log "API_VIP_ROUTER_ID must be a number (got '$API_VIP_ROUTER_ID')"
+    exit 1
+  fi
+  if [[ -n "$API_VIP_AUTH_PASS" && ! "$API_VIP_AUTH_PASS" =~ ^[A-Za-z0-9]{1,8}$ ]]; then
+    log "API_VIP_AUTH_PASS must be 1-$API_VIP_AUTH_PASS_MAX_LEN letters or digits"
+    exit 1
+  fi
+}
+
+# api_vip_auth_pass: prints the VRRP password, generating and persisting one
+# (0600) on first use so every rerun renders the same value.
+api_vip_auth_pass() {
+  if [[ -n "$API_VIP_AUTH_PASS" ]]; then
+    printf '%s' "$API_VIP_AUTH_PASS"
+    return
+  fi
+  if [[ ! -s "$API_VIP_AUTH_PASS_FILE" ]]; then
+    mkdir -p "$(dirname "$API_VIP_AUTH_PASS_FILE")"
+    ( umask 077
+      LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c "$API_VIP_AUTH_PASS_MAX_LEN" >"$API_VIP_AUTH_PASS_FILE" )
+  fi
+  cat "$API_VIP_AUTH_PASS_FILE"
+}
+
+# require_api_vip <controller-count>: the guard behind NO_API_VIP.
+require_api_vip() {
+  local controllers="$1"
+  [[ -n "$API_VIP" || "$controllers" -le 1 || "$NO_API_VIP" == "true" ]] && return 0
+  log "This cluster has $controllers controllers but no API_VIP (ADR-0086)."
+  log "  Without one, every client and in-cluster component reaches the API through"
+  log "  a single controller, and losing it loses the API."
+  log "  Set API_VIP=<free LAN address>/<prefix>, outside DHCP and any MetalLB pool,"
+  log "  or NO_API_VIP=true if one entry point is really what you want."
+  exit 1
+}
+
+# render_cplb <indent>: the spec.network.controlPlaneLoadBalancing block, with
+# every line prefixed by <indent>. Prints nothing without API_VIP.
+render_cplb() {
+  local pad="$1" pass
+  [[ -n "$API_VIP" ]] || return 0
+  pass="$(api_vip_auth_pass)"
+  printf '%s\n' \
+    "${pad}controlPlaneLoadBalancing:" \
+    "${pad}  enabled: true" \
+    "${pad}  type: Keepalived" \
+    "${pad}  keepalived:" \
+    "${pad}    vrrpInstances:" \
+    "${pad}    - virtualIPs: [\"$API_VIP\"]" \
+    "${pad}      authPass: \"$pass\"" \
+    "${pad}      virtualRouterID: $API_VIP_ROUTER_ID"
+}
+
+# Tailscale flag that advertises the VIP as a subnet route from every node, so
+# a client off the LAN reaches the VIP through whichever node is up. Empty
+# without API_VIP.
+tailscale_route_flag() {
+  [[ -n "$API_VIP" ]] || return 0
+  printf ' --advertise-routes=%s' "$(api_vip_host_route)"
+}
+
+# log_api_vip_followups: the steps a VIP needs that the script cannot take.
+log_api_vip_followups() {
+  [[ -n "$API_VIP" ]] || return 0
+  log "Control plane VIP: $(api_vip_addr) (VRRP router id $API_VIP_ROUTER_ID; password in $API_VIP_AUTH_PASS_FILE unless API_VIP_AUTH_PASS is set)"
+  log "  Reserve $(api_vip_addr) on the LAN: outside DHCP and every MetalLB pool."
+  if [[ -n "$TAILSCALE_AUTHKEY" ]]; then
+    log "  Each node advertises $(api_vip_host_route) on the tailnet. Approve it once per node in"
+    log "  the admin console (Machines -> <node> -> Edit route settings), or with an autoApprovers policy."
+  fi
+}
 
 # ============================================================================
 # Node model (backend-agnostic)
@@ -611,7 +736,7 @@ EOF
   if [[ -n "$TAILSCALE_AUTHKEY" ]]; then
     cat >>"$seed_dir/user-data" <<EOF
   - curl -fsSL https://tailscale.com/install.sh | sh
-  - tailscale up --authkey=$TAILSCALE_AUTHKEY --hostname=$name --ssh
+  - tailscale up --authkey=$TAILSCALE_AUTHKEY --hostname=$name --ssh$(tailscale_route_flag)
 EOF
   fi
 }
@@ -698,7 +823,7 @@ EOF
         - "[ -x /usr/local/bin/tailscaled ] || ( curl -fsSL -o /tmp/ts.tgz https://pkgs.tailscale.com/stable/tailscale_${TAILSCALE_VERSION}_amd64.tgz && tar xzf /tmp/ts.tgz -C /tmp && cp /tmp/tailscale_${TAILSCALE_VERSION}_amd64/tailscale /tmp/tailscale_${TAILSCALE_VERSION}_amd64/tailscaled /usr/local/bin/ && rm -rf /tmp/ts.tgz /tmp/tailscale_${TAILSCALE_VERSION}_amd64 )"
         - systemctl daemon-reload
         - systemctl enable --now tailscaled
-        - "tailscale status >/dev/null 2>&1 || tailscale up --authkey=$TAILSCALE_AUTHKEY --hostname=$name --ssh"
+        - "tailscale status >/dev/null 2>&1 || tailscale up --authkey=$TAILSCALE_AUTHKEY --hostname=$name --ssh$(tailscale_route_flag)"
 write_files:
   - path: /etc/systemd/system/tailscaled.service
     permissions: "0644"
@@ -1215,8 +1340,10 @@ render_k0s_yaml() {
   echo "  name: k0s"
   echo "spec:"
   echo "  api:"
+  [[ -n "$API_VIP" ]] && echo "    externalAddress: $(api_vip_addr)"
   echo "    sans:"
   [[ -n "$API_SAN" ]] && echo "      - $API_SAN"
+  [[ -n "$API_VIP" ]] && echo "      - $(api_vip_addr)"
   for entry in "${NODES[@]}"; do
     [[ -n "$entry" ]] || continue
     _parse_node "$entry"
@@ -1234,6 +1361,7 @@ render_k0s_yaml() {
   fi
   echo "  network:"
   echo "    provider: $K0S_NETWORK_PROVIDER"
+  render_cplb "    "
   if [[ "$K0S_NETWORK_PROVIDER" == "calico" ]]; then
     echo "    calico:"
     echo "      ipAutodetectionMethod: \"can-reach=${CALICO_REACH:-$cp_ip}\""
@@ -1298,6 +1426,14 @@ wait_k0s_api() {
 # config step (vsphere): ensure nodes are up, stage the binary on all, write
 # the cluster config on every controller.
 vsphere_config() {
+  validate_api_vip
+  local entry controllers=0
+  for entry in "${NODES[@]}"; do
+    [[ -n "$entry" ]] || continue
+    _parse_node "$entry"
+    [[ "$_N_ROLE" == controller* ]] && controllers=$((controllers + 1))
+  done
+  require_api_vip "$controllers"
   populate_node_table
   local cp cp_ip row name role ip
   cp="$(first_controller)" || { log "no controller in NODES"; exit 1; }
@@ -1307,8 +1443,11 @@ vsphere_config() {
     stage_k0s_binary "$ip"
     [[ "$role" == controller* ]] && { push_k0s_yaml "$ip" "$cp_ip" || true; }
   done
-  echo "${KUBECONFIG_SERVER:-${API_SAN:-$cp_ip}}" >"$KUBECONFIG_SERVER_FILE"
+  local vip=""
+  [[ -n "$API_VIP" ]] && vip="$(api_vip_addr)"
+  echo "${KUBECONFIG_SERVER:-${API_SAN:-${vip:-$cp_ip}}}" >"$KUBECONFIG_SERVER_FILE"
   log "vSphere prepare complete (binaries staged, controller configs written)"
+  log_api_vip_followups
 }
 
 # apply step (vsphere): init the first controller, then join the rest.
@@ -1479,9 +1618,10 @@ populate_node_table() {
 }
 
 generate_k0sctl_config() {
+  validate_api_vip
   populate_node_table
 
-  local hosts="" sans="" cp_ip="" cp_ts_ip=""
+  local hosts="" sans="" cp_ip="" cp_ts_ip="" controllers=0
   for extra_san in $EXTRA_SANS; do
     sans+="            - $extra_san"$'\n'
   done
@@ -1516,14 +1656,23 @@ generate_k0sctl_config() {
       sans+="            - $ip"$'\n'
     fi
 
-    if [[ -z "$cp_ip" && "$role" == controller* ]]; then
-      cp_ip="$ip"; cp_ts_ip="$ts_ip"
+    if [[ "$role" == controller* ]]; then
+      controllers=$((controllers + 1))
+      if [[ -z "$cp_ip" ]]; then
+        cp_ip="$ip"; cp_ts_ip="$ts_ip"
+      fi
     fi
     hosts+="  - role: $role"$'\n'
     hosts+="    uploadBinary: true"$'\n'
     hosts+="    os: $K0SCTL_OS_OVERRIDE"$'\n'
     if [[ "$role" == "controller+worker" && "$NO_TAINTS" == "true" ]]; then
       hosts+="    noTaints: true"$'\n'
+    fi
+    # See K0S_DISABLE_KONNECTIVITY and ADR-0086. k0sctl's reinstall phase
+    # applies a changed flag to an existing controller on the next apply.
+    if [[ "$role" == controller* && "$K0S_DISABLE_KONNECTIVITY" == "true" ]]; then
+      hosts+="    installFlags:"$'\n'
+      hosts+="    - --disable-components=konnectivity-server"$'\n'
     fi
     hosts+="    ssh:"$'\n'
     hosts+="      address: $ip"$'\n'
@@ -1532,7 +1681,10 @@ generate_k0sctl_config() {
     hosts+="      keyPath: $SSH_PRIVKEY"$'\n'
   done
 
-  local api_external="${API_EXTERNAL_ADDRESS:-$cp_ip}"
+  require_api_vip "$controllers"
+  local vip=""
+  [[ -n "$API_VIP" ]] && vip="$(api_vip_addr)"
+  local api_external="${vip:-${API_EXTERNAL_ADDRESS:-$cp_ip}}"
   if [[ -z "$api_external" ]]; then
     log "No controller found in the node table and no API_EXTERNAL_ADDRESS set"
     exit 1
@@ -1542,9 +1694,16 @@ generate_k0sctl_config() {
     *) sans+="            - $api_external"$'\n' ;;
   esac
 
-  # kubeconfig server preference: explicit override -> API_SAN -> control-plane
-  # node's Tailscale IP -> its internal/static address.
-  echo "${KUBECONFIG_SERVER:-${API_SAN:-${cp_ts_ip:-$api_external}}}" >"$KUBECONFIG_SERVER_FILE"
+  # kubeconfig server preference: explicit override -> API_SAN -> the VIP ->
+  # control-plane node's Tailscale IP -> its internal/static address. Off the
+  # LAN the VIP is reached through the nodes' Tailscale subnet route.
+  echo "${KUBECONFIG_SERVER:-${API_SAN:-${vip:-${cp_ts_ip:-$api_external}}}}" >"$KUBECONFIG_SERVER_FILE"
+
+  local network=""
+  if [[ -n "$API_VIP" ]]; then
+    network="        network:"$'\n'
+    network+="$(render_cplb "          ")"$'\n'
+  fi
 
   local storage=""
   case "$K0S_STORAGE_TYPE" in
@@ -1584,9 +1743,10 @@ $hosts  k0s:
         api:
           externalAddress: $api_external
           sans:
-$sans$storage
+$sans$network$storage
 EOF
   } >"$K0SCTL_CONFIG"
+  log_api_vip_followups
 }
 
 purge_known_hosts() {

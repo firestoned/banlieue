@@ -24,7 +24,6 @@ use crate::reconciler::Context;
 use crate::sys;
 use banlieue_api::banlieue::{FailureDomain, FailureDomainAttributes, Provider, ProviderStatus};
 use banlieue_provider_sdk::reconciler::{requeue_long, requeue_on_error};
-use banlieue_provider_sdk::ssa::FIELD_MANAGER_PROVIDER_CLOUD_HYPERVISOR;
 use banlieue_provider_sdk::status::{condition_status, set_condition};
 use kube::api::{Api, Patch, PatchParams};
 use kube::runtime::controller::Action;
@@ -428,7 +427,10 @@ async fn patch_status(ctx: &Context, name: &str, status: &ProviderStatus) -> Res
     let api: Api<Provider> = Api::namespaced(ctx.client.clone(), &ctx.config.provider.namespace);
     api.patch_status(
         name,
-        &PatchParams::apply(FIELD_MANAGER_PROVIDER_CLOUD_HYPERVISOR).force(),
+        // Scoped per ADR-0087. Force is still right here: this host is the
+        // sole writer of its OWN Provider's status, so there is no other
+        // manager to take fields from.
+        &PatchParams::apply(&ctx.config.field_manager()).force(),
         &Patch::Apply(&patch),
     )
     .await

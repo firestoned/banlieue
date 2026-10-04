@@ -2073,7 +2073,7 @@
       "error_message": "two providers reconciling one VMImage silently erase each other's status.perProvider rows and conditions",
       "file": "crates/banlieue-api/src/banlieue/vmimage.rs",
       "root_cause": "status.perProvider and status.conditions are plain arrays with no x-kubernetes-list-type, so server-side apply treats them as ATOMIC: the whole array is owned by one field manager. Each provider applies the full list containing only its own rows, with force(), so it takes ownership and discards the other's. Reproduced on a real apiserver (kind): after vsphere then libvirt applied, perProvider was ['kvm-1'] only and conditions held only libvirt's. rawDiskArtifact survived because it is a distinct key with skip_serializing_if. examples/04-vmimage-ubuntu.yaml ships vsphere+proxmox+libvirt sources, so this is the documented case, not a corner.",
-      "fix": "FIXED (ADR-0015). (1) status.perProvider gets x-kubernetes-list-type=map keyed on [providerName, providerNamespace]; status.conditions gets list-type=map keyed on [type], via #[schemars(extend(...))] in banlieue-api. (2) Providers no longer write VMImage.status.conditions at all — a provider cannot compute 'ready everywhere' from rows it does not own. (3) banlieue-controller gains a VMImage reconciler owning the aggregate Ready under field manager banlieue.io/controller. Verified on kind: perProvider now reads ['vc-1','kvm-1'] and a provider's later write neither duplicates its own row nor disturbs the controller's condition.",
+      "fix": "FIXED (ADR-0015). (1) status.perProvider gets x-kubernetes-list-type=map keyed on [providerName, providerNamespace]; status.conditions gets list-type=map keyed on [type], via #[schemars(extend(...))] in banlieue-api. (2) Providers no longer write VMImage.status.conditions at all — a provider cannot compute 'ready everywhere' from rows it does not own. (3) banlieue-controller gains a VMImage reconciler owning the aggregate Ready under field manager banlieue.io/controller. Verified on kind: perProvider now reads ['vc-1','kvm-1'] and a provider's later write neither duplicates its own row nor disturbs the controller's condition. INCOMPLETE: the schema half held, but the per-writer manager identity it depended on was never enforced. ADR-0060's host-resident provider reintroduced the same erasure under one manager name; see bug-175 and ADR-0087.",
       "tags": [
         "ssa",
         "field-manager",
@@ -2083,7 +2083,9 @@
         "data-loss",
         "architectural"
       ],
-      "related_bugs": [],
+      "related_bugs": [
+        "bug-175"
+      ],
       "occurrences": 1,
       "last_seen": "2026-07-31T20:44:52.230678+00:00"
     },
@@ -3122,6 +3124,72 @@
       "related_bugs": [],
       "occurrences": 1,
       "last_seen": "2026-09-30T23:40:00.000Z"
+    },
+    {
+      "id": "bug-174",
+      "timestamp": "2026-10-03T22:40:00.000Z",
+      "error_message": "failed to load authentication configuration from file \"/etc/k0s/oidc/authentication-config.yaml\": open ...: permission denied (kube-apiserver crash-loops; dev-oidc-k0s.sh attach: 'did not come back with the flag in 300s; restoring')",
+      "file": "scripts/dev-oidc-k0s.sh",
+      "root_cause": "attach_controller wrote the AuthenticationConfiguration 0600 root:root in a 0700 root dir. k0s runs kube-apiserver as the unprivileged kube-apiserver user (uid 994) with gid 0 and NO supplementary groups, so it cannot read it. A group-readable root:kube-apiserver file also fails, because the process's gid is 0, not kube-apiserver.",
+      "fix": "Own the dir and file by the apiserver user: chown $APISERVER_USER:root, 0750 dir / 0640 file (APISERVER_USER defaults to kube-apiserver; falls back to root when the user does not exist). Verified on the 3-controller core cluster: all three restarted with --authentication-config in effect.",
+      "tags": [
+        "k0s",
+        "oidc",
+        "kube-apiserver",
+        "permissions",
+        "dex",
+        "structured-authn"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-10-03T22:40:00.000Z"
+    },
+    {
+      "id": "bug-175",
+      "timestamp": "2026-10-03T22:30:00.000000+00:00",
+      "last_seen": "2026-10-03T22:30:00.000000+00:00",
+      "occurrences": 1,
+      "file": "crates/banlieue-provider-sdk/src/ssa.rs",
+      "error_message": "One VMImage visible to three host-resident Cloud Hypervisor providers went into a permanent write loop: resourceVersion 366324 -> 728405 in ~35 min (~362,000 writes, ~170/sec), status.conditions[Ready] flapping, and status.perProvider holding only ONE row at a time, rotating between the hosts. No error was logged; every host reported 'VMImage row published ready=true reason=Reconciled' tens of times per second.",
+      "root_cause": "bug-116's failure mode, reached by a different route. ADR-0015 fixed the ATOMIC-array half by making perProvider x-kubernetes-list-type=map, and its model was 'each provider owns only the entry it applies'. That is true of MANAGERS, not providers, and in 2026-07 the two coincided: one provider class meant one writer. ADR-0060 then made the Cloud Hypervisor provider host-resident, so one class runs N writers, each applying ONLY ITS OWN row, all under the single constant FIELD_MANAGER_PROVIDER_CLOUD_HYPERVISOR. Under SSA a field manager owns exactly the field set it last applied, so host B's apply made the apiserver delete host A's row (that manager no longer declared it); A's watch fired, A re-applied, deleting B's. The .force() on every provider apply suppressed the conflict that would have surfaced it immediately. A merge-keyed list separates owners; it cannot separate two writers presenting the same owner name. NOT a bug in libvirt/vSphere/Proxmox: each of those applies its class's COMPLETE row set in one patch, so replicas under one manager are idempotent.",
+      "fix": "ADR-0087. provider_field_manager(class, provider_namespace, provider_name) in banlieue-provider-sdk builds a per-writer manager (banlieue.io/provider-<class>/<ns>/<name>), truncating with a stable FNV-1a suffix past the apiserver's 128-char manager cap so truncation cannot collapse two writers back into one name. HostConfig::field_manager() exposes it for the CH host; all four CH apply sites use it, and .force() is dropped on the single-row perProvider write so a conflict now surfaces as the defect it is (the whole-set writers keep force, since reclaiming a removed Provider's row is part of owning the whole set). The rule is stated as: scope a manager exactly when its writer applies a SUBSET of what the manager could own, which is the test a new provider must answer rather than 'how many processes run'.",
+      "lesson": "The invariant ADR-0015 depended on was never written where a reader could check it against the code; ssa.rs actually asserted the opposite ('each CRD has exactly one controller writing each subresource'), and nothing failed when ADR-0060 made that false. Also: the existing e2e (e2e_vmimage_ssa.rs) proved two DIFFERENT managers coexist, which is the case that was never going to break. The case that broke was two writers sharing ONE manager, and it was untested because unit tests cannot reach it: it is a property of the apiserver's merge. Both directions are now pinned in that e2e.",
+      "tags": [
+        "ssa",
+        "field-manager",
+        "vmimage",
+        "adr-0087",
+        "adr-0060",
+        "adr-0015",
+        "cloud-hypervisor",
+        "reconcile-loop",
+        "architectural",
+        "regression"
+      ],
+      "related_bugs": [
+        "bug-116"
+      ]
+    },
+    {
+      "id": "bug-175",
+      "timestamp": "2026-10-03T22:55:00.000Z",
+      "error_message": "./scripts/dev-oidc-k0s.sh: line 517: ca_arg[@]: unbound variable",
+      "file": "scripts/dev-oidc-k0s.sh",
+      "root_cause": "With EXPOSE=tailscale no CA argument is needed, so ca_arg=() stays empty; bash < 4.4 (macOS ships 3.2) treats \"${arr[@]}\" of an empty array as unbound under set -u.",
+      "fix": "Expand as ${ca_arg[@]+\"${ca_arg[@]}\"} in setup_login and print_kubeconfig. Verified: login on the core cluster printed oidc:ebourgeois.",
+      "tags": [
+        "bash",
+        "bash-3.2",
+        "macos",
+        "set-u",
+        "dex",
+        "oidc"
+      ],
+      "related_bugs": [
+        "bug-174"
+      ],
+      "occurrences": 1,
+      "last_seen": "2026-10-03T22:55:00.000Z"
     }
   ]
 }

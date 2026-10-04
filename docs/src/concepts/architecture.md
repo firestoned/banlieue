@@ -263,7 +263,10 @@ at once (ADR-0012).
 itself (libvirt or vSphere backend, ADR-0017). An opt-in `flux` step
 (`FLUX_ENABLED=true`) fetches a registry credential from HashiCorp Vault
 and pushes flux-operator + `flux-core` manifests onto the first controller
-node (ADR-0018) — bootstrap tooling, not a runtime controller.
+node (ADR-0018): bootstrap tooling, not a runtime controller. A cluster
+with more than one controller puts its API behind a keepalived virtual IP
+that k0s balances over every controller, and runs without konnectivity
+(ADR-0086).
 
 ## Why the controller and the operator are separate processes
 
