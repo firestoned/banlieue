@@ -1,5 +1,23 @@
 # Changelog
 
+## [2026-10-05] - ADR-0088 proposed: first-boot sealing for `Immediate` images
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0088-first-boot-sealing-for-immediate-images.md` (Proposed):
+  supersedes ADR-0048 on acceptance, as ADR-0048's own Expiry section
+  requires now that Kairos first-boot sealing (kairos-io/kairos#4556,
+  #4924, #4973) is merged upstream. Allows `tpmEnabled` with an `Immediate`
+  image only when the `VMImage` declares `firstBootSealing`, known by
+  construction for `Url` builds and asserted for pre-built disks; rejects a
+  sealing image without a vTPM, which would halt every boot; redefines
+  `GuestReady` for these images as "sealed and booted", read back from the
+  guest, with a deadline for a boot halted fail closed. Gated behind a
+  feature flag until a released Kairos carries the capability and the
+  upstream defects that break it (#5149, #5193, #5158) are fixed. No code,
+  CALM or threat-model change yet: those follow acceptance.
+
 ## [2026-10-03 19:45] - Threat model pass: identity plane deployed and cryptography measured
 
 **Author:** Erick Bourgeois
@@ -27,6 +45,11 @@
     links banlieue does not terminate (PostgreSQL 17, libvirtd's GnuTLS,
     WireGuard); no post-quantum signatures anywhere; an in-cluster issuer
     lets a cluster admin mint any identity.
+  - §7.20 (2026-10-04): the reference deployment's datastore now runs
+    PostgreSQL 18 with X25519MLKEM768-only key exchange, TLS 1.3 and
+    `verify-full`; Go clients proven to negotiate the hybrid. New note:
+    `pg_upgradecluster` does not copy `conf.d/` (a `listen_addresses` there
+    is lost and the API with it).
 
 ### Why
 The owner's requirement is that all cryptography be post-quantum. Measuring
