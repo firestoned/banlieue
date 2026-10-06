@@ -1019,7 +1019,13 @@ a different assumption is unsafe.
       kubelet, the SPIRE server, an issuer behind a Go TLS proxy, and
       OpenSSH 10 all negotiate ML-KEM hybrids by default; PostgreSQL 17,
       libvirtd's GnuTLS build, WireGuard and banlieue's own clients (§8) do
-      not.
+      not. On 2026-10-04 its datastore moved to PostgreSQL 18 with
+      `ssl_groups = 'X25519MLKEM768'` (no classical fallback), TLS 1.3 only
+      and `verify-full` against a private CA; kine (Go) and SPIRE reconnected
+      under that offer, which shows Go clients negotiate the hybrid.
+    - Upgrading the datastore with Debian's `pg_upgradecluster`: it does not
+      copy `conf.d/`, so a `listen_addresses` kept there is lost and every
+      controller loses the API until it is restored. Copy `conf.d/` first.
 
 ## 8. Accepted risks
 
