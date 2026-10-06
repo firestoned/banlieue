@@ -2987,6 +2987,7 @@ VirtualMachine. The CAPI contract label
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `cluster` | string | Yes | Compute cluster within the datacenter. |
+| `createdBy` | string |  | The principal that created the parent `VirtualMachine`, copied from its `banlieue.io/created-by` annotation when present (ADR-0089). That annotation is stamped by an optional `MutatingAdmissionPolicy` (`deploy/admission/virtualmachine-created-by.yaml`) from `request.userInfo.username` at `VirtualMachine` CREATE — `None` on a cluster that doesn't apply it, or for a `VirtualMachine` that predates it. Surfaced as the vCenter `CreatedBy` custom attribute by the provider; never a stand-in value when absent. |
 | `datacenter` | string | Yes | Datacenter name. |
 | `datastore` | string | Yes | Datastore or datastore cluster name (resolved from the storage class). |
 | `desiredPowerState` | string |  | Desired power state, resolved from the parent `VirtualMachine`'s `spec.desiredPowerState` (ADR-0024). Defaults to `PoweredOn`, matching `VirtualMachineSpec`'s own default. Allowed: `PoweredOn`, `PoweredOff`, `Suspended`. |
@@ -3168,6 +3169,7 @@ The VSphereMachine spec for machines created from this template.
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `cluster` | string | Yes | Compute cluster within the datacenter. |
+| `createdBy` | string |  | The principal that created the parent `VirtualMachine`, copied from its `banlieue.io/created-by` annotation when present (ADR-0089). That annotation is stamped by an optional `MutatingAdmissionPolicy` (`deploy/admission/virtualmachine-created-by.yaml`) from `request.userInfo.username` at `VirtualMachine` CREATE — `None` on a cluster that doesn't apply it, or for a `VirtualMachine` that predates it. Surfaced as the vCenter `CreatedBy` custom attribute by the provider; never a stand-in value when absent. |
 | `datacenter` | string | Yes | Datacenter name. |
 | `datastore` | string | Yes | Datastore or datastore cluster name (resolved from the storage class). |
 | `desiredPowerState` | string |  | Desired power state, resolved from the parent `VirtualMachine`'s `spec.desiredPowerState` (ADR-0024). Defaults to `PoweredOn`, matching `VirtualMachineSpec`'s own default. Allowed: `PoweredOn`, `PoweredOff`, `Suspended`. |

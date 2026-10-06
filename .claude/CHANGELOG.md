@@ -1,5 +1,171 @@
 # Changelog
 
+## [2026-10-06 (3)] - ADR-0090: isolate each backend kind in the VirtualMachine finalize cascade
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0090-finalize-vm-per-backend-isolation.md` (Accepted): found
+  live — a stale `ClusterRole` with no `proxmoxmachines` grant made
+  `finalize_vm`'s sequential `apis.proxmox.get_opt(name).await?` return
+  `403 Forbidden`, which aborted the function via `?` before the "issue
+  delete" branch ran for *any* kind, including vSphere VMs whose
+  `VSphereMachine` lookup had already succeeded. The finalizer stayed on
+  indefinitely and the backend VM in vCenter was never destroyed — a
+  permission gap on one backend blocked deletion for every
+  `VirtualMachine`, regardless of which backend it actually used.
+
+### Changed
+- `crates/banlieue-controller/src/reconciler/virtualmachine.rs`: split
+  `finalize_vm`'s decision from its I/O, matching the `pool`/`pool_plan`
+  split already used elsewhere in this crate. New pure `InfraState`
+  (`Absent`/`Present`/`Terminating`/`Unknown`) and
+  `plan_finalize([(InfraKind, InfraState); 4]) -> FinalizePlan`: each
+  backend kind is resolved independently via the new `infra_state` helper,
+  which catches a lookup error and reports `Unknown` instead of
+  propagating it. `Unknown` blocks finalizer removal (never treated as
+  absent) but never blocks another kind's delete (never treated as
+  present either). Delete errors are likewise caught per kind so one
+  backend's delete failure doesn't stop another kind's delete in the same
+  pass.
+- `crates/banlieue-controller/src/reconciler/virtualmachine_tests.rs`: 6
+  new tests for `plan_finalize` covering all-absent (removes finalizer),
+  a present kind (deletes it, finalizer stays), a terminating kind
+  (no redundant delete), an unknown kind alone (blocks removal, nothing
+  queued), an unknown kind alongside a present one (present kind still
+  deletes), and multiple present kinds in one pass.
+
+### Why
+A `VirtualMachine` not backed by Proxmox still has its deletion blocked by
+a Proxmox-specific RBAC gap, because the four backend checks were
+sequential and `?`-chained. See ADR-0090.
+
+- `docs/src/security/threat-model.md`: full pass per ADR-0090 — header
+  stamp bumped to ADR-0001…ADR-0090 (fourth 2026-10-06 pass), new TB-1 row
+  for the now-fixed cross-backend deletion-blocking threat (classified D).
+  No new component, actor, asset, or trust boundary.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+### Verification
+- `cargo fmt --all` ✅
+- `cargo clippy --all-targets --all-features -- -D warnings` ✅ (workspace-wide)
+- `cargo test -p banlieue-controller -p banlieue-api -p banlieue-provider-sdk -p banlieue-provider-vsphere -p banlieue-provider-proxmox -p banlieue-provider-libvirt -p banlieue-operator` ✅ — 0 failed
+- `cargo test --workspace` could not run: `banlieue-provider-cloud-hypervisor`
+  fails to compile on macOS (Linux-only TUN/TAP + `rustix` APIs) — confirmed
+  pre-existing and unrelated via `git stash`, not touched by this change.
+
+## [2026-10-06 (2)] - Script to enable MutatingAdmissionPolicy on an existing k0s cluster
+
+**Author:** Erick Bourgeois
+
+### Added
+- `scripts/enable-feature-gate-k0s.sh`: merges `FEATURE_GATES` (default
+  `MutatingAdmissionPolicy=true`) and, once the cluster's exact pre-GA stage
+  is confirmed, `RUNTIME_CONFIG` (e.g.
+  `admissionregistration.k8s.io/v1beta1=true`) into `spec.api.extraArgs` on
+  every k0s controller — one backup + one edit pass + one restart per
+  controller, rolled back automatically if the apiserver doesn't come back
+  healthy with every requested setting in effect. On rollback, the last
+  `LOG_TAIL_LINES` of `journalctl -u k0scontroller` are printed so a failed
+  attempt names its own cause instead of leaving the operator to dig for it.
+  Needed because `scripts/bootstrap-k0s-cluster.sh`'s default `K0S_VERSION`
+  (1.35.5+k0s.0) ships `MutatingAdmissionPolicy` as beta — off by default,
+  and pre-GA the API group itself needs `--runtime-config` in addition to
+  the feature gate, at whichever versioned group (`v1alpha1`/`v1beta1`) the
+  stage actually uses; `deploy/admission/virtualmachine-created-by.yaml`
+  (ADR-0089) targets `v1`/GA and cannot be applied until either the gate
+  (+runtime-config) is on or the cluster is upgraded to 1.36+. Unlike
+  `dev-oidc-k0s.sh`'s `attach_controller` (which refuses a node that already
+  has `spec.api.extraArgs`), this script merges new keys into an existing
+  `extraArgs` block — expected, since this cluster already carries `oidc-*`
+  flags there — without touching any value already present. `SSH_IDENTITY`
+  overrides the `ssh -i` key (default: ssh's own identity resolution).
+
+### Why
+ADR-0089's `MutatingAdmissionPolicy` needs this gate (and, pre-GA, the
+matching `runtime-config`); nothing in the repo could turn either on for an
+already-running cluster. First live run found both a missing-flag gap
+(`runtime-config` not yet handled) and a latent bug in the original
+single-setting version (each setting's edit re-copied `$K0S_CONFIG` to the
+backup file, so a second setting applied in the same run would have
+clobbered the pre-any-edit backup with a partially-edited one) — fixed by
+taking the backup exactly once per controller and having every edit step
+read and rewrite the live config file.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only (operator-run, against an existing cluster; not
+      invoked by any committed automation)
+- [ ] Documentation only
+
+## [2026-10-06] - ADR-0089: VSphereMachine custom attributes (Template/CreatedBy/CreatedAt)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0089-vspheremachine-custom-attributes.md` (Accepted): brings
+  `sre-automations`' `cf-node` vCenter custom-attribute convention
+  (`Template`, `CreatedBy`, `CreatedAt`) to VMs `banlieue-provider-vsphere`
+  clones. `Template`/`CreatedAt` are read straight off data `VSphereMachine`
+  already has; `CreatedBy` is captured at `VirtualMachine` CREATE via a new
+  `MutatingAdmissionPolicy` (`admissionregistration.k8s.io/v1`, GA in
+  Kubernetes 1.36+) reading `request.userInfo.username` — the same
+  admission-time-identity pattern ADR-0047 Decision 10 uses to validate
+  `VirtualMachineClaim.spec.subject.id`, but mutating instead of validating.
+  Proxmox and libvirt are out of scope (Decision 5); deferred to a follow-up
+  ADR.
+- `deploy/admission/virtualmachine-created-by.yaml`: the
+  `MutatingAdmissionPolicy` + `MutatingAdmissionPolicyBinding`, optional and
+  separately applied like every other file in `deploy/admission/`
+  (`failurePolicy: Ignore` — an audit convenience, never a create-blocking
+  check).
+- `crates/banlieue-api/src/banlieue/virtualmachine.rs`: `ANNOTATION_CREATED_BY`
+  (`banlieue.io/created-by`).
+- `crates/banlieue-api/src/infrastructure/vsphere_machine.rs`:
+  `VSphereMachineSpec.created_by: Option<String>`.
+- `crates/banlieue-provider-vsphere/src/client/{mod,vim,fake}.rs`:
+  `VSphereClient::set_custom_attributes`, implemented against `vim_rs`'s
+  `CustomFieldsManager` (list → `AddCustomFieldDef` if missing →
+  `SetField`), matching `govc`'s `fields.set -add`.
+- `crates/banlieue-provider-vsphere/src/reconciler/vspheremachine.rs`:
+  `ensure_vm` stamps the three attributes once, on first provision, inside
+  the same first-provision-only guard as `add_tpm_device`/`grow_os_disk`.
+
+### Changed
+- `crates/banlieue-controller/src/reconciler/infra.rs`: `build_vsphere_machine`
+  copies `banlieue.io/created-by` off the parent `VirtualMachine` into
+  `VSphereMachineSpec.created_by` when present.
+- `deploy/crds/infrastructure.banlieue.io_vspheremachine{s,templates}.yaml`,
+  `docs/src/reference/api.md`: regenerated (`make crds`) for the new
+  `createdBy` field.
+- `deploy/admission/README.md`: documents the new policy and its 1.36+ floor.
+- `docs/architecture/calm/architecture.json`: new `admission-policy-mutation`
+  control; `service-provider-vsphere` / `data-asset-infra-machine-cr`
+  descriptions updated; ADR-0089 added to `adrs`.
+- `docs/src/security/threat-model.md`: full pass, stamp bumped to ADR-0089
+  (2026-10-06). New asset A-18 (the three custom attributes); a TB-1 row for
+  a forged `banlieue.io/created-by` annotation (not prevented on UPDATE or
+  on a cluster without the policy — accepted, since nothing trusts the value
+  for authorization); §7.7 notes the new policy's 1.36+ floor and
+  `failurePolicy: Ignore`. No new component, actor, or trust boundary.
+
+### Why
+Operators already use vCenter custom attributes for fleet auditing outside
+Kubernetes; banlieue had no equivalent for VMs it builds.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only (the admission policy is optional; re-apply
+      `deploy/crds/` to pick up the new `createdBy` field)
+- [ ] Documentation only
+
 ## [2026-10-05] - ADR-0088 proposed: first-boot sealing for `Immediate` images
 
 **Author:** Erick Bourgeois

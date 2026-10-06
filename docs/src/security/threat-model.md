@@ -4,11 +4,25 @@ SPDX-License-Identifier: Apache-2.0
 -->
 # Threat Model
 
-> **Status:** Living document. Last full pass **2026-10-03**, against the
-> architecture defined by **ADR-0001 … ADR-0087** (0057–0059 unallocated,
+> **Status:** Living document. Last full pass **2026-10-06**, against the
+> architecture defined by **ADR-0001 … ADR-0090** (0057–0059 unallocated,
 > 0066 and 0068–0073 reserved; 0074 and 0075 Accepted 2026-09-28; 0076–0080
 > reserved by roadmap 19; 0081–0082 recorded but not implemented in banlieue,
-> so they move nothing here). A third 2026-10-03 pass is driven by evidence
+> 0088 Proposed and not yet implemented, so none of those three move anything
+> here). A fourth 2026-10-06 pass is ADR-0090 (`VirtualMachine` finalize
+> cascade: isolate each backend kind): no new component, actor, asset or
+> trust boundary — found live, a stale `ClusterRole` missing a
+> `proxmoxmachines` grant made `finalize_vm`'s `?`-chained backend lookups
+> abort before the vSphere branch below them ran, so a permission gap on one
+> backend blocked deletion for every `VirtualMachine`, any backend. Adds one
+> TB-1 row for the fixed availability threat (classified D: the blast radius
+> of a lookup failure, now scoped to the affected backend's own VMs by
+> `plan_finalize`). The 2026-10-06 pass before it is ADR-0089 (`VSphereMachine`
+> custom attributes `Template`/`CreatedAt`/`CreatedBy`): adds A-18, a TB-1 row
+> for a forged `banlieue.io/created-by` annotation, and a §7.7 note on the new
+> `MutatingAdmissionPolicy`'s higher (1.36+) floor and `failurePolicy:
+> Ignore` posture — no new component, actor or trust boundary. A third
+> 2026-10-03 pass is driven by evidence
 > rather than an ADR: an OIDC issuer (Dex) and workload identity (SPIRE) were
 > deployed on a reference management cluster, and every link's cryptography
 > was measured by offering one TLS group at a time. It changes no component or
@@ -318,6 +332,7 @@ relationship to the host.
 | A-6 | vTPM identity and sealed disk-encryption keys | vSphere VM, per-clone (ADR-0039/0040); on libvirt, **swtpm state keyed by domain UUID** (ADR-0050); on Cloud Hypervisor, swtpm state in `<storage class>/<machine uid>/tpm/`, owned by the guest's uid, deleted with the machine (ADR-0065) | High — a shared or surviving TPM identity breaks per-VM disk-encryption isolation |
 | A-6a | **vTPM endorsement key certificate** — the public anchor an attestation quote is checked against | vCenter-issued and read host-side on vSphere; `swtpm_localca`-issued into the vTPM's NVRAM on libvirt, exported by the guest to `/run/banlieue/ek.pem` and mirrored to `VirtualMachineClaim.status` (ADR-0045); on Cloud Hypervisor, written by `swtpm_setup` at manufacture to `<state_root>/ek/<machine uid>/` (`0700 banlieue`) and read **host-side** (ADR-0065) | Low confidentiality — it is a **public key**, deliberately readable by every reader of the claim. Its value is *integrity of binding*: it must name the VM banlieue actually created, or ADR-0049 verifies a quote from the wrong machine |
 | A-17 | **The management cluster's datastore**: every Kubernetes object, Secrets included (A-1 hypervisor credentials, A-13 registry credentials, ServiceAccount signing material references), in plaintext unless API-server encryption at rest is configured | etcd on the controllers by default; with ADR-0085's kine, an external SQL database (PostgreSQL on the hypervisor host), reached over the network | **Critical**: read access is every Secret in the cluster, write access is cluster-admin. With kine it also lives outside every node, so it is backed up, and must be protected, as a database |
+| A-18 | **`VSphereMachine` custom attributes** — `Template`, `CreatedAt`, `CreatedBy` (ADR-0089), the fleet-auditing fields `sre-automations`' `cf-node` tool also writes | vCenter `CustomFieldsManager`, per cloned VM; `CreatedBy`'s source is `VirtualMachine`'s `banlieue.io/created-by` annotation, stamped at CREATE by the optional `banlieue-virtualmachine-created-by` `MutatingAdmissionPolicy` | Zero confidentiality — all three are free text, visible to anyone with vCenter read access. **Low integrity**: `CreatedBy` can be forged (TB-1); nothing downstream trusts any of the three for an authorization decision |
 | A-15 | **EK trust-anchor bundle** — the set of CA certificates trusted to issue this backend's vTPM EK certificates | `Provider.spec.attestation.ekTrustBundle` — inline PEM, or a ConfigMap/Secret it names in the Provider's namespace. Admin-supplied, never discovered; resolved by the **broker**, never by any banlieue identity (ADR-0049 Decision 10) | Zero confidentiality — public CA material. **High integrity**: a rogue CA added here makes every EK certificate that CA forges verify, defeating the whole attestation chain; and on libvirt *removing* a host's issuer is the revocation mechanism, so an entry an attacker can re-add is a revocation undone |
 
 ## 4. Actors
@@ -452,6 +467,8 @@ relationship to the host.
 | A `VirtualMachine` **declares another VM's address** in `spec.networkOverrides`, by mistake or to intercept traffic meant for it and knock it off the network (ARP contention on the shared segment) | S, T, I, D | **ADR-0083**: `banlieue-controller` blocks the later claimant on the same `networkClass` before scheduling: `Ready=False reason=DuplicateAddress`, and **no infra CR** for a VM never provisioned, so the address never reaches a provider. A VM that **holds** the address (`status.heldAddresses`, written by the controller only when it applies the infra CR) keeps it whatever its age, including while its guest reboots and on vSphere, which reports no guest addresses; a running VM edited onto a held address is blocked and its infra CR is not re-applied. `crates/banlieue-controller/src/reconciler/address_conflict.rs` (`find_duplicate_address`), called from `reconciler/virtualmachine.rs` before `schedule`; unit tests in `address_conflict_tests.rs`, reconcile wiring in `tests/live_duplicate_address.rs` against a real API server. **Banlieue VMs and declared addresses only:** a machine banlieue did not create is not seen (§9), and root in a guest can still configure any address on its NIC, which is the existing no-anti-spoofing residue in §8 |
 | The duplicate-address condition message **discloses another namespace's VM**: its name, namespace, or that it exists | I | The message names a holder as `namespace/name` only when it shares the blocked VM's namespace; otherwise it says "a VirtualMachine in another namespace" (`address_conflict.rs` (`Holder::OtherNamespace`), tested by `collision_across_namespaces_is_detected_but_holder_is_not_named` and `tests/live_duplicate_address.rs::holder_in_another_namespace_blocks_without_being_named`). The residual one-bit oracle ("is this address in use on this `networkClass`?") is §8 |
 | A principal forges `status.heldAddresses` to reserve addresses it was never given, or to release one a running guest still uses | T, D | **Bounded by RBAC, not prevented.** Only the controller writes VM status; writing it takes `update`/`patch` on `virtualmachines/status`, which no tenant role needs and which is already infrastructure-admin-equivalent (it can rewrite `status.infrastructureRef` and every mirrored field). The controller rewrites the field from its own spec on every successful apply, so a forgery lasts until the next one. `deploy/controller/rbac/clusterrole.yaml` is the only shipped grant |
+| A `VirtualMachine`'s `banlieue.io/created-by` annotation is forged, so the vCenter `CreatedBy` custom attribute later misattributes who built a VM (ADR-0089) | S | **Not prevented on UPDATE, and not prevented at all on a cluster without the policy — both accepted by design (ADR-0089 Decision 2).** On CREATE where `banlieue-virtualmachine-created-by` applies, the `MutatingAdmissionPolicy`'s `ApplyConfiguration` merge always sets the annotation to `request.userInfo.username`, overwriting any value the creator supplied in the same request — a self-set value on CREATE does not survive. But the policy matches `operations: ["CREATE"]` only, so a later `UPDATE` by any principal holding `update` on the `VirtualMachine` can edit or remove it uncorrected; and a cluster that never applies the policy (it needs Kubernetes 1.36+, §7) gets no stamping at all, leaving the annotation fully attacker/author-controlled. Unlike `VirtualMachineClaim.spec.subject` (the claim-attribution row above), `created-by` carries no authorization weight — nothing in banlieue reads it to decide who may do what — so a forged value only misleads an operator reading vCenter's fleet-audit attributes, the same exposure already accepted for the vCenter `annotation` field other tooling writes |
+| A permission or connectivity fault on **one** infra backend (vSphere/libvirt/cloud-hypervisor/Proxmox) blocks the `VirtualMachine` deletion cascade for **every** backend, holding every pending `VirtualMachine` delete — including ones with no relationship to the broken backend — `Terminating` indefinitely (ADR-0090) | D | **Fixed, not merely bounded.** Found live: a `ClusterRole` missing `proxmoxmachines` returned `403` from `apis.proxmox.get_opt`, and the old sequential `?`-chained lookup in `finalize_vm` aborted before the vSphere branch below it ran, even though that vSphere lookup had already succeeded — the finalizer stayed on and the backend VM in vCenter was never destroyed. `finalize_vm` now resolves each backend kind independently (`infra_state`) into `InfraState::{Absent,Present,Terminating,Unknown}`, and the pure `plan_finalize` decides per kind: a lookup or delete failure on one kind (`Unknown`) never blocks another kind's `Present` delete, and never lets the finalizer come off either — `crates/banlieue-controller/src/reconciler/virtualmachine.rs`, unit-tested in `virtualmachine_tests.rs` |
 
 ### TB-2 — Pods → Secrets
 
@@ -820,6 +837,14 @@ a different assumption is unsafe.
    (`*-credentialsref-authorization`, `*-userdata-authorization`) need an API
    server new enough for the CEL `authorizer` variable and are shipped as
    separate files for exactly that reason; both are `failurePolicy: Fail`.
+   **`virtualmachine-created-by.yaml` is the one exception to both of those
+   patterns** (ADR-0089): it is a `MutatingAdmissionPolicy`, needs Kubernetes
+   1.36+ (higher than every `ValidatingAdmissionPolicy` floor above), and is
+   `failurePolicy: Ignore` on purpose — it stamps an audit-convenience
+   annotation, not a security check, so its own failure must never block a
+   `VirtualMachine` create. Skipping it has no security consequence (see the
+   TB-1 row above); it only means `VSphereMachine`'s `CreatedBy` vCenter
+   custom attribute is never populated.
 8. **Pin `VMImage.spec.sources[].importFrom` to digests.** The
    `banlieue-vmimage-import-source` VAP enforces a registry allowlist supplied
    as a parameter ConfigMap and **fails closed** if that ConfigMap is absent —
