@@ -175,6 +175,17 @@ pub struct VSphereMachineSpec {
     /// `VirtualMachineSpec`'s own default.
     #[serde(default)]
     pub desired_power_state: PowerState,
+
+    /// The principal that created the parent `VirtualMachine`, copied from
+    /// its `banlieue.io/created-by` annotation when present (ADR-0089). That
+    /// annotation is stamped by an optional `MutatingAdmissionPolicy`
+    /// (`deploy/admission/virtualmachine-created-by.yaml`) from
+    /// `request.userInfo.username` at `VirtualMachine` CREATE — `None` on a
+    /// cluster that doesn't apply it, or for a `VirtualMachine` that
+    /// predates it. Surfaced as the vCenter `CreatedBy` custom attribute by
+    /// the provider; never a stand-in value when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_by: Option<String>,
 }
 
 /// One virtual disk on the resulting vSphere VM.

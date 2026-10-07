@@ -7,8 +7,8 @@ mod tests {
     use std::collections::BTreeMap;
 
     use banlieue_api::banlieue::{
-        Architecture, DiskOverride, DiskSpec, GuestAgent, HardwareOverride, HardwareSpec,
-        ImagePerProviderStatus, ImageSource, ImageSourceKind, MigrationPolicy,
+        ANNOTATION_CREATED_BY, Architecture, DiskOverride, DiskSpec, GuestAgent, HardwareOverride,
+        HardwareSpec, ImagePerProviderStatus, ImageSource, ImageSourceKind, MigrationPolicy,
         NetworkInterfaceOverride, NetworkInterfaceSpec, NetworkSpec, OsFamily, PlacementSpec,
         Provider, ProviderCapabilities, ProviderConnection, ProviderSpec, ResolvedResource,
         SubnetShape, VMClass, VMClassSpec, VMImage, VMImageSpec, VMImageStatus, VirtualMachine,
@@ -722,6 +722,49 @@ mod tests {
         )
         .unwrap();
         assert!(m.spec.user_data.is_none());
+    }
+
+    #[test]
+    fn build_vsphere_machine_omits_created_by_when_vm_has_no_annotation() {
+        let raw = BTreeMap::from([
+            ("datacenter".to_string(), "dc1".to_string()),
+            ("cluster".to_string(), "cluster-a".to_string()),
+        ]);
+        let m = build_vsphere_machine(
+            &parent_vm(),
+            &parent_class(),
+            &parent_image(),
+            &decision_with_raw(raw),
+            &parent_provider(),
+            None,
+        )
+        .unwrap();
+        assert!(m.spec.created_by.is_none());
+    }
+
+    #[test]
+    fn build_vsphere_machine_copies_created_by_from_the_vm_annotation() {
+        // ADR-0089: the MutatingAdmissionPolicy stamps this annotation at
+        // VirtualMachine CREATE; the controller just copies it through.
+        let mut vm = parent_vm();
+        vm.metadata.annotations = Some(BTreeMap::from([(
+            ANNOTATION_CREATED_BY.to_string(),
+            "alice".to_string(),
+        )]));
+        let raw = BTreeMap::from([
+            ("datacenter".to_string(), "dc1".to_string()),
+            ("cluster".to_string(), "cluster-a".to_string()),
+        ]);
+        let m = build_vsphere_machine(
+            &vm,
+            &parent_class(),
+            &parent_image(),
+            &decision_with_raw(raw),
+            &parent_provider(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(m.spec.created_by.as_deref(), Some("alice"));
     }
 
     #[test]

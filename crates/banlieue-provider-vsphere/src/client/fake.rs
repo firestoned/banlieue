@@ -249,6 +249,7 @@ pub struct FakeClient {
     tpm_endorsement_der: Mutex<Vec<Vec<u8>>>,
     grown_disks: Mutex<Vec<(String, u32)>>,
     guest_info: Mutex<HashMap<(String, String), String>>,
+    custom_attributes: Mutex<HashMap<String, Vec<(String, String)>>>,
 }
 
 impl FakeClient {
@@ -266,6 +267,7 @@ impl FakeClient {
             tpm_endorsement_der: Mutex::new(Vec::new()),
             grown_disks: Mutex::new(Vec::new()),
             guest_info: Mutex::new(HashMap::new()),
+            custom_attributes: Mutex::new(HashMap::new()),
         }
     }
 
@@ -325,6 +327,17 @@ impl FakeClient {
             .expect("fake client lock")
             .iter()
             .any(|m| m.as_str() == vm_moref)
+    }
+
+    /// The custom attributes last set on `vm_moref` via
+    /// `set_custom_attributes` (ADR-0089), `None` if it was never called for
+    /// that moref.
+    pub fn custom_attributes(&self, vm_moref: &str) -> Option<Vec<(String, String)>> {
+        self.custom_attributes
+            .lock()
+            .expect("fake client lock")
+            .get(vm_moref)
+            .cloned()
     }
 
     /// The last `size_gi_b` `grow_os_disk` was called with for `vm_moref`,
@@ -503,5 +516,17 @@ impl VSphereClient for FakeClient {
             .expect("fake client lock")
             .get(&(vm_moref.to_string(), key.to_string()))
             .cloned())
+    }
+
+    async fn set_custom_attributes(
+        &self,
+        vm_moref: &str,
+        values: &[(String, String)],
+    ) -> Result<()> {
+        self.custom_attributes
+            .lock()
+            .expect("fake client lock")
+            .insert(vm_moref.to_string(), values.to_vec());
+        Ok(())
     }
 }

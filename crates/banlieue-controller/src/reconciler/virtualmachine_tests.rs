@@ -202,4 +202,104 @@ mod tests {
             );
         }
     }
+
+    // ---- plan_finalize (ADR-0090) ---------------------------------------
+    //
+    // Pure decision step of the deletion cascade: given each backend kind's
+    // resolved InfraState, decide what to delete and whether every kind is
+    // confirmed gone. `Unknown` (a lookup error other than 404) must behave
+    // like neither Absent nor Present — this is the whole fix.
+
+    fn states(
+        vsphere: InfraState,
+        libvirt: InfraState,
+        cloud_hypervisor: InfraState,
+        proxmox: InfraState,
+    ) -> [(InfraKind, InfraState); 4] {
+        [
+            (InfraKind::VSphere, vsphere),
+            (InfraKind::Libvirt, libvirt),
+            (InfraKind::CloudHypervisor, cloud_hypervisor),
+            (InfraKind::Proxmox, proxmox),
+        ]
+    }
+
+    #[test]
+    fn all_absent_removes_the_finalizer() {
+        let plan = plan_finalize(&states(
+            InfraState::Absent,
+            InfraState::Absent,
+            InfraState::Absent,
+            InfraState::Absent,
+        ));
+        assert!(plan.remove_finalizer);
+        assert!(plan.delete.is_empty());
+    }
+
+    #[test]
+    fn a_present_kind_is_deleted_and_finalizer_stays() {
+        let plan = plan_finalize(&states(
+            InfraState::Present,
+            InfraState::Absent,
+            InfraState::Absent,
+            InfraState::Absent,
+        ));
+        assert_eq!(plan.delete, vec![InfraKind::VSphere]);
+        assert!(!plan.remove_finalizer);
+    }
+
+    #[test]
+    fn a_terminating_kind_is_not_deleted_again_and_finalizer_stays() {
+        // Already has a deletionTimestamp — its own finalizer is doing the
+        // work; issuing another delete is a redundant no-op at best.
+        let plan = plan_finalize(&states(
+            InfraState::Terminating,
+            InfraState::Absent,
+            InfraState::Absent,
+            InfraState::Absent,
+        ));
+        assert!(plan.delete.is_empty());
+        assert!(!plan.remove_finalizer);
+    }
+
+    #[test]
+    fn an_unknown_kind_blocks_finalizer_removal_but_is_never_queued_for_delete() {
+        // There is nothing safe to act on for a kind whose lookup failed —
+        // it is not asked to delete anything, and it is not treated as gone.
+        let plan = plan_finalize(&states(
+            InfraState::Absent,
+            InfraState::Absent,
+            InfraState::Absent,
+            InfraState::Unknown,
+        ));
+        assert!(plan.delete.is_empty());
+        assert!(!plan.remove_finalizer);
+    }
+
+    #[test]
+    fn an_unknown_kind_does_not_block_a_present_kinds_delete() {
+        // This is the actual bug: a lookup failure on one kind (e.g. an RBAC
+        // gap on a backend this VM never used) must not prevent a *different*
+        // kind's backend VM from being torn down.
+        let plan = plan_finalize(&states(
+            InfraState::Present,
+            InfraState::Absent,
+            InfraState::Absent,
+            InfraState::Unknown,
+        ));
+        assert_eq!(plan.delete, vec![InfraKind::VSphere]);
+        assert!(!plan.remove_finalizer);
+    }
+
+    #[test]
+    fn every_present_kind_is_queued_for_delete_in_one_pass() {
+        let plan = plan_finalize(&states(
+            InfraState::Present,
+            InfraState::Present,
+            InfraState::Absent,
+            InfraState::Absent,
+        ));
+        assert_eq!(plan.delete, vec![InfraKind::VSphere, InfraKind::Libvirt]);
+        assert!(!plan.remove_finalizer);
+    }
 }

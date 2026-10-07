@@ -13,8 +13,8 @@ use std::collections::BTreeMap;
 
 use banlieue_api::banlieue::InstallMode;
 use banlieue_api::banlieue::{
-    DiskSpec, HardwareOverride, ImagePerProviderStatus, Provider, SubnetShape, VMClass, VMImage,
-    VirtualMachine,
+    ANNOTATION_CREATED_BY, DiskSpec, HardwareOverride, ImagePerProviderStatus, Provider,
+    SubnetShape, VMClass, VMImage, VirtualMachine,
 };
 use banlieue_api::common::{IpamShape, IpamSpec, MachineAddress, StaticIpamConfig};
 use banlieue_api::infrastructure::{
@@ -287,6 +287,9 @@ pub fn build_vsphere_machine(
         network: nics,
         user_data: rendered_user_data.map(str::to_string),
         desired_power_state: vm.spec.desired_power_state.clone(),
+        // ADR-0089: present only when the optional created-by
+        // MutatingAdmissionPolicy stamped the annotation on this VM.
+        created_by: vm.annotations().get(ANNOTATION_CREATED_BY).cloned(),
     };
 
     Ok(VSphereMachine {

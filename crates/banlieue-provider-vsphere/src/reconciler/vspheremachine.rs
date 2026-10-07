@@ -34,6 +34,7 @@ use banlieue_provider_sdk::reconciler::{requeue_default, requeue_long, requeue_o
 use banlieue_provider_sdk::ssa::FIELD_MANAGER_PROVIDER_VSPHERE;
 use banlieue_provider_sdk::status::{condition_status, set_condition};
 use base64::Engine;
+use chrono::Utc;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Condition;
 use kube::{
     Resource, ResourceExt,
@@ -87,6 +88,13 @@ const GUESTINFO_NETWORK_GATEWAY: &str = "guestinfo.network.gateway";
 const GUESTINFO_NETWORK_DNS: &str = "guestinfo.network.dns";
 const GUESTINFO_NETWORK_DOMAIN: &str = "guestinfo.network.domain";
 const GUESTINFO_USERDATA: &str = "guestinfo.userdata";
+
+/// vCenter custom attribute names stamped on every VM this provider clones
+/// (ADR-0089) — matches `sre-automations`' `cf-node` tool exactly, so the
+/// same vCenter-side fleet auditing works for VMs built either way.
+const CUSTOM_ATTR_TEMPLATE: &str = "Template";
+const CUSTOM_ATTR_CREATED_AT: &str = "CreatedAt";
+const CUSTOM_ATTR_CREATED_BY: &str = "CreatedBy";
 const GUESTINFO_USERDATA_ENCODING: &str = "guestinfo.userdata.encoding";
 const GUESTINFO_METADATA: &str = "guestinfo.metadata";
 
@@ -348,6 +356,20 @@ pub async fn ensure_vm(
         })
         .await?;
     info!(vm_ref = %vm_ref, "CloneVM_Task complete");
+
+    // ADR-0089: stamp vCenter custom attributes once, right after the clone
+    // settles — Template/CreatedAt are always known; CreatedBy only when the
+    // parent VirtualMachine carried the banlieue.io/created-by annotation.
+    let mut custom_attributes = vec![
+        (CUSTOM_ATTR_TEMPLATE.to_string(), spec.template.clone()),
+        (CUSTOM_ATTR_CREATED_AT.to_string(), Utc::now().to_rfc3339()),
+    ];
+    if let Some(created_by) = &spec.created_by {
+        custom_attributes.push((CUSTOM_ATTR_CREATED_BY.to_string(), created_by.clone()));
+    }
+    client
+        .set_custom_attributes(&vm_ref, &custom_attributes)
+        .await?;
 
     // `spec.disks` is schema-required to have at least one entry
     // (`VSphereDiskSpec` min length 1) — `disks[0]` is the OS disk, a

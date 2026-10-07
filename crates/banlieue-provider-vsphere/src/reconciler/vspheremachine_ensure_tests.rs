@@ -53,6 +53,7 @@ mod tests {
             network: vec![dhcp_nic(network)],
             user_data: None,
             desired_power_state: PowerState::PoweredOn,
+            created_by: None,
         }
     }
 
@@ -118,6 +119,68 @@ mod tests {
             Some(PowerState::PoweredOn)
         );
         assert_eq!(outcome.power_state, Some(PowerState::PoweredOn));
+    }
+
+    #[tokio::test]
+    async fn first_reconcile_stamps_template_and_created_at_but_not_created_by() {
+        // ADR-0089: Template/CreatedAt are always known; CreatedBy is
+        // omitted — never a stand-in value — when the spec carries none.
+        let client = FakeClient::new(seeded_inventory());
+        let outcome = ensure_vm(
+            as_client(&client),
+            &spec("ds-fast-01", "vmnet-prod"),
+            "db-01",
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let attrs = client
+            .custom_attributes(&outcome.vm_ref)
+            .expect("set_custom_attributes must be called on first provision");
+        let as_map: std::collections::HashMap<_, _> = attrs.into_iter().collect();
+        assert_eq!(
+            as_map.get("Template"),
+            Some(&"ubuntu-22.04-cloudinit".to_string())
+        );
+        assert!(as_map.contains_key("CreatedAt"));
+        assert!(
+            !as_map.contains_key("CreatedBy"),
+            "must not invent a CreatedBy value when spec.created_by is None"
+        );
+    }
+
+    #[tokio::test]
+    async fn first_reconcile_stamps_created_by_when_spec_carries_it() {
+        let client = FakeClient::new(seeded_inventory());
+        let mut s = spec("ds-fast-01", "vmnet-prod");
+        s.created_by = Some("alice".to_string());
+        let outcome = ensure_vm(as_client(&client), &s, "db-01", None, None)
+            .await
+            .unwrap();
+
+        let attrs = client
+            .custom_attributes(&outcome.vm_ref)
+            .expect("set_custom_attributes must be called on first provision");
+        let as_map: std::collections::HashMap<_, _> = attrs.into_iter().collect();
+        assert_eq!(as_map.get("CreatedBy"), Some(&"alice".to_string()));
+    }
+
+    #[tokio::test]
+    async fn already_provisioned_never_calls_set_custom_attributes() {
+        let client = FakeClient::new(seeded_inventory());
+        ensure_vm(
+            as_client(&client),
+            &spec("ds-fast-01", "vmnet-prod"),
+            "db-01",
+            Some("vm-existing-123"),
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert!(client.custom_attributes("vm-existing-123").is_none());
     }
 
     #[tokio::test]

@@ -329,6 +329,25 @@ pub trait VSphereClient: Send + Sync {
     /// `key` is absent — the ordinary case for most of a `Deferred`
     /// member's life, not an error.
     async fn guest_info(&self, vm_moref: &str, key: &str) -> Result<Option<String>>;
+
+    /// Set vCenter custom attributes on `vm_moref` (ADR-0089), defining each
+    /// one via `CustomFieldsManager.AddCustomFieldDef` first if it doesn't
+    /// already exist on this vCenter, then `CustomFieldsManager.SetField` per
+    /// pair — the same list-then-define-if-missing shape as `govc`'s
+    /// `fields.set -add`.
+    ///
+    /// A custom attribute, not the `config.annotation` field: that field
+    /// already carries the source template name by convention elsewhere, so
+    /// writing anything else there would break an unrelated upgrade
+    /// pre-flight that compares it exactly. Called once from
+    /// [`crate::reconciler::vspheremachine::ensure_vm`], inside the same
+    /// first-provision-only guard as [`VSphereClient::add_tpm_device`] and
+    /// [`VSphereClient::grow_os_disk`].
+    async fn set_custom_attributes(
+        &self,
+        vm_moref: &str,
+        values: &[(String, String)],
+    ) -> Result<()>;
 }
 
 /// Everything [`VSphereClient::clone_vm`] needs to clone a per-zone template

@@ -16,6 +16,7 @@ use tracing::{debug, info, warn};
 use vim_rs::core::client::{Client, ClientBuilder, VimClient};
 use vim_rs::mo::cluster_compute_resource::ClusterComputeResource;
 use vim_rs::mo::container_view::ContainerView;
+use vim_rs::mo::custom_fields_manager::CustomFieldsManager;
 use vim_rs::mo::datacenter::Datacenter as VimDatacenter;
 use vim_rs::mo::datastore::Datastore as VimDatastore;
 use vim_rs::mo::distributed_virtual_portgroup::DistributedVirtualPortgroup;
@@ -1299,6 +1300,34 @@ impl VSphereClient for VimClientImpl {
             .map_err(|e| Error::Vsphere(format!("VirtualMachine.config({vm_moref}): {e}")))
     }
 
+    async fn set_custom_attributes(
+        &self,
+        vm_moref: &str,
+        values: &[(String, String)],
+    ) -> Result<()> {
+        let sc = self.client.service_content();
+        let cfm_moref = sc
+            .custom_fields_manager
+            .as_ref()
+            .ok_or(Error::Missing("ServiceContent.custom_fields_manager"))?;
+        let cfm = CustomFieldsManager::new(self.client.clone(), &cfm_moref.value);
+
+        let entity = ManagedObjectReference {
+            r#type: MoTypesEnum::VirtualMachine,
+            value: vm_moref.to_string(),
+        };
+
+        for (name, value) in values {
+            let key = self.custom_field_key(&cfm, name).await?;
+            cfm.set_field(&entity, key, value).await.map_err(|e| {
+                Error::Vsphere(format!(
+                    "CustomFieldsManager.SetField({vm_moref}, {name}): {e}"
+                ))
+            })?;
+        }
+        Ok(())
+    }
+
     async fn destroy_vm(&self, vm_moref: &str) -> Result<()> {
         info!(moref = %vm_moref, "destroying VSphereMachine's backend VM");
         match self.power_off_and_destroy(vm_moref).await {
@@ -1396,6 +1425,48 @@ impl VimClientImpl {
             .map_err(|e| Error::Vsphere(format!("Destroy_Task({moref}): {e}")))?;
         self.wait_for_task(&task.value, "destroy existing target")
             .await
+    }
+
+    /// Find the key of the `VirtualMachine`-scoped custom field named `name`,
+    /// defining it on this vCenter via `AddCustomFieldDef` if it doesn't
+    /// exist yet (ADR-0089) — the same list-then-define-if-missing shape as
+    /// `govc`'s `fields.set -add`.
+    ///
+    /// `DuplicateName` from a losing `AddCustomFieldDef` race (two
+    /// reconciles defining the same field concurrently) is not an error:
+    /// the field now exists either way, so re-list and use the winner's key.
+    async fn custom_field_key(&self, cfm: &CustomFieldsManager, name: &str) -> Result<i32> {
+        let existing = cfm
+            .field()
+            .await
+            .map_err(|e| Error::Vsphere(format!("CustomFieldsManager.field(): {e}")))?
+            .unwrap_or_default();
+        if let Some(def) = existing.iter().find(|d| d.name == name) {
+            return Ok(def.key);
+        }
+
+        match cfm
+            .add_custom_field_def(name, Some("VirtualMachine"), None, None)
+            .await
+        {
+            Ok(def) => Ok(def.key),
+            Err(e) if e.to_string().to_lowercase().contains("duplicatename") => cfm
+                .field()
+                .await
+                .map_err(|e| Error::Vsphere(format!("CustomFieldsManager.field(): {e}")))?
+                .unwrap_or_default()
+                .into_iter()
+                .find(|d| d.name == name)
+                .map(|d| d.key)
+                .ok_or_else(|| {
+                    Error::Vsphere(format!(
+                        "CustomFieldsManager.AddCustomFieldDef({name}): DuplicateName but field not found on re-list"
+                    ))
+                }),
+            Err(e) => Err(Error::Vsphere(format!(
+                "CustomFieldsManager.AddCustomFieldDef({name}): {e}"
+            ))),
+        }
     }
 
     /// Poll a vCenter task to completion. `Ok(())` on `Success`; `Err` on

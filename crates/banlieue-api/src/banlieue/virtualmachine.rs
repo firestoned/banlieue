@@ -18,6 +18,13 @@ use kube::CustomResource;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+/// Annotation stamped on a `VirtualMachine` at CREATE by the optional
+/// `MutatingAdmissionPolicy` in `deploy/admission/virtualmachine-created-by.yaml`
+/// (ADR-0089), from `request.userInfo.username`. `banlieue-controller` copies
+/// its value into `VSphereMachineSpec.created_by`; absent on a cluster that
+/// doesn't apply the policy, or on a `VirtualMachine` that predates it.
+pub const ANNOTATION_CREATED_BY: &str = "banlieue.io/created-by";
+
 #[derive(CustomResource, Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[kube(
     group = "banlieue.io",
