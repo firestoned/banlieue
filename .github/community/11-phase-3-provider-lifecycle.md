@@ -1,5 +1,9 @@
 # Phase 3 — Provider Lifecycle Automation
 
+> **Status: ✅ Complete (2026-10-08).** Every task and test below is done
+> or superseded. The Helm chart was removed from this roadmap's scope:
+> the single-command install is `banlieue bootstrap operator` (ADR-0013).
+
 > **Goal.** Introduce the `ProviderClass` CRD and a lifecycle
 > controller that creates, upgrades, and removes the per-provider
 > Deployments, ServiceAccounts, RBAC, and Leases automatically.
@@ -166,8 +170,8 @@ when the last Provider in that namespace goes away.
 
 ## Tasks
 
-> **Status (audited against the tree 2026-09-24): the lifecycle itself is
-> built; only the Helm packaging is outstanding.** One structural change
+> **Status (audited against the tree 2026-09-24; closed 2026-10-08): the
+> lifecycle is built, and the Helm packaging was removed from scope.** One structural change
 > from the plan below: lifecycle does **not** live in the main controller.
 > ADR-0012 gave it its own binary, `banlieue-operator`, so the controller
 > stays out of the business of creating Deployments.
@@ -209,10 +213,12 @@ when the last Provider in that namespace goes away.
       side effect, which keeps install auditable and dry-runnable
       (`--dry-run`). Covered by `make kind-e2e-bootstrap`,
       `kind-e2e-dry-run` and `kind-e2e-escape-hatch`.
-- [ ] Update Helm chart (Phase 4 work) so banlieue installation only
-      needs the main controller; ProviderClasses bring up the rest.
-      **Still open** — no chart exists yet (roadmap 12 §4.6). `banlieue
-      bootstrap` is today's single-command install.
+- [x] ~~Update Helm chart (Phase 4 work) so banlieue installation only
+      needs the main controller; ProviderClasses bring up the rest.~~
+      **Removed from scope (2026-10-08).** No chart exists and none is
+      planned for this phase. `banlieue bootstrap operator` (ADR-0013) is
+      the single-command install, and it already installs only the
+      operator, with ProviderClasses bringing up each backend.
 
 ## Tests
 
@@ -238,17 +244,17 @@ when the last Provider in that namespace goes away.
 
 ## Definition of done
 
-- Single-command install: `helm install banlieue ...` brings up the
-  main controller only. Operators add ProviderClasses to enable each
-  backend.
+- Single-command install: `banlieue bootstrap operator` brings up the
+  operator only (ADR-0013; originally planned as `helm install`).
+  Operators add ProviderClasses to enable each backend.
 - Upgrading a provider is a YAML edit to `ProviderClass.spec.image`.
 - Removing a backend is `kubectl delete providerclass <kind>`.
 
-> **Two of three met (2026-09-24).** Upgrade-by-edit and
-> delete-the-class both work and are covered by `make kind-e2e-class`.
-> The single-command install exists as `banlieue bootstrap operator`
-> (ADR-0013); the Helm form of it is still roadmap 12 §4.6, which is why
-> this phase stays 🔶 on [`ROADMAPS.md`](../../ROADMAPS.md).
+> **All three met (2026-10-08).** Upgrade-by-edit and delete-the-class
+> both work and are covered by `make kind-e2e-class`. The single-command
+> install is `banlieue bootstrap operator` (ADR-0013), covered by
+> `make kind-e2e-bootstrap`. The Helm form was dropped from this phase's
+> scope, so the phase is ✅ on [`ROADMAPS.md`](../../ROADMAPS.md).
 
 ## Gotchas
 

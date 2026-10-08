@@ -6,6 +6,8 @@ This folder contains the [FINOS Common Architecture Language Model
 | File | Purpose |
 | --- | --- |
 | `architecture.json` | Single architecture document: nodes, relationships, flows, controls, metadata. Targets CALM schema **1.2**. |
+| `vtpm-kairos-k0s-encryption.calm.json` | Companion model: the two encryption-at-rest controls on a k0s control-plane node (companion to `docs/design/vtpm-kairos-k0s-encryption.md`). |
+| `agentsandbox-stack.calm.json` | Companion model: the AgentSandbox platform end to end, from the physical TPM to the signed policy (policy plane, banlieue orchestration, identity, the sandbox VM and its single way out). Nodes and relationships with `metadata.status: proposed` are not built. Validate with `npx --yes @finos/calm-cli@1.37.0 validate -a docs/architecture/calm/agentsandbox-stack.calm.json -f pretty`. |
 | `templates/mermaid/system.md.hbs` | Handlebars template that renders every node and relationship as a single Mermaid `flowchart LR`. Output → `docs/src/architecture/system.md`. |
 | `templates/mermaid/flows.md.hbs` | Handlebars template that renders each `flows[]` entry as its own Mermaid `flowchart TD`. Output → `docs/src/architecture/flows.md`. |
 

@@ -1,5 +1,84 @@
 # Changelog
 
+## [2026-10-08] - Roadmap 11 closed: Helm chart removed from scope
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/community/11-phase-3-provider-lifecycle.md`:
+  - The Helm-chart task is struck through as removed from scope.
+  - The definition of done now names `banlieue bootstrap operator`
+    (ADR-0013) as the single-command install, covered by
+    `make kind-e2e-bootstrap`.
+  - A completion banner is added.
+- `ROADMAPS.md`: roadmap 11 goes from 🔶 to ✅.
+
+### Why
+The Helm chart was the only item keeping roadmap 11 open, and
+`banlieue bootstrap operator` already meets the install goal. Roadmap 12
+§4.6 still lists a Helm chart as a FINOS-readiness item; that is unchanged.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+## [2026-10-08] - ADR-0088: user-data lands on `COS_OEM` once, not every boot
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docs/adr/0088-first-boot-sealing-for-immediate-images.md`: corrects the
+  `COS_OEM` consequence. Kairos's datasource stage writes the per-VM
+  user-data to `/oem/95_userdata` on the first boot that finds a
+  datasource, guarded on the file not existing, so it is written once and
+  never refreshed or removed. The plaintext-on-disk conclusion is
+  unchanged.
+
+### Why
+The ADR said the pull happened on every boot, which misdescribes when the
+file appears and implies a refresh that never happens.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+## [2026-10-06] - CALM companion model for the AgentSandbox stack
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/architecture/calm/agentsandbox-stack.calm.json`: CALM 1.2 model
+  of the AgentSandbox stack diagram ("from physical TPM to signed
+  policy"). 30 nodes (the three zones, the policy, banlieue and identity
+  lanes, the sandbox VM's parts, the hardware root of trust, and two
+  actors the diagram implies), 29 relationships (all 20 diagram arrows
+  plus structure), and 4 flows (policy to enforcement, provision and
+  bind, agent egress, key release). The diagram's legend is carried as
+  data: proposed items (nono, sandboxpolicy-render) carry
+  `metadata.status: proposed`, signed-policy arrows and the single way
+  out of a VM carry `metadata.diagram-style`. Controls cite ADR-0081 and
+  ADR-0082 clauses. The vSphere key provider is named generically
+  ("Enterprise KMS"). Validates clean with `@finos/calm-cli@1.37.0`,
+  strict mode included.
+
+### Changed
+- `docs/architecture/calm/README.md`: file table lists both companion
+  models.
+
+### Why
+The stack existed only as a draw.io picture; as CALM it is validated,
+diffable and linked to the ADRs it depicts.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
 ## [2026-10-08] - Pin manifests, examples and guides to v0.4.0
 
 **Author:** Erick Bourgeois
