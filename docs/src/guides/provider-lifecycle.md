@@ -124,7 +124,7 @@ The image lives on the class, so upgrading a fleet is one edit:
 
 ```sh
 kubectl patch providerclass vsphere --type=merge \
-  -p '{"spec":{"image":{"tag":"v0.4.0"}}}'
+  -p '{"spec":{"image":{"tag":"v0.5.0"}}}'
 ```
 
 To upgrade a single backend first, create a second class pinning the new image

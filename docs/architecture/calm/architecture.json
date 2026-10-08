@@ -1984,7 +1984,7 @@
         {
           "sequence-number": 1,
           "relationship-unique-id": "rel-operator-kubectl",
-          "description": "Platform operator edits one field: `kubectl patch providerclass vsphere` to set spec.image.tag to v0.4.0. To canary a single backend instead, they create a second class pinning the new image and repoint one Provider at it."
+          "description": "Platform operator edits one field: `kubectl patch providerclass vsphere` to set spec.image.tag to v0.5.0. To canary a single backend instead, they create a second class pinning the new image and repoint one Provider at it."
         },
         {
           "sequence-number": 2,

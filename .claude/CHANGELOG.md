@@ -1,5 +1,25 @@
 # Changelog
 
+## [2026-10-08] - Pin manifests, examples and guides to v0.4.0
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `deploy/{controller,operator,imagebuilder,provider-vsphere}/deployment.yaml`:
+  image `ghcr.io/firestoned/banlieue:v0.3.0` → `v0.4.0`.
+- `docs/src/guides/{index,core-controller,vsphere-provider,using-banlieue-imagebuilder}.md`:
+  released image, `git clone --branch` and `blob/`/`tree/` links → `v0.4.0`.
+- `examples/08-providerclass-vsphere.yaml`, `examples/09-providerclass-libvirt.yaml`:
+  default class → `v0.4.0`; the canary class in example 08 → `v0.5.0`.
+- `docs/src/guides/provider-lifecycle.md`, `docs/architecture/calm/architecture.json`,
+  `docs/src/architecture/flows.md`: the upgrade-flow example now patches to
+  `v0.5.0`, one release ahead of the current pin.
+
+### Why
+The `v0.4.0` tag shipped with `deploy/` still pinning `v0.3.0` images, so
+applying the tagged manifests ran the previous release, without ADR-0087's
+per-writer field managers. Same post-release roll-forward as #75 did for
+`v0.3.0`.
 ## [2026-10-06 (3)] - ADR-0090: isolate each backend kind in the VirtualMachine finalize cascade
 
 **Author:** Erick Bourgeois
@@ -49,6 +69,7 @@ sequential and `?`-chained. See ADR-0090.
 - [ ] Breaking change
 - [ ] Requires cluster rollout
 - [ ] Config change only
+- [x] Documentation only
 - [ ] Documentation only
 
 ### Verification

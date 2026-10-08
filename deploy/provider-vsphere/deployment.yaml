@@ -49,7 +49,7 @@ spec:
           # 2026-07-31 CHAIN-002): this static deployment reads credentials
           # through a namespaced Role there (rbac/role.yaml), so Providers in
           # other namespaces are out of scope by construction.
-          image: ghcr.io/firestoned/banlieue:v0.3.0
+          image: ghcr.io/firestoned/banlieue:v0.4.0
           imagePullPolicy: IfNotPresent
           args: ["provider", "vsphere", "--namespace", "banlieue-system"]
           envFrom:
