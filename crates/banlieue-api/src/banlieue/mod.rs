@@ -21,9 +21,10 @@ pub use providerclass::{
     ProviderClassStatus, ProviderDeployment, ProviderImage,
 };
 pub use virtualmachine::{
-    AffinityMode, AntiAffinityRule, DEFAULT_USER_DATA_KEY, DiskOverride, HardwareOverride,
-    HeldAddress, MigrationPolicy, NetworkInterfaceOverride, PlacementSpec, ResolvedResource,
-    ScheduledPlacement, UserDataSpec, VirtualMachine, VirtualMachineSpec, VirtualMachineStatus,
+    ANNOTATION_CREATED_BY, AffinityMode, AntiAffinityRule, DEFAULT_USER_DATA_KEY, DiskOverride,
+    HardwareOverride, HeldAddress, MigrationPolicy, NetworkInterfaceOverride, PlacementSpec,
+    ResolvedResource, ScheduledPlacement, UserDataSpec, VirtualMachine, VirtualMachineSpec,
+    VirtualMachineStatus,
 };
 pub use virtualmachineclaim::{
     ANNOTATION_SUBJECT_ID, ANNOTATION_SUBJECT_ISSUER, CLAIM_FINALIZER, CLAIM_NONCE_BITS,

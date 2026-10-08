@@ -9,6 +9,13 @@ mod tests {
     use kube::CustomResourceExt;
     use std::collections::BTreeMap;
 
+    #[test]
+    fn annotation_created_by_is_the_expected_literal() {
+        // API: changing this strands every MutatingAdmissionPolicy binding
+        // already deployed against the old key (ADR-0089).
+        assert_eq!(ANNOTATION_CREATED_BY, "banlieue.io/created-by");
+    }
+
     fn fixed_time() -> Time {
         let s = "\"2026-05-24T12:00:00Z\"";
         Time(serde_json::from_str(s).unwrap())

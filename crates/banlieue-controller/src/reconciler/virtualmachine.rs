@@ -593,6 +593,76 @@ where
     }
 }
 
+/// One backend kind's resolved state during the deletion cascade
+/// (ADR-0090).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum InfraState {
+    /// Confirmed gone (404) — nothing to do for this kind.
+    Absent,
+    /// Exists, no `deletionTimestamp` yet — needs a delete issued.
+    Present,
+    /// Exists and already terminating — its own finalizer is doing the
+    /// work; issuing another delete would be a redundant no-op.
+    Terminating,
+    /// The lookup failed for a reason other than "not found" (e.g. an RBAC
+    /// gap on a backend this VM never used). Neither present nor absent:
+    /// never blocks another kind's cascade, and never lets the finalizer
+    /// come off either, since "unknown" might be hiding a real backend VM.
+    Unknown,
+}
+
+/// What [`finalize_vm`] should do this pass, decided from each backend
+/// kind's [`InfraState`]. Pure — see [`plan_finalize`].
+#[derive(Debug, Default, PartialEq, Eq)]
+struct FinalizePlan {
+    /// Kinds to issue a delete against, in the order checked.
+    delete: Vec<InfraKind>,
+    /// Only `true` when every kind resolved to [`InfraState::Absent`].
+    remove_finalizer: bool,
+}
+
+/// Pure decision step of the deletion cascade (ADR-0090): which kinds need
+/// a delete issued, and whether every kind is confirmed gone.
+///
+/// `remove_finalizer` is `true` only when all four states are
+/// [`InfraState::Absent`] — [`InfraState::Unknown`] is deliberately not
+/// treated as absent, since removing the finalizer on an unresolved lookup
+/// is exactly the dangling-VM risk the finalizer exists to prevent.
+#[must_use]
+fn plan_finalize(states: &[(InfraKind, InfraState); 4]) -> FinalizePlan {
+    FinalizePlan {
+        delete: states
+            .iter()
+            .filter(|(_, s)| *s == InfraState::Present)
+            .map(|(k, _)| *k)
+            .collect(),
+        remove_finalizer: states.iter().all(|(_, s)| *s == InfraState::Absent),
+    }
+}
+
+/// Resolve one backend kind's [`InfraState`] without propagating a lookup
+/// failure to the caller (ADR-0090) — a `kind_name` lookup error (e.g. an
+/// RBAC gap on a backend this VM never used) must never block cleanup of a
+/// kind that resolves cleanly.
+async fn infra_state<K>(api: &Api<K>, name: &str, kind_name: &'static str) -> InfraState
+where
+    K: kube::Resource + Clone + std::fmt::Debug + serde::de::DeserializeOwned,
+{
+    match api.get_opt(name).await {
+        Ok(None) => InfraState::Absent,
+        Ok(Some(obj)) if obj.meta().deletion_timestamp.is_some() => InfraState::Terminating,
+        Ok(Some(_)) => InfraState::Present,
+        Err(e) => {
+            warn!(
+                infra_kind = kind_name,
+                error = %e,
+                "infra CR lookup failed; treating as unknown rather than blocking other backends"
+            );
+            InfraState::Unknown
+        }
+    }
+}
+
 /// Deletion path with cascade-wait on the owned infra CR.
 ///
 /// The contract is:
@@ -617,6 +687,17 @@ where
 /// wrong, and being wrong here means dropping the finalizer while a real VM
 /// is still running on a hypervisor. One `get_opt` per kind is the cheap price
 /// of never leaking one.
+///
+/// # Why each kind is isolated (ADR-0090)
+///
+/// Checking every kind is the ADR-0026 contract above; checking them
+/// sequentially behind `?` is not — a lookup failure on one kind (found
+/// live: an RBAC gap on `proxmoxmachines`) used to abort before the "issue
+/// delete" branch ran for any kind, including ones already confirmed
+/// `Present`. Each kind's state is now resolved independently via
+/// [`infra_state`], and [`plan_finalize`] decides the plan from all four
+/// results at once, so one backend's permission or connectivity fault only
+/// ever stalls that backend's own VMs.
 async fn finalize_vm(
     api: &Api<VirtualMachine>,
     apis: &InfraApis,
@@ -625,61 +706,69 @@ async fn finalize_vm(
     info!("finalizing VirtualMachine");
     let owned_name = vm.name_any();
 
-    // (exists, already terminating) for each backend.
-    let vsphere = apis
-        .vsphere
-        .get_opt(&owned_name)
-        .await?
-        .map(|m| m.metadata.deletion_timestamp.is_some());
-    let libvirt = apis
-        .libvirt
-        .get_opt(&owned_name)
-        .await?
-        .map(|m| m.metadata.deletion_timestamp.is_some());
-    let cloud_hypervisor = apis
-        .cloud_hypervisor
-        .get_opt(&owned_name)
-        .await?
-        .map(|m| m.metadata.deletion_timestamp.is_some());
-    let proxmox = apis
-        .proxmox
-        .get_opt(&owned_name)
-        .await?
-        .map(|m| m.metadata.deletion_timestamp.is_some());
+    let states = [
+        (
+            InfraKind::VSphere,
+            infra_state(&apis.vsphere, &owned_name, "VSphereMachine").await,
+        ),
+        (
+            InfraKind::Libvirt,
+            infra_state(&apis.libvirt, &owned_name, "LibvirtMachine").await,
+        ),
+        (
+            InfraKind::CloudHypervisor,
+            infra_state(
+                &apis.cloud_hypervisor,
+                &owned_name,
+                "CloudHypervisorMachine",
+            )
+            .await,
+        ),
+        (
+            InfraKind::Proxmox,
+            infra_state(&apis.proxmox, &owned_name, "ProxmoxMachine").await,
+        ),
+    ];
+    let plan = plan_finalize(&states);
 
-    if vsphere.is_none() && libvirt.is_none() && cloud_hypervisor.is_none() && proxmox.is_none() {
+    // Issue a delete for anything present. Each kind's failure is caught
+    // and logged rather than propagated, so one backend's delete error
+    // cannot stop another kind's delete from being attempted in this same
+    // pass (ADR-0090) — this is never silently swallowed: `delete_failed`
+    // withholds the finalizer below exactly like an unresolved lookup does.
+    let mut delete_failed = false;
+    for kind in &plan.delete {
+        let result = match kind {
+            InfraKind::VSphere => {
+                info!(vsphere_machine = %owned_name, "requesting VSphereMachine deletion; waiting for cascade");
+                delete_ignoring_404(&apis.vsphere, &owned_name).await
+            }
+            InfraKind::Libvirt => {
+                info!(libvirt_machine = %owned_name, "requesting LibvirtMachine deletion; waiting for cascade");
+                delete_ignoring_404(&apis.libvirt, &owned_name).await
+            }
+            InfraKind::CloudHypervisor => {
+                info!(cloud_hypervisor_machine = %owned_name, "requesting CloudHypervisorMachine deletion; waiting for cascade");
+                delete_ignoring_404(&apis.cloud_hypervisor, &owned_name).await
+            }
+            InfraKind::Proxmox => {
+                info!(proxmox_machine = %owned_name, "requesting ProxmoxMachine deletion; waiting for cascade");
+                delete_ignoring_404(&apis.proxmox, &owned_name).await
+            }
+        };
+        if let Err(e) = result {
+            warn!(infra_kind = ?kind, error = %e, "infra CR delete failed; other backends still proceed");
+            delete_failed = true;
+        }
+    }
+
+    if plan.remove_finalizer && !delete_failed {
         info!("infra CRs cleared; removing VirtualMachine finalizer");
         remove_finalizer(api, vm, VM_FINALIZER).await?;
         return Ok(requeue_default());
     }
 
-    // Issue a delete for anything present that is not already terminating.
-    // The provider's own finalizer keeps it around until the backend VM is
-    // really gone; this is never `|| true`-ed, so a failure surfaces instead
-    // of leaving a guest running while teardown claims success.
-    if vsphere == Some(false) {
-        info!(vsphere_machine = %owned_name, "requesting VSphereMachine deletion; waiting for cascade");
-        delete_ignoring_404(&apis.vsphere, &owned_name).await?;
-    }
-    if libvirt == Some(false) {
-        info!(libvirt_machine = %owned_name, "requesting LibvirtMachine deletion; waiting for cascade");
-        delete_ignoring_404(&apis.libvirt, &owned_name).await?;
-    }
-    if cloud_hypervisor == Some(false) {
-        info!(cloud_hypervisor_machine = %owned_name, "requesting CloudHypervisorMachine deletion; waiting for cascade");
-        delete_ignoring_404(&apis.cloud_hypervisor, &owned_name).await?;
-    }
-    if proxmox == Some(false) {
-        info!(proxmox_machine = %owned_name, "requesting ProxmoxMachine deletion; waiting for cascade");
-        delete_ignoring_404(&apis.proxmox, &owned_name).await?;
-    }
-    if vsphere == Some(true)
-        || libvirt == Some(true)
-        || cloud_hypervisor == Some(true)
-        || proxmox == Some(true)
-    {
-        debug!("infra CR still terminating; will recheck");
-    }
+    debug!("infra CR still terminating or unresolved; will recheck");
     Ok(requeue_on_error())
 }
 

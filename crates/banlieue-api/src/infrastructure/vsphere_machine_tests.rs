@@ -45,6 +45,7 @@ mod tests {
             network: vec![sample_nic("eth0")],
             user_data: None,
             desired_power_state: PowerState::PoweredOn,
+            created_by: None,
         }
     }
 
@@ -154,6 +155,41 @@ mod tests {
         assert!(!obj.contains_key("folder"));
         assert!(!obj.contains_key("resourcePool"));
         assert!(!obj.contains_key("userData"));
+        assert!(!obj.contains_key("createdBy"));
+    }
+
+    // ----------------------------------------------------------------------
+    // createdBy (ADR-0089)
+    // ----------------------------------------------------------------------
+
+    #[test]
+    fn vsphere_machine_spec_created_by_round_trip() {
+        let s = VSphereMachineSpec {
+            created_by: Some("alice".to_string()),
+            ..minimal_spec()
+        };
+        let json = serde_json::to_value(&s).unwrap();
+        assert_eq!(json["createdBy"], "alice");
+        let back: VSphereMachineSpec = serde_json::from_value(json).unwrap();
+        assert_eq!(back, s);
+    }
+
+    #[test]
+    fn vsphere_machine_spec_missing_created_by_deserializes_to_none() {
+        let json = serde_json::json!({
+            "providerRef": {"name": "p"},
+            "template": "t",
+            "datacenter": "dc",
+            "cluster": "c",
+            "datastore": "ds",
+            "numCpus": 1,
+            "memoryMiB": 1024,
+            "firmware": "efi",
+            "disks": [],
+            "network": []
+        });
+        let s: VSphereMachineSpec = serde_json::from_value(json).unwrap();
+        assert_eq!(s.created_by, None);
     }
 
     #[test]

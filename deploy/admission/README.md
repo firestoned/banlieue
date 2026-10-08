@@ -5,9 +5,12 @@
 
 Optional, in-API-server hardening for banlieue CRDs using
 [ValidatingAdmissionPolicy](https://kubernetes.io/docs/reference/access-authn-authz/validating-admission-policy/)
-(CEL, GA in Kubernetes **1.30+**). These enforce invariants the CRD OpenAPI
-schema cannot express — cross-field and immutability rules — at admission time,
-before the object is ever persisted, with no webhook to run or certificates to
+(CEL, GA in Kubernetes **1.30+**) and, for one file,
+[MutatingAdmissionPolicy](https://kubernetes.io/docs/reference/access-authn-authz/mutating-admission-policy/)
+(CEL, GA in Kubernetes **1.36+**). These enforce invariants the CRD OpenAPI
+schema cannot express — cross-field and immutability rules, and (for the one
+mutating policy) stamping an identity annotation — at admission time, before
+the object is ever persisted, with no webhook to run or certificates to
 rotate.
 
 | Policy | Enforces |
@@ -22,6 +25,7 @@ rotate.
 | `vmimage-import-source.yaml` | Every `VMImage.spec.sources[].importFrom` is pinned to an `@sha256:` digest and references a registry in the `banlieue-vmimage-allowed-registries` parameter ConfigMap (security review 2026-07-31). |
 | `virtualmachineclaim-subject-authorization.yaml` | `VirtualMachineClaim.spec.subject.id` must equal the authenticated username (declared brokers exempt), `spec.subject.issuer` must be in the `banlieue-claim-subject-policy` parameter ConfigMap, and `spec` is immutable ([ADR-0047](../../docs/adr/0047-virtualmachineclaim.md) Decision 10). |
 | `providerclass-guardrails.yaml` | `ProviderClass.spec.additionalRules` may not grant on `secrets`, use `*` resources/verbs, or use `escalate`/`bind`/`impersonate`; `spec.workloadNamespace` may not be a Kubernetes system namespace (security review 2026-07-31). |
+| `virtualmachine-created-by.yaml` | Stamps `banlieue.io/created-by` on a `VirtualMachine` at CREATE from `request.userInfo.username` — an informational attribute, not an authorization boundary ([ADR-0089](../../docs/adr/0089-vspheremachine-custom-attributes.md)). The only `MutatingAdmissionPolicy` in this directory; needs Kubernetes 1.36+. |
 
 Apply after the CRDs:
 
@@ -33,6 +37,10 @@ kubectl apply -f deploy/admission/
 Each file ships a `ValidatingAdmissionPolicy` (the rule) and a
 `ValidatingAdmissionPolicyBinding` with `validationActions: ["Deny"]` (enforce).
 Switch a binding to `["Warn","Audit"]` to roll out in report-only mode first.
+`virtualmachine-created-by.yaml` is the one exception: it ships a
+`MutatingAdmissionPolicy` + `MutatingAdmissionPolicyBinding` instead, with
+`failurePolicy: Ignore` rather than `Deny`/enforce — it stamps an annotation,
+it does not reject anything.
 
 Notes:
 
@@ -58,7 +66,21 @@ Notes:
   namespace is equivalent to reading every Secret in that namespace — see the
   [threat model](../../docs/src/security/threat-model.md).
 
+- `virtualmachine-created-by.yaml` needs Kubernetes 1.36+
+  (`MutatingAdmissionPolicy` GA) — higher than every `ValidatingAdmissionPolicy`
+  floor above. On an older apiserver this one file is rejected while the rest
+  still apply; `VSphereMachine`'s `CreatedBy` vCenter custom attribute is then
+  simply never set (`Template`/`CreatedAt` are unaffected — see ADR-0089).
+  `MutatingAdmissionPolicy` is beta (off by default) on 1.34–1.35 and GA (on
+  by default) from 1.36 — `scripts/bootstrap-k0s-cluster.sh`'s default
+  `K0S_VERSION` is 1.35.x, so a cluster built with it needs the feature gate
+  turned on explicitly before this file can be applied at all. Use
+  `scripts/enable-feature-gate-k0s.sh enable` (`FEATURE_GATES=MutatingAdmissionPolicy=true`
+  by default) to do that cluster-wide, one controller at a time, with a
+  backup and automatic rollback if an apiserver doesn't come back healthy.
+
 Rationale (VAP vs. webhook vs. CRD-embedded CEL) is recorded in
-[ADR-0007](../../docs/adr/0007-admission-policies.md); the attack chains these
-policies break are in the 2026-07-31 security review and the
-[threat model](../../docs/src/security/threat-model.md).
+[ADR-0007](../../docs/adr/0007-admission-policies.md); the mutating-policy
+rationale is in [ADR-0089](../../docs/adr/0089-vspheremachine-custom-attributes.md);
+the attack chains the validating policies break are in the 2026-07-31
+security review and the [threat model](../../docs/src/security/threat-model.md).
