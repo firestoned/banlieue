@@ -1,5 +1,29 @@
 # Changelog
 
+## [2026-10-08] - Roadmap 11 closed: Helm chart removed from scope
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/community/11-phase-3-provider-lifecycle.md`:
+  - The Helm-chart task is struck through as removed from scope.
+  - The definition of done now names `banlieue bootstrap operator`
+    (ADR-0013) as the single-command install, covered by
+    `make kind-e2e-bootstrap`.
+  - A completion banner is added.
+- `ROADMAPS.md`: roadmap 11 goes from 🔶 to ✅.
+
+### Why
+The Helm chart was the only item keeping roadmap 11 open, and
+`banlieue bootstrap operator` already meets the install goal. Roadmap 12
+§4.6 still lists a Helm chart as a FINOS-readiness item; that is unchanged.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
 ## [2026-10-08] - ADR-0088: user-data lands on `COS_OEM` once, not every boot
 
 **Author:** Erick Bourgeois
