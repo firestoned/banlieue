@@ -134,7 +134,10 @@ pick_pool_root() {
   local best="" best_avail=0 mp avail
   for mp in $POOL_CANDIDATES; do
     [[ -d "$mp" ]] || continue
-    avail="$(df -P --output=avail "$mp" 2>/dev/null | tail -1 | tr -d ' ')" || continue
+    # No -P: GNU df rejects it alongside --output ("mutually exclusive"), and
+    # with stderr discarded every candidate then scored empty, so the pool
+    # silently fell back to /var/lib on exactly the hosts this guards against.
+    avail="$(df --output=avail "$mp" 2>/dev/null | tail -1 | tr -d ' ')" || continue
     [[ -n "$avail" ]] || continue
     if (( avail > best_avail )); then best_avail="$avail"; best="$mp"; fi
   done
@@ -162,13 +165,15 @@ setup_pools() {
   root="${POOL_ROOT:-$(pick_pool_root)}"
   images="$root/images"; isos="$root/iso"
 
-  log "Storage pools under $root ($(df -h --output=avail "$root" 2>/dev/null | tail -1 | tr -d ' ') free)"
   # install -d -m sets the mode explicitly. A plain mkdir under a restrictive
   # umask yields drwx------, and libvirt's qemu user then cannot traverse to
   # the images -- a failure that surfaces as an opaque permission error at
   # VM start, far from its cause.
   install -d -m 0771 "$images" "$isos"
   chown root:libvirt "$images" "$isos"
+  # Logged after install -d: on a first run $root does not exist yet, and df
+  # on a missing path prints nothing.
+  log "Storage pools under $root ($(df -h --output=avail "$root" 2>/dev/null | tail -1 | tr -d ' ') free)"
 
   define_pool "$POOL_NAME"     "$images"
   define_pool "$ISO_POOL_NAME" "$isos"

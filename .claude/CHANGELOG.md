@@ -1,5 +1,29 @@
 # Changelog
 
+## [2026-10-02 18:10] - bootstrap-libvirt-host.sh: pool root picks the roomiest mount again
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `scripts/bootstrap-libvirt-host.sh` (`pick_pool_root`): dropped `-P` from
+  `df -P --output=avail`. GNU df refuses the pair ("options -P and --output
+  are mutually exclusive"); with stderr discarded every candidate mount scored
+  empty and the pool always fell back to `/var/lib/libvirt`, the small root
+  partition the function exists to avoid. Found bootstrapping a fresh Debian 13
+  host whose 718G `/home` lost to a 52G `/`.
+- `setup_pools`: the "Storage pools under ..." log line now runs after
+  `install -d`, so a first run reports the free space instead of `( free)`.
+
+### Why
+A fresh host put every disk image on the root filesystem. Re-running
+`bootstrap-libvirt-host.sh pools` repoints existing empty pools.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-10-08] - Roadmap 11 closed: Helm chart removed from scope
 
 **Author:** Erick Bourgeois
