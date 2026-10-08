@@ -1,5 +1,38 @@
 # Changelog
 
+## [2026-10-06] - CALM companion model for the AgentSandbox stack
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/architecture/calm/agentsandbox-stack.calm.json`: CALM 1.2 model
+  of the AgentSandbox stack diagram ("from physical TPM to signed
+  policy"). 30 nodes (the three zones, the policy, banlieue and identity
+  lanes, the sandbox VM's parts, the hardware root of trust, and two
+  actors the diagram implies), 29 relationships (all 20 diagram arrows
+  plus structure), and 4 flows (policy to enforcement, provision and
+  bind, agent egress, key release). The diagram's legend is carried as
+  data: proposed items (nono, sandboxpolicy-render) carry
+  `metadata.status: proposed`, signed-policy arrows and the single way
+  out of a VM carry `metadata.diagram-style`. Controls cite ADR-0081 and
+  ADR-0082 clauses. The vSphere key provider is named generically
+  ("Enterprise KMS"). Validates clean with `@finos/calm-cli@1.37.0`,
+  strict mode included.
+
+### Changed
+- `docs/architecture/calm/README.md`: file table lists both companion
+  models.
+
+### Why
+The stack existed only as a draw.io picture; as CALM it is validated,
+diffable and linked to the ADRs it depicts.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
 ## [2026-10-08] - Pin manifests, examples and guides to v0.4.0
 
 **Author:** Erick Bourgeois

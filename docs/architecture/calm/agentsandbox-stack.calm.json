@@ -1,0 +1,969 @@
+{
+  "$schema": "https://calm.finos.org/release/1.2/meta/calm.json",
+  "$id": "https://github.com/firestoned/banlieue/blob/main/docs/architecture/calm/agentsandbox-stack.calm.json",
+  "adrs": [
+    "docs/adr/0040-deferred-install-for-vtpm-encryption.md",
+    "docs/adr/0046-virtualmachinepool.md",
+    "docs/adr/0047-virtualmachineclaim.md",
+    "docs/adr/0049-attestation-trust-anchors.md",
+    "docs/adr/0055-agentsandbox.md",
+    "docs/adr/0081-kubernetes-orchestrates-vms-run-agents.md",
+    "docs/adr/0082-no-inbound-to-sandboxes.md"
+  ],
+  "metadata": {
+    "owner": "banlieue-maintainers",
+    "last_reviewed": "2026-10-06",
+    "source": "sandbox-stack.drawio, 'AgentSandbox: high-level stack, from physical TPM to signed policy'",
+    "scope": "The AgentSandbox platform end to end: the signed policy path (Git, notaio, the DSSE bundle), banlieue's VM orchestration (supervisory agent, VMClaim, VMPool, controller), identity (identity provider, SPIRE, mediatore), the sandbox VM and its single way out, and the hardware root of trust. Companion model to architecture.json, which models banlieue itself; notaio, mediatore and the egress gateway are summarized here and their own repositories are the source of truth for them. Nodes and relationships tagged metadata.status=proposed are not built."
+  },
+  "nodes": [
+    {
+      "unique-id": "agentsandbox-person",
+      "node-type": "actor",
+      "name": "Person",
+      "description": "A human who starts and directs agent work. Logs in through the enterprise identity provider; their user token is exchanged by mediatore and never enters a sandbox VM. Implied by the diagram's 'Person logs in' box."
+    },
+    {
+      "unique-id": "agentsandbox-platform-team",
+      "node-type": "actor",
+      "name": "Platform team",
+      "description": "Owns SandboxProfile objects and the VMPool of warm sandbox VMs. Implied by the diagram's labels on the Git and VMPool boxes."
+    },
+    {
+      "unique-id": "agentsandbox-management-cluster",
+      "node-type": "ecosystem",
+      "name": "Management cluster",
+      "description": "Kubernetes cluster used for orchestration only: policy compilation, VM orchestration and identity. No agent-generated or untrusted code runs here (ADR-0081 Decision 2). Separate from general-purpose clusters (ADR-0081 Decision 4).",
+      "controls": {
+        "no-untrusted-code-in-cluster": {
+          "description": "No workload that runs agent-generated or untrusted code runs in a Kubernetes cluster; every such workload runs in its own VM outside any cluster. A hard floor that no knob relaxes.",
+          "requirements": [
+            {
+              "requirement-url": "https://github.com/firestoned/banlieue/blob/main/docs/adr/0081-kubernetes-orchestrates-vms-run-agents.md",
+              "config": {
+                "framework": "banlieue ADR",
+                "controls": [
+                  "ADR-0081 Decision 2"
+                ],
+                "evidence": "docs/adr/0081-kubernetes-orchestrates-vms-run-agents.md"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "agentsandbox-sandbox-zone",
+      "node-type": "network",
+      "name": "Sandbox zone",
+      "description": "Network segment for sandbox VMs and the egress gateway, outside any cluster. Accepts no inbound connections, ships no sshd, and has no route to any Kubernetes API server. The diagram marks it as the zone of untrusted workloads.",
+      "controls": {
+        "no-inbound": {
+          "description": "Sandboxes accept no inbound connections and run no sshd; break-glass is the hypervisor console under RBAC with alerts.",
+          "requirements": [
+            {
+              "requirement-url": "https://github.com/firestoned/banlieue/blob/main/docs/adr/0082-no-inbound-to-sandboxes.md",
+              "config": {
+                "framework": "banlieue ADR",
+                "controls": [
+                  "ADR-0082 Decisions 1 and 2 (Proposed)"
+                ],
+                "evidence": "docs/adr/0082-no-inbound-to-sandboxes.md"
+              }
+            }
+          ]
+        },
+        "no-route-to-kube-api": {
+          "description": "The sandbox segment never has a route to any Kubernetes API server; sandboxes reach only mediatore and the egress gateway.",
+          "requirements": [
+            {
+              "requirement-url": "https://github.com/firestoned/banlieue/blob/main/docs/adr/0081-kubernetes-orchestrates-vms-run-agents.md",
+              "config": {
+                "framework": "banlieue ADR",
+                "controls": [
+                  "ADR-0081 Decision 4"
+                ],
+                "evidence": "docs/adr/0081-kubernetes-orchestrates-vms-run-agents.md"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "agentsandbox-hardware-trust",
+      "node-type": "system",
+      "name": "Hardware root of trust and key custody",
+      "description": "The physical TPM on each ESXi host, the enterprise KMS acting as vSphere's key provider, and the per-VM vTPM and VM encryption those keys protect."
+    },
+    {
+      "unique-id": "agentsandbox-policy-plane",
+      "node-type": "system",
+      "name": "Policy plane",
+      "description": "SandboxPolicy authoring, compilation and signing by notaio. Produces the signed bundle that mediatore and mediatore-guest enforce."
+    },
+    {
+      "unique-id": "agentsandbox-banlieue",
+      "node-type": "system",
+      "name": "banlieue VM orchestration",
+      "description": "The banlieue objects and controllers that turn a claim into one encrypted sandbox VM."
+    },
+    {
+      "unique-id": "agentsandbox-identity-plane",
+      "node-type": "system",
+      "name": "Identity and tokens",
+      "description": "Human login, workload attestation and short-lived token minting."
+    },
+    {
+      "unique-id": "agentsandbox-policy-repo",
+      "node-type": "data-asset",
+      "name": "Policy Git repository",
+      "description": "Reviewed changes only. Holds SandboxProfile (owned by the platform team), SandboxPolicy and KnobGrant. Sits outside the cluster; the GitOps reconciler pulls from it."
+    },
+    {
+      "unique-id": "agentsandbox-ai-governance-catalogue",
+      "node-type": "data-asset",
+      "name": "FINOS AI Governance Framework catalogue",
+      "description": "A pinned copy of the FINOS AI Governance Framework, mapped to policy knobs and lint rules. Used by notaio at compile time for traceability only; never read at runtime."
+    },
+    {
+      "unique-id": "agentsandbox-gitops-reconciler",
+      "node-type": "service",
+      "name": "GitOps reconciler",
+      "description": "The only writer of SandboxPolicy, SandboxProfile and KnobGrant objects in the management cluster, enforced by admission.",
+      "controls": {
+        "sole-writer-enforced-by-admission": {
+          "description": "Only the GitOps reconciler may create or change policy objects; admission rejects any other writer, so every policy change is a reviewed Git merge.",
+          "requirements": [
+            {
+              "requirement-url": "https://github.com/firestoned/banlieue/blob/main/docs/adr/0081-kubernetes-orchestrates-vms-run-agents.md",
+              "config": {
+                "framework": "banlieue ADR",
+                "controls": [
+                  "AgentSandbox platform policy path"
+                ],
+                "evidence": "sandbox-stack diagram; enforcing admission policy lives in the notaio repository"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "agentsandbox-notaio",
+      "node-type": "service",
+      "name": "notaio controller",
+      "description": "Runs in its own namespace with its own signing key. Watches SandboxPolicy, SandboxProfile and KnobGrant; lints them, applies grants, compiles and signs the result."
+    },
+    {
+      "unique-id": "agentsandbox-signed-bundle",
+      "node-type": "data-asset",
+      "name": "Signed policy bundle",
+      "description": "DSSE-signed, compiled policy held in a ConfigMap. Versioned and expiring; consumers refuse downgrades.",
+      "controls": {
+        "signed-versioned-expiring": {
+          "description": "Every consumer verifies the DSSE signature, rejects expired bundles and refuses a version lower than the last one it accepted.",
+          "requirements": [
+            {
+              "requirement-url": "https://github.com/firestoned/banlieue/blob/main/docs/adr/0082-no-inbound-to-sandboxes.md",
+              "config": {
+                "framework": "banlieue ADR",
+                "controls": [
+                  "ADR-0082 guest ruleset (rendered from the signed bundle)"
+                ],
+                "evidence": "sandbox-stack diagram; verification lives in mediatore and mediatore-guest"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "agentsandbox-supervisory-agent",
+      "node-type": "service",
+      "name": "Supervisory agent",
+      "description": "Runs in the pool and claim namespace. Creates and manages VMClaims, one per subject. Creating claims for subjects other than itself is the broker role that banlieue's claim-subject admission policy permits only for listed principals."
+    },
+    {
+      "unique-id": "agentsandbox-vmclaim",
+      "node-type": "data-asset",
+      "name": "VirtualMachineClaim",
+      "description": "Created and managed by the supervisory agent. One VM, one subject. Names the SandboxPolicy and records the policy version it was bound under (ADR-0047)."
+    },
+    {
+      "unique-id": "agentsandbox-vmpool",
+      "node-type": "data-asset",
+      "name": "VirtualMachinePool",
+      "description": "Managed by the platform team. Warm, encrypted Kairos Debian VMs with installMode: Deferred, so each member installs independently with its own vTPM (ADR-0046, ADR-0040)."
+    },
+    {
+      "unique-id": "agentsandbox-banlieue-controller",
+      "node-type": "service",
+      "name": "banlieue controller and vSphere provider",
+      "description": "Reconciles pools and claims against VMClass, VMImage (Kairos Debian) and Provider, and creates the encrypted VMs on vSphere."
+    },
+    {
+      "unique-id": "agentsandbox-identity-provider",
+      "node-type": "system",
+      "name": "Enterprise identity provider",
+      "description": "Entra ID in the enterprise deployment; Dex with GitHub in development environments. Authenticates the person."
+    },
+    {
+      "unique-id": "agentsandbox-spire-server",
+      "node-type": "service",
+      "name": "SPIRE server",
+      "description": "Attests sandbox VMs by vTPM node attestation and issues one SPIFFE ID per claim."
+    },
+    {
+      "unique-id": "agentsandbox-mediatore",
+      "node-type": "service",
+      "name": "mediatore",
+      "description": "Binds each claim to its attested VM. Mints short-lived, audience-scoped tokens by on-behalf-of or STS exchange. Verifies the signed bundle, evaluates it at every mint, and stamps the policy version into each token. The user's token never enters the VM.",
+      "controls": {
+        "user-token-never-enters-vm": {
+          "description": "The person's token stays in mediatore; a VM only ever receives short-lived tokens scoped to one audience.",
+          "requirements": [
+            {
+              "requirement-url": "https://github.com/firestoned/banlieue/blob/main/docs/adr/0081-kubernetes-orchestrates-vms-run-agents.md",
+              "config": {
+                "framework": "banlieue ADR",
+                "controls": [
+                  "AgentSandbox platform token model"
+                ],
+                "evidence": "docs/src/guides/sandbox-identity-mediatore.md"
+              }
+            }
+          ]
+        },
+        "policy-evaluated-every-mint": {
+          "description": "Every token mint verifies the current signed bundle and evaluates it, so a policy change applies at the next mint without restarting anything.",
+          "requirements": [
+            {
+              "requirement-url": "https://github.com/firestoned/banlieue/blob/main/docs/adr/0081-kubernetes-orchestrates-vms-run-agents.md",
+              "config": {
+                "framework": "banlieue ADR",
+                "controls": [
+                  "AgentSandbox platform token model"
+                ],
+                "evidence": "sandbox-stack diagram"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "agentsandbox-sandbox-vm",
+      "node-type": "system",
+      "name": "Sandbox VM (Kairos Debian)",
+      "description": "One encrypted Kairos Debian VM per subject, with its own vTPM. Created by banlieue outside any cluster.",
+      "controls": {
+        "one-vm-per-identity": {
+          "description": "One VM per identity, each installing independently with its own vTPM; no vTPM, identity or disk-encryption material is shared between VMs.",
+          "requirements": [
+            {
+              "requirement-url": "https://github.com/firestoned/banlieue/blob/main/docs/adr/0081-kubernetes-orchestrates-vms-run-agents.md",
+              "config": {
+                "framework": "banlieue ADR",
+                "controls": [
+                  "ADR-0081 Decision 3"
+                ],
+                "evidence": "docs/adr/0081-kubernetes-orchestrates-vms-run-agents.md"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "agentsandbox-nono",
+      "node-type": "service",
+      "name": "nono (proposed spike)",
+      "description": "Proposed, not built: Landlock confinement around the jailed agent, a per-tool broker, and phantom credentials injected at egress.",
+      "metadata": {
+        "status": "proposed",
+        "diagram-style": "dashed orange: proposed, not built yet"
+      }
+    },
+    {
+      "unique-id": "agentsandbox-jailed-agent",
+      "node-type": "service",
+      "name": "Jailed agent (nsjail)",
+      "description": "Runs agent-generated code as a per-subject Linux user in an empty network namespace. Reaches the world only through a local socket to mediatore-guest.",
+      "controls": {
+        "empty-network-namespace": {
+          "description": "The jailed process has an empty network namespace; its only channel out is a local socket to mediatore-guest.",
+          "requirements": [
+            {
+              "requirement-url": "https://github.com/firestoned/banlieue/blob/main/docs/adr/0082-no-inbound-to-sandboxes.md",
+              "config": {
+                "framework": "banlieue ADR",
+                "controls": [
+                  "ADR-0082 Decision 5 (Proposed)"
+                ],
+                "evidence": "docs/adr/0082-no-inbound-to-sandboxes.md"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "agentsandbox-mediatore-guest",
+      "node-type": "service",
+      "name": "mediatore-guest",
+      "description": "Runs as root in the VM. Attests the VM to SPIRE, verifies the signed bundle and refuses downgrades, renders and applies the nsjail, nftables and settings configuration, and holds the VM's only connection out."
+    },
+    {
+      "unique-id": "agentsandbox-sandboxpolicy-render",
+      "node-type": "service",
+      "name": "sandboxpolicy-render (proposed library)",
+      "description": "Proposed, not built: a library from the notaio repository that renders a bundle into nftables rules, nsjail configuration, settings and a nono profile.",
+      "metadata": {
+        "status": "proposed",
+        "diagram-style": "dashed orange: proposed, not built yet"
+      }
+    },
+    {
+      "unique-id": "agentsandbox-egress-gateway",
+      "node-type": "service",
+      "name": "Egress gateway",
+      "description": "Enforces an allowlist taken from the signed bundle. Sits outside the guest, so it holds even if guest root is compromised.",
+      "controls": {
+        "enforcement-outside-guest": {
+          "description": "Egress enforcement that must hold against guest root sits outside the guest, at the gateway and in host or network firewalling; in-guest nftables is a second layer.",
+          "requirements": [
+            {
+              "requirement-url": "https://github.com/firestoned/banlieue/blob/main/docs/adr/0082-no-inbound-to-sandboxes.md",
+              "config": {
+                "framework": "banlieue ADR",
+                "controls": [
+                  "ADR-0082 Decision 4 (Proposed)"
+                ],
+                "evidence": "docs/adr/0082-no-inbound-to-sandboxes.md"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "agentsandbox-allowed-destinations",
+      "node-type": "system",
+      "name": "Allowed destinations",
+      "description": "External services on the bundle's allowlist. Accept only audience-scoped tokens."
+    },
+    {
+      "unique-id": "agentsandbox-physical-tpm",
+      "node-type": "system",
+      "name": "Physical TPM 2.0",
+      "description": "On each ESXi host. Provides host attestation."
+    },
+    {
+      "unique-id": "agentsandbox-enterprise-kms",
+      "node-type": "system",
+      "name": "Enterprise KMS",
+      "description": "The organization's key management service, registered as vSphere's key provider. Releases keys to attested hosts."
+    },
+    {
+      "unique-id": "agentsandbox-vm-vtpm-encryption",
+      "node-type": "system",
+      "name": "Per-VM vTPM and VM encryption",
+      "description": "VM files and vTPM state are encrypted with keys from the KMS. The vTPM seals the Kairos disk-encryption key."
+    }
+  ],
+  "relationships": [
+    {
+      "unique-id": "agentsandbox-rel-management-cluster-hosts",
+      "description": "Everything that orchestrates runs in the management cluster. The policy repository, the governance catalogue and the identity provider are drawn in its lanes but are external.",
+      "relationship-type": {
+        "deployed-in": {
+          "container": "agentsandbox-management-cluster",
+          "nodes": [
+            "agentsandbox-gitops-reconciler",
+            "agentsandbox-notaio",
+            "agentsandbox-signed-bundle",
+            "agentsandbox-supervisory-agent",
+            "agentsandbox-vmclaim",
+            "agentsandbox-vmpool",
+            "agentsandbox-banlieue-controller",
+            "agentsandbox-spire-server",
+            "agentsandbox-mediatore"
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "agentsandbox-rel-sandbox-zone-hosts",
+      "description": "Sandbox VMs and the egress gateway live in the sandbox zone, outside any cluster.",
+      "relationship-type": {
+        "deployed-in": {
+          "container": "agentsandbox-sandbox-zone",
+          "nodes": [
+            "agentsandbox-sandbox-vm",
+            "agentsandbox-egress-gateway"
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "agentsandbox-rel-policy-plane-parts",
+      "description": "The policy lane of the diagram.",
+      "relationship-type": {
+        "composed-of": {
+          "container": "agentsandbox-policy-plane",
+          "nodes": [
+            "agentsandbox-policy-repo",
+            "agentsandbox-ai-governance-catalogue",
+            "agentsandbox-gitops-reconciler",
+            "agentsandbox-notaio",
+            "agentsandbox-signed-bundle"
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "agentsandbox-rel-banlieue-parts",
+      "description": "The banlieue lane of the diagram.",
+      "relationship-type": {
+        "composed-of": {
+          "container": "agentsandbox-banlieue",
+          "nodes": [
+            "agentsandbox-supervisory-agent",
+            "agentsandbox-vmclaim",
+            "agentsandbox-vmpool",
+            "agentsandbox-banlieue-controller"
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "agentsandbox-rel-identity-plane-parts",
+      "description": "The identity lane of the diagram.",
+      "relationship-type": {
+        "composed-of": {
+          "container": "agentsandbox-identity-plane",
+          "nodes": [
+            "agentsandbox-identity-provider",
+            "agentsandbox-spire-server",
+            "agentsandbox-mediatore"
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "agentsandbox-rel-sandbox-vm-parts",
+      "description": "What runs inside each sandbox VM. nono and sandboxpolicy-render are proposed.",
+      "relationship-type": {
+        "composed-of": {
+          "container": "agentsandbox-sandbox-vm",
+          "nodes": [
+            "agentsandbox-jailed-agent",
+            "agentsandbox-mediatore-guest",
+            "agentsandbox-sandboxpolicy-render",
+            "agentsandbox-nono"
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "agentsandbox-rel-hardware-trust-parts",
+      "description": "The hardware root of trust and key custody zone.",
+      "relationship-type": {
+        "composed-of": {
+          "container": "agentsandbox-hardware-trust",
+          "nodes": [
+            "agentsandbox-physical-tpm",
+            "agentsandbox-enterprise-kms",
+            "agentsandbox-vm-vtpm-encryption"
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "agentsandbox-rel-person-logs-in",
+      "description": "The person authenticates to the enterprise identity provider.",
+      "relationship-type": {
+        "interacts": {
+          "actor": "agentsandbox-person",
+          "nodes": [
+            "agentsandbox-identity-provider"
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "agentsandbox-rel-platform-team-owns",
+      "description": "The platform team authors SandboxProfiles through reviewed Git changes and manages the VMPool.",
+      "relationship-type": {
+        "interacts": {
+          "actor": "agentsandbox-platform-team",
+          "nodes": [
+            "agentsandbox-policy-repo",
+            "agentsandbox-vmpool"
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "agentsandbox-rel-agent-creates-claim",
+      "description": "The supervisory agent creates and manages a VMClaim per subject (diagram e1).",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "agentsandbox-supervisory-agent"
+          },
+          "destination": {
+            "node": "agentsandbox-vmclaim"
+          }
+        }
+      }
+    },
+    {
+      "unique-id": "agentsandbox-rel-claim-binds-pool-member",
+      "description": "The claim binds exactly one warm pool member (diagram e2, ADR-0047).",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "agentsandbox-vmclaim"
+          },
+          "destination": {
+            "node": "agentsandbox-vmpool"
+          }
+        }
+      }
+    },
+    {
+      "unique-id": "agentsandbox-rel-pool-reconciled",
+      "description": "The banlieue controller reconciles the pool and its members (diagram e3).",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "agentsandbox-vmpool"
+          },
+          "destination": {
+            "node": "agentsandbox-banlieue-controller"
+          }
+        }
+      }
+    },
+    {
+      "unique-id": "agentsandbox-rel-controller-creates-vm",
+      "description": "Creates the encrypted VM on vSphere with installMode: Deferred, so the guest installs with its own vTPM (diagram e4, ADR-0040).",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "agentsandbox-banlieue-controller"
+          },
+          "destination": {
+            "node": "agentsandbox-sandbox-vm"
+          }
+        }
+      }
+    },
+    {
+      "unique-id": "agentsandbox-rel-repo-to-gitops",
+      "description": "Reviewed merges are the only input to the reconciler (diagram e5).",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "agentsandbox-policy-repo"
+          },
+          "destination": {
+            "node": "agentsandbox-gitops-reconciler"
+          }
+        }
+      }
+    },
+    {
+      "unique-id": "agentsandbox-rel-gitops-to-notaio",
+      "description": "The reconciler applies policy objects that notaio watches (diagram e6).",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "agentsandbox-gitops-reconciler"
+          },
+          "destination": {
+            "node": "agentsandbox-notaio"
+          }
+        }
+      }
+    },
+    {
+      "unique-id": "agentsandbox-rel-catalogue-to-notaio",
+      "description": "Requirements from the catalogue feed lint and compile, at compile time only (diagram e6b).",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "agentsandbox-ai-governance-catalogue"
+          },
+          "destination": {
+            "node": "agentsandbox-notaio"
+          }
+        }
+      },
+      "metadata": {
+        "diagram-style": "dotted purple: signed policy and bundle"
+      }
+    },
+    {
+      "unique-id": "agentsandbox-rel-notaio-signs-bundle",
+      "description": "notaio compiles and signs the bundle with its own key (diagram e7).",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "agentsandbox-notaio"
+          },
+          "destination": {
+            "node": "agentsandbox-signed-bundle"
+          }
+        }
+      }
+    },
+    {
+      "unique-id": "agentsandbox-rel-bundle-to-mediatore",
+      "description": "mediatore verifies the bundle and evaluates it at every token mint (diagram e8).",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "agentsandbox-signed-bundle"
+          },
+          "destination": {
+            "node": "agentsandbox-mediatore"
+          }
+        }
+      },
+      "metadata": {
+        "diagram-style": "dotted purple: signed policy and bundle"
+      }
+    },
+    {
+      "unique-id": "agentsandbox-rel-idp-login",
+      "description": "The person's login reaches mediatore as an identity token (diagram e9).",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "agentsandbox-identity-provider"
+          },
+          "destination": {
+            "node": "agentsandbox-mediatore"
+          }
+        }
+      }
+    },
+    {
+      "unique-id": "agentsandbox-rel-spire-entry",
+      "description": "SPIRE and mediatore exchange the SPIFFE entry that ties an attested VM to its claim. The diagram draws this arrow in both directions (diagram e10); which side creates the entry is recorded in the mediatore repository, not here.",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "agentsandbox-spire-server"
+          },
+          "destination": {
+            "node": "agentsandbox-mediatore"
+          }
+        }
+      },
+      "metadata": {
+        "diagram-direction": "bidirectional"
+      }
+    },
+    {
+      "unique-id": "agentsandbox-rel-mediatore-watches-claims",
+      "description": "mediatore watches claims and binds one when it reaches Bound (diagram e11).",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "agentsandbox-vmclaim"
+          },
+          "destination": {
+            "node": "agentsandbox-mediatore"
+          }
+        }
+      }
+    },
+    {
+      "unique-id": "agentsandbox-rel-guest-to-mediatore",
+      "description": "Outbound mutual TLS from the guest: the only way out of a VM. Instructions for the agent and tokens come back over this stream (diagram e12, ADR-0082 Decision 3).",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "agentsandbox-mediatore-guest"
+          },
+          "destination": {
+            "node": "agentsandbox-mediatore"
+          }
+        }
+      },
+      "protocol": "mTLS",
+      "controls": {
+        "only-way-out": {
+          "description": "The guest's single outbound mTLS stream to mediatore is the VM's only connection that is not jailed traffic to the gateway; the guest never talks to a Kubernetes API server.",
+          "requirements": [
+            {
+              "requirement-url": "https://github.com/firestoned/banlieue/blob/main/docs/adr/0082-no-inbound-to-sandboxes.md",
+              "config": {
+                "framework": "banlieue ADR",
+                "controls": [
+                  "ADR-0082 Decision 3 (Proposed)"
+                ],
+                "evidence": "docs/adr/0082-no-inbound-to-sandboxes.md"
+              }
+            }
+          ]
+        }
+      },
+      "metadata": {
+        "diagram-style": "thick red: the only way out of a VM"
+      }
+    },
+    {
+      "unique-id": "agentsandbox-rel-jail-to-guest",
+      "description": "The jailed agent reaches mediatore-guest over a local socket (diagram e13).",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "agentsandbox-jailed-agent"
+          },
+          "destination": {
+            "node": "agentsandbox-mediatore-guest"
+          }
+        }
+      }
+    },
+    {
+      "unique-id": "agentsandbox-rel-render-to-guest",
+      "description": "Proposed: mediatore-guest uses the render library to turn the bundle into local configuration (diagram e13b).",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "agentsandbox-sandboxpolicy-render"
+          },
+          "destination": {
+            "node": "agentsandbox-mediatore-guest"
+          }
+        }
+      },
+      "metadata": {
+        "status": "proposed",
+        "diagram-style": "dashed orange: proposed, not built yet"
+      }
+    },
+    {
+      "unique-id": "agentsandbox-rel-guest-to-gateway",
+      "description": "Jailed traffic leaves the VM only towards the egress gateway (diagram e14).",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "agentsandbox-mediatore-guest"
+          },
+          "destination": {
+            "node": "agentsandbox-egress-gateway"
+          }
+        }
+      }
+    },
+    {
+      "unique-id": "agentsandbox-rel-gateway-to-destinations",
+      "description": "Only allowlisted destinations are reachable (diagram e15).",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "agentsandbox-egress-gateway"
+          },
+          "destination": {
+            "node": "agentsandbox-allowed-destinations"
+          }
+        }
+      }
+    },
+    {
+      "unique-id": "agentsandbox-rel-tpm-to-kms",
+      "description": "Host attestation precedes key release to the host (diagram e16).",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "agentsandbox-physical-tpm"
+          },
+          "destination": {
+            "node": "agentsandbox-enterprise-kms"
+          }
+        }
+      }
+    },
+    {
+      "unique-id": "agentsandbox-rel-kms-to-vtpm",
+      "description": "The KMS supplies the keys that encrypt VM files and vTPM state (diagram e17).",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "agentsandbox-enterprise-kms"
+          },
+          "destination": {
+            "node": "agentsandbox-vm-vtpm-encryption"
+          }
+        }
+      }
+    },
+    {
+      "unique-id": "agentsandbox-rel-vtpm-seals-disk",
+      "description": "The vTPM seals the Kairos disk-encryption key inside each VM (diagram e18).",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "agentsandbox-vm-vtpm-encryption"
+          },
+          "destination": {
+            "node": "agentsandbox-sandbox-vm"
+          }
+        }
+      }
+    }
+  ],
+  "flows": [
+    {
+      "unique-id": "agentsandbox-flow-policy-to-enforcement",
+      "name": "Policy change to enforcement",
+      "description": "A reviewed policy change becomes a signed bundle that mediatore evaluates on the next mint.",
+      "transitions": [
+        {
+          "sequence-number": 1,
+          "relationship-unique-id": "agentsandbox-rel-repo-to-gitops",
+          "description": "A reviewed merge lands in the policy repository."
+        },
+        {
+          "sequence-number": 2,
+          "relationship-unique-id": "agentsandbox-rel-gitops-to-notaio",
+          "description": "The GitOps reconciler applies SandboxPolicy, SandboxProfile and KnobGrant."
+        },
+        {
+          "sequence-number": 3,
+          "relationship-unique-id": "agentsandbox-rel-catalogue-to-notaio",
+          "description": "notaio lints against the pinned governance catalogue."
+        },
+        {
+          "sequence-number": 4,
+          "relationship-unique-id": "agentsandbox-rel-notaio-signs-bundle",
+          "description": "notaio compiles and signs a new bundle version."
+        },
+        {
+          "sequence-number": 5,
+          "relationship-unique-id": "agentsandbox-rel-bundle-to-mediatore",
+          "description": "mediatore verifies the new bundle and uses it from the next mint."
+        }
+      ]
+    },
+    {
+      "unique-id": "agentsandbox-flow-provision-and-bind",
+      "name": "Provision and bind a sandbox",
+      "description": "From a claim to an attested, bound VM.",
+      "transitions": [
+        {
+          "sequence-number": 1,
+          "relationship-unique-id": "agentsandbox-rel-agent-creates-claim",
+          "description": "The supervisory agent creates a VMClaim naming the subject and SandboxPolicy."
+        },
+        {
+          "sequence-number": 2,
+          "relationship-unique-id": "agentsandbox-rel-claim-binds-pool-member",
+          "description": "The claim binds one warm, encrypted pool member."
+        },
+        {
+          "sequence-number": 3,
+          "relationship-unique-id": "agentsandbox-rel-pool-reconciled",
+          "description": "The banlieue controller refills the pool."
+        },
+        {
+          "sequence-number": 4,
+          "relationship-unique-id": "agentsandbox-rel-controller-creates-vm",
+          "description": "New members are created on vSphere with installMode: Deferred."
+        },
+        {
+          "sequence-number": 5,
+          "relationship-unique-id": "agentsandbox-rel-vtpm-seals-disk",
+          "description": "During install the VM's own vTPM seals its disk-encryption key."
+        },
+        {
+          "sequence-number": 6,
+          "relationship-unique-id": "agentsandbox-rel-mediatore-watches-claims",
+          "description": "mediatore sees the claim reach Bound."
+        },
+        {
+          "sequence-number": 7,
+          "relationship-unique-id": "agentsandbox-rel-spire-entry",
+          "description": "SPIRE issues the claim's SPIFFE entry after vTPM attestation."
+        },
+        {
+          "sequence-number": 8,
+          "relationship-unique-id": "agentsandbox-rel-guest-to-mediatore",
+          "description": "mediatore-guest opens its outbound mTLS stream and mediatore binds the claim to the attested VM."
+        }
+      ]
+    },
+    {
+      "unique-id": "agentsandbox-flow-agent-egress",
+      "name": "Agent work and egress",
+      "description": "How a jailed agent acts on the world without the user's token entering the VM.",
+      "transitions": [
+        {
+          "sequence-number": 1,
+          "relationship-unique-id": "agentsandbox-rel-idp-login",
+          "description": "The person logs in; mediatore holds their identity."
+        },
+        {
+          "sequence-number": 2,
+          "relationship-unique-id": "agentsandbox-rel-guest-to-mediatore",
+          "description": "Instructions reach the guest over its existing outbound stream.",
+          "direction": "destination-to-source"
+        },
+        {
+          "sequence-number": 3,
+          "relationship-unique-id": "agentsandbox-rel-jail-to-guest",
+          "description": "The jailed agent asks mediatore-guest for access over its local socket."
+        },
+        {
+          "sequence-number": 4,
+          "relationship-unique-id": "agentsandbox-rel-guest-to-mediatore",
+          "description": "mediatore-guest requests a token over the mTLS stream."
+        },
+        {
+          "sequence-number": 5,
+          "relationship-unique-id": "agentsandbox-rel-bundle-to-mediatore",
+          "description": "mediatore evaluates the signed bundle and mints a short-lived, audience-scoped token stamped with the policy version."
+        },
+        {
+          "sequence-number": 6,
+          "relationship-unique-id": "agentsandbox-rel-guest-to-gateway",
+          "description": "Jailed traffic carrying that token leaves through the egress gateway."
+        },
+        {
+          "sequence-number": 7,
+          "relationship-unique-id": "agentsandbox-rel-gateway-to-destinations",
+          "description": "The gateway forwards only to allowlisted destinations."
+        }
+      ]
+    },
+    {
+      "unique-id": "agentsandbox-flow-key-release",
+      "name": "Key release for VM encryption",
+      "description": "The hardware chain that protects VM files and vTPM state.",
+      "transitions": [
+        {
+          "sequence-number": 1,
+          "relationship-unique-id": "agentsandbox-rel-tpm-to-kms",
+          "description": "The ESXi host attests with its physical TPM and the KMS releases keys."
+        },
+        {
+          "sequence-number": 2,
+          "relationship-unique-id": "agentsandbox-rel-kms-to-vtpm",
+          "description": "The keys encrypt the VM's files and vTPM state."
+        },
+        {
+          "sequence-number": 3,
+          "relationship-unique-id": "agentsandbox-rel-vtpm-seals-disk",
+          "description": "The vTPM seals the Kairos disk-encryption key."
+        }
+      ]
+    }
+  ]
+}
