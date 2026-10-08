@@ -258,10 +258,12 @@ is documented on the field.
 **`COS_OEM` is never sealed, and per-VM user-data is persisted on it.**
 First-boot sealing reads its policy from `COS_OEM` before anything is
 unlocked, so OEM itself stays plaintext, and Kairos refuses to seal it on
-first boot. That covers more than the image's baked cloud-config: on every
-boot Kairos's datasource stage pulls the per-VM user-data (the NoCloud seed
-on libvirt and Cloud Hypervisor, guestinfo on vSphere) and writes it to
-`/oem/95_userdata` on `COS_OEM`. Anything delivered through
+first boot. That covers more than the image's baked cloud-config: on the
+first boot that finds a datasource, Kairos's datasource stage pulls the
+per-VM user-data (the NoCloud seed on libvirt and Cloud Hypervisor,
+guestinfo on vSphere) and writes it to `/oem/95_userdata` on `COS_OEM`. The
+pull is guarded on that file not existing, so it happens once and the file
+is never refreshed or removed. Anything delivered through
 `VirtualMachine.spec.userData` therefore ends up in plaintext on the guest's
 disk, next to the policy, for the life of the VM. For a Kubernetes node that
 is typically the cluster **join token**, plus any registry or KMS

@@ -1,5 +1,27 @@
 # Changelog
 
+## [2026-10-08] - ADR-0088: user-data lands on `COS_OEM` once, not every boot
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docs/adr/0088-first-boot-sealing-for-immediate-images.md`: corrects the
+  `COS_OEM` consequence. Kairos's datasource stage writes the per-VM
+  user-data to `/oem/95_userdata` on the first boot that finds a
+  datasource, guarded on the file not existing, so it is written once and
+  never refreshed or removed. The plaintext-on-disk conclusion is
+  unchanged.
+
+### Why
+The ADR said the pull happened on every boot, which misdescribes when the
+file appears and implies a refresh that never happens.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
 ## [2026-10-06] - CALM companion model for the AgentSandbox stack
 
 **Author:** Erick Bourgeois
