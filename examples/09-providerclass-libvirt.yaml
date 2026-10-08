@@ -22,7 +22,7 @@ spec:
     repository: ghcr.io/firestoned/banlieue
     # Never `latest` in production: a mutable tag makes the running version
     # unknowable and defeats rollback.
-    tag: v0.3.0
+    tag: v0.4.0
     pullPolicy: IfNotPresent
 
   # Leader-elected, so replicas buy failover rather than throughput.

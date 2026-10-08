@@ -1,7 +1,7 @@
 # Guide: Core Controller
 
 This guide installs the **banlieue main controller** on a real Kubernetes
-cluster from the released image `ghcr.io/firestoned/banlieue:v0.3.0`. The
+cluster from the released image `ghcr.io/firestoned/banlieue:v0.4.0`. The
 controller watches `VirtualMachine` resources, schedules them onto a `Provider`,
 creates the backend-specific infrastructure CR (e.g. `VSphereMachine`), and
 mirrors status back. It is the foundation every provider builds on — install it
@@ -22,7 +22,7 @@ first, then add a provider with the [vSphere Provider guide](vsphere-provider.md
 - The released manifests. Pin the repo to the tag so the YAML matches the image:
 
     ```sh
-    git clone --branch v0.3.0 --depth 1 https://github.com/firestoned/banlieue
+    git clone --branch v0.4.0 --depth 1 https://github.com/firestoned/banlieue
     cd banlieue
     ```
 
@@ -140,7 +140,7 @@ spec:
         seccompProfile: { type: RuntimeDefault }
       containers:
         - name: controller
-          image: ghcr.io/firestoned/banlieue:v0.3.0   # pinned, never :latest
+          image: ghcr.io/firestoned/banlieue:v0.4.0   # pinned, never :latest
           args: ["controller"]                          # role selector
           envFrom:
             - configMapRef: { name: banlieue-controller-config }
