@@ -1,0 +1,48 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# What Cluster API's manager needs on banlieue's infrastructure kinds, and
+# nothing else (ADR-0096 Decision 4).
+#
+# The `aggregate-to-manager` label folds these rules into CAPI's own manager
+# ClusterRole, so a CAPI Machine, MachineSet or Cluster that references a
+# banlieue infrastructure object is authorised without a bespoke binding.
+# MachineSets create machines from templates and deleting a Machine deletes
+# its infrastructure object, hence the full verb set.
+#
+# Deliberately absent: everything in `banlieue.io`, Secrets, IPAM claims,
+# Events and Leases. The label used to sit on `banlieue-controller`, which
+# handed CAPI's manager all of those; it needs none of them.
+#
+# One rule per kind, covering exactly the CRDs that carry the
+# `cluster.x-k8s.io/v1beta2` contract label (ADR-0005), plus `/status` for
+# those with a status subresource. Templates have none. A unit test
+# (`capi_aggregate_role_covers_exactly_the_capi_contract_kinds`) derives the
+# expected set from the generated CRDs, so a new infrastructure kind that is
+# not added here fails the build.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: banlieue-capi-infrastructure
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: capi-infrastructure
+    cluster.x-k8s.io/aggregate-to-manager: "true"
+rules:
+  - apiGroups: ["infrastructure.banlieue.io"]
+    resources:
+      - vspheremachines
+      - vspheremachines/status
+      - vspheremachinetemplates
+      - vsphereclusters
+      - vsphereclusters/status
+      - proxmoxmachines
+      - proxmoxmachines/status
+      - proxmoxmachinetemplates
+      - libvirtmachines
+      - libvirtmachines/status
+      - libvirtmachinetemplates
+      - cloudhypervisormachines
+      - cloudhypervisormachines/status
+      - cloudhypervisormachinetemplates
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]

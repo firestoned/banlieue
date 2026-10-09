@@ -7,9 +7,9 @@ metadata:
   labels:
     app.kubernetes.io/name: banlieue
     app.kubernetes.io/component: controller
-    # Aggregated to CAPI manager so a future CAPI Machine referencing one of
-    # our infrastructure CRDs can be authorised without a custom binding.
-    cluster.x-k8s.io/aggregate-to-manager: "true"
+  # Not aggregated to Cluster API's manager: that is
+  # deploy/capi/clusterrole-aggregate.yaml, scoped to the infrastructure
+  # kinds only (ADR-0096).
 rules:
   # ---------------------------------------------------------------------------
   # banlieue.io group — user-facing CRDs

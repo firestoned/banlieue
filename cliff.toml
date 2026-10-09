@@ -1,0 +1,65 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# git-cliff configuration: the user-facing release changelog, generated from
+# Conventional Commits (roadmap 12 §4.8). `make changelog` rewrites
+# CHANGELOG.md; `make release-notes` renders one release for the GitHub
+# Release body. .claude/CHANGELOG.md is the internal engineering log and is
+# not a source for this file.
+
+[changelog]
+header = """
+<!--
+Copyright (c) 2026 Erick Bourgeois, banlieue
+SPDX-License-Identifier: Apache-2.0
+-->
+# Changelog
+
+All notable changes to banlieue, by release. Generated from the commit
+history with [git-cliff](https://git-cliff.org/); do not edit by hand, run
+`make changelog`.
+"""
+body = """
+{% if version %}\
+## [{{ version | trim_start_matches(pat="v") }}](https://github.com/firestoned/banlieue/releases/tag/{{ version }}) ({{ timestamp | date(format="%Y-%m-%d") }})
+{% else %}\
+## Unreleased
+{% endif %}\
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group | striptags | trim | upper_first }}
+{% for commit in commits %}
+- {% if commit.scope %}**{{ commit.scope }}:** {% endif %}\
+{{ commit.message | split(pat="\n") | first | trim }}\
+{% endfor %}
+{% endfor %}
+"""
+footer = ""
+trim = false
+
+[git]
+conventional_commits = true
+# Early history predates Conventional Commits; keep it under "Other".
+filter_unconventional = false
+split_commits = false
+protect_breaking_commits = true
+filter_commits = false
+tag_pattern = "^v[0-9]+\\.[0-9]+\\.[0-9]+$"
+sort_commits = "oldest"
+commit_preprocessors = [
+  # "(#123)" at the end of a squash-merge subject becomes a PR link.
+  { pattern = "\\(#([0-9]+)\\)", replace = "([#${1}](https://github.com/firestoned/banlieue/pull/${1}))" },
+]
+commit_parsers = [
+  { message = "^feat", group = "<!-- 0 -->Features" },
+  { message = "^fix", group = "<!-- 1 -->Bug fixes" },
+  { message = "^perf", group = "<!-- 2 -->Performance" },
+  { message = "^refactor", group = "<!-- 3 -->Refactoring" },
+  { message = "^docs", group = "<!-- 4 -->Documentation" },
+  { message = "^test", group = "<!-- 5 -->Tests" },
+  # Dependabot bumps are listed in each release's SBOM, not here.
+  { message = "^build\\(deps\\)", skip = true },
+  { message = "^(build|ci)", group = "<!-- 6 -->Build and CI" },
+  { message = "^chore\\(release\\)", skip = true },
+  { message = "^(chore|style|revert)", group = "<!-- 7 -->Other" },
+  { message = ".*", group = "<!-- 7 -->Other" },
+]

@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use reqwest::Method;
+use tracing::instrument;
 
 use crate::api::ProxmoxApi;
 use crate::error::{Error, Result};
@@ -295,25 +296,32 @@ fn multipart(filename: &str, data: &[u8]) -> (String, Vec<u8>) {
     (format!("multipart/form-data; boundary={boundary}"), body)
 }
 
+// One span per backend call (ADR-0092). `skip_all`, then identifiers only:
+// request params, the API token and upload payloads are never recorded.
 #[async_trait]
 impl ProxmoxApi for Client {
+    #[instrument(name = "proxmox.version", skip_all)]
     async fn version(&self) -> Result<Version> {
         self.get("/version", &Params::new()).await
     }
 
+    #[instrument(name = "proxmox.list_nodes", skip_all)]
     async fn list_nodes(&self) -> Result<Vec<Node>> {
         self.get("/nodes", &Params::new()).await
     }
 
+    #[instrument(name = "proxmox.cluster_vms", skip_all)]
     async fn cluster_vms(&self) -> Result<Vec<ClusterVm>> {
         self.get("/cluster/resources", &Params::new().set("type", "vm"))
             .await
     }
 
+    #[instrument(name = "proxmox.next_id", skip_all)]
     async fn next_id(&self) -> Result<VmId> {
         self.get("/cluster/nextid", &Params::new()).await
     }
 
+    #[instrument(name = "proxmox.node_storage", skip_all, fields(node = %node))]
     async fn node_storage(&self, node: &str) -> Result<Vec<Storage>> {
         self.get(
             &format!("/nodes/{}/storage", encode_segment(node)),
@@ -322,6 +330,7 @@ impl ProxmoxApi for Client {
         .await
     }
 
+    #[instrument(name = "proxmox.node_networks", skip_all, fields(node = %node))]
     async fn node_networks(&self, node: &str) -> Result<Vec<NetworkIface>> {
         self.get(
             &format!("/nodes/{}/network", encode_segment(node)),
@@ -330,6 +339,7 @@ impl ProxmoxApi for Client {
         .await
     }
 
+    #[instrument(name = "proxmox.storage_content", skip_all, fields(node = %node, storage = %storage))]
     async fn storage_content(&self, node: &str, storage: &str) -> Result<Vec<Volume>> {
         let path = format!(
             "/nodes/{}/storage/{}/content",
@@ -339,6 +349,7 @@ impl ProxmoxApi for Client {
         self.get(&path, &Params::new()).await
     }
 
+    #[instrument(name = "proxmox.clone_vm", skip_all, fields(node = %node, template))]
     async fn clone_vm(&self, node: &str, template: u32, params: &CloneParams) -> Result<Upid> {
         self.task(
             Method::POST,
@@ -348,11 +359,13 @@ impl ProxmoxApi for Client {
         .await
     }
 
+    #[instrument(name = "proxmox.vm_config", skip_all, fields(node = %node, vmid))]
     async fn vm_config(&self, node: &str, vmid: u32) -> Result<VmConfig> {
         self.get(&format!("{}/config", qemu(node, vmid)), &Params::new())
             .await
     }
 
+    #[instrument(name = "proxmox.set_vm_config", skip_all, fields(node = %node, vmid))]
     async fn set_vm_config(&self, node: &str, vmid: u32, params: &Params) -> Result<()> {
         let body = self
             .call(
@@ -365,6 +378,7 @@ impl ProxmoxApi for Client {
         decode_data(&body)
     }
 
+    #[instrument(name = "proxmox.resize_disk", skip_all, fields(node = %node, vmid, disk = %disk))]
     async fn resize_disk(
         &self,
         node: &str,
@@ -386,6 +400,7 @@ impl ProxmoxApi for Client {
             .transpose()
     }
 
+    #[instrument(name = "proxmox.start", skip_all, fields(node = %node, vmid))]
     async fn start_vm(&self, node: &str, vmid: u32) -> Result<Upid> {
         self.task(
             Method::POST,
@@ -395,6 +410,7 @@ impl ProxmoxApi for Client {
         .await
     }
 
+    #[instrument(name = "proxmox.stop", skip_all, fields(node = %node, vmid))]
     async fn stop_vm(&self, node: &str, vmid: u32) -> Result<Upid> {
         self.task(
             Method::POST,
@@ -404,6 +420,7 @@ impl ProxmoxApi for Client {
         .await
     }
 
+    #[instrument(name = "proxmox.shutdown", skip_all, fields(node = %node, vmid))]
     async fn shutdown_vm(&self, node: &str, vmid: u32) -> Result<Upid> {
         self.task(
             Method::POST,
@@ -413,6 +430,7 @@ impl ProxmoxApi for Client {
         .await
     }
 
+    #[instrument(name = "proxmox.vm_status", skip_all, fields(node = %node, vmid))]
     async fn vm_status(&self, node: &str, vmid: u32) -> Result<VmStatus> {
         self.get(
             &format!("{}/status/current", qemu(node, vmid)),
@@ -421,6 +439,7 @@ impl ProxmoxApi for Client {
         .await
     }
 
+    #[instrument(name = "proxmox.delete_vm", skip_all, fields(node = %node, vmid))]
     async fn delete_vm(&self, node: &str, vmid: u32) -> Result<Upid> {
         let params = Params::new()
             .flag("purge", true)
@@ -428,6 +447,7 @@ impl ProxmoxApi for Client {
         self.task(Method::DELETE, &qemu(node, vmid), &params).await
     }
 
+    #[instrument(name = "proxmox.upload_iso", skip_all, fields(node = %node, storage = %storage, filename = %filename))]
     async fn upload_iso(
         &self,
         node: &str,
@@ -452,6 +472,7 @@ impl ProxmoxApi for Client {
         Upid::parse(&decode_data::<String>(&body)?)
     }
 
+    #[instrument(name = "proxmox.delete_volume", skip_all, fields(node = %node, storage = %storage, volid = %volid))]
     async fn delete_volume(&self, node: &str, storage: &str, volid: &str) -> Result<Upid> {
         let path = format!(
             "/nodes/{}/storage/{}/content/{}",
@@ -462,6 +483,7 @@ impl ProxmoxApi for Client {
         self.task(Method::DELETE, &path, &Params::new()).await
     }
 
+    #[instrument(name = "proxmox.task_status", skip_all, fields(upid = %upid.as_str()))]
     async fn task_status(&self, upid: &Upid) -> Result<TaskStatus> {
         let path = format!(
             "/nodes/{}/tasks/{}/status",
@@ -471,6 +493,7 @@ impl ProxmoxApi for Client {
         self.get(&path, &Params::new()).await
     }
 
+    #[instrument(name = "proxmox.agent_interfaces", skip_all, fields(node = %node, vmid))]
     async fn agent_interfaces(&self, node: &str, vmid: u32) -> Result<Vec<GuestInterface>> {
         let r: GuestInterfaces = self
             .get(

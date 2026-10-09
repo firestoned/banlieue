@@ -63,3 +63,4 @@ node_modules/
 /proxmox-provider-token-secret.yaml
 /proxmox-ca.pem
 /pve-root-ca.pem
+notes/

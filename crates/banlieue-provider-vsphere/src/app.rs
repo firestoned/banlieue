@@ -8,11 +8,13 @@
 //!
 //! 1. Initialises structured logging via [`banlieue_provider_sdk::bootstrap`].
 //! 2. Builds a [`kube::Client`] via [`banlieue_provider_sdk::client`].
-//! 3. Starts a tiny health server on `:health_port` (livez + readyz).
+//! 3. Starts the health server on `:health_port` (`/livez`, `/readyz`,
+//!    ADR-0093) and the metrics server on `:metrics_port` (ADR-0091).
 //! 4. (Unless `--no-leader-elect`) acquires the leader Lease before any
 //!    reconciler runs; spawns a background renewer.
-//! 5. Runs the [`kube::runtime::Controller`]s for `Provider` (vSphere class)
-//!    and `VMImage`.
+//! 5. Runs the [`kube::runtime::Controller`]s for `Provider` (vSphere class),
+//!    `VMImage` and `VSphereMachine` through the SDK's instrumented
+//!    [`run_controller`].
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -20,14 +22,17 @@ use std::time::Duration;
 use anyhow::{Context as _, Result};
 use banlieue_api::banlieue::{Provider, VMImage};
 use banlieue_api::infrastructure::VSphereMachine;
-use banlieue_provider_sdk::bootstrap::{init_tracing, serve_health, shutdown_signal};
+use banlieue_provider_sdk::bootstrap::{
+    Observability, init_tracing, shutdown_signal, start_observability,
+};
 use banlieue_provider_sdk::client::build_client_with;
+use banlieue_provider_sdk::health::Election;
 use banlieue_provider_sdk::leader::{
     DEFAULT_LEASE_DURATION_SECS, DEFAULT_RENEW_PERIOD_SECS, DEFAULT_RETRY_PERIOD_SECS,
     LeaderConfig, acquire_or_wait, renew_forever,
 };
+use banlieue_provider_sdk::runner::run_controller;
 use clap::{Args, Subcommand};
-use futures::StreamExt;
 use k8s_openapi::api::batch::v1::Job;
 use kube::{
     Api, ResourceExt,
@@ -47,6 +52,10 @@ const DEFAULT_HEALTH_PORT: u16 = 8081;
 const DEFAULT_METRICS_PORT: u16 = 8080;
 const DEFAULT_LEADER_ELECTION_NAMESPACE: &str = "banlieue-system";
 const DEFAULT_LEADER_ELECTION_ID: &str = "banlieue-provider-vsphere";
+
+/// This role's name: the OTLP `service.name` (ADR-0092) and the `role`
+/// label of `banlieue_leader` (ADR-0091).
+pub const ROLE: &str = "banlieue-provider-vsphere";
 const DEFAULT_VSPHERE_TASK_TIMEOUT_SECS: u64 = 600;
 /// Default image for VMImage import Jobs. Matches libvirt's default; normally
 /// overridden by `banlieue-operator`, which passes `--import-image` with the
@@ -81,7 +90,7 @@ pub struct Cli {
     #[arg(long, env = "BANLIEUE_HEALTH_PORT", default_value_t = DEFAULT_HEALTH_PORT)]
     pub health_port: u16,
 
-    /// Metrics server bind port (Phase 4 will populate; reserved now).
+    /// Metrics server bind port: Prometheus `GET /metrics` (ADR-0091).
     #[arg(long, env = "BANLIEUE_METRICS_PORT", default_value_t = DEFAULT_METRICS_PORT)]
     pub metrics_port: u16,
 
@@ -235,16 +244,21 @@ pub fn vmimage_ref_from_job(job: Job) -> Option<ObjectRef<VMImage>> {
 /// * `cli` - parsed `banlieue provider vsphere` arguments.
 ///
 /// # Errors
-/// Returns an error if logging init, kube client construction, or leader-lease
-/// acquisition fails.
+/// Returns an error if logging init, kube client construction, binding the
+/// health or metrics port, or leader-lease acquisition fails.
 pub async fn run(cli: Cli) -> Result<()> {
     // Install the rustls ring provider as the process default before ANY TLS use
     // — the kube client below and the BYOC vCenter client both need it, and
     // reqwest 0.13 (rustls-no-provider) panics without it (ADR-0009).
     install_default_crypto_provider();
 
-    init_tracing(&cli.log_format, cli.log_level.as_deref(), LOG_DIRECTIVES)
-        .context("initialising tracing")?;
+    let telemetry = init_tracing(
+        ROLE,
+        &cli.log_format,
+        cli.log_level.as_deref(),
+        LOG_DIRECTIVES,
+    )
+    .context("initialising tracing")?;
 
     // One-shot roles exit when done; only the controller path below needs a
     // health server, a leader lease, or a watch.
@@ -263,23 +277,30 @@ pub async fn run(cli: Cli) -> Result<()> {
         .await
         .context("constructing kube client")?;
 
-    tokio::spawn(serve_health(cli.health_port));
+    let leader_cfg = (!cli.no_leader_elect).then(|| build_leader_config(&cli));
+    let election = leader_cfg
+        .as_ref()
+        .map_or(Election::Disabled, LeaderConfig::election);
+    let Observability { metrics, readiness } =
+        start_observability(ROLE, cli.health_port, cli.metrics_port, election)
+            .await
+            .context("starting health and metrics servers")?;
 
-    if !cli.no_leader_elect {
-        let leader_cfg = build_leader_config(&cli);
+    if let Some(leader_cfg) = leader_cfg {
         info!(
             namespace = %leader_cfg.namespace,
             lease = %leader_cfg.lease_name,
             identity = %leader_cfg.identity,
             "waiting for leader election"
         );
-        acquire_or_wait(client.clone(), &leader_cfg)
+        acquire_or_wait(client.clone(), &leader_cfg, &readiness)
             .await
             .context("acquiring leader lease")?;
 
         let renewer_client = client.clone();
+        let renewer_readiness = readiness.clone();
         tokio::spawn(async move {
-            if let Err(e) = renew_forever(renewer_client, leader_cfg).await {
+            if let Err(e) = renew_forever(renewer_client, leader_cfg, renewer_readiness).await {
                 error!(error = %e, "leader lease renewer terminated — exiting");
                 std::process::exit(1);
             }
@@ -322,43 +343,48 @@ pub async fn run(cli: Cli) -> Result<()> {
         provider_name = ?cli.provider_name,
         "starting Provider + VMImage + VSphereMachine controllers (class=vsphere)"
     );
-    let provider_ctrl = Controller::new(
-        provider_api,
-        provider_watch_config(cli.provider_name.as_deref()),
-    )
-    .run(provider::reconcile, provider::error_policy, ctx.clone())
-    .for_each(|res| async move {
-        match res {
-            Ok((obj, _)) => info!(kind = "Provider", ?obj, "reconciled"),
-            Err(e) => error!(kind = "Provider", error = %e, "reconcile error"),
-        }
-    });
+    let provider_ctrl = run_controller(
+        Controller::new(
+            provider_api,
+            provider_watch_config(cli.provider_name.as_deref()),
+        ),
+        "Provider",
+        metrics.clone(),
+        provider::reconcile,
+        provider::error_policy,
+        ctx.clone(),
+    );
 
     // Import Jobs live in the (namespaced) build namespace, not wherever
     // --namespace scopes Provider/VSphereMachine — always Api::all's
     // cluster-wide equivalent restricted to one namespace, never affected
     // by cli.namespace.
     let import_job_api: Api<Job> = Api::namespaced(client.clone(), &cli.build_namespace);
-    let image_ctrl = Controller::new(image_api, Config::default())
-        .watches(import_job_api, Config::default(), vmimage_ref_from_job)
-        .run(vmimage::reconcile, vmimage::error_policy, ctx.clone())
-        .for_each(|res| async move {
-            match res {
-                Ok((obj, _)) => info!(kind = "VMImage", ?obj, "reconciled"),
-                Err(e) => error!(kind = "VMImage", error = %e, "reconcile error"),
-            }
-        });
+    let image_ctrl = run_controller(
+        Controller::new(image_api, Config::default()).watches(
+            import_job_api,
+            Config::default(),
+            vmimage_ref_from_job,
+        ),
+        "VMImage",
+        metrics.clone(),
+        vmimage::reconcile,
+        vmimage::error_policy,
+        ctx.clone(),
+    );
 
     // ADR-0024: clone-from-template create path only — see
     // reconciler::vspheremachine's module doc comment for scope.
-    let machine_ctrl = Controller::new(machine_api, Config::default())
-        .run(vspheremachine::reconcile, vspheremachine::error_policy, ctx)
-        .for_each(|res| async move {
-            match res {
-                Ok((obj, _)) => info!(kind = "VSphereMachine", ?obj, "reconciled"),
-                Err(e) => error!(kind = "VSphereMachine", error = %e, "reconcile error"),
-            }
-        });
+    let machine_ctrl = run_controller(
+        Controller::new(machine_api, Config::default()),
+        "VSphereMachine",
+        metrics.clone(),
+        vspheremachine::reconcile,
+        vspheremachine::error_policy,
+        ctx,
+    );
+
+    readiness.controllers_started();
 
     tokio::select! {
         () = provider_ctrl => {
@@ -375,6 +401,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         }
     }
 
+    telemetry.shutdown();
     Ok(())
 }
 

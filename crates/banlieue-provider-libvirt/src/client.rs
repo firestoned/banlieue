@@ -89,6 +89,10 @@ pub fn parse_endpoint(endpoint: &str) -> Result<(String, u16)> {
 }
 
 /// The production factory: connects over mutual TLS and opens the session.
+///
+/// Stateless by design (ADR-0095): every reconcile builds a fresh client from
+/// credentials it has just read, so a rotated Secret is used by the next one.
+/// Any connection reuse must key on the Secret's `resourceVersion`.
 #[derive(Debug, Default, Clone)]
 pub struct TlsClientFactory;
 

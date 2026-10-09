@@ -153,6 +153,8 @@ help: ## Show this help
         kind-bootstrap-install kind-e2e-install kind-e2e kind-e2e-ci kind-e2e-logs \
         kind-e2e-bootstrap kind-e2e-dry-run kind-e2e-escape-hatch \
         kind-e2e-workload kind-e2e-pause kind-e2e-workload-namespace kind-e2e-class \
+        clusterctl-components clusterctl-install clusterctl-local-repo \
+        kind-capi-create kind-capi-delete kind-capi-init kind-e2e-capi kind-e2e-capi-logs \
         claim-live-test address-live-test pool-claim-e2e ch-e2e ch-vtpm-e2e ch-deferred-e2e ch-restart-e2e ch-host-install-test ch-polkit-test provider-bench \
         dev-oidc-up dev-oidc-attach dev-oidc-github-creds dev-oidc-login \
         dev-oidc-try-claim dev-oidc-status dev-oidc-down \
@@ -268,6 +270,50 @@ calm-diagrams: ## Render CALM Mermaid diagrams into $(CALM_DIAGRAMS_OUT)
 	  done; \
 	  echo "✓ CALM diagrams written to $(CALM_DIAGRAMS_OUT)/"; \
 	fi
+
+# ----- Release changelog (git-cliff) ----------------------------------------
+#
+# CHANGELOG.md is the user-facing release changelog, generated from
+# Conventional Commits by cliff.toml (roadmap 12 §4.8). Regenerate it before
+# tagging, with TAG naming the release about to be cut so its entries move out
+# of "Unreleased". release-notes renders a single release for the GitHub
+# Release body.
+
+GIT_CLIFF ?= git-cliff
+RELEASE_NOTES ?= notes/RELEASE_NOTES.md
+# Pinned git-cliff release for CI, verified against its published SHA-512
+# (Scorecard Pinned-Dependencies: no unhashed download).
+GIT_CLIFF_VERSION ?= 2.14.2
+GIT_CLIFF_SHA512 ?= 26d1f7c8ea2400f2ccb0b2e7f321635f600b583bf4cd1f7afaa5e8c24068ad1088a2504e0a4d9f4333d4bb20a80329327d9462634343ee3af91e1a7fbdc6f18a
+GIT_CLIFF_INSTALL_DIR ?= $(HOME)/.local/bin
+
+changelog: ## Regenerate CHANGELOG.md from the commit history (TAG=vX.Y.Z to name the release being cut)
+	@command -v $(GIT_CLIFF) >/dev/null 2>&1 || { echo "Error: git-cliff not found. Install: https://git-cliff.org/docs/installation"; exit 1; }
+	@$(GIT_CLIFF) --config cliff.toml $(if $(TAG),--tag $(TAG)) --output CHANGELOG.md
+	@echo "✓ CHANGELOG.md regenerated"
+
+release-notes: ## Render one release's notes into $(RELEASE_NOTES): the tag HEAD is on, or TAG=vX.Y.Z to preview an untagged release
+	@command -v $(GIT_CLIFF) >/dev/null 2>&1 || { echo "Error: git-cliff not found. Install: https://git-cliff.org/docs/installation"; exit 1; }
+	@mkdir -p $(dir $(RELEASE_NOTES))
+	@$(GIT_CLIFF) --config cliff.toml $(if $(TAG),--tag $(TAG) --unreleased,--current) --strip header --output $(RELEASE_NOTES)
+	@echo "✓ Release notes written to $(RELEASE_NOTES)"
+
+DCO_RANGE ?= origin/main..HEAD
+
+dco-check: ## Fail unless every commit in DCO_RANGE (default origin/main..HEAD) is signed off by its author
+	@scripts/dco-check.sh $(DCO_RANGE)
+
+dco-check-test: ## Test scripts/dco-check.sh against throwaway repositories
+	@scripts/dco-check-test.sh
+
+git-cliff-install: ## Install the pinned git-cliff (linux/amd64) into $(GIT_CLIFF_INSTALL_DIR), SHA-512 verified
+	@set -eu; tmp=$$(mktemp -d); trap 'rm -rf "$$tmp"' EXIT; \
+	  f=git-cliff-$(GIT_CLIFF_VERSION)-x86_64-unknown-linux-gnu.tar.gz; \
+	  curl -fsSL -o "$$tmp/$$f" https://github.com/orhun/git-cliff/releases/download/v$(GIT_CLIFF_VERSION)/$$f; \
+	  echo "$(GIT_CLIFF_SHA512)  $$tmp/$$f" | sha512sum -c - >/dev/null; \
+	  tar -xzf "$$tmp/$$f" -C "$$tmp"; \
+	  mkdir -p $(GIT_CLIFF_INSTALL_DIR); install -m 0755 "$$tmp/git-cliff-$(GIT_CLIFF_VERSION)/git-cliff" $(GIT_CLIFF_INSTALL_DIR)/git-cliff
+	@echo "✓ git-cliff $(GIT_CLIFF_VERSION) installed in $(GIT_CLIFF_INSTALL_DIR)"
 
 # ----- Documentation (MkDocs Material) --------------------------------------
 
@@ -946,6 +992,96 @@ vex-auto-reachability: ## Run auto-vex-reachability locally ($(GRYPE_JSON) + $(R
 	@rm -f /tmp/avr-symbols.txt
 	@echo "✓ wrote vex.auto-reachability.json"
 
+# ----- clusterctl packaging (ADR-0096) ---------------------------------------
+#
+# banlieue is ONE clusterctl InfrastructureProvider, `banlieue`. Its
+# components file is exactly what `banlieue bootstrap operator` installs,
+# rendered with `--dry-run`: one install definition (ADR-0013), no second
+# copy to drift. Every release attaches it, with config/clusterctl/metadata.yaml.
+
+# Workspace version, read from the root Cargo.toml `[workspace.package]`.
+WORKSPACE_VERSION := $(shell awk -F'"' '/^\[workspace\.package\]/ { p = 1; next } /^\[/ { p = 0 } p && /^version *=/ { print $$2; exit }' Cargo.toml)
+
+# Release the components describe: the version directory clusterctl reads.
+# The release workflow passes the GitHub Release tag.
+CLUSTERCTL_RELEASE_TAG ?= v$(WORKSPACE_VERSION)
+
+# Image tag baked into the components. A release uses its own tag, so the
+# file needs no clusterctl variables. The CAPI e2e overrides it.
+CLUSTERCTL_IMAGE_TAG ?= $(CLUSTERCTL_RELEASE_TAG)
+
+# Where `clusterctl-components` writes infrastructure-components.yaml and
+# metadata.yaml.
+CLUSTERCTL_OUT_DIR ?= $(CURDIR)/target/clusterctl/release
+
+# Pinned Cluster API release, for both the clusterctl CLI and the providers
+# the contract e2e installs. v1.14.x serves the v1beta2 contract banlieue
+# implements (ADR-0005). v1beta2 behaviour is still settling upstream, so a
+# bump is a deliberate change, re-verified with `make kind-e2e-capi`.
+CAPI_VERSION ?= v1.14.3
+
+# SHA-256 of the clusterctl binaries for $(CAPI_VERSION), as published on the
+# GitHub release. Upstream ships no checksum file, so they are pinned here.
+CLUSTERCTL_SHA256_linux_amd64  := e56f397f55c6fdde6ee8c0fead4fb21270a50e05111180bf68c8ae6c82dfd917
+CLUSTERCTL_SHA256_linux_arm64  := eea3a3ecc64ae155c57eea35378d833285a92cb549c3298a18765bc40a7a3f7b
+CLUSTERCTL_SHA256_darwin_amd64 := decec263200ff5790593fcff64a0f9d42799410b91b1e23c86ec1437607bb1fd
+CLUSTERCTL_SHA256_darwin_arm64 := 5915523f13949884d29d5254445b8d294ba314b5dacb3e8eff9e42f1c9d2e684
+
+# clusterctl lives under target/ (versioned name), never in a system path:
+# the e2e depends on this exact release, not on whatever is on PATH.
+TOOLS_BIN_DIR ?= $(CURDIR)/target/tools
+CLUSTERCTL    ?= $(TOOLS_BIN_DIR)/clusterctl-$(CAPI_VERSION)
+
+clusterctl-components: ## Render infrastructure-components.yaml + metadata.yaml into $(CLUSTERCTL_OUT_DIR)
+	@mkdir -p $(CLUSTERCTL_OUT_DIR)
+	@echo "Rendering clusterctl components for $(CLUSTERCTL_RELEASE_TAG) (image tag $(CLUSTERCTL_IMAGE_TAG))..."
+	@cargo run -q -p banlieue -- bootstrap operator \
+	  --namespace $(NAMESPACE) --version $(CLUSTERCTL_IMAGE_TAG) --dry-run \
+	  > $(CLUSTERCTL_OUT_DIR)/bootstrap-dry-run.yaml
+	@# clusterctl runs every components file through envsubst, which reads
+	@# `$$NAME` and `$${NAME}` as variables. The CRD descriptions quote
+	@# ADR-0024's user-data placeholders (`$${VM_NAME}`, ...) and clusterctl
+	@# would refuse to install without values for them. `$$$$` is envsubst's
+	@# escape for a literal `$$`, so doubling every one makes the file
+	@# variable-free and clusterctl hands the apiserver the original text.
+	@sed -e 's/\$$/$$$$/g' $(CLUSTERCTL_OUT_DIR)/bootstrap-dry-run.yaml \
+	  > $(CLUSTERCTL_OUT_DIR)/infrastructure-components.yaml
+	@# The escape must be lossless: undoing it gives back the dry-run exactly.
+	@sed -e 's/\$$\$$/$$/g' $(CLUSTERCTL_OUT_DIR)/infrastructure-components.yaml \
+	  | cmp -s - $(CLUSTERCTL_OUT_DIR)/bootstrap-dry-run.yaml \
+	  || { echo "ERROR: escaping for clusterctl is not lossless"; exit 1; }
+	@rm -f $(CLUSTERCTL_OUT_DIR)/bootstrap-dry-run.yaml
+	@cp config/clusterctl/metadata.yaml $(CLUSTERCTL_OUT_DIR)/metadata.yaml
+	@echo "✓ wrote $(CLUSTERCTL_OUT_DIR)/{infrastructure-components,metadata}.yaml"
+
+clusterctl-install: ## Install clusterctl $(CAPI_VERSION) into $(TOOLS_BIN_DIR) (checksum-verified)
+	@if [ -x "$(CLUSTERCTL)" ]; then echo "✓ clusterctl $(CAPI_VERSION) present: $(CLUSTERCTL)"; exit 0; fi; \
+	OS=$$(uname -s | tr '[:upper:]' '[:lower:]'); \
+	ARCH=$$(uname -m); \
+	case "$$ARCH" in x86_64) ARCH=amd64 ;; aarch64|arm64) ARCH=arm64 ;; esac; \
+	case "$$OS-$$ARCH" in \
+	  linux-amd64)  EXPECTED=$(CLUSTERCTL_SHA256_linux_amd64) ;; \
+	  linux-arm64)  EXPECTED=$(CLUSTERCTL_SHA256_linux_arm64) ;; \
+	  darwin-amd64) EXPECTED=$(CLUSTERCTL_SHA256_darwin_amd64) ;; \
+	  darwin-arm64) EXPECTED=$(CLUSTERCTL_SHA256_darwin_arm64) ;; \
+	  *) echo "ERROR: no pinned clusterctl checksum for $$OS-$$ARCH"; exit 1 ;; \
+	esac; \
+	mkdir -p $(TOOLS_BIN_DIR); \
+	URL="https://github.com/kubernetes-sigs/cluster-api/releases/download/$(CAPI_VERSION)/clusterctl-$$OS-$$ARCH"; \
+	echo "Downloading $$URL"; \
+	curl -sSLf -o $(CLUSTERCTL).download "$$URL"; \
+	if command -v sha256sum >/dev/null 2>&1; then \
+	  ACTUAL=$$(sha256sum $(CLUSTERCTL).download | awk '{print $$1}'); \
+	else \
+	  ACTUAL=$$(shasum -a 256 $(CLUSTERCTL).download | awk '{print $$1}'); \
+	fi; \
+	if [ "$$EXPECTED" != "$$ACTUAL" ]; then \
+	  rm -f $(CLUSTERCTL).download; echo "ERROR: clusterctl checksum mismatch"; exit 1; \
+	fi; \
+	chmod +x $(CLUSTERCTL).download; \
+	mv $(CLUSTERCTL).download $(CLUSTERCTL); \
+	echo "✓ clusterctl $(CAPI_VERSION) installed: $(CLUSTERCTL)"
+
 # ----- kind (local Kubernetes) ---------------------------------------------
 
 kind-install: ## Install kind CLI if missing
@@ -1350,6 +1486,102 @@ kind-e2e-ci: ## Run e2e suite $(E2E_SUITE) in CI; dumps diagnostics on failure, 
 	$(MAKE) kind-delete || true; \
 	rm -f $(KIND_KUBECONFIG); \
 	exit $$rc
+
+# ----- Cluster API contract e2e (ADR-0096 Decision 5) -----------------------
+#
+# Real CAPI controllers against banlieue's infrastructure CRDs and its
+# aggregate ClusterRole, with no hypervisor and no provider running: the test
+# writes the infrastructure status a provider would, and asserts CAPI reflects
+# it. Always a FRESH cluster of its own (clusterctl init is not re-runnable),
+# always torn down afterwards, diagnostics dumped first on failure.
+#
+# Needs network access (clusterctl fetches CAPI and cert-manager from GitHub)
+# and a kind that runs $(CAPI_KIND_NODE_IMAGE): CAPI $(CAPI_VERSION) needs a
+# management cluster of Kubernetes v1.33 or newer, which needs kind v0.30+
+# (KIND_VERSION is older; put a newer kind first on PATH).
+
+CAPI_KIND_CLUSTER_NAME ?= banlieue-capi
+CAPI_KIND_NODE_IMAGE   ?= kindest/node:v1.34.11@sha256:44e222ee2132dab25ff87301682f89eb82c7880ea3a1bf543bfe9708fd08d67d
+CAPI_KIND_KUBECONFIG    = $(CURDIR)/.kind-kubeconfig-$(CAPI_KIND_CLUSTER_NAME)
+CAPI_KUBECTL            = kubectl --kubeconfig $(CAPI_KIND_KUBECONFIG)
+
+# The local clusterctl repository: {base}/infrastructure-banlieue/{version}/,
+# the layout clusterctl requires for a file:// provider URL.
+CLUSTERCTL_REPO_DIR ?= $(CURDIR)/target/clusterctl/repository
+
+# Image tag for the e2e components. Never loaded into the cluster, so
+# banlieue's own pods stay in ImagePullBackOff: the contract under test is
+# CAPI against the CRDs and RBAC, and a running vSphere provider would race
+# the test for the VSphereMachine status it writes.
+CAPI_E2E_IMAGE_TAG ?= capi-e2e-not-pulled
+
+clusterctl-local-repo: ## Build a local clusterctl repository + config from this tree in $(CLUSTERCTL_REPO_DIR)
+	@rm -rf $(CLUSTERCTL_REPO_DIR)
+	@$(MAKE) --no-print-directory clusterctl-components \
+	  CLUSTERCTL_IMAGE_TAG=$(CAPI_E2E_IMAGE_TAG) \
+	  CLUSTERCTL_OUT_DIR=$(CLUSTERCTL_REPO_DIR)/infrastructure-banlieue/$(CLUSTERCTL_RELEASE_TAG)
+	@printf '%s\n' \
+	  '# Generated by `make clusterctl-local-repo`.' \
+	  'providers:' \
+	  '  - name: banlieue' \
+	  '    type: InfrastructureProvider' \
+	  '    url: file://$(CLUSTERCTL_REPO_DIR)/infrastructure-banlieue/$(CLUSTERCTL_RELEASE_TAG)/infrastructure-components.yaml' \
+	  > $(CLUSTERCTL_REPO_DIR)/clusterctl.yaml
+	@echo "✓ wrote $(CLUSTERCTL_REPO_DIR)/clusterctl.yaml"
+
+kind-capi-delete: ## Delete the CAPI e2e kind cluster
+	@if kind get clusters 2>/dev/null | grep -qx $(CAPI_KIND_CLUSTER_NAME); then \
+		kind delete cluster --name $(CAPI_KIND_CLUSTER_NAME); \
+	else \
+		echo "✓ no cluster named '$(CAPI_KIND_CLUSTER_NAME)', nothing to delete"; \
+	fi
+	@rm -f $(CAPI_KIND_KUBECONFIG)
+
+kind-capi-create: kind-install kind-capi-delete ## Create a fresh kind cluster for the CAPI e2e
+	@echo "Creating kind cluster '$(CAPI_KIND_CLUSTER_NAME)' ($(CAPI_KIND_NODE_IMAGE))..."
+	@kind create cluster --name $(CAPI_KIND_CLUSTER_NAME) --image $(CAPI_KIND_NODE_IMAGE) \
+	  --kubeconfig $(CAPI_KIND_KUBECONFIG) --wait 180s
+
+kind-capi-init: clusterctl-install clusterctl-local-repo ## clusterctl init: CAPI $(CAPI_VERSION) + banlieue from the local repository
+	@echo "clusterctl init: CAPI $(CAPI_VERSION), banlieue $(CLUSTERCTL_RELEASE_TAG) (local repository)..."
+	@CLUSTERCTL_DISABLE_VERSIONCHECK=true $(CLUSTERCTL) init \
+	  --config $(CLUSTERCTL_REPO_DIR)/clusterctl.yaml \
+	  --kubeconfig $(CAPI_KIND_KUBECONFIG) \
+	  --core cluster-api:$(CAPI_VERSION) \
+	  --bootstrap kubeadm:$(CAPI_VERSION) \
+	  --control-plane kubeadm:$(CAPI_VERSION) \
+	  --infrastructure banlieue:$(CLUSTERCTL_RELEASE_TAG)
+	@# Wait for CAPI core only: its webhooks must answer before the test
+	@# creates a Cluster. banlieue's pods are never expected to be ready.
+	@$(CAPI_KUBECTL) -n capi-system rollout status \
+	  deployment/capi-controller-manager --timeout=300s
+
+kind-e2e-capi: ## e2e: CAPI core drives banlieue infrastructure objects (fresh cluster, always torn down)
+	@# CAPI_E2E_KEEP=1 keeps the cluster for debugging; delete it afterwards
+	@# with `make kind-capi-delete`.
+	@if $(MAKE) --no-print-directory kind-capi-create && \
+	   $(MAKE) --no-print-directory kind-capi-init && \
+	   KUBECONFIG=$(CAPI_KIND_KUBECONFIG) \
+	   cargo test -p banlieue-operator --test e2e_capi_contract -- \
+	     --ignored --nocapture --test-threads=1; then \
+	  rc=0; \
+	else \
+	  rc=$$?; \
+	  echo "::error::CAPI contract e2e failed, dumping cluster state"; \
+	  $(MAKE) --no-print-directory kind-e2e-capi-logs || true; \
+	fi; \
+	if [ -z "$(CAPI_E2E_KEEP)" ]; then $(MAKE) --no-print-directory kind-capi-delete || true; fi; \
+	if [ $$rc -eq 0 ]; then echo "✓ e2e_capi_contract passed"; fi; \
+	exit $$rc
+
+kind-e2e-capi-logs: ## Dump CAPI + banlieue state from the CAPI e2e cluster
+	@echo "── providers ───────────────────────────────────────────────────────"
+	-@$(CAPI_KUBECTL) get providers.clusterctl.cluster.x-k8s.io -A
+	@echo "── CAPI core logs ──────────────────────────────────────────────────"
+	-@$(CAPI_KUBECTL) -n capi-system logs deployment/capi-controller-manager --tail=200
+	@echo "── e2e objects ─────────────────────────────────────────────────────"
+	-@$(CAPI_KUBECTL) -n banlieue-capi-e2e get clusters.cluster.x-k8s.io,machines.cluster.x-k8s.io,vsphereclusters,vspheremachines -o yaml
+	-@$(CAPI_KUBECTL) get clusterrole banlieue-capi-infrastructure -o yaml
 
 kind-up: kind-create kind-deploy-crds ## One-shot: create cluster + apply CRDs (controller still runs locally)
 	@echo ""

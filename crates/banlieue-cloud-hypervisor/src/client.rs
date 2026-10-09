@@ -19,6 +19,7 @@ use hyper_util::rt::TokioIo;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::net::UnixStream;
+use tracing::instrument;
 
 /// Host header value. The VMM ignores it; HTTP/1.1 requires one.
 const HOST: &str = "localhost";
@@ -31,6 +32,8 @@ pub struct Client {
     timeout: Duration,
 }
 
+// Each VMM call is one span (ADR-0092). Spans skip every argument: a
+// `GuestPlan` carries the guest's cloud-init payload.
 impl Client {
     /// A client for the VMM at `socket`, with `timeout` per call.
     pub fn new(socket: impl AsRef<Path>, timeout: Duration) -> Self {
@@ -54,6 +57,7 @@ impl Client {
     ///
     /// # Errors
     /// Any [`Error`] from the call.
+    #[instrument(name = "cloud_hypervisor.ping", skip_all)]
     pub async fn ping(&self) -> Result<VmmPing> {
         let body = self.call(Endpoint::VmmPing, None).await?;
         wire::decode_ping(&body)
@@ -63,6 +67,7 @@ impl Client {
     ///
     /// # Errors
     /// Any [`Error`] from the call; [`Error::Api`] if a VM already exists.
+    #[instrument(name = "cloud_hypervisor.create", skip_all)]
     pub async fn create(&self, plan: &GuestPlan) -> Result<()> {
         self.call(Endpoint::VmCreate, Some(wire::encode_vm_create(plan)))
             .await
@@ -73,6 +78,7 @@ impl Client {
     ///
     /// # Errors
     /// Any [`Error`] from the call.
+    #[instrument(name = "cloud_hypervisor.boot", skip_all)]
     pub async fn boot(&self) -> Result<()> {
         self.call(Endpoint::VmBoot, None).await.map(drop)
     }
@@ -81,6 +87,7 @@ impl Client {
     ///
     /// # Errors
     /// Any [`Error`] from the call other than "not created".
+    #[instrument(name = "cloud_hypervisor.info", skip_all)]
     pub async fn info(&self) -> Result<Option<VmInfo>> {
         match self.call(Endpoint::VmInfo, None).await {
             Ok(body) => wire::decode_info(&body).map(Some),
@@ -93,6 +100,7 @@ impl Client {
     ///
     /// # Errors
     /// Any [`Error`] from the call; [`Error::Api`] if the VM is not running.
+    #[instrument(name = "cloud_hypervisor.power_button", skip_all)]
     pub async fn power_button(&self) -> Result<()> {
         self.call(Endpoint::VmPowerButton, None).await.map(drop)
     }
@@ -101,6 +109,7 @@ impl Client {
     ///
     /// # Errors
     /// Any [`Error`] from the call.
+    #[instrument(name = "cloud_hypervisor.shutdown", skip_all)]
     pub async fn shutdown(&self) -> Result<()> {
         self.call(Endpoint::VmShutdown, None).await.map(drop)
     }
@@ -109,6 +118,7 @@ impl Client {
     ///
     /// # Errors
     /// Any [`Error`] from the call.
+    #[instrument(name = "cloud_hypervisor.delete", skip_all)]
     pub async fn delete(&self) -> Result<()> {
         self.call(Endpoint::VmDelete, None).await.map(drop)
     }
@@ -117,6 +127,7 @@ impl Client {
     ///
     /// # Errors
     /// Any [`Error`] from the call.
+    #[instrument(name = "cloud_hypervisor.shutdown_vmm", skip_all)]
     pub async fn shutdown_vmm(&self) -> Result<()> {
         self.call(Endpoint::VmmShutdown, None).await.map(drop)
     }
@@ -125,6 +136,7 @@ impl Client {
     ///
     /// # Errors
     /// Any [`Error`] from the call.
+    #[instrument(name = "cloud_hypervisor.remove_device", skip_all, fields(id = %id))]
     pub async fn remove_device(&self, id: &str) -> Result<()> {
         self.call(
             Endpoint::VmRemoveDevice,

@@ -58,10 +58,15 @@ const METRICS_PORT: i32 = 8080;
 const HEALTH_PORT: i32 = 8081;
 
 /// Name of the health port, referenced by both probes.
-const HEALTH_PORT_NAME: &str = "health";
+///
+/// Public because the NetworkPolicy templates in `deploy/network-policies/`
+/// open ingress by this name (ADR-0094), and their test pins it.
+pub const HEALTH_PORT_NAME: &str = "health";
 
 /// Name of the metrics port.
-const METRICS_PORT_NAME: &str = "metrics";
+///
+/// Public for the same reason as [`HEALTH_PORT_NAME`] (ADR-0094).
+pub const METRICS_PORT_NAME: &str = "metrics";
 
 /// Liveness probe timings.
 const LIVENESS_INITIAL_DELAY_SECS: i32 = 10;

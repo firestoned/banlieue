@@ -8,12 +8,15 @@
 //!
 //! 1. Initialises structured logging via [`banlieue_provider_sdk::bootstrap`].
 //! 2. Builds a [`kube::Client`] via [`banlieue_provider_sdk::client`].
-//! 3. Starts a tiny health server on `:health_port` (livez + readyz).
+//! 3. Starts the health server on `:health_port` (`/livez`, `/readyz`,
+//!    ADR-0093) and the metrics server on `:metrics_port` (`/metrics`,
+//!    ADR-0091), both before leader election so a standby answers too.
 //! 4. (Unless `--no-leader-elect`) acquires the
 //!    `coordination.k8s.io/v1.Lease` named `--leader-election-id`
 //!    before any reconciler runs; spawns a background renewer.
 //! 5. Runs the [`kube::runtime::Controller`]s for `VirtualMachine` and
-//!    `VSphereCluster`.
+//!    `VSphereCluster` (and the pool, claim and image controllers) through
+//!    the SDK's instrumented [`run_controller`].
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -25,22 +28,29 @@ use banlieue_api::banlieue::{
 use banlieue_api::infrastructure::{
     CloudHypervisorMachine, LibvirtMachine, ProxmoxMachine, VSphereCluster, VSphereMachine,
 };
-use banlieue_provider_sdk::bootstrap::{init_tracing, serve_health, shutdown_signal};
+use banlieue_provider_sdk::bootstrap::{
+    Observability, init_tracing, shutdown_signal, start_observability,
+};
 use banlieue_provider_sdk::client::build_client_with;
+use banlieue_provider_sdk::health::Election;
 use banlieue_provider_sdk::leader::{
     DEFAULT_LEASE_DURATION_SECS, DEFAULT_RENEW_PERIOD_SECS, DEFAULT_RETRY_PERIOD_SECS,
     LeaderConfig, acquire_or_wait, renew_forever,
 };
+use banlieue_provider_sdk::runner::run_controller;
 use clap::Args;
 use futures::StreamExt;
 use kube::{
     Api, ResourceExt,
-    runtime::{Controller, reflector::ObjectRef, watcher::Config},
+    runtime::{
+        Controller, WatchStreamExt, reflector, reflector::ObjectRef, watcher, watcher::Config,
+    },
 };
-use tracing::{debug, error, info};
+use tracing::{error, info, warn};
 
 use crate::{
     context::Context,
+    metrics::{FailureDomainCollector, VirtualMachineCollector},
     reconciler::claim,
     reconciler::pool,
     reconciler::virtualmachine::{error_policy, reconcile},
@@ -52,6 +62,10 @@ const DEFAULT_HEALTH_PORT: u16 = 8081;
 const DEFAULT_METRICS_PORT: u16 = 8080;
 const DEFAULT_LEADER_ELECTION_NAMESPACE: &str = "banlieue-system";
 const DEFAULT_LEADER_ELECTION_ID: &str = "banlieue-controller";
+
+/// This role's name: the OTLP `service.name` (ADR-0092) and the `role`
+/// label of `banlieue_leader` (ADR-0091).
+pub const ROLE: &str = "banlieue-controller";
 
 /// Per-crate `tracing` directives layered on top of the base log level.
 const LOG_DIRECTIVES: &[&str] = &["kube=warn"];
@@ -74,7 +88,7 @@ pub struct Cli {
     #[arg(long, env = "BANLIEUE_HEALTH_PORT", default_value_t = DEFAULT_HEALTH_PORT)]
     pub health_port: u16,
 
-    /// Metrics server bind port (Phase 4 will populate; the port is reserved now).
+    /// Metrics server bind port: Prometheus `GET /metrics` (ADR-0091).
     #[arg(long, env = "BANLIEUE_METRICS_PORT", default_value_t = DEFAULT_METRICS_PORT)]
     pub metrics_port: u16,
 
@@ -122,11 +136,16 @@ pub struct Cli {
 /// * `cli` - parsed `banlieue controller` arguments.
 ///
 /// # Errors
-/// Returns an error if logging init, kube client construction, or leader-lease
-/// acquisition fails.
+/// Returns an error if logging init, kube client construction, binding the
+/// health or metrics port, or leader-lease acquisition fails.
 pub async fn run(cli: Cli) -> Result<()> {
-    init_tracing(&cli.log_format, cli.log_level.as_deref(), LOG_DIRECTIVES)
-        .context("initialising tracing")?;
+    let telemetry = init_tracing(
+        ROLE,
+        &cli.log_format,
+        cli.log_level.as_deref(),
+        LOG_DIRECTIVES,
+    )
+    .context("initialising tracing")?;
     info!(
         version = env!("CARGO_PKG_VERSION"),
         namespace = ?cli.namespace,
@@ -138,23 +157,30 @@ pub async fn run(cli: Cli) -> Result<()> {
         .await
         .context("constructing kube client")?;
 
-    tokio::spawn(serve_health(cli.health_port));
+    let leader_cfg = (!cli.no_leader_elect).then(|| build_leader_config(&cli));
+    let election = leader_cfg
+        .as_ref()
+        .map_or(Election::Disabled, LeaderConfig::election);
+    let Observability { metrics, readiness } =
+        start_observability(ROLE, cli.health_port, cli.metrics_port, election)
+            .await
+            .context("starting health and metrics servers")?;
 
-    if !cli.no_leader_elect {
-        let leader_cfg = build_leader_config(&cli);
+    if let Some(leader_cfg) = leader_cfg {
         info!(
             namespace = %leader_cfg.namespace,
             lease = %leader_cfg.lease_name,
             identity = %leader_cfg.identity,
             "waiting for leader election"
         );
-        acquire_or_wait(client.clone(), &leader_cfg)
+        acquire_or_wait(client.clone(), &leader_cfg, &readiness)
             .await
             .context("acquiring leader lease")?;
 
         let renewer_client = client.clone();
+        let renewer_readiness = readiness.clone();
         tokio::spawn(async move {
-            if let Err(e) = renew_forever(renewer_client, leader_cfg).await {
+            if let Err(e) = renew_forever(renewer_client, leader_cfg, renewer_readiness).await {
                 error!(error = %e, "leader lease renewer terminated — exiting");
                 std::process::exit(1);
             }
@@ -231,8 +257,10 @@ pub async fn run(cli: Cli) -> Result<()> {
     );
     let vm_store_for_class = vm_store.clone();
     let vm_store_for_provider = vm_store.clone();
+    // `banlieue_virtualmachines{phase}` counts this same store at scrape time.
+    metrics.register_collector(Box::new(VirtualMachineCollector::new(vm_store.clone())));
 
-    let controller_fut = controller
+    let vm_controller = controller
         .owns(vsphere_api, Config::default())
         .owns(libvirt_api, Config::default())
         .owns(cloud_hypervisor_api, Config::default())
@@ -270,14 +298,15 @@ pub async fn run(cli: Cli) -> Result<()> {
                     .map(|vm| ObjectRef::from_obj(vm.as_ref()))
                     .collect::<Vec<_>>()
             },
-        )
-        .run(reconcile, error_policy, ctx.clone())
-        .for_each(|res| async move {
-            match res {
-                Ok((obj, _)) => info!(?obj, "reconciled"),
-                Err(e) => error!(error = %e, "reconcile error"),
-            }
-        });
+        );
+    let controller_fut = run_controller(
+        vm_controller,
+        "VirtualMachine",
+        metrics.clone(),
+        reconcile,
+        error_policy,
+        ctx.clone(),
+    );
 
     // VSphereCluster (CAPI InfraCluster) controller. Aggregates Provider
     // failure domains into the CAPI status. A Provider's status changing
@@ -296,27 +325,42 @@ pub async fn run(cli: Cli) -> Result<()> {
     let vsc_controller = Controller::new(vsc_api, Config::default());
     let vsc_store = vsc_controller.store();
 
-    let vsc_fut = vsc_controller
-        .watches(
-            provider_api,
-            Config::default(),
-            move |_provider: Provider| {
-                vsc_store
-                    .state()
-                    .into_iter()
-                    .map(|c| ObjectRef::from_obj(c.as_ref()))
-                    .collect::<Vec<_>>()
-            },
-        )
-        .run(
-            vsphere_cluster::reconcile,
-            vsphere_cluster::error_policy,
-            ctx.clone(),
-        )
-        .for_each(|res| async move {
-            match res {
-                Ok((obj, _)) => info!(kind = "VSphereCluster", ?obj, "reconciled"),
-                Err(e) => error!(kind = "VSphereCluster", error = %e, "reconcile error"),
+    let vsc_controller = vsc_controller.watches(
+        provider_api,
+        Config::default(),
+        move |_provider: Provider| {
+            vsc_store
+                .state()
+                .into_iter()
+                .map(|c| ObjectRef::from_obj(c.as_ref()))
+                .collect::<Vec<_>>()
+        },
+    );
+    let vsc_fut = run_controller(
+        vsc_controller,
+        "VSphereCluster",
+        metrics.clone(),
+        vsphere_cluster::reconcile,
+        vsphere_cluster::error_policy,
+        ctx.clone(),
+    );
+
+    // `banlieue_provider_failure_domains{provider,kind}` (ADR-0091) reads
+    // Provider status from a reflector of its own: the two Provider watches
+    // above are triggers whose stores kube-runtime does not expose. Providers
+    // are few and operator-created, so the extra watch is cheap.
+    let fd_provider_api: Api<Provider> = match cli.namespace.as_deref() {
+        Some(ns) => Api::namespaced(client.clone(), ns),
+        None => Api::all(client.clone()),
+    };
+    let (fd_store, fd_writer) = reflector::store::<Provider>();
+    metrics.register_collector(Box::new(FailureDomainCollector::new(fd_store)));
+    let fd_reflector = watcher(fd_provider_api, Config::default())
+        .default_backoff()
+        .reflect(fd_writer)
+        .for_each(|event| async move {
+            if let Err(e) = event {
+                warn!(error = %e, "Provider metrics watch error; retrying");
             }
         });
 
@@ -326,14 +370,14 @@ pub async fn run(cli: Cli) -> Result<()> {
     // no backend is contacted, so the extra watch is cheap.
     info!("starting VMImage aggregate-readiness controller");
     let image_api: Api<VMImage> = Api::all(client.clone());
-    let image_fut = Controller::new(image_api, Config::default())
-        .run(vmimage::reconcile, vmimage::error_policy, ctx.clone())
-        .for_each(|res| async move {
-            match res {
-                Ok((obj, _)) => debug!(kind = "VMImage", ?obj, "aggregated"),
-                Err(e) => error!(kind = "VMImage", error = %e, "reconcile error"),
-            }
-        });
+    let image_fut = run_controller(
+        Controller::new(image_api, Config::default()),
+        "VMImage",
+        metrics.clone(),
+        vmimage::reconcile,
+        vmimage::error_policy,
+        ctx.clone(),
+    );
 
     // VirtualMachinePool (ADR-0046). Watches its members by label, so a
     // member going Ready — or being claimed — reaches the pool immediately
@@ -350,17 +394,19 @@ pub async fn run(cli: Cli) -> Result<()> {
         Some(ns) => Api::namespaced(client.clone(), ns),
         None => Api::all(client.clone()),
     };
-    let pool_fut = Controller::new(pool_api, Config::default())
-        .watches(pool_member_api, Config::default(), |vm: VirtualMachine| {
-            pool::pool_for_member(&vm)
-        })
-        .run(pool::reconcile, pool::error_policy, ctx.clone())
-        .for_each(|res| async move {
-            match res {
-                Ok((obj, _)) => debug!(kind = "VirtualMachinePool", ?obj, "reconciled"),
-                Err(e) => error!(kind = "VirtualMachinePool", error = %e, "reconcile error"),
-            }
-        });
+    let pool_controller = Controller::new(pool_api, Config::default()).watches(
+        pool_member_api,
+        Config::default(),
+        |vm: VirtualMachine| pool::pool_for_member(&vm),
+    );
+    let pool_fut = run_controller(
+        pool_controller,
+        "VirtualMachinePool",
+        metrics.clone(),
+        pool::reconcile,
+        pool::error_policy,
+        ctx.clone(),
+    );
 
     // VirtualMachineClaim (ADR-0047). Owns its bound member — re-parented
     // from the pool at bind time — so the member going Ready, or being
@@ -374,15 +420,16 @@ pub async fn run(cli: Cli) -> Result<()> {
         Some(ns) => Api::namespaced(client.clone(), ns),
         None => Api::all(client.clone()),
     };
-    let claim_fut = Controller::new(claim_api, Config::default())
-        .owns(claim_member_api, Config::default())
-        .run(claim::reconcile, claim::error_policy, ctx.clone())
-        .for_each(|res| async move {
-            match res {
-                Ok((obj, _)) => debug!(kind = "VirtualMachineClaim", ?obj, "reconciled"),
-                Err(e) => error!(kind = "VirtualMachineClaim", error = %e, "reconcile error"),
-            }
-        });
+    let claim_fut = run_controller(
+        Controller::new(claim_api, Config::default()).owns(claim_member_api, Config::default()),
+        "VirtualMachineClaim",
+        metrics.clone(),
+        claim::reconcile,
+        claim::error_policy,
+        ctx.clone(),
+    );
+
+    readiness.controllers_started();
 
     tokio::select! {
         () = controller_fut => {
@@ -400,11 +447,15 @@ pub async fn run(cli: Cli) -> Result<()> {
         () = vsc_fut => {
             info!("VSphereCluster controller stream ended");
         }
+        () = fd_reflector => {
+            info!("Provider metrics watch ended");
+        }
         _ = shutdown_signal() => {
             info!("shutdown signal received; releasing controllers");
         }
     }
 
+    telemetry.shutdown();
     Ok(())
 }
 

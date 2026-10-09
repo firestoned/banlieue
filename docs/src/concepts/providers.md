@@ -177,7 +177,7 @@ banlieue's provider model is open. To ship a new provider:
    The provider CRD shape used in `crates/banlieue-api/src/infrastructure/`
    (`VSphereMachine`, `VSphereMachineTemplate`) is the reference.
 2. Build a controller against your CRD using `banlieue-provider-sdk`.
-3. Ship a container image and a Helm chart / Kustomize manifest.
+3. Ship a container image and a Kustomize manifest.
 
 That's it. No registration with the banlieue project. No code changes to
 `banlieue-api`. No coordination with the main controller team. The whole point

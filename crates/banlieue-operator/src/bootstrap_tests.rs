@@ -1183,4 +1183,268 @@ mod tests {
                 .any(|b| b.metadata.name == declared.metadata.name)
         );
     }
+
+    // ----------------------------------------------------------------------
+    // Cluster API aggregation and clusterctl packaging (ADR-0096)
+    // ----------------------------------------------------------------------
+
+    /// Label CAPI's manager ClusterRole aggregates on.
+    const CAPI_AGGREGATE_LABEL: &str = "cluster.x-k8s.io/aggregate-to-manager";
+
+    /// Label ADR-0005 stamps on every CRD that satisfies a CAPI v1beta2
+    /// contract.
+    const CAPI_CONTRACT_LABEL: &str = "cluster.x-k8s.io/v1beta2";
+
+    /// The group the aggregate role is confined to.
+    const INFRASTRUCTURE_GROUP: &str = "infrastructure.banlieue.io";
+
+    /// What CAPI's manager needs on an infrastructure kind: MachineSets create
+    /// machines from templates, and deleting a Machine deletes its
+    /// infrastructure object.
+    const CAPI_VERBS: [&str; 7] = [
+        "get", "list", "watch", "create", "update", "patch", "delete",
+    ];
+
+    fn capi_role() -> ClusterRole {
+        build_capi_aggregate_cluster_role().expect("embedded CAPI aggregate role parses")
+    }
+
+    #[test]
+    fn capi_aggregate_role_is_named_and_aggregated_to_the_capi_manager() {
+        let role = capi_role();
+        assert_eq!(CAPI_AGGREGATE_CLUSTER_ROLE, "banlieue-capi-infrastructure");
+        assert_eq!(
+            role.metadata.name.as_deref(),
+            Some(CAPI_AGGREGATE_CLUSTER_ROLE)
+        );
+        let labels = role.metadata.labels.unwrap_or_default();
+        assert_eq!(
+            labels.get(CAPI_AGGREGATE_LABEL).map(String::as_str),
+            Some("true"),
+            "the role exists only to be aggregated into CAPI's manager"
+        );
+    }
+
+    /// ADR-0096 Decision 4: nothing in `banlieue.io`, no Secrets, IPAM, Events
+    /// or Leases. One rule outside the infrastructure group is one too many.
+    #[test]
+    fn capi_aggregate_role_grants_nothing_outside_the_infrastructure_group() {
+        let rules = capi_role().rules.unwrap_or_default();
+        assert!(!rules.is_empty(), "the aggregate role grants nothing");
+        for rule in &rules {
+            assert_eq!(
+                rule.api_groups.as_deref(),
+                Some(&[INFRASTRUCTURE_GROUP.to_string()][..]),
+                "rule {rule:?} reaches outside {INFRASTRUCTURE_GROUP}"
+            );
+            assert!(
+                rule.non_resource_urls.is_none(),
+                "no non-resource URLs: {rule:?}"
+            );
+            assert!(
+                rule.resource_names.is_none(),
+                "the role grants by kind, not by name: {rule:?}"
+            );
+            for resource in rule.resources.as_deref().unwrap_or_default() {
+                assert!(!resource.contains('*'), "no wildcard resources: {resource}");
+            }
+            for verb in &rule.verbs {
+                assert!(
+                    CAPI_VERBS.contains(&verb.as_str()),
+                    "verb {verb:?} is not one the contract needs"
+                );
+            }
+        }
+    }
+
+    /// The role covers exactly the CRDs that carry the CAPI contract label,
+    /// plus `/status` for those with a status subresource, with the full verb
+    /// set on each. Derived from the generated CRDs, so a new infrastructure
+    /// kind left out of the role fails here instead of failing a CAPI user at
+    /// runtime with a 403.
+    #[test]
+    fn capi_aggregate_role_covers_exactly_the_capi_contract_kinds() {
+        let mut expected = std::collections::BTreeSet::new();
+        for crd in build_crds() {
+            let labels = crd.metadata.labels.clone().unwrap_or_default();
+            if !labels.contains_key(CAPI_CONTRACT_LABEL) {
+                continue;
+            }
+            assert_eq!(crd.spec.group, INFRASTRUCTURE_GROUP);
+            let plural = crd.spec.names.plural.clone();
+            let has_status = crd
+                .spec
+                .versions
+                .iter()
+                .any(|v| v.subresources.as_ref().is_some_and(|s| s.status.is_some()));
+            for verb in CAPI_VERBS {
+                expected.insert((plural.clone(), verb.to_string()));
+                if has_status {
+                    expected.insert((format!("{plural}/status"), verb.to_string()));
+                }
+            }
+        }
+        assert!(
+            !expected.is_empty(),
+            "no CRD carries the CAPI contract label"
+        );
+
+        let mut granted = std::collections::BTreeSet::new();
+        for rule in capi_role().rules.unwrap_or_default() {
+            for resource in rule.resources.unwrap_or_default() {
+                for verb in &rule.verbs {
+                    granted.insert((resource.clone(), verb.clone()));
+                }
+            }
+        }
+        assert_eq!(granted, expected);
+    }
+
+    /// The label used to sit on `banlieue-controller`, handing CAPI's manager
+    /// create and delete on every `banlieue.io` kind, IPAM claims, Events and
+    /// Leases. ADR-0096 takes it off.
+    #[test]
+    fn controller_cluster_role_is_not_aggregated_to_the_capi_manager() {
+        let role = InstallRole::Controller.cluster_role().unwrap();
+        let labels = role.metadata.labels.unwrap_or_default();
+        assert!(
+            !labels.contains_key(CAPI_AGGREGATE_LABEL),
+            "banlieue-controller must not be aggregated into CAPI's manager"
+        );
+    }
+
+    /// No other ClusterRole the install ships may carry the label either.
+    #[test]
+    fn only_the_capi_aggregate_role_is_aggregated_to_the_capi_manager() {
+        let manifests = build_operator_install(&opts(), &BACKENDS_WITH_ROLES, false).unwrap();
+        let aggregated: Vec<_> = manifests
+            .cluster_roles
+            .iter()
+            .filter(|r| {
+                r.metadata
+                    .labels
+                    .as_ref()
+                    .is_some_and(|l| l.contains_key(CAPI_AGGREGATE_LABEL))
+            })
+            .filter_map(|r| r.metadata.name.clone())
+            .collect();
+        assert_eq!(aggregated, vec![CAPI_AGGREGATE_CLUSTER_ROLE.to_string()]);
+    }
+
+    /// `bootstrap operator` is the clusterctl components file (ADR-0096
+    /// Decision 2), so it must install the aggregate role, exactly as shipped.
+    #[test]
+    fn operator_install_ships_the_capi_aggregate_role() {
+        let manifests = build_operator_install(&opts(), &["vsphere"], false).unwrap();
+        let role = manifests
+            .cluster_roles
+            .iter()
+            .find(|r| r.metadata.name.as_deref() == Some(CAPI_AGGREGATE_CLUSTER_ROLE))
+            .expect("bootstrap operator must install the CAPI aggregate role");
+        assert_eq!(role, &capi_role());
+    }
+
+    /// A single-role install never re-applies cluster-wide platform objects.
+    #[test]
+    fn role_installs_do_not_ship_the_capi_aggregate_role() {
+        for role in [
+            InstallRole::Imagebuilder,
+            InstallRole::Provider("vsphere".to_string()),
+        ] {
+            let manifests = build_role_install(&role, &opts()).unwrap();
+            assert!(
+                !manifests
+                    .cluster_roles
+                    .iter()
+                    .any(|r| r.metadata.name.as_deref() == Some(CAPI_AGGREGATE_CLUSTER_ROLE)),
+                "{} install must not carry the CAPI aggregate role",
+                role.name()
+            );
+        }
+    }
+
+    /// clusterctl reads the target namespace from the components file's one
+    /// Namespace object, and rejects a file that carries more than one.
+    #[test]
+    fn operator_install_yaml_carries_exactly_one_namespace() {
+        let yaml = build_operator_install(&opts(), &["vsphere"], false)
+            .unwrap()
+            .to_yaml()
+            .unwrap();
+        let namespaces: Vec<String> = yaml
+            .split("\n---\n")
+            .filter_map(|doc| serde_yaml::from_str::<serde_yaml::Value>(doc).ok())
+            .filter(|doc| doc.get("kind").and_then(|k| k.as_str()) == Some("Namespace"))
+            .filter_map(|doc| {
+                doc.get("metadata")
+                    .and_then(|m| m.get("name"))
+                    .and_then(|n| n.as_str())
+                    .map(str::to_string)
+            })
+            .collect();
+        assert_eq!(namespaces, vec![DEFAULT_NAMESPACE.to_string()]);
+    }
+
+    const CLUSTERCTL_METADATA: &str = include_str!("../../../config/clusterctl/metadata.yaml");
+
+    /// `(major, minor, contract)` for each `releaseSeries` entry.
+    fn release_series() -> Vec<(u64, u64, String)> {
+        let doc: serde_yaml::Value = serde_yaml::from_str(CLUSTERCTL_METADATA).unwrap();
+        assert_eq!(
+            doc.get("apiVersion").and_then(|v| v.as_str()),
+            Some("clusterctl.cluster.x-k8s.io/v1alpha3")
+        );
+        assert_eq!(doc.get("kind").and_then(|v| v.as_str()), Some("Metadata"));
+        doc.get("releaseSeries")
+            .and_then(|s| s.as_sequence())
+            .expect("releaseSeries is a list")
+            .iter()
+            .map(|entry| {
+                (
+                    entry
+                        .get("major")
+                        .and_then(serde_yaml::Value::as_u64)
+                        .unwrap(),
+                    entry
+                        .get("minor")
+                        .and_then(serde_yaml::Value::as_u64)
+                        .unwrap(),
+                    entry
+                        .get("contract")
+                        .and_then(|c| c.as_str())
+                        .unwrap()
+                        .to_string(),
+                )
+            })
+            .collect()
+    }
+
+    /// clusterctl refuses to install a version whose series is missing from
+    /// `metadata.yaml`, so a version bump without a new entry would ship a
+    /// release `clusterctl init` cannot install (ADR-0096 Decision 3).
+    #[test]
+    fn clusterctl_metadata_has_an_entry_for_the_workspace_series() {
+        let mut parts = env!("CARGO_PKG_VERSION").split('.');
+        let major: u64 = parts.next().unwrap().parse().unwrap();
+        let minor: u64 = parts.next().unwrap().parse().unwrap();
+        let series = release_series();
+        assert!(
+            series
+                .iter()
+                .any(|(ma, mi, contract)| *ma == major && *mi == minor && contract == "v1beta2"),
+            "config/clusterctl/metadata.yaml has no v1beta2 entry for {major}.{minor}: {series:?}"
+        );
+    }
+
+    /// Every series banlieue has released implements the v1beta2 contract
+    /// (ADR-0005): none may claim another, and none may repeat.
+    #[test]
+    fn clusterctl_metadata_maps_every_series_to_v1beta2_once() {
+        let series = release_series();
+        let mut seen = std::collections::BTreeSet::new();
+        for (major, minor, contract) in &series {
+            assert_eq!(contract, "v1beta2", "{major}.{minor}");
+            assert!(seen.insert((*major, *minor)), "{major}.{minor} repeats");
+        }
+    }
 }

@@ -23,6 +23,12 @@ on a real cluster, using the released container image
     Install the CRDs, the `banlieue-controller`, RBAC, and the optional
     ValidatingAdmissionPolicies — the foundation every provider builds on.
 
+- :material-puzzle: **[Cluster API](cluster-api.md)**
+
+    Install banlieue as a clusterctl infrastructure provider with
+    `clusterctl init --infrastructure banlieue`, and the scoped ClusterRole
+    that authorises Cluster API's manager on the infrastructure kinds only.
+
 - :material-server-network: **[vSphere Provider](vsphere-provider.md)**
 
     From an empty cluster to a scheduled `VirtualMachine` on vCenter: the
@@ -92,6 +98,12 @@ on a real cluster, using the released container image
     Turn an OCI/Kairos image into a `VMImage` raw disk automatically (ADR-0010)
     — install `banlieue-imagebuilder`, watch the build, and see exactly what's
     implemented today versus tracked as a follow-up.
+
+- :material-chart-line: **[Observability](observability.md)**
+
+    Prometheus metrics on every role, scraping operator-spawned provider pods,
+    the Grafana dashboard, opt-in OpenTelemetry traces, and why a standby
+    replica reports Ready.
 
 </div>
 

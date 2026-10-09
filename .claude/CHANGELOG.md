@@ -1,5 +1,116 @@
 # Changelog
 
+## [2026-10-08] - FINOS readiness (roadmap 12), docs site closed (roadmap 08), ADR-0091 to ADR-0096
+
+**Author:** Erick Bourgeois
+
+### Added
+- **Governance:**
+  - `CONTRIBUTING.md`: DCO plus signed commits, the ADD flow, the gate.
+  - `CODE_OF_CONDUCT.md`: Contributor Covenant 2.1 verbatim, except the
+    reporting contact.
+  - `GOVERNANCE.md`: roles, lazy consensus, ADRs, votes, maintainer
+    criteria, the post-1.0 support and backport policy.
+  - `MAINTAINERS.md` and `NOTICE`.
+  - `docs/src/governance/{charter,finos-contribution}.md`.
+- **DCO in CI:**
+  - `scripts/dco-check.sh` and `make dco-check`: every PR commit needs a
+    `Signed-off-by` matching its author; GitHub App bots match by name,
+    because Dependabot signs off as `support@github.com`.
+  - `scripts/dco-check-test.sh` and `make dco-check-test` cover 9 cases.
+  - A new `✍️ DCO Sign-off` job is in `✅ Required Checks`.
+- **Release changelog:**
+  - `cliff.toml`, `make changelog` and a generated root `CHANGELOG.md`.
+  - `make release-notes`, now in each GitHub Release body.
+  - `make git-cliff-install`: pinned v2.14.2, SHA-512 verified.
+- **ADR-0091, Prometheus metrics:**
+  - `/metrics` on every role, cloud-hypervisor included.
+  - The SDK's `runner::run_controller` wraps all 20 `Controller::new` call
+    sites and records reconcile totals, durations and error kinds, with no
+    object names.
+  - Gauges: `banlieue_leader`, `banlieue_provider_failure_domains`, and
+    `banlieue_virtualmachines{phase}` (phase derived; VM status has none).
+  - `deploy/dashboards/`.
+- **ADR-0092, OpenTelemetry traces:**
+  - OTLP/HTTP-protobuf export, only when `OTEL_EXPORTER_OTLP_ENDPOINT` is
+    set.
+  - Spans for reconcile and scheduling, plus `skip_all` backend spans with
+    identifiers only.
+- **ADR-0093, health endpoints:**
+  - A path-aware listener (`httpd.rs`, `health.rs`): `/livez`, and
+    `/readyz` with body `leader`/`standby`/`starting`/`unreachable`; 404
+    and 400 for anything else.
+  - A standby that can take over is Ready; a bind failure is fatal; a
+    failed Lease read no longer kills a standby.
+- **ADR-0094, NetworkPolicies:**
+  - Opt-in `deploy/network-policies/`: default deny, then one allow per
+    component and per import or push Job.
+  - `crates/banlieue-operator/tests/network_policies.rs`, 12 tests.
+  - `docs/src/security/network-policies.md`.
+- **ADR-0095, credential rotation:** no Secret watch. Per-provider tests
+  pin each production client factory as stateless, and the vSphere,
+  Proxmox and libvirt guides gain a rotation procedure.
+- **ADR-0096, clusterctl:**
+  - One clusterctl provider, `banlieue` (`config/clusterctl/metadata.yaml`).
+  - `make clusterctl-components` renders `infrastructure-components.yaml`
+    from `bootstrap operator --dry-run`, escaped for envsubst.
+  - The release job attaches both files.
+  - A scoped `banlieue-capi-infrastructure` aggregate role
+    (`deploy/capi/`).
+  - `make kind-e2e-capi`, a contract e2e against real CAPI v1.14.3: 2 of 2
+    pass on a `kind` cluster.
+  - `docs/src/guides/cluster-api.md`.
+- **Docs site:** Developer → Contributing, a Governance section and a
+  Changelog page, each pulling in a root file through
+  `mkdocs-include-markdown-plugin`; the Observability, Cluster API and
+  Network Policies pages.
+
+### Changed
+- **Security fix:** the CAPI aggregation label is removed from
+  `banlieue-controller`. CAPI's manager had inherited create and delete on
+  every `banlieue.io` kind; it now gets only `infrastructure.banlieue.io`.
+- `docs/mkdocs.yml`: `strict: true`.
+- **Dependencies:** `prometheus-client` 0.25; `opentelemetry`,
+  `opentelemetry_sdk` and `opentelemetry-otlp` 0.33; `tracing-opentelemetry`
+  0.34. reqwest stays on 0.13 with no aws-lc, OpenSSL or tonic.
+- Per-reconcile success logs move from `info` to `debug`.
+- **Helm:** removed from scope everywhere (roadmap 12 §4.6, two doc
+  mentions). There is no Helm chart and none will be built.
+- `.github/community/01-decisions.md`:
+  - frozen as the annotated pre-ADR record;
+  - D-020 updated;
+  - O-004 closed by ADR-0096.
+- **Roadmap 08 ✅.** Roadmap 12 is ticked through §4.2 to §4.10; what's
+  left is listed under Impact.
+- **Threat model full pass**, stamp advanced to ADR-0096:
+  - A-19 telemetry;
+  - actors CAPI's manager and the telemetry consumers;
+  - TB-14 telemetry and TB-15 CAPI → infrastructure objects;
+  - rows on TB-2 and TB-4;
+  - §7.21 and §7.22;
+  - four §8 risks;
+  - the old "fixed 200 health" risk retired.
+- CALM: metrics and liveness interfaces on every role; the metrics scraper
+  and OTel collector nodes; four controls.
+
+### Why
+FINOS readiness: governance, release engineering, observability, network
+hardening and CAPI packaging.
+
+### Impact
+- [ ] Breaking change. One case comes close: anyone relying on the old CAPI
+  aggregation must re-apply the RBAC to get the new scoped role.
+- [x] Requires cluster rollout (new image: metrics, health and leader
+  behaviour; re-apply RBAC for the CAPI role)
+- [ ] Config change only
+- [ ] Documentation only
+
+Still open on roadmap 12:
+- e2e scenarios that wait on roadmaps 10 and 14;
+- nightly real-backend CI, which needs self-hosted runners;
+- `cargo publish` of `banlieue-api`;
+- the FINOS donation itself.
+
 ## [2026-10-02 18:10] - bootstrap-libvirt-host.sh: pool root picks the roomiest mount again
 
 **Author:** Erick Bourgeois

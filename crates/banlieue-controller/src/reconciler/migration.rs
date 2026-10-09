@@ -123,6 +123,7 @@ impl PlacementDriftReason {
 /// Returns [`MigrationAction::InPlace`] when there is no drift, or one of
 /// the drift variants otherwise. The function is total: every input
 /// combination produces a well-defined action.
+#[tracing::instrument(name = "scheduler.evaluate_migration", skip_all)]
 pub fn evaluate(vm: &VirtualMachine, decision: &Decision) -> MigrationAction {
     let Some(current) = vm.status.as_ref().and_then(|s| s.scheduled.as_ref()) else {
         // No previous placement → this is the first scheduling pass, not a

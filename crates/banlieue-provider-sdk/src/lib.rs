@@ -12,8 +12,15 @@
 //!
 //! Modules:
 //!
-//! - [`bootstrap`] — shared process startup: `tracing` init, the health
-//!   server, and the SIGTERM / Ctrl-C shutdown future.
+//! - [`bootstrap`]: shared process startup: `tracing` init (with opt-in
+//!   OTLP trace export, ADR-0092) and the SIGTERM / Ctrl-C shutdown future.
+//! - [`health`]: path-aware `/livez` and `/readyz`, with readiness fed by
+//!   leader election (ADR-0093).
+//! - [`metrics`]: the process Prometheus registry served at `/metrics`
+//!   (ADR-0091).
+//! - [`runner`]: the instrumented controller runner every role uses, which
+//!   records reconcile metrics and spans.
+//! - [`httpd`]: the minimal HTTP/1.1 listener behind `health` and `metrics`.
 //! - [`client`] — build a [`kube::Client`] from kubeconfig or in-cluster
 //!   config, with explicit timeouts.
 //! - [`status`] — typed helpers for `metav1.Condition` lists.
@@ -38,11 +45,15 @@ pub mod ek;
 pub mod error;
 pub mod finalizer;
 pub mod guestdata;
+pub mod health;
+pub mod httpd;
 pub mod leader;
+pub mod metrics;
 pub mod naming;
 pub mod osartifact;
 pub mod pem;
 pub mod reconciler;
+pub mod runner;
 pub mod scheduling;
 pub mod ssa;
 pub mod status;

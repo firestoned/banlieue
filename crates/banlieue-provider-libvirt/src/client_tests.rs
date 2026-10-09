@@ -65,4 +65,15 @@ mod tests {
         let c = FakeClient::failing("connection refused");
         assert!(matches!(c.list_pools().await, Err(Error::Libvirt(_))));
     }
+
+    /// ADR-0095: a rotated credential Secret takes effect on the next
+    /// reconcile only because nothing built from a credential outlives one.
+    /// The production factory must therefore hold no client, session or
+    /// credential: a zero-sized type cannot. A future connection cache has to
+    /// key on the Secret's `resourceVersion` instead, and must change this
+    /// test deliberately.
+    #[test]
+    fn production_factory_holds_no_client_between_reconciles() {
+        assert_eq!(std::mem::size_of::<TlsClientFactory>(), 0);
+    }
 }

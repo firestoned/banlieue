@@ -17,6 +17,10 @@ edit_uri: edit/main/docs/src/
 docs_dir: src
 site_dir: site
 
+# Fail the build on any warning: broken links, missing nav targets, bad
+# includes (roadmap 08).
+strict: true
+
 # Copyright
 copyright: Copyright &copy; 2026 Erick Bourgeois
 
@@ -97,6 +101,10 @@ plugins:
       type: timeago
       fallback_to_build_date: true
       enable_git_follow: false
+
+  # Pulls the root CONTRIBUTING / GOVERNANCE / MAINTAINERS / CODE_OF_CONDUCT /
+  # CHANGELOG files into the site, so each has one source of truth.
+  - include-markdown
 
 # Extensions
 markdown_extensions:
@@ -182,6 +190,7 @@ nav:
       - End-to-End Setup (Bootstrap to Running VMs): guides/end-to-end-setup.md
       - Core Controller: guides/core-controller.md
       - Provider Lifecycle & Install: guides/provider-lifecycle.md
+      - Cluster API (clusterctl): guides/cluster-api.md
       - vSphere Provider: guides/vsphere-provider.md
       - libvirt Provider: guides/libvirt-provider.md
       - Proxmox VE Provider: guides/proxmox-provider.md
@@ -193,6 +202,7 @@ nav:
       - Testing claim authorization: guides/testing-claim-authorization.md
       - Sandbox Identity with mediatore: guides/sandbox-identity-mediatore.md
       - Environment / Provider Isolation: guides/environment-provider-isolation.md
+      - Observability: guides/observability.md
       - Setting up the Kairos Operator: guides/kairos-operator-setup.md
       - Using banlieue-imagebuilder: guides/using-banlieue-imagebuilder.md
       - Building an Alpine VM Template: guides/alpine-vsphere-template.md
@@ -215,15 +225,25 @@ nav:
       - Overview: developer/index.md
       - Local Development: developer/local-development.md
       - OAuth / OIDC Clients: developer/oauth-clients.md
+      - Contributing: developer/contributing.md
+
+  - Governance:
+      - Governance: governance/index.md
+      - Maintainers: governance/maintainers.md
+      - Code of Conduct: governance/code-of-conduct.md
+      - Charter (draft): governance/charter.md
+      - Contributing to FINOS: governance/finos-contribution.md
 
   - Security:
       - Security Boundary: security/sandbox-boundary.md
       - vSphere Least Privilege: security/vsphere-least-privilege.md
       - vTPM per Provider: security/vtpm-per-provider.md
       - Guest Configuration Hygiene: security/guest-configuration.md
+      - Network Policies: security/network-policies.md
       - Threat Model: security/threat-model.md
 
   - Reference:
       - API Reference (CRDs): reference/api.md
       - Provider Comparison: reference/provider-comparison.md
       - License: reference/license.md
+      - Changelog: changelog.md

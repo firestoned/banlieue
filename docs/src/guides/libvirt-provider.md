@@ -407,6 +407,25 @@ same name quietly inherits a stale one.
 The shared boot image is never deleted: it belongs to the `VMImage`, and
 removing it with one machine would break every other VM using it.
 
+## Rotating credentials
+
+1. Issue a new client certificate from the CA the libvirt host trusts.
+2. Update the Secret's `tls.crt` and `tls.key` in place. If the CA itself
+   changes, add the new CA to the host's trust store first, then update the
+   CA ConfigMap.
+3. Wait about 30 seconds, and check that the `Provider` stays `Ready`
+   (`kubectl get provider <name>`).
+4. Revoke the old certificate, or remove the old CA from the host.
+
+banlieue never watches the Secret. Each reconcile reads it by name and builds
+a fresh connection from it, so the new credential is in use within one
+requeue interval (about 30 seconds), with no restart. Watching would need
+read access to every Secret in the namespace, which the provider
+deliberately does not have
+([ADR-0095](https://github.com/firestoned/banlieue/blob/main/docs/adr/0095-credential-rotation-without-secret-watches.md)).
+To cut a credential off immediately, revoke it on the backend: that stops it
+everywhere at once.
+
 ## Troubleshooting
 
 | Symptom | Cause |

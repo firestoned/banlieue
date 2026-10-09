@@ -383,6 +383,23 @@ Full worked examples:
     (`COS_PERSISTENT`) came up as `crypto_LUKS`, mounted and auto-unlocked
     via its own vTPM on first boot, with no manual intervention.
 
+## Rotating credentials
+
+1. Create the new vCenter user or password, with the same role as the old one.
+2. Update the Secret in place (`kubectl -n <namespace> create secret generic <name> --from-literal=username=... --from-literal=password=... --dry-run=client -o yaml | kubectl apply -f -`).
+3. Wait about 30 seconds, and check that the `Provider` stays `Ready`
+   (`kubectl get provider <name>`).
+4. Remove the old password or user in vCenter.
+
+banlieue never watches the Secret. Each reconcile reads it by name and builds
+a fresh connection from it, so the new credential is in use within one
+requeue interval (about 30 seconds), with no restart. Watching would need
+read access to every Secret in the namespace, which the provider
+deliberately does not have
+([ADR-0095](https://github.com/firestoned/banlieue/blob/main/docs/adr/0095-credential-rotation-without-secret-watches.md)).
+To cut a credential off immediately, revoke it on the backend: that stops it
+everywhere at once.
+
 ## Troubleshooting
 
 `Provider` not `Ready` — read the condition `reason`:

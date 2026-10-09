@@ -6,7 +6,8 @@
 //! names the host — which `Provider` it is, where guests' disks live, which
 //! bridges exist, which kubeconfig to use — comes from the host-local config
 //! file the bootstrap script writes (ADR-0062 Decision 4), so the flags here
-//! are only process concerns: the config path, logging, health, the lease.
+//! are only process concerns: the config path, logging, health, metrics,
+//! the lease.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -15,15 +16,18 @@ use std::time::Duration;
 use anyhow::{Context as _, Result};
 use banlieue_api::banlieue::{Provider, VMImage};
 use banlieue_api::infrastructure::CloudHypervisorMachine;
-use banlieue_provider_sdk::bootstrap::{init_tracing, serve_health, shutdown_signal};
+use banlieue_provider_sdk::bootstrap::{
+    Observability, init_tracing, shutdown_signal, start_observability,
+};
 use banlieue_provider_sdk::client::build_client_with;
+use banlieue_provider_sdk::health::Election;
 use banlieue_provider_sdk::leader::{
     DEFAULT_LEASE_DURATION_SECS, DEFAULT_RENEW_PERIOD_SECS, DEFAULT_RETRY_PERIOD_SECS,
     LeaderConfig, acquire_or_wait, renew_forever,
 };
 use banlieue_provider_sdk::naming::workload_name;
+use banlieue_provider_sdk::runner::run_controller;
 use clap::{Args, Subcommand, ValueEnum};
-use futures::StreamExt;
 use kube::runtime::{Controller, watcher::Config as WatchConfig};
 use kube::{Api, Client};
 use tracing::{error, info, warn};
@@ -37,6 +41,13 @@ use crate::{provider, sys, systemd, token, vmimage};
 /// Where the bootstrap script writes the host config.
 pub const DEFAULT_CONFIG_PATH: &str = "/etc/banlieue/cloud-hypervisor.toml";
 const DEFAULT_HEALTH_PORT: u16 = 8081;
+/// Same metrics port as every other role (ADR-0091 Decision 1).
+const DEFAULT_METRICS_PORT: u16 = 8080;
+
+/// This role's name: the OTLP `service.name` (ADR-0092) and the `role`
+/// label of `banlieue_leader` (ADR-0091).
+pub const ROLE: &str = "banlieue-provider-cloud-hypervisor";
+
 /// Per-crate `tracing` directives layered on top of the base log level.
 const LOG_DIRECTIVES: &[&str] = &["kube=warn", "zbus=warn"];
 
@@ -77,6 +88,10 @@ pub struct Cli {
     /// Health server bind port.
     #[arg(long, env = "BANLIEUE_HEALTH_PORT", default_value_t = DEFAULT_HEALTH_PORT)]
     pub health_port: u16,
+
+    /// Metrics server bind port: Prometheus `GET /metrics` (ADR-0091).
+    #[arg(long, env = "BANLIEUE_METRICS_PORT", default_value_t = DEFAULT_METRICS_PORT)]
+    pub metrics_port: u16,
 
     /// Log format: `json` for SIEM-friendly output, `text` for local dev.
     #[arg(long, env = "RUST_LOG_FORMAT", default_value = "text")]
@@ -142,10 +157,16 @@ async fn build_client(config: &HostConfig) -> Result<Client> {
 ///
 /// # Errors
 /// Returns an error if the host config is unusable, or if logging init,
-/// the kube client, the systemd connection or the leader lease fails.
+/// the kube client, the systemd connection, binding the health or metrics
+/// port, or the leader lease fails.
 pub async fn run(cli: Cli) -> Result<()> {
-    init_tracing(&cli.log_format, cli.log_level.as_deref(), LOG_DIRECTIVES)
-        .context("initialising tracing")?;
+    let telemetry = init_tracing(
+        ROLE,
+        &cli.log_format,
+        cli.log_level.as_deref(),
+        LOG_DIRECTIVES,
+    )
+    .context("initialising tracing")?;
 
     // One-shot roles exit when their work is done.
     if let Some(ChCommand::Import(args)) = cli.command {
@@ -210,23 +231,31 @@ pub async fn run(cli: Cli) -> Result<()> {
         .await
         .context("connecting to systemd")?
         .with_report_wake(report_wake);
-    tokio::spawn(serve_health(cli.health_port));
+    let lease = (!cli.no_leader_elect)
+        .then(|| leader_config(&config, &class, cli.leader_election_identity.clone()));
+    let election = lease
+        .as_ref()
+        .map_or(Election::Disabled, LeaderConfig::election);
+    let Observability { metrics, readiness } =
+        start_observability(ROLE, cli.health_port, cli.metrics_port, election)
+            .await
+            .context("starting health and metrics servers")?;
 
-    if cli.no_leader_elect {
-        info!("leader election disabled by --no-leader-elect");
-    } else {
-        let lc = leader_config(&config, &class, cli.leader_election_identity.clone());
+    if let Some(lc) = lease {
         info!(lease = %lc.lease_name, "waiting for leader election");
-        acquire_or_wait(client.clone(), &lc)
+        acquire_or_wait(client.clone(), &lc, &readiness)
             .await
             .context("acquiring leader lease")?;
         let renewer = client.clone();
+        let renewer_readiness = readiness.clone();
         tokio::spawn(async move {
-            if let Err(e) = renew_forever(renewer, lc).await {
+            if let Err(e) = renew_forever(renewer, lc, renewer_readiness).await {
                 error!(error = %e, "leader lease renewer terminated — exiting");
                 std::process::exit(1);
             }
         });
+    } else {
+        info!("leader election disabled by --no-leader-elect");
     }
 
     let ctx = Arc::new(Context {
@@ -238,14 +267,14 @@ pub async fn run(cli: Cli) -> Result<()> {
     });
 
     let provider_api: Api<Provider> = Api::namespaced(client.clone(), &config.provider.namespace);
-    let provider_ctrl = Controller::new(provider_api, provider_watch_config(&config))
-        .run(provider::reconcile, provider::error_policy, ctx.clone())
-        .for_each(|res| async move {
-            match res {
-                Ok((obj, _)) => info!(kind = "Provider", ?obj, "reconciled"),
-                Err(e) => error!(kind = "Provider", error = %e, "reconcile error"),
-            }
-        });
+    let provider_ctrl = run_controller(
+        Controller::new(provider_api, provider_watch_config(&config)),
+        "Provider",
+        metrics.clone(),
+        provider::reconcile,
+        provider::error_policy,
+        ctx.clone(),
+    );
 
     // Machines live beside their Provider (ADR-0060); the reconciler skips
     // any whose providerRef names another host.
@@ -257,25 +286,26 @@ pub async fn run(cli: Cli) -> Result<()> {
     let woken = futures::stream::unfold(report_woken, |mut rx| async move {
         rx.recv().await.map(|()| ((), rx))
     });
-    let machine_ctrl = Controller::new(machine_api, WatchConfig::default())
-        .reconcile_all_on(woken)
-        .run(reconciler::reconcile, reconciler::error_policy, ctx.clone())
-        .for_each(|res| async move {
-            match res {
-                Ok((obj, _)) => info!(kind = "CloudHypervisorMachine", ?obj, "reconciled"),
-                Err(e) => error!(kind = "CloudHypervisorMachine", error = %e, "reconcile error"),
-            }
-        });
+    let machine_ctrl = run_controller(
+        Controller::new(machine_api, WatchConfig::default()).reconcile_all_on(woken),
+        "CloudHypervisorMachine",
+        metrics.clone(),
+        reconciler::reconcile,
+        reconciler::error_policy,
+        ctx.clone(),
+    );
 
     // VMImage is cluster-scoped: every image may name this provider class.
-    let image_ctrl = Controller::new(Api::<VMImage>::all(client.clone()), WatchConfig::default())
-        .run(vmimage::reconcile, vmimage::error_policy, ctx)
-        .for_each(|res| async move {
-            match res {
-                Ok((obj, _)) => info!(kind = "VMImage", ?obj, "reconciled"),
-                Err(e) => error!(kind = "VMImage", error = %e, "reconcile error"),
-            }
-        });
+    let image_ctrl = run_controller(
+        Controller::new(Api::<VMImage>::all(client.clone()), WatchConfig::default()),
+        "VMImage",
+        metrics.clone(),
+        vmimage::reconcile,
+        vmimage::error_policy,
+        ctx,
+    );
+
+    readiness.controllers_started();
 
     // Guests are systemd units, not children of this process: stopping the
     // provider leaves them running (ADR-0063).
@@ -285,6 +315,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         () = image_ctrl => info!("VMImage controller stream ended"),
         _ = shutdown_signal() => info!("shutdown signal received; guests keep running"),
     }
+    telemetry.shutdown();
     Ok(())
 }
 

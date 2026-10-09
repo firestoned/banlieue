@@ -22,6 +22,7 @@ use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName, pem::PemObjec
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio_rustls::{TlsConnector, client::TlsStream};
+use tracing::instrument;
 
 use crate::rpc::{
     MESSAGE_HEADER_LEN, MESSAGE_LEN_PREFIX_LEN, MessageHeader, MessageStatus, MessageType,
@@ -502,6 +503,7 @@ pub async fn connect_tls(
 ///
 /// # Errors
 /// As [`connect_tls`], plus [`TransportError::Timeout`].
+#[instrument(name = "libvirt.connect", skip_all, fields(host = %host, port))]
 pub async fn connect_tls_with_timeout(
     host: &str,
     port: u16,

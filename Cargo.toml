@@ -60,6 +60,24 @@ futures = "0.3"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
+# Prometheus metrics on every role (ADR-0091). The Prometheus project's own
+# client: OpenMetrics text encoding, no HTTP server and no TLS of its own (the
+# SDK serves the registry from its hand-rolled listener).
+prometheus-client = "0.25"
+
+# OpenTelemetry trace export, opt-in through the standard OTEL_* environment
+# (ADR-0092). OTLP over HTTP/protobuf only: no `grpc-tonic`, so no tonic and
+# no second HTTP/2 stack. `reqwest-blocking-client` makes the exporter use the
+# workspace's reqwest 0.13 (same major, so the `rustls-no-provider` feature set
+# below applies and TLS uses the process's installed `ring` provider); the
+# blocking client suits the SDK's thread-based batch span processor, which
+# exports off the tokio runtime. Default features are off so the metrics/logs
+# signals and the gRPC transport are never compiled in.
+opentelemetry = { version = "0.33", default-features = false, features = ["trace"] }
+opentelemetry_sdk = { version = "0.33", default-features = false, features = ["trace"] }
+opentelemetry-otlp = { version = "0.33", default-features = false, features = ["http-proto", "trace", "reqwest-blocking-client"] }
+tracing-opentelemetry = { version = "0.34", default-features = false }
+
 # CLI
 clap = { version = "4", features = ["derive", "env"] }
 

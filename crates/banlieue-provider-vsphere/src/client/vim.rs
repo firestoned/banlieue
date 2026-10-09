@@ -12,7 +12,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use banlieue_api::banlieue::{DiskController, InstallMode, NicAdapter, ProviderConnection};
 use banlieue_api::common::{DiskProvisioning, Firmware, PowerState};
-use tracing::{debug, info, warn};
+use tracing::{debug, info, instrument, warn};
 use vim_rs::core::client::{Client, ClientBuilder, VimClient};
 use vim_rs::mo::cluster_compute_resource::ClusterComputeResource;
 use vim_rs::mo::container_view::ContainerView;
@@ -124,6 +124,10 @@ const KIB_PER_GIB: i64 = 1024 * 1024;
 const BYTES_PER_KIB: i64 = 1024;
 
 /// Factory that talks to a real vCenter via vim_rs.
+///
+/// Stateless by design (ADR-0095): every reconcile builds a fresh client from
+/// credentials it has just read, so a rotated Secret is used by the next one.
+/// Any connection reuse must key on the Secret's `resourceVersion`.
 #[derive(Default, Clone)]
 pub struct VimClientFactory;
 
@@ -288,6 +292,7 @@ fn build_http_client_with_timeouts(
 
 #[async_trait]
 impl VSphereClientFactory for VimClientFactory {
+    #[instrument(name = "vsphere.connect", skip_all)]
     async fn build(
         &self,
         connection: &ProviderConnection,
@@ -321,8 +326,13 @@ pub struct VimClientImpl {
     client: Arc<Client>,
 }
 
+// One `vsphere.<op>` span per backend call (ADR-0092). Spans skip every
+// argument and record inventory names and morefs only: never credentials,
+// `extraConfig` (it carries guest user-data), guestinfo values or custom
+// attribute values.
 #[async_trait]
 impl VSphereClient for VimClientImpl {
+    #[instrument(name = "vsphere.list_datacenters", skip_all)]
     async fn list_datacenters(&self) -> Result<Vec<Datacenter>> {
         let sc = self.client.service_content();
         let view_manager_moref = sc
@@ -366,6 +376,7 @@ impl VSphereClient for VimClientImpl {
         Ok(out)
     }
 
+    #[instrument(name = "vsphere.list_clusters", skip_all, fields(datacenter = %dc.name))]
     async fn list_clusters(&self, dc: &Datacenter) -> Result<Vec<Cluster>> {
         let sc = self.client.service_content();
         let view_manager_moref = sc
@@ -408,6 +419,7 @@ impl VSphereClient for VimClientImpl {
         Ok(out)
     }
 
+    #[instrument(name = "vsphere.find_template", skip_all, fields(datacenter = %dc.name, template = %name))]
     async fn find_template(
         &self,
         dc: &Datacenter,
@@ -494,6 +506,7 @@ impl VSphereClient for VimClientImpl {
         Ok(None)
     }
 
+    #[instrument(name = "vsphere.list_datastores", skip_all, fields(cluster = %cluster.name))]
     async fn list_datastores(&self, cluster: &Cluster) -> Result<Vec<Datastore>> {
         // A cluster's reachable datastores come from its own `datastore`
         // association, not the folder tree — so read the property directly
@@ -535,6 +548,7 @@ impl VSphereClient for VimClientImpl {
         Ok(out)
     }
 
+    #[instrument(name = "vsphere.list_networks", skip_all, fields(cluster = %cluster.name))]
     async fn list_networks(&self, cluster: &Cluster) -> Result<Vec<Network>> {
         let ccr = ClusterComputeResource::new(self.client.clone(), &cluster.moref);
         let morefs = ccr
@@ -561,6 +575,7 @@ impl VSphereClient for VimClientImpl {
         Ok(out)
     }
 
+    #[instrument(name = "vsphere.import_iso_template", skip_all, fields(datacenter = %req.datacenter, cluster = %req.cluster, template = %req.template_name))]
     async fn import_iso_template(&self, req: &crate::client::IsoImportRequest) -> Result<String> {
         // ADR-0020: the ISO is already uploaded (`req.iso_datastore_path`). Here
         // we `CreateVM_Task` an empty EFI VM (pvscsi + blank disk + IDE CD-ROM
@@ -805,6 +820,7 @@ impl VSphereClient for VimClientImpl {
         Ok(resolved)
     }
 
+    #[instrument(name = "vsphere.ensure_datastore_dir", skip_all, fields(datacenter_moref = %datacenter_moref, datastore = %datastore))]
     async fn ensure_datastore_dir(
         &self,
         datacenter_moref: &str,
@@ -832,6 +848,7 @@ impl VSphereClient for VimClientImpl {
         }
     }
 
+    #[instrument(name = "vsphere.destroy_if_present", skip_all, fields(datacenter_moref = %datacenter_moref, vm_name = %name))]
     async fn destroy_if_present(
         &self,
         datacenter_moref: &str,
@@ -856,6 +873,7 @@ impl VSphereClient for VimClientImpl {
         self.power_off_and_destroy(&existing).await
     }
 
+    #[instrument(name = "vsphere.clone_vm", skip_all, fields(cluster_moref = %req.cluster_moref, vm_name = %req.vm_name))]
     async fn clone_vm(&self, req: &crate::client::CloneVmRequest) -> Result<String> {
         // Resource pool (cluster) + VM folder (datacenter), same resolution
         // as import_iso_template.
@@ -1107,6 +1125,7 @@ impl VSphereClient for VimClientImpl {
             .ok_or_else(|| Error::Vsphere("cloned VM not found after CloneVM_Task".to_string()))
     }
 
+    #[instrument(name = "vsphere.set_power_state", skip_all, fields(vm_moref = %vm_moref, desired = ?desired))]
     async fn set_power_state(&self, vm_moref: &str, desired: PowerState) -> Result<()> {
         let vmm = VimVirtualMachine::new(self.client.clone(), vm_moref);
         let task = match desired {
@@ -1126,6 +1145,7 @@ impl VSphereClient for VimClientImpl {
         self.wait_for_task(&task.value, "set power state").await
     }
 
+    #[instrument(name = "vsphere.add_tpm_device", skip_all, fields(vm_moref = %vm_moref))]
     async fn add_tpm_device(&self, vm_moref: &str) -> Result<()> {
         let vmm = VimVirtualMachine::new(self.client.clone(), vm_moref);
         let spec = build_add_tpm_reconfigure_spec();
@@ -1136,6 +1156,7 @@ impl VSphereClient for VimClientImpl {
         self.wait_for_task(&task.value, "add vTPM device").await
     }
 
+    #[instrument(name = "vsphere.tpm_endorsement_certificates", skip_all, fields(vm_moref = %vm_moref))]
     async fn tpm_endorsement_certificates(&self, vm_moref: &str) -> Result<Vec<Vec<u8>>> {
         let vmm = VimVirtualMachine::new(self.client.clone(), vm_moref);
         let cfg = vmm
@@ -1157,6 +1178,7 @@ impl VSphereClient for VimClientImpl {
             .collect())
     }
 
+    #[instrument(name = "vsphere.grow_os_disk", skip_all, fields(vm_moref = %vm_moref, size_gi_b))]
     async fn grow_os_disk(&self, vm_moref: &str, size_gi_b: u32) -> Result<()> {
         let vmm = VimVirtualMachine::new(self.client.clone(), vm_moref);
         let cfg = vmm
@@ -1240,6 +1262,7 @@ impl VSphereClient for VimClientImpl {
         self.wait_for_task(&task.value, "grow OS disk").await
     }
 
+    #[instrument(name = "vsphere.power_state", skip_all, fields(vm_moref = %vm_moref))]
     async fn power_state(&self, vm_moref: &str) -> Result<PowerState> {
         let vmm = VimVirtualMachine::new(self.client.clone(), vm_moref);
         let runtime = vmm
@@ -1260,6 +1283,7 @@ impl VSphereClient for VimClientImpl {
     // `guestinfo.userdata` into, read back the other direction). Unverified
     // against a real vCenter — see ADR-0043's Notes — so treat a first live
     // run as the actual test.
+    #[instrument(name = "vsphere.guest_info", skip_all, fields(vm_moref = %vm_moref))]
     async fn guest_info(&self, vm_moref: &str, key: &str) -> Result<Option<String>> {
         // Two things ruled out `VimVirtualMachine::config()` /
         // `extract_property::<VirtualMachineConfigInfo>`, both found live
@@ -1300,6 +1324,7 @@ impl VSphereClient for VimClientImpl {
             .map_err(|e| Error::Vsphere(format!("VirtualMachine.config({vm_moref}): {e}")))
     }
 
+    #[instrument(name = "vsphere.set_custom_attributes", skip_all, fields(vm_moref = %vm_moref))]
     async fn set_custom_attributes(
         &self,
         vm_moref: &str,
@@ -1328,6 +1353,7 @@ impl VSphereClient for VimClientImpl {
         Ok(())
     }
 
+    #[instrument(name = "vsphere.destroy_vm", skip_all, fields(vm_moref = %vm_moref))]
     async fn destroy_vm(&self, vm_moref: &str) -> Result<()> {
         info!(moref = %vm_moref, "destroying VSphereMachine's backend VM");
         match self.power_off_and_destroy(vm_moref).await {

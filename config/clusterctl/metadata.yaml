@@ -1,0 +1,29 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# clusterctl provider metadata for the `banlieue` InfrastructureProvider
+# (ADR-0096 Decision 3). Attached to every GitHub Release next to
+# infrastructure-components.yaml; clusterctl reads it to learn which Cluster
+# API contract each release series implements.
+#
+# Every series implements v1beta2: the infrastructure CRDs have carried the
+# `cluster.x-k8s.io/v1beta2` label since ADR-0005. Add an entry before
+# bumping the workspace minor version: the unit test
+# `clusterctl_metadata_has_an_entry_for_the_workspace_series` fails without
+# one, because clusterctl refuses to install a version whose series is
+# missing here.
+apiVersion: clusterctl.cluster.x-k8s.io/v1alpha3
+kind: Metadata
+releaseSeries:
+  - major: 0
+    minor: 4
+    contract: v1beta2
+  - major: 0
+    minor: 3
+    contract: v1beta2
+  - major: 0
+    minor: 2
+    contract: v1beta2
+  - major: 0
+    minor: 1
+    contract: v1beta2
