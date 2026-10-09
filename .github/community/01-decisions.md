@@ -11,6 +11,11 @@
 > entry below, the entry has been rewritten to state what is true today and to
 > cite the ADR. Entries with no ADR cited are still original decisions that
 > nothing has revisited.
+>
+> **Frozen 2026-10-08 (roadmap 12 §4.10).** Kept, not retired: several
+> entries are still the only statement of their decision. It takes **no new
+> entries**; a new decision is an ADR. An entry is only edited to point at
+> the ADR that supersedes it.
 
 ## D-001 — Language and toolchain
 
@@ -241,10 +246,11 @@ no failure mode where a down webhook blocks every write.
 
 ## D-020 — License and governance
 
-- **Apache-2.0** throughout.
-- DCO sign-off enforced on every commit (FINOS requirement).
-- Code of Conduct: Contributor Covenant v2.1.
-- Governance file added in Phase 4.
+- **Apache-2.0** throughout, with a `NOTICE` file.
+- DCO sign-off on every commit, enforced in CI by `make dco-check` (the
+  `✍️ DCO Sign-off` job, `scripts/dco-check.sh`); see `CONTRIBUTING.md`.
+- Code of Conduct: Contributor Covenant v2.1 (`CODE_OF_CONDUCT.md`).
+- `GOVERNANCE.md` and `MAINTAINERS.md` landed 2026-10-08 (roadmap 12 §4.9).
 
 ## D-021 — Naming
 
@@ -309,4 +315,4 @@ remain in the roadmap doc; they refine this decision, they do not reopen it.
 | ~~O-001~~ | ~~Proxmox Rust client choice~~ | **Closed** by [ADR-0074](../../docs/adr/0074-banlieue-proxmox-rest-client.md) (accepted 2026-09-28) |
 | O-002 | Live migration semantics across providers | Phase 2 design review |
 | ~~O-003~~ | ~~Multi-tenancy boundaries within a single Provider~~ | **Closed** by [ADR-0003](../../docs/adr/0003-provider-deployment-topology.md) (accepted 2026-07-31) + [ADR-0016](../../docs/adr/0016-imagebuild-namespace-isolation.md) |
-| O-004 | CAPI `clusterctl` integration shape | Phase 4 |
+| ~~O-004~~ | ~~CAPI `clusterctl` integration shape~~ | **Closed** by [ADR-0096](../../docs/adr/0096-clusterctl-infrastructure-provider.md) (accepted 2026-10-08): one clusterctl provider, `banlieue` |

@@ -4,12 +4,22 @@ SPDX-License-Identifier: Apache-2.0
 -->
 # Threat Model
 
-> **Status:** Living document. Last full pass **2026-10-06**, against the
-> architecture defined by **ADR-0001 … ADR-0090** (0057–0059 unallocated,
+> **Status:** Living document. Last full pass **2026-10-08**, against the
+> architecture defined by **ADR-0001 … ADR-0096** (0057–0059 unallocated,
 > 0066 and 0068–0073 reserved; 0074 and 0075 Accepted 2026-09-28; 0076–0080
 > reserved by roadmap 19; 0081–0082 recorded but not implemented in banlieue,
 > 0088 Proposed and not yet implemented, so none of those three move anything
-> here). A fourth 2026-10-06 pass is ADR-0090 (`VirtualMachine` finalize
+> here). The 2026-10-08 pass is ADR-0091 to ADR-0096 (roadmap 12):
+> Prometheus metrics and opt-in OpenTelemetry export, path-aware health,
+> opt-in NetworkPolicies, credential rotation without Secret watches, and
+> clusterctl packaging with a scoped CAPI aggregate role. It adds no
+> component and no namespace. It adds two actors (CAPI's manager, the
+> telemetry consumers), one asset (A-19, telemetry), two boundaries (TB-14
+> telemetry, TB-15 CAPI controllers → infrastructure objects), rows on TB-2
+> and TB-4, §7.21 and §7.22, and four §8 risks. It **closes** two things: the
+> CAPI manager no longer inherits the controller's whole role (it had create
+> and delete on every `banlieue.io` kind), and the "fixed `200` health
+> endpoint" risk, which ADR-0093 retires. A fourth 2026-10-06 pass is ADR-0090 (`VirtualMachine` finalize
 > cascade: isolate each backend kind): no new component, actor, asset or
 > trust boundary — found live, a stale `ClusterRole` missing a
 > `proxmoxmachines` grant made `finalize_vm`'s `?`-chained backend lookups
@@ -333,6 +343,7 @@ relationship to the host.
 | A-6a | **vTPM endorsement key certificate** — the public anchor an attestation quote is checked against | vCenter-issued and read host-side on vSphere; `swtpm_localca`-issued into the vTPM's NVRAM on libvirt, exported by the guest to `/run/banlieue/ek.pem` and mirrored to `VirtualMachineClaim.status` (ADR-0045); on Cloud Hypervisor, written by `swtpm_setup` at manufacture to `<state_root>/ek/<machine uid>/` (`0700 banlieue`) and read **host-side** (ADR-0065) | Low confidentiality — it is a **public key**, deliberately readable by every reader of the claim. Its value is *integrity of binding*: it must name the VM banlieue actually created, or ADR-0049 verifies a quote from the wrong machine |
 | A-17 | **The management cluster's datastore**: every Kubernetes object, Secrets included (A-1 hypervisor credentials, A-13 registry credentials, ServiceAccount signing material references), in plaintext unless API-server encryption at rest is configured | etcd on the controllers by default; with ADR-0085's kine, an external SQL database (PostgreSQL on the hypervisor host), reached over the network | **Critical**: read access is every Secret in the cluster, write access is cluster-admin. With kine it also lives outside every node, so it is backed up, and must be protected, as a database |
 | A-18 | **`VSphereMachine` custom attributes** — `Template`, `CreatedAt`, `CreatedBy` (ADR-0089), the fleet-auditing fields `sre-automations`' `cf-node` tool also writes | vCenter `CustomFieldsManager`, per cloned VM; `CreatedBy`'s source is `VirtualMachine`'s `banlieue.io/created-by` annotation, stamped at CREATE by the optional `banlieue-virtualmachine-created-by` `MutatingAdmissionPolicy` | Zero confidentiality — all three are free text, visible to anyone with vCenter read access. **Low integrity**: `CreatedBy` can be forged (TB-1); nothing downstream trusts any of the three for an authorization decision |
+| A-19 | **Telemetry**: Prometheus series on each role's `metrics` port, and, only when `OTEL_EXPORTER_OTLP_ENDPOINT` is set, trace spans exported to a collector (ADR-0091, ADR-0092) | The scraper's storage; the operator's collector and wherever it forwards | Low confidentiality: metric labels carry no object names, namespaces or error text (`runner_tests.rs` asserts it); spans carry object names, namespaces and backend ids (node, vmid, moref, domain), never credentials, user-data or Secret contents. Its value is **integrity for operations**: forged or suppressed telemetry hides an outage, it does not change state |
 | A-15 | **EK trust-anchor bundle** — the set of CA certificates trusted to issue this backend's vTPM EK certificates | `Provider.spec.attestation.ekTrustBundle` — inline PEM, or a ConfigMap/Secret it names in the Provider's namespace. Admin-supplied, never discovered; resolved by the **broker**, never by any banlieue identity (ADR-0049 Decision 10) | Zero confidentiality — public CA material. **High integrity**: a rogue CA added here makes every EK certificate that CA forges verify, defeating the whole attestation chain; and on libvirt *removing* a host's issuer is the revocation mechanism, so an entry an attacker can re-add is a revocation undone |
 
 ## 4. Actors
@@ -352,6 +363,8 @@ relationship to the host.
 | **OCI registry** and whoever operates it (ADR-0064) | Stores every pushed build; can read, withhold or delete one | **Untrusted for integrity** — hosts pull by digest and verify it, so the registry cannot substitute content. **Trusted for confidentiality and availability**: it sees every image in full (§7.13) |
 | **Host operator running `banlieue host cloud-hypervisor install`** | Root on the host, for one command | Trusted, like the hypervisor operator; the installer's controls protect the host **from the provider's user** during that run, not from the operator |
 | External contributor | Opens a PR from a fork | Untrusted |
+| **Cluster API's manager** (CAPI core, installed by the platform operator; `clusterctl init --infrastructure banlieue`, ADR-0096) | Creates, updates and deletes banlieue **infrastructure** objects it owns through `Machine`s and `MachineSet`s, through the aggregated `banlieue-capi-infrastructure` ClusterRole | Semi-trusted, like any controller the platform operator installs. **Bounded to `infrastructure.banlieue.io`** machines, templates and clusters: nothing in `banlieue.io`, no Secrets, IPAM, Events or Leases (TB-15) |
+| **Telemetry consumers**: the metrics scraper (from a namespace labelled `banlieue.io/monitoring=true`) and, if configured, the OTLP collector | Read A-19; the collector receives spans pushed to it | Trusted for confidentiality of what they receive, untrusted for integrity of anything banlieue does: nothing banlieue decides reads telemetry back (TB-14) |
 | **OIDC identity provider** (and any bridge in front of it, e.g. Dex for GitHub) | Mints the ID tokens the API server accepts, and therefore **decides what `request.userInfo.username` is** | **Semi-trusted, and entirely outside banlieue's control.** Every guarantee the claim-subject policy makes is downstream of this actor: banlieue checks `subject.id` against a username it did not derive. Compromise or misconfiguration here makes every claim attribution meaningless — §8 |
 | Hypervisor operator | vCenter/libvirt/Proxmox privileges outside Kubernetes; root on a Cloud Hypervisor host | Semi-trusted — **can read datastores, storage pools and Proxmox storages banlieue writes to** (including a Proxmox machine's seed ISO), **can edit or copy the ownership marker on a Proxmox VM** (§8), and on libvirt can read swtpm state on the host filesystem. On a Cloud Hypervisor host, root can read every guest's disk, seed and memory, and the provider's cluster token (A-11) |
 
@@ -403,6 +416,12 @@ relationship to the host.
          ──▶ k0s reverse proxy ──▶ any controller's API server
          (TLS passes through; konnectivity off, API servers reach kubelets directly; ADR-0086)
 
+  TB-14: metrics scraper (banlieue.io/monitoring ns) ──▶ :8080 /metrics on every role
+         kubelet ──▶ :8081 /livez /readyz;  role ──▶ OTLP collector (opt-in, ADR-0092)
+
+  TB-15: CAPI manager ──▶ API server ──▶ infrastructure.banlieue.io objects only
+         (aggregated banlieue-capi-infrastructure ClusterRole, ADR-0096)
+
   TB-10: push Job (banlieue-imagebuild, no SA token) ──▶ OCI registry
          ──▶ banlieue-ch-import@<V>.service on a KVM host (by digest, host-pinned repository)
 
@@ -439,6 +458,8 @@ relationship to the host.
 | TB-10 | Build namespace → OCI registry → Cloud Hypervisor host | A build leaves the cluster for a registry the operator runs, and enters a host that cannot mount cluster storage (ADR-0064) |
 | TB-12 | Management cluster controllers → external datastore | With kine (ADR-0085), cluster state leaves the controllers for a database on another host; whoever reaches that database with the credential holds the cluster |
 | TB-13 | LAN and tailnet → management cluster control plane VIP | With `API_VIP` (ADR-0086), every client outside the cluster, kube-proxy and joining workers reach the API through an address that VRRP elects among the controllers, an election anything on the LAN can take part in |
+| TB-14 | banlieue pods ↔ telemetry consumers | Inbound scrapes of `metrics` and probes of `health`; outbound OTLP spans when configured (ADR-0091 to ADR-0093) |
+| TB-15 | CAPI controllers → banlieue infrastructure objects | CAPI's manager creates, owns and deletes infrastructure machines through its aggregated role (ADR-0096) |
 | TB-11 | Installer (root, once) → Cloud Hypervisor host | A root process writes the host's trust base (A-14), in part inside directories the provider's user owns, from artifacts downloaded from upstream or an operator's mirror (ADR-0067, ADR-0084) |
 
 ## 6. Threats by boundary
@@ -489,6 +510,7 @@ access**, and each identity reads only the objects it can name.
 | `TlsIdentity` likewise — the libvirt credential *is* the client private key, so `client_key_pem` renders as `<redacted>` and the public CA/cert halves render as byte counts. A regression test asserts the key never reaches `{:?}` | `crates/banlieue-libvirt/src/transport.rs`, `transport_tests.rs` (`tls_identity_debug_redacts_the_private_key`) |
 | The Proxmox provider `ClusterRole` grants **no Secret or ConfigMap access, no `create` and no `delete`** on `proxmoxmachines`; the API token and CA bundle are read by name through the operator's per-`Provider` `resourceNames` Role — `deploy/provider-proxmox/rbac/clusterrole.yaml`, `crates/banlieue-operator/src/bootstrap.rs` |
 | `ApiToken` and `ClientConfig` have hand-written redacting `Debug`; the token is validated (`user@realm!tokenid`, no whitespace in the secret) before any request, so a mis-pasted value is reported as such and never echoed. Regression tests assert the secret never reaches `{:?}` | `crates/banlieue-proxmox/src/token.rs`, `client.rs` (`token_tests.rs`, `client_tests.rs`) |
+| Rotating a credential needs **no Secret `list`/`watch`**: each provider reads its one Secret by name on every reconcile and builds a fresh client from it, so a rotation lands within the ~30 s requeue (ADR-0095). Granting a watch would have meant read access to every Secret in the namespace. Regression tests pin each production client factory as stateless | `crates/banlieue-provider-{vsphere,proxmox,libvirt}/src/client*` (`production_factory_holds_no_client_between_reconciles`) |
 | The libvirt provider `ClusterRole` grants **no `create` and no `delete`** on `libvirtmachines` — the controller owns their lifecycle; a compromised provider cannot mint machines the scheduler never placed | `deploy/provider-libvirt/rbac/clusterrole.yaml` |
 
 ### TB-3 — Restricted → privileged namespace
@@ -524,6 +546,8 @@ read-only root filesystem and all capabilities dropped.
 | MITM / attacker-presented certificate | banlieue owns the `reqwest` client and honours `connection.caBundle` (ADR-0008); CA source validated by `banlieue-provider-cabundle-source` VAP |
 | Hostile or unresponsive endpoint stalls every reconcile | 10 s connect / 120 s request timeouts on the vSphere client; timeouts on libvirt connect, recv, and `Session::send` |
 | Malformed libvirt RPC frames | Wire decoder is continuously fuzzed (`crates/banlieue-libvirt/fuzz`, `.github/workflows/fuzz.yaml`, ClusterFuzzLite); ADR-0050's domain `decode_*` halves are pure and unit-tested against captured wire bytes, so they are in that fuzz surface too |
+| A compromised provider pod uses its network reach to scan or attack hosts other than its backend | **Opt-in** `deploy/network-policies/` (ADR-0094): default deny, then egress only to DNS, the API server and the provider's own backend port (443 vCenter, 8006 Proxmox, 16514 libvirtd), selected by `app.kubernetes.io/component` so operator-spawned providers in any namespace match. Destinations stay "any address" until the site narrows them (§7.21, §8); `crates/banlieue-operator/tests/network_policies.rs` pins the port set against the labels the operator stamps |
+| Backend call tracing (ADR-0092) leaks hypervisor credentials or guest bootstrap material into a span | Every backend span is `skip_all` and records only identifiers (node, vmid, moref, pool, volume, domain): `crates/banlieue-proxmox/src/client.rs`, `crates/banlieue-libvirt/src/procs.rs`, `crates/banlieue-cloud-hypervisor/src/client.rs`, `crates/banlieue-provider-vsphere/src/client/vim.rs`. Export is off unless `OTEL_EXPORTER_OTLP_ENDPOINT` is set |
 | A deleted VM leaves its sealed-key material behind (swtpm state, UEFI NVRAM varstore) | `domain_undefine` takes **no flags parameter** and unconditionally sends `MANAGED_SAVE\|NVRAM\|TPM` (ADR-0050 Decision 5) — the flag cannot be forgotten at a call site — `crates/banlieue-libvirt/src/procs.rs`, proven against a real libvirtd in `tests/live_libvirtd.rs`. Live since ADR-0050: `LibvirtMachine`'s finalizer calls it on every teardown — `crates/banlieue-provider-libvirt/src/machine_client.rs` (`undefine`), invoked from `reconciler/libvirtmachine.rs::finalize_backend`, which then verifies the domain is actually gone before deleting its volumes |
 | Something other than the intended guest answers the broker's mTLS connection and receives the subject's token | S | The agent returns a **TPM quote over `status.nonce`**, verified against the EK certificate published on the claim (ADR-0049, ADR-0045). The vTPM is unique per VM by construction — on vSphere because deferred install never installs the golden template so each clone installs with its own vTPM (ADR-0040), on libvirt because swtpm state is keyed by domain UUID. **Half implemented since 2026-09-23**: ADR-0045 landed, so the anchor now exists on the claim (`status.tpmEndorsementCertificates`). A `tpmEnabled` member is unbindable until it publishes one **on both backends** — the gate lives in each reconciler's `GuestReady` (libvirt `build_status`, vSphere `status_with_observed_state`), withheld with reason `TpmEndorsementPending`. vSphere gained that gate when ADR-0043's vSphere transport landed and gave it a `GuestReady` to gate at all; before then a vSphere member with an empty list was held back by nothing. ADR-0049 is Accepted (2026-09-27) and banlieue's whole side now exists — the anchor on the claim *and* the admin-supplied issuer bundle (`Provider.spec.attestation.ekTrustBundle`, A-15) a verifier checks that anchor against — but nothing yet *performs* the verification: the broker and in-guest agent are deliberately not banlieue code (Decisions 2 and 9) and are not built |
 | A token minted for a different service is presented to the agent and accepted | S | `aud` is the agent's **own configured audience** and is deliberately never read from the claim (ADR-0049 Decision 5) — otherwise whoever wrote the claim chooses the audience |
@@ -751,6 +775,32 @@ k0s components, configured by `scripts/bootstrap-k0s-cluster.sh`
 | The tailnet's policy is the default allow-all, so every member device and every tagged device (for example a Kubernetes operator's ingress proxies) reaches the VIP | S, E | Reaching the address grants nothing (the API server authenticates every request), but the reachable population is the whole tailnet. Operator requirement (§7.19): grants by group and tag instead of `src * dst *` |
 | The VIP's route is advertised but not yet approved, so a client off the LAN sends API traffic to whatever local network it is on | I, S | The kubeconfig pins the cluster CA: the TLS handshake fails before any client credential is sent (client certificates and bearer tokens both follow server verification). Approve the route before switching kubeconfigs to the VIP (§7.19) |
 | With konnectivity off, the API servers dial kubelets (10250) and pods directly | I | The kubelet authenticates and authorizes the API server's client certificate; the nodes were already reachable on the LAN (§8, ADR-0085). Konnectivity stays available (`K0S_DISABLE_KONNECTIVITY=false`) where the controllers cannot reach the nodes |
+
+### TB-14: banlieue pods ↔ telemetry consumers
+
+Every role serves `/metrics` on port 8080 and `/livez` and `/readyz` on 8081,
+from a hand-rolled listener in `crates/banlieue-provider-sdk/src/httpd.rs`
+(ADR-0091, ADR-0093). Trace export leaves the pod only when an OTLP endpoint
+is configured (ADR-0092).
+
+| Threat | STRIDE | Control |
+| --- | --- | --- |
+| Anyone on the pod network reads `/metrics` | I | Metric labels carry no object name, namespace or error text, only controller kinds, error variants, Provider names and VM phases; `runner_tests.rs` asserts no label carries an object's name. Reach is limited by the opt-in ingress rule: `metrics` only from namespaces labelled `banlieue.io/monitoring=true` (`deploy/network-policies/`, §7.21) |
+| Label cardinality explodes the scraper (one series per VM or per error message) | D | Bounded by design (ADR-0091): `banlieue_virtualmachines{phase}` replaces a per-object series; `runner_tests.rs` checks 50 objects share one series |
+| A malformed, slow or oversized request ties up the health or metrics listener | D | The request line is capped at 1 KiB with a 5 s read timeout; anything else is a 400 and the connection is closed (`httpd.rs`, `MAX_REQUEST_LINE_BYTES`; `httpd_tests.rs`) |
+| A standby falsely reports Ready, or a healthy standby is reported broken and stalls rollouts | T, D | Readiness is "serving or able to take over" (`crates/banlieue-provider-sdk/src/health.rs`, `evaluate`): leader with controllers started, or a standby that read the Lease within one lease duration; leadership is in the body and the `banlieue_leader` gauge (ADR-0093) |
+| The process keeps running with no health server after a failed bind | D | A bind failure is fatal (`start_health_server` returns `BootstrapError::Bind`; every role exits non-zero) |
+| Spans reach a collector the operator did not intend, or carry sensitive content | I | Off unless `OTEL_EXPORTER_OTLP_ENDPOINT`/`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` is set (`crates/banlieue-provider-sdk/src/bootstrap.rs`, `otlp_enabled`); span attributes exclude credentials, user-data and Secret contents (TB-4). The shipped policies open no egress to a collector; the operator adds that rule knowingly (§7.21) |
+| Telemetry is forged or suppressed to hide an outage | T, R | Not controlled, and harmless to state: nothing banlieue decides reads telemetry back. Status on the CRs remains the record (§8) |
+
+### TB-15: CAPI controllers → banlieue infrastructure objects
+
+| Threat | STRIDE | Control |
+| --- | --- | --- |
+| CAPI's manager, or anything that compromises it, creates or deletes `VirtualMachine`s, pools, claims or IPAM claims through banlieue's RBAC | E | **Closed by ADR-0096.** The aggregation label is off `banlieue-controller`; CAPI aggregates only `banlieue-capi-infrastructure` (`deploy/capi/clusterrole-aggregate.yaml`), which grants verbs on `infrastructure.banlieue.io` machines, templates and clusters and nothing else. `bootstrap_tests.rs` (`capi_aggregate_role_grants_nothing_outside_the_infrastructure_group`, `only_the_capi_aggregate_role_is_aggregated_to_the_capi_manager`) and `e2e_capi_contract.rs` (against real CAPI v1.14.3) enforce it |
+| A new infrastructure kind is added without the CAPI role, or the role drifts wider than the contract | E, D | `capi_aggregate_role_covers_exactly_the_capi_contract_kinds` derives the expected set from the CRDs carrying the contract label, so either drift fails the build |
+| CAPI's manager deletes a banlieue machine it owns, destroying a real VM | D | By design: a `Machine` owns its infrastructure object, and deleting the `Machine` is the request. A machine banlieue's controller created is owned by its `VirtualMachine`, not a CAPI `Machine` |
+| The clusterctl components file installs something other than what `banlieue bootstrap` installs | T | One definition: the file is `banlieue bootstrap operator --dry-run`, escaped for envsubst, and `make clusterctl-components` checks that unescaping it gives back the dry-run byte for byte. It ships with the release's provenance (TB-6) |
 
 ## 7. Deployment hardening requirements
 
@@ -1052,6 +1102,22 @@ a different assumption is unsafe.
       copy `conf.d/`, so a `listen_addresses` kept there is lost and every
       controller loses the API until it is restored. Copy `conf.d/` first.
 
+21. **Apply the NetworkPolicies, and narrow them (TB-4, TB-14, ADR-0094).**
+    `deploy/network-policies/` is opt-in, so nothing is restricted until you
+    apply it to every namespace running banlieue pods, a `ProviderClass`
+    `workloadNamespace` included. Then replace each "any address" API-server
+    and backend rule with your cluster's API CIDR and your hypervisors'
+    CIDRs; until you do, egress is restricted by port only, and on vSphere
+    port 443 stays open everywhere. Label only your monitoring namespace
+    `banlieue.io/monitoring=true`. If you enable trace export, add an egress
+    rule to your collector and nothing wider. Cloud Hypervisor providers run
+    on the host; use its firewall.
+
+22. **Point trace export only at a collector you operate (A-19, ADR-0092).**
+    Spans name objects, namespaces and backend ids. Leave
+    `OTEL_EXPORTER_OTLP_ENDPOINT` unset unless you want them, and use
+    `https://` to a collector outside the pod's node.
+
 ## 8. Accepted risks
 
 | Risk | Why accepted | Revisit when |
@@ -1098,7 +1164,10 @@ a different assumption is unsafe.
 | The Proxmox seed ISO stays attached for the machine's life (as for libvirt and Cloud Hypervisor), so a guest can read its own rendered user-data | Same reasoning as the NoCloud entry above: cloud-init re-reads its datasource on every boot, and ejecting it needs its own live verification across a reboot. What remains is each guest's own material | Detaching the seed is verified live across a reboot on Proxmox, or delivery stops needing a persistent datasource |
 | **Address squatting:** anyone who can create a `VirtualMachine` on a `networkClass` can claim an address on it first, and ADR-0083 then blocks everyone after them | First-come-first-served is how the network itself behaves. ADR-0083 makes that visible rather than creating it. The alternative (pre-assigned address ownership) is IPAM, and CAPI IPAM pools (ADR-0033/0053) are where per-tenant address ownership belongs | A `networkClass` is shared between tenants who do not trust each other, or CAPI IPAM lands and static overrides can be restricted to IPAM-issued addresses |
 | **Cross-namespace "address in use" oracle:** a tenant can learn whether an address is claimed on a `networkClass` by any VM in any namespace, by declaring it and reading the condition | One bit per probe, never a name (the holder is unnamed across namespaces, §6/TB-1). The same fact is observable on the wire by anyone on the segment, which is where the address actually lives. Consistent with the single-tenant posture (ADR-0025) | A second tenant becomes real on a shared `networkClass`; then scope the check per tenant or move address ownership into IPAM |
-| Health endpoint binds `0.0.0.0` and returns a fixed `200` | Standard probe trade-off; carries no data | It ever reports real state |
+| Health and metrics endpoints bind `0.0.0.0` without authentication, and `/readyz` says whether this replica leads | Probes come from the kubelet, not a pod, so they cannot authenticate; leadership is also readable from the Lease. Metrics carry no object names (TB-14). ADR-0093 retired the old "fixed `200`" entry: the answers are now real | A metric gains a label that names an object, or a non-probe client needs these ports |
+| **The NetworkPolicies are opt-in, and their destinations are "any address" until narrowed** | banlieue cannot know a site's API server or hypervisor CIDRs, and a wrong egress rule breaks the product silently; there is no templating layer to fill them in (ADR-0094). Port-level restriction already stops most lateral movement | The operator gains RBAC to write per-workload policies with addresses from the `Provider` (ADR-0094 follow-up) |
+| **A rotated credential is used for up to ~30 s before banlieue picks it up**, and a revoked one keeps failing reconciles until the Secret is updated | Watching Secrets would grant every provider read access to every Secret in its namespace (ADR-0095). Immediate cut-off belongs on the backend, which stops a credential everywhere at once | A provider caches a client across reconciles (the cache must then key on `resourceVersion`), or Kubernetes can scope a watch to one named Secret |
+| **Telemetry is not integrity-protected**: a party on the path or with scraper access can forge or suppress it | Nothing banlieue decides reads telemetry back; the CRs' status is the record (TB-14) | An automated decision (autoscaling, remediation) starts consuming banlieue metrics |
 | Provider condition messages are mirrored verbatim onto user-facing `VirtualMachine` status | Useful diagnostics; providers are in-tree | A third-party provider ships |
 
 ## 9. Out of scope

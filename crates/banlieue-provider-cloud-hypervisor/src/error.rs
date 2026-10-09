@@ -57,5 +57,28 @@ impl From<zbus::Error> for Error {
     }
 }
 
+/// The `kind` label of `banlieue_reconcile_errors_total` (ADR-0091): the
+/// variant name, never the message.
+impl banlieue_provider_sdk::metrics::ErrorKind for Error {
+    fn kind(&self) -> &'static str {
+        match self {
+            Self::Plan(_) => "Plan",
+            Self::HostConfig(_) => "HostConfig",
+            Self::Io(_) => "Io",
+            Self::Systemd(_) => "Systemd",
+            Self::Vmm(_) => "Vmm",
+            Self::Kube(_) => "Kube",
+            Self::Missing(_) => "Missing",
+            Self::VmmExited(_) => "VmmExited",
+            Self::Import(_) => "Import",
+            Self::UidRangeFull => "UidRangeFull",
+        }
+    }
+}
+
 /// Result alias for this crate.
 pub type Result<T> = std::result::Result<T, Error>;
+
+#[cfg(test)]
+#[path = "error_tests.rs"]
+mod error_tests;

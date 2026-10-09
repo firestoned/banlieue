@@ -57,7 +57,17 @@
           "config": {
             "host": "0.0.0.0",
             "port": 8081,
-            "path": "/healthz",
+            "path": "/readyz",
+            "protocol": "HTTP"
+          }
+        },
+        {
+          "unique-id": "banlieue-controller-liveness",
+          "definition-url": "https://calm.finos.org/release/1.2/prototype/interface/http-endpoint.json",
+          "config": {
+            "host": "0.0.0.0",
+            "port": 8081,
+            "path": "/livez",
             "protocol": "HTTP"
           }
         }
@@ -109,7 +119,27 @@
           "config": {
             "host": "0.0.0.0",
             "port": 8081,
-            "path": "/healthz",
+            "path": "/readyz",
+            "protocol": "HTTP"
+          }
+        },
+        {
+          "unique-id": "banlieue-operator-liveness",
+          "definition-url": "https://calm.finos.org/release/1.2/prototype/interface/http-endpoint.json",
+          "config": {
+            "host": "0.0.0.0",
+            "port": 8081,
+            "path": "/livez",
+            "protocol": "HTTP"
+          }
+        },
+        {
+          "unique-id": "banlieue-operator-metrics",
+          "definition-url": "https://calm.finos.org/release/1.2/prototype/interface/http-endpoint.json",
+          "config": {
+            "host": "0.0.0.0",
+            "port": 8080,
+            "path": "/metrics",
             "protocol": "HTTP"
           }
         }
@@ -154,19 +184,115 @@
       "unique-id": "service-provider-vsphere",
       "node-type": "service",
       "name": "banlieue-provider-vsphere",
-      "description": "Provider controller drives vCenter via a BYOC vim_rs client (ADR-0008). Live today: the `provider` reconciler (capability introspection, failure-domain discovery, ADR-0019), the `vmimage` reconciler (per-zone Kairos template build via ISO import, install-once-and-generalize, ADR-0020/0021), and the `VSphereMachine` reconciler \u2014 cloning a VM from the per-zone template and delivering static IP + templated cloud-config via vCenter guestinfo on first provision (ADR-0024). The VSphereMachine reconciler is create-path only: it clones and powers on once, then only observes power state; update/drift reconciliation and live migration beyond a recreate-on-change fallback are not yet implemented (ADR-0036). Satisfies the CAPI v1beta2 InfraMachine contract so the same provider can also serve CAPI Clusters. On first provision it also stamps three vCenter custom attributes (CustomFieldsManager, ADR-0089) on the cloned VM for fleet auditing outside Kubernetes: Template (the source template name), CreatedAt (the clone timestamp), and CreatedBy (copied from the VirtualMachine's banlieue.io/created-by annotation when the admission policy in admission-policy-mutation set one)."
+      "description": "Provider controller drives vCenter via a BYOC vim_rs client (ADR-0008). Live today: the `provider` reconciler (capability introspection, failure-domain discovery, ADR-0019), the `vmimage` reconciler (per-zone Kairos template build via ISO import, install-once-and-generalize, ADR-0020/0021), and the `VSphereMachine` reconciler \u2014 cloning a VM from the per-zone template and delivering static IP + templated cloud-config via vCenter guestinfo on first provision (ADR-0024). The VSphereMachine reconciler is create-path only: it clones and powers on once, then only observes power state; update/drift reconciliation and live migration beyond a recreate-on-change fallback are not yet implemented (ADR-0036). Satisfies the CAPI v1beta2 InfraMachine contract so the same provider can also serve CAPI Clusters. On first provision it also stamps three vCenter custom attributes (CustomFieldsManager, ADR-0089) on the cloned VM for fleet auditing outside Kubernetes: Template (the source template name), CreatedAt (the clone timestamp), and CreatedBy (copied from the VirtualMachine's banlieue.io/created-by annotation when the admission policy in admission-policy-mutation set one).",
+      "interfaces": [
+        {
+          "unique-id": "provider-vsphere-health",
+          "definition-url": "https://calm.finos.org/release/1.2/prototype/interface/http-endpoint.json",
+          "config": {
+            "host": "0.0.0.0",
+            "port": 8081,
+            "path": "/readyz",
+            "protocol": "HTTP"
+          }
+        },
+        {
+          "unique-id": "provider-vsphere-liveness",
+          "definition-url": "https://calm.finos.org/release/1.2/prototype/interface/http-endpoint.json",
+          "config": {
+            "host": "0.0.0.0",
+            "port": 8081,
+            "path": "/livez",
+            "protocol": "HTTP"
+          }
+        },
+        {
+          "unique-id": "provider-vsphere-metrics",
+          "definition-url": "https://calm.finos.org/release/1.2/prototype/interface/http-endpoint.json",
+          "config": {
+            "host": "0.0.0.0",
+            "port": 8080,
+            "path": "/metrics",
+            "protocol": "HTTP"
+          }
+        }
+      ]
     },
     {
       "unique-id": "service-provider-proxmox",
       "node-type": "service",
       "name": "banlieue-provider-proxmox",
-      "description": "Provider controller for Proxmox VE clusters. Watches ProxmoxMachine infrastructure CRs and drives the Proxmox REST API through the first-party `banlieue-proxmox` crate (ADR-0074): API tokens only, privilege-separated to the BanlieueProvider role, TLS verified against the node's own CA, every mutation awaited as a bounded UPID task. The machine spec arrives fully resolved (node, storage, bridge, template VMID), like VSphereMachine (ADR-0075). The VMID is recorded in status before the clone so a crash cannot duplicate a VM, and ownership is the machine's UID in the VM description, set atomically by the clone and checked before any adopt or delete, so a same-named VM is never touched. Guest bootstrap is a NoCloud CIDATA ISO built in-process (ADR-0054) and uploaded to an iso-capable storage, because the API cannot upload cicustom snippets; the provider deletes it with the VM. Verifies each Template VMID a VMImage names and publishes one failure domain per node. Status: implemented and unit-tested against an in-memory Proxmox; not yet run against a real node (ADR-0074, ADR-0075)."
+      "description": "Provider controller for Proxmox VE clusters. Watches ProxmoxMachine infrastructure CRs and drives the Proxmox REST API through the first-party `banlieue-proxmox` crate (ADR-0074): API tokens only, privilege-separated to the BanlieueProvider role, TLS verified against the node's own CA, every mutation awaited as a bounded UPID task. The machine spec arrives fully resolved (node, storage, bridge, template VMID), like VSphereMachine (ADR-0075). The VMID is recorded in status before the clone so a crash cannot duplicate a VM, and ownership is the machine's UID in the VM description, set atomically by the clone and checked before any adopt or delete, so a same-named VM is never touched. Guest bootstrap is a NoCloud CIDATA ISO built in-process (ADR-0054) and uploaded to an iso-capable storage, because the API cannot upload cicustom snippets; the provider deletes it with the VM. Verifies each Template VMID a VMImage names and publishes one failure domain per node. Status: implemented and unit-tested against an in-memory Proxmox; not yet run against a real node (ADR-0074, ADR-0075).",
+      "interfaces": [
+        {
+          "unique-id": "provider-proxmox-health",
+          "definition-url": "https://calm.finos.org/release/1.2/prototype/interface/http-endpoint.json",
+          "config": {
+            "host": "0.0.0.0",
+            "port": 8081,
+            "path": "/readyz",
+            "protocol": "HTTP"
+          }
+        },
+        {
+          "unique-id": "provider-proxmox-liveness",
+          "definition-url": "https://calm.finos.org/release/1.2/prototype/interface/http-endpoint.json",
+          "config": {
+            "host": "0.0.0.0",
+            "port": 8081,
+            "path": "/livez",
+            "protocol": "HTTP"
+          }
+        },
+        {
+          "unique-id": "provider-proxmox-metrics",
+          "definition-url": "https://calm.finos.org/release/1.2/prototype/interface/http-endpoint.json",
+          "config": {
+            "host": "0.0.0.0",
+            "port": 8080,
+            "path": "/metrics",
+            "protocol": "HTTP"
+          }
+        }
+      ]
     },
     {
       "unique-id": "service-provider-libvirt",
       "node-type": "service",
       "name": "banlieue-provider-libvirt",
-      "description": "Provider controller for libvirt/KVM hosts, speaking libvirt's own RPC protocol through the first-party `banlieue-libvirt` crate (XDR codec + message framing) rather than any third-party client \u2014 zero new dependencies, no C library, no FFI. Split by plane (ADR-0011): the CONTROL plane runs in-process \u2014 the Provider reconciler connects, lists storage pools and networks, verifies the admin-declared spec.capabilities actually exist, and publishes status.failureDomains[] (one per host, with pools as the interesting sub-structure since libvirt has no datacenter/cluster hierarchy). The DATA plane runs as a Kubernetes Job so bulk disk bytes never flow through the controller process; that Job runs the `banlieue` binary itself, so there is no third-party tools image to pin, trust, or patch. VM lifecycle (a LibvirtMachine InfraMachine CRD) is deliberately out of scope for this increment. A third reconciler (ADR-0050) owns the LibvirtMachine lifecycle: it defines, starts, inspects and undefines domains through the same first-party `banlieue-libvirt` crate, adding domain procedures beside the existing storage ones rather than taking on libvirt's C client. Undefine always passes MANAGED_SAVE|NVRAM|TPM so no varstore or swtpm state outlives a deleted VM. Domain XML is rendered through an escaping-only template module: every value reaching it (domain name, volume paths, bridge names) is user- or admin-influenced. Guest readiness (ADR-0043) adds a SECOND libvirt RPC program to the same connection: virDomainQemuAgentCommand lives in libvirt's qemu-specific program (0x20008087), not the remote program (0x20008086) this crate has spoken until now, so the session and framing code stop assuming one connection means one program. The installed guest writes a marker file that only a system booted from the installed disk writes (guarded on immucore's active/passive sentinels), and the provider reads it with guest-file-open/read/close rather than guest-exec -- three deterministic calls instead of a fire-and-poll with a pid to chase, and no executable required inside the guest. This distinguishes the INSTALLED system from the live installer, which every cheap liveness signal (agent ping, DHCP lease, open SSH port) fails to do because the installer environment satisfies all of them while it is still overwriting the disk. User-data reaches a libvirt guest as a cloud-init NoCloud seed: a small ISO labelled CIDATA, built in-process with a Joliet tree (ADR-0054) because ISO9660 Level 1 cannot spell the hyphenated `meta-data`/`user-data` names cloud-init requires. No genisoimage, no subprocess, and the payload never touches the container's filesystem \u2014 unlike vSphere, which has guestinfo and needs no disk at all."
+      "description": "Provider controller for libvirt/KVM hosts, speaking libvirt's own RPC protocol through the first-party `banlieue-libvirt` crate (XDR codec + message framing) rather than any third-party client \u2014 zero new dependencies, no C library, no FFI. Split by plane (ADR-0011): the CONTROL plane runs in-process \u2014 the Provider reconciler connects, lists storage pools and networks, verifies the admin-declared spec.capabilities actually exist, and publishes status.failureDomains[] (one per host, with pools as the interesting sub-structure since libvirt has no datacenter/cluster hierarchy). The DATA plane runs as a Kubernetes Job so bulk disk bytes never flow through the controller process; that Job runs the `banlieue` binary itself, so there is no third-party tools image to pin, trust, or patch. VM lifecycle (a LibvirtMachine InfraMachine CRD) is deliberately out of scope for this increment. A third reconciler (ADR-0050) owns the LibvirtMachine lifecycle: it defines, starts, inspects and undefines domains through the same first-party `banlieue-libvirt` crate, adding domain procedures beside the existing storage ones rather than taking on libvirt's C client. Undefine always passes MANAGED_SAVE|NVRAM|TPM so no varstore or swtpm state outlives a deleted VM. Domain XML is rendered through an escaping-only template module: every value reaching it (domain name, volume paths, bridge names) is user- or admin-influenced. Guest readiness (ADR-0043) adds a SECOND libvirt RPC program to the same connection: virDomainQemuAgentCommand lives in libvirt's qemu-specific program (0x20008087), not the remote program (0x20008086) this crate has spoken until now, so the session and framing code stop assuming one connection means one program. The installed guest writes a marker file that only a system booted from the installed disk writes (guarded on immucore's active/passive sentinels), and the provider reads it with guest-file-open/read/close rather than guest-exec -- three deterministic calls instead of a fire-and-poll with a pid to chase, and no executable required inside the guest. This distinguishes the INSTALLED system from the live installer, which every cheap liveness signal (agent ping, DHCP lease, open SSH port) fails to do because the installer environment satisfies all of them while it is still overwriting the disk. User-data reaches a libvirt guest as a cloud-init NoCloud seed: a small ISO labelled CIDATA, built in-process with a Joliet tree (ADR-0054) because ISO9660 Level 1 cannot spell the hyphenated `meta-data`/`user-data` names cloud-init requires. No genisoimage, no subprocess, and the payload never touches the container's filesystem \u2014 unlike vSphere, which has guestinfo and needs no disk at all.",
+      "interfaces": [
+        {
+          "unique-id": "provider-libvirt-health",
+          "definition-url": "https://calm.finos.org/release/1.2/prototype/interface/http-endpoint.json",
+          "config": {
+            "host": "0.0.0.0",
+            "port": 8081,
+            "path": "/readyz",
+            "protocol": "HTTP"
+          }
+        },
+        {
+          "unique-id": "provider-libvirt-liveness",
+          "definition-url": "https://calm.finos.org/release/1.2/prototype/interface/http-endpoint.json",
+          "config": {
+            "host": "0.0.0.0",
+            "port": 8081,
+            "path": "/livez",
+            "protocol": "HTTP"
+          }
+        },
+        {
+          "unique-id": "provider-libvirt-metrics",
+          "definition-url": "https://calm.finos.org/release/1.2/prototype/interface/http-endpoint.json",
+          "config": {
+            "host": "0.0.0.0",
+            "port": 8080,
+            "path": "/metrics",
+            "protocol": "HTTP"
+          }
+        }
+      ]
     },
     {
       "unique-id": "service-banlieue-imagebuilder",
@@ -180,7 +306,27 @@
           "config": {
             "host": "0.0.0.0",
             "port": 8081,
-            "path": "/healthz",
+            "path": "/readyz",
+            "protocol": "HTTP"
+          }
+        },
+        {
+          "unique-id": "banlieue-imagebuilder-liveness",
+          "definition-url": "https://calm.finos.org/release/1.2/prototype/interface/http-endpoint.json",
+          "config": {
+            "host": "0.0.0.0",
+            "port": 8081,
+            "path": "/livez",
+            "protocol": "HTTP"
+          }
+        },
+        {
+          "unique-id": "banlieue-imagebuilder-metrics",
+          "definition-url": "https://calm.finos.org/release/1.2/prototype/interface/http-endpoint.json",
+          "config": {
+            "host": "0.0.0.0",
+            "port": 8080,
+            "path": "/metrics",
             "protocol": "HTTP"
           }
         }
@@ -388,7 +534,25 @@
       "unique-id": "service-capi-core",
       "node-type": "service",
       "name": "Cluster API core + control-plane provider (k0smotron)",
-      "description": "Upstream CAPI controllers (cluster, machineset, machinedeployment) plus a control-plane/bootstrap provider \u2014 k0smotron for k0s. Reads VSphereCluster.status.failureDomains, balances Machines across them (count-based round-robin), and mints VSphereMachines from a VSphereMachineTemplate. banlieue does NOT ship these; the platform operator installs them. This is what lets any CAPI consumer (kubeadm, RKE2, k0smotron) use banlieue as an infra provider."
+      "description": "Upstream CAPI controllers (cluster, machineset, machinedeployment) plus a control-plane/bootstrap provider \u2014 k0smotron for k0s. Reads VSphereCluster.status.failureDomains, balances Machines across them (count-based round-robin), and mints VSphereMachines from a VSphereMachineTemplate. banlieue does NOT ship these; the platform operator installs them. This is what lets any CAPI consumer (kubeadm, RKE2, k0smotron) use banlieue as an infra provider. banlieue ships it nothing beyond a dedicated aggregate ClusterRole, banlieue-capi-infrastructure, scoped to infrastructure.banlieue.io (ADR-0096), and is installable as the clusterctl infrastructure provider `banlieue`.",
+      "controls": {
+        "capi-aggregate-role-scoped": {
+          "description": "CAPI's manager is granted banlieue permissions only through banlieue-capi-infrastructure, which covers the infrastructure.banlieue.io machine, template and cluster kinds and nothing in banlieue.io (ADR-0096). The aggregation label is not on the controller's own ClusterRole.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": [
+                  "AC-6",
+                  "AC-3"
+                ],
+                "evidence": "deploy/capi/clusterrole-aggregate.yaml, docs/adr/0096-clusterctl-infrastructure-provider.md"
+              }
+            }
+          ]
+        }
+      }
     },
     {
       "unique-id": "system-k0s-bootstrap",
@@ -462,6 +626,36 @@
           "config": {
             "host": "unix:/run/banlieue/ch/<uid>/vsock.sock_1024",
             "port": 1024
+          }
+        },
+        {
+          "unique-id": "provider-cloud-hypervisor-health",
+          "definition-url": "https://calm.finos.org/release/1.2/prototype/interface/http-endpoint.json",
+          "config": {
+            "host": "0.0.0.0",
+            "port": 8081,
+            "path": "/readyz",
+            "protocol": "HTTP"
+          }
+        },
+        {
+          "unique-id": "provider-cloud-hypervisor-liveness",
+          "definition-url": "https://calm.finos.org/release/1.2/prototype/interface/http-endpoint.json",
+          "config": {
+            "host": "0.0.0.0",
+            "port": 8081,
+            "path": "/livez",
+            "protocol": "HTTP"
+          }
+        },
+        {
+          "unique-id": "provider-cloud-hypervisor-metrics",
+          "definition-url": "https://calm.finos.org/release/1.2/prototype/interface/http-endpoint.json",
+          "config": {
+            "host": "0.0.0.0",
+            "port": 8080,
+            "path": "/metrics",
+            "protocol": "HTTP"
           }
         }
       ]
@@ -557,6 +751,18 @@
           }
         }
       ]
+    },
+    {
+      "unique-id": "service-metrics-scraper",
+      "node-type": "service",
+      "name": "Metrics scraper (Prometheus)",
+      "description": "Operator-provided Prometheus (or compatible) that scrapes each banlieue role's /metrics on port 8080 (ADR-0091). Runs in a namespace labelled banlieue.io/monitoring=true, which is the only source ADR-0094's NetworkPolicies admit to the metrics port. banlieue does not ship it."
+    },
+    {
+      "unique-id": "service-otel-collector",
+      "node-type": "service",
+      "name": "OpenTelemetry collector (optional)",
+      "description": "Operator-provided OTLP/HTTP collector. Each banlieue role exports trace spans to it only when OTEL_EXPORTER_OTLP_ENDPOINT is set (ADR-0092); with it unset there is no exporter and no egress. Its address is deployment specific, so ADR-0094's policies do not open egress to it."
     }
   ],
   "relationships": [
@@ -1527,6 +1733,237 @@
           ]
         }
       }
+    },
+    {
+      "unique-id": "rel-metrics-scraper-banlieue-controller",
+      "description": "Prometheus scrapes banlieue-controller's OpenMetrics endpoint: bounded-cardinality reconcile counters and histograms, the leader gauge, and domain gauges. No object names, credentials or spec content (ADR-0091).",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "service-metrics-scraper"
+          },
+          "destination": {
+            "node": "service-banlieue-controller",
+            "interfaces": [
+              "banlieue-controller-metrics"
+            ]
+          }
+        }
+      },
+      "protocol": "HTTP"
+    },
+    {
+      "unique-id": "rel-banlieue-controller-otel-collector",
+      "description": "Opt-in: banlieue-controller exports reconcile and backend-call spans over OTLP/HTTP when OTEL_EXPORTER_OTLP_ENDPOINT is set (ADR-0092). Span attributes never carry credentials, user-data or Secret contents.",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "service-banlieue-controller"
+          },
+          "destination": {
+            "node": "service-otel-collector"
+          }
+        }
+      },
+      "protocol": "HTTPS"
+    },
+    {
+      "unique-id": "rel-metrics-scraper-banlieue-operator",
+      "description": "Prometheus scrapes banlieue-operator's OpenMetrics endpoint: bounded-cardinality reconcile counters and histograms, the leader gauge, and domain gauges. No object names, credentials or spec content (ADR-0091).",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "service-metrics-scraper"
+          },
+          "destination": {
+            "node": "service-banlieue-operator",
+            "interfaces": [
+              "banlieue-operator-metrics"
+            ]
+          }
+        }
+      },
+      "protocol": "HTTP"
+    },
+    {
+      "unique-id": "rel-banlieue-operator-otel-collector",
+      "description": "Opt-in: banlieue-operator exports reconcile and backend-call spans over OTLP/HTTP when OTEL_EXPORTER_OTLP_ENDPOINT is set (ADR-0092). Span attributes never carry credentials, user-data or Secret contents.",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "service-banlieue-operator"
+          },
+          "destination": {
+            "node": "service-otel-collector"
+          }
+        }
+      },
+      "protocol": "HTTPS"
+    },
+    {
+      "unique-id": "rel-metrics-scraper-banlieue-imagebuilder",
+      "description": "Prometheus scrapes banlieue-imagebuilder's OpenMetrics endpoint: bounded-cardinality reconcile counters and histograms, the leader gauge, and domain gauges. No object names, credentials or spec content (ADR-0091).",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "service-metrics-scraper"
+          },
+          "destination": {
+            "node": "service-banlieue-imagebuilder",
+            "interfaces": [
+              "banlieue-imagebuilder-metrics"
+            ]
+          }
+        }
+      },
+      "protocol": "HTTP"
+    },
+    {
+      "unique-id": "rel-banlieue-imagebuilder-otel-collector",
+      "description": "Opt-in: banlieue-imagebuilder exports reconcile and backend-call spans over OTLP/HTTP when OTEL_EXPORTER_OTLP_ENDPOINT is set (ADR-0092). Span attributes never carry credentials, user-data or Secret contents.",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "service-banlieue-imagebuilder"
+          },
+          "destination": {
+            "node": "service-otel-collector"
+          }
+        }
+      },
+      "protocol": "HTTPS"
+    },
+    {
+      "unique-id": "rel-metrics-scraper-provider-vsphere",
+      "description": "Prometheus scrapes provider-vsphere's OpenMetrics endpoint: bounded-cardinality reconcile counters and histograms, the leader gauge, and domain gauges. No object names, credentials or spec content (ADR-0091).",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "service-metrics-scraper"
+          },
+          "destination": {
+            "node": "service-provider-vsphere",
+            "interfaces": [
+              "provider-vsphere-metrics"
+            ]
+          }
+        }
+      },
+      "protocol": "HTTP"
+    },
+    {
+      "unique-id": "rel-provider-vsphere-otel-collector",
+      "description": "Opt-in: provider-vsphere exports reconcile and backend-call spans over OTLP/HTTP when OTEL_EXPORTER_OTLP_ENDPOINT is set (ADR-0092). Span attributes never carry credentials, user-data or Secret contents.",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "service-provider-vsphere"
+          },
+          "destination": {
+            "node": "service-otel-collector"
+          }
+        }
+      },
+      "protocol": "HTTPS"
+    },
+    {
+      "unique-id": "rel-metrics-scraper-provider-proxmox",
+      "description": "Prometheus scrapes provider-proxmox's OpenMetrics endpoint: bounded-cardinality reconcile counters and histograms, the leader gauge, and domain gauges. No object names, credentials or spec content (ADR-0091).",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "service-metrics-scraper"
+          },
+          "destination": {
+            "node": "service-provider-proxmox",
+            "interfaces": [
+              "provider-proxmox-metrics"
+            ]
+          }
+        }
+      },
+      "protocol": "HTTP"
+    },
+    {
+      "unique-id": "rel-provider-proxmox-otel-collector",
+      "description": "Opt-in: provider-proxmox exports reconcile and backend-call spans over OTLP/HTTP when OTEL_EXPORTER_OTLP_ENDPOINT is set (ADR-0092). Span attributes never carry credentials, user-data or Secret contents.",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "service-provider-proxmox"
+          },
+          "destination": {
+            "node": "service-otel-collector"
+          }
+        }
+      },
+      "protocol": "HTTPS"
+    },
+    {
+      "unique-id": "rel-metrics-scraper-provider-libvirt",
+      "description": "Prometheus scrapes provider-libvirt's OpenMetrics endpoint: bounded-cardinality reconcile counters and histograms, the leader gauge, and domain gauges. No object names, credentials or spec content (ADR-0091).",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "service-metrics-scraper"
+          },
+          "destination": {
+            "node": "service-provider-libvirt",
+            "interfaces": [
+              "provider-libvirt-metrics"
+            ]
+          }
+        }
+      },
+      "protocol": "HTTP"
+    },
+    {
+      "unique-id": "rel-provider-libvirt-otel-collector",
+      "description": "Opt-in: provider-libvirt exports reconcile and backend-call spans over OTLP/HTTP when OTEL_EXPORTER_OTLP_ENDPOINT is set (ADR-0092). Span attributes never carry credentials, user-data or Secret contents.",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "service-provider-libvirt"
+          },
+          "destination": {
+            "node": "service-otel-collector"
+          }
+        }
+      },
+      "protocol": "HTTPS"
+    },
+    {
+      "unique-id": "rel-metrics-scraper-provider-cloud-hypervisor",
+      "description": "Prometheus scrapes provider-cloud-hypervisor's OpenMetrics endpoint: bounded-cardinality reconcile counters and histograms, the leader gauge, and domain gauges. No object names, credentials or spec content (ADR-0091).",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "service-metrics-scraper"
+          },
+          "destination": {
+            "node": "service-provider-cloud-hypervisor",
+            "interfaces": [
+              "provider-cloud-hypervisor-metrics"
+            ]
+          }
+        }
+      },
+      "protocol": "HTTP"
+    },
+    {
+      "unique-id": "rel-provider-cloud-hypervisor-otel-collector",
+      "description": "Opt-in: provider-cloud-hypervisor exports reconcile and backend-call spans over OTLP/HTTP when OTEL_EXPORTER_OTLP_ENDPOINT is set (ADR-0092). Span attributes never carry credentials, user-data or Secret contents.",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "service-provider-cloud-hypervisor"
+          },
+          "destination": {
+            "node": "service-otel-collector"
+          }
+        }
+      },
+      "protocol": "HTTPS"
     }
   ],
   "flows": [
@@ -2477,6 +2914,54 @@
           }
         }
       ]
+    },
+    "network-policy-templates": {
+      "description": "Opt-in default-deny NetworkPolicies per banlieue component, selected by app.kubernetes.io/component, allowing only DNS, the API server and the component's backend port out, and only metrics (from banlieue.io/monitoring namespaces) and health in (ADR-0094).",
+      "requirements": [
+        {
+          "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+          "config": {
+            "framework": "NIST SP 800-53 Rev. 5",
+            "controls": [
+              "SC-7",
+              "AC-4"
+            ],
+            "evidence": "deploy/network-policies/, docs/adr/0094-networkpolicy-templates.md"
+          }
+        }
+      ]
+    },
+    "credential-rotation-bounded": {
+      "description": "Provider credentials are read by name on every reconcile and never cached past one, so a rotated Secret takes effect within the requeue interval, without granting any provider list or watch on Secrets (ADR-0095).",
+      "requirements": [
+        {
+          "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+          "config": {
+            "framework": "NIST SP 800-53 Rev. 5",
+            "controls": [
+              "IA-5",
+              "AC-6"
+            ],
+            "evidence": "crates/banlieue-provider-{proxmox,libvirt}/src/credentials.rs, crates/banlieue-provider-vsphere/src/reconciler/provider.rs (read_credentials), client factory tests production_factory_holds_no_client_between_reconciles, docs/adr/0095-credential-rotation-without-secret-watches.md"
+          }
+        }
+      ]
+    },
+    "observability-bounded": {
+      "description": "Metrics carry no object names, credentials or spec content and have bounded label cardinality; trace export is off unless configured, and span attributes exclude credentials and user-data (ADR-0091, ADR-0092). Health endpoints are path-aware and readiness reports leadership without gating on it (ADR-0093).",
+      "requirements": [
+        {
+          "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+          "config": {
+            "framework": "NIST SP 800-53 Rev. 5",
+            "controls": [
+              "SI-4",
+              "AU-12"
+            ],
+            "evidence": "crates/banlieue-provider-sdk/src/{metrics,runner,health,httpd}.rs, docs/adr/0091-prometheus-metrics-endpoint.md, docs/adr/0093-health-endpoints-reflect-leadership.md"
+          }
+        }
+      ]
     }
   },
   "metadata": {
@@ -2576,6 +3061,12 @@
     "docs/adr/0085-management-cluster-kine-bridge-kairos-debian.md",
     "docs/adr/0086-management-cluster-control-plane-vip.md",
     "docs/adr/0087-field-manager-identity-per-writer.md",
-    "docs/adr/0089-vspheremachine-custom-attributes.md"
+    "docs/adr/0089-vspheremachine-custom-attributes.md",
+    "docs/adr/0091-prometheus-metrics-endpoint.md",
+    "docs/adr/0092-opentelemetry-tracing-opt-in.md",
+    "docs/adr/0093-health-endpoints-reflect-leadership.md",
+    "docs/adr/0094-networkpolicy-templates.md",
+    "docs/adr/0095-credential-rotation-without-secret-watches.md",
+    "docs/adr/0096-clusterctl-infrastructure-provider.md"
   ]
 }

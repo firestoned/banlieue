@@ -200,6 +200,13 @@ impl RejectReasons {
 ///
 /// # Errors
 /// See [`ScheduleError`] variants.
+// The placement decision is its own span (ADR-0092 Decision 4). Inputs are
+// counted, never recorded: the VM spec carries user-data.
+#[tracing::instrument(
+    name = "scheduler.schedule",
+    skip_all,
+    fields(providers = providers.len(), existing_vms = existing_vms.len())
+)]
 pub fn schedule(
     vm: &VirtualMachine,
     class: &VMClass,

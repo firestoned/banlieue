@@ -24,6 +24,7 @@ use tokio::time::sleep;
 use tracing::{debug, error, info, warn};
 
 use crate::error::{Error, Result};
+use crate::health::{Election, Readiness};
 
 /// Field manager used when patching the Lease.
 pub const LEASE_FIELD_MANAGER: &str = "banlieue.io/leader-election";
@@ -101,6 +102,14 @@ impl LeaderConfig {
             ));
         }
         Ok(())
+    }
+
+    /// The readiness [`Election`] mode this config implies: a standby stays
+    /// Ready for one `lease_duration` after its last lease read (ADR-0093).
+    pub fn election(&self) -> Election {
+        Election::Enabled {
+            lease_duration: self.lease_duration,
+        }
     }
 
     /// Best-effort identity string for the running process.
@@ -181,11 +190,20 @@ pub fn decide_action(now: Timestamp, lease: Option<&Lease>, cfg: &LeaderConfig) 
 /// renewal ever fails terminally the process exits; the Deployment
 /// controller restarts the pod, which re-enters this function.
 ///
+/// Every successful Lease read is recorded on `readiness`, so a standby
+/// that keeps reading the lease reports Ready (`standby`), and one that
+/// stops reaching the API server ages into `unreachable` (ADR-0093). A
+/// failed read is therefore logged and retried on the retry period rather
+/// than ending the process. Acquiring the lease marks `readiness` leader.
+///
 /// # Errors
-/// Returns any underlying [`kube::Error`] from a Lease GET / CREATE /
-/// PATCH call. Transient errors are logged and retried; persistent
-/// errors bubble up.
-pub async fn acquire_or_wait(client: Client, cfg: &LeaderConfig) -> Result<()> {
+/// Returns an invalid [`LeaderConfig`], or any underlying [`kube::Error`]
+/// from the Lease CREATE / PATCH that acquires the lease.
+pub async fn acquire_or_wait(
+    client: Client,
+    cfg: &LeaderConfig,
+    readiness: &Readiness,
+) -> Result<()> {
     cfg.validate()?;
     let api: Api<Lease> = Api::namespaced(client, &cfg.namespace);
 
@@ -197,7 +215,15 @@ pub async fn acquire_or_wait(client: Client, cfg: &LeaderConfig) -> Result<()> {
     );
 
     loop {
-        let current = fetch_lease(&api, &cfg.lease_name).await?;
+        let current = match fetch_lease(&api, &cfg.lease_name).await {
+            Ok(current) => current,
+            Err(e) => {
+                warn!(error = %e, "leader election: lease read failed, retrying");
+                sleep(cfg.retry_period).await;
+                continue;
+            }
+        };
+        readiness.lease_observed();
         let action = decide_action(Timestamp::now(), current.as_ref(), cfg);
         debug!(?action, "leader election step");
 
@@ -208,16 +234,19 @@ pub async fn acquire_or_wait(client: Client, cfg: &LeaderConfig) -> Result<()> {
                 } else {
                     patch_take_over(&api, cfg, current.as_ref()).await?;
                 }
+                readiness.became_leader();
                 info!(identity = %cfg.identity, "leader election: acquired lease");
                 return Ok(());
             }
             LeaseAction::Renew => {
                 renew_once(&api, cfg).await?;
+                readiness.became_leader();
                 info!(identity = %cfg.identity, "leader election: re-renewed existing lease");
                 return Ok(());
             }
             LeaseAction::TakeOver => {
                 patch_take_over(&api, cfg, current.as_ref()).await?;
+                readiness.became_leader();
                 info!(
                     identity = %cfg.identity,
                     "leader election: took over expired lease"
@@ -236,13 +265,19 @@ pub async fn acquire_or_wait(client: Client, cfg: &LeaderConfig) -> Result<()> {
 ///
 /// On a transient error the loop retries on the retry period; on a
 /// persistent loss-of-holder the function returns so the caller can
-/// exit the process.
-pub async fn renew_forever(client: Client, cfg: LeaderConfig) -> Result<()> {
+/// exit the process. Each successful renewal is recorded on `readiness`;
+/// a lost lease marks it no longer leader before returning.
+///
+/// # Errors
+/// [`Error::Missing`] when the lease is lost, or the [`kube::Error`] of the
+/// re-read that follows a failed renewal.
+pub async fn renew_forever(client: Client, cfg: LeaderConfig, readiness: Readiness) -> Result<()> {
     let api: Api<Lease> = Api::namespaced(client, &cfg.namespace);
     loop {
         sleep(cfg.renew_period).await;
         match renew_once(&api, &cfg).await {
             Ok(()) => {
+                readiness.lease_observed();
                 debug!(identity = %cfg.identity, "lease renewed");
             }
             Err(Error::Kube(e)) => {
@@ -250,6 +285,7 @@ pub async fn renew_forever(client: Client, cfg: LeaderConfig) -> Result<()> {
                 let current = fetch_lease(&api, &cfg.lease_name).await?;
                 let action = decide_action(Timestamp::now(), current.as_ref(), &cfg);
                 if action != LeaseAction::Renew {
+                    readiness.lost_leadership();
                     error!(
                         ?action,
                         identity = %cfg.identity,

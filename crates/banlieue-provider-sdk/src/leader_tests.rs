@@ -170,4 +170,14 @@ mod tests {
         let id = LeaderConfig::default_identity();
         assert!(!id.is_empty(), "default identity must never be empty");
     }
+
+    #[test]
+    fn election_mode_carries_the_lease_duration() {
+        assert_eq!(
+            config().election(),
+            crate::health::Election::Enabled {
+                lease_duration: Duration::from_secs(LEASE_DURATION_SECS)
+            }
+        );
+    }
 }

@@ -4,9 +4,10 @@
 > FINOS: docs, governance, CAPI integration, observability,
 > security hardening, release engineering.
 >
-> **Stop condition.** A new user can install banlieue from a Helm
-> chart, follow a quickstart, get a VM running on any of the three
-> providers. The project meets FINOS donation requirements.
+> **Stop condition.** A new user can install banlieue with
+> `banlieue bootstrap operator` (or the kustomize bases under `deploy/`),
+> follow a quickstart, get a VM running on any of the three providers. The
+> project meets FINOS donation requirements.
 
 ## Preconditions
 
@@ -46,7 +47,7 @@ docs/
 │   │   └── conditions.md              // every condition type/reason
 │   └── troubleshooting.md
 ├── operator/
-│   ├── install.md                     // Helm chart usage
+│   ├── install.md                     // banlieue bootstrap operator / kustomize
 │   ├── upgrade.md
 │   ├── observability.md
 │   ├── security.md
@@ -68,53 +69,70 @@ Test banlieue's provider CRDs as **CAPI infrastructure providers**.
 Without code changes, a `clusterv1.Machine` referencing a
 `VSphereMachine` should work.
 
+**Done 2026-10-08 (ADR-0096)**, verified against real CAPI v1.14.3 on
+`kind` by `make kind-e2e-capi` (`crates/banlieue-operator/tests/e2e_capi_contract.rs`).
+
 Concrete tasks:
 
-- [ ] Stand up CAPI in a `kind` cluster.
-- [ ] Apply banlieue's CRDs with the
-      `cluster.x-k8s.io/v1beta2: v1alpha1` label.
-- [ ] Apply the aggregated ClusterRole
-      (`cluster.x-k8s.io/aggregate-to-manager: "true"`).
-- [ ] Create a Cluster + Machine pair pointing at a VSphereMachine
-      directly (bypass banlieue's VirtualMachine).
-- [ ] Verify CAPI's Machine controller sets
-      `status.initialization.infrastructureProvisioned=true` once
-      the VSphereMachine reports it.
+- [x] ~~Stand up CAPI in a `kind` cluster.~~ `make kind-capi-create` +
+      `kind-capi-init` (`clusterctl init`, pinned v1.14.3).
+- [x] ~~Apply banlieue's CRDs with the `cluster.x-k8s.io/v1beta2: v1alpha1`
+      label.~~ Installed by `clusterctl` from a local repository built from
+      the tree.
+- [x] ~~Apply the aggregated ClusterRole.~~ **Changed:** a dedicated
+      `banlieue-capi-infrastructure` role (`deploy/capi/clusterrole-aggregate.yaml`)
+      scoped to `infrastructure.banlieue.io`; the label is gone from the
+      controller's own role, which had granted CAPI's manager all of
+      `banlieue.io`.
+- [x] ~~Create a Cluster + Machine pair pointing at a VSphereMachine
+      directly.~~
+- [x] ~~Verify CAPI's Machine controller sets
+      `status.initialization.infrastructureProvisioned=true`.~~ Plus the
+      providerID and addresses copied, and delete cascading to the
+      infrastructure objects.
 
 `clusterctl` integration:
 
-- [ ] Add `metadata.yaml` per provider crate at `config/clusterctl/`.
-- [ ] Add `clusterctl.yaml` config entries to the docs so users can
-      `clusterctl init --infrastructure banlieue-vsphere`.
-- [ ] Document the constraints (banlieue providers are designed for
-      arbitrary VMs, so the "infrastructure" provider role works but
-      the bootstrap/control-plane providers come from upstream).
+- [x] ~~Add `metadata.yaml` per provider crate.~~ **One provider, not one per
+      backend** (ADR-0096): `config/clusterctl/metadata.yaml`. Releases attach
+      it with `infrastructure-components.yaml`, rendered from
+      `banlieue bootstrap operator --dry-run` (`make clusterctl-components`).
+- [x] ~~Add `clusterctl.yaml` config entries to the docs.~~
+      `docs/src/guides/cluster-api.md`: `clusterctl init --infrastructure banlieue`.
+- [x] ~~Document the constraints.~~ Same guide: infrastructure role only;
+      bootstrap and control-plane providers come from upstream.
 
 ## 4.3 Observability
 
-- [ ] **Metrics**: implement `controller-runtime`-style metrics in
-      every controller via `prometheus-client`. **Not started** — every
-      binary already accepts `--metrics-port` (`BANLIEUE_METRICS_PORT`),
-      but the port is reserved, not served:
-  - `banlieue_reconcile_total{controller,result}`
-  - `banlieue_reconcile_duration_seconds{controller}`
-  - `banlieue_reconcile_errors_total{controller,kind}`
-  - `banlieue_provider_failure_domains{provider,kind}`
-  - `banlieue_vm_state{namespace,name,state}`
-  - `banlieue_snapshot_size_bytes{vm,tier}`
-- [ ] **Tracing**: wire OpenTelemetry exporter; spans for reconcile,
-      scheduling, backend API calls.
+- [x] ~~**Metrics**: controller-runtime-style metrics in every controller
+      via `prometheus-client`.~~ **Done 2026-10-08 (ADR-0091)**: `/metrics` on
+      `--metrics-port` in every role (cloud-hypervisor included), recorded by
+      one SDK wrapper (`banlieue-provider-sdk::runner::run_controller`) that
+      every `Controller::new` call site uses:
+  - `banlieue_reconcile_total{controller,result}`,
+    `banlieue_reconcile_duration_seconds{controller}`,
+    `banlieue_reconcile_errors_total{controller,kind}`
+  - `banlieue_leader{role}`, `banlieue_provider_failure_domains{provider,kind}`
+  - `banlieue_virtualmachines{phase}` **instead of** the per-object
+    `banlieue_vm_state{namespace,name,state}` (unbounded cardinality)
+  - `banlieue_snapshot_size_bytes` waits for snapshots (roadmap 10)
+- [x] ~~**Tracing**: wire OpenTelemetry exporter; spans for reconcile,
+      scheduling, backend API calls.~~ **Done 2026-10-08 (ADR-0092)**: OTLP over
+      HTTP/protobuf, opt-in via `OTEL_EXPORTER_OTLP_ENDPOINT`; reconcile,
+      scheduler and per-operation backend spans (vSphere, Proxmox, libvirt,
+      Cloud Hypervisor) that never record credentials or user-data.
 - [x] ~~**Structured logs**: JSON output mode behind a CLI flag.~~
       **Done** — `--log-format json|text` (`BANLIEUE_LOG_FORMAT`) on every
       binary, via `banlieue-provider-sdk::bootstrap::init_tracing`.
-- [ ] **Healthchecks**: `/healthz` and `/readyz` already in place
-      from Phase 1; ensure they reflect leader-election state.
-      **Half done** — `serve_health` is wired into every binary, but it
-      answers `200 ok` to any request without inspecting the path or the
-      lease, so a non-leader standby reports ready. The reflection half is
-      what is left.
-- [ ] Sample Grafana dashboards in `deploy/dashboards/`. **Blocked on
-      metrics above** — nothing to graph yet.
+- [x] ~~**Healthchecks**: ensure they reflect leader-election state.~~
+      **Done 2026-10-08 (ADR-0093)**: path-aware `/livez` and `/readyz`
+      (404 elsewhere, 400 on malformed). Readiness means "serving or able to
+      take over", so a healthy standby stays Ready (a NotReady standby would
+      stall rollouts and PDBs); leadership is reported in the `/readyz` body
+      and the `banlieue_leader` gauge. A health server that cannot bind is
+      fatal.
+- [x] ~~Sample Grafana dashboards in `deploy/dashboards/`.~~ **Done**:
+      `deploy/dashboards/banlieue-overview.json`, `banlieue_*` metrics only.
 
 ## 4.4 Security hardening
 
@@ -127,18 +145,24 @@ Concrete tasks:
       workload (`banlieue-operator/src/workload.rs`). No libvirt exception
       was needed: ADR-0011's own client talks native RPC over mTLS from an
       ordinary pod, so the provider never needs host access.
-- [ ] **NetworkPolicy** templates restricting controller pods to
-      egress only to required endpoints (vCenter, Proxmox, libvirt
-      hosts, the K8s apiserver). **Still open** — nothing under `deploy/`
-      ships a `NetworkPolicy`, and the threat model does not yet record the
-      gap either; the next full pass should either add the templates or
-      put this in its §8 accepted risks with a *Revisit when*.
-- [ ] **Secret rotation**: providers re-read credentials on Secret
-      change events (already watching, just ensure cache invalidates).
-      **Still open** — the premise turned out to be wrong: providers do
-      **not** watch Secrets. Credentials are read per reconcile, so a
-      rotated Secret is picked up on the next requeue, but a rotation does
-      not itself trigger one.
+- [x] ~~**NetworkPolicy** templates restricting controller pods to
+      egress only to required endpoints.~~ **Done 2026-10-08 (ADR-0094)**:
+      opt-in `deploy/network-policies/`: default deny for every banlieue pod,
+      then one allow policy per component (selected by
+      `app.kubernetes.io/component`, so operator-spawned providers in any
+      namespace are covered) and per import/push Job. Egress is DNS, the API
+      server and the component's own backend port; ingress is `metrics` (from
+      `banlieue.io/monitoring=true` namespaces) and `health`. Destination
+      CIDRs stay a documented site edit. `crates/banlieue-operator/tests/network_policies.rs`
+      pins the shape against the labels the operator stamps.
+- [x] ~~**Secret rotation**: providers re-read credentials on Secret
+      change events.~~ **Decided 2026-10-08, ADR-0095: no Secret watch.**
+      Watching needs `list`/`watch` on every Secret in the namespace, where
+      each provider can today `get` only its own. Credentials are read per
+      reconcile and no client outlives one, so a rotation lands within the
+      ~30 s requeue. That bound is now a contract: per-provider tests pin
+      the production client factories as stateless, and the vSphere, Proxmox
+      and libvirt guides document the rotate-then-revoke procedure.
 - [x] ~~**cosign-signed images**: keyless signing in CI via
       `cosign sign --keyless`.~~ **Done** — `build.yaml` keyless-signs
       every pushed digest and `cosign attest`s the OpenVEX predicate for
@@ -182,60 +206,21 @@ Concrete tasks:
   - [x] Provider lifecycle: install/upgrade/uninstall ProviderClass —
         `e2e_provider_{class,workload,pause}.rs`, `e2e_workload_namespace.rs`,
         `e2e_bootstrap_install.rs` (roadmap 11).
-  - [ ] CAPI integration: Machine + VSphereMachine pair — §4.2 above,
-        not started.
+  - [x] ~~CAPI integration: Machine + VSphereMachine pair~~:
+        `e2e_capi_contract.rs` (`make kind-e2e-capi`), §4.2 above.
 - [ ] CI matrix per backend; nightly runs against real vCenter/Proxmox
       where possible (self-hosted runners). **Still open** — `e2e.yaml`
       fans the `kind` suites out one job each, but every backend-touching
       suite is `#[ignore]`d and local-only; there are no self-hosted
       runners.
 
-## 4.6 Helm chart
+## 4.6 ~~Helm chart~~: out of scope
 
-`deploy/helm/banlieue/`:
-
-```yaml
-# values.yaml
-image:
-  repository: ghcr.io/firestoned/banlieue-controller
-  tag: ""           # default = chart appVersion
-  pullPolicy: IfNotPresent
-
-leaderElection:
-  enabled: true
-  namespace: banlieue-system
-
-webhook:
-  enabled: true
-  certManager: true
-
-providerClasses:
-  vsphere:
-    enabled: true
-    image: ghcr.io/firestoned/banlieue-provider-vsphere
-    replicas: 2
-  proxmox:
-    enabled: true
-    image: ghcr.io/firestoned/banlieue-provider-proxmox
-    replicas: 2
-  libvirt:
-    enabled: false
-    image: ghcr.io/firestoned/banlieue-provider-libvirt
-    replicas: 1
-
-monitoring:
-  serviceMonitor:
-    enabled: false
-  grafanaDashboards:
-    enabled: false
-```
-
-Tasks:
-
-- [ ] Chart skeleton with CRDs, controller Deployment, webhook,
-      ProviderClasses gated by `values.providerClasses.*.enabled`.
-- [ ] Lint with `helm lint` and `kubeval`.
-- [ ] Render fixtures in CI to catch regressions.
+**Removed 2026-10-08. banlieue does not ship a Helm chart, now or later.**
+The install paths are `banlieue bootstrap operator` (ADR-0013), which
+installs the operator and lets `ProviderClass` resources bring up each
+backend, and the kustomize bases under `deploy/`. Neither needs a templating
+layer, and CRD upgrades stay a plain `kubectl apply` of `deploy/crds/`.
 
 ## 4.7 Container images
 
@@ -256,22 +241,32 @@ Tasks:
 
 ## 4.8 Release engineering
 
-- [ ] Conventional commit history; use `git-cliff` or similar to
-      auto-generate CHANGELOG.
+- [x] ~~Conventional commit history; use `git-cliff` or similar to
+      auto-generate CHANGELOG.~~ **Done 2026-10-08**: `cliff.toml`;
+      `make changelog` (root `CHANGELOG.md`, published on the docs site) and
+      `make release-notes`, which the release workflow appends to each GitHub
+      Release body. git-cliff is installed in CI by `make git-cliff-install`,
+      pinned and SHA-512 verified.
 - [ ] Semantic version tags `vX.Y.Z` trigger GH Actions:
       - cargo publish (only crates we want to publish; probably
-        skip the provider binaries and only publish `banlieue-api`)
-      - container image build/sign/push
-      - helm chart package + push (chartmuseum or GH pages)
-      - CRD YAMLs attached to GH release
-      - changelog entry
+        skip the provider binaries and only publish `banlieue-api`).
+        **Still open**, the one remaining sub-item: it needs a crates.io
+        owner and a publish token, and a decision on whether `banlieue-api`
+        is a supported public crate.
+      - ~~container image build/sign/push~~ **Done** (`build.yaml`, ADR-0006).
+      - ~~CRD YAMLs attached to GH release~~ **Done** (`deploy-manifests.tar.gz`).
+      - ~~changelog entry~~ **Done 2026-10-08** (`make release-notes` in the
+        release body).
 - [x] ~~Branch protection on `main`: PR with signed-off commits,
       passing CI required.~~ **Done 2026-09-19** — ruleset `main` with
       required checks; commit signatures are verified in CI by
       `firestoned/github-actions/security/verify-signed-commits`. See
       roadmap 16, which also notes the one-time ruleset edit still needed
       to require the new aggregator context.
-- [ ] Backport policy for `v1.x` once we hit GA.
+- [x] ~~Backport policy for `v1.x` once we hit GA.~~ **Done**: written
+      down ahead of GA in `GOVERNANCE.md` ("Releases and support"): from 1.0
+      the latest minor gets fixes and the previous minor gets security fixes
+      for three months; fixes land on `main`, then a `release-X.Y` branch.
 
 ## 4.9 Governance and FINOS-readiness
 
@@ -280,24 +275,36 @@ requirements when ready):
 
 - [x] ~~**LICENSE**: Apache-2.0~~ **Done** — `LICENSE`, and every source
       file carries an SPDX header (enforced in CI).
-- [ ] **NOTICE**: copyright + attributions
+- [x] ~~**NOTICE**: copyright + attributions~~ **Done**: `NOTICE`.
 - [x] ~~**README.md** with a clear "what this is" + quickstart.~~
       **Done** — `README.md`, with the docs site at `docs/src/` behind it.
-- [ ] **CONTRIBUTING.md** with DCO instructions and dev setup.
-- [ ] **CODE_OF_CONDUCT.md** (Contributor Covenant v2.1).
-- [ ] **GOVERNANCE.md** describing maintainers, decision process,
-      maintainer addition criteria.
+- [x] ~~**CONTRIBUTING.md** with DCO instructions and dev setup.~~
+      **Done**: also on the docs site as Developer → Contributing.
+- [x] ~~**CODE_OF_CONDUCT.md** (Contributor Covenant v2.1).~~ **Done**.
+- [x] ~~**GOVERNANCE.md** describing maintainers, decision process,
+      maintainer addition criteria.~~ **Done**.
 - [x] ~~**SECURITY.md** with disclosure email and supported versions.~~
       **Done** — `SECURITY.md`, pointing at GitHub private vulnerability
       reporting rather than an email address.
-- [ ] **MAINTAINERS.md** listing current maintainers with contact.
-- [ ] **DCO** enforced via GitHub app on all commits.
-- [ ] **OWNERS** files for sub-areas (optional but useful).
-- [ ] Project metadata: name, mission statement, charter draft.
-- [ ] Migration plan from `firestoned/banlieue` to
-      `finos/banlieue`: redirect, image republish under new path,
-      CRD API group rename considerations (probably keep
-      `banlieue.io` to avoid breaking users).
+- [x] ~~**MAINTAINERS.md** listing current maintainers with contact.~~
+      **Done** (contact by GitHub handle).
+- [x] ~~**DCO** enforced via GitHub app on all commits.~~ **Done, in CI
+      instead of an app**: the `✍️ DCO Sign-off` job runs `make dco-check`
+      on every pull request and is part of `✅ Required Checks`. The sign-off
+      must match the author; GitHub App bots match by name (Dependabot signs
+      off as `support@github.com`). `make dco-check-test` covers the rules.
+- [x] ~~**OWNERS** files for sub-areas (optional but useful).~~ **Done as
+      `.github/CODEOWNERS`** (one owner today; paths split as maintainers
+      join, per `GOVERNANCE.md`).
+- [x] ~~Project metadata: name, mission statement, charter draft.~~
+      **Done**: `docs/src/governance/charter.md` (draft for FINOS review).
+- [x] ~~Migration plan from `firestoned/banlieue` to
+      `finos/banlieue`.~~ **Done**:
+      `docs/src/governance/finos-contribution.md`: repository transfer (not a
+      fork), image path from the first release after the move, **keep the
+      `banlieue.io` API groups**, docs redirect, keyless-signing identity
+      change. The donation itself is a FINOS legal/TSC process, not a repo
+      task.
 
 ## 4.10 ADRs (Architecture Decision Records) — largely done
 
@@ -323,10 +330,10 @@ What remains under this heading:
       meaning of "ADR-0042" both stayed put — across the imagebuilder and
       operator crates, RBAC manifests, the CALM model, generated CRDs and API
       docs, examples, and roadmap 17.
-- [ ] **Reconcile `01-decisions.md`.** Its entries have been annotated with
-      the ADRs that superseded them; decide whether to retire it entirely or
-      keep it as the annotated pre-ADR record. Do not delete it silently —
-      several entries are still the only statement of their decision.
+- [x] ~~**Reconcile `01-decisions.md`.**~~ **Done 2026-10-08: kept and
+      frozen** as the annotated pre-ADR record. It takes no new entries; a new
+      decision is an ADR, and an entry is only edited to point at the ADR that
+      supersedes it.
 - [ ] Keep the threat model current: a **full pass** after every implemented
       ADR (`rules/threat-modeling.md`), which is ADD's last step.
 
@@ -339,15 +346,15 @@ Tackle in roughly this order, but parallelize:
 3. Observability (4.3) — operators need this for early adoption.
 4. Security hardening (4.4) — required for FINOS.
 5. E2E (4.5) — gates everything else.
-6. Helm chart (4.6) — required for usability.
+6. ~~Helm chart (4.6)~~: out of scope, see 4.6.
 7. Container images and release engineering (4.7, 4.8).
 8. Governance and FINOS submission (4.9).
 9. ADRs (4.10).
 
 ## Definition of done
 
-- A new operator can install banlieue via Helm and provision a VM in
-  under 30 minutes following the docs.
+- A new operator can install banlieue with `banlieue bootstrap operator`
+  and provision a VM in under 30 minutes following the docs.
 - E2E test matrix passes on every PR.
 - Container images are signed; SBOMs published.
 - All FINOS donation checklist items satisfied.
@@ -358,11 +365,6 @@ Tackle in roughly this order, but parallelize:
 - **Doc drift**: API reference must be generated, not
   hand-maintained. Same for sample manifests in the docs — pull from
   `examples/` via include.
-- **Helm + CRDs**: there's a long-standing Helm + CRD lifecycle
-  pain. Recommended approach: ship CRDs in the chart's `crds/`
-  directory (which doesn't manage updates), and document
-  `kubectl apply -f` for upgrades. Or, more invasively, use a CRD
-  controller — overkill for our scope.
 - **CAPI version compatibility**: pin to a specific CAPI version in
   integration tests. v1beta2 stabilization is ongoing.
 - **DCO enforcement**: easy to enable, easy to break a contributor

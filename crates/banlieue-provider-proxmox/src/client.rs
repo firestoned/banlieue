@@ -48,6 +48,10 @@ pub fn install_default_crypto_provider() {
 }
 
 /// The real factory: HTTPS with an API token.
+///
+/// Stateless by design (ADR-0095): every reconcile builds a fresh client from
+/// credentials it has just read, so a rotated Secret is used by the next one.
+/// Any connection reuse must key on the Secret's `resourceVersion`.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct HttpClientFactory;
 

@@ -160,6 +160,25 @@ Deleting the `VirtualMachine` stops the VM if it is running, destroys it with
 its unreferenced disks, deletes the seed ISO, and only then releases the
 finalizer. "Already gone" counts as success at every step.
 
+## Rotating credentials
+
+1. Create a new API token in Proxmox VE for the same user, with the same
+   privileges.
+2. Update the Secret in place: `username` is the new `user@realm!tokenid`,
+   `tokenValue` its secret.
+3. Wait about 30 seconds, and check that the `Provider` stays `Ready`
+   (`kubectl get provider <name>`).
+4. Delete the old token in Proxmox VE.
+
+banlieue never watches the Secret. Each reconcile reads it by name and builds
+a fresh connection from it, so the new credential is in use within one
+requeue interval (about 30 seconds), with no restart. Watching would need
+read access to every Secret in the namespace, which the provider
+deliberately does not have
+([ADR-0095](https://github.com/firestoned/banlieue/blob/main/docs/adr/0095-credential-rotation-without-secret-watches.md)).
+To cut a credential off immediately, revoke it on the backend: that stops it
+everywhere at once.
+
 ## Troubleshooting
 
 | Symptom | Cause |

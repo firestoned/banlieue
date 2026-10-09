@@ -21,12 +21,23 @@ base64.workspace = true
 # EK certificate subject check shared by the KVM providers (ek.rs).
 x509-parser.workspace = true
 thiserror.workspace = true
-# `net` + `io-util` back the health server, `signal` backs the shutdown future
-# (both live in `bootstrap`); `macros` + `rt-multi-thread` are the base runtime.
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "io-util", "signal"] }
+# `net` + `io-util` back the health and metrics listeners (`httpd`), `time`
+# their request-line read timeout and the leader-election sleeps, `signal` the
+# shutdown future; `macros` + `rt-multi-thread` are the base runtime.
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "io-util", "signal", "time"] }
 futures.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+# Metrics registry served on `--metrics-port` (ADR-0091).
+prometheus-client.workspace = true
+# Opt-in OTLP trace export from `init_tracing` (ADR-0092).
+opentelemetry.workspace = true
+opentelemetry_sdk.workspace = true
+opentelemetry-otlp.workspace = true
+tracing-opentelemetry.workspace = true
+# Installs `ring` as the process crypto provider before the OTLP exporter's
+# reqwest client (built with `rustls-no-provider`) makes its first TLS call.
+rustls.workspace = true
 chrono.workspace = true
 async-trait.workspace = true
 

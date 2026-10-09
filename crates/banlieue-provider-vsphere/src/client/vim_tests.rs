@@ -732,4 +732,15 @@ n17Lktsw0jAZJp1tU1DJPZSYHZPPWLZlJhHftNtpKQ==
     fn malformed_json_is_an_error_not_a_panic() {
         assert!(extra_config_value_from_raw_json(b"not json", "any.key").is_err());
     }
+
+    /// ADR-0095: a rotated credential Secret takes effect on the next
+    /// reconcile only because nothing built from a credential outlives one.
+    /// The production factory must therefore hold no client, session or
+    /// credential: a zero-sized type cannot. A future connection cache has to
+    /// key on the Secret's `resourceVersion` instead, and must change this
+    /// test deliberately.
+    #[test]
+    fn production_factory_holds_no_client_between_reconciles() {
+        assert_eq!(std::mem::size_of::<VimClientFactory>(), 0);
+    }
 }

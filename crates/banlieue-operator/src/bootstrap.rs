@@ -20,7 +20,8 @@
 //!
 //! - **CRDs** are generated at runtime from the Rust types via the same
 //!   `crdgen_support::all_crds()` list `crdgen` uses.
-//! - **ClusterRoles** are `include_str!`-embedded from `deploy/*/rbac/`, so the
+//! - **ClusterRoles** are `include_str!`-embedded from `deploy/*/rbac/` (and
+//!   the Cluster API aggregate role from `deploy/capi/`, ADR-0096), so the
 //!   shipped manifests stay the single source of truth and a GitOps install
 //!   grants exactly the same permissions as a bootstrap install. Moving one of
 //!   those files breaks the build — which is the point.
@@ -119,6 +120,11 @@ const PROVIDER_PROXMOX_CLUSTER_ROLE: &str =
     include_str!("../../../deploy/provider-proxmox/rbac/clusterrole.yaml");
 const PROVIDER_CLOUD_HYPERVISOR_CLUSTER_ROLE: &str =
     include_str!("../../../deploy/provider-cloud-hypervisor/rbac/clusterrole.yaml");
+const CAPI_AGGREGATE_CLUSTER_ROLE_YAML: &str =
+    include_str!("../../../deploy/capi/clusterrole-aggregate.yaml");
+
+/// Name of the ClusterRole aggregated into Cluster API's manager (ADR-0096).
+pub const CAPI_AGGREGATE_CLUSTER_ROLE: &str = "banlieue-capi-infrastructure";
 
 /// `banlieue bootstrap <target>`.
 #[derive(Debug, Args)]
@@ -523,6 +529,14 @@ pub fn build_operator_install(
             })?);
     }
 
+    // What Cluster API's manager may do on the infrastructure kinds
+    // (ADR-0096). No workload is bound to it: CAPI's own manager role
+    // aggregates it by label. This install is also the clusterctl components
+    // file, so `clusterctl init --infrastructure banlieue` gets it from here.
+    manifests
+        .cluster_roles
+        .push(build_capi_aggregate_cluster_role()?);
+
     if !skip_provider_classes {
         manifests.provider_classes = backends
             .iter()
@@ -531,6 +545,21 @@ pub fn build_operator_install(
     }
 
     Ok(manifests)
+}
+
+/// Parse the embedded ClusterRole that Cluster API's manager aggregates
+/// (`deploy/capi/clusterrole-aggregate.yaml`, ADR-0096 Decision 4).
+///
+/// It grants get, list, watch, create, update, patch and delete on the
+/// `infrastructure.banlieue.io` machine, machine-template and cluster kinds
+/// and their status, and nothing else.
+///
+/// # Errors
+/// Returns an error if the embedded YAML is not a valid ClusterRole, which can
+/// only happen if the `deploy/capi/` manifest was edited into invalid YAML.
+pub fn build_capi_aggregate_cluster_role() -> Result<ClusterRole> {
+    serde_yaml::from_str(CAPI_AGGREGATE_CLUSTER_ROLE_YAML)
+        .with_context(|| format!("parsing embedded ClusterRole {CAPI_AGGREGATE_CLUSTER_ROLE}"))
 }
 
 /// Build a single-role install (the `provider` / `imagebuilder` escape hatches).

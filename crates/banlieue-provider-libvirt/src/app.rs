@@ -4,7 +4,9 @@
 //!
 //! Library form of the libvirt provider, invoked by the unified `banlieue`
 //! binary (ADR-0004). [`run`] owns the full lifecycle: tracing, kube client,
-//! health server, leader election, then the `Provider` controller.
+//! health and metrics servers (ADR-0093, ADR-0091), leader election, then the
+//! `Provider`, `VMImage` and `LibvirtMachine` controllers through the SDK's
+//! instrumented [`run_controller`].
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -12,14 +14,17 @@ use std::time::Duration;
 use anyhow::{Context as _, Result};
 use banlieue_api::banlieue::{Provider, VMImage};
 use banlieue_api::infrastructure::LibvirtMachine;
-use banlieue_provider_sdk::bootstrap::{init_tracing, serve_health, shutdown_signal};
+use banlieue_provider_sdk::bootstrap::{
+    Observability, init_tracing, shutdown_signal, start_observability,
+};
 use banlieue_provider_sdk::client::build_client_with;
+use banlieue_provider_sdk::health::Election;
 use banlieue_provider_sdk::leader::{
     DEFAULT_LEASE_DURATION_SECS, DEFAULT_RENEW_PERIOD_SECS, DEFAULT_RETRY_PERIOD_SECS,
     LeaderConfig, acquire_or_wait, renew_forever,
 };
+use banlieue_provider_sdk::runner::run_controller;
 use clap::{Args, Subcommand};
-use futures::StreamExt;
 use kube::{
     Api,
     runtime::{Controller, watcher::Config},
@@ -38,6 +43,10 @@ const DEFAULT_HEALTH_PORT: u16 = 8081;
 const DEFAULT_METRICS_PORT: u16 = 8080;
 const DEFAULT_LEADER_ELECTION_NAMESPACE: &str = "banlieue-system";
 const DEFAULT_LEADER_ELECTION_ID: &str = "banlieue-provider-libvirt";
+
+/// This role's name: the OTLP `service.name` (ADR-0092) and the `role`
+/// label of `banlieue_leader` (ADR-0091).
+pub const ROLE: &str = "banlieue-provider-libvirt";
 // The namespace image builds run in. Deliberately NOT `banlieue-system`:
 // kairos-operator's OSArtifact build pods require `privileged: true`, which
 // `baseline` denies as well as `restricted`, so this namespace enforces
@@ -80,7 +89,7 @@ pub struct Cli {
     #[arg(long, env = "BANLIEUE_HEALTH_PORT", default_value_t = DEFAULT_HEALTH_PORT)]
     pub health_port: u16,
 
-    /// Metrics server bind port (reserved).
+    /// Metrics server bind port: Prometheus `GET /metrics` (ADR-0091).
     #[arg(long, env = "BANLIEUE_METRICS_PORT", default_value_t = DEFAULT_METRICS_PORT)]
     pub metrics_port: u16,
 
@@ -189,11 +198,16 @@ pub fn provider_watch_config(provider_name: Option<&str>) -> Config {
 /// Run the libvirt provider to completion.
 ///
 /// # Errors
-/// Returns an error if logging init, kube client construction, or leader-lease
-/// acquisition fails.
+/// Returns an error if logging init, kube client construction, binding the
+/// health or metrics port, or leader-lease acquisition fails.
 pub async fn run(cli: Cli) -> Result<()> {
-    init_tracing(&cli.log_format, cli.log_level.as_deref(), LOG_DIRECTIVES)
-        .context("initialising tracing")?;
+    let telemetry = init_tracing(
+        ROLE,
+        &cli.log_format,
+        cli.log_level.as_deref(),
+        LOG_DIRECTIVES,
+    )
+    .context("initialising tracing")?;
 
     // One-shot roles exit when their work is done; only the controller path
     // below needs a health server, a leader lease, or a watch.
@@ -212,17 +226,24 @@ pub async fn run(cli: Cli) -> Result<()> {
     let client = build_client_with(cli.kubeconfig.as_deref().map(std::ffi::OsStr::new))
         .await
         .context("constructing kube client")?;
-    tokio::spawn(serve_health(cli.health_port));
+    let leader_cfg = (!cli.no_leader_elect).then(|| build_leader_config(&cli));
+    let election = leader_cfg
+        .as_ref()
+        .map_or(Election::Disabled, LeaderConfig::election);
+    let Observability { metrics, readiness } =
+        start_observability(ROLE, cli.health_port, cli.metrics_port, election)
+            .await
+            .context("starting health and metrics servers")?;
 
-    if !cli.no_leader_elect {
-        let leader_cfg = build_leader_config(&cli);
+    if let Some(leader_cfg) = leader_cfg {
         info!(lease = %leader_cfg.lease_name, "waiting for leader election");
-        acquire_or_wait(client.clone(), &leader_cfg)
+        acquire_or_wait(client.clone(), &leader_cfg, &readiness)
             .await
             .context("acquiring leader lease")?;
         let renewer_client = client.clone();
+        let renewer_readiness = readiness.clone();
         tokio::spawn(async move {
-            if let Err(e) = renew_forever(renewer_client, leader_cfg).await {
+            if let Err(e) = renew_forever(renewer_client, leader_cfg, renewer_readiness).await {
                 error!(error = %e, "leader lease renewer terminated — exiting");
                 std::process::exit(1);
             }
@@ -255,28 +276,28 @@ pub async fn run(cli: Cli) -> Result<()> {
     info!("starting Provider controller (class=libvirt)");
     let ctx2 = ctx.clone();
     let ctx3 = ctx.clone();
-    let provider_ctrl = Controller::new(
-        provider_api,
-        provider_watch_config(cli.provider_name.as_deref()),
-    )
-    .run(provider::reconcile, provider::error_policy, ctx)
-    .for_each(|res| async move {
-        match res {
-            Ok((obj, _)) => info!(kind = "Provider", ?obj, "reconciled"),
-            Err(e) => error!(kind = "Provider", error = %e, "reconcile error"),
-        }
-    });
+    let provider_ctrl = run_controller(
+        Controller::new(
+            provider_api,
+            provider_watch_config(cli.provider_name.as_deref()),
+        ),
+        "Provider",
+        metrics.clone(),
+        provider::reconcile,
+        provider::error_policy,
+        ctx,
+    );
 
     // VMImage is cluster-scoped: always watch every namespace.
     let image_api: Api<VMImage> = Api::all(client.clone());
-    let image_ctrl = Controller::new(image_api, Config::default())
-        .run(vmimage::reconcile, vmimage::error_policy, ctx2)
-        .for_each(|res| async move {
-            match res {
-                Ok((obj, _)) => info!(kind = "VMImage", ?obj, "reconciled"),
-                Err(e) => error!(kind = "VMImage", error = %e, "reconcile error"),
-            }
-        });
+    let image_ctrl = run_controller(
+        Controller::new(image_api, Config::default()),
+        "VMImage",
+        metrics.clone(),
+        vmimage::reconcile,
+        vmimage::error_policy,
+        ctx2,
+    );
 
     // LibvirtMachine — the VM lifecycle (ADR-0050). Namespaced like the
     // Provider, because a machine always lives beside the VirtualMachine that
@@ -286,18 +307,16 @@ pub async fn run(cli: Cli) -> Result<()> {
         Some(ns) => Api::namespaced(client.clone(), ns),
         None => Api::all(client.clone()),
     };
-    let machine_ctrl = Controller::new(machine_api, Config::default())
-        .run(
-            libvirtmachine::reconcile,
-            libvirtmachine::error_policy,
-            ctx3,
-        )
-        .for_each(|res| async move {
-            match res {
-                Ok((obj, _)) => info!(kind = "LibvirtMachine", ?obj, "reconciled"),
-                Err(e) => error!(kind = "LibvirtMachine", error = %e, "reconcile error"),
-            }
-        });
+    let machine_ctrl = run_controller(
+        Controller::new(machine_api, Config::default()),
+        "LibvirtMachine",
+        metrics.clone(),
+        libvirtmachine::reconcile,
+        libvirtmachine::error_policy,
+        ctx3,
+    );
+
+    readiness.controllers_started();
 
     tokio::select! {
         () = provider_ctrl => info!("Provider controller stream ended"),
@@ -305,6 +324,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         () = machine_ctrl => info!("LibvirtMachine controller stream ended"),
         _ = shutdown_signal() => info!("shutdown signal received; releasing controllers"),
     }
+    telemetry.shutdown();
     Ok(())
 }
 

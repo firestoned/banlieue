@@ -62,6 +62,8 @@ flowchart LR
     service-banlieue-host-installer["banlieue host cloud-hypervisor (installer)"]
     service-vmm-release-source["Cloud Hypervisor release source (github.com or operator mirror, external)"]
     network-control-plane-vip["Management cluster control plane VIP"]
+    service-metrics-scraper["Metrics scraper (Prometheus)"]
+    service-otel-collector["OpenTelemetry collector (optional)"]
     subgraph sg_system-banlieue-binary [System Banlieue Binary]
         service-banlieue-controller
         service-banlieue-operator
@@ -144,6 +146,20 @@ flowchart LR
     end
     service-banlieue-host-installer -->|HTTPS| service-vmm-release-source
     network-control-plane-vip -->|TCP| service-kubernetes-api
+    service-metrics-scraper -->|HTTP| service-banlieue-controller
+    service-banlieue-controller -->|HTTPS| service-otel-collector
+    service-metrics-scraper -->|HTTP| service-banlieue-operator
+    service-banlieue-operator -->|HTTPS| service-otel-collector
+    service-metrics-scraper -->|HTTP| service-banlieue-imagebuilder
+    service-banlieue-imagebuilder -->|HTTPS| service-otel-collector
+    service-metrics-scraper -->|HTTP| service-provider-vsphere
+    service-provider-vsphere -->|HTTPS| service-otel-collector
+    service-metrics-scraper -->|HTTP| service-provider-proxmox
+    service-provider-proxmox -->|HTTPS| service-otel-collector
+    service-metrics-scraper -->|HTTP| service-provider-libvirt
+    service-provider-libvirt -->|HTTPS| service-otel-collector
+    service-metrics-scraper -->|HTTP| service-provider-cloud-hypervisor
+    service-provider-cloud-hypervisor -->|HTTPS| service-otel-collector
 ```
 
 <sub>Source: nodes and relationships in `architecture.json`.</sub>

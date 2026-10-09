@@ -1,0 +1,56 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# Allow list for the libvirt image import Job (ADR-0094). It runs in the
+# image-build namespace (banlieue-imagebuild by default), reads its Provider
+# and credentials from the API server, and streams the artifact to libvirtd
+# over mutual TLS. It serves nothing, so no ingress.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: banlieue-libvirt-import
+  labels:
+    app.kubernetes.io/name: banlieue
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: banlieue
+      app.kubernetes.io/component: libvirt-import
+  policyTypes:
+    - Egress
+  egress:
+    # DNS: cluster DNS pods only.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Kubernetes API server. Its address is per cluster, so this rule has no
+    # "to" and allows any address on the two usual API ports. Narrow it by
+    # adding your cluster's API server address, for example:
+    #   - to:
+    #       - ipBlock:
+    #           cidr: 192.0.2.10/32
+    #     ports: ...
+    - ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 6443
+    # libvirtd over mutual TLS. banlieue cannot know your addresses,
+    # so this rule has no "to" and allows any address on port 16514 only.
+    # Narrow it to your site's CIDRs, for example:
+    #   - to:
+    #       - ipBlock:
+    #           cidr: 198.51.100.0/24
+    #     ports: ...
+    - ports:
+        - protocol: TCP
+          port: 16514

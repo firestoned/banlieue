@@ -1,0 +1,13 @@
+banlieue
+Copyright (c) 2026 Erick Bourgeois and the banlieue contributors
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This product includes software developed by third parties. Each release
+publishes a Software Bill of Materials (SBOM) listing every third-party
+component compiled into its binaries and container images, with its version
+and licence.
+
+CODE_OF_CONDUCT.md is the Contributor Covenant, version 2.1
+(https://www.contributor-covenant.org/version/2/1/code_of_conduct.html),
+licensed under the Creative Commons Attribution 4.0 International License.

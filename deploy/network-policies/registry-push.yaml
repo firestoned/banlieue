@@ -1,0 +1,47 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# Allow list for the imagebuilder's registry push Job (ADR-0094). It runs in
+# the image-build namespace (banlieue-imagebuild by default) with no service
+# account token, so it never calls the API server: DNS and the OCI registry
+# only. It serves nothing, so no ingress.
+#
+# A registry on another port (for example registry.internal:5000, or plain
+# HTTP on 80) needs that port added here.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: banlieue-registry-push
+  labels:
+    app.kubernetes.io/name: banlieue
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: banlieue
+      app.kubernetes.io/component: registry-push
+  policyTypes:
+    - Egress
+  egress:
+    # DNS: cluster DNS pods only.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # OCI registry over HTTPS. banlieue cannot know your addresses,
+    # so this rule has no "to" and allows any address on port 443 only.
+    # Narrow it to your site's CIDRs, for example:
+    #   - to:
+    #       - ipBlock:
+    #           cidr: 203.0.113.0/24
+    #     ports: ...
+    - ports:
+        - protocol: TCP
+          port: 443

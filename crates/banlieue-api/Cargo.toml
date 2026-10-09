@@ -23,7 +23,7 @@ serde_yaml.workspace = true
 
 [features]
 default = []
-# Enables the binary that prints all CRDs as YAML for kustomize/helm consumption.
+# Enables the binary that prints all CRDs as YAML for kustomize consumption.
 crdgen = ["dep:serde_yaml", "dep:clap"]
 
 [[bin]]

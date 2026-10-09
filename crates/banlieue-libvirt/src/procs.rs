@@ -16,6 +16,11 @@
 //! The encode/decode halves are plain functions over bytes rather than
 //! methods on a session, so their exact wire output is unit-testable without
 //! a connection.
+//!
+//! Each public procedure is one `libvirt.<op>` span (ADR-0092). Spans skip
+//! every argument and record only pool, volume, network and domain names:
+//! never XML (a domain definition names the guest's seed media), agent
+//! commands, or uploaded bytes.
 
 use crate::rpc::{
     PROC_AUTH_LIST, PROC_CONNECT_LIST_ALL_NETWORKS, PROC_CONNECT_LIST_ALL_STORAGE_POOLS,
@@ -31,6 +36,7 @@ use crate::transport::{Result, Session, TransportError};
 use crate::xdr::{Decoder, Encoder};
 use tokio::io::AsyncReadExt;
 use tokio::io::{AsyncRead, AsyncWrite};
+use tracing::instrument;
 
 /// `VIR_UUID_BUFLEN` — libvirt UUIDs are a fixed 16 raw bytes on the wire,
 /// not the 36-character string form.
@@ -195,6 +201,7 @@ pub fn decode_auth_list(payload: &[u8]) -> Result<Vec<AuthType>> {
 ///
 /// # Errors
 /// Any [`TransportError`].
+#[instrument(name = "libvirt.auth_list", skip_all)]
 pub async fn auth_list<S>(session: &mut Session<S>) -> Result<Vec<AuthType>>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -222,6 +229,7 @@ where
 /// does not implement (only `REMOTE_AUTH_NONE` is supported — with
 /// `auth_tls="none"` the client certificate is already the credential), plus
 /// any other [`TransportError`].
+#[instrument(name = "libvirt.connect_open", skip_all, fields(read_only))]
 pub async fn connect_open<S>(
     session: &mut Session<S>,
     uri: Option<&str>,
@@ -250,6 +258,7 @@ where
 ///
 /// # Errors
 /// Any [`TransportError`].
+#[instrument(name = "libvirt.list_all_storage_pools", skip_all)]
 pub async fn list_all_storage_pools<S>(session: &mut Session<S>) -> Result<Vec<StoragePool>>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -267,6 +276,7 @@ where
 ///
 /// # Errors
 /// Any [`TransportError`].
+#[instrument(name = "libvirt.list_all_networks", skip_all)]
 pub async fn list_all_networks<S>(session: &mut Session<S>) -> Result<Vec<Network>>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -491,6 +501,7 @@ pub fn raw_volume_xml(name: &str, capacity_bytes: u64) -> String {
 /// # Errors
 /// Any [`TransportError`]; a `Remote` error typically means the volume already
 /// exists or the pool is inactive.
+#[instrument(name = "libvirt.storage_vol_create_xml", skip_all, fields(pool = %pool.name))]
 pub async fn storage_vol_create_xml<S>(
     session: &mut Session<S>,
     pool: &StoragePool,
@@ -531,6 +542,7 @@ where
 /// # Errors
 /// Any [`TransportError`]; [`TransportError::Protocol`] if `reader` yields
 /// fewer than `length` bytes.
+#[instrument(name = "libvirt.storage_vol_upload", skip_all, fields(pool = %vol.pool, volume = %vol.name, length))]
 pub async fn storage_vol_upload<S, R>(
     session: &mut Session<S>,
     vol: &StorageVol,
@@ -581,6 +593,7 @@ where
 ///
 /// # Errors
 /// Any [`TransportError`].
+#[instrument(name = "libvirt.storage_pool_list_all_volumes", skip_all, fields(pool = %pool.name))]
 pub async fn storage_pool_list_all_volumes<S>(
     session: &mut Session<S>,
     pool: &StoragePool,
@@ -669,6 +682,7 @@ pub fn decode_storage_vol_ret(body: &[u8]) -> Result<StorageVol> {
 ///
 /// # Errors
 /// Any [`TransportError`]; a `Remote` error means no such pool.
+#[instrument(name = "libvirt.storage_pool_lookup_by_name", skip_all, fields(pool = %name))]
 pub async fn storage_pool_lookup_by_name<S>(
     session: &mut Session<S>,
     name: &str,
@@ -692,6 +706,7 @@ where
 /// # Errors
 /// Any [`TransportError`]; a `Remote` error means no such volume, which is
 /// how a caller tests for existence.
+#[instrument(name = "libvirt.storage_vol_lookup_by_name", skip_all, fields(pool = %pool.name, volume = %name))]
 pub async fn storage_vol_lookup_by_name<S>(
     session: &mut Session<S>,
     pool: &StoragePool,
@@ -709,6 +724,7 @@ where
 ///
 /// # Errors
 /// Any [`TransportError`]; a `Remote` error if the volume is gone already.
+#[instrument(name = "libvirt.storage_vol_delete", skip_all, fields(pool = %vol.pool, volume = %vol.name))]
 pub async fn storage_vol_delete<S>(session: &mut Session<S>, vol: &StorageVol) -> Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -726,6 +742,7 @@ where
 ///
 /// # Errors
 /// Any [`TransportError`].
+#[instrument(name = "libvirt.storage_pool_refresh", skip_all, fields(pool = %pool.name))]
 pub async fn storage_pool_refresh<S>(session: &mut Session<S>, pool: &StoragePool) -> Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -823,6 +840,7 @@ fn optional_string(d: &mut Decoder<'_>) -> Result<Option<String>> {
 /// # Errors
 /// Any [`TransportError`]; a `Remote` error if the network has no lease
 /// database, which is the case for a bridge rather than a managed network.
+#[instrument(name = "libvirt.network_get_dhcp_leases", skip_all, fields(network = %net.name))]
 pub async fn network_get_dhcp_leases<S>(
     session: &mut Session<S>,
     net: &Network,
@@ -1100,6 +1118,7 @@ pub fn decode_domain_qemu_agent_command_ret(payload: &[u8]) -> Result<Option<Str
 /// Any [`TransportError`]. An agent that is absent or not yet running
 /// surfaces as [`TransportError::Remote`] — which the caller should read as
 /// "not ready", not as a fault.
+#[instrument(name = "libvirt.domain_qemu_agent_command", skip_all, fields(domain = %dom.name))]
 pub async fn domain_qemu_agent_command<S>(
     session: &mut Session<S>,
     dom: &Domain,
@@ -1255,6 +1274,7 @@ pub fn decode_domain_interface_addresses_ret(body: &[u8]) -> Result<Vec<DomainIn
 ///
 /// # Errors
 /// Any [`TransportError`]; a `Remote` error means no such domain.
+#[instrument(name = "libvirt.domain_lookup_by_name", skip_all, fields(domain = %name))]
 pub async fn domain_lookup_by_name<S>(session: &mut Session<S>, name: &str) -> Result<Domain>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -1272,6 +1292,7 @@ where
 ///
 /// # Errors
 /// Any [`TransportError`]; a `Remote` error typically means invalid XML.
+#[instrument(name = "libvirt.domain_define", skip_all)]
 pub async fn domain_define_xml<S>(session: &mut Session<S>, xml: &str) -> Result<Domain>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -1285,6 +1306,7 @@ where
 ///
 /// # Errors
 /// Any [`TransportError`]; a `Remote` error if the domain is already running.
+#[instrument(name = "libvirt.domain_create", skip_all, fields(domain = %dom.name))]
 pub async fn domain_create<S>(session: &mut Session<S>, dom: &Domain) -> Result<Domain>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -1298,6 +1320,7 @@ where
 ///
 /// # Errors
 /// Any [`TransportError`].
+#[instrument(name = "libvirt.domain_shutdown", skip_all, fields(domain = %dom.name))]
 pub async fn domain_shutdown<S>(session: &mut Session<S>, dom: &Domain) -> Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -1311,6 +1334,7 @@ where
 ///
 /// # Errors
 /// Any [`TransportError`]; a `Remote` error if the domain is not running.
+#[instrument(name = "libvirt.domain_destroy", skip_all, fields(domain = %dom.name))]
 pub async fn domain_destroy<S>(session: &mut Session<S>, dom: &Domain) -> Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -1330,6 +1354,7 @@ where
 /// # Errors
 /// Any [`TransportError`]; a `Remote` error if the domain is still running
 /// (call [`domain_destroy`] first).
+#[instrument(name = "libvirt.domain_undefine", skip_all, fields(domain = %dom.name))]
 pub async fn domain_undefine<S>(session: &mut Session<S>, dom: &Domain) -> Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -1357,6 +1382,7 @@ where
 /// Any [`TransportError`]; a `Remote` error if no device matches the target
 /// in `xml`, or if the guest holds the tray locked (which is deliberately
 /// not forced — see [`DEVICE_MODIFY_FORCE`]).
+#[instrument(name = "libvirt.domain_update_device", skip_all, fields(domain = %dom.name))]
 pub async fn domain_update_device_flags<S>(
     session: &mut Session<S>,
     dom: &Domain,
@@ -1375,6 +1401,7 @@ where
 ///
 /// # Errors
 /// Any [`TransportError`].
+#[instrument(name = "libvirt.domain_get_state", skip_all, fields(domain = %dom.name))]
 pub async fn domain_get_state<S>(session: &mut Session<S>, dom: &Domain) -> Result<DomainState>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -1404,6 +1431,7 @@ pub fn decode_domain_get_xml_desc_ret(body: &[u8]) -> Result<String> {
 ///
 /// # Errors
 /// Any [`TransportError`]; a `Remote` error if the domain no longer exists.
+#[instrument(name = "libvirt.domain_get_xml_desc", skip_all, fields(domain = %dom.name))]
 pub async fn domain_get_xml_desc<S>(
     session: &mut Session<S>,
     dom: &Domain,
@@ -1427,6 +1455,7 @@ where
 /// # Errors
 /// Any [`TransportError`]; a `Remote` error when the source is unavailable
 /// (no guest agent, no lease file, domain not running).
+#[instrument(name = "libvirt.domain_interface_addresses", skip_all, fields(domain = %dom.name))]
 pub async fn domain_interface_addresses<S>(
     session: &mut Session<S>,
     dom: &Domain,

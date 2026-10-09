@@ -97,9 +97,10 @@ inside the infrastructure CRDs — the controller never reads a Secret.
 kubectl apply -R -f deploy/controller/rbac/
 ```
 
-The ClusterRole carries the `cluster.x-k8s.io/aggregate-to-manager: "true"`
-label, so a future Cluster API manager can drive the same infrastructure CRDs
-without a bespoke binding.
+This ClusterRole is **not** aggregated into Cluster API's manager. That is a
+separate, smaller role, `banlieue-capi-infrastructure`
+(`deploy/capi/clusterrole-aggregate.yaml`), which grants CAPI only the
+infrastructure kinds (ADR-0096). See [Cluster API](cluster-api.md).
 
 ## 4. Apply configuration
 
@@ -202,12 +203,14 @@ kubectl -n banlieue-system logs deploy/banlieue-controller | head
 kubectl -n banlieue-system get lease banlieue-controller
 
 # Metrics / health are reachable in-cluster:
-kubectl -n banlieue-system port-forward deploy/banlieue-controller 8081:8081 &
-curl -s localhost:8081/readyz   # -> ok
+kubectl -n banlieue-system port-forward deploy/banlieue-controller 8081:8081 8080:8080 &
+curl -s localhost:8081/readyz   # -> leader (or standby on a second replica)
+curl -s localhost:8080/metrics | grep banlieue_leader
 ```
 
 A healthy controller logs leader acquisition and a reconcile loop that idles
-until you create resources.
+until you create resources. What each endpoint reports, and how to scrape the
+metrics, is in the [Observability guide](observability.md).
 
 ## What's next
 

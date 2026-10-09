@@ -52,6 +52,13 @@ lan = "br0"
         assert_eq!(cli.bus, BusArg::System);
         assert!(!cli.no_leader_elect);
         assert_eq!(cli.health_port, DEFAULT_HEALTH_PORT);
+        assert_eq!(cli.metrics_port, DEFAULT_METRICS_PORT);
+    }
+
+    #[test]
+    fn metrics_port_is_configurable() {
+        let cli = parse(&["--metrics-port", "9464"]);
+        assert_eq!(cli.metrics_port, 9464);
     }
 
     #[test]

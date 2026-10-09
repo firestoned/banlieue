@@ -32,6 +32,8 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 futures.workspace = true
 
 tracing.workspace = true
+# Domain gauges collected from reflector stores at scrape time (ADR-0091).
+prometheus-client.workspace = true
 
 clap.workspace = true
 chrono.workspace = true
