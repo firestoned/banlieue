@@ -1,5 +1,30 @@
 # Changelog
 
+## [2026-10-09] - Close roadmap 12 (FINOS-ready)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/community/12-phase-4-finos-ready.md`: closed. New "Closed
+  2026-10-09" section maps each still-unticked item to where it lives now;
+  the threat-model item is ticked as a standing rule.
+- `.github/community/10-phase-2-snapshots.md`: the snapshot-schedule e2e
+  scenario joins its Definition of done.
+- `.github/community/14-live-migration.md`: the migration-policy e2e scenario
+  joins its Tests list.
+- `ROADMAPS.md`: row 12 is ✅.
+
+### Why
+The repo side of FINOS readiness was done on 2026-10-08. What remained is
+blocked on other roadmaps (10, 14), on infrastructure (self-hosted runners),
+on a crates.io owner, or on FINOS's own process, none of it phase 4 work.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
 ## [2026-10-08] - FINOS readiness (roadmap 12), docs site closed (roadmap 08), ADR-0091 to ADR-0096
 
 **Author:** Erick Bourgeois
