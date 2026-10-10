@@ -1,6 +1,6 @@
 # anatomy.md
 
-> Auto-maintained by OpenWolf. Last scanned: 2026-10-09T04:00:00.473Z
+> Auto-maintained by OpenWolf. Last scanned: 2026-10-10T04:00:00.523Z
 > Files: 512 tracked | Anatomy hits: 0 | Misses: 0
 
 ## ./
@@ -23,7 +23,7 @@
 - `NOTICE` (~159 tok)
 - `osv-scanner.toml` — SPDX-License-Identifier: Apache-2.0 (~355 tok)
 - `README.md` — Project documentation (~3300 tok)
-- `ROADMAPS.md` — Roadmaps (~4059 tok)
+- `ROADMAPS.md` — Roadmaps (~4136 tok)
 - `SECURITY.md` — Security Policy (~382 tok)
 
 ## .clusterfuzzlite/
@@ -61,14 +61,14 @@
 - `07-phase-1d-libvirt-provider.md` — Phase 1D — Libvirt Provider (~4174 tok)
 - `08-phase-1e-docs.md` — Phase 1E — Documentation site (MkDocs Material) (~4296 tok)
 - `09-phase-1f-cloud-hypervisor-provider.md` — 09: Phase 1F, Cloud Hypervisor provider (~11501 tok)
-- `10-phase-2-snapshots.md` — Phase 2 — Snapshots with GFS Scheduling (~2904 tok)
+- `10-phase-2-snapshots.md` — Phase 2 — Snapshots with GFS Scheduling (~2937 tok)
 - `11-phase-3-provider-lifecycle.md` — Phase 3 — Provider Lifecycle Automation (~3154 tok)
-- `12-phase-4-finos-ready.md` — Phase 4 — FINOS-Ready Polish (~4848 tok)
+- `12-phase-4-finos-ready.md` — Phase 4 — FINOS-Ready Polish (~5132 tok)
 - `13-ipam-pool-integration.md` — IPAM Pool Integration (CAPI `ipam.cluster.x-k8s.io`) (~3676 tok)
-- `14-live-migration.md` — Live Migration (same-class first, cross-class deferred) (~3251 tok)
+- `14-live-migration.md` — Live Migration (same-class first, cross-class deferred) (~3286 tok)
 - `15-vsphere-disk-image-import.md` — 15: vSphere disk-image import (raw and VMDK), alongside the ISO path (~4709 tok)
 - `16-scorecard-remediation.md` — 60 — OSSF Scorecard remediation (~2608 tok)
-- `17-ephemeral-vm-pools.md` — 17: Ephemeral, single-use VM pools (AI agent sandboxes) (~12407 tok)
+- `17-ephemeral-vm-pools.md` — 17: Ephemeral, single-use VM pools (AI agent sandboxes) (~12828 tok)
 - `18-split-image-fast-clone.md` — 18: Split-image fast clone — verified base + per-VM sealed volume (~4187 tok)
 - `19-port-groups.md` — 19: Port groups — declared, reconciled, and safe to delete (~4109 tok)
 - `README.md` — Project documentation (~1406 tok)
@@ -378,8 +378,8 @@
 
 - `app_tests.rs` — Unit tests for `app.rs` — flag parsing + leader config. (~1015 tok)
 - `app.rs` — # `banlieue operator` entry point (~3214 tok)
-- `bootstrap_tests.rs` — Unit tests for `bootstrap.rs`. (~17227 tok)
-- `bootstrap.rs` — `banlieue bootstrap` — self-contained cluster install (ADR-0013). (~16254 tok)
+- `bootstrap_tests.rs` — Unit tests for `bootstrap.rs`. (~17981 tok)
+- `bootstrap.rs` — `banlieue bootstrap` — self-contained cluster install (ADR-0013). (~16807 tok)
 - `context.rs` — Shared reconcile context (client + operator namespace). (~966 tok)
 - `error_tests.rs` — Unit tests for [`super::super::error`]: the metric `kind` of each variant. (~197 tok)
 - `error.rs` — Typed errors for `banlieue-operator`. (~372 tok)
@@ -423,7 +423,7 @@
 - `app.rs` — # `banlieue provider cloud-hypervisor` entry point (~3651 tok)
 - `error_tests.rs` — Unit tests for [`super::super::error`]: the metric `kind` of each variant. (~234 tok)
 - `error.rs` — Errors from the Cloud Hypervisor provider. (~689 tok)
-- `fake.rs` — An in-memory [`HostOps`] for unit tests. (~4970 tok)
+- `fake.rs` — An in-memory [`HostOps`] for unit tests. (~5072 tok)
 - `host_config_tests.rs` — Unit tests for `host_config.rs`. (~2758 tok)
 - `host_config.rs` — The host-local configuration (ADR-0062 Decision 4). (~3525 tok)
 - `host.rs` — The seam the machine reconciler is tested through. (~3643 tok)
@@ -432,8 +432,8 @@
 - `import_tests.rs` — Unit tests for `import.rs`, on real directories. The pull itself is (~660 tok)
 - `import.rs` — `banlieue provider cloud-hypervisor import`: put one registry image into (~1595 tok)
 - `lib.rs` — # banlieue-provider-cloud-hypervisor (~726 tok)
-- `machine_tests.rs` — Unit tests for `machine.rs`, driven against the strict `FakeHost`. (~9638 tok)
-- `machine.rs` — Converging one `CloudHypervisorMachine`, and tearing it down. (~5177 tok)
+- `machine_tests.rs` — Unit tests for `machine.rs`, driven against the strict `FakeHost`. (~10014 tok)
+- `machine.rs` — Converging one `CloudHypervisorMachine`, and tearing it down. (~5296 tok)
 - `neigh_tests.rs` — Unit tests for `neigh.rs`. (~709 tok)
 - `neigh.rs` — Guest addresses from the host's IPv4 neighbour table (ADR-0062 Decision 5). (~828 tok)
 - `plan_tests.rs` — Unit tests for `plan.rs`. (~6382 tok)
@@ -725,7 +725,7 @@
 
 ## deploy/controller/rbac/
 
-- `clusterrole.yaml` — SPDX-License-Identifier: Apache-2.0 (~1733 tok)
+- `clusterrole.yaml` — SPDX-License-Identifier: Apache-2.0 (~1838 tok)
 - `clusterrolebinding.yaml` — SPDX-License-Identifier: Apache-2.0 (~135 tok)
 - `role.yaml` — SPDX-License-Identifier: Apache-2.0 (~330 tok)
 - `rolebinding.yaml` — SPDX-License-Identifier: Apache-2.0 (~144 tok)

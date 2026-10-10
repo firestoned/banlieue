@@ -300,6 +300,8 @@ Edge cases:
   correctly for 24 hours of operation.
 - Retention prunes correctly per-tier.
 - Cron expressions are validated at admission.
+- An e2e scenario covers schedule firings and per-tier retention
+  (carried over from roadmap 12 §4.5 when it closed, 2026-10-09).
 - Documentation in `docs/user/snapshots.md` (Phase 4 finalizes; stub
   here).
 

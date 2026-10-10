@@ -168,6 +168,8 @@ Update a row when a backend's answer changes.
 - [ ] `FakeClient`-based tests for the new vSphere relocate reconcile
       branch, mirroring `vspheremachine_ensure_tests.rs`'s existing
       pattern.
+- [ ] An e2e scenario for `migrationPolicy` `Automatic` and `Manual`
+      (carried over from roadmap 12 §4.5 when it closed, 2026-10-09).
 
 ### Docs (mandatory per this project's process — ADR → CALM → TDD → implement → docs)
 

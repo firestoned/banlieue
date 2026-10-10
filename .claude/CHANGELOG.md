@@ -1,5 +1,117 @@
 # Changelog
 
+## [2026-10-10 10:07] - k0s OIDC identities are prefixed `github:`, not `oidc:`
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `scripts/dev-oidc-k0s.sh`: the username and group prefix written into
+  each controller's `authentication-config.yaml` is now `PREFIX`, default
+  `github:` (was a hardcoded `oidc:`). `grant` checks for that prefix and
+  `GRANT_USER` is documented as `github:<login>`. An empty `PREFIX` falls
+  back to the default, so the script cannot produce unprefixed identities.
+- `docs/src/guides/testing-claim-authorization.md`: the k0s section says
+  identities are `github:<login>`, explains why the prefix exists, and says
+  the claim subject policy's `usernamePrefix` must match it.
+
+### Why
+A prefix that names the identity provider is clearer than a generic one and
+keeps GitHub subjects apart from every other authenticator. Groups need it
+most: Dex reports a GitHub team as `org:team`, so with no prefix, a GitHub org
+named `system` could produce `system:masters`. The kind script keeps `oidc:`.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only
+- [ ] Documentation only
+
+Re-running `dev-oidc-k0s.sh up` on a cluster that was set up with `oidc:`
+renames every OIDC identity, so RBAC bindings for `oidc:<login>` stop
+matching until they are recreated for `github:<login>`.
+
+## [2026-10-09] - Three bugs found by the multi-host Cloud Hypervisor phase G run
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- **A vTPM could be handed to its guest before it was manufactured**
+  (`crates/banlieue-provider-cloud-hypervisor/src/machine.rs`, `ensure_tpm`).
+  "Manufactured" meant "the EK files exist", but `swtpm_setup` writes them
+  before it saves the final TPM state and exits. A pass in that window
+  adopted the half-written state and started swtpm; setup then replaced the
+  state file as `banlieue`, `0640`, which the guest's swtpm cannot read. The
+  TPM entered failure mode (`TPM2_Startup` returned `0x101`) and the VM never
+  booted, until the pool reaped it. Seen live on one of the two hosts; very likely the "one
+  in seven vTPM I/O error" recorded on 2026-09-28. Nothing is adopted or
+  started now while the manufacture unit is still running.
+- **`banlieue bootstrap operator` never installed the controller's
+  user-data Role** (`crates/banlieue-operator/src/bootstrap.rs`,
+  `build_controller_userdata_role`). `add_role` emitted namespaced Roles for
+  the operator, providers and imagebuilder, but not
+  `deploy/controller/rbac/role.yaml` and `rolebinding.yaml`, so every
+  `VirtualMachine` carrying `spec.userData` failed to schedule with a 403 on
+  a bootstrap install. Both are now embedded from `deploy/` like the
+  ClusterRoles, so the two install paths cannot drift.
+- **The controller could not add its finalizer to a `VirtualMachineClaim`**
+  (`deploy/controller/rbac/clusterrole.yaml`). `ensure_finalizer` is a merge
+  patch on the claim; the role granted `virtualmachineclaims/finalizers` but
+  not `patch` on the claim, so no claim ever bound under the shipped RBAC.
+  `tests/live_claim.rs` runs as cluster admin and could not see it.
+
+### Added
+- `crates/banlieue-provider-cloud-hypervisor/src/machine_tests.rs`:
+  `swtpm_waits_for_the_manufacture_unit_to_finish`.
+  `src/fake.rs::write_ek_files_during_setup`: the fake used to write the EK
+  files and unload the setup unit in one step, so it could not represent the
+  window at all (`rules/testing.md`: a fake more permissive than the host).
+- `crates/banlieue-operator/src/bootstrap_tests.rs`:
+  `bootstrap_emits_the_controller_userdata_role_as_the_manifest_declares`,
+  `the_controller_may_patch_every_kind_it_finalizes`.
+- Each test was written first and failed before its fix.
+
+### Changed
+- `docs/src/security/threat-model.md`: a TB-9 row (TPM state adopted
+  mid-manufacture, D), a TB-1 row (the controller's `patch` on claims and why
+  it cannot change a claim's spec), and the TB-2 row on the controller's
+  user-data Role now cites the bootstrap builder and its ADR-0042 dependency.
+  Rows only: no ADR, so no full pass and no stamp change.
+
+### Why
+Found running `make ch-pool-claim-e2e` (roadmap 17 phase G) on two Cloud
+Hypervisor hosts at once against a `banlieue bootstrap`-installed cluster.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (controller ClusterRole; provider binary on each Cloud Hypervisor host)
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-10-09] - Close roadmap 12 (FINOS-ready)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/community/12-phase-4-finos-ready.md`: closed. New "Closed
+  2026-10-09" section maps each still-unticked item to where it lives now;
+  the threat-model item is ticked as a standing rule.
+- `.github/community/10-phase-2-snapshots.md`: the snapshot-schedule e2e
+  scenario joins its Definition of done.
+- `.github/community/14-live-migration.md`: the migration-policy e2e scenario
+  joins its Tests list.
+- `ROADMAPS.md`: row 12 is ✅.
+
+### Why
+The repo side of FINOS readiness was done on 2026-10-08. What remained is
+blocked on other roadmaps (10, 14), on infrastructure (self-hosted runners),
+on a crates.io owner, or on FINOS's own process, none of it phase 4 work.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
 ## [2026-10-08] - FINOS readiness (roadmap 12), docs site closed (roadmap 08), ADR-0091 to ADR-0096
 
 **Author:** Erick Bourgeois

@@ -108,6 +108,13 @@ impl FakeHost {
         s.vms.remove(unit);
     }
 
+    /// `swtpm_setup` wrote the EK certificates but is still running: it
+    /// writes them before it saves the final TPM state and exits. As on a
+    /// real host, the EK files exist while the setup unit is still active.
+    pub fn write_ek_files_during_setup(&self, plan: &MachinePlan) {
+        self.lock().manufactured.insert(plan.uid.clone());
+    }
+
     /// `swtpm_setup` finished: the TPM is manufactured and, as systemd
     /// may do with a finished oneshot instance, its setup unit is unloaded.
     pub fn finish_tpm_setup(&self, plan: &MachinePlan) {

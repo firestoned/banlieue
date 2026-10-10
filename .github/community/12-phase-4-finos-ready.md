@@ -9,6 +9,23 @@
 > follow a quickstart, get a VM running on any of the three providers. The
 > project meets FINOS donation requirements.
 
+## Closed 2026-10-09
+
+The repo side of FINOS readiness is done. The five items still unticked below
+are not phase 4 work any more; each now lives where its blocker does, and none
+is a reason to keep this roadmap open:
+
+| Item | Where it lives now | Blocked on |
+|---|---|---|
+| Migration-policy e2e scenario (4.5) | roadmap 14, *Tests* | live migration itself |
+| Snapshot-schedule e2e scenario (4.5) | roadmap 10, *Definition of done* | the snapshot CRDs |
+| Nightly real-backend CI matrix (4.5) | deferred, no roadmap | self-hosted runners |
+| `cargo publish` of `banlieue-api` (4.8) | deferred, no roadmap | a crates.io owner, a token, and a decision that the crate is a supported public API |
+| Threat model kept current (4.10) | `rules/threat-modeling.md` | nothing: a standing rule, run as ADD's last step |
+
+The donation itself is a FINOS legal and TSC process
+(`docs/src/governance/finos-contribution.md`), not a repo task.
+
 ## Preconditions
 
 - Phases 1–3 stable across at least the vSphere and Proxmox
@@ -199,10 +216,10 @@ Concrete tasks:
   - [x] Create/read/update/delete VirtualMachine — `e2e_pool_claim.rs`
         (pool → VMs → real domains → claim → release) and
         `e2e_import_pipeline.rs`.
-  - [ ] Migration policy: Automatic + Manual paths — roadmap 14; only the
-        `Recreate` placeholder exists.
-  - [ ] Snapshot schedule: cron firings + retention — roadmap 10; no CRDs
-        yet.
+  - [ ] Migration policy: Automatic + Manual paths. **Moved to roadmap 14**
+        (2026-10-09); only the `Recreate` placeholder exists.
+  - [ ] Snapshot schedule: cron firings + retention. **Moved to roadmap 10**
+        (2026-10-09); no CRDs yet.
   - [x] Provider lifecycle: install/upgrade/uninstall ProviderClass —
         `e2e_provider_{class,workload,pause}.rs`, `e2e_workload_namespace.rs`,
         `e2e_bootstrap_install.rs` (roadmap 11).
@@ -212,7 +229,7 @@ Concrete tasks:
       where possible (self-hosted runners). **Still open** — `e2e.yaml`
       fans the `kind` suites out one job each, but every backend-touching
       suite is `#[ignore]`d and local-only; there are no self-hosted
-      runners.
+      runners. **Deferred at close (2026-10-09)** until runners exist.
 
 ## 4.6 ~~Helm chart~~: out of scope
 
@@ -252,7 +269,7 @@ layer, and CRD upgrades stay a plain `kubectl apply` of `deploy/crds/`.
         skip the provider binaries and only publish `banlieue-api`).
         **Still open**, the one remaining sub-item: it needs a crates.io
         owner and a publish token, and a decision on whether `banlieue-api`
-        is a supported public crate.
+        is a supported public crate. **Deferred at close (2026-10-09).**
       - ~~container image build/sign/push~~ **Done** (`build.yaml`, ADR-0006).
       - ~~CRD YAMLs attached to GH release~~ **Done** (`deploy-manifests.tar.gz`).
       - ~~changelog entry~~ **Done 2026-10-08** (`make release-notes` in the
@@ -334,8 +351,9 @@ What remains under this heading:
       frozen** as the annotated pre-ADR record. It takes no new entries; a new
       decision is an ADR, and an entry is only edited to point at the ADR that
       supersedes it.
-- [ ] Keep the threat model current: a **full pass** after every implemented
-      ADR (`rules/threat-modeling.md`), which is ADD's last step.
+- [x] Keep the threat model current: a **full pass** after every implemented
+      ADR (`rules/threat-modeling.md`), which is ADD's last step. *A standing
+      rule, not a task; it outlives this roadmap.*
 
 ## Tasks summary
 

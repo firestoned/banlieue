@@ -1184,6 +1184,61 @@ mod tests {
         );
     }
 
+    /// `ensure_finalizer` / `remove_finalizer` are merge patches on the
+    /// object itself, so every kind the controller finalizes needs `patch`
+    /// on the main resource, not only `<kind>/finalizers`. Claims lacked it,
+    /// and no claim ever bound on a bootstrap install (found live, roadmap
+    /// 17 phase G, 2026-10-09); `live_claim.rs` runs as cluster admin and
+    /// could not see it.
+    #[test]
+    fn the_controller_may_patch_every_kind_it_finalizes() {
+        let role = InstallRole::Controller.cluster_role().unwrap();
+        let granted = triples(&role.rules.unwrap_or_default());
+        for kind in ["virtualmachines", "vmimages", "virtualmachineclaims"] {
+            assert!(
+                granted
+                    .iter()
+                    .any(|(g, r, v)| g == "banlieue.io" && r == kind && v == "patch"),
+                "controller cannot patch {kind}, so it cannot add its finalizer"
+            );
+        }
+    }
+
+    /// The controller resolves `spec.userData` Secrets and ConfigMaps in the
+    /// install namespace (ADR-0025, ADR-0038) through a namespaced Role. A
+    /// bootstrap install without it 403s on the first VirtualMachine that
+    /// carries user-data, which on a pool means no member ever schedules.
+    #[test]
+    fn bootstrap_emits_the_controller_userdata_role_as_the_manifest_declares() {
+        let declared: Role =
+            serde_yaml::from_str(include_str!("../../../deploy/controller/rbac/role.yaml"))
+                .unwrap();
+        let declared_binding: RoleBinding = serde_yaml::from_str(include_str!(
+            "../../../deploy/controller/rbac/rolebinding.yaml"
+        ))
+        .unwrap();
+
+        let install = build_operator_install(&opts(), &["cloud-hypervisor"], false).unwrap();
+        let built = install
+            .roles
+            .iter()
+            .find(|r| r.metadata.name == declared.metadata.name)
+            .expect("bootstrap emits the controller's user-data Role");
+        assert_eq!(built.rules, declared.rules);
+        assert_eq!(built.metadata.namespace, Some(opts().namespace));
+
+        let binding = install
+            .role_bindings
+            .iter()
+            .find(|b| b.metadata.name == declared_binding.metadata.name)
+            .expect("bootstrap emits the controller's user-data RoleBinding");
+        assert_eq!(binding.role_ref, declared_binding.role_ref);
+        let subject = &binding.subjects.as_ref().unwrap()[0];
+        assert_eq!(subject.kind, "ServiceAccount");
+        assert_eq!(subject.name, InstallRole::Controller.name());
+        assert_eq!(subject.namespace, Some(opts().namespace));
+    }
+
     // ----------------------------------------------------------------------
     // Cluster API aggregation and clusterctl packaging (ADR-0096)
     // ----------------------------------------------------------------------
