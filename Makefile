@@ -1002,6 +1002,29 @@ vex-auto-reachability: ## Run auto-vex-reachability locally ($(GRYPE_JSON) + $(R
 # Workspace version, read from the root Cargo.toml `[workspace.package]`.
 WORKSPACE_VERSION := $(shell awk -F'"' '/^\[workspace\.package\]/ { p = 1; next } /^\[/ { p = 0 } p && /^version *=/ { print $$2; exit }' Cargo.toml)
 
+# File `set-version` rewrites; `set-version-test` points it at a scratch copy.
+VERSION_FILE ?= Cargo.toml
+
+# Three-dot range on purpose: the two-dot form also tests its end pattern on
+# the header line, which itself starts with `[`, so the range closed at once
+# and the edit silently changed nothing (v0.4.1 shipped reporting 0.4.0).
+.PHONY: set-version
+set-version: ## Set [workspace.package] version in VERSION_FILE to VERSION; fails if the file does not then say so
+	@test -n "$(VERSION)" || { echo "set VERSION, e.g. make set-version VERSION=1.2.3"; exit 1; }
+	@perl -i -pe 's/^version = ".*"/version = "$(VERSION)"/ if /^\[workspace\.package\]/ ... /^\[/' $(VERSION_FILE)
+	@got=$$(awk -F'"' '/^\[workspace\.package\]/ { p = 1; next } /^\[/ { p = 0 } p && /^version *=/ { print $$2; exit }' $(VERSION_FILE)); \
+	  if [ "$$got" != "$(VERSION)" ]; then echo "$(VERSION_FILE): workspace version is '$$got', expected '$(VERSION)'"; exit 1; fi; \
+	  echo "$(VERSION_FILE): workspace version $(VERSION)"
+
+.PHONY: set-version-test
+set-version-test: ## Prove set-version changes the workspace version (and only it) on a scratch copy of Cargo.toml
+	@tmp=$$(mktemp -d); trap 'rm -rf "$$tmp"' EXIT; \
+	  cp Cargo.toml "$$tmp/Cargo.toml"; \
+	  $(MAKE) --no-print-directory set-version VERSION=0.0.0-set-version-test VERSION_FILE="$$tmp/Cargo.toml" && \
+	  changed=$$(diff Cargo.toml "$$tmp/Cargo.toml" | grep -c '^>'); \
+	  if [ "$$changed" != "1" ]; then echo "set-version changed $$changed lines, expected exactly 1"; exit 1; fi; \
+	  echo "set-version-test: ok"
+
 # Release the components describe: the version directory clusterctl reads.
 # The release workflow passes the GitHub Release tag.
 CLUSTERCTL_RELEASE_TAG ?= v$(WORKSPACE_VERSION)
