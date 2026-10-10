@@ -1,5 +1,32 @@
 # Changelog
 
+## [2026-10-10] - Release builds really stamp the tag's version
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `.github/workflows/build.yaml`: the release step that rewrites
+  `[workspace.package] version` from the tag never changed anything. Its Perl
+  two-dot range (`/^\[workspace\.package\]/ .. /^\[/`) also tests the end
+  pattern on the header line, which itself starts with `[`, so the range
+  closed before reaching `version =`. The step printed "Updated Cargo.toml to
+  version 0.4.1" and then, in its own `grep`, `version = "0.4.0"`; v0.4.1
+  shipped reporting `banlieue 0.4.0`. Nothing checked the result.
+
+### Added
+- `Makefile`: `set-version` (three-dot range, then re-reads the version and
+  fails unless it matches `VERSION`) and `set-version-test` (runs it on a
+  scratch copy of `Cargo.toml` and requires exactly one changed line). The
+  release step now calls `make set-version`; the test job runs
+  `make set-version-test` on every build, so a regression fails a PR, not a
+  release.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only (CI and Makefile)
+
 ## [2026-10-10 10:07] - k0s OIDC identities are prefixed `github:`, not `oidc:`
 
 **Author:** Erick Bourgeois

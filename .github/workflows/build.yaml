@@ -230,10 +230,8 @@ jobs:
 
       - name: Update workspace version (release)
         if: github.event_name == 'release'
-        run: |
-          perl -i -pe 's/^version = ".*"/version = "${{ needs.extract-version.outputs.version }}"/ if /^\[workspace\.package\]/ .. /^\[/' Cargo.toml
-          echo "Updated Cargo.toml to version ${{ needs.extract-version.outputs.version }}"
-          grep '^version = ' Cargo.toml
+        # Fails the build if Cargo.toml does not then carry the tag's version.
+        run: make set-version VERSION=${{ needs.extract-version.outputs.version }}
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (moving ref — re-pin quarterly)
@@ -293,6 +291,9 @@ jobs:
 
       - name: Run tests
         run: cargo test --workspace --all-features --verbose
+
+      - name: Release version stamp works
+        run: make set-version-test
 
   # ─────────────────────────────────────────────────────────────────────────────
   # Security scan — all events (cargo-audit).
