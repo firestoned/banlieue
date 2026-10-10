@@ -54,10 +54,16 @@ rules:
   # the claim, so an expired hold cannot be mistaken for a live one. That adds
   # little reachable power, since ending a claim destroys a VirtualMachine the
   # controller can already delete directly.
+  #
+  # `patch` IS granted, for the claim's own finalizer only: `ensure_finalizer`
+  # and `remove_finalizer` are merge patches on the claim's metadata, which
+  # `virtualmachineclaims/finalizers` alone does not allow. The claim's spec
+  # (pool, subject, TTL) is still never written here; the reconciler patches
+  # only `metadata.finalizers` and its status.
   - apiGroups: ["banlieue.io"]
     resources:
       - virtualmachineclaims
-    verbs: ["get", "list", "watch", "delete"]
+    verbs: ["get", "list", "watch", "patch", "delete"]
   - apiGroups: ["banlieue.io"]
     resources:
       - virtualmachineclaims/status

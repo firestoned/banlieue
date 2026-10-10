@@ -75,6 +75,13 @@ SSH_USER="${SSH_USER:-root}"
 # Space-separated controller addresses. Empty: every control-plane node's
 # InternalIP, from the cluster.
 CONTROLLERS="${CONTROLLERS:-}"
+# Prepended by kube-apiserver to every OIDC username and group. Named for the
+# upstream identity provider, so `github:octocat` cannot be mistaken for, or
+# collide with, any other authenticator's subject. Groups need it most: Dex's
+# GitHub connector spells a team `org:team`, so unprefixed, a GitHub org called
+# `system` could hand out `system:masters`. An empty PREFIX means the default,
+# never no prefix.
+PREFIX="${PREFIX:-github:}"
 AUTHN_DIR="${AUTHN_DIR:-/etc/k0s/oidc}"
 AUTHN_FILE="${AUTHN_DIR}/authentication-config.yaml"
 # k0s runs kube-apiserver as this unprivileged user (installConfig.users.
@@ -338,10 +345,10 @@ jwt:
       audiences: ["$CLIENT_ID"]
 $(authn_ca)
     claimMappings:
-      # Readable identities (oidc:<github-login>), the same shape the kind
-      # cluster and ADR-0047's subject policy expect.
-      username: { claim: preferred_username, prefix: "oidc:" }
-      groups: { claim: groups, prefix: "oidc:" }
+      # Readable identities (${PREFIX}<github-login>). ADR-0047's subject
+      # policy must carry the same value as its usernamePrefix param.
+      username: { claim: preferred_username, prefix: "${PREFIX}" }
+      groups: { claim: groups, prefix: "${PREFIX}" }
 EOF
 }
 
@@ -536,11 +543,11 @@ setup_login() {
 
 # Claim access for the identity you just logged in as — and nobody else.
 grant_me() {
-  # GRANT_USER=oidc:<login> when you logged in from another machine.
+  # GRANT_USER=${PREFIX}<login> when you logged in from another machine.
   local me="${GRANT_USER:-}"
   [[ -n "$me" ]] || me="$(kubectl --context "$OIDC_USER" auth whoami \
     -o jsonpath='{.status.userInfo.username}' 2>/dev/null || true)"
-  [[ "$me" == oidc:* ]] || { warn "no OIDC identity (got '$me'): run login, or set GRANT_USER=oidc:<login>"; exit 1; }
+  [[ "$me" == "$PREFIX"* ]] || { warn "no OIDC identity (got '$me'): run login, or set GRANT_USER=${PREFIX}<login>"; exit 1; }
   log "granting claim access in $NAMESPACE to $me"
   kubectl apply -f - <<EOF >/dev/null
 apiVersion: rbac.authorization.k8s.io/v1
@@ -628,7 +635,8 @@ Usage: $0 [up|login|kubeconfig|grant|status|down|certs|dex|expose|verify|attach]
 
 Env: KUBECONFIG, SSH_USER (default root; else passwordless sudo),
      CONTROLLERS (default: discovered), BANLIEUE_GITHUB_APP_CLIENT_ID/SECRET,
-     EXPOSE (local | tailscale), GRANT_USER (oidc:<login>).
+     EXPOSE (local | tailscale), PREFIX (default github:),
+     GRANT_USER (${PREFIX}<login>).
 GitHub App callback URL: ${ISSUER}/callback
 EOF
       exit 1

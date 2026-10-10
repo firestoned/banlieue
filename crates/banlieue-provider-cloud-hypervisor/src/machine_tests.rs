@@ -664,6 +664,37 @@ lan = "br0"
         );
     }
 
+    /// The EK files appear before `swtpm_setup` saves the final state and
+    /// exits. Found live (roadmap 17 phase G, 2026-10-09): a pass in that
+    /// window adopted the half-written state and started swtpm; setup then
+    /// replaced the state file as the provider's user, which the guest's
+    /// swtpm could not read, so the TPM entered failure mode and the VM
+    /// never booted. Nothing is adopted or started while setup still runs.
+    #[tokio::test]
+    async fn swtpm_waits_for_the_manufacture_unit_to_finish() {
+        let plan = tpm_plan();
+        let t = plan.tpm.clone().unwrap();
+        let h = host(&plan);
+        tpm_pass(&h, &plan).await.unwrap();
+        h.write_ek_files_during_setup(&plan);
+
+        for _ in 0..3 {
+            let o = tpm_pass(&h, &plan).await.unwrap();
+            assert_eq!(o.phase, Phase::StartingTpm);
+        }
+        {
+            let s = h.state.lock().unwrap();
+            assert!(!s.adopted.contains(&plan.uid), "{:?}", s.calls);
+            assert!(!s.units.contains_key(&t.unit), "{:?}", s.calls);
+        }
+
+        h.finish_tpm_setup(&plan);
+        tpm_pass(&h, &plan).await.unwrap();
+        let s = h.state.lock().unwrap();
+        assert!(s.adopted.contains(&plan.uid));
+        assert_eq!(s.units.get(&t.unit), Some(&UnitState::Active));
+    }
+
     /// A failed manufacture is a host problem (found live: a wrong group),
     /// not a transient one. It stays failed and is reported on every pass,
     /// instead of being cleared and retried every few seconds, which made
