@@ -205,6 +205,17 @@ async fn ensure_tpm(host: &dyn HostOps, plan: &MachinePlan) -> Result<bool> {
         }
         return Ok(false);
     }
+    // The EK files are written before `swtpm_setup` saves the final state
+    // and exits. Adopting in that window hands the guest a state file that
+    // setup then replaces as the provider's user, unreadable by the guest's
+    // swtpm (found live, roadmap 17 phase G).
+    if host
+        .unit_state(&t.setup_unit)
+        .await?
+        .is_some_and(|s| s.is_running())
+    {
+        return Ok(false);
+    }
     match host.unit_state(&t.unit).await? {
         Some(state) if state.is_running() => Ok(host.tpm_socket_ready(plan).await),
         Some(UnitState::Failed) => Err(report_failed(host, &t.unit).await?),

@@ -285,7 +285,7 @@ provider can realise (see [Repo reality](#repo-reality-at-8360e19)).
 | D | libvirt provider: `LibvirtMachine` reconciler | 07 + 0050 + 0054 | ✅ complete — CRD, domain XML, reconciler, NoCloud user-data; roadmap 07 closed |
 | E | Proxmox provider, same | amend 12 | ⛔ |
 | F | Attestation trust anchors, threat model | 0049 | ✅ **banlieue's side complete 2026-09-27** — ADR-0049 Accepted with Decision 10: `Provider.spec.attestation.ekTrustBundle` (a `CABundleSource`, admin-supplied, never discovered; per-backend — vCenter's CA on vSphere, per-host `swtpm_localca` issuer on libvirt), shape-validated at admission (`deploy/admission/provider-attestation-ektrustbundle.yaml`), documented in the claims guide, examples annotated. Threat-model full pass done same day: A-15 (the bundle — zero confidentiality, high integrity), the sandbox workload named as an actor, TB-1 rows for bundle tampering and stale-image members, §7.14 (bundle custody) and §7.15 (vSphere VM Encryption on sandbox storage classes), §8 residues updated. What remains of ADR-0049 — the in-guest agent (Decision 9) and the broker — is deliberately **not banlieue code**: phase C / ADR-0055 |
-| G | Cloud Hypervisor backend, same | 09 + 0060–0065 | 🔶 **Prerequisites landed and verified live 2026-09-27** (roadmap 09): A2's `GuestReady` over vsock (the installed system runs `systemd-notify`, no extra package), A4's eject (`vm.remove-device`, and a per-machine installer copy deleted after it), A5's EK certificate read host-side where it was minted, A3 unchanged (controller-side), all through `make ch-deferred-e2e`. **Open:** a `VirtualMachinePool` with `readiness: GuestReady` reaching `Warm` on this class, and its warm-up time against vSphere's 130.3 s |
+| G | Cloud Hypervisor backend, same | 09 + 0060–0065 | 🔶 **Prerequisites landed and verified live 2026-09-27** (roadmap 09): A2's `GuestReady` over vsock (the installed system runs `systemd-notify`, no extra package), A4's eject (`vm.remove-device`, and a per-machine installer copy deleted after it), A5's EK certificate read host-side where it was minted, A3 unchanged (controller-side), all through `make ch-deferred-e2e`. **Pool verified live 2026-10-09** on two hosts at once: `GuestReady` pool `Warm` in 90 s, refills in 80 s and 100 s (vSphere: 130.3 s); claim, release and replacement pass. **Open:** a Cloud Hypervisor vTPM I/O error that fails about 1 install in 7, and spreading members across hosts (the scheduler tie-break, ADR needed) |
 
 Per `rules/architecture-driven-development.md` each ADR lands before its
 code. Skeleton decisions are below so the ADRs are an hour each, not a day.
@@ -716,13 +716,34 @@ has, each verified on a host on 2026-09-27:
 
 To finish G:
 
-- [ ] A `VirtualMachinePool` of a `tpmEnabled`, `Deferred` class on a
+- [x] A `VirtualMachinePool` of a `tpmEnabled`, `Deferred` class on a
       Cloud Hypervisor `Provider`, `readiness: GuestReady`, reaches `Warm`;
-      claim, release and replacement work. Needs the controller deployed
-      where the host's provider reports.
-- [ ] Record the warm-up time next to vSphere's 130.3 s. The install is
-      most of it (341 s for one Kairos Hadron install in `make
-      ch-deferred-e2e`); roadmap 18 is the lever.
+      claim, release and replacement work. *2026-10-09, on two hosts at
+      once, each with its own Provider, against one management cluster
+      (v0.4.0):* `make ch-pool-claim-e2e` passed both tests on one host;
+      on the other it passed claim/release/replacement and failed only the
+      pool-deletion test, on the open vTPM I/O error below. The run found
+      and fixed three bugs: the vTPM adopted mid-manufacture
+      (`machine.rs::ensure_tpm`), bootstrap omitting the controller's
+      user-data Role, and the controller ClusterRole lacking `patch` on
+      claims (CHANGELOG 2026-10-09).
+- [x] Record the warm-up time next to vSphere's 130.3 s. *2026-10-09:* a
+      2-member pool `Warm` in **90 s**, and a one-member refill in **80 s**
+      and **100 s** on the two hosts: an encrypted Kairos Hadron v0.4.0
+      install to a vTPM-sealed `COS_PERSISTENT`, reported over vsock. Faster
+      than vSphere's 130.3 s with no split-image work (roadmap 18).
+- [ ] **A guest's vTPM fails mid-install** (`tpm_recv: error -5`, then
+      `/dev/tpmrm0` "State not recoverable"; the Kairos installer exits at
+      encryption and the member is reaped at `provisioningTimeoutSeconds`).
+      swtpm logs nothing, so the fault is in Cloud Hypervisor's TPM
+      emulation or its control channel. Seen in 2 of about 14 installs on
+      2026-10-09, all on one host. Needs a reproduction outside banlieue,
+      then an upstream report or a VMM version change.
+- [ ] Spread pool members across hosts. Every member of a pool with no
+      placement pin landed on one host: the scheduler's tie-break is the
+      alphabetical `(provider, failure domain)` order
+      (`reconciler/scheduler.rs`), not the even spread D-023 and roadmap 03
+      require. A scheduling-policy change, so an ADR first.
 
 ### F: Attestation anchors and threat model (ADR-0049)
 

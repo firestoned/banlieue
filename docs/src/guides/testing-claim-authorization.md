@@ -183,8 +183,9 @@ the shipped value is a placeholder.
 
 ### On an existing k0s cluster instead
 
-`scripts/dev-oidc-k0s.sh` does the same thing on a k0s cluster: the same
-issuer URL, the same `oidc:` identities. What differs is how it gets there.
+`scripts/dev-oidc-k0s.sh` does the same thing on a k0s cluster with the same
+issuer URL. What differs is how it gets there, and the identities: on k0s they
+are `github:<login>` rather than `oidc:<login>` (set with `PREFIX`).
 
 ```sh
 export BANLIEUE_GITHUB_APP_CLIENT_ID=... BANLIEUE_GITHUB_APP_CLIENT_SECRET=...
@@ -218,6 +219,12 @@ make dev-oidc-k0s-grant
   one is reachable by anyone who can reach its nodes, and any GitHub
   account can finish a Dex login. `dev-oidc-k0s-grant` binds claim access
   to the one identity you logged in as, never to `system:authenticated`.
+- **Identities are prefixed `github:`.** The API server prepends it to every
+  username and group, naming the identity provider so a GitHub login cannot
+  collide with another authenticator's subject. It matters most for groups:
+  Dex spells a GitHub team `org:team`, so without a prefix an org called
+  `system` could produce `system:masters`. If you install the claim subject
+  policy on this cluster, set its `usernamePrefix` param to the same value.
 - **The kubelogin client is public.** It uses PKCE and has no client secret,
   so there is no secret to publish.
 - **Two ways to reach the issuer (`EXPOSE`).**
@@ -249,7 +256,7 @@ make dev-oidc-k0s-grant
   Copy it to the laptop, install kubelogin there
   (`brew install kubelogin`), and run
   `KUBECONFIG=dev-oidc.yaml kubectl auth whoami`. Then grant from the
-  workstation with `GRANT_USER=oidc:<login> make dev-oidc-k0s-grant`.
+  workstation with `GRANT_USER=github:<login> make dev-oidc-k0s-grant`.
 
 `make dev-oidc-k0s-down` reverses all of it. It restores every controller's
 `k0s.yaml` (again one at a time), then removes Dex, the proxy, the kubectl

@@ -122,6 +122,13 @@ const PROVIDER_CLOUD_HYPERVISOR_CLUSTER_ROLE: &str =
     include_str!("../../../deploy/provider-cloud-hypervisor/rbac/clusterrole.yaml");
 const CAPI_AGGREGATE_CLUSTER_ROLE_YAML: &str =
     include_str!("../../../deploy/capi/clusterrole-aggregate.yaml");
+/// The controller's namespaced user-data Role and its binding (ADR-0025,
+/// ADR-0038). Embedded like the ClusterRoles, so a bootstrap install grants
+/// exactly what the GitOps manifests grant. ADR-0042's admission policy is
+/// what makes this un-scoped `get` safe.
+const CONTROLLER_USERDATA_ROLE: &str = include_str!("../../../deploy/controller/rbac/role.yaml");
+const CONTROLLER_USERDATA_ROLE_BINDING: &str =
+    include_str!("../../../deploy/controller/rbac/rolebinding.yaml");
 
 /// Name of the ClusterRole aggregated into Cluster API's manager (ADR-0096).
 pub const CAPI_AGGREGATE_CLUSTER_ROLE: &str = "banlieue-capi-infrastructure";
@@ -562,6 +569,30 @@ pub fn build_capi_aggregate_cluster_role() -> Result<ClusterRole> {
         .with_context(|| format!("parsing embedded ClusterRole {CAPI_AGGREGATE_CLUSTER_ROLE}"))
 }
 
+/// The controller's user-data `Role` and `RoleBinding`, from
+/// `deploy/controller/rbac/`, moved into the install namespace.
+///
+/// The controller resolves `VirtualMachine.spec.userData` Secrets and
+/// ConfigMaps itself (ADR-0025, ADR-0038); without this Role every
+/// `VirtualMachine` carrying user-data fails to schedule with a 403.
+///
+/// # Errors
+/// Returns an error if either embedded manifest is not valid YAML for its
+/// kind, which can only happen if `deploy/controller/rbac/` was edited into
+/// invalid YAML.
+pub fn build_controller_userdata_role(opts: &InstallOptions) -> Result<(Role, RoleBinding)> {
+    let mut role: Role = serde_yaml::from_str(CONTROLLER_USERDATA_ROLE)
+        .context("parsing embedded deploy/controller/rbac/role.yaml")?;
+    let mut binding: RoleBinding = serde_yaml::from_str(CONTROLLER_USERDATA_ROLE_BINDING)
+        .context("parsing embedded deploy/controller/rbac/rolebinding.yaml")?;
+    role.metadata.namespace = Some(opts.namespace.clone());
+    binding.metadata.namespace = Some(opts.namespace.clone());
+    for subject in binding.subjects.iter_mut().flatten() {
+        subject.namespace = Some(opts.namespace.clone());
+    }
+    Ok((role, binding))
+}
+
 /// Build a single-role install (the `provider` / `imagebuilder` escape hatches).
 ///
 /// Deliberately applies no CRDs: schemas belong to `bootstrap operator`, and
@@ -634,6 +665,11 @@ fn add_role(
         manifests
             .role_bindings
             .push(build_operator_token_role_binding(opts));
+    }
+    if matches!(role, InstallRole::Controller) {
+        let (userdata_role, userdata_binding) = build_controller_userdata_role(opts)?;
+        manifests.roles.push(userdata_role);
+        manifests.role_bindings.push(userdata_binding);
     }
     if matches!(role, InstallRole::Provider(_)) {
         manifests.roles.push(build_namespaced_role(role, opts));
