@@ -63,7 +63,9 @@ a DNS name.
     Both are real OIDC providers, so they can skip Dex entirely — and the
     redirect URI you register differs accordingly. Per-provider click-paths,
     connector YAML and gotchas:
-    [OAuth / OIDC Clients](../developer/oauth-clients.md).
+    [OAuth / OIDC Clients](../developer/oauth-clients.md). To accept all
+    three on one k0s cluster, each with its own username prefix, see
+    [All three on one cluster](../developer/oauth-clients.md#all-three-on-one-cluster).
 
 [github.com/settings/developers](https://github.com/settings/developers) →
 **New OAuth App** (an OAuth App, *not* a GitHub App — they are different

@@ -155,7 +155,7 @@ help: ## Show this help
         kind-e2e-workload kind-e2e-pause kind-e2e-workload-namespace kind-e2e-class \
         clusterctl-components clusterctl-install clusterctl-local-repo \
         kind-capi-create kind-capi-delete kind-capi-init kind-e2e-capi kind-e2e-capi-logs \
-        claim-live-test address-live-test pool-claim-e2e ch-e2e ch-vtpm-e2e ch-deferred-e2e ch-restart-e2e ch-host-install-test ch-polkit-test provider-bench \
+        claim-live-test address-live-test pool-claim-e2e ch-e2e ch-vtpm-e2e ch-deferred-e2e ch-restart-e2e ch-host-install-test ch-polkit-test provider-bench ch-pool-timings \
         dev-oidc-up dev-oidc-attach dev-oidc-github-creds dev-oidc-login \
         dev-oidc-try-claim dev-oidc-status dev-oidc-down \
         dev-oidc-k0s-up dev-oidc-k0s-login dev-oidc-k0s-grant \
@@ -569,6 +569,20 @@ provider-bench: ## Benchmark one provider through the VirtualMachine API (docs/s
 	  echo "See crates/banlieue-controller/tests/bench_provider.rs."; \
 	  exit 1; }
 	cargo test -p banlieue-controller --test bench_provider -- --ignored --nocapture
+
+ch-pool-timings: ## Cloud Hypervisor: stage-by-stage timings of a GuestReady VirtualMachinePool, claims and release (docs/src/reference/cloud-hypervisor-pool-timings.md; LOCAL ONLY)
+	@# Creates a pool and claims on the cluster in KUBECONFIG, reads each
+	@# host's journal and each guest's over SSH. Settings: the module docs of
+	@# scripts/ch-pool-timings.py. Output: target/ch-pool-timings/<UTC time>/.
+	@test -n "$$BANLIEUE_POOLTIME_CLASS" -a -n "$$BANLIEUE_POOLTIME_IMAGE" -a -n "$$BANLIEUE_POOLTIME_USER_DATA" || { \
+	  echo "Set BANLIEUE_POOLTIME_CLASS, BANLIEUE_POOLTIME_IMAGE and BANLIEUE_POOLTIME_USER_DATA"; \
+	  echo "(and, for subject claims, BANLIEUE_POOLTIME_SUBJECT_CONTEXT and _SUBJECT_ID)."; \
+	  echo "See scripts/ch-pool-timings.py."; \
+	  exit 1; }
+	@out=$${BANLIEUE_POOLTIME_OUT:-target/ch-pool-timings/$$(date -u +%Y%m%dT%H%M%SZ)}; \
+	  BANLIEUE_POOLTIME_OUT=$$out scripts/ch-pool-timings.py run && \
+	  BANLIEUE_POOLTIME_OUT=$$out scripts/ch-pool-timings.py journal && \
+	  BANLIEUE_POOLTIME_OUT=$$out scripts/ch-pool-timings.py report
 
 # ch-host-install-test from a non-Linux workstation: a Linux KVM host
 # (user@host) to sync the tree to and run on. Empty runs locally. Never

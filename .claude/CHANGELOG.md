@@ -1,5 +1,113 @@
 # Changelog
 
+## [2026-10-11] - Google and Auth0 as direct issuers beside Dex (k0s)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `scripts/dev-oidc-k0s.sh`: the authentication config can hold Google
+  (`BANLIEUE_GOOGLE_CLIENT_ID`) and Auth0 (`BANLIEUE_AUTH0_ISSUER`,
+  `BANLIEUE_AUTH0_CLIENT_ID`) as direct `jwt` issuers beside Dex, each with
+  its own username prefix (`google:`, `auth0:`), `aud` pinned to the client
+  ID and `email_verified` required. `validate_issuers` refuses empty, equal,
+  nested and `system:` prefixes, and an Auth0 issuer that differs from its
+  discovery document. `verify_discovery` fetches every issuer from every
+  controller. New `await_reload`: after writing, waits until each API
+  server's `apiserver_authentication_config_controller_last_config_info`
+  hash equals the file's sha256, and restores the previous file (kept as
+  `.prev`) if it never does. `PROVIDER=dex|google|auth0` selects the issuer
+  for `login`, `kubeconfig` and `grant` (contexts `banlieue-oidc`,
+  `banlieue-oidc-google`, `banlieue-oidc-auth0`; one RoleBinding per
+  issuer). `grant` for Google/Auth0 leaves the policy's `usernamePrefix`
+  alone. New `config` subcommand prints the file without touching anything.
+  `status` shows per-controller file vs loaded hash and the configured
+  issuers.
+- `docs/src/developer/oauth-clients.md`: new *All three on one cluster*
+  section (the AuthenticationConfiguration, why each issuer needs its own
+  prefix, client registration for the direct topology, applying and
+  verifying on k0s, logging in with each, the single-prefix claim policy
+  limit), four troubleshooting rows; the Google and Auth0 direct examples
+  used the `github:` prefix and now use `google:` / `auth0:`; Auth0 direct
+  recommends a Native (PKCE) application.
+- `docs/src/guides/testing-claim-authorization.md`: links the new section.
+- `docs/src/security/threat-model.md`: TB-7 update (not a full pass, stamp
+  unchanged): four rows for multiple issuers, a §7.6 obligation (one prefix
+  per issuer), a note on the §8 issuer-verification risk.
+
+### Why
+To test GitHub, Google and Auth0 logins on the same cluster. The rendered
+three-issuer file was loaded by a real kube-apiserver v1.36.4 (three OIDC
+authenticators built), and a broken variant was rejected with a CEL error.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only
+- [ ] Documentation only
+
+## [2026-10-11] - Link the Cloud Hypervisor vTPM issue
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docs/src/reference/cloud-hypervisor-pool-timings.md`,
+  `.github/community/17-ephemeral-vm-pools.md`, `docs/src/security/threat-model.md`
+  (§8): the vTPM response-timeout fault is reported upstream as
+  https://github.com/cloud-hypervisor/cloud-hypervisor/issues/9053.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+## [2026-10-11] - Cloud Hypervisor vTPM fault root-caused; claim identities use `github:`; pool timing harness
+
+**Author:** Erick Bourgeois
+
+### Changed
+- **`oidc:` to `github:` everywhere** (the API-server username and group
+  prefix for GitHub logins through Dex): `deploy/admission/virtualmachineclaim-subject-authorization.yaml`
+  (`usernamePrefix` default and comments), `scripts/dev-oidc-kind.sh` (kind
+  API-server flags), and the examples in
+  `docs/src/guides/testing-claim-authorization.md`,
+  `docs/src/developer/oauth-clients.md`,
+  `docs/src/concepts/virtualmachine-claim-flow.md`, ADR-0047's example, the
+  threat model and the CALM model. Matches the core cluster, whose
+  AuthenticationConfiguration moved to `github:` on 2026-10-10.
+- `scripts/dev-oidc-k0s.sh`: `grant_me` now sets the policy's
+  `usernamePrefix` to `PREFIX`. Its own comment said the two must agree, but
+  nothing set it, so a non-default prefix denied every claim (found live
+  2026-10-10).
+- `docs/src/guides/testing-claim-authorization.md`: two examples set
+  `spec.subject.id` to the prefixed username; ADR-0047 Decision 9 (amended)
+  stores the raw subject, so they now use `octocat`.
+- `docs/src/reference/cloud-hypervisor-pool-timings.md`: the vTPM fault's
+  cause, proof and fix, and a 10-member run on the fixed VMM.
+- `.github/community/17-ephemeral-vm-pools.md`: phase G's vTPM item records
+  the root cause and what remains.
+- `docs/src/security/threat-model.md`: §8 accepted risk for the stock
+  v53.0 vTPM failure under CPU contention, with its revisit condition.
+
+### Added
+- `scripts/ch-pool-timings.py` and `make ch-pool-timings`: the harness behind
+  the timings page (run, journal, report), configured by `BANLIEUE_POOLTIME_*`.
+
+### Found
+- **Cloud Hypervisor's TPM backend gives swtpm 100 ms per response**
+  (`tpm/src/emulator.rs`: one `recvfrom` on a socket with a 100 ms
+  `SO_RCVTIMEO`). A slower command is reported to the guest as a fatal TPM
+  error that is never cleared. Deterministic with swtpm throttled to 3 % CPU;
+  fixed in a patched VMM (full-response read, 120 s deadline, unit tests),
+  which installs normally under the same throttle and passed 10 of 10
+  installs. Not a banlieue change; the upstream proposal is pending.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only (a cluster on the shipped `oidc:` default must set `usernamePrefix` to match its API server)
+- [ ] Documentation only
+
 ## [2026-10-10] - Cloud Hypervisor vTPM pool timings
 
 **Author:** Erick Bourgeois

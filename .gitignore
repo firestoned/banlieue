@@ -19,7 +19,7 @@ binaries/
 # Documentation build artefacts (MkDocs)
 docs/site/
 docs/.venv/
-docs/__pycache__/
+**/__pycache__/**
 
 .DS_Store
 

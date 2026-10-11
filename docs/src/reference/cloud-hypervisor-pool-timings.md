@@ -4,10 +4,12 @@ SPDX-License-Identifier: Apache-2.0
 -->
 # Cloud Hypervisor vTPM pool timings
 
-> **Measured 2026-10-10**, banlieue v0.4.1. One run, one host, fourteen pool
-> members. A point-in-time measurement, not a living table: rerun it when the
-> provider's pacing, the image or the VMM version changes. The broader
-> per-provider numbers are in [Provider comparison](provider-comparison.md).
+> **Measured 2026-10-10 and 2026-10-11**, banlieue v0.4.1, one host: a run of
+> fourteen members on stock Cloud Hypervisor v53.0, then ten on v53.0 with
+> the vTPM fix below. A point-in-time measurement, not a living table: rerun
+> it with `make ch-pool-timings` when the provider's pacing, the image or the
+> VMM version changes. The broader per-provider numbers are in
+> [Provider comparison](provider-comparison.md).
 
 This page answers one question for roadmap 17's sandbox pools on Cloud
 Hypervisor: **how long does each stage of a `GuestReady` pool take, from the
@@ -28,7 +30,8 @@ encrypted install.
 | Claim created to `Bound` | **0–1 s** server-side (`creationTimestamp` to `boundAt`), all 8 claims |
 | Claim deleted to claim, VM and host unit all gone | **6.4 s** and **6.7 s** for 4 claims at once |
 | Pool deleted to pool and members gone | **5.1 s** |
-| Members lost to the vTPM fault below | **3 of 14**, each costing the pool's full `provisioningTimeoutSeconds` (900 s) |
+| Six members installing at once, to `Warm` | **141 s** (installs slow under contention: 104 s each, against 77 s at three) |
+| Members lost to the vTPM fault below | **3 of 14** on stock v53.0, each costing the pool's full `provisioningTimeoutSeconds` (900 s); **0 of 10** with the fix |
 
 vSphere's 2-member `GuestReady` pool warmed in 130.3 s (roadmap 17); this one
 brings three concurrent members to `Warm` in 107.5 s with no split-image work (roadmap 18).
@@ -135,29 +138,52 @@ then three claims at once.
   its `VirtualMachine` go, and the guest's VMM unit is stopped on the host
   (ADR-0047 Decision 6). Four releases at once take no longer than one.
 
-## The vTPM fault
+## The vTPM fault, and its fix
 
-Three of fourteen members never reported. In the two whose guests were
-inspected, the guest kernel logged `tpm_recv: error -5` about 0.2–0.4 s after
-the Kairos installer first opened `/dev/tpmrm0`, then `/dev/tpmrm0` became
-"State not recoverable" and the installer exited at the encryption step. The
-third member failed the same way from outside (no report, reaped at 900 s);
-its guest was not inspected. swtpm logs nothing at the time, so the fault is
-in Cloud Hypervisor's TPM emulation or its control channel, not in banlieue,
-and not the adoption race fixed in v0.4.1: that race leaves swtpm unable to
-read its state, so the VM never boots, whereas each of these booted and its
-TPM answered until the installer's first commands.
+On stock Cloud Hypervisor v53.0, three of fourteen members never reported.
+In the guests that were inspected, the kernel logged `tpm_recv: error -5`
+about 0.2–0.4 s after the Kairos installer first opened `/dev/tpmrm0`, then
+`/dev/tpmrm0` was "State not recoverable" and the installer exited at the
+encryption step. swtpm logged nothing.
 
-Its cost is the pool's `provisioningTimeoutSeconds`: the member sits running
-the failed installer until the pool reaps it, then a replacement installs.
-That is why one warm-up took 1005 s and one refill 1101 s. Until the fault is
-fixed, a shorter `provisioningTimeoutSeconds` (about 3× the 108 s median)
-bounds the damage. Tracked in roadmap 17 phase G.
+**Cause: a 100 ms read in Cloud Hypervisor, not banlieue.** The VMM passes
+each TPM command to swtpm over a stream socket and reads the response with a
+single `recvfrom`, on a socket whose receive timeout is 100 ms
+(`tpm/src/emulator.rs`, `prepare_data_fd` and `deliver_request`). A command
+swtpm takes longer than that to answer (key generation, which LUKS sealing
+starts with, on a busy host) is reported to the guest as failed: the CRB
+device sets `CTRL_STS.tpmSts`, the TPM's fatal-error bit, which the kernel's
+`crb_recv` turns into `-EIO` and which nothing ever clears. A single read can
+also return part of a response. The code is unchanged on upstream `main` as
+of 2026-10-11.
+
+**Proof.** Throttling one guest's swtpm to 3 % CPU with systemd `CPUQuota`
+makes the fault deterministic on stock v53.0: the guest kernel's own TPM
+probe at boot fails with `error -5`, and `/dev/tpmrm0` never appears. With
+the fix, the same throttle produces slow answers instead of errors: the
+member installs, seals `COS_PERSISTENT` to its vTPM and is claimable in about
+102 s, as fast as an unthrottled one.
+
+**Fix.** Read the 10-byte response header, then exactly the size it
+declares, looping over partial reads; keep the 100 ms socket timeout as a
+poll interval, retried until a 120 s deadline (Linux allows TPM2 commands up
+to 300 s). A declared size smaller than a header or larger than the buffer is
+an error. Unit tests cover a response split across a delay longer than the
+socket timeout, the deadline, an impossible size, and swtpm closing
+mid-response. With it, ten installs, six of them concurrent, had no fault.
+
+**Status.** The fix is a Cloud Hypervisor change, reported upstream as
+[cloud-hypervisor#9053](https://github.com/cloud-hypervisor/cloud-hypervisor/issues/9053) (2026-10-11). A
+host takes a patched VMM through
+`banlieue host cloud-hypervisor install --vmm-url … --vmm-sha256 … --vmm-version …`
+(ADR-0084). Until a host has it, a shorter `provisioningTimeoutSeconds`
+(about 3× the 108 s median) bounds the cost of each fault. Tracked in
+roadmap 17 phase G.
 
 ## How it was measured
 
-A harness outside the repository created the pool and claims through the
-Kubernetes API and polled the pool, its `VirtualMachine`s, their
+`make ch-pool-timings` (`scripts/ch-pool-timings.py`; its module docs list
+the settings) creates the pool and claims through the Kubernetes API and polled the pool, its `VirtualMachine`s, their
 `CloudHypervisorMachine`s and the claims about every 3 s, recording the
 first time each transition was seen. Every stage above uses the more precise
 source available rather than the poll:

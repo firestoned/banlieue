@@ -733,13 +733,18 @@ To finish G:
       install to a vTPM-sealed `COS_PERSISTENT`, reported over vsock. Faster
       than vSphere's 130.3 s with no split-image work (roadmap 18).
 - [ ] **A guest's vTPM fails mid-install** (`tpm_recv: error -5`, then
-      `/dev/tpmrm0` "State not recoverable"; the Kairos installer exits at
-      encryption and the member is reaped at `provisioningTimeoutSeconds`).
-      swtpm logs nothing, so the fault is in Cloud Hypervisor's TPM
-      emulation or its control channel. Seen in 2 of about 14 installs on
-      2026-10-09 and 3 of 14 on 2026-10-10 (v0.4.1), all on one host;
-      measured in `docs/src/reference/cloud-hypervisor-pool-timings.md`. Needs a reproduction outside banlieue,
-      then an upstream report or a VMM version change.
+      `/dev/tpmrm0` "State not recoverable"; the member is reaped at
+      `provisioningTimeoutSeconds`). Seen in 5 of 28 installs on stock
+      Cloud Hypervisor v53.0. *Root-caused 2026-10-11*: Cloud Hypervisor
+      reads each swtpm response once, with a 100 ms receive timeout, so a
+      slow command (key generation) is reported to the guest as a fatal TPM
+      error. Proved deterministic by throttling swtpm to 3 % CPU, and fixed
+      in a patched VMM (read the full response, 120 s deadline): the same
+      throttle then installs normally, and 10 of 10 installs pass. Details:
+      `docs/src/reference/cloud-hypervisor-pool-timings.md`. Reported upstream
+      as https://github.com/cloud-hypervisor/cloud-hypervisor/issues/9053. **Open:** the
+      upstream fix, and a patched static VMM for hosts
+      to install with `--vmm-url`/`--vmm-sha256` until a release has it.
 - [ ] Spread pool members across hosts. Every member of a pool with no
       placement pin landed on one host: the scheduler's tie-break is the
       alphabetical `(provider, failure domain)` order
