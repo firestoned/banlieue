@@ -58,9 +58,9 @@ server calls you is what must be typed into `spec.subject.id`.
 
 | Provider | Sensible `--oidc-username-claim` | You become |
 | --- | --- | --- |
-| GitHub (via Dex) | `preferred_username` | `oidc:octocat` — the GitHub login |
-| Google | `email` | `oidc:you@example.com` |
-| Auth0 | `email` | `oidc:you@example.com` — Auth0 issues no `preferred_username` |
+| GitHub (via Dex) | `preferred_username` | `github:octocat`, the GitHub login |
+| Google | `email` | `github:you@example.com` |
+| Auth0 | `email` | `github:you@example.com`; Auth0 issues no `preferred_username` |
 
 !!! warning "Do not use `sub` as the username claim"
     It is the spec-correct stable identifier, and it is unusable here.
@@ -186,7 +186,7 @@ connectors:
 --oidc-issuer-url=https://accounts.google.com
 --oidc-client-id=<your-client-id>.apps.googleusercontent.com
 --oidc-username-claim=email
---oidc-username-prefix=oidc:
+--oidc-username-prefix=github:
 ```
 
 No `--oidc-ca-file`: Google's certificate chains to a public root the API
@@ -308,7 +308,7 @@ connectors:
 --oidc-issuer-url=https://dev-a1b2c3d4.us.auth0.com/
 --oidc-client-id=<your-client-id>
 --oidc-username-claim=email
---oidc-username-prefix=oidc:
+--oidc-username-prefix=github:
 ```
 
 No `--oidc-ca-file`: Auth0's certificate chains to a public root the API

@@ -245,5 +245,6 @@ nav:
   - Reference:
       - API Reference (CRDs): reference/api.md
       - Provider Comparison: reference/provider-comparison.md
+      - Cloud Hypervisor Pool Timings: reference/cloud-hypervisor-pool-timings.md
       - License: reference/license.md
       - Changelog: changelog.md

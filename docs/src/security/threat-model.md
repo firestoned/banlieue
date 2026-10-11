@@ -864,7 +864,7 @@ a different assumption is unsafe.
      `--oidc-username-prefix`.** These are two independently-managed objects
      that have to agree, and nothing checks that they do. `spec.subject.id`
      stores the **raw** subject as the issuer spells it — a JWT carries no
-     `oidc:` prefix, so the prefixed form would leave the in-guest agent a
+     `github:` prefix, so the prefixed form would leave the in-guest agent a
      value it cannot compare (ADR-0047 Decision 9, amended; ADR-0049) — and
      the policy re-applies the prefix at comparison time instead. A mismatch
      fails safe but silently: see §6/TB-7. Re-check it whenever the cluster's

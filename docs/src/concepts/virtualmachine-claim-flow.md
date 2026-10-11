@@ -82,7 +82,7 @@ sequenceDiagram
     API->>Dex: fetch JWKS once, then cache it
     API->>API: verify signature, iss, aud, exp
     API->>API: username = oidc-username-prefix + the configured claim
-    Note over API: a sub of octocat becomes<br/>a userInfo.username of oidc:octocat
+    Note over API: a sub of octocat becomes<br/>a userInfo.username of github:octocat
     API-->>K: response
 ```
 
@@ -112,7 +112,7 @@ flowchart LR
         S["sub / preferred_username<br/><b>octocat</b>"]
     end
     subgraph K8S["Kubernetes, after --oidc-username-prefix"]
-        U["userInfo.username<br/><b>oidc:octocat</b>"]
+        U["userInfo.username<br/><b>github:octocat</b>"]
     end
     subgraph CR["VirtualMachineClaim"]
         C["spec.subject.id<br/><b>octocat</b>"]
@@ -127,7 +127,7 @@ flowchart LR
 ```
 
 `spec.subject.id` stores the **raw** subject. The in-guest agent compares it
-against a JWT, and no token anywhere carries an `oidc:` prefix — so storing
+against a JWT, and no token anywhere carries a `github:` prefix — so storing
 the prefixed Kubernetes username would make the field uncomparable to the
 only thing it exists to be compared against. The admission policy adds the
 prefix at check time instead, from `usernamePrefix` in its params ConfigMap.

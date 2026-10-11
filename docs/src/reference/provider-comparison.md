@@ -113,6 +113,11 @@ table below is the fair comparison of the hypervisors.
 - libvirt's 4 KiB direct reads varied from 7.7 to 93 MB/s across its three
   runs; treat that row as noise until it is rerun.
 
+**Sandbox pools.** Stage-by-stage timings for a `tpmEnabled`, `Deferred`
+`VirtualMachinePool` on Cloud Hypervisor, from pool creation through claim,
+refill and release, are in
+[Cloud Hypervisor pool timings](cloud-hypervisor-pool-timings.md).
+
 ## The hypervisors alone, same host
 
 Before banlieue drove either, the two KVM hypervisors were compared directly

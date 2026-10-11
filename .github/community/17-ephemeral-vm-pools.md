@@ -737,7 +737,8 @@ To finish G:
       encryption and the member is reaped at `provisioningTimeoutSeconds`).
       swtpm logs nothing, so the fault is in Cloud Hypervisor's TPM
       emulation or its control channel. Seen in 2 of about 14 installs on
-      2026-10-09, all on one host. Needs a reproduction outside banlieue,
+      2026-10-09 and 3 of 14 on 2026-10-10 (v0.4.1), all on one host;
+      measured in `docs/src/reference/cloud-hypervisor-pool-timings.md`. Needs a reproduction outside banlieue,
       then an upstream report or a VMM version change.
 - [ ] Spread pool members across hosts. Every member of a pool with no
       placement pin landed on one host: the scheduler's tie-break is the

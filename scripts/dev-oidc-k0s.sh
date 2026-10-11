@@ -568,6 +568,12 @@ roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: banlieue-claim
 subjects:
   - { kind: User, name: "$me", apiGroup: rbac.authorization.k8s.io }
 EOF
+  # The subject policy re-applies the API server's prefix when it checks a
+  # claim, so it must carry the same PREFIX the authentication config does.
+  # Left at the shipped default, a non-default PREFIX denies every claim.
+  kubectl -n "$NAMESPACE" patch configmap banlieue-claim-subject-policy \
+    --type=merge -p "{\"data\":{\"usernamePrefix\":\"${PREFIX}\\n\"}}" >/dev/null
+  log "policy usernamePrefix set to $PREFIX"
 }
 
 status() {

@@ -134,7 +134,7 @@ what is missing is the object that puts the label there.
 
    ```text
    JWT:   preferred_username = octocat
-   Claim: subject.id         = oidc:octocat
+   Claim: subject.id         = github:octocat
    ```
 
    Nothing in the token matches that: `preferred_username` lacks the prefix

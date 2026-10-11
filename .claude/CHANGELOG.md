@@ -1,5 +1,32 @@
 # Changelog
 
+## [2026-10-10] - Cloud Hypervisor vTPM pool timings
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/src/reference/cloud-hypervisor-pool-timings.md`: stage-by-stage
+  timings of a 3-member `tpmEnabled`, `Deferred`, `GuestReady`
+  `VirtualMachinePool` on Cloud Hypervisor (v0.4.1, 14 members): a member is
+  claimable 108 s after creation (77 s of it the guest's own encrypted
+  install), claims bind in the second they are created in both admission
+  modes (the subject's own OIDC claim and a broker's), release destroys the
+  guest in about 6.5 s, and 3 of 14 installs hit the Cloud Hypervisor vTPM
+  I/O fault, each costing the pool's full `provisioningTimeoutSeconds`.
+  Also finds about 9 s of reconcile pacing in the first 10 s of every member.
+  Linked from `docs/mkdocs.yml` and `reference/provider-comparison.md`.
+
+### Changed
+- `.github/community/17-ephemeral-vm-pools.md`: phase G's vTPM-fault item
+  records this run's rate and links the page.
+- `Cargo.lock`: workspace crates to 0.4.2, matching `Cargo.toml`.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
 ## [2026-10-10] - Release builds really stamp the tag's version
 
 **Author:** Erick Bourgeois

@@ -238,7 +238,7 @@ dependencies = [
 
 [[package]]
 name = "banlieue"
-version = "0.4.0"
+version = "0.4.2"
 dependencies = [
  "anyhow",
  "banlieue-controller",
@@ -256,7 +256,7 @@ dependencies = [
 
 [[package]]
 name = "banlieue-api"
-version = "0.4.0"
+version = "0.4.2"
 dependencies = [
  "clap",
  "k8s-openapi",
@@ -269,7 +269,7 @@ dependencies = [
 
 [[package]]
 name = "banlieue-cloud-hypervisor"
-version = "0.4.0"
+version = "0.4.2"
 dependencies = [
  "bytes",
  "http",
@@ -288,7 +288,7 @@ dependencies = [
 
 [[package]]
 name = "banlieue-controller"
-version = "0.4.0"
+version = "0.4.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -312,7 +312,7 @@ dependencies = [
 
 [[package]]
 name = "banlieue-host"
-version = "0.4.0"
+version = "0.4.2"
 dependencies = [
  "async-trait",
  "banlieue-cloud-hypervisor",
@@ -332,7 +332,7 @@ dependencies = [
 
 [[package]]
 name = "banlieue-imagebuilder"
-version = "0.4.0"
+version = "0.4.2"
 dependencies = [
  "anyhow",
  "banlieue-api",
@@ -354,7 +354,7 @@ dependencies = [
 
 [[package]]
 name = "banlieue-libvirt"
-version = "0.4.0"
+version = "0.4.2"
 dependencies = [
  "rustls",
  "rustls-pki-types",
@@ -366,7 +366,7 @@ dependencies = [
 
 [[package]]
 name = "banlieue-oci"
-version = "0.4.0"
+version = "0.4.2"
 dependencies = [
  "base64 0.23.1",
  "flate2",
@@ -385,7 +385,7 @@ dependencies = [
 
 [[package]]
 name = "banlieue-operator"
-version = "0.4.0"
+version = "0.4.2"
 dependencies = [
  "anyhow",
  "banlieue-api",
@@ -406,7 +406,7 @@ dependencies = [
 
 [[package]]
 name = "banlieue-provider-cloud-hypervisor"
-version = "0.4.0"
+version = "0.4.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -434,7 +434,7 @@ dependencies = [
 
 [[package]]
 name = "banlieue-provider-libvirt"
-version = "0.4.0"
+version = "0.4.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -460,7 +460,7 @@ dependencies = [
 
 [[package]]
 name = "banlieue-provider-proxmox"
-version = "0.4.0"
+version = "0.4.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -482,7 +482,7 @@ dependencies = [
 
 [[package]]
 name = "banlieue-provider-sdk"
-version = "0.4.0"
+version = "0.4.2"
 dependencies = [
  "async-trait",
  "banlieue-api",
@@ -510,7 +510,7 @@ dependencies = [
 
 [[package]]
 name = "banlieue-provider-vsphere"
-version = "0.4.0"
+version = "0.4.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -537,7 +537,7 @@ dependencies = [
 
 [[package]]
 name = "banlieue-proxmox"
-version = "0.4.0"
+version = "0.4.2"
 dependencies = [
  "async-trait",
  "form_urlencoded",
@@ -553,7 +553,7 @@ dependencies = [
 
 [[package]]
 name = "banlieue-vex"
-version = "0.4.0"
+version = "0.4.2"
 dependencies = [
  "anyhow",
  "chrono",

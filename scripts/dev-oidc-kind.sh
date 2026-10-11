@@ -151,13 +151,13 @@ nodes:
             oidc-client-id: $CLIENT_ID
             oidc-ca-file: /etc/oidc/ca.pem
             # preferred_username gives a readable identity. Dex populates it
-            # from the GitHub login, so usernames look like oidc:octocat
+            # from the GitHub login, so usernames look like github:octocat
             # rather than an opaque base64 subject — which matters here,
             # because spec.subject.id has to be typed by a human.
             oidc-username-claim: preferred_username
-            oidc-username-prefix: "oidc:"
+            oidc-username-prefix: "github:"
             oidc-groups-claim: groups
-            oidc-groups-prefix: "oidc:"
+            oidc-groups-prefix: "github:"
           # 2. node -> apiserver static pod. The kind mount above is not
           #    enough on its own; the API server only sees what kubeadm
           #    mounts into it.
@@ -389,9 +389,9 @@ flags = [
     f'--oidc-client-id={client_id}',
     '--oidc-ca-file=/etc/oidc/ca.pem',
     '--oidc-username-claim=preferred_username',
-    '--oidc-username-prefix=oidc:',
+    '--oidc-username-prefix=github:',
     '--oidc-groups-claim=groups',
-    '--oidc-groups-prefix=oidc:',
+    '--oidc-groups-prefix=github:',
 ]
 # Idempotent: drop any existing oidc flag before adding ours back.
 c['command'] = [a for a in c['command'] if not a.startswith('--oidc-')] + flags
