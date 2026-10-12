@@ -1,5 +1,58 @@
 # Changelog
 
+## [2026-10-12] - API ends at VirtualMachineClaim; AgentSandbox moves to mediatore (ADR-0097)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0097-api-ends-at-virtualmachineclaim.md` (Accepted): banlieue adds
+  no kind above `VirtualMachineClaim`; pool and claim stay in
+  `banlieue-controller`; `AgentSandbox` becomes a mediatore CRD
+  (`mediatore.io/v1alpha1`, mediatore ADR-0008). Takes 0097, which the
+  reverted RBAC-aggregation draft never merged.
+
+### Changed
+- `docs/adr/0055-agentsandbox.md`: Superseded by ADR-0097 and mediatore
+  ADR-0008; never built, kept as the original design record.
+- `docs/adr/0081-*.md`, `docs/adr/0082-*.md`: frozen, with a pointer to their
+  canonical copies, mediatore ADR-0009 and ADR-0010. Their *What this means
+  for banlieue* sections still bind banlieue.
+- `docs/architecture/calm/architecture.json`: removed the
+  `data-asset-agentsandbox-cr` node and `rel-agentsandbox-owns-claim`;
+  three descriptions name mediatore instead of ADR-0055; `adrs` swaps 0055
+  for 0097. `make calm-validate` clean; `docs/src/architecture/{system,flows}.md`
+  regenerated.
+- `docs/architecture/calm/agentsandbox-stack.calm.json`: moved to mediatore
+  (rewired there so the supervisory agent creates an `AgentSandbox` and
+  mediatore creates the claim); the README row points to it.
+- `README.md`, `docs/src/overview.md`, `docs/src/guides/virtualmachine-claims.md`,
+  `docs/src/guides/sandbox-identity-mediatore.md`,
+  `examples/01-provider-vsphere-dc1.yaml`: the broker and `AgentSandbox` are
+  mediatore's.
+- `ROADMAPS.md` row 17 and `.github/community/17-ephemeral-vm-pools.md`
+  phase C: moved to mediatore.
+- `docs/src/security/threat-model.md`: full pass for ADR-0097, stamp advanced
+  to 2026-10-12 / ADR-0097. Conclusion: no boundary change (nothing that
+  existed is removed). Broker actor row and one §8 risk name mediatore and
+  its declarative request path; §9 lists the agent layer as out of scope.
+
+### Not changed
+- `crates/banlieue-api/src/banlieue/provider.rs` still cites ADR-0055 in the
+  `ekTrustBundle` rustdoc. ADR-0055 forwards to its successors, and editing
+  the comment would require a CRD regen; left for the next change to that
+  file.
+
+### Why
+Pool and claim are generic and already isolated from the VM core, so they
+stay. `AgentSandbox` only adds issuer and audience policy, whose only reader
+is the broker, so it belongs with the broker.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
 ## [2026-10-11] - Google and Auth0 as direct issuers beside Dex (k0s)
 
 **Author:** Erick Bourgeois

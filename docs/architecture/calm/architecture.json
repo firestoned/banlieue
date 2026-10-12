@@ -477,12 +477,6 @@
       "description": "Namespaced CRD (banlieue.io/v1alpha1) that hands one warm VirtualMachinePool member to one subject, and is the only way a member ever leaves the pool (ADR-0047). A member is bound at most once in its life: there is no unbind and no return-to-pool, because the VM itself is the isolation boundary between subjects. Binding is a resourceVersion-preconditioned merge patch on the member, so two claims racing for one member yield exactly one success and one 409 \u2014 optimistic concurrency, never a lock. The bind also re-parents the member's ownerReferences from pool to claim, which is what lets a pool be deleted without destroying sandboxes in use. spec.ttlSeconds is mandatory (a claim without a deadline is a leaked VM) and a finalizer holds the claim until the member is gone from the API server, so \"claim deleted\" means \"sandbox destroyed\". spec.subject carries an opaque issuer+id that banlieue records for audit and never interprets; it is never a credential, and status.nonce (128 random bits) exists only so an attestation quote cannot be replayed across claims. Those three published fields ARE banlieue's side of the attestation contract (ADR-0049): subject.issuer tells the in-guest agent which issuer to trust, subject.id holds the RAW subject as that issuer spells it rather than the prefixed Kubernetes username -- a JWT carries no github: prefix, so storing the prefixed form left a value the agent could not compare (fixed as ADR-0047 Decision 9, amended) -- and status.nonce is what a TPM quote is taken over. banlieue neither carries nor validates the credential: a broker pushes {claim, nonce, JWT} to the agent over mTLS, the agent returns a quote over the nonce, and the broker verifies it against the EK certificate mirrored onto the claim. Nothing is at rest -- no disk, no CR, no hypervisor channel -- which is forced rather than chosen, because a warm pool member exists BEFORE any claim does, so nothing baked in at provisioning time can be subject-specific. The per-VM vTPM that anchors the quote is unique by construction on both backends: on vSphere because deferred install never installs the golden template, so each clone installs itself with its own already-unique vTPM (ADR-0040), and on libvirt because swtpm state is keyed by domain UUID."
     },
     {
-      "unique-id": "data-asset-agentsandbox-cr",
-      "node-type": "data-asset",
-      "name": "AgentSandbox Custom Resource",
-      "description": "Namespaced CRD in a SEPARATE API group (agent.banlieue.io/v1alpha1), served by its own controller, so a cluster running VMs for CI never installs or reasons about an agent CRD (ADR-0055). It does NOT bind pool members: it creates and owns a VirtualMachineClaim, the way a Deployment owns a ReplicaSet. That is the whole point of the shape \u2014 bind-once is enforced by a single resourceVersion-preconditioned patch in one controller, and a second kind binding members would mean two independent implementations of the one invariant that must never break. It carries agent-shaped POLICY (acceptable token issuers and audiences, egress allowlist, tool scopes, runtime selection) and never a credential: a custom resource is readable by anyone with namespace read and lands in the audit log, so the token reaches the guest over the attested channel instead. The agent runtime comes from the image rather than from bind-time provisioning, because installing one at bind time reintroduces exactly the latency the warm pool exists to remove. Status mirrors the claim rather than being derived independently, and a finalizer holds the object until its claim is gone so that \"sandbox deleted\" keeps meaning \"VM destroyed\" through the wrapper."
-    },
-    {
       "unique-id": "data-asset-provider-cr",
       "node-type": "data-asset",
       "name": "Provider Custom Resource",
@@ -1277,19 +1271,6 @@
             "data-asset-virtualmachineclaim-cr",
             "data-asset-virtualmachinepool-cr",
             "data-asset-virtualmachine-cr"
-          ]
-        }
-      }
-    },
-    {
-      "unique-id": "rel-agentsandbox-owns-claim",
-      "description": "The agent controller creates one VirtualMachineClaim per AgentSandbox and owns it through ownerReferences, passing spec.ttlSeconds straight through so a single deadline is enforced by the only layer that can actually destroy the VM. It never patches a pool member and never writes the claim label. Deleting an AgentSandbox garbage-collects its claim, whose own finalizer blocks until the member is gone from the backend; the AgentSandbox holds a finalizer of its own so it cannot vanish first and report success while the VM is still being torn down (ADR-0055).",
-      "relationship-type": {
-        "interacts": {
-          "actor": "service-banlieue-controller",
-          "nodes": [
-            "data-asset-agentsandbox-cr",
-            "data-asset-virtualmachineclaim-cr"
           ]
         }
       }
@@ -2520,7 +2501,7 @@
           ]
         },
         "bind-once-optimistic-concurrency": {
-          "description": "A member is handed out at most once in its life -- there is no unbind and no return-to-pool, because the VM itself is the isolation boundary between subjects. Enforced without a lock or a lease: the bind is a single merge patch carrying the member's resourceVersion, which the API server rejects with 409 if anyone wrote that object since it was listed, and a Claimed member is never offered by the picker again. Keeping that in ONE controller is also why AgentSandbox owns a claim rather than binding members itself (ADR-0055): two implementations of the one invariant that must never break is one too many.",
+          "description": "A member is handed out at most once in its life -- there is no unbind and no return-to-pool, because the VM itself is the isolation boundary between subjects. Enforced without a lock or a lease: the bind is a single merge patch carrying the member's resourceVersion, which the API server rejects with 409 if anyone wrote that object since it was listed, and a Claimed member is never offered by the picker again. Keeping that in ONE controller is also why a consumer such as mediatore's AgentSandbox owns a claim rather than binding members itself (ADR-0097, mediatore ADR-0008): two implementations of the one invariant that must never break is one too many.",
           "requirements": [
             {
               "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
@@ -2540,7 +2521,7 @@
     {
       "unique-id": "flow-attest-and-deliver-credential",
       "name": "Deliver a subject's credential to its sandbox (banlieue side implemented; agent and broker are not banlieue code)",
-      "description": "The unanswered half of the claim model: a claim deliberately carries no credential, so how does the subject's token reach the guest and what convinces the guest it is genuine? ADR-0049 is Accepted (2026-09-27) and banlieue's whole side of the contract exists: subject.issuer, subject.id, status.nonce, the mirrored EK certificate (ADR-0045, landed 2026-09-23), and the per-backend trust anchor Provider.spec.attestation.ekTrustBundle (Decision 10, admin-supplied, never discovered -- an anchor fished off the hypervisor would let the host vouch for its own guests). What does not exist -- the in-guest agent (Decision 9) and the broker (ADR-0055) -- is by design not banlieue code, so this flow stays unexercised until they are built elsewhere.",
+      "description": "The unanswered half of the claim model: a claim deliberately carries no credential, so how does the subject's token reach the guest and what convinces the guest it is genuine? ADR-0049 is Accepted (2026-09-27) and banlieue's whole side of the contract exists: subject.issuer, subject.id, status.nonce, the mirrored EK certificate (ADR-0045, landed 2026-09-23), and the per-backend trust anchor Provider.spec.attestation.ekTrustBundle (Decision 10, admin-supplied, never discovered -- an anchor fished off the hypervisor would let the host vouch for its own guests). What does not exist -- the in-guest agent (Decision 9) and the broker (mediatore, ADR-0097) -- is by design not banlieue code, so this flow stays unexercised until they are built elsewhere.",
       "transitions": [
         {
           "sequence-number": 1,
@@ -2969,7 +2950,7 @@
     "repository": "https://github.com/firestoned/banlieue",
     "license": "Apache-2.0",
     "calm-schema-version": "1.2",
-    "phase": "Phase 1A/1D \u2014 banlieue-api, the main controller, banlieue-operator, and the vSphere provider create and power on real VMs end-to-end (vSphere create-path only: clone-from-template + power-on, no update/drift/live-migration yet). The libvirt provider now has a full domain lifecycle: LibvirtMachine defines, starts, monitors and destroys domains over libvirt's native RPC, builds its own NoCloud seed ISO in-process, and reports GuestReady from a qemu-guest-agent probe (ADR-0050, ADR-0054, ADR-0043). VirtualMachinePool and VirtualMachineClaim are implemented and verified against a real libvirt host: a pool fills, a claim binds one member for one subject, and deleting the claim destroys the VM. banlieue's side of the attestation handshake (ADR-0049, Accepted) is complete \u2014 claim subject fields, nonce, mirrored EK certificate (ADR-0045) and the admin-supplied Provider.spec.attestation.ekTrustBundle trust anchor \u2014 while the in-guest agent and the AgentSandbox broker (ADR-0055) are designed, modelled and deliberately not banlieue code. Proxmox is anticipated in the schema only \u2014 no provider implementation.",
+    "phase": "Phase 1A/1D \u2014 banlieue-api, the main controller, banlieue-operator, and the vSphere provider create and power on real VMs end-to-end (vSphere create-path only: clone-from-template + power-on, no update/drift/live-migration yet). The libvirt provider now has a full domain lifecycle: LibvirtMachine defines, starts, monitors and destroys domains over libvirt's native RPC, builds its own NoCloud seed ISO in-process, and reports GuestReady from a qemu-guest-agent probe (ADR-0050, ADR-0054, ADR-0043). VirtualMachinePool and VirtualMachineClaim are implemented and verified against a real libvirt host: a pool fills, a claim binds one member for one subject, and deleting the claim destroys the VM. banlieue's side of the attestation handshake (ADR-0049, Accepted) is complete \u2014 claim subject fields, nonce, mirrored EK certificate (ADR-0045) and the admin-supplied Provider.spec.attestation.ekTrustBundle trust anchor \u2014 while the in-guest agent and the broker are deliberately not banlieue code: they are mediatore, which also owns the AgentSandbox CRD (ADR-0097). Proxmox is anticipated in the schema only \u2014 no provider implementation.",
     "crds": {
       "user-facing": {
         "group": "banlieue.io",
@@ -3040,7 +3021,6 @@
     "docs/adr/0043-guestready-installed-guest-signal.md",
     "docs/adr/0047-virtualmachineclaim.md",
     "docs/adr/0049-attestation-trust-anchors.md",
-    "docs/adr/0055-agentsandbox.md",
     "docs/adr/0050-libvirtmachine-domain-lifecycle.md",
     "docs/adr/0051-vmimage-trusted-boot-uki-support.md",
     "docs/adr/0052-instant-clone-vmfork-not-supported.md",
@@ -3067,6 +3047,7 @@
     "docs/adr/0093-health-endpoints-reflect-leadership.md",
     "docs/adr/0094-networkpolicy-templates.md",
     "docs/adr/0095-credential-rotation-without-secret-watches.md",
-    "docs/adr/0096-clusterctl-infrastructure-provider.md"
+    "docs/adr/0096-clusterctl-infrastructure-provider.md",
+    "docs/adr/0097-api-ends-at-virtualmachineclaim.md"
   ]
 }

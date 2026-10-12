@@ -14,8 +14,13 @@ project that finishes the story. It sits in front of the claim API and behind
 every sandbox:
 
 1. **Front door.** Validates the user's IdP login (Entra ID, or Dex in a
-   homelab) and creates the claim with `spec.subject` taken from the token —
-   mediatore is the allowlisted broker the VAP trusts to do this.
+   homelab) and creates the claim with `spec.subject` taken from the token;
+   mediatore is the allowlisted broker the VAP trusts to do this. In
+   mediatore's design the request is an `AgentSandbox`, a mediatore CRD that
+   owns the claim
+   ([mediatore ADR-0008](https://github.com/firestoned/mediatore/blob/main/docs/adr/0008-agentsandbox-crd-owned-by-mediatore.md)),
+   so a sandbox can also be requested declaratively; banlieue still sees
+   only the claim.
 2. **Binding.** The pool member attested its vTPM to a SPIRE server at boot
    (the EK certificate chain, the same one
    [ADR-0045](https://github.com/firestoned/banlieue/blob/main/docs/adr/0045-vtpm-ek-certificate.md)

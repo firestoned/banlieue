@@ -121,7 +121,7 @@ Three things it deliberately is **not**:
 - **Not discovered.** An anchor read off the hypervisor would let whoever
   controls the hypervisor choose the anchor that vouches for its own guests.
 - **Not verified by banlieue.** banlieue publishes configuration; the
-  verifier (the broker of ADR-0055) resolves the referenced
+  verifier (the broker, [mediatore](https://github.com/firestoned/mediatore)) resolves the referenced
   ConfigMap/Secret in the Provider's namespace and does the checking.
 - **Not subject to expiry.** swtpm EK certificates carry
   `notAfter 9999-12-31`, so removing a host's issuer from this bundle *is*

@@ -6,6 +6,11 @@ SPDX-License-Identifier: Apache-2.0
 
 - **Status:** Proposed
 - **Date:** 2026-09-30
+- **Moved:** 2026-10-12, by [ADR-0097](0097-api-ends-at-virtualmachineclaim.md).
+  The canonical copy is mediatore
+  [ADR-0010](https://github.com/firestoned/mediatore/blob/main/docs/adr/0010-no-inbound-to-sandboxes.md).
+  This copy is frozen; its *What this means for banlieue* section still
+  binds banlieue.
 - **Deciders:** Erick Bourgeois
 - **Scope:** banlieue, mediatore, mediatore-guest, the egress gateway
 - **Origin:** Platform ADR-0002, recorded here unchanged in substance. Its

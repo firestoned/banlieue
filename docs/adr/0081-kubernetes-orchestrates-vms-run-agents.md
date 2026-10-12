@@ -6,6 +6,11 @@ SPDX-License-Identifier: Apache-2.0
 
 - **Status:** Accepted
 - **Date:** 2026-09-30
+- **Moved:** 2026-10-12, by [ADR-0097](0097-api-ends-at-virtualmachineclaim.md).
+  The canonical copy is mediatore
+  [ADR-0009](https://github.com/firestoned/mediatore/blob/main/docs/adr/0009-kubernetes-orchestrates-vms-run-agents.md).
+  This copy is frozen; its *What this means for banlieue* section still
+  binds banlieue.
 - **Deciders:** Erick Bourgeois
 - **Scope:** banlieue, mediatore, the AgentSandbox platform
 - **Origin:** Platform ADR-0001, recorded here unchanged in substance. Its

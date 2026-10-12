@@ -4,12 +4,19 @@ SPDX-License-Identifier: Apache-2.0
 -->
 # Threat Model
 
-> **Status:** Living document. Last full pass **2026-10-08**, against the
-> architecture defined by **ADR-0001 … ADR-0096** (0057–0059 unallocated,
+> **Status:** Living document. Last full pass **2026-10-12**, against the
+> architecture defined by **ADR-0001 … ADR-0097** (0057–0059 unallocated,
 > 0066 and 0068–0073 reserved; 0074 and 0075 Accepted 2026-09-28; 0076–0080
-> reserved by roadmap 19; 0081–0082 recorded but not implemented in banlieue,
+> reserved by roadmap 19; 0081–0082 recorded but not implemented in banlieue, and kept canonically in
+> mediatore since ADR-0097;
 > 0088 Proposed and not yet implemented, so none of those three move anything
-> here). The 2026-10-08 pass is ADR-0091 to ADR-0096 (roadmap 12):
+> here). The 2026-10-12 pass is ADR-0097 (banlieue's API ends at
+> `VirtualMachineClaim`; `AgentSandbox` moves to mediatore as its CRD), and its
+> conclusion is **no boundary change**. `AgentSandbox` and `agent.banlieue.io`
+> were never built, so no component, CRD, identity or RBAC grant leaves the
+> deployed posture, and the broker stays what §4 already models: an external
+> claim consumer bounded by §7.6. The pass updates the broker actor row, one §8
+> risk (mediatore's declarative request path) and §9. The 2026-10-08 pass is ADR-0091 to ADR-0096 (roadmap 12):
 > Prometheus metrics and opt-in OpenTelemetry export, path-aware health,
 > opt-in NetworkPolicies, credential rotation without Secret watches, and
 > clusterctl packaging with a scoped CAPI aggregate role. It adds no
@@ -362,7 +369,7 @@ relationship to the host.
 | Cluster admin | Full Kubernetes API | Yes — out of scope by policy (`SECURITY.md`) |
 | Platform admin | Creates `ProviderClass`, `Provider`, `VMImage` | **Semi-trusted — must be treated as infrastructure-admin-equivalent** |
 | Tenant / VM author | Creates `VirtualMachine` in a namespace | **Untrusted for confidentiality of A-1/A-2** — see §7 |
-| Claim consumer / sandbox broker | Creates `VirtualMachineClaim`s, holding `create` on them in a namespace | **Bounded by admission**: `spec.subject.id` must equal the authenticated username unless the requester is a declared broker (§7.6). A broker is trusted for attribution by definition |
+| Claim consumer / sandbox broker | Creates `VirtualMachineClaim`s, holding `create` on them in a namespace | **Bounded by admission**: `spec.subject.id` must equal the authenticated username unless the requester is a declared broker (§7.6). A broker is trusted for attribution by definition. The reference broker is mediatore, which creates each claim from an `AgentSandbox` it owns (ADR-0097); to banlieue it is one declared broker, whatever its front door |
 | Compromised controller pod | RCE inside one banlieue pod | Untrusted |
 | **Sandbox workload** — the AI agent (or anything else) running inside a claimed VM, including one gone hostile via prompt injection | Arbitrary code as root inside its own guest: can write the readiness marker, present or withhold an EK certificate, answer on any port, read the still-attached NoCloud seed | **Untrusted, by design** — the VM boundary is the isolation model (ADR-0047), and every TB-4/TB-5 control involving the guest assumes it is hostile. What it cannot do from inside: escape its vTPM identity (the EK private key is the one thing it cannot substitute — TB-4), reach another member's claim, or make banlieue carry a credential to it (A-9) |
 | Compromised hypervisor endpoint | Attacker-controlled host reachable at `spec.connection.endpoint` | Untrusted |
@@ -1151,7 +1158,7 @@ a different assumption is unsafe.
 | On libvirt the EK certificate is **reported by the guest**, not read from the hypervisor, because swtpm persists no host-side copy | Forced by swtpm's design, not chosen (ADR-0045): the certificate is loaded into the vTPM's NVRAM and the issuing temp directory is deleted, and no libvirt RPC exposes it. It is sound because an EK certificate is a public key — substituting another member's does not yield its private half, so ADR-0049's activation fails — and the subject-CN binding catches the substitution earlier still. The residue is that a guest can *withhold* its certificate, which denies only its own readiness | libvirt or swtpm grows a host-side read, or a member withholding its certificate becomes something worth distinguishing from one that is merely slow |
 | `GuestReady` can be asserted by any code running as root inside the guest, so it proves which disk booted only for a guest that has not been compromised — true on both transports (`qemu-guest-agent` file read on libvirt, `config.extraConfig` on vSphere) | It is a *liveness* signal by construction (ADR-0043 Decision 9) and is consumed only to decide when a **fresh, unclaimed** VM joins a warm pool — before any subject has touched it. Treating it as integrity would be the error; the document and the ADR both say so explicitly | Attestation ships (ADR-0049), at which point a TPM quote over the claim nonce is the integrity signal and this one stays what it is |
 | A **broker** both holds subject credentials and is the party that verifies TPM quotes, so its compromise is the design's worst case | Somebody has to hold the credential to deliver it, and somebody has to verify the quote; concentrating both in one audited component is preferable to spreading either. banlieue is deliberately not that component (ADR-0049 Decision 2), so a controller compromise discloses no subject credential | The broker is split into deliver/verify roles, or hardware-backed key custody becomes available to it |
-| A declared **broker** may attribute a sandbox to any identity, so the audit trail is only as honest as the broker is | Handing sandboxes out on behalf of other people is a broker's entire purpose (roadmap phase C); a broker that could only name itself could not broker. The concentration is explicit, empty by default, and confined to one auditable ConfigMap (§7.6) rather than diffused across everyone holding `create` | A broker is compromised, or claims need per-request proof of the subject's consent rather than the broker's assertion |
+| A declared **broker** may attribute a sandbox to any identity, so the audit trail is only as honest as the broker is | Handing sandboxes out on behalf of other people is a broker's entire purpose; a broker that could only name itself could not broker. The concentration is explicit, empty by default, and confined to one auditable ConfigMap (§7.6) rather than diffused across everyone holding `create`. mediatore also accepts declarative `AgentSandbox` requests, so the honesty of the trail rests on mediatore's own subject-pinning admission policy as well as on mediatore; that control is mediatore's and is not verified here | A broker is compromised; claims need per-request proof of the subject's consent rather than the broker's assertion; or a broker that accepts declarative requests ships without pinning their subject to the caller |
 | **A guest's vTPM can be failed by host CPU contention** on stock Cloud Hypervisor v53.0: the VMM gives swtpm 100 ms per response, then marks the TPM fatally failed for the guest's lifetime. A busy host (another guest, a burst of installs) is enough; on a `Deferred` `tpmEnabled` member it aborts the install, which the pool reaps at `provisioningTimeoutSeconds` (D) | Not banlieue code: it is in the VMM's TPM backend (`tpm/src/emulator.rs`). The cost is bounded by the pool's reaper, and nothing is disclosed or forged: the TPM refuses, it does not answer wrongly. The fix is known and tested (`docs/src/reference/cloud-hypervisor-pool-timings.md`); reported upstream as [cloud-hypervisor#9053](https://github.com/cloud-hypervisor/cloud-hypervisor/issues/9053) | Every Cloud Hypervisor host runs a VMM with the response-deadline fix (upstream release, or a patched VMM installed with `--vmm-url`) |
 | **The identity provider is trusted absolutely, and is outside banlieue** | The API server is the only thing that can attest a caller, and it attests whatever the configured issuer asserted. banlieue cannot verify an upstream IdP without becoming an IdP. The claim-subject policy is still worth having: it binds an attribution to *whatever* identity the cluster does authenticate, which is strictly better than free text | banlieue ever needs an attribution stronger than the cluster's own authentication — at which point the answer is per-request proof from the subject (a signed consent, or the attested channel of ADR-0049), not a better check on the caller |
 | A consumer's **cached ID token** sits on their laptop (`~/.kube/cache/oidc-login`) and authenticates as them if stolen | Not specific to claims — every Kubernetes bearer token behaves this way, and client-side credential custody is out of scope (§9). Recorded because the claim-specific consequence is distinctive: the audit trail records the *victim* requesting a sandbox, which is exactly the fiction §6/TB-1 exists to prevent. Short token lifetimes are the issuer-side mitigation | Claims carry per-request proof of the subject's intent rather than only the caller's identity |
@@ -1208,6 +1215,10 @@ a different assumption is unsafe.
   `ca-certificates`): installed and kept current by the host's own package
   manager or image build, never by banlieue (ADR-0084 Decision 1).
   `preflight` checks that the commands exist, not where they came from.
+- The agent layer above `VirtualMachineClaim`: `AgentSandbox`, token
+  brokering, the in-guest agent and their attestation. They are mediatore's
+  (ADR-0097), covered by mediatore's own threat model; banlieue's share ends at
+  the claim and the EK certificate it mirrors.
 - Removing banlieue from a Cloud Hypervisor host (`uninstall`, host drain):
   not built (ADR-0067 Decision 8); `banlieue host cloud-hypervisor status` shows what a
   manual removal must cover.

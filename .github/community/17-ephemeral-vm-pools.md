@@ -281,7 +281,7 @@ provider can realise (see [Repo reality](#repo-reality-at-8360e19)).
 | A3 | `tpmEnabled` requires `installMode: Deferred` | 0048 | ✅ landed 2026-09-23 — pure check in `banlieue-controller`, rejected before scheduling so no infra CR is created; `Manual` passes, and an image with **no `template`** is rejected too (a pre-built disk is a pre-laid one) |
 | B1 | `VirtualMachinePool` | 0046 | ✅ landed and validated e2e against a real libvirt host — fills, self-heals, rolls, cascades on delete. **Also validated live against a real vSphere-backed pool (2026-09-23)**: a 2-member `GuestReady`-gated `sandbox-pool` (`debian-dev-v0.4.0`, `Deferred`, `tpmEnabled`, `small-dev` class) went apply→`Warm=True` in **130.3s**, both members within 29ms of each other — ~9.6s clone+vTPM+power-on, ~120.7s guest boot/install/announce, bounded by the 30s `NotAnnounced` poll cadence (ADR-0043 Decision 8) then correctly switching to the 300s interval once `GuestReady`. This is the first live confirmation that a `VirtualMachinePool` set to `readiness: GuestReady` actually reaches `Warm` on vSphere, not just that the signal decodes |
 | B2 | `VirtualMachineClaim` | 0047 | ✅ landed — bind/hold/release, TTL expiry, finalizer, nonce; a pool is now consumable |
-| C | In-guest agent (separate repo) | own repo | ⛔ |
+| C | In-guest agent (separate repo) | own repo | ➡️ moved to [mediatore](https://github.com/firestoned/mediatore) (`mediatore-guest`), with `AgentSandbox` (ADR-0097, mediatore ADR-0008, 2026-10-12) |
 | D | libvirt provider: `LibvirtMachine` reconciler | 07 + 0050 + 0054 | ✅ complete — CRD, domain XML, reconciler, NoCloud user-data; roadmap 07 closed |
 | E | Proxmox provider, same | amend 12 | ⛔ |
 | F | Attestation trust anchors, threat model | 0049 | ✅ **banlieue's side complete 2026-09-27** — ADR-0049 Accepted with Decision 10: `Provider.spec.attestation.ekTrustBundle` (a `CABundleSource`, admin-supplied, never discovered; per-backend — vCenter's CA on vSphere, per-host `swtpm_localca` issuer on libvirt), shape-validated at admission (`deploy/admission/provider-attestation-ektrustbundle.yaml`), documented in the claims guide, examples annotated. Threat-model full pass done same day: A-15 (the bundle — zero confidentiality, high integrity), the sandbox workload named as an actor, TB-1 rows for bundle tampering and stale-image members, §7.14 (bundle custody) and §7.15 (vSphere VM Encryption on sandbox storage classes), §8 residues updated. What remains of ADR-0049 — the in-guest agent (Decision 9) and the broker — is deliberately **not banlieue code**: phase C / ADR-0055 |
@@ -625,6 +625,14 @@ naming an issuer the site does not use. That asymmetry is now modelled as
 recorded alongside it.
 
 ### C: In-guest agent (separate repo under `firestoned`)
+
+> **Moved 2026-10-12.** This phase is mediatore's: the in-guest agent is
+> `mediatore-guest`, the broker is mediatore, and the `AgentSandbox` request
+> object above the claim is a mediatore CRD
+> ([ADR-0097](../../docs/adr/0097-api-ends-at-virtualmachineclaim.md),
+> mediatore ADR-0008). mediatore's roadmaps track it; the design notes below
+> are kept as written. mediatore plans to replace the nonce-and-quote
+> handshake in step 2 with SPIRE attestation (its roadmap 03).
 
 Out of banlieue. Baked into the sandbox image via `vm-build` and one
 `cloudConfigs` layer. Starts only from the installed system.

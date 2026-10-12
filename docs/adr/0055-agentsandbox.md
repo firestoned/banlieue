@@ -1,6 +1,10 @@
 # 0055 — `AgentSandbox`: the agent layer owns a claim, not a member
 
-- **Status:** Proposed
+- **Status:** Superseded by [ADR-0097](0097-api-ends-at-virtualmachineclaim.md)
+  and mediatore [ADR-0008](https://github.com/firestoned/mediatore/blob/main/docs/adr/0008-agentsandbox-crd-owned-by-mediatore.md)
+  (2026-10-12). Never built. `AgentSandbox` is now a mediatore CRD,
+  `mediatore.io/v1alpha1`; this file is kept as the record of the original
+  design and is not edited further.
 - **Date:** 2026-09-20
 - **Deciders:** Erick Bourgeois
 - **Related:** Layers on top of [ADR-0047](0047-virtualmachineclaim.md)

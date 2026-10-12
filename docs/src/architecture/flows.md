@@ -186,7 +186,7 @@ flowchart TD
 
 ## Deliver a subject&#x27;s credential to its sandbox (banlieue side implemented; agent and broker are not banlieue code)
 
-The unanswered half of the claim model: a claim deliberately carries no credential, so how does the subject's token reach the guest and what convinces the guest it is genuine? ADR-0049 is Accepted (2026-09-27) and banlieue's whole side of the contract exists: subject.issuer, subject.id, status.nonce, the mirrored EK certificate (ADR-0045, landed 2026-09-23), and the per-backend trust anchor Provider.spec.attestation.ekTrustBundle (Decision 10, admin-supplied, never discovered -- an anchor fished off the hypervisor would let the host vouch for its own guests). What does not exist -- the in-guest agent (Decision 9) and the broker (ADR-0055) -- is by design not banlieue code, so this flow stays unexercised until they are built elsewhere.
+The unanswered half of the claim model: a claim deliberately carries no credential, so how does the subject's token reach the guest and what convinces the guest it is genuine? ADR-0049 is Accepted (2026-09-27) and banlieue's whole side of the contract exists: subject.issuer, subject.id, status.nonce, the mirrored EK certificate (ADR-0045, landed 2026-09-23), and the per-backend trust anchor Provider.spec.attestation.ekTrustBundle (Decision 10, admin-supplied, never discovered -- an anchor fished off the hypervisor would let the host vouch for its own guests). What does not exist -- the in-guest agent (Decision 9) and the broker (mediatore, ADR-0097) -- is by design not banlieue code, so this flow stays unexercised until they are built elsewhere.
 
 ```mermaid
 flowchart TD

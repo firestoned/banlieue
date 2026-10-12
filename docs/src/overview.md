@@ -187,9 +187,10 @@ above:
 
 That pair is what makes banlieue usable as a sandbox substrate for CI jobs and
 AI agents. Both are implemented and validated end-to-end against a real libvirt
-host; the higher-level `AgentSandbox` wrapper
-([ADR-0055](https://github.com/firestoned/banlieue/blob/main/docs/adr/0055-agentsandbox.md))
-is designed but not yet built.
+host. The claim is the top of banlieue's API
+([ADR-0097](https://github.com/firestoned/banlieue/blob/main/docs/adr/0097-api-ends-at-virtualmachineclaim.md)):
+agent-specific layers such as `AgentSandbox` live in
+[mediatore](https://github.com/firestoned/mediatore).
 
 ## What banlieue is **not**
 

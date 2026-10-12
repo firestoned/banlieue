@@ -39,7 +39,6 @@ flowchart LR
     data-asset-virtualmachine-cr["VirtualMachine Custom Resource"]
     data-asset-virtualmachinepool-cr["VirtualMachinePool Custom Resource"]
     data-asset-virtualmachineclaim-cr["VirtualMachineClaim Custom Resource"]
-    data-asset-agentsandbox-cr["AgentSandbox Custom Resource"]
     data-asset-provider-cr["Provider Custom Resource"]
     data-asset-providerclass-cr["ProviderClass Custom Resource"]
     data-asset-vmclass-cr["VMClass Custom Resource"]
@@ -123,8 +122,6 @@ flowchart LR
     service-banlieue-controller --> data-asset-virtualmachineclaim-cr
     service-banlieue-controller --> data-asset-virtualmachinepool-cr
     service-banlieue-controller --> data-asset-virtualmachine-cr
-    service-banlieue-controller --> data-asset-agentsandbox-cr
-    service-banlieue-controller --> data-asset-virtualmachineclaim-cr
     actor-vm-consumer -->|HTTPS| network-oidc-issuer
     service-kubernetes-api -->|HTTPS| network-oidc-issuer
     service-sandbox-broker --> data-asset-virtualmachineclaim-cr
