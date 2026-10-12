@@ -3190,6 +3190,25 @@
       ],
       "occurrences": 1,
       "last_seen": "2026-10-03T22:55:00.000Z"
+    },
+    {
+      "id": "bug-176",
+      "timestamp": "2026-10-12T09:20:00.000Z",
+      "error_message": "libvirt Deferred member stuck GuestReady=False/GuestNotAnnounced; guest back in live installer (cdroot, /run/cos/live_mode) after a completed install",
+      "file": "crates/banlieue-provider-libvirt/src/xml/domain.rs",
+      "root_cause": "render_os listed <boot dev='cdrom'/> before <boot dev='hd'/> until the eject, but the eject waits for guestInstalled, which only a boot of the installed disk can write: a deadlock. Unit test install_media_boots_cdrom_before_disk pinned the broken order; every earlier libvirt pool run used BackingFile images that install nothing.",
+      "fix": "Boot hd first, cdrom as fallback (empty disk is skipped by the firmware). ADR-0044 amended 2026-10-12. Verified live: Kairos Debian 13 Deferred tpmEnabled member GuestReady in 158 s, ejected, EK published; e2e_pool_claim GuestReady passed.",
+      "tags": [
+        "libvirt",
+        "deferred",
+        "boot-order",
+        "guestready",
+        "adr-0044",
+        "kairos"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-10-12T09:20:00.000Z"
     }
   ]
 }

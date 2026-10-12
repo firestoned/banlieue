@@ -1,6 +1,6 @@
 # anatomy.md
 
-> Auto-maintained by OpenWolf. Last scanned: 2026-10-10T16:00:00.771Z
+> Auto-maintained by OpenWolf. Last scanned: 2026-10-12T13:19:47.664Z
 > Files: 512 tracked | Anatomy hits: 0 | Misses: 0
 
 ## ./
@@ -19,11 +19,11 @@
 - `GOVERNANCE.md` — Governance (~1125 tok)
 - `LICENSE` — Project license (~3029 tok)
 - `MAINTAINERS.md` — Maintainers (~165 tok)
-- `Makefile` — Make build targets (~26066 tok)
+- `Makefile` — Make build targets (~26353 tok)
 - `NOTICE` (~159 tok)
 - `osv-scanner.toml` — SPDX-License-Identifier: Apache-2.0 (~355 tok)
-- `README.md` — Project documentation (~3300 tok)
-- `ROADMAPS.md` — Roadmaps (~4136 tok)
+- `README.md` — Project documentation (~3324 tok)
+- `ROADMAPS.md` — Roadmaps (~4259 tok)
 - `SECURITY.md` — Security Policy (~382 tok)
 
 ## .clusterfuzzlite/
@@ -68,7 +68,7 @@
 - `14-live-migration.md` — Live Migration (same-class first, cross-class deferred) (~3286 tok)
 - `15-vsphere-disk-image-import.md` — 15: vSphere disk-image import (raw and VMDK), alongside the ISO path (~4709 tok)
 - `16-scorecard-remediation.md` — 60 — OSSF Scorecard remediation (~2608 tok)
-- `17-ephemeral-vm-pools.md` — 17: Ephemeral, single-use VM pools (AI agent sandboxes) (~12855 tok)
+- `17-ephemeral-vm-pools.md` — 17: Ephemeral, single-use VM pools (AI agent sandboxes) (~13561 tok)
 - `18-split-image-fast-clone.md` — 18: Split-image fast clone — verified base + per-VM sealed volume (~4187 tok)
 - `19-port-groups.md` — 19: Port groups — declared, reconciled, and safe to delete (~4109 tok)
 - `README.md` — Project documentation (~1406 tok)
@@ -457,7 +457,7 @@
 
 - `e2e_deferred.rs` — End to end on a real Cloud Hypervisor host: a `tpmEnabled` (~3936 tok)
 - `e2e_machine.rs` — End to end on a real Cloud Hypervisor host: a `VirtualMachine` becomes a (~4378 tok)
-- `e2e_pool_claim.rs` — Pool → Cloud Hypervisor guests → claim → release, end to end on the host (~7714 tok)
+- `e2e_pool_claim.rs` — Pool → Cloud Hypervisor guests → claim → release, end to end on the host (~8146 tok)
 - `e2e_restart.rs` — End to end on a real Cloud Hypervisor host: restarting the provider — (~3090 tok)
 - `e2e_vtpm.rs` — End to end on a real Cloud Hypervisor host: a `tpmEnabled` (~2468 tok)
 - `live_sys.rs` — Live test of the tap and bridge syscalls in `sys.rs`. (~1669 tok)
@@ -496,8 +496,8 @@
 
 ## crates/banlieue-provider-libvirt/src/xml/
 
-- `domain_tests.rs` — Unit tests for `xml/domain.rs`. (~6420 tok)
-- `domain.rs` — Build libvirt domain XML from a [`LibvirtMachineSpec`] (ADR-0050). (~4703 tok)
+- `domain_tests.rs` — Unit tests for `xml/domain.rs`. (~6531 tok)
+- `domain.rs` — Build libvirt domain XML from a [`LibvirtMachineSpec`] (ADR-0050). (~4786 tok)
 - `escape_tests.rs` — Unit tests for `xml/escape.rs`. (~1386 tok)
 - `escape.rs` — XML escaping for domain XML (ADR-0050 Decision 6). (~966 tok)
 - `mod.rs` — Domain XML construction (ADR-0050 Decision 6). (~207 tok)
@@ -505,7 +505,7 @@
 ## crates/banlieue-provider-libvirt/tests/
 
 - `e2e_import_pipeline.rs` — Full ADR-0010 pipeline against a real cluster and a real libvirt host. (~4137 tok)
-- `e2e_pool_claim.rs` — Pool → real libvirt domains → claim → release, end to end (ADR-0046/0047). (~12338 tok)
+- `e2e_pool_claim.rs` — Pool → real libvirt domains → claim → release, end to end (ADR-0046/0047). (~13434 tok)
 - `e2e_vmimage_ssa.rs` — e2e: the `VMImage.status` field-manager split of ADR-0010. (~4198 tok)
 - `live_cloudinit.rs` — Proof that a **guest consumes** the cloud-init seed (ADR-0054). (~3171 tok)
 - `live_ek.rs` — The vTPM endorsement-certificate read path, against a **real guest with a (~3515 tok)
@@ -709,7 +709,7 @@
 - `virtualmachine-created-by.yaml` — SPDX-License-Identifier: Apache-2.0 (~880 tok)
 - `virtualmachine-immutability.yaml` — SPDX-License-Identifier: Apache-2.0 (~526 tok)
 - `virtualmachine-userdata-authorization.yaml` — SPDX-License-Identifier: Apache-2.0 (~1223 tok)
-- `virtualmachineclaim-subject-authorization.yaml` — SPDX-License-Identifier: Apache-2.0 (~3008 tok)
+- `virtualmachineclaim-subject-authorization.yaml` — SPDX-License-Identifier: Apache-2.0 (~3045 tok)
 - `vmimage-import-source.yaml` — VAP + params ConfigMap: importFrom must be digest-pinned and registry-allowlisted (security review 2026-07-31) (~1011 tok)
 
 ## deploy/capi/

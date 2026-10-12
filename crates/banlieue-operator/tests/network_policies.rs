@@ -31,7 +31,6 @@ use k8s_openapi::api::networking::v1::{
     NetworkPolicy, NetworkPolicyEgressRule, NetworkPolicyPeer, NetworkPolicyPort,
 };
 use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
-use serde::Deserialize;
 
 /// Directory holding the templates, relative to the repository root.
 const POLICY_DIR: &str = "deploy/network-policies";
@@ -83,6 +82,28 @@ fn yaml_files(dir: &Path) -> Vec<PathBuf> {
     files
 }
 
+/// The documents of a multi-document YAML file: split on `---` lines, with
+/// empty and comment-only documents (a license header) dropped.
+fn yaml_documents(text: &str) -> Vec<String> {
+    let mut docs = vec![String::new()];
+    for line in text.lines() {
+        if line.trim_end() == "---" {
+            docs.push(String::new());
+            continue;
+        }
+        if let Some(doc) = docs.last_mut() {
+            doc.push_str(line);
+            doc.push('\n');
+        }
+    }
+    docs.into_iter()
+        .filter(|d| {
+            d.lines()
+                .any(|l| !l.trim().is_empty() && !l.trim_start().starts_with('#'))
+        })
+        .collect()
+}
+
 /// Parse every document in every policy file. Fails loudly when the
 /// directory is empty: a test over nothing must not report success.
 fn policies() -> Vec<(PathBuf, NetworkPolicy)> {
@@ -90,12 +111,12 @@ fn policies() -> Vec<(PathBuf, NetworkPolicy)> {
     let mut out = Vec::new();
     for path in yaml_files(&dir) {
         let text = fs::read_to_string(&path).expect("readable policy file");
-        for doc in serde_yaml::Deserializer::from_str(&text) {
-            let value = serde_yaml::Value::deserialize(doc).expect("valid YAML");
+        for doc in yaml_documents(&text) {
+            let value: serde_json::Value = serde_saphyr::from_str(&doc).expect("valid YAML");
             if value.is_null() {
                 continue;
             }
-            let policy: NetworkPolicy = serde_yaml::from_value(value)
+            let policy: NetworkPolicy = serde_json::from_value(value)
                 .unwrap_or_else(|e| panic!("{}: not a NetworkPolicy: {e}", path.display()));
             out.push((path.clone(), policy));
         }
@@ -147,7 +168,7 @@ fn deployed_components() -> BTreeSet<String> {
         }
         let text = fs::read_to_string(&manifest).expect("readable deployment");
         let deployment: Deployment =
-            serde_yaml::from_str(&text).unwrap_or_else(|e| panic!("{}: {e}", manifest.display()));
+            serde_saphyr::from_str(&text).unwrap_or_else(|e| panic!("{}: {e}", manifest.display()));
         let labels = deployment
             .spec
             .and_then(|s| s.template.metadata)

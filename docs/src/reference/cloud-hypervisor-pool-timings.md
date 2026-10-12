@@ -164,13 +164,37 @@ the fix, the same throttle produces slow answers instead of errors: the
 member installs, seals `COS_PERSISTENT` to its vTPM and is claimable in about
 102 s, as fast as an unthrottled one.
 
-**Fix.** Read the 10-byte response header, then exactly the size it
-declares, looping over partial reads; keep the 100 ms socket timeout as a
-poll interval, retried until a 120 s deadline (Linux allows TPM2 commands up
-to 300 s). A declared size smaller than a header or larger than the buffer is
-an error. Unit tests cover a response split across a delay longer than the
-socket timeout, the deadline, an impossible size, and swtpm closing
-mid-response. With it, ten installs, six of them concurrent, had no fault.
+**Fix.** Raise the data socket's receive timeout from 100 ms to 120 s
+(Linux allows TPM2 commands up to 300 s), still set once when the socket is
+prepared, and read the 10-byte response header and then exactly the size it
+declares with `read_exact`, so a partial read is never taken as a whole
+response. A declared size smaller than a header or larger than the buffer is
+an error. Unit tests cover a response split across delays, the timeout, an
+impossible size, and swtpm closing mid-response. This is the shape the
+maintainer asked for in review of
+[cloud-hypervisor#9054](https://github.com/cloud-hypervisor/cloud-hypervisor/pull/9054).
+An earlier revision that polled a 100 ms timeout up to a deadline had ten
+installs, six of them concurrent, with no fault (2026-10-11).
+
+!!! danger "The read path must not call `setsockopt`"
+    TPM commands are served on the guest's vCPU threads, and Cloud
+    Hypervisor's vCPU seccomp filter (`vcpu_thread_rules` in
+    `vmm/src/seccomp_filters.rs`) allows no `setsockopt`. One revision of
+    the fix set the receive timeout inside the read loop, and every guest's
+    VMM died with `SIGSYS` on its first TPM command (2026-10-12: "Probable
+    seccomp violation: si_syscall=54 ... thread=vcpu"). Its unit tests
+    passed, because they run without seccomp. Set socket options when the
+    socket is prepared, on the VMM thread, never when reading.
+
+**Two hosts, 2026-10-12.** With the reviewed fix (cloud-hypervisor#9054 at `3d6f462cf`) installed on two hosts (one 96
+cores, one 32), each running its own Provider against one management
+cluster (banlieue v0.4.1), `make ch-pool-claim-e2e` with
+`BANLIEUE_E2E_READINESS=GuestReady`, a `tpmEnabled` class and the Kairos
+Hadron v0.4.0 installer passed on both: warm-up of two members 115 s and
+110 s, one-member refill 110 s and 100 s, claim bound in 5 s, the released
+guest gone from the host in 5 s. Ten installs in all (five per host), every
+one sealed to its vTPM and reported (an install that hits the TPM fault
+never reports), and no VMM crash in either host's journal.
 
 **Status.** The fix is a Cloud Hypervisor change, reported upstream as
 [cloud-hypervisor#9053](https://github.com/cloud-hypervisor/cloud-hypervisor/issues/9053) (2026-10-11). A

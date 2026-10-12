@@ -327,7 +327,7 @@ spec:
                 nullable: true
                 type: string
               addresses:
-                description: 'CAPI contract field (optional): VM addresses.'
+                description: "CAPI contract field (optional): VM addresses."
                 items:
                   description: A typed machine address. Mirrors CAPI's `clusterv1.MachineAddress`.
                   properties:
@@ -335,7 +335,7 @@ spec:
                       description: The address itself.
                       type: string
                     type:
-                      description: 'Address type. Accepted: Hostname, ExternalIP, InternalIP, ExternalDNS, InternalDNS.'
+                      description: "Address type. Accepted: Hostname, ExternalIP, InternalIP, ExternalDNS, InternalDNS."
                       enum:
                       - Hostname
                       - ExternalIP
@@ -385,7 +385,7 @@ spec:
                 - type
                 x-kubernetes-list-type: map
               failureDomain:
-                description: 'CAPI contract field (optional): observed failure domain.'
+                description: "CAPI contract field (optional): observed failure domain."
                 nullable: true
                 type: string
               initialization:

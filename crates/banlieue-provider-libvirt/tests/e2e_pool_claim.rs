@@ -74,6 +74,23 @@
 //!   place". The suite checks the Provider is Ready up front for this
 //!   reason.
 //!
+//! Optional, for a `Deferred` image and a real claim policy:
+//!
+//! - `BANLIEUE_E2E_READINESS`: the pool's `spec.readiness`, default
+//!   `InfrastructureReady`. Use `GuestReady` with a `Deferred` image: the
+//!   member is then not claimable until the installed system has reported
+//!   (ADR-0043) and its installer has been ejected (ADR-0044).
+//! - `BANLIEUE_E2E_USER_DATA`: a cloud-config file every member gets, in a
+//!   ConfigMap the run creates and removes. A `Deferred` image needs one:
+//!   the install itself is user-data, and so is the boot stage that writes
+//!   `/run/banlieue/phase` (`examples/16-cloud-config-guest-phase.yaml`).
+//! - `BANLIEUE_E2E_CLAIM_AS`: create claims as this user (impersonation),
+//!   e.g. `github:octocat`, so a cluster running the claim subject policy
+//!   checks a real subject rather than refusing the suite's admin identity.
+//!   Pair it with `BANLIEUE_E2E_SUBJECT_ID` (the RAW subject, without the
+//!   API server's prefix) and, if the policy's allowlist differs,
+//!   `BANLIEUE_E2E_ISSUER`.
+//!
 //! `LIBVIRT_HOST`/`LIBVIRT_TLS_DIR` are optional: without them everything
 //! Kubernetes can see is still asserted and only the on-host checks are
 //! skipped, which is a strictly weaker run — the on-host check is the
@@ -116,6 +133,15 @@ const WARM: u32 = 2;
 /// How long a claim holds. Long enough that expiry never races the test —
 /// expiry itself is covered in `live_claim.rs`, deterministically.
 const CLAIM_TTL_SECS: u64 = 3600;
+/// `spec.readiness` when `BANLIEUE_E2E_READINESS` is unset.
+const DEFAULT_READINESS: &str = "InfrastructureReady";
+/// The ConfigMap key a member's user-data is read from.
+const USER_DATA_KEY: &str = "user-data";
+/// Claim subject when `BANLIEUE_E2E_SUBJECT_ID` is unset.
+const DEFAULT_SUBJECT_ID: &str = "e2e-subject-0c3b7f2e";
+/// Claim issuer when `BANLIEUE_E2E_ISSUER` is unset: the policy's shipped
+/// placeholder allowlist entry.
+const DEFAULT_ISSUER: &str = "https://issuer.example.com";
 
 // ---------------------------------------------------------------------------
 // Environment
@@ -125,13 +151,21 @@ struct Fixture {
     provider: String,
     image: String,
     class: String,
+    readiness: String,
+    user_data: Option<String>,
 }
 
 fn fixture() -> Option<Fixture> {
+    let user_data = std::env::var("BANLIEUE_E2E_USER_DATA").ok().map(|p| {
+        std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("BANLIEUE_E2E_USER_DATA {p}: {e}"))
+    });
     Some(Fixture {
         provider: std::env::var("BANLIEUE_E2E_PROVIDER").ok()?,
         image: std::env::var("BANLIEUE_E2E_IMAGE").ok()?,
         class: std::env::var("BANLIEUE_E2E_CLASS").ok()?,
+        readiness: std::env::var("BANLIEUE_E2E_READINESS")
+            .unwrap_or_else(|_| DEFAULT_READINESS.into()),
+        user_data,
     })
 }
 
@@ -261,6 +295,9 @@ impl Scratch {
     fn claims(&self) -> Api<VirtualMachineClaim> {
         Api::namespaced(self.client.clone(), &self.namespace)
     }
+    fn configmaps(&self) -> Api<ConfigMap> {
+        Api::namespaced(self.client.clone(), &self.namespace)
+    }
 
     /// Members of *this run's* pool, or `None` when the API server could
     /// not answer. The distinction matters: an unreachable API is not an
@@ -334,6 +371,20 @@ impl Scratch {
             );
         }
 
+        // The user-data ConfigMap `make_pool` names after the pool. Deleted
+        // after the members, which read it until they are gone.
+        if let Ok(cms) = self.configmaps().list(&ListParams::default()).await {
+            for cm in cms
+                .into_iter()
+                .filter(|c| c.name_any().starts_with(&self.prefix))
+            {
+                let _ = self
+                    .configmaps()
+                    .delete(&cm.name_any(), &DeleteParams::background())
+                    .await;
+            }
+        }
+
         if let Some((host, dir)) = libvirt_settings() {
             for domain in &expected {
                 if domain_exists(&host, &dir, domain).await {
@@ -396,6 +447,29 @@ async fn require_ready_provider(s: &Scratch, provider: &str) {
 }
 
 async fn make_pool(s: &Scratch, f: &Fixture, name: &str) {
+    let mut template = json!({
+        "classRef": { "name": f.class },
+        "imageRef": { "name": f.image },
+        "desiredPowerState": "PoweredOn",
+        // Members are cattle; a migration mid-test would muddy every
+        // on-host assertion below.
+        "migrationPolicy": "never",
+    });
+    if let Some(data) = &f.user_data {
+        // Named after the pool, so the prefix teardown removes it too.
+        let cm: ConfigMap = serde_json::from_value(json!({
+            "apiVersion": "v1",
+            "kind": "ConfigMap",
+            "metadata": { "name": name, "namespace": s.namespace },
+            "data": { USER_DATA_KEY: data },
+        }))
+        .expect("user-data ConfigMap");
+        s.configmaps()
+            .create(&PostParams::default(), &cm)
+            .await
+            .expect("create user-data ConfigMap");
+        template["userData"] = json!({ "configMapRef": { "name": name } });
+    }
     let pool: VirtualMachinePool = serde_json::from_value(json!({
         "apiVersion": "banlieue.io/v1alpha1",
         "kind": "VirtualMachinePool",
@@ -404,18 +478,8 @@ async fn make_pool(s: &Scratch, f: &Fixture, name: &str) {
             "warmReplicas": WARM,
             "maxReplicas": WARM + 2,
             "maxSurge": WARM,
-            // The only value satisfiable today: GuestReady needs ADR-0043.
-            "readiness": "InfrastructureReady",
-            "template": {
-                "spec": {
-                    "classRef": { "name": f.class },
-                    "imageRef": { "name": f.image },
-                    "desiredPowerState": "PoweredOn",
-                    // Members are cattle; a migration mid-test would muddy
-                    // every on-host assertion below.
-                    "migrationPolicy": "never",
-                }
-            },
+            "readiness": f.readiness,
+            "template": { "spec": template },
         },
     }))
     .expect("pool fixture");
@@ -426,24 +490,38 @@ async fn make_pool(s: &Scratch, f: &Fixture, name: &str) {
 }
 
 async fn make_claim(s: &Scratch, name: &str, pool: &str) {
+    let issuer = std::env::var("BANLIEUE_E2E_ISSUER").unwrap_or_else(|_| DEFAULT_ISSUER.into());
+    let subject =
+        std::env::var("BANLIEUE_E2E_SUBJECT_ID").unwrap_or_else(|_| DEFAULT_SUBJECT_ID.into());
     let claim: VirtualMachineClaim = serde_json::from_value(json!({
         "apiVersion": "banlieue.io/v1alpha1",
         "kind": "VirtualMachineClaim",
         "metadata": { "name": name, "namespace": s.namespace },
         "spec": {
             "poolRef": { "name": pool },
-            "subject": {
-                "issuer": "https://issuer.example.com",
-                "id": "e2e-subject-0c3b7f2e",
-            },
+            "subject": { "issuer": issuer, "id": subject },
             "ttlSeconds": CLAIM_TTL_SECS,
         },
     }))
     .expect("claim fixture");
-    s.claims()
+    let claims: Api<VirtualMachineClaim> =
+        Api::namespaced(claim_client(&s.client).await, &s.namespace);
+    claims
         .create(&PostParams::default(), &claim)
         .await
         .expect("create claim");
+}
+
+/// The client claims are created with: `BANLIEUE_E2E_CLAIM_AS`
+/// impersonated when set, so the claim subject policy sees a real subject.
+/// Everything else (reads, deletes, teardown) stays on the admin client.
+async fn claim_client(admin: &Client) -> Client {
+    let Ok(user) = std::env::var("BANLIEUE_E2E_CLAIM_AS") else {
+        return admin.clone();
+    };
+    let mut config = kube::Config::infer().await.expect("kubeconfig");
+    config.auth_info.impersonate = Some(user);
+    Client::try_from(config).expect("impersonating client")
 }
 
 async fn available(s: &Scratch, pool: &str) -> u32 {

@@ -382,7 +382,7 @@ impl InstallRole {
                 other => anyhow::bail!("no embedded ClusterRole for backend {other:?}"),
             },
         };
-        serde_yaml::from_str(yaml)
+        serde_saphyr::from_str(yaml)
             .with_context(|| format!("parsing embedded ClusterRole for {}", self.name()))
     }
 }
@@ -465,7 +465,7 @@ impl InstallManifests {
 /// Append one YAML document, with its leading separator.
 fn push_doc<T: serde::Serialize>(out: &mut String, object: &T) -> Result<()> {
     out.push_str("---\n");
-    out.push_str(&serde_yaml::to_string(object)?);
+    out.push_str(&banlieue_api::yaml::to_string(object)?);
     Ok(())
 }
 
@@ -565,7 +565,7 @@ pub fn build_operator_install(
 /// Returns an error if the embedded YAML is not a valid ClusterRole, which can
 /// only happen if the `deploy/capi/` manifest was edited into invalid YAML.
 pub fn build_capi_aggregate_cluster_role() -> Result<ClusterRole> {
-    serde_yaml::from_str(CAPI_AGGREGATE_CLUSTER_ROLE_YAML)
+    serde_saphyr::from_str(CAPI_AGGREGATE_CLUSTER_ROLE_YAML)
         .with_context(|| format!("parsing embedded ClusterRole {CAPI_AGGREGATE_CLUSTER_ROLE}"))
 }
 
@@ -581,9 +581,9 @@ pub fn build_capi_aggregate_cluster_role() -> Result<ClusterRole> {
 /// kind, which can only happen if `deploy/controller/rbac/` was edited into
 /// invalid YAML.
 pub fn build_controller_userdata_role(opts: &InstallOptions) -> Result<(Role, RoleBinding)> {
-    let mut role: Role = serde_yaml::from_str(CONTROLLER_USERDATA_ROLE)
+    let mut role: Role = serde_saphyr::from_str(CONTROLLER_USERDATA_ROLE)
         .context("parsing embedded deploy/controller/rbac/role.yaml")?;
-    let mut binding: RoleBinding = serde_yaml::from_str(CONTROLLER_USERDATA_ROLE_BINDING)
+    let mut binding: RoleBinding = serde_saphyr::from_str(CONTROLLER_USERDATA_ROLE_BINDING)
         .context("parsing embedded deploy/controller/rbac/rolebinding.yaml")?;
     role.metadata.namespace = Some(opts.namespace.clone());
     binding.metadata.namespace = Some(opts.namespace.clone());

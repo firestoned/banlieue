@@ -39,6 +39,12 @@
 //!   Provider's namespace, since members only schedule against Providers in
 //!   their own namespace.
 //! - `BANLIEUE_E2E_RUN_ROOT` — default `/run/banlieue/ch`.
+//! - `BANLIEUE_E2E_CLAIM_AS`: create claims as this user (impersonation),
+//!   e.g. `github:octocat`, so a cluster running the claim subject policy
+//!   checks a real subject rather than refusing the suite's admin identity.
+//!   Pair it with `BANLIEUE_E2E_SUBJECT_ID` (the RAW subject, without the
+//!   API server's prefix) and, if the policy's allowlist differs,
+//!   `BANLIEUE_E2E_ISSUER`.
 //!
 //! Or `make ch-pool-claim-e2e`.
 //!
@@ -89,6 +95,11 @@ const TAP_UID_DIGITS: usize = 10;
 const DEFAULT_RUN_ROOT: &str = "/run/banlieue/ch";
 const DEFAULT_NAMESPACE: &str = "banlieue-system";
 const DEFAULT_READINESS: &str = "InfrastructureReady";
+/// Claim subject when `BANLIEUE_E2E_SUBJECT_ID` is unset.
+const DEFAULT_SUBJECT_ID: &str = "e2e-subject-0c3b7f2e";
+/// Claim issuer when `BANLIEUE_E2E_ISSUER` is unset: the policy's shipped
+/// placeholder allowlist entry.
+const DEFAULT_ISSUER: &str = "https://issuer.example.com";
 const USER_DATA_KEY: &str = "user-data";
 
 // ---------------------------------------------------------------------------
@@ -424,17 +435,33 @@ impl Scratch {
             "spec": {
                 "poolRef": { "name": pool },
                 "subject": {
-                    "issuer": "https://issuer.example.com",
-                    "id": "e2e-subject-0c3b7f2e",
+                    "issuer": std::env::var("BANLIEUE_E2E_ISSUER")
+                        .unwrap_or_else(|_| DEFAULT_ISSUER.into()),
+                    "id": std::env::var("BANLIEUE_E2E_SUBJECT_ID")
+                        .unwrap_or_else(|_| DEFAULT_SUBJECT_ID.into()),
                 },
                 "ttlSeconds": CLAIM_TTL_SECS,
             },
         }))
         .expect("claim fixture");
-        self.api::<VirtualMachineClaim>()
+        let claims: Api<VirtualMachineClaim> =
+            Api::namespaced(self.claim_client().await, &self.s.namespace);
+        claims
             .create(&PostParams::default(), &obj)
             .await
             .expect("create claim");
+    }
+
+    /// The client claims are created with: `BANLIEUE_E2E_CLAIM_AS`
+    /// impersonated when set, so the claim subject policy sees a real
+    /// subject. Reads, deletes and teardown stay on the admin client.
+    async fn claim_client(&self) -> Client {
+        let Ok(user) = std::env::var("BANLIEUE_E2E_CLAIM_AS") else {
+            return self.client.clone();
+        };
+        let mut config = kube::Config::infer().await.expect("kubeconfig");
+        config.auth_info.impersonate = Some(user);
+        Client::try_from(config).expect("impersonating client")
     }
 
     async fn wait_bound(&self, claim: &str) -> String {

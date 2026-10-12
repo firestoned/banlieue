@@ -92,7 +92,7 @@ pub fn host_kubeconfig(server: &str, ca_data: Option<&str>, token_path: &Path) -
         "contexts": [{ "name": USER_ENTRY, "context": { "cluster": CLUSTER_ENTRY, "user": USER_ENTRY } }],
         "current-context": USER_ENTRY,
     });
-    serde_yaml::to_string(&doc).unwrap_or_default()
+    banlieue_api::yaml::to_string(&doc).unwrap_or_default()
 }
 
 /// Write `contents` to a new `0600` file at `path`.

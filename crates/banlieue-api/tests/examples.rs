@@ -18,18 +18,39 @@ use banlieue_api::banlieue::{ClaimPhase, VirtualMachineClaim};
 /// Repo-relative path to `examples/`, resolved from this crate.
 const EXAMPLES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples");
 
-fn read_example(file: &str) -> serde_yaml::Value {
+fn read_example(file: &str) -> serde_json::Value {
     let path = format!("{EXAMPLES}/{file}");
     let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
-    serde_yaml::from_str(&text).unwrap_or_else(|e| panic!("{path}: {e}"))
+    serde_saphyr::from_str(&text).unwrap_or_else(|e| panic!("{path}: {e}"))
+}
+
+/// The documents of a multi-document YAML file: split on `---` lines, with
+/// empty and comment-only documents (a license header) dropped.
+fn yaml_documents(text: &str) -> Vec<String> {
+    let mut docs = vec![String::new()];
+    for line in text.lines() {
+        if line.trim_end() == "---" {
+            docs.push(String::new());
+            continue;
+        }
+        if let Some(doc) = docs.last_mut() {
+            doc.push_str(line);
+            doc.push('\n');
+        }
+    }
+    docs.into_iter()
+        .filter(|d| {
+            d.lines()
+                .any(|l| !l.trim().is_empty() && !l.trim_start().starts_with('#'))
+        })
+        .collect()
 }
 
 /// Recursively collect `a.b.c` paths of every mapping key.
-fn key_paths(value: &serde_yaml::Value, prefix: &str, out: &mut Vec<String>) {
+fn key_paths(value: &serde_json::Value, prefix: &str, out: &mut Vec<String>) {
     match value {
-        serde_yaml::Value::Mapping(map) => {
-            for (k, v) in map {
-                let Some(key) = k.as_str() else { continue };
+        serde_json::Value::Object(map) => {
+            for (key, v) in map {
                 let path = if prefix.is_empty() {
                     key.to_string()
                 } else {
@@ -39,7 +60,7 @@ fn key_paths(value: &serde_yaml::Value, prefix: &str, out: &mut Vec<String>) {
                 key_paths(v, &path, out);
             }
         }
-        serde_yaml::Value::Sequence(items) => {
+        serde_json::Value::Array(items) => {
             for item in items {
                 key_paths(item, prefix, out);
             }
@@ -50,8 +71,8 @@ fn key_paths(value: &serde_yaml::Value, prefix: &str, out: &mut Vec<String>) {
 
 /// Assert that re-serializing `parsed` loses none of `original`'s keys —
 /// i.e. that every key the example author wrote is a field the type has.
-fn assert_no_dropped_keys<T: serde::Serialize>(original: &serde_yaml::Value, parsed: &T) {
-    let round_tripped = serde_yaml::to_value(parsed).expect("re-serialize");
+fn assert_no_dropped_keys<T: serde::Serialize>(original: &serde_json::Value, parsed: &T) {
+    let round_tripped = serde_json::to_value(parsed).expect("re-serialize");
 
     let mut before = Vec::new();
     key_paths(original, "", &mut before);
@@ -70,7 +91,7 @@ fn assert_no_dropped_keys<T: serde::Serialize>(original: &serde_yaml::Value, par
 fn virtualmachineclaim_example_matches_the_type() {
     let doc = read_example("19-virtualmachineclaim.yaml");
     let claim: VirtualMachineClaim =
-        serde_yaml::from_value(doc.clone()).expect("example must parse as a VirtualMachineClaim");
+        serde_json::from_value(doc.clone()).expect("example must parse as a VirtualMachineClaim");
 
     assert_eq!(claim.spec.pool_ref.name, "sandbox-pool");
     assert_eq!(claim.spec.ttl_seconds, 900);
@@ -104,15 +125,15 @@ fn claim_status_phases_are_the_documented_four() {
 #[should_panic(expected = "misspelled, or invented")]
 fn a_misspelled_key_is_caught() {
     let mut doc = read_example("19-virtualmachineclaim.yaml");
-    let spec = doc.get_mut("spec").unwrap().as_mapping_mut().unwrap();
-    let pool_ref = spec.get_mut("poolRef").unwrap().as_mapping_mut().unwrap();
+    let spec = doc.get_mut("spec").unwrap().as_object_mut().unwrap();
+    let pool_ref = spec.get_mut("poolRef").unwrap().as_object_mut().unwrap();
     let name = pool_ref.remove("name").unwrap();
     pool_ref.insert("reference".into(), name);
 
     let spec_doc = doc.get("spec").unwrap().clone();
     // `poolRef.name` is required, so parse the spec leniently for this check.
-    let claim: banlieue_api::banlieue::VirtualMachineClaimSpec = serde_yaml::from_value(
-        serde_yaml::from_str(
+    let claim: banlieue_api::banlieue::VirtualMachineClaimSpec = serde_json::from_value(
+        serde_saphyr::from_str(
             r#"
 poolRef: { name: sandbox-pool }
 subject: { issuer: "https://issuer.example.com", id: "x" }
@@ -137,13 +158,13 @@ fn proxmox_example_matches_the_types() {
     let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
     let mut seen = Vec::new();
 
-    for de in serde_yaml::Deserializer::from_str(&text) {
-        let doc: serde_yaml::Value = serde::Deserialize::deserialize(de).expect("valid YAML");
+    for text in yaml_documents(&text) {
+        let doc: serde_json::Value = serde_saphyr::from_str(&text).expect("valid YAML");
         let kind = doc["kind"].as_str().expect("kind").to_string();
         let spec = doc.get("spec").cloned();
         match kind.as_str() {
             "Provider" => {
-                let p: Provider = serde_yaml::from_value(doc.clone()).expect("Provider");
+                let p: Provider = serde_json::from_value(doc.clone()).expect("Provider");
                 assert_no_dropped_keys(&spec.unwrap(), &p.spec);
                 let classes = &p.spec.capabilities.storage_classes;
                 assert!(
@@ -158,7 +179,7 @@ fn proxmox_example_matches_the_types() {
                 );
             }
             "VMImage" => {
-                let i: VMImage = serde_yaml::from_value(doc.clone()).expect("VMImage");
+                let i: VMImage = serde_json::from_value(doc.clone()).expect("VMImage");
                 assert_no_dropped_keys(&spec.unwrap(), &i.spec);
                 assert!(
                     i.spec.sources.iter().any(|s| s.provider_class == "proxmox"),
@@ -166,12 +187,12 @@ fn proxmox_example_matches_the_types() {
                 );
             }
             "VMClass" => {
-                let c: VMClass = serde_yaml::from_value(doc.clone()).expect("VMClass");
+                let c: VMClass = serde_json::from_value(doc.clone()).expect("VMClass");
                 assert_no_dropped_keys(&spec.unwrap(), &c.spec);
             }
             "VirtualMachine" => {
                 let v: VirtualMachine =
-                    serde_yaml::from_value(doc.clone()).expect("VirtualMachine");
+                    serde_json::from_value(doc.clone()).expect("VirtualMachine");
                 assert_no_dropped_keys(&spec.unwrap(), &v.spec);
             }
             _ => {}

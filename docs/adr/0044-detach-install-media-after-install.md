@@ -7,6 +7,8 @@ SPDX-License-Identifier: Apache-2.0
 - **Status:** Accepted
 - **Date:** 2026-09-23
 - **Deciders:** Erick Bourgeois
+- **Amended:** 2026-10-12 (libvirt boot order: disk first, installer as
+  fallback; see *Amendment 2026-10-12* at the end)
 - **Related:** Gates on [ADR-0043](0043-guestready-installed-guest-signal.md);
   constrains [ADR-0040](0040-deferred-install-for-vtpm-encryption.md)'s
   deferred-install path; consumed by
@@ -143,3 +145,37 @@ gain the field until it can be tested, so the absent value keeps meaning
 **A guest can still read its own user-data from the seed.** Decision 4's
 deliberate residue, and the reason this ADR does not claim to make a sandbox's
 bootstrap material unreadable from inside the sandbox.
+
+## Amendment 2026-10-12: on libvirt, the disk boots before the installer
+
+**Context.** The libvirt domain listed `<boot dev='cdrom'/>` before
+`<boot dev='hd'/>` until the eject. The eject waits for `guestInstalled`
+(Decision 1), and `guestInstalled` is written only by a system booted from
+the installed disk (ADR-0043). With the installer first, that boot never
+happens. Found live on 2026-10-12 with a Kairos Debian 13 installer and a
+`tpmEnabled` class on a libvirt host: the install completed (the disk held
+2.78 GiB), the guest rebooted, and it came back up in the live installer
+(`cdroot`, `/run/cos/live_mode`) with no marker. It would have reinstalled
+in a loop until `provisioningTimeoutSeconds`. Every earlier libvirt pool run
+used images that install nothing, so none of them could see it. vSphere was
+not affected: its Deferred path reached `GuestReady` with the CD-ROM first
+(2026-09-23).
+
+**Decision.** On libvirt, a machine with install media lists the disk first
+and the installer second. The disk is empty on first boot, so the firmware
+skips it and boots the installer; after the install the disk is bootable
+and wins. This is the order Cloud Hypervisor already uses (ADR-0065
+Decision 3). The eject, and the suppression of the ISO from every later
+definition, are unchanged.
+
+**Consequences.**
+
+- The "one reboot away from re-entering the installer" risk in Context is
+  now smaller on libvirt even before the eject: a guest with a bootable disk
+  boots that disk. The eject is still required, for the readership reason
+  and because an installed disk that stops booting would fall through to
+  the installer.
+- A Deferred machine whose disk is *not* empty (none exists today:
+  `InstallMedia` always creates an empty disk) would boot that disk instead
+  of the installer.
+

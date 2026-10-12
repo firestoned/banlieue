@@ -36,8 +36,12 @@ pub mod infrastructure;
 /// Deliberately **not** gated behind the `crdgen` feature: bootstrap builds
 /// CRDs from these same Rust types at runtime so the schemas it applies are by
 /// construction the ones the running binary implements (ADR-0013). Only the
-/// `serde_yaml` dependency stays feature-gated.
+/// `serde-saphyr` dependency stays feature-gated.
 pub mod crdgen_support;
+
+/// YAML output as banlieue writes it. Only compiled with the `yaml` feature.
+#[cfg(feature = "yaml")]
+pub mod yaml;
 
 /// Markdown API-reference generation used by the `crddoc` binary. Only
 /// compiled with the `crdgen` feature.

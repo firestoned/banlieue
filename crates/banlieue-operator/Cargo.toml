@@ -14,7 +14,7 @@ authors.workspace = true
 # `banlieue_operator::bootstrap::run` for `bootstrap` (ADR-0004).
 
 [dependencies]
-banlieue-api = { path = "../banlieue-api" }
+banlieue-api = { path = "../banlieue-api", features = ["yaml"] }
 banlieue-provider-sdk = { path = "../banlieue-provider-sdk" }
 
 kube.workspace = true
@@ -22,7 +22,7 @@ k8s-openapi.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-serde_yaml.workspace = true
+serde-saphyr.workspace = true
 
 thiserror.workspace = true
 anyhow.workspace = true

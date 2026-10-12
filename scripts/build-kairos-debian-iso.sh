@@ -12,6 +12,12 @@
 #
 #   scripts/build-kairos-debian-iso.sh            # -> $OUT_DIR/*.iso + .sha256
 #   DEBIAN_VERSION=13 OUT_DIR=/tmp/iso scripts/build-kairos-debian-iso.sh
+#   EXTRA_PACKAGES="tpm2-tools openssl" scripts/build-kairos-debian-iso.sh
+#
+# EXTRA_PACKAGES adds Debian packages to the image. A tpmEnabled libvirt
+# pool needs "tpm2-tools openssl": the guest exports its vTPM endorsement
+# certificate with them (examples/20-cloud-config-guest-ek-certificate.yaml),
+# because swtpm keeps no host-side copy (ADR-0045).
 #
 # The image carries no k0s: k0sctl installs exactly K0S_VERSION on every node
 # (bootstrap-k0s-cluster.sh). It does carry qemu-guest-agent, so a bridged VM's
@@ -26,6 +32,7 @@ KAIROS_INIT_VERSION="${KAIROS_INIT_VERSION:-v0.17.3}"
 AURORABOOT_VERSION="${AURORABOOT_VERSION:-v0.27.1}"
 # Recorded in the image's /etc/kairos-release.
 IMAGE_VERSION="${IMAGE_VERSION:-v0.1.0}"
+EXTRA_PACKAGES="${EXTRA_PACKAGES:-}"
 IMAGE_TAG="${IMAGE_TAG:-localhost/kairos-debian:${DEBIAN_VERSION}-${IMAGE_VERSION}}"
 OUT_DIR="${OUT_DIR:-$PWD/build/kairos-debian}"
 RUNTIME="${CONTAINER_RUNTIME:-$(command -v podman >/dev/null && echo podman || echo docker)}"
@@ -40,7 +47,7 @@ cat >"$work/Containerfile" <<EOF
 FROM docker.io/library/debian:${DEBIAN_VERSION}
 # The guest agent lets the hypervisor read the VM's addresses on a bridge.
 RUN apt-get update \\
- && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends qemu-guest-agent \\
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends qemu-guest-agent ${EXTRA_PACKAGES} \\
  && rm -rf /var/lib/apt/lists/*
 RUN --mount=type=bind,from=quay.io/kairos/kairos-init:${KAIROS_INIT_VERSION},src=/kairos-init,dst=/kairos-init \\
     /kairos-init --version "${IMAGE_VERSION}"

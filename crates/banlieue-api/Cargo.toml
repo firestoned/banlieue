@@ -15,16 +15,18 @@ k8s-openapi.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-serde_yaml = { workspace = true, optional = true }
+serde-saphyr = { workspace = true, optional = true }
 clap = { workspace = true, optional = true }
 
 [dev-dependencies]
-serde_yaml.workspace = true
+serde-saphyr.workspace = true
 
 [features]
 default = []
+# YAML output as banlieue writes it (`banlieue_api::yaml`).
+yaml = ["dep:serde-saphyr"]
 # Enables the binary that prints all CRDs as YAML for kustomize consumption.
-crdgen = ["dep:serde_yaml", "dep:clap"]
+crdgen = ["yaml", "dep:clap"]
 
 [[bin]]
 name = "crdgen"

@@ -220,15 +220,19 @@ fn render_os(
         }
     }
 
-    // A Deferred machine must boot its installer first, and keeps doing so
-    // until the provider ejects the media once the guest reports installed —
-    // libvirt's analogue of ADR-0044. Listing `hd` after it means the very
-    // next boot after that ejection comes off the freshly installed disk,
-    // with no second redefine.
+    // Disk first, installer second (ADR-0044, amended 2026-10-12). A
+    // Deferred machine's disk is empty on first boot, so the firmware skips
+    // it and boots the installer; once the install has written a bootable
+    // disk, the disk wins. That is the only boot in which the installed
+    // system runs and reports installed (ADR-0043), which is what lets the
+    // provider eject the media. The installer-first order deadlocked, found
+    // live: the guest came back up in its live installer after every install
+    // and never wrote the marker. Cloud Hypervisor orders its disks the same
+    // way (ADR-0065).
+    os.push_str("<boot dev='hd'/>");
     if has_install_media {
         os.push_str("<boot dev='cdrom'/>");
     }
-    os.push_str("<boot dev='hd'/>");
     os.push_str("</os>");
     Ok(os)
 }

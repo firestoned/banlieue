@@ -64,7 +64,7 @@ deliberate.
 | Value | Means | Use when |
 | --- | --- | --- |
 | `InfrastructureReady` | the backend says the VM exists and is running | `installMode: Immediate` |
-| `GuestReady` | the **installed guest** booted and announced itself | `installMode: Deferred` (libvirt only, for now) |
+| `GuestReady` | the **installed guest** booted and announced itself | `installMode: Deferred`, on any backend (see below) |
 
 For a Deferred image, `InfrastructureReady` fires when the install
 **starts**, not when it finishes. A pool using it would hand out VMs that
@@ -76,57 +76,74 @@ port are all satisfied by the installer environment while it is still
 overwriting the disk. The distinguishing fact is *which disk booted*
 ([ADR-0043](https://github.com/firestoned/banlieue/blob/main/docs/adr/0043-guestready-installed-guest-signal.md)).
 
-!!! warning "`GuestReady` needs an image built to send the signal"
-    ADR-0043 publishes the condition **on libvirt**, from a marker the
-    installed guest writes and the provider reads back through
-    `qemu-guest-agent`. Two things are required of the image:
+### What `GuestReady` needs, per backend
 
-    1. the `cloudConfigs` layer from
-       `examples/16-cloud-config-guest-phase.yaml`, and
-    2. `qemu-guest-agent` installed and enabled.
+`GuestReady` is published only after the **installed** system has reported
+(ADR-0043) and, for a `Deferred` machine, after the installer has been
+ejected (ADR-0044). For a `tpmEnabled` class it also waits for the vTPM's
+endorsement certificate (ADR-0045), so a member that cannot attest is never
+claimable. How the installed system reports differs by backend:
 
-    A **`tpmEnabled` class needs a third thing** on libvirt: the layer from
-    `examples/20-cloud-config-guest-ek-certificate.yaml`, plus `tpm2-tools`
-    in the image. The guest exports its vTPM endorsement certificate, which
-    banlieue publishes and a claim mirrors, because swtpm keeps no
-    host-side copy for the provider to read
-    ([ADR-0045](https://github.com/firestoned/banlieue/blob/main/docs/adr/0045-vtpm-endorsement-key-certificate.md)).
-    Until it appears, the member reports:
+| Backend | How the installed system reports | What the image or user-data must carry | Verified live |
+| --- | --- | --- | --- |
+| **libvirt** | writes `/run/banlieue/phase`; the provider reads it through `qemu-guest-agent` | the libvirt stage of `examples/16-cloud-config-guest-phase.yaml`, and `qemu-guest-agent` installed and enabled. A `tpmEnabled` class also needs `examples/20-cloud-config-guest-ek-certificate.yaml` plus `tpm2-tools` and `openssl`: swtpm keeps no host-side copy of the certificate, so the guest exports it | 2026-10-12: Deferred, `tpmEnabled`, Kairos on Debian 13. A member reached `GuestReady` **158 s** after creation, installer ejected, EK certificate published; the pool e2e (warm, claim, refill, release, pool deletion) passed |
+| **Cloud Hypervisor** | `systemd-notify phase=installed` over vsock; the provider listens on the host | the Cloud Hypervisor stage of example 16. No guest agent. The EK certificate is read on the host | 2026-10-09: a 2-member pool `Warm` in **90 s**, refills in 80 s and 100 s. 2026-10-12, two hosts with the vTPM-fixed VMM: `Warm` in 115 s and 110 s, the pool e2e passed on both. See [the timings page](../reference/cloud-hypervisor-pool-timings.md) for the vTPM fault and the VMM it needs |
+| **vSphere** | `vmware-rpctool` writes `guestinfo.banlieue.phase` | the vSphere stage of example 16, and open-vm-tools | 2026-09-23: a 2-member `GuestReady` pool `Warm` in **130.3 s** |
 
-    ```text
-    GuestReady=False   reason=TpmEndorsementPending
-    ```
+Example 16 carries all three stages; each one only runs where its
+transport exists, so one layer serves every backend.
 
-    which keeps it out of the warm set — a member that cannot attest is not
-    one a claim should bind.
+The install itself is user-data (or a `cloudConfigs` layer baked into the
+installer): Kairos needs `install.auto: true` and `install.reboot: true`,
+and a `tpmEnabled` class adds `encrypted_partitions: [COS_PERSISTENT]` so
+the disk is sealed to that member's own vTPM.
 
-    Without `qemu-guest-agent` the provider cannot evaluate the signal at
-    all, so it leaves `GuestReady` **absent** rather than false, and the
-    pool reports:
+!!! warning "libvirt: a Deferred image needs a provider newer than v0.4.1"
+    Up to v0.4.1 the libvirt provider booted the installer before the disk,
+    so after a completed install the guest came back up in the live
+    installer, never booted the installed system, and never reported. The
+    member stays `GuestNotAnnounced` and reinstalls until the pool reaps it
+    at `provisioningTimeoutSeconds`. The provider now boots the disk first
+    and falls back to the installer only while the disk is empty
+    ([ADR-0044](https://github.com/firestoned/banlieue/blob/main/docs/adr/0044-detach-install-media-after-install.md),
+    amended 2026-10-12). Images that install nothing (`installMode:
+    Immediate`) were never affected.
 
-    ```text
-    Warm=False   reason=ReadinessSignalAbsent
-    message: no member has published the "GuestReady" condition;
-             spec.readiness selects a signal nothing is setting
-    ```
-
-    That is the pool telling you the signal it was asked to wait for is one
-    nothing sends — not a slow install. Rebuild the image with the layer.
-
-    **On vSphere the transport is specified but not implemented**, so a
-    vSphere pool set to `GuestReady` reports `ReadinessSignalAbsent`
-    regardless of its image.
-
-    Verified against a real host: a stock **Kairos Ubuntu 24.04** image
-    boots but ships **no `qemu-guest-agent`**, so it cannot satisfy
-    `GuestReady` as-is. Check before adopting it:
+!!! tip "Building a libvirt image that can report"
+    Kairos's own Ubuntu image ships no `qemu-guest-agent`, and Hadron has no
+    package manager. `scripts/build-kairos-debian-iso.sh` builds a Kairos
+    installer ISO on Debian with the agent enabled; for a `tpmEnabled` pool
+    add the EK tools:
 
     ```sh
-    virsh qemu-agent-command <domain> '{"execute":"guest-ping"}'
+    EXTRA_PACKAGES="tpm2-tools openssl" scripts/build-kairos-debian-iso.sh
     ```
 
-    An error rather than `{"return":{}}` means the agent is missing, and
-    the pool will report `ReadinessSignalAbsent` forever.
+    Put the ISO in the Provider's pool and name it from a `BackingFile`
+    source with `template.installMode: deferred`.
+
+Without `qemu-guest-agent` a libvirt provider cannot evaluate the signal at
+all, so it leaves `GuestReady` **absent** rather than false, and the pool
+reports:
+
+```text
+Warm=False   reason=ReadinessSignalAbsent
+message: no member has published the "GuestReady" condition;
+         spec.readiness selects a signal nothing is setting
+```
+
+That is the pool telling you the signal it was asked to wait for is one
+nothing sends, not a slow install. Check a libvirt image before adopting it:
+
+```sh
+virsh qemu-agent-command <domain> '{"execute":"guest-ping"}'
+```
+
+An error rather than `{"return":{}}` means the agent is missing.
+
+A `tpmEnabled` member whose certificate has not appeared yet reports
+`GuestReady=False reason=TpmEndorsementPending`, which keeps it out of the
+warm set.
 
 This is also why the field has no default. `GuestReady` is the *right*
 default for the use case pools were built for, and defaulting to it would
@@ -286,6 +303,8 @@ with it. See [VirtualMachine Claims](virtualmachine-claims.md).
 | `Capacity=False`, `MaxReplicasReached` | `maxReplicas` is below what `warmReplicas` plus churn needs. |
 | `Capacity=False`, `AddressRangeExhausted` | The address range has no spares above `maxReplicas`. |
 | Members churn: created, then deleted, repeatedly | `provisioningTimeoutSeconds` is shorter than the image takes to install. |
+| libvirt, Deferred: a member stays `GuestNotAnnounced` and its guest is back in the live installer after installing | A provider at v0.4.1 or earlier boots the installer before the disk. Upgrade; see *What `GuestReady` needs, per backend*. |
+| Cloud Hypervisor, `tpmEnabled`: about 1 install in 7 fails with `tpm_recv: error -5` | Stock Cloud Hypervisor's 100 ms TPM receive timeout. See [the timings page](../reference/cloud-hypervisor-pool-timings.md). |
 | Pool keeps creating members up to `maxReplicas` | The readiness signal is never satisfied, so `available` never rises and the pool keeps trying. The `ReadinessSignalAbsent` condition above names the cause. |
 
 ## Full schema reference

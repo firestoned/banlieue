@@ -468,7 +468,7 @@ spec:
                       description: The address itself.
                       type: string
                     type:
-                      description: 'Address type. Accepted: Hostname, ExternalIP, InternalIP, ExternalDNS, InternalDNS.'
+                      description: "Address type. Accepted: Hostname, ExternalIP, InternalIP, ExternalDNS, InternalDNS."
                       enum:
                       - Hostname
                       - ExternalIP
@@ -545,7 +545,7 @@ spec:
                       description: The `VMClass` interface the address is on.
                       type: string
                     networkClass:
-                      description: 'That interface''s `networkClass`: the network the address is unique on.'
+                      description: "That interface's `networkClass`: the network the address is unique on."
                       type: string
                   required:
                   - address

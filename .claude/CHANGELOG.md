@@ -1,5 +1,114 @@
 # Changelog
 
+## [2026-10-12] - Replace serde_yaml with serde-saphyr (RUSTSEC-2024-0449)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `Cargo.toml`, `crates/{banlieue-api,banlieue-imagebuilder,banlieue-operator,banlieue-cloud-hypervisor}/Cargo.toml`:
+  `serde_yaml 0.9.34+deprecated` replaced by `serde-saphyr 1.3`, as bindy did.
+  serde_yaml's backend, `unsafe-libyaml`, is unmaintained (RUSTSEC-2024-0449),
+  which failed `cargo-deny` and `cargo-audit` on every PR. serde-saphyr is
+  safe Rust, MIT/Apache-2.0, maintained; `kube-client` 4.2 already depends on
+  an older release of it.
+- `crates/banlieue-imagebuilder/src/cloud_config_merge.rs`: the merge works on
+  `serde_json::Value` (serde-saphyr has no value type of its own). Behaviour is
+  unchanged except that the merged cloud-config's mapping keys come out
+  sorted; list order (stages, users) is preserved.
+- `crates/banlieue-api/src/yaml.rs` (new, `yaml` feature; `crdgen` enables
+  it): `banlieue_api::yaml::to_string`, the one writer for everything
+  banlieue emits as YAML (`crdgen`, `banlieue bootstrap` manifests, the
+  operator's host kubeconfig, the merged cloud-config). It keeps long
+  single-line strings on one line (`folded_wrap_chars`) and empties the
+  indentation serde-saphyr writes on blank lines inside block scalars, which
+  it has no option for; the trimmed form is kept only when it parses back to
+  the same document. Tests: `yaml_tests.rs`, including a round trip of every
+  generated CRD with no trailing whitespace.
+- `deploy/crds/` regenerated. Compared with the serde_yaml output: no
+  trailing whitespace anywhere; strings that need quoting are double-quoted
+  rather than single-quoted (serde-saphyr has no quote-style option); and
+  the one description containing tabs (Kubernetes' `Quantity`) is a `|-`
+  block instead of a single escaped line. Content is identical.
+- Tests: `serde_yaml::Value` to `serde_json::Value`; the two multi-document
+  readers (`banlieue-api/tests/examples.rs`,
+  `banlieue-operator/tests/network_policies.rs`) split on `---` lines.
+
+### Why
+RUSTSEC-2024-0449 started failing `cargo-deny` and `cargo-audit` on
+2026-10-12, blocking PR #93. Replacing the dependency, rather than ignoring
+the advisory, is what bindy did.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-10-12] - libvirt Deferred pools work end to end (boot-order fix); Cloud Hypervisor pools verified on two hosts with the fixed VMM
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `crates/banlieue-provider-libvirt/src/xml/domain.rs`: a machine with install
+  media boots its disk first and the installer second. Installer-first
+  deadlocked a real Deferred install: after installing, the guest came back up
+  in the live installer, never booted the installed disk, never wrote the
+  ADR-0043 marker, and so was never ejected or made `GuestReady`. Found live on
+  2026-10-12; every earlier libvirt pool run used images that install nothing.
+  `domain_tests.rs`: `install_media_boots_disk_before_cdrom` replaces the test
+  that pinned the broken order. ADR-0044 amended (2026-10-12).
+
+### Added
+- `crates/banlieue-provider-libvirt/tests/e2e_pool_claim.rs`:
+  `BANLIEUE_E2E_READINESS` and `BANLIEUE_E2E_USER_DATA` (as the Cloud
+  Hypervisor suite has), the user-data ConfigMap removed by the prefix
+  teardown; `BANLIEUE_E2E_CLAIM_AS` / `BANLIEUE_E2E_SUBJECT_ID` /
+  `BANLIEUE_E2E_ISSUER` to create claims as an impersonated user, so a cluster
+  running the claim subject policy checks a real subject.
+- `crates/banlieue-provider-cloud-hypervisor/tests/e2e_pool_claim.rs`: the same
+  claim impersonation knobs.
+- `scripts/build-kairos-debian-iso.sh`: `EXTRA_PACKAGES` (e.g.
+  `"tpm2-tools openssl"` for a `tpmEnabled` libvirt pool, which exports its EK
+  certificate from the guest).
+
+### Verified live
+- libvirt (patched provider and controller as local binaries on a kind
+  cluster, a 96-core libvirt host): a Kairos Debian 13 `Deferred` image with a
+  `tpmEnabled` class reached `GuestReady` 158 s after creation, installer
+  ejected, EK certificate (`CN=<domain>:<uuid>`, issuer `swtpm-localca`)
+  published and mirrored; `e2e_pool_claim` claim/release and pool-deletion
+  tests passed with `GuestReady` (506 s for both).
+- Cloud Hypervisor (two hosts, each its own Provider, one management cluster at
+  v0.4.1), with a VMM built from the reviewed vTPM fix (cloud-hypervisor PR
+  9054 at `3d6f462cf`: 120 s receive timeout set once in `prepare_data_fd`,
+  then `read_exact` of header and declared size): `make ch-pool-claim-e2e`,
+  `GuestReady`, `tpmEnabled`, Kairos Hadron v0.4.0. Warm-up 115 s / 110 s,
+  refill 110 s / 100 s, claim bind 5 s, released guest gone in 5 s; both
+  tests passed on both hosts, ten installs, all reported, no VMM crash. An
+  earlier revision (`c197080a4`) set the timeout inside the read loop, on the
+  vCPU thread, and every guest's VMM died with `SIGSYS` (seccomp forbids
+  `setsockopt` there).
+
+### Changed
+- `docs/src/guides/virtualmachine-pools.md`: `GuestReady` per backend (how
+  each reports, what the image needs, what was verified), the libvirt
+  provider-version warning, the image recipe, two troubleshooting rows.
+- `docs/src/reference/cloud-hypervisor-pool-timings.md`: the seccomp
+  constraint on the fix, and the two-host result.
+- `docs/adr/0044-detach-install-media-after-install.md`: amendment
+  2026-10-12. `docs/architecture/calm/architecture.json`: ADR-0044 description.
+- `docs/src/security/threat-model.md`: pass for the ADR-0044 amendment; one
+  TB-5 row strengthened, no boundary change.
+- `.github/community/17-ephemeral-vm-pools.md`, `ROADMAPS.md`: A2 closed on
+  every backend; libvirt gap closed; phase G two-host result.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (libvirt providers need a build with the
+      boot-order fix for Deferred images)
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-10-12] - API ends at VirtualMachineClaim; AgentSandbox moves to mediatore (ADR-0097)
 
 **Author:** Erick Bourgeois

@@ -368,7 +368,7 @@ spec:
                       description: The address itself.
                       type: string
                     type:
-                      description: 'Address type. Accepted: Hostname, ExternalIP, InternalIP, ExternalDNS, InternalDNS.'
+                      description: "Address type. Accepted: Hostname, ExternalIP, InternalIP, ExternalDNS, InternalDNS."
                       enum:
                       - Hostname
                       - ExternalIP
@@ -443,7 +443,7 @@ spec:
                 type: boolean
               initialization:
                 default: {}
-                description: 'CAPI contract field: replaces the deprecated v1beta1 `status.ready`.'
+                description: "CAPI contract field: replaces the deprecated v1beta1 `status.ready`."
                 properties:
                   provisioned:
                     description: |-

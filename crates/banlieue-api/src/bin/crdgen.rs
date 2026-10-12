@@ -72,7 +72,7 @@ fn crd_filename(crd: &CustomResourceDefinition) -> String {
 }
 
 fn render<T: serde::Serialize>(crd: T) -> String {
-    serde_yaml::to_string(&crd).expect("serialize CRD to YAML")
+    banlieue_api::yaml::to_string(&crd).expect("serialize CRD to YAML")
 }
 
 fn write_stdout(crds: &[(String, String)]) -> ExitCode {

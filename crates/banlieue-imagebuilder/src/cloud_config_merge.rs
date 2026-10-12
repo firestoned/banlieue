@@ -15,10 +15,11 @@
 //!   list, another as a scalar) is a hard merge error — "explicit over
 //!   implicit."
 //!
-//! Implemented as a pure, unit-tested function on [`serde_yaml::Value`] —
+//! Implemented as a pure, unit-tested function on [`serde_json::Value`] (YAML
+//! parsed and written by `serde_saphyr`):
 //! no dependency on yip/mergo.
 
-use serde_yaml::Value;
+use serde_json::Value;
 
 /// Errors from cloud-config merge.
 #[derive(Debug, thiserror::Error)]
@@ -27,7 +28,7 @@ pub enum MergeError {
     #[error("cloud-config parse error (source index {index}): {source}")]
     Parse {
         index: usize,
-        source: serde_yaml::Error,
+        source: serde_saphyr::Error,
     },
 
     /// Type mismatch at a key path across two sources.
@@ -45,16 +46,12 @@ pub enum MergeError {
 fn deep_merge(base: &mut Value, overlay: Value, path: &str) -> Result<(), MergeError> {
     match (base, overlay) {
         // Both mappings → recurse per key.
-        (Value::Mapping(base_map), Value::Mapping(overlay_map)) => {
+        (Value::Object(base_map), Value::Object(overlay_map)) => {
             for (key, overlay_val) in overlay_map {
-                let key_str = match &key {
-                    Value::String(s) => s.clone(),
-                    other => format!("{other:?}"),
-                };
                 let child_path = if path.is_empty() {
-                    key_str.clone()
+                    key.clone()
                 } else {
-                    format!("{path}.{key_str}")
+                    format!("{path}.{key}")
                 };
 
                 if let Some(base_val) = base_map.get_mut(&key) {
@@ -67,12 +64,12 @@ fn deep_merge(base: &mut Value, overlay: Value, path: &str) -> Result<(), MergeE
         }
 
         // Both sequences → concatenate.
-        (Value::Sequence(base_seq), Value::Sequence(overlay_seq)) => {
+        (Value::Array(base_seq), Value::Array(overlay_seq)) => {
             base_seq.extend(overlay_seq);
             Ok(())
         }
 
-        // Both scalars / nulls / tagged → overlay wins.
+        // Both scalars / nulls → overlay wins.
         (base_val, overlay_val)
             if matches!(
                 (&*base_val, &overlay_val),
@@ -111,9 +108,8 @@ fn yaml_type_name(v: &Value) -> &'static str {
         Value::Bool(_) => "bool",
         Value::Number(_) => "number",
         Value::String(_) => "string",
-        Value::Sequence(_) => "sequence",
-        Value::Mapping(_) => "mapping",
-        Value::Tagged(_) => "tagged",
+        Value::Array(_) => "sequence",
+        Value::Object(_) => "mapping",
     }
 }
 
@@ -129,21 +125,21 @@ fn yaml_type_name(v: &Value) -> &'static str {
 /// [`MergeError::TypeMismatch`] if two sources disagree on the type of a
 /// value at the same key path.
 pub fn merge_cloud_configs(sources: &[&str]) -> Result<String, MergeError> {
-    let mut merged = Value::Mapping(serde_yaml::Mapping::new());
+    let mut merged = Value::Object(serde_json::Map::new());
 
     for (i, src) in sources.iter().enumerate() {
-        let doc: Value = serde_yaml::from_str(src).map_err(|e| MergeError::Parse {
+        let doc: Value = serde_saphyr::from_str(src).map_err(|e| MergeError::Parse {
             index: i,
             source: e,
         })?;
         deep_merge(&mut merged, doc, "")?;
     }
 
-    // serde_yaml::to_string always starts with `---\n`; strip it and
+    // Strip a leading document marker, if any, and
     // prepend the `#cloud-config` magic header that kairos/yip requires to
     // recognise the file as cloud-config. The header is a YAML comment so
     // it is lost during parse → re-serialize; we must re-add it.
-    let yaml = serde_yaml::to_string(&merged).unwrap_or_default();
+    let yaml = banlieue_api::yaml::to_string(&merged).unwrap_or_default();
     let body = yaml.strip_prefix("---\n").unwrap_or(&yaml);
     Ok(format!("#cloud-config\n{body}"))
 }

@@ -1053,7 +1053,7 @@ mod tests {
                         return None;
                     }
                     let doc = std::fs::read_to_string(&path).ok()?;
-                    let crd: serde_yaml::Value = serde_yaml::from_str(&doc).ok()?;
+                    let crd: serde_json::Value = serde_saphyr::from_str(&doc).ok()?;
                     Some(crd.get("metadata")?.get("name")?.as_str()?.to_string())
                 })
                 .collect();
@@ -1164,7 +1164,7 @@ mod tests {
     fn bootstrap_emits_the_operator_token_role_as_the_manifest_declares() {
         let manifest = include_str!("../../../deploy/operator/rbac/role.yaml");
         let first = manifest.split("\n---\n").next().unwrap();
-        let declared: Role = serde_yaml::from_str(first).unwrap();
+        let declared: Role = serde_saphyr::from_str(first).unwrap();
         let built = build_operator_token_role(&opts());
         assert_eq!(built.metadata.name, declared.metadata.name);
         assert_eq!(built.rules, declared.rules);
@@ -1211,9 +1211,9 @@ mod tests {
     #[test]
     fn bootstrap_emits_the_controller_userdata_role_as_the_manifest_declares() {
         let declared: Role =
-            serde_yaml::from_str(include_str!("../../../deploy/controller/rbac/role.yaml"))
+            serde_saphyr::from_str(include_str!("../../../deploy/controller/rbac/role.yaml"))
                 .unwrap();
-        let declared_binding: RoleBinding = serde_yaml::from_str(include_str!(
+        let declared_binding: RoleBinding = serde_saphyr::from_str(include_str!(
             "../../../deploy/controller/rbac/rolebinding.yaml"
         ))
         .unwrap();
@@ -1428,7 +1428,7 @@ mod tests {
             .unwrap();
         let namespaces: Vec<String> = yaml
             .split("\n---\n")
-            .filter_map(|doc| serde_yaml::from_str::<serde_yaml::Value>(doc).ok())
+            .filter_map(|doc| serde_saphyr::from_str::<serde_json::Value>(doc).ok())
             .filter(|doc| doc.get("kind").and_then(|k| k.as_str()) == Some("Namespace"))
             .filter_map(|doc| {
                 doc.get("metadata")
@@ -1444,25 +1444,25 @@ mod tests {
 
     /// `(major, minor, contract)` for each `releaseSeries` entry.
     fn release_series() -> Vec<(u64, u64, String)> {
-        let doc: serde_yaml::Value = serde_yaml::from_str(CLUSTERCTL_METADATA).unwrap();
+        let doc: serde_json::Value = serde_saphyr::from_str(CLUSTERCTL_METADATA).unwrap();
         assert_eq!(
             doc.get("apiVersion").and_then(|v| v.as_str()),
             Some("clusterctl.cluster.x-k8s.io/v1alpha3")
         );
         assert_eq!(doc.get("kind").and_then(|v| v.as_str()), Some("Metadata"));
         doc.get("releaseSeries")
-            .and_then(|s| s.as_sequence())
+            .and_then(|s| s.as_array())
             .expect("releaseSeries is a list")
             .iter()
             .map(|entry| {
                 (
                     entry
                         .get("major")
-                        .and_then(serde_yaml::Value::as_u64)
+                        .and_then(serde_json::Value::as_u64)
                         .unwrap(),
                     entry
                         .get("minor")
-                        .and_then(serde_yaml::Value::as_u64)
+                        .and_then(serde_json::Value::as_u64)
                         .unwrap(),
                     entry
                         .get("contract")

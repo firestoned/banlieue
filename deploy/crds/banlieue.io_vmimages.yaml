@@ -200,7 +200,7 @@ spec:
                 - other
                 type: string
               osVersion:
-                description: 'Free-form version string. Examples: "22.04", "9.4", "2022".'
+                description: "Free-form version string. Examples: \"22.04\", \"9.4\", \"2022\"."
                 type: string
               sources:
                 description: |-

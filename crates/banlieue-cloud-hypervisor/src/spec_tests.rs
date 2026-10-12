@@ -14,7 +14,7 @@
 #[cfg(test)]
 mod tests {
     use crate::types::{GuestPlan, PlannedDisk, PlannedNic, VmConfigRequest};
-    use serde_yaml::Value as Yaml;
+    use serde_json::Value as Yaml;
     use sha2::{Digest, Sha256};
     use std::path::PathBuf;
 
@@ -50,7 +50,7 @@ mod tests {
     // Decision 4).
 
     fn schemas() -> Yaml {
-        let doc: Yaml = serde_yaml::from_str(SPEC).expect("spec parses");
+        let doc: Yaml = serde_saphyr::from_str(SPEC).expect("spec parses");
         doc["components"]["schemas"].clone()
     }
 
@@ -108,7 +108,7 @@ mod tests {
                     bad.push(format!("{at}: sent a string, spec says {ty:?}"));
                     return;
                 }
-                if let Some(allowed) = schema.get("enum").and_then(Yaml::as_sequence)
+                if let Some(allowed) = schema.get("enum").and_then(Yaml::as_array)
                     && !allowed.iter().any(|a| a.as_str() == Some(s))
                 {
                     bad.push(format!("{at}: {s:?} is not one of the spec's enum values"));
@@ -176,7 +176,7 @@ mod tests {
     /// Every endpoint path the client calls is declared by the spec.
     #[test]
     fn every_endpoint_path_exists_in_the_pinned_spec() {
-        let doc: Yaml = serde_yaml::from_str(SPEC).unwrap();
+        let doc: Yaml = serde_saphyr::from_str(SPEC).unwrap();
         for e in crate::wire::Endpoint::ALL {
             let rel = e.path().trim_start_matches(crate::wire::API_PREFIX);
             let entry = &doc["paths"][format!("/{rel}").as_str()];

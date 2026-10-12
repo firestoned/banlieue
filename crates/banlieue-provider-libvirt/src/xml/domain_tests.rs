@@ -196,20 +196,27 @@ mod tests {
         assert!(!xml.contains("device='cdrom'"), "{xml}");
     }
 
-    /// A `Deferred` machine boots the installer first. It keeps booting the
-    /// installer until the provider ejects the media once the guest reports
-    /// installed — which is libvirt's analogue of ADR-0044, and the reason
-    /// the CD-ROM is listed before the disk rather than after.
+    /// A `Deferred` machine lists the disk before the installer. Its disk is
+    /// empty on first boot, so the firmware skips it and boots the installer;
+    /// once the install has written a bootable disk, the disk wins, which is
+    /// the only way the installed system ever runs and reports installed
+    /// (ADR-0043) so the media can be ejected (ADR-0044, amended 2026-10-12).
+    /// Installer first was a deadlock, found live on 2026-10-12: after a
+    /// completed install the Kairos guest came back up in its live installer,
+    /// never booted the installed disk, and so never wrote the marker that
+    /// triggers the eject.
     #[test]
-    fn install_media_boots_cdrom_before_disk() {
+    fn install_media_boots_disk_before_cdrom() {
         let spec = spec_with(LibvirtBootSourceKind::InstallMedia, Firmware::Bios, false);
         let mut i = input(&spec);
         i.install_iso_path = Some("/var/lib/libvirt/images/installer.iso");
         let xml = build_domain_xml(&i).unwrap();
 
-        let cdrom = xml.find("<boot dev='cdrom'/>").expect("cdrom boot entry");
         let hd = xml.find("<boot dev='hd'/>").expect("hd boot entry");
-        assert!(cdrom < hd, "cdrom must precede hd: {xml}");
+        let cdrom = xml
+            .find("<boot dev='cdrom'/>")
+            .expect("cdrom boot entry, the fallback");
+        assert!(hd < cdrom, "hd must precede cdrom: {xml}");
         assert!(xml.contains("device='cdrom'"), "{xml}");
         assert!(
             xml.contains("<source file='/var/lib/libvirt/images/installer.iso'/>"),

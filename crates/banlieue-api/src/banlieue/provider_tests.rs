@@ -770,7 +770,7 @@ attestation:
         struct Partial {
             attestation: ProviderAttestation,
         }
-        let p: Partial = serde_yaml::from_str(yaml).unwrap();
+        let p: Partial = serde_saphyr::from_str(yaml).unwrap();
         assert!(p.attestation.ek_trust_bundle.inline.is_some());
         assert!(p.attestation.ek_trust_bundle.validate().is_ok());
     }

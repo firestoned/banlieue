@@ -129,7 +129,7 @@ spec:
                       description: The address itself.
                       type: string
                     type:
-                      description: 'Address type. Accepted: Hostname, ExternalIP, InternalIP, ExternalDNS, InternalDNS.'
+                      description: "Address type. Accepted: Hostname, ExternalIP, InternalIP, ExternalDNS, InternalDNS."
                       enum:
                       - Hostname
                       - ExternalIP
@@ -180,7 +180,7 @@ spec:
                   type: object
                 type: array
               expiresAt:
-                description: '`bound_at + spec.ttlSeconds`. The member is deleted at this instant.'
+                description: "`bound_at + spec.ttlSeconds`. The member is deleted at this instant."
                 format: date-time
                 nullable: true
                 type: string

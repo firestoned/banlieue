@@ -275,7 +275,7 @@ provider can realise (see [Repo reality](#repo-reality-at-8360e19)).
 | Phase | What | ADR | Status |
 |---|---|---|---|
 | 0 | Slim image experiment | none (no code) | ⏸️ deferred (no vTPM on the libvirt hosts yet) |
-| A2 | `GuestReady`: the installed guest reports in | 0043 | 🔶 **vSphere closed end-to-end 2026-09-23** — a real `Deferred`, `tpmEnabled` VM ran `vmware-rpctool info-set guestinfo.banlieue.phase installed` at boot, `guest_info` read it back, and `GuestReady=True reason=GuestAnnounced` showed up correctly mirrored onto `VirtualMachine`. Getting there found and fixed three code bugs (tokio runtime flavor, `vim_rs`'s `VimAny` decode, a `_value` wrapper-field mismatch) plus one deployment gap (the live `VSphereMachine` CRD was never regenerated for the new `guestInstalled` field, so status patches 500'd — fixed with `make crds` + `kubectl apply`). **libvirt still open**: its read path is verified against a real `qemu-guest-agent`, but no Kairos image yet carries the phase layer to prove the marker is written at the right *moment* (not just that the channel works) — the same category of gap vSphere just closed, unresolved on that backend |
+| A2 | `GuestReady`: the installed guest reports in | 0043 | ✅ **Closed on every backend** (Cloud Hypervisor 2026-09-27, below in G; libvirt 2026-10-12). **vSphere closed end-to-end 2026-09-23**: a real `Deferred`, `tpmEnabled` VM ran `vmware-rpctool info-set guestinfo.banlieue.phase installed` at boot, `guest_info` read it back, and `GuestReady=True reason=GuestAnnounced` showed up correctly mirrored onto `VirtualMachine`. Getting there found and fixed three code bugs (tokio runtime flavor, `vim_rs`'s `VimAny` decode, a `_value` wrapper-field mismatch) plus one deployment gap (the live `VSphereMachine` CRD was never regenerated for the new `guestInstalled` field, so status patches 500'd — fixed with `make crds` + `kubectl apply`). **libvirt closed end-to-end 2026-10-12**: a Kairos Debian `Deferred`, `tpmEnabled` member installed, booted the installed disk, wrote the marker, had its installer ejected and its EK certificate published, and reached `GuestReady` in 158 s; the pool e2e passed with `GuestReady`. Getting there found and fixed a libvirt boot-order deadlock (installer before disk; ADR-0044 amended) |
 | A4 | Detach install media once installed | 0044 | ✅ landed 2026-09-23 (libvirt) — `virDomainUpdateDeviceFlags` (proc 174) ejects the cdrom when `guestInstalled` flips, **before** `GuestReady` is published, so a pool can never bind a member with media attached. Sticky `installMediaDetached`; the ISO is also suppressed from the redefined domain XML. vSphere half deferred for want of a vCenter. **Verified live against a real libvirtd 2026-09-23** — a CONFIG-only eject of a real cdrom was accepted *and applied* |
 | A5 | vTPM EK certificate in machine status | 0045 | ✅ landed 2026-09-23 (libvirt; vSphere code-only) — published on the infra CR, mirrored through `VirtualMachine` onto a bound claim. **The design in phase D below was wrong**: swtpm persists no host-side copy of the certificate, so on libvirt the guest exports it to `/run/banlieue/ek.pem` and banlieue reads it with ADR-0043's read-only path (never `guest-exec`). Subject CN is checked against `<domain-name>:<domain-uuid>`, and for a `tpmEnabled` machine publication **gates `GuestReady`**, the same ordering ADR-0044 uses. The *mechanism* is verified against a real host — certificate read out of NV `0x01c00002` of a live domain, CN confirmed as `<name>:<uuid>` — and `tests/live_ek.rs` exercises the shipped path. **Unblocks F** |
 | A3 | `tpmEnabled` requires `installMode: Deferred` | 0048 | ✅ landed 2026-09-23 — pure check in `banlieue-controller`, rejected before scheduling so no infra CR is created; `Manual` passes, and an image with **no `template`** is rejected too (a pre-built disk is a pre-laid one) |
@@ -351,10 +351,28 @@ stanza commented out so nobody announces into a channel nothing reads.
      on, for the entire install window of every Deferred member. It now
      pings to classify the failure.
 
-   What this still does **not** prove: that a real Kairos/immucore
+   ~~What this still does **not** prove: that a real Kairos/immucore
    `Deferred` install writes the marker at the right *moment* — that its
    `/run/cos/active_mode` guard keeps it out of the live installer. That
-   needs an image built with the phase layer and is a separate gap.
+   needs an image built with the phase layer and is a separate gap.~~
+   **Closed 2026-10-12.** A Kairos installer on Debian 13
+   (`scripts/build-kairos-debian-iso.sh` with
+   `EXTRA_PACKAGES="tpm2-tools openssl"`, so `qemu-guest-agent` plus the
+   EK tools), `installMode: deferred`, a `tpmEnabled` class, and the
+   install, phase and EK stages as user-data. The first run found a real
+   bug: the domain booted the installer before the disk, so after a
+   completed install (2.78 GiB on the disk) the guest came back up in the
+   live installer (`cdroot`, `/run/cos/live_mode`) and never wrote the
+   marker. Every earlier libvirt pool run used images that install
+   nothing, so none could see it. Fixed by booting the disk first, the
+   installer only while the disk is empty (ADR-0044, amended 2026-10-12;
+   `xml/domain.rs`). With the fix, a member reached `GuestReady` 158 s
+   after creation with `guestInstalled` and `installMediaDetached` set and
+   its EK certificate (`CN=<domain>:<uuid>`, issuer `swtpm-localca`)
+   published and mirrored onto the `VirtualMachine`; the pool e2e's
+   claim/release and pool-deletion tests passed with `GuestReady`
+   (`BANLIEUE_E2E_READINESS`/`BANLIEUE_E2E_USER_DATA`, added to the libvirt
+   suite for this).
 2. ~~**The vSphere half** (`guestinfo.banlieue.phase` read from
    `config.extraConfig`), deferred for want of a vCenter to verify
    against.~~ **Implemented and verified live 2026-09-22:**
@@ -750,9 +768,17 @@ To finish G:
       in a patched VMM (read the full response, 120 s deadline): the same
       throttle then installs normally, and 10 of 10 installs pass. Details:
       `docs/src/reference/cloud-hypervisor-pool-timings.md`. Reported upstream
-      as https://github.com/cloud-hypervisor/cloud-hypervisor/issues/9053. **Open:** the
-      upstream fix, and a patched static VMM for hosts
-      to install with `--vmm-url`/`--vmm-sha256` until a release has it.
+      as https://github.com/cloud-hypervisor/cloud-hypervisor/issues/9053.
+      *2026-10-12, two hosts:* a revision of the fix that set the socket
+      timeout inside the read loop (the vCPU thread, whose seccomp filter
+      forbids `setsockopt`) killed every guest's VMM with `SIGSYS`. The
+      reviewed fix (PR 9054 at `3d6f462cf`: 120 s timeout set once in
+      `prepare_data_fd`, then `read_exact` of header and body) passed
+      `make ch-pool-claim-e2e` on both hosts with `GuestReady`: warm-up
+      115 s and 110 s, refill 110 s and 100 s; all ten installs reported,
+      no VMM crash. **Open:** the upstream fix, and a published static
+      VMM for hosts to install with `--vmm-url`/`--vmm-sha256` until a
+      release has it.
 - [ ] Spread pool members across hosts. Every member of a pool with no
       placement pin landed on one host: the scheduler's tie-break is the
       alphabetical `(provider, failure domain)` order
