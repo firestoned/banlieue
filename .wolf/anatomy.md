@@ -1,6 +1,6 @@
 # anatomy.md
 
-> Auto-maintained by OpenWolf. Last scanned: 2026-10-13T10:00:00.561Z
+> Auto-maintained by OpenWolf. Last scanned: 2026-10-13T16:00:00.397Z
 > Files: 511 tracked | Anatomy hits: 0 | Misses: 0
 
 ## ./
@@ -19,11 +19,11 @@
 - `GOVERNANCE.md` — Governance (~1125 tok)
 - `LICENSE` — Project license (~3029 tok)
 - `MAINTAINERS.md` — Maintainers (~165 tok)
-- `Makefile` — Make build targets (~26601 tok)
+- `Makefile` — Make build targets (~26947 tok)
 - `NOTICE` (~159 tok)
 - `osv-scanner.toml` — SPDX-License-Identifier: Apache-2.0 (~355 tok)
 - `README.md` — Project documentation (~3324 tok)
-- `ROADMAPS.md` — Roadmaps (~4262 tok)
+- `ROADMAPS.md` — Roadmaps (~4270 tok)
 - `SECURITY.md` — Security Policy (~382 tok)
 
 ## .clusterfuzzlite/
@@ -68,7 +68,7 @@
 - `14-live-migration.md` — Live Migration (same-class first, cross-class deferred) (~3286 tok)
 - `15-vsphere-disk-image-import.md` — 15: vSphere disk-image import (raw and VMDK), alongside the ISO path (~4709 tok)
 - `16-scorecard-remediation.md` — 60 — OSSF Scorecard remediation (~2608 tok)
-- `17-ephemeral-vm-pools.md` — 17: Ephemeral, single-use VM pools (AI agent sandboxes) (~13573 tok)
+- `17-ephemeral-vm-pools.md` — 17: Ephemeral, single-use VM pools (AI agent sandboxes) (~13632 tok)
 - `18-split-image-fast-clone.md` — 18: Split-image fast clone — verified base + per-VM sealed volume (~4187 tok)
 - `19-port-groups.md` — 19: Port groups — declared, reconciled, and safe to delete (~4109 tok)
 - `README.md` — Project documentation (~1406 tok)
@@ -124,7 +124,7 @@
 
 ## crates/banlieue-api/
 
-- `Cargo.toml` — Rust package manifest (~284 tok)
+- `Cargo.toml` — Rust package manifest (~350 tok)
 
 ## crates/banlieue-api/src/
 
@@ -247,8 +247,8 @@
 - `pool_plan.rs` — Pure planning logic for `VirtualMachinePool` (roadmap 17, ADR-0046). (~3198 tok)
 - `pool_tests.rs` — Unit tests for `pool.rs`. (~3070 tok)
 - `pool.rs` — `VirtualMachinePool` reconciler (roadmap 17, ADR-0046). (~5253 tok)
-- `scheduler_tests.rs` — Unit tests for [`super::super::scheduler`]. (~9551 tok)
-- `scheduler.rs` — Scheduler — the pure placement function. (~6588 tok)
+- `scheduler_tests.rs` — Unit tests for [`super::super::scheduler`]. (~10776 tok)
+- `scheduler.rs` — Scheduler — the pure placement function. (~7242 tok)
 - `status_mirror_tests.rs` — Unit tests for [`super::super::status_mirror`]. (~8314 tok)
 - `status_mirror.rs` — `VirtualMachine` status mirror. (~3571 tok)
 - `virtualmachine_tests.rs` — Unit tests for [`super::super::virtualmachine`]. (~3322 tok)
@@ -261,7 +261,7 @@
 ## crates/banlieue-controller/tests/
 
 - `bench_provider.rs` — Provider benchmark: the same `VirtualMachine`, measured the same way, on (~5719 tok)
-- `live_claim_subject_policy.rs` — The claim subject policy against a **real API server** (ADR-0047 (~2104 tok)
+- `live_claim_subject_policy.rs` — The claim subject policy against a **real API server** (ADR-0047 (~2124 tok)
 - `live_claim.rs` — `VirtualMachineClaim` against a **real API server** (ADR-0047). (~7552 tok)
 - `live_duplicate_address.rs` — Duplicate static-address blocking against a **real API server** (~5936 tok)
 
@@ -473,10 +473,10 @@
 ## crates/banlieue-provider-libvirt/src/
 
 - `app_tests.rs` — Unit tests for [`super::super::app`]. (~2522 tok)
-- `app.rs` — # `banlieue provider libvirt` entry point (~3798 tok)
+- `app.rs` — # `banlieue provider libvirt` entry point (~3829 tok)
 - `client_tests.rs` — Unit tests for `client.rs`. (~798 tok)
 - `client.rs` — The libvirt-facing seam. (~2195 tok)
-- `context.rs` — Shared reconcile context for the libvirt provider. (~953 tok)
+- `context.rs` — Shared reconcile context for the libvirt provider. (~1099 tok)
 - `error_tests.rs` — Unit tests for [`super::super::error`]: the metric `kind` of each variant. (~208 tok)
 - `error.rs` — Typed errors for the libvirt provider's reconcilers. (~570 tok)
 - `guest_tests.rs` — Unit tests for `guest.rs`. (~4321 tok)
@@ -489,8 +489,8 @@
 
 ## crates/banlieue-provider-libvirt/src/reconciler/
 
-- `libvirtmachine_tests.rs` — Unit tests for the `LibvirtMachine` reconciler. (~13934 tok)
-- `libvirtmachine.rs` — `LibvirtMachine` reconciler — a scheduled VM becomes a real domain (~11738 tok)
+- `libvirtmachine_tests.rs` — Unit tests for the `LibvirtMachine` reconciler. (~14437 tok)
+- `libvirtmachine.rs` — `LibvirtMachine` reconciler — a scheduled VM becomes a real domain (~12349 tok)
 - `mod.rs` — libvirt provider reconcilers. (~132 tok)
 - `provider_tests.rs` — Unit tests for the `Provider` reconciler. (~2610 tok)
 - `provider.rs` — `Provider` reconciler for backend class `libvirt`. (~3801 tok)
@@ -542,7 +542,7 @@
 - `provider_tests.rs` — Unit tests for the `Provider` reconciler. (~3191 tok)
 - `provider.rs` — `Provider` reconciler for backend class `proxmox`. (~3730 tok)
 - `proxmoxmachine_tests.rs` — Unit tests for the `ProxmoxMachine` reconciler. (~9910 tok)
-- `proxmoxmachine.rs` — `ProxmoxMachine` reconciler: a scheduled VM becomes a real Proxmox VM (~7841 tok)
+- `proxmoxmachine.rs` — `ProxmoxMachine` reconciler: a scheduled VM becomes a real Proxmox VM (~7949 tok)
 
 ## crates/banlieue-provider-proxmox/tests/
 
@@ -582,8 +582,8 @@
 - `osartifact.rs` — Shared knowledge of kairos-operator's `OSArtifact` CRD (`build.kairos.io`) (~651 tok)
 - `pem_tests.rs` — Unit tests for `pem.rs`. (~506 tok)
 - `pem.rs` — PEM encoding for certificates a provider publishes into a CR status. (~461 tok)
-- `reconciler_tests.rs` — Unit tests for [`super::super::reconciler`]. (~302 tok)
-- `reconciler.rs` — Small helpers around [`kube::runtime::controller::Action`]. (~457 tok)
+- `reconciler_tests.rs` — Unit tests for [`super::super::reconciler`]. (~457 tok)
+- `reconciler.rs` — Small helpers around [`kube::runtime::controller::Action`]. (~644 tok)
 - `runner_tests.rs` — Unit tests for [`super::super::runner`]: outcome classification, and the (~1651 tok)
 - `runner.rs` — The one place every controller is run from (ADR-0091 Decision 2). (~1540 tok)
 - `scheduling_tests.rs` — Unit tests for build-pod scheduling constraints. (~1099 tok)
@@ -607,8 +607,8 @@
 ## crates/banlieue-provider-vsphere/src/
 
 - `app_tests.rs` — Unit tests for [`super::super::app`]. (~1888 tok)
-- `app.rs` — # `banlieue provider vsphere` entry point (~4840 tok)
-- `context.rs` — Shared reconcile context for the vSphere provider. (~846 tok)
+- `app.rs` — # `banlieue provider vsphere` entry point (~4869 tok)
+- `context.rs` — Shared reconcile context for the vSphere provider. (~992 tok)
 - `error_tests.rs` — Unit tests for [`super::super::error`]: the metric `kind` of each variant. (~214 tok)
 - `error.rs` — Typed errors for the vSphere provider's reconcilers. (~587 tok)
 - `guest_tests.rs` — Unit tests for `guest.rs`. (~1251 tok)
@@ -640,7 +640,7 @@
 - `vspheremachine_ensure_tests.rs` — Unit tests for [`super::super::ensure_vm`]. (~5022 tok)
 - `vspheremachine_finalize_tests.rs` — Unit tests for [`super::super::finalize_vm`] (ADR-0026: `VSphereMachine` (~340 tok)
 - `vspheremachine_tests.rs` — Unit tests for [`super::super::vspheremachine`]. (~7358 tok)
-- `vspheremachine.rs` — `VSphereMachine` reconciler — clone a VM from its per-zone template (~12389 tok)
+- `vspheremachine.rs` — `VSphereMachine` reconciler — clone a VM from its per-zone template (~12498 tok)
 
 ## crates/banlieue-provider-vsphere/tests/
 
@@ -708,7 +708,7 @@
 - `provider-connection.yaml` — SPDX-License-Identifier: Apache-2.0 (~1254 tok)
 - `provider-immutability.yaml` — SPDX-License-Identifier: Apache-2.0 (~413 tok)
 - `providerclass-guardrails.yaml` — SPDX-License-Identifier: Apache-2.0 (~1047 tok)
-- `README.md` — Project documentation (~1672 tok)
+- `README.md` — Project documentation (~1740 tok)
 - `virtualmachine-created-by.yaml` — SPDX-License-Identifier: Apache-2.0 (~880 tok)
 - `virtualmachine-immutability.yaml` — SPDX-License-Identifier: Apache-2.0 (~526 tok)
 - `virtualmachine-userdata-authorization.yaml` — SPDX-License-Identifier: Apache-2.0 (~1223 tok)

@@ -3216,14 +3216,16 @@
       "error_message": "LibvirtMachine gone (404) while its domain was being created; domain + volumes left running on the host",
       "file": "crates/banlieue-provider-libvirt/src/reconciler/libvirtmachine.rs",
       "root_cause": "Trigger not confirmed: something removed the provider finalizer (or the machine was deleted before it landed) while a create pass was already converging, so the provider created disk, seed and domain for a LibvirtMachine that no longer existed and only learned so from the 404 on its status patch. A second contributor was bug-178: three provider pods reconciled the same machine concurrently.",
-      "fix": "Compensation: after converge, a 404 on the status patch (is_gone) calls compensate_gone, which runs finalize_backend to destroy/undefine the domain and delete the volumes this pass created. Unit-tested (a_pass_that_finds_its_machine_gone_removes_what_it_created) and live-verified on a kind cluster against libvirtd: finalizer stripped and machine deleted mid-create, 0 domains and 0 volumes left. Leaked e2e domain removed by hand.",
+      "fix": "Compensation: after converge, a 404 on the status patch (is_gone) calls compensate_gone, which runs finalize_backend to destroy/undefine the domain and delete the volumes this pass created. Unit-tested (a_pass_that_finds_its_machine_gone_removes_what_it_created) and live-verified on a kind cluster against libvirtd: finalizer stripped and machine deleted mid-create, 0 domains and 0 volumes left. Leaked e2e domain removed by hand. The same compensation was added to the Proxmox (finalize_backend, found by ownership marker) and vSphere (finalize_vm on the cloned moref) machine reconcilers; unit-tested only.",
       "tags": [
-        "libvirt",
-        "finalizer",
-        "race",
-        "leak",
         "deletion",
-        "pool"
+        "finalizer",
+        "leak",
+        "libvirt",
+        "pool",
+        "proxmox",
+        "race",
+        "vsphere"
       ],
       "related_bugs": [
         "bug-178"

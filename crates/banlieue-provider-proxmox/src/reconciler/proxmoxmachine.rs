@@ -698,8 +698,11 @@ pub async fn reconcile(machine: Arc<ProxmoxMachine>, ctx: Arc<Context>) -> Resul
     match outcome {
         Ok(observed) => {
             let expected = proxmox_provider_id(&machine.spec.provider_ref.name, observed.vmid);
-            if machine.spec.provider_id.as_deref() != Some(expected.as_str()) {
-                patch_provider_id(&api, &name, &expected).await?;
+            let vmid = Some(observed.vmid);
+            if machine.spec.provider_id.as_deref() != Some(expected.as_str())
+                && let Err(e) = patch_provider_id(&api, &name, &expected).await
+            {
+                return gone_or(e, proxmox.as_ref(), &m, &machine.spec, vmid).await;
             }
             let status = build_status(
                 machine.status.as_ref(),
@@ -707,7 +710,9 @@ pub async fn reconcile(machine: Arc<ProxmoxMachine>, ctx: Arc<Context>) -> Resul
                 &observed,
                 generation,
             );
-            patch_status(&api, &name, &status).await?;
+            if let Err(e) = patch_status(&api, &name, &status).await {
+                return gone_or(e, proxmox.as_ref(), &m, &machine.spec, vmid).await;
+            }
             Ok(if poll_soon(&machine.spec, &observed) {
                 requeue_default()
             } else {
@@ -717,10 +722,62 @@ pub async fn reconcile(machine: Arc<ProxmoxMachine>, ctx: Arc<Context>) -> Resul
         Err(e) => {
             warn!(error = %e, "proxmox machine convergence failed");
             let status = failure_status(machine.status.as_ref(), &e.to_string(), generation);
-            patch_status(&api, &name, &status).await?;
+            if let Err(e) = patch_status(&api, &name, &status).await {
+                return gone_or(e, proxmox.as_ref(), &m, &machine.spec, recorded).await;
+            }
             Ok(requeue_on_error())
         }
     }
+}
+
+const HTTP_NOT_FOUND: u16 = 404;
+
+/// Whether `err` says the `ProxmoxMachine` itself no longer exists.
+#[must_use]
+pub fn is_gone(err: &Error) -> bool {
+    let kube = match err {
+        Error::Kube(e) | Error::Sdk(banlieue_provider_sdk::Error::Kube(e)) => e,
+        _ => return false,
+    };
+    matches!(kube, kube::Error::Api(status) if status.code == HTTP_NOT_FOUND)
+}
+
+/// A write after converge failed with `err`. If the machine is gone, remove
+/// what this pass may have created ([`compensate_gone`]); otherwise return
+/// `err`.
+async fn gone_or(
+    err: Error,
+    api: &dyn ProxmoxApi,
+    m: &MachineRef<'_>,
+    spec: &ProxmoxMachineSpec,
+    vmid: Option<u32>,
+) -> Result<Action> {
+    if !is_gone(&err) {
+        return Err(err);
+    }
+    compensate_gone(api, m, spec, vmid).await
+}
+
+/// The machine was deleted while this pass was creating its VM, so no
+/// finalizer will ever clean up behind it: remove the VM and its seed now,
+/// exactly as the finalizer would (bug-177). `vmid` may be `None`; the
+/// ownership marker still finds a VM this pass cloned.
+///
+/// # Errors
+/// [`Error::Proxmox`] if the cleanup fails. The object is gone, so nothing
+/// retries it: the failure is logged by the controller's error policy.
+pub async fn compensate_gone(
+    api: &dyn ProxmoxApi,
+    m: &MachineRef<'_>,
+    spec: &ProxmoxMachineSpec,
+    vmid: Option<u32>,
+) -> Result<Action> {
+    warn!(
+        machine = m.name,
+        "ProxmoxMachine deleted while its VM was being created; removing what this pass created"
+    );
+    finalize_backend(api, m, spec, vmid).await?;
+    Ok(Action::await_change())
 }
 
 /// Requeue after a reconcile error.

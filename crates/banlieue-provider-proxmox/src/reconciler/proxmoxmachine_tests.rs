@@ -969,4 +969,39 @@ mod tests {
         want_off.desired_power_state = PowerState::PoweredOff;
         assert!(!poll_soon(&want_off, &observed(PowerState::PoweredOff)));
     }
+
+    fn api_error(code: u16, reason: &str) -> kube::Error {
+        kube::Error::Api(
+            kube::core::Status::failure("test", reason)
+                .with_code(code)
+                .boxed(),
+        )
+    }
+
+    #[test]
+    fn a_machine_gone_from_the_api_is_recognised() {
+        assert!(is_gone(&Error::Kube(api_error(404, "NotFound"))));
+        assert!(is_gone(&Error::Sdk(banlieue_provider_sdk::Error::Kube(
+            api_error(404, "NotFound")
+        ))));
+        assert!(!is_gone(&Error::Kube(api_error(409, "Conflict"))));
+        assert!(!is_gone(&Error::Missing("ProxmoxMachine.metadata.uid")));
+    }
+
+    /// The machine was deleted while this pass cloned its VM, before the
+    /// VMID reached status: the ownership marker still finds the VM, and the
+    /// pass removes it and its seed (bug-177).
+    #[tokio::test]
+    async fn a_pass_that_finds_its_machine_gone_removes_what_it_created() {
+        let f = world().await;
+        pass(&f, &seeded(), None).await.unwrap();
+        assert_eq!(vm_named(&f.cluster_vms().await.unwrap(), NAME), 1);
+
+        compensate_gone(&f, &machine(), &seeded(), None)
+            .await
+            .unwrap();
+
+        assert_eq!(vm_named(&f.cluster_vms().await.unwrap(), NAME), 0);
+        assert!(f.storage_content("pve1", "local").await.unwrap().is_empty());
+    }
 }

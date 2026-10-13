@@ -1,5 +1,37 @@
 # Changelog
 
+## [2026-10-13] - vSphere and Proxmox clean up a machine deleted mid-create
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `crates/banlieue-provider-proxmox/src/reconciler/proxmoxmachine.rs`: a 404
+  on any write after converge (`providerID`, the success status, the
+  failure status) now runs `compensate_gone`, which calls `finalize_backend`.
+  The VM is found by its UID ownership marker, so it is removed even when
+  its VMID never reached status.
+- `crates/banlieue-provider-vsphere/src/reconciler/vspheremachine.rs`: a 404
+  on the status write after `ensure_vm` destroys the VM this pass cloned
+  (`compensate_gone`, via `finalize_vm`).
+- Same failure and fix as the libvirt one in the entry below (bug-177): a
+  machine deleted while its VM was being created left the VM running with
+  no object to own it.
+
+### Tests
+- `proxmoxmachine_tests.rs`: `a_machine_gone_from_the_api_is_recognised`,
+  `a_pass_that_finds_its_machine_gone_removes_what_it_created` (VMID never
+  recorded).
+- `vspheremachine_finalize_tests.rs`: `a_machine_gone_from_the_api_is_recognised`,
+  `a_pass_that_finds_its_machine_gone_destroys_the_vm_it_cloned`,
+  `a_pass_that_cloned_nothing_removes_nothing`.
+- Unit tests only: no live vCenter or Proxmox was available.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (provider images)
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-10-13] - Providers serve only their own machines; libvirt cleans up a machine deleted mid-create
 
 **Author:** Erick Bourgeois

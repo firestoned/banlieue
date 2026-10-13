@@ -599,7 +599,8 @@ pub async fn reconcile(machine: Arc<VSphereMachine>, ctx: Arc<Context>) -> Resul
     {
         Ok(outcome) => {
             info!(vm_ref = %outcome.vm_ref, "VSphereMachine provisioned");
-            patch_status_success(
+            let vm_ref = outcome.vm_ref.clone();
+            if let Err(e) = patch_status_success(
                 &ctx,
                 &namespace,
                 &name,
@@ -607,12 +608,15 @@ pub async fn reconcile(machine: Arc<VSphereMachine>, ctx: Arc<Context>) -> Resul
                 &existing.conditions,
                 outcome,
             )
-            .await?;
+            .await
+            {
+                return gone_or(e, client.as_ref(), Some(&vm_ref)).await;
+            }
             Ok(requeue_long())
         }
         Err(e) => {
             warn!(error = %e, "provisioning failed");
-            patch_status_failed(
+            if let Err(e) = patch_status_failed(
                 &ctx,
                 &namespace,
                 &name,
@@ -621,10 +625,51 @@ pub async fn reconcile(machine: Arc<VSphereMachine>, ctx: Arc<Context>) -> Resul
                 reasons::PROVISION_FAILED,
                 format!("{e}"),
             )
-            .await?;
+            .await
+            {
+                return gone_or(e, client.as_ref(), existing_vm_ref).await;
+            }
             Ok(requeue_on_error())
         }
     }
+}
+
+const HTTP_NOT_FOUND: u16 = 404;
+
+/// Whether `err` says the `VSphereMachine` itself no longer exists.
+#[must_use]
+pub fn is_gone(err: &Error) -> bool {
+    let kube = match err {
+        Error::Kube(e) | Error::Sdk(banlieue_provider_sdk::Error::Kube(e)) => e,
+        _ => return false,
+    };
+    matches!(kube, kube::Error::Api(status) if status.code == HTTP_NOT_FOUND)
+}
+
+/// A status write after `ensure_vm` failed with `err`. If the machine is
+/// gone, destroy what this pass created ([`compensate_gone`]); otherwise
+/// return `err`.
+async fn gone_or(err: Error, client: &dyn VSphereClient, vm_ref: Option<&str>) -> Result<Action> {
+    if !is_gone(&err) {
+        return Err(err);
+    }
+    compensate_gone(client, vm_ref).await
+}
+
+/// The machine was deleted while this pass was cloning its VM, so no
+/// finalizer will ever see the VM's moref: destroy it now, exactly as the
+/// finalizer would (bug-177). `None` means nothing was cloned.
+///
+/// # Errors
+/// [`Error::Vsphere`] if the destroy fails. The object is gone, so nothing
+/// retries it: the failure is logged by the controller's error policy.
+pub async fn compensate_gone(client: &dyn VSphereClient, vm_ref: Option<&str>) -> Result<Action> {
+    warn!(
+        vm_ref = vm_ref.unwrap_or_default(),
+        "VSphereMachine deleted while its VM was being created; removing what this pass created"
+    );
+    finalize_vm(client, vm_ref).await?;
+    Ok(Action::await_change())
 }
 
 /// Deletion path (ADR-0026): resolve the same vCenter client the create
