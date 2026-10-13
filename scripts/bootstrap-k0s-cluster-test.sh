@@ -92,6 +92,14 @@ neigh='192.0.2.20 lladdr 52:54:00:aa:bb:01 REACHABLE
 expect_eq "neighbour IP found by MAC, any case" "$(parse_neigh_ip 52:54:00:aa:bb:04 <<<"$neigh")" "192.0.2.21"
 expect_eq "failed neighbour entry ignored" "$(parse_neigh_ip 52:54:00:aa:bb:05 <<<"$neigh")" ""
 expect_eq "unknown MAC yields nothing" "$(parse_neigh_ip 52:54:00:aa:bb:99 <<<"$neigh")" ""
+# A reinstalled node keeps its MAC, so the installer's old lease can linger as
+# a STALE entry beside the live one: the live one wins, wherever it sits.
+neigh='192.0.2.30 lladdr 52:54:00:aa:bb:06 STALE
+192.0.2.31 lladdr 52:54:00:aa:bb:06 REACHABLE
+192.0.2.32 lladdr 52:54:00:aa:bb:07 STALE
+192.0.2.33 lladdr 52:54:00:aa:bb:07 DELAY'
+expect_eq "live entry beats a stale one listed first" "$(parse_neigh_ip 52:54:00:aa:bb:06 <<<"$neigh")" "192.0.2.31"
+expect_eq "DELAY counts as live" "$(parse_neigh_ip 52:54:00:aa:bb:07 <<<"$neigh")" "192.0.2.33"
 
 # --- unit rendering ------------------------------------------------------------
 CH_VM_USER=k0s-vm CH_BRIDGE=br0 CH_VM_DIR=/srv/k0s-ch CH_TPM=true VCPUS=8 MEM_MB=10240

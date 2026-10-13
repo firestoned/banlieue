@@ -82,8 +82,12 @@
     (`/run/cos/live_mode`, `/run/cos/uki_install_mode`, as Kairos's own
     stages test). It used to join from the installer too, leaving an
     offline device behind and the installed node named `<name>-1`.
+  - A CH node's address lookup prefers a live neighbour entry over a STALE
+    one. A reinstalled node keeps its MAC, so the installer's earlier lease
+    can linger beside the real address; `join` picked the stale one first
+    and waited on SSH at an address nobody held.
   - `main` runs only when executed, so the test can source the script.
-- `scripts/bootstrap-k0s-cluster-test.sh` (99 cases): VMM selection and
+- `scripts/bootstrap-k0s-cluster-test.sh` (101 cases): VMM selection and
   refusals, tap names within `IFNAMSIZ`, fixed and derived MACs, neighbour
   parsing, all three units (identity, sandbox, Landlock, sockets, stop,
   install word), settings refusals, join targets, controller install flags,

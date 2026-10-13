@@ -1277,10 +1277,15 @@ ch_node_mac() {
 }
 
 # parse_neigh_ip <mac>: reads `ip -4 neigh show` output on stdin and prints
-# the address resolved to <mac>, ignoring entries that never resolved.
+# the address resolved to <mac>, ignoring entries that never resolved. A live
+# entry wins over a STALE one: a reinstalled node keeps its MAC, and the
+# installer's earlier lease can linger in the table beside the real address.
 parse_neigh_ip() {
   awk -v mac="$(tr '[:upper:]' '[:lower:]' <<<"$1")" '
-    $2 == "lladdr" && tolower($3) == mac && $4 != "FAILED" && $4 != "INCOMPLETE" { print $1; exit }'
+    $2 != "lladdr" || tolower($3) != mac || $4 == "FAILED" || $4 == "INCOMPLETE" { next }
+    $4 != "STALE" { print $1; found = 1; exit }
+    stale == "" { stale = $1 }
+    END { if (!found && stale != "") print stale }'
 }
 
 # ch_bridge_addr: the host's IPv4 address on CH_BRIDGE (empty if none).
