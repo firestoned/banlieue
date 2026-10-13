@@ -13,8 +13,10 @@ SPDX-License-Identifier: Apache-2.0
 > here). The latest 2026-10-13 pass is
 > **ADR-0099**: the management cluster's bootstrap can run a node on Cloud
 > Hypervisor (a plain VM under three systemd units, no banlieue component)
-> and can add workers to a running cluster with a short-lived token (`join`).
-> It adds one component (§2), one asset (A-20, the worker join token), one
+> and can add workers and controllers to a running cluster with a
+> short-lived token (`join`; a controller copies a running one's `/etc/k0s`),
+> so a cluster's nodes can be swapped from libvirt to CH one at a time.
+> It adds one component (§2), one asset (A-20, the join tokens), one
 > actor (the bootstrap operator with sudo on the host), one boundary (TB-16,
 > bootstrap operator → running cluster), a §5 diagram block, rows on TB-9 for
 > a management node's VMM, §7.23 and three §8 risks. Found and fixed during the
@@ -391,7 +393,7 @@ relationship to the host.
 | A-17 | **The management cluster's datastore**: every Kubernetes object, Secrets included (A-1 hypervisor credentials, A-13 registry credentials, ServiceAccount signing material references), in plaintext unless API-server encryption at rest is configured | etcd on the controllers by default; with ADR-0085's kine, an external SQL database (PostgreSQL on the hypervisor host), reached over the network | **Critical**: read access is every Secret in the cluster, write access is cluster-admin. With kine it also lives outside every node, so it is backed up, and must be protected, as a database |
 | A-18 | **`VSphereMachine` custom attributes** — `Template`, `CreatedAt`, `CreatedBy` (ADR-0089), the fleet-auditing fields `sre-automations`' `cf-node` tool also writes | vCenter `CustomFieldsManager`, per cloned VM; `CreatedBy`'s source is `VirtualMachine`'s `banlieue.io/created-by` annotation, stamped at CREATE by the optional `banlieue-virtualmachine-created-by` `MutatingAdmissionPolicy` | Zero confidentiality — all three are free text, visible to anyone with vCenter read access. **Low integrity**: `CreatedBy` can be forged (TB-1); nothing downstream trusts any of the three for an authorization decision |
 | A-19 | **Telemetry**: Prometheus series on each role's `metrics` port, and, only when `OTEL_EXPORTER_OTLP_ENDPOINT` is set, trace spans exported to a collector (ADR-0091, ADR-0092) | The scraper's storage; the operator's collector and wherever it forwards | Low confidentiality: metric labels carry no object names, namespaces or error text (`runner_tests.rs` asserts it); spans carry object names, namespaces and backend ids (node, vmid, moref, domain), never credentials, user-data or Secret contents. Its value is **integrity for operations**: forged or suppressed telemetry hides an outage, it does not change state |
-| A-20 | **k0s worker join token** (ADR-0099): lets its holder join any machine to the management cluster as a worker | Minted on a controller by `join` with `--expiry=15m`, piped over SSH straight to the joining node (never written on the operator's machine), stored `0600 root` at `/etc/k0s/worker-token-file` on that node | High while valid: a worker runs any pod scheduled to it and reads the Secrets those pods mount. Worthless after expiry; the file stays on the node, like k0sctl's and the vSphere backend's |
+| A-20 | **k0s join tokens, and a joining controller's copy of `/etc/k0s`** (ADR-0099). A worker token joins any machine as a worker; a **controller** token hands over the cluster CA and service-account signing keys, and `/etc/k0s` carries the datastore password and the VRRP secret | Minted on a controller by `join` with `--expiry=15m`, piped over SSH straight to the joining node (never written on the operator's machine), stored `0600 root` at `/etc/k0s/{worker,controller}-token-file` on that node; `/etc/k0s` crosses the same kind of pipe | Worker token: high while valid (a worker runs any pod scheduled to it and reads the Secrets those pods mount). Controller token or `/etc/k0s`: **critical**, the whole cluster and its datastore. A token is worthless after expiry; the file stays on the node, like k0sctl's and the vSphere backend's |
 | A-15 | **EK trust-anchor bundle** — the set of CA certificates trusted to issue this backend's vTPM EK certificates | `Provider.spec.attestation.ekTrustBundle` — inline PEM, or a ConfigMap/Secret it names in the Provider's namespace. Admin-supplied, never discovered; resolved by the **broker**, never by any banlieue identity (ADR-0049 Decision 10) | Zero confidentiality — public CA material. **High integrity**: a rogue CA added here makes every EK certificate that CA forges verify, defeating the whole attestation chain; and on libvirt *removing* a host's issuer is the revocation mechanism, so an entry an attacker can re-add is a revocation undone |
 
 ## 4. Actors
@@ -472,7 +474,8 @@ relationship to the host.
          (aggregated banlieue-capi-infrastructure ClusterRole, ADR-0096)
 
   TB-16: bootstrap operator (SSH key) ──▶ controller: k0s token create (15 min)
-         ──pipe──▶ joining node: /etc/k0s/worker-token-file (0600) ──▶ k0s worker
+         ──pipe──▶ joining node: /etc/k0s/<role>-token-file (0600) ──▶ k0s worker
+         controller: tar /etc/k0s (no tokens) ──pipe──▶ joining controller ──▶ k0s controller
          (never written on the operator's machine; never writes a controller; ADR-0099)
 
   KVM host, management nodes on Cloud Hypervisor (ADR-0099; no banlieue component):
@@ -522,7 +525,7 @@ relationship to the host.
 | TB-13 | LAN and tailnet → management cluster control plane VIP | With `API_VIP` (ADR-0086), every client outside the cluster, kube-proxy and joining workers reach the API through an address that VRRP elects among the controllers, an election anything on the LAN can take part in |
 | TB-14 | banlieue pods ↔ telemetry consumers | Inbound scrapes of `metrics` and probes of `health`; outbound OTLP spans when configured (ADR-0091 to ADR-0093) |
 | TB-15 | CAPI controllers → banlieue infrastructure objects | CAPI's manager creates, owns and deletes infrastructure machines through its aggregated role (ADR-0096) |
-| TB-16 | Bootstrap operator → running management cluster (`join`) | A worker join credential (A-20) is minted on a controller and carried to a new node, which then joins a cluster whose controllers the script does not reconfigure (ADR-0099) |
+| TB-16 | Bootstrap operator → running management cluster (`join`) | A join credential (A-20) is minted on a controller and carried to a new node, which then joins a cluster whose controllers the script does not reconfigure; a joining controller also receives a running controller's `/etc/k0s` (ADR-0099) |
 | TB-11 | Installer (root, once) → Cloud Hypervisor host | A root process writes the host's trust base (A-14), in part inside directories the provider's user owns, from artifacts downloaded from upstream or an operator's mirror (ADR-0067, ADR-0084) |
 
 ## 6. Threats by boundary
@@ -890,16 +893,21 @@ is configured (ADR-0092).
 
 ### TB-16: Bootstrap operator → running management cluster (`join`)
 
-Only when the operator runs `join` (ADR-0099). The worker token is A-20.
+Only when the operator runs `join` (ADR-0099). The tokens, and the copied
+`/etc/k0s`, are A-20.
 
 | Threat | STRIDE | Control |
 | --- | --- | --- |
-| Growing a cluster rewrites its controllers with stale settings (the k0sctl config predates a VIP, a disabled component or an API server flag), restarting them misconfigured | T, D | `join` writes nothing to any controller and never reads or applies `k0sctl.yaml`; on a controller it runs only `k0s version`, `k0s token create --role=worker` and `k0s kubectl get node`: `join_workers`, `wait_node_ready`. Controllers are refused as join targets: `join_targets`, tested in `scripts/bootstrap-k0s-cluster-test.sh` |
-| The join token leaks and joins an attacker's machine as a worker | I, E | Minted per run with `--expiry=15m` (`JOIN_TOKEN_EXPIRY`); carried controller → node in one pipe between two SSH sessions, never written on the operator's machine; stored `umask 077` under `/etc/k0s` on the node: `join_workers`. A worker that does join is visible in `kubectl get nodes` and can be deleted, but anything it ran meanwhile is not undone |
-| A worker joins at a different k0s version from the cluster | D | The controller's `k0s version` must equal `K0S_VERSION`, otherwise `join` stops before minting a token: `join_workers` |
+| Growing a cluster rewrites its controllers with stale settings (the k0sctl config predates a VIP, a disabled component or an API server flag), restarting them misconfigured | T, D | `join` writes nothing to an existing controller and never reads or applies `k0sctl.yaml`; on a controller it only reads: `k0s version`, `k0s token create`, `systemctl cat k0scontroller`, `tar -c /etc/k0s`, `k0s kubectl get node/controlnode`: `join_nodes`, `wait_node_ready`, `wait_controlnode` |
+| A joining controller runs with settings the other controllers do not have (another datastore, VIP or API server configuration), splitting the control plane | T, D | It is a copy of a running controller, not of the script's settings: that controller's `/etc/k0s` and its `ExecStart` flags, with only the worker flags following the node's role; a `--single` source and unparseable flags are refused: `join_controller_node`, `controller_install_flags`, tested in `scripts/bootstrap-k0s-cluster-test.sh` |
+| The datastore password or VRRP secret in `/etc/k0s` leaks on the way to a joining controller | I | Read by `sudo tar` on the controller and extracted by `sudo tar` on the node, through one pipe between two SSH sessions; nothing is written on the operator's machine; ownership and modes are kept (`--numeric-owner`, `-p`), so `k0s.yaml` stays `0600 root`: `join_controller_node` |
+| A join token leaks and joins an attacker's machine, as a worker or, with a controller token, holding the cluster CA key | I, E | Minted per run with `--expiry=15m` (`JOIN_TOKEN_EXPIRY`); carried controller → node in one pipe between two SSH sessions, never written on the operator's machine; stored `umask 077` under `/etc/k0s` on the node: `join_worker_node`, `join_controller_node`. A node that does join is visible in `kubectl get nodes` (and a controller in `kubectl get controlnodes`) and can be removed, but a leaked CA key cannot be revoked short of rotating the cluster CA |
+| A node joins at a different k0s version from the cluster | D | The controller's `k0s version` must equal `K0S_VERSION`, otherwise `join` stops before minting a token: `join_nodes` |
 | The k0s binary on the new node is tampered with | T | Downloaded for the pinned `K0S_VERSION` from `K0S_BINARY_BASEURL` and checked against the release's `sha256sums.txt`: `stage_k0s_binary`. **Only when that file can be fetched**: if it cannot, the binary is used unverified (§8) |
 | Something on the LAN answers as the controller or the new node and receives the token, or hands the node another cluster's token | S, I | **Not controlled by the script**: `ssh_run` connects with `StrictHostKeyChecking=no`, as every step of this script always has. The SSH key authenticates the operator to the node, not the node to the operator (§8) |
-| A join runs twice, or after a partial failure | D | A node whose `k0sworker` is already active is skipped; `k0s install worker --force` replaces a half-installed service: `join_workers` |
+| A join runs twice, or after a partial failure | D | A node whose role's service (`k0sworker` or `k0scontroller`) is already active is skipped; `k0s install --force` replaces a half-installed service; a node running k0s in another role is refused rather than reset: `join_worker_node`, `join_controller_node` |
+| A reset worker joins as a controller over its old Node object, which keeps the worker's labels, so the control plane runs on a node nothing selects as control plane | T | `join` refuses a controller while a Node of that name exists, and says to delete it: `join_controller_node`, tested in `scripts/bootstrap-k0s-cluster-test.sh` |
+| A swap retires a node, and a later `vms` recreates it as an empty VM that then waits for a join | D | Retired nodes are listed in `RETIRED_NODES`, which `vms` does not recreate and the node table skips: `node_retired`, tested in `scripts/bootstrap-k0s-cluster-test.sh` |
 
 ## 7. Deployment hardening requirements
 
@@ -1227,9 +1235,14 @@ a different assumption is unsafe.
 23. **Grow a running management cluster with `join`, and keep management
     nodes on Cloud Hypervisor apart from banlieue's guests (TB-9, TB-16,
     ADR-0099).**
-    - Add workers to a cluster you have changed since bootstrap with `join`,
-      never `config` + `apply`, which push the generated configuration back
-      onto every controller.
+    - Add workers and controllers to a cluster you have changed since
+      bootstrap with `join`, never `config` + `apply`, which push the
+      generated configuration back onto every controller. When swapping
+      nodes, add the new controller before retiring the old one.
+    - Treat a controller `join` as a cluster-admin action: its token carries
+      the cluster CA key. Admit the new controller's address to the
+      datastore yourself (on PostgreSQL, one `hostssl` line for that
+      address), and remove the retired controller's line when it goes.
     - Run `join` from the hypervisor host or another machine on the nodes'
       network, not across an untrusted segment: the script does not check
       SSH host keys (§8).
@@ -1293,7 +1306,7 @@ a different assumption is unsafe.
 | **A rotated credential is used for up to ~30 s before banlieue picks it up**, and a revoked one keeps failing reconciles until the Secret is updated | Watching Secrets would grant every provider read access to every Secret in its namespace (ADR-0095). Immediate cut-off belongs on the backend, which stops a credential everywhere at once | A provider caches a client across reconciles (the cache must then key on `resourceVersion`), or Kubernetes can scope a watch to one named Secret |
 | **Telemetry is not integrity-protected**: a party on the path or with scraper access can forge or suppress it | Nothing banlieue decides reads telemetry back; the CRs' status is the record (TB-14) | An automated decision (autoscaling, remediation) starts consuming banlieue metrics |
 | **Management nodes on Cloud Hypervisor share one host user** (`CH_VM_USER`), so a guest that escapes into one node's VMM can read and write the other management nodes' disks and vTPM state on that host (ADR-0099) | They are nodes of one cluster, and one compromised node already reaches what the cluster's workloads reach; a uid per node, as banlieue gives its guests, would add bookkeeping without separating different trust. banlieue's guests remain separate from it (TB-9) | Nodes of more than one cluster, or of different trust, are put on one host with `NODE_VMMS=cloud-hypervisor` |
-| **The bootstrap script does not verify SSH host keys** (`StrictHostKeyChecking=no` in `ssh_run`); with `join` that session also carries a worker join token (A-20) | Every node is new, or rebuilt, when the script first reaches it, so there is no key to pin yet; the token expires in 15 minutes. Running it from the host or the nodes' own network keeps it off untrusted paths (§7.23) | The script records each node's host key at creation (the seed can carry one) and checks it afterwards |
+| **The bootstrap script does not verify SSH host keys** (`StrictHostKeyChecking=no` in `ssh_run`); with `join` that session also carries a join token, and for a controller the cluster CA key's token and the datastore password (A-20) | Every node is new, or rebuilt, when the script first reaches it, so there is no key to pin yet; a token expires in 15 minutes, though a controller's is enough to take the CA key within them. Running it from the host or the nodes' own network keeps it off untrusted paths (§7.23) | The script records each node's host key at creation (the seed can carry one) and checks it afterwards |
 | **`stage_k0s_binary` uses the k0s binary unverified when the release's `sha256sums.txt` cannot be fetched**, which `join` and the vSphere backend both rely on | An air-gapped mirror may publish no checksum file, and failing closed would break those estates; the binary is fetched over HTTPS from `K0S_BINARY_BASEURL` | A pinned digest setting (as `IMAGE_SHA256` does for the installer ISO) is added, or the mirror case is handled explicitly |
 | Provider condition messages are mirrored verbatim onto user-facing `VirtualMachine` status | Useful diagnostics; providers are in-tree | A third-party provider ships |
 

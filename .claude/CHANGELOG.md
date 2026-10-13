@@ -36,16 +36,17 @@
 - [x] Requires cluster rollout (provider images)
 - [ ] Config change only
 
-## [2026-10-13] - k0s bootstrap: Cloud Hypervisor nodes and a worker-only `join` (ADR-0099)
+## [2026-10-13] - k0s bootstrap: Cloud Hypervisor nodes and a node `join` (ADR-0099)
 
 **Author:** Erick Bourgeois
 
 ### Added
-- `docs/adr/0099-cloud-hypervisor-nodes-and-worker-join-in-k0s-bootstrap.md`:
+- `docs/adr/0099-cloud-hypervisor-nodes-and-node-join-in-k0s-bootstrap.md`:
   the VMM becomes a per-node choice within the libvirt backend; a Cloud
   Hypervisor node is a plain CH VM under three systemd units, not a banlieue
-  object; `join` adds workers to a running cluster without touching
-  controllers.
+  object; `join` adds workers and controllers to a running cluster without
+  rewriting its controllers, so libvirt nodes can be swapped for CH ones one
+  at a time.
 - `scripts/bootstrap-k0s-cluster.sh`:
   - `NODE_VMMS` (one per VM, `libvirt` default, or `cloud-hypervisor`), with
     `CH_FIRMWARE` (required), `CH_BRIDGE`, `CH_BINARY`, `CH_REMOTE`,
@@ -61,15 +62,32 @@
     Kairos and cloud seeds both carry it; the Kairos seed keeps a single
     `network:` stage key when Tailscale is also on.
   - `join` step: `JOIN_NODES`, `JOIN_CONTROLLER`, `JOIN_TOKEN_EXPIRY`
-    (`15m`). Refuses controllers, unknown names and a controller whose k0s
-    version differs from `K0S_VERSION`; mints the token on a controller and
-    pipes it to a `0600` file on the node; installs the worker; waits for
-    `Ready`. Never writes to a controller or reads `k0sctl.yaml`.
+    (`15m`). Joins each node in its `NODE_ROLES` role. Refuses unknown names
+    and a controller whose k0s version differs from `K0S_VERSION`; mints a
+    token of the node's role on a controller and pipes it to a `0600` file
+    on the node. A joining controller first gets a copy of the running
+    controller's `/etc/k0s` (minus tokens and `containerd.toml`) and its
+    `ExecStart` flags (`controller_install_flags`; worker flags follow the
+    role and `NO_TAINTS`, `--single` refused), then waits for its
+    `ControlNode` and `Ready`. A node running k0s in another role is refused
+    with the reset to run, and a controller is refused while a Node of its
+    name exists (kubelet labels a Node only at registration). Never writes to an existing controller or reads
+    `k0sctl.yaml`.
+  - `RETIRED_NODES`: nodes keep their position-based names after a swap;
+    retired ones are not recreated by `vms` and not waited for.
+  - An interrupted CH install (units but no `.installed` marker) is removed
+    and redone by the next `vms`, instead of telling the operator to run
+    `destroy`, which would have removed the whole cluster.
+  - The Kairos seed's Tailscale stage is skipped in the live installer
+    (`/run/cos/live_mode`, `/run/cos/uki_install_mode`, as Kairos's own
+    stages test). It used to join from the installer too, leaving an
+    offline device behind and the installed node named `<name>-1`.
   - `main` runs only when executed, so the test can source the script.
-- `scripts/bootstrap-k0s-cluster-test.sh` (73 cases): VMM selection and
+- `scripts/bootstrap-k0s-cluster-test.sh` (99 cases): VMM selection and
   refusals, tap names within `IFNAMSIZ`, fixed and derived MACs, neighbour
   parsing, all three units (identity, sandbox, Landlock, sockets, stop,
-  install word), settings refusals, join targets, seeds. `make
+  install word), settings refusals, join targets, controller install flags,
+  retired nodes, seeds. `make
   k0s-script-test`.
 - `Makefile`: `K0S_NODE_VMMS`, `K0S_CH_FIRMWARE`, `K0S_CH_BRIDGE`,
   `K0S_JOIN_NODES`, `K0S_JOIN_CONTROLLER`; `k0s-join`, `k0s-remote-join`,
@@ -78,15 +96,19 @@
 ### Changed
 - `docs/architecture/calm/architecture.json`: node
   `service-k0s-bootstrap-ch-node`, relationships
-  `rel-bootstrap-cloud-hypervisor-node` and `rel-bootstrap-join-worker` (with
+  `rel-bootstrap-cloud-hypervisor-node` and `rel-bootstrap-join-node` (with
   AC-6 and IA-5 controls), the bootstrap system's description;
   `docs/src/architecture/system.md` regenerated.
 - `docs/src/guides/end-to-end-setup.md`: "Nodes on Cloud Hypervisor" and
-  "Adding a worker to a running cluster".
+  "Adding a node to a running cluster", including what a joining controller
+  copies, the datastore access it needs, and swapping a libvirt node for a
+  CH one with `RETIRED_NODES`, and saving a node's local volumes before
+  retiring it (learned when a swap lost a SPIRE server's key directory).
 - `docs/src/guides/host-bootstrap.md`: Cockpit's VM page does not show Cloud
   Hypervisor guests (banlieue's or the bootstrap's).
 - `docs/src/security/threat-model.md`: full pass, stamp 2026-10-13 against
-  ADR-0001 … ADR-0099. New §2 component, A-20 (worker join token), bootstrap
+  ADR-0001 … ADR-0099. New §2 component, A-20 (join tokens and a joining
+  controller's copy of `/etc/k0s`), bootstrap
   operator actor, TB-16 (`join`) with its §5 diagram block and §6 table,
   TB-9 rows for a management node's VMM, §7.23, three §8 risks (one host
   user for all management CH nodes; SSH host keys unchecked; k0s binary
@@ -96,21 +118,28 @@
 ### Why
 Erick wants to compare Cloud Hypervisor's host CPU cost with libvirt/QEMU's
 on the core cluster's own host, with a CH node beside the libvirt ones, and
-to grow that cluster without `config` + `apply`, whose saved `k0sctl.yaml`
-predates the cluster's VIP, disabled konnectivity and OIDC flag.
+then to replace the libvirt controllers with CH ones one at a time. Neither
+can go through `config` + `apply`, whose saved `k0sctl.yaml` predates the
+cluster's VIP, disabled konnectivity, OIDC flag and `verify-full` datastore
+TLS; a controller generated from the script's settings would miss all four,
+which is why a joining controller copies a running one.
 
 Verified live on the core cluster's host: `vms` installed a Kairos-on-Debian
 CH node in about 80 s (vTPM, same kernel as the libvirt nodes, persistent
 `/opt`), and `join` brought it `Ready` without touching the controllers.
 Live runs found two bugs the unit tests then pinned: Landlock refused the
 tap's `tun_flags` in sysfs, and an unpaced restart loop took swtpm into
-systemd's start limit.
+systemd's start limit. The same CH node was then reset and joined again as
+a `controller+worker`, copying a running controller's `/etc/k0s`: kine,
+the API server (now an endpoint of the `kubernetes` Service), keepalived
+and its `ControlNode` came up. That run found the third bug: the reset
+worker's Node object was reused without control-plane labels, which `join`
+now refuses.
 
 ### Impact
 - [ ] Breaking change (`NODE_VMMS` unset keeps every node on libvirt)
 - [ ] Requires cluster rollout
 - [x] Config change only
-
 - [ ] Documentation only
 
 ## [2026-10-13] - Spread placement (ADR-0098); per-issuer claim prefixes (ADR-0047 amended); Deferred libvirt e2e

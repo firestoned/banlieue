@@ -51,9 +51,12 @@
 #   ./bootstrap-k0s-cluster.sh --print-env-template   # scaffold for the vSphere env file
 #
 #   `join` adds the nodes named in JOIN_NODES to a cluster that is ALREADY
-#   RUNNING, as k0s workers, with a 15-minute token from a controller
-#   (ADR-0099). It never touches a controller or the k0sctl config, so it is
-#   the safe way to grow a cluster whose controllers have changed since
+#   RUNNING, each in its NODE_ROLES role, with a 15-minute token from a
+#   controller (ADR-0099). A new controller copies /etc/k0s and its install
+#   flags from that running controller, not from this script's settings, so
+#   it matches the cluster as it is now. `join` never writes to an existing
+#   controller or uses the k0sctl config, so it is the safe way to grow (or
+#   swap the nodes of) a cluster whose controllers have changed since
 #   bootstrap; `config` + `apply` would push the generated config back onto
 #   every controller. Typical: raise VM_COUNT, then `vms join`.
 #
@@ -100,6 +103,11 @@ LIBVIRT_BRIDGE="${LIBVIRT_BRIDGE:-}"
 # Fixed MACs let a LAN DHCP server reserve each node's address, which a
 # cluster needs: k0s does not survive its nodes changing address.
 VM_MACS="${VM_MACS:-}"
+# Space-separated names of nodes that were removed from the cluster but keep
+# their position in NODE_ROLES, VM_MACS and NODE_VMMS, because nodes are
+# named by position (ADR-0099). `vms` does not recreate them and no other
+# step waits for them, so a cluster can swap its nodes one at a time.
+RETIRED_NODES="${RETIRED_NODES:-}"
 LIBVIRT_POOL="${LIBVIRT_POOL:-default}"
 
 # --- per-node VMM (ADR-0099) ------------------------------------------------
@@ -128,10 +136,12 @@ SWTPM="${SWTPM:-/usr/bin/swtpm}"
 CH_UNIT_DIR="${CH_UNIT_DIR:-/etc/systemd/system}"
 
 # --- join (ADR-0099) ----------------------------------------------------------
-# Space-separated node names to add as WORKERS to a running cluster.
+# Space-separated node names to add to a running cluster, each in its
+# NODE_ROLES role (worker, controller or controller+worker).
 JOIN_NODES="${JOIN_NODES:-}"
-# Controller address to mint the join token on. Empty: the first controller
-# in the node table.
+# Controller address to mint the join token on, and that a joining
+# controller copies its configuration from. Empty: the first controller in
+# the node table.
 JOIN_CONTROLLER="${JOIN_CONTROLLER:-}"
 JOIN_TOKEN_EXPIRY="${JOIN_TOKEN_EXPIRY:-15m}"
 # No osinfo entry exists for Kairos, so `generic` is the right fallback there.
@@ -580,8 +590,19 @@ node_name_roles() {
   fi
   local roles=($NODE_ROLES) idx
   for idx in $(seq 0 $((VM_COUNT - 1))); do
+    node_retired "$idx" && continue
     echo "$(vm_name "$idx") ${roles[$idx]:-worker}"
   done
+}
+
+# node_retired <idx>: succeeds when VM <idx> is named in RETIRED_NODES.
+node_retired() {
+  local name retired
+  name="$(vm_name "$1")"
+  for retired in $RETIRED_NODES; do
+    [[ "$retired" == "$name" ]] && return 0
+  done
+  return 1
 }
 
 # node_vmm <idx>: the VMM that runs VM <idx> (libvirt backend), from NODE_VMMS.
@@ -595,6 +616,7 @@ node_vmm() {
 any_node_vmm() {
   local idx
   for idx in $(seq 0 $((VM_COUNT - 1))); do
+    node_retired "$idx" && continue
     [[ "$(node_vmm "$idx")" == "$1" ]] && return 0
   done
   return 1
@@ -955,8 +977,13 @@ EOF
   fi
 
   if [[ -n "$TAILSCALE_AUTHKEY" ]]; then
+    # Not from the installer: Kairos runs this seed's stages in the live
+    # boot too, and a join there leaves an offline device on the tailnet
+    # that pushes the installed node's name to <name>-1. Same markers as
+    # Kairos's own stages in /system/oem.
     cat >>"$seed_dir/user-data" <<EOF
     - name: "Install and join Tailscale"
+      if: '[ ! -f /run/cos/live_mode ] && [ ! -f /run/cos/uki_install_mode ]'
       commands:
         - "[ -x /usr/local/bin/tailscaled ] || ( curl -fsSL -o /tmp/ts.tgz https://pkgs.tailscale.com/stable/tailscale_${TAILSCALE_VERSION}_amd64.tgz && tar xzf /tmp/ts.tgz -C /tmp && cp /tmp/tailscale_${TAILSCALE_VERSION}_amd64/tailscale /tmp/tailscale_${TAILSCALE_VERSION}_amd64/tailscaled /usr/local/bin/ && rm -rf /tmp/ts.tgz /tmp/tailscale_${TAILSCALE_VERSION}_amd64 )"
         - systemctl daemon-reload
@@ -1115,6 +1142,10 @@ create_vms_libvirt() {
     ensure_pool
   fi
   for idx in $(seq 0 $((VM_COUNT - 1))); do
+    if node_retired "$idx"; then
+      log "$(vm_name "$idx") is retired (RETIRED_NODES), not creating it"
+      continue
+    fi
     create_vm "$idx" &
     pids+=($!)
   done
@@ -1293,6 +1324,7 @@ validate_ch_node() {
 check_deps_ch() {
   local missing=() idx cmd
   for idx in $(seq 0 $((VM_COUNT - 1))); do
+    node_retired "$idx" && continue
     [[ "$(node_vmm "$idx")" == "cloud-hypervisor" ]] && validate_ch_node "$(vm_name "$idx")"
   done
   for cmd in "$CH_BINARY" "$CH_REMOTE" qemu-img genisoimage ip systemctl sudo; do
@@ -1495,13 +1527,16 @@ create_vm_ch() {
   name="$(vm_name "$idx")"; unit="$(ch_unit "$name")"; dir="$(ch_node_dir "$name")"
 
   if sudo test -f "$CH_UNIT_DIR/$unit.service"; then
-    if ! sudo test -f "$dir/$CH_INSTALLED_MARKER"; then
-      log "$name has units but never finished installing; run destroy and retry"
-      exit 1
+    if sudo test -f "$dir/$CH_INSTALLED_MARKER"; then
+      log "Cloud Hypervisor node $name already defined, ensuring it is running"
+      sudo systemctl start "$unit.service"
+      return
     fi
-    log "Cloud Hypervisor node $name already defined, ensuring it is running"
-    sudo systemctl start "$unit.service"
-    return
+    # An install that was interrupted (the script killed, the host rebooted)
+    # leaves units and a partial disk but no marker. Nothing on that disk is
+    # worth keeping, so this node alone is removed and installed again.
+    log "$name never finished installing; removing it and starting over"
+    destroy_ch_node "$idx"
   fi
 
   host_ip="$(ch_bridge_addr)"
@@ -1596,10 +1631,13 @@ destroy_ch_node() {
 # shellcheck disable=SC2016
 readonly K0S_FIND_REMOTE='k=$(command -v k0s 2>/dev/null || ls -1 /opt/k0s/k0s-v*-amd64 2>/dev/null | tail -n1); [ -n "$k" ] || { echo "no k0s binary on this node" >&2; exit 1; }'
 readonly JOIN_READY_ATTEMPTS=60     # x 5 s for the new node to report Ready
+# What a joining controller does NOT copy from the running one's /etc/k0s:
+# join tokens (each node gets its own) and the containerd config k0s
+# generates for each worker. GNU tar exclusions match any path component.
+readonly K0S_CONFIG_CLONE_EXCLUDES="--exclude=*token-file --exclude=containerd.toml"
 
-# join_targets: the NODE_TABLE rows named by JOIN_NODES. Refuses controllers
-# (their config is what the script cannot know about a running cluster) and
-# names that are not nodes of this cluster.
+# join_targets: the NODE_TABLE rows named by JOIN_NODES, in that order.
+# Refuses names that are not nodes of this cluster.
 join_targets() {
   [[ -n "$JOIN_NODES" ]] || { log "join needs JOIN_NODES=<node names>"; exit 1; }
   local want row name role ip found
@@ -1608,12 +1646,6 @@ join_targets() {
     for row in "${NODE_TABLE[@]}"; do
       IFS='|' read -r name role ip <<<"$row"
       [[ "$name" == "$want" ]] || continue
-      if [[ "$role" == controller* ]]; then
-        log "join adds workers only; $want is a $role."
-        log "  A controller needs the cluster's storage, VIP and SAN settings, which a running"
-        log "  cluster may have changed since bootstrap."
-        exit 1
-      fi
       found="$row"
       break
     done
@@ -1637,9 +1669,107 @@ join_controller_ip() {
   exit 1
 }
 
-join_workers() {
+# controller_install_flags <ExecStart> <role>: the `k0s install controller`
+# flags for a node joining in <role>, from the running controller's
+# ExecStart line. Every flag after `controller` is kept (config path, data
+# dir, disabled components) except the worker ones, which follow <role> and
+# NO_TAINTS as at bootstrap, and a token file, which the join supplies.
+# Refuses a `--single` controller (it cannot have peers), a line that is
+# not a controller's, and quoting this word split cannot carry.
+controller_install_flags() {
+  local exec_start="$1" role="$2" word seen="" skip="" out=()
+  case "$exec_start" in
+    *\'*|*\"*|*\\*) log "the controller's ExecStart has quoting join cannot copy: $exec_start"; return 1 ;;
+  esac
+  for word in $exec_start; do
+    if [[ -z "$seen" ]]; then
+      [[ "$word" == controller ]] && seen=1
+      continue
+    fi
+    if [[ -n "$skip" ]]; then skip=""; continue; fi
+    case "$word" in
+      --single|--single=true)
+        log "the running controller is a --single one, which cannot take peers"; return 1 ;;
+      --token-file) skip=1 ;;
+      --token-file=*|--enable-worker|--enable-worker=*|--no-taints|--no-taints=*) ;;
+      *) out+=("$word") ;;
+    esac
+  done
+  [[ -n "$seen" ]] || { log "not a k0s controller's ExecStart: $exec_start"; return 1; }
+  if [[ "$role" == "controller+worker" ]]; then
+    out+=(--enable-worker)
+    [[ "$NO_TAINTS" == "true" ]] && out+=(--no-taints)
+  fi
+  printf '%s' "${out[*]}"
+}
+
+# join_worker_node <controller-ip> <name> <ip> <k0s-bin>
+join_worker_node() {
+  local cp_ip="$1" name="$2" ip="$3" k0s_bin="$4"
+  if ssh_run "$ip" 'systemctl is-active --quiet k0sworker' 2>/dev/null; then
+    log "[$name] k0sworker already active, skipping"
+    return 0
+  fi
+  stage_k0s_binary "$ip"
+  log "[$name] minting a worker token on $cp_ip (expires in $JOIN_TOKEN_EXPIRY)"
+  # Straight from the controller into a root-only file on the node: the
+  # token is never written on this machine.
+  ssh_run "$cp_ip" "sudo sh -c '$K0S_FIND_REMOTE; \"\$k\" token create --role=worker --expiry=$JOIN_TOKEN_EXPIRY'" \
+    | tr -d '\r' \
+    | ssh_run "$ip" 'sudo install -d -m 0700 /etc/k0s && sudo sh -c "umask 077; cat >/etc/k0s/worker-token-file"'
+  log "[$name/$ip] installing k0s worker"
+  ssh_run "$ip" "sudo $k0s_bin install worker --force --token-file /etc/k0s/worker-token-file && sudo $k0s_bin start"
+  wait_node_ready "$cp_ip" "$name"
+}
+
+# join_controller_node <controller-ip> <name> <role> <ip> <k0s-bin>: the new
+# controller takes the RUNNING controller's /etc/k0s (k0s.yaml with its
+# storage, VIP and API server settings, and the files it names, such as a
+# datastore CA or an authentication config) and its install flags, so it
+# matches the cluster as it is, not as this script would generate it. The
+# token carries the cluster CA and service-account keys over k0s's join API.
+join_controller_node() {
+  local cp_ip="$1" name="$2" role="$3" ip="$4" k0s_bin="$5" exec_start flags
+  if ssh_run "$ip" 'systemctl is-active --quiet k0scontroller' 2>/dev/null; then
+    log "[$name] k0scontroller already active, skipping"
+    return 0
+  fi
+  if ssh_run "$ip" 'systemctl is-active --quiet k0sworker' 2>/dev/null; then
+    log "[$name] runs k0s as a worker; reset it before joining it as a $role:"
+    log "  on $name: sudo k0s stop && sudo k0s reset && sudo reboot   (k0s may be under /opt/k0s)"
+    log "  then: kubectl delete node $name"
+    exit 1
+  fi
+  exec_start="$(ssh_run "$cp_ip" 'systemctl cat k0scontroller' | tr -d '\r' | sed -n 's/^ExecStart=//p' | tail -n1)"
+  flags="$(controller_install_flags "$exec_start" "$role")" || exit 1
+  # A Node left from an earlier role (a reset worker) would be reused as is:
+  # kubelet sets a Node's labels only when it registers it, so the new
+  # controller would never carry node-role.kubernetes.io/control-plane.
+  if ssh_run "$cp_ip" "sudo sh -c '$K0S_FIND_REMOTE; \"\$k\" kubectl get node $name --no-headers'" >/dev/null 2>&1; then
+    log "[$name] a Node named $name already exists, from its earlier role."
+    log "  kubelet labels a Node only when it registers it, so delete it first: kubectl delete node $name"
+    exit 1
+  fi
+  stage_k0s_binary "$ip"
+  log "[$name] copying /etc/k0s from $cp_ip (no tokens)"
+  # Node to node through this machine's pipe, never written here: k0s.yaml
+  # carries the datastore password and the VRRP secret.
+  ssh_run "$cp_ip" "sudo tar -C /etc/k0s --numeric-owner $K0S_CONFIG_CLONE_EXCLUDES -cf - ." \
+    | ssh_run "$ip" 'sudo install -d -m 0755 /etc/k0s && sudo tar -C /etc/k0s --numeric-owner -xpf -'
+  log "[$name] minting a controller token on $cp_ip (expires in $JOIN_TOKEN_EXPIRY)"
+  ssh_run "$cp_ip" "sudo sh -c '$K0S_FIND_REMOTE; \"\$k\" token create --role=controller --expiry=$JOIN_TOKEN_EXPIRY'" \
+    | tr -d '\r' \
+    | ssh_run "$ip" 'sudo sh -c "umask 077; cat >/etc/k0s/controller-token-file"'
+  log "[$name/$ip] installing k0s $role: $flags"
+  ssh_run "$ip" "sudo $k0s_bin install controller --force $flags --token-file /etc/k0s/controller-token-file && sudo $k0s_bin start"
+  wait_controlnode "$cp_ip" "$name"
+  [[ "$role" == "controller+worker" ]] && wait_node_ready "$cp_ip" "$name"
+  return 0
+}
+
+join_nodes() {
   populate_node_table
-  local targets cp_ip cp_version tag k0s_bin row name role ip
+  local targets cp_ip cp_version tag k0s_bin name role ip
   targets="$(join_targets)"
   cp_ip="$(join_controller_ip)"
   tag="$(_k0s_ver_tag)"
@@ -1653,22 +1783,30 @@ join_workers() {
   fi
 
   while IFS='|' read -r name role ip; do
-    if ssh_run "$ip" 'systemctl is-active --quiet k0sworker' 2>/dev/null; then
-      log "[$name] k0sworker already active, skipping"
-      continue
-    fi
-    stage_k0s_binary "$ip"
-    log "[$name] minting a worker token on $cp_ip (expires in $JOIN_TOKEN_EXPIRY)"
-    # Straight from the controller into a root-only file on the node: the
-    # token is never written on this machine.
-    ssh_run "$cp_ip" "sudo sh -c '$K0S_FIND_REMOTE; \"\$k\" token create --role=worker --expiry=$JOIN_TOKEN_EXPIRY'" \
-      | tr -d '\r' \
-      | ssh_run "$ip" 'sudo install -d -m 0700 /etc/k0s && sudo sh -c "umask 077; cat >/etc/k0s/worker-token-file"'
-    log "[$name/$ip] installing k0s worker $tag"
-    ssh_run "$ip" "sudo $k0s_bin install worker --force --token-file /etc/k0s/worker-token-file && sudo $k0s_bin start"
-    wait_node_ready "$cp_ip" "$name"
+    case "$role" in
+      worker) join_worker_node "$cp_ip" "$name" "$ip" "$k0s_bin" ;;
+      controller|controller+worker) join_controller_node "$cp_ip" "$name" "$role" "$ip" "$k0s_bin" ;;
+      *) log "[$name] unknown role '$role'"; exit 1 ;;
+    esac
   done <<<"$targets"
   log "join complete: $JOIN_NODES"
+}
+
+# wait_controlnode <controller-ip> <node>: k0s's autopilot records every
+# controller as a ControlNode once it has started against the datastore.
+wait_controlnode() {
+  local cp_ip="$1" name="$2"
+  log "[$name] waiting for the controller to register..."
+  for _ in $(seq 1 "$JOIN_READY_ATTEMPTS"); do
+    if ssh_run "$cp_ip" "sudo sh -c '$K0S_FIND_REMOTE; \"\$k\" kubectl get controlnode $name --no-headers'" >/dev/null 2>&1; then
+      log "[$name] controller registered"
+      return 0
+    fi
+    sleep 5
+  done
+  log "[$name] never registered as a controller; check 'sudo journalctl -u k0scontroller' on the node."
+  log "  With kine, the datastore must accept this node's address (for PostgreSQL, a pg_hba.conf line)."
+  exit 1
 }
 
 # wait_node_ready <controller-ip> <node>: asks the controller, so it works
@@ -2257,6 +2395,7 @@ populate_node_table() {
   fi
   local roles=($NODE_ROLES) idx name ip
   for idx in $(seq 0 $((VM_COUNT - 1))); do
+    node_retired "$idx" && continue
     name="$(vm_name "$idx")"
     if [[ "$(node_vmm "$idx")" == "cloud-hypervisor" ]]; then
       ip="$(wait_for_ip_ch "$idx" "$name")"
@@ -2798,7 +2937,7 @@ main() {
       ;;
     join)
       check_deps
-      join_workers
+      join_nodes
       ;;
     destroy)
       destroy_all
@@ -2817,7 +2956,7 @@ main() {
       echo "Usage: $0 [all|vms|config|apply|kubeconfig|label|flux|join|destroy|--print-env-template]" >&2
       echo "  BACKEND=libvirt (default) | vsphere   (vsphere also needs BANLIEUE_ENV_FILE)" >&2
       echo "  NODE_VMMS=\"libvirt ... cloud-hypervisor\"  per-node VMM on the libvirt backend (ADR-0099)" >&2
-      echo "  JOIN_NODES=\"<name> ...\"  with 'join': add those workers to a RUNNING cluster" >&2
+      echo "  JOIN_NODES=\"<name> ...\"  with 'join': add those workers or controllers to a RUNNING cluster" >&2
       echo "  FLUX_ENABLED=true         to enable the flux/all flux-operator deployment step" >&2
       exit 1
       ;;

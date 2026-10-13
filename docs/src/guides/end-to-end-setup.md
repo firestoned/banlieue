@@ -268,8 +268,11 @@ Requirements and differences from a libvirt node:
   (`sudo socat -,raw,echo=0 UNIX-CONNECT:/run/k0s-vm-<name>/serial.sock`).
 - `destroy` removes CH nodes too: it kills the VMM (a power cut, like `virsh
   destroy`), removes the units and deletes the node's directory.
+- An install that was interrupted (the script killed, the host rebooted) is
+  redone by the next `vms`: a node with units but no `.installed` marker is
+  removed on its own and installed again. Only that node is touched.
 
-##### Adding a worker to a running cluster (ADR-0099)
+##### Adding a node to a running cluster (ADR-0099)
 
 `config` regenerates the whole k0sctl configuration from the script's
 settings, and `apply` pushes it to every node, controllers included. A
@@ -295,19 +298,93 @@ set -a; . ~/.config/banlieue/hosts/<name>.env; . ./mgmt-04.env; set +a
 ./scripts/bootstrap-k0s-cluster.sh join
 ```
 
-`vms` leaves existing VMs alone (it only starts them if stopped). `join`:
+`vms` leaves existing VMs alone (it only starts them if stopped). `join`
+adds each node in `JOIN_NODES` in its `NODE_ROLES` role:
 
 1. checks the controller runs `K0S_VERSION`, and refuses a mismatch;
 2. stages that k0s binary, checksum-verified, under `/opt/k0s` on the node;
-3. mints a worker token on a controller (`JOIN_CONTROLLER`, default the
-   first one) that expires after `JOIN_TOKEN_EXPIRY` (`15m`), and carries it
-   over SSH into a root-only file on the node, never onto your machine;
-4. runs `k0s install worker` and waits for the node to report `Ready`.
+3. mints a token of the node's role on a controller (`JOIN_CONTROLLER`,
+   default the first one) that expires after `JOIN_TOKEN_EXPIRY` (`15m`),
+   and carries it over SSH into a root-only file on the node, never onto
+   your machine;
+4. runs `k0s install worker`, or `k0s install controller` for a
+   controller, and waits for the node to report `Ready` (a controller first
+   registers as a `ControlNode`).
 
-It writes nothing to any controller and never reads `k0sctl.yaml`. A node
-whose `k0sworker` is already active is skipped. Controllers are refused:
-joining one needs the cluster's storage, VIP and SAN settings, which is what
-a running cluster may have changed.
+It never reads `k0sctl.yaml` and writes nothing to an existing controller.
+A node already running its role's k0s service is skipped.
+
+**A joining controller is a copy of a running one**, not of your settings,
+so the storage, VIP and API server configuration you changed after
+bootstrap carry over:
+
+- `/etc/k0s` is copied from `JOIN_CONTROLLER` (or the first controller),
+  node to node through one pipe, without join tokens or the per-worker
+  `containerd.toml`. That is `k0s.yaml` and whatever it names: a datastore
+  CA bundle, an authentication configuration. Stray backups beside them are
+  copied too.
+- The install flags are that controller's (from `systemctl cat
+  k0scontroller`), such as `--disable-components=konnectivity-server`.
+  Only the worker flags change: `--enable-worker` for `controller+worker`,
+  plus `--no-taints` when `NO_TAINTS=true`.
+
+Before joining a controller, let the systems outside the cluster accept
+it: with kine, the datastore must admit the new node's address (on
+PostgreSQL, a `hostssl` line in `pg_hba.conf` and a reload), and anything
+else keyed on the controllers' addresses, such as other databases' access
+rules or firewalls, needs the new one too. `join` cannot do that; the
+controller just never registers, and the message points at its journal.
+
+A node that already runs k0s in another role is refused. Converting a
+worker to a controller destroys its k0s state, so you run the reset
+yourself (`sudo k0s stop && sudo k0s reset && sudo reboot` on the node),
+delete its Node (`kubectl delete node <name>`), then `join` again. `join`
+refuses a controller while a Node of that name exists: kubelet sets a
+Node's labels only when it registers it, so the old worker's Node would
+never get `node-role.kubernetes.io/control-plane`.
+
+###### Swapping a libvirt node for a Cloud Hypervisor one
+
+Replace one node at a time, adding before removing, so a three-controller
+control plane never runs on two:
+
+1. Create the CH node as a controller and join it (above): give it the
+   same role as the node it replaces.
+2. Check it serves: `kubectl get controlnodes` lists it, and its node is
+   `Ready`. With `API_VIP`, it is now also a VRRP candidate for the VIP.
+3. Retire the old node: `kubectl drain <old> --ignore-daemonsets
+   --delete-emptydir-data`, then on it `sudo k0s stop && sudo k0s reset`,
+   then `kubectl delete node <old>` and `kubectl delete controlnode <old>`.
+   **Save its local volumes first.** A volume of a node-local storage class
+   (such as `local-path`) lives on the node's disk and is pinned to the
+   node's name, so it dies with the VM. List them with `kubectl get pv`
+   (look at each one's node affinity); after the drain, copy their
+   directories off the node (`sudo tar -C /opt -cpf - local-path-provisioner`
+   for `local-path`) and, once the new VM is up but **before** `join`,
+   restore them with `tar -xpf` so ownership and modes come back too.
+   Without that, the pod is rescheduled onto the new node of the same name
+   with an empty directory the kubelet creates as `root 0755`, which a
+   non-root pod cannot write.
+4. Remove its VM (`virsh destroy` and `virsh undefine --nvram <old>`) and
+   its disk, its datastore access line and its DHCP reservation.
+5. Add it to `RETIRED_NODES` in the env file.
+
+Nodes are named by position (`<VM_PREFIX>-01` is the first entry of
+`NODE_ROLES`, `VM_MACS` and `NODE_VMMS`), so a retired node keeps its
+entry; deleting it would rename every node after it. `RETIRED_NODES` is
+what stops `vms` recreating it as an empty VM and `join` waiting for its
+address. Keep growing the list as the swap goes on:
+
+```sh
+VM_COUNT=5
+NODE_ROLES="controller+worker controller+worker controller+worker controller+worker controller+worker"
+NODE_VMMS="libvirt libvirt libvirt cloud-hypervisor cloud-hypervisor"
+RETIRED_NODES="mgmt-01"
+JOIN_NODES=mgmt-05
+```
+
+Do not run `config` + `apply` against a swapped cluster: the k0sctl
+configuration would describe nodes and settings it no longer has.
 
 The two files are sourced with `set -a` rather than passed as
 `BANLIEUE_ENV_FILE`, because the script sources that file **after** reading

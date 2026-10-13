@@ -1748,8 +1748,10 @@ K0S_IMAGEBUILD_NODE    ?=
 K0S_NODE_VMMS          ?=
 K0S_CH_FIRMWARE        ?=
 K0S_CH_BRIDGE          ?=
-# Nodes to add as workers to a RUNNING cluster with `k0s-join` (ADR-0099).
-# Never touches a controller, unlike k0s-config + k0s-apply.
+# Nodes to add to a RUNNING cluster with `k0s-join`, each in its NODE_ROLES
+# role (ADR-0099). A new controller copies the running controller's
+# /etc/k0s; no existing controller is written to, unlike k0s-config +
+# k0s-apply.
 K0S_JOIN_NODES         ?=
 K0S_JOIN_CONTROLLER    ?=
 
@@ -1799,7 +1801,7 @@ k0s-kubeconfig: ## Fetch the k0s dev cluster kubeconfig into $(K0S_WORKDIR)/kube
 k0s-label: ## Label+taint the imagebuild worker (banlieue.io/imagebuild=true, dedicated=imagebuild:NoSchedule)
 	$(K0S_ENV) $(K0S_SCRIPT) label
 
-k0s-join: ## Join K0S_JOIN_NODES as workers to a RUNNING cluster, without touching controllers (ADR-0099)
+k0s-join: ## Join K0S_JOIN_NODES (workers or controllers) to a RUNNING cluster, without rewriting its controllers (ADR-0099)
 	$(K0S_ENV) $(K0S_SCRIPT) join
 
 k0s-script-test: ## Unit-test bootstrap-k0s-cluster.sh (CH node units, join targets; no host needed)

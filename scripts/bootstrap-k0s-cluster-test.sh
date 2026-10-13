@@ -3,16 +3,18 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Tests for scripts/bootstrap-k0s-cluster.sh: the pure parts of the Cloud
-# Hypervisor node support and of the `join` step (ADR-0099). The script is
+# Hypervisor node support and of the `join` step (ADR-0099), workers and
+# controllers. The script is
 # sourced, not run, so nothing here touches libvirt, systemd, sudo or SSH.
 #
 # Usage: scripts/bootstrap-k0s-cluster-test.sh
 
 # Variables set here are read by the sourced script's functions, which the
 # linter cannot follow through a computed path; the expect_* helpers are
-# deliberate A && B || C one-liners. Kept before the first command, so these
-# apply to the whole file.
-# shellcheck disable=SC2034,SC2015,SC2016,SC1091
+# deliberate A && B || C one-liners; stubs that replace the script's
+# functions are called by those functions. Kept before the first command,
+# so these apply to the whole file.
+# shellcheck disable=SC2034,SC2015,SC2016,SC1091,SC2329
 set -euo pipefail
 
 SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/bootstrap-k0s-cluster.sh"
@@ -161,7 +163,9 @@ NODE_TABLE=("core-01|controller+worker|192.0.2.11" "core-02|controller+worker|19
 JOIN_NODES="core-04"
 expect_eq "join picks the named worker" "$(join_targets)" "core-04|worker|192.0.2.14"
 JOIN_NODES="core-01"
-expect_refused "join refuses a controller" join_targets
+expect_eq "join picks a controller" "$(join_targets)" "core-01|controller+worker|192.0.2.11"
+JOIN_NODES="core-04 core-01"
+expect_eq "join keeps JOIN_NODES order" "$(join_targets | cut -d'|' -f1 | tr '\n' ' ')" "core-04 core-01 "
 JOIN_NODES="core-09"
 expect_refused "join refuses an unknown node" join_targets
 JOIN_NODES=""
@@ -170,6 +174,77 @@ JOIN_CONTROLLER=""
 expect_eq "token from the first controller" "$(join_controller_ip)" "192.0.2.11"
 JOIN_CONTROLLER=192.0.2.12
 expect_eq "JOIN_CONTROLLER overrides" "$(join_controller_ip)" "192.0.2.12"
+
+# --- controller join: flags cloned from the running controller ---------------
+src="/usr/local/bin/k0s controller --config=/etc/k0s/k0s.yaml --data-dir=/var/lib/k0s --enable-worker=true --no-taints=true --disable-components=konnectivity-server"
+NO_TAINTS=true
+expect_eq "controller+worker keeps the source's flags" "$(controller_install_flags "$src" controller+worker)" \
+  "--config=/etc/k0s/k0s.yaml --data-dir=/var/lib/k0s --disable-components=konnectivity-server --enable-worker --no-taints"
+expect_eq "a plain controller runs no kubelet" "$(controller_install_flags "$src" controller)" \
+  "--config=/etc/k0s/k0s.yaml --data-dir=/var/lib/k0s --disable-components=konnectivity-server"
+NO_TAINTS=false
+expect_eq "NO_TAINTS=false keeps the taint" "$(controller_install_flags "$src" controller+worker)" \
+  "--config=/etc/k0s/k0s.yaml --data-dir=/var/lib/k0s --disable-components=konnectivity-server --enable-worker"
+NO_TAINTS=true
+expect_eq "the source's own token file is dropped, both spellings" \
+  "$(controller_install_flags "/opt/k0s/k0s-v1-amd64 controller --token-file /etc/k0s/t --token-file=/etc/k0s/t -c /etc/k0s/k0s.yaml" controller)" \
+  "-c /etc/k0s/k0s.yaml"
+expect_eq "worker flags of another spelling are dropped" \
+  "$(controller_install_flags "k0s controller --enable-worker --no-taints" controller+worker)" "--enable-worker --no-taints"
+expect_refused "a --single controller cannot be joined" controller_install_flags "k0s controller --single" controller
+expect_refused "a unit that is not a controller is refused" controller_install_flags "k0s worker --token-file=/x" controller
+expect_refused "quoted flags are refused" controller_install_flags "k0s controller --labels='a=b c'" controller
+# A converted worker's Node outlives its reset, and kubelet sets a Node's
+# labels only when it registers it: the controller would come up unlabelled.
+fake_cluster() {
+  ssh_run() {
+    case "$2" in
+      *is-active*) return 1 ;;
+      *"systemctl cat k0scontroller"*) echo "ExecStart=/usr/local/bin/k0s controller --config=/etc/k0s/k0s.yaml" ;;
+      *"get node core-04"*) [[ -n "$NODE_EXISTS" ]] ;;
+      *) return 1 ;;
+    esac
+  }
+  stage_k0s_binary() { echo STAGED; exit 0; }
+}
+staged="$( NODE_EXISTS=1; fake_cluster; join_controller_node 192.0.2.11 core-04 controller+worker 192.0.2.14 /opt/k0s/k0s 2>/dev/null )"
+expect_lacks "a controller is not joined over an existing Node" "$staged" "STAGED"
+staged="$( NODE_EXISTS=""; fake_cluster; join_controller_node 192.0.2.11 core-04 controller+worker 192.0.2.14 /opt/k0s/k0s 2>/dev/null )"
+expect_has "a controller with no Node yet goes ahead" "$staged" "STAGED"
+expect_has "the clone skips token files" "$K0S_CONFIG_CLONE_EXCLUDES" "--exclude=*token-file"
+expect_has "the clone skips the worker's generated containerd config" "$K0S_CONFIG_CLONE_EXCLUDES" "--exclude=containerd.toml"
+
+# --- an interrupted CH install is cleared and redone ---------------------------
+# Stubs: units exist; the installed marker exists only when INSTALLED is set.
+# The run stops at the VM user (ensure_ch_vm_user), after the decision under
+# test and before anything is built.
+fake_ch_host() {
+  sudo() { case "$*" in *"$CH_INSTALLED_MARKER"*) [[ -n "$INSTALLED" ]] ;; "test -f "*) return 0 ;; *) echo "SUDO $*" ;; esac; }
+  destroy_ch_node() { echo "DESTROYED $1"; }
+  ch_bridge_addr() { echo 192.0.2.1; }
+  ensure_ch_vm_user() { echo "REBUILT"; exit 0; }
+}
+VM_PREFIX=core
+out="$( INSTALLED=""; fake_ch_host; create_vm_ch 0 2>/dev/null )"
+expect_has "a half-installed node is destroyed" "$out" "DESTROYED 0"
+expect_has "and built again" "$out" "REBUILT"
+out="$( INSTALLED=1; fake_ch_host; create_vm_ch 0 2>/dev/null )"
+expect_lacks "an installed node is not destroyed" "$out" "DESTROYED"
+expect_has "an installed node is started" "$out" "systemctl start"
+
+# --- retired nodes keep their position but are skipped ----------------------
+VM_COUNT=4 VM_PREFIX=core NODE_VMMS="" NODE_ROLES="controller+worker controller+worker controller+worker controller+worker"
+RETIRED_NODES="core-01"
+expect_accepted "a retired node is retired" node_retired 0
+expect_refused "other nodes are not" node_retired 1
+created="$( ensure_pool() { :; }; create_vm() { vm_name "$1"; echo; }; create_vms_libvirt | tr '\n' ' ' )"
+expect_eq "vms does not recreate a retired node" "$created" "core-02 core-03 core-04 "
+table="$( wait_for_ip_libvirt() { echo "192.0.2.$((10 + ${1##*-}))"; }; wait_for_ssh() { :; }
+  NODE_TABLE=(); populate_node_table; printf '%s ' "${NODE_TABLE[@]}" )"
+expect_lacks "the node table skips a retired node" "$table" "core-01"
+expect_has "the node table keeps the others" "$table" "core-02|controller+worker|192.0.2.12"
+expect_eq "label sees no retired node" "$(node_name_roles | cut -d' ' -f1 | tr '\n' ' ')" "core-02 core-03 core-04 "
+RETIRED_NODES=""
 
 # --- seed: announce to the host ------------------------------------------------
 SSH_USER=erick TAILSCALE_AUTHKEY="" LIBVIRT_IMAGE_KIND=kairos
@@ -181,6 +256,11 @@ make_cloud_init_kairos core-04 "$TMP/seed-kt" 192.0.2.1
 ud="$(cat "$TMP/seed-kt/user-data")"
 [[ "$(grep -c '^  network:' <<<"$ud")" == 1 ]] && ok "one network stage with tailscale too" || fail "one network stage with tailscale too"
 expect_has "tailscale still joins" "$ud" "tailscale up"
+# The live installer boot runs the same seed; joining there leaves an
+# offline device on the tailnet and pushes the node's name to <name>-1.
+ts_stage="$(sed -n '/Install and join Tailscale/,/^write_files:/p' <<<"$ud")"
+expect_has "tailscale skips the live installer" "$ts_stage" "[ ! -f /run/cos/live_mode ]"
+expect_has "and the UKI installer" "$ts_stage" "[ ! -f /run/cos/uki_install_mode ]"
 TAILSCALE_AUTHKEY=""
 make_cloud_init_kairos core-01 "$TMP/seed-kl"
 expect_lacks "libvirt seed has no announce" "$(cat "$TMP/seed-kl/user-data")" "ping -c 3"
@@ -189,6 +269,7 @@ expect_has "cloud seed announces every boot" "$(cat "$TMP/seed-c/user-data")" "k
 
 # --- usage -------------------------------------------------------------------------
 expect_has "usage lists join" "$(main bogus 2>&1)" "join"
+expect_has "usage says join takes controllers" "$(main bogus 2>&1)" "controllers"
 
 if ((failures)); then
   echo "$failures failure(s)"
