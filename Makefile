@@ -163,7 +163,7 @@ help: ## Show this help
         vcsim-up vcsim-down vcsim-logs \
         docs docs-serve docs-clean docs-deploy \
         calm-diagrams calm-docify calm-validate \
-        k0s-all k0s-vms k0s-config k0s-apply k0s-kubeconfig k0s-destroy k0s-clean \
+        k0s-all k0s-vms k0s-config k0s-apply k0s-kubeconfig k0s-join k0s-script-test k0s-destroy k0s-clean \
         k0s-sync k0s-remote-all k0s-remote-vms k0s-remote-config k0s-remote-apply \
         k0s-remote-kubeconfig k0s-remote-destroy k0s-fetch-kubeconfig \
         debian-image debian-image-clean debian-image-sync debian-image-remote \
@@ -1742,6 +1742,16 @@ K0S_KUBECONFIG_SERVER  ?=
 # taint dedicated=imagebuild:NoSchedule). Empty = the script picks the last
 # pure worker in K0S_NODE_ROLES.
 K0S_IMAGEBUILD_NODE    ?=
+# Per-node VMM, one entry per VM: libvirt (default) or cloud-hypervisor
+# (ADR-0099). A cloud-hypervisor node is a plain CH VM run by systemd units
+# on the host; it needs K0S_CH_FIRMWARE, a bridge and passwordless sudo.
+K0S_NODE_VMMS          ?=
+K0S_CH_FIRMWARE        ?=
+K0S_CH_BRIDGE          ?=
+# Nodes to add as workers to a RUNNING cluster with `k0s-join` (ADR-0099).
+# Never touches a controller, unlike k0s-config + k0s-apply.
+K0S_JOIN_NODES         ?=
+K0S_JOIN_CONTROLLER    ?=
 
 K0S_HYPERVISOR         ?=
 K0S_HYPERVISOR_USER    ?= root
@@ -1767,6 +1777,8 @@ K0S_ENV = VM_COUNT=$(K0S_VM_COUNT) VCPUS=$(K0S_VCPUS) MEM_MB=$(K0S_MEM_MB) DISK_
 	K0S_DISABLE_KONNECTIVITY=$(K0S_DISABLE_KONNECTIVITY) \
 	NO_TAINTS=$(K0S_NO_TAINTS) K0S_VERSION=$(K0S_VERSION) IMAGEBUILD_NODE=$(K0S_IMAGEBUILD_NODE) \
 	K0SCTL_OS_OVERRIDE=$(K0SCTL_OS_OVERRIDE) \
+	NODE_VMMS="$(K0S_NODE_VMMS)" CH_FIRMWARE=$(K0S_CH_FIRMWARE) CH_BRIDGE=$(K0S_CH_BRIDGE) \
+	JOIN_NODES="$(K0S_JOIN_NODES)" JOIN_CONTROLLER=$(K0S_JOIN_CONTROLLER) \
 	SSH_PUBKEY=$(K0S_SSH_PUBKEY) SSH_USER=$(K0S_SSH_USER) WORKDIR=$(K0S_WORKDIR)
 
 k0s-all: ## Full idempotent k0s bootstrap: VMs -> k0sctl config -> apply -> kubeconfig (runs virt-install locally)
@@ -1786,6 +1798,12 @@ k0s-kubeconfig: ## Fetch the k0s dev cluster kubeconfig into $(K0S_WORKDIR)/kube
 
 k0s-label: ## Label+taint the imagebuild worker (banlieue.io/imagebuild=true, dedicated=imagebuild:NoSchedule)
 	$(K0S_ENV) $(K0S_SCRIPT) label
+
+k0s-join: ## Join K0S_JOIN_NODES as workers to a RUNNING cluster, without touching controllers (ADR-0099)
+	$(K0S_ENV) $(K0S_SCRIPT) join
+
+k0s-script-test: ## Unit-test bootstrap-k0s-cluster.sh (CH node units, join targets; no host needed)
+	scripts/bootstrap-k0s-cluster-test.sh
 
 k0s-destroy: ## Destroy the k0s dev VMs and remove generated config/disks
 	$(K0S_ENV) $(K0S_SCRIPT) destroy
@@ -1808,6 +1826,8 @@ K0S_REMOTE_ENV = VM_COUNT=$(K0S_VM_COUNT) VCPUS=$(K0S_VCPUS) MEM_MB=$(K0S_MEM_MB
 	K0S_DISABLE_KONNECTIVITY=$(K0S_DISABLE_KONNECTIVITY) \
 	NO_TAINTS=$(K0S_NO_TAINTS) K0S_VERSION=$(K0S_VERSION) IMAGEBUILD_NODE=$(K0S_IMAGEBUILD_NODE) \
 	K0SCTL_OS_OVERRIDE=$(K0SCTL_OS_OVERRIDE) \
+	NODE_VMMS="$(K0S_NODE_VMMS)" CH_FIRMWARE=$(K0S_CH_FIRMWARE) CH_BRIDGE=$(K0S_CH_BRIDGE) \
+	JOIN_NODES="$(K0S_JOIN_NODES)" JOIN_CONTROLLER=$(K0S_JOIN_CONTROLLER) \
 	SSH_USER=$(K0S_SSH_USER) WORKDIR=$(K0S_REMOTE_WORKDIR) \
 	SSH_PUBKEY=$(K0S_REMOTE_DIR)/$(notdir $(K0S_SSH_PUBKEY)) SSH_PRIVKEY=$(K0S_REMOTE_SSH_PRIVKEY)
 
@@ -1828,6 +1848,9 @@ k0s-remote-kubeconfig: k0s-sync ## Run 'k0s-kubeconfig' on $(K0S_HYPERVISOR) ove
 
 k0s-remote-label: k0s-sync ## Run 'k0s-label' on $(K0S_HYPERVISOR) over SSH instead of locally
 	$(K0S_SSH) 'cd $(K0S_REMOTE_DIR) && $(K0S_REMOTE_ENV) ./bootstrap-k0s-cluster.sh label'
+
+k0s-remote-join: k0s-sync ## Run 'k0s-join' on $(K0S_HYPERVISOR) over SSH instead of locally
+	$(K0S_SSH) 'cd $(K0S_REMOTE_DIR) && $(K0S_REMOTE_ENV) ./bootstrap-k0s-cluster.sh join'
 
 k0s-remote-destroy: k0s-sync ## Run 'k0s-destroy' on $(K0S_HYPERVISOR) over SSH instead of locally
 	$(K0S_SSH) 'cd $(K0S_REMOTE_DIR) && $(K0S_REMOTE_ENV) ./bootstrap-k0s-cluster.sh destroy'

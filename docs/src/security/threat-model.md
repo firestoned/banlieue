@@ -5,12 +5,22 @@ SPDX-License-Identifier: Apache-2.0
 # Threat Model
 
 > **Status:** Living document. Last full pass **2026-10-13**, against the
-> architecture defined by **ADR-0001 … ADR-0098** (0057–0059 unallocated,
+> architecture defined by **ADR-0001 … ADR-0099** (0057–0059 unallocated,
 > 0066 and 0068–0073 reserved; 0074 and 0075 Accepted 2026-09-28; 0076–0080
 > reserved by roadmap 19; 0081–0082 recorded but not implemented in banlieue, and kept canonically in
 > mediatore since ADR-0097;
 > 0088 Proposed and not yet implemented, so none of those three move anything
-> here). The 2026-10-12 pass is ADR-0097 (banlieue's API ends at
+> here). The latest 2026-10-13 pass is
+> **ADR-0099**: the management cluster's bootstrap can run a node on Cloud
+> Hypervisor (a plain VM under three systemd units, no banlieue component)
+> and can add workers to a running cluster with a short-lived token (`join`).
+> It adds one component (§2), one asset (A-20, the worker join token), one
+> actor (the bootstrap operator with sudo on the host), one boundary (TB-16,
+> bootstrap operator → running cluster), a §5 diagram block, rows on TB-9 for
+> a management node's VMM, §7.23 and three §8 risks. Found and fixed during the
+> pass: the units' runtime directory defaulted to `0755`, and the VMM ran
+> without Landlock (now on, with read access to its own tap's sysfs entry
+> only). The 2026-10-12 pass is ADR-0097 (banlieue's API ends at
 > `VirtualMachineClaim`; `AgentSandbox` moves to mediatore as its CRD), and its
 > conclusion is **no boundary change**. `AgentSandbox` and `agent.banlieue.io`
 > were never built, so no component, CRD, identity or RBAC grant leaves the
@@ -355,6 +365,7 @@ relationship to the host.
 | registry push Job | **None** — `automountServiceAccountToken: false` | `banlieue-imagebuild` | Pushes a `Ready` build to the operator's OCI registry for host-resident providers (ADR-0064); reads the artifacts PVC read-only and the push Secret, nothing else — `crates/banlieue-imagebuilder/src/reconciler/push.rs` |
 | image import unit (Cloud Hypervisor) | Host user `banlieue` | The host, as `banlieue-ch-import@<vmimage uid>.service` | Pulls one image by digest into the storage classes' image caches and exits; sandboxed, writable only in `images/` — `crates/banlieue-provider-cloud-hypervisor/src/vmimage.rs` (`import_unit`), `import.rs` |
 | kairos build pod | kairos-operator's SA | `banlieue-imagebuild` | **Privileged** — loop devices, mount, chroot |
+| Management-cluster node on Cloud Hypervisor (ADR-0099) | Host user `CH_VM_USER` (default `k0s-vm`, no login, `kvm`), **shared by every such node on the host**; its tap is created by a root oneshot | The host, as `k0s-vm-<name>.service`, with `k0s-vm-<name>-net.service` and `k0s-vm-<name>-swtpm.service`; **not a banlieue object** | Runs one management-cluster node, written by `scripts/bootstrap-k0s-cluster.sh` through sudo. No capabilities, `NoNewPrivileges`, `ProtectSystem=strict`, `DevicePolicy=closed` (`/dev/kvm`, `/dev/net/tun`), Landlock with the tap's sysfs entry read-only, runtime directory `0700`; writes only `CH_VM_DIR/<name>/` (`0750`) and its runtime directory: `render_ch_vm_unit` |
 | `banlieue host cloud-hypervisor` (installer) | **root**, once, at an operator's request; no cluster identity | A Cloud Hypervisor host, as a command, never a service | Installs the VMM and firmware (the pinned release, or one the operator names at or above the client's gate, from github.com or a mirror; ADR-0084), the `banlieue` user, guest uid records, directories, the host config, the EK CA, the polkit rule and the units (ADR-0067). Installs no OS packages. A separate crate no provider depends on: `crates/banlieue-host/` |
 
 ## 3. Assets
@@ -380,6 +391,7 @@ relationship to the host.
 | A-17 | **The management cluster's datastore**: every Kubernetes object, Secrets included (A-1 hypervisor credentials, A-13 registry credentials, ServiceAccount signing material references), in plaintext unless API-server encryption at rest is configured | etcd on the controllers by default; with ADR-0085's kine, an external SQL database (PostgreSQL on the hypervisor host), reached over the network | **Critical**: read access is every Secret in the cluster, write access is cluster-admin. With kine it also lives outside every node, so it is backed up, and must be protected, as a database |
 | A-18 | **`VSphereMachine` custom attributes** — `Template`, `CreatedAt`, `CreatedBy` (ADR-0089), the fleet-auditing fields `sre-automations`' `cf-node` tool also writes | vCenter `CustomFieldsManager`, per cloned VM; `CreatedBy`'s source is `VirtualMachine`'s `banlieue.io/created-by` annotation, stamped at CREATE by the optional `banlieue-virtualmachine-created-by` `MutatingAdmissionPolicy` | Zero confidentiality — all three are free text, visible to anyone with vCenter read access. **Low integrity**: `CreatedBy` can be forged (TB-1); nothing downstream trusts any of the three for an authorization decision |
 | A-19 | **Telemetry**: Prometheus series on each role's `metrics` port, and, only when `OTEL_EXPORTER_OTLP_ENDPOINT` is set, trace spans exported to a collector (ADR-0091, ADR-0092) | The scraper's storage; the operator's collector and wherever it forwards | Low confidentiality: metric labels carry no object names, namespaces or error text (`runner_tests.rs` asserts it); spans carry object names, namespaces and backend ids (node, vmid, moref, domain), never credentials, user-data or Secret contents. Its value is **integrity for operations**: forged or suppressed telemetry hides an outage, it does not change state |
+| A-20 | **k0s worker join token** (ADR-0099): lets its holder join any machine to the management cluster as a worker | Minted on a controller by `join` with `--expiry=15m`, piped over SSH straight to the joining node (never written on the operator's machine), stored `0600 root` at `/etc/k0s/worker-token-file` on that node | High while valid: a worker runs any pod scheduled to it and reads the Secrets those pods mount. Worthless after expiry; the file stays on the node, like k0sctl's and the vSphere backend's |
 | A-15 | **EK trust-anchor bundle** — the set of CA certificates trusted to issue this backend's vTPM EK certificates | `Provider.spec.attestation.ekTrustBundle` — inline PEM, or a ConfigMap/Secret it names in the Provider's namespace. Admin-supplied, never discovered; resolved by the **broker**, never by any banlieue identity (ADR-0049 Decision 10) | Zero confidentiality — public CA material. **High integrity**: a rogue CA added here makes every EK certificate that CA forges verify, defeating the whole attestation chain; and on libvirt *removing* a host's issuer is the revocation mechanism, so an entry an attacker can re-add is a revocation undone |
 
 ## 4. Actors
@@ -397,6 +409,7 @@ relationship to the host.
 | **Stolen Proxmox API token** | Holds A-1 for Proxmox, without the cluster | Untrusted; bounded by the token's **ACLs**, not the user's: it is privilege-separated and holds only the `BanlieueProvider` role on `/vms`, one node, one SDN zone and the ISO storage — it can create and destroy VMs there, and cannot open a console, run commands in a guest, migrate, snapshot, or change permissions (`scripts/bootstrap-proxmox-host.sh`, `ROLE_PRIVS`). Its one storage-deleting privilege, `Datastore.Allocate`, is held **only on `banlieue-seed`**, a storage holding nothing but seed ISOs (`SEED_ROLE_PRIVS`): it cannot delete backups, templates or ISOs elsewhere, nor edit another storage's definition |
 | **Stolen host credential** (Cloud Hypervisor) | Holds A-11 — the provider's ServiceAccount token — without the host | Untrusted; bounded by the provider's namespaced RBAC (TB-8) and the token's lifetime |
 | **OCI registry** and whoever operates it (ADR-0064) | Stores every pushed build; can read, withhold or delete one | **Untrusted for integrity** — hosts pull by digest and verify it, so the registry cannot substitute content. **Trusted for confidentiality and availability**: it sees every image in full (§7.13) |
+| **Bootstrap operator** running `scripts/bootstrap-k0s-cluster.sh` with Cloud Hypervisor nodes or `join` (ADR-0099) | Passwordless **sudo on the hypervisor host** (CH nodes), and an SSH key every management node trusts | Trusted, like the hypervisor operator. `join` asks it to hold no new secret: the token goes controller → node over its SSH sessions |
 | **Host operator running `banlieue host cloud-hypervisor install`** | Root on the host, for one command | Trusted, like the hypervisor operator; the installer's controls protect the host **from the provider's user** during that run, not from the operator |
 | External contributor | Opens a PR from a fork | Untrusted |
 | **Cluster API's manager** (CAPI core, installed by the platform operator; `clusterctl init --infrastructure banlieue`, ADR-0096) | Creates, updates and deletes banlieue **infrastructure** objects it owns through `Machine`s and `MachineSet`s, through the aggregated `banlieue-capi-infrastructure` ClusterRole | Semi-trusted, like any controller the platform operator installs. **Bounded to `infrastructure.banlieue.io`** machines, templates and clusters: nothing in `banlieue.io`, no Secrets, IPAM, Events or Leases (TB-15) |
@@ -458,6 +471,19 @@ relationship to the host.
   TB-15: CAPI manager ──▶ API server ──▶ infrastructure.banlieue.io objects only
          (aggregated banlieue-capi-infrastructure ClusterRole, ADR-0096)
 
+  TB-16: bootstrap operator (SSH key) ──▶ controller: k0s token create (15 min)
+         ──pipe──▶ joining node: /etc/k0s/worker-token-file (0600) ──▶ k0s worker
+         (never written on the operator's machine; never writes a controller; ADR-0099)
+
+  KVM host, management nodes on Cloud Hypervisor (ADR-0099; no banlieue component):
+    bootstrap operator ──sudo──▶ /etc/systemd/system/k0s-vm-<n>{,-net,-swtpm}.service
+    systemd ──▶ k0s-vm-<n>-net    root oneshot: tap kv-<n> owned by k0s-vm ──▶ bridge
+            ──▶ k0s-vm-<n>-swtpm  as k0s-vm, state in CH_VM_DIR/<n>/tpm (0700)
+            ──▶ k0s-vm-<n>        VMM as k0s-vm (kvm, no caps), sandbox + Landlock,
+                                  writes CH_VM_DIR/<n>/ (0750) and /run/k0s-vm-<n>/ (0700)
+    (k0s-vm is shared by every management node on the host; banlieue guests'
+     uids and 2770 dirs are separate from it ─ TB-9)
+
   TB-10: push Job (banlieue-imagebuild, no SA token) ──▶ OCI registry
          ──▶ banlieue-ch-import@<V>.service on a KVM host (by digest, host-pinned repository)
 
@@ -496,6 +522,7 @@ relationship to the host.
 | TB-13 | LAN and tailnet → management cluster control plane VIP | With `API_VIP` (ADR-0086), every client outside the cluster, kube-proxy and joining workers reach the API through an address that VRRP elects among the controllers, an election anything on the LAN can take part in |
 | TB-14 | banlieue pods ↔ telemetry consumers | Inbound scrapes of `metrics` and probes of `health`; outbound OTLP spans when configured (ADR-0091 to ADR-0093) |
 | TB-15 | CAPI controllers → banlieue infrastructure objects | CAPI's manager creates, owns and deletes infrastructure machines through its aggregated role (ADR-0096) |
+| TB-16 | Bootstrap operator → running management cluster (`join`) | A worker join credential (A-20) is minted on a controller and carried to a new node, which then joins a cluster whose controllers the script does not reconfigure (ADR-0099) |
 | TB-11 | Installer (root, once) → Cloud Hypervisor host | A root process writes the host's trust base (A-14), in part inside directories the provider's user owns, from artifacts downloaded from upstream or an operator's mirror (ADR-0067, ADR-0084) |
 
 ## 6. Threats by boundary
@@ -739,6 +766,22 @@ Assume a guest has escaped into its VMM process. What contains it:
 | A failed VMM loops silently, hiding a fault | R | Failed units are kept (`CollectMode=inactive`), their systemd result is reported as `Ready=False, VmmExited`, then cleared and retried with backoff — `machine.rs`, `systemd.rs::failure` |
 | Deleting a machine leaves its disk, seed, tap or unit behind | I | `machine.rs::teardown` stops the unit, deletes the taps and removes both directories, then **verifies** each is gone before the finalizer is released (`hostfs::remove_machine`, `host.rs::remove_taps`) — live-verified repeatedly |
 
+**Management-cluster nodes on Cloud Hypervisor (ADR-0099).** These are not
+banlieue guests: `scripts/bootstrap-k0s-cluster.sh` writes their units, and
+nothing in banlieue manages them. Assume one node's guest escapes into its
+VMM:
+
+| Threat | STRIDE | Control |
+| --- | --- | --- |
+| The VMM reads or writes a **banlieue guest's** disk, seed, socket or TPM state | I, T | It runs as `CH_VM_USER` (`k0s-vm`), which is neither a guest uid nor in the `banlieue` group, so the `2770 guest-uid:banlieue` directories under `0711` roots are closed to it, as to any other user: `render_ch_vm_unit`, and TB-9 above for the guest side |
+| The VMM reads or writes **another management node's** disk or vTPM state | I, T | **Not separated**: every management node on the host runs as the same `CH_VM_USER`. All of them are nodes of one cluster, and a management node already holds what a worker or controller holds; §8 |
+| The VMM writes anywhere else on the host | T, E | `ProtectSystem=strict`, `ProtectHome=read-only`, `PrivateTmp`, `NoNewPrivileges`, `ReadWritePaths=` its node directory and `/run/k0s-vm-<name>` only; Cloud Hypervisor's seccomp filters and Landlock, widened only by a read-only rule on its own tap's sysfs entry (found live: without it the VMM cannot read `tun_flags` and refuses to boot): `render_ch_vm_unit`, tested in `scripts/bootstrap-k0s-cluster-test.sh` |
+| The VMM opens other devices | E | `DevicePolicy=closed` with only `/dev/kvm` and `/dev/net/tun` |
+| A local user drives the VMM through its API or serial socket, or the vTPM through its control socket | E, I | `RuntimeDirectoryMode=0700` and `UMask=0077` on both units: the sockets are reachable by `CH_VM_USER` and root only (found during this pass: the runtime directory had defaulted to `0755`): `render_ch_vm_unit`, `render_ch_swtpm_unit` |
+| The VMM reconfigures the bridge or other interfaces | E | It holds no capabilities. The tap is created by a root oneshot, `k0s-vm-<name>-net.service`, owned by `CH_VM_USER`, so opening it needs no `CAP_NET_ADMIN`: `render_ch_net_unit` |
+| A management node spoofs another LAN host's address on the bridge | S | Not controlled at L2, as for banlieue guests above and libvirt nodes on `LIBVIRT_BRIDGE` (§8) |
+| A VMM that cannot start loops fast enough to take its vTPM unit into systemd's start limit, leaving it down after the fault clears (found live) | D | `RestartSec=5s` on the VMM unit: `render_ch_vm_unit` |
+
 ### TB-10 — Build namespace → OCI registry → Cloud Hypervisor host
 
 A Cloud Hypervisor host cannot mount the artifacts PVC, so a build it needs
@@ -844,6 +887,19 @@ is configured (ADR-0092).
 | A new infrastructure kind is added without the CAPI role, or the role drifts wider than the contract | E, D | `capi_aggregate_role_covers_exactly_the_capi_contract_kinds` derives the expected set from the CRDs carrying the contract label, so either drift fails the build |
 | CAPI's manager deletes a banlieue machine it owns, destroying a real VM | D | By design: a `Machine` owns its infrastructure object, and deleting the `Machine` is the request. A machine banlieue's controller created is owned by its `VirtualMachine`, not a CAPI `Machine` |
 | The clusterctl components file installs something other than what `banlieue bootstrap` installs | T | One definition: the file is `banlieue bootstrap operator --dry-run`, escaped for envsubst, and `make clusterctl-components` checks that unescaping it gives back the dry-run byte for byte. It ships with the release's provenance (TB-6) |
+
+### TB-16: Bootstrap operator → running management cluster (`join`)
+
+Only when the operator runs `join` (ADR-0099). The worker token is A-20.
+
+| Threat | STRIDE | Control |
+| --- | --- | --- |
+| Growing a cluster rewrites its controllers with stale settings (the k0sctl config predates a VIP, a disabled component or an API server flag), restarting them misconfigured | T, D | `join` writes nothing to any controller and never reads or applies `k0sctl.yaml`; on a controller it runs only `k0s version`, `k0s token create --role=worker` and `k0s kubectl get node`: `join_workers`, `wait_node_ready`. Controllers are refused as join targets: `join_targets`, tested in `scripts/bootstrap-k0s-cluster-test.sh` |
+| The join token leaks and joins an attacker's machine as a worker | I, E | Minted per run with `--expiry=15m` (`JOIN_TOKEN_EXPIRY`); carried controller → node in one pipe between two SSH sessions, never written on the operator's machine; stored `umask 077` under `/etc/k0s` on the node: `join_workers`. A worker that does join is visible in `kubectl get nodes` and can be deleted, but anything it ran meanwhile is not undone |
+| A worker joins at a different k0s version from the cluster | D | The controller's `k0s version` must equal `K0S_VERSION`, otherwise `join` stops before minting a token: `join_workers` |
+| The k0s binary on the new node is tampered with | T | Downloaded for the pinned `K0S_VERSION` from `K0S_BINARY_BASEURL` and checked against the release's `sha256sums.txt`: `stage_k0s_binary`. **Only when that file can be fetched**: if it cannot, the binary is used unverified (§8) |
+| Something on the LAN answers as the controller or the new node and receives the token, or hands the node another cluster's token | S, I | **Not controlled by the script**: `ssh_run` connects with `StrictHostKeyChecking=no`, as every step of this script always has. The SSH key authenticates the operator to the node, not the node to the operator (§8) |
+| A join runs twice, or after a partial failure | D | A node whose `k0sworker` is already active is skipped; `k0s install worker --force` replaces a half-installed service: `join_workers` |
 
 ## 7. Deployment hardening requirements
 
@@ -1168,6 +1224,23 @@ a different assumption is unsafe.
     `OTEL_EXPORTER_OTLP_ENDPOINT` unset unless you want them, and use
     `https://` to a collector outside the pod's node.
 
+23. **Grow a running management cluster with `join`, and keep management
+    nodes on Cloud Hypervisor apart from banlieue's guests (TB-9, TB-16,
+    ADR-0099).**
+    - Add workers to a cluster you have changed since bootstrap with `join`,
+      never `config` + `apply`, which push the generated configuration back
+      onto every controller.
+    - Run `join` from the hypervisor host or another machine on the nodes'
+      network, not across an untrusted segment: the script does not check
+      SSH host keys (§8).
+    - Keep `CH_VM_USER` a dedicated account: not `banlieue`, not a banlieue
+      guest uid, in no group but its own and `kvm`.
+    - Leave `CH_VM_DIR` on a filesystem banlieue's storage classes do not
+      share a directory with, and keep its parents searchable but not
+      writable by `CH_VM_USER`.
+    - Reserve each CH node's MAC in DHCP, as for libvirt nodes: the script
+      finds a node by its MAC, and a k0s node must not change address.
+
 ## 8. Accepted risks
 
 | Risk | Why accepted | Revisit when |
@@ -1219,6 +1292,9 @@ a different assumption is unsafe.
 | **The NetworkPolicies are opt-in, and their destinations are "any address" until narrowed** | banlieue cannot know a site's API server or hypervisor CIDRs, and a wrong egress rule breaks the product silently; there is no templating layer to fill them in (ADR-0094). Port-level restriction already stops most lateral movement | The operator gains RBAC to write per-workload policies with addresses from the `Provider` (ADR-0094 follow-up) |
 | **A rotated credential is used for up to ~30 s before banlieue picks it up**, and a revoked one keeps failing reconciles until the Secret is updated | Watching Secrets would grant every provider read access to every Secret in its namespace (ADR-0095). Immediate cut-off belongs on the backend, which stops a credential everywhere at once | A provider caches a client across reconciles (the cache must then key on `resourceVersion`), or Kubernetes can scope a watch to one named Secret |
 | **Telemetry is not integrity-protected**: a party on the path or with scraper access can forge or suppress it | Nothing banlieue decides reads telemetry back; the CRs' status is the record (TB-14) | An automated decision (autoscaling, remediation) starts consuming banlieue metrics |
+| **Management nodes on Cloud Hypervisor share one host user** (`CH_VM_USER`), so a guest that escapes into one node's VMM can read and write the other management nodes' disks and vTPM state on that host (ADR-0099) | They are nodes of one cluster, and one compromised node already reaches what the cluster's workloads reach; a uid per node, as banlieue gives its guests, would add bookkeeping without separating different trust. banlieue's guests remain separate from it (TB-9) | Nodes of more than one cluster, or of different trust, are put on one host with `NODE_VMMS=cloud-hypervisor` |
+| **The bootstrap script does not verify SSH host keys** (`StrictHostKeyChecking=no` in `ssh_run`); with `join` that session also carries a worker join token (A-20) | Every node is new, or rebuilt, when the script first reaches it, so there is no key to pin yet; the token expires in 15 minutes. Running it from the host or the nodes' own network keeps it off untrusted paths (§7.23) | The script records each node's host key at creation (the seed can carry one) and checks it afterwards |
+| **`stage_k0s_binary` uses the k0s binary unverified when the release's `sha256sums.txt` cannot be fetched**, which `join` and the vSphere backend both rely on | An air-gapped mirror may publish no checksum file, and failing closed would break those estates; the binary is fetched over HTTPS from `K0S_BINARY_BASEURL` | A pinned digest setting (as `IMAGE_SHA256` does for the installer ISO) is added, or the mirror case is handled explicitly |
 | Provider condition messages are mirrored verbatim onto user-facing `VirtualMachine` status | Useful diagnostics; providers are in-tree | A third-party provider ships |
 
 ## 9. Out of scope

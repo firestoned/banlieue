@@ -568,7 +568,13 @@
       "unique-id": "system-k0s-bootstrap",
       "node-type": "system",
       "name": "k0s Bootstrap Script",
-      "description": "scripts/bootstrap-k0s-cluster.sh \u2014 stands up the MANAGEMENT k0s cluster that runs the banlieue controllers and kairos-operator (the substrate `banlieue bootstrap` later installs onto; not a workload provisioned through banlieue). Pluggable BACKEND: `libvirt` clones/installs Kairos VMs via virt-install on a KVM host; `vsphere` clones cluster-specific Kairos templates via govc against a vCenter, spreading nodes evenly across compute clusters so each is an etcd failure domain. Installs k0s with k0sctl. No environment-specific identifier is committed \u2014 every value comes from the GOVC_* environment, govc discovery, or an untracked operator config (ADR-0017). An opt-in `flux` step (FLUX_ENABLED=true), backend-agnostic, fetches a registry credential from Vault and pushes flux-operator + flux-core manifests onto the first controller node (ADR-0018). ADR-0085 adds three opt-in libvirt options: K0S_STORAGE_TYPE=kine with KINE_DATASOURCE keeps cluster state in an external SQL database instead of etcd on the controllers (the generated k0sctl config, which carries the password, is written 0600); LIBVIRT_BRIDGE puts the nodes on a host bridge, their addresses read from the guest agent, with VM_MACS for DHCP reservations; and a Kairos-on-Debian installer ISO built by scripts/build-kairos-debian-iso.sh (kairos-init + AuroraBoot)."
+      "description": "scripts/bootstrap-k0s-cluster.sh \u2014 stands up the MANAGEMENT k0s cluster that runs the banlieue controllers and kairos-operator (the substrate `banlieue bootstrap` later installs onto; not a workload provisioned through banlieue). Pluggable BACKEND: `libvirt` clones/installs Kairos VMs via virt-install on a KVM host; `vsphere` clones cluster-specific Kairos templates via govc against a vCenter, spreading nodes evenly across compute clusters so each is an etcd failure domain. Installs k0s with k0sctl. No environment-specific identifier is committed \u2014 every value comes from the GOVC_* environment, govc discovery, or an untracked operator config (ADR-0017). An opt-in `flux` step (FLUX_ENABLED=true), backend-agnostic, fetches a registry credential from Vault and pushes flux-operator + flux-core manifests onto the first controller node (ADR-0018). ADR-0085 adds three opt-in libvirt options: K0S_STORAGE_TYPE=kine with KINE_DATASOURCE keeps cluster state in an external SQL database instead of etcd on the controllers (the generated k0sctl config, which carries the password, is written 0600); LIBVIRT_BRIDGE puts the nodes on a host bridge, their addresses read from the guest agent, with VM_MACS for DHCP reservations; and a Kairos-on-Debian installer ISO built by scripts/build-kairos-debian-iso.sh (kairos-init + AuroraBoot). ADR-0099 makes the VMM a per-node choice within the libvirt backend (NODE_VMMS): a `cloud-hypervisor` node is a plain Cloud Hypervisor VM supervised by three root-written systemd units on the host, with no banlieue component involved, so it starts at boot without the cluster it belongs to. It also adds a `join` step that adds the nodes named in JOIN_NODES as k0s workers to a RUNNING cluster with a short-lived token from a controller, never rewriting a controller's configuration."
+    },
+    {
+      "unique-id": "service-k0s-bootstrap-ch-node",
+      "node-type": "service",
+      "name": "Management-cluster node on Cloud Hypervisor",
+      "description": "A management-cluster node created by scripts/bootstrap-k0s-cluster.sh with NODE_VMMS=cloud-hypervisor (ADR-0099), on the same KVM host as its libvirt siblings: k0s-vm-<name>.service runs cloud-hypervisor as an unprivileged system user (CH_VM_USER, kvm group, no capabilities), k0s-vm-<name>-net.service (root, oneshot) creates its tap on the bridge owned by that user, and k0s-vm-<name>-swtpm.service serves its vTPM. Not a banlieue VirtualMachine and not visible to virsh or Cockpit: it must start at boot before the cluster's API exists. Its address is read from the host's neighbour table; the seed makes the guest ping the host's bridge address on every boot."
     },
     {
       "unique-id": "database-kine-datastore",
@@ -1226,6 +1232,62 @@
               "libvirt-tls"
             ]
           }
+        }
+      }
+    },
+    {
+      "unique-id": "rel-bootstrap-cloud-hypervisor-node",
+      "description": "For a node with NODE_VMMS=cloud-hypervisor, the bootstrap script (run on the host, through sudo) creates the node's directory, disk and NoCloud seed, writes its three systemd units, installs Kairos from the ISO through a runtime drop-in, then enables the VMM unit so it starts at boot (ADR-0099).",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "system-k0s-bootstrap"
+          },
+          "destination": {
+            "node": "service-k0s-bootstrap-ch-node"
+          }
+        }
+      },
+      "controls": {
+        "ch-node-least-privilege": {
+          "description": "The VMM and swtpm run as CH_VM_USER, a system account with no login and no capabilities; the tap is created for that user by a root oneshot so the VMM needs no CAP_NET_ADMIN; the VMM unit has NoNewPrivileges, ProtectSystem=strict, DevicePolicy=closed with /dev/kvm and /dev/net/tun only, and may write only the node's own directory and runtime directory. scripts/bootstrap-k0s-cluster.sh (render_ch_units).",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53",
+                "control": "AC-6 Least Privilege"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-bootstrap-join-worker",
+      "description": "The `join` step asks a running controller, over SSH, for a k0s worker token valid for 15 minutes and carries it over SSH into a 0600 file on each node in JOIN_NODES, then installs the pinned, checksum-verified k0s worker there. Nothing is written to any controller and the k0sctl configuration is not used (ADR-0099).",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "system-k0s-bootstrap"
+          },
+          "destination": {
+            "node": "ecosystem-management-cluster"
+          }
+        }
+      },
+      "controls": {
+        "short-lived-join-token": {
+          "description": "Worker tokens are minted per run with --expiry=15m, never written on the operator's machine, and stored root-only on the joining node; controllers are refused by `join`. scripts/bootstrap-k0s-cluster.sh (join_workers).",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53",
+                "control": "IA-5 Authenticator Management"
+              }
+            }
+          ]
         }
       }
     },

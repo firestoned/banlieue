@@ -161,6 +161,13 @@ Set `COCKPIT_BIND=lan` to listen on all interfaces anyway.
     does **not** use the TLS certificates from `bootstrap-libvirt-tls.sh`, so
     it is a second, independent access path to the same hypervisor.
 
+!!! note
+    `cockpit-machines` drives libvirt's QEMU driver only. Cloud Hypervisor
+    guests, whether banlieue's (`banlieue-ch@<uid>`) or management-cluster
+    nodes made with `NODE_VMMS=cloud-hypervisor` (`k0s-vm-<name>`, ADR-0099),
+    do not appear on its Virtual Machines page. Cockpit shows them as
+    services and processes; manage them with `systemctl`.
+
 ### Optional: Tailscale
 
 ```sh

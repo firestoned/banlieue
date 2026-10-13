@@ -213,6 +213,106 @@ kubernetes.io/service-name=kubernetes`, which should list every controller,
 and `kubectl get apiservice v1beta1.metrics.k8s.io`, which should stay
 `True`.
 
+##### Nodes on Cloud Hypervisor (ADR-0099)
+
+The VMM is a per-node choice. `NODE_VMMS` lists one per VM, in order, beside
+`NODE_ROLES` and `VM_MACS`; an empty list or a missing entry means
+`libvirt`. A `cloud-hypervisor` node is a plain Cloud Hypervisor VM, not a
+banlieue `VirtualMachine`: a management node must come up after a host
+reboot before the cluster banlieue runs on exists, so banlieue cannot be
+what starts it. The script writes three systemd units for it on the host:
+
+| Unit | Runs as | Does |
+| --- | --- | --- |
+| `k0s-vm-<name>-net.service` | root, oneshot | Creates tap `kv-<name>` on the bridge, owned by `CH_VM_USER`, so the VMM needs no `CAP_NET_ADMIN`. Deletes it on stop. |
+| `k0s-vm-<name>-swtpm.service` | `CH_VM_USER` | The node's vTPM (`CH_TPM=true`), matching the TPM virt-install gives a UEFI domain. |
+| `k0s-vm-<name>.service` | `CH_VM_USER` | `cloud-hypervisor` with the node's disk, seed, tap, vTPM and firmware. Enabled, so it starts at boot like an autostarted domain. Stopping it presses the ACPI power button and waits for the guest to power off, up to 120 s; a guest still booting ignores the button and is then terminated. |
+
+The install matches the libvirt Kairos path: the installer ISO is attached
+through a drop-in under `/run/systemd/system`, Kairos installs and powers
+off, and the script detaches the ISO and enables the unit. A
+`LIBVIRT_IMAGE_KIND=cloud` image boots directly.
+
+```sh
+# Three libvirt controllers and one Cloud Hypervisor worker, on one host.
+VM_COUNT=4
+NODE_ROLES="controller+worker controller+worker controller+worker worker"
+NODE_VMMS="libvirt libvirt libvirt cloud-hypervisor"
+VM_MACS="52:54:00:00:00:01 52:54:00:00:00:02 52:54:00:00:00:03 52:54:00:00:00:04"
+LIBVIRT_BRIDGE=br0
+CH_FIRMWARE=/opt/banlieue/firmware/<version>/CLOUDHV.fd
+```
+
+| Setting | Default | Effect |
+| --- | --- | --- |
+| `NODE_VMMS` | every node `libvirt` | `libvirt` or `cloud-hypervisor` per VM. More entries than `VM_COUNT`, or another value, is refused. |
+| `CH_FIRMWARE` | none; **required** | The `CLOUDHV.fd` to boot. `banlieue host cloud-hypervisor install` puts one under `/opt/banlieue/firmware/`. |
+| `CH_BRIDGE` | `LIBVIRT_BRIDGE` | Bridge for the node's tap. It must carry a host IPv4 address (see below). |
+| `CH_BINARY` / `CH_REMOTE` | `/usr/local/bin/cloud-hypervisor`, `/usr/local/bin/ch-remote` | The VMM, and the client the stop command uses. A vTPM needs a VMM with the fix tracked in cloud-hypervisor#9053. |
+| `CH_VM_USER` | `k0s-vm` | System account (no login, `kvm` group, no capabilities) that runs every CH node's VMM and vTPM. Created on first use. |
+| `CH_VM_DIR` | `<libvirt pool dir>/../k0s-ch` | One directory per node: `disk.qcow2`, `seed.iso`, `tpm/`. Every parent must be searchable by `CH_VM_USER`. |
+| `CH_TPM` | `true` | Give each CH node a vTPM. Needs `swtpm` (`SWTPM`). |
+
+Requirements and differences from a libvirt node:
+
+- The script runs **on the hypervisor host** and needs **passwordless sudo**
+  for CH nodes (it writes units and owns files as `CH_VM_USER`). A remote
+  `LIBVIRT_URI` is refused for them.
+- There is no guest agent. Each CH node's seed pings the host's address on
+  the bridge at every boot, and the script reads the node's address from the
+  host's neighbour table by its MAC. Without `VM_MACS` the MAC is derived
+  from the cluster and node name; reserve it in DHCP either way.
+- The node is invisible to `virsh` and to Cockpit's Virtual Machines page,
+  which only drives libvirt's QEMU driver. Use `systemctl status
+  k0s-vm-<name>`; the serial console is `/run/k0s-vm-<name>/serial.sock`
+  (`sudo socat -,raw,echo=0 UNIX-CONNECT:/run/k0s-vm-<name>/serial.sock`).
+- `destroy` removes CH nodes too: it kills the VMM (a power cut, like `virsh
+  destroy`), removes the units and deletes the node's directory.
+
+##### Adding a worker to a running cluster (ADR-0099)
+
+`config` regenerates the whole k0sctl configuration from the script's
+settings, and `apply` pushes it to every node, controllers included. A
+cluster you have changed since bootstrap (a VIP added by hand, an API server
+flag, a component disabled) gets those changes overwritten. To grow such a
+cluster, use `join` instead:
+
+```sh
+# The cluster's env file describes three nodes. A second untracked file
+# describes the fourth and names it for `join`:
+cat >mgmt-04.env <<'EOF'
+VM_COUNT=4
+NODE_ROLES="controller+worker controller+worker controller+worker worker"
+NODE_VMMS="libvirt libvirt libvirt cloud-hypervisor"
+VM_MACS="52:54:00:00:00:01 52:54:00:00:00:02 52:54:00:00:00:03 52:54:00:00:00:04"
+CH_FIRMWARE=/opt/banlieue/firmware/<version>/CLOUDHV.fd
+JOIN_NODES=mgmt-04
+EOF
+
+# Source both (the second wins), create the node, then join only it.
+set -a; . ~/.config/banlieue/hosts/<name>.env; . ./mgmt-04.env; set +a
+./scripts/bootstrap-k0s-cluster.sh vms
+./scripts/bootstrap-k0s-cluster.sh join
+```
+
+`vms` leaves existing VMs alone (it only starts them if stopped). `join`:
+
+1. checks the controller runs `K0S_VERSION`, and refuses a mismatch;
+2. stages that k0s binary, checksum-verified, under `/opt/k0s` on the node;
+3. mints a worker token on a controller (`JOIN_CONTROLLER`, default the
+   first one) that expires after `JOIN_TOKEN_EXPIRY` (`15m`), and carries it
+   over SSH into a root-only file on the node, never onto your machine;
+4. runs `k0s install worker` and waits for the node to report `Ready`.
+
+It writes nothing to any controller and never reads `k0sctl.yaml`. A node
+whose `k0sworker` is already active is skipped. Controllers are refused:
+joining one needs the cluster's storage, VIP and SAN settings, which is what
+a running cluster may have changed.
+
+The two files are sourced with `set -a` rather than passed as
+`BANLIEUE_ENV_FILE`, because the script sources that file **after** reading
+the environment: a `VM_COUNT` in it would win over one on the command line.
+
 **Output of this phase:** a running k0s **management** cluster with nothing
 banlieue-specific on it yet.
 

@@ -1,5 +1,81 @@
 # Changelog
 
+## [2026-10-13] - k0s bootstrap: Cloud Hypervisor nodes and a worker-only `join` (ADR-0099)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0099-cloud-hypervisor-nodes-and-worker-join-in-k0s-bootstrap.md`:
+  the VMM becomes a per-node choice within the libvirt backend; a Cloud
+  Hypervisor node is a plain CH VM under three systemd units, not a banlieue
+  object; `join` adds workers to a running cluster without touching
+  controllers.
+- `scripts/bootstrap-k0s-cluster.sh`:
+  - `NODE_VMMS` (one per VM, `libvirt` default, or `cloud-hypervisor`), with
+    `CH_FIRMWARE` (required), `CH_BRIDGE`, `CH_BINARY`, `CH_REMOTE`,
+    `CH_VM_USER` (`k0s-vm`), `CH_VM_DIR`, `CH_TPM`, `SWTPM`. A CH node gets
+    `k0s-vm-<name>{,-net,-swtpm}.service`: a root oneshot creates its tap
+    owned by `CH_VM_USER`, the VMM and swtpm run as that user with no
+    capabilities, `ProtectSystem=strict`, `DevicePolicy=closed`, Landlock
+    (plus read-only access to its own tap's sysfs entry), a `0700` runtime
+    directory and `UMask=0077`; enabled so it starts at boot. Install goes
+    through a runtime drop-in that attaches the ISO; stop presses the ACPI
+    power button and waits. Addresses come from the neighbour table: the
+    seed pings the host's bridge address on every boot (`announce_command`).
+    Kairos and cloud seeds both carry it; the Kairos seed keeps a single
+    `network:` stage key when Tailscale is also on.
+  - `join` step: `JOIN_NODES`, `JOIN_CONTROLLER`, `JOIN_TOKEN_EXPIRY`
+    (`15m`). Refuses controllers, unknown names and a controller whose k0s
+    version differs from `K0S_VERSION`; mints the token on a controller and
+    pipes it to a `0600` file on the node; installs the worker; waits for
+    `Ready`. Never writes to a controller or reads `k0sctl.yaml`.
+  - `main` runs only when executed, so the test can source the script.
+- `scripts/bootstrap-k0s-cluster-test.sh` (73 cases): VMM selection and
+  refusals, tap names within `IFNAMSIZ`, fixed and derived MACs, neighbour
+  parsing, all three units (identity, sandbox, Landlock, sockets, stop,
+  install word), settings refusals, join targets, seeds. `make
+  k0s-script-test`.
+- `Makefile`: `K0S_NODE_VMMS`, `K0S_CH_FIRMWARE`, `K0S_CH_BRIDGE`,
+  `K0S_JOIN_NODES`, `K0S_JOIN_CONTROLLER`; `k0s-join`, `k0s-remote-join`,
+  `k0s-script-test`.
+
+### Changed
+- `docs/architecture/calm/architecture.json`: node
+  `service-k0s-bootstrap-ch-node`, relationships
+  `rel-bootstrap-cloud-hypervisor-node` and `rel-bootstrap-join-worker` (with
+  AC-6 and IA-5 controls), the bootstrap system's description;
+  `docs/src/architecture/system.md` regenerated.
+- `docs/src/guides/end-to-end-setup.md`: "Nodes on Cloud Hypervisor" and
+  "Adding a worker to a running cluster".
+- `docs/src/guides/host-bootstrap.md`: Cockpit's VM page does not show Cloud
+  Hypervisor guests (banlieue's or the bootstrap's).
+- `docs/src/security/threat-model.md`: full pass, stamp 2026-10-13 against
+  ADR-0001 … ADR-0099. New §2 component, A-20 (worker join token), bootstrap
+  operator actor, TB-16 (`join`) with its §5 diagram block and §6 table,
+  TB-9 rows for a management node's VMM, §7.23, three §8 risks (one host
+  user for all management CH nodes; SSH host keys unchecked; k0s binary
+  unverified when `sha256sums.txt` is unreachable). Found and fixed during
+  the pass: a `0755` runtime directory, and no Landlock.
+
+### Why
+Erick wants to compare Cloud Hypervisor's host CPU cost with libvirt/QEMU's
+on the core cluster's own host, with a CH node beside the libvirt ones, and
+to grow that cluster without `config` + `apply`, whose saved `k0sctl.yaml`
+predates the cluster's VIP, disabled konnectivity and OIDC flag.
+
+Verified live on the core cluster's host: `vms` installed a Kairos-on-Debian
+CH node in about 80 s (vTPM, same kernel as the libvirt nodes, persistent
+`/opt`), and `join` brought it `Ready` without touching the controllers.
+Live runs found two bugs the unit tests then pinned: Landlock refused the
+tap's `tun_flags` in sysfs, and an unpaced restart loop took swtpm into
+systemd's start limit.
+
+### Impact
+- [ ] Breaking change (`NODE_VMMS` unset keeps every node on libvirt)
+- [ ] Requires cluster rollout
+- [x] Config change only
+- [ ] Documentation only
+
 ## [2026-10-13] - Spread placement (ADR-0098); per-issuer claim prefixes (ADR-0047 amended); Deferred libvirt e2e
 
 **Author:** Erick Bourgeois

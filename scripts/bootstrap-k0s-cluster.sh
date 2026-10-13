@@ -11,6 +11,13 @@
 #       ISO onto an empty disk, then k0sctl. Run on the hypervisor host (or
 #       point LIBVIRT_URI at a remote one). Unchanged from the original script.
 #
+#       NODE_VMMS picks the VMM per node (ADR-0099): `libvirt` (default) or
+#       `cloud-hypervisor`. A cloud-hypervisor node is a plain Cloud
+#       Hypervisor VM run by three systemd units on THIS host (no banlieue,
+#       no libvirt), so it starts at boot like an autostarted domain. It
+#       needs passwordless sudo, CH_FIRMWARE and a bridge with an address.
+#       One cluster may mix both VMMs.
+#
 #   BACKEND=vsphere  -- clone cluster-specific Kairos VM *templates* in a
 #       VMware vSphere estate with govc, reconfigure networking/CPU/memory/disk,
 #       let the template's baked-in installer run unattended, then k0sctl. No
@@ -39,9 +46,16 @@
 # node, uploading the binary over SSH (uploadBinary: true).
 #
 # Usage:
-#   ./bootstrap-k0s-cluster.sh [all|vms|config|apply|kubeconfig|label|flux|destroy]
+#   ./bootstrap-k0s-cluster.sh [all|vms|config|apply|kubeconfig|label|flux|join|destroy]
 #   BANLIEUE_ENV_FILE=~/.k0s/banlieue.env BACKEND=vsphere ./bootstrap-k0s-cluster.sh all
 #   ./bootstrap-k0s-cluster.sh --print-env-template   # scaffold for the vSphere env file
+#
+#   `join` adds the nodes named in JOIN_NODES to a cluster that is ALREADY
+#   RUNNING, as k0s workers, with a 15-minute token from a controller
+#   (ADR-0099). It never touches a controller or the k0sctl config, so it is
+#   the safe way to grow a cluster whose controllers have changed since
+#   bootstrap; `config` + `apply` would push the generated config back onto
+#   every controller. Typical: raise VM_COUNT, then `vms join`.
 #
 #   FLUX_ENABLED=true (in the env file) adds an opt-in `flux` step -- fetches a
 #   registry credential from Vault (token auth via the `vault` CLI; VAULT_ADDR/
@@ -87,6 +101,39 @@ LIBVIRT_BRIDGE="${LIBVIRT_BRIDGE:-}"
 # cluster needs: k0s does not survive its nodes changing address.
 VM_MACS="${VM_MACS:-}"
 LIBVIRT_POOL="${LIBVIRT_POOL:-default}"
+
+# --- per-node VMM (ADR-0099) ------------------------------------------------
+# Space-separated, one per VM in order: `libvirt` or `cloud-hypervisor`.
+# Missing entries (and an empty list) mean libvirt, so existing clusters are
+# unchanged. Example: a CH worker beside three libvirt controllers:
+#   NODE_VMMS="libvirt libvirt libvirt cloud-hypervisor"
+NODE_VMMS="${NODE_VMMS:-}"
+# Cloud Hypervisor nodes are created on THIS host through sudo (never through
+# LIBVIRT_URI). Nothing below is guessed: a missing firmware or bridge is
+# refused with a message.
+CH_BINARY="${CH_BINARY:-/usr/local/bin/cloud-hypervisor}"
+CH_REMOTE="${CH_REMOTE:-/usr/local/bin/ch-remote}"
+# CLOUDHV.fd (rust-hypervisor-firmware's EDK2 build). `banlieue host
+# cloud-hypervisor install` puts one under /opt/banlieue/firmware/<version>/.
+CH_FIRMWARE="${CH_FIRMWARE:-}"
+# The bridge CH nodes' taps join. It must carry a host address: the guest
+# pings it on every boot so the host's neighbour table resolves the node.
+CH_BRIDGE="${CH_BRIDGE:-$LIBVIRT_BRIDGE}"
+# Unprivileged system account (kvm group, no login) that runs every CH node's
+# VMM and vTPM. Created on first use.
+CH_VM_USER="${CH_VM_USER:-k0s-vm}"
+# Give each CH node a vTPM, as virt-install does for a UEFI libvirt domain.
+CH_TPM="${CH_TPM:-true}"
+SWTPM="${SWTPM:-/usr/bin/swtpm}"
+CH_UNIT_DIR="${CH_UNIT_DIR:-/etc/systemd/system}"
+
+# --- join (ADR-0099) ----------------------------------------------------------
+# Space-separated node names to add as WORKERS to a running cluster.
+JOIN_NODES="${JOIN_NODES:-}"
+# Controller address to mint the join token on. Empty: the first controller
+# in the node table.
+JOIN_CONTROLLER="${JOIN_CONTROLLER:-}"
+JOIN_TOKEN_EXPIRY="${JOIN_TOKEN_EXPIRY:-15m}"
 # No osinfo entry exists for Kairos, so `generic` is the right fallback there.
 # A distro cloud image DOES have one, and naming it gets the correct virtio
 # defaults and clock/CPU tuning instead of virt-install's "VM performance may
@@ -329,6 +376,9 @@ _default_pool_dir() {
   echo "${path:-/var/lib/libvirt/images}/k0s-bootstrap"
 }
 POOL_DIR="${POOL_DIR:-$(_default_pool_dir)}"
+# Cloud Hypervisor nodes' disks, seeds and vTPM state, one directory per node,
+# beside the libvirt pool so they land on the same large filesystem.
+CH_VM_DIR="${CH_VM_DIR:-$(dirname "$POOL_DIR")/k0s-ch}"
 INSTALL_ISO="$POOL_DIR/$(basename "${BASE_IMAGE_PATH:-$IMAGE_URL}")"
 CLOUD_IMAGE="$POOL_DIR/$(basename "${BASE_IMAGE_PATH:-$CLOUD_IMAGE_URL}")"
 
@@ -534,12 +584,47 @@ node_name_roles() {
   done
 }
 
+# node_vmm <idx>: the VMM that runs VM <idx> (libvirt backend), from NODE_VMMS.
+node_vmm() {
+  local vmms
+  read -r -a vmms <<<"$NODE_VMMS"
+  printf '%s' "${vmms[$1]:-libvirt}"
+}
+
+# any_node_vmm <vmm>: succeeds when at least one of the VM_COUNT nodes uses it.
+any_node_vmm() {
+  local idx
+  for idx in $(seq 0 $((VM_COUNT - 1))); do
+    [[ "$(node_vmm "$idx")" == "$1" ]] && return 0
+  done
+  return 1
+}
+
+# validate_node_vmms: refuse an unknown VMM, or more entries than nodes (a
+# list that does not line up with VM_COUNT is a typo, not a request).
+validate_node_vmms() {
+  local vmms v
+  read -r -a vmms <<<"$NODE_VMMS"
+  if ((${#vmms[@]} > VM_COUNT)); then
+    log "NODE_VMMS has ${#vmms[@]} entries but VM_COUNT is $VM_COUNT"
+    exit 1
+  fi
+  for v in "${vmms[@]}"; do
+    case "$v" in
+      libvirt|cloud-hypervisor) ;;
+      *) log "NODE_VMMS entries must be 'libvirt' or 'cloud-hypervisor', not '$v'"; exit 1 ;;
+    esac
+  done
+}
+
 # ============================================================================
 # libvirt backend
 # ============================================================================
 check_deps_libvirt() {
-  local missing=()
-  for cmd in virt-install virsh qemu-img k0sctl kubectl curl ssh genisoimage; do
+  local missing=() tools=(qemu-img k0sctl kubectl curl ssh genisoimage)
+  validate_node_vmms
+  any_node_vmm libvirt && tools+=(virt-install virsh)
+  for cmd in "${tools[@]}"; do
     command -v "$cmd" >/dev/null 2>&1 || missing+=("$cmd")
   done
   if [[ ! -f "$SSH_PUBKEY" ]]; then
@@ -549,6 +634,9 @@ check_deps_libvirt() {
   if ((${#missing[@]})); then
     log "Missing dependencies: ${missing[*]}"
     exit 1
+  fi
+  if any_node_vmm cloud-hypervisor; then
+    check_deps_ch
   fi
 }
 
@@ -671,7 +759,7 @@ fetch_installer_iso() {
 # cloud-init ignores outright, so a Kairos user-data on Debian yields a node
 # with no user, no key and no way in.
 make_cloud_init_cloud() {
-  local name="$1" seed_dir="$2"
+  local name="$1" seed_dir="$2" announce_host="${3:-}"
   mkdir -p "$seed_dir"
 
   cat >"$seed_dir/meta-data" <<EOF
@@ -725,6 +813,29 @@ write_files:
     permissions: '0644'
     content: |
       options loop max_loop=8
+EOF
+
+  # Cloud Hypervisor nodes (ADR-0099): a unit, not a runcmd, because runcmd
+  # runs once per instance and the host's neighbour entry must be renewed on
+  # every boot. See announce_command.
+  if [[ -n "$announce_host" ]]; then
+    cat >>"$seed_dir/user-data" <<EOF
+  - path: /etc/systemd/system/k0s-vm-announce.service
+    permissions: '0644'
+    content: |
+      [Unit]
+      Description=Make the hypervisor host learn this node's address
+      Wants=network-online.target
+      After=network-online.target
+      [Service]
+      Type=oneshot
+      ExecStart=/bin/sh -c '$(announce_command "$announce_host")'
+      [Install]
+      WantedBy=multi-user.target
+EOF
+  fi
+
+  cat >>"$seed_dir/user-data" <<EOF
 package_update: true
 packages:
   - curl
@@ -732,6 +843,9 @@ packages:
 runcmd:
   - modprobe loop max_loop=8 || modprobe loop
 EOF
+  if [[ -n "$announce_host" ]]; then
+    echo "  - systemctl enable --now k0s-vm-announce.service" >>"$seed_dir/user-data"
+  fi
 
   if [[ -n "$TAILSCALE_AUTHKEY" ]]; then
     cat >>"$seed_dir/user-data" <<EOF
@@ -741,6 +855,15 @@ EOF
   fi
 }
 
+# announce_command <host-ip>: what a Cloud Hypervisor node runs at boot so
+# the host resolves its MAC to its address. Any packet the host must answer
+# will do; ping first, and a TCP connection attempt for an image without it.
+# Never fails the boot: an unreachable host only delays address discovery.
+announce_command() {
+  printf 'ping -c 3 -W 1 %s >/dev/null 2>&1 || curl -s -m 2 -o /dev/null http://%s:1/ || true' "$1" "$1"
+}
+
+# make_cloud_init_files <name> <seed-dir> [announce-host]
 make_cloud_init_files() {
   local seed_dir="$2"
   if [[ "$LIBVIRT_IMAGE_KIND" == "cloud" ]]; then
@@ -758,7 +881,7 @@ make_cloud_init_files() {
 }
 
 make_cloud_init_kairos() {
-  local name="$1" seed_dir="$2"
+  local name="$1" seed_dir="$2" announce_host="${3:-}"
   mkdir -p "$seed_dir"
 
   cat >"$seed_dir/meta-data" <<EOF
@@ -815,9 +938,24 @@ stages:
         - for i in 0 1 2 3 4 5 6 7; do [ -e /dev/loop\$i ] || mknod -m 660 /dev/loop\$i b 7 \$i; done
 EOF
 
+  # One `network:` stage key, whichever entries it carries: a duplicate key
+  # is not an error in YAML parsers that keep the last one, it is a silently
+  # dropped stage.
+  if [[ -n "$announce_host" || -n "$TAILSCALE_AUTHKEY" ]]; then
+    echo "  network:" >>"$seed_dir/user-data"
+  fi
+  # Cloud Hypervisor nodes (ADR-0099): yip stages run on every boot, so the
+  # host's neighbour entry for this node is renewed each time it starts.
+  if [[ -n "$announce_host" ]]; then
+    cat >>"$seed_dir/user-data" <<EOF
+    - name: "Make the hypervisor host learn this node's address"
+      commands:
+        - "$(announce_command "$announce_host")"
+EOF
+  fi
+
   if [[ -n "$TAILSCALE_AUTHKEY" ]]; then
     cat >>"$seed_dir/user-data" <<EOF
-  network:
     - name: "Install and join Tailscale"
       commands:
         - "[ -x /usr/local/bin/tailscaled ] || ( curl -fsSL -o /tmp/ts.tgz https://pkgs.tailscale.com/stable/tailscale_${TAILSCALE_VERSION}_amd64.tgz && tar xzf /tmp/ts.tgz -C /tmp && cp /tmp/tailscale_${TAILSCALE_VERSION}_amd64/tailscale /tmp/tailscale_${TAILSCALE_VERSION}_amd64/tailscaled /usr/local/bin/ && rm -rf /tmp/ts.tgz /tmp/tailscale_${TAILSCALE_VERSION}_amd64 )"
@@ -858,6 +996,10 @@ wait_for_install() {
 
 create_vm() {
   local idx="$1" name
+  if [[ "$(node_vmm "$idx")" == "cloud-hypervisor" ]]; then
+    create_vm_ch "$idx"
+    return
+  fi
   name="$(vm_name "$idx")"
 
   if virsh --connect "$LIBVIRT_URI" dominfo "$name" >/dev/null 2>&1; then
@@ -969,7 +1111,9 @@ ensure_pool() {
 
 create_vms_libvirt() {
   local idx pids=()
-  ensure_pool
+  if any_node_vmm libvirt; then
+    ensure_pool
+  fi
   for idx in $(seq 0 $((VM_COUNT - 1))); do
     create_vm "$idx" &
     pids+=($!)
@@ -1015,6 +1159,10 @@ destroy_libvirt() {
   for idx in $(seq 0 $((VM_COUNT - 1))); do
     local name
     name="$(vm_name "$idx")"
+    if [[ "$(node_vmm "$idx")" == "cloud-hypervisor" ]]; then
+      destroy_ch_node "$idx"
+      continue
+    fi
     if virsh --connect "$LIBVIRT_URI" dominfo "$name" >/dev/null 2>&1; then
       log "Destroying VM $name"
       virsh --connect "$LIBVIRT_URI" destroy "$name" >/dev/null 2>&1 || true
@@ -1029,6 +1177,7 @@ destroy_libvirt() {
   rm -f "$K0SCTL_CONFIG" "$KUBECONFIG_OUT" "$TAILSCALE_IP_MAP" "$KUBECONFIG_SERVER_FILE"
   tailscale_remove_devices
   local leftover
+  any_node_vmm libvirt || { log "All $VM_PREFIX-* nodes removed"; return 0; }
   leftover="$(virsh --connect "$LIBVIRT_URI" list --all --name 2>/dev/null \
     | grep -E "^${VM_PREFIX}-[0-9]+\$" || true)"
   if [[ -n "$leftover" ]]; then
@@ -1037,6 +1186,503 @@ destroy_libvirt() {
   fi
   [[ "$failed" -ne 0 ]] && exit 1
   log "All $VM_PREFIX-* domains removed"
+}
+
+# ============================================================================
+# Cloud Hypervisor nodes (libvirt backend, NODE_VMMS=cloud-hypervisor; ADR-0099)
+# ============================================================================
+# A node is three units in CH_UNIT_DIR, written as root through sudo:
+#
+#   k0s-vm-<name>-net.service    root oneshot: tap kv-<name> on CH_BRIDGE,
+#                                owned by CH_VM_USER (so the VMM needs no
+#                                CAP_NET_ADMIN), deleted on stop
+#   k0s-vm-<name>-swtpm.service  the vTPM, as CH_VM_USER (CH_TPM=true)
+#   k0s-vm-<name>.service        cloud-hypervisor, as CH_VM_USER; enabled, so
+#                                it starts at boot without the cluster
+#
+# Files live in CH_VM_DIR/<name>/ (disk.qcow2, seed.iso, tpm/), runtime
+# sockets in /run/k0s-vm-<name>/ (api.sock, swtpm.sock, serial.sock). No
+# banlieue component is involved: a management node must come up before the
+# cluster banlieue runs on.
+readonly CH_TAP_PREFIX="kv-"
+readonly IFNAME_MAX_LEN=15          # IFNAMSIZ (16) less the terminating NUL
+readonly CH_TAP_HASH_LEN=12
+readonly CH_STOP_TIMEOUT_S=120      # ACPI shutdown budget before SIGTERM
+readonly CH_TASKS_MAX=1024
+readonly CH_RESTART_DELAY_S=5
+readonly CH_SWTPM_WAIT_TRIES=50     # x 0.1 s for the vTPM socket to appear
+readonly CH_RUNTIME_DROPIN_ROOT=/run/systemd/system
+readonly CH_INSTALLED_MARKER=".installed"
+
+ch_unit()     { printf 'k0s-vm-%s' "$1"; }
+ch_run_dir()  { printf '/run/%s' "$(ch_unit "$1")"; }
+ch_node_dir() { printf '%s/%s' "$CH_VM_DIR" "$1"; }
+
+_sha256_hex() {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum; else shasum -a 256; fi | awk '{print $1}'
+}
+
+# ch_tap_name <name>: kv-<name>, or kv-<hash> when that exceeds IFNAMSIZ.
+ch_tap_name() {
+  local tap="${CH_TAP_PREFIX}$1"
+  if ((${#tap} > IFNAME_MAX_LEN)); then
+    tap="${CH_TAP_PREFIX}$(printf '%s' "$1" | _sha256_hex | cut -c1-"$CH_TAP_HASH_LEN")"
+  fi
+  printf '%s' "$tap"
+}
+
+# ch_node_mac <idx> <name>: VM_MACS[idx], else one derived from the cluster
+# and node name. Fixed either way: the node's DHCP address must not change,
+# and the host finds the node by its MAC.
+ch_node_mac() {
+  local macs h
+  read -r -a macs <<<"$VM_MACS"
+  if [[ -n "${macs[$1]:-}" ]]; then
+    printf '%s' "${macs[$1]}"
+    return
+  fi
+  h="$(printf '%s/%s' "$CLUSTER_NAME" "$2" | _sha256_hex)"
+  printf '52:54:00:%s:%s:%s' "${h:0:2}" "${h:2:2}" "${h:4:2}"
+}
+
+# parse_neigh_ip <mac>: reads `ip -4 neigh show` output on stdin and prints
+# the address resolved to <mac>, ignoring entries that never resolved.
+parse_neigh_ip() {
+  awk -v mac="$(tr '[:upper:]' '[:lower:]' <<<"$1")" '
+    $2 == "lladdr" && tolower($3) == mac && $4 != "FAILED" && $4 != "INCOMPLETE" { print $1; exit }'
+}
+
+# ch_bridge_addr: the host's IPv4 address on CH_BRIDGE (empty if none).
+ch_bridge_addr() {
+  ip -4 -o addr show dev "$CH_BRIDGE" 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1
+}
+
+# systemd's escaping of a device name inside a unit name (`-` is the path
+# separator there).
+_systemd_escape_dev() { printf '%s' "${1//-/\\x2d}"; }
+
+# validate_ch_node <name>: settings a CH node cannot be created without.
+# Pure: checks values, not the host (see check_deps_ch).
+validate_ch_node() {
+  local name="$1"
+  if [[ ! "$name" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]]; then
+    log "'$name' is not usable as a Cloud Hypervisor node name (lowercase letters, digits and '-')"
+    exit 1
+  fi
+  if [[ -z "$CH_FIRMWARE" ]]; then
+    log "Cloud Hypervisor node $name needs CH_FIRMWARE=<path to CLOUDHV.fd>"
+    log "  (\`banlieue host cloud-hypervisor install\` puts one under /opt/banlieue/firmware/)"
+    exit 1
+  fi
+  if [[ -z "$CH_BRIDGE" ]]; then
+    log "Cloud Hypervisor node $name needs a bridge: set CH_BRIDGE (or LIBVIRT_BRIDGE)"
+    exit 1
+  fi
+  if [[ "$LIBVIRT_URI" =~ ^[a-z+]+://[^/] ]]; then
+    log "Cloud Hypervisor node $name is created on THIS host, but LIBVIRT_URI ($LIBVIRT_URI) is remote."
+    log "  Run the script on the hypervisor host (the k0s-remote-* make targets do)."
+    exit 1
+  fi
+  if [[ ! "$CH_VM_USER" =~ ^[a-z_][a-z0-9_-]*$ ]]; then
+    log "CH_VM_USER '$CH_VM_USER' is not a valid user name"
+    exit 1
+  fi
+}
+
+# check_deps_ch: what the host must provide for any CH node.
+check_deps_ch() {
+  local missing=() idx cmd
+  for idx in $(seq 0 $((VM_COUNT - 1))); do
+    [[ "$(node_vmm "$idx")" == "cloud-hypervisor" ]] && validate_ch_node "$(vm_name "$idx")"
+  done
+  for cmd in "$CH_BINARY" "$CH_REMOTE" qemu-img genisoimage ip systemctl sudo; do
+    command -v "$cmd" >/dev/null 2>&1 || missing+=("$cmd")
+  done
+  [[ "$CH_TPM" == "true" ]] && { command -v "$SWTPM" >/dev/null 2>&1 || missing+=("$SWTPM (or CH_TPM=false)"); }
+  [[ -r "$CH_FIRMWARE" ]] || missing+=("readable CH_FIRMWARE ($CH_FIRMWARE)")
+  if ((${#missing[@]})); then
+    log "Missing for Cloud Hypervisor nodes: ${missing[*]}"
+    exit 1
+  fi
+  if ! sudo -n true 2>/dev/null; then
+    log "Cloud Hypervisor nodes are created through sudo, which needs a password here."
+    log "  Run 'sudo -v' first, or configure passwordless sudo for this user."
+    exit 1
+  fi
+  if [[ -z "$(ch_bridge_addr)" ]]; then
+    log "Bridge $CH_BRIDGE has no IPv4 address on this host (or does not exist)."
+    log "  Cloud Hypervisor nodes announce themselves to that address so the host can find them."
+    exit 1
+  fi
+}
+
+render_ch_net_unit() {
+  local name="$1" tap ip_bin br_dev
+  tap="$(ch_tap_name "$name")"
+  ip_bin="$(command -v ip || echo /usr/sbin/ip)"
+  br_dev="sys-subsystem-net-devices-$(_systemd_escape_dev "$CH_BRIDGE").device"
+  cat <<EOF
+# Written by scripts/bootstrap-k0s-cluster.sh (ADR-0099). Do not edit.
+[Unit]
+Description=k0s node $name: tap $tap on $CH_BRIDGE
+Wants=network-online.target
+After=network-online.target
+BindsTo=$br_dev
+After=$br_dev
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStartPre=-$ip_bin link del $tap
+ExecStart=$ip_bin tuntap add dev $tap mode tap user $CH_VM_USER group $CH_VM_USER
+ExecStart=$ip_bin link set $tap master $CH_BRIDGE up
+ExecStop=$ip_bin link del $tap
+EOF
+}
+
+render_ch_swtpm_unit() {
+  local name="$1" unit run dir
+  unit="$(ch_unit "$name")"; run="$(ch_run_dir "$name")"; dir="$(ch_node_dir "$name")"
+  cat <<EOF
+# Written by scripts/bootstrap-k0s-cluster.sh (ADR-0099). Do not edit.
+[Unit]
+Description=k0s node $name: vTPM
+PartOf=$unit.service
+
+[Service]
+User=$CH_VM_USER
+Group=$CH_VM_USER
+RuntimeDirectory=$unit
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
+UMask=0077
+ExecStart=$SWTPM socket --tpm2 --tpmstate dir=$dir/tpm --ctrl type=unixio,path=$run/swtpm.sock
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+ReadWritePaths=$dir/tpm $run
+DevicePolicy=closed
+EOF
+}
+
+# render_ch_vm_unit <name> <idx>. $K0S_VM_INSTALL_DISK is deliberately an
+# unbraced word of its own: systemd splits it at whitespace, so it adds the
+# installer disk while the install drop-in sets it and nothing otherwise.
+# Landlock is on, as for banlieue's own guests. The VMM derives rules for the
+# files and sockets it is given, but not for the tap's sysfs entry it reads at
+# boot (tun_flags), so that one directory is granted read-only.
+render_ch_vm_unit() {
+  local name="$1" idx="$2" unit run dir tap mac tpm_deps="" tpm_wait="" tpm_arg=""
+  unit="$(ch_unit "$name")"; run="$(ch_run_dir "$name")"; dir="$(ch_node_dir "$name")"
+  tap="$(ch_tap_name "$name")"; mac="$(ch_node_mac "$idx" "$name")"
+  if [[ "$CH_TPM" == "true" ]]; then
+    tpm_deps="Requires=$unit-swtpm.service"$'\n'"After=$unit-swtpm.service"
+    # swtpm is Type=simple: wait for its socket, or the VMM races it.
+    tpm_wait="ExecStartPre=/bin/sh -c 'i=0; while [ ! -S $run/swtpm.sock ]; do i=\$\$((i+1)); [ \$\$i -gt $CH_SWTPM_WAIT_TRIES ] && exit 1; sleep 0.1; done'"
+    tpm_arg="  --tpm socket=$run/swtpm.sock \\"$'\n'
+  fi
+  cat <<EOF
+# Written by scripts/bootstrap-k0s-cluster.sh (ADR-0099). Do not edit.
+# A management-cluster node on Cloud Hypervisor. Serial console:
+#   sudo socat -,raw,echo=0 UNIX-CONNECT:$run/serial.sock
+[Unit]
+Description=k0s node $name (Cloud Hypervisor)
+BindsTo=$unit-net.service
+After=$unit-net.service
+$tpm_deps
+
+[Service]
+User=$CH_VM_USER
+Group=$CH_VM_USER
+SupplementaryGroups=kvm
+RuntimeDirectory=$unit
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
+# The API, serial and vTPM sockets: the VM user's and root's only.
+UMask=0077
+# Set only during install, by a drop-in under $CH_RUNTIME_DROPIN_ROOT.
+Environment=K0S_VM_INSTALL_DISK=
+ExecStartPre=/bin/rm -f $run/api.sock
+$tpm_wait
+ExecStart=$CH_BINARY \\
+  --api-socket path=$run/api.sock \\
+  --landlock \\
+  --landlock-rules path=/sys/class/net/$tap,access=r \\
+  --firmware $CH_FIRMWARE \\
+  --cpus boot=$VCPUS \\
+  --memory size=${MEM_MB}M \\
+  --disk path=$dir/disk.qcow2,image_type=qcow2 path=$dir/seed.iso,readonly=on,image_type=raw \$K0S_VM_INSTALL_DISK \\
+  --net tap=$tap,mac=$mac \\
+${tpm_arg}  --rng src=/dev/urandom \\
+  --serial socket=$run/serial.sock \\
+  --console off
+# The guest gets an ACPI power button and time to shut down; SIGTERM only
+# after TimeoutStopSec. A host shutdown is then a guest shutdown.
+ExecStop=/bin/sh -c '$CH_REMOTE --api-socket $run/api.sock power-button; while kill -0 \$MAINPID 2>/dev/null; do sleep 1; done'
+TimeoutStopSec=$CH_STOP_TIMEOUT_S
+Restart=on-failure
+# Paced, so a VMM that cannot start does not drag its vTPM unit into
+# systemd's start limit.
+RestartSec=${CH_RESTART_DELAY_S}s
+TasksMax=$CH_TASKS_MAX
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+ReadWritePaths=$dir $run
+DevicePolicy=closed
+DeviceAllow=/dev/kvm rw
+DeviceAllow=/dev/net/tun rw
+
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+
+# The install-time drop-in: attaches the installer and never restarts, so a
+# guest that powers off after installing leaves the unit inactive.
+render_ch_install_dropin() {
+  local dir; dir="$(ch_node_dir "$1")"
+  cat <<EOF
+[Service]
+Environment=K0S_VM_INSTALL_DISK=path=$dir/install.iso,readonly=on,image_type=raw
+Restart=no
+EOF
+}
+
+ensure_ch_vm_user() {
+  id -u "$CH_VM_USER" >/dev/null 2>&1 && return 0
+  log "Creating system user $CH_VM_USER for Cloud Hypervisor nodes"
+  sudo useradd --system --no-create-home --home-dir /nonexistent \
+    --shell /usr/sbin/nologin "$CH_VM_USER"
+}
+
+write_ch_units() {
+  local name="$1" idx="$2" unit
+  unit="$(ch_unit "$name")"
+  render_ch_net_unit "$name" | sudo tee "$CH_UNIT_DIR/$unit-net.service" >/dev/null
+  if [[ "$CH_TPM" == "true" ]]; then
+    render_ch_swtpm_unit "$name" | sudo tee "$CH_UNIT_DIR/$unit-swtpm.service" >/dev/null
+  fi
+  render_ch_vm_unit "$name" "$idx" | sudo tee "$CH_UNIT_DIR/$unit.service" >/dev/null
+  sudo systemctl daemon-reload
+}
+
+# wait_for_install_ch <name>: the install drop-in has Restart=no, so the unit
+# goes inactive when Kairos powers the guest off, and failed if the VMM did.
+wait_for_install_ch() {
+  local name="$1" unit state
+  unit="$(ch_unit "$name").service"
+  log "Waiting for $name to install Kairos and power off..."
+  for _ in $(seq 1 "$INSTALL_WAIT_ATTEMPTS"); do
+    state="$(systemctl is-active "$unit" 2>/dev/null || true)"
+    case "$state" in
+      inactive) return 0 ;;
+      failed)
+        log "$unit failed during install:"
+        sudo journalctl -u "$unit" -n 20 --no-pager >&2 || true
+        exit 1 ;;
+    esac
+    sleep 5
+  done
+  log "Timed out waiting for $name to power off after install"
+  exit 1
+}
+
+create_vm_ch() {
+  local idx="$1" name unit dir host_ip seed_dir dropin
+  name="$(vm_name "$idx")"; unit="$(ch_unit "$name")"; dir="$(ch_node_dir "$name")"
+
+  if sudo test -f "$CH_UNIT_DIR/$unit.service"; then
+    if ! sudo test -f "$dir/$CH_INSTALLED_MARKER"; then
+      log "$name has units but never finished installing; run destroy and retry"
+      exit 1
+    fi
+    log "Cloud Hypervisor node $name already defined, ensuring it is running"
+    sudo systemctl start "$unit.service"
+    return
+  fi
+
+  host_ip="$(ch_bridge_addr)"
+  ensure_ch_vm_user
+  sudo install -d -m 0750 -o "$CH_VM_USER" -g "$CH_VM_USER" "$dir"
+  if ! sudo -u "$CH_VM_USER" test -w "$dir"; then
+    log "$CH_VM_USER cannot reach $dir: every parent directory must be searchable by it"
+    exit 1
+  fi
+  sudo install -d -m 0700 -o "$CH_VM_USER" -g "$CH_VM_USER" "$dir/tpm"
+
+  # The seed is built as the operator, then installed into the node's
+  # directory; the working copy may hold TAILSCALE_AUTHKEY, so it goes.
+  seed_dir="$WORKDIR/ch-seed/$name"
+  log "Building cloud-init seed for $name (announces itself to $host_ip)"
+  make_cloud_init_files "$name" "$seed_dir" "$host_ip"
+  sudo install -m 0400 -o "$CH_VM_USER" -g "$CH_VM_USER" "$seed_dir.iso" "$dir/seed.iso"
+  rm -rf "$seed_dir" "$seed_dir.iso"
+
+  if [[ "$LIBVIRT_IMAGE_KIND" == "cloud" ]]; then
+    log "Cloning cloud image for $name (${DISK_GB}G)"
+    sudo cp --reflink=auto "$CLOUD_IMAGE" "$dir/disk.qcow2"
+    sudo qemu-img resize "$dir/disk.qcow2" "${DISK_GB}G" >/dev/null
+  else
+    log "Creating empty disk for $name (${DISK_GB}G -- Kairos installs onto it from the ISO)"
+    sudo qemu-img create -f qcow2 "$dir/disk.qcow2" "${DISK_GB}G" >/dev/null
+    sudo cp --reflink=auto "$INSTALL_ISO" "$dir/install.iso"
+    sudo chown "$CH_VM_USER:$CH_VM_USER" "$dir/install.iso"
+  fi
+  sudo chown "$CH_VM_USER:$CH_VM_USER" "$dir/disk.qcow2"
+  sudo chmod 0600 "$dir/disk.qcow2"
+
+  log "Writing systemd units for $name (${VCPUS} vCPU, ${MEM_MB}MB RAM, Cloud Hypervisor)"
+  write_ch_units "$name" "$idx"
+
+  if [[ "$LIBVIRT_IMAGE_KIND" != "cloud" ]]; then
+    dropin="$CH_RUNTIME_DROPIN_ROOT/$unit.service.d"
+    sudo install -d "$dropin"
+    render_ch_install_dropin "$name" | sudo tee "$dropin/install.conf" >/dev/null
+    sudo systemctl daemon-reload
+    sudo systemctl start "$unit.service"
+    wait_for_install_ch "$name"
+    log "Detaching the installer from $name and booting the installed system"
+    sudo rm -rf "$dropin"
+    sudo rm -f "$dir/install.iso"
+    sudo systemctl daemon-reload
+  fi
+  sudo touch "$dir/$CH_INSTALLED_MARKER"
+  sudo systemctl enable --now "$unit.service"
+}
+
+wait_for_ip_ch() {
+  local idx="$1" name="$2" mac ip=""
+  mac="$(ch_node_mac "$idx" "$name")"
+  log "Waiting for $name's address (MAC $mac in the neighbour table on $CH_BRIDGE)..."
+  for _ in $(seq 1 "$IP_WAIT_ATTEMPTS"); do
+    ip="$(ip -4 neigh show dev "$CH_BRIDGE" 2>/dev/null | parse_neigh_ip "$mac")"
+    [[ -n "$ip" ]] && { echo "$ip"; return 0; }
+    sleep 5
+  done
+  log "Timed out waiting for an IP address for $name"
+  exit 1
+}
+
+destroy_ch_node() {
+  local idx="$1" name unit dir dropin
+  name="$(vm_name "$idx")"; unit="$(ch_unit "$name")"; dir="$(ch_node_dir "$name")"
+  validate_ch_node "$name"
+  if sudo test -f "$CH_UNIT_DIR/$unit.service"; then
+    log "Destroying Cloud Hypervisor node $name"
+    sudo systemctl disable "$unit.service" >/dev/null 2>&1 || true
+    # destroy is a power cut, like `virsh destroy`.
+    sudo systemctl kill --signal=SIGKILL "$unit.service" >/dev/null 2>&1 || true
+    sudo systemctl stop "$unit.service" "$unit-swtpm.service" "$unit-net.service" >/dev/null 2>&1 || true
+  fi
+  dropin="$CH_RUNTIME_DROPIN_ROOT/$unit.service.d"
+  sudo rm -rf "$dropin"
+  sudo rm -f "$CH_UNIT_DIR/$unit.service" "$CH_UNIT_DIR/$unit-swtpm.service" "$CH_UNIT_DIR/$unit-net.service"
+  sudo systemctl daemon-reload
+  sudo systemctl reset-failed "$unit.service" "$unit-swtpm.service" "$unit-net.service" >/dev/null 2>&1 || true
+  # validate_ch_node above guarantees a non-empty, slash-free name.
+  sudo rm -rf "${CH_VM_DIR:?}/${name:?}"
+  rm -rf "$WORKDIR/ch-seed/$name" "$WORKDIR/ch-seed/$name.iso"
+}
+
+# ============================================================================
+# join: add workers to a RUNNING cluster (any backend; ADR-0099)
+# ============================================================================
+# Remote snippet that finds the k0s binary however it was installed: k0sctl
+# puts it on PATH, the native path under /opt/k0s. Single-quoted on purpose:
+# it is expanded on the node, never here.
+# shellcheck disable=SC2016
+readonly K0S_FIND_REMOTE='k=$(command -v k0s 2>/dev/null || ls -1 /opt/k0s/k0s-v*-amd64 2>/dev/null | tail -n1); [ -n "$k" ] || { echo "no k0s binary on this node" >&2; exit 1; }'
+readonly JOIN_READY_ATTEMPTS=60     # x 5 s for the new node to report Ready
+
+# join_targets: the NODE_TABLE rows named by JOIN_NODES. Refuses controllers
+# (their config is what the script cannot know about a running cluster) and
+# names that are not nodes of this cluster.
+join_targets() {
+  [[ -n "$JOIN_NODES" ]] || { log "join needs JOIN_NODES=<node names>"; exit 1; }
+  local want row name role ip found
+  for want in $JOIN_NODES; do
+    found=""
+    for row in "${NODE_TABLE[@]}"; do
+      IFS='|' read -r name role ip <<<"$row"
+      [[ "$name" == "$want" ]] || continue
+      if [[ "$role" == controller* ]]; then
+        log "join adds workers only; $want is a $role."
+        log "  A controller needs the cluster's storage, VIP and SAN settings, which a running"
+        log "  cluster may have changed since bootstrap."
+        exit 1
+      fi
+      found="$row"
+      break
+    done
+    [[ -n "$found" ]] || { log "JOIN_NODES names '$want', which is not one of this cluster's nodes"; exit 1; }
+    echo "$found"
+  done
+}
+
+# join_controller_ip: JOIN_CONTROLLER, else the first controller's address.
+join_controller_ip() {
+  if [[ -n "$JOIN_CONTROLLER" ]]; then
+    printf '%s' "$JOIN_CONTROLLER"
+    return
+  fi
+  local row name role ip
+  for row in "${NODE_TABLE[@]}"; do
+    IFS='|' read -r name role ip <<<"$row"
+    [[ "$role" == controller* ]] && { printf '%s' "$ip"; return; }
+  done
+  log "no controller in the node table; set JOIN_CONTROLLER=<address>"
+  exit 1
+}
+
+join_workers() {
+  populate_node_table
+  local targets cp_ip cp_version tag k0s_bin row name role ip
+  targets="$(join_targets)"
+  cp_ip="$(join_controller_ip)"
+  tag="$(_k0s_ver_tag)"
+  k0s_bin="/opt/k0s/k0s-${tag}-amd64"
+
+  cp_version="$(ssh_run "$cp_ip" "sudo sh -c '$K0S_FIND_REMOTE; \"\$k\" version'" | tr -d '\r')"
+  if [[ "$cp_version" != "$tag" ]]; then
+    log "The controller at $cp_ip runs k0s $cp_version but K0S_VERSION is $tag."
+    log "  Set K0S_VERSION to the cluster's version: a worker joins at the version it is installed with."
+    exit 1
+  fi
+
+  while IFS='|' read -r name role ip; do
+    if ssh_run "$ip" 'systemctl is-active --quiet k0sworker' 2>/dev/null; then
+      log "[$name] k0sworker already active, skipping"
+      continue
+    fi
+    stage_k0s_binary "$ip"
+    log "[$name] minting a worker token on $cp_ip (expires in $JOIN_TOKEN_EXPIRY)"
+    # Straight from the controller into a root-only file on the node: the
+    # token is never written on this machine.
+    ssh_run "$cp_ip" "sudo sh -c '$K0S_FIND_REMOTE; \"\$k\" token create --role=worker --expiry=$JOIN_TOKEN_EXPIRY'" \
+      | tr -d '\r' \
+      | ssh_run "$ip" 'sudo install -d -m 0700 /etc/k0s && sudo sh -c "umask 077; cat >/etc/k0s/worker-token-file"'
+    log "[$name/$ip] installing k0s worker $tag"
+    ssh_run "$ip" "sudo $k0s_bin install worker --force --token-file /etc/k0s/worker-token-file && sudo $k0s_bin start"
+    wait_node_ready "$cp_ip" "$name"
+  done <<<"$targets"
+  log "join complete: $JOIN_NODES"
+}
+
+# wait_node_ready <controller-ip> <node>: asks the controller, so it works
+# whatever kubeconfig the operator has.
+wait_node_ready() {
+  local cp_ip="$1" name="$2" status
+  log "[$name] waiting for the node to report Ready..."
+  for _ in $(seq 1 "$JOIN_READY_ATTEMPTS"); do
+    status="$(ssh_run "$cp_ip" "sudo sh -c '$K0S_FIND_REMOTE; \"\$k\" kubectl get node $name --no-headers'" 2>/dev/null | awk '{print $2}' || true)"
+    [[ "$status" == Ready* ]] && { log "[$name] Ready"; return 0; }
+    sleep 5
+  done
+  log "[$name] did not report Ready; check 'sudo journalctl -u k0sworker' on the node"
+  exit 1
 }
 
 # ============================================================================
@@ -1592,7 +2238,8 @@ wait_for_tailscale_ip() {
 # Build the node table the k0sctl config is generated from. Each row is
 # "name|role|ip". This is where a backend resolves node addresses and waits for
 # the nodes to become reachable.
-#   libvirt: name from VM_COUNT, role from NODE_ROLES, ip from DHCP lease.
+#   libvirt: name from VM_COUNT, role from NODE_ROLES, ip from DHCP lease
+#            (or, for a cloud-hypervisor node, the host's neighbour table).
 #   vsphere: name/role/ip straight from NODES; wait for the install to finish.
 NODE_TABLE=()
 populate_node_table() {
@@ -1611,7 +2258,11 @@ populate_node_table() {
   local roles=($NODE_ROLES) idx name ip
   for idx in $(seq 0 $((VM_COUNT - 1))); do
     name="$(vm_name "$idx")"
-    ip="$(wait_for_ip_libvirt "$name")"
+    if [[ "$(node_vmm "$idx")" == "cloud-hypervisor" ]]; then
+      ip="$(wait_for_ip_ch "$idx" "$name")"
+    else
+      ip="$(wait_for_ip_libvirt "$name")"
+    fi
     wait_for_ssh "$ip"
     NODE_TABLE+=("$name|${roles[$idx]:-worker}|$ip")
   done
@@ -2145,6 +2796,10 @@ main() {
       check_deps
       deploy_flux
       ;;
+    join)
+      check_deps
+      join_workers
+      ;;
     destroy)
       destroy_all
       ;;
@@ -2159,12 +2814,17 @@ main() {
       deploy_flux
       ;;
     *)
-      echo "Usage: $0 [all|vms|config|apply|kubeconfig|label|flux|destroy|--print-env-template]" >&2
+      echo "Usage: $0 [all|vms|config|apply|kubeconfig|label|flux|join|destroy|--print-env-template]" >&2
       echo "  BACKEND=libvirt (default) | vsphere   (vsphere also needs BANLIEUE_ENV_FILE)" >&2
+      echo "  NODE_VMMS=\"libvirt ... cloud-hypervisor\"  per-node VMM on the libvirt backend (ADR-0099)" >&2
+      echo "  JOIN_NODES=\"<name> ...\"  with 'join': add those workers to a RUNNING cluster" >&2
       echo "  FLUX_ENABLED=true         to enable the flux/all flux-operator deployment step" >&2
       exit 1
       ;;
   esac
 }
 
-main "$@"
+# Sourced by scripts/bootstrap-k0s-cluster-test.sh for its functions only.
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi

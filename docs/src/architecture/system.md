@@ -49,6 +49,7 @@ flowchart LR
     data-asset-capi-cluster-cr["CAPI Cluster / MachineDeployment (external)"]
     service-capi-core["Cluster API core + control-plane provider (k0smotron)"]
     system-k0s-bootstrap["k0s Bootstrap Script"]
+    service-k0s-bootstrap-ch-node["Management-cluster node on Cloud Hypervisor"]
     database-kine-datastore["kine datastore (external SQL, operator-provided)"]
     network-oidc-issuer["OIDC Token Issuer (JWKS / discovery)"]
     service-sandbox-broker["Sandbox Broker (planned, roadmap phase C — not shipped by banlieue)"]
@@ -115,6 +116,8 @@ flowchart LR
     service-provider-libvirt -->|TLS| network-libvirt-backend
     system-k0s-bootstrap --> network-vsphere-backend
     system-k0s-bootstrap --> network-libvirt-backend
+    system-k0s-bootstrap --> service-k0s-bootstrap-ch-node
+    system-k0s-bootstrap --> ecosystem-management-cluster
     service-kubernetes-api -->|TLS| database-kine-datastore
     system-k0s-bootstrap --> network-vault-backend
     service-banlieue-controller --> data-asset-virtualmachinepool-cr
