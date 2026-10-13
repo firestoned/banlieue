@@ -779,11 +779,14 @@ To finish G:
       no VMM crash. **Open:** the upstream fix, and a published static
       VMM for hosts to install with `--vmm-url`/`--vmm-sha256` until a
       release has it.
-- [ ] Spread pool members across hosts. Every member of a pool with no
-      placement pin landed on one host: the scheduler's tie-break is the
+- [x] Spread pool members across hosts. Every member of a pool with no
+      placement pin landed on one host: the scheduler's tie-break was the
       alphabetical `(provider, failure domain)` order
       (`reconciler/scheduler.rs`), not the even spread D-023 and roadmap 03
-      require. A scheduling-policy change, so an ADR first.
+      require. *Done 2026-10-13* (ADR-0098): eligible domains are ordered by
+      the pool's own load, then total load, then a rendezvous hash, so
+      members spread and refills go where the pool is short. Unit-tested in
+      `scheduler_tests.rs`; reaches a cluster with the next release.
 
 ### F: Attestation anchors and threat model (ADR-0049)
 

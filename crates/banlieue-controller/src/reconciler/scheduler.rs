@@ -34,16 +34,25 @@
 //!    a failure domain sharing a `topologyKey` value with an already-
 //!    scheduled VM matching the rule's label selector.
 //!
-//! ## Tie-break
+//! ## Spread (ADR-0098)
 //!
-//! Stable lexicographic order over `(provider_name, failure_domain_name)`.
-//! Deterministic and unit-testable; sufficient until a richer score is
-//! needed.
+//! The survivors are ordered, not just tie-broken, so placement spreads
+//! evenly across failure domains (D-023):
+//!
+//! 1. fewest already-scheduled VMs of the VM's spread group on the domain
+//!    (the other members of its pool, or every VM when it is in none);
+//! 2. then fewest scheduled VMs overall;
+//! 3. then the highest rendezvous hash of `(vm, provider, failure domain)`,
+//!    so members scheduled concurrently, before they can see each other's
+//!    placement, still spread instead of following one fixed order.
+//!
+//! Load comes from `status.scheduled` of the VMs passed in; a VM never
+//! counts against itself. Still a pure, deterministic function.
 
 use std::collections::BTreeMap;
 
 use banlieue_api::banlieue::{
-    AffinityMode, AntiAffinityRule, FailureDomain, NetworkClassMapping, Provider,
+    AffinityMode, AntiAffinityRule, FailureDomain, LABEL_POOL, NetworkClassMapping, Provider,
     ProviderCapabilities, ResolvedResource, StorageClassMapping, VMClass, VMImage, VirtualMachine,
 };
 use banlieue_api::common::{Firmware, LabelSelector, LabelSelectorOperator};
@@ -386,16 +395,65 @@ pub fn schedule(
         return Err(ScheduleError::AntiAffinityUnsatisfied(key));
     }
 
-    // Tie-break: alphabetical by (provider_name, failure_domain_name).
-    survivors.sort_by(|(a_p, a_fd), (b_p, b_fd)| {
-        a_p.name_any()
-            .cmp(&b_p.name_any())
-            .then_with(|| a_fd.name.cmp(&b_fd.name))
-    });
     let _ = pre_aa_len; // (kept for future scoring use)
-    let (provider, fd) = survivors.first().expect("survivors non-empty");
+    // Spread (ADR-0098): least loaded for the VM's group, then overall, then
+    // rendezvous hash.
+    let (provider, fd) = survivors
+        .iter()
+        .min_by_key(|(p, fd)| {
+            let (group, total) = placement_load(vm, existing_vms, &p.name_any(), &fd.name);
+            let rendezvous = fnv1a(&[&vm.name_any(), &p.name_any(), &fd.name]);
+            (group, total, std::cmp::Reverse(rendezvous))
+        })
+        .expect("survivors non-empty");
 
     Ok(build_decision(vm, class, provider, fd))
+}
+
+/// FNV-1a 64-bit offset basis and prime.
+const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+/// FNV-1a over `parts`, each followed by a NUL so `("ab", "c")` and
+/// `("a", "bc")` differ. Fixed, unlike `std`'s hasher, so a placement does
+/// not change with the Rust version.
+fn fnv1a(parts: &[&str]) -> u64 {
+    let mut hash = FNV_OFFSET_BASIS;
+    for part in parts {
+        for byte in part.bytes().chain(std::iter::once(0)) {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(FNV_PRIME);
+        }
+    }
+    hash
+}
+
+/// `(group, total)`: how many VMs other than `vm` are scheduled on
+/// `(provider, failure_domain)`, counting only `vm`'s spread group, then all
+/// of them. A pool member's group is its pool (`LABEL_POOL`); any other
+/// VM's group is every VM.
+fn placement_load(
+    vm: &VirtualMachine,
+    existing_vms: &[VirtualMachine],
+    provider: &str,
+    failure_domain: &str,
+) -> (usize, usize) {
+    let me = vm.name_any();
+    let pool = vm.labels().get(LABEL_POOL);
+    existing_vms
+        .iter()
+        .filter(|other| other.name_any() != me)
+        .filter(|other| {
+            other
+                .status
+                .as_ref()
+                .and_then(|s| s.scheduled.as_ref())
+                .is_some_and(|s| s.provider_name == provider && s.failure_domain == failure_domain)
+        })
+        .fold((0, 0), |(group, total), other| {
+            let same_group = pool.is_none() || other.labels().get(LABEL_POOL) == pool;
+            (group + usize::from(same_group), total + 1)
+        })
 }
 
 /// Trait extension so we can call `mode_is_required()` directly on a rule.

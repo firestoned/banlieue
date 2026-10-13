@@ -447,9 +447,22 @@ async fn require_ready_provider(s: &Scratch, provider: &str) {
 }
 
 async fn make_pool(s: &Scratch, f: &Fixture, name: &str) {
+    make_pool_with(s, f, name, &f.image, json!({})).await;
+}
+
+/// [`make_pool`] from `image`, with `extra` merged into the pool's spec
+/// (e.g. `provisioningTimeoutSeconds`). Readiness and user-data come from
+/// the fixture, so a `Deferred` image is installed and announces.
+async fn make_pool_with(
+    s: &Scratch,
+    f: &Fixture,
+    name: &str,
+    image: &str,
+    extra: serde_json::Value,
+) {
     let mut template = json!({
         "classRef": { "name": f.class },
-        "imageRef": { "name": f.image },
+        "imageRef": { "name": image },
         "desiredPowerState": "PoweredOn",
         // Members are cattle; a migration mid-test would muddy every
         // on-host assertion below.
@@ -470,17 +483,21 @@ async fn make_pool(s: &Scratch, f: &Fixture, name: &str) {
             .expect("create user-data ConfigMap");
         template["userData"] = json!({ "configMapRef": { "name": name } });
     }
+    let mut spec = json!({
+        "warmReplicas": WARM,
+        "maxReplicas": WARM + 2,
+        "maxSurge": WARM,
+        "readiness": f.readiness,
+        "template": { "spec": template },
+    });
+    if let (Some(spec), Some(extra)) = (spec.as_object_mut(), extra.as_object()) {
+        spec.extend(extra.clone());
+    }
     let pool: VirtualMachinePool = serde_json::from_value(json!({
         "apiVersion": "banlieue.io/v1alpha1",
         "kind": "VirtualMachinePool",
         "metadata": { "name": name, "namespace": s.namespace },
-        "spec": {
-            "warmReplicas": WARM,
-            "maxReplicas": WARM + 2,
-            "maxSurge": WARM,
-            "readiness": f.readiness,
-            "template": { "spec": template },
-        },
+        "spec": spec,
     }))
     .expect("pool fixture");
     s.pools()
@@ -858,34 +875,18 @@ async fn bumping_the_image_rolls_the_pool_without_dropping_below_warm() {
         )
         .await;
 
-        let pool_obj: VirtualMachinePool = serde_json::from_value(json!({
-            "apiVersion": "banlieue.io/v1alpha1",
-            "kind": "VirtualMachinePool",
-            "metadata": { "name": pool, "namespace": s.namespace },
-            "spec": {
-                "warmReplicas": WARM,
-                "maxReplicas": WARM + 2,
-                "maxSurge": WARM,
-                "readiness": "InfrastructureReady",
-                // Explicit, although it is the default: this test IS the
-                // recycle path, and a silently flipped default would turn it
-                // into a 15-minute timeout.
-                "recycleOnImageChange": true,
-                "template": {
-                    "spec": {
-                        "classRef": { "name": f.class },
-                        "imageRef": { "name": image },
-                        "desiredPowerState": "PoweredOn",
-                        "migrationPolicy": "never",
-                    }
-                },
-            },
-        }))
-        .expect("pool fixture");
-        s.pools()
-            .create(&PostParams::default(), &pool_obj)
-            .await
-            .expect("create pool");
+        // Explicit, although it is the default: this test IS the recycle
+        // path, and a silently flipped default would turn it into a
+        // 15-minute timeout. Readiness and user-data come from the fixture,
+        // so a `Deferred` image rolls through real installs.
+        make_pool_with(
+            &s,
+            &f,
+            &pool,
+            &image,
+            json!({ "recycleOnImageChange": true }),
+        )
+        .await;
 
         wait_for(
             "the pool to reach its warm size",
@@ -1027,6 +1028,62 @@ async fn sabotage_link_down(host: &str, dir: &Path, domain: &str) -> bool {
     true
 }
 
+/// Eject the installer from a **running** `Deferred` domain, live only:
+/// the definition of done's own "detach the ISO mid-install".
+///
+/// Returns `false` when the domain is absent, not yet running, or has no
+/// installer left to eject. The installer is the cdrom that is not the
+/// NoCloud seed (`*-cidata.iso`); the update is that `<disk>` element with
+/// its `<source>` removed, which libvirt applies as an eject. Live only,
+/// for the same reason as [`sabotage_link_down`].
+async fn sabotage_eject_installer(host: &str, dir: &Path, domain: &str) -> bool {
+    let identity = load_identity(dir);
+    let mut session = connect_tls(host, DEFAULT_TLS_PORT, &identity)
+        .await
+        .expect("TLS to the libvirt host");
+    connect_open(&mut session, Some("qemu:///system"), false)
+        .await
+        .expect("CONNECT_OPEN");
+    let dom = match domain_lookup_by_name(&mut session, domain).await {
+        Ok(d) => d,
+        Err(e) if is_not_found(&e) => return false,
+        Err(e) => panic!("looking up domain {domain}: {e}"),
+    };
+    let state = domain_get_state(&mut session, &dom)
+        .await
+        .expect("DOMAIN_GET_STATE");
+    if !state.is_running() {
+        return false;
+    }
+    let xml = domain_get_xml_desc(&mut session, &dom, 0)
+        .await
+        .expect("DOMAIN_GET_XML_DESC");
+    let installer = xml
+        .match_indices("<disk ")
+        .filter_map(|(start, _)| {
+            let end = xml[start..].find("</disk>")? + start + "</disk>".len();
+            Some(&xml[start..end])
+        })
+        .find(|disk| {
+            disk.contains("device='cdrom'")
+                && disk.contains("<source ")
+                && !disk.contains("-cidata")
+        });
+    let Some(installer) = installer else {
+        return false;
+    };
+    let source_start = installer.find("<source ").expect("source present");
+    let source_end = installer[source_start..]
+        .find("/>")
+        .map(|i| source_start + i + "/>".len())
+        .expect("source element is self-closing");
+    let device = format!("{}{}", &installer[..source_start], &installer[source_end..]);
+    domain_update_device_flags(&mut session, &dom, &device, DEVICE_MODIFY_LIVE)
+        .await
+        .expect("DOMAIN_UPDATE_DEVICE_FLAGS(eject installer)");
+    true
+}
+
 /// Roadmap 17's other never-run definition-of-done item: a member whose
 /// install is sabotaged never reaches readiness, is deleted at
 /// `provisioningTimeoutSeconds`, and is replaced — and the pool still warms.
@@ -1038,6 +1095,11 @@ async fn sabotage_link_down(host: &str, dir: &Path, domain: &str) -> bool {
 /// agent install, and cutting its network is the same category of injury
 /// with a far wider window (the whole apt run, not the seconds before
 /// cloud-init reads the seed).
+///
+/// With `BANLIEUE_E2E_USER_DATA` set, the fixture image is `Deferred` and
+/// the members install for real: the sabotage is then the definition of
+/// done's own, the installer ejected mid-install, and the pool uses the
+/// fixture's readiness and user-data.
 ///
 /// If the sabotage ever loses that race the sabotaged member goes Ready,
 /// nothing is reaped, and the "sabotaged member to be reaped" wait times
@@ -1065,48 +1127,60 @@ async fn a_sabotaged_member_is_reaped_at_provisioning_timeout_and_replaced() {
 
     use futures::FutureExt as _;
     let result = std::panic::AssertUnwindSafe(async {
-        let cm: ConfigMap = serde_json::from_value(json!({
-            "apiVersion": "v1",
-            "kind": "ConfigMap",
-            "metadata": { "name": userdata, "namespace": s.namespace },
-            "data": { "user-data": SABOTAGE_SEED },
-        }))
-        .expect("userdata fixture");
-        configmaps
-            .create(&PostParams::default(), &cm)
-            .await
-            .expect("create userdata ConfigMap");
+        let deferred = f.user_data.is_some();
+        if deferred {
+            make_pool_with(
+                &s,
+                &f,
+                &pool,
+                &f.image,
+                json!({ "provisioningTimeoutSeconds": SABOTAGE_PROVISIONING_TIMEOUT_SECS }),
+            )
+            .await;
+        } else {
+            let cm: ConfigMap = serde_json::from_value(json!({
+                "apiVersion": "v1",
+                "kind": "ConfigMap",
+                "metadata": { "name": userdata, "namespace": s.namespace },
+                "data": { "user-data": SABOTAGE_SEED },
+            }))
+            .expect("userdata fixture");
+            configmaps
+                .create(&PostParams::default(), &cm)
+                .await
+                .expect("create userdata ConfigMap");
 
-        let pool_obj: VirtualMachinePool = serde_json::from_value(json!({
-            "apiVersion": "banlieue.io/v1alpha1",
-            "kind": "VirtualMachinePool",
-            "metadata": { "name": pool, "namespace": s.namespace },
-            "spec": {
-                "warmReplicas": WARM,
-                "maxReplicas": WARM + 2,
-                "maxSurge": WARM,
-                // GuestReady: the member is ready when the guest ANNOUNCES,
-                // which is the signal the sabotage suppresses. With
-                // InfrastructureReady the domain merely running would count,
-                // and there would be nothing to sabotage.
-                "readiness": "GuestReady",
-                "provisioningTimeoutSeconds": SABOTAGE_PROVISIONING_TIMEOUT_SECS,
-                "template": {
-                    "spec": {
-                        "classRef": { "name": f.class },
-                        "imageRef": { "name": f.image },
-                        "desiredPowerState": "PoweredOn",
-                        "migrationPolicy": "never",
-                        "userData": { "configMapRef": { "name": userdata } },
-                    }
+            let pool_obj: VirtualMachinePool = serde_json::from_value(json!({
+                "apiVersion": "banlieue.io/v1alpha1",
+                "kind": "VirtualMachinePool",
+                "metadata": { "name": pool, "namespace": s.namespace },
+                "spec": {
+                    "warmReplicas": WARM,
+                    "maxReplicas": WARM + 2,
+                    "maxSurge": WARM,
+                    // GuestReady: the member is ready when the guest ANNOUNCES,
+                    // which is the signal the sabotage suppresses. With
+                    // InfrastructureReady the domain merely running would count,
+                    // and there would be nothing to sabotage.
+                    "readiness": "GuestReady",
+                    "provisioningTimeoutSeconds": SABOTAGE_PROVISIONING_TIMEOUT_SECS,
+                    "template": {
+                        "spec": {
+                            "classRef": { "name": f.class },
+                            "imageRef": { "name": f.image },
+                            "desiredPowerState": "PoweredOn",
+                            "migrationPolicy": "never",
+                            "userData": { "configMapRef": { "name": userdata } },
+                        }
+                    },
                 },
-            },
-        }))
-        .expect("pool fixture");
-        s.pools()
-            .create(&PostParams::default(), &pool_obj)
-            .await
-            .expect("create pool");
+            }))
+            .expect("pool fixture");
+            s.pools()
+                .create(&PostParams::default(), &pool_obj)
+                .await
+                .expect("create pool");
+        }
 
         // Hunt: the FIRST member whose domain reaches `running` gets its
         // link cut. 2s polling against a boot-to-apt window measured in
@@ -1116,7 +1190,12 @@ async fn a_sabotaged_member_is_reaped_at_provisioning_timeout_and_replaced() {
             let mut hit = None;
             for m in s.member_names(&pool).await {
                 let d = domain_name(&s.namespace, &m);
-                if sabotage_link_down(&host, &dir, &d).await {
+                let cut = if deferred {
+                    sabotage_eject_installer(&host, &dir, &d).await
+                } else {
+                    sabotage_link_down(&host, &dir, &d).await
+                };
+                if cut {
                     hit = Some(m);
                     break;
                 }
@@ -1132,7 +1211,12 @@ async fn a_sabotaged_member_is_reaped_at_provisioning_timeout_and_replaced() {
             tokio::time::sleep(SABOTAGE_POLL).await;
         };
         let sabotaged_domain = domain_name(&s.namespace, &sabotaged);
-        eprintln!("  ✂ severed the network of {sabotaged} ({sabotaged_domain})");
+        let injury = if deferred {
+            "ejected the installer of"
+        } else {
+            "severed the network of"
+        };
+        eprintln!("  ✂ {injury} {sabotaged} ({sabotaged_domain})");
 
         // The reap: gone from the API server, at roughly the configured
         // timeout. The wait is on the member's absence — the thing that is

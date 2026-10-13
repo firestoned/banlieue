@@ -1,5 +1,51 @@
 # Changelog
 
+## [2026-10-13] - Spread placement (ADR-0098); per-issuer claim prefixes (ADR-0047 amended); Deferred libvirt e2e
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0098-spread-placement-across-failure-domains.md`: the scheduler
+  orders eligible `(provider, failure domain)` candidates by the load of the
+  VM's pool, then total load, then a rendezvous hash, instead of taking the
+  alphabetically first. Closes roadmap 17 phase G's spread item and the
+  placement half of D-023.
+- `deploy/admission/virtualmachineclaim-subject-authorization.yaml`:
+  `issuerPrefixes` (`<issuer> <prefix>` per line). A claim is checked against
+  its own issuer's prefix, falling back to `usernamePrefix`; this also stops
+  a user from one issuer recording a subject under another.
+- `crates/banlieue-controller/tests/live_claim_subject_policy.rs` and
+  `make claim-policy-live-test`: dry-run claims as impersonated users against
+  a real API server; fails on the previous policy for both reasons above.
+
+### Changed
+- `crates/banlieue-controller/src/reconciler/scheduler.rs`: `placement_load`
+  and FNV-1a `fnv1a`; `scheduler_tests.rs`: eight spread tests replace the
+  alphabetical tie-break test.
+- `crates/banlieue-provider-libvirt/tests/e2e_pool_claim.rs`: the image-bump
+  test uses the fixture's readiness and user-data (`make_pool_with`), and
+  with `BANLIEUE_E2E_USER_DATA` the sabotage test ejects the installer
+  mid-install (`sabotage_eject_installer`), the definition of done's own
+  injury for a `Deferred` image.
+- `scripts/dev-oidc-k0s.sh`: `grant` for Google/Auth0 adds the issuer to the
+  policy's `issuers` and its line to `issuerPrefixes` (`policy_add_issuer`)
+  instead of leaving claims refused.
+- `docs/adr/0047-virtualmachineclaim.md`: amendment 2026-10-13 (Decision 9),
+  and its stale "Decision 10 not implemented" note corrected.
+- Docs: pools guide (*Where members land*), `concepts/virtualmachine.md`,
+  `concepts/virtualmachine-claim-flow.md`, `developer/oauth-clients.md`
+  (*Claims from every issuer*), `deploy/admission/README.md`, CH timings
+  page. CALM: ADR-0098 control on the controller, claim-flow description;
+  diagrams regenerated. Threat model: pass for both, stamp 2026-10-13 /
+  ADR-0098. Roadmap 17 and `ROADMAPS.md`: spread item done.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (controller for ADR-0098; re-apply the
+      admission policy for `issuerPrefixes`)
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-10-12] - Replace serde_yaml with serde-saphyr (RUSTSEC-2024-0449)
 
 **Author:** Erick Bourgeois

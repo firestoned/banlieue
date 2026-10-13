@@ -789,12 +789,10 @@ roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: banlieue-claim
 subjects:
   - { kind: User, name: "$me", apiGroup: rbac.authorization.k8s.io }
 EOF
-  # The subject policy holds ONE prefix, and it stays Dex's: rewriting it to
-  # google: or auth0: would deny every GitHub claim. So a Google or Auth0
-  # identity can read and list, and its claims are refused by the policy's
-  # subject check until the policy learns a prefix per issuer.
+  # Google and Auth0 get their own line in the policy's issuerPrefixes
+  # (ADR-0047 Decision 9, amended 2026-10-13); usernamePrefix stays Dex's.
   if [[ "$PROVIDER" != "dex" ]]; then
-    warn "policy usernamePrefix left at Dex's; claims as $me will be refused by the subject check"
+    policy_add_issuer "$(provider_issuer)" "$prefix"
     return 0
   fi
   # The subject policy re-applies the API server's prefix when it checks a
@@ -803,6 +801,31 @@ EOF
   kubectl -n "$NAMESPACE" patch configmap banlieue-claim-subject-policy \
     --type=merge -p "{\"data\":{\"usernamePrefix\":\"${PREFIX}\\n\"}}" >/dev/null
   log "policy usernamePrefix set to $PREFIX"
+}
+
+# The issuer URL `login` uses for PROVIDER, which is what a claim's
+# subject.issuer names.
+provider_issuer() {
+  case "$PROVIDER" in
+    dex)    echo "$ISSUER" ;;
+    google) echo "$GOOGLE_ISSUER" ;;
+    auth0)  echo "$AUTH0_ISSUER" ;;
+  esac
+}
+
+# Add ISSUER to the claim subject policy's allowlist and its "<issuer>
+# <prefix>" line to issuerPrefixes, keeping every other line. Idempotent.
+policy_add_issuer() {
+  local issuer="$1" prefix="$2" cm=banlieue-claim-subject-policy issuers pairs
+  issuers="$(kubectl -n "$NAMESPACE" get configmap "$cm" -o jsonpath='{.data.issuers}')"
+  pairs="$(kubectl -n "$NAMESPACE" get configmap "$cm" -o jsonpath='{.data.issuerPrefixes}')"
+  issuers="$( { printf '%s\n' "$issuers"; echo "$issuer"; } | awk 'NF && !seen[$0]++')"
+  pairs="$( { printf '%s\n' "$pairs" | awk -v i="$issuer" 'NF && $1 != i'; echo "$issuer $prefix"; } )"
+  kubectl -n "$NAMESPACE" patch configmap "$cm" --type=merge -p "$(python3 -c '
+import json, sys
+print(json.dumps({"data": {"issuers": sys.argv[1] + "\n", "issuerPrefixes": sys.argv[2] + "\n"}}))
+' "$issuers" "$pairs")" >/dev/null
+  log "policy: $issuer allowed, prefix $prefix"
 }
 
 status() {

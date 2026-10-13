@@ -42,7 +42,8 @@ brings three concurrent members to `Warm` in 107.5 s with no split-image work (r
   SSD, ext4; Debian 13. The same host as the Cloud Hypervisor column in
   [Provider comparison](provider-comparison.md). All fourteen members landed
   on it: with two Cloud Hypervisor Providers serving the class, the scheduler
-  breaks the tie alphabetically rather than spreading (roadmap 17 phase G).
+  broke the tie alphabetically rather than spreading. Since ADR-0098 it
+  spreads pool members across failure domains.
 - **Hypervisor:** Cloud Hypervisor v53.0, swtpm 0.7.1, one `banlieue-ch@`
   unit and one `banlieue-swtpm@` unit per guest (ADR-0063, ADR-0065).
 - **banlieue:** v0.4.1 provider on the host; v0.4.1 controller and operator

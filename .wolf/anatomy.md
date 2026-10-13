@@ -1,6 +1,6 @@
 # anatomy.md
 
-> Auto-maintained by OpenWolf. Last scanned: 2026-10-13T04:00:00.454Z
+> Auto-maintained by OpenWolf. Last scanned: 2026-10-13T10:00:00.561Z
 > Files: 511 tracked | Anatomy hits: 0 | Misses: 0
 
 ## ./
@@ -19,7 +19,7 @@
 - `GOVERNANCE.md` — Governance (~1125 tok)
 - `LICENSE` — Project license (~3029 tok)
 - `MAINTAINERS.md` — Maintainers (~165 tok)
-- `Makefile` — Make build targets (~26353 tok)
+- `Makefile` — Make build targets (~26601 tok)
 - `NOTICE` (~159 tok)
 - `osv-scanner.toml` — SPDX-License-Identifier: Apache-2.0 (~355 tok)
 - `README.md` — Project documentation (~3324 tok)
@@ -261,6 +261,7 @@
 ## crates/banlieue-controller/tests/
 
 - `bench_provider.rs` — Provider benchmark: the same `VirtualMachine`, measured the same way, on (~5719 tok)
+- `live_claim_subject_policy.rs` — The claim subject policy against a **real API server** (ADR-0047 (~2104 tok)
 - `live_claim.rs` — `VirtualMachineClaim` against a **real API server** (ADR-0047). (~7552 tok)
 - `live_duplicate_address.rs` — Duplicate static-address blocking against a **real API server** (~5936 tok)
 
@@ -507,7 +508,7 @@
 ## crates/banlieue-provider-libvirt/tests/
 
 - `e2e_import_pipeline.rs` — Full ADR-0010 pipeline against a real cluster and a real libvirt host. (~4137 tok)
-- `e2e_pool_claim.rs` — Pool → real libvirt domains → claim → release, end to end (ADR-0046/0047). (~13434 tok)
+- `e2e_pool_claim.rs` — Pool → real libvirt domains → claim → release, end to end (ADR-0046/0047). (~14340 tok)
 - `e2e_vmimage_ssa.rs` — e2e: the `VMImage.status` field-manager split of ADR-0010. (~4198 tok)
 - `live_cloudinit.rs` — Proof that a **guest consumes** the cloud-init seed (ADR-0054). (~3171 tok)
 - `live_ek.rs` — The vTPM endorsement-certificate read path, against a **real guest with a (~3515 tok)
@@ -711,7 +712,7 @@
 - `virtualmachine-created-by.yaml` — SPDX-License-Identifier: Apache-2.0 (~880 tok)
 - `virtualmachine-immutability.yaml` — SPDX-License-Identifier: Apache-2.0 (~526 tok)
 - `virtualmachine-userdata-authorization.yaml` — SPDX-License-Identifier: Apache-2.0 (~1223 tok)
-- `virtualmachineclaim-subject-authorization.yaml` — SPDX-License-Identifier: Apache-2.0 (~3045 tok)
+- `virtualmachineclaim-subject-authorization.yaml` — SPDX-License-Identifier: Apache-2.0 (~3473 tok)
 - `vmimage-import-source.yaml` — VAP + params ConfigMap: importFrom must be digest-pinned and registry-allowlisted (security review 2026-07-31) (~1011 tok)
 
 ## deploy/capi/
@@ -761,4 +762,3 @@
 
 - `configmap.yaml` — SPDX-License-Identifier: Apache-2.0 (~398 tok)
 - `deployment.yaml` — SPDX-License-Identifier: Apache-2.0 (~838 tok)
-- `namespace.yaml` — SPDX-License-Identifier: Apache-2.0 (~409 tok)

@@ -130,7 +130,10 @@ flowchart LR
 against a JWT, and no token anywhere carries a `github:` prefix — so storing
 the prefixed Kubernetes username would make the field uncomparable to the
 only thing it exists to be compared against. The admission policy adds the
-prefix at check time instead, from `usernamePrefix` in its params ConfigMap.
+prefix at check time instead, from its params ConfigMap: the claim's
+issuer's own line in `issuerPrefixes` when there is one, else
+`usernamePrefix`. With a distinct prefix per issuer, that also proves the
+claim's issuer is the one that authenticated its author.
 
 ## 2. Creating a claim: what admission checks
 
@@ -156,14 +159,14 @@ sequenceDiagram
     API->>API: authorize (RBAC)
     API->>VAP: admission review
     VAP->>CM: paramRef, with parameterNotFoundAction Deny
-    CM-->>VAP: issuers, brokers, usernamePrefix
+    CM-->>VAP: issuers, brokers, usernamePrefix, issuerPrefixes
 
     Note over VAP: variables: split on newlines,<br/>drop blanks, trim
 
     alt caller is in brokers
         VAP->>VAP: skip the id check — handing<br/>sandboxes to others is its job
     else ordinary caller
-        VAP->>VAP: usernamePrefix + subject.id == userInfo.username ?
+        VAP->>VAP: prefix(subject.issuer) + subject.id == userInfo.username ?<br/>(issuerPrefixes entry, else usernamePrefix)
     end
     VAP->>VAP: subject.issuer in issuers ?
 

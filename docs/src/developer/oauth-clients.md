@@ -556,16 +556,39 @@ can finish a login. Bind the identities you mean:
 PROVIDER=google ./scripts/dev-oidc-k0s.sh grant    # RoleBinding banlieue-claim-author-oidc-google
 ```
 
-!!! warning "Claims work for one issuer at a time"
-    banlieue's claim subject policy compares
-    `usernamePrefix + spec.subject.id` with the authenticated username, and
-    its ConfigMap holds a **single** `usernamePrefix`. With it at `github:`,
-    a Google or Auth0 identity can read pools and claims after `grant`, but
-    a claim it creates naming itself is refused by the subject check. This
-    fails closed. `grant` for Google or Auth0 therefore leaves the prefix
-    alone rather than switching it and breaking every GitHub claim. To test
-    claims as a Google or Auth0 user, point `usernamePrefix` (and the
-    `issuers` allowlist) at that issuer for the duration of the test.
+### Claims from every issuer
+
+banlieue's claim subject policy checks that a claim names its own creator:
+the prefix plus `spec.subject.id` must equal the authenticated username.
+With several issuers, give the policy one prefix per issuer in its
+ConfigMap's `issuerPrefixes`, matching the AuthenticationConfiguration, and
+list each issuer in `issuers`:
+
+```yaml
+# ConfigMap banlieue-system/banlieue-claim-subject-policy
+data:
+  issuers: |
+    https://dex.example.com
+    https://accounts.google.com
+    https://dev-a1b2c3d4.us.auth0.com/
+  usernamePrefix: |
+    github:
+  issuerPrefixes: |
+    https://dex.example.com github:
+    https://accounts.google.com google:
+    https://dev-a1b2c3d4.us.auth0.com/ auth0:
+```
+
+A Google user then creates a claim with `subject.issuer:
+https://accounts.google.com` and `subject.id: you@example.com`. Because each
+issuer's prefix is distinct, the policy also refuses a claim whose issuer is
+not the one that authenticated its author: a GitHub user cannot record a
+sandbox as Google's. An issuer with no `issuerPrefixes` line falls back to
+`usernamePrefix` (ADR-0047 Decision 9, amended 2026-10-13).
+
+`grant` keeps this in step: for `PROVIDER=google` or `auth0` it adds that
+issuer to `issuers` and its line to `issuerPrefixes`, leaving the others as
+they are.
 
 ---
 
@@ -607,7 +630,7 @@ policy's issuer allowlist) is provider-independent.
 | One issuer works, a newly added one is ignored | The API server refused the new file and kept running the old one. Compare `sha256sum` of the file with the `hash` label of `apiserver_authentication_config_controller_last_config_info`; the API server log names the field it rejected. |
 | Google or Auth0 login succeeds, API server answers 401 | `aud` is not in that entry's `audiences` (it must be the client ID), or `email_verified` is false or missing. Decode the ID token from `~/.kube/cache/oidc-login` and compare. |
 | Auth0 database user rejected while a social login works | The address was never verified. The `email_verified` rule refuses it by design; verify the address, or use the social connection. |
-| A Google/Auth0 identity is refused when creating a claim naming itself | The claim subject policy holds one `usernamePrefix` (Dex's). See [Claims work for one issuer at a time](#logging-in-with-each). |
+| A Google/Auth0 identity is refused when creating a claim naming itself | Its issuer has no line in the policy's `issuerPrefixes`, so `usernamePrefix` (Dex's) applies, or the issuer is missing from `issuers`. See [Claims from every issuer](#claims-from-every-issuer). |
 | `kubectl auth whoami` shows a long opaque string | `--oidc-username-claim=sub`. Use `email` or `preferred_username`; `sub` cannot be typed into `spec.subject.id`. |
 
 ## Reference

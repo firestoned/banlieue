@@ -8,13 +8,15 @@
   subject, not the Kubernetes username; see the decision for why the first
   version could not be validated by the in-guest agent); 2026-09-28
   (Decision 2 — a claim that already labels a member finishes that bind
-  instead of picking again; one claim took two members from a stale cache)
+  instead of picking again; one claim took two members from a stale cache);
+  2026-10-13 (Decision 9: a username prefix per issuer; see the amendment
+  at the end)
 - **Notes:** Implemented and validated end to end against a real cluster and
   libvirt host — pool → warm domains → claim → release, with the released
   domain verified gone from the hypervisor
   (`crates/banlieue-provider-libvirt/tests/e2e_pool_claim.rs`). Decision 10's
-  `subject`-pinning admission policy is **not** implemented and is recorded
-  as an accepted risk in the threat model.
+  `subject`-pinning admission policy is implemented in
+  `deploy/admission/virtualmachineclaim-subject-authorization.yaml`.
 - **Related:** Completes [ADR-0046](0046-virtualmachinepool.md)
   (`VirtualMachinePool`), which maintains a warm set but has no way to hand
   one out. Depends on the member lifecycle in
@@ -198,3 +200,40 @@ what is missing is the object that puts the label there.
 - Nothing about a claim is provider-specific. A claim binds a
   `VirtualMachine`; which backend realises it is invisible here, exactly as
   it is to the pool.
+
+## Amendment 2026-10-13: a username prefix per issuer (Decision 9)
+
+**Context.** Decision 9's check is `usernamePrefix + subject.id ==
+request.userInfo.username`, with one prefix for the cluster. An API server
+can trust several issuers at once (one `jwt` entry each in a structured
+`AuthenticationConfiguration`), and each must have its own prefix, or an
+account at one issuer authenticates as a same-named account at another. With
+one prefix in the policy, only that issuer's users could create claims:
+on a cluster trusting GitHub (through Dex), Google and Auth0, a Google user
+naming their own subject was refused. Worse, the check could not tie a claim
+to the issuer that authenticated its author: a GitHub user could create a
+claim naming Google as the issuer, because nothing compared the two.
+
+**Decision.** The policy's ConfigMap gains `issuerPrefixes`: lines of
+`<issuer> <prefix>`. A claim whose `subject.issuer` has an entry is checked
+against that issuer's prefix; any other issuer falls back to
+`usernamePrefix`, so a cluster that does not set `issuerPrefixes` behaves
+exactly as before. A line that is not exactly two words is ignored.
+
+**Consequences.**
+
+- Users from every configured issuer can create claims naming themselves.
+- Because each issuer's prefix is distinct, the prefix on the caller's
+  username now identifies the issuer that authenticated them, so a listed
+  issuer can no longer be named by a user from a different one. This narrows
+  the accepted risk that `subject.issuer` is allowlisted but never verified:
+  it is verified for every issuer listed in `issuerPrefixes`, and remains an
+  allowlist check only for issuers that fall back to `usernamePrefix`.
+- `issuerPrefixes` must agree with the API server's authentication
+  configuration, like `usernamePrefix` before it. A mismatch fails closed
+  (claims refused), never open.
+- Verified against a real API server:
+  `crates/banlieue-controller/tests/live_claim_subject_policy.rs`
+  (`make claim-policy-live-test`), which fails on the previous policy for
+  both reasons above.
+

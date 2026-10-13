@@ -155,7 +155,7 @@ help: ## Show this help
         kind-e2e-workload kind-e2e-pause kind-e2e-workload-namespace kind-e2e-class \
         clusterctl-components clusterctl-install clusterctl-local-repo \
         kind-capi-create kind-capi-delete kind-capi-init kind-e2e-capi kind-e2e-capi-logs \
-        claim-live-test address-live-test pool-claim-e2e ch-e2e ch-vtpm-e2e ch-deferred-e2e ch-restart-e2e ch-host-install-test ch-polkit-test provider-bench ch-pool-timings \
+        claim-live-test claim-policy-live-test address-live-test pool-claim-e2e ch-e2e ch-vtpm-e2e ch-deferred-e2e ch-restart-e2e ch-host-install-test ch-polkit-test provider-bench ch-pool-timings \
         dev-oidc-up dev-oidc-attach dev-oidc-github-creds dev-oidc-login \
         dev-oidc-try-claim dev-oidc-status dev-oidc-down \
         dev-oidc-k0s-up dev-oidc-k0s-login dev-oidc-k0s-grant \
@@ -501,6 +501,22 @@ claim-live-test: ## Run the claim reconciler against a REAL API server (needs KU
 	  exit 1; }
 	@echo "Running the claim reconciler against $$(kubectl config current-context) ..."
 	cargo test -p banlieue-controller --test live_claim -- \
+	  --ignored --nocapture --test-threads=1
+
+claim-policy-live-test: ## Run the claim subject policy (per-issuer prefixes, ADR-0047) against a REAL API server (needs KUBECONFIG)
+	@# CEL in a ValidatingAdmissionPolicy: only an API server can say what it
+	@# admits. Dry-run claim creates as impersonated users. The test rewrites
+	@# the policy's ConfigMap and restores it, so use a scratch cluster:
+	@#
+	@#   kind create cluster --name banlieue-policy-test
+	@#   kubectl apply --server-side -f deploy/crds/
+	@#   kubectl create namespace banlieue-system
+	@#   kubectl apply -f deploy/admission/virtualmachineclaim-subject-authorization.yaml
+	@#   make claim-policy-live-test
+	@test -n "$$KUBECONFIG" -o -f "$$HOME/.kube/config" || { \
+	  echo "No kubeconfig. Point KUBECONFIG at a cluster with the CRDs and the policy."; \
+	  exit 1; }
+	cargo test -p banlieue-controller --test live_claim_subject_policy -- \
 	  --ignored --nocapture --test-threads=1
 
 address-live-test: ## Run duplicate-address blocking (ADR-0083) against a REAL API server (needs KUBECONFIG; no libvirt)

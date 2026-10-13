@@ -865,45 +865,167 @@ mod tests {
         assert!(msg.ends_with(&format!("; … and {MAX_REJECT_REASONS} more")));
     }
 
-    // --- Tie-break ----------------------------------------------------------
+    // --- Spread (ADR-0098) --------------------------------------------------
 
-    #[test]
-    fn tiebreak_is_alphabetical_provider_then_fd() {
-        let v = vm("db-01", "ns", BTreeMap::new());
+    const POOL_LABEL: &str = "banlieue.io/pool";
+    const HOSTS: [&str; 3] = ["h1", "h2", "h3"];
+
+    /// Three single-domain providers, all able to run the test class.
+    fn three_hosts() -> (Vec<Provider>, VMImage, VMClass) {
+        let providers = HOSTS
+            .iter()
+            .map(|h| {
+                provider(
+                    h,
+                    BTreeMap::new(),
+                    vec![fd(h, BTreeMap::new(), &["gold"], &["prod"], &[])],
+                    caps_with(
+                        &[("gold", "datastore", "ds")],
+                        &[("prod", "portGroup", "pg")],
+                    ),
+                )
+            })
+            .collect();
         let cls = class(
             vec![("os", "gold")],
             vec![("eth0", "prod")],
             vec![],
             Firmware::Efi,
         );
-        let img = image_ready_on(&["aaa", "zzz"]);
-        let providers = vec![
-            provider(
-                "zzz",
-                BTreeMap::new(),
-                vec![fd("z-fd", BTreeMap::new(), &["gold"], &["prod"], &[])],
-                caps_with(
-                    &[("gold", "datastore", "z-ds")],
-                    &[("prod", "portGroup", "z-pg")],
-                ),
-            ),
-            provider(
-                "aaa",
-                BTreeMap::new(),
-                vec![
-                    fd("b-fd", BTreeMap::new(), &["gold"], &["prod"], &[]),
-                    fd("a-fd", BTreeMap::new(), &["gold"], &["prod"], &[]),
-                ],
-                caps_with(
-                    &[("gold", "datastore", "a-ds")],
-                    &[("prod", "portGroup", "a-pg")],
-                ),
-            ),
-        ];
+        (providers, image_ready_on(&HOSTS), cls)
+    }
 
-        let d = schedule(&v, &cls, &img, &providers, &[]).unwrap();
-        assert_eq!(d.provider_name, "aaa");
-        assert_eq!(d.failure_domain_name, "a-fd");
+    fn member(name: &str, pool: &str) -> VirtualMachine {
+        vm(name, "ns", lbls([(POOL_LABEL, pool)]))
+    }
+
+    fn placed_member(name: &str, pool: &str, host: &str) -> VirtualMachine {
+        scheduled_vm(name, "ns", lbls([(POOL_LABEL, pool)]), host, host)
+    }
+
+    fn host_of(v: &VirtualMachine, existing: &[VirtualMachine]) -> String {
+        let (providers, img, cls) = three_hosts();
+        schedule(v, &cls, &img, &providers, existing)
+            .unwrap()
+            .failure_domain_name
+    }
+
+    #[test]
+    fn a_pool_spreads_evenly_as_members_are_placed() {
+        let mut existing = Vec::new();
+        let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+        for i in 0..6 {
+            let name = format!("pool-a-{i}");
+            let host = host_of(&member(&name, "a"), &existing);
+            *counts.entry(host.clone()).or_default() += 1;
+            existing.push(placed_member(&name, "a", &host));
+        }
+        assert_eq!(counts.len(), HOSTS.len(), "every host used: {counts:?}");
+        assert!(counts.values().all(|&n| n == 2), "two per host: {counts:?}");
+    }
+
+    #[test]
+    fn the_least_loaded_host_wins_whatever_the_name() {
+        let existing = vec![
+            placed_member("m1", "a", "h1"),
+            placed_member("m2", "a", "h2"),
+        ];
+        for i in 0..20 {
+            let v = member(&format!("new-{i}"), "a");
+            assert_eq!(host_of(&v, &existing), "h3");
+        }
+    }
+
+    /// A pool member spreads against its own pool; other VMs only break ties.
+    #[test]
+    fn the_spread_group_of_a_member_is_its_pool() {
+        let existing = vec![
+            placed_member("a1", "a", "h1"),
+            placed_member("a2", "a", "h2"),
+            placed_member("b1", "b", "h3"),
+            placed_member("b2", "b", "h3"),
+            placed_member("b3", "b", "h3"),
+        ];
+        assert_eq!(host_of(&member("a3", "a"), &existing), "h3");
+    }
+
+    /// Among equally loaded hosts (for its pool), the one with fewer VMs
+    /// overall wins.
+    #[test]
+    fn total_load_breaks_a_tie_in_pool_load() {
+        let existing = vec![
+            placed_member("b1", "b", "h1"),
+            placed_member("b2", "b", "h2"),
+        ];
+        assert_eq!(host_of(&member("a1", "a"), &existing), "h3");
+    }
+
+    #[test]
+    fn a_vm_outside_any_pool_spreads_against_every_vm() {
+        let existing = vec![
+            scheduled_vm("x1", "ns", BTreeMap::new(), "h1", "h1"),
+            scheduled_vm("x2", "ns", BTreeMap::new(), "h1", "h1"),
+            placed_member("a1", "a", "h2"),
+            placed_member("a2", "a", "h3"),
+        ];
+        for i in 0..20 {
+            let v = vm(&format!("solo-{i}"), "ns", BTreeMap::new());
+            assert_ne!(host_of(&v, &existing), "h1");
+        }
+    }
+
+    /// With nothing placed, the choice depends on the VM (rendezvous
+    /// hashing), so concurrent members that cannot see each other spread;
+    /// and it is deterministic.
+    #[test]
+    fn ties_are_broken_per_vm_not_by_a_fixed_order() {
+        let mut chosen = std::collections::BTreeSet::new();
+        for i in 0..30 {
+            let v = member(&format!("race-{i}"), "a");
+            let first = host_of(&v, &[]);
+            assert_eq!(first, host_of(&v, &[]), "same inputs, same answer");
+            chosen.insert(first);
+        }
+        assert_eq!(
+            chosen.len(),
+            HOSTS.len(),
+            "ties reach every host: {chosen:?}"
+        );
+    }
+
+    #[test]
+    fn a_vm_does_not_count_against_itself() {
+        let existing = vec![
+            placed_member("self", "a", "h1"),
+            placed_member("m2", "a", "h2"),
+            placed_member("m3", "a", "h3"),
+        ];
+        assert_eq!(host_of(&member("self", "a"), &existing), "h1");
+    }
+
+    /// Spread orders what the filters allow; it never overrides them.
+    #[test]
+    fn a_selector_beats_spread() {
+        let existing = vec![
+            placed_member("m1", "a", "h1"),
+            placed_member("m2", "a", "h1"),
+        ];
+        let v = vm_with_placement(
+            "pinned",
+            "ns",
+            lbls([(POOL_LABEL, "a")]),
+            PlacementSpec {
+                provider_selector: Some(label_selector(&[("host", "h1")])),
+                ..PlacementSpec::default()
+            },
+        );
+        let (mut providers, img, cls) = three_hosts();
+        for p in &mut providers {
+            let name = p.metadata.name.clone().unwrap_or_default();
+            p.metadata.labels = Some(lbls([("host", name.as_str())]));
+        }
+        let d = schedule(&v, &cls, &img, &providers, &existing).unwrap();
+        assert_eq!(d.failure_domain_name, "h1");
     }
 
     // --- Backend ID resolution ---------------------------------------------

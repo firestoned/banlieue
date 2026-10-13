@@ -83,6 +83,21 @@ data:
   usernamePrefix: |
     github:
 
+  # Per-issuer prefixes, for an API server that trusts more than one issuer
+  # (one `jwt` entry each in its AuthenticationConfiguration). One
+  # `<issuer> <prefix>` pair per line, separated by spaces, each exactly as
+  # the AuthenticationConfiguration spells it. A claim naming an issuer listed
+  # here is checked against that issuer's prefix; any other issuer falls back
+  # to `usernamePrefix`. Because every issuer's prefix is distinct, the
+  # prefix on the caller's username is what proves the claim's issuer is the
+  # one that authenticated them (ADR-0047 Decision 9, amended 2026-10-13).
+  # Empty by default: a single-issuer cluster needs only `usernamePrefix`.
+  #
+  #   issuerPrefixes: |
+  #     https://dex.example.com github:
+  #     https://accounts.google.com google:
+  issuerPrefixes: |
+
   # Principals allowed to set an arbitrary `spec.subject.id` — i.e. to hand a
   # sandbox to somebody other than themselves. One username per line, matched
   # exactly, as the API server spells it (a ServiceAccount is
@@ -130,6 +145,20 @@ spec:
     # list entry must not become a phantom match.
     - name: usernamePrefix
       expression: "params.data.?usernamePrefix.orValue('').trim()"
+    # `issuerPrefixes` as [issuer, prefix] pairs; a line that is not exactly
+    # two words is ignored rather than matched.
+    - name: issuerPrefixes
+      expression: >-
+        params.data.?issuerPrefixes.orValue('').split('\n')
+          .map(l, l.trim().split(' ').filter(w, w != ''))
+          .filter(e, size(e) == 2)
+    # The prefix the caller's username must carry: the claim's issuer's own,
+    # else the cluster-wide one.
+    - name: expectedPrefix
+      expression: >-
+        variables.issuerPrefixes.exists(e, e[0] == object.spec.subject.issuer)
+          ? variables.issuerPrefixes.filter(e, e[0] == object.spec.subject.issuer)[0][1]
+          : variables.usernamePrefix
   validations:
     # 1. The binding the API server can actually vouch for.
     #
@@ -146,12 +175,12 @@ spec:
     - expression: >-
         request.operation != 'CREATE'
         || variables.isBroker
-        || variables.usernamePrefix + object.spec.subject.id
+        || variables.expectedPrefix + object.spec.subject.id
              == request.userInfo.username
       messageExpression: >-
         'spec.subject.id is ' + object.spec.subject.id
         + ' (which this cluster would spell '
-        + variables.usernamePrefix + object.spec.subject.id
+        + variables.expectedPrefix + object.spec.subject.id
         + ') but you are authenticated as ' + request.userInfo.username
         + '. A claim records who a sandbox VM was handed to, so it may only'
         + ' name its own creator — otherwise the audit trail says whatever the'

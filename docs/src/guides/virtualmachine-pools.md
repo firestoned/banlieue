@@ -149,6 +149,19 @@ This is also why the field has no default. `GuestReady` is the *right*
 default for the use case pools were built for, and defaulting to it would
 make every pool silently do nothing.
 
+## Where members land
+
+Members spread across every failure domain the pool's class and image can
+use: each new member goes to the domain holding the fewest members of the
+same pool, so a pool of six on three hosts aims for two on each, and losing a
+host loses a third of the warm set rather than all of it. Members created
+together are spread by hashing their names, since they cannot yet see each
+other's placement; a refill then goes to whichever domain is short
+([ADR-0098](https://github.com/firestoned/banlieue/blob/main/docs/adr/0098-spread-placement-across-failure-domains.md)).
+To keep a pool on particular hosts, narrow it with
+`placement.providerSelector` or `placement.failureDomainSelector` in the
+template; spread only orders the domains those allow.
+
 ## Sizing
 
 Two numbers, and one of them is usually got wrong:

@@ -3209,6 +3209,25 @@
       "related_bugs": [],
       "occurrences": 1,
       "last_seen": "2026-10-12T09:20:00.000Z"
+    },
+    {
+      "id": "bug-177",
+      "timestamp": "2026-10-13T10:08:36.000Z",
+      "error_message": "LibvirtMachine gone (404) while its domain was being created; domain + volumes left running on the host",
+      "file": "crates/banlieue-provider-libvirt/src/reconciler/libvirtmachine.rs",
+      "root_cause": "OPEN, not confirmed. A pool refill member was created during the sabotage test's teardown (pool deletion). Controller requested the LibvirtMachine delete at 10:08:33.666 and found it 404 at 10:08:33.792, so it carried no provider finalizer at deletion; yet the provider, which calls ensure_finalizer before converge, created disk, seed and domain (33.767-33.843) and only hit 404 on its status patch at 33:36.798. Cross-pod log timestamps (nodes re-clocked 2026-10-12) cannot order events ~100 ms apart.",
+      "fix": "Not fixed. Leaked domain destroyed and its own volumes removed by hand. Needs a live API-server reproduction (create then immediately delete a LibvirtMachine) and a guard so converge never runs unless the finalizer is confirmed on the server copy.",
+      "tags": [
+        "libvirt",
+        "finalizer",
+        "race",
+        "leak",
+        "deletion",
+        "pool"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-10-13T10:08:36.000Z"
     }
   ]
 }

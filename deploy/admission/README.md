@@ -49,7 +49,11 @@ Notes:
   apiserver plus CEL `variables`. **Edit its `issuers` list**: the shipped
   value is a placeholder, and an unedited cluster rejects every claim. Its
   `brokers` list is empty by default and is a trust concentration — anyone
-  named there may attribute a sandbox to any identity.
+  named there may attribute a sandbox to any identity. An API server that
+  trusts several issuers also needs `issuerPrefixes`, one
+  `<issuer> <prefix>` line each, matching its authentication configuration
+  (ADR-0047 Decision 9, amended 2026-10-13); `make claim-policy-live-test`
+  checks the policy against a real API server.
 - `vmimage-import-source.yaml` also ships its parameter ConfigMap (first
   document in the file — the binding fails closed when it is missing). **Edit
   the `registries` list per site** before applying; the defaults are

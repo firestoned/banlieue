@@ -79,7 +79,12 @@ stateDiagram-v2
 - `placement.providerSelector` / `placement.failureDomainSelector` *(label
   selectors, optional)* — which `Provider`(s)/failure domains may schedule
   this VM. There is no direct-by-name `Provider` reference; the scheduler
-  matches labels.
+  matches labels. Among the failure domains that qualify, it picks the one
+  with the fewest VMs already scheduled: the fewest of the same pool for a
+  pool member, the fewest overall otherwise. Equal loads are broken per VM,
+  by hashing, so VMs created together spread rather than queue on one
+  domain
+  ([ADR-0098](https://github.com/firestoned/banlieue/blob/main/docs/adr/0098-spread-placement-across-failure-domains.md)).
 - `desiredPowerState` *(string, optional)* — `PoweredOn` (default) |
   `PoweredOff` | `Suspended`.
 - `userData` *(object, optional)* — references a Secret (`secretRef`) or
