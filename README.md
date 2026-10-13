@@ -199,15 +199,19 @@ BANLIEUE_ENV_FILE=~/.k0s/banlieue.env BACKEND=vsphere \
 <details>
 <summary><b>libvirt backend (default)</b></summary>
 
-Creates Kairos "Hadron" VMs with `virt-install` on a KVM/libvirt host and
-lets Kairos install itself from its ISO. Run on the hypervisor host, or
-point `LIBVIRT_URI` at a remote one:
+Creates Kairos "Hadron" VMs on a KVM host and lets Kairos install itself
+from its ISO. Run on the hypervisor host. Each node is a Cloud Hypervisor VM
+run by systemd units by default (ADR-0099), which needs a `CLOUDHV.fd` and
+passwordless `sudo`:
 
 ```sh
-LIBVIRT_URI=qemu:///system \
+CH_FIRMWARE=/opt/banlieue/firmware/<version>/CLOUDHV.fd \
 VM_COUNT=4 VCPUS=2 MEM_MB=8192 DISK_GB=25 \
   ./scripts/bootstrap-k0s-cluster.sh all
 ```
+
+`DEFAULT_VMM=libvirt` creates libvirt domains with `virt-install` instead,
+and `LIBVIRT_URI` may then point at a remote host.
 
 </details>
 

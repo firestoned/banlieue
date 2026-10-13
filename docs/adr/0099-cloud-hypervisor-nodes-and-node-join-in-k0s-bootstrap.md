@@ -7,6 +7,7 @@ SPDX-License-Identifier: Apache-2.0
 - **Status:** Accepted
 - **Date:** 2026-10-13
 - **Deciders:** Erick Bourgeois
+- **Amended:** 2026-10-13 (Decision 5: Cloud Hypervisor is the default VMM)
 - **Related:** Extends [ADR-0017](0017-vsphere-bootstrap-backend.md) (the
   bootstrap script and its backends) and
   [ADR-0085](0085-management-cluster-kine-bridge-kairos-debian.md)
@@ -49,15 +50,16 @@ that:
 ### 1. The VMM is chosen per node, within the libvirt backend
 
 `NODE_VMMS` lists one VMM per node, beside `NODE_ROLES` and `VM_MACS`:
-`libvirt` (the default for every node) or `cloud-hypervisor`. One cluster
-can mix them. `BACKEND=libvirt` is the "local KVM host" backend: it already
+`cloud-hypervisor` or `libvirt`. A node it does not name takes
+`DEFAULT_VMM` (Decision 5). One cluster can mix them. `BACKEND=libvirt` is the "local KVM host" backend: it already
 owns the image fetch, the seed, the bridge and the node table, and none of
 that depends on which VMM runs the guest.
 
 A `cloud-hypervisor` node must be created on the host itself (it is not
 reached through `LIBVIRT_URI`), on a bridge (`CH_BRIDGE`, defaulting to
-`LIBVIRT_BRIDGE`), with an explicit firmware (`CH_FIRMWARE`, the
-`CLOUDHV.fd` the operator installed). Each is refused with a message rather
+`LIBVIRT_BRIDGE`, then to the bridge libvirt reports for `LIBVIRT_NETWORK`),
+with an explicit firmware (`CH_FIRMWARE`, the `CLOUDHV.fd` the operator
+installed). A missing firmware or bridge is refused with a message rather
 than guessed.
 
 ### 2. A Cloud Hypervisor node is three systemd units, not a banlieue object
@@ -94,6 +96,11 @@ boot-time step that pings the host's address on the bridge, so the host
 always holds a resolved neighbour entry for the guest. The script reads the
 address from that entry, the way banlieue's provider does (ADR-0062
 Decision 5). A bridge with no host address is refused for CH nodes.
+
+The NIC is pinned to PCI slot 2 (`--net ...,pci_device_id=2`), so every CH
+guest names it `ens2`. Left to Cloud Hypervisor, the slot follows the disks
+(`ens3` with the OS disk and seed) and would move whenever a disk is added.
+A Cloud Hypervisor whose `--net` lacks `pci_device_id` is refused.
 
 ### 4. `join`: add nodes to a running cluster without rewriting its controllers
 
@@ -138,6 +145,29 @@ The script only has to forget the node. Nodes are named by their position
 in `NODE_ROLES`, so a retired node keeps its entry and is listed in
 `RETIRED_NODES`, which `vms` does not recreate and which no step waits for.
 
+### 5. Cloud Hypervisor is the default VMM
+
+`DEFAULT_VMM` is the VMM of every node `NODE_VMMS` does not name, and it
+defaults to `cloud-hypervisor`; `DEFAULT_VMM=libvirt` restores the earlier
+behaviour. Once CH nodes had replaced a running cluster's libvirt
+controllers with no loss of function, keeping libvirt as the default would
+only mean writing `NODE_VMMS` out in full for the VMM banlieue itself
+prefers (ADR-0060).
+
+Changing a default must not change what an existing cluster's commands do.
+A cluster built when libvirt was the default sets no `NODE_VMMS`, so under
+the new default `vms` would build a CH node beside each libvirt domain,
+with the same name and MAC, and `destroy` would skip every domain and
+report the cluster removed. Every command, `destroy` included, therefore
+first compares each node's resolved VMM with what exists on the host and
+refuses on a mismatch: a libvirt domain where a CH node is expected, or a
+CH node's unit where a libvirt domain is expected. The refusal names
+`DEFAULT_VMM=libvirt` as the way out. Retired nodes are not checked.
+
+With no bridge configured, CH nodes join `LIBVIRT_NETWORK`'s bridge
+(`virbr0` for libvirt's `default` network), whose DHCP server hands out
+their addresses, so the default runs on a stock KVM host.
+
 ## Consequences
 
 **Positive**
@@ -169,5 +199,11 @@ in `NODE_ROLES`, so a retired node keeps its entry and is listed in
   join is a cluster-admin action and its SSH paths must be trusted.
 - A joining controller copies all of `/etc/k0s`, so stray files there
   (backups an operator left beside `k0s.yaml`) are copied too.
+- Making CH the default breaks the bare invocation of a cluster built on
+  libvirt: it is refused until the operator sets `DEFAULT_VMM=libvirt`.
+  The refusal is deliberate; the alternative was building or destroying
+  the wrong VMs.
+- The default now needs `CH_FIRMWARE` and passwordless `sudo`, which a
+  libvirt-only run never did.
 - A derived MAC is stable but not reserved: the LAN's DHCP server must
   still reserve it, as for libvirt nodes (ADR-0085).

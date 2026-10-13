@@ -116,17 +116,29 @@ flux | destroy`. `GOVC_*` (URL/creds/datacenter/CA) comes from the ambient
 environment; nothing environment-specific is ever committed to the env file
 (`rules/no-real-infrastructure.md`).
 
-#### libvirt (default)
+#### libvirt backend (default): nodes on Cloud Hypervisor
 
 ```sh
-LIBVIRT_URI=qemu:///system \
+CH_FIRMWARE=/opt/banlieue/firmware/<version>/CLOUDHV.fd \
 VM_COUNT=4 VCPUS=2 MEM_MB=8192 DISK_GB=25 \
   ./scripts/bootstrap-k0s-cluster.sh all
 ```
 
-Run on the KVM/libvirt host itself, or point `LIBVIRT_URI` at a remote one.
-Kairos installs itself from `IMAGE_URL`'s ISO onto an empty disk before
-`k0sctl` takes over.
+Run on the KVM host itself, with passwordless `sudo`. Each node is a Cloud
+Hypervisor VM by default ([below](#nodes-on-cloud-hypervisor-adr-0099)),
+on the bridge of libvirt's `default` network unless you name one. Kairos
+installs itself from `IMAGE_URL`'s ISO onto an empty disk before `k0sctl`
+takes over.
+
+`DEFAULT_VMM=libvirt` makes every node a libvirt domain instead, created
+with `virt-install`; `LIBVIRT_URI` may then point at a remote host, and no
+firmware or `sudo` is needed:
+
+```sh
+DEFAULT_VMM=libvirt LIBVIRT_URI=qemu:///system \
+VM_COUNT=4 VCPUS=2 MEM_MB=8192 DISK_GB=25 \
+  ./scripts/bootstrap-k0s-cluster.sh all
+```
 
 #### libvirt: a long-lived cluster (kine, bridge, Kairos on Debian)
 
@@ -215,9 +227,10 @@ and `kubectl get apiservice v1beta1.metrics.k8s.io`, which should stay
 
 ##### Nodes on Cloud Hypervisor (ADR-0099)
 
-The VMM is a per-node choice. `NODE_VMMS` lists one per VM, in order, beside
-`NODE_ROLES` and `VM_MACS`; an empty list or a missing entry means
-`libvirt`. A `cloud-hypervisor` node is a plain Cloud Hypervisor VM, not a
+Cloud Hypervisor is the default VMM. `DEFAULT_VMM` sets it for every node,
+and `NODE_VMMS` overrides it per node: one entry per VM, in order, beside
+`NODE_ROLES` and `VM_MACS`, so one cluster can mix both. A
+`cloud-hypervisor` node is a plain Cloud Hypervisor VM, not a
 banlieue `VirtualMachine`: a management node must come up after a host
 reboot before the cluster banlieue runs on exists, so banlieue cannot be
 what starts it. The script writes three systemd units for it on the host:
@@ -234,24 +247,32 @@ off, and the script detaches the ISO and enables the unit. A
 `LIBVIRT_IMAGE_KIND=cloud` image boots directly.
 
 ```sh
-# Three libvirt controllers and one Cloud Hypervisor worker, on one host.
-VM_COUNT=4
-NODE_ROLES="controller+worker controller+worker controller+worker worker"
-NODE_VMMS="libvirt libvirt libvirt cloud-hypervisor"
-VM_MACS="52:54:00:00:00:01 52:54:00:00:00:02 52:54:00:00:00:03 52:54:00:00:00:04"
+# Three Cloud Hypervisor controllers on a LAN bridge, on one host.
+VM_COUNT=3
+NODE_ROLES="controller+worker controller+worker controller+worker"
+VM_MACS="52:54:00:00:00:01 52:54:00:00:00:02 52:54:00:00:00:03"
 LIBVIRT_BRIDGE=br0
 CH_FIRMWARE=/opt/banlieue/firmware/<version>/CLOUDHV.fd
 ```
 
 | Setting | Default | Effect |
 | --- | --- | --- |
-| `NODE_VMMS` | every node `libvirt` | `libvirt` or `cloud-hypervisor` per VM. More entries than `VM_COUNT`, or another value, is refused. |
+| `DEFAULT_VMM` | `cloud-hypervisor` | The VMM of every node `NODE_VMMS` does not name: `cloud-hypervisor` or `libvirt`. |
+| `NODE_VMMS` | empty (every node `DEFAULT_VMM`) | `libvirt` or `cloud-hypervisor` per VM. More entries than `VM_COUNT`, or another value, is refused. |
 | `CH_FIRMWARE` | none; **required** | The `CLOUDHV.fd` to boot. `banlieue host cloud-hypervisor install` puts one under `/opt/banlieue/firmware/`. |
-| `CH_BRIDGE` | `LIBVIRT_BRIDGE` | Bridge for the node's tap. It must carry a host IPv4 address (see below). |
+| `CH_BRIDGE` | `LIBVIRT_BRIDGE`, else `LIBVIRT_NETWORK`'s bridge | Bridge for the node's tap. It must carry a host IPv4 address (see below). On libvirt's `default` network that is `virbr0`, whose DHCP server gives the nodes their addresses. |
 | `CH_BINARY` / `CH_REMOTE` | `/usr/local/bin/cloud-hypervisor`, `/usr/local/bin/ch-remote` | The VMM, and the client the stop command uses. A vTPM needs a VMM with the fix tracked in cloud-hypervisor#9053. |
 | `CH_VM_USER` | `k0s-vm` | System account (no login, `kvm` group, no capabilities) that runs every CH node's VMM and vTPM. Created on first use. |
 | `CH_VM_DIR` | `<libvirt pool dir>/../k0s-ch` | One directory per node: `disk.qcow2`, `seed.iso`, `tpm/`. Every parent must be searchable by `CH_VM_USER`. |
 | `CH_TPM` | `true` | Give each CH node a vTPM. Needs `swtpm` (`SWTPM`). |
+
+**A cluster built on libvirt** (before Cloud Hypervisor became the default)
+sets `DEFAULT_VMM=libvirt` in its env file. Until it does, every command
+refuses to run, `destroy` included, and names that setting: without it,
+`vms` would build a Cloud Hypervisor node beside each libvirt domain, with
+the same name and MAC, and `destroy` would leave every domain running. The
+same check refuses a libvirt node whose name is already a Cloud Hypervisor
+node on the host.
 
 Requirements and differences from a libvirt node:
 
@@ -262,6 +283,11 @@ Requirements and differences from a libvirt node:
   the bridge at every boot, and the script reads the node's address from the
   host's neighbour table by its MAC. Without `VM_MACS` the MAC is derived
   from the cluster and node name; reserve it in DHCP either way.
+- The guest's NIC is always `ens2`: the script pins it to PCI slot 2, so
+  the name does not move with the disks or the installer ISO. This needs a
+  Cloud Hypervisor whose `--net` takes `pci_device_id`; an older one is
+  refused. A node built before this change keeps its old name (`ens3`)
+  until its VMM unit is next restarted.
 - The node is invisible to `virsh` and to Cockpit's Virtual Machines page,
   which only drives libvirt's QEMU driver. Use `systemctl status
   k0s-vm-<name>`; the serial console is `/run/k0s-vm-<name>/serial.sock`
@@ -286,9 +312,7 @@ cluster, use `join` instead:
 cat >mgmt-04.env <<'EOF'
 VM_COUNT=4
 NODE_ROLES="controller+worker controller+worker controller+worker worker"
-NODE_VMMS="libvirt libvirt libvirt cloud-hypervisor"
 VM_MACS="52:54:00:00:00:01 52:54:00:00:00:02 52:54:00:00:00:03 52:54:00:00:00:04"
-CH_FIRMWARE=/opt/banlieue/firmware/<version>/CLOUDHV.fd
 JOIN_NODES=mgmt-04
 EOF
 
@@ -382,6 +406,17 @@ NODE_VMMS="libvirt libvirt libvirt cloud-hypervisor cloud-hypervisor"
 RETIRED_NODES="mgmt-01"
 JOIN_NODES=mgmt-05
 ```
+
+**Rebuilding a node in place** keeps its name, MAC and address instead of
+adding new ones: add one extra controller first, so the control plane keeps
+its size while a node is out, then for each node retire it (step 3, then
+remove its libvirt domain), flip its `NODE_VMMS` entry to
+`cloud-hypervisor`, run `vms`, restore its local volumes, and `join` it.
+The DHCP reservation brings it back on its old address. Once every node is
+swapped, retire the extra controller and set the env file to
+`DEFAULT_VMM=cloud-hypervisor` (or drop `NODE_VMMS` and `DEFAULT_VMM`).
+The installer's lease for the same MAC can linger in the host's neighbour
+table as a `STALE` entry; the script finds the node by its live entry.
 
 Do not run `config` + `apply` against a swapped cluster: the k0sctl
 configuration would describe nodes and settings it no longer has.

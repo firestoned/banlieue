@@ -1,5 +1,93 @@
 # Changelog
 
+## [2026-10-13 19:40] - k0s bootstrap: a CH node's NIC is always ens2
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `scripts/bootstrap-k0s-cluster.sh`: every Cloud Hypervisor node's NIC is
+  pinned to PCI slot 2 (`CH_NIC_PCI_SLOT`, `--net ...,pci_device_id=2`), so
+  the guest always names it `ens2`. Unpinned, the slot followed the disks
+  (`ens3` with the OS disk and seed). CH reserves explicit slots before
+  creating any device, so the disks, the installer ISO and the vTPM cannot
+  take it. `ch_pins_nic_slot` refuses a Cloud Hypervisor whose `--net` has
+  no `pci_device_id`, before any node is built.
+- `scripts/bootstrap-k0s-cluster-test.sh` (120 cases): the unit pins the
+  slot; a CH binary with and without `pci_device_id`.
+- `docs/adr/0099-…` (Decision 3) and `docs/src/guides/end-to-end-setup.md`:
+  the NIC name and the CH version it needs.
+
+### Why
+A stable interface name across nodes and across reinstalls; nothing in the
+CH guest's config names the interface (Kairos runs DHCP on every NIC), so
+the name was free to drift.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only
+- [ ] Documentation only
+
+Existing CH nodes rename `ens3` to `ens2` the next time their
+`k0s-vm-<name>` unit is rewritten and restarted. Threat model pass: no
+boundary, asset or actor changes; stamp unchanged from the Decision 5 pass
+earlier today.
+
+## [2026-10-13 18:55] - k0s bootstrap: Cloud Hypervisor is the default VMM (ADR-0099 Decision 5)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `scripts/bootstrap-k0s-cluster.sh`: `DEFAULT_VMM` (default
+  `cloud-hypervisor`) is the VMM of every node `NODE_VMMS` does not name;
+  `DEFAULT_VMM=libvirt` restores the earlier behaviour. Header, settings and
+  usage text updated.
+  - `check_vmm_matches_host`: every command, `destroy` included, refuses
+    when a node's resolved VMM disagrees with the host (a libvirt domain
+    where a CH node is expected, or a CH node's unit where a libvirt domain
+    is expected) and names `DEFAULT_VMM=libvirt`. Without it, a cluster
+    built on libvirt would get a CH node beside each domain from `vms`, and
+    `destroy` would leave every domain running while reporting success.
+  - `resolve_ch_bridge`: with no `CH_BRIDGE` or `LIBVIRT_BRIDGE`, CH nodes
+    join the bridge libvirt reports for `LIBVIRT_NETWORK` (`virbr0` for
+    `default`), so the default works on a stock KVM host; refused when none
+    resolves.
+- `scripts/bootstrap-k0s-cluster-test.sh` (117 cases): the default, the
+  override, `DEFAULT_VMM` validation, the mismatch guard both ways (and for
+  `destroy`), retired nodes skipped by it, bridge resolution, usage. A test
+  fixture's `SSH_USER` is now the `admin` placeholder.
+- `Makefile`: `K0S_DEFAULT_VMM`, passed to the script locally and on
+  `K0S_HYPERVISOR`; the dev-cluster comments and target help describe CH
+  as the default.
+- `docs/adr/0099-…`: amended, Decision 5 and two accepted costs (a
+  libvirt-built cluster must set `DEFAULT_VMM=libvirt`; the default needs
+  `CH_FIRMWARE` and passwordless sudo).
+- `docs/src/guides/end-to-end-setup.md`: the libvirt backend section leads
+  with CH nodes and shows `DEFAULT_VMM=libvirt`; settings table gains
+  `DEFAULT_VMM` and the new `CH_BRIDGE` fallback; a note on clusters built
+  on libvirt; examples no longer spell out `NODE_VMMS`; rebuilding a node in
+  place (same name, MAC and address) documented.
+- `docs/src/guides/host-bootstrap.md`, `README.md`: prerequisites and the
+  quick start follow the new default.
+- `docs/architecture/calm/architecture.json`: bootstrap node and
+  relationship descriptions. `make calm-validate` passes.
+- `docs/src/security/threat-model.md`: full pass; header notes the
+  amendment; two STRIDE rows on CH management nodes (VMM mismatch,
+  network choice), §4 actor, §7.23 and §8 revisit condition updated. No new
+  asset, boundary or component.
+
+### Why
+All three core-cluster controllers now run on Cloud Hypervisor with no
+loss of function, and banlieue itself prefers CH (ADR-0060). Keeping
+libvirt as the default meant spelling out `NODE_VMMS` for the common case.
+
+### Impact
+- [x] Breaking change: a cluster built on libvirt must add
+  `DEFAULT_VMM=libvirt` to its env file (the script refuses until it does)
+- [ ] Requires cluster rollout
+- [x] Config change only
+- [ ] Documentation only
+
 ## [2026-10-13] - vSphere and Proxmox clean up a machine deleted mid-create
 
 **Author:** Erick Bourgeois

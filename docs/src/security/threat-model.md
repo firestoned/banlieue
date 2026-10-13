@@ -16,6 +16,12 @@ SPDX-License-Identifier: Apache-2.0
 > and can add workers and controllers to a running cluster with a
 > short-lived token (`join`; a controller copies a running one's `/etc/k0s`),
 > so a cluster's nodes can be swapped from libvirt to CH one at a time.
+> Amended the same day (Decision 5), CH is now the default VMM: the host
+> sudo it needs is the default rather than an opt-in, every command first
+> refuses a node whose VMM disagrees with what exists on the host (so a
+> libvirt-built cluster is neither doubled nor half-destroyed), and with no
+> bridge configured CH nodes join the libvirt network's own bridge, read
+> from libvirt (two rows on the CH management-node table, §4, §7.23, §8).
 > It adds one component (§2), one asset (A-20, the join tokens), one
 > actor (the bootstrap operator with sudo on the host), one boundary (TB-16,
 > bootstrap operator → running cluster), a §5 diagram block, rows on TB-9 for
@@ -411,7 +417,7 @@ relationship to the host.
 | **Stolen Proxmox API token** | Holds A-1 for Proxmox, without the cluster | Untrusted; bounded by the token's **ACLs**, not the user's: it is privilege-separated and holds only the `BanlieueProvider` role on `/vms`, one node, one SDN zone and the ISO storage — it can create and destroy VMs there, and cannot open a console, run commands in a guest, migrate, snapshot, or change permissions (`scripts/bootstrap-proxmox-host.sh`, `ROLE_PRIVS`). Its one storage-deleting privilege, `Datastore.Allocate`, is held **only on `banlieue-seed`**, a storage holding nothing but seed ISOs (`SEED_ROLE_PRIVS`): it cannot delete backups, templates or ISOs elsewhere, nor edit another storage's definition |
 | **Stolen host credential** (Cloud Hypervisor) | Holds A-11 — the provider's ServiceAccount token — without the host | Untrusted; bounded by the provider's namespaced RBAC (TB-8) and the token's lifetime |
 | **OCI registry** and whoever operates it (ADR-0064) | Stores every pushed build; can read, withhold or delete one | **Untrusted for integrity** — hosts pull by digest and verify it, so the registry cannot substitute content. **Trusted for confidentiality and availability**: it sees every image in full (§7.13) |
-| **Bootstrap operator** running `scripts/bootstrap-k0s-cluster.sh` with Cloud Hypervisor nodes or `join` (ADR-0099) | Passwordless **sudo on the hypervisor host** (CH nodes), and an SSH key every management node trusts | Trusted, like the hypervisor operator. `join` asks it to hold no new secret: the token goes controller → node over its SSH sessions |
+| **Bootstrap operator** running `scripts/bootstrap-k0s-cluster.sh` with Cloud Hypervisor nodes (the default VMM) or `join` (ADR-0099) | Passwordless **sudo on the hypervisor host** (CH nodes; only `DEFAULT_VMM=libvirt` with no CH node avoids it), and an SSH key every management node trusts | Trusted, like the hypervisor operator. `join` asks it to hold no new secret: the token goes controller → node over its SSH sessions |
 | **Host operator running `banlieue host cloud-hypervisor install`** | Root on the host, for one command | Trusted, like the hypervisor operator; the installer's controls protect the host **from the provider's user** during that run, not from the operator |
 | External contributor | Opens a PR from a fork | Untrusted |
 | **Cluster API's manager** (CAPI core, installed by the platform operator; `clusterctl init --infrastructure banlieue`, ADR-0096) | Creates, updates and deletes banlieue **infrastructure** objects it owns through `Machine`s and `MachineSet`s, through the aggregated `banlieue-capi-infrastructure` ClusterRole | Semi-trusted, like any controller the platform operator installs. **Bounded to `infrastructure.banlieue.io`** machines, templates and clusters: nothing in `banlieue.io`, no Secrets, IPAM, Events or Leases (TB-15) |
@@ -784,6 +790,8 @@ VMM:
 | The VMM reconfigures the bridge or other interfaces | E | It holds no capabilities. The tap is created by a root oneshot, `k0s-vm-<name>-net.service`, owned by `CH_VM_USER`, so opening it needs no `CAP_NET_ADMIN`: `render_ch_net_unit` |
 | A management node spoofs another LAN host's address on the bridge | S | Not controlled at L2, as for banlieue guests above and libvirt nodes on `LIBVIRT_BRIDGE` (§8) |
 | A VMM that cannot start loops fast enough to take its vTPM unit into systemd's start limit, leaving it down after the fault clears (found live) | D | `RestartSec=5s` on the VMM unit: `render_ch_vm_unit` |
+| With CH the default, a command run against a cluster built on libvirt creates a second VM with a running node's name and MAC, or `destroy` reports the cluster removed while every domain still runs | T, D | Every command, `destroy` included, first compares each node's resolved VMM with the host (a libvirt domain, or a CH node's unit, of that name) and refuses on a mismatch, naming `DEFAULT_VMM=libvirt`: `check_vmm_matches_host`, tested in `scripts/bootstrap-k0s-cluster-test.sh` |
+| A CH node lands on a network nobody chose | T | `CH_BRIDGE`, else `LIBVIRT_BRIDGE`, else the bridge libvirt itself reports for `LIBVIRT_NETWORK`; refused when none resolves, and the chosen bridge is logged: `resolve_ch_bridge`. A bridge without a host address is refused as before: `check_deps_ch` |
 
 ### TB-10 — Build namespace → OCI registry → Cloud Hypervisor host
 
@@ -1248,6 +1256,9 @@ a different assumption is unsafe.
       SSH host keys (§8).
     - Keep `CH_VM_USER` a dedicated account: not `banlieue`, not a banlieue
       guest uid, in no group but its own and `kvm`.
+    - Cloud Hypervisor is the default VMM, and it needs passwordless sudo on
+      the host. Set `DEFAULT_VMM=libvirt` in the env file of a cluster built
+      on libvirt; the script refuses to run against it otherwise.
     - Leave `CH_VM_DIR` on a filesystem banlieue's storage classes do not
       share a directory with, and keep its parents searchable but not
       writable by `CH_VM_USER`.
@@ -1305,7 +1316,7 @@ a different assumption is unsafe.
 | **The NetworkPolicies are opt-in, and their destinations are "any address" until narrowed** | banlieue cannot know a site's API server or hypervisor CIDRs, and a wrong egress rule breaks the product silently; there is no templating layer to fill them in (ADR-0094). Port-level restriction already stops most lateral movement | The operator gains RBAC to write per-workload policies with addresses from the `Provider` (ADR-0094 follow-up) |
 | **A rotated credential is used for up to ~30 s before banlieue picks it up**, and a revoked one keeps failing reconciles until the Secret is updated | Watching Secrets would grant every provider read access to every Secret in its namespace (ADR-0095). Immediate cut-off belongs on the backend, which stops a credential everywhere at once | A provider caches a client across reconciles (the cache must then key on `resourceVersion`), or Kubernetes can scope a watch to one named Secret |
 | **Telemetry is not integrity-protected**: a party on the path or with scraper access can forge or suppress it | Nothing banlieue decides reads telemetry back; the CRs' status is the record (TB-14) | An automated decision (autoscaling, remediation) starts consuming banlieue metrics |
-| **Management nodes on Cloud Hypervisor share one host user** (`CH_VM_USER`), so a guest that escapes into one node's VMM can read and write the other management nodes' disks and vTPM state on that host (ADR-0099) | They are nodes of one cluster, and one compromised node already reaches what the cluster's workloads reach; a uid per node, as banlieue gives its guests, would add bookkeeping without separating different trust. banlieue's guests remain separate from it (TB-9) | Nodes of more than one cluster, or of different trust, are put on one host with `NODE_VMMS=cloud-hypervisor` |
+| **Management nodes on Cloud Hypervisor share one host user** (`CH_VM_USER`), so a guest that escapes into one node's VMM can read and write the other management nodes' disks and vTPM state on that host (ADR-0099) | They are nodes of one cluster, and one compromised node already reaches what the cluster's workloads reach; a uid per node, as banlieue gives its guests, would add bookkeeping without separating different trust. banlieue's guests remain separate from it (TB-9) | Nodes of more than one cluster, or of different trust, are put on one host as Cloud Hypervisor nodes (the default VMM) |
 | **The bootstrap script does not verify SSH host keys** (`StrictHostKeyChecking=no` in `ssh_run`); with `join` that session also carries a join token, and for a controller the cluster CA key's token and the datastore password (A-20) | Every node is new, or rebuilt, when the script first reaches it, so there is no key to pin yet; a token expires in 15 minutes, though a controller's is enough to take the CA key within them. Running it from the host or the nodes' own network keeps it off untrusted paths (§7.23) | The script records each node's host key at creation (the seed can carry one) and checks it afterwards |
 | **`stage_k0s_binary` uses the k0s binary unverified when the release's `sha256sums.txt` cannot be fetched**, which `join` and the vSphere backend both rely on | An air-gapped mirror may publish no checksum file, and failing closed would break those estates; the binary is fetched over HTTPS from `K0S_BINARY_BASEURL` | A pinned digest setting (as `IMAGE_SHA256` does for the installer ISO) is added, or the mirror case is handled explicitly |
 | Provider condition messages are mirrored verbatim onto user-facing `VirtualMachine` status | Useful diagnostics; providers are in-tree | A third-party provider ships |

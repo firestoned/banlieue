@@ -1663,13 +1663,14 @@ kind-status: ## Show cluster, controller, and CR status
 		$(KIND_KUBECTL) get $$k -A 2>/dev/null || echo "(unreachable or CRD missing)"; \
 	done
 
-# ----- Dev VM cluster (k0s on libvirt, for exercising the libvirt provider) -
+# ----- Dev VM cluster (k0s on Cloud Hypervisor or libvirt VMs) --------------
 
 # Bootstraps a 4-node k0s cluster (3 controller+worker, 1 worker) on Kairos
-# Hadron VMs via scripts/bootstrap-k0s-cluster.sh + k0sctl. virt-install/
-# qemu-img only run on a Linux libvirt host, so the k0s-remote-* targets rsync
-# the script to K0S_HYPERVISOR and run it there over SSH instead of locally on
-# macOS.
+# Hadron VMs via scripts/bootstrap-k0s-cluster.sh + k0sctl. The nodes are
+# Cloud Hypervisor VMs by default (ADR-0099), libvirt domains with
+# K0S_DEFAULT_VMM=libvirt. Both only run on a Linux KVM host, so the
+# k0s-remote-* targets rsync the script to K0S_HYPERVISOR and run it there
+# over SSH instead of locally on macOS.
 
 K0S_SCRIPT             := ./scripts/bootstrap-k0s-cluster.sh
 K0S_VM_COUNT           ?= 4
@@ -1742,9 +1743,14 @@ K0S_KUBECONFIG_SERVER  ?=
 # taint dedicated=imagebuild:NoSchedule). Empty = the script picks the last
 # pure worker in K0S_NODE_ROLES.
 K0S_IMAGEBUILD_NODE    ?=
-# Per-node VMM, one entry per VM: libvirt (default) or cloud-hypervisor
-# (ADR-0099). A cloud-hypervisor node is a plain CH VM run by systemd units
-# on the host; it needs K0S_CH_FIRMWARE, a bridge and passwordless sudo.
+# The VMM of every node K0S_NODE_VMMS does not name (ADR-0099). Empty means
+# the script's default, cloud-hypervisor: a plain CH VM run by systemd units
+# on the host, which needs K0S_CH_FIRMWARE and passwordless sudo, and joins
+# K0S_CH_BRIDGE (empty: the bridge of K0S_LIBVIRT_NETWORK). A cluster built
+# on libvirt sets K0S_DEFAULT_VMM=libvirt; the script refuses one that does
+# not rather than build or destroy the wrong VMs.
+K0S_DEFAULT_VMM        ?=
+# Per-node VMM, one entry per VM: libvirt or cloud-hypervisor.
 K0S_NODE_VMMS          ?=
 K0S_CH_FIRMWARE        ?=
 K0S_CH_BRIDGE          ?=
@@ -1779,14 +1785,14 @@ K0S_ENV = VM_COUNT=$(K0S_VM_COUNT) VCPUS=$(K0S_VCPUS) MEM_MB=$(K0S_MEM_MB) DISK_
 	K0S_DISABLE_KONNECTIVITY=$(K0S_DISABLE_KONNECTIVITY) \
 	NO_TAINTS=$(K0S_NO_TAINTS) K0S_VERSION=$(K0S_VERSION) IMAGEBUILD_NODE=$(K0S_IMAGEBUILD_NODE) \
 	K0SCTL_OS_OVERRIDE=$(K0SCTL_OS_OVERRIDE) \
-	NODE_VMMS="$(K0S_NODE_VMMS)" CH_FIRMWARE=$(K0S_CH_FIRMWARE) CH_BRIDGE=$(K0S_CH_BRIDGE) \
+	DEFAULT_VMM=$(K0S_DEFAULT_VMM) NODE_VMMS="$(K0S_NODE_VMMS)" CH_FIRMWARE=$(K0S_CH_FIRMWARE) CH_BRIDGE=$(K0S_CH_BRIDGE) \
 	JOIN_NODES="$(K0S_JOIN_NODES)" JOIN_CONTROLLER=$(K0S_JOIN_CONTROLLER) \
 	SSH_PUBKEY=$(K0S_SSH_PUBKEY) SSH_USER=$(K0S_SSH_USER) WORKDIR=$(K0S_WORKDIR)
 
-k0s-all: ## Full idempotent k0s bootstrap: VMs -> k0sctl config -> apply -> kubeconfig (runs virt-install locally)
+k0s-all: ## Full idempotent k0s bootstrap: VMs -> k0sctl config -> apply -> kubeconfig (on this KVM host)
 	$(K0S_ENV) $(K0S_SCRIPT) all
 
-k0s-vms: ## Create/ensure the k0s dev VMs exist and are running (runs virt-install locally)
+k0s-vms: ## Create/ensure the k0s dev VMs exist and are running (Cloud Hypervisor by default, on this KVM host)
 	$(K0S_ENV) $(K0S_SCRIPT) vms
 
 k0s-config: ## (Re)generate k0sctl.yaml from the current k0s VM IPs
@@ -1828,7 +1834,7 @@ K0S_REMOTE_ENV = VM_COUNT=$(K0S_VM_COUNT) VCPUS=$(K0S_VCPUS) MEM_MB=$(K0S_MEM_MB
 	K0S_DISABLE_KONNECTIVITY=$(K0S_DISABLE_KONNECTIVITY) \
 	NO_TAINTS=$(K0S_NO_TAINTS) K0S_VERSION=$(K0S_VERSION) IMAGEBUILD_NODE=$(K0S_IMAGEBUILD_NODE) \
 	K0SCTL_OS_OVERRIDE=$(K0SCTL_OS_OVERRIDE) \
-	NODE_VMMS="$(K0S_NODE_VMMS)" CH_FIRMWARE=$(K0S_CH_FIRMWARE) CH_BRIDGE=$(K0S_CH_BRIDGE) \
+	DEFAULT_VMM=$(K0S_DEFAULT_VMM) NODE_VMMS="$(K0S_NODE_VMMS)" CH_FIRMWARE=$(K0S_CH_FIRMWARE) CH_BRIDGE=$(K0S_CH_BRIDGE) \
 	JOIN_NODES="$(K0S_JOIN_NODES)" JOIN_CONTROLLER=$(K0S_JOIN_CONTROLLER) \
 	SSH_USER=$(K0S_SSH_USER) WORKDIR=$(K0S_REMOTE_WORKDIR) \
 	SSH_PUBKEY=$(K0S_REMOTE_DIR)/$(notdir $(K0S_SSH_PUBKEY)) SSH_PRIVKEY=$(K0S_REMOTE_SSH_PRIVKEY)

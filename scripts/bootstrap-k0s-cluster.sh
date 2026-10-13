@@ -6,17 +6,18 @@
 #
 # Two provisioning backends, selected with BACKEND (ADR-0017):
 #
-#   BACKEND=libvirt  (default) -- create Kairos "Hadron" VMs with
-#       virt-install on a KVM/libvirt host, let Kairos install itself from its
-#       ISO onto an empty disk, then k0sctl. Run on the hypervisor host (or
-#       point LIBVIRT_URI at a remote one). Unchanged from the original script.
+#   BACKEND=libvirt  (default) -- create Kairos "Hadron" VMs on a KVM host,
+#       let Kairos install itself from its ISO onto an empty disk, then
+#       k0sctl. Run on the hypervisor host.
 #
-#       NODE_VMMS picks the VMM per node (ADR-0099): `libvirt` (default) or
-#       `cloud-hypervisor`. A cloud-hypervisor node is a plain Cloud
-#       Hypervisor VM run by three systemd units on THIS host (no banlieue,
-#       no libvirt), so it starts at boot like an autostarted domain. It
-#       needs passwordless sudo, CH_FIRMWARE and a bridge with an address.
-#       One cluster may mix both VMMs.
+#       Each node runs under Cloud Hypervisor by default (ADR-0099): a plain
+#       CH VM run by three systemd units on THIS host (no banlieue, no
+#       libvirt domain), so it starts at boot like an autostarted domain. It
+#       needs passwordless sudo, CH_FIRMWARE and a bridge with an address
+#       (CH_BRIDGE, else LIBVIRT_BRIDGE, else LIBVIRT_NETWORK's bridge).
+#       DEFAULT_VMM=libvirt makes every node a virt-install domain instead
+#       (the earlier default; LIBVIRT_URI may then name a remote host), and
+#       NODE_VMMS picks per node, so one cluster may mix both VMMs.
 #
 #   BACKEND=vsphere  -- clone cluster-specific Kairos VM *templates* in a
 #       VMware vSphere estate with govc, reconfigure networking/CPU/memory/disk,
@@ -111,10 +112,15 @@ RETIRED_NODES="${RETIRED_NODES:-}"
 LIBVIRT_POOL="${LIBVIRT_POOL:-default}"
 
 # --- per-node VMM (ADR-0099) ------------------------------------------------
+# The VMM of every node NODE_VMMS does not name: `cloud-hypervisor` (the
+# default) or `libvirt`. A cluster built when libvirt was the default sets
+# DEFAULT_VMM=libvirt; every command refuses to run against one that does not
+# (check_vmm_matches_host), so it is never doubled or half-destroyed.
+DEFAULT_VMM="${DEFAULT_VMM:-cloud-hypervisor}"
 # Space-separated, one per VM in order: `libvirt` or `cloud-hypervisor`.
-# Missing entries (and an empty list) mean libvirt, so existing clusters are
-# unchanged. Example: a CH worker beside three libvirt controllers:
-#   NODE_VMMS="libvirt libvirt libvirt cloud-hypervisor"
+# Missing entries (and an empty list) take DEFAULT_VMM. Example: a libvirt
+# node beside two CH ones:
+#   NODE_VMMS="cloud-hypervisor cloud-hypervisor libvirt"
 NODE_VMMS="${NODE_VMMS:-}"
 # Cloud Hypervisor nodes are created on THIS host through sudo (never through
 # LIBVIRT_URI). Nothing below is guessed: a missing firmware or bridge is
@@ -126,6 +132,8 @@ CH_REMOTE="${CH_REMOTE:-/usr/local/bin/ch-remote}"
 CH_FIRMWARE="${CH_FIRMWARE:-}"
 # The bridge CH nodes' taps join. It must carry a host address: the guest
 # pings it on every boot so the host's neighbour table resolves the node.
+# Empty with no LIBVIRT_BRIDGE: the bridge of LIBVIRT_NETWORK (virbr0 for
+# libvirt's `default` network), whose dnsmasq hands out the addresses.
 CH_BRIDGE="${CH_BRIDGE:-$LIBVIRT_BRIDGE}"
 # Unprivileged system account (kvm group, no login) that runs every CH node's
 # VMM and vTPM. Created on first use.
@@ -133,6 +141,10 @@ CH_VM_USER="${CH_VM_USER:-k0s-vm}"
 # Give each CH node a vTPM, as virt-install does for a UEFI libvirt domain.
 CH_TPM="${CH_TPM:-true}"
 SWTPM="${SWTPM:-/usr/bin/swtpm}"
+# The PCI slot every CH node's NIC is pinned to, so the guest always names it
+# ens2. Left to CH, the slot follows the disks and moves when the installer
+# disk is attached. Not a setting: every CH node gets the same name.
+readonly CH_NIC_PCI_SLOT=2
 CH_UNIT_DIR="${CH_UNIT_DIR:-/etc/systemd/system}"
 
 # --- join (ADR-0099) ----------------------------------------------------------
@@ -605,11 +617,12 @@ node_retired() {
   return 1
 }
 
-# node_vmm <idx>: the VMM that runs VM <idx> (libvirt backend), from NODE_VMMS.
+# node_vmm <idx>: the VMM that runs VM <idx> (libvirt backend), from NODE_VMMS,
+# else DEFAULT_VMM.
 node_vmm() {
   local vmms
   read -r -a vmms <<<"$NODE_VMMS"
-  printf '%s' "${vmms[$1]:-libvirt}"
+  printf '%s' "${vmms[$1]:-$DEFAULT_VMM}"
 }
 
 # any_node_vmm <vmm>: succeeds when at least one of the VM_COUNT nodes uses it.
@@ -631,11 +644,49 @@ validate_node_vmms() {
     log "NODE_VMMS has ${#vmms[@]} entries but VM_COUNT is $VM_COUNT"
     exit 1
   fi
+  case "$DEFAULT_VMM" in
+    libvirt|cloud-hypervisor) ;;
+    *) log "DEFAULT_VMM must be 'libvirt' or 'cloud-hypervisor', not '$DEFAULT_VMM'"; exit 1 ;;
+  esac
   for v in "${vmms[@]}"; do
     case "$v" in
       libvirt|cloud-hypervisor) ;;
       *) log "NODE_VMMS entries must be 'libvirt' or 'cloud-hypervisor', not '$v'"; exit 1 ;;
     esac
+  done
+}
+
+# libvirt_domain_defined <name>: a libvirt domain of that name exists. False
+# where virsh is not installed (a CH-only host).
+libvirt_domain_defined() {
+  command -v virsh >/dev/null 2>&1 || return 1
+  virsh --connect "$LIBVIRT_URI" dominfo "$1" >/dev/null 2>&1
+}
+
+# ch_node_defined <name>: this host has that CH node's VMM unit.
+ch_node_defined() {
+  sudo -n test -f "$CH_UNIT_DIR/$(ch_unit "$1").service" 2>/dev/null
+}
+
+# check_vmm_matches_host: refuse when a node already exists on this host under
+# the other VMM. Without it, a cluster built when libvirt was the default
+# would get a CH node beside each libvirt domain (same name, same MAC) from
+# `vms`, and `destroy` would report it removed while every domain still runs.
+check_vmm_matches_host() {
+  local idx name vmm
+  for idx in $(seq 0 $((VM_COUNT - 1))); do
+    node_retired "$idx" && continue
+    name="$(vm_name "$idx")"; vmm="$(node_vmm "$idx")"
+    if [[ "$vmm" == "cloud-hypervisor" ]] && libvirt_domain_defined "$name"; then
+      log "$name is a libvirt domain, but its VMM resolves to cloud-hypervisor."
+      log "  A cluster built on libvirt sets DEFAULT_VMM=libvirt (or names it in NODE_VMMS)."
+      exit 1
+    fi
+    if [[ "$vmm" == "libvirt" ]] && ch_node_defined "$name"; then
+      log "$name is a Cloud Hypervisor node, but its VMM resolves to libvirt."
+      log "  Name it cloud-hypervisor in NODE_VMMS, or unset DEFAULT_VMM=libvirt."
+      exit 1
+    fi
   done
 }
 
@@ -645,6 +696,7 @@ validate_node_vmms() {
 check_deps_libvirt() {
   local missing=() tools=(qemu-img k0sctl kubectl curl ssh genisoimage)
   validate_node_vmms
+  check_vmm_matches_host
   any_node_vmm libvirt && tools+=(virt-install virsh)
   for cmd in "${tools[@]}"; do
     command -v "$cmd" >/dev/null 2>&1 || missing+=("$cmd")
@@ -1187,6 +1239,8 @@ wait_for_ip_libvirt() {
 
 destroy_libvirt() {
   local failed=0
+  validate_node_vmms
+  check_vmm_matches_host
   for idx in $(seq 0 $((VM_COUNT - 1))); do
     local name
     name="$(vm_name "$idx")"
@@ -1326,6 +1380,20 @@ validate_ch_node() {
 }
 
 # check_deps_ch: what the host must provide for any CH node.
+# resolve_ch_bridge: with no CH_BRIDGE (and no LIBVIRT_BRIDGE behind it),
+# use LIBVIRT_NETWORK's bridge, read from libvirt rather than guessed.
+resolve_ch_bridge() {
+  [[ -n "$CH_BRIDGE" ]] && return 0
+  CH_BRIDGE="$(virsh --connect "$LIBVIRT_URI" net-dumpxml "$LIBVIRT_NETWORK" 2>/dev/null \
+    | sed -n "s/.*<bridge name=['\"]\([^'\"]*\)['\"].*/\1/p" | head -n1)"
+  if [[ -z "$CH_BRIDGE" ]]; then
+    log "No bridge for Cloud Hypervisor nodes: set CH_BRIDGE (or LIBVIRT_BRIDGE),"
+    log "  or define libvirt network '$LIBVIRT_NETWORK' so its bridge can be used."
+    exit 1
+  fi
+  log "Cloud Hypervisor nodes join $CH_BRIDGE (libvirt network $LIBVIRT_NETWORK)"
+}
+
 check_deps_ch() {
   local missing=() idx cmd
   for idx in $(seq 0 $((VM_COUNT - 1))); do
@@ -1341,16 +1409,28 @@ check_deps_ch() {
     log "Missing for Cloud Hypervisor nodes: ${missing[*]}"
     exit 1
   fi
+  if ! ch_pins_nic_slot; then
+    log "$CH_BINARY cannot pin a NIC's PCI slot (no pci_device_id in --net); upgrade Cloud Hypervisor."
+    exit 1
+  fi
   if ! sudo -n true 2>/dev/null; then
     log "Cloud Hypervisor nodes are created through sudo, which needs a password here."
     log "  Run 'sudo -v' first, or configure passwordless sudo for this user."
     exit 1
   fi
+  resolve_ch_bridge
   if [[ -z "$(ch_bridge_addr)" ]]; then
     log "Bridge $CH_BRIDGE has no IPv4 address on this host (or does not exist)."
     log "  Cloud Hypervisor nodes announce themselves to that address so the host can find them."
     exit 1
   fi
+}
+
+# ch_pins_nic_slot: does CH_BINARY's --net take pci_device_id (CH_NIC_PCI_SLOT)?
+ch_pins_nic_slot() {
+  # Captured, not piped to grep -q: under pipefail an early grep exit would
+  # SIGPIPE the help output and read as "no".
+  [[ "$("$CH_BINARY" --help 2>/dev/null)" == *pci_device_id=* ]]
 }
 
 render_ch_net_unit() {
@@ -1450,7 +1530,7 @@ ExecStart=$CH_BINARY \\
   --cpus boot=$VCPUS \\
   --memory size=${MEM_MB}M \\
   --disk path=$dir/disk.qcow2,image_type=qcow2 path=$dir/seed.iso,readonly=on,image_type=raw \$K0S_VM_INSTALL_DISK \\
-  --net tap=$tap,mac=$mac \\
+  --net tap=$tap,mac=$mac,pci_device_id=$CH_NIC_PCI_SLOT \\
 ${tpm_arg}  --rng src=/dev/urandom \\
   --serial socket=$run/serial.sock \\
   --console off
@@ -2960,7 +3040,8 @@ main() {
     *)
       echo "Usage: $0 [all|vms|config|apply|kubeconfig|label|flux|join|destroy|--print-env-template]" >&2
       echo "  BACKEND=libvirt (default) | vsphere   (vsphere also needs BANLIEUE_ENV_FILE)" >&2
-      echo "  NODE_VMMS=\"libvirt ... cloud-hypervisor\"  per-node VMM on the libvirt backend (ADR-0099)" >&2
+      echo "  DEFAULT_VMM=cloud-hypervisor (default) | libvirt   the nodes' VMM on the libvirt backend (ADR-0099)" >&2
+      echo "  NODE_VMMS=\"cloud-hypervisor ... libvirt\"  per-node VMM, overriding DEFAULT_VMM" >&2
       echo "  JOIN_NODES=\"<name> ...\"  with 'join': add those workers or controllers to a RUNNING cluster" >&2
       echo "  FLUX_ENABLED=true         to enable the flux/all flux-operator deployment step" >&2
       exit 1

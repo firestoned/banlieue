@@ -29,6 +29,7 @@ echo "ssh-ed25519 AAAATEST test@bar.foo.io" >"$SSH_PUBKEY"
 # shellcheck source=bootstrap-k0s-cluster.sh
 source "$SCRIPT"
 set +e
+SOURCED_DEFAULT_VMM="$DEFAULT_VMM"
 
 failures=0
 ok()   { echo "ok   $1"; }
@@ -52,21 +53,63 @@ expect_accepted() {
 }
 
 # --- per-node VMM ------------------------------------------------------------
-VM_COUNT=4 NODE_VMMS=""
-expect_eq "VMM defaults to libvirt" "$(node_vmm 3)" "libvirt"
+expect_eq "the default VMM is cloud-hypervisor" "$SOURCED_DEFAULT_VMM" "cloud-hypervisor"
+VM_COUNT=4 NODE_VMMS="" DEFAULT_VMM=cloud-hypervisor
+expect_eq "an empty list takes the default VMM" "$(node_vmm 3)" "cloud-hypervisor"
+DEFAULT_VMM=libvirt
+expect_eq "DEFAULT_VMM=libvirt keeps the old default" "$(node_vmm 3)" "libvirt"
 NODE_VMMS="libvirt libvirt libvirt cloud-hypervisor"
 expect_eq "VMM read per node" "$(node_vmm 3)" "cloud-hypervisor"
 expect_eq "VMM of an earlier node" "$(node_vmm 0)" "libvirt"
 expect_accepted "a node uses cloud-hypervisor" any_node_vmm cloud-hypervisor
 NODE_VMMS="libvirt"
-expect_eq "missing entries default to libvirt" "$(node_vmm 3)" "libvirt"
+expect_eq "missing entries take DEFAULT_VMM" "$(node_vmm 3)" "libvirt"
 expect_refused "no node uses cloud-hypervisor" any_node_vmm cloud-hypervisor
+DEFAULT_VMM=cloud-hypervisor
+expect_eq "missing entries take DEFAULT_VMM (cloud-hypervisor)" "$(node_vmm 3)" "cloud-hypervisor"
 NODE_VMMS="libvirt qemu"
 expect_refused "unknown VMM refused" validate_node_vmms
+NODE_VMMS="" DEFAULT_VMM=qemu
+expect_refused "unknown DEFAULT_VMM refused" validate_node_vmms
+DEFAULT_VMM=cloud-hypervisor
 NODE_VMMS="libvirt libvirt libvirt libvirt cloud-hypervisor"
 expect_refused "more VMMs than nodes refused" validate_node_vmms
 NODE_VMMS="libvirt libvirt libvirt cloud-hypervisor"
 expect_accepted "valid VMM list accepted" validate_node_vmms
+
+# --- a node's VMM must match what already exists on the host -----------------
+# A cluster built when libvirt was the default must not be doubled by `vms`
+# (a CH node beside the libvirt domain, same MAC) or half-removed by `destroy`.
+# Stubs: DOMAINS and CH_UNITS name what exists on the "host".
+fake_vmm_host() {
+  libvirt_domain_defined() { [[ " $DOMAINS " == *" $1 "* ]]; }
+  ch_node_defined() { [[ " $CH_UNITS " == *" $1 "* ]]; }
+}
+# on_host <domains> <ch-units>: run check_vmm_matches_host against that host.
+on_host() { DOMAINS="$1" CH_UNITS="$2"; fake_vmm_host; check_vmm_matches_host; }
+VM_COUNT=3 VM_PREFIX=core NODE_VMMS="" DEFAULT_VMM=cloud-hypervisor RETIRED_NODES=""
+expect_refused "a libvirt domain under a CH default is refused" on_host "core-01 core-02 core-03" ""
+expect_has "the refusal names the way out" "$( on_host core-01 "" 2>&1 )" "DEFAULT_VMM=libvirt"
+expect_accepted "CH nodes that are CH units pass" on_host "" "core-01 core-02"
+expect_accepted "nothing built yet passes" on_host "" ""
+NODE_VMMS="libvirt libvirt libvirt"
+expect_refused "a CH unit under a libvirt node is refused" on_host "" "core-02"
+expect_accepted "libvirt nodes that are libvirt domains pass" on_host "core-01 core-02 core-03" ""
+NODE_VMMS="" RETIRED_NODES="core-01"
+expect_accepted "a retired node is not checked" on_host "core-01" ""
+RETIRED_NODES=""
+out="$( DOMAINS='core-01' CH_UNITS=''; fake_vmm_host; destroy_ch_node() { echo "DESTROYED $1"; }; destroy_libvirt 2>&1 )"
+expect_lacks "destroy refuses before touching a mismatched cluster" "$out" "DESTROYED"
+
+# --- the CH bridge defaults to the libvirt network's bridge -----------------
+out="$( CH_BRIDGE="" LIBVIRT_NETWORK=default
+  virsh() { [[ "$*" == *"net-dumpxml default"* ]] && echo "<network><name>default</name><bridge name='virbr0' stp='on'/></network>"; }
+  resolve_ch_bridge; echo "$CH_BRIDGE" )"
+expect_eq "no bridge given: the libvirt network's bridge" "$out" "virbr0"
+out="$( CH_BRIDGE=br0; virsh() { echo "<bridge name='virbr9'/>"; }; resolve_ch_bridge; echo "$CH_BRIDGE" )"
+expect_eq "an explicit bridge is kept" "$out" "br0"
+no_bridge() { CH_BRIDGE=""; LIBVIRT_NETWORK=default; virsh() { return 1; }; resolve_ch_bridge; }
+expect_refused "no bridge and no network bridge is refused" no_bridge
 
 # --- tap name and MAC ----------------------------------------------------------
 expect_eq "tap name for a short node name" "$(ch_tap_name core-04)" "kv-core-04"
@@ -117,6 +160,7 @@ expect_has "OS disk typed qcow2" "$vm_unit" "path=/srv/k0s-ch/core-04/disk.qcow2
 expect_has "seed attached read-only raw" "$vm_unit" "path=/srv/k0s-ch/core-04/seed.iso,readonly=on,image_type=raw"
 expect_has "installer disk is an unbraced env word" "$vm_unit" ' $K0S_VM_INSTALL_DISK '
 expect_has "tap and fixed MAC" "$vm_unit" "--net tap=kv-core-04,mac=52:54:00:00:00:04"
+expect_has "NIC pinned to PCI slot 2, so the guest names it ens2" "$vm_unit" "mac=52:54:00:00:00:04,pci_device_id=2 "
 expect_has "vTPM socket" "$vm_unit" "--tpm socket=/run/k0s-vm-core-04/swtpm.sock"
 expect_has "needs the swtpm unit" "$vm_unit" "Requires=k0s-vm-core-04-swtpm.service"
 expect_has "bound to its tap unit" "$vm_unit" "BindsTo=k0s-vm-core-04-net.service"
@@ -151,6 +195,14 @@ expect_has "swtpm state in the node dir" "$swtpm_unit" "--tpmstate dir=/srv/k0s-
 expect_has "swtpm stops with the VM" "$swtpm_unit" "PartOf=k0s-vm-core-04.service"
 expect_has "swtpm runtime dir private" "$swtpm_unit" "RuntimeDirectoryMode=0700"
 expect_has "swtpm socket private" "$swtpm_unit" "UMask=0077"
+
+# --- the CH binary can pin the NIC's PCI slot ---------------------------------
+printf '#!/bin/sh\necho "--net tap=<if_name>,pci_segment=<segment_id>,pci_device_id=<pci_slot>"\n' >"$TMP/ch-new"
+printf '#!/bin/sh\necho "--net tap=<if_name>,pci_segment=<segment_id>"\n' >"$TMP/ch-old"
+chmod +x "$TMP/ch-new" "$TMP/ch-old"
+pins_with() { CH_BINARY="$1"; ch_pins_nic_slot; }
+expect_accepted "a CH that takes pci_device_id is accepted" pins_with "$TMP/ch-new"
+expect_refused "a CH without pci_device_id is refused" pins_with "$TMP/ch-old"
 
 # --- Cloud Hypervisor settings guard -------------------------------------------
 LIBVIRT_URI=qemu:///system
@@ -241,7 +293,7 @@ expect_lacks "an installed node is not destroyed" "$out" "DESTROYED"
 expect_has "an installed node is started" "$out" "systemctl start"
 
 # --- retired nodes keep their position but are skipped ----------------------
-VM_COUNT=4 VM_PREFIX=core NODE_VMMS="" NODE_ROLES="controller+worker controller+worker controller+worker controller+worker"
+VM_COUNT=4 VM_PREFIX=core NODE_VMMS="" DEFAULT_VMM=libvirt NODE_ROLES="controller+worker controller+worker controller+worker controller+worker"
 RETIRED_NODES="core-01"
 expect_accepted "a retired node is retired" node_retired 0
 expect_refused "other nodes are not" node_retired 1
@@ -255,7 +307,7 @@ expect_eq "label sees no retired node" "$(node_name_roles | cut -d' ' -f1 | tr '
 RETIRED_NODES=""
 
 # --- seed: announce to the host ------------------------------------------------
-SSH_USER=erick TAILSCALE_AUTHKEY="" LIBVIRT_IMAGE_KIND=kairos
+SSH_USER=admin TAILSCALE_AUTHKEY="" LIBVIRT_IMAGE_KIND=kairos
 make_cloud_init_kairos core-04 "$TMP/seed-k" 192.0.2.1
 ud="$(cat "$TMP/seed-k/user-data")"
 expect_has "kairos seed pings the host" "$ud" "ping -c 3 -W 1 192.0.2.1"
@@ -278,6 +330,7 @@ expect_has "cloud seed announces every boot" "$(cat "$TMP/seed-c/user-data")" "k
 # --- usage -------------------------------------------------------------------------
 expect_has "usage lists join" "$(main bogus 2>&1)" "join"
 expect_has "usage says join takes controllers" "$(main bogus 2>&1)" "controllers"
+expect_has "usage names the default VMM" "$(main bogus 2>&1)" "DEFAULT_VMM=cloud-hypervisor (default)"
 
 if ((failures)); then
   echo "$failures failure(s)"

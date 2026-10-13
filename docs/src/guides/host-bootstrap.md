@@ -10,7 +10,7 @@ running `libvirtd`. This guide covers the step before both.
 
 | Backend | What must exist first | Provided by |
 | --- | --- | --- |
-| libvirt | `virt-install`, `virsh`, `qemu-img`, `k0sctl`, `kubectl`, `curl`, `ssh`, `genisoimage`, a running `libvirtd`, storage pools | `bootstrap-libvirt-host.sh` |
+| libvirt | `qemu-img`, `k0sctl`, `kubectl`, `curl`, `ssh`, `genisoimage`, a running `libvirtd`, storage pools; for Cloud Hypervisor nodes (the default) also `cloud-hypervisor`, `ch-remote`, `swtpm`, a `CLOUDHV.fd` and passwordless `sudo`; for libvirt nodes (`DEFAULT_VMM=libvirt`) `virt-install` and `virsh` | `bootstrap-libvirt-host.sh`, plus `banlieue host cloud-hypervisor install` for the Cloud Hypervisor pieces |
 | vSphere | `govc`, `jq`, `kubectl`, `ssh`, `base64`, a reachable vCenter, placement maps | `bootstrap-vsphere.sh` |
 
 The two are deliberately asymmetric. A libvirt host is *provisioned* — packages,
@@ -164,8 +164,8 @@ Set `COCKPIT_BIND=lan` to listen on all interfaces anyway.
 !!! note
     `cockpit-machines` drives libvirt's QEMU driver only. Cloud Hypervisor
     guests, whether banlieue's (`banlieue-ch@<uid>`) or management-cluster
-    nodes made with `NODE_VMMS=cloud-hypervisor` (`k0s-vm-<name>`, ADR-0099),
-    do not appear on its Virtual Machines page. Cockpit shows them as
+    nodes, which `bootstrap-k0s-cluster.sh` makes by default
+    (`k0s-vm-<name>`, ADR-0099), do not appear on its Virtual Machines page. Cockpit shows them as
     services and processes; manage them with `systemctl`.
 
 ### Optional: Tailscale
