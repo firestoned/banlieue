@@ -10,7 +10,9 @@ homepage.workspace = true
 authors.workspace = true
 
 [dependencies]
-kube.workspace = true
+# Only the CustomResource derive: a consumer's TLS stack is its own business, and kube's
+# default features would force the client and the `ring` provider into every consumer.
+kube = { version = "~4.2", default-features = false, features = ["derive"] }
 k8s-openapi.workspace = true
 schemars.workspace = true
 serde.workspace = true
