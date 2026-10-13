@@ -41,6 +41,19 @@ pub fn no_requeue() -> Action {
     Action::await_change()
 }
 
+/// Whether a provider started as `provider_name` reconciles a machine whose
+/// `spec.providerRef` names `machine_provider`.
+///
+/// The operator starts one workload per `Provider` with `--provider-name`,
+/// and every workload watches every machine of its kind in the namespace.
+/// A workload must leave other Providers' machines alone: it cannot reach
+/// their credentials, and acting on them only produces errors. A provider
+/// started without a name (a static install) serves every Provider.
+#[must_use]
+pub fn serves(provider_name: Option<&str>, machine_provider: &str) -> bool {
+    provider_name.is_none_or(|mine| mine == machine_provider)
+}
+
 #[cfg(test)]
 #[path = "reconciler_tests.rs"]
 mod reconciler_tests;

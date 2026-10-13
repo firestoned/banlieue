@@ -525,6 +525,54 @@ mod tests {
         assert!(undefine < delete, "{:?}", c.calls);
     }
 
+    // ------------------------------------------------------------------
+    // bug-177: a machine deleted while this pass was creating it
+    // ------------------------------------------------------------------
+
+    fn api_error(code: u16, reason: &str) -> kube::Error {
+        kube::Error::Api(
+            kube::core::Status::failure("test", reason)
+                .with_code(code)
+                .boxed(),
+        )
+    }
+
+    #[test]
+    fn a_machine_gone_from_the_api_is_recognised() {
+        assert!(is_gone(&Error::Kube(api_error(404, "NotFound"))));
+        assert!(is_gone(&Error::Sdk(banlieue_provider_sdk::Error::Kube(
+            api_error(404, "NotFound")
+        ))));
+        assert!(!is_gone(&Error::Kube(api_error(409, "Conflict"))));
+        assert!(!is_gone(&Error::Libvirt("connection reset".into())));
+    }
+
+    /// When the report-back finds the machine gone, the pass removes what it
+    /// created, so nothing is left running for an object nobody owns.
+    #[tokio::test]
+    async fn a_pass_that_finds_its_machine_gone_removes_what_it_created() {
+        let mut c = ready_host();
+        let s = spec(LibvirtBootSourceKind::InstallMedia);
+        converge(&mut c, &s, false, false).await.expect("converge");
+        assert!(
+            c.domains.contains_key(&s.domain_name),
+            "converge defined it"
+        );
+
+        compensate_gone(&mut c, &s).await.expect("compensate");
+
+        assert!(
+            c.domains.is_empty(),
+            "domain left behind: {:?}",
+            c.domains.keys()
+        );
+        assert_eq!(
+            c.volumes.keys().collect::<Vec<_>>(),
+            vec![&(POOL.to_string(), SOURCE_VOLUME.to_string())],
+            "only the shared source image may remain"
+        );
+    }
+
     /// The boot source is a shared image owned by the VMImage reconciler.
     /// Deleting it with one machine would break every other VM using it.
     #[tokio::test]

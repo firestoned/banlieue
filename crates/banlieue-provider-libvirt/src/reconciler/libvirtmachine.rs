@@ -119,6 +119,16 @@ pub async fn reconcile(machine: Arc<LibvirtMachine>, ctx: Arc<Context>) -> Resul
     );
     let _enter = span.enter();
 
+    // Another Provider's machine is its own workload's to reconcile. Acting
+    // on it here fails on credentials at best, and at worst finalizes it
+    // against the wrong host (bug-178).
+    if !banlieue_provider_sdk::reconciler::serves(
+        ctx.provider_name.as_deref(),
+        &machine.spec.provider_ref.name,
+    ) {
+        return Ok(Action::await_change());
+    }
+
     let api: Api<LibvirtMachine> = Api::namespaced(ctx.client.clone(), &namespace);
 
     // Connecting is the expensive part of every path below, deletion
@@ -164,7 +174,9 @@ pub async fn reconcile(machine: Arc<LibvirtMachine>, ctx: Arc<Context>) -> Resul
             // five-minute wait (ADR-0045).
             let ek_pending =
                 machine.spec.tpm_enabled && status.tpm_endorsement_certificates.is_empty();
-            patch_status(&api, &name, &status).await?;
+            if let Err(e) = patch_status(&api, &name, &status).await {
+                return gone_or(e, client.as_mut(), &machine.spec).await;
+            }
             // Age from the API server's own clock, saturating: a clock skew
             // that makes the machine "from the future" reads as age 0, which
             // errs toward polling fast, never toward abandoning it.
@@ -191,7 +203,9 @@ pub async fn reconcile(machine: Arc<LibvirtMachine>, ctx: Arc<Context>) -> Resul
         Err(e) => {
             warn!(error = %e, "libvirt machine convergence failed");
             let status = failure_status(&machine, &e.to_string(), generation);
-            patch_status(&api, &name, &status).await?;
+            if let Err(e) = patch_status(&api, &name, &status).await {
+                return gone_or(e, client.as_mut(), &machine.spec).await;
+            }
             Ok(requeue_on_error())
         }
     }
@@ -839,6 +853,51 @@ async fn finalize(
     info!("backend cleared; removing finalizer");
     remove_finalizer(api, machine, MACHINE_FINALIZER).await?;
     Ok(requeue_default())
+}
+
+/// The API server's status code for an object that does not exist.
+const HTTP_NOT_FOUND: u16 = 404;
+
+/// Whether `err` says the `LibvirtMachine` itself no longer exists.
+#[must_use]
+pub fn is_gone(err: &Error) -> bool {
+    let kube = match err {
+        Error::Kube(e) | Error::Sdk(banlieue_provider_sdk::Error::Kube(e)) => e,
+        _ => return false,
+    };
+    matches!(kube, kube::Error::Api(status) if status.code == HTTP_NOT_FOUND)
+}
+
+/// A status write failed with `err`. If the machine is gone, remove what
+/// this pass may have created ([`compensate_gone`]); otherwise return `err`.
+async fn gone_or(
+    err: Error,
+    client: &mut dyn LibvirtMachineClient,
+    spec: &LibvirtMachineSpec,
+) -> Result<Action> {
+    if !is_gone(&err) {
+        return Err(err);
+    }
+    compensate_gone(client, spec).await
+}
+
+/// The machine was deleted while this pass was creating its backend, so no
+/// finalizer will ever clean up behind it: remove the domain and its
+/// volumes now, exactly as the finalizer would (bug-177).
+///
+/// # Errors
+/// Returns the libvirt error if the cleanup fails; the requeue retries it
+/// only while the object is still cached, so a failure is logged loudly.
+pub async fn compensate_gone(
+    client: &mut dyn LibvirtMachineClient,
+    spec: &LibvirtMachineSpec,
+) -> Result<Action> {
+    warn!(
+        domain = %spec.domain_name,
+        "LibvirtMachine deleted while its domain was being created; removing what this pass created"
+    );
+    finalize_backend(client, spec).await?;
+    Ok(Action::await_change())
 }
 
 /// Remove the domain and every volume banlieue created for this machine.

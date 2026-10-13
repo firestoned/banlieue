@@ -257,16 +257,19 @@ pub async fn run(cli: Cli) -> Result<()> {
     let import_tolerations =
         banlieue_provider_sdk::scheduling::parse_tolerations(&cli.build_toleration)
             .map_err(|e| anyhow::anyhow!("{e}"))?;
-    let ctx = Arc::new(Context::new(
-        client.clone(),
-        cli.namespace.clone(),
-        Arc::new(TlsClientFactory::new()),
-        Arc::new(TlsMachineClientFactory::new()),
-        cli.build_namespace.clone(),
-        cli.import_image.clone(),
-        cli.import_service_account.clone(),
-        import_tolerations,
-    ));
+    let ctx = Arc::new(
+        Context::new(
+            client.clone(),
+            cli.namespace.clone(),
+            Arc::new(TlsClientFactory::new()),
+            Arc::new(TlsMachineClientFactory::new()),
+            cli.build_namespace.clone(),
+            cli.import_image.clone(),
+            cli.import_service_account.clone(),
+            import_tolerations,
+        )
+        .with_provider_name(cli.provider_name.clone()),
+    );
 
     let provider_api: Api<Provider> = match cli.namespace.as_deref() {
         Some(ns) => Api::namespaced(client.clone(), ns),

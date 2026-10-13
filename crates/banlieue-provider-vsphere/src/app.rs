@@ -316,15 +316,18 @@ pub async fn run(cli: Cli) -> Result<()> {
             .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     let vsphere_factory = Arc::new(VimClientFactory::new());
-    let ctx = Arc::new(Context::new(
-        client.clone(),
-        cli.namespace.clone(),
-        vsphere_factory,
-        cli.build_namespace.clone(),
-        cli.import_image.clone(),
-        cli.import_service_account.clone(),
-        import_tolerations,
-    ));
+    let ctx = Arc::new(
+        Context::new(
+            client.clone(),
+            cli.namespace.clone(),
+            vsphere_factory,
+            cli.build_namespace.clone(),
+            cli.import_image.clone(),
+            cli.import_service_account.clone(),
+            import_tolerations,
+        )
+        .with_provider_name(cli.provider_name.clone()),
+    );
 
     let provider_api: Api<Provider> = match cli.namespace.as_deref() {
         Some(ns) => Api::namespaced(client.clone(), ns),

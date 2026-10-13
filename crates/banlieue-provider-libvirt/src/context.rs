@@ -55,6 +55,10 @@ pub struct Context {
     /// tainted node, which matters when the volume sits on a dedicated build
     /// node.
     pub import_tolerations: Vec<Toleration>,
+
+    /// The `Provider` this workload serves (`--provider-name`). `None` for a
+    /// static install, which serves every Provider of its class.
+    pub provider_name: Option<String>,
 }
 
 impl Context {
@@ -82,6 +86,15 @@ impl Context {
             import_image,
             import_service_account,
             import_tolerations,
+            provider_name: None,
         }
+    }
+
+    /// This context, serving only the `Provider` named `provider_name`
+    /// (see [`banlieue_provider_sdk::reconciler::serves`]).
+    #[must_use]
+    pub fn with_provider_name(mut self, provider_name: Option<String>) -> Self {
+        self.provider_name = provider_name;
+        self
     }
 }

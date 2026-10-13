@@ -3215,8 +3215,8 @@
       "timestamp": "2026-10-13T10:08:36.000Z",
       "error_message": "LibvirtMachine gone (404) while its domain was being created; domain + volumes left running on the host",
       "file": "crates/banlieue-provider-libvirt/src/reconciler/libvirtmachine.rs",
-      "root_cause": "OPEN, not confirmed. A pool refill member was created during the sabotage test's teardown (pool deletion). Controller requested the LibvirtMachine delete at 10:08:33.666 and found it 404 at 10:08:33.792, so it carried no provider finalizer at deletion; yet the provider, which calls ensure_finalizer before converge, created disk, seed and domain (33.767-33.843) and only hit 404 on its status patch at 33:36.798. Cross-pod log timestamps (nodes re-clocked 2026-10-12) cannot order events ~100 ms apart.",
-      "fix": "Not fixed. Leaked domain destroyed and its own volumes removed by hand. Needs a live API-server reproduction (create then immediately delete a LibvirtMachine) and a guard so converge never runs unless the finalizer is confirmed on the server copy.",
+      "root_cause": "Trigger not confirmed: something removed the provider finalizer (or the machine was deleted before it landed) while a create pass was already converging, so the provider created disk, seed and domain for a LibvirtMachine that no longer existed and only learned so from the 404 on its status patch. A second contributor was bug-178: three provider pods reconciled the same machine concurrently.",
+      "fix": "Compensation: after converge, a 404 on the status patch (is_gone) calls compensate_gone, which runs finalize_backend to destroy/undefine the domain and delete the volumes this pass created. Unit-tested (a_pass_that_finds_its_machine_gone_removes_what_it_created) and live-verified on a kind cluster against libvirtd: finalizer stripped and machine deleted mid-create, 0 domains and 0 volumes left. Leaked e2e domain removed by hand.",
       "tags": [
         "libvirt",
         "finalizer",
@@ -3225,9 +3225,32 @@
         "deletion",
         "pool"
       ],
-      "related_bugs": [],
+      "related_bugs": [
+        "bug-178"
+      ],
       "occurrences": 1,
       "last_seen": "2026-10-13T10:08:36.000Z"
+    },
+    {
+      "id": "bug-178",
+      "timestamp": "2026-10-13T11:30:00.000Z",
+      "error_message": "libvirt provider for one Provider logs credential errors for machines of every other Provider (1531 errors in 6h)",
+      "file": "crates/banlieue-provider-libvirt/src/reconciler/libvirtmachine.rs",
+      "root_cause": "--provider-name was parsed but never consulted by the machine controllers in libvirt, vSphere and Proxmox: every provider pod reconciled every machine in the cluster, failing on credentials it lacks, racing peers on the same object, and on vSphere able to finalize against the wrong vCenter. Cloud Hypervisor already filtered with is_ours().",
+      "fix": "banlieue_provider_sdk::reconciler::serves(provider_name, machine_provider); each machine reconcile returns await_change() for a machine whose providerRef names another Provider. Context gains provider_name (libvirt/vSphere; Proxmox already had it). Live-verified: a LibvirtMachine for another Provider got no finalizer, no log line, no domain.",
+      "tags": [
+        "provider",
+        "scoping",
+        "libvirt",
+        "vsphere",
+        "proxmox",
+        "multi-provider"
+      ],
+      "related_bugs": [
+        "bug-177"
+      ],
+      "occurrences": 1,
+      "last_seen": "2026-10-13T11:30:00.000Z"
     }
   ]
 }

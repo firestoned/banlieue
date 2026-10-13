@@ -1,5 +1,41 @@
 # Changelog
 
+## [2026-10-13] - Providers serve only their own machines; libvirt cleans up a machine deleted mid-create
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `crates/banlieue-provider-sdk/src/reconciler.rs`: `serves(provider_name,
+  machine_provider)`. The libvirt, vSphere and Proxmox machine reconcilers
+  now return `await_change()` for a machine whose `providerRef` names another
+  Provider. `--provider-name` was parsed but never consulted, so every
+  provider pod reconciled every machine: the libvirt provider for one host
+  logged 1531 credential errors in 6 hours for other hosts' machines, peers
+  raced on the same object, and a vSphere provider could finalize against
+  the wrong vCenter. Cloud Hypervisor already filtered (`is_ours`).
+  `Context` gains `provider_name` in libvirt and vSphere (Proxmox had it).
+- `crates/banlieue-provider-libvirt/src/reconciler/libvirtmachine.rs`: a 404
+  on the status patch after converge (`is_gone`) now runs `compensate_gone`,
+  which tears down the domain and volumes the pass just created. Before, a
+  `LibvirtMachine` deleted while its domain was being created left the
+  domain running on the host. Found during the Deferred sabotage e2e; the
+  exact trigger (how the finalizer was gone) is not confirmed, so the fix
+  makes the outcome safe whatever the trigger.
+
+### Tests
+- `reconciler_tests.rs`: `a_provider_serves_only_its_own_machines`,
+  `a_provider_without_a_name_serves_every_machine`.
+- `libvirtmachine_tests.rs`: `a_machine_gone_from_the_api_is_recognised`,
+  `a_pass_that_finds_its_machine_gone_removes_what_it_created`.
+- Both verified live on a kind cluster against a real libvirtd: a machine
+  for another Provider got no finalizer and no domain; a machine deleted
+  mid-create left 0 domains and 0 volumes.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (provider images)
+- [ ] Config change only
+
 ## [2026-10-13] - k0s bootstrap: Cloud Hypervisor nodes and a worker-only `join` (ADR-0099)
 
 **Author:** Erick Bourgeois
@@ -74,6 +110,7 @@ systemd's start limit.
 - [ ] Breaking change (`NODE_VMMS` unset keeps every node on libvirt)
 - [ ] Requires cluster rollout
 - [x] Config change only
+
 - [ ] Documentation only
 
 ## [2026-10-13] - Spread placement (ADR-0098); per-issuer claim prefixes (ADR-0047 amended); Deferred libvirt e2e

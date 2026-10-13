@@ -649,6 +649,16 @@ pub async fn reconcile(machine: Arc<ProxmoxMachine>, ctx: Arc<Context>) -> Resul
         tracing::info_span!("reconcile", kind = "ProxmoxMachine", %namespace, %name, generation);
     let _enter = span.enter();
 
+    // Another Provider's machine is its own workload's to reconcile. Acting
+    // on it here fails on credentials at best, and at worst finalizes it
+    // against the wrong host (bug-178).
+    if !banlieue_provider_sdk::reconciler::serves(
+        ctx.provider_name.as_deref(),
+        &machine.spec.provider_ref.name,
+    ) {
+        return Ok(Action::await_change());
+    }
+
     let api: Api<ProxmoxMachine> = Api::namespaced(ctx.client.clone(), &namespace);
     let providers: Api<Provider> = Api::namespaced(ctx.client.clone(), &namespace);
     let provider = providers.get(&machine.spec.provider_ref.name).await?;
