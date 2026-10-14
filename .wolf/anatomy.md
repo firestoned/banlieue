@@ -1,6 +1,6 @@
 # anatomy.md
 
-> Auto-maintained by OpenWolf. Last scanned: 2026-10-14T16:00:00.485Z
+> Auto-maintained by OpenWolf. Last scanned: 2026-10-14T22:00:00.488Z
 > Files: 511 tracked | Anatomy hits: 0 | Misses: 0
 
 ## ./
@@ -610,8 +610,8 @@
 - `app_tests.rs` — Unit tests for [`super::super::app`]. (~1888 tok)
 - `app.rs` — # `banlieue provider vsphere` entry point (~4869 tok)
 - `context.rs` — Shared reconcile context for the vSphere provider. (~992 tok)
-- `error_tests.rs` — Unit tests for [`super::super::error`]: the metric `kind` of each variant. (~214 tok)
-- `error.rs` — Typed errors for the vSphere provider's reconcilers. (~587 tok)
+- `error_tests.rs` — Unit tests for [`super::super::error`]: the metric `kind` of each variant. (~274 tok)
+- `error.rs` — Typed errors for the vSphere provider's reconcilers. (~750 tok)
 - `guest_tests.rs` — Unit tests for `guest.rs`. (~1251 tok)
 - `guest.rs` — Reading the installed-guest marker via vSphere `guestinfo` (ADR-0043). (~1321 tok)
 - `import_tests.rs` — Unit tests for the pure helpers of the `image-import` subcommand. (~4687 tok)
@@ -624,10 +624,10 @@
 
 ## crates/banlieue-provider-vsphere/src/client/
 
-- `fake.rs` — In-memory `VSphereClient` used by reconciler tests. (~6061 tok)
-- `mod.rs` — vSphere client surface used by the reconcilers. (~6943 tok)
-- `vim_tests.rs` — Unit tests for the BYOC HTTP-client helpers in `vim.rs` (ADR-0008). (~8516 tok)
-- `vim.rs` — Production `VSphereClient` implementation backed by `vim_rs`. (~30568 tok)
+- `fake.rs` — In-memory `VSphereClient` used by reconciler tests. (~6811 tok)
+- `mod.rs` — vSphere client surface used by the reconcilers. (~7303 tok)
+- `vim_tests.rs` — Unit tests for the BYOC HTTP-client helpers in `vim.rs` (ADR-0008). (~8828 tok)
+- `vim.rs` — Production `VSphereClient` implementation backed by `vim_rs`. (~31506 tok)
 
 ## crates/banlieue-provider-vsphere/src/reconciler/
 
@@ -638,10 +638,10 @@
 - `vmimage_finalize_tests.rs` — Unit tests for [`super::super::destroy_zone_templates`] (ADR-0028: (~1770 tok)
 - `vmimage_tests.rs` — Unit tests for [`super::super::vmimage`]. (~9890 tok)
 - `vmimage.rs` — `VMImage` reconciler — template availability and `Url`-source import (~13710 tok)
-- `vspheremachine_ensure_tests.rs` — Unit tests for [`super::super::ensure_vm`]. (~6093 tok)
-- `vspheremachine_finalize_tests.rs` — Unit tests for [`super::super::finalize_vm`] (ADR-0026: `VSphereMachine` (~777 tok)
+- `vspheremachine_ensure_tests.rs` — Unit tests for [`super::super::ensure_vm`]. (~7181 tok)
+- `vspheremachine_finalize_tests.rs` — Unit tests for [`super::super::finalize_vm`] (ADR-0026: `VSphereMachine` (~1695 tok)
 - `vspheremachine_tests.rs` — Unit tests for [`super::super::vspheremachine`]. (~7358 tok)
-- `vspheremachine.rs` — `VSphereMachine` reconciler — clone a VM from its per-zone template (~13402 tok)
+- `vspheremachine.rs` — `VSphereMachine` reconciler — clone a VM from its per-zone template (~14859 tok)
 
 ## crates/banlieue-provider-vsphere/tests/
 

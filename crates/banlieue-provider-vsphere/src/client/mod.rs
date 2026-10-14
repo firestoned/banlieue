@@ -330,6 +330,19 @@ pub trait VSphereClient: Send + Sync {
     /// member's life, not an error.
     async fn guest_info(&self, vm_moref: &str, key: &str) -> Result<Option<String>>;
 
+    /// Every VM named `name` directly in the folder a clone for
+    /// `datacenter_moref` / `folder` would target (ADR-0101 Decision 3):
+    /// `folder` under the datacenter's `vmFolder`, or `vmFolder` itself when
+    /// `None` or empty, resolved as [`VSphereClient::clone_vm`] resolves it
+    /// but never created. Not recursive: `DuplicateName` is per folder.
+    /// Empty when the folder does not exist yet.
+    async fn find_vms_named(
+        &self,
+        datacenter_moref: &str,
+        folder: Option<&str>,
+        name: &str,
+    ) -> Result<Vec<NamedVm>>;
+
     /// Set vCenter custom attributes on `vm_moref` (ADR-0089), defining each
     /// one via `CustomFieldsManager.AddCustomFieldDef` first if it doesn't
     /// already exist on this vCenter, then `CustomFieldsManager.SetField` per
@@ -386,6 +399,23 @@ pub struct CloneVmRequest {
     /// `guestinfo.userdata` (ADR-0024), built by
     /// [`crate::reconciler::vspheremachine::build_guestinfo`].
     pub extra_config: Vec<(String, String)>,
+}
+
+/// The `extraConfig` key holding the `VSphereMachine` UID a clone belongs
+/// to (ADR-0101). Set by `CloneVM_Task` itself, so no banlieue VM exists
+/// without it, and deliberately outside `guestinfo.*`, which the guest can
+/// write.
+pub const MACHINE_UID_KEY: &str = "banlieue.machine.uid";
+
+/// A VM found by [`VSphereClient::find_vms_named`]: its moref and, if it
+/// carries one, its [`MACHINE_UID_KEY`] marker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NamedVm {
+    /// The VM's managed-object id.
+    pub moref: String,
+    /// The marker's value; `None` for a VM banlieue did not clone (or one
+    /// cloned before ADR-0101).
+    pub machine_uid: Option<String>,
 }
 
 /// One template NIC, fully resolved to a concrete port-group moref

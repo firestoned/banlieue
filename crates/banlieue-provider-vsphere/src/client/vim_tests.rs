@@ -743,4 +743,28 @@ n17Lktsw0jAZJp1tU1DJPZSYHZPPWLZlJhHftNtpKQ==
     fn production_factory_holds_no_client_between_reconciles() {
         assert_eq!(std::mem::size_of::<VimClientFactory>(), 0);
     }
+
+    // ----------------------------------------------------------------------
+    // vm_identity_from_raw_config (ADR-0101): a VM's display name and
+    // ownership marker, read from the same raw `config` document as
+    // guestinfo above, for the same reason.
+    // ----------------------------------------------------------------------
+
+    #[test]
+    fn reads_the_name_and_the_ownership_marker() {
+        let json = br#"{"name":"db-01","extraConfig":[{"_typeName":"OptionValue","key":"banlieue.machine.uid","value":{"_typeName":"string","_value":"uid-1"}}]}"#;
+        assert_eq!(
+            vm_identity_from_raw_config(json, "banlieue.machine.uid").unwrap(),
+            (Some("db-01".to_string()), Some("uid-1".to_string()))
+        );
+    }
+
+    #[test]
+    fn a_vm_without_the_marker_has_no_owner() {
+        let json = br#"{"name":"db-01","extraConfig":[{"key":"guestinfo.network.hostname","value":"db-01"}]}"#;
+        assert_eq!(
+            vm_identity_from_raw_config(json, "banlieue.machine.uid").unwrap(),
+            (Some("db-01".to_string()), None)
+        );
+    }
 }

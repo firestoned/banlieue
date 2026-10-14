@@ -429,6 +429,29 @@ datacenter), `ConnectFailed`, `LookupFailed`, `NoVSphereSource`.
   refused rather than built unencrypted (ADR-0048). This one never reaches
   the scheduler, so `Scheduled` is deliberately left untouched.
 
+`VSphereMachine` not `Ready` with `reason=VMNameConflict`: a VM with the
+machine's name already sits in the clone's target folder (`spec.folder`, or
+the datacenter's VM folder) and it is **not** this machine's. Every VM
+banlieue clones carries the machine's UID in the `extraConfig` key
+`banlieue.machine.uid` (ADR-0101), and the provider never touches a VM
+without a matching one, so it refuses to clone beside it rather than
+failing on vCenter's `DuplicateName` forever. Compare the two:
+
+```sh
+kubectl -n banlieue-system get vspheremachine db-prod-01 -o jsonpath='{.metadata.uid}'
+govc vm.info -e -vm.ipath '/dc1/vm/db-prod-01' | grep banlieue.machine.uid
+```
+
+- No `banlieue.machine.uid` at all: somebody else's VM, or a clone left
+  behind by a banlieue release before ADR-0101 (those clones were never
+  marked). Delete or rename it in vCenter once; the next pass clones.
+- A different UID: another machine of the same name, typically from another
+  namespace placed in the same folder. Give them different folders or names.
+
+A clone that **does** carry this machine's UID is never a conflict: it is
+left over from a pass that stopped between the clone and its status write,
+and the provider destroys it and clones again, or destroys it on deletion.
+
 ```sh
 kubectl -n banlieue-system logs deploy/banlieue-provider-vsphere
 kubectl -n banlieue-system logs deploy/banlieue-controller

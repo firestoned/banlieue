@@ -54,8 +54,8 @@ use vim_rs::types::vim_any::VimAny;
 use crate::error::{Error, Result};
 
 use super::{
-    Cluster, Credentials, Datacenter, Datastore, Network, Template, VSphereClient,
-    VSphereClientFactory,
+    Cluster, Credentials, Datacenter, Datastore, MACHINE_UID_KEY, NamedVm, Network, Template,
+    VSphereClient, VSphereClientFactory,
 };
 
 const APP_NAME: &str = env!("CARGO_PKG_NAME");
@@ -1277,6 +1277,66 @@ impl VSphereClient for VimClientImpl {
         })
     }
 
+    #[instrument(name = "vsphere.find_vms_named", skip_all, fields(datacenter_moref = %datacenter_moref, name = %name))]
+    async fn find_vms_named(
+        &self,
+        datacenter_moref: &str,
+        folder: Option<&str>,
+        name: &str,
+    ) -> Result<Vec<NamedVm>> {
+        let dc = VimDatacenter::new(self.client.clone(), datacenter_moref);
+        let vm_folder = dc
+            .vm_folder()
+            .await
+            .map_err(|e| Error::Vsphere(format!("Datacenter.vmFolder({datacenter_moref}): {e}")))?;
+        // Resolved as clone_vm resolves it, but never created: a folder that
+        // does not exist yet holds no VM.
+        let target = match folder {
+            Some(path) if !path.is_empty() => {
+                let Some(found) = self.find_folder(&vm_folder.value, path).await? else {
+                    return Ok(Vec::new());
+                };
+                found
+            }
+            _ => vm_folder.value.clone(),
+        };
+        let children = Folder::new(self.client.clone(), &target)
+            .child_entity()
+            .await
+            .map_err(|e| Error::Vsphere(format!("Folder.childEntity({target}): {e}")))?
+            .unwrap_or_default();
+
+        let mut found = Vec::new();
+        for child in children
+            .iter()
+            .filter(|c| c.r#type == MoTypesEnum::VirtualMachine)
+        {
+            let pv = self
+                .client
+                .fetch_property_raw("", "VirtualMachine", &child.value, "config")
+                .await
+                .map_err(|e| {
+                    Error::Vsphere(format!("VirtualMachine.config({}): {e}", child.value))
+                })?;
+            // A VM still being created may have no config yet; it cannot be
+            // matched by name, and a clone of ours always has one.
+            let Some(vim_rs::core::client::PropertyValue::Json(bytes)) = pv else {
+                continue;
+            };
+            let (vm_name, machine_uid) = vm_identity_from_raw_config(&bytes, MACHINE_UID_KEY)
+                .map_err(|e| {
+                    Error::Vsphere(format!("VirtualMachine.config({}): {e}", child.value))
+                })?;
+            if vm_name.as_deref() == Some(name) {
+                found.push(NamedVm {
+                    moref: child.value.clone(),
+                    machine_uid,
+                });
+            }
+        }
+        Ok(found)
+    }
+
     // ADR-0043's vSphere transport: `key` is a `guestinfo.*` name the guest
     // set with `vmware-rpctool`, which vCenter reflects into this same
     // `config.extraConfig` list (the same property `clone_vm` writes
@@ -1389,10 +1449,15 @@ fn extra_config_value_from_raw_json(
 ) -> std::result::Result<Option<String>, String> {
     let doc: serde_json::Value =
         serde_json::from_slice(bytes).map_err(|e| format!("parsing raw JSON: {e}"))?;
-    let Some(entries) = doc.get("extraConfig").and_then(serde_json::Value::as_array) else {
-        return Ok(None);
-    };
-    Ok(entries.iter().find_map(|entry| {
+    Ok(extra_config_value(&doc, key))
+}
+
+/// [`extra_config_value_from_raw_json`] over an already-parsed `config`.
+fn extra_config_value(doc: &serde_json::Value, key: &str) -> Option<String> {
+    let entries = doc
+        .get("extraConfig")
+        .and_then(serde_json::Value::as_array)?;
+    entries.iter().find_map(|entry| {
         if entry.get("key")?.as_str()? != key {
             return None;
         }
@@ -1408,7 +1473,24 @@ fn extra_config_value_from_raw_json(
             .or_else(|| value.get("_value").and_then(serde_json::Value::as_str))
             .or_else(|| value.get("value").and_then(serde_json::Value::as_str))
             .map(str::to_string)
-    }))
+    })
+}
+
+/// A VM's display name and the value of its ownership-marker key
+/// `marker_key` ([`MACHINE_UID_KEY`] in practice), read from a raw
+/// `VirtualMachineConfigInfo` document (ADR-0101). Raw for the reasons
+/// [`extra_config_value_from_raw_json`] gives.
+fn vm_identity_from_raw_config(
+    bytes: &[u8],
+    marker_key: &str,
+) -> std::result::Result<(Option<String>, Option<String>), String> {
+    let doc: serde_json::Value =
+        serde_json::from_slice(bytes).map_err(|e| format!("parsing raw JSON: {e}"))?;
+    let name = doc
+        .get("name")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+    Ok((name, extra_config_value(&doc, marker_key)))
 }
 
 impl VimClientImpl {

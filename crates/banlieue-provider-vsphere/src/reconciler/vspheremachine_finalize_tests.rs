@@ -7,8 +7,54 @@
 mod tests {
     use crate::client::{FakeClient, Inventory, VSphereClient};
 
-    use super::super::{compensate_gone, finalize_vm, is_gone};
+    use banlieue_api::common::{DiskProvisioning, Firmware, LocalObjectReference, PowerState};
+    use banlieue_api::infrastructure::{VSphereDiskSpec, VSphereMachineSpec};
+
+    use super::super::{MachineRef, compensate_gone, finalize_unrecorded, finalize_vm, is_gone};
     use crate::error::Error;
+
+    const UID: &str = "7c0d1f9e-0000-4000-8000-0000000000db";
+
+    fn machine() -> MachineRef<'static> {
+        MachineRef {
+            name: "db-01",
+            uid: UID,
+        }
+    }
+
+    fn spec() -> VSphereMachineSpec {
+        VSphereMachineSpec {
+            provider_id: None,
+            failure_domain: None,
+            provider_ref: LocalObjectReference {
+                name: "vc1".to_string(),
+            },
+            template: "ubuntu-22.04-cloudinit".to_string(),
+            template_folder: None,
+            datacenter: "dc1".to_string(),
+            cluster: "cluster-a".to_string(),
+            datastore: "ds-fast-01".to_string(),
+            folder: None,
+            resource_pool: None,
+            num_cpus: 2,
+            memory_mi_b: 2048,
+            firmware: Firmware::Efi,
+            tpm_enabled: false,
+            disks: vec![VSphereDiskSpec {
+                name: "os".to_string(),
+                size_gi_b: 20,
+                provisioning: DiskProvisioning::Thin,
+            }],
+            network: Vec::new(),
+            user_data: None,
+            desired_power_state: PowerState::PoweredOn,
+            created_by: None,
+        }
+    }
+
+    fn with_dc() -> FakeClient {
+        FakeClient::new(Inventory::builder().with_dc("dc1").build())
+    }
 
     fn api_error(code: u16, reason: &str) -> kube::Error {
         kube::Error::Api(
@@ -68,6 +114,51 @@ mod tests {
     async fn a_pass_that_cloned_nothing_removes_nothing() {
         let client = FakeClient::new(Inventory::default());
         compensate_gone(as_client(&client), None).await.unwrap();
+        assert!(client.destroyed_vms().is_empty());
+    }
+
+    // ADR-0101 Decision 4: deletion with no status.vmRef looks for a VM the
+    // pass that lost its moref left behind, and destroys only a marked one.
+
+    #[tokio::test]
+    async fn deletion_without_a_vm_ref_destroys_our_marked_vm() {
+        let client = with_dc();
+        let ours = client.add_vm(None, "db-01", Some(UID));
+        finalize_unrecorded(as_client(&client), &spec(), &machine())
+            .await
+            .unwrap();
+        assert_eq!(client.destroyed_vms(), vec![ours]);
+    }
+
+    #[tokio::test]
+    async fn deletion_without_a_vm_ref_never_touches_a_foreign_same_named_vm() {
+        for foreign_uid in [None, Some("another-machine-uid")] {
+            let client = with_dc();
+            client.add_vm(None, "db-01", foreign_uid);
+            finalize_unrecorded(as_client(&client), &spec(), &machine())
+                .await
+                .unwrap();
+            assert!(client.destroyed_vms().is_empty(), "{foreign_uid:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn deletion_without_a_vm_ref_and_nothing_there_succeeds() {
+        let client = with_dc();
+        finalize_unrecorded(as_client(&client), &spec(), &machine())
+            .await
+            .unwrap();
+        assert!(client.destroyed_vms().is_empty());
+    }
+
+    /// A datacenter that no longer exists cannot hold the VM; deletion must
+    /// not block on it forever.
+    #[tokio::test]
+    async fn deletion_without_a_vm_ref_in_a_missing_datacenter_succeeds() {
+        let client = FakeClient::new(Inventory::default());
+        finalize_unrecorded(as_client(&client), &spec(), &machine())
+            .await
+            .unwrap();
         assert!(client.destroyed_vms().is_empty());
     }
 }

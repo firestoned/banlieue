@@ -17,6 +17,14 @@ mod tests {
         assert_eq!(Error::InvalidSpec("dup".into()).kind(), "InvalidSpec");
         assert_eq!(Error::Missing("spec.connection").kind(), "Missing");
         assert_eq!(
+            Error::VmNameConflict {
+                name: "db-01".into(),
+                moref: "vm-42".into(),
+            }
+            .kind(),
+            "VmNameConflict"
+        );
+        assert_eq!(
             Error::Sdk(banlieue_provider_sdk::Error::Missing("x")).kind(),
             "Sdk"
         );

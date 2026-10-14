@@ -15,9 +15,25 @@ use banlieue_api::common::PowerState;
 use crate::error::{Error, Result};
 
 use super::{
-    CloneVmRequest, Cluster, Credentials, Datacenter, Datastore, Network, Template, VSphereClient,
-    VSphereClientFactory,
+    CloneVmRequest, Cluster, Credentials, Datacenter, Datastore, MACHINE_UID_KEY, NamedVm, Network,
+    Template, VSphereClient, VSphereClientFactory,
 };
+
+/// A VM that exists in the fake vCenter right now.
+#[derive(Debug, Clone)]
+struct LiveVm {
+    /// Folder path under `vmFolder`; `None` is `vmFolder` itself.
+    folder: Option<String>,
+    name: String,
+    /// The [`MACHINE_UID_KEY`] marker, if the VM carries one.
+    machine_uid: Option<String>,
+}
+
+/// `Some("")` and `None` both mean the datacenter's `vmFolder`, as in the
+/// real `clone_vm`.
+fn folder_key(folder: Option<&str>) -> Option<String> {
+    folder.filter(|f| !f.is_empty()).map(str::to_string)
+}
 
 /// One recorded [`VSphereClient::clone_vm`] call, kept so reconciler tests
 /// can assert what was requested without a real vCenter. See
@@ -266,11 +282,12 @@ pub struct FakeClient {
     grown_disks: Mutex<Vec<(String, u32)>>,
     guest_info: Mutex<HashMap<(String, String), String>>,
     custom_attributes: Mutex<HashMap<String, Vec<(String, String)>>>,
-    /// VMs that exist right now, by moref: `(folder, name)`. Real vCenter
-    /// refuses a second VM of the same name in one folder (`DuplicateName`),
-    /// so the fake does too.
-    live: Mutex<HashMap<String, (Option<String>, String)>>,
+    /// VMs that exist right now, by moref. Real vCenter refuses a second VM
+    /// of the same name in one folder (`DuplicateName`), so the fake does
+    /// too.
+    live: Mutex<HashMap<String, LiveVm>>,
     failing: Mutex<HashSet<FakeStep>>,
+    named_lookups: Mutex<usize>,
 }
 
 impl FakeClient {
@@ -291,7 +308,30 @@ impl FakeClient {
             custom_attributes: Mutex::new(HashMap::new()),
             live: Mutex::new(HashMap::new()),
             failing: Mutex::new(HashSet::new()),
+            named_lookups: Mutex::new(0),
         }
+    }
+
+    /// Put a VM in the fake vCenter that this test did not clone: a stale
+    /// clone a lost pass left behind (`machine_uid` set), or somebody
+    /// else's VM that merely shares the name. Returns its moref.
+    pub fn add_vm(&self, folder: Option<&str>, name: &str, machine_uid: Option<&str>) -> String {
+        let mut live = self.live.lock().expect("fake client lock");
+        let moref = format!("vm-seeded-{}", live.len());
+        live.insert(
+            moref.clone(),
+            LiveVm {
+                folder: folder_key(folder),
+                name: name.to_string(),
+                machine_uid: machine_uid.map(str::to_string),
+            },
+        );
+        moref
+    }
+
+    /// How many [`VSphereClient::find_vms_named`] calls were made.
+    pub fn named_lookups(&self) -> usize {
+        *self.named_lookups.lock().expect("fake client lock")
     }
 
     /// Make every later `step` call fail, as a vCenter fault would.
@@ -485,17 +525,32 @@ impl VSphereClient for FakeClient {
     }
 
     async fn clone_vm(&self, req: &CloneVmRequest) -> Result<String> {
-        let key = (req.folder.clone(), req.vm_name.clone());
+        let folder = folder_key(req.folder.as_deref());
         let moref = format!("vm-clone-{}", req.vm_name);
         {
             let mut live = self.live.lock().expect("fake client lock");
-            if live.values().any(|k| *k == key) {
+            if live
+                .values()
+                .any(|vm| vm.folder == folder && vm.name == req.vm_name)
+            {
                 return Err(Error::Vsphere(format!(
                     "CloneVM_Task({}): DuplicateName",
                     req.vm_name
                 )));
             }
-            live.insert(moref.clone(), key);
+            let machine_uid = req
+                .extra_config
+                .iter()
+                .find(|(k, _)| k == MACHINE_UID_KEY)
+                .map(|(_, v)| v.clone());
+            live.insert(
+                moref.clone(),
+                LiveVm {
+                    folder,
+                    name: req.vm_name.clone(),
+                    machine_uid,
+                },
+            );
         }
         self.clones
             .lock()
@@ -583,6 +638,29 @@ impl VSphereClient for FakeClient {
             .expect("fake client lock")
             .push((vm_moref.to_string(), size_gi_b));
         Ok(())
+    }
+
+    async fn find_vms_named(
+        &self,
+        _datacenter_moref: &str,
+        folder: Option<&str>,
+        name: &str,
+    ) -> Result<Vec<NamedVm>> {
+        *self.named_lookups.lock().expect("fake client lock") += 1;
+        let folder = folder_key(folder);
+        let mut found: Vec<NamedVm> = self
+            .live
+            .lock()
+            .expect("fake client lock")
+            .iter()
+            .filter(|(_, vm)| vm.folder == folder && vm.name == name)
+            .map(|(moref, vm)| NamedVm {
+                moref: moref.clone(),
+                machine_uid: vm.machine_uid.clone(),
+            })
+            .collect();
+        found.sort_by(|a, b| a.moref.cmp(&b.moref));
+        Ok(found)
     }
 
     async fn guest_info(&self, vm_moref: &str, key: &str) -> Result<Option<String>> {

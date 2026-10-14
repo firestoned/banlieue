@@ -12,7 +12,17 @@ mod tests {
 
     use crate::client::{FakeClient, FakeStep, Inventory, VSphereClient};
 
-    use super::super::ensure_vm;
+    use super::super::{MACHINE_UID_KEY, MachineRef, ensure_vm};
+    use crate::error::Error;
+
+    const UID: &str = "7c0d1f9e-0000-4000-8000-0000000000db";
+
+    fn machine() -> MachineRef<'static> {
+        MachineRef {
+            name: "db-01",
+            uid: UID,
+        }
+    }
 
     fn as_client(c: &FakeClient) -> &dyn VSphereClient {
         c
@@ -73,7 +83,7 @@ mod tests {
         let outcome = ensure_vm(
             as_client(&client),
             &spec("ds-fast-01", "vmnet-prod"),
-            "db-01",
+            &machine(),
             Some("vm-existing-123"),
             None,
         )
@@ -95,7 +105,7 @@ mod tests {
         let outcome = ensure_vm(
             as_client(&client),
             &spec("ds-fast-01", "vmnet-prod"),
-            "db-01",
+            &machine(),
             None,
             None,
         )
@@ -129,7 +139,7 @@ mod tests {
         let outcome = ensure_vm(
             as_client(&client),
             &spec("ds-fast-01", "vmnet-prod"),
-            "db-01",
+            &machine(),
             None,
             None,
         )
@@ -156,7 +166,7 @@ mod tests {
         let client = FakeClient::new(seeded_inventory());
         let mut s = spec("ds-fast-01", "vmnet-prod");
         s.created_by = Some("alice".to_string());
-        let outcome = ensure_vm(as_client(&client), &s, "db-01", None, None)
+        let outcome = ensure_vm(as_client(&client), &s, &machine(), None, None)
             .await
             .unwrap();
 
@@ -173,7 +183,7 @@ mod tests {
         ensure_vm(
             as_client(&client),
             &spec("ds-fast-01", "vmnet-prod"),
-            "db-01",
+            &machine(),
             Some("vm-existing-123"),
             None,
         )
@@ -188,7 +198,7 @@ mod tests {
         let client = FakeClient::new(seeded_inventory());
         let mut s = spec("ds-fast-01", "vmnet-prod");
         s.tpm_enabled = true;
-        let outcome = ensure_vm(as_client(&client), &s, "db-01", None, None)
+        let outcome = ensure_vm(as_client(&client), &s, &machine(), None, None)
             .await
             .unwrap();
 
@@ -208,7 +218,7 @@ mod tests {
         let outcome = ensure_vm(
             as_client(&client),
             &spec("ds-fast-01", "vmnet-prod"),
-            "db-01",
+            &machine(),
             None,
             None,
         )
@@ -227,7 +237,7 @@ mod tests {
         let outcome = ensure_vm(
             as_client(&client),
             &s,
-            "db-01",
+            &machine(),
             Some("vm-existing-123"),
             None,
         )
@@ -247,7 +257,7 @@ mod tests {
         let outcome = ensure_vm(
             as_client(&client),
             &spec("ds-fast-01", "vmnet-prod"),
-            "db-01",
+            &machine(),
             None,
             None,
         )
@@ -264,7 +274,7 @@ mod tests {
         ensure_vm(
             as_client(&client),
             &spec("ds-fast-01", "vmnet-prod"),
-            "db-01",
+            &machine(),
             Some("vm-existing-123"),
             None,
         )
@@ -279,7 +289,7 @@ mod tests {
         let client = FakeClient::new(seeded_inventory());
         let mut s = spec("ds-fast-01", "vmnet-prod");
         s.desired_power_state = PowerState::PoweredOff;
-        let outcome = ensure_vm(as_client(&client), &s, "db-01", None, None)
+        let outcome = ensure_vm(as_client(&client), &s, &machine(), None, None)
             .await
             .unwrap();
         assert_eq!(
@@ -301,7 +311,7 @@ mod tests {
         let client = FakeClient::new(seeded_inventory());
         let mut s = spec("ds-fast-01", "vmnet-prod");
         s.desired_power_state = PowerState::PoweredOff;
-        let outcome = ensure_vm(as_client(&client), &s, "db-01", None, None)
+        let outcome = ensure_vm(as_client(&client), &s, &machine(), None, None)
             .await
             .unwrap();
 
@@ -331,7 +341,7 @@ mod tests {
         let outcome = ensure_vm(
             as_client(&client),
             &spec("DSC-01", "vmnet-prod"),
-            "db-01",
+            &machine(),
             None,
             None,
         )
@@ -362,7 +372,7 @@ mod tests {
         let outcome = ensure_vm(
             as_client(&client),
             &s,
-            "db-01",
+            &machine(),
             None,
             Some("#cloud-config\nhostname: db-01\n"),
         )
@@ -386,7 +396,7 @@ mod tests {
         let mut s = spec("ds-fast-01", "vmnet-prod");
         s.datacenter = "does-not-exist".to_string();
         assert!(
-            ensure_vm(as_client(&client), &s, "db-01", None, None)
+            ensure_vm(as_client(&client), &s, &machine(), None, None)
                 .await
                 .is_err()
         );
@@ -398,7 +408,7 @@ mod tests {
         let mut s = spec("ds-fast-01", "vmnet-prod");
         s.cluster = "does-not-exist".to_string();
         assert!(
-            ensure_vm(as_client(&client), &s, "db-01", None, None)
+            ensure_vm(as_client(&client), &s, &machine(), None, None)
                 .await
                 .is_err()
         );
@@ -410,7 +420,7 @@ mod tests {
         let mut s = spec("ds-fast-01", "vmnet-prod");
         s.template = "does-not-exist".to_string();
         assert!(
-            ensure_vm(as_client(&client), &s, "db-01", None, None)
+            ensure_vm(as_client(&client), &s, &machine(), None, None)
                 .await
                 .is_err()
         );
@@ -421,7 +431,7 @@ mod tests {
         let client = FakeClient::new(seeded_inventory());
         let s = spec("ds-fast-01", "does-not-exist");
         assert!(
-            ensure_vm(as_client(&client), &s, "db-01", None, None)
+            ensure_vm(as_client(&client), &s, &machine(), None, None)
                 .await
                 .is_err()
         );
@@ -445,7 +455,7 @@ mod tests {
         s.template = "hadron-kairos-v0.1.0".to_string();
         s.template_folder = Some("templates/cluster-a".to_string());
 
-        let outcome = ensure_vm(as_client(&client), &s, "db-01", None, None)
+        let outcome = ensure_vm(as_client(&client), &s, &machine(), None, None)
             .await
             .unwrap();
         assert!(!outcome.already_provisioned);
@@ -470,7 +480,7 @@ mod tests {
         s.template = "hadron-kairos-v0.1.0".to_string();
         s.template_folder = Some("templates/cluster-a".to_string());
 
-        let err = ensure_vm(as_client(&client), &s, "db-01", None, None)
+        let err = ensure_vm(as_client(&client), &s, &machine(), None, None)
             .await
             .unwrap_err();
         assert!(err.to_string().contains("not found"));
@@ -483,7 +493,7 @@ mod tests {
         let client = FakeClient::new(seeded_inventory());
         let mut s = spec("ds-fast-01", "vmnet-prod");
         s.template_folder = None; // already the default; explicit for clarity
-        let outcome = ensure_vm(as_client(&client), &s, "db-01", None, None)
+        let outcome = ensure_vm(as_client(&client), &s, &machine(), None, None)
             .await
             .unwrap();
         assert!(!outcome.already_provisioned);
@@ -493,7 +503,7 @@ mod tests {
         client: &FakeClient,
         spec: &VSphereMachineSpec,
     ) -> crate::error::Result<String> {
-        ensure_vm(as_client(client), spec, "db-01", None, None)
+        ensure_vm(as_client(client), spec, &machine(), None, None)
             .await
             .map(|o| o.vm_ref)
     }
@@ -503,9 +513,11 @@ mod tests {
     #[tokio::test]
     async fn the_fake_refuses_a_second_vm_of_the_same_name() {
         let client = FakeClient::new(seeded_inventory());
-        let s = spec("ds-fast-01", "vmnet-prod");
-        first_pass(&client, &s).await.unwrap();
-        let err = first_pass(&client, &s).await.unwrap_err();
+        first_pass(&client, &spec("ds-fast-01", "vmnet-prod"))
+            .await
+            .unwrap();
+        let again = client.cloned_vms()[0].request.clone();
+        let err = as_client(&client).clone_vm(&again).await.unwrap_err();
         assert!(err.to_string().contains("DuplicateName"), "{err}");
     }
 
@@ -582,5 +594,93 @@ mod tests {
             .unwrap_err();
         assert!(client.destroyed_vms().is_empty());
         assert!(client.cloned_vms().is_empty());
+    }
+
+    // ADR-0101: the ownership marker, and what a pass without status.vmRef
+    // does with a VM that already carries the machine's name.
+
+    #[tokio::test]
+    async fn the_clone_carries_the_machine_uid_outside_guestinfo() {
+        let client = FakeClient::new(seeded_inventory());
+        first_pass(&client, &spec("ds-fast-01", "vmnet-prod"))
+            .await
+            .unwrap();
+
+        let extra = &client.cloned_vms()[0].request.extra_config;
+        assert!(
+            extra.contains(&(MACHINE_UID_KEY.to_string(), UID.to_string())),
+            "{extra:?}"
+        );
+        // guestinfo.* is guest-writable; the marker must not be.
+        assert!(!MACHINE_UID_KEY.starts_with("guestinfo."));
+    }
+
+    /// A provider that stopped between the clone and its status write left
+    /// a marked VM behind. The next pass destroys it and clones afresh.
+    #[tokio::test]
+    async fn an_interrupted_clone_of_ours_is_destroyed_and_cloned_again() {
+        let client = FakeClient::new(seeded_inventory());
+        let stale = client.add_vm(None, "db-01", Some(UID));
+
+        let vm_ref = first_pass(&client, &spec("ds-fast-01", "vmnet-prod"))
+            .await
+            .unwrap();
+
+        assert_eq!(client.destroyed_vms(), vec![stale]);
+        assert_eq!(client.live_vms(), vec![vm_ref]);
+    }
+
+    /// A same-named VM without our marker is somebody else's: never
+    /// destroyed, never cloned over, reported as a name conflict.
+    #[tokio::test]
+    async fn a_same_named_vm_without_our_marker_is_never_touched() {
+        for foreign_uid in [None, Some("another-machine-uid")] {
+            let client = FakeClient::new(seeded_inventory());
+            let foreign = client.add_vm(None, "db-01", foreign_uid);
+
+            let err = first_pass(&client, &spec("ds-fast-01", "vmnet-prod"))
+                .await
+                .unwrap_err();
+
+            assert!(
+                matches!(&err, Error::VmNameConflict { moref, .. } if *moref == foreign),
+                "{foreign_uid:?}: {err}"
+            );
+            assert!(client.destroyed_vms().is_empty(), "{foreign_uid:?}");
+            assert!(client.cloned_vms().is_empty(), "{foreign_uid:?}");
+        }
+    }
+
+    /// `DuplicateName` is per folder, so only the clone's own target folder
+    /// is searched; a marked VM elsewhere is not this pass's business.
+    #[tokio::test]
+    async fn only_the_target_folder_is_searched() {
+        let client = FakeClient::new(seeded_inventory());
+        let mut s = spec("ds-fast-01", "vmnet-prod");
+        s.folder = Some("team-a".to_string());
+        let elsewhere = client.add_vm(Some("team-b"), "db-01", Some(UID));
+        let ours = client.add_vm(Some("team-a"), "db-01", Some(UID));
+
+        first_pass(&client, &s).await.unwrap();
+
+        assert_eq!(client.destroyed_vms(), vec![ours]);
+        assert!(client.live_vms().contains(&elsewhere));
+    }
+
+    /// The lookup costs a vCenter read, so a machine that already knows its
+    /// VM never pays for it.
+    #[tokio::test]
+    async fn a_recorded_vm_ref_skips_the_lookup() {
+        let client = FakeClient::new(seeded_inventory());
+        ensure_vm(
+            as_client(&client),
+            &spec("ds-fast-01", "vmnet-prod"),
+            &machine(),
+            Some("vm-existing-123"),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(client.named_lookups(), 0);
     }
 }

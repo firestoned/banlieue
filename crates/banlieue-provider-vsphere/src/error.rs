@@ -33,6 +33,19 @@ pub enum Error {
     /// entries resolving to the same name, ADR-0023).
     #[error("invalid spec: {0}")]
     InvalidSpec(String),
+
+    /// A VM of the machine's name already exists in the clone's target
+    /// folder without this machine's ownership marker (ADR-0101): somebody
+    /// else's VM, never touched, and the clone cannot be made beside it.
+    #[error(
+        "a VM named {name:?} already exists in the target folder ({moref}) and is not this machine's"
+    )]
+    VmNameConflict {
+        /// The machine's (and so the VM's) name.
+        name: String,
+        /// The conflicting VM's moref.
+        moref: String,
+    },
 }
 
 /// The `kind` label of `banlieue_reconcile_errors_total` (ADR-0091): the
@@ -46,6 +59,7 @@ impl banlieue_provider_sdk::metrics::ErrorKind for Error {
             Self::Vsphere(_) => "Vsphere",
             Self::Missing(_) => "Missing",
             Self::InvalidSpec(_) => "InvalidSpec",
+            Self::VmNameConflict { .. } => "VmNameConflict",
         }
     }
 }

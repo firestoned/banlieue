@@ -44,6 +44,7 @@ use kube::{
 use serde_json::json;
 use tracing::{debug, info, warn};
 
+pub use crate::client::MACHINE_UID_KEY;
 use crate::client::{CloneVmRequest, VSphereClient};
 use crate::context::Context;
 use crate::error::{Error, Result};
@@ -59,6 +60,11 @@ mod reasons {
     pub const SECRET_INVALID: &str = "SecretInvalid";
     pub const CONNECT_FAILED: &str = "ConnectFailed";
     pub const PROVISION_FAILED: &str = "ProvisionFailed";
+    /// ADR-0101: a VM of the machine's name already sits in the clone's
+    /// target folder without this machine's ownership marker. Somebody
+    /// else's VM: never touched, and reported instead of retrying a clone
+    /// vCenter would refuse with `DuplicateName`.
+    pub const VM_NAME_CONFLICT: &str = "VMNameConflict";
     /// ADR-0034: `status.initialization.provisioned == true` but
     /// `status.vmRef` is unset — an inconsistent status a prior bug (or
     /// manual edit) left behind. Detected and reported, never
@@ -204,6 +210,17 @@ fn local_hostname(vm_name: &str, domain: Option<&str>) -> String {
     }
 }
 
+/// The identity a `VSphereMachine` gives its backend VM (ADR-0101): `name`
+/// is the VM's display name, `uid` (`metadata.uid`) its ownership marker,
+/// written into the clone's `extraConfig` under [`MACHINE_UID_KEY`].
+#[derive(Debug, Clone, Copy)]
+pub struct MachineRef<'a> {
+    /// `metadata.name`: the VM's display name. Not an ownership test.
+    pub name: &'a str,
+    /// `metadata.uid`: the only ownership test.
+    pub uid: &'a str,
+}
+
 /// Outcome of [`ensure_vm`] — what the caller should patch onto
 /// `VSphereMachine.status`.
 #[derive(Debug)]
@@ -240,17 +257,22 @@ pub struct ProvisionOutcome {
 /// `existing_vm_ref` is `VSphereMachine.status.vmRef` from the last
 /// reconcile; when already set, this is a no-op (idempotent — no re-clone,
 /// no repeated power-state calls, matching this module's currently
-/// create-only scope). `rendered_userdata` is `spec.userData` — already
-/// resolved and placeholder-substituted content by the time it reaches
-/// here (`banlieue-controller` does that, ADR-0025 — this module never
-/// reads a Secret).
+/// create-only scope). When it is unset, the clone's target folder is
+/// searched first for a VM of `machine.name` ([`reclaim_or_refuse`],
+/// ADR-0101), and the clone carries `machine.uid` as its ownership marker.
+///
+/// `rendered_userdata` is `spec.userData`: already resolved and
+/// placeholder-substituted by the time it reaches here
+/// (`banlieue-controller` does that, ADR-0025; this module never reads a
+/// Secret).
 pub async fn ensure_vm(
     client: &dyn VSphereClient,
     spec: &VSphereMachineSpec,
-    vm_name: &str,
+    machine: &MachineRef<'_>,
     existing_vm_ref: Option<&str>,
     rendered_userdata: Option<&str>,
 ) -> Result<ProvisionOutcome> {
+    let vm_name = machine.name;
     if let Some(vm_ref) = existing_vm_ref {
         return Ok(ProvisionOutcome {
             vm_ref: vm_ref.to_string(),
@@ -268,6 +290,8 @@ pub async fn ensure_vm(
         .into_iter()
         .find(|d| d.name == spec.datacenter)
         .ok_or_else(|| Error::Vsphere(format!("datacenter {:?} not found", spec.datacenter)))?;
+
+    reclaim_or_refuse(client, &dc.moref, spec.folder.as_deref(), machine).await?;
 
     info!(cluster = %spec.cluster, "resolving cluster");
     let cluster = client
@@ -336,7 +360,9 @@ pub async fn ensure_vm(
         })?;
     info!(network = %network.name, network_moref = %network.moref, "network resolved");
 
-    let extra_config = build_guestinfo(vm_name, &spec.network, rendered_userdata);
+    let mut extra_config = build_guestinfo(vm_name, &spec.network, rendered_userdata);
+    // ADR-0101: in the CloneSpec itself, so the VM never exists unmarked.
+    extra_config.push((MACHINE_UID_KEY.to_string(), machine.uid.to_string()));
 
     info!(vm_name, template_moref = %template.moref, "submitting CloneVM_Task");
     let vm_ref = client
@@ -460,6 +486,73 @@ async fn roll_back_clone(client: &dyn VSphereClient, vm_ref: &str, cause: Error)
             "{cause}; destroying the half-provisioned clone {vm_ref} also failed: {destroy}"
         )),
     }
+}
+
+/// ADR-0101 Decision 3: before cloning with no `status.vmRef`, deal with any
+/// VM already named `machine.name` in the clone's target folder. One that
+/// carries this machine's UID is a clone a lost pass left behind: destroy
+/// it, so the clone that follows is fresh. Any other is somebody else's:
+/// never touched, and [`Error::VmNameConflict`].
+///
+/// # Errors
+/// [`Error::VmNameConflict`] for a same-named VM that is not ours;
+/// [`Error::Vsphere`] if the lookup or a destroy fails.
+pub async fn reclaim_or_refuse(
+    client: &dyn VSphereClient,
+    datacenter_moref: &str,
+    folder: Option<&str>,
+    machine: &MachineRef<'_>,
+) -> Result<()> {
+    for vm in client
+        .find_vms_named(datacenter_moref, folder, machine.name)
+        .await?
+    {
+        if vm.machine_uid.as_deref() != Some(machine.uid) {
+            return Err(Error::VmNameConflict {
+                name: machine.name.to_string(),
+                moref: vm.moref,
+            });
+        }
+        warn!(vm_ref = %vm.moref, "found this machine's clone from an interrupted pass; destroying it to clone afresh");
+        client.destroy_vm(&vm.moref).await?;
+    }
+    Ok(())
+}
+
+/// ADR-0101 Decision 4: deletion of a machine with no `status.vmRef`. A
+/// pass that lost its moref may still have left a clone; destroy it if, and
+/// only if, it carries this machine's UID. A datacenter that no longer
+/// exists holds nothing, so it does not block the finalizer.
+///
+/// # Errors
+/// [`Error::Vsphere`] if the lookup or the destroy fails; the finalizer
+/// stays and the deletion is retried.
+pub async fn finalize_unrecorded(
+    client: &dyn VSphereClient,
+    spec: &VSphereMachineSpec,
+    machine: &MachineRef<'_>,
+) -> Result<()> {
+    let Some(dc) = client
+        .list_datacenters()
+        .await?
+        .into_iter()
+        .find(|d| d.name == spec.datacenter)
+    else {
+        warn!(datacenter = %spec.datacenter, "datacenter not found; no unrecorded clone to look for");
+        return Ok(());
+    };
+    for vm in client
+        .find_vms_named(&dc.moref, spec.folder.as_deref(), machine.name)
+        .await?
+    {
+        if vm.machine_uid.as_deref() != Some(machine.uid) {
+            info!(vm_ref = %vm.moref, "a VM of this name exists but is not this machine's; leaving it");
+            continue;
+        }
+        info!(vm_ref = %vm.moref, "destroying this machine's unrecorded clone");
+        client.destroy_vm(&vm.moref).await?;
+    }
+    Ok(())
 }
 
 /// Top-level reconcile entrypoint registered with [`kube::runtime::Controller`].
@@ -621,10 +714,16 @@ pub async fn reconcile(machine: Arc<VSphereMachine>, ctx: Arc<Context>) -> Resul
     // the Secret; the provider never touches a Secret for this.
     let existing_vm_ref = machine.status.as_ref().and_then(|s| s.vm_ref.as_deref());
 
+    let uid = machine
+        .metadata
+        .uid
+        .as_deref()
+        .ok_or(Error::Missing("VSphereMachine.metadata.uid"))?;
+    let me = MachineRef { name: &name, uid };
     match ensure_vm(
         client.as_ref(),
         &machine.spec,
-        &name,
+        &me,
         existing_vm_ref,
         machine.spec.user_data.as_deref(),
     )
@@ -649,13 +748,18 @@ pub async fn reconcile(machine: Arc<VSphereMachine>, ctx: Arc<Context>) -> Resul
         }
         Err(e) => {
             warn!(error = %e, "provisioning failed");
+            let reason = if matches!(e, Error::VmNameConflict { .. }) {
+                reasons::VM_NAME_CONFLICT
+            } else {
+                reasons::PROVISION_FAILED
+            };
             if let Err(e) = patch_status_failed(
                 &ctx,
                 &namespace,
                 &name,
                 generation,
                 existing.clone(),
-                reasons::PROVISION_FAILED,
+                reason,
                 format!("{e}"),
             )
             .await
@@ -720,22 +824,48 @@ async fn finalize(
     info!("finalizing VSphereMachine");
     let vm_ref = machine.status.as_ref().and_then(|s| s.vm_ref.as_deref());
 
+    let provider_api: Api<Provider> = Api::namespaced(ctx.client.clone(), namespace);
+    let provider = match provider_api.get(&machine.spec.provider_ref.name).await {
+        Ok(p) => p,
+        // With nothing recorded there may be nothing to destroy, and no
+        // vCenter to ask without the Provider: do not block deletion on it
+        // (ADR-0101 Decision 4). A recorded vmRef still blocks, as ADR-0026
+        // decided.
+        Err(kube::Error::Api(e)) if e.code == HTTP_NOT_FOUND && vm_ref.is_none() => {
+            warn!(provider = %machine.spec.provider_ref.name, "Provider gone and no vmRef recorded; skipping the unrecorded-clone lookup");
+            remove_finalizer(api, machine, VSPHERE_MACHINE_FINALIZER).await?;
+            return Ok(requeue_default());
+        }
+        Err(e) => return Err(Error::Kube(e)),
+    };
+    let creds =
+        super::provider::read_credentials(ctx, namespace, &provider.spec.connection).await?;
+    let ca_bundle_pem = crate::reconciler::ca_bundle::resolve_ca_bundle(
+        ctx,
+        namespace,
+        &provider.spec.connection.ca_bundle,
+    )
+    .await?;
+    let client = ctx
+        .vsphere
+        .build(&provider.spec.connection, &creds, ca_bundle_pem.as_deref())
+        .await?;
+
     if vm_ref.is_some() {
-        let provider_api: Api<Provider> = Api::namespaced(ctx.client.clone(), namespace);
-        let provider = provider_api.get(&machine.spec.provider_ref.name).await?;
-        let creds =
-            super::provider::read_credentials(ctx, namespace, &provider.spec.connection).await?;
-        let ca_bundle_pem = crate::reconciler::ca_bundle::resolve_ca_bundle(
-            ctx,
-            namespace,
-            &provider.spec.connection.ca_bundle,
+        finalize_vm(client.as_ref(), vm_ref).await?;
+    } else {
+        let name = machine.name_any();
+        let uid = machine
+            .metadata
+            .uid
+            .as_deref()
+            .ok_or(Error::Missing("VSphereMachine.metadata.uid"))?;
+        finalize_unrecorded(
+            client.as_ref(),
+            &machine.spec,
+            &MachineRef { name: &name, uid },
         )
         .await?;
-        let client = ctx
-            .vsphere
-            .build(&provider.spec.connection, &creds, ca_bundle_pem.as_deref())
-            .await?;
-        finalize_vm(client.as_ref(), vm_ref).await?;
     }
 
     remove_finalizer(api, machine, VSPHERE_MACHINE_FINALIZER).await?;

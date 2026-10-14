@@ -1,5 +1,72 @@
 # Changelog
 
+## [2026-10-14 20:30] - vSphere ownership marker and recovery of a lost clone (ADR-0101)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0101-vspheremachine-ownership-marker-and-adoption.md`: every
+  clone carries the machine's UID in the non-`guestinfo` `extraConfig` key
+  `banlieue.machine.uid`, set by `CloneVM_Task` itself; only that marker
+  proves ownership. With no `status.vmRef`, the create path and the
+  finalizer look in the clone's target folder and destroy only a marked VM.
+- `crates/banlieue-provider-vsphere/src/client/mod.rs`: `MACHINE_UID_KEY`,
+  `NamedVm`, and `VSphereClient::find_vms_named` (direct children of the
+  target folder only; a folder that does not exist yet holds nothing).
+- `crates/banlieue-provider-vsphere/src/client/vim.rs`: the real
+  `find_vms_named`, reading `name` and the marker from the raw `config`
+  document (`vm_identity_from_raw_config`), for the same reason
+  `guest_info` reads it raw; `extra_config_value` factored out of
+  `extra_config_value_from_raw_json`.
+- `crates/banlieue-provider-vsphere/src/reconciler/vspheremachine.rs`:
+  `MachineRef`; `ensure_vm` takes it, adds the marker to the clone's
+  `extraConfig`, and calls `reclaim_or_refuse` before cloning: our marked
+  VM is destroyed and re-cloned, any other same-named VM is
+  `Error::VmNameConflict` (reason `VMNameConflict`), never touched.
+  `finalize_unrecorded` handles deletion with no `vmRef`; a Provider that is
+  already gone, with nothing recorded, no longer blocks deletion.
+- `docs/src/guides/vsphere-provider.md`: troubleshooting for
+  `VMNameConflict`.
+- `docs/architecture/calm/architecture.json`: `vm-ownership-marker` control
+  and the provider-to-vCenter description; `make calm-validate` passes.
+- `docs/src/security/threat-model.md`: full pass, stamp advanced to
+  ADR-0101. A-16 covers vSphere; a TB-4 "vSphere VM ownership" block (four
+  STRIDE rows: foreign-VM adoption, a lost moref, a guest forging the
+  marker, cross-namespace name collision), each mapped to
+  `reclaim_or_refuse` / `finalize_unrecorded` / `find_vms_named`; the
+  hypervisor-operator and sandbox-workload actors updated; the §8 marker
+  risk widened to vSphere and one §8 row added (guest invisibility of the
+  key not yet verified live). §1, §2, §5 (diagram), §7, §9 and §10 walked:
+  no change, since no component, boundary, identity, RBAC grant or vCenter
+  privilege is new.
+
+### Tests
+- `client/fake.rs`: VMs per folder with their marker, `add_vm` for stale or
+  foreign VMs, `named_lookups`; `clone_vm` records the marker it was given.
+- `vspheremachine_ensure_tests.rs`: the marker is in the clone and outside
+  `guestinfo.*`; an interrupted clone of ours is destroyed and re-cloned; a
+  same-named VM without our marker (none, or another UID) is never touched;
+  only the target folder is searched; a recorded `vmRef` skips the lookup.
+  `the_fake_refuses_a_second_vm_of_the_same_name` now calls `clone_vm`
+  directly, since a second pass legitimately reclaims the first clone.
+- `vspheremachine_finalize_tests.rs`: deletion without `vmRef` destroys our
+  marked VM, leaves foreign ones, and succeeds with nothing there or with
+  the datacenter gone.
+- `client/vim_tests.rs`, `error_tests.rs`: the raw parser and the new
+  error kind.
+- Unit tests only. Still to verify live against a real vCenter: the marker
+  survives the clone, and it cannot be read through `vmware-rpctool` from
+  the guest.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (provider images)
+- [ ] Config change only
+- [ ] Documentation only
+
+Machines stuck on `DuplicateName` today hold an unmarked clone and will
+report `VMNameConflict` after upgrade; delete that VM in vCenter once.
+
 ## [2026-10-14 05:40] - vSphere rolls back a clone whose provisioning fails
 
 **Author:** Erick Bourgeois
