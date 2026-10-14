@@ -296,11 +296,12 @@ Domain XML skeleton:
       `parse_endpoint` and `connect_tls` live in
       `banlieue-libvirt/src/transport.rs`. Only `qemu+tls://` is accepted
       (ADR-0011), so the `qemu+ssh` form in this line never applied.
-- [ ] Implement the remaining procedures in `banlieue-libvirt`. **Two of the
-      three are done** — `storage_vol_lookup_by_name` and `storage_vol_delete`.
-      **`list_all_domains` is still only a constant**
-      (`PROC_CONNECT_LIST_ALL_DOMAINS = 273` in `rpc.rs`, no procedure), and
-      nothing needs it yet: the machine reconciler looks a domain up by name.
+- [x] Implement the remaining procedures in `banlieue-libvirt`. **Done for
+      every procedure banlieue uses**: `storage_vol_lookup_by_name` and
+      `storage_vol_delete`. `list_all_domains` is **dropped** (2026-10-14):
+      nothing needs it, since the machine reconciler looks a domain up by
+      name, so it stays a constant
+      (`PROC_CONNECT_LIST_ALL_DOMAINS = 273` in `rpc.rs`) until a caller does.
       Pools, networks, volume create/upload, the domain lifecycle (ADR-0050)
       and `domain_update_device_flags` (ADR-0044) are all in place.
 - [x] ~~Implement `xml/domain.rs` with thorough escaping and tests.~~

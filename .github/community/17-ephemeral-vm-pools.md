@@ -70,7 +70,10 @@ install ahead of demand. That is what a pool is.
 
 ## 0. Deferred: test a super-slim Kairos image
 
-> **Status: deferred, 2026-09-18.** Not being run now. The libvirt hosts this
+> **Status: deferred, 2026-09-18; still not run as of 2026-10-13.** The
+> blocker named below is gone (swtpm has been set up on the libvirt hosts
+> since 2026-09-23, phase A5), so this is now only waiting for a day of
+> work. As written at the time: Not being run now. The libvirt hosts this
 > roadmap is first being tested against have no vTPM (swtpm) configured yet,
 > and the experiment's two rows that matter (UKI boot stall, Deferred install
 > time) are both measured on a TPM-enabled, Trusted Boot guest. Revisit once
@@ -274,7 +277,7 @@ provider can realise (see [Repo reality](#repo-reality-at-8360e19)).
 
 | Phase | What | ADR | Status |
 |---|---|---|---|
-| 0 | Slim image experiment | none (no code) | ⏸️ deferred (no vTPM on the libvirt hosts yet) |
+| 0 | Slim image experiment | none (no code) | ⏸️ deferred, not run. The original reason (no vTPM on the libvirt hosts) is gone: swtpm has worked there since A5 (2026-09-23), so only the day of work is missing |
 | A2 | `GuestReady`: the installed guest reports in | 0043 | ✅ **Closed on every backend** (Cloud Hypervisor 2026-09-27, below in G; libvirt 2026-10-12). **vSphere closed end-to-end 2026-09-23**: a real `Deferred`, `tpmEnabled` VM ran `vmware-rpctool info-set guestinfo.banlieue.phase installed` at boot, `guest_info` read it back, and `GuestReady=True reason=GuestAnnounced` showed up correctly mirrored onto `VirtualMachine`. Getting there found and fixed three code bugs (tokio runtime flavor, `vim_rs`'s `VimAny` decode, a `_value` wrapper-field mismatch) plus one deployment gap (the live `VSphereMachine` CRD was never regenerated for the new `guestInstalled` field, so status patches 500'd — fixed with `make crds` + `kubectl apply`). **libvirt closed end-to-end 2026-10-12**: a Kairos Debian `Deferred`, `tpmEnabled` member installed, booted the installed disk, wrote the marker, had its installer ejected and its EK certificate published, and reached `GuestReady` in 158 s; the pool e2e passed with `GuestReady`. Getting there found and fixed a libvirt boot-order deadlock (installer before disk; ADR-0044 amended) |
 | A4 | Detach install media once installed | 0044 | ✅ landed 2026-09-23 (libvirt) — `virDomainUpdateDeviceFlags` (proc 174) ejects the cdrom when `guestInstalled` flips, **before** `GuestReady` is published, so a pool can never bind a member with media attached. Sticky `installMediaDetached`; the ISO is also suppressed from the redefined domain XML. vSphere half deferred for want of a vCenter. **Verified live against a real libvirtd 2026-09-23** — a CONFIG-only eject of a real cdrom was accepted *and applied* |
 | A5 | vTPM EK certificate in machine status | 0045 | ✅ landed 2026-09-23 (libvirt; vSphere code-only) — published on the infra CR, mirrored through `VirtualMachine` onto a bound claim. **The design in phase D below was wrong**: swtpm persists no host-side copy of the certificate, so on libvirt the guest exports it to `/run/banlieue/ek.pem` and banlieue reads it with ADR-0043's read-only path (never `guest-exec`). Subject CN is checked against `<domain-name>:<domain-uuid>`, and for a `tpmEnabled` machine publication **gates `GuestReady`**, the same ordering ADR-0044 uses. The *mechanism* is verified against a real host — certificate read out of NV `0x01c00002` of a live domain, CN confirmed as `<name>:<uuid>` — and `tests/live_ek.rs` exercises the shipped path. **Unblocks F** |
@@ -283,9 +286,9 @@ provider can realise (see [Repo reality](#repo-reality-at-8360e19)).
 | B2 | `VirtualMachineClaim` | 0047 | ✅ landed — bind/hold/release, TTL expiry, finalizer, nonce; a pool is now consumable |
 | C | In-guest agent (separate repo) | own repo | ➡️ moved to [mediatore](https://github.com/firestoned/mediatore) (`mediatore-guest`), with `AgentSandbox` (ADR-0097, mediatore ADR-0008, 2026-10-12) |
 | D | libvirt provider: `LibvirtMachine` reconciler | 07 + 0050 + 0054 | ✅ complete — CRD, domain XML, reconciler, NoCloud user-data; roadmap 07 closed |
-| E | Proxmox provider, same | amend 12 | ⛔ |
+| E | Proxmox provider, same | amend 06 | ⛔ pool work not started. The provider itself now exists (roadmap 06, ADR-0074/0075, template clone only); the TPM-class create-from-ISO path, `GuestReady`, media detach and EK read below are all open |
 | F | Attestation trust anchors, threat model | 0049 | ✅ **banlieue's side complete 2026-09-27** — ADR-0049 Accepted with Decision 10: `Provider.spec.attestation.ekTrustBundle` (a `CABundleSource`, admin-supplied, never discovered; per-backend — vCenter's CA on vSphere, per-host `swtpm_localca` issuer on libvirt), shape-validated at admission (`deploy/admission/provider-attestation-ektrustbundle.yaml`), documented in the claims guide, examples annotated. Threat-model full pass done same day: A-15 (the bundle — zero confidentiality, high integrity), the sandbox workload named as an actor, TB-1 rows for bundle tampering and stale-image members, §7.14 (bundle custody) and §7.15 (vSphere VM Encryption on sandbox storage classes), §8 residues updated. What remains of ADR-0049 — the in-guest agent (Decision 9) and the broker — is deliberately **not banlieue code**: phase C / ADR-0055 |
-| G | Cloud Hypervisor backend, same | 09 + 0060–0065 | 🔶 **Prerequisites landed and verified live 2026-09-27** (roadmap 09): A2's `GuestReady` over vsock (the installed system runs `systemd-notify`, no extra package), A4's eject (`vm.remove-device`, and a per-machine installer copy deleted after it), A5's EK certificate read host-side where it was minted, A3 unchanged (controller-side), all through `make ch-deferred-e2e`. **Pool verified live 2026-10-09** on two hosts at once: `GuestReady` pool `Warm` in 90 s, refills in 80 s and 100 s (vSphere: 130.3 s); claim, release and replacement pass. **Open:** a Cloud Hypervisor vTPM I/O error that fails about 1 install in 7, and spreading members across hosts (the scheduler tie-break, ADR needed) |
+| G | Cloud Hypervisor backend, same | 09 + 0060–0065 | 🔶 **Prerequisites landed and verified live 2026-09-27** (roadmap 09): A2's `GuestReady` over vsock (the installed system runs `systemd-notify`, no extra package), A4's eject (`vm.remove-device`, and a per-machine installer copy deleted after it), A5's EK certificate read host-side where it was minted, A3 unchanged (controller-side), all through `make ch-deferred-e2e`. **Pool verified live 2026-10-09** on two hosts at once: `GuestReady` pool `Warm` in 90 s, refills in 80 s and 100 s (vSphere: 130.3 s); claim, release and replacement pass. Re-verified 2026-10-12 with the reviewed vTPM fix: `Warm` in 115 s and 110 s, all ten installs reported. Spreading members across hosts is **done** (ADR-0098, 2026-10-13, released in v0.4.3). **Open:** the vTPM response-timeout fix landing upstream (cloud-hypervisor issue 9053, PR 9054), or a published patched VMM; stock v53.0 fails about 1 install in 6 |
 
 Per `rules/architecture-driven-development.md` each ADR lands before its
 code. Skeleton decisions are below so the ADRs are an hour each, not a day.
@@ -571,7 +574,9 @@ Code:
   2,600 combinations.
 - `crates/banlieue-controller/src/reconciler/pool.rs`: gather, plan, apply,
   publish.
-- `examples/15-virtualmachinepool-sandbox.yaml`.
+- `examples/15-virtualmachinepool-sandbox.yaml`. (Landed as
+  `examples/18-virtualmachinepool.yaml`, with the claim in
+  `examples/19-virtualmachineclaim.yaml`.)
 
 Wiring left to do: `pub mod pool; pub mod pool_plan; pub mod claim;` in
 `reconciler/mod.rs`; re-exports in `banlieue-api/src/banlieue/mod.rs`; two
@@ -687,10 +692,9 @@ Add to roadmap 07's task list:
   swtpm/vars leak is closed by construction.
 - ~~The `LibvirtMachine` CRD itself (`banlieue-api`).~~ **Done** — both
   `LibvirtMachine` and `LibvirtMachineTemplate` exist and generate.
-- **Still to do: the `LibvirtMachine` reconciler** in
-  `banlieue-provider-libvirt` (`xml/domain.rs` — only `xml/escape.rs` exists
-  — NoCloud ISO, deletion finalizer). The CRD and the procedures are both in
-  place; nothing drives them from a CR yet.
+- ~~The `LibvirtMachine` reconciler in `banlieue-provider-libvirt`
+  (`xml/domain.rs`, NoCloud ISO, deletion finalizer).~~ **Done** (ADR-0050,
+  ADR-0054); roadmap 07 is closed and the pool e2e runs against it.
 - `<tpm model='tpm-crb'><backend type='emulator' version='2.0'/></tpm>`;
   advertise `FEATURE_VTPM`. swtpm state is keyed by domain UUID, so a new
   domain is a new TPM.
@@ -711,7 +715,9 @@ Add to roadmap 07's task list:
 
 ### E: Proxmox (amend roadmap 06)
 
-No crate yet. Roadmap 06 assumes template clone; for TPM classes replace that
+**Updated 2026-10-13:** the crate exists (`banlieue-provider-proxmox`,
+ADR-0074/0075, roadmap 06) and does template clone only; nothing below is
+built. Roadmap 06 assumes template clone; for TPM classes replace that
 with create-from-ISO. Rule to write down: **never clone a VM that has a
 `tpmstate0` volume**, a full clone copies it, which is ADR-0040's shared-vTPM
 problem again. `tpmstate0` v2.0 is added at create. `efidisk0` with
@@ -779,14 +785,14 @@ To finish G:
       no VMM crash. **Open:** the upstream fix, and a published static
       VMM for hosts to install with `--vmm-url`/`--vmm-sha256` until a
       release has it.
-- [x] Spread pool members across hosts. Every member of a pool with no
+- [x] Spread pool members across hosts. (Released in v0.4.3.) Every member of a pool with no
       placement pin landed on one host: the scheduler's tie-break was the
       alphabetical `(provider, failure domain)` order
       (`reconciler/scheduler.rs`), not the even spread D-023 and roadmap 03
       require. *Done 2026-10-13* (ADR-0098): eligible domains are ordered by
       the pool's own load, then total load, then a rendezvous hash, so
       members spread and refills go where the pool is short. Unit-tested in
-      `scheduler_tests.rs`; reaches a cluster with the next release.
+      `scheduler_tests.rs`.
 
 ### F: Attestation anchors and threat model (ADR-0049)
 
@@ -871,7 +877,7 @@ To finish G:
 
 - [ ] Section 0 matrix filled in and linked from ADR-0051.
 - [x] ADRs 0043 to 0048 accepted; CALM updated. **Done 2026-09-23** — 0045 was the last one outstanding; every one of the six is `Accepted` and registered in `docs/architecture/calm/architecture.json`.
-- [ ] `examples/15` applied live: pool reaches `Warm=True`; a claim binds in
+- [ ] `examples/18` and `examples/19` (planned as `examples/15`) applied live: pool reaches `Warm=True`; a claim binds in
       under 5 s; `govc device.ls` on the bound member shows no CD-ROM;
       `status.tpmEndorsementCertificates` parses with `openssl x509`.
 - [ ] Two claims created in the same second bind two different members.
@@ -883,8 +889,8 @@ To finish G:
       deleted at `provisioningTimeoutSeconds` and replaced.
 - [ ] `tpmEnabled` class + `Immediate` image yields `ImageClassMismatch` and no
       infra CR.
-- [ ] `ROADMAPS.md` rows for 06, 07 and 17 reflect reality — keep them
-      current as phases land.
+- [x] `ROADMAPS.md` rows for 06, 07 and 17 reflect reality. Audited
+      against the tree 2026-10-14; keep them current as phases land.
 
 ## Gotchas
 

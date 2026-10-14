@@ -123,8 +123,9 @@ banlieue/
 └── examples/
 ```
 
-`banlieue-provider-proxmox` does not exist yet (roadmap 06, ⛔). There is no
-Helm chart yet (Phase 4 §4.6).
+`banlieue-provider-proxmox` and `banlieue-provider-cloud-hypervisor` exist
+too (roadmaps 06 and 09). There is no Helm chart and there will not be one:
+install is kustomize manifests plus `banlieue bootstrap` (roadmap 12).
 
 > **Note.** `banlieue-libvirt`, `banlieue-operator`, `banlieue-imagebuilder`
 > and `banlieue-vex` grew out of ADRs rather than roadmap phases; their

@@ -82,7 +82,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Check license headers
-        uses: firestoned/github-actions/security/license-check@d0d51c638a90bffc2a1567fe7af112b37fe8854c # v1.3.7
+        uses: firestoned/github-actions/security/license-check@f52366c4f57f0110012035ac1bcd0bee4075b3e9 # v1.4.0
         with:
           copyright-holder: "Erick Bourgeois, banlieue"
           license-id: "Apache-2.0"
@@ -101,7 +101,7 @@ jobs:
 
       - name: Verify commits (PR)
         if: github.event_name == 'pull_request'
-        uses: firestoned/github-actions/security/verify-signed-commits@d0d51c638a90bffc2a1567fe7af112b37fe8854c # v1.3.7
+        uses: firestoned/github-actions/security/verify-signed-commits@f52366c4f57f0110012035ac1bcd0bee4075b3e9 # v1.4.0
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           base-ref: origin/${{ github.base_ref }}
@@ -109,14 +109,14 @@ jobs:
 
       - name: Verify commits (push to main)
         if: github.event_name == 'push'
-        uses: firestoned/github-actions/security/verify-signed-commits@d0d51c638a90bffc2a1567fe7af112b37fe8854c # v1.3.7
+        uses: firestoned/github-actions/security/verify-signed-commits@f52366c4f57f0110012035ac1bcd0bee4075b3e9 # v1.4.0
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           verify-mode: push
 
       - name: Verify commits (release)
         if: github.event_name == 'release'
-        uses: firestoned/github-actions/security/verify-signed-commits@d0d51c638a90bffc2a1567fe7af112b37fe8854c # v1.3.7
+        uses: firestoned/github-actions/security/verify-signed-commits@f52366c4f57f0110012035ac1bcd0bee4075b3e9 # v1.4.0
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           verify-mode: release
@@ -175,7 +175,11 @@ jobs:
           components: clippy
 
       - name: Cache cargo dependencies
-        uses: firestoned/github-actions/rust/cache-cargo@d0d51c638a90bffc2a1567fe7af112b37fe8854c # v1.3.7
+        uses: firestoned/github-actions/rust/cache-cargo@f52366c4f57f0110012035ac1bcd0bee4075b3e9 # v1.4.0
+        with:
+          # Pull requests restore main's cache but never save their own
+          # (cache-cargo v1.4.0 keys per job, so main's entries stay useful).
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Run clippy
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
@@ -237,7 +241,11 @@ jobs:
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (moving ref — re-pin quarterly)
 
       - name: Cache cargo dependencies
-        uses: firestoned/github-actions/rust/cache-cargo@d0d51c638a90bffc2a1567fe7af112b37fe8854c # v1.3.7
+        uses: firestoned/github-actions/rust/cache-cargo@f52366c4f57f0110012035ac1bcd0bee4075b3e9 # v1.4.0
+        with:
+          # Pull requests restore main's cache but never save their own
+          # (cache-cargo v1.4.0 keys per job, so main's entries stay useful).
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # Production binary = banlieue's default features (vsphere; no vcsim).
       - name: Build banlieue binary
@@ -287,7 +295,11 @@ jobs:
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (moving ref — re-pin quarterly)
 
       - name: Cache cargo dependencies
-        uses: firestoned/github-actions/rust/cache-cargo@d0d51c638a90bffc2a1567fe7af112b37fe8854c # v1.3.7
+        uses: firestoned/github-actions/rust/cache-cargo@f52366c4f57f0110012035ac1bcd0bee4075b3e9 # v1.4.0
+        with:
+          # Pull requests restore main's cache but never save their own
+          # (cache-cargo v1.4.0 keys per job, so main's entries stay useful).
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Run tests
         run: cargo test --workspace --all-features --verbose
@@ -312,13 +324,13 @@ jobs:
 
       - name: Run security scan (PR / push)
         if: github.event_name != 'release'
-        uses: firestoned/github-actions/rust/security-scan@d0d51c638a90bffc2a1567fe7af112b37fe8854c # v1.3.7
+        uses: firestoned/github-actions/rust/security-scan@f52366c4f57f0110012035ac1bcd0bee4075b3e9 # v1.4.0
         with:
           cargo-audit-version: "0.22.0"
 
       - name: Run security scan (release)
         if: github.event_name == 'release'
-        uses: firestoned/github-actions/rust/security-scan@d0d51c638a90bffc2a1567fe7af112b37fe8854c # v1.3.7
+        uses: firestoned/github-actions/rust/security-scan@f52366c4f57f0110012035ac1bcd0bee4075b3e9 # v1.4.0
         with:
           cargo-audit-version: "0.22.0"
           upload-artifact-name: cargo-audit-report-release
@@ -340,6 +352,34 @@ jobs:
         with:
           log-level: warn
           command: check
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # banlieue-api packaged and built alone against crates.io dependencies, as a
+  # consumer gets it (ADR-0100), so a crate that cannot be published fails the
+  # pull request rather than the release. Its own job: the isolated build
+  # compiles k8s-openapi from scratch, and runs beside the test job, not after.
+  # ─────────────────────────────────────────────────────────────────────────────
+  crate-package:
+    name: 📦 Package banlieue-api
+    if: github.event_name != 'release' && needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    needs: [changes, verify-commits]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (moving ref, re-pin quarterly)
+
+      - name: Cache cargo dependencies
+        uses: firestoned/github-actions/rust/cache-cargo@f52366c4f57f0110012035ac1bcd0bee4075b3e9 # v1.4.0
+        with:
+          # Pull requests restore main's cache but never save their own
+          # (cache-cargo v1.4.0 keys per job, so main's entries stay useful).
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Package and verify banlieue-api
+        run: make crate-package
 
   # ─────────────────────────────────────────────────────────────────────────────
   # Docker — build both image variants (distroless + Chainguard), multi-arch.
@@ -376,7 +416,7 @@ jobs:
         uses: ./.github/actions/prepare-docker-binaries
 
       - name: Set up Docker (login + buildx)
-        uses: firestoned/github-actions/docker/setup-docker@d0d51c638a90bffc2a1567fe7af112b37fe8854c # v1.3.7
+        uses: firestoned/github-actions/docker/setup-docker@f52366c4f57f0110012035ac1bcd0bee4075b3e9 # v1.4.0
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -549,7 +589,11 @@ jobs:
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (moving ref — re-pin quarterly)
 
       - name: Cache cargo dependencies
-        uses: firestoned/github-actions/rust/cache-cargo@d0d51c638a90bffc2a1567fe7af112b37fe8854c # v1.3.7
+        uses: firestoned/github-actions/rust/cache-cargo@f52366c4f57f0110012035ac1bcd0bee4075b3e9 # v1.4.0
+        with:
+          # Pull requests restore main's cache but never save their own
+          # (cache-cargo v1.4.0 keys per job, so main's entries stay useful).
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Build auto-vex-presence
         run: cargo build --release -p banlieue-vex --bin auto-vex-presence
@@ -619,7 +663,11 @@ jobs:
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (moving ref — re-pin quarterly)
 
       - name: Cache cargo dependencies
-        uses: firestoned/github-actions/rust/cache-cargo@d0d51c638a90bffc2a1567fe7af112b37fe8854c # v1.3.7
+        uses: firestoned/github-actions/rust/cache-cargo@f52366c4f57f0110012035ac1bcd0bee4075b3e9 # v1.4.0
+        with:
+          # Pull requests restore main's cache but never save their own
+          # (cache-cargo v1.4.0 keys per job, so main's entries stay useful).
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Build auto-vex-reachability
         run: cargo build --release -p banlieue-vex --bin auto-vex-reachability
@@ -836,7 +884,7 @@ jobs:
           tar czf "${{ matrix.artifact_name }}.tar.gz" banlieue
 
       - name: Cosign sign tarball
-        uses: firestoned/github-actions/security/cosign-sign@d0d51c638a90bffc2a1567fe7af112b37fe8854c # v1.3.7
+        uses: firestoned/github-actions/security/cosign-sign@f52366c4f57f0110012035ac1bcd0bee4075b3e9 # v1.4.0
         with:
           artifact-path: artifacts/${{ matrix.artifact_name }}/${{ matrix.artifact_name }}.tar.gz
 
@@ -931,7 +979,11 @@ jobs:
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (moving ref — re-pin quarterly)
 
       - name: Cache cargo dependencies
-        uses: firestoned/github-actions/rust/cache-cargo@d0d51c638a90bffc2a1567fe7af112b37fe8854c # v1.3.7
+        uses: firestoned/github-actions/rust/cache-cargo@f52366c4f57f0110012035ac1bcd0bee4075b3e9 # v1.4.0
+        with:
+          # Pull requests restore main's cache but never save their own
+          # (cache-cargo v1.4.0 keys per job, so main's entries stay useful).
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Generate CRDs
         run: make crds
@@ -986,7 +1038,11 @@ jobs:
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (moving ref, re-pin quarterly)
 
       - name: Cache cargo dependencies
-        uses: firestoned/github-actions/rust/cache-cargo@d0d51c638a90bffc2a1567fe7af112b37fe8854c # v1.3.7
+        uses: firestoned/github-actions/rust/cache-cargo@f52366c4f57f0110012035ac1bcd0bee4075b3e9 # v1.4.0
+        with:
+          # Pull requests restore main's cache but never save their own
+          # (cache-cargo v1.4.0 keys per job, so main's entries stay useful).
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Render clusterctl components
         env:
@@ -1002,6 +1058,53 @@ jobs:
             clusterctl/infrastructure-components.yaml
             clusterctl/metadata.yaml
           if-no-files-found: error
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Release only: publish banlieue-api to crates.io (ADR-0100).
+  #
+  # The one job that reads CARGO_REGISTRY_TOKEN, and only on the release event.
+  # The crate carries the release's version, stamped by `make set-version`
+  # exactly as the binary build does. A version already on crates.io is
+  # skipped, so re-running a release does not fail on an immutable upload.
+  # ─────────────────────────────────────────────────────────────────────────────
+  publish-crate:
+    name: 📦 Publish banlieue-api
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    needs: [extract-version, test]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Update workspace version (release)
+        run: make set-version VERSION=${{ needs.extract-version.outputs.version }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (moving ref, re-pin quarterly)
+
+      - name: Cache cargo dependencies
+        uses: firestoned/github-actions/rust/cache-cargo@f52366c4f57f0110012035ac1bcd0bee4075b3e9 # v1.4.0
+        with:
+          save-if: false
+
+      # Builds the packaged crate alone with the Kubernetes version from the
+      # Makefile (the crate itself enables none), so the publish below can
+      # skip cargo's identical verification build.
+      - name: Package and verify banlieue-api
+        run: make crate-package
+
+      - name: Is this version already on crates.io?
+        id: published
+        run: echo "published=$(make --no-print-directory crate-published)" >> "$GITHUB_OUTPUT"
+
+      - name: Publish to crates.io
+        if: steps.published.outputs.published == 'false'
+        uses: firestoned/github-actions/rust/publish-crate@f52366c4f57f0110012035ac1bcd0bee4075b3e9 # v1.4.0
+        with:
+          package: banlieue-api
+          workspace: 'true'
+          token: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          cargo-args: '--no-verify'
 
   # ─────────────────────────────────────────────────────────────────────────────
   # Release only: collate every artifact and attach to the GitHub Release.
@@ -1080,11 +1183,11 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────────
   # The single required status check (roadmap 16 #1).
   #
-  # Branch ruleset `main` requires THIS context, not the four jobs underneath
-  # it. That indirection is the whole point: a docs-only PR skips format,
-  # clippy, test and cargo-deny, and a skipped job never reports a context of
-  # its own — so requiring them directly blocks such a PR indefinitely, with no
-  # bypass actor to click past it.
+  # Branch ruleset `main` requires THIS context, not the jobs underneath it.
+  # That indirection is the whole point: a docs-only PR skips format, clippy,
+  # test, cargo-deny and crate-package, and a skipped job never reports a
+  # context of its own, so requiring them directly blocks such a PR
+  # indefinitely, with no bypass actor to click past it.
   #
   # `if: always()` makes this job run even when its dependencies skipped or
   # failed. The guard then fails ONLY on a real failure or cancellation; a
@@ -1094,7 +1197,7 @@ jobs:
     name: ✅ Required Checks
     if: always() && github.event_name == 'pull_request'
     runs-on: ubuntu-latest
-    needs: [license-check, verify-commits, dco, format, clippy, test, cargo-deny]
+    needs: [license-check, verify-commits, dco, format, clippy, test, cargo-deny, crate-package]
     steps:
       - name: Assert no required job failed
         env:

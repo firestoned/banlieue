@@ -17,7 +17,12 @@
 > **Status (2026-09-27): done.** ADR-0060 to ADR-0065 and ADR-0067 are
 > accepted; every task, test and definition-of-done item is
 > ticked, and each was verified live on a real host. Phase 10 turned the
-> bootstrap script into `banlieue host`. Cloud
+> bootstrap script into `banlieue host`. Since then, outside this roadmap's
+> task list: [ADR-0084](../../docs/adr/0084-host-install-release-sources-and-versions.md)
+> (2026-10-02) installs the VMM from any URL and version, and
+> [ADR-0099](../../docs/adr/0099-cloud-hypervisor-nodes-and-node-join-in-k0s-bootstrap.md)
+> (2026-10-13) lets `scripts/bootstrap-k0s-cluster.sh` run management-cluster
+> nodes on Cloud Hypervisor, which is now its default VMM. Cloud
 > Hypervisor is a **first-class, host-resident provider** (shape A below),
 > not libvirt's `ch` driver: [ADR-0060](../../docs/adr/0060-cloud-hypervisor-first-class-provider-topology.md).
 > Read [The defining problem](#the-defining-problem-there-is-no-daemon)

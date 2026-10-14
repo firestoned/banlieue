@@ -64,6 +64,8 @@ flowchart LR
     network-control-plane-vip["Management cluster control plane VIP"]
     service-metrics-scraper["Metrics scraper (Prometheus)"]
     service-otel-collector["OpenTelemetry collector (optional)"]
+    actor-rust-api-consumer["Rust API consumer"]
+    service-crates-io["crates.io (external)"]
     subgraph sg_system-banlieue-binary [System Banlieue Binary]
         service-banlieue-controller
         service-banlieue-operator
@@ -160,6 +162,8 @@ flowchart LR
     service-provider-libvirt -->|HTTPS| service-otel-collector
     service-metrics-scraper -->|HTTP| service-provider-cloud-hypervisor
     service-provider-cloud-hypervisor -->|HTTPS| service-otel-collector
+    actor-rust-api-consumer -->|HTTPS| service-crates-io
+    actor-rust-api-consumer -->|HTTPS| service-kubernetes-api
 ```
 
 <sub>Source: nodes and relationships in `architecture.json`.</sub>

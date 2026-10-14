@@ -4,7 +4,11 @@ SPDX-License-Identifier: Apache-2.0
 -->
 # 16 — OSSF Scorecard remediation
 
-Status as of **2026-09-07**. Scorecard runs weekly via
+Status as of **2026-10-13** (first written 2026-09-07). Still open: the
+one-time ruleset edit under #1 (checked against the live ruleset 2026-10-13,
+it still requires the four `build.yaml` contexts and not
+`✅ Required Checks`), plus #5 and #7, which need a second reviewer and an
+external registration. Scorecard runs weekly via
 [`.github/workflows/scorecard.yaml`](../workflows/scorecard.yaml) and reports into
 the Code Scanning dashboard. Four checks cannot be fixed from the repo tree —
 they are GitHub *settings* or an external registration. This file records what

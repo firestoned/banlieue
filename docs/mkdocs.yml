@@ -225,6 +225,7 @@ nav:
       - Overview: developer/index.md
       - Local Development: developer/local-development.md
       - OAuth / OIDC Clients: developer/oauth-clients.md
+      - Rust API Crate: developer/rust-api-crate.md
       - Contributing: developer/contributing.md
 
   - Governance:

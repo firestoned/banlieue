@@ -54,26 +54,26 @@ A suggested working pattern:
 ```
 Phase 1A (controller + SDK)  ✅
    ├─→ Phase 1B (vSphere)    ✅
-   ├─→ Phase 1C (Proxmox)    ⛔   can run in parallel after 1A lands
+   ├─→ Phase 1C (Proxmox)    🔶   implemented; cluster e2e and the comparison column remain
    ├─→ Phase 1D (libvirt)    ✅
-   ├─→ Phase 1F (Cloud Hyp.) ⛔   after 1D; reuses its seed + import patterns
-   └─→ Phase 1E (MkDocs)     🔶   no preconditions
+   ├─→ Phase 1F (Cloud Hyp.) ✅   after 1D; reuses its seed + import patterns
+   └─→ Phase 1E (MkDocs)     ✅   no preconditions
          │
          ▼
    Phase 2 (snapshots)       ⛔   needs at least one provider
          │
          ▼
-   Phase 3 (lifecycle)       🔶   ProviderClass + banlieue-operator exist
+   Phase 3 (lifecycle)       ✅   ProviderClass + banlieue-operator
          │
          ▼
-   Phase 4 (FINOS-ready)     🔶   everything that's left
+   Phase 4 (FINOS-ready)     ✅   closed 2026-10-09; nightly real-backend CI and cargo publish deferred
 
-   17 (ephemeral VM pools)   🔶   1D landed; phase A (A3/A4/A5) is what is left
+   17 (ephemeral VM pools)   🔶   phases A, B, D, F and G landed; live vSphere claim run, upstream CH vTPM fix, phase E (Proxmox) left
          │
          ▼
-   18 (split-image fast clone) ⛔ after 17; phase D needs 15; phases E/F land with 1C/1F
+   18 (split-image fast clone) ⛔ after 17; phase D needs 15; phases E/F build on 1C/1F
 
-   19 (port groups)          ⛔   after 1B/1D; phase E lands with 1C/1F
+   19 (port groups)          ⛔   after 1B/1D; phase E builds on 1C/1F
 ```
 
 ## Updates to these docs

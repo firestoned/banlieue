@@ -357,6 +357,33 @@ pub async fn ensure_vm(
         .await?;
     info!(vm_ref = %vm_ref, "CloneVM_Task complete");
 
+    // Everything after the clone runs as one unit: if any step faults, the
+    // clone is destroyed. Its moref never reaches status on a failed pass,
+    // so a clone left behind could never be found again, and every later
+    // pass would fail on its name with `DuplicateName`.
+    let (tpm_attached, tpm_endorsement_certificates) =
+        match finish_clone(client, spec, &vm_ref).await {
+            Ok(done) => done,
+            Err(e) => return Err(roll_back_clone(client, &vm_ref, e).await),
+        };
+
+    Ok(ProvisionOutcome {
+        vm_ref,
+        power_state: Some(spec.desired_power_state.clone()),
+        already_provisioned: false,
+        tpm_attached,
+        tpm_endorsement_certificates,
+    })
+}
+
+/// The steps of [`ensure_vm`] after `CloneVM_Task`: custom attributes, OS
+/// disk floor, vTPM, endorsement certificates, power state. Returns
+/// `(tpm_attached, tpm_endorsement_certificates)` for the outcome.
+async fn finish_clone(
+    client: &dyn VSphereClient,
+    spec: &VSphereMachineSpec,
+    vm_ref: &str,
+) -> Result<(Option<bool>, Vec<String>)> {
     // ADR-0089: stamp vCenter custom attributes once, right after the clone
     // settles — Template/CreatedAt are always known; CreatedBy only when the
     // parent VirtualMachine carried the banlieue.io/created-by annotation.
@@ -368,7 +395,7 @@ pub async fn ensure_vm(
         custom_attributes.push((CUSTOM_ATTR_CREATED_BY.to_string(), created_by.clone()));
     }
     client
-        .set_custom_attributes(&vm_ref, &custom_attributes)
+        .set_custom_attributes(vm_ref, &custom_attributes)
         .await?;
 
     // `spec.disks` is schema-required to have at least one entry
@@ -377,7 +404,7 @@ pub async fn ensure_vm(
     // `ReconfigVM_Task`, after the clone has fully settled, per
     // `VSphereClient::grow_os_disk`'s own doc comment.
     if let Some(os_disk) = spec.disks.first() {
-        client.grow_os_disk(&vm_ref, os_disk.size_gi_b).await?;
+        client.grow_os_disk(vm_ref, os_disk.size_gi_b).await?;
     }
 
     // ADR-0039: attach a vTPM before power-on, not after — Kairos's kcrypt
@@ -387,7 +414,7 @@ pub async fn ensure_vm(
     // to run as a separate ReconfigVM_Task before the power-on branch.
     let tpm_attached = if spec.tpm_enabled {
         info!(vm_ref = %vm_ref, "attaching vTPM device");
-        client.add_tpm_device(&vm_ref).await?;
+        client.add_tpm_device(vm_ref).await?;
         info!(vm_ref = %vm_ref, "vTPM device attached");
         Some(true)
     } else {
@@ -401,32 +428,38 @@ pub async fn ensure_vm(
     // asynchronously-issued certificate a delay rather than a permanent
     // absence.
     let tpm_endorsement_certificates =
-        refresh_ek_certificates(client, &vm_ref, spec.tpm_enabled, &[]).await?;
+        refresh_ek_certificates(client, vm_ref, spec.tpm_enabled, &[]).await?;
 
     // CloneVM_Task always clones powered off (ADR-0024's clone spec sets
     // power_on: false). Calling set_power_state(PoweredOff) again is a
     // redundant no-op transition that real vCenter rejects with
-    // InvalidPowerState; if that propagated via `?` before this function
-    // returns, the caller never learns vm_ref and re-clones every
-    // subsequent reconcile, hitting DuplicateName forever (found live
-    // testing ADR-0038 userData with desiredPowerState: PoweredOff).
+    // InvalidPowerState, which would fail (and roll back) every pass of a
+    // machine that wants to stay off (found live testing ADR-0038 userData
+    // with desiredPowerState: PoweredOff).
     if spec.desired_power_state == PowerState::PoweredOff {
         info!(vm_ref = %vm_ref, "clone already powered off, skipping redundant power-state task");
     } else {
         info!(vm_ref = %vm_ref, desired_power_state = ?spec.desired_power_state, "setting power state");
         client
-            .set_power_state(&vm_ref, spec.desired_power_state.clone())
+            .set_power_state(vm_ref, spec.desired_power_state.clone())
             .await?;
         info!(vm_ref = %vm_ref, power_state = ?spec.desired_power_state, "power state confirmed");
     }
 
-    Ok(ProvisionOutcome {
-        vm_ref,
-        power_state: Some(spec.desired_power_state.clone()),
-        already_provisioned: false,
-        tpm_attached,
-        tpm_endorsement_certificates,
-    })
+    Ok((tpm_attached, tpm_endorsement_certificates))
+}
+
+/// Destroy a clone whose provisioning failed with `cause`, and return the
+/// error to report: `cause` itself, or both faults when the destroy fails
+/// too, naming the VM left behind.
+async fn roll_back_clone(client: &dyn VSphereClient, vm_ref: &str, cause: Error) -> Error {
+    warn!(vm_ref, error = %cause, "provisioning failed after the clone; destroying it");
+    match client.destroy_vm(vm_ref).await {
+        Ok(()) => cause,
+        Err(destroy) => Error::Vsphere(format!(
+            "{cause}; destroying the half-provisioned clone {vm_ref} also failed: {destroy}"
+        )),
+    }
 }
 
 /// Top-level reconcile entrypoint registered with [`kube::runtime::Controller`].

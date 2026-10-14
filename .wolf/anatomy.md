@@ -1,6 +1,6 @@
 # anatomy.md
 
-> Auto-maintained by OpenWolf. Last scanned: 2026-10-13T16:00:00.397Z
+> Auto-maintained by OpenWolf. Last scanned: 2026-10-14T10:00:00.489Z
 > Files: 511 tracked | Anatomy hits: 0 | Misses: 0
 
 ## ./
@@ -19,11 +19,11 @@
 - `GOVERNANCE.md` — Governance (~1125 tok)
 - `LICENSE` — Project license (~3029 tok)
 - `MAINTAINERS.md` — Maintainers (~165 tok)
-- `Makefile` — Make build targets (~26947 tok)
+- `Makefile` — Make build targets (~27457 tok)
 - `NOTICE` (~159 tok)
 - `osv-scanner.toml` — SPDX-License-Identifier: Apache-2.0 (~355 tok)
-- `README.md` — Project documentation (~3324 tok)
-- `ROADMAPS.md` — Roadmaps (~4270 tok)
+- `README.md` — Project documentation (~3379 tok)
+- `ROADMAPS.md` — Roadmaps (~4416 tok)
 - `SECURITY.md` — Security Policy (~382 tok)
 
 ## .clusterfuzzlite/
@@ -51,27 +51,27 @@
 
 ## .github/community/
 
-- `00-overview.md` — banlieue — Roadmap Overview (~1742 tok)
+- `00-overview.md` — banlieue — Roadmap Overview (~1770 tok)
 - `01-decisions.md` — banlieue — Locked Design Decisions (~3787 tok)
 - `02-conventions.md` — banlieue — Coding Conventions (~2242 tok)
 - `03-availability-zones-and-datastore-tiering.md` — banlieue — Availability Zones, Datastore & Compute Tiering (~1841 tok)
 - `04-phase-1a-controller-and-sdk.md` — Phase 1A — Main Controller + Provider SDK (~3671 tok)
-- `05-phase-1b-vsphere-provider.md` — Phase 1B — vSphere Provider (~3966 tok)
-- `06-phase-1c-proxmox-provider.md` — Phase 1C — Proxmox Provider (~2872 tok)
-- `07-phase-1d-libvirt-provider.md` — Phase 1D — Libvirt Provider (~4174 tok)
+- `05-phase-1b-vsphere-provider.md` — Phase 1B — vSphere Provider (~3974 tok)
+- `06-phase-1c-proxmox-provider.md` — Phase 1C — Proxmox Provider (~2912 tok)
+- `07-phase-1d-libvirt-provider.md` — Phase 1D — Libvirt Provider (~4185 tok)
 - `08-phase-1e-docs.md` — Phase 1E — Documentation site (MkDocs Material) (~4296 tok)
-- `09-phase-1f-cloud-hypervisor-provider.md` — 09: Phase 1F, Cloud Hypervisor provider (~11501 tok)
+- `09-phase-1f-cloud-hypervisor-provider.md` — 09: Phase 1F, Cloud Hypervisor provider (~11604 tok)
 - `10-phase-2-snapshots.md` — Phase 2 — Snapshots with GFS Scheduling (~2937 tok)
 - `11-phase-3-provider-lifecycle.md` — Phase 3 — Provider Lifecycle Automation (~3154 tok)
-- `12-phase-4-finos-ready.md` — Phase 4 — FINOS-Ready Polish (~5132 tok)
+- `12-phase-4-finos-ready.md` — Phase 4 — FINOS-Ready Polish (~5184 tok)
 - `13-ipam-pool-integration.md` — IPAM Pool Integration (CAPI `ipam.cluster.x-k8s.io`) (~3676 tok)
 - `14-live-migration.md` — Live Migration (same-class first, cross-class deferred) (~3286 tok)
 - `15-vsphere-disk-image-import.md` — 15: vSphere disk-image import (raw and VMDK), alongside the ISO path (~4709 tok)
-- `16-scorecard-remediation.md` — 60 — OSSF Scorecard remediation (~2608 tok)
-- `17-ephemeral-vm-pools.md` — 17: Ephemeral, single-use VM pools (AI agent sandboxes) (~13632 tok)
+- `16-scorecard-remediation.md` — 16 — OSSF Scorecard remediation (~2677 tok)
+- `17-ephemeral-vm-pools.md` — 17: Ephemeral, single-use VM pools (AI agent sandboxes) (~13883 tok)
 - `18-split-image-fast-clone.md` — 18: Split-image fast clone — verified base + per-VM sealed volume (~4187 tok)
 - `19-port-groups.md` — 19: Port groups — declared, reconciled, and safe to delete (~4109 tok)
-- `README.md` — Project documentation (~1406 tok)
+- `README.md` — Project documentation (~1434 tok)
 
 ## .github/requirements/
 
@@ -93,13 +93,13 @@
 
 ## .github/workflows/
 
-- `build.yaml` — SPDX-License-Identifier: Apache-2.0 (~13336 tok)
+- `build.yaml` — SPDX-License-Identifier: Apache-2.0 (~14785 tok)
 - `calm-test.yaml` — SPDX-License-Identifier: Apache-2.0 (~2002 tok)
 - `calm.yaml` — SPDX-License-Identifier: Apache-2.0 (~2057 tok)
 - `codeql.yaml` — /*.rs (beta in CodeQL; stable enough for (~700 tok)
 - `dependabot-auto-merge.yaml` — SPDX-License-Identifier: Apache-2.0 (~2030 tok)
 - `docs.yaml` — SPDX-License-Identifier: Apache-2.0 (~3860 tok)
-- `e2e.yaml` — SPDX-License-Identifier: Apache-2.0 (~1260 tok)
+- `e2e.yaml` — SPDX-License-Identifier: Apache-2.0 (~1390 tok)
 - `fuzz.yaml` — SPDX-License-Identifier: Apache-2.0 (~557 tok)
 - `sast.yaml` — SPDX-License-Identifier: Apache-2.0 (~799 tok)
 - `scorecard.yaml` — SPDX-License-Identifier: Apache-2.0 (~1094 tok)
@@ -124,7 +124,8 @@
 
 ## crates/banlieue-api/
 
-- `Cargo.toml` — Rust package manifest (~350 tok)
+- `Cargo.toml` — Rust package manifest (~541 tok)
+- `README.md` — Project documentation (~414 tok)
 
 ## crates/banlieue-api/src/
 
@@ -541,8 +542,8 @@
 - `mod.rs` — Proxmox provider reconcilers. (~113 tok)
 - `provider_tests.rs` — Unit tests for the `Provider` reconciler. (~3191 tok)
 - `provider.rs` — `Provider` reconciler for backend class `proxmox`. (~3730 tok)
-- `proxmoxmachine_tests.rs` — Unit tests for the `ProxmoxMachine` reconciler. (~9910 tok)
-- `proxmoxmachine.rs` — `ProxmoxMachine` reconciler: a scheduled VM becomes a real Proxmox VM (~7949 tok)
+- `proxmoxmachine_tests.rs` — Unit tests for the `ProxmoxMachine` reconciler. (~10291 tok)
+- `proxmoxmachine.rs` — `ProxmoxMachine` reconciler: a scheduled VM becomes a real Proxmox VM (~8524 tok)
 
 ## crates/banlieue-provider-proxmox/tests/
 
@@ -623,8 +624,8 @@
 
 ## crates/banlieue-provider-vsphere/src/client/
 
-- `fake.rs` — In-memory `VSphereClient` used by reconciler tests. (~5275 tok)
-- `mod.rs` — vSphere client surface used by the reconcilers. (~6940 tok)
+- `fake.rs` — In-memory `VSphereClient` used by reconciler tests. (~6061 tok)
+- `mod.rs` — vSphere client surface used by the reconcilers. (~6943 tok)
 - `vim_tests.rs` — Unit tests for the BYOC HTTP-client helpers in `vim.rs` (ADR-0008). (~8516 tok)
 - `vim.rs` — Production `VSphereClient` implementation backed by `vim_rs`. (~30568 tok)
 
@@ -637,10 +638,10 @@
 - `vmimage_finalize_tests.rs` — Unit tests for [`super::super::destroy_zone_templates`] (ADR-0028: (~1770 tok)
 - `vmimage_tests.rs` — Unit tests for [`super::super::vmimage`]. (~9890 tok)
 - `vmimage.rs` — `VMImage` reconciler — template availability and `Url`-source import (~13710 tok)
-- `vspheremachine_ensure_tests.rs` — Unit tests for [`super::super::ensure_vm`]. (~5022 tok)
-- `vspheremachine_finalize_tests.rs` — Unit tests for [`super::super::finalize_vm`] (ADR-0026: `VSphereMachine` (~340 tok)
+- `vspheremachine_ensure_tests.rs` — Unit tests for [`super::super::ensure_vm`]. (~6093 tok)
+- `vspheremachine_finalize_tests.rs` — Unit tests for [`super::super::finalize_vm`] (ADR-0026: `VSphereMachine` (~777 tok)
 - `vspheremachine_tests.rs` — Unit tests for [`super::super::vspheremachine`]. (~7358 tok)
-- `vspheremachine.rs` — `VSphereMachine` reconciler — clone a VM from its per-zone template (~12498 tok)
+- `vspheremachine.rs` — `VSphereMachine` reconciler — clone a VM from its per-zone template (~13402 tok)
 
 ## crates/banlieue-provider-vsphere/tests/
 
@@ -761,4 +762,3 @@
 ## deploy/imagebuilder/
 
 - `configmap.yaml` — SPDX-License-Identifier: Apache-2.0 (~398 tok)
-- `deployment.yaml` — SPDX-License-Identifier: Apache-2.0 (~838 tok)

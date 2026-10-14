@@ -4,13 +4,23 @@ SPDX-License-Identifier: Apache-2.0
 -->
 # Threat Model
 
-> **Status:** Living document. Last full pass **2026-10-13**, against the
-> architecture defined by **ADR-0001 … ADR-0099** (0057–0059 unallocated,
+> **Status:** Living document. Last full pass **2026-10-14**, against the
+> architecture defined by **ADR-0001 … ADR-0100** (0057–0059 unallocated,
 > 0066 and 0068–0073 reserved; 0074 and 0075 Accepted 2026-09-28; 0076–0080
 > reserved by roadmap 19; 0081–0082 recorded but not implemented in banlieue, and kept canonically in
 > mediatore since ADR-0097;
 > 0088 Proposed and not yet implemented, so none of those three move anything
-> here). The latest 2026-10-13 pass is
+> here). The latest, 2026-10-14, pass is **ADR-0100**: every release
+> publishes `banlieue-api` to crates.io at the release's version, from a
+> `build.yaml` job of its own that alone reads the new repository secret
+> `CARGO_REGISTRY_TOKEN`. It adds one asset (A-21, that token), one actor
+> (a Rust consumer of the published types), the crates.io leg of the §5
+> TB-6 line, three TB-6 rows, §7.24 for consumers and two §8 risks (a crate
+> upload is unsigned and immutable; the token is long-lived until Trusted
+> Publishing). No runtime component, CRD, identity or RBAC grant changes:
+> the crate carries types, not a client, and a consumer reaches the API
+> server under its own RBAC and the same admission policies as `kubectl`.
+> The 2026-10-13 pass is
 > **ADR-0099**: the management cluster's bootstrap can run a node on Cloud
 > Hypervisor (a plain VM under three systemd units, no banlieue component)
 > and can add workers and controllers to a running cluster with a
@@ -400,6 +410,7 @@ relationship to the host.
 | A-18 | **`VSphereMachine` custom attributes** — `Template`, `CreatedAt`, `CreatedBy` (ADR-0089), the fleet-auditing fields `sre-automations`' `cf-node` tool also writes | vCenter `CustomFieldsManager`, per cloned VM; `CreatedBy`'s source is `VirtualMachine`'s `banlieue.io/created-by` annotation, stamped at CREATE by the optional `banlieue-virtualmachine-created-by` `MutatingAdmissionPolicy` | Zero confidentiality — all three are free text, visible to anyone with vCenter read access. **Low integrity**: `CreatedBy` can be forged (TB-1); nothing downstream trusts any of the three for an authorization decision |
 | A-19 | **Telemetry**: Prometheus series on each role's `metrics` port, and, only when `OTEL_EXPORTER_OTLP_ENDPOINT` is set, trace spans exported to a collector (ADR-0091, ADR-0092) | The scraper's storage; the operator's collector and wherever it forwards | Low confidentiality: metric labels carry no object names, namespaces or error text (`runner_tests.rs` asserts it); spans carry object names, namespaces and backend ids (node, vmid, moref, domain), never credentials, user-data or Secret contents. Its value is **integrity for operations**: forged or suppressed telemetry hides an outage, it does not change state |
 | A-20 | **k0s join tokens, and a joining controller's copy of `/etc/k0s`** (ADR-0099). A worker token joins any machine as a worker; a **controller** token hands over the cluster CA and service-account signing keys, and `/etc/k0s` carries the datastore password and the VRRP secret | Minted on a controller by `join` with `--expiry=15m`, piped over SSH straight to the joining node (never written on the operator's machine), stored `0600 root` at `/etc/k0s/{worker,controller}-token-file` on that node; `/etc/k0s` crosses the same kind of pipe | Worker token: high while valid (a worker runs any pod scheduled to it and reads the Secrets those pods mount). Controller token or `/etc/k0s`: **critical**, the whole cluster and its datastore. A token is worthless after expiry; the file stays on the node, like k0sctl's and the vSphere backend's |
+| A-21 | **`CARGO_REGISTRY_TOKEN`**, the crates.io API token that publishes `banlieue-api` (ADR-0100) | A GitHub Actions repository secret, read only by `build.yaml`'s `publish-crate` job on the `release` event; never available to a pull request from a fork | **High**: whoever holds it can publish any new version of `banlieue-api`, and every consumer that resolves a semver range takes it on their next build. It cannot replace a published version (uploads are immutable) and holds no cluster or hypervisor access |
 | A-15 | **EK trust-anchor bundle** — the set of CA certificates trusted to issue this backend's vTPM EK certificates | `Provider.spec.attestation.ekTrustBundle` — inline PEM, or a ConfigMap/Secret it names in the Provider's namespace. Admin-supplied, never discovered; resolved by the **broker**, never by any banlieue identity (ADR-0049 Decision 10) | Zero confidentiality — public CA material. **High integrity**: a rogue CA added here makes every EK certificate that CA forges verify, defeating the whole attestation chain; and on libvirt *removing* a host's issuer is the revocation mechanism, so an entry an attacker can re-add is a revocation undone |
 
 ## 4. Actors
@@ -420,6 +431,7 @@ relationship to the host.
 | **Bootstrap operator** running `scripts/bootstrap-k0s-cluster.sh` with Cloud Hypervisor nodes (the default VMM) or `join` (ADR-0099) | Passwordless **sudo on the hypervisor host** (CH nodes; only `DEFAULT_VMM=libvirt` with no CH node avoids it), and an SSH key every management node trusts | Trusted, like the hypervisor operator. `join` asks it to hold no new secret: the token goes controller → node over its SSH sessions |
 | **Host operator running `banlieue host cloud-hypervisor install`** | Root on the host, for one command | Trusted, like the hypervisor operator; the installer's controls protect the host **from the provider's user** during that run, not from the operator |
 | External contributor | Opens a PR from a fork | Untrusted |
+| **Rust consumer of `banlieue-api`** (ADR-0100): a broker such as mediatore, an operator's tooling | Builds against the published types and calls the API server with **its own** credential | Neither more nor less trusted than any API client: the crate carries types only (no client, credential or TLS stack), so it grants nothing that RBAC and admission (TB-1, TB-7) do not |
 | **Cluster API's manager** (CAPI core, installed by the platform operator; `clusterctl init --infrastructure banlieue`, ADR-0096) | Creates, updates and deletes banlieue **infrastructure** objects it owns through `Machine`s and `MachineSet`s, through the aggregated `banlieue-capi-infrastructure` ClusterRole | Semi-trusted, like any controller the platform operator installs. **Bounded to `infrastructure.banlieue.io`** machines, templates and clusters: nothing in `banlieue.io`, no Secrets, IPAM, Events or Leases (TB-15) |
 | **Telemetry consumers**: the metrics scraper (from a namespace labelled `banlieue.io/monitoring=true`) and, if configured, the OTLP collector | Read A-19; the collector receives spans pushed to it | Trusted for confidentiality of what they receive, untrusted for integrity of anything banlieue does: nothing banlieue decides reads telemetry back (TB-14) |
 | **OIDC identity provider** (and any bridge in front of it, e.g. Dex for GitHub) | Mints the ID tokens the API server accepts, and therefore **decides what `request.userInfo.username` is** | **Semi-trusted, and entirely outside banlieue's control.** Every guarantee the claim-subject policy makes is downstream of this actor: banlieue checks `subject.id` against a username it did not derive. Compromise or misconfiguration here makes every claim attribution meaningless — §8 |
@@ -465,6 +477,8 @@ relationship to the host.
                     └────────────────────────────────────────────────────────┘
 
   TB-6: GitHub Actions / GHCR ──▶ released images & binaries
+        GitHub Actions ──▶ crates.io ──▶ banlieue-api in consumers' builds
+        (A-21 token, release job only; ADR-0100)
 
   TB-12: management cluster controllers (kine) ──▶ SQL datastore on the host
          (A-17; TLS, password from an untracked env file; ADR-0085)
@@ -694,6 +708,9 @@ This is the strongest area of the project and is largely already ADR-0006.
 | Untrusted input | Event fields reach `run:` steps only through `env:` indirection, never inline interpolation |
 | Auto-merge | Gated on `pull_request.user.login == 'dependabot[bot]'` (the PR author, not `github.actor`); major-version updates are held for human review |
 | Scanning | CodeQL, OpenSSF Scorecard, SAST, grype/OSV, `cargo audit`, `cargo deny`, gitleaks |
+| Crate publication: token custody (S, E) | `CARGO_REGISTRY_TOKEN` (A-21) is read by one job, `publish-crate` in `.github/workflows/build.yaml`, gated on `github.event_name == 'release'`, holding only `contents: read`; fork pull requests receive no secrets. It goes through the SHA-pinned `firestoned/github-actions/rust/publish-crate` (ADR-0100) |
+| Crate publication: what is published (T) | The crate is built from the release's own checkout with the tag's version stamped by `make set-version`, after the `test` job passed; `make crate-package` builds the packaged copy alone against crates.io dependencies on every pull request (`crate-package` job) and again before the upload. Only `banlieue-api` is published; no path dependency or file outside the crate can enter it |
+| Crate publication: repudiation and re-runs (R) | One version per release tag, equal to the binary's and the CRDs'; `make crate-published` skips a version already on crates.io, so a re-run cannot fail half-way or publish twice. crates.io's own audit log records each upload against the token |
 
 ### TB-7 — External identity provider → API server
 
@@ -1264,6 +1281,13 @@ a different assumption is unsafe.
       writable by `CH_VM_USER`.
     - Reserve each CH node's MAC in DHCP, as for libvirt nodes: the script
       finds a node by its MAC, and a k0s node must not change address.
+24. **Build against the `banlieue-api` release that matches the installed
+    CRDs (A-21, ADR-0100).** The crate's version is the release's version;
+    a consumer pinned to it serializes exactly the schema the API server
+    enforces. Commit `Cargo.lock`, so a new upload reaches a build only
+    when someone updates it, and enable one k8s-openapi version feature in
+    the final binary. The crate grants a consumer nothing: give its
+    identity only the RBAC its calls need.
 
 ## 8. Accepted risks
 
@@ -1320,6 +1344,8 @@ a different assumption is unsafe.
 | **The bootstrap script does not verify SSH host keys** (`StrictHostKeyChecking=no` in `ssh_run`); with `join` that session also carries a join token, and for a controller the cluster CA key's token and the datastore password (A-20) | Every node is new, or rebuilt, when the script first reaches it, so there is no key to pin yet; a token expires in 15 minutes, though a controller's is enough to take the CA key within them. Running it from the host or the nodes' own network keeps it off untrusted paths (§7.23) | The script records each node's host key at creation (the seed can carry one) and checks it afterwards |
 | **`stage_k0s_binary` uses the k0s binary unverified when the release's `sha256sums.txt` cannot be fetched**, which `join` and the vSphere backend both rely on | An air-gapped mirror may publish no checksum file, and failing closed would break those estates; the binary is fetched over HTTPS from `K0S_BINARY_BASEURL` | A pinned digest setting (as `IMAGE_SHA256` does for the installer ISO) is added, or the mirror case is handled explicitly |
 | Provider condition messages are mirrored verbatim onto user-facing `VirtualMachine` status | Useful diagnostics; providers are in-tree | A third-party provider ships |
+| **A `banlieue-api` upload carries no signature or provenance**, unlike the binary and images (cosign, SLSA, ADR-0006), so a consumer cannot verify which build produced it | crates.io offers none to sign with; the upload comes from the tagged checkout in the release run, and `Cargo.lock` checksums pin what a consumer got the first time | crates.io supports artifact attestations or Sigstore signing |
+| **`CARGO_REGISTRY_TOKEN` is a long-lived secret** (A-21): if it leaks, it publishes until revoked | The first upload needs a token; scope it to `publish-new` and `publish-update` and, once the name exists, to `banlieue-api` only, with an expiry (ADR-0100 Decision 6) | The crate exists on crates.io and the publish action accepts Trusted Publishing (GitHub OIDC), so the secret can be deleted |
 
 ## 9. Out of scope
 

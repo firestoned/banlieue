@@ -11,7 +11,7 @@
 
 ## Closed 2026-10-09
 
-The repo side of FINOS readiness is done. The five items still unticked below
+The repo side of FINOS readiness is done. The items in this table
 are not phase 4 work any more; each now lives where its blocker does, and none
 is a reason to keep this roadmap open:
 
@@ -20,7 +20,7 @@ is a reason to keep this roadmap open:
 | Migration-policy e2e scenario (4.5) | roadmap 14, *Tests* | live migration itself |
 | Snapshot-schedule e2e scenario (4.5) | roadmap 10, *Definition of done* | the snapshot CRDs |
 | Nightly real-backend CI matrix (4.5) | deferred, no roadmap | self-hosted runners |
-| `cargo publish` of `banlieue-api` (4.8) | deferred, no roadmap | a crates.io owner, a token, and a decision that the crate is a supported public API |
+| ~~`cargo publish` of `banlieue-api` (4.8)~~ | done 2026-10-14, ADR-0100 | nothing; first upload on the next release |
 | Threat model kept current (4.10) | `rules/threat-modeling.md` | nothing: a standing rule, run as ADD's last step |
 
 The donation itself is a FINOS legal and TSC process
@@ -212,14 +212,15 @@ Concrete tasks:
       the backend-touching suites run against a **real** libvirt host
       (`make pool-claim-e2e`, `make libvirt-e2e`) or real vCenter
       (`make vsphere-live-test`), and stay out of CI.
-- [ ] Scenarios:
+- [x] Scenarios (the two not run here moved out at close, 2026-10-09):
   - [x] Create/read/update/delete VirtualMachine — `e2e_pool_claim.rs`
         (pool → VMs → real domains → claim → release) and
         `e2e_import_pipeline.rs`.
-  - [ ] Migration policy: Automatic + Manual paths. **Moved to roadmap 14**
-        (2026-10-09); only the `Recreate` placeholder exists.
-  - [ ] Snapshot schedule: cron firings + retention. **Moved to roadmap 10**
-        (2026-10-09); no CRDs yet.
+  - [x] ~~Migration policy: Automatic + Manual paths.~~ **Moved to
+        roadmap 14** (2026-10-09), which owns it; only the `Recreate`
+        placeholder exists.
+  - [x] ~~Snapshot schedule: cron firings + retention.~~ **Moved to
+        roadmap 10** (2026-10-09), which owns it; no CRDs yet.
   - [x] Provider lifecycle: install/upgrade/uninstall ProviderClass —
         `e2e_provider_{class,workload,pause}.rs`, `e2e_workload_namespace.rs`,
         `e2e_bootstrap_install.rs` (roadmap 11).
@@ -264,12 +265,15 @@ layer, and CRD upgrades stay a plain `kubectl apply` of `deploy/crds/`.
       `make release-notes`, which the release workflow appends to each GitHub
       Release body. git-cliff is installed in CI by `make git-cliff-install`,
       pinned and SHA-512 verified.
-- [ ] Semantic version tags `vX.Y.Z` trigger GH Actions:
-      - cargo publish (only crates we want to publish; probably
-        skip the provider binaries and only publish `banlieue-api`).
-        **Still open**, the one remaining sub-item: it needs a crates.io
-        owner and a publish token, and a decision on whether `banlieue-api`
-        is a supported public crate. **Deferred at close (2026-10-09).**
+- [x] Semantic version tags `vX.Y.Z` trigger GH Actions:
+      - ~~cargo publish (only crates we want to publish; probably
+        skip the provider binaries and only publish `banlieue-api`).~~
+        **Done 2026-10-14** ([ADR-0100](../../docs/adr/0100-publish-banlieue-api-to-crates-io.md)):
+        `banlieue-api` only, at the release's version, from the
+        `publish-crate` job of `build.yaml`, which alone reads
+        `CARGO_REGISTRY_TOKEN`; every pull request runs
+        `make crate-package`. The first upload happens on the next release
+        tag.
       - ~~container image build/sign/push~~ **Done** (`build.yaml`, ADR-0006).
       - ~~CRD YAMLs attached to GH release~~ **Done** (`deploy-manifests.tar.gz`).
       - ~~changelog entry~~ **Done 2026-10-08** (`make release-notes` in the

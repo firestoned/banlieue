@@ -3253,6 +3253,26 @@
       ],
       "occurrences": 1,
       "last_seen": "2026-10-13T11:30:00.000Z"
+    },
+    {
+      "id": "bug-179",
+      "timestamp": "2026-10-14T09:40:00.000Z",
+      "error_message": "VSphereMachine fails every reconcile with CloneVM_Task DuplicateName after one provisioning step faulted",
+      "file": "crates/banlieue-provider-vsphere/src/reconciler/vspheremachine.rs",
+      "root_cause": "ensure_vm cloned, then ran custom attributes / grow disk / vTPM / EK / power with `?`. A fault in any of them returned Err without the clone's moref, so status.vmRef was never written; the next pass cloned again under the same name, which vCenter refuses. The FakeClient accepted duplicate names, so no test could see it.",
+      "fix": "Post-clone steps moved into finish_clone; on Err, roll_back_clone destroys the clone and returns the original error (both errors and the VM name if the destroy fails). Fake now refuses DuplicateName per folder and supports fail(FakeStep). Remaining gap: a crash between clone and status write; needs an ownership marker for safe adoption (ADR).",
+      "tags": [
+        "vsphere",
+        "provisioning",
+        "rollback",
+        "fake-fidelity",
+        "duplicate-name"
+      ],
+      "related_bugs": [
+        "bug-177"
+      ],
+      "occurrences": 1,
+      "last_seen": "2026-10-14T09:40:00.000Z"
     }
   ]
 }

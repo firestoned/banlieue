@@ -8,12 +8,20 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 authors.workspace = true
+readme = "README.md"
+documentation = "https://docs.rs/banlieue-api"
+keywords = ["kubernetes", "virtualization", "crd", "cluster-api", "vm"]
+categories = ["api-bindings", "virtualization"]
 
 [dependencies]
 # Only the CustomResource derive: a consumer's TLS stack is its own business, and kube's
 # default features would force the client and the `ring` provider into every consumer.
 kube = { version = "~4.2", default-features = false, features = ["derive"] }
-k8s-openapi.workspace = true
+# No Kubernetes version feature: k8s-openapi requires a library to leave that
+# choice to the final binary, and fails the build when two are enabled (ADR-0100).
+# The dev-dependency below and the `crdgen` feature choose one for this crate's
+# own tests and generator binaries.
+k8s-openapi = { version = "0.28", features = ["schemars"] }
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -21,6 +29,7 @@ serde-saphyr = { workspace = true, optional = true }
 clap = { workspace = true, optional = true }
 
 [dev-dependencies]
+k8s-openapi.workspace = true
 serde-saphyr.workspace = true
 
 [features]
@@ -28,7 +37,11 @@ default = []
 # YAML output as banlieue writes it (`banlieue_api::yaml`).
 yaml = ["dep:serde-saphyr"]
 # Enables the binary that prints all CRDs as YAML for kustomize consumption.
-crdgen = ["yaml", "dep:clap"]
+crdgen = ["yaml", "dep:clap", "k8s-openapi/latest"]
+
+[package.metadata.docs.rs]
+# `crdgen` picks a Kubernetes version, which docs.rs needs to build at all.
+all-features = true
 
 [[bin]]
 name = "crdgen"

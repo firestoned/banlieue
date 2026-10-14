@@ -274,12 +274,12 @@ banlieue-provider-vsphere [--kubeconfig PATH]
       `src/guest.rs` + `banlieue-provider-sdk/src/guestdata.rs`
       (ADR-0029 hostname/FQDN defaults, ADR-0037 layered cloud-config,
       ADR-0038 ConfigMap userData, ADR-0043 `GuestReady` read-back).
-- [ ] IPAM claim/wait helper (use `kube::Api` against
-      `ipam.cluster.x-k8s.io/IPAddressClaim`). **Still open, deliberately
-      deferred** — roadmap 13 blocks on choosing a CAPI IPAM provider.
-      The CRD surface is designed (ADR-0033, ADR-0053) and
-      `banlieue-api`'s `common.rs` carries the `IPAddressClaim`-shaped
-      types; no provider-side code yet.
+- [x] ~~IPAM claim/wait helper (use `kube::Api` against
+      `ipam.cluster.x-k8s.io/IPAddressClaim`).~~ **Moved to roadmap 13**
+      (2026-10-14), which owns it: there the controller, not this provider,
+      creates the `IPAddressClaim` per NIC and hands the provider an
+      address, so no vSphere-side helper is planned. Still blocked on
+      choosing a CAPI IPAM provider (ADR-0033, ADR-0053).
 - [x] ~~Wire main with leader election, signal handling, dual
       controllers (Provider + VSphereMachine).~~ **Done** — `src/app.rs`,
       now four controllers (Provider, VSphereMachine, VMImage, import

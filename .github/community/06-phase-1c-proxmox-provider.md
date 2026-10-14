@@ -233,9 +233,11 @@ into `ipconfigN`.
 - [x] Implement the node/storage/network/VM/media/agent calls (`client.rs`, behind the `ProxmoxApi` trait; in-memory `fake.rs`).
 - [x] Implement `reconciler/provider.rs` (one failure domain per node; storage/bridge/`seed-iso` verified).
 - [x] Implement `reconciler/proxmoxmachine.rs` (ADR-0075 lifecycle; controller dispatch in `banlieue-controller`).
-- [ ] Implement `reconciler/image.rs` (template clone-source check;
-      optional import via `qm importdisk` proxy — usually requires
-      shell access, so document as out-of-scope for v1).
+- [x] Implement `reconciler/image.rs` (template clone-source check).
+      **Done** (ADR-0075): a `Template` source's VMID is verified to be a
+      template and published in `status.perProvider`. The optional import
+      via `qm importdisk` is out of scope: the API offers no disk import
+      (ADR-0074), so a `Url` source is reported as unsupported.
 - [x] ~~`customize.rs` (snippet upload + cicustom)~~ **Superseded** by ADR-0075 Decision 5: the API cannot upload snippets, so cloud-init is a NoCloud seed ISO built with the SDK's `cloudinit` writer and uploaded to the `seed-iso` storage.
 - [x] Implement deletion finalizer including seed-ISO cleanup.
 - [x] ~~Container image~~ **Superseded**: `banlieue provider proxmox` is a subcommand of the single binary (ADR-0004); no separate image.

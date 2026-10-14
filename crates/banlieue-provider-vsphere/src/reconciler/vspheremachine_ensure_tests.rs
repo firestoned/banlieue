@@ -10,7 +10,7 @@ mod tests {
     use banlieue_api::common::{Firmware, PowerState};
     use banlieue_api::infrastructure::{VSphereDiskSpec, VSphereMachineSpec, VSphereNicSpec};
 
-    use crate::client::{FakeClient, Inventory, VSphereClient};
+    use crate::client::{FakeClient, FakeStep, Inventory, VSphereClient};
 
     use super::super::ensure_vm;
 
@@ -487,5 +487,100 @@ mod tests {
             .await
             .unwrap();
         assert!(!outcome.already_provisioned);
+    }
+
+    async fn first_pass(
+        client: &FakeClient,
+        spec: &VSphereMachineSpec,
+    ) -> crate::error::Result<String> {
+        ensure_vm(as_client(client), spec, "db-01", None, None)
+            .await
+            .map(|o| o.vm_ref)
+    }
+
+    /// The fake must refuse what vCenter refuses, or the bug below hides:
+    /// a second VM of the same name in one folder is `DuplicateName`.
+    #[tokio::test]
+    async fn the_fake_refuses_a_second_vm_of_the_same_name() {
+        let client = FakeClient::new(seeded_inventory());
+        let s = spec("ds-fast-01", "vmnet-prod");
+        first_pass(&client, &s).await.unwrap();
+        let err = first_pass(&client, &s).await.unwrap_err();
+        assert!(err.to_string().contains("DuplicateName"), "{err}");
+    }
+
+    /// Every step after the clone can fault. Whichever does, the clone is
+    /// destroyed: its moref never reaches status, so nothing else could
+    /// ever find it, and the next pass would hit `DuplicateName` forever.
+    #[tokio::test]
+    async fn a_failure_after_the_clone_destroys_the_clone() {
+        for step in [
+            FakeStep::SetCustomAttributes,
+            FakeStep::GrowOsDisk,
+            FakeStep::AddTpmDevice,
+            FakeStep::SetPowerState,
+        ] {
+            let client = FakeClient::new(seeded_inventory());
+            let mut s = spec("ds-fast-01", "vmnet-prod");
+            s.tpm_enabled = true;
+            client.fail(step);
+
+            let err = first_pass(&client, &s).await.unwrap_err();
+
+            assert!(
+                err.to_string().contains(&format!("{step:?}")),
+                "{step:?}: the original fault is what is reported: {err}"
+            );
+            assert!(client.live_vms().is_empty(), "{step:?}: clone left behind");
+            assert_eq!(
+                client.destroyed_vms(),
+                vec!["vm-clone-db-01".to_string()],
+                "{step:?}"
+            );
+        }
+    }
+
+    /// The point of the rollback: once the fault clears, the next pass
+    /// provisions normally instead of failing on the name.
+    #[tokio::test]
+    async fn the_pass_after_a_rolled_back_failure_provisions_normally() {
+        let client = FakeClient::new(seeded_inventory());
+        let s = spec("ds-fast-01", "vmnet-prod");
+        client.fail(FakeStep::GrowOsDisk);
+        first_pass(&client, &s).await.unwrap_err();
+
+        client.heal(FakeStep::GrowOsDisk);
+        let vm_ref = first_pass(&client, &s).await.unwrap();
+
+        assert_eq!(client.live_vms(), vec![vm_ref]);
+        assert_eq!(client.cloned_vms().len(), 2);
+    }
+
+    /// A rollback that fails too is reported with both faults, so the
+    /// operator learns a VM was left behind and which one.
+    #[tokio::test]
+    async fn a_failed_rollback_reports_both_faults_and_the_vm() {
+        let client = FakeClient::new(seeded_inventory());
+        let s = spec("ds-fast-01", "vmnet-prod");
+        client.fail(FakeStep::GrowOsDisk);
+        client.fail(FakeStep::DestroyVm);
+
+        let err = first_pass(&client, &s).await.unwrap_err().to_string();
+
+        assert!(err.contains("GrowOsDisk"), "{err}");
+        assert!(err.contains("DestroyVm"), "{err}");
+        assert!(err.contains("vm-clone-db-01"), "{err}");
+        assert_eq!(client.live_vms(), vec!["vm-clone-db-01".to_string()]);
+    }
+
+    /// A failure before the clone has nothing to roll back.
+    #[tokio::test]
+    async fn a_failure_before_the_clone_destroys_nothing() {
+        let client = FakeClient::new(seeded_inventory());
+        first_pass(&client, &spec("ds-fast-01", "no-such-network"))
+            .await
+            .unwrap_err();
+        assert!(client.destroyed_vms().is_empty());
+        assert!(client.cloned_vms().is_empty());
     }
 }

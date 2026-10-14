@@ -5,7 +5,7 @@
 //! The fake holds a pre-seeded inventory and answers `list_*` calls from it.
 //! No vim_rs, no tokio I/O, no network — tests stay fast and deterministic.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -26,6 +26,22 @@ use super::{
 pub struct ClonedVm {
     pub request: CloneVmRequest,
     pub moref: String,
+}
+
+/// A [`FakeClient`] call a test can make fail ([`FakeClient::fail`]), to
+/// drive the error paths a real vCenter reaches with a fault mid-provision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FakeStep {
+    /// [`VSphereClient::set_custom_attributes`].
+    SetCustomAttributes,
+    /// [`VSphereClient::grow_os_disk`].
+    GrowOsDisk,
+    /// [`VSphereClient::add_tpm_device`].
+    AddTpmDevice,
+    /// [`VSphereClient::set_power_state`].
+    SetPowerState,
+    /// [`VSphereClient::destroy_vm`].
+    DestroyVm,
 }
 
 /// Synthetic inventory used by [`FakeClient`] tests. Build with [`Inventory::builder`].
@@ -250,6 +266,11 @@ pub struct FakeClient {
     grown_disks: Mutex<Vec<(String, u32)>>,
     guest_info: Mutex<HashMap<(String, String), String>>,
     custom_attributes: Mutex<HashMap<String, Vec<(String, String)>>>,
+    /// VMs that exist right now, by moref: `(folder, name)`. Real vCenter
+    /// refuses a second VM of the same name in one folder (`DuplicateName`),
+    /// so the fake does too.
+    live: Mutex<HashMap<String, (Option<String>, String)>>,
+    failing: Mutex<HashSet<FakeStep>>,
 }
 
 impl FakeClient {
@@ -268,7 +289,46 @@ impl FakeClient {
             grown_disks: Mutex::new(Vec::new()),
             guest_info: Mutex::new(HashMap::new()),
             custom_attributes: Mutex::new(HashMap::new()),
+            live: Mutex::new(HashMap::new()),
+            failing: Mutex::new(HashSet::new()),
         }
+    }
+
+    /// Make every later `step` call fail, as a vCenter fault would.
+    pub fn fail(&self, step: FakeStep) {
+        self.failing.lock().expect("fake client lock").insert(step);
+    }
+
+    /// Let `step` succeed again.
+    pub fn heal(&self, step: FakeStep) {
+        self.failing.lock().expect("fake client lock").remove(&step);
+    }
+
+    /// Morefs of every VM that exists right now (cloned, not destroyed).
+    pub fn live_vms(&self) -> Vec<String> {
+        let mut morefs: Vec<String> = self
+            .live
+            .lock()
+            .expect("fake client lock")
+            .keys()
+            .cloned()
+            .collect();
+        morefs.sort();
+        morefs
+    }
+
+    fn injected(&self, step: FakeStep, vm_moref: &str) -> Result<()> {
+        if self
+            .failing
+            .lock()
+            .expect("fake client lock")
+            .contains(&step)
+        {
+            return Err(Error::Vsphere(format!(
+                "{vm_moref}: injected {step:?} fault"
+            )));
+        }
+        Ok(())
     }
 
     /// Seed a `guestinfo`/`extraConfig` value for `vm_moref`, as if the
@@ -425,7 +485,18 @@ impl VSphereClient for FakeClient {
     }
 
     async fn clone_vm(&self, req: &CloneVmRequest) -> Result<String> {
+        let key = (req.folder.clone(), req.vm_name.clone());
         let moref = format!("vm-clone-{}", req.vm_name);
+        {
+            let mut live = self.live.lock().expect("fake client lock");
+            if live.values().any(|k| *k == key) {
+                return Err(Error::Vsphere(format!(
+                    "CloneVM_Task({}): DuplicateName",
+                    req.vm_name
+                )));
+            }
+            live.insert(moref.clone(), key);
+        }
         self.clones
             .lock()
             .expect("fake client lock")
@@ -444,6 +515,7 @@ impl VSphereClient for FakeClient {
     }
 
     async fn set_power_state(&self, vm_moref: &str, desired: PowerState) -> Result<()> {
+        self.injected(FakeStep::SetPowerState, vm_moref)?;
         self.power_state_calls
             .lock()
             .expect("fake client lock")
@@ -468,6 +540,8 @@ impl VSphereClient for FakeClient {
     }
 
     async fn destroy_vm(&self, vm_moref: &str) -> Result<()> {
+        self.injected(FakeStep::DestroyVm, vm_moref)?;
+        self.live.lock().expect("fake client lock").remove(vm_moref);
         self.destroyed
             .lock()
             .expect("fake client lock")
@@ -480,6 +554,7 @@ impl VSphereClient for FakeClient {
     }
 
     async fn add_tpm_device(&self, vm_moref: &str) -> Result<()> {
+        self.injected(FakeStep::AddTpmDevice, vm_moref)?;
         self.tpm_attached
             .lock()
             .expect("fake client lock")
@@ -502,6 +577,7 @@ impl VSphereClient for FakeClient {
     }
 
     async fn grow_os_disk(&self, vm_moref: &str, size_gi_b: u32) -> Result<()> {
+        self.injected(FakeStep::GrowOsDisk, vm_moref)?;
         self.grown_disks
             .lock()
             .expect("fake client lock")
@@ -523,6 +599,7 @@ impl VSphereClient for FakeClient {
         vm_moref: &str,
         values: &[(String, String)],
     ) -> Result<()> {
+        self.injected(FakeStep::SetCustomAttributes, vm_moref)?;
         self.custom_attributes
             .lock()
             .expect("fake client lock")

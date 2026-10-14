@@ -1,5 +1,128 @@
 # Changelog
 
+## [2026-10-14 05:40] - vSphere rolls back a clone whose provisioning fails
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `crates/banlieue-provider-vsphere/src/reconciler/vspheremachine.rs`: the
+  steps after `CloneVM_Task` (custom attributes, OS disk floor, vTPM,
+  endorsement certificates, power state) run as one unit, `finish_clone`;
+  if any faults, `roll_back_clone` destroys the clone and the original error
+  is reported. Before, the clone's moref never reached status on a failed
+  pass, so the next pass cloned again and failed on `DuplicateName` forever.
+  A rollback that fails too reports both faults and names the VM left
+  behind.
+
+### Tests
+- `crates/banlieue-provider-vsphere/src/client/fake.rs`: the fake refused
+  nothing, which is why this bug passed every test. It now refuses a second
+  VM of the same name in one folder, as vCenter does, and `fail(FakeStep)`
+  makes a step fault. No existing test relied on the permissive behaviour.
+- `vspheremachine_ensure_tests.rs`: `the_fake_refuses_a_second_vm_of_the_same_name`,
+  `a_failure_after_the_clone_destroys_the_clone` (each of the four
+  post-clone steps), `the_pass_after_a_rolled_back_failure_provisions_normally`,
+  `a_failed_rollback_reports_both_faults_and_the_vm`,
+  `a_failure_before_the_clone_destroys_nothing`.
+- Unit tests only: no live vCenter was available.
+
+### Known gap
+- A provider that **crashes** between the clone and its status write still
+  leaves a VM the next pass cannot adopt (`DuplicateName`). Closing that
+  needs an ownership marker on the VM, as Proxmox has (ADR-0075 Decision 4),
+  so adoption is safe; that is an ADR, not this fix.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (provider images)
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-10-14 05:26] - Publish banlieue-api to crates.io (ADR-0100); firestoned/github-actions v1.4.0
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docs/adr/0100-publish-banlieue-api-to-crates-io.md`: new ADR. Only
+  `banlieue-api` is published, at the release's version, from the release
+  run; the crate leaves the Kubernetes version to the consumer.
+- `crates/banlieue-api/Cargo.toml`: k8s-openapi enables only `schemars` (a
+  library must not choose a Kubernetes version); the dev-dependency and the
+  `crdgen` feature choose `latest`; crates.io metadata (`readme`,
+  `documentation`, `keywords`, `categories`) and docs.rs `all-features`.
+  `crates/banlieue-api/README.md`: the crate's crates.io page. CRDs
+  regenerate byte-identical.
+- `Makefile`: `crate-package` (package and build the packaged copy alone,
+  with `K8S_OPENAPI_ENABLED_VERSION`) and `crate-published` (is this version
+  on crates.io already?).
+- `.github/workflows/build.yaml`: `crate-package` job on pull requests and
+  pushes (in `✅ Required Checks`); `publish-crate` job on the release event,
+  the only reader of `CARGO_REGISTRY_TOKEN`, through
+  `firestoned/github-actions/rust/publish-crate`, skipping a version already
+  published.
+- `.github/workflows/build.yaml`, `.github/workflows/e2e.yaml`: every
+  `firestoned/github-actions` reference moved from v1.3.7 to v1.4.0
+  (`f52366c`). cache-cargo v1.4.0 is rebuilt on Swatinem/rust-cache: per-job
+  keys, toolchain and target in the key, workspace crates pruned before
+  saving. Every cache step now passes `save-if` so only `main` saves, and
+  the e2e job installs the toolchain before the cache step, as v1.4.0
+  requires.
+- `docs/architecture/calm/architecture.json`: a Rust API consumer actor,
+  crates.io, their two relationships, ADR-0100 on the release provenance
+  control; diagrams regenerated.
+- `docs/src/security/threat-model.md`: full pass, stamp 2026-10-14 against
+  ADR-0001 to ADR-0100. A-21 (the token), the consumer actor, the crates.io
+  leg on the §5 diagram, three TB-6 rows, §7.24, two §8 risks.
+- `docs/src/developer/rust-api-crate.md` (new, in the nav): using the crate.
+- Roadmaps: 12's `cargo publish` item done; 05's IPAM helper moved to 13;
+  12's migration and snapshot scenarios struck as moved to 14 and 10; 07's
+  `list_all_domains` dropped (no caller); 17's `ROADMAPS.md` box ticked.
+  `ROADMAPS.md` rows 05, 07 and 12 follow.
+
+### Why
+External Rust consumers (mediatore first) need the API types at a version
+that matches a release's CRDs. The cache rework cuts restore sizes that had
+outgrown the builds they were meant to speed up.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only
+- [ ] Documentation only
+
+## [2026-10-13 19:59] - Roadmap statuses reconciled with the tree
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/community/README.md`: the phase-dependency graph showed 1C and 1F
+  as not started and 1E, Phase 3 and Phase 4 as in progress. Now 1C in
+  progress, the other four done, and roadmap 17's line names what is left.
+- `.github/community/00-overview.md`: the Proxmox crate exists; no Helm
+  chart is planned.
+- `.github/community/06-phase-1c-proxmox-provider.md`: `reconciler/image.rs`
+  ticked (template check done; disk import out of scope, ADR-0074).
+- `.github/community/09-phase-1f-cloud-hypervisor-provider.md`: status block
+  points at ADR-0084 and ADR-0099, which landed after the roadmap closed.
+- `.github/community/16-scorecard-remediation.md`: status line re-dated; the
+  ruleset edit is still outstanding (checked against the live ruleset).
+- `.github/community/17-ephemeral-vm-pools.md`: phase table rows 0, E and G,
+  the section 0 status, the phase D and E bodies and the `examples/15`
+  references (the files are `examples/18` and `examples/19`).
+- `ROADMAPS.md`: rows 06, 16 and 17 (ADR-0098 released in v0.4.3; phase E
+  named as open).
+
+### Why
+An audit of every roadmap against the tree, the ADRs, the tags and the live
+ruleset found the status board's symbols correct but the README graph and
+several detail docs behind it.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
 ## [2026-10-13 19:40] - k0s bootstrap: a CH node's NIC is always ens2
 
 **Author:** Erick Bourgeois

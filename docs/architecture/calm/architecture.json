@@ -779,6 +779,18 @@
       "node-type": "service",
       "name": "OpenTelemetry collector (optional)",
       "description": "Operator-provided OTLP/HTTP collector. Each banlieue role exports trace spans to it only when OTEL_EXPORTER_OTLP_ENDPOINT is set (ADR-0092); with it unset there is no exporter and no egress. Its address is deployment specific, so ADR-0094's policies do not open egress to it."
+    },
+    {
+      "unique-id": "actor-rust-api-consumer",
+      "node-type": "actor",
+      "name": "Rust API consumer",
+      "description": "A program outside this repository that creates, reads or watches banlieue objects through the published banlieue-api types (ADR-0100): a broker such as mediatore, an operator's tooling, a CAPI integration. It authenticates to the Kubernetes API with its own identity; the crate carries types only, no client, credential or TLS stack."
+    },
+    {
+      "unique-id": "service-crates-io",
+      "node-type": "service",
+      "name": "crates.io (external)",
+      "description": "The Rust package registry. The release run of build.yaml publishes banlieue-api there under the release's version, from a job that alone reads the CARGO_REGISTRY_TOKEN secret (ADR-0100). Uploads are immutable (a bad version can be yanked, not replaced) and carry no Sigstore signature or SLSA provenance, unlike the binary and images (ADR-0006)."
     }
   ],
   "relationships": [
@@ -2023,6 +2035,36 @@
         }
       },
       "protocol": "HTTPS"
+    },
+    {
+      "unique-id": "rel-api-consumer-crates-io",
+      "description": "A Rust consumer resolves banlieue-api from crates.io at build time, at a version equal to a banlieue release, so its types match that release's CRDs (ADR-0100).",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "actor-rust-api-consumer"
+          },
+          "destination": {
+            "node": "service-crates-io"
+          }
+        }
+      },
+      "protocol": "HTTPS"
+    },
+    {
+      "unique-id": "rel-api-consumer-kubernetes-api",
+      "description": "The consumer reads and writes banlieue objects through the Kubernetes API with the banlieue-api types, under its own RBAC and the same admission policies as any other client (ADR-0007, ADR-0100). Nothing in the crate widens what it may do.",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "actor-rust-api-consumer"
+          },
+          "destination": {
+            "node": "service-kubernetes-api"
+          }
+        }
+      },
+      "protocol": "HTTPS"
     }
   ],
   "flows": [
@@ -2836,7 +2878,7 @@
       ]
     },
     "release-artifact-provenance": {
-      "description": "Every release ships the `banlieue` binary (multi-arch, signed) plus distroless and Chainguard container images, each with: CycloneDX SBOM (binary via cargo-cyclonedx, image via syft/anchore), Cosign keyless (OIDC) signatures, GitHub build-provenance attestations, SLSA Build L3 provenance (slsa-github-generator) for the binary tarballs, and an OpenVEX document (vexctl-merged from .vex/, Cosign-attested to each image digest and consumed by the Grype scan as `grype --vex`). Grype results upload to GitHub Code Scanning as SARIF. VEX statements are derived automatically by the banlieue-vex crate's auto-vex-presence (SBOM-absence) and auto-vex-reachability (binary symbol-import) tools and merged with curated .vex/*.json. Build logic is Makefile-driven; firestoned/github-actions composites are reused; third-party actions are SHA-pinned (SLSA generator pinned to a release tag).",
+      "description": "Every release ships the `banlieue` binary (multi-arch, signed) plus distroless and Chainguard container images, each with: CycloneDX SBOM (binary via cargo-cyclonedx, image via syft/anchore), Cosign keyless (OIDC) signatures, GitHub build-provenance attestations, SLSA Build L3 provenance (slsa-github-generator) for the binary tarballs, and an OpenVEX document (vexctl-merged from .vex/, Cosign-attested to each image digest and consumed by the Grype scan as `grype --vex`). Grype results upload to GitHub Code Scanning as SARIF. VEX statements are derived automatically by the banlieue-vex crate's auto-vex-presence (SBOM-absence) and auto-vex-reachability (binary symbol-import) tools and merged with curated .vex/*.json. Build logic is Makefile-driven; firestoned/github-actions composites are reused; third-party actions are SHA-pinned (SLSA generator pinned to a release tag). banlieue-api is published to crates.io from the release run (ADR-0100), in a job of its own that alone reads CARGO_REGISTRY_TOKEN, through the SHA-pinned firestoned/github-actions/rust/publish-crate; every pull request packages it and builds the packaged copy alone (make crate-package).",
       "requirements": [
         {
           "requirement-url": "https://slsa.dev/spec/v1.0/levels",
@@ -2858,7 +2900,7 @@
               "PW.4",
               "RV.1"
             ],
-            "evidence": ".github/workflows/build.yaml, .vex/README.md, docs/adr/0006-release-and-supply-chain-pipeline.md"
+            "evidence": ".github/workflows/build.yaml, .vex/README.md, docs/adr/0006-release-and-supply-chain-pipeline.md, docs/adr/0100-publish-banlieue-api-to-crates-io.md"
           }
         }
       ]
@@ -3127,6 +3169,7 @@
     "docs/adr/0095-credential-rotation-without-secret-watches.md",
     "docs/adr/0096-clusterctl-infrastructure-provider.md",
     "docs/adr/0097-api-ends-at-virtualmachineclaim.md",
-    "docs/adr/0098-spread-placement-across-failure-domains.md"
+    "docs/adr/0098-spread-placement-across-failure-domains.md",
+    "docs/adr/0100-publish-banlieue-api-to-crates-io.md"
   ]
 }

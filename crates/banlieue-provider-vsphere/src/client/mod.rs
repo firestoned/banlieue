@@ -15,7 +15,7 @@ use crate::error::Result;
 pub mod fake;
 pub mod vim;
 
-pub use fake::{FakeClient, FakeClientFactory, Inventory, InventoryBuilder};
+pub use fake::{FakeClient, FakeClientFactory, FakeStep, Inventory, InventoryBuilder};
 pub use vim::{VimClientFactory, install_default_crypto_provider};
 
 // `Template` is re-exported via the module path `crate::client::Template`

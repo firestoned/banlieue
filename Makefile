@@ -1055,6 +1055,32 @@ set-version-test: ## Prove set-version changes the workspace version (and only i
 	  if [ "$$changed" != "1" ]; then echo "set-version changed $$changed lines, expected exactly 1"; exit 1; fi; \
 	  echo "set-version-test: ok"
 
+# The one crate published to crates.io (ADR-0100), and the Kubernetes version
+# its packaged copy is built against. A library must not enable a k8s-openapi
+# version feature, so the isolated build `cargo package` runs needs the
+# version from the environment instead. Keep it equal to the version
+# k8s-openapi's `latest` feature selects in the workspace dependency.
+PUBLISHED_CRATE ?= banlieue-api
+K8S_OPENAPI_PACKAGE_VERSION ?= 1.36
+CRATES_IO_API ?= https://crates.io/api/v1
+CRATES_IO_USER_AGENT ?= banlieue-release (https://github.com/firestoned/banlieue)
+
+.PHONY: crate-package
+crate-package: ## Package banlieue-api and build the packaged copy alone, as a crates.io consumer gets it (ADR-0100)
+	@K8S_OPENAPI_ENABLED_VERSION=$(K8S_OPENAPI_PACKAGE_VERSION) \
+	  cargo package -p $(PUBLISHED_CRATE) --allow-dirty
+
+.PHONY: crate-published
+crate-published: ## Print true/false: is $(PUBLISHED_CRATE) VERSION (default: the workspace version) already on crates.io?
+	@version="$${VERSION:-$(WORKSPACE_VERSION)}"; \
+	  code=$$(curl -sS -o /dev/null -w '%{http_code}' -A "$(CRATES_IO_USER_AGENT)" \
+	    "$(CRATES_IO_API)/crates/$(PUBLISHED_CRATE)/$$version") || exit 1; \
+	  case "$$code" in \
+	    200) echo true ;; \
+	    404) echo false ;; \
+	    *) echo "crates.io answered HTTP $$code for $(PUBLISHED_CRATE) $$version" >&2; exit 1 ;; \
+	  esac
+
 # Release the components describe: the version directory clusterctl reads.
 # The release workflow passes the GitHub Release tag.
 CLUSTERCTL_RELEASE_TAG ?= v$(WORKSPACE_VERSION)
