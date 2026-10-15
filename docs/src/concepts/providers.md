@@ -110,6 +110,28 @@ A provider controller is a Kubernetes controller. Its responsibilities:
    torn down.
 5. **Use server-side apply** with a provider-specific field manager
    (`banlieue.io/provider-vsphere`, etc.) — so ownership of fields is explicit.
+6. **Serve only its own Provider's machines.** One provider process runs per
+   `Provider`, but every machine of its kind is visible to it; it reconciles
+   only those whose `spec.providerRef.name` is its `--provider-name`
+   (`banlieue_provider_sdk::reconciler::serves`). Acting on another
+   Provider's machine fails on credentials at best, and at worst finalizes
+   it against the wrong backend.
+7. **Prove it is alive by renewing its Lease.** The SDK's leader election
+   renews a `coordination.k8s.io` Lease named
+   `banlieue-provider-<ProviderClass>-<Provider>` in the workload namespace
+   every 5 seconds. banlieue-operator reads it into
+   `status.workload.heartbeat`, and the scheduler places nothing new on a
+   provider whose Lease has stopped (`Stale`), because a provider that is
+   down cannot clear its own `Ready=True`
+   ([ADR-0102](https://github.com/firestoned/banlieue/blob/main/docs/adr/0102-provider-liveness-from-its-lease.md)).
+8. **Mark what it creates, and touch nothing unmarked.** Each backend object
+   carries the machine's UID, written by the call that creates it (the
+   Proxmox VM description, the vSphere `extraConfig` key
+   `banlieue.machine.uid`). A crash between creating an object and recording
+   it in status is then recoverable, and a same-named object somebody else
+   owns is never adopted or destroyed
+   ([ADR-0075](https://github.com/firestoned/banlieue/blob/main/docs/adr/0075-proxmoxmachine-inframachine-contract.md),
+   [ADR-0101](https://github.com/firestoned/banlieue/blob/main/docs/adr/0101-vspheremachine-ownership-marker-and-adoption.md)).
 
 ## What a provider controller does **not** do
 
@@ -176,7 +198,10 @@ banlieue's provider model is open. To ship a new provider:
    [CAPI v1beta2 InfraMachine contract](https://cluster-api.sigs.k8s.io/developer/providers/contracts/).
    The provider CRD shape used in `crates/banlieue-api/src/infrastructure/`
    (`VSphereMachine`, `VSphereMachineTemplate`) is the reference.
-2. Build a controller against your CRD using `banlieue-provider-sdk`.
+2. Build a controller against your CRD using `banlieue-provider-sdk`. Its
+   leader election gives you the Lease that liveness reads (item 7 above);
+   name it with `banlieue_provider_sdk::naming::workload_name`, and grant
+   your identity that Lease alone, never Leases cluster-wide.
 3. Ship a container image and a Kustomize manifest.
 
 That's it. No registration with the banlieue project. No code changes to

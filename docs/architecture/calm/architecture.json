@@ -2506,7 +2506,7 @@
         {
           "sequence-number": 6,
           "relationship-unique-id": "rel-operator-kube-api",
-          "description": "banlieue-operator's Deployment watch fires as replicas become ready and mirrors readiness into Provider.status.workload. It deliberately does not write status.conditions \u2014 that list is owned by the provider's own field manager, and a plain list without x-kubernetes-list-type:map cannot be merged per-entry by two managers.",
+          "description": "banlieue-operator's Deployment watch fires as replicas become ready and mirrors readiness into Provider.status.workload. It also reads the provider's leader-election Lease from step 4 and records status.workload.heartbeat (Alive, then Stale if the Lease stops renewing), which the scheduler uses to place nothing new on a provider that has stopped (ADR-0102). It deliberately does not write status.conditions: that list is owned by the provider's own field manager, and a plain list without x-kubernetes-list-type:map cannot be merged per-entry by two managers.",
           "direction": "destination-to-source"
         }
       ],

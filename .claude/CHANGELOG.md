@@ -1,5 +1,27 @@
 # Changelog
 
+## [2026-10-15 09:00] - Provider contract docs: own machines, Lease liveness, ownership markers
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docs/src/concepts/providers.md`: "What a provider controller does" gains
+  three obligations the recent fixes made part of the contract: serve only
+  its own Provider's machines (bug-178), prove it is alive by renewing its
+  per-Provider Lease (ADR-0102), and mark what it creates with the machine's
+  UID and touch nothing unmarked (ADR-0075, ADR-0101). The third-party
+  provider steps say to name the Lease with `workload_name` and grant that
+  Lease alone.
+- `docs/architecture/calm/architecture.json`: step 6 of
+  `flow-provision-provider-workload` records the heartbeat;
+  `docs/src/architecture/flows.md` regenerated. `make calm-validate` passes.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
 ## [2026-10-15 03:30] - Lease rights narrowed to each role's own Lease; threat model pass for ADR-0102
 
 **Author:** Erick Bourgeois

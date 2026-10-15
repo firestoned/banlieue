@@ -1,6 +1,6 @@
 # anatomy.md
 
-> Auto-maintained by OpenWolf. Last scanned: 2026-10-14T22:00:00.488Z
+> Auto-maintained by OpenWolf. Last scanned: 2026-10-15T04:00:00.517Z
 > Files: 511 tracked | Anatomy hits: 0 | Misses: 0
 
 ## ./
@@ -141,9 +141,9 @@
 
 ## crates/banlieue-api/src/banlieue/
 
-- `mod.rs` — `banlieue.io/v1alpha1` API group. (~640 tok)
-- `provider_tests.rs` — Unit tests for `provider.rs`. (~9623 tok)
-- `provider.rs` — `banlieue.io/v1alpha1` Provider CRD. (~7742 tok)
+- `mod.rs` — `banlieue.io/v1alpha1` API group. (~643 tok)
+- `provider_tests.rs` — Unit tests for `provider.rs`. (~10301 tok)
+- `provider.rs` — `banlieue.io/v1alpha1` Provider CRD. (~8110 tok)
 - `providerclass_tests.rs` — Unit tests for `providerclass.rs`. (~3356 tok)
 - `providerclass.rs` — `banlieue.io/v1alpha1` ProviderClass CRD. (~4099 tok)
 - `virtualmachine_tests.rs` — Unit tests for `virtualmachine.rs`. (~7592 tok)
@@ -222,14 +222,14 @@
 ## crates/banlieue-controller/src/
 
 - `app_tests.rs` — Unit tests for [`super::super::app`]. (~584 tok)
-- `app.rs` — # `banlieue controller` entry point (~5511 tok)
+- `app.rs` — # `banlieue controller` entry point (~5563 tok)
 - `context_tests.rs` — Unit tests for [`super::Context`]. (~357 tok)
 - `context.rs` — Shared reconcile context — the only value that all reconcilers receive. (~468 tok)
 - `error_tests.rs` — Unit tests for [`super::super::error`]: the metric `kind` of each variant. (~196 tok)
 - `error.rs` — Typed errors for the main controller. (~433 tok)
 - `lib.rs` — # banlieue-controller (~274 tok)
-- `metrics_tests.rs` — Unit tests for [`super::super::metrics`]: phase derivation, counting, and (~2364 tok)
-- `metrics.rs` — The controller's domain gauges (ADR-0091 Decision 3). (~2071 tok)
+- `metrics_tests.rs` — Unit tests for [`super::super::metrics`]: phase derivation, counting, and (~2998 tok)
+- `metrics.rs` — The controller's domain gauges (ADR-0091 Decision 3). (~2962 tok)
 
 ## crates/banlieue-controller/src/reconciler/
 
@@ -248,8 +248,8 @@
 - `pool_plan.rs` — Pure planning logic for `VirtualMachinePool` (roadmap 17, ADR-0046). (~3198 tok)
 - `pool_tests.rs` — Unit tests for `pool.rs`. (~3070 tok)
 - `pool.rs` — `VirtualMachinePool` reconciler (roadmap 17, ADR-0046). (~5253 tok)
-- `scheduler_tests.rs` — Unit tests for [`super::super::scheduler`]. (~10776 tok)
-- `scheduler.rs` — Scheduler — the pure placement function. (~7242 tok)
+- `scheduler_tests.rs` — Unit tests for [`super::super::scheduler`]. (~11786 tok)
+- `scheduler.rs` — Scheduler — the pure placement function. (~7614 tok)
 - `status_mirror_tests.rs` — Unit tests for [`super::super::status_mirror`]. (~8314 tok)
 - `status_mirror.rs` — `VirtualMachine` status mirror. (~3571 tok)
 - `virtualmachine_tests.rs` — Unit tests for [`super::super::virtualmachine`]. (~3322 tok)
@@ -380,16 +380,18 @@
 
 ## crates/banlieue-operator/src/
 
-- `app_tests.rs` — Unit tests for `app.rs` — flag parsing + leader config. (~1015 tok)
-- `app.rs` — # `banlieue operator` entry point (~3214 tok)
-- `bootstrap_tests.rs` — Unit tests for `bootstrap.rs`. (~17984 tok)
-- `bootstrap.rs` — `banlieue bootstrap` — self-contained cluster install (ADR-0013). (~16811 tok)
-- `context.rs` — Shared reconcile context (client + operator namespace). (~966 tok)
+- `app_tests.rs` — Unit tests for [`super::super::app`]. (~1136 tok)
+- `app.rs` — # `banlieue operator` entry point (~3355 tok)
+- `bootstrap_tests.rs` — Unit tests for `bootstrap.rs`. (~20427 tok)
+- `bootstrap.rs` — `banlieue bootstrap` — self-contained cluster install (ADR-0013). (~17794 tok)
+- `context.rs` — Shared reconcile context for `banlieue-operator`. (~1111 tok)
 - `error_tests.rs` — Unit tests for [`super::super::error`]: the metric `kind` of each variant. (~197 tok)
 - `error.rs` — Typed errors for `banlieue-operator`. (~372 tok)
-- `events_tests.rs` — Unit tests for `events.rs`. (~1274 tok)
-- `events.rs` — Kubernetes Events published against `Provider` objects. (~1498 tok)
-- `lib.rs` — # banlieue-operator (~495 tok)
+- `events_tests.rs` — Unit tests for `events.rs`. (~1628 tok)
+- `events.rs` — Kubernetes Events published against `Provider` objects. (~1944 tok)
+- `heartbeat_tests.rs` — Unit tests for [`super::super::heartbeat`] (ADR-0102). (~1430 tok)
+- `heartbeat.rs` — Provider liveness from its leader-election Lease (ADR-0102). (~1293 tok)
+- `lib.rs` — # banlieue-operator (~500 tok)
 - `naming_tests.rs` — Unit tests for `naming.rs`. (~2492 tok)
 - `naming.rs` — Derived names and labels for per-instance provider workloads. (~1493 tok)
 - `workload_tests.rs` — Unit tests for `workload.rs`. (~10354 tok)
@@ -399,7 +401,7 @@
 
 - `mod.rs` — Reconciler modules. (~12 tok)
 - `provider_tests.rs` — Unit tests for `reconciler/provider.rs`. (~2459 tok)
-- `provider.rs` — The `Provider` → workload reconciler. (~6023 tok)
+- `provider.rs` — The `Provider` → workload reconciler. (~6595 tok)
 - `providerclass_tests.rs` — Unit tests for `reconciler/providerclass.rs`. (~2210 tok)
 - `providerclass.rs` — The `ProviderClass` status reconciler. (~2319 tok)
 
@@ -572,8 +574,8 @@
 - `health.rs` — Path-aware liveness and readiness endpoints (ADR-0093). (~2442 tok)
 - `httpd_tests.rs` — Unit tests for [`super::super::httpd`]: request-line parsing and response (~1551 tok)
 - `httpd.rs` — The minimal HTTP/1.1 listener behind the health server (ADR-0093) and the (~2865 tok)
-- `leader_tests.rs` — Unit tests for [`super::super::leader`]. (~1815 tok)
-- `leader.rs` — Lease-based leader election for banlieue controllers. (~4070 tok)
+- `leader_tests.rs` — Unit tests for [`super::super::leader`]. (~2111 tok)
+- `leader.rs` — Lease-based leader election for banlieue controllers. (~4350 tok)
 - `lib.rs` — # banlieue-provider-sdk (~656 tok)
 - `metrics_tests.rs` — Unit tests for [`super::super::metrics`]: series names and labels as they (~1142 tok)
 - `metrics.rs` — The per-process Prometheus registry, served at `GET /metrics` (ADR-0091). (~2930 tok)
@@ -729,8 +731,9 @@
 
 ## deploy/controller/rbac/
 
-- `clusterrole.yaml` — SPDX-License-Identifier: Apache-2.0 (~1838 tok)
+- `clusterrole.yaml` — SPDX-License-Identifier: Apache-2.0 (~1841 tok)
 - `clusterrolebinding.yaml` — SPDX-License-Identifier: Apache-2.0 (~135 tok)
+- `role-leader-election.yaml` — SPDX-License-Identifier: Apache-2.0 (~407 tok)
 - `role.yaml` — SPDX-License-Identifier: Apache-2.0 (~330 tok)
 - `rolebinding.yaml` — SPDX-License-Identifier: Apache-2.0 (~144 tok)
 - `serviceaccount.yaml` — SPDX-License-Identifier: Apache-2.0 (~80 tok)
@@ -738,7 +741,7 @@
 ## deploy/crds/
 
 - `banlieue.io_providerclasses.yaml` — K8s CustomResourceDefinition: providerclasses.banlieue.io (~7715 tok)
-- `banlieue.io_providers.yaml` — K8s CustomResourceDefinition: providers.banlieue.io (~10600 tok)
+- `banlieue.io_providers.yaml` — K8s CustomResourceDefinition: providers.banlieue.io (~10765 tok)
 - `banlieue.io_virtualmachineclaims.yaml` — K8s CustomResourceDefinition: virtualmachineclaims.banlieue.io (~2995 tok)
 - `banlieue.io_virtualmachinepools.yaml` — K8s CustomResourceDefinition: virtualmachinepools.banlieue.io (~9412 tok)
 - `banlieue.io_virtualmachines.yaml` — K8s CustomResourceDefinition: virtualmachines.banlieue.io (~8886 tok)
@@ -753,12 +756,3 @@
 - `infrastructure.banlieue.io_vsphereclusters.yaml` — K8s CustomResourceDefinition: vsphereclusters.infrastructure.banlieue.io (~3954 tok)
 - `infrastructure.banlieue.io_vspheremachines.yaml` — K8s CustomResourceDefinition: vspheremachines.infrastructure.banlieue.io (~6916 tok)
 - `infrastructure.banlieue.io_vspheremachinetemplates.yaml` — K8s CustomResourceDefinition: vspheremachinetemplates.infrastructure.banlieue.io (~4584 tok)
-
-## deploy/dashboards/
-
-- `banlieue-overview.json` (~2289 tok)
-- `README.md` — Project documentation (~223 tok)
-
-## deploy/imagebuilder/
-
-- `configmap.yaml` — SPDX-License-Identifier: Apache-2.0 (~398 tok)
