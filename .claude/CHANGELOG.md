@@ -1,5 +1,323 @@
 # Changelog
 
+## [2026-10-16 12:00] - dev-oidc-k0s.sh: append to an existing spec.api.extraArgs
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `scripts/dev-oidc-k0s.sh`: `attach` no longer refuses when `/etc/k0s/k0s.yaml`
+  already has `spec.api.extraArgs`. It classifies the `api:` section
+  (`API_ARGS_STATE_AWK`) and: appends `authentication-config:` to a plain block
+  of other flags (scoped to `api:`, so `controllerManager.extraArgs` is never
+  touched); creates the block when absent (as before); **refuses** when any
+  `oidc-*` flag is set there (kube-apiserver will not start with both those and
+  `--authentication-config`) or when `extraArgs` is flow-style/inline. The
+  backup, restart, readiness and reload-with-rollback steps are unchanged.
+
+### Why
+The first `attach` against a controller whose k0s config already carried extra
+API flags stopped with "add by hand", defeating the one-controller-at-a-time
+rollout the script exists for.
+
+### Impact
+- [ ] Requires cluster rollout
+- [x] Config change only
+- [ ] Documentation only
+
+## [2026-10-16 11:00] - dev-oidc-k0s.sh: honour SSH_IDENTITY; show why discovery failed
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `scripts/dev-oidc-k0s.sh`: `SSH_IDENTITY` (documented in usage by callers but
+  never read) now selects the private key for `SSH_USER`, offered alone
+  (`-i`, `IdentitiesOnly=yes`). When the discovery check fails it now runs one
+  visible attempt so the real error (ssh denied, sudo, DNS, TLS) is printed.
+
+### Why
+`attach` appeared to block for 90 s: ssh authenticated with the agent's key
+instead of the one named, was denied, and `verify_discovery` suppressed every
+error while retrying.
+
+### Impact
+- [ ] Requires cluster rollout
+- [x] Config change only
+- [ ] Documentation only
+
+## [2026-10-16 03:00] - dev-oidc-k0s.sh: `SKIP_DISCOVERY_CHECK` to attach before the issuer exists
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `scripts/dev-oidc-k0s.sh`: `attach` honours `SKIP_DISCOVERY_CHECK=true`,
+  which skips the pre-flight that every controller can fetch and trust the
+  issuer's discovery document, and prints a warning instead. `up` is unchanged
+  (it deploys Dex, so the check still runs).
+
+### Why
+`attach` against an `EXPOSE=external` issuer that did not exist yet sat in the
+90 s discovery retry loop (curl errors are suppressed, so it looked like a
+hang) and then refused to continue. Writing the API server config first and
+deploying Dex afterwards is a legitimate order: kube-apiserver starts with an
+unreachable issuer and only rejects that issuer's tokens.
+
+### Impact
+- [ ] Requires cluster rollout
+- [x] Config change only
+- [ ] Documentation only
+
+## [2026-10-16 09:40] - dev-oidc-k0s.sh: allow an empty username prefix when Dex is the only issuer
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `scripts/dev-oidc-k0s.sh`:
+  - `PREFIX="${PREFIX-github:}"`, not `${PREFIX:-github:}` — the `:-` form
+    treated an explicitly empty `PREFIX=""` the same as unset, silently
+    falling back to `"github:"` and making the empty-prefix case below
+    unreachable from the environment.
+  - `validate_issuers`: the empty-prefix refusal now only fires once more
+    than one issuer is actually enabled (`PREFIX`/`GOOGLE_PREFIX`/
+    `AUTH0_PREFIX`). With Dex as the sole issuer, `PREFIX=""` is accepted.
+  - New `EXPOSE=external` mode, alongside `local`/`tailscale`: for an OIDC
+    issuer already deployed and exposed by something other than this script
+    (a real `ClusterIssuer` behind an Ingress/Gateway, not this script's own
+    self-signed loopback cert or tailscale serve), with a certificate that
+    already chains to a trust store every controller already has. Treated
+    like `tailscale` everywhere a CA would otherwise need pushing/trusting
+    (`check_deps`, `verify_discovery`, `authn_ca`, `login_args`, `status`);
+    `up`/`certs`/`dex`/`expose`/`down` remain the other two modes' job, never
+    `external`'s — this mode only drives `attach`/`config`/`login`/
+    `kubeconfig` against an issuer the script did not create.
+- `docs/src/developer/oauth-clients.md`: clarified that the "never leave a
+  prefix empty" warning is scoped to the multi-issuer case this section
+  covers, not a blanket rule.
+
+### Why
+A single-Dex deployment with both a GitHub and an LDAP connector (one
+corporate identity per person, unlike the multi-issuer case this check
+otherwise guards) needs an unprefixed `preferred_username` for a downstream,
+username-keyed consumer with no prefix scheme of its own to recognise the
+identity. The existing check refused any empty prefix unconditionally, which
+was stricter than the actual risk it exists to catch: a second issuer's
+namespace to collide with. No such risk exists with one issuer.
+
+That Dex instance is deployed by a different repository entirely (not this
+script's `up`/`certs`/`dex`), behind a real CA-issued certificate — reusing
+this script for its apiserver-trust wiring instead of maintaining a second,
+parallel copy of the same `attach` logic needed `EXPOSE=external` to exist,
+and exposed the `PREFIX` expansion bug above (never hit before because every
+existing caller left `PREFIX` at its non-empty default).
+
+### Impact
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Behavior change, opt-in only: `PREFIX=""` and `EXPOSE=external` are
+      both new, explicit opt-ins. Existing `local`/`tailscale` callers and
+      any non-empty `PREFIX` are unaffected.
+
+## [2026-10-16 02:10] - imagebuilder: fix the OSArtifact delete/recreate race on an in-place image bump
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `crates/banlieue-imagebuilder/src/reconciler/vmimage.rs`: new pure
+  `artifact_gate` (`Proceed` / `DeleteForRebuild` / `AwaitTeardown`) over a
+  `LiveArtifactView`. A stale or foreign `OSArtifact` is now deleted with
+  **foreground** propagation (`rebuild_delete_params`), and while the old
+  artifact has a `deletionTimestamp`, or its `<image>-build-artifacts` PVC does,
+  the reconciler neither deletes again nor SSA-applies; it records a waiting
+  status and requeues. Previously: background delete, then a same-name apply
+  on the next pass.
+- `crates/banlieue-imagebuilder/src/reconciler/vmimage_tests.rs`: gate and
+  delete-params tests.
+- `deploy/imagebuilder/rbac/role.yaml` and
+  `crates/banlieue-operator/src/bootstrap.rs` (+ test): read-only `get` on
+  `persistentvolumeclaims` in the build namespace, so the gate can see the
+  PVC's `deletionTimestamp`. The two must stay in step.
+
+### Why
+Live rollout e2e (see the entry below) timed out twice: the recreated
+same-name `OSArtifact` adopted the old, terminating PVC/build pod, whose
+owner UID was then garbage-collected. The cause is inferred from the evidence
+below, not observed directly; the live rerun is the confirmation.
+
+### Impact
+- [x] Requires cluster rollout (rebuild and deploy the imagebuilder image; the
+      Role change applies with it)
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-10-16 01:15] - vSphere rollout e2e: configurable window; found the imagebuilder rebuild race
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `crates/banlieue-provider-vsphere/tests/e2e_pool_claim.rs`:
+  `BANLIEUE_E2E_ROLLOUT_TIMEOUT_SECS` (new, default 2400 s, was a fixed 900 s)
+  for the rollout test's wait. A managed-build roll is a full ISO build, one
+  vCenter import Job per zone, then two provisions, so 900 s expired while
+  availability was correctly held at `warmReplicas`.
+
+### Why
+Two live runs of `bumping_the_image_rolls_the_pool_without_dropping_below_warm`
+with a real second image (`debian13:v2026.10.16`, built and pushed for the
+purpose) both timed out, the second after the full 2400 s. Neither tripped the
+availability assertion. The image never became `Ready` after the bump.
+
+Evidence gathered (read-only) for why:
+- `banlieue-imagebuilder` logged `OSArtifact is stale or foreign; deleting for
+  rebuild` 10 s after the bump, then re-applied an `OSArtifact` of the **same
+  name** on the next pass (`reconciler/vmimage.rs`, the SEC-005 path).
+- The build-artifacts PVC is owned by the `OSArtifact` **by UID**
+  (`<image>-build-artifacts`, ownerReference uid = `status.buildArtifact.osArtifactUid`)
+  and has the `pvc-protection` finalizer.
+- Run 1's events: the three per-zone import pods were `FailedScheduling:
+  persistentvolumeclaim "<image>-build-artifacts" not found`.
+- Run 2: no second build pod and no second set of import Jobs ever appeared in
+  40 minutes while the imagebuilder re-reconciled the image every 30 s.
+
+Working diagnosis (inferred, not observed directly): deleting an `OSArtifact`
+and recreating one with the same name within the same second lets the new
+artifact adopt the old one's still-terminating PVC and build pod, and then
+the garbage collector removes the PVC the old UID owned. `NOT YET FIXED`;
+no imagebuilder change in this entry.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+Affects any managed-build `VMImage` whose `importFrom` is edited in place.
+Creating a new `VMImage` per version (the current practice, e.g.
+`debian-dev-v2026.10.14`) does not take this path. No ADR/CALM or threat-model
+change. `cargo fmt` and `cargo clippy --all-targets --all-features -D warnings`
+pass for `banlieue-provider-vsphere`.
+
+## [2026-10-16 00:00] - vSphere pool/claim e2e: remaining two tests live, rollout bump fixed
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `crates/banlieue-provider-vsphere/tests/e2e_pool_claim.rs`:
+  - `BANLIEUE_E2E_IMAGE_BUMP_SOURCE` (new): the rollout test bumps
+    `spec.sources[0].importFrom` to this value instead of `spec.osVersion`
+    when set. `pool.rs::image_revision` prefers
+    `status.buildArtifact.osArtifactUid` — the imported `OSArtifact`'s own
+    Kubernetes UID — over `metadata.generation` for any image with a
+    managed build, and a managed build only gets a new `OSArtifact` (and
+    so a new UID) from a new `importFrom` digest. The fixture image
+    (`debian-dev-v0.4.0`, a `Url` source) is exactly this shape, so bumping
+    only `osVersion` moves `generation` but never the revision the pool
+    watches — the pool then correctly never rolls, and the wait times out.
+    Without the env var, the test now warns loudly about this instead of
+    silently bumping the wrong field.
+
+### Why
+First live run (2026-10-15) of `deleting_a_pool_leaves_a_claimed_vm_running`
+and `bumping_the_image_rolls_the_pool_without_dropping_below_warm` against a
+scratch pool: the pool-deletion test passed clean (26.99s — pool deleted,
+claimed VM confirmed still running on vCenter). The rollout test timed out
+after 900s; `banlieue-imagebuilder` logs showed the scratch image's
+`generation` reaching 2 right after the bump and reconciling every 5
+minutes for the full window with no new build activity — confirming the
+revision genuinely never changed, not a hung reconciler. Root-caused to the
+`osVersion`-vs-managed-build mismatch above; fixed in the test, not banlieue.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+No ADR/CALM pass: a test-only fix, no architectural change. `cargo fmt` /
+`cargo clippy --all-targets --all-features -D warnings` pass. Not yet
+re-run with a real `BANLIEUE_E2E_IMAGE_BUMP_SOURCE` value — needs a second
+real artifact tag from the user's registry, which this suite deliberately
+never hardcodes (`rules/no-real-infrastructure.md`).
+
+## [2026-10-15 10:00] - ADR-0100 (Proposed): sandbox guest software is consumer image content
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0100-sandbox-guest-software-is-consumer-image-content.md`:
+  banlieue ships none of the sandbox guest software (in-guest agent, SPIFFE
+  agent, forwarder). The consumer supplies it through `VMImage` layers. A
+  template for a `tpmEnabled` pool carries no per-VM identity, and per-VM
+  keys are generated on first boot onto a partition sealed by ADR-0088.
+  Amends ADR-0049 Decision 3 on acceptance.
+
+### Why
+ADR-0088 turns pool members into clones of one installed disk, so ADR-0049
+Decision 3's "generated during the per-VM install" no longer holds for that
+path. ADR-0097 Decision 5 puts the software itself outside banlieue.
+
+### Impact
+- [x] Documentation only
+
+## [2026-10-14 00:00] - vSphere pool/claim e2e suite: roadmap 17's open claim-bind gap
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `crates/banlieue-provider-vsphere/tests/e2e_pool_claim.rs` (new): pool →
+  real vCenter VMs → claim → release, end to end — the vSphere twin of
+  `banlieue-provider-libvirt/tests/e2e_pool_claim.rs`. Three `#[ignore]`d
+  tests: a claimed member is destroyed on vCenter when its claim releases,
+  a pool deletion leaves a claimed VM running, and an image bump rolls the
+  pool without availability dropping below `warmReplicas`. On-host
+  verification connects directly to vCenter with the same
+  `VSphereClient`/`VimClientFactory` pair `live_vcenter.rs` uses (production
+  JSON transport, not SOAP/govc); "exists" is read through
+  `VSphereClient::power_state`, matching `ManagedObjectNotFound` the same
+  way `destroy_vm` already does, rather than adding a second existence
+  check. Not ported: the libvirt suite's sabotage/reap test — its injury
+  (live NIC link-down / installer eject) has no equivalent on
+  `VSphereClient` today; that is follow-up work, not this gap.
+  - `BANLIEUE_E2E_POOL=<name>`: the claim-release test can bind against an
+    already-running pool instead of creating a scratch one — reads
+    `warmReplicas` from the live pool's spec and waits for a genuine
+    member-count refill rather than a hardcoded target, and its teardown
+    deletes only the claim it created, never the pool. The other two tests
+    refuse to run while this is set (one deletes the pool, one bumps its
+    image — unsafe against a pool you don't own).
+- `crates/banlieue-provider-vsphere/Cargo.toml`: added `getrandom` (already
+  a workspace dependency, used by the libvirt suite) to `[dev-dependencies]`
+  for the new suite's run-unique object-name suffixes.
+- `Makefile`: `vsphere-pool-claim-e2e` target, mirroring `pool-claim-e2e`'s
+  shape and env-var contract (`BANLIEUE_E2E_PROVIDER/_IMAGE/_CLASS`, plus
+  `VSPHERE_ENDPOINT/_USERNAME/_PASSWORD` for the on-host checks).
+
+### Why
+Roadmap 17 names this as its one explicitly open item:
+"`VirtualMachineClaim` itself is not yet tested against a vSphere-backed
+pool ... that is an expectation, not yet a live result." `VirtualMachinePool`
+is already confirmed live on vSphere (2026-09-23); claim bind/hold/release
+is backend-neutral (ADR-0047 Decision 9), so the gap was purely test
+coverage, not missing code.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+No ADR/CALM pass: this adds test coverage for already-implemented,
+already-decided architecture (ADR-0046/0047) against an existing backend
+contract (`VSphereClient`) — no new CRD, controller, provider, contract, or
+trust boundary. `cargo fmt` / `cargo clippy --all-targets --all-features -D
+warnings` / `cargo test --workspace` all pass.
+
+First live run (2026-10-15) found an unrelated, pre-existing bug on the
+`sandbox-pool` fixture: its `VMImage`'s cloud-config never reported
+`guestinfo.banlieue.phase=installed`, so every member hit
+`provisioningTimeoutSeconds` and was reaped and replaced in an endless
+loop (`GuestReady` reason `GuestNotAnnounced`) — see ADR-0100, fixed by
+rebuilding the image with the correct cloud-config layer
+(`examples/16-cloud-config-guest-phase.yaml`). Not this suite's bug; the
+suite is what surfaced it.
 ## [2026-10-15 09:00] - Provider contract docs: own machines, Lease liveness, ownership markers
 
 **Author:** Erick Bourgeois

@@ -34,7 +34,7 @@ use banlieue_provider_sdk::reconciler::{requeue_default, requeue_long, requeue_o
 use banlieue_provider_sdk::scheduling::BuildScheduling;
 use banlieue_provider_sdk::ssa::FIELD_MANAGER_IMAGEBUILDER;
 use k8s_openapi::api::batch::v1::Job;
-use k8s_openapi::api::core::v1::{Pod, Secret};
+use k8s_openapi::api::core::v1::{PersistentVolumeClaim, Pod, Secret};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference;
 use kube::api::{
     Api, ApiResource, DeleteParams, DynamicObject, GroupVersionKind, ListParams, Patch, PatchParams,
@@ -574,6 +574,65 @@ pub fn spec_matches(
         && artifact_flag_matches
 }
 
+/// What the reconciler knows about the live `OSArtifact`, reduced to the
+/// three facts [`artifact_gate`] decides on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LiveArtifactView {
+    /// Owner reference matches this `VMImage`'s UID ([`owner_uid_matches`]).
+    pub owned: bool,
+    /// Spec requests exactly the current build ([`spec_matches`]).
+    pub current: bool,
+    /// `metadata.deletionTimestamp` is set — teardown is in flight.
+    pub terminating: bool,
+}
+
+/// What to do about the `OSArtifact` before applying the desired one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArtifactGate {
+    /// Nothing in the way: apply the desired `OSArtifact`.
+    Proceed,
+    /// Live artifact is stale or foreign: delete it, then wait.
+    DeleteForRebuild,
+    /// A previous artifact (or its PVC) is still being torn down: do not
+    /// apply, do not delete again — requeue.
+    AwaitTeardown,
+}
+
+/// Decide how to proceed given the live `OSArtifact` and whether its
+/// artifacts PVC is mid-deletion.
+///
+/// The `OSArtifact` name is deterministic (`<image>-build`), and so is its
+/// PVC (`<image>-build-artifacts`), which is owner-referenced **by UID**.
+/// Recreating the artifact while the old one or its PVC is still terminating
+/// makes the new one adopt a volume whose owner UID is about to be
+/// garbage-collected, so the volume vanishes under the build and the import
+/// Jobs never schedule. The only safe order is: delete, wait until both are
+/// gone, then create.
+pub fn artifact_gate(live: Option<LiveArtifactView>, pvc_terminating: bool) -> ArtifactGate {
+    let Some(live) = live else {
+        return if pvc_terminating {
+            ArtifactGate::AwaitTeardown
+        } else {
+            ArtifactGate::Proceed
+        };
+    };
+    if live.terminating {
+        return ArtifactGate::AwaitTeardown;
+    }
+    if !live.owned || !live.current {
+        return ArtifactGate::DeleteForRebuild;
+    }
+    ArtifactGate::Proceed
+}
+
+/// Delete parameters for a stale `OSArtifact`: **foreground** propagation, so
+/// the object stays (with a `deletionTimestamp`) until its dependents — the
+/// build pod and the artifacts PVC — are gone, which is what lets
+/// [`artifact_gate`] wait on the object alone.
+pub fn rebuild_delete_params() -> kube::api::DeleteParams {
+    kube::api::DeleteParams::foreground()
+}
+
 /// Minimal view of an `OSArtifact.status` this reconciler needs — extracted
 /// once from the live object so the mapping logic below is pure and
 /// testable without a live `kube::Api`.
@@ -875,40 +934,58 @@ pub async fn reconcile(image: Arc<VMImage>, ctx: Arc<Context>) -> Result<Action>
         Err(e) => return Err(Error::Kube(e)),
     };
 
-    if let Some(obj) = &live {
-        let owned = owner_uid_matches(obj.metadata.owner_references.as_deref(), &uid);
-        let current = spec_matches(
+    let live_view = live.as_ref().map(|obj| LiveArtifactView {
+        owned: owner_uid_matches(obj.metadata.owner_references.as_deref(), &uid),
+        current: spec_matches(
             &obj.data,
             source.import_from.as_deref().unwrap_or_default(),
             arch_str(&image.spec.architecture),
             &kind,
             image.spec.trusted_boot.as_ref(),
+        ),
+        terminating: obj.metadata.deletion_timestamp.is_some(),
+    });
+    let pvc_api: Api<PersistentVolumeClaim> =
+        Api::namespaced(ctx.client.clone(), &ctx.build_namespace);
+    let pvc_terminating = match pvc_api.get_opt(&artifacts_pvc_name(&os_name)).await? {
+        Some(pvc) => pvc.metadata.deletion_timestamp.is_some(),
+        None => false,
+    };
+
+    let gate = artifact_gate(live_view, pvc_terminating);
+    if gate != ArtifactGate::Proceed {
+        let message = match gate {
+            ArtifactGate::DeleteForRebuild => {
+                info!(
+                    owned = live_view.is_some_and(|v| v.owned),
+                    current = live_view.is_some_and(|v| v.current),
+                    "OSArtifact is stale or foreign; deleting for rebuild"
+                );
+                os_api.delete(&os_name, &rebuild_delete_params()).await?;
+                "replaced a stale or foreign OSArtifact; rebuild starts once it is gone"
+            }
+            _ => {
+                info!(
+                    pvc_terminating,
+                    "previous OSArtifact is still being torn down; waiting before recreating"
+                );
+                "waiting for the previous OSArtifact and its volume to be removed"
+            }
+        };
+        let view = KairosArtifactStatusView {
+            phase: None,
+            message: Some(message.to_string()),
+        };
+        let build_status = compute_build_artifact_status(
+            &os_name,
+            kind.clone(),
+            &view,
+            source.checksum.as_deref(),
+            None,
+            image.spec.trusted_boot.is_some(),
         );
-        if !owned || !current {
-            info!(
-                owned,
-                current, "OSArtifact is stale or foreign; deleting for rebuild"
-            );
-            os_api
-                .delete(&os_name, &kube::api::DeleteParams::default())
-                .await?;
-            let view = KairosArtifactStatusView {
-                phase: None,
-                message: Some(
-                    "replaced a stale or foreign OSArtifact; rebuild starts next pass".to_string(),
-                ),
-            };
-            let build_status = compute_build_artifact_status(
-                &os_name,
-                kind.clone(),
-                &view,
-                source.checksum.as_deref(),
-                None,
-                image.spec.trusted_boot.is_some(),
-            );
-            patch_vmimage_status(&ctx, &name, build_status).await?;
-            return Ok(requeue_default());
-        }
+        patch_vmimage_status(&ctx, &name, build_status).await?;
+        return Ok(requeue_default());
     }
 
     // ADR-0037: if cloud_configs is non-empty, fetch + merge + SSA a merged

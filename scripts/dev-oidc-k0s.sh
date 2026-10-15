@@ -43,9 +43,13 @@
 #   BANLIEUE_GOOGLE_CLIENT_ID, or BANLIEUE_AUTH0_ISSUER plus
 #   BANLIEUE_AUTH0_CLIENT_ID, and `attach` writes them in; the API server
 #   reloads the file, so nothing restarts. Each issuer gets its own username
-#   prefix (github:, google:, auth0:), and `attach` refuses prefixes that are
-#   empty, equal, or a prefix of one another: the prefix is the only part of
-#   an authenticated username that says which issuer vouched for it.
+#   prefix (github:, google:, auth0:), and once more than one issuer is
+#   enabled, `attach` refuses prefixes that are empty, equal, or a prefix of
+#   one another: the prefix is the only part of an authenticated username
+#   that says which issuer vouched for it. With Dex as the only issuer
+#   (no Google/Auth0), PREFIX="" is allowed -- every Dex connector resolves
+#   to the same identity namespace, so there is no second issuer to collide
+#   with, and some downstream consumers need the unprefixed username.
 #   PROVIDER=google|auth0 points `login`, `kubeconfig` and `grant` at one of
 #   them. Provider-side registration: docs/src/developer/oauth-clients.md.
 #
@@ -63,6 +67,14 @@ NODE_PORT="${NODE_PORT:-32000}"
 #              certificate. No private CA to trust anywhere, and any tailnet
 #              device (a laptop running kubectl) logs in with no tunnels.
 #              The controllers must be on the tailnet to reach it.
+#   external   Dex (or any OIDC issuer) already deployed and exposed by
+#              something other than this script -- a real ClusterIssuer
+#              behind an Ingress/Gateway, for instance -- with a certificate
+#              that already chains to a trust store every controller and
+#              this machine already has. ISSUER must be set explicitly; this
+#              script then only manages the apiserver trust config and
+#              login, never Dex itself, its certs, or its exposure (`up`,
+#              `certs`, `dex`, `expose`, `down` are for the other two modes).
 EXPOSE="${EXPOSE:-local}"
 if [[ -z "${ISSUER:-}" ]]; then
   if [[ "$EXPOSE" == "tailscale" ]]; then
@@ -85,6 +97,11 @@ WORK_DIR="${WORK_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/banlieue-oidc-k0s}"
 NAMESPACE="${NAMESPACE:-banlieue-system}"
 # root on bare metal; any other user must have passwordless sudo.
 SSH_USER="${SSH_USER:-root}"
+# Private key for SSH_USER. Empty: ssh's own defaults and agent. When set it
+# is the ONLY key offered (IdentitiesOnly), so a busy agent cannot exhaust
+# the server's attempts before this one is tried.
+SSH_IDENTITY="${SSH_IDENTITY:-}"
+SSH_IDENTITY="${SSH_IDENTITY/#\~/$HOME}"
 # Space-separated controller addresses. Empty: every control-plane node's
 # InternalIP, from the cluster.
 CONTROLLERS="${CONTROLLERS:-}"
@@ -92,9 +109,12 @@ CONTROLLERS="${CONTROLLERS:-}"
 # upstream identity provider, so `github:octocat` cannot be mistaken for, or
 # collide with, any other authenticator's subject. Groups need it most: Dex's
 # GitHub connector spells a team `org:team`, so unprefixed, a GitHub org called
-# `system` could hand out `system:masters`. An empty PREFIX means the default,
-# never no prefix.
-PREFIX="${PREFIX:-github:}"
+# `system` could hand out `system:masters`. Unset (the variable absent from
+# the environment) means the default "github:"; PREFIX="" is a deliberate
+# empty prefix, only accepted by validate_issuers when Dex is the sole
+# issuer (see there for why). The `-` (not `:-`) expansion is required for
+# that: `:-` would treat an explicitly empty PREFIX the same as unset.
+PREFIX="${PREFIX-github:}"
 # Direct issuers, each added only when its client ID is set. The client
 # secrets are for `login` (kubelogin) only and never reach a controller.
 GOOGLE_ISSUER="https://accounts.google.com"
@@ -132,6 +152,12 @@ OIDC_USER="${OIDC_USER:-banlieue-oidc}"
 APISERVER_PORT="${APISERVER_PORT:-6443}"
 RESTART_TIMEOUT_SECS="${RESTART_TIMEOUT_SECS:-300}"
 DISCOVERY_TIMEOUT_SECS="${DISCOVERY_TIMEOUT_SECS:-90}"
+# `attach` normally refuses to touch a controller until it can fetch the
+# issuer's discovery document. Set this to true to attach BEFORE the issuer
+# exists (the config is written first, Dex deployed after). kube-apiserver
+# starts fine with an unreachable issuer and only rejects that issuer's
+# tokens, so other authentication (client certificates) is unaffected.
+SKIP_DISCOVERY_CHECK="${SKIP_DISCOVERY_CHECK:-false}"
 # kube-apiserver picks a changed file up on its own, but not instantly.
 RELOAD_TIMEOUT_SECS="${RELOAD_TIMEOUT_SECS:-150}"
 
@@ -141,7 +167,11 @@ warn() { echo "!!! $*" >&2; }
 check_deps() {
   local missing=()
   local tools=(kubectl openssl ssh nc)
-  if [[ "$EXPOSE" == "tailscale" ]]; then tools+=(tailscale curl); else tools+=(docker); fi
+  case "$EXPOSE" in
+    tailscale) tools+=(tailscale curl) ;;
+    external)  tools+=(curl) ;;
+    *)         tools+=(docker) ;;
+  esac
   ! auth0_enabled || tools+=(curl python3)
   for c in "${tools[@]}"; do
     command -v "$c" >/dev/null 2>&1 || missing+=("$c")
@@ -188,12 +218,22 @@ validate_issuers() {
 
   # A username prefix is the only part of request.userInfo that says which
   # issuer vouched for a name. Empty, shared or nested prefixes let an
-  # account at one issuer pass for a same-named account at another.
+  # account at one issuer pass for a same-named account at another -- but
+  # only once there IS more than one issuer's namespace in play. With Dex as
+  # the only issuer (no Google/Auth0 enabled), every connector behind it
+  # still resolves to one corporate identity -- a GitHub login and an
+  # LDAP/AD username for the same person are the same identity, not two that
+  # could collide -- so an empty PREFIX is a legitimate, deliberate choice
+  # there -- required, in fact, for an
+  # unprefixed downstream consumer (like a username-keyed activation record)
+  # to recognise the identity at all. The refusal below only fires once a
+  # second issuer actually exists to collide with.
   local prefixes=("$PREFIX") i j
   ! google_enabled || prefixes+=("$GOOGLE_PREFIX")
   ! auth0_enabled  || prefixes+=("$AUTH0_PREFIX")
   for ((i = 0; i < ${#prefixes[@]}; i++)); do
-    [[ -n "${prefixes[i]}" ]] || { warn "an issuer has an empty username prefix"; exit 1; }
+    [[ ${#prefixes[@]} -eq 1 || -n "${prefixes[i]}" ]] \
+      || { warn "an issuer has an empty username prefix"; exit 1; }
     [[ "${prefixes[i]}" != system:* ]] \
       || { warn "prefix '${prefixes[i]}' is in the reserved system: namespace"; exit 1; }
     for ((j = 0; j < ${#prefixes[@]}; j++)); do
@@ -217,7 +257,9 @@ on() {
   local sudo="" script
   [[ "$SSH_USER" == "root" ]] || sudo="sudo -n"
   script="$(printf '%s' "$*" | base64 -w0)"
-  ssh -o BatchMode=yes -o ConnectTimeout=10 "${SSH_USER}@${host}" \
+  local ssh_id=()
+  [[ -z "$SSH_IDENTITY" ]] || ssh_id=(-i "$SSH_IDENTITY" -o IdentitiesOnly=yes)
+  ssh -o BatchMode=yes -o ConnectTimeout=10 ${ssh_id[@]+"${ssh_id[@]}"} "${SSH_USER}@${host}" \
     "echo $script | base64 -d > /tmp/.banlieue-oidc.\$\$ && $sudo sh /tmp/.banlieue-oidc.\$\$; rc=\$?; rm -f /tmp/.banlieue-oidc.\$\$; exit \$rc"
 }
 
@@ -383,12 +425,17 @@ verify_discovery() {
   for host in $(controllers); do
     local deadline=$((SECONDS + DISCOVERY_TIMEOUT_SECS)) ok=false
     while (( SECONDS <= deadline )); do
-      # tailscale: a public certificate, so the node's own trust store —
-      # which is what kube-apiserver uses when the config names no CA.
-      local cacert=""
-      [[ "$EXPOSE" == "tailscale" ]] || cacert="--cacert /tmp/banlieue-oidc-ca.pem"
-      if on "$host" "cat >/tmp/banlieue-oidc-ca.pem && \
-          curl -fsS $cacert ${ISSUER}/.well-known/openid-configuration >/dev/null; \
+      # tailscale and external: a publicly-trusted certificate, so the
+      # node's own trust store is what kube-apiserver uses when the config
+      # names no CA -- nothing to push. local is the only mode with a
+      # private CA (this script's own), which has to reach the controller
+      # before curl can trust it there.
+      if [[ "$EXPOSE" == "tailscale" || "$EXPOSE" == "external" ]]; then
+        if on "$host" "curl -fsS ${ISSUER}/.well-known/openid-configuration >/dev/null" 2>/dev/null; then
+          ok=true; break
+        fi
+      elif on "$host" "cat >/tmp/banlieue-oidc-ca.pem && \
+          curl -fsS --cacert /tmp/banlieue-oidc-ca.pem ${ISSUER}/.well-known/openid-configuration >/dev/null; \
           rc=\$?; rm -f /tmp/banlieue-oidc-ca.pem; exit \$rc" <"$WORK_DIR/ca.pem" 2>/dev/null; then
         ok=true; break
       fi
@@ -397,6 +444,11 @@ verify_discovery() {
     if [[ "$ok" != "true" ]]; then
       warn "$host cannot fetch and trust ${ISSUER}/.well-known/openid-configuration"
       warn "  Until it can, its API server would reject every OIDC token."
+      # The retry loop above hides every error; show one attempt's, so an ssh
+      # failure (key, user, sudo) is not mistaken for an unreachable issuer.
+      warn "  one more attempt, plain curl (no private CA), as ${SSH_USER}@${host}:"
+      on "$host" "curl -sS -m 10 -o /dev/null ${ISSUER}/.well-known/openid-configuration" 2>&1 \
+        | sed 's/^/    /' >&2 || true
       exit 1
     fi
     log "  ✓ $host fetches and trusts $ISSUER"
@@ -419,7 +471,7 @@ verify_discovery() {
 # a tailscale issuer has a public one, and kube-apiserver then uses the
 # system trust store.
 authn_ca() {
-  [[ "$EXPOSE" == "tailscale" ]] && return 0
+  [[ "$EXPOSE" == "tailscale" || "$EXPOSE" == "external" ]] && return 0
   echo "      certificateAuthority: |"
   sed 's/^/        /' "$WORK_DIR/ca.pem"
 }
@@ -434,8 +486,9 @@ jwt:
       audiences: ["$CLIENT_ID"]
 $(authn_ca)
     claimMappings:
-      # Readable identities (${PREFIX}<github-login>). ADR-0047's subject
-      # policy must carry the same value as its usernamePrefix param.
+      # Readable identities (${PREFIX}<login from whichever connector
+      # authenticated this request>). ADR-0047's subject policy must carry
+      # the same value as its usernamePrefix param.
       username: { claim: preferred_username, prefix: "${PREFIX}" }
       groups: { claim: groups, prefix: "${PREFIX}" }
 $(authn_google)
@@ -529,6 +582,13 @@ await_reload() {
   done
 }
 
+# What spec.api in k0s.yaml holds, for attach_controller: prints `oidc` (any
+# oidc-* flag under it), `odd` (extraArgs that is not a plain block map, e.g.
+# `extraArgs: {}`), `extra` (a block of other flags) or `none`. Scoped to the
+# api section: controllerManager and others have an extraArgs at the same
+# indent. Single-quoted into a remote awk, so no quote characters in it.
+API_ARGS_STATE_AWK='/^  api:$/ {a=1; next} a && /^  [A-Za-z]/ {a=0} a && /^[ ]+oidc-[a-z-]+:/ {o=1} a && /^    extraArgs:[ ]*[^ #]/ {x=1} a && /^    extraArgs:[ ]*(#.*)?$/ {e=1} END {print o ? "oidc" : (x ? "odd" : (e ? "extra" : "none"))}'
+
 attach_controller() {
   local host="$1"
   log "controller $host"
@@ -548,15 +608,27 @@ attach_controller() {
   if on "$host" "grep -q 'authentication-config:' $K0S_CONFIG"; then
     log "  $K0S_CONFIG already names the file; the API server reloads it on change"
   else
-    if on "$host" "grep -q '^    extraArgs:' $K0S_CONFIG"; then
-      warn "  $K0S_CONFIG already has spec.api.extraArgs; add by hand:"
-      warn "    authentication-config: $AUTHN_FILE"
-      exit 1
-    fi
+    local state insert_awk
+    state="$(on "$host" "awk '$API_ARGS_STATE_AWK' $K0S_CONFIG")"
+    case "$state" in
+      oidc)
+        warn "  $K0S_CONFIG sets oidc-* flags under spec.api.extraArgs. kube-apiserver refuses to"
+        warn "  start with both those and --authentication-config; migrate them into the"
+        warn "  issuer config first (see \`$0 config\`), remove them, then re-run. Not touching it."
+        exit 1 ;;
+      odd)
+        warn "  spec.api.extraArgs in $K0S_CONFIG is not a plain block map (flow style or inline"
+        warn "  value); add by hand:  authentication-config: $AUTHN_FILE"
+        exit 1 ;;
+      extra) # a block of other flags: append beside them
+        insert_awk='/^  api:$/ {a=1; print; next} a && /^  [A-Za-z]/ {a=0} {print} a && /^    extraArgs:[ ]*(#.*)?$/ {print "      authentication-config: " f}' ;;
+      *)     # no extraArgs at all: create the block
+        insert_awk='{print} /^  api:$/ {print "    extraArgs:"; print "      authentication-config: " f}' ;;
+    esac
     # awk, not `sed -i` with \n: Kairos ships a non-GNU sed. `cat >` keeps
     # the file's inode and mode.
     on "$host" "cp -p $K0S_CONFIG $K0S_BACKUP && \
-      awk -v f='$AUTHN_FILE' '{print} /^  api:\$/ {print \"    extraArgs:\"; print \"      authentication-config: \" f}' \
+      awk -v f='$AUTHN_FILE' '$insert_awk' \
         $K0S_BACKUP >$K0S_CONFIG.tmp && cat $K0S_CONFIG.tmp >$K0S_CONFIG && rm -f $K0S_CONFIG.tmp && \
       grep -q 'authentication-config: $AUTHN_FILE' $K0S_CONFIG"
     log "  restarting k0scontroller"
@@ -685,7 +757,8 @@ login_args() {
       printf '%s\n' "--exec-arg=--oidc-issuer-url=$ISSUER" "--exec-arg=--oidc-client-id=$CLIENT_ID" \
         --exec-arg=--oidc-extra-scope=profile --exec-arg=--oidc-extra-scope=email \
         --exec-arg=--oidc-extra-scope=groups
-      [[ "$EXPOSE" == "tailscale" ]] || echo "--exec-arg=--certificate-authority=$WORK_DIR/ca.pem"
+      [[ "$EXPOSE" == "tailscale" || "$EXPOSE" == "external" ]] \
+        || echo "--exec-arg=--certificate-authority=$WORK_DIR/ca.pem"
       ;;
     google)
       # No `groups` scope: Google has no such claim and refuses the request.
@@ -750,7 +823,7 @@ setup_login() {
     "${args[@]}" >/dev/null
   kubectl config set-context "$ctx" --cluster="$cluster" \
     --user="$ctx" --namespace="$NAMESPACE" >/dev/null
-  if [[ "$PROVIDER" == "dex" && "$EXPOSE" != "tailscale" ]]; then
+  if [[ "$PROVIDER" == "dex" && "$EXPOSE" == "local" ]]; then
     log "context '$ctx' created. Remote browser? Forward first:"
     log "  ssh -L 8000:127.0.0.1:8000 -L ${NODE_PORT}:127.0.0.1:${NODE_PORT} <this host>"
   fi
@@ -842,7 +915,7 @@ status() {
     on "$host" "sed -n 's/^ *url: /    issuer: /p' $AUTHN_FILE" 2>/dev/null || true
   done
   echo "expose:      $EXPOSE"
-  if [[ "$EXPOSE" == "tailscale" ]]; then
+  if [[ "$EXPOSE" == "tailscale" || "$EXPOSE" == "external" ]]; then
     echo -n "issuer:      "; (curl -fsS "${ISSUER}/.well-known/openid-configuration" >/dev/null 2>&1 && echo "answering") || echo DOWN
   else
     echo -n "proxy:       "; (nc -z 127.0.0.1 "$NODE_PORT" 2>/dev/null && echo "127.0.0.1:$NODE_PORT open") || echo DOWN
@@ -887,7 +960,16 @@ main() {
     certs)  check_deps; make_certs ;;
     dex)    check_deps; make_certs; deploy_dex; verify_discovery ;;
     verify) check_deps; verify_discovery ;;
-    attach) check_deps; validate_issuers; verify_discovery; attach_all ;;
+    attach)
+      check_deps; validate_issuers
+      if [[ "$SKIP_DISCOVERY_CHECK" == "true" ]]; then
+        warn "SKIP_DISCOVERY_CHECK=true: not checking that controllers can reach ${ISSUER};"
+        warn "  its tokens are rejected until it is reachable and its certificate trusted"
+      else
+        verify_discovery
+      fi
+      attach_all
+      ;;
     config) validate_issuers; authn_config ;;
     expose) check_deps; expose ;;
     kubeconfig) require_provider; print_kubeconfig ;;
@@ -919,7 +1001,8 @@ Env: KUBECONFIG, SSH_USER (default root; else passwordless sudo),
      BANLIEUE_AUTH0_ISSUER, BANLIEUE_AUTH0_CLIENT_ID[/SECRET],
      AUTH0_PREFIX (default auth0:), AUTH0_GROUPS_CLAIM,
      PROVIDER (dex | google | auth0, for login/kubeconfig/grant),
-     GRANT_USER (<prefix><login>).
+     SSH_IDENTITY (private key for SSH_USER), GRANT_USER (<prefix><login>),
+     SKIP_DISCOVERY_CHECK (true: attach before the issuer exists).
 GitHub App callback URL: ${ISSUER}/callback
 EOF
       exit 1

@@ -6,6 +6,9 @@ SPDX-License-Identifier: Apache-2.0
 
 - **Status:** Accepted
 - **Date:** 2026-10-06
+- **Amended:** 2026-10-08 (Decision 6, new — a `v1beta1` manifest variant for
+  Kubernetes 1.34–1.35, found necessary live against a real k0s v1.35.1+k0s.1
+  cluster)
 - **Deciders:** Erick Bourgeois
 - **Related:** [ADR-0007](0007-admission-policies.md) (ValidatingAdmissionPolicy
   posture this extends to mutation); [ADR-0047](0047-virtualmachineclaim.md)
@@ -139,6 +142,29 @@ no JSONPatch index arithmetic needed.
    `description`/notes field, neither of which is a 1:1 fit. libvirt has only
    an XML `<metadata>` block. Both need their own design, deferred to a
    follow-up ADR rather than guessed here.
+
+6. **(Amended 2026-10-08) A `v1beta1` manifest variant is shipped for
+   pre-GA clusters, applied explicitly instead of the `v1` file — never
+   both.** `deploy/admission/compat/virtualmachine-created-by.v1beta1.yaml`
+   is byte-identical to `deploy/admission/virtualmachine-created-by.yaml`
+   except `apiVersion`. Found necessary live: a real k0s v1.35.1+k0s.1
+   cluster (Kubernetes 1.35, beta stage) serves
+   `MutatingAdmissionPolicy`/`MutatingAdmissionPolicyBinding` only as
+   `admissionregistration.k8s.io/v1beta1`, never `v1` — the `v1` floor this
+   ADR originally stated is still the only version with the feature **on by
+   default**, but a site that wants it sooner can turn it on explicitly,
+   pre-GA, with both `--feature-gates=MutatingAdmissionPolicy=true` and
+   `--runtime-config=admissionregistration.k8s.io/v1beta1=true` (the feature
+   gate alone does not serve the API group/version). `scripts/enable-feature-gate-k0s.sh`
+   sets both, merged into an existing `spec.api.extraArgs` without
+   disturbing any other key. The `compat/` directory keeps this out of the
+   blanket `kubectl apply -f deploy/admission/` in `deploy/admission/README.md`,
+   since the two files share a policy name and applying both to a cluster
+   serving only one version leaves the other a dangling rejected object, not
+   a working duplicate. **Not yet confirmed**: whether the CEL mutation
+   actually fires on `v1beta1` identically to `v1` against a real
+   `VirtualMachine` create — the live run that found this had only gotten as
+   far as the gate/runtime-config restart.
 
 ## Consequences
 

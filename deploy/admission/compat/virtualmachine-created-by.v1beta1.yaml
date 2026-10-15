@@ -1,0 +1,80 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# v1beta1 variant of ../virtualmachine-created-by.yaml, for a cluster
+# running Kubernetes 1.34 or 1.35 — where MutatingAdmissionPolicy is BETA,
+# not GA. Same policy, same spec, only `apiVersion` differs: pre-GA, the
+# resource is served as `admissionregistration.k8s.io/v1beta1`, not `v1`
+# (ADR-0089 Amendment, 2026-10-08 — confirmed the running Kubernetes version
+# is 1.35 (`k0s version` → v1.35.1+k0s.1) against a real cluster that had
+# just been found to need `--runtime-config` in addition to the feature gate
+# ADR-0089 already documents; the `v1` manifest was never actually attempted
+# against this cluster, since discovering the correct apiVersion came first).
+#
+# Lives in compat/, not deploy/admission/, so the top-level
+# `kubectl apply -f deploy/admission/` in this directory's README never
+# picks this file up alongside ../virtualmachine-created-by.yaml: both
+# define the same policy name, and applying both to a cluster that serves
+# only one of the two versions leaves the other a dangling object the
+# apiserver rejected outright, not a working duplicate. Apply this file
+# EXPLICITLY, by its own path, instead of the directory, and only on a
+# cluster confirmed to be pre-GA.
+#
+# Beyond this file, a pre-GA cluster ALSO needs the API group/version itself
+# turned on, which the feature gate alone does not do:
+#
+#   --feature-gates=MutatingAdmissionPolicy=true
+#   --runtime-config=admissionregistration.k8s.io/v1beta1=true
+#
+# scripts/enable-feature-gate-k0s.sh sets both, merged into an existing
+# spec.api.extraArgs without disturbing any other key already there:
+#
+#   FEATURE_GATES=MutatingAdmissionPolicy=true \
+#   RUNTIME_CONFIG=admissionregistration.k8s.io/v1beta1=true \
+#   scripts/enable-feature-gate-k0s.sh enable
+#
+# See every other comment in virtualmachine-created-by.yaml for why this
+# policy exists, why it is mutating rather than validating, why
+# `failurePolicy: Ignore`, and why `operations: ["CREATE"]` only — none of
+# that changes here, only the API version.
+#
+# UNVERIFIED past "the apiserver accepts this manifest and the policy
+# object exists" — whether the CEL `request.userInfo` mutation actually
+# fires on this beta API the same way it does on v1 has not yet been
+# confirmed against a real VirtualMachine create. Update this comment (and
+# ADR-0089) once it has.
+apiVersion: admissionregistration.k8s.io/v1beta1
+kind: MutatingAdmissionPolicy
+metadata:
+  name: banlieue-virtualmachine-created-by
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: admission
+spec:
+  failurePolicy: Ignore
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["banlieue.io"]
+        apiVersions: ["v1alpha1"]
+        operations: ["CREATE"]
+        resources: ["virtualmachines"]
+  mutations:
+    - patchType: "ApplyConfiguration"
+      applyConfiguration:
+        expression: >
+          Object{
+            metadata: Object.metadata{
+              annotations: {"banlieue.io/created-by": request.userInfo.username}
+            }
+          }
+  reinvocationPolicy: Never
+---
+apiVersion: admissionregistration.k8s.io/v1beta1
+kind: MutatingAdmissionPolicyBinding
+metadata:
+  name: banlieue-virtualmachine-created-by
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: admission
+spec:
+  policyName: banlieue-virtualmachine-created-by

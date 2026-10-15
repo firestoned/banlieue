@@ -411,8 +411,14 @@ entry's `audiences`, then maps claims to a username.
     `github:`: one is a prefix of the other, so one issuer's names can be
     spelled as the other's.
 
-    `scripts/dev-oidc-k0s.sh` refuses empty, equal and nested prefixes, and
-    anything in the reserved `system:` namespace.
+    `scripts/dev-oidc-k0s.sh` refuses empty, equal and nested prefixes once
+    more than one issuer is enabled, and always refuses anything in the
+    reserved `system:` namespace. This section is about *this* case —
+    several issuers on one cluster. With Dex alone (no Google/Auth0), an
+    empty prefix is allowed: every Dex connector resolves to one identity
+    namespace, so there is no second issuer to collide with, and some
+    downstream consumers (a username-keyed record with no prefix scheme)
+    need the bare username to recognise the identity at all.
 
 ### The configuration
 

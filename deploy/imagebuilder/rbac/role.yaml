@@ -56,6 +56,12 @@ rules:
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["list"]
+  # The rebuild gate reads the artifacts PVC's deletionTimestamp so a stale
+  # OSArtifact is never recreated over a volume still being torn down.
+  # Read-only: the PVC is owned and removed by its OSArtifact.
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
