@@ -153,6 +153,7 @@ mod tests {
             namespace: "banlieue-system".into(),
             ready_replicas: None,
             observed_generation: Some(3),
+            ..Default::default()
         };
         let v = serde_json::to_value(&s).unwrap();
         assert_eq!(v["mode"], "External");
@@ -830,6 +831,7 @@ attestation:
                 namespace: "banlieue-system".to_string(),
                 ready_replicas: Some(1),
                 observed_generation: Some(4),
+                ..Default::default()
             }),
             ..Default::default()
         };
@@ -857,6 +859,7 @@ attestation:
                 namespace: "banlieue-system".to_string(),
                 ready_replicas: Some(0),
                 observed_generation: None,
+                ..Default::default()
             }),
             ..Default::default()
         };
@@ -874,6 +877,8 @@ attestation:
             namespace: "tenant-a".to_string(),
             ready_replicas: Some(2),
             observed_generation: Some(9),
+            heartbeat: Some(Heartbeat::Alive),
+            last_heartbeat_time: Some(parse_time("2026-10-15T08:00:00Z")),
         };
         let round_tripped: ProviderWorkloadStatus =
             serde_json::from_str(&serde_json::to_string(&workload).unwrap()).unwrap();
@@ -886,5 +891,60 @@ attestation:
     fn parse_time(rfc3339: &str) -> Time {
         let quoted = format!("\"{rfc3339}\"");
         serde_json::from_str(&quoted).unwrap()
+    }
+
+    // ----------------------------------------------------------------------
+    // status.workload.heartbeat: provider liveness from its Lease (ADR-0102)
+    // ----------------------------------------------------------------------
+
+    #[test]
+    fn heartbeat_serializes_with_its_last_renewal() {
+        let workload = ProviderWorkloadStatus {
+            mode: WorkloadMode::External,
+            namespace: "banlieue-system".to_string(),
+            heartbeat: Some(Heartbeat::Stale),
+            last_heartbeat_time: Some(parse_time("2026-10-13T12:57:53Z")),
+            ..Default::default()
+        };
+        let v = serde_json::to_value(&workload).unwrap();
+        assert_eq!(v["heartbeat"], "Stale");
+        assert_eq!(v["lastHeartbeatTime"], "2026-10-13T12:57:53Z");
+    }
+
+    /// A workload status written before ADR-0102 has no heartbeat, and must
+    /// read as "not evaluated", never as any of the three states.
+    #[test]
+    fn a_workload_status_from_before_the_heartbeat_has_none() {
+        let old: ProviderWorkloadStatus =
+            serde_json::from_str(r#"{"namespace":"banlieue-system","mode":"External"}"#).unwrap();
+        assert!(old.heartbeat.is_none());
+        assert!(old.last_heartbeat_time.is_none());
+        let v = serde_json::to_value(&old).unwrap();
+        assert!(v.get("heartbeat").is_none(), "{v}");
+    }
+
+    #[test]
+    fn every_heartbeat_state_has_a_stable_wire_name() {
+        for (state, wire) in [
+            (Heartbeat::Alive, "Alive"),
+            (Heartbeat::Stale, "Stale"),
+            (Heartbeat::Absent, "Absent"),
+        ] {
+            assert_eq!(serde_json::to_value(state).unwrap(), wire);
+        }
+    }
+
+    #[test]
+    fn kubectl_get_providers_shows_the_heartbeat() {
+        let crd = Provider::crd();
+        let columns = crd.spec.versions[0]
+            .additional_printer_columns
+            .as_ref()
+            .expect("printer columns");
+        let heartbeat = columns
+            .iter()
+            .find(|c| c.name == "Heartbeat")
+            .expect("a Heartbeat column");
+        assert_eq!(heartbeat.json_path, ".status.workload.heartbeat");
     }
 }

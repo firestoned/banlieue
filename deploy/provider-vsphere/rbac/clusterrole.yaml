@@ -110,8 +110,8 @@ rules:
     resources: ["events"]
     verbs: ["create", "patch"]
 
-  # Leases for leader election. Provider uses the same SDK pattern as the
-  # main controller (GET + CREATE + server-side-apply PATCH).
-  - apiGroups: ["coordination.k8s.io"]
-    resources: ["leases"]
-    verbs: ["get", "create", "update", "patch"]
+  # Leader-election Leases are NOT granted here: a ClusterRoleBinding would
+  # grant them on every Lease in the cluster. Each role gets a namespaced
+  # Role narrowed to its own Lease instead (ADR-0102): built by `banlieue
+  # bootstrap`, and in deploy/provider-vsphere/rbac/role-leader-election.yaml, or by the operator
+  # for the providers it runs.

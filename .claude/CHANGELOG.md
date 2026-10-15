@@ -1,5 +1,123 @@
 # Changelog
 
+## [2026-10-15 03:30] - Lease rights narrowed to each role's own Lease; threat model pass for ADR-0102
+
+**Author:** Erick Bourgeois
+
+### Security
+- `deploy/{controller,imagebuilder,provider-vsphere,provider-proxmox,provider-libvirt}/rbac/clusterrole.yaml`:
+  the Lease rule is removed. Bound by a ClusterRoleBinding, it let each of
+  those identities `update` **any** Lease in the cluster: other providers'
+  (ADR-0102 heartbeats), banlieue-controller's and banlieue-operator's
+  leader Leases, and node heartbeats in `kube-node-lease`. Found by the
+  ADR-0102 threat-model pass and confirmed with `kubectl auth can-i` on the
+  core cluster. The operator keeps its cluster-wide grant: it must hold what
+  it delegates.
+- `deploy/{controller,imagebuilder,provider-vsphere}/rbac/role-leader-election.yaml`:
+  a namespaced Role and RoleBinding per role: `create` on Leases (which
+  `resourceNames` cannot narrow) and `get`/`update`/`patch` on the role's
+  own Lease only.
+- `crates/banlieue-operator/src/bootstrap.rs`: `build_leader_election_role`
+  and its binding for every role but the operator, and
+  `--leader-election-namespace <install namespace>` on each of those
+  Deployments, so the Lease lives where its Role does (it used to default to
+  `banlieue-system` whatever the install namespace). The operator's
+  per-Provider Role (`workload.rs`) was already narrowed this way.
+
+### Tests
+- `bootstrap_tests.rs`: `no_shared_cluster_role_but_the_operators_grants_leases`,
+  `each_role_gets_a_role_for_its_own_lease_in_its_install_namespace`,
+  `each_role_elects_through_a_lease_in_its_install_namespace`,
+  `gitops_lease_roles_match_what_bootstrap_builds`; four existing tests now
+  count Roles without the leader-election pair.
+- Live, `kubectl auth can-i` on a kind cluster: for the GitOps manifests
+  (controller, imagebuilder, vSphere provider) and a `bootstrap provider
+  libvirt --namespace tenant-x` install, each identity may update its own
+  Lease and create Leases in its namespace, and may not update another
+  role's Lease, any Lease in `kube-node-lease`, or create one in
+  `kube-system`.
+
+### Threat model
+- `docs/src/security/threat-model.md`: full pass, stamp advanced to
+  ADR-0102. New TB-17 (provider identity, its Lease, operator, scheduler) in
+  the §5 table, diagram and §6 (seven STRIDE rows); asset A-22 (provider
+  liveness); the operator's §2 row; §8's "holds the union" row now names its
+  Lease grant, plus two new risks (clock skew within `staleAfter`; the
+  operator as sole evaluator). §1, §4, §7, §9 and §10 walked: no change.
+- `docs/adr/0102-*.md` Consequences and the CALM `provider-liveness`
+  control (now citing AC-6) record the narrowing.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (re-apply the RBAC and the bootstrap install)
+- [ ] Config change only
+- [ ] Documentation only
+
+On upgrade, apply the new `role-leader-election.yaml` (or re-run `banlieue
+bootstrap`) **before** the narrowed ClusterRoles, or a role's next Lease
+renewal is refused and it restarts until the Role exists.
+
+## [2026-10-15 02:30] - Provider liveness from its Lease (ADR-0102)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0102-provider-liveness-from-its-lease.md`: a provider's liveness
+  is judged outside it, from the leader-election Lease it already renews.
+  Prompted by the 2026-10-13 outage, in which three Cloud Hypervisor
+  providers crash-looped for twelve hours while their Providers kept
+  `Ready=True` and still received VMs.
+- `crates/banlieue-api/src/banlieue/provider.rs`: `Heartbeat` (`Alive`,
+  `Stale`, `Absent`); `ProviderWorkloadStatus.heartbeat` and
+  `lastHeartbeatTime`; a `Heartbeat` print column; `Default` on
+  `ProviderWorkloadStatus`. CRDs and the API reference regenerated.
+- `crates/banlieue-operator/src/heartbeat.rs`: pure `evaluate` (Lease and
+  time to state and re-check time), `transition` and `requeue_after`.
+  `reconciler/provider.rs` reads the Provider's Lease with one `get` (no
+  watch, no new RBAC), records the heartbeat in `status.workload`, emits
+  `ProviderHeartbeatStale` / `ProviderHeartbeatRestored`, and requeues by
+  the staleness deadline. `--provider-stale-after-secs` (default 60).
+- `crates/banlieue-controller/src/reconciler/scheduler.rs`: a provider whose
+  heartbeat is `Stale` takes no new VM; `ProviderNotAlive` when none is left.
+  `Absent` and an unevaluated heartbeat schedule as before.
+- `crates/banlieue-controller/src/metrics.rs`:
+  `banlieue_provider_heartbeat{provider,kind,state}`, from the Provider
+  reflector the failure-domain gauge already uses.
+- `crates/banlieue-provider-sdk/src/leader.rs`: `identity_from`; the default
+  Lease holder falls back to the kernel hostname, so a host provider's Lease
+  no longer says `unknown`.
+
+### Changed
+- `docs/src/guides/observability.md`: metric row, a Provider liveness
+  section and an example alert. `provider-lifecycle.md`,
+  `cloud-hypervisor-host.md` (troubleshooting row for a stale host) and
+  `vsphere-provider.md` (`ProviderNotAlive`; the stale "Phase 1B scope"
+  warning removed: the `VSphereMachine` lifecycle shipped with ADR-0024).
+- `docs/adr/0102-*.md`: the gauge comes from banlieue-controller (Decision
+  5), and a paused Provider's heartbeat is not re-evaluated.
+- `docs/architecture/calm/architecture.json`: `provider-liveness` control,
+  marked implemented; `make calm-validate` passes.
+
+### Tests
+- `heartbeat_tests.rs`: alive until the deadline, stale after it (the
+  outage's twelve hours), exactly-at-the-limit, no Lease, acquire time
+  standing in, a Lease with no times, clock skew, transitions, requeue
+  bounds. `events_tests.rs`, `app_tests.rs` (the flag),
+  `provider_tests.rs` (wire names, old objects, print column),
+  `scheduler_tests.rs` (stale skipped, all stale, absent and unevaluated
+  kept, selector miss first), `metrics_tests.rs`, `leader_tests.rs`.
+- Live, against a real API server (kind on the build host, operator run as
+  a local binary): a twelve-hour-old Lease gave `Stale` and a Warning
+  Event, a renewed one `Alive` and a Restored Event, a deleted one
+  `Absent`; the column printed, and only `banlieue.io/operator` wrote
+  `status.workload`.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (re-apply the Provider CRD, then the images)
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-10-14 20:30] - vSphere ownership marker and recovery of a lost clone (ADR-0101)
 
 **Author:** Erick Bourgeois

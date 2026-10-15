@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Shared reconcile context for `banlieue-operator`.
 
+use std::time::Duration;
+
 use kube::Client;
 use kube::runtime::events::{Recorder, Reporter};
 
@@ -41,6 +43,10 @@ pub struct Context {
     pub build_node_selector: Vec<String>,
     /// `--build-toleration` values, forwarded for the same reason.
     pub build_toleration: Vec<String>,
+
+    /// How long a provider's Lease may go unrenewed before its heartbeat is
+    /// `Stale` (ADR-0102).
+    pub provider_stale_after: Duration,
 }
 
 impl Context {
@@ -94,6 +100,14 @@ impl Context {
             imagebuild_namespace,
             build_node_selector,
             build_toleration,
+            provider_stale_after: Duration::from_secs(crate::heartbeat::DEFAULT_STALE_AFTER_SECS),
         }
+    }
+
+    /// Override how long a provider's Lease may go unrenewed (ADR-0102).
+    #[must_use]
+    pub fn with_provider_stale_after(mut self, stale_after: Duration) -> Self {
+        self.provider_stale_after = stale_after;
+        self
     }
 }

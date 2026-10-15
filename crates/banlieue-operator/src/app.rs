@@ -76,6 +76,15 @@ pub struct Cli {
     #[arg(long = "build-toleration", value_name = "KEY[=VALUE]:EFFECT")]
     pub build_toleration: Vec<String>,
 
+    /// Seconds without a Lease renewal after which a provider's heartbeat is
+    /// `Stale` and it takes no new VirtualMachine (ADR-0102).
+    #[arg(
+        long = "provider-stale-after-secs",
+        env = "BANLIEUE_PROVIDER_STALE_AFTER_SECS",
+        default_value_t = crate::heartbeat::DEFAULT_STALE_AFTER_SECS
+    )]
+    pub provider_stale_after_secs: u64,
+
     /// Restrict the Provider watch to a single namespace. Defaults to watching
     /// every namespace, which is what a cluster-wide operator wants.
     #[arg(long, env = "BANLIEUE_WATCH_NAMESPACE")]
@@ -183,13 +192,16 @@ pub async fn run(cli: Cli) -> Result<()> {
         info!("leader election disabled by --no-leader-elect");
     }
 
-    let ctx = Arc::new(Context::with_build_scheduling(
-        client.clone(),
-        cli.namespace.clone(),
-        crate::bootstrap::DEFAULT_IMAGEBUILD_NAMESPACE.to_string(),
-        cli.build_node_selector.clone(),
-        cli.build_toleration.clone(),
-    ));
+    let ctx = Arc::new(
+        Context::with_build_scheduling(
+            client.clone(),
+            cli.namespace.clone(),
+            crate::bootstrap::DEFAULT_IMAGEBUILD_NAMESPACE.to_string(),
+            cli.build_node_selector.clone(),
+            cli.build_toleration.clone(),
+        )
+        .with_provider_stale_after(Duration::from_secs(cli.provider_stale_after_secs)),
+    );
 
     let provider_api: Api<Provider> = match cli.watch_namespace.as_deref() {
         Some(ns) => Api::namespaced(client.clone(), ns),

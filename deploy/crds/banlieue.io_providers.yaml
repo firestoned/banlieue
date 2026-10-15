@@ -23,6 +23,9 @@ spec:
     - jsonPath: .status.conditions[?(@.type=='Ready')].status
       name: Ready
       type: string
+    - jsonPath: .status.workload.heartbeat
+      name: Heartbeat
+      type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -649,6 +652,19 @@ spec:
                       `External`: there is no Deployment.
                     nullable: true
                     type: string
+                  heartbeat:
+                    description: A provider's liveness, from its leader-election Lease (ADR-0102).
+                    enum:
+                    - Alive
+                    - Stale
+                    - Absent
+                    nullable: true
+                    type: string
+                  lastHeartbeatTime:
+                    description: The Lease's last `renewTime`, when there is a Lease.
+                    format: date-time
+                    nullable: true
+                    type: string
                   mode:
                     default: Managed
                     description: |-
@@ -675,9 +691,8 @@ spec:
                     description: |-
                       Ready replicas reported by that Deployment. Zero means the backend's
                       controller is not currently running, whatever the Provider's other
-                      conditions say. Unset for `External`: whether an external provider is
-                      running is its own `Ready` condition and Lease to say, not the
-                      operator's.
+                      conditions say. Unset for `External`: there is no Deployment, and
+                      whether the provider is running is `heartbeat` (ADR-0102).
                     format: int32
                     nullable: true
                     type: integer

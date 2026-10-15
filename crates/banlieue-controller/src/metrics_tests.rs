@@ -228,4 +228,62 @@ mod tests {
             "{text}"
         );
     }
+
+    // --- banlieue_provider_heartbeat (ADR-0102) ------------------------------
+
+    fn with_heartbeat(mut p: Provider, heartbeat: banlieue_api::banlieue::Heartbeat) -> Provider {
+        p.status.get_or_insert_with(Default::default).workload =
+            Some(banlieue_api::banlieue::ProviderWorkloadStatus {
+                heartbeat: Some(heartbeat),
+                ..Default::default()
+            });
+        p
+    }
+
+    /// One series per state, `1` for the current one, so an alert can test
+    /// `state="Stale" == 1` without knowing the other two.
+    #[test]
+    fn heartbeat_series_mark_the_current_state_and_zero_the_others() {
+        use banlieue_api::banlieue::Heartbeat::Stale;
+        let p = with_heartbeat(provider("grill", "cloud-hypervisor", 1), Stale);
+        let series = heartbeat_series([&p]);
+        let get = |state: &str| {
+            series[&(
+                "grill".to_string(),
+                "cloud-hypervisor".to_string(),
+                state.to_string(),
+            )]
+        };
+        assert_eq!(get("Stale"), 1);
+        assert_eq!(get("Alive"), 0);
+        assert_eq!(get("Absent"), 0);
+        assert_eq!(series.len(), 3);
+    }
+
+    /// A Provider the operator has not evaluated yet has no series, rather
+    /// than one that claims a state nobody measured.
+    #[test]
+    fn an_unevaluated_heartbeat_has_no_series() {
+        let p = provider("grill", "cloud-hypervisor", 1);
+        assert!(heartbeat_series([&p]).is_empty());
+    }
+
+    #[test]
+    fn heartbeat_collector_encodes_provider_kind_and_state() {
+        let (reader, mut writer) = reflector::store::<Provider>();
+        writer.apply_watcher_event(&Event::Apply(with_heartbeat(
+            provider("grill", "cloud-hypervisor", 1),
+            banlieue_api::banlieue::Heartbeat::Alive,
+        )));
+        let metrics = Metrics::new("banlieue-controller");
+        metrics.register_collector(Box::new(HeartbeatCollector::new(reader)));
+
+        let text = metrics.encode().expect("encode");
+        assert!(
+            text.contains(
+                r#"banlieue_provider_heartbeat{provider="grill",kind="cloud-hypervisor",state="Alive"} 1"#
+            ),
+            "{text}"
+        );
+    }
 }

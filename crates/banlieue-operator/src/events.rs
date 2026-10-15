@@ -39,6 +39,10 @@ pub mod reasons {
     pub const RECONCILE_SKIPPED: &str = "ReconcileSkipped";
     /// The referenced `ProviderClass` does not exist.
     pub const CLASS_NOT_FOUND: &str = "ProviderClassNotFound";
+    /// The provider stopped renewing its Lease (ADR-0102).
+    pub const HEARTBEAT_STALE: &str = "ProviderHeartbeatStale";
+    /// A stale provider is renewing its Lease again (ADR-0102).
+    pub const HEARTBEAT_RESTORED: &str = "ProviderHeartbeatRestored";
 }
 
 /// A workload was created or updated.
@@ -129,6 +133,43 @@ pub fn class_not_found(class: &str) -> Event {
              `banlieue bootstrap operator` seeds one per compiled-in backend."
         )),
         action: "Resolve".to_string(),
+        secondary: None,
+    }
+}
+
+/// The provider stopped renewing its Lease (ADR-0102).
+///
+/// `Warning`: nothing in the provider can say it is down, so this is the
+/// first sign of it. The note names the Lease and its last renewal, which
+/// on a Cloud Hypervisor host is also the host that stopped.
+#[must_use]
+pub fn heartbeat_stale(lease: &str, last_renewed: Option<&str>) -> Event {
+    let when = last_renewed.map_or_else(
+        || "it records no renewal".to_string(),
+        |t| format!("last renewed {t}"),
+    );
+    Event {
+        type_: EventType::Warning,
+        reason: reasons::HEARTBEAT_STALE.to_string(),
+        note: Some(format!(
+            "Provider is not running: Lease {lease} has stopped renewing ({when}). No new \
+             VirtualMachine is scheduled onto it until it renews again."
+        )),
+        action: "Evaluate".to_string(),
+        secondary: None,
+    }
+}
+
+/// A stale provider is renewing its Lease again (ADR-0102).
+#[must_use]
+pub fn heartbeat_restored(lease: &str) -> Event {
+    Event {
+        type_: EventType::Normal,
+        reason: reasons::HEARTBEAT_RESTORED.to_string(),
+        note: Some(format!(
+            "Provider is running again: Lease {lease} is renewing; it is schedulable."
+        )),
+        action: "Evaluate".to_string(),
         secondary: None,
     }
 }

@@ -72,7 +72,9 @@ The provider's ClusterRole is read-only on `providers` (it only patches their
 `status`) and reconciles `vmimages/status` and `vspheremachines`. Credentials
 and CA bundles are read by name through a **namespaced** Role in
 `banlieue-system` (`rbac/role.yaml`) — no provider identity holds cluster-wide
-Secret access (security review 2026-07-31 CHAIN-002). Wait for it:
+Secret access (security review 2026-07-31 CHAIN-002). Leader election reaches
+only its own Lease, through `rbac/role-leader-election.yaml`; no Lease rule is
+granted cluster-wide (ADR-0102). Wait for it:
 
 ```sh
 kubectl -n banlieue-system rollout status deploy/banlieue-provider-vsphere --timeout=120s
@@ -418,6 +420,10 @@ datacenter), `ConnectFailed`, `LookupFailed`, `NoVSphereSource`.
 
 - `reason=ImageNotReady` — the `VMImage` isn't `ready` on any candidate provider
   (step 5).
+- `reason=ProviderNotAlive`: every `Provider` the VM could use has a
+  `Stale` heartbeat, so its provider is not running (ADR-0102). Check
+  `kubectl get providers` and the provider pod; see
+  [Provider liveness](observability.md#provider-liveness).
 - `reason=NoProviderMatched` — no `Provider` matches `placement.providerSelector`, or
   none advertises the requested storage/network class or feature. Check the
   `Provider.spec.capabilities` against the `VMClass`.
@@ -457,13 +463,6 @@ kubectl -n banlieue-system logs deploy/banlieue-provider-vsphere
 kubectl -n banlieue-system logs deploy/banlieue-controller
 kubectl -n banlieue-system describe virtualmachine db-prod-01   # Events
 ```
-
-!!! warning "Phase 1B scope"
-    This release ships capability introspection (`failureDomains`) and the
-    `VMImage` template check. The `VSphereMachine` VM-lifecycle reconciler
-    (clone → power-on → status mirror) lands in a later iteration, so the
-    `VirtualMachine` schedules and a `VSphereMachine` is created, but the VM is
-    not yet powered on in vCenter.
 
 ## Full schema reference
 

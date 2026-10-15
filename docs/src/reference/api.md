@@ -62,6 +62,7 @@ never does. Communication between them is CRD-only.
 | Class | string | `.spec.providerClassRef.name` | 0 |
 | Endpoint | string | `.spec.connection.endpoint` | 1 |
 | Ready | string | `.status.conditions[?(@.type=='Ready')].status` | 0 |
+| Heartbeat | string | `.status.workload.heartbeat` | 0 |
 | Age | date | `.metadata.creationTimestamp` | 0 |
 
 ### `.spec`
@@ -376,10 +377,12 @@ conflict-free (ADR-0012).
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `deploymentName` | string |  | Name of the Deployment running this Provider's controller. Conventionally `banlieue-provider-<class>-<provider-name>`. Unset for `External`: there is no Deployment. |
+| `heartbeat` | string |  | A provider's liveness, from its leader-election Lease (ADR-0102). Allowed: `Alive`, `Stale`, `Absent`. |
+| `lastHeartbeatTime` | string |  | The Lease's last `renewTime`, when there is a Lease. |
 | `mode` | string |  | Whether the operator runs this provider (`Managed`) or only gave it an identity (`External`, ADR-0060 Decision 3). Absent on objects written before the field existed, which were all Managed. Allowed: `Managed`, `External`. |
 | `namespace` | string | Yes | Namespace the Deployment was created in — the ProviderClass's `workloadNamespace`, or the operator's own namespace when unset. |
 | `observedGeneration` | integer |  | The Provider generation the operator had observed when it last applied this workload. |
-| `readyReplicas` | integer |  | Ready replicas reported by that Deployment. Zero means the backend's controller is not currently running, whatever the Provider's other conditions say. Unset for `External`: whether an external provider is running is its own `Ready` condition and Lease to say, not the operator's. |
+| `readyReplicas` | integer |  | Ready replicas reported by that Deployment. Zero means the backend's controller is not currently running, whatever the Provider's other conditions say. Unset for `External`: there is no Deployment, and whether the provider is running is `heartbeat` (ADR-0102). |
 
 ---
 

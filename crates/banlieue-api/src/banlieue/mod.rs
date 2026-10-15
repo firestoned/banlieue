@@ -11,10 +11,10 @@ pub mod vmclass;
 pub mod vmimage;
 
 pub use provider::{
-    FailureDomain, FailureDomainAttributes, FailureDomainNameOverride, NetworkClassMapping,
-    Provider, ProviderCapabilities, ProviderConnection, ProviderSpec, ProviderStatus,
-    ProviderWorkloadStatus, ScopedSubnet, ScopedTarget, StorageClassMapping, SubnetShape,
-    WorkloadMode,
+    FailureDomain, FailureDomainAttributes, FailureDomainNameOverride, Heartbeat,
+    NetworkClassMapping, Provider, ProviderCapabilities, ProviderConnection, ProviderSpec,
+    ProviderStatus, ProviderWorkloadStatus, ScopedSubnet, ScopedTarget, StorageClassMapping,
+    SubnetShape, WorkloadMode,
 };
 pub use providerclass::{
     DEFAULT_PROVIDER_REPLICAS, ImagePullPolicy, LoggingSpec, ProviderClass, ProviderClassSpec,

@@ -50,7 +50,7 @@ use tracing::{error, info, warn};
 
 use crate::{
     context::Context,
-    metrics::{FailureDomainCollector, VirtualMachineCollector},
+    metrics::{FailureDomainCollector, HeartbeatCollector, VirtualMachineCollector},
     reconciler::claim,
     reconciler::pool,
     reconciler::virtualmachine::{error_policy, reconcile},
@@ -354,7 +354,9 @@ pub async fn run(cli: Cli) -> Result<()> {
         None => Api::all(client.clone()),
     };
     let (fd_store, fd_writer) = reflector::store::<Provider>();
-    metrics.register_collector(Box::new(FailureDomainCollector::new(fd_store)));
+    metrics.register_collector(Box::new(FailureDomainCollector::new(fd_store.clone())));
+    // ADR-0102's heartbeat gauge reads the same Provider status: one store.
+    metrics.register_collector(Box::new(HeartbeatCollector::new(fd_store)));
     let fd_reflector = watcher(fd_provider_api, Config::default())
         .default_backoff()
         .reflect(fd_writer)

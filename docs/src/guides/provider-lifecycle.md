@@ -100,6 +100,12 @@ kubectl get providers -A
 kubectl get provider prod-vc -o jsonpath='{.status.workload}' | jq
 ```
 
+`status.workload.heartbeat` says whether the provider is actually running,
+judged from the Lease it renews (ADR-0102): `Alive`, `Stale` (it stopped,
+and no new VM is scheduled onto it) or `Absent` (no Lease yet). It covers
+External providers too, which have no Deployment for `readyReplicas` to
+describe. See [Provider liveness](observability.md#provider-liveness).
+
 ## Why one Deployment per Provider
 
 A single Deployment serving every vCenter is cheaper, and it is what banlieue
@@ -187,7 +193,8 @@ What you give up, compared to the operator path:
 - **Per-instance isolation.** One provider pod serves every `Provider` of its
   class in the namespace instead of one pod per `Provider` — the shared
   failure and shared identity model described above.
-- **Workload lifecycle.** There is no `status.workload` reporting, no
+- **Workload lifecycle.** There is no `status.workload` reporting (and so
+  no heartbeat, ADR-0102), no
   finalizer-based cleanup, and upgrades mean re-running
   `banlieue bootstrap provider <backend> --version <new>` (or `--dry-run`)
   instead of patching a `ProviderClass` image tag.

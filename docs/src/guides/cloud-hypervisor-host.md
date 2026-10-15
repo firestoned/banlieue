@@ -805,6 +805,7 @@ restarting its unit; guests keep running (`make ch-restart-e2e`).
 
 | Symptom | Cause |
 | --- | --- |
+| `kubectl get providers` shows `HEARTBEAT` `Stale` for this host | The provider stopped renewing its Lease: it is down, or cannot reach the API server. `systemctl status banlieue-provider-cloud-hypervisor` and its journal say which; a crash loop of `Network is unreachable` means the `server:` in `/etc/banlieue/credentials/kubeconfig` no longer answers. No new VM is scheduled onto the host until it renews (ADR-0102). |
 | `running inside a VM (kvm)` in `preflight` | The host is a VM. Supported only for labs, with `--allow-virtualized-host`. |
 | `/dev/kvm missing` | VT-x/AMD-V disabled in firmware, or the `kvm_intel`/`kvm_amd` module is not loaded. |
 | `network class default -> br0: not a bridge on this host` | The bridge does not exist yet, or has a different name. See [Step 1](#step-1-a-bridge-for-guests). |

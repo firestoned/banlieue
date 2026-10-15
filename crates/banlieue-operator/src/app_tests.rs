@@ -104,4 +104,17 @@ mod tests {
     fn operator_lease_name_does_not_collide_with_provider_leases() {
         assert!(!DEFAULT_LEADER_ELECTION_ID.starts_with(crate::naming::WORKLOAD_NAME_PREFIX));
     }
+
+    /// ADR-0102: four lease durations by default, overridable.
+    #[test]
+    fn provider_stale_after_defaults_to_sixty_seconds_and_overrides() {
+        assert_eq!(
+            parse(&[]).provider_stale_after_secs,
+            crate::heartbeat::DEFAULT_STALE_AFTER_SECS
+        );
+        assert_eq!(
+            parse(&["--provider-stale-after-secs", "120"]).provider_stale_after_secs,
+            120
+        );
+    }
 }

@@ -506,7 +506,7 @@ mod tests {
         let manifests =
             build_role_install(&InstallRole::Provider("vsphere".to_string()), &opts()).unwrap();
 
-        assert_eq!(manifests.roles.len(), 1);
+        assert_eq!(non_lease_count(&manifests.roles), 1);
         let role = &manifests.roles[0];
         assert_eq!(role.metadata.namespace.as_deref(), Some(DEFAULT_NAMESPACE));
         let rules = role.rules.as_ref().expect("the Role has rules");
@@ -524,7 +524,7 @@ mod tests {
             );
         }
 
-        assert_eq!(manifests.role_bindings.len(), 1);
+        assert_eq!(non_lease_binding_count(&manifests.role_bindings), 1);
         let binding = &manifests.role_bindings[0];
         assert_eq!(binding.role_ref.kind, "Role");
         assert_eq!(binding.role_ref.name, "banlieue-provider-vsphere");
@@ -557,11 +557,11 @@ mod tests {
         let manifests = build_role_install(&InstallRole::Imagebuilder, &opts()).unwrap();
 
         assert_eq!(
-            manifests.roles.len(),
+            non_lease_count(&manifests.roles),
             1,
             "the imagebuilder reads cloudConfigs Secrets through a namespaced Role (ADR-0041)"
         );
-        assert_eq!(manifests.role_bindings.len(), 1);
+        assert_eq!(non_lease_binding_count(&manifests.role_bindings), 1);
 
         let role = &manifests.roles[0];
         assert_eq!(
@@ -683,8 +683,12 @@ mod tests {
         let manifests =
             build_role_install(&InstallRole::Provider("vsphere".to_string()), &opts()).unwrap();
 
-        assert_eq!(manifests.roles.len(), 1, "expected one namespaced Role");
-        assert_eq!(manifests.role_bindings.len(), 1);
+        assert_eq!(
+            non_lease_count(&manifests.roles),
+            1,
+            "expected one namespaced Role besides the leader-election one"
+        );
+        assert_eq!(non_lease_binding_count(&manifests.role_bindings), 1);
 
         let role = &manifests.roles[0];
         assert_eq!(role.metadata.namespace.as_deref(), Some(DEFAULT_NAMESPACE));
@@ -1500,6 +1504,219 @@ mod tests {
         for (major, minor, contract) in &series {
             assert_eq!(contract, "v1beta2", "{major}.{minor}");
             assert!(seen.insert((*major, *minor)), "{major}.{minor} repeats");
+        }
+    }
+
+    // ----------------------------------------------------------------------
+    // Leader-election Leases: each role reaches only its own (ADR-0102)
+    // ----------------------------------------------------------------------
+
+    /// The roles that elect a leader through a Lease of their own and get a
+    /// narrowed Role for it. The operator is not one: it must hold Lease
+    /// rights cluster-wide to grant them to providers (§8 of the threat
+    /// model), so its ClusterRole keeps them.
+    fn lease_roles() -> Vec<InstallRole> {
+        vec![
+            InstallRole::Controller,
+            InstallRole::Imagebuilder,
+            InstallRole::Provider("vsphere".to_string()),
+            InstallRole::Provider("libvirt".to_string()),
+            InstallRole::Provider("proxmox".to_string()),
+        ]
+    }
+
+    /// A ClusterRoleBinding grants cluster-wide, so a Lease rule in a shared
+    /// ClusterRole let any provider rewrite any Lease: another provider's
+    /// (forging or killing its heartbeat), the controller's and operator's
+    /// (stealing leadership), and node heartbeats in `kube-node-lease`.
+    #[test]
+    fn no_shared_cluster_role_but_the_operators_grants_leases() {
+        for role in lease_roles() {
+            let leases: Vec<_> = granted_triples(&role)
+                .into_iter()
+                .filter(|(g, r, _)| g == "coordination.k8s.io" && r == "leases")
+                .collect();
+            assert!(
+                leases.is_empty(),
+                "{} ClusterRole grants {leases:?} cluster-wide; Lease access belongs in a \
+                 namespaced Role narrowed to the role's own Lease",
+                role.name()
+            );
+        }
+        let operator = granted_triples(&InstallRole::Operator);
+        for verb in ["get", "create", "update", "patch"] {
+            assert!(
+                operator.contains(&(
+                    "coordination.k8s.io".to_string(),
+                    "leases".to_string(),
+                    verb.to_string()
+                )),
+                "the operator must hold leases/{verb} to grant it to providers"
+            );
+        }
+    }
+
+    /// Roles other than the leader-election one every role now carries.
+    fn non_lease_count(roles: &[Role]) -> usize {
+        roles
+            .iter()
+            .filter(|r| {
+                !r.metadata
+                    .name
+                    .as_deref()
+                    .unwrap_or_default()
+                    .ends_with("-leader-election")
+            })
+            .count()
+    }
+
+    fn non_lease_binding_count(bindings: &[RoleBinding]) -> usize {
+        bindings
+            .iter()
+            .filter(|b| {
+                !b.metadata
+                    .name
+                    .as_deref()
+                    .unwrap_or_default()
+                    .ends_with("-leader-election")
+            })
+            .count()
+    }
+
+    fn custom_namespace() -> InstallOptions {
+        InstallOptions {
+            namespace: "tenant-x".to_string(),
+            ..opts()
+        }
+    }
+
+    /// `create` cannot be narrowed by `resourceNames`, so it is its own rule,
+    /// namespaced; everything that names a Lease names only the role's own.
+    #[test]
+    fn each_role_gets_a_role_for_its_own_lease_in_its_install_namespace() {
+        let opts = custom_namespace();
+        for role in lease_roles() {
+            let install = build_role_install(&role, &opts).unwrap();
+            let name = format!("{}-leader-election", role.name());
+            let built = install
+                .roles
+                .iter()
+                .find(|r| r.metadata.name.as_deref() == Some(name.as_str()))
+                .unwrap_or_else(|| panic!("{}: no {name} Role", role.name()));
+            assert_eq!(built.metadata.namespace.as_deref(), Some("tenant-x"));
+            assert_eq!(
+                built.rules,
+                Some(leader_election_rules(role.name())),
+                "{}",
+                role.name()
+            );
+            let binding = install
+                .role_bindings
+                .iter()
+                .find(|b| b.metadata.name.as_deref() == Some(name.as_str()))
+                .unwrap_or_else(|| panic!("{}: no {name} RoleBinding", role.name()));
+            assert_eq!(binding.role_ref.kind, "Role");
+            assert_eq!(binding.role_ref.name, name);
+            let subject = &binding.subjects.as_ref().unwrap()[0];
+            assert_eq!(subject.name, role.name());
+            assert_eq!(subject.namespace.as_deref(), Some("tenant-x"));
+        }
+    }
+
+    fn leader_election_rules(lease: &str) -> Vec<PolicyRule> {
+        vec![
+            PolicyRule {
+                api_groups: Some(vec!["coordination.k8s.io".to_string()]),
+                resources: Some(vec!["leases".to_string()]),
+                verbs: vec!["create".to_string()],
+                ..Default::default()
+            },
+            PolicyRule {
+                api_groups: Some(vec!["coordination.k8s.io".to_string()]),
+                resources: Some(vec!["leases".to_string()]),
+                resource_names: Some(vec![lease.to_string()]),
+                verbs: vec!["get".to_string(), "update".to_string(), "patch".to_string()],
+                ..Default::default()
+            },
+        ]
+    }
+
+    /// The narrowed Role lives in the install namespace, so the Lease must
+    /// too: each binary otherwise defaults to `banlieue-system`.
+    #[test]
+    fn each_role_elects_through_a_lease_in_its_install_namespace() {
+        let opts = custom_namespace();
+        for role in lease_roles() {
+            let install = build_role_install(&role, &opts).unwrap();
+            let args = install.deployments[0]
+                .spec
+                .as_ref()
+                .unwrap()
+                .template
+                .spec
+                .as_ref()
+                .unwrap()
+                .containers[0]
+                .args
+                .clone()
+                .unwrap_or_default();
+            let at = args
+                .iter()
+                .position(|a| a == "--leader-election-namespace")
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{}: no --leader-election-namespace in {args:?}",
+                        role.name()
+                    )
+                });
+            assert_eq!(args[at + 1], "tenant-x", "{}", role.name());
+        }
+    }
+
+    /// The GitOps manifests grant what bootstrap grants, or one install path
+    /// 403s on its own Lease while the other works.
+    #[test]
+    fn gitops_lease_roles_match_what_bootstrap_builds() {
+        for (role, manifest) in [
+            (
+                InstallRole::Controller,
+                include_str!("../../../deploy/controller/rbac/role-leader-election.yaml"),
+            ),
+            (
+                InstallRole::Imagebuilder,
+                include_str!("../../../deploy/imagebuilder/rbac/role-leader-election.yaml"),
+            ),
+            (
+                InstallRole::Provider("vsphere".to_string()),
+                include_str!("../../../deploy/provider-vsphere/rbac/role-leader-election.yaml"),
+            ),
+        ] {
+            let mut docs = manifest.split("\n---\n");
+            let declared: Role = serde_saphyr::from_str(docs.next().unwrap()).unwrap();
+            let declared_binding: RoleBinding =
+                serde_saphyr::from_str(docs.next().expect("a RoleBinding document")).unwrap();
+            let install = build_role_install(&role, &opts()).unwrap();
+            let built = install
+                .roles
+                .iter()
+                .find(|r| r.metadata.name == declared.metadata.name)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{}: bootstrap has no {:?}",
+                        role.name(),
+                        declared.metadata.name
+                    )
+                });
+            assert_eq!(built.rules, declared.rules, "{}", role.name());
+            assert_eq!(built.metadata.namespace, declared.metadata.namespace);
+            assert_eq!(
+                declared_binding.role_ref.name,
+                declared.metadata.name.clone().unwrap()
+            );
+            assert_eq!(
+                declared_binding.subjects.as_ref().unwrap()[0].name,
+                role.name()
+            );
         }
     }
 }

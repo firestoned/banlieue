@@ -5,12 +5,23 @@ SPDX-License-Identifier: Apache-2.0
 # Threat Model
 
 > **Status:** Living document. Last full pass **2026-10-14**, against the
-> architecture defined by **ADR-0001 … ADR-0101** (0057–0059 unallocated,
+> architecture defined by **ADR-0001 … ADR-0102** (0057–0059 unallocated,
 > 0066 and 0068–0073 reserved; 0074 and 0075 Accepted 2026-09-28; 0076–0080
 > reserved by roadmap 19; 0081–0082 recorded but not implemented in banlieue, and kept canonically in
 > mediatore since ADR-0097;
 > 0088 Proposed and not yet implemented, so none of those three move anything
-> here). The latest, 2026-10-14, pass is **ADR-0101**: every vSphere clone
+> here). The latest, 2026-10-15, pass is **ADR-0102**: a provider's liveness is
+judged outside it, from the leader-election Lease it renews. banlieue-operator
+reads each Provider's Lease (one `get`) into `status.workload.heartbeat`, and
+the scheduler places nothing new on a `Stale` provider. The Lease thereby
+becomes an input to scheduling, so this pass adds TB-17 (§5 table and
+diagram, §6) and asset A-22, updates the operator and controller in §2, and
+adds two §8 risks (clock skew, the operator as the evaluator). It also found
+and **fixed** a wider grant: every shared ClusterRole but the operator's let
+its identity write any Lease in the cluster, so Lease rights are now a
+namespaced Role narrowed to each role's own Lease (`banlieue bootstrap`, the
+GitOps manifests, and the operator's per-Provider Role, which already was).
+The earlier 2026-10-14 pass is **ADR-0101**: every vSphere clone
 carries its `VSphereMachine`'s UID in the `extraConfig` key
 `banlieue.machine.uid`, outside `guestinfo.*` and set by `CloneVM_Task`
 itself, and a create or a deletion with no `status.vmRef` searches the
@@ -381,7 +392,7 @@ relationship to the host.
 | Component | Identity | Namespace | Scope |
 | --- | --- | --- | --- |
 | `banlieue-controller` | `banlieue-controller` | `banlieue-system` | Watches `VirtualMachine`, schedules onto a `Provider`, creates provider infra CRs. Refuses a VM whose static address another VM already claims (ADR-0083), which reads `VirtualMachine`s across every namespace it watches. Also runs the `VirtualMachinePool` loop (ADR-0046) and the `VirtualMachineClaim` loop (ADR-0047) — the latter binds a pool member to a subject and destroys it on release |
-| `banlieue-operator` | `banlieue-operator` | `banlieue-system` | Provider lifecycle (ADR-0012): creates provider Deployments, ServiceAccounts, Roles, RoleBindings |
+| `banlieue-operator` | `banlieue-operator` | `banlieue-system` | Provider lifecycle (ADR-0012): creates provider Deployments, ServiceAccounts, Roles, RoleBindings. Reads each Provider's leader-election Lease (one `get`) and records its heartbeat in `status.workload` (ADR-0102) |
 | `banlieue-provider-vsphere` / `-libvirt` | per-`Provider` SA | `banlieue-system` | Talks to the hypervisor; reconciles infra CRs (`VSphereMachine`, `LibvirtMachine` — ADR-0050) and realises them as real VMs/domains |
 | `banlieue-provider-proxmox` | per-`Provider` SA | `banlieue-system` | Talks to Proxmox VE through the first-party `banlieue-proxmox` client (ADR-0074); reconciles `ProxmoxMachine`s (ADR-0075) into full clones of a template VM, verifies the template VMIDs `VMImage`s name, and publishes one failure domain per node. Spawns no Jobs — `deploy/provider-proxmox/rbac/clusterrole.yaml` |
 | `banlieue-provider-cloud-hypervisor` | ServiceAccount `banlieue-provider-cloud-hypervisor` (a bound token in a kubeconfig **on the host**); host user `banlieue` | **Not in the cluster** — a systemd service on the KVM host; its Provider lives in `banlieue-system` | Watches its own `Provider`, `CloudHypervisorMachine`s and `VMImage`s over the API; creates taps, disks, seeds and one transient systemd unit per guest (ADR-0060, ADR-0063). Holds `CAP_NET_ADMIN`, `CAP_CHOWN`, `CAP_FOWNER` and nothing else — `deploy/provider-cloud-hypervisor/host/banlieue-provider-cloud-hypervisor.service` |
@@ -421,6 +432,7 @@ relationship to the host.
 | A-19 | **Telemetry**: Prometheus series on each role's `metrics` port, and, only when `OTEL_EXPORTER_OTLP_ENDPOINT` is set, trace spans exported to a collector (ADR-0091, ADR-0092) | The scraper's storage; the operator's collector and wherever it forwards | Low confidentiality: metric labels carry no object names, namespaces or error text (`runner_tests.rs` asserts it); spans carry object names, namespaces and backend ids (node, vmid, moref, domain), never credentials, user-data or Secret contents. Its value is **integrity for operations**: forged or suppressed telemetry hides an outage, it does not change state |
 | A-20 | **k0s join tokens, and a joining controller's copy of `/etc/k0s`** (ADR-0099). A worker token joins any machine as a worker; a **controller** token hands over the cluster CA and service-account signing keys, and `/etc/k0s` carries the datastore password and the VRRP secret | Minted on a controller by `join` with `--expiry=15m`, piped over SSH straight to the joining node (never written on the operator's machine), stored `0600 root` at `/etc/k0s/{worker,controller}-token-file` on that node; `/etc/k0s` crosses the same kind of pipe | Worker token: high while valid (a worker runs any pod scheduled to it and reads the Secrets those pods mount). Controller token or `/etc/k0s`: **critical**, the whole cluster and its datastore. A token is worthless after expiry; the file stays on the node, like k0sctl's and the vSphere backend's |
 | A-21 | **`CARGO_REGISTRY_TOKEN`**, the crates.io API token that publishes `banlieue-api` (ADR-0100) | A GitHub Actions repository secret, read only by `build.yaml`'s `publish-crate` job on the `release` event; never available to a pull request from a fork | **High**: whoever holds it can publish any new version of `banlieue-api`, and every consumer that resolves a semver range takes it on their next build. It cannot replace a published version (uploads are immutable) and holds no cluster or hypervisor access |
+| A-22 | **Provider liveness**: each provider's leader-election Lease, and the `status.workload.heartbeat` banlieue-operator derives from it (ADR-0102) | A `coordination.k8s.io` Lease named after the provider's workload, in its workload namespace; `Provider.status.workload` | Medium for **integrity and availability**: a forged `Alive` hides a dead provider and keeps VMs scheduling onto it; a forged `Stale` stops new VMs reaching a healthy one. Not a secret |
 | A-15 | **EK trust-anchor bundle** — the set of CA certificates trusted to issue this backend's vTPM EK certificates | `Provider.spec.attestation.ekTrustBundle` — inline PEM, or a ConfigMap/Secret it names in the Provider's namespace. Admin-supplied, never discovered; resolved by the **broker**, never by any banlieue identity (ADR-0049 Decision 10) | Zero confidentiality — public CA material. **High integrity**: a rogue CA added here makes every EK certificate that CA forges verify, defeating the whole attestation chain; and on libvirt *removing* a host's issuer is the revocation mechanism, so an entry an attacker can re-add is a revocation undone |
 
 ## 4. Actors
@@ -508,6 +520,10 @@ relationship to the host.
          controller: tar /etc/k0s (no tokens) ──pipe──▶ joining controller ──▶ k0s controller
          (never written on the operator's machine; never writes a controller; ADR-0099)
 
+  TB-17: provider pod / host ──▶ its own Lease only (namespaced, resourceNames)
+         operator ──get──▶ that Lease ──▶ Provider.status.workload.heartbeat
+         controller scheduler ──▶ skips a Stale Provider (ADR-0102)
+
   KVM host, management nodes on Cloud Hypervisor (ADR-0099; no banlieue component):
     bootstrap operator ──sudo──▶ /etc/systemd/system/k0s-vm-<n>{,-net,-swtpm}.service
     systemd ──▶ k0s-vm-<n>-net    root oneshot: tap kv-<n> owned by k0s-vm ──▶ bridge
@@ -556,6 +572,7 @@ relationship to the host.
 | TB-14 | banlieue pods ↔ telemetry consumers | Inbound scrapes of `metrics` and probes of `health`; outbound OTLP spans when configured (ADR-0091 to ADR-0093) |
 | TB-15 | CAPI controllers → banlieue infrastructure objects | CAPI's manager creates, owns and deletes infrastructure machines through its aggregated role (ADR-0096) |
 | TB-16 | Bootstrap operator → running management cluster (`join`) | A join credential (A-20) is minted on a controller and carried to a new node, which then joins a cluster whose controllers the script does not reconfigure; a joining controller also receives a running controller's `/etc/k0s` (ADR-0099) |
+| TB-17 | Provider identity → its Lease → operator → scheduler | Since ADR-0102 a Lease a provider writes is read back as an input to placement: whoever can write it can hide a dead provider or starve a live one |
 | TB-11 | Installer (root, once) → Cloud Hypervisor host | A root process writes the host's trust base (A-14), in part inside directories the provider's user owns, from artifacts downloaded from upstream or an operator's mirror (ADR-0067, ADR-0084) |
 
 ## 6. Threats by boundary
@@ -956,6 +973,22 @@ Only when the operator runs `join` (ADR-0099). The tokens, and the copied
 | A reset worker joins as a controller over its old Node object, which keeps the worker's labels, so the control plane runs on a node nothing selects as control plane | T | `join` refuses a controller while a Node of that name exists, and says to delete it: `join_controller_node`, tested in `scripts/bootstrap-k0s-cluster-test.sh` |
 | A swap retires a node, and a later `vms` recreates it as an empty VM that then waits for a join | D | Retired nodes are listed in `RETIRED_NODES`, which `vms` does not recreate and the node table skips: `node_retired`, tested in `scripts/bootstrap-k0s-cluster-test.sh` |
 
+### TB-17: Provider identity → its Lease → operator → scheduler
+
+ADR-0102 turns each provider's leader-election Lease into an input to
+placement. The boundary is who may write a Lease, and what the operator and
+the scheduler do with what they read.
+
+| Threat | STRIDE | Control |
+| --- | --- | --- |
+| A compromised provider rewrites **another** provider's Lease: renews a dead one so it reads `Alive` and keeps receiving VMs, lets a live one age into `Stale`, or takes over its leadership so the real one exits | S, T, D | No shared ClusterRole but the operator's grants any Lease verb: `deploy/{controller,imagebuilder,provider-vsphere,provider-proxmox,provider-libvirt}/rbac/clusterrole.yaml`, guarded by `bootstrap_tests.rs::no_shared_cluster_role_but_the_operators_grants_leases`. Each role writes its Lease through a namespaced Role whose `get`/`update`/`patch` name only its own Lease: the operator's per-Provider Role (`crates/banlieue-operator/src/workload.rs`, `named_rule`), `banlieue bootstrap`'s (`bootstrap.rs::build_leader_election_role`, with `--leader-election-namespace` set to the install namespace) and the GitOps `deploy/*/rbac/role-leader-election.yaml`, checked equal by `gitops_lease_roles_match_what_bootstrap_builds`. Verified with `kubectl auth can-i` on a real API server: each identity may update its own Lease and no other |
+| The same grant reaches **beyond banlieue**: node heartbeats in `kube-node-lease`, control-plane leader Leases in `kube-system` | S, T, E | Removed with the row above: Lease rights are namespaced Roles, so no banlieue identity but the operator can write a Lease outside its own namespace, and none but the operator one it does not name. The operator's cluster-wide Lease grant is §8's "holds the union" |
+| A provider `create`s a Lease under another provider's name before that provider ever starts, so an `Absent` provider reads `Alive` | S | Bounded: `create` cannot be narrowed by `resourceNames`, so it stays a namespaced rule. A Lease it created but cannot `update` goes `Stale` after `staleAfter`, and `Absent` schedules exactly like `Alive`, so the forgery gains no placement it would not have had |
+| A compromised provider writes `status.workload.heartbeat` on another Provider directly (every provider ClusterRole holds `providers/status` `patch`) | T, D | Bounded, not prevented: the operator owns that field and re-applies it with `force` on every reconcile; the forged write is itself a Provider change that wakes the operator, and the requeue is never longer than `REQUEUE_DEFAULT_SECS` (`reconciler/provider.rs::publish_status`, `heartbeat.rs::requeue_after`). The same identity could already rewrite that Provider's conditions and failure domains; ADR-0102 adds nothing it lacked |
+| A provider that is down keeps `Ready=True` and keeps receiving VMs (the 2026-10-13 outage) | D | **ADR-0102**: `crates/banlieue-operator/src/heartbeat.rs` (`evaluate`) records `Stale` once the Lease is `staleAfter` (default 60 s) old; `crates/banlieue-controller/src/reconciler/scheduler.rs` (`is_stale`) skips it, `ProviderNotAlive` when none is left; `ProviderHeartbeatStale` Event and `banlieue_provider_heartbeat` gauge. Live-tested against a real API server |
+| `Absent` is used to slip past the filter | D | By design `Absent` (no Lease) is not filtered, so `--no-leader-elect` runs and Providers from before ADR-0102 keep working. It is a different state from `Stale` and visible as such (column, gauge); a provider that was ever running leaves a Lease behind and reads `Stale`, not `Absent`, when it stops |
+| Clock skew between a host and the operator misjudges liveness | D | Bounded: a renewal stamped in the future reads `Alive` for at most `staleAfter`, and `staleAfter` is four lease durations. Skew larger than that is §8 |
+
 ## 7. Deployment hardening requirements
 
 These are properties of the **current** design that operators must enforce
@@ -1315,7 +1348,9 @@ a different assumption is unsafe.
 
 | Risk | Why accepted | Revisit when |
 | --- | --- | --- |
-| `banlieue-operator` holds the union of every permission it can delegate | Kubernetes escalation-prevention requires it; granting `escalate`/`bind` instead would be strictly worse. The ceiling is auditable in one file | A provider needs a materially more dangerous permission |
+| `banlieue-operator` holds the union of every permission it can delegate | Kubernetes escalation-prevention requires it; granting `escalate`/`bind` instead would be strictly worse. The ceiling is auditable in one file. This includes Lease `get`/`create`/`update`/`patch` **cluster-wide**: it delegates them, narrowed, into every provider's Role, and since ADR-0102 it reads each provider's Lease, so a compromised operator can forge any heartbeat (TB-17) | A provider needs a materially more dangerous permission |
+| **Liveness assumes clocks agree to within `staleAfter`** (ADR-0102): a provider writes `renewTime` by its own clock and the operator judges it by its own | Leader election already assumes the same; `staleAfter` defaults to four lease durations, and a future timestamp is capped at one `staleAfter` of grace | A host's clock is found to drift past `staleAfter`, or `staleAfter` is lowered close to the lease duration |
+| **The operator is the only evaluator of liveness**: while it is down, every heartbeat stays at its last value, and a provider that dies then keeps `Alive` | Liveness is a status field of the operator's (ADR-0012); a second evaluator would be a second writer. The operator's own `banlieue_leader` gauge is what to alert on, and `docs/src/guides/observability.md` says so | Liveness needs to survive an operator outage (e.g. the scheduler reading the Lease itself) |
 | `banlieue-imagebuild` runs `privileged` | kairos' builder genuinely requires loop devices and chroot; isolation is by namespace | kairos supports rootless builds |
 | Rendered user-data is visible in `VSphereMachine.spec` **and `LibvirtMachine.spec`** | Single-tenant, single-namespace posture (ADR-0025). ADR-0042 closed the *escalation* (a principal reaching user-data it could not read); the *reflection* to anyone who can already `get` the infra CR is unchanged and deliberate, and ADR-0050 extends it to a second kind rather than introducing a new risk | A second tenant or namespace becomes real — ADR-0025's superseded per-VM Role design is the shape that scales |
 | The controller's user-data Role is namespace-wide, not `resourceNames`-scoped | The names a validly admitted `VirtualMachine` may cite are unknowable when the manifest is written; authorization moves to admission, where the requesting identity still exists (ADR-0042). A compromise of the controller identity itself is still bounded only by the namespace | The install stops shipping `deploy/admission/`, or per-VM RBAC becomes tractable |

@@ -81,7 +81,8 @@ rules:
     resources: ["events"]
     verbs: ["create", "patch"]
 
-  # Leases for leader election.
-  - apiGroups: ["coordination.k8s.io"]
-    resources: ["leases"]
-    verbs: ["get", "create", "update", "patch"]
+  # Leader-election Leases are NOT granted here: a ClusterRoleBinding would
+  # grant them on every Lease in the cluster. Each role gets a namespaced
+  # Role narrowed to its own Lease instead (ADR-0102): built by `banlieue
+  # bootstrap`, or by the operator
+  # for the providers it runs.

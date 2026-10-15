@@ -127,7 +127,7 @@
       "unique-id": "service-banlieue-operator",
       "node-type": "service",
       "name": "banlieue-operator",
-      "description": "Provider lifecycle controller. Watches Provider (one backend instance) and ProviderClass (install metadata: image, resources, workload namespace) CRs, and server-side-applies one Deployment, ServiceAccount, Role, RoleBinding and ClusterRoleBinding per Provider \u2014 the per-instance topology of ADR-0003. Each spawned provider pod runs a server-side filtered watch (labelSelector banlieue.io/provider=<name>) so one hung backend cannot stall another. NAMESPACED objects carry an ownerReference to their Provider and are garbage-collected with it; the ClusterRoleBinding cannot (a cluster-scoped dependent with a namespaced owner is deleted immediately by the collector), so a finalizer removes it. Cluster-scoped names are namespace-qualified, because two Providers sharing a name and class in different namespaces would otherwise collide on one binding and fight over its subject. Also prunes superseded workloads by label whenever a Provider's class changes \u2014 ADR-0007 ships the immutability policy as OPTIONAL hardening and requires the controller to fall back to delete-and-recreate rather than depend on it. Publishes ProviderClass.status (Providers referencing the class, and a Ready condition reporting whether the shared per-backend ClusterRole exists). Writes only Provider.status.workload \u2014 never status.conditions, which the provider's own field manager owns. Holds no backend credentials and never reads Secret contents. See ADR-0012.",
+      "description": "Provider lifecycle controller. Watches Provider (one backend instance) and ProviderClass (install metadata: image, resources, workload namespace) CRs, and server-side-applies one Deployment, ServiceAccount, Role, RoleBinding and ClusterRoleBinding per Provider \u2014 the per-instance topology of ADR-0003. Each spawned provider pod runs a server-side filtered watch (labelSelector banlieue.io/provider=<name>) so one hung backend cannot stall another. NAMESPACED objects carry an ownerReference to their Provider and are garbage-collected with it; the ClusterRoleBinding cannot (a cluster-scoped dependent with a namespaced owner is deleted immediately by the collector), so a finalizer removes it. Cluster-scoped names are namespace-qualified, because two Providers sharing a name and class in different namespaces would otherwise collide on one binding and fight over its subject. Also prunes superseded workloads by label whenever a Provider's class changes \u2014 ADR-0007 ships the immutability policy as OPTIONAL hardening and requires the controller to fall back to delete-and-recreate rather than depend on it. Publishes ProviderClass.status (Providers referencing the class, and a Ready condition reporting whether the shared per-backend ClusterRole exists). Writes only Provider.status.workload \u2014 never status.conditions, which the provider's own field manager owns. Holds no backend credentials and never reads Secret contents. See ADR-0012. It also reports whether each provider is running, from that provider's own leader-election Lease, into status.workload.heartbeat (ADR-0102).",
       "interfaces": [
         {
           "unique-id": "banlieue-operator-health",
@@ -929,7 +929,7 @@
     },
     {
       "unique-id": "rel-controller-kube-api",
-      "description": "banlieue-controller watches VirtualMachine / Provider / VMClass / VMImage / VSphereCluster CRs, server-side-applies infrastructure machine CRs, watches their status, and patches VirtualMachine status with the mirrored conditions. It also reconciles VSphereCluster (InfraCluster) by aggregating selected Providers' status.failureDomains[] into the CAPI v1beta2 failure-domain list \u2014 reading Provider status only, no backend access.",
+      "description": "banlieue-controller watches VirtualMachine / Provider / VMClass / VMImage / VSphereCluster CRs, server-side-applies infrastructure machine CRs, watches their status, and patches VirtualMachine status with the mirrored conditions. It also reconciles VSphereCluster (InfraCluster) by aggregating selected Providers' status.failureDomains[] into the CAPI v1beta2 failure-domain list \u2014 reading Provider status only, no backend access. The scheduler's first filter skips a Provider whose status.workload.heartbeat is Stale (Scheduled=False, reason ProviderNotAlive); Absent is not filtered (ADR-0102).",
       "relationship-type": {
         "connects": {
           "source": {
@@ -947,7 +947,7 @@
     },
     {
       "unique-id": "rel-operator-kube-api",
-      "description": "banlieue-operator watches ProviderClass and Provider CRs and server-side-applies the per-instance provider workload (Deployment, ServiceAccount, Role, RoleBinding) with field manager banlieue.io/operator, then mirrors readiness into Provider.status.workload. It never contacts the spawned provider, the main controller, or any backend \u2014 only the K8s API.",
+      "description": "banlieue-operator watches ProviderClass and Provider CRs and server-side-applies the per-instance provider workload (Deployment, ServiceAccount, Role, RoleBinding) with field manager banlieue.io/operator, then mirrors readiness into Provider.status.workload. It never contacts the spawned provider, the main controller, or any backend \u2014 only the K8s API. Liveness (ADR-0102): on each Provider reconcile the operator also reads that Provider's leader-election Lease (one get, named by workload_name, in the workload namespace; no list or watch) and writes status.workload.heartbeat (Alive / Stale / Absent) and lastHeartbeatTime under its own field manager, requeueing the Provider for the moment the heartbeat would go stale (60s by default) and publishing ProviderHeartbeatStale / ProviderHeartbeatRestored Events on each transition.",
       "relationship-type": {
         "connects": {
           "source": {
@@ -965,7 +965,7 @@
     },
     {
       "unique-id": "rel-provider-vsphere-kube-api",
-      "description": "vSphere provider controller watches Provider CRs (capability introspection, ADR-0019), VMImage CRs (per-zone template build, ADR-0020/0021), and VSphereMachine infrastructure CRs (clone-from-template create path + power-state observation, ADR-0024), patching each one's .status. NEVER speaks to the banlieue controller directly \u2014 the K8s API is the bus.",
+      "description": "vSphere provider controller watches Provider CRs (capability introspection, ADR-0019), VMImage CRs (per-zone template build, ADR-0020/0021), and VSphereMachine infrastructure CRs (clone-from-template create path + power-state observation, ADR-0024), patching each one's .status. NEVER speaks to the banlieue controller directly \u2014 the K8s API is the bus. The leader-election Lease it renews every 5s is also its liveness signal, read by banlieue-operator (ADR-0102).",
       "relationship-type": {
         "connects": {
           "source": {
@@ -983,7 +983,7 @@
     },
     {
       "unique-id": "rel-provider-proxmox-kube-api",
-      "description": "Proxmox provider controller watches ProxmoxMachine infrastructure CRs and patches their .status. Same CRD-only contract as the vSphere provider.",
+      "description": "Proxmox provider controller watches ProxmoxMachine infrastructure CRs and patches their .status. Same CRD-only contract as the vSphere provider. The leader-election Lease it renews every 5s is also its liveness signal, read by banlieue-operator (ADR-0102).",
       "relationship-type": {
         "connects": {
           "source": {
@@ -1001,7 +1001,7 @@
     },
     {
       "unique-id": "rel-provider-libvirt-kube-api",
-      "description": "libvirt provider controller watches LibvirtMachine infrastructure CRs and patches their .status. Same CRD-only contract.",
+      "description": "libvirt provider controller watches LibvirtMachine infrastructure CRs and patches their .status. Same CRD-only contract. The leader-election Lease it renews every 5s is also its liveness signal, read by banlieue-operator (ADR-0102).",
       "relationship-type": {
         "connects": {
           "source": {
@@ -1467,7 +1467,7 @@
     },
     {
       "unique-id": "rel-provider-cloud-hypervisor-kube-api",
-      "description": "The host-resident provider dials the management-cluster API server from the KVM host: watches its Provider (by name), CloudHypervisorMachines in its namespace and VMImages; server-side-applies Provider status, its perProvider VMImage row, and machine status and spec.providerID. Same CRD-only contract as every provider; the only difference is where the process runs.",
+      "description": "The host-resident provider dials the management-cluster API server from the KVM host: watches its Provider (by name), CloudHypervisorMachines in its namespace and VMImages; server-side-applies Provider status, its perProvider VMImage row, and machine status and spec.providerID. Same CRD-only contract as every provider; the only difference is where the process runs. The leader-election Lease it renews every 5s is also its liveness signal, read by banlieue-operator (ADR-0102).",
       "relationship-type": {
         "connects": {
           "source": {
@@ -1823,7 +1823,7 @@
     },
     {
       "unique-id": "rel-metrics-scraper-banlieue-controller",
-      "description": "Prometheus scrapes banlieue-controller's OpenMetrics endpoint: bounded-cardinality reconcile counters and histograms, the leader gauge, and domain gauges. No object names, credentials or spec content (ADR-0091).",
+      "description": "Prometheus scrapes banlieue-controller's OpenMetrics endpoint: bounded-cardinality reconcile counters and histograms, the leader gauge, and domain gauges. No object names, credentials or spec content (ADR-0091). Adds banlieue_provider_heartbeat{provider, kind, state}, one series per Provider and state, computed beside banlieue_provider_failure_domains from the same Provider reflector (ADR-0102).",
       "relationship-type": {
         "connects": {
           "source": {
@@ -3079,6 +3079,24 @@
           }
         }
       ]
+    },
+    "provider-liveness": {
+      "description": "IMPLEMENTED (ADR-0102; unit-tested, and verified against a real API server on kind): a Provider's liveness is decided outside the provider, from the coordination.k8s.io Lease its leader election already renews, so a provider that is down cannot leave a stale Ready=True standing. banlieue-operator, the sole writer of status.workload, records Alive / Stale / Absent and the last renewal; Stale means the Lease has not been renewed for staleAfter (default 60s, four lease durations). The scheduler never places a new VirtualMachine on a Stale Provider. The operator reads the Lease with the get it already holds and re-checks at the staleness deadline, so no identity gains list or watch on Leases, and providers write nothing new. Liveness proves the process runs and reaches the API server, not that its backend works. Only the operator holds Lease rights cluster-wide (to delegate them); every other identity writes its Lease through a namespaced Role naming only its own Lease, so no provider can forge another's heartbeat.",
+      "requirements": [
+        {
+          "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+          "config": {
+            "framework": "NIST SP 800-53 Rev. 5",
+            "controls": [
+              "AC-6",
+              "CP-2",
+              "SC-24",
+              "SI-4"
+            ],
+            "evidence": "docs/adr/0102-provider-liveness-from-its-lease.md, crates/banlieue-operator/src/heartbeat.rs, crates/banlieue-operator/src/reconciler/provider.rs (publish_status), crates/banlieue-controller/src/reconciler/scheduler.rs (is_stale), crates/banlieue-controller/src/metrics.rs (HeartbeatCollector), crates/banlieue-operator/src/bootstrap.rs (build_leader_election_role), deploy/*/rbac/role-leader-election.yaml"
+          }
+        }
+      ]
     }
   },
   "metadata": {
@@ -3187,6 +3205,7 @@
     "docs/adr/0097-api-ends-at-virtualmachineclaim.md",
     "docs/adr/0098-spread-placement-across-failure-domains.md",
     "docs/adr/0100-publish-banlieue-api-to-crates-io.md",
-    "docs/adr/0101-vspheremachine-ownership-marker-and-adoption.md"
+    "docs/adr/0101-vspheremachine-ownership-marker-and-adoption.md",
+    "docs/adr/0102-provider-liveness-from-its-lease.md"
   ]
 }

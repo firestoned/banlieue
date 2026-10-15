@@ -14,7 +14,7 @@ mod tests {
     use k8s_openapi::apimachinery::pkg::apis::meta::v1::MicroTime;
     use k8s_openapi::jiff::Timestamp;
 
-    use super::super::{LeaderConfig, LeaseAction, decide_action};
+    use super::super::{LeaderConfig, LeaseAction, decide_action, identity_from};
 
     const OUR_IDENTITY: &str = "controller-pod-a";
     const OTHER_IDENTITY: &str = "controller-pod-b";
@@ -179,5 +179,32 @@ mod tests {
                 lease_duration: Duration::from_secs(LEASE_DURATION_SECS)
             }
         );
+    }
+
+    /// ADR-0102 Decision 6: a provider run by systemd has neither `POD_NAME`
+    /// nor `HOSTNAME`, so its Lease said `unknown`. The kernel's hostname is
+    /// the next best name, so a stale Lease says which host stopped.
+    #[test]
+    fn identity_falls_back_to_the_kernel_hostname() {
+        assert_eq!(identity_from(None, None, Some("grill\n".into())), "grill");
+    }
+
+    #[test]
+    fn identity_prefers_the_pod_name_then_the_hostname_variable() {
+        assert_eq!(
+            identity_from(Some("pod-1".into()), Some("h".into()), Some("k".into())),
+            "pod-1"
+        );
+        assert_eq!(identity_from(None, Some("h".into()), Some("k".into())), "h");
+    }
+
+    #[test]
+    fn empty_identity_sources_are_skipped() {
+        assert_eq!(
+            identity_from(Some(String::new()), Some(" ".into()), Some("k".into())),
+            "k"
+        );
+        assert_eq!(identity_from(None, None, None), "unknown");
+        assert_eq!(identity_from(None, None, Some("\n".into())), "unknown");
     }
 }

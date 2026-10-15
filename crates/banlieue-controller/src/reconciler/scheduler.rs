@@ -15,7 +15,9 @@
 //! ## Filter chain (in order)
 //!
 //! 1. Provider selector — `placement.providerSelector` against
-//!    `Provider.metadata.labels`.
+//!    `Provider.metadata.labels`. Then liveness (ADR-0102): a Provider
+//!    whose `status.workload.heartbeat` is `Stale` is dropped; `Absent` and
+//!    an unevaluated heartbeat are kept.
 //! 2. Failure-domain selector — `placement.failureDomainSelector` against
 //!    `FailureDomain.labels`.
 //! 3. Image readiness — `VMImage.status.perProvider[i].ready == true` for
@@ -52,8 +54,9 @@
 use std::collections::BTreeMap;
 
 use banlieue_api::banlieue::{
-    AffinityMode, AntiAffinityRule, FailureDomain, LABEL_POOL, NetworkClassMapping, Provider,
-    ProviderCapabilities, ResolvedResource, StorageClassMapping, VMClass, VMImage, VirtualMachine,
+    AffinityMode, AntiAffinityRule, FailureDomain, Heartbeat, LABEL_POOL, NetworkClassMapping,
+    Provider, ProviderCapabilities, ResolvedResource, StorageClassMapping, VMClass, VMImage,
+    VirtualMachine,
 };
 use banlieue_api::common::{Firmware, LabelSelector, LabelSelectorOperator};
 use kube::ResourceExt;
@@ -137,6 +140,12 @@ pub enum ScheduleError {
     /// Required anti-affinity rule could not be satisfied.
     #[error("required anti-affinity rule on topologyKey={0} left no candidates")]
     AntiAffinityUnsatisfied(String),
+
+    /// Every Provider the selector matched has a `Stale` heartbeat: they
+    /// stopped renewing their Leases, so nothing would reconcile the VM
+    /// (ADR-0102).
+    #[error("every matching provider has stopped renewing its Lease")]
+    ProviderNotAlive,
 }
 
 /// Stable condition reasons. Mapped onto the `Scheduled` condition.
@@ -155,6 +164,8 @@ pub mod reasons {
     pub const TPM_UNSUPPORTED: &str = "TpmUnsupported";
     /// Required anti-affinity rule could not be satisfied.
     pub const ANTI_AFFINITY_UNSATISFIED: &str = "AntiAffinityUnsatisfied";
+    /// Every matching Provider's heartbeat is `Stale` (ADR-0102).
+    pub const PROVIDER_NOT_ALIVE: &str = "ProviderNotAlive";
 }
 
 impl ScheduleError {
@@ -168,8 +179,20 @@ impl ScheduleError {
             ScheduleError::FirmwareUnsupported => reasons::FIRMWARE_UNSUPPORTED,
             ScheduleError::TpmUnsupported => reasons::TPM_UNSUPPORTED,
             ScheduleError::AntiAffinityUnsatisfied(_) => reasons::ANTI_AFFINITY_UNSATISFIED,
+            ScheduleError::ProviderNotAlive => reasons::PROVIDER_NOT_ALIVE,
         }
     }
+}
+
+/// Whether `provider`'s heartbeat, as the operator last judged it, is
+/// `Stale`. `Absent` and an unevaluated heartbeat are not (ADR-0102).
+fn is_stale(provider: &Provider) -> bool {
+    provider
+        .status
+        .as_ref()
+        .and_then(|s| s.workload.as_ref())
+        .and_then(|w| w.heartbeat)
+        == Some(Heartbeat::Stale)
 }
 
 /// Bounded collector for per-candidate reject reasons. Keeps the first
@@ -232,6 +255,15 @@ pub fn schedule(
         .collect();
     if provider_candidates.is_empty() {
         return Err(ScheduleError::NoProviderMatched);
+    }
+
+    // ADR-0102: a provider that stopped renewing its Lease takes no new VM.
+    let provider_candidates: Vec<&Provider> = provider_candidates
+        .into_iter()
+        .filter(|p| !is_stale(p))
+        .collect();
+    if provider_candidates.is_empty() {
+        return Err(ScheduleError::ProviderNotAlive);
     }
 
     // Walk all (provider, failure_domain) tuples.

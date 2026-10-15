@@ -691,6 +691,13 @@ fn add_role(
             .role_bindings
             .push(build_cloud_config_role_binding(role, opts));
     }
+    // Last, so each role's own namespaced Role stays first. ADR-0102: each role's leader election reaches its own Lease only.
+    if elects_through_own_lease(role) {
+        manifests.roles.push(build_leader_election_role(role, opts));
+        manifests
+            .role_bindings
+            .push(build_leader_election_role_binding(role, opts));
+    }
     manifests.config_maps.push(build_config_map(role, opts));
     manifests.deployments.push(build_deployment(role, opts));
     Ok(())
@@ -839,6 +846,78 @@ pub fn build_namespaced_role(role: &InstallRole, opts: &InstallOptions) -> Role 
 
 /// Name of the operator's namespaced token Role and its binding.
 const OPERATOR_TOKEN_ROLE_NAME: &str = "banlieue-operator-external-tokens";
+
+/// API group of `Lease`.
+const COORDINATION_API_GROUP: &str = "coordination.k8s.io";
+
+/// Suffix of each role's leader-election Role and RoleBinding.
+const LEADER_ELECTION_ROLE_SUFFIX: &str = "-leader-election";
+
+/// Whether `role` gets a namespaced Role for its own Lease (ADR-0102). Every
+/// role but the operator, which must hold Lease rights cluster-wide to grant
+/// them to the providers it runs, and keeps them in its ClusterRole.
+#[must_use]
+pub fn elects_through_own_lease(role: &InstallRole) -> bool {
+    !matches!(role, InstallRole::Operator)
+}
+
+/// The leader-election Role for `role`, in the install namespace: `create`
+/// on Leases (which `resourceNames` cannot narrow) as its own rule, and
+/// `get`/`update`/`patch` on the role's own Lease only (ADR-0102). The Lease
+/// is named after the role, each binary's default `--leader-election-id`.
+#[must_use]
+pub fn build_leader_election_role(role: &InstallRole, opts: &InstallOptions) -> Role {
+    let lease_rule = |verbs: &[&str], names: Option<Vec<String>>| PolicyRule {
+        api_groups: Some(vec![COORDINATION_API_GROUP.to_string()]),
+        resources: Some(vec!["leases".to_string()]),
+        resource_names: names,
+        verbs: verbs.iter().map(|v| (*v).to_string()).collect(),
+        ..Default::default()
+    };
+    Role {
+        metadata: ObjectMeta {
+            name: Some(format!("{}{LEADER_ELECTION_ROLE_SUFFIX}", role.name())),
+            namespace: Some(opts.namespace.clone()),
+            labels: Some(labels(role)),
+            ..Default::default()
+        },
+        rules: Some(vec![
+            lease_rule(&["create"], None),
+            lease_rule(
+                &["get", "update", "patch"],
+                Some(vec![role.name().to_string()]),
+            ),
+        ]),
+    }
+}
+
+/// Bind [`build_leader_election_role`] to `role`'s ServiceAccount.
+#[must_use]
+pub fn build_leader_election_role_binding(
+    role: &InstallRole,
+    opts: &InstallOptions,
+) -> RoleBinding {
+    let name = format!("{}{LEADER_ELECTION_ROLE_SUFFIX}", role.name());
+    RoleBinding {
+        metadata: ObjectMeta {
+            name: Some(name.clone()),
+            namespace: Some(opts.namespace.clone()),
+            labels: Some(labels(role)),
+            ..Default::default()
+        },
+        role_ref: RoleRef {
+            api_group: Some("rbac.authorization.k8s.io".to_string()),
+            kind: "Role".to_string(),
+            name,
+        },
+        subjects: Some(vec![Subject {
+            kind: "ServiceAccount".to_string(),
+            name: role.name().to_string(),
+            namespace: Some(opts.namespace.clone()),
+            ..Default::default()
+        }]),
+    }
+}
 
 /// The operator's namespaced Role holding `serviceaccounts/token` `create`,
 /// which it grants each External provider on its own ServiceAccount
@@ -1091,6 +1170,15 @@ fn build_container(role: &InstallRole, opts: &InstallOptions) -> Container {
         }
         _ => role.args_with(opts),
     };
+    // The role's narrowed Lease Role is in the install namespace, so its
+    // Lease must be too; each binary defaults to `banlieue-system`
+    // (ADR-0102). The operator keeps its cluster-wide Lease rights and its
+    // own default.
+    let mut args = args;
+    if elects_through_own_lease(role) {
+        args.push("--leader-election-namespace".to_string());
+        args.push(opts.namespace.clone());
+    }
     Container {
         name: role.component(),
         image: Some(resolve_image(opts)),

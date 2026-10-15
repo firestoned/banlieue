@@ -117,13 +117,41 @@ impl LeaderConfig {
     /// Order of preference:
     /// 1. `POD_NAME` env var (set via the downward API on K8s deployments).
     /// 2. `HOSTNAME` env var.
-    /// 3. The literal string `"unknown"` (callers should override this
+    /// 3. The kernel's hostname: a provider run by systemd has neither
+    ///    variable, and its Lease must still say which host holds it
+    ///    (ADR-0102 Decision 6).
+    /// 4. The literal string `"unknown"` (callers should override this
     ///    via [`LeaderConfig::identity`]).
     pub fn default_identity() -> String {
-        std::env::var("POD_NAME")
-            .or_else(|_| std::env::var("HOSTNAME"))
-            .unwrap_or_else(|_| "unknown".to_string())
+        identity_from(
+            std::env::var("POD_NAME").ok(),
+            std::env::var("HOSTNAME").ok(),
+            std::fs::read_to_string(KERNEL_HOSTNAME_PATH).ok(),
+        )
     }
+}
+
+/// Where Linux exposes the kernel's hostname.
+const KERNEL_HOSTNAME_PATH: &str = "/proc/sys/kernel/hostname";
+
+/// Identity used when no source has a usable value.
+const UNKNOWN_IDENTITY: &str = "unknown";
+
+/// [`LeaderConfig::default_identity`]'s choice, from its three sources in
+/// order of preference. A source that is empty or only whitespace is
+/// skipped; values are trimmed. Pure.
+#[must_use]
+pub fn identity_from(
+    pod_name: Option<String>,
+    hostname_var: Option<String>,
+    kernel_hostname: Option<String>,
+) -> String {
+    [pod_name, hostname_var, kernel_hostname]
+        .into_iter()
+        .flatten()
+        .map(|v| v.trim().to_string())
+        .find(|v| !v.is_empty())
+        .unwrap_or_else(|| UNKNOWN_IDENTITY.to_string())
 }
 
 /// The action a candidate should take given the current state of the

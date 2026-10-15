@@ -30,6 +30,7 @@ pub mod bootstrap;
 pub mod context;
 pub mod error;
 pub mod events;
+pub mod heartbeat;
 pub mod host_credential;
 pub mod naming;
 pub mod reconciler;

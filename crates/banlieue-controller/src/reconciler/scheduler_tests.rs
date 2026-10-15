@@ -1104,4 +1104,90 @@ mod tests {
         assert_eq!(sp.resolved_networks[0].backend_id, "pg-1");
         assert!(sp.scheduled_at.is_some());
     }
+
+    // --- Provider liveness (ADR-0102) --------------------------------------
+
+    fn with_heartbeat(mut p: Provider, heartbeat: banlieue_api::banlieue::Heartbeat) -> Provider {
+        let status = p.status.get_or_insert_with(Default::default);
+        status.workload = Some(banlieue_api::banlieue::ProviderWorkloadStatus {
+            heartbeat: Some(heartbeat),
+            ..Default::default()
+        });
+        p
+    }
+
+    /// The 2026-10-13 outage: two of three hosts' providers had stopped.
+    /// Nothing new may land on them, whatever the spread would prefer.
+    #[test]
+    fn a_stale_provider_receives_no_new_vm() {
+        use banlieue_api::banlieue::Heartbeat::{Alive, Stale};
+        let (providers, img, cls) = three_hosts();
+        let providers: Vec<Provider> = providers
+            .into_iter()
+            .map(|p| {
+                let hb = if p.name_any() == "h2" { Alive } else { Stale };
+                with_heartbeat(p, hb)
+            })
+            .collect();
+        for name in ["a", "b", "c", "d", "e", "f"] {
+            let v = vm(name, "banlieue-system", BTreeMap::new());
+            let d = schedule(&v, &cls, &img, &providers, &[]).expect("schedule");
+            assert_eq!(d.provider_name, "h2", "{name}");
+        }
+    }
+
+    #[test]
+    fn every_candidate_stale_is_provider_not_alive() {
+        let (providers, img, cls) = three_hosts();
+        let providers: Vec<Provider> = providers
+            .into_iter()
+            .map(|p| with_heartbeat(p, banlieue_api::banlieue::Heartbeat::Stale))
+            .collect();
+        let v = vm("a", "banlieue-system", BTreeMap::new());
+        let err = schedule(&v, &cls, &img, &providers, &[]).unwrap_err();
+        assert_eq!(err, ScheduleError::ProviderNotAlive);
+        assert_eq!(err.reason(), "ProviderNotAlive");
+    }
+
+    /// `Absent` (no Lease: `--no-leader-elect`, the e2e tiers) and an
+    /// unevaluated heartbeat (a Provider from before ADR-0102) schedule as
+    /// they always did.
+    #[test]
+    fn an_absent_or_unevaluated_heartbeat_still_schedules() {
+        let (providers, img, cls) = three_hosts();
+        let mut providers = providers.into_iter();
+        let absent = with_heartbeat(
+            providers.next().unwrap(),
+            banlieue_api::banlieue::Heartbeat::Absent,
+        );
+        let unevaluated = providers.next().unwrap();
+        for only in [absent, unevaluated] {
+            let expected = only.name_any();
+            let v = vm("a", "banlieue-system", BTreeMap::new());
+            let d = schedule(&v, &cls, &img, &[only], &[]).expect("schedule");
+            assert_eq!(d.provider_name, expected);
+        }
+    }
+
+    /// A selector that matches nothing is still `NoProviderMatched`: being
+    /// dead is only reported for providers the VM could otherwise use.
+    #[test]
+    fn a_selector_miss_is_reported_before_liveness() {
+        let (providers, img, cls) = three_hosts();
+        let providers: Vec<Provider> = providers
+            .into_iter()
+            .map(|p| with_heartbeat(p, banlieue_api::banlieue::Heartbeat::Stale))
+            .collect();
+        let v = vm_with_placement(
+            "a",
+            "banlieue-system",
+            BTreeMap::new(),
+            PlacementSpec {
+                provider_selector: Some(label_selector(&[("tier", "none")])),
+                ..Default::default()
+            },
+        );
+        let err = schedule(&v, &cls, &img, &providers, &[]).unwrap_err();
+        assert_eq!(err, ScheduleError::NoProviderMatched);
+    }
 }

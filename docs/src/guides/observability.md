@@ -23,6 +23,7 @@ a non-zero status instead of running unobservable.
 | `banlieue_leader` | gauge | `role` | `1` while this process holds its lease (or runs with `--no-leader-elect`), else `0` |
 | `banlieue_virtualmachines` | gauge | `phase` | `VirtualMachine`s per phase. Controller only |
 | `banlieue_provider_failure_domains` | gauge | `provider`, `kind` | Failure domains a `Provider` reports in its status; `kind` is its ProviderClass. Controller only |
+| `banlieue_provider_heartbeat` | gauge | `provider`, `kind`, `state` | `1` for the heartbeat the operator recorded for a `Provider` (`Alive`, `Stale`, `Absent`), `0` for the other two; no series until one is recorded (ADR-0102). Controller only |
 
 `controller` is the reconciled kind: `VirtualMachine`, `VirtualMachinePool`,
 `VirtualMachineClaim`, `VSphereCluster`, `VMImage`, `Provider`,
@@ -189,6 +190,50 @@ managed object reference or a pool name.
 Turning export on gives the role egress to the collector. If you restrict
 egress with NetworkPolicy, allow the collector's address yourself: it is
 specific to your deployment, so banlieue cannot ship a rule for it.
+
+## Provider liveness
+
+A provider reports its own health in `status.conditions`, and a provider
+that is down reports nothing, so its last `Ready=True` stays up. Whether it
+is **running** is decided outside it instead (ADR-0102): banlieue-operator
+reads the Lease the provider's leader election renews every 5 seconds and
+records the result in `status.workload`:
+
+| `heartbeat` | Meaning | Scheduling |
+| --- | --- | --- |
+| `Alive` | the Lease was renewed within `--provider-stale-after-secs` (default 60) | normal |
+| `Stale` | the Lease exists but stopped renewing: the provider was running and has stopped | **no new VM** is placed on it (`Scheduled=False`, `ProviderNotAlive` when no other candidate is left) |
+| `Absent` | no Lease: never started, or run with `--no-leader-elect` | normal |
+
+```sh
+kubectl get providers -A                       # HEARTBEAT column
+kubectl get provider grill -o jsonpath='{.status.workload.heartbeat} {.status.workload.lastHeartbeatTime}'
+kubectl get events -A --field-selector reason=ProviderHeartbeatStale
+```
+
+Each change to and from `Stale` is an Event on the Provider
+(`ProviderHeartbeatStale`, `ProviderHeartbeatRestored`). `Alive` means the
+process runs and reaches the API server, not that its backend works; that
+is still the provider's own `Ready` and `ProviderReachable`.
+
+An alert on the gauge, for any Prometheus rule file:
+
+```yaml
+groups:
+  - name: banlieue
+    rules:
+      - alert: BanlieueProviderStale
+        expr: banlieue_provider_heartbeat{state="Stale"} == 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Provider {{ $labels.provider }} ({{ $labels.kind }}) has stopped renewing its Lease"
+```
+
+The gauge comes from banlieue-controller and the heartbeat from
+banlieue-operator, so alert on `banlieue_leader{role="banlieue-operator"}`
+too: with the operator down, heartbeats stop being re-evaluated.
 
 ## Health endpoint semantics
 

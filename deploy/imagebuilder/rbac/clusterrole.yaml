@@ -72,7 +72,8 @@ rules:
   # `only_the_operator_cluster_role_may_grant_secret_access` in
   # crates/banlieue-operator/src/bootstrap_tests.rs.
 
-  # Leases for leader election. Same SDK pattern as every other banlieue role.
-  - apiGroups: ["coordination.k8s.io"]
-    resources: ["leases"]
-    verbs: ["get", "create", "update", "patch"]
+  # Leader-election Leases are NOT granted here: a ClusterRoleBinding would
+  # grant them on every Lease in the cluster. Each role gets a namespaced
+  # Role narrowed to its own Lease instead (ADR-0102): built by `banlieue
+  # bootstrap`, and in deploy/imagebuilder/rbac/role-leader-election.yaml, or by the operator
+  # for the providers it runs.

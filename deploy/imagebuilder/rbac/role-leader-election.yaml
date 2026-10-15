@@ -1,0 +1,42 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# Leader election for banlieue-imagebuilder: its own Lease and nothing else (ADR-0102).
+# Lease rights used to sit in the shared ClusterRole, which a
+# ClusterRoleBinding grants cluster-wide: any Lease in any namespace,
+# including other components' and kube-node-lease. `create` cannot be
+# narrowed by resourceNames, so it is its own rule, confined to this
+# namespace; every verb that names a Lease names only banlieue-imagebuilder.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: banlieue-imagebuilder-leader-election
+  namespace: banlieue-system
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: imagebuilder
+rules:
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["create"]
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    resourceNames: ["banlieue-imagebuilder"]
+    verbs: ["get", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: banlieue-imagebuilder-leader-election
+  namespace: banlieue-system
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: imagebuilder
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: banlieue-imagebuilder-leader-election
+subjects:
+  - kind: ServiceAccount
+    name: banlieue-imagebuilder
+    namespace: banlieue-system

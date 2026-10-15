@@ -19,6 +19,8 @@ mod tests {
             reasons::WORKLOAD_DELETED,
             reasons::RECONCILE_SKIPPED,
             reasons::CLASS_NOT_FOUND,
+            reasons::HEARTBEAT_STALE,
+            reasons::HEARTBEAT_RESTORED,
         ] {
             assert!(!reason.is_empty());
             assert!(
@@ -116,5 +118,36 @@ mod tests {
         ] {
             assert!(!event.action.is_empty(), "{} has no action", event.reason);
         }
+    }
+
+    /// ADR-0102: a provider that stopped renewing its Lease is a Warning
+    /// that names the Lease and when it was last renewed.
+    #[test]
+    fn a_stale_heartbeat_is_a_warning_naming_the_lease_and_last_renewal() {
+        let event = heartbeat_stale(
+            "banlieue-provider-cloud-hypervisor-grill",
+            Some("2026-10-13T12:57:53Z"),
+        );
+        assert_eq!(event.type_, EventType::Warning);
+        assert_eq!(event.reason, reasons::HEARTBEAT_STALE);
+        let note = event.note.expect("a note");
+        assert!(
+            note.contains("banlieue-provider-cloud-hypervisor-grill"),
+            "{note}"
+        );
+        assert!(note.contains("2026-10-13T12:57:53Z"), "{note}");
+    }
+
+    #[test]
+    fn a_restored_heartbeat_is_a_normal_event() {
+        let event = heartbeat_restored("banlieue-provider-cloud-hypervisor-grill");
+        assert_eq!(event.type_, EventType::Normal);
+        assert_eq!(event.reason, reasons::HEARTBEAT_RESTORED);
+        assert!(
+            event
+                .note
+                .expect("a note")
+                .contains("banlieue-provider-cloud-hypervisor-grill")
+        );
     }
 }

@@ -22,8 +22,10 @@ use banlieue_provider_sdk::finalizer::{ensure_finalizer, remove_finalizer};
 use banlieue_provider_sdk::reconciler::{requeue_default, requeue_on_error};
 use banlieue_provider_sdk::ssa::server_side_apply;
 use k8s_openapi::api::apps::v1::Deployment;
+use k8s_openapi::api::coordination::v1::Lease;
 use k8s_openapi::api::core::v1::ServiceAccount;
 use k8s_openapi::api::rbac::v1::{ClusterRoleBinding, Role, RoleBinding};
+use k8s_openapi::jiff::Timestamp;
 use kube::api::{DeleteParams, ListParams, Patch, PatchParams};
 use kube::runtime::controller::Action;
 use kube::{Api, Resource, ResourceExt};
@@ -33,6 +35,7 @@ use tracing::{debug, info, warn};
 use crate::context::Context;
 use crate::error::{Error, Result};
 use crate::events;
+use crate::heartbeat::{self, Transition};
 use crate::naming::{cluster_scoped_name, owned_by_selector, workload_name};
 use crate::workload::{WorkloadInputs, build_workload, owner_reference};
 
@@ -119,6 +122,7 @@ pub fn workload_status(
         namespace: namespace.to_string(),
         ready_replicas: Some(ready_replicas),
         observed_generation,
+        ..Default::default()
     }
 }
 
@@ -137,6 +141,7 @@ pub fn external_workload_status(
         namespace: namespace.to_string(),
         ready_replicas: None,
         observed_generation,
+        ..Default::default()
     }
 }
 
@@ -213,9 +218,10 @@ pub async fn reconcile(provider: Arc<Provider>, ctx: Arc<Context>) -> Result<Act
         emit(&ctx, &provider, events::workload_pruned(&pruned)).await;
     }
 
-    publish_status(&provider, &class, &namespace, &providers, &ctx).await?;
+    let recheck_in = publish_status(&provider, &class, &namespace, &providers, &ctx).await?;
 
-    Ok(requeue_default())
+    // ADR-0102: back no later than the moment the heartbeat could go stale.
+    Ok(Action::requeue(heartbeat::requeue_after(recheck_in)))
 }
 
 /// Publish an Event against `provider`.
@@ -436,15 +442,17 @@ async fn apply_workload(
     Ok(())
 }
 
-/// Mirror the workload's readiness into `Provider.status.workload`.
+/// Mirror the workload's readiness and the provider's heartbeat into
+/// `Provider.status.workload`. Returns how long until the heartbeat could
+/// change on its own (ADR-0102).
 async fn publish_status(
     provider: &Provider,
     class: &ProviderClass,
     provider_namespace: &str,
     providers: &Api<Provider>,
     ctx: &Context,
-) -> Result<()> {
-    let status = if class.spec.deployment_mode() == ProviderDeployment::External {
+) -> Result<std::time::Duration> {
+    let mut status = if class.spec.deployment_mode() == ProviderDeployment::External {
         external_workload_status(provider_namespace, provider.meta().generation)
     } else {
         let workload_namespace = class.spec.workload_namespace_or(provider_namespace);
@@ -458,6 +466,41 @@ async fn publish_status(
             provider.meta().generation,
         )
     };
+
+    // ADR-0102: the provider's own Lease says whether it is running. It lives
+    // where its workload does, under its workload name, for Managed and
+    // External alike; one `get`, no watch.
+    let lease_name = workload_name(&class.name_any(), &provider.name_any());
+    let leases: Api<Lease> = Api::namespaced(ctx.client.clone(), &status.namespace);
+    let lease = leases.get_opt(&lease_name).await?;
+    let reading = heartbeat::evaluate(lease.as_ref(), Timestamp::now(), ctx.provider_stale_after);
+    let previous = provider
+        .status
+        .as_ref()
+        .and_then(|s| s.workload.as_ref())
+        .and_then(|w| w.heartbeat);
+    match heartbeat::transition(previous, reading.heartbeat) {
+        Some(Transition::WentStale) => {
+            let last = reading
+                .last_heartbeat_time
+                .as_ref()
+                .map(|t| t.0.to_string());
+            warn!(provider = %provider.name_any(), lease = %lease_name, "provider heartbeat is stale");
+            emit(
+                ctx,
+                provider,
+                events::heartbeat_stale(&lease_name, last.as_deref()),
+            )
+            .await;
+        }
+        Some(Transition::Restored) => {
+            info!(provider = %provider.name_any(), lease = %lease_name, "provider heartbeat restored");
+            emit(ctx, provider, events::heartbeat_restored(&lease_name)).await;
+        }
+        None => {}
+    }
+    status.heartbeat = Some(reading.heartbeat);
+    status.last_heartbeat_time = reading.last_heartbeat_time;
 
     // Patch only `status.workload`; `status.conditions` stays owned by the
     // provider's own field manager (ADR-0012).
@@ -474,7 +517,7 @@ async fn publish_status(
         )
         .await?;
 
-    Ok(())
+    Ok(reading.recheck_in)
 }
 
 /// Delete what owner references cannot, then release the finalizer.

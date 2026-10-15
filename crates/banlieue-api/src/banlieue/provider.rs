@@ -13,7 +13,7 @@
 //! availability in status.
 
 use crate::common::*;
-use k8s_openapi::apimachinery::pkg::apis::meta::v1::Condition;
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::{Condition, Time};
 use kube::CustomResource;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -32,6 +32,7 @@ use std::collections::BTreeMap;
     printcolumn = r#"{"name":"Class","type":"string","jsonPath":".spec.providerClassRef.name"}"#,
     printcolumn = r#"{"name":"Endpoint","type":"string","jsonPath":".spec.connection.endpoint","priority":1}"#,
     printcolumn = r#"{"name":"Ready","type":"string","jsonPath":".status.conditions[?(@.type=='Ready')].status"}"#,
+    printcolumn = r#"{"name":"Heartbeat","type":"string","jsonPath":".status.workload.heartbeat"}"#,
     printcolumn = r#"{"name":"Age","type":"date","jsonPath":".metadata.creationTimestamp"}"#
 )]
 #[serde(rename_all = "camelCase")]
@@ -441,7 +442,7 @@ pub struct ProviderStatus {
 /// One Deployment per Provider, so a hung or slow backend cannot stall
 /// reconciliation for any other and each pod holds exactly one backend's
 /// credentials.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderWorkloadStatus {
     /// Whether the operator runs this provider (`Managed`) or only gave it an
@@ -462,9 +463,8 @@ pub struct ProviderWorkloadStatus {
 
     /// Ready replicas reported by that Deployment. Zero means the backend's
     /// controller is not currently running, whatever the Provider's other
-    /// conditions say. Unset for `External`: whether an external provider is
-    /// running is its own `Ready` condition and Lease to say, not the
-    /// operator's.
+    /// conditions say. Unset for `External`: there is no Deployment, and
+    /// whether the provider is running is `heartbeat` (ADR-0102).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ready_replicas: Option<i32>,
 
@@ -472,6 +472,32 @@ pub struct ProviderWorkloadStatus {
     /// this workload.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub observed_generation: Option<i64>,
+
+    /// Whether the provider process is running, judged by the operator from
+    /// the leader-election Lease the provider renews (ADR-0102), for Managed
+    /// and External providers alike. A provider that is down cannot report
+    /// itself, so this, not its own `Ready`, is what says it stopped. Unset
+    /// until the operator has evaluated it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub heartbeat: Option<Heartbeat>,
+
+    /// The Lease's last `renewTime`, when there is a Lease.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_heartbeat_time: Option<Time>,
+}
+
+/// A provider's liveness, from its leader-election Lease (ADR-0102).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub enum Heartbeat {
+    /// The Lease was renewed within the operator's `staleAfter`.
+    Alive,
+    /// The Lease exists but has not been renewed within `staleAfter`: the
+    /// provider was running and has stopped. The scheduler places nothing
+    /// new on it.
+    Stale,
+    /// There is no Lease: the provider has never started, or runs with
+    /// `--no-leader-elect`. Not filtered by the scheduler.
+    Absent,
 }
 
 impl ProviderConnection {
