@@ -1046,6 +1046,15 @@ pub fn build_cloud_config_role(role: &InstallRole) -> Role {
                 verbs: vec!["list".to_string()],
                 ..Default::default()
             },
+            // The rebuild gate reads the artifacts PVC's deletionTimestamp so
+            // a stale OSArtifact is never recreated over a volume that is
+            // still being torn down. Read-only.
+            PolicyRule {
+                api_groups: Some(vec![String::new()]),
+                resources: Some(vec!["persistentvolumeclaims".to_string()]),
+                verbs: vec!["get".to_string()],
+                ..Default::default()
+            },
         ]),
     }
 }

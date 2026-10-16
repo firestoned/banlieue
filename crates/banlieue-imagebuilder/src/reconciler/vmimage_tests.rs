@@ -1380,4 +1380,71 @@ mod tests {
         );
         assert!(s.os_artifact_uid.is_none());
     }
+
+    fn live(owned: bool, current: bool, terminating: bool) -> Option<LiveArtifactView> {
+        Some(LiveArtifactView {
+            owned,
+            current,
+            terminating,
+        })
+    }
+
+    #[test]
+    fn gate_proceeds_when_nothing_exists() {
+        assert_eq!(artifact_gate(None, false), ArtifactGate::Proceed);
+    }
+
+    #[test]
+    fn gate_proceeds_for_a_live_owned_current_artifact() {
+        assert_eq!(
+            artifact_gate(live(true, true, false), false),
+            ArtifactGate::Proceed
+        );
+    }
+
+    #[test]
+    fn gate_deletes_a_stale_artifact() {
+        assert_eq!(
+            artifact_gate(live(true, false, false), false),
+            ArtifactGate::DeleteForRebuild
+        );
+    }
+
+    #[test]
+    fn gate_deletes_a_foreign_artifact() {
+        assert_eq!(
+            artifact_gate(live(false, true, false), false),
+            ArtifactGate::DeleteForRebuild
+        );
+    }
+
+    /// The race: a stale artifact already being torn down must NOT be
+    /// deleted again, and must NOT be SSA-applied over — recreating the
+    /// same name adopts the dying PVC, which GC then removes.
+    #[test]
+    fn gate_waits_while_the_old_artifact_is_terminating() {
+        for (owned, current) in [(true, true), (true, false), (false, true), (false, false)] {
+            assert_eq!(
+                artifact_gate(live(owned, current, true), false),
+                ArtifactGate::AwaitTeardown,
+                "owned={owned} current={current}"
+            );
+        }
+    }
+
+    /// The artifact object is gone but its PVC is still being finalised:
+    /// a new artifact created now would adopt it.
+    #[test]
+    fn gate_waits_while_the_old_pvc_is_terminating() {
+        assert_eq!(artifact_gate(None, true), ArtifactGate::AwaitTeardown);
+    }
+
+    #[test]
+    fn delete_params_use_foreground_propagation() {
+        let params = rebuild_delete_params();
+        assert_eq!(
+            params.propagation_policy,
+            Some(kube::api::PropagationPolicy::Foreground)
+        );
+    }
 }

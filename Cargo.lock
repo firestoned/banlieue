@@ -520,6 +520,7 @@ dependencies = [
  "chrono",
  "clap",
  "futures",
+ "getrandom 0.4.3",
  "k8s-openapi",
  "kube",
  "reqwest",

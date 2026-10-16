@@ -833,9 +833,13 @@ To finish G:
 > boxes are not read as "untested":
 >
 > - **Pool reaches `Warm=True`, a claim binds, release destroys the member**
->   — green on libvirt (`make pool-claim-e2e`), and the pool half is green
->   on vSphere too (2-member `GuestReady`-gated pool, apply → `Warm=True`
->   in 130.3 s, 2026-09-23).
+>   — green on libvirt (`make pool-claim-e2e`), and **now fully green on
+>   vSphere too (2026-10-15)**: `make vsphere-pool-claim-e2e`
+>   (`a_claimed_member_is_destroyed_on_vcenter_when_the_claim_is_released`,
+>   `e2e_pool_claim.rs`) ran against a real `sandbox-pool`, 51.69 s end to
+>   end, with vCenter itself confirmed to have destroyed the released VM.
+>   The pool-only half was already green (2-member `GuestReady`-gated pool,
+>   apply → `Warm=True` in 130.3 s, 2026-09-23).
 > - **Concurrent claims do not collide; a claim outlives its own deletion
 >   until the member is gone** — green against a real apiserver in
 >   `banlieue-controller/tests/live_claim.rs`
@@ -881,10 +885,35 @@ To finish G:
       under 5 s; `govc device.ls` on the bound member shows no CD-ROM;
       `status.tpmEndorsementCertificates` parses with `openssl x509`.
 - [ ] Two claims created in the same second bind two different members.
-- [ ] Deleting a claim removes the VM from vCenter before the claim object
-      disappears.
+- [x] Deleting a claim removes the VM from vCenter before the claim object
+      disappears. **Done 2026-10-15** —
+      `a_claimed_member_is_destroyed_on_vcenter_when_the_claim_is_released`
+      (`e2e_pool_claim.rs`), green against a real vCenter in 51.69 s.
 - [ ] Bumping the `VMImage` rolls the pool with `available ≥ warmReplicas`
-      throughout (given the `maxReplicas` headroom above).
+      throughout (given the `maxReplicas` headroom above). **Attempted
+      2026-10-15, found a test bug, not yet re-run**: `debian-dev-v0.4.0` is
+      a managed-build (`Url`-source) image, whose revision is the imported
+      `OSArtifact`'s own UID, not `metadata.generation` — bumping
+      `spec.osVersion` alone never changes it, so the pool correctly never
+      rolled and the wait timed out at 900s (confirmed via
+      `banlieue-imagebuilder` logs: periodic no-op reconciles, no new
+      `OSArtifact`). `e2e_pool_claim.rs` now supports
+      `BANLIEUE_E2E_IMAGE_BUMP_SOURCE` to bump `importFrom` instead.
+      **Re-run 2026-10-15 with a real second tag** (`debian13:v2026.10.16`):
+      timed out twice, the second after 2400 s, without ever tripping the
+      availability assertion (the old members stayed `available`). The image
+      never became `Ready` after the bump. `banlieue-imagebuilder` deletes
+      the stale `OSArtifact` (SEC-005, `reconciler/vmimage.rs`) and recreates
+      one of the same name in the same second; the build-artifacts PVC is
+      owned by the `OSArtifact` by UID, and run 1's import pods were
+      `FailedScheduling: persistentvolumeclaim "<image>-build-artifacts" not
+      found`. Working diagnosis, not yet fixed: a delete/recreate race with
+      the terminating PVC and build pod. Does not affect a new `VMImage` per
+      version. **Fixed in code 2026-10-16** (foreground delete, then wait for
+      the old `OSArtifact` and its PVC to be gone before recreating;
+      `artifact_gate` in `reconciler/vmimage.rs`, plus a read-only PVC `get`
+      in the imagebuilder Role). The box stays open until the imagebuilder
+      image is rebuilt and deployed and the live rollout test passes.
 - [ ] A member whose install is sabotaged (detach the ISO mid-install) is
       deleted at `provisioningTimeoutSeconds` and replaced.
 - [ ] `tpmEnabled` class + `Immediate` image yields `ImageClassMismatch` and no

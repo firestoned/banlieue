@@ -155,7 +155,7 @@ help: ## Show this help
         kind-e2e-workload kind-e2e-pause kind-e2e-workload-namespace kind-e2e-class \
         clusterctl-components clusterctl-install clusterctl-local-repo \
         kind-capi-create kind-capi-delete kind-capi-init kind-e2e-capi kind-e2e-capi-logs \
-        claim-live-test claim-policy-live-test address-live-test pool-claim-e2e ch-e2e ch-vtpm-e2e ch-deferred-e2e ch-restart-e2e ch-host-install-test ch-polkit-test provider-bench ch-pool-timings \
+        claim-live-test claim-policy-live-test address-live-test pool-claim-e2e vsphere-pool-claim-e2e ch-e2e ch-vtpm-e2e ch-deferred-e2e ch-restart-e2e ch-host-install-test ch-polkit-test provider-bench ch-pool-timings \
         dev-oidc-up dev-oidc-attach dev-oidc-github-creds dev-oidc-login \
         dev-oidc-try-claim dev-oidc-status dev-oidc-down \
         dev-oidc-k0s-up dev-oidc-k0s-login dev-oidc-k0s-grant \
@@ -360,6 +360,36 @@ vsphere-live-test: ## Run the live vCenter harness against a REAL vCenter (needs
 	  exit 1; }
 	@echo "Running the live vCenter harness against $$VSPHERE_ENDPOINT ..."
 	cargo test -p banlieue-provider-vsphere --test live_vcenter -- \
+	  --ignored --nocapture --test-threads=1
+
+vsphere-pool-claim-e2e: ## vSphere: pool -> real vCenter VMs -> claim -> release (roadmap 17's open vSphere claim-bind gap; LOCAL ONLY, never CI)
+	@# Assumes banlieue is already installed and running, the named Provider
+	@# is Ready, and the named VMImage is already Ready — this tests pools
+	@# and claims, not the install and not the image pipeline. See
+	@# tests/e2e_pool_claim.rs module docs for BANLIEUE_E2E_READINESS,
+	@# _USER_DATA and _CLAIM_AS.
+	@test -n "$$BANLIEUE_E2E_PROVIDER" -a -n "$$BANLIEUE_E2E_IMAGE" -a -n "$$BANLIEUE_E2E_CLASS" || { \
+	  echo "Set all three. Example:"; \
+	  echo "  export KUBECONFIG=~/dev/kubeconfig/homelab.yaml"; \
+	  echo "  BANLIEUE_E2E_PROVIDER=<provider> \\"; \
+	  echo "  BANLIEUE_E2E_IMAGE=<ready VMImage> \\"; \
+	  echo "  BANLIEUE_E2E_CLASS=<VMClass> \\"; \
+	  echo "  VSPHERE_ENDPOINT=https://bar.foo.io/sdk \\"; \
+	  echo "  VSPHERE_USERNAME='svc-banlieue@vsphere.local' \\"; \
+	  echo "  VSPHERE_PASSWORD='...' \\"; \
+	  echo "    make vsphere-pool-claim-e2e"; \
+	  echo ""; \
+	  echo "BANLIEUE_E2E_NAMESPACE defaults to banlieue-system and must be the"; \
+	  echo "namespace your Provider lives in — members only schedule against"; \
+	  echo "Providers in their own namespace."; \
+	  echo ""; \
+	  echo "VSPHERE_ENDPOINT/_USERNAME/_PASSWORD are optional, but without them"; \
+	  echo "the on-vCenter checks are skipped and the run proves strictly less."; \
+	  exit 1; }
+	@test -n "$$VSPHERE_ENDPOINT" || echo "⚠ VSPHERE_ENDPOINT unset: on-vCenter VM checks will be SKIPPED."
+	@echo "Running pool -> claim -> release against provider $$BANLIEUE_E2E_PROVIDER ..."
+	@echo "  This provisions real VMs; expect several minutes per test."
+	cargo test -p banlieue-provider-vsphere --test e2e_pool_claim -- \
 	  --ignored --nocapture --test-threads=1
 
 proxmox-live-test: ## Run the Proxmox client against a REAL node, read-only (needs PROXMOX_ENDPOINT / PROXMOX_TOKEN_ID / PROXMOX_TOKEN_SECRET)

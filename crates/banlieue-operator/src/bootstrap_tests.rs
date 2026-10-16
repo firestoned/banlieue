@@ -649,6 +649,25 @@ mod tests {
         );
     }
 
+    /// The rebuild gate reads the artifacts PVC's `deletionTimestamp` so it
+    /// never recreates an `OSArtifact` over a volume still being torn down.
+    /// Read-only: the imagebuilder never creates or deletes the PVC itself.
+    #[test]
+    fn the_imagebuilder_build_namespace_role_can_read_the_artifacts_pvc() {
+        let manifests = build_role_install(&InstallRole::Imagebuilder, &opts()).unwrap();
+        let rules = manifests.roles[0].rules.as_ref().unwrap();
+        let pvc_verbs: Vec<String> = rules
+            .iter()
+            .filter(|r| {
+                r.resources
+                    .as_deref()
+                    .is_some_and(|rs| rs.contains(&"persistentvolumeclaims".to_string()))
+            })
+            .flat_map(|r| r.verbs.clone())
+            .collect();
+        assert_eq!(pvc_verbs, vec!["get".to_string()]);
+    }
+
     #[test]
     fn a_role_install_binds_its_service_account_to_its_cluster_role() {
         let manifests = build_role_install(&InstallRole::Imagebuilder, &opts()).unwrap();
