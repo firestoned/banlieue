@@ -1,5 +1,108 @@
 # Changelog
 
+## [2026-10-19 16:00] - dev-oidc-k0s: attach replaces existing oidc-* flags, idempotently
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `scripts/dev-oidc-k0s.sh`: new `REPLACE_OIDC_FLAGS` (default `false`).
+  `attach` used to stop at any controller whose k0s.yaml set `oidc-*` under
+  `spec.api.extraArgs`; it still does by default, now listing the flags it
+  found. With `true` it replaces them: the flags are removed
+  (`OIDC_STRIP_AWK`, scoped to `spec.api` like `API_ARGS_STATE_AWK`) and
+  `authentication-config` takes their place, naming the file written from
+  `ISSUER`/`CLIENT_ID`/`PREFIX`/`GROUPS_STRIP_PREFIXES`. Both edits land
+  before the one restart.
+- `attach_controller` is now step-wise: strip only when flags are present,
+  insert only when the flag is absent, restart only if either changed. A
+  re-run after a partial or complete attach edits nothing and restarts
+  nothing. `K0S_BACKUP` is taken once, before the first edit, so it stays
+  the file as found (what `down` and the failed-restart rollback restore);
+  the insert now reads the live file rather than the backup, which would
+  otherwise have reintroduced stripped flags.
+
+### Why
+A cluster first set up with legacy `--oidc-*` flags could not move to a
+structured config without hand-editing every controller. The flags cannot
+simply be rewritten with the new values: kube-apiserver refuses them beside
+`--authentication-config`, and the flags have no form of the CEL groups
+mapping. Opt-in, because the issuer they named stops being trusted.
+
+### Verified
+`bash -n` and shellcheck clean (no findings beyond HEAD's). The strip, state
+and insert awk run on a sample k0s.yaml with macOS awk: flags removed,
+`controllerManager.extraArgs` untouched, the re-run state is `extra` with the
+flag present (no edit). Not yet run against a live controller.
+
+### Impact
+- [ ] Requires cluster rollout
+- [x] Config change only (opt-in variable; default behaviour unchanged)
+- [ ] Documentation only
+
+## [2026-10-19 14:00] - dev-oidc-k0s: strip org prefixes from Dex groups
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `scripts/dev-oidc-k0s.sh`: new `GROUPS_STRIP_PREFIXES` ("org-a: org-b:").
+  When set, the Dex issuer's `groups` mapping becomes a CEL expression
+  (`authn_dex_groups`) that removes those prefixes, drops any group left in
+  `system:`, then applies `PREFIX`; unset keeps the plain `claim`/`prefix`
+  mapping. `validate_issuers` refuses entries that are not `name:`, are in
+  `system:`, or nest inside one another, since each is spliced into a CEL
+  string literal. Usage text now lists `EXPOSE=external`, `CLIENT_ID` and the
+  new variable.
+- `docs/src/security/threat-model.md`: TB-7 row for the new mapping, plus a
+  dated TB-7 update note (not a full pass).
+
+### Why
+Dex's GitHub connector emits teams as `org:team`. Where those teams mirror
+directory groups that other connectors emit bare, the org prefix has to go for
+one RBAC binding to cover both logins. A raw-CEL option was rejected: the
+script can't validate arbitrary CEL, and `system:` filtering must not be
+optional.
+
+### Verified
+`config` output loaded by a real kube-apiserver v1.35 (kind, at startup) for
+`PREFIX=""` and `PREFIX=github:`. The first draft
+(`claims.?groups.orValue([])`, then `claims.groups`) was refused by the API
+server: claims are typed `any`, which CEL can't iterate over, hence `dyn()`.
+Mapping a real token through the expression was not exercised.
+
+### Impact
+- [ ] Requires cluster rollout
+- [x] Config change only (opt-in variable; default output unchanged)
+- [ ] Documentation only
+
+## [2026-10-19 09:00] - vSphere e2e: same-second claims and ImageClassMismatch, both live
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `crates/banlieue-provider-vsphere/tests/e2e_pool_claim.rs`: two new
+  `#[ignore]`d tests. `two_claims_created_in_the_same_second_bind_two_different_members`
+  (own pool, refuses `BANLIEUE_E2E_POOL`; both claims created in one
+  `tokio::join!`; asserts distinct members, per-claim label, sole
+  `VirtualMachineClaim` owner, and distinct real vCenter VMs).
+  `a_tpm_class_with_an_immediate_image_is_refused_before_any_infra_is_created`
+  (creates and deletes a scratch cluster-scoped `tpmEnabled` copy of
+  `BANLIEUE_E2E_CLASS`; asserts `Ready=False`/`ImageClassMismatch`, and watches
+  45 s for an `infrastructureRef` or `VSphereMachine` that must not appear).
+- `.github/community/17-ephemeral-vm-pools.md`: both DoD boxes ticked with the
+  results.
+- `ROADMAPS.md`: roadmap 17's row now states what is verified live on vSphere
+  and what is open. The rebase had dropped the earlier update to this row, which
+  still listed the claim-bind test as open.
+
+### Why
+Two of roadmap 17's remaining vSphere DoD items had no live coverage; neither
+needed a new `VSphereClient` capability.
+
+### Impact
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only (tests; no production code)
+
 ## [2026-10-16 12:00] - dev-oidc-k0s.sh: append to an existing spec.api.extraArgs
 
 **Author:** Erick Bourgeois

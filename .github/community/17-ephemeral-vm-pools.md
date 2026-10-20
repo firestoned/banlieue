@@ -884,7 +884,13 @@ To finish G:
 - [ ] `examples/18` and `examples/19` (planned as `examples/15`) applied live: pool reaches `Warm=True`; a claim binds in
       under 5 s; `govc device.ls` on the bound member shows no CD-ROM;
       `status.tpmEndorsementCertificates` parses with `openssl x509`.
-- [ ] Two claims created in the same second bind two different members.
+- [x] Two claims created in the same second bind two different members.
+      **Done 2026-10-19** —
+      `two_claims_created_in_the_same_second_bind_two_different_members`
+      (`e2e_pool_claim.rs`), green against a real vCenter in 37.58 s: both
+      claims created 65 ms apart, both bound within 5 s to two distinct
+      members, each carrying its own claim's label and sole ownership, two
+      distinct running vCenter VMs.
 - [x] Deleting a claim removes the VM from vCenter before the claim object
       disappears. **Done 2026-10-15** —
       `a_claimed_member_is_destroyed_on_vcenter_when_the_claim_is_released`
@@ -916,8 +922,13 @@ To finish G:
       image is rebuilt and deployed and the live rollout test passes.
 - [ ] A member whose install is sabotaged (detach the ISO mid-install) is
       deleted at `provisioningTimeoutSeconds` and replaced.
-- [ ] `tpmEnabled` class + `Immediate` image yields `ImageClassMismatch` and no
-      infra CR.
+- [x] `tpmEnabled` class + `Immediate` image yields `ImageClassMismatch` and no
+      infra CR. **Done 2026-10-19** —
+      `a_tpm_class_with_an_immediate_image_is_refused_before_any_infra_is_created`
+      (`e2e_pool_claim.rs`), green in 46 s: `Ready=False` /
+      `ImageClassMismatch` naming `installMode: Deferred`, and for 45 s after
+      it no `infrastructureRef` and no `VSphereMachine`. Creates and deletes
+      its own cluster-scoped `tpmEnabled` copy of `BANLIEUE_E2E_CLASS`.
 - [x] `ROADMAPS.md` rows for 06, 07 and 17 reflect reality. Audited
       against the tree 2026-10-14; keep them current as phases land.
 

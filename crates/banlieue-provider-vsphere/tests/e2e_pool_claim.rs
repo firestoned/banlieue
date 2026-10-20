@@ -93,8 +93,8 @@ use std::time::{Duration, Instant};
 
 use banlieue_api::banlieue::ProviderConnection;
 use banlieue_api::banlieue::{
-    LABEL_CLAIM, LABEL_POOL, LABEL_POOL_IMAGE_REVISION, VMImage, VirtualMachine,
-    VirtualMachineClaim, VirtualMachinePool,
+    InstallMode, LABEL_CLAIM, LABEL_POOL, LABEL_POOL_IMAGE_REVISION, VMClass, VMImage,
+    VirtualMachine, VirtualMachineClaim, VirtualMachinePool,
 };
 use banlieue_api::common::LocalObjectReference;
 use banlieue_api::infrastructure::VSphereMachine;
@@ -130,6 +130,11 @@ const DEFAULT_SUBJECT_ID: &str = "e2e-subject-0c3b7f2e";
 /// Claim issuer when `BANLIEUE_E2E_ISSUER` is unset: the policy's shipped
 /// placeholder allowlist entry.
 const DEFAULT_ISSUER: &str = "https://issuer.example.com";
+/// How long the mismatch test keeps watching, after `Ready=False` appears,
+/// for an infrastructure CR that must never be created. The reconciler stops
+/// at the guard and requeues long, so this only has to outlast one ordinary
+/// reconcile cycle.
+const NO_INFRA_GRACE: Duration = Duration::from_secs(45);
 /// Time the rollout test has to replace both members, from the bump. A
 /// managed-build image (`Url` source) rolls through a full ISO build, one
 /// vCenter import Job per zone, and two provisions before the first
@@ -1067,4 +1072,303 @@ async fn bumping_the_image_rolls_the_pool_without_dropping_below_warm() {
     if let Err(payload) = result {
         std::panic::resume_unwind(payload);
     }
+}
+
+/// ADR-0047's concurrency story, on a real pool: two claims created at the
+/// same instant must bind two *different* members. The bind is a merge patch
+/// carrying the member's `resourceVersion`, so the loser of a race gets a 409
+/// and must move on to the next member rather than double-bind or give up.
+/// Backend-neutral at the API server (no on-host assertions beyond "the two
+/// VMs are two distinct real VMs"); `live_claim.rs` proves the 409 itself,
+/// this proves the pool path end to end with real members.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "real cluster + vCenter; set BANLIEUE_E2E_PROVIDER/_IMAGE/_CLASS"]
+async fn two_claims_created_in_the_same_second_bind_two_different_members() {
+    assert!(
+        existing_pool_name().is_none(),
+        "this test needs exactly {WARM} warm members and claims both — unset \
+         BANLIEUE_E2E_POOL (meant for the claim-release test only)"
+    );
+    let Some(f) = fixture() else {
+        panic!("set BANLIEUE_E2E_PROVIDER, BANLIEUE_E2E_IMAGE and BANLIEUE_E2E_CLASS");
+    };
+    let on_host = vcenter_settings();
+    let client = client().await;
+    let s = Scratch::new(&client, "twoclaims").await;
+    require_ready_provider(&s, &f.provider).await;
+
+    let pool = s.name("pool");
+    let result = run_same_second_case(&s, &f, &pool, on_host.as_ref()).await;
+    s.teardown(on_host.as_ref(), &pool).await;
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+async fn run_same_second_case(
+    s: &Scratch,
+    f: &Fixture,
+    pool: &str,
+    on_host: Option<&VCenterSettings>,
+) -> Result<(), Box<dyn std::any::Any + Send>> {
+    use futures::FutureExt as _;
+    std::panic::AssertUnwindSafe(async {
+        make_pool(s, f, pool).await;
+        wait_for(
+            "the pool to reach its warm size",
+            provision_timeout(),
+            || async { (available(s, pool).await >= WARM).then_some(()) },
+        )
+        .await;
+        let members = s.member_names(pool).await;
+        assert_eq!(members.len() as u32, WARM, "members: {members:?}");
+
+        // Both creates are in flight together: one join, no await between.
+        let (claim_a, claim_b) = (s.name("claim-a"), s.name("claim-b"));
+        let started = Instant::now();
+        tokio::join!(make_claim(s, &claim_a, pool), make_claim(s, &claim_b, pool));
+        eprintln!(
+            "  both claims created within {} ms of each other",
+            started.elapsed().as_millis()
+        );
+
+        let mut bound = Vec::new();
+        for claim in [&claim_a, &claim_b] {
+            let vm = wait_for(
+                &format!("claim {claim} to bind a member"),
+                TEARDOWN_TIMEOUT,
+                || async {
+                    s.claims()
+                        .get(claim)
+                        .await
+                        .ok()?
+                        .status?
+                        .virtual_machine_ref
+                        .map(|r| r.name)
+                },
+            )
+            .await;
+            bound.push(vm);
+        }
+        eprintln!(
+            "  bound: {bound:?} (both within {} s)",
+            started.elapsed().as_secs()
+        );
+
+        assert_ne!(
+            bound[0], bound[1],
+            "two claims must never bind the same member"
+        );
+        for (claim, vm_name) in [&claim_a, &claim_b].into_iter().zip(&bound) {
+            assert!(
+                members.contains(vm_name),
+                "{vm_name} is a member of this pool"
+            );
+            let vm = s.vms().get(vm_name).await.expect("get bound member");
+            assert_eq!(
+                vm.labels().get(LABEL_CLAIM),
+                Some(claim),
+                "{vm_name} must carry its own claim's label, not the other's"
+            );
+            let owners: Vec<&str> = vm
+                .owner_references()
+                .iter()
+                .map(|o| o.kind.as_str())
+                .collect();
+            assert_eq!(
+                owners,
+                vec!["VirtualMachineClaim"],
+                "ADR-0047 Decision 3: the claim must be the member's sole owner"
+            );
+        }
+
+        if let Some(settings) = on_host {
+            let vc = connect(settings).await;
+            let mut morefs = Vec::new();
+            for vm_name in &bound {
+                let moref = member_moref(&s.client, &s.namespace, vm_name)
+                    .await
+                    .unwrap_or_else(|| panic!("{vm_name} is bound but has no vmRef"));
+                assert!(
+                    vm_exists(vc.as_ref(), &moref).await,
+                    "{vm_name} is bound but vCenter has no VM {moref}"
+                );
+                morefs.push(moref);
+            }
+            assert_ne!(morefs[0], morefs[1], "two claims, one vCenter VM");
+            eprintln!("  ✓ two claims hold two distinct, running vCenter VMs");
+        }
+    })
+    .catch_unwind()
+    .await
+}
+
+/// ADR-0048, live: a `tpmEnabled` class with an `Immediate` image is refused
+/// before it reaches a provider. The VM must report `Ready=False` /
+/// `ImageClassMismatch` and no infrastructure CR may ever appear — the
+/// combination would otherwise clone fine, attach a vTPM that nothing seals
+/// to, and silently encrypt nothing. No vCenter VM is created, so there is
+/// nothing to verify on the host: the *absence* of a `VSphereMachine` is the
+/// assertion.
+///
+/// `VMClass` is cluster-scoped, so the test creates its own scratch class —
+/// a copy of `BANLIEUE_E2E_CLASS` with `tpmEnabled: true` — and deletes it.
+/// `BANLIEUE_E2E_IMAGE` must be an `Immediate` image (the default install
+/// mode), which is also what the pool tests use.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "real cluster; set BANLIEUE_E2E_PROVIDER/_IMAGE/_CLASS"]
+async fn a_tpm_class_with_an_immediate_image_is_refused_before_any_infra_is_created() {
+    let Some(f) = fixture() else {
+        panic!("set BANLIEUE_E2E_PROVIDER, BANLIEUE_E2E_IMAGE and BANLIEUE_E2E_CLASS");
+    };
+    let client = client().await;
+    let s = Scratch::new(&client, "mismatch").await;
+    require_ready_provider(&s, &f.provider).await;
+
+    let classes: Api<VMClass> = Api::all(client.clone());
+    let images: Api<VMImage> = Api::all(client.clone());
+
+    let image = images
+        .get(&f.image)
+        .await
+        .unwrap_or_else(|e| panic!("VMImage {}: {e}", f.image));
+    let mode = image
+        .spec
+        .template
+        .as_ref()
+        .map_or_else(InstallMode::default, |t| t.install_mode);
+    assert_eq!(
+        mode,
+        InstallMode::Immediate,
+        "BANLIEUE_E2E_IMAGE {} is {mode:?}; this test needs an Immediate image",
+        f.image
+    );
+
+    let class_name = s.name("tpm-class");
+    let vm_name = s.name("vm");
+    let result = run_mismatch_case(&s, &f, &classes, &class_name, &vm_name).await;
+
+    eprintln!("  tearing down {}", s.prefix);
+    let _ = s.vms().delete(&vm_name, &DeleteParams::background()).await;
+    wait_for_opt(
+        "the VirtualMachine to be deleted",
+        TEARDOWN_TIMEOUT,
+        || async {
+            s.vms()
+                .get_opt(&vm_name)
+                .await
+                .ok()?
+                .is_none()
+                .then_some(())
+        },
+    )
+    .await;
+    let _ = classes.delete(&class_name, &DeleteParams::default()).await;
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+async fn run_mismatch_case(
+    s: &Scratch,
+    f: &Fixture,
+    classes: &Api<VMClass>,
+    class_name: &str,
+    vm_name: &str,
+) -> Result<(), Box<dyn std::any::Any + Send>> {
+    use futures::FutureExt as _;
+    std::panic::AssertUnwindSafe(async {
+        let base = classes
+            .get(&f.class)
+            .await
+            .unwrap_or_else(|e| panic!("VMClass {}: {e}", f.class));
+        let mut spec = base.spec.clone();
+        spec.tpm_enabled = true;
+        let scratch_class: VMClass = serde_json::from_value(json!({
+            "apiVersion": "banlieue.io/v1alpha1",
+            "kind": "VMClass",
+            "metadata": { "name": class_name },
+            "spec": spec,
+        }))
+        .expect("scratch VMClass");
+        classes
+            .create(&PostParams::default(), &scratch_class)
+            .await
+            .expect("create scratch tpmEnabled VMClass");
+
+        let vm: VirtualMachine = serde_json::from_value(json!({
+            "apiVersion": "banlieue.io/v1alpha1",
+            "kind": "VirtualMachine",
+            "metadata": { "name": vm_name, "namespace": s.namespace },
+            "spec": {
+                "classRef": { "name": class_name },
+                "imageRef": { "name": f.image },
+                "desiredPowerState": "PoweredOn",
+                "migrationPolicy": "never",
+            },
+        }))
+        .expect("VirtualMachine fixture");
+        s.vms()
+            .create(&PostParams::default(), &vm)
+            .await
+            .expect("create VirtualMachine");
+
+        let message = wait_for(
+            "the VM to report ImageClassMismatch",
+            provision_timeout(),
+            || async {
+                let status = s.vms().get(vm_name).await.ok()?.status?;
+                let ready = status.conditions.iter().find(|c| c.type_ == "Ready")?;
+                (ready.reason == "ImageClassMismatch").then(|| {
+                    assert_eq!(ready.status, "False", "Ready must be False: {ready:?}");
+                    ready.message.clone()
+                })
+            },
+        )
+        .await;
+        assert!(
+            message.contains("Deferred"),
+            "the message must name the fix (installMode: Deferred): {message}"
+        );
+
+        // The point: nothing downstream. Watch for a while rather than check
+        // once — a bug here is an infra CR appearing a reconcile later.
+        let deadline = Instant::now() + NO_INFRA_GRACE;
+        eprintln!(
+            "  … watching {} s for an infrastructure CR that must not appear",
+            NO_INFRA_GRACE.as_secs()
+        );
+        let machines: Api<VSphereMachine> = Api::namespaced(s.client.clone(), &s.namespace);
+        loop {
+            let vm = s.vms().get(vm_name).await.expect("get VM");
+            let status = vm.status.unwrap_or_default();
+            assert!(
+                status.infrastructure_ref.is_none(),
+                "an infrastructureRef was set for a refused pairing: {:?}",
+                status.infrastructure_ref
+            );
+            let strays: Vec<String> = machines
+                .list(&ListParams::default())
+                .await
+                .expect("list VSphereMachines")
+                .into_iter()
+                .filter(|m| {
+                    m.name_any().starts_with(vm_name)
+                        || m.owner_references().iter().any(|o| o.name == vm_name)
+                })
+                .map(|m| m.name_any())
+                .collect();
+            assert!(
+                strays.is_empty(),
+                "a VSphereMachine exists for a refused pairing: {strays:?}"
+            );
+            if Instant::now() >= deadline {
+                break;
+            }
+            tokio::time::sleep(POLL).await;
+        }
+        eprintln!("  ✓ no infrastructure CR was created");
+    })
+    .catch_unwind()
+    .await
 }

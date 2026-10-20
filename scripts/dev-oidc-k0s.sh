@@ -115,6 +115,14 @@ CONTROLLERS="${CONTROLLERS:-}"
 # issuer (see there for why). The `-` (not `:-`) expansion is required for
 # that: `:-` would treat an explicitly empty PREFIX the same as unset.
 PREFIX="${PREFIX-github:}"
+# Space-separated prefixes removed from the Dex issuer's `groups` values, each
+# ending in ":" (e.g. "org-a: org-b:"). Dex's GitHub connector spells a team
+# `org:team`; when those teams mirror directory groups that other connectors
+# emit bare, stripping the org makes both the same Kubernetes group. Any group
+# that comes out in the reserved `system:` namespace is dropped, so a team
+# called `system:masters` cannot become the real one. PREFIX is applied after
+# stripping. Empty (default): groups are mapped as-is, with PREFIX.
+GROUPS_STRIP_PREFIXES="${GROUPS_STRIP_PREFIXES:-}"
 # Direct issuers, each added only when its client ID is set. The client
 # secrets are for `login` (kubelogin) only and never reach a controller.
 GOOGLE_ISSUER="https://accounts.google.com"
@@ -158,6 +166,14 @@ DISCOVERY_TIMEOUT_SECS="${DISCOVERY_TIMEOUT_SECS:-90}"
 # starts fine with an unreachable issuer and only rejects that issuer's
 # tokens, so other authentication (client certificates) is unaffected.
 SKIP_DISCOVERY_CHECK="${SKIP_DISCOVERY_CHECK:-false}"
+# kube-apiserver refuses to start with both --oidc-* flags and
+# --authentication-config, so `attach` stops at a controller whose k0s.yaml
+# still sets oidc-* under spec.api.extraArgs. true: replace them -- the flags
+# are removed and the issuer, client ID, prefix and groups set here take
+# their place, in the authentication config k0s.yaml then names. The file as
+# found is kept as K0S_BACKUP, which `down` restores. A file the CA flag
+# points at is left on disk.
+REPLACE_OIDC_FLAGS="${REPLACE_OIDC_FLAGS:-false}"
 # kube-apiserver picks a changed file up on its own, but not instantly.
 RELOAD_TIMEOUT_SECS="${RELOAD_TIMEOUT_SECS:-150}"
 
@@ -228,6 +244,22 @@ validate_issuers() {
   # unprefixed downstream consumer (like a username-keyed activation record)
   # to recognise the identity at all. The refusal below only fires once a
   # second issuer actually exists to collide with.
+  # Each strip prefix is spliced into a CEL string literal: allow only a
+  # plain name and its colon, so no prefix can change the expression. Nested
+  # pairs are refused because only the first that matches would be stripped.
+  local strips=() s t
+  read -r -a strips <<<"$GROUPS_STRIP_PREFIXES"
+  for s in ${strips[@]+"${strips[@]}"}; do
+    [[ "$s" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*:$ ]] \
+      || { warn "GROUPS_STRIP_PREFIXES entry '$s' must be a name followed by ':' (e.g. org-a:)"; exit 1; }
+    [[ "$s" != system:* ]] \
+      || { warn "GROUPS_STRIP_PREFIXES entry '$s' is in the reserved system: namespace"; exit 1; }
+    for t in "${strips[@]}"; do
+      [[ "$s" == "$t" || "$t" != "$s"* ]] \
+        || { warn "GROUPS_STRIP_PREFIXES entries '$s' and '$t' overlap"; exit 1; }
+    done
+  done
+
   local prefixes=("$PREFIX") i j
   ! google_enabled || prefixes+=("$GOOGLE_PREFIX")
   ! auth0_enabled  || prefixes+=("$AUTH0_PREFIX")
@@ -476,6 +508,31 @@ authn_ca() {
   sed 's/^/        /' "$WORK_DIR/ca.pem"
 }
 
+# The Dex issuer's groups mapping: the claim with PREFIX, or, with
+# GROUPS_STRIP_PREFIXES, a CEL expression that strips those prefixes, drops
+# anything left in system:, then applies PREFIX. A token with no groups claim
+# maps to no groups either way.
+authn_dex_groups() {
+  if [[ -z "$GROUPS_STRIP_PREFIXES" ]]; then
+    echo "      groups: { claim: groups, prefix: \"${PREFIX}\" }"
+    return
+  fi
+  local strips=() s expr="g"
+  read -r -a strips <<<"$GROUPS_STRIP_PREFIXES"
+  for s in "${strips[@]}"; do
+    expr="g.startsWith(\"$s\") ? g.substring(${#s}) : ($expr)"
+  done
+  # kube-apiserver types every claim `any`, which CEL refuses as the range of
+  # map(); dyn() makes it dynamic, which it accepts. has() first: a token
+  # with no groups claim maps to no groups.
+  local cel="dyn(claims.groups).map(g, $expr).filter(g, !g.startsWith(\"system:\"))"
+  [[ -z "$PREFIX" ]] || cel="$cel.map(g, \"$PREFIX\" + g)"
+  cel="has(claims.groups) ? $cel : []"
+  echo "      # Strips ${GROUPS_STRIP_PREFIXES}; drops system:*."
+  echo "      groups:"
+  echo "        expression: '$cel'"
+}
+
 authn_config() {
   cat <<EOF
 apiVersion: apiserver.config.k8s.io/v1
@@ -490,7 +547,7 @@ $(authn_ca)
       # authenticated this request>). ADR-0047's subject policy must carry
       # the same value as its usernamePrefix param.
       username: { claim: preferred_username, prefix: "${PREFIX}" }
-      groups: { claim: groups, prefix: "${PREFIX}" }
+$(authn_dex_groups)
 $(authn_google)
 $(authn_auth0)
 EOF
@@ -588,7 +645,8 @@ await_reload() {
 # api section: controllerManager and others have an extraArgs at the same
 # indent. Single-quoted into a remote awk, so no quote characters in it.
 API_ARGS_STATE_AWK='/^  api:$/ {a=1; next} a && /^  [A-Za-z]/ {a=0} a && /^[ ]+oidc-[a-z-]+:/ {o=1} a && /^    extraArgs:[ ]*[^ #]/ {x=1} a && /^    extraArgs:[ ]*(#.*)?$/ {e=1} END {print o ? "oidc" : (x ? "odd" : (e ? "extra" : "none"))}'
-
+# Drops exactly the lines API_ARGS_STATE_AWK counts as oidc-* flags.
+OIDC_STRIP_AWK='/^  api:$/ {a=1; print; next} a && /^  [A-Za-z]/ {a=0} a && /^[ ]+oidc-[a-z-]+:/ {next} {print}'
 attach_controller() {
   local host="$1"
   log "controller $host"
@@ -605,17 +663,41 @@ attach_controller() {
     cat >$AUTHN_FILE.tmp && chown \$u:root $AUTHN_FILE.tmp && chmod 0640 $AUTHN_FILE.tmp && \
     mv -f $AUTHN_FILE.tmp $AUTHN_FILE"
 
-  if on "$host" "grep -q 'authentication-config:' $K0S_CONFIG"; then
-    log "  $K0S_CONFIG already names the file; the API server reloads it on change"
-  else
-    local state insert_awk
+  # Each step below runs only while needed, so a re-run after a partial or
+  # complete attach changes nothing in k0s.yaml and restarts nothing.
+  # K0S_BACKUP is taken once, before the first edit: it stays the file as
+  # this script found it, for the restore below and for `down`.
+  local state changed=false
+  state="$(on "$host" "awk '$API_ARGS_STATE_AWK' $K0S_CONFIG")"
+  if [[ "$state" == "oidc" ]]; then
+    if [[ "$REPLACE_OIDC_FLAGS" != "true" ]]; then
+      warn "  $K0S_CONFIG sets oidc-* flags under spec.api.extraArgs:"
+      on "$host" "awk '/^  api:\$/ {a=1; next} a && /^  [A-Za-z]/ {a=0} a && /^[ ]+oidc-[a-z-]+:/' $K0S_CONFIG" \
+        | sed 's/^ */      /' >&2 || true
+      warn "  kube-apiserver refuses to start with both those and --authentication-config."
+      warn "  Re-run with REPLACE_OIDC_FLAGS=true to replace them with ${ISSUER}"
+      warn "  (see \`$0 config\`), or remove them by hand. Not touching it."
+      exit 1
+    fi
+    log "  replacing the oidc-* flags in $K0S_CONFIG with $AUTHN_FILE ($ISSUER; as found: $K0S_BACKUP)"
+    on "$host" "{ [ -f $K0S_BACKUP ] || cp -p $K0S_CONFIG $K0S_BACKUP; } && \
+      awk '$OIDC_STRIP_AWK' $K0S_CONFIG >$K0S_CONFIG.tmp && \
+      cat $K0S_CONFIG.tmp >$K0S_CONFIG && rm -f $K0S_CONFIG.tmp"
     state="$(on "$host" "awk '$API_ARGS_STATE_AWK' $K0S_CONFIG")"
+    if [[ "$state" == "oidc" ]]; then
+      warn "  oidc-* flags are still in $K0S_CONFIG after removal; restoring it"
+      on "$host" "cp -p $K0S_BACKUP $K0S_CONFIG"
+      exit 1
+    fi
+    changed=true
+  fi
+
+  if on "$host" "grep -q 'authentication-config:' $K0S_CONFIG"; then
+    [[ "$changed" == "true" ]] \
+      || log "  $K0S_CONFIG already names the file; the API server reloads it on change"
+  else
+    local insert_awk
     case "$state" in
-      oidc)
-        warn "  $K0S_CONFIG sets oidc-* flags under spec.api.extraArgs. kube-apiserver refuses to"
-        warn "  start with both those and --authentication-config; migrate them into the"
-        warn "  issuer config first (see \`$0 config\`), remove them, then re-run. Not touching it."
-        exit 1 ;;
       odd)
         warn "  spec.api.extraArgs in $K0S_CONFIG is not a plain block map (flow style or inline"
         warn "  value); add by hand:  authentication-config: $AUTHN_FILE"
@@ -627,10 +709,13 @@ attach_controller() {
     esac
     # awk, not `sed -i` with \n: Kairos ships a non-GNU sed. `cat >` keeps
     # the file's inode and mode.
-    on "$host" "cp -p $K0S_CONFIG $K0S_BACKUP && \
+    on "$host" "{ [ -f $K0S_BACKUP ] || cp -p $K0S_CONFIG $K0S_BACKUP; } && \
       awk -v f='$AUTHN_FILE' '$insert_awk' \
-        $K0S_BACKUP >$K0S_CONFIG.tmp && cat $K0S_CONFIG.tmp >$K0S_CONFIG && rm -f $K0S_CONFIG.tmp && \
+        $K0S_CONFIG >$K0S_CONFIG.tmp && cat $K0S_CONFIG.tmp >$K0S_CONFIG && rm -f $K0S_CONFIG.tmp && \
       grep -q 'authentication-config: $AUTHN_FILE' $K0S_CONFIG"
+    changed=true
+  fi
+  if [[ "$changed" == "true" ]]; then
     log "  restarting k0scontroller"
     on "$host" "systemctl restart k0scontroller"
   fi
@@ -996,13 +1081,15 @@ Usage: $0 [up|attach|config|login|kubeconfig|grant|status|down|certs|dex|expose|
 
 Env: KUBECONFIG, SSH_USER (default root; else passwordless sudo),
      CONTROLLERS (default: discovered), BANLIEUE_GITHUB_APP_CLIENT_ID/SECRET,
-     EXPOSE (local | tailscale), PREFIX (default github:),
+     EXPOSE (local | tailscale | external, with ISSUER), CLIENT_ID,
+     PREFIX (default github:), GROUPS_STRIP_PREFIXES ("org-a: org-b:"),
      BANLIEUE_GOOGLE_CLIENT_ID/SECRET, GOOGLE_PREFIX (default google:),
      BANLIEUE_AUTH0_ISSUER, BANLIEUE_AUTH0_CLIENT_ID[/SECRET],
      AUTH0_PREFIX (default auth0:), AUTH0_GROUPS_CLAIM,
      PROVIDER (dex | google | auth0, for login/kubeconfig/grant),
      SSH_IDENTITY (private key for SSH_USER), GRANT_USER (<prefix><login>),
-     SKIP_DISCOVERY_CHECK (true: attach before the issuer exists).
+     SKIP_DISCOVERY_CHECK (true: attach before the issuer exists),
+     REPLACE_OIDC_FLAGS (true: replace oidc-* flags k0s.yaml already sets).
 GitHub App callback URL: ${ISSUER}/callback
 EOF
       exit 1
