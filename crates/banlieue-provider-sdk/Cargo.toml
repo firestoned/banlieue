@@ -1,5 +1,7 @@
 [package]
 name = "banlieue-provider-sdk"
+# Internal to the workspace: only banlieue-api is published (ADR-0100).
+publish = false
 description = "Shared runtime helpers used by banlieue-controller and every provider crate."
 version.workspace = true
 edition.workspace = true

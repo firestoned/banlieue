@@ -1,5 +1,7 @@
 [package]
 name = "banlieue"
+# Internal to the workspace: only banlieue-api is published (ADR-0100).
+publish = false
 description = "The unified banlieue binary — dispatches `controller` and `provider <name>` subcommands into the per-role library crates."
 version.workspace = true
 edition.workspace = true

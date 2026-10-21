@@ -1,5 +1,7 @@
 [package]
 name = "banlieue-oci"
+# Internal to the workspace: only banlieue-api is published (ADR-0100).
+publish = false
 description = "Minimal first-party OCI distribution client: push one file as a single-layer OCI artifact, and pull it back by digest into a sparse file. Pure Rust (ADR-0064)."
 version.workspace = true
 edition.workspace = true

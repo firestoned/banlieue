@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 [package]
 name = "banlieue-vex"
+# Internal to the workspace: only banlieue-api is published (ADR-0100).
+publish = false
 description = "Auto-VEX derivation CLI tools (presence + reachability) for the banlieue release pipeline."
 version.workspace = true
 edition.workspace = true

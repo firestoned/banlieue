@@ -1045,11 +1045,18 @@ jobs:
   # Runs on main pushes too, not only releases: the SLSA subjects job needs it
   # and runs on both, and a render broken on main is caught before a tag. On a
   # push the tag is empty and the Makefile falls back to the workspace version.
+  #
+  # On a release every banlieue image is pinned to the default (Chainguard,
+  # unsuffixed tag) image's multi-arch digest (ADR-0103), which only exists
+  # once `docker` has pushed it. RELEASE_REQUIRE_DIGEST fails the job rather
+  # than ship unpinned manifests. A push renders by tag: its image carries
+  # sha-/latest tags, not the version tag the manifests name.
   # ─────────────────────────────────────────────────────────────────────────────
   release-manifests:
     name: 📦 Release Manifests
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
+    needs: [docker]
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1066,6 +1073,8 @@ jobs:
         env:
           RELEASE_TAG: ${{ github.event.release.tag_name }}
           RELEASE_MANIFESTS_DIR: ${{ github.workspace }}/release-manifests
+          RELEASE_IMAGE_DIGEST: ${{ github.event_name == 'release' && needs.docker.outputs.digest-chainguard || '' }}
+          RELEASE_REQUIRE_DIGEST: ${{ github.event_name == 'release' }}
         run: make release-manifests
 
       - name: Upload release manifests artifact

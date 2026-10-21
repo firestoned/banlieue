@@ -1034,6 +1034,89 @@ mod tests {
         );
     }
 
+    const VALID_DIGEST: &str =
+        "sha256:0f756fa0c0ffee00112233445566778899aabbccddeeff001122334455667788";
+
+    fn container_image(deployment: &Deployment) -> String {
+        deployment
+            .spec
+            .as_ref()
+            .expect("spec")
+            .template
+            .spec
+            .as_ref()
+            .expect("pod spec")
+            .containers[0]
+            .image
+            .clone()
+            .expect("image")
+    }
+
+    /// `--image-digest` pinned only the seeded classes, so a digest-pinned
+    /// install still ran the controller, operator and imagebuilder from a
+    /// mutable tag (ADR-0103). Every banlieue workload bootstrap writes must
+    /// carry the digest, with the tag kept beside it.
+    #[test]
+    fn a_digest_pins_every_installed_workload() {
+        let opts = InstallOptions {
+            image_digest: Some(VALID_DIGEST.to_string()),
+            ..opts()
+        };
+        for role in [
+            InstallRole::Controller,
+            InstallRole::Operator,
+            InstallRole::Imagebuilder,
+            InstallRole::Provider("vsphere".to_string()),
+        ] {
+            let image = container_image(&build_deployment(&role, &opts));
+            assert_eq!(
+                image,
+                format!("ghcr.io/firestoned/banlieue:v0.1.0@{VALID_DIGEST}"),
+                "{role:?} must be pinned"
+            );
+        }
+    }
+
+    #[test]
+    fn without_a_digest_workloads_reference_their_tag() {
+        let image = container_image(&build_deployment(&InstallRole::Operator, &opts()));
+        assert_eq!(image, "ghcr.io/firestoned/banlieue:v0.1.0");
+    }
+
+    /// A mirrored install pins the mirror's copy; the digest is the same bytes.
+    #[test]
+    fn a_digest_follows_a_registry_override() {
+        let opts = InstallOptions {
+            registry: Some("registry.internal:5000".to_string()),
+            image_digest: Some(VALID_DIGEST.to_string()),
+            ..opts()
+        };
+        assert_eq!(
+            install_image(&opts),
+            format!("registry.internal:5000/banlieue:v0.1.0@{VALID_DIGEST}")
+        );
+    }
+
+    /// A malformed digest would only surface as an `ErrImagePull` on every
+    /// pod after the install "succeeded"; refuse it at the command line.
+    #[test]
+    fn the_digest_flag_accepts_only_a_sha256_digest() {
+        assert_eq!(
+            parse_image_digest(VALID_DIGEST).as_deref(),
+            Ok(VALID_DIGEST)
+        );
+        for bad in [
+            "",
+            "0f756fa0c0ffee00112233445566778899aabbccddeeff001122334455667788",
+            "sha256:0f756fa0",
+            "sha256:0F756FA0C0FFEE00112233445566778899AABBCCDDEEFF001122334455667788",
+            "sha512:0f756fa0c0ffee00112233445566778899aabbccddeeff001122334455667788",
+            "@sha256:0f756fa0c0ffee00112233445566778899aabbccddeeff001122334455667788",
+        ] {
+            assert!(parse_image_digest(bad).is_err(), "{bad:?} must be refused");
+        }
+    }
+
     #[test]
     fn without_a_digest_a_class_still_references_its_tag() {
         let class = build_provider_class("libvirt", &opts());

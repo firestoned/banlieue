@@ -2894,7 +2894,7 @@
       ]
     },
     "release-artifact-provenance": {
-      "description": "Every release ships the `banlieue` binary (multi-arch, signed) plus distroless and Chainguard container images, each with: CycloneDX SBOM (binary via cargo-cyclonedx, image via syft/anchore), Cosign keyless (OIDC) signatures, GitHub build-provenance attestations, SLSA Build L3 provenance (slsa-github-generator) for the binary tarballs, and an OpenVEX document (vexctl-merged from .vex/, Cosign-attested to each image digest and consumed by the Grype scan as `grype --vex`). Grype results upload to GitHub Code Scanning as SARIF. VEX statements are derived automatically by the banlieue-vex crate's auto-vex-presence (SBOM-absence) and auto-vex-reachability (binary symbol-import) tools and merged with curated .vex/*.json. Build logic is Makefile-driven; firestoned/github-actions composites are reused; third-party actions are SHA-pinned (SLSA generator pinned to a release tag). banlieue-api is published to crates.io from the release run (ADR-0100), in a job of its own that alone reads CARGO_REGISTRY_TOKEN, through the SHA-pinned firestoned/github-actions/rust/publish-crate; every pull request packages it and builds the packaged copy alone (make crate-package).",
+      "description": "Every release ships the `banlieue` binary (multi-arch, signed) plus distroless and Chainguard container images, each with: CycloneDX SBOM (binary via cargo-cyclonedx, image via syft/anchore), Cosign keyless (OIDC) signatures, GitHub build-provenance attestations, SLSA Build L3 provenance (slsa-github-generator) whose subjects are the binary tarballs, deploy-manifests.tar.gz and the single-file install manifests (install.yaml, crds.yaml, admission-policies.yaml, network-policies.yaml, the clusterctl files), and an OpenVEX document (vexctl-merged from .vex/, Cosign-attested to each image digest and consumed by the Grype scan as `grype --vex`). Grype results upload to GitHub Code Scanning as SARIF. VEX statements are derived automatically by the banlieue-vex crate's auto-vex-presence (SBOM-absence) and auto-vex-reachability (binary symbol-import) tools and merged with curated .vex/*.json. Build logic is Makefile-driven; firestoned/github-actions composites are reused; third-party actions are SHA-pinned (SLSA generator pinned to a release tag). banlieue-api is published to crates.io from the release run (ADR-0100), in a job of its own that alone reads CARGO_REGISTRY_TOKEN, through the SHA-pinned firestoned/github-actions/rust/publish-crate; every pull request packages it and builds the packaged copy alone (make crate-package). The published install.yaml and clusterctl components pin every banlieue image by the release image's multi-arch digest (`repository:tag@sha256:...`, ADR-0103): the release-manifests job runs after the image push, passes the digest to `banlieue bootstrap operator --image-digest`, and fails the release rather than publish an unpinned manifest.",
       "requirements": [
         {
           "requirement-url": "https://slsa.dev/spec/v1.0/levels",
@@ -2916,7 +2916,7 @@
               "PW.4",
               "RV.1"
             ],
-            "evidence": ".github/workflows/build.yaml, .vex/README.md, docs/adr/0006-release-and-supply-chain-pipeline.md, docs/adr/0100-publish-banlieue-api-to-crates-io.md"
+            "evidence": ".github/workflows/build.yaml, .vex/README.md, docs/adr/0006-release-and-supply-chain-pipeline.md, docs/adr/0100-publish-banlieue-api-to-crates-io.md, docs/adr/0103-digest-pinned-installs.md, Makefile (release-manifests, release-digest-check), crates/banlieue-operator/src/bootstrap.rs (install_image, parse_image_digest)"
           }
         }
       ]
@@ -3206,6 +3206,7 @@
     "docs/adr/0098-spread-placement-across-failure-domains.md",
     "docs/adr/0100-publish-banlieue-api-to-crates-io.md",
     "docs/adr/0101-vspheremachine-ownership-marker-and-adoption.md",
-    "docs/adr/0102-provider-liveness-from-its-lease.md"
+    "docs/adr/0102-provider-liveness-from-its-lease.md",
+    "docs/adr/0103-digest-pinned-installs.md"
   ]
 }

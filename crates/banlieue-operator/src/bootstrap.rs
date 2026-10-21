@@ -206,15 +206,16 @@ pub struct CommonArgs {
     #[arg(long)]
     pub registry: Option<String>,
 
-    /// Pin seeded `ProviderClass`es to this image digest, e.g.
-    /// `sha256:0f756fa0…`. The tag is kept as documentation of intent; the
-    /// digest is what gets pulled.
+    /// Pin every banlieue image this install writes to this digest, e.g.
+    /// `sha256:0f756fa0…`: the controller, operator and imagebuilder
+    /// Deployments and the seeded `ProviderClass`es (ADR-0103). The tag is
+    /// kept as documentation of intent; the digest is what gets pulled.
     ///
     /// Strongly recommended for anything but throwaway clusters: a Deployment
     /// built from a mutable tag has an unchanging spec, so pushing a new image
     /// triggers no rollout and pods keep running old layers while looking
     /// perfectly healthy.
-    #[arg(long)]
+    #[arg(long, value_parser = parse_image_digest)]
     pub image_digest: Option<String>,
 
     /// Restrict image-build and import workloads to nodes carrying these
@@ -271,7 +272,8 @@ pub struct InstallOptions {
     pub build_node_selector: Vec<String>,
     /// `--build-toleration` values, for the same roles.
     pub build_toleration: Vec<String>,
-    /// Image digest to pin seeded `ProviderClass`es to, e.g. `sha256:0f75…`.
+    /// Image digest to pin every installed banlieue image to, e.g.
+    /// `sha256:0f75…` (ADR-0103).
     ///
     /// Without one the class references a tag, and a Deployment built from a
     /// tag has a spec that never changes when a new image is pushed — so
@@ -469,13 +471,44 @@ fn push_doc<T: serde::Serialize>(out: &mut String, object: &T) -> Result<()> {
     Ok(())
 }
 
-/// Fully qualified image reference for an install.
+/// Tagged image reference for an install, without any digest.
+///
+/// The seeded `ProviderClass`es split this into repository and tag and carry
+/// the digest in their own field; workload containers use [`install_image`].
 #[must_use]
 pub fn resolve_image(opts: &InstallOptions) -> String {
     match opts.registry.as_deref() {
         Some(registry) => format!("{registry}/{IMAGE_NAME}:{}", opts.version),
         None => format!("{IMAGE_BASE}:{}", opts.version),
     }
+}
+
+/// Image reference a bootstrap-written container pulls:
+/// `<repository>:<tag>@<digest>` when `--image-digest` is set, otherwise
+/// [`resolve_image`]'s tag (ADR-0103).
+///
+/// The same shape [`ProviderImage::reference`] gives a pinned class, so a
+/// digest-pinned install runs every banlieue role from the same bytes.
+#[must_use]
+pub fn install_image(opts: &InstallOptions) -> String {
+    let tagged = resolve_image(opts);
+    match opts.image_digest.as_deref() {
+        Some(digest) => format!("{tagged}@{digest}"),
+        None => tagged,
+    }
+}
+
+/// `--image-digest` value parser: `sha256:` and 64 lowercase hex digits.
+///
+/// A malformed digest would otherwise pass the install and surface later as
+/// `ErrImagePull` on every pod.
+///
+/// # Errors
+/// A message naming the expected form when `value` is not a sha256 digest.
+pub fn parse_image_digest(value: &str) -> Result<String, String> {
+    banlieue_oci::reference::require_digest(value)
+        .map(|()| value.to_string())
+        .map_err(|_| format!("{value:?} is not a digest: expected sha256:<64 lowercase hex>"))
 }
 
 /// Every CRD this binary implements, post-processed exactly as `crdgen` does.
@@ -1190,7 +1223,7 @@ fn build_container(role: &InstallRole, opts: &InstallOptions) -> Container {
     }
     Container {
         name: role.component(),
-        image: Some(resolve_image(opts)),
+        image: Some(install_image(opts)),
         image_pull_policy: Some("IfNotPresent".to_string()),
         args: Some(args),
         env: Some(

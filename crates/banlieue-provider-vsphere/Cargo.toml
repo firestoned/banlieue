@@ -1,5 +1,7 @@
 [package]
 name = "banlieue-provider-vsphere"
+# Internal to the workspace: only banlieue-api is published (ADR-0100).
+publish = false
 description = "banlieue provider for VMware vSphere / vCenter. Watches Provider and VSphereMachine CRs and reconciles them against vCenter via the VI JSON API."
 version.workspace = true
 edition.workspace = true

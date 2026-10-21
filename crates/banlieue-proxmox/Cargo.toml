@@ -1,5 +1,7 @@
 [package]
 name = "banlieue-proxmox"
+# Internal to the workspace: only banlieue-api is published (ADR-0100).
+publish = false
 description = "First-party Proxmox VE REST client: API-token auth, UPID task waiting, reason-phrase errors, and an in-memory fake that refuses what the real API refuses (ADR-0074)."
 version.workspace = true
 edition.workspace = true

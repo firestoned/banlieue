@@ -450,7 +450,7 @@ kubectl apply --server-side -f $URL/install.yaml
 
 | Release asset | Contents |
 | --- | --- |
-| `install.yaml` | `banlieue bootstrap operator --version <tag> --dry-run` |
+| `install.yaml` | `banlieue bootstrap operator --version <tag> --image-digest <digest> --dry-run` |
 | `crds.yaml` | every CRD (also inside `install.yaml`) |
 | `admission-policies.yaml` | every policy in `deploy/admission/`; opt-in, and **edit its two parameter ConfigMaps first** (see `deploy/admission/README.md`) |
 | `network-policies.yaml` | every policy in `deploy/network-policies/` (ADR-0094); opt-in, applied per namespace |
@@ -459,6 +459,17 @@ kubectl apply --server-side -f $URL/install.yaml
 
 All of them are listed in `checksums.sha256` and covered by the release's
 SLSA provenance (`banlieue-<version>.intoto.jsonl`).
+
+`install.yaml` and `infrastructure-components.yaml` pin every banlieue image
+by the release image's digest (`ghcr.io/firestoned/banlieue:<tag>@sha256:…`,
+ADR-0103), so a moved tag cannot change what a fresh install runs. Do the same
+for a bootstrap install with `--image-digest`; it pins the controller,
+operator and imagebuilder Deployments and every seeded `ProviderClass`:
+
+```sh
+DIGEST=$(crane digest ghcr.io/firestoned/banlieue:v0.4.5)
+banlieue bootstrap operator --version v0.4.5 --image-digest "$DIGEST"
+```
 
 **Output:** CRDs installed, two controllers running, zero backends
 registered yet. See **[Core Controller](core-controller.md)**.

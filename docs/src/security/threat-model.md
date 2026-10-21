@@ -4,13 +4,23 @@ SPDX-License-Identifier: Apache-2.0
 -->
 # Threat Model
 
-> **Status:** Living document. Last full pass **2026-10-14**, against the
-> architecture defined by **ADR-0001 … ADR-0102** (0057–0059 unallocated,
+> **Status:** Living document. Last full pass **2026-10-21**, against the
+> architecture defined by **ADR-0001 … ADR-0103** (0057–0059 unallocated,
 > 0066 and 0068–0073 reserved; 0074 and 0075 Accepted 2026-09-28; 0076–0080
 > reserved by roadmap 19; 0081–0082 recorded but not implemented in banlieue, and kept canonically in
 > mediatore since ADR-0097;
 > 0088 Proposed and not yet implemented, so none of those three move anything
-> here). The latest, 2026-10-15, pass is **ADR-0102**: a provider's liveness is
+> here). The latest, 2026-10-21, pass is **ADR-0103**: `banlieue bootstrap
+> --image-digest` pins every banlieue image it writes (the controller,
+> operator, imagebuilder and provider Deployments as well as the seeded
+> `ProviderClass`es, which were the only ones pinned before) and refuses a
+> malformed digest, and each release's `install.yaml` and clusterctl
+> components are rendered after the image push with its multi-arch digest; a
+> release with no digest fails. It closes the §8 risk that published
+> manifests named the image by tag (that row also wrongly said bootstrap had
+> no digest flag), adds two TB-6 rows, widens A-5 and adds §7.25. No
+> component, boundary, identity or RBAC grant changes, so §5 stands. The
+> 2026-10-15 pass is **ADR-0102**: a provider's liveness is
 judged outside it, from the leader-election Lease it renews. banlieue-operator
 reads each Provider's Lease (one `get`) into `status.workload.heartbeat`, and
 the scheduler places nothing new on a `Stale` provider. The Lease thereby
@@ -415,7 +425,7 @@ relationship to the host.
 | A-2 | Guest bootstrap material (cloud-config, SSH keys, join tokens) | Secrets/ConfigMaps → `VSphereMachine.spec.userData` / `LibvirtMachine.spec.userData` / `CloudHypervisorMachine.spec.userData` / `ProxmoxMachine.spec.userData` → `guestinfo.userdata` or a NoCloud ISO (on Cloud Hypervisor, `seed.iso` in the machine directory on the host; on Proxmox, `banlieue-<machine uid>.iso` on an `iso`-content storage, attached for the machine's life) → built image | High — guest compromise, lateral movement into provisioned fleet |
 | A-3 | VM image artifacts (ISO / raw disk) | `OSArtifact` PVC, then a vSphere datastore under `banlieue-images/`; on Cloud Hypervisor, the operator's **OCI registry** (a single-layer artifact, addressed by digest) and then each storage class's image cache on the host (`<storage class>/images/sha256-<hex>.raw`, `0750 banlieue`), or a file an admin placed there (ADR-0064) | **Critical** — a tampered image compromises every VM built from it |
 | A-4 | Integrity of the control plane's own decisions | `Provider`, `ProviderClass`, `VMImage`, `VMClass` CRs | High — a forged `Provider` redirects credentials; a forged `VMImage` redirects the fleet's boot media |
-| A-5 | Released binaries and container images | GHCR, GitHub Releases | **Critical** — downstream supply-chain compromise |
+| A-5 | Released binaries, container images and install manifests (`install.yaml`, clusterctl components; both pin the image by digest, ADR-0103) | GHCR, GitHub Releases | **Critical**: downstream supply-chain compromise |
 | A-9 | **The subject's own credential (a JWT)** — the thing a sandbox is handed so it can act as its subject | **Never in banlieue.** Broker → in-guest agent over mTLS, after attestation (ADR-0049). Not on a disk, not in a CR, not in a hypervisor channel | **Critical** — it *is* the subject's identity. Kept out of banlieue entirely, which is why no banlieue compromise discloses it |
 | A-8 | **Guest readiness marker** — a value the guest writes and the provider reads back: `/run/banlieue/phase` on libvirt, `guestinfo.banlieue.phase` on vSphere | guest tmpfs → `qemu-guest-agent` → `LibvirtMachine.status.guestInstalled`, or guest `vmware-rpctool` → `config.extraConfig` → `VSphereMachineStatus.guestInstalled` (ADR-0043; both transports verified against a real backend) | Low on its own, but it gates pool membership: a guest that can assert it early gets handed out early. **Not an integrity signal** — see §6/TB-4 and §8 |
 | A-7 | **Claim bindings** — which subject was given which VM, and when | `VirtualMachineClaim.spec.subject` + `status`, mirrored onto the member as `banlieue.io/claim-subject-*` annotations (ADR-0047) | Medium — discloses who was using which sandbox to every reader of the namespace; a *forged* binding makes the record say someone requested a VM they never asked for |
@@ -750,6 +760,8 @@ This is the strongest area of the project and is largely already ADR-0006.
 | Crate publication: token custody (S, E) | `CARGO_REGISTRY_TOKEN` (A-21) is read by one job, `publish-crate` in `.github/workflows/build.yaml`, gated on `github.event_name == 'release'`, holding only `contents: read`; fork pull requests receive no secrets. It goes through the SHA-pinned `firestoned/github-actions/rust/publish-crate` (ADR-0100) |
 | Crate publication: what is published (T) | The crate is built from the release's own checkout with the tag's version stamped by `make set-version`, after the `test` job passed; `make crate-package` builds the packaged copy alone against crates.io dependencies on every pull request (`crate-package` job) and again before the upload. Only `banlieue-api` is published; no path dependency or file outside the crate can enter it |
 | Crate publication: repudiation and re-runs (R) | One version per release tag, equal to the binary's and the CRDs'; `make crate-published` skips a version already on crates.io, so a re-run cannot fail half-way or publish twice. crates.io's own audit log records each upload against the token |
+| Install manifests: image pinning (T) | **ADR-0103.** A moved or overwritten GHCR tag cannot change what a fresh install from a release runs: `install.yaml` and the clusterctl components name every banlieue image `<repository>:<tag>@<digest>` (`install_image` and the seeded `ProviderClass.spec.image.digest` in `crates/banlieue-operator/src/bootstrap.rs`), and the kubelet pulls the digest. The `release-manifests` job in `.github/workflows/build.yaml` runs after `docker` and passes `docker.outputs.digest-chainguard`; `make release-digest-check` (`RELEASE_REQUIRE_DIGEST=true`) fails the release rather than publish an unpinned manifest. Tests: `a_digest_pins_every_installed_workload`, `a_seeded_class_can_be_pinned_to_a_digest` |
+| Install manifests: digest input (T, D) | `--image-digest` is parsed by `parse_image_digest`, which accepts only `sha256:` and 64 lowercase hex digits (`banlieue_oci::reference::require_digest`), before anything is applied, so a typo cannot pass the install and then fail every pull (`the_digest_flag_accepts_only_a_sha256_digest`) |
 
 ### TB-7 — External identity provider → API server
 
@@ -954,7 +966,7 @@ is configured (ADR-0092).
 | A new infrastructure kind is added without the CAPI role, or the role drifts wider than the contract | E, D | `capi_aggregate_role_covers_exactly_the_capi_contract_kinds` derives the expected set from the CRDs carrying the contract label, so either drift fails the build |
 | CAPI's manager deletes a banlieue machine it owns, destroying a real VM | D | By design: a `Machine` owns its infrastructure object, and deleting the `Machine` is the request. A machine banlieue's controller created is owned by its `VirtualMachine`, not a CAPI `Machine` |
 | The clusterctl components file installs something other than what `banlieue bootstrap` installs | T | One definition: the file is `banlieue bootstrap operator --dry-run`, escaped for envsubst, and `make clusterctl-components` checks that unescaping it gives back the dry-run byte for byte. It ships with the release's provenance (TB-6) |
-| A published `install.yaml` installs something other than what `banlieue bootstrap` installs | T | Same single definition: `make install-yaml` writes `banlieue bootstrap operator --dry-run` for the release tag, unescaped, with only a comment header added. It is a SLSA subject and in `checksums.sha256` (TB-6) |
+| A published `install.yaml` installs something other than what `banlieue bootstrap` installs | T | Same single definition: `make install-yaml` writes `banlieue bootstrap operator --image-digest <release digest> --dry-run` for the release tag, unescaped, with only a comment header added. It is a SLSA subject and in `checksums.sha256` (TB-6) |
 
 ### TB-16: Bootstrap operator → running management cluster (`join`)
 
@@ -1344,6 +1356,14 @@ a different assumption is unsafe.
     when someone updates it, and enable one k8s-openapi version feature in
     the final binary. The crate grants a consumer nothing: give its
     identity only the RBAC its calls need.
+25. **Install banlieue by digest (A-5, ADR-0103).** Apply a release's
+    `install.yaml` (already pinned), or pass `--image-digest` to
+    `banlieue bootstrap operator`, taking the digest from the release you
+    verified (`crane digest ghcr.io/firestoned/banlieue:<tag>`, checked
+    against its cosign signature). A GitOps repository rendered with
+    `--dry-run` keeps the digest, so an upgrade is a reviewed change of
+    digest and every Deployment rolls. A mirror (`--registry`) is pinned to
+    the same digest, which the mirror must serve unchanged.
 
 ## 8. Accepted risks
 
@@ -1403,7 +1423,6 @@ a different assumption is unsafe.
 | **The bootstrap script does not verify SSH host keys** (`StrictHostKeyChecking=no` in `ssh_run`); with `join` that session also carries a join token, and for a controller the cluster CA key's token and the datastore password (A-20) | Every node is new, or rebuilt, when the script first reaches it, so there is no key to pin yet; a token expires in 15 minutes, though a controller's is enough to take the CA key within them. Running it from the host or the nodes' own network keeps it off untrusted paths (§7.23) | The script records each node's host key at creation (the seed can carry one) and checks it afterwards |
 | **`stage_k0s_binary` uses the k0s binary unverified when the release's `sha256sums.txt` cannot be fetched**, which `join` and the vSphere backend both rely on | An air-gapped mirror may publish no checksum file, and failing closed would break those estates; the binary is fetched over HTTPS from `K0S_BINARY_BASEURL` | A pinned digest setting (as `IMAGE_SHA256` does for the installer ISO) is added, or the mirror case is handled explicitly |
 | Provider condition messages are mirrored verbatim onto user-facing `VirtualMachine` status | Useful diagnostics; providers are in-tree | A third-party provider ships |
-| **The published `install.yaml` and clusterctl components reference the banlieue image by tag** (`ghcr.io/firestoned/banlieue:<tag>`), not by digest, so a moved tag changes what a fresh install runs | Release tags are written once by the release run, and the image is cosign-signed and attested by digest (ADR-0006), so a consumer can verify what a tag resolves to. Pinning needs `banlieue bootstrap` to emit digests: `ProviderClass.spec.image.digest` exists, but bootstrap has no flag to set it, and pinning only the operator Deployment would leave the ProviderClasses on tags | `banlieue bootstrap operator` accepts an image digest, or a tag is found to have moved |
 | **A `banlieue-api` upload carries no signature or provenance**, unlike the binary and images (cosign, SLSA, ADR-0006), so a consumer cannot verify which build produced it | crates.io offers none to sign with; the upload comes from the tagged checkout in the release run, and `Cargo.lock` checksums pin what a consumer got the first time | crates.io supports artifact attestations or Sigstore signing |
 | **`CARGO_REGISTRY_TOKEN` is a long-lived secret** (A-21): if it leaks, it publishes until revoked | The first upload needs a token; scope it to `publish-new` and `publish-update` and, once the name exists, to `banlieue-api` only, with an expiry (ADR-0100 Decision 6) | The crate exists on crates.io and the publish action accepts Trusted Publishing (GitHub OIDC), so the secret can be deleted |
 

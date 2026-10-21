@@ -1,5 +1,60 @@
 # Changelog
 
+## [2026-10-21 14:00] - ADR-0103: digest-pinned installs; internal crates marked publish = false
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0103-digest-pinned-installs.md`: `--image-digest` pins every
+  installed banlieue image, and releases publish digest-pinned manifests.
+- `crates/banlieue-operator/src/bootstrap.rs`: `install_image` (the
+  `<repository>:<tag>@<digest>` reference every bootstrap-written container
+  now uses) and `parse_image_digest` (clap value parser for
+  `--image-digest`, through `banlieue_oci::reference::require_digest`).
+- `Makefile`: `RELEASE_IMAGE_DIGEST` feeds `--image-digest` to `install-yaml`
+  and `clusterctl-components`; `release-digest-check` fails when
+  `RELEASE_REQUIRE_DIGEST=true` and no digest is given. The install.yaml
+  header says whether its images are pinned.
+
+### Changed
+- `--image-digest` used to pin only the seeded `ProviderClass`es; the
+  controller, operator, imagebuilder and static provider Deployments now
+  carry the digest too, and a malformed digest is refused at parse time.
+- `.github/workflows/build.yaml`: `release-manifests` needs `docker` and, on a
+  release, passes `docker.outputs.digest-chainguard` with
+  `RELEASE_REQUIRE_DIGEST=true`. Main pushes still render by tag.
+- `crates/banlieue-operator/Cargo.toml`: depends on `banlieue-oci` (already
+  linked into the `banlieue` binary).
+- Every crate but `banlieue-api` sets `publish = false`, so ADR-0100's
+  "only banlieue-api is published" holds in the manifests and not only in
+  the CI job's `package:` input.
+- `docs/architecture/calm/architecture.json`: `release-artifact-provenance`
+  names the manifest SLSA subjects (stale since the release-assets change)
+  and the digest pin; ADR-0103 registered. `make calm-validate` clean.
+- `docs/src/guides/end-to-end-setup.md`: pinned release manifests, and
+  `--image-digest` for bootstrap installs.
+- Threat model full pass for ADR-0103, stamp advanced to 2026-10-21 /
+  ADR-0103: A-5 widened, two TB-6 rows, §7.25 (install by digest), and the
+  §8 "manifests reference the image by tag" risk removed as closed (it also
+  wrongly said bootstrap had no digest flag). No component, boundary,
+  identity or RBAC change; §5 stands.
+
+### Tests
+- `bootstrap_tests.rs`: `a_digest_pins_every_installed_workload`,
+  `without_a_digest_workloads_reference_their_tag`,
+  `a_digest_follows_a_registry_override`,
+  `the_digest_flag_accepts_only_a_sha256_digest`.
+
+### Why
+A tag can move; the release's signatures and attestations are bound to a
+digest. Installs from release manifests now run exactly the attested image.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-10-21 11:00] - fix(deps): zbus 6 (RUSTSEC-2026-0370/0371/0372); MSRV 1.89
 
 **Author:** Erick Bourgeois

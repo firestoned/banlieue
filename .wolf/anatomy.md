@@ -1,6 +1,6 @@
 # anatomy.md
 
-> Auto-maintained by OpenWolf. Last scanned: 2026-10-15T04:00:00.517Z
+> Auto-maintained by OpenWolf. Last scanned: 2026-10-21T16:00:00.335Z
 > Files: 511 tracked | Anatomy hits: 0 | Misses: 0
 
 ## ./
@@ -19,7 +19,7 @@
 - `GOVERNANCE.md` — Governance (~1125 tok)
 - `LICENSE` — Project license (~3029 tok)
 - `MAINTAINERS.md` — Maintainers (~165 tok)
-- `Makefile` — Make build targets (~27457 tok)
+- `Makefile` — Make build targets (~29885 tok)
 - `NOTICE` (~159 tok)
 - `osv-scanner.toml` — SPDX-License-Identifier: Apache-2.0 (~355 tok)
 - `README.md` — Project documentation (~3379 tok)
@@ -52,7 +52,7 @@
 ## .github/community/
 
 - `00-overview.md` — banlieue — Roadmap Overview (~1770 tok)
-- `01-decisions.md` — banlieue — Locked Design Decisions (~3787 tok)
+- `01-decisions.md` — banlieue — Locked Design Decisions (~3797 tok)
 - `02-conventions.md` — banlieue — Coding Conventions (~2242 tok)
 - `03-availability-zones-and-datastore-tiering.md` — banlieue — Availability Zones, Datastore & Compute Tiering (~1841 tok)
 - `04-phase-1a-controller-and-sdk.md` — Phase 1A — Main Controller + Provider SDK (~3671 tok)
@@ -68,7 +68,7 @@
 - `14-live-migration.md` — Live Migration (same-class first, cross-class deferred) (~3286 tok)
 - `15-vsphere-disk-image-import.md` — 15: vSphere disk-image import (raw and VMDK), alongside the ISO path (~4709 tok)
 - `16-scorecard-remediation.md` — 16 — OSSF Scorecard remediation (~2677 tok)
-- `17-ephemeral-vm-pools.md` — 17: Ephemeral, single-use VM pools (AI agent sandboxes) (~13883 tok)
+- `17-ephemeral-vm-pools.md` — 17: Ephemeral, single-use VM pools (AI agent sandboxes) (~14422 tok)
 - `18-split-image-fast-clone.md` — 18: Split-image fast clone — verified base + per-VM sealed volume (~4187 tok)
 - `19-port-groups.md` — 19: Port groups — declared, reconciled, and safe to delete (~4109 tok)
 - `README.md` — Project documentation (~1434 tok)
@@ -93,7 +93,7 @@
 
 ## .github/workflows/
 
-- `build.yaml` — SPDX-License-Identifier: Apache-2.0 (~14785 tok)
+- `build.yaml` — SPDX-License-Identifier: Apache-2.0 (~15142 tok)
 - `calm-test.yaml` — SPDX-License-Identifier: Apache-2.0 (~2002 tok)
 - `calm.yaml` — SPDX-License-Identifier: Apache-2.0 (~2057 tok)
 - `codeql.yaml` — /*.rs (beta in CodeQL; stable enough for (~700 tok)
@@ -182,7 +182,7 @@
 
 ## crates/banlieue-cloud-hypervisor/
 
-- `Cargo.toml` — Rust package manifest (~406 tok)
+- `Cargo.toml` — Rust package manifest (~432 tok)
 
 ## crates/banlieue-cloud-hypervisor/spec/
 
@@ -217,7 +217,7 @@
 
 ## crates/banlieue-controller/
 
-- `Cargo.toml` — Rust package manifest (~474 tok)
+- `Cargo.toml` — Rust package manifest (~500 tok)
 
 ## crates/banlieue-controller/src/
 
@@ -268,7 +268,7 @@
 
 ## crates/banlieue-host/
 
-- `Cargo.toml` — Rust package manifest (~504 tok)
+- `Cargo.toml` — Rust package manifest (~529 tok)
 
 ## crates/banlieue-host/src/
 
@@ -298,7 +298,7 @@
 
 ## crates/banlieue-imagebuilder/
 
-- `Cargo.toml` — Rust package manifest (~399 tok)
+- `Cargo.toml` — Rust package manifest (~424 tok)
 
 ## crates/banlieue-imagebuilder/src/
 
@@ -320,12 +320,12 @@
 - `mod.rs` — `banlieue-imagebuilder` reconcilers. (~108 tok)
 - `push_tests.rs` — Unit tests for `push.rs`. (~2916 tok)
 - `push.rs` — Pushing a finished build artifact to an OCI registry (ADR-0064 Decision 2). (~3596 tok)
-- `vmimage_tests.rs` — Unit tests for `vmimage.rs`. (~13839 tok)
-- `vmimage.rs` — `VMImage` reconciler — drives the shared, provider-agnostic image build for (~13512 tok)
+- `vmimage_tests.rs` — Unit tests for `vmimage.rs`. (~14422 tok)
+- `vmimage.rs` — `VMImage` reconciler — drives the shared, provider-agnostic image build for (~14434 tok)
 
 ## crates/banlieue-libvirt/
 
-- `Cargo.toml` — Rust package manifest (~505 tok)
+- `Cargo.toml` — Rust package manifest (~530 tok)
 
 ## crates/banlieue-libvirt/fuzz/
 
@@ -353,7 +353,7 @@
 
 ## crates/banlieue-oci/
 
-- `Cargo.toml` — Rust package manifest (~443 tok)
+- `Cargo.toml` — Rust package manifest (~468 tok)
 
 ## crates/banlieue-oci/src/
 
@@ -376,14 +376,14 @@
 
 ## crates/banlieue-operator/
 
-- `Cargo.toml` — Rust package manifest (~380 tok)
+- `Cargo.toml` — Rust package manifest (~454 tok)
 
 ## crates/banlieue-operator/src/
 
 - `app_tests.rs` — Unit tests for [`super::super::app`]. (~1136 tok)
 - `app.rs` — # `banlieue operator` entry point (~3355 tok)
-- `bootstrap_tests.rs` — Unit tests for `bootstrap.rs`. (~20427 tok)
-- `bootstrap.rs` — `banlieue bootstrap` — self-contained cluster install (ADR-0013). (~17794 tok)
+- `bootstrap_tests.rs` — Unit tests for `bootstrap.rs`. (~21522 tok)
+- `bootstrap.rs` — `banlieue bootstrap` — self-contained cluster install (ADR-0013). (~18336 tok)
 - `context.rs` — Shared reconcile context for `banlieue-operator`. (~1111 tok)
 - `error_tests.rs` — Unit tests for [`super::super::error`]: the metric `kind` of each variant. (~197 tok)
 - `error.rs` — Typed errors for `banlieue-operator`. (~372 tok)
@@ -421,7 +421,7 @@
 
 ## crates/banlieue-provider-cloud-hypervisor/
 
-- `Cargo.toml` — Rust package manifest (~588 tok)
+- `Cargo.toml` — Rust package manifest (~616 tok)
 
 ## crates/banlieue-provider-cloud-hypervisor/src/
 
@@ -453,7 +453,7 @@
 - `sys_tests.rs` — Unit tests for `sys.rs` that need no privilege. Tap and bridge calls are (~1580 tok)
 - `sys.rs` — The few syscalls the provider needs that `std` does not wrap: tap devices, (~3979 tok)
 - `systemd_tests.rs` — Unit tests for `systemd.rs`, and for the template units it starts: what a (~2141 tok)
-- `systemd.rs` — Guests and their helpers as instances of root-owned template units, over (~3478 tok)
+- `systemd.rs` — Guests and their helpers as instances of root-owned template units, over (~3477 tok)
 - `token_tests.rs` — Unit tests for `token.rs`. (~1298 tok)
 - `token.rs` — The provider renews its own cluster credential (ADR-0060 Decision 5). (~2378 tok)
 - `vmimage_tests.rs` — Unit tests for `vmimage.rs`. (~3962 tok)
@@ -471,7 +471,7 @@
 
 ## crates/banlieue-provider-libvirt/
 
-- `Cargo.toml` — Rust package manifest (~514 tok)
+- `Cargo.toml` — Rust package manifest (~539 tok)
 
 ## crates/banlieue-provider-libvirt/src/
 
@@ -520,7 +520,7 @@
 
 ## crates/banlieue-provider-proxmox/
 
-- `Cargo.toml` — Rust package manifest (~452 tok)
+- `Cargo.toml` — Rust package manifest (~477 tok)
 
 ## crates/banlieue-provider-proxmox/src/
 
@@ -553,7 +553,7 @@
 
 ## crates/banlieue-provider-sdk/
 
-- `Cargo.toml` — Rust package manifest (~512 tok)
+- `Cargo.toml` — Rust package manifest (~537 tok)
 
 ## crates/banlieue-provider-sdk/src/
 
@@ -605,7 +605,7 @@
 
 ## crates/banlieue-provider-vsphere/
 
-- `Cargo.toml` — Rust package manifest (~796 tok)
+- `Cargo.toml` — Rust package manifest (~829 tok)
 
 ## crates/banlieue-provider-vsphere/src/
 
@@ -647,11 +647,12 @@
 
 ## crates/banlieue-provider-vsphere/tests/
 
+- `e2e_pool_claim.rs` — Pool → real vCenter VMs → claim → release, end to end (ADR-0046/0047). (~11771 tok)
 - `live_vcenter.rs` — Integration test against a **real vCenter** over the production transport. (~3778 tok)
 
 ## crates/banlieue-proxmox/
 
-- `Cargo.toml` — Rust package manifest (~434 tok)
+- `Cargo.toml` — Rust package manifest (~459 tok)
 
 ## crates/banlieue-proxmox/src/
 
@@ -679,7 +680,7 @@
 
 ## crates/banlieue-vex/
 
-- `Cargo.toml` — Rust package manifest (~214 tok)
+- `Cargo.toml` — Rust package manifest (~239 tok)
 
 ## crates/banlieue-vex/src/
 
@@ -696,7 +697,7 @@
 
 ## crates/banlieue/
 
-- `Cargo.toml` — Rust package manifest (~882 tok)
+- `Cargo.toml` — Rust package manifest (~907 tok)
 
 ## crates/banlieue/src/
 
@@ -711,12 +712,16 @@
 - `provider-connection.yaml` — SPDX-License-Identifier: Apache-2.0 (~1254 tok)
 - `provider-immutability.yaml` — SPDX-License-Identifier: Apache-2.0 (~413 tok)
 - `providerclass-guardrails.yaml` — SPDX-License-Identifier: Apache-2.0 (~1047 tok)
-- `README.md` — Project documentation (~1740 tok)
+- `README.md` — Project documentation (~2233 tok)
 - `virtualmachine-created-by.yaml` — SPDX-License-Identifier: Apache-2.0 (~880 tok)
 - `virtualmachine-immutability.yaml` — SPDX-License-Identifier: Apache-2.0 (~526 tok)
 - `virtualmachine-userdata-authorization.yaml` — SPDX-License-Identifier: Apache-2.0 (~1223 tok)
 - `virtualmachineclaim-subject-authorization.yaml` — SPDX-License-Identifier: Apache-2.0 (~3473 tok)
 - `vmimage-import-source.yaml` — VAP + params ConfigMap: importFrom must be digest-pinned and registry-allowlisted (security review 2026-07-31) (~1011 tok)
+
+## deploy/admission/compat/
+
+- `virtualmachine-created-by.v1beta1.yaml` — SPDX-License-Identifier: Apache-2.0 (~977 tok)
 
 ## deploy/capi/
 
@@ -754,5 +759,3 @@
 - `infrastructure.banlieue.io_proxmoxmachines.yaml` — K8s CustomResourceDefinition: proxmoxmachines.infrastructure.banlieue.io (~5202 tok)
 - `infrastructure.banlieue.io_proxmoxmachinetemplates.yaml` — K8s CustomResourceDefinition: proxmoxmachinetemplates.infrastructure.banlieue.io (~4096 tok)
 - `infrastructure.banlieue.io_vsphereclusters.yaml` — K8s CustomResourceDefinition: vsphereclusters.infrastructure.banlieue.io (~3954 tok)
-- `infrastructure.banlieue.io_vspheremachines.yaml` — K8s CustomResourceDefinition: vspheremachines.infrastructure.banlieue.io (~6916 tok)
-- `infrastructure.banlieue.io_vspheremachinetemplates.yaml` — K8s CustomResourceDefinition: vspheremachinetemplates.infrastructure.banlieue.io (~4584 tok)

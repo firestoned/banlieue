@@ -1146,7 +1146,7 @@ clusterctl-components: ## Render infrastructure-components.yaml + metadata.yaml 
 	@mkdir -p $(CLUSTERCTL_OUT_DIR)
 	@echo "Rendering clusterctl components for $(CLUSTERCTL_RELEASE_TAG) (image tag $(CLUSTERCTL_IMAGE_TAG))..."
 	@cargo run -q -p banlieue -- bootstrap operator \
-	  --namespace $(NAMESPACE) --version $(CLUSTERCTL_IMAGE_TAG) --dry-run \
+	  --namespace $(NAMESPACE) --version $(CLUSTERCTL_IMAGE_TAG) $(RELEASE_DIGEST_FLAG) --dry-run \
 	  > $(CLUSTERCTL_OUT_DIR)/bootstrap-dry-run.yaml
 	@# clusterctl runs every components file through envsubst, which reads
 	@# `$$NAME` and `$${NAME}` as variables. The CRD descriptions quote
@@ -1183,6 +1183,14 @@ RELEASE_TAG := $(or $(RELEASE_TAG),v$(WORKSPACE_VERSION))
 RELEASE_MANIFESTS_DIR ?= $(CURDIR)/target/release-manifests
 RELEASE_DOWNLOAD_URL := https://github.com/firestoned/banlieue/releases/download/$(RELEASE_TAG)
 
+# Multi-arch digest of the release image (ADR-0103). Set, it pins every banlieue
+# image in install.yaml and the clusterctl components with `--image-digest`.
+# The release workflow passes the docker job's digest and sets
+# RELEASE_REQUIRE_DIGEST=true, so a release can never ship unpinned manifests.
+RELEASE_IMAGE_DIGEST ?=
+RELEASE_REQUIRE_DIGEST ?= false
+RELEASE_DIGEST_FLAG = $(if $(strip $(RELEASE_IMAGE_DIGEST)),--image-digest $(strip $(RELEASE_IMAGE_DIGEST)))
+
 # $(call release-header,<title>,<file>): the comment block every asset opens with.
 define release-header
 	echo "# Copyright (c) 2026 Erick Bourgeois, banlieue"; \
@@ -1198,20 +1206,29 @@ endef
 # separated by `---`. awk also terminates a file missing its final newline.
 release-concat = awk 'FNR == 1 { print "---" } { print }' $(1)
 
-release-manifests: install-yaml crds-yaml admission-policies-yaml network-policies-yaml ## Render every release manifest (single-file YAMLs + clusterctl components) into $(RELEASE_MANIFESTS_DIR)
+release-manifests: release-digest-check install-yaml crds-yaml admission-policies-yaml network-policies-yaml ## Render every release manifest (single-file YAMLs + clusterctl components) into $(RELEASE_MANIFESTS_DIR)
 	@$(MAKE) --no-print-directory clusterctl-components CLUSTERCTL_OUT_DIR=$(RELEASE_MANIFESTS_DIR)
 	@echo "✓ release manifests for $(RELEASE_TAG) in $(RELEASE_MANIFESTS_DIR)"
 
-install-yaml: ## Render install.yaml (bootstrap operator --dry-run for $(RELEASE_TAG)) into $(RELEASE_MANIFESTS_DIR)
+.PHONY: release-digest-check
+release-digest-check: ## Fail when RELEASE_REQUIRE_DIGEST=true and RELEASE_IMAGE_DIGEST is empty (ADR-0103)
+	@if [ "$(RELEASE_REQUIRE_DIGEST)" = "true" ] && [ -z "$(strip $(RELEASE_IMAGE_DIGEST))" ]; then \
+	  echo "ERROR: RELEASE_IMAGE_DIGEST is empty: a release must pin its image by digest."; \
+	  echo "       The image is built and pushed first; pass its multi-arch digest."; \
+	  exit 1; \
+	fi
+
+install-yaml: release-digest-check ## Render install.yaml (bootstrap operator --dry-run for $(RELEASE_TAG)) into $(RELEASE_MANIFESTS_DIR)
 	@mkdir -p $(RELEASE_MANIFESTS_DIR)
 	@cargo run -q -p banlieue -- bootstrap operator \
-	  --namespace $(NAMESPACE) --version $(RELEASE_TAG) --dry-run \
+	  --namespace $(NAMESPACE) --version $(RELEASE_TAG) $(RELEASE_DIGEST_FLAG) --dry-run \
 	  > $(RELEASE_MANIFESTS_DIR)/install.body.yaml
 	@{ \
 	  $(call release-header,single-file install (CRDs + operator + ProviderClasses),install.yaml); \
 	  echo "#"; \
-	  echo "# Same objects as 'banlieue bootstrap operator --version $(RELEASE_TAG)'. It also"; \
-	  echo "# carries ProviderClass objects, so establish the CRDs first (crds.yaml):"; \
+	  echo "# Same objects as 'banlieue bootstrap operator $(strip --version $(RELEASE_TAG) $(RELEASE_DIGEST_FLAG))'."; \
+	  echo "# Images: $(if $(strip $(RELEASE_IMAGE_DIGEST)),pinned by digest (the tag beside it documents intent),referenced by tag only)."; \
+	  echo "# It also carries ProviderClass objects, so establish the CRDs first (crds.yaml):"; \
 	  echo "#   kubectl apply --server-side -f $(RELEASE_DOWNLOAD_URL)/crds.yaml"; \
 	  echo "#   kubectl wait --for=condition=Established --timeout=60s -f $(RELEASE_DOWNLOAD_URL)/crds.yaml"; \
 	  echo "#   kubectl apply --server-side -f $(RELEASE_DOWNLOAD_URL)/install.yaml"; \
