@@ -19,9 +19,10 @@
 
 ## D-001 — Language and toolchain
 
-- **Rust** edition **2024**, MSRV **1.88** (root `Cargo.toml`
+- **Rust** edition **2024**, MSRV **1.89** (root `Cargo.toml`
   `edition` / `rust-version`). Bumped from the original edition 2021 /
-  1.80 to match the kube-rs reference toolchain.
+  1.80 to match the kube-rs reference toolchain, then to 1.89 for zbus 6
+  (2026-10-21).
 - `rustfmt` defaults, `clippy` clean with `-D warnings`.
 - Workspace layout; one crate per logical component. Shared deps are pinned
   once in the root `[workspace.dependencies]` table; member crates use

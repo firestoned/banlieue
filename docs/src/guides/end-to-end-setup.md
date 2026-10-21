@@ -437,6 +437,29 @@ binary's own Rust types, so schema and binary can never disagree) →
 backend compiled into the binary. `--dry-run` prints the exact YAML instead
 of applying it, for a GitOps repo.
 
+Without the binary, every GitHub Release carries that `--dry-run` output as
+`install.yaml`. It includes `ProviderClass` objects, so establish the CRDs
+first:
+
+```sh
+URL=https://github.com/firestoned/banlieue/releases/latest/download   # or releases/download/<tag>
+kubectl apply --server-side -f $URL/crds.yaml
+kubectl wait --for=condition=Established --timeout=60s -f $URL/crds.yaml
+kubectl apply --server-side -f $URL/install.yaml
+```
+
+| Release asset | Contents |
+| --- | --- |
+| `install.yaml` | `banlieue bootstrap operator --version <tag> --dry-run` |
+| `crds.yaml` | every CRD (also inside `install.yaml`) |
+| `admission-policies.yaml` | every policy in `deploy/admission/`; opt-in, and **edit its two parameter ConfigMaps first** (see `deploy/admission/README.md`) |
+| `network-policies.yaml` | every policy in `deploy/network-policies/` (ADR-0094); opt-in, applied per namespace |
+| `deploy-manifests.tar.gz` | the whole `deploy/` tree, READMEs and host units included |
+| `infrastructure-components.yaml`, `metadata.yaml` | the clusterctl provider ([Cluster API](cluster-api.md)) |
+
+All of them are listed in `checksums.sha256` and covered by the release's
+SLSA provenance (`banlieue-<version>.intoto.jsonl`).
+
 **Output:** CRDs installed, two controllers running, zero backends
 registered yet. See **[Core Controller](core-controller.md)**.
 

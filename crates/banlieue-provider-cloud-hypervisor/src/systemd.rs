@@ -18,7 +18,7 @@
 use futures::StreamExt as _;
 use std::path::PathBuf;
 use std::time::Duration;
-use zbus::zvariant::{OwnedObjectPath, Value};
+use zbus::{OwnedObjectPath, Variant};
 
 /// systemd's job mode: fail rather than queue behind a conflicting job.
 const JOB_MODE_FAIL: &str = "fail";
@@ -90,9 +90,9 @@ impl EnvFile {
 impl UnitStart {
     /// The runtime properties set before the start.
     #[must_use]
-    pub fn runtime_properties(&self) -> Vec<(&'static str, Value<'static>)> {
+    pub fn runtime_properties(&self) -> Vec<(&'static str, Variant<'static>)> {
         self.memory_max
-            .map(|b| vec![("MemoryMax", Value::from(b))])
+            .map(|b| vec![("MemoryMax", Variant::from(b))])
             .unwrap_or_default()
     }
 }
@@ -161,7 +161,7 @@ trait Manager {
         &self,
         name: &str,
         runtime: bool,
-        properties: &[(&str, Value<'_>)],
+        properties: &[(&str, Variant<'_>)],
     ) -> zbus::Result<()>;
 
     fn stop_unit(&self, name: &str, mode: &str) -> zbus::Result<OwnedObjectPath>;
@@ -334,7 +334,7 @@ impl Systemd {
             return Ok(None);
         }
         let service = ServiceProxy::builder(&self.conn)
-            .path(row.6)?
+            .path(row.6)
             .build()
             .await?;
         Ok(Some(describe_exit(

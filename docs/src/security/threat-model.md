@@ -738,7 +738,7 @@ This is the strongest area of the project and is largely already ADR-0006.
 
 | Control | Detail |
 | --- | --- |
-| Provenance | SLSA build provenance on every release |
+| Provenance | SLSA build provenance on every release. Its subjects are every installable asset: the binary tarballs, `deploy-manifests.tar.gz`, and the single-file YAMLs (`install.yaml`, `crds.yaml`, `admission-policies.yaml`, `network-policies.yaml`, the clusterctl files), all rendered by `make release-manifests` in `.github/workflows/build.yaml` and listed in `checksums.sha256` |
 | SBOM + VEX | Generated per release; VEX statements are reachability- and presence-derived, and the generators **fail closed** on empty or oversized inputs (256 MiB cap) |
 | Signing | cosign signatures on published images |
 | Base images | Digest-pinned (Chainguard + distroless), non-root, tracked by Dependabot |
@@ -954,6 +954,7 @@ is configured (ADR-0092).
 | A new infrastructure kind is added without the CAPI role, or the role drifts wider than the contract | E, D | `capi_aggregate_role_covers_exactly_the_capi_contract_kinds` derives the expected set from the CRDs carrying the contract label, so either drift fails the build |
 | CAPI's manager deletes a banlieue machine it owns, destroying a real VM | D | By design: a `Machine` owns its infrastructure object, and deleting the `Machine` is the request. A machine banlieue's controller created is owned by its `VirtualMachine`, not a CAPI `Machine` |
 | The clusterctl components file installs something other than what `banlieue bootstrap` installs | T | One definition: the file is `banlieue bootstrap operator --dry-run`, escaped for envsubst, and `make clusterctl-components` checks that unescaping it gives back the dry-run byte for byte. It ships with the release's provenance (TB-6) |
+| A published `install.yaml` installs something other than what `banlieue bootstrap` installs | T | Same single definition: `make install-yaml` writes `banlieue bootstrap operator --dry-run` for the release tag, unescaped, with only a comment header added. It is a SLSA subject and in `checksums.sha256` (TB-6) |
 
 ### TB-16: Bootstrap operator → running management cluster (`join`)
 
@@ -1402,6 +1403,7 @@ a different assumption is unsafe.
 | **The bootstrap script does not verify SSH host keys** (`StrictHostKeyChecking=no` in `ssh_run`); with `join` that session also carries a join token, and for a controller the cluster CA key's token and the datastore password (A-20) | Every node is new, or rebuilt, when the script first reaches it, so there is no key to pin yet; a token expires in 15 minutes, though a controller's is enough to take the CA key within them. Running it from the host or the nodes' own network keeps it off untrusted paths (§7.23) | The script records each node's host key at creation (the seed can carry one) and checks it afterwards |
 | **`stage_k0s_binary` uses the k0s binary unverified when the release's `sha256sums.txt` cannot be fetched**, which `join` and the vSphere backend both rely on | An air-gapped mirror may publish no checksum file, and failing closed would break those estates; the binary is fetched over HTTPS from `K0S_BINARY_BASEURL` | A pinned digest setting (as `IMAGE_SHA256` does for the installer ISO) is added, or the mirror case is handled explicitly |
 | Provider condition messages are mirrored verbatim onto user-facing `VirtualMachine` status | Useful diagnostics; providers are in-tree | A third-party provider ships |
+| **The published `install.yaml` and clusterctl components reference the banlieue image by tag** (`ghcr.io/firestoned/banlieue:<tag>`), not by digest, so a moved tag changes what a fresh install runs | Release tags are written once by the release run, and the image is cosign-signed and attested by digest (ADR-0006), so a consumer can verify what a tag resolves to. Pinning needs `banlieue bootstrap` to emit digests: `ProviderClass.spec.image.digest` exists, but bootstrap has no flag to set it, and pinning only the operator Deployment would leave the ProviderClasses on tags | `banlieue bootstrap operator` accepts an image digest, or a tag is found to have moved |
 | **A `banlieue-api` upload carries no signature or provenance**, unlike the binary and images (cosign, SLSA, ADR-0006), so a consumer cannot verify which build produced it | crates.io offers none to sign with; the upload comes from the tagged checkout in the release run, and `Cargo.lock` checksums pin what a consumer got the first time | crates.io supports artifact attestations or Sigstore signing |
 | **`CARGO_REGISTRY_TOKEN` is a long-lived secret** (A-21): if it leaks, it publishes until revoked | The first upload needs a token; scope it to `publish-new` and `publish-update` and, once the name exists, to `banlieue-api` only, with an expiry (ADR-0100 Decision 6) | The crate exists on crates.io and the publish action accepts Trusted Publishing (GitHub OIDC), so the secret can be deleted |
 

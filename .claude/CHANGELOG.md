@@ -1,5 +1,79 @@
 # Changelog
 
+## [2026-10-21 11:00] - fix(deps): zbus 6 (RUSTSEC-2026-0370/0371/0372); MSRV 1.89
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `crates/banlieue-provider-cloud-hypervisor/Cargo.toml`: `zbus` 5 to 6, with
+  the `proxy` feature (zbus 6 gates `#[zbus::proxy]` behind it). zbus 6
+  absorbs `zvariant`, `zvariant_derive` and `zbus_names`, which RustSec now
+  flags unmaintained (RUSTSEC-2026-0370, -0371, -0372) and which failed
+  `cargo-deny` on every PR. All three leave `Cargo.lock`.
+- `crates/banlieue-provider-cloud-hypervisor/src/systemd.rs`:
+  `zbus::zvariant::{OwnedObjectPath, Value}` becomes
+  `zbus::{OwnedObjectPath, Variant}`; `proxy::Builder::path` is infallible in
+  zbus 6 (a bad path surfaces from `build()`), so its `?` is gone.
+- `Cargo.toml`: `rust-version` 1.88 to 1.89, zbus 6's MSRV.
+  `.github/community/01-decisions.md` D-001 records it.
+
+### Why
+`cargo-deny` failed on the three advisories with no ignore possible short of
+accepting unmaintained crates; zbus 6 is the upstream migration path.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-10-21 10:00] - Release assets: install.yaml, crds.yaml, admission and network policy bundles
+
+**Author:** Erick Bourgeois
+
+### Added
+- `Makefile`: `release-manifests` (umbrella), `install-yaml`, `crds-yaml`,
+  `admission-policies-yaml`, `network-policies-yaml`, rendering single-file
+  manifests into `$(RELEASE_MANIFESTS_DIR)` (default
+  `target/release-manifests`), each with a header naming the release, its
+  download URL and the apply command. `install.yaml` is
+  `banlieue bootstrap operator --dry-run` for `RELEASE_TAG`, unescaped (the
+  clusterctl file is the same render, envsubst-escaped). The admission
+  bundle's header says to edit the two parameter ConfigMaps first: an unedited
+  `banlieue-claim-subject-policy` denies every claim. Modelled on bindy's
+  `release-manifests`.
+- `release-manifests` also runs `clusterctl-components` into the same
+  directory. `CLUSTERCTL_RELEASE_TAG` now defaults to `RELEASE_TAG`, which
+  falls back to `v$(WORKSPACE_VERSION)` even when set but empty.
+
+### Changed
+- `.github/workflows/build.yaml`: the release-only `clusterctl-components` job
+  becomes `release-manifests`, running `make release-manifests` on main pushes
+  and releases. `upload-release-assets` attaches every `release/*.yaml`, so
+  releases now carry `install.yaml`, `crds.yaml`, `admission-policies.yaml` and
+  `network-policies.yaml` beside `deploy-manifests.tar.gz` and the clusterctl
+  files.
+- `generate-provenance-subjects` hashes the manifests and
+  `deploy-manifests.tar.gz` too, not only the binary tarballs. The threat model
+  already claimed the clusterctl file shipped with the release's provenance;
+  it now does.
+- `docs/src/guides/end-to-end-setup.md`: install from the release assets
+  (crds.yaml, wait for Established, install.yaml) and a table of every asset.
+- `docs/src/security/threat-model.md`: TB-6 provenance row lists the subjects;
+  a row for `install.yaml` matching bootstrap; §8 accepted risk that the
+  published manifests reference the image by tag, revisit when bootstrap can
+  emit a digest. Not an ADR, so the full-pass stamp is unchanged.
+
+### Why
+Install without the binary in one `kubectl apply`, as bindy does, with every
+asset covered by provenance and checksums.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only (plus CI and Makefile)
+
 ## [2026-10-16 12:00] - dev-oidc-k0s.sh: append to an existing spec.api.extraArgs
 
 **Author:** Erick Bourgeois
