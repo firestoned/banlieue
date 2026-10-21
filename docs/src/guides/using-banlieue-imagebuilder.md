@@ -58,6 +58,7 @@ but only inside the build namespace, and only through the namespaced `Role`
 described below — never through a `ClusterRole`.
 
 ```sh
+kubectl apply -f deploy/imagebuilder/namespace.yaml
 kubectl apply -R -f deploy/imagebuilder/rbac/
 kubectl apply -f deploy/imagebuilder/configmap.yaml
 kubectl apply -f deploy/imagebuilder/deployment.yaml

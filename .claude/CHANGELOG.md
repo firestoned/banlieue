@@ -187,6 +187,27 @@ asset covered by provenance and checksums.
 - [ ] Config change only
 - [x] Documentation only (plus CI and Makefile)
 
+## [2026-10-20 12:00] - ADR-0104 (vSphere Template-kind per-zone lookup, Accepted); kairos-operator install pinning; imagebuilder namespace step
+
+**Author:** Pooja Maiti
+
+### Changed
+- `docs/adr/0104-vsphere-template-kind-per-zone-lookup.md` (new, Accepted; decider Erick Bourgeois): a vsphere `Template` source behaves like `Url` for lookup, status and placement, and banlieue never destroys a template it did not import. The code follows in a separate change; no code changes in this entry.
+- `docs/architecture/calm/architecture.json`: vsphere provider node describes adopted `Template` sources (ADR-0104); `make calm-validate` passes.
+- `docs/src/guides/kairos-operator-setup.md`: warning to pin a released tag and the pinned install form `?ref=<release-tag>` (no version hardcoded; releases page linked).
+- `scripts/bootstrap-kairos-operator.sh`: warns when `KAIROS_OPERATOR_REF` has no `?ref=`; documents the pinned form.
+- `docs/adr/0010-vmimage-build-pipeline-imagebuilder.md`: the install command shows the pinned form.
+- `docs/src/guides/using-banlieue-imagebuilder.md`: the install step applies `deploy/imagebuilder/namespace.yaml` first (the build-namespace Role and RBAC need it to exist).
+
+### Why
+ADR-0104 records the decision before code, per ADD. The kairos-operator install tracked the operator repository's default branch, which can change at any time; the imagebuilder install skipped creating its namespace.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
 ## [2026-10-16 12:00] - dev-oidc-k0s.sh: append to an existing spec.api.extraArgs
 
 **Author:** Erick Bourgeois

@@ -20,12 +20,21 @@ third-party operator your cluster depends on.
     document a cert-manager prerequisite or a Helm chart — install is via
     `kubectl apply -k` (Kustomize) against the operator's own repo. If that
     changes upstream, `kubectl apply -k` will simply pull whatever the
-    referenced `config/default` overlay declares.
+    referenced `config/default` overlay declares. That is also why you should
+    pin a release tag (see the warning below).
 
 ## Install the operator
 
+!!! warning "Pin a release; do not install from the default branch"
+    Running this install without `?ref=` installs whatever is on the operator
+    repository's default branch **right now**, and that can change at any time.
+    Do not do that against a production cluster. Pick a released tag from the
+    [kairos-operator releases page](https://github.com/kairos-io/kairos-operator/releases)
+    and pin to it with `?ref=<release-tag>`, as below. Re-run the command with
+    a newer tag to upgrade, on your schedule.
+
 ```sh
-kubectl apply -k https://github.com/kairos-io/kairos-operator/config/default
+kubectl apply -k "https://github.com/kairos-io/kairos-operator/config/default?ref=<release-tag>"
 ```
 
 This installs the operator's CRDs (including `osartifacts.build.kairos.io`,

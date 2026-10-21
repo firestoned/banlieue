@@ -41,6 +41,11 @@ STORAGE_CLASS="${STORAGE_CLASS:-local-path}"
 # Helm chart, despite the operator's own naming suggesting otherwise. Verified
 # against https://kairos.io/operator-docs/installation/ (2026-07). No
 # cert-manager prerequisite is documented either.
+#
+# The default below tracks the operator repo's default branch, which can change
+# at any time. For anything beyond a throwaway cluster, pin a released tag:
+#   KAIROS_OPERATOR_REF='https://github.com/kairos-io/kairos-operator/config/default?ref=<release-tag>'
+# (releases: https://github.com/kairos-io/kairos-operator/releases).
 KAIROS_OPERATOR_REF="${KAIROS_OPERATOR_REF:-https://github.com/kairos-io/kairos-operator/config/default}"
 KAIROS_NAMESPACE="${KAIROS_NAMESPACE:-operator-system}"
 KAIROS_DEPLOYMENT="${KAIROS_DEPLOYMENT:-operator-kairos-operator}"
@@ -158,6 +163,10 @@ install_storage() {
 }
 
 install_operator() {
+  case "$KAIROS_OPERATOR_REF" in
+    *'?ref='*) ;;
+    *) warn "KAIROS_OPERATOR_REF has no ?ref=<release-tag>: this installs the default branch, which can change at any time. Pin a release for production." ;;
+  esac
   log "Installing kairos-operator from $KAIROS_OPERATOR_REF"
   kubectl apply -k "$KAIROS_OPERATOR_REF"
 

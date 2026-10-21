@@ -49,8 +49,8 @@ rule both apply to third-party CRDs we integrate against, not just our own):
 - `spec.exporters` lets the OSArtifact itself run a post-build Job with the
   artifacts PVC mounted read-only at `/artifacts` — useful for backend-specific
   conversion later, but Stage 2 of this ADR does not use it (see Decision).
-- Install is `kubectl apply -k https://github.com/kairos-io/kairos-operator/config/default`
-  (kustomize, not Helm — no Helm chart is documented). No cert-manager
+- Install is `kubectl apply -k https://github.com/kairos-io/kairos-operator/config/default?ref=<release-tag>`
+  (pin a released tag rather than the default branch; kustomize, not Helm — no Helm chart is documented). No cert-manager
   prerequisite is documented. This corrects an assumption in an earlier,
   disconnected prototype of this same idea, which guessed at Helm chart names
   that don't exist upstream — a reminder that this class of assumption must be
