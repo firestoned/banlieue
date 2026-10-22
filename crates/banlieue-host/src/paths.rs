@@ -51,6 +51,8 @@ pub const SYSTEMD_UNIT_DIR: &str = "/etc/systemd/system";
 pub const BANLIEUE_USER: &str = "banlieue";
 /// Guest records are named `<prefix><uid>`.
 pub const GUEST_NAME_PREFIX: &str = "banlieue-g";
+/// The slice guests and vTPMs run in (ADR-0105).
+pub const GUEST_SLICE_UNIT: &str = "banlieue-guests.slice";
 /// The provider's own unit.
 pub const PROVIDER_UNIT: &str = "banlieue-provider-cloud-hypervisor.service";
 /// The templates the provider starts instances of (ADR-0063, amended).

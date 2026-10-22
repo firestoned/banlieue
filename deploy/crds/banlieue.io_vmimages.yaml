@@ -130,6 +130,49 @@ spec:
                       type: object
                   type: object
                 type: array
+              firstBootSealing:
+                description: |-
+                  Declares that every clone of this image seals the listed partitions
+                  to its own vTPM on its first boot (ADR-0088), which is what lets a
+                  `VMClass` with `tpmEnabled: true` use an `Immediate` (pre-installed)
+                  image. Without it that pairing is refused, because the template was
+                  installed before any per-VM vTPM existed (ADR-0048).
+
+                  For a `Url` source `banlieue-imagebuilder` writes the sealing policy
+                  into the built image itself (`status.firstBootSealing: Built`); for a
+                  `Template` or `BackingFile` source the image must already carry it, and
+                  this field is an operator assertion (`Asserted`). Either way every
+                  clone's `GuestReady` waits for the guest to report each listed
+                  partition sealed. Gated on `banlieue-controller
+                  --enable-first-boot-sealing`; with the flag off a `VirtualMachine` of
+                  this image is refused (`FirstBootSealingDisabled`). Not combinable with
+                  `trustedBoot`.
+                nullable: true
+                properties:
+                  partitions:
+                    default:
+                    - COS_PERSISTENT
+                    description: |-
+                      Kairos partition labels to seal on first boot. Defaults to
+                      `[COS_PERSISTENT]`. `COS_OEM`, `COS_STATE`, `COS_RECOVERY` and
+                      `COS_GRUB` are refused at admission, mirroring Kairos's own refusal.
+                    items:
+                      type: string
+                    minItems: 1
+                    type: array
+                  timeoutSeconds:
+                    default: 600
+                    description: |-
+                      Seconds from the machine's power-on (its infrastructure `Ready`
+                      transition) within which the guest must report every listed partition
+                      sealed; after that `GuestReady` is `False` with reason
+                      `FirstBootSealingTimeout`. A clone that cannot seal halts in its
+                      initramfs and never reports anything, so this is how it is noticed.
+                    format: uint32
+                    maximum: 86400.0
+                    minimum: 60.0
+                    type: integer
+                type: object
               guestAgent:
                 default: cloud-init
                 description: |-
@@ -505,6 +548,12 @@ spec:
                       for `iso`). Populated at phase `Ready`.
                     nullable: true
                     type: string
+                  firstBootSealingLayer:
+                    description: |-
+                      Whether this build carries the banlieue-generated first-boot sealing
+                      layer (ADR-0088): set when `spec.firstBootSealing` was honoured by the
+                      merged cloud-config this artifact was built from. Omitted when false.
+                    type: boolean
                   kind:
                     description: |-
                       What kind of artifact was built, aligned with kairos-operator's own
@@ -640,6 +689,13 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              firstBootSealing:
+                description: How banlieue knows an image seals itself on first boot (ADR-0088).
+                enum:
+                - Built
+                - Asserted
+                nullable: true
+                type: string
               observedGeneration:
                 format: int64
                 nullable: true

@@ -317,6 +317,7 @@ with it. See [VirtualMachine Claims](virtualmachine-claims.md).
 | `Capacity=False`, `AddressRangeExhausted` | The address range has no spares above `maxReplicas`. |
 | Members churn: created, then deleted, repeatedly | `provisioningTimeoutSeconds` is shorter than the image takes to install. |
 | libvirt, Deferred: a member stays `GuestNotAnnounced` and its guest is back in the live installer after installing | A provider at v0.4.1 or earlier boots the installer before the disk. Upgrade; see *What `GuestReady` needs, per backend*. |
+| vSphere, Deferred: members stay `GuestReady=False`, reason `InstallMediaAttached` | The provider cannot eject the install ISO: a guest holding the tray locked, or a vCenter role without `VirtualMachine.Interact.SetCDMedia` / `.DeviceConnection`. See the [vSphere guide](vsphere-provider.md#troubleshooting). |
 | Cloud Hypervisor, `tpmEnabled`: about 1 install in 7 fails with `tpm_recv: error -5` | Stock Cloud Hypervisor's 100 ms TPM receive timeout. See [the timings page](../reference/cloud-hypervisor-pool-timings.md). |
 | Pool keeps creating members up to `maxReplicas` | The readiness signal is never satisfied, so `available` never rises and the pool keeps trying. The `ReadinessSignalAbsent` condition above names the cause. |
 

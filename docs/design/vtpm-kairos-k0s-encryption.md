@@ -3,7 +3,8 @@
 **Audience:** Security / architecture review
 
 **Status:** Living document:  vTPM/kcrypt disk encryption is implemented
-(ADR-0039) **and validated end-to-end below (§3a, §4a)**. The k0s etcd
+(ADR-0039) **and validated end-to-end below (§3a, §4a)**; §4b validates
+per-clone first-boot sealing of an `Immediate` template (ADR-0088). The k0s etcd
 Secrets encryption piece described in §5 was a proposed new project as of
 the last revision of this doc; it is now **implemented and validated
 end-to-end** as `sceau` — see §5 for the full command transcript proving a
@@ -651,6 +652,82 @@ Note for anyone comparing against `cryptsetup luksDump`: this method
 `Tokens:` section is legitimately empty; that is not evidence of a missing
 TPM binding. The boot-log unlock method line above is the authoritative
 signal, not `luksDump`.
+
+### 4b. Proof: an `Immediate` template clone sealed on its own first boot (ADR-0088)
+
+§4 assumes the stanza is applied at install time, which is why ADR-0048
+required `installMode: Deferred` for every `tpmEnabled` VM: a full Kairos
+install per VM, about 8 minutes. [ADR-0088](../adr/0088-first-boot-sealing-for-immediate-images.md)
+instead installs the template **once, with no vTPM and no encryption**, and
+has each clone seal `COS_PERSISTENT` to its own vTPM on its first boot
+(Kairos `encrypt-pending`, kairos-io/kairos#4924).
+
+Validated 2026-10-22 on vSphere, with nothing done by hand between
+`kubectl apply` and `GuestReady=True`: a Debian 13 Kairos image
+(`kairos-init v4.4.0-rc1`), `installMode: Immediate`,
+`firstBootSealing: {}`, three zones, and the controller running with
+`--enable-first-boot-sealing`. Times are UTC, taken from the object
+timestamps, the provider's log, and the guest journal.
+
+**Image build (once per image, shared by every clone):**
+
+| Step | Start | End | Duration |
+| --- | --- | --- | --- |
+| `VMImage` applied; `OSArtifact` and build pod created | 21:45:25 | 21:45:25 | 0 s |
+| Pod scheduled and started | 21:45:25 | 21:45:29 | 4 s |
+| Pull the Kairos base image (`pull-image-baseimage`) | 21:45:29 | 21:46:26 | 57 s |
+| Build the ISO, sealing layer included (`build-iso`) | 21:46:27 | 21:46:39 | 12 s |
+| Build finished → per-zone import Jobs created | 21:46:39 | 21:46:56 | 17 s |
+| Import and install the template, 3 zones in parallel | 21:46:56 | 21:48:01 | 65 s |
+| All 3 zones `ready`, `status.firstBootSealing: Built` | | 21:48:17 | **≈ 2 m 52 s total** |
+
+**Clone (per VM):**
+
+| Step | Start | End | Duration |
+| --- | --- | --- | --- |
+| `VirtualMachine` applied; `Scheduled=True`, `VSphereMachine` created | 21:48:22.4 | 21:48:22.4 | < 1 s |
+| Resolve datacenter, cluster, template, datastore, network | 21:48:22.4 | 21:48:22.8 | 0.4 s |
+| `CloneVM_Task` | 21:48:22.8 | 21:48:25.9 | 3.1 s |
+| Attach the clone's own vTPM | 21:48:25.9 | 21:48:28.9 | 3.0 s |
+| Power on; `InfrastructureReady=True` | 21:48:28.9 | 21:48:31.9 | 3.0 s |
+| Firmware until the kernel starts (vTPM seen: `VMWARE VMW_TPM2`) | 21:48:31.9 | 21:48:45.9 | 14 s |
+| initrd until `COS_OEM` is mounted (policy file read) | 21:48:45.9 | 21:48:47.1 | 1.2 s |
+| **`encrypt-pending`**: LUKS2-format `COS_PERSISTENT`, seal the passphrase to the vTPM (TPM NV) | 21:48:47.1 | 21:48:51.6 | **4.5 s** |
+| `unlock-all`: open `COS_PERSISTENT_LUKS` from the vTPM | 21:48:51.6 | 21:48:51.9 | 0.33 s |
+| Rest of initrd, switch root, `boot` stage | 21:48:51.9 | 21:49:00.9 | 9.0 s |
+| Report step publishes `COS_PERSISTENT` (`guestinfo.banlieue.sealed`, `/run/banlieue/sealed`) | | 21:49:00.9 | |
+| Provider's next pass reads it; `sealedPartitions` written, `GuestReady=True` | 21:49:00.9 | 21:49:32.4 | 31 s |
+| **Total, `kubectl apply` → `GuestReady=True`** | 21:48:22.4 | 21:49:32.4 | **70 s** |
+
+The guest boot took 18.9 s (`systemd-analyze`: 2.8 s kernel, 11.9 s
+initrd, 4.2 s userspace), so sealing added about 4.8 s to the first boot.
+The disk was encrypted 29 s after `kubectl apply`. Most of the remaining
+time is the provider requeue: the pass at 21:49:02 ran 1.4 s after the guest
+wrote the report and did not see it in `config.extraConfig` yet, so the
+next pass, 30 s later, did.
+
+**Reboot of the same clone:**
+
+| Step | Time / duration |
+| --- | --- |
+| `systemctl reboot` → kernel start | 28 s |
+| `encrypt-pending`: "all partitions configured for encryption are already LUKS; encrypt-pending is a no-op" | < 0.1 s |
+| `unlock-all` from the vTPM | 0.35 s |
+| Boot total (`systemd-analyze`) | 15.1 s (7.4 s initrd) |
+
+`/usr/local` was back on `/dev/mapper/sda5` and `GuestReady` stayed `True`.
+The run configures no `c_index`, so kairos-io/kairos#5193 (seal and unseal
+with different NV indices) could not apply.
+
+**Checked in the guest:** `/oem/91_banlieue_first_boot_sealing.yaml` starts
+with `#cloud-config` and was not edited by hand; `/dev/sda5` is LUKS2,
+label `COS_PERSISTENT_LUKS`, one keyslot, mounted at `/usr/local`; the
+unlock method is "Local TPM NV passphrase", so `Tokens:` is empty, as §4a
+explains.
+
+**Against `Deferred`:** a clone becomes sealed and `GuestReady` in about
+70 s, against about 8 minutes for a `Deferred` install of every VM. The
+image build is paid once per image, not per VM.
 
 ---
 

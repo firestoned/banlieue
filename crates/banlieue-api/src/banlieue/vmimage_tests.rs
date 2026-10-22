@@ -29,6 +29,7 @@ mod tests {
             template: None,
             iso_overlay: None,
             trusted_boot: None,
+            first_boot_sealing: None,
         }
     }
 
@@ -445,6 +446,7 @@ mod tests {
             message: None,
             checksum: None,
             oci_artifact: None,
+            first_boot_sealing_layer: false,
         };
         let json = serde_json::to_value(&s).unwrap();
         let obj = json.as_object().unwrap();
@@ -470,6 +472,7 @@ mod tests {
             message: None,
             checksum: None,
             oci_artifact: None,
+            first_boot_sealing_layer: false,
         };
         let json = serde_json::to_value(&s).unwrap();
         assert_eq!(json["kind"], "iso");
@@ -493,6 +496,7 @@ mod tests {
             message: None,
             checksum: None,
             oci_artifact: None,
+            first_boot_sealing_layer: false,
         };
         let json = serde_json::to_value(&s).unwrap();
         assert!(!json.as_object().unwrap().contains_key("osArtifactUid"));
@@ -511,6 +515,7 @@ mod tests {
             message: None,
             checksum: None,
             oci_artifact: None,
+            first_boot_sealing_layer: false,
         };
         let json = serde_json::to_value(&s).unwrap();
         assert_eq!(
@@ -559,6 +564,7 @@ mod tests {
                 message: None,
                 checksum: None,
                 oci_artifact: None,
+                first_boot_sealing_layer: false,
             }),
             ..VMImageStatus::default()
         };
@@ -926,6 +932,91 @@ mod tests {
         assert_eq!(
             sources_schema["x-kubernetes-list-map-keys"][0],
             "providerClass"
+        );
+    }
+
+    // ----------------------------------------------------------------------
+    // firstBootSealing (ADR-0088)
+    // ----------------------------------------------------------------------
+
+    #[test]
+    fn vmimage_spec_omits_first_boot_sealing_when_absent() {
+        let json = serde_json::to_value(minimal_vmimage_spec()).unwrap();
+        assert!(!json.as_object().unwrap().contains_key("firstBootSealing"));
+    }
+
+    #[test]
+    fn vmimage_spec_accepts_an_empty_first_boot_sealing_block() {
+        let mut json = serde_json::to_value(minimal_vmimage_spec()).unwrap();
+        json["firstBootSealing"] = serde_json::json!({});
+        let spec: VMImageSpec = serde_json::from_value(json).unwrap();
+        assert_eq!(spec.first_boot_sealing, Some(FirstBootSealing::default()));
+    }
+
+    #[test]
+    fn vmimage_status_first_boot_sealing_provenance_values() {
+        for (v, expected) in [
+            (FirstBootSealingProvenance::Built, "Built"),
+            (FirstBootSealingProvenance::Asserted, "Asserted"),
+        ] {
+            assert_eq!(serde_json::to_value(v).unwrap(), expected);
+        }
+        let status = VMImageStatus {
+            first_boot_sealing: Some(FirstBootSealingProvenance::Asserted),
+            ..Default::default()
+        };
+        assert_eq!(
+            serde_json::to_value(&status).unwrap()["firstBootSealing"],
+            "Asserted"
+        );
+        let empty = serde_json::to_value(VMImageStatus::default()).unwrap();
+        assert!(!empty.as_object().unwrap().contains_key("firstBootSealing"));
+    }
+
+    /// Only the builder knows it appended the policy layer, so the flag lives
+    /// on its own status block, and is omitted rather than written as `false`
+    /// on every image that never asked for sealing.
+    #[test]
+    fn build_artifact_first_boot_sealing_layer_is_omitted_unless_true() {
+        let mut ba = BuildArtifactStatus {
+            kind: BuildArtifactKind::Iso,
+            phase: BuildArtifactPhase::Ready,
+            os_artifact_ref: "img-build".to_string(),
+            os_artifact_uid: None,
+            pvc_ref: None,
+            file: None,
+            reason: None,
+            message: None,
+            checksum: None,
+            oci_artifact: None,
+            first_boot_sealing_layer: false,
+        };
+        let json = serde_json::to_value(&ba).unwrap();
+        assert!(
+            !json
+                .as_object()
+                .unwrap()
+                .contains_key("firstBootSealingLayer")
+        );
+        ba.first_boot_sealing_layer = true;
+        assert_eq!(
+            serde_json::to_value(&ba).unwrap()["firstBootSealingLayer"],
+            true
+        );
+        let back: BuildArtifactStatus = serde_json::from_value(
+            serde_json::json!({"kind":"iso","phase":"Ready","osArtifactRef":"x"}),
+        )
+        .unwrap();
+        assert!(!back.first_boot_sealing_layer);
+    }
+
+    #[test]
+    fn vmimage_crd_schema_carries_first_boot_sealing() {
+        let crd = serde_json::to_value(VMImage::crd()).unwrap();
+        let spec = &crd["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"]["spec"]["properties"];
+        assert_eq!(
+            spec["firstBootSealing"]["properties"]["partitions"]["minItems"],
+            1
         );
     }
 }

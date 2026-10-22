@@ -162,6 +162,7 @@ fn spec(domain_name: &str, pool: &str, source_volume: &str) -> LibvirtMachineSpe
         }],
         user_data: Some(AGENT_SEED.to_string()),
         desired_power_state: PowerState::PoweredOn,
+        first_boot_sealing: None,
     }
 }
 

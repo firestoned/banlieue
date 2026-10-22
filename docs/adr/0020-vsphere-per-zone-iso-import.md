@@ -4,6 +4,9 @@
 - **Date:** 2026-08-08
 - **Amended:** 2026-08-20 (Decision #5, per-zone template
   folder isolation).
+- **Amended:** 2026-10-23 (a re-import checks for VMs holding the ISO before
+  destroying anything, and a failed import Job is retried; see *Amendment
+  2026-10-23*)
 - **Related:** Extends [ADR-0010](0010-vmimage-build-pipeline-imagebuilder.md)
   (the `banlieue-imagebuilder` build/import split), [ADR-0015](0015-vmimage-status-merge-strategy.md)
   (per-provider status ownership), and [ADR-0016](0016-imagebuild-namespace-isolation.md)
@@ -193,6 +196,54 @@ copy alongside it. Clean those up manually in vCenter.
 - **Every zone gets its own template folder, unconditionally** (Decision
   #5). Fixes a real cross-zone collision when failure domains share a
   datacenter, at the cost of slightly deeper vCenter inventory nesting.
+
+## Amendment 2026-10-23: replacing an ISO a VM holds, and retrying a failed import
+
+**Context.** Found live on 2026-10-22. A `forceUpload` + `forceCreate`
+re-import of a `Deferred` image ran in three zones. In one zone the Job
+destroyed the existing template, then tried to delete the old ISO through the
+datastore file API and got `500 Internal Server Error`: an installed VM still
+had that ISO connected to its CD-ROM (ADR-0044's vSphere gap, closed by its
+2026-10-23 amendment). Three defects compounded it:
+
+1. the destroy came first, so the failure left the zone with **no template**;
+2. a bare `500` named neither the cause nor the VM;
+3. the Job hit its `backoffLimit`, and the provider adopts a failed Job as-is,
+   so nothing retried until someone deleted it or set
+   `banlieue.io/force-reimport`.
+
+**Decision.**
+
+1. **Pre-flight before any destructive step.** With `forceUpload`, the Job
+   resolves the target datastore first, then lists the VMs on it
+   (`Datastore.vm`, which includes VMs that only have an ISO mounted from it,
+   verified live) and refuses when any has a **connected** CD-ROM backed by
+   the target ISO. The error names those VMs. Nothing is destroyed and nothing
+   is deleted. A disconnected CD-ROM, or a powered-off VM, holds no lock and
+   does not count. The order of the destroy relative to the reuse probe
+   (Decision #5's comment in `import.rs`) is otherwise unchanged.
+2. **The delete's failure says what it usually means.** A non-success answer
+   to the ISO delete reports the status *and* that a VM probably still has the
+   file open. That covers a VM the pre-flight could not see, such as one that
+   connected the ISO in between.
+3. **A failed import Job is retried** once its failure is older than
+   `IMPORT_RETRY_AFTER_SECS` (10 minutes): the provider deletes it, and the
+   next pass recreates it with the same arguments. The zone reports
+   `Importing` with a "retrying" message while that happens. The interval
+   bounds the cost of a failure that keeps recurring (each retry of a
+   `forceCreate` import that gets past the pre-flight rebuilds the template).
+   `banlieue.io/force-reimport` still retries immediately.
+
+**Consequences.**
+
+- A VM holding the ISO now costs a clear, non-destructive failure that heals
+  itself once the VM lets go, instead of a zone with no template.
+- A permanently broken import retries every 10 minutes forever, visibly
+  (`ImportFailed`, then `Importing`, in `perProvider[].zones[]`). That is the
+  same "keep converging" stance as every other reconciler here; the Job logs
+  carry the reason.
+- The pre-flight costs one `Datastore.vm` read plus one `config` read per VM on
+  that datastore, once per forced re-import.
 
 ## Follow-ups
 

@@ -33,7 +33,7 @@ mod tests {
 
     #[test]
     fn tpm_enabled_with_immediate_image_is_rejected() {
-        let mismatch = image_class_mismatch(true, InstallMode::Immediate);
+        let mismatch = image_class_mismatch(true, InstallMode::Immediate, false, false);
         assert!(
             mismatch.is_some(),
             "tpmEnabled + Immediate attaches a vTPM that nothing ever seals to"
@@ -45,18 +45,24 @@ mod tests {
         // The condition message is the whole diagnosis: an operator reading
         // `kubectl describe` must be able to fix this without reading code,
         // so it has to name the field that is wrong AND what to set instead.
-        let message = image_class_mismatch(true, InstallMode::Immediate)
+        let refusal = image_class_mismatch(true, InstallMode::Immediate, false, false)
             .expect("Immediate + tpmEnabled must be rejected");
+        assert_eq!(refusal.reason, REASON_IMAGE_CLASS_MISMATCH);
+        let message = refusal.message;
         assert!(message.contains("tpmEnabled"), "names the VMClass field");
         assert!(message.contains("installMode"), "names the VMImage field");
         assert!(message.contains("Deferred"), "names the remedy");
+        assert!(
+            message.contains("firstBootSealing"),
+            "names the other remedy (ADR-0088)"
+        );
     }
 
     #[test]
     fn tpm_enabled_with_deferred_image_is_accepted() {
         // The sanctioned pairing: each clone installs itself, at its own
         // first boot, with its own already-attached vTPM present.
-        assert!(image_class_mismatch(true, InstallMode::Deferred).is_none());
+        assert!(image_class_mismatch(true, InstallMode::Deferred, false, false).is_none());
     }
 
     #[test]
@@ -65,7 +71,7 @@ mod tests {
         // mechanics to Deferred for a build that is not Kairos-driven.
         // banlieue cannot verify what such an image does and must not
         // reject it, or non-Kairos encrypted images have no path at all.
-        assert!(image_class_mismatch(true, InstallMode::Manual).is_none());
+        assert!(image_class_mismatch(true, InstallMode::Manual, false, false).is_none());
     }
 
     #[test]
@@ -76,7 +82,83 @@ mod tests {
         // `InstallMode::default()`, so that default must stay `Immediate` or
         // the fail-closed behaviour silently inverts (ADR-0048 Decision 6).
         assert_eq!(InstallMode::default(), InstallMode::Immediate);
-        assert!(image_class_mismatch(true, InstallMode::default()).is_some());
+        assert!(image_class_mismatch(true, InstallMode::default(), false, false).is_some());
+    }
+
+    // ---- image_class_mismatch, first-boot sealing (ADR-0088) -------------
+    //
+    // ADR-0088 Decision 3's table, plus the Decision 7 flag: the field is
+    // inert unless the controller was started with it on, and then the only
+    // newly allowed pairing needs the new field.
+
+    #[test]
+    fn tpm_enabled_immediate_image_with_first_boot_sealing_is_accepted_when_enabled() {
+        // Each clone seals COS_PERSISTENT to its own vTPM on first boot.
+        assert!(image_class_mismatch(true, InstallMode::Immediate, true, true).is_none());
+    }
+
+    #[test]
+    fn first_boot_sealing_without_tpm_enabled_is_rejected() {
+        // Every boot of every clone would halt fail closed: no TPM to seal to.
+        for mode in [
+            InstallMode::Immediate,
+            InstallMode::Deferred,
+            InstallMode::Manual,
+        ] {
+            let refusal = image_class_mismatch(false, mode, true, true)
+                .unwrap_or_else(|| panic!("sealing without a vTPM must be refused for {mode:?}"));
+            assert_eq!(refusal.reason, REASON_IMAGE_CLASS_MISMATCH);
+            assert!(refusal.message.contains("tpmEnabled"));
+            assert!(refusal.message.contains("firstBootSealing"));
+        }
+    }
+
+    #[test]
+    fn deferred_and_manual_with_first_boot_sealing_are_accepted_when_enabled() {
+        // ADR-0088 row three: Deferred/Manual are unchanged by the field;
+        // a Deferred install seals at install time and the policy is a no-op.
+        for mode in [InstallMode::Deferred, InstallMode::Manual] {
+            assert!(image_class_mismatch(true, mode, true, true).is_none());
+        }
+    }
+
+    #[test]
+    fn first_boot_sealing_declared_while_disabled_is_refused_with_its_own_reason() {
+        // Decision 7, as amended: with the flag off a declared field is
+        // neither honoured nor ignored. The VM is refused, so nothing boots
+        // expecting a policy banlieue never agreed to, and the reason says
+        // which switch is off.
+        for tpm in [true, false] {
+            for mode in [
+                InstallMode::Immediate,
+                InstallMode::Deferred,
+                InstallMode::Manual,
+            ] {
+                let refusal = image_class_mismatch(tpm, mode, true, false)
+                    .unwrap_or_else(|| panic!("flag off must refuse tpm={tpm} {mode:?}"));
+                assert_eq!(refusal.reason, REASON_FIRST_BOOT_SEALING_DISABLED);
+                assert!(refusal.message.contains("--enable-first-boot-sealing"));
+            }
+        }
+    }
+
+    #[test]
+    fn the_flag_alone_changes_nothing_for_images_that_do_not_declare_sealing() {
+        // "Behaviour changes on upgrade are confined to opted-in VMs":
+        // turning the flag on must not change any undeclared pairing.
+        for tpm in [true, false] {
+            for mode in [
+                InstallMode::Immediate,
+                InstallMode::Deferred,
+                InstallMode::Manual,
+            ] {
+                assert_eq!(
+                    image_class_mismatch(tpm, mode, false, true),
+                    image_class_mismatch(tpm, mode, false, false),
+                    "tpm={tpm} {mode:?}"
+                );
+            }
+        }
     }
 
     // ---- spec.paused (in-band pause) ------------------------------------
@@ -197,7 +279,7 @@ mod tests {
             InstallMode::Manual,
         ] {
             assert!(
-                image_class_mismatch(false, mode).is_none(),
+                image_class_mismatch(false, mode, false, false).is_none(),
                 "tpmEnabled: false must accept {mode:?}"
             );
         }

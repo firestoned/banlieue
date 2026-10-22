@@ -160,6 +160,14 @@ pub struct LibvirtMachineSpec {
     /// `spec.desiredPowerState` (ADR-0024).
     #[serde(default)]
     pub desired_power_state: PowerState,
+
+    /// First-boot sealing the guest must report before `GuestReady`
+    /// (ADR-0088), copied by `banlieue-controller` from the parent
+    /// `VirtualMachine`'s `VMImage.spec.firstBootSealing` when the class is
+    /// `tpmEnabled`. `None` for every other machine, which keeps today's
+    /// `GuestReady` meaning unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_boot_sealing: Option<FirstBootSealing>,
 }
 
 /// Where this machine's OS disk comes from — the libvirt expression of
@@ -370,6 +378,15 @@ pub struct LibvirtMachineStatus {
     /// contract.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub guest_installed: Option<bool>,
+
+    /// Partitions the guest has reported sealed, as LUKS containers, on a
+    /// first-boot sealing machine (ADR-0088): from ``/run/banlieue/sealed`, read with the guest agent`. **Sticky**:
+    /// the report is re-asserted every boot but lives in volatile state, and a
+    /// powered-off machine has not become unsealed. Empty until reported, and
+    /// on every machine without `spec.firstBootSealing`. Guest-supplied, so it
+    /// is only ever used to *withhold* `GuestReady`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sealed_partitions: Vec<String>,
 
     /// Whether the install medium has been ejected (ADR-0044).
     ///

@@ -234,6 +234,7 @@ async fn a_vmimage_is_built_once_and_imported_into_every_declared_pool() {
         template: None,
         iso_overlay: None,
         trusted_boot: None,
+        first_boot_sealing: None,
     };
     images
         .create(

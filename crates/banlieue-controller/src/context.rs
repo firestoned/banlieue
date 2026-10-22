@@ -24,6 +24,10 @@ pub struct Context {
     /// controller (e.g. tests driving `reconcile` directly), where the check
     /// falls back to a LIST.
     pub vm_store: Option<Store<VirtualMachine>>,
+    /// Whether `VMImage.spec.firstBootSealing` is honoured (ADR-0088
+    /// Decision 7), from `--enable-first-boot-sealing`. Off by default: a
+    /// `VirtualMachine` whose image declares it is then refused.
+    pub first_boot_sealing: bool,
 }
 
 impl Context {
@@ -33,6 +37,7 @@ impl Context {
             client,
             namespace,
             vm_store: None,
+            first_boot_sealing: false,
         }
     }
 
@@ -40,6 +45,14 @@ impl Context {
     #[must_use]
     pub fn with_vm_store(mut self, store: Store<VirtualMachine>) -> Self {
         self.vm_store = Some(store);
+        self
+    }
+
+    /// Honour `VMImage.spec.firstBootSealing` (ADR-0088), from
+    /// `--enable-first-boot-sealing`.
+    #[must_use]
+    pub fn with_first_boot_sealing(mut self, enabled: bool) -> Self {
+        self.first_boot_sealing = enabled;
         self
     }
 }

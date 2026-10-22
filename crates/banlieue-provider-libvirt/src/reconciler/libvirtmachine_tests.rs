@@ -58,6 +58,7 @@ mod tests {
             }],
             user_data: None,
             desired_power_state: PowerState::PoweredOn,
+            first_boot_sealing: None,
         }
     }
 
@@ -1013,6 +1014,10 @@ mod tests {
             // Neutral on ADR-0045 too: the shared spec has `tpm_enabled:
             // false`, so there is no certificate to wait for.
             ek: EkProbe::NotPublished,
+            // Neutral on ADR-0088: no sealing report, and the shared spec
+            // declares no firstBootSealing.
+            sealed: Vec::new(),
+            now: k8s_openapi::jiff::Timestamp::now(),
         }
     }
 
@@ -1287,5 +1292,100 @@ mod tests {
         let gr = find_condition(&st, condition_types::GUEST_READY).expect("GuestReady published");
         assert_eq!(gr.status, condition_status::FALSE);
         assert_eq!(gr.reason, "TpmEndorsementMismatch");
+    }
+
+    // ---- first-boot sealing (ADR-0088 Decision 5) -----------------------
+
+    fn sealing_machine() -> LibvirtMachine {
+        let mut m = machine_cr();
+        m.spec.tpm_enabled = true;
+        m.spec.first_boot_sealing = Some(banlieue_api::common::FirstBootSealing::default());
+        m.status = Some(LibvirtMachineStatus {
+            tpm_endorsement_certificates: vec![EK_PEM.to_string()],
+            conditions: vec![k8s_openapi::apimachinery::pkg::apis::meta::v1::Condition {
+                type_: "Ready".to_string(),
+                status: "True".to_string(),
+                reason: "DomainRunning".to_string(),
+                message: String::new(),
+                observed_generation: Some(1),
+                last_transition_time: k8s_openapi::apimachinery::pkg::apis::meta::v1::Time(
+                    k8s_openapi::jiff::Timestamp::from_second(0).unwrap(),
+                ),
+            }],
+            ..Default::default()
+        });
+        m
+    }
+
+    fn observed_at(guest: GuestProbe, sealed: &[&str], now_epoch: i64) -> Observed {
+        let mut o = observed_running();
+        o.guest = guest;
+        o.sealed = sealed.iter().map(|p| (*p).to_string()).collect();
+        o.now = k8s_openapi::jiff::Timestamp::from_second(now_epoch).unwrap();
+        o
+    }
+
+    #[test]
+    fn a_sealed_installed_libvirt_guest_is_guest_ready() {
+        let st = build_status(
+            &sealing_machine(),
+            &observed_at(GuestProbe::Installed, &["COS_PERSISTENT"], 30),
+            2,
+        );
+        assert_eq!(find_condition(&st, "GuestReady").unwrap().status, "True");
+        assert_eq!(st.sealed_partitions, vec!["COS_PERSISTENT".to_string()]);
+    }
+
+    #[test]
+    fn an_unsealed_installed_libvirt_guest_is_unverified() {
+        let st = build_status(
+            &sealing_machine(),
+            &observed_at(GuestProbe::Installed, &[], 30),
+            2,
+        );
+        let c = find_condition(&st, "GuestReady").unwrap();
+        assert_eq!(c.status, "False");
+        assert_eq!(
+            c.reason,
+            banlieue_provider_sdk::sealing::REASON_FIRST_BOOT_SEALING_UNVERIFIED
+        );
+    }
+
+    /// A clone whose sealing failed halts in its initramfs, where no agent
+    /// runs: unreachable is all the probe can say, and the deadline must
+    /// still publish the failure.
+    #[test]
+    fn a_halted_libvirt_clone_times_out_even_with_no_agent() {
+        let st = build_status(
+            &sealing_machine(),
+            &observed_at(GuestProbe::AgentUnreachable, &[], 601),
+            2,
+        );
+        let c = find_condition(&st, "GuestReady").expect("published on timeout");
+        assert_eq!(c.status, "False");
+        assert_eq!(
+            c.reason,
+            banlieue_provider_sdk::sealing::REASON_FIRST_BOOT_SEALING_TIMEOUT
+        );
+    }
+
+    #[test]
+    fn before_the_deadline_an_unreachable_agent_still_publishes_nothing() {
+        let st = build_status(
+            &sealing_machine(),
+            &observed_at(GuestProbe::AgentUnreachable, &[], 30),
+            2,
+        );
+        assert!(find_condition(&st, "GuestReady").is_none());
+    }
+
+    #[test]
+    fn a_libvirt_sealing_report_is_sticky() {
+        let mut m = sealing_machine();
+        m.status.as_mut().unwrap().sealed_partitions = vec!["COS_PERSISTENT".to_string()];
+        m.status.as_mut().unwrap().guest_installed = Some(true);
+        let st = build_status(&m, &observed_at(GuestProbe::Installed, &[], 10_000), 2);
+        assert_eq!(st.sealed_partitions, vec!["COS_PERSISTENT".to_string()]);
+        assert_eq!(find_condition(&st, "GuestReady").unwrap().status, "True");
     }
 }

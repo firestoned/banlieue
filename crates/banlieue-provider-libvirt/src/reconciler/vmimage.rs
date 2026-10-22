@@ -635,6 +635,7 @@ async fn patch_status(
         // its own perProvider entry and says nothing about the aggregate.
         conditions: Vec::new(),
         observed_generation: Some(generation),
+        first_boot_sealing: None,
     };
     let patch = json!({
         "apiVersion": VMImage::api_version(&()).to_string(),

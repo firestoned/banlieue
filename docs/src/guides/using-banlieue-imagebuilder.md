@@ -435,6 +435,37 @@ With no repository configured, a `cloud-hypervisor` `Url` source reports
 registry. The host side is in the
 [Cloud Hypervisor host guide](cloud-hypervisor-host.md#images-from-a-registry-url-sources).
 
+## First-boot sealing layer (ADR-0088)
+
+When a `VMImage` declares `spec.firstBootSealing` (and the controller runs
+with `--enable-first-boot-sealing`), the builder appends **its own**
+cloud-config layer after every `cloudConfigs` entry, so no operator layer can
+override it. The merged Secret is created even when `cloudConfigs` is empty.
+
+| Artifact | What the layer adds |
+| --- | --- |
+| `iso` (vSphere) | An `after-install-chroot` step that writes `/oem/91_banlieue_first_boot_sealing.yaml` (`kcrypt.encrypt_on_boot: true` and `install.encrypted_partitions`) into the installed disk's `COS_OEM`. The install configuration itself never asks for encryption: the template installs once, with no vTPM. |
+| `cloudImage` (libvirt) | The same two keys at the top level, since no installer runs and the image's cloud-config is what lands in `COS_OEM`. |
+| both | A `boot` step, guarded to the installed system, that writes the listed partitions found as LUKS containers to `guestinfo.banlieue.sealed` and `/run/banlieue/sealed`. The provider reads it for `GuestReady`. |
+
+`status.buildArtifact.firstBootSealingLayer: true` records that the layer is
+in the build, and `status.firstBootSealing` becomes `Built`.
+
+The build is refused (`phase: Failed`) rather than produced when:
+
+- an operator layer of an `immediate` image sets
+  `install.encrypted_partitions` (`FirstBootSealingConflict`): drop it from
+  the template cloud-config;
+- a listed partition is not a plain label, or is `COS_OEM`, `COS_STATE`,
+  `COS_RECOVERY` or `COS_GRUB` (`FirstBootSealingInvalid`).
+
+The builder cannot read the source image's Kairos version, so it cannot
+refuse an image too old to seal. Such a clone boots unsealed and is caught
+by `GuestReady=False` (`FirstBootSealingUnverified` or
+`FirstBootSealingTimeout`), never reported healthy. Changing
+`firstBootSealing` on an existing `VMImage` does not rebuild an artifact
+that already exists; recreate the `VMImage`.
+
 ## Integrity and lifecycle (security review 2026-07-31)
 
 Two guarantees hold over everything above:

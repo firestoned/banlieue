@@ -142,6 +142,7 @@ fn spec(domain_name: &str, pool: &str, source_volume: &str) -> LibvirtMachineSpe
         // A marker the guest can only have got from the seed.
         user_data: Some("#cloud-config\n".to_string()),
         desired_power_state: PowerState::PoweredOn,
+        first_boot_sealing: None,
     }
 }
 

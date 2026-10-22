@@ -217,6 +217,7 @@ variable, so a cloud-init payload needs no file of its own
 | `--vmm-url`, `--ch-remote-url`, `--firmware-url` | the GitHub release asset | Where each file is downloaded from, for a mirror. HTTPS only. |
 | `--vmm-sha256`, `--ch-remote-sha256`, `--firmware-sha256` | the pin, or GitHub's digest | The sha256 of a file that is not the pinned release. |
 | `--artifacts-dir` | none (download) | Take `cloud-hypervisor-static`, `ch-remote-static` and `CLOUDHV.fd` from here, verified the same way. |
+| `--guest-cpus`, `--guest-cpu-weight`, `--guest-memory-max`, `--guest-tasks-max` | none (unbounded) | The budget all guests share on a host that runs other workloads: `banlieue-guests.slice` ([details](cloud-hypervisor-host-systemd.md#the-guests-slice)). |
 | `--allow-virtualized-host` | off | Lab use only: run on a host that is itself a VM. |
 
 By default the VMM is the release pinned in the binary, the one its client

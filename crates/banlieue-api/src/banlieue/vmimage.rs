@@ -7,7 +7,9 @@
 //! readiness in status by polling each registered Provider and (where
 //! supported) importing the image on demand.
 
-use crate::common::{CloudConfigSource, DiskProvisioning, Firmware, LocalObjectReference};
+use crate::common::{
+    CloudConfigSource, DiskProvisioning, Firmware, FirstBootSealing, LocalObjectReference,
+};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Condition;
 use kube::CustomResource;
 use schemars::JsonSchema;
@@ -127,6 +129,24 @@ pub struct VMImageSpec {
     /// builds and non-`Url` sources.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trusted_boot: Option<TrustedBootSource>,
+
+    /// Declares that every clone of this image seals the listed partitions
+    /// to its own vTPM on its first boot (ADR-0088), which is what lets a
+    /// `VMClass` with `tpmEnabled: true` use an `Immediate` (pre-installed)
+    /// image. Without it that pairing is refused, because the template was
+    /// installed before any per-VM vTPM existed (ADR-0048).
+    ///
+    /// For a `Url` source `banlieue-imagebuilder` writes the sealing policy
+    /// into the built image itself (`status.firstBootSealing: Built`); for a
+    /// `Template` or `BackingFile` source the image must already carry it, and
+    /// this field is an operator assertion (`Asserted`). Either way every
+    /// clone's `GuestReady` waits for the guest to report each listed
+    /// partition sealed. Gated on `banlieue-controller
+    /// --enable-first-boot-sealing`; with the flag off a `VirtualMachine` of
+    /// this image is refused (`FirstBootSealingDisabled`). Not combinable with
+    /// `trustedBoot`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_boot_sealing: Option<FirstBootSealing>,
 }
 
 /// Requests a Trusted Boot (UKI) artifact for a `VMImage`'s `Url` source.
@@ -582,6 +602,26 @@ pub struct VMImageStatus {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub observed_generation: Option<i64>,
+
+    /// How banlieue knows a clone of this image will seal itself on first
+    /// boot (ADR-0088 Decision 2), when `spec.firstBootSealing` is set:
+    /// `Built` once `banlieue-imagebuilder` wrote the policy into a `Url`
+    /// build, `Asserted` for an image with no `Url` source. Absent while a
+    /// `Url` build has not produced it yet, and when nothing is declared.
+    /// Written only by `banlieue-controller`. Informational: what gates
+    /// `GuestReady` is the guest's own sealing report.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_boot_sealing: Option<FirstBootSealingProvenance>,
+}
+
+/// How banlieue knows an image seals itself on first boot (ADR-0088).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub enum FirstBootSealingProvenance {
+    /// banlieue wrote the policy into the image it built.
+    Built,
+    /// The image was not built by banlieue; the operator asserts it carries
+    /// the policy, and the guest's sealing report is what checks the claim.
+    Asserted,
 }
 
 /// Progress of the shared image build driven by `banlieue-imagebuilder` from a
@@ -653,6 +693,12 @@ pub struct BuildArtifactStatus {
     /// registry.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub oci_artifact: Option<OciArtifactStatus>,
+
+    /// Whether this build carries the banlieue-generated first-boot sealing
+    /// layer (ADR-0088): set when `spec.firstBootSealing` was honoured by the
+    /// merged cloud-config this artifact was built from. Omitted when false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub first_boot_sealing_layer: bool,
 }
 
 /// Progress of pushing the build artifact to an OCI registry (ADR-0064

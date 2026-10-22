@@ -16,7 +16,9 @@ use banlieue_api::banlieue::{
     ANNOTATION_CREATED_BY, DiskSpec, HardwareOverride, ImagePerProviderStatus, Provider,
     SubnetShape, VMClass, VMImage, VirtualMachine,
 };
-use banlieue_api::common::{IpamShape, IpamSpec, MachineAddress, StaticIpamConfig};
+use banlieue_api::common::{
+    FirstBootSealing, IpamShape, IpamSpec, MachineAddress, StaticIpamConfig,
+};
 use banlieue_api::infrastructure::{
     ChBootSource, ChBootSourceKind, ChCpuSpec, ChMemorySpec, ChNicSpec, CloudHypervisorMachine,
     CloudHypervisorMachineSpec, LibvirtBootSource, LibvirtBootSourceKind, LibvirtDiskBus,
@@ -291,6 +293,7 @@ pub fn build_vsphere_machine(
         // ADR-0089: present only when the optional created-by
         // MutatingAdmissionPolicy stamped the annotation on this VM.
         created_by: vm.annotations().get(ANNOTATION_CREATED_BY).cloned(),
+        first_boot_sealing: first_boot_sealing_for(class, image),
     };
 
     Ok(VSphereMachine {
@@ -310,6 +313,18 @@ pub fn build_vsphere_machine(
 }
 
 /// Construct a controller-owning [`OwnerReference`] back to the parent VM.
+/// The first-boot sealing a machine's guest must report before `GuestReady`
+/// (ADR-0088): the image's declaration, on a vTPM machine only. The pairing
+/// check has already refused a declaration without a vTPM, so the `tpmEnabled`
+/// test here is belt and braces: a machine with nothing to seal to must never
+/// wait for a report that cannot come.
+fn first_boot_sealing_for(class: &VMClass, image: &VMImage) -> Option<FirstBootSealing> {
+    if !class.spec.tpm_enabled {
+        return None;
+    }
+    image.spec.first_boot_sealing.clone()
+}
+
 fn owner_reference_for(
     vm: &VirtualMachine,
 ) -> k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference {
@@ -541,6 +556,7 @@ pub fn build_libvirt_machine(
         network: nics,
         user_data: rendered_user_data.map(str::to_string),
         desired_power_state: vm.spec.desired_power_state.clone(),
+        first_boot_sealing: first_boot_sealing_for(class, image),
     };
 
     Ok(LibvirtMachine {

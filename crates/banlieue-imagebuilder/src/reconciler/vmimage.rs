@@ -28,7 +28,8 @@ use banlieue_api::banlieue::{
     TrustedBootSource, VMImage, VMImageStatus,
 };
 use banlieue_api::common::{
-    CloudConfigSource, DEFAULT_CLOUD_CONFIG_KEY, KeySelector, LocalObjectReference,
+    CloudConfigSource, DEFAULT_CLOUD_CONFIG_KEY, FirstBootSealing, KeySelector,
+    LocalObjectReference,
 };
 use banlieue_provider_sdk::reconciler::{requeue_default, requeue_long, requeue_on_error};
 use banlieue_provider_sdk::scheduling::BuildScheduling;
@@ -48,6 +49,7 @@ use crate::cloud_config_merge::merge_cloud_configs;
 
 use crate::context::Context;
 use crate::error::{Error, Result};
+use crate::first_boot_sealing::{SealingLayerError, sealing_layer};
 use crate::importer_image::ImporterImage;
 use crate::reconciler::push;
 
@@ -747,6 +749,84 @@ pub fn compute_build_artifact_status(
         message: view.message.clone(),
         checksum: checksum.map(str::to_string),
         oci_artifact: None,
+        first_boot_sealing_layer: false,
+    }
+}
+
+/// What an image's first-boot sealing needs from its build (ADR-0088).
+#[derive(Debug, Clone, Copy)]
+pub struct SealingRequest<'a> {
+    /// The image's `spec.firstBootSealing`.
+    pub sealing: &'a FirstBootSealing,
+    /// The artifact this build produces.
+    pub kind: &'a BuildArtifactKind,
+    /// The image's install mode.
+    pub install_mode: InstallMode,
+}
+
+/// The merged cloud-config of a build, or why first-boot sealing refused it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MergedCloudConfig {
+    /// The YAML to put in the merged Secret, and whether it carries
+    /// banlieue's first-boot sealing layer.
+    Ready {
+        /// Merged cloud-config, `#cloud-config` header included.
+        yaml: String,
+        /// True when the ADR-0088 layer was appended.
+        sealing_layer: bool,
+    },
+    /// `spec.firstBootSealing` cannot be honoured; the build is refused.
+    SealingRefused(SealingLayerError),
+}
+
+/// Merge the operator layers (ADR-0037), then, when `sealing` is requested,
+/// banlieue's first-boot sealing layer **last** (ADR-0088). With no request
+/// the result is exactly the operator merge.
+///
+/// # Errors
+/// [`Error::CloudConfigMerge`] when the operator layers do not merge.
+pub fn merge_with_sealing(
+    operator_docs: &[&str],
+    sealing: Option<SealingRequest<'_>>,
+) -> Result<MergedCloudConfig> {
+    let operator = merge_cloud_configs(operator_docs)?;
+    let Some(req) = sealing else {
+        return Ok(MergedCloudConfig::Ready {
+            yaml: operator,
+            sealing_layer: false,
+        });
+    };
+    let layer = match sealing_layer(req.sealing, req.kind, req.install_mode, &operator) {
+        Ok(layer) => layer,
+        Err(e) => return Ok(MergedCloudConfig::SealingRefused(e)),
+    };
+    Ok(MergedCloudConfig::Ready {
+        yaml: merge_cloud_configs(&[&operator, &layer])?,
+        sealing_layer: true,
+    })
+}
+
+/// `status.buildArtifact` for a build refused before any `OSArtifact`
+/// exists because first-boot sealing cannot be honoured (ADR-0088).
+#[must_use]
+pub fn sealing_refused_status(
+    os_artifact_name: &str,
+    kind: BuildArtifactKind,
+    checksum: Option<&str>,
+    err: &SealingLayerError,
+) -> BuildArtifactStatus {
+    BuildArtifactStatus {
+        kind,
+        reason: Some(err.reason().to_string()),
+        phase: BuildArtifactPhase::Failed,
+        os_artifact_ref: os_artifact_name.to_string(),
+        os_artifact_uid: None,
+        pvc_ref: None,
+        file: None,
+        message: Some(err.to_string()),
+        checksum: checksum.map(str::to_string),
+        oci_artifact: None,
+        first_boot_sealing_layer: false,
     }
 }
 
@@ -767,7 +847,8 @@ async fn merge_and_apply_cloud_configs(
     vmimage_name: &str,
     vmimage_uid: &str,
     cloud_configs: &[CloudConfigSource],
-) -> Result<CloudConfigSource> {
+    sealing: Option<SealingRequest<'_>>,
+) -> Result<CloudConfigOutcome> {
     let secrets_api: Api<Secret> = Api::namespaced(ctx.client.clone(), &ctx.build_namespace);
 
     // 1. Fetch each referenced Secret and extract the cloud-config key.
@@ -793,9 +874,15 @@ async fn merge_and_apply_cloud_configs(
         yaml_docs.push(yaml_str);
     }
 
-    // 2. Merge.
+    // 2. Merge, with banlieue's first-boot sealing layer last (ADR-0088).
     let doc_refs: Vec<&str> = yaml_docs.iter().map(String::as_str).collect();
-    let merged_yaml = merge_cloud_configs(&doc_refs)?;
+    let (merged_yaml, sealing_layer) = match merge_with_sealing(&doc_refs, sealing)? {
+        MergedCloudConfig::Ready {
+            yaml,
+            sealing_layer,
+        } => (yaml, sealing_layer),
+        MergedCloudConfig::SealingRefused(e) => return Ok(CloudConfigOutcome::SealingRefused(e)),
+    };
 
     // 3. SSA-apply the merged Secret.
     let merged_name = merged_cloud_config_secret_name(vmimage_name);
@@ -827,16 +914,31 @@ async fn merge_and_apply_cloud_configs(
     info!(
         secret = %merged_name,
         sources = cloud_configs.len(),
+        sealing_layer,
         "SSA-applied merged cloud-config Secret"
     );
 
     // 4. Return a CloudConfigSource pointing at the merged Secret.
-    Ok(CloudConfigSource {
-        secret_ref: Some(KeySelector {
-            name: merged_name,
-            key: None, // defaults to DEFAULT_CLOUD_CONFIG_KEY
-        }),
+    Ok(CloudConfigOutcome::Applied {
+        source: CloudConfigSource {
+            secret_ref: Some(KeySelector {
+                name: merged_name,
+                key: None, // defaults to DEFAULT_CLOUD_CONFIG_KEY
+            }),
+        },
+        sealing_layer,
     })
+}
+
+/// Result of [`merge_and_apply_cloud_configs`].
+enum CloudConfigOutcome {
+    /// The merged Secret was applied.
+    Applied {
+        source: CloudConfigSource,
+        sealing_layer: bool,
+    },
+    /// First-boot sealing refused the build; nothing was applied.
+    SealingRefused(SealingLayerError),
 }
 
 /// Top-level reconcile entrypoint.
@@ -916,6 +1018,7 @@ pub async fn reconcile(image: Arc<VMImage>, ctx: Arc<Context>) -> Result<Action>
                 )),
                 checksum: source.checksum.clone(),
                 oci_artifact: None,
+                first_boot_sealing_layer: false,
             };
             patch_vmimage_status(&ctx, &name, build_status).await?;
             return Ok(requeue_default());
@@ -991,10 +1094,41 @@ pub async fn reconcile(image: Arc<VMImage>, ctx: Arc<Context>) -> Result<Action>
     // ADR-0037: if cloud_configs is non-empty, fetch + merge + SSA a merged
     // Secret; pass *that* to the OSArtifact, not the user's original
     // Secrets. If empty, no cloud-config at all.
-    let merged_cc = if !image.spec.cloud_configs.is_empty() {
-        Some(merge_and_apply_cloud_configs(&ctx, &name, &uid, &image.spec.cloud_configs).await?)
+    // ADR-0088: an image that seals on first boot always gets a merged
+    // Secret, since banlieue's own layer is a cloud-config even when the
+    // operator supplied none.
+    let sealing = image
+        .spec
+        .first_boot_sealing
+        .as_ref()
+        .map(|sealing| SealingRequest {
+            sealing,
+            kind: &kind,
+            install_mode,
+        });
+    let (merged_cc, sealing_layer) = if !image.spec.cloud_configs.is_empty() || sealing.is_some() {
+        match merge_and_apply_cloud_configs(&ctx, &name, &uid, &image.spec.cloud_configs, sealing)
+            .await?
+        {
+            CloudConfigOutcome::Applied {
+                source,
+                sealing_layer,
+            } => (Some(source), sealing_layer),
+            CloudConfigOutcome::SealingRefused(err) => {
+                warn!(reason = err.reason(), error = %err, "firstBootSealing refused the build");
+                let build_status = sealing_refused_status(
+                    &os_name,
+                    kind.clone(),
+                    source.checksum.as_deref(),
+                    &err,
+                );
+                patch_vmimage_status(&ctx, &name, build_status).await?;
+                // Nothing changes until the VMImage or a cloud-config does.
+                return Ok(requeue_long());
+            }
+        }
     } else {
-        None
+        (None, false)
     };
 
     let desired = desired_os_artifact(
@@ -1032,6 +1166,7 @@ pub async fn reconcile(image: Arc<VMImage>, ctx: Arc<Context>) -> Result<Action>
         os_artifact_uid,
         image.spec.trusted_boot.is_some(),
     );
+    build_status.first_boot_sealing_layer = sealing_layer;
     // ADR-0064: a host-resident provider cannot mount the PVC, so a Ready
     // artifact it needs goes to the registry too.
     if build_status.phase == BuildArtifactPhase::Ready && push::needs_push(&image.spec.sources) {

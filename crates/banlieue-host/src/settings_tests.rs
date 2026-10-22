@@ -119,4 +119,73 @@ mod tests {
         h.put_file("/sys/class/net/eth0", b"", Kind::Other);
         assert_eq!(default_storage(&h), PathBuf::from("/var/lib/banlieue/ch"));
     }
+
+    // ------------------------------------------------ guest slice (ADR-0105)
+
+    #[test]
+    fn no_budget_flags_means_an_unbounded_slice() {
+        let h = FakeHost::debian();
+        let s = resolve(&args(&[]), &h).unwrap();
+        assert_eq!(s.guest_slice, GuestSlice::default());
+        assert!(s.guest_slice.is_unbounded());
+        assert_eq!(s.guest_slice.limits(), "");
+    }
+
+    #[test]
+    fn the_budget_flags_become_slice_settings_in_a_fixed_order() {
+        let h = FakeHost::debian();
+        let s = resolve(
+            &args(&[
+                "--guest-cpus",
+                "0-15,32-47",
+                "--guest-cpu-weight",
+                "200",
+                "--guest-memory-max",
+                "400G",
+                "--guest-tasks-max",
+                "30000",
+            ]),
+            &h,
+        )
+        .unwrap();
+        assert!(!s.guest_slice.is_unbounded());
+        assert_eq!(
+            s.guest_slice.limits(),
+            "AllowedCPUs=0-15,32-47\nCPUWeight=200\nMemoryMax=400G\nTasksMax=30000\n"
+        );
+    }
+
+    #[test]
+    fn a_percentage_is_a_valid_memory_budget() {
+        let h = FakeHost::debian();
+        let s = resolve(&args(&["--guest-memory-max", "60%"]), &h).unwrap();
+        assert_eq!(s.guest_slice.limits(), "MemoryMax=60%\n");
+    }
+
+    /// A value is rendered into a root-owned unit: nothing that could add a
+    /// directive, and nothing systemd would reject at load time.
+    #[test]
+    fn budget_values_that_could_corrupt_a_unit_are_refused() {
+        let h = FakeHost::debian();
+        for bad in [
+            &["--guest-cpus", "0-3\nExecStart=/bin/sh"][..],
+            &["--guest-cpus", "0-3;1"],
+            &["--guest-cpus", "3-1"],
+            &["--guest-cpus", "a"],
+            &["--guest-cpus", ""],
+            &["--guest-cpu-weight", "0"],
+            &["--guest-cpu-weight", "10001"],
+            &["--guest-memory-max", "10X"],
+            &["--guest-memory-max", "101%"],
+            &["--guest-memory-max", "0"],
+            &["--guest-memory-max", "1G\nUser=root"],
+            &["--guest-memory-max", "infinity"],
+            &["--guest-tasks-max", "0"],
+        ] {
+            match resolve(&args(bad), &h) {
+                Err(Error::Setting { .. }) => {}
+                other => panic!("{bad:?}: {other:?}"),
+            }
+        }
+    }
 }

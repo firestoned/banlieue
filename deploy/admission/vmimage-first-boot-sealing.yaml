@@ -1,0 +1,73 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# VMImage first-boot sealing (ADR-0088). `spec.firstBootSealing` declares that
+# every clone seals the listed partitions to its own vTPM on first boot.
+# This policy validates the declaration on its own, independent of the
+# controller's --enable-first-boot-sealing flag (an admission policy cannot
+# read a controller flag; with the flag off the controller refuses the VMs of
+# such an image instead, ADR-0088 amendment C):
+#
+#   - every partition is a plain Kairos label ([A-Z0-9_]+). The names end up
+#     in a shell script that runs as root on every clone, and the builder
+#     refuses anything else too;
+#   - none is a partition the running system depends on (COS_OEM, COS_STATE,
+#     COS_RECOVERY, COS_GRUB), mirroring Kairos's own refusal;
+#   - firstBootSealing is not combined with trustedBoot: UKI images are
+#     encrypted at install time and first-boot sealing does not exist for
+#     them upstream.
+#
+# The non-empty list is enforced by the CRD schema (minItems: 1).
+# Requires Kubernetes 1.30+ (ValidatingAdmissionPolicy GA).
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: banlieue-vmimage-first-boot-sealing
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: admission
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["banlieue.io"]
+        apiVersions: ["v1alpha1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["vmimages"]
+  # Only images that declare sealing carry anything to check.
+  matchConditions:
+    - name: declares-first-boot-sealing
+      expression: "has(object.spec.firstBootSealing)"
+  validations:
+    - expression: >-
+        !has(object.spec.firstBootSealing.partitions)
+          || object.spec.firstBootSealing.partitions.all(p, p.matches('^[A-Z0-9_]+$'))
+      message: >-
+        spec.firstBootSealing.partitions entries must be Kairos partition labels
+        ([A-Z0-9_]+), for example COS_PERSISTENT.
+      reason: Invalid
+    - expression: >-
+        !has(object.spec.firstBootSealing.partitions)
+          || object.spec.firstBootSealing.partitions.all(p,
+               !(p in ['COS_OEM', 'COS_STATE', 'COS_RECOVERY', 'COS_GRUB']))
+      message: >-
+        spec.firstBootSealing.partitions cannot list COS_OEM, COS_STATE,
+        COS_RECOVERY or COS_GRUB: the running system depends on them, and
+        Kairos refuses to seal them on first boot.
+      reason: Invalid
+    - expression: "!has(object.spec.trustedBoot)"
+      message: >-
+        spec.firstBootSealing cannot be combined with spec.trustedBoot: UKI
+        images are encrypted at install time and have no first-boot sealing.
+      reason: Invalid
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: banlieue-vmimage-first-boot-sealing
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: admission
+spec:
+  policyName: banlieue-vmimage-first-boot-sealing
+  validationActions: ["Deny"]

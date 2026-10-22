@@ -326,6 +326,7 @@ mod tests {
                 network: vec![],
                 user_data: None,
                 desired_power_state: PowerState::PoweredOn,
+                first_boot_sealing: None,
             },
             status: Some(LibvirtMachineStatus {
                 initialization: InitializationStatus {
@@ -352,6 +353,7 @@ mod tests {
                     observed_generation: None,
                 }],
                 observed_generation: None,
+                sealed_partitions: vec![],
             }),
         }
     }

@@ -39,6 +39,7 @@ mod tests {
             message: None,
             checksum: None,
             oci_artifact: oci,
+            first_boot_sealing_layer: false,
         }
     }
 

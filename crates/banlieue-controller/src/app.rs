@@ -107,6 +107,18 @@ pub struct Cli {
     #[arg(long, env = "BANLIEUE_NO_LEADER_ELECT", default_value_t = false)]
     pub no_leader_elect: bool,
 
+    /// Honour `VMImage.spec.firstBootSealing` (ADR-0088): allow a
+    /// `tpmEnabled` class with an `Immediate` image whose clones seal their
+    /// own partitions on first boot. Off by default, and while off a
+    /// `VirtualMachine` whose image declares the field is refused
+    /// (`FirstBootSealingDisabled`) rather than silently treated as plain.
+    #[arg(
+        long,
+        env = "BANLIEUE_ENABLE_FIRST_BOOT_SEALING",
+        default_value_t = false
+    )]
+    pub enable_first_boot_sealing: bool,
+
     /// Namespace the leader-election Lease lives in.
     #[arg(
         long,
@@ -253,7 +265,9 @@ pub async fn run(cli: Cli) -> Result<()> {
     // The duplicate-address check (ADR-0083) reads every VM from this store
     // rather than listing them from the API on each reconcile.
     let ctx = Arc::new(
-        Context::new(client.clone(), cli.namespace.clone()).with_vm_store(vm_store.clone()),
+        Context::new(client.clone(), cli.namespace.clone())
+            .with_vm_store(vm_store.clone())
+            .with_first_boot_sealing(cli.enable_first_boot_sealing),
     );
     let vm_store_for_class = vm_store.clone();
     let vm_store_for_provider = vm_store.clone();

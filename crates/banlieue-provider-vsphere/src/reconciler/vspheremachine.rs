@@ -24,18 +24,23 @@
 use std::sync::Arc;
 
 use banlieue_api::banlieue::Provider;
-use banlieue_api::common::{InitializationStatus, PowerState, condition_types};
+use banlieue_api::common::{FirstBootSealing, InitializationStatus, PowerState, condition_types};
 use banlieue_api::infrastructure::{
     VSphereMachine, VSphereMachineSpec, VSphereMachineStatus, VSphereNicSpec,
 };
 use banlieue_provider_sdk::finalizer::{ensure_finalizer, remove_finalizer};
 use banlieue_provider_sdk::pem::der_to_pem;
 use banlieue_provider_sdk::reconciler::{requeue_default, requeue_long, requeue_on_error};
+use banlieue_provider_sdk::sealing::{
+    REASON_FIRST_BOOT_SEALING_TIMEOUT, REASON_FIRST_BOOT_SEALING_UNVERIFIED, SealingGate,
+    sealing_gate, sticky_sealed_partitions,
+};
 use banlieue_provider_sdk::ssa::FIELD_MANAGER_PROVIDER_VSPHERE;
 use banlieue_provider_sdk::status::{condition_status, set_condition};
 use base64::Engine;
 use chrono::Utc;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Condition;
+use k8s_openapi::jiff::Timestamp;
 use kube::{
     Resource, ResourceExt,
     api::{Api, Patch, PatchParams},
@@ -48,7 +53,7 @@ pub use crate::client::MACHINE_UID_KEY;
 use crate::client::{CloneVmRequest, VSphereClient};
 use crate::context::Context;
 use crate::error::{Error, Result};
-use crate::guest::{self, GuestProbe, PHASE_INSTALLED, PHASE_KEY};
+use crate::guest::{self, GuestProbe, PHASE_INSTALLED, PHASE_KEY, SEALED_KEY};
 use crate::import::resolve_concrete_datastore;
 
 /// Stable `reason` strings on the conditions. Keep these stable — operators
@@ -937,16 +942,143 @@ async fn patch_status_success(
         // a power cycle it hasn't even had its first boot before. The
         // ongoing `refresh_power_state` path is what starts observing it.
         guest_installed: None,
+        // ADR-0044: nothing to eject until the guest has installed.
+        install_media_detached: None,
         tpm_endorsement_certificates,
         conditions,
         observed_generation: Some(generation),
+        sealed_partitions: vec![],
     };
     patch_machine_status(ctx, namespace, name, status).await
 }
 
+/// Whether a provisioned machine's refreshed observation must be written to
+/// status. Anything that `status_with_observed_state` would record
+/// differently is a reason; an unchanged pass is not, so a settled machine
+/// costs no status write per requeue.
+///
+/// # Arguments
+/// * `current` - the machine's stored status
+/// * `observed` - the power state read this pass
+/// * `guest_installed` - the sticky installed-guest flag after this pass
+/// * `install_media_detached` - the sticky eject record after this pass (ADR-0044)
+/// * `ek_certificates` - the EK certificates after this pass (ADR-0045)
+/// * `sealed_now` - the sticky sealed partitions after this pass (ADR-0088)
+/// * `sealing_gate_open` - whether a first-boot sealing report is still due
+fn refresh_needs_patch(
+    current: &VSphereMachineStatus,
+    observed: &PowerState,
+    guest_installed: Option<bool>,
+    install_media_detached: Option<bool>,
+    ek_certificates: &[String],
+    sealed_now: &[String],
+    sealing_gate_open: bool,
+) -> bool {
+    let already_reported_healthy = current
+        .conditions
+        .iter()
+        .any(|c| c.type_ == condition_types::READY && c.status == condition_status::TRUE);
+    current.observed_power_state.as_ref() != Some(observed)
+        || current.guest_installed != guest_installed
+        || current.install_media_detached != install_media_detached
+        || ek_certificates != current.tpm_endorsement_certificates.as_slice()
+        || !already_reported_healthy
+        // The pass on which the report arrives closes the gate, so this is
+        // what records it (and GuestReady=True).
+        || sealed_now != current.sealed_partitions.as_slice()
+        // Pending sealing re-evaluates every pass, so the deadline turns
+        // into FirstBootSealingTimeout without another trigger.
+        || sealing_gate_open
+}
+
+/// The power state to drive a provisioned VM to (ADR-0034, amendment
+/// 2026-10-23), or `None` when it is already in `desired`. Pure.
+///
+/// Powering on is also how a suspended VM resumes, so no case needs more than
+/// the one target state.
+pub(crate) fn power_action(desired: &PowerState, observed: &PowerState) -> Option<PowerState> {
+    (desired != observed).then(|| desired.clone())
+}
+
+/// Drive a provisioned VM to `spec.desiredPowerState` and return the state to
+/// record, plus whether the caller should look again soon.
+///
+/// Found live (2026-10-23): a `Deferred` install whose cloud-config ends with
+/// `install.poweroff: true` powers the VM off, and the provider, which only
+/// observed power state after the clone (ADR-0034), never brought it back, so
+/// it sat off with `desiredPowerState: PowerOn`. libvirt, Proxmox and Cloud
+/// Hypervisor already converge; this makes vSphere do the same.
+///
+/// A vCenter fault is logged and not returned: the observation must still be
+/// recorded, and the retry is the next (short) requeue.
+pub(crate) async fn converge_power_state(
+    client: &dyn VSphereClient,
+    vm_ref: &str,
+    desired: &PowerState,
+    observed: PowerState,
+) -> (PowerState, bool) {
+    let Some(target) = power_action(desired, &observed) else {
+        return (observed, false);
+    };
+    info!(vm_ref, from = ?observed, to = ?target, "driving power state to spec.desiredPowerState (ADR-0034)");
+    match client.set_power_state(vm_ref, target.clone()).await {
+        Ok(()) => (target, false),
+        Err(e) => {
+            warn!(vm_ref, error = %e, "power state change failed; retrying next pass");
+            (observed, true)
+        }
+    }
+}
+
+/// `GuestReady` reason while an installed guest's install ISO is still
+/// attached (ADR-0044). The libvirt provider uses the same reason.
+const REASON_INSTALL_MEDIA_ATTACHED: &str = "InstallMediaAttached";
+
+/// Whether this pass must eject the install media (ADR-0044, vSphere
+/// amendment): only once the *installed* guest has announced itself, and only
+/// until the eject is recorded. Before that the installer may still be
+/// reading the ISO; after it, the record is sticky and costs no vCenter call.
+pub(crate) fn eject_install_media_due(
+    guest_installed: Option<bool>,
+    recorded: Option<bool>,
+) -> bool {
+    guest_installed == Some(true) && recorded != Some(true)
+}
+
+/// Eject the install media when it is due and return the new
+/// `installMediaDetached`: unchanged when not due, `Some(true)` once the VM
+/// has no ISO-backed CD-ROM left (ejected now, or never had one, as an
+/// `Immediate` clone), `Some(false)` when the eject failed. A failure is
+/// logged, not returned: it withholds `GuestReady` and is retried next pass,
+/// and must not stop the rest of the observation from being recorded.
+pub(crate) async fn settle_install_media(
+    client: &dyn VSphereClient,
+    vm_ref: &str,
+    guest_installed: Option<bool>,
+    recorded: Option<bool>,
+) -> Option<bool> {
+    if !eject_install_media_due(guest_installed, recorded) {
+        return recorded;
+    }
+    match client.eject_install_media(vm_ref).await {
+        Ok(ejected) => {
+            if ejected > 0 {
+                info!(vm_ref, ejected, "ejected install media (ADR-0044)");
+            }
+            Some(true)
+        }
+        Err(e) => {
+            warn!(vm_ref, error = %e, "install media eject failed; GuestReady withheld, retrying next pass");
+            Some(false)
+        }
+    }
+}
+
 /// ADR-0034: once provisioned, `reconcile` no longer resolves
 /// template/datastore/network or clones — that ADR-0024 reasoning still
-/// holds. It does perform two cheap reads — `VSphereClient::power_state`
+/// holds. Since the 2026-10-23 amendment it also drives the VM to
+/// `spec.desiredPowerState` ([`converge_power_state`]), as the other providers
+/// do. It performs two cheap reads — `VSphereClient::power_state`
 /// (ADR-0034) and, while the VM is running, `VSphereClient::guest_info` for
 /// the installed-guest marker (ADR-0043) — so `status.observedPowerState`
 /// and `status.guestInstalled`/`GuestReady` reflect reality rather than
@@ -983,9 +1115,35 @@ async fn refresh_power_state(
     };
     match client.power_state(&vm_ref).await {
         Ok(observed) => {
+            // ADR-0034 amendment 2026-10-23: converge before anything below
+            // reads the state, so the guest probe and the status see the VM
+            // as it is now.
+            let (observed, power_retry) =
+                converge_power_state(client, &vm_ref, &machine.spec.desired_power_state, observed)
+                    .await;
             let guest_probe = guest::probe_guest(client, &vm_ref, observed.clone()).await?;
             let guest_installed =
                 guest::sticky_guest_installed(current.guest_installed, guest_probe.is_installed());
+            // ADR-0044: eject before building the status that may publish
+            // GuestReady, so a bound member never has its installer attached.
+            let install_media_detached = settle_install_media(
+                client,
+                &vm_ref,
+                guest_installed,
+                current.install_media_detached,
+            )
+            .await;
+            // ADR-0088: only a first-boot sealing machine has a report to read.
+            let sealing_required = machine.spec.first_boot_sealing.as_ref();
+            let sealed_observed = match sealing_required {
+                Some(_) => guest::probe_sealed(client, &vm_ref, observed.clone()).await?,
+                None => Vec::new(),
+            };
+            let sealed_now = sticky_sealed_partitions(&current.sealed_partitions, &sealed_observed);
+            let sealing_gate_open = sealing_required.is_some_and(|required| {
+                sealing_gate(required, &sealed_now, &current.conditions, Timestamp::now())
+                    != SealingGate::Satisfied
+            });
 
             // ADR-0045. Read here, not only at create time: vCenter may not
             // have issued the certificate the instant the vTPM was attached,
@@ -1000,26 +1158,32 @@ async fn refresh_power_state(
             )
             .await?;
 
-            let already_reported_healthy = current
-                .conditions
-                .iter()
-                .any(|c| c.type_ == condition_types::READY && c.status == condition_status::TRUE);
-            let ek_changed = ek_certificates != current.tpm_endorsement_certificates;
             let ek_certificates_pending = ek_certificates.is_empty();
-            if current.observed_power_state.as_ref() != Some(&observed)
-                || current.guest_installed != guest_installed
-                || ek_changed
-                || !already_reported_healthy
-            {
+            if refresh_needs_patch(
+                &current,
+                &observed,
+                guest_installed,
+                install_media_detached,
+                &ek_certificates,
+                &sealed_now,
+                sealing_gate_open,
+            ) {
                 info!(vm_ref, power_state = ?observed, guest = ?guest_probe, "observed state changed");
+                let mut current = current;
+                current.install_media_detached = install_media_detached;
                 let next = status_with_observed_state(
                     current,
                     observed,
                     guest_installed,
                     guest_probe,
                     ek_certificates,
-                    machine.spec.tpm_enabled,
                     generation,
+                    TpmObservation {
+                        tpm_enabled: machine.spec.tpm_enabled,
+                        sealing: sealing_required,
+                        sealed: sealed_observed,
+                        now: Timestamp::now(),
+                    },
                 );
                 patch_machine_status(ctx, namespace, name, next).await?;
             }
@@ -1027,11 +1191,20 @@ async fn refresh_power_state(
             // the answer to change, exactly like a guest that has not
             // announced (ADR-0045).
             let ek_pending = machine.spec.tpm_enabled && ek_certificates_pending;
-            Ok(if guest::should_poll_soon(guest_probe) || ek_pending {
-                requeue_default()
-            } else {
-                requeue_long()
-            })
+            // A failed eject (ADR-0044) is deliberately NOT a reason to poll
+            // soon: each attempt is a vCenter reconfigure, and one that keeps
+            // failing should cost one per long requeue, not one every 30 s.
+            Ok(
+                if guest::should_poll_soon(guest_probe)
+                    || ek_pending
+                    || sealing_gate_open
+                    || power_retry
+                {
+                    requeue_default()
+                } else {
+                    requeue_long()
+                },
+            )
         }
         Err(e) if is_backend_missing_error(&e) => {
             warn!(vm_ref, error = %e, "backend VM no longer exists — reporting BackendMissing");
@@ -1115,6 +1288,34 @@ fn status_reporting_failure(
     current
 }
 
+/// The vTPM inputs to [`status_with_observed_state`]: whether the machine has
+/// one (ADR-0045's certificate gate) and its first-boot sealing (ADR-0088
+/// Decision 5).
+pub(crate) struct TpmObservation<'a> {
+    /// `spec.tpmEnabled`.
+    pub(crate) tpm_enabled: bool,
+    /// `spec.firstBootSealing`; `None` leaves `GuestReady`'s ADR-0043
+    /// meaning untouched.
+    pub(crate) sealing: Option<&'a FirstBootSealing>,
+    /// Partitions the guest reported sealed this observation.
+    pub(crate) sealed: Vec<String>,
+    /// Now, for the sealing deadline.
+    pub(crate) now: Timestamp,
+}
+
+#[cfg(test)]
+impl TpmObservation<'_> {
+    /// A machine that does not seal on first boot.
+    pub(crate) fn plain(tpm_enabled: bool) -> Self {
+        Self {
+            tpm_enabled,
+            sealing: None,
+            sealed: Vec::new(),
+            now: Timestamp::now(),
+        }
+    }
+}
+
 /// Build the status to (re-)apply after observing a new power state and
 /// guest probe — starting from the *entire current* status, not a narrow
 /// `{observedPowerState, observedGeneration}` object. Pure, so this
@@ -1135,10 +1336,15 @@ fn status_with_observed_state(
     guest_installed: Option<bool>,
     guest: GuestProbe,
     ek_certificates: Vec<String>,
-    tpm_enabled: bool,
     generation: i64,
+    tpm: TpmObservation<'_>,
 ) -> VSphereMachineStatus {
+    let tpm_enabled = tpm.tpm_enabled;
     current.observed_power_state = Some(observed_power);
+    if tpm.sealing.is_some() {
+        current.sealed_partitions =
+            sticky_sealed_partitions(&current.sealed_partitions, &tpm.sealed);
+    }
     current.guest_installed = guest_installed;
     current.tpm_endorsement_certificates = ek_certificates;
     current.observed_generation = Some(generation);
@@ -1170,10 +1376,57 @@ fn status_with_observed_state(
     // `tpmEnabled` member that has not published its EK certificate cannot
     // be attested, so a pool must not bind it. Machines without a vTPM are
     // unaffected — they have no certificate to wait for.
+    //
+    // ADR-0088 adds the sealing gate for a first-boot sealing machine: an
+    // installed guest must also have reported every listed partition sealed,
+    // and past the deadline the condition says so whether or not the guest
+    // ever announced, because a clone whose sealing failed halts in its
+    // initramfs and never reaches the stage that announces.
     let installed = guest_installed == Some(true);
     let ek_pending = tpm_enabled && current.tpm_endorsement_certificates.is_empty();
+    let gate = tpm.sealing.map(|required| {
+        sealing_gate(
+            required,
+            &current.sealed_partitions,
+            &current.conditions,
+            tpm.now,
+        )
+    });
     if installed || guest == GuestProbe::NotAnnounced {
-        let (guest_status, guest_reason, guest_message) = if installed && ek_pending {
+        let (guest_status, guest_reason, guest_message) = if let Some(SealingGate::TimedOut {
+            missing,
+        }) = &gate
+        {
+            (
+                condition_status::FALSE,
+                REASON_FIRST_BOOT_SEALING_TIMEOUT,
+                format!(
+                    "no complete first-boot sealing report within the deadline; missing: {} \
+                     (a clone that cannot seal halts in its initramfs: check the VM console)",
+                    missing.join(", ")
+                ),
+            )
+        } else if let (true, Some(SealingGate::Pending { missing })) = (installed, &gate) {
+            (
+                condition_status::FALSE,
+                REASON_FIRST_BOOT_SEALING_UNVERIFIED,
+                format!(
+                    "the installed guest announced itself but has not reported {} sealed \
+                     in {SEALED_KEY} (ADR-0088)",
+                    missing.join(", ")
+                ),
+            )
+        } else if installed && current.install_media_detached == Some(false) {
+            (
+                condition_status::FALSE,
+                REASON_INSTALL_MEDIA_ATTACHED,
+                "the installed guest announced itself, but its install ISO could not be \
+                 ejected yet; it is retried every few minutes (ADR-0044). The provider log \
+                 names the vCenter fault; a missing VirtualMachine.Interact.SetCDMedia / \
+                 DeviceConnection privilege is the usual cause"
+                    .to_string(),
+            )
+        } else if installed && ek_pending {
             (
                 condition_status::FALSE,
                 "TpmEndorsementPending",

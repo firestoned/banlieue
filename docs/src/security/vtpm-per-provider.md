@@ -28,6 +28,18 @@ template, so every clone would share one sealed disk.
 - No admission policy enforces this. Admission cannot see the `VMClass` and
   the `VMImage` together, so the check is in the controller. **Unit tests
   only** (`virtualmachine_tests.rs`).
+- **First-boot sealing (ADR-0088, behind `--enable-first-boot-sealing`,
+  default off).** An `Immediate` image that declares
+  `spec.firstBootSealing` is accepted: its template carries the sealing
+  policy and no key material, and each clone seals the listed partitions to
+  its own vTPM on its first boot (Kairos `encrypt-pending`). The guarantee
+  above still holds, because nothing sealed is ever copied; only the install
+  is shared. `firstBootSealing` without `tpmEnabled` is refused, and with the
+  flag off any VM of such an image is refused with
+  `FirstBootSealingDisabled`. Each clone's `GuestReady` waits for the guest
+  to report every listed partition sealed. **Unit tests only**; not run
+  against a real vCenter or libvirt host yet, and no stable Kairos release
+  carries first-boot sealing (ADR-0088 *Accept when*).
 
 With `installMode: Deferred`, the image is never installed into a shared
 template. Each VM boots the installer on an empty OS disk, and the installer
@@ -41,7 +53,8 @@ encrypts that disk to the VM's own vTPM.
 | vTPM | After the clone and before first power-on, `add_tpm_device` reconfigures the VM with a **new** `VirtualTpm` device; vCenter generates its EK certificate (`vspheremachine.rs`, `ensure_vm`) | Unit tests (`vspheremachine_ensure_tests.rs`: attach before power-on) |
 | Template | Templates banlieue builds carry no vTPM: the only `VirtualTpm` constructor is the per-clone add | Code reading |
 | Deferred | For a non-`Immediate` image, the template is left uninstalled with the installer attached; each clone installs at first boot | One manual live run, one VM, 2026-09-04 (ADR-0040). Not automated |
-| EK certificate | Read host-side from the `VirtualTpm` device and published on the infra CR (ADR-0045) | **Not verified live** (ADR-0045) |
+| EK certificate | Read host-side from the `VirtualTpm` device and published on the infra CR (ADR-0045); read from the raw `config` document, since the typed decode fails on a VM carrying a vTPM | One live run, three VMs, 2026-10-22 |
+| First-boot sealing | For an `Immediate` image with `firstBootSealing`, the clone gets its vTPM before first power-on as above; the guest seals on first boot and reports `guestinfo.banlieue.sealed`, which gates `GuestReady` (ADR-0088) | Unit tests only |
 
 !!! warning "Hand-built templates"
     vSphere's default clone behaviour **copies** a source VM's vTPM,

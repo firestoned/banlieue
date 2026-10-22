@@ -424,4 +424,73 @@ mod tests {
     fn effective_folder_is_just_the_zone_when_the_root_is_empty() {
         assert_eq!(effective_folder(Some(""), "cluster-01"), "cluster-01");
     }
+
+    // ------------------------------------------------------------------
+    // ADR-0020, amendment 2026-10-23: a forceUpload never destroys the
+    // template for an ISO it cannot replace.
+    // ------------------------------------------------------------------
+
+    fn ds_01() -> Datastore {
+        Datastore {
+            name: "ds-01".to_string(),
+            moref: "datastore-1".to_string(),
+            datastore_cluster: None,
+            free_space_bytes: None,
+        }
+    }
+
+    const ISO: &str = "banlieue-images/img.iso";
+
+    #[tokio::test]
+    async fn an_iso_no_vm_holds_is_replaceable() {
+        use super::super::ensure_iso_replaceable;
+
+        let client = crate::client::FakeClient::new(crate::client::Inventory::default());
+        ensure_iso_replaceable(&client, &ds_01(), ISO)
+            .await
+            .unwrap();
+    }
+
+    /// The live failure: an installed Deferred VM still had the ISO
+    /// connected, vCenter answered 500 to the delete, and the template had
+    /// already been destroyed. Now the import stops first and says who.
+    #[tokio::test]
+    async fn an_iso_a_running_vm_holds_is_refused_naming_the_vm() {
+        use super::super::ensure_iso_replaceable;
+
+        let client = crate::client::FakeClient::new(crate::client::Inventory::default());
+        client.hold_iso("datastore-1", "[ds-01] banlieue-images/img.iso", "db-01");
+        client.hold_iso("datastore-1", "[ds-01] banlieue-images/img.iso", "db-02");
+        let err = ensure_iso_replaceable(&client, &ds_01(), ISO)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("db-01") && err.contains("db-02"), "{err}");
+        assert!(err.contains("[ds-01] banlieue-images/img.iso"), "{err}");
+        assert!(err.contains("Nothing was destroyed"), "{err}");
+    }
+
+    /// The same file name on another datastore is another file.
+    #[tokio::test]
+    async fn a_holder_on_another_datastore_does_not_block() {
+        use super::super::ensure_iso_replaceable;
+
+        let client = crate::client::FakeClient::new(crate::client::Inventory::default());
+        client.hold_iso("datastore-2", "[ds-02] banlieue-images/img.iso", "db-01");
+        ensure_iso_replaceable(&client, &ds_01(), ISO)
+            .await
+            .unwrap();
+    }
+
+    #[test]
+    fn a_failed_iso_delete_says_a_vm_probably_still_has_it_open() {
+        use super::super::iso_delete_failed_message;
+
+        let msg = iso_delete_failed_message(
+            "https://vcenter.example.com/folder/banlieue-images/img.iso",
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+        );
+        assert!(msg.contains("500"), "{msg}");
+        assert!(msg.contains("CD-ROM"), "{msg}");
+    }
 }

@@ -32,7 +32,8 @@ use tracing::info;
 
 use crate::client::vim::{build_http_client, build_upload_http_client, server_address};
 use crate::client::{
-    Credentials, Datastore, IsoImportRequest, RequestedNic, VSphereClientFactory, VimClientFactory,
+    Credentials, Datastore, IsoImportRequest, RequestedNic, VSphereClient, VSphereClientFactory,
+    VimClientFactory,
 };
 use crate::nic_flag::parse_nic_flag;
 
@@ -681,22 +682,6 @@ pub async fn run(args: ImportArgs) -> Result<()> {
     // folder rather than the whole datacenter (ADR-0020 Decision #5).
     let folder = effective_folder(args.root_folder.as_deref(), &args.failure_domain);
 
-    // --force-create: destroy any existing target now, before the datastore
-    // reuse-check below. A stale template still referencing the target ISO
-    // as its CD-ROM backing holds an NFC lock on that file, which otherwise
-    // makes the reuse-check's HEAD probe indistinguishable from "absent" and
-    // triggers a wasted re-upload onto a different datastore member.
-    if args.force_create {
-        vim.destroy_if_present(&datacenter.moref, &folder, &args.vmimage)
-            .await
-            .with_context(|| {
-                format!(
-                    "destroying existing target {:?} before recreate",
-                    args.vmimage
-                )
-            })?;
-    }
-
     let cluster = vim
         .list_clusters(&datacenter)
         .await
@@ -714,20 +699,48 @@ pub async fn run(args: ImportArgs) -> Result<()> {
         .list_datastores(&cluster)
         .await
         .context("listing datastores")?;
+    let candidates = candidate_datastores(&datastores, &plan.datastore)?;
+    let remote_path = format!("{DATASTORE_UPLOAD_DIR}/{}.iso", args.vmimage);
+
+    // --force-upload replaces the ISO on the emptiest member, so that member
+    // is decided here, before anything is destroyed, and checked: vCenter
+    // cannot delete an ISO a running VM has connected, and finding that out
+    // after the template is gone leaves the zone with none (ADR-0020,
+    // amendment 2026-10-23).
+    let mut chosen: Option<String> = None;
+    if args.force_upload {
+        let target = pick_emptiest(&candidates);
+        ensure_iso_replaceable(vim.as_ref(), target, &remote_path).await?;
+        chosen = Some(target.name.clone());
+    }
+
+    // --force-create: destroy any existing target now, before the datastore
+    // reuse-check below. A stale template still referencing the target ISO
+    // as its CD-ROM backing holds an NFC lock on that file, which otherwise
+    // makes the reuse-check's HEAD probe indistinguishable from "absent" and
+    // triggers a wasted re-upload onto a different datastore member.
+    if args.force_create {
+        vim.destroy_if_present(&datacenter.moref, &folder, &args.vmimage)
+            .await
+            .with_context(|| {
+                format!(
+                    "destroying existing target {:?} before recreate",
+                    args.vmimage
+                )
+            })?;
+    }
 
     // Resolve the concrete member datastore. Idempotency first: if the ISO is
     // already on ANY member of the (datastore-)cluster, reuse that member so a
     // re-run neither re-uploads nor scatters copies across members. Only a
-    // fresh placement (or --force-upload) falls back to the emptiest member.
-    let candidates = candidate_datastores(&datastores, &plan.datastore)?;
+    // fresh placement (or --force-upload, decided above) falls back to the
+    // emptiest member.
     let host = server_address(&provider.spec.connection.endpoint);
-    let remote_path = format!("{DATASTORE_UPLOAD_DIR}/{}.iso", args.vmimage);
     let probe = build_http_client(
         ca_bundle_pem.as_deref(),
         provider.spec.connection.insecure_skip_tls_verify,
     )
     .map_err(|e| anyhow!("{e}"))?;
-    let mut chosen: Option<String> = None;
     if !args.force_upload {
         for d in &candidates {
             if datastore_file_exists(
@@ -829,6 +842,48 @@ pub async fn run(args: ImportArgs) -> Result<()> {
 
     info!(template = %resolved, "vSphere ISO import complete");
     Ok(())
+}
+
+/// Refuse a `--force-upload` whose target ISO a running VM still has
+/// connected (ADR-0020, amendment 2026-10-23). Called before any destructive
+/// step, so a refusal leaves the existing template and ISO in place. The error
+/// names the VMs, so the operator knows which CD-ROM to disconnect; a
+/// `Deferred` VM's provider ejects it once the guest is installed (ADR-0044).
+///
+/// # Errors
+/// When vCenter cannot be asked, or when any VM holds the ISO.
+pub async fn ensure_iso_replaceable(
+    client: &dyn VSphereClient,
+    datastore: &Datastore,
+    remote_path: &str,
+) -> Result<()> {
+    let iso_path = format!("[{}] {remote_path}", datastore.name);
+    let holders = client
+        .vms_holding_iso(&datastore.moref, &iso_path)
+        .await
+        .with_context(|| format!("checking which VMs hold {iso_path} before replacing it"))?;
+    if holders.is_empty() {
+        return Ok(());
+    }
+    bail!(
+        "cannot replace {iso_path}: it is connected to the CD-ROM of running VM(s) {}, and \
+         vCenter refuses to delete a file a VM has open. Nothing was destroyed. Eject the \
+         CD-ROM on those VMs (banlieue does this for an installed Deferred VM it manages, \
+         ADR-0044); the import is retried automatically",
+        holders.join(", ")
+    )
+}
+
+/// The error for a non-success answer to the ISO delete before a
+/// `--force-upload`. vCenter answers a bare `500` when a VM has the file
+/// open, so the message says that is the usual cause; it covers a VM that
+/// connected the ISO after [`ensure_iso_replaceable`] ran.
+#[must_use]
+pub fn iso_delete_failed_message(url: &str, status: reqwest::StatusCode) -> String {
+    format!(
+        "deleting existing ISO at {url} returned {status}; this usually means a running VM \
+         still has it connected to a CD-ROM (ADR-0020, amendment 2026-10-23)"
+    )
 }
 
 /// Resolve a requested datastore name — which may be an individual datastore or
@@ -1007,7 +1062,7 @@ async fn upload_iso_to_datastore(
             Ok(r) if r.status().is_success() || r.status().as_u16() == 404 => {
                 info!(url = %url_str, "forceUpload: removed any existing ISO before upload");
             }
-            Ok(r) => bail!("deleting existing ISO at {url_str} returned {}", r.status()),
+            Ok(r) => bail!(iso_delete_failed_message(&url_str, r.status())),
             Err(e) => return Err(anyhow!(e)).context("deleting existing ISO before re-upload"),
         }
     } else {

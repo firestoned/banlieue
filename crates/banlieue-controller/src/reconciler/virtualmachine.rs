@@ -131,8 +131,54 @@ pub fn clear_paused(conditions: &mut Vec<Condition>) {
 /// (ADR-0048).
 pub const REASON_IMAGE_CLASS_MISMATCH: &str = "ImageClassMismatch";
 
-/// `Some(message)` when this class/image pairing would attach a vTPM that
-/// nothing ever seals to (ADR-0048).
+/// Condition reason for a `VirtualMachine` whose image declares
+/// `firstBootSealing` while `banlieue-controller` runs without
+/// `--enable-first-boot-sealing` (ADR-0088 Decision 7, as amended).
+pub const REASON_FIRST_BOOT_SEALING_DISABLED: &str = "FirstBootSealingDisabled";
+
+/// A class/image pairing the controller refuses: the `Ready` condition's
+/// reason and message.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PairingRefusal {
+    /// Stable condition reason ([`REASON_IMAGE_CLASS_MISMATCH`] or
+    /// [`REASON_FIRST_BOOT_SEALING_DISABLED`]).
+    pub reason: &'static str,
+    /// The whole diagnosis, naming the fields and the remedy.
+    pub message: &'static str,
+}
+
+const MESSAGE_TPM_IMMEDIATE: &str = "VMClass.tpmEnabled requires a VMImage with installMode: Deferred, \
+     or an Immediate image that declares spec.firstBootSealing; an Immediate \
+     (pre-installed) template is otherwise not encrypted per VM, because its \
+     disk was installed before any per-VM vTPM existed (ADR-0040, ADR-0048, \
+     ADR-0088)";
+
+const MESSAGE_SEALING_WITHOUT_TPM: &str = "VMImage.spec.firstBootSealing requires a VMClass with tpmEnabled: true; \
+     a clone with no vTPM cannot seal and halts on every boot (ADR-0088)";
+
+const MESSAGE_SEALING_DISABLED: &str = "VMImage.spec.firstBootSealing is declared but banlieue-controller runs \
+     without --enable-first-boot-sealing (BANLIEUE_ENABLE_FIRST_BOOT_SEALING), \
+     so the pairing is refused rather than ignored (ADR-0088)";
+
+/// `Some(refusal)` when this class/image pairing cannot be what it claims
+/// (ADR-0048, replaced by ADR-0088 Decision 3 behind its flag).
+///
+/// | `tpm_enabled` | `mode` | `first_boot_sealing` | result |
+/// |---|---|---|---|
+/// | any | any | declared, `sealing_enabled` false | refused, `FirstBootSealingDisabled` |
+/// | true | `Immediate` | absent | refused: silently plaintext |
+/// | true | `Immediate` | declared | allowed: sealed per clone on first boot |
+/// | true | `Deferred` / `Manual` | any | allowed (ADR-0040) |
+/// | false | any | declared | refused: every boot would halt |
+/// | false | any | absent | allowed |
+///
+/// # Arguments
+/// * `tpm_enabled` - `VMClass.spec.tpmEnabled`
+/// * `mode` - the image's install mode (`Immediate` when it has no template)
+/// * `first_boot_sealing` - whether `VMImage.spec.firstBootSealing` is set
+/// * `sealing_enabled` - the controller's `--enable-first-boot-sealing`
+///
+/// The rest of this comment is ADR-0048's rationale for the first refusal:
 ///
 /// Kairos partition encryption is install-phase-only: `kcrypt` seals LUKS
 /// keys to the TPM during `kairos-agent install`, so the sealing can only
@@ -151,12 +197,23 @@ pub const REASON_IMAGE_CLASS_MISMATCH: &str = "ImageClassMismatch";
 /// Pure and backend-neutral — it reads only provider-agnostic fields, so
 /// every backend is constrained identically without participating.
 #[must_use]
-pub fn image_class_mismatch(tpm_enabled: bool, mode: InstallMode) -> Option<&'static str> {
-    (tpm_enabled && mode == InstallMode::Immediate).then_some(
-        "VMClass.tpmEnabled requires a VMImage with installMode: Deferred; an \
-         Immediate (pre-installed) template cannot be encrypted per VM, because \
-         its disk was installed before any per-VM vTPM existed (ADR-0040, ADR-0048)",
-    )
+pub fn image_class_mismatch(
+    tpm_enabled: bool,
+    mode: InstallMode,
+    first_boot_sealing: bool,
+    sealing_enabled: bool,
+) -> Option<PairingRefusal> {
+    let refuse = |reason, message| Some(PairingRefusal { reason, message });
+    if first_boot_sealing && !sealing_enabled {
+        return refuse(REASON_FIRST_BOOT_SEALING_DISABLED, MESSAGE_SEALING_DISABLED);
+    }
+    if first_boot_sealing && !tpm_enabled {
+        return refuse(REASON_IMAGE_CLASS_MISMATCH, MESSAGE_SEALING_WITHOUT_TPM);
+    }
+    if tpm_enabled && mode == InstallMode::Immediate && !first_boot_sealing {
+        return refuse(REASON_IMAGE_CLASS_MISMATCH, MESSAGE_TPM_IMMEDIATE);
+    }
+    None
 }
 
 /// Top-level reconcile entrypoint registered with [`kube::runtime::Controller`].
@@ -234,13 +291,21 @@ pub async fn reconcile(vm: Arc<VirtualMachine>, ctx: Arc<Context>) -> Result<Act
         .as_ref()
         .map_or_else(InstallMode::default, |t| t.install_mode);
 
-    if let Some(detail) = image_class_mismatch(class.spec.tpm_enabled, install_mode) {
+    // ADR-0088: an image that declares first-boot sealing changes the table,
+    // and only when the controller was started with the feature on.
+    if let Some(refusal) = image_class_mismatch(
+        class.spec.tpm_enabled,
+        install_mode,
+        image.spec.first_boot_sealing.is_some(),
+        ctx.first_boot_sealing,
+    ) {
         warn!(
             class = %vm.spec.class_ref.name,
             image = %vm.spec.image_ref.name,
-            "class/image pairing would attach a vTPM that nothing seals to"
+            reason = refusal.reason,
+            "class/image pairing refused"
         );
-        patch_image_class_mismatch(&vm_api, &vm, &name, generation, detail).await?;
+        patch_image_class_mismatch(&vm_api, &vm, &name, generation, refusal).await?;
         return Ok(requeue_long());
     }
 
@@ -904,15 +969,15 @@ async fn patch_image_class_mismatch(
     vm: &VirtualMachine,
     name: &str,
     generation: i64,
-    detail: &str,
+    refusal: PairingRefusal,
 ) -> Result<()> {
     let mut status = vm.status.clone().unwrap_or_default();
     set_condition(
         &mut status.conditions,
         condition_types::READY,
         condition_status::FALSE,
-        REASON_IMAGE_CLASS_MISMATCH,
-        detail,
+        refusal.reason,
+        refusal.message,
         generation,
     );
     status.observed_generation = Some(generation);

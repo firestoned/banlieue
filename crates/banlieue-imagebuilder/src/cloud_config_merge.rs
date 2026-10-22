@@ -21,6 +21,10 @@
 
 use serde_json::Value;
 
+/// The magic first line Kairos/yip require before treating a file as
+/// cloud-config. Kairos's collector silently skips a file without it.
+pub const CLOUD_CONFIG_HEADER: &str = "#cloud-config";
+
 /// Errors from cloud-config merge.
 #[derive(Debug, thiserror::Error)]
 pub enum MergeError {
@@ -141,7 +145,7 @@ pub fn merge_cloud_configs(sources: &[&str]) -> Result<String, MergeError> {
     // it is lost during parse → re-serialize; we must re-add it.
     let yaml = banlieue_api::yaml::to_string(&merged).unwrap_or_default();
     let body = yaml.strip_prefix("---\n").unwrap_or(&yaml);
-    Ok(format!("#cloud-config\n{body}"))
+    Ok(format!("{CLOUD_CONFIG_HEADER}\n{body}"))
 }
 
 #[cfg(test)]

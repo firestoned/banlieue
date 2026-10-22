@@ -24,6 +24,7 @@ pub mod app;
 pub mod cloud_config_merge;
 pub mod context;
 pub mod error;
+pub mod first_boot_sealing;
 pub mod importer_image;
 pub mod oci_push;
 pub mod reconciler;

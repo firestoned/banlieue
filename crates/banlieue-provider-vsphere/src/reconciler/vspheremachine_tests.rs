@@ -9,6 +9,7 @@ mod tests {
     use k8s_openapi::apimachinery::pkg::apis::meta::v1::{Condition, Time};
 
     use super::super::build_guestinfo;
+    use super::super::{TpmObservation, refresh_needs_patch, status_with_observed_state};
 
     fn dhcp_nic(name: &str) -> VSphereNicSpec {
         VSphereNicSpec {
@@ -294,8 +295,8 @@ mod tests {
             None,
             GuestProbe::NotEvaluated,
             Vec::new(),
-            false,
             2,
+            TpmObservation::plain(false),
         );
 
         assert_eq!(next.vm_ref, current.vm_ref);
@@ -347,8 +348,8 @@ mod tests {
             None,
             GuestProbe::NotEvaluated,
             Vec::new(),
-            false,
             2,
+            TpmObservation::plain(false),
         );
 
         let ready = next
@@ -426,8 +427,8 @@ mod tests {
             None,
             GuestProbe::NotEvaluated,
             Vec::new(),
-            false,
             1,
+            TpmObservation::plain(false),
         );
 
         assert!(
@@ -450,8 +451,8 @@ mod tests {
             Some(false),
             GuestProbe::NotAnnounced,
             Vec::new(),
-            false,
             1,
+            TpmObservation::plain(false),
         );
 
         let guest_ready = next
@@ -476,8 +477,8 @@ mod tests {
             Some(true),
             GuestProbe::Installed,
             Vec::new(),
-            false,
             1,
+            TpmObservation::plain(false),
         );
 
         let guest_ready = next
@@ -505,8 +506,8 @@ mod tests {
             Some(false),
             GuestProbe::NotAnnounced,
             Vec::new(),
-            false,
             1,
+            TpmObservation::plain(false),
         );
 
         let ready = next
@@ -596,8 +597,8 @@ mod tests {
             Some(true),
             GuestProbe::Installed,
             Vec::new(),
-            true,
             1,
+            TpmObservation::plain(true),
         );
 
         let gr = next
@@ -624,8 +625,8 @@ mod tests {
             Some(true),
             GuestProbe::Installed,
             vec!["-----BEGIN CERTIFICATE-----\nstub\n-----END CERTIFICATE-----".to_string()],
-            true,
             1,
+            TpmObservation::plain(true),
         );
 
         let gr = next
@@ -653,8 +654,8 @@ mod tests {
             Some(true),
             GuestProbe::Installed,
             Vec::new(),
-            false,
             1,
+            TpmObservation::plain(false),
         );
 
         let gr = next
@@ -663,5 +664,492 @@ mod tests {
             .find(|c| c.type_ == "GuestReady")
             .expect("GuestReady published");
         assert_eq!(gr.status, "True");
+    }
+
+    // ------------------------------------------------------------------
+    // status_with_observed_state — first-boot sealing (ADR-0088 Decision 5)
+    // ------------------------------------------------------------------
+
+    fn ready_status(ready_since_epoch: i64) -> VSphereMachineStatus {
+        use banlieue_api::common::InitializationStatus;
+        VSphereMachineStatus {
+            initialization: InitializationStatus {
+                provisioned: Some(true),
+            },
+            vm_ref: Some("vm-1234".to_string()),
+            conditions: vec![Condition {
+                type_: "Ready".to_string(),
+                status: "True".to_string(),
+                reason: "Reconciled".to_string(),
+                message: "VSphereMachine provisioned".to_string(),
+                observed_generation: Some(1),
+                last_transition_time: Time(
+                    k8s_openapi::jiff::Timestamp::from_second(ready_since_epoch).unwrap(),
+                ),
+            }],
+            observed_power_state: Some(PowerState::PoweredOn),
+            tpm_endorsement_certificates: vec!["PEM".to_string()],
+            ..Default::default()
+        }
+    }
+
+    fn observe(
+        current: VSphereMachineStatus,
+        guest: crate::guest::GuestProbe,
+        sealed: &[&str],
+        now_epoch: i64,
+    ) -> VSphereMachineStatus {
+        let required = banlieue_api::common::FirstBootSealing::default();
+        status_with_observed_state(
+            current,
+            PowerState::PoweredOn,
+            Some(guest == crate::guest::GuestProbe::Installed),
+            guest,
+            vec!["PEM".to_string()],
+            2,
+            TpmObservation {
+                tpm_enabled: true,
+                sealing: Some(&required),
+                sealed: sealed.iter().map(|p| (*p).to_string()).collect(),
+                now: k8s_openapi::jiff::Timestamp::from_second(now_epoch).unwrap(),
+            },
+        )
+    }
+
+    fn guest_ready(s: &VSphereMachineStatus) -> &Condition {
+        s.conditions
+            .iter()
+            .find(|c| c.type_ == "GuestReady")
+            .expect("GuestReady present")
+    }
+
+    #[test]
+    fn a_sealed_installed_guest_is_guest_ready() {
+        use crate::guest::GuestProbe;
+        let next = observe(
+            ready_status(0),
+            GuestProbe::Installed,
+            &["COS_PERSISTENT"],
+            30,
+        );
+        assert_eq!(guest_ready(&next).status, "True");
+        assert_eq!(next.sealed_partitions, vec!["COS_PERSISTENT".to_string()]);
+    }
+
+    #[test]
+    fn an_installed_guest_that_has_not_reported_sealing_is_unverified() {
+        use crate::guest::GuestProbe;
+        let next = observe(ready_status(0), GuestProbe::Installed, &[], 30);
+        let c = guest_ready(&next);
+        assert_eq!(c.status, "False");
+        assert_eq!(
+            c.reason,
+            banlieue_provider_sdk::sealing::REASON_FIRST_BOOT_SEALING_UNVERIFIED
+        );
+        assert!(c.message.contains("COS_PERSISTENT"));
+    }
+
+    /// The halted-clone case: it never reaches userspace, so it never
+    /// announces, and only the deadline can say so.
+    #[test]
+    fn a_guest_that_never_announces_times_out_after_the_deadline() {
+        use crate::guest::GuestProbe;
+        let next = observe(ready_status(0), GuestProbe::NotAnnounced, &[], 601);
+        let c = guest_ready(&next);
+        assert_eq!(c.status, "False");
+        assert_eq!(
+            c.reason,
+            banlieue_provider_sdk::sealing::REASON_FIRST_BOOT_SEALING_TIMEOUT
+        );
+    }
+
+    #[test]
+    fn before_the_deadline_a_silent_guest_is_still_just_not_announced() {
+        use crate::guest::GuestProbe;
+        let next = observe(ready_status(0), GuestProbe::NotAnnounced, &[], 30);
+        assert_eq!(guest_ready(&next).reason, "GuestNotAnnounced");
+    }
+
+    #[test]
+    fn a_sealing_report_is_sticky_across_an_empty_observation() {
+        use crate::guest::GuestProbe;
+        let mut current = ready_status(0);
+        current.sealed_partitions = vec!["COS_PERSISTENT".to_string()];
+        current.guest_installed = Some(true);
+        let next = observe(current, GuestProbe::Installed, &[], 10_000);
+        assert_eq!(next.sealed_partitions, vec!["COS_PERSISTENT".to_string()]);
+        assert_eq!(guest_ready(&next).status, "True");
+    }
+
+    #[test]
+    fn without_sealing_nothing_about_guest_ready_changes() {
+        use crate::guest::GuestProbe;
+        let next = status_with_observed_state(
+            ready_status(0),
+            PowerState::PoweredOn,
+            Some(true),
+            GuestProbe::Installed,
+            vec!["PEM".to_string()],
+            2,
+            TpmObservation::plain(true),
+        );
+        assert_eq!(guest_ready(&next).status, "True");
+        assert!(next.sealed_partitions.is_empty());
+    }
+
+    // ------------------------------------------------------------------
+    // refresh_needs_patch — when a provisioned machine's status is written
+    // ------------------------------------------------------------------
+
+    fn settled_status() -> VSphereMachineStatus {
+        let mut s = ready_status(0);
+        s.guest_installed = Some(true);
+        s
+    }
+
+    fn cos_persistent() -> Vec<String> {
+        vec!["COS_PERSISTENT".to_string()]
+    }
+
+    #[test]
+    fn nothing_changed_needs_no_patch() {
+        let current = settled_status();
+        assert!(!refresh_needs_patch(
+            &current,
+            &PowerState::PoweredOn,
+            Some(true),
+            None,
+            &["PEM".to_string()],
+            &[],
+            false,
+        ));
+    }
+
+    /// Found live: the pass on which the report first arrives closes the
+    /// gate (Satisfied), so "gate open" no longer forces the write, and
+    /// nothing else changed. Without this trigger sealedPartitions and
+    /// GuestReady=True are never recorded.
+    #[test]
+    fn a_newly_reported_seal_needs_a_patch_even_with_the_gate_closed() {
+        let current = settled_status();
+        assert!(refresh_needs_patch(
+            &current,
+            &PowerState::PoweredOn,
+            Some(true),
+            None,
+            &["PEM".to_string()],
+            &cos_persistent(),
+            false,
+        ));
+    }
+
+    #[test]
+    fn an_already_recorded_seal_needs_no_patch() {
+        let mut current = settled_status();
+        current.sealed_partitions = cos_persistent();
+        assert!(!refresh_needs_patch(
+            &current,
+            &PowerState::PoweredOn,
+            Some(true),
+            None,
+            &["PEM".to_string()],
+            &cos_persistent(),
+            false,
+        ));
+    }
+
+    #[test]
+    fn an_open_sealing_gate_needs_a_patch() {
+        let current = settled_status();
+        assert!(refresh_needs_patch(
+            &current,
+            &PowerState::PoweredOn,
+            Some(true),
+            None,
+            &["PEM".to_string()],
+            &[],
+            true,
+        ));
+    }
+
+    #[test]
+    fn a_power_state_change_needs_a_patch() {
+        let current = settled_status();
+        assert!(refresh_needs_patch(
+            &current,
+            &PowerState::PoweredOff,
+            Some(true),
+            None,
+            &["PEM".to_string()],
+            &[],
+            false,
+        ));
+    }
+
+    #[test]
+    fn a_newly_recorded_eject_needs_a_patch() {
+        let current = settled_status();
+        assert!(refresh_needs_patch(
+            &current,
+            &PowerState::PoweredOn,
+            Some(true),
+            Some(true),
+            &["PEM".to_string()],
+            &[],
+            false,
+        ));
+    }
+
+    #[test]
+    fn an_already_recorded_eject_needs_no_patch() {
+        let mut current = settled_status();
+        current.install_media_detached = Some(true);
+        assert!(!refresh_needs_patch(
+            &current,
+            &PowerState::PoweredOn,
+            Some(true),
+            Some(true),
+            &["PEM".to_string()],
+            &[],
+            false,
+        ));
+    }
+
+    // ------------------------------------------------------------------
+    // ADR-0044, vSphere amendment: install media is ejected once the guest
+    // is installed, and GuestReady waits for it.
+    // ------------------------------------------------------------------
+
+    fn guest_ready_with_media(detached: Option<bool>) -> Condition {
+        use crate::guest::GuestProbe;
+
+        let next = status_with_observed_state(
+            VSphereMachineStatus {
+                guest_installed: Some(true),
+                install_media_detached: detached,
+                ..Default::default()
+            },
+            PowerState::PoweredOn,
+            Some(true),
+            GuestProbe::Installed,
+            Vec::new(),
+            1,
+            TpmObservation::plain(false),
+        );
+        next.conditions
+            .into_iter()
+            .find(|c| c.type_ == "GuestReady")
+            .expect("GuestReady published")
+    }
+
+    /// The invariant: a member whose installer is still attached is never
+    /// GuestReady, so a pool cannot bind it.
+    #[test]
+    fn guest_ready_waits_for_the_install_media_eject() {
+        let gr = guest_ready_with_media(Some(false));
+        assert_eq!(gr.status, "False");
+        assert_eq!(gr.reason, "InstallMediaAttached");
+    }
+
+    #[test]
+    fn guest_ready_is_true_once_the_install_media_is_ejected() {
+        let gr = guest_ready_with_media(Some(true));
+        assert_eq!(gr.status, "True");
+        assert_eq!(gr.reason, "GuestAnnounced");
+    }
+
+    #[test]
+    fn eject_is_due_only_for_an_installed_guest_not_yet_recorded() {
+        use super::super::eject_install_media_due;
+
+        assert!(eject_install_media_due(Some(true), None));
+        assert!(eject_install_media_due(Some(true), Some(false)));
+        // Sticky: never re-read once recorded.
+        assert!(!eject_install_media_due(Some(true), Some(true)));
+        // The installer is still running from it.
+        assert!(!eject_install_media_due(Some(false), None));
+        assert!(!eject_install_media_due(None, None));
+    }
+
+    const VM: &str = "vm-1";
+
+    fn fake() -> crate::client::FakeClient {
+        crate::client::FakeClient::new(crate::client::Inventory::default())
+    }
+
+    #[tokio::test]
+    async fn an_installed_deferred_clone_has_its_installer_ejected() {
+        use super::super::settle_install_media;
+
+        let client = fake();
+        client.attach_install_media(VM, 1);
+        let detached = settle_install_media(&client, VM, Some(true), None).await;
+        assert_eq!(detached, Some(true));
+        assert_eq!(client.ejected_vms(), vec![VM.to_string()]);
+        assert_eq!(client.install_media_of(VM), 0);
+    }
+
+    /// An Immediate clone has no CD-ROM: verified, recorded, nothing ejected.
+    #[tokio::test]
+    async fn a_clone_without_install_media_records_it_as_detached() {
+        use super::super::settle_install_media;
+
+        let client = fake();
+        let detached = settle_install_media(&client, VM, Some(true), None).await;
+        assert_eq!(detached, Some(true));
+        assert!(client.ejected_vms().is_empty());
+    }
+
+    #[tokio::test]
+    async fn nothing_is_ejected_while_the_installer_runs() {
+        use super::super::settle_install_media;
+
+        let client = fake();
+        client.attach_install_media(VM, 1);
+        let detached = settle_install_media(&client, VM, Some(false), None).await;
+        assert_eq!(detached, None);
+        assert_eq!(client.install_media_of(VM), 1);
+    }
+
+    #[tokio::test]
+    async fn a_recorded_eject_is_not_repeated() {
+        use super::super::settle_install_media;
+
+        let client = fake();
+        client.attach_install_media(VM, 1);
+        let detached = settle_install_media(&client, VM, Some(true), Some(true)).await;
+        assert_eq!(detached, Some(true));
+        assert!(client.ejected_vms().is_empty());
+    }
+
+    /// A failed eject (a locked tray, a vCenter fault) withholds GuestReady
+    /// and is retried, never reported as done.
+    #[tokio::test]
+    async fn a_failed_eject_stays_pending() {
+        use super::super::settle_install_media;
+
+        let client = fake();
+        client.attach_install_media(VM, 1);
+        client.fail(crate::client::FakeStep::EjectInstallMedia);
+        let detached = settle_install_media(&client, VM, Some(true), None).await;
+        assert_eq!(detached, Some(false));
+        assert_eq!(client.install_media_of(VM), 1);
+    }
+
+    // ------------------------------------------------------------------
+    // ADR-0034 amendment 2026-10-23: a provisioned VM is driven to
+    // `spec.desiredPowerState`. Found live: a Deferred install that ends
+    // with `install.poweroff: true` left the VM off forever, because the
+    // provider only observed power state after the clone.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn power_action_is_none_when_the_vm_is_already_in_the_desired_state() {
+        use super::super::power_action;
+
+        for state in [
+            PowerState::PoweredOn,
+            PowerState::PoweredOff,
+            PowerState::Suspended,
+        ] {
+            assert_eq!(power_action(&state, &state), None);
+        }
+    }
+
+    #[test]
+    fn power_action_drives_the_vm_to_the_desired_state() {
+        use super::super::power_action;
+
+        assert_eq!(
+            power_action(&PowerState::PoweredOn, &PowerState::PoweredOff),
+            Some(PowerState::PoweredOn)
+        );
+        // A suspended VM is resumed by powering it on.
+        assert_eq!(
+            power_action(&PowerState::PoweredOn, &PowerState::Suspended),
+            Some(PowerState::PoweredOn)
+        );
+        assert_eq!(
+            power_action(&PowerState::PoweredOff, &PowerState::PoweredOn),
+            Some(PowerState::PoweredOff)
+        );
+        assert_eq!(
+            power_action(&PowerState::Suspended, &PowerState::PoweredOn),
+            Some(PowerState::Suspended)
+        );
+    }
+
+    /// A fake VM already in `state`, seeded the only way the fake allows (a
+    /// first `set_power_state` on a moref records it without complaint).
+    async fn fake_vm_in(state: PowerState) -> crate::client::FakeClient {
+        use crate::client::VSphereClient;
+
+        let client = crate::client::FakeClient::new(crate::client::Inventory::default());
+        client.set_power_state(VM, state).await.unwrap();
+        client
+    }
+
+    #[tokio::test]
+    async fn a_powered_off_vm_is_powered_on() {
+        use super::super::converge_power_state;
+
+        let client = fake_vm_in(PowerState::PoweredOff).await;
+        let calls = client.power_state_call_count(VM);
+
+        let (state, retry) =
+            converge_power_state(&client, VM, &PowerState::PoweredOn, PowerState::PoweredOff).await;
+
+        assert_eq!(state, PowerState::PoweredOn);
+        assert!(!retry);
+        assert_eq!(client.power_state_of(VM), Some(PowerState::PoweredOn));
+        assert_eq!(client.power_state_call_count(VM), calls + 1);
+    }
+
+    /// The steady state costs no vCenter mutation, and the fake would fault
+    /// a redundant request (`InvalidPowerState`) just as vCenter does.
+    #[tokio::test]
+    async fn a_vm_already_in_the_desired_state_is_left_alone() {
+        use super::super::converge_power_state;
+
+        let client = fake_vm_in(PowerState::PoweredOn).await;
+        let calls = client.power_state_call_count(VM);
+
+        let (state, retry) =
+            converge_power_state(&client, VM, &PowerState::PoweredOn, PowerState::PoweredOn).await;
+
+        assert_eq!(state, PowerState::PoweredOn);
+        assert!(!retry);
+        assert_eq!(client.power_state_call_count(VM), calls);
+    }
+
+    #[tokio::test]
+    async fn a_vm_that_should_be_off_is_powered_off() {
+        use super::super::converge_power_state;
+
+        let client = fake_vm_in(PowerState::PoweredOn).await;
+
+        let (state, retry) =
+            converge_power_state(&client, VM, &PowerState::PoweredOff, PowerState::PoweredOn).await;
+
+        assert_eq!(state, PowerState::PoweredOff);
+        assert!(!retry);
+        assert_eq!(client.power_state_of(VM), Some(PowerState::PoweredOff));
+    }
+
+    /// A vCenter fault must not stop the observation from being recorded: the
+    /// real state is reported and the caller retries soon.
+    #[tokio::test]
+    async fn a_failed_power_change_reports_the_real_state_and_asks_for_a_retry() {
+        use super::super::converge_power_state;
+
+        let client = fake_vm_in(PowerState::PoweredOff).await;
+        client.fail(crate::client::FakeStep::SetPowerState);
+
+        let (state, retry) =
+            converge_power_state(&client, VM, &PowerState::PoweredOn, PowerState::PoweredOff).await;
+
+        assert_eq!(state, PowerState::PoweredOff);
+        assert!(retry);
+        assert_eq!(client.power_state_of(VM), Some(PowerState::PoweredOff));
     }
 }

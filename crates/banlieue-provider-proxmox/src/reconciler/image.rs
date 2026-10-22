@@ -230,6 +230,7 @@ async fn patch_vmimage_status(
         build_artifact: None,
         conditions: Vec::new(),
         observed_generation: Some(generation),
+        first_boot_sealing: None,
     };
     let patch = json!({
         "apiVersion": VMImage::api_version(&()).to_string(),

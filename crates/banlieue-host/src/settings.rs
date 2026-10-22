@@ -29,6 +29,14 @@ pub const DEFAULT_BRIDGE: &str = "virbr0";
 pub const DEFAULT_CLASS: &str = "default";
 /// Interfaces, as the kernel lists them.
 pub const SYS_CLASS_NET: &str = "/sys/class/net";
+/// The smallest `CPUWeight` systemd accepts.
+pub const MIN_CPU_WEIGHT: u32 = 1;
+/// The largest `CPUWeight` systemd accepts.
+pub const MAX_CPU_WEIGHT: u32 = 10_000;
+/// The largest percentage a `MemoryMax=N%` budget may name.
+pub const MAX_MEMORY_PERCENT: u32 = 100;
+/// Size suffixes systemd reads as powers of 1024.
+const SIZE_SUFFIXES: [char; 4] = ['K', 'M', 'G', 'T'];
 
 /// Settings shared by every `banlieue host cloud-hypervisor` verb.
 #[derive(Clone, Debug, Default, Args)]
@@ -77,6 +85,66 @@ pub struct HostArgs {
     /// only, unsupported.
     #[arg(long, env = "BANLIEUE_HOST_ALLOW_VIRTUALIZED_HOST")]
     pub allow_virtualized_host: bool,
+    /// CPUs the guests may run on together (`AllowedCPUs=` on the guests
+    /// slice, ADR-0105), a cpuset list such as `0-15,32-47`. Unset: any.
+    #[arg(long, env = "BANLIEUE_HOST_GUEST_CPUS", value_name = "CPUSET")]
+    pub guest_cpus: Option<String>,
+    /// The guests' CPU share against other workloads (`CPUWeight=`, 1-10000;
+    /// systemd's default is 100). Unset: systemd's default.
+    #[arg(long, env = "BANLIEUE_HOST_GUEST_CPU_WEIGHT", value_name = "WEIGHT")]
+    pub guest_cpu_weight: Option<u32>,
+    /// A ceiling on all guests' memory together (`MemoryMax=`): bytes with
+    /// an optional K/M/G/T suffix, or a percentage such as `60%`. Unset:
+    /// only each guest's own limit applies.
+    #[arg(long, env = "BANLIEUE_HOST_GUEST_MEMORY_MAX", value_name = "SIZE")]
+    pub guest_memory_max: Option<String>,
+    /// A ceiling on all guests' processes and threads together
+    /// (`TasksMax=`). Unset: each guest's own limit applies.
+    #[arg(long, env = "BANLIEUE_HOST_GUEST_TASKS_MAX", value_name = "COUNT")]
+    pub guest_tasks_max: Option<u64>,
+}
+
+/// The guests' shared budget on a host that runs other workloads
+/// (ADR-0105). Each field is one `banlieue-guests.slice` setting; unset
+/// emits no line.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct GuestSlice {
+    /// `AllowedCPUs=`.
+    pub cpus: Option<String>,
+    /// `CPUWeight=`.
+    pub cpu_weight: Option<u32>,
+    /// `MemoryMax=`.
+    pub memory_max: Option<String>,
+    /// `TasksMax=`.
+    pub tasks_max: Option<u64>,
+}
+
+impl GuestSlice {
+    /// Whether no limit at all is declared.
+    #[must_use]
+    pub fn is_unbounded(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// The `[Slice]` lines for what is declared, in a fixed order, each
+    /// newline-terminated; empty when nothing is.
+    #[must_use]
+    pub fn limits(&self) -> String {
+        let mut out = String::new();
+        if let Some(v) = &self.cpus {
+            out.push_str(&format!("AllowedCPUs={v}\n"));
+        }
+        if let Some(v) = self.cpu_weight {
+            out.push_str(&format!("CPUWeight={v}\n"));
+        }
+        if let Some(v) = &self.memory_max {
+            out.push_str(&format!("MemoryMax={v}\n"));
+        }
+        if let Some(v) = self.tasks_max {
+            out.push_str(&format!("TasksMax={v}\n"));
+        }
+        out
+    }
 }
 
 /// The registry section, when there is one.
@@ -109,6 +177,8 @@ pub struct Settings {
     pub registry: Option<Registry>,
     /// Accept a virtualized host.
     pub allow_virtualized: bool,
+    /// The guests' shared budget.
+    pub guest_slice: GuestSlice,
 }
 
 impl Settings {
@@ -154,6 +224,80 @@ fn pairs(name: &'static str, raw: &[String]) -> Result<Vec<(String, String)>, Er
         out.push((k.to_string(), v.to_string()));
     }
     Ok(out)
+}
+
+fn bad(name: &'static str, why: impl Into<String>) -> Error {
+    Error::Setting {
+        name,
+        why: why.into(),
+    }
+}
+
+/// A cpuset list: comma-separated `N` or `N-M` with `N <= M`.
+fn cpuset(raw: &str) -> Result<String, Error> {
+    const NAME: &str = "--guest-cpus";
+    let number = |t: &str| t.parse::<u32>().ok().filter(|_| !t.starts_with('+'));
+    for item in raw.split(',') {
+        let ok = match item.split_once('-') {
+            None => number(item).is_some(),
+            Some((lo, hi)) => matches!((number(lo), number(hi)), (Some(a), Some(b)) if a <= b),
+        };
+        if !ok {
+            return Err(bad(
+                NAME,
+                format!("{raw:?}: not a cpuset list like 0-15,32"),
+            ));
+        }
+    }
+    Ok(raw.to_string())
+}
+
+/// A memory ceiling: a positive size with an optional `K`/`M`/`G`/`T`
+/// suffix, or `1%`-`100%`.
+fn memory_max(raw: &str) -> Result<String, Error> {
+    const NAME: &str = "--guest-memory-max";
+    let positive = |t: &str| {
+        !t.is_empty()
+            && t.chars().all(|c| c.is_ascii_digit())
+            && t.parse::<u64>().is_ok_and(|n| n > 0)
+    };
+    let ok = match raw.strip_suffix('%') {
+        Some(p) => positive(p) && p.parse::<u32>().is_ok_and(|n| n <= MAX_MEMORY_PERCENT),
+        None => positive(raw.strip_suffix(SIZE_SUFFIXES).unwrap_or(raw)),
+    };
+    if ok {
+        return Ok(raw.to_string());
+    }
+    Err(bad(
+        NAME,
+        format!("{raw:?}: not a size like 400G, 1048576 or 60%"),
+    ))
+}
+
+/// Validate the budget flags (ADR-0105): each value ends up in a root-owned
+/// unit file, so it is checked before it is rendered.
+fn guest_slice(args: &HostArgs) -> Result<GuestSlice, Error> {
+    if let Some(w) = args.guest_cpu_weight
+        && !(MIN_CPU_WEIGHT..=MAX_CPU_WEIGHT).contains(&w)
+    {
+        return Err(bad(
+            "--guest-cpu-weight",
+            format!("{w}: {MIN_CPU_WEIGHT} to {MAX_CPU_WEIGHT}"),
+        ));
+    }
+    if args.guest_tasks_max == Some(0) {
+        return Err(bad("--guest-tasks-max", "0 would forbid every guest"));
+    }
+    Ok(GuestSlice {
+        cpus: args.guest_cpus.as_deref().map(cpuset).transpose()?,
+        cpu_weight: args.guest_cpu_weight,
+        memory_max: args
+            .guest_memory_max
+            .as_deref()
+            .map(memory_max)
+            .transpose()?,
+        tasks_max: args.guest_tasks_max,
+    })
 }
 
 /// The candidate mount with the most free space, as a storage class path.
@@ -233,6 +377,7 @@ pub fn resolve(args: &HostArgs, probe: &dyn Probe) -> Result<Settings, Error> {
         uid_count: args.guest_uid_count,
         registry,
         allow_virtualized: args.allow_virtualized_host,
+        guest_slice: guest_slice(args)?,
     })
 }
 

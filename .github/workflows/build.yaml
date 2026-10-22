@@ -383,9 +383,15 @@ jobs:
 
   # ─────────────────────────────────────────────────────────────────────────────
   # Docker — build both image variants (distroless + Chainguard), multi-arch.
-  # Images BUILD on every event (validates both Dockerfiles); they are PUSHED,
-  # Cosign-signed, SBOM'd and attested only on push-to-main + release — so fork
-  # PRs never need packages:write. See ADR-0006.
+  # Images BUILD on every event (validates both Dockerfiles). They are PUSHED and
+  # Cosign-signed on push-to-main, release, and pull requests whose head branch
+  # lives in this repository (tags `pr-<N>[-distroless]` and
+  # `sha-<short>[-distroless]`, never `latest` or a version), so a PR can be
+  # tested on a cluster before it merges. Pushing such a branch already needs
+  # write access to the repository, the same trust as a push to main. Fork PRs
+  # stay build-only: their token has no packages:write, and their code is not
+  # ours to publish. SBOM, attestation and the Grype gates stay main/release
+  # only: a PR image is a test artifact, not a release. See ADR-0006.
   # ─────────────────────────────────────────────────────────────────────────────
   docker:
     name: 🐳 Image - ${{ matrix.variant.name }}
@@ -443,7 +449,7 @@ jobs:
           context: .
           file: ${{ matrix.variant.dockerfile }}
           platforms: linux/amd64,linux/arm64
-          push: ${{ github.event_name != 'pull_request' }}
+          push: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
@@ -454,12 +460,14 @@ jobs:
           sbom: true
           provenance: true
 
+      # Every image this job pushes is signed, PR images included, so nothing
+      # unsigned ever sits in the registry beside the release images.
       - name: Install Cosign
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
       - name: Cosign sign (keyless, by digest)
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         run: cosign sign --yes "ghcr.io/${{ github.repository }}@${{ steps.docker_build.outputs.digest }}"
 
       - name: Generate image SBOM

@@ -405,6 +405,16 @@ Full worked examples:
     drop `tpmEnabled` from the `VMClass`. `manual` also passes — it is the
     documented escape hatch for a build that is not Kairos-driven.
 
+    The third option keeps `immediate`: declare `firstBootSealing: {}` on
+    the `VMImage` and run `banlieue-controller` with
+    `--enable-first-boot-sealing` (ADR-0088). Every clone then seals
+    `COS_PERSISTENT` to its own vTPM on its first boot, and the template is
+    installed only once. See
+    [`23-vmimage-immediate-first-boot-sealing.yaml`](https://github.com/firestoned/banlieue/blob/main/examples/23-vmimage-immediate-first-boot-sealing.yaml).
+    The operator cloud-config for it must not set
+    `install.encrypted_partitions`, and needs a Kairos with first-boot
+    sealing (kairos-io/kairos#4924, not in a stable release yet).
+
     A `VMImage` with **no `template` block at all** (a `Template`- or
     `BackingFile`-source image) is rejected on the same grounds: it is a
     pre-built, and therefore pre-laid, disk.
@@ -455,6 +465,20 @@ everywhere at once.
 zone's folder; the zone's `message` names the folder searched), `ConnectFailed`,
 `LookupFailed`, `NoFailureDomains`, `NoVSphereSource`.
 
+A zone with `reason=ImportFailed`: its import Job failed; read the Job's
+logs (`kubectl -n banlieue-imagebuild logs job/<the Job named in the zone's
+message>`). The provider deletes and recreates a failed Job once it has been
+failed for 10 minutes; to retry at once, run
+`kubectl annotate vmimage <image> banlieue.io/force-reimport=true` (the
+provider clears it). One cause has its own message: with
+`forceUpload`, `cannot replace [<datastore>] banlieue-images/<image>.iso: it is
+connected to the CD-ROM of running VM(s) …`. vCenter will not delete an ISO
+that a running VM has open, so the Job stops before destroying the zone's
+template. The provider ejects the ISO from an installed `Deferred` VM it
+manages (next item), so this clears on its own once those VMs have
+installed. For a VM banlieue doesn't manage, eject the CD-ROM in vCenter
+(`govc device.cdrom.eject -vm <vm>`).
+
 `VirtualMachine` stuck at `InfrastructureReady=False / ProvisionFailed` with a
 "template ... not found" message on its `VSphereMachine`: the clone looked for a
 template name that is not in the zone's folder.
@@ -474,6 +498,14 @@ template name that is not in the zone's folder.
 kubectl -n banlieue-system get vspheremachine <name> -o jsonpath='{.spec.template}{"  "}{.spec.templateFolder}{"\n"}'
 ```
 
+A `VirtualMachine` that keeps starting again after you stopped it in vCenter:
+the provider drives every VM to `spec.desiredPowerState` (ADR-0034, amended
+2026-10-23), so a vCenter-side power-off is reverted within a few minutes. Set
+`desiredPowerState: PoweredOff` on the `VirtualMachine` to hold it off. A VM
+that is off while `desiredPowerState` is `PoweredOn` and does not start: look
+at the provider log for `power state change failed`, and at the provider's
+vCenter role (`VirtualMachine.Interact.PowerOn`).
+
 `VirtualMachine` stuck `Scheduled=False`:
 
 - `reason=ImageNotReady` — the `VMImage` isn't `ready` on any candidate provider
@@ -491,7 +523,45 @@ kubectl -n banlieue-system get vspheremachine <name> -o jsonpath='{.spec.templat
   `VMImage` whose `installMode` is `immediate` (or which has no `template`
   block at all). The vTPM would have nothing to seal against, so the VM is
   refused rather than built unencrypted (ADR-0048). This one never reaches
-  the scheduler, so `Scheduled` is deliberately left untouched.
+  the scheduler, so `Scheduled` is deliberately left untouched. Also raised
+  for `firstBootSealing` on an image whose class has no vTPM (ADR-0088).
+- `reason=FirstBootSealingDisabled` — the `VMImage` declares
+  `firstBootSealing` but `banlieue-controller` runs without
+  `--enable-first-boot-sealing`. The VM is refused rather than built as if
+  the field were absent.
+- `reason=FirstBootSealingUnsupported` (`Scheduled`) — a sealing vTPM VM
+  matched only Cloud Hypervisor providers, which are not cleared for it yet
+  (ADR-0088 Open question 2).
+
+`GuestReady=False`, `reason=InstallMediaAttached`: the installed guest
+announced itself, but the provider could not eject its install ISO yet
+(ADR-0044). It retries every few minutes. If the guest holds the CD-ROM tray
+locked (installed Kairos guests do), vCenter asks "Disconnect anyway and
+override the lock?" and the provider answers Yes itself; it answers no other
+question, so a different pending question on the VM needs a human. The
+usual remaining cause is a vCenter role without
+`VirtualMachine.Interact.SetCDMedia` / `.DeviceConnection`
+([least privilege](../security/vsphere-least-privilege.md)); the provider log
+names the fault. Once the eject succeeds, `status.installMediaDetached` is
+`true`.
+
+`GuestReady=False` on a first-boot sealing VM:
+
+- `reason=FirstBootSealingUnverified` — the installed guest announced itself
+  but has not reported every listed partition in `guestinfo.banlieue.sealed`.
+  Check `kubectl get vspheremachine <name> -o jsonpath='{.status.sealedPartitions}'`.
+- `reason=FirstBootSealingTimeout` — no complete report within
+  `firstBootSealing.timeoutSeconds` (default 600) of power-on. A clone that
+  cannot seal (no vTPM, a Kairos without first-boot sealing, an upstream
+  defect) halts in its initramfs and never reaches the stage that reports:
+  open the VM console in vCenter for the cause.
+
+`VMImage.status.buildArtifact` `Failed` with `reason=FirstBootSealingConflict`:
+an operator cloud-config of an `immediate` image with `firstBootSealing` sets
+`install.encrypted_partitions`. The template installs with no vTPM, so that
+would fail; remove it, banlieue writes the policy for first boot itself.
+`reason=FirstBootSealingInvalid`: a partition that is not a plain label or is
+a system partition.
 
 `VSphereMachine` not `Ready` with `reason=VMNameConflict`: a VM with the
 machine's name already sits in the clone's target folder (`spec.folder`, or

@@ -191,6 +191,12 @@ pub trait LibvirtMachineClient: Send {
         domain_name: &str,
         domain_uuid: &str,
     ) -> crate::guest::EkProbe;
+
+    /// The partitions the domain's guest reports sealed (ADR-0088).
+    ///
+    /// Infallible for the same reason as `probe_guest`: nothing reported is
+    /// the state of every boot before the report stage runs.
+    async fn read_sealed_report(&mut self, domain: &Domain) -> Vec<String>;
 }
 
 /// Diagnostic helper: a domain's addresses as a printable string,
@@ -376,6 +382,10 @@ where
         crate::guest::read_ek_certificate(&mut self.session, domain, domain_name, domain_uuid).await
     }
 
+    async fn read_sealed_report(&mut self, domain: &Domain) -> Vec<String> {
+        crate::guest::read_sealed_report(&mut self.session, domain).await
+    }
+
     async fn domain_addresses(
         &mut self,
         domain: &Domain,
@@ -464,6 +474,10 @@ pub struct FakeMachineClient {
     /// it was handed would be more permissive than the thing it stands in
     /// for, which is how the `DOMAIN_DEFINE_XML` bug got in.
     pub ek_certificates: std::collections::BTreeMap<String, String>,
+    /// Raw sealing reports by domain name, as a guest would write
+    /// `/run/banlieue/sealed` (ADR-0088). Parsed with the real client's
+    /// parser, so the fake is never more permissive than a guest is.
+    pub sealed_reports: std::collections::BTreeMap<String, String>,
     /// When set, every call fails with this message.
     pub fail_with: Option<String>,
 }
@@ -557,6 +571,14 @@ impl LibvirtMachineClient for FakeMachineClient {
             return crate::guest::EkProbe::Mismatch;
         }
         crate::guest::EkProbe::Published(pem.clone())
+    }
+
+    async fn read_sealed_report(&mut self, domain: &Domain) -> Vec<String> {
+        self.record("read_sealed_report", &domain.name);
+        self.sealed_reports
+            .get(&domain.name)
+            .map(|r| banlieue_provider_sdk::sealing::parse_sealed_report(r))
+            .unwrap_or_default()
     }
 
     async fn lookup_pool(&mut self, name: &str) -> Result<Option<StoragePool>> {

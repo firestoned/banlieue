@@ -1447,4 +1447,97 @@ mod tests {
             Some(kube::api::PropagationPolicy::Foreground)
         );
     }
+
+    // ---- merge_with_sealing (ADR-0088) -----------------------------------
+
+    const OPERATOR: &str = "users:\n  - name: kairos\n";
+
+    #[test]
+    fn without_sealing_the_merge_is_exactly_what_it_was() {
+        let merged = merge_with_sealing(&[OPERATOR], None).unwrap();
+        assert_eq!(
+            merged,
+            MergedCloudConfig::Ready {
+                yaml: crate::cloud_config_merge::merge_cloud_configs(&[OPERATOR]).unwrap(),
+                sealing_layer: false,
+            }
+        );
+    }
+
+    #[test]
+    fn with_sealing_the_layer_is_merged_last_and_reported() {
+        let sealing = banlieue_api::common::FirstBootSealing::default();
+        let req = SealingRequest {
+            sealing: &sealing,
+            kind: &BuildArtifactKind::Iso,
+            install_mode: banlieue_api::banlieue::InstallMode::Immediate,
+        };
+        let MergedCloudConfig::Ready {
+            yaml,
+            sealing_layer,
+        } = merge_with_sealing(&[OPERATOR], Some(req)).unwrap()
+        else {
+            panic!("expected a merged cloud-config");
+        };
+        assert!(sealing_layer);
+        assert!(yaml.starts_with("#cloud-config\n"), "yip needs the header");
+        assert!(yaml.contains("name: kairos"), "operator content survives");
+        assert!(yaml.contains(crate::first_boot_sealing::POLICY_FILE));
+    }
+
+    /// The layer alone is a cloud-config: an image with no operator layers
+    /// still needs a merged Secret once it declares sealing.
+    #[test]
+    fn sealing_without_operator_layers_still_produces_a_cloud_config() {
+        let sealing = banlieue_api::common::FirstBootSealing::default();
+        let req = SealingRequest {
+            sealing: &sealing,
+            kind: &BuildArtifactKind::Iso,
+            install_mode: banlieue_api::banlieue::InstallMode::Immediate,
+        };
+        let MergedCloudConfig::Ready {
+            yaml,
+            sealing_layer,
+        } = merge_with_sealing(&[], Some(req)).unwrap()
+        else {
+            panic!("expected a merged cloud-config");
+        };
+        assert!(sealing_layer);
+        assert!(yaml.contains(crate::first_boot_sealing::REPORT_STEP_NAME));
+    }
+
+    #[test]
+    fn a_conflicting_operator_layer_refuses_the_build_instead_of_erroring() {
+        let sealing = banlieue_api::common::FirstBootSealing::default();
+        let req = SealingRequest {
+            sealing: &sealing,
+            kind: &BuildArtifactKind::Iso,
+            install_mode: banlieue_api::banlieue::InstallMode::Immediate,
+        };
+        let operator = "install:\n  encrypted_partitions:\n    - COS_PERSISTENT\n";
+        match merge_with_sealing(&[operator], Some(req)).unwrap() {
+            MergedCloudConfig::SealingRefused(e) => {
+                assert_eq!(
+                    e.reason(),
+                    crate::first_boot_sealing::REASON_FIRST_BOOT_SEALING_CONFLICT
+                );
+            }
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sealing_refused_status_is_a_failed_build_naming_the_reason() {
+        let err = crate::first_boot_sealing::SealingLayerError::Conflict("why".to_string());
+        let s =
+            sealing_refused_status("img-build", BuildArtifactKind::Iso, Some("sha256:00"), &err);
+        assert_eq!(s.phase, BuildArtifactPhase::Failed);
+        assert_eq!(
+            s.reason.as_deref(),
+            Some(crate::first_boot_sealing::REASON_FIRST_BOOT_SEALING_CONFLICT)
+        );
+        assert_eq!(s.message.as_deref(), Some("why"));
+        assert!(!s.first_boot_sealing_layer);
+        assert_eq!(s.checksum.as_deref(), Some("sha256:00"));
+    }
 }

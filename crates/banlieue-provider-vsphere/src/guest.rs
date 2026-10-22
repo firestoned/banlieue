@@ -76,6 +76,35 @@ pub async fn probe_guest(
     Ok(classify(value.as_deref()))
 }
 
+/// `extraConfig` key a first-boot sealing guest writes its sealing report to
+/// (ADR-0088 Decision 5): the listed partitions that are LUKS containers,
+/// comma separated.
+pub const SEALED_KEY: &str = "guestinfo.banlieue.sealed";
+
+/// Read `vm_moref`'s sealing report from `config.extraConfig`.
+///
+/// Empty while the VM is stopped (the report is runtime state, like the phase
+/// marker) and while no report has been written. The caller folds the result
+/// into the sticky `status.sealedPartitions`.
+///
+/// # Errors
+/// Propagates a transport/authentication failure from
+/// [`VSphereClient::guest_info`].
+pub async fn probe_sealed(
+    client: &dyn VSphereClient,
+    vm_moref: &str,
+    power_state: PowerState,
+) -> Result<Vec<String>> {
+    if power_state != PowerState::PoweredOn {
+        return Ok(Vec::new());
+    }
+    let value = client.guest_info(vm_moref, SEALED_KEY).await?;
+    Ok(value
+        .as_deref()
+        .map(banlieue_provider_sdk::sealing::parse_sealed_report)
+        .unwrap_or_default())
+}
+
 /// Classify a raw `extraConfig` value. Exact match after trimming — a
 /// substring test would let `not-installed` read as installed.
 fn classify(value: Option<&str>) -> GuestProbe {

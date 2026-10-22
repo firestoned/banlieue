@@ -14,7 +14,7 @@ use crate::fetch::Fetch;
 use crate::ops::{Cmd, Host, Kind, Owner, Probe};
 use crate::paths::{
     BANLIEUE_USER, BIN_DIR, CONF_DIR, CREDENTIALS_DIR, EK_CA_CERT, EK_CA_DIR, GUEST_NAME_PREFIX,
-    HOST_CONFIG, KUBECONFIG_PATH, POLKIT_RULE, PROVIDER_BINARY, PROVIDER_UNIT,
+    GUEST_SLICE_UNIT, HOST_CONFIG, KUBECONFIG_PATH, POLKIT_RULE, PROVIDER_BINARY, PROVIDER_UNIT,
     REGISTRY_CREDENTIALS_DIR, RUN_ROOT, STATE_ROOT, STATE_SUBDIRS, SWTPM_CONF_DIR,
     SWTPM_SETUP_CONF, SYSTEMD_UNIT_DIR, TMPFILES_CONF, UNIT_GLOBS, USERDB_DIR, VMM_BINARY,
 };
@@ -707,7 +707,7 @@ pub fn provider(host: &dyn Host, s: &Settings, o: &Options) -> Result<(), Error>
     let values = render::values(s, host);
     for t in render::UNIT_TEMPLATES
         .iter()
-        .chain([&render::PROVIDER_UNIT])
+        .chain([&render::GUEST_SLICE, &render::PROVIDER_UNIT])
     {
         let text = render::render(t, &values)?;
         put(
@@ -717,6 +717,12 @@ pub fn provider(host: &dyn Host, s: &Settings, o: &Options) -> Result<(), Error>
             MODE_PUBLIC_FILE,
             &Owner::root(),
         )?;
+    }
+    if s.guest_slice.is_unbounded() {
+        note(format!(
+            "{GUEST_SLICE_UNIT} sets no limit: guests may take all of this host's CPU and memory \
+             (--guest-cpus, --guest-cpu-weight, --guest-memory-max, --guest-tasks-max)"
+        ));
     }
     let systemd = host.systemd_running();
     if systemd {

@@ -236,6 +236,74 @@ impl CloudConfigSource {
     }
 }
 
+/// The partition a Kairos node seals by default: its persistent data
+/// partition, the one `install.encrypted_partitions` names in practice.
+pub const DEFAULT_FIRST_BOOT_SEALING_PARTITION: &str = "COS_PERSISTENT";
+
+/// How long a clone's first boot may take to report itself sealed before
+/// `GuestReady` gives up with `FirstBootSealingTimeout` (ADR-0088 Decision 5).
+/// Ten minutes covers a sealing pass (seconds for an empty partition) plus a
+/// slow first boot with plenty to spare.
+pub const DEFAULT_FIRST_BOOT_SEALING_TIMEOUT_SECONDS: u32 = 600;
+
+/// Lower and upper bounds on [`FirstBootSealing::timeout_seconds`]: shorter
+/// than a minute would fail a healthy first boot, longer than a day would leave
+/// a halted clone unreported for longer than anyone would wait for it.
+const MIN_FIRST_BOOT_SEALING_TIMEOUT_SECONDS: u32 = 60;
+const MAX_FIRST_BOOT_SEALING_TIMEOUT_SECONDS: u32 = 86_400;
+
+fn default_first_boot_sealing_partitions() -> Vec<String> {
+    vec![DEFAULT_FIRST_BOOT_SEALING_PARTITION.to_string()]
+}
+
+fn default_first_boot_sealing_timeout_seconds() -> u32 {
+    DEFAULT_FIRST_BOOT_SEALING_TIMEOUT_SECONDS
+}
+
+/// A declaration that every clone of an image seals the listed partitions to
+/// **its own** vTPM on its first boot, through Kairos's `encrypt-pending`
+/// step, rather than at install time (ADR-0088).
+///
+/// Declared on `VMImage.spec.firstBootSealing`, and copied by
+/// `banlieue-controller` onto the infrastructure machine's spec so the
+/// provider knows which partitions the guest must report sealed before
+/// `GuestReady`. `firstBootSealing: {}` takes the defaults.
+///
+/// First boot **reformats** each listed partition: anything an image author
+/// baked into it is lost on every clone. `COS_OEM` is never sealed, so
+/// per-VM user-data persisted there stays plaintext.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct FirstBootSealing {
+    /// Kairos partition labels to seal on first boot. Defaults to
+    /// `[COS_PERSISTENT]`. `COS_OEM`, `COS_STATE`, `COS_RECOVERY` and
+    /// `COS_GRUB` are refused at admission, mirroring Kairos's own refusal.
+    #[serde(default = "default_first_boot_sealing_partitions")]
+    #[schemars(length(min = 1))]
+    pub partitions: Vec<String>,
+
+    /// Seconds from the machine's power-on (its infrastructure `Ready`
+    /// transition) within which the guest must report every listed partition
+    /// sealed; after that `GuestReady` is `False` with reason
+    /// `FirstBootSealingTimeout`. A clone that cannot seal halts in its
+    /// initramfs and never reports anything, so this is how it is noticed.
+    #[serde(default = "default_first_boot_sealing_timeout_seconds")]
+    #[schemars(range(
+        min = MIN_FIRST_BOOT_SEALING_TIMEOUT_SECONDS,
+        max = MAX_FIRST_BOOT_SEALING_TIMEOUT_SECONDS
+    ))]
+    pub timeout_seconds: u32,
+}
+
+impl Default for FirstBootSealing {
+    fn default() -> Self {
+        Self {
+            partitions: default_first_boot_sealing_partitions(),
+            timeout_seconds: DEFAULT_FIRST_BOOT_SEALING_TIMEOUT_SECONDS,
+        }
+    }
+}
+
 /// Minimal LabelSelector mirroring the k8s `metav1.LabelSelector` shape.
 ///
 /// We re-declare it here rather than re-exporting `k8s_openapi`'s type because

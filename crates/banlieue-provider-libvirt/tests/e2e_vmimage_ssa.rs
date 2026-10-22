@@ -138,6 +138,7 @@ async fn two_providers_and_the_imagebuilder_can_share_one_vmimage_status() {
             template: None,
             iso_overlay: None,
             trusted_boot: None,
+            first_boot_sealing: None,
         },
         status: None,
     };
@@ -405,6 +406,7 @@ async fn create_image(api: &Api<VMImage>) {
             template: None,
             iso_overlay: None,
             trusted_boot: None,
+            first_boot_sealing: None,
         },
         status: None,
     };

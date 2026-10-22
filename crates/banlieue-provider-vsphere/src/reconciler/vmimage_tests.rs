@@ -450,6 +450,7 @@ mod tests {
             message: None,
             checksum: None,
             oci_artifact: None,
+            first_boot_sealing_layer: false,
         }
     }
 
@@ -800,6 +801,7 @@ mod tests {
                 }),
                 iso_overlay: None,
                 trusted_boot: None,
+                first_boot_sealing: None,
             },
             status: None,
         };
@@ -1005,6 +1007,7 @@ mod tests {
                 template: None,
                 iso_overlay: None,
                 trusted_boot: None,
+                first_boot_sealing: None,
             },
             status: None,
         };
@@ -1127,8 +1130,92 @@ mod tests {
                 template: None,
                 iso_overlay: None,
                 trusted_boot: None,
+                first_boot_sealing: None,
             },
             status: None,
         };
+    }
+
+    // ---------- ADR-0020, amendment 2026-10-23: failed imports retry ------
+
+    fn failed_job_at(failed_at_epoch: i64) -> k8s_openapi::api::batch::v1::Job {
+        use k8s_openapi::api::batch::v1::{Job, JobCondition, JobStatus};
+        use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
+
+        Job {
+            status: Some(JobStatus {
+                failed: Some(2),
+                conditions: Some(vec![JobCondition {
+                    type_: "Failed".to_string(),
+                    status: "True".to_string(),
+                    reason: Some("BackoffLimitExceeded".to_string()),
+                    last_transition_time: Some(Time(
+                        k8s_openapi::jiff::Timestamp::from_second(failed_at_epoch).unwrap(),
+                    )),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn at(epoch: i64) -> k8s_openapi::jiff::Timestamp {
+        k8s_openapi::jiff::Timestamp::from_second(epoch).unwrap()
+    }
+
+    const FAILED_AT: i64 = 1_000_000;
+
+    #[test]
+    fn a_failed_import_is_retried_once_the_interval_has_passed() {
+        use super::super::{IMPORT_RETRY_AFTER_SECS, import_retry_due};
+
+        let job = failed_job_at(FAILED_AT);
+        assert!(!import_retry_due(
+            &job,
+            at(FAILED_AT + IMPORT_RETRY_AFTER_SECS - 1)
+        ));
+        assert!(import_retry_due(
+            &job,
+            at(FAILED_AT + IMPORT_RETRY_AFTER_SECS)
+        ));
+    }
+
+    #[test]
+    fn a_running_or_succeeded_import_is_never_retried() {
+        use super::super::import_retry_due;
+        use k8s_openapi::api::batch::v1::{Job, JobStatus};
+
+        let far_future = at(FAILED_AT * 2);
+        let running = Job {
+            status: Some(JobStatus::default()),
+            ..Default::default()
+        };
+        assert!(!import_retry_due(&running, far_future));
+        let succeeded = Job {
+            status: Some(JobStatus {
+                succeeded: Some(1),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(!import_retry_due(&succeeded, far_future));
+    }
+
+    /// Without a Failed condition there is nothing to time from; a guess
+    /// would retry a Job that may still be failing over right now.
+    #[test]
+    fn a_failed_import_without_a_failed_condition_is_not_retried() {
+        use super::super::import_retry_due;
+        use k8s_openapi::api::batch::v1::{Job, JobStatus};
+
+        let job = Job {
+            status: Some(JobStatus {
+                failed: Some(1),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(!import_retry_due(&job, at(FAILED_AT * 2)));
     }
 }

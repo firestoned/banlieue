@@ -36,10 +36,11 @@ use vim_rs::types::enums::{
 use vim_rs::types::structs::{
     DistributedVirtualSwitchPortConnection, ManagedObjectReference, OptionValue,
     ParaVirtualScsiController, PlacementAction, PlacementSpec, VirtualBusLogicController,
-    VirtualCdrom, VirtualCdromIsoBackingInfo, VirtualController, VirtualDevice,
-    VirtualDeviceConfigSpec, VirtualDeviceConnectInfo, VirtualDeviceDeviceBackingInfo,
-    VirtualDeviceFileBackingInfo, VirtualDevicePciBusSlotInfo, VirtualDisk,
-    VirtualDiskFlatVer2BackingInfo, VirtualE1000, VirtualE1000E, VirtualEthernetCard,
+    VirtualCdrom, VirtualCdromIsoBackingInfo, VirtualCdromRemotePassthroughBackingInfo,
+    VirtualController, VirtualDevice, VirtualDeviceConfigSpec, VirtualDeviceConnectInfo,
+    VirtualDeviceDeviceBackingInfo, VirtualDeviceFileBackingInfo, VirtualDevicePciBusSlotInfo,
+    VirtualDeviceRemoteDeviceBackingInfo, VirtualDisk, VirtualDiskFlatVer2BackingInfo,
+    VirtualE1000, VirtualE1000E, VirtualEthernetCard,
     VirtualEthernetCardDistributedVirtualPortBackingInfo, VirtualEthernetCardNetworkBackingInfo,
     VirtualIdeController, VirtualLsiLogicController, VirtualLsiLogicSasController,
     VirtualMachineBootOptions, VirtualMachineBootOptionsBootableCdromDevice,
@@ -1382,6 +1383,54 @@ impl VSphereClient for VimClientImpl {
             .map_err(|e| Error::Vsphere(format!("VirtualMachine.config({vm_moref}): {e}")))
     }
 
+    #[instrument(name = "vsphere.eject_install_media", skip_all, fields(vm_moref = %vm_moref))]
+    async fn eject_install_media(&self, vm_moref: &str) -> Result<usize> {
+        let cdroms = self.raw_iso_cdroms(vm_moref).await?;
+        if cdroms.is_empty() {
+            return Ok(0);
+        }
+        let spec = build_eject_cdroms_reconfigure_spec(&cdroms);
+        let vmm = VimVirtualMachine::new(self.client.clone(), vm_moref);
+        let task = vmm.reconfig_vm_task(&spec).await.map_err(|e| {
+            Error::Vsphere(format!(
+                "ReconfigVM_Task({vm_moref}) [eject install media]: {e}"
+            ))
+        })?;
+        self.wait_for_eject_task(&task.value, vm_moref).await?;
+        info!(vm_moref, ejected = cdroms.len(), "ejected install media");
+        Ok(cdroms.len())
+    }
+
+    #[instrument(name = "vsphere.vms_holding_iso", skip_all, fields(datastore_moref = %datastore_moref, iso_path = %iso_path))]
+    async fn vms_holding_iso(&self, datastore_moref: &str, iso_path: &str) -> Result<Vec<String>> {
+        let vms = VimDatastore::new(self.client.clone(), datastore_moref)
+            .vm()
+            .await
+            .map_err(|e| Error::Vsphere(format!("Datastore.vm({datastore_moref}): {e}")))?
+            .unwrap_or_default();
+        let mut holders = Vec::new();
+        for vm in vms {
+            let pv = self
+                .client
+                .fetch_property_raw("", MO_TYPE_VIRTUAL_MACHINE, &vm.value, "config")
+                .await
+                .map_err(|e| Error::Vsphere(format!("VirtualMachine.config({}): {e}", vm.value)))?;
+            // A VM still being created has no config, and so no CD-ROM yet.
+            let Some(vim_rs::core::client::PropertyValue::Json(bytes)) = pv else {
+                continue;
+            };
+            let cdroms = iso_cdroms_from_raw_config(&bytes)
+                .map_err(|e| Error::Vsphere(format!("VirtualMachine.config({}): {e}", vm.value)))?;
+            if !holds_iso(&cdroms, iso_path) {
+                continue;
+            }
+            let (name, _) = vm_identity_from_raw_config(&bytes, MACHINE_UID_KEY)
+                .map_err(|e| Error::Vsphere(format!("VirtualMachine.config({}): {e}", vm.value)))?;
+            holders.push(name.unwrap_or_else(|| vm.value.clone()));
+        }
+        Ok(holders)
+    }
+
     #[instrument(name = "vsphere.set_custom_attributes", skip_all, fields(vm_moref = %vm_moref))]
     async fn set_custom_attributes(
         &self,
@@ -1550,6 +1599,91 @@ fn tpm_endorsement_certificates_from_raw_config(
 }
 
 impl VimClientImpl {
+    /// The ISO-backed CD-ROMs of `vm_moref`, from its raw `config` (see
+    /// [`iso_cdroms_from_raw_config`] for why raw). A VM with no config yet
+    /// has none.
+    async fn raw_iso_cdroms(&self, vm_moref: &str) -> Result<Vec<IsoCdrom>> {
+        let pv = self
+            .client
+            .fetch_property_raw("", MO_TYPE_VIRTUAL_MACHINE, vm_moref, "config")
+            .await
+            .map_err(|e| Error::Vsphere(format!("VirtualMachine.config({vm_moref}): {e}")))?;
+        let Some(vim_rs::core::client::PropertyValue::Json(bytes)) = pv else {
+            return Ok(Vec::new());
+        };
+        iso_cdroms_from_raw_config(&bytes)
+            .map_err(|e| Error::Vsphere(format!("VirtualMachine.config({vm_moref}): {e}")))
+    }
+
+    /// [`Self::wait_for_task`] for the install-media eject, answering the one
+    /// question it can raise (ADR-0044 vSphere amendment, Decision 4 as
+    /// revised 2026-10-23). An installed guest that holds the CD-ROM tray
+    /// locked makes vCenter ask `msg.cdromdisconnect.locked`, and the task
+    /// waits on the answer; left alone, vCenter answers No itself after a few
+    /// minutes and the eject fails, every pass. The guest no longer needs its
+    /// installer, so this answers Yes. Any other question is left for a
+    /// human (see [`cdrom_lock_question_answer`]).
+    async fn wait_for_eject_task(&self, task_moref: &str, vm_moref: &str) -> Result<()> {
+        const WHAT: &str = "eject install media";
+        let task = Task::new(self.client.clone(), task_moref);
+        let vmm = VimVirtualMachine::new(self.client.clone(), vm_moref);
+        let mut answered: Option<String> = None;
+        for _ in 0..TASK_POLL_MAX_ATTEMPTS {
+            let info = task
+                .info()
+                .await
+                .map_err(|e| Error::Vsphere(format!("Task.info({task_moref}) [{WHAT}]: {e}")))?;
+            match info.state {
+                TaskInfoStateEnum::Success => return Ok(()),
+                TaskInfoStateEnum::Error => {
+                    let msg = info
+                        .error
+                        .map(|f| format!("{f:?}"))
+                        .unwrap_or_else(|| "no fault detail".to_string());
+                    return Err(Error::Vsphere(format!("{WHAT} task failed: {msg}")));
+                }
+                _ => {}
+            }
+            // The whole `runtime`, raw: one property per request is what the
+            // JSON API serves, and `question` is absent when there is none.
+            let pv = self
+                .client
+                .fetch_property_raw("", MO_TYPE_VIRTUAL_MACHINE, vm_moref, "runtime")
+                .await
+                .map_err(|e| Error::Vsphere(format!("VirtualMachine.runtime({vm_moref}): {e}")))?;
+            let question = match pv {
+                Some(vim_rs::core::client::PropertyValue::Json(bytes)) => {
+                    serde_json::from_slice::<serde_json::Value>(&bytes)
+                        .ok()
+                        .and_then(|runtime| runtime.get("question").cloned())
+                }
+                _ => None,
+            };
+            if let Some(question) = question
+                && let Some((question_id, yes)) =
+                    cdrom_lock_question_answer(question.to_string().as_bytes()).map_err(|e| {
+                        Error::Vsphere(format!("VirtualMachine.runtime({vm_moref}).question: {e}"))
+                    })?
+                && answered.as_deref() != Some(question_id.as_str())
+            {
+                warn!(
+                    vm_moref,
+                    question_id,
+                    "the installed guest holds the CD-ROM tray locked; overriding it (ADR-0044)"
+                );
+                vmm.answer_vm(&question_id, &yes).await.map_err(|e| {
+                    Error::Vsphere(format!("AnswerVM({vm_moref}, {question_id}): {e}"))
+                })?;
+                answered = Some(question_id);
+            }
+            tokio::time::sleep(TASK_POLL_INTERVAL).await;
+        }
+        Err(Error::Vsphere(format!(
+            "{WHAT} task {task_moref} did not complete within {}s",
+            TASK_POLL_MAX_ATTEMPTS as u64 * TASK_POLL_INTERVAL.as_secs()
+        )))
+    }
+
     /// Power off (if not already) and destroy the VM at `moref`. Shared by
     /// [`VSphereClient::destroy_if_present`] (name+folder based, template
     /// rebuilds) and [`VSphereClient::destroy_vm`] (moref-based,
@@ -1986,6 +2120,189 @@ fn find_cdrom_placement(
                 unit_number: vd.unit_number,
             }
         })
+}
+
+/// `_typeName` of a CD-ROM device in a raw `config.hardware.device` list.
+const VIRTUAL_CDROM_TYPE_NAME: &str = "VirtualCdrom";
+
+/// `_typeName` of a CD-ROM backing that is an ISO file on a datastore.
+const CDROM_ISO_BACKING_TYPE_NAME: &str = "VirtualCdromIsoBackingInfo";
+
+/// A CD-ROM backed by an ISO file, as read from a raw `config` document
+/// (ADR-0044's vSphere amendment, ADR-0020's 2026-10-23 amendment): enough
+/// to rebuild a well-formed `Edit` (see [`CdromPlacement`] for why
+/// `controllerKey` must be re-sent) and to tell whether it holds the file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct IsoCdrom {
+    pub(crate) key: i32,
+    pub(crate) controller_key: Option<i32>,
+    pub(crate) unit_number: Option<i32>,
+    /// `[datastore] path/file.iso`.
+    pub(crate) file_name: String,
+    /// `connectable.connected`: whether the running VM has the file open.
+    pub(crate) connected: bool,
+}
+
+/// Every CD-ROM in a raw `VirtualMachineConfigInfo` document whose backing
+/// is an ISO file, in device order. Raw for the reasons
+/// [`tpm_endorsement_certificates_from_raw_config`] gives: the typed decode
+/// fails on a VM that carries a vTPM, and every `Deferred` clone does.
+///
+/// A CD-ROM with any other backing (a client device, after an eject) is not
+/// returned, so ejecting twice finds nothing the second time.
+///
+/// # Errors
+/// The document is not JSON.
+pub(crate) fn iso_cdroms_from_raw_config(
+    bytes: &[u8],
+) -> std::result::Result<Vec<IsoCdrom>, String> {
+    let doc: serde_json::Value =
+        serde_json::from_slice(bytes).map_err(|e| format!("parsing raw JSON: {e}"))?;
+    let Some(devices) = doc
+        .get("hardware")
+        .and_then(|h| h.get("device"))
+        .and_then(serde_json::Value::as_array)
+    else {
+        return Ok(Vec::new());
+    };
+    let as_i32 = |v: Option<&serde_json::Value>| {
+        v.and_then(serde_json::Value::as_i64)
+            .and_then(|n| i32::try_from(n).ok())
+    };
+    Ok(devices
+        .iter()
+        .filter(|d| {
+            d.get("_typeName").and_then(serde_json::Value::as_str) == Some(VIRTUAL_CDROM_TYPE_NAME)
+        })
+        .filter_map(|d| {
+            let backing = d.get("backing")?;
+            if backing.get("_typeName").and_then(serde_json::Value::as_str)
+                != Some(CDROM_ISO_BACKING_TYPE_NAME)
+            {
+                return None;
+            }
+            Some(IsoCdrom {
+                key: as_i32(d.get("key"))?,
+                controller_key: as_i32(d.get("controllerKey")),
+                unit_number: as_i32(d.get("unitNumber")),
+                file_name: backing
+                    .get("fileName")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                connected: d
+                    .get("connectable")
+                    .and_then(|c| c.get("connected"))
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false),
+            })
+        })
+        .collect())
+}
+
+/// `VirtualMachineMessage.id` of vCenter's question "The guest operating
+/// system has locked the CD-ROM door ... Disconnect anyway and override the
+/// lock?", as observed live on vCenter 8.0.3.
+const CDROM_LOCKED_QUESTION_ID: &str = "msg.cdromdisconnect.locked";
+
+/// `ElementDescription.label` of a question's Yes choice.
+const QUESTION_CHOICE_YES_LABEL: &str = "button.yes";
+
+/// From a raw `runtime.question` document, the `(question id, Yes choice
+/// key)` to answer when, and only when, it is the guest-locked CD-ROM
+/// question ([`CDROM_LOCKED_QUESTION_ID`]). `None` for no question, any other
+/// question, or one without a Yes choice. The key is read from the labels,
+/// never assumed. Pure.
+///
+/// # Errors
+/// The document is not JSON.
+pub(crate) fn cdrom_lock_question_answer(
+    bytes: &[u8],
+) -> std::result::Result<Option<(String, String)>, String> {
+    let doc: serde_json::Value =
+        serde_json::from_slice(bytes).map_err(|e| format!("parsing raw JSON: {e}"))?;
+    let is_cdrom_lock = doc
+        .get("message")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|messages| {
+            messages.iter().any(|m| {
+                m.get("id").and_then(serde_json::Value::as_str) == Some(CDROM_LOCKED_QUESTION_ID)
+            })
+        });
+    if !is_cdrom_lock {
+        return Ok(None);
+    }
+    let Some(id) = doc.get("id").and_then(serde_json::Value::as_str) else {
+        return Ok(None);
+    };
+    let yes = doc
+        .get("choice")
+        .and_then(|c| c.get("choiceInfo"))
+        .and_then(serde_json::Value::as_array)
+        .and_then(|choices| {
+            choices.iter().find(|c| {
+                c.get("label").and_then(serde_json::Value::as_str)
+                    == Some(QUESTION_CHOICE_YES_LABEL)
+            })
+        })
+        .and_then(|c| c.get("key"))
+        .and_then(serde_json::Value::as_str);
+    Ok(yes.map(|key| (id.to_string(), key.to_string())))
+}
+
+/// Whether one of `cdroms` holds `iso_path` open: connected, and backed by
+/// exactly that `[datastore] path`. A disconnected drive (a template, or a
+/// powered-off VM) holds no lock, so vCenter can delete the file under it.
+pub(crate) fn holds_iso(cdroms: &[IsoCdrom], iso_path: &str) -> bool {
+    cdroms
+        .iter()
+        .any(|c| c.connected && c.file_name == iso_path)
+}
+
+/// The `ReconfigVM_Task` spec that ejects every one of `cdroms` the way
+/// `govc device.cdrom.eject` does (ADR-0044's vSphere amendment): the drive
+/// stays, its backing becomes a client device, and it is neither connected,
+/// connected at power-on, nor under guest control. A guest-side `eject`
+/// changes none of the persisted fields, so the ISO would come back at the
+/// next power-on; this is what makes it stay gone. Pure.
+pub(crate) fn build_eject_cdroms_reconfigure_spec(cdroms: &[IsoCdrom]) -> VirtualMachineConfigSpec {
+    let changes: Vec<Box<dyn vim_rs::types::traits::VirtualDeviceConfigSpecTrait>> = cdroms
+        .iter()
+        .map(|c| {
+            let edit: Box<dyn vim_rs::types::traits::VirtualDeviceConfigSpecTrait> =
+                Box::new(VirtualDeviceConfigSpec {
+                    operation: Some(VirtualDeviceConfigSpecOperationEnum::Edit),
+                    device: Box::new(VirtualCdrom {
+                        virtual_device_: VirtualDevice {
+                            key: c.key,
+                            controller_key: c.controller_key,
+                            unit_number: c.unit_number,
+                            backing: Some(Box::new(VirtualCdromRemotePassthroughBackingInfo {
+                                virtual_device_remote_device_backing_info_:
+                                    VirtualDeviceRemoteDeviceBackingInfo {
+                                        device_name: String::new(),
+                                        ..Default::default()
+                                    },
+                                exclusive: false,
+                            })),
+                            connectable: Some(VirtualDeviceConnectInfo {
+                                start_connected: false,
+                                allow_guest_control: false,
+                                connected: false,
+                                ..Default::default()
+                            }),
+                            ..Default::default()
+                        },
+                    }),
+                    ..Default::default()
+                });
+            edit
+        })
+        .collect();
+    VirtualMachineConfigSpec {
+        device_change: Some(changes),
+        ..Default::default()
+    }
 }
 
 /// Find the device key of the first virtual disk among a VM's hardware

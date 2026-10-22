@@ -170,6 +170,39 @@ spec:
                 - efi
                 - efi-secure
                 type: string
+              firstBootSealing:
+                description: |-
+                  First-boot sealing the guest must report before `GuestReady`
+                  (ADR-0088), copied by `banlieue-controller` from the parent
+                  `VirtualMachine`'s `VMImage.spec.firstBootSealing` when the class is
+                  `tpmEnabled`. `None` for every other machine, which keeps today's
+                  `GuestReady` meaning unchanged.
+                nullable: true
+                properties:
+                  partitions:
+                    default:
+                    - COS_PERSISTENT
+                    description: |-
+                      Kairos partition labels to seal on first boot. Defaults to
+                      `[COS_PERSISTENT]`. `COS_OEM`, `COS_STATE`, `COS_RECOVERY` and
+                      `COS_GRUB` are refused at admission, mirroring Kairos's own refusal.
+                    items:
+                      type: string
+                    minItems: 1
+                    type: array
+                  timeoutSeconds:
+                    default: 600
+                    description: |-
+                      Seconds from the machine's power-on (its infrastructure `Ready`
+                      transition) within which the guest must report every listed partition
+                      sealed; after that `GuestReady` is `False` with reason
+                      `FirstBootSealingTimeout`. A clone that cannot seal halts in its
+                      initramfs and never reports anything, so this is how it is noticed.
+                    format: uint32
+                    maximum: 86400.0
+                    minimum: 60.0
+                    type: integer
+                type: object
               folder:
                 description: |-
                   Destination vCenter folder path for the **clone** (not the source
@@ -453,6 +486,23 @@ spec:
                     nullable: true
                     type: boolean
                 type: object
+              installMediaDetached:
+                description: |-
+                  Whether the provider has made sure no install medium is left on the
+                  VM (ADR-0044, vSphere amendment 2026-10-23).
+
+                  Set once `guestInstalled` is true: every ISO-backed CD-ROM is ejected
+                  (client-device backing, not connected, not connected at power-on, no
+                  guest control) and this becomes `true`, also when there was nothing to
+                  eject, as on an `Immediate` clone whose template's CD-ROM was removed at
+                  build time. `None` until then. **Sticky once true**: an ejected ISO
+                  does not come back.
+
+                  `GuestReady` is published `True` only after this is true, so a pool can
+                  never bind a member that still has its installer attached, and an
+                  installed VM never keeps holding its image's ISO on the datastore.
+                nullable: true
+                type: boolean
               instanceUuid:
                 description: |-
                   VM instance UUID. Stable across vCenter restarts and the source for
@@ -477,6 +527,17 @@ spec:
                 - null
                 nullable: true
                 type: string
+              sealedPartitions:
+                description: |-
+                  Partitions the guest has reported sealed, as LUKS containers, on a
+                  first-boot sealing machine (ADR-0088): from ``guestinfo.banlieue.sealed``. **Sticky**:
+                  the report is re-asserted every boot but lives in volatile state, and a
+                  powered-off machine has not become unsealed. Empty until reported, and
+                  on every machine without `spec.firstBootSealing`. Guest-supplied, so it
+                  is only ever used to *withhold* `GuestReady`.
+                items:
+                  type: string
+                type: array
               tpmAttached:
                 description: |-
                   Whether a vTPM device was successfully attached, when

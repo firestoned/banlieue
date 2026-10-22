@@ -907,4 +907,219 @@ n17Lktsw0jAZJp1tU1DJPZSYHZPPWLZlJhHftNtpKQ==
     fn malformed_config_json_is_an_error_for_certificates_too() {
         assert!(tpm_endorsement_certificates_from_raw_config(b"not json").is_err());
     }
+
+    // ----------------------------------------------------------------------
+    // ISO-backed CD-ROMs (ADR-0044's vSphere amendment, ADR-0020's
+    // 2026-10-23 amendment), read from the raw `config` document for the
+    // same reason as the vTPM certificates above.
+    //
+    // Shape captured from a real vCenter (8.0.3.0), a Deferred template's
+    // CD-ROM: `{"_typeName":"VirtualCdrom","key":3000,"backing":
+    // {"_typeName":"VirtualCdromIsoBackingInfo","fileName":"[<ds>] banlieue-
+    // images/<image>.iso","datastore":{...}},"connectable":{"_typeName":
+    // "VirtualDeviceConnectInfo","startConnected":true,"allowGuestControl":
+    // true,"connected":false,"status":"untried"},"controllerKey":200,
+    // "unitNumber":0}`. Datastore names below are placeholders.
+    // ----------------------------------------------------------------------
+
+    const REAL_DEFERRED_CDROM: &[u8] = br#"{"name":"db-01","hardware":{"device":[
+        {"_typeName":"VirtualDisk","key":2000},
+        {"_typeName":"VirtualCdrom","key":3000,
+         "deviceInfo":{"_typeName":"Description","label":"CD/DVD drive 1","summary":"ISO [ds-01] banlieue-images/img.iso"},
+         "backing":{"_typeName":"VirtualCdromIsoBackingInfo","fileName":"[ds-01] banlieue-images/img.iso",
+                    "datastore":{"_typeName":"ManagedObjectReference","value":"datastore-1","type":"Datastore"}},
+         "connectable":{"_typeName":"VirtualDeviceConnectInfo","startConnected":true,"allowGuestControl":true,"connected":true,"status":"ok"},
+         "controllerKey":200,"unitNumber":0}
+    ]}}"#;
+
+    #[test]
+    fn reads_the_iso_cdrom_of_the_real_vcenter_device() {
+        assert_eq!(
+            iso_cdroms_from_raw_config(REAL_DEFERRED_CDROM).unwrap(),
+            vec![IsoCdrom {
+                key: 3000,
+                controller_key: Some(200),
+                unit_number: Some(0),
+                file_name: "[ds-01] banlieue-images/img.iso".to_string(),
+                connected: true,
+            }]
+        );
+    }
+
+    /// An already-ejected drive (client-device backing) holds nothing, so
+    /// a second pass finds no work: the eject is idempotent by construction.
+    #[test]
+    fn a_cdrom_with_a_client_device_backing_is_not_iso_backed() {
+        let json = br#"{"hardware":{"device":[
+            {"_typeName":"VirtualCdrom","key":3000,"controllerKey":200,"unitNumber":0,
+             "backing":{"_typeName":"VirtualCdromRemotePassthroughBackingInfo","deviceName":"","exclusive":false},
+             "connectable":{"_typeName":"VirtualDeviceConnectInfo","startConnected":false,"allowGuestControl":false,"connected":false}}
+        ]}}"#;
+        assert!(iso_cdroms_from_raw_config(json).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_vm_without_a_cdrom_has_no_iso_cdroms() {
+        let json = br#"{"hardware":{"device":[{"_typeName":"VirtualDisk","key":2000}]}}"#;
+        assert!(iso_cdroms_from_raw_config(json).unwrap().is_empty());
+        assert!(
+            iso_cdroms_from_raw_config(br#"{"name":"x"}"#)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    /// `connectable` is optional in the schema; absent means not connected.
+    #[test]
+    fn a_cdrom_without_connectable_is_not_connected() {
+        let json = br#"{"hardware":{"device":[
+            {"_typeName":"VirtualCdrom","key":3000,
+             "backing":{"_typeName":"VirtualCdromIsoBackingInfo","fileName":"[ds-01] a.iso"}}
+        ]}}"#;
+        let found = iso_cdroms_from_raw_config(json).unwrap();
+        assert_eq!(found.len(), 1);
+        assert!(!found[0].connected);
+        assert_eq!(found[0].controller_key, None);
+    }
+
+    #[test]
+    fn malformed_config_json_is_an_error_for_cdroms_too() {
+        assert!(iso_cdroms_from_raw_config(b"not json").is_err());
+    }
+
+    #[test]
+    fn only_a_connected_cdrom_on_that_exact_file_holds_the_iso() {
+        let held = |file: &str, connected: bool| IsoCdrom {
+            key: 3000,
+            controller_key: Some(200),
+            unit_number: Some(0),
+            file_name: file.to_string(),
+            connected,
+        };
+        let iso = "[ds-01] banlieue-images/img.iso";
+        assert!(holds_iso(&[held(iso, true)], iso));
+        // Disconnected (a template, or an ejected-by-guest drive) or
+        // powered off: vCenter holds no lock, the delete succeeds.
+        assert!(!holds_iso(&[held(iso, false)], iso));
+        // Same file name on another datastore is another file.
+        assert!(!holds_iso(
+            &[held("[ds-02] banlieue-images/img.iso", true)],
+            iso
+        ));
+        assert!(!holds_iso(&[], iso));
+    }
+
+    #[test]
+    fn eject_spec_replaces_the_iso_with_a_client_device_and_disconnects_it() {
+        let cdroms = vec![IsoCdrom {
+            key: 3000,
+            controller_key: Some(200),
+            unit_number: Some(0),
+            file_name: "[ds-01] banlieue-images/img.iso".to_string(),
+            connected: true,
+        }];
+        let spec = build_eject_cdroms_reconfigure_spec(&cdroms);
+        let changes = spec.device_change.as_ref().unwrap();
+        assert_eq!(changes.len(), 1);
+        assert_eq!(
+            changes[0].operation,
+            Some(VirtualDeviceConfigSpecOperationEnum::Edit)
+        );
+        let device = changes[0].device.get_virtual_device();
+        assert_eq!(device.key, 3000);
+        // Same MissingController regression as the boot-order edit.
+        assert_eq!(device.controller_key, Some(200));
+        assert_eq!(device.unit_number, Some(0));
+        assert_eq!(
+            device.backing.as_ref().unwrap().data_type(),
+            vim_rs::types::struct_enum::StructType::VirtualCdromRemotePassthroughBackingInfo
+        );
+        let connectable = device.connectable.as_ref().unwrap();
+        assert!(!connectable.connected);
+        // Not reconnected at the next power-on, which is what a guest-side
+        // `eject` cannot change.
+        assert!(!connectable.start_connected);
+        // Nor reconnected by the guest.
+        assert!(!connectable.allow_guest_control);
+    }
+
+    #[test]
+    fn eject_spec_edits_every_iso_cdrom() {
+        let cdrom = |key| IsoCdrom {
+            key,
+            controller_key: Some(200),
+            unit_number: Some(0),
+            file_name: "[ds-01] a.iso".to_string(),
+            connected: false,
+        };
+        let spec = build_eject_cdroms_reconfigure_spec(&[cdrom(3000), cdrom(3001)]);
+        let keys: Vec<i32> = spec
+            .device_change
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|c| c.device.get_virtual_device().key)
+            .collect();
+        assert_eq!(keys, vec![3000, 3001]);
+    }
+
+    // ----------------------------------------------------------------------
+    // The guest-locked CD-ROM question (ADR-0044 vSphere amendment, Decision
+    // 4 as revised 2026-10-23). Found live: an installed Kairos guest holds
+    // the tray locked, and the eject's ReconfigVM_Task waits on
+    // `msg.cdromdisconnect.locked` ("Disconnect anyway and override the
+    // lock?") until vCenter answers No itself after about 4 minutes. Fields
+    // as observed live on vCenter 8.0.3: question id "72185828", message id
+    // `msg.cdromdisconnect.locked`, choices key "0" = `button.yes`, key "1" =
+    // `button.no`.
+    // ----------------------------------------------------------------------
+
+    const CDROM_LOCK_QUESTION: &[u8] = br#"{"_typeName":"VirtualMachineQuestionInfo","id":"72185828",
+        "text":"The guest operating system has locked the CD-ROM door ... Disconnect anyway and override the lock?",
+        "choice":{"_typeName":"ChoiceOption","choiceInfo":[
+            {"_typeName":"ElementDescription","label":"button.yes","summary":"Yes","key":"0"},
+            {"_typeName":"ElementDescription","label":"button.no","summary":"No","key":"1"}],"defaultIndex":1},
+        "message":[{"_typeName":"VirtualMachineMessage","id":"msg.cdromdisconnect.locked","text":"..."}]}"#;
+
+    #[test]
+    fn the_cdrom_lock_question_is_answered_yes_by_its_key() {
+        assert_eq!(
+            cdrom_lock_question_answer(CDROM_LOCK_QUESTION).unwrap(),
+            Some(("72185828".to_string(), "0".to_string()))
+        );
+    }
+
+    /// The Yes key is read from the labels, not assumed to be "0".
+    #[test]
+    fn the_yes_key_is_found_by_label_wherever_it_is() {
+        let json = br#"{"id":"7","choice":{"choiceInfo":[
+            {"label":"button.no","key":"0"},{"label":"button.yes","key":"1"}]},
+            "message":[{"id":"msg.cdromdisconnect.locked"}]}"#;
+        assert_eq!(
+            cdrom_lock_question_answer(json).unwrap(),
+            Some(("7".to_string(), "1".to_string()))
+        );
+    }
+
+    /// Any other question is left for a human: banlieue overrides exactly
+    /// one thing, the guest's lock on an installer it no longer needs.
+    #[test]
+    fn any_other_question_is_never_answered() {
+        let json = br#"{"id":"8","choice":{"choiceInfo":[{"label":"button.yes","key":"0"}]},
+            "message":[{"id":"msg.uuid.altered"}]}"#;
+        assert_eq!(cdrom_lock_question_answer(json).unwrap(), None);
+    }
+
+    #[test]
+    fn no_question_or_no_yes_choice_is_nothing_to_answer() {
+        assert_eq!(cdrom_lock_question_answer(b"null").unwrap(), None);
+        let no_yes = br#"{"id":"9","choice":{"choiceInfo":[{"label":"button.no","key":"1"}]},
+            "message":[{"id":"msg.cdromdisconnect.locked"}]}"#;
+        assert_eq!(cdrom_lock_question_answer(no_yes).unwrap(), None);
+    }
+
+    #[test]
+    fn a_malformed_question_is_an_error() {
+        assert!(cdrom_lock_question_answer(b"not json").is_err());
+    }
 }

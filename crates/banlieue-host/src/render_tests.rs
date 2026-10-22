@@ -28,6 +28,7 @@ mod tests {
             uid_count: 1024,
             registry: None,
             allow_virtualized: false,
+            guest_slice: crate::settings::GuestSlice::default(),
         }
     }
 
@@ -196,5 +197,47 @@ mod tests {
         assert!(setup.contains("/etc/banlieue/swtpm/swtpm-localca.conf"));
         let localca = &files[0].1;
         assert!(localca.contains(&format!("issuercert = {EK_CA_CERT}")));
+    }
+
+    // ------------------------------------------------ guest slice (ADR-0105)
+
+    fn budgeted() -> Settings {
+        Settings {
+            guest_slice: crate::settings::GuestSlice {
+                cpus: Some("0-15".into()),
+                cpu_weight: Some(200),
+                memory_max: Some("400G".into()),
+                tasks_max: None,
+            },
+            ..settings()
+        }
+    }
+
+    #[test]
+    fn the_slice_carries_the_declared_budget() {
+        let h = FakeHost::debian();
+        let text = render(&GUEST_SLICE, &values(&budgeted(), &h)).unwrap();
+        assert!(text.contains("[Slice]\nAllowedCPUs=0-15\nCPUWeight=200\nMemoryMax=400G\n"));
+        assert!(!text.contains("TasksMax"), "an unset flag emits no line");
+    }
+
+    #[test]
+    fn an_unbudgeted_slice_still_renders() {
+        let h = FakeHost::debian();
+        let text = render(&GUEST_SLICE, &values(&settings(), &h)).unwrap();
+        assert!(text.contains("[Slice]"));
+        assert!(!text.contains("MemoryMax") && !text.contains("AllowedCPUs"));
+    }
+
+    /// The point of the slice: every long-lived per-guest unit is in it.
+    #[test]
+    fn guest_and_vtpm_units_run_inside_the_slice() {
+        let h = FakeHost::debian();
+        let v = values(&settings(), &h);
+        for name in ["banlieue-ch@.service", "banlieue-swtpm@.service"] {
+            let t = UNIT_TEMPLATES.iter().find(|t| t.name == name).unwrap();
+            let text = render(t, &v).unwrap();
+            assert!(text.contains("\nSlice=banlieue-guests.slice\n"), "{name}");
+        }
     }
 }

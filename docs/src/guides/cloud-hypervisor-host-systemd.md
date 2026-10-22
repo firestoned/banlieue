@@ -21,6 +21,7 @@ is an error, never an installed unit:
 | `banlieue-provider-cloud-hypervisor.service` | `/etc/systemd/system/` | The provider itself |
 | `60-banlieue-cloud-hypervisor.rules` | `/etc/polkit-1/rules.d/` | What the provider may ask systemd to do |
 | `banlieue-cloud-hypervisor.tmpfiles.conf` | `/etc/tmpfiles.d/banlieue-cloud-hypervisor.conf` | The run root, recreated every boot |
+| `banlieue-guests.slice` | `/etc/systemd/system/` | The budget every guest and vTPM shares ([below](#the-guests-slice)) |
 | `banlieue-ch@.service` | `/etc/systemd/system/` | One VMM per guest, instance = guest uid |
 | `banlieue-swtpm@.service` | `/etc/systemd/system/` | One swtpm per `tpmEnabled` guest |
 | `banlieue-swtpm-setup@.service` | `/etc/systemd/system/` | Manufactures a guest's vTPM, once |
@@ -89,6 +90,31 @@ a tap's flags from sysfs, which the VMM does when it opens the tap, so the
 provider adds one read-only Landlock rule per tap, on
 `/sys/devices/virtual/net/<tap>` — nothing wider. Without it the network
 device silently drops out of the VM and the guest boots with no NIC.
+
+## The guests slice
+
+`banlieue-guests.slice` (ADR-0105) is the parent cgroup of every
+`banlieue-ch@` and `banlieue-swtpm@` instance (`Slice=` in both templates).
+Per-guest `MemoryMax` bounds one guest; the slice bounds **all of them
+together**, which is what matters on a host that also runs other workloads.
+The limits exist only if you declare them to `install`:
+
+| Flag | Slice setting |
+| --- | --- |
+| `--guest-cpus 0-15,32-47` | `AllowedCPUs=` |
+| `--guest-cpu-weight 200` | `CPUWeight=` (1–10000; systemd's default is 100) |
+| `--guest-memory-max 400G` (or `60%`) | `MemoryMax=` |
+| `--guest-tasks-max 30000` | `TasksMax=` |
+
+An unset flag emits no line, so that dimension is unbounded, and `install`
+says so. The slice is a ceiling, not a reservation: it does not keep other
+workloads off the CPUs it allows. It is root-owned and the polkit rule never
+allows `set-property` on it, so the provider cannot lift it.
+
+```sh
+systemctl show banlieue-guests.slice -p AllowedCPUs -p CPUWeight -p MemoryMax -p TasksMax
+systemd-cgls /banlieue-guests.slice     # the running guests and their vTPMs
+```
 
 ## The vTPM units
 

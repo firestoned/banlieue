@@ -110,6 +110,7 @@ fn spec(domain_name: &str, pool: &str, source_volume: &str) -> LibvirtMachineSpe
         // that a guest runs it.
         user_data: Some("#cloud-config\nhostname: banlieue-livetest\n".to_string()),
         desired_power_state: PowerState::PoweredOn,
+        first_boot_sealing: None,
     }
 }
 

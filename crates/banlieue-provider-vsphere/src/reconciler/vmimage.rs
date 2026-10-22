@@ -46,6 +46,7 @@ use banlieue_api::common::Firmware;
 use banlieue_provider_sdk::finalizer::{ensure_finalizer, remove_finalizer};
 use banlieue_provider_sdk::reconciler::{requeue_default, requeue_long, requeue_on_error};
 use banlieue_provider_sdk::ssa::FIELD_MANAGER_PROVIDER_VSPHERE;
+use banlieue_provider_sdk::status::condition_status;
 use k8s_openapi::api::batch::v1::Job;
 use k8s_openapi::api::core::v1::{Secret, Toleration};
 use kube::{
@@ -853,6 +854,12 @@ async fn ensure_import_jobs(
             .await
         } else {
             match api.get(&job_name).await {
+                // ADR-0020, amendment 2026-10-23: a failed Job is otherwise
+                // adopted forever. Deleting it lets the next pass recreate it
+                // with the same arguments (the 404 arm below).
+                Ok(job) if import_retry_due(&job, k8s_openapi::jiff::Timestamp::now()) => {
+                    retry_failed_import_job(&api, &fd.name, &job_name).await
+                }
                 Ok(job) => zone_from_job(&fd.name, image_name, &folder, &job_name, &job),
                 Err(kube::Error::Api(e)) if e.code == 404 => {
                     create_import_job(
@@ -866,6 +873,74 @@ async fn ensure_import_jobs(
         zones.push(zone);
     }
     zones
+}
+
+/// How long a failed per-zone import Job is left in place before it is
+/// deleted and recreated (ADR-0020, amendment 2026-10-23): long enough for
+/// its logs to be read and to bound the cost of a failure that keeps
+/// recurring, short enough that a cause that cleared (a VM let go of the
+/// ISO) heals without an operator. `banlieue.io/force-reimport` still
+/// retries at once.
+pub const IMPORT_RETRY_AFTER_SECS: i64 = 600;
+
+/// Kubernetes `Job` condition type of a Job that has given up.
+const JOB_CONDITION_FAILED: &str = "Failed";
+
+/// Whether `job` has failed and its `Failed` condition is at least
+/// [`IMPORT_RETRY_AFTER_SECS`] old at `now`. A running or succeeded Job is
+/// never due, and neither is a failed one without a `Failed` condition, since
+/// there is then nothing to time the interval from. Pure.
+pub fn import_retry_due(job: &Job, now: k8s_openapi::jiff::Timestamp) -> bool {
+    let Some(status) = job.status.as_ref() else {
+        return false;
+    };
+    if status.failed.unwrap_or(0) == 0 || status.succeeded.unwrap_or(0) > 0 {
+        return false;
+    }
+    status
+        .conditions
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .filter(|c| c.type_ == JOB_CONDITION_FAILED && c.status == condition_status::TRUE)
+        .filter_map(|c| c.last_transition_time.as_ref())
+        .any(|failed_at| now.as_second() - failed_at.0.as_second() >= IMPORT_RETRY_AFTER_SECS)
+}
+
+/// Delete a failed import Job so the next pass recreates it, and report the
+/// zone as `Importing` meanwhile. A delete that fails reports `ImportFailed`
+/// with the cause, and is attempted again next pass.
+async fn retry_failed_import_job(
+    api: &Api<Job>,
+    failure_domain: &str,
+    job_name: &str,
+) -> ZoneImageStatus {
+    match api
+        .delete(job_name, &kube::api::DeleteParams::background())
+        .await
+    {
+        Ok(_) => {
+            info!(
+                job = job_name,
+                failure_domain, "retrying a failed import Job"
+            );
+            zone_row(
+                failure_domain,
+                false,
+                reasons::IMPORTING,
+                &format!(
+                    "import Job {job_name} failed more than {IMPORT_RETRY_AFTER_SECS}s ago; \
+                     retrying (ADR-0020)"
+                ),
+            )
+        }
+        Err(e) => zone_row(
+            failure_domain,
+            false,
+            reasons::IMPORT_FAILED,
+            &format!("import Job {job_name} failed, and deleting it to retry failed: {e}"),
+        ),
+    }
 }
 
 /// Server-side-apply one per-zone import Job and translate the outcome into a
@@ -1319,6 +1394,7 @@ async fn patch_vmimage_status(
         // it computed would be an answer to a different question.
         conditions: Vec::new(),
         observed_generation: Some(generation),
+        first_boot_sealing: None,
     };
 
     let patch = json!({

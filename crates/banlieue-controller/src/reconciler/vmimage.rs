@@ -29,7 +29,8 @@ use std::sync::Arc;
 use std::collections::BTreeSet;
 
 use banlieue_api::banlieue::{
-    ImagePerProviderStatus, ImageSource, ImageSourceKind, Provider, VMImage,
+    FirstBootSealingProvenance, ImagePerProviderStatus, ImageSource, ImageSourceKind, Provider,
+    VMImage, VMImageSpec, VMImageStatus,
 };
 use banlieue_provider_sdk::finalizer::{ensure_finalizer, remove_finalizer};
 use banlieue_provider_sdk::reconciler::{requeue_default, requeue_long, requeue_on_error};
@@ -202,11 +203,15 @@ pub fn aggregate_ready(rows: &[ImagePerProviderStatus]) -> AggregateReady {
 /// Pure, so the field-manager split is testable without a cluster: the patch
 /// must carry `conditions` and nothing else, or it would re-create exactly the
 /// contention ADR-0015 removed.
+///
+/// `first_boot_sealing` is ADR-0088's provenance, which this manager also
+/// owns alone; omitted when `None` so server-side apply releases the field.
 #[must_use]
 pub fn build_status_patch(
     name: &str,
     aggregate: &AggregateReady,
     generation: i64,
+    first_boot_sealing: Option<FirstBootSealingProvenance>,
 ) -> serde_json::Value {
     let mut conditions = Vec::new();
     set_condition(
@@ -217,12 +222,40 @@ pub fn build_status_patch(
         aggregate.message.clone(),
         generation,
     );
+    let mut status = json!({ "conditions": conditions });
+    if let Some(provenance) = first_boot_sealing {
+        status["firstBootSealing"] = json!(provenance);
+    }
     json!({
         "apiVersion": VMImage::api_version(&()).to_string(),
         "kind": VMImage::kind(&()).to_string(),
         "metadata": { "name": name },
-        "status": { "conditions": conditions },
+        "status": status,
     })
+}
+
+/// How banlieue knows a clone of this image seals itself on first boot
+/// (ADR-0088 Decision 2, as amended).
+///
+/// `None` when nothing is declared. An image with a `Url` source is `Built`
+/// only once `banlieue-imagebuilder` reports it wrote the policy layer
+/// (`status.buildArtifact.firstBootSealingLayer`), and claims nothing before
+/// that. An image with no `Url` source was not built by banlieue, so the
+/// declaration is the operator's `Asserted` claim.
+#[must_use]
+pub fn first_boot_sealing_provenance(
+    spec: &VMImageSpec,
+    status: Option<&VMImageStatus>,
+) -> Option<FirstBootSealingProvenance> {
+    spec.first_boot_sealing.as_ref()?;
+    let built_by_banlieue = spec.sources.iter().any(|s| s.kind == ImageSourceKind::Url);
+    if !built_by_banlieue {
+        return Some(FirstBootSealingProvenance::Asserted);
+    }
+    status
+        .and_then(|s| s.build_artifact.as_ref())
+        .filter(|b| b.first_boot_sealing_layer)
+        .map(|_| FirstBootSealingProvenance::Built)
 }
 
 /// Reconcile one `VMImage`: aggregate provider rows into `Ready`.
@@ -254,7 +287,12 @@ pub async fn reconcile(image: Arc<VMImage>, ctx: Arc<Context>) -> Result<Action>
     api.patch_status(
         &name,
         &PatchParams::apply(FIELD_MANAGER_CONTROLLER).force(),
-        &Patch::Apply(&build_status_patch(&name, &aggregate, generation)),
+        &Patch::Apply(&build_status_patch(
+            &name,
+            &aggregate,
+            generation,
+            first_boot_sealing_provenance(&image.spec, image.status.as_ref()),
+        )),
     )
     .await?;
 

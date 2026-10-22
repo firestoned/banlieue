@@ -1546,6 +1546,7 @@ Cluster-scoped: a VMImage is shared by VirtualMachines in any namespace.
 | --- | --- | --- | --- |
 | `architecture` | string | Yes | Guest CPU architecture. Failure domains whose hosts cannot run this architecture are filtered out by the scheduler. Allowed: `amd64`, `arm64`. |
 | `cloudConfigs` | object[] |  | Layered cloud-configs baked into the built artifact for `Url`-kind sources (ADR-0037). `banlieue-imagebuilder` fetches each referenced Secret in list order, deep-merges their YAML content (maps deep-merge, lists concatenate, type-mismatch errors), SSA-applies a single merged Secret (`<vmimage-name>-cloud-config-merged`), and passes *that* to the kairos-operator `OSArtifact` as `cloudConfigRef` (`auroraboot build-iso --cloud-config`). Empty list = no cloud-config. Index 0 is the base; each subsequent entry layers on top. SecretRef-first; see [`CloudConfigSource`] and ADR-0020. Ignored for non-`Url` sources. |
+| `firstBootSealing` | object |  | Declares that every clone of this image seals the listed partitions to its own vTPM on its first boot (ADR-0088), which is what lets a `VMClass` with `tpmEnabled: true` use an `Immediate` (pre-installed) image. Without it that pairing is refused, because the template was installed before any per-VM vTPM existed (ADR-0048). |
 | `guestAgent` | string |  | Guest agent contract this image is built to support; determines how `VirtualMachine.spec.userData` is delivered. Allowed: `cloud-init`, `ignition`, `sysprep`, `none`. |
 | `isoOverlay` | object |  | Additional files overlaid onto a built ISO for `Url`-kind vSphere sources (e.g. a hand-verified `grub.cfg`). Resolved by `banlieue-imagebuilder` into the kairos-operator `OSArtifact`'s `spec.volumes[]` + `spec.artifacts.overlayISOVolume` — the same `auroraboot build-iso --overlay-iso` mechanism a hand-run ISO-build pipeline would use. See [`IsoOverlaySource`] and ADR-0022. Ignored for `cloudImage`-kind builds and non-`Url` sources. |
 | `osDistribution` | string | Yes | Free-form distribution string. Examples: ubuntu, rhel, debian, fedora-coreos, windows-server. |
@@ -1581,6 +1582,29 @@ YAML (key defaults to [`DEFAULT_CLOUD_CONFIG_KEY`]).
 | --- | --- | --- | --- |
 | `key` | string |  | Key within the object's `data`. Defaults are caller-defined. |
 | `name` | string | Yes | Name of the ConfigMap / Secret in the referrer's namespace. |
+
+#### `.spec.firstBootSealing`
+
+Declares that every clone of this image seals the listed partitions
+to its own vTPM on its first boot (ADR-0088), which is what lets a
+`VMClass` with `tpmEnabled: true` use an `Immediate` (pre-installed)
+image. Without it that pairing is refused, because the template was
+installed before any per-VM vTPM existed (ADR-0048).
+
+For a `Url` source `banlieue-imagebuilder` writes the sealing policy
+into the built image itself (`status.firstBootSealing: Built`); for a
+`Template` or `BackingFile` source the image must already carry it, and
+this field is an operator assertion (`Asserted`). Either way every
+clone's `GuestReady` waits for the guest to report each listed
+partition sealed. Gated on `banlieue-controller
+--enable-first-boot-sealing`; with the flag off a `VirtualMachine` of
+this image is refused (`FirstBootSealingDisabled`). Not combinable with
+`trustedBoot`.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `partitions` | string[] |  | Kairos partition labels to seal on first boot. Defaults to `[COS_PERSISTENT]`. `COS_OEM`, `COS_STATE`, `COS_RECOVERY` and `COS_GRUB` are refused at admission, mirroring Kairos's own refusal. |
+| `timeoutSeconds` | integer |  | Seconds from the machine's power-on (its infrastructure `Ready` transition) within which the guest must report every listed partition sealed; after that `GuestReady` is `False` with reason `FirstBootSealingTimeout`. A clone that cannot seal halts in its initramfs and never reports anything, so this is how it is noticed. |
 
 #### `.spec.isoOverlay`
 
@@ -1719,6 +1743,7 @@ Maintained by the image controller; read by the scheduler.
 | --- | --- | --- | --- |
 | `buildArtifact` | object |  | Progress of the shared, provider-agnostic image build for `Url`-kind sources — set exclusively by `banlieue-imagebuilder` (field manager `banlieue.io/imagebuilder`), never by a provider. Typed by `kind` (`cloudImage` for libvirt, `iso` for vSphere). `None` when no `Url` source exists on this `VMImage` or the build hasn't started. See ADR-0010 and ADR-0020. |
 | `conditions` | object[] |  | `Ready` is True iff every per-provider entry is ready. |
+| `firstBootSealing` | string |  | How banlieue knows an image seals itself on first boot (ADR-0088). Allowed: `Built`, `Asserted`. |
 | `observedGeneration` | integer |  |  |
 | `perProvider` | object[] |  | Per-Provider readiness. One entry per Provider that supports this image's providerClass and has reconciled at least once. |
 
@@ -1735,6 +1760,7 @@ ADR-0010 and ADR-0020.
 | --- | --- | --- | --- |
 | `checksum` | string |  | Expected checksum (`<alg>:<hex>`) of the built artifact, copied from the `Url` source the build serves. Consumers that stream the artifact to a backend MUST verify it against this value and fail closed on mismatch (security review 2026-07-31, SEC-004) — the value lives here, next to the PVC reference, so no consumer has to re-derive which source the shared build came from. |
 | `file` | string |  | File name of the artifact within the artifacts PVC (kairos-operator convention: `<osArtifactRef>.raw` for `cloudImage`, `<osArtifactRef>.iso` for `iso`). Populated at phase `Ready`. |
+| `firstBootSealingLayer` | boolean |  | Whether this build carries the banlieue-generated first-boot sealing layer (ADR-0088): set when `spec.firstBootSealing` was honoured by the merged cloud-config this artifact was built from. Omitted when false. |
 | `kind` | string | Yes | What kind of artifact was built, aligned with kairos-operator's own `OSArtifactKind`. Determines the `file` extension and which provider class consumes it. Allowed: `cloudImage`, `iso`. |
 | `message` | string |  | Long human-readable detail, e.g. the `OSArtifact.status.message` on failure. |
 | `ociArtifact` | object |  | The same artifact, pushed to an OCI registry for providers that run outside the cluster and cannot mount the artifacts PVC (ADR-0064). Set only when a `cloud-hypervisor` `Url` source exists; `None` otherwise, so installs without a host-resident provider need no registry. |
@@ -2178,6 +2204,7 @@ reconciles it into a real domain.
 | `domainName` | string | Yes | libvirt domain name. Unique per host, and the handle every domain procedure takes. |
 | `failureDomain` | string |  | CAPI contract (optional): failure domain placement. The banlieue scheduler writes the chosen failure domain here. |
 | `firmware` | string | Yes | Firmware. EFI requires OVMF on the host; `EfiSecure` additionally requires a `.secboot.fd` variant and pre-enrolled keys. Allowed: `bios`, `efi`, `efi-secure`. |
+| `firstBootSealing` | object |  | First-boot sealing the guest must report before `GuestReady` (ADR-0088), copied by `banlieue-controller` from the parent `VirtualMachine`'s `VMImage.spec.firstBootSealing` when the class is `tpmEnabled`. `None` for every other machine, which keeps today's `GuestReady` meaning unchanged. |
 | `machineType` | string |  | QEMU machine type (`q35`, `pc`, …). `None` lets libvirt pick its default for the host's architecture, which is the right answer unless an image needs a specific chipset. |
 | `memoryMiB` | integer | Yes | Memory in MiB. |
 | `network` | object[] | Yes | Network interfaces. |
@@ -2206,6 +2233,19 @@ Disks. The first is the OS disk; the rest are blank data disks.
 | `bus` | string |  | Controller bus. Allowed: `virtio`, `scsi`, `sata`. |
 | `name` | string | Yes | Stable disk name; echoed in status and used to name the volume. |
 | `sizeGiB` | integer | Yes | Disk size in GiB. For an overlay OS disk this is a floor — the overlay is created at least this large. |
+
+#### `.spec.firstBootSealing`
+
+First-boot sealing the guest must report before `GuestReady`
+(ADR-0088), copied by `banlieue-controller` from the parent
+`VirtualMachine`'s `VMImage.spec.firstBootSealing` when the class is
+`tpmEnabled`. `None` for every other machine, which keeps today's
+`GuestReady` meaning unchanged.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `partitions` | string[] |  | Kairos partition labels to seal on first boot. Defaults to `[COS_PERSISTENT]`. `COS_OEM`, `COS_STATE`, `COS_RECOVERY` and `COS_GRUB` are refused at admission, mirroring Kairos's own refusal. |
+| `timeoutSeconds` | integer |  | Seconds from the machine's power-on (its infrastructure `Ready` transition) within which the guest must report every listed partition sealed; after that `GuestReady` is `False` with reason `FirstBootSealingTimeout`. A clone that cannot seal halts in its initramfs and never reports anything, so this is how it is noticed. |
 
 #### `.spec.network[]`
 
@@ -2298,6 +2338,7 @@ InfraMachine status contract (plus libvirt-specific diagnostics).
 | `installMediaDetached` | boolean |  | Whether the install medium has been ejected (ADR-0044). |
 | `observedGeneration` | integer |  |  |
 | `observedPowerState` | string |  | The domain's last observed run state, mapped onto banlieue's backend-neutral [`PowerState`] (ADR-0034). The hypervisor's view, not a guest-OS-boot signal. Not part of the CAPI contract; mirrored onto the parent `VirtualMachine`'s `status.observedPowerState`. Allowed: `PoweredOn`, `PoweredOff`, `Suspended`, `null`. |
+| `sealedPartitions` | string[] |  | Partitions the guest has reported sealed, as LUKS containers, on a first-boot sealing machine (ADR-0088): from ``/run/banlieue/sealed`, read with the guest agent`. **Sticky**: the report is re-asserted every boot but lives in volatile state, and a powered-off machine has not become unsealed. Empty until reported, and on every machine without `spec.firstBootSealing`. Guest-supplied, so it is only ever used to *withhold* `GuestReady`. |
 | `tpmAttached` | boolean |  | Whether an emulated TPM was attached, when `spec.tpmEnabled` is set (ADR-0039). `None` when `tpmEnabled` is `false` or the attach has not run yet. A failed attach surfaces through the conditions rather than a dedicated `VirtualMachine`-level mirror. |
 | `tpmEndorsementCertificates` | string[] |  | PEM vTPM endorsement key certificate(s) reported by the guest and validated against this domain (ADR-0045). |
 
@@ -2377,6 +2418,7 @@ The LibvirtMachine spec for machines created from this template.
 | `domainName` | string | Yes | libvirt domain name. Unique per host, and the handle every domain procedure takes. |
 | `failureDomain` | string |  | CAPI contract (optional): failure domain placement. The banlieue scheduler writes the chosen failure domain here. |
 | `firmware` | string | Yes | Firmware. EFI requires OVMF on the host; `EfiSecure` additionally requires a `.secboot.fd` variant and pre-enrolled keys. Allowed: `bios`, `efi`, `efi-secure`. |
+| `firstBootSealing` | object |  | First-boot sealing the guest must report before `GuestReady` (ADR-0088), copied by `banlieue-controller` from the parent `VirtualMachine`'s `VMImage.spec.firstBootSealing` when the class is `tpmEnabled`. `None` for every other machine, which keeps today's `GuestReady` meaning unchanged. |
 | `machineType` | string |  | QEMU machine type (`q35`, `pc`, …). `None` lets libvirt pick its default for the host's architecture, which is the right answer unless an image needs a specific chipset. |
 | `memoryMiB` | integer | Yes | Memory in MiB. |
 | `network` | object[] | Yes | Network interfaces. |
@@ -2405,6 +2447,19 @@ Disks. The first is the OS disk; the rest are blank data disks.
 | `bus` | string |  | Controller bus. Allowed: `virtio`, `scsi`, `sata`. |
 | `name` | string | Yes | Stable disk name; echoed in status and used to name the volume. |
 | `sizeGiB` | integer | Yes | Disk size in GiB. For an overlay OS disk this is a floor — the overlay is created at least this large. |
+
+###### `.spec.template.spec.firstBootSealing`
+
+First-boot sealing the guest must report before `GuestReady`
+(ADR-0088), copied by `banlieue-controller` from the parent
+`VirtualMachine`'s `VMImage.spec.firstBootSealing` when the class is
+`tpmEnabled`. `None` for every other machine, which keeps today's
+`GuestReady` meaning unchanged.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `partitions` | string[] |  | Kairos partition labels to seal on first boot. Defaults to `[COS_PERSISTENT]`. `COS_OEM`, `COS_STATE`, `COS_RECOVERY` and `COS_GRUB` are refused at admission, mirroring Kairos's own refusal. |
+| `timeoutSeconds` | integer |  | Seconds from the machine's power-on (its infrastructure `Ready` transition) within which the guest must report every listed partition sealed; after that `GuestReady` is `False` with reason `FirstBootSealingTimeout`. A clone that cannot seal halts in its initramfs and never reports anything, so this is how it is noticed. |
 
 ###### `.spec.template.spec.network[]`
 
@@ -3002,6 +3057,7 @@ VirtualMachine. The CAPI contract label
 | `disks` | object[] | Yes | Disks. The first disk is the template's OS disk (grown if needed); subsequent disks are blank. |
 | `failureDomain` | string |  | CAPI contract (optional): failure domain placement. The banlieue scheduler writes the chosen failure domain here; for CAPI users the parent Machine's `spec.failureDomain` is what populates this. |
 | `firmware` | string | Yes | Firmware. EFI / EFI Secure require the template to be EFI-capable. Allowed: `bios`, `efi`, `efi-secure`. |
+| `firstBootSealing` | object |  | First-boot sealing the guest must report before `GuestReady` (ADR-0088), copied by `banlieue-controller` from the parent `VirtualMachine`'s `VMImage.spec.firstBootSealing` when the class is `tpmEnabled`. `None` for every other machine, which keeps today's `GuestReady` meaning unchanged. |
 | `folder` | string |  | Destination vCenter folder path for the **clone** (not the source template — see `template_folder`). Optional; defaults to the datacenter VM root, or (once set by `banlieue-controller`) the same per-zone folder the template lives in. |
 | `memoryMiB` | integer | Yes | Memory in MiB. |
 | `network` | object[] | Yes | Network interfaces. |
@@ -3024,6 +3080,19 @@ subsequent disks are blank.
 | `name` | string | Yes | Stable disk name; echoed in status with resolved backend identifiers. |
 | `provisioning` | string |  | Provisioning hint (thin / thick / eager-zeroed). Allowed: `thin`, `thick`, `eagerZeroed`. |
 | `sizeGiB` | integer | Yes | Disk size in GiB. For the OS disk this is a floor — the template's disk is grown to at least this size. |
+
+#### `.spec.firstBootSealing`
+
+First-boot sealing the guest must report before `GuestReady`
+(ADR-0088), copied by `banlieue-controller` from the parent
+`VirtualMachine`'s `VMImage.spec.firstBootSealing` when the class is
+`tpmEnabled`. `None` for every other machine, which keeps today's
+`GuestReady` meaning unchanged.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `partitions` | string[] |  | Kairos partition labels to seal on first boot. Defaults to `[COS_PERSISTENT]`. `COS_OEM`, `COS_STATE`, `COS_RECOVERY` and `COS_GRUB` are refused at admission, mirroring Kairos's own refusal. |
+| `timeoutSeconds` | integer |  | Seconds from the machine's power-on (its infrastructure `Ready` transition) within which the guest must report every listed partition sealed; after that `GuestReady` is `False` with reason `FirstBootSealingTimeout`. A clone that cannot seal halts in its initramfs and never reports anything, so this is how it is noticed. |
 
 #### `.spec.network[]`
 
@@ -3101,9 +3170,11 @@ status contract (plus a few vSphere-specific diagnostics).
 | `failureDomain` | string |  | CAPI contract field (optional): observed failure domain. Surfaced to the parent Machine's `status.failureDomain`. |
 | `guestInstalled` | boolean |  | Whether the *installed* guest has announced itself, distinct from a live installer still overwriting the disk (ADR-0043). Read from `guestinfo.banlieue.phase` via `config.extraConfig` — the guest writes it with `vmware-rpctool`, the host reads it back here. `None` means nothing has looked yet (the whole life of an `Immediate` image, or a `Deferred` one before its first observation); sticky at `Some(true)` once observed, since the runtime value does not survive a power cycle but a stopped VM has not become uninstalled. Not part of the CAPI contract; mirrored onto the parent `VirtualMachine` as the `GuestReady` condition (`common::condition_types::GUEST_READY`), never as `Ready`. |
 | `initialization` | object |  | CAPI contract field: replaces the deprecated v1beta1 `status.ready`. |
+| `installMediaDetached` | boolean |  | Whether the provider has made sure no install medium is left on the VM (ADR-0044, vSphere amendment 2026-10-23). |
 | `instanceUuid` | string |  | VM instance UUID. Stable across vCenter restarts and the source for `spec.providerID`. Not part of the CAPI contract. |
 | `observedGeneration` | integer |  |  |
 | `observedPowerState` | string |  | The backend VM's actual power state, as last observed via `VirtualMachine.runtime.powerState` (ADR-0034) — the hypervisor's view, available immediately on power-on, not a guest-OS-boot signal. Absent until first observed. Not part of the CAPI contract; mirrored onto the parent `VirtualMachine`'s own `status.observedPowerState`. Allowed: `PoweredOn`, `PoweredOff`, `Suspended`, `null`. |
+| `sealedPartitions` | string[] |  | Partitions the guest has reported sealed, as LUKS containers, on a first-boot sealing machine (ADR-0088): from ``guestinfo.banlieue.sealed``. **Sticky**: the report is re-asserted every boot but lives in volatile state, and a powered-off machine has not become unsealed. Empty until reported, and on every machine without `spec.firstBootSealing`. Guest-supplied, so it is only ever used to *withhold* `GuestReady`. |
 | `tpmAttached` | boolean |  | Whether a vTPM device was successfully attached, when `spec.tpmEnabled` is set (ADR-0039). `None` when `tpmEnabled` is `false` (nothing was ever attempted) or the attach hasn't run yet. Not part of the CAPI contract; a failed attach surfaces through the `Ready`/`InfrastructureReady` conditions rather than a dedicated `VirtualMachine`-level mirror (ADR-0034's reasoning for `observedPowerState` applies equally here). |
 | `tpmEndorsementCertificates` | string[] |  | PEM vTPM endorsement key certificate(s) issued by vCenter for this VM's vTPM (ADR-0045). |
 | `vmRef` | string |  | VMware managed-object reference (vm-NNNN). Useful for operator diagnostics. Not part of the CAPI contract. |
@@ -3184,6 +3255,7 @@ The VSphereMachine spec for machines created from this template.
 | `disks` | object[] | Yes | Disks. The first disk is the template's OS disk (grown if needed); subsequent disks are blank. |
 | `failureDomain` | string |  | CAPI contract (optional): failure domain placement. The banlieue scheduler writes the chosen failure domain here; for CAPI users the parent Machine's `spec.failureDomain` is what populates this. |
 | `firmware` | string | Yes | Firmware. EFI / EFI Secure require the template to be EFI-capable. Allowed: `bios`, `efi`, `efi-secure`. |
+| `firstBootSealing` | object |  | First-boot sealing the guest must report before `GuestReady` (ADR-0088), copied by `banlieue-controller` from the parent `VirtualMachine`'s `VMImage.spec.firstBootSealing` when the class is `tpmEnabled`. `None` for every other machine, which keeps today's `GuestReady` meaning unchanged. |
 | `folder` | string |  | Destination vCenter folder path for the **clone** (not the source template — see `template_folder`). Optional; defaults to the datacenter VM root, or (once set by `banlieue-controller`) the same per-zone folder the template lives in. |
 | `memoryMiB` | integer | Yes | Memory in MiB. |
 | `network` | object[] | Yes | Network interfaces. |
@@ -3206,6 +3278,19 @@ subsequent disks are blank.
 | `name` | string | Yes | Stable disk name; echoed in status with resolved backend identifiers. |
 | `provisioning` | string |  | Provisioning hint (thin / thick / eager-zeroed). Allowed: `thin`, `thick`, `eagerZeroed`. |
 | `sizeGiB` | integer | Yes | Disk size in GiB. For the OS disk this is a floor — the template's disk is grown to at least this size. |
+
+###### `.spec.template.spec.firstBootSealing`
+
+First-boot sealing the guest must report before `GuestReady`
+(ADR-0088), copied by `banlieue-controller` from the parent
+`VirtualMachine`'s `VMImage.spec.firstBootSealing` when the class is
+`tpmEnabled`. `None` for every other machine, which keeps today's
+`GuestReady` meaning unchanged.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `partitions` | string[] |  | Kairos partition labels to seal on first boot. Defaults to `[COS_PERSISTENT]`. `COS_OEM`, `COS_STATE`, `COS_RECOVERY` and `COS_GRUB` are refused at admission, mirroring Kairos's own refusal. |
+| `timeoutSeconds` | integer |  | Seconds from the machine's power-on (its infrastructure `Ready` transition) within which the guest must report every listed partition sealed; after that `GuestReady` is `False` with reason `FirstBootSealingTimeout`. A clone that cannot seal halts in its initramfs and never reports anything, so this is how it is noticed. |
 
 ###### `.spec.template.spec.network[]`
 

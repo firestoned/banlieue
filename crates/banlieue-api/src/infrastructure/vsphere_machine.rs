@@ -187,6 +187,14 @@ pub struct VSphereMachineSpec {
     /// the provider; never a stand-in value when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_by: Option<String>,
+
+    /// First-boot sealing the guest must report before `GuestReady`
+    /// (ADR-0088), copied by `banlieue-controller` from the parent
+    /// `VirtualMachine`'s `VMImage.spec.firstBootSealing` when the class is
+    /// `tpmEnabled`. `None` for every other machine, which keeps today's
+    /// `GuestReady` meaning unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_boot_sealing: Option<FirstBootSealing>,
 }
 
 /// One virtual disk on the resulting vSphere VM.
@@ -283,6 +291,31 @@ pub struct VSphereMachineStatus {
     /// never as `Ready`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub guest_installed: Option<bool>,
+
+    /// Whether the provider has made sure no install medium is left on the
+    /// VM (ADR-0044, vSphere amendment 2026-10-23).
+    ///
+    /// Set once `guestInstalled` is true: every ISO-backed CD-ROM is ejected
+    /// (client-device backing, not connected, not connected at power-on, no
+    /// guest control) and this becomes `true`, also when there was nothing to
+    /// eject, as on an `Immediate` clone whose template's CD-ROM was removed at
+    /// build time. `None` until then. **Sticky once true**: an ejected ISO
+    /// does not come back.
+    ///
+    /// `GuestReady` is published `True` only after this is true, so a pool can
+    /// never bind a member that still has its installer attached, and an
+    /// installed VM never keeps holding its image's ISO on the datastore.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub install_media_detached: Option<bool>,
+
+    /// Partitions the guest has reported sealed, as LUKS containers, on a
+    /// first-boot sealing machine (ADR-0088): from ``guestinfo.banlieue.sealed``. **Sticky**:
+    /// the report is re-asserted every boot but lives in volatile state, and a
+    /// powered-off machine has not become unsealed. Empty until reported, and
+    /// on every machine without `spec.firstBootSealing`. Guest-supplied, so it
+    /// is only ever used to *withhold* `GuestReady`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sealed_partitions: Vec<String>,
     /// PEM vTPM endorsement key certificate(s) issued by vCenter for this
     /// VM's vTPM (ADR-0045).
     ///

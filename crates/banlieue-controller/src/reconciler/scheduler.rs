@@ -61,6 +61,8 @@ use banlieue_api::banlieue::{
     VMClass, VMImage, VirtualMachine,
 };
 use banlieue_api::common::{Firmware, LabelSelector, LabelSelectorOperator};
+
+use crate::reconciler::infra::PROVIDER_CLASS_CLOUD_HYPERVISOR;
 use kube::ResourceExt;
 
 /// Feature flag a failure domain must advertise to support EFI secure boot.
@@ -148,6 +150,14 @@ pub enum ScheduleError {
     /// (ADR-0102).
     #[error("every matching provider has stopped renewing its Lease")]
     ProviderNotAlive,
+
+    /// The image declares first-boot sealing on a vTPM class, and every
+    /// matching Provider is a backend not cleared for it (Cloud Hypervisor,
+    /// ADR-0088 Open question 2).
+    #[error(
+        "firstBootSealing with tpmEnabled is not supported on any matching provider (cloud-hypervisor is excluded, ADR-0088)"
+    )]
+    FirstBootSealingUnsupported,
 }
 
 /// Stable condition reasons. Mapped onto the `Scheduled` condition.
@@ -168,6 +178,9 @@ pub mod reasons {
     pub const ANTI_AFFINITY_UNSATISFIED: &str = "AntiAffinityUnsatisfied";
     /// Every matching Provider's heartbeat is `Stale` (ADR-0102).
     pub const PROVIDER_NOT_ALIVE: &str = "ProviderNotAlive";
+    /// First-boot sealing on a vTPM class, and only excluded backends match
+    /// (ADR-0088).
+    pub const FIRST_BOOT_SEALING_UNSUPPORTED: &str = "FirstBootSealingUnsupported";
 }
 
 impl ScheduleError {
@@ -182,6 +195,7 @@ impl ScheduleError {
             ScheduleError::TpmUnsupported => reasons::TPM_UNSUPPORTED,
             ScheduleError::AntiAffinityUnsatisfied(_) => reasons::ANTI_AFFINITY_UNSATISFIED,
             ScheduleError::ProviderNotAlive => reasons::PROVIDER_NOT_ALIVE,
+            ScheduleError::FirstBootSealingUnsupported => reasons::FIRST_BOOT_SEALING_UNSUPPORTED,
         }
     }
 }
@@ -267,6 +281,23 @@ pub fn schedule(
     if provider_candidates.is_empty() {
         return Err(ScheduleError::ProviderNotAlive);
     }
+
+    // ADR-0088 Decision 4: a vTPM VM whose image seals on first boot is not
+    // placed on a backend not cleared for it (Cloud Hypervisor, Open
+    // question 2). Filtered here, before the failure-domain walk, so the
+    // refusal names the actual cause rather than a generic no-match.
+    let provider_candidates: Vec<&Provider> = if seals_on_first_boot(class, image) {
+        let cleared: Vec<&Provider> = provider_candidates
+            .into_iter()
+            .filter(|p| p.spec.provider_class_ref.name != PROVIDER_CLASS_CLOUD_HYPERVISOR)
+            .collect();
+        if cleared.is_empty() {
+            return Err(ScheduleError::FirstBootSealingUnsupported);
+        }
+        cleared
+    } else {
+        provider_candidates
+    };
 
     // Walk all (provider, failure_domain) tuples.
     let mut reject_reasons = RejectReasons::default();
@@ -502,6 +533,11 @@ fn placement_load(
 }
 
 /// Trait extension so we can call `mode_is_required()` directly on a rule.
+/// Whether a VM of this class and image seals on its first boot (ADR-0088).
+fn seals_on_first_boot(class: &VMClass, image: &VMImage) -> bool {
+    class.spec.tpm_enabled && image.spec.first_boot_sealing.is_some()
+}
+
 trait AntiAffinityRuleExt {
     fn mode_is_required(&self) -> bool;
 }

@@ -3293,6 +3293,62 @@
       "related_bugs": [
         "bug-159"
       ]
+    },
+    {
+      "id": "bug-181",
+      "timestamp": "2026-10-22T15:30:00.000Z",
+      "last_seen": "2026-10-22T15:30:00.000Z",
+      "occurrences": 1,
+      "error_message": "ADR-0088 Immediate clone boots with COS_PERSISTENT still plaintext; immucore encrypt-pending runs ~3ms (ok) and does nothing; GuestReady stays FirstBootSealingUnverified",
+      "file": "crates/banlieue-imagebuilder/src/first_boot_sealing.rs",
+      "root_cause": "The after-install-chroot policy file /oem/91_banlieue_first_boot_sealing.yaml had no #cloud-config header. Kairos collector (sdk/collector HasValidHeader) silently skips headerless files (immucore scans with NoLogs), so kcrypt.encrypt_on_boot was never seen. Unit tests parsed the content as YAML and so could not notice.",
+      "fix": "policy_yaml prepends CLOUD_CONFIG_HEADER (new shared const in cloud_config_merge.rs); test iso_policy_file_carries_the_cloud_config_header. Rule: every file banlieue writes into /oem must start with #cloud-config.",
+      "tags": [
+        "kairos",
+        "adr-0088",
+        "cloud-config",
+        "live-only"
+      ],
+      "related_bugs": []
+    },
+    {
+      "id": "bug-182",
+      "timestamp": "2026-10-22T15:30:00.000Z",
+      "last_seen": "2026-10-22T15:30:00.000Z",
+      "occurrences": 1,
+      "error_message": "vSphere: guestinfo.banlieue.sealed=COS_PERSISTENT but VSphereMachine.status.sealedPartitions stays empty and GuestReady stays FirstBootSealingUnverified; reconciles drop to the 5-min requeue",
+      "file": "crates/banlieue-provider-vsphere/src/reconciler/vspheremachine.rs",
+      "root_cause": "refresh_power_state only patches when something changed; sealing_gate_open was the only sealing trigger. The pass on which the report arrives makes the gate Satisfied, so no trigger fired and the new sealed state was never written.",
+      "fix": "Extracted pure refresh_needs_patch(); a changed sticky sealedPartitions is a trigger. Tests incl. a_newly_reported_seal_needs_a_patch_even_with_the_gate_closed. libvirt patches every pass, unaffected.",
+      "tags": [
+        "vsphere",
+        "adr-0088",
+        "status",
+        "change-detection",
+        "live-only"
+      ],
+      "related_bugs": [
+        "bug-181"
+      ]
+    },
+    {
+      "id": "bug-183",
+      "timestamp": "2026-10-23T05:00:00.000Z",
+      "last_seen": "2026-10-23T05:00:00.000Z",
+      "occurrences": 1,
+      "error_message": "vSphere import Job: deleting existing ISO at https://<vcenter>/folder/banlieue-images/<image>.iso?dcPath=...&dsName=... returned 500 Internal Server Error; VMImage Ready=False ImportFailed, zone left with no template",
+      "file": "crates/banlieue-provider-vsphere/src/import.rs",
+      "root_cause": "A Deferred clone inherits the template's ISO-backed CD-ROM (startConnected: true) and nothing ever disconnected it (ADR-0044 was libvirt-only); Kairos eject-cd only affects the running VM, so the ISO came back at power-on. vCenter refuses to delete a file a running VM has open. The import destroyed the template before the delete, the 500 named no cause, and the failed Job (backoffLimit) was adopted forever.",
+      "fix": "ADR-0044 vSphere amendment: settle_install_media ejects every ISO CD-ROM (client-device backing, connected/startConnected/allowGuestControl false) once guestInstalled, records status.installMediaDetached, gates GuestReady (InstallMediaAttached). ADR-0020 amendment: ensure_iso_replaceable pre-flight (Datastore.vm + connected CD-ROM on that exact file) before the forceCreate destroy, iso_delete_failed_message, import_retry_due deletes a Job failed >= 10 min. Live follow-up: installed Kairos guests hold the tray locked (vCenter question msg.cdromdisconnect.locked, auto-answered No after ~4 min), so the eject now answers Yes to that question only (cdrom_lock_question_answer). Kairos eject-cd never worked here: its shutdown hook runs /usr/bin/eject, absent from the debian13 image.",
+      "tags": [
+        "vsphere",
+        "adr-0044",
+        "adr-0020",
+        "import",
+        "cdrom",
+        "live-only"
+      ],
+      "related_bugs": []
     }
   ]
 }

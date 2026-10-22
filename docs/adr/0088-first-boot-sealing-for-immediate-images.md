@@ -7,6 +7,9 @@ SPDX-License-Identifier: Apache-2.0
 - **Status:** Proposed
 - **Date:** 2026-10-05
 - **Deciders:** Erick Bourgeois
+- **Amended:** 2026-10-22 (implemented behind the Decision 7 flag; Decision 2
+  for ISO builds, Decision 3's flag-off handling, Decision 5's timeout
+  origin; see *Amendment 2026-10-22*)
 - **Supersedes:** [ADR-0048](0048-tpm-enabled-requires-deferred-install.md),
   on acceptance. ADR-0048 named its own end date: the day
   [kairos-io/kairos#4556](https://github.com/kairos-io/kairos/issues/4556)
@@ -300,6 +303,103 @@ readback; the threat model rows citing ADR-0048 (asset A-12, the
 "looks sealed but plaintext" information-disclosure row, the `Manual` row,
 and the Cloud Hypervisor vTPM row) rewritten in a full pass; an example
 `VMImage` and `VMClass` pair; and the Kairos-on-libvirt guide updated.
+
+## Amendment 2026-10-22: implemented behind the flag
+
+Implemented ahead of acceptance, as Decision 7 anticipates: every new
+behaviour sits behind the controller flag `--enable-first-boot-sealing`
+(`BANLIEUE_ENABLE_FIRST_BOOT_SEALING`, default off). The status stays
+*Proposed*, and the Accept-when list is unchanged: kairos-io/kairos#5193
+closed on 2026-10-22, after `v4.4.0-rc2`, so no Kairos build yet carries all
+three fixes. Four points of the Decision change in the implementing.
+
+**A. Decision 2, for ISO builds: the policy is written into `COS_OEM` after
+the install, never put in the install configuration.** Upstream #4924 is "the
+immucore DAG step and config gating only": the install hook does not read
+`kcrypt.encrypt_on_boot`, so `install.encrypted_partitions` in an ISO's
+install configuration makes the installer encrypt at install time. An
+`Immediate` template installs once with no vTPM, so that install fails.
+banlieue's merge concatenates lists (ADR-0037), so an appended layer cannot
+take the key back out either. For a `Url` build whose artifact is an ISO
+(vSphere's Immediate path, ADR-0021), the generated layer therefore:
+
+- writes the policy (`kcrypt.encrypt_on_boot: true` and
+  `install.encrypted_partitions` from `spec.firstBootSealing.partitions`) as
+  its own file, `/oem/91_banlieue_first_boot_sealing.yaml`, from an
+  `after-install-chroot` stage. That is the installed disk's `COS_OEM`, where
+  `encrypt-pending` reads it, and it is the same hook images already use to
+  write `/oem` (for example a GRUB environment);
+- refuses the build (`Failed`, reason `FirstBootSealingConflict`) when an
+  operator layer of an `Immediate` image sets a non-empty
+  `install.encrypted_partitions`. Removing it silently would be implicit; the
+  install would fail anyway.
+
+For a `CloudImage` build (no installer runs; libvirt and Cloud Hypervisor),
+the layer carries both keys directly, since the image's cloud-config is what
+lands in `COS_OEM`. Whether it does is still Open question 1; the guest
+readback below is what fails loudly if it does not.
+
+**B. Decision 2, provenance.** The builder records
+`status.buildArtifact.firstBootSealingLayer: true` when it appended the
+layer. The controller's `VMImage` reconciler, the only writer of
+`status.firstBootSealing`, derives `Built` from that and `Asserted` for an
+image with no `Url` source. The Kairos-version gate
+(`FirstBootSealingUnsupported`) is **not** implemented: the builder never
+learns the source image's Kairos version, and no stable release carries #4924
+to name as the constant. The readback is the only protection against an
+image too old to seal, and it fails loudly (`FirstBootSealingTimeout`).
+
+**C. Decision 7, flag off: the `VirtualMachine` is refused, not the
+`VMImage`.** An admission policy cannot read a controller flag. With the flag
+off, a `VirtualMachine` whose image declares `firstBootSealing` gets
+`Ready=False`, reason `FirstBootSealingDisabled`, and no infrastructure CR,
+the same handling as `ImageClassMismatch`. Nothing boots expecting a policy
+that was never honoured, and nothing is silently ignored. The admission policy
+validates only what is independent of the flag: a non-empty partition list,
+no `COS_OEM`, `COS_STATE`, `COS_RECOVERY` or `COS_GRUB`, and not together with
+`trustedBoot`.
+
+**D. Decision 5, the timeout origin.** `timeoutSeconds` counts from the
+infrastructure machine's `Ready=True` transition, the end of provisioning,
+which on every backend is the power-on. No new timestamp is stored. The
+controller copies `firstBootSealing` into the infrastructure machine's spec
+(`VSphereMachine`, `LibvirtMachine`), and the provider records the reported
+partitions in a sticky `status.sealedPartitions`, alongside the sticky
+`guestInstalled`. The guest report is `guestinfo.banlieue.sealed` (vSphere) or
+`/run/banlieue/sealed` (libvirt): a comma-separated list of the listed
+partitions found as LUKS containers (label `<P>` or `<P>_LUKS`, both shapes
+from kairos-io/kairos#4403), written from a `boot` stage the builder appends.
+
+**Live run, 2026-10-22 (vSphere, Kairos `v4.4.0-rc1`).** An `Immediate`
+Debian 13 image with `firstBootSealing: {}` built with
+`status.firstBootSealing: Built`, and its clone got its own vTPM. The run found
+two defects, both fixed:
+
+1. **The policy file had no `#cloud-config` header.** Kairos's collector
+   silently skips a config file without one (`HasValidHeader`, and immucore
+   scans with logging off), so `encrypt-pending` saw no
+   `kcrypt.encrypt_on_boot` and was a no-op. The gate held, as designed:
+   `GuestReady=False`, `FirstBootSealingUnverified`. With the header added,
+   the next boot encrypted `COS_PERSISTENT` (LUKS2, `COS_PERSISTENT_LUKS`) in
+   about 4 s and unlocked it from the clone's own vTPM ("Local TPM NV
+   passphrase"), and the report step published `COS_PERSISTENT`.
+2. **vSphere never recorded the report.** The provider writes a provisioned
+   machine's status only when something changed. The pass on which the
+   report arrives closes the gate, so "gate open" no longer forced the write
+   and `sealedPartitions` / `GuestReady=True` were never written. A changed
+   sticky `sealedPartitions` is now a trigger. libvirt re-patches every pass
+   and was not affected.
+
+With both fixes in the image, a rerun from a fresh build passed with no
+manual step. The image took about 2 m 52 s to build and import into three
+zones, once. A clone went from `kubectl apply` to `GuestReady=True` in 70 s:
+`encrypt-pending` took 4.5 s and the unlock 0.33 s. After a reboot,
+`encrypt-pending` was a no-op and the unlock took 0.35 s. The per-step
+timings are in
+[the vTPM/kcrypt design doc, §4b](../design/vtpm-kairos-k0s-encryption.md#4b-proof-an-immediate-template-clone-sealed-on-its-own-first-boot-adr-0088).
+This answers the vSphere half of the design, not the Accept-when list:
+`v4.4.0-rc1` is not a release, and Open question 1 is about `CloudImage`
+builds, which vSphere does not use.
 
 ## Open questions
 

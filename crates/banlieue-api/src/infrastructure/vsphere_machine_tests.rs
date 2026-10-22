@@ -46,6 +46,7 @@ mod tests {
             user_data: None,
             desired_power_state: PowerState::PoweredOn,
             created_by: None,
+            first_boot_sealing: None,
         }
     }
 
@@ -353,6 +354,8 @@ mod tests {
             observed_power_state: Some(PowerState::PoweredOn),
             tpm_attached: Some(true),
             guest_installed: Some(true),
+            install_media_detached: Some(true),
+            sealed_partitions: vec![],
             // ADR-0045: round-trips as a list, because vCenter's own field is
             // one and a TPM may carry both an RSA and an ECC certificate.
             tpm_endorsement_certificates: vec![
@@ -500,5 +503,57 @@ mod tests {
         assert_eq!(crd.spec.names.kind, "VSphereMachineTemplate");
         assert_eq!(crd.spec.names.plural, "vspheremachinetemplates");
         assert_eq!(crd.spec.scope, "Namespaced");
+    }
+
+    // ------------------------------------------------------------------
+    // First-boot sealing (ADR-0088)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn spec_omits_first_boot_sealing_when_absent() {
+        let json = serde_json::to_value(minimal_spec()).unwrap();
+        assert!(!json.as_object().unwrap().contains_key("firstBootSealing"));
+    }
+
+    #[test]
+    fn spec_carries_first_boot_sealing_when_set() {
+        let mut spec = minimal_spec();
+        spec.first_boot_sealing = Some(FirstBootSealing::default());
+        let json = serde_json::to_value(&spec).unwrap();
+        assert_eq!(json["firstBootSealing"]["partitions"][0], "COS_PERSISTENT");
+        assert_eq!(json["firstBootSealing"]["timeoutSeconds"], 600);
+    }
+
+    #[test]
+    fn status_sealed_partitions_omitted_when_empty_and_round_trip() {
+        let empty = serde_json::to_value(VSphereMachineStatus::default()).unwrap();
+        assert!(!empty.as_object().unwrap().contains_key("sealedPartitions"));
+        let s = VSphereMachineStatus {
+            sealed_partitions: vec!["COS_PERSISTENT".to_string()],
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&s).unwrap();
+        assert_eq!(json["sealedPartitions"][0], "COS_PERSISTENT");
+        let back: VSphereMachineStatus = serde_json::from_value(json).unwrap();
+        assert_eq!(back.sealed_partitions, s.sealed_partitions);
+    }
+
+    #[test]
+    fn status_install_media_detached_omitted_until_set_and_round_trips() {
+        let empty = serde_json::to_value(VSphereMachineStatus::default()).unwrap();
+        assert!(
+            !empty
+                .as_object()
+                .unwrap()
+                .contains_key("installMediaDetached")
+        );
+        let s = VSphereMachineStatus {
+            install_media_detached: Some(true),
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&s).unwrap();
+        assert_eq!(json["installMediaDetached"], true);
+        let back: VSphereMachineStatus = serde_json::from_value(json).unwrap();
+        assert_eq!(back.install_media_detached, Some(true));
     }
 }

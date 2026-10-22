@@ -118,4 +118,40 @@ mod tests {
         assert!(!GuestProbe::NotAnnounced.is_installed());
         assert!(!GuestProbe::NotEvaluated.is_installed());
     }
+
+    // ------------------------------------------------------------------
+    // probe_sealed (ADR-0088 Decision 5)
+    // ------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn probe_sealed_reads_nothing_from_a_stopped_vm() {
+        let client = fake();
+        client.set_guest_info("vm-1", SEALED_KEY, "COS_PERSISTENT");
+        let sealed = probe_sealed(as_client(&client), "vm-1", PowerState::PoweredOff)
+            .await
+            .unwrap();
+        assert!(sealed.is_empty());
+    }
+
+    #[tokio::test]
+    async fn probe_sealed_parses_the_report() {
+        let client = fake();
+        client.set_guest_info("vm-1", SEALED_KEY, "COS_PERSISTENT,COS_DATA\n");
+        let sealed = probe_sealed(as_client(&client), "vm-1", PowerState::PoweredOn)
+            .await
+            .unwrap();
+        assert_eq!(
+            sealed,
+            vec!["COS_PERSISTENT".to_string(), "COS_DATA".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn probe_sealed_is_empty_without_a_report() {
+        let client = fake();
+        let sealed = probe_sealed(as_client(&client), "vm-1", PowerState::PoweredOn)
+            .await
+            .unwrap();
+        assert!(sealed.is_empty());
+    }
 }

@@ -55,6 +55,7 @@ pub mod pem;
 pub mod reconciler;
 pub mod runner;
 pub mod scheduling;
+pub mod sealing;
 pub mod ssa;
 pub mod status;
 

@@ -58,6 +58,8 @@ pub enum FakeStep {
     SetPowerState,
     /// [`VSphereClient::destroy_vm`].
     DestroyVm,
+    /// [`VSphereClient::eject_install_media`].
+    EjectInstallMedia,
 }
 
 /// Synthetic inventory used by [`FakeClient`] tests. Build with [`Inventory::builder`].
@@ -288,6 +290,13 @@ pub struct FakeClient {
     live: Mutex<HashMap<String, LiveVm>>,
     failing: Mutex<HashSet<FakeStep>>,
     named_lookups: Mutex<usize>,
+    /// ISO-backed CD-ROMs per VM moref (ADR-0044). None by default: a clone
+    /// of an `Immediate` template has no CD-ROM.
+    install_media: Mutex<HashMap<String, usize>>,
+    /// Every `eject_install_media` call that ejected something, by moref.
+    ejected: Mutex<Vec<String>>,
+    /// VM names holding an ISO open, by `(datastore moref, iso path)`.
+    iso_holders: Mutex<HashMap<(String, String), Vec<String>>>,
 }
 
 impl FakeClient {
@@ -309,6 +318,9 @@ impl FakeClient {
             live: Mutex::new(HashMap::new()),
             failing: Mutex::new(HashSet::new()),
             named_lookups: Mutex::new(0),
+            install_media: Mutex::new(HashMap::new()),
+            ejected: Mutex::new(Vec::new()),
+            iso_holders: Mutex::new(HashMap::new()),
         }
     }
 
@@ -379,6 +391,41 @@ impl FakeClient {
             .lock()
             .expect("fake client lock")
             .insert((vm_moref.to_string(), key.to_string()), value.into());
+    }
+
+    /// Give `vm_moref` `drives` ISO-backed CD-ROMs, as a clone of a
+    /// `Deferred` template has (ADR-0040, ADR-0044).
+    pub fn attach_install_media(&self, vm_moref: &str, drives: usize) {
+        self.install_media
+            .lock()
+            .expect("fake client lock")
+            .insert(vm_moref.to_string(), drives);
+    }
+
+    /// How many ISO-backed CD-ROMs `vm_moref` still has.
+    pub fn install_media_of(&self, vm_moref: &str) -> usize {
+        self.install_media
+            .lock()
+            .expect("fake client lock")
+            .get(vm_moref)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// Every moref an `eject_install_media` call actually ejected from.
+    pub fn ejected_vms(&self) -> Vec<String> {
+        self.ejected.lock().expect("fake client lock").clone()
+    }
+
+    /// Make `vm_name` hold `iso_path` on `datastore_moref` open, as a running
+    /// VM with a connected CD-ROM does (ADR-0020, amendment 2026-10-23).
+    pub fn hold_iso(&self, datastore_moref: &str, iso_path: &str, vm_name: &str) {
+        self.iso_holders
+            .lock()
+            .expect("fake client lock")
+            .entry((datastore_moref.to_string(), iso_path.to_string()))
+            .or_default()
+            .push(vm_name.to_string());
     }
 
     /// Make this fake vCenter issue `der` as the vTPM endorsement
@@ -677,6 +724,33 @@ impl VSphereClient for FakeClient {
             .expect("fake client lock")
             .get(&(vm_moref.to_string(), key.to_string()))
             .cloned())
+    }
+
+    async fn eject_install_media(&self, vm_moref: &str) -> Result<usize> {
+        self.injected(FakeStep::EjectInstallMedia, vm_moref)?;
+        let drives = self
+            .install_media
+            .lock()
+            .expect("fake client lock")
+            .insert(vm_moref.to_string(), 0)
+            .unwrap_or(0);
+        if drives > 0 {
+            self.ejected
+                .lock()
+                .expect("fake client lock")
+                .push(vm_moref.to_string());
+        }
+        Ok(drives)
+    }
+
+    async fn vms_holding_iso(&self, datastore_moref: &str, iso_path: &str) -> Result<Vec<String>> {
+        Ok(self
+            .iso_holders
+            .lock()
+            .expect("fake client lock")
+            .get(&(datastore_moref.to_string(), iso_path.to_string()))
+            .cloned()
+            .unwrap_or_default())
     }
 
     async fn set_custom_attributes(

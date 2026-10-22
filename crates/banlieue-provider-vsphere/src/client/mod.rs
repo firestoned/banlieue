@@ -330,6 +330,31 @@ pub trait VSphereClient: Send + Sync {
     /// member's life, not an error.
     async fn guest_info(&self, vm_moref: &str, key: &str) -> Result<Option<String>>;
 
+    /// Eject every ISO-backed CD-ROM on `vm_moref` (ADR-0044, vSphere
+    /// amendment 2026-10-23): one `ReconfigVM_Task` that gives each a
+    /// client-device backing and clears `connected`, `startConnected` and
+    /// `allowGuestControl`, as `govc device.cdrom.eject` does. The drive
+    /// itself stays.
+    ///
+    /// Returns how many drives were ejected. `0` is success, not an error: an
+    /// `Immediate` clone has no CD-ROM (its template's was removed at build
+    /// time), and a second call finds the drives already ejected.
+    ///
+    /// A guest holding the tray locked makes vCenter ask the VM
+    /// `msg.cdromdisconnect.locked`; this answers Yes to that question only
+    /// (ADR-0044, Decision 4 as revised 2026-10-23), since the installed guest
+    /// no longer needs its installer. Any other question is left unanswered,
+    /// the task wait times out and the caller retries on a later pass.
+    async fn eject_install_media(&self, vm_moref: &str) -> Result<usize>;
+
+    /// Names of the VMs on `datastore_moref` (`Datastore.vm`, which lists a VM
+    /// that only has an ISO mounted from it, verified live) that hold
+    /// `iso_path` open: a **connected** CD-ROM backed by exactly that
+    /// `[datastore] path`. vCenter refuses to delete such a file. A
+    /// disconnected drive or a powered-off VM does not count (ADR-0020,
+    /// amendment 2026-10-23).
+    async fn vms_holding_iso(&self, datastore_moref: &str, iso_path: &str) -> Result<Vec<String>>;
+
     /// Every VM named `name` directly in the folder a clone for
     /// `datacenter_moref` / `folder` would target (ADR-0101 Decision 3):
     /// `folder` under the datacenter's `vmFolder`, or `vmFolder` itself when

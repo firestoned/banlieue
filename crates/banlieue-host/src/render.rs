@@ -53,6 +53,8 @@ pub const UNIT_TEMPLATES: [Template; 4] = [
     template!("banlieue-swtpm-setup@.service"),
     template!("banlieue-ch-import@.service"),
 ];
+/// The slice every guest and vTPM runs in (ADR-0105).
+pub const GUEST_SLICE: Template = template!("banlieue-guests.slice");
 /// The provider's own unit.
 pub const PROVIDER_UNIT: Template = template!("banlieue-provider-cloud-hypervisor.service");
 /// The run root, recreated at every boot.
@@ -117,6 +119,7 @@ pub fn values(s: &Settings, probe: &dyn Probe) -> BTreeMap<&'static str, String>
         ("EK_CA_DIR", EK_CA_DIR.to_string()),
         ("GUEST_UID_BASE", s.uid_base.to_string()),
         ("GUEST_UID_COUNT", s.uid_count.to_string()),
+        ("GUEST_SLICE_LIMITS", s.guest_slice.limits()),
     ])
 }
 

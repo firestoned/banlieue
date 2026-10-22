@@ -13,6 +13,7 @@ CollectMode=inactive
 ExecStart=@SWTPM@ socket --tpm2 --tpmstate dir=@STATE_ROOT@/tpm/%i --ctrl type=unixio,path=@RUN_ROOT@/%i/swtpm.sock
 User=%i
 Group=%i
+Slice=banlieue-guests.slice
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes

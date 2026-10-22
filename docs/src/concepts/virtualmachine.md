@@ -86,7 +86,11 @@ stateDiagram-v2
   domain
   ([ADR-0098](https://github.com/firestoned/banlieue/blob/main/docs/adr/0098-spread-placement-across-failure-domains.md)).
 - `desiredPowerState` *(string, optional)* — `PoweredOn` (default) |
-  `PoweredOff` | `Suspended`.
+  `PoweredOff` | `Suspended`. The provider keeps the VM in this state on every
+  pass, on every backend: a VM that powers itself off (for example after an
+  install whose cloud-config sets `install.poweroff: true`) is started again,
+  and one stopped in the hypervisor's own console is too. To hold a VM off, set
+  `PoweredOff`.
 - `userData` *(object, optional)* — references a Secret (`secretRef`) or
   ConfigMap (`configMapRef`) carrying the cloud-init / ignition / sysprep
   payload (exactly one must be set). See

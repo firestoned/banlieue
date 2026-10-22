@@ -19,6 +19,7 @@ CollectMode=inactive
 ExecStart=@VMM_BINARY@ --api-socket path=@RUN_ROOT@/%i/api.sock
 User=%i
 Group=%i
+Slice=banlieue-guests.slice
 SupplementaryGroups=kvm
 TasksMax=1024
 NoNewPrivileges=yes

@@ -44,10 +44,15 @@ use banlieue_libvirt::{
 };
 use banlieue_provider_sdk::finalizer::{ensure_finalizer, remove_finalizer};
 use banlieue_provider_sdk::reconciler::{requeue_default, requeue_long, requeue_on_error};
+use banlieue_provider_sdk::sealing::{
+    REASON_FIRST_BOOT_SEALING_TIMEOUT, REASON_FIRST_BOOT_SEALING_UNVERIFIED, SealingGate,
+    sealing_gate, sticky_sealed_partitions,
+};
 use banlieue_provider_sdk::ssa::FIELD_MANAGER_PROVIDER_LIBVIRT;
 use banlieue_provider_sdk::status::{condition_status, set_condition};
 
-use crate::guest::{EK_PATH, EkProbe, GuestProbe, MARKER_PATH, expected_ek_cn};
+use crate::guest::{EK_PATH, EkProbe, GuestProbe, MARKER_PATH, SEALED_PATH, expected_ek_cn};
+use k8s_openapi::jiff::Timestamp;
 use kube::{
     ResourceExt,
     api::{Api, Patch, PatchParams},
@@ -174,6 +179,19 @@ pub async fn reconcile(machine: Arc<LibvirtMachine>, ctx: Arc<Context>) -> Resul
             // five-minute wait (ADR-0045).
             let ek_pending =
                 machine.spec.tpm_enabled && status.tpm_endorsement_certificates.is_empty();
+            // ADR-0088: a sealing report still due is also an answer expected
+            // to change soon; once timed out, it is not.
+            let sealing_pending = machine.spec.first_boot_sealing.as_ref().is_some_and(|req| {
+                matches!(
+                    sealing_gate(
+                        req,
+                        &status.sealed_partitions,
+                        &status.conditions,
+                        observed.now
+                    ),
+                    SealingGate::Pending { .. }
+                )
+            });
             if let Err(e) = patch_status(&api, &name, &status).await {
                 return gone_or(e, client.as_mut(), &machine.spec).await;
             }
@@ -191,7 +209,7 @@ pub async fn reconcile(machine: Arc<LibvirtMachine>, ctx: Arc<Context>) -> Resul
                 if should_poll_soon(
                     observed.guest,
                     !observed.addresses.is_empty(),
-                    ek_pending,
+                    ek_pending || sealing_pending,
                     within_agent_bootstrap_grace(age_secs),
                 ) {
                     requeue_default()
@@ -249,6 +267,12 @@ pub struct Observed {
     /// Always `NotPublished` for a machine with `tpm_enabled: false` — there
     /// is no vTPM, so nothing is ever asked of the guest.
     pub ek: EkProbe,
+    /// Partitions the guest reported sealed this pass (ADR-0088). Always
+    /// empty for a machine without `spec.firstBootSealing`; stickiness is
+    /// applied in `build_status`.
+    pub sealed: Vec<String>,
+    /// When this observation was made, for the sealing deadline.
+    pub now: Timestamp,
 }
 
 /// Should this pass eject the install medium? (ADR-0044)
@@ -447,6 +471,14 @@ pub async fn converge(
         EkProbe::NotPublished
     };
 
+    // ADR-0088: the sealing report, only for a machine that seals on first
+    // boot and only from a running domain, like the EK certificate above.
+    let sealed = if spec.first_boot_sealing.is_some() && state.is_running() {
+        client.read_sealed_report(&domain).await
+    } else {
+        Vec::new()
+    };
+
     Ok(Observed {
         domain,
         state,
@@ -455,6 +487,8 @@ pub async fn converge(
         guest,
         install_media_detached,
         ek,
+        sealed,
+        now: Timestamp::now(),
     })
 }
 
@@ -700,6 +734,10 @@ fn build_status(
         status.install_media_detached,
         observed.install_media_detached,
     );
+    if machine.spec.first_boot_sealing.is_some() {
+        status.sealed_partitions =
+            sticky_sealed_partitions(&status.sealed_partitions, &observed.sealed);
+    }
     status.observed_generation = Some(generation);
 
     let (cond_status, reason, message) = if provisioned {
@@ -747,54 +785,90 @@ fn build_status(
     // attested, so binding one would hand a subject a sandbox it can never
     // prove anything about. Machines with no vTPM skip this entirely — they
     // have no certificate to wait for and must not be stranded waiting.
+    //
+    // ADR-0088 adds the sealing gate for a first-boot sealing machine, and
+    // one case where GuestReady is published although the agent cannot
+    // answer: past the deadline. A clone whose sealing failed halts in its
+    // initramfs, where no agent runs, so "unreachable" is all the probe can
+    // ever say about it, and staying silent would hide exactly that failure.
     let installed = status.guest_installed == Some(true);
     let media_pending = status.install_media_detached == Some(false);
     let ek_pending = machine.spec.tpm_enabled && status.tpm_endorsement_certificates.is_empty();
     let ek_mismatch = observed.ek == EkProbe::Mismatch;
-    if installed || observed.guest == GuestProbe::NotAnnounced {
-        let (guest_status, guest_reason, guest_message) = if installed && media_pending {
-            (
-                condition_status::FALSE,
-                "InstallMediaAttached",
-                "the installed guest announced itself, but its install medium \
+    let gate = machine.spec.first_boot_sealing.as_ref().map(|required| {
+        sealing_gate(
+            required,
+            &status.sealed_partitions,
+            &status.conditions,
+            observed.now,
+        )
+    });
+    let timed_out = matches!(gate, Some(SealingGate::TimedOut { .. }));
+    if installed || observed.guest == GuestProbe::NotAnnounced || timed_out {
+        let (guest_status, guest_reason, guest_message) =
+            if let Some(SealingGate::TimedOut { missing }) = &gate {
+                (
+                    condition_status::FALSE,
+                    REASON_FIRST_BOOT_SEALING_TIMEOUT,
+                    format!(
+                        "no complete first-boot sealing report within the deadline; missing: {} \
+                     (a clone that cannot seal halts in its initramfs: check the serial console)",
+                        missing.join(", ")
+                    ),
+                )
+            } else if let (true, Some(SealingGate::Pending { missing })) = (installed, &gate) {
+                (
+                    condition_status::FALSE,
+                    REASON_FIRST_BOOT_SEALING_UNVERIFIED,
+                    format!(
+                        "the installed guest announced itself but has not reported {} sealed \
+                     in {SEALED_PATH} (ADR-0088)",
+                        missing.join(", ")
+                    ),
+                )
+            } else if installed && media_pending {
+                (
+                    condition_status::FALSE,
+                    "InstallMediaAttached",
+                    "the installed guest announced itself, but its install medium \
                  has not been ejected yet (ADR-0044)"
-                    .to_string(),
-            )
-        } else if installed && ek_mismatch {
-            (
-                condition_status::FALSE,
-                "TpmEndorsementMismatch",
-                format!(
-                    "the guest reported a vTPM endorsement certificate that is not \
+                        .to_string(),
+                )
+            } else if installed && ek_mismatch {
+                (
+                    condition_status::FALSE,
+                    "TpmEndorsementMismatch",
+                    format!(
+                        "the guest reported a vTPM endorsement certificate that is not \
                      issued to this domain; expected subject CN {} (ADR-0045)",
-                    expected_ek_cn(
-                        &machine.spec.domain_name,
-                        &format_uuid(&observed.domain.uuid)
-                    )
-                ),
-            )
-        } else if installed && ek_pending {
-            (
-                condition_status::FALSE,
-                "TpmEndorsementPending",
-                format!(
-                    "the installed guest announced itself, but has not exported its \
+                        expected_ek_cn(
+                            &machine.spec.domain_name,
+                            &format_uuid(&observed.domain.uuid)
+                        )
+                    ),
+                )
+            } else if installed && ek_pending {
+                (
+                    condition_status::FALSE,
+                    "TpmEndorsementPending",
+                    format!(
+                        "the installed guest announced itself, but has not exported its \
                      vTPM endorsement certificate to {EK_PATH} yet (ADR-0045)"
-                ),
-            )
-        } else if installed {
-            (
-                condition_status::TRUE,
-                "GuestAnnounced",
-                "the installed guest announced itself".to_string(),
-            )
-        } else {
-            (
-                condition_status::FALSE,
-                "GuestNotAnnounced",
-                format!("qemu-guest-agent is answering but reports no {MARKER_PATH} marker"),
-            )
-        };
+                    ),
+                )
+            } else if installed {
+                (
+                    condition_status::TRUE,
+                    "GuestAnnounced",
+                    "the installed guest announced itself".to_string(),
+                )
+            } else {
+                (
+                    condition_status::FALSE,
+                    "GuestNotAnnounced",
+                    format!("qemu-guest-agent is answering but reports no {MARKER_PATH} marker"),
+                )
+            };
         set_condition(
             &mut status.conditions,
             condition_types::GUEST_READY,

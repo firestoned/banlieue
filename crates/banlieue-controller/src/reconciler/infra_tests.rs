@@ -137,6 +137,7 @@ mod tests {
                 template: None,
                 iso_overlay: None,
                 trusted_boot: None,
+                first_boot_sealing: None,
             },
             status: Some(VMImageStatus {
                 per_provider: vec![ImagePerProviderStatus {
@@ -151,6 +152,7 @@ mod tests {
                 build_artifact: None,
                 conditions: vec![],
                 observed_generation: None,
+                first_boot_sealing: None,
             }),
         }
     }
@@ -230,6 +232,73 @@ mod tests {
         .expect("ok");
 
         assert!(m.spec.tpm_enabled);
+    }
+
+    // ---- first-boot sealing (ADR-0088 Decision 5) ------------------------
+    //
+    // The provider decides what GuestReady waits for from its own spec, so
+    // the image's declaration has to travel with the machine; only a vTPM
+    // machine can seal (the pairing check refuses the rest before this runs).
+
+    fn sealing_raw() -> BTreeMap<String, String> {
+        BTreeMap::from([
+            ("datacenter".to_string(), "dc1".to_string()),
+            ("cluster".to_string(), "cluster-a".to_string()),
+        ])
+    }
+
+    #[test]
+    fn vsphere_machine_carries_first_boot_sealing_from_the_image() {
+        let mut class = parent_class();
+        class.spec.tpm_enabled = true;
+        let mut image = parent_image();
+        let sealing = banlieue_api::common::FirstBootSealing {
+            partitions: vec!["COS_PERSISTENT".to_string()],
+            timeout_seconds: 900,
+        };
+        image.spec.first_boot_sealing = Some(sealing.clone());
+        let m = build_vsphere_machine(
+            &parent_vm(),
+            &class,
+            &image,
+            &decision_with_raw(sealing_raw()),
+            &parent_provider(),
+            None,
+        )
+        .expect("ok");
+        assert_eq!(m.spec.first_boot_sealing, Some(sealing));
+    }
+
+    #[test]
+    fn vsphere_machine_has_no_first_boot_sealing_without_a_declaration_or_a_vtpm() {
+        let mut tpm = parent_class();
+        tpm.spec.tpm_enabled = true;
+        let m = build_vsphere_machine(
+            &parent_vm(),
+            &tpm,
+            &parent_image(),
+            &decision_with_raw(sealing_raw()),
+            &parent_provider(),
+            None,
+        )
+        .expect("ok");
+        assert!(m.spec.first_boot_sealing.is_none(), "nothing declared");
+
+        let mut image = parent_image();
+        image.spec.first_boot_sealing = Some(banlieue_api::common::FirstBootSealing::default());
+        let m = build_vsphere_machine(
+            &parent_vm(),
+            &parent_class(),
+            &image,
+            &decision_with_raw(sealing_raw()),
+            &parent_provider(),
+            None,
+        )
+        .expect("ok");
+        assert!(
+            m.spec.first_boot_sealing.is_none(),
+            "no vTPM, nothing to seal to"
+        );
     }
 
     #[test]
@@ -1234,6 +1303,25 @@ mod tests {
         .expect("ok");
         assert_eq!(m.spec.firmware, Firmware::Efi);
         assert!(m.spec.tpm_enabled);
+    }
+
+    #[test]
+    fn libvirt_machine_carries_first_boot_sealing_only_with_a_vtpm() {
+        use banlieue_api::banlieue::InstallMode;
+        let provider = libvirt_provider(("network", "default"));
+        let mut image = libvirt_image(InstallMode::Immediate);
+        image.spec.first_boot_sealing = Some(banlieue_api::common::FirstBootSealing::default());
+
+        let mut class = parent_class();
+        class.spec.tpm_enabled = true;
+        let m = build_libvirt(&parent_vm(), &class, &image, &provider).expect("ok");
+        assert_eq!(
+            m.spec.first_boot_sealing,
+            Some(banlieue_api::common::FirstBootSealing::default())
+        );
+
+        let m = build_libvirt(&parent_vm(), &parent_class(), &image, &provider).expect("ok");
+        assert!(m.spec.first_boot_sealing.is_none());
     }
 
     #[test]

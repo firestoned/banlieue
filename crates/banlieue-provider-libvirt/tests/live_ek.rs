@@ -145,6 +145,7 @@ fn spec(domain_name: &str, pool: &str, source_volume: &str) -> LibvirtMachineSpe
         }],
         user_data: Some(seed()),
         desired_power_state: PowerState::PoweredOn,
+        first_boot_sealing: None,
     }
 }
 

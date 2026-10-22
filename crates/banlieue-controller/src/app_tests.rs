@@ -39,6 +39,13 @@ mod tests {
         );
     }
 
+    /// ADR-0088 Decision 7: first-boot sealing is opt-in, off unless asked.
+    #[test]
+    fn first_boot_sealing_is_off_by_default_and_enabled_by_flag() {
+        assert!(!parse(&[]).enable_first_boot_sealing);
+        assert!(parse(&["--enable-first-boot-sealing"]).enable_first_boot_sealing);
+    }
+
     #[test]
     fn build_leader_config_maps_cli_values() {
         let cli = parse(&[

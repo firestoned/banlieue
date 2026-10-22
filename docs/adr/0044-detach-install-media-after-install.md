@@ -9,6 +9,8 @@ SPDX-License-Identifier: Apache-2.0
 - **Deciders:** Erick Bourgeois
 - **Amended:** 2026-10-12 (libvirt boot order: disk first, installer as
   fallback; see *Amendment 2026-10-12* at the end)
+- **Amended:** 2026-10-23 (implemented on vSphere; see *Amendment
+  2026-10-23*)
 - **Related:** Gates on [ADR-0043](0043-guestready-installed-guest-signal.md);
   constrains [ADR-0040](0040-deferred-install-for-vtpm-encryption.md)'s
   deferred-install path; consumed by
@@ -179,3 +181,89 @@ definition, are unchanged.
   `InstallMedia` always creates an empty disk) would boot that disk instead
   of the installer.
 
+
+## Amendment 2026-10-23: implemented on vSphere
+
+**Context.** The Consequences above deferred vSphere "for want of a vCenter to
+verify against". The cost of that deferral was found live on 2026-10-22: a
+`Deferred` VM (an OpenBao node) still had its image's ISO connected to its
+CD-ROM days after installing, because a `Deferred` template's CD-ROM has
+`startConnected: true`, every clone inherits it, and nothing disconnects it.
+When the image was re-imported with `forceUpload`, the import Job could not
+delete the old ISO from that zone's datastore (vCenter answers
+`500 Internal Server Error` for a file a running VM has open), the zone's
+template had already been destroyed, and the `VMImage` stayed `Ready=False`.
+So the readership exposure in Context is real on vSphere, and so is a second
+cost: an installed VM blocks every later re-import of its image into its
+zone.
+
+**Decision.**
+
+1. **Decision 1 holds on vSphere unchanged.** Once `guestInstalled` is true,
+   the provider ejects the install media, and only then can `GuestReady` be
+   `True`. A machine whose eject has not succeeded reports
+   `GuestReady=False`, reason `InstallMediaAttached`, the libvirt reason.
+2. **The eject is the one `govc device.cdrom.eject` performs.** Every CD-ROM
+   backed by an ISO file is edited (`ReconfigVM_Task`) to a client-device
+   backing (`VirtualCdromRemotePassthroughBackingInfo`) with `connected`,
+   `startConnected` and `allowGuestControl` all false. The drive stays, as on
+   libvirt (Decision 3): only the medium leaves, so nothing references the ISO
+   and the guest cannot reconnect it. Device removal is not used: an IDE
+   CD-ROM cannot be hot-removed from a running VM.
+3. **`VSphereMachineStatus.installMediaDetached`** is the sticky record, as
+   on libvirt (Decision 2). It is absent until the guest is installed.
+   vSphere does not tell the provider whether the image was `Deferred`
+   (`VSphereMachineSpec` carries no install mode), so the first installed
+   observation reads the VM's devices and sets `true` whether it ejected an
+   ISO or found none. That is the one difference from Decision 5: an
+   `Immediate` clone (whose template's CD-ROM was removed at build time,
+   ADR-0021) also records `true`, meaning "verified no install media", rather
+   than staying absent. It costs one `config` read per machine, once.
+4. **A guest that holds the tray locked is overridden** (revised
+   2026-10-23, after the first live run; the opposite of libvirt's Decision
+   3). vCenter asks the VM `msg.cdromdisconnect.locked` ("Disconnect anyway
+   and override the lock?") and the reconfigure task waits on it; left
+   alone, vCenter answers No itself after about four minutes and the eject
+   fails, on every pass, forever. Found live: **every installed Kairos guest
+   seen so far holds the tray locked**, and the VMs could not be logged into
+   (no SSH, no console login), so "release it from inside the guest" was not
+   available. The eject only happens once `guestInstalled` is true, when the
+   guest no longer needs its installer, so the provider answers Yes, to that
+   one question only (matched by its message id, the Yes key read from the
+   labels). Any other question is left for a human. A failed eject is retried
+   at the long requeue, not every pass.
+5. **Machines provisioned before this change are covered.** Their
+   `installMediaDetached` is absent and `guestInstalled` is already true, so
+   their next pass ejects. A provider rollout therefore disconnects the
+   install ISO from every installed `Deferred` VM it manages.
+
+**Why Kairos's own `eject-cd` did not prevent this.** `eject-cd: true` makes
+the installer write `/usr/lib/systemd/system-shutdown/eject`, a one-line
+`/usr/bin/eject -rmF`, run when the live installer shuts down before its
+reboot (`agent/pkg/action/install.go`, only when booted from CD). The
+debian13 image (`kairos-init v4.4.0-rc1`) ships no `eject` binary (Debian's
+`eject` package is not installed), so the hook fails silently, which systemd
+allows for shutdown hooks. vCenter's event log for the affected VM shows one
+power-on and no disconnect at install time. Even when the hook works, a guest
+eject changes only the running VM: it cannot clear `startConnected` or
+`allowGuestControl`, so the provider-side eject is needed either way.
+
+**Consequences.**
+
+- The "bound pool member never has install media" invariant now holds on
+  vSphere too, and `kubectl get vspheremachine -o json` audits it.
+- An installed VM no longer blocks a re-import of its image; the import's
+  own pre-flight (ADR-0020, amendment 2026-10-23) covers whatever still does.
+- **Verified live 2026-10-23** (vCenter 8.0.3), for the eject itself: on
+  rollout the provider ejected the ISO from two installed `Deferred` VMs; both
+  CD-ROMs read back with a client-device backing and `connected`,
+  `startConnected` and `allowGuestControl` false, `installMediaDetached:
+  true`, `GuestReady=True`. Clones without a CD-ROM recorded `true` without a
+  reconfigure. Both guests held the tray locked; that run predates the
+  automatic answer, and the lock question was answered Yes by hand. **The
+  automatic answer (Decision 4) was then verified live the same day**: on a
+  freshly installed `Deferred` clone the provider logged that the guest holds
+  the tray locked and was overriding it, and the ISO was ejected 3 s later
+  (no question left pending); a second installed VM behaved the same.
+  The same rollout's re-import of the blocked zone passed the ADR-0020
+  pre-flight and rebuilt the zone's template.

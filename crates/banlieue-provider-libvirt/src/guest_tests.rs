@@ -359,4 +359,33 @@ mod tests {
             assert!(ek_cn_matches(&got, FIXTURE_DOMAIN, FIXTURE_UUID), "{what}");
         }
     }
+
+    // ---- sealing report (ADR-0088 Decision 5) -------------------------
+
+    fn b64(text: &str) -> String {
+        use base64::Engine;
+        base64::engine::general_purpose::STANDARD.encode(text)
+    }
+
+    #[test]
+    fn the_sealing_report_is_parsed_from_a_read_reply() {
+        let reply = read_reply(&b64("COS_PERSISTENT,COS_DATA\n"), true);
+        assert_eq!(
+            sealed_from_read(&reply),
+            vec!["COS_PERSISTENT".to_string(), "COS_DATA".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_garbled_or_oversized_report_seals_nothing() {
+        assert!(sealed_from_read("not json").is_empty());
+        assert!(
+            sealed_from_read(&read_reply(&b64(&"A".repeat(SEALED_READ_MAX + 1)), true)).is_empty()
+        );
+    }
+
+    #[test]
+    fn the_sealing_report_path_is_beside_the_phase_marker() {
+        assert_eq!(SEALED_PATH, "/run/banlieue/sealed");
+    }
 }

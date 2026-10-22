@@ -900,4 +900,49 @@ mod tests {
         assert_eq!(s.source_count(), 3);
         assert!(s.validate().is_err());
     }
+
+    // ----------------------------------------------------------------------
+    // FirstBootSealing (ADR-0088)
+    // ----------------------------------------------------------------------
+
+    /// `firstBootSealing: {}` is the documented way to opt in: the block's
+    /// presence is the declaration, and its fields default to the one
+    /// partition Kairos seals and a ten minute first-boot budget.
+    #[test]
+    fn first_boot_sealing_empty_block_takes_the_defaults() {
+        let s: FirstBootSealing = serde_json::from_str("{}").unwrap();
+        assert_eq!(s.partitions, vec!["COS_PERSISTENT".to_string()]);
+        assert_eq!(
+            s.timeout_seconds,
+            DEFAULT_FIRST_BOOT_SEALING_TIMEOUT_SECONDS
+        );
+        assert_eq!(s, FirstBootSealing::default());
+    }
+
+    #[test]
+    fn first_boot_sealing_round_trips_camel_case() {
+        let s = FirstBootSealing {
+            partitions: vec!["COS_PERSISTENT".to_string(), "COS_DATA".to_string()],
+            timeout_seconds: 900,
+        };
+        let json = serde_json::to_value(&s).unwrap();
+        assert_eq!(json["partitions"][1], "COS_DATA");
+        assert_eq!(json["timeoutSeconds"], 900);
+        let back: FirstBootSealing = serde_json::from_value(json).unwrap();
+        assert_eq!(back, s);
+    }
+
+    /// The list is a set of partition labels: an explicit empty list is a
+    /// declaration that seals nothing, which the schema refuses rather than
+    /// letting a tpmEnabled clone boot plaintext while "declared sealed".
+    #[test]
+    fn first_boot_sealing_schema_requires_at_least_one_partition() {
+        let schema = serde_json::to_value(schemars::schema_for!(FirstBootSealing)).unwrap();
+        assert_eq!(schema["properties"]["partitions"]["minItems"], 1);
+    }
+
+    #[test]
+    fn first_boot_sealing_rejects_unknown_type_for_timeout() {
+        assert!(serde_json::from_str::<FirstBootSealing>(r#"{"timeoutSeconds":"ten"}"#).is_err());
+    }
 }

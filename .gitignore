@@ -40,6 +40,7 @@ docs/.venv/
 # absolute paths into the maintainer's home directory, so this file is
 # machine-local and must never be committed (rules/no-real-infrastructure.md).
 .claude/settings.json
+.claude/settings.local.json
 
 # RustRover
 #  JetBrains specific template is maintained in a separate JetBrains.gitignore that can

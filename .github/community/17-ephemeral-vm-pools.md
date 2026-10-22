@@ -57,7 +57,7 @@ stays readable.
 | Constraint | Source |
 |---|---|
 | One VM per identity. No multiplexing identities behind a shared guest kernel. | design decision |
-| TPM-sealed Kairos partitions are mandatory, so `installMode: Deferred` is mandatory. Encryption is install-phase-only in Kairos; an `Immediate` template clone can never be encrypted per-VM. | ADR-0040 |
+| TPM-sealed Kairos partitions are mandatory, so `installMode: Deferred` is mandatory. Encryption is install-phase-only in Kairos; an `Immediate` template clone can never be encrypted per-VM. Since 2026-10-22 ADR-0088 (Proposed, implemented behind `--enable-first-boot-sealing`, default off) lifts this for an `Immediate` image that declares `firstBootSealing`, once a Kairos release carries first-boot sealing. | ADR-0040, ADR-0088 |
 | No Instant Clone. Incompatible with a vTPM on the fork source. | ADR-0052 |
 | Trusted Boot/UKI is experimental on vSphere: about 3 minutes of silent stalls per boot. Sandboxes use the classic GRUB image until section 0 says otherwise. | ADR-0051 |
 | CR-to-CR only. Pools create `VirtualMachine`s; they never talk to a provider. | 01-DECISIONS |

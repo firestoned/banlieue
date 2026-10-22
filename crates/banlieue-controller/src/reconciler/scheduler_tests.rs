@@ -160,6 +160,7 @@ mod tests {
                 template: None,
                 iso_overlay: None,
                 trusted_boot: None,
+                first_boot_sealing: None,
             },
             status: Some(VMImageStatus {
                 per_provider: providers
@@ -177,6 +178,7 @@ mod tests {
                 build_artifact: None,
                 conditions: vec![],
                 observed_generation: None,
+                first_boot_sealing: None,
             }),
         }
     }
@@ -610,6 +612,82 @@ mod tests {
 
         let decision = schedule(&v, &cls, &img, &[p], &[]).unwrap();
         assert_eq!(decision.failure_domain_name, "fd-a");
+    }
+
+    // ---- first-boot sealing on Cloud Hypervisor (ADR-0088 Decision 4) ----
+    //
+    // Whether Cloud Hypervisor's vTPM path accepts an Immediate source is
+    // ADR-0088 Open question 2, so a sealing vTPM VM is never placed there.
+
+    fn sealing_fixture() -> (VirtualMachine, VMClass, VMImage) {
+        let v = vm("db-01", "ns", BTreeMap::new());
+        let cls = class_with_tpm_enabled(
+            class(
+                vec![("os", "gold")],
+                vec![("eth0", "prod")],
+                vec![],
+                Firmware::Efi,
+            ),
+            true,
+        );
+        let mut img = image_ready_on(&["ch1", "vc1"]);
+        img.spec.first_boot_sealing = Some(banlieue_api::common::FirstBootSealing::default());
+        (v, cls, img)
+    }
+
+    fn tpm_provider(name: &str, provider_class: &str) -> Provider {
+        let mut p = provider(
+            name,
+            BTreeMap::new(),
+            vec![fd("fd-a", BTreeMap::new(), &["gold"], &["prod"], &["vtpm"])],
+            caps_with(
+                &[("gold", "datastore", "ds-1")],
+                &[("prod", "portGroup", "pg-1")],
+            ),
+        );
+        p.spec.provider_class_ref.name = provider_class.into();
+        p
+    }
+
+    #[test]
+    fn first_boot_sealing_is_not_placed_on_cloud_hypervisor() {
+        let (v, cls, img) = sealing_fixture();
+        let err = schedule(
+            &v,
+            &cls,
+            &img,
+            &[tpm_provider("ch1", "cloud-hypervisor")],
+            &[],
+        )
+        .unwrap_err();
+        assert_eq!(err, ScheduleError::FirstBootSealingUnsupported);
+        assert_eq!(err.reason(), reasons::FIRST_BOOT_SEALING_UNSUPPORTED);
+    }
+
+    #[test]
+    fn first_boot_sealing_skips_cloud_hypervisor_for_another_backend() {
+        let (v, cls, img) = sealing_fixture();
+        let providers = [
+            tpm_provider("ch1", "cloud-hypervisor"),
+            tpm_provider("vc1", "vsphere"),
+        ];
+        let decision = schedule(&v, &cls, &img, &providers, &[]).unwrap();
+        assert_eq!(decision.provider_name, "vc1");
+    }
+
+    #[test]
+    fn cloud_hypervisor_still_takes_vtpm_vms_that_do_not_declare_sealing() {
+        let (v, cls, mut img) = sealing_fixture();
+        img.spec.first_boot_sealing = None;
+        let decision = schedule(
+            &v,
+            &cls,
+            &img,
+            &[tpm_provider("ch1", "cloud-hypervisor")],
+            &[],
+        )
+        .unwrap();
+        assert_eq!(decision.provider_name, "ch1");
     }
 
     #[test]

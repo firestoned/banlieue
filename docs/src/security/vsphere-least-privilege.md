@@ -31,7 +31,7 @@ therefore needs none of the privileges those require.
 | `ViewManager.CreateContainerView`, property reads | `vim.rs` inventory listing | root folder, datacenters, clusters, datastores, networks, VMs, tasks | Inventory, reachability (ADR-0019), task polling |
 | `Folder.CreateFolder` | `ensure_folder` | datacenter VM folder | Per-zone template and VM folders |
 | `Folder.CreateVM_Task` | `import_iso_template` | VM folder, cluster root pool, datastore, port groups | Build an ISO install template (ADR-0021) |
-| `VirtualMachine.ReconfigVM_Task` | template NIC slot, CD-ROM and boot order, CD-ROM removal, disk grow, vTPM add | VM | Template finishing, OS disk floor, vTPM (ADR-0039) |
+| `VirtualMachine.ReconfigVM_Task` | template NIC slot, CD-ROM and boot order, CD-ROM removal, disk grow, vTPM add, install-media eject | VM | Template finishing, OS disk floor, vTPM (ADR-0039), ejecting an installed VM's install ISO (ADR-0044) |
 | `VirtualMachine.MarkAsTemplate` | `import_iso_template` | VM | Finish a template |
 | `VirtualMachine.PowerOnVM_Task` / `PowerOffVM_Task` / `SuspendVM_Task` | `set_power_state`, install boot | VM | Desired power state (ADR-0024) |
 | `ClusterComputeResource.PlaceVm` | `clone_vm` | cluster | DRS host recommendation before clone |
@@ -39,6 +39,7 @@ therefore needs none of the privileges those require.
 | `VirtualMachine.Destroy_Task` | `destroy_vm` | VM or template | Machine delete, image finalize, forced rebuild |
 | `FileManager.MakeDirectory` | `ensure_datastore_dir` | datastore | ISO upload directory |
 | HTTP `HEAD` / `PUT` / `DELETE` on `/folder/...` | `import.rs` | datastore | Check, upload and replace the install ISO |
+| `Datastore.vm` and each listed VM's `config` (property reads) | `vms_holding_iso` | datastore, VMs on it | Before a `forceUpload` replaces an ISO, find VMs that still have it connected (ADR-0020, amendment 2026-10-23) |
 
 The clone and create specs also carry: NIC backing edits, `extraConfig`
 (`guestinfo.*`, `ethernetN.pciSlotNumber`), CPU and memory, a new disk and
@@ -68,7 +69,7 @@ Create a custom role, for example `banlieue-sandbox`, with these privileges:
 | `VirtualMachine.Config.DiskExtend` | OS disk floor (grow only) | High |
 | `VirtualMachine.Config.Settings` | Boot order on the install template | High |
 | `VirtualMachine.Interact.PowerOn`, `.PowerOff`, `.Suspend` | Power state | High |
-| `VirtualMachine.Interact.SetCDMedia`, `.DeviceConnection` | Connecting the install ISO | **Unverified** |
+| `VirtualMachine.Interact.SetCDMedia`, `.DeviceConnection` | Connecting the install ISO, and ejecting it once the guest is installed (ADR-0044) | **Unverified** |
 | `Resource.AssignVMToPool` | Create and clone into the cluster's root pool | High |
 | `Datastore.AllocateSpace` | Create, clone, disk grow, ISO upload | High |
 | `Datastore.Browse` | ISO existence check, ISO-backed CD-ROM | Medium |
@@ -83,8 +84,11 @@ privileges. The provider uses none of them.
 If image builds run under a different Provider or account than VM
 provisioning, you can split the role. Only the import path needs
 `VirtualMachine.Inventory.Create`, `.Provisioning.MarkAsTemplate`,
-`.Config.AddNewDisk`, `.Config.Settings`, the `Interact.SetCDMedia`
-pair and `Datastore.FileManagement`.
+`.Config.AddNewDisk`, `.Config.Settings` and `Datastore.FileManagement`.
+Both need the `Interact.SetCDMedia` pair: provisioning ejects a `Deferred`
+VM's install ISO once its guest is installed (ADR-0044). Without it the
+eject fails and the VM stays `GuestReady=False`, reason
+`InstallMediaAttached`.
 
 ## Where to assign it
 

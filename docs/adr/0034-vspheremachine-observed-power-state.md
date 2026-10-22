@@ -2,6 +2,8 @@
 
 - **Status:** Accepted
 - **Date:** 2026-08-24
+- **Amended:** 2026-10-23 (the provider now converges to
+  `spec.desiredPowerState`; see *Amendment 2026-10-23*)
 - **Related:** Amends [ADR-0024](0024-vspheremachine-clone-static-ip-cloud-config.md)'s
   create-path-only scoping decision. Extends `banlieue.io/v1alpha1`
   `VirtualMachine` (`crates/banlieue-api/src/banlieue/virtualmachine.rs`) and
@@ -128,3 +130,58 @@ call without also trying to *change* the power state.
 - One extra `VirtualMachine.runtime` read per `VSphereMachine` reconcile,
   even once steady-state — bounded, cheap, and only on the existing
   `requeue_long` cadence (no new polling frequency introduced).
+
+## Amendment 2026-10-23: converge to `spec.desiredPowerState`
+
+**Context.** This ADR made the provider *observe* power state and deliberately
+stop there: a VM powered off out of band was reported, not repaired. Found
+live on 2026-10-23: a `Deferred` image whose baked-in cloud-config ended with
+`install.poweroff: true` (a leftover from the `Immediate` template recipe)
+installed, powered itself off, and stayed off. `desiredPowerState` was
+`PoweredOn`, `observedPowerState` was `PoweredOff`, and nothing ever started
+it. The libvirt, Proxmox and Cloud Hypervisor providers already drive the
+machine to its desired state on every pass, so vSphere was the one backend
+where declaring `PoweredOn` was a promise only for the first minute of the
+machine's life.
+
+**Decision.**
+
+1. **Every pass on a provisioned machine drives the VM to
+   `spec.desiredPowerState`.** After the `power_state` read and before the
+   guest probe, `converge_power_state` calls `set_power_state` when the two
+   differ. Powering on is also how a suspended VM resumes. A VM already in the
+   desired state costs no vCenter mutation.
+2. **A vCenter fault does not fail the pass.** It is logged, the real state is
+   recorded, and the machine requeues at the short interval rather than the
+   long one. Deletion still takes priority over everything (ADR-0026), so this
+   cannot fight a delete.
+3. **An out-of-band power change is now reverted, not just reported.** An
+   operator who stops a VM in vCenter will see it started again on the next
+   pass (at most one long requeue later). To keep a VM off, set the
+   `VirtualMachine`'s `desiredPowerState: PoweredOff` (the provider then holds
+   it off), or delete it. This is the same contract the other providers have
+   always had, and the rest of this ADR (the status fields, the
+   `BackendMissing` detect-and-report path) is unchanged.
+
+**Consequences.**
+
+- A `poweroff: true` install is a valid `Deferred` recipe: the VM installs,
+  powers off, and the provider boots it into the installed system. Verified
+  live: with the install ISO still connected, the guest booted its installed
+  disk (login prompt about 60 s after power-on), not the installer.
+- **Rollout starts every `VSphereMachine` whose VM is off while
+  `desiredPowerState` is `PoweredOn`**, including VMs a human stopped on
+  purpose. List them first: `kubectl get vspheremachine -A -o json | jq -r
+  '.items[]|select(.spec.desiredPowerState!=.status.observedPowerState)|.metadata.name'`.
+- Quarantining a VM by powering it off in vCenter no longer holds. Recorded in
+  the threat model (TB-4).
+- **Timing depends on how often the machine is looked at.** A settled VM (guest
+  announced, nothing pending) is requeued at the long interval, so one stopped
+  out of band is started again within about five minutes. **Verified live
+  2026-10-23** on vCenter 8.0.3: powered off in vCenter at 15:14:36, powered on
+  by the provider at 15:19:26 (294 s), `observedPowerState` back to `PoweredOn`.
+  A VM that is running but has not announced itself (a `Deferred` install in
+  progress) is requeued every 30 s, so an install that ends in `poweroff`
+  should resume within about 30 s; **that case is not yet verified live.**
+- Unit tested against the fake, which refuses a redundant power change as
+  vCenter does.

@@ -1,0 +1,114 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# A pre-installed (Immediate) Kairos template whose clones each seal
+# COS_PERSISTENT to their OWN vTPM on their first boot (ADR-0088), and the
+# tpmEnabled VMClass that uses it.
+#
+# WHY THIS INSTEAD OF EXAMPLE 13 (Deferred)
+#
+#   Deferred runs the whole Kairos install once per clone, at that clone's
+#   first boot, so each VM waits for a full install. Immediate installs once,
+#   into the template, and every clone boots straight into it; first-boot
+#   sealing encrypts the persistent partition in seconds, against the vTPM
+#   banlieue attaches to the clone before its first power-on. The template
+#   itself carries the policy and no key material.
+#
+# PREREQUISITES
+#
+#   - banlieue-controller runs with --enable-first-boot-sealing
+#     (BANLIEUE_ENABLE_FIRST_BOOT_SEALING=true). Without it, every
+#     VirtualMachine of this image is refused with FirstBootSealingDisabled.
+#   - The source image carries a Kairos with first-boot sealing
+#     (kairos-io/kairos#4924): no stable Kairos release has it yet, and the
+#     builder cannot check the version. An image too old to seal boots
+#     plaintext and is caught by GuestReady=False, FirstBootSealingTimeout
+#     or FirstBootSealingUnverified, never reported healthy.
+#   - A KMS registered in vCenter and the `vtpm` feature on the Provider, as
+#     for example 12.
+#
+# WHAT banlieue DOES WITH firstBootSealing
+#
+#   banlieue-imagebuilder appends its own cloud-config layer AFTER the
+#   operator layers below. For this ISO build it writes the policy
+#   (kcrypt.encrypt_on_boot + install.encrypted_partitions) into the
+#   installed disk's COS_OEM from an after-install-chroot stage, and adds a
+#   boot stage that reports the sealed partitions in
+#   guestinfo.banlieue.sealed. The operator layers must therefore NOT set
+#   install.encrypted_partitions: the template installs with no vTPM, so that
+#   would make its install fail (the build is refused with
+#   FirstBootSealingConflict instead).
+#
+#   status.firstBootSealing becomes Built once the layer is in the build.
+#   Each clone's GuestReady waits for COS_PERSISTENT to be reported sealed.
+#
+# WHAT IT DOES NOT PROTECT
+#
+#   COS_OEM is never sealed. Per-VM user-data (VirtualMachine.spec.userData)
+#   is persisted there in plaintext for the life of the VM, so a secret in
+#   user-data is not protected at rest by this.
+#
+# Changing firstBootSealing on an existing VMImage does not rebuild an
+# OSArtifact that already exists: recreate the VMImage.
+---
+apiVersion: banlieue.io/v1alpha1
+kind: VMImage
+metadata:
+  name: kairos-debian-13-sealed
+spec:
+  osFamily: linux
+  osDistribution: debian
+  osVersion: "13"
+  architecture: amd64
+  guestAgent: cloud-init
+  sources:
+    - providerClass: vsphere
+      kind: Url
+      ref: unused-for-url-sources # required by the schema; ignored for kind: Url
+      importFrom: ghcr.io/example/kairos-debian:13-first-boot-sealing@sha256:0000000000000000000000000000000000000000000000000000000000000000 # placeholder: pin your own image's digest
+  cloudConfigs:
+    # The template-building install: install.poweroff, no reboot, and no
+    # install.encrypted_partitions (see above).
+    - secretRef:
+        name: kairos-template-install-cloud-config
+        key: cloud-config.yaml
+  template:
+    rootFolder: templates/kairos-sealed
+    network:
+      - network: vmnet-prod
+        adapter: vmxnet3
+        pciSlot: 192
+    disk:
+      size: 16
+      type: thin
+      controller: pvscsi
+    cpus: 2
+    memoryMib: 4096
+    firmware: efi   # vTPM requires EFI
+    installMode: immediate
+  # The declaration. `{}` takes the defaults: seal [COS_PERSISTENT], and
+  # give each clone 600 seconds from power-on to report it.
+  firstBootSealing: {}
+---
+apiVersion: banlieue.io/v1alpha1
+kind: VMClass
+metadata:
+  name: sealed-standard
+spec:
+  hardware:
+    cpus: 4
+    memoryMiB: 8192
+    disks:
+      - name: root
+        sizeGiB: 50
+        storageClass: gold
+        provisioning: thin
+  network:
+    interfaces:
+      - name: eth0
+        networkClass: prod
+        ipam: {}
+  firmware: efi
+  features:
+    - vtpm
+  tpmEnabled: true

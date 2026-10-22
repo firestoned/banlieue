@@ -1,0 +1,17 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# The budget every Cloud Hypervisor guest and vTPM shares on this host
+# (ADR-0105): banlieue-ch@.service and banlieue-swtpm@.service run inside it.
+# Each limit below exists only if the operator declared it to
+# `banlieue host cloud-hypervisor install` (--guest-cpus, --guest-cpu-weight,
+# --guest-memory-max, --guest-tasks-max); a missing line is a dimension left
+# unbounded, not a default. Root-owned: the provider cannot lift the budget
+# (polkit allows start, stop and reset-failed of instances, never
+# set-property on this slice).
+
+[Unit]
+Description=banlieue Cloud Hypervisor guests
+
+[Slice]
+@GUEST_SLICE_LIMITS@

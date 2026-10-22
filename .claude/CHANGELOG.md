@@ -1,5 +1,356 @@
 # Changelog
 
+## [2026-10-23 14:30] - vSphere provider converges to `desiredPowerState` (ADR-0034 amendment)
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `crates/banlieue-provider-vsphere/src/reconciler/vspheremachine.rs`: a
+  provisioned machine is now driven to `spec.desiredPowerState` on every pass
+  (`power_action`, `converge_power_state`), before the guest probe and the
+  status are built. A vCenter fault is logged, the real state is recorded, and
+  the machine requeues at the short interval. libvirt, Proxmox and Cloud
+  Hypervisor already behaved this way; vSphere only observed (ADR-0034).
+
+### Changed
+- ADR-0034: amendment 2026-10-23. CALM: the `rel-provider-vsphere-backend`
+  description. Threat model: one TB-4 row and one §8 risk (a vCenter-side
+  power-off no longer holds a VM; the hold is `desiredPowerState:
+  PoweredOff`); the header describes the third amendment of the 2026-10-23
+  pass. Docs: `concepts/virtualmachine.md`, `guides/vsphere-provider.md`.
+
+### Why
+Found live: a `Deferred` image built with `install.poweroff: true` (a
+leftover of the `Immediate` template recipe in the Secret at build time)
+installed, powered off, and stayed off with `desiredPowerState: PoweredOn`.
+Starting it by hand booted the installed system, with the install ISO still
+connected, in about 60 s.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (provider image). **On rollout the provider
+  starts every VSphereMachine whose VM is off while `desiredPowerState` is
+  `PoweredOn`**, including VMs a human stopped on purpose.
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-10-23 13:40] - banlieue-host: collapse a nested `if` (clippy)
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `crates/banlieue-host/src/settings.rs` (`guest_slice`): the `--guest-cpu-weight`
+  range check is a single `if let … &&`, as `clippy::collapsible_if` requires.
+  Behaviour unchanged. This lint failed the PR's Clippy job. It wasn't seen
+  locally because the crate is Linux-only. `cargo clippy --workspace
+  --all-targets --all-features --target x86_64-unknown-linux-gnu -- -D
+  warnings` now runs the CI check from macOS, and it is clean.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-10-23 12:15] - vSphere eject overrides the guest's CD-ROM lock; live rollout result
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `crates/banlieue-provider-vsphere/src/client/vim.rs`: the eject's task wait
+  (`wait_for_eject_task`) reads the VM's `runtime.question` each poll and,
+  for `msg.cdromdisconnect.locked` only, answers Yes (`AnswerVM`, the Yes key
+  found by its `button.yes` label: `cdrom_lock_question_answer`, unit tested
+  against the question shape observed live). Any other question is left for
+  a human.
+- `crates/banlieue-provider-vsphere/src/reconciler/vspheremachine.rs`: a
+  failed eject no longer forces the 30 s requeue; it retries at the long
+  requeue. The `InstallMediaAttached` message points at the privilege and
+  the provider log.
+- ADR-0044 vSphere amendment: Decision 4 revised (override the lock), with
+  why Kairos's `eject-cd` did not help. The amendment and the threat model
+  record what was verified live. Updated the TB-5 locked-tray row and the
+  vSphere guide's troubleshooting.
+
+### Why
+The rollout of the previous entry (image `pr-113-distroless@sha256:e854ee59…`)
+ejected the ISO from both installed `Deferred` VMs, but both guests held the
+tray locked. vCenter asked "Disconnect anyway and override the lock?", then
+answered No itself after about four minutes, every pass. The VMs could not
+be logged into, so the guest could not release the tray. Answering Yes by
+hand completed both ejects (client-device backing, all connect flags false),
+`installMediaDetached: true`, `GuestReady=True`. The blocked zone's
+re-import had already passed the new pre-flight on its first retry and
+rebuilt the template, so the `VMImage` went `Ready=True`.
+
+Kairos's `eject-cd` failed silently: it writes a shutdown hook that runs
+`/usr/bin/eject -rmF`, and the debian13 image (kairos-init `v4.4.0-rc1`)
+ships no `eject` binary.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (provider image)
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-10-23 05:00] - vSphere: eject install media once installed (ADR-0044); import pre-flight and retry (ADR-0020)
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `crates/banlieue-provider-vsphere/src/reconciler/vspheremachine.rs`: once
+  `guestInstalled` is true, `settle_install_media` ejects the install ISO
+  before the status that may publish `GuestReady` is built, and records the
+  sticky `status.installMediaDetached`. Until the eject succeeds,
+  `GuestReady=False`, reason `InstallMediaAttached`, and the pass requeues
+  short. `refresh_needs_patch` gains the field as a trigger.
+- `crates/banlieue-provider-vsphere/src/client/{mod,vim,fake}.rs`: new
+  `VSphereClient::eject_install_media` is one `ReconfigVM_Task` giving every
+  ISO-backed CD-ROM a client-device backing, with `connected`,
+  `startConnected` and `allowGuestControl` false (as `govc
+  device.cdrom.eject` does). New `vms_holding_iso` reads `Datastore.vm` and
+  each listed VM's raw `config`. Pure helpers `iso_cdroms_from_raw_config`,
+  `holds_iso` and `build_eject_cdroms_reconfigure_spec` are tested against
+  the CD-ROM device shape captured from a real vCenter 8.0.3.
+- `crates/banlieue-provider-vsphere/src/import.rs`: with `forceUpload`, the
+  target datastore is resolved first and `ensure_iso_replaceable` refuses,
+  naming the VMs, when a running VM has the ISO connected. This happens
+  before the `forceCreate` destroy, so a refusal leaves the template in
+  place. A failed ISO delete now says a VM probably still has the file open.
+- `crates/banlieue-provider-vsphere/src/reconciler/vmimage.rs`: a failed
+  import Job is deleted and recreated once its `Failed` condition is
+  `IMPORT_RETRY_AFTER_SECS` (600 s) old (`import_retry_due`).
+- `crates/banlieue-api/src/infrastructure/vsphere_machine.rs`:
+  `VSphereMachineStatus.installMediaDetached`. CRD and API reference
+  regenerated.
+
+### Changed
+- ADR-0044: amendment 2026-10-23 (implemented on vSphere). ADR-0020:
+  amendment 2026-10-23 (pre-flight, error message, retry). CALM: the
+  `rel-provider-vsphere-backend` description.
+- `docs/src/security/vsphere-least-privilege.md`: the provisioning path now
+  needs `VirtualMachine.Interact.SetCDMedia` / `.DeviceConnection` too.
+  Added the `Datastore.vm` read and the eject to the call table.
+- `docs/src/guides/vsphere-provider.md`, `virtualmachine-pools.md`:
+  troubleshooting for `ImportFailed` (including the held-ISO message and
+  `banlieue.io/force-reimport=true`) and for `InstallMediaAttached`.
+- Threat model pass, stamp 2026-10-23 (ADR range unchanged, ADR-0105):
+  rewrote the TB-5 prose and the three install-media rows, which were
+  libvirt-only, and added a TB-5 row for the forced re-import. No actor,
+  identity, RBAC grant or boundary changes; §5 stands.
+
+### Why
+Found live on 2026-10-22: a `Deferred` VM still had its image's ISO
+connected days after installing. Kairos's `eject-cd` only affects the
+running VM; the CD-ROM keeps `startConnected: true`, so the ISO returns at
+power-on. A `forceUpload` re-import then could not delete the ISO
+(`500 Internal Server Error`), after the zone's template had already been
+destroyed, and the failed Job was never retried. The `VMImage` stayed
+`Ready=False`.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (the `VSphereMachine` CRD and the provider
+  image). On rollout, the provider ejects the install ISO from every
+  installed `Deferred` VM it manages.
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-10-22 18:00] - ADR-0105: Cloud Hypervisor guests share one budgeted slice
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docs/adr/0105-cloud-hypervisor-guests-slice.md`: new. Guests and vTPMs run in
+  `banlieue-guests.slice`, whose limits the operator declares at install.
+- `deploy/provider-cloud-hypervisor/host/banlieue-guests.slice`: new;
+  `banlieue-ch@.service` and `banlieue-swtpm@.service` gain `Slice=`.
+- `crates/banlieue-host/src/{settings,render,paths,stages}.rs`: four flags
+  (`--guest-cpus`, `--guest-cpu-weight`, `--guest-memory-max`,
+  `--guest-tasks-max`, each with a `BANLIEUE_HOST_GUEST_*` variable), strict
+  validation, the slice rendered and installed by the `provider` stage;
+  tests in the matching `_tests.rs` files.
+- `docs/src/guides/cloud-hypervisor-host{,-systemd}.md`,
+  `docs/architecture/calm/architecture.json`: documented and modelled.
+- `docs/src/security/threat-model.md`: full pass, stamp advanced to ADR-0105
+  (one TB-9 row, one TB-11 row, one §8 risk; no boundary change).
+
+### Why
+First onboarding of a Cloud Hypervisor host that also runs other workloads:
+per-guest limits cannot bound the guests' combined CPU and memory.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+Existing hosts gain the slice on their next `install`.
+
+## [2026-10-23 01:00] - ADR-0088: end-to-end vSphere run, with per-step timings
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docs/design/vtpm-kairos-k0s-encryption.md`: new §4b, the evidence for
+  ADR-0088 on vSphere. It times every step of a fresh `Immediate` image build
+  (≈ 2 m 52 s, once, three zones) and of a clone, from `kubectl apply` to
+  `GuestReady=True` (70 s; `encrypt-pending` 4.5 s, unlock 0.33 s). It also
+  records a reboot of the sealed clone (no-op `encrypt-pending`, unlock
+  0.35 s) and what was checked inside the guest.
+- `docs/adr/0088-first-boot-sealing-for-immediate-images.md`: the *Live run*
+  note records the passing rerun, links to §4b, and says why the ADR stays
+  *Proposed*: the Accept-when list is still open.
+
+### Why
+To confirm that both fixes from the first live run work with no manual step,
+and to record how much faster a sealed `Immediate` clone is than a
+`Deferred` install of every VM.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+## [2026-10-22 15:30] - ADR-0088: two fixes from the first live run
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `crates/banlieue-imagebuilder/src/first_boot_sealing.rs`: the ISO policy
+  file `/oem/91_banlieue_first_boot_sealing.yaml` now starts with
+  `#cloud-config`. Kairos's collector silently skips a headerless file, so
+  `encrypt-pending` never saw `kcrypt.encrypt_on_boot` and the clone booted
+  plaintext. `cloud_config_merge::CLOUD_CONFIG_HEADER` is the one constant
+  for the header, used by the merge too.
+- `crates/banlieue-provider-vsphere/src/reconciler/vspheremachine.rs`: the
+  "did anything change" decision for a provisioned machine is now
+  `refresh_needs_patch`, and a changed sticky `sealedPartitions` is one of
+  its triggers. Before, the pass that received the report closed the gate,
+  nothing else had changed, and `sealedPartitions` / `GuestReady=True` were
+  never written.
+- ADR-0088: a *Live run* note under the 2026-10-22 amendment.
+
+### Why
+The first live run on vSphere (Kairos `v4.4.0-rc1`): the gate held correctly,
+but the image never sealed and, once sealed by hand, the provider never
+recorded it.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-10-22 13:00] - CI: publish images for same-repository pull requests
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/workflows/build.yaml` (`docker` job): images are now pushed and
+  Cosign-signed for pull requests whose head branch is in this repository,
+  tagged `pr-<N>[-distroless]` and `sha-<short>[-distroless]` (the tags the
+  job already computed), never `latest` or a version. Fork PRs stay
+  build-only. SBOM, digest export, attestation and the Grype gates remain
+  main/release only.
+- Threat model, TB-6: a row for pull-request images.
+
+### Why
+A PR could not be tested on a cluster before merging: its build discarded the
+image (`push: false`), as found testing the vTPM fix (#112).
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only
+- [ ] Documentation only
+
+## [2026-10-22 12:00] - ADR-0088: first-boot sealing for Immediate images, behind a default-off flag
+
+**Author:** Erick Bourgeois
+
+### Added
+- `crates/banlieue-api`: `common::FirstBootSealing` (`partitions`, default
+  `[COS_PERSISTENT]`, `minItems: 1`; `timeoutSeconds`, default 600, 60–86400);
+  `VMImage.spec.firstBootSealing`; `VMImage.status.firstBootSealing`
+  (`Built` | `Asserted`, `FirstBootSealingProvenance`);
+  `status.buildArtifact.firstBootSealingLayer`;
+  `VSphereMachine`/`LibvirtMachine` `spec.firstBootSealing` and sticky
+  `status.sealedPartitions`. CRDs and the API reference regenerated.
+- `banlieue-controller`: `--enable-first-boot-sealing`
+  (`BANLIEUE_ENABLE_FIRST_BOOT_SEALING`, default off), the controller's first
+  feature flag, carried in `Context`. `image_class_mismatch` takes the
+  declaration and the flag and returns a `PairingRefusal` (reason + message):
+  `tpmEnabled` + `Immediate` is allowed when the image declares sealing;
+  sealing without `tpmEnabled` is refused; with the flag off any VM of a
+  declaring image is refused with the new reason `FirstBootSealingDisabled`.
+  `infra.rs` copies the declaration onto vTPM machines; the scheduler keeps a
+  sealing vTPM VM off Cloud Hypervisor (`FirstBootSealingUnsupported`); the
+  `VMImage` reconciler writes the provenance.
+- `banlieue-imagebuilder`: `src/first_boot_sealing.rs`, the generated layer,
+  merged after every operator layer (`merge_with_sealing`). ISO builds get
+  the policy as `/oem/91_banlieue_first_boot_sealing.yaml` from an
+  `after-install-chroot` stage, never in the install configuration;
+  `CloudImage` builds get the keys directly. Both get a `boot` stage that
+  reports the LUKS-sealed partitions to `guestinfo.banlieue.sealed` and
+  `/run/banlieue/sealed`. Refusals: `FirstBootSealingConflict` (an
+  `Immediate` ISO whose operator layers set `install.encrypted_partitions`),
+  `FirstBootSealingInvalid` (empty, system or non-label partitions). A
+  sealing image always gets a merged Secret, even with no `cloudConfigs`.
+- `banlieue-provider-sdk`: `sealing` (report parsing, stickiness,
+  `sealing_gate` with the deadline counted from the machine's `Ready=True`
+  transition).
+- `banlieue-provider-vsphere` / `-libvirt`: read the report (`probe_sealed`;
+  `read_sealed_report`, capped at `SEALED_READ_MAX`), record it, and gate
+  `GuestReady`: `FirstBootSealingUnverified`, `FirstBootSealingTimeout`. On
+  libvirt the timeout is published even when no guest agent answers, since a
+  clone that cannot seal halts in its initramfs. Both poll at the short
+  interval while a report is due. vSphere's status builder now takes a
+  `TpmObservation` (vTPM facts grouped, clippy's argument limit).
+- `deploy/admission/vmimage-first-boot-sealing.yaml`: partitions are plain
+  labels, no system partitions, not with `trustedBoot`.
+- `examples/23-vmimage-immediate-first-boot-sealing.yaml`.
+
+### Changed
+- `docs/adr/0088-…`: dated amendment (Status stays Proposed): the ISO policy
+  goes to `COS_OEM` after install, because upstream #4924 does not make the
+  install hook read `encrypt_on_boot` and banlieue's merge cannot remove an
+  operator's list; flag-off refuses the VM, not the image; provenance
+  mechanics; the Kairos-version gate is not implemented; timeout origin.
+- `docs/architecture/calm/architecture.json`: `tpm-encryption-pairing`
+  extended, new `first-boot-sealing` control, ADR-0088 listed. `make
+  calm-validate` clean.
+- Threat model: full pass, stamp 2026-10-22 (ADR-0088). §2 controller and
+  imagebuilder, A-6, A-8, three TB-4 and three TB-5 rows, §7.9, five new §8
+  risks, the `Manual` risk narrowed. §5 stands.
+- Docs: `security/vtpm-per-provider.md`, `guides/vsphere-provider.md`
+  (refusal box, troubleshooting reasons), `guides/using-banlieue-imagebuilder.md`
+  (new section), `deploy/admission/README.md`; roadmap 17's constraint row
+  annotated.
+
+### Why
+Template-speed clones that still seal per VM: an `Immediate` template is
+installed once, and each clone seals `COS_PERSISTENT` to its own vTPM in
+seconds on first boot, instead of a full Deferred install per VM.
+
+### Verified, and not
+- Unit tests across every macOS-buildable crate: 2197 passed, 0 failed;
+  clippy `-D warnings` clean; new CRD schema validated with kubeconform
+  against the examples; the VAP server-dry-runs.
+- **Not run against a real vCenter or libvirt host**, and no stable Kairos
+  carries first-boot sealing (#5193 is in no build), so ADR-0088 stays
+  Proposed. Open question 1 (does a `CloudImage` build's cloud-config land in
+  `COS_OEM`) is unanswered; the readback is what would catch it. The
+  `after-install-chroot` write into `/oem` follows an existing image's
+  practice and is likewise unverified with this layer.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (CRDs for VMImage, VSphereMachine(Template),
+  LibvirtMachine(Template); controller, imagebuilder, providers; the new VAP)
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-10-22 01:50] - tokio 1.54.0 -> 1.54.1 (1.54.0 yanked)
 
 **Author:** Erick Bourgeois

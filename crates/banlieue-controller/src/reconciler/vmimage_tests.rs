@@ -104,7 +104,7 @@ mod tests {
         // The whole point of ADR-0015: this manager owns `conditions` alone.
         // Touching perProvider or buildArtifact here would re-create the
         // contention the ADR removed.
-        let patch = build_status_patch("img", &aggregate_ready(&[row("a", true, None)]), 7);
+        let patch = build_status_patch("img", &aggregate_ready(&[row("a", true, None)]), 7, None);
         let status = patch["status"].as_object().expect("status object");
         assert!(status.contains_key("conditions"));
         assert!(
@@ -115,11 +115,118 @@ mod tests {
             !status.contains_key("buildArtifact"),
             "buildArtifact belongs to banlieue-imagebuilder"
         );
+        assert!(
+            !status.contains_key("firstBootSealing"),
+            "nothing declared, nothing claimed; omitting it releases the field"
+        );
+    }
+
+    #[test]
+    fn the_patch_carries_first_boot_sealing_provenance_when_known() {
+        let patch = build_status_patch(
+            "img",
+            &aggregate_ready(&[row("a", true, None)]),
+            7,
+            Some(FirstBootSealingProvenance::Built),
+        );
+        assert_eq!(patch["status"]["firstBootSealing"], "Built");
+    }
+
+    // ---------- first-boot sealing provenance (ADR-0088 Decision 2) ------
+
+    fn sealing_spec(kinds: &[banlieue_api::banlieue::ImageSourceKind]) -> VMImageSpec {
+        let sources = kinds
+            .iter()
+            .enumerate()
+            .map(|(i, k)| source(&format!("class-{i}"), k.clone()))
+            .collect();
+        VMImageSpec {
+            os_family: banlieue_api::banlieue::OsFamily::Linux,
+            os_distribution: "debian".to_string(),
+            os_version: "13".to_string(),
+            architecture: banlieue_api::banlieue::Architecture::Amd64,
+            guest_agent: banlieue_api::banlieue::GuestAgent::default(),
+            sources,
+            cloud_configs: vec![],
+            template: None,
+            iso_overlay: None,
+            trusted_boot: None,
+            first_boot_sealing: Some(banlieue_api::common::FirstBootSealing::default()),
+        }
+    }
+
+    fn status_with_layer(layer: bool) -> VMImageStatus {
+        VMImageStatus {
+            build_artifact: Some(banlieue_api::banlieue::BuildArtifactStatus {
+                kind: banlieue_api::banlieue::BuildArtifactKind::Iso,
+                phase: banlieue_api::banlieue::BuildArtifactPhase::Ready,
+                os_artifact_ref: "img-build".to_string(),
+                os_artifact_uid: None,
+                pvc_ref: None,
+                file: None,
+                reason: None,
+                message: None,
+                checksum: None,
+                oci_artifact: None,
+                first_boot_sealing_layer: layer,
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn no_declaration_means_no_provenance() {
+        use banlieue_api::banlieue::ImageSourceKind;
+        let mut spec = sealing_spec(&[ImageSourceKind::Url]);
+        spec.first_boot_sealing = None;
+        assert_eq!(
+            first_boot_sealing_provenance(&spec, Some(&status_with_layer(true))),
+            None
+        );
+    }
+
+    #[test]
+    fn a_url_build_is_built_once_the_builder_wrote_the_layer() {
+        use banlieue_api::banlieue::ImageSourceKind;
+        let spec = sealing_spec(&[ImageSourceKind::Url]);
+        assert_eq!(
+            first_boot_sealing_provenance(&spec, Some(&status_with_layer(true))),
+            Some(FirstBootSealingProvenance::Built)
+        );
+    }
+
+    /// Until the builder says so, nothing is claimed: "Built" must mean the
+    /// policy is actually in the artifact, not that a build was asked for.
+    #[test]
+    fn a_url_build_claims_nothing_before_the_layer_is_written() {
+        use banlieue_api::banlieue::ImageSourceKind;
+        let spec = sealing_spec(&[ImageSourceKind::Url]);
+        assert_eq!(
+            first_boot_sealing_provenance(&spec, Some(&status_with_layer(false))),
+            None
+        );
+        assert_eq!(first_boot_sealing_provenance(&spec, None), None);
+    }
+
+    #[test]
+    fn an_image_banlieue_did_not_build_is_asserted() {
+        use banlieue_api::banlieue::ImageSourceKind;
+        for kinds in [
+            vec![ImageSourceKind::Template],
+            vec![ImageSourceKind::BackingFile],
+            vec![ImageSourceKind::Template, ImageSourceKind::BackingFile],
+        ] {
+            assert_eq!(
+                first_boot_sealing_provenance(&sealing_spec(&kinds), None),
+                Some(FirstBootSealingProvenance::Asserted),
+                "{kinds:?}"
+            );
+        }
     }
 
     #[test]
     fn the_patch_records_the_generation_it_observed() {
-        let patch = build_status_patch("img", &aggregate_ready(&[row("a", true, None)]), 7);
+        let patch = build_status_patch("img", &aggregate_ready(&[row("a", true, None)]), 7, None);
         assert_eq!(
             patch["status"]["conditions"][0]["observedGeneration"], 7,
             "a stale condition must be detectable"

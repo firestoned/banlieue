@@ -756,4 +756,22 @@ mod tests {
         assert!(h.commands().is_empty(), "nothing ran");
         install_all(&h, &s, &only(Stage::Vmm)).await.unwrap();
     }
+
+    /// ADR-0105: the slice is a root-owned unit beside the templates, with
+    /// the budget the operator declared, and a re-run changes nothing.
+    #[tokio::test]
+    async fn the_guest_slice_is_installed_with_the_declared_budget() {
+        let h = fake_host();
+        let mut s = settings(&h);
+        s.guest_slice.cpus = Some("0-3".into());
+        s.guest_slice.memory_max = Some("64G".into());
+        install_all(&h, &s, &opts()).await.unwrap();
+        let path = format!("{SYSTEMD_UNIT_DIR}/banlieue-guests.slice");
+        let text = String::from_utf8(h.read(Path::new(&path)).unwrap()).unwrap();
+        assert!(text.contains("AllowedCPUs=0-3") && text.contains("MemoryMax=64G"));
+        assert_eq!(mode_owner(&h, &path), (0o644, "root".into(), "root".into()));
+        let before = h.read(Path::new(&path)).unwrap();
+        install_all(&h, &s, &opts()).await.unwrap();
+        assert_eq!(h.read(Path::new(&path)).unwrap(), before);
+    }
 }

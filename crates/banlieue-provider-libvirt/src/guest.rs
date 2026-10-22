@@ -237,6 +237,54 @@ where
     }
 }
 
+/// Where a first-boot sealing guest writes its sealing report (ADR-0088
+/// Decision 5): the listed partitions that are LUKS containers, comma
+/// separated. Beside the phase marker, on tmpfs, rewritten every boot.
+pub const SEALED_PATH: &str = "/run/banlieue/sealed";
+
+/// Largest sealing report read back. A handful of partition labels fits in
+/// far less; anything bigger is not a report.
+pub const SEALED_READ_MAX: usize = 256;
+
+/// The partitions a `guest-file-read` reply of [`SEALED_PATH`] reports
+/// sealed. Empty for anything unreadable: guest-supplied, so it can only
+/// withhold `GuestReady`.
+#[must_use]
+pub fn sealed_from_read(reply: &str) -> Vec<String> {
+    guest_text_from_read(reply, SEALED_READ_MAX)
+        .map(|t| banlieue_provider_sdk::sealing::parse_sealed_report(&t))
+        .unwrap_or_default()
+}
+
+/// Read a running domain's sealing report, if it has written one.
+///
+/// Read-only throughout, exactly like [`read_ek_certificate`]:
+/// `guest-file-open` with `mode: "r"`, read, close. An absent file, no agent
+/// and an unreadable reply all mean "nothing reported yet".
+pub async fn read_sealed_report<S>(session: &mut Session<S>, dom: &Domain) -> Vec<String>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let open = guest_file_open_cmd(SEALED_PATH);
+    let Ok(Some(reply)) =
+        domain_qemu_agent_command(session, dom, &open, AGENT_TIMEOUT_DEFAULT).await
+    else {
+        return Vec::new();
+    };
+    let Some(handle) = parse_file_handle(&reply) else {
+        return Vec::new();
+    };
+    let read = guest_file_read_cmd(handle, SEALED_READ_MAX);
+    let read_reply = domain_qemu_agent_command(session, dom, &read, AGENT_TIMEOUT_DEFAULT).await;
+    // Always close: leaking guest file handles exhausts the agent's table.
+    let close = guest_file_close_cmd(handle);
+    let _ = domain_qemu_agent_command(session, dom, &close, AGENT_TIMEOUT_DEFAULT).await;
+    match read_reply {
+        Ok(Some(r)) => sealed_from_read(&r),
+        _ => Vec::new(),
+    }
+}
+
 /// What an EK certificate probe found (ADR-0045).
 ///
 /// Four outcomes, because they drive different behaviour: a guest that has
