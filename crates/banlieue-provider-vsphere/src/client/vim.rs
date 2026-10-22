@@ -1158,24 +1158,22 @@ impl VSphereClient for VimClientImpl {
 
     #[instrument(name = "vsphere.tpm_endorsement_certificates", skip_all, fields(vm_moref = %vm_moref))]
     async fn tpm_endorsement_certificates(&self, vm_moref: &str) -> Result<Vec<Vec<u8>>> {
-        let vmm = VimVirtualMachine::new(self.client.clone(), vm_moref);
-        let cfg = vmm
-            .config()
+        // Raw, not `VimVirtualMachine::config()`: found live, the typed
+        // `VirtualMachineConfigInfo` decode fails ("JSON property decode
+        // failed") on a VM that carries a vTPM, so every pass of a
+        // `tpmEnabled` machine failed right after `add_tpm_device`. The same
+        // family as `guest_info` below, and the same remedy: read the whole
+        // "config" as untyped JSON and pick out only what is needed.
+        let pv = self
+            .client
+            .fetch_property_raw("", "VirtualMachine", vm_moref, "config")
             .await
-            .map_err(|e| Error::Vsphere(format!("VirtualMachine.config({vm_moref}): {e}")))?
-            .ok_or_else(|| Error::Vsphere(format!("{vm_moref}: no config")))?;
-        let devices = cfg.hardware.device.unwrap_or_default();
-
-        // An absent certificate is NOT an error: a VM with no vTPM has none,
-        // and vCenter may not have issued one the instant the device is
-        // attached. Both are "ask again", which is what an empty Vec means
-        // to the caller (ADR-0045).
-        Ok(devices
-            .iter()
-            .filter_map(|d| d.as_any_ref().downcast_ref::<VirtualTpm>())
-            .filter_map(|tpm| tpm.endorsement_key_certificate.clone())
-            .flatten()
-            .collect())
+            .map_err(|e| Error::Vsphere(format!("VirtualMachine.config({vm_moref}): {e}")))?;
+        let Some(vim_rs::core::client::PropertyValue::Json(bytes)) = pv else {
+            return Err(Error::Vsphere(format!("{vm_moref}: no config")));
+        };
+        tpm_endorsement_certificates_from_raw_config(&bytes)
+            .map_err(|e| Error::Vsphere(format!("VirtualMachine.config({vm_moref}): {e}")))
     }
 
     #[instrument(name = "vsphere.grow_os_disk", skip_all, fields(vm_moref = %vm_moref, size_gi_b))]
@@ -1491,6 +1489,64 @@ fn vm_identity_from_raw_config(
         .and_then(serde_json::Value::as_str)
         .map(str::to_string);
     Ok((name, extra_config_value(&doc, marker_key)))
+}
+
+/// `_typeName` of a vTPM device in a raw `config.hardware.device` list.
+const VIRTUAL_TPM_TYPE_NAME: &str = "VirtualTPM";
+
+/// The DER endorsement-key certificates of every vTPM device in a raw
+/// `VirtualMachineConfigInfo` document, in device order (ADR-0045). Raw for
+/// the reasons [`extra_config_value_from_raw_json`] gives, and because a
+/// device or property vim_rs does not model must not hide the certificates.
+///
+/// Only `endorsementKeyCertificate` is read, never
+/// `endorsementKeyCertificateSigningRequest`: a signing request is not an
+/// identity vCenter issued.
+///
+/// # Errors
+///
+/// The document is not JSON, or a certificate entry is not a base64 string.
+/// An absent, `null` or empty certificate list is not an error: vCenter may
+/// not have issued it yet, and an empty result means "ask again".
+fn tpm_endorsement_certificates_from_raw_config(
+    bytes: &[u8],
+) -> std::result::Result<Vec<Vec<u8>>, String> {
+    use base64::Engine as _;
+
+    let doc: serde_json::Value =
+        serde_json::from_slice(bytes).map_err(|e| format!("parsing raw JSON: {e}"))?;
+    let Some(devices) = doc
+        .get("hardware")
+        .and_then(|h| h.get("device"))
+        .and_then(serde_json::Value::as_array)
+    else {
+        return Ok(Vec::new());
+    };
+
+    let mut certificates = Vec::new();
+    for device in devices {
+        if device.get("_typeName").and_then(serde_json::Value::as_str)
+            != Some(VIRTUAL_TPM_TYPE_NAME)
+        {
+            continue;
+        }
+        let Some(entries) = device
+            .get("endorsementKeyCertificate")
+            .and_then(serde_json::Value::as_array)
+        else {
+            continue;
+        };
+        for entry in entries {
+            let encoded = entry.as_str().ok_or_else(|| {
+                format!("vTPM endorsementKeyCertificate entry is not a string: {entry}")
+            })?;
+            let der = base64::engine::general_purpose::STANDARD
+                .decode(encoded)
+                .map_err(|e| format!("vTPM endorsementKeyCertificate is not base64: {e}"))?;
+            certificates.push(der);
+        }
+    }
+    Ok(certificates)
 }
 
 impl VimClientImpl {

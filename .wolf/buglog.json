@@ -3273,6 +3273,26 @@
       ],
       "occurrences": 1,
       "last_seen": "2026-10-14T09:40:00.000Z"
+    },
+    {
+      "id": "bug-180",
+      "timestamp": "2026-10-22T01:30:00.000Z",
+      "last_seen": "2026-10-22T01:30:00.000Z",
+      "occurrences": 1,
+      "error_message": "tpmEnabled VSphereMachine fails right after \"vTPM device attached\": vsphere: VirtualMachine.config(vm-...): Parse error: JSON property decode failed for vim_rs::types::structs::VirtualMachineConfigInfo (then DuplicateName / VMNameConflict on retry)",
+      "file": "crates/banlieue-provider-vsphere/src/client/vim.rs",
+      "root_cause": "tpm_endorsement_certificates (ADR-0045) decoded the whole config as typed VirtualMachineConfigInfo. On a VM carrying a vTPM that typed decode fails against real vCenter 8.0.3 JSON, and it is the first typed config read after add_tpm_device in the provisioning sequence, so every tpmEnabled machine failed.",
+      "fix": "Fetch config with fetch_property_raw and parse untyped JSON in tpm_endorsement_certificates_from_raw_config: VirtualTPM devices only, endorsementKeyCertificate base64-decoded in order, CSRs ignored, absent/null/empty = ask again, non-string or non-base64 = error.",
+      "tags": [
+        "vsphere",
+        "vim_rs",
+        "vtpm",
+        "adr-0045",
+        "regression"
+      ],
+      "related_bugs": [
+        "bug-159"
+      ]
     }
   ]
 }

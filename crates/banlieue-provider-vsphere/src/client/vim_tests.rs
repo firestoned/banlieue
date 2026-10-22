@@ -767,4 +767,144 @@ n17Lktsw0jAZJp1tU1DJPZSYHZPPWLZlJhHftNtpKQ==
             (Some("db-01".to_string()), None)
         );
     }
+
+    // ----------------------------------------------------------------------
+    // tpm_endorsement_certificates_from_raw_config (ADR-0045): the EK
+    // certificates of a VM's vTPM, read from the raw `config` document.
+    //
+    // Found live: right after `add_tpm_device` the typed
+    // `VirtualMachine.config` decode fails ("JSON property decode failed for
+    // VirtualMachineConfigInfo") on a VM that now carries a vTPM, so every
+    // pass of a `tpmEnabled` machine failed (and, before ADR-0101's rollback,
+    // left its clone behind to collide on `DuplicateName`). Same family as
+    // the ADR-0043 guestinfo read above, so same remedy: no typed decode.
+    //
+    // Shape captured from a real vCenter (8.0.3.0): the device is
+    // `{"_typeName":"VirtualTPM", ..., "endorsementKeyCertificateSigningRequest":
+    // [<base64>, <base64>], "endorsementKeyCertificate": [<base64>, <base64>]}`
+    // — one entry per key type (RSA and ECC). The base64 below is placeholder
+    // bytes, not a real certificate.
+    // ----------------------------------------------------------------------
+
+    /// `AQID` = `[1, 2, 3]`, `BAUG` = `[4, 5, 6]`, `BwgJ` = `[7, 8, 9]`.
+    #[test]
+    fn reads_the_certificates_of_the_real_vcenter_vtpm_device() {
+        let json = br#"{"hardware":{"device":[
+            {"_typeName":"VirtualDisk","key":2000},
+            {"_typeName":"VirtualTPM","key":11000,
+             "deviceInfo":{"_typeName":"Description","label":"Virtual TPM","summary":"Virtual Trusted Platform Module"},
+             "endorsementKeyCertificateSigningRequest":["BwgJ"],
+             "endorsementKeyCertificate":["AQID","BAUG"]}
+        ]}}"#;
+        assert_eq!(
+            tpm_endorsement_certificates_from_raw_config(json).unwrap(),
+            vec![vec![1, 2, 3], vec![4, 5, 6]]
+        );
+    }
+
+    /// The signing requests are not certificates: returning them would bind
+    /// a VM to a value vCenter never issued as its identity.
+    #[test]
+    fn never_returns_the_signing_requests() {
+        let json = br#"{"hardware":{"device":[
+            {"_typeName":"VirtualTPM","key":11000,"endorsementKeyCertificateSigningRequest":["BwgJ"]}
+        ]}}"#;
+        assert!(
+            tpm_endorsement_certificates_from_raw_config(json)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    /// vCenter may not have issued the certificate the instant the device
+    /// is attached: an absent (or null) list is "ask again", never an error.
+    #[test]
+    fn a_vtpm_without_certificates_yet_yields_none_rather_than_an_error() {
+        for json in [
+            br#"{"hardware":{"device":[{"_typeName":"VirtualTPM","key":11000}]}}"#.as_slice(),
+            br#"{"hardware":{"device":[{"_typeName":"VirtualTPM","key":11000,"endorsementKeyCertificate":null}]}}"#
+                .as_slice(),
+            br#"{"hardware":{"device":[{"_typeName":"VirtualTPM","key":11000,"endorsementKeyCertificate":[]}]}}"#
+                .as_slice(),
+        ] {
+            assert!(tpm_endorsement_certificates_from_raw_config(json)
+                .unwrap()
+                .is_empty());
+        }
+    }
+
+    #[test]
+    fn a_vm_without_a_vtpm_has_no_certificates() {
+        let json = br#"{"hardware":{"device":[{"_typeName":"VirtualDisk","key":2000}]}}"#;
+        assert!(
+            tpm_endorsement_certificates_from_raw_config(json)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_config_without_hardware_has_no_certificates() {
+        assert!(
+            tpm_endorsement_certificates_from_raw_config(br#"{"name":"db-01"}"#)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    /// The failure mode this exists for: something elsewhere in the document
+    /// that a typed decode cannot parse (a bare-string `OptionValue.value`,
+    /// a device of a kind vim_rs does not model, an unknown property) must
+    /// not hide the vTPM's certificates.
+    #[test]
+    fn an_undecodable_neighbour_does_not_hide_the_certificates() {
+        let json = br#"{
+            "extraConfig":[{"key":"guestinfo.banlieue.phase","value":"installed"}],
+            "someFutureProperty":{"_typeName":"NotAType","x":[1,{"y":null}]},
+            "hardware":{"device":[
+                {"_typeName":"VirtualSomethingNew","key":9,"weird":["a",{"b":1}]},
+                {"key":8},
+                {"_typeName":"VirtualTPM","key":11000,"endorsementKeyCertificate":["AQID"]}
+            ]}}"#;
+        assert_eq!(
+            tpm_endorsement_certificates_from_raw_config(json).unwrap(),
+            vec![vec![1, 2, 3]]
+        );
+    }
+
+    #[test]
+    fn certificates_of_several_vtpm_devices_are_all_returned_in_order() {
+        let json = br#"{"hardware":{"device":[
+            {"_typeName":"VirtualTPM","key":11000,"endorsementKeyCertificate":["AQID"]},
+            {"_typeName":"VirtualTPM","key":11001,"endorsementKeyCertificate":["BAUG"]}
+        ]}}"#;
+        assert_eq!(
+            tpm_endorsement_certificates_from_raw_config(json).unwrap(),
+            vec![vec![1, 2, 3], vec![4, 5, 6]]
+        );
+    }
+
+    /// A certificate that is not valid base64 is a protocol fault worth
+    /// surfacing, not silently dropped (which would read as "not issued yet"
+    /// forever).
+    #[test]
+    fn a_certificate_that_is_not_base64_is_an_error() {
+        let json = br#"{"hardware":{"device":[
+            {"_typeName":"VirtualTPM","key":11000,"endorsementKeyCertificate":["***not base64***"]}
+        ]}}"#;
+        assert!(tpm_endorsement_certificates_from_raw_config(json).is_err());
+    }
+
+    #[test]
+    fn a_certificate_that_is_not_a_string_is_an_error() {
+        let json = br#"{"hardware":{"device":[
+            {"_typeName":"VirtualTPM","key":11000,"endorsementKeyCertificate":[42]}
+        ]}}"#;
+        assert!(tpm_endorsement_certificates_from_raw_config(json).is_err());
+    }
+
+    #[test]
+    fn malformed_config_json_is_an_error_for_certificates_too() {
+        assert!(tpm_endorsement_certificates_from_raw_config(b"not json").is_err());
+    }
 }

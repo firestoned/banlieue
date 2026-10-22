@@ -1,5 +1,63 @@
 # Changelog
 
+## [2026-10-22 01:50] - tokio 1.54.0 -> 1.54.1 (1.54.0 yanked)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `Cargo.lock`: tokio 1.54.0 -> 1.54.1 (`cargo update -p tokio --precise
+  1.54.1`; nothing else moved). 1.54.0 was yanked from crates.io and 1.54.1
+  published 2026-10-21 in its place.
+
+### Why
+Both the cargo-deny job (`error[yanked]`, reported under "advisories FAILED")
+and the cargo-audit Security Vulnerability Scan fail on a yanked crate, so every
+build of a lockfile carrying 1.54.0, main included, went red. `cargo deny check`
+against crates.io passes after the bump.
+
+A local Artifactory crates mirror that has not refreshed its index lags here in
+both directions: it still shows 1.54.0 as not yanked (so a local `cargo deny`
+passes where CI fails) and does not list 1.54.1 yet (so a build through it
+cannot resolve the new lock until it does).
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only
+- [ ] Documentation only
+
+## [2026-10-22 01:30] - vSphere: read vTPM EK certificates from the raw config, so tpmEnabled machines provision
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `crates/banlieue-provider-vsphere/src/client/vim.rs`:
+  `tpm_endorsement_certificates` no longer decodes `VirtualMachine.config` as
+  the typed `VirtualMachineConfigInfo`. Found live on vCenter 8.0.3: once a vTPM
+  is attached that decode fails ("JSON property decode failed"), and it is the
+  first typed read after `add_tpm_device` (clone, grow disk, attach vTPM, read EK
+  certificates). Every pass of a `tpmEnabled` VSphereMachine therefore failed,
+  and since ADR-0101 each failure rolls the clone back. It now fetches "config"
+  raw, as `guest_info` and the ADR-0101 identity read already do, and
+  `tpm_endorsement_certificates_from_raw_config` (new) picks the
+  `endorsementKeyCertificate` lists of `VirtualTPM` devices out of the untyped
+  JSON: base64 decoded, device order kept, the signing requests never returned.
+  An absent, null or empty list still means "not issued yet, ask again"; a
+  non-string or non-base64 entry is an error rather than a silent "not yet".
+- `crates/banlieue-provider-vsphere/src/client/vim_tests.rs`: ten tests for it,
+  on the device shape captured from the real vCenter, including an undecodable
+  neighbouring device and property that must not hide the certificates.
+
+### Why
+OpenBao VMs on a `tpmEnabled` VMClass never got past provisioning on
+v0.4.3–v0.4.5 (`VirtualMachine.config(vm-…): Parse error`).
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (vSphere provider image)
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-10-21 14:00] - ADR-0103: digest-pinned installs; internal crates marked publish = false
 
 **Author:** Erick Bourgeois
