@@ -98,14 +98,6 @@ mod tests {
         }
     }
 
-    fn fake_client_with(template: Option<(&str, &str)>) -> FakeClient {
-        let mut builder = Inventory::builder().with_dc("dc-east");
-        if let Some((dc_name, tname)) = template {
-            builder = builder.with_template(dc_name, tname);
-        }
-        FakeClient::new(builder.build())
-    }
-
     fn as_client(c: &FakeClient) -> &dyn VSphereClient {
         c
     }
@@ -168,65 +160,278 @@ mod tests {
         assert!(find_vsphere_source(&sources).is_none());
     }
 
-    // ---------- compute_template_status ----------------------------------
+    // ---------- compute_template_status (Template source, ADR-0104) -------
+
+    /// A vsphere `Provider` whose failure domains are `(zone, datacenter)`.
+    fn provider_with_zones(name: &str, zones: &[(&str, &str)]) -> Provider {
+        let mut p = provider(name, "banlieue");
+        p.status.as_mut().unwrap().failure_domains = zones
+            .iter()
+            .map(|(zone, datacenter)| {
+                let mut raw = BTreeMap::new();
+                raw.insert("datacenter".to_string(), (*datacenter).to_string());
+                raw.insert("cluster".to_string(), "cluster-a".to_string());
+                FailureDomain {
+                    name: (*zone).to_string(),
+                    labels: Default::default(),
+                    attributes: FailureDomainAttributes {
+                        raw,
+                        ..Default::default()
+                    },
+                }
+            })
+            .collect();
+        p
+    }
+
+    fn zone_of<'a>(
+        row: &'a banlieue_api::banlieue::ImagePerProviderStatus,
+        name: &str,
+    ) -> &'a banlieue_api::banlieue::ZoneImageStatus {
+        row.zones
+            .iter()
+            .find(|z| z.name == name)
+            .unwrap_or_else(|| panic!("no zone {name:?} in {:?}", row.zones))
+    }
 
     #[tokio::test]
-    async fn compute_template_status_returns_ready_when_template_present() {
-        let client = fake_client_with(Some(("dc-east", "ubuntu-22.04")));
-        let dcs = vec![dc("dc-east")];
+    async fn template_status_is_per_zone_with_bare_names_and_folders() {
+        let client = FakeClient::new(
+            Inventory::builder()
+                .with_dc("dc-east")
+                .with_template_in_folder("dc-east", "templates/zone-a", "ubuntu-22.04")
+                .with_template_in_folder("dc-east", "templates/zone-b", "ubuntu-22.04")
+                .build(),
+        );
+        let p = provider_with_zones("prov", &[("zone-a", "dc-east"), ("zone-b", "dc-east")]);
+
         let row = compute_template_status(
             as_client(&client),
-            &dcs,
+            &[dc("dc-east")],
             "ubuntu-22.04",
-            &provider("prov-east", "banlieue"),
+            Some("templates"),
+            &p,
         )
         .await;
+
         assert!(row.ready);
         assert_eq!(row.reason.as_deref(), Some(reasons::RECONCILED));
-        assert_eq!(row.provider_name, "prov-east");
+        assert_eq!(row.provider_name, "prov");
         assert_eq!(row.provider_namespace, "banlieue");
+        assert_eq!(row.zones.len(), 2);
+        for (zone, folder) in [
+            ("zone-a", "templates/zone-a"),
+            ("zone-b", "templates/zone-b"),
+        ] {
+            let z = zone_of(&row, zone);
+            assert!(z.ready, "{zone} should be ready");
+            assert_eq!(z.reason.as_deref(), Some(reasons::RECONCILED));
+            assert_eq!(z.resolved_ref.as_deref(), Some("ubuntu-22.04"));
+            assert_eq!(z.template_folder.as_deref(), Some(folder));
+        }
+    }
+
+    #[tokio::test]
+    async fn template_status_never_publishes_a_decorated_resolved_ref() {
+        let client = FakeClient::new(
+            Inventory::builder()
+                .with_dc("dc-east")
+                .with_template_in_folder("dc-east", "zone-a", "ubuntu-22.04")
+                .build(),
+        );
+        let p = provider_with_zones("prov", &[("zone-a", "dc-east")]);
+
+        let row = compute_template_status(
+            as_client(&client),
+            &[dc("dc-east")],
+            "ubuntu-22.04",
+            None,
+            &p,
+        )
+        .await;
+
         assert_eq!(
-            row.resolved_ref.as_deref(),
-            Some("[dc-east] ubuntu-22.04"),
-            "resolved_ref should follow vSphere [datacenter] template-name convention"
+            row.resolved_ref, None,
+            "top-level resolvedRef is unset, as for Url"
+        );
+        for z in &row.zones {
+            let r = z.resolved_ref.as_deref().unwrap_or_default();
+            assert!(!r.contains('[') && !r.contains(']'), "decorated: {r:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn template_status_without_root_folder_uses_the_zone_name_as_folder() {
+        // Parity with Url: rootFolder is optional; unset means <zone> directly
+        // under the datacenter VM-folder root (effective_folder).
+        let client = FakeClient::new(
+            Inventory::builder()
+                .with_dc("dc-east")
+                .with_template_in_folder("dc-east", "zone-a", "ubuntu-22.04")
+                .build(),
+        );
+        let p = provider_with_zones("prov", &[("zone-a", "dc-east")]);
+
+        let row = compute_template_status(
+            as_client(&client),
+            &[dc("dc-east")],
+            "ubuntu-22.04",
+            None,
+            &p,
+        )
+        .await;
+
+        assert!(row.ready);
+        assert_eq!(
+            zone_of(&row, "zone-a").template_folder.as_deref(),
+            Some("zone-a")
         );
     }
 
     #[tokio::test]
-    async fn compute_template_status_returns_not_found_when_template_absent() {
-        let client = fake_client_with(None); // DC seeded but no template
-        let dcs = vec![dc("dc-east")];
-        let row = compute_template_status(
-            as_client(&client),
-            &dcs,
-            "ubuntu-22.04",
-            &provider("p", "ns"),
-        )
-        .await;
-        assert!(!row.ready);
-        assert_eq!(row.reason.as_deref(), Some(reasons::TEMPLATE_NOT_FOUND));
-        assert!(row.message.as_deref().unwrap().contains("ubuntu-22.04"));
-    }
+    async fn template_status_missing_zone_is_not_ready_without_breaking_the_others() {
+        let client = FakeClient::new(
+            Inventory::builder()
+                .with_dc("dc-east")
+                .with_template_in_folder("dc-east", "templates/zone-a", "ubuntu-22.04")
+                .build(),
+        );
+        let p = provider_with_zones("prov", &[("zone-a", "dc-east"), ("zone-b", "dc-east")]);
 
-    #[tokio::test]
-    async fn compute_template_status_returns_not_found_with_no_datacenters() {
-        // Defensive: if for some reason no DCs are passed in (e.g. Provider
-        // status went stale and live walk is empty too), don't claim ready.
-        let client = fake_client_with(Some(("dc-east", "ubuntu-22.04")));
         let row = compute_template_status(
             as_client(&client),
-            &[],
+            &[dc("dc-east")],
             "ubuntu-22.04",
-            &provider("p", "ns"),
+            Some("templates"),
+            &p,
         )
         .await;
-        assert!(!row.ready);
-        assert_eq!(row.reason.as_deref(), Some(reasons::TEMPLATE_NOT_FOUND));
+
+        assert!(row.ready, "aggregate is ready while any zone is");
+        assert!(zone_of(&row, "zone-a").ready);
+        let b = zone_of(&row, "zone-b");
+        assert!(!b.ready);
+        assert_eq!(b.reason.as_deref(), Some(reasons::TEMPLATE_NOT_FOUND));
         assert!(
-            row.message.as_deref().unwrap().contains("no datacenters"),
-            "message should explain why: {:?}",
-            row.message
+            b.message.as_deref().unwrap().contains("templates/zone-b"),
+            "message names the folder searched: {:?}",
+            b.message
         );
+        assert_eq!(b.resolved_ref, None);
+    }
+
+    #[tokio::test]
+    async fn template_status_is_not_ready_when_no_zone_has_the_template() {
+        let client = FakeClient::new(Inventory::builder().with_dc("dc-east").build());
+        let p = provider_with_zones("prov", &[("zone-a", "dc-east"), ("zone-b", "dc-east")]);
+
+        let row = compute_template_status(
+            as_client(&client),
+            &[dc("dc-east")],
+            "ubuntu-22.04",
+            Some("templates"),
+            &p,
+        )
+        .await;
+
+        assert!(!row.ready);
+        assert_eq!(row.reason.as_deref(), Some(reasons::TEMPLATE_NOT_FOUND));
+        assert!(row.zones.iter().all(|z| !z.ready));
+        assert_eq!(row.zones.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn template_status_does_not_fall_back_to_a_datacenter_wide_match() {
+        // The old behaviour: a template anywhere in the datacenter counted.
+        // It must not count now — only the per-zone folder does.
+        let client = FakeClient::new(
+            Inventory::builder()
+                .with_dc("dc-east")
+                .with_template("dc-east", "ubuntu-22.04")
+                .build(),
+        );
+        let p = provider_with_zones("prov", &[("zone-a", "dc-east")]);
+
+        let row = compute_template_status(
+            as_client(&client),
+            &[dc("dc-east")],
+            "ubuntu-22.04",
+            Some("templates"),
+            &p,
+        )
+        .await;
+
+        assert!(!row.ready);
+        assert_eq!(
+            zone_of(&row, "zone-a").reason.as_deref(),
+            Some(reasons::TEMPLATE_NOT_FOUND)
+        );
+    }
+
+    #[tokio::test]
+    async fn template_status_folder_lookup_is_scoped_to_the_zones_datacenter() {
+        // vCenter folders are per-datacenter: the same path in another
+        // datacenter is a different folder and must not satisfy this zone.
+        let client = FakeClient::new(
+            Inventory::builder()
+                .with_dc("dc-east")
+                .with_dc("dc-west")
+                .with_template_in_folder("dc-west", "templates/zone-a", "ubuntu-22.04")
+                .build(),
+        );
+        let p = provider_with_zones("prov", &[("zone-a", "dc-east")]);
+
+        let row = compute_template_status(
+            as_client(&client),
+            &[dc("dc-east"), dc("dc-west")],
+            "ubuntu-22.04",
+            Some("templates"),
+            &p,
+        )
+        .await;
+
+        assert!(!zone_of(&row, "zone-a").ready);
+    }
+
+    #[tokio::test]
+    async fn template_status_reports_no_failure_domains() {
+        let client = FakeClient::new(Inventory::builder().with_dc("dc-east").build());
+        let mut p = provider("prov", "banlieue");
+        p.status.as_mut().unwrap().failure_domains.clear();
+
+        let row = compute_template_status(
+            as_client(&client),
+            &[dc("dc-east")],
+            "ubuntu-22.04",
+            None,
+            &p,
+        )
+        .await;
+
+        assert!(!row.ready);
+        assert_eq!(row.reason.as_deref(), Some(reasons::NO_FAILURE_DOMAINS));
+        assert!(row.zones.is_empty());
+    }
+
+    #[tokio::test]
+    async fn template_status_zone_with_unresolved_datacenter_is_not_found() {
+        // The zone's datacenter is not among the live datacenters passed in.
+        let client = FakeClient::new(Inventory::builder().with_dc("dc-east").build());
+        let p = provider_with_zones("prov", &[("zone-a", "dc-gone")]);
+
+        let row = compute_template_status(
+            as_client(&client),
+            &[dc("dc-east")],
+            "ubuntu-22.04",
+            None,
+            &p,
+        )
+        .await;
+
+        assert!(!row.ready);
+        let z = zone_of(&row, "zone-a");
+        assert_eq!(z.reason.as_deref(), Some(reasons::TEMPLATE_NOT_FOUND));
+        assert!(z.message.as_deref().unwrap().contains("dc-gone"));
     }
 
     // ---------- gate_on_build_artifact (Url source, ADR-0020) -------------

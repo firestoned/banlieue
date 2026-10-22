@@ -197,7 +197,10 @@ mod tests {
         assert_eq!(m.spec.datacenter, "dc1");
         assert_eq!(m.spec.cluster, "cluster-a");
         assert_eq!(m.spec.datastore, "ds-fast-01");
-        assert_eq!(m.spec.template, "[dc1] templates/ubuntu-22.04-cloudinit");
+        assert_eq!(
+            m.spec.template, "templates/ubuntu-22.04-cloudinit",
+            "the [dc] display prefix is never handed to the provider"
+        );
         assert_eq!(m.spec.num_cpus, 8);
         assert_eq!(m.spec.memory_mi_b, 32_768);
         assert_eq!(m.spec.network.len(), 1);
@@ -826,6 +829,83 @@ mod tests {
             m.spec.template_folder.as_deref(),
             Some("templates/vc1-dc1-cluster-a")
         );
+    }
+
+    fn template_kind_zone_image(top_level: Option<&str>) -> VMImage {
+        let mut image = parent_image();
+        image.status.as_mut().unwrap().per_provider = vec![ImagePerProviderStatus {
+            provider_name: "vc1".into(),
+            provider_namespace: "banlieue-system".into(),
+            ready: true,
+            resolved_ref: top_level.map(str::to_string),
+            reason: None,
+            message: None,
+            zones: vec![ZoneImageStatus {
+                name: "vc1-dc1-cluster-a".into(),
+                ready: true,
+                resolved_ref: Some("my-template".into()),
+                template_folder: Some("templates/vc1-dc1-cluster-a".into()),
+                reason: None,
+                message: None,
+            }],
+        }];
+        image
+    }
+
+    fn build_for(image: &VMImage) -> VSphereMachine {
+        let raw = BTreeMap::from([
+            ("datacenter".to_string(), "dc1".to_string()),
+            ("cluster".to_string(), "cluster-a".to_string()),
+        ]);
+        build_vsphere_machine(
+            &parent_vm(),
+            &parent_class(),
+            image,
+            &decision_with_raw(raw),
+            &parent_provider(),
+            None,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn template_kind_zone_status_yields_bare_name_and_zone_folder() {
+        // ADR-0104: a Template-kind image publishes per-zone status like Url.
+        let m = build_for(&template_kind_zone_image(None));
+        assert_eq!(m.spec.template, "my-template");
+        assert_eq!(
+            m.spec.template_folder.as_deref(),
+            Some("templates/vc1-dc1-cluster-a")
+        );
+    }
+
+    #[test]
+    fn zone_entry_wins_over_a_legacy_decorated_top_level_ref() {
+        // A row written by an older provider may still carry the display
+        // string at the top level during a rolling upgrade.
+        let m = build_for(&template_kind_zone_image(Some("[dc1] my-template")));
+        assert_eq!(m.spec.template, "my-template");
+        assert_eq!(
+            m.spec.template_folder.as_deref(),
+            Some("templates/vc1-dc1-cluster-a")
+        );
+    }
+
+    #[test]
+    fn legacy_decorated_ref_with_no_zones_is_stripped_to_the_bare_name() {
+        let mut image = parent_image();
+        image.status.as_mut().unwrap().per_provider[0].resolved_ref =
+            Some("[dc1,dc2] my-template".into());
+        let m = build_for(&image);
+        assert_eq!(m.spec.template, "my-template");
+        assert_eq!(m.spec.template_folder, None);
+    }
+
+    #[test]
+    fn bare_top_level_ref_is_left_untouched() {
+        let mut image = parent_image();
+        image.status.as_mut().unwrap().per_provider[0].resolved_ref = Some("my-template".into());
+        assert_eq!(build_for(&image).spec.template, "my-template");
     }
 
     #[test]

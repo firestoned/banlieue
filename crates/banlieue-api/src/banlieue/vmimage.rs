@@ -98,10 +98,13 @@ pub struct VMImageSpec {
 
     /// How the backend **template** is built from a `Url` source (root
     /// folder, network, disk, CPU / memory / firmware / NIC, force knobs).
-    /// Every field
-    /// is optional and falls back to a built-in default. Only meaningful for
-    /// `Url` sources; ignored for `Template` / `BackingFile`. See
-    /// [`VMImageTemplate`] and ADR-0020.
+    /// Every field is optional and falls back to a built-in default. Only
+    /// meaningful for `Url` sources, with one exception: for a vSphere
+    /// `Template` source (an existing template banlieue adopts and never
+    /// builds) only `rootFolder` is read, to find the template in
+    /// `<rootFolder>/<failure-domain>`; every other field is ignored.
+    /// Ignored for `BackingFile`. See [`VMImageTemplate`], ADR-0020 and
+    /// ADR-0104.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub template: Option<VMImageTemplate>,
 
@@ -176,7 +179,9 @@ pub struct IsoOverlayFile {
 pub struct VMImageTemplate {
     /// Root vCenter inventory folder (path under the datacenter's VM folder,
     /// e.g. `templates/kairos`); created if missing. When unset, the
-    /// datacenter's VM-folder root is the root. vSphere-only.
+    /// datacenter's VM-folder root is the root. vSphere-only. Read for both
+    /// `Url` (where the template is created) and `Template` (where the
+    /// existing template is looked up) sources (ADR-0104).
     ///
     /// Named `rootFolder`, not `folder`, because it is never the literal
     /// target: the per-zone import always places the template at
@@ -719,8 +724,9 @@ pub struct ImagePerProviderStatus {
     pub provider_namespace: String,
     /// True when the image can be used to clone/create a VM on this provider.
     pub ready: bool,
-    /// Resolved concrete reference on the backend.
-    /// vSphere: `[datacenter] folder/template-name`. Proxmox: VMID. Libvirt: path.
+    /// Resolved concrete reference on the backend, for backends with one
+    /// reference per provider. Proxmox: VMID. Libvirt: path. Unset for
+    /// vSphere, whose per-zone references are in [`Self::zones`] (ADR-0104).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolved_ref: Option<String>,
     /// Short reason if not ready. Stable values from
@@ -730,41 +736,44 @@ pub struct ImagePerProviderStatus {
     /// Long human-readable detail.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
-    /// Per-zone (per-`Provider.status.failureDomains[]`) import progress.
-    /// Only populated for `Url`-kind sources, where "ready" on this Provider
-    /// legitimately means "ready in some zones, still importing in others" —
-    /// `Template` sources report readiness as a single vCenter-wide lookup
-    /// and leave this empty.
+    /// Per-zone (per-`Provider.status.failureDomains[]`) readiness. Populated
+    /// by the vSphere provider for both `Url` sources (import progress) and
+    /// `Template` sources (whether the adopted template exists in each zone's
+    /// folder, ADR-0104). For `Url`, `ready` means every zone is ready; for
+    /// `Template` it means at least one zone is, and the scheduler places
+    /// VMs only in ready zones. Empty for backends without zones (libvirt,
+    /// Proxmox).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub zones: Vec<ZoneImageStatus>,
 }
 
-/// Import readiness of a `VMImage` in one failure domain (zone) of a
-/// Provider. Only meaningful for `Url`-kind sources built by
-/// `banlieue-imagebuilder` and imported per zone by the owning provider's
-/// controller (e.g. `banlieue-provider-vsphere`, one zone == one vSphere
-/// compute cluster / datastore / network in the current environment). See
-/// ADR-0010.
+/// Readiness of a `VMImage` in one failure domain (zone) of a Provider. For
+/// `Url`-kind sources, built by `banlieue-imagebuilder` and imported per zone
+/// by the owning provider's controller (e.g. `banlieue-provider-vsphere`, one
+/// zone == one vSphere compute cluster / datastore / network in the current
+/// environment), it is import progress (ADR-0010). For vSphere `Template`
+/// sources it is whether the adopted template exists in this zone's folder
+/// (ADR-0104).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ZoneImageStatus {
     /// Name of the failure domain, matching `Provider.status.failureDomains[].name`.
     pub name: String,
-    /// True once the template/import is usable in this zone.
+    /// True once the template is usable in this zone (import finished for
+    /// `Url`; template found in the zone's folder for `Template`).
     pub ready: bool,
     /// The template's bare display name within this zone once ready — the
     /// value a provider passes to a name-based template lookup. NOT a
-    /// decorated string (no `[dc]`/folder prefix): folder scoping for a
-    /// per-zone (`Url`-kind) import lives in [`Self::template_folder`],
-    /// kept separate so a lookup can be built from structured fields
-    /// instead of parsing this one.
+    /// decorated string (no `[dc]`/folder prefix): the folder lives in
+    /// [`Self::template_folder`], kept separate so a lookup can be built
+    /// from structured fields instead of parsing this one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolved_ref: Option<String>,
     /// The vCenter folder path (relative to the datacenter's VM folder,
     /// e.g. `templates/cluster-01`) the template in [`Self::resolved_ref`]
-    /// lives in, for a per-zone (`Url`-kind) import (ADR-0020 Decision #5).
-    /// `None` for a `Template`-kind image, which has no per-zone folder —
-    /// its `resolved_ref` is looked up datacenter-wide.
+    /// lives in: `<spec.template.rootFolder>/<zone>` for both `Url` imports
+    /// (ADR-0020 Decision #5) and `Template` sources (ADR-0104). Unset while
+    /// the zone is not ready.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub template_folder: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

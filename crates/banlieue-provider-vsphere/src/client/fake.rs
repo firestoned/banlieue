@@ -478,7 +478,14 @@ impl VSphereClient for FakeClient {
             Some(f) if !f.is_empty() => self.inventory.templates_by_folder.get(f),
             _ => self.inventory.templates_by_dc.get(&dc.moref),
         };
-        Ok(templates.and_then(|tpls| tpls.iter().find(|t| t.name == name).cloned()))
+        // vCenter inventory folders are scoped per datacenter: the same path
+        // in another datacenter is a different folder, so a template seeded
+        // there must not satisfy a lookup in `dc`.
+        Ok(templates.and_then(|tpls| {
+            tpls.iter()
+                .find(|t| t.name == name && t.datacenter_moref == dc.moref)
+                .cloned()
+        }))
     }
 
     async fn list_datastores(&self, cluster: &Cluster) -> Result<Vec<Datastore>> {

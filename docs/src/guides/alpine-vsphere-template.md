@@ -355,7 +355,15 @@ spec:
     - providerClass: vsphere
       kind: Template
       ref: alpine-3.21-cloudinit       # <-- the vCenter template name from Step 7
+  template:
+    rootFolder: templates              # <-- where banlieue looks, per zone
 ```
+
+banlieue looks for the template once per failure domain, in the folder
+`<rootFolder>/<failure-domain>` (for example `templates/<failure-domain>`), not
+anywhere in the datacenter. Put a copy of the template in each failure domain's
+folder; a zone without one reports `TemplateNotFound` and receives no VMs. See
+[Register a `VMImage`](vsphere-provider.md#5-register-a-vmimage).
 
 Apply it, then reference it from a `VirtualMachine` (see the
 [vSphere Provider guide](vsphere-provider.md) for the full `Provider` +

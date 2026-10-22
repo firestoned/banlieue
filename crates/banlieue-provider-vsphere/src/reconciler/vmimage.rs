@@ -7,10 +7,14 @@
 //! `ImageSource` named in `VMImage.spec.sources[]` (where `provider_class ==
 //! "vsphere"`):
 //!
-//! - `Template` sources: look up the template by name; flip the matching
-//!   `VMImage.status.perProvider[]` entry to `ready=true` (with
-//!   `resolved_ref` populated) when found in every datacenter the Provider
-//!   has a failure domain in.
+//! - `Template` sources (ADR-0104): adopt a template that already exists in
+//!   vCenter. For each `Provider.status.failureDomains[]` entry, look the
+//!   template up under `<rootFolder>/<failure-domain>`
+//!   ([`crate::import::effective_folder`], the same rule `Url` uses) and
+//!   publish one [`ZoneImageStatus`] per failure domain with a bare
+//!   `resolved_ref`. The row is `ready` while any zone has the template;
+//!   the scheduler gates each zone on its own entry. banlieue never destroys
+//!   a template it did not import ([`image_owns_templates`]).
 //! - `Url` sources (ADR-0010 / ADR-0020): readiness depends on
 //!   `VMImage.status.buildArtifact` (an `iso`, built by `banlieue-imagebuilder`)
 //!   — this reconciler never writes that field, only reads it. Once it reports
@@ -22,7 +26,8 @@
 //!
 //! `ready=false` in every non-terminal case carries a stable [`reasons`] tag.
 //!
-//! The pure helpers ([`compute_template_status`], [`gate_on_build_artifact`],
+//! The pure helpers ([`compute_template_status`], [`image_owns_templates`],
+//! [`gate_on_build_artifact`],
 //! [`build_import_job`], [`import_job_name`], [`zone_from_job`]) take plain
 //! values / `&dyn VSphereClient` so the reconciler tests drive them with
 //! `FakeClient` and never touch `kube::Api`; the Job-creating step
@@ -58,6 +63,10 @@ use crate::error::{Error, Result};
 
 const SECRET_KEY_USERNAME: &str = "username";
 const SECRET_KEY_PASSWORD: &str = "password";
+
+/// `FailureDomain.attributes.raw` key holding the failure domain's datacenter
+/// (written by the `provider` reconciler).
+const ATTR_DATACENTER: &str = "datacenter";
 
 /// Annotation on a `VMImage` requesting a forced re-import: the per-zone import
 /// Jobs are deleted and recreated, so a completed import re-runs (ADR-0020).
@@ -323,7 +332,7 @@ async fn finalize(api: &Api<VMImage>, image: &VMImage, ctx: &Context) -> Result<
         .as_ref()
         .is_some_and(|t| t.retain_on_delete);
 
-    if !retain {
+    if !retain && image_owns_templates(image) {
         let rows = image
             .status
             .as_ref()
@@ -354,13 +363,48 @@ async fn finalize(api: &Api<VMImage>, image: &VMImage, ctx: &Context) -> Result<
                 .as_ref()
                 .map(|s| s.failure_domains.as_slice())
                 .unwrap_or_default();
-            destroy_zone_templates(client.as_ref(), &datacenters, failure_domains, &row.zones)
-                .await?;
+            destroy_owned_zone_templates(
+                client.as_ref(),
+                &datacenters,
+                failure_domains,
+                image,
+                &row.zones,
+            )
+            .await?;
         }
     }
 
     remove_finalizer(api, image, VM_IMAGE_FINALIZER).await?;
     Ok(requeue_default())
+}
+
+/// Whether banlieue built this image's templates itself and may therefore
+/// destroy them (ADR-0104). True only for a vsphere `Url` source, whose
+/// templates the per-zone import Jobs created. A `Template` source adopts a
+/// template the operator already had in vCenter; it is never ours to delete,
+/// whatever `status.perProvider[].zones[]` happens to say — so the decision
+/// is made on the source kind, not on status contents. An image with no
+/// vsphere source owns nothing.
+pub fn image_owns_templates(image: &VMImage) -> bool {
+    find_vsphere_source(&image.spec.sources).is_some_and(|s| s.kind == ImageSourceKind::Url)
+}
+
+/// [`destroy_zone_templates`], guarded by [`image_owns_templates`]: a
+/// no-op for any image whose templates banlieue did not import. This is the
+/// only entry point the deletion path uses, so no caller can reach
+/// `destroy_vm` on an adopted template.
+async fn destroy_owned_zone_templates(
+    client: &dyn VSphereClient,
+    datacenters: &[Datacenter],
+    failure_domains: &[FailureDomain],
+    image: &VMImage,
+    zones: &[ZoneImageStatus],
+) -> Result<()> {
+    if !image_owns_templates(image) {
+        info!("VMImage adopts existing templates; leaving them in place");
+        return Ok(());
+    }
+    destroy_zone_templates(client, datacenters, failure_domains, zones).await
 }
 
 /// Destroy every per-zone template `zones` reports, unless already absent
@@ -493,54 +537,124 @@ pub async fn reconcile_for_provider(
         }
     };
 
-    compute_template_status(client.as_ref(), &datacenters, &source.reference, provider).await
+    compute_template_status(
+        client.as_ref(),
+        &datacenters,
+        &source.reference,
+        force.root_folder.as_deref(),
+        provider,
+    )
+    .await
 }
 
-/// Pure helper for the per-provider template check: given a connected client
-/// and a list of candidate datacenters, return a populated
-/// [`ImagePerProviderStatus`] row.
+/// Pure helper for the per-provider `Template`-source check (ADR-0104): given
+/// a connected client and the Provider's datacenters, look the adopted
+/// template up in every failure domain's own folder and return the row.
+///
+/// One [`ZoneImageStatus`] per `Provider.status.failureDomains[]` entry, with
+/// the **bare** template name as `resolved_ref` and the folder searched as
+/// `template_folder` — the same shape the `Url` path publishes. The folder is
+/// `<root_folder>/<failure-domain>` ([`crate::import::effective_folder`]); a
+/// template elsewhere in the datacenter does not count. The row is `ready`
+/// while any zone has the template, so one zone missing it does not take the
+/// image away from the others (the scheduler gates each zone itself).
 pub async fn compute_template_status(
     client: &dyn VSphereClient,
     datacenters: &[Datacenter],
     template_name: &str,
+    root_folder: Option<&str>,
     provider: &Provider,
 ) -> ImagePerProviderStatus {
-    if datacenters.is_empty() {
+    let failure_domains: &[FailureDomain] = provider
+        .status
+        .as_ref()
+        .map(|s| s.failure_domains.as_slice())
+        .unwrap_or_default();
+    if failure_domains.is_empty() {
         return per_provider_failure(
             provider,
-            reasons::TEMPLATE_NOT_FOUND,
-            "no datacenters discovered for this Provider".to_string(),
+            reasons::NO_FAILURE_DOMAINS,
+            "Provider has no status.failureDomains[] published yet".to_string(),
         );
     }
 
-    let mut hits = Vec::new();
-    for dc in datacenters {
-        match client.find_template(dc, None, template_name).await {
-            Ok(Some(t)) => hits.push((dc.name.clone(), t)),
-            Ok(None) => {}
-            Err(e) => {
-                return per_provider_failure(provider, reasons::LOOKUP_FAILED, e.to_string());
-            }
-        }
+    let mut zones = Vec::with_capacity(failure_domains.len());
+    for fd in failure_domains {
+        zones.push(template_zone_status(client, datacenters, fd, template_name, root_folder).await);
     }
 
-    if hits.is_empty() {
-        return per_provider_failure(
-            provider,
+    let ready = zones.iter().any(|z| z.ready);
+    let (reason, message) = if ready {
+        (reasons::RECONCILED, None)
+    } else if zones
+        .iter()
+        .any(|z| z.reason.as_deref() == Some(reasons::LOOKUP_FAILED))
+    {
+        (
+            reasons::LOOKUP_FAILED,
+            Some("vCenter rejected the template lookup in at least one zone".to_string()),
+        )
+    } else {
+        (
             reasons::TEMPLATE_NOT_FOUND,
-            format!("template {template_name:?} not present in any datacenter"),
-        );
-    }
-
-    let resolved = render_resolved_ref(&hits, template_name);
+            Some(format!("template {template_name:?} not found in any zone")),
+        )
+    };
     ImagePerProviderStatus {
         provider_name: provider.name_any(),
         provider_namespace: provider.namespace().unwrap_or_default(),
-        ready: true,
-        resolved_ref: Some(resolved),
-        reason: Some(reasons::RECONCILED.to_string()),
-        message: None,
-        zones: vec![],
+        ready,
+        resolved_ref: None,
+        reason: Some(reason.to_string()),
+        message,
+        zones,
+    }
+}
+
+/// Look the adopted template up in one failure domain's own folder.
+async fn template_zone_status(
+    client: &dyn VSphereClient,
+    datacenters: &[Datacenter],
+    fd: &FailureDomain,
+    template_name: &str,
+    root_folder: Option<&str>,
+) -> ZoneImageStatus {
+    let Some(dc_name) = fd.attributes.raw.get(ATTR_DATACENTER) else {
+        return zone_row(
+            &fd.name,
+            false,
+            reasons::TEMPLATE_NOT_FOUND,
+            "failure domain has no datacenter attribute",
+        );
+    };
+    let Some(dc) = datacenters.iter().find(|d| &d.name == dc_name) else {
+        return zone_row(
+            &fd.name,
+            false,
+            reasons::TEMPLATE_NOT_FOUND,
+            &format!("datacenter {dc_name:?} of this failure domain is not available in vCenter"),
+        );
+    };
+
+    let folder = crate::import::effective_folder(root_folder, &fd.name);
+    match client.find_template(dc, Some(&folder), template_name).await {
+        Ok(Some(_)) => ZoneImageStatus {
+            name: fd.name.clone(),
+            ready: true,
+            resolved_ref: Some(template_name.to_string()),
+            template_folder: Some(folder),
+            reason: Some(reasons::RECONCILED.to_string()),
+            message: None,
+        },
+        Ok(None) => zone_row(
+            &fd.name,
+            false,
+            reasons::TEMPLATE_NOT_FOUND,
+            &format!(
+                "template {template_name:?} not found in folder {folder:?} of datacenter {dc_name:?}"
+            ),
+        ),
+        Err(e) => zone_row(&fd.name, false, reasons::LOOKUP_FAILED, &e.to_string()),
     }
 }
 
@@ -1104,13 +1218,6 @@ fn per_provider_failure(
         message: Some(message),
         zones: vec![],
     }
-}
-
-fn render_resolved_ref(hits: &[(String, crate::client::Template)], template_name: &str) -> String {
-    // vSphere convention: "[datacenter,...] template-name". With one DC hit
-    // we render the simpler "[dc] name"; with multiple we list all the DCs.
-    let dcs: Vec<&str> = hits.iter().map(|(dc, _)| dc.as_str()).collect();
-    format!("[{}] {}", dcs.join(","), template_name)
 }
 
 /// Read the Provider's credentials Secret. Mirrors `provider.rs::read_credentials`

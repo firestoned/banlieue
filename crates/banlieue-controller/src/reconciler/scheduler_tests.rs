@@ -1190,4 +1190,127 @@ mod tests {
         let err = schedule(&v, &cls, &img, &providers, &[]).unwrap_err();
         assert_eq!(err, ScheduleError::NoProviderMatched);
     }
+
+    // --- Filter: per-zone image readiness (Template source, ADR-0104) ------
+
+    /// `image_ready_on(&[provider])` with its single row rewritten to the
+    /// per-zone shape a `Template`-kind source publishes: no top-level
+    /// `resolvedRef`, one `zones[]` entry per `(name, ready)`, aggregate
+    /// `ready` = any zone ready.
+    fn template_image_with_zones(
+        provider: &str,
+        kind: ImageSourceKind,
+        zones: &[(&str, bool)],
+        aggregate_ready: bool,
+    ) -> VMImage {
+        let mut img = image_ready_on(&[provider]);
+        img.spec.sources[0].kind = kind;
+        let row = &mut img.status.as_mut().unwrap().per_provider[0];
+        row.ready = aggregate_ready;
+        row.resolved_ref = None;
+        row.zones = zones
+            .iter()
+            .map(|(name, ready)| banlieue_api::banlieue::ZoneImageStatus {
+                name: (*name).into(),
+                ready: *ready,
+                resolved_ref: ready.then(|| "ubuntu-22.04-cloudinit".to_string()),
+                template_folder: ready.then(|| format!("templates/{name}")),
+                reason: None,
+                message: None,
+            })
+            .collect();
+        img
+    }
+
+    fn two_zone_provider() -> Provider {
+        provider(
+            "vc1",
+            BTreeMap::new(),
+            vec![
+                fd("zone-a", BTreeMap::new(), &["gold"], &["prod"], &[]),
+                fd("zone-b", BTreeMap::new(), &["gold"], &["prod"], &[]),
+            ],
+            caps_with(
+                &[("gold", "datastore", "ds-1")],
+                &[("prod", "portGroup", "pg-1")],
+            ),
+        )
+    }
+
+    fn gold_prod_class() -> VMClass {
+        class(
+            vec![("os", "gold")],
+            vec![("eth0", "prod")],
+            vec![],
+            Firmware::Efi,
+        )
+    }
+
+    #[test]
+    fn template_source_never_places_into_a_zone_that_is_not_ready() {
+        let v = vm("db-01", "ns", BTreeMap::new());
+        // zone-a lacks the template; zone-b has it. Run repeatedly: the
+        // decision must be zone-b every time, never an arbitrary pick.
+        let img = template_image_with_zones(
+            "vc1",
+            ImageSourceKind::Template,
+            &[("zone-a", false), ("zone-b", true)],
+            true,
+        );
+        for _ in 0..8 {
+            let d = schedule(&v, &gold_prod_class(), &img, &[two_zone_provider()], &[])
+                .expect("schedule");
+            assert_eq!(d.failure_domain_name, "zone-b");
+        }
+    }
+
+    #[test]
+    fn template_source_skips_a_failure_domain_with_no_zone_entry() {
+        let v = vm("db-01", "ns", BTreeMap::new());
+        // zone-b is a failure domain of the Provider but the image's row
+        // does not mention it at all: not placeable.
+        let img =
+            template_image_with_zones("vc1", ImageSourceKind::Template, &[("zone-a", true)], true);
+        let d =
+            schedule(&v, &gold_prod_class(), &img, &[two_zone_provider()], &[]).expect("schedule");
+        assert_eq!(d.failure_domain_name, "zone-a");
+    }
+
+    #[test]
+    fn template_source_with_no_ready_zone_is_not_schedulable() {
+        let v = vm("db-01", "ns", BTreeMap::new());
+        let img = template_image_with_zones(
+            "vc1",
+            ImageSourceKind::Template,
+            &[("zone-a", false), ("zone-b", false)],
+            false,
+        );
+        let err = schedule(&v, &gold_prod_class(), &img, &[two_zone_provider()], &[]).unwrap_err();
+        assert_eq!(err, ScheduleError::ImageNotReady);
+    }
+
+    #[test]
+    fn template_source_row_without_zones_keeps_the_provider_level_check() {
+        // libvirt / Proxmox style rows (and legacy vsphere rows) publish no
+        // zones[]: provider-level readiness alone decides, as before.
+        let v = vm("db-01", "ns", BTreeMap::new());
+        let img = template_image_with_zones("vc1", ImageSourceKind::Template, &[], true);
+        assert!(schedule(&v, &gold_prod_class(), &img, &[two_zone_provider()], &[]).is_ok());
+    }
+
+    #[test]
+    fn url_source_scheduling_is_unchanged_by_zone_gating() {
+        // Url rows keep the provider-level check only: ready=true places
+        // regardless of an individual zone entry. (Url aggregates as
+        // "all zones ready", so this row shape is artificial — the point is
+        // that the Template-only gate does not apply to Url.)
+        let v = vm("db-01", "ns", BTreeMap::new());
+        let img = template_image_with_zones(
+            "vc1",
+            ImageSourceKind::Url,
+            &[("zone-a", false), ("zone-b", false)],
+            true,
+        );
+        assert!(schedule(&v, &gold_prod_class(), &img, &[two_zone_provider()], &[]).is_ok());
+    }
 }

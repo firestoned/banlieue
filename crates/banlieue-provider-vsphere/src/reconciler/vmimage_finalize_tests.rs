@@ -7,11 +7,18 @@
 mod tests {
     use std::collections::BTreeMap;
 
-    use banlieue_api::banlieue::{FailureDomain, FailureDomainAttributes, ZoneImageStatus};
+    use banlieue_api::banlieue::{
+        Architecture, FailureDomain, FailureDomainAttributes, GuestAgent, ImagePerProviderStatus,
+        ImageSource, ImageSourceKind, OsFamily, VMImage, VMImageSpec, VMImageStatus,
+        VMImageTemplate, ZoneImageStatus,
+    };
+    use kube::api::ObjectMeta;
 
     use crate::client::{Datacenter, FakeClient, Inventory, VSphereClient};
 
-    use super::super::destroy_zone_templates;
+    use super::super::{
+        destroy_owned_zone_templates, destroy_zone_templates, image_owns_templates,
+    };
 
     fn as_client(c: &FakeClient) -> &dyn VSphereClient {
         c
@@ -47,6 +54,148 @@ mod tests {
             reason: None,
             message: None,
         }
+    }
+
+    fn image(
+        kind: ImageSourceKind,
+        retain_on_delete: bool,
+        zones: Vec<ZoneImageStatus>,
+    ) -> VMImage {
+        VMImage {
+            metadata: ObjectMeta {
+                name: Some("adopted".to_string()),
+                ..Default::default()
+            },
+            spec: VMImageSpec {
+                os_family: OsFamily::Linux,
+                os_distribution: "ubuntu".to_string(),
+                os_version: "22.04".to_string(),
+                architecture: Architecture::Amd64,
+                guest_agent: GuestAgent::CloudInit,
+                sources: vec![ImageSource {
+                    provider_class: "vsphere".to_string(),
+                    kind,
+                    reference: "hadron-kairos-v0.1.0".to_string(),
+                    import_from: None,
+                    checksum: None,
+                }],
+                cloud_configs: vec![],
+                template: Some(VMImageTemplate {
+                    retain_on_delete,
+                    ..Default::default()
+                }),
+                iso_overlay: None,
+                trusted_boot: None,
+            },
+            status: Some(VMImageStatus {
+                per_provider: vec![ImagePerProviderStatus {
+                    provider_name: "prov".to_string(),
+                    provider_namespace: "ns".to_string(),
+                    ready: true,
+                    resolved_ref: None,
+                    reason: None,
+                    message: None,
+                    zones,
+                }],
+                ..Default::default()
+            }),
+        }
+    }
+
+    #[test]
+    fn only_url_sourced_images_own_their_templates() {
+        assert!(image_owns_templates(&image(
+            ImageSourceKind::Url,
+            false,
+            vec![]
+        )));
+        assert!(!image_owns_templates(&image(
+            ImageSourceKind::Template,
+            false,
+            vec![]
+        )));
+    }
+
+    #[tokio::test]
+    async fn template_kind_image_never_destroys_even_with_per_zone_status() {
+        // The adopted template really exists in the zone's folder and the
+        // status points straight at it: the exact shape that would be
+        // destroyed if the guard looked at status instead of source kind.
+        let inv = Inventory::builder()
+            .with_dc("dc-east")
+            .with_template_in_folder("dc-east", "templates/cluster-01", "hadron-kairos-v0.1.0")
+            .build();
+        let client = FakeClient::new(inv);
+        let zones = vec![zone(
+            "cluster-01",
+            "hadron-kairos-v0.1.0",
+            "templates/cluster-01",
+        )];
+        let img = image(ImageSourceKind::Template, false, zones.clone());
+
+        destroy_owned_zone_templates(
+            as_client(&client),
+            &[dc("dc-east")],
+            &[failure_domain("cluster-01", "dc-east")],
+            &img,
+            &zones,
+        )
+        .await
+        .unwrap();
+
+        assert!(client.destroyed_vms().is_empty());
+    }
+
+    #[tokio::test]
+    async fn template_kind_image_never_destroys_without_per_zone_status() {
+        let inv = Inventory::builder()
+            .with_dc("dc-east")
+            .with_template_in_folder("dc-east", "templates/cluster-01", "hadron-kairos-v0.1.0")
+            .build();
+        let client = FakeClient::new(inv);
+        let img = image(ImageSourceKind::Template, false, vec![]);
+
+        destroy_owned_zone_templates(
+            as_client(&client),
+            &[dc("dc-east")],
+            &[failure_domain("cluster-01", "dc-east")],
+            &img,
+            &[],
+        )
+        .await
+        .unwrap();
+
+        assert!(client.destroyed_vms().is_empty());
+    }
+
+    #[tokio::test]
+    async fn url_kind_image_still_destroys_what_it_imported() {
+        let inv = Inventory::builder()
+            .with_dc("dc-east")
+            .with_template_in_folder("dc-east", "templates/cluster-01", "hadron-kairos-v0.1.0")
+            .build();
+        let client = FakeClient::new(inv);
+        let zones = vec![zone(
+            "cluster-01",
+            "hadron-kairos-v0.1.0",
+            "templates/cluster-01",
+        )];
+        let img = image(ImageSourceKind::Url, false, zones.clone());
+
+        destroy_owned_zone_templates(
+            as_client(&client),
+            &[dc("dc-east")],
+            &[failure_domain("cluster-01", "dc-east")],
+            &img,
+            &zones,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            client.destroyed_vms(),
+            vec!["vm-template-templates/cluster-01-hadron-kairos-v0.1.0".to_string()]
+        );
     }
 
     #[tokio::test]

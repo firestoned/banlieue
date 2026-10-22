@@ -3,6 +3,12 @@
 #
 # Ubuntu 22.04 cloud image, available on all three provider classes.
 # Each source maps to whatever that backend uses to identify a base image.
+#
+# vSphere `kind: Template` adopts a template that already exists in vCenter;
+# banlieue builds and never deletes it. The template is looked up once per
+# failure domain, in the folder `<spec.template.rootFolder>/<failure-domain>`
+# (just `<failure-domain>` when rootFolder is unset), so a copy of
+# `ubuntu-22.04-cloudinit` must sit in each of those folders (ADR-0104).
 apiVersion: banlieue.io/v1alpha1
 kind: VMImage
 metadata:
@@ -26,3 +32,6 @@ spec:
       ref: /var/lib/libvirt/images/ubuntu-22.04.qcow2
       importFrom: https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img
       checksum: sha256:0000000000000000000000000000000000000000000000000000000000000000  # placeholder — replace with the real digest
+  # Read by the vSphere Template source only (other fields here are ignored for it).
+  template:
+    rootFolder: templates

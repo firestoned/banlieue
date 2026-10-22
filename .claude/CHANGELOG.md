@@ -58,6 +58,29 @@ v0.4.3–v0.4.5 (`VirtualMachine.config(vm-…): Parse error`).
 - [ ] Config change only
 - [ ] Documentation only
 
+## [2026-10-21 16:00] - vSphere `Template`-kind VMImages resolve per zone (ADR-0104)
+
+**Author:** Pooja Maiti
+
+### Changed
+- `crates/banlieue-provider-vsphere/src/reconciler/vmimage.rs`: `compute_template_status` looks the template up per failure domain under `<spec.template.rootFolder>/<failure-domain>` (`effective_folder`, same rule and optional root as `Url`) and publishes `perProvider[].zones[]` with a bare `resolvedRef` and `templateFolder`. A zone missing the template is `TemplateNotFound` without affecting the others; no failure domains reports `NoFailureDomains`; the row is `ready` while any zone is. The decorated `[dc] name` string (`render_resolved_ref`) is gone. New `image_owns_templates` (true only for `Url`) and `destroy_owned_zone_templates` guard `finalize`, so deleting a `Template`-kind image never destroys a template, with or without per-zone status.
+- `crates/banlieue-controller/src/reconciler/infra.rs`: `VSphereMachine.spec.template` is always a bare name. `resolve_template_ref` prefers the zone entry over the top-level ref; the vSphere path strips a legacy `[<dc>] ` prefix (`bare_template_name`). Fixes `InfrastructureReady=False / ProvisionFailed` ("template not found") for every `Template`-kind image. libvirt and Proxmox unchanged.
+- `crates/banlieue-controller/src/reconciler/scheduler.rs`: `image_ready_in_zone` gates each failure domain on its own zone entry, for `Template` sources whose row has `zones[]` only. `Url` scheduling is unchanged.
+- `crates/banlieue-provider-vsphere/src/client/fake.rs`: folder lookups scope by datacenter, as vCenter does.
+- `crates/banlieue-api/src/banlieue/vmimage.rs`, `crates/banlieue-api/src/infrastructure/vsphere_machine.rs`: doc comments only. Regenerated `deploy/crds/banlieue.io_vmimages.yaml`, `deploy/crds/infrastructure.banlieue.io_vspheremachine{,template}s.yaml`, `docs/src/reference/api.md`.
+- Tests: `vmimage_tests.rs`, `vmimage_finalize_tests.rs`, `infra_tests.rs`, `scheduler_tests.rs`.
+- Docs: `docs/src/guides/vsphere-provider.md` (per-zone `Template` section, new "template not found" troubleshooting), `docs/src/guides/alpine-vsphere-template.md`, `docs/src/concepts/architecture.md`, `examples/04-vmimage-ubuntu.yaml`.
+- `docs/src/security/threat-model.md`: full pass, stamp advanced to 2026-10-21 / ADR-0104; new TB-4 block (4 rows), A-3, section 2, section 4 and one section 8 row.
+
+### Why
+A vSphere `Template`-kind image published a human-oriented `[dc] name` string that the controller passed straight into `VSphereMachine.spec.template`, which is matched by exact name, so no clone from such an image could succeed; its lookup was also datacenter-wide and first-match, and it had no per-zone status.
+
+### Impact
+- [x] Breaking change: a `Template`-kind template not under `<rootFolder>/<failure-domain>` becomes `TemplateNotFound` in that zone. No clone from such an image could ever have worked, so no working deployment depends on the old lookup.
+- [x] Requires cluster rollout: controller and vsphere provider images; re-apply the three CRDs above (descriptions only, no schema change).
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-10-21 14:00] - ADR-0103: digest-pinned installs; internal crates marked publish = false
 
 **Author:** Erick Bourgeois

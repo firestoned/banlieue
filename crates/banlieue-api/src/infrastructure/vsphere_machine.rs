@@ -99,8 +99,9 @@ pub struct VSphereMachineSpec {
 
     /// The per-zone vCenter folder the template in `template` lives in
     /// (resolved from `VMImage.status`, e.g. `templates/cluster-01`,
-    /// ADR-0020 Decision #5). `None` for a `Template`-kind image, which
-    /// has no per-zone folder — its lookup is datacenter-wide.
+    /// ADR-0020 Decision #5). Set for both `Url` and `Template` vSphere
+    /// sources (ADR-0104); `None` only for a row written by a provider that
+    /// predates it, whose lookup is datacenter-wide.
     ///
     /// This is deliberately a separate field from `template`, not a
     /// `folder/name`-encoded string: every zone's template shares the same

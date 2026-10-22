@@ -203,6 +203,7 @@ pub fn build_vsphere_machine(
         provider: decision.provider_name.clone(),
         zone: decision.failure_domain_name.clone(),
     })?;
+    let template = bare_template_name(&template).to_string();
 
     // Disks: 1:1 with VMClass disks. Storage class resolution is via
     // resolved_storage (same order). sizeGiB is the class's own value
@@ -396,16 +397,6 @@ fn merge_disk_size_override(disk: &DiskSpec, override_: Option<&HardwareOverride
         .unwrap_or(disk.size_gi_b)
 }
 
-/// Look up the resolved template reference for the chosen provider and
-/// zone: its bare display name, plus the per-zone folder it lives in when
-/// there is one.
-///
-/// `Template`-kind images have a single top-level `resolved_ref` on the
-/// provider row and no per-zone folder (`None` — the lookup is
-/// datacenter-wide). `Url`-kind images have per-zone `resolved_ref` /
-/// `template_folder` entries (one per failure domain). This function
-/// checks both, preferring the top-level ref (always set for `Template`
-/// sources) and falling back to the zone that matches
 /// Failure-domain raw-attribute key for the libvirt host a domain lands on.
 /// Optional: a libvirt failure domain is one host, so the domain's placement
 /// is the failure domain itself.
@@ -993,7 +984,15 @@ fn nic_source_kind(
     }
 }
 
-/// `failure_domain_name`.
+/// Look up the resolved template reference for the chosen provider and
+/// zone: its bare display name, plus the per-zone folder it lives in when
+/// there is one.
+///
+/// vSphere images (`Url` and, since ADR-0104, `Template`) have per-zone
+/// `resolved_ref` / `template_folder` entries, one per failure domain.
+/// libvirt and Proxmox rows have a single top-level `resolved_ref` and no
+/// per-zone folder (`None`). The zone entry matching `failure_domain_name` is
+/// preferred; the top-level ref is the fallback.
 fn resolve_template_ref(
     image: &VMImage,
     provider_name: &str,
@@ -1005,16 +1004,29 @@ fn resolve_template_ref(
             .iter()
             .find(|p: &&ImagePerProviderStatus| p.provider_name == provider_name)?;
 
-        // Template-kind: top-level resolved_ref, no per-zone folder.
-        if let Some(ref r) = row.resolved_ref {
-            return Some((r.clone(), None));
+        // Per-zone entry first (vSphere `Url` and `Template`, ADR-0104):
+        // bare resolved_ref + the zone's template_folder.
+        if let Some(zone) = row.zones.iter().find(|z| z.name == failure_domain_name) {
+            let name = zone.resolved_ref.clone()?;
+            return Some((name, zone.template_folder.clone()));
         }
 
-        // Url-kind: per-zone resolved_ref + template_folder.
-        let zone = row.zones.iter().find(|z| z.name == failure_domain_name)?;
-        let name = zone.resolved_ref.clone()?;
-        Some((name, zone.template_folder.clone()))
+        // No zone entry: the provider's single top-level ref (libvirt volume,
+        // Proxmox VMID, or a legacy vSphere row), with no per-zone folder.
+        row.resolved_ref.clone().map(|r| (r, None))
     })
+}
+
+/// Strip the `[<datacenter(s)>] ` display prefix that vSphere providers
+/// before ADR-0104 wrote into a `Template`-kind image's top-level
+/// `resolvedRef`. `VSphereMachine.spec.template` is matched by exact name, so
+/// it must only ever carry the bare name. A ref without the prefix is
+/// returned unchanged.
+fn bare_template_name(resolved_ref: &str) -> &str {
+    resolved_ref
+        .strip_prefix('[')
+        .and_then(|rest| rest.split_once("] "))
+        .map_or(resolved_ref, |(_, name)| name)
 }
 
 // Convenience accessors used by status_mirror tests. Suppresses unused-warning

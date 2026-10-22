@@ -1552,7 +1552,7 @@ Cluster-scoped: a VMImage is shared by VirtualMachines in any namespace.
 | `osFamily` | string | Yes | Broad operating-system family. Coarser than `osDistribution`; lets providers apply high-level guest handling. Allowed: `linux`, `windows`, `bsd`, `other`. |
 | `osVersion` | string | Yes | Free-form version string. Examples: "22.04", "9.4", "2022". |
 | `sources` | object[] | Yes | Per-provider source mappings — one backend binding for this catalog entry per `providerClass` you intend to schedule VMs onto ("one name, many backends", see the type-level doc comment above). |
-| `template` | object |  | How the backend **template** is built from a `Url` source (root folder, network, disk, CPU / memory / firmware / NIC, force knobs). Every field is optional and falls back to a built-in default. Only meaningful for `Url` sources; ignored for `Template` / `BackingFile`. See [`VMImageTemplate`] and ADR-0020. |
+| `template` | object |  | How the backend **template** is built from a `Url` source (root folder, network, disk, CPU / memory / firmware / NIC, force knobs). Every field is optional and falls back to a built-in default. Only meaningful for `Url` sources, with one exception: for a vSphere `Template` source (an existing template banlieue adopts and never builds) only `rootFolder` is read, to find the template in `<rootFolder>/<failure-domain>`; every other field is ignored. Ignored for `BackingFile`. See [`VMImageTemplate`], ADR-0020 and ADR-0104. |
 | `trustedBoot` | object |  | Requests a Trusted Boot (UKI) artifact instead of a classic kernel+initrd one, for `Url`-kind vSphere sources. Resolved by `banlieue-imagebuilder` into the kairos-operator `OSArtifact`'s `spec.artifacts.uki.{iso,keysVolume}` (replacing the plain `artifacts.iso` request) — the `auroraboot build-uki` mechanism. See [`TrustedBootSource`] and ADR-0051. Ignored for `cloudImage`-kind builds and non-`Url` sources. |
 
 #### `.spec.cloudConfigs[]`
@@ -1638,10 +1638,13 @@ has one, rather than leaving it to `find_url_source` /
 
 How the backend **template** is built from a `Url` source (root
 folder, network, disk, CPU / memory / firmware / NIC, force knobs).
-Every field
-is optional and falls back to a built-in default. Only meaningful for
-`Url` sources; ignored for `Template` / `BackingFile`. See
-[`VMImageTemplate`] and ADR-0020.
+Every field is optional and falls back to a built-in default. Only
+meaningful for `Url` sources, with one exception: for a vSphere
+`Template` source (an existing template banlieue adopts and never
+builds) only `rootFolder` is read, to find the template in
+`<rootFolder>/<failure-domain>`; every other field is ignored.
+Ignored for `BackingFile`. See [`VMImageTemplate`], ADR-0020 and
+ADR-0104.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -1656,7 +1659,7 @@ is optional and falls back to a built-in default. Only meaningful for
 | `memoryMib` | integer |  | Memory of the template, in MiB (`govc vm.create -m`). When unset, defaults to 4096. vSphere-only. |
 | `network` | object[] |  | The template's network interfaces. Empty means exactly one NIC, using every per-entry default below — the same behavior this field had before it became a list (ADR-0031). vSphere-only. |
 | `retainOnDelete` | boolean |  | Keep the per-zone vCenter template(s) this `VMImage` caused to be built when the `VMImage` itself is deleted. When unset (the default), deleting a `VMImage` also destroys every per-zone template it owns — declarative deletion, matching `VirtualMachine`'s own cascade onto its `VSphereMachine` (ADR-0026). Set `true` to opt out — e.g. the template is still referenced by another generation, or its lifecycle is managed by hand outside banlieue. vSphere-only; ignored by any other provider. See ADR-0028. |
-| `rootFolder` | string |  | Root vCenter inventory folder (path under the datacenter's VM folder, e.g. `templates/kairos`); created if missing. When unset, the datacenter's VM-folder root is the root. vSphere-only. |
+| `rootFolder` | string |  | Root vCenter inventory folder (path under the datacenter's VM folder, e.g. `templates/kairos`); created if missing. When unset, the datacenter's VM-folder root is the root. vSphere-only. Read for both `Url` (where the template is created) and `Template` (where the existing template is looked up) sources (ADR-0104). |
 
 ##### `.spec.template.disk`
 
@@ -1802,25 +1805,27 @@ row. That was a real, reproduced bug, not a theoretical one.
 | `providerNamespace` | string | Yes | Namespace of the Provider. |
 | `ready` | boolean | Yes | True when the image can be used to clone/create a VM on this provider. |
 | `reason` | string |  | Short reason if not ready. Stable values from `condition_reasons::IMAGE_*`. |
-| `resolvedRef` | string |  | Resolved concrete reference on the backend. vSphere: `[datacenter] folder/template-name`. Proxmox: VMID. Libvirt: path. |
-| `zones` | object[] |  | Per-zone (per-`Provider.status.failureDomains[]`) import progress. Only populated for `Url`-kind sources, where "ready" on this Provider legitimately means "ready in some zones, still importing in others" — `Template` sources report readiness as a single vCenter-wide lookup and leave this empty. |
+| `resolvedRef` | string |  | Resolved concrete reference on the backend, for backends with one reference per provider. Proxmox: VMID. Libvirt: path. Unset for vSphere, whose per-zone references are in [`Self::zones`] (ADR-0104). |
+| `zones` | object[] |  | Per-zone (per-`Provider.status.failureDomains[]`) readiness. Populated by the vSphere provider for both `Url` sources (import progress) and `Template` sources (whether the adopted template exists in each zone's folder, ADR-0104). For `Url`, `ready` means every zone is ready; for `Template` it means at least one zone is, and the scheduler places VMs only in ready zones. Empty for backends without zones (libvirt, Proxmox). |
 
 ##### `.status.perProvider[].zones[]`
 
-Per-zone (per-`Provider.status.failureDomains[]`) import progress.
-Only populated for `Url`-kind sources, where "ready" on this Provider
-legitimately means "ready in some zones, still importing in others" —
-`Template` sources report readiness as a single vCenter-wide lookup
-and leave this empty.
+Per-zone (per-`Provider.status.failureDomains[]`) readiness. Populated
+by the vSphere provider for both `Url` sources (import progress) and
+`Template` sources (whether the adopted template exists in each zone's
+folder, ADR-0104). For `Url`, `ready` means every zone is ready; for
+`Template` it means at least one zone is, and the scheduler places
+VMs only in ready zones. Empty for backends without zones (libvirt,
+Proxmox).
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `message` | string |  |  |
 | `name` | string | Yes | Name of the failure domain, matching `Provider.status.failureDomains[].name`. |
-| `ready` | boolean | Yes | True once the template/import is usable in this zone. |
+| `ready` | boolean | Yes | True once the template is usable in this zone (import finished for `Url`; template found in the zone's folder for `Template`). |
 | `reason` | string |  |  |
-| `resolvedRef` | string |  | The template's bare display name within this zone once ready — the value a provider passes to a name-based template lookup. NOT a decorated string (no `[dc]`/folder prefix): folder scoping for a per-zone (`Url`-kind) import lives in [`Self::template_folder`], kept separate so a lookup can be built from structured fields instead of parsing this one. |
-| `templateFolder` | string |  | The vCenter folder path (relative to the datacenter's VM folder, e.g. `templates/cluster-01`) the template in [`Self::resolved_ref`] lives in, for a per-zone (`Url`-kind) import (ADR-0020 Decision #5). `None` for a `Template`-kind image, which has no per-zone folder — its `resolved_ref` is looked up datacenter-wide. |
+| `resolvedRef` | string |  | The template's bare display name within this zone once ready — the value a provider passes to a name-based template lookup. NOT a decorated string (no `[dc]`/folder prefix): the folder lives in [`Self::template_folder`], kept separate so a lookup can be built from structured fields instead of parsing this one. |
+| `templateFolder` | string |  | The vCenter folder path (relative to the datacenter's VM folder, e.g. `templates/cluster-01`) the template in [`Self::resolved_ref`] lives in: `<spec.template.rootFolder>/<zone>` for both `Url` imports (ADR-0020 Decision #5) and `Template` sources (ADR-0104). Unset while the zone is not ready. |
 
 ---
 
@@ -3005,7 +3010,7 @@ VirtualMachine. The CAPI contract label
 | `providerRef` | object | Yes | Reference to the banlieue `Provider` whose connection details describe the target vCenter. |
 | `resourcePool` | string |  | Resource pool path within the cluster. Optional; defaults to the cluster's root resource pool. |
 | `template` | string | Yes | vCenter template's bare display name (resolved from `VMImage`). Never a decorated string (no `[dc]`/folder prefix) — see `template_folder` for the scoping the lookup needs. |
-| `templateFolder` | string |  | The per-zone vCenter folder the template in `template` lives in (resolved from `VMImage.status`, e.g. `templates/cluster-01`, ADR-0020 Decision #5). `None` for a `Template`-kind image, which has no per-zone folder — its lookup is datacenter-wide. |
+| `templateFolder` | string |  | The per-zone vCenter folder the template in `template` lives in (resolved from `VMImage.status`, e.g. `templates/cluster-01`, ADR-0020 Decision #5). Set for both `Url` and `Template` vSphere sources (ADR-0104); `None` only for a row written by a provider that predates it, whose lookup is datacenter-wide. |
 | `tpmEnabled` | boolean |  | Attach a virtual TPM (vTPM) device to this VM, resolved from the VM's `VMClass.spec.tpmEnabled` (ADR-0039). Consumed by the provider controller between `clone_vm` (which always clones powered off) and the power-on step, so the device exists before first boot — a hard requirement for Kairos's `kcrypt` to seal LUKS keys to it during unattended install. |
 | `userData` | string |  | Guest bootstrap payload content — already resolved from the parent `VirtualMachine`'s `spec.userData` Secret or ConfigMap (ADR-0038) and placeholder-substituted (ADR-0024's `${VM_NAME}`/`${FQDN}`/etc. set) by `banlieue-controller` (ADR-0025). The provider delivers this verbatim (base64 into `guestinfo.userdata`) — it never reads a Secret or ConfigMap itself. |
 
@@ -3187,7 +3192,7 @@ The VSphereMachine spec for machines created from this template.
 | `providerRef` | object | Yes | Reference to the banlieue `Provider` whose connection details describe the target vCenter. |
 | `resourcePool` | string |  | Resource pool path within the cluster. Optional; defaults to the cluster's root resource pool. |
 | `template` | string | Yes | vCenter template's bare display name (resolved from `VMImage`). Never a decorated string (no `[dc]`/folder prefix) — see `template_folder` for the scoping the lookup needs. |
-| `templateFolder` | string |  | The per-zone vCenter folder the template in `template` lives in (resolved from `VMImage.status`, e.g. `templates/cluster-01`, ADR-0020 Decision #5). `None` for a `Template`-kind image, which has no per-zone folder — its lookup is datacenter-wide. |
+| `templateFolder` | string |  | The per-zone vCenter folder the template in `template` lives in (resolved from `VMImage.status`, e.g. `templates/cluster-01`, ADR-0020 Decision #5). Set for both `Url` and `Template` vSphere sources (ADR-0104); `None` only for a row written by a provider that predates it, whose lookup is datacenter-wide. |
 | `tpmEnabled` | boolean |  | Attach a virtual TPM (vTPM) device to this VM, resolved from the VM's `VMClass.spec.tpmEnabled` (ADR-0039). Consumed by the provider controller between `clone_vm` (which always clones powered off) and the power-on step, so the device exists before first boot — a hard requirement for Kairos's `kcrypt` to seal LUKS keys to it during unattended install. |
 | `userData` | string |  | Guest bootstrap payload content — already resolved from the parent `VirtualMachine`'s `spec.userData` Secret or ConfigMap (ADR-0038) and placeholder-substituted (ADR-0024's `${VM_NAME}`/`${FQDN}`/etc. set) by `banlieue-controller` (ADR-0025). The provider delivers this verbatim (base64 into `guestinfo.userdata`) — it never reads a Secret or ConfigMap itself. |
 

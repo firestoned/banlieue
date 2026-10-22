@@ -222,8 +222,14 @@ kubectl apply -f vmclass.yaml
 ## 5. Register a `VMImage`
 
 A `VMImage` maps a backend-agnostic OS name to a per-backend source. For vSphere
-the source `kind: Template` and `ref` is the **template name in vCenter** (the
-provider verifies it exists in every failure-domain datacenter).
+the source `kind: Template` adopts a template that **already exists in vCenter**:
+`ref` is its name, and banlieue never builds, modifies or deletes it.
+
+The template is looked up **once per failure domain**, in the folder
+`<spec.template.rootFolder>/<failure-domain-name>`. When `rootFolder` is unset
+the folder is just `<failure-domain-name>` directly under the datacenter's VM
+folder. This is the same rule a `Url`-kind image uses. A template anywhere else
+in the datacenter does not count, so put a copy in each failure domain's folder.
 
 ```yaml title="vmimage.yaml"
 apiVersion: banlieue.io/v1alpha1
@@ -239,18 +245,50 @@ spec:
   sources:
     - providerClass: vsphere
       kind: Template
-      ref: ubuntu-22.04-cloudinit      # must exist as a template in vCenter
+      ref: ubuntu-22.04-cloudinit      # template name; must exist in each zone's folder
+  template:
+    rootFolder: templates              # zones look in templates/<failure-domain-name>
 ```
+
+Only `spec.template.rootFolder` is read for a `Template` source. The other
+`spec.template` fields (`cpus`, `disk`, `network`, `installMode`, `forceCreate`,
+`retainOnDelete`, ...) describe how banlieue *builds* a template from a `Url`
+source and are ignored here.
 
 ```sh
 kubectl apply -f vmimage.yaml
 
-# The provider flips per-provider readiness once it finds the template:
+# The provider reports one entry per failure domain under `zones`:
 kubectl get vmimage ubuntu-22.04-cloudinit -o yaml | yq '.status.perProvider'
 ```
 
-`ready: true` for `prod-vsphere` is the gate the scheduler waits on. If it stays
-`false`, check the `reason` (`TemplateNotFound`, `ConnectFailed`, …).
+```yaml
+- providerName: prod-vsphere
+  ready: true                      # true while at least one zone has the template
+  reason: Reconciled
+  zones:
+    - name: zone-a
+      ready: true
+      resolvedRef: ubuntu-22.04-cloudinit   # the bare template name
+      templateFolder: templates/zone-a
+    - name: zone-b
+      ready: false
+      reason: TemplateNotFound
+      message: template "ubuntu-22.04-cloudinit" not found in folder "templates/zone-b" of datacenter "dc1"
+```
+
+`ready: true` for `prod-vsphere` plus a ready zone is the gate the scheduler
+waits on. The scheduler only places a VM in a zone whose own entry is ready, so
+a zone missing its template never receives one while the other zones keep
+working. If everything stays `false`, check the `reason` (`TemplateNotFound`,
+`ConnectFailed`, `NoFailureDomains`, …). Deleting the `VMImage` never deletes the
+vCenter template: banlieue only destroys templates it imported itself (`Url`).
+
+!!! note "Upgrading a `Template`-kind image"
+    Before ADR-0104 the template was looked up anywhere in the datacenter. It
+    is now per zone, so a template that does not sit under
+    `<rootFolder>/<failure-domain-name>` becomes `TemplateNotFound` in that
+    zone until you move or copy it there.
 
 ## 6. Create a `VirtualMachine`
 
@@ -413,8 +451,28 @@ everywhere at once.
 | `ConnectFailed` | bad creds / endpoint / TLS | provider logs |
 | `InventoryFailed` | login OK, inventory walk failed | provider logs |
 
-`VMImage` per-provider not ready: `TemplateNotFound` (template absent in a
-datacenter), `ConnectFailed`, `LookupFailed`, `NoVSphereSource`.
+`VMImage` per-provider not ready: `TemplateNotFound` (template absent from a
+zone's folder; the zone's `message` names the folder searched), `ConnectFailed`,
+`LookupFailed`, `NoFailureDomains`, `NoVSphereSource`.
+
+`VirtualMachine` stuck at `InfrastructureReady=False / ProvisionFailed` with a
+"template ... not found" message on its `VSphereMachine`: the clone looked for a
+template name that is not in the zone's folder.
+
+- Read `spec.template` and `spec.templateFolder` on the `VSphereMachine`; the
+  template must exist in exactly that folder, in that machine's datacenter.
+  `spec.template` is a bare name. If it looks like `[dc1] name`, the
+  `VMImage` row was written by a provider older than ADR-0104: upgrade the
+  provider and controller.
+- Compare with `kubectl get vmimage <name> -o yaml | yq '.status.perProvider[].zones'`
+  and confirm the machine's zone is `ready: true`. A zone that is not ready
+  receives no VMs, so a machine in one means the zone's template went missing
+  after it was scheduled.
+- In vCenter, check the folder is `<rootFolder>/<failure-domain-name>` and that
+  the object there is a *template*, not a powered-off VM.
+```sh
+kubectl -n banlieue-system get vspheremachine <name> -o jsonpath='{.spec.template}{"  "}{.spec.templateFolder}{"\n"}'
+```
 
 `VirtualMachine` stuck `Scheduled=False`:
 

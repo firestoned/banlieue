@@ -21,7 +21,9 @@
 //! 2. Failure-domain selector — `placement.failureDomainSelector` against
 //!    `FailureDomain.labels`.
 //! 3. Image readiness — `VMImage.status.perProvider[i].ready == true` for
-//!    the candidate Provider.
+//!    the candidate Provider. A `Template`-kind source that reports
+//!    `zones[]` is additionally gated per failure domain: the zone's own
+//!    entry must be ready (ADR-0104).
 //! 4. Storage classes — every disk's `storageClass` must appear in
 //!    `FailureDomain.attributes.availableStorageClasses`.
 //! 5. Network classes — every NIC's `networkClass` must appear in
@@ -54,9 +56,9 @@
 use std::collections::BTreeMap;
 
 use banlieue_api::banlieue::{
-    AffinityMode, AntiAffinityRule, FailureDomain, Heartbeat, LABEL_POOL, NetworkClassMapping,
-    Provider, ProviderCapabilities, ResolvedResource, StorageClassMapping, VMClass, VMImage,
-    VirtualMachine,
+    AffinityMode, AntiAffinityRule, FailureDomain, Heartbeat, ImageSourceKind, LABEL_POOL,
+    NetworkClassMapping, Provider, ProviderCapabilities, ResolvedResource, StorageClassMapping,
+    VMClass, VMImage, VirtualMachine,
 };
 use banlieue_api::common::{Firmware, LabelSelector, LabelSelectorOperator};
 use kube::ResourceExt;
@@ -306,6 +308,17 @@ pub fn schedule(
                 continue;
             }
 
+            // Step 3b: per-zone image readiness (Template-kind sources only)
+            if !image_ready_in_zone(image, provider, &fd.name) {
+                reject_reasons.push(format!(
+                    "{}/{}: image {} has no ready template in this zone",
+                    provider.name_any(),
+                    fd.name,
+                    image.name_any(),
+                ));
+                continue;
+            }
+
             // Step 4: storage classes
             if let Some(missing) = first_missing(
                 class.spec.hardware.disks.iter().map(|d| &d.storage_class),
@@ -540,6 +553,39 @@ fn image_ready_on_provider(image: &VMImage, provider_name: &str) -> bool {
             .iter()
             .any(|p| p.provider_name == provider_name && p.ready)
     })
+}
+
+/// Per-zone image readiness for a `Template`-kind source (ADR-0104).
+///
+/// A vsphere `Template` source publishes one `zones[]` entry per failure
+/// domain, and a zone whose template is missing must not receive a VM even
+/// though the provider-level row is ready (other zones have it). Applies only
+/// when the image's source for this provider's class is `Template` **and** the
+/// row has `zones[]`; every other case (`Url`, libvirt / Proxmox rows with no
+/// zones, a legacy row) keeps the provider-level check alone, so `Url`
+/// scheduling is unchanged.
+fn image_ready_in_zone(image: &VMImage, provider: &Provider, zone: &str) -> bool {
+    let class = &provider.spec.provider_class_ref.name;
+    let template_sourced = image
+        .spec
+        .sources
+        .iter()
+        .any(|s| &s.provider_class == class && s.kind == ImageSourceKind::Template);
+    if !template_sourced {
+        return true;
+    }
+    let provider_name = provider.name_any();
+    let Some(row) = image.status.as_ref().and_then(|s| {
+        s.per_provider
+            .iter()
+            .find(|p| p.provider_name == provider_name)
+    }) else {
+        return true;
+    };
+    if row.zones.is_empty() {
+        return true;
+    }
+    row.zones.iter().any(|z| z.name == zone && z.ready)
 }
 
 /// Build the final [`Decision`] from the chosen provider + fd. Resolves

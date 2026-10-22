@@ -139,7 +139,8 @@ status:
       zones:
         - name: cluster-a
           ready: true
-          resolvedRef: "[ds-cluster-a] templates/kairos/kairos-ubuntu-2404"
+          resolvedRef: kairos-ubuntu-2404          # bare template name
+          templateFolder: templates/kairos/cluster-a
 ```
 
 - **`buildArtifact.kind` mirrors kairos-operator's `OSArtifactKind`**, so
