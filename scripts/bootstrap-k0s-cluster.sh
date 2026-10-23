@@ -1285,6 +1285,9 @@ destroy_libvirt() {
 #   k0s-vm-<name>.service        cloud-hypervisor, as CH_VM_USER; enabled, so
 #                                it starts at boot without the cluster
 #
+# The VMM and vTPM units run in banlieue-nodes.slice (ADR-0106), written once
+# beside them.
+#
 # Files live in CH_VM_DIR/<name>/ (disk.qcow2, seed.iso, tpm/), runtime
 # sockets in /run/k0s-vm-<name>/ (api.sock, swtpm.sock, serial.sock). No
 # banlieue component is involved: a management node must come up before the
@@ -1298,6 +1301,10 @@ readonly CH_RESTART_DELAY_S=5
 readonly CH_SWTPM_WAIT_TRIES=50     # x 0.1 s for the vTPM socket to appear
 readonly CH_RUNTIME_DROPIN_ROOT=/run/systemd/system
 readonly CH_INSTALLED_MARKER=".installed"
+# Every node's VMM and vTPM run here (ADR-0106): a child of banlieue.slice,
+# beside banlieue's own guests in banlieue-guests.slice, so one cgroup totals
+# the host's VMs and one `systemctl set-property banlieue.slice ...` bounds them.
+readonly CH_SLICE="banlieue-nodes.slice"
 
 ch_unit()     { printf 'k0s-vm-%s' "$1"; }
 ch_run_dir()  { printf '/run/%s' "$(ch_unit "$1")"; }
@@ -1457,6 +1464,50 @@ ExecStop=$ip_bin link del $tap
 EOF
 }
 
+# render_ch_slice_unit: no limits. The operator bounds every VM on the host
+# with `systemctl set-property banlieue.slice ...`, a drop-in this script
+# never overwrites.
+render_ch_slice_unit() {
+  cat <<EOF
+# Written by scripts/bootstrap-k0s-cluster.sh (ADR-0106). Do not edit.
+# Management-cluster nodes on Cloud Hypervisor; a child of banlieue.slice.
+# Bound all VMs on this host with:
+#   systemctl set-property banlieue.slice CPUWeight=50 MemoryMax=48G
+[Unit]
+Description=banlieue management-cluster nodes (Cloud Hypervisor)
+
+[Slice]
+EOF
+}
+
+# render_ch_slice_dropin: moves a node whose units predate ADR-0106 into the
+# slice without rewriting them (they carry the sizing they were built with).
+render_ch_slice_dropin() {
+  cat <<EOF
+# Written by scripts/bootstrap-k0s-cluster.sh (ADR-0106). Do not edit.
+[Service]
+Slice=$CH_SLICE
+EOF
+}
+
+# ensure_ch_slice <name>: the slice unit, and a drop-in on each of the node's
+# VM units that does not already name it. Takes effect when the unit next
+# restarts; a running node is not restarted for it.
+ensure_ch_slice() {
+  local unit u dropin
+  unit="$(ch_unit "$1")"
+  render_ch_slice_unit | sudo tee "$CH_UNIT_DIR/$CH_SLICE" >/dev/null
+  for u in "$unit" "$unit-swtpm"; do
+    sudo test -f "$CH_UNIT_DIR/$u.service" || continue
+    sudo grep -qx "Slice=$CH_SLICE" "$CH_UNIT_DIR/$u.service" && continue
+    dropin="$CH_UNIT_DIR/$u.service.d"
+    sudo install -d "$dropin"
+    render_ch_slice_dropin | sudo tee "$dropin/50-slice.conf" >/dev/null
+    log "$u moves into $CH_SLICE at its next restart"
+  done
+  sudo systemctl daemon-reload
+}
+
 render_ch_swtpm_unit() {
   local name="$1" unit run dir
   unit="$(ch_unit "$name")"; run="$(ch_run_dir "$name")"; dir="$(ch_node_dir "$name")"
@@ -1467,6 +1518,7 @@ Description=k0s node $name: vTPM
 PartOf=$unit.service
 
 [Service]
+Slice=$CH_SLICE
 User=$CH_VM_USER
 Group=$CH_VM_USER
 RuntimeDirectory=$unit
@@ -1510,6 +1562,7 @@ After=$unit-net.service
 $tpm_deps
 
 [Service]
+Slice=$CH_SLICE
 User=$CH_VM_USER
 Group=$CH_VM_USER
 SupplementaryGroups=kvm
@@ -1578,6 +1631,7 @@ ensure_ch_vm_user() {
 write_ch_units() {
   local name="$1" idx="$2" unit
   unit="$(ch_unit "$name")"
+  render_ch_slice_unit | sudo tee "$CH_UNIT_DIR/$CH_SLICE" >/dev/null
   render_ch_net_unit "$name" | sudo tee "$CH_UNIT_DIR/$unit-net.service" >/dev/null
   if [[ "$CH_TPM" == "true" ]]; then
     render_ch_swtpm_unit "$name" | sudo tee "$CH_UNIT_DIR/$unit-swtpm.service" >/dev/null
@@ -1614,6 +1668,7 @@ create_vm_ch() {
   if sudo test -f "$CH_UNIT_DIR/$unit.service"; then
     if sudo test -f "$dir/$CH_INSTALLED_MARKER"; then
       log "Cloud Hypervisor node $name already defined, ensuring it is running"
+      ensure_ch_slice "$name"
       sudo systemctl start "$unit.service"
       return
     fi
@@ -1700,6 +1755,7 @@ destroy_ch_node() {
   dropin="$CH_RUNTIME_DROPIN_ROOT/$unit.service.d"
   sudo rm -rf "$dropin"
   sudo rm -f "$CH_UNIT_DIR/$unit.service" "$CH_UNIT_DIR/$unit-swtpm.service" "$CH_UNIT_DIR/$unit-net.service"
+  sudo rm -rf "$CH_UNIT_DIR/$unit.service.d" "$CH_UNIT_DIR/$unit-swtpm.service.d"
   sudo systemctl daemon-reload
   sudo systemctl reset-failed "$unit.service" "$unit-swtpm.service" "$unit-net.service" >/dev/null 2>&1 || true
   # validate_ch_node above guarantees a non-empty, slash-free name.

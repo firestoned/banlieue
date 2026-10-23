@@ -1,6 +1,6 @@
 # anatomy.md
 
-> Auto-maintained by OpenWolf. Last scanned: 2026-10-21T16:00:00.335Z
+> Auto-maintained by OpenWolf. Last scanned: 2026-10-23T16:00:00.280Z
 > Files: 511 tracked | Anatomy hits: 0 | Misses: 0
 
 ## ./
@@ -13,7 +13,7 @@
 - `cliff.toml` — SPDX-License-Identifier: Apache-2.0 (~699 tok)
 - `CODE_OF_CONDUCT.md` — Contributor Covenant Code of Conduct (~1470 tok)
 - `CONTRIBUTING.md` — Contributing to banlieue (~1439 tok)
-- `deny.toml` — cargo-deny configuration (~1551 tok)
+- `deny.toml` — cargo-deny configuration (~966 tok)
 - `Dockerfile` — Docker container definition (~959 tok)
 - `Dockerfile.chainguard` — SPDX-License-Identifier: Apache-2.0 (~770 tok)
 - `GOVERNANCE.md` — Governance (~1125 tok)
@@ -21,7 +21,7 @@
 - `MAINTAINERS.md` — Maintainers (~165 tok)
 - `Makefile` — Make build targets (~29885 tok)
 - `NOTICE` (~159 tok)
-- `osv-scanner.toml` — SPDX-License-Identifier: Apache-2.0 (~355 tok)
+- `osv-scanner.toml` — SPDX-License-Identifier: Apache-2.0 (~120 tok)
 - `README.md` — Project documentation (~3379 tok)
 - `ROADMAPS.md` — Roadmaps (~4416 tok)
 - `SECURITY.md` — Security Policy (~382 tok)
@@ -268,7 +268,7 @@
 
 ## crates/banlieue-host/
 
-- `Cargo.toml` — Rust package manifest (~529 tok)
+- `Cargo.toml` — Rust package manifest (~586 tok)
 
 ## crates/banlieue-host/src/
 
@@ -277,20 +277,22 @@
 - `error.rs` — Why a `banlieue host cloud-hypervisor` verb failed. (~639 tok)
 - `fake.rs` — An in-memory host for the unit tests. (~5520 tok)
 - `fetch.rs` — Where the pinned artifacts come from: the upstream releases over HTTPS, (~1668 tok)
-- `lib.rs` — # banlieue-host (~1880 tok)
+- `lib.rs` — # banlieue-host (~2018 tok)
 - `ops.rs` — What the installer may do to a host, split in two (ADR-0067 Decision 1). (~1906 tok)
-- `paths.rs` — Where everything goes on a host. (~1059 tok)
+- `overhead_tests.rs` — Unit tests for `overhead.rs`. (~3636 tok)
+- `overhead.rs` — `banlieue host cloud-hypervisor overhead` (ADR-0104): what the VMs on (~4660 tok)
+- `paths.rs` — Where everything goes on a host. (~1166 tok)
 - `pins_tests.rs` — Unit tests for `pins.rs`: one pinned release, everywhere. (~890 tok)
 - `pins.rs` — The pinned VMM release (ADR-0067 Decision 4), and the layout of any (~1966 tok)
 - `real.rs` — The real host: the filesystem, NSS through `getent`, and commands. (~3262 tok)
 - `release_tests.rs` — Unit tests for `release.rs` (ADR-0084 Decisions 2 to 4). (~4410 tok)
 - `release.rs` — Which VMM release `install` and `selftest` mean (ADR-0084 Decisions 2 (~3183 tok)
-- `render_tests.rs` — Unit tests for `render.rs`. (~2139 tok)
-- `render.rs` — The files `install` writes (ADR-0067 Decision 5). (~3202 tok)
+- `render_tests.rs` — Unit tests for `render.rs`. (~2644 tok)
+- `render.rs` — The files `install` writes (ADR-0067 Decision 5). (~3237 tok)
 - `settings_tests.rs` — Unit tests for `settings.rs`. (~1130 tok)
 - `settings.rs` — What a host is to be (ADR-0067 Decision 6): flags, each with a (~2509 tok)
-- `stages_tests.rs` — Unit tests for `stages.rs`, against the in-memory host. The numbered (~7728 tok)
-- `stages.rs` — The stages of `banlieue host cloud-hypervisor install`, and the read-only verbs (~10344 tok)
+- `stages_tests.rs` — Unit tests for `stages.rs`, against the in-memory host. The numbered (~7831 tok)
+- `stages.rs` — The stages of `banlieue host cloud-hypervisor install`, and the read-only verbs (~10350 tok)
 
 ## crates/banlieue-host/src/fixtures/
 
@@ -757,5 +759,3 @@
 - `infrastructure.banlieue.io_libvirtmachines.yaml` — K8s CustomResourceDefinition: libvirtmachines.infrastructure.banlieue.io (~6684 tok)
 - `infrastructure.banlieue.io_libvirtmachinetemplates.yaml` — K8s CustomResourceDefinition: libvirtmachinetemplates.infrastructure.banlieue.io (~4809 tok)
 - `infrastructure.banlieue.io_proxmoxmachines.yaml` — K8s CustomResourceDefinition: proxmoxmachines.infrastructure.banlieue.io (~5202 tok)
-- `infrastructure.banlieue.io_proxmoxmachinetemplates.yaml` — K8s CustomResourceDefinition: proxmoxmachinetemplates.infrastructure.banlieue.io (~4096 tok)
-- `infrastructure.banlieue.io_vsphereclusters.yaml` — K8s CustomResourceDefinition: vsphereclusters.infrastructure.banlieue.io (~3954 tok)

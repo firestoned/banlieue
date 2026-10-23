@@ -53,6 +53,10 @@ pub const BANLIEUE_USER: &str = "banlieue";
 pub const GUEST_NAME_PREFIX: &str = "banlieue-g";
 /// The slice guests and vTPMs run in (ADR-0105).
 pub const GUEST_SLICE_UNIT: &str = "banlieue-guests.slice";
+/// The parent of every VM slice: `banlieue-guests.slice` and the k0s
+/// bootstrap's `banlieue-nodes.slice` (ADR-0106). systemd creates it from its
+/// children; `overhead` reads its totals.
+pub const VMS_SLICE_UNIT: &str = "banlieue.slice";
 /// The provider's own unit.
 pub const PROVIDER_UNIT: &str = "banlieue-provider-cloud-hypervisor.service";
 /// The templates the provider starts instances of (ADR-0063, amended).

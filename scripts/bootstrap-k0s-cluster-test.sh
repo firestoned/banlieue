@@ -196,6 +196,23 @@ expect_has "swtpm stops with the VM" "$swtpm_unit" "PartOf=k0s-vm-core-04.servic
 expect_has "swtpm runtime dir private" "$swtpm_unit" "RuntimeDirectoryMode=0700"
 expect_has "swtpm socket private" "$swtpm_unit" "UMask=0077"
 
+# --- every node VM is in banlieue-nodes.slice (ADR-0106) ----------------------
+CH_TPM=true
+vm_unit="$(render_ch_vm_unit core-04 3)"
+swtpm_unit="$(render_ch_swtpm_unit core-04)"
+net_unit="$(render_ch_net_unit core-04)"
+expect_has "the VMM runs in the nodes' slice" "$vm_unit" "Slice=banlieue-nodes.slice"
+expect_has "the vTPM runs in the nodes' slice" "$swtpm_unit" "Slice=banlieue-nodes.slice"
+expect_lacks "the tap oneshot is not a VM" "$net_unit" "Slice="
+expect_has "an older node moves in by drop-in" "$(render_ch_slice_dropin)" "Slice=banlieue-nodes.slice"
+expect_has "the drop-in is a [Service] setting" "$(render_ch_slice_dropin)" "[Service]"
+slice_unit="$(render_ch_slice_unit)"
+expect_has "the slice unit is a slice" "$slice_unit" "[Slice]"
+expect_eq "the slice is a child of banlieue.slice" "${CH_SLICE%%-*}" "banlieue"
+for limit in CPUQuota= CPUWeight= MemoryMax= MemoryHigh=; do
+  expect_lacks "the slice ships no $limit" "$(grep -v '^#' <<<"$slice_unit")" "$limit"
+done
+
 # --- the CH binary can pin the NIC's PCI slot ---------------------------------
 printf '#!/bin/sh\necho "--net tap=<if_name>,pci_segment=<segment_id>,pci_device_id=<pci_slot>"\n' >"$TMP/ch-new"
 printf '#!/bin/sh\necho "--net tap=<if_name>,pci_segment=<segment_id>"\n' >"$TMP/ch-old"

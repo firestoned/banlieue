@@ -116,6 +116,16 @@ systemctl show banlieue-guests.slice -p AllowedCPUs -p CPUWeight -p MemoryMax -p
 systemd-cgls /banlieue-guests.slice     # the running guests and their vTPMs
 ```
 
+`banlieue-guests.slice` is a child of `banlieue.slice` (ADR-0106), which
+systemd creates implicitly and which has no unit file. Its other child is
+`banlieue-nodes.slice`, where `scripts/bootstrap-k0s-cluster.sh` puts
+management-cluster nodes on Cloud Hypervisor. `systemd-cgtop banlieue.slice`
+shows every VM on the host, and a budget across guests and nodes together is
+set on the parent with `systemctl set-property`. How to size the two budgets
+together, and the per-VM CPU split (`banlieue host cloud-hypervisor
+overhead`), are in the
+[CH host guide](cloud-hypervisor-host.md#vm-resource-limits-banlieueslice).
+
 ## The vTPM units
 
 A `tpmEnabled` machine (ADR-0065) gets two more units, instances named by

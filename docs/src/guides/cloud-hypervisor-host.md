@@ -52,6 +52,9 @@ provider is not root, and the credential can read no Secrets.
     `swtpm_setup` and `swtpm_localca` on `PATH`, and names every one that is
     missing.
 - **systemd, D-Bus and polkit.** Guests are systemd units (ADR-0063).
+- **cgroup v2** (the unified hierarchy at `/sys/fs/cgroup`, the default on
+  Debian 12 and later, Fedora and current Ubuntu). VM slices and
+  `overhead` read it; `stat -fc %T /sys/fs/cgroup` prints `cgroup2fs`.
 - **A Linux bridge** for guest networking. banlieue never creates one; see
   [Step 1](#step-1-a-bridge-for-guests).
 - **Root on the host**, directly or through `sudo`.
@@ -273,10 +276,11 @@ intended way to change a setting.
 | `host` | The `banlieue` system user, one userdb user and private group per guest uid, state, storage and run directories, and `/etc/banlieue/cloud-hypervisor.toml` (rendered from the provider's own config type and parsed back before it is written). An existing file is kept, except that its `[vmm]` section follows the release just installed. |
 | `tpm` | A per-host EK certificate authority for `swtpm_localca`, created as `banlieue`, readable by `banlieue` only. |
 | `polkit` | A rule letting `banlieue` manage instances of its own templates, for uids in the guest range, and nothing else. |
-| `provider` | The four template units and the provider unit. The provider is enabled only once its binary and kubeconfig exist. |
+| `provider` | The four template units, `banlieue-guests.slice` (ADR-0105) and the provider unit. The provider is enabled only once its binary and kubeconfig exist. |
 | `selftest` | The VMM runs, the firmware matches its sha256, guest uids resolve, `banlieue` can open `/dev/kvm`, the provider's own host checks pass, and a test vTPM gets an EK certificate with a `<name>:<uid>` CN. Boots nothing (also `banlieue host cloud-hypervisor selftest`). |
 
 `banlieue host cloud-hypervisor status` reports what is installed and changes nothing.
+`banlieue host cloud-hypervisor overhead` measures what the VMs cost the host and changes nothing; see [Measuring VM overhead](#measuring-vm-overhead).
 
 ### What ends up where
 
@@ -294,6 +298,8 @@ intended way to change a setting.
 | `/etc/polkit-1/rules.d/60-banlieue-cloud-hypervisor.rules` | root, 0644 | Unit rule |
 | `/etc/systemd/system/banlieue-{ch,swtpm,swtpm-setup,ch-import}@.service` | root, 0644 | Template units the provider starts instances of |
 | `/etc/systemd/system/banlieue-provider-cloud-hypervisor.service` | root, 0644 | Provider unit |
+| `/etc/systemd/system/banlieue-guests.slice` | root, 0644 | The slice every guest's VMM and vTPM runs in, with the budget from the `--guest-*` flags (ADR-0105); a child of `banlieue.slice` ([VM resource limits](#vm-resource-limits-banlieueslice)) |
+| `/etc/systemd/system.control/banlieue*.slice.d/` | root | **Yours, not `install`'s:** limits you set with `systemctl set-property` on `banlieue.slice` or `banlieue-nodes.slice`. `install` never writes or removes them |
 
 ### Why the EK CA key is `banlieue`-only
 
@@ -344,7 +350,198 @@ Without `sudo`, files in directories only `banlieue` can enter show as
 `provider: inactive` and `kubeconfig: absent` are expected until the provider
 ships.
 
+Check that guests land in their slice (any guest running, or after the next
+one starts):
+
+```sh
+systemctl status banlieue-guests.slice      # loaded; lists running guests once there are any
+systemd-cgls -u banlieue.slice              # the tree: banlieue-guests.slice/banlieue-ch@<uid>.service ...
+# each guest and the slice it is in
+for u in $(systemctl list-units --plain --no-legend 'banlieue-ch@*' | awk '{print $1}'); do
+  echo "$u $(systemctl show -P Slice "$u")"
+done
+```
+
 ---
+
+## VM resource limits (`banlieue.slice`)
+
+Every VM a banlieue component runs on this host is placed under one systemd
+slice, `banlieue.slice`: banlieue's guests in `banlieue-guests.slice`
+(ADR-0105) and management-cluster nodes in `banlieue-nodes.slice`
+(ADR-0106). That gives the host's VMs a single cgroup tree: one place to read
+what they use, and the place to cap them so the host's own services (sshd,
+the provider, a database, a Kubernetes worker, backup or security agents)
+cannot be starved by a burst of guests.
+
+| Slice | Holds | Created by |
+| --- | --- | --- |
+| `banlieue-guests.slice` | each guest's VMM (`banlieue-ch@<uid>`) and vTPM (`banlieue-swtpm@<uid>`) | `install` (`provider` stage), named in the root-owned templates |
+| `banlieue-nodes.slice` | management-cluster nodes on Cloud Hypervisor (`k0s-vm-<name>`, `-swtpm`), if this host runs any | `scripts/bootstrap-k0s-cluster.sh` ([Nodes on Cloud Hypervisor](end-to-end-setup.md#nodes-on-cloud-hypervisor-adr-0099)) |
+| `banlieue.slice` | both of the above | systemd, implicitly: a parent slice exists as soon as a child does; there is no unit file for it |
+
+The one-shot helpers (`banlieue-swtpm-setup@`, `banlieue-ch-import@`) are
+not VMs and stay in `system.slice`. The provider cannot change any of this:
+`Slice=` is fixed in the root-owned templates, systemd does not accept it as
+a runtime property, and the polkit rule gives the provider no rights on any
+slice.
+
+### See what the VMs use
+
+```sh
+systemd-cgtop banlieue.slice                       # live CPU, memory, tasks per guest
+systemctl status banlieue.slice                    # memory and CPU totals
+cat /sys/fs/cgroup/banlieue.slice/cpu.stat         # cumulative CPU (usage_usec)
+cat /sys/fs/cgroup/banlieue.slice/memory.current   # bytes in use by every VM
+```
+
+For the per-VM split between guest work and host-side overhead, use
+[`overhead`](#measuring-vm-overhead).
+
+### Set a budget
+
+banlieue never guesses how much of a host it may take: an unset budget is
+unbounded, and `install` says so.
+
+**Guests: declare it to `install`** (ADR-0105). The flags are rendered into
+`banlieue-guests.slice`, validated first so a value cannot inject a directive,
+and re-applied by every later `install`:
+
+```sh
+# A 96-core, 256 GiB host that also runs other workloads: guests get cores
+# 16 to 95, a lower share under contention, and at most 200 GiB together.
+sudo banlieue host cloud-hypervisor install --network-class default=br0 \
+    --guest-cpus 16-95 --guest-cpu-weight 50 --guest-memory-max 200G --guest-tasks-max 30000
+```
+
+| Flag (each also a `BANLIEUE_HOST_*` variable) | Slice setting | Effect on the guests |
+| --- | --- | --- |
+| `--guest-cpus 16-95` | `AllowedCPUs=` | Confined to those CPUs. A ceiling, not a reservation: other workloads may still use them unless their own cpuset keeps them off. |
+| `--guest-cpu-weight 50` | `CPUWeight=` (1 to 10000, default 100) | A share **under contention only**: idle CPU is still theirs. At 50 the guests together get half the CPU time of an equally busy peer. Almost always the right CPU control. |
+| `--guest-memory-max 200G` (or `75%`) | `MemoryMax=` | A **hard cap** on all guests together. Exceeding it makes the kernel **OOM-kill a VMM**, which is that guest crashing. Size it from the guests (below). |
+| `--guest-tasks-max 30000` | `TasksMax=` | Processes and threads, all guests together. |
+
+To change a guest budget, run `install` again with new values. Do **not** use
+`systemctl set-property` on `banlieue-guests.slice`: its drop-in silently
+overrides the declared value, and `install` never removes it.
+
+**Every VM together, or the management nodes: `systemctl set-property`**
+(ADR-0106). `banlieue.slice` and `banlieue-nodes.slice` have no flags. The
+command writes a drop-in under `/etc/systemd/system.control/`, applies at
+once, survives reboots, and neither `install` nor the bootstrap script
+touches it:
+
+```sh
+# Guests and management nodes together: a lower share under contention,
+# at most 224 GiB.
+sudo systemctl set-property banlieue.slice CPUWeight=50 MemoryMax=224G
+# Or the management nodes only.
+sudo systemctl set-property banlieue-nodes.slice CPUWeight=200
+```
+
+`CPUQuota=` (percent of one core, e.g. `6400%` = 64 cores) is also available
+here: a **hard cap** enforced even when the host is idle, so the VMs simply
+run slower. Prefer `CPUWeight=` unless you must guarantee cores to something
+else. `MemoryHigh=` (reclaim pressure) mostly stalls guests; prefer a
+correctly sized `MemoryMax=`.
+
+**Size every `MemoryMax` from the guests, not the other way round.** Each
+guest's VMM already has its own `MemoryMax` (its memory plus 512 MiB, set by
+the provider). Where two caps apply (the guests' slice and `banlieue.slice`),
+the tighter one wins. If a cap is below the sum of the VMs running under it,
+the kernel kills one of their VMMs to make room. banlieue's scheduler does
+not read slice limits yet (ADR-0105's follow-up), so it will not keep a new VM
+off a host whose slice is full. Set each cap to what the host can give VMs,
+and keep the host's guest capacity (its storage and VM classes) within it.
+
+Check and undo:
+
+```sh
+systemctl show banlieue-guests.slice -p AllowedCPUs -p CPUWeight -p MemoryMax -p TasksMax
+systemctl show banlieue.slice -p CPUWeight -p CPUQuotaPerSecUSec -p MemoryMax
+sudo rm -r /etc/systemd/system.control/banlieue.slice.d && sudo systemctl daemon-reload   # undo set-property
+# guests: re-run install with your usual flags and no --guest-*
+```
+
+### Hosts installed before ADR-0105
+
+Re-running `install` adds `banlieue-guests.slice` and the updated templates.
+A guest that is **already running** stays in `system.slice` until its unit
+next starts: when its machine is recreated, or the host reboots. A reboot
+inside the guest does not restart its VMM unit. Nothing is lost meanwhile:
+`overhead` finds a guest wherever it runs, and `systemctl show -P Slice
+banlieue-ch@<uid>.service` says where one is (the loop under
+[Verifying](#verifying) lists them all).
+
+## Measuring VM overhead
+
+`banlieue host cloud-hypervisor overhead` (ADR-0106) samples every VM on the
+host twice, `--seconds` apart (default 60), and splits the CPU each used into
+guest work and what running it cost the host. It changes nothing and needs no
+root.
+
+```sh
+banlieue host cloud-hypervisor overhead                 # 60 s window
+banlieue host ch overhead --seconds 300                 # steadier, for a comparison
+ssh admin@bar.foo.io banlieue host ch overhead          # from a workstation
+```
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--seconds` | `60` | The sampling window. Longer smooths bursts; one minute settles a busy guest. |
+
+Run it as any user: `/proc/*/task/*/stat` and cgroup files are
+world-readable, and the verb opens files only. There is no reason to run it
+as root.
+
+```text
+interval 60.0s; values are % of ONE host core (100 = one core busy)
+vm                               guest vcpu-host       vmm     swtpm     total  overhead
+guest:2000017                     12.4       7.9       0.1       0.0      20.4     64.5%
+libvirt:node-a                    51.3      33.8       1.0       0.0      86.1     67.8%
+node:node-b                       46.5      29.0       0.4       0.0      75.9     63.3%
+overhead = (vcpu-host + vmm + swtpm) / guest
+banlieue.slice total: 96.3 (every VM running in a banlieue slice)
+```
+
+| Column | Is |
+| --- | --- |
+| `guest` | The vCPU threads' time running guest code (`guest_time` in `/proc/<pid>/task/<tid>/stat`). |
+| `vcpu-host` | The rest of the vCPU threads' time: KVM exits, **halt polling**, in-kernel emulation. |
+| `vmm` | The VMM's other threads: virtio devices, I/O queues, the API. |
+| `swtpm` | The vTPM emulator. |
+
+VMs are found by cgroup name wherever they run: banlieue guests
+(`guest:<uid>`, the VMM and swtpm units together), management-cluster nodes
+from `scripts/bootstrap-k0s-cluster.sh` (`node:<name>`), and libvirt domains
+(`libvirt:<name>`), so a host part-way through a move from libvirt compares
+both VMMs side by side.
+
+Reading the numbers:
+
+- **Compare like with like.** An idle guest pays proportionally more host
+  time (its vCPUs wake, poll and halt), so its overhead ratio looks worse than
+  a busy one's. Put the same workload on both sides of a comparison.
+- **`vcpu-host` is mostly the kernel, not the VMM.** In the measurement behind
+  ADR-0099, most of it was KVM halt polling: a KVM setting
+  (`/sys/module/kvm/parameters/halt_poll_ns`), the same for QEMU and Cloud
+  Hypervisor.
+- **`vmm` is the part a VMM choice changes.** Cloud Hypervisor's was about a
+  tenth of QEMU's there (0.1% against 1.0 to 1.2% of a core per VM).
+- **The slice line is the kernel's own total** for `banlieue.slice` over the
+  same window. It covers only VMs in the slice (a guest started before
+  ADR-0105 is in the rows but not in it) and includes the short-lived
+  processes the per-thread rows can miss. It is absent until a VM has
+  started in the slice.
+- **Values are percent of one core**, so a host's total capacity is its core
+  count times 100 (9600 on a 96-core host).
+
+How it attributes time: it reads each thread's `utime + stime` and
+`guest_time` twice. vCPU threads are recognised by name (`vcpu<N>` for Cloud
+Hypervisor, `CPU <N>/KVM` for QEMU); every thread of a `swtpm` process counts
+as swtpm. A VMM that renamed its threads would shift time between columns, so
+treat the split as a diagnostic, not an accounting record (the slice line
+cannot be renamed).
 
 ## Smoke-boot a guest by hand
 
@@ -668,7 +865,8 @@ paths are bind-mounted from the persistent partition
 | Path | On Kairos | Consequence if left ephemeral |
 | --- | --- | --- |
 | `/opt/banlieue/` (VMM, firmware), `/usr/local/bin/` (links, provider binary) | persistent | none |
-| `/etc/systemd/system/` (units) | persistent | none |
+| `/etc/systemd/system/` (units, `banlieue-guests.slice`) | persistent | none |
+| `/etc/systemd/system.control/` (limits from `systemctl set-property`) | persistent | none |
 | `/var/lib/banlieue/` (EK CA, vTPM state, provider state) | **ephemeral** | a new EK CA every boot: every guest's EK certificate stops verifying |
 | `/etc/banlieue/` (host config, kubeconfig, credentials) | **ephemeral** | the provider loses its cluster credential at every boot |
 | the default storage class (`/srv/banlieue/ch`, if `/srv` is roomiest) | **ephemeral** | every guest disk is lost at reboot |
@@ -820,3 +1018,8 @@ restarting its unit; guests keep running (`make ch-restart-e2e`).
 | `swtpm_setup as banlieue: ...` in `selftest` | The EK CA directory has the wrong owner, often after copying `/var/lib/banlieue` by hand. Re-run `install --only tpm`. |
 | `sudo: a terminal is required to read the password` with `--remote` | The workstation side ran without a terminal (piped, or from CI). Run it in an interactive terminal. |
 | Provider unit `inactive` | Expected until the provider binary and `/etc/banlieue/kubeconfig` exist. |
+| A guest is not under `banlieue.slice` in `systemd-cgls` | It started before `install` added the slice. It moves when its unit next starts (the machine is recreated or the host reboots); see [Hosts installed before ADR-0105](#hosts-installed-before-adr-0105). |
+| A guest died, and `journalctl -u banlieue-ch@<uid>` says the OOM killer ended it, though it was within its own memory | A slice's `MemoryMax` (`--guest-memory-max` on `banlieue-guests.slice`, or one set on `banlieue.slice`) is below what the running VMs use together. Raise it, or run fewer guests here; see [Set a budget](#set-a-budget). |
+| Guests are slow while the host is not busy | A `CPUQuota` set on `banlieue.slice` caps them even when the host is idle (`systemctl show banlieue.slice -p CPUQuotaPerSecUSec`); use `CPUWeight` instead. Or `--guest-cpus` confines them to too few CPUs (`systemctl show banlieue-guests.slice -p AllowedCPUs`). |
+| `overhead` prints `no VMs found` with guests running | The host is on cgroup v1 (`stat -fc %T /sys/fs/cgroup` is not `cgroup2fs`), or the guests are not systemd units banlieue knows (`banlieue-ch@`, `k0s-vm-`, libvirt `machine-qemu`). |
+| `overhead` shows no `banlieue.slice total` line | No VM has started in the slice yet. |

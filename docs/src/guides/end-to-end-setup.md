@@ -246,6 +246,17 @@ through a drop-in under `/run/systemd/system`, Kairos installs and powers
 off, and the script detaches the ISO and enables the unit. A
 `LIBVIRT_IMAGE_KIND=cloud` image boots directly.
 
+The VMM and vTPM units run in `banlieue-nodes.slice`, which the script writes
+beside them: a child of `banlieue.slice`, next to banlieue's own guests in
+`banlieue-guests.slice` (ADR-0105, ADR-0106). `systemd-cgtop banlieue.slice` shows every VM on the host, and
+`systemctl set-property banlieue.slice CPUWeight=… MemoryMax=…` bounds them
+together. For a node built before this, rerunning `vms` adds a `Slice=`
+drop-in (`k0s-vm-<name>.service.d/50-slice.conf`) rather than rewriting its
+units, and the node moves into the slice at its next restart; nothing is
+restarted for it. To see what each node costs
+the host, run `banlieue host cloud-hypervisor overhead` on it
+([Measuring VM overhead](cloud-hypervisor-host.md#measuring-vm-overhead)).
+
 ```sh
 # Three Cloud Hypervisor controllers on a LAN bridge, on one host.
 VM_COUNT=3

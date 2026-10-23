@@ -574,7 +574,7 @@
       "unique-id": "service-k0s-bootstrap-ch-node",
       "node-type": "service",
       "name": "Management-cluster node on Cloud Hypervisor",
-      "description": "A management-cluster node created by scripts/bootstrap-k0s-cluster.sh, by default or with NODE_VMMS=cloud-hypervisor (ADR-0099), on the KVM host that runs the script: k0s-vm-<name>.service runs cloud-hypervisor as an unprivileged system user (CH_VM_USER, kvm group, no capabilities), k0s-vm-<name>-net.service (root, oneshot) creates its tap on the bridge owned by that user, and k0s-vm-<name>-swtpm.service serves its vTPM. Not a banlieue VirtualMachine and not visible to virsh or Cockpit: it must start at boot before the cluster's API exists. Its address is read from the host's neighbour table; the seed makes the guest ping the host's bridge address on every boot."
+      "description": "A management-cluster node created by scripts/bootstrap-k0s-cluster.sh, by default or with NODE_VMMS=cloud-hypervisor (ADR-0099), on the KVM host that runs the script: k0s-vm-<name>.service runs cloud-hypervisor as an unprivileged system user (CH_VM_USER, kvm group, no capabilities), k0s-vm-<name>-net.service (root, oneshot) creates its tap on the bridge owned by that user, and k0s-vm-<name>-swtpm.service serves its vTPM. Not a banlieue VirtualMachine and not visible to virsh or Cockpit: it must start at boot before the cluster's API exists. Its address is read from the host's neighbour table; the seed makes the guest ping the host's bridge address on every boot. Its VMM and swtpm units run in banlieue-nodes.slice, a sibling of banlieue-guests.slice under banlieue.slice (ADR-0106)."
     },
     {
       "unique-id": "database-kine-datastore",
@@ -734,7 +734,7 @@
       "unique-id": "service-banlieue-host-installer",
       "node-type": "service",
       "name": "banlieue host cloud-hypervisor (installer)",
-      "description": "`banlieue host cloud-hypervisor {preflight,status,selftest,install}` (alias `ch`; ADR-0067, amended by ADR-0084, which also put the backend in the command): the same banlieue binary, run once as root by an operator or a cloud-init payload, prepares a KVM host for the Cloud Hypervisor provider. It installs no OS packages on any distribution (ADR-0084 Decision 1): preflight checks, by command, for the systemd, swtpm and swtpm-tools pieces the host supplies through its own package manager or image build. Stages: the VMM, ch-remote and firmware, each from its own URL (github.com by default, or an operator mirror such as an Artifactory VCS remote), at the pinned version or any version the client's version gate accepts, and verified against a sha256 before any is installed (compiled pin, operator flag, or GitHub's published asset digest); the banlieue user, guest uid records, directories and the host config (rendered from the provider's own HostConfig type, with its [vmm] section kept in step with the installed release); the per-host EK CA, the polkit rule, the template units and the provider unit. Read-only verbs cannot write by construction; install is idempotent and writes every file by temp-and-rename. Lives in the banlieue-host crate, which the provider crate does not depend on, so no reconcile path can reach it (ADR-0011). Never creates a bridge, has no SSH client, and exits when done: it is not a daemon."
+      "description": "`banlieue host cloud-hypervisor {preflight,status,selftest,install}` (alias `ch`; ADR-0067, amended by ADR-0084, which also put the backend in the command): the same banlieue binary, run once as root by an operator or a cloud-init payload, prepares a KVM host for the Cloud Hypervisor provider. It installs no OS packages on any distribution (ADR-0084 Decision 1): preflight checks, by command, for the systemd, swtpm and swtpm-tools pieces the host supplies through its own package manager or image build. Stages: the VMM, ch-remote and firmware, each from its own URL (github.com by default, or an operator mirror such as an Artifactory VCS remote), at the pinned version or any version the client's version gate accepts, and verified against a sha256 before any is installed (compiled pin, operator flag, or GitHub's published asset digest); the banlieue user, guest uid records, directories and the host config (rendered from the provider's own HostConfig type, with its [vmm] section kept in step with the installed release); the per-host EK CA, the polkit rule, the template units and the provider unit. Read-only verbs cannot write by construction; install is idempotent and writes every file by temp-and-rename. Lives in the banlieue-host crate, which the provider crate does not depend on, so no reconcile path can reach it (ADR-0011). Never creates a bridge, has no SSH client, and exits when done: it is not a daemon. Has a read-only `overhead` verb that samples every VM's threads (banlieue guests, k0s nodes, libvirt scopes) and splits host CPU into guest, vCPU host-side, VMM and swtpm time, plus banlieue.slice's kernel total (ADR-0106)."
     },
     {
       "unique-id": "service-vmm-release-source",
@@ -3114,6 +3114,23 @@
           }
         }
       ]
+    },
+    "vm-resource-accounting": {
+      "description": "IMPLEMENTED (ADR-0105, ADR-0106): every Cloud Hypervisor VM a banlieue component runs is under banlieue.slice. Guests (banlieue-ch@, banlieue-swtpm@) are in banlieue-guests.slice, set in the root-owned templates and budgeted by the operator's declared `install --guest-*` flags (ADR-0105); management-cluster nodes are in banlieue-nodes.slice, set by scripts/bootstrap-k0s-cluster.sh (ADR-0106). banlieue.slice is one cgroup for the host's VM total, where an operator bounds guests and nodes together with `systemctl set-property`. The provider has no rights on any slice. `banlieue host cloud-hypervisor overhead` (read-only, no root) reports per-VM guest vs host-side CPU from /proc and cgroup counters.",
+      "requirements": [
+        {
+          "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+          "config": {
+            "framework": "NIST SP 800-53 Rev. 5",
+            "controls": [
+              "SC-6",
+              "AU-12",
+              "CM-6"
+            ],
+            "evidence": "docs/adr/0105-cloud-hypervisor-guests-slice.md, docs/adr/0106-vm-systemd-slices-and-overhead-sampler.md, deploy/provider-cloud-hypervisor/host/banlieue-guests.slice, crates/banlieue-host/src/settings.rs, scripts/bootstrap-k0s-cluster.sh, scripts/test-cloud-hypervisor-polkit.js, crates/banlieue-host/src/overhead.rs"
+          }
+        }
+      ]
     }
   },
   "metadata": {
@@ -3226,6 +3243,8 @@
     "docs/adr/0101-vspheremachine-ownership-marker-and-adoption.md",
     "docs/adr/0102-provider-liveness-from-its-lease.md",
     "docs/adr/0103-digest-pinned-installs.md",
-    "docs/adr/0104-vsphere-template-kind-per-zone-lookup.md"
+    "docs/adr/0104-vsphere-template-kind-per-zone-lookup.md",
+    "docs/adr/0105-cloud-hypervisor-guests-slice.md",
+    "docs/adr/0106-vm-systemd-slices-and-overhead-sampler.md"
   ]
 }

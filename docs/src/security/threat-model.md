@@ -5,12 +5,22 @@ SPDX-License-Identifier: Apache-2.0
 # Threat Model
 
 > **Status:** Living document. Last full pass **2026-10-23**, against the
-> architecture defined by **ADR-0001 … ADR-0105** (0057–0059 unallocated,
+> architecture defined by **ADR-0001 … ADR-0106** (0057–0059 unallocated,
 > 0066 and 0068–0073 reserved; 0074 and 0075 Accepted 2026-09-28; 0076–0080
 > reserved by roadmap 19; 0081–0082 recorded but not implemented in banlieue, and kept canonically in
 > mediatore since ADR-0097;
 > 0088 Proposed but implemented behind a default-off flag, below). The most
-> recent pass, 2026-10-23, covers three amendments found by a live vSphere run
+> recent pass, 2026-10-23, is **ADR-0106**: management-cluster nodes on Cloud
+> Hypervisor run in `banlieue-nodes.slice`, beside ADR-0105's
+> `banlieue-guests.slice`, so `banlieue.slice` holds every VM on a host and an
+> operator can bound guests and nodes together with `systemctl set-property`;
+> and `banlieue host cloud-hypervisor overhead`, a read-only verb, reports each
+> VM's guest CPU against host-side overhead. It updates two §2 rows and the §5
+> diagram, adds three TB-9 rows, §7.26 and one §8 risk (a compromised VMM can
+> skew the measurement); the polkit tests now refuse `set-property` and `stop`
+> on all three slices. No identity, RBAC grant, boundary or cluster object
+> changes. It also fixes two citations of a removed reference unit. The
+> 2026-10-23 pass before it covers three amendments found by a live vSphere run
 > (the third, **ADR-0034's**, is described after the first two):
 > **ADR-0044 on vSphere** (once the guest is installed the provider ejects an
 > ISO-backed CD-ROM, as `govc device.cdrom.eject` does, and only then can
@@ -451,7 +461,7 @@ relationship to the host.
 | `banlieue-provider-vsphere` / `-libvirt` | per-`Provider` SA | `banlieue-system` | Talks to the hypervisor; reconciles infra CRs (`VSphereMachine`, `LibvirtMachine` — ADR-0050) and realises them as real VMs/domains. For a `Template`-kind `VMImage` it looks the adopted template up per zone, read-only, and never destroys it (ADR-0104) |
 | `banlieue-provider-proxmox` | per-`Provider` SA | `banlieue-system` | Talks to Proxmox VE through the first-party `banlieue-proxmox` client (ADR-0074); reconciles `ProxmoxMachine`s (ADR-0075) into full clones of a template VM, verifies the template VMIDs `VMImage`s name, and publishes one failure domain per node. Spawns no Jobs — `deploy/provider-proxmox/rbac/clusterrole.yaml` |
 | `banlieue-provider-cloud-hypervisor` | ServiceAccount `banlieue-provider-cloud-hypervisor` (a bound token in a kubeconfig **on the host**); host user `banlieue` | **Not in the cluster** — a systemd service on the KVM host; its Provider lives in `banlieue-system` | Watches its own `Provider`, `CloudHypervisorMachine`s and `VMImage`s over the API; creates taps, disks, seeds and one transient systemd unit per guest (ADR-0060, ADR-0063). Holds `CAP_NET_ADMIN`, `CAP_CHOWN`, `CAP_FOWNER` and nothing else — `deploy/provider-cloud-hypervisor/host/banlieue-provider-cloud-hypervisor.service` |
-| Cloud Hypervisor VMM, one per guest | Its own host uid **and private gid** (`banlieue-g<uid>`, registered in `/etc/userdb`), plus `kvm` | The host, as `banlieue-ch@<guest uid>.service`, an instance of a root-owned template | Runs one guest. No capabilities; seccomp and Landlock on; systemd sandbox — `deploy/provider-cloud-hypervisor/host/banlieue-ch-guest.example.service` |
+| Cloud Hypervisor VMM, one per guest | Its own host uid **and private gid** (`banlieue-g<uid>`, registered in `/etc/userdb`), plus `kvm` | The host, as `banlieue-ch@<guest uid>.service`, an instance of a root-owned template | Runs one guest. No capabilities; seccomp and Landlock on; systemd sandbox: `deploy/provider-cloud-hypervisor/host/banlieue-ch@.service` |
 | `banlieue-imagebuilder` | `banlieue-imagebuilder` | `banlieue-system` | Drives kairos `OSArtifact` builds; merges cloud-config (ADR-0037) ; for a `VMImage` with `firstBootSealing` appends a banlieue-generated layer after every operator layer: the sealing policy into the installed disk's `COS_OEM` and a boot stage that reports the sealed partitions (ADR-0088, `src/first_boot_sealing.rs`) |
 | swtpm, one per `tpmEnabled` Cloud Hypervisor guest | The guest's uid and private group | The host, as `banlieue-swtpm@<guest uid>.service` | Emulates the guest's TPM from state in `/var/lib/banlieue/tpm/<guest uid>/` (ADR-0065) — `plan.rs::swtpm_unit` |
 | vTPM manufacture, once per guest | Host user `banlieue` | The host, as `banlieue-swtpm-setup@<guest uid>.service` | Runs `swtpm_setup`: creates the TPM and signs its EK and platform certificates with the host's `swtpm_localca` key — `plan.rs::swtpm_setup_unit` |
@@ -459,8 +469,8 @@ relationship to the host.
 | registry push Job | **None** — `automountServiceAccountToken: false` | `banlieue-imagebuild` | Pushes a `Ready` build to the operator's OCI registry for host-resident providers (ADR-0064); reads the artifacts PVC read-only and the push Secret, nothing else — `crates/banlieue-imagebuilder/src/reconciler/push.rs` |
 | image import unit (Cloud Hypervisor) | Host user `banlieue` | The host, as `banlieue-ch-import@<vmimage uid>.service` | Pulls one image by digest into the storage classes' image caches and exits; sandboxed, writable only in `images/` — `crates/banlieue-provider-cloud-hypervisor/src/vmimage.rs` (`import_unit`), `import.rs` |
 | kairos build pod | kairos-operator's SA | `banlieue-imagebuild` | **Privileged** — loop devices, mount, chroot |
-| Management-cluster node on Cloud Hypervisor (ADR-0099) | Host user `CH_VM_USER` (default `k0s-vm`, no login, `kvm`), **shared by every such node on the host**; its tap is created by a root oneshot | The host, as `k0s-vm-<name>.service`, with `k0s-vm-<name>-net.service` and `k0s-vm-<name>-swtpm.service`; **not a banlieue object** | Runs one management-cluster node, written by `scripts/bootstrap-k0s-cluster.sh` through sudo. No capabilities, `NoNewPrivileges`, `ProtectSystem=strict`, `DevicePolicy=closed` (`/dev/kvm`, `/dev/net/tun`), Landlock with the tap's sysfs entry read-only, runtime directory `0700`; writes only `CH_VM_DIR/<name>/` (`0750`) and its runtime directory: `render_ch_vm_unit` |
-| `banlieue host cloud-hypervisor` (installer) | **root**, once, at an operator's request; no cluster identity | A Cloud Hypervisor host, as a command, never a service | Installs the VMM and firmware (the pinned release, or one the operator names at or above the client's gate, from github.com or a mirror; ADR-0084), the `banlieue` user, guest uid records, directories, the host config, the EK CA, the polkit rule and the units (ADR-0067). Installs no OS packages. A separate crate no provider depends on: `crates/banlieue-host/` |
+| Management-cluster node on Cloud Hypervisor (ADR-0099) | Host user `CH_VM_USER` (default `k0s-vm`, no login, `kvm`), **shared by every such node on the host**; its tap is created by a root oneshot | The host, as `k0s-vm-<name>.service`, with `k0s-vm-<name>-net.service` and `k0s-vm-<name>-swtpm.service`; **not a banlieue object** | Runs one management-cluster node, written by `scripts/bootstrap-k0s-cluster.sh` through sudo. No capabilities, `NoNewPrivileges`, `ProtectSystem=strict`, `DevicePolicy=closed` (`/dev/kvm`, `/dev/net/tun`), Landlock with the tap's sysfs entry read-only, runtime directory `0700`; writes only `CH_VM_DIR/<name>/` (`0750`) and its runtime directory: `render_ch_vm_unit`. VMM and vTPM in `banlieue-nodes.slice` (ADR-0106) |
+| `banlieue host cloud-hypervisor` (installer) | **root**, once, at an operator's request; no cluster identity | A Cloud Hypervisor host, as a command, never a service | Installs the VMM and firmware (the pinned release, or one the operator names at or above the client's gate, from github.com or a mirror; ADR-0084), the `banlieue` user, guest uid records, directories, the host config, the EK CA, the polkit rule and the units (ADR-0067). Installs no OS packages. Its `overhead` verb (ADR-0106) is read-only and runs as any user: it reads `/proc/*/task/*/stat` and cgroup counters and writes nothing. A separate crate no provider depends on: `crates/banlieue-host/` |
 
 ## 3. Assets
 
@@ -602,6 +612,7 @@ relationship to the host.
   │              seccomp · Landlock · sandbox  ─ TB-9 ─  seccomp · Landlock      │
   │              <storage>/<A>/ 2770 A:banlieue   <storage>/<B>/ 2770 B:banlieue │
   │              tap A ─────────── host bridge ─────────── tap B                 │
+  │              guests in banlieue-guests.slice ⊂ banlieue.slice (ADR-0105/6)   │
   │                                                                             │
   │  banlieue host cloud-hypervisor install (root, once) ──TB-11──▶ /opt, /etc, │
   │     ▲  in banlieue-owned dirs by O_NOFOLLOW   units, polkit, userdb, EK CA  │
@@ -890,10 +901,13 @@ Assume a guest has escaped into its VMM process. What contains it:
 | Threat | STRIDE | Control |
 | --- | --- | --- |
 | The VMM reads or writes another guest's disk, seed or socket | I, T | Each guest runs as **its own uid and its own private group** (`User=<uid>`, `Group=<uid>`, registered in `/etc/userdb` by the bootstrap); machine and run directories are `2770 guest-uid:banlieue` under `0711` roots, and no guest is ever in the `banlieue` group; a uid is given to one machine at a time, under one lock, even when a pool creates members together — `plan.rs::vmm_unit`, `plan.rs::UidLedger`, `hostfs.rs::prepare_dirs`, `scripts/bootstrap-cloud-hypervisor-host.sh`. Live-verified: another user cannot even list a guest's directory |
-| The VMM writes anywhere else on the host | T, E | `ProtectSystem=strict` with `ReadWritePaths=` its own two directories, `ProtectHome`, `PrivateTmp`, `NoNewPrivileges`; Cloud Hypervisor's own seccomp filters and Landlock, with Landlock widened only by one read-only rule per tap on `/sys/devices/virtual/net/<tap>` — `systemd.rs`, `banlieue-cloud-hypervisor/src/types.rs`; reference unit `deploy/provider-cloud-hypervisor/host/banlieue-ch-guest.example.service` |
+| The VMM writes anywhere else on the host | T, E | `ProtectSystem=strict` with `ReadWritePaths=` its own two directories, `ProtectHome`, `PrivateTmp`, `NoNewPrivileges`; Cloud Hypervisor's own seccomp filters and Landlock, with Landlock widened only by one read-only rule per tap on `/sys/devices/virtual/net/<tap>`: `systemd.rs`, `banlieue-cloud-hypervisor/src/types.rs`; reference unit `deploy/provider-cloud-hypervisor/host/banlieue-ch@.service` |
 | The VMM opens other devices | E | `DevicePolicy=closed` with only `/dev/kvm` and `/dev/net/tun` allowed |
 | The VMM exhausts host memory or PIDs | D | `MemoryMax=` guest memory + 512 MiB, `TasksMax=1024` in the unit's cgroup |
 | **All guests together** exhaust a shared host's CPU, memory or PIDs (a pool refill storm, or one escaped VMM spawning load) and starve the host's other workloads | D | Every guest and vTPM runs in `banlieue-guests.slice` (`Slice=` in `banlieue-ch@.service` and `banlieue-swtpm@.service`), whose `AllowedCPUs`, `CPUWeight`, `MemoryMax` and `TasksMax` the operator declares at install. The slice is a root-owned file and polkit never allows `set-property` on it, so neither the provider nor a guest can lift it — `deploy/provider-cloud-hypervisor/host/banlieue-guests.slice`, `banlieue-host/src/settings.rs::GuestSlice`, tested `the_guest_slice_is_installed_with_the_declared_budget`, `guest_and_vtpm_units_run_inside_the_slice`. Unset limits leave that dimension unbounded, and `install` says so. §8 |
+| **All VMs on a host together** (guests and management-cluster nodes) starve its other workloads | D | Nodes from `scripts/bootstrap-k0s-cluster.sh` run in `banlieue-nodes.slice` (`Slice=` from `render_ch_vm_unit`/`render_ch_swtpm_unit`, or the `50-slice.conf` drop-in `ensure_ch_slice` adds to an older node), so `banlieue.slice` holds every VM and one `systemctl set-property banlieue.slice` bounds guests and nodes together (§7.26). Nothing ships a limit on the parent or the nodes' slice: by default they are bounded only by the host, and the guests by ADR-0105's declared budget (ADR-0106) |
+| The provider lifts a budget on `banlieue.slice` or `banlieue-nodes.slice`, or moves a VM out of its slice | T, E | The polkit rule matches only guest and import instances, so it grants nothing on any slice: `scripts/test-cloud-hypervisor-polkit.js` refuses `set-property` on `banlieue.slice`, `banlieue-guests.slice` and `banlieue-nodes.slice`, and `stop` on `banlieue-guests.slice`. `Slice=` is fixed in root-owned unit files and systemd accepts only resource-control properties at runtime on a unit with a file |
+| VMM-controlled `/proc` data (its thread names, its counters) reaches `banlieue host cloud-hypervisor overhead`, possibly run as root | T, D | `crates/banlieue-host/src/overhead.rs` only parses: `stat` is split after the last `)` and read as numbers, thread names are only compared against two fixed patterns, nothing from `/proc` is printed (VM names come from cgroup directory names, which systemd and root create), and the verb writes nothing. It needs no root; run it unprivileged. Skewed numbers are §8 |
 | **The VMM plants a symlink** in its own directory so the provider's privileged `chown`/`chmod`/truncate lands on another guest's disk or the shared image | T, E | **Every privileged change the provider makes inside a guest's directory goes through a file handle, never a path**: disks and seeds are created `O_CREAT\|O_EXCL`, then grown, owned and re-moded through that handle (`fchown`, `fchmod`, `set_len`); directories are opened `O_NOFOLLOW\|O_DIRECTORY` before being re-owned; the seed is read `O_NOFOLLOW` — `hostfs.rs` (`own`, `ensure_os_disk`, `write_seed`, `prepare_dirs`), `sys.rs::clone_file`. Tests plant symlinks and assert their targets are untouched (`hostfs_tests.rs`, `sys_tests.rs`) |
 | The VMM replaces its API socket so the provider talks to something else, or so the provider's `CAP_FOWNER` re-modes an arbitrary file | S, E | `hostfs::grant_api_socket` opens the path `O_PATH\|O_NOFOLLOW`, requires a **socket** owned by the guest uid in the `banlieue` group with no bits for others, and changes only that opened inode via `/proc/self/fd`; the VMM client re-checks owner and mode before every connect — `banlieue-cloud-hypervisor/src/socket.rs` |
 | The VMM returns a malformed or huge API response to the provider | D, T | Typed decoding into bounded structs; errors are reported on the machine's status, never panics — `banlieue-cloud-hypervisor/src/wire.rs`. **Not fuzzed**, unlike the libvirt decoder. §8 |
@@ -1446,6 +1460,16 @@ a different assumption is unsafe.
     digest and every Deployment rolls. A mirror (`--registry`) is pinned to
     the same digest, which the mirror must serve unchanged.
 
+26. **Budget the VMs on a shared host (ADR-0105, ADR-0106).** Declare the
+    guests' budget to `install` (`--guest-cpus`, `--guest-cpu-weight`,
+    `--guest-memory-max`, `--guest-tasks-max`); change it by re-running
+    `install`, never with `set-property` on `banlieue-guests.slice`, whose
+    drop-in would silently override the declared value. Where management
+    nodes share the host, bound every VM together on the parent:
+    `systemctl set-property banlieue.slice CPUWeight=50 MemoryMax=<host RAM
+    less what the host needs>`. Size each `MemoryMax` from the VMs under it:
+    a cap below their sum makes the kernel kill a VMM.
+
 ## 8. Accepted risks
 
 | Risk | Why accepted | Revisit when |
@@ -1512,6 +1536,7 @@ a different assumption is unsafe.
 | **The bootstrap script does not verify SSH host keys** (`StrictHostKeyChecking=no` in `ssh_run`); with `join` that session also carries a join token, and for a controller the cluster CA key's token and the datastore password (A-20) | Every node is new, or rebuilt, when the script first reaches it, so there is no key to pin yet; a token expires in 15 minutes, though a controller's is enough to take the CA key within them. Running it from the host or the nodes' own network keeps it off untrusted paths (§7.23) | The script records each node's host key at creation (the seed can carry one) and checks it afterwards |
 | **`stage_k0s_binary` uses the k0s binary unverified when the release's `sha256sums.txt` cannot be fetched**, which `join` and the vSphere backend both rely on | An air-gapped mirror may publish no checksum file, and failing closed would break those estates; the binary is fetched over HTTPS from `K0S_BINARY_BASEURL` | A pinned digest setting (as `IMAGE_SHA256` does for the installer ISO) is added, or the mirror case is handled explicitly |
 | Provider condition messages are mirrored verbatim onto user-facing `VirtualMachine` status | Useful diagnostics; providers are in-tree | A third-party provider ships |
+| **A compromised VMM can skew `banlieue host cloud-hypervisor overhead`**: naming a thread `vcpu<N>` (or its process `swtpm`) moves its time between columns, so a VMM's own overhead can be reported as guest time | The verb is a diagnostic an operator reads, not an input to scheduling, billing or any control; the guest's total is unchanged, and the slice's own `cpu.stat` (also reported) is kernel-accounted and cannot be renamed. Telling vCPU threads apart without trusting their names needs the VMM's API (`vm.info`), which the installer crate does not speak | Overhead numbers feed an automated decision (placement, billing, alerts) |
 | **A `banlieue-api` upload carries no signature or provenance**, unlike the binary and images (cosign, SLSA, ADR-0006), so a consumer cannot verify which build produced it | crates.io offers none to sign with; the upload comes from the tagged checkout in the release run, and `Cargo.lock` checksums pin what a consumer got the first time | crates.io supports artifact attestations or Sigstore signing |
 | **`CARGO_REGISTRY_TOKEN` is a long-lived secret** (A-21): if it leaks, it publishes until revoked | The first upload needs a token; scope it to `publish-new` and `publish-update` and, once the name exists, to `banlieue-api` only, with an expiry (ADR-0100 Decision 6) | The crate exists on crates.io and the publish action accepts Trusted Publishing (GitHub OIDC), so the secret can be deleted |
 

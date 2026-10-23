@@ -53,6 +53,11 @@ const cases = [
   // set-property only on VMM instances
   ["banlieue", "banlieue-swtpm@2000007.service", "set-property", "not_handled"],
   ["banlieue", "banlieue-ch-import@6f1c2d3e-4a5b-4c6d-8e7f-0a1b2c3d4e5f.service", "set-property", "not_handled"],
+  // The VM slices are the operator's to bound, never the provider's (ADR-0106).
+  ["banlieue", "banlieue.slice", "set-property", "not_handled"],
+  ["banlieue", "banlieue-guests.slice", "set-property", "not_handled"],
+  ["banlieue", "banlieue-nodes.slice", "set-property", "not_handled"],
+  ["banlieue", "banlieue-guests.slice", "stop", "not_handled"],
   // other verbs
   ["banlieue", "banlieue-ch@2000007.service", "enable", "not_handled"],
   ["banlieue", "banlieue-ch@2000007.service", "restart", "not_handled"],

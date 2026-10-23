@@ -12,6 +12,7 @@
 //! banlieue host cloud-hypervisor preflight   # changes nothing
 //! banlieue host cloud-hypervisor status      # changes nothing
 //! banlieue host cloud-hypervisor selftest    # changes nothing, boots nothing
+//! banlieue host cloud-hypervisor overhead    # changes nothing: VM CPU, guest vs host
 //! banlieue host cloud-hypervisor install     # every stage, in order
 //! banlieue host ch install --only tpm        # `ch` is a visible alias
 //! banlieue host ch install --dry-run
@@ -29,6 +30,7 @@ pub mod error;
 pub mod fake;
 pub mod fetch;
 pub mod ops;
+pub mod overhead;
 pub mod paths;
 pub mod pins;
 pub mod real;
@@ -83,6 +85,11 @@ pub enum Verb {
     /// Prepare this host, every stage in order, or one with --only. Needs
     /// root, except with --dry-run.
     Install(InstallArgs),
+    /// What the VMs on this host cost it: per VM, guest CPU against the
+    /// host-side overhead (vCPU exits and halt polling, VMM threads, swtpm),
+    /// for banlieue guests, k0s bootstrap nodes and libvirt domains alike
+    /// (ADR-0106). Changes nothing; needs no root.
+    Overhead(overhead::OverheadArgs),
 }
 
 /// `banlieue host cloud-hypervisor selftest`.
@@ -154,6 +161,7 @@ pub async fn run(cli: Cli) -> Result<(), Error> {
             let release = release::resolve(&args.release, &fetch::GitHubDigests::new()).await?;
             stages::selftest(&host, &release, &s, &facts)
         }
+        Verb::Overhead(args) => overhead::run(&args).await,
         Verb::Install(args) => {
             let s = settings::resolve(&args.settings, &host)?;
             let release = release::resolve(&args.release, &fetch::GitHubDigests::new()).await?;

@@ -1,5 +1,76 @@
 # Changelog
 
+## [2026-10-23 15:00] - Advisory ignores removed (quick-xml fixed upstream)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `deny.toml`, `osv-scanner.toml`: RUSTSEC-2026-0194/0195 no longer ignored.
+  Their revisit condition is met: vim_rs 0.6.1 depends on quick-xml 0.42.0,
+  past the 0.41.0 fix, so cargo-deny had been warning
+  `advisory-not-detected` on every run. `cargo deny check`: advisories, bans,
+  licenses and sources ok.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only
+- [ ] Documentation only
+
+## [2026-10-23 12:00] - ADR-0106: every VM in banlieue.slice; `banlieue host cloud-hypervisor overhead`
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0106-vm-systemd-slices-and-overhead-sampler.md`, extending
+  ADR-0105 (the guests' budgeted `banlieue-guests.slice`, which landed first).
+- `crates/banlieue-host/src/overhead.rs`: `banlieue host cloud-hypervisor
+  overhead [--seconds N]`, read-only and rootless. Per VM (banlieue guests,
+  k0s bootstrap nodes, libvirt domains, found by cgroup name wherever they
+  run), host CPU split into guest, vCPU host-side, VMM and swtpm, plus
+  `banlieue.slice`'s own total. A Rust port of the one-off sampler behind
+  the 2026-10-13 CH-vs-libvirt measurement, now also counting a guest's swtpm
+  unit with its VMM. Verified live on a lab host. `paths::VMS_SLICE_UNIT`.
+- `scripts/bootstrap-k0s-cluster.sh`: `banlieue-nodes.slice`, `Slice=` on each
+  node's VMM and vTPM unit, and `ensure_ch_slice`, which moves a node built
+  earlier into the slice with a `50-slice.conf` drop-in (no unit rewrite, no
+  restart) when `vms` is rerun.
+
+### Changed
+- `crates/banlieue-host/Cargo.toml`: rustix `param` (clock ticks), tokio
+  `time`, `tempfile` dev-dependency (all already in the workspace).
+- `scripts/test-cloud-hypervisor-polkit.js`: four cases proving the provider
+  gets nothing on `banlieue.slice`, `banlieue-guests.slice` or
+  `banlieue-nodes.slice`.
+- CALM: `vm-resource-accounting` control (ADR-0105 and ADR-0106); CH node and
+  installer descriptions; ADR-0105 (missing) and ADR-0106 registered.
+- Docs, `cloud-hypervisor-host.md`: "VM resource limits (`banlieue.slice`)"
+  (the slices; reading totals; guests budgeted with ADR-0105's `--guest-*`
+  flags and never with `set-property` on their slice; guests and nodes
+  together with `set-property banlieue.slice`; sizing `MemoryMax` so the
+  kernel never OOM-kills a VMM; check and undo; hosts installed before
+  ADR-0105), "Measuring VM overhead", cgroup v2 under Requirements, slice
+  checks under Verifying, Kairos persistence rows, five troubleshooting rows.
+  `cloud-hypervisor-host-systemd.md`: the parent and nodes' slice after
+  ADR-0105's section. `end-to-end-setup.md`: the nodes' slice.
+- Threat model full pass for ADR-0106, stamp 2026-10-23 / ADR-0106: two §2
+  rows, the §5 diagram, three TB-9 rows, §7.26, one §8 risk; and two stale
+  citations of a removed reference unit fixed.
+
+### Tests
+- `overhead_tests.rs` (16), `scripts/bootstrap-k0s-cluster-test.sh` (slice on
+  VMM and vTPM, not on the tap; drop-in; no limits), the polkit cases above.
+
+### Why
+One cgroup for every VM on a host, guests and management nodes alike, and the
+overhead measurement reproducible by anyone instead of a scratch script.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-10-23 14:30] - vSphere provider converges to `desiredPowerState` (ADR-0034 amendment)
 
 **Author:** Erick Bourgeois

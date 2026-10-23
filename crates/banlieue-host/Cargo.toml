@@ -30,13 +30,16 @@ reqwest.workspace = true
 rustls.workspace = true
 # Free space, effective uid, host name, and O_NOFOLLOW handles for every
 # ownership and mode change. Already built for the provider.
-rustix = { version = "1", features = ["fs", "process", "system", "std"] }
+# `param` for the clock tick rate `overhead` converts /proc counters with.
+rustix = { version = "1", features = ["fs", "process", "system", "std", "param"] }
 serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["rt", "macros", "sync"] }
+tokio = { workspace = true, features = ["rt", "macros", "sync", "time"] }
 toml = "1"
 x509-parser.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+# Fixture /proc and cgroup trees for `overhead`. Already a workspace dependency.
+tempfile.workspace = true
