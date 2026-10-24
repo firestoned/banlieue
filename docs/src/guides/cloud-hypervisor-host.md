@@ -1,18 +1,40 @@
-# Cloud Hypervisor Host Bootstrap
+# Cloud Hypervisor Provider
 
-This guide turns a bare-metal Linux machine running systemd into a Cloud
-Hypervisor host for
-banlieue's host-resident provider (roadmap 09,
-[ADR-0060](https://github.com/firestoned/banlieue/blob/main/docs/adr/0060-cloud-hypervisor-first-class-provider-topology.md)
-to ADR-0065).
+Cloud Hypervisor is banlieue's reference backend: a small Rust VMM on a
+plain KVM host, driven by a provider that runs on the host itself (roadmap
+09, [ADR-0060](https://github.com/firestoned/banlieue/blob/main/docs/adr/0060-cloud-hypervisor-first-class-provider-topology.md)
+to ADR-0065). What it gives you that the other backends do not:
 
-!!! warning "The provider itself is not released yet"
-    This guide prepares the host completely: VMM, firmware, vTPM tooling, the
-    `banlieue` account, storage, the host config and the provider's systemd
-    unit. The unit stays **installed but not enabled** until the
-    `banlieue` binary with the `cloud-hypervisor` provider and its kubeconfig
-    exist. Until then, [smoke-boot a guest by hand](#smoke-boot-a-guest-by-hand)
-    to prove the host works.
+- **No hypervisor daemon and no hypervisor credential.** Each guest is one
+  VMM process in its own systemd unit. The provider holds only a
+  self-renewing ServiceAccount token, and reads no Secret.
+- **One identity per guest.** Every guest runs as its own uid and private
+  group, sandboxed by systemd, seccomp and Landlock (ADR-0063).
+- **A budget for guests, and placement that respects it.** All guests share
+  `banlieue-guests.slice`, capped by the limits you declare (ADR-0105); the
+  provider publishes what they may use, and the scheduler places a VM only
+  where it fits (ADR-0107).
+- **Images by digest.** A host pulls a disk image from an OCI registry by
+  digest and verifies it (ADR-0064), or uses one you placed.
+- **A vTPM per guest, with its EK certificate read on the host** where it was
+  minted (ADR-0065).
+- **Fast warm pools.** Three `GuestReady` members reach `Warm` in about
+  108 s, against 130 s for two on vSphere
+  ([Pool Timings](../reference/cloud-hypervisor-pool-timings.md)).
+
+This guide takes a bare-metal Linux machine running systemd to a host
+banlieue schedules VMs onto: prepare the host (Steps 1 to 3), then
+[connect it to a cluster](#connect-it-to-a-cluster). How it compares with
+vSphere, libvirt and Proxmox, row by row, is the
+[Provider Comparison](../reference/provider-comparison.md).
+
+!!! info "The provider starts once the host is connected"
+    `install` prepares everything (VMM, firmware, vTPM tooling, the `banlieue`
+    account, storage, the host config and the provider's systemd unit) but
+    leaves the unit **installed, not enabled**, until the host has its
+    cluster credential. Before that, you can
+    [smoke-boot a guest by hand](#smoke-boot-a-guest-by-hand) to prove the
+    host works.
 
 A Cloud Hypervisor host differs from a [libvirt host](host-bootstrap.md) in
 three ways that shape everything below:
@@ -347,8 +369,8 @@ sudo banlieue host cloud-hypervisor status
 Without `sudo`, files in directories only `banlieue` can enter show as
 `unknown (run as root)` rather than missing.
 
-`provider: inactive` and `kubeconfig: absent` are expected until the provider
-ships.
+`provider: inactive` and `kubeconfig: absent` are expected until you
+[connect the host to a cluster](#connect-it-to-a-cluster).
 
 Check that guests land in their slice (any guest running, or after the next
 one starts):
@@ -646,14 +668,21 @@ process runs here. Three steps, in order.
 1. **In the cluster**, install banlieue if you have not: `banlieue bootstrap
    operator` installs the `cloud-hypervisor` ProviderClass (`deployment:
    External`) and its ClusterRole alongside everything else. Then apply the
-   host's `Provider` and what its VMs use — example 21 is a complete set.
+   host's `Provider` and what its VMs use: example 02 is a complete set.
    The Provider names **no** `credentialsRef` (this provider reads no
    Secret; one set is refused) and its name must be the host's
    `PROVIDER_NAME`:
 
     ```sh
-    kubectl apply -f examples/21-virtualmachine-cloud-hypervisor.yaml
+    kubectl apply -f examples/02-virtualmachine-cloud-hypervisor.yaml
     ```
+
+    Example 02 keeps its Provider minimal. For a production host,
+    `examples/01-provider-cloud-hypervisor.yaml` is the same Provider in
+    full, each field explained: several storage and network classes mapped
+    to host classes, the `vtpm` feature, the EK trust bundle, and
+    `scheduling.cpuOvercommitRatio`, with the status capacity the host
+    publishes back (ADR-0107).
 
     The operator creates the Provider's ServiceAccount and a Role scoped to
     that one Provider, its machines, its Lease and renewing its own token.
@@ -809,7 +838,7 @@ image installed `Deferred`, so the disk is sealed to that guest's own TPM
 
 2. **Image:** `spec.template.installMode: Deferred`. For a `Url` source the
    imagebuilder builds the installer ISO; for `BackingFile`, put the ISO in
-   the image cache yourself. Add example 16's
+   the image cache yourself. Add example 17's
    `banlieue-guest-phase-cloud-hypervisor` stage, so the installed system
    reports over vsock (`systemd-notify`, systemd 256 or later; `socat` on
    older images).

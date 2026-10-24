@@ -89,7 +89,7 @@ fn assert_no_dropped_keys<T: serde::Serialize>(original: &serde_json::Value, par
 
 #[test]
 fn virtualmachineclaim_example_matches_the_type() {
-    let doc = read_example("19-virtualmachineclaim.yaml");
+    let doc = read_example("20-virtualmachineclaim.yaml");
     let claim: VirtualMachineClaim =
         serde_json::from_value(doc.clone()).expect("example must parse as a VirtualMachineClaim");
 
@@ -124,7 +124,7 @@ fn claim_status_phases_are_the_documented_four() {
 #[test]
 #[should_panic(expected = "misspelled, or invented")]
 fn a_misspelled_key_is_caught() {
-    let mut doc = read_example("19-virtualmachineclaim.yaml");
+    let mut doc = read_example("20-virtualmachineclaim.yaml");
     let spec = doc.get_mut("spec").unwrap().as_object_mut().unwrap();
     let pool_ref = spec.get_mut("poolRef").unwrap().as_object_mut().unwrap();
     let name = pool_ref.remove("name").unwrap();
@@ -202,4 +202,43 @@ fn proxmox_example_matches_the_types() {
     for kind in ["Provider", "VMImage", "VMClass", "VirtualMachine"] {
         assert!(seen.iter().any(|k| k == kind), "example lacks a {kind}");
     }
+}
+
+/// The Cloud Hypervisor Provider example (ADR-0060, ADR-0107): it must parse
+/// with no dropped key, carry no credential (an External provider reads no
+/// Secret), map every class to a `hostClass`, and show the scheduling knob
+/// inside the range the CRD enforces.
+#[test]
+fn cloud_hypervisor_provider_example_matches_the_type() {
+    use banlieue_api::banlieue::{MAX_CPU_OVERCOMMIT_RATIO, MIN_CPU_OVERCOMMIT_RATIO, Provider};
+
+    let doc = read_example("01-provider-cloud-hypervisor.yaml");
+    let p: Provider = serde_json::from_value(doc.clone()).expect("a Provider");
+    assert_no_dropped_keys(&doc["spec"], &p.spec);
+
+    assert_eq!(p.spec.provider_class_ref.name, "cloud-hypervisor");
+    assert!(
+        p.spec.connection.credentials_ref.is_none(),
+        "a Cloud Hypervisor Provider must not name a Secret (ADR-0060 Decision 4)"
+    );
+    let caps = &p.spec.capabilities;
+    assert!(!caps.storage_classes.is_empty() && !caps.network_classes.is_empty());
+    for target in caps
+        .storage_classes
+        .iter()
+        .map(|c| &c.target)
+        .chain(caps.network_classes.iter().map(|c| &c.target))
+    {
+        assert!(
+            target.as_ref().is_some_and(|t| t.contains_key("hostClass")),
+            "every class maps to a host class, got {target:?}"
+        );
+    }
+    let ratio = p
+        .spec
+        .scheduling
+        .as_ref()
+        .and_then(|s| s.cpu_overcommit_ratio)
+        .expect("the example shows spec.scheduling.cpuOvercommitRatio");
+    assert!((MIN_CPU_OVERCOMMIT_RATIO..=MAX_CPU_OVERCOMMIT_RATIO).contains(&ratio));
 }

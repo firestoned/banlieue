@@ -3,10 +3,10 @@
 #
 # A VMImage built for TPM-sealed Kairos disk encryption (ADR-0039/ADR-0040).
 # Pair this with a `VMClass` setting `tpmEnabled: true` (see
-# examples/12-vmclass-tpm-encrypted.yaml).
+# examples/14-vmclass-tpm-encrypted.yaml).
 #
 # WHY `installMode: deferred` INSTEAD OF THE `immediate` DEFAULT
-# (see examples/07-vmimage-kairos-url-source.yaml):
+# (see examples/09-vmimage-kairos-url-source.yaml):
 #
 # Kairos's `kcrypt` only ever seals encryption keys to a TPM that is present
 # DURING install — it has no supported way to encrypt an already-installed
@@ -86,5 +86,5 @@ spec:
     cpus: 2
     memoryMib: 4096
     firmware: efi   # vTPM requires EFI; also required by the Firmware default
-    # The one field that actually differs from example 07's Immediate mode:
+    # The one field that actually differs from example 09's Immediate mode:
     installMode: deferred   # immediate (default) | deferred | manual — see ADR-0040

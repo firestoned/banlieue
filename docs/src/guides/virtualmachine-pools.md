@@ -33,12 +33,12 @@ The only way to hand out such a VM quickly is to have installed it already.
 
 ## Quick start
 
-`examples/18-virtualmachinepool.yaml` is a complete pool. It pairs with the
-Provider, `VMImage` and `VMClass` from `examples/17-virtualmachine-libvirt.yaml`.
+`examples/19-virtualmachinepool.yaml` is a complete pool. It pairs with the
+Provider, `VMImage` and `VMClass` from `examples/18-virtualmachine-libvirt.yaml`.
 
 ```sh
-kubectl apply -f examples/17-virtualmachine-libvirt.yaml
-kubectl apply -f examples/18-virtualmachinepool.yaml
+kubectl apply -f examples/18-virtualmachine-libvirt.yaml
+kubectl apply -f examples/19-virtualmachinepool.yaml
 kubectl get virtualmachinepool,virtualmachine -n banlieue-system -w
 ```
 
@@ -86,11 +86,11 @@ claimable. How the installed system reports differs by backend:
 
 | Backend | How the installed system reports | What the image or user-data must carry | Verified live |
 | --- | --- | --- | --- |
-| **libvirt** | writes `/run/banlieue/phase`; the provider reads it through `qemu-guest-agent` | the libvirt stage of `examples/16-cloud-config-guest-phase.yaml`, and `qemu-guest-agent` installed and enabled. A `tpmEnabled` class also needs `examples/20-cloud-config-guest-ek-certificate.yaml` plus `tpm2-tools` and `openssl`: swtpm keeps no host-side copy of the certificate, so the guest exports it | 2026-10-12: Deferred, `tpmEnabled`, Kairos on Debian 13. A member reached `GuestReady` **158 s** after creation, installer ejected, EK certificate published; the pool e2e (warm, claim, refill, release, pool deletion) passed |
+| **libvirt** | writes `/run/banlieue/phase`; the provider reads it through `qemu-guest-agent` | the libvirt stage of `examples/17-cloud-config-guest-phase.yaml`, and `qemu-guest-agent` installed and enabled. A `tpmEnabled` class also needs `examples/21-cloud-config-guest-ek-certificate.yaml` plus `tpm2-tools` and `openssl`: swtpm keeps no host-side copy of the certificate, so the guest exports it | 2026-10-12: Deferred, `tpmEnabled`, Kairos on Debian 13. A member reached `GuestReady` **158 s** after creation, installer ejected, EK certificate published; the pool e2e (warm, claim, refill, release, pool deletion) passed |
 | **Cloud Hypervisor** | `systemd-notify phase=installed` over vsock; the provider listens on the host | the Cloud Hypervisor stage of example 16. No guest agent. The EK certificate is read on the host | 2026-10-09: a 2-member pool `Warm` in **90 s**, refills in 80 s and 100 s. 2026-10-12, two hosts with the vTPM-fixed VMM: `Warm` in 115 s and 110 s, the pool e2e passed on both. See [the timings page](../reference/cloud-hypervisor-pool-timings.md) for the vTPM fault and the VMM it needs |
 | **vSphere** | `vmware-rpctool` writes `guestinfo.banlieue.phase` | the vSphere stage of example 16, and open-vm-tools | 2026-09-23: a 2-member `GuestReady` pool `Warm` in **130.3 s** |
 
-Example 16 carries all three stages; each one only runs where its
+Example 17 carries all three stages; each one only runs where its
 transport exists, so one layer serves every backend.
 
 The install itself is user-data (or a `cloudConfigs` layer baked into the
@@ -313,6 +313,7 @@ with it. See [VirtualMachine Claims](virtualmachine-claims.md).
 | `Warm=False`, reason `ReadinessSignalAbsent` | `spec.readiness` names a condition nothing publishes. Almost always `GuestReady` before ADR-0043. Switch to `InfrastructureReady` if the image is `Immediate`. |
 | `available` stays 0, members exist and are Ready | The members' `Ready` is not the condition `spec.readiness` selects. Check `kubectl get virtualmachine <member> -o jsonpath='{.status.conditions}'`. |
 | No members created at all | The pool's template does not schedule. Check a member's `Scheduled` condition; if there are no members, check the pool's own events and that the `VMClass` and `VMImage` it names exist. |
+| Members exist but stay `Scheduled=False`, `NoFailureDomainMatched`, with `insufficient capacity` | The hosts the pool may use are full for its class (ADR-0107): the pool's `Capacity` condition is about its own `maxReplicas` and address range, not about hosts. Raise the hosts' budget, add a host, or lower `warmReplicas`. On Cloud Hypervisor, see [VM resource limits](cloud-hypervisor-host.md#vm-resource-limits-banlieueslice). |
 | `Capacity=False`, `MaxReplicasReached` | `maxReplicas` is below what `warmReplicas` plus churn needs. |
 | `Capacity=False`, `AddressRangeExhausted` | The address range has no spares above `maxReplicas`. |
 | Members churn: created, then deleted, repeatedly | `provisioningTimeoutSeconds` is shorter than the image takes to install. |

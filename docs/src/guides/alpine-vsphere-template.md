@@ -338,7 +338,7 @@ a folder/datacenter the provider's vCenter user can see — the same datacenter 
 ## Step 8 — Register it with banlieue
 
 Create a `VMImage` whose vSphere source `ref` is the template name (mirrors
-`examples/04-vmimage-ubuntu.yaml`):
+`examples/06-vmimage-ubuntu.yaml`):
 
 ```yaml
 apiVersion: banlieue.io/v1alpha1

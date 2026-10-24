@@ -9,7 +9,7 @@
 # the VM itself is the isolation boundary between subjects, so a member that
 # has been exposed to one can never be given to another.
 #
-# Pairs with the pool in 18-virtualmachinepool.yaml.
+# Pairs with the pool in 19-virtualmachinepool.yaml.
 #
 # READ THIS BEFORE COPYING
 #

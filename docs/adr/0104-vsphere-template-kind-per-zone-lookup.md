@@ -130,7 +130,7 @@ two spellings depending on source kind, and every `Url` image would still need
   Because of problem 1 no clone from a `Template`-kind image could ever have
   succeeded, so no working deployment depends on the old datacenter-wide
   lookup. A repo search found the old model only in unit-test fixtures,
-  `examples/04-vmimage-ubuntu.yaml`, and the `Template` sections of the vSphere
+  `examples/06-vmimage-ubuntu.yaml`, and the `Template` sections of the vSphere
   provider guide and the Alpine template guide; all are updated here. Operators
   must move or copy adopted templates into the per-zone folders (or accept
   `TemplateNotFound`).

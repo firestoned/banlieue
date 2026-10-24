@@ -22,8 +22,8 @@ flowchart TB
 
     subgraph P2["2️⃣ Register a backend<br/>(ADR-0003, ADR-0012)"]
       direction LR
-      prov[("Provider")] -->|"operator mints a\ndedicated workload"| provpod["banlieue-provider-vsphere\n/ -libvirt"]
-      provpod -->|introspects| backend[("vCenter / libvirt host")]
+      prov[("Provider")] -->|"operator mints an identity\n(and a workload, in-cluster)"| provpod["banlieue-provider-cloud-hypervisor (on the host)\n/ -vsphere / -libvirt / -proxmox"]
+      provpod -->|introspects| backend[("KVM host / vCenter /\nlibvirt host / Proxmox node")]
       provpod -->|publishes| fds["status.failureDomains[]"]
     end
 
@@ -487,15 +487,20 @@ registered yet. See **[Core Controller](core-controller.md)**.
 
 ### 2. Register a backend
 
-Apply a `Provider` (endpoint, credentials, declared storage/network
-classes). `banlieue-operator` mints a dedicated Deployment + ServiceAccount
-+ Role + RoleBinding for it (one per `Provider`, so a hung backend never
-stalls another — ADR-0003), and that pod logs in, introspects the backend,
-and publishes `status.failureDomains[]`.
+Apply a `Provider` (declared storage/network classes and, for the in-cluster
+backends, an endpoint and credentials). `banlieue-operator` gives each one
+its own identity: for the in-cluster backends a dedicated Deployment,
+ServiceAccount, Role and RoleBinding (one per `Provider`, so a hung backend
+never stalls another, ADR-0003); for a Cloud Hypervisor host only the
+identity, since its provider runs on the host itself (ADR-0060). The
+provider introspects its backend and publishes `status.failureDomains[]`,
+with capacity where it can measure it (ADR-0107).
 
 **Output:** one or more reachable failure domains, ready for scheduling.
-See **[vSphere Provider](vsphere-provider.md)** /
-**[libvirt Provider](libvirt-provider.md)**, and
+See **[Cloud Hypervisor Provider](cloud-hypervisor-host.md)** (the reference
+backend) / **[vSphere Provider](vsphere-provider.md)** /
+**[libvirt Provider](libvirt-provider.md)** /
+**[Proxmox VE Provider](proxmox-provider.md)**, and
 **[Environment / Provider Isolation](environment-provider-isolation.md)**
 before you reach for a *second* `Provider` for what's actually the same
 backend.

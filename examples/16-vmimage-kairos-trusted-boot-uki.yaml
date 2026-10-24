@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # A VMImage built as a Trusted Boot (UKI) artifact (ADR-0051). Pairs with
-# examples/13-vmimage-kairos-deferred-install-tpm.yaml's TPM-sealed
+# examples/15-vmimage-kairos-deferred-install-tpm.yaml's TPM-sealed
 # `kcrypt` cloud-config and a VMClass setting `tpmEnabled: true` — this
 # example is the image-build-time half of that same end-to-end feature;
 # ADR-0039/ADR-0040 are the VM-instance-time half (vTPM device attach +

@@ -6,7 +6,7 @@
 #
 # This is a `cloudConfigs` layer for a Deferred-mode VMImage (ADR-0037), not
 # a standalone object: add it to the image's layers and rebuild. It is the
-# companion to 16-cloud-config-guest-phase.yaml and belongs beside it — both
+# companion to 17-cloud-config-guest-phase.yaml and belongs beside it — both
 # write into /run/banlieue, and on libvirt a `tpmEnabled` machine needs BOTH
 # before it will report GuestReady.
 #
@@ -70,11 +70,11 @@ stages:
 #
 # USING IT
 #
-#   1. Add this layer AND 16-cloud-config-guest-phase.yaml to a Deferred
+#   1. Add this layer AND 17-cloud-config-guest-phase.yaml to a Deferred
 #      VMImage's `spec.cloudConfigs` and rebuild.
 #   2. Pair it with a VMClass setting `tpmEnabled: true`
-#      (12-vmclass-tpm-encrypted.yaml) and a Deferred image
-#      (13-vmimage-kairos-deferred-install-tpm.yaml) — ADR-0048 rejects
+#      (14-vmclass-tpm-encrypted.yaml) and a Deferred image
+#      (15-vmimage-kairos-deferred-install-tpm.yaml) — ADR-0048 rejects
 #      `tpmEnabled` with an Immediate image before scheduling.
 #   3. Watch a member publish it:
 #

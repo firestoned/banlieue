@@ -1,5 +1,93 @@
 # Changelog
 
+## [2026-10-24 18:00] - Examples renumbered: Cloud Hypervisor first
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `examples/`: the two Cloud Hypervisor examples lead (01 the full
+  `Provider`, 02 the complete walkthrough), every other example keeps its
+  relative order, and the numbering is contiguous 01 to 23 (the old gap at
+  15 is gone). 22 and 23 are unchanged. Mapping:
+  - `24-provider-cloud-hypervisor.yaml` → `01-provider-cloud-hypervisor.yaml`
+  - `21-virtualmachine-cloud-hypervisor.yaml` → `02-virtualmachine-cloud-hypervisor.yaml`
+  - `01-provider-vsphere-dc1.yaml` → `03-provider-vsphere-dc1.yaml`
+  - `02-provider-libvirt-edge.yaml` → `04-provider-libvirt-edge.yaml`
+  - `03-vmclass-db-prod-large.yaml` → `05-vmclass-db-prod-large.yaml`
+  - `04-vmimage-ubuntu.yaml` → `06-vmimage-ubuntu.yaml`
+  - `05-virtualmachine.yaml` → `07-virtualmachine.yaml`
+  - `06-vspherecluster-multi-vcenter.yaml` → `08-vspherecluster-multi-vcenter.yaml`
+  - `07-vmimage-kairos-url-source.yaml` → `09-vmimage-kairos-url-source.yaml`
+  - `08-providerclass-vsphere.yaml` → `10-providerclass-vsphere.yaml`
+  - `09-providerclass-libvirt.yaml` → `11-providerclass-libvirt.yaml`
+  - `10-virtualmachine-static-ip.yaml` → `12-virtualmachine-static-ip.yaml`
+  - `11-virtualmachine-configmap-userdata.yaml` → `13-virtualmachine-configmap-userdata.yaml`
+  - `12-vmclass-tpm-encrypted.yaml` → `14-vmclass-tpm-encrypted.yaml`
+  - `13-vmimage-kairos-deferred-install-tpm.yaml` → `15-vmimage-kairos-deferred-install-tpm.yaml`
+  - `14-vmimage-kairos-trusted-boot-uki.yaml` → `16-vmimage-kairos-trusted-boot-uki.yaml`
+  - `16-cloud-config-guest-phase.yaml` → `17-cloud-config-guest-phase.yaml`
+  - `17-virtualmachine-libvirt.yaml` → `18-virtualmachine-libvirt.yaml`
+  - `18-virtualmachinepool.yaml` → `19-virtualmachinepool.yaml`
+  - `19-virtualmachineclaim.yaml` → `20-virtualmachineclaim.yaml`
+  - `20-cloud-config-guest-ek-certificate.yaml` → `21-cloud-config-guest-ek-certificate.yaml`
+- Every reference moved with them: `crates/banlieue-api/tests/examples.rs`,
+  the libvirt e2e/live tests, a controller doc comment, the Makefile,
+  `scripts/build-kairos-debian-iso.sh`, the guides, ADR file links, and the
+  examples' own cross-references ("example NN" in prose renumbered by hand).
+  The obsolete note in `18-virtualmachine-libvirt.yaml` reserving numbers
+  for the pool examples is removed. Past CHANGELOG entries keep the old
+  numbers.
+
+### Impact
+- [ ] Breaking change (paths under `examples/` changed; nothing installs from them)
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+## [2026-10-24 17:00] - Docs: Cloud Hypervisor first, then vSphere, libvirt, Proxmox
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docs/mkdocs.yml`: Guides regrouped into Getting Started, Providers (Cloud
+  Hypervisor, vSphere, libvirt, Proxmox VE, each with its companion guides),
+  Workloads, Images and Operations. All 22 guides kept.
+- `guides/cloud-hypervisor-host.md`: titled "Cloud Hypervisor Provider",
+  opens with what the reference backend gives (no hypervisor daemon or
+  credential, a uid per guest, a budget the scheduler places against, images
+  by digest, a vTPM per guest, measured pool timings); the stale "provider
+  not released yet" warning is replaced with when the unit starts.
+- `index.md`, `overview.md`, `README.md`: Cloud Hypervisor leads every
+  backend list and diagram, with a "Cloud Hypervisor first" section; the
+  project status is corrected (all four providers create VMs; Proxmox's
+  cluster e2e is the last item), replacing claims that only vSphere created
+  VMs, that libvirt had no VM lifecycle and that Proxmox had no provider;
+  the overview walkthrough follows a `CloudHypervisorMachine`; the README's
+  repository layout gains six missing crates and its CRD table all four
+  infra kinds; the Rust badge says 1.89; "phase plans kept outside this
+  repository" now points to `ROADMAPS.md`.
+- `guides/index.md`: sectioned the same way, Cloud Hypervisor first; pinned
+  to v0.4.5 (was v0.4.0).
+- `concepts/architecture.md`: the controller table gains the Cloud
+  Hypervisor and Proxmox providers and corrects libvirt's (lifecycle
+  implemented); support libraries list every first-party client.
+- `reference/provider-comparison.md`: columns Cloud Hypervisor, vSphere,
+  libvirt, Proxmox; Proxmox status corrected (its column remains roadmap
+  06's item).
+- `concepts/providers.md`, `reasoning/abstraction-principle.md`,
+  `guides/end-to-end-setup.md`, `guides/core-controller.md`: backend lists
+  and next steps in the same order, including Proxmox where it was missing.
+
+### Why
+Cloud Hypervisor is the reference backend; the docs led with vSphere and
+described a project state several releases old.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
 ## [2026-10-24 14:00] - ADR-0107: capacity-aware scheduling
 
 **Author:** Erick Bourgeois
@@ -39,14 +127,26 @@
   `concepts/providers.md` (`scheduling.cpuOvercommitRatio`, one host one
   Provider), `cloud-hypervisor-host.md` (the scheduler now reads the slice
   budget; how to see a host's capacity; troubleshooting row for
-  `insufficient capacity`). Roadmap 03's capacity-aware-spread question
-  marked partly answered.
+  `insufficient capacity`), `concepts/architecture.md` (the capacity fit in
+  the placement step), `concepts/providers.md` "What a provider controller
+  does" item 9 (publish capacity if you can measure it), and a
+  `virtualmachine-pools.md` troubleshooting row (members unplaceable for
+  capacity, distinct from the pool's own `Capacity` condition). Roadmap 03's
+  capacity-aware-spread question marked partly answered.
 - CALM: `capacity-aware-placement` control; controller and CH provider
   descriptions; ADR-0107 registered.
 - Threat model full pass, stamp 2026-10-24 / ADR-0107: §2 controller row, one
   TB-1 row, two TB-8 rows, §7.27, three §8 risks.
 
+- `examples/24-provider-cloud-hypervisor.yaml`: a complete Cloud Hypervisor
+  `Provider` (host-class mappings, `vtpm`, EK trust bundle,
+  `scheduling.cpuOvercommitRatio`) with an annotated excerpt of the capacity
+  status it publishes; linked from `concepts/providers.md` and the CH host
+  guide.
+
 ### Tests
+- `examples.rs::cloud_hypervisor_provider_example_matches_the_type` (no
+  dropped key, no credential, every class a `hostClass`, ratio in range).
 - `provider_tests.rs` (API, 5), `scheduler_tests.rs` (10 capacity cases),
   CH `provider_tests.rs` (5) and `systemd_tests.rs` (5, including systemd's
   real encoding), `banlieue-host` render test pinning the slice names.

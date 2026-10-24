@@ -2,7 +2,7 @@
 
 A **provider** is the unit of pluggability in banlieue. A provider is whatever
 turns a uniform `VirtualMachine` request into a real VM on a specific backend
-(vSphere, Proxmox, libvirt, …).
+(Cloud Hypervisor, vSphere, libvirt, Proxmox VE, …).
 
 This page explains what a provider *is* on the wire, what it implements, and
 how it plugs in. For the reasoning behind the design, see
@@ -58,8 +58,8 @@ spec:
 Notes:
 
 - `providerClassRef.name` references a `ProviderClass` CR, which carries the
-  backend kind (`spec.backend`, drawn from a well-known set — `vsphere`,
-  `libvirt`, `cloud-hypervisor` and `proxmox`) plus install metadata (image,
+  backend kind (`spec.backend`, drawn from a well-known set: `cloud-hypervisor`,
+  `vsphere`, `libvirt` and `proxmox`) plus install metadata (image,
   resources, RBAC) without changing this reference. See
   [ADR-0012](https://github.com/firestoned/banlieue/blob/main/docs/adr/0012-providerclass-crd-and-operator-role.md).
 - The user never sees the `connection:` / `capabilities:` blocks. They're owned
@@ -87,6 +87,9 @@ Notes:
       scheduling:
         cpuOvercommitRatio: 2   # at most 2 vCPUs per published CPU
     ```
+
+    `examples/01-provider-cloud-hypervisor.yaml` is a complete Cloud
+    Hypervisor `Provider` with this field and the capacity it is applied to.
 - When provisioning Kubernetes clusters via CAPI, a `VSphereCluster`
   (InfraCluster) aggregates the `status.failureDomains[]` of one or more
   `Provider`s — so a single cluster can span multiple vCenters. See
@@ -146,6 +149,15 @@ A provider controller is a Kubernetes controller. Its responsibilities:
    owns is never adopted or destroyed
    ([ADR-0075](https://github.com/firestoned/banlieue/blob/main/docs/adr/0075-proxmoxmachine-inframachine-contract.md),
    [ADR-0101](https://github.com/firestoned/banlieue/blob/main/docs/adr/0101-vspheremachine-ownership-marker-and-adoption.md)).
+9. **Publish capacity, if it can measure it.** Optional, but it is what lets
+   the scheduler stop placing VMs on a full failure domain. Fill
+   `status.failureDomains[].attributes.capacity` with what guests may use
+   there: `cpus`, `memoryMiB` (after anything the backend reserves, or a
+   smaller budget it enforces), and `memoryOverheadMiBPerVM` (what each VM
+   costs beyond its class's memory). Publish only figures you measured; leave
+   out any you cannot, and the scheduler does not check that resource. The
+   Cloud Hypervisor provider is the reference (`provider.rs::guest_capacity`)
+   ([ADR-0107](https://github.com/firestoned/banlieue/blob/main/docs/adr/0107-capacity-aware-scheduling.md)).
 
 ## What a provider controller does **not** do
 

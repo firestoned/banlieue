@@ -3,7 +3,7 @@
 #
 # A VirtualMachine pinned to a static address on one VMClass-declared
 # interface, with a per-VM memory bump (ADR-0024). The VMClass
-# ("db-prod-large", see 03-vmclass-db-prod-large.yaml) itself only declares
+# ("db-prod-large", see 05-vmclass-db-prod-large.yaml) itself only declares
 # `dhcp` for eth0 — networkOverrides is what lets THIS one VM get a fixed
 # address without needing a class of its own.
 #

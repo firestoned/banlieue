@@ -145,8 +145,8 @@ consequence of "provisioned" meaning "install just started" rather than
    and generates its own machine-id/SSH host keys naturally, and the VM is
    meant to keep running as the production workload after install completes,
    not power itself off for templating. Add a new example
-   (`examples/13-vmimage-kairos-deferred-install-tpm.yaml`) showing this
-   contract alongside `tpmEnabled: true`, distinct from example 07's
+   (`examples/15-vmimage-kairos-deferred-install-tpm.yaml`) showing this
+   contract alongside `tpmEnabled: true`, distinct from example 09's
    `Immediate`-mode contract.
 
 4. **Document the status/timing consequence.** `VSphereMachineStatus`
@@ -198,6 +198,6 @@ consequence of "provisioned" meaning "install just started" rather than
   use case.
 - `Immediate`-mode images remain fully supported and unaffected — this is
   purely an additive, opt-in path for the specific `tpmEnabled: true` case.
-- Existing example `07-vmimage-kairos-url-source.yaml` and any other
+- Existing example `09-vmimage-kairos-url-source.yaml` and any other
   `VMImage` using the old `autoManageInstall` field name need a mechanical
   rename to `installMode: Immediate` (schema rename, not a behavior change).

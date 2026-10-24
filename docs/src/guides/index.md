@@ -2,7 +2,11 @@
 
 Production-oriented, step-by-step guides for installing and operating banlieue
 on a real cluster, using the released container image
-`ghcr.io/firestoned/banlieue:v0.4.0`. No build-from-source, no simulators.
+`ghcr.io/firestoned/banlieue:v0.4.5`. No build-from-source, no simulators.
+
+## Get started
+
+Bring up a management cluster and install banlieue.
 
 <div class="grid cards" markdown>
 
@@ -23,11 +27,27 @@ on a real cluster, using the released container image
     Install the CRDs, the `banlieue-controller`, RBAC, and the optional
     ValidatingAdmissionPolicies — the foundation every provider builds on.
 
-- :material-puzzle: **[Cluster API](cluster-api.md)**
+</div>
 
-    Install banlieue as a clusterctl infrastructure provider with
-    `clusterctl init --infrastructure banlieue`, and the scoped ClusterRole
-    that authorises Cluster API's manager on the infrastructure kinds only.
+## Providers
+
+One guide per backend, in the order we recommend them: Cloud Hypervisor first.
+
+<div class="grid cards" markdown>
+
+- :material-star-circle: **[Cloud Hypervisor Provider](cloud-hypervisor-host.md)**
+
+    **The reference backend.** A bare-metal Linux host (Debian, Kairos, any
+    systemd distribution) to VMs banlieue schedules: the VMM and firmware from
+    GitHub or your mirror, a guest per systemd unit under its own uid, a
+    budgeted guests' slice the scheduler places against, OCI images by
+    digest, a vTPM per guest, and measuring what the VMs cost the host.
+
+- :material-shield-lock: **[Cloud Hypervisor: Host Internals](cloud-hypervisor-host-systemd.md)**
+
+    Every unit setting, slice, polkit rule, tmpfiles entry and guest identity
+    the Cloud Hypervisor host needs, why each is there, and what breaks
+    without it.
 
 - :material-server-network: **[vSphere Provider](vsphere-provider.md)**
 
@@ -37,31 +57,27 @@ on a real cluster, using the released container image
 
 - :material-server: **[libvirt Provider](libvirt-provider.md)**
 
-    Register a libvirt/KVM host over mutual TLS and import a guest image onto
-    it — a first-party RPC client, no `libvirt-dev` and no `virsh`.
+    Register a libvirt/KVM host over mutual TLS and run VMs on it: image
+    import, the `LibvirtMachine` lifecycle, cloud-init and vTPM, through a
+    first-party RPC client, with no `libvirt-dev` and no `virsh`.
+
+- :material-cloud-check: **[cloud-init on libvirt](cloud-init-on-libvirt.md)**
+
+    How `spec.userData` reaches a guest as a NoCloud seed, why the image is
+    Joliet, and how to tell from outside whether cloud-init consumed it.
 
 - :material-server: **[Proxmox VE Provider](proxmox-provider.md)**
 
     Register a Proxmox node with a least-privilege API token and run VMs as
     full clones of a template, with cloud-init delivered as a NoCloud ISO.
 
-- :material-server-security: **[Cloud Hypervisor Host Bootstrap](cloud-hypervisor-host.md)**
+</div>
 
-    Prepare a bare-metal Linux host (Debian, Kairos, any systemd
-    distribution) for the host-resident Cloud Hypervisor provider: the VMM
-    and firmware from GitHub or your own mirror, at the pinned or a newer
-    release, per-guest uids, a per-host EK CA, and a safe way to add a bridge
-    to a remote machine.
+## Workloads
 
-- :material-shield-lock: **[Cloud Hypervisor Host: systemd, polkit, identities](cloud-hypervisor-host-systemd.md)**
+Warm pools, single-use claims, the identity layer above them, and Cluster API.
 
-    Every unit setting, polkit rule, tmpfiles entry and guest identity the
-    Cloud Hypervisor host needs, why each is there, and what breaks without it.
-
-- :material-cloud-check: **[cloud-init on libvirt](cloud-init-on-libvirt.md)**
-
-    How `spec.userData` reaches a guest as a NoCloud seed, why the image is
-    Joliet, and how to tell from outside whether cloud-init consumed it.
+<div class="grid cards" markdown>
 
 - :material-layers-triple: **[VirtualMachine Pools](virtualmachine-pools.md)**
 
@@ -88,6 +104,20 @@ on a real cluster, using the released container image
     establishes *who* you are, the admission checks, the bind race, the state
     machine, and the two finalizers that make release mean something.
 
+- :material-puzzle: **[Cluster API](cluster-api.md)**
+
+    Install banlieue as a clusterctl infrastructure provider with
+    `clusterctl init --infrastructure banlieue`, and the scoped ClusterRole
+    that authorises Cluster API's manager on the infrastructure kinds only.
+
+</div>
+
+## Images
+
+Building the disk images VMs boot from.
+
+<div class="grid cards" markdown>
+
 - :material-cloud-download: **[Setting up the Kairos Operator](kairos-operator-setup.md)**
 
     Install the third-party [Kairos operator](https://kairos.io) banlieue's
@@ -98,6 +128,14 @@ on a real cluster, using the released container image
     Turn an OCI/Kairos image into a `VMImage` raw disk automatically (ADR-0010)
     — install `banlieue-imagebuilder`, watch the build, and see exactly what's
     implemented today versus tracked as a follow-up.
+
+</div>
+
+## Operations
+
+Running banlieue day to day.
+
+<div class="grid cards" markdown>
 
 - :material-chart-line: **[Observability](observability.md)**
 
@@ -113,8 +151,8 @@ on a real cluster, using the released container image
 
 ## Conventions used in these guides
 
-- Everything is pinned to the released tag **`v0.4.0`**. Manifests live in the
-  repository under [`deploy/`](https://github.com/firestoned/banlieue/tree/v0.4.0/deploy)
+- Everything is pinned to the released tag **`v0.4.5`**. Manifests live in the
+  repository under [`deploy/`](https://github.com/firestoned/banlieue/tree/v0.4.5/deploy)
   at that tag; the guides apply them directly.
 - All workloads run in the **`banlieue-system`** namespace under the
   Pod Security **restricted** profile.
@@ -124,6 +162,6 @@ on a real cluster, using the released container image
 
 ```sh
 # Pin the repo to the release so the manifests match the image.
-git clone --branch v0.4.0 --depth 1 https://github.com/firestoned/banlieue
+git clone --branch v0.4.5 --depth 1 https://github.com/firestoned/banlieue
 cd banlieue
 ```

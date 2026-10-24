@@ -1,6 +1,10 @@
 # anatomy.md
 
-> Auto-maintained by OpenWolf. Last scanned: 2026-10-24T04:00:00.340Z
+<<<<<<< Updated upstream
+> Auto-maintained by OpenWolf. Last scanned: 2026-10-24T16:00:00.195Z
+=======
+> Auto-maintained by OpenWolf. Last scanned: 2026-10-24T22:00:00.191Z
+>>>>>>> Stashed changes
 > Files: 511 tracked | Anatomy hits: 0 | Misses: 0
 
 ## ./
@@ -22,7 +26,7 @@
 - `Makefile` — Make build targets (~29885 tok)
 - `NOTICE` (~159 tok)
 - `osv-scanner.toml` — SPDX-License-Identifier: Apache-2.0 (~120 tok)
-- `README.md` — Project documentation (~3379 tok)
+- `README.md` — Project documentation (~3895 tok)
 - `ROADMAPS.md` — Roadmaps (~4416 tok)
 - `SECURITY.md` — Security Policy (~382 tok)
 
@@ -141,9 +145,15 @@
 
 ## crates/banlieue-api/src/banlieue/
 
+<<<<<<< Updated upstream
 - `mod.rs` — `banlieue.io/v1alpha1` API group. (~688 tok)
 - `provider_tests.rs` — Unit tests for `provider.rs`. (~11104 tok)
 - `provider.rs` — `banlieue.io/v1alpha1` Provider CRD. (~8954 tok)
+=======
+- `mod.rs` — `banlieue.io/v1alpha1` API group. (~651 tok)
+- `provider_tests.rs` — Unit tests for `provider.rs`. (~10301 tok)
+- `provider.rs` — `banlieue.io/v1alpha1` Provider CRD. (~8110 tok)
+>>>>>>> Stashed changes
 - `providerclass_tests.rs` — Unit tests for `providerclass.rs`. (~3356 tok)
 - `providerclass.rs` — `banlieue.io/v1alpha1` ProviderClass CRD. (~4099 tok)
 - `virtualmachine_tests.rs` — Unit tests for `virtualmachine.rs`. (~7592 tok)
@@ -178,7 +188,7 @@
 
 ## crates/banlieue-api/tests/
 
-- `examples.rs` — Every `examples/*.yaml` must parse into the types it names. (~2324 tok)
+- `examples.rs` — Every `examples/*.yaml` must parse into the types it names. (~2776 tok)
 
 ## crates/banlieue-cloud-hypervisor/
 
@@ -239,7 +249,11 @@
 - `claim_plan.rs` — Pure decisions behind the `VirtualMachineClaim` reconciler (ADR-0047). (~2686 tok)
 - `claim_tests.rs` — Unit tests for `claim.rs`. (~495 tok)
 - `claim.rs` — `VirtualMachineClaim` reconciler (roadmap 17, ADR-0047). (~4601 tok)
+<<<<<<< Updated upstream
 - `infra_tests.rs` — Unit tests for [`super::super::infra`]. (~21030 tok)
+=======
+- `infra_tests.rs` — Unit tests for [`super::super::infra`]. (~21020 tok)
+>>>>>>> Stashed changes
 - `infra.rs` — Build provider-specific infrastructure CRs from a scheduler [`Decision`]. (~12074 tok)
 - `migration_tests.rs` — Unit tests for [`super::super::migration`]. (~2925 tok)
 - `migration.rs` — Migration sub-loop — recreate-only path for Phase 1A iteration 3. (~2262 tok)
@@ -248,6 +262,7 @@
 - `pool_plan.rs` — Pure planning logic for `VirtualMachinePool` (roadmap 17, ADR-0046). (~3198 tok)
 - `pool_tests.rs` — Unit tests for `pool.rs`. (~3070 tok)
 - `pool.rs` — `VirtualMachinePool` reconciler (roadmap 17, ADR-0046). (~5253 tok)
+<<<<<<< Updated upstream
 - `scheduler_tests.rs` — Unit tests for [`super::super::scheduler`]. (~16436 tok)
 - `scheduler.rs` — Scheduler — the pure placement function. (~9886 tok)
 - `status_mirror_tests.rs` — Unit tests for [`super::super::status_mirror`]. (~8338 tok)
@@ -257,6 +272,17 @@
 - `vmimage_tests.rs` — Unit tests for the `VMImage` aggregate-readiness reconciler. (~3146 tok)
 - `vmimage.rs` — Aggregate readiness for `VMImage` (ADR-0015). (~3393 tok)
 - `vsphere_cluster_tests.rs` — Unit tests for [`super::super::vsphere_cluster`]. (~3440 tok)
+=======
+- `scheduler_tests.rs` — Unit tests for [`super::super::scheduler`]. (~13878 tok)
+- `scheduler.rs` — Scheduler — the pure placement function. (~8629 tok)
+- `status_mirror_tests.rs` — Unit tests for [`super::super::status_mirror`]. (~8338 tok)
+- `status_mirror.rs` — `VirtualMachine` status mirror. (~3571 tok)
+- `virtualmachine_tests.rs` — Unit tests for [`super::super::virtualmachine`]. (~4336 tok)
+- `virtualmachine.rs` — `VirtualMachine` reconciler — Phase 1A iteration 2. (~14998 tok)
+- `vmimage_tests.rs` — Unit tests for the `VMImage` aggregate-readiness reconciler. (~3146 tok)
+- `vmimage.rs` — Aggregate readiness for `VMImage` (ADR-0015). (~3393 tok)
+- `vsphere_cluster_tests.rs` — Unit tests for [`super::super::vsphere_cluster`]. (~3413 tok)
+>>>>>>> Stashed changes
 - `vsphere_cluster.rs` — `VSphereCluster` reconciler — CAPI InfraCluster failure-domain aggregation. (~2840 tok)
 
 ## crates/banlieue-controller/tests/
@@ -280,14 +306,22 @@
 - `lib.rs` — # banlieue-host (~2018 tok)
 - `ops.rs` — What the installer may do to a host, split in two (ADR-0067 Decision 1). (~1906 tok)
 - `overhead_tests.rs` — Unit tests for `overhead.rs`. (~3634 tok)
+<<<<<<< Updated upstream
 - `overhead.rs` — `banlieue host cloud-hypervisor overhead` (ADR-0106): what the VMs on (~4664 tok)
+=======
+- `overhead.rs` — `banlieue host cloud-hypervisor overhead` (ADR-0104): what the VMs on (~4664 tok)
+>>>>>>> Stashed changes
 - `paths.rs` — Where everything goes on a host. (~1160 tok)
 - `pins_tests.rs` — Unit tests for `pins.rs`: one pinned release, everywhere. (~890 tok)
 - `pins.rs` — The pinned VMM release (ADR-0067 Decision 4), and the layout of any (~1966 tok)
 - `real.rs` — The real host: the filesystem, NSS through `getent`, and commands. (~3262 tok)
 - `release_tests.rs` — Unit tests for `release.rs` (ADR-0084 Decisions 2 to 4). (~4410 tok)
 - `release.rs` — Which VMM release `install` and `selftest` mean (ADR-0084 Decisions 2 (~3183 tok)
+<<<<<<< Updated upstream
 - `render_tests.rs` — Unit tests for `render.rs`. (~2749 tok)
+=======
+- `render_tests.rs` — Unit tests for `render.rs`. (~2605 tok)
+>>>>>>> Stashed changes
 - `render.rs` — The files `install` writes (ADR-0067 Decision 5). (~3254 tok)
 - `settings_tests.rs` — Unit tests for `settings.rs`. (~1801 tok)
 - `settings.rs` — What a host is to be (ADR-0067 Decision 6): flags, each with a (~4005 tok)
@@ -479,7 +513,11 @@
 
 ## crates/banlieue-provider-libvirt/src/
 
+<<<<<<< Updated upstream
 - `app_tests.rs` — Unit tests for [`super::super::app`]. (~2544 tok)
+=======
+- `app_tests.rs` — Unit tests for [`super::super::app`]. (~2535 tok)
+>>>>>>> Stashed changes
 - `app.rs` — # `banlieue provider libvirt` entry point (~3829 tok)
 - `client_tests.rs` — Unit tests for `client.rs`. (~798 tok)
 - `client.rs` — The libvirt-facing seam. (~2195 tok)
@@ -499,9 +537,15 @@
 - `libvirtmachine_tests.rs` — Unit tests for the `LibvirtMachine` reconciler. (~15548 tok)
 - `libvirtmachine.rs` — `LibvirtMachine` reconciler — a scheduled VM becomes a real domain (~13347 tok)
 - `mod.rs` — libvirt provider reconcilers. (~132 tok)
+<<<<<<< Updated upstream
 - `provider_tests.rs` — Unit tests for the `Provider` reconciler. (~2620 tok)
 - `provider.rs` — `Provider` reconciler for backend class `libvirt`. (~3809 tok)
 - `vmimage_tests.rs` — Unit tests for the `VMImage` reconciler. (~6779 tok)
+=======
+- `provider_tests.rs` — Unit tests for the `Provider` reconciler. (~2610 tok)
+- `provider.rs` — `Provider` reconciler for backend class `libvirt`. (~3801 tok)
+- `vmimage_tests.rs` — Unit tests for the `VMImage` reconciler. (~6769 tok)
+>>>>>>> Stashed changes
 - `vmimage.rs` — `VMImage` reconciler — the libvirt half of ADR-0010's pipeline. (~7245 tok)
 
 ## crates/banlieue-provider-libvirt/src/xml/
@@ -543,7 +587,11 @@
 
 ## crates/banlieue-provider-proxmox/src/reconciler/
 
+<<<<<<< Updated upstream
 - `image_tests.rs` — Unit tests for the `VMImage` reconciler's pure core. (~1546 tok)
+=======
+- `image_tests.rs` — Unit tests for the `VMImage` reconciler's pure core. (~1537 tok)
+>>>>>>> Stashed changes
 - `image.rs` — `VMImage` reconciler: verify the template a `VMImage` names and publish (~2467 tok)
 - `mod.rs` — Proxmox provider reconcilers. (~113 tok)
 - `provider_tests.rs` — Unit tests for the `Provider` reconciler. (~3200 tok)
@@ -622,7 +670,11 @@
 - `error.rs` — Typed errors for the vSphere provider's reconcilers. (~750 tok)
 - `guest_tests.rs` — Unit tests for `guest.rs`. (~1607 tok)
 - `guest.rs` — Reading the installed-guest marker via vSphere `guestinfo` (ADR-0043). (~1614 tok)
+<<<<<<< Updated upstream
 - `import_tests.rs` — Unit tests for the pure helpers of the `image-import` subcommand. (~5476 tok)
+=======
+- `import_tests.rs` — Unit tests for the pure helpers of the `image-import` subcommand. (~5466 tok)
+>>>>>>> Stashed changes
 - `import.rs` — `banlieue provider vsphere image-import` — the per-zone data path of (~12918 tok)
 - `k8s_name_tests.rs` — SPDX-License-Identifier: Apache-2.0 (~789 tok)
 - `k8s_name.rs` — Collision-safe Kubernetes object names built from a set of identifying (~873 tok)
@@ -642,9 +694,15 @@
 - `ca_bundle.rs` — Resolve `Provider.spec.connection.caBundle` to PEM text (ADR-0008). (~497 tok)
 - `mod.rs` — vSphere provider reconcilers. (~162 tok)
 - `provider_tests.rs` — Unit tests for [`super::super::provider`]. (~4964 tok)
+<<<<<<< Updated upstream
 - `provider.rs` — `Provider` reconciler — capability introspection against vCenter. (~6135 tok)
 - `vmimage_finalize_tests.rs` — Unit tests for [`super::super::destroy_zone_templates`] (ADR-0028: (~3183 tok)
 - `vmimage_tests.rs` — Unit tests for [`super::super::vmimage`]. (~12705 tok)
+=======
+- `provider.rs` — `Provider` reconciler — capability introspection against vCenter. (~6128 tok)
+- `vmimage_finalize_tests.rs` — Unit tests for [`super::super::destroy_zone_templates`] (ADR-0028: (~3183 tok)
+- `vmimage_tests.rs` — Unit tests for [`super::super::vmimage`]. (~12695 tok)
+>>>>>>> Stashed changes
 - `vmimage.rs` — `VMImage` reconciler — template availability and `Url`-source import (~15767 tok)
 - `vspheremachine_ensure_tests.rs` — Unit tests for [`super::super::ensure_vm`]. (~7192 tok)
 - `vspheremachine_finalize_tests.rs` — Unit tests for [`super::super::finalize_vm`] (ADR-0026: `VSphereMachine` (~1706 tok)

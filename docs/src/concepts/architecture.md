@@ -74,18 +74,25 @@ same field (ADR-0015).
 
 | Controller | Subcommand | Watches | Creates / owns | Field manager |
 | --- | --- | --- | --- | --- |
-| banlieue-controller | `banlieue controller` | `VirtualMachine`, `Provider`, `VMClass`, `VMImage`, infra CRs | Infra CRs (`VSphereMachine`) per VM; aggregates `Provider.status.failureDomains[]` into `VSphereCluster.status`; mirrors infra status onto `VirtualMachine.status` | `banlieue.io/controller` |
+| banlieue-controller | `banlieue controller` | `VirtualMachine`, `Provider`, `VMClass`, `VMImage`, infra CRs | Infra CRs (`CloudHypervisorMachine`, `VSphereMachine`, `LibvirtMachine`, `ProxmoxMachine`) per VM, placed only where the VM fits published capacity (ADR-0107); aggregates `Provider.status.failureDomains[]` into `VSphereCluster.status`; mirrors infra status onto `VirtualMachine.status` | `banlieue.io/controller` |
 | banlieue-operator | `banlieue operator` | `Provider`, `ProviderClass`, spawned Deployments | One workload per Provider: Deployment, ServiceAccount, Role, RoleBinding, ClusterRoleBinding; mirrors Deployment readiness into `Provider.status.workload` | `banlieue.io/operator` |
 | banlieue-imagebuilder | `banlieue imagebuilder` | `VMImage`, `OSArtifact` | `OSArtifact` CRs (kairos-operator) for `Url`-kind sources; `VMImage.status.buildArtifact` | `banlieue.io/imagebuilder` |
+| banlieue-provider-cloud-hypervisor | `banlieue provider cloud-hypervisor`, **on the KVM host** as a systemd service, not a pod (ADR-0060) | Its `Provider`, `CloudHypervisorMachine`, `VMImage` | One VMM per guest as a systemd unit under the guest's own uid, through systemd over D-Bus (ADR-0063); images pulled from an OCI registry by digest (ADR-0064); `Provider.status.failureDomains[]` with typed capacity from the host and its guests' slice budget (ADR-0105, ADR-0107) | `banlieue.io/provider-cloud-hypervisor` |
 | banlieue-provider-vsphere | `banlieue provider vsphere` | Its `Provider`, `VSphereMachine`, `VMImage` | vCenter VMs/templates via the BYOC vim client; per-zone `image-import` Jobs; `Provider.status.failureDomains[]`, `VMImage.status.perProvider[]` | `banlieue.io/provider-vsphere` |
-| banlieue-provider-libvirt | `banlieue provider libvirt` | Its `Provider`, `VMImage` (no machine CRD yet) | Host capability verification + per-pool image import over the pure-Rust `banlieue-libvirt` RPC client; `Provider.status.failureDomains[]`, `VMImage.status.perProvider[]`. VM/domain lifecycle (`LibvirtMachine`) is not implemented yet. | `banlieue.io/provider-libvirt` |
+| banlieue-provider-libvirt | `banlieue provider libvirt` | Its `Provider`, `LibvirtMachine`, `VMImage` | Domains over the pure-Rust `banlieue-libvirt` RPC client (ADR-0011, ADR-0050): host capability verification, per-pool image import, `LibvirtMachine` lifecycle with a NoCloud seed; `Provider.status.failureDomains[]`, `VMImage.status.perProvider[]` | `banlieue.io/provider-libvirt` |
+| banlieue-provider-proxmox | `banlieue provider proxmox` | Its `Provider`, `ProxmoxMachine`, `VMImage` | Full clones of a template over the first-party `banlieue-proxmox` REST client with a least-privilege API token, a NoCloud seed ISO per VM (ADR-0074, ADR-0075); `Provider.status.failureDomains[]` | `banlieue.io/provider-proxmox` |
 | kairos-operator (external) | — | `OSArtifact` | Artifact builds (raw cloud image or `auroraboot build-iso` ISO) onto a PVC | — |
 
-Two support libraries factor out the shared machinery:
+Support libraries factor out the shared machinery:
 `banlieue-provider-sdk` (process bootstrap, SSA helpers, finalizers,
-leader election, status) and `banlieue-libvirt` (the XDR/TLS libvirt wire
-client, ADR-0011). `banlieue-vex` is release tooling, not a runtime
-component.
+leader election, status), and one first-party client per backend API:
+`banlieue-cloud-hypervisor` (the VMM's REST API on a Unix socket,
+ADR-0061), `banlieue-libvirt` (the XDR/TLS libvirt wire client, ADR-0011)
+and `banlieue-proxmox` (the Proxmox VE REST API, ADR-0074).
+`banlieue-oci` pushes and pulls disk images by digest (ADR-0064).
+`banlieue-host` is the `banlieue host cloud-hypervisor` installer
+(ADR-0067), run once on a host and never by a controller. `banlieue-vex` is
+release tooling, not a runtime component.
 
 ## CRDs
 
@@ -173,8 +180,11 @@ flowchart LR
 1. User applies a `VirtualMachine`.
 2. **Main controller** resolves `classRef` / `imageRef` and filters
    candidate Providers and failure domains through `placement`
-   (provider selector, failure-domain selector, anti-affinity), then
-   server-side-applies a `VSphereMachine` owned by the `VirtualMachine`.
+   (provider selector, failure-domain selector, anti-affinity) and, where a
+   failure domain publishes capacity, whether the VM fits beside the VMs
+   already there
+   ([ADR-0107](https://github.com/firestoned/banlieue/blob/main/docs/adr/0107-capacity-aware-scheduling.md)),
+   then server-side-applies a `VSphereMachine` owned by the `VirtualMachine`.
 3. **Provider controller** (the pod the operator spawned for that
    Provider) sees the infra CR and provisions on its backend.
 4. **Provider** patches the infra CR's status with CAPI v1beta2-shaped

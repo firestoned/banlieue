@@ -28,12 +28,12 @@ Every other behaviour on this page is a consequence of that one sentence.
 
 ## Quick start
 
-`examples/19-virtualmachineclaim.yaml` is a complete claim against the pool
-in `examples/18-virtualmachinepool.yaml`.
+`examples/20-virtualmachineclaim.yaml` is a complete claim against the pool
+in `examples/19-virtualmachinepool.yaml`.
 
 ```sh
-kubectl apply -f examples/18-virtualmachinepool.yaml
-kubectl apply -f examples/19-virtualmachineclaim.yaml
+kubectl apply -f examples/19-virtualmachinepool.yaml
+kubectl apply -f examples/20-virtualmachineclaim.yaml
 kubectl get vmclaim -n banlieue-system -w
 ```
 

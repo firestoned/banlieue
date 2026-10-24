@@ -162,7 +162,7 @@ into a vCenter template (ADR-0020):
     power itself off for templating) and no `after-install-chroot`
     identity-wipe stage (each clone installs fresh and gets its own
     machine-id/SSH host keys naturally). See
-    [`examples/13-vmimage-kairos-deferred-install-tpm.yaml`](https://github.com/firestoned/banlieue/blob/v0.4.0/examples/13-vmimage-kairos-deferred-install-tpm.yaml)
+    [`examples/15-vmimage-kairos-deferred-install-tpm.yaml`](https://github.com/firestoned/banlieue/blob/v0.4.0/examples/15-vmimage-kairos-deferred-install-tpm.yaml)
     and ADR-0040. Note that `VSphereMachine.status.initialization.provisioned`
     still flips `true` the instant the clone powers on — for a
     `deferred`-mode VM that now means "the 8-12 minute install just
@@ -249,7 +249,7 @@ into a vCenter template (ADR-0020):
     and the enroller. Pair this with `spec.template.firmware: efi-secure` and
     a `tpmEnabled: true` `VMClass` (ADR-0039/0040) for TPM-sealed `kcrypt`
     disk encryption end to end — see
-    [`examples/14-vmimage-kairos-trusted-boot-uki.yaml`](https://github.com/firestoned/banlieue/blob/v0.4.0/examples/14-vmimage-kairos-trusted-boot-uki.yaml).
+    [`examples/16-vmimage-kairos-trusted-boot-uki.yaml`](https://github.com/firestoned/banlieue/blob/v0.4.0/examples/16-vmimage-kairos-trusted-boot-uki.yaml).
     **Live-verified:** vSphere UEFI Secure Boot key enrollment works via the
     `uefi.secureBoot.{pk,kek,db}Default.file0` VMX `extraConfig` mechanism
     (Broadcom KB 377306) — upload the three DER-encoded certs
@@ -330,7 +330,7 @@ spec:
     installMode: immediate        # immediate (default) | deferred | manual — see ADR-0040
 ```
 
-(Also available as [`examples/07-vmimage-kairos-url-source.yaml`](https://github.com/firestoned/banlieue/blob/v0.4.0/examples/07-vmimage-kairos-url-source.yaml).)
+(Also available as [`examples/09-vmimage-kairos-url-source.yaml`](https://github.com/firestoned/banlieue/blob/v0.4.0/examples/09-vmimage-kairos-url-source.yaml).)
 
 ```sh
 kubectl apply -f vmimage-kairos.yaml

@@ -48,7 +48,7 @@
 //! install writes the marker *at the right moment* — that its
 //! `/run/cos/active_mode` guard keeps it out of the live installer. That
 //! needs an image built with the phase layer
-//! (`examples/16-cloud-config-guest-phase.yaml`) and is a separate gap.
+//! (`examples/17-cloud-config-guest-phase.yaml`) and is a separate gap.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};

@@ -14,7 +14,7 @@
 //! accepted. The failure mode is the expensive kind: the patch returns 200 and
 //! the other manager's data is silently gone.
 //!
-//! `examples/04-vmimage-ubuntu.yaml` ships sources for vsphere, proxmox *and*
+//! `examples/06-vmimage-ubuntu.yaml` ships sources for vsphere, proxmox *and*
 //! libvirt, so more than one provider reconciling the same `VMImage` is the
 //! documented case, not a corner.
 //!
@@ -129,7 +129,7 @@ async fn two_providers_and_the_imagebuilder_can_share_one_vmimage_status() {
             os_version: "22.04".to_string(),
             architecture: Architecture::Amd64,
             guest_agent: GuestAgent::CloudInit,
-            // Exactly the shape examples/04-vmimage-ubuntu.yaml ships.
+            // Exactly the shape examples/06-vmimage-ubuntu.yaml ships.
             sources: vec![
                 source("vsphere", ImageSourceKind::Template, "ubuntu-22.04"),
                 source("libvirt", ImageSourceKind::Url, "https://example.com/u.raw"),

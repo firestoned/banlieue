@@ -10,8 +10,8 @@ The opinion is: **not in the user's hands.**
 > The user-facing API should describe *what* they want — not *how*, not *where*,
 > not *with what credentials*, not *against which SDK version*.
 >
-> All variation between backends — vSphere, Proxmox, libvirt, the next one —
-> belongs **behind the API**, in provider implementations that the user does
+> All variation between backends (Cloud Hypervisor, vSphere, libvirt,
+> Proxmox, the next one) belongs **behind the API**, in provider implementations that the user does
 > not see and does not need to learn.
 
 This is the **least-touch principle**. The user's workflow should be touched as
