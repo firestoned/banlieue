@@ -187,6 +187,62 @@ trait Manager {
         states: &[&str],
         patterns: &[&str],
     ) -> zbus::Result<Vec<UnitRow>>;
+
+    /// Load a unit (from its file and drop-ins, or synthesized for an
+    /// implicit parent slice) and return its object path. Read-only.
+    fn load_unit(&self, name: &str) -> zbus::Result<OwnedObjectPath>;
+}
+
+#[zbus::proxy(
+    interface = "org.freedesktop.systemd1.Slice",
+    default_service = "org.freedesktop.systemd1"
+)]
+trait Slice {
+    #[zbus(property, name = "MemoryMax")]
+    fn memory_max(&self) -> zbus::Result<u64>;
+
+    #[zbus(property, name = "AllowedCPUs")]
+    fn allowed_cpus(&self) -> zbus::Result<Vec<u8>>;
+}
+
+/// The slice every guest's VMM and vTPM runs in (ADR-0105).
+pub const GUEST_SLICE: &str = "banlieue-guests.slice";
+/// Its parent, holding every banlieue VM on the host (ADR-0106).
+pub const VMS_SLICE: &str = "banlieue.slice";
+/// Bytes in one MiB.
+const BYTES_PER_MIB: u64 = 1024 * 1024;
+
+/// A slice's `MemoryMax`, MiB rounded down; `None` for systemd's
+/// "infinity" (`u64::MAX`).
+#[must_use]
+pub fn memory_max_mib(bytes: u64) -> Option<u64> {
+    (bytes != u64::MAX).then_some(bytes / BYTES_PER_MIB)
+}
+
+/// The number of CPUs in an `AllowedCPUs` mask (byte 0 bit 0 is CPU 0);
+/// `None` when no CPU is set, which systemd means as "no restriction".
+#[must_use]
+pub fn allowed_cpu_count(mask: &[u8]) -> Option<u32> {
+    let count: u32 = mask.iter().map(|b| b.count_ones()).sum();
+    (count > 0).then_some(count)
+}
+
+/// The guests' budget: the tighter of their slice and its parent, each a
+/// `(memory MiB, CPUs)` pair.
+#[must_use]
+pub fn combine_budgets(
+    guests: (Option<u64>, Option<u32>),
+    parent: (Option<u64>, Option<u32>),
+) -> crate::provider::SliceBudget {
+    let tighter = |a: Option<u64>, b: Option<u64>| match (a, b) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    };
+    crate::provider::SliceBudget {
+        memory_max_mib: tighter(guests.0, parent.0),
+        allowed_cpus: tighter(guests.1.map(u64::from), parent.1.map(u64::from))
+            .and_then(|n| u32::try_from(n).ok()),
+    }
 }
 
 #[zbus::proxy(
@@ -241,6 +297,33 @@ impl Systemd {
         let manager = ManagerProxy::new(&conn).await?;
         manager.subscribe().await?;
         Ok(Self { conn, manager })
+    }
+
+    /// `(MemoryMax MiB, AllowedCPUs count)` of the slice `name`, from its
+    /// unit properties, which include `systemctl set-property` drop-ins and
+    /// are there while the slice is inactive.
+    ///
+    /// # Errors
+    /// The D-Bus error.
+    pub async fn slice_limits(&self, name: &str) -> zbus::Result<(Option<u64>, Option<u32>)> {
+        let path = self.manager.load_unit(name).await?;
+        let slice = SliceProxy::builder(&self.conn).path(path).build().await?;
+        Ok((
+            memory_max_mib(slice.memory_max().await?),
+            allowed_cpu_count(&slice.allowed_cpus().await?),
+        ))
+    }
+
+    /// The budget systemd enforces on guests together (ADR-0107). A slice
+    /// that cannot be read counts as unbounded, and is logged.
+    pub async fn guest_slice_budget(&self) -> crate::provider::SliceBudget {
+        let read = |name: &'static str| async move {
+            self.slice_limits(name).await.unwrap_or_else(|e| {
+                tracing::warn!(slice = name, error = %e, "slice limits unreadable; treated as unbounded");
+                (None, None)
+            })
+        };
+        combine_budgets(read(GUEST_SLICE).await, read(VMS_SLICE).await)
     }
 
     /// Set `spec`'s runtime limits, then start the instance. The

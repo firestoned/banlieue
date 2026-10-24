@@ -75,6 +75,7 @@ never does. Communication between them is CRD-only.
 | `failureDomainNameOverrides` | object[] |  | Explicit overrides for individual discovered failure domains' generated `name`. The auto-computed, collision-safe name (`<provider>-<datacenter>-<cluster>`, hashed when too long) is always the fallback for any `(datacenter, cluster)` pair with no matching entry here — this is opt-in, never required. See ADR-0023. |
 | `paused` | boolean |  | Suspend reconciliation. Equivalent to setting the `cluster.x-k8s.io/paused` annotation but in-band. |
 | `providerClassRef` | object | Yes | Reference to a ProviderClass that identifies the backend type. |
+| `scheduling` | object |  | How the scheduler places VMs on this backend (ADR-0107). Optional: without it the defaults apply. |
 | `useContentLibrary` | boolean |  | vSphere only: import `Url`-kind VMImages through a vCenter Content Library rather than the default datastore-upload + `MarkAsTemplate` path. Defaults to `false` (no Content Library required), matching environments where CL is not enabled. Ignored by non-vSphere classes. See ADR-0020. |
 
 #### `.spec.attestation`
@@ -307,6 +308,15 @@ changing this reference.
 | --- | --- | --- | --- |
 | `name` | string | Yes |  |
 
+#### `.spec.scheduling`
+
+How the scheduler places VMs on this backend (ADR-0107). Optional:
+without it the defaults apply.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `cpuOvercommitRatio` | integer |  | vCPUs the scheduler may place per CPU a failure domain publishes in `attributes.capacity.cpus`. `1` means no overcommit. CPU contention only slows guests, so the default allows 4; memory is never overcommitted. Unset: 4. |
+
 ### `.status`
 
 Observed state of a Provider: the failure domains its controller discovered
@@ -359,8 +369,21 @@ reachable from here.
 | --- | --- | --- | --- |
 | `availableNetworkClasses` | string[] |  | Subset of spec.capabilities.networkClasses[].name reachable here. |
 | `availableStorageClasses` | string[] |  | Subset of spec.capabilities.storageClasses[].name reachable here. |
+| `capacity` | object |  | What guests may use in this failure domain, as the provider measured it (ADR-0107). The scheduler fits each VM against it; a domain that publishes none is not filtered on capacity. |
 | `features` | string[] |  | Feature flags actually present here. Always a subset of spec.capabilities.features. |
 | `raw` | map[string]string |  | Provider-specific resolved attributes; for vSphere this typically includes datacenter, cluster, resourcePool. Used by the provider's controller when filling in the infrastructure CR. |
+
+###### `.status.failureDomains[].attributes.capacity`
+
+What guests may use in this failure domain, as the provider measured
+it (ADR-0107). The scheduler fits each VM against it; a domain that
+publishes none is not filtered on capacity.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `cpus` | integer |  | Logical CPUs guests may use. vCPUs are placed up to this times the Provider's `scheduling.cpuOvercommitRatio`. |
+| `memoryMiB` | integer |  | Memory guests may use, MiB: the host's, or a smaller budget the host declares for guests (a Cloud Hypervisor host's guests' slice, ADR-0105). Never overcommitted. |
+| `memoryOverheadMiBPerVM` | integer |  | Memory each VM costs beyond its class's `memoryMiB` (its VMM), MiB. |
 
 #### `.status.workload`
 

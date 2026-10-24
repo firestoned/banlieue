@@ -33,6 +33,7 @@ mod tests {
                 available_network_classes: Vec::new(),
                 features: Vec::new(),
                 raw: pairs(raw),
+                capacity: None,
             },
         }
     }
@@ -55,6 +56,7 @@ mod tests {
             use_content_library: false,
             failure_domain_name_overrides: Vec::new(),
             attestation: None,
+            scheduling: None,
         };
         let mut p = Provider::new(name, spec);
         if !labels.is_empty() {
@@ -255,6 +257,7 @@ mod tests {
                 use_content_library: false,
                 failure_domain_name_overrides: Vec::new(),
                 attestation: None,
+                scheduling: None,
             },
         );
         let refs = vec![&p1, &p2, &p3];

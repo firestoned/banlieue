@@ -72,7 +72,21 @@ Notes:
   then verifies them and reports per-failure-domain availability in
   `status.failureDomains[]`.
 - A cluster can have many `Provider`s, including multiple of the same class
-  (`prod-vsphere`, `dr-vsphere`, `lab-vsphere`).
+  (`prod-vsphere`, `dr-vsphere`, `lab-vsphere`). One backend host should be
+  one `Provider`: capacity is counted per `Provider`, so two pointing at one
+  host would each count only their own VMs.
+- `scheduling.cpuOvercommitRatio` *(1 to 64, default 4)* is how many vCPUs
+  the scheduler may place per CPU a failure domain publishes in
+  `status.failureDomains[].attributes.capacity`. Memory is never
+  overcommitted. Capacity is published today by the Cloud Hypervisor provider
+  only; a failure domain without it is not checked
+  ([ADR-0107](https://github.com/firestoned/banlieue/blob/main/docs/adr/0107-capacity-aware-scheduling.md)).
+
+    ```yaml
+    spec:
+      scheduling:
+        cpuOvercommitRatio: 2   # at most 2 vCPUs per published CPU
+    ```
 - When provisioning Kubernetes clusters via CAPI, a `VSphereCluster`
   (InfraCluster) aggregates the `status.failureDomains[]` of one or more
   `Provider`s — so a single cluster can span multiple vCenters. See

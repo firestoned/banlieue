@@ -82,6 +82,7 @@ lan = "br0"
                 failure_domain_name_overrides: Default::default(),
                 use_content_library: Default::default(),
                 attestation: None,
+                scheduling: None,
             },
         );
         p.metadata = ObjectMeta {
@@ -108,6 +109,7 @@ lan = "br0"
                 hugepages_mib: Some(0),
                 storage_free_gib: [("fast".to_string(), 812)].into(),
             },
+            guest_budget: SliceBudget::default(),
         }
     }
 
@@ -357,5 +359,86 @@ lan = "br0"
         let r = ready(&st);
         assert_eq!(r.status, "False");
         assert_eq!(r.reason, reasons::CREDENTIALS_NOT_ALLOWED);
+    }
+
+    // ------------------------------------------------------------------
+    // Typed capacity for the scheduler (ADR-0107)
+    // ------------------------------------------------------------------
+
+    fn host(cpus: Option<u32>, memory: Option<u64>, hugepages: Option<u64>) -> HostCapacity {
+        HostCapacity {
+            cpus,
+            memory_mib: memory,
+            hugepages_mib: hugepages,
+            ..HostCapacity::default()
+        }
+    }
+
+    /// No slice budget: guests may use the host, less reserved hugepages
+    /// (memory a guest cannot be given on demand).
+    #[test]
+    fn without_a_budget_guests_get_the_host_less_hugepages() {
+        let c = guest_capacity(
+            &host(Some(96), Some(262_144), Some(1024)),
+            &SliceBudget::default(),
+        );
+        assert_eq!(c.cpus, Some(96));
+        assert_eq!(c.memory_mi_b, Some(261_120));
+    }
+
+    /// A smaller budget wins; a larger one changes nothing.
+    #[test]
+    fn the_slice_budget_caps_what_guests_get() {
+        let h = host(Some(96), Some(262_144), Some(0));
+        let small = SliceBudget {
+            allowed_cpus: Some(80),
+            memory_max_mib: Some(204_800),
+        };
+        let c = guest_capacity(&h, &small);
+        assert_eq!((c.cpus, c.memory_mi_b), (Some(80), Some(204_800)));
+        let large = SliceBudget {
+            allowed_cpus: Some(128),
+            memory_max_mib: Some(1 << 30),
+        };
+        let c = guest_capacity(&h, &large);
+        assert_eq!((c.cpus, c.memory_mi_b), (Some(96), Some(262_144)));
+    }
+
+    /// A host figure that could not be read still yields the budget's.
+    #[test]
+    fn a_budget_stands_in_for_an_unreadable_host_figure() {
+        let budget = SliceBudget {
+            allowed_cpus: Some(8),
+            memory_max_mib: Some(4096),
+        };
+        let c = guest_capacity(&HostCapacity::default(), &budget);
+        assert_eq!((c.cpus, c.memory_mi_b), (Some(8), Some(4096)));
+    }
+
+    /// Each guest's VMM runs with MemoryMax = guest + this; the scheduler
+    /// must count it, or a full host OOM-kills a VMM.
+    #[test]
+    fn the_per_vm_overhead_is_the_vmms_memory_margin() {
+        let c = guest_capacity(&HostCapacity::default(), &SliceBudget::default());
+        assert_eq!(c.memory_overhead_mi_b_per_vm, Some(VMM_MEMORY_OVERHEAD_MIB));
+        assert_eq!(VMM_MEMORY_OVERHEAD_MIB, 512);
+    }
+
+    #[test]
+    fn the_failure_domain_publishes_typed_capacity() {
+        let mut facts = healthy();
+        facts.guest_budget = SliceBudget {
+            allowed_cpus: None,
+            memory_max_mib: Some(32_768),
+        };
+        let status = compute_status(&provider(&[]), &config(), &facts, 1);
+        let cap = status.failure_domains[0]
+            .attributes
+            .capacity
+            .clone()
+            .expect("typed capacity");
+        assert_eq!(cap.cpus, Some(32));
+        assert_eq!(cap.memory_mi_b, Some(32_768));
+        assert_eq!(cap.memory_overhead_mi_b_per_vm, Some(512));
     }
 }

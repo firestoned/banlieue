@@ -53,17 +53,19 @@
 //! Load comes from `status.scheduled` of the VMs passed in; a VM never
 //! counts against itself. Still a pure, deterministic function.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use banlieue_api::banlieue::{
-    AffinityMode, AntiAffinityRule, FailureDomain, Heartbeat, ImageSourceKind, LABEL_POOL,
-    NetworkClassMapping, Provider, ProviderCapabilities, ResolvedResource, StorageClassMapping,
-    VMClass, VMImage, VirtualMachine,
+    AffinityMode, AntiAffinityRule, DEFAULT_CPU_OVERCOMMIT_RATIO, FailureDomain,
+    FailureDomainCapacity, Heartbeat, ImageSourceKind, LABEL_POOL, NetworkClassMapping, Provider,
+    ProviderCapabilities, ProviderScheduling, ResolvedResource, StorageClassMapping, VMClass,
+    VMImage, VirtualMachine,
 };
 use banlieue_api::common::{Firmware, LabelSelector, LabelSelectorOperator};
 
 use crate::reconciler::infra::PROVIDER_CLASS_CLOUD_HYPERVISOR;
 use kube::ResourceExt;
+use tracing::warn;
 
 /// Feature flag a failure domain must advertise to support EFI secure boot.
 pub const FEATURE_EFI_SECURE_BOOT: &str = "efiSecureBoot";
@@ -261,8 +263,11 @@ pub fn schedule(
     image: &VMImage,
     providers: &[Provider],
     existing_vms: &[VirtualMachine],
+    classes: &[VMClass],
 ) -> Result<Decision, ScheduleError> {
     let placement = &vm.spec.placement;
+    let classes_by_name: HashMap<String, &VMClass> =
+        classes.iter().map(|c| (c.name_any(), c)).collect();
 
     // Step 1: providerSelector
     let provider_candidates: Vec<&Provider> = providers
@@ -426,6 +431,39 @@ pub fn schedule(
                 continue;
             }
 
+            // Step 8b: capacity (ADR-0107). Memory strictly, vCPUs up to the
+            // Provider's overcommit ratio; a domain publishing no capacity, or
+            // no figure for a resource, is not checked on it.
+            if let Some(capacity) = &fd.attributes.capacity {
+                let overhead = capacity.memory_overhead_mi_b_per_vm.unwrap_or(0);
+                let used = usage_on(
+                    vm,
+                    existing_vms,
+                    &classes_by_name,
+                    &provider.name_any(),
+                    &fd.name,
+                    overhead,
+                );
+                let ratio = provider.spec.scheduling.as_ref().map_or(
+                    DEFAULT_CPU_OVERCOMMIT_RATIO,
+                    ProviderScheduling::cpu_overcommit_ratio,
+                );
+                if let Some(short) = capacity_shortfall(
+                    class.spec.hardware.cpus,
+                    u64::from(class.spec.hardware.memory_mi_b) + overhead,
+                    used,
+                    capacity,
+                    ratio,
+                ) {
+                    reject_reasons.push(format!(
+                        "{}/{}: insufficient capacity: {short}",
+                        provider.name_any(),
+                        fd.name,
+                    ));
+                    continue;
+                }
+            }
+
             survivors.push((provider, fd));
         }
     }
@@ -530,6 +568,86 @@ fn placement_load(
             let same_group = pool.is_none() || other.labels().get(LABEL_POOL) == pool;
             (group + usize::from(same_group), total + 1)
         })
+}
+
+/// vCPUs and memory (MiB, VMM overhead included) already placed on one
+/// failure domain (ADR-0107).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Usage {
+    /// vCPUs of the VMs placed there.
+    pub cpus: u64,
+    /// Their memory plus the per-VM overhead, MiB.
+    pub memory_mi_b: u64,
+}
+
+/// What VMs other than `vm` scheduled on `(provider, failure_domain)` use,
+/// from their classes. A VM whose class is not in `classes` counts at zero
+/// (and is logged): a deleted class must not block every placement.
+fn usage_on(
+    vm: &VirtualMachine,
+    existing_vms: &[VirtualMachine],
+    classes: &HashMap<String, &VMClass>,
+    provider: &str,
+    failure_domain: &str,
+    overhead_mi_b: u64,
+) -> Usage {
+    let me = vm.name_any();
+    existing_vms
+        .iter()
+        .filter(|other| other.name_any() != me)
+        .filter(|other| {
+            other
+                .status
+                .as_ref()
+                .and_then(|s| s.scheduled.as_ref())
+                .is_some_and(|s| s.provider_name == provider && s.failure_domain == failure_domain)
+        })
+        .fold(Usage::default(), |used, other| {
+            let Some(class) = classes.get(&other.spec.class_ref.name) else {
+                warn!(
+                    vm = %other.name_any(),
+                    class = %other.spec.class_ref.name,
+                    "placed VM's class not found; not counted against capacity"
+                );
+                return used;
+            };
+            Usage {
+                cpus: used.cpus + u64::from(class.spec.hardware.cpus),
+                memory_mi_b: used.memory_mi_b
+                    + u64::from(class.spec.hardware.memory_mi_b)
+                    + overhead_mi_b,
+            }
+        })
+}
+
+/// Why a VM needing `cpus` vCPUs and `memory_mi_b` MiB (overhead included)
+/// does not fit beside `used`, or `None` when it fits. Memory first: it is
+/// the resource whose overflow kills a guest. A figure `capacity` lacks is
+/// not checked.
+#[must_use]
+pub fn capacity_shortfall(
+    cpus: u32,
+    memory_mi_b: u64,
+    used: Usage,
+    capacity: &FailureDomainCapacity,
+    cpu_overcommit_ratio: u32,
+) -> Option<String> {
+    if let Some(available) = capacity.memory_mi_b {
+        let needed = used.memory_mi_b + memory_mi_b;
+        if needed > available {
+            return Some(format!("memory {needed} MiB > {available} MiB"));
+        }
+    }
+    if let Some(host_cpus) = capacity.cpus {
+        let needed = used.cpus + u64::from(cpus);
+        let allowed = u64::from(host_cpus) * u64::from(cpu_overcommit_ratio);
+        if needed > allowed {
+            return Some(format!(
+                "vCPUs {needed} > {host_cpus} CPUs x {cpu_overcommit_ratio}"
+            ));
+        }
+    }
+    None
 }
 
 /// Trait extension so we can call `mode_is_required()` directly on a rule.

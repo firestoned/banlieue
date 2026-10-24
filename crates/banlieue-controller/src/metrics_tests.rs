@@ -85,6 +85,7 @@ mod tests {
             use_content_library: false,
             failure_domain_name_overrides: Vec::new(),
             attestation: None,
+            scheduling: None,
         };
         let mut p = Provider::new(name, spec);
         p.status = Some(ProviderStatus {
