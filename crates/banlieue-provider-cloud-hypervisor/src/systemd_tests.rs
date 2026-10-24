@@ -191,4 +191,58 @@ mod tests {
             UnitState::Other("maintenance".into())
         );
     }
+
+    // ------------------------------------------------- slice budget (ADR-0107)
+
+    /// systemd reports an unset `MemoryMax` as `u64::MAX` ("infinity").
+    #[test]
+    fn memory_max_infinity_is_no_limit() {
+        assert_eq!(memory_max_mib(u64::MAX), None);
+        assert_eq!(memory_max_mib(200 * 1024 * 1024 * 1024), Some(204_800));
+        // Rounded down: a partial MiB is not given to guests.
+        assert_eq!(memory_max_mib(1024 * 1024 + 1), Some(1));
+    }
+
+    /// `AllowedCPUs` is a CPU bitmask, byte 0 bit 0 = CPU 0; empty = unset.
+    #[test]
+    fn allowed_cpus_counts_the_bits_set() {
+        assert_eq!(allowed_cpu_count(&[]), None);
+        assert_eq!(allowed_cpu_count(&[0, 0]), None);
+        assert_eq!(allowed_cpu_count(&[0b1111_0000, 0b0000_0001]), Some(5));
+        assert_eq!(allowed_cpu_count(&[0xff; 12]), Some(96));
+    }
+
+    /// What systemd 257 actually returned on a lab host for
+    /// `set-property … AllowedCPUs=0-3,8 MemoryMax=6G` (busctl, 2026-10-24).
+    #[test]
+    fn decodes_what_systemd_really_reports() {
+        assert_eq!(allowed_cpu_count(&[15, 1, 0, 0, 0, 0, 0, 0]), Some(5));
+        assert_eq!(memory_max_mib(6_442_450_944), Some(6144));
+    }
+
+    /// The guests' budget is the tighter of their slice and its parent.
+    #[test]
+    fn the_budget_is_the_tighter_of_the_two_slices() {
+        let guests = (Some(8 * 1024), Some(16));
+        let parent = (Some(4 * 1024), None);
+        assert_eq!(
+            combine_budgets(guests, parent),
+            crate::provider::SliceBudget {
+                allowed_cpus: Some(16),
+                memory_max_mib: Some(4 * 1024),
+            }
+        );
+        assert_eq!(
+            combine_budgets((None, None), (None, None)),
+            crate::provider::SliceBudget::default()
+        );
+    }
+
+    /// The slice names match the ones `banlieue host` installs (ADR-0105) and
+    /// systemd derives (ADR-0106).
+    #[test]
+    fn the_slice_names_are_the_installed_ones() {
+        assert_eq!(GUEST_SLICE, "banlieue-guests.slice");
+        assert_eq!(VMS_SLICE, "banlieue.slice");
+    }
 }

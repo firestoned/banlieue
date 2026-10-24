@@ -20,9 +20,12 @@
 
 use crate::error::{Error, Result};
 use crate::host_config::HostConfig;
+pub use crate::plan::VMM_MEMORY_OVERHEAD_MIB;
 use crate::reconciler::Context;
 use crate::sys;
-use banlieue_api::banlieue::{FailureDomain, FailureDomainAttributes, Provider, ProviderStatus};
+use banlieue_api::banlieue::{
+    FailureDomain, FailureDomainAttributes, FailureDomainCapacity, Provider, ProviderStatus,
+};
 use banlieue_provider_sdk::reconciler::{requeue_long, requeue_on_error};
 use banlieue_provider_sdk::status::{condition_status, set_condition};
 use kube::api::{Api, Patch, PatchParams};
@@ -87,6 +90,43 @@ pub struct HostFacts {
     pub ek_ca_pem: Option<String>,
     /// What the host has to give guests.
     pub capacity: HostCapacity,
+    /// The budget the host declares for guests: its guests' slice and their
+    /// parent (ADR-0105, ADR-0106). Read from systemd by the reconciler.
+    pub guest_budget: SliceBudget,
+}
+
+/// The limits systemd enforces on guests together, from
+/// `banlieue-guests.slice` and `banlieue.slice` (the tighter of the two).
+/// `None`: that dimension is unbounded.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SliceBudget {
+    /// CPUs in `AllowedCPUs`.
+    pub allowed_cpus: Option<u32>,
+    /// `MemoryMax`, MiB.
+    pub memory_max_mib: Option<u64>,
+}
+
+/// What guests may use on this host (ADR-0107): each figure is the host's
+/// (memory less reserved hugepages), or the slice budget's when that is
+/// smaller or the host's is unknown; plus the per-VM VMM overhead.
+#[must_use]
+pub fn guest_capacity(host: &HostCapacity, budget: &SliceBudget) -> FailureDomainCapacity {
+    let host_memory = host
+        .memory_mib
+        .map(|m| m.saturating_sub(host.hugepages_mib.unwrap_or(0)));
+    FailureDomainCapacity {
+        cpus: min_known(host.cpus, budget.allowed_cpus),
+        memory_mi_b: min_known(host_memory, budget.memory_max_mib),
+        memory_overhead_mi_b_per_vm: Some(VMM_MEMORY_OVERHEAD_MIB),
+    }
+}
+
+/// The smaller of two optional figures, or whichever is known.
+fn min_known<T: Ord>(a: Option<T>, b: Option<T>) -> Option<T> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    }
 }
 
 /// The host's capacity, as published on its failure domain. Each figure is
@@ -203,6 +243,7 @@ pub fn gather_facts(config: &HostConfig) -> HostFacts {
             .and_then(|t| std::fs::read_to_string(&t.ek_ca_certificate).ok())
             .and_then(|text| banlieue_provider_sdk::ek::parse_ek_pem_str(&text)),
         capacity: gather_capacity(config),
+        guest_budget: SliceBudget::default(),
     }
 }
 
@@ -296,6 +337,7 @@ pub fn compute_status(
                 .cloned()
                 .collect(),
             raw,
+            capacity: Some(guest_capacity(&facts.capacity, &facts.guest_budget)),
         },
     };
 
@@ -407,7 +449,8 @@ pub async fn reconcile(provider: Arc<Provider>, ctx: Arc<Context>) -> Result<Act
     }
     let name = provider.name_any();
     let generation = provider.metadata.generation.unwrap_or(0);
-    let facts = gather_facts(&ctx.config);
+    let mut facts = gather_facts(&ctx.config);
+    facts.guest_budget = ctx.host.guest_slice_budget().await;
     let status = compute_status(&provider, &ctx.config, &facts, generation);
     if status.failure_domains.is_empty() {
         warn!(provider = %name, ?facts, "host cannot run guests");

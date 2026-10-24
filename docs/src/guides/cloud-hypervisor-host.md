@@ -449,10 +449,27 @@ correctly sized `MemoryMax=`.
 guest's VMM already has its own `MemoryMax` (its memory plus 512 MiB, set by
 the provider). Where two caps apply (the guests' slice and `banlieue.slice`),
 the tighter one wins. If a cap is below the sum of the VMs running under it,
-the kernel kills one of their VMMs to make room. banlieue's scheduler does
-not read slice limits yet (ADR-0105's follow-up), so it will not keep a new VM
-off a host whose slice is full. Set each cap to what the host can give VMs,
-and keep the host's guest capacity (its storage and VM classes) within it.
+the kernel kills one of their VMMs to make room.
+
+banlieue's scheduler keeps that from happening through placement (ADR-0107).
+The provider publishes what guests may use on this host as its failure
+domain's `capacity`: CPUs and memory, each the host's or the slice budget's
+(the tighter of `banlieue-guests.slice` and `banlieue.slice`, read from
+systemd), whichever is smaller, and the 512 MiB per-VM overhead. A new VM is
+placed here only if its memory plus overhead fits beside the guests already
+scheduled here, and its vCPUs fit the published CPUs times the Provider's
+`spec.scheduling.cpuOvercommitRatio` (default 4). See it with:
+
+```sh
+kubectl get provider <name> -n banlieue-system \
+  -o jsonpath='{.status.failureDomains[0].attributes.capacity}'
+```
+
+Two limits remain. Memory used by anything that is not a banlieue guest (the
+host's own services, management nodes in `banlieue-nodes.slice`) is not
+deducted unless a slice budget leaves it out, so on a shared host declare a
+guests' budget. And capacity is checked at placement, not reserved: VMs
+scheduled at the same moment can both fit against the same free memory.
 
 Check and undo:
 
@@ -1023,3 +1040,4 @@ restarting its unit; guests keep running (`make ch-restart-e2e`).
 | Guests are slow while the host is not busy | A `CPUQuota` set on `banlieue.slice` caps them even when the host is idle (`systemctl show banlieue.slice -p CPUQuotaPerSecUSec`); use `CPUWeight` instead. Or `--guest-cpus` confines them to too few CPUs (`systemctl show banlieue-guests.slice -p AllowedCPUs`). |
 | `overhead` prints `no VMs found` with guests running | The host is on cgroup v1 (`stat -fc %T /sys/fs/cgroup` is not `cgroup2fs`), or the guests are not systemd units banlieue knows (`banlieue-ch@`, `k0s-vm-`, libvirt `machine-qemu`). |
 | `overhead` shows no `banlieue.slice total` line | No VM has started in the slice yet. |
+| A VM stays `Scheduled=False`, `NoFailureDomainMatched`, with `insufficient capacity: memory … > … MiB` (or `vCPUs … > … CPUs x …`) | Every host it may use is full for its class (ADR-0107). Raise the budget (`--guest-memory-max`, or `spec.scheduling.cpuOvercommitRatio` for CPU), add a host, or use a smaller class. Read what a host offers with `kubectl get provider <name> -o jsonpath='{.status.failureDomains[0].attributes.capacity}'`. |

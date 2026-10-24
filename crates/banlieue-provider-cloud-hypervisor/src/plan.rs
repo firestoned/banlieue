@@ -58,10 +58,13 @@ const MAC_UID_DIGITS: std::ops::Range<usize> = 10..18;
 const MAX_IMAGE_NAME: usize = 128;
 /// Octets in a MAC address.
 const MAC_OCTETS: usize = 6;
-/// Memory the VMM process itself needs beyond guest RAM, for `MemoryMax`.
-const VMM_MEMORY_OVERHEAD_BYTES: u64 = 512 * 1024 * 1024;
+/// Memory the VMM process itself needs beyond guest RAM, MiB: added to each
+/// guest's `MemoryMax`, and published so the scheduler counts it (ADR-0107).
+pub const VMM_MEMORY_OVERHEAD_MIB: u64 = 512;
 /// Bytes in one MiB.
 const BYTES_PER_MIB: u64 = 1024 * 1024;
+/// [`VMM_MEMORY_OVERHEAD_MIB`] in bytes, for `MemoryMax`.
+const VMM_MEMORY_OVERHEAD_BYTES: u64 = VMM_MEMORY_OVERHEAD_MIB * BYTES_PER_MIB;
 
 /// Template of a guest's swtpm; instance: its host uid.
 pub const SWTPM_TEMPLATE: &str = "banlieue-swtpm";

@@ -79,7 +79,17 @@ stateDiagram-v2
 - `placement.providerSelector` / `placement.failureDomainSelector` *(label
   selectors, optional)* — which `Provider`(s)/failure domains may schedule
   this VM. There is no direct-by-name `Provider` reference; the scheduler
-  matches labels. Among the failure domains that qualify, it picks the one
+  matches labels. A failure domain that publishes capacity
+  (`status.failureDomains[].attributes.capacity`, today the Cloud Hypervisor
+  provider) qualifies only if the VM fits beside the VMs already placed
+  there: its class's memory plus the per-VM overhead strictly, and its vCPUs
+  within the published CPUs times the Provider's
+  `spec.scheduling.cpuOvercommitRatio` (default 4). A domain without
+  capacity is not checked
+  ([ADR-0107](https://github.com/firestoned/banlieue/blob/main/docs/adr/0107-capacity-aware-scheduling.md)).
+  A VM that fits nowhere reports `Scheduled=False` with
+  `NoFailureDomainMatched` and an `insufficient capacity` reason per domain.
+  Among the failure domains that qualify, it picks the one
   with the fewest VMs already scheduled: the fewest of the same pool for a
   pool member, the fewest overall otherwise. Equal loads are broken per VM,
   by hashing, so VMs created together spread rather than queue on one

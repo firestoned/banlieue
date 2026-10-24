@@ -1,5 +1,66 @@
 # Changelog
 
+## [2026-10-24 14:00] - ADR-0107: capacity-aware scheduling
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0107-capacity-aware-scheduling.md`: closes ADR-0105's follow-up.
+- `crates/banlieue-api/src/banlieue/provider.rs`:
+  `FailureDomainAttributes.capacity` (`FailureDomainCapacity`: `cpus`,
+  `memoryMiB`, `memoryOverheadMiBPerVM`, all optional) and
+  `ProviderSpec.scheduling` (`ProviderScheduling.cpuOvercommitRatio`, CRD
+  range 1 to 64, default 4: `DEFAULT_`/`MIN_`/`MAX_CPU_OVERCOMMIT_RATIO`).
+  **API change for `banlieue-api` consumers:** struct literals of
+  `FailureDomainAttributes` and `ProviderSpec` need the new fields.
+  `deploy/crds/banlieue.io_providers.yaml` and `docs/src/reference/api.md`
+  regenerated.
+- `crates/banlieue-controller/src/reconciler/scheduler.rs`: step 8b fits a
+  VM against a failure domain's capacity, counting the VMs already scheduled
+  there by their classes: memory strictly (class memory plus the per-VM
+  overhead), vCPUs up to the published CPUs times the Provider's ratio. A
+  domain without capacity, or without a figure, is not checked. Rejections
+  read `insufficient capacity: memory N MiB > M MiB` /
+  `vCPUs N > C CPUs x R`. `schedule()` takes every `VMClass`; the
+  reconciler lists them once per pass (RBAC already grants `list`).
+  `capacity_shortfall` and `Usage` are public and unit-tested.
+- `crates/banlieue-provider-cloud-hypervisor`: publishes typed capacity, the
+  smaller of the host's (memory less reserved hugepages) and the guests'
+  budget, the tighter of `banlieue-guests.slice` and `banlieue.slice`, read
+  over D-Bus (`LoadUnit` plus `MemoryMax`/`AllowedCPUs`; unprivileged,
+  read-only, includes `set-property` drop-ins). `HostOps::guest_slice_budget`,
+  `provider::guest_capacity`, `systemd::{memory_max_mib, allowed_cpu_count,
+  combine_budgets}`; `plan::VMM_MEMORY_OVERHEAD_MIB` (512) is the one
+  definition of the VMM margin. Verified live: systemd 257 returns
+  `AllowedCPUs=0-3,8` as `[15, 1, 0, …]` and the decoder counts 5.
+
+### Changed
+- Docs: `concepts/virtualmachine.md` (placement fits capacity),
+  `concepts/providers.md` (`scheduling.cpuOvercommitRatio`, one host one
+  Provider), `cloud-hypervisor-host.md` (the scheduler now reads the slice
+  budget; how to see a host's capacity; troubleshooting row for
+  `insufficient capacity`). Roadmap 03's capacity-aware-spread question
+  marked partly answered.
+- CALM: `capacity-aware-placement` control; controller and CH provider
+  descriptions; ADR-0107 registered.
+- Threat model full pass, stamp 2026-10-24 / ADR-0107: §2 controller row, one
+  TB-1 row, two TB-8 rows, §7.27, three §8 risks.
+
+### Tests
+- `provider_tests.rs` (API, 5), `scheduler_tests.rs` (10 capacity cases),
+  CH `provider_tests.rs` (5) and `systemd_tests.rs` (5, including systemd's
+  real encoding), `banlieue-host` render test pinning the slice names.
+
+### Why
+Without it a host takes VMs until the kernel OOM-kills a guest's VMM; with
+it the VM is placed elsewhere or waits.
+
+### Impact
+- [ ] Breaking change (Kubernetes API: additive, optional fields)
+- [x] Requires cluster rollout (CRDs, controller, CH providers)
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-10-23 15:00] - Advisory ignores removed (quick-xml fixed upstream)
 
 **Author:** Erick Bourgeois

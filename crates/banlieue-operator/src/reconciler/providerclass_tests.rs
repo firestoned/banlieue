@@ -53,6 +53,7 @@ mod tests {
                 use_content_library: false,
                 failure_domain_name_overrides: Vec::new(),
                 attestation: None,
+                scheduling: None,
             },
         );
         p.metadata.namespace = Some("banlieue-system".to_string());

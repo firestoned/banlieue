@@ -65,6 +65,10 @@ pub trait HostOps: Send + Sync {
     /// Why a unit failed (systemd's result and exit status), when it is
     /// loaded and failed; `None` otherwise.
     async fn unit_failure(&self, name: &str) -> Result<Option<String>>;
+    /// The budget systemd enforces on all guests together (ADR-0107): the
+    /// tighter of `banlieue-guests.slice` and `banlieue.slice`. Unreadable
+    /// counts as unbounded.
+    async fn guest_slice_budget(&self) -> crate::provider::SliceBudget;
     /// Start an instance of a template unit.
     /// Write the unit's environment file, if any, then start it.
     async fn start_unit(&self, spec: &UnitStart) -> Result<()>;
@@ -243,6 +247,10 @@ impl HostOps for RealHost {
 
     async fn unit_failure(&self, name: &str) -> Result<Option<String>> {
         Ok(self.systemd.failure(name).await?)
+    }
+
+    async fn guest_slice_budget(&self) -> crate::provider::SliceBudget {
+        self.systemd.guest_slice_budget().await
     }
 
     async fn start_unit(&self, spec: &UnitStart) -> Result<()> {
