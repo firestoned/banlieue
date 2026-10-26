@@ -134,7 +134,7 @@ kubectl patch providerclass vsphere --type=merge \
 ```
 
 To upgrade a single backend first, create a second class pinning the new image
-and repoint one Provider at it — see `examples/08-providerclass-vsphere.yaml`.
+and repoint one Provider at it: see `examples/10-providerclass-vsphere.yaml`.
 
 !!! note "Class edits apply immediately"
     The operator watches `ProviderClass` and maps each edit back to every

@@ -83,7 +83,7 @@
 //! - `BANLIEUE_E2E_USER_DATA`: a cloud-config file every member gets, in a
 //!   ConfigMap the run creates and removes. A `Deferred` image needs one:
 //!   the install itself is user-data, and so is the boot stage that writes
-//!   `/run/banlieue/phase` (`examples/16-cloud-config-guest-phase.yaml`).
+//!   `/run/banlieue/phase` (`examples/17-cloud-config-guest-phase.yaml`).
 //! - `BANLIEUE_E2E_CLAIM_AS`: create claims as this user (impersonation),
 //!   e.g. `github:octocat`, so a cluster running the claim subject policy
 //!   checks a real subject rather than refusing the suite's admin identity.

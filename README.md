@@ -16,7 +16,7 @@
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/firestoned/banlieue/badge)](https://scorecard.dev/viewer/?uri=github.com/firestoned/banlieue)
 
 [![License](https://img.shields.io/github/license/firestoned/banlieue?color=blue)](LICENSE)
-[![Rust](https://img.shields.io/badge/rust-1.88%2B-orange?logo=rust)](https://www.rust-lang.org/)
+[![Rust](https://img.shields.io/badge/rust-1.89%2B-orange?logo=rust)](https://www.rust-lang.org/)
 [![Docs site](https://img.shields.io/badge/docs-firestoned.github.io%2Fbanlieue-informational?logo=materialformkdocs)](https://firestoned.github.io/banlieue/)
 [![Status](https://img.shields.io/badge/status-In%20Development-orange)](#project-status)
 [![Issues](https://img.shields.io/github/issues/firestoned/banlieue)](https://github.com/firestoned/banlieue/issues)
@@ -27,11 +27,10 @@
 
 **banlieue** lets you declare a virtual machine the same way you declare a
 `Deployment` or `Service` — one Kubernetes Custom Resource — and have it
-scheduled onto whatever hypervisor or VM platform you run: **vSphere** can
-create and power on VMs today, **libvirt** can register hosts and import
-images (VM/domain lifecycle is landing next), **Proxmox** is planned, and any
-backend a third party writes. The user's manifest never changes when the
-backend does.
+scheduled onto whatever hypervisor or VM platform you run: **Cloud
+Hypervisor** on your own KVM hosts (the reference backend), **vSphere**,
+**libvirt**, **Proxmox VE**, and any backend a third party writes. The user's
+manifest never changes when the backend does.
 
 ```yaml
 apiVersion: banlieue.io/v1alpha1
@@ -54,6 +53,27 @@ backend-specific infrastructure CR (e.g. a `VSphereMachine`) that a provider
 controller turns into a real VM — all over the Kubernetes API, with no new
 transport or auth to operate.
 
+## Cloud Hypervisor first
+
+Every backend runs the same `VirtualMachine`; **Cloud Hypervisor** is the
+reference one. A small Rust VMM on a plain KVM host, with no hypervisor
+daemon:
+
+- the provider runs on the host, holding a self-renewing ServiceAccount token
+  and **no hypervisor credential and no Secret**;
+- each guest is one VMM in its own systemd unit, **under its own uid**,
+  sandboxed by systemd, seccomp and Landlock;
+- all guests share a **declared budget**, and the scheduler places a VM only
+  where it fits;
+- images come from an OCI registry **by digest**, and every guest can have a
+  vTPM whose EK certificate is read on the host;
+- a warm pool refills a claimed `GuestReady` VM in about 100 to 120 s.
+
+Start with the
+**[Cloud Hypervisor Provider guide](https://firestoned.github.io/banlieue/guides/cloud-hypervisor-host/)**;
+the **[Provider Comparison](https://firestoned.github.io/banlieue/reference/provider-comparison/)**
+lines it up against vSphere, libvirt and Proxmox.
+
 ## Why banlieue?
 
 The VM control plane is fragmented: every team running more than one hypervisor
@@ -61,8 +81,9 @@ writes the same glue twice. banlieue makes the VM a first-class, declarative,
 backend-agnostic Kubernetes object.
 
 - **One declarative API** for VMs, regardless of backend.
-- **Swap or mix providers** without rewriting workloads — vSphere here, Proxmox
-  there, libvirt for dev — in the same cluster.
+- **Swap or mix providers** without rewriting workloads: Cloud Hypervisor on
+  bare-metal KVM hosts, vSphere in the data centre, libvirt or Proxmox at the
+  edge, in the same cluster.
 - **Zero new transports.** The contract between the main controller and the
   providers is the Kubernetes API itself: no gRPC, no REST, no custom auth.
 - **A battle-tested status model.** Provider infrastructure CRDs satisfy the
@@ -87,8 +108,8 @@ it. The only way to hand such a VM over quickly is to have built it already.
   leaked VM.
 
 This is what makes banlieue usable as a sandbox substrate for CI jobs and AI
-agents. Both kinds are implemented and validated end-to-end against a real
-libvirt host. The claim is the top of banlieue's API
+agents. Pools are validated end to end on Cloud Hypervisor, libvirt and
+vSphere hosts, and claims on Cloud Hypervisor and libvirt. The claim is the top of banlieue's API
 ([ADR-0097](docs/adr/0097-api-ends-at-virtualmachineclaim.md)): agent-specific
 layers such as `AgentSandbox` live in [mediatore](https://github.com/firestoned/mediatore).
 
@@ -122,11 +143,14 @@ main controller mirrors that status onto the `VirtualMachine`.
 | `VirtualMachine` | `banlieue.io/v1alpha1` | The user-facing request for a running VM. |
 | `VMClass` | `banlieue.io/v1alpha1` | A reusable hardware "shape" + capability requirements. |
 | `VMImage` | `banlieue.io/v1alpha1` | A backend-agnostic, multi-source OS image catalog entry. |
-| `Provider` | `banlieue.io/v1alpha1` | One registered backend instance (a vCenter, a libvirt host, …). |
+| `Provider` | `banlieue.io/v1alpha1` | One registered backend instance (a Cloud Hypervisor host, a vCenter, a libvirt host, a Proxmox node). |
 | `VirtualMachinePool` | `banlieue.io/v1alpha1` | A self-refilling set of warm, already-provisioned `VirtualMachine`s. |
 | `VirtualMachineClaim` | `banlieue.io/v1alpha1` | One subject's exclusive, time-boxed hold on one pool member. |
 | `ProviderClass` | `banlieue.io/v1alpha1` | Cluster-scoped install metadata for a backend class (image, resources, RBAC). |
-| `VSphereMachine` / `VSphereMachineTemplate` / `VSphereCluster` | `infrastructure.banlieue.io/v1alpha1` | Concrete, CAPI-contract infra CRs the vSphere provider reconciles. |
+| `CloudHypervisorMachine` / `CloudHypervisorMachineTemplate` | `infrastructure.banlieue.io/v1alpha1` | Concrete, CAPI-contract infra CRs the Cloud Hypervisor provider reconciles. |
+| `VSphereMachine` / `VSphereMachineTemplate` / `VSphereCluster` | `infrastructure.banlieue.io/v1alpha1` | The same for vSphere, plus its InfraCluster. |
+| `LibvirtMachine` / `LibvirtMachineTemplate` | `infrastructure.banlieue.io/v1alpha1` | The same for libvirt. |
+| `ProxmoxMachine` / `ProxmoxMachineTemplate` | `infrastructure.banlieue.io/v1alpha1` | The same for Proxmox VE. |
 
 Full schema reference: **[API Reference](https://firestoned.github.io/banlieue/reference/api/)** ·
 Design rationale: **[Concepts](https://firestoned.github.io/banlieue/concepts/)** &
@@ -139,13 +163,19 @@ banlieue/
 ├── crates/
 │   ├── banlieue/                    # single binary: dispatches controller/operator/provider/bootstrap/imagebuilder subcommands
 │   ├── banlieue-api/                # authoritative CRD type system (code-first); generates deploy/crds/
+│   ├── banlieue-cloud-hypervisor/   # first-party client for the Cloud Hypervisor VMM's REST API
 │   ├── banlieue-controller/         # main controller lib: schedules VirtualMachine CRs + mirrors status
+│   ├── banlieue-host/               # `banlieue host cloud-hypervisor`: prepares a KVM host (install, status, overhead)
 │   ├── banlieue-imagebuilder/       # provider-agnostic VMImage build pipeline (OCI/Kairos → raw disk)
 │   ├── banlieue-libvirt/            # first-party pure-Rust libvirt RPC client (no native libvirt lib)
+│   ├── banlieue-oci/                # OCI registry client: VM disk images pushed and pulled by digest
 │   ├── banlieue-operator/           # provider lifecycle operator: Provider CRs → workloads; `banlieue bootstrap`
-│   ├── banlieue-provider-libvirt/   # libvirt/KVM provider: host capabilities + image import (VM lifecycle: not yet)
+│   ├── banlieue-provider-cloud-hypervisor/  # Cloud Hypervisor provider, host-resident (the reference backend)
+│   ├── banlieue-provider-libvirt/   # libvirt/KVM provider: host capabilities, image import, VM lifecycle
+│   ├── banlieue-provider-proxmox/   # Proxmox VE provider: template clones, NoCloud seed ISO
 │   ├── banlieue-provider-sdk/       # shared provider/controller building blocks
-│   ├── banlieue-provider-vsphere/   # vSphere provider: capability checks, image build, VM create/power-on
+│   ├── banlieue-provider-vsphere/   # vSphere provider: capability checks, image build, VM lifecycle
+│   ├── banlieue-proxmox/            # first-party Proxmox VE REST client
 │   └── banlieue-vex/                # auto-VEX tooling for the release/supply-chain pipeline
 ├── deploy/                      # CRDs (generated) + kustomize manifests
 ├── docs/                        # MkDocs site + CALM architecture model + ADRs (docs/adr/)
@@ -248,16 +278,19 @@ make docs
 
 ## Project status
 
-banlieue is **early**. The `banlieue-api` type system + CRDs, the main
-controller, `banlieue-operator` (provider lifecycle), and the vSphere provider
-are far enough along to create and power on real VMs end-to-end — vSphere's
-create path clones from a template and powers on; update/drift handling
-beyond observed power state, and live migration, are still limited (see
-ADR-0036). The libvirt provider can register a host and import disk images
-into its storage pools, but VM/domain provisioning (a future `LibvirtMachine`
-CRD) is not implemented yet. Proxmox is anticipated in the CRD schema and docs
-but has no provider implementation. The CRD surface is `v1alpha1` and **will
-break before `v1`** — don't run production workloads against it yet.
+banlieue is **early, and runs real VMs on all four backends**:
+
+| Provider | State |
+| --- | --- |
+| Cloud Hypervisor | Complete: host install, VM lifecycle, vTPM, OCI images, pools, capacity-aware placement |
+| vSphere | Complete: validated end to end against real vCenter and ESXi |
+| libvirt | Complete: VM lifecycle, NoCloud cloud-init, vTPM, pools |
+| Proxmox VE | Implemented end to end and tested against a real node; the cluster end-to-end test is the last item |
+
+The controller, `banlieue-operator`, `banlieue-imagebuilder`, warm pools and
+claims are in place. Live migration and snapshots are not started (see
+[`ROADMAPS.md`](ROADMAPS.md)). The CRD surface is `v1alpha1` and **will break
+before `v1`**: don't run production workloads against it yet.
 
 ## License
 

@@ -39,7 +39,7 @@
       "unique-id": "service-banlieue-controller",
       "node-type": "service",
       "name": "banlieue-controller",
-      "description": "Main Rust kube-rs controller. Watches VirtualMachine CRs, resolves classRef/imageRef references, schedules the VM onto a Provider matched via placement.providerSelector/failureDomainSelector, creates a backend-specific infrastructure CR carrying the resolved spec, and mirrors status from that infra CR back onto the VirtualMachine. Owns no backend credentials \u2014 all backend access is delegated to provider controllers via CRDs.",
+      "description": "Main Rust kube-rs controller. Watches VirtualMachine CRs, resolves classRef/imageRef references, schedules the VM onto a Provider matched via placement.providerSelector/failureDomainSelector, creates a backend-specific infrastructure CR carrying the resolved spec, and mirrors status from that infra CR back onto the VirtualMachine. Owns no backend credentials \u2014 all backend access is delegated to provider controllers via CRDs. Placement is capacity-aware (ADR-0107): a failure domain that publishes `attributes.capacity` takes a VM only if its memory (class memory plus the per-VM overhead) fits strictly and its vCPUs fit `Provider.spec.scheduling.cpuOvercommitRatio` times the published CPUs, counting the VMs already scheduled there; a domain with no capacity is not filtered.",
       "interfaces": [
         {
           "unique-id": "banlieue-controller-metrics",
@@ -634,7 +634,7 @@
       "unique-id": "service-provider-cloud-hypervisor",
       "node-type": "service",
       "name": "banlieue-provider-cloud-hypervisor",
-      "description": "Host-resident provider for Cloud Hypervisor (ADR-0060): the first banlieue component that runs OUTSIDE the management cluster, as a systemd service on the KVM host, as the unprivileged `banlieue` user with CAP_NET_ADMIN, CAP_CHOWN and CAP_FOWNER only. It dials the API server with a bound ServiceAccount token from the host (nothing dials the host), watches its own Provider, CloudHypervisorMachines and VMImages, and realises each machine as one instance of a root-owned template unit, started over D-Bus (ADR-0063, amended), a persistent tap on a host bridge, an OS disk cloned from the host image cache and a NoCloud seed. Machines name storage and network CLASSES; the host resolves them through its own root-owned config, so a path or bridge never crosses into the cluster (ADR-0062 Decision 4). Holds no hypervisor credential: the hypervisor is local. Every privileged file change inside a guest's directory goes through a file handle, never a path, so a compromised guest cannot redirect it with a symlink. Code: crates/banlieue-provider-cloud-hypervisor. Host files: deploy/provider-cloud-hypervisor/host/.",
+      "description": "Host-resident provider for Cloud Hypervisor (ADR-0060): the first banlieue component that runs OUTSIDE the management cluster, as a systemd service on the KVM host, as the unprivileged `banlieue` user with CAP_NET_ADMIN, CAP_CHOWN and CAP_FOWNER only. It dials the API server with a bound ServiceAccount token from the host (nothing dials the host), watches its own Provider, CloudHypervisorMachines and VMImages, and realises each machine as one instance of a root-owned template unit, started over D-Bus (ADR-0063, amended), a persistent tap on a host bridge, an OS disk cloned from the host image cache and a NoCloud seed. Machines name storage and network CLASSES; the host resolves them through its own root-owned config, so a path or bridge never crosses into the cluster (ADR-0062 Decision 4). Holds no hypervisor credential: the hypervisor is local. Every privileged file change inside a guest's directory goes through a file handle, never a path, so a compromised guest cannot redirect it with a symlink. Code: crates/banlieue-provider-cloud-hypervisor. Host files: deploy/provider-cloud-hypervisor/host/. It publishes its failure domain's typed capacity (ADR-0107): CPUs and memory guests may use, the smaller of the host's and the guests' slice budget read from systemd over D-Bus, and the 512 MiB per-VM VMM overhead.",
       "interfaces": [
         {
           "unique-id": "guest-report-unix-socket",
@@ -3131,6 +3131,22 @@
           }
         }
       ]
+    },
+    "capacity-aware-placement": {
+      "description": "IMPLEMENTED (ADR-0107): the scheduler fits each VM against the capacity a provider publishes on its failure domain before spreading. Memory is strict (class memoryMiB plus memoryOverheadMiBPerVM, summed over VMs already scheduled there), so a host's declared guest memory budget is never over-placed and a running guest is never OOM-killed for a new one; CPU fits a per-Provider overcommit ratio (default 4). The Cloud Hypervisor provider publishes the smaller of the host's resources and its guests' slice budget (ADR-0105), read from systemd. A failure domain without published capacity is not filtered, so other backends keep their behaviour.",
+      "requirements": [
+        {
+          "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+          "config": {
+            "framework": "NIST SP 800-53 Rev. 5",
+            "controls": [
+              "SC-6",
+              "SC-5"
+            ],
+            "evidence": "docs/adr/0107-capacity-aware-scheduling.md, crates/banlieue-controller/src/reconciler/scheduler.rs, crates/banlieue-api/src/banlieue/provider.rs, crates/banlieue-provider-cloud-hypervisor/src/provider.rs"
+          }
+        }
+      ]
     }
   },
   "metadata": {
@@ -3245,6 +3261,7 @@
     "docs/adr/0103-digest-pinned-installs.md",
     "docs/adr/0104-vsphere-template-kind-per-zone-lookup.md",
     "docs/adr/0105-cloud-hypervisor-guests-slice.md",
-    "docs/adr/0106-vm-systemd-slices-and-overhead-sampler.md"
+    "docs/adr/0106-vm-systemd-slices-and-overhead-sampler.md",
+    "docs/adr/0107-capacity-aware-scheduling.md"
   ]
 }

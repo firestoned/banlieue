@@ -111,7 +111,7 @@ ConfigMap's key defaults to `ca.crt`.
 
 ## 3. Register the `Provider`
 
-```yaml title="examples/02-provider-libvirt-edge.yaml (excerpt)"
+```yaml title="examples/04-provider-libvirt-edge.yaml (excerpt)"
 apiVersion: banlieue.io/v1alpha1
 kind: Provider
 metadata:
@@ -148,7 +148,7 @@ dropped and reported — which is the point of probing at all, since a `Provider
 reporting `Ready` without ever having reached the host is actively misleading.
 
 ```sh
-kubectl apply -f examples/02-provider-libvirt-edge.yaml
+kubectl apply -f examples/04-provider-libvirt-edge.yaml
 kubectl -n banlieue-system get provider libvirt-edge-host-7
 ```
 
@@ -226,12 +226,12 @@ expose it through `/proc` to anything sharing the namespace.
 
 Everything above is setup. This is the part that produces a machine.
 
-`examples/17-virtualmachine-libvirt.yaml` is a complete, applyable set: a
+`examples/18-virtualmachine-libvirt.yaml` is a complete, applyable set: a
 `VMImage`, a `VMClass` and a `VirtualMachine`. Apply it and watch both
 objects:
 
 ```sh
-kubectl apply -f examples/17-virtualmachine-libvirt.yaml
+kubectl apply -f examples/18-virtualmachine-libvirt.yaml
 kubectl get virtualmachine,libvirtmachine -n banlieue-system -w
 ```
 
@@ -435,7 +435,7 @@ everywhere at once.
 | `Ready=False`, reason `ConnectFailed` | TLS or reachability. Check 16514, then reproduce with `virsh -c qemu+tls://…`. |
 | `Ready=False`, reason `CredentialsUnavailable` | The Secret or CA ConfigMap is missing a key. `tls.crt` / `tls.key` / `ca.crt`. |
 | Zone stuck at `BuildPending` | `status.buildArtifact` is not `Ready` yet — the problem is upstream, in `banlieue-imagebuilder`. |
-| Import Job `403` on `jobs` | The `ProviderClass` is missing `additionalRules`. See `examples/09-providerclass-libvirt.yaml`. |
+| Import Job `403` on `jobs` | The `ProviderClass` is missing `additionalRules`. See `examples/11-providerclass-libvirt.yaml`. |
 | Import Job `Pending`, ServiceAccount not found | The Job's namespace and the provider's differ. The provider falls back to that namespace's `default` SA, which needs the grant. |
 | `VirtualMachine` stuck `Scheduled=False`, reason `ImageNotReady` | The `VMImage` has no ready `libvirt` source. For a `BackingFile`, the volume must already be in the pool. |
 | `LibvirtMachine` `Ready=False`: *volume … is not in pool* | The image has not finished importing, or a `BackingFile` names a volume that is not there. `virsh vol-list <pool>`. |

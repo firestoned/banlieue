@@ -70,7 +70,7 @@
   **End-to-end confirmed live, 2026-09-23**, against a real `Deferred`,
   `tpmEnabled` VM (`debian-tpm-dev-v0.4.0`, rebuilt with the vSphere
   `vmware-rpctool info-set` stage from
-  `examples/16-cloud-config-guest-phase.yaml` uncommented): the guest itself
+  `examples/17-cloud-config-guest-phase.yaml` uncommented): the guest itself
   ran `vmware-rpctool info-set guestinfo.banlieue.phase installed` on boot,
   `guest_info` read it back, and `VSphereMachine.status` showed
   `guestInstalled: true` with `GuestReady=True reason=GuestAnnounced` —
@@ -282,7 +282,7 @@ booted from**.
   for on vSphere. libvirt's own moment-of-write proof (a Kairos image
   carrying the phase layer) remains open — that gap is specific to that
   backend's image, not to this ADR's decision.
-- `examples/16-cloud-config-guest-phase.yaml`'s vSphere stanza is
+- `examples/17-cloud-config-guest-phase.yaml`'s vSphere stanza is
   uncommented and confirmed live.
 - `VirtualMachine` gains a mirrored `GuestReady` condition, so a consumer
   reads one object rather than reaching into the infra CR.

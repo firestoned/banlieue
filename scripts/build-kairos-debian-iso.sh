@@ -16,7 +16,7 @@
 #
 # EXTRA_PACKAGES adds Debian packages to the image. A tpmEnabled libvirt
 # pool needs "tpm2-tools openssl": the guest exports its vTPM endorsement
-# certificate with them (examples/20-cloud-config-guest-ek-certificate.yaml),
+# certificate with them (examples/21-cloud-config-guest-ek-certificate.yaml),
 # because swtpm keeps no host-side copy (ADR-0045).
 #
 # The image carries no k0s: k0sctl installs exactly K0S_VERSION on every node

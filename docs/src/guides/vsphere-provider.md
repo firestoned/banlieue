@@ -387,8 +387,8 @@ happen:
    machine-id/SSH host keys.
 
 Full worked examples:
-[`12-vmclass-tpm-encrypted.yaml`](https://github.com/firestoned/banlieue/blob/v0.4.0/examples/12-vmclass-tpm-encrypted.yaml),
-[`13-vmimage-kairos-deferred-install-tpm.yaml`](https://github.com/firestoned/banlieue/blob/v0.4.0/examples/13-vmimage-kairos-deferred-install-tpm.yaml).
+[`14-vmclass-tpm-encrypted.yaml`](https://github.com/firestoned/banlieue/blob/v0.4.0/examples/14-vmclass-tpm-encrypted.yaml),
+[`15-vmimage-kairos-deferred-install-tpm.yaml`](https://github.com/firestoned/banlieue/blob/v0.4.0/examples/15-vmimage-kairos-deferred-install-tpm.yaml).
 
 !!! danger "Getting step 3 wrong is now an error, not a silent no-op"
     Pairing `tpmEnabled: true` with an `immediate` image used to clone

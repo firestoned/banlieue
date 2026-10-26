@@ -1,0 +1,102 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# One Cloud Hypervisor host as a Provider (ADR-0060), with what the scheduler
+# reads back from it (ADR-0107).
+#
+# Unlike vSphere, libvirt and Proxmox, this provider runs ON the host, as the
+# systemd service `banlieue-provider-cloud-hypervisor`, prepared by
+# `banlieue host cloud-hypervisor install` (see docs/src/guides/
+# cloud-hypervisor-host.md). The operator gives it an identity and nothing
+# else: no Deployment, no Secret.
+#
+# One host is one Provider. Capacity is counted per Provider, so two
+# Providers naming the same host would each count only their own VMs and
+# together over-place it.
+apiVersion: banlieue.io/v1alpha1
+kind: Provider
+metadata:
+  # Must equal [provider].name in the host's /etc/banlieue/cloud-hypervisor.toml
+  # (`install --provider-name`): the host serves only the Provider it names.
+  name: ch-bar
+  namespace: banlieue-system
+  labels:
+    dc: dc-edge
+    env: prod
+spec:
+  providerClassRef:
+    name: cloud-hypervisor
+  connection:
+    # Informational only: shown in status, never dialled. The host dials the
+    # API server and nothing dials the host. A URL because the admission
+    # policy requires one; the `ch://` scheme says it is not an API.
+    endpoint: ch://bar.foo.io
+    # No credentialsRef, and none is accepted: a provider on the hypervisor
+    # must read no Secret (ADR-0060 Decision 4). Its cluster credential is a
+    # bound ServiceAccount token issued by
+    # `banlieue bootstrap cloud-hypervisor-host`.
+  capabilities:
+    # Each abstract class maps to a HOST class, never to a path or bridge:
+    # the host resolves `hostClass` through its own config, which a
+    # cluster user cannot change. The host classes come from `install`:
+    #   --storage-class default=/srv/banlieue/ch --storage-class nvme=/nvme/banlieue/ch
+    #   --network-class default=virbr0 --network-class lan=br0
+    storageClasses:
+      - name: standard
+        target:
+          hostClass: default
+      - name: gold
+        target:
+          hostClass: nvme
+    networkClasses:
+      - name: mgmt
+        target:
+          hostClass: default
+      - name: prod
+        target:
+          hostClass: lan
+    # `vtpm` lets `tpmEnabled` VMClasses land here (ADR-0065). It is an
+    # assertion: status drops it if the host cannot manufacture a vTPM.
+    features:
+      - vtpm
+  # The issuers of this host's vTPM endorsement-key certificates, for the
+  # attestation broker (ADR-0049 Decision 10). On Cloud Hypervisor that is
+  # the host's own EK CA, created by `install` at
+  # /var/lib/banlieue/swtpm-localca/issuercert.pem and also published in
+  # status.ekCaCertificates. Admin-supplied, never taken from status:
+  # copy it into the ConfigMap after checking it on the host. EXACTLY ONE of
+  # inline / configMapRef / secretRef.
+  attestation:
+    ekTrustBundle:
+      configMapRef:
+        name: ch-bar-ek-ca
+  # How the scheduler places VMs here (ADR-0107). Memory is never
+  # overcommitted; vCPUs may be, up to this many per CPU the host publishes.
+  # 1 to 64, default 4. 2 suits a host that also runs latency-sensitive work.
+  scheduling:
+    cpuOvercommitRatio: 2
+
+# What the provider publishes back, for reference (status is written by the
+# provider, never by you). `capacity` is what the scheduler fits each VM
+# against: CPUs and memory guests may use, each the host's or the guests'
+# budget, whichever is smaller. The budget is the tighter of
+# banlieue-guests.slice (`install --guest-cpus 16-95 --guest-memory-max 200G`,
+# ADR-0105) and banlieue.slice (`systemctl set-property`). Every VM also costs
+# its class's memory plus memoryOverheadMiBPerVM (its VMM's margin).
+#
+# status:
+#   failureDomains:
+#     - name: ch-bar
+#       attributes:
+#         availableStorageClasses: [standard, gold]
+#         availableNetworkClasses: [mgmt, prod]
+#         features: [vtpm]
+#         capacity:
+#           cpus: 80                     # AllowedCPUs 16-95
+#           memoryMiB: 204800            # 200G guests' slice budget
+#           memoryOverheadMiBPerVM: 512
+#
+# With ratio 2, this host takes VMs until their vCPUs reach 160, or their
+# memory plus 512 MiB each reaches 204800 MiB, whichever comes first. A VM
+# that fits nowhere reports Scheduled=False, NoFailureDomainMatched,
+# "insufficient capacity: ...".

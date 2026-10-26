@@ -261,6 +261,7 @@ pub async fn compute_status(
                 available_network_classes: avail_network,
                 features: caps.features.clone(),
                 raw,
+                capacity: None,
             },
         });
     }

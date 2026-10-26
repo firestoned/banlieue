@@ -12,11 +12,12 @@ mod tests {
 
     use banlieue_api::banlieue::{
         AffinityMode, AntiAffinityRule, Architecture, DiskSpec, FailureDomain,
-        FailureDomainAttributes, GuestAgent, HardwareSpec, ImagePerProviderStatus, ImageSource,
-        ImageSourceKind, MigrationPolicy, NetworkClassMapping, NetworkInterfaceSpec, NetworkSpec,
-        OsFamily, PlacementSpec, Provider, ProviderCapabilities, ProviderConnection, ProviderSpec,
-        ProviderStatus, ScheduledPlacement, StorageClassMapping, VMClass, VMClassSpec, VMImage,
-        VMImageSpec, VMImageStatus, VirtualMachine, VirtualMachineSpec, VirtualMachineStatus,
+        FailureDomainAttributes, FailureDomainCapacity, GuestAgent, HardwareSpec,
+        ImagePerProviderStatus, ImageSource, ImageSourceKind, MigrationPolicy, NetworkClassMapping,
+        NetworkInterfaceSpec, NetworkSpec, OsFamily, PlacementSpec, Provider, ProviderCapabilities,
+        ProviderConnection, ProviderScheduling, ProviderSpec, ProviderStatus, ScheduledPlacement,
+        StorageClassMapping, VMClass, VMClassSpec, VMImage, VMImageSpec, VMImageStatus,
+        VirtualMachine, VirtualMachineSpec, VirtualMachineStatus,
     };
     use banlieue_api::common::{
         DiskProvisioning, Firmware, IpamShape, LabelSelector, LocalObjectReference, PowerState,
@@ -213,6 +214,7 @@ mod tests {
                 use_content_library: false,
                 failure_domain_name_overrides: Vec::new(),
                 attestation: None,
+                scheduling: None,
             },
             status: Some(ProviderStatus {
                 failure_domains: fds,
@@ -239,6 +241,7 @@ mod tests {
                 available_network_classes: network.iter().map(|s| s.to_string()).collect(),
                 features: features.iter().map(|s| s.to_string()).collect(),
                 raw: BTreeMap::new(),
+                capacity: None,
             },
         }
     }
@@ -313,7 +316,7 @@ mod tests {
             ),
         );
 
-        let d = schedule(&v, &cls, &img, &[p], &[]).expect("schedule");
+        let d = schedule(&v, &cls, &img, &[p], &[], &[]).expect("schedule");
         assert_eq!(d.provider_name, "vc1");
         assert_eq!(d.failure_domain_name, "vc1-cluster-a");
         assert_eq!(d.resolved_storage[0].class_name, "gold");
@@ -349,7 +352,7 @@ mod tests {
             ProviderCapabilities::default(),
         );
 
-        let err = schedule(&v, &cls, &img, &[p], &[]).unwrap_err();
+        let err = schedule(&v, &cls, &img, &[p], &[], &[]).unwrap_err();
         assert_eq!(err, ScheduleError::NoProviderMatched);
         assert_eq!(err.reason(), reasons::NO_PROVIDER);
     }
@@ -374,7 +377,7 @@ mod tests {
             ),
         );
 
-        assert!(schedule(&v, &cls, &img, &[p], &[]).is_ok());
+        assert!(schedule(&v, &cls, &img, &[p], &[], &[]).is_ok());
     }
 
     // --- Filter: failureDomainSelector --------------------------------------
@@ -410,7 +413,7 @@ mod tests {
             ),
         );
 
-        let d = schedule(&v, &cls, &img, &[p], &[]).unwrap();
+        let d = schedule(&v, &cls, &img, &[p], &[], &[]).unwrap();
         assert_eq!(d.failure_domain_name, "fd-b");
     }
 
@@ -436,7 +439,7 @@ mod tests {
             ),
         );
 
-        let err = schedule(&v, &cls, &img, &[p], &[]).unwrap_err();
+        let err = schedule(&v, &cls, &img, &[p], &[], &[]).unwrap_err();
         assert_eq!(err, ScheduleError::ImageNotReady);
     }
 
@@ -468,7 +471,7 @@ mod tests {
             ),
         );
 
-        let err = schedule(&v, &cls, &img, &[p], &[]).unwrap_err();
+        let err = schedule(&v, &cls, &img, &[p], &[], &[]).unwrap_err();
         match err {
             ScheduleError::NoFailureDomainMatched(msg) => {
                 assert!(
@@ -502,7 +505,7 @@ mod tests {
             ),
         );
 
-        let err = schedule(&v, &cls, &img, &[p], &[]).unwrap_err();
+        let err = schedule(&v, &cls, &img, &[p], &[], &[]).unwrap_err();
         assert!(matches!(err, ScheduleError::NoFailureDomainMatched(_)));
     }
 
@@ -528,7 +531,7 @@ mod tests {
             ),
         );
 
-        let err = schedule(&v, &cls, &img, &[p], &[]).unwrap_err();
+        let err = schedule(&v, &cls, &img, &[p], &[], &[]).unwrap_err();
         assert!(matches!(err, ScheduleError::NoFailureDomainMatched(_)));
     }
 
@@ -554,7 +557,7 @@ mod tests {
             ),
         );
 
-        let err = schedule(&v, &cls, &img, &[p], &[]).unwrap_err();
+        let err = schedule(&v, &cls, &img, &[p], &[], &[]).unwrap_err();
         assert_eq!(err, ScheduleError::FirmwareUnsupported);
     }
 
@@ -583,7 +586,7 @@ mod tests {
             ),
         );
 
-        let err = schedule(&v, &cls, &img, &[p], &[]).unwrap_err();
+        let err = schedule(&v, &cls, &img, &[p], &[], &[]).unwrap_err();
         assert_eq!(err, ScheduleError::TpmUnsupported);
     }
 
@@ -610,7 +613,7 @@ mod tests {
             ),
         );
 
-        let decision = schedule(&v, &cls, &img, &[p], &[]).unwrap();
+        let decision = schedule(&v, &cls, &img, &[p], &[], &[]).unwrap();
         assert_eq!(decision.failure_domain_name, "fd-a");
     }
 
@@ -658,6 +661,7 @@ mod tests {
             &img,
             &[tpm_provider("ch1", "cloud-hypervisor")],
             &[],
+            &[],
         )
         .unwrap_err();
         assert_eq!(err, ScheduleError::FirstBootSealingUnsupported);
@@ -671,7 +675,7 @@ mod tests {
             tpm_provider("ch1", "cloud-hypervisor"),
             tpm_provider("vc1", "vsphere"),
         ];
-        let decision = schedule(&v, &cls, &img, &providers, &[]).unwrap();
+        let decision = schedule(&v, &cls, &img, &providers, &[], &[]).unwrap();
         assert_eq!(decision.provider_name, "vc1");
     }
 
@@ -684,6 +688,7 @@ mod tests {
             &cls,
             &img,
             &[tpm_provider("ch1", "cloud-hypervisor")],
+            &[],
             &[],
         )
         .unwrap();
@@ -710,7 +715,7 @@ mod tests {
             ),
         );
 
-        let decision = schedule(&v, &cls, &img, &[p], &[]).unwrap();
+        let decision = schedule(&v, &cls, &img, &[p], &[], &[]).unwrap();
         assert_eq!(decision.failure_domain_name, "fd-a");
     }
 
@@ -740,7 +745,7 @@ mod tests {
             ),
         );
 
-        assert!(schedule(&v, &cls, &img, &[p], &[]).is_ok());
+        assert!(schedule(&v, &cls, &img, &[p], &[], &[]).is_ok());
     }
 
     // --- Anti-affinity ------------------------------------------------------
@@ -792,7 +797,7 @@ mod tests {
             ),
         );
 
-        let d = schedule(&v, &cls, &img, &[p], &[sibling]).unwrap();
+        let d = schedule(&v, &cls, &img, &[p], &[sibling], &[]).unwrap();
         assert_eq!(d.failure_domain_name, "fd-b", "must avoid fd-a");
     }
 
@@ -833,7 +838,7 @@ mod tests {
             ),
         );
 
-        let err = schedule(&v, &cls, &img, &[p], &[sibling]).unwrap_err();
+        let err = schedule(&v, &cls, &img, &[p], &[sibling], &[]).unwrap_err();
         match err {
             ScheduleError::AntiAffinityUnsatisfied(key) => {
                 assert_eq!(key, "failure_domain");
@@ -867,7 +872,7 @@ mod tests {
             ),
         );
 
-        let err = schedule(&v, &cls, &img, &[p], &[]).unwrap_err();
+        let err = schedule(&v, &cls, &img, &[p], &[], &[]).unwrap_err();
         match err {
             ScheduleError::NoFailureDomainMatched(msg) => {
                 assert!(msg.contains("vc1/fd-a:"), "first reason kept: {msg}");
@@ -910,7 +915,7 @@ mod tests {
             ),
         );
 
-        let err = schedule(&v, &cls, &img, &[p], &[]).unwrap_err();
+        let err = schedule(&v, &cls, &img, &[p], &[], &[]).unwrap_err();
         match err {
             ScheduleError::NoFailureDomainMatched(msg) => {
                 let first_omitted = format!("vc1/fd-{MAX_REJECT_REASONS:02}:");
@@ -983,7 +988,7 @@ mod tests {
 
     fn host_of(v: &VirtualMachine, existing: &[VirtualMachine]) -> String {
         let (providers, img, cls) = three_hosts();
-        schedule(v, &cls, &img, &providers, existing)
+        schedule(v, &cls, &img, &providers, existing, &[])
             .unwrap()
             .failure_domain_name
     }
@@ -1102,7 +1107,7 @@ mod tests {
             let name = p.metadata.name.clone().unwrap_or_default();
             p.metadata.labels = Some(lbls([("host", name.as_str())]));
         }
-        let d = schedule(&v, &cls, &img, &providers, &existing).unwrap();
+        let d = schedule(&v, &cls, &img, &providers, &existing, &[]).unwrap();
         assert_eq!(d.failure_domain_name, "h1");
     }
 
@@ -1120,7 +1125,7 @@ mod tests {
             vec![fd("fd-a", BTreeMap::new(), &["gold"], &[], &[])],
             caps_with(&[("gold", "datastoreCluster", "dsc-gold")], &[]),
         );
-        let d = schedule(&v, &cls, &img, &[p], &[]).unwrap();
+        let d = schedule(&v, &cls, &img, &[p], &[], &[]).unwrap();
         assert_eq!(d.resolved_storage[0].backend_id, "dsc-gold");
     }
 
@@ -1145,7 +1150,7 @@ mod tests {
                 .available_storage_classes = vec!["gold".into()];
         }
 
-        let d = schedule(&v, &cls, &img, &[p], &[]).unwrap();
+        let d = schedule(&v, &cls, &img, &[p], &[], &[]).unwrap();
         assert_eq!(d.resolved_storage[0].backend_id, "gold");
     }
 
@@ -1170,7 +1175,7 @@ mod tests {
                 &[("prod", "portGroup", "pg-1")],
             ),
         );
-        let d = schedule(&v, &cls, &img, &[p], &[]).unwrap();
+        let d = schedule(&v, &cls, &img, &[p], &[], &[]).unwrap();
 
         let now = k8s_openapi::apimachinery::pkg::apis::meta::v1::Time(
             k8s_openapi::jiff::Timestamp::now(),
@@ -1209,7 +1214,7 @@ mod tests {
             .collect();
         for name in ["a", "b", "c", "d", "e", "f"] {
             let v = vm(name, "banlieue-system", BTreeMap::new());
-            let d = schedule(&v, &cls, &img, &providers, &[]).expect("schedule");
+            let d = schedule(&v, &cls, &img, &providers, &[], &[]).expect("schedule");
             assert_eq!(d.provider_name, "h2", "{name}");
         }
     }
@@ -1222,7 +1227,7 @@ mod tests {
             .map(|p| with_heartbeat(p, banlieue_api::banlieue::Heartbeat::Stale))
             .collect();
         let v = vm("a", "banlieue-system", BTreeMap::new());
-        let err = schedule(&v, &cls, &img, &providers, &[]).unwrap_err();
+        let err = schedule(&v, &cls, &img, &providers, &[], &[]).unwrap_err();
         assert_eq!(err, ScheduleError::ProviderNotAlive);
         assert_eq!(err.reason(), "ProviderNotAlive");
     }
@@ -1242,7 +1247,7 @@ mod tests {
         for only in [absent, unevaluated] {
             let expected = only.name_any();
             let v = vm("a", "banlieue-system", BTreeMap::new());
-            let d = schedule(&v, &cls, &img, &[only], &[]).expect("schedule");
+            let d = schedule(&v, &cls, &img, &[only], &[], &[]).expect("schedule");
             assert_eq!(d.provider_name, expected);
         }
     }
@@ -1265,7 +1270,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        let err = schedule(&v, &cls, &img, &providers, &[]).unwrap_err();
+        let err = schedule(&v, &cls, &img, &providers, &[], &[]).unwrap_err();
         assert_eq!(err, ScheduleError::NoProviderMatched);
     }
 
@@ -1336,8 +1341,15 @@ mod tests {
             true,
         );
         for _ in 0..8 {
-            let d = schedule(&v, &gold_prod_class(), &img, &[two_zone_provider()], &[])
-                .expect("schedule");
+            let d = schedule(
+                &v,
+                &gold_prod_class(),
+                &img,
+                &[two_zone_provider()],
+                &[],
+                &[],
+            )
+            .expect("schedule");
             assert_eq!(d.failure_domain_name, "zone-b");
         }
     }
@@ -1349,8 +1361,15 @@ mod tests {
         // does not mention it at all: not placeable.
         let img =
             template_image_with_zones("vc1", ImageSourceKind::Template, &[("zone-a", true)], true);
-        let d =
-            schedule(&v, &gold_prod_class(), &img, &[two_zone_provider()], &[]).expect("schedule");
+        let d = schedule(
+            &v,
+            &gold_prod_class(),
+            &img,
+            &[two_zone_provider()],
+            &[],
+            &[],
+        )
+        .expect("schedule");
         assert_eq!(d.failure_domain_name, "zone-a");
     }
 
@@ -1363,7 +1382,15 @@ mod tests {
             &[("zone-a", false), ("zone-b", false)],
             false,
         );
-        let err = schedule(&v, &gold_prod_class(), &img, &[two_zone_provider()], &[]).unwrap_err();
+        let err = schedule(
+            &v,
+            &gold_prod_class(),
+            &img,
+            &[two_zone_provider()],
+            &[],
+            &[],
+        )
+        .unwrap_err();
         assert_eq!(err, ScheduleError::ImageNotReady);
     }
 
@@ -1373,7 +1400,17 @@ mod tests {
         // zones[]: provider-level readiness alone decides, as before.
         let v = vm("db-01", "ns", BTreeMap::new());
         let img = template_image_with_zones("vc1", ImageSourceKind::Template, &[], true);
-        assert!(schedule(&v, &gold_prod_class(), &img, &[two_zone_provider()], &[]).is_ok());
+        assert!(
+            schedule(
+                &v,
+                &gold_prod_class(),
+                &img,
+                &[two_zone_provider()],
+                &[],
+                &[]
+            )
+            .is_ok()
+        );
     }
 
     #[test]
@@ -1389,6 +1426,236 @@ mod tests {
             &[("zone-a", false), ("zone-b", false)],
             true,
         );
-        assert!(schedule(&v, &gold_prod_class(), &img, &[two_zone_provider()], &[]).is_ok());
+        assert!(
+            schedule(
+                &v,
+                &gold_prod_class(),
+                &img,
+                &[two_zone_provider()],
+                &[],
+                &[]
+            )
+            .is_ok()
+        );
+    }
+
+    // --- Filter: capacity (ADR-0107) ---------------------------------------
+
+    /// One provider `p` with failure domains carrying these capacities, and a
+    /// 2-vCPU, 1024 MiB class named `c` that fits its storage and network.
+    fn capacity_fixture(
+        fds: Vec<(&str, Option<FailureDomainCapacity>)>,
+        ratio: Option<u32>,
+    ) -> (VirtualMachine, VMClass, VMImage, Provider) {
+        let v = vm("new", "banlieue-system", BTreeMap::new());
+        let cls = class(
+            vec![("os", "gold")],
+            vec![("eth0", "prod")],
+            vec![],
+            Firmware::Efi,
+        );
+        let img = image_ready_on(&["p"]);
+        let mut prov = provider(
+            "p",
+            BTreeMap::new(),
+            fds.into_iter()
+                .map(|(name, cap)| {
+                    let mut f = fd(name, BTreeMap::new(), &["gold"], &["prod"], &[]);
+                    f.attributes.capacity = cap;
+                    f
+                })
+                .collect(),
+            caps_with(
+                &[("gold", "datastore", "ds-fast-01")],
+                &[("prod", "portGroup", "vmnet-prod")],
+            ),
+        );
+        prov.spec.scheduling = ratio.map(|r| ProviderScheduling {
+            cpu_overcommit_ratio: Some(r),
+        });
+        (v, cls, img, prov)
+    }
+
+    fn cap(cpus: Option<u32>, memory: Option<u64>, overhead: Option<u64>) -> FailureDomainCapacity {
+        FailureDomainCapacity {
+            cpus,
+            memory_mi_b: memory,
+            memory_overhead_mi_b_per_vm: overhead,
+        }
+    }
+
+    /// `n` VMs of class `c` already scheduled on `p`/`fd`.
+    fn placed(n: usize, fd: &str) -> Vec<VirtualMachine> {
+        (0..n)
+            .map(|i| {
+                scheduled_vm(
+                    &format!("old-{fd}-{i}"),
+                    "banlieue-system",
+                    BTreeMap::new(),
+                    "p",
+                    fd,
+                )
+            })
+            .collect()
+    }
+
+    /// Memory is strict, and every VM, the new one included, pays the
+    /// per-VM overhead: 3 placed + 1 new = 4 x (1024 + 512) = 6144 MiB.
+    #[test]
+    fn memory_fits_exactly_and_not_one_mib_more() {
+        let existing = placed(3, "fd");
+        for (memory, fits) in [(6144, true), (6143, false)] {
+            let (v, cls, img, p) =
+                capacity_fixture(vec![("fd", Some(cap(None, Some(memory), Some(512))))], None);
+            let result = schedule(&v, &cls, &img, &[p], &existing, std::slice::from_ref(&cls));
+            assert_eq!(result.is_ok(), fits, "capacity {memory} MiB: {result:?}");
+        }
+    }
+
+    #[test]
+    fn a_memory_shortfall_is_named_in_the_reject_reason() {
+        let existing = placed(1, "fd");
+        let (v, cls, img, p) =
+            capacity_fixture(vec![("fd", Some(cap(None, Some(1024), None)))], None);
+        let err =
+            schedule(&v, &cls, &img, &[p], &existing, std::slice::from_ref(&cls)).unwrap_err();
+        let ScheduleError::NoFailureDomainMatched(msg) = err else {
+            panic!("expected NoFailureDomainMatched, got {err:?}");
+        };
+        assert!(msg.contains("memory"), "{msg}");
+        assert!(
+            msg.contains("2048") && msg.contains("1024"),
+            "needed and available: {msg}"
+        );
+    }
+
+    /// CPU fits the ratio: 2 CPUs x default 4 = 8 vCPUs.
+    #[test]
+    fn cpu_fits_the_default_overcommit_ratio() {
+        for (already, fits) in [(3, true), (4, false)] {
+            let existing = placed(already, "fd");
+            let (v, cls, img, p) =
+                capacity_fixture(vec![("fd", Some(cap(Some(2), None, None)))], None);
+            let result = schedule(&v, &cls, &img, &[p], &existing, std::slice::from_ref(&cls));
+            assert_eq!(
+                result.is_ok(),
+                fits,
+                "{already} x 2 vCPUs placed: {result:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_provider_sets_the_overcommit_ratio() {
+        let existing = placed(1, "fd");
+        let (v, cls, img, p) =
+            capacity_fixture(vec![("fd", Some(cap(Some(3), None, None)))], Some(1));
+        let err =
+            schedule(&v, &cls, &img, &[p], &existing, std::slice::from_ref(&cls)).unwrap_err();
+        let ScheduleError::NoFailureDomainMatched(msg) = err else {
+            panic!("expected NoFailureDomainMatched, got {err:?}");
+        };
+        assert!(msg.contains("vCPU"), "{msg}");
+    }
+
+    /// No capacity, or no figure for a resource: that resource is not
+    /// checked, so backends that publish nothing keep today's behaviour.
+    #[test]
+    fn a_missing_capacity_or_figure_is_not_filtered() {
+        let existing = placed(50, "fd");
+        for capacity in [
+            None,
+            Some(cap(None, None, None)),
+            Some(cap(None, Some(1 << 20), None)),
+        ] {
+            let (v, cls, img, p) = capacity_fixture(vec![("fd", capacity.clone())], Some(1));
+            assert!(
+                schedule(&v, &cls, &img, &[p], &existing, std::slice::from_ref(&cls)).is_ok(),
+                "{capacity:?}"
+            );
+        }
+    }
+
+    /// Only VMs scheduled on this provider and failure domain count.
+    #[test]
+    fn vms_elsewhere_do_not_count() {
+        let mut existing = placed(4, "other");
+        existing.push(scheduled_vm(
+            "far",
+            "banlieue-system",
+            BTreeMap::new(),
+            "q",
+            "fd",
+        ));
+        let (v, cls, img, p) =
+            capacity_fixture(vec![("fd", Some(cap(Some(1), Some(1024), None)))], Some(2));
+        assert!(schedule(&v, &cls, &img, &[p], &existing, std::slice::from_ref(&cls)).is_ok());
+    }
+
+    /// A placed VM whose class is gone counts at zero rather than blocking
+    /// every placement on the host.
+    #[test]
+    fn a_vm_with_an_unknown_class_counts_at_zero() {
+        let mut existing = placed(1, "fd");
+        existing[0].spec.class_ref.name = "deleted".into();
+        let (v, cls, img, p) =
+            capacity_fixture(vec![("fd", Some(cap(None, Some(1024), None)))], None);
+        assert!(schedule(&v, &cls, &img, &[p], &existing, std::slice::from_ref(&cls)).is_ok());
+    }
+
+    /// The VM being placed never counts against itself, even when it
+    /// already carries a placement (a re-schedule).
+    #[test]
+    fn the_vm_being_placed_does_not_count_against_itself() {
+        let (_, cls, img, p) =
+            capacity_fixture(vec![("fd", Some(cap(None, Some(1024), None)))], None);
+        let me = scheduled_vm("new", "banlieue-system", BTreeMap::new(), "p", "fd");
+        assert!(
+            schedule(
+                &me,
+                &cls,
+                &img,
+                &[p],
+                std::slice::from_ref(&me),
+                std::slice::from_ref(&cls)
+            )
+            .is_ok()
+        );
+    }
+
+    /// A full failure domain is skipped and the VM lands on one that fits.
+    #[test]
+    fn a_full_failure_domain_is_skipped_for_one_that_fits() {
+        let existing = placed(1, "full");
+        let (v, cls, img, p) = capacity_fixture(
+            vec![
+                ("full", Some(cap(None, Some(1024), None))),
+                ("roomy", Some(cap(None, Some(8192), None))),
+            ],
+            None,
+        );
+        let d = schedule(&v, &cls, &img, &[p], &existing, std::slice::from_ref(&cls))
+            .expect("fits roomy");
+        assert_eq!(d.failure_domain_name, "roomy");
+    }
+
+    /// The pure check: what is short, by how much.
+    #[test]
+    fn capacity_shortfall_reports_each_resource() {
+        let c = cap(Some(1), Some(2048), Some(0));
+        let used = Usage {
+            cpus: 4,
+            memory_mi_b: 1024,
+        };
+        assert_eq!(
+            capacity_shortfall(2, 512, used, &c, 4),
+            Some("vCPUs 6 > 1 CPUs x 4".to_string())
+        );
+        assert!(
+            capacity_shortfall(2, 2048, used, &c, 8)
+                .unwrap()
+                .starts_with("memory")
+        );
+        assert_eq!(capacity_shortfall(2, 512, Usage::default(), &c, 4), None);
     }
 }

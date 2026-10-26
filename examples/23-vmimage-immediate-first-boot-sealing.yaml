@@ -5,7 +5,7 @@
 # COS_PERSISTENT to their OWN vTPM on their first boot (ADR-0088), and the
 # tpmEnabled VMClass that uses it.
 #
-# WHY THIS INSTEAD OF EXAMPLE 13 (Deferred)
+# WHY THIS INSTEAD OF EXAMPLE 15 (Deferred)
 #
 #   Deferred runs the whole Kairos install once per clone, at that clone's
 #   first boot, so each VM waits for a full install. Immediate installs once,
@@ -25,7 +25,7 @@
 #     plaintext and is caught by GuestReady=False, FirstBootSealingTimeout
 #     or FirstBootSealingUnverified, never reported healthy.
 #   - A KMS registered in vCenter and the `vtpm` feature on the Provider, as
-#     for example 12.
+#     for example 14.
 #
 # WHAT banlieue DOES WITH firstBootSealing
 #

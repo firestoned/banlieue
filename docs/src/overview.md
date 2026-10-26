@@ -2,9 +2,9 @@
 
 > **What banlieue does, in one sentence:** it gives you a single
 > Kubernetes-native API for describing virtual machines, then dispatches each
-> VM to whichever hypervisor backend you've plugged in — vSphere today,
-> libvirt and (eventually) Proxmox, or one you write yourself — without your
-> manifest ever changing shape.
+> VM to whichever hypervisor backend you've plugged in (Cloud Hypervisor on
+> your own KVM hosts, vSphere, libvirt, Proxmox VE, or one you write
+> yourself) without your manifest ever changing shape.
 
 This page is the **fundamentals**: what banlieue is, what it does, and how the
 pieces fit together at a single glance. For the *reasoning* behind these
@@ -19,7 +19,7 @@ There are three actors:
 | --- | --- |
 | **User** | Writes one `VirtualMachine` YAML. Runs `kubectl apply`. That's it. |
 | **banlieue controller** | Watches `VirtualMachine`s, resolves their refs, creates a backend-specific *infrastructure* CR, and mirrors status back. |
-| **Provider controller** | Watches its infrastructure CR and talks to a real hypervisor (vSphere / Proxmox / libvirt / …). |
+| **Provider controller** | Watches its infrastructure CR and talks to a real hypervisor (Cloud Hypervisor / vSphere / libvirt / Proxmox VE / …). |
 
 Everything happens through the **Kubernetes API**. There is no second protocol,
 no RPC, no message bus. CRDs are the messages. The K8s API server is the bus.
@@ -37,7 +37,7 @@ flowchart TB
       PROV[(Provider)]
       CLS[(VMClass)]
       IMG[(VMImage)]
-      INFRA[(VSphereMachine /<br/>ProxmoxMachine /<br/>LibvirtMachine)]
+      INFRA[(CloudHypervisorMachine /<br/>VSphereMachine /<br/>LibvirtMachine /<br/>ProxmoxMachine)]
     end
 
     subgraph Main["🧠 banlieue-controller"]
@@ -45,15 +45,17 @@ flowchart TB
     end
 
     subgraph Providers["🔌 Provider controllers (one per backend)"]
+      PC[banlieue-provider-cloud-hypervisor<br/>on the KVM host]
       PV[banlieue-provider-vsphere]
-      PP[banlieue-provider-proxmox]
       PL[banlieue-provider-libvirt]
+      PP[banlieue-provider-proxmox]
     end
 
     subgraph Backends["💻 Real backends"]
+      BC[Cloud Hypervisor VMMs<br/>one systemd unit per guest]
       BV[vSphere / vCenter]
-      BP[Proxmox VE]
       BL[libvirt / KVM hosts]
+      BP[Proxmox VE]
     end
 
     U --> VM
@@ -65,17 +67,20 @@ flowchart TB
     MC -- creates / patches --> INFRA
     MC -. watches .-> INFRA
 
+    PC -. watches .-> INFRA
     PV -. watches .-> INFRA
-    PP -. watches .-> INFRA
     PL -. watches .-> INFRA
+    PP -. watches .-> INFRA
 
+    PC --> BC
     PV --> BV
-    PP --> BP
     PL --> BL
+    PP --> BP
 
+    PC -- patches status --> INFRA
     PV -- patches status --> INFRA
-    PP -- patches status --> INFRA
     PL -- patches status --> INFRA
+    PP -- patches status --> INFRA
 
     MC -- mirrors status --> VM
     VM -. visible to user .-> U
@@ -85,8 +90,8 @@ flowchart TB
     classDef be  fill:#e8f7ec,stroke:#3a8050,color:#0a3a1a
     classDef usr fill:#f0e6ff,stroke:#7a3aa0,color:#2a0a40
     class VM,PROV,CLS,IMG,INFRA api
-    class MC,PV,PP,PL ctl
-    class BV,BP,BL be
+    class MC,PC,PV,PL,PP ctl
+    class BC,BV,BL,BP be
     class U usr
 ```
 
@@ -99,11 +104,11 @@ Three rules to remember when reading the diagram:
 3. **The user only ever interacts with the top-left box.** Everything else is
    plumbing they shouldn't have to see.
 
-> **Current state vs. the diagram:** `VSphereMachine` is the only
-> infrastructure CR that exists and is reconciled today. `ProxmoxMachine` and
-> `LibvirtMachine` (and their provider controllers) are the design target —
-> `banlieue-provider-libvirt` today only registers hosts and imports images
-> (no VM lifecycle yet), and there is no Proxmox provider at all. See
+> **One provider is not a pod.** The Cloud Hypervisor provider runs on the KVM
+> host itself, as a systemd service, and dials the API server; nothing dials
+> the host. To the diagram that makes no difference: it watches its
+> `CloudHypervisorMachine`s and patches their status like every other
+> provider. All four infrastructure CRs are reconciled today; see
 > [Project status](index.md#project-status).
 
 ## A 10-second walkthrough
@@ -127,12 +132,15 @@ Three rules to remember when reading the diagram:
 
 2. The **banlieue controller** sees it, looks up `db-prod-large` and
    `ubuntu-22-04`, matches `placement.providerSelector` against the available
-   `Provider` CRs to pick one, and creates a `VSphereMachine` carrying the
-   resolved spec.
+   `Provider` CRs to pick one (here, a Cloud Hypervisor host), and creates a
+   `CloudHypervisorMachine` carrying the resolved spec.
 
-3. The **vSphere provider controller** sees the new `VSphereMachine`, talks to
-   vCenter, provisions the VM, and writes status (`Ready=true`, addresses,
-   provider ID) back onto the `VSphereMachine`.
+3. The **Cloud Hypervisor provider**, running on that host, sees the new
+   `CloudHypervisorMachine`, prepares the guest's disk and seed, starts its
+   VMM as a systemd unit under the guest's own uid, and writes status
+   (`Ready=true`, addresses, provider ID) back onto the
+   `CloudHypervisorMachine`. On vSphere the same step is a `VSphereMachine`
+   and a clone in vCenter.
 
 4. The **banlieue controller** sees that status and mirrors it onto
    `VirtualMachine.status` so the user can `kubectl get vm db-prod-01` and
@@ -141,18 +149,18 @@ Three rules to remember when reading the diagram:
 If the user later changes `placement.providerSelector` to match a different
 `Provider`, the same sequence happens — but now that Provider's backend
 controller picks up the work, on the same Kubernetes API, with the same
-status contract. (Today this is only exercisable across two vSphere
-`Provider`s; a cross-backend swap needs a working infrastructure CR/reconciler
-on both sides — see [Project status](index.md#project-status).)
+status contract. Every backend has its infrastructure CR and reconciler, so
+the swap works between any two of them; see
+[Project status](index.md#project-status).
 
 ## What "fundamentally" buys you
 
 Because everything below the user's CR is uniform and pluggable:
 
 - **Swap a backend** by changing one field (`placement.providerSelector`).
-- **Mix backends** in one cluster — prod on vSphere, dev on libvirt, edge on
-  Proxmox (once its provider ships) — addressed by the same
-  `kind: VirtualMachine`.
+- **Mix backends** in one cluster (sandboxes and pools on Cloud Hypervisor
+  hosts, prod on vSphere, dev on libvirt, edge on Proxmox), addressed by the
+  same `kind: VirtualMachine`.
 - **Add a new backend** by writing a provider once; every existing
   `VirtualMachine` becomes deployable there with no manifest change.
 - **Audit, RBAC, GitOps, OPA, dashboards, etc.** all work the same way they

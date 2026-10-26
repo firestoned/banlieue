@@ -98,7 +98,7 @@ something `banlieue-imagebuilder` injects into the user's Secret — merging
 YAML stage lists mechanically is fragile, and ADR non-negotiable #4 (explicit
 over implicit) argues against silently rewriting user-supplied cloud-config.
 `docs/src/guides/using-banlieue-imagebuilder.md` and
-`examples/07-vmimage-kairos-url-source.yaml` document the required snippet.
+`examples/09-vmimage-kairos-url-source.yaml` document the required snippet.
 
 ### 2. Import-Job sequence change
 
@@ -195,7 +195,7 @@ No new credentials field, no guest-ops client code, no change to
   above, or the import Job will time out waiting for a poweroff that never
   comes — unless `spec.template.autoManageInstall: false` opts out of the
   whole sequence. Documented in `docs/src/guides/using-banlieue-imagebuilder.md`
-  and `examples/07-vmimage-kairos-url-source.yaml`; the import Job's
+  and `examples/09-vmimage-kairos-url-source.yaml`; the import Job's
   timeout-failure message references this ADR/guide.
 - **`--force-create` destroys the stale target before the datastore
   reuse-check, not after** (found live testing this ADR). A template whose

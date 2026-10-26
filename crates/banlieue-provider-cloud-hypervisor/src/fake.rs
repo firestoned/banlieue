@@ -37,6 +37,8 @@ const HTTP_INTERNAL: u16 = 500;
 /// Everything the fake host remembers.
 #[derive(Debug, Default)]
 pub struct State {
+    /// The guests' slice budget the host reports (ADR-0107).
+    pub slice_budget: crate::provider::SliceBudget,
     /// Bridges that exist.
     pub bridges: BTreeSet<String>,
     /// Images in the cache, by path.
@@ -354,6 +356,10 @@ impl HostOps for FakeHost {
 
     async fn unit_state(&self, name: &str) -> Result<Option<UnitState>> {
         Ok(self.lock().units.get(name).cloned())
+    }
+
+    async fn guest_slice_budget(&self) -> crate::provider::SliceBudget {
+        self.lock().slice_budget.clone()
     }
 
     async fn unit_failure(&self, name: &str) -> Result<Option<String>> {

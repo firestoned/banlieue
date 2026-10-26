@@ -3,7 +3,7 @@
 //! Aggregate readiness for `VMImage` (ADR-0015).
 //!
 //! A `VMImage` can name sources for several backends at once —
-//! `examples/04-vmimage-ubuntu.yaml` names three. Each provider reconciles the
+//! `examples/06-vmimage-ubuntu.yaml` names three. Each provider reconciles the
 //! same object and publishes its own `status.perProvider[]` entry, merge-keyed
 //! so the entries coexist.
 //!

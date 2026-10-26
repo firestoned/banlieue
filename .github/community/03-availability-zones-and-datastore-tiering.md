@@ -107,7 +107,12 @@ Consequences:
   the data path. If a backend only offers shared storage, the failure domain
   granularity must collapse to match (fewer, larger AZs) rather than pretend.
 - **Capacity-aware even spread.** Spreading "evenly" needs a notion of
-  per-domain capacity/utilization the scheduler can read.
+  per-domain capacity/utilization the scheduler can read. *Partly answered
+  2026-10-24 by ADR-0107:* failure domains publish a typed `capacity`, and
+  the scheduler fits each VM against it (memory strictly, vCPUs up to a
+  per-Provider overcommit ratio) before spreading. Only the Cloud Hypervisor
+  provider publishes capacity so far, and the spread itself is still by VM
+  count (ADR-0098), not by utilization.
 
 ## Roadmap actions
 

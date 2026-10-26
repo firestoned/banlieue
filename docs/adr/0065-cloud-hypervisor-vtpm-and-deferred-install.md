@@ -301,7 +301,7 @@ planned).
   is sent back. `GuestReady` is published only for `Deferred` machines or
   once a guest has reported, so an `Immediate` image without a sender
   leaves it absent and a pool reports the signal absent (ADR-0046
-  Decision 3) instead of waiting. The sender is example 16's
+  Decision 3) instead of waiting. The sender is example 17's
   `banlieue-guest-phase-cloud-hypervisor` stage. It needs **no extra
   package** on an image with systemd 256 or later:
   `NOTIFY_SOCKET=vsock-stream:2:1024 systemd-notify phase=installed`
@@ -338,10 +338,10 @@ planned).
 **Follow-ups**
 
 - Correct ADR-0045's ECC EK index (`0x01c0000a` → read `0x01c00016` too)
-  and example 20's export stage to match, so the libvirt export does not
+  and example 21's export stage to match, so the libvirt export does not
   miss the P-384 certificate either.
 - Guest images for this class need `tpm2-tools`: Kairos Hadron *core* has
-  no `tpm2_nvread`, so example 20's stage failed in the spike. Same
-  requirement example 20 already states for libvirt.
+  no `tpm2_nvread`, so example 21's stage failed in the spike. Same
+  requirement example 21 already states for libvirt.
 - Roadmap 17: add phase G for this backend (roadmap 09 phase 7).
 - The threat model: the vsock channel as a guest → host input path.

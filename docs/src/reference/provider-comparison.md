@@ -4,9 +4,10 @@ SPDX-License-Identifier: Apache-2.0
 -->
 # Provider comparison
 
-> **Living document.** One column per provider. It is complete when all four
-> are measured: Cloud Hypervisor ✅ · libvirt ✅ · vSphere ⏳ · Proxmox ⏳
-> (provider not built yet, roadmap 06). Last updated **2026-09-27**.
+> **Living document.** One column per provider, Cloud Hypervisor (the
+> reference backend) first. It is complete when all four are measured:
+> Cloud Hypervisor ✅ · vSphere ⏳ · libvirt ✅ · Proxmox ⏳ (implemented; its
+> column is roadmap 06's last item). Last updated **2026-10-24**.
 > The open columns are tracked as tasks in roadmaps 05 (vSphere) and 06
 > (Proxmox).
 > To add or refresh a column, see [Adding a column](#adding-a-column).
@@ -19,22 +20,22 @@ user waits for: scheduling, the provider, the hypervisor and the guest.
 
 ## Capabilities
 
-| | Cloud Hypervisor | libvirt | vSphere | Proxmox |
+| | Cloud Hypervisor | vSphere | libvirt | Proxmox |
 | --- | --- | --- | --- | --- |
-| Status | Implemented (roadmap 09) | Implemented (roadmap 07) | Implemented (roadmap 05) | Not started (roadmap 06) |
-| Where the provider runs | **On the KVM host**, as a systemd service; `External` ProviderClass (ADR-0060) | In the cluster, one Deployment per Provider (ADR-0012) | In the cluster, one Deployment per Provider | — |
-| Talks to | The local VMM's REST API on a Unix socket (ADR-0061) | Remote `libvirtd`, native RPC over mutual TLS (ADR-0011) | vCenter SOAP API (ADR-0008) | — |
-| Credential it holds | A bound ServiceAccount token on the host, self-renewing; **no hypervisor credential and no Secret reads** | mTLS client key (Secret) | vCenter username/password (Secret) | — |
-| Hypervisor | Cloud Hypervisor v53 (Rust, KVM) | QEMU/KVM (C) via libvirt | ESXi | Proxmox VE (QEMU/KVM) |
-| One VM is | A systemd unit (`banlieue-ch@<uid>`) running one VMM process | A libvirt domain | A vSphere VM | — |
-| Guest isolation on the host | **Own uid and private group per guest**, systemd sandbox, seccomp and Landlock in the VMM (ADR-0063) | Host-configured: `libvirt-qemu` user, per-domain AppArmor/SELinux (sVirt) | ESXi | — |
-| Image delivery | Admin-placed file in the host cache, or **OCI registry pull by digest** (ADR-0064) | Admin-placed pool volume, or import Job into each pool (ADR-0011) | Per-zone ISO import, templates (ADR-0020) | — |
-| `Immediate` install (clone) | Reflink, or sparse copy (ADR-0064 D4) | Backing-volume overlay (ADR-0050) | Template clone | — |
-| `Deferred` install | Installer as a read-only virtio disk, hot-unplugged when installed (ADR-0065) | Installer CD-ROM, ejected when installed (ADR-0044) | Installer CD-ROM (ADR-0040) | — |
-| vTPM | swtpm per guest (ADR-0065) | swtpm via libvirt (ADR-0050) | vTPM, needs a KMS (ADR-0039) | — |
-| EK certificate source | **Read on the host**, where it was minted | Reported by the guest (ADR-0045) | Read from vCenter | — |
-| `GuestReady` signal | vsock report (ADR-0065 D5) | `qemu-guest-agent` file read (ADR-0043) | `guestinfo` (ADR-0043) | — |
-| UEFI Secure Boot | **No**: no persistent UEFI variables (ADR-0065 D7) | Yes (OVMF secboot, SMM) | Yes | — |
+| Status | Implemented (roadmap 09) | Implemented (roadmap 05) | Implemented (roadmap 07) | Implemented; cluster end-to-end test and this column pending (roadmap 06) |
+| Where the provider runs | **On the KVM host**, as a systemd service; `External` ProviderClass (ADR-0060) | In the cluster, one Deployment per Provider | In the cluster, one Deployment per Provider (ADR-0012) | — |
+| Talks to | The local VMM's REST API on a Unix socket (ADR-0061) | vCenter SOAP API (ADR-0008) | Remote `libvirtd`, native RPC over mutual TLS (ADR-0011) | — |
+| Credential it holds | A bound ServiceAccount token on the host, self-renewing; **no hypervisor credential and no Secret reads** | vCenter username/password (Secret) | mTLS client key (Secret) | — |
+| Hypervisor | Cloud Hypervisor v53 (Rust, KVM) | ESXi | QEMU/KVM (C) via libvirt | Proxmox VE (QEMU/KVM) |
+| One VM is | A systemd unit (`banlieue-ch@<uid>`) running one VMM process | A vSphere VM | A libvirt domain | — |
+| Guest isolation on the host | **Own uid and private group per guest**, systemd sandbox, seccomp and Landlock in the VMM (ADR-0063) | ESXi | Host-configured: `libvirt-qemu` user, per-domain AppArmor/SELinux (sVirt) | — |
+| Image delivery | Admin-placed file in the host cache, or **OCI registry pull by digest** (ADR-0064) | Per-zone ISO import, templates (ADR-0020) | Admin-placed pool volume, or import Job into each pool (ADR-0011) | — |
+| `Immediate` install (clone) | Reflink, or sparse copy (ADR-0064 D4) | Template clone | Backing-volume overlay (ADR-0050) | — |
+| `Deferred` install | Installer as a read-only virtio disk, hot-unplugged when installed (ADR-0065) | Installer CD-ROM (ADR-0040) | Installer CD-ROM, ejected when installed (ADR-0044) | — |
+| vTPM | swtpm per guest (ADR-0065) | vTPM, needs a KMS (ADR-0039) | swtpm via libvirt (ADR-0050) | — |
+| EK certificate source | **Read on the host**, where it was minted | Read from vCenter | Reported by the guest (ADR-0045) | — |
+| `GuestReady` signal | vsock report (ADR-0065 D5) | `guestinfo` (ADR-0043) | `qemu-guest-agent` file read (ADR-0043) | — |
+| UEFI Secure Boot | **No**: no persistent UEFI variables (ADR-0065 D7) | Yes | Yes (OVMF secboot, SMM) | — |
 | Live migration | No (roadmap 14 not started) | No | No | — |
 | Snapshots | No (roadmap 10 not started) | No | No | — |
 

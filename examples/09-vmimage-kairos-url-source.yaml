@@ -41,7 +41,7 @@
 # `users` only if a userless system is genuinely intended. Not building a
 # Kairos image, or managing install yourself? Set
 # `spec.template.installMode: manual` (or `deferred` — see
-# 13-vmimage-kairos-deferred-install-tpm.yaml, ADR-0040) to skip this
+# 15-vmimage-kairos-deferred-install-tpm.yaml, ADR-0040) to skip this
 # contract entirely — the import reverts to ADR-0020's original
 # create+attach-ISO+MarkAsTemplate behavior, no power-on. banlieue never
 # reads or edits this Secret either way.

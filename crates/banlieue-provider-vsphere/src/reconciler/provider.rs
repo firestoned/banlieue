@@ -382,6 +382,7 @@ pub fn compute_failure_domain_attributes(
         // downgrade is an ADR-0019 follow-up.
         features: capabilities.features.clone(),
         raw,
+        capacity: None,
     }
 }
 

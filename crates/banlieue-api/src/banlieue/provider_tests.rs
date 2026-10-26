@@ -187,6 +187,7 @@ mod tests {
             use_content_library: false,
             failure_domain_name_overrides: Vec::new(),
             attestation: None,
+            scheduling: None,
         };
         let json = serde_json::to_value(&s).unwrap();
         let obj = json.as_object().unwrap();
@@ -221,6 +222,7 @@ mod tests {
             use_content_library: false,
             failure_domain_name_overrides: Vec::new(),
             attestation: None,
+            scheduling: None,
         };
         let json = serde_json::to_value(&s).unwrap();
         assert_eq!(json["paused"], true);
@@ -251,6 +253,7 @@ mod tests {
             use_content_library: true,
             failure_domain_name_overrides: Vec::new(),
             attestation: None,
+            scheduling: None,
         };
         let json = serde_json::to_value(&s).unwrap();
         assert_eq!(json["useContentLibrary"], true);
@@ -284,6 +287,7 @@ mod tests {
                     available_network_classes: vec!["prod".to_string()],
                     features: vec!["hotAddCPU".to_string()],
                     raw: BTreeMap::new(),
+                    capacity: None,
                 },
             }],
             conditions: vec![Condition {
@@ -658,6 +662,7 @@ mod tests {
             use_content_library: false,
             failure_domain_name_overrides: Vec::new(),
             attestation: None,
+            scheduling: None,
         };
         let json = serde_json::to_value(&s).unwrap();
         assert!(
@@ -692,6 +697,7 @@ mod tests {
                 name: "cluster-01".to_string(),
             }],
             attestation: None,
+            scheduling: None,
         };
         let json = serde_json::to_value(&s).unwrap();
         assert_eq!(json["failureDomainNameOverrides"][0]["name"], "cluster-01");
@@ -721,6 +727,7 @@ mod tests {
             use_content_library: false,
             failure_domain_name_overrides: Vec::new(),
             attestation: None,
+            scheduling: None,
         }
     }
 
@@ -946,5 +953,76 @@ attestation:
             .find(|c| c.name == "Heartbeat")
             .expect("a Heartbeat column");
         assert_eq!(heartbeat.json_path, ".status.workload.heartbeat");
+    }
+
+    // ------------------------------------------------ capacity (ADR-0107)
+
+    /// A provider that publishes no capacity writes nothing, so a backend
+    /// that does not know its capacity is unchanged on the wire.
+    #[test]
+    fn attributes_without_capacity_omit_it() {
+        let v = serde_json::to_value(FailureDomainAttributes::default()).unwrap();
+        assert!(v.get("capacity").is_none(), "{v}");
+    }
+
+    #[test]
+    fn capacity_round_trips_with_camel_case_fields() {
+        let c = FailureDomainCapacity {
+            cpus: Some(96),
+            memory_mi_b: Some(204_800),
+            memory_overhead_mi_b_per_vm: Some(512),
+        };
+        let v = serde_json::to_value(&c).unwrap();
+        assert_eq!(
+            v,
+            serde_json::json!({"cpus": 96, "memoryMiB": 204_800, "memoryOverheadMiBPerVM": 512})
+        );
+        assert_eq!(
+            serde_json::from_value::<FailureDomainCapacity>(v).unwrap(),
+            c
+        );
+    }
+
+    /// Every figure is optional: a backend fills in what it knows.
+    #[test]
+    fn a_partial_capacity_is_valid() {
+        let c: FailureDomainCapacity =
+            serde_json::from_value(serde_json::json!({"memoryMiB": 1024})).unwrap();
+        assert_eq!(c.cpus, None);
+        assert_eq!(c.memory_mi_b, Some(1024));
+        assert_eq!(c.memory_overhead_mi_b_per_vm, None);
+    }
+
+    /// No `scheduling` block means the documented default ratio.
+    #[test]
+    fn the_cpu_overcommit_ratio_defaults_when_unset() {
+        assert_eq!(
+            ProviderScheduling::default().cpu_overcommit_ratio(),
+            DEFAULT_CPU_OVERCOMMIT_RATIO
+        );
+        let explicit = ProviderScheduling {
+            cpu_overcommit_ratio: Some(1),
+        };
+        assert_eq!(explicit.cpu_overcommit_ratio(), 1);
+        assert_eq!(DEFAULT_CPU_OVERCOMMIT_RATIO, 4);
+    }
+
+    /// The API server enforces the ratio's range, so a typo cannot disable
+    /// the check (0) or make it meaningless (a huge value).
+    #[test]
+    fn the_crd_bounds_the_cpu_overcommit_ratio() {
+        let crd = serde_json::to_value(Provider::crd()).unwrap();
+        let ratio = &crd["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"]["spec"]
+            ["properties"]["scheduling"]["properties"]["cpuOvercommitRatio"];
+        assert_eq!(
+            ratio["minimum"].as_f64(),
+            Some(f64::from(MIN_CPU_OVERCOMMIT_RATIO)),
+            "{ratio}"
+        );
+        assert_eq!(
+            ratio["maximum"].as_f64(),
+            Some(f64::from(MAX_CPU_OVERCOMMIT_RATIO)),
+            "{ratio}"
+        );
     }
 }

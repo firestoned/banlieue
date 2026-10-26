@@ -216,8 +216,14 @@ metrics, is in the [Observability guide](observability.md).
 
 The controller is running but has no backend to schedule onto. Add one:
 
-- **[vSphere Provider guide](vsphere-provider.md)** — install the provider and
-  take a `VirtualMachine` all the way to a scheduled `VSphereMachine` on vCenter.
+- **[Cloud Hypervisor Provider](cloud-hypervisor-host.md)**, the reference
+  backend: prepare a bare-metal KVM host and connect it, then run VMs on it.
+- **[vSphere Provider](vsphere-provider.md)**: take a `VirtualMachine` all the
+  way to a running VM on vCenter.
+- **[libvirt Provider](libvirt-provider.md)**: register a libvirt/KVM host over
+  mutual TLS and run VMs on it.
+- **[Proxmox VE Provider](proxmox-provider.md)**: register a Proxmox node with a
+  least-privilege API token and run VMs as template clones.
 
 To uninstall, delete in reverse order (`deploy/admission/`, `deploy/controller/`,
 then `deploy/crds/` — deleting the CRDs removes all banlieue objects).

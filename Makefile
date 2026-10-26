@@ -1456,7 +1456,7 @@ kind-deploy-operator: kind-deploy-crds kind-load ## Deploy banlieue-operator to 
 	@echo "✓ banlieue-operator is running. Apply a Provider CR and it will create"
 	@echo "  that backend's Deployment, ServiceAccount, Role, RoleBinding and"
 	@echo "  ClusterRoleBinding (ADR-0003). A ProviderClass must exist first:"
-	@echo "    kubectl apply -f examples/08-providerclass-vsphere.yaml"
+	@echo "    kubectl apply -f examples/10-providerclass-vsphere.yaml"
 	@echo ""
 
 operator-run-local: crds ## Run banlieue-operator locally against your current kube-context

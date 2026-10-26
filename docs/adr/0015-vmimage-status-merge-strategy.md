@@ -30,7 +30,7 @@ distinct key and is `skip_serializing_if = "Option::is_none"`, so a provider's
 
 The split is right; the schema does not implement it.
 
-This is not a corner case. `examples/04-vmimage-ubuntu.yaml` ships sources for
+This is not a corner case. `examples/06-vmimage-ubuntu.yaml` ships sources for
 `vsphere`, `proxmox` *and* `libvirt` — the documented way to describe one
 abstract image available on several backends. Two providers reconciling it flip
 the object back and forth on every reconcile.

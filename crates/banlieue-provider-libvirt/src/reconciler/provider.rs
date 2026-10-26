@@ -193,6 +193,7 @@ pub async fn compute_status(
             available_network_classes: available_network,
             features: provider.spec.capabilities.features.clone(),
             raw,
+            capacity: None,
         },
     };
 

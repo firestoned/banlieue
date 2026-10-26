@@ -108,6 +108,42 @@ pub struct ProviderSpec {
     /// runs no `tpmEnabled` classes has no reason to set it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attestation: Option<ProviderAttestation>,
+
+    /// How the scheduler places VMs on this backend (ADR-0107). Optional:
+    /// without it the defaults apply.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scheduling: Option<ProviderScheduling>,
+}
+
+/// vCPUs the scheduler places per published CPU when a Provider does not
+/// set `scheduling.cpuOvercommitRatio` (ADR-0107).
+pub const DEFAULT_CPU_OVERCOMMIT_RATIO: u32 = 4;
+/// Smallest `cpuOvercommitRatio`: one vCPU per CPU, no overcommit.
+pub const MIN_CPU_OVERCOMMIT_RATIO: u32 = 1;
+/// Largest `cpuOvercommitRatio` the API server accepts.
+pub const MAX_CPU_OVERCOMMIT_RATIO: u32 = 64;
+
+/// Placement policy for one backend (ADR-0107).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderScheduling {
+    /// vCPUs the scheduler may place per CPU a failure domain publishes in
+    /// `attributes.capacity.cpus`. `1` means no overcommit. CPU contention
+    /// only slows guests, so the default allows 4; memory is never
+    /// overcommitted. Unset: 4.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = MIN_CPU_OVERCOMMIT_RATIO, max = MAX_CPU_OVERCOMMIT_RATIO))]
+    pub cpu_overcommit_ratio: Option<u32>,
+}
+
+impl ProviderScheduling {
+    /// The ratio to apply: the configured one, or
+    /// [`DEFAULT_CPU_OVERCOMMIT_RATIO`].
+    #[must_use]
+    pub fn cpu_overcommit_ratio(&self) -> u32 {
+        self.cpu_overcommit_ratio
+            .unwrap_or(DEFAULT_CPU_OVERCOMMIT_RATIO)
+    }
 }
 
 /// Attestation configuration for one backend (ADR-0049 Decision 10).
@@ -582,6 +618,38 @@ pub struct FailureDomainAttributes {
     /// controller when filling in the infrastructure CR.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub raw: BTreeMap<String, String>,
+
+    /// What guests may use in this failure domain, as the provider measured
+    /// it (ADR-0107). The scheduler fits each VM against it; a domain that
+    /// publishes none is not filtered on capacity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capacity: Option<FailureDomainCapacity>,
+}
+
+/// Resources a failure domain offers guests (ADR-0107). Every figure is
+/// optional: a provider publishes what it knows, and the scheduler checks
+/// only what is present.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct FailureDomainCapacity {
+    /// Logical CPUs guests may use. vCPUs are placed up to this times the
+    /// Provider's `scheduling.cpuOvercommitRatio`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpus: Option<u32>,
+
+    /// Memory guests may use, MiB: the host's, or a smaller budget the host
+    /// declares for guests (a Cloud Hypervisor host's guests' slice,
+    /// ADR-0105). Never overcommitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_mi_b: Option<u64>,
+
+    /// Memory each VM costs beyond its class's `memoryMiB` (its VMM), MiB.
+    #[serde(
+        default,
+        rename = "memoryOverheadMiBPerVM",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub memory_overhead_mi_b_per_vm: Option<u64>,
 }
 
 #[inline]

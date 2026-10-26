@@ -328,7 +328,10 @@ pub async fn reconcile(vm: Arc<VirtualMachine>, ctx: Arc<Context>) -> Result<Act
     }
 
     // ---- Schedule ------------------------------------------------------
-    let decision = match schedule(&vm, &class, &image, &providers, &sibling_vms) {
+    // Every placed VM's size, for the capacity fit (ADR-0107). VMClasses
+    // are cluster-scoped and few, so one list per scheduling pass.
+    let classes = class_api.list(&ListParams::default()).await?.items;
+    let decision = match schedule(&vm, &class, &image, &providers, &sibling_vms, &classes) {
         Ok(d) => d,
         Err(err) => {
             warn!(?err, "scheduling failed; surfacing condition");

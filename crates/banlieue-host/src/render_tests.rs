@@ -240,4 +240,18 @@ mod tests {
             assert!(text.contains("\nSlice=banlieue-guests.slice\n"), "{name}");
         }
     }
+
+    /// The provider reads the guests' budget from this slice by name
+    /// (ADR-0107); the installer and the provider must agree on it.
+    #[test]
+    fn the_provider_reads_the_slice_the_installer_writes() {
+        assert_eq!(
+            crate::paths::GUEST_SLICE_UNIT,
+            banlieue_provider_cloud_hypervisor::systemd::GUEST_SLICE
+        );
+        assert_eq!(
+            crate::paths::VMS_SLICE_UNIT,
+            banlieue_provider_cloud_hypervisor::systemd::VMS_SLICE
+        );
+    }
 }
