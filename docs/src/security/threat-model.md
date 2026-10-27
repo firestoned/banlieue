@@ -9,7 +9,9 @@ SPDX-License-Identifier: Apache-2.0
 > 0066 and 0068–0073 reserved; 0074 and 0075 Accepted 2026-09-28; 0076–0080
 > reserved by roadmap 19; 0081–0082 recorded but not implemented in banlieue, and kept canonically in
 > mediatore since ADR-0097;
-> 0088 Accepted 2026-10-26, superseding 0048). The most recent pass,
+> 0088 Accepted 2026-10-26, superseding 0048; 0108 and 0109 Proposed and
+> not implemented, renumbered 2026-10-26 from duplicate 0100 and 0103). The
+> most recent pass,
 > 2026-10-26, is **ADR-0088's acceptance**: Kairos v4.4.0 shipped first-boot
 > sealing and the three kcrypt fixes its *Accept when* named, a raw
 > `cloudImage` build was shown to carry the sealing layer onto `COS_OEM`

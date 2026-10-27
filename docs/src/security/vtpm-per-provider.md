@@ -43,7 +43,10 @@ template, so every clone would share one sealed disk.
   build), and for the raw `cloudImage` that libvirt uses at the image level:
   clones of one raw image, each with its own swtpm, sealed on first boot,
   unlocked on reboot and, with no TPM, halted fail closed (2026-10-26,
-  ADR-0088 *Amendment 2026-10-26*). Not yet run through a `LibvirtMachine`.
+  ADR-0088 *Amendment 2026-10-26*), then through banlieue on libvirt the
+  same day: a `GuestReady` pool of `tpmEnabled` members whose
+  `LibvirtMachine`s recorded `sealedPartitions: [COS_PERSISTENT]` and an EK
+  certificate, warm in 125 s.
 
 With `installMode: Deferred`, the image is never installed into a shared
 template. Each VM boots the installer on an empty OS disk, and the installer

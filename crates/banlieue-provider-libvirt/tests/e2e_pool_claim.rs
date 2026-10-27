@@ -1104,6 +1104,13 @@ async fn sabotage_eject_installer(host: &str, dir: &Path, domain: &str) -> bool 
 /// If the sabotage ever loses that race the sabotaged member goes Ready,
 /// nothing is reaped, and the "sabotaged member to be reaped" wait times
 /// out — a loud wrong-reason failure to rerun, never a silent pass.
+///
+/// The same wrong-reason failure is certain, not a race, for an image whose
+/// guest agent is baked in rather than installed from the seed: the agent
+/// reports over virtio-serial, which a link-down does not touch, so the
+/// member announces regardless (found 2026-10-26 with a first-boot sealing
+/// Kairos image, ADR-0088). Such an image has nothing for this test to
+/// sabotage; run the other three tests against it.
 #[tokio::test]
 #[ignore = "real cluster + libvirt host; set BANLIEUE_E2E_PROVIDER/_IMAGE/_CLASS"]
 async fn a_sabotaged_member_is_reaped_at_provisioning_timeout_and_replaced() {

@@ -446,10 +446,29 @@ the image carried banlieue's sealing layer and report stage verbatim:
 | C, no vTPM | the reset completed, then `encrypt-pending` halted: "KAIROS BOOT FAILED, Encrypt on boot: partition encryption failed ... could not find TPM 2.0 device", rebooting every 90 s; never reached userspace, never reported |
 
 The LUKS header UUID was again identical across clones (Context, *Evidence
-from a live run*). This run exercised the image and Kairos, not a
-`LibvirtMachine`: the provider's overlay (ADR-0050) is the same qcow2-over-raw
-shape, but a banlieue `make libvirt-live-test` against a sealing image is
-still worth running before the first production pool.
+from a live run*).
+
+**Through banlieue on libvirt, the same day.** `e2e_pool_claim` ran with
+`banlieue controller` (flag at its new default) and `banlieue provider
+libvirt` as local binaries on a kind cluster, against a libvirt/KVM host
+with swtpm: a `GuestReady` pool, a `tpmEnabled` class, and a `BackingFile`
+`VMImage` declaring `firstBootSealing: {}` (`status.firstBootSealing:
+Asserted`). The image was Debian 13 through kairos-init v4.4.0 with
+`qemu-guest-agent`, `tpm2-tools` and `openssl`, built raw with the operator's
+AuroraBoot command, its cloud-config rendered by the imagebuilder's own
+`merge_cloud_configs` and `sealing_layer` (a user, the ADR-0043 phase marker,
+the ADR-0045 EK export, then the sealing layer). Every member's
+`LibvirtMachine` carried `spec.firstBootSealing` and recorded
+`status.sealedPartitions: [COS_PERSISTENT]`, a published EK certificate and
+`GuestReady=True`. Two members warmed in 125 s, and a refill took 126 s,
+against 158 s for a `Deferred` member on libvirt (2026-10-12): a raw clone
+still pays a recovery reset and a reboot, so the gain is the install, not the
+boot. The claim/release, image-bump rollout (availability never below two)
+and pool-deletion tests passed. The sabotage test failed for the reason its
+own documentation names: it cuts the network so a seed-installed guest agent
+cannot arrive, and this image's agent is baked in, so the "sabotaged" member
+reported anyway and nothing was reaped. That test does not apply to such an
+image; it is not a sealing failure.
 
 **Decision 7: the flag defaults on.** Decision 7 gated the feature "until
 acceptance". `--enable-first-boot-sealing` (`BANLIEUE_ENABLE_FIRST_BOOT_SEALING`)

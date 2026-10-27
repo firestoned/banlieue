@@ -1,5 +1,73 @@
 # Changelog
 
+## [2026-10-26 23:45] - ADR-0088 verified through banlieue on libvirt
+
+**Author:** Erick Bourgeois
+
+### Verified live
+- `e2e_pool_claim` (libvirt), `banlieue controller` and `banlieue provider
+  libvirt` as local binaries on a kind cluster, against a libvirt/KVM host
+  with swtpm. `GuestReady` pool, `tpmEnabled` class, `BackingFile` `VMImage`
+  with `firstBootSealing: {}` (`Asserted`); image Debian 13 + kairos-init
+  v4.4.0 + `qemu-guest-agent` `tpm2-tools` `openssl`, raw from the operator's
+  AuroraBoot v0.24.0 command, cloud-config rendered by the imagebuilder's
+  own `merge_cloud_configs` + `sealing_layer`. Every member:
+  `spec.firstBootSealing` copied by the controller (flag at its new
+  default), `status.sealedPartitions: [COS_PERSISTENT]`, an EK certificate
+  published, `GuestReady=True`. Warm 125 s (two members), refill 126 s;
+  `Deferred` on libvirt was 158 s.
+- 3 of 4 tests passed: claim/release (released domain gone from the host),
+  image-bump rollout (availability never below two), pool deletion (claimed
+  domain survives). The sabotage test failed for the wrong reason its doc
+  already names: it severs the network against a seed-installed guest agent,
+  and this image's agent is baked in and reports over virtio-serial, so the
+  member announced and nothing was reaped. Not a sealing failure.
+- One transient: libvirt's "pool 'default' has asynchronous jobs running"
+  during the rollout's surge; the next pass converged.
+
+### Changed
+- `docs/adr/0088-first-boot-sealing-for-immediate-images.md` (Amendment
+  2026-10-26), `docs/src/security/vtpm-per-provider.md`,
+  `.github/community/17-ephemeral-vm-pools.md` and `ROADMAPS.md` row 17:
+  record the run and the timings.
+- `crates/banlieue-provider-libvirt/tests/e2e_pool_claim.rs`: the sabotage
+  test's doc says it cannot apply to an image with a baked-in guest agent.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+## [2026-10-26 22:30] - Renumber duplicate ADRs 0100 and 0103
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docs/adr/0100-sandbox-guest-software-is-consumer-image-content.md` →
+  `docs/adr/0108-sandbox-guest-software-is-consumer-image-content.md`
+- `docs/adr/0103-isolated-sandbox-network-with-proxy-egress.md` →
+  `docs/adr/0109-isolated-sandbox-network-with-proxy-egress.md`
+- Both carry a `Renumbered:` bullet; 0109's links to its sibling now say
+  ADR-0108. `docs/src/security/threat-model.md`: the header's ADR list notes
+  0108 and 0109 as Proposed and not implemented (no pass; stamp unchanged).
+
+### Why
+Each number was used twice. ADR numbers are never reused, so the ADR merged
+second keeps its content and takes the next free number, in merge order
+(0100 sandbox software merged 2026-10-19, 0103 sandbox network 2026-10-22).
+Every other `ADR-0100` and `ADR-0103` reference in the repo (crate
+manifests, Makefile, CALM, threat model) already meant the ADRs that keep
+those numbers (crates.io publishing, digest-pinned installs). Earlier
+entries in this file that say ADR-0100 or ADR-0103 for the sandbox ADRs
+keep the numbers they had when written.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
 ## [2026-10-26 21:30] - ADR-0088 accepted: first-boot sealing on by default; ADR-0048 superseded
 
 **Author:** Erick Bourgeois

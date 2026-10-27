@@ -2,10 +2,11 @@
 Copyright (c) 2026 Erick Bourgeois, banlieue
 SPDX-License-Identifier: Apache-2.0
 -->
-# 0103: Isolated sandbox network, with egress through proxy VMs
+# 0109: Isolated sandbox network, with egress through proxy VMs
 
 - **Status:** Proposed
 - **Date:** 2026-10-20
+- **Renumbered:** 2026-10-26, from 0103, which [ADR-0103](0103-digest-pinned-installs.md) already held.
 - **Deciders:** Erick Bourgeois
 - **Related:** [ADR-0030](0030-per-zone-capability-targets.md) (per-zone
   network targets), [ADR-0032](0032-per-zone-network-subnet-shape.md)
@@ -16,7 +17,7 @@ SPDX-License-Identifier: Apache-2.0
   here), [ADR-0083](0083-block-duplicate-static-address.md) (duplicate static
   addresses are blocked), [ADR-0097](0097-api-ends-at-virtualmachineclaim.md)
   (Decision 5, the scope test),
-  [ADR-0100](0100-sandbox-guest-software-is-consumer-image-content.md)
+  [ADR-0108](0108-sandbox-guest-software-is-consumer-image-content.md)
   (sandbox software is image content), roadmap 19 (`VMNetwork`, which will
   take over creating the port groups this ADR uses by hand).
 
@@ -105,7 +106,7 @@ vSphere 8.0 cluster; the fourth is read from the tree.
    keyed on SNI (haproxy) and an HTTP forward proxy for tools that need one
    (`apt`, `pip`). Destinations are a default-deny allowlist held in the
    proxy image. Protocols that are neither (raw UDP, ICMP) are not carried.
-5. **The proxies are image content, not a banlieue kind (ADR-0100,
+5. **The proxies are image content, not a banlieue kind (ADR-0108,
    ADR-0097 Decision 5).** The proxy software and its allowlist live in a
    `VMImage` and its cloud-config layers, owned by whoever runs the
    environment. banlieue gains no CRD and no controller for them. The scope
