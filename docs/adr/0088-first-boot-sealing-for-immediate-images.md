@@ -4,14 +4,17 @@ SPDX-License-Identifier: Apache-2.0
 -->
 # 0088: `tpmEnabled` with an `Immediate` image, sealed on first boot
 
-- **Status:** Proposed
-- **Date:** 2026-10-05
+- **Status:** Accepted
+- **Date:** 2026-10-26
+- **Proposed:** 2026-10-05
 - **Deciders:** Erick Bourgeois
 - **Amended:** 2026-10-22 (implemented behind the Decision 7 flag; Decision 2
   for ISO builds, Decision 3's flag-off handling, Decision 5's timeout
-  origin; see *Amendment 2026-10-22*)
-- **Supersedes:** [ADR-0048](0048-tpm-enabled-requires-deferred-install.md),
-  on acceptance. ADR-0048 named its own end date: the day
+  origin; see *Amendment 2026-10-22*); 2026-10-26 (accepted: the Accept-when
+  list is met, Open question 1 is answered and Decision 7's flag defaults
+  on; see *Amendment 2026-10-26*)
+- **Supersedes:** [ADR-0048](0048-tpm-enabled-requires-deferred-install.md).
+  ADR-0048 named its own end date: the day
   [kairos-io/kairos#4556](https://github.com/kairos-io/kairos/issues/4556)
   ships. Its Decision inverts rather than narrows, so it is superseded, not
   amended, exactly as its Expiry section asks.
@@ -26,7 +29,8 @@ SPDX-License-Identifier: Apache-2.0
   [roadmap 17](../../.github/community/17-ephemeral-vm-pools.md) (warm pool
   sizing), [roadmap 18](../../.github/community/18-split-image-fast-clone.md)
   (the banlieue-side alternative, see Context)
-- **Accept when:** all of these hold, and not before:
+- **Accept when:** met 2026-10-26 (Kairos v4.4.0 carries items 1 and 2; a
+  raw build on that release answered item 3). The list as it stood:
   1. a released Kairos contains first-boot sealing
      ([kairos-io/kairos#4924](https://github.com/kairos-io/kairos/pull/4924),
      merged 2026-09-25; the latest release, v4.3.0 of 2026-09-08, predates
@@ -401,9 +405,78 @@ This answers the vSphere half of the design, not the Accept-when list:
 `v4.4.0-rc1` is not a release, and Open question 1 is about `CloudImage`
 builds, which vSphere does not use.
 
+## Amendment 2026-10-26: accepted
+
+**The Accept-when list is met.**
+
+1. **A release carries first-boot sealing.** Kairos v4.4.0 (2026-10-26,
+   Hadron v0.6.3) contains kairos-io/kairos#4924.
+2. **It carries the fixes.** #5150 closes #5149 (a cryptsetup warning on
+   stderr failed the boot), #5160 closes #5158 (the post-unlock check could
+   not detect a failed unlock) and #5194 closes #5193 (a configured `c_index`
+   sealed with one index and unsealed with another). All three are in v4.4.0,
+   as is #5184 (the agent reads the configured NV index, TPM device and
+   C index).
+3. **Open question 1 is answered: yes.** Checked on a libvirt/KVM host with
+   the exact command kairos-operator v0.3.0 runs for an `OSArtifact` with
+   `artifacts.cloudImage` and a `cloudConfigRef` (`auroraboot --set
+   disk.raw=true ... --cloud-config /cloud-config.yaml`), with its default
+   tool image, AuroraBoot v0.24.0, from
+   `quay.io/kairos/hadron:v0.6.3-core-amd64-generic-v4.4.0` pinned by digest.
+   The cloud-config is copied byte for byte, header included, to
+   `/oem/90_custom.yaml` on the raw image's `COS_OEM` (mode 0600), next to
+   AuroraBoot's own `01_reset.yaml`. The builder's `CloudImage` layer
+   therefore reaches the partition `encrypt-pending` reads, and needs no
+   change.
+
+**What the raw path does, observed.** A raw image has no `COS_STATE` or
+`COS_PERSISTENT`: only EFI, `COS_OEM` and `COS_RECOVERY`. A clone's first
+boot runs recovery, whose `01_reset.yaml` resets the disk, creating
+`COS_PERSISTENT` plaintext, and reboots. `encrypt-pending` then seals it on
+the next boot, before anything mounts it, so the CloudImage path seals
+through the same step as the ISO path. Four clones of that raw image were
+booted as qcow2 overlays under QEMU with OVMF, each with its own swtpm, and
+the image carried banlieue's sealing layer and report stage verbatim:
+
+| Clone | Observed |
+|---|---|
+| A, fresh vTPM | recovery, reset, then the installed system; `COS_PERSISTENT_LUKS` is `crypto_LUKS`; the report stage wrote `COS_PERSISTENT` to `/run/banlieue/sealed` |
+| A, rebooted, same disk and TPM state | straight to the installed system, unlocked from its own vTPM, report `COS_PERSISTENT` (#5193 does not recur) |
+| B, fresh vTPM | sealed on its own first boot, report `COS_PERSISTENT`; keyslot salt differs from A's |
+| C, no vTPM | the reset completed, then `encrypt-pending` halted: "KAIROS BOOT FAILED, Encrypt on boot: partition encryption failed ... could not find TPM 2.0 device", rebooting every 90 s; never reached userspace, never reported |
+
+The LUKS header UUID was again identical across clones (Context, *Evidence
+from a live run*). This run exercised the image and Kairos, not a
+`LibvirtMachine`: the provider's overlay (ADR-0050) is the same qcow2-over-raw
+shape, but a banlieue `make libvirt-live-test` against a sealing image is
+still worth running before the first production pool.
+
+**Decision 7: the flag defaults on.** Decision 7 gated the feature "until
+acceptance". `--enable-first-boot-sealing` (`BANLIEUE_ENABLE_FIRST_BOOT_SEALING`)
+now defaults to `true` and stays as an off switch:
+`--enable-first-boot-sealing=false` restores ADR-0048's refusal for every
+image that declares `firstBootSealing` (`FirstBootSealingDisabled`); the bare
+flag still parses. Nothing changes for a VM whose image does not declare the
+field, so turning it on by default allows only the pairing this ADR exists to
+allow.
+
+**Still true after acceptance.**
+
+- **Cloud Hypervisor stays excluded** (Open question 2): the scheduler does
+  not place a `firstBootSealing` + `tpmEnabled` VM there, so on that backend
+  ADR-0048's refusal is what holds.
+- **The Kairos-version gate is still not implemented** (Amendment 2026-10-22,
+  B). v4.4.0 is now the version it would name, but the builder still never
+  learns the source image's version. An image built on an older Kairos boots
+  plaintext and is caught by the readback (`FirstBootSealingTimeout` or
+  `FirstBootSealingUnverified`), never reported healthy.
+- **Open question 3** (the kernel command line route) is not a gate and stays
+  open.
+
 ## Open questions
 
-1. **Does AuroraBoot place a raw image's cloud-config into `COS_OEM`?**
+1. **Answered 2026-10-26: yes** (see *Amendment 2026-10-26*).
+   *Was:* **Does AuroraBoot place a raw image's cloud-config into `COS_OEM`?**
    Decision 2 assumes that `cloudConfigRef` on a `cloudImage` build ends up
    as a file in the built disk's OEM partition, where `encrypt-pending`
    reads it. ADR-0051 already found that `cloudConfigRef` behaves differently

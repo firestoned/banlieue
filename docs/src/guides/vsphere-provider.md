@@ -406,8 +406,9 @@ Full worked examples:
     documented escape hatch for a build that is not Kairos-driven.
 
     The third option keeps `immediate`: declare `firstBootSealing: {}` on
-    the `VMImage` and run `banlieue-controller` with
-    `--enable-first-boot-sealing` (ADR-0088). Every clone then seals
+    the `VMImage`, built from Kairos v4.4.0 or later (ADR-0088; on unless
+    `banlieue-controller` runs with `--enable-first-boot-sealing=false`).
+    Every clone then seals
     `COS_PERSISTENT` to its own vTPM on its first boot, and the template is
     installed only once. See
     [`23-vmimage-immediate-first-boot-sealing.yaml`](https://github.com/firestoned/banlieue/blob/main/examples/23-vmimage-immediate-first-boot-sealing.yaml).
@@ -526,8 +527,8 @@ vCenter role (`VirtualMachine.Interact.PowerOn`).
   the scheduler, so `Scheduled` is deliberately left untouched. Also raised
   for `firstBootSealing` on an image whose class has no vTPM (ADR-0088).
 - `reason=FirstBootSealingDisabled` — the `VMImage` declares
-  `firstBootSealing` but `banlieue-controller` runs without
-  `--enable-first-boot-sealing`. The VM is refused rather than built as if
+  `firstBootSealing` but `banlieue-controller` runs with
+  `--enable-first-boot-sealing=false`. The VM is refused rather than built as if
   the field were absent.
 - `reason=FirstBootSealingUnsupported` (`Scheduled`) — a sealing vTPM VM
   matched only Cloud Hypervisor providers, which are not cleared for it yet

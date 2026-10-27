@@ -25,8 +25,9 @@ pub struct Context {
     /// falls back to a LIST.
     pub vm_store: Option<Store<VirtualMachine>>,
     /// Whether `VMImage.spec.firstBootSealing` is honoured (ADR-0088
-    /// Decision 7), from `--enable-first-boot-sealing`. Off by default: a
-    /// `VirtualMachine` whose image declares it is then refused.
+    /// Decision 7), from `--enable-first-boot-sealing`. On by default since
+    /// ADR-0088 was accepted; when off, a `VirtualMachine` whose image
+    /// declares it is refused.
     pub first_boot_sealing: bool,
 }
 
@@ -37,7 +38,7 @@ impl Context {
             client,
             namespace,
             vm_store: None,
-            first_boot_sealing: false,
+            first_boot_sealing: true,
         }
     }
 
@@ -48,7 +49,7 @@ impl Context {
         self
     }
 
-    /// Honour `VMImage.spec.firstBootSealing` (ADR-0088), from
+    /// Honour, or refuse, `VMImage.spec.firstBootSealing` (ADR-0088), from
     /// `--enable-first-boot-sealing`.
     #[must_use]
     pub fn with_first_boot_sealing(mut self, enabled: bool) -> Self {

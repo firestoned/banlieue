@@ -1862,7 +1862,7 @@ K0S_LIBVIRT_POOL       ?= default
 # Left empty by default so bootstrap-k0s-cluster.sh's own default (generic)
 # applies; set explicitly to override.
 K0S_OS_VARIANT         ?=
-K0S_IMAGE_URL          ?= https://github.com/kairos-io/kairos/releases/download/v4.1.2/kairos-hadron-v0.4.0-core-amd64-generic-v4.1.2.iso
+K0S_IMAGE_URL          ?= https://github.com/kairos-io/kairos/releases/download/v4.4.0/kairos-hadron-v0.6.3-core-amd64-generic-v4.4.0.iso
 # Path to a locally-downloaded Kairos installer ISO, to use instead of
 # downloading K0S_IMAGE_URL.
 K0S_BASE_IMAGE_PATH    ?=

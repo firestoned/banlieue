@@ -132,8 +132,8 @@ pub fn clear_paused(conditions: &mut Vec<Condition>) {
 pub const REASON_IMAGE_CLASS_MISMATCH: &str = "ImageClassMismatch";
 
 /// Condition reason for a `VirtualMachine` whose image declares
-/// `firstBootSealing` while `banlieue-controller` runs without
-/// `--enable-first-boot-sealing` (ADR-0088 Decision 7, as amended).
+/// `firstBootSealing` while `banlieue-controller` runs with
+/// `--enable-first-boot-sealing=false` (ADR-0088 Decision 7, as amended).
 pub const REASON_FIRST_BOOT_SEALING_DISABLED: &str = "FirstBootSealingDisabled";
 
 /// A class/image pairing the controller refuses: the `Ready` condition's
@@ -157,7 +157,7 @@ const MESSAGE_SEALING_WITHOUT_TPM: &str = "VMImage.spec.firstBootSealing require
      a clone with no vTPM cannot seal and halts on every boot (ADR-0088)";
 
 const MESSAGE_SEALING_DISABLED: &str = "VMImage.spec.firstBootSealing is declared but banlieue-controller runs \
-     without --enable-first-boot-sealing (BANLIEUE_ENABLE_FIRST_BOOT_SEALING), \
+     with --enable-first-boot-sealing=false (BANLIEUE_ENABLE_FIRST_BOOT_SEALING), \
      so the pairing is refused rather than ignored (ADR-0088)";
 
 /// `Some(refusal)` when this class/image pairing cannot be what it claims

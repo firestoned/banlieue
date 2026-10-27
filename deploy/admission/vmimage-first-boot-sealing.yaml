@@ -4,9 +4,10 @@
 # VMImage first-boot sealing (ADR-0088). `spec.firstBootSealing` declares that
 # every clone seals the listed partitions to its own vTPM on first boot.
 # This policy validates the declaration on its own, independent of the
-# controller's --enable-first-boot-sealing flag (an admission policy cannot
-# read a controller flag; with the flag off the controller refuses the VMs of
-# such an image instead, ADR-0088 amendment C):
+# controller's --enable-first-boot-sealing flag (on by default since ADR-0088
+# was accepted; an admission policy cannot read a controller flag, so with
+# the flag set to false the controller refuses the VMs of such an image
+# instead, ADR-0088 amendment C):
 #
 #   - every partition is a plain Kairos label ([A-Z0-9_]+). The names end up
 #     in a shell script that runs as root on every clone, and the builder

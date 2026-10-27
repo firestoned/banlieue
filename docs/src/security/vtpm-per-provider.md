@@ -28,8 +28,9 @@ template, so every clone would share one sealed disk.
 - No admission policy enforces this. Admission cannot see the `VMClass` and
   the `VMImage` together, so the check is in the controller. **Unit tests
   only** (`virtualmachine_tests.rs`).
-- **First-boot sealing (ADR-0088, behind `--enable-first-boot-sealing`,
-  default off).** An `Immediate` image that declares
+- **First-boot sealing (ADR-0088, Accepted 2026-10-26; on unless the
+  controller runs with `--enable-first-boot-sealing=false`).** An
+  `Immediate` image that declares
   `spec.firstBootSealing` is accepted: its template carries the sealing
   policy and no key material, and each clone seals the listed partitions to
   its own vTPM on its first boot (Kairos `encrypt-pending`). The guarantee
@@ -37,9 +38,12 @@ template, so every clone would share one sealed disk.
   is shared. `firstBootSealing` without `tpmEnabled` is refused, and with the
   flag off any VM of such an image is refused with
   `FirstBootSealingDisabled`. Each clone's `GuestReady` waits for the guest
-  to report every listed partition sealed. **Unit tests only**; not run
-  against a real vCenter or libvirt host yet, and no stable Kairos release
-  carries first-boot sealing (ADR-0088 *Accept when*).
+  to report every listed partition sealed. Needs Kairos v4.4.0 or later in
+  the image. **Verified live** on vSphere end to end (2026-10-22, an `iso`
+  build), and for the raw `cloudImage` that libvirt uses at the image level:
+  clones of one raw image, each with its own swtpm, sealed on first boot,
+  unlocked on reboot and, with no TPM, halted fail closed (2026-10-26,
+  ADR-0088 *Amendment 2026-10-26*). Not yet run through a `LibvirtMachine`.
 
 With `installMode: Deferred`, the image is never installed into a shared
 template. Each VM boots the installer on an empty OS disk, and the installer

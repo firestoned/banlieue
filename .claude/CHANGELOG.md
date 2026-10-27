@@ -1,5 +1,99 @@
 # Changelog
 
+## [2026-10-26 21:30] - ADR-0088 accepted: first-boot sealing on by default; ADR-0048 superseded
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docs/adr/0088-first-boot-sealing-for-immediate-images.md`: Status
+  Accepted (2026-10-26). New *Amendment 2026-10-26* records the met
+  Accept-when list (Kairos v4.4.0 carries #4924 and #5150/#5160/#5194,
+  closing #5149/#5158/#5193), the answer to Open question 1, and Decision 7's
+  flag now defaulting on.
+- `docs/adr/0048-tpm-enabled-requires-deferred-install.md`: Superseded by
+  ADR-0088; its refusal still holds for undeclared images, on Cloud
+  Hypervisor, and with the flag off.
+- `crates/banlieue-controller/src/app.rs`, `src/context.rs`:
+  `--enable-first-boot-sealing` (`BANLIEUE_ENABLE_FIRST_BOOT_SEALING`)
+  defaults to `true`; `=false` turns it off; the bare flag still parses.
+  Tests: `app_tests.rs` (on by default, bare flag, `=false`/`=true`),
+  `context_tests.rs`. `reconciler/virtualmachine.rs`: the
+  `FirstBootSealingDisabled` message and doc name `=false`.
+- `crates/banlieue-api/src/banlieue/vmimage.rs`: `firstBootSealing` doc
+  names Kairos v4.4.0 and the opt-out; `deploy/crds/banlieue.io_vmimages.yaml`
+  and `docs/src/reference/api.md` regenerated (description only).
+- `docs/architecture/calm/architecture.json`: `tpm-encryption-pairing` and
+  `first-boot-sealing` controls updated; `make calm-validate` clean,
+  diagrams regenerated unchanged.
+- `docs/src/security/threat-model.md`: full pass, stamp 2026-10-26 (range
+  unchanged, ADR-0107). §2 controller row, A-12, two TB-5 rows, one TB-8
+  row, §7 sealing requirement rewritten; §8 "pre-release Kairos" risk
+  retired for "an image older than v4.4.0 is caught only by the readback";
+  new §8 risk: blocks written to `COS_PERSISTENT` before sealing are not
+  guaranteed wiped. §4 and §5 unchanged (no actor, identity, RBAC grant or
+  boundary added).
+- Docs: `libvirt-provider.md` (the first-boot sealing disk shape),
+  `vsphere-provider.md`, `using-banlieue-imagebuilder.md`,
+  `vtpm-per-provider.md`, example 23 prerequisites,
+  `deploy/admission/vmimage-first-boot-sealing.yaml` comment, roadmap 17
+  and its `ROADMAPS.md` row.
+
+### Why
+Open question 1 was answered live on a KVM host: the exact raw-build command
+kairos-operator v0.3.0 runs (AuroraBoot v0.24.0) copies the merged
+cloud-config verbatim to `/oem/90_custom.yaml` on `COS_OEM`. Clones of that
+raw image (Kairos v4.4.0, Hadron v0.6.3) under QEMU with their own swtpm
+booted recovery, reset, then sealed `COS_PERSISTENT` on the next boot and
+published `/run/banlieue/sealed=COS_PERSISTENT` through banlieue's own report
+stage; a rebooted clone unlocked from its own vTPM; a second clone had a
+different keyslot salt; a clone with no TPM halted on "KAIROS BOOT FAILED"
+and never reached userspace. Not run through a `LibvirtMachine`.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (controller default changes; re-apply the
+      `vmimages` CRD for its new description)
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-10-26 18:45] - Kairos v4.4.0: installer ISO, kairos-init and Hadron pins
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `Makefile` (`K0S_IMAGE_URL`), `scripts/bootstrap-k0s-cluster.sh`
+  (`IMAGE_URL`): the default installer is now
+  `kairos-hadron-v0.6.3-core-amd64-generic-v4.4.0.iso` (was Hadron v0.4.0,
+  Kairos v4.1.2).
+- `scripts/build-kairos-debian-iso.sh`: `KAIROS_INIT_VERSION` defaults to
+  `v4.4.0` (was `v0.17.3`). kairos-init now lives in the kairos monorepo and
+  is versioned with Kairos; the v4.4.0 CLI keeps `--version`, `-s`, `-l`,
+  `--model` and `-t`, checked by running its `--help`.
+- `docs/src/guides/building-kairos-hadron-template.md`: `KAIROS_INIT_VERSION`
+  `v4.4.0`, `HADRON_VERSION` `v0.6.3` (both images pulled successfully), and
+  the kairos-init image moved from `quay.io/kairos-io/kairos-init`, which does
+  not exist, to `quay.io/kairos/kairos-init`.
+
+### Why
+Kairos v4.4.0 (2026-10-26) is the first release with first-boot sealing
+(kairos-io/kairos#4924) and the kcrypt fixes #5150, #5160 and #5194, which
+close #5149, #5158 and #5193. Those are ADR-0088's *Accept when* items 1 and
+2; item 3 (its open question 1) is still open, so ADR-0088 stays Proposed.
+
+Not changed: the `quay.io/kairos/ubuntu` references in `examples/` and the
+imagebuilder guide stay at v3.7.2, because no 24.04 v4.4.0 Ubuntu image is
+published. AuroraBoot stays at v0.27.1. Records of past live runs ("verified
+with Hadron v0.4.0") are history and are left as written.
+
+Upstream breaking change: `/usr/libexec` is no longer persisted across
+boots. Nothing in this repo relies on it being persisted.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only (new default images; not yet verified live)
+- [ ] Documentation only
+
 ## [2026-10-24 18:00] - Examples renumbered: Cloud Hypervisor first
 
 **Author:** Erick Bourgeois

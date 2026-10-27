@@ -16,12 +16,13 @@
 #
 # PREREQUISITES
 #
-#   - banlieue-controller runs with --enable-first-boot-sealing
-#     (BANLIEUE_ENABLE_FIRST_BOOT_SEALING=true). Without it, every
-#     VirtualMachine of this image is refused with FirstBootSealingDisabled.
-#   - The source image carries a Kairos with first-boot sealing
-#     (kairos-io/kairos#4924): no stable Kairos release has it yet, and the
-#     builder cannot check the version. An image too old to seal boots
+#   - banlieue-controller honours firstBootSealing by default (ADR-0088,
+#     Accepted). Run with --enable-first-boot-sealing=false
+#     (BANLIEUE_ENABLE_FIRST_BOOT_SEALING=false) and every VirtualMachine of
+#     this image is refused with FirstBootSealingDisabled instead.
+#   - The source image is built on Kairos v4.4.0 or later, the first release
+#     with first-boot sealing (kairos-io/kairos#4924) and its fixes. The
+#     builder cannot check the version: an image too old to seal boots
 #     plaintext and is caught by GuestReady=False, FirstBootSealingTimeout
 #     or FirstBootSealingUnverified, never reported healthy.
 #   - A KMS registered in vCenter and the `vtpm` feature on the Provider, as

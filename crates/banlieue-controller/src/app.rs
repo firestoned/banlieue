@@ -109,13 +109,18 @@ pub struct Cli {
 
     /// Honour `VMImage.spec.firstBootSealing` (ADR-0088): allow a
     /// `tpmEnabled` class with an `Immediate` image whose clones seal their
-    /// own partitions on first boot. Off by default, and while off a
-    /// `VirtualMachine` whose image declares the field is refused
+    /// own partitions on first boot. On by default since ADR-0088 was
+    /// accepted; `--enable-first-boot-sealing=false` turns it off, and while
+    /// off a `VirtualMachine` whose image declares the field is refused
     /// (`FirstBootSealingDisabled`) rather than silently treated as plain.
+    /// The bare flag still parses and enables.
     #[arg(
         long,
         env = "BANLIEUE_ENABLE_FIRST_BOOT_SEALING",
-        default_value_t = false
+        default_value_t = true,
+        num_args = 0..=1,
+        default_missing_value = "true",
+        action = clap::ArgAction::Set
     )]
     pub enable_first_boot_sealing: bool,
 

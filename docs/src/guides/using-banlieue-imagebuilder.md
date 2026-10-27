@@ -437,8 +437,9 @@ registry. The host side is in the
 
 ## First-boot sealing layer (ADR-0088)
 
-When a `VMImage` declares `spec.firstBootSealing` (and the controller runs
-with `--enable-first-boot-sealing`), the builder appends **its own**
+When a `VMImage` declares `spec.firstBootSealing` (honoured by default; a
+controller run with `--enable-first-boot-sealing=false` refuses its VMs),
+the builder appends **its own**
 cloud-config layer after every `cloudConfigs` entry, so no operator layer can
 override it. The merged Secret is created even when `cloudConfigs` is empty.
 

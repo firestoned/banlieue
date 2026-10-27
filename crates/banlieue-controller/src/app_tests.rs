@@ -39,11 +39,25 @@ mod tests {
         );
     }
 
-    /// ADR-0088 Decision 7: first-boot sealing is opt-in, off unless asked.
+    /// ADR-0088 is Accepted (2026-10-26), so Decision 7's gate is lifted:
+    /// first-boot sealing is on unless an operator turns it off.
     #[test]
-    fn first_boot_sealing_is_off_by_default_and_enabled_by_flag() {
-        assert!(!parse(&[]).enable_first_boot_sealing);
+    fn first_boot_sealing_is_on_by_default() {
+        assert!(parse(&[]).enable_first_boot_sealing);
+    }
+
+    /// The bare flag from the gated release still parses, and still enables.
+    #[test]
+    fn bare_first_boot_sealing_flag_still_enables() {
         assert!(parse(&["--enable-first-boot-sealing"]).enable_first_boot_sealing);
+    }
+
+    /// An operator can still opt out, which restores ADR-0048's refusal for
+    /// every image that declares `firstBootSealing`.
+    #[test]
+    fn first_boot_sealing_can_be_turned_off() {
+        assert!(!parse(&["--enable-first-boot-sealing=false"]).enable_first_boot_sealing);
+        assert!(parse(&["--enable-first-boot-sealing=true"]).enable_first_boot_sealing);
     }
 
     #[test]

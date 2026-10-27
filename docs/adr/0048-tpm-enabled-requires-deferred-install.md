@@ -4,8 +4,14 @@ SPDX-License-Identifier: Apache-2.0
 -->
 # 0048 — `tpmEnabled` requires a `Deferred` (or `Manual`) install
 
-- **Status:** Accepted
+- **Status:** Superseded by [ADR-0088](0088-first-boot-sealing-for-immediate-images.md)
 - **Date:** 2026-09-23
+- **Superseded:** 2026-10-26, when Kairos v4.4.0 shipped first-boot sealing
+  (the capability #4556 asked for) and ADR-0088 was accepted. The refusal
+  below still holds for an `Immediate` image that does not declare
+  `firstBootSealing`, on Cloud Hypervisor, and on any controller run with
+  `--enable-first-boot-sealing=false`; ADR-0088 Decision 3 carries it as the
+  first row of its table.
 - **Deciders:** Erick Bourgeois
 - **Related:** Closes the open item in
   [ADR-0040](0040-deferred-install-for-vtpm-encryption.md) Decision 5;
@@ -154,6 +160,10 @@ vSphere, libvirt and any future backend identically without any of them
 participating. No provider code changes.
 
 ## Expiry: this decision has a known end date
+
+> **Reached 2026-10-26.** First-boot sealing (kairos-io/kairos#4924, the
+> implementation of #4556) shipped in Kairos v4.4.0 and ADR-0088 superseded
+> this ADR. The text below is kept as the record.
 
 **Everything above rests on one upstream fact: Kairos encryption is
 install-phase-only.** That is true of Kairos today, and it is the sole reason

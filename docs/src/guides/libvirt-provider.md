@@ -275,9 +275,21 @@ from anything set per-VM:
 | `Immediate` | `backingVolume` | Creates a qcow2 **overlay** over the imported image. Fast. |
 | `Deferred` / `Manual` | `installMedia` | Creates an **empty** qcow2 disk and attaches the image as a boot CD-ROM. The guest installs itself. |
 
-`Deferred` is slower — a full unattended install per VM — but it is the only
-shape that can produce a disk sealed to that VM's own vTPM. On libvirt it is
+`Deferred` is slower (a full unattended install per VM), but it is one of
+two shapes that produce a disk sealed to that VM's own vTPM. On libvirt it is
 also the *simpler* path: no template, no backing chain, nothing to copy.
+
+The other is an `Immediate` image that declares `spec.firstBootSealing`
+([ADR-0088](https://github.com/firestoned/banlieue/blob/main/docs/adr/0088-first-boot-sealing-for-immediate-images.md),
+Kairos v4.4.0 or later). The imagebuilder's raw `cloudImage` carries the
+sealing policy on `COS_OEM` and no key material. Each overlay's first boot
+runs Kairos's recovery reset, which lays out `COS_PERSISTENT`, and the next
+boot seals it to that domain's own swtpm before anything mounts it; the base
+volume is never written. Without a vTPM the guest halts on a "KAIROS BOOT
+FAILED" screen instead of booting plaintext, and `GuestReady` waits for the
+guest to report the partition sealed (`/run/banlieue/sealed`, read through
+the guest agent). Per-VM user-data still lands on `COS_OEM` in plaintext, so
+a sealed disk does not protect secrets passed in `spec.userData`.
 
 The overlay's backing format is taken from the backing volume's **name**
 (`.qcow2`/`.qcow` → qcow2, otherwise raw), never from its contents. libvirt

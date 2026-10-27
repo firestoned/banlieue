@@ -78,8 +78,8 @@ touches a package manager again.
 
 ```dockerfile
 # ---- versions ----
-ARG KAIROS_INIT_VERSION=v0.17.3
-ARG HADRON_VERSION=v0.5.1
+ARG KAIROS_INIT_VERSION=v4.4.0
+ARG HADRON_VERSION=v0.6.3
 # Keep in sync with any sibling Alpine-based build — the payloads stage
 # below relies on this release's apk package names/layouts.
 ARG ALPINE_VERSION=3.21
@@ -92,7 +92,7 @@ ARG TRUSTED_BOOT=false
 ARG SECURITY_AGENT_VERSION="latest.el9.x86_64"
 ARG STATIC_CURL_VERSION
 
-FROM quay.io/kairos-io/kairos-init:${KAIROS_INIT_VERSION} AS kairos-init
+FROM quay.io/kairos/kairos-init:${KAIROS_INIT_VERSION} AS kairos-init
 
 # ---- Alpine payload stage: everything that needs a package manager to
 # assemble, done once. Hadron ships with NO package manager at all, so

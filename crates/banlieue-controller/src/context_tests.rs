@@ -34,12 +34,11 @@ mod tests {
         assert_eq!(ctx.namespace.as_deref(), Some("ns"));
     }
 
-    /// ADR-0088 Decision 7: first-boot sealing is off unless the operator
-    /// turned it on, so a context built the ordinary way refuses every image
-    /// that declares it.
+    /// ADR-0088 is Accepted (2026-10-26): a context built the ordinary way
+    /// honours `firstBootSealing`, matching the CLI default.
     #[tokio::test]
-    async fn first_boot_sealing_is_off_by_default() {
-        assert!(!Context::new(offline_client(), None).first_boot_sealing);
+    async fn first_boot_sealing_is_on_by_default() {
+        assert!(Context::new(offline_client(), None).first_boot_sealing);
     }
 
     #[tokio::test]
@@ -47,10 +46,10 @@ mod tests {
         let (reader, _writer) = reflector::store::<VirtualMachine>();
         let ctx = Context::new(offline_client(), Some("ns".into()))
             .with_vm_store(reader)
-            .with_first_boot_sealing(true);
-        assert!(ctx.first_boot_sealing);
+            .with_first_boot_sealing(false);
+        assert!(!ctx.first_boot_sealing);
         assert!(ctx.vm_store.is_some());
         assert_eq!(ctx.namespace.as_deref(), Some("ns"));
-        assert!(!ctx.with_first_boot_sealing(false).first_boot_sealing);
+        assert!(ctx.with_first_boot_sealing(true).first_boot_sealing);
     }
 }

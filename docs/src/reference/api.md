@@ -1619,9 +1619,10 @@ into the built image itself (`status.firstBootSealing: Built`); for a
 `Template` or `BackingFile` source the image must already carry it, and
 this field is an operator assertion (`Asserted`). Either way every
 clone's `GuestReady` waits for the guest to report each listed
-partition sealed. Gated on `banlieue-controller
---enable-first-boot-sealing`; with the flag off a `VirtualMachine` of
-this image is refused (`FirstBootSealingDisabled`). Not combinable with
+partition sealed. Needs a source image on Kairos v4.4.0 or later.
+Honoured unless `banlieue-controller` runs with
+`--enable-first-boot-sealing=false`, which refuses a `VirtualMachine`
+of this image (`FirstBootSealingDisabled`). Not combinable with
 `trustedBoot`.
 
 | Field | Type | Required | Description |

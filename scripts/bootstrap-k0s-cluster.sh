@@ -164,7 +164,7 @@ OS_VARIANT="${OS_VARIANT:-}"
 CLOUD_OS_VARIANT="${CLOUD_OS_VARIANT:-debian13}"
 # Kairos Hadron CORE installer ISO -- deliberately NOT the `standard` flavor,
 # which would bundle its own k0s/k3s at a version we don't control.
-IMAGE_URL="${IMAGE_URL:-https://github.com/kairos-io/kairos/releases/download/v4.1.2/kairos-hadron-v0.4.0-core-amd64-generic-v4.1.2.iso}"
+IMAGE_URL="${IMAGE_URL:-https://github.com/kairos-io/kairos/releases/download/v4.4.0/kairos-hadron-v0.6.3-core-amd64-generic-v4.4.0.iso}"
 IP_WAIT_ATTEMPTS="${IP_WAIT_ATTEMPTS:-60}"   # 60 * 5s = 5min
 SSH_WAIT_ATTEMPTS="${SSH_WAIT_ATTEMPTS:-60}" # 60 * 5s = 5min
 # 5min. The Kairos path drops in a prebuilt tarball, but a distro cloud image
