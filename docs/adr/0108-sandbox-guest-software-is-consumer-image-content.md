@@ -2,10 +2,11 @@
 Copyright (c) 2026 Erick Bourgeois, banlieue
 SPDX-License-Identifier: Apache-2.0
 -->
-# 0100: Sandbox guest software is consumer image content; a template carries no per-VM identity
+# 0108: Sandbox guest software is consumer image content; a template carries no per-VM identity
 
 - **Status:** Proposed
 - **Date:** 2026-10-15
+- **Renumbered:** 2026-10-26, from 0100, which [ADR-0100](0100-publish-banlieue-api-to-crates-io.md) already held.
 - **Deciders:** Erick Bourgeois
 - **Amends:** [ADR-0049](0049-attestation-trust-anchors.md) Decision 3, on
   acceptance (where the agent's keys are generated).
