@@ -1569,7 +1569,7 @@
     },
     {
       "unique-id": "rel-imagebuilder-push-registry",
-      "description": "When a VMImage has a cloud-hypervisor Url source and its build is Ready, banlieue-imagebuilder creates a push Job in the build namespace (ADR-0064 Decision 2). The Job mounts the artifacts PVC read-only and pushes the file as a single-layer gzip OCI artifact tagged with the OSArtifact uid, using the kubernetes.io/basic-auth Secret named by --registry-credentials-secret. It has no ServiceAccount token; its only output is the digest-pinned reference, written as its termination message, which the imagebuilder checks names the configured repository before recording it on status.buildArtifact.ociArtifact. Code: crates/banlieue-imagebuilder/src/reconciler/push.rs, oci_push.rs; crates/banlieue-oci.",
+      "description": "When a VMImage has a cloud-hypervisor Url source and its build is Ready, banlieue-imagebuilder creates a push Job in the build namespace (ADR-0064 Decision 2). The Job mounts the artifacts PVC read-only and pushes the file as a single-layer gzip OCI artifact tagged with the OSArtifact uid, using the kubernetes.io/basic-auth Secret named by --registry-credentials-secret. It has no ServiceAccount token; its only output is the digest-pinned reference, written as its termination message, which the imagebuilder checks names the configured repository before recording it on status.buildArtifact.ociArtifact. A registry served by a private CA is reached with an operator-named CA bundle (ADR-0110): --registry-ca-bundle-config-map or --registry-ca-bundle-secret (and --registry-ca-bundle-key, default ca.crt) make the Job mount that one key read-only and pass it as --ca-bundle, and the client adds every certificate in it as a root alongside the public ones (an empty bundle is refused). Code: crates/banlieue-imagebuilder/src/reconciler/push.rs, oci_push.rs; crates/banlieue-oci/src/tls.rs.",
       "relationship-type": {
         "connects": {
           "source": {
@@ -1585,6 +1585,18 @@
       },
       "protocol": "HTTPS",
       "controls": {
+        "registry-push-trust-anchor": {
+          "description": "The push Job trusts the public roots plus, only when the operator names one, the certificates of a single CA bundle key (ADR-0110). The key is validated at startup so it cannot leave its mount, only that key is mounted, read-only, and an empty or unparsable bundle fails the Job instead of silently falling back to the public roots. There is no option to skip verification. crates/banlieue-oci/src/tls.rs (http_client, root_certificates), crates/banlieue-imagebuilder/src/reconciler/push.rs (CaBundle, build_push_job).",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53",
+                "control": "SC-23 Session Authenticity"
+              }
+            }
+          ]
+        },
         "registry-push-least-privilege": {
           "description": "The push Job has automountServiceAccountToken=false, runs non-root with a read-only root filesystem and all capabilities dropped, mounts the PVC read-only and gets an emptyDir for the compressed copy. The imagebuilder accepts its termination message only as a digest in the configured repository. crates/banlieue-imagebuilder/src/reconciler/push.rs (build_push_job, pushed_reference).",
           "requirements": [

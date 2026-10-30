@@ -4,15 +4,22 @@ SPDX-License-Identifier: Apache-2.0
 -->
 # Threat Model
 
-> **Status:** Living document. Last full pass **2026-10-26**, against the
-> architecture defined by **ADR-0001 … ADR-0107** (0057–0059 unallocated,
+> **Status:** Living document. Last full pass **2026-10-29**, against the
+> architecture defined by **ADR-0001 … ADR-0110** (0057–0059 unallocated,
 > 0066 and 0068–0073 reserved; 0074 and 0075 Accepted 2026-09-28; 0076–0080
 > reserved by roadmap 19; 0081–0082 recorded but not implemented in banlieue, and kept canonically in
 > mediatore since ADR-0097;
 > 0088 Accepted 2026-10-26, superseding 0048; 0108 and 0109 Proposed and
 > not implemented, renumbered 2026-10-26 from duplicate 0100 and 0103). The
-> most recent pass,
-> 2026-10-26, is **ADR-0088's acceptance**: Kairos v4.4.0 shipped first-boot
+> most recent pass, 2026-10-29, is **ADR-0110**: the registry push Job can
+> trust an operator-named CA bundle, for a registry served by a private CA.
+> That is a new **trust anchor** in the one Job that holds a registry
+> credential. It adds one §2 sentence, five TB-10 rows, a clause in §7.13 and
+> one §8 risk. No actor, identity, RBAC grant or boundary is added (the
+> kubelet mounts the bundle; the Job gains no API access), so §4 and §5 gain
+> a clause and no row, and the host side of TB-10 is unchanged: a host pulls
+> with its own trust store, by digest, from its own pinned repository. The
+> pass before it, 2026-10-26, was **ADR-0088's acceptance**: Kairos v4.4.0 shipped first-boot
 > sealing and the three kcrypt fixes its *Accept when* named, a raw
 > `cloudImage` build was shown to carry the sealing layer onto `COS_OEM`
 > (Open question 1), and `--enable-first-boot-sealing` now defaults on, with
@@ -22,7 +29,7 @@ SPDX-License-Identifier: Apache-2.0
 > v4.4.0 is caught only by the readback) and adds one §8 risk (blocks written
 > to `COS_PERSISTENT` before sealing are not guaranteed wiped). No actor,
 > identity, RBAC grant or boundary is added, so §4 and §5 are unchanged;
-> Cloud Hypervisor stays excluded. The pass before it, 2026-10-24, is
+> Cloud Hypervisor stays excluded. The pass before that, 2026-10-24, was
 > **ADR-0107**: the scheduler places a VM only
 > where it fits the capacity a provider publishes on its failure domain
 > (memory strictly, with a per-VM overhead; vCPUs up to
@@ -490,7 +497,7 @@ relationship to the host.
 | swtpm, one per `tpmEnabled` Cloud Hypervisor guest | The guest's uid and private group | The host, as `banlieue-swtpm@<guest uid>.service` | Emulates the guest's TPM from state in `/var/lib/banlieue/tpm/<guest uid>/` (ADR-0065) — `plan.rs::swtpm_unit` |
 | vTPM manufacture, once per guest | Host user `banlieue` | The host, as `banlieue-swtpm-setup@<guest uid>.service` | Runs `swtpm_setup`: creates the TPM and signs its EK and platform certificates with the host's `swtpm_localca` key — `plan.rs::swtpm_setup_unit` |
 | per-zone import Job | `banlieue-import` | `banlieue-imagebuild` | Uploads a built ISO to a datastore, creates a template (ADR-0020) |
-| registry push Job | **None** — `automountServiceAccountToken: false` | `banlieue-imagebuild` | Pushes a `Ready` build to the operator's OCI registry for host-resident providers (ADR-0064); reads the artifacts PVC read-only and the push Secret, nothing else — `crates/banlieue-imagebuilder/src/reconciler/push.rs` |
+| registry push Job | **None** — `automountServiceAccountToken: false` | `banlieue-imagebuild` | Pushes a `Ready` build to the operator's OCI registry for host-resident providers (ADR-0064); reads the artifacts PVC read-only, the push Secret and, if the operator names one, one key of a CA bundle (ADR-0110, a trust anchor, mounted read-only), nothing else — `crates/banlieue-imagebuilder/src/reconciler/push.rs` |
 | image import unit (Cloud Hypervisor) | Host user `banlieue` | The host, as `banlieue-ch-import@<vmimage uid>.service` | Pulls one image by digest into the storage classes' image caches and exits; sandboxed, writable only in `images/` — `crates/banlieue-provider-cloud-hypervisor/src/vmimage.rs` (`import_unit`), `import.rs` |
 | kairos build pod | kairos-operator's SA | `banlieue-imagebuild` | **Privileged** — loop devices, mount, chroot |
 | Management-cluster node on Cloud Hypervisor (ADR-0099) | Host user `CH_VM_USER` (default `k0s-vm`, no login, `kvm`), **shared by every such node on the host**; its tap is created by a root oneshot | The host, as `k0s-vm-<name>.service`, with `k0s-vm-<name>-net.service` and `k0s-vm-<name>-swtpm.service`; **not a banlieue object** | Runs one management-cluster node, written by `scripts/bootstrap-k0s-cluster.sh` through sudo. No capabilities, `NoNewPrivileges`, `ProtectSystem=strict`, `DevicePolicy=closed` (`/dev/kvm`, `/dev/net/tun`), Landlock with the tap's sysfs entry read-only, runtime directory `0700`; writes only `CH_VM_DIR/<name>/` (`0750`) and its runtime directory: `render_ch_vm_unit`. VMM and vTPM in `banlieue-nodes.slice` (ADR-0106) |
@@ -538,7 +545,7 @@ relationship to the host.
 | **Compromised VMM** (Cloud Hypervisor) | A guest that has escaped into its VMM process: code execution as that guest's host uid, with `kvm` and write access to its own two directories | **Untrusted.** The unit's sandbox and the per-guest identity are what contain it (TB-9); the provider must never act on anything it can influence without checking |
 | **Stolen Proxmox API token** | Holds A-1 for Proxmox, without the cluster | Untrusted; bounded by the token's **ACLs**, not the user's: it is privilege-separated and holds only the `BanlieueProvider` role on `/vms`, one node, one SDN zone and the ISO storage — it can create and destroy VMs there, and cannot open a console, run commands in a guest, migrate, snapshot, or change permissions (`scripts/bootstrap-proxmox-host.sh`, `ROLE_PRIVS`). Its one storage-deleting privilege, `Datastore.Allocate`, is held **only on `banlieue-seed`**, a storage holding nothing but seed ISOs (`SEED_ROLE_PRIVS`): it cannot delete backups, templates or ISOs elsewhere, nor edit another storage's definition |
 | **Stolen host credential** (Cloud Hypervisor) | Holds A-11 — the provider's ServiceAccount token — without the host | Untrusted; bounded by the provider's namespaced RBAC (TB-8) and the token's lifetime |
-| **OCI registry** and whoever operates it (ADR-0064) | Stores every pushed build; can read, withhold or delete one | **Untrusted for integrity** — hosts pull by digest and verify it, so the registry cannot substitute content. **Trusted for confidentiality and availability**: it sees every image in full (§7.13) |
+| **OCI registry** and whoever operates it (ADR-0064) | Stores every pushed build; can read, withhold or delete one. With a private CA (ADR-0110), the CA that signs its certificate is trusted by the push Job, so whoever controls that CA can also read the push credential and the artifact in transit | **Untrusted for integrity** — hosts pull by digest and verify it, so the registry cannot substitute content. **Trusted for confidentiality and availability**: it sees every image in full (§7.13) |
 | **Bootstrap operator** running `scripts/bootstrap-k0s-cluster.sh` with Cloud Hypervisor nodes (the default VMM) or `join` (ADR-0099) | Passwordless **sudo on the hypervisor host** (CH nodes; only `DEFAULT_VMM=libvirt` with no CH node avoids it), and an SSH key every management node trusts | Trusted, like the hypervisor operator. `join` asks it to hold no new secret: the token goes controller → node over its SSH sessions |
 | **Host operator running `banlieue host cloud-hypervisor install`** | Root on the host, for one command | Trusted, like the hypervisor operator; the installer's controls protect the host **from the provider's user** during that run, not from the operator |
 | External contributor | Opens a PR from a fork | Untrusted |
@@ -622,7 +629,8 @@ relationship to the host.
     (k0s-vm is shared by every management node on the host; banlieue guests'
      uids and 2770 dirs are separate from it ─ TB-9)
 
-  TB-10: push Job (banlieue-imagebuild, no SA token) ──▶ OCI registry
+  TB-10: push Job (banlieue-imagebuild, no SA token; public roots + one
+         operator-named CA bundle key, ADR-0110) ──▶ OCI registry
          ──▶ banlieue-ch-import@<V>.service on a KVM host (by digest, host-pinned repository)
 
   ┌──────────── KVM host running banlieue-provider-cloud-hypervisor ────────────┐
@@ -992,6 +1000,11 @@ registry.
 | An oversized or hostile layer exhausts the host | D | The layer is capped at its manifest-declared size while streaming, and so is the **decompressed** stream: the push records the uncompressed length as a layer annotation (`io.banlieue.disk.size`), covered by the manifest digest the host pins, and the pull refuses to write past it or to finish short of it — `crates/banlieue-oci/src/sparse.rs` (`with_limit`), `client.rs::pull_file`. Superseded pulls are evicted beyond `[registry] keep_unreferenced`, and a deleted image's file is removed (`vmimage.rs::eviction_candidates`, `release`), so steady-state growth is bounded by the images in use. §8 |
 | Eviction deletes an image a guest depends on | D, T | Only digest-named pulls are candidates, never admin-placed files; a file is kept while this host's row of a live `VMImage` resolves to it or one of its machines names it (`referenced_files`). A running guest's OS disk is its own file (reflink or sparse copy), so removing the cache file cannot touch it |
 | The import process writes outside the image cache | T, E | Its own unit, an instance of the root-owned `banlieue-ch-import@.service`, as the provider's user: `ProtectSystem=strict`, `ReadWritePaths=` only the storage classes' `images/`, `ProtectHome`, `PrivateTmp`, `NoNewPrivileges`, `DevicePolicy=closed` with no devices — the template file, checked by `systemd_tests.rs`. Writes go through a temporary name and a rename; a copy into a second class is created `O_EXCL` (`sys.rs::clone_file`) |
+| A bundle naming a **rogue or over-broad CA** makes the push Job trust an impostor registry (a man in the middle reads the push credential and the artifact, A-13 and A-2/A-3) | S, I | **The trust anchor is the operator's choice and nothing else's**: it is named only by the imagebuilder's own configuration (`--registry-ca-bundle-*`, set by whoever edits its ConfigMap and Deployment), never by a `VMImage`, `Provider` or tenant object. The Job mounts one key, read-only, and **adds** the certificates to the public roots (`tls.rs::http_client`). A man in the middle cannot change what a host boots: the host pulls with its own trust store, a digest in its own pinned repository (TB-8). It can capture the push credential, so scope that credential to the one repository (§7.13). §8 |
+| A `--registry-ca-bundle-key` that is not a plain file name escapes the mount or names another file | T, E | The key is validated when the flags are resolved, before any Job exists: letters, digits, `.`, `_`, `-`, not `.` or `..`, at most 253 bytes, and only that key is projected as a volume item — `push.rs::CaBundle::new`, tested in `push_tests.rs` and `app_tests.rs` |
+| An empty, unreadable or unparsable bundle **silently leaves the Job on the public roots** while the operator believes a CA is pinned | S | Fails closed: a bundle with no certificate, or that cannot be read, fails the push with its path, and the VMImage row reports the failure — `crates/banlieue-oci/src/tls.rs::{http_client, root_certificates}`, `tls_tests.rs` |
+| Verification is switched off to get past a certificate error | S, I | There is no such option, in the client or the Job: the only alternative to a CA is `--registry-plain-http`, which is explicit, named for a private network, and unchanged by ADR-0110 — `oci_push.rs`, `app.rs` |
+| The CA bundle is tampered with in the build namespace | T | A ConfigMap or Secret in `banlieue-imagebuild`: the same RBAC that protects the push Secret (A-13) and the build namespace's other Secrets (§6 TB-3). Its worst case is the first row; a host is unaffected |
 | Registry credentials leak | I | Push: a Secret in `banlieue-imagebuild`, mounted only into the push Job. Pull: files readable by `root:banlieue` only, never a cluster Secret, so ADR-0060's "no Secret reads" holds for the host (`host_config.rs`, bootstrap script) |
 
 ### TB-11 — Installer (root, once) → Cloud Hypervisor host
@@ -1318,7 +1331,10 @@ a different assumption is unsafe.
 13. **Treat the OCI registry used for Cloud Hypervisor images as holding
     guest bootstrap material** (ADR-0064, TB-10). Images can carry
     cloud-config baked in by `VMImage.spec.cloudConfigs`. Use a private
-    repository with access control and TLS; give the imagebuilder a push
+    repository with access control and TLS (if its certificate is signed by a
+    private CA, name that CA to the imagebuilder with
+    `--registry-ca-bundle-*`, ADR-0110, and name no more than the one CA);
+    give the imagebuilder a push
     credential scoped to that one repository, and hosts a **pull-only**
     credential. Push access to that repository, together with `VMImage`
     status write, decides what hosts boot: keep both lists short. Configure
@@ -1544,6 +1560,7 @@ a different assumption is unsafe.
 | A **compromised provider process** reaches every guest on its host: it can read their disks and reconfigure taps (`CAP_NET_ADMIN`) | Inherent in a host-resident hypervisor manager — something on the host has to own guests' storage and networking, and the alternative (root) is strictly worse. It holds three capabilities and no others, can manage only instances of its root-owned templates for uids in the guest range (so it cannot start anything as root), and writes only the run root, the storage classes and its own state directories | A split into a minimal privileged helper and an unprivileged reconciler becomes worth its complexity |
 | Hosts verify an image's **integrity** (digest) but not its **provenance**: whoever can write `VMImage` status and push to the configured repository chooses what hosts boot | Digest pinning already defeats a registry that substitutes content, and the host pins the repository. Signing needs a key-management story of its own, which ADR-0064 defers to its own ADR (cosign/sigstore) | Signature verification on pull lands, or the repository is shared with parties outside the platform team |
 | The imagebuilder's identity can **create Jobs in `banlieue-imagebuild`**, a privileged namespace, so its compromise is node-root-equivalent there | It already drove privileged builds through `OSArtifact`s; the push Job must run beside the PVC it reads. The Job it creates holds no API credential and no privilege | The push can run outside the privileged namespace (e.g. a restricted namespace with a read-only clone of the artifacts volume) |
+| The push Job's CA bundle (ADR-0110) is a **trust anchor, not a pin**: any certificate the named CA issues for the registry's host name is accepted, and a CA that issues for other names widens what the Job would trust | The operator names the CA, banlieue adds it to the public roots rather than replacing them, the bundle is reachable only through the imagebuilder's own configuration, and the host never uses it (it pulls by digest from its own repository with its own trust store). The exposure is the push credential and the artifact in transit | A per-registry certificate or public-key pin is added, or the same bundle is offered to anything that reaches a host or a tenant |
 | Images in the registry can carry cloud-config (A-2), readable by the registry's operator | The registry is the operator's, like the datastore in TB-5; banlieue cannot encrypt what a host must boot without a key-distribution scheme it does not have | Per-VM secrets move entirely out of shared images, or images are encrypted for their hosts |
 | The Cloud Hypervisor API decoder (`banlieue-cloud-hypervisor`) is **not fuzzed** | The peer is a local VMM the provider started, not a network endpoint; decoding is into typed, bounded structs and failure is reported, not fatal. The libvirt decoder is fuzzed because its peer is remote | A fuzz target is added alongside the libvirt one, or the client ever talks to a VMM it did not start |
 | A **non-pinned VMM release** is verified against GitHub's published digest or the operator's flag, not a pin reviewed in a banlieue change, so a release **replaced on GitHub itself** (a compromised upstream account) would verify | Only when an operator names a version other than the pinned one, per host and explicitly (ADR-0084 Decision 4). It still catches a corrupted or substituted download from any mirror, and Cloud Hypervisor publishes no signatures to check instead. The pinned release keeps its compiled digests | Cloud Hypervisor signs its releases (then verify the signature), or a fleet needs non-pinned releases routinely enough to pin them in banlieue instead |

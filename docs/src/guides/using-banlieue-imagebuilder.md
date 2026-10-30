@@ -421,6 +421,26 @@ BANLIEUE_REGISTRY_CREDENTIALS_SECRET: "banlieue-registry-push"          # --regi
 The Secret is `kubernetes.io/basic-auth` (`username`, `password`) in the
 build namespace; leave it unset for an anonymous registry.
 `--registry-plain-http` is for a registry on a private network or a test.
+
+Two settings matter on a cluster behind a private CA or an image mirror, and
+both fail only after the build has finished and the push starts:
+
+| Symptom on the push Job's pod | Setting |
+| --- | --- |
+| `invalid peer certificate: UnknownIssuer` in its log | `BANLIEUE_REGISTRY_CA_BUNDLE_CONFIG_MAP` or `BANLIEUE_REGISTRY_CA_BUNDLE_SECRET` (and `BANLIEUE_REGISTRY_CA_BUNDLE_KEY`, default `ca.crt`): the CA that signed the registry's certificate (ADR-0110) |
+| `ImagePullBackOff` on its pod | `BANLIEUE_PUSH_IMAGE` (`--push-image`): the Job's image defaults to the public banlieue image; name the mirrored one, digest-pinned like the imagebuilder's own |
+
+The CA bundle is a PEM file, one or several certificates, in a ConfigMap
+**or** a Secret in the build namespace. The Job mounts only the named key,
+read-only, and trusts its certificates **in addition to** the public roots;
+a bundle with no certificate fails the push rather than falling back to the
+public roots, and there is no option to skip verification. Restart the
+imagebuilder after changing either setting, and delete a failed push Job
+(`kubectl -n banlieue-imagebuild delete job <vmimage>-build-push`) so it is
+recreated with the new settings: a Job's pod template cannot be edited. The
+host pulls with its own trust store, so a host that already trusts the CA
+needs nothing here.
+
 The push Job runs the banlieue image itself (`--push-image`) with no
 ServiceAccount token, and each build is tagged with its `OSArtifact` uid:
 

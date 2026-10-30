@@ -753,6 +753,12 @@ registry, since the host cannot mount the cluster's artifacts volume
     BANLIEUE_REGISTRY_CREDENTIALS_SECRET: "banlieue-registry-push"
     ```
 
+    If the registry is served by a private CA, also set
+    `BANLIEUE_REGISTRY_CA_BUNDLE_CONFIG_MAP` (or `…_SECRET`) to a bundle in
+    that namespace, and on a cluster that mirrors images set
+    `BANLIEUE_PUSH_IMAGE` to the mirrored banlieue image; see
+    [using the imagebuilder](using-banlieue-imagebuilder.md#cloud-hypervisor-hosts-pushed-to-a-registry).
+
     The Secret is `kubernetes.io/basic-auth`, in the build namespace
     (`banlieue-imagebuild`). Once a `VMImage` with a `cloud-hypervisor`
     `Url` source finishes building, a push Job uploads it and

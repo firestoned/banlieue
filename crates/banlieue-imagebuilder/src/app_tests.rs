@@ -71,6 +71,109 @@ mod tests {
         assert!(registry_config(&cli).is_err());
     }
 
+    const REPO: &str = "registry.internal:5000/banlieue/disks";
+
+    #[test]
+    fn no_ca_bundle_flags_means_no_ca_bundle() {
+        let cli = parse(&["--registry-repository", REPO]);
+        assert!(registry_config(&cli).unwrap().unwrap().ca_bundle.is_none());
+    }
+
+    #[test]
+    fn a_config_map_ca_bundle_defaults_its_key_to_ca_crt() {
+        let cli = parse(&[
+            "--registry-repository",
+            REPO,
+            "--registry-ca-bundle-config-map",
+            "corp-ca",
+        ]);
+        let ca = registry_config(&cli).unwrap().unwrap().ca_bundle.unwrap();
+        assert_eq!(ca.source, CaBundleSource::ConfigMap("corp-ca".to_string()));
+        assert_eq!(ca.key, "ca.crt");
+    }
+
+    #[test]
+    fn a_secret_ca_bundle_takes_an_explicit_key() {
+        let cli = parse(&[
+            "--registry-repository",
+            REPO,
+            "--registry-ca-bundle-secret",
+            "corp-ca",
+            "--registry-ca-bundle-key",
+            "root.pem",
+        ]);
+        let ca = registry_config(&cli).unwrap().unwrap().ca_bundle.unwrap();
+        assert_eq!(ca.source, CaBundleSource::Secret("corp-ca".to_string()));
+        assert_eq!(ca.key, "root.pem");
+    }
+
+    /// Two sources for one bundle is ambiguous: refused when parsing, not
+    /// resolved by picking one.
+    #[test]
+    fn a_config_map_and_a_secret_ca_bundle_conflict() {
+        let argv = [
+            "imagebuilder",
+            "--registry-ca-bundle-config-map",
+            "a",
+            "--registry-ca-bundle-secret",
+            "b",
+        ];
+        assert!(Wrapper::try_parse_from(argv).is_err());
+    }
+
+    /// A key with no bundle to take it from is a typo, not a no-op.
+    #[test]
+    fn a_ca_bundle_key_without_a_bundle_is_a_startup_error() {
+        let cli = parse(&[
+            "--registry-repository",
+            REPO,
+            "--registry-ca-bundle-key",
+            "root.pem",
+        ]);
+        let err = registry_config(&cli).unwrap_err().to_string();
+        assert!(err.contains("registry-ca-bundle"), "{err}");
+    }
+
+    #[test]
+    fn a_traversing_ca_bundle_key_is_a_startup_error() {
+        let cli = parse(&[
+            "--registry-repository",
+            REPO,
+            "--registry-ca-bundle-secret",
+            "corp-ca",
+            "--registry-ca-bundle-key",
+            "../etc/passwd",
+        ]);
+        assert!(registry_config(&cli).is_err());
+    }
+
+    /// The Job's own `--ca-bundle` flag parses on the push subcommand.
+    #[test]
+    fn push_subcommand_takes_a_ca_bundle_path() {
+        let cli = parse(&[
+            "push",
+            "--source",
+            "/artifacts/x.raw",
+            "--target",
+            "registry.internal:5000/d:t",
+            "--artifact-type",
+            "application/vnd.banlieue.disk.raw.v1",
+            "--scratch-dir",
+            "/scratch",
+            "--ca-bundle",
+            "/var/run/banlieue/registry-ca/ca.crt",
+        ]);
+        let Some(ImagebuilderCommand::Push(args)) = cli.command else {
+            panic!("expected push");
+        };
+        assert_eq!(
+            args.ca_bundle,
+            Some(std::path::PathBuf::from(
+                "/var/run/banlieue/registry-ca/ca.crt"
+            ))
+        );
+    }
+
     #[test]
     fn push_subcommand_parses() {
         let cli = parse(&[

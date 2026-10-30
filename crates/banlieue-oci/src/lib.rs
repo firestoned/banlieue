@@ -15,6 +15,7 @@
 //! - [`auth`]: anonymous, Basic, and Bearer token challenges.
 //! - [`manifest`]: the one manifest shape pushed and accepted.
 //! - [`sparse`]: zero runs become holes.
+//! - [`tls`]: the HTTP client, with an optional operator-named CA bundle.
 //! - [`client`]: push and pull.
 
 pub mod auth;
@@ -23,6 +24,7 @@ pub mod error;
 pub mod manifest;
 pub mod reference;
 pub mod sparse;
+pub mod tls;
 
 pub use auth::Credentials;
 

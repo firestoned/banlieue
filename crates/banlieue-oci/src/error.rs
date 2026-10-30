@@ -33,6 +33,9 @@ pub enum Error {
     /// An authentication challenge could not be answered.
     #[error("auth: {0}")]
     Auth(String),
+    /// The CA bundle is unreadable, unparsable or holds no certificate.
+    #[error("tls: {0}")]
+    Tls(String),
     /// Transport failure.
     #[error("http: {0}")]
     Http(#[from] reqwest::Error),

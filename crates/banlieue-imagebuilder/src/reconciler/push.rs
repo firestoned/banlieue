@@ -42,16 +42,93 @@ pub const ANNOTATION_GENERATION: &str = "io.banlieue.vmimage.generation";
 const ARTIFACTS_MOUNT_PATH: &str = "/artifacts";
 /// Where the push credentials Secret is mounted.
 pub const CREDENTIALS_MOUNT_PATH: &str = "/var/run/banlieue/registry";
+/// Where the registry CA bundle's one key is mounted (ADR-0110).
+pub const CA_MOUNT_PATH: &str = "/var/run/banlieue/registry-ca";
+/// The key a CA bundle is read from when none is named: the same default as
+/// `Provider.spec.connection.caBundle`.
+pub const DEFAULT_CA_BUNDLE_KEY: &str = "ca.crt";
+/// The longest a ConfigMap or Secret key may be (Kubernetes' limit).
+pub const MAX_CA_BUNDLE_KEY_LEN: usize = 253;
 /// Writable scratch for the compressed copy; the root filesystem is
 /// read-only and so is the PVC.
 const SCRATCH_MOUNT_PATH: &str = "/scratch";
 
 const VOLUME_ARTIFACTS: &str = "artifacts";
 const VOLUME_CREDENTIALS: &str = "registry-credentials";
+const VOLUME_CA: &str = "registry-ca";
 const VOLUME_SCRATCH: &str = "scratch";
 
 /// The distroless nonroot uid the banlieue image runs as.
 const NONROOT_UID: i64 = 65532;
+
+/// Where the registry CA bundle lives in the build namespace (ADR-0110).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CaBundleSource {
+    /// A ConfigMap, by name.
+    ConfigMap(String),
+    /// A Secret, by name.
+    Secret(String),
+}
+
+/// A CA bundle the push Job trusts in addition to the public roots
+/// (ADR-0110): one key of one ConfigMap or Secret.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CaBundle {
+    /// The object holding the PEM.
+    pub source: CaBundleSource,
+    /// The key within it; also the file name in the Job's mount.
+    pub key: String,
+}
+
+impl CaBundle {
+    /// Validate and build.
+    ///
+    /// The key becomes a path component and a volume item path, so it is
+    /// restricted to what a ConfigMap or Secret key already allows
+    /// (letters, digits, `.`, `_`, `-`, at most [`MAX_CA_BUNDLE_KEY_LEN`])
+    /// and may not be `.` or `..`.
+    ///
+    /// # Errors
+    /// A message naming the problem when `key` is empty, too long, `.` or
+    /// `..`, or holds any other character.
+    pub fn new(source: CaBundleSource, key: &str) -> Result<Self, String> {
+        let allowed = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-');
+        if key.is_empty() || key == "." || key == ".." {
+            return Err(format!("{key:?}: not a usable key"));
+        }
+        if key.len() > MAX_CA_BUNDLE_KEY_LEN {
+            return Err(format!("key is longer than {MAX_CA_BUNDLE_KEY_LEN} bytes"));
+        }
+        if !key.chars().all(allowed) {
+            return Err(format!(
+                "{key:?}: a key holds only letters, digits, '.', '_' and '-'"
+            ));
+        }
+        Ok(Self {
+            source,
+            key: key.to_string(),
+        })
+    }
+
+    /// Where the key is readable inside the push Job.
+    #[must_use]
+    pub fn mounted_path(&self) -> String {
+        format!("{CA_MOUNT_PATH}/{}", self.key)
+    }
+
+    /// The pod volume projecting only this key.
+    fn volume(&self) -> Value {
+        let items = json!([{ "key": self.key, "path": self.key }]);
+        match &self.source {
+            CaBundleSource::ConfigMap(name) => {
+                json!({ "name": VOLUME_CA, "configMap": { "name": name, "items": items } })
+            }
+            CaBundleSource::Secret(name) => {
+                json!({ "name": VOLUME_CA, "secret": { "secretName": name, "items": items } })
+            }
+        }
+    }
+}
 
 /// Registry configuration, parsed once at startup.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -65,6 +142,9 @@ pub struct RegistryConfig {
     pub plain_http: bool,
     /// Image the push Job runs: the banlieue image itself.
     pub image: String,
+    /// A CA bundle the Job trusts besides the public roots, for a registry
+    /// served by a private CA (ADR-0110).
+    pub ca_bundle: Option<CaBundle>,
 }
 
 impl RegistryConfig {
@@ -90,7 +170,15 @@ impl RegistryConfig {
             credentials_secret,
             plain_http,
             image,
+            ca_bundle: None,
         })
+    }
+
+    /// The same configuration trusting `ca_bundle` as well (ADR-0110).
+    #[must_use]
+    pub fn with_ca_bundle(mut self, ca_bundle: CaBundle) -> Self {
+        self.ca_bundle = Some(ca_bundle);
+        self
     }
 }
 
@@ -204,6 +292,10 @@ pub fn build_push_job(inputs: &PushJobInputs<'_>) -> Value {
     if registry.plain_http {
         args.push("--plain-http".to_string());
     }
+    if let Some(ca) = &registry.ca_bundle {
+        args.push("--ca-bundle".to_string());
+        args.push(ca.mounted_path());
+    }
 
     let mut mounts = vec![
         json!({ "name": VOLUME_ARTIFACTS, "mountPath": ARTIFACTS_MOUNT_PATH, "readOnly": true }),
@@ -219,6 +311,10 @@ pub fn build_push_job(inputs: &PushJobInputs<'_>) -> Value {
             json!({ "name": VOLUME_CREDENTIALS, "mountPath": CREDENTIALS_MOUNT_PATH, "readOnly": true }),
         );
         volumes.push(json!({ "name": VOLUME_CREDENTIALS, "secret": { "secretName": secret } }));
+    }
+    if let Some(ca) = &registry.ca_bundle {
+        mounts.push(json!({ "name": VOLUME_CA, "mountPath": CA_MOUNT_PATH, "readOnly": true }));
+        volumes.push(ca.volume());
     }
 
     let labels = BTreeMap::from([
