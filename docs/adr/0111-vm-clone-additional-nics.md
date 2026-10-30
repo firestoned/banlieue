@@ -90,10 +90,13 @@ point of an isolated sandbox segment, could not be configured at all.
 - The guestinfo keys are readable by the guest, as the flat ones already are;
   they hold addresses and names, no credentials.
 - **Guest contract.** An image must carry the multi-NIC `configure-network`
-  (vm-build) to configure NIC 1 and beyond. An older image given a two-NIC VM
-  still configures NIC 0 only; the second NIC comes up unconfigured, not
-  misaddressed, once the script stops matching `en*` for the primary file.
-  Rebuilding the image is the operator's step.
+  (vm-build) to configure NIC 1 and beyond. **An older image is worse than
+  one that ignores the second NIC:** its script writes one `Name=en*` file, which
+  matches *every* ethernet interface, so a two-NIC VM gets NIC 0's address and
+  default route on both adapters, a duplicate address on two segments. Never
+  create a multi-interface VM from an image that lacks the new script. Today
+  only the egress class declares two interfaces. Rebuilding the image is the
+  operator's step.
 - Adapter type follows the template. A template with an unusual NIC (E1000)
   gives every added NIC the same type; there is no per-interface adapter field.
 - Not done: removing or changing NICs of a provisioned VM; hot-adding after the

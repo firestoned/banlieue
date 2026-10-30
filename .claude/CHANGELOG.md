@@ -42,7 +42,7 @@ The egress gateway VMs of the agent sandbox (ADR-0109) need a routable adapter a
 
 ### Impact
 - [x] Requires cluster rollout (the provider image)
-- [x] Config change: an image needs the multi-adapter `configure-network` (vm-build) to configure NIC 1 and beyond
+- [x] Config change: an image needs the multi-adapter `configure-network` (vm-build). An older image gives every NIC the first one's address (its script matches `en*`), so do not create a multi-interface VM from one
 - [ ] Documentation only
 
 ## [2026-10-29 12:00] - The registry push Job trusts an operator-named CA bundle (ADR-0110)

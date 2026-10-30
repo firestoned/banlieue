@@ -1550,8 +1550,10 @@ a different assumption is unsafe.
     equivalent) and test that, and give an isolated segment its own
     `networkClass` (§7.17) so no other class reaches it. banlieue creates the
     NICs; it does not and cannot check what the guest does with them. Rebuild
-    an image after the in-guest `configure-network` changes, or its NICs beyond
-    the first come up unconfigured.
+    an image after the in-guest `configure-network` changes, and never create a
+    multi-interface VM from one built before: its script matches every ethernet
+    interface with one file, so each NIC takes the first one's address and
+    default route, a duplicate address on two segments.
 
 ## 8. Accepted risks
 

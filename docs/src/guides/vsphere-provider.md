@@ -250,8 +250,10 @@ The addresses reach the guest as `guestinfo.network.*` for the first interface a
 `guestinfo.network.<i>.*` for interface `i` (see
 [guest configuration](../security/guest-configuration.md)). The guest image must carry a
 `configure-network` that reads them: NIC `i` is the `i`-th ethernet interface in PCI
-address order. An image built before this change configures the first NIC only, so
-rebuild the image. A VM that bridges two segments must have IP forwarding off in the guest.
+address order. **Do not create a multi-interface VM from an image built
+before this change:** its `configure-network` writes one file matching every
+ethernet interface, so both NICs would get the first one's address and default
+route. Rebuild the image first. A VM that bridges two segments must have IP forwarding off in the guest.
 Changing the interface list of a VM that already exists is not reconciled.
 
 ## 5. Register a `VMImage`
