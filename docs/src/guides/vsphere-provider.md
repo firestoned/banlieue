@@ -219,6 +219,41 @@ spec:
 kubectl apply -f vmclass.yaml
 ```
 
+### More than one network adapter
+
+A class may declare several interfaces. A VM created from it gets **one NIC per
+declared interface** (ADR-0111): the template's own NIC is moved onto the first
+interface's port group, and each further interface is added as a new NIC of the
+same adapter type, in declared order. Every interface's network class must resolve
+from the VM's cluster, or the VM is not created and the error names the
+interface. Give each VM its own addresses with `VirtualMachine.spec.networkOverrides`,
+keyed by interface name; an interface with no gateway is a bare layer 2 segment.
+
+```yaml title="vmclass-two-nics.yaml"
+spec:
+  network:
+    interfaces:
+      - { name: uplink,  networkClass: prod,    ipam: { static: {} } }   # the default route
+      - { name: private, networkClass: private, ipam: { static: {} } }   # an isolated segment
+```
+
+```yaml title="in the VirtualMachine"
+spec:
+  networkOverrides:
+    - name: uplink
+      static: { address: 192.0.2.10, prefix: 24, gateway: 192.0.2.1, nameservers: ["192.0.2.53"] }
+    - name: private
+      static: { address: 198.51.100.1, prefix: 24 }          # no gateway
+```
+
+The addresses reach the guest as `guestinfo.network.*` for the first interface and
+`guestinfo.network.<i>.*` for interface `i` (see
+[guest configuration](../security/guest-configuration.md)). The guest image must carry a
+`configure-network` that reads them: NIC `i` is the `i`-th ethernet interface in PCI
+address order. An image built before this change configures the first NIC only, so
+rebuild the image. A VM that bridges two segments must have IP forwarding off in the guest.
+Changing the interface list of a VM that already exists is not reconciled.
+
 ## 5. Register a `VMImage`
 
 A `VMImage` maps a backend-agnostic OS name to a per-backend source. For vSphere

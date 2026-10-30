@@ -411,6 +411,10 @@ pub struct CloneVmRequest {
     pub network_moref: String,
     /// True when `network_moref` is a distributed (vDS) port group.
     pub network_distributed: bool,
+    /// The NICs after the first, one per further declared interface, in
+    /// declared order (ADR-0111). Each is added to the clone with the same
+    /// adapter type as the template's own NIC. Empty for a single-NIC VM.
+    pub extra_nics: Vec<CloneNic>,
     /// Virtual CPU count.
     pub num_cpus: i32,
     /// Memory, in MiB.
@@ -424,6 +428,19 @@ pub struct CloneVmRequest {
     /// `guestinfo.userdata` (ADR-0024), built by
     /// [`crate::reconciler::vspheremachine::build_guestinfo`].
     pub extra_config: Vec<(String, String)>,
+}
+
+/// One NIC added to a clone beyond the template's own (ADR-0111), resolved to
+/// a concrete port-group moref by the caller, like the first NIC's fields on
+/// [`CloneVmRequest`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CloneNic {
+    /// Port group name this NIC attaches to (the standard backing's `deviceName`).
+    pub network: String,
+    /// Managed-object id of that port group.
+    pub network_moref: String,
+    /// True when the port group is a distributed (vDS) one.
+    pub network_distributed: bool,
 }
 
 /// The `extraConfig` key holding the `VSphereMachine` UID a clone belongs

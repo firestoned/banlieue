@@ -24,7 +24,9 @@
 use std::sync::Arc;
 
 use banlieue_api::banlieue::Provider;
-use banlieue_api::common::{FirstBootSealing, InitializationStatus, PowerState, condition_types};
+use banlieue_api::common::{
+    FirstBootSealing, InitializationStatus, PowerState, StaticIpamConfig, condition_types,
+};
 use banlieue_api::infrastructure::{
     VSphereMachine, VSphereMachineSpec, VSphereMachineStatus, VSphereNicSpec,
 };
@@ -50,7 +52,7 @@ use serde_json::json;
 use tracing::{debug, info, warn};
 
 pub use crate::client::MACHINE_UID_KEY;
-use crate::client::{CloneVmRequest, VSphereClient};
+use crate::client::{CloneNic, CloneVmRequest, VSphereClient};
 use crate::context::Context;
 use crate::error::{Error, Result};
 use crate::guest::{self, GuestProbe, PHASE_INSTALLED, PHASE_KEY, SEALED_KEY};
@@ -93,11 +95,11 @@ mod reasons {
 pub const VSPHERE_MACHINE_FINALIZER: &str = "banlieue.io/vspheremachine";
 
 const GUESTINFO_NETWORK_HOSTNAME: &str = "guestinfo.network.hostname";
-const GUESTINFO_NETWORK_IP: &str = "guestinfo.network.ip";
-const GUESTINFO_NETWORK_PREFIX: &str = "guestinfo.network.prefix";
-const GUESTINFO_NETWORK_GATEWAY: &str = "guestinfo.network.gateway";
-const GUESTINFO_NETWORK_DNS: &str = "guestinfo.network.dns";
-const GUESTINFO_NETWORK_DOMAIN: &str = "guestinfo.network.domain";
+/// The `guestinfo.network` key prefix. Interface 0 publishes `<base>.ip`,
+/// `.prefix`, `.gateway`, `.dns`, `.domain` (the flat convention images already
+/// deployed read); interface `i >= 1` publishes `<base>.<i>.ip` and so on
+/// (ADR-0111).
+const GUESTINFO_NETWORK_BASE: &str = "guestinfo.network";
 const GUESTINFO_USERDATA: &str = "guestinfo.userdata";
 
 /// vCenter custom attribute names stamped on every VM this provider clones
@@ -122,13 +124,15 @@ const GUESTINFO_METADATA: &str = "guestinfo.metadata";
 /// `dhcp`-only node still get a stable hostname without authoring a
 /// per-host `userData` cloud-config just to set one.
 ///
-/// The rest of `guestinfo.network.*` is a flat, non-indexed convention — it
-/// can only represent one primary static network, not one per NIC — so this
-/// uses the *first* NIC with a resolved static [`IpamSource::Static`]
-/// override, if any; a plain `dhcp` NIC contributes nothing beyond the
-/// hostname. `rendered_userdata` is the already placeholder-substituted
-/// cloud-config ([`banlieue_provider_sdk::guestdata::render_placeholders`]);
-/// `None` omits both userdata keys entirely.
+/// Network config is published per interface (ADR-0111). Interface 0 keeps
+/// the flat `guestinfo.network.{ip,prefix,gateway,dns,domain}` keys; interface
+/// `i >= 1` publishes `guestinfo.network.<i>.{ip,prefix,gateway,dns,domain}`.
+/// Each key appears only when that interface has a static address (and, for
+/// the last three, a value): a `dhcp` interface publishes nothing, and a
+/// static one with no gateway (an isolated segment) publishes no gateway.
+/// `rendered_userdata` is the already placeholder-substituted cloud-config
+/// ([`banlieue_provider_sdk::guestdata::render_placeholders`]); `None` omits
+/// both userdata keys entirely.
 ///
 /// `guestinfo.metadata` is also unconditional and independent of
 /// `rendered_userdata` — see [`build_guestinfo_metadata`] (ADR-0029).
@@ -139,29 +143,16 @@ pub fn build_guestinfo(
 ) -> Vec<(String, String)> {
     let mut out = vec![(GUESTINFO_NETWORK_HOSTNAME.to_string(), vm_name.to_string())];
 
-    let static_cfg = nics
-        .iter()
-        .find(|n| n.ipam.static_.is_some())
-        .and_then(|n| n.ipam.static_.as_ref());
-
-    if let Some(static_cfg) = static_cfg {
-        out.push((GUESTINFO_NETWORK_IP.to_string(), static_cfg.address.clone()));
-        out.push((
-            GUESTINFO_NETWORK_PREFIX.to_string(),
-            static_cfg.prefix.to_string(),
-        ));
-        if let Some(gateway) = &static_cfg.gateway {
-            out.push((GUESTINFO_NETWORK_GATEWAY.to_string(), gateway.clone()));
-        }
-        if !static_cfg.nameservers.is_empty() {
-            out.push((
-                GUESTINFO_NETWORK_DNS.to_string(),
-                static_cfg.nameservers.join(","),
-            ));
-        }
-        if let Some(domain) = &static_cfg.domain {
-            out.push((GUESTINFO_NETWORK_DOMAIN.to_string(), domain.clone()));
-        }
+    for (i, nic) in nics.iter().enumerate() {
+        let Some(static_cfg) = nic.ipam.static_.as_ref() else {
+            continue;
+        };
+        let base = if i == 0 {
+            GUESTINFO_NETWORK_BASE.to_string()
+        } else {
+            format!("{GUESTINFO_NETWORK_BASE}.{i}")
+        };
+        push_static_network(&mut out, &base, static_cfg);
     }
 
     if let Some(userdata) = rendered_userdata {
@@ -173,13 +164,35 @@ pub fn build_guestinfo(
         ));
     }
 
-    let domain = static_cfg.and_then(|s| s.domain.as_deref());
+    // The domain for the hostname is the first static interface's, as before
+    // ADR-0111: it names the VM, not a particular interface.
+    let domain = nics
+        .iter()
+        .find_map(|n| n.ipam.static_.as_ref())
+        .and_then(|s| s.domain.as_deref());
     out.push((
         GUESTINFO_METADATA.to_string(),
         build_guestinfo_metadata(vm_name, domain),
     ));
 
     out
+}
+
+/// Append one interface's static network keys under `base` (see
+/// [`GUESTINFO_NETWORK_BASE`]): address and prefix always, gateway, DNS and
+/// domain only when set.
+fn push_static_network(out: &mut Vec<(String, String)>, base: &str, cfg: &StaticIpamConfig) {
+    out.push((format!("{base}.ip"), cfg.address.clone()));
+    out.push((format!("{base}.prefix"), cfg.prefix.to_string()));
+    if let Some(gateway) = &cfg.gateway {
+        out.push((format!("{base}.gateway"), gateway.clone()));
+    }
+    if !cfg.nameservers.is_empty() {
+        out.push((format!("{base}.dns"), cfg.nameservers.join(",")));
+    }
+    if let Some(domain) = &cfg.domain {
+        out.push((format!("{base}.domain"), domain.clone()));
+    }
 }
 
 /// Build the base64-encoded `guestinfo.metadata` YAML document — real
@@ -354,16 +367,34 @@ pub async fn ensure_vm(
         .ok_or(Error::Missing("VSphereMachineSpec.network[0]"))?;
     info!(network = %nic_spec.port_group, "resolving network");
     let networks = client.list_networks(&cluster).await?;
-    let network = networks
-        .into_iter()
-        .find(|n| n.name == nic_spec.port_group)
-        .ok_or_else(|| {
-            Error::Vsphere(format!(
-                "network {:?} not reachable from cluster {:?}",
-                nic_spec.port_group, spec.cluster
-            ))
-        })?;
+    // ADR-0111: every declared interface is resolved up front, so one that is
+    // not reachable from this cluster stops the clone before it starts and
+    // names the interface, instead of leaving a VM with fewer NICs than asked.
+    let resolve_network = |nic: &VSphereNicSpec| {
+        networks
+            .iter()
+            .find(|n| n.name == nic.port_group)
+            .ok_or_else(|| {
+                Error::Vsphere(format!(
+                    "network {:?} (interface {:?}) not reachable from cluster {:?}",
+                    nic.port_group, nic.name, spec.cluster
+                ))
+            })
+    };
+    let network = resolve_network(nic_spec)?;
     info!(network = %network.name, network_moref = %network.moref, "network resolved");
+    let extra_nics = spec
+        .network
+        .iter()
+        .skip(1)
+        .map(|nic| {
+            resolve_network(nic).map(|n| CloneNic {
+                network: n.name.clone(),
+                network_moref: n.moref.clone(),
+                network_distributed: n.distributed,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
 
     let mut extra_config = build_guestinfo(vm_name, &spec.network, rendered_userdata);
     // ADR-0101: in the CloneSpec itself, so the VM never exists unmarked.
@@ -376,9 +407,10 @@ pub async fn ensure_vm(
             cluster_moref: cluster.moref,
             template_moref: template.moref,
             datastore_moref,
-            network: network.name,
-            network_moref: network.moref,
+            network: network.name.clone(),
+            network_moref: network.moref.clone(),
             network_distributed: network.distributed,
+            extra_nics,
             num_cpus: spec.num_cpus as i32,
             memory_mib: i64::from(spec.memory_mi_b),
             folder: spec.folder.clone(),
