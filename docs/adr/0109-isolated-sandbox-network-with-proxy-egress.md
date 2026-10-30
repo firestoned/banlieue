@@ -8,7 +8,12 @@ SPDX-License-Identifier: Apache-2.0
 - **Date:** 2026-10-20
 - **Renumbered:** 2026-10-26, from 0103, which [ADR-0103](0103-digest-pinned-installs.md) already held.
 - **Deciders:** Erick Bourgeois
-- **Related:** [ADR-0030](0030-per-zone-capability-targets.md) (per-zone
+- **Amended:** 2026-10-28 (Decision 4: the proxies run Envoy with a SPIFFE
+  identity, not haproxy; the proxy-choice item under *Still to decide* is
+  settled; see mediatore ADR-0023)
+- **Related:** mediatore
+  [ADR-0023](https://github.com/firestoned/mediatore/blob/main/docs/adr/0023-egress-gateway-envoy-with-spiffe-identity.md)
+  (the gateway's software, identity and authorization), [ADR-0030](0030-per-zone-capability-targets.md) (per-zone
   network targets), [ADR-0032](0032-per-zone-network-subnet-shape.md)
   (per-zone subnet shape), [ADR-0046](0046-virtualmachinepool.md)
   (`VirtualMachinePool`), [ADR-0056](0056-vmpool-address-pool-entries.md) (pool
@@ -101,11 +106,20 @@ vSphere 8.0 cluster; the fourth is read from the tree.
 
    IP forwarding is **off**. A proxy terminates the sandbox's connection and
    opens a new one from its own routable address, so sandbox addresses never
-   appear on the corporate network and no NAT or route exists. Two services
-   run on the `sandbox` interface only, never on `egress`: a TCP passthrough
-   keyed on SNI (haproxy) and an HTTP forward proxy for tools that need one
-   (`apt`, `pip`). Destinations are a default-deny allowlist held in the
-   proxy image. Protocols that are neither (raw UDP, ICMP) are not carried.
+   appear on the corporate network and no NAT or route exists.
+
+   *Amended 2026-10-28.* The proxy is **Envoy**, with its own SPIFFE identity
+   from a local SPIRE agent, requiring mutual TLS from each sandbox and
+   authorizing every CONNECT on the caller's claim identity and the requested
+   authority (mediatore
+   [ADR-0023](https://github.com/firestoned/mediatore/blob/main/docs/adr/0023-egress-gateway-envoy-with-spiffe-identity.md)).
+   It listens on the `sandbox` interface only, never on `egress`. The
+   destinations are a default-deny allowlist per claim, answered by the
+   broker, not a list held in the proxy image. The text this replaces named
+   two services, a TCP passthrough keyed on SNI (haproxy) and an HTTP forward
+   proxy for tools that need one (`apt`, `pip`); a plain HTTP request is now
+   carried as a CONNECT to port 80 by the forwarder in the sandbox. Protocols
+   that are neither (raw UDP, ICMP) are not carried.
 5. **The proxies are image content, not a banlieue kind (ADR-0108,
    ADR-0097 Decision 5).** The proxy software and its allowlist live in a
    `VMImage` and its cloud-config layers, owned by whoever runs the
@@ -161,11 +175,15 @@ vSphere 8.0 cluster; the fourth is read from the tree.
 
 ### Still to decide
 
-- How a sandbox picks among three proxies: an address list in the image, one
-  name resolving to all three (which needs a resolver after all), or a
-  floating address between them.
-- Who authors and reviews the proxy allowlist, and how a change reaches
-  running proxies without rebuilding the image.
+- ~~How a sandbox picks among three proxies~~ Settled 2026-10-28 (mediatore
+  ADR-0023 decision 7): an ordered address list from the broker, a random
+  start and failover per connection; no name, no floating address.
+- ~~Who authors and reviews the proxy allowlist, and how a change reaches
+  running proxies without rebuilding the image.~~ Settled in part
+  2026-10-28: the allowlist is per claim, comes from the broker's evaluation
+  of the claim's policy, and changes with no image rebuild. Whether the
+  gateway also verifies the notaio bundle itself is open in mediatore
+  ADR-0023.
 - Whether the `guestinfo` convention should carry several static NICs, which
   would let banlieue, rather than the image, address a proxy's second NIC.
 - When `VMNetwork` (roadmap 19) replaces the hand-made port groups, and how

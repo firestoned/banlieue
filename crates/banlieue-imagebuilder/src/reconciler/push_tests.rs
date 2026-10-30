@@ -258,4 +258,117 @@ mod tests {
         let silent = oci_status(&r, &job(1, 0), None);
         assert_eq!(silent.phase, OciArtifactPhase::Pushing);
     }
+
+    fn with_ca(source: CaBundleSource, key: &str) -> RegistryConfig {
+        registry().with_ca_bundle(CaBundle::new(source, key).unwrap())
+    }
+
+    fn pod(job: &Value) -> &Value {
+        &job["spec"]["template"]["spec"]
+    }
+
+    fn volume<'a>(job: &'a Value, name: &str) -> Option<&'a Value> {
+        pod(job)["volumes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|v| v["name"] == name)
+    }
+
+    /// Without a CA bundle the Job is exactly what it was: no extra volume,
+    /// mount or flag (ADR-0110 Decision 1, "unset, nothing changes").
+    #[test]
+    fn no_ca_bundle_means_no_ca_volume_and_no_flag() {
+        let registry = registry();
+        let artifact = artifact();
+        let job = build_push_job(&inputs(&registry, &artifact, &[]));
+        assert!(volume(&job, "registry-ca").is_none());
+        let args = pod(&job)["containers"][0]["args"].to_string();
+        assert!(!args.contains("--ca-bundle"), "{args}");
+        let mounts = pod(&job)["containers"][0]["volumeMounts"].to_string();
+        assert!(!mounts.contains("registry-ca"), "{mounts}");
+    }
+
+    /// A ConfigMap bundle: only the named key is projected, read-only, and the
+    /// Job is told where it landed.
+    #[test]
+    fn a_config_map_ca_bundle_mounts_one_key_read_only_and_is_passed_by_flag() {
+        let registry = with_ca(CaBundleSource::ConfigMap("corp-ca".into()), "root.pem");
+        let artifact = artifact();
+        let job = build_push_job(&inputs(&registry, &artifact, &[]));
+        let vol = volume(&job, "registry-ca").expect("a CA volume");
+        assert_eq!(vol["configMap"]["name"], "corp-ca");
+        assert_eq!(
+            vol["configMap"]["items"],
+            json!([{ "key": "root.pem", "path": "root.pem" }])
+        );
+        assert!(vol.get("secret").is_none());
+        let mount = pod(&job)["containers"][0]["volumeMounts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["name"] == "registry-ca")
+            .cloned()
+            .expect("a CA mount");
+        assert_eq!(mount["mountPath"], CA_MOUNT_PATH);
+        assert_eq!(mount["readOnly"], true);
+        let args: Vec<String> =
+            serde_json::from_value(pod(&job)["containers"][0]["args"].clone()).unwrap();
+        let at = args.iter().position(|a| a == "--ca-bundle").expect("flag");
+        assert_eq!(args[at + 1], format!("{CA_MOUNT_PATH}/root.pem"));
+    }
+
+    #[test]
+    fn a_secret_ca_bundle_mounts_one_key_from_the_secret() {
+        let registry = with_ca(
+            CaBundleSource::Secret("corp-ca".into()),
+            DEFAULT_CA_BUNDLE_KEY,
+        );
+        let artifact = artifact();
+        let job = build_push_job(&inputs(&registry, &artifact, &[]));
+        let vol = volume(&job, "registry-ca").expect("a CA volume");
+        assert_eq!(vol["secret"]["secretName"], "corp-ca");
+        assert_eq!(
+            vol["secret"]["items"],
+            json!([{ "key": "ca.crt", "path": "ca.crt" }])
+        );
+        assert!(vol.get("configMap").is_none());
+    }
+
+    /// The CA volume is additional, never a replacement: the credentials and
+    /// scratch volumes stay.
+    #[test]
+    fn the_ca_bundle_does_not_displace_the_other_volumes() {
+        let registry = with_ca(CaBundleSource::Secret("corp-ca".into()), "ca.crt");
+        let artifact = artifact();
+        let job = build_push_job(&inputs(&registry, &artifact, &[]));
+        for name in [
+            "artifacts",
+            "scratch",
+            "registry-credentials",
+            "registry-ca",
+        ] {
+            assert!(volume(&job, name).is_some(), "missing {name}");
+        }
+    }
+
+    /// The key becomes a path component and a volume item path, so it must
+    /// not be able to leave the mount or name something else.
+    #[test]
+    fn the_ca_bundle_key_is_validated_when_the_flags_are_resolved() {
+        for ok in ["ca.crt", "root-ca.pem", "bundle_1.pem", "A.b-c_d"] {
+            assert!(
+                CaBundle::new(CaBundleSource::Secret("s".into()), ok).is_ok(),
+                "{ok}"
+            );
+        }
+        for bad in ["", ".", "..", "../x", "a/b", "a b", "ca.crt\n", "é"] {
+            assert!(
+                CaBundle::new(CaBundleSource::Secret("s".into()), bad).is_err(),
+                "{bad:?} must be refused"
+            );
+        }
+        let too_long = "a".repeat(MAX_CA_BUNDLE_KEY_LEN + 1);
+        assert!(CaBundle::new(CaBundleSource::Secret("s".into()), &too_long).is_err());
+    }
 }

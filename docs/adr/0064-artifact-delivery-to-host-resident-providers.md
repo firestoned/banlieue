@@ -166,7 +166,9 @@ Decisions 1 to 4 as built, and where they differ from the text above.
   get/create/patch/delete and `pods` list. Configuration:
   `--registry-repository`, `--registry-credentials-secret` (a
   `kubernetes.io/basic-auth` Secret), `--registry-plain-http`,
-  `--push-image`.
+  `--push-image`, and (ADR-0110) `--registry-ca-bundle-config-map` /
+  `--registry-ca-bundle-secret` / `--registry-ca-bundle-key` for a registry
+  served by a private CA.
 - **The host pins its repository.** The host config gains an optional
   `[registry]` section: `repository`, `credentials_dir` (the same
   `username`/`password` files), `plain_http`. The host pulls a reference

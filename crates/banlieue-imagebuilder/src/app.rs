@@ -40,7 +40,7 @@ use tracing::{error, info, warn};
 
 use crate::importer_image::ImporterImage;
 use crate::oci_push::PushArgs;
-use crate::reconciler::push::RegistryConfig;
+use crate::reconciler::push::{CaBundle, CaBundleSource, DEFAULT_CA_BUNDLE_KEY, RegistryConfig};
 use crate::reconciler::vmimage::ISO_OVERLAY_IMPORTER_IMAGE;
 use crate::{context::Context, reconciler::vmimage};
 
@@ -185,9 +185,30 @@ pub struct Cli {
     #[arg(long, env = "BANLIEUE_REGISTRY_PLAIN_HTTP", default_value_t = false)]
     pub registry_plain_http: bool,
 
-    /// Image the push Job runs. Defaults to the banlieue image itself.
+    /// Image the push Job runs. Defaults to the public banlieue image; a
+    /// cluster that mirrors images sets this to the mirrored reference, or
+    /// the Job cannot start.
     #[arg(long, env = "BANLIEUE_PUSH_IMAGE", default_value = DEFAULT_PUSH_IMAGE)]
     pub push_image: String,
+
+    /// ConfigMap in the build namespace holding a CA bundle (PEM) the push
+    /// Job trusts besides the public roots, for a registry served by a
+    /// private CA (ADR-0110). Exclusive with `--registry-ca-bundle-secret`.
+    #[arg(
+        long,
+        env = "BANLIEUE_REGISTRY_CA_BUNDLE_CONFIG_MAP",
+        conflicts_with = "registry_ca_bundle_secret"
+    )]
+    pub registry_ca_bundle_config_map: Option<String>,
+
+    /// Secret in the build namespace holding that CA bundle instead.
+    #[arg(long, env = "BANLIEUE_REGISTRY_CA_BUNDLE_SECRET")]
+    pub registry_ca_bundle_secret: Option<String>,
+
+    /// Key of the CA bundle within the ConfigMap or Secret. Defaults to
+    /// `ca.crt`.
+    #[arg(long, env = "BANLIEUE_REGISTRY_CA_BUNDLE_KEY")]
+    pub registry_ca_bundle_key: Option<String>,
 }
 
 /// Subcommands of `banlieue imagebuilder`.
@@ -209,14 +230,45 @@ pub fn registry_config(cli: &Cli) -> Result<Option<RegistryConfig>> {
     let Some(repository) = cli.registry_repository.as_deref() else {
         return Ok(None);
     };
-    RegistryConfig::new(
+    let config = RegistryConfig::new(
         repository,
         cli.registry_credentials_secret.clone(),
         cli.registry_plain_http,
         cli.push_image.clone(),
     )
-    .map(Some)
-    .map_err(|e| anyhow::anyhow!("--registry-repository: {e}"))
+    .map_err(|e| anyhow::anyhow!("--registry-repository: {e}"))?;
+    Ok(Some(match ca_bundle(cli)? {
+        Some(ca) => config.with_ca_bundle(ca),
+        None => config,
+    }))
+}
+
+/// The CA bundle named by `--registry-ca-bundle-*`, if any.
+///
+/// # Errors
+/// A key with no bundle to read it from, or a key that is not a plain file
+/// name.
+fn ca_bundle(cli: &Cli) -> Result<Option<CaBundle>> {
+    let source = match (
+        &cli.registry_ca_bundle_config_map,
+        &cli.registry_ca_bundle_secret,
+    ) {
+        (Some(name), _) => CaBundleSource::ConfigMap(name.clone()),
+        (None, Some(name)) => CaBundleSource::Secret(name.clone()),
+        (None, None) if cli.registry_ca_bundle_key.is_some() => {
+            anyhow::bail!(
+                "--registry-ca-bundle-key needs --registry-ca-bundle-config-map or --registry-ca-bundle-secret"
+            );
+        }
+        (None, None) => return Ok(None),
+    };
+    let key = cli
+        .registry_ca_bundle_key
+        .as_deref()
+        .unwrap_or(DEFAULT_CA_BUNDLE_KEY);
+    CaBundle::new(source, key)
+        .map(Some)
+        .map_err(|e| anyhow::anyhow!("--registry-ca-bundle-key: {e}"))
 }
 
 /// Run `banlieue-imagebuilder` to completion (until a shutdown signal or the

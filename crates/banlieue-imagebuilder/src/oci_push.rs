@@ -54,6 +54,12 @@ pub struct PushArgs {
     #[arg(long, default_value_t = false)]
     pub plain_http: bool,
 
+    /// PEM file of CA certificates to trust besides the public roots: a
+    /// mounted ConfigMap or Secret key (ADR-0110). Every certificate in it is
+    /// added; a file with none fails the push. Unset trusts the public roots.
+    #[arg(long)]
+    pub ca_bundle: Option<PathBuf>,
+
     /// Where to write the pushed reference.
     #[arg(long, default_value = TERMINATION_LOG)]
     pub termination_log: PathBuf,
@@ -85,7 +91,8 @@ pub async fn run(args: PushArgs) -> Result<()> {
         Some(dir) => Credentials::from_dir(dir).context("--credentials-dir")?,
         None => Credentials::anonymous(),
     };
-    let client = Client::new(reqwest::Client::new(), credentials, args.plain_http);
+    let http = banlieue_oci::tls::http_client(args.ca_bundle.as_deref()).context("--ca-bundle")?;
+    let client = Client::new(http, credentials, args.plain_http);
 
     info!(source = %args.source.display(), %target, "pushing build artifact");
     let pushed = client

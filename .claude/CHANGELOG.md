@@ -1,5 +1,54 @@
 # Changelog
 
+## [2026-10-29 12:00] - The registry push Job trusts an operator-named CA bundle (ADR-0110)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0110-registry-push-job-ca-bundle.md`: a registry served by a private CA failed the
+  push Job with `invalid peer certificate: UnknownIssuer`, and nothing in the imagebuilder's
+  configuration could fix it. The imagebuilder now takes `--registry-ca-bundle-config-map` or
+  `--registry-ca-bundle-secret` (exclusive) and `--registry-ca-bundle-key` (default `ca.crt`),
+  env `BANLIEUE_REGISTRY_CA_BUNDLE_{CONFIG_MAP,SECRET,KEY}`.
+- `crates/banlieue-oci/src/tls.rs` (+ `tls_tests.rs`): `http_client(ca_bundle)` adds every
+  certificate in the PEM as a root alongside the public ones, via `from_pem_bundle` and
+  `add_root_certificate` (the vSphere and Proxmox pattern), not via `SSL_CERT_FILE`, whose effect
+  depends on the verifier reqwest's rustls feature set picks. An unreadable or certificate-less
+  bundle fails with its path (it would otherwise leave the client on the public roots). New
+  `Error::Tls`.
+- `crates/banlieue-imagebuilder/src/reconciler/push.rs`: `CaBundleSource`, `CaBundle` (the key is
+  validated at startup: letters, digits, `.`, `_`, `-`, not `.`/`..`, at most 253 bytes, because it
+  becomes a path), `RegistryConfig::with_ca_bundle`. The push Job projects only that key, read-only,
+  at `/var/run/banlieue/registry-ca` and passes `--ca-bundle <path>`. No new RBAC.
+- `oci_push.rs`: `--ca-bundle` on `banlieue imagebuilder push`; `app.rs`: the three flags above,
+  and a key without a bundle is a startup error.
+
+### Changed
+- `docs/architecture/calm/architecture.json`: `rel-imagebuilder-push-registry` describes the CA
+  bundle and gains the `registry-push-trust-anchor` control; `make calm-validate` passes and
+  `make calm-diagrams` ran.
+- `docs/src/guides/using-banlieue-imagebuilder.md`, `cloud-hypervisor-host.md`,
+  `deploy/imagebuilder/configmap.yaml`: the CA bundle settings, and `BANLIEUE_PUSH_IMAGE`, which a
+  cluster that mirrors images must set (the push Job defaults to the public image and sits in
+  `ImagePullBackOff` otherwise). ADR-0064's configuration list points at ADR-0110.
+- `docs/src/security/threat-model.md`: full pass, stamp advanced to ADR-0001…ADR-0110 (see below).
+
+### Why
+The first Cloud Hypervisor VMImage built on a private-CA, image-mirrored cluster built its raw disk
+and then could not push it: first `ImagePullBackOff` (public push image), then `UnknownIssuer`.
+
+### Impact
+- [ ] Requires cluster rollout (imagebuilder image bump to read the new flags; then restart it and
+      recreate any failed push Job)
+- [x] Config change only for installs that need no private CA: unset flags change nothing
+- Follow-up recorded in the ADR: default `--push-image` to the imagebuilder's own image.
+- Dev-dependencies only, for `crates/banlieue-oci/tests/tls_private_ca.rs` (a real TLS handshake:
+  a client without the bundle is refused by a private-CA server, one with it is accepted, and a
+  bundle trusts its own CA and no other): `rcgen` 0.14 (`ring` + `pem`; generates the throwaway CA
+  in the test, so no key is committed; maintained under the rustls org, pulls `pem`, `yasna`,
+  `bit-vec`), `tokio-rustls` 0.26 and `rustls-pki-types` (both already in the lockfile). No new
+  runtime dependency and no native code.
+
 ## [2026-10-26 23:45] - ADR-0088 verified through banlieue on libvirt
 
 **Author:** Erick Bourgeois
@@ -32,6 +81,26 @@
   record the run and the timings.
 - `crates/banlieue-provider-libvirt/tests/e2e_pool_claim.rs`: the sabotage
   test's doc says it cannot apply to an image with a baked-in guest agent.
+
+## [2026-10-28 09:30] - ADR-0109 amended: the sandbox egress proxies run Envoy with a SPIFFE identity
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docs/adr/0109-isolated-sandbox-network-with-proxy-egress.md`: Decision 4
+  amended. The three proxy VMs run Envoy with their own SPIFFE identity,
+  require mutual TLS from each sandbox and authorize every CONNECT per claim,
+  instead of a haproxy SNI passthrough with an allowlist in the image. Two
+  items under *Still to decide* (proxy choice among three, who owns the
+  allowlist) are settled in whole or in part. The decision itself is recorded
+  in mediatore ADR-0023 (Proposed), which owns the AgentSandbox platform's
+  decisions.
+
+### Why
+ADR-0109 gave every sandbox on the segment the same standing at the proxy, so
+one allowlist served every claim and the proxy's log named an address, not a
+claim. The sandbox already holds a claim SPIFFE identity (ADR-0108's forwarder
+assumes it will be used); the proxy now checks it.
 
 ### Impact
 - [ ] Breaking change
