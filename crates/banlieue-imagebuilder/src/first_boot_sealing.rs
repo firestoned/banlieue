@@ -17,8 +17,9 @@
 //!   - **CloudImage builds** (no installer): as top-level keys, because the
 //!     image's cloud-config is itself what lands in `COS_OEM`.
 //! - adds a `boot` stage that reports which listed partitions are LUKS
-//!   containers, to `guestinfo.banlieue.sealed` (vSphere) and
-//!   `/run/banlieue/sealed` (libvirt), for `GuestReady` (Decision 5).
+//!   containers, to `guestinfo.banlieue.sealed` (vSphere),
+//!   `/run/banlieue/sealed` (libvirt) and a `sealed=` line on the vsock
+//!   report (Cloud Hypervisor, ADR-0112), for `GuestReady` (Decision 5).
 //!
 //! Pure: no I/O, so every decision is unit tested.
 
@@ -47,6 +48,12 @@ pub const GUESTINFO_SEALED_KEY: &str = "guestinfo.banlieue.sealed";
 /// libvirt channel for the report: read back with the guest agent, the same
 /// transport as ADR-0043's `/run/banlieue/phase`.
 pub const RUN_SEALED_PATH: &str = "/run/banlieue/sealed";
+
+/// Cloud Hypervisor channel for the report (ADR-0112): the guest's vsock
+/// report, host CID 2, port 1024 (the provider's `report::REPORT_PORT`),
+/// stream only on this VMM; the same address the documented images send
+/// `phase=installed` to (ADR-0065 Decision 5).
+pub const VSOCK_NOTIFY_SOCKET: &str = "vsock-stream:2:1024";
 
 /// `buildArtifact.reason` when an operator layer asks the template install to
 /// encrypt on an image that seals on first boot instead.
@@ -150,8 +157,10 @@ fn operator_encrypted_partitions(operator_merged: &str) -> Result<Vec<String>, S
 }
 
 /// The POSIX shell the report step runs: which listed partitions are LUKS
-/// containers now, written to both channels. An empty report is still
-/// written, so the provider can tell "nothing sealed" from "not booted".
+/// containers now, written to every backend's channel; each provider reads
+/// only its own, and a channel absent here is skipped. An empty report is
+/// still written, so the provider can tell "nothing sealed" from "not
+/// booted".
 fn report_script(partitions: &[String]) -> String {
     let list = partitions.join(" ");
     format!(
@@ -167,6 +176,9 @@ if command -v vmware-rpctool >/dev/null 2>&1; then
 fi
 mkdir -p "$(dirname {RUN_SEALED_PATH})"
 printf '%s\n' "$sealed" > {RUN_SEALED_PATH}
+if [ -e /dev/vsock ]; then
+  NOTIFY_SOCKET={VSOCK_NOTIFY_SOCKET} systemd-notify "sealed=$sealed" || true
+fi
 "#
     )
 }

@@ -67,6 +67,8 @@ pub struct State {
     pub listening: BTreeSet<String>,
     /// Machines (by UID) whose guest reported `phase=installed`.
     pub reported_installed: BTreeSet<String>,
+    /// Partitions each machine's guest reported sealed (ADR-0112).
+    pub reported_sealed: BTreeMap<String, Vec<String>>,
     /// Devices removed with `vm.remove-device`, as `(unit, id)`.
     pub removed_devices: Vec<(String, String)>,
     /// Machines (by UID) whose TPM was manufactured.
@@ -143,6 +145,16 @@ impl FakeHost {
         if s.listening.contains(&plan.uid) {
             s.reported_installed.insert(plan.uid.clone());
         }
+    }
+
+    /// The guest sends `sealed=<partitions>` (ADR-0112). Recorded even before
+    /// the listener exists, as a report already sent while the provider was
+    /// starting; the converge pass that starts listening reads it.
+    pub fn guest_reports_sealed(&self, plan: &MachinePlan, partitions: &[&str]) {
+        self.lock().reported_sealed.insert(
+            plan.uid.clone(),
+            partitions.iter().map(|p| (*p).to_string()).collect(),
+        );
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
@@ -324,10 +336,19 @@ impl HostOps for FakeHost {
         self.lock().reported_installed.contains(&plan.uid)
     }
 
+    async fn guest_reported_sealed(&self, plan: &MachinePlan) -> Vec<String> {
+        self.lock()
+            .reported_sealed
+            .get(&plan.uid)
+            .cloned()
+            .unwrap_or_default()
+    }
+
     async fn stop_report_listener(&self, plan: &MachinePlan) {
         let mut s = self.lock();
         s.listening.remove(&plan.uid);
         s.reported_installed.remove(&plan.uid);
+        s.reported_sealed.remove(&plan.uid);
     }
 
     async fn ensure_taps(&self, plan: &MachinePlan) -> Result<()> {

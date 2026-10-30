@@ -3349,6 +3349,24 @@
         "live-only"
       ],
       "related_bugs": []
+    },
+    {
+      "id": "bug-184",
+      "timestamp": "2026-10-28T17:30:00.000Z",
+      "last_seen": "2026-10-28T17:30:00.000Z",
+      "occurrences": 1,
+      "error_message": "CloudHypervisorMachine with firstBootSealing.timeoutSeconds=180 and no vTPM reported GuestReady=False FirstBootSealingTimeout 359 s after Ready, not ~180 s",
+      "file": "crates/banlieue-provider-cloud-hypervisor/src/reconciler.rs",
+      "root_cause": "requeue_for returned requeue_long (300 s) for a Running guest with an address; the vsock report is the only early wake-up and a clone that cannot seal halts and never reports, so the deadline was only noticed on the next long requeue",
+      "fix": "sealing_report_due(plan.first_boot_sealing, status, now); requeue_for(o, sealing_due) requeues on the default 30 s cadence while a report is due, as libvirt does. Live re-run: 194 s",
+      "tags": [
+        "cloud-hypervisor",
+        "first-boot-sealing",
+        "adr-0110",
+        "requeue",
+        "deadline"
+      ],
+      "related_bugs": null
     }
   ]
 }

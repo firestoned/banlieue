@@ -823,11 +823,14 @@ kubectl patch vmimage <name> --type json \
   -p '[{"op":"remove","path":"/metadata/finalizers/0"}]'   # check the index first
 ```
 
-## vTPM and Deferred install
+## vTPM, Deferred install and first-boot sealing
 
-A `VMClass` with `tpmEnabled: true` needs a host that offers `vtpm` and an
-image installed `Deferred`, so the disk is sealed to that guest's own TPM
-(ADR-0048, ADR-0065):
+A `VMClass` with `tpmEnabled: true` needs a host that offers `vtpm`, and an
+image whose disk ends up sealed to that guest's own TPM. Two ways get there:
+an image installed `Deferred` (ADR-0048, ADR-0065), which runs the installer
+in each guest, or an `Immediate` image that **seals itself on first boot**
+([below](#first-boot-sealing), ADR-0088, ADR-0112), which runs no installer.
+For a `Deferred` image:
 
 1. **Host:** the bootstrap's `tpm` step creates the host's EK CA; the host
    config's `[tpm]` section points at it. Declare the feature on the
@@ -866,10 +869,48 @@ systemctl status 'banlieue-swtpm@*'
 
 `make ch-vtpm-e2e` checks the vTPM half on a host (it creates a
 `tpmEnabled` machine directly, since the controller refuses `tpmEnabled`
-with an `Immediate` image). `make ch-deferred-e2e` checks the whole path
+with an `Immediate` image that does not seal itself). `make ch-deferred-e2e` checks the whole path
 with a Kairos installer ISO in the cache: install, sealing, the vsock
 report, the eject, and a clean delete. It runs its test binary as root,
 since it reads the guest's disk and the provider's state.
+
+### First-boot sealing
+
+Verified on a real host (ADR-0112, 2026-10-28): a sealed `GuestReady` pool
+of two `tpmEnabled` members warmed in 125 s and refilled in 110 s, against
+341 s for one `Deferred` install, and a machine with no vTPM halted in its
+initramfs and reported `FirstBootSealingTimeout`.
+
+A `VMImage` with `firstBootSealing` (Kairos v4.4.0 or later) is cloned as an
+ordinary `Immediate` image: each guest's `os.raw` is a reflink (or a copy)
+of the cached image, and the guest gets a freshly manufactured swtpm. On its
+first boot Kairos seals `COS_PERSISTENT` (or the partitions the image lists)
+to that vTPM, inside the guest's own copy; the cached image is never written.
+
+The guest then has to say it is sealed. With no guest agent on this backend,
+it reports over the same vsock as `phase=installed`, one more line:
+
+```sh
+NOTIFY_SOCKET=vsock-stream:2:1024 systemd-notify "sealed=COS_PERSISTENT"
+```
+
+A `Url` image gets this from banlieue's sealing layer, which reports on every
+backend's channel at once. An image you built yourself (`BackingFile`,
+recorded `firstBootSealing: Asserted`) must send it.
+
+The provider records the reported partitions on
+`status.sealedPartitions` (sticky) and holds `GuestReady` until every listed
+partition is there:
+
+| `GuestReady` | Means |
+| --- | --- |
+| `False`, `FirstBootSealingUnverified` | the guest reported `phase=installed` but not every partition sealed yet |
+| `False`, `FirstBootSealingTimeout` | `firstBootSealing.timeoutSeconds` (600 by default) passed since `Ready` with no complete report (checked every 30 s while the report is due). A clone that cannot seal halts in its initramfs and says nothing; read `serial.log` in its machine directory |
+| `True` | every listed partition is reported sealed, and the EK certificate is published |
+
+```sh
+kubectl get cloudhypervisormachine <m> -o jsonpath='{.spec.firstBootSealing} {.status.sealedPartitions}{"\n"}'
+```
 
 ## Gotchas
 

@@ -77,6 +77,7 @@ lan = "br0"
                 tpm_enabled: false,
                 user_data: None,
                 desired_power_state: PowerState::PoweredOn,
+                first_boot_sealing: None,
             },
             status: host_uid.map(|u| CloudHypervisorMachineStatus {
                 host_uid: Some(u),
@@ -111,32 +112,105 @@ lan = "br0"
 
     #[test]
     fn requeue_is_quick_while_changing_and_slow_when_settled() {
-        let quick = requeue_for(&Observed {
-            phase: Phase::StartingVmm,
-            addresses: vec![],
-            ..Observed::default()
-        });
-        let waiting_dhcp = requeue_for(&Observed {
-            phase: Phase::Running,
-            addresses: vec![],
-            ..Observed::default()
-        });
-        let settled = requeue_for(&Observed {
-            phase: Phase::Running,
-            addresses: vec![Ipv4Addr::new(192, 0, 2, 9)],
-            ..Observed::default()
-        });
+        let quick = requeue_for(
+            &Observed {
+                phase: Phase::StartingVmm,
+                addresses: vec![],
+                ..Observed::default()
+            },
+            false,
+        );
+        let waiting_dhcp = requeue_for(
+            &Observed {
+                phase: Phase::Running,
+                addresses: vec![],
+                ..Observed::default()
+            },
+            false,
+        );
+        let settled = requeue_for(&running_with_address(), false);
         assert_eq!(quick, Action::requeue(Duration::from_secs(3)));
         assert_eq!(waiting_dhcp, requeue_default());
         assert_eq!(settled, requeue_long());
         assert_eq!(
-            requeue_for(&Observed {
-                phase: Phase::Stopping,
-                addresses: vec![],
-                ..Observed::default()
-            }),
+            requeue_for(
+                &Observed {
+                    phase: Phase::Stopping,
+                    addresses: vec![],
+                    ..Observed::default()
+                },
+                false,
+            ),
             quick
         );
+    }
+
+    fn running_with_address() -> Observed {
+        Observed {
+            phase: Phase::Running,
+            addresses: vec![Ipv4Addr::new(192, 0, 2, 9)],
+            ..Observed::default()
+        }
+    }
+
+    /// ADR-0112: the report itself wakes the reconciler, but nothing wakes it
+    /// at the deadline, so a guest that never reports must still be looked at
+    /// often enough for `FirstBootSealingTimeout` to land on time, not up to
+    /// a long requeue late.
+    #[test]
+    fn requeue_stays_default_while_a_sealing_report_is_due() {
+        assert_eq!(
+            requeue_for(&running_with_address(), true),
+            requeue_default()
+        );
+        // A transition still wins: it is quicker.
+        assert_eq!(
+            requeue_for(
+                &Observed {
+                    phase: Phase::StartingVmm,
+                    ..Observed::default()
+                },
+                true,
+            ),
+            Action::requeue(Duration::from_secs(3))
+        );
+    }
+
+    fn ready_at(secs: i64) -> CloudHypervisorMachineStatus {
+        use k8s_openapi::apimachinery::pkg::apis::meta::v1::{Condition, Time};
+        CloudHypervisorMachineStatus {
+            conditions: vec![Condition {
+                type_: "Ready".into(),
+                status: "True".into(),
+                reason: "GuestRunning".into(),
+                message: String::new(),
+                last_transition_time: Time(
+                    k8s_openapi::jiff::Timestamp::from_second(secs).unwrap(),
+                ),
+                observed_generation: None,
+            }],
+            ..CloudHypervisorMachineStatus::default()
+        }
+    }
+
+    #[test]
+    fn a_sealing_report_is_due_only_while_pending() {
+        let req: banlieue_api::common::FirstBootSealing =
+            serde_json::from_str(r#"{"timeoutSeconds": 180}"#).unwrap();
+        let at = |s: i64| k8s_openapi::jiff::Timestamp::from_second(s).unwrap();
+        let st = ready_at(1_000);
+        // No declaration: nothing is due.
+        assert!(!sealing_report_due(None, &st, at(1_010)));
+        // Declared, within the deadline, nothing reported: due.
+        assert!(sealing_report_due(Some(&req), &st, at(1_010)));
+        // Past the deadline: timed out, no longer due.
+        assert!(!sealing_report_due(Some(&req), &st, at(1_181)));
+        // Reported in full: satisfied, no longer due.
+        let sealed = CloudHypervisorMachineStatus {
+            sealed_partitions: vec!["COS_PERSISTENT".into()],
+            ..st
+        };
+        assert!(!sealing_report_due(Some(&req), &sealed, at(1_010)));
     }
 
     #[test]

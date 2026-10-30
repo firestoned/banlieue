@@ -37,6 +37,10 @@ use banlieue_api::common::{
 use banlieue_api::infrastructure::{ChAddressSource, CloudHypervisorMachineStatus};
 use banlieue_cloud_hypervisor::{VmState, check_version};
 use banlieue_provider_sdk::cloudinit::build_seed_iso;
+use banlieue_provider_sdk::sealing::{
+    REASON_FIRST_BOOT_SEALING_TIMEOUT, REASON_FIRST_BOOT_SEALING_UNVERIFIED, SealingGate,
+    sealing_gate, sticky_sealed_partitions,
+};
 use banlieue_provider_sdk::status::{condition_status, set_condition};
 use std::net::Ipv4Addr;
 use tracing::{info, warn};
@@ -71,6 +75,12 @@ pub struct Observed {
     /// For a plan with an installer: whether it is now detached. `None`
     /// when the plan has none (never had one, or already detached).
     pub install_media_detached: Option<bool>,
+    /// Partitions the guest reported sealed (ADR-0112). Read only for a
+    /// first-boot sealing machine; empty otherwise.
+    pub sealed: Vec<String>,
+    /// When the pass observed this, for the sealing deadline (ADR-0088
+    /// Decision 5). The epoch when unset, which never times anything out.
+    pub now: k8s_openapi::jiff::Timestamp,
 }
 
 /// Advance the machine one step toward `desired`.
@@ -152,6 +162,10 @@ pub async fn converge(
     let mut o = observed(Phase::Running, host.guest_addresses(plan).await?);
     o.ek_certificates = host.ek_certificates(plan).await?;
     o.guest_installed = host.guest_reported_installed(plan).await;
+    if plan.first_boot_sealing.is_some() {
+        o.sealed = host.guest_reported_sealed(plan).await;
+    }
+    o.now = k8s_openapi::jiff::Timestamp::now();
     if plan.has_install_media() {
         // The live half of the eject (ADR-0065 Decision 4): gone from the
         // running VMM, so a guest-initiated reboot cannot bring it back.
@@ -416,6 +430,10 @@ pub fn build_status(
     } else if running {
         st.guest_installed = Some(false);
     }
+    // ADR-0112: sticky like the rest, and only for a machine that seals.
+    if plan.first_boot_sealing.is_some() {
+        st.sealed_partitions = sticky_sealed_partitions(&st.sealed_partitions, &o.sealed);
+    }
     st.install_media_detached = if plan.empty_os_disk {
         match (st.install_media_detached, o.install_media_detached) {
             (Some(true), _) => Some(true),
@@ -428,10 +446,38 @@ pub fn build_status(
     // Published only where it can be evaluated: a Deferred install, which
     // is expected to report, or any guest that has. An Immediate image with
     // no sender leaves it absent, so a pool reports the signal absent
-    // rather than waiting forever (ADR-0046 Decision 3).
+    // rather than waiting forever (ADR-0046 Decision 3). A first-boot
+    // sealing machine also publishes it past the deadline: a clone that
+    // cannot seal halts in its initramfs and never reports (ADR-0112).
     let installed = st.guest_installed == Some(true);
-    if plan.empty_os_disk || installed {
-        let (status, reason, message) = if !installed {
+    let gate = plan
+        .first_boot_sealing
+        .as_ref()
+        .map(|required| sealing_gate(required, &st.sealed_partitions, &st.conditions, o.now));
+    let timed_out = matches!(gate, Some(SealingGate::TimedOut { .. }));
+    if plan.empty_os_disk || installed || timed_out {
+        let (status, reason, message) = if let Some(SealingGate::TimedOut { missing }) = &gate {
+            (
+                condition_status::FALSE,
+                REASON_FIRST_BOOT_SEALING_TIMEOUT,
+                format!(
+                    "no complete first-boot sealing report within the deadline; missing: {} \
+                     (a clone that cannot seal halts in its initramfs: check the serial log)",
+                    missing.join(", ")
+                ),
+            )
+        } else if let (true, Some(SealingGate::Pending { missing })) = (installed, &gate) {
+            (
+                condition_status::FALSE,
+                REASON_FIRST_BOOT_SEALING_UNVERIFIED,
+                format!(
+                    "the installed guest reported, but not {} sealed on vsock port {} \
+                     (ADR-0112)",
+                    missing.join(", "),
+                    crate::report::REPORT_PORT
+                ),
+            )
+        } else if !installed {
             (
                 condition_status::FALSE,
                 "GuestNotAnnounced",
