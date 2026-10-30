@@ -54,7 +54,7 @@ network facts:
 
 | Provider | Keys or files |
 | --- | --- |
-| vSphere | `guestinfo.network.hostname`; `guestinfo.network.ip`, `.prefix`, `.gateway`, `.dns`, `.domain` (static addressing only); `guestinfo.metadata` (`instance-id`, `local-hostname`); `guestinfo.userdata` and `guestinfo.userdata.encoding` when user data is set; `ethernetN.pciSlotNumber` (`crates/banlieue-provider-vsphere/src/reconciler/vspheremachine.rs`, `build_guestinfo`) |
+| vSphere | `guestinfo.network.hostname`; `guestinfo.network.ip`, `.prefix`, `.gateway`, `.dns`, `.domain` for the first interface and `guestinfo.network.<i>.ip` and so on for interface `i >= 1` (static addressing only, ADR-0111); `guestinfo.metadata` (`instance-id`, `local-hostname`); `guestinfo.userdata` and `guestinfo.userdata.encoding` when user data is set; `ethernetN.pciSlotNumber` (`crates/banlieue-provider-vsphere/src/reconciler/vspheremachine.rs`, `build_guestinfo`) |
 | libvirt | NoCloud `meta-data` (`instance-id` = domain UUID, `local-hostname`) and `user-data` if set (`crates/banlieue-provider-sdk/src/cloudinit/mod.rs`) |
 | Cloud Hypervisor | The same NoCloud seed, built only when user data is set |
 

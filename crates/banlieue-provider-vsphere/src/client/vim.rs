@@ -119,6 +119,10 @@ const KEY_IDE: i32 = -1002;
 const KEY_CDROM: i32 = -1003;
 const KEY_NIC: i32 = -1004;
 const KEY_TPM: i32 = -1005;
+/// Temporary device key of the first NIC a clone adds beyond the template's own
+/// (ADR-0111); the next ones count down from it. vCenter replaces a negative key
+/// with a real one when the device is created.
+const KEY_CLONE_NIC_BASE: i32 = -2000;
 const KIB_PER_GIB: i64 = 1024 * 1024;
 /// `VirtualDisk.capacityInBytes` doc: clients must initialize it (not just
 /// `capacityInKB`) when changing the capacity of an existing disk.
@@ -898,9 +902,10 @@ impl VSphereClient for VimClientImpl {
             _ => vm_folder.value.clone(),
         };
 
-        // Read the template's own devices to find its (single) NIC's device
-        // key — the clone reconfigures that same key onto the target zone's
-        // port group rather than adding a new device.
+        // Read the template's own devices to find its first NIC's device key —
+        // the clone reconfigures that same key onto interface 0's port group
+        // rather than adding a device for it. Interfaces beyond the first are
+        // added as new NICs of the same adapter type (ADR-0111).
         let template = VimVirtualMachine::new(self.client.clone(), &req.template_moref);
         let template_cfg = template
             .config()
@@ -939,11 +944,29 @@ impl VSphereClient for VimClientImpl {
         let nic_backing = self
             .build_nic_backing(&req.network, &req.network_moref, req.network_distributed)
             .await?;
-        let nic_change = VirtualDeviceConfigSpec {
-            operation: Some(VirtualDeviceConfigSpecOperationEnum::Edit),
-            device: build_nic_edit_device(nic_key, nic_backing, nic_adapter_type, nic_pci_slot),
-            ..Default::default()
-        };
+        // ADR-0111: one NIC per declared interface. The template's own NIC is
+        // edited onto interface 0's port group (above); each further interface
+        // is added, backed by its own port group.
+        let mut extra_backings = Vec::with_capacity(req.extra_nics.len());
+        for nic in &req.extra_nics {
+            extra_backings.push(
+                self.build_nic_backing(&nic.network, &nic.network_moref, nic.network_distributed)
+                    .await?,
+            );
+        }
+        let nic_changes: Vec<Box<dyn vim_rs::types::traits::VirtualDeviceConfigSpecTrait>> =
+            build_clone_nic_changes(
+                nic_key,
+                nic_backing,
+                nic_adapter_type,
+                nic_pci_slot,
+                extra_backings,
+            )
+            .into_iter()
+            .map(|change| {
+                Box::new(change) as Box<dyn vim_rs::types::traits::VirtualDeviceConfigSpecTrait>
+            })
+            .collect();
 
         let mut extra_config: Vec<Box<dyn vim_rs::types::traits::OptionValueTrait>> = req
             .extra_config
@@ -1098,7 +1121,7 @@ impl VSphereClient for VimClientImpl {
             config: Some(VirtualMachineConfigSpec {
                 num_cp_us: Some(req.num_cpus),
                 memory_mb: Some(req.memory_mib),
-                device_change: Some(vec![Box::new(nic_change)]),
+                device_change: Some(nic_changes),
                 extra_config: Some(extra_config),
                 ..Default::default()
             }),
@@ -2385,6 +2408,39 @@ fn find_all_nic_keys(
         })
         .map(|d| (d.get_virtual_device().key, d.data_type()))
         .collect()
+}
+
+/// The device changes a clone makes to its NICs (ADR-0111): an `Edit` of the
+/// template's own NIC onto interface 0's backing, then one `Add` per further
+/// interface, in declared order, each of the *same adapter type* as the
+/// template's NIC. Added NICs get a fresh negative key each (vCenter's
+/// convention for a device that does not exist yet) and no slot of their own:
+/// vCenter assigns one, and the guest orders NICs by PCI address. Pure, no
+/// vCenter I/O, so it is unit-testable.
+fn build_clone_nic_changes(
+    first_key: i32,
+    first_backing: Box<dyn VirtualDeviceBackingInfoTrait>,
+    adapter_type: vim_rs::types::struct_enum::StructType,
+    first_pci_slot: Option<i32>,
+    extra_backings: Vec<Box<dyn VirtualDeviceBackingInfoTrait>>,
+) -> Vec<VirtualDeviceConfigSpec> {
+    let mut changes = Vec::with_capacity(1 + extra_backings.len());
+    changes.push(VirtualDeviceConfigSpec {
+        operation: Some(VirtualDeviceConfigSpecOperationEnum::Edit),
+        device: build_nic_edit_device(first_key, first_backing, adapter_type, first_pci_slot),
+        ..Default::default()
+    });
+    for (i, backing) in extra_backings.into_iter().enumerate() {
+        // `i` is a handful of NICs, far below i32::MAX; the cast cannot truncate.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+        let key = KEY_CLONE_NIC_BASE - i as i32;
+        changes.push(VirtualDeviceConfigSpec {
+            operation: Some(VirtualDeviceConfigSpecOperationEnum::Add),
+            device: build_nic_edit_device(key, backing, adapter_type, None),
+            ..Default::default()
+        });
+    }
+    changes
 }
 
 /// Build the device-edit spec for `clone_vm`'s NIC reconfigure, as the

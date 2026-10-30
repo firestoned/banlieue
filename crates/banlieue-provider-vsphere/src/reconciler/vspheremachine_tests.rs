@@ -117,18 +117,15 @@ mod tests {
         assert_eq!(find(&pairs, "guestinfo.network.domain"), None);
     }
 
-    #[test]
-    fn first_static_nic_wins_when_multiple_are_declared() {
-        // guestinfo.network.* is a flat, non-indexed convention (matches
-        // this environment's existing hand-provisioned VMs) — it can only
-        // represent one primary static network, not one per NIC.
-        let other = VSphereNicSpec {
+    fn sandbox_nic() -> VSphereNicSpec {
+        // A bare layer 2 segment: an address and a prefix, no gateway, no DNS.
+        VSphereNicSpec {
             name: "eth1".to_string(),
-            port_group: "vmnet-mgmt".to_string(),
+            port_group: "vmnet-sandbox".to_string(),
             mac_address: None,
             ipam: IpamSpec {
                 static_: Some(StaticIpamConfig {
-                    address: "10.0.0.99".to_string(),
+                    address: "198.51.100.1".to_string(),
                     prefix: 24,
                     gateway: None,
                     nameservers: Vec::new(),
@@ -136,15 +133,71 @@ mod tests {
                 }),
                 ..Default::default()
             },
-        };
-        let pairs = build_guestinfo("db-01", &[static_nic("eth0"), other], None);
-        assert_eq!(find(&pairs, "guestinfo.network.ip"), Some("10.0.0.90"));
+        }
     }
 
     #[test]
-    fn dhcp_first_static_second_still_uses_the_static_one() {
-        let pairs = build_guestinfo("db-01", &[dhcp_nic("eth0"), static_nic("eth1")], None);
+    fn interface_zero_owns_the_flat_keys_and_later_ones_are_indexed() {
+        // ADR-0111: the flat keys stay NIC 0's (images already deployed read
+        // them); interface i >= 1 publishes guestinfo.network.<i>.*.
+        let pairs = build_guestinfo("db-01", &[static_nic("eth0"), sandbox_nic()], None);
         assert_eq!(find(&pairs, "guestinfo.network.ip"), Some("10.0.0.90"));
+        assert_eq!(find(&pairs, "guestinfo.network.gateway"), Some("10.0.0.1"));
+        assert_eq!(find(&pairs, "guestinfo.network.1.ip"), Some("198.51.100.1"));
+        assert_eq!(find(&pairs, "guestinfo.network.1.prefix"), Some("24"));
+        assert_eq!(
+            find(&pairs, "guestinfo.network.0.ip"),
+            None,
+            "interface 0 has no indexed form: the flat keys are its contract"
+        );
+    }
+
+    #[test]
+    fn a_later_interface_with_no_gateway_dns_or_domain_publishes_only_address_and_prefix() {
+        let pairs = build_guestinfo("db-01", &[static_nic("eth0"), sandbox_nic()], None);
+        assert_eq!(find(&pairs, "guestinfo.network.1.gateway"), None);
+        assert_eq!(find(&pairs, "guestinfo.network.1.dns"), None);
+        assert_eq!(find(&pairs, "guestinfo.network.1.domain"), None);
+    }
+
+    #[test]
+    fn a_later_interface_publishes_gateway_dns_and_domain_when_it_has_them() {
+        let mut second = static_nic("eth1");
+        second.port_group = "vmnet-mgmt".to_string();
+        let pairs = build_guestinfo("db-01", &[sandbox_nic(), second], None);
+        assert_eq!(
+            find(&pairs, "guestinfo.network.1.gateway"),
+            Some("10.0.0.1")
+        );
+        assert_eq!(
+            find(&pairs, "guestinfo.network.1.dns"),
+            Some("10.0.1.53,10.0.1.54")
+        );
+        assert_eq!(
+            find(&pairs, "guestinfo.network.1.domain"),
+            Some("k8s.example.internal")
+        );
+    }
+
+    #[test]
+    fn dhcp_first_static_second_publishes_only_the_indexed_keys() {
+        // Before ADR-0111 the flat keys came from "the first static
+        // interface", which addressed NIC 0 with NIC 1's settings. Now each
+        // interface speaks for itself.
+        let pairs = build_guestinfo("db-01", &[dhcp_nic("eth0"), static_nic("eth1")], None);
+        assert_eq!(find(&pairs, "guestinfo.network.ip"), None);
+        assert_eq!(find(&pairs, "guestinfo.network.1.ip"), Some("10.0.0.90"));
+    }
+
+    #[test]
+    fn a_dhcp_later_interface_publishes_nothing() {
+        let pairs = build_guestinfo("db-01", &[static_nic("eth0"), dhcp_nic("eth1")], None);
+        assert!(
+            pairs
+                .iter()
+                .all(|(k, _)| !k.starts_with("guestinfo.network.1.")),
+            "{pairs:?}"
+        );
     }
 
     #[test]

@@ -684,4 +684,78 @@ mod tests {
         .unwrap();
         assert_eq!(client.named_lookups(), 0);
     }
+
+    // ADR-0111: every declared interface gets a NIC, not only the first.
+
+    fn two_nic_spec() -> VSphereMachineSpec {
+        let mut spec = spec("ds-fast-01", "vmnet-prod");
+        let mut second = dhcp_nic("vmnet-sandbox");
+        second.name = "eth1".to_string();
+        spec.network.push(second);
+        spec
+    }
+
+    fn inventory_with_sandbox() -> Inventory {
+        Inventory::builder()
+            .with_dc("dc1")
+            .with_cluster("dc1", "cluster-a")
+            .with_template("dc1", "ubuntu-22.04-cloudinit")
+            .with_datastore("dc1", "cluster-a", "ds-fast-01", None)
+            .with_network("dc1", "cluster-a", "vmnet-prod", false)
+            .with_network("dc1", "cluster-a", "vmnet-sandbox", true)
+            .build()
+    }
+
+    #[tokio::test]
+    async fn every_declared_interface_is_requested_in_order() {
+        let client = FakeClient::new(inventory_with_sandbox());
+        ensure_vm(as_client(&client), &two_nic_spec(), &machine(), None, None)
+            .await
+            .unwrap();
+
+        let request = client.cloned_vms().remove(0).request;
+        assert_eq!(
+            request.network, "vmnet-prod",
+            "interface 0 stays the template's NIC"
+        );
+        assert!(!request.network_distributed);
+        assert_eq!(request.extra_nics.len(), 1);
+        assert_eq!(request.extra_nics[0].network, "vmnet-sandbox");
+        assert!(
+            request.extra_nics[0].network_distributed,
+            "a distributed port group needs the distributed backing, as for NIC 0"
+        );
+        assert!(!request.extra_nics[0].network_moref.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_single_interface_requests_no_extra_nics() {
+        let client = FakeClient::new(seeded_inventory());
+        ensure_vm(
+            as_client(&client),
+            &spec("ds-fast-01", "vmnet-prod"),
+            &machine(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(client.cloned_vms().remove(0).request.extra_nics.is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_unreachable_later_interface_clones_nothing_and_names_the_port_group() {
+        // The second port group is not in the cluster's inventory.
+        let client = FakeClient::new(seeded_inventory());
+        let err = ensure_vm(as_client(&client), &two_nic_spec(), &machine(), None, None)
+            .await
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("vmnet-sandbox"),
+            "error must name the port group: {msg}"
+        );
+        assert!(msg.contains("eth1"), "error must name the interface: {msg}");
+        assert!(client.cloned_vms().is_empty(), "no clone may be attempted");
+    }
 }

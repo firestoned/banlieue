@@ -1122,4 +1122,61 @@ n17Lktsw0jAZJp1tU1DJPZSYHZPPWLZlJhHftNtpKQ==
     fn a_malformed_question_is_an_error() {
         assert!(cdrom_lock_question_answer(b"not json").is_err());
     }
+
+    // ----------------------------------------------------------------------
+    // build_clone_nic_changes (ADR-0111: one NIC per declared interface)
+    // ----------------------------------------------------------------------
+
+    #[test]
+    fn build_clone_nic_changes_edits_the_first_nic_and_adds_the_rest_in_order() {
+        use vim_rs::types::enums::VirtualDeviceConfigSpecOperationEnum::{Add, Edit};
+        use vim_rs::types::struct_enum::StructType;
+        let specs = build_clone_nic_changes(
+            4000,
+            dummy_nic_backing(),
+            StructType::VirtualVmxnet3,
+            Some(33),
+            vec![dummy_nic_backing(), dummy_nic_backing()],
+        );
+        let ops: Vec<_> = specs.iter().map(|s| s.operation.clone()).collect();
+        assert_eq!(ops, vec![Some(Edit), Some(Add), Some(Add)]);
+
+        // The template's own NIC keeps its key and its pinned slot.
+        assert_eq!(specs[0].device.get_virtual_device().key, 4000);
+        assert!(specs[0].device.get_virtual_device().slot_info.is_some());
+
+        // Added NICs: the template's adapter type, a fresh negative key each
+        // (vCenter's convention for a device that does not exist yet), and no
+        // slot of their own: vCenter assigns it and the guest orders by PCI
+        // address.
+        let keys: Vec<i32> = specs[1..]
+            .iter()
+            .map(|s| s.device.get_virtual_device().key)
+            .collect();
+        assert!(
+            keys.iter().all(|k| *k < 0),
+            "new devices need negative keys: {keys:?}"
+        );
+        assert_ne!(keys[0], keys[1], "keys must be distinct: {keys:?}");
+        for added in &specs[1..] {
+            assert_eq!(added.device.data_type(), StructType::VirtualVmxnet3);
+            assert!(added.device.get_virtual_device().slot_info.is_none());
+        }
+    }
+
+    #[test]
+    fn build_clone_nic_changes_with_no_extra_nics_is_only_the_edit() {
+        use vim_rs::types::enums::VirtualDeviceConfigSpecOperationEnum::Edit;
+        use vim_rs::types::struct_enum::StructType;
+        let specs = build_clone_nic_changes(
+            4000,
+            dummy_nic_backing(),
+            StructType::VirtualE1000E,
+            None,
+            Vec::new(),
+        );
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0].operation, Some(Edit));
+        assert_eq!(specs[0].device.data_type(), StructType::VirtualE1000E);
+    }
 }

@@ -1,5 +1,50 @@
 # Changelog
 
+## [2026-10-30 18:00] - A cloned VM gets one NIC per declared interface (ADR-0111)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0111-vm-clone-additional-nics.md`: a `VMClass` may declare several interfaces and the
+  controller carried them all into `VSphereMachine.spec.network`, but the vSphere clone used only the
+  first (`spec.network.first()`, one network in `CloneVmRequest`, the template's NIC edited and nothing
+  added, one flat `guestinfo.network.*` set). Found live: three gateway VMs declared with a routable and
+  a sandbox interface came up with the routable NIC only. The clone now adds one NIC per further
+  interface, and guest addressing is published per NIC.
+- `CloneNic` and `CloneVmRequest.extra_nics` (`client/mod.rs`); `build_clone_nic_changes` (`client/vim.rs`):
+  an `Edit` of the template's NIC then one `Add` per further interface, the template's adapter type, a
+  fresh negative key each, no slot of their own (the guest orders NICs by PCI address).
+- `ensure_vm` resolves every declared interface's port group before cloning; an unreachable one stops the
+  clone and names the interface and the port group.
+- `build_guestinfo` publishes `guestinfo.network.<i>.{ip,prefix,gateway,dns,domain}` for interface `i >= 1`,
+  each key only when set (an interface with no gateway is valid). Interface 0 keeps the flat keys.
+- Tests: `vim_tests.rs`, `vspheremachine_ensure_tests.rs`, `vspheremachine_tests.rs` (ten new tests).
+
+### Changed
+- Behaviour: the flat `guestinfo.network.*` keys now come from interface 0 only; before they came from
+  "the first interface with a static address". They differ only for a VM whose first interface is DHCP
+  and a later one static, which previously addressed NIC 0 with NIC 1's settings. Two tests that encoded the
+  old rule were rewritten.
+- A VM that declares a second interface now gets it on its next create. Existing VMs are untouched.
+- `docs/architecture/calm/architecture.json`: `rel-provider-vsphere-backend` describes the multi-NIC clone;
+  `make calm-validate` passes.
+- `docs/src/guides/vsphere-provider.md` (a "More than one network adapter" section) and
+  `docs/src/security/guest-configuration.md` (the per-NIC keys).
+- `docs/src/security/threat-model.md`: full pass, stamp 2026-10-30 against ADR-0001 to ADR-0111. A second NIC
+  now exists, so a VM can sit on two segments. Added a §2 clause, an A-4 clause, a TB-1 clause (the
+  duplicate-address check covers every interface), a TB-4 table "vSphere VM network adapters" (five rows),
+  §7.28 (a two-adapter VM is a bridge until the guest says otherwise) and two §8 risks (a guest with two NICs
+  can forward between segments; a `VMClass` edit does not change existing VMs), and a line in the §5 diagram.
+  No actor, identity, RBAC grant or boundary was added.
+
+### Why
+The egress gateway VMs of the agent sandbox (ADR-0109) need a routable adapter and an isolated one.
+
+### Impact
+- [x] Requires cluster rollout (the provider image)
+- [x] Config change: an image needs the multi-adapter `configure-network` (vm-build) to configure NIC 1 and beyond
+- [ ] Documentation only
+
 ## [2026-10-29 12:00] - The registry push Job trusts an operator-named CA bundle (ADR-0110)
 
 **Author:** Erick Bourgeois
