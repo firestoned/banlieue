@@ -129,7 +129,7 @@ lan = "br0"
             false,
         );
         let settled = requeue_for(&running_with_address(), false);
-        assert_eq!(quick, Action::requeue(Duration::from_secs(3)));
+        assert_eq!(quick, Action::requeue(Duration::from_secs(1)));
         assert_eq!(waiting_dhcp, requeue_default());
         assert_eq!(settled, requeue_long());
         assert_eq!(
@@ -143,6 +143,27 @@ lan = "br0"
             ),
             quick
         );
+    }
+
+    /// Roadmap 18 phase C: a VMM start is four or five quick steps
+    /// (manufacture, swtpm, VMM unit, API socket), each a pass. At 3 s a
+    /// pass they cost a sealed clone about 8 s of its 106 s, nearly all of
+    /// it waiting; each step itself takes well under a second.
+    #[test]
+    fn a_vmm_start_step_is_looked_at_again_within_a_second() {
+        for phase in [Phase::StartingTpm, Phase::StartingVmm, Phase::Stopping] {
+            assert_eq!(
+                requeue_for(
+                    &Observed {
+                        phase: phase.clone(),
+                        ..Observed::default()
+                    },
+                    false,
+                ),
+                Action::requeue(Duration::from_secs(1)),
+                "{phase:?}"
+            );
+        }
     }
 
     fn running_with_address() -> Observed {
@@ -172,7 +193,7 @@ lan = "br0"
                 },
                 true,
             ),
-            Action::requeue(Duration::from_secs(3))
+            Action::requeue(Duration::from_secs(1))
         );
     }
 

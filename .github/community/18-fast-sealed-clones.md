@@ -29,15 +29,17 @@ is no longer needed is recorded under *Superseded*.
 |---|---|---|---|
 | Per-clone OS install | Every member (`Deferred`) | **None** (first-boot sealing, ADR-0088/0112) | None |
 | Pool warm-up, 2 members | 130.3 s vSphere, 158 s libvirt, 341 s one CH install | **125 s** libvirt, **125–130 s** Cloud Hypervisor | ≤ 30 s per member |
+| One sealed member, creation → `GuestReady` | n/a | **39.3 s** Cloud Hypervisor with a pre-laid image (106.3 s raw; phase C) | ≤ 30 s |
 | Cross-member negative test | Not run | **Green on Cloud Hypervisor** (2026-10-31) | Green on every backend |
 | Base integrity (dm-verity / UKI) | None | None | Verified base |
 | Build-time secret scanner | None | None | Fails the build |
 
-Where the 125 s goes now: a raw clone has no `COS_STATE` or `COS_PERSISTENT`
+Where the time goes now: a raw clone has no `COS_STATE` or `COS_PERSISTENT`
 yet, so its first boot runs recovery, whose reset lays out the partitions,
 then reboots into the active system, which seals `COS_PERSISTENT` and
 reports (ADR-0088 *Amendment 2026-10-26*). The install is gone; a recovery
-boot, a reset and a second boot remain. That is phase C's target.
+boot, a reset and a second boot remain, 54 % of a lone member's 106 s, and
+GRUB's 10 s menu wait on each boot is another 19 % (phase C).
 
 ## Security invariants (every phase must preserve all five)
 
@@ -124,28 +126,84 @@ invariant 4 caveat).
       boot's command line in the test image so the run also records
       Kairos's own unlock failure.
 
-## C. Boot path to ≤ 30 s ⛔
+## C. Boot path to ≤ 30 s 🔶 (106 s → 39 s)
 
-What remains of the 125 s is boot, not install: recovery boot, reset,
-reboot, seal, report. Measure first, then pick; any path that changes a
-`VMImage` contract or a provider's disk layout is an ADR.
+What remains is boot, not install: recovery boot, reset, reboot, seal,
+report. Any path that changes a `VMImage` contract or a provider's disk
+layout is an ADR.
 
-- [ ] **Measure the split.** Per member, on one backend: firmware + GRUB,
-      recovery boot to reset start, reset, reboot, initramfs seal, userspace
-      to report. The console timestamps and the provider's condition
-      transitions give most of it.
-- [ ] **Candidates**, cheapest first:
-      - a raw image that already carries `COS_STATE` and an *unformatted*
-        `COS_PERSISTENT`, so a clone boots the active system directly and
-        only seals (skips recovery and its reset). Needs an AuroraBoot or
-        builder change; the partition must stay unformatted and keyless in
-        the image (invariant 1);
-      - the original split model: a verified read-only base plus an empty
-        per-VM data disk the provider attaches, sealed with
-        `systemd-repart`/`systemd-cryptenroll` or Kairos. It is backend work
-        per provider (ADR-0071 to ADR-0073, reserved below), and only worth
-        it if the first candidate cannot reach the target;
-      - shaving the boot itself: GRUB timeout, kernel and initramfs size.
+- [x] **Measure the split** (2026-10-31). Three sealed VMs, one at a time,
+      on one Cloud Hypervisor host (32 cores, the patched VMM), banlieue
+      v0.4.8, `ch-tpm` class (2 vCPU, 4 GiB), the ADR-0112 test image (Debian
+      13 + kairos-init v4.4.0, raw) plus a test-only layer printing a marker
+      to `ttyS0` at every Kairos stage. A host-side sampler stamped each
+      serial line with host time; cluster times are the conditions'
+      `lastTransitionTime`. Creation to `GuestReady=True`: **106, 108 and
+      105 s** (a lone member; a pool of two on one host took 125 s). The
+      three runs agree within 2 s at every step:
+
+      | Seconds after creation (mean of 3) | Step | Takes |
+      | --- | --- | --- |
+      | 0 → 8.0 | provider: reflink disk, manufacture swtpm, start the VMM (`Ready=True`) | 8.0 s |
+      | 8.0 → 14.7 | firmware to GRUB | 6.7 s |
+      | 14.7 → 26.9 | **GRUB menu countdown** (10.3 s), then recovery kernel | 12.2 s |
+      | 26.9 → 51.7 | recovery boot: kernel, `rootfs`, `initramfs`, `boot`, `before-reset` | 24.8 s |
+      | 51.7 → 64.9 | **reset** (lays out `COS_STATE` and `COS_PERSISTENT`) | 13.2 s |
+      | 64.9 → 72.5 | reboot: shutdown, firmware to GRUB | 7.6 s |
+      | 72.5 → 84.7 | **GRUB menu countdown** (10.3 s), then the active kernel | 12.2 s |
+      | 84.7 → 93.9 | active kernel to the `rootfs` stage | 9.2 s |
+      | 93.9 → 101.8 | `rootfs` to `initramfs` (first-boot sealing runs here) | 7.9 s |
+      | 101.8 → 106.7 | `boot` stage: the vsock `sealed=` and `phase=installed` reports, `GuestReady=True` | 4.9 s |
+
+      What it says:
+      - **The recovery path is over half of it**: GRUB, recovery boot, reset
+        and reboot, 14.7 → 72.5, is **57.8 s (54 %)**.
+      - **GRUB waits 10.3 s on each boot**, 20.6 s (19 %) of doing nothing.
+      - **Sealing itself is cheap.** The active `rootfs` → `initramfs` window
+        that contains it takes 7.9 s, *less* than the same window in the
+        recovery boot (9.7 s), which seals nothing.
+      - **The provider's 8 s is mostly pacing**: one step per reconcile pass,
+        about 3 s apart (as `docs/src/reference/cloud-hypervisor-pool-timings.md`
+        found for `Deferred`).
+- [x] **The three candidates, done and measured (2026-10-31, ADR-0113,
+      Proposed).** Same host, class and image, three clones per row,
+      creation to `GuestReady=True` with `sealedPartitions: [COS_PERSISTENT]`:
+
+      | Image and provider | Mean | Runs |
+      | --- | --- | --- |
+      | Raw, v0.4.8 | 106.3 s | 106, 108, 105 |
+      | Pre-laid, GRUB timeout 0 (candidates 1 and 2), v0.4.8 | 41.3 s | 41, 39, 44 |
+      | The same with 1 s provider pacing (candidate 3) | **39.3 s** | 39, 40, 39 |
+      | Built by `scripts/prelay-kairos-raw.sh`, 1 s pacing | **39.3 s** | 39, 39, 40 |
+
+      1. **GRUB timeout 0**: `timeout=0` in `COS_OEM`'s `grubenv`, the
+         `/grubenv` GRUB already loads after its `set timeout=10`. Not a
+         `grubcustom` on `COS_OEM`: GRUB sources the first one it finds, and
+         the reset writes Kairos's boot-assessment hook as `COS_STATE`'s.
+      2. **Pre-laid image**: `scripts/prelay-kairos-raw.sh` (with
+         `scripts/prelay-kairos-raw-test.sh`) does the recovery reset once at
+         build time. The design changed twice on contact: the recovery boot
+         itself tries to encrypt `COS_PERSISTENT` (so the build boot must
+         run with no `kcrypt` section, or it halts without a TPM, or seals to
+         the builder's), and it logs a machine-id into `COS_PERSISTENT` (so
+         the partition is re-made empty). `make ch-sealing-isolation-e2e`
+         passed against the result.
+      3. **Provider pacing**: `REQUEUE_TRANSITION` 3 s → 1 s; the machine
+         reaches `Ready` in 5 s instead of 7 s. Smaller than the 5 s
+         estimate.
+
+      In the pre-laid boot the sealing window is 12.1 s (7.9 s in the raw
+      flow's second boot, where the recovery boot had done part of it).
+- [ ] **The imagebuilder pre-lays `Url` images** (ADR-0113 Decision 3): a
+      build step after AuroraBoot, in a builder image carrying QEMU, OVMF,
+      e2fsprogs and gdisk, with `/dev/kvm`.
+- [ ] **Does `COS_PERSISTENT` grow on a larger clone disk?** (ADR-0113 Open
+      question 1.)
+- [ ] **The next levers to 30 s.** What remains of 39 s: provider 5 s, **9 s
+      from the VMM starting to the firmware handing over to GRUB** (Cloud
+      Hypervisor's firmware, possibly the prototype VMM's vTPM polling),
+      kernel to `rootfs` 8 s, sealing 12 s, report 4 s. The firmware's 9 s
+      is the largest single step left and the cheapest to investigate.
 - [ ] Re-measure the pool with whichever lands, on all three backends.
 
 ## D. Verified base and build-time scanner (invariants 1, 3) ⛔

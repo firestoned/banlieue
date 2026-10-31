@@ -39,7 +39,10 @@ use tracing::{info, warn};
 /// Finalizer held while the machine has anything on the host.
 pub const MACHINE_FINALIZER: &str = "banlieue.io/cloudhypervisormachine";
 /// How soon to look again while the VMM or the guest is changing state.
-const REQUEUE_TRANSITION: Duration = Duration::from_secs(3);
+/// A VMM start is four or five quick steps, one per pass (manufacture,
+/// swtpm, VMM unit, API socket), each well under a second; at 3 s a pass
+/// they cost a sealed clone about 8 s of waiting (roadmap 18 phase C).
+const REQUEUE_TRANSITION: Duration = Duration::from_secs(1);
 
 /// What every reconcile needs.
 pub struct Context {

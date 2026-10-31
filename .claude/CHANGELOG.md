@@ -1,5 +1,99 @@
 # Changelog
 
+## [2026-10-31 20:00] - ADR-0113 (Proposed): pre-laid images; sealed clones in 39 s instead of 106 s
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0113-pre-laid-images-for-fast-sealed-clones.md` (Proposed): do
+  the Kairos recovery reset every raw clone runs on its first boot once, at
+  build time; GRUB menu timeout 0 via `COS_OEM`'s `grubenv`; the builder
+  pre-lays, never the host; a pre-laid image is laid out for one disk size;
+  1 s provider pacing. Accept when the imagebuilder pre-lays `Url` images,
+  a pre-laid pool warms on Cloud Hypervisor and libvirt, the isolation test
+  passes against a pre-laid image (met), and the disk-size question is
+  answered.
+- `scripts/prelay-kairos-raw.sh` and `scripts/prelay-kairos-raw-test.sh`:
+  the first-party pre-lay tool (root, KVM; about three minutes) and its
+  tests (the GRUB environment block writer, cross-checked against
+  `grub-editenv`, and the argument checks).
+
+### Changed
+- `crates/banlieue-provider-cloud-hypervisor/src/reconciler.rs`:
+  `REQUEUE_TRANSITION` 3 s → 1 s (tests first, in `reconciler_tests.rs`).
+- `docs/src/guides/cloud-hypervisor-host.md`: "Pre-laid images" section.
+- `docs/architecture/calm/architecture.json`: `pre-laid-images` control;
+  ADR-0113 registered.
+- `.github/community/18-fast-sealed-clones.md` phase C and `ROADMAPS.md`
+  row 18: the results and what is left.
+- Threat model full pass, stamp 2026-10-31 / ADR-0113: five TB-5 rows (an
+  image sealed to the builder, build-boot identity and logs, operator stages
+  run at build time, a reset that never ran, a host rewriting an artifact),
+  each mapped to a check in the script or to ADR-0064's rule that the
+  provider never writes the image cache. No actor, identity, grant,
+  namespace or boundary changes.
+
+### Measured (Cloud Hypervisor, three clones per row, creation to `GuestReady`)
+- Raw image, v0.4.8: 106.3 s. Pre-laid with GRUB timeout 0: 41.3 s. Plus
+  1 s pacing: 39.3 s. Script-built image: 39.3 s (39, 39, 40).
+- `make ch-sealing-isolation-e2e` against the script-built image: passed
+  (A sealed in 40 s; its copy under a fresh vTPM never unlocked).
+
+### Found on the way
+- The raw image's recovery boot already tries to encrypt `COS_PERSISTENT`,
+  so a build boot with the image's own config halts (no TPM) or would seal
+  to the builder: the build boot carries no `kcrypt` section.
+- The build boot logs into `COS_PERSISTENT`, including a journal directory
+  named after its machine-id: the partition is re-made empty.
+- With no admin user, Kairos runs none of the configured stages, so the
+  reset never starts: the build config has a throwaway admin user.
+- `01_reset.yaml`'s layout stage creates `COS_STATE` and `COS_PERSISTENT`
+  before the reset, and QEMU exits 0 on SIGTERM, so an early version
+  reported success with no system on the disk: the script now requires
+  `cOS/active.img`, and deletes its output on any failure.
+- A `grubcustom` on `COS_OEM` would shadow Kairos's boot-assessment hook
+  on `COS_STATE`; the timeout goes in `grubenv` instead.
+- Starting the reset from the recovery `boot` stage (to skip networkd's
+  120 s wait) hangs; not used.
+- 9 s pass between the VMM starting and the firmware handing over to GRUB:
+  the next lever.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (the CH provider's pacing; hosts only)
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-10-31 17:30] - Roadmap 18 phase C: where a sealed clone's boot time goes
+
+**Author:** Erick Bourgeois
+
+### Measured
+- Three sealed VMs, one at a time, on one Cloud Hypervisor host, banlieue
+  v0.4.8, `ch-tpm` class, the ADR-0112 test image plus a test-only layer that
+  prints a marker to `ttyS0` at every Kairos stage; a host-side sampler
+  stamped each serial line. Creation to `GuestReady=True`: 106, 108, 105 s,
+  every step within 2 s across runs. Recovery path (GRUB, recovery boot,
+  reset, reboot) 57.8 s (54 %); GRUB's menu countdown 10.3 s on each boot
+  (19 %); provider 8 s (mostly reconcile pacing); active boot 22 s, with
+  first-boot sealing inside a 7.9 s window that is shorter than the same
+  window in the recovery boot.
+
+### Changed
+- `.github/community/18-fast-sealed-clones.md`: phase C's measurement
+  ticked with the breakdown table; the candidates ranked by measured worth
+  (GRUB timeout 0 about −20 s; a pre-laid-partition raw image to about 49 s
+  alone, 39 s with it, an ADR; one-pass provider pacing about −5 s; all
+  three about 34 s). The split model stays parked: it saves nothing over the
+  pre-laid image for boot time.
+- `ROADMAPS.md` row 18: the measurement.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
 ## [2026-10-31 02:30] - Roadmap 18 rewritten; cross-member sealing isolation proven on Cloud Hypervisor
 
 **Author:** Erick Bourgeois
