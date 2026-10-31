@@ -27,7 +27,7 @@ SPDX-License-Identifier: Apache-2.0
   [ADR-0050](0050-libvirtmachine-domain-lifecycle.md),
   [ADR-0065](0065-cloud-hypervisor-vtpm-and-deferred-install.md);
   [roadmap 17](../../.github/community/17-ephemeral-vm-pools.md) (warm pool
-  sizing), [roadmap 18](../../.github/community/18-split-image-fast-clone.md)
+  sizing), [roadmap 18](../../.github/community/18-fast-sealed-clones.md)
   (the banlieue-side alternative, see Context)
 - **Accept when:** met 2026-10-26 (Kairos v4.4.0 carries items 1 and 2; a
   raw build on that release answered item 3). The list as it stood:

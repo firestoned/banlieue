@@ -1,11 +1,7 @@
 # anatomy.md
 
-> Auto-maintained by OpenWolf. Last scanned: 2026-10-30T22:00:00.294Z
+> Auto-maintained by OpenWolf. Last scanned: 2026-10-31T04:00:00.204Z
 > Files: 511 tracked | Anatomy hits: 0 | Misses: 0
-
-<<<<<<< Updated upstream
-=======
->>>>>>> Stashed changes
 
 ## ./
 
@@ -23,11 +19,11 @@
 - `GOVERNANCE.md` — Governance (~1125 tok)
 - `LICENSE` — Project license (~3029 tok)
 - `MAINTAINERS.md` — Maintainers (~165 tok)
-- `Makefile` — Make build targets (~29885 tok)
+- `Makefile` — Make build targets (~30183 tok)
 - `NOTICE` (~159 tok)
 - `osv-scanner.toml` — SPDX-License-Identifier: Apache-2.0 (~120 tok)
 - `README.md` — Project documentation (~3895 tok)
-- `ROADMAPS.md` — Roadmaps (~4569 tok)
+- `ROADMAPS.md` — Roadmaps (~4622 tok)
 - `SECURITY.md` — Security Policy (~382 tok)
 
 ## .clusterfuzzlite/
@@ -73,9 +69,9 @@
 - `15-vsphere-disk-image-import.md` — 15: vSphere disk-image import (raw and VMDK), alongside the ISO path (~4709 tok)
 - `16-scorecard-remediation.md` — 16 — OSSF Scorecard remediation (~2677 tok)
 - `17-ephemeral-vm-pools.md` — 17: Ephemeral, single-use VM pools (AI agent sandboxes) (~14554 tok)
-- `18-split-image-fast-clone.md` — 18: Split-image fast clone — verified base + per-VM sealed volume (~4187 tok)
+- `18-fast-sealed-clones.md` — 18: Fast sealed clones: isolation proof, boot speed, verified base (~3204 tok)
 - `19-port-groups.md` — 19: Port groups — declared, reconciled, and safe to delete (~4109 tok)
-- `README.md` — Project documentation (~1434 tok)
+- `README.md` — Project documentation (~1447 tok)
 
 ## .github/requirements/
 
@@ -144,10 +140,6 @@
 - `yaml.rs` — YAML output for everything banlieue writes (CRDs, bootstrap manifests, (~660 tok)
 
 ## crates/banlieue-api/src/banlieue/
-
-<<<<<<< Updated upstream
-=======
->>>>>>> Stashed changes
 
 - `mod.rs` — `banlieue.io/v1alpha1` API group. (~688 tok)
 - `provider_tests.rs` — Unit tests for `provider.rs`. (~11104 tok)
@@ -241,13 +233,6 @@
 
 ## crates/banlieue-controller/src/reconciler/
 
-<<<<<<< Updated upstream
-=======
->>>>>>> Stashed changes
-<<<<<<< Updated upstream
-=======
->>>>>>> Stashed changes
-
 - `address_conflict_tests.rs` — Unit tests for [`super::super::address_conflict`] (ADR-0083). (~5908 tok)
 - `address_conflict.rs` — Duplicate static-address detection (ADR-0083). (~3151 tok)
 - `claim_plan_tests.rs` — Unit tests for `claim_plan.rs`. (~4622 tok)
@@ -286,13 +271,6 @@
 - `Cargo.toml` — Rust package manifest (~586 tok)
 
 ## crates/banlieue-host/src/
-
-<<<<<<< Updated upstream
-=======
->>>>>>> Stashed changes
-<<<<<<< Updated upstream
-=======
->>>>>>> Stashed changes
 
 - `boundary_tests.rs` — ADR-0067 Decision 3 / roadmap 09 phase 10, invariant 7: no reconcile path (~295 tok)
 - `dryrun.rs` — `install --dry-run`: look at the real host, change nothing, and print (~856 tok)
@@ -494,6 +472,7 @@
 - `e2e_machine.rs` — End to end on a real Cloud Hypervisor host: a `VirtualMachine` becomes a (~4378 tok)
 - `e2e_pool_claim.rs` — Pool → Cloud Hypervisor guests → claim → release, end to end on the host (~8146 tok)
 - `e2e_restart.rs` — End to end on a real Cloud Hypervisor host: restarting the provider — (~3090 tok)
+- `e2e_sealing_isolation.rs` — A sealed disk opens only with its own vTPM: the cross-member negative (~6788 tok)
 - `e2e_vtpm.rs` — End to end on a real Cloud Hypervisor host: a `tpmEnabled` (~2468 tok)
 - `live_sys.rs` — Live test of the tap and bridge syscalls in `sys.rs`. (~1669 tok)
 - `live_systemd.rs` — Live test of template-unit instances against the calling user's systemd (~2013 tok)
@@ -503,10 +482,6 @@
 - `Cargo.toml` — Rust package manifest (~539 tok)
 
 ## crates/banlieue-provider-libvirt/src/
-
-<<<<<<< Updated upstream
-=======
->>>>>>> Stashed changes
 
 - `app_tests.rs` — Unit tests for [`super::super::app`]. (~2544 tok)
 - `app.rs` — # `banlieue provider libvirt` entry point (~3829 tok)
@@ -524,10 +499,6 @@
 - `machine_client.rs` — The libvirt operations the `LibvirtMachine` reconciler needs (ADR-0050). (~8724 tok)
 
 ## crates/banlieue-provider-libvirt/src/reconciler/
-
-<<<<<<< Updated upstream
-=======
->>>>>>> Stashed changes
 
 - `libvirtmachine_tests.rs` — Unit tests for the `LibvirtMachine` reconciler. (~15548 tok)
 - `libvirtmachine.rs` — `LibvirtMachine` reconciler — a scheduled VM becomes a real domain (~13347 tok)
@@ -575,10 +546,6 @@
 - `network.rs` — Guest network configuration for the NoCloud seed. (~1097 tok)
 
 ## crates/banlieue-provider-proxmox/src/reconciler/
-
-<<<<<<< Updated upstream
-=======
->>>>>>> Stashed changes
 
 - `image_tests.rs` — Unit tests for the `VMImage` reconciler's pure core. (~1546 tok)
 - `image.rs` — `VMImage` reconciler: verify the template a `VMImage` names and publish (~2467 tok)
@@ -652,10 +619,6 @@
 
 ## crates/banlieue-provider-vsphere/src/
 
-<<<<<<< Updated upstream
-=======
->>>>>>> Stashed changes
-
 - `app_tests.rs` — Unit tests for [`super::super::app`]. (~1888 tok)
 - `app.rs` — # `banlieue provider vsphere` entry point (~4869 tok)
 - `context.rs` — Shared reconcile context for the vSphere provider. (~992 tok)
@@ -679,10 +642,6 @@
 - `vim.rs` — Production `VSphereClient` implementation backed by `vim_rs`. (~37009 tok)
 
 ## crates/banlieue-provider-vsphere/src/reconciler/
-
-<<<<<<< Updated upstream
-=======
->>>>>>> Stashed changes
 
 - `ca_bundle.rs` — Resolve `Provider.spec.connection.caBundle` to PEM text (ADR-0008). (~497 tok)
 - `mod.rs` — vSphere provider reconcilers. (~162 tok)
@@ -800,4 +759,3 @@
 - `banlieue.io_providerclasses.yaml` — K8s CustomResourceDefinition: providerclasses.banlieue.io (~7715 tok)
 - `banlieue.io_providers.yaml` — K8s CustomResourceDefinition: providers.banlieue.io (~11504 tok)
 - `banlieue.io_virtualmachineclaims.yaml` — K8s CustomResourceDefinition: virtualmachineclaims.banlieue.io (~2995 tok)
-- `banlieue.io_virtualmachinepools.yaml` — K8s CustomResourceDefinition: virtualmachinepools.banlieue.io (~9412 tok)

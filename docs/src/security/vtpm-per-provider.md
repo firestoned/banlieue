@@ -92,6 +92,7 @@ encrypts that disk to the VM's own vTPM.
 | EK certificate | Written by host-side manufacture and published from the host files, not reported by the guest | Same live test, asserts `ek_cn_matches` |
 | Deferred sealing | The guest installs and encrypts at first boot | Live, one machine: `make ch-deferred-e2e` (`tests/e2e_deferred.rs`, checks for LUKS on the disk). Both recorded passing 2026-09-27 (ADR-0065) |
 | First-boot sealing | An `Immediate` image with `firstBootSealing`: the guest's own reflinked or copied `os.raw` and a fresh swtpm; the guest seals on first boot and reports `sealed=` over vsock, which gates `GuestReady` (ADR-0112) | Live, a pool: `make ch-pool-claim-e2e` with `GuestReady`, every member `sealedPartitions: [COS_PERSISTENT]`, warm in 125 s; a machine with no vTPM reported `FirstBootSealingTimeout` (2026-10-28) |
+| Cross-member isolation | A sealed disk opens only with its own vTPM: each clone's key is sealed to its own swtpm, though every clone of one image has the same LUKS header UUID | Live: `make ch-sealing-isolation-e2e` (`tests/e2e_sealing_isolation.rs`, roadmap 18 phase B). A sealed member's disk, copied to a machine with a fresh vTPM, never unlocked and timed out; the original unlocked again under its own (2026-10-31) |
 | Host uid uniqueness | How a host uid is allocated uniquely per machine | **Not verified** in this review |
 
 ## Proxmox

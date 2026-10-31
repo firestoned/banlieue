@@ -1,5 +1,56 @@
 # Changelog
 
+## [2026-10-31 02:30] - Roadmap 18 rewritten; cross-member sealing isolation proven on Cloud Hypervisor
+
+**Author:** Erick Bourgeois
+
+### Added
+- `crates/banlieue-provider-cloud-hypervisor/tests/e2e_sealing_isolation.rs`
+  and `make ch-sealing-isolation-e2e`: roadmap 18 invariant 2, the negative
+  test. Seals member A through banlieue and checks from its console that
+  `COS_PERSISTENT` is mounted from a device-mapper device; powers A off,
+  copies its sealed disk into the image cache, boots the copy as a new
+  machine with a freshly manufactured vTPM and requires that it never
+  unlocks and is never `GuestReady`; then powers A on again and requires it
+  unlocks under its own vTPM. The image needs a test-only console probe
+  stage (module docs), because the sealing report says a partition *is*
+  LUKS, not that the guest unlocked it.
+
+### Verified live
+- Cloud Hypervisor, kind cluster + local controller + test provider on the
+  host, the sealing image plus the probe stage: **passed, 486 s**. A sealed
+  and unlocked `/dev/mapper/vda5` in 110 s; the copy under a fresh vTPM
+  never unlocked and went `GuestReady=False`, `FirstBootSealingTimeout` at
+  its 300 s deadline; A unlocked again 30 s after power-on. The installed
+  system's kernel does not log to the serial console, so the proof is
+  differential (same disk, own vTPM unlocks, another never does), not a
+  captured Kairos unlock failure; recorded as a roadmap 18 follow-up.
+
+### Changed
+- `.github/community/18-split-image-fast-clone.md` renamed to
+  `18-fast-sealed-clones.md` and rewritten: ADR-0088/0112 delivered phase A
+  (per-clone sealing with no installer) by another route; phase B is the
+  isolation proof (green on CH; libvirt, vSphere open); phase C the boot
+  path to 30 s (recovery boot, reset, reboot are what remain); phase D the
+  verified base and secret scanner; phase E Proxmox. ADR-0068/0069 will not
+  be written (decided by ADR-0088); ADR-0070 to ADR-0073 stay reserved. The
+  invariant 4 caveat (the report cannot tell unlocked from LUKS) is
+  recorded.
+- `ROADMAPS.md` row 18 (⛔ to 🔶), `.github/community/README.md` (reading
+  order and dependency graph), ADR-0088's link,
+  `docs/src/security/vtpm-per-provider.md` (CH isolation row),
+  `docs/src/reference/cloud-hypervisor-pool-timings.md` (the install is
+  gone).
+- `.wolf/anatomy.md`: removed 11 empty stash-pop conflict blocks
+  (`<<<<<<< Updated upstream` / `>>>>>>> Stashed changes`) committed to
+  main before #121.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only (plus an ignored e2e test)
+
 ## [2026-10-28 13:45] - ADR-0112 accepted: first-boot sealing verified on Cloud Hypervisor
 
 **Author:** Erick Bourgeois

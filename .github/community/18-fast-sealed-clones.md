@@ -1,0 +1,224 @@
+# 18: Fast sealed clones: isolation proof, boot speed, verified base
+
+> **Goal.** A `tpmEnabled` pool member is cloned, sealed to its own fresh
+> vTPM and `GuestReady` in **seconds**, on every backend, and the isolation
+> that sealing is supposed to buy is **proven live**, not assumed: no
+> member's sealed disk opens under any vTPM but its own. Memory forking stays
+> rejected (ADR-0052).
+>
+> **Stop condition.** On libvirt, vSphere and Cloud Hypervisor: a
+> `GuestReady` pool of `tpmEnabled` members goes clone → `GuestReady=True`
+> in **≤ 30 s** per member; every backend runs the cross-member negative test
+> green; and the base image is integrity-verified and scanned for secrets at
+> build time.
+
+**Rewritten 2026-10-31.** This roadmap was written (2026-09-24, baseline
+`677be59`) as "split-image fast clone": a dm-verity base plus an empty
+per-VM LUKS volume, because Kairos could then only encrypt at install time
+(ADR-0040), so the only per-VM sealed disk was a per-VM install. Kairos
+v4.4.0 changed that. **ADR-0088** (libvirt, vSphere) and **ADR-0112** (Cloud
+Hypervisor) now clone an `Immediate` image and let Kairos seal
+`COS_PERSISTENT` to the clone's own vTPM on its first boot. That removed the
+per-clone install, which was the bulk of this roadmap's cost, by a different
+route than the one planned here. What is left is below; what was planned and
+is no longer needed is recorded under *Superseded*.
+
+## Where it stands
+
+| Measure | Before (2026-09) | Now | Target |
+|---|---|---|---|
+| Per-clone OS install | Every member (`Deferred`) | **None** (first-boot sealing, ADR-0088/0112) | None |
+| Pool warm-up, 2 members | 130.3 s vSphere, 158 s libvirt, 341 s one CH install | **125 s** libvirt, **125–130 s** Cloud Hypervisor | ≤ 30 s per member |
+| Cross-member negative test | Not run | **Green on Cloud Hypervisor** (2026-10-31) | Green on every backend |
+| Base integrity (dm-verity / UKI) | None | None | Verified base |
+| Build-time secret scanner | None | None | Fails the build |
+
+Where the 125 s goes now: a raw clone has no `COS_STATE` or `COS_PERSISTENT`
+yet, so its first boot runs recovery, whose reset lays out the partitions,
+then reboots into the active system, which seals `COS_PERSISTENT` and
+reports (ADR-0088 *Amendment 2026-10-26*). The install is gone; a recovery
+boot, a reset and a second boot remain. That is phase C's target.
+
+## Security invariants (every phase must preserve all five)
+
+| # | Invariant | Status |
+|---|---|---|
+| 1 | **The base image contains no secrets and no identity.** No machine-id, SSH host keys, tokens, enrolled TPM material or pre-created keyslots. Enforced at build time with a scanner, not a convention. | ⛔ Convention only. Phase D. |
+| 2 | **One volume key per member, sealed to that member's vTPM only.** No fleet key, no escrow copy. The negative test is a live deliverable, not an assumption. | 🔶 Proven on Cloud Hypervisor (phase B); libvirt and vSphere open. |
+| 3 | **The base is integrity-bound to the image artifact.** | ⛔ Phase D. |
+| 4 | **`GuestReady` implies sealed.** A member that cannot seal never announces. | ✅ ADR-0088 Decision 5 readback on all three backends; `FirstBootSealingTimeout` for a clone that halts. Caveat below. |
+| 5 | **Fresh vTPM per clone, never migrated, never duplicated.** | ✅ All three backends (ADR-0039, ADR-0050, ADR-0065). |
+
+**The caveat on invariant 4.** The sealing report says each listed partition
+*is* a LUKS container, not that the guest *unlocked* it. A guest that
+booted without opening its data volume would still report it sealed if it
+got far enough to report. Today that cannot happen with Kairos, which halts
+in the initramfs when an unlock fails (the negative test observes exactly
+that: no report, `FirstBootSealingTimeout`), but the guarantee comes from
+Kairos's behaviour, not from what banlieue reads. Phase B's test asserts the
+copy is never `GuestReady`, so a Kairos change that degraded instead of
+halting would turn the suite red.
+
+## Fixed constraints (not up for re-litigation here)
+
+| Constraint | Source |
+|---|---|
+| No memory forking, on any backend. Instant Clone, snapshot-restore fan-out and fork-from-golden all copy the parent's RAM, including its unsealed volume key, so no vTPM swap restores isolation afterwards. This roadmap is **disk-only** fast cloning. | ADR-0052 |
+| Never clone TPM state. Fresh vTPM per member. | ADR-0040, roadmap 17 §D/§E |
+| Never clone a disk that has been *sealed*. Clones are taken from the unsealed image; sealing happens inside each clone, on its own first boot. | ADR-0040, ADR-0088 |
+| The EK certificate gate stands: a `tpmEnabled` member is unbindable until it publishes `status.tpmEndorsementCertificates`. | ADR-0045 |
+| CR-to-CR only; pools and claims never talk to a provider. | 01-DECISIONS |
+
+## A. Per-clone sealing without an installer ✅
+
+Delivered by ADR-0088 (Accepted 2026-10-26) and ADR-0112 (Accepted
+2026-10-28), not by this roadmap's original phases 0–C:
+
+- [x] An `Immediate` `VMImage` declares `firstBootSealing`; the controller
+      copies it onto the infra CR; `tpmEnabled` + `Immediate` is valid when
+      it does (ADR-0048 superseded).
+- [x] The imagebuilder appends a sealing layer (Kairos `encrypt_on_boot` on
+      the listed partitions, plus a report on every backend's channel).
+- [x] Each provider reads the report back and gates `GuestReady` on it, with
+      a deadline: libvirt (`qemu-guest-agent`), vSphere (`guestinfo`), Cloud
+      Hypervisor (vsock `sealed=` line).
+- [x] Live: vSphere end to end (2026-10-22), libvirt pool 125 s
+      (2026-10-26), Cloud Hypervisor pool 125–130 s (2026-10-28).
+
+## B. Cross-member isolation proof (invariant 2) 🔶
+
+Every clone of one image gets the **same LUKS header UUID**, because every
+clone formats the same partition of the same image (ADR-0088, *Evidence from
+a live run*). That is harmless only if each clone's volume key is its own
+and is sealed to its own vTPM. The test that shows it:
+
+1. seal member A through banlieue, and confirm from its console that
+   `COS_PERSISTENT` is mounted from a device-mapper device (unlocked);
+2. power A off and copy its sealed disk;
+3. boot the copy as a new machine with a freshly manufactured vTPM: it must
+   never unlock, and never be `GuestReady`;
+4. power A on again with its own vTPM: it unlocks, so step 3 failed because
+   of the vTPM, not because the copy was damaged.
+
+The console probe is a test-only cloud-config stage
+(`banlieue-e2e-persistent=$(findmnt -no SOURCE /usr/local)` to `ttyS0`),
+because the sealing report cannot tell unlocked from merely LUKS (the
+invariant 4 caveat).
+
+- [x] **Cloud Hypervisor**: `make ch-sealing-isolation-e2e`
+      (`crates/banlieue-provider-cloud-hypervisor/tests/e2e_sealing_isolation.rs`).
+      **Green 2026-10-31**: A sealed and unlocked (`/dev/mapper/vda5`) in
+      110 s; the copy under a fresh vTPM never unlocked and timed out
+      (`FirstBootSealingTimeout`, 300 s budget); A unlocked again 30 s after
+      power-on.
+- [ ] **libvirt**: the same four steps against `LibvirtMachine` (copy the
+      domain's overlay flattened onto its base, or the volume with
+      `qemu-img convert`). The probe can read back through the guest agent
+      instead of a console.
+- [ ] **vSphere**: the same, copying the VMDK into a new VM with a fresh
+      vTPM (ADR-0039).
+- [ ] **Capture the failure, not only its absence.** The installed system's
+      kernel does not write to the serial console, so step 3's evidence is
+      that the copy never unlocked while the same disk does under its own
+      vTPM: a differential proof. Add `console=ttyS0` to the installed
+      boot's command line in the test image so the run also records
+      Kairos's own unlock failure.
+
+## C. Boot path to ≤ 30 s ⛔
+
+What remains of the 125 s is boot, not install: recovery boot, reset,
+reboot, seal, report. Measure first, then pick; any path that changes a
+`VMImage` contract or a provider's disk layout is an ADR.
+
+- [ ] **Measure the split.** Per member, on one backend: firmware + GRUB,
+      recovery boot to reset start, reset, reboot, initramfs seal, userspace
+      to report. The console timestamps and the provider's condition
+      transitions give most of it.
+- [ ] **Candidates**, cheapest first:
+      - a raw image that already carries `COS_STATE` and an *unformatted*
+        `COS_PERSISTENT`, so a clone boots the active system directly and
+        only seals (skips recovery and its reset). Needs an AuroraBoot or
+        builder change; the partition must stay unformatted and keyless in
+        the image (invariant 1);
+      - the original split model: a verified read-only base plus an empty
+        per-VM data disk the provider attaches, sealed with
+        `systemd-repart`/`systemd-cryptenroll` or Kairos. It is backend work
+        per provider (ADR-0071 to ADR-0073, reserved below), and only worth
+        it if the first candidate cannot reach the target;
+      - shaving the boot itself: GRUB timeout, kernel and initramfs size.
+- [ ] Re-measure the pool with whichever lands, on all three backends.
+
+## D. Verified base and build-time scanner (invariants 1, 3) ⛔
+
+- [ ] Build-time scanner over the image: fails the build on a machine-id,
+      SSH host keys, LUKS keyslots, TPM state or other identity material.
+      Note the image's `COS_OEM` carries the operator's cloud-config (users,
+      password hashes): what is allowed there is part of the decision.
+- [ ] Base integrity (ADR-0070, reserved): dm-verity root hash pinned by the
+      image artifact, reaching the guest through a channel it cannot be lied
+      to about cheaply; a signed UKI when ADR-0051's stall resolves.
+- [ ] Threat-model pass: asset A-6's per-volume distinction, a row for the
+      verity root hash (integrity, not confidentiality), §8 risk for any
+      unsigned-cmdline interim with *Revisit when: UKI lands*.
+
+## E. Proxmox ⛔ (with roadmap 06)
+
+The Proxmox provider exists (roadmap 06) but has no create-from-ISO,
+`GuestReady`, sealing readback or EK path. When it gets them it should start
+from phase A's shape (fresh `tpmstate0` at create, never copied; first-boot
+sealing readback), then phase B's test.
+
+## ADR reservations
+
+Reserved 2026-09-24: ADR-0068 to ADR-0073. ADR-0068 (the split `VMImage`
+contract) and ADR-0069 (the first-boot sealing mechanism) were decided by
+ADR-0088 instead and will not be written. Still reserved: ADR-0070 (base
+integrity, phase D) and ADR-0071 to ADR-0073 (per-backend split provisioning
+for vSphere, Proxmox and Cloud Hypervisor), which phase C writes only if it
+picks the split model.
+
+## Superseded
+
+From the 2026-09-24 plan, no longer needed:
+
+- **Phase 0's decision gate** (a fourth `installMode`, whether the stack
+  stays Kairos, what happens to `Deferred`): answered by ADR-0088. The mode
+  is `Immediate` + `firstBootSealing`; the stack stays Kairos; `Deferred`
+  remains for full-disk persistent VMs.
+- **Phase A's first-boot unit and phase B's API and controller work**:
+  ADR-0088's sealing layer, readback and `image_class_mismatch` change.
+- **"`GuestReady` written only after the volume is sealed"**: the readback
+  gate does this on every backend (invariant 4).
+
+## Testing (the four tiers, per `rules/testing.md`)
+
+| Tier | What it proves here |
+|---|---|
+| Unit | sealing gate and deadline, report parsing, controller pairing rules (all landed with ADR-0088/0112) |
+| Live protocol | phase C's disk layout accepted by each backend |
+| Live API server | nothing new: claims and pools unchanged |
+| E2E | clone → `GuestReady` timing; **cross-member unseal fails** on every backend; teardown leaves no disk, volume or TPM state |
+
+The negative test is the point of the whole roadmap: a suite that only shows
+members *can* seal, and never that siblings *can't* unseal each other, would
+pass with a fleet-shared key.
+
+## Explicitly out of scope
+
+- **Memory forking in any form**: ADR-0052 is reaffirmed, not weakened.
+- **Re-encrypting a shared base per member** (`cryptsetup reencrypt`): it
+  rewrites every block, destroying the CoW sharing.
+- **Network-bound or broker-released keys** (Tang/Clevis-style): a boot-time
+  network dependency and a crown-jewel broker; its own ADR on top of
+  ADR-0049 if ever wanted.
+- **Sharing a vTPM across members**, ever.
+
+## Relationship to other roadmaps
+
+| Roadmap | Relationship |
+|---|---|
+| 17 (pools/sandboxes) | First consumer. Phase A already shrank its warm-pool math; phase C would shrink it again. |
+| 15 (vSphere disk import) | Needed only if phase C picks the split model on vSphere (a pre-laid base disk). |
+| 09 (Cloud Hypervisor) | Phase B's first green run is there; phase C's reflink path lands there. |
+| 06 (Proxmox) | Phase E. |
+| ADR-0051 (UKI) | Phase D's integrity story upgrades from "pinned hash" to "signed, measured chain" when it resolves. |
