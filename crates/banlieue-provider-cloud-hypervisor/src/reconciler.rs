@@ -21,9 +21,12 @@ use crate::host::HostOps;
 use crate::host_config::HostConfig;
 use crate::machine::{Observed, Phase, build_status, converge, failure_status, teardown};
 use crate::plan::{PlanError, UidLedger, plan_machine};
+use banlieue_api::common::FirstBootSealing;
 use banlieue_api::infrastructure::{CloudHypervisorMachine, CloudHypervisorMachineStatus};
 use banlieue_provider_sdk::finalizer::{ensure_finalizer, remove_finalizer};
 use banlieue_provider_sdk::reconciler::{requeue_default, requeue_long, requeue_on_error};
+use banlieue_provider_sdk::sealing::{SealingGate, sealing_gate};
+use k8s_openapi::jiff::Timestamp;
 use kube::api::{Api, ListParams, Patch, PatchParams};
 use kube::runtime::controller::Action;
 use kube::{Client, ResourceExt};
@@ -77,16 +80,41 @@ pub fn used_host_uids(
 }
 
 /// How soon to reconcile again after a pass that observed `o`.
+///
+/// `sealing_due` is [`sealing_report_due`] for the status just built: while a
+/// first-boot sealing report is still due, a running guest is looked at on
+/// the default cadence rather than the long one. The report itself wakes the
+/// reconciler (ADR-0112 Decision 1), but nothing wakes it at the deadline,
+/// and a clone that cannot seal never reports.
 #[must_use]
-pub fn requeue_for(o: &Observed) -> Action {
+pub fn requeue_for(o: &Observed, sealing_due: bool) -> Action {
     match o.phase {
         Phase::StartingTpm | Phase::StartingVmm | Phase::Stopping => {
             Action::requeue(REQUEUE_TRANSITION)
         }
         // Still waiting for DHCP: the address is what users look for next.
         Phase::Running if o.addresses.is_empty() => requeue_default(),
+        // Still waiting for a sealing report, or for its deadline.
+        Phase::Running if sealing_due => requeue_default(),
         Phase::Running | Phase::Stopped => requeue_long(),
     }
+}
+
+/// Whether a first-boot sealing report is still due for a machine whose
+/// spec declares `required` and whose status is `st`, at `now`: declared,
+/// not yet complete, and not yet past its deadline (ADR-0088 Decision 5).
+#[must_use]
+pub fn sealing_report_due(
+    required: Option<&FirstBootSealing>,
+    st: &CloudHypervisorMachineStatus,
+    now: Timestamp,
+) -> bool {
+    required.is_some_and(|req| {
+        matches!(
+            sealing_gate(req, &st.sealed_partitions, &st.conditions, now),
+            SealingGate::Pending { .. }
+        )
+    })
 }
 
 /// The `Ready=False` reason for an error.
@@ -204,7 +232,8 @@ pub async fn reconcile(machine: Arc<CloudHypervisorMachine>, ctx: Arc<Context>) 
         Ok(o) => {
             let st = build_status(previous, &o, &plan, &ctx.config.provider.name, generation);
             patch_status(&api, &name, &st, &field_manager).await?;
-            Ok(requeue_for(&o))
+            let sealing_due = sealing_report_due(plan.first_boot_sealing.as_ref(), &st, o.now);
+            Ok(requeue_for(&o, sealing_due))
         }
         Err(e) => {
             warn!(machine = %name, error = %e, "converge failed");

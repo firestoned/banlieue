@@ -565,9 +565,6 @@ vCenter role (`VirtualMachine.Interact.PowerOn`).
   `firstBootSealing` but `banlieue-controller` runs with
   `--enable-first-boot-sealing=false`. The VM is refused rather than built as if
   the field were absent.
-- `reason=FirstBootSealingUnsupported` (`Scheduled`) — a sealing vTPM VM
-  matched only Cloud Hypervisor providers, which are not cleared for it yet
-  (ADR-0088 Open question 2).
 
 `GuestReady=False`, `reason=InstallMediaAttached`: the installed guest
 announced itself, but the provider could not eject its install ISO yet

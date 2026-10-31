@@ -126,7 +126,8 @@ pub struct CloudHypervisorMachineSpec {
 
     /// Attach a vTPM (swtpm), resolved from the VM's `VMClass.spec.tpmEnabled`.
     /// Requires [`ChBootSourceKind::InstallMedia`] (ADR-0040, ADR-0048,
-    /// ADR-0065).
+    /// ADR-0065), or an image that seals itself on first boot
+    /// ([`Self::first_boot_sealing`], ADR-0088, ADR-0112).
     #[serde(default)]
     pub tpm_enabled: bool,
 
@@ -139,6 +140,15 @@ pub struct CloudHypervisorMachineSpec {
     /// Desired power state, resolved from the parent `VirtualMachine`.
     #[serde(default)]
     pub desired_power_state: PowerState,
+
+    /// First-boot sealing the guest must report before `GuestReady`
+    /// (ADR-0088, ADR-0112), copied by `banlieue-controller` from the parent
+    /// `VirtualMachine`'s `VMImage.spec.firstBootSealing` when the class is
+    /// `tpmEnabled`. The guest reports over its vsock (`sealed=` beside
+    /// `phase=installed`). `None` for every other machine, which keeps
+    /// today's `GuestReady` meaning unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_boot_sealing: Option<FirstBootSealing>,
 }
 
 /// Virtual CPUs for a machine.
@@ -300,6 +310,15 @@ pub struct CloudHypervisorMachineStatus {
     /// ADR-0065).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tpm_endorsement_certificates: Vec<String>,
+
+    /// Partitions the guest has reported sealed, as LUKS containers, on a
+    /// first-boot sealing machine (ADR-0088, ADR-0112): from the `sealed=`
+    /// line of its vsock report. **Sticky**: the report is re-sent every boot,
+    /// and a powered-off machine has not become unsealed. Empty until
+    /// reported, and on every machine without `spec.firstBootSealing`.
+    /// Guest-supplied, so it is only ever used to *withhold* `GuestReady`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sealed_partitions: Vec<String>,
 
     /// The unprivileged host uid this machine's units run as (ADR-0063
     /// Decision 3). Recorded so the provider re-adopts a running guest

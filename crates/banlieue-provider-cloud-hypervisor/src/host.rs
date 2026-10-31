@@ -99,6 +99,8 @@ pub trait HostOps: Send + Sync {
     async fn ensure_report_listener(&self, plan: &MachinePlan) -> Result<()>;
     /// Whether the guest reported `phase=installed`.
     async fn guest_reported_installed(&self, plan: &MachinePlan) -> bool;
+    /// The partitions the guest reported sealed with `sealed=` (ADR-0112).
+    async fn guest_reported_sealed(&self, plan: &MachinePlan) -> Vec<String>;
     /// Stop listening for the guest.
     async fn stop_report_listener(&self, plan: &MachinePlan);
 
@@ -308,6 +310,10 @@ impl HostOps for RealHost {
 
     async fn guest_reported_installed(&self, plan: &MachinePlan) -> bool {
         self.reports.installed(&plan.uid)
+    }
+
+    async fn guest_reported_sealed(&self, plan: &MachinePlan) -> Vec<String> {
+        self.reports.sealed(&plan.uid)
     }
 
     async fn stop_report_listener(&self, plan: &MachinePlan) {

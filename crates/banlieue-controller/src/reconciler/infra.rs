@@ -728,6 +728,7 @@ pub fn build_cloud_hypervisor_machine(
         tpm_enabled: class.spec.tpm_enabled,
         user_data: rendered_user_data.map(str::to_string),
         desired_power_state: vm.spec.desired_power_state.clone(),
+        first_boot_sealing: first_boot_sealing_for(class, image),
     };
 
     Ok(CloudHypervisorMachine {

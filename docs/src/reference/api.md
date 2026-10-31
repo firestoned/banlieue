@@ -1909,13 +1909,14 @@ provider on the chosen host runs it as a Cloud Hypervisor guest.
 | `cpus` | object | Yes | Virtual CPUs. |
 | `desiredPowerState` | string |  | Desired power state, resolved from the parent `VirtualMachine`. Allowed: `PoweredOn`, `PoweredOff`, `Suspended`. |
 | `failureDomain` | string |  | CAPI contract (optional): failure domain placement. One host is one failure domain on this backend, as on libvirt. |
+| `firstBootSealing` | object |  | First-boot sealing the guest must report before `GuestReady` (ADR-0088, ADR-0112), copied by `banlieue-controller` from the parent `VirtualMachine`'s `VMImage.spec.firstBootSealing` when the class is `tpmEnabled`. The guest reports over its vsock (`sealed=` beside `phase=installed`). `None` for every other machine, which keeps today's `GuestReady` meaning unchanged. |
 | `memory` | object | Yes | Guest memory. |
 | `nics` | object[] | Yes | Network interfaces. |
 | `osDiskSizeGiB` | integer | Yes | OS disk size in GiB. Required, and grown to before first boot; never shrunk. Must be at least the image's size. |
 | `providerID` | string |  | CAPI contract: Provider ID for the resulting Node, if this VM becomes a Kubernetes node. Format: `cloudhypervisor://<provider-name>/<machine-uid>`. Set by the provider once the guest exists. |
 | `providerRef` | object | Yes | The `Provider` for the one host that runs this machine (ADR-0060). |
 | `storageClass` | string | Yes | Storage class the machine's disks live in. A name the host declares in its local config and publishes on its failure domain; never a path. |
-| `tpmEnabled` | boolean |  | Attach a vTPM (swtpm), resolved from the VM's `VMClass.spec.tpmEnabled`. Requires [`ChBootSourceKind::InstallMedia`] (ADR-0040, ADR-0048, ADR-0065). |
+| `tpmEnabled` | boolean |  | Attach a vTPM (swtpm), resolved from the VM's `VMClass.spec.tpmEnabled`. Requires [`ChBootSourceKind::InstallMedia`] (ADR-0040, ADR-0048, ADR-0065), or an image that seals itself on first boot ([`Self::first_boot_sealing`], ADR-0088, ADR-0112). |
 | `userData` | string |  | Guest bootstrap payload, already resolved and placeholder-substituted by `banlieue-controller` (ADR-0025, ADR-0038). Rendered into a NoCloud `CIDATA` seed disk; the provider reads no Secret or ConfigMap. |
 
 #### `.spec.bootSource`
@@ -1935,6 +1936,20 @@ Virtual CPUs.
 | --- | --- | --- | --- |
 | `boot` | integer | Yes | vCPUs the guest boots with. |
 | `max` | integer |  | Hotplug headroom: the most vCPUs the guest may be resized to. Fixed when the VM is created. `None` means no headroom. |
+
+#### `.spec.firstBootSealing`
+
+First-boot sealing the guest must report before `GuestReady`
+(ADR-0088, ADR-0112), copied by `banlieue-controller` from the parent
+`VirtualMachine`'s `VMImage.spec.firstBootSealing` when the class is
+`tpmEnabled`. The guest reports over its vsock (`sealed=` beside
+`phase=installed`). `None` for every other machine, which keeps
+today's `GuestReady` meaning unchanged.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `partitions` | string[] |  | Kairos partition labels to seal on first boot. Defaults to `[COS_PERSISTENT]`. `COS_OEM`, `COS_STATE`, `COS_RECOVERY` and `COS_GRUB` are refused at admission, mirroring Kairos's own refusal. |
+| `timeoutSeconds` | integer |  | Seconds from the machine's power-on (its infrastructure `Ready` transition) within which the guest must report every listed partition sealed; after that `GuestReady` is `False` with reason `FirstBootSealingTimeout`. A clone that cannot seal halts in its initramfs and never reports anything, so this is how it is noticed. |
 
 #### `.spec.memory`
 
@@ -2027,6 +2042,7 @@ backends alike.
 | `installMediaDetached` | boolean |  | Whether the installer has been removed, live and for future starts (ADR-0044, ADR-0065 Decision 4). Sticky once true; `None` when there was never an installer. |
 | `observedGeneration` | integer |  | The `metadata.generation` this status was computed from. |
 | `observedPowerState` | string |  | The VM's last observed run state. Allowed: `PoweredOn`, `PoweredOff`, `Suspended`, `null`. |
+| `sealedPartitions` | string[] |  | Partitions the guest has reported sealed, as LUKS containers, on a first-boot sealing machine (ADR-0088, ADR-0112): from the `sealed=` line of its vsock report. **Sticky**: the report is re-sent every boot, and a powered-off machine has not become unsealed. Empty until reported, and on every machine without `spec.firstBootSealing`. Guest-supplied, so it is only ever used to *withhold* `GuestReady`. |
 | `tpmAttached` | boolean |  | Whether a vTPM was attached, when `spec.tpmEnabled` is set. |
 | `tpmEndorsementCertificates` | string[] |  | PEM EK certificates, validated against this machine (ADR-0045, ADR-0065). |
 
@@ -2096,13 +2112,14 @@ The CloudHypervisorMachine spec for machines created from this template.
 | `cpus` | object | Yes | Virtual CPUs. |
 | `desiredPowerState` | string |  | Desired power state, resolved from the parent `VirtualMachine`. Allowed: `PoweredOn`, `PoweredOff`, `Suspended`. |
 | `failureDomain` | string |  | CAPI contract (optional): failure domain placement. One host is one failure domain on this backend, as on libvirt. |
+| `firstBootSealing` | object |  | First-boot sealing the guest must report before `GuestReady` (ADR-0088, ADR-0112), copied by `banlieue-controller` from the parent `VirtualMachine`'s `VMImage.spec.firstBootSealing` when the class is `tpmEnabled`. The guest reports over its vsock (`sealed=` beside `phase=installed`). `None` for every other machine, which keeps today's `GuestReady` meaning unchanged. |
 | `memory` | object | Yes | Guest memory. |
 | `nics` | object[] | Yes | Network interfaces. |
 | `osDiskSizeGiB` | integer | Yes | OS disk size in GiB. Required, and grown to before first boot; never shrunk. Must be at least the image's size. |
 | `providerID` | string |  | CAPI contract: Provider ID for the resulting Node, if this VM becomes a Kubernetes node. Format: `cloudhypervisor://<provider-name>/<machine-uid>`. Set by the provider once the guest exists. |
 | `providerRef` | object | Yes | The `Provider` for the one host that runs this machine (ADR-0060). |
 | `storageClass` | string | Yes | Storage class the machine's disks live in. A name the host declares in its local config and publishes on its failure domain; never a path. |
-| `tpmEnabled` | boolean |  | Attach a vTPM (swtpm), resolved from the VM's `VMClass.spec.tpmEnabled`. Requires [`ChBootSourceKind::InstallMedia`] (ADR-0040, ADR-0048, ADR-0065). |
+| `tpmEnabled` | boolean |  | Attach a vTPM (swtpm), resolved from the VM's `VMClass.spec.tpmEnabled`. Requires [`ChBootSourceKind::InstallMedia`] (ADR-0040, ADR-0048, ADR-0065), or an image that seals itself on first boot ([`Self::first_boot_sealing`], ADR-0088, ADR-0112). |
 | `userData` | string |  | Guest bootstrap payload, already resolved and placeholder-substituted by `banlieue-controller` (ADR-0025, ADR-0038). Rendered into a NoCloud `CIDATA` seed disk; the provider reads no Secret or ConfigMap. |
 
 ###### `.spec.template.spec.bootSource`
@@ -2122,6 +2139,20 @@ Virtual CPUs.
 | --- | --- | --- | --- |
 | `boot` | integer | Yes | vCPUs the guest boots with. |
 | `max` | integer |  | Hotplug headroom: the most vCPUs the guest may be resized to. Fixed when the VM is created. `None` means no headroom. |
+
+###### `.spec.template.spec.firstBootSealing`
+
+First-boot sealing the guest must report before `GuestReady`
+(ADR-0088, ADR-0112), copied by `banlieue-controller` from the parent
+`VirtualMachine`'s `VMImage.spec.firstBootSealing` when the class is
+`tpmEnabled`. The guest reports over its vsock (`sealed=` beside
+`phase=installed`). `None` for every other machine, which keeps
+today's `GuestReady` meaning unchanged.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `partitions` | string[] |  | Kairos partition labels to seal on first boot. Defaults to `[COS_PERSISTENT]`. `COS_OEM`, `COS_STATE`, `COS_RECOVERY` and `COS_GRUB` are refused at admission, mirroring Kairos's own refusal. |
+| `timeoutSeconds` | integer |  | Seconds from the machine's power-on (its infrastructure `Ready` transition) within which the guest must report every listed partition sealed; after that `GuestReady` is `False` with reason `FirstBootSealingTimeout`. A clone that cannot seal halts in its initramfs and never reports anything, so this is how it is noticed. |
 
 ###### `.spec.template.spec.memory`
 

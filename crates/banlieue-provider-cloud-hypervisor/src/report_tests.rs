@@ -120,4 +120,76 @@ mod tests {
         );
         listeners.stop("m1", &path);
     }
+
+    // ------------------------------------------------ sealed= (ADR-0112)
+
+    #[test]
+    fn a_sealed_line_reports_the_partitions_sealed() {
+        let r = parse_report(b"phase=installed\nsealed=COS_PERSISTENT\n");
+        assert!(r.installed);
+        assert_eq!(r.sealed, vec!["COS_PERSISTENT".to_string()]);
+        let alone = parse_report(b"sealed=COS_PERSISTENT,COS_DATA\n");
+        assert!(!alone.installed, "sealing is not the installed marker");
+        assert_eq!(
+            alone.sealed,
+            vec!["COS_PERSISTENT".to_string(), "COS_DATA".to_string()]
+        );
+    }
+
+    /// Guest-supplied: plain labels only, each once, through the parser
+    /// every provider shares; a prefix or an empty value is no report.
+    #[test]
+    fn the_sealed_line_is_parsed_strictly() {
+        let r = parse_report(b"sealed= COS_PERSISTENT , cos_bad,../x,COS_PERSISTENT\n");
+        assert_eq!(r.sealed, vec!["COS_PERSISTENT".to_string()]);
+        assert!(parse_report(b"sealed=\n").sealed.is_empty());
+        assert!(parse_report(b"xsealed=COS_PERSISTENT\n").sealed.is_empty());
+        assert!(parse_report(b"phase=installed\n").sealed.is_empty());
+        let mut big = b"sealed=COS_PERSISTENT\n".to_vec();
+        big.resize(MAX_REPORT_BYTES + 1, b'x');
+        assert!(
+            parse_report(&big).sealed.is_empty(),
+            "oversized is no report"
+        );
+    }
+
+    /// Reports over separate connections add up, a new partition wakes the
+    /// reconciler, and a repeat does not.
+    #[tokio::test]
+    async fn sealed_reports_accumulate_and_wake_once_per_new_partition() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vsock.sock_1024");
+        let me = crate::sys::effective_uid();
+        let group = crate::sys::effective_gid();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let listeners = Listeners::waking(tx);
+        listeners.ensure("m1", &path, me, group).await.unwrap();
+        assert!(listeners.sealed("m1").is_empty());
+
+        let send = |line: &'static [u8]| {
+            let mut guest = std::os::unix::net::UnixStream::connect(&path).unwrap();
+            guest.write_all(line).unwrap();
+        };
+        send(b"sealed=COS_PERSISTENT\n");
+        let woke = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv()).await;
+        assert_eq!(woke.ok().flatten(), Some(()), "a new partition wakes");
+        send(b"sealed=COS_PERSISTENT\n");
+        send(b"sealed=COS_DATA\n");
+        let woke = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv()).await;
+        assert_eq!(woke.ok().flatten(), Some(()), "another new one wakes");
+        for _ in 0..50 {
+            if listeners.sealed("m1").len() == 2 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert_eq!(
+            listeners.sealed("m1"),
+            vec!["COS_PERSISTENT".to_string(), "COS_DATA".to_string()]
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert!(rx.try_recv().is_err(), "the repeat did not wake it");
+        listeners.stop("m1", &path);
+        assert!(listeners.sealed("m1").is_empty());
+    }
 }

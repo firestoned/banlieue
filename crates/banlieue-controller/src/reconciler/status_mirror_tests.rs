@@ -568,6 +568,7 @@ mod tests {
                 tpm_enabled: false,
                 user_data: None,
                 desired_power_state: PowerState::PoweredOn,
+                first_boot_sealing: None,
             },
             status: Some(CloudHypervisorMachineStatus {
                 initialization: InitializationStatus {

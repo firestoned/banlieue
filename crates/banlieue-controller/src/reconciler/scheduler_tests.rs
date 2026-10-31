@@ -617,10 +617,10 @@ mod tests {
         assert_eq!(decision.failure_domain_name, "fd-a");
     }
 
-    // ---- first-boot sealing on Cloud Hypervisor (ADR-0088 Decision 4) ----
+    // ---- first-boot sealing on Cloud Hypervisor (ADR-0088, ADR-0112) ----
     //
-    // Whether Cloud Hypervisor's vTPM path accepts an Immediate source is
-    // ADR-0088 Open question 2, so a sealing vTPM VM is never placed there.
+    // Once excluded pending ADR-0088 Open question 2; ADR-0112 answers it, so
+    // a sealing vTPM VM is placed on Cloud Hypervisor like any backend.
 
     fn sealing_fixture() -> (VirtualMachine, VMClass, VMImage) {
         let v = vm("db-01", "ns", BTreeMap::new());
@@ -653,9 +653,9 @@ mod tests {
     }
 
     #[test]
-    fn first_boot_sealing_is_not_placed_on_cloud_hypervisor() {
+    fn first_boot_sealing_is_placed_on_cloud_hypervisor() {
         let (v, cls, img) = sealing_fixture();
-        let err = schedule(
+        let decision = schedule(
             &v,
             &cls,
             &img,
@@ -663,20 +663,8 @@ mod tests {
             &[],
             &[],
         )
-        .unwrap_err();
-        assert_eq!(err, ScheduleError::FirstBootSealingUnsupported);
-        assert_eq!(err.reason(), reasons::FIRST_BOOT_SEALING_UNSUPPORTED);
-    }
-
-    #[test]
-    fn first_boot_sealing_skips_cloud_hypervisor_for_another_backend() {
-        let (v, cls, img) = sealing_fixture();
-        let providers = [
-            tpm_provider("ch1", "cloud-hypervisor"),
-            tpm_provider("vc1", "vsphere"),
-        ];
-        let decision = schedule(&v, &cls, &img, &providers, &[], &[]).unwrap();
-        assert_eq!(decision.provider_name, "vc1");
+        .expect("a sealing vTPM VM fits a Cloud Hypervisor provider with vtpm");
+        assert_eq!(decision.provider_name, "ch1");
     }
 
     #[test]

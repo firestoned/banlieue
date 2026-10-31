@@ -156,7 +156,7 @@ mod tests {
     }
 
     #[test]
-    fn the_report_names_every_partition_and_writes_both_channels() {
+    fn the_report_names_every_partition_and_writes_every_channel() {
         let layer = iso_layer(&["COS_PERSISTENT", "COS_DATA"]);
         let script = report_step(&layer)["commands"][0].as_str().unwrap();
         assert!(script.contains("COS_PERSISTENT"));
@@ -164,6 +164,31 @@ mod tests {
         assert!(script.contains("crypto_LUKS"));
         assert!(script.contains(GUESTINFO_SEALED_KEY));
         assert!(script.contains(RUN_SEALED_PATH));
+        assert!(
+            script.contains(VSOCK_NOTIFY_SOCKET),
+            "Cloud Hypervisor channel (ADR-0112)"
+        );
+    }
+
+    /// ADR-0112: Cloud Hypervisor reads a `sealed=` line on the guest's
+    /// vsock report, sent the way the documented images send
+    /// `phase=installed`, and only where a vsock exists, so the step stays a
+    /// no-op on vSphere and libvirt.
+    #[test]
+    fn the_vsock_report_is_a_guarded_sealed_line() {
+        let layer = iso_layer(&["COS_PERSISTENT"]);
+        let script = report_step(&layer)["commands"][0].as_str().unwrap();
+        assert!(
+            script.contains(r#"if [ -e /dev/vsock ]; then"#),
+            "guarded by the vsock device: {script}"
+        );
+        assert!(
+            script.contains(&format!(
+                r#"NOTIFY_SOCKET={VSOCK_NOTIFY_SOCKET} systemd-notify "sealed=$sealed""#
+            )),
+            "{script}"
+        );
+        assert_eq!(VSOCK_NOTIFY_SOCKET, "vsock-stream:2:1024");
     }
 
     #[test]

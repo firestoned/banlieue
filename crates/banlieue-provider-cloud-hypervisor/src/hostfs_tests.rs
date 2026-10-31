@@ -114,6 +114,7 @@ lan = "br0"
             tpm_enabled: tpm,
             user_data: Some("#cloud-config\n".into()),
             desired_power_state: PowerState::PoweredOn,
+            first_boot_sealing: None,
         };
         let plan = plan_machine(UID, MACHINE_NAME, "ch-a", &spec, &config, me).unwrap();
         Host { _root: root, plan }

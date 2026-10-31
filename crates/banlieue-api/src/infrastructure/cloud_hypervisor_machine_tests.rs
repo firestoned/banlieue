@@ -37,6 +37,7 @@ mod tests {
             tpm_enabled: false,
             user_data: None,
             desired_power_state: PowerState::PoweredOn,
+            first_boot_sealing: None,
         }
     }
 
@@ -312,5 +313,36 @@ mod tests {
                 "{kind} lacks the CAPI contract label"
             );
         }
+    }
+
+    // ------------------------------------------------- first-boot sealing (ADR-0112)
+
+    #[test]
+    fn spec_omits_first_boot_sealing_when_absent() {
+        let json = serde_json::to_value(minimal_spec()).unwrap();
+        assert!(!json.as_object().unwrap().contains_key("firstBootSealing"));
+    }
+
+    #[test]
+    fn spec_carries_first_boot_sealing_when_set() {
+        let mut spec = minimal_spec();
+        spec.first_boot_sealing = Some(FirstBootSealing::default());
+        let json = serde_json::to_value(&spec).unwrap();
+        assert_eq!(json["firstBootSealing"]["partitions"][0], "COS_PERSISTENT");
+        assert_eq!(json["firstBootSealing"]["timeoutSeconds"], 600);
+    }
+
+    #[test]
+    fn status_sealed_partitions_omitted_when_empty_and_round_trip() {
+        let empty = serde_json::to_value(CloudHypervisorMachineStatus::default()).unwrap();
+        assert!(!empty.as_object().unwrap().contains_key("sealedPartitions"));
+        let s = CloudHypervisorMachineStatus {
+            sealed_partitions: vec!["COS_PERSISTENT".to_string()],
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&s).unwrap();
+        assert_eq!(json["sealedPartitions"][0], "COS_PERSISTENT");
+        let back: CloudHypervisorMachineStatus = serde_json::from_value(json).unwrap();
+        assert_eq!(back.sealed_partitions, s.sealed_partitions);
     }
 }

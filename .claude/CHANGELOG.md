@@ -1,5 +1,178 @@
 # Changelog
 
+## [2026-10-28 13:45] - ADR-0112 accepted: first-boot sealing verified on Cloud Hypervisor
+
+**Author:** Erick Bourgeois
+
+### Renumbered
+- Rebased onto main 2026-10-30, twice: main merged its own ADR-0110
+  (registry push Job CA bundle, #122) and then ADR-0111 (vSphere clone NICs,
+  #124), so first-boot sealing on Cloud Hypervisor is **ADR-0112**
+  (`docs/adr/0112-first-boot-sealing-on-cloud-hypervisor.md`). Every
+  reference in code comments, CRDs, docs, CALM and the threat model moved
+  with it; main's ADR-0110 and ADR-0111 references are unchanged. The
+  threat-model stamp is 2026-10-30 / ADR-0112: the three parallel passes do
+  not interact.
+
+### Verified live
+- `e2e_pool_claim` (Cloud Hypervisor), `banlieue controller` on a throwaway
+  kind cluster and `banlieue provider cloud-hypervisor` on the host as the
+  provider's user, both built from this branch. `GuestReady` pool,
+  `tpmEnabled` class, `BackingFile` `VMImage` with `firstBootSealing: {}`.
+  Image: Debian 13 + kairos-init v4.4.0, raw from AuroraBoot v0.24.0, its
+  cloud-config rendered by the imagebuilder's `merge_cloud_configs` +
+  `sealing_layer` (user, the CH `phase=installed` stage from example 17, then
+  the sealing layer with the new vsock `sealed=` line).
+- 2 of 2 tests passed, twice. Every member: `spec.firstBootSealing` set by
+  the controller, `status.sealedPartitions: [COS_PERSISTENT]`,
+  `GuestReady=True`. Warm 125 s / 130 s (two members), refill 110 s / 105 s;
+  one `Deferred` CH install was 341 s. Released and collected guests left
+  nothing on the host.
+- No vTPM: a `CloudHypervisorMachine` declaring `firstBootSealing` without a
+  vTPM halted with Kairos's "could not find TPM 2.0 device" and reported
+  `GuestReady=False`, `FirstBootSealingTimeout`. A `tpmEnabled` control on
+  the same 180 s budget sealed in 98 s.
+
+### Fixed
+- `crates/banlieue-provider-cloud-hypervisor/src/reconciler.rs`: the first
+  no-vTPM run timed out 359 s after `Ready` on a 180 s budget, because a
+  running guest with an address requeues every 300 s and a halted clone never
+  sends the report that would wake it. New `sealing_report_due`;
+  `requeue_for` now takes it and requeues on the default 30 s cadence while a
+  report is due, as libvirt does. Re-run: 194 s. Tests in
+  `reconciler_tests.rs`.
+
+### Changed
+- `docs/adr/0112-first-boot-sealing-on-cloud-hypervisor.md`: Accepted, with
+  *Amendment 2026-10-28* (the run, and Decision 4's cadence).
+- `docs/adr/0088-first-boot-sealing-for-immediate-images.md`: the "Cloud
+  Hypervisor stays excluded" bullet and Open question 2 point at the accepted
+  ADR-0112.
+- `docs/src/guides/cloud-hypervisor-host.md`: the Proposed warning becomes
+  the verified result; the timeout row notes the 30 s re-check.
+- `docs/src/security/vtpm-per-provider.md`: CH first-boot sealing row.
+- `docs/architecture/calm/architecture.json`: `first-boot-sealing` control
+  drops a stale "Cloud Hypervisor is excluded" sentence and records the
+  acceptance.
+- `ROADMAPS.md` row 17 and `.github/community/17-ephemeral-vm-pools.md`:
+  Cloud Hypervisor is no longer excluded; timings.
+- Threat model pass: stamp advanced to 2026-10-28 (ADR-0112 Accepted); the
+  halted-clone row cites the re-check. No actor, identity, grant, boundary
+  or accepted risk changes.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-10-27 12:00] - ADR-0112: first-boot sealing on Cloud Hypervisor (Proposed)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0112-first-boot-sealing-on-cloud-hypervisor.md` (Proposed until
+  a sealed `GuestReady` pool warms on a real CH host): answers ADR-0088 Open
+  question 2. A CH `Immediate` clone is the guest's own reflinked or copied
+  `os.raw` with a fresh swtpm, so sealing never writes the cached image; the
+  readback is a `sealed=` line on the ADR-0065 vsock report. ADR-0088's Open
+  question 2 points to it.
+- `crates/banlieue-api`: `CloudHypervisorMachine.spec.firstBootSealing` and
+  `status.sealedPartitions`, as on `LibvirtMachine`/`VSphereMachine`; CRDs and
+  API reference regenerated.
+- `crates/banlieue-provider-cloud-hypervisor`: `report.rs` parses `sealed=`
+  through `banlieue_provider_sdk::sealing::parse_sealed_report` (plain labels,
+  each once, within `MAX_REPORT_BYTES`), keeps the union per machine, and
+  wakes the reconciler on a new partition (`Listeners::sealed`);
+  `HostOps::guest_reported_sealed`; `MachinePlan.first_boot_sealing`;
+  `Observed.sealed`/`now`; `build_status` keeps `sealedPartitions` sticky and
+  gates `GuestReady` with the shared `sealing_gate`
+  (`FirstBootSealingUnverified`, and `FirstBootSealingTimeout` published even
+  when the guest never reported).
+- `crates/banlieue-imagebuilder/src/first_boot_sealing.rs`: the report stage
+  also sends `sealed=` over `VSOCK_NOTIFY_SOCKET` (`vsock-stream:2:1024`),
+  guarded by `/dev/vsock`, so one image reports on all three backends.
+
+### Changed
+- `crates/banlieue-controller`: `build_cloud_hypervisor_machine` copies the
+  image's sealing declaration through `first_boot_sealing_for` (vTPM classes
+  only); the scheduler no longer filters out Cloud Hypervisor for a sealing
+  vTPM VM, and `ScheduleError::FirstBootSealingUnsupported` /
+  `reasons::FIRST_BOOT_SEALING_UNSUPPORTED` are removed (no producer left).
+- Docs: the CH host guide's vTPM section gains "First-boot sealing" (the
+  vsock line, `GuestReady` reasons, a Proposed warning); the vSphere guide
+  drops the `FirstBootSealingUnsupported` entry. CALM: the
+  `first-boot-sealing` control and the CH provider node; ADR-0112 registered.
+- Threat model full pass, stamp 2026-10-27 / ADR-0112 (0108, 0109 Proposed
+  and not implemented; 0110 implemented, Proposed until its live run): A-8,
+  both sealing-report rows, the CH vTPM row, the halted-clone row and §7's
+  sealing requirement now cover the vsock channel.
+
+### Tests
+- API (3), controller (`ch_machine_carries_first_boot_sealing_only_with_a_vtpm`,
+  `first_boot_sealing_is_placed_on_cloud_hypervisor`), CH `report_tests.rs`
+  (3, one on a real socket), `machine_tests.rs` (5), imagebuilder (1 new, 1
+  extended).
+
+### Why
+Cloud Hypervisor, the reference backend, could not run the default secure
+image path ADR-0088 made the default.
+
+### Impact
+- [ ] Breaking change (Kubernetes API additive; `ScheduleError` loses a variant)
+- [x] Requires cluster rollout (CRDs, controller, imagebuilder, CH providers)
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-10-29 12:00] - The registry push Job trusts an operator-named CA bundle (ADR-0110)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0110-registry-push-job-ca-bundle.md`: a registry served by a private CA failed the
+  push Job with `invalid peer certificate: UnknownIssuer`, and nothing in the imagebuilder's
+  configuration could fix it. The imagebuilder now takes `--registry-ca-bundle-config-map` or
+  `--registry-ca-bundle-secret` (exclusive) and `--registry-ca-bundle-key` (default `ca.crt`),
+  env `BANLIEUE_REGISTRY_CA_BUNDLE_{CONFIG_MAP,SECRET,KEY}`.
+- `crates/banlieue-oci/src/tls.rs` (+ `tls_tests.rs`): `http_client(ca_bundle)` adds every
+  certificate in the PEM as a root alongside the public ones, via `from_pem_bundle` and
+  `add_root_certificate` (the vSphere and Proxmox pattern), not via `SSL_CERT_FILE`, whose effect
+  depends on the verifier reqwest's rustls feature set picks. An unreadable or certificate-less
+  bundle fails with its path (it would otherwise leave the client on the public roots). New
+  `Error::Tls`.
+- `crates/banlieue-imagebuilder/src/reconciler/push.rs`: `CaBundleSource`, `CaBundle` (the key is
+  validated at startup: letters, digits, `.`, `_`, `-`, not `.`/`..`, at most 253 bytes, because it
+  becomes a path), `RegistryConfig::with_ca_bundle`. The push Job projects only that key, read-only,
+  at `/var/run/banlieue/registry-ca` and passes `--ca-bundle <path>`. No new RBAC.
+- `oci_push.rs`: `--ca-bundle` on `banlieue imagebuilder push`; `app.rs`: the three flags above,
+  and a key without a bundle is a startup error.
+
+### Changed
+- `docs/architecture/calm/architecture.json`: `rel-imagebuilder-push-registry` describes the CA
+  bundle and gains the `registry-push-trust-anchor` control; `make calm-validate` passes and
+  `make calm-diagrams` ran.
+- `docs/src/guides/using-banlieue-imagebuilder.md`, `cloud-hypervisor-host.md`,
+  `deploy/imagebuilder/configmap.yaml`: the CA bundle settings, and `BANLIEUE_PUSH_IMAGE`, which a
+  cluster that mirrors images must set (the push Job defaults to the public image and sits in
+  `ImagePullBackOff` otherwise). ADR-0064's configuration list points at ADR-0110.
+- `docs/src/security/threat-model.md`: full pass, stamp advanced to ADR-0001…ADR-0110 (see below).
+
+### Why
+The first Cloud Hypervisor VMImage built on a private-CA, image-mirrored cluster built its raw disk
+and then could not push it: first `ImagePullBackOff` (public push image), then `UnknownIssuer`.
+
+### Impact
+- [ ] Requires cluster rollout (imagebuilder image bump to read the new flags; then restart it and
+      recreate any failed push Job)
+- [x] Config change only for installs that need no private CA: unset flags change nothing
+- Follow-up recorded in the ADR: default `--push-image` to the imagebuilder's own image.
+- Dev-dependencies only, for `crates/banlieue-oci/tests/tls_private_ca.rs` (a real TLS handshake:
+  a client without the bundle is refused by a private-CA server, one with it is accepted, and a
+  bundle trusts its own CA and no other): `rcgen` 0.14 (`ring` + `pem`; generates the throwaway CA
+  in the test, so no key is committed; maintained under the rustls org, pulls `pem`, `yasna`,
+  `bit-vec`), `tokio-rustls` 0.26 and `rustls-pki-types` (both already in the lockfile). No new
+  runtime dependency and no native code.
+
 ## [2026-10-30 18:00] - A cloned VM gets one NIC per declared interface (ADR-0111)
 
 **Author:** Erick Bourgeois

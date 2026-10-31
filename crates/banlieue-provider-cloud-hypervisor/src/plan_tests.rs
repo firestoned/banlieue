@@ -72,6 +72,7 @@ lan = "br0"
             tpm_enabled: false,
             user_data: Some("#cloud-config\n".into()),
             desired_power_state: PowerState::PoweredOn,
+            first_boot_sealing: None,
         }
     }
 

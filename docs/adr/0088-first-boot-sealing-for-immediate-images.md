@@ -481,9 +481,10 @@ allow.
 
 **Still true after acceptance.**
 
-- **Cloud Hypervisor stays excluded** (Open question 2): the scheduler does
-  not place a `firstBootSealing` + `tpmEnabled` VM there, so on that backend
-  ADR-0048's refusal is what holds.
+- **Cloud Hypervisor stayed excluded** (Open question 2) until
+  [ADR-0112](0112-first-boot-sealing-on-cloud-hypervisor.md), Accepted
+  2026-10-28, which places a `firstBootSealing` + `tpmEnabled` VM there and
+  reads the report back over vsock.
 - **The Kairos-version gate is still not implemented** (Amendment 2026-10-22,
   B). v4.4.0 is now the version it would name, but the builder still never
   learns the source image's version. An image built on an older Kairos boots
@@ -502,7 +503,12 @@ allow.
    across AuroraBoot build commands. This must be checked against a real raw
    build before acceptance; if it does not hold, the builder writes the layer
    into OEM itself.
-2. **Can Cloud Hypervisor clone an `Immediate` image with a vTPM?** ADR-0065
+2. **Answered by [ADR-0112](0112-first-boot-sealing-on-cloud-hypervisor.md)
+   (Accepted 2026-10-28, verified on a host): yes.** An `Immediate` clone on Cloud
+   Hypervisor is the guest's own reflink or copy of the image with a fresh
+   swtpm, not an overlay on a shared base, and the guest reports its sealed
+   partitions as a `sealed=` line on its vsock report.
+   *Was:* **Can Cloud Hypervisor clone an `Immediate` image with a vTPM?** ADR-0065
    added vTPM for Deferred installs; whether its `os.raw` handling supports a
    shared base is unverified.
 3. **Should the kernel command line route be supported?** Kairos also reads

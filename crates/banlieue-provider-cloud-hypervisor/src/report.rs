@@ -6,11 +6,14 @@
 //! [`REPORT_PORT`] reaches the Unix socket `<vsock socket>_<port>` in its run
 //! directory, where the provider listens. The installed system's boot stage
 //! connects and writes `phase=installed`; the provider sends nothing back.
+//! A first-boot sealing image also writes `sealed=<partitions>` (ADR-0112),
+//! the partitions it found to be LUKS containers.
 //!
 //! Everything received is untrusted: at most [`MAX_REPORT_BYTES`], read
-//! with a timeout, and only an exact `phase=installed` line counts. Other
-//! lines (an image may still send its EK certificate, which this provider
-//! reads host-side instead) are ignored. A guest can only claim its *own*
+//! with a timeout; only an exact `phase=installed` line counts, and a
+//! `sealed=` line is parsed by the provider SDK's strict parser, the one
+//! libvirt and vSphere use. Other lines (an image may still send its EK
+//! certificate, which this provider reads host-side instead) are ignored. A guest can only claim its *own*
 //! installation: the socket is in its run directory and nobody else's.
 //!
 //! The listening socket is created by the provider and handed to the
@@ -28,6 +31,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use banlieue_provider_sdk::sealing::{parse_sealed_report, sticky_sealed_partitions};
 use tokio::io::AsyncReadExt;
 use tokio::net::UnixListener;
 use tokio::task::JoinHandle;
@@ -42,14 +46,19 @@ pub const MAX_REPORT_BYTES: usize = 16 * 1024;
 const READ_TIMEOUT: Duration = Duration::from_secs(10);
 /// The one line that means "the installed system booted".
 const INSTALLED_LINE: &str = "phase=installed";
+/// The prefix of the line listing the partitions found sealed (ADR-0112).
+const SEALED_PREFIX: &str = "sealed=";
 /// The listening socket: the guest (owner) and the provider (group).
 const SOCKET_MODE: u32 = 0o660;
 
 /// What a guest reported.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Report {
     /// The installed system booted (ADR-0043's marker).
     pub installed: bool,
+    /// Partitions reported sealed, plain labels in report order, each once
+    /// (ADR-0088 Decision 5, ADR-0112). Empty when none was reported.
+    pub sealed: Vec<String>,
 }
 
 /// Parse one connection's bytes. Oversized or non-UTF-8 input is no report.
@@ -61,14 +70,21 @@ pub fn parse_report(bytes: &[u8]) -> Report {
     let Ok(text) = std::str::from_utf8(bytes) else {
         return Report::default();
     };
-    Report {
-        installed: text.lines().any(|l| l.trim() == INSTALLED_LINE),
+    let mut report = Report::default();
+    for line in text.lines().map(str::trim) {
+        if line == INSTALLED_LINE {
+            report.installed = true;
+        } else if let Some(value) = line.strip_prefix(SEALED_PREFIX) {
+            report.sealed = sticky_sealed_partitions(&report.sealed, &parse_sealed_report(value));
+        }
     }
+    report
 }
 
 struct Entry {
     task: JoinHandle<()>,
     installed: Arc<AtomicBool>,
+    sealed: Arc<Mutex<Vec<String>>>,
 }
 
 /// Sent when a guest first reports, so the machine reconciler runs now
@@ -126,16 +142,18 @@ impl Listeners {
         let listener = UnixListener::bind(path)?;
         hand_to_guest(path, guest_uid, group)?;
 
-        let installed = self
-            .lock()
-            .get(key)
-            .map_or_else(|| Arc::new(AtomicBool::new(false)), |e| e.installed.clone());
+        let (installed, sealed) = self.lock().get(key).map_or_else(
+            || (Arc::new(AtomicBool::new(false)), Arc::default()),
+            |e| (e.installed.clone(), e.sealed.clone()),
+        );
         let heard = installed.clone();
+        let heard_sealed = sealed.clone();
         let name = key.to_string();
         let wake = self.wake.clone();
         let task = tokio::spawn(async move {
             while let Ok((mut stream, _)) = listener.accept().await {
                 let heard = heard.clone();
+                let heard_sealed = heard_sealed.clone();
                 let name = name.clone();
                 let wake = wake.clone();
                 tokio::spawn(async move {
@@ -150,21 +168,33 @@ impl Listeners {
                         debug!(machine = %name, "guest report connection dropped");
                         return;
                     }
-                    if parse_report(&buf).installed && !heard.swap(true, Ordering::SeqCst) {
+                    let report = parse_report(&buf);
+                    let newly_installed = report.installed && !heard.swap(true, Ordering::SeqCst);
+                    if newly_installed {
                         info!(machine = %name, "guest reported phase=installed");
-                        // A closed channel means the controller is gone;
-                        // the periodic pass is all that is left.
-                        if let Some(wake) = wake {
-                            let _ = wake.send(());
-                        }
+                    }
+                    let newly_sealed = merge_sealed(&heard_sealed, &report.sealed);
+                    if newly_sealed {
+                        info!(machine = %name, sealed = ?report.sealed, "guest reported sealed partitions");
+                    }
+                    // A closed channel means the controller is gone; the
+                    // periodic pass is all that is left.
+                    if (newly_installed || newly_sealed)
+                        && let Some(wake) = wake
+                    {
+                        let _ = wake.send(());
                     }
                 });
             }
         });
-        if let Some(old) = self
-            .lock()
-            .insert(key.to_string(), Entry { task, installed })
-        {
+        if let Some(old) = self.lock().insert(
+            key.to_string(),
+            Entry {
+                task,
+                installed,
+                sealed,
+            },
+        ) {
             old.task.abort();
         }
         Ok(())
@@ -179,6 +209,18 @@ impl Listeners {
             .is_some_and(|e| e.installed.load(Ordering::SeqCst))
     }
 
+    /// The partitions machine `key`'s guest has reported sealed since this
+    /// provider started listening, in the order first reported (ADR-0112).
+    #[must_use]
+    pub fn sealed(&self, key: &str) -> Vec<String> {
+        self.lock().get(key).map_or_else(Vec::new, |e| {
+            e.sealed
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+        })
+    }
+
     /// Stop listening for `key` and remove its socket.
     pub fn stop(&self, key: &str, path: &Path) {
         if let Some(e) = self.lock().remove(key) {
@@ -186,6 +228,20 @@ impl Listeners {
         }
         let _ = fs::remove_file(path);
     }
+}
+
+/// Fold `reported` into `heard`; `true` when it added a partition.
+fn merge_sealed(heard: &Mutex<Vec<String>>, reported: &[String]) -> bool {
+    if reported.is_empty() {
+        return false;
+    }
+    let mut heard = heard
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let merged = sticky_sealed_partitions(&heard, reported);
+    let added = merged.len() > heard.len();
+    *heard = merged;
+    added
 }
 
 /// Give the socket just bound at `path` to the guest: opened `O_PATH |

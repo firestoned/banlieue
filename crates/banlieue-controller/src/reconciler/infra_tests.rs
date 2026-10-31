@@ -1474,6 +1474,30 @@ mod tests {
         build_cloud_hypervisor_machine(vm, class, image, &ch_decision(), &ch_provider(), None)
     }
 
+    /// ADR-0112: the CH machine carries the image's sealing declaration
+    /// exactly as the vSphere and libvirt ones do: only with a vTPM.
+    #[test]
+    fn ch_machine_carries_first_boot_sealing_only_with_a_vtpm() {
+        use banlieue_api::banlieue::InstallMode;
+        let mut image = ch_image(InstallMode::Immediate);
+        image.spec.first_boot_sealing = Some(banlieue_api::common::FirstBootSealing::default());
+
+        let mut class = parent_class();
+        class.spec.tpm_enabled = true;
+        let m = build_ch(&parent_vm(), &class, &image).expect("ok");
+        assert_eq!(
+            m.spec.first_boot_sealing,
+            Some(banlieue_api::common::FirstBootSealing::default())
+        );
+        assert!(m.spec.tpm_enabled);
+
+        let m = build_ch(&parent_vm(), &parent_class(), &image).expect("ok");
+        assert!(
+            m.spec.first_boot_sealing.is_none(),
+            "no vTPM, nothing to seal to"
+        );
+    }
+
     #[test]
     fn ch_happy_path_populates_every_required_field() {
         use banlieue_api::banlieue::InstallMode;

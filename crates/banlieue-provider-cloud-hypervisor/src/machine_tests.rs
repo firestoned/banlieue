@@ -76,6 +76,7 @@ lan = "br0"
             tpm_enabled: false,
             user_data: Some("#cloud-config\nhostname: db-01\n".into()),
             desired_power_state: PowerState::PoweredOn,
+            first_boot_sealing: None,
         }
     }
 
@@ -933,5 +934,175 @@ lan = "br0"
         pass(&h, &plan, &PowerState::PoweredOn).await;
         teardown(&h, &plan).await.unwrap();
         assert!(!h.state.lock().unwrap().listening.contains(&plan.uid));
+    }
+
+    // ------------------------------------------------------------------
+    // First-boot sealing readback (ADR-0088 Decision 5, ADR-0112)
+    // ------------------------------------------------------------------
+
+    /// A `tpmEnabled` machine booting an `Immediate` image that seals itself.
+    fn sealing_plan() -> MachinePlan {
+        let mut s = spec();
+        s.tpm_enabled = true;
+        s.first_boot_sealing = Some(banlieue_api::common::FirstBootSealing::default());
+        plan_machine(UID, MACHINE_NAME, "ch-a", &s, &tpm_config(), HOST_UID).unwrap()
+    }
+
+    /// A previous status whose `Ready` turned True at `second`.
+    fn ready_since(second: i64) -> banlieue_api::infrastructure::CloudHypervisorMachineStatus {
+        let mut st = banlieue_api::infrastructure::CloudHypervisorMachineStatus::default();
+        st.conditions
+            .push(k8s_openapi::apimachinery::pkg::apis::meta::v1::Condition {
+                type_: "Ready".into(),
+                status: "True".into(),
+                reason: "GuestRunning".into(),
+                message: String::new(),
+                last_transition_time: k8s_openapi::apimachinery::pkg::apis::meta::v1::Time(
+                    k8s_openapi::jiff::Timestamp::from_second(second).unwrap(),
+                ),
+                observed_generation: Some(1),
+            });
+        st
+    }
+
+    fn running(installed: bool, sealed: &[&str], now: i64) -> Observed {
+        Observed {
+            phase: Phase::Running,
+            ek_certificates: vec!["pem".into()],
+            guest_installed: installed,
+            sealed: sealed.iter().map(|p| (*p).to_string()).collect(),
+            now: k8s_openapi::jiff::Timestamp::from_second(now).unwrap(),
+            ..Observed::default()
+        }
+    }
+
+    /// Announced but not sealed is not ready; sealed and announced is.
+    #[test]
+    fn a_sealing_guest_is_unverified_until_it_reports_its_partitions() {
+        let plan = sealing_plan();
+        let st = build_status(
+            Some(&ready_since(1_000)),
+            &running(true, &[], 1_010),
+            &plan,
+            "ch-a",
+            1,
+        );
+        assert_eq!(
+            guest_ready(&st),
+            Some(("False".into(), "FirstBootSealingUnverified".into()))
+        );
+        let st = build_status(
+            Some(&st),
+            &running(true, &["COS_PERSISTENT"], 1_020),
+            &plan,
+            "ch-a",
+            1,
+        );
+        assert_eq!(st.sealed_partitions, vec!["COS_PERSISTENT".to_string()]);
+        assert_eq!(
+            guest_ready(&st),
+            Some(("True".into(), "GuestAnnounced".into()))
+        );
+    }
+
+    /// A stopped or rebooting guest has not become unsealed.
+    #[test]
+    fn sealed_partitions_are_sticky() {
+        let plan = sealing_plan();
+        let mut previous = ready_since(1_000);
+        previous.sealed_partitions = vec!["COS_PERSISTENT".into()];
+        previous.guest_installed = Some(true);
+        let st = build_status(
+            Some(&previous),
+            &running(false, &[], 1_100),
+            &plan,
+            "ch-a",
+            1,
+        );
+        assert_eq!(st.sealed_partitions, vec!["COS_PERSISTENT".to_string()]);
+        assert_eq!(
+            guest_ready(&st),
+            Some(("True".into(), "GuestAnnounced".into()))
+        );
+    }
+
+    /// A clone that cannot seal halts in its initramfs and says nothing:
+    /// past the deadline, GuestReady is published False anyway.
+    #[test]
+    fn a_silent_sealing_guest_times_out() {
+        let plan = sealing_plan();
+        let timeout = i64::from(banlieue_api::common::FirstBootSealing::default().timeout_seconds);
+        let before = build_status(
+            Some(&ready_since(1_000)),
+            &running(false, &[], 1_000 + timeout),
+            &plan,
+            "ch-a",
+            1,
+        );
+        assert!(
+            guest_ready(&before).is_none(),
+            "nothing to say before the deadline"
+        );
+        let after = build_status(
+            Some(&ready_since(1_000)),
+            &running(false, &[], 1_001 + timeout),
+            &plan,
+            "ch-a",
+            1,
+        );
+        assert_eq!(
+            guest_ready(&after),
+            Some(("False".into(), "FirstBootSealingTimeout".into()))
+        );
+    }
+
+    /// A machine that does not seal ignores the line entirely.
+    #[test]
+    fn a_machine_without_sealing_ignores_sealed_reports() {
+        let plan = tpm_plan();
+        let st = build_status(
+            None,
+            &running(true, &["COS_PERSISTENT"], 1_000),
+            &plan,
+            "ch-a",
+            1,
+        );
+        assert!(st.sealed_partitions.is_empty());
+        assert_eq!(
+            guest_ready(&st),
+            Some(("True".into(), "GuestAnnounced".into()))
+        );
+    }
+
+    /// Converge until the guest runs. A vTPM machine takes several passes,
+    /// and its `swtpm_setup` finishes on its own time, as on a real host.
+    async fn run_until_running(h: &FakeHost, plan: &MachinePlan) -> Observed {
+        for i in 0..10 {
+            let o = pass(h, plan, &PowerState::PoweredOn).await;
+            if i == 0 && plan.tpm.is_some() {
+                h.finish_tpm_setup(plan);
+            }
+            if o.phase == Phase::Running {
+                return o;
+            }
+        }
+        panic!("the machine never reached Running");
+    }
+
+    /// The host is asked for the report only for a sealing machine.
+    #[tokio::test]
+    async fn converge_reads_the_sealed_report_for_sealing_machines_only() {
+        let plan = sealing_plan();
+        let h = host(&plan);
+        h.guest_reports_sealed(&plan, &["COS_PERSISTENT"]);
+        let o = run_until_running(&h, &plan).await;
+        assert_eq!(o.sealed, vec!["COS_PERSISTENT".to_string()]);
+        assert!(o.now.as_second() > 0, "the pass stamps its own time");
+
+        let plain = tpm_plan();
+        let h = host(&plain);
+        h.guest_reports_sealed(&plain, &["COS_PERSISTENT"]);
+        let o = run_until_running(&h, &plain).await;
+        assert!(o.sealed.is_empty());
     }
 }

@@ -203,6 +203,9 @@ pub struct MachinePlan {
     pub tpm: Option<TpmPlan>,
     /// Create the OS disk empty (`Deferred`) rather than from the image.
     pub empty_os_disk: bool,
+    /// The partitions the guest must report sealed before `GuestReady`
+    /// (ADR-0088, ADR-0112); `None` for a machine that does not seal.
+    pub first_boot_sealing: Option<banlieue_api::common::FirstBootSealing>,
     /// Where the provider listens for the guest's report: the vsock socket
     /// with `_<port>` appended, which is where a guest's connection to that
     /// host port lands.
@@ -369,6 +372,7 @@ pub fn plan_machine(
         guest,
         tpm,
         empty_os_disk,
+        first_boot_sealing: spec.first_boot_sealing.clone(),
         report_socket,
     })
 }
