@@ -706,6 +706,19 @@ ch-vtpm-e2e: ## Cloud Hypervisor: tpmEnabled machine -> own swtpm, host-minted E
 	cargo test -p banlieue-provider-cloud-hypervisor --test e2e_vtpm -- \
 	  --ignored --nocapture --test-threads=1
 
+ch-sealing-isolation-e2e: ## Cloud Hypervisor: a sealed member's disk does not unlock under another vTPM, and still does under its own (ON THE HOST, as root, never CI)
+	@# Roadmap 18 invariant 2 (tests/e2e_sealing_isolation.rs module docs):
+	@# the image needs the console probe stage named there. Builds as you;
+	@# only the test binary runs through sudo, because it reads serial logs
+	@# and copies a guest's disk into the image cache.
+	@test -n "$$BANLIEUE_E2E_PROVIDER" -a -n "$$BANLIEUE_E2E_IMAGE" -a -n "$$BANLIEUE_E2E_CLASS" -a -n "$$BANLIEUE_E2E_STORAGE_DIR" -a -n "$$KUBECONFIG" || { \
+	  echo "Set KUBECONFIG, BANLIEUE_E2E_PROVIDER, BANLIEUE_E2E_IMAGE, BANLIEUE_E2E_CLASS"; \
+	  echo "and BANLIEUE_E2E_STORAGE_DIR (see tests/e2e_sealing_isolation.rs)."; \
+	  exit 1; }
+	CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER="sudo --preserve-env=KUBECONFIG,BANLIEUE_E2E_PROVIDER,BANLIEUE_E2E_IMAGE,BANLIEUE_E2E_CLASS,BANLIEUE_E2E_STORAGE_DIR,BANLIEUE_E2E_NAMESPACE,BANLIEUE_E2E_RUN_ROOT" \
+	  cargo test -p banlieue-provider-cloud-hypervisor --test e2e_sealing_isolation -- \
+	  --ignored --nocapture --test-threads=1
+
 ch-deferred-e2e: ## Cloud Hypervisor: tpmEnabled Deferred install -> sealed, reported, installer ejected -> delete leaves nothing (ON THE HOST, as root, never CI)
 	@# Creates a CloudHypervisorMachine directly (tests/e2e_deferred.rs
 	@# module docs). Builds as you; only the test binary runs through sudo,

@@ -96,7 +96,10 @@ Where the 108 s goes, for a typical member:
 
 - **The install is 70 % of the time** and is all the guest's own work:
   writing the image, creating and sealing the LUKS volume, and a reboot. The
-  provider cannot shorten it. Roadmap 18's split-image clone is the lever.
+  provider cannot shorten it. First-boot sealing (ADR-0112, 2026-10-28) has
+  since removed the install for an `Immediate` image: a sealed pool of two
+  warms in 125 s, a recovery boot, a reset and a second boot. Roadmap 18
+  phase C is what is left.
 - **About 9 s of the first 10 s is pacing, not work.** The provider advances
   one step per reconcile pass (manufacture, then swtpm, then the VMM), and
   passes are about 3 s apart; the steps themselves take well under a second.

@@ -24,7 +24,7 @@ This directory holds the roadmap docs for building banlieue.
 | 15 | `15-vsphere-disk-image-import.md` | vSphere import from a raw disk as VMDK, next to the ISO path; first-party VMDK writer | Before touching `import.rs` or `BuildArtifactKind`; read ADR-0010, 0020, 0021, 0040 first |
 | 16 | `16-scorecard-remediation.md` | OSSF Scorecard: what to click, and which checks are deliberately capped | Before touching repo settings or "fixing" a Scorecard alert |
 | 17 | `17-ephemeral-vm-pools.md` | `VirtualMachinePool` + `VirtualMachineClaim`: warm, never-reused, TPM-sealed single-use VMs | Largest open initiative; read after 07 (libvirt is its first live target) |
-| 18 | `18-split-image-fast-clone.md` | Fast disk cloning with encryption: verified (dm-verity) shared base + per-VM LUKS volume sealed at first boot to a fresh vTPM; no memory forking (ADR-0052 stands) | After 17 (its first consumer); read ADR-0040, 0045, 0048, 0052 first; phase D also needs 15 |
+| 18 | `18-fast-sealed-clones.md` | Fast sealed clones: prove no member's sealed disk opens under another's vTPM, cut clone → `GuestReady` to seconds, verify the base; no memory forking (ADR-0052 stands) | After 17 (its first consumer); read ADR-0052, 0088 and 0112 first; phase C's split option needs 15 |
 | 19 | `19-port-groups.md` | Declared port groups: `VMNetwork` realized per backend (vSphere DVPortgroup, libvirt network, Proxmox SDN VNet, CH bridge VLAN), VLAN allowlist, ownership + in-use safety | Before touching network-class resolution; read ADR-0019, 0030, 0031, 0032 first |
 
 Status for every row above lives in [`ROADMAPS.md`](../../ROADMAPS.md) at the
@@ -71,7 +71,7 @@ Phase 1A (controller + SDK)  ✅
    17 (ephemeral VM pools)   🔶   phases A, B, D, F and G landed; live vSphere claim run, upstream CH vTPM fix, phase E (Proxmox) left
          │
          ▼
-   18 (split-image fast clone) ⛔ after 17; phase D needs 15; phases E/F build on 1C/1F
+   18 (fast sealed clones)   🔶   phase A via ADR-0088/0112; isolation test green on CH; boot speed, verified base, Proxmox left
 
    19 (port groups)          ⛔   after 1B/1D; phase E builds on 1C/1F
 ```
