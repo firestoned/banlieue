@@ -1,5 +1,36 @@
 # Changelog
 
+## [2026-11-01 01:30] - ADR-0113 Open question 1: COS_PERSISTENT does not grow
+
+**Author:** Erick Bourgeois
+
+### Verified live
+- An image pre-laid at 20 GiB (`scripts/prelay-kairos-raw.sh`) cloned on
+  Cloud Hypervisor with a 40 GiB and a 20 GiB class: both sealed and
+  unlocked, and both kept a 13.1 GB `persistent` partition; the 40 GiB
+  clone's extra 20 GiB is unused (its GPT still describes 20 GiB).
+- A first-boot grow stage (Kairos layout `expand_partition` on
+  `COS_PERSISTENT`) was tried three ways and rejected: it rewrote the
+  partition without growing it and dropped its partition label; the
+  initramfs has no `sfdisk` to relocate the backup GPT header; and its
+  plaintext guard did not hold on the second boot. Not added to the script.
+
+### Changed
+- `docs/adr/0113-pre-laid-images-for-fast-sealed-clones.md`: *Amendment:
+  one disk size*; Decision 4 is the rule (pre-lay at the class's disk size;
+  the CH provider already refuses an image larger than the disk, in
+  `hostfs.rs`); the two ways to lift it are recorded, undecided.
+- `.github/community/18-fast-sealed-clones.md` phase C and
+  `docs/src/guides/cloud-hypervisor-host.md`: the answer.
+- Threat model: no change; nothing shipped alters a boundary (the rejected
+  grow stage would have).
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
 ## [2026-10-31 20:00] - ADR-0113 (Proposed): pre-laid images; sealed clones in 39 s instead of 106 s
 
 **Author:** Erick Bourgeois

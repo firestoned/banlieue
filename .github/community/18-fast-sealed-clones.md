@@ -197,8 +197,13 @@ layout is an ADR.
 - [ ] **The imagebuilder pre-lays `Url` images** (ADR-0113 Decision 3): a
       build step after AuroraBoot, in a builder image carrying QEMU, OVMF,
       e2fsprogs and gdisk, with `/dev/kvm`.
-- [ ] **Does `COS_PERSISTENT` grow on a larger clone disk?** (ADR-0113 Open
-      question 1.)
+- [x] **Does `COS_PERSISTENT` grow on a larger clone disk?** No
+      (2026-10-31, ADR-0113 *Amendment: one disk size*): a 20 GiB pre-laid
+      image cloned to a 40 GiB disk keeps a 13.1 GB `persistent`, the rest
+      unused. A first-boot grow stage was tried and rejected (no `sfdisk` in
+      the initramfs, the layout tool dropped the partition label without
+      growing it, and its plaintext guard did not hold). Pre-lay at the
+      class's disk size.
 - [ ] **The next levers to 30 s.** What remains of 39 s: provider 5 s, **9 s
       from the VMM starting to the firmware handing over to GRUB** (Cloud
       Hypervisor's firmware, possibly the prototype VMM's vTPM polling),

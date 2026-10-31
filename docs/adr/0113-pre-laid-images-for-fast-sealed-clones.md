@@ -7,6 +7,8 @@ SPDX-License-Identifier: Apache-2.0
 - **Status:** Proposed
 - **Date:** 2026-10-31
 - **Deciders:** Erick Bourgeois
+- **Amended:** 2026-10-31 (Open question 1 answered: `COS_PERSISTENT`
+  does not grow; Decision 4 is the rule; see *Amendment: one disk size*)
 - **Related:** Roadmap 18 phase C (the measurement this acts on); builds on
   [ADR-0088](0088-first-boot-sealing-for-immediate-images.md) and
   [ADR-0112](0112-first-boot-sealing-on-cloud-hypervisor.md) (first-boot
@@ -99,9 +101,14 @@ disable automatic fallback.
    `BackingFile` images on any KVM host; the imagebuilder runs the same
    steps as a build step after AuroraBoot, in a follow-up that needs a
    builder image carrying QEMU, OVMF, e2fsprogs and gdisk.
-4. **A pre-laid image is laid out for one disk size.** `COS_PERSISTENT`
-   fills the disk it was laid out on. A clone's disk must be at least that
-   size.
+4. **A pre-laid image is laid out for one disk size; pre-lay at the
+   clones' disk size.** `COS_PERSISTENT` fills the disk it was laid out on
+   and does not grow on a larger clone disk (*Amendment: one disk size*). A
+   clone's disk must be at least the image's size; the Cloud Hypervisor
+   provider already refuses an image larger than the requested disk
+   (`crates/banlieue-provider-cloud-hypervisor/src/hostfs.rs`,
+   `ensure_os_disk`). A larger disk works but its extra space is unused, so
+   a class with a different disk size needs its own pre-laid image.
 5. **The Cloud Hypervisor provider requeues a VMM start step after 1 s, not
    3 s.** Each step (manufacture, swtpm, VMM unit, API socket) is well under
    a second of work.
@@ -109,7 +116,7 @@ disable automatic fallback.
 **Accept when:** the imagebuilder pre-lays a `Url` image end to end; a
 `GuestReady` pool of a pre-laid image warms on Cloud Hypervisor and libvirt;
 `make ch-sealing-isolation-e2e` is green against a pre-laid image (met
-2026-10-31, below); and Open question 1 is answered.
+2026-10-31, below); and Open question 1 is answered (met 2026-10-31: no).
 
 ## Measured (2026-10-31, before acceptance)
 
@@ -148,10 +155,8 @@ used.
 
 ## Open questions
 
-1. **Does `COS_PERSISTENT` grow on a larger clone disk?** Kairos's layout
-   stage expands the last partition in recovery; whether the active boot of
-   a pre-laid clone does the same for a disk larger than the image is
-   unverified. Until it is, Decision 4 is the rule.
+1. **Does `COS_PERSISTENT` grow on a larger clone disk?** Answered: **no**
+   (*Amendment: one disk size*).
 2. **Stages bound to the reset** (`before-reset`, `after-reset`,
    `after-reset-chroot`) no longer run on a pre-laid clone, and Decision 1
    keeps them from running at build time. An image that relies on them must
@@ -175,3 +180,36 @@ used.
 - Reset-time stages stop running on clones (Open question 2).
 - The ≤ 30 s target of roadmap 18 is not met by this ADR alone; the next
   levers are the firmware's 9 s and the active boot.
+
+## Amendment: one disk size (2026-10-31)
+
+**Open question 1 is answered: `COS_PERSISTENT` does not grow.** An image
+pre-laid at 20 GiB was cloned on Cloud Hypervisor (v0.4.8) with a 40 GiB and
+a 20 GiB class. Both sealed and unlocked; the provider grew the 40 GiB
+clone's `os.raw` to 40 GiB, and inside the guest the partition table was
+identical on both: `persistent` 13.1 GB, its filesystem 12.8 GB, the extra
+20 GiB unused. The GPT still describes the 20 GiB disk, its backup header at
+the old end.
+
+Making the guest grow the partition on its first boot was tried and **is not
+adopted**:
+
+- a Kairos layout stage (`rootfs.before`, `expand_partition: size: 0` on
+  `COS_PERSISTENT`) **rewrote partition 5 without growing it and dropped its
+  `persistent` partition label**: the layout tool expands to the end the GPT
+  describes;
+- relocating the backup GPT header first needs `sfdisk` (or `sgdisk`), and
+  the installed system's initramfs has neither (exit 127);
+- the guard meant to keep the stage away from a sealed partition (`blkid`
+  reporting `crypto_LUKS`) **did not hold in that stage**: the stage ran
+  again on the clone's second boot, against the sealed partition. It changed
+  nothing there, but a partition-table rewrite on every boot of a sealed disk
+  is the opposite of what this ADR is for.
+
+So Decision 4 is the rule: pre-lay at the clones' disk size. Two ways to lift
+it remain, neither decided: the builder pre-lays one image per class disk
+size (cheap, a build per size); or the provider relocates the backup GPT
+header when it grows a fresh clone's `os.raw`, before first boot (the disk is
+still a pristine copy then, but the provider would be parsing an
+image-controlled partition table on the host, a new trust boundary that
+needs its own ADR).
