@@ -943,8 +943,10 @@ three minutes.
 
 What changes for you:
 
-- The image is laid out for one disk size. Give the clones' class
-  (`hardware.disks[0].sizeGiB`) at least the size you pre-laid for.
+- The image is laid out for one disk size, and `COS_PERSISTENT` does not
+  grow on a larger disk. Pre-lay at the clones' class disk size
+  (`hardware.disks[0].sizeGiB`): a smaller disk is refused, and a larger one
+  works but its extra space goes unused.
 - It is 20 GiB apparent but sparse (about 3.3 GiB of data); copy it with
   `cp --sparse=always`, as above.
 - Stages bound to the reset (`before-reset`, `after-reset`,
