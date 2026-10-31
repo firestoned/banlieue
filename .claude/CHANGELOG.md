@@ -1,5 +1,35 @@
 # Changelog
 
+## [2026-10-31 17:30] - Roadmap 18 phase C: where a sealed clone's boot time goes
+
+**Author:** Erick Bourgeois
+
+### Measured
+- Three sealed VMs, one at a time, on one Cloud Hypervisor host, banlieue
+  v0.4.8, `ch-tpm` class, the ADR-0112 test image plus a test-only layer that
+  prints a marker to `ttyS0` at every Kairos stage; a host-side sampler
+  stamped each serial line. Creation to `GuestReady=True`: 106, 108, 105 s,
+  every step within 2 s across runs. Recovery path (GRUB, recovery boot,
+  reset, reboot) 57.8 s (54 %); GRUB's menu countdown 10.3 s on each boot
+  (19 %); provider 8 s (mostly reconcile pacing); active boot 22 s, with
+  first-boot sealing inside a 7.9 s window that is shorter than the same
+  window in the recovery boot.
+
+### Changed
+- `.github/community/18-fast-sealed-clones.md`: phase C's measurement
+  ticked with the breakdown table; the candidates ranked by measured worth
+  (GRUB timeout 0 about −20 s; a pre-laid-partition raw image to about 49 s
+  alone, 39 s with it, an ADR; one-pass provider pacing about −5 s; all
+  three about 34 s). The split model stays parked: it saves nothing over the
+  pre-laid image for boot time.
+- `ROADMAPS.md` row 18: the measurement.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
 ## [2026-10-31 02:30] - Roadmap 18 rewritten; cross-member sealing isolation proven on Cloud Hypervisor
 
 **Author:** Erick Bourgeois
