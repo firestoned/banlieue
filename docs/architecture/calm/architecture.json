@@ -3127,6 +3127,23 @@
         }
       ]
     },
+    "pre-laid-images": {
+      "description": "ADR-0113 (Proposed). A sealed pool image may be pre-laid: the Kairos recovery reset that every clone of a raw image otherwise runs on its first boot is done once, at build time, and the result is the image. scripts/prelay-kairos-raw.sh boots the raw image once under QEMU with -no-reboot, KVM, no TPM and no network device, with COS_OEM holding only AuroraBoot's 01_reset.yaml and a throwaway admin user whose random password is never stored, so no operator stage and no kcrypt section runs at build time and nothing is sealed; it refuses the result unless COS_STATE holds cOS/active.img, no partition is LUKS and the console shows no boot failure; it then gives COS_PERSISTENT a fresh empty filesystem (the build boot's logs and machine-id go with the old one), restores the image's own cloud-configs (01_reset.yaml stays gone, so a clone never resets), sets GRUB's menu timeout to 0 in COS_OEM's grubenv (not a grubcustom, which would shadow Kairos's boot-assessment hook on COS_STATE), and refuses the result unless COS_PERSISTENT is empty. Each clone boots once into the active system and seals COS_PERSISTENT to its own vTPM. The builder pre-lays, never the host, so a host runs the bytes that were built and pinned by digest (ADR-0064). The Cloud Hypervisor provider requeues a VMM start step after 1 s. Measured: a sealed clone reaches GuestReady in 39.3 s instead of 106.3 s, and the cross-member isolation test is green against a pre-laid image.",
+      "requirements": [
+        {
+          "requirement-url": "https://github.com/firestoned/banlieue/blob/main/docs/adr/0113-pre-laid-images-for-fast-sealed-clones.md",
+          "config": {
+            "framework": "NIST SP 800-53 Rev. 5",
+            "controls": [
+              "SC-28",
+              "SI-7",
+              "CM-6"
+            ],
+            "evidence": "docs/adr/0113-pre-laid-images-for-fast-sealed-clones.md, scripts/prelay-kairos-raw.sh, scripts/prelay-kairos-raw-test.sh, crates/banlieue-provider-cloud-hypervisor/src/reconciler.rs (REQUEUE_TRANSITION), crates/banlieue-provider-cloud-hypervisor/tests/e2e_sealing_isolation.rs"
+          }
+        }
+      ]
+    },
     "vm-resource-accounting": {
       "description": "IMPLEMENTED (ADR-0105, ADR-0106): every Cloud Hypervisor VM a banlieue component runs is under banlieue.slice. Guests (banlieue-ch@, banlieue-swtpm@) are in banlieue-guests.slice, set in the root-owned templates and budgeted by the operator's declared `install --guest-*` flags (ADR-0105); management-cluster nodes are in banlieue-nodes.slice, set by scripts/bootstrap-k0s-cluster.sh (ADR-0106). banlieue.slice is one cgroup for the host's VM total, where an operator bounds guests and nodes together with `systemctl set-property`. The provider has no rights on any slice. `banlieue host cloud-hypervisor overhead` (read-only, no root) reports per-VM guest vs host-side CPU from /proc and cgroup counters.",
       "requirements": [
@@ -3275,6 +3292,7 @@
     "docs/adr/0105-cloud-hypervisor-guests-slice.md",
     "docs/adr/0106-vm-systemd-slices-and-overhead-sampler.md",
     "docs/adr/0107-capacity-aware-scheduling.md",
-    "docs/adr/0112-first-boot-sealing-on-cloud-hypervisor.md"
+    "docs/adr/0112-first-boot-sealing-on-cloud-hypervisor.md",
+    "docs/adr/0113-pre-laid-images-for-fast-sealed-clones.md"
   ]
 }

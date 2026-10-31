@@ -912,6 +912,50 @@ partition is there:
 kubectl get cloudhypervisormachine <m> -o jsonpath='{.spec.firstBootSealing} {.status.sealedPartitions}{"\n"}'
 ```
 
+### Pre-laid images: sealed clones in about 40 s
+
+!!! warning "ADR-0113 is Proposed"
+    The tool and the measurements below are real; the imagebuilder does not
+    pre-lay `Url` images yet. Today you pre-lay a raw image yourself and
+    publish it as a `BackingFile` image.
+
+A Kairos raw image (AuroraBoot `disk.raw`) makes every clone run a recovery
+boot, a reset that lays out `COS_STATE` and `COS_PERSISTENT`, and a reboot,
+before the system it laid out seals and reports: **106 s** to `GuestReady`
+on a Cloud Hypervisor host, over half of it that recovery path, plus 10 s of
+GRUB menu countdown on each boot. A **pre-laid** image has had that reset
+done once, at build time: a clone boots straight into the installed system,
+seals `COS_PERSISTENT` to its own vTPM and reports, in **about 39 s**.
+
+```sh
+# On any Linux host with KVM, as root. 20 = the clones' OS disk size in GiB.
+sudo scripts/prelay-kairos-raw.sh kairos-build.raw kairos-build-prelaid.raw 20
+sudo cp --sparse=always kairos-build-prelaid.raw /srv/banlieue/ch/images/
+```
+
+The script boots the image once under QEMU with no TPM and no network,
+running none of the image's own configuration (only AuroraBoot's reset and a
+throwaway admin user), so nothing is sealed and no stage of yours runs at
+build time. It then empties `COS_PERSISTENT`, puts your configuration back,
+sets GRUB's menu timeout to 0, and refuses the result unless the reset
+really ran, nothing is LUKS and `COS_PERSISTENT` is empty. It takes about
+three minutes.
+
+What changes for you:
+
+- The image is laid out for one disk size. Give the clones' class
+  (`hardware.disks[0].sizeGiB`) at least the size you pre-laid for.
+- It is 20 GiB apparent but sparse (about 3.3 GiB of data); copy it with
+  `cp --sparse=always`, as above.
+- Stages bound to the reset (`before-reset`, `after-reset`,
+  `after-reset-chroot`) no longer run on clones; move anything they do to a
+  `boot` stage.
+- There is no GRUB menu to pick from on the console; automatic fallback after
+  a failed boot still works.
+
+Each clone still seals its own copy of the plaintext partition:
+`make ch-sealing-isolation-e2e` passes against a pre-laid image.
+
 ## Gotchas
 
 Found in the roadmap 09 phase 0 spike, and handled by banlieue's provider so
