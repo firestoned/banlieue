@@ -30,8 +30,9 @@ use banlieue_api::banlieue::{
     BuildArtifactKind, BuildArtifactPhase, BuildArtifactStatus, ImagePerProviderStatus,
     ImageSource, ImageSourceKind, Provider, VMImage, VMImageStatus, ZoneImageStatus,
 };
+use banlieue_provider_sdk::reconciler::providers_in_scope;
 use banlieue_provider_sdk::reconciler::{requeue_default, requeue_long, requeue_on_error};
-use banlieue_provider_sdk::ssa::FIELD_MANAGER_PROVIDER_LIBVIRT;
+use banlieue_provider_sdk::ssa::{FIELD_MANAGER_PROVIDER_LIBVIRT, status_field_manager};
 use k8s_openapi::api::batch::v1::Job;
 use k8s_openapi::api::core::v1::Toleration;
 use kube::{
@@ -84,7 +85,10 @@ pub async fn reconcile(image: Arc<VMImage>, ctx: Arc<Context>) -> Result<Action>
         return Ok(requeue_long());
     };
 
-    let providers = list_libvirt_providers(&ctx).await?;
+    let providers = providers_in_scope(
+        list_libvirt_providers(&ctx).await?,
+        ctx.provider_name.as_deref(),
+    );
     if providers.is_empty() {
         info!("no libvirt Providers in scope — leaving status untouched");
         return Ok(requeue_long());
@@ -103,7 +107,16 @@ pub async fn reconcile(image: Arc<VMImage>, ctx: Arc<Context>) -> Result<Action>
         rows.push(row);
     }
 
-    patch_status(&ctx, &name, generation, rows).await?;
+    let namespace = providers
+        .first()
+        .and_then(ResourceExt::namespace)
+        .unwrap_or_default();
+    let field_manager = status_field_manager(
+        FIELD_MANAGER_PROVIDER_LIBVIRT,
+        ctx.provider_name.as_deref(),
+        &namespace,
+    );
+    patch_status(&ctx, &name, generation, rows, &field_manager).await?;
 
     // Poll while work is outstanding; back off once everything is settled.
     Ok(if any_pending {
@@ -703,6 +716,7 @@ async fn patch_status(
     name: &str,
     generation: i64,
     per_provider: Vec<ImagePerProviderStatus>,
+    field_manager: &str,
 ) -> Result<()> {
     let status = VMImageStatus {
         per_provider,
@@ -724,7 +738,7 @@ async fn patch_status(
     let api: Api<VMImage> = Api::all(ctx.client.clone());
     api.patch_status(
         name,
-        &PatchParams::apply(FIELD_MANAGER_PROVIDER_LIBVIRT).force(),
+        &PatchParams::apply(field_manager).force(),
         &Patch::Apply(&patch),
     )
     .await?;

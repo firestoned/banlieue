@@ -13,8 +13,19 @@ SPDX-License-Identifier: Apache-2.0
 > not implemented, renumbered 2026-10-26 from duplicate 0100 and 0103; 0112
 > Accepted 2026-10-28, renumbered 2026-10-30 from 0110, which main had
 > meanwhile taken twice; 0113 Proposed, its tool, the provider's pacing and
-> the imagebuilder's pre-lay Job implemented). The most recent pass,
-> 2026-11-01, is **ADR-0113's amendment**: the imagebuilder pre-lays a `Url`
+> the imagebuilder's pre-lay Job implemented; 0087 amended 2026-11-01). The
+> most recent pass, 2026-11-01, is **ADR-0087's amendment**: a provider
+> workload started for one `Provider` (as the operator deploys them)
+> reconciles only that `Provider`'s `VMImage` rows, under its own field
+> manager, on libvirt, Proxmox and vSphere, and vSphere's deletion becomes
+> per-`Provider`. Found live as a v0.4.9 libvirt regression (workloads
+> reading each other's Secrets, refused, and overwriting each other's rows),
+> rolled back; vSphere (rows, and a delete that hung) and Proxmox (rows
+> erased by a shared manager) were latent. It adds one TB-4 row and one §8
+> risk (a deleted vSphere `Provider`'s templates are left in vCenter); no
+> new identity, grant or boundary: it makes the workloads stay inside the
+> grants they already had. The pass before it, 2026-11-01, is **ADR-0113's
+> amendment**: the imagebuilder pre-lays a `Url`
 > image when its `VMImage` sets `spec.prelay`, with a new privileged Job in
 > the build namespace that boots the build once under QEMU/KVM and reports
 > only a digest. It adds one §4 identity row, three TB-10 rows (a wrong
@@ -827,6 +838,7 @@ read-only root filesystem and all capabilities dropped.
 | banlieue's read of the certificate becomes a way to run code inside a sandbox | E | The certificate lives in the vTPM's NVRAM, and the obvious way to fetch it is `tpm2_nvread` over `guest-exec` — **host-to-guest arbitrary code execution**. banlieue does not use `guest-exec` anywhere: the guest exports the certificate to `/run/banlieue/ek.pem` and banlieue reads that file with `guest-file-open` at an explicit `mode: "r"` (ADR-0045 Decision 2). A provider that only ever opens guest files read-only cannot be turned into a remote shell by a compromised controller |
 | A half-failed teardown silently leaves domains defined | libvirt 11.3 *fails* undefine on a UEFI domain without `NVRAM` rather than warning; the error is returned, never swallowed, and the live lifecycle test asserts the domain is actually gone — `crates/banlieue-libvirt/tests/live_libvirtd.rs` |
 | Credentials leak into logs | No secret is ever logged; redacting `Debug`; provider condition messages are the only verbatim text mirrored to user-facing status |
+| A provider workload acts on **another `Provider`'s** state: reads its credentials Secret, overwrites or erases its `VMImage.status.perProvider` row, or (vSphere) blocks or performs the deletion of its zone templates | **ADR-0087, Amendment 2026-11-01.** A workload started with `--provider-name` reconciles only that `Provider`'s rows (`providers_in_scope`, `crates/banlieue-provider-sdk/src/reconciler.rs`) and writes them under its own field manager (`status_field_manager`, `ssa.rs`), on libvirt (`reconciler/vmimage.rs`), Proxmox (`reconciler/image.rs`) and vSphere (`reconciler/vmimage.rs`); its operator-rendered Role grants `get` on its own credentials Secret only, so reaching another's is refused by the API server, not just avoided. vSphere's delete destroys only the workload's own templates, clears its own row's zones, and removes the shared finalizer once no existing `Provider` lists templates (`rows_to_clean`, `with_zones_cleared`, `finalizer_can_go`, tested in `vmimage_finalize_tests.rs`). Found live 2026-11-01 (libvirt, v0.4.9, rolled back); vSphere and Proxmox were latent |
 
 #### vSphere VM ownership (ADR-0024, ADR-0026, ADR-0101)
 
@@ -1687,6 +1699,7 @@ a different assumption is unsafe.
 | **A guest with two NICs can forward between its segments**, and banlieue does not check that it does not (ADR-0111) | banlieue provisions the adapters and cannot inspect a guest; the isolation of a segment is a property of the guest that bridges it. §7.28 asks for forwarding off, and the first consumer (the egress gateways, ADR-0109) writes it in its own cloud-config and tests it | A policy can state which `VMClass`es may join an isolated `networkClass`, or the guest's forwarding state is readable from outside (a status field or a scan) |
 | **A `VMClass` edit does not change a VM that already exists** (ADR-0111, as ADR-0024): the NICs a VM was cloned with are the NICs it keeps, so removing an interface from a class does not detach running VMs from that segment | Reconciling a changed NIC list on a running VM is a reconfigure with its own failure modes (a NIC that is in use, a guest that has configured it) and is out of scope of the clone; the operator who retires a segment must rebuild its VMs | A VM's NIC list is reconciled after creation, or `VMClass` becomes immutable once a VM uses it |
 | **The pre-lay Job is privileged and runs a guest under QEMU/KVM on a build node** (ADR-0113): a QEMU escape lands in a privileged container on that node | The build namespace already runs privileged kairos-operator builds (row above), so the namespace boundary is unchanged; QEMU runs seccomp-sandboxed, with no network and no TPM, and the guest is the image being built. `--build-node-selector` keeps it on dedicated build nodes | QEMU can run unprivileged in the Job (non-root, a KVM device plugin instead of `privileged`) |
+| **A `VMImage` deleted after one of its vSphere `Provider`s leaves that `Provider`'s zone templates in vCenter** (ADR-0087, Amendment 2026-11-01) | Nothing can reach that vCenter with a deleted `Provider`'s credentials; before the amendment the delete hung forever instead. The workload logs which `Provider`'s templates it left | An operator-side cleanup for orphaned templates exists, or `Provider` deletion learns to wait for its `VMImage` templates |
 
 ## 9. Out of scope
 

@@ -168,7 +168,7 @@ for the wrong reason.
 > already in the pool and the image build disappears too, taking the run
 > from tens of minutes to under one.
 
-### Two rules these tiers exist to enforce
+### Three rules these tiers exist to enforce
 
 1. **A fake that is more permissive than the real thing hides bugs.**
    `DOMAIN_DEFINE_XML` is not an upsert, but the offline fake accepted a
@@ -184,6 +184,14 @@ for the wrong reason.
    eight tests printed `ok` while doing nothing — which is worse than having
    no tests at all, because it answers "is this covered?" with a confident
    yes. Missing fixtures fail loudly and name what is missing.
+
+3. **A live test with more privilege than production hides bugs.** The
+   v0.4.9 `BackingFile` check passed a live run where one provider process
+   served every Provider with an admin kubeconfig; on the cluster, each
+   Provider has its own workload allowed only its own Secret, and the check
+   broke there within a minute. Run a live test in the topology and with the
+   identities production uses: one process per Provider, each on its own
+   ServiceAccount with the Role the operator renders.
 
 ### A wait that stale state can satisfy is not a wait
 

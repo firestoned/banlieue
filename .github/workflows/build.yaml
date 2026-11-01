@@ -302,6 +302,10 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Run tests
+        env:
+          # Line tables keep backtraces readable; full debuginfo is most of
+          # target/, and it filled the runner's disk in the v0.4.9 release run.
+          CARGO_PROFILE_DEV_DEBUG: line-tables-only
         run: cargo test --workspace --all-features --verbose
 
       - name: Release version stamp works

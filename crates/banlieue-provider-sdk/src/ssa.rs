@@ -157,6 +157,24 @@ where
     Ok(patched)
 }
 
+/// The field manager a provider workload writes its shared rows with
+/// (ADR-0087, Amendment 2026-11-01): scoped to its `Provider` when it was
+/// started for one (`provider_name`), since it then writes only that
+/// `Provider`'s row and a shared manager would remove the rows the other
+/// workloads applied; the class constant for a static install, which writes
+/// every row.
+#[must_use]
+pub fn status_field_manager(
+    class: &str,
+    provider_name: Option<&str>,
+    provider_namespace: &str,
+) -> String {
+    match provider_name {
+        Some(name) => provider_field_manager(class, provider_namespace, name),
+        None => class.to_string(),
+    }
+}
+
 #[cfg(test)]
 #[path = "ssa_tests.rs"]
 mod ssa_tests;

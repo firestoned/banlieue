@@ -1,5 +1,118 @@
 # Changelog
 
+## [2026-11-01 19:30] - ADR-0087 amended: a workload for one Provider writes one row (vSphere, Proxmox, libvirt)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docs/adr/0087-field-manager-identity-per-writer.md`: *Amendment
+  2026-11-01*. Decision 1 assumed vSphere, Proxmox and libvirt apply every
+  row of their class; that is only a static install. A workload started with
+  `--provider-name` (one per `Provider`, as the operator deploys, each allowed
+  only its own credentials) now reconciles only that `Provider`'s rows under a
+  scoped field manager, on every backend. Decision 3 narrowed: these three
+  keep `.force()` to take their rows over from the class manager after an
+  upgrade. vSphere deletion becomes per-`Provider`. The one-shot
+  `banlieue.io/force-reimport` annotation stays as it was (recorded).
+- `crates/banlieue-provider-sdk`: `reconciler::providers_in_scope` and
+  `ssa::status_field_manager`, the one implementation all three use (tests in
+  `reconciler_tests.rs`, `ssa_tests.rs`).
+- `crates/banlieue-provider-libvirt/src/reconciler/vmimage.rs`: uses the SDK
+  helpers (its local copies from the earlier fix removed, with their tests,
+  now covered once in the SDK).
+- `crates/banlieue-provider-proxmox/src/reconciler/image.rs`: already scoped
+  to its own `Provider`, but wrote under the class manager, so each Proxmox
+  workload's apply removed the other Proxmox workloads' rows. Now the scoped
+  manager.
+- `crates/banlieue-provider-vsphere/src/reconciler/vmimage.rs`: the main pass
+  was unscoped (every workload computed every row, reading every `Provider`'s
+  credentials, forbidden to it) under the class manager; now scoped, with the
+  scoped manager. The deletion finalizer walked every row with that row's
+  `Provider`'s credentials, so with two vSphere `Provider`s a delete failed on
+  the second and retried forever; now each workload destroys its own zone
+  templates, clears its row's `zones`, and the finalizer comes off once no
+  existing `Provider` lists templates (`rows_to_clean`,
+  `with_zones_cleared`, `finalizer_can_go`, tests in
+  `vmimage_finalize_tests.rs`). A deleted `Provider`'s row no longer holds the
+  delete; its templates are left in vCenter and logged.
+- `docs/src/guides/vsphere-provider.md`: multi-`Provider` deletion and the
+  force-reimport caveat.
+- Threat model pass, stamp 2026-11-01 (ADR-0087 amended): one TB-4 row, one §8
+  risk.
+
+### Verified
+- Unit: SDK 186, libvirt 232, Proxmox 130, vSphere 319 (all pass).
+- Live: the libvirt path (earlier today, same semantics, one process per
+  `Provider` on least-privilege ServiceAccounts). vSphere and Proxmox: unit
+  tests only; no vCenter or Proxmox host is reachable from this environment.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (vSphere, Proxmox and libvirt providers)
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-11-01 17:30] - Fix: libvirt VMImage rows scoped to their own Provider (v0.4.9 regression)
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `crates/banlieue-provider-libvirt/src/reconciler/vmimage.rs`: the `VMImage`
+  reconciler ignored `--provider-name`, so in the one-workload-per-Provider
+  topology every libvirt workload reconciled every libvirt Provider's
+  `perProvider` row, all under one shared field manager. Harmless while a
+  `BackingFile` row needed no credentials; with the v0.4.9 host check each
+  workload tried to read the other Providers' credential Secrets, which its
+  least-privilege Role forbids, and the workloads overwrote each other's rows
+  (`HostUnreachable` from a foreign workload, then the right answer, in
+  turn). On the core cluster `mediatore-guest` went not ready on every
+  Provider; the cluster side was rolled back to v0.4.8 within about 8
+  minutes. Now: `providers_in_scope` keeps only the workload's own Provider
+  (`serves`), and `vmimage_field_manager` writes with a per-Provider field
+  manager (`provider_field_manager`, as the Cloud Hypervisor provider already
+  does), so one workload's apply never removes another's row. A static
+  install (no `--provider-name`) still serves and writes every row. Tests:
+  `a_per_provider_workload_reconciles_only_its_own_provider`,
+  `each_provider_writes_its_row_under_its_own_field_manager`.
+
+### Verified live
+- kind, two Providers on real libvirt hosts, one process per Provider with
+  `--provider-name` and its own ServiceAccount allowed only its own
+  credentials (as the operator renders them). Released v0.4.9 reproduced the
+  failure (rows flapping, `secrets ... is forbidden`); the fix held for two
+  minutes (ready where the volume is, `VolumeNotFound` elsewhere), each row
+  under its own field manager. Upgrading from v0.4.8 (rows written by the
+  shared manager) converged within 15 s.
+
+### Changed
+- `.claude/rules/testing.md`: a third rule, a live test run with more
+  privilege than production hides bugs: the earlier live check ran one
+  process serving both Providers with an admin kubeconfig.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (libvirt providers)
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-11-01 16:30] - CI: test job builds with line tables only
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/workflows/build.yaml` (`test` job): `CARGO_PROFILE_DEV_DEBUG:
+  line-tables-only` on `cargo test`. The v0.4.9 release run's test job ran the
+  runner out of disk while compiling (`No space left on device`, 45 MB free),
+  though `main`'s run of the same commit passed: the workspace's debug build
+  sits at the edge of the runner's space. Full debuginfo is most of `target/`;
+  line tables keep backtraces readable.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only (CI configuration)
+
 ## [2026-11-01 05:00] - ADR-0113: the imagebuilder pre-lays; libvirt pre-laid pool; firmware timing; libvirt BackingFile readiness fix
 
 **Author:** Erick Bourgeois

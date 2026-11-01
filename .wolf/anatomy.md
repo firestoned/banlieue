@@ -1,6 +1,6 @@
 # anatomy.md
 
-> Auto-maintained by OpenWolf. Last scanned: 2026-11-01T04:00:00.331Z
+> Auto-maintained by OpenWolf. Last scanned: 2026-11-01T17:00:00.230Z
 > Files: 512 tracked | Anatomy hits: 0 | Misses: 0
 
 ## ./
@@ -94,7 +94,7 @@
 
 ## .github/workflows/
 
-- `build.yaml` — SPDX-License-Identifier: Apache-2.0 (~15379 tok)
+- `build.yaml` — SPDX-License-Identifier: Apache-2.0 (~15442 tok)
 - `calm-test.yaml` — SPDX-License-Identifier: Apache-2.0 (~2002 tok)
 - `calm.yaml` — SPDX-License-Identifier: Apache-2.0 (~2057 tok)
 - `codeql.yaml` — /*.rs (beta in CodeQL; stable enough for (~700 tok)
@@ -509,7 +509,7 @@
 - `provider_tests.rs` — Unit tests for the `Provider` reconciler. (~2620 tok)
 - `provider.rs` — `Provider` reconciler for backend class `libvirt`. (~3809 tok)
 - `vmimage_tests.rs` — Unit tests for the `VMImage` reconciler. (~7244 tok)
-- `vmimage.rs` — `VMImage` reconciler — the libvirt half of ADR-0010's pipeline. (~8045 tok)
+- `vmimage.rs` — `VMImage` reconciler — the libvirt half of ADR-0010's pipeline. (~8174 tok)
 
 ## crates/banlieue-provider-libvirt/src/xml/
 
@@ -551,7 +551,7 @@
 ## crates/banlieue-provider-proxmox/src/reconciler/
 
 - `image_tests.rs` — Unit tests for the `VMImage` reconciler's pure core. (~1546 tok)
-- `image.rs` — `VMImage` reconciler: verify the template a `VMImage` names and publish (~2467 tok)
+- `image.rs` — `VMImage` reconciler: verify the template a `VMImage` names and publish (~2620 tok)
 - `mod.rs` — Proxmox provider reconcilers. (~113 tok)
 - `provider_tests.rs` — Unit tests for the `Provider` reconciler. (~3200 tok)
 - `provider.rs` — `Provider` reconciler for backend class `proxmox`. (~3739 tok)
@@ -596,16 +596,16 @@
 - `osartifact.rs` — Shared knowledge of kairos-operator's `OSArtifact` CRD (`build.kairos.io`) (~651 tok)
 - `pem_tests.rs` — Unit tests for `pem.rs`. (~506 tok)
 - `pem.rs` — PEM encoding for certificates a provider publishes into a CR status. (~461 tok)
-- `reconciler_tests.rs` — Unit tests for [`super::super::reconciler`]. (~457 tok)
-- `reconciler.rs` — Small helpers around [`kube::runtime::controller::Action`]. (~644 tok)
+- `reconciler_tests.rs` — Unit tests for [`super::super::reconciler`]. (~856 tok)
+- `reconciler.rs` — Small helpers around [`kube::runtime::controller::Action`]. (~847 tok)
 - `runner_tests.rs` — Unit tests for [`super::super::runner`]: outcome classification, and the (~1651 tok)
 - `runner.rs` — The one place every controller is run from (ADR-0091 Decision 2). (~1540 tok)
 - `scheduling_tests.rs` — Unit tests for build-pod scheduling constraints. (~1099 tok)
 - `scheduling.rs` — Where image-build workloads are allowed to run (ADR-0016 follow-up). (~1649 tok)
 - `sealing_tests.rs` — Unit tests for `sealing.rs` (ADR-0088 Decision 5). (~1345 tok)
 - `sealing.rs` — First-boot sealing readback, shared by every provider (ADR-0088 (~1407 tok)
-- `ssa_tests.rs` — Unit tests for field-manager naming (ADR-0087). (~2383 tok)
-- `ssa.rs` — Server-side apply helper. (~1962 tok)
+- `ssa_tests.rs` — Unit tests for field-manager naming (ADR-0087). (~2630 tok)
+- `ssa.rs` — Server-side apply helper. (~2152 tok)
 - `status_tests.rs` — Unit tests for [`super::super::status`]. (~1014 tok)
 - `status.rs` — Helpers for managing `metav1.Condition` lists on CR status. (~965 tok)
 
@@ -650,9 +650,9 @@
 - `mod.rs` — vSphere provider reconcilers. (~162 tok)
 - `provider_tests.rs` — Unit tests for [`super::super::provider`]. (~4964 tok)
 - `provider.rs` — `Provider` reconciler — capability introspection against vCenter. (~6135 tok)
-- `vmimage_finalize_tests.rs` — Unit tests for [`super::super::destroy_zone_templates`] (ADR-0028: (~3192 tok)
+- `vmimage_finalize_tests.rs` — Unit tests for [`super::super::destroy_zone_templates`] (ADR-0028: (~4023 tok)
 - `vmimage_tests.rs` — Unit tests for [`super::super::vmimage`]. (~12743 tok)
-- `vmimage.rs` — `VMImage` reconciler — template availability and `Url`-source import (~15767 tok)
+- `vmimage.rs` — `VMImage` reconciler — template availability and `Url`-source import (~16763 tok)
 - `vspheremachine_ensure_tests.rs` — Unit tests for [`super::super::ensure_vm`]. (~7975 tok)
 - `vspheremachine_finalize_tests.rs` — Unit tests for [`super::super::finalize_vm`] (ADR-0026: `VSphereMachine` (~1706 tok)
 - `vspheremachine_tests.rs` — Unit tests for [`super::super::vspheremachine`]. (~12868 tok)

@@ -43,4 +43,37 @@ mod tests {
         assert!(serves(None, "slate-kvm"));
         assert!(serves(None, "grill-kvm"));
     }
+
+    fn provider(name: &str) -> banlieue_api::banlieue::Provider {
+        let mut p: banlieue_api::banlieue::Provider = serde_json::from_value(serde_json::json!({
+            "apiVersion": "banlieue.io/v1alpha1",
+            "kind": "Provider",
+            "metadata": { "name": name, "namespace": "banlieue-system" },
+            "spec": {
+                "providerClassRef": { "name": "libvirt" },
+                "connection": { "endpoint": "qemu+tls://bar.foo.io/system" }
+            }
+        }))
+        .unwrap();
+        p.metadata.name = Some(name.to_string());
+        p
+    }
+
+    /// ADR-0087, Amendment 2026-11-01: a workload started for one Provider
+    /// reconciles that Provider's rows and no other's: it holds that
+    /// Provider's credentials only.
+    #[test]
+    fn a_workload_for_one_provider_has_only_that_provider_in_scope() {
+        let all = vec![provider("kvm-a"), provider("kvm-b")];
+        let mine = providers_in_scope(all.clone(), Some("kvm-b"));
+        assert_eq!(mine.len(), 1);
+        assert_eq!(mine[0].metadata.name.as_deref(), Some("kvm-b"));
+        assert!(providers_in_scope(all.clone(), Some("kvm-c")).is_empty());
+    }
+
+    #[test]
+    fn a_static_install_has_every_provider_in_scope() {
+        let all = vec![provider("kvm-a"), provider("kvm-b")];
+        assert_eq!(providers_in_scope(all, None).len(), 2);
+    }
 }

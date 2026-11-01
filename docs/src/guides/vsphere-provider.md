@@ -506,7 +506,9 @@ logs (`kubectl -n banlieue-imagebuild logs job/<the Job named in the zone's
 message>`). The provider deletes and recreates a failed Job once it has been
 failed for 10 minutes; to retry at once, run
 `kubectl annotate vmimage <image> banlieue.io/force-reimport=true` (the
-provider clears it). One cause has its own message: with
+provider clears it; with several vSphere `Provider`s the first workload to act
+clears it for all, so re-annotate if another `Provider`'s zones did not
+re-import). One cause has its own message: with
 `forceUpload`, `cannot replace [<datastore>] banlieue-images/<image>.iso: it is
 connected to the CD-ROM of running VM(s) …`. vCenter will not delete an ISO
 that a running VM has open, so the Job stops before destroying the zone's
@@ -514,6 +516,15 @@ template. The provider ejects the ISO from an installed `Deferred` VM it
 manages (next item), so this clears on its own once those VMs have
 installed. For a VM banlieue doesn't manage, eject the CD-ROM in vCenter
 (`govc device.cdrom.eject -vm <vm>`).
+
+A `VMImage` deleted while it has templates on several vSphere `Provider`s:
+each `Provider`'s workload destroys its own zone templates and clears its row's
+`zones`; the object goes away once no existing `Provider` lists any. If one
+stays `Terminating`, the row still listing zones names the `Provider` whose
+workload has not finished (check that workload's log). A `Provider` deleted
+before the `VMImage` no longer holds it, but its templates stay in vCenter:
+the workload logs `Provider no longer exists; its zone templates stay in
+vCenter`, and they are yours to remove.
 
 `VirtualMachine` stuck at `InfrastructureReady=False / ProvisionFailed` with a
 "template ... not found" message on its `VSphereMachine`: the clone looked for a

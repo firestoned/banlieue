@@ -3367,6 +3367,26 @@
         "deadline"
       ],
       "related_bugs": null
+    },
+    {
+      "id": "bug-185",
+      "timestamp": "2026-11-01T16:20:00.000Z",
+      "last_seen": "2026-11-01T16:20:00.000Z",
+      "occurrences": 1,
+      "error_message": "VMImage perProvider rows HostUnreachable: secrets \"libvirt-<other>-creds\" is forbidden for system:serviceaccount:banlieue-system:banlieue-provider-libvirt-<me>; rows flapping between workloads",
+      "file": "crates/banlieue-provider-libvirt/src/reconciler/vmimage.rs",
+      "root_cause": "The libvirt VMImage reconciler ignored --provider-name and wrote every libvirt Provider row under one shared SSA field manager; the v0.4.9 BackingFile host check made each workload read other Providers Secrets, forbidden by their per-Provider Roles",
+      "fix": "providers_in_scope (serves) + vmimage_field_manager (provider_field_manager per Provider). Verified on kind with one process per Provider on its own least-privilege ServiceAccount",
+      "tags": [
+        "libvirt",
+        "vmimage",
+        "rbac",
+        "ssa",
+        "field-manager",
+        "regression",
+        "v0.4.9"
+      ],
+      "related_bugs": null
     }
   ]
 }
