@@ -21,8 +21,9 @@ use std::sync::Arc;
 use banlieue_api::banlieue::{
     ImagePerProviderStatus, ImageSource, ImageSourceKind, Provider, VMImage, VMImageStatus,
 };
+use banlieue_provider_sdk::reconciler::providers_in_scope;
 use banlieue_provider_sdk::reconciler::{requeue_default, requeue_long, requeue_on_error};
-use banlieue_provider_sdk::ssa::FIELD_MANAGER_PROVIDER_PROXMOX;
+use banlieue_provider_sdk::ssa::{FIELD_MANAGER_PROVIDER_PROXMOX, status_field_manager};
 use banlieue_proxmox::ProxmoxApi;
 use kube::{
     Resource, ResourceExt,
@@ -167,7 +168,19 @@ pub async fn reconcile(image: Arc<VMImage>, ctx: Arc<Context>) -> Result<Action>
         rows.push(row_for_provider(&ctx, provider, source).await);
     }
     let any_pending = rows.iter().any(|r| !r.ready);
-    patch_vmimage_status(&ctx, &name, generation, rows).await?;
+    // ADR-0087 (Amendment 2026-11-01): started for one Provider, this
+    // workload writes one row, under that Provider's own manager; the class
+    // manager would remove the rows the other Proxmox workloads applied.
+    let namespace = providers
+        .first()
+        .and_then(ResourceExt::namespace)
+        .unwrap_or_default();
+    let field_manager = status_field_manager(
+        FIELD_MANAGER_PROVIDER_PROXMOX,
+        ctx.provider_name.as_deref(),
+        &namespace,
+    );
+    patch_vmimage_status(&ctx, &name, generation, rows, &field_manager).await?;
     Ok(if any_pending {
         requeue_default()
     } else {
@@ -198,17 +211,13 @@ async fn list_providers(ctx: &Context) -> Result<Vec<Provider>> {
         Some(ns) => Api::namespaced(ctx.client.clone(), ns),
         None => Api::all(ctx.client.clone()),
     };
-    Ok(api
+    let of_class = api
         .list(&ListParams::default())
         .await?
         .into_iter()
         .filter(|p| p.spec.provider_class_ref.name == PROVIDER_CLASS_NAME)
-        .filter(|p| {
-            ctx.provider_name
-                .as_deref()
-                .is_none_or(|n| p.name_any() == n)
-        })
-        .collect())
+        .collect();
+    Ok(providers_in_scope(of_class, ctx.provider_name.as_deref()))
 }
 
 /// Requeue after a reconcile error.
@@ -222,6 +231,7 @@ async fn patch_vmimage_status(
     name: &str,
     generation: i64,
     per_provider: Vec<ImagePerProviderStatus>,
+    field_manager: &str,
 ) -> Result<()> {
     // Only this provider's rows: `buildArtifact` belongs to the imagebuilder
     // and the aggregate `Ready` to the controller (ADR-0010, ADR-0015).
@@ -241,7 +251,7 @@ async fn patch_vmimage_status(
     let api: Api<VMImage> = Api::all(ctx.client.clone());
     api.patch_status(
         name,
-        &PatchParams::apply(FIELD_MANAGER_PROVIDER_PROXMOX).force(),
+        &PatchParams::apply(field_manager).force(),
         &Patch::Apply(&patch),
     )
     .await?;

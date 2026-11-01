@@ -35,7 +35,7 @@
 
 use std::sync::Arc;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use banlieue_api::banlieue::{
     BuildArtifactKind, BuildArtifactPhase, BuildArtifactStatus, FailureDomain,
@@ -44,8 +44,10 @@ use banlieue_api::banlieue::{
 };
 use banlieue_api::common::Firmware;
 use banlieue_provider_sdk::finalizer::{ensure_finalizer, remove_finalizer};
-use banlieue_provider_sdk::reconciler::{requeue_default, requeue_long, requeue_on_error};
-use banlieue_provider_sdk::ssa::FIELD_MANAGER_PROVIDER_VSPHERE;
+use banlieue_provider_sdk::reconciler::{
+    providers_in_scope, requeue_default, requeue_long, requeue_on_error, serves,
+};
+use banlieue_provider_sdk::ssa::{FIELD_MANAGER_PROVIDER_VSPHERE, status_field_manager};
 use banlieue_provider_sdk::status::condition_status;
 use k8s_openapi::api::batch::v1::Job;
 use k8s_openapi::api::core::v1::{Secret, Toleration};
@@ -260,9 +262,12 @@ pub async fn reconcile(image: Arc<VMImage>, ctx: Arc<Context>) -> Result<Action>
         return Ok(requeue_long());
     };
 
-    let providers = list_vsphere_providers(&ctx).await?;
+    let providers = providers_in_scope(
+        list_vsphere_providers(&ctx).await?,
+        ctx.provider_name.as_deref(),
+    );
     if providers.is_empty() {
-        info!("no vsphere Providers in scope — leaving status untouched");
+        info!("no vsphere Providers in scope; leaving status untouched");
         return Ok(requeue_long());
     }
 
@@ -289,7 +294,16 @@ pub async fn reconcile(image: Arc<VMImage>, ctx: Arc<Context>) -> Result<Action>
         rows.push(row);
     }
 
-    patch_vmimage_status(&ctx, &name, generation, rows).await?;
+    let namespace = providers
+        .first()
+        .and_then(ResourceExt::namespace)
+        .unwrap_or_default();
+    let field_manager = status_field_manager(
+        FIELD_MANAGER_PROVIDER_VSPHERE,
+        ctx.provider_name.as_deref(),
+        &namespace,
+    );
+    patch_vmimage_status(&ctx, &name, generation, rows, &field_manager).await?;
 
     // One-shot: clear the annotation now that every provider's ensure_import_jobs
     // has seen it this pass, so the next reconcile (including the one the Job
@@ -332,51 +346,132 @@ async fn finalize(api: &Api<VMImage>, image: &VMImage, ctx: &Context) -> Result<
         .template
         .as_ref()
         .is_some_and(|t| t.retain_on_delete);
-
-    if !retain && image_owns_templates(image) {
-        let rows = image
-            .status
-            .as_ref()
-            .map(|s| s.per_provider.as_slice())
-            .unwrap_or_default();
-        for row in rows {
-            if row.zones.is_empty() {
-                continue;
-            }
-            let provider_api: Api<Provider> =
-                Api::namespaced(ctx.client.clone(), &row.provider_namespace);
-            let provider = provider_api.get(&row.provider_name).await?;
-            let namespace = provider.namespace().unwrap_or_default();
-            let creds = read_credentials(ctx, &namespace, &provider).await?;
-            let ca_bundle_pem = crate::reconciler::ca_bundle::resolve_ca_bundle(
-                ctx,
-                &namespace,
-                &provider.spec.connection.ca_bundle,
-            )
-            .await?;
-            let client = ctx
-                .vsphere
-                .build(&provider.spec.connection, &creds, ca_bundle_pem.as_deref())
-                .await?;
-            let datacenters = dcs_from_provider_status(&provider, client.as_ref()).await?;
-            let failure_domains = provider
-                .status
-                .as_ref()
-                .map(|s| s.failure_domains.as_slice())
-                .unwrap_or_default();
-            destroy_owned_zone_templates(
-                client.as_ref(),
-                &datacenters,
-                failure_domains,
-                image,
-                &row.zones,
-            )
-            .await?;
-        }
+    // Nothing of ours to destroy: an adopted template is never ours, and
+    // retainOnDelete keeps imported ones.
+    if retain || !image_owns_templates(image) {
+        remove_finalizer(api, image, VM_IMAGE_FINALIZER).await?;
+        return Ok(requeue_default());
     }
 
-    remove_finalizer(api, image, VM_IMAGE_FINALIZER).await?;
+    // ADR-0087, Amendment 2026-11-01: a workload for one Provider destroys
+    // that Provider's templates only, with that Provider's credentials,
+    // records it by clearing its row's zones, and the finalizer comes off
+    // once no existing Provider has templates listed.
+    let scope = ctx.provider_name.as_deref();
+    let rows = image
+        .status
+        .as_ref()
+        .map(|s| s.per_provider.clone())
+        .unwrap_or_default();
+    for row in rows_to_clean(&rows, scope) {
+        let provider_api: Api<Provider> =
+            Api::namespaced(ctx.client.clone(), &row.provider_namespace);
+        let Some(provider) = provider_api.get_opt(&row.provider_name).await? else {
+            warn!(
+                provider = %row.provider_name,
+                "Provider no longer exists; its zone templates stay in vCenter"
+            );
+            continue;
+        };
+        let namespace = provider.namespace().unwrap_or_default();
+        let creds = read_credentials(ctx, &namespace, &provider).await?;
+        let ca_bundle_pem = crate::reconciler::ca_bundle::resolve_ca_bundle(
+            ctx,
+            &namespace,
+            &provider.spec.connection.ca_bundle,
+        )
+        .await?;
+        let client = ctx
+            .vsphere
+            .build(&provider.spec.connection, &creds, ca_bundle_pem.as_deref())
+            .await?;
+        let datacenters = dcs_from_provider_status(&provider, client.as_ref()).await?;
+        let failure_domains = provider
+            .status
+            .as_ref()
+            .map(|s| s.failure_domains.as_slice())
+            .unwrap_or_default();
+        destroy_owned_zone_templates(
+            client.as_ref(),
+            &datacenters,
+            failure_domains,
+            image,
+            &row.zones,
+        )
+        .await?;
+    }
+    let after = with_zones_cleared(&rows, scope);
+    let mine: Vec<ImagePerProviderStatus> = after
+        .iter()
+        .filter(|r| serves(scope, &r.provider_name))
+        .cloned()
+        .collect();
+    if let Some(first) = mine.first() {
+        let field_manager = status_field_manager(
+            FIELD_MANAGER_PROVIDER_VSPHERE,
+            scope,
+            &first.provider_namespace,
+        );
+        let generation = image.metadata.generation.unwrap_or(0);
+        patch_vmimage_status(ctx, &image.name_any(), generation, mine, &field_manager).await?;
+    }
+
+    let live: BTreeSet<(String, String)> = list_vsphere_providers(ctx)
+        .await?
+        .iter()
+        .map(|p| (p.namespace().unwrap_or_default(), p.name_any()))
+        .collect();
+    if finalizer_can_go(&after, &live) {
+        remove_finalizer(api, image, VM_IMAGE_FINALIZER).await?;
+    } else {
+        info!("other vsphere Providers still have zone templates to destroy");
+    }
     Ok(requeue_default())
+}
+
+/// The rows whose zone templates this workload destroys on delete: its own
+/// `Provider`'s rows that still list zones (every such row for a static
+/// install). ADR-0087, Amendment 2026-11-01.
+#[must_use]
+pub fn rows_to_clean<'a>(
+    rows: &'a [ImagePerProviderStatus],
+    provider_name: Option<&str>,
+) -> Vec<&'a ImagePerProviderStatus> {
+    rows.iter()
+        .filter(|r| !r.zones.is_empty() && serves(provider_name, &r.provider_name))
+        .collect()
+}
+
+/// `rows` with this workload's rows' `zones` cleared, as they stand once its
+/// templates are destroyed.
+#[must_use]
+pub fn with_zones_cleared(
+    rows: &[ImagePerProviderStatus],
+    provider_name: Option<&str>,
+) -> Vec<ImagePerProviderStatus> {
+    rows.iter()
+        .cloned()
+        .map(|mut r| {
+            if serves(provider_name, &r.provider_name) {
+                r.zones.clear();
+            }
+            r
+        })
+        .collect()
+}
+
+/// Whether the deletion finalizer can come off: no row lists zone templates
+/// for a `Provider` that still exists. A deleted `Provider`'s templates can
+/// no longer be reached with its credentials, so its row does not hold the
+/// delete (it used to, forever).
+#[must_use]
+pub fn finalizer_can_go(
+    rows: &[ImagePerProviderStatus],
+    live_providers: &BTreeSet<(String, String)>,
+) -> bool {
+    rows.iter()
+        .filter(|r| !r.zones.is_empty())
+        .all(|r| !live_providers.contains(&(r.provider_namespace.clone(), r.provider_name.clone())))
 }
 
 /// Whether banlieue built this image's templates itself and may therefore
@@ -1380,6 +1475,7 @@ async fn patch_vmimage_status(
     name: &str,
     generation: i64,
     per_provider: Vec<ImagePerProviderStatus>,
+    field_manager: &str,
 ) -> Result<()> {
     let status = VMImageStatus {
         per_provider,
@@ -1405,7 +1501,7 @@ async fn patch_vmimage_status(
     });
 
     let api: Api<VMImage> = Api::all(ctx.client.clone());
-    let params = PatchParams::apply(FIELD_MANAGER_PROVIDER_VSPHERE).force();
+    let params = PatchParams::apply(field_manager).force();
     api.patch_status(name, &params, &Patch::Apply(&patch))
         .await?;
     Ok(())

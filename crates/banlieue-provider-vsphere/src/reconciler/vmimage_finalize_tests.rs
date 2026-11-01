@@ -17,7 +17,8 @@ mod tests {
     use crate::client::{Datacenter, FakeClient, Inventory, VSphereClient};
 
     use super::super::{
-        destroy_owned_zone_templates, destroy_zone_templates, image_owns_templates,
+        destroy_owned_zone_templates, destroy_zone_templates, finalizer_can_go,
+        image_owns_templates, rows_to_clean, with_zones_cleared,
     };
 
     fn as_client(c: &FakeClient) -> &dyn VSphereClient {
@@ -321,5 +322,85 @@ mod tests {
                 "vm-template-templates/cluster-02-hadron-kairos-v0.1.0".to_string(),
             ]
         );
+    }
+
+    // ---- per-Provider deletion (ADR-0087, Amendment 2026-11-01) -------------
+
+    fn row(provider: &str, zones: Vec<ZoneImageStatus>) -> ImagePerProviderStatus {
+        ImagePerProviderStatus {
+            provider_name: provider.to_string(),
+            provider_namespace: "banlieue-system".to_string(),
+            ready: true,
+            resolved_ref: None,
+            reason: None,
+            message: None,
+            zones,
+        }
+    }
+
+    fn live(names: &[&str]) -> std::collections::BTreeSet<(String, String)> {
+        names
+            .iter()
+            .map(|n| ("banlieue-system".to_string(), (*n).to_string()))
+            .collect()
+    }
+
+    /// A workload for one Provider destroys that Provider's templates only:
+    /// it holds no other Provider's credentials.
+    #[test]
+    fn a_workload_for_one_provider_cleans_only_its_own_rows() {
+        let rows = vec![
+            row("dc1", vec![zone("z1", "t1", "f")]),
+            row("dc2", vec![zone("z2", "t2", "f")]),
+            row("dc3", vec![]),
+        ];
+        let mine = rows_to_clean(&rows, Some("dc2"));
+        assert_eq!(mine.len(), 1);
+        assert_eq!(mine[0].provider_name, "dc2");
+        assert!(
+            rows_to_clean(&rows, Some("dc3")).is_empty(),
+            "nothing to destroy"
+        );
+    }
+
+    #[test]
+    fn a_static_install_cleans_every_row_with_templates() {
+        let rows = vec![row("dc1", vec![zone("z1", "t1", "f")]), row("dc2", vec![])];
+        let all: Vec<&str> = rows_to_clean(&rows, None)
+            .iter()
+            .map(|r| r.provider_name.as_str())
+            .collect();
+        assert_eq!(all, vec!["dc1"]);
+    }
+
+    /// The finalizer comes off once no existing Provider still has templates
+    /// listed; a Provider that is gone cannot be cleaned and must not hold the
+    /// delete forever (it used to).
+    #[test]
+    fn the_finalizer_waits_for_existing_providers_and_not_for_deleted_ones() {
+        let rows = vec![row("dc1", vec![]), row("dc2", vec![zone("z2", "t2", "f")])];
+        assert!(
+            !finalizer_can_go(&rows, &live(&["dc1", "dc2"])),
+            "dc2 still has templates"
+        );
+        assert!(
+            finalizer_can_go(&rows, &live(&["dc1"])),
+            "dc2 is gone; nothing can clean it"
+        );
+        assert!(finalizer_can_go(&[row("dc1", vec![])], &live(&["dc1"])));
+        assert!(finalizer_can_go(&[], &live(&[])));
+    }
+
+    #[test]
+    fn clearing_a_providers_zones_touches_only_that_providers_row() {
+        let rows = vec![
+            row("dc1", vec![zone("z1", "t1", "f")]),
+            row("dc2", vec![zone("z2", "t2", "f")]),
+        ];
+        let after = with_zones_cleared(&rows, Some("dc1"));
+        assert!(after[0].zones.is_empty());
+        assert_eq!(after[1].zones.len(), 1);
+        let all = with_zones_cleared(&rows, None);
+        assert!(all.iter().all(|r| r.zones.is_empty()));
     }
 }

@@ -204,4 +204,32 @@ mod tests {
         let unique: std::collections::BTreeSet<&str> = all.iter().copied().collect();
         assert_eq!(unique.len(), all.len());
     }
+
+    /// ADR-0087, Amendment 2026-11-01: started for one Provider, a workload
+    /// writes under its own scoped manager; a static install keeps the class
+    /// constant because it writes every row.
+    #[test]
+    fn status_field_manager_is_scoped_exactly_when_started_for_one_provider() {
+        let scoped = status_field_manager(
+            FIELD_MANAGER_PROVIDER_VSPHERE,
+            Some("dc1"),
+            "banlieue-system",
+        );
+        assert_eq!(
+            scoped,
+            provider_field_manager(FIELD_MANAGER_PROVIDER_VSPHERE, "banlieue-system", "dc1")
+        );
+        assert_ne!(
+            scoped,
+            status_field_manager(
+                FIELD_MANAGER_PROVIDER_VSPHERE,
+                Some("dc2"),
+                "banlieue-system"
+            )
+        );
+        assert_eq!(
+            status_field_manager(FIELD_MANAGER_PROVIDER_VSPHERE, None, "banlieue-system"),
+            FIELD_MANAGER_PROVIDER_VSPHERE
+        );
+    }
 }

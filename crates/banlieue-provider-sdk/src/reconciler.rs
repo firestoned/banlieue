@@ -54,6 +54,29 @@ pub fn serves(provider_name: Option<&str>, machine_provider: &str) -> bool {
     provider_name.is_none_or(|mine| mine == machine_provider)
 }
 
+/// The `Provider`s a workload reconciles shared rows (such as
+/// `VMImage.status.perProvider`) for.
+///
+/// Started with `--provider-name` (one workload per `Provider`, as the
+/// operator deploys), only that `Provider`: the workload can read that
+/// `Provider`'s credentials and no other's. A static install (`None`) serves
+/// every `Provider` it is given. ADR-0087, Amendment 2026-11-01.
+#[must_use]
+pub fn providers_in_scope(
+    providers: Vec<banlieue_api::banlieue::Provider>,
+    provider_name: Option<&str>,
+) -> Vec<banlieue_api::banlieue::Provider> {
+    providers
+        .into_iter()
+        .filter(|p| {
+            serves(
+                provider_name,
+                p.metadata.name.as_deref().unwrap_or_default(),
+            )
+        })
+        .collect()
+}
+
 #[cfg(test)]
 #[path = "reconciler_tests.rs"]
 mod reconciler_tests;

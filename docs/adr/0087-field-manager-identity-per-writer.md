@@ -6,6 +6,8 @@ SPDX-License-Identifier: Apache-2.0
 
 - **Status:** Accepted
 - **Date:** 2026-10-03
+- **Amended:** 2026-11-01 (a workload started for one `Provider` is a subset
+  writer on every backend; see *Amendment 2026-11-01*)
 - **Deciders:** Erick Bourgeois
 - **Related:** Restores the invariant
   [ADR-0015](0015-vmimage-status-merge-strategy.md) relied on but never stated
@@ -172,3 +174,60 @@ impersonating another host's manager name, which is a loud conflict rather
 than a silent takeover. That is an integrity and availability concern against
 a shared object, so §6 and the mitigations table change and a full pass is
 due.
+
+## Amendment 2026-11-01: a workload for one Provider writes one row
+
+Decision 1 said vSphere, Proxmox and libvirt apply every row of their class,
+so the class constant was a correct manager for them. That is only true of a
+**static install**, one process serving every `Provider` of its class. The
+operator deploys **one workload per `Provider`** (ADR-0003, ADR-0012), each
+started with `--provider-name` and allowed to read **its own** credentials
+Secret and nothing else (ADR-0012, least privilege). Such a workload cannot
+compute another `Provider`'s row: on vSphere and Proxmox every row needs that
+`Provider`'s credentials, and since v0.4.9 a libvirt `BackingFile` row does
+too.
+
+What that broke, found 2026-11-01:
+
+- **libvirt** (v0.4.9, rolled back on the core cluster within minutes):
+  every workload wrote every row; each failed on the others' Secrets and
+  overwrote their rows (`HostUnreachable`), so `BackingFile` images flapped
+  to not ready everywhere.
+- **vSphere** (latent, since the per-`Provider` topology): the same, for
+  every row, since every row reads credentials; and the deletion finalizer
+  walks every row with that row's `Provider`'s credentials, so with two
+  vSphere `Provider`s a `VMImage` delete fails on the second and retries
+  forever.
+- **Proxmox** (latent): already scoped to its own `Provider`, but under the
+  class manager, so each workload's apply of its one row removes the rows the
+  other Proxmox workloads applied: the Cloud Hypervisor bug this ADR fixed.
+
+**Decision 1 now reads:** a workload started with `--provider-name`
+reconciles **only that `Provider`'s** rows and writes them under the scoped
+manager; only a static install (no `--provider-name`) is a whole-set writer
+and keeps the class constant. On every backend, not just Cloud Hypervisor.
+Two helpers in `banlieue-provider-sdk` are the only way to get either right:
+`reconciler::providers_in_scope` (the `Provider`s a workload serves) and
+`ssa::status_field_manager` (the scoped manager when started for one
+`Provider`, the class constant otherwise).
+
+**Decision 3 is narrowed:** vSphere, Proxmox and libvirt keep `.force()` on
+their scoped write. Their rows were last written under the class manager,
+which still owns those fields after an upgrade; without `.force()` the first
+scoped apply conflicts on every field whose value it changes and never lands.
+`.force()` stays out of writers that never shared a manager (Cloud
+Hypervisor).
+
+**vSphere's deletion becomes per-`Provider`.** The finalizer stays one name
+(`banlieue.io/vmimage`). Each workload destroys **its own** `Provider`'s
+zone templates and then clears its row's `zones`; whichever workload finds no
+row with zones left removes the finalizer. A row whose `Provider` no longer
+exists does not block it: nothing can reach that vCenter with its
+credentials any more, so its templates are left in place and logged, where
+before the delete hung.
+
+**Not changed, recorded:** `banlieue.io/force-reimport` is a one-shot
+annotation the first vSphere workload to act on it clears, so with several
+vSphere `Provider`s the others can miss it. Re-annotate per `Provider`'s
+need, or delete and recreate the `VMImage`, until it is made per-`Provider`.
+
