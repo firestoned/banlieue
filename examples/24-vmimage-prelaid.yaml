@@ -1,0 +1,77 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# A pre-laid, first-boot-sealing image for Cloud Hypervisor and libvirt
+# (ADR-0113, Proposed; ADR-0088, ADR-0112).
+#
+# A raw Kairos image makes every clone run a recovery boot, a reset and a
+# reboot before its real first boot. `prelay` has banlieue-imagebuilder do
+# that once, at build time, so each clone boots straight into the installed
+# system and seals COS_PERSISTENT to its own vTPM: about 40 s to GuestReady
+# on Cloud Hypervisor instead of about 106 s.
+#
+# NEEDS
+#   - banlieue-imagebuilder --prelay-image <an image built from
+#     Dockerfile.prelay>, and /dev/kvm on the build nodes it schedules on;
+#   - for Cloud Hypervisor, --registry-repository (the artifact reaches hosts
+#     through a registry, ADR-0064);
+#   - a source image on Kairos v4.4.0 or later (first-boot sealing).
+#
+# WHAT HAPPENS
+#   kairos-operator builds the raw image; a pre-lay Job checks it against
+#   `checksum`, boots it once under QEMU (no network, no TPM), writes
+#   <osartifact>-prelaid.raw beside it and reports its digest; only then is
+#   status.buildArtifact Ready, with that file and that digest:
+#
+#   kubectl get vmimage kairos-debian-13-prelaid \
+#     -o jsonpath='{.status.buildArtifact.phase} {.status.buildArtifact.file} {.status.buildArtifact.prelaidDiskSizeGiB}{"\n"}'
+#
+# The image is laid out for one disk size: the class below uses exactly
+# prelay.diskSizeGiB. A larger disk works but its extra space is unused.
+apiVersion: banlieue.io/v1alpha1
+kind: VMImage
+metadata:
+  name: kairos-debian-13-prelaid
+spec:
+  osFamily: linux
+  osDistribution: debian
+  osVersion: "13"
+  architecture: amd64
+  guestAgent: cloud-init
+  sources:
+    - providerClass: cloud-hypervisor
+      kind: Url
+      ref: unused-for-url-sources # required by the schema; ignored for kind: Url
+      importFrom: ghcr.io/example/kairos-debian:13@sha256:0000000000000000000000000000000000000000000000000000000000000000 # placeholder: pin your own image's digest
+    - providerClass: libvirt
+      kind: Url
+      ref: unused-for-url-sources
+      importFrom: ghcr.io/example/kairos-debian:13@sha256:0000000000000000000000000000000000000000000000000000000000000000
+  # Seal [COS_PERSISTENT] on each clone's first boot, to its own vTPM.
+  firstBootSealing: {}
+  # Do the recovery reset once, at build time, for 20 GiB disks.
+  prelay:
+    diskSizeGiB: 20
+---
+apiVersion: banlieue.io/v1alpha1
+kind: VMClass
+metadata:
+  name: ch-sealed-20g
+spec:
+  hardware:
+    cpus: 2
+    memoryMiB: 4096
+    disks:
+      - name: os
+        sizeGiB: 20 # = prelay.diskSizeGiB
+        storageClass: standard
+        provisioning: thin
+  network:
+    interfaces:
+      - name: eth0
+        networkClass: mgmt
+        ipam: {}
+  firmware: efi
+  features:
+    - vtpm
+  tpmEnabled: true

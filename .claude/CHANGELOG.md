@@ -1,5 +1,74 @@
 # Changelog
 
+## [2026-11-01 05:00] - ADR-0113: the imagebuilder pre-lays; libvirt pre-laid pool; firmware timing; libvirt BackingFile readiness fix
+
+**Author:** Erick Bourgeois
+
+### Added
+- `VMImage.spec.prelay.diskSizeGiB` and `status.buildArtifact.prelaidDiskSizeGiB`
+  (`crates/banlieue-api/src/banlieue/vmimage.rs`, `PrelaySpec`,
+  `MIN_PRELAY_DISK_SIZE_GIB` = 10); CRDs and API reference regenerated.
+- `crates/banlieue-imagebuilder/src/reconciler/prelay.rs` (+ tests): the
+  pre-lay Job (privileged, no API token, owned by the `OSArtifact`, follows
+  build scheduling), its result check (`sha256:` + 64 lowercase hex), and how
+  an outcome folds into `buildArtifact` (`Building`/`Prelaying` until done;
+  then `Ready` with the pre-laid file, the builder's digest as `checksum`
+  and `prelaidDiskSizeGiB`; `PrelayFailed`, `PrelayNeedsCloudImage`,
+  `PrelayImageUnset` otherwise). Wired into the `VMImage` reconciler before
+  the registry push; `--prelay-image` / `BANLIEUE_PRELAY_IMAGE`.
+- `Dockerfile.prelay`: the pre-lay Job's image (Debian slim pinned by
+  digest, QEMU, OVMF, e2fsprogs, gdisk, util-linux, the script). Not built
+  or published by this change.
+- `examples/24-vmimage-prelaid.yaml`.
+- `scripts/prelay-kairos-raw.sh`: Job mode (arguments from `PRELAY_INPUT`,
+  `PRELAY_OUTPUT`, `PRELAY_DISK_SIZE_GIB`), `PRELAY_VERIFY_CHECKSUM` (the
+  input checked before anything is done to it, SEC-004), `PRELAY_RESULT_FILE`
+  (the output's digest), and QEMU's seccomp sandbox. Tests extended.
+
+### Fixed
+- `crates/banlieue-provider-libvirt`: a `BackingFile` `VMImage` was marked
+  ready on every libvirt Provider without contacting the host (the module
+  doc claimed otherwise, and `reasons::VOLUME_NOT_FOUND` was defined but
+  unused). Seen live: ready on two hosts whose pool lacked the volume. The
+  snapshot client now lists each pool's volumes in the session it already
+  opens; the row is ready only when every target pool holds the volume, and
+  says `VolumeNotFound` (naming the pools) or `HostUnreachable`. The fake
+  refuses an unknown pool, as a host does. Verified against two real hosts
+  (ready on the one with the volume, `VolumeNotFound` on the other).
+
+### Verified live
+- Pre-laid pool on libvirt (one libvirt host): two `tpmEnabled` members
+  `Warm` in 65 s (raw: 125 s, ADR-0088), both sealed with an EK certificate.
+  ADR-0113's libvirt acceptance item.
+- The script's Job mode on a build host: input verified, build boot under
+  the QEMU sandbox (184 s), result digest equal to an independent
+  `sha256sum`.
+- Firmware timing, twelve VMs on three hosts: VMM unit start to first
+  console byte 3.4 s on most runs (the provider's 3 s pacing, which the 1 s
+  `REQUEUE_TRANSITION` change cuts); first console byte to the GRUB hand-off
+  3.5 to 8.5 s, the same with and without a vTPM and on the prototype and
+  tpmfix VMMs: the firmware itself, not the vTPM polling.
+
+### Changed
+- `docs/adr/0113-pre-laid-images-for-fast-sealed-clones.md`: *Amendment: the
+  imagebuilder pre-lays*; Accept-when progress; the libvirt measurement.
+- `docs/src/guides/using-banlieue-imagebuilder.md` (pre-laying section),
+  `docs/src/guides/cloud-hypervisor-host.md`, `docs/src/guides/libvirt-provider.md`
+  (`VolumeNotFound` troubleshooting), `deploy/imagebuilder/configmap.yaml`.
+- `docs/architecture/calm/architecture.json`: `pre-laid-images` control.
+- Threat model pass, stamp 2026-11-01: a §4 identity row (the pre-lay Job),
+  three TB-10 rows (a wrong digest, a QEMU escape, a rewritten build), one
+  §8 risk (a privileged Job running a guest on a build node).
+- `.github/community/18-fast-sealed-clones.md` phase C and `ROADMAPS.md` row
+  18.
+
+### Impact
+- [ ] Breaking change (additive CRD fields; a libvirt `BackingFile` image
+      whose volume is missing on a host now reports it, which is the fix)
+- [x] Requires cluster rollout (CRDs, imagebuilder, libvirt and CH providers)
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-11-01 01:30] - ADR-0113 Open question 1: COS_PERSISTENT does not grow
 
 **Author:** Erick Bourgeois

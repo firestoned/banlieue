@@ -235,4 +235,19 @@ mod tests {
         assert_eq!(cfg.lease_name, "custom-lock");
         assert_eq!(cfg.identity, "pod-1");
     }
+
+    /// ADR-0113: pre-laying is off until an operator names an image that can
+    /// run QEMU; a VMImage asking for it is then refused, not shipped raw.
+    #[test]
+    fn prelay_image_is_unset_by_default_and_settable() {
+        assert_eq!(parse(&[]).prelay_image, None);
+        let cli = parse(&[
+            "--prelay-image",
+            "registry.internal:5000/banlieue/prelay:v1",
+        ]);
+        assert_eq!(
+            cli.prelay_image.as_deref(),
+            Some("registry.internal:5000/banlieue/prelay:v1")
+        );
+    }
 }

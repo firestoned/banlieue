@@ -34,6 +34,10 @@ pub struct Context {
     /// Where build artifacts are pushed for host-resident providers
     /// (ADR-0064). `None`: no registry configured, nothing is pushed.
     pub registry: Option<RegistryConfig>,
+
+    /// Image for pre-lay Jobs (ADR-0113, `--prelay-image`). `None`: a
+    /// `VMImage` asking for `spec.prelay` is refused.
+    pub prelay_image: Option<String>,
 }
 
 impl Context {
@@ -45,6 +49,7 @@ impl Context {
         scheduling: BuildScheduling,
         importer_image: ImporterImage,
         registry: Option<RegistryConfig>,
+        prelay_image: Option<String>,
     ) -> Self {
         Self {
             client,
@@ -52,6 +57,7 @@ impl Context {
             scheduling,
             importer_image,
             registry,
+            prelay_image,
         }
     }
 }

@@ -76,4 +76,17 @@ mod tests {
     fn production_factory_holds_no_client_between_reconciles() {
         assert_eq!(std::mem::size_of::<TlsClientFactory>(), 0);
     }
+
+    /// The fake must refuse what a host refuses: listing a pool it does not
+    /// have is an error, not an empty list (rules/testing.md).
+    #[tokio::test]
+    async fn the_fake_lists_volumes_per_pool_and_refuses_an_unknown_pool() {
+        let fake = FakeClient::with(&["default", "fast"], &[]).with_volume("default", "base.raw");
+        assert_eq!(
+            fake.volumes("default").await.unwrap(),
+            vec!["base.raw".to_string()]
+        );
+        assert!(fake.volumes("fast").await.unwrap().is_empty());
+        assert!(fake.volumes("nope").await.is_err());
+    }
 }

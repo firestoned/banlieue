@@ -4,7 +4,7 @@ SPDX-License-Identifier: Apache-2.0
 -->
 # Threat Model
 
-> **Status:** Living document. Last full pass **2026-10-31**, against the
+> **Status:** Living document. Last full pass **2026-11-01**, against the
 > architecture defined by **ADR-0001 … ADR-0113** (0057–0059 unallocated,
 > 0066 and 0068–0073 reserved; 0074 and 0075 Accepted 2026-09-28; 0076–0080
 > reserved by roadmap 19; 0081–0082 recorded but not implemented in banlieue, and kept canonically in
@@ -12,8 +12,16 @@ SPDX-License-Identifier: Apache-2.0
 > 0088 Accepted 2026-10-26, superseding 0048; 0108 and 0109 Proposed and
 > not implemented, renumbered 2026-10-26 from duplicate 0100 and 0103; 0112
 > Accepted 2026-10-28, renumbered 2026-10-30 from 0110, which main had
-> meanwhile taken twice; 0113 Proposed, its tool and the provider's pacing
-> implemented). The most recent pass, 2026-10-31, is **ADR-0113**: pre-laid
+> meanwhile taken twice; 0113 Proposed, its tool, the provider's pacing and
+> the imagebuilder's pre-lay Job implemented). The most recent pass,
+> 2026-11-01, is **ADR-0113's amendment**: the imagebuilder pre-lays a `Url`
+> image when its `VMImage` sets `spec.prelay`, with a new privileged Job in
+> the build namespace that boots the build once under QEMU/KVM and reports
+> only a digest. It adds one §4 identity row, three TB-10 rows (a wrong
+> digest, a QEMU escape, a rewritten build) and one §8 risk (a privileged
+> Job running a guest on a build node); no new namespace, RBAC grant or
+> boundary, since the namespace already runs privileged builds. The pass
+> before it, 2026-10-31, is **ADR-0113**: pre-laid
 > images, where the Kairos recovery reset every raw clone runs on first boot
 > is done once at build time (`scripts/prelay-kairos-raw.sh`), and the Cloud
 > Hypervisor provider requeues a VMM start step after 1 s. A pre-laid image is
@@ -538,6 +546,7 @@ relationship to the host.
 | vTPM manufacture, once per guest | Host user `banlieue` | The host, as `banlieue-swtpm-setup@<guest uid>.service` | Runs `swtpm_setup`: creates the TPM and signs its EK and platform certificates with the host's `swtpm_localca` key — `plan.rs::swtpm_setup_unit` |
 | per-zone import Job | `banlieue-import` | `banlieue-imagebuild` | Uploads a built ISO to a datastore, creates a template (ADR-0020) |
 | registry push Job | **None** — `automountServiceAccountToken: false` | `banlieue-imagebuild` | Pushes a `Ready` build to the operator's OCI registry for host-resident providers (ADR-0064); reads the artifacts PVC read-only, the push Secret and, if the operator names one, one key of a CA bundle (ADR-0110, a trust anchor, mounted read-only), nothing else — `crates/banlieue-imagebuilder/src/reconciler/push.rs` |
+| pre-lay Job (ADR-0113) | **None**: `automountServiceAccountToken: false` | `banlieue-imagebuild` | Boots a `Ready` raw build once under QEMU/KVM (no network, no TPM) to pre-lay it, for a `VMImage` with `spec.prelay`; **privileged** (loop devices, mounts, `/dev/kvm`, as the namespace's kairos-operator builds), mounts the artifacts PVC read-write to write `<osartifact>-prelaid.raw` beside the untouched build, runs the operator's `--prelay-image`, and reports only a digest: `crates/banlieue-imagebuilder/src/reconciler/prelay.rs` (`build_prelay_job`), `scripts/prelay-kairos-raw.sh` |
 | image import unit (Cloud Hypervisor) | Host user `banlieue` | The host, as `banlieue-ch-import@<vmimage uid>.service` | Pulls one image by digest into the storage classes' image caches and exits; sandboxed, writable only in `images/` — `crates/banlieue-provider-cloud-hypervisor/src/vmimage.rs` (`import_unit`), `import.rs` |
 | kairos build pod | kairos-operator's SA | `banlieue-imagebuild` | **Privileged** — loop devices, mount, chroot |
 | Management-cluster node on Cloud Hypervisor (ADR-0099) | Host user `CH_VM_USER` (default `k0s-vm`, no login, `kvm`), **shared by every such node on the host**; its tap is created by a root oneshot | The host, as `k0s-vm-<name>.service`, with `k0s-vm-<name>-net.service` and `k0s-vm-<name>-swtpm.service`; **not a banlieue object** | Runs one management-cluster node, written by `scripts/bootstrap-k0s-cluster.sh` through sudo. No capabilities, `NoNewPrivileges`, `ProtectSystem=strict`, `DevicePolicy=closed` (`/dev/kvm`, `/dev/net/tun`), Landlock with the tap's sysfs entry read-only, runtime directory `0700`; writes only `CH_VM_DIR/<name>/` (`0750`) and its runtime directory: `render_ch_vm_unit`. VMM and vTPM in `banlieue-nodes.slice` (ADR-0106) |
@@ -1055,6 +1064,9 @@ registry.
 | A `VMImage` status writer points hosts at **another digest in the same repository** | T | **RBAC only.** `vmimages/status` patch (the imagebuilder, every Cloud Hypervisor provider's token, cluster admins) together with push access to the repository chooses what hosts boot. Digest pinning gives integrity, not provenance; signature verification is ADR-0064's follow-up. §8 |
 | A compromised push Job redirects hosts | T, S | It has no API credential at all (`automountServiceAccountToken: false`); its only output is a termination message the imagebuilder validates as above — `push.rs::build_push_job` |
 | The push Job escalates or tampers with the build | E, T | Non-root, `readOnlyRootFilesystem`, `allowPrivilegeEscalation: false`, all capabilities dropped, PVC mounted **read-only**, an `emptyDir` for the compressed copy — `push.rs::build_push_job`, tested in `push_tests.rs` |
+| A compromised or wrong **pre-lay Job** publishes content it should not, or a digest for something else (ADR-0113) | T, S | It holds no API credential; its only output is a termination message the imagebuilder accepts only as `sha256:` and 64 lowercase hex digits (`prelay.rs::parse_prelay_result`), and every consumer verifies the file against that digest. It verifies the built raw file against the source's `checksum` **before** touching it (`PRELAY_VERIFY_CHECKSUM`, `verify_checksum` in `scripts/prelay-kairos-raw.sh`), so SEC-004's chain runs source checksum → builder digest. The Job's code is the operator's `--prelay-image`: the same trust as the build images the namespace already runs |
+| The image booted at build time **escapes QEMU** onto the build node, into a privileged container | E | QEMU runs with its seccomp sandbox (`-sandbox on,obsolete=deny,elevateprivileges=deny,spawn=deny,resourcecontrol=deny`), no network device and no TPM (`scripts/prelay-kairos-raw.sh`); the guest is the image being built, which every clone will run anyway. Residual risk in §8 |
+| The pre-lay Job **rewrites the built file**, so what was verified is not what was transformed | T | It writes a new file (`prelaid_file_name`) and refuses an existing output; the built file is read only. Only `Done` moves the artifact to the new file; a failed or refused pre-lay publishes `Failed` with no `file`, so nothing imports a half-made image (`prelay.rs::apply_prelay`, `apply_refusal`, tested in `prelay_tests.rs`) |
 | The registry reads images, including cloud-config baked into them (A-2) | I | **Not controlled by banlieue.** Treat the registry as holding A-2 (§7.13); per-VM secrets belong in `VirtualMachine.spec.userData`, delivered per clone, not in a shared image — as TB-5 says for datastores |
 | The registry withholds or deletes an image | D | The import unit fails, the row reports `ImportFailed` with systemd's reason, and the next reconcile retries. Images already cached, and running guests, are unaffected |
 | An oversized or hostile layer exhausts the host | D | The layer is capped at its manifest-declared size while streaming, and so is the **decompressed** stream: the push records the uncompressed length as a layer annotation (`io.banlieue.disk.size`), covered by the manifest digest the host pins, and the pull refuses to write past it or to finish short of it — `crates/banlieue-oci/src/sparse.rs` (`with_limit`), `client.rs::pull_file`. Superseded pulls are evicted beyond `[registry] keep_unreferenced`, and a deleted image's file is removed (`vmimage.rs::eviction_candidates`, `release`), so steady-state growth is bounded by the images in use. §8 |
@@ -1674,6 +1686,7 @@ a different assumption is unsafe.
 
 | **A guest with two NICs can forward between its segments**, and banlieue does not check that it does not (ADR-0111) | banlieue provisions the adapters and cannot inspect a guest; the isolation of a segment is a property of the guest that bridges it. §7.28 asks for forwarding off, and the first consumer (the egress gateways, ADR-0109) writes it in its own cloud-config and tests it | A policy can state which `VMClass`es may join an isolated `networkClass`, or the guest's forwarding state is readable from outside (a status field or a scan) |
 | **A `VMClass` edit does not change a VM that already exists** (ADR-0111, as ADR-0024): the NICs a VM was cloned with are the NICs it keeps, so removing an interface from a class does not detach running VMs from that segment | Reconciling a changed NIC list on a running VM is a reconfigure with its own failure modes (a NIC that is in use, a guest that has configured it) and is out of scope of the clone; the operator who retires a segment must rebuild its VMs | A VM's NIC list is reconciled after creation, or `VMClass` becomes immutable once a VM uses it |
+| **The pre-lay Job is privileged and runs a guest under QEMU/KVM on a build node** (ADR-0113): a QEMU escape lands in a privileged container on that node | The build namespace already runs privileged kairos-operator builds (row above), so the namespace boundary is unchanged; QEMU runs seccomp-sandboxed, with no network and no TPM, and the guest is the image being built. `--build-node-selector` keeps it on dedicated build nodes | QEMU can run unprivileged in the Job (non-root, a KVM device plugin instead of `privileged`) |
 
 ## 9. Out of scope
 

@@ -449,7 +449,7 @@ everywhere at once.
 | Zone stuck at `BuildPending` | `status.buildArtifact` is not `Ready` yet — the problem is upstream, in `banlieue-imagebuilder`. |
 | Import Job `403` on `jobs` | The `ProviderClass` is missing `additionalRules`. See `examples/11-providerclass-libvirt.yaml`. |
 | Import Job `Pending`, ServiceAccount not found | The Job's namespace and the provider's differ. The provider falls back to that namespace's `default` SA, which needs the grant. |
-| `VirtualMachine` stuck `Scheduled=False`, reason `ImageNotReady` | The `VMImage` has no ready `libvirt` source. For a `BackingFile`, the volume must already be in the pool. |
+| `VirtualMachine` stuck `Scheduled=False`, reason `ImageNotReady` | The `VMImage` has no ready `libvirt` source. For a `BackingFile`, the volume must already be in every pool the Provider targets: its row then says `VolumeNotFound` and names the pools that lack it, or `HostUnreachable` if the host could not be asked. |
 | `LibvirtMachine` `Ready=False`: *volume … is not in pool* | The image has not finished importing, or a `BackingFile` names a volume that is not there. `virsh vol-list <pool>`. |
 | `LibvirtMachine` `Ready=False`: *storage pool … does not exist* | `spec.pool` came from the Provider's `storageClasses` mapping. The mapping names a pool the host does not have. |
 | `VirtualMachine` never gets a `LibvirtMachine` | The chosen Provider's class has no builder in `banlieue-controller`. The `Scheduled` condition names the class. |

@@ -1575,6 +1575,7 @@ Cluster-scoped: a VMImage is shared by VirtualMachines in any namespace.
 | `osDistribution` | string | Yes | Free-form distribution string. Examples: ubuntu, rhel, debian, fedora-coreos, windows-server. |
 | `osFamily` | string | Yes | Broad operating-system family. Coarser than `osDistribution`; lets providers apply high-level guest handling. Allowed: `linux`, `windows`, `bsd`, `other`. |
 | `osVersion` | string | Yes | Free-form version string. Examples: "22.04", "9.4", "2022". |
+| `prelay` | object |  | Pre-lay the built image (ADR-0113): `banlieue-imagebuilder` boots the raw `cloudImage` once, at build time, through the Kairos recovery reset every clone would otherwise run on its first boot, so each clone boots straight into the installed system. Only for a `Url` source built as a `cloudImage`; an `iso` build is refused (`PrelayNeedsCloudImage`). Needs `banlieue-imagebuilder --prelay-image`. The published artifact is the pre-laid file, with a checksum the builder computed after verifying the built file against the source's `checksum`. |
 | `sources` | object[] | Yes | Per-provider source mappings — one backend binding for this catalog entry per `providerClass` you intend to schedule VMs onto ("one name, many backends", see the type-level doc comment above). |
 | `template` | object |  | How the backend **template** is built from a `Url` source (root folder, network, disk, CPU / memory / firmware / NIC, force knobs). Every field is optional and falls back to a built-in default. Only meaningful for `Url` sources, with one exception: for a vSphere `Template` source (an existing template banlieue adopts and never builds) only `rootFolder` is read, to find the template in `<rootFolder>/<failure-domain>`; every other field is ignored. Ignored for `BackingFile`. See [`VMImageTemplate`], ADR-0020 and ADR-0104. |
 | `trustedBoot` | object |  | Requests a Trusted Boot (UKI) artifact instead of a classic kernel+initrd one, for `Url`-kind vSphere sources. Resolved by `banlieue-imagebuilder` into the kairos-operator `OSArtifact`'s `spec.artifacts.uki.{iso,keysVolume}` (replacing the plain `artifacts.iso` request) — the `auroraboot build-uki` mechanism. See [`TrustedBootSource`] and ADR-0051. Ignored for `cloudImage`-kind builds and non-`Url` sources. |
@@ -1662,6 +1663,22 @@ Secret in the imagebuild namespace holding the overlay file contents.
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `name` | string | Yes |  |
+
+#### `.spec.prelay`
+
+Pre-lay the built image (ADR-0113): `banlieue-imagebuilder` boots the
+raw `cloudImage` once, at build time, through the Kairos recovery
+reset every clone would otherwise run on its first boot, so each
+clone boots straight into the installed system. Only for a `Url`
+source built as a `cloudImage`; an `iso` build is refused
+(`PrelayNeedsCloudImage`). Needs `banlieue-imagebuilder
+--prelay-image`. The published artifact is the pre-laid file, with a
+checksum the builder computed after verifying the built file against
+the source's `checksum`.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `diskSizeGiB` | integer | Yes | The clones' OS disk size, in GiB. `COS_PERSISTENT` fills a disk of this size and does not grow on a larger one, and a smaller one cannot hold the image: give the classes that use this image this disk size (ADR-0113 Decision 4). |
 
 #### `.spec.sources[]`
 
@@ -1791,6 +1808,7 @@ ADR-0010 and ADR-0020.
 | `osArtifactRef` | string | Yes | Name of the `OSArtifact` CR `banlieue-imagebuilder` created for this `VMImage` (same namespace as the artifacts PVC below). |
 | `osArtifactUid` | string |  | `metadata.uid` of the `OSArtifact` named by `os_artifact_ref`, once observed. Each provider's per-zone import Job sets this as its own `ownerReference` so a rebuilt (deleted-and-recreated) `OSArtifact` garbage-collects the stale Job — and the artifacts PVC mount it holds — instead of the Job outliving it for up to its `ttlSecondsAfterFinished` (ADR-0027). Absent until the `OSArtifact` has actually been observed once. |
 | `phase` | string | Yes | Current build phase. Allowed: `Pending`, `Building`, `Ready`, `Failed`. |
+| `prelaidDiskSizeGiB` | integer |  | The disk size, in GiB, the artifact was pre-laid for (ADR-0113), when `spec.prelay` was honoured: `file` is then the pre-laid image and `checksum` its digest, computed by the builder. Omitted otherwise. |
 | `pvcRef` | object |  | Reference to the PVC kairos-operator created holding the built artifact, once known. Populated no earlier than phase `Building`. |
 | `reason` | string |  | Short reason, mirroring the stable-string convention used elsewhere in this status (e.g. `ImagePerProviderStatus.reason`). |
 

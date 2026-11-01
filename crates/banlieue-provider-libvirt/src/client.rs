@@ -11,11 +11,13 @@
 //! The real implementation is a thin wrapper over `banlieue-libvirt`; all the
 //! protocol lives there (ADR-0011).
 
+use std::collections::BTreeMap;
+
 use async_trait::async_trait;
 use banlieue_api::banlieue::ProviderConnection;
 use banlieue_libvirt::{
     DEFAULT_TLS_PORT, Network, StoragePool, TlsIdentity, connect_open, connect_tls,
-    list_all_networks, list_all_storage_pools,
+    list_all_networks, list_all_storage_pools, storage_pool_list_all_volumes,
 };
 
 use crate::error::{Error, Result};
@@ -33,6 +35,12 @@ pub trait LibvirtClient: Send + Sync {
     async fn list_pools(&self) -> Result<Vec<StoragePool>>;
     /// Every network, running or merely defined.
     async fn list_networks(&self) -> Result<Vec<Network>>;
+    /// The names of the volumes in `pool`.
+    ///
+    /// # Errors
+    /// [`Error::Libvirt`] when the host has no such pool, or could not list
+    /// it (an inactive pool cannot be listed).
+    async fn volumes(&self, pool: &str) -> Result<Vec<String>>;
 }
 
 /// Builds a [`LibvirtClient`] from a `Provider`'s connection details.
@@ -121,7 +129,22 @@ impl LibvirtClientFactory for TlsClientFactory {
         // a connection open across reconciles.
         let pools = list_all_storage_pools(&mut session).await?;
         let networks = list_all_networks(&mut session).await?;
-        Ok(Box::new(SnapshotClient { pools, networks }))
+        // One more call per pool, so a `BackingFile` image is reported ready
+        // only where its volume really is. A pool that cannot be listed (not
+        // running) is remembered as such, not as empty.
+        let mut volumes = BTreeMap::new();
+        for pool in &pools {
+            let listed = storage_pool_list_all_volumes(&mut session, pool)
+                .await
+                .map(|vols| vols.into_iter().map(|v| v.name).collect())
+                .map_err(|e| e.to_string());
+            volumes.insert(pool.name.clone(), listed);
+        }
+        Ok(Box::new(SnapshotClient {
+            pools,
+            networks,
+            volumes,
+        }))
     }
 }
 
@@ -130,6 +153,8 @@ impl LibvirtClientFactory for TlsClientFactory {
 struct SnapshotClient {
     pools: Vec<StoragePool>,
     networks: Vec<Network>,
+    /// Each pool's volume names, or why they could not be listed.
+    volumes: BTreeMap<String, std::result::Result<Vec<String>, String>>,
 }
 
 #[async_trait]
@@ -139,6 +164,13 @@ impl LibvirtClient for SnapshotClient {
     }
     async fn list_networks(&self) -> Result<Vec<Network>> {
         Ok(self.networks.clone())
+    }
+    async fn volumes(&self, pool: &str) -> Result<Vec<String>> {
+        match self.volumes.get(pool) {
+            Some(Ok(names)) => Ok(names.clone()),
+            Some(Err(why)) => Err(Error::Libvirt(format!("listing pool {pool}: {why}"))),
+            None => Err(Error::Libvirt(format!("no storage pool named {pool}"))),
+        }
     }
 }
 
@@ -151,6 +183,8 @@ pub struct FakeClient {
     pub networks: Vec<Network>,
     /// When set, every call fails with this message.
     pub fail_with: Option<String>,
+    /// Volume names per pool; a pool absent here has none.
+    pub volumes: BTreeMap<String, Vec<String>>,
 }
 
 impl FakeClient {
@@ -173,7 +207,18 @@ impl FakeClient {
                 .map(|(name, uuid)| Network { name, uuid })
                 .collect(),
             fail_with: None,
+            volumes: BTreeMap::new(),
         }
+    }
+
+    /// The same fake host, with `volume` in `pool`.
+    #[must_use]
+    pub fn with_volume(mut self, pool: &str, volume: &str) -> Self {
+        self.volumes
+            .entry(pool.to_string())
+            .or_default()
+            .push(volume.to_string());
+        self
     }
 
     /// A fake host that fails every call.
@@ -198,6 +243,16 @@ impl LibvirtClient for FakeClient {
             Some(m) => Err(Error::Libvirt(m.clone())),
             None => Ok(self.networks.clone()),
         }
+    }
+    async fn volumes(&self, pool: &str) -> Result<Vec<String>> {
+        if let Some(m) = &self.fail_with {
+            return Err(Error::Libvirt(m.clone()));
+        }
+        // As a host does: an unknown pool is an error, not an empty list.
+        if !self.pools.iter().any(|p| p.name == pool) {
+            return Err(Error::Libvirt(format!("no storage pool named {pool}")));
+        }
+        Ok(self.volumes.get(pool).cloned().unwrap_or_default())
     }
 }
 

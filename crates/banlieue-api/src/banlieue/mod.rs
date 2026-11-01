@@ -44,7 +44,8 @@ pub use vmclass::{
 pub use vmimage::{
     Architecture, BuildArtifactKind, BuildArtifactPhase, BuildArtifactStatus, DiskController,
     FirstBootSealingProvenance, GuestAgent, ImagePerProviderStatus, ImageSource, ImageSourceKind,
-    InstallMode, IsoOverlayFile, IsoOverlaySource, NicAdapter, OciArtifactPhase, OciArtifactStatus,
-    OsFamily, TrustedBootSource, VMImage, VMImageSpec, VMImageStatus, VMImageTemplate,
+    InstallMode, IsoOverlayFile, IsoOverlaySource, MAX_PRELAY_DISK_SIZE_GIB,
+    MIN_PRELAY_DISK_SIZE_GIB, NicAdapter, OciArtifactPhase, OciArtifactStatus, OsFamily,
+    PrelaySpec, TrustedBootSource, VMImage, VMImageSpec, VMImageStatus, VMImageTemplate,
     VMImageTemplateDisk, VMImageTemplateNic, ZoneImageStatus,
 };

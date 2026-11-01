@@ -30,6 +30,7 @@ mod tests {
             iso_overlay: None,
             trusted_boot: None,
             first_boot_sealing: None,
+            prelay: None,
         }
     }
 
@@ -447,6 +448,7 @@ mod tests {
             checksum: None,
             oci_artifact: None,
             first_boot_sealing_layer: false,
+            prelaid_disk_size_gi_b: None,
         };
         let json = serde_json::to_value(&s).unwrap();
         let obj = json.as_object().unwrap();
@@ -473,6 +475,7 @@ mod tests {
             checksum: None,
             oci_artifact: None,
             first_boot_sealing_layer: false,
+            prelaid_disk_size_gi_b: None,
         };
         let json = serde_json::to_value(&s).unwrap();
         assert_eq!(json["kind"], "iso");
@@ -497,6 +500,7 @@ mod tests {
             checksum: None,
             oci_artifact: None,
             first_boot_sealing_layer: false,
+            prelaid_disk_size_gi_b: None,
         };
         let json = serde_json::to_value(&s).unwrap();
         assert!(!json.as_object().unwrap().contains_key("osArtifactUid"));
@@ -516,6 +520,7 @@ mod tests {
             checksum: None,
             oci_artifact: None,
             first_boot_sealing_layer: false,
+            prelaid_disk_size_gi_b: None,
         };
         let json = serde_json::to_value(&s).unwrap();
         assert_eq!(
@@ -565,6 +570,7 @@ mod tests {
                 checksum: None,
                 oci_artifact: None,
                 first_boot_sealing_layer: false,
+                prelaid_disk_size_gi_b: None,
             }),
             ..VMImageStatus::default()
         };
@@ -936,6 +942,70 @@ mod tests {
     }
 
     // ----------------------------------------------------------------------
+    // prelay (ADR-0113, Amendment 2026-11-01)
+    // ----------------------------------------------------------------------
+
+    #[test]
+    fn vmimage_spec_omits_prelay_when_absent() {
+        let json = serde_json::to_value(minimal_vmimage_spec()).unwrap();
+        assert!(!json.as_object().unwrap().contains_key("prelay"));
+    }
+
+    #[test]
+    fn vmimage_spec_round_trips_a_prelay_disk_size() {
+        let mut json = serde_json::to_value(minimal_vmimage_spec()).unwrap();
+        json["prelay"] = serde_json::json!({ "diskSizeGiB": 20 });
+        let spec: VMImageSpec = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(spec.prelay, Some(PrelaySpec { disk_size_gi_b: 20 }));
+        assert_eq!(
+            serde_json::to_value(&spec).unwrap()["prelay"],
+            json["prelay"]
+        );
+    }
+
+    #[test]
+    fn prelay_requires_a_disk_size() {
+        let mut json = serde_json::to_value(minimal_vmimage_spec()).unwrap();
+        json["prelay"] = serde_json::json!({});
+        assert!(serde_json::from_value::<VMImageSpec>(json).is_err());
+    }
+
+    /// The reset lays out about 8 GiB of COS_RECOVERY and COS_STATE before
+    /// COS_PERSISTENT; a smaller disk cannot hold the result.
+    #[test]
+    fn prelay_disk_size_has_a_floor_in_the_crd() {
+        let crd = serde_json::to_value(VMImage::crd()).unwrap();
+        let size = &crd["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"]["spec"]["properties"]
+            ["prelay"]["properties"]["diskSizeGiB"];
+        assert_eq!(
+            size["minimum"].as_f64(),
+            Some(f64::from(MIN_PRELAY_DISK_SIZE_GIB))
+        );
+    }
+
+    #[test]
+    fn build_artifact_status_records_a_prelaid_disk_size_only_when_set() {
+        let mut s = BuildArtifactStatus {
+            kind: BuildArtifactKind::CloudImage,
+            phase: BuildArtifactPhase::Ready,
+            reason: None,
+            os_artifact_ref: "x-build".into(),
+            os_artifact_uid: None,
+            pvc_ref: None,
+            file: None,
+            message: None,
+            checksum: None,
+            oci_artifact: None,
+            first_boot_sealing_layer: false,
+            prelaid_disk_size_gi_b: None,
+        };
+        let json = serde_json::to_value(&s).unwrap();
+        assert!(!json.as_object().unwrap().contains_key("prelaidDiskSizeGiB"));
+        s.prelaid_disk_size_gi_b = Some(20);
+        assert_eq!(serde_json::to_value(&s).unwrap()["prelaidDiskSizeGiB"], 20);
+    }
+
+    // ----------------------------------------------------------------------
     // firstBootSealing (ADR-0088)
     // ----------------------------------------------------------------------
 
@@ -990,6 +1060,7 @@ mod tests {
             checksum: None,
             oci_artifact: None,
             first_boot_sealing_layer: false,
+            prelaid_disk_size_gi_b: None,
         };
         let json = serde_json::to_value(&ba).unwrap();
         assert!(
