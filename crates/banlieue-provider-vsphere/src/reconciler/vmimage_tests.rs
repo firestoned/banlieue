@@ -452,6 +452,7 @@ mod tests {
             checksum: None,
             oci_artifact: None,
             first_boot_sealing_layer: false,
+            prelaid_disk_size_gi_b: None,
         }
     }
 
@@ -803,6 +804,7 @@ mod tests {
                 iso_overlay: None,
                 trusted_boot: None,
                 first_boot_sealing: None,
+                prelay: None,
             },
             status: None,
         };
@@ -1009,6 +1011,7 @@ mod tests {
                 iso_overlay: None,
                 trusted_boot: None,
                 first_boot_sealing: None,
+                prelay: None,
             },
             status: None,
         };
@@ -1132,6 +1135,7 @@ mod tests {
                 iso_overlay: None,
                 trusted_boot: None,
                 first_boot_sealing: None,
+                prelay: None,
             },
             status: None,
         };

@@ -51,7 +51,7 @@ use crate::context::Context;
 use crate::error::{Error, Result};
 use crate::first_boot_sealing::{SealingLayerError, sealing_layer};
 use crate::importer_image::ImporterImage;
-use crate::reconciler::push;
+use crate::reconciler::{prelay, push};
 
 /// `OSArtifact`'s API group (kairos-operator, not banlieue's own).
 pub const OSARTIFACT_GROUP: &str = "build.kairos.io";
@@ -750,6 +750,7 @@ pub fn compute_build_artifact_status(
         checksum: checksum.map(str::to_string),
         oci_artifact: None,
         first_boot_sealing_layer: false,
+        prelaid_disk_size_gi_b: None,
     }
 }
 
@@ -827,6 +828,7 @@ pub fn sealing_refused_status(
         checksum: checksum.map(str::to_string),
         oci_artifact: None,
         first_boot_sealing_layer: false,
+        prelaid_disk_size_gi_b: None,
     }
 }
 
@@ -1019,6 +1021,7 @@ pub async fn reconcile(image: Arc<VMImage>, ctx: Arc<Context>) -> Result<Action>
                 checksum: source.checksum.clone(),
                 oci_artifact: None,
                 first_boot_sealing_layer: false,
+                prelaid_disk_size_gi_b: None,
             };
             patch_vmimage_status(&ctx, &name, build_status).await?;
             return Ok(requeue_default());
@@ -1167,6 +1170,19 @@ pub async fn reconcile(image: Arc<VMImage>, ctx: Arc<Context>) -> Result<Action>
         image.spec.trusted_boot.is_some(),
     );
     build_status.first_boot_sealing_layer = sealing_layer;
+    // ADR-0113: a pre-laid image is the artifact; until the pre-lay Job is
+    // done nothing may start on the raw file.
+    if let Some(request) = image.spec.prelay.as_ref() {
+        if let Some(refusal) =
+            prelay::prelay_refusal(&build_status.kind, ctx.prelay_image.as_deref())
+        {
+            prelay::apply_refusal(&mut build_status, refusal);
+        } else if build_status.phase == BuildArtifactPhase::Ready {
+            let outcome =
+                reconcile_prelay(&ctx, &name, &build_status, request.disk_size_gi_b).await?;
+            prelay::apply_prelay(&mut build_status, &outcome, request.disk_size_gi_b);
+        }
+    }
     // ADR-0064: a host-resident provider cannot mount the PVC, so a Ready
     // artifact it needs goes to the registry too.
     if build_status.phase == BuildArtifactPhase::Ready && push::needs_push(&image.spec.sources) {
@@ -1270,6 +1286,62 @@ async fn reconcile_push(
         jobs.delete(&job_name, &DeleteParams::background()).await?;
     }
     Ok(status)
+}
+
+/// Drive the pre-lay Job for a `Ready` raw build (ADR-0113): create it if
+/// absent, replace a previous build's, and once it succeeds read the digest
+/// it reported.
+async fn reconcile_prelay(
+    ctx: &Context,
+    vmimage: &str,
+    artifact: &BuildArtifactStatus,
+    disk_size_gib: u32,
+) -> Result<prelay::PrelayOutcome> {
+    let (Some(image), Some(uid)) = (
+        ctx.prelay_image.as_deref(),
+        artifact.os_artifact_uid.as_deref(),
+    ) else {
+        return Ok(prelay::PrelayOutcome::Running);
+    };
+    let job_name = prelay::prelay_job_name(&artifact.os_artifact_ref);
+    let jobs: Api<Job> = Api::namespaced(ctx.client.clone(), &ctx.build_namespace);
+    let existing = match jobs.get(&job_name).await {
+        Ok(job) => Some(job),
+        Err(kube::Error::Api(e)) if e.code == 404 => None,
+        Err(e) => return Err(Error::Kube(e)),
+    };
+    let Some(job) = existing else {
+        let desired = prelay::build_prelay_job(&prelay::PrelayJobInputs {
+            job_name: &job_name,
+            namespace: &ctx.build_namespace,
+            vmimage,
+            image,
+            artifact,
+            os_artifact_uid: uid,
+            disk_size_gib,
+            tolerations: &ctx.scheduling.tolerations,
+            node_selector: &ctx.scheduling.node_selector,
+        });
+        jobs.patch(
+            &job_name,
+            &PatchParams::apply(FIELD_MANAGER_IMAGEBUILDER).force(),
+            &Patch::Apply(&desired),
+        )
+        .await?;
+        info!(job = %job_name, "created pre-lay Job");
+        return Ok(prelay::PrelayOutcome::Running);
+    };
+    // A previous build's Job, not yet garbage-collected.
+    if !owner_uid_matches(job.metadata.owner_references.as_deref(), uid) {
+        jobs.delete(&job_name, &DeleteParams::background()).await?;
+        return Ok(prelay::PrelayOutcome::Running);
+    }
+    let message = if job_succeeded(&job) {
+        push_termination_message(ctx, &job_name).await?
+    } else {
+        None
+    };
+    Ok(prelay::prelay_outcome(&job, message.as_deref()))
 }
 
 fn job_succeeded(job: &Job) -> bool {

@@ -487,6 +487,64 @@ by `GuestReady=False` (`FirstBootSealingUnverified` or
 `firstBootSealing` on an existing `VMImage` does not rebuild an artifact
 that already exists; recreate the `VMImage`.
 
+## Pre-laying a raw image (ADR-0113)
+
+!!! warning "ADR-0113 is Proposed"
+    Implemented and tested against a live build, but not yet accepted, and
+    banlieue does not publish the pre-lay image: you build it from
+    `Dockerfile.prelay`.
+
+A raw Kairos image makes every clone run a recovery boot, a reset that lays
+out `COS_STATE` and `COS_PERSISTENT`, and a reboot before its real first
+boot. `spec.prelay` does that once, at build time: a sealed clone then
+reaches `GuestReady` in about 40 s instead of about 106 s on Cloud
+Hypervisor, and a two-member pool warms in 65 s instead of 125 s on libvirt.
+
+```yaml
+spec:
+  sources:
+    - providerClass: cloud-hypervisor
+      kind: Url
+      ref: unused-for-url-sources
+      importFrom: ghcr.io/example/kairos-debian:13@sha256:<digest>
+  firstBootSealing: {}
+  prelay:
+    diskSizeGiB: 20   # the clones' OS disk size; give their class exactly this
+```
+
+What happens, in order:
+
+1. kairos-operator builds the raw `cloudImage` as usual.
+2. The imagebuilder starts a pre-lay Job beside the artifacts PVC, running
+   `--prelay-image`. `buildArtifact` stays `Building`, reason `Prelaying`,
+   so no import Job or registry push starts on the raw file.
+3. The Job checks the built file against the source's `checksum` (when
+   set), boots it once under QEMU with no network and no TPM, writes
+   `<osartifact>-prelaid.raw` beside it and reports that file's digest.
+4. `buildArtifact` becomes `Ready` with `file` the pre-laid image,
+   `checksum` its digest and `prelaidDiskSizeGiB` the size; imports and the
+   registry push carry on from there and verify against that digest.
+
+To turn it on:
+
+- build an image from `Dockerfile.prelay` and set `--prelay-image`
+  (`BANLIEUE_PRELAY_IMAGE`);
+- make sure the build nodes have `/dev/kvm`, and select them with
+  `--build-node-selector`: the Job runs privileged in the build namespace,
+  like the kairos-operator builds already do.
+
+| `buildArtifact` | Means |
+| --- | --- |
+| `Building`, `Prelaying` | the pre-lay Job is running |
+| `Failed`, `PrelayFailed` | the Job failed or reported something other than a digest; its pod log, and the console it kept beside the output, say why |
+| `Failed`, `PrelayNeedsCloudImage` | the source builds an `iso` (vSphere); only a raw image can be pre-laid |
+| `Failed`, `PrelayImageUnset` | `--prelay-image` is not set |
+
+A pre-laid image is laid out for one disk size, and `COS_PERSISTENT` does
+not grow on a larger disk. Stages bound to the reset (`after-reset` and
+friends) no longer run on clones. See the Cloud Hypervisor guide's
+"Pre-laid images" section for the details and the measurements.
+
 ## Integrity and lifecycle (security review 2026-07-31)
 
 Two guarantees hold over everything above:

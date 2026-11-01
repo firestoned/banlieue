@@ -8,7 +8,9 @@ SPDX-License-Identifier: Apache-2.0
 - **Date:** 2026-10-31
 - **Deciders:** Erick Bourgeois
 - **Amended:** 2026-10-31 (Open question 1 answered: `COS_PERSISTENT`
-  does not grow; Decision 4 is the rule; see *Amendment: one disk size*)
+  does not grow; Decision 4 is the rule; see *Amendment: one disk size*);
+  2026-11-01 (Decision 3's imagebuilder step and its API; see *Amendment:
+  the imagebuilder pre-lays*)
 - **Related:** Roadmap 18 phase C (the measurement this acts on); builds on
   [ADR-0088](0088-first-boot-sealing-for-immediate-images.md) and
   [ADR-0112](0112-first-boot-sealing-on-cloud-hypervisor.md) (first-boot
@@ -113,8 +115,11 @@ disable automatic fallback.
    3 s.** Each step (manufacture, swtpm, VMM unit, API socket) is well under
    a second of work.
 
-**Accept when:** the imagebuilder pre-lays a `Url` image end to end; a
-`GuestReady` pool of a pre-laid image warms on Cloud Hypervisor and libvirt;
+**Accept when:** the imagebuilder pre-lays a `Url` image end to end
+(implemented 2026-11-01, *Amendment: the imagebuilder pre-lays*; not yet run
+in a cluster, which needs an image built from `Dockerfile.prelay`); a
+`GuestReady` pool of a pre-laid image warms on Cloud Hypervisor and libvirt
+(met: Cloud Hypervisor 2026-10-31, libvirt 2026-11-01, 65 s, below);
 `make ch-sealing-isolation-e2e` is green against a pre-laid image (met
 2026-10-31, below); and Open question 1 is answered (met 2026-10-31: no).
 
@@ -132,7 +137,14 @@ with `sealedPartitions: [COS_PERSISTENT]`:
 | Built by `scripts/prelay-kairos-raw.sh`, with 1 s pacing | **39.3 s** | 39, 39, 40 |
 
 The script's build boot takes about three minutes (177 s, two of them the
-networkd wait). `make ch-sealing-isolation-e2e` passed against the
+networkd wait).
+
+On libvirt (2026-11-01), a pre-laid image with a guest agent, the
+file-based phase marker and the guest-side EK export, uploaded as a
+`BackingFile` volume to one host's pool: a two-member `GuestReady` pool of a
+`tpmEnabled` class (2 vCPU, 4 GiB, 20 GiB) warmed in **65 s**, both members
+with `sealedPartitions: [COS_PERSISTENT]` and an EK certificate (34 s and
+64 s to `GuestReady`). The raw image's pool on libvirt took 125 s (ADR-0088). `make ch-sealing-isolation-e2e` passed against the
 script-built image (393 s): member A sealed and announced in 40 s, its
 disk copied to a machine with a fresh vTPM never unlocked
 (`FirstBootSealingTimeout`), and A unlocked again under its own vTPM. Each
@@ -213,3 +225,45 @@ header when it grows a fresh clone's `os.raw`, before first boot (the disk is
 still a pristine copy then, but the provider would be parsing an
 image-controlled partition table on the host, a new trust boundary that
 needs its own ADR).
+
+## Amendment: the imagebuilder pre-lays (2026-11-01)
+
+Decision 3 placed pre-laying in the builder. This is how:
+
+1. **`VMImage.spec.prelay: { diskSizeGiB }` asks for it.** It applies to a
+   `Url` source whose build is a raw `cloudImage`; for an `iso` build the
+   imagebuilder refuses (`buildArtifact.phase: Failed`, reason
+   `PrelayNeedsCloudImage`). `diskSizeGiB` is the clones' OS disk size
+   (Decision 4), at least 10 (the reset lays out about 8 GiB of `COS_STATE`
+   and `COS_RECOVERY` before `COS_PERSISTENT`). Pre-laying is not tied to
+   `firstBootSealing`: any raw Kairos image skips its recovery path this way.
+2. **A pre-lay Job runs between the build and the artifact being `Ready`.**
+   When the `OSArtifact` is `Ready`, the imagebuilder creates
+   `<osartifact>-prelay` in the build namespace, owned by the `OSArtifact`
+   (so a rebuild garbage-collects it, as the push Job), mounting the
+   artifacts PVC. Until it succeeds `buildArtifact` stays `Building`, reason
+   `Prelaying`, so no import Job or registry push starts on the raw file.
+3. **The Job keeps SEC-004's chain intact.** It verifies the built raw file
+   against the source's `checksum` (when set) **before** touching it, writes
+   the pre-laid image to `<osartifact>-prelaid.raw` beside it (the raw file
+   is never modified), and reports the result's `sha256:<hex>` as its
+   termination message. The imagebuilder then publishes `buildArtifact.file`
+   as the pre-laid file, `buildArtifact.checksum` as that digest (consumers
+   verify what they receive against a digest the builder computed from a
+   verified input) and `buildArtifact.prelaidDiskSizeGiB`. A failed Job
+   publishes `Failed`, reason `PrelayFailed`, with its message.
+4. **The Job's image is the operator's** (`--prelay-image`): it must carry
+   `scripts/prelay-kairos-raw.sh`, QEMU, OVMF, e2fsprogs, gdisk and
+   util-linux; `Dockerfile.prelay` builds one. With the flag unset, a
+   `VMImage` asking for `prelay` fails with `PrelayImageUnset` rather than
+   silently shipping the raw file.
+5. **It needs KVM on the build node.** The Job is privileged (the build
+   namespace already is, for kairos-operator's builds, ADR-0016) and uses
+   the node's `/dev/kvm`; it inherits the imagebuilder's build scheduling
+   (`--build-node-selector`, `--build-toleration`), which is how an
+   operator puts builds on KVM-capable, dedicated nodes.
+6. **QEMU runs sandboxed.** The script starts QEMU with
+   `-sandbox on,obsolete=deny,elevateprivileges=deny,spawn=deny,resourcecontrol=deny`
+   (seccomp), no network device and no TPM: the guest is the image being
+   built, run once, with nothing to reach.
+

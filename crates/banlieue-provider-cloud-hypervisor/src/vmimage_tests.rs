@@ -40,6 +40,7 @@ mod tests {
             checksum: None,
             oci_artifact: oci,
             first_boot_sealing_layer: false,
+            prelaid_disk_size_gi_b: None,
         }
     }
 

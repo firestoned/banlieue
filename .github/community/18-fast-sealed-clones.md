@@ -194,9 +194,18 @@ layout is an ADR.
 
       In the pre-laid boot the sealing window is 12.1 s (7.9 s in the raw
       flow's second boot, where the recovery boot had done part of it).
-- [ ] **The imagebuilder pre-lays `Url` images** (ADR-0113 Decision 3): a
-      build step after AuroraBoot, in a builder image carrying QEMU, OVMF,
-      e2fsprogs and gdisk, with `/dev/kvm`.
+- [x] **The imagebuilder pre-lays `Url` images** (ADR-0113, *Amendment: the
+      imagebuilder pre-lays*, 2026-11-01): `VMImage.spec.prelay.diskSizeGiB`;
+      a privileged pre-lay Job after the build verifies the raw file against
+      the source checksum, pre-lays it into a new file and reports its
+      digest, which becomes the artifact's checksum. `Dockerfile.prelay`
+      builds the Job's image (`--prelay-image`); the script's Job mode
+      (environment arguments, checksum, result file, QEMU seccomp sandbox)
+      ran live on a build host. Not yet run in a cluster: that needs the
+      image built.
+- [x] **A pre-laid pool on libvirt** (2026-11-01): two members `Warm` in
+      65 s, against 125 s for the raw image (ADR-0088), both sealed with an
+      EK certificate.
 - [x] **Does `COS_PERSISTENT` grow on a larger clone disk?** No
       (2026-10-31, ADR-0113 *Amendment: one disk size*): a 20 GiB pre-laid
       image cloned to a 40 GiB disk keeps a 13.1 GB `persistent`, the rest
@@ -204,11 +213,24 @@ layout is an ADR.
       the initramfs, the layout tool dropped the partition label without
       growing it, and its plaintext guard did not hold). Pre-lay at the
       class's disk size.
-- [ ] **The next levers to 30 s.** What remains of 39 s: provider 5 s, **9 s
-      from the VMM starting to the firmware handing over to GRUB** (Cloud
-      Hypervisor's firmware, possibly the prototype VMM's vTPM polling),
-      kernel to `rootfs` 8 s, sealing 12 s, report 4 s. The firmware's 9 s
-      is the largest single step left and the cheapest to investigate.
+- [x] **Where the firmware's 9 s goes** (2026-11-01). Twelve VMs on three
+      hosts (prototype and tpmfix VMMs, with and without a vTPM), console
+      and unit start times on one clock:
+
+      | VMM unit started → first console byte | first console byte → firmware hands off to GRUB |
+      | --- | --- |
+      | 3.4 s on most runs (0.4 s on some) | 3.5 to 8.5 s, any host, any VMM, with or without a vTPM |
+
+      About 3.4 s is **banlieue's pacing**: the provider starts the VMM unit
+      and boots the VM on the next pass (3 s in v0.4.8; the 1 s
+      `REQUEUE_TRANSITION` change cuts it). The swtpm → VMM gap is the same
+      pass (3.05 s every time). The rest, **4 to 8 s, is the firmware
+      itself**, silent on the console, and the same on the prototype and the
+      tpmfix VMMs and with no vTPM at all: **not the vTPM polling**, and
+      nothing for the upstream vTPM fix.
+- [ ] **Find what the firmware waits on** for 4 to 8 s before choosing the
+      boot disk: a debug build of the firmware (`CLOUDHV.fd`) with its
+      log on the console. The largest step left between 39 s and 30 s.
 - [ ] Re-measure the pool with whichever lands, on all three backends.
 
 ## D. Verified base and build-time scanner (invariants 1, 3) ⛔

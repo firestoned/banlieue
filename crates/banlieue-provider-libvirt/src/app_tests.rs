@@ -152,6 +152,7 @@ mod tests {
             checksum: None,
             oci_artifact: None,
             first_boot_sealing_layer: false,
+            prelaid_disk_size_gi_b: None,
         };
 
         let job = crate::reconciler::vmimage::build_import_job(

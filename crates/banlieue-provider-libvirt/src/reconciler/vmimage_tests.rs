@@ -17,6 +17,7 @@ mod tests {
     use banlieue_provider_sdk::scheduling::parse_tolerations;
     use k8s_openapi::api::batch::v1::{Job, JobStatus};
     use kube::api::ObjectMeta;
+    use std::collections::BTreeMap;
 
     fn artifact(phase: BuildArtifactPhase) -> BuildArtifactStatus {
         BuildArtifactStatus {
@@ -33,6 +34,7 @@ mod tests {
             checksum: None,
             oci_artifact: None,
             first_boot_sealing_layer: false,
+            prelaid_disk_size_gi_b: None,
         }
     }
 
@@ -534,20 +536,59 @@ mod tests {
         assert_eq!(backing_file_volume_name("/a/b/c/disk.img"), "disk.img");
     }
 
-    /// A `BackingFile` source is ready immediately and must publish the
-    /// volume a machine will look up.
-    #[test]
-    fn backing_file_source_publishes_its_resolved_ref() {
-        let source = ImageSource {
+    fn backing_source() -> ImageSource {
+        ImageSource {
             provider_class: "libvirt".into(),
             kind: ImageSourceKind::BackingFile,
             reference: "/var/lib/libvirt/images/ubuntu-22.04.qcow2".into(),
             import_from: None,
             checksum: None,
-        };
-        let row = backing_file_row(&provider_with_pools("default"), &source);
+        }
+    }
+
+    /// A `BackingFile` source is ready once every target pool holds the
+    /// volume, and then publishes the volume a machine will look up.
+    #[test]
+    fn backing_file_source_is_ready_when_every_target_pool_has_the_volume() {
+        let present = BTreeMap::from([("default".to_string(), true), ("fast".to_string(), true)]);
+        let row = backing_file_row(&provider_with_pools("default"), &backing_source(), &present);
         assert!(row.ready);
+        assert_eq!(row.reason.as_deref(), Some(reasons::RECONCILED));
         assert_eq!(row.resolved_ref.as_deref(), Some("ubuntu-22.04.qcow2"));
+    }
+
+    /// Seen live 2026-11-01: a volume on one host was reported ready on two
+    /// others, so a machine could be scheduled where it cannot be created.
+    #[test]
+    fn backing_file_source_is_not_ready_where_a_pool_lacks_the_volume() {
+        let present = BTreeMap::from([("default".to_string(), true), ("fast".to_string(), false)]);
+        let row = backing_file_row(&provider_with_pools("default"), &backing_source(), &present);
+        assert!(!row.ready);
+        assert_eq!(row.reason.as_deref(), Some(reasons::VOLUME_NOT_FOUND));
+        let message = row.message.unwrap();
+        assert!(
+            message.contains("ubuntu-22.04.qcow2") && message.contains("fast"),
+            "{message}"
+        );
+        assert!(
+            !message.contains("default"),
+            "only the pools that lack it: {message}"
+        );
+        assert_eq!(
+            row.resolved_ref, None,
+            "no reference until every pool has it"
+        );
+    }
+
+    #[test]
+    fn backing_file_source_with_no_pools_checked_is_not_ready() {
+        let row = backing_file_row(
+            &provider_with_pools("default"),
+            &backing_source(),
+            &BTreeMap::new(),
+        );
+        assert!(!row.ready);
+        assert_eq!(row.resolved_ref, None);
     }
 
     /// A `Url` source's volume is named by the import Job, deterministically,

@@ -148,6 +148,37 @@ pub struct VMImageSpec {
     /// `trustedBoot`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub first_boot_sealing: Option<FirstBootSealing>,
+
+    /// Pre-lay the built image (ADR-0113): `banlieue-imagebuilder` boots the
+    /// raw `cloudImage` once, at build time, through the Kairos recovery
+    /// reset every clone would otherwise run on its first boot, so each
+    /// clone boots straight into the installed system. Only for a `Url`
+    /// source built as a `cloudImage`; an `iso` build is refused
+    /// (`PrelayNeedsCloudImage`). Needs `banlieue-imagebuilder
+    /// --prelay-image`. The published artifact is the pre-laid file, with a
+    /// checksum the builder computed after verifying the built file against
+    /// the source's `checksum`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prelay: Option<PrelaySpec>,
+}
+
+/// Smallest disk a Kairos image can be pre-laid for: the reset lays out
+/// about 8 GiB of `COS_RECOVERY` and `COS_STATE` before `COS_PERSISTENT`.
+pub const MIN_PRELAY_DISK_SIZE_GIB: u32 = 10;
+/// Largest pre-lay disk size accepted, 64 TiB in GiB.
+pub const MAX_PRELAY_DISK_SIZE_GIB: u32 = 65_536;
+
+/// How to pre-lay a `VMImage`'s built raw image (ADR-0113).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PrelaySpec {
+    /// The clones' OS disk size, in GiB. `COS_PERSISTENT` fills a disk of
+    /// this size and does not grow on a larger one, and a smaller one cannot
+    /// hold the image: give the classes that use this image this disk size
+    /// (ADR-0113 Decision 4).
+    #[serde(rename = "diskSizeGiB")]
+    #[schemars(range(min = MIN_PRELAY_DISK_SIZE_GIB, max = MAX_PRELAY_DISK_SIZE_GIB))]
+    pub disk_size_gi_b: u32,
 }
 
 /// Requests a Trusted Boot (UKI) artifact for a `VMImage`'s `Url` source.
@@ -700,6 +731,16 @@ pub struct BuildArtifactStatus {
     /// merged cloud-config this artifact was built from. Omitted when false.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub first_boot_sealing_layer: bool,
+
+    /// The disk size, in GiB, the artifact was pre-laid for (ADR-0113), when
+    /// `spec.prelay` was honoured: `file` is then the pre-laid image and
+    /// `checksum` its digest, computed by the builder. Omitted otherwise.
+    #[serde(
+        default,
+        rename = "prelaidDiskSizeGiB",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub prelaid_disk_size_gi_b: Option<u32>,
 }
 
 /// Progress of pushing the build artifact to an OCI registry (ADR-0064

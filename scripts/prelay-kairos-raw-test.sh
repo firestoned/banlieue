@@ -56,6 +56,16 @@ else
   echo "skip grub-editenv cross-check (not installed)"
 fi
 
+# ---- verify_checksum ------------------------------------------------------------
+
+printf 'kairos' >"$WORK/blob"
+good="sha256:$(sha256sum "$WORK/blob" | cut -d' ' -f1)"
+check "a matching sha256 passes" bash -c "PRELAY_SOURCE_ONLY=1 source '$SCRIPT'; verify_checksum '$WORK/blob' '$good'"
+check "a matching sha512 passes" bash -c "PRELAY_SOURCE_ONLY=1 source '$SCRIPT'; verify_checksum '$WORK/blob' 'sha512:$(sha512sum "$WORK/blob" | cut -d' ' -f1)'"
+check "a mismatch fails" bash -c "! (PRELAY_SOURCE_ONLY=1 source '$SCRIPT'; verify_checksum '$WORK/blob' 'sha256:$(printf '0%.0s' {1..64})') 2>/dev/null"
+check "md5 is refused" bash -c "! (PRELAY_SOURCE_ONLY=1 source '$SCRIPT'; verify_checksum '$WORK/blob' 'md5:0123') 2>/dev/null"
+check "upper-case hex is refused" bash -c "! (PRELAY_SOURCE_ONLY=1 source '$SCRIPT'; verify_checksum '$WORK/blob' '${good^^}') 2>/dev/null"
+
 # ---- argument checks (before anything is touched) ---------------------------
 
 expect_fail() { # case name, expected message fragment, args...
@@ -72,6 +82,12 @@ expect_fail "a non-numeric size is refused" "positive number" "$WORK/in.raw" "$W
 expect_fail "a zero size is refused" "positive number" "$WORK/in.raw" "$WORK/out.raw" 0
 expect_fail "a missing input is refused" "not found" "$WORK/nope.raw" "$WORK/out.raw"
 expect_fail "an existing output is never overwritten" "exists" "$WORK/in.raw" "$WORK/exists.raw"
+
+# The Job passes its arguments through the environment.
+out=$(PRELAY_INPUT="$WORK/nope.raw" PRELAY_OUTPUT="$WORK/out.raw" bash "$SCRIPT" 2>&1)
+if [[ $out == *"not found"* ]]; then ok "arguments can come from PRELAY_INPUT/PRELAY_OUTPUT"; else fail "env arguments: got '$out'"; fi
+out=$(PRELAY_INPUT="$WORK/in.raw" bash "$SCRIPT" 2>&1)
+if [[ $out == *"usage:"* ]]; then ok "PRELAY_INPUT without PRELAY_OUTPUT is a usage error"; else fail "env without output: got '$out'"; fi
 
 if ((failures > 0)); then
   echo "$failures failure(s)"

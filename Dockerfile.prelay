@@ -1,0 +1,41 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# Image for banlieue-imagebuilder's pre-lay Job (ADR-0113, Amendment
+# 2026-11-01): `--prelay-image`.
+#
+# The Job boots a freshly built Kairos raw image once, under QEMU/KVM with no
+# network and no TPM, through the recovery reset every clone would otherwise
+# run on its first boot, and writes the result beside it on the artifacts PVC
+# (scripts/prelay-kairos-raw.sh says exactly what it does and refuses). It
+# needs QEMU and OVMF to boot the image, and loop devices, mounts and
+# e2fsprogs, gdisk and util-linux to inspect and fix the disk afterwards.
+#
+# Unlike the banlieue image (distroless, one static binary) this one is a
+# Debian userland, because the job is a shell script over those tools. It
+# runs privileged in the build namespace (ADR-0016) with no API access.
+#
+# Build (banlieue does not publish it yet):
+#     docker build -f Dockerfile.prelay -t <registry>/banlieue-prelay:<tag> .
+#
+# Pinned by digest, on a literal FROM line, so Dependabot re-pins it (see
+# Dockerfile for why the digest must not hide behind an ARG). BASE_IMAGE stays
+# overridable for a mirror.
+ARG BASE_IMAGE=pinned-base
+
+FROM docker.io/library/debian:13-slim@sha256:f6b08b09a05725f9431502d3b5714f5c4576e82c1a84fa1debe0c24a7e0c3ec4 AS pinned-base
+
+FROM ${BASE_IMAGE}
+
+# qemu-system-x86: the build boot; ovmf: its UEFI firmware; e2fsprogs:
+# mke2fs; gdisk: sgdisk -e; util-linux: losetup, blkid, mount; coreutils:
+# sha256sum/sha512sum, truncate, cp --sparse.
+RUN apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      qemu-system-x86 ovmf e2fsprogs gdisk util-linux coreutils \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY scripts/prelay-kairos-raw.sh /usr/local/bin/prelay-kairos-raw.sh
+RUN chmod 0755 /usr/local/bin/prelay-kairos-raw.sh
+
+ENTRYPOINT ["/usr/local/bin/prelay-kairos-raw.sh"]

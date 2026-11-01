@@ -209,6 +209,14 @@ pub struct Cli {
     /// `ca.crt`.
     #[arg(long, env = "BANLIEUE_REGISTRY_CA_BUNDLE_KEY")]
     pub registry_ca_bundle_key: Option<String>,
+
+    /// Image the pre-lay Job runs for a `VMImage` with `spec.prelay`
+    /// (ADR-0113): it must carry `prelay-kairos-raw.sh`, QEMU, OVMF,
+    /// e2fsprogs, gdisk and util-linux (`Dockerfile.prelay` builds one), and
+    /// the build nodes need `/dev/kvm`. Unset: such a `VMImage` fails with
+    /// `PrelayImageUnset`.
+    #[arg(long, env = "BANLIEUE_PRELAY_IMAGE")]
+    pub prelay_image: Option<String>,
 }
 
 /// Subcommands of `banlieue imagebuilder`.
@@ -354,12 +362,16 @@ pub async fn run(cli: Cli) -> Result<()> {
         Some(r) => info!(repository = %r.repository, "registry push enabled"),
         None => info!("no --registry-repository: build artifacts are not pushed"),
     }
+    if let Some(image) = &cli.prelay_image {
+        info!(%image, "pre-laying enabled (ADR-0113)");
+    }
     let ctx = Arc::new(Context::new(
         client.clone(),
         cli.build_namespace.clone(),
         scheduling,
         importer_image,
         registry,
+        cli.prelay_image.clone(),
     ));
 
     // VMImage is cluster-scoped — always watch every namespace.

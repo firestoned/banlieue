@@ -152,6 +152,7 @@ mod tests {
             iso_overlay: None,
             trusted_boot: None,
             first_boot_sealing: Some(banlieue_api::common::FirstBootSealing::default()),
+            prelay: None,
         }
     }
 
@@ -169,6 +170,7 @@ mod tests {
                 checksum: None,
                 oci_artifact: None,
                 first_boot_sealing_layer: layer,
+                prelaid_disk_size_gi_b: None,
             }),
             ..Default::default()
         }

@@ -40,12 +40,21 @@
 #   scripts/prelay-kairos-raw.sh <input.raw> <output.raw> [disk-size-GiB]
 #
 #   disk-size-GiB  the clones' OS disk size (default 20). COS_PERSISTENT
-#                  fills it; a clone's disk must be at least this large.
+#                  fills it and does not grow on a larger disk; give the
+#                  clones' class exactly this size (ADR-0113 Decision 4).
+#
+# With no arguments, the three come from PRELAY_INPUT, PRELAY_OUTPUT and
+# PRELAY_DISK_SIZE_GIB: that is how banlieue-imagebuilder's pre-lay Job runs
+# it (ADR-0113, Amendment 2026-11-01).
 #
 # Environment:
 #   OVMF_CODE      UEFI firmware code (default: first of the usual paths)
 #   OVMF_VARS      UEFI variable template (default: next to OVMF_CODE)
 #   PRELAY_TIMEOUT seconds the build boot may take (default 900)
+#   PRELAY_VERIFY_CHECKSUM  <alg>:<hex> (sha256 or sha512) the input must
+#                  match before anything is done to it (SEC-004)
+#   PRELAY_RESULT_FILE  where to write the output's sha256:<hex> when done
+#                  (the Job's /dev/termination-log)
 #
 # Needs: qemu-system-x86_64, sgdisk, losetup, blkid, mke2fs, mount, truncate.
 set -euo pipefail
@@ -59,6 +68,10 @@ readonly BUILD_CONFIG="00_banlieue_prelay.yaml"
 readonly BUILD_USER="banlieue-prelay"
 readonly BUILD_PASSWORD_BYTES=24
 readonly ACTIVE_IMAGE="cOS/active.img"
+# QEMU's seccomp sandbox: the guest is the image being built, run once with
+# no network and no TPM; it has no business spawning, escalating or
+# reconfiguring anything on the build node.
+readonly QEMU_SANDBOX="on,obsolete=deny,elevateprivileges=deny,spawn=deny,resourcecontrol=deny"
 readonly BUILD_VCPUS=2
 readonly BUILD_MEMORY_MIB=4096
 readonly OVMF_CODE_CANDIDATES=(
@@ -103,6 +116,20 @@ part_by_label() {
   return 1
 }
 
+# verify_checksum <file> <alg>:<hex>: fail unless <file> matches.
+verify_checksum() {
+  local file=$1 expected=$2 alg hex actual
+  alg=${expected%%:*}
+  hex=${expected#*:}
+  case $alg in
+    sha256 | sha512) ;;
+    *) die "unsupported checksum algorithm '$alg' (sha256 or sha512)" ;;
+  esac
+  [[ $hex =~ ^[0-9a-f]+$ ]] || die "checksum '$expected' is not <alg>:<lowercase hex>"
+  actual=$("${alg}sum" "$file" | cut -d' ' -f1)
+  [[ $actual == "$hex" ]] || die "checksum mismatch for $file: expected $expected, computed $alg:$actual"
+}
+
 find_ovmf() {
   if [[ -n ${OVMF_CODE:-} ]]; then echo "$OVMF_CODE"; return; fi
   local c
@@ -111,7 +138,10 @@ find_ovmf() {
 }
 
 main() {
-  [[ $# -ge 2 && $# -le 3 ]] || die "usage: $0 <input.raw> <output.raw> [disk-size-GiB]"
+  if [[ $# -eq 0 && -n ${PRELAY_INPUT:-} ]]; then
+    set -- "$PRELAY_INPUT" "${PRELAY_OUTPUT:-}" "${PRELAY_DISK_SIZE_GIB:-}"
+  fi
+  [[ $# -ge 2 && $# -le 3 && -n $2 ]] || die "usage: $0 <input.raw> <output.raw> [disk-size-GiB]"
   # Globals, not locals: the EXIT trap runs after main returns.
   input=$1 out=$2
   local size_gib=${3:-$DEFAULT_DISK_SIZE_GIB}
@@ -144,6 +174,10 @@ main() {
   }
   trap cleanup EXIT
 
+  if [[ -n ${PRELAY_VERIFY_CHECKSUM:-} ]]; then
+    say "verifying $input against $PRELAY_VERIFY_CHECKSUM"
+    verify_checksum "$input" "$PRELAY_VERIFY_CHECKSUM"
+  fi
   say "copying $input to $out, grown to ${size_gib} GiB"
   cp --sparse=always "$input" "$out"
   truncate -s "${size_gib}G" "$out"
@@ -179,7 +213,7 @@ main() {
     -drive if=pflash,format=raw,readonly=on,file="$code" \
     -drive if=pflash,format=raw,file="$work/vars.fd" \
     -drive file="$out",if=virtio,format=raw \
-    -nic none \
+    -nic none -sandbox "$QEMU_SANDBOX" \
     -display none -serial file:"$work/serial.log" -monitor none || rc=$?
   ((rc == 0)) || die "build boot failed or timed out (rc=$rc); console kept as $out.failed-console.log"
   if grep -aq 'KAIROS BOOT FAILED' "$work/serial.log"; then
@@ -218,6 +252,9 @@ main() {
   [[ -z $(find "$mnt" -mindepth 1 -not -name lost+found -print -quit) ]] || die "COS_PERSISTENT is not empty"
   umount "$mnt"
   losetup -d "$loop"; loop=""
+  if [[ -n ${PRELAY_RESULT_FILE:-} ]]; then
+    printf 'sha256:%s\n' "$(sha256sum "$out" | cut -d' ' -f1)" >"$PRELAY_RESULT_FILE"
+  fi
   done=1
   say "pre-laid image written: $out"
 }

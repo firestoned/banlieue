@@ -87,6 +87,7 @@ mod tests {
                 iso_overlay: None,
                 trusted_boot: None,
                 first_boot_sealing: None,
+                prelay: None,
             },
             status: Some(VMImageStatus {
                 per_provider: vec![ImagePerProviderStatus {

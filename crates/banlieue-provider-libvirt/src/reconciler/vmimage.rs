@@ -4,8 +4,9 @@
 //!
 //! For sources where `providerClass == "libvirt"`:
 //!
-//! - **`BackingFile`** — a volume expected to already exist on the host. Ready
-//!   when it is actually present in the target pool.
+//! - **`BackingFile`**: a volume expected to already exist on the host. Ready
+//!   only when it is present in every target pool (checked on each
+//!   reconcile, `VolumeNotFound` otherwise).
 //! - **`Url`** — gated on `VMImage.status.buildArtifact.phase == Ready`,
 //!   which only `banlieue-imagebuilder` ever writes (ADR-0010). Once the raw
 //!   disk exists, one import Job per target pool streams it in.
@@ -64,6 +65,8 @@ pub mod reasons {
     pub const IMPORT_FAILED: &str = "ImportFailed";
     /// A `BackingFile` source names a volume the pool does not contain.
     pub const VOLUME_NOT_FOUND: &str = "VolumeNotFound";
+    /// The host could not be asked whether a `BackingFile` volume exists.
+    pub const HOST_UNREACHABLE: &str = "HostUnreachable";
     /// This source kind is not supported by the libvirt provider.
     pub const UNSUPPORTED_SOURCE_KIND: &str = "UnsupportedSourceKind";
 }
@@ -136,11 +139,31 @@ async fn reconcile_for_provider(
 ) -> ImagePerProviderStatus {
     match source.kind {
         ImageSourceKind::BackingFile => {
-            // Declared to exist already; nothing to import. Treated as ready
-            // without contacting the host: verifying it would need a
-            // connection per reconcile for a source the admin asserted is
-            // static. The provider's own probe already proves reachability.
-            backing_file_row(provider, source)
+            // Declared to exist already; nothing to import. But it is ready
+            // only where the volume really is: an image reported ready on a
+            // host without it lets a machine schedule there and fail to
+            // define (seen live 2026-11-01).
+            let pools = target_pools(provider);
+            if pools.is_empty() {
+                return row(
+                    provider,
+                    false,
+                    reasons::NO_FAILURE_DOMAINS,
+                    Some("Provider has published no failure domains yet".to_string()),
+                    Vec::new(),
+                );
+            }
+            let volume = backing_file_volume_name(&source.reference);
+            match backing_file_presence(ctx, provider, &pools, volume).await {
+                Ok(present) => backing_file_row(provider, source, &present),
+                Err(why) => row(
+                    provider,
+                    false,
+                    reasons::HOST_UNREACHABLE,
+                    Some(why),
+                    Vec::new(),
+                ),
+            }
         }
         ImageSourceKind::Url => match gate_on_raw_disk(raw_disk) {
             Err((reason, message)) => row(provider, false, reason, Some(message), Vec::new()),
@@ -427,15 +450,70 @@ pub fn url_volume_name(image_name: &str, kind: &BuildArtifactKind) -> String {
     format!("{image_name}{suffix}")
 }
 
-/// The `perProvider` row for a `BackingFile` source.
-fn backing_file_row(provider: &Provider, source: &ImageSource) -> ImagePerProviderStatus {
+/// Which of `pools` hold `volume` on `provider`'s host.
+///
+/// # Errors
+/// Why the host could not be asked: its credentials, the connection, or a
+/// pool that could not be listed.
+async fn backing_file_presence(
+    ctx: &Context,
+    provider: &Provider,
+    pools: &[String],
+    volume: &str,
+) -> std::result::Result<BTreeMap<String, bool>, String> {
+    let namespace = provider.namespace().unwrap_or_default();
+    let identity = crate::credentials::resolve(&ctx.client, &namespace, provider)
+        .await
+        .map_err(|e| format!("credentials: {e}"))?;
+    let client = ctx
+        .libvirt
+        .build(&provider.spec.connection, &identity)
+        .await
+        .map_err(|e| format!("connecting to the host: {e}"))?;
+    let mut present = BTreeMap::new();
+    for pool in pools {
+        let names = client.volumes(pool).await.map_err(|e| e.to_string())?;
+        present.insert(pool.clone(), names.iter().any(|n| n == volume));
+    }
+    Ok(present)
+}
+
+/// The `perProvider` row for a `BackingFile` source, given which target
+/// pools hold its volume: ready, with the volume as its reference, only when
+/// every one does. A reference is never published for a volume some pool
+/// lacks, as for a half-imported `Url` source.
+fn backing_file_row(
+    provider: &Provider,
+    source: &ImageSource,
+    present: &BTreeMap<String, bool>,
+) -> ImagePerProviderStatus {
+    let volume = backing_file_volume_name(&source.reference);
+    let missing: Vec<&str> = present
+        .iter()
+        .filter(|(_, here)| !**here)
+        .map(|(pool, _)| pool.as_str())
+        .collect();
+    if present.is_empty() || !missing.is_empty() {
+        let message = if present.is_empty() {
+            format!("no pool was checked for volume {volume}")
+        } else {
+            format!("volume {volume} is not in pool(s) {}", missing.join(", "))
+        };
+        return row(
+            provider,
+            false,
+            reasons::VOLUME_NOT_FOUND,
+            Some(message),
+            Vec::new(),
+        );
+    }
     row_with_ref(
         provider,
         true,
         reasons::RECONCILED,
         None,
         Vec::new(),
-        Some(backing_file_volume_name(&source.reference).to_string()),
+        Some(volume.to_string()),
     )
 }
 
