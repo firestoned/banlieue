@@ -64,7 +64,8 @@ check "a matching sha256 passes" bash -c "PRELAY_SOURCE_ONLY=1 source '$SCRIPT';
 check "a matching sha512 passes" bash -c "PRELAY_SOURCE_ONLY=1 source '$SCRIPT'; verify_checksum '$WORK/blob' 'sha512:$(sha512sum "$WORK/blob" | cut -d' ' -f1)'"
 check "a mismatch fails" bash -c "! (PRELAY_SOURCE_ONLY=1 source '$SCRIPT'; verify_checksum '$WORK/blob' 'sha256:$(printf '0%.0s' {1..64})') 2>/dev/null"
 check "md5 is refused" bash -c "! (PRELAY_SOURCE_ONLY=1 source '$SCRIPT'; verify_checksum '$WORK/blob' 'md5:0123') 2>/dev/null"
-check "upper-case hex is refused" bash -c "! (PRELAY_SOURCE_ONLY=1 source '$SCRIPT'; verify_checksum '$WORK/blob' '${good^^}') 2>/dev/null"
+upper=$(printf '%s' "$good" | tr '[:lower:]' '[:upper:]')
+check "upper-case hex is refused" bash -c "! (PRELAY_SOURCE_ONLY=1 source '$SCRIPT'; verify_checksum '$WORK/blob' '$upper') 2>/dev/null"
 
 # ---- argument checks (before anything is touched) ---------------------------
 

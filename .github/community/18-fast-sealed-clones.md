@@ -201,8 +201,9 @@ layout is an ADR.
       digest, which becomes the artifact's checksum. `Dockerfile.prelay`
       builds the Job's image (`--prelay-image`); the script's Job mode
       (environment arguments, checksum, result file, QEMU seccomp sandbox)
-      ran live on a build host. Not yet run in a cluster: that needs the
-      image built.
+      ran live on a build host, then **in a cluster (2026-11-02)**: a Hadron
+      `Url` image pre-laid by the Job (digest verified), and its clone sealed
+      and `GuestReady` in **30 s** on Cloud Hypervisor. ADR-0113 accepted.
 - [x] **A pre-laid pool on libvirt** (2026-11-01): two members `Warm` in
       65 s, against 125 s for the raw image (ADR-0088), both sealed with an
       EK certificate.

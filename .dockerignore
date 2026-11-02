@@ -28,3 +28,6 @@ docs/
 deploy/
 examples/
 scripts/
+# ...except the one script Dockerfile.prelay ships: the pre-lay Job's image
+# runs it (ADR-0113). The banlieue image never COPYs it.
+!scripts/prelay-kairos-raw.sh

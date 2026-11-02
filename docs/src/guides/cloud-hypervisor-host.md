@@ -914,11 +914,10 @@ kubectl get cloudhypervisormachine <m> -o jsonpath='{.spec.firstBootSealing} {.s
 
 ### Pre-laid images: sealed clones in about 40 s
 
-!!! warning "ADR-0113 is Proposed"
-    The tool and the measurements below are real. For a `Url` image the
-    imagebuilder pre-lays it when the `VMImage` sets `spec.prelay` and the
-    imagebuilder has `--prelay-image` (see the imagebuilder guide); for a
-    `BackingFile` image you run the script yourself, as below.
+For a `Url` image the imagebuilder pre-lays it when the `VMImage` sets
+`spec.prelay` and the imagebuilder has `--prelay-image` (see the imagebuilder
+guide; ADR-0113, accepted 2026-11-02); for a `BackingFile` image you run the
+script yourself, as below.
 
 A Kairos raw image (AuroraBoot `disk.raw`) makes every clone run a recovery
 boot, a reset that lays out `COS_STATE` and `COS_PERSISTENT`, and a reboot,
