@@ -1,5 +1,39 @@
 # Changelog
 
+## [2026-11-02 10:00] - Real host names scrubbed; an automated check for real infrastructure
+
+**Author:** Erick Bourgeois
+
+### Changed
+- Test fixtures and one doc example used the maintainer's real host and
+  Provider names: `crates/banlieue-controller/src/metrics_tests.rs`,
+  `crates/banlieue-operator/src/events_tests.rs`,
+  `crates/banlieue-provider-sdk/src/leader_tests.rs`,
+  `crates/banlieue-provider-sdk/src/reconciler_tests.rs`,
+  `docs/src/guides/observability.md`. Now placeholders (`ch-bar`, `kvm-a`,
+  `kvm-b`, `bar`). Tests only; no behaviour changes.
+- Three historical entries in this CHANGELOG and two notes in
+  `.wolf/cerebrum.md` named real hosts; reworded without them. One palette
+  description reworded to its hex value so the local check stays strict.
+
+### Added
+- `scripts/check-infra-identifiers.sh` (+ `-test.sh`), `make
+  check-infra-identifiers` and `make check-infra-identifiers-test`: fail on a
+  host under the maintainer's domain, a Tailscale MagicDNS name, or a single
+  tailnet address, with generic patterns that name nothing real; plus, when
+  present, a local denylist (`~/.config/banlieue/infra-denylist`) for real
+  short host names, which cannot be committed without publishing them.
+  Portable to macOS's bash 3.2 and BSD grep (found and fixed while testing).
+- `.github/workflows/build.yaml`: `🕵️ No Real Infrastructure` job on every
+  pull request, required through `✅ Required Checks`.
+- `.claude/rules/no-real-infrastructure.md`: "The automated check".
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only (tests, CI, docs)
+
 ## [2026-11-01 19:30] - ADR-0087 amended: a workload for one Provider writes one row (vSphere, Proxmox, libvirt)
 
 **Author:** Erick Bourgeois
@@ -4415,7 +4449,7 @@ did nothing.
   live by the sabotage e2e.
 - `crates/banlieue-provider-libvirt/tests/e2e_pool_claim.rs`: two new
   `#[ignore]` tests closing roadmap 17's last untested DoD items, both
-  **green against a real libvirt host + cluster (grill, 2026-09-28)**:
+  **green against a real libvirt host + cluster (2026-09-28)**:
   - `bumping_the_image_rolls_the_pool_without_dropping_below_warm` — scratch
     `VMImage` copy, generation bump via inert spec patch, every-poll
     assertion of `available ≥ warmReplicas`; completion keyed on the new
@@ -4435,7 +4469,7 @@ did nothing.
   probe at ~T+38s with the next due at ~T+338s — past the pool's
   `provisioningTimeoutSeconds` — so a `GuestReady` pool reaped every member
   it ever created (8 generations churned in one 17-minute run). Found by the
-  first live run of the sabotage e2e; `live_guest` (70.5s green on grill)
+  first live run of the sabotage e2e; `live_guest` (70.5s green on a libvirt host)
   isolated the reconciler cadence as the sole cause. Four new unit tests pin
   the matrix; the age is computed saturating so clock skew errs toward
   polling fast.
@@ -4494,7 +4528,7 @@ only; no new component, asset, boundary or control); stamp advanced to
   (regenerated `docs/src/architecture/flows.md`).
 - `deploy/crds/banlieue.io_providers.yaml` + `docs/src/reference/api.md`:
   regenerated (`make crds`); additive-only, server-dry-run-verified against
-  the lenny cluster. **The live CRD needs a `kubectl apply` on deploy.**
+  the test cluster. **The live CRD needs a `kubectl apply` on deploy.**
 - `examples/01-provider-vsphere-dc1.yaml`, `examples/02-provider-libvirt-edge.yaml`:
   commented `attestation.ekTrustBundle` stanzas with per-backend provenance.
 - `docs/src/guides/virtualmachine-claims.md`: new "Verifying a quote: where
@@ -17875,7 +17909,7 @@ Two separate issues, fixed together: the examples now target the same default na
 - `docs/src/concepts/`: `index.md`, `architecture.md` (components, reconcile flow, watches, SSA), `virtualmachine.md` (CRD shape, status, lifecycle), `providers.md` (Provider CR + provider controller anatomy + SDK pointers), `infra-crds-capi.md` (why we satisfy the CAPI v1beta2 InfraMachine contract).
 - `docs/src/getting-started/quickstart.md`: stubbed Phase 0/1A quick start with explicit "not production-ready" admonition.
 - `docs/src/reference/roadmap.md` + `docs/src/reference/license.md`: public-facing roadmap (Phase 0 → 1E) and Apache-2.0 summary.
-- `docs/src/stylesheets/extra.css`: neutral slate/sky/amber palette (no corporate branding from the 5-spot source), mermaid zoom/pan, TOC, mobile + print styles.
+- `docs/src/stylesheets/extra.css`: neutral blue-grey (#334155), sky and amber palette (no corporate branding from the 5-spot source), mermaid zoom/pan, TOC, mobile + print styles.
 - `docs/src/javascripts/mermaid-init.js`: mermaid initialiser + zoom/pan handlers, supports Material's instant-navigation re-render via `document$`.
 - Root `Makefile`: `docs`, `docs-serve`, `docs-clean`, `docs-deploy` targets — Poetry-based, all logic in the Makefile per the project's "workflows are Makefile-driven" rule.
 - Root `.gitignore`: ignore `docs/site/`, `docs/.venv/`, `docs/__pycache__/`.

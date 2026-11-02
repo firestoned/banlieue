@@ -186,7 +186,7 @@ mod tests {
     /// the next best name, so a stale Lease says which host stopped.
     #[test]
     fn identity_falls_back_to_the_kernel_hostname() {
-        assert_eq!(identity_from(None, None, Some("grill\n".into())), "grill");
+        assert_eq!(identity_from(None, None, Some("bar\n".into())), "bar");
     }
 
     #[test]

@@ -307,6 +307,12 @@ dco-check: ## Fail unless every commit in DCO_RANGE (default origin/main..HEAD) 
 dco-check-test: ## Test scripts/dco-check.sh against throwaway repositories
 	@scripts/dco-check-test.sh
 
+check-infra-identifiers: ## Fail if a tracked file names real infrastructure (generic patterns; plus ~/.config/banlieue/infra-denylist when present)
+	@scripts/check-infra-identifiers.sh
+
+check-infra-identifiers-test: ## Test scripts/check-infra-identifiers.sh against throwaway repositories
+	@scripts/check-infra-identifiers-test.sh
+
 git-cliff-install: ## Install the pinned git-cliff (linux/amd64) into $(GIT_CLIFF_INSTALL_DIR), SHA-512 verified
 	@set -eu; tmp=$$(mktemp -d); trap 'rm -rf "$$tmp"' EXIT; \
 	  f=git-cliff-$(GIT_CLIFF_VERSION)-x86_64-unknown-linux-gnu.tar.gz; \

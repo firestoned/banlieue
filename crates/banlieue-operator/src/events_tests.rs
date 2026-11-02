@@ -125,14 +125,14 @@ mod tests {
     #[test]
     fn a_stale_heartbeat_is_a_warning_naming_the_lease_and_last_renewal() {
         let event = heartbeat_stale(
-            "banlieue-provider-cloud-hypervisor-grill",
+            "banlieue-provider-cloud-hypervisor-ch-bar",
             Some("2026-10-13T12:57:53Z"),
         );
         assert_eq!(event.type_, EventType::Warning);
         assert_eq!(event.reason, reasons::HEARTBEAT_STALE);
         let note = event.note.expect("a note");
         assert!(
-            note.contains("banlieue-provider-cloud-hypervisor-grill"),
+            note.contains("banlieue-provider-cloud-hypervisor-ch-bar"),
             "{note}"
         );
         assert!(note.contains("2026-10-13T12:57:53Z"), "{note}");
@@ -140,14 +140,14 @@ mod tests {
 
     #[test]
     fn a_restored_heartbeat_is_a_normal_event() {
-        let event = heartbeat_restored("banlieue-provider-cloud-hypervisor-grill");
+        let event = heartbeat_restored("banlieue-provider-cloud-hypervisor-ch-bar");
         assert_eq!(event.type_, EventType::Normal);
         assert_eq!(event.reason, reasons::HEARTBEAT_RESTORED);
         assert!(
             event
                 .note
                 .expect("a note")
-                .contains("banlieue-provider-cloud-hypervisor-grill")
+                .contains("banlieue-provider-cloud-hypervisor-ch-bar")
         );
     }
 }
