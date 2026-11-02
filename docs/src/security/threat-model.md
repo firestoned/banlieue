@@ -4,7 +4,7 @@ SPDX-License-Identifier: Apache-2.0
 -->
 # Threat Model
 
-> **Status:** Living document. Last full pass **2026-11-01**, against the
+> **Status:** Living document. Last full pass **2026-11-02**, against the
 > architecture defined by **ADR-0001 … ADR-0113** (0057–0059 unallocated,
 > 0066 and 0068–0073 reserved; 0074 and 0075 Accepted 2026-09-28; 0076–0080
 > reserved by roadmap 19; 0081–0082 recorded but not implemented in banlieue, and kept canonically in
@@ -13,8 +13,15 @@ SPDX-License-Identifier: Apache-2.0
 > not implemented, renumbered 2026-10-26 from duplicate 0100 and 0103; 0112
 > Accepted 2026-10-28, renumbered 2026-10-30 from 0110, which main had
 > meanwhile taken twice; 0113 Proposed, its tool, the provider's pacing and
-> the imagebuilder's pre-lay Job implemented; 0087 amended 2026-11-01). The
-> most recent pass, 2026-11-01, is **ADR-0087's amendment**: a provider
+> the imagebuilder's pre-lay Job implemented; 0087 amended 2026-11-01; 0113
+> accepted 2026-11-02). The most recent pass, 2026-11-02, is **ADR-0113's
+> acceptance**: the pre-lay Job ran in a cluster. Its one new behaviour, the
+> script making missing loop partition device nodes inside its privileged
+> container (no udev there), adds no capability the Job did not already
+> hold as a privileged pod (§4 row, TB-10 rows and the §8 risk stand), so no
+> row changes; the failure path (`PrelayFailed`, no `file`) was observed
+> live, as the TB-10 row says. The pass before it, 2026-11-01, is
+> **ADR-0087's amendment**: a provider
 > workload started for one `Provider` (as the operator deploys them)
 > reconciles only that `Provider`'s `VMImage` rows, under its own field
 > manager, on libvirt, Proxmox and vSphere, and vSphere's deletion becomes

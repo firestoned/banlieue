@@ -4,13 +4,15 @@ SPDX-License-Identifier: Apache-2.0
 -->
 # 0113: Pre-laid images for fast sealed clones
 
-- **Status:** Proposed
-- **Date:** 2026-10-31
+- **Status:** Accepted
+- **Date:** 2026-11-02
+- **Proposed:** 2026-10-31
 - **Deciders:** Erick Bourgeois
 - **Amended:** 2026-10-31 (Open question 1 answered: `COS_PERSISTENT`
   does not grow; Decision 4 is the rule; see *Amendment: one disk size*);
   2026-11-01 (Decision 3's imagebuilder step and its API; see *Amendment:
-  the imagebuilder pre-lays*)
+  the imagebuilder pre-lays*); 2026-11-02 (accepted: every criterion met;
+  see *Amendment: accepted*)
 - **Related:** Roadmap 18 phase C (the measurement this acts on); builds on
   [ADR-0088](0088-first-boot-sealing-for-immediate-images.md) and
   [ADR-0112](0112-first-boot-sealing-on-cloud-hypervisor.md) (first-boot
@@ -115,9 +117,9 @@ disable automatic fallback.
    3 s.** Each step (manufacture, swtpm, VMM unit, API socket) is well under
    a second of work.
 
-**Accept when:** the imagebuilder pre-lays a `Url` image end to end
-(implemented 2026-11-01, *Amendment: the imagebuilder pre-lays*; not yet run
-in a cluster, which needs an image built from `Dockerfile.prelay`); a
+**Accept when** (all met 2026-11-02, *Amendment: accepted*): the imagebuilder
+pre-lays a `Url` image end to end (implemented 2026-11-01, run in a cluster
+2026-11-02); a
 `GuestReady` pool of a pre-laid image warms on Cloud Hypervisor and libvirt
 (met: Cloud Hypervisor 2026-10-31, libvirt 2026-11-01, 65 s, below);
 `make ch-sealing-isolation-e2e` is green against a pre-laid image (met
@@ -266,4 +268,50 @@ Decision 3 placed pre-laying in the builder. This is how:
    `-sandbox on,obsolete=deny,elevateprivileges=deny,spawn=deny,resourcecontrol=deny`
    (seccomp), no network device and no TPM: the guest is the image being
    built, run once, with nothing to reach.
+
+## Amendment: accepted (2026-11-02)
+
+**The imagebuilder pre-laid a `Url` image end to end, in a cluster**, the
+last criterion. A kind cluster with privileged nodes (so pods see the host's
+`/dev/kvm` and loop devices), kairos-operator and `banlieue imagebuilder
+--prelay-image` built from `Dockerfile.prelay`. The `VMImage`: a `Url` source
+`quay.io/kairos/hadron:v0.6.3-core-amd64-generic-v4.4.0` pinned by digest, a
+cloud-config layer (a user and the Cloud Hypervisor phase report),
+`firstBootSealing: {}` and `prelay: { diskSizeGiB: 20 }`.
+
+- kairos-operator built the raw image; the artifact stayed `Building`,
+  reason `Prelaying`, while the pre-lay Job ran; nothing consumed the raw
+  file.
+- The Job booted the build once under QEMU inside its pod (168 s), re-made
+  `COS_PERSISTENT` empty and reported `sha256:a3b85589…`. The artifact became
+  `Ready` with `file: <osartifact>-prelaid.raw`, that digest as `checksum`
+  and `prelaidDiskSizeGiB: 20`; the digest recomputed from the PVC's file
+  matched byte for byte, and the built raw file sat untouched beside it.
+- The image held what Decision 1 requires: `COS_STATE` with `active.img`
+  and `passive.img`, `COS_PERSISTENT` empty and plaintext, `COS_OEM` with only
+  the image's own configuration (its sealing policy included) and `grubenv`
+  with `timeout=0`, nothing LUKS.
+- A clone of that exact artifact, through banlieue on a Cloud Hypervisor
+  host (`tpmEnabled` class, `BackingFile` copy of the artifact, digest
+  checked after the copy), sealed (`sealedPartitions: [COS_PERSISTENT]`, two
+  EK certificates) and reached `GuestReady` **30 s** after creation: roadmap
+  18's target, on Hadron, against 40 s for the Debian test image.
+- The failure path was seen too: before the fix below, the Job failed and
+  the artifact went `Failed`, reason `PrelayFailed`, with no `file`.
+
+**What the run found, both fixed before acceptance:**
+
+1. `Dockerfile.prelay` could not build: the repository's `.dockerignore`
+   excludes `scripts/`, so its `COPY` found nothing. `.dockerignore` now
+   lets that one script through.
+2. Inside a container the script found no partitions ("no COS_OEM
+   partition"). `losetup -P` makes the kernel create `loopNpM`, but a
+   container's `/dev` is a snapshot from container start and no udev adds
+   the new nodes. The script now makes any missing partition node from
+   `/sys/block/<loop>/<partition>/dev` (`ensure_part_nodes`); on a host udev
+   has already made them and it does nothing.
+
+**Retrying a failed pre-lay** takes deleting the Job (it allows no retries)
+and touching the `VMImage` (any annotation change), because a `Failed`
+artifact is otherwise only re-examined on the long requeue.
 

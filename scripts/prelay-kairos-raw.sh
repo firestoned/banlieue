@@ -107,6 +107,22 @@ grubenv_set() {
   } >"$file"
 }
 
+# ensure_part_nodes <loopdev>: make sure /dev has a node for each partition
+# the kernel created for <loopdev>. On a host udev adds them; inside a
+# container (the imagebuilder's pre-lay Job) /dev is a snapshot from container
+# start and nothing adds them, so make the missing ones from sysfs.
+ensure_part_nodes() {
+  local dev=$1 base sys name majmin
+  base=$(basename "$dev")
+  for sys in /sys/block/"$base"/"$base"p*; do
+    [[ -e $sys/dev ]] || continue
+    name=$(basename "$sys")
+    [[ -b /dev/$name ]] && continue
+    majmin=$(<"$sys/dev")
+    mknod "/dev/$name" b "${majmin%%:*}" "${majmin##*:}"
+  done
+}
+
 # part_by_label <loopdev> <label>: the partition device carrying <label>.
 part_by_label() {
   local dev=$1 label=$2 p
@@ -184,6 +200,7 @@ main() {
   sgdisk -e "$out" >/dev/null
 
   loop=$(losetup -fP --show "$out")
+  ensure_part_nodes "$loop"
   local oem
   oem=$(part_by_label "$loop" COS_OEM) || die "no COS_OEM partition: not a Kairos raw image"
   [[ -z $(part_by_label "$loop" COS_STATE || true) ]] || die "input already has COS_STATE: already laid out"
@@ -223,6 +240,7 @@ main() {
   say "build boot done in $((SECONDS - started)) s"
 
   loop=$(losetup -fP --show "$out")
+  ensure_part_nodes "$loop"
   local state persistent fstype
   state=$(part_by_label "$loop" COS_STATE) || die "no COS_STATE after the build boot: the reset did not run"
   persistent=$(part_by_label "$loop" COS_PERSISTENT) || die "no COS_PERSISTENT after the build boot"

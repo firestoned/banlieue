@@ -1,5 +1,48 @@
 # Changelog
 
+## [2026-11-02 01:00] - ADR-0113 accepted: the imagebuilder pre-lays in a cluster; clone GuestReady in 30 s
+
+**Author:** Erick Bourgeois
+
+### Verified live
+- kind (privileged nodes), kairos-operator, `banlieue imagebuilder
+  --prelay-image` from `Dockerfile.prelay`; a `Url` `VMImage` of
+  `quay.io/kairos/hadron:v0.6.3-core-amd64-generic-v4.4.0` (pinned) with a
+  cloud-config layer, `firstBootSealing: {}`, `prelay: { diskSizeGiB: 20 }`.
+  The artifact held at `Building/Prelaying`; the Job pre-laid it in its pod
+  (build boot 168 s) and reported a digest; the artifact went `Ready` with
+  the pre-laid file, that digest (equal to an independent recomputation) and
+  `prelaidDiskSizeGiB: 20`; the image's partitions and contents matched
+  Decision 1.
+- Its clone through banlieue on a Cloud Hypervisor host: sealed
+  (`COS_PERSISTENT`, two EK certificates), `GuestReady` 30 s after creation.
+- The failure path before the fixes below: `Failed`, `PrelayFailed`, no
+  `file`.
+
+### Fixed
+- `.dockerignore`: `scripts/` was excluded, so `Dockerfile.prelay`'s `COPY`
+  failed; the one script is now let through.
+- `scripts/prelay-kairos-raw.sh`: inside a container `losetup -P`'s partition
+  nodes never appear (no udev, `/dev` is a snapshot); `ensure_part_nodes`
+  makes the missing ones from sysfs.
+- `scripts/prelay-kairos-raw-test.sh`: `${var^^}` is not bash 3.2 (macOS);
+  the upper-case case now uses `tr`.
+
+### Changed
+- `docs/adr/0113-pre-laid-images-for-fast-sealed-clones.md`: Accepted
+  (*Amendment: accepted*).
+- `docs/src/guides/using-banlieue-imagebuilder.md` (you build the image; how
+  to retry a failed pre-lay), `docs/src/guides/cloud-hypervisor-host.md`,
+  CALM `pre-laid-images`, `.github/community/18-fast-sealed-clones.md`,
+  `ROADMAPS.md` row 18.
+- Threat model pass, stamp 2026-11-02 (ADR-0113 accepted): no row changes.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only (plus the script and .dockerignore fixes)
+
 ## [2026-11-02 10:00] - Real host names scrubbed; an automated check for real infrastructure
 
 **Author:** Erick Bourgeois

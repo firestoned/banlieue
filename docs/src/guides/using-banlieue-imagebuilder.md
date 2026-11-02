@@ -489,10 +489,12 @@ that already exists; recreate the `VMImage`.
 
 ## Pre-laying a raw image (ADR-0113)
 
-!!! warning "ADR-0113 is Proposed"
-    Implemented and tested against a live build, but not yet accepted, and
-    banlieue does not publish the pre-lay image: you build it from
-    `Dockerfile.prelay`.
+!!! note "You build the pre-lay image"
+    ADR-0113 is accepted (2026-11-02: a Hadron `Url` image pre-laid in a
+    cluster, its clone sealed and `GuestReady` in 30 s), but banlieue does not
+    publish the pre-lay image yet: build it from `Dockerfile.prelay`
+    (`docker build -f Dockerfile.prelay -t <registry>/banlieue-prelay:<tag> .`)
+    and push it where the build namespace can pull it.
 
 A raw Kairos image makes every clone run a recovery boot, a reset that lays
 out `COS_STATE` and `COS_PERSISTENT`, and a reboot before its real first
@@ -539,6 +541,12 @@ To turn it on:
 | `Failed`, `PrelayFailed` | the Job failed or reported something other than a digest; its pod log, and the console it kept beside the output, say why |
 | `Failed`, `PrelayNeedsCloudImage` | the source builds an `iso` (vSphere); only a raw image can be pre-laid |
 | `Failed`, `PrelayImageUnset` | `--prelay-image` is not set |
+
+To retry a failed pre-lay, delete the Job (`kubectl -n banlieue-imagebuild
+delete job <osartifact>-prelay`; it allows no retries of its own) and touch the
+`VMImage` (`kubectl annotate vmimage <image> banlieue.io/retry="$(date +%s)"
+--overwrite`): a `Failed` artifact is otherwise only looked at again on the
+long requeue.
 
 A pre-laid image is laid out for one disk size, and `COS_PERSISTENT` does
 not grow on a larger disk. Stages bound to the reset (`after-reset` and
