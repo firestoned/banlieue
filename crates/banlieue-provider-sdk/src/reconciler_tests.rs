@@ -32,16 +32,16 @@ mod tests {
 
     #[test]
     fn a_provider_serves_only_its_own_machines() {
-        assert!(serves(Some("slate-kvm"), "slate-kvm"));
-        assert!(!serves(Some("grill-kvm"), "slate-kvm"));
+        assert!(serves(Some("kvm-b"), "kvm-b"));
+        assert!(!serves(Some("kvm-a"), "kvm-b"));
     }
 
     /// A statically installed provider has no `--provider-name` and serves
     /// every Provider of its class.
     #[test]
     fn a_provider_without_a_name_serves_every_machine() {
-        assert!(serves(None, "slate-kvm"));
-        assert!(serves(None, "grill-kvm"));
+        assert!(serves(None, "kvm-b"));
+        assert!(serves(None, "kvm-a"));
     }
 
     fn provider(name: &str) -> banlieue_api::banlieue::Provider {

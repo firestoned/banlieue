@@ -207,7 +207,7 @@ records the result in `status.workload`:
 
 ```sh
 kubectl get providers -A                       # HEARTBEAT column
-kubectl get provider grill -o jsonpath='{.status.workload.heartbeat} {.status.workload.lastHeartbeatTime}'
+kubectl get provider ch-bar -o jsonpath='{.status.workload.heartbeat} {.status.workload.lastHeartbeatTime}'
 kubectl get events -A --field-selector reason=ProviderHeartbeatStale
 ```
 

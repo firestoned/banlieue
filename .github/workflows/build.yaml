@@ -141,6 +141,26 @@ jobs:
         run: make dco-check
 
   # ─────────────────────────────────────────────────────────────────────────────
+  # PR only: no real infrastructure in a tracked file
+  # (rules/no-real-infrastructure.md). Never gated on changed paths: a prose PR
+  # can leak a host name as easily as code. Generic patterns only; the
+  # maintainer's own host names live in a local denylist the repo never sees.
+  # ─────────────────────────────────────────────────────────────────────────────
+  infra-identifiers:
+    name: 🕵️ No Real Infrastructure
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Test the check
+        run: make check-infra-identifiers-test
+
+      - name: Check tracked files
+        run: make check-infra-identifiers
+
+  # ─────────────────────────────────────────────────────────────────────────────
   # PR only: formatting + clippy.
   # ─────────────────────────────────────────────────────────────────────────────
   format:
@@ -1233,7 +1253,7 @@ jobs:
     name: ✅ Required Checks
     if: always() && github.event_name == 'pull_request'
     runs-on: ubuntu-latest
-    needs: [license-check, verify-commits, dco, format, clippy, test, cargo-deny, crate-package]
+    needs: [license-check, verify-commits, dco, infra-identifiers, format, clippy, test, cargo-deny, crate-package]
     steps:
       - name: Assert no required job failed
         env:

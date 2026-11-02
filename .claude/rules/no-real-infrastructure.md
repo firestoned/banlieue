@@ -80,3 +80,18 @@ git diff --cached -U0 | rg -i 'jeb\.ca|\b(?:\d{1,3}\.){3}\d{1,3}\b'
 
 Flag anything that is not in the placeholder table above. If you are unsure
 whether a value is real, assume it is and replace it.
+
+## The automated check
+
+`make check-infra-identifiers` (`scripts/check-infra-identifiers.sh`) runs on
+every pull request and fails on a host under the maintainer's domain, a
+Tailscale MagicDNS name, or a single tailnet address (100.64.0.0/10). Those
+patterns name nothing real, so the check publishes nothing.
+
+Real **short host names** cannot be listed in the repository without
+publishing them, so they live in a local denylist the repo never sees:
+`~/.config/banlieue/infra-denylist` (or `INFRA_DENYLIST=<file>`), one
+extended regular expression per line, matched case-insensitively as whole
+words. When that file exists, the same `make` target checks it too: run it
+before every commit. `make check-infra-identifiers-test` tests the check
+itself.
