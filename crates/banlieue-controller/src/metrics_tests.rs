@@ -246,11 +246,11 @@ mod tests {
     #[test]
     fn heartbeat_series_mark_the_current_state_and_zero_the_others() {
         use banlieue_api::banlieue::Heartbeat::Stale;
-        let p = with_heartbeat(provider("grill", "cloud-hypervisor", 1), Stale);
+        let p = with_heartbeat(provider("ch-bar", "cloud-hypervisor", 1), Stale);
         let series = heartbeat_series([&p]);
         let get = |state: &str| {
             series[&(
-                "grill".to_string(),
+                "ch-bar".to_string(),
                 "cloud-hypervisor".to_string(),
                 state.to_string(),
             )]
@@ -265,7 +265,7 @@ mod tests {
     /// than one that claims a state nobody measured.
     #[test]
     fn an_unevaluated_heartbeat_has_no_series() {
-        let p = provider("grill", "cloud-hypervisor", 1);
+        let p = provider("ch-bar", "cloud-hypervisor", 1);
         assert!(heartbeat_series([&p]).is_empty());
     }
 
@@ -273,7 +273,7 @@ mod tests {
     fn heartbeat_collector_encodes_provider_kind_and_state() {
         let (reader, mut writer) = reflector::store::<Provider>();
         writer.apply_watcher_event(&Event::Apply(with_heartbeat(
-            provider("grill", "cloud-hypervisor", 1),
+            provider("ch-bar", "cloud-hypervisor", 1),
             banlieue_api::banlieue::Heartbeat::Alive,
         )));
         let metrics = Metrics::new("banlieue-controller");
@@ -282,7 +282,7 @@ mod tests {
         let text = metrics.encode().expect("encode");
         assert!(
             text.contains(
-                r#"banlieue_provider_heartbeat{provider="grill",kind="cloud-hypervisor",state="Alive"} 1"#
+                r#"banlieue_provider_heartbeat{provider="ch-bar",kind="cloud-hypervisor",state="Alive"} 1"#
             ),
             "{text}"
         );
