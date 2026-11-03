@@ -1,5 +1,36 @@
 # Changelog
 
+## [2026-11-03 00:57] - vSphere: a by-name VM lookup no longer fails on a vTPM VM
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `crates/banlieue-provider-vsphere/src/client/vim.rs`: `find_vm_moref_by_name`
+  (run after every `CloneVM_Task`) and `find_template` called the typed
+  `VirtualMachine.config()` on each VM they scanned. vim_rs 0.6.1 cannot decode
+  a `VirtualTPM` device into `VirtualMachineConfigInfo` (its two endorsement-key
+  fields arrive as arrays of base64 strings, the typed side is `Vec<Vec<u8>>`),
+  so any vTPM VM scanned ahead of the match failed the lookup with
+  `Parse error: JSON property decode failed for ...VirtualMachineConfigInfo`.
+  Pool members are vTPM VMs, so a pool refill cloned, failed, destroyed the
+  clone as "from an interrupted pass" and repeated. Both scans now read the raw
+  `config` property and take only the name and template flag
+  (`vm_summary_from_raw_config`, `raw_vm_summary`), as `find_vms_named` already
+  does.
+- `vim_tests.rs`: five tests for `vm_summary_from_raw_config`, including a
+  document with a `VirtualTPM` device.
+
+### Why
+Found on a pool whose VMs were all vTPM-enabled; reproduced offline by running
+vim_rs's own decoder on the raw JSON a vCenter returns and bisecting it: removing
+the two certificate fields makes the document decode.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (provider image)
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-11-02 01:00] - ADR-0113 accepted: the imagebuilder pre-lays in a cluster; clone GuestReady in 30 s
 
 **Author:** Erick Bourgeois

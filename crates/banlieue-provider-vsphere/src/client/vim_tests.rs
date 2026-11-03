@@ -769,6 +769,65 @@ n17Lktsw0jAZJp1tU1DJPZSYHZPPWLZlJhHftNtpKQ==
     }
 
     // ----------------------------------------------------------------------
+    // vm_summary_from_raw_config: the display name and template flag a
+    // by-name lookup needs, read from the raw `config` document.
+    //
+    // Found live: vim_rs 0.6.1 cannot decode a `VirtualTPM` device into its
+    // typed `VirtualMachineConfigInfo` (the two endorsement-key fields are
+    // arrays of base64 strings; the typed side wants `Vec<Vec<u8>>`), so a
+    // typed `config()` over a folder holding any vTPM VM failed the whole
+    // scan and every clone that scanned past one. The lookups must not
+    // depend on the typed decode of a VM they are only comparing names with.
+    // ----------------------------------------------------------------------
+
+    #[test]
+    fn summary_reads_the_name_and_the_template_flag() {
+        let json = br#"{"name":"tpl-01","template":true,"extraConfig":[]}"#;
+        assert_eq!(
+            vm_summary_from_raw_config(json).unwrap(),
+            (Some("tpl-01".to_string()), true)
+        );
+    }
+
+    #[test]
+    fn summary_of_a_vm_with_a_vtpm_is_still_readable() {
+        // The shape vCenter returns for a vTPM VM: both certificate fields
+        // are arrays of base64 strings.
+        let json = br#"{
+            "name":"pool-01","template":false,
+            "hardware":{"device":[
+                {"_typeName":"VirtualVmxnet3","key":4000},
+                {"_typeName":"VirtualTPM","key":11000,
+                 "endorsementKeyCertificateSigningRequest":["AQID","BAUG"],
+                 "endorsementKeyCertificate":["BwgJ","CgsM"]}
+            ]}
+        }"#;
+        assert_eq!(
+            vm_summary_from_raw_config(json).unwrap(),
+            (Some("pool-01".to_string()), false)
+        );
+    }
+
+    #[test]
+    fn summary_defaults_an_absent_template_flag_to_false() {
+        let json = br#"{"name":"pool-01"}"#;
+        assert_eq!(
+            vm_summary_from_raw_config(json).unwrap(),
+            (Some("pool-01".to_string()), false)
+        );
+    }
+
+    #[test]
+    fn summary_of_a_nameless_document_has_no_name() {
+        assert_eq!(vm_summary_from_raw_config(b"{}").unwrap(), (None, false));
+    }
+
+    #[test]
+    fn summary_rejects_a_document_that_is_not_json() {
+        assert!(vm_summary_from_raw_config(b"not json").is_err());
+    }
+
+    // ----------------------------------------------------------------------
     // tpm_endorsement_certificates_from_raw_config (ADR-0045): the EK
     // certificates of a VM's vTPM, read from the raw `config` document.
     //
