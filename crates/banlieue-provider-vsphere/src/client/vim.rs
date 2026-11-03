@@ -485,25 +485,17 @@ impl VSphereClient for VimClientImpl {
         // up front because PropertyCollector batching is iteration-2b territory.
         // The common case (handful of templates per DC) is fine without it.
         for moref in morefs {
-            let vmm = VimVirtualMachine::new(self.client.clone(), &moref.value);
-            let cfg = match vmm.config().await {
-                Ok(Some(c)) => c,
-                Ok(None) => continue,
-                Err(e) => {
-                    return Err(Error::Vsphere(format!(
-                        "VirtualMachine.config({}): {e}",
-                        moref.value
-                    )));
-                }
+            let Some((vm_name, is_template)) = self.raw_vm_summary(&moref.value).await? else {
+                continue;
             };
-            if !cfg.template {
+            if !is_template {
                 continue;
             }
-            if cfg.name != name {
+            if vm_name.as_deref() != Some(name) {
                 continue;
             }
             return Ok(Some(Template {
-                name: cfg.name,
+                name: name.to_string(),
                 moref: moref.value,
                 datacenter_moref: dc.moref.clone(),
             }));
@@ -1563,6 +1555,31 @@ fn vm_identity_from_raw_config(
     Ok((name, extra_config_value(&doc, marker_key)))
 }
 
+/// A VM's display name and whether it is a template, read from a raw
+/// `VirtualMachineConfigInfo` document. A by-name scan compares these for
+/// every VM it passes, so it must not depend on the typed decode: vim_rs
+/// cannot decode a `VirtualTPM` device (see
+/// [`tpm_endorsement_certificates_from_raw_config`]), and one such VM in the
+/// scanned folder would fail the lookup for every VM after it. An absent
+/// `template` is `false`.
+///
+/// # Errors
+///
+/// The document is not JSON.
+fn vm_summary_from_raw_config(bytes: &[u8]) -> std::result::Result<(Option<String>, bool), String> {
+    let doc: serde_json::Value =
+        serde_json::from_slice(bytes).map_err(|e| format!("parsing raw JSON: {e}"))?;
+    let name = doc
+        .get("name")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+    let template = doc
+        .get("template")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    Ok((name, template))
+}
+
 /// `_typeName` of a vTPM device in a raw `config.hardware.device` list.
 const VIRTUAL_TPM_TYPE_NAME: &str = "VirtualTPM";
 
@@ -1899,19 +1916,34 @@ impl VimClientImpl {
         let _ = view.destroy_view().await;
 
         for moref in morefs {
-            let vmm = VimVirtualMachine::new(self.client.clone(), &moref.value);
-            match vmm.config().await {
-                Ok(Some(cfg)) if cfg.name == name => return Ok(Some(moref.value)),
-                Ok(_) => {}
-                Err(e) => {
-                    return Err(Error::Vsphere(format!(
-                        "VirtualMachine.config({}): {e}",
-                        moref.value
-                    )));
-                }
+            let Some((vm_name, _)) = self.raw_vm_summary(&moref.value).await? else {
+                continue;
+            };
+            if vm_name.as_deref() == Some(name) {
+                return Ok(Some(moref.value));
             }
         }
         Ok(None)
+    }
+
+    /// The display name and template flag of one VM, from its raw `config`
+    /// property ([`vm_summary_from_raw_config`]). `None` for a VM with no
+    /// config yet (one still being created): it cannot be matched by name.
+    ///
+    /// Raw, never `VimVirtualMachine::config()`: the typed decode fails on a
+    /// VM with a vTPM, which would abort a scan over a folder holding one.
+    async fn raw_vm_summary(&self, vm_moref: &str) -> Result<Option<(Option<String>, bool)>> {
+        let pv = self
+            .client
+            .fetch_property_raw("", "VirtualMachine", vm_moref, "config")
+            .await
+            .map_err(|e| Error::Vsphere(format!("VirtualMachine.config({vm_moref}): {e}")))?;
+        let Some(vim_rs::core::client::PropertyValue::Json(bytes)) = pv else {
+            return Ok(None);
+        };
+        vm_summary_from_raw_config(&bytes)
+            .map(Some)
+            .map_err(|e| Error::Vsphere(format!("VirtualMachine.config({vm_moref}): {e}")))
     }
 
     /// Resolve a distributed (vDS) port group moref to its
