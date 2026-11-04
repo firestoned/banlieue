@@ -487,6 +487,28 @@ by `GuestReady=False` (`FirstBootSealingUnverified` or
 `firstBootSealing` on an existing `VMImage` does not rebuild an artifact
 that already exists; recreate the `VMImage`.
 
+## Rebuilding after a worker is replaced (ADR-0115)
+
+On `local-path` storage the artifacts PVC is a directory on one worker's disk.
+When that worker is rebuilt it returns under the same name with an empty disk,
+while the PV, the PVC and the `OSArtifact` still read `Bound` and `Ready`, and
+every import Job fails with `cannot read /artifacts/<image>-build.iso`.
+
+The imagebuilder now notices. It reads the PV's node (`nodeAffinity` on
+`kubernetes.io/hostname`) and compares that node's `creationTimestamp` with the
+PV's. A node created **after** the PV, or no longer present, means the volume's
+data is gone, and the `OSArtifact` is deleted and rebuilt (about eight minutes
+per image). The `VMImage` status message reads `replaced an OSArtifact whose
+volume was lost with its node`.
+
+- It needs the imagebuilder `ClusterRole` from `deploy/imagebuilder/rbac/clusterrole.yaml`
+  (`get` on `persistentvolumes`, `list` on `nodes`). Without it the check logs a
+  warning and does nothing; nothing is deleted.
+- It does not apply to storage without node affinity, and it cannot see a file
+  deleted from a node that was not replaced.
+- A node whose `Node` object is deleted and re-registered with its disk intact
+  is also rebuilt; the cost is one rebuild.
+
 ## Pre-laying a raw image (ADR-0113)
 
 !!! note "You build the pre-lay image"

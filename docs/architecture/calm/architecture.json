@@ -382,7 +382,7 @@
           ]
         },
         "least-privilege": {
-          "description": "Imagebuilder ServiceAccount's ClusterRole carries no Secret rule. Cloud-config Secrets referenced by VMImage.spec.cloudConfigs, and the merged Secret it server-side-applies, are reached through a namespaced Role in the build namespace bound cross-namespace to the ServiceAccount in banlieue-system (ADR-0041) \u2014 matching the single Api<Secret> in the crate, which is namespaced to --build-namespace.",
+          "description": "Imagebuilder ServiceAccount's ClusterRole carries no Secret rule. Cloud-config Secrets referenced by VMImage.spec.cloudConfigs, and the merged Secret it server-side-applies, are reached through a namespaced Role in the build namespace bound cross-namespace to the ServiceAccount in banlieue-system (ADR-0041) \u2014 matching the single Api<Secret> in the crate, which is namespaced to --build-namespace. Its ClusterRole also holds two read-only cluster-scoped verbs (get persistentvolumes, list nodes) so the rebuild gate can tell that an artifacts volume pinned to a replaced node lost its data (ADR-0115); neither verb writes or returns Secret content.",
           "requirements": [
             {
               "requirement-url": "https://kubernetes.io/docs/concepts/security/rbac-good-practices/",
@@ -391,7 +391,7 @@
                 "controls": [
                   "no-cluster-wide-secret-read"
                 ],
-                "evidence": "deploy/imagebuilder/rbac/clusterrole.yaml, deploy/imagebuilder/rbac/role.yaml, crates/banlieue-imagebuilder/src/reconciler/vmimage.rs, docs/adr/0041-imagebuilder-namespaced-secret-access.md"
+                "evidence": "deploy/imagebuilder/rbac/clusterrole.yaml, deploy/imagebuilder/rbac/role.yaml, crates/banlieue-imagebuilder/src/reconciler/vmimage.rs, docs/adr/0041-imagebuilder-namespaced-secret-access.md, docs/adr/0115-rebuild-an-artifact-whose-node-local-volume-was-lost.md"
               }
             }
           ]

@@ -35,8 +35,8 @@ use banlieue_provider_sdk::reconciler::{requeue_default, requeue_long, requeue_o
 use banlieue_provider_sdk::scheduling::BuildScheduling;
 use banlieue_provider_sdk::ssa::FIELD_MANAGER_IMAGEBUILDER;
 use k8s_openapi::api::batch::v1::Job;
-use k8s_openapi::api::core::v1::{PersistentVolumeClaim, Pod, Secret};
-use k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference;
+use k8s_openapi::api::core::v1::{Node, PersistentVolume, PersistentVolumeClaim, Pod, Secret};
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::{OwnerReference, Time};
 use kube::api::{
     Api, ApiResource, DeleteParams, DynamicObject, GroupVersionKind, ListParams, Patch, PatchParams,
 };
@@ -576,8 +576,95 @@ pub fn spec_matches(
         && artifact_flag_matches
 }
 
+/// Status message when an artifact is rebuilt because its node-local volume
+/// was lost (ADR-0115).
+const REBUILD_VOLUME_LOST_MESSAGE: &str =
+    "replaced an OSArtifact whose volume was lost with its node; rebuild starts once it is gone";
+/// The node label a node-local PV pins itself to (`local-path`, `local`).
+const HOSTNAME_LABEL: &str = "kubernetes.io/hostname";
+/// The only `nodeAffinity` operator that pins a volume to a named host.
+const NODE_AFFINITY_IN: &str = "In";
+
+/// The one host a PV is pinned to, from its `nodeAffinity`
+/// (`kubernetes.io/hostname`, operator `In`, exactly one value).
+///
+/// `None` for a PV with no node affinity (network storage), a different
+/// label, another operator, or more than one host: this never guesses, because
+/// [`volume_lost`] would then compare the wrong node (ADR-0115 Decision 3).
+pub fn pinned_hostname(pv: &PersistentVolume) -> Option<String> {
+    let terms = &pv
+        .spec
+        .as_ref()?
+        .node_affinity
+        .as_ref()?
+        .required
+        .as_ref()?
+        .node_selector_terms;
+    let mut hosts = terms
+        .iter()
+        .flat_map(|term| term.match_expressions.iter().flatten())
+        .filter(|e| e.key == HOSTNAME_LABEL && e.operator == NODE_AFFINITY_IN)
+        .flat_map(|e| e.values.iter().flatten());
+    let host = hosts.next()?;
+    hosts.next().is_none().then(|| host.clone())
+}
+
+/// True when a node-local volume's data cannot be there any more: no node
+/// carrying the PV's hostname was created at or before the PV was.
+///
+/// A node that is gone, or that came back as a new object with an empty disk
+/// (a rebuild), both read as lost. Equal timestamps are not a replacement; only
+/// a strictly newer node is. If any matching node predates the PV the volume is
+/// kept (ADR-0115 Decision 1).
+pub fn volume_lost(pv_created: &Time, matching_nodes_created: &[Time]) -> bool {
+    !matching_nodes_created.iter().any(|node| node <= pv_created)
+}
+
+/// Resolve the artifacts PVC to its PV and node, and apply [`volume_lost`].
+///
+/// Anything the cluster does not show (PVC unbound, PV gone, no host pinned)
+/// is **not** lost, and so is any failed read, including a `403` from a site
+/// that has not yet applied the ClusterRole carrying `get persistentvolumes`
+/// and `list nodes`: an upgrade must never start deleting artifacts for a
+/// missing permission (ADR-0115 Decisions 3 and 4).
+async fn artifact_volume_lost(client: &kube::Client, pvc: &PersistentVolumeClaim) -> bool {
+    let Some(pv_name) = pvc.spec.as_ref().and_then(|s| s.volume_name.clone()) else {
+        return false;
+    };
+    let pv = match Api::<PersistentVolume>::all(client.clone())
+        .get_opt(&pv_name)
+        .await
+    {
+        Ok(Some(pv)) => pv,
+        Ok(None) => return false,
+        Err(e) => {
+            warn!(error = %e, pv = %pv_name, "cannot read the artifacts PV; not judging its volume lost");
+            return false;
+        }
+    };
+    let (Some(host), Some(pv_created)) =
+        (pinned_hostname(&pv), pv.metadata.creation_timestamp.clone())
+    else {
+        return false;
+    };
+    let selector = ListParams::default().labels(&format!("{HOSTNAME_LABEL}={host}"));
+    let nodes = match Api::<Node>::all(client.clone()).list(&selector).await {
+        Ok(list) => list,
+        Err(e) => {
+            warn!(error = %e, host = %host, "cannot list nodes; not judging the artifacts volume lost");
+            return false;
+        }
+    };
+    let created: Vec<Time> = nodes
+        .items
+        .iter()
+        .filter_map(|n| n.metadata.creation_timestamp.clone())
+        .collect();
+    volume_lost(&pv_created, &created)
+}
+
 /// What the reconciler knows about the live `OSArtifact`, reduced to the
-/// three facts [`artifact_gate`] decides on.
+/// four facts [`artifact_gate`] decides on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LiveArtifactView {
     /// Owner reference matches this `VMImage`'s UID ([`owner_uid_matches`]).
@@ -586,6 +673,10 @@ pub struct LiveArtifactView {
     pub current: bool,
     /// `metadata.deletionTimestamp` is set — teardown is in flight.
     pub terminating: bool,
+    /// The artifacts volume sits on a node that was replaced after the volume
+    /// was made, so its data is gone while `phase` still says `Ready`
+    /// ([`volume_lost`], ADR-0115).
+    pub volume_lost: bool,
 }
 
 /// What to do about the `OSArtifact` before applying the desired one.
@@ -621,7 +712,7 @@ pub fn artifact_gate(live: Option<LiveArtifactView>, pvc_terminating: bool) -> A
     if live.terminating {
         return ArtifactGate::AwaitTeardown;
     }
-    if !live.owned || !live.current {
+    if !live.owned || !live.current || live.volume_lost {
         return ArtifactGate::DeleteForRebuild;
     }
     ArtifactGate::Proceed
@@ -1040,6 +1131,20 @@ pub async fn reconcile(image: Arc<VMImage>, ctx: Arc<Context>) -> Result<Action>
         Err(e) => return Err(Error::Kube(e)),
     };
 
+    let pvc_api: Api<PersistentVolumeClaim> =
+        Api::namespaced(ctx.client.clone(), &ctx.build_namespace);
+    let pvc = pvc_api.get_opt(&artifacts_pvc_name(&os_name)).await?;
+    let pvc_terminating = pvc
+        .as_ref()
+        .is_some_and(|pvc| pvc.metadata.deletion_timestamp.is_some());
+    // ADR-0115: only a live, not-yet-terminating artifact's volume is judged.
+    let volume_lost = match (&live, &pvc) {
+        (Some(obj), Some(pvc)) if obj.metadata.deletion_timestamp.is_none() => {
+            artifact_volume_lost(&ctx.client, pvc).await
+        }
+        _ => false,
+    };
+
     let live_view = live.as_ref().map(|obj| LiveArtifactView {
         owned: owner_uid_matches(obj.metadata.owner_references.as_deref(), &uid),
         current: spec_matches(
@@ -1050,13 +1155,8 @@ pub async fn reconcile(image: Arc<VMImage>, ctx: Arc<Context>) -> Result<Action>
             image.spec.trusted_boot.as_ref(),
         ),
         terminating: obj.metadata.deletion_timestamp.is_some(),
+        volume_lost,
     });
-    let pvc_api: Api<PersistentVolumeClaim> =
-        Api::namespaced(ctx.client.clone(), &ctx.build_namespace);
-    let pvc_terminating = match pvc_api.get_opt(&artifacts_pvc_name(&os_name)).await? {
-        Some(pvc) => pvc.metadata.deletion_timestamp.is_some(),
-        None => false,
-    };
 
     let gate = artifact_gate(live_view, pvc_terminating);
     if gate != ArtifactGate::Proceed {
@@ -1065,10 +1165,15 @@ pub async fn reconcile(image: Arc<VMImage>, ctx: Arc<Context>) -> Result<Action>
                 info!(
                     owned = live_view.is_some_and(|v| v.owned),
                     current = live_view.is_some_and(|v| v.current),
-                    "OSArtifact is stale or foreign; deleting for rebuild"
+                    volume_lost,
+                    "OSArtifact is stale, foreign or lost its volume; deleting for rebuild"
                 );
                 os_api.delete(&os_name, &rebuild_delete_params()).await?;
-                "replaced a stale or foreign OSArtifact; rebuild starts once it is gone"
+                if volume_lost {
+                    REBUILD_VOLUME_LOST_MESSAGE
+                } else {
+                    "replaced a stale or foreign OSArtifact; rebuild starts once it is gone"
+                }
             }
             _ => {
                 info!(

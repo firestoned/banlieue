@@ -669,6 +669,23 @@ mod tests {
         assert_eq!(pvc_verbs, vec!["get".to_string()]);
     }
 
+    /// ADR-0115: the rebuild gate reads the artifacts PV and the node it is
+    /// pinned to. Both are cluster-scoped, so the grant is on the ClusterRole,
+    /// and it must stay read-only and as narrow as the gate needs.
+    #[test]
+    fn the_imagebuilder_cluster_role_reads_volumes_and_nodes_and_writes_neither() {
+        let granted = granted_triples(&InstallRole::Imagebuilder);
+        let on = |resource: &str| -> Vec<String> {
+            granted
+                .iter()
+                .filter(|(g, r, _)| g.is_empty() && r == resource)
+                .map(|(_, _, v)| v.clone())
+                .collect()
+        };
+        assert_eq!(on("persistentvolumes"), vec!["get".to_string()]);
+        assert_eq!(on("nodes"), vec!["list".to_string()]);
+    }
+
     #[test]
     fn a_role_install_binds_its_service_account_to_its_cluster_role() {
         let manifests = build_role_install(&InstallRole::Imagebuilder, &opts()).unwrap();
