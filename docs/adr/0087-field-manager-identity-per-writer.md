@@ -7,7 +7,9 @@ SPDX-License-Identifier: Apache-2.0
 - **Status:** Accepted
 - **Date:** 2026-10-03
 - **Amended:** 2026-11-01 (a workload started for one `Provider` is a subset
-  writer on every backend; see *Amendment 2026-11-01*)
+  writer on every backend; see *Amendment 2026-11-01*); 2026-11-03
+  (`banlieue.io/force-reimport` is handled per `Provider`; see *Amendment
+  2026-11-03*)
 - **Deciders:** Erick Bourgeois
 - **Related:** Restores the invariant
   [ADR-0015](0015-vmimage-status-merge-strategy.md) relied on but never stated
@@ -226,8 +228,65 @@ exists does not block it: nothing can reach that vCenter with its
 credentials any more, so its templates are left in place and logged, where
 before the delete hung.
 
-**Not changed, recorded:** `banlieue.io/force-reimport` is a one-shot
-annotation the first vSphere workload to act on it clears, so with several
-vSphere `Provider`s the others can miss it. Re-annotate per `Provider`'s
-need, or delete and recreate the `VMImage`, until it is made per-`Provider`.
+**Not changed here, recorded:** `banlieue.io/force-reimport` was a one-shot
+annotation the first vSphere workload to act on it cleared, so with several
+vSphere `Provider`s the others could miss it. Made per-`Provider` in the next
+amendment.
 
+## Amendment 2026-11-03: a forced re-import is handled per Provider
+
+The 2026-11-01 amendment left one thing on the class-wide model:
+`banlieue.io/force-reimport` on a `VMImage`. A workload deletes and recreates
+the import Jobs of **its own** `Provider` while the annotation is present (the
+Jobs are per `Provider`, named from the image, the `Provider` and the failure
+domain), and then cleared the annotation, so that the next reconcile does not
+do it again. With one workload per `Provider` that is wrong: the first
+workload to finish clears the request for all of them, and the others may
+never see it, so their zone templates are never re-imported. Same class of
+bug as the libvirt rows in the previous amendment, less dangerous because it
+loses a request and does not overwrite state.
+
+**Decision.** A request is **handled per `Provider`** and **cleared by the
+last one**:
+
+1. A workload that finds the annotation set re-imports its own `Provider`'s
+   Jobs only if its own **handled marker** is absent from the `VMImage`. The
+   marker is an annotation
+   `force-reimport-handled.banlieue.io/<name>` with value `true`, where
+   `<name>` is `collision_safe_name([provider namespace, provider name])`
+   (the helper the import Jobs already use, so it is a valid, collision-safe
+   name part of at most 63 characters).
+2. After acting, it sets its own marker. A marker is an annotation, not a
+   status field, so there is no CRD change and no new permission: a workload
+   already patches the `VMImage` and already lists the `Provider`s of its
+   class. Each workload writes only its own key in a JSON Merge Patch, so
+   concurrent workloads cannot overwrite each other.
+3. The workload then reads the `VMImage` the patch returned. If **every
+   vSphere `Provider` that exists** has a marker, it clears the request
+   annotation **and every marker** (including the marker of a `Provider`
+   that has since been deleted) in one merge patch. Two workloads may both
+   find the set complete and both clear; clearing is idempotent.
+4. A static install (no `--provider-name`) serves every `Provider`, so it sets
+   every marker in one pass and clears at once: unchanged behaviour.
+
+**Consequences.**
+
+- With N vSphere `Provider`s, each re-imports exactly once per request, and
+  the annotation is cleared when the last one has. Re-annotating afterwards
+  starts a clean request.
+- The annotation stays on the `VMImage` while some `Provider`'s workload has
+  not handled it (for example it is not running yet). The handled ones do not
+  re-import in the meantime, which was the point of clearing it.
+- A `Provider` created while a request is pending is counted: it re-imports
+  (its Jobs are created anyway) and sets its marker.
+- A request is one attempt per `Provider`, as before: the marker is set after
+  the pass whether or not each Job's delete and create succeeded; a failed
+  Job is retried by the ordinary retry path (ADR-0020, amendment 2026-10-23),
+  not by repeating the forced re-import.
+- Markers on a `VMImage` are visible to anyone who can read it and are
+  removed with the request; a stale marker cannot start a re-import because
+  the request annotation is what starts one.
+
+**CALM impact: none.** No node, relationship, interface or trust boundary
+changes. **Threat model impact: none**: no new permission, field or writer,
+and the annotation was already writable by the same workloads.

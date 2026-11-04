@@ -1,5 +1,52 @@
 # Changelog
 
+## [2026-11-03 20:30] - vSphere force-reimport is handled per Provider (ADR-0087, amended)
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `crates/banlieue-provider-vsphere/src/reconciler/vmimage.rs`: with one
+  workload per `Provider` (ADR-0003, ADR-0012) the first workload to act on
+  `banlieue.io/force-reimport` cleared the annotation for all of them, so with
+  two or more vSphere `Provider`s the others could miss the request and never
+  re-import their zones (the same class as the libvirt rows bug of v0.4.9,
+  less dangerous: a request is lost, no state is overwritten). Each `Provider`
+  now has a handled marker annotation
+  (`force-reimport-handled.banlieue.io/<namespace-name>`) set by its own
+  workload after it re-imports its own Jobs; the request and every marker are
+  cleared by the last `Provider` to handle it (or at once on a static
+  install). New pure helpers `force_reimport_handled_key`,
+  `force_reimport_pending_for`, `mark_force_reimport_handled_patch`,
+  `force_reimport_complete`, `ImportForce::for_provider`;
+  `clear_force_reimport_patch` now takes the image and also nulls every marker
+  (including a deleted `Provider`'s).
+- `crates/banlieue-provider-vsphere/src/reconciler/vmimage_tests.rs`: eleven
+  tests, including the case that regressed (one `Provider`'s marker must not
+  hide the request from another).
+
+### Changed
+- `docs/adr/0087-field-manager-identity-per-writer.md`: *Amendment 2026-11-03*
+  replaces the "Not changed, recorded" note. CALM and threat model: no change
+  (no new field, permission or writer).
+- `docs/src/guides/vsphere-provider.md`: the re-import paragraph describes the
+  per-`Provider` behaviour instead of the re-annotate workaround.
+- `.wolf/buglog.json`: `bug-187` records the open vSphere NIC slot bug (guests
+  are `ens33`/`ens34`, not the declared `ens192`/`ens224`): templates are
+  created without PCIe root ports, so the pinned slot is rewritten to 33. Not
+  fixed here.
+
+### Why
+Found by reading the code after the per-`Provider` workload change: the
+comment on the clear said it was safe "now that every provider's
+`ensure_import_jobs` has seen it", which held only when one process served
+every `Provider`.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (provider image)
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-11-03 00:57] - vSphere: a by-name VM lookup no longer fails on a vTPM VM
 
 **Author:** Erick Bourgeois

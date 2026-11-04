@@ -1035,21 +1035,261 @@ mod tests {
         assert!(!force_reimport_requested(&img));
     }
 
-    #[test]
-    fn clear_force_reimport_patch_nulls_only_that_annotation() {
-        use super::super::clear_force_reimport_patch;
+    /// A `VMImage` carrying exactly these annotations.
+    fn annotated_image(annotations: &[(&str, &str)]) -> VMImage {
+        VMImage {
+            metadata: ObjectMeta {
+                name: Some("kairos-rhel98".to_string()),
+                annotations: Some(
+                    annotations
+                        .iter()
+                        .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+                        .collect(),
+                ),
+                ..Default::default()
+            },
+            spec: VMImageSpec {
+                os_family: OsFamily::Linux,
+                os_distribution: "rhel".to_string(),
+                os_version: "9.8".to_string(),
+                architecture: Architecture::Amd64,
+                guest_agent: GuestAgent::CloudInit,
+                sources: vec![vsphere_image_source("kairos-rhel98")],
+                cloud_configs: vec![],
+                template: None,
+                iso_overlay: None,
+                trusted_boot: None,
+                first_boot_sealing: None,
+                prelay: None,
+            },
+            status: None,
+        }
+    }
 
-        let patch = clear_force_reimport_patch();
+    const REQUEST: (&str, &str) = ("banlieue.io/force-reimport", "true");
+
+    #[test]
+    fn handled_key_is_a_valid_annotation_key_that_names_the_provider() {
+        use super::super::force_reimport_handled_key;
+
+        let key = force_reimport_handled_key(&provider("vc-east", "banlieue-system"));
+        let (prefix, name) = key
+            .split_once('/')
+            .expect("an annotation key is prefix/name");
+        assert_eq!(prefix, "force-reimport-handled.banlieue.io");
+        assert!(
+            name.len() <= 63,
+            "the name part of an annotation key is at most 63 characters"
+        );
+        assert!(name.contains("vc-east"), "got {name}");
+        assert!(
+            name.chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'),
+            "got {name}"
+        );
+    }
+
+    #[test]
+    fn handled_key_differs_per_provider_and_per_namespace() {
+        use super::super::force_reimport_handled_key;
+
+        let a = force_reimport_handled_key(&provider("vc-east", "ns-a"));
+        let b = force_reimport_handled_key(&provider("vc-west", "ns-a"));
+        let c = force_reimport_handled_key(&provider("vc-east", "ns-b"));
+        assert_ne!(a, b);
+        assert_ne!(a, c);
+        assert_eq!(
+            a,
+            force_reimport_handled_key(&provider("vc-east", "ns-a")),
+            "stable"
+        );
+    }
+
+    #[test]
+    fn handled_key_of_a_long_name_stays_within_the_limit_and_apart() {
+        use super::super::force_reimport_handled_key;
+
+        let long = "p".repeat(80);
+        let a = force_reimport_handled_key(&provider(&format!("{long}-1"), "ns"));
+        let b = force_reimport_handled_key(&provider(&format!("{long}-2"), "ns"));
+        assert!(a.split_once('/').unwrap().1.len() <= 63);
+        assert_ne!(a, b, "a truncation must not merge two Providers");
+    }
+
+    #[test]
+    fn a_provider_is_pending_only_while_requested_and_not_yet_handled() {
+        use super::super::{force_reimport_handled_key, force_reimport_pending_for};
+
+        let east = provider("vc-east", "ns");
+        let marker = force_reimport_handled_key(&east);
+
+        assert!(force_reimport_pending_for(
+            &annotated_image(&[REQUEST]),
+            &east
+        ));
+        assert!(
+            !force_reimport_pending_for(
+                &annotated_image(&[REQUEST, (marker.as_str(), "true")]),
+                &east
+            ),
+            "already handled"
+        );
+        assert!(
+            !force_reimport_pending_for(&annotated_image(&[(marker.as_str(), "true")]), &east),
+            "no request: a leftover marker never starts a re-import"
+        );
+        assert!(!force_reimport_pending_for(&annotated_image(&[]), &east));
+    }
+
+    #[test]
+    fn one_providers_marker_does_not_hide_the_request_from_another() {
+        use super::super::{force_reimport_handled_key, force_reimport_pending_for};
+
+        let east = provider("vc-east", "ns");
+        let west = provider("vc-west", "ns");
+        let east_marker = force_reimport_handled_key(&east);
+        let img = annotated_image(&[REQUEST, (east_marker.as_str(), "true")]);
+
+        assert!(!force_reimport_pending_for(&img, &east));
+        assert!(
+            force_reimport_pending_for(&img, &west),
+            "the bug: west must still see the request"
+        );
+    }
+
+    #[test]
+    fn marking_handled_sets_only_the_keys_of_the_given_providers() {
+        use super::super::{force_reimport_handled_key, mark_force_reimport_handled_patch};
+
+        let east = provider("vc-east", "ns");
+        let west = provider("vc-west", "ns");
+        let patch = mark_force_reimport_handled_patch(std::slice::from_ref(&east));
         assert_eq!(
             patch,
             serde_json::json!({
-                "metadata": {
-                    "annotations": {
-                        "banlieue.io/force-reimport": null
-                    }
-                }
+                "metadata": { "annotations": { force_reimport_handled_key(&east): "true" } }
+            })
+        );
+
+        let both = mark_force_reimport_handled_patch(&[east.clone(), west.clone()]);
+        let ann = both["metadata"]["annotations"].as_object().unwrap();
+        assert_eq!(ann.len(), 2);
+        assert!(ann.contains_key(&force_reimport_handled_key(&west)));
+        assert!(
+            !ann.contains_key("banlieue.io/force-reimport"),
+            "marking never touches the request"
+        );
+    }
+
+    #[test]
+    fn the_request_is_complete_only_when_every_existing_provider_has_handled_it() {
+        use super::super::{force_reimport_complete, force_reimport_handled_key};
+
+        let east = provider("vc-east", "ns");
+        let west = provider("vc-west", "ns");
+        let all = [east.clone(), west.clone()];
+        let east_marker = force_reimport_handled_key(&east);
+        let west_marker = force_reimport_handled_key(&west);
+
+        assert!(!force_reimport_complete(&annotated_image(&[REQUEST]), &all));
+        assert!(!force_reimport_complete(
+            &annotated_image(&[REQUEST, (east_marker.as_str(), "true")]),
+            &all
+        ));
+        assert!(force_reimport_complete(
+            &annotated_image(&[
+                REQUEST,
+                (east_marker.as_str(), "true"),
+                (west_marker.as_str(), "true")
+            ]),
+            &all
+        ));
+    }
+
+    #[test]
+    fn a_marker_for_a_deleted_provider_does_not_block_completion() {
+        use super::super::{force_reimport_complete, force_reimport_handled_key};
+
+        let east = provider("vc-east", "ns");
+        let gone = provider("vc-gone", "ns");
+        let img = annotated_image(&[
+            REQUEST,
+            (force_reimport_handled_key(&east).as_str(), "true"),
+            (force_reimport_handled_key(&gone).as_str(), "true"),
+        ]);
+        assert!(force_reimport_complete(&img, std::slice::from_ref(&east)));
+    }
+
+    #[test]
+    fn a_provider_that_does_not_exist_yet_cannot_be_missing() {
+        use super::super::force_reimport_complete;
+
+        assert!(
+            force_reimport_complete(&annotated_image(&[REQUEST]), &[]),
+            "nothing left to wait for"
+        );
+    }
+
+    #[test]
+    fn clear_force_reimport_patch_nulls_the_request_and_every_marker_and_nothing_else() {
+        use super::super::{clear_force_reimport_patch, force_reimport_handled_key};
+
+        let east = provider("vc-east", "ns");
+        let gone = provider("vc-gone", "ns");
+        let east_marker = force_reimport_handled_key(&east);
+        let gone_marker = force_reimport_handled_key(&gone);
+        let img = annotated_image(&[
+            REQUEST,
+            (east_marker.as_str(), "true"),
+            (gone_marker.as_str(), "true"),
+            ("example.invalid/keep", "me"),
+        ]);
+
+        assert_eq!(
+            clear_force_reimport_patch(&img),
+            serde_json::json!({
+                "metadata": { "annotations": {
+                    "banlieue.io/force-reimport": null,
+                    east_marker: null,
+                    gone_marker: null
+                } }
             }),
-            "must be a JSON Merge Patch that deletes only this one annotation key"
+            "a JSON Merge Patch that deletes the request and the markers, including a stale one, and leaves other annotations alone"
+        );
+    }
+
+    #[test]
+    fn clearing_an_image_without_markers_nulls_only_the_request() {
+        use super::super::clear_force_reimport_patch;
+
+        assert_eq!(
+            clear_force_reimport_patch(&annotated_image(&[REQUEST])),
+            serde_json::json!({ "metadata": { "annotations": { "banlieue.io/force-reimport": null } } })
+        );
+    }
+
+    #[test]
+    fn a_pass_reimports_only_for_providers_that_have_not_handled_the_request() {
+        use super::super::{ImportForce, force_reimport_handled_key, force_reimport_pending_for};
+
+        // The shape reconcile() uses: one ImportForce per Provider, with
+        // `reimport` decided by that Provider's own marker.
+        let east = provider("vc-east", "ns");
+        let west = provider("vc-west", "ns");
+        let img = annotated_image(&[
+            REQUEST,
+            (force_reimport_handled_key(&east).as_str(), "true"),
+        ]);
+        let base = ImportForce::from_image(&img);
+        assert!(base.reimport, "the image-wide knob still reads the request");
+
+        let for_east = base.for_provider(force_reimport_pending_for(&img, &east));
+        let for_west = base.for_provider(force_reimport_pending_for(&img, &west));
+        assert!(!for_east.reimport);
+        assert!(for_west.reimport);
+        assert_eq!(
+            for_west.upload, base.upload,
+            "every other knob carries through"
         );
     }
 
