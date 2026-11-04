@@ -129,8 +129,26 @@ stages:
 
 Add `Gateway=${GATEWAY}` when the interface has one. Only the first static
 interface has placeholders; a Kairos guest with two static NICs sets the
-second in its image. (This stage follows Kairos's documented pattern and has
-not yet been run through banlieue on a live Kairos guest.)
+second in its image.
+
+Verified through banlieue on a real libvirt host (2026-11-04): a
+one-member `VirtualMachinePool` with `spec.addressing` on a pre-laid Kairos
+Debian 13 image, this stage in the template's `userData`. The controller
+rendered `Address=<drawn address>/24` and `Gateway=…` into the user-data,
+the guest wrote `10-static.network`, and its agent reported the drawn
+address on the NIC.
+
+!!! note "Kairos asks for a DHCP lease during early boot"
+    Kairos images ship their own `/etc/systemd/network/20-dhcp.network`
+    (matching `en*`). `10-static.network` sorts first, so the running system
+    uses the static address. But the lease log of that run also showed one
+    DHCP lease for the guest's MAC, taken in the first seconds of boot,
+    before the stage writes the static file. On a segment **with** DHCP the
+    guest briefly holds, and leases, a dynamic address; on a segment with no
+    DHCP server the early request goes unanswered (whether that delays boot
+    was not measured). An image built only for static segments could drop
+    `20-dhcp.network`; that is untested, and such an image would then get no
+    address at all on a DHCP network.
 
 ## Why the image is Joliet
 
