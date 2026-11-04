@@ -3,6 +3,8 @@
 - **Status:** Accepted
 - **Date:** 2026-09-20
 - **Proposed:** 2026-09-19
+- **Amended:** 2026-11-04 (Decision 5: a seed always carries `user-data`;
+  see *Amendment: every seed has user-data*)
 - **Notes:** Implemented and verified live;
   the evidence is in Decision 3. Completes
   [ADR-0050](0050-libvirtmachine-domain-lifecycle.md) (`LibvirtMachine`
@@ -99,7 +101,9 @@ memory.
    cloud-init re-run its per-instance modules for a genuinely new VM rather
    than treating it as a reboot. The provider derives `instance-id` from
    the domain's UUID, so a rebuilt member is a new instance by
-   construction, and `local-hostname` from the domain name.
+   construction, and `local-hostname` from the domain name. *Amended
+   2026-11-04:* `user-data` is always present too, an empty cloud-config
+   when none is set; see the amendment.
 
 6. **The seed volume is owned by the machine.** It is created in the same
    pool, named `<domain>-cidata.iso`, and deleted by `finalize_backend`
@@ -122,3 +126,24 @@ memory.
   mechanical change and should be done then, not pre-emptively.
 - vfat remains available as a fallback if a guest is ever found that
   dislikes Joliet. Nothing in this decision forecloses it.
+
+## Amendment: every seed has user-data (2026-11-04)
+
+Decision 5 held that `meta-data` alone makes a valid seed. It does not:
+cloud-init (25.1, Debian 13) accepts a NoCloud seed only when it carries
+both `meta-data` and `user-data`, and ignores a seed missing either, its
+hostname and any `network-config`
+([ADR-0114](0114-static-addressing-in-the-nocloud-seed.md)) included. The
+guest logs `device /dev/sr0 with label=cidata not a valid seed` and carries
+on with its defaults. Found on the v0.4.12 rollout: a static VM with no
+`userData` stayed on DHCP. Every libvirt VM created without `userData`
+before this had had its seed ignored the same way, silently, since the
+lease-hostname test that verified Decision 3 always set user-data.
+
+`seed_files` now always writes `user-data`, an empty `#cloud-config` when
+the machine sets none (`EMPTY_USER_DATA`), which changes nothing in the
+guest. `live_cloudinit.rs` covers the case
+(`a_seed_without_user_data_is_still_read`). Cloud Hypervisor writes a seed
+only when it has user-data or a static NIC, and Proxmox builds the same
+file list, so both pick the change up with no code of their own.
+

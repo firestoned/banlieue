@@ -17,8 +17,11 @@ SPDX-License-Identifier: Apache-2.0
 > meanwhile taken twice; 0113 Proposed, its tool, the provider's pacing and
 > the imagebuilder's pre-lay Job implemented; 0087 amended 2026-11-01 and
 > 2026-11-03; 0113 accepted 2026-11-02 and amended twice 2026-11-04; 0114
-> Accepted 2026-11-04). The most recent pass, the second of 2026-11-04, is
-> **ADR-0114**: libvirt and Cloud Hypervisor now write a cloud-init
+> Accepted 2026-11-04; 0054 amended 2026-11-04: every NoCloud seed carries
+> `user-data`, an empty cloud-config when none is set, so cloud-init stops
+> ignoring seeds without it; no row changes, the seed's contents and who
+> controls them are as before). The most recent pass is ADR-0115's (noted
+> above); the one before it, the second of 2026-11-04, is **ADR-0114**: libvirt and Cloud Hypervisor now write a cloud-init
 > `network-config` into the NoCloud seed for a static NIC, through the
 > renderer Proxmox already used, and libvirt derives MACs for such a
 > machine. A tenant's address, gateway, nameserver and domain strings now

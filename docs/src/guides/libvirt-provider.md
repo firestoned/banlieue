@@ -373,8 +373,10 @@ subprocess would need the payload on disk to hand it a path, writing the
 guest's bootstrap credentials into the container's filesystem on every
 reconcile.
 
-The seed carries a generated `meta-data` even when you set no user-data,
-because cloud-init requires one and ignores a seed without it:
+The seed carries a generated `meta-data`, and an empty `#cloud-config` as
+`user-data` when you set none: cloud-init requires both and ignores a seed
+missing either (before v0.4.13 a VM without `userData` got no `user-data`
+file, and its whole seed was ignored):
 
 ```yaml
 instance-id: <the domain's UUID>

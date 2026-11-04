@@ -48,7 +48,8 @@ volume named `<domain>-cidata.iso` in the machine's storage pool.
 ### The seed's contents
 
 ```text
-/user-data       your payload, byte for byte
+/user-data       your payload, byte for byte (an empty `#cloud-config`
+                 when you set none)
 /meta-data       generated:
 
                  instance-id: <the domain's UUID>
@@ -56,8 +57,13 @@ volume named `<domain>-cidata.iso` in the machine's storage pool.
 /network-config  generated, only when a NIC is static (see below)
 ```
 
-`meta-data` is always present, even when you set no user-data at all —
-cloud-init requires it and **silently ignores a seed without it**.
+`meta-data` and `user-data` are always present: cloud-init accepts a seed
+only when it has both, and **silently ignores a seed missing either**,
+`network-config` and hostname included. With no `userData` set, the seed
+carries an empty `#cloud-config`. (Before v0.4.13 it carried no
+`user-data` then, so a VM without `userData` lost its hostname and any
+static address; found on a real Debian guest, which logged "not a valid
+seed".)
 
 !!! important "`instance-id` is the domain's UUID, deliberately"
     cloud-init keys "have I already run for this instance?" on

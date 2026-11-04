@@ -103,6 +103,13 @@ Two kinds of guest read a NoCloud seed, and they read it differently:
   guest agent reported it. The image's own `20-dhcp.network` also took one
   DHCP lease in early boot, before the stage ran; the running system used
   the static address. The libvirt guide records it.
+- **Found on the v0.4.12 rollout: a static VM with no `userData` stayed on
+  DHCP.** Its seed had `meta-data` and `network-config` but no `user-data`,
+  and cloud-init rejects such a seed outright. Every seed now carries
+  `user-data` (an empty cloud-config when none is set): ADR-0054, amended
+  2026-11-04. v0.4.12 delivers a static address only to a VM that also sets
+  `userData`, on all three NoCloud backends (Proxmox's static seed had the
+  same gap since ADR-0075); v0.4.13 to every VM.
 - **Found live: a static libvirt guest with no agent reports no address.**
   It asks for no DHCP lease, and libvirt's ARP source reported nothing even
   while the guest pinged its gateway every 2 s. The provider's address
