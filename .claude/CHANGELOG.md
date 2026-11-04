@@ -1,5 +1,38 @@
 # Changelog
 
+## [2026-11-04 23:00] - Kairos static addressing verified live (ADR-0114 Decision 4)
+
+**Author:** Erick Bourgeois
+
+### Verified live
+- On a kind cluster running banlieue v0.4.11 (installed by `bootstrap
+  operator`, the libvirt provider as the operator's per-Provider workload)
+  against a real libvirt host: a one-member `VirtualMachinePool` with
+  `spec.addressing` on a pre-laid Kairos Debian 13 image (`qemu-guest-agent`,
+  a login user), with the guide's networkd stage in the template's
+  `userData`. The pool stamped the drawn address onto the member's
+  `networkOverrides`; the controller rendered `Address=<it>/24` and
+  `Gateway=` into the user-data; the guest wrote `10-static.network`; its
+  agent reported the address on the NIC's MAC. Rig removed afterwards.
+
+### Found
+- Kairos images ship `/etc/systemd/network/20-dhcp.network` (`en*`). The
+  running system used `10-static.network`, which sorts first, but the
+  network's lease log showed one DHCP lease for the guest's MAC from the
+  first seconds of boot, before the stage writes the static file.
+
+### Changed
+- `docs/src/guides/cloud-init-on-libvirt.md`: the Kairos example is marked
+  verified, with a note on the early DHCP lease.
+- `docs/adr/0114-static-addressing-in-the-nocloud-seed.md`: the Kairos live
+  result under Consequences.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
 ## [2026-11-04 20:00] - Static addressing reaches libvirt and Cloud Hypervisor guests (ADR-0114)
 
 **Author:** Erick Bourgeois

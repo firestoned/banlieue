@@ -96,6 +96,13 @@ Two kinds of guest read a NoCloud seed, and they read it differently:
   cloud-init network table showed both), pinged its gateway, installed
   packages through that route, and its agent reported the address
   (`live_cloudinit.rs`, `a_guest_applies_a_static_address_from_the_seed`).
+- **Verified live, Kairos** (libvirt, pre-laid Kairos Debian 13,
+  2026-11-04): a `VirtualMachinePool` member drew its address from
+  `spec.addressing`; the controller rendered it into user-data through the
+  ADR-0024 placeholders, the Decision 4 networkd stage wrote it, and the
+  guest agent reported it. The image's own `20-dhcp.network` also took one
+  DHCP lease in early boot, before the stage ran; the running system used
+  the static address. The libvirt guide records it.
 - **Found live: a static libvirt guest with no agent reports no address.**
   It asks for no DHCP lease, and libvirt's ARP source reported nothing even
   while the guest pinged its gateway every 2 s. The provider's address
