@@ -505,10 +505,13 @@ A zone with `reason=ImportFailed`: its import Job failed; read the Job's
 logs (`kubectl -n banlieue-imagebuild logs job/<the Job named in the zone's
 message>`). The provider deletes and recreates a failed Job once it has been
 failed for 10 minutes; to retry at once, run
-`kubectl annotate vmimage <image> banlieue.io/force-reimport=true` (the
-provider clears it; with several vSphere `Provider`s the first workload to act
-clears it for all, so re-annotate if another `Provider`'s zones did not
-re-import). One cause has its own message: with
+`kubectl annotate vmimage <image> banlieue.io/force-reimport=true`. Each
+vSphere `Provider` re-imports its own zones once for that request and marks it
+handled with an annotation of its own (`force-reimport-handled.banlieue.io/…`);
+the last `Provider` to handle it removes the request and every marker. With
+several `Provider`s the annotation therefore stays until all of them have
+acted, and a `Provider` whose workload is not running yet re-imports as soon as
+it is (ADR-0087, amendment 2026-11-03). One cause has its own message: with
 `forceUpload`, `cannot replace [<datastore>] banlieue-images/<image>.iso: it is
 connected to the CD-ROM of running VM(s) …`. vCenter will not delete an ISO
 that a running VM has open, so the Job stops before destroying the zone's

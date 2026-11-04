@@ -3408,6 +3408,46 @@
       ],
       "occurrences": 1,
       "last_seen": "2026-11-03T00:58:11.000Z"
+    },
+    {
+      "id": "bug-187",
+      "timestamp": "2026-11-03T20:11:19.000Z",
+      "error_message": "vSphere guests come up as ens33/ens34 instead of the declared ens192/ens224 (VMImage pciSlot: 192, VMClass interface names ens192/ens224); ethernet0.pciSlotNumber on the imported template reads 33",
+      "file": "crates/banlieue-provider-vsphere/src/client/vim.rs",
+      "root_cause": "A pinned ethernetN.pciSlotNumber of 192/224 only exists on a VM that has PCIe root ports (pciBridge4..7 virtualDev=pcieRootPort, functions=8). banlieue's template creation (build_template_config_spec, then the separate pin-slot ReconfigVM_Task) never sets them (no 'pciBridge' anywhere in the repo), so ESXi falls back to legacy slot 33 on first power-on and rewrites the extraConfig; clones inherit 33 and extra NICs (ADR-0111) auto-assign 33/34. Templates from the older script flow (May-Aug 2026) have the bridges and slot 192. Experiment 2026-11-03 on a throwaway clone (not through banlieue): bridges + ethernet0=192 kept NIC 1 at 192; NIC 2 auto-assigned 33; pinning ethernet1=224 gave 224. The ens names themselves were not observed in a guest (clone needs a vTPM; govc cannot add one). Also: ADR-0031's default of 192 + index (193, 194) is not a valid PCIe layout.",
+      "fix": "NOT FIXED, to work on later. Plan: add the four pciBridge extraConfig sets at template creation, pin ethernetN.pciSlotNumber explicitly for every extra NIC at clone time, replace the 192 + index default and amend ADR-0031 and the VMImage pciSlot docs, re-import templates (existing ones keep 33), tests first. Verify end to end: a pool VM from a re-imported template boots as ens192. Memory: vsphere-nic-slot-needs-pcie-root-ports.",
+      "tags": [
+        "vsphere",
+        "nic",
+        "pci-slot",
+        "pcie-root-port",
+        "ens192",
+        "template",
+        "open"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-11-03T20:11:19.000Z"
+    },
+    {
+      "id": "bug-188",
+      "timestamp": "2026-11-03T20:30:46.000Z",
+      "error_message": "vSphere force-reimport: with two or more vSphere Providers the first workload to act clears banlieue.io/force-reimport for all, so the others may never re-import",
+      "file": "crates/banlieue-provider-vsphere/src/reconciler/vmimage.rs",
+      "root_cause": "The operator runs one workload per Provider (each re-imports only its own Provider's Jobs), but reconcile() cleared the one shared annotation after its own pass, on the assumption (comment: 'now that every provider's ensure_import_jobs has seen it') that one process served every Provider. Same class as the v0.4.9 libvirt rows bug and ADR-0087 amendment 2026-11-01, which had recorded this one as 'Not changed'.",
+      "fix": "A per-Provider handled marker annotation (force-reimport-handled.banlieue.io/<ns-name>) set by each workload after it re-imports its own Jobs; the request and all markers are cleared by the last Provider to handle it (settle_force_reimport). ADR-0087 amendment 2026-11-03. Lesson: when a topology changes from one process to one-per-X, grep for every 'clear / mark done / one-shot' write on a shared object, not only the status rows.",
+      "tags": [
+        "vsphere",
+        "force-reimport",
+        "per-provider",
+        "adr-0087",
+        "one-shot-annotation"
+      ],
+      "related_bugs": [
+        "bug-186"
+      ],
+      "occurrences": 1,
+      "last_seen": "2026-11-03T20:30:46.000Z"
     }
   ]
 }

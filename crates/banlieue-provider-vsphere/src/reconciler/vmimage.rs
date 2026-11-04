@@ -75,6 +75,9 @@ const ATTR_DATACENTER: &str = "datacenter";
 /// Jobs are deleted and recreated, so a completed import re-runs (ADR-0020).
 /// Value is truthy (`"true"`, case-insensitive). Orthogonal to
 /// `spec.forceUpload` / `spec.forceCreate`, which control what the (re)run does.
+/// Handled per `Provider`: each vSphere workload re-imports its own `Provider`'s
+/// Jobs once and marks that ([`force_reimport_handled_key`]); the last one to
+/// handle it clears the annotation (ADR-0087, amendment 2026-11-03).
 pub const ANNOTATION_FORCE_REIMPORT: &str = "banlieue.io/force-reimport";
 
 /// Label an import Job carries naming the `VMImage` it was created for.
@@ -103,19 +106,87 @@ pub fn force_reimport_requested(image: &VMImage) -> bool {
         .is_some_and(|v| v.eq_ignore_ascii_case("true"))
 }
 
-/// The JSON Merge Patch that clears `banlieue.io/force-reimport` once this
-/// reconcile pass has acted on it. Pure, so the shape is unit-testable
-/// without a kube client.
+/// Domain of the per-`Provider` "handled" markers a `VMImage` carries while a
+/// forced re-import is pending (ADR-0087, amendment 2026-11-03).
+const FORCE_REIMPORT_HANDLED_DOMAIN: &str = "force-reimport-handled.banlieue.io";
+
+/// The annotation key recording that `provider`'s workload has acted on the
+/// current `banlieue.io/force-reimport` request: `<domain>/<name>`, where
+/// `<name>` is the collision-safe join of the `Provider`'s namespace and name
+/// (at most 63 characters, so a valid annotation key name).
+///
+/// One key per `Provider`, written by that `Provider`'s workload only, so a
+/// merge patch of several workloads' markers cannot overwrite each other.
+#[must_use]
+pub fn force_reimport_handled_key(provider: &Provider) -> String {
+    let namespace = provider.namespace().unwrap_or_default();
+    let name =
+        crate::k8s_name::collision_safe_name(&[namespace.as_str(), provider.name_any().as_str()]);
+    format!("{FORCE_REIMPORT_HANDLED_DOMAIN}/{name}")
+}
+
+/// True when `image` carries `provider`'s handled marker.
+fn force_reimport_handled(image: &VMImage, provider: &Provider) -> bool {
+    image
+        .metadata
+        .annotations
+        .as_ref()
+        .is_some_and(|a| a.contains_key(&force_reimport_handled_key(provider)))
+}
+
+/// True when `provider`'s workload still has to act on the request: the
+/// annotation is set and this `Provider` has not marked it handled. A marker
+/// with no request never starts a re-import. Pure, so the rule is
+/// unit-testable.
+#[must_use]
+pub fn force_reimport_pending_for(image: &VMImage, provider: &Provider) -> bool {
+    force_reimport_requested(image) && !force_reimport_handled(image, provider)
+}
+
+/// The JSON Merge Patch that records `providers` as having handled the
+/// request. Only their own marker keys: it never touches the request itself.
+#[must_use]
+fn mark_force_reimport_handled_patch(providers: &[Provider]) -> Value {
+    let annotations: serde_json::Map<String, Value> = providers
+        .iter()
+        .map(|p| (force_reimport_handled_key(p), json!("true")))
+        .collect();
+    json!({ "metadata": { "annotations": annotations } })
+}
+
+/// True when every `Provider` in `all` has handled the request. A marker for a
+/// `Provider` that no longer exists is ignored, and with none left to wait for
+/// the request is complete.
+#[must_use]
+fn force_reimport_complete(image: &VMImage, all: &[Provider]) -> bool {
+    all.iter().all(|p| force_reimport_handled(image, p))
+}
+
+/// The JSON Merge Patch that ends a request: deletes `banlieue.io/force-reimport`
+/// and every handled marker on `image`, including a marker left by a `Provider`
+/// that has since been deleted, and nothing else. Pure, so the shape is
+/// unit-testable without a kube client.
 ///
 /// `force-reimport` must be a one-shot trigger, not a standing flag: found
 /// live, leaving the annotation in place caused every subsequent reconcile
 /// (including ones the Job watch itself fires the instant the just-created
-/// Job's pod changes phase) to see `force.reimport` still true and delete +
-/// recreate the import Job all over again — an unbroken delete/recreate
-/// storm across all three zones, no import ever surviving long enough to
-/// progress past `Pending`.
-fn clear_force_reimport_patch() -> Value {
-    json!({ "metadata": { "annotations": { ANNOTATION_FORCE_REIMPORT: null } } })
+/// Job's pod changes phase) to see the request still set and delete +
+/// recreate the import Job all over again, an unbroken delete/recreate storm
+/// across all three zones, no import ever surviving long enough to progress
+/// past `Pending`. With one workload per `Provider` (ADR-0087, amendment
+/// 2026-11-03) it is the *last* workload to handle it that clears it; before
+/// that the per-`Provider` markers stop the handled ones repeating.
+#[must_use]
+fn clear_force_reimport_patch(image: &VMImage) -> Value {
+    let marker_prefix = format!("{FORCE_REIMPORT_HANDLED_DOMAIN}/");
+    let mut annotations = serde_json::Map::new();
+    annotations.insert(ANNOTATION_FORCE_REIMPORT.to_string(), Value::Null);
+    for key in image.metadata.annotations.iter().flat_map(|a| a.keys()) {
+        if key.starts_with(&marker_prefix) {
+            annotations.insert(key.clone(), Value::Null);
+        }
+    }
+    json!({ "metadata": { "annotations": annotations } })
 }
 
 /// The three force knobs that drive the per-zone import, bundled so they thread
@@ -158,6 +229,19 @@ pub struct ImportForce {
 }
 
 impl ImportForce {
+    /// This `ImportForce` with `reimport` decided for one `Provider`: the
+    /// image-wide request is read once ([`Self::from_image`]), but whether a
+    /// given `Provider`'s Jobs are deleted and recreated depends on that
+    /// `Provider`'s own handled marker ([`force_reimport_pending_for`]).
+    /// Every other knob carries through.
+    #[must_use]
+    pub fn for_provider(&self, reimport: bool) -> Self {
+        Self {
+            reimport,
+            ..self.clone()
+        }
+    }
+
     /// Read the force knobs + template settings off a `VMImage` (the
     /// `banlieue.io/force-reimport` annotation + `spec.template`).
     pub fn from_image(image: &VMImage) -> Self {
@@ -262,10 +346,8 @@ pub async fn reconcile(image: Arc<VMImage>, ctx: Arc<Context>) -> Result<Action>
         return Ok(requeue_long());
     };
 
-    let providers = providers_in_scope(
-        list_vsphere_providers(&ctx).await?,
-        ctx.provider_name.as_deref(),
-    );
+    let all_providers = list_vsphere_providers(&ctx).await?;
+    let providers = providers_in_scope(all_providers.clone(), ctx.provider_name.as_deref());
     if providers.is_empty() {
         info!("no vsphere Providers in scope; leaving status untouched");
         return Ok(requeue_long());
@@ -281,13 +363,16 @@ pub async fn reconcile(image: Arc<VMImage>, ctx: Arc<Context>) -> Result<Action>
     let mut rows: Vec<ImagePerProviderStatus> = Vec::with_capacity(providers.len());
     let mut any_pending = false;
     for provider in &providers {
+        // Whether this Provider's Jobs are re-imported depends on its own
+        // marker, not on the request alone (ADR-0087, amendment 2026-11-03).
+        let provider_force = force.for_provider(force_reimport_pending_for(&image, provider));
         let row = reconcile_for_provider(
             &ctx,
             provider,
             vsphere_source,
             build_artifact,
             &name,
-            &force,
+            &provider_force,
         )
         .await;
         any_pending |= !row.ready;
@@ -305,17 +390,18 @@ pub async fn reconcile(image: Arc<VMImage>, ctx: Arc<Context>) -> Result<Action>
     );
     patch_vmimage_status(&ctx, &name, generation, rows, &field_manager).await?;
 
-    // One-shot: clear the annotation now that every provider's ensure_import_jobs
-    // has seen it this pass, so the next reconcile (including the one the Job
-    // watch fires immediately after the Job we just (re)created changes phase)
-    // doesn't delete + recreate it all over again.
+    // One-shot per Provider (ADR-0087, amendment 2026-11-03): mark the
+    // Providers this workload just re-imported as handled, so the next
+    // reconcile (including the one the Job watch fires immediately after the
+    // Job we just (re)created changes phase) does not delete and recreate it
+    // all over again; the last Provider to handle the request clears it.
     if force.reimport {
-        api.patch(
-            &name,
-            &PatchParams::default(),
-            &Patch::Merge(&clear_force_reimport_patch()),
-        )
-        .await?;
+        let acted_for: Vec<Provider> = providers
+            .iter()
+            .filter(|p| force_reimport_pending_for(&image, p))
+            .cloned()
+            .collect();
+        settle_force_reimport(&api, &name, &image, &acted_for, &all_providers).await?;
     }
 
     // Poll while a per-zone import is still running; back off once every
@@ -326,6 +412,47 @@ pub async fn reconcile(image: Arc<VMImage>, ctx: Arc<Context>) -> Result<Action>
     } else {
         requeue_long()
     })
+}
+
+/// Record that `acted_for` have handled the force-reimport request on `name`,
+/// then end the request if every `Provider` in `all` has handled it.
+///
+/// The completeness check reads the `VMImage` the marker patch returned, so a
+/// workload sees the markers every other workload has set by then. With
+/// nothing new to mark (this workload handled its `Provider` in an earlier
+/// pass), it checks the snapshot it reconciled, which is how the last workload
+/// to see a complete set clears the request. Two workloads may both find the
+/// set complete and both clear: clearing is idempotent.
+///
+/// # Errors
+/// The apiserver rejects either patch.
+async fn settle_force_reimport(
+    api: &Api<VMImage>,
+    name: &str,
+    snapshot: &VMImage,
+    acted_for: &[Provider],
+    all: &[Provider],
+) -> Result<()> {
+    let current = if acted_for.is_empty() {
+        snapshot.clone()
+    } else {
+        api.patch(
+            name,
+            &PatchParams::default(),
+            &Patch::Merge(&mark_force_reimport_handled_patch(acted_for)),
+        )
+        .await?
+    };
+    if !force_reimport_complete(&current, all) {
+        return Ok(());
+    }
+    api.patch(
+        name,
+        &PatchParams::default(),
+        &Patch::Merge(&clear_force_reimport_patch(&current)),
+    )
+    .await?;
+    Ok(())
 }
 
 /// `error_policy` invoked on `reconcile` failure.
