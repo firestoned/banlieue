@@ -15,7 +15,11 @@
 # Debian userland, because the job is a shell script over those tools. It
 # runs privileged in the build namespace (ADR-0016) with no API access.
 #
-# Build (banlieue does not publish it yet):
+# Published by CI as ghcr.io/firestoned/banlieue-prelay (linux/amd64,
+# Cosign-signed; .github/workflows/build.yaml, job docker-prelay), the
+# imagebuilder's --prelay-image default (ADR-0113, amendment 2026-11-04), and
+# scanned by its own Grype gate (`make grype-prelay`, VEX in .vex/prelay/).
+# Build it yourself with:
 #     docker build -f Dockerfile.prelay -t <registry>/banlieue-prelay:<tag> .
 #
 # Pinned by digest, on a literal FROM line, so Dependabot re-pins it (see

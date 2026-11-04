@@ -236,18 +236,39 @@ mod tests {
         assert_eq!(cfg.identity, "pod-1");
     }
 
-    /// ADR-0113: pre-laying is off until an operator names an image that can
-    /// run QEMU; a VMImage asking for it is then refused, not shipped raw.
+    /// ADR-0113 (amendment 2026-11-04): the imagebuilder defaults to the
+    /// pre-lay image banlieue publishes for its own version, so `spec.prelay`
+    /// works with no setup step.
     #[test]
-    fn prelay_image_is_unset_by_default_and_settable() {
-        assert_eq!(parse(&[]).prelay_image, None);
+    fn prelay_image_defaults_to_the_published_image() {
+        assert_eq!(
+            prelay_image(&parse(&[])).as_deref(),
+            Some(concat!(
+                "ghcr.io/firestoned/banlieue-prelay:v",
+                env!("CARGO_PKG_VERSION")
+            ))
+        );
+    }
+
+    /// A mirrored cluster repoints it, like `--push-image`.
+    #[test]
+    fn prelay_image_is_settable() {
         let cli = parse(&[
             "--prelay-image",
-            "registry.internal:5000/banlieue/prelay:v1",
+            "registry.internal:5000/banlieue-prelay:v1",
         ]);
         assert_eq!(
-            cli.prelay_image.as_deref(),
-            Some("registry.internal:5000/banlieue/prelay:v1")
+            prelay_image(&cli).as_deref(),
+            Some("registry.internal:5000/banlieue-prelay:v1")
         );
+    }
+
+    /// An empty value turns pre-laying off: a VMImage asking for it is then
+    /// refused with `PrelayImageUnset`, never shipped raw.
+    #[test]
+    fn an_empty_prelay_image_turns_pre_laying_off() {
+        for off in ["", "  "] {
+            assert_eq!(prelay_image(&parse(&["--prelay-image", off])), None);
+        }
     }
 }

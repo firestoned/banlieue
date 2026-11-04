@@ -38,7 +38,9 @@ data:
   # defaults to the public banlieue image, which such a cluster cannot pull.
   # BANLIEUE_PUSH_IMAGE: "mirror.internal/firestoned/banlieue:v0.0.0-distroless@sha256:<digest>"
   # Pre-laying (ADR-0113): the image a VMImage with spec.prelay is pre-laid
-  # with, built from Dockerfile.prelay. The Job runs privileged and needs
-  # /dev/kvm on the build node, so pair it with a build node selector. Unset:
-  # such a VMImage fails with PrelayImageUnset.
-  # BANLIEUE_PRELAY_IMAGE: "registry.internal:5000/banlieue/prelay:v0.0.0"
+  # with. Defaults to the published ghcr.io/firestoned/banlieue-prelay at the
+  # imagebuilder's version; a mirrored cluster repoints it, and pinning a
+  # digest is recommended. The Job runs privileged and needs /dev/kvm on the
+  # build node, so pair it with a build node selector. Empty: pre-laying is
+  # off and such a VMImage fails with PrelayImageUnset.
+  # BANLIEUE_PRELAY_IMAGE: "registry.internal:5000/banlieue-prelay:v0.0.0@sha256:<digest>"

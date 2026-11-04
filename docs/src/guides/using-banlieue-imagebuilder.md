@@ -527,20 +527,37 @@ What happens, in order:
    `checksum` its digest and `prelaidDiskSizeGiB` the size; imports and the
    registry push carry on from there and verify against that digest.
 
-To turn it on:
+The Job runs the pre-lay image banlieue publishes,
+`ghcr.io/firestoned/banlieue-prelay` (linux/amd64, Cosign-signed, built from
+`Dockerfile.prelay`; ADR-0113's *Amendment: a published pre-lay image*).
+Every published image passes its own Grype gate first: no high or critical
+finding that Debian has already fixed. Findings with no Debian fix ship, and
+are listed in the repository's Code Scanning (category
+`grype-release-Prelay` for a release); the image's SBOM is a release asset,
+so you can scan it against your own policy.
+`--prelay-image` (`BANLIEUE_PRELAY_IMAGE`) defaults to it at the
+imagebuilder's own version, and `banlieue bootstrap imagebuilder` writes it
+explicitly. To use it:
 
-- build an image from `Dockerfile.prelay` and set `--prelay-image`
-  (`BANLIEUE_PRELAY_IMAGE`);
 - make sure the build nodes have `/dev/kvm`, and select them with
   `--build-node-selector`: the Job runs privileged in the build namespace,
-  like the kairos-operator builds already do.
+  like the kairos-operator builds already do;
+- pin it by digest: `banlieue bootstrap imagebuilder --prelay-image-digest
+  sha256:<digest>` (the digest is not `--image-digest`'s: it is a different
+  image). Look it up with `crane digest
+  ghcr.io/firestoned/banlieue-prelay:<version>` and check its signature
+  with `cosign verify` as for the banlieue image;
+- on a cluster that mirrors images, mirror it too: under `--registry`,
+  bootstrap points the Job at `<registry>/banlieue-prelay:<version>`.
+
+`--prelay-image ""` turns pre-laying off.
 
 | `buildArtifact` | Means |
 | --- | --- |
 | `Building`, `Prelaying` | the pre-lay Job is running |
 | `Failed`, `PrelayFailed` | the Job failed or reported something other than a digest; its pod log, and the console it kept beside the output, say why |
 | `Failed`, `PrelayNeedsCloudImage` | the source builds an `iso` (vSphere); only a raw image can be pre-laid |
-| `Failed`, `PrelayImageUnset` | `--prelay-image` is not set |
+| `Failed`, `PrelayImageUnset` | `--prelay-image` is set to an empty value (pre-laying off) |
 
 To retry a failed pre-lay, delete the Job (`kubectl -n banlieue-imagebuild
 delete job <osartifact>-prelay`; it allows no retries of its own) and touch the

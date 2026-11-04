@@ -1,11 +1,11 @@
 # anatomy.md
 
-> Auto-maintained by OpenWolf. Last scanned: 2026-11-01T23:00:00.209Z
+> Auto-maintained by OpenWolf. Last scanned: 2026-11-03T23:00:00.257Z
 > Files: 512 tracked | Anatomy hits: 0 | Misses: 0
 
 ## ./
 
-- `.dockerignore` — Build-context allowlist: only binaries/ is COPYed; .git/target/docs excluded (SEC-017) (~193 tok)
+- `.dockerignore` — Docker ignore rules (~237 tok)
 - `.gitignore` — Git ignore rules (~580 tok)
 - `AGENTS.md` — OpenWolf (~174 tok)
 - `Cargo.toml` — Rust package manifest (~1824 tok)
@@ -20,11 +20,11 @@
 - `GOVERNANCE.md` — Governance (~1125 tok)
 - `LICENSE` — Project license (~3029 tok)
 - `MAINTAINERS.md` — Maintainers (~165 tok)
-- `Makefile` — Make build targets (~30183 tok)
+- `Makefile` — Make build targets (~30272 tok)
 - `NOTICE` (~159 tok)
 - `osv-scanner.toml` — SPDX-License-Identifier: Apache-2.0 (~120 tok)
 - `README.md` — Project documentation (~3895 tok)
-- `ROADMAPS.md` — Roadmaps (~4835 tok)
+- `ROADMAPS.md` — Roadmaps (~4885 tok)
 - `SECURITY.md` — Security Policy (~382 tok)
 
 ## .clusterfuzzlite/
@@ -70,7 +70,7 @@
 - `15-vsphere-disk-image-import.md` — 15: vSphere disk-image import (raw and VMDK), alongside the ISO path (~4709 tok)
 - `16-scorecard-remediation.md` — 16 — OSSF Scorecard remediation (~2677 tok)
 - `17-ephemeral-vm-pools.md` — 17: Ephemeral, single-use VM pools (AI agent sandboxes) (~14554 tok)
-- `18-fast-sealed-clones.md` — 18: Fast sealed clones: isolation proof, boot speed, verified base (~4568 tok)
+- `18-fast-sealed-clones.md` — 18: Fast sealed clones: isolation proof, boot speed, verified base (~4603 tok)
 - `19-port-groups.md` — 19: Port groups — declared, reconciled, and safe to delete (~4109 tok)
 - `README.md` — Project documentation (~1447 tok)
 
@@ -94,7 +94,7 @@
 
 ## .github/workflows/
 
-- `build.yaml` — SPDX-License-Identifier: Apache-2.0 (~15442 tok)
+- `build.yaml` — SPDX-License-Identifier: Apache-2.0 (~15691 tok)
 - `calm-test.yaml` — SPDX-License-Identifier: Apache-2.0 (~2002 tok)
 - `calm.yaml` — SPDX-License-Identifier: Apache-2.0 (~2057 tok)
 - `codeql.yaml` — /*.rs (beta in CodeQL; stable enough for (~700 tok)
@@ -229,7 +229,7 @@
 - `error_tests.rs` — Unit tests for [`super::super::error`]: the metric `kind` of each variant. (~196 tok)
 - `error.rs` — Typed errors for the main controller. (~433 tok)
 - `lib.rs` — # banlieue-controller (~274 tok)
-- `metrics_tests.rs` — Unit tests for [`super::super::metrics`]: phase derivation, counting, and (~3007 tok)
+- `metrics_tests.rs` — Unit tests for [`super::super::metrics`]: phase derivation, counting, and (~3008 tok)
 - `metrics.rs` — The controller's domain gauges (ADR-0091 Decision 3). (~2962 tok)
 
 ## crates/banlieue-controller/src/reconciler/
@@ -397,7 +397,7 @@
 - `context.rs` — Shared reconcile context for `banlieue-operator`. (~1111 tok)
 - `error_tests.rs` — Unit tests for [`super::super::error`]: the metric `kind` of each variant. (~197 tok)
 - `error.rs` — Typed errors for `banlieue-operator`. (~372 tok)
-- `events_tests.rs` — Unit tests for `events.rs`. (~1628 tok)
+- `events_tests.rs` — Unit tests for `events.rs`. (~1630 tok)
 - `events.rs` — Kubernetes Events published against `Provider` objects. (~1944 tok)
 - `heartbeat_tests.rs` — Unit tests for [`super::super::heartbeat`] (ADR-0102). (~1430 tok)
 - `heartbeat.rs` — Provider liveness from its leader-election Lease (ADR-0102). (~1293 tok)
@@ -585,7 +585,7 @@
 - `health.rs` — Path-aware liveness and readiness endpoints (ADR-0093). (~2442 tok)
 - `httpd_tests.rs` — Unit tests for [`super::super::httpd`]: request-line parsing and response (~1551 tok)
 - `httpd.rs` — The minimal HTTP/1.1 listener behind the health server (ADR-0093) and the (~2865 tok)
-- `leader_tests.rs` — Unit tests for [`super::super::leader`]. (~2111 tok)
+- `leader_tests.rs` — Unit tests for [`super::super::leader`]. (~2110 tok)
 - `leader.rs` — Lease-based leader election for banlieue controllers. (~4350 tok)
 - `lib.rs` — # banlieue-provider-sdk (~660 tok)
 - `metrics_tests.rs` — Unit tests for [`super::super::metrics`]: series names and labels as they (~1142 tok)
@@ -596,7 +596,7 @@
 - `osartifact.rs` — Shared knowledge of kairos-operator's `OSArtifact` CRD (`build.kairos.io`) (~651 tok)
 - `pem_tests.rs` — Unit tests for `pem.rs`. (~506 tok)
 - `pem.rs` — PEM encoding for certificates a provider publishes into a CR status. (~461 tok)
-- `reconciler_tests.rs` — Unit tests for [`super::super::reconciler`]. (~848 tok)
+- `reconciler_tests.rs` — Unit tests for [`super::super::reconciler`]. (~841 tok)
 - `reconciler.rs` — Small helpers around [`kube::runtime::controller::Action`]. (~868 tok)
 - `runner_tests.rs` — Unit tests for [`super::super::runner`]: outcome classification, and the (~1651 tok)
 - `runner.rs` — The one place every controller is run from (ADR-0091 Decision 2). (~1540 tok)
@@ -641,8 +641,8 @@
 
 - `fake.rs` — In-memory `VSphereClient` used by reconciler tests. (~7693 tok)
 - `mod.rs` — vSphere client surface used by the reconcilers. (~7954 tok)
-- `vim_tests.rs` — Unit tests for the BYOC HTTP-client helpers in `vim.rs` (ADR-0008). (~14009 tok)
-- `vim.rs` — Production `VSphereClient` implementation backed by `vim_rs`. (~37009 tok)
+- `vim_tests.rs` — Unit tests for the BYOC HTTP-client helpers in `vim.rs` (ADR-0008). (~14668 tok)
+- `vim.rs` — Production `VSphereClient` implementation backed by `vim_rs`. (~37428 tok)
 
 ## crates/banlieue-provider-vsphere/src/reconciler/
 

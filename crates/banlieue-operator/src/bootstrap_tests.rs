@@ -19,6 +19,7 @@ mod tests {
             build_node_selector: Vec::new(),
             build_toleration: Vec::new(),
             image_digest: None,
+            prelay_image_digest: None,
         }
     }
 
@@ -1006,7 +1007,137 @@ mod tests {
         // clap rejects an empty value, so an unset selector must be omitted
         // rather than passed as "".
         let args = InstallRole::Imagebuilder.args_with(&opts());
-        assert_eq!(args, vec!["imagebuilder".to_string()]);
+        assert!(
+            !args
+                .iter()
+                .any(|a| a == "--build-node-selector" || a == "--build-toleration"),
+            "{args:?}"
+        );
+    }
+
+    // ---------- the pre-lay image (ADR-0113, amendment 2026-11-04) --------
+
+    /// The value following `flag` in `args`, if any.
+    fn flag_value<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
+        args.windows(2)
+            .find(|w| w[0] == flag)
+            .map(|w| w[1].as_str())
+    }
+
+    /// The imagebuilder is told which pre-lay image to run, for the version
+    /// being installed, not left to the binary's own default.
+    #[test]
+    fn the_imagebuilder_gets_the_published_prelay_image() {
+        let args = InstallRole::Imagebuilder.args_with(&opts());
+        assert_eq!(
+            flag_value(&args, "--prelay-image"),
+            Some("ghcr.io/firestoned/banlieue-prelay:v0.1.0")
+        );
+    }
+
+    /// A mirrored cluster cannot pull ghcr.io: the pre-lay image follows
+    /// `--registry` like every other banlieue image.
+    #[test]
+    fn the_prelay_image_follows_a_registry_override() {
+        let opts = InstallOptions {
+            registry: Some("registry.internal:5000".to_string()),
+            ..opts()
+        };
+        assert_eq!(
+            prelay_install_image(&opts),
+            "registry.internal:5000/banlieue-prelay:v0.1.0"
+        );
+    }
+
+    /// A privileged Job pulled by a mutable tag can change under a running
+    /// cluster (ADR-0103); `--prelay-image-digest` pins it, mirror or not.
+    #[test]
+    fn a_prelay_digest_pins_the_prelay_image() {
+        let opts = InstallOptions {
+            registry: Some("registry.internal:5000".to_string()),
+            prelay_image_digest: Some(VALID_DIGEST.to_string()),
+            ..opts()
+        };
+        let args = InstallRole::Imagebuilder.args_with(&opts);
+        assert_eq!(
+            flag_value(&args, "--prelay-image"),
+            Some(format!("registry.internal:5000/banlieue-prelay:v0.1.0@{VALID_DIGEST}").as_str())
+        );
+    }
+
+    /// `--image-digest` is the banlieue image's digest; it must never be
+    /// applied to the pre-lay image, which is different bytes.
+    #[test]
+    fn the_banlieue_digest_does_not_pin_the_prelay_image() {
+        let opts = InstallOptions {
+            image_digest: Some(VALID_DIGEST.to_string()),
+            ..opts()
+        };
+        assert_eq!(
+            prelay_install_image(&opts),
+            "ghcr.io/firestoned/banlieue-prelay:v0.1.0"
+        );
+    }
+
+    /// Only the imagebuilder declares `--prelay-image`; any other role given
+    /// it would refuse to start.
+    #[test]
+    fn only_the_imagebuilder_gets_the_prelay_image() {
+        for role in [
+            InstallRole::Controller,
+            InstallRole::Operator,
+            InstallRole::Provider("libvirt".to_string()),
+        ] {
+            let args = role.args_with(&opts());
+            assert_eq!(flag_value(&args, "--prelay-image"), None, "{role:?}");
+        }
+    }
+
+    /// `bootstrap imagebuilder --prelay-image-digest` takes only a sha256
+    /// digest and reaches the install options.
+    #[test]
+    fn the_prelay_digest_flag_is_parsed_and_validated() {
+        use clap::Parser;
+        #[derive(Parser)]
+        struct Wrapper {
+            #[command(subcommand)]
+            target: BootstrapTarget,
+        }
+        let parsed = Wrapper::try_parse_from([
+            "bootstrap",
+            "imagebuilder",
+            "--prelay-image-digest",
+            VALID_DIGEST,
+        ])
+        .expect("a valid digest parses");
+        let BootstrapTarget::Imagebuilder {
+            common,
+            prelay_image_digest,
+        } = parsed.target
+        else {
+            panic!("expected the imagebuilder target");
+        };
+        let (opts, _) = common.split();
+        assert_eq!(
+            opts.with_prelay_digest(prelay_image_digest)
+                .prelay_image_digest
+                .as_deref(),
+            Some(VALID_DIGEST)
+        );
+        assert!(
+            Wrapper::try_parse_from(["bootstrap", "imagebuilder", "--prelay-image-digest", "v1"])
+                .is_err()
+        );
+        assert!(
+            Wrapper::try_parse_from([
+                "bootstrap",
+                "operator",
+                "--prelay-image-digest",
+                VALID_DIGEST
+            ])
+            .is_err(),
+            "only the imagebuilder install takes it"
+        );
     }
 
     // ---------- digest pinning --------------------------------------------

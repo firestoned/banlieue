@@ -34,6 +34,10 @@ the Grype scan (`grype --vex`) so justified findings do not re-alarm. See
   and going stale. Hand-write a statement only when the argument is not
   "this symbol is not linked" (see `CVE-2026-27171.json`, which turns on the
   absence of a *crate*, not a symbol).
+- **`prelay/`**: statements for the pre-lay image (`pkg:oci/banlieue-prelay`),
+  which has its own Grype gate (`make grype-prelay`, ADR-0113). Kept out of
+  the `*.json` glob on purpose: nothing here applies to the banlieue image.
+  See [`prelay/README.md`](prelay/README.md).
 - **`.gitkeep`** — keeps the directory tracked when no curated statements exist.
 
 When there are no curated statements, CI emits a valid **empty** OpenVEX

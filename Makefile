@@ -93,6 +93,13 @@ CONTAINER_TOOL ?= docker
 VEXCTL_VERSION ?= 0.4.1
 GRYPE_VERSION  ?= 0.118.0
 PRODUCT_PURL   ?= pkg:oci/banlieue
+# The pre-lay image's Grype gate (ADR-0113, amendment: a gate for the pre-lay
+# image). PRELAY_IMAGE_REF is the image to scan, by digest; the gate fails on
+# a finding at or above PRELAY_GRYPE_FAIL_ON that Debian has already fixed.
+PRELAY_IMAGE_REF     ?=
+PRELAY_GRYPE_FAIL_ON ?= high
+PRELAY_VEX_DIR       ?= .vex/prelay
+PRELAY_GRYPE_SARIF   ?= grype-prelay.sarif
 # Inputs for the local auto-vex mirrors (`make vex-auto-*`).
 GRYPE_JSON         ?= grype.json
 AFFECTED_FUNCTIONS ?= .vex/.affected-functions.json
@@ -146,6 +153,7 @@ help: ## Show this help
         docker-build docker-build-amd64 docker-build-arm64 \
         docker-build-chainguard docker-buildx docker-buildx-chainguard docker-push \
         sbom vexctl-install vex-validate vex-assemble \
+        grype-install grype-prelay \
         vex-auto-presence vex-auto-reachability \
         kind-install kind-create kind-delete kind-load \
         kind-deploy-crds kind-deploy-controller kind-up kind-down kind-status \
@@ -208,7 +216,7 @@ clean: ## Clean build artefacts
 # and is applied per job instead.
 #
 # Keep this in sync with the `changes` job in .github/workflows/build.yaml.
-CI_CODE_PATHS_RE ?= ^(crates/|Cargo\.toml$$|Cargo\.lock$$|Dockerfile|\.github/workflows/build\.yaml$$|\.github/actions/|\.vex/)
+CI_CODE_PATHS_RE ?= ^(crates/|Cargo\.toml$$|Cargo\.lock$$|Dockerfile|\.dockerignore$$|scripts/prelay-kairos-raw\.sh$$|\.github/workflows/build\.yaml$$|\.github/actions/|\.vex/)
 
 ci-code-changed: ## Print true/false: does the diff against BASE_REF touch build-relevant paths? (CI gating, roadmap 16 #1)
 	@base="$${BASE_REF:-origin/main}"; \
@@ -725,6 +733,17 @@ ch-sealing-isolation-e2e: ## Cloud Hypervisor: a sealed member's disk does not u
 	  cargo test -p banlieue-provider-cloud-hypervisor --test e2e_sealing_isolation -- \
 	  --ignored --nocapture --test-threads=1
 
+libvirt-sealing-isolation-e2e: ## libvirt: a sealed member's disk does not unlock under another vTPM, and still does under its own (cluster + libvirt host, never CI)
+	@# Roadmap 18 invariant 2 on libvirt (tests/e2e_sealing_isolation.rs
+	@# module docs): the image needs the probe stage named there. Runs from
+	@# anywhere that reaches the cluster and the host's libvirtd over TLS.
+	@test -n "$$BANLIEUE_E2E_PROVIDER" -a -n "$$BANLIEUE_E2E_IMAGE" -a -n "$$BANLIEUE_E2E_CLASS" -a -n "$$LIBVIRT_HOST" -a -n "$$LIBVIRT_TLS_DIR" -a -n "$$KUBECONFIG" || { \
+	  echo "Set KUBECONFIG, BANLIEUE_E2E_PROVIDER, BANLIEUE_E2E_IMAGE, BANLIEUE_E2E_CLASS,"; \
+	  echo "LIBVIRT_HOST and LIBVIRT_TLS_DIR (see tests/e2e_sealing_isolation.rs)."; \
+	  exit 1; }
+	cargo test -p banlieue-provider-libvirt --test e2e_sealing_isolation -- \
+	  --ignored --nocapture --test-threads=1
+
 ch-deferred-e2e: ## Cloud Hypervisor: tpmEnabled Deferred install -> sealed, reported, installer ejected -> delete leaves nothing (ON THE HOST, as root, never CI)
 	@# Creates a CloudHypervisorMachine directly (tests/e2e_deferred.rs
 	@# module docs). Builds as you; only the test binary runs through sudo,
@@ -1028,9 +1047,43 @@ vexctl-install: ## Install openvex/vexctl ($(VEXCTL_VERSION)) if not already pre
 	fi; \
 	vexctl version
 
-vex-validate: vexctl-install ## Validate that every .vex/*.json parses and merges
+grype-install: ## Install anchore/grype ($(GRYPE_VERSION)) if not already present
+	@if command -v grype >/dev/null 2>&1; then echo "grype already installed"; grype version; exit 0; fi; \
+	if [ "$$(uname -s)" = "Darwin" ]; then \
+		brew install grype; \
+	else \
+		arch=$$(uname -m); case "$$arch" in x86_64) arch=amd64 ;; aarch64|arm64) arch=arm64 ;; esac; \
+		url="https://github.com/anchore/grype/releases/download/v$(GRYPE_VERSION)/grype_$(GRYPE_VERSION)_linux_$$arch.tar.gz"; \
+		echo "Downloading $$url"; \
+		tmp=$$(mktemp -d); \
+		curl -fsSLo "$$tmp/grype.tgz" "$$url"; \
+		tar -xzf "$$tmp/grype.tgz" -C "$$tmp" grype; \
+		sudo install -m 0755 "$$tmp/grype" /usr/local/bin/grype; \
+		rm -rf "$$tmp"; \
+	fi; \
+	grype version
+
+# Two scans of one image (the vulnerability DB is cached, so the second is
+# quick). The first reports every finding to $(PRELAY_GRYPE_SARIF) for Code
+# Scanning, unfixed ones included, and never fails. The second is the gate:
+# --only-fixed, so a Debian finding with no fix (or marked won't-fix) is
+# reported but does not block, and nobody is handed a gate they cannot pass.
+# A curated statement in $(PRELAY_VEX_DIR)/ suppresses a finding in both.
+grype-prelay: grype-install ## Gate: scan PRELAY_IMAGE_REF; fail on a fixed finding >= PRELAY_GRYPE_FAIL_ON (ADR-0113)
+	@test -n "$(PRELAY_IMAGE_REF)" || { \
+	  echo "Set PRELAY_IMAGE_REF=<registry>/banlieue-prelay@sha256:<digest>"; exit 1; }
+	@vex_args=""; \
+	for f in $(PRELAY_VEX_DIR)/*.json; do if [ -f "$$f" ]; then vex_args="$$vex_args --vex $$f"; fi; done; \
+	echo "── Report: every finding -> $(PRELAY_GRYPE_SARIF) ──"; \
+	grype "$(PRELAY_IMAGE_REF)" $$vex_args --output sarif --file "$(PRELAY_GRYPE_SARIF)"; \
+	echo "── Gate: fixed findings at or above $(PRELAY_GRYPE_FAIL_ON) ──"; \
+	grype "$(PRELAY_IMAGE_REF)" $$vex_args --only-fixed --fail-on "$(PRELAY_GRYPE_FAIL_ON)" --output table
+
+vex-validate: vexctl-install ## Validate that every .vex/*.json (and .vex/prelay/*.json) parses and merges
 	@vexctl merge --id "https://banlieue/local/validate" --author "local" .vex/*.json > /dev/null
-	@echo "✓ all .vex/*.json parsed successfully"
+	@set -- $(wildcard $(PRELAY_VEX_DIR)/*.json); \
+	if [ $$# -gt 0 ]; then vexctl merge --id "https://banlieue/local/validate-prelay" --author "local" "$$@" > /dev/null; fi
+	@echo "✓ all .vex/*.json and $(PRELAY_VEX_DIR)/*.json parsed successfully"
 
 vex-assemble: vexctl-install ## Merge .vex/*.json into one OpenVEX document on stdout
 	@vexctl merge \

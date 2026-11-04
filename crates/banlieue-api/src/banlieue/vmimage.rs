@@ -154,8 +154,9 @@ pub struct VMImageSpec {
     /// reset every clone would otherwise run on its first boot, so each
     /// clone boots straight into the installed system. Only for a `Url`
     /// source built as a `cloudImage`; an `iso` build is refused
-    /// (`PrelayNeedsCloudImage`). Needs `banlieue-imagebuilder
-    /// --prelay-image`. The published artifact is the pre-laid file, with a
+    /// (`PrelayNeedsCloudImage`). The pre-lay Job runs the published
+    /// `banlieue-prelay` image (`banlieue-imagebuilder --prelay-image`) and
+    /// needs `/dev/kvm` on the build node. The published artifact is the pre-laid file, with a
     /// checksum the builder computed after verifying the built file against
     /// the source's `checksum`.
     #[serde(default, skip_serializing_if = "Option::is_none")]

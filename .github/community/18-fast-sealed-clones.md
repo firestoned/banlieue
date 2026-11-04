@@ -46,7 +46,7 @@ GRUB's 10 s menu wait on each boot is another 19 % (phase C).
 | # | Invariant | Status |
 |---|---|---|
 | 1 | **The base image contains no secrets and no identity.** No machine-id, SSH host keys, tokens, enrolled TPM material or pre-created keyslots. Enforced at build time with a scanner, not a convention. | ⛔ Convention only. Phase D. |
-| 2 | **One volume key per member, sealed to that member's vTPM only.** No fleet key, no escrow copy. The negative test is a live deliverable, not an assumption. | 🔶 Proven on Cloud Hypervisor (phase B); libvirt and vSphere open. |
+| 2 | **One volume key per member, sealed to that member's vTPM only.** No fleet key, no escrow copy. The negative test is a live deliverable, not an assumption. | 🔶 Proven on Cloud Hypervisor and libvirt (phase B); vSphere open. |
 | 3 | **The base is integrity-bound to the image artifact.** | ⛔ Phase D. |
 | 4 | **`GuestReady` implies sealed.** A member that cannot seal never announces. | ✅ ADR-0088 Decision 5 readback on all three backends; `FirstBootSealingTimeout` for a clone that halts. Caveat below. |
 | 5 | **Fresh vTPM per clone, never migrated, never duplicated.** | ✅ All three backends (ADR-0039, ADR-0050, ADR-0065). |
@@ -113,10 +113,21 @@ invariant 4 caveat).
       110 s; the copy under a fresh vTPM never unlocked and timed out
       (`FirstBootSealingTimeout`, 300 s budget); A unlocked again 30 s after
       power-on.
-- [ ] **libvirt**: the same four steps against `LibvirtMachine` (copy the
-      domain's overlay flattened onto its base, or the volume with
-      `qemu-img convert`). The probe can read back through the guest agent
-      instead of a console.
+- [x] **libvirt**: the same four steps against `LibvirtMachine`:
+      `make libvirt-sealing-isolation-e2e`
+      (`crates/banlieue-provider-libvirt/tests/e2e_sealing_isolation.rs`).
+      **Green 2026-11-04**, in the production topology (banlieue v0.4.10
+      installed by `bootstrap operator`, the libvirt provider as the
+      operator's per-Provider workload, a pre-laid Debian image as a
+      `BackingFile`): A sealed and unlocked (`/dev/mapper/vda5`); its disk
+      cloned flat under a fresh vTPM never unlocked and timed out
+      (`FirstBootSealingTimeout`, 300 s budget, 303 s); A unlocked again 30 s
+      after power-on; teardown left nothing on the host.
+      It needs no shell on the host: the sealed overlay is cloned, flattened,
+      into a raw volume over libvirt's own TLS connection
+      (`storage_vol_create_xml_from`, `virsh vol-clone`'s procedure, new in
+      `banlieue-libvirt`), and the probe is a file read back through the
+      guest agent (`/run/banlieue/e2e-persistent`), not a console line.
 - [ ] **vSphere**: the same, copying the VMDK into a new VM with a fresh
       vTPM (ADR-0039).
 - [ ] **Capture the failure, not only its absence.** The installed system's
@@ -204,6 +215,20 @@ layout is an ADR.
       ran live on a build host, then **in a cluster (2026-11-02)**: a Hadron
       `Url` image pre-laid by the Job (digest verified), and its clone sealed
       and `GuestReady` in **30 s** on Cloud Hypervisor. ADR-0113 accepted.
+- [x] **banlieue publishes the pre-lay image** (ADR-0113, *Amendment: a
+      published pre-lay image*, 2026-11-04): CI builds `Dockerfile.prelay`
+      into `ghcr.io/firestoned/banlieue-prelay` (linux/amd64, Cosign-signed,
+      provenance and SBOM on main and releases); `--prelay-image` defaults
+      to it and `banlieue bootstrap imagebuilder --prelay-image-digest` pins
+      it, so `spec.prelay` needs no image of the operator's own. The first
+      release to carry it is v0.4.11; check that run's `🐳 Image - Prelay`.
+- [x] **The pre-lay image has a Grype gate** (ADR-0113, *Amendment: a
+      Grype gate for the pre-lay image*, 2026-11-04): `make grype-prelay`
+      (CI job `🔭 Container Scan - Prelay`) scans every pushed image,
+      reports every finding to Code Scanning and fails on a high or critical
+      finding Debian has already fixed; VEX in `.vex/prelay/`; the release
+      upload waits for it. A local build passed it (333 findings, none
+      fixable).
 - [x] **A pre-laid pool on libvirt** (2026-11-01): two members `Warm` in
       65 s, against 125 s for the raw image (ADR-0088), both sealed with an
       EK certificate.

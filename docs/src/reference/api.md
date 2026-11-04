@@ -1575,7 +1575,7 @@ Cluster-scoped: a VMImage is shared by VirtualMachines in any namespace.
 | `osDistribution` | string | Yes | Free-form distribution string. Examples: ubuntu, rhel, debian, fedora-coreos, windows-server. |
 | `osFamily` | string | Yes | Broad operating-system family. Coarser than `osDistribution`; lets providers apply high-level guest handling. Allowed: `linux`, `windows`, `bsd`, `other`. |
 | `osVersion` | string | Yes | Free-form version string. Examples: "22.04", "9.4", "2022". |
-| `prelay` | object |  | Pre-lay the built image (ADR-0113): `banlieue-imagebuilder` boots the raw `cloudImage` once, at build time, through the Kairos recovery reset every clone would otherwise run on its first boot, so each clone boots straight into the installed system. Only for a `Url` source built as a `cloudImage`; an `iso` build is refused (`PrelayNeedsCloudImage`). Needs `banlieue-imagebuilder --prelay-image`. The published artifact is the pre-laid file, with a checksum the builder computed after verifying the built file against the source's `checksum`. |
+| `prelay` | object |  | Pre-lay the built image (ADR-0113): `banlieue-imagebuilder` boots the raw `cloudImage` once, at build time, through the Kairos recovery reset every clone would otherwise run on its first boot, so each clone boots straight into the installed system. Only for a `Url` source built as a `cloudImage`; an `iso` build is refused (`PrelayNeedsCloudImage`). The pre-lay Job runs the published `banlieue-prelay` image (`banlieue-imagebuilder --prelay-image`) and needs `/dev/kvm` on the build node. The published artifact is the pre-laid file, with a checksum the builder computed after verifying the built file against the source's `checksum`. |
 | `sources` | object[] | Yes | Per-provider source mappings — one backend binding for this catalog entry per `providerClass` you intend to schedule VMs onto ("one name, many backends", see the type-level doc comment above). |
 | `template` | object |  | How the backend **template** is built from a `Url` source (root folder, network, disk, CPU / memory / firmware / NIC, force knobs). Every field is optional and falls back to a built-in default. Only meaningful for `Url` sources, with one exception: for a vSphere `Template` source (an existing template banlieue adopts and never builds) only `rootFolder` is read, to find the template in `<rootFolder>/<failure-domain>`; every other field is ignored. Ignored for `BackingFile`. See [`VMImageTemplate`], ADR-0020 and ADR-0104. |
 | `trustedBoot` | object |  | Requests a Trusted Boot (UKI) artifact instead of a classic kernel+initrd one, for `Url`-kind vSphere sources. Resolved by `banlieue-imagebuilder` into the kairos-operator `OSArtifact`'s `spec.artifacts.uki.{iso,keysVolume}` (replacing the plain `artifacts.iso` request) — the `auroraboot build-uki` mechanism. See [`TrustedBootSource`] and ADR-0051. Ignored for `cloudImage`-kind builds and non-`Url` sources. |
@@ -1671,8 +1671,9 @@ raw `cloudImage` once, at build time, through the Kairos recovery
 reset every clone would otherwise run on its first boot, so each
 clone boots straight into the installed system. Only for a `Url`
 source built as a `cloudImage`; an `iso` build is refused
-(`PrelayNeedsCloudImage`). Needs `banlieue-imagebuilder
---prelay-image`. The published artifact is the pre-laid file, with a
+(`PrelayNeedsCloudImage`). The pre-lay Job runs the published
+`banlieue-prelay` image (`banlieue-imagebuilder --prelay-image`) and
+needs `/dev/kvm` on the build node. The published artifact is the pre-laid file, with a
 checksum the builder computed after verifying the built file against
 the source's `checksum`.
 
