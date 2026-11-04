@@ -49,6 +49,18 @@ rules:
   # ---------------------------------------------------------------------------
   # Core resources
   # ---------------------------------------------------------------------------
+  # ADR-0115: the rebuild gate tells that an artifacts volume pinned to a
+  # replaced node lost its data (PV nodeAffinity -> Node.creationTimestamp vs
+  # the PV's own). Both kinds are cluster-scoped, so only a ClusterRole can
+  # grant them. Read-only; neither returns Secret content. Without these the
+  # check logs a warning and changes nothing, so an upgrade is safe before the
+  # role is applied.
+  - apiGroups: [""]
+    resources: ["persistentvolumes"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["list"]
   # Emit Events for state transitions visible via `kubectl describe vmimage`.
   - apiGroups: [""]
     resources: ["events"]

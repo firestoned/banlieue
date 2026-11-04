@@ -1,5 +1,28 @@
 # Changelog
 
+## [2026-11-04 19:00] - Rebuild an artifact whose node-local volume was lost (ADR-0115)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0115-rebuild-an-artifact-whose-node-local-volume-was-lost.md`: a volume is lost when no node with the PV's hostname was created at or before the PV; a lost volume is a stale artifact.
+- `crates/banlieue-imagebuilder/src/reconciler/vmimage.rs`: `pinned_hostname`, `volume_lost`, `artifact_volume_lost`; `LiveArtifactView.volume_lost`; `artifact_gate` returns `DeleteForRebuild` for it. A failed PV or Node read never deletes. The status message says why the artifact was replaced.
+- `deploy/imagebuilder/rbac/clusterrole.yaml`: `get` on `persistentvolumes` and `list` on `nodes` (read-only, cluster-scoped).
+- Tests: 13 in `vmimage_tests.rs`, and `the_imagebuilder_cluster_role_reads_volumes_and_nodes_and_writes_neither` in `bootstrap_tests.rs`.
+
+### Changed
+- `docs/architecture/calm/architecture.json`: the imagebuilder's `least-privilege` control and evidence. `make calm-validate` passes; no structure change, so no diagrams.
+- `docs/src/security/threat-model.md`: full pass; stamp advanced to ADR-0115; §2, TB-3, §7 and §8 updated. No new component, boundary or write grant, so the §5 diagram stands.
+- `docs/src/guides/using-banlieue-imagebuilder.md`: "Rebuilding after a worker is replaced".
+
+### Why
+After every worker was rebuilt, six `OSArtifact`s stayed `Ready` with their ISOs gone, and every import Job failed forever.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (apply the imagebuilder ClusterRole, then the new imagebuilder image)
+- [ ] Config change only
+- [ ] Documentation only
 ## [2026-11-04 23:00] - Kairos static addressing verified live (ADR-0114 Decision 4)
 
 **Author:** Erick Bourgeois

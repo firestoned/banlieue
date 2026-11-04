@@ -1386,7 +1386,127 @@ mod tests {
             owned,
             current,
             terminating,
+            volume_lost: false,
         })
+    }
+
+    // ----- ADR-0115: a volume whose node was replaced is a stale artifact ---
+
+    fn time(rfc3339: &str) -> k8s_openapi::apimachinery::pkg::apis::meta::v1::Time {
+        serde_json::from_value(json!(rfc3339)).expect("valid RFC 3339 time")
+    }
+
+    fn pv_with_affinity(terms: serde_json::Value) -> k8s_openapi::api::core::v1::PersistentVolume {
+        serde_json::from_value(json!({
+            "apiVersion": "v1",
+            "kind": "PersistentVolume",
+            "metadata": {"name": "pvc-x"},
+            "spec": {"nodeAffinity": {"required": {"nodeSelectorTerms": terms}}},
+        }))
+        .expect("valid PV")
+    }
+
+    fn hostname_term(op: &str, values: &[&str]) -> serde_json::Value {
+        json!({"matchExpressions": [
+            {"key": "kubernetes.io/hostname", "operator": op, "values": values}
+        ]})
+    }
+
+    #[test]
+    fn a_pv_pinned_to_one_hostname_names_it() {
+        let pv = pv_with_affinity(json!([hostname_term("In", &["worker-a.foo.io"])]));
+        assert_eq!(pinned_hostname(&pv).as_deref(), Some("worker-a.foo.io"));
+    }
+
+    #[test]
+    fn a_pv_without_node_affinity_names_no_host() {
+        let pv: k8s_openapi::api::core::v1::PersistentVolume = serde_json::from_value(json!({
+            "apiVersion": "v1", "kind": "PersistentVolume",
+            "metadata": {"name": "pvc-x"}, "spec": {},
+        }))
+        .unwrap();
+        assert_eq!(pinned_hostname(&pv), None);
+    }
+
+    #[test]
+    fn a_pv_pinned_on_another_label_names_no_host() {
+        let pv = pv_with_affinity(json!([{"matchExpressions": [
+            {"key": "topology.kubernetes.io/zone", "operator": "In", "values": ["z1"]}
+        ]}]));
+        assert_eq!(pinned_hostname(&pv), None);
+    }
+
+    /// `NotIn` and `Exists` do not pin to a host; guessing one would make the
+    /// gate compare the wrong node.
+    #[test]
+    fn a_pv_with_a_non_in_operator_names_no_host() {
+        let pv = pv_with_affinity(json!([hostname_term("NotIn", &["worker-a.foo.io"])]));
+        assert_eq!(pinned_hostname(&pv), None);
+    }
+
+    /// More than one host is ambiguous, so the check never guesses.
+    #[test]
+    fn a_pv_pinned_to_several_hostnames_names_no_host() {
+        let pv = pv_with_affinity(json!([hostname_term(
+            "In",
+            &["worker-a.foo.io", "worker-b.foo.io"]
+        )]));
+        assert_eq!(pinned_hostname(&pv), None);
+    }
+
+    #[test]
+    fn a_volume_is_lost_when_its_node_is_gone() {
+        assert!(volume_lost(&time("2026-11-01T10:00:00Z"), &[]));
+    }
+
+    #[test]
+    fn a_volume_is_lost_when_its_node_was_recreated_after_it() {
+        let pv = time("2026-11-01T10:00:00Z");
+        assert!(volume_lost(&pv, &[time("2026-11-04T14:40:33Z")]));
+    }
+
+    #[test]
+    fn a_volume_survives_when_its_node_is_older() {
+        let pv = time("2026-11-04T10:00:00Z");
+        assert!(!volume_lost(&pv, &[time("2026-11-01T14:40:33Z")]));
+    }
+
+    /// Equal timestamps (a node and a PV made in the same second) must not
+    /// read as a replacement: only strictly newer does.
+    #[test]
+    fn a_volume_survives_when_node_and_pv_share_a_timestamp() {
+        let pv = time("2026-11-04T10:00:00Z");
+        assert!(!volume_lost(&pv, &[time("2026-11-04T10:00:00Z")]));
+    }
+
+    #[test]
+    fn a_volume_survives_if_any_matching_node_predates_it() {
+        let pv = time("2026-11-04T10:00:00Z");
+        let nodes = [time("2026-11-04T14:00:00Z"), time("2026-10-01T00:00:00Z")];
+        assert!(!volume_lost(&pv, &nodes));
+    }
+
+    #[test]
+    fn gate_deletes_an_artifact_whose_volume_was_lost() {
+        let view = Some(LiveArtifactView {
+            owned: true,
+            current: true,
+            terminating: false,
+            volume_lost: true,
+        });
+        assert_eq!(artifact_gate(view, false), ArtifactGate::DeleteForRebuild);
+    }
+
+    /// Teardown already in flight wins: never delete twice.
+    #[test]
+    fn gate_waits_on_a_terminating_artifact_even_if_its_volume_was_lost() {
+        let view = Some(LiveArtifactView {
+            owned: true,
+            current: true,
+            terminating: true,
+            volume_lost: true,
+        });
+        assert_eq!(artifact_gate(view, false), ArtifactGate::AwaitTeardown);
     }
 
     #[test]

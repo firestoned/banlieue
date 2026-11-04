@@ -5,10 +5,12 @@ SPDX-License-Identifier: Apache-2.0
 # Threat Model
 
 > **Status:** Living document. Last full pass **2026-11-04**, against the
-> architecture defined by **ADR-0001 … ADR-0114** (0057–0059 unallocated,
+> architecture defined by **ADR-0001 … ADR-0115** (0057–0059 unallocated,
 > 0066 and 0068–0073 reserved; 0074 and 0075 Accepted 2026-09-28; 0076–0080
 > reserved by roadmap 19; 0081–0082 recorded but not implemented in banlieue, and kept canonically in
-> mediatore since ADR-0097;
+> mediatore since ADR-0097; **ADR-0115** (2026-11-04: the imagebuilder's rebuild gate
+> reads the artifacts PV and its node, two read-only cluster-scoped grants; a
+> volume lost with a replaced node is rebuilt: §2, TB-3, §7, §8);
 > 0088 Accepted 2026-10-26, superseding 0048; 0108 and 0109 Proposed and
 > not implemented, renumbered 2026-10-26 from duplicate 0100 and 0103; 0112
 > Accepted 2026-10-28, renumbered 2026-10-30 from 0110, which main had
@@ -591,7 +593,7 @@ relationship to the host.
 | `banlieue-provider-proxmox` | per-`Provider` SA | `banlieue-system` | Talks to Proxmox VE through the first-party `banlieue-proxmox` client (ADR-0074); reconciles `ProxmoxMachine`s (ADR-0075) into full clones of a template VM, verifies the template VMIDs `VMImage`s name, and publishes one failure domain per node. Spawns no Jobs — `deploy/provider-proxmox/rbac/clusterrole.yaml` |
 | `banlieue-provider-cloud-hypervisor` | ServiceAccount `banlieue-provider-cloud-hypervisor` (a bound token in a kubeconfig **on the host**); host user `banlieue` | **Not in the cluster** — a systemd service on the KVM host; its Provider lives in `banlieue-system` | Watches its own `Provider`, `CloudHypervisorMachine`s and `VMImage`s over the API; creates taps, disks, seeds and one transient systemd unit per guest (ADR-0060, ADR-0063). Holds `CAP_NET_ADMIN`, `CAP_CHOWN`, `CAP_FOWNER` and nothing else — `deploy/provider-cloud-hypervisor/host/banlieue-provider-cloud-hypervisor.service` |
 | Cloud Hypervisor VMM, one per guest | Its own host uid **and private gid** (`banlieue-g<uid>`, registered in `/etc/userdb`), plus `kvm` | The host, as `banlieue-ch@<guest uid>.service`, an instance of a root-owned template | Runs one guest. No capabilities; seccomp and Landlock on; systemd sandbox: `deploy/provider-cloud-hypervisor/host/banlieue-ch@.service` |
-| `banlieue-imagebuilder` | `banlieue-imagebuilder` | `banlieue-system` | Drives kairos `OSArtifact` builds; merges cloud-config (ADR-0037) ; for a `VMImage` with `firstBootSealing` appends a banlieue-generated layer after every operator layer: the sealing policy into the installed disk's `COS_OEM` and a boot stage that reports the sealed partitions (ADR-0088, `src/first_boot_sealing.rs`) |
+| `banlieue-imagebuilder` | `banlieue-imagebuilder` | `banlieue-system` | Drives kairos `OSArtifact` builds; merges cloud-config (ADR-0037) ; for a `VMImage` with `firstBootSealing` appends a banlieue-generated layer after every operator layer: the sealing policy into the installed disk's `COS_OEM` and a boot stage that reports the sealed partitions (ADR-0088, `src/first_boot_sealing.rs`); reads the artifacts PV and the node it is pinned to (read-only, cluster-scoped) to rebuild an artifact whose node-local volume was lost with a replaced node (ADR-0115) |
 | swtpm, one per `tpmEnabled` Cloud Hypervisor guest | The guest's uid and private group | The host, as `banlieue-swtpm@<guest uid>.service` | Emulates the guest's TPM from state in `/var/lib/banlieue/tpm/<guest uid>/` (ADR-0065) — `plan.rs::swtpm_unit` |
 | vTPM manufacture, once per guest | Host user `banlieue` | The host, as `banlieue-swtpm-setup@<guest uid>.service` | Runs `swtpm_setup`: creates the TPM and signs its EK and platform certificates with the host's `swtpm_localca` key — `plan.rs::swtpm_setup_unit` |
 | per-zone import Job | `banlieue-import` | `banlieue-imagebuild` | Uploads a built ISO to a datastore, creates a template (ADR-0020) |
@@ -818,6 +820,7 @@ access**, and each identity reads only the objects it can name.
 | An empty `resourceNames` list is treated as a bug, not a default — the CA-ConfigMap rule is emitted only when the Provider names one | same |
 | `banlieue-controller`'s `ClusterRole` carries no Secret rule at all; its Secret/ConfigMap `get` is a namespaced `Role`, which `banlieue bootstrap operator` emits from the same file (it did not before 2026-10-09, so no `VirtualMachine` with user-data scheduled on a bootstrap install). The Role is un-scoped by name, so it is safe only with ADR-0042's VAP applied (`deploy/admission/`, a separate step) | `deploy/controller/rbac/clusterrole.yaml`, `deploy/controller/rbac/role.yaml`, `crates/banlieue-operator/src/bootstrap.rs` (`build_controller_userdata_role`), tested in `bootstrap_tests.rs` |
 | `banlieue-imagebuilder`'s cloud-config Secret access is a namespaced `Role` in the **build** namespace, not a `ClusterRole` rule (ADR-0041) | `deploy/imagebuilder/rbac/role.yaml` |
+| `banlieue-imagebuilder`'s `ClusterRole` reads `persistentvolumes` (`get`) and `nodes` (`list`) and writes neither; a unit test pins the exact verbs (ADR-0115) | `deploy/imagebuilder/rbac/clusterrole.yaml`, `crates/banlieue-operator/src/bootstrap_tests.rs` |
 | No `ClusterRole` grants Secret access **except `banlieue-operator`'s deliberate `get`** — held only so RBAC's escalation-prevention permits it to delegate that verb into a per-Provider `resourceNames`-scoped `Role`, and never exercised by the operator itself (SEC-007, accepted-with-monitoring) | `deploy/operator/rbac/clusterrole.yaml` |
 | That invariant is mechanically **enforced**, not merely checkable: a unit test fails the build if any other `ClusterRole` grants `secrets`/`configmaps` | `crates/banlieue-operator/src/bootstrap_tests.rs` (`only_the_operator_cluster_role_may_grant_secret_access`) |
 | The CLI install path emits the same namespaced RBAC as the manifests, so `banlieue bootstrap` and GitOps cannot drift apart | `crates/banlieue-operator/src/bootstrap.rs` (`build_cloud_config_role`) |
@@ -853,6 +856,23 @@ in this namespace. It already was in effect — it creates `OSArtifact`s,
 which kairos turns into privileged pods — but the grant is now direct. §8.
 The push Job it creates runs with no ServiceAccount token, non-root, with a
 read-only root filesystem and all capabilities dropped.
+
+**ADR-0115: a lost volume is rebuilt, not trusted.** On node-local storage an
+artifacts PVC can stay `Bound` and its `OSArtifact` `Ready` after the worker's
+disk was replaced, so the build namespace would keep reporting an image whose
+file is gone (an availability failure, and a status that lies). The imagebuilder
+now reads the bound PV and the node it is pinned to, and deletes and rebuilds an
+`OSArtifact` whose node was replaced after the PV was made
+(`crates/banlieue-imagebuilder/src/reconciler/vmimage.rs`: `pinned_hostname`,
+`volume_lost`, `artifact_gate`). Its identity gains `get` on `persistentvolumes`
+and `list` on `nodes` (`deploy/imagebuilder/rbac/clusterrole.yaml`, pinned by
+`the_imagebuilder_cluster_role_reads_volumes_and_nodes_and_writes_neither`):
+read-only, cluster-scoped, no Secret content, no new write. The delete it
+performs is the one SEC-005 already grants. A failed read never deletes
+(a missing grant degrades to the old behaviour). STRIDE: **D/T** (a node that
+re-registers makes a needless rebuild, bounded, §8); **I** (node and PV names
+and timestamps are visible to the identity, the same facts `kubectl get nodes`
+shows any cluster reader).
 
 ### TB-4 — Cluster → hypervisor
 
@@ -1690,6 +1710,7 @@ a different assumption is unsafe.
 | **A first-boot sealing image built on a Kairos older than v4.4.0** boots plaintext (no `encrypt-pending`) or cannot unlock after a reboot (kairos-io/kairos#5193). This replaces the pre-acceptance risk "first-boot sealing runs on pre-release Kairos", retired 2026-10-26 when v4.4.0 shipped #4924 and the fixes | The builder never learns the source image's Kairos version, so it cannot refuse an old one (ADR-0088 Amendment 2026-10-22, B). Such a clone never reports its partitions sealed, so it is `GuestReady=False` (`FirstBootSealingUnverified` or `FirstBootSealingTimeout`) and a pool never hands it out (§6/TB-5); the docs and example 23 require v4.4.0 | The builder can read the source's Kairos version (for example `/etc/kairos-release` in the unpacked rootfs) and refuse an older one |
 | **Blocks written to `COS_PERSISTENT` before it is sealed are not guaranteed wiped**: on the `iso` path the template install lays the partition out once, and on the raw `cloudImage` path each clone's recovery reset does; first-boot sealing then turns it into a LUKS container, and nothing in banlieue or ADR-0088 asserts the old blocks are overwritten | What is written before sealing is image content (the install or reset), not a per-VM secret: per-VM user-data goes to `COS_OEM` (the row below), and nothing runs from `COS_PERSISTENT` before `encrypt-pending` | A per-VM secret is written to `COS_PERSISTENT` before first-boot sealing, or Kairos documents that sealing wipes the data area |
 | **`firstBootSealingLayer` can overclaim on an image changed after its first build**: adding `firstBootSealing` updates the merged cloud-config, but an existing `OSArtifact` is not rebuilt, so status says the layer is in the build while the artifact predates it | The guest readback still withholds `GuestReady` from such a clone, so the overclaim is in provenance, not in what gets handed out; the guides say to recreate the `VMImage` | The `OSArtifact` rebuild is keyed on the merged cloud-config's content |
+| **An artifact is rebuilt needlessly when a worker's `Node` object is deleted and re-registered with its disk intact** (ADR-0115): the node's new `creationTimestamp` reads as a replacement | The cost is one rebuild (about eight minutes) per image on that node, and the opposite error, an ISO gone while `Ready` is reported, is what the gate exists to stop. A volume with no node affinity, or a read that fails, is never judged lost | Revisit when storage that survives node loss is the default, or when a probe of the file itself is added |
 | First-boot sealing does **not** protect `COS_OEM`, where per-VM user-data (A-2) is persisted in plaintext for the life of the VM | Kairos reads its sealing policy from `COS_OEM` before anything is unlocked, so OEM stays plaintext by design (ADR-0088 Consequences); the example and guides say so | Secrets stop travelling in user-data (short-lived join tokens, fetching secrets at boot from an authenticated source) |
 | The NoCloud `cidata` seed stays attached after install, so a guest can read its own rendered user-data (A-2) from inside the sandbox | ADR-0044 Decision 4, deliberate and scoped: cloud-init re-reads its datasource on every boot, so removing the seed risks regressing per-boot modules in a way that needs its own live verification on a reboot — not a first boot. Ejecting the *installer* removes the build-time overlay shared across every VM, which is the broader exposure; what remains is each guest's own material, which that guest's workload could in principle obtain anyway | The seed eject is verified live across a reboot, or user-data delivery stops needing a persistent datasource |
 | A stolen host token (A-11) can patch **any `CloudHypervisorMachine`** in its namespace — another host's included — clearing finalizers or rewriting status | Machine names are not known when the Role is written, so `resourceNames` cannot scope them. Providers and their status *are* scoped since External mode (2026-09-26). The token still cannot read Secrets or create or delete machines. Operators bound it by namespace (§7.11) | Per-host machine scoping becomes possible (a label-selector authorization, or one namespace per host) |
