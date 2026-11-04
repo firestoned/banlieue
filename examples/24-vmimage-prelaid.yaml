@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # A pre-laid, first-boot-sealing image for Cloud Hypervisor and libvirt
-# (ADR-0113, Proposed; ADR-0088, ADR-0112).
+# (ADR-0113; ADR-0088, ADR-0112).
 #
 # A raw Kairos image makes every clone run a recovery boot, a reset and a
 # reboot before its real first boot. `prelay` has banlieue-imagebuilder do
@@ -11,8 +11,10 @@
 # on Cloud Hypervisor instead of about 106 s.
 #
 # NEEDS
-#   - banlieue-imagebuilder --prelay-image <an image built from
-#     Dockerfile.prelay>, and /dev/kvm on the build nodes it schedules on;
+#   - /dev/kvm on the build nodes banlieue-imagebuilder schedules on. The
+#     pre-lay Job runs ghcr.io/firestoned/banlieue-prelay, which banlieue
+#     publishes and --prelay-image defaults to (pin it with
+#     `banlieue bootstrap imagebuilder --prelay-image-digest`);
 #   - for Cloud Hypervisor, --registry-repository (the artifact reaches hosts
 #     through a registry, ADR-0064);
 #   - a source image on Kairos v4.4.0 or later (first-boot sealing).

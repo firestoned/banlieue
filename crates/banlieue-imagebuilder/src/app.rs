@@ -68,6 +68,13 @@ const DEFAULT_BUILD_NAMESPACE: &str = "banlieue-imagebuild";
 const DEFAULT_PUSH_IMAGE: &str =
     concat!("ghcr.io/firestoned/banlieue:v", env!("CARGO_PKG_VERSION"));
 
+/// Image the pre-lay Job runs (ADR-0113, amendment 2026-11-04): the one
+/// banlieue publishes for this version, built from `Dockerfile.prelay`.
+const DEFAULT_PRELAY_IMAGE: &str = concat!(
+    "ghcr.io/firestoned/banlieue-prelay:v",
+    env!("CARGO_PKG_VERSION")
+);
+
 /// Per-crate `tracing` directives layered on top of the base log level.
 const LOG_DIRECTIVES: &[&str] = &["kube=warn"];
 
@@ -213,10 +220,12 @@ pub struct Cli {
     /// Image the pre-lay Job runs for a `VMImage` with `spec.prelay`
     /// (ADR-0113): it must carry `prelay-kairos-raw.sh`, QEMU, OVMF,
     /// e2fsprogs, gdisk and util-linux (`Dockerfile.prelay` builds one), and
-    /// the build nodes need `/dev/kvm`. Unset: such a `VMImage` fails with
-    /// `PrelayImageUnset`.
-    #[arg(long, env = "BANLIEUE_PRELAY_IMAGE")]
-    pub prelay_image: Option<String>,
+    /// the build nodes need `/dev/kvm`. Defaults to the image banlieue
+    /// publishes for this version; a cluster that mirrors images sets the
+    /// mirrored reference. Empty turns pre-laying off: such a `VMImage` then
+    /// fails with `PrelayImageUnset`. Read it through [`prelay_image`].
+    #[arg(long, env = "BANLIEUE_PRELAY_IMAGE", default_value = DEFAULT_PRELAY_IMAGE)]
+    pub prelay_image: String,
 }
 
 /// Subcommands of `banlieue imagebuilder`.
@@ -228,6 +237,17 @@ pub enum ImagebuilderCommand {
     /// invoked by hand, though the flags are stable so a failed push can be
     /// reproduced.
     Push(PushArgs),
+}
+
+/// The pre-lay image to run, or `None` when `--prelay-image` is empty
+/// (pre-laying off, ADR-0113).
+#[must_use]
+pub fn prelay_image(cli: &Cli) -> Option<String> {
+    let image = cli.prelay_image.trim();
+    if image.is_empty() {
+        return None;
+    }
+    Some(image.to_string())
 }
 
 /// The registry configuration from `cli`, if a repository is set.
@@ -362,8 +382,10 @@ pub async fn run(cli: Cli) -> Result<()> {
         Some(r) => info!(repository = %r.repository, "registry push enabled"),
         None => info!("no --registry-repository: build artifacts are not pushed"),
     }
-    if let Some(image) = &cli.prelay_image {
-        info!(%image, "pre-laying enabled (ADR-0113)");
+    let prelay_image = prelay_image(&cli);
+    match &prelay_image {
+        Some(image) => info!(%image, "pre-laying enabled (ADR-0113)"),
+        None => info!("--prelay-image is empty: pre-laying is off"),
     }
     let ctx = Arc::new(Context::new(
         client.clone(),
@@ -371,7 +393,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         scheduling,
         importer_image,
         registry,
-        cli.prelay_image.clone(),
+        prelay_image,
     ));
 
     // VMImage is cluster-scoped — always watch every namespace.

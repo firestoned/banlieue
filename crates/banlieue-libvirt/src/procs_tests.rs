@@ -1045,6 +1045,33 @@ mod tests {
         assert_eq!(encode_storage_vol_delete_args(&vol), want.into_bytes());
     }
 
+    /// `remote_storage_vol_create_xml_from_args { pool; xml; clonevol; flags }`
+    /// and procedure 125, both as `src/remote/remote_protocol.x` defines them:
+    /// a wrong number calls some other procedure with these bytes.
+    #[test]
+    fn encodes_storage_vol_create_xml_from_args() {
+        assert_eq!(PROC_STORAGE_VOL_CREATE_XML_FROM, 125);
+        let pool = sample_pool();
+        let source = StorageVol {
+            pool: "default".into(),
+            name: "a-os.qcow2".into(),
+            key: "/var/lib/libvirt/images/a-os.qcow2".into(),
+        };
+        let xml = raw_volume_xml("copy.raw", 1);
+        let mut want = Encoder::new();
+        want.write_string(&pool.name);
+        want.write_opaque_fixed(&pool.uuid);
+        want.write_string(&xml);
+        want.write_string(&source.pool);
+        want.write_string(&source.name);
+        want.write_string(&source.key);
+        want.write_u32(0);
+        assert_eq!(
+            encode_storage_vol_create_xml_from_args(&pool, &xml, &source),
+            want.into_bytes()
+        );
+    }
+
     #[test]
     fn encodes_storage_pool_refresh_args() {
         let pool = sample_pool();

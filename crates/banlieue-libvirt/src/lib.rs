@@ -47,8 +47,8 @@ pub use procs::{
     encode_network_get_dhcp_leases_args, is_not_found, list_all_networks, list_all_storage_pools,
     network_get_dhcp_leases, qcow2_overlay_volume_xml, qcow2_volume_xml, raw_volume_xml,
     storage_pool_list_all_volumes, storage_pool_lookup_by_name, storage_pool_refresh,
-    storage_vol_create_xml, storage_vol_delete, storage_vol_lookup_by_name, storage_vol_upload,
-    validate_volume_name,
+    storage_vol_create_xml, storage_vol_create_xml_from, storage_vol_delete,
+    storage_vol_lookup_by_name, storage_vol_upload, validate_volume_name,
 };
 
 pub use rpc::{
@@ -56,9 +56,9 @@ pub use rpc::{
     MessageType, PAYLOAD_MAX, PROC_CONNECT_CLOSE, PROC_CONNECT_LIST_ALL_NETWORKS,
     PROC_CONNECT_LIST_ALL_STORAGE_POOLS, PROC_CONNECT_OPEN, PROC_STORAGE_POOL_GET_XML_DESC,
     PROC_STORAGE_POOL_LIST_ALL_VOLUMES, PROC_STORAGE_POOL_LOOKUP_BY_NAME,
-    PROC_STORAGE_POOL_REFRESH, PROC_STORAGE_VOL_CREATE_XML, PROC_STORAGE_VOL_UPLOAD, QEMU_PROGRAM,
-    QEMU_PROTOCOL_VERSION, REMOTE_PROGRAM, REMOTE_PROTOCOL_VERSION, RpcError, decode_message,
-    encode_message, parse_length_prefix,
+    PROC_STORAGE_POOL_REFRESH, PROC_STORAGE_VOL_CREATE_XML, PROC_STORAGE_VOL_CREATE_XML_FROM,
+    PROC_STORAGE_VOL_UPLOAD, QEMU_PROGRAM, QEMU_PROTOCOL_VERSION, REMOTE_PROGRAM,
+    REMOTE_PROTOCOL_VERSION, RpcError, decode_message, encode_message, parse_length_prefix,
 };
 pub use transport::{
     DEFAULT_TIMEOUT, DEFAULT_TLS_PORT, Result, Session, TlsIdentity, TransportError, connect_tls,

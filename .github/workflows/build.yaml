@@ -521,6 +521,150 @@ jobs:
           esac
 
   # ─────────────────────────────────────────────────────────────────────────────
+  # Pre-lay image (ADR-0113, amendment 2026-11-04): what banlieue-imagebuilder's
+  # pre-lay Job runs, and its `--prelay-image` default
+  # (ghcr.io/firestoned/banlieue-prelay:v<version>). Built from
+  # Dockerfile.prelay on every event; pushed and Cosign-signed under the same
+  # rules and tags as the banlieue image above. linux/amd64 only: the script
+  # boots an x86_64 image under KVM. SBOM and provenance on main/release, as
+  # above. Every pushed image is then scanned by `grype-prelay` below.
+  # ─────────────────────────────────────────────────────────────────────────────
+  docker-prelay:
+    name: 🐳 Image - Prelay
+    runs-on: ubuntu-latest
+    needs: [extract-version, test]
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    outputs:
+      digest: ${{ steps.export-digest.outputs.digest }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Docker (login + buildx)
+        uses: firestoned/github-actions/docker/setup-docker@f52366c4f57f0110012035ac1bcd0bee4075b3e9 # v1.4.0
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ghcr.io/${{ github.repository }}-prelay
+          flavor: |
+            latest=false
+          tags: |
+            type=ref,event=pr
+            type=raw,value=sha-${{ needs.extract-version.outputs.short-sha }}
+            type=raw,value=main-{{date 'YYYY-MM-DD'}},enable=${{ github.event_name == 'push' }}
+            type=raw,value=latest,enable=${{ github.event_name == 'push' }}
+            type=semver,pattern={{version}},prefix=v,enable=${{ github.event_name == 'release' }}
+            type=semver,pattern={{major}}.{{minor}},prefix=v,enable=${{ github.event_name == 'release' }}
+
+      - name: Build and push
+        id: docker_build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: Dockerfile.prelay
+          platforms: linux/amd64
+          push: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=Prelay
+          cache-to: type=gha,mode=max,scope=Prelay
+          sbom: true
+          provenance: true
+
+      - name: Install Cosign
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Cosign sign (keyless, by digest)
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        run: cosign sign --yes "ghcr.io/${{ github.repository }}-prelay@${{ steps.docker_build.outputs.digest }}"
+
+      - name: Attest build provenance
+        if: github.event_name != 'pull_request'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ghcr.io/${{ github.repository }}-prelay
+          subject-digest: ${{ steps.docker_build.outputs.digest }}
+          push-to-registry: true
+
+      - name: Generate image SBOM
+        if: github.event_name != 'pull_request'
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+        with:
+          image: ghcr.io/${{ github.repository }}-prelay@${{ steps.docker_build.outputs.digest }}
+          format: cyclonedx-json
+          output-file: docker-sbom-prelay.json
+          upload-release-assets: false
+
+      # Named outside the `docker-sbom-*` pattern on purpose: build-vex merges
+      # those into the banlieue image's VEX, which this image is not part of.
+      - name: Upload image SBOM artifact
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: prelay-image-sbom
+          path: docker-sbom-prelay.json
+          if-no-files-found: error
+
+      # Exported wherever the image was pushed (in-repo PRs too), so
+      # grype-prelay scans every pushed image, not only main and releases.
+      - name: Export digest
+        id: export-digest
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        run: echo "digest=${{ steps.docker_build.outputs.digest }}" >> "$GITHUB_OUTPUT"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Grype gate for the pre-lay image (ADR-0113, amendment: a Grype gate for the
+  # pre-lay image). Its own gate, not the banlieue image's: that one triages
+  # through VEX derived for one static Rust binary, which says nothing about a
+  # Debian userland. `make grype-prelay` reports every finding as SARIF, then
+  # fails on a finding at or above `high` that Debian has already fixed
+  # (`--only-fixed`), with curated statements from .vex/prelay/. Runs on every
+  # pushed image (in-repo PRs, main, release; fork PRs push nothing to scan),
+  # and the release's asset upload waits for it.
+  # ─────────────────────────────────────────────────────────────────────────────
+  grype-prelay:
+    name: 🔭 Container Scan - Prelay
+    if: needs.docker-prelay.outputs.digest != ''
+    runs-on: ubuntu-latest
+    needs: [docker-prelay]
+    permissions:
+      contents: read
+      packages: read
+      security-events: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Log in to GHCR
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Scan and gate the pre-lay image
+        env:
+          PRELAY_IMAGE_REF: ghcr.io/${{ github.repository }}-prelay@${{ needs.docker-prelay.outputs.digest }}
+          PRELAY_GRYPE_SARIF: grype-${{ github.event_name }}-Prelay.sarif
+        run: make grype-prelay
+
+      - name: Upload SARIF to Code Scanning
+        if: always() && hashFiles('grype-*-Prelay.sarif') != ''
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        with:
+          sarif_file: grype-${{ github.event_name }}-Prelay.sarif
+          category: grype-${{ github.event_name }}-Prelay
+
+  # ─────────────────────────────────────────────────────────────────────────────
   # Attest — GitHub build-provenance attestation for each pushed image.
   # ─────────────────────────────────────────────────────────────────────────────
   attest:
@@ -1174,6 +1318,8 @@ jobs:
       - extract-version
       - test
       - docker
+      - docker-prelay
+      - grype-prelay
       - attest
       - sign-artifacts
       - slsa-provenance

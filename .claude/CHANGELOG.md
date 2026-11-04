@@ -1,5 +1,163 @@
 # Changelog
 
+## [2026-11-04 16:00] - A Grype gate for the pre-lay image (ADR-0113, amended)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `Makefile`: `grype-install` (pinned `GRYPE_VERSION`) and `grype-prelay`.
+  `grype-prelay` scans `PRELAY_IMAGE_REF` twice: every finding to SARIF
+  (`PRELAY_GRYPE_SARIF`, never fails), then the gate, `--only-fixed
+  --fail-on $(PRELAY_GRYPE_FAIL_ON)` (default `high`), each with every
+  `.vex/prelay/*.json` as `--vex`. `vex-validate` also validates
+  `.vex/prelay/`.
+- `.github/workflows/build.yaml`: `grype-prelay` job (`🔭 Container Scan -
+  Prelay`), on every pushed pre-lay image (in-repo PRs, main, release),
+  uploading SARIF to Code Scanning as `grype-<event>-Prelay`;
+  `upload-release-assets` needs it. `docker-prelay` now exports its digest
+  wherever it pushed, not only on main and releases.
+- `.vex/prelay/README.md`: curated VEX for `pkg:oci/banlieue-prelay`, kept
+  out of `build-vex`'s `.vex/*.json` glob.
+
+### Changed
+- ADR-0113: *Amendment: a Grype gate for the pre-lay image*; Decision 5 of
+  *a published pre-lay image* marked superseded.
+- Threat model pass (header, TB-6 *Pre-lay image* and *Scanning* rows, §8):
+  the "no vulnerability gate" risk narrows to findings Debian has not fixed,
+  plus the cached `apt-get install` layer. No component, actor, identity or
+  boundary change; §5 diagram unchanged; stamp stays 2026-11-04,
+  ADR-0001 … ADR-0113.
+- CALM: the ADR-0113 node's description and evidence; `make calm-validate`
+  clean, diagrams unchanged.
+- Roadmap 18 item ticked; `ROADMAPS.md` row 18; `.vex/README.md`;
+  `Dockerfile.prelay` header.
+
+### Verified
+- Built `Dockerfile.prelay` with podman on the build host and ran `make
+  grype-prelay` against the archive: passes. 333 findings (82 high or
+  critical), every one `wont-fix` or `not-fixed` in Debian. Without
+  `--only-fixed` Grype exits 2, as does the target with no
+  `PRELAY_IMAGE_REF`.
+- The gate end to end with a pinned Grype 0.118.0 on PATH (nothing installed
+  system-wide): against the built pre-lay image it writes 333 SARIF results
+  and exits 0; against `debian:12.0-slim` (2023) it exits 2 on fixed highs,
+  among them the KEV-listed CVE-2023-4911 in `libc6`. So it passes the image
+  it gates and fails one that misses Debian fixes.
+- `actionlint` clean; `grype-prelay` needs `docker-prelay`, and
+  `upload-release-assets` needs `grype-prelay`.
+
+### Why
+The pre-lay image runs in a privileged Job and shipped with no scan gate
+(§8). The banlieue image's VEX cannot judge a Debian userland; a gate on
+fixable findings can, and is one the image can pass.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+- CI only. A release now waits for the pre-lay image's gate.
+
+## [2026-11-04 14:00] - libvirt sealing-isolation e2e (roadmap 18 phase B): green
+
+**Author:** Erick Bourgeois
+
+### Added
+- `crates/banlieue-provider-libvirt/tests/e2e_sealing_isolation.rs`: the
+  libvirt port of the Cloud Hypervisor cross-member negative test (roadmap
+  18 invariant 2): seal member A, clone its sealed disk, boot the clone with
+  a fresh vTPM (it must end `GuestReady=False`, `FirstBootSealingTimeout`,
+  never unlocked), then power A on again (it must unlock). No host shell:
+  everything goes over libvirt's mutual-TLS connection, and the probe is a
+  file the image writes (`/run/banlieue/e2e-persistent`) read back through
+  the guest agent's read-only `guest-file-*` calls.
+- `make libvirt-sealing-isolation-e2e`.
+- `crates/banlieue-libvirt`: `storage_vol_create_xml_from` and
+  `encode_storage_vol_create_xml_from_args`
+  (`REMOTE_PROC_STORAGE_VOL_CREATE_XML_FROM`, procedure 125, checked against
+  libvirt's `remote_protocol.x`), `virsh vol-clone`'s procedure. Only the
+  e2e calls it; no reconcile path does.
+
+### Verified live (2026-11-04)
+- Green on a libvirt host with swtpm, in the production topology: a kind
+  cluster with banlieue v0.4.10 installed by `bootstrap operator` (pinned by
+  digest), the libvirt provider running as the operator's per-Provider
+  workload, a pre-laid Debian 13 Kairos image (guest agent, phase marker, EK
+  export, sealing layer, the probe) uploaded as a `BackingFile` volume and
+  digest-checked. A sealed and unlocked (`/dev/mapper/vda5`); its disk,
+  cloned flat, under a fresh vTPM never unlocked and timed out
+  (`FirstBootSealingTimeout` at 303 s of a 300 s budget); A unlocked again
+  30 s after power-on; teardown left no domain or volume.
+- The first attempt stalled because the fixture Provider lacked
+  `features: [vtpm]` (the VM never scheduled); the test now checks that up
+  front and fails in seconds.
+
+### Changed
+- Roadmap 18 phase B: libvirt ticked; invariant 2 is proven on Cloud
+  Hypervisor and libvirt. `ROADMAPS.md` row 18 updated.
+
+### Why
+Invariant 2 was proven on Cloud Hypervisor only.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+- Test and client-library addition only. No ADR (no architectural change:
+  a test, and a library call nothing in production uses), so no
+  threat-model pass beyond 2026-11-04's.
+
+## [2026-11-04 12:00] - banlieue publishes the pre-lay image (ADR-0113, amended)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/workflows/build.yaml`: new `docker-prelay` job (`🐳 Image - Prelay`)
+  builds `Dockerfile.prelay` on every event and pushes
+  `ghcr.io/firestoned/banlieue-prelay` (linux/amd64) under the banlieue
+  image's push rules and tags, Cosign-signed by digest, with build
+  provenance and an SBOM on main and releases. `upload-release-assets` waits
+  for it; its SBOM ships with the release.
+- `Makefile`: `CI_CODE_PATHS_RE` also matches `.dockerignore` and
+  `scripts/prelay-kairos-raw.sh`, so a change to what the image contains
+  builds it.
+- `crates/banlieue-imagebuilder/src/app.rs`: `--prelay-image` defaults to
+  `ghcr.io/firestoned/banlieue-prelay:v<version>`; an empty value turns
+  pre-laying off (`prelay_image`), and such a `VMImage` still fails with
+  `PrelayImageUnset`, whose message now says so
+  (`reconciler/prelay.rs`).
+- `crates/banlieue-operator/src/bootstrap.rs`: `bootstrap imagebuilder`
+  passes `--prelay-image` explicitly (`prelay_install_image`): the installed
+  version, under `--registry` for a mirror, pinned by the new
+  `--prelay-image-digest` (validated like `--image-digest`, and never taken
+  from it).
+- `crates/banlieue-api/src/banlieue/vmimage.rs`: `spec.prelay` doc names the
+  published image; `deploy/crds/` and `docs/src/reference/api.md`
+  regenerated.
+- ADR-0113 *Amendment: a published pre-lay image*; CALM `pre-laid-images`
+  control; imagebuilder and Cloud Hypervisor guides; example 24;
+  `deploy/imagebuilder/configmap.yaml`; `Dockerfile.prelay` header; roadmap
+  18 and `ROADMAPS.md` row 18.
+- Threat model: full pass, stamp 2026-11-04. A-5 and the §2 pre-lay Job row
+  name the image; TB-6 gains a *Pre-lay image* row; the TB-10 row's trust
+  sentence changes; §8 gains *the published pre-lay image has no
+  vulnerability gate* (narrowed the same day by the Grype gate, 16:00
+  entry, to the findings Debian has not fixed). The same pass covers ADR-0087's 2026-11-03 amendment
+  (per-Provider `force-reimport` markers): no row changes.
+
+### Why
+`spec.prelay` could not be used without each operator building, pushing and
+configuring their own pre-lay image, which nobody signed.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+- New published image; an imagebuilder now pre-lays a `VMImage` with
+  `spec.prelay` with no flag set (it needs `/dev/kvm` on the build nodes).
+
 ## [2026-11-03 20:30] - vSphere force-reimport is handled per Provider (ADR-0087, amended)
 
 **Author:** Erick Bourgeois

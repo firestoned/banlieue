@@ -29,8 +29,9 @@ use crate::rpc::{
     PROC_DOMAIN_INTERFACE_ADDRESSES, PROC_DOMAIN_LOOKUP_BY_NAME, PROC_DOMAIN_SHUTDOWN,
     PROC_DOMAIN_UNDEFINE_FLAGS, PROC_DOMAIN_UPDATE_DEVICE_FLAGS, PROC_NETWORK_GET_DHCP_LEASES,
     PROC_STORAGE_POOL_LIST_ALL_VOLUMES, PROC_STORAGE_POOL_LOOKUP_BY_NAME,
-    PROC_STORAGE_POOL_REFRESH, PROC_STORAGE_VOL_CREATE_XML, PROC_STORAGE_VOL_DELETE,
-    PROC_STORAGE_VOL_LOOKUP_BY_NAME, PROC_STORAGE_VOL_UPLOAD, STREAM_CHUNK_MAX,
+    PROC_STORAGE_POOL_REFRESH, PROC_STORAGE_VOL_CREATE_XML, PROC_STORAGE_VOL_CREATE_XML_FROM,
+    PROC_STORAGE_VOL_DELETE, PROC_STORAGE_VOL_LOOKUP_BY_NAME, PROC_STORAGE_VOL_UPLOAD,
+    STREAM_CHUNK_MAX,
 };
 use crate::transport::{Result, Session, TransportError};
 use crate::xdr::{Decoder, Encoder};
@@ -521,6 +522,52 @@ where
         .await?;
     let mut d = Decoder::new(&body);
     StorageVol::decode(&mut d)
+}
+
+/// Encode `remote_storage_vol_create_xml_from_args { pool; xml; clonevol;
+/// flags; }`.
+#[must_use]
+pub fn encode_storage_vol_create_xml_from_args(
+    pool: &StoragePool,
+    xml: &str,
+    source: &StorageVol,
+) -> Vec<u8> {
+    let mut e = Encoder::new();
+    e.write_string(&pool.name);
+    e.write_opaque_fixed(&pool.uuid);
+    e.write_string(xml);
+    source.encode(&mut e);
+    e.write_u32(0); // flags
+    e.into_bytes()
+}
+
+/// Create a volume in `pool` from the given XML, filled with the contents
+/// of `source` (`virsh vol-clone`'s procedure).
+///
+/// libvirtd copies on the host: for a directory pool it converts with
+/// `qemu-img`, so a qcow2 overlay cloned into a `raw` volume comes out
+/// flattened, backing image included. Nothing in banlieue's reconcile path
+/// calls this; the libvirt sealing-isolation e2e copies a sealed disk with it.
+///
+/// # Errors
+/// Any [`TransportError`]; a `Remote` error typically means the target
+/// already exists, the source is in use by a running domain, or the pool is
+/// inactive.
+#[instrument(name = "libvirt.storage_vol_create_xml_from", skip_all, fields(pool = %pool.name, source = %source.name))]
+pub async fn storage_vol_create_xml_from<S>(
+    session: &mut Session<S>,
+    pool: &StoragePool,
+    xml: &str,
+    source: &StorageVol,
+) -> Result<StorageVol>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let args = encode_storage_vol_create_xml_from_args(pool, xml, source);
+    let body = session
+        .call(PROC_STORAGE_VOL_CREATE_XML_FROM, &args)
+        .await?;
+    decode_storage_vol_ret(&body)
 }
 
 /// Upload `length` bytes from `reader` into `vol`.

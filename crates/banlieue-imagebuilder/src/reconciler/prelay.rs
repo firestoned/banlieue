@@ -57,8 +57,8 @@ pub enum PrelayRefusal {
     /// The build is an `iso`: only a raw `cloudImage` has a recovery reset to
     /// do once.
     NeedsCloudImage,
-    /// `--prelay-image` is not set: refused rather than shipping the raw file
-    /// as if it were pre-laid.
+    /// `--prelay-image` is empty (pre-laying turned off): refused rather than
+    /// shipping the raw file as if it were pre-laid.
     ImageUnset,
 }
 
@@ -78,8 +78,9 @@ impl PrelayRefusal {
                 "spec.prelay needs a raw cloudImage build; this source builds an iso (ADR-0113)"
             }
             Self::ImageUnset => {
-                "spec.prelay needs banlieue-imagebuilder --prelay-image, an image carrying \
-                 prelay-kairos-raw.sh and QEMU (Dockerfile.prelay, ADR-0113)"
+                "spec.prelay needs a pre-lay image, but banlieue-imagebuilder runs with \
+                 --prelay-image empty (pre-laying off); leave it unset for the published \
+                 ghcr.io/firestoned/banlieue-prelay (ADR-0113)"
             }
         }
     }

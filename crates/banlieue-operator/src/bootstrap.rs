@@ -76,6 +76,13 @@ pub const IMAGE_BASE: &str = "ghcr.io/firestoned/banlieue";
 /// Image name appended to a `--registry` override.
 const IMAGE_NAME: &str = "banlieue";
 
+/// The pre-lay image's repository, without a tag (ADR-0113, amendment
+/// 2026-11-04): what `banlieue-imagebuilder`'s pre-lay Job runs.
+pub const PRELAY_IMAGE_BASE: &str = "ghcr.io/firestoned/banlieue-prelay";
+
+/// Pre-lay image name appended to a `--registry` override.
+const PRELAY_IMAGE_NAME: &str = "banlieue-prelay";
+
 /// Default image tag: the binary's own version, so bootstrap installs the image
 /// matching the binary that ran it.
 pub const DEFAULT_IMAGE_TAG: &str = concat!("v", env!("CARGO_PKG_VERSION"));
@@ -181,6 +188,13 @@ pub enum BootstrapTarget {
     Imagebuilder {
         #[command(flatten)]
         common: CommonArgs,
+
+        /// Pin the pre-lay image (`banlieue-prelay`, ADR-0113) to this
+        /// digest, e.g. `sha256:0f756fa0…`. Its own flag because it is its
+        /// own image: `--image-digest` pins the banlieue image. Recommended
+        /// for the same reason (ADR-0103), and more so for a privileged Job.
+        #[arg(long, value_parser = parse_image_digest)]
+        prelay_image_digest: Option<String>,
     },
 
     /// Issue a Cloud Hypervisor host its first credential: a kubeconfig and
@@ -252,6 +266,7 @@ impl CommonArgs {
                 build_node_selector: self.build_node_selector.clone(),
                 build_toleration: self.build_toleration.clone(),
                 image_digest: self.image_digest.clone(),
+                prelay_image_digest: None,
             },
             self.dry_run,
         )
@@ -280,6 +295,22 @@ pub struct InstallOptions {
     /// nothing rolls, and `imagePullPolicy: Always` does not help because it
     /// only applies when a pod is created.
     pub image_digest: Option<String>,
+    /// Digest to pin the pre-lay image to (`bootstrap imagebuilder
+    /// --prelay-image-digest`, ADR-0113). Never taken from
+    /// [`InstallOptions::image_digest`]: different image, different bytes.
+    pub prelay_image_digest: Option<String>,
+}
+
+impl InstallOptions {
+    /// These options with the pre-lay image pinned to `digest` (or unpinned
+    /// for `None`).
+    #[must_use]
+    pub fn with_prelay_digest(self, digest: Option<String>) -> Self {
+        Self {
+            prelay_image_digest: digest,
+            ..self
+        }
+    }
 }
 
 /// A banlieue role that can be installed as a workload.
@@ -362,6 +393,12 @@ impl InstallRole {
         for value in &opts.build_toleration {
             args.push("--build-toleration".to_string());
             args.push(value.clone());
+        }
+        // The version being installed, not the binary's own default, and the
+        // mirror under `--registry` (ADR-0113, amendment 2026-11-04).
+        if matches!(self, Self::Imagebuilder) {
+            args.push("--prelay-image".to_string());
+            args.push(prelay_install_image(opts));
         }
         args
     }
@@ -493,6 +530,22 @@ pub fn resolve_image(opts: &InstallOptions) -> String {
 pub fn install_image(opts: &InstallOptions) -> String {
     let tagged = resolve_image(opts);
     match opts.image_digest.as_deref() {
+        Some(digest) => format!("{tagged}@{digest}"),
+        None => tagged,
+    }
+}
+
+/// The pre-lay image an imagebuilder install runs:
+/// `<repository>:<tag>[@<digest>]`, with the repository under `--registry`
+/// when one is set and the digest from `--prelay-image-digest` only
+/// (ADR-0113, amendment 2026-11-04).
+#[must_use]
+pub fn prelay_install_image(opts: &InstallOptions) -> String {
+    let tagged = match opts.registry.as_deref() {
+        Some(registry) => format!("{registry}/{PRELAY_IMAGE_NAME}:{}", opts.version),
+        None => format!("{PRELAY_IMAGE_BASE}:{}", opts.version),
+    };
+    match opts.prelay_image_digest.as_deref() {
         Some(digest) => format!("{tagged}@{digest}"),
         None => tagged,
     }
@@ -1471,8 +1524,12 @@ pub async fn run(cli: Cli, backends: &[&str]) -> Result<()> {
                 dry_run,
             )
         }
-        BootstrapTarget::Imagebuilder { common } => {
+        BootstrapTarget::Imagebuilder {
+            common,
+            prelay_image_digest,
+        } => {
             let (opts, dry_run) = common.split();
+            let opts = opts.with_prelay_digest(prelay_image_digest.clone());
             (
                 build_role_install(&InstallRole::Imagebuilder, &opts)?,
                 dry_run,

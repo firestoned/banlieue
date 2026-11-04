@@ -12,7 +12,10 @@ SPDX-License-Identifier: Apache-2.0
   does not grow; Decision 4 is the rule; see *Amendment: one disk size*);
   2026-11-01 (Decision 3's imagebuilder step and its API; see *Amendment:
   the imagebuilder pre-lays*); 2026-11-02 (accepted: every criterion met;
-  see *Amendment: accepted*)
+  see *Amendment: accepted*); 2026-11-04 (banlieue publishes the pre-lay
+  image and the imagebuilder defaults to it; see *Amendment: a published
+  pre-lay image*); 2026-11-04 (the pre-lay image gets a Grype gate of its
+  own; see *Amendment: a Grype gate for the pre-lay image*)
 - **Related:** Roadmap 18 phase C (the measurement this acts on); builds on
   [ADR-0088](0088-first-boot-sealing-for-immediate-images.md) and
   [ADR-0112](0112-first-boot-sealing-on-cloud-hypervisor.md) (first-boot
@@ -314,4 +317,86 @@ cloud-config layer (a user and the Cloud Hypervisor phase report),
 **Retrying a failed pre-lay** takes deleting the Job (it allows no retries)
 and touching the `VMImage` (any annotation change), because a `Failed`
 artifact is otherwise only re-examined on the long requeue.
+
+## Amendment: a published pre-lay image (2026-11-04)
+
+Decision 4 of *the imagebuilder pre-lays* left the pre-lay Job's image to
+the operator: build `Dockerfile.prelay`, push it somewhere and set
+`--prelay-image`. Nobody can use `spec.prelay` without doing that first, and
+an image each operator builds is an image nobody signs. banlieue now
+publishes it.
+
+1. **CI publishes `ghcr.io/firestoned/banlieue-prelay`.** The build
+   workflow builds `Dockerfile.prelay` on every event and pushes it where it
+   pushes the banlieue image, with the same tags (`pr-<N>`, `sha-<short>`,
+   `latest` and `main-<date>` on main, `v<version>` and `v<major>.<minor>`
+   on a release). Every pushed image is signed with Cosign, keyless, by
+   digest; on main and on a release it also gets a build-provenance
+   attestation and an SBOM, as the banlieue image does (ADR-0006).
+2. **linux/amd64 only.** The script boots an x86_64 Kairos image under KVM;
+   an arm64 node has no x86 KVM to run it with. Pre-laying an arm64 image is
+   out of scope until someone needs it.
+3. **The imagebuilder defaults to it.** `--prelay-image` defaults to
+   `ghcr.io/firestoned/banlieue-prelay:v<its own version>`, the way
+   `--push-image` defaults to the public banlieue image. Pre-laying still
+   happens only for a `VMImage` that sets `spec.prelay`; the default only
+   removes the setup step. An empty value (`--prelay-image ""`) turns it off,
+   and such a `VMImage` still fails with `PrelayImageUnset`.
+4. **`banlieue bootstrap imagebuilder` writes the reference explicitly**:
+   `<registry>/banlieue-prelay:<version>` under `--registry` (a mirrored
+   cluster cannot pull ghcr.io), and pinned with the new
+   `--prelay-image-digest`. It is its own flag because it is its own image
+   with its own digest; `--image-digest` pins the banlieue image, and a
+   privileged Job deserves a digest for the same reason the Deployments do
+   (ADR-0103: a tag can move under a running cluster).
+5. **No Grype gate yet.** The banlieue image's gates (Grype with VEX from
+   `auto-vex-presence` and `auto-vex-reachability`) are built around one
+   static Rust binary. The pre-lay image is a Debian 13 userland (QEMU,
+   OVMF, e2fsprogs, gdisk, util-linux) whose findings those tools cannot
+   triage, and a gate nobody can pass would only be switched off. Its base
+   is pinned by digest and re-pinned by Dependabot, and its SBOM is
+   published so a consumer can scan it. Recorded as an accepted risk in the
+   threat model, to revisit when the image gets a scan gate of its own.
+   *Superseded by Amendment: a Grype gate for the pre-lay image.*
+
+## Amendment: a Grype gate for the pre-lay image (2026-11-04)
+
+Decision 5 of *a published pre-lay image* shipped the image with no scan
+gate, because the banlieue image's gate cannot judge it. That reasoning
+holds for the banlieue gate; it does not stop the pre-lay image having one
+built for what it is.
+
+1. **The pre-lay image has its own Grype gate.** `make grype-prelay`
+   (`grype-prelay` job in `.github/workflows/build.yaml`) scans the pushed
+   image by digest twice. The first scan reports every finding as SARIF to
+   GitHub Code Scanning (category `grype-<event>-Prelay`) and never fails.
+   The second is the gate: it fails on a finding at or above **high** that
+   Debian has **already fixed** (`--only-fixed --fail-on high`).
+2. **Only a fixed finding fails it.** Debian marks most of a distribution
+   userland's findings `wont-fix` or `not-fixed`; a gate on those is the gate
+   nobody can pass that Decision 5 warned about. Built on 2026-11-04 from
+   `Dockerfile.prelay`, the image has 333 findings, 82 of them high or
+   critical, and **none with a fix**: every high is `wont-fix` (80) or
+   `not-fixed` (1). The gate passes, and still says something: when Debian
+   fixes a high, an image built without the fix fails until it is rebuilt
+   or re-pinned. The unfixed findings stay visible in Code Scanning.
+3. **Its VEX is its own: `.vex/prelay/`.** Statements there name
+   `pkg:oci/banlieue-prelay` and are passed to both scans as `--vex`. They
+   are not merged into the banlieue image's VEX (`build-vex` globs
+   `.vex/*.json` only), and none of the auto-VEX tools run on this image:
+   their arguments (an SBOM without the package, a binary without the
+   symbol) are about one static Rust binary. The directory starts empty; a
+   statement is needed only for a fixed finding that cannot be taken or that
+   does not apply to how the Job runs the package.
+4. **It scans every pushed image and gates the release.** It runs wherever
+   `docker-prelay` pushed (in-repo pull requests, main, releases; a fork's
+   pull request pushes nothing to scan), and the release's asset upload
+   waits for it. It is **not** one of the pull request's required checks: a
+   Debian fix published the day a pull request runs would otherwise block an
+   unrelated change.
+
+A fix that lands in Debian is not picked up by a cached build: the
+`apt-get install` layer is reused until `Dockerfile.prelay` changes. A
+Dependabot re-pin of the base changes the `FROM` line and rebuilds that
+layer; until then, a failing gate is cleared by a rebuild without the cache.
 
