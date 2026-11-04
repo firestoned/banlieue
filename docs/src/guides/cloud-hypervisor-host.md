@@ -737,6 +737,17 @@ restarting `banlieue-provider-cloud-hypervisor`: guests are their own
 `banlieue-ch@` units and keep running, and the new process adopts them.
 `make ch-restart-e2e` checks exactly that on a host.
 
+## Static addresses
+
+A guest on a static interface (`ipam.static`, `networkOverrides`, or a pool's
+`spec.addressing`) gets its address from the NoCloud seed: the provider writes
+a cloud-init `network-config` matched by the NIC's derived MAC, and writes a
+seed for that even when the machine has no user-data
+([ADR-0114](https://github.com/firestoned/banlieue/blob/main/docs/adr/0114-static-addressing-in-the-nocloud-seed.md)).
+Kairos guests apply no `network-config`; they take the address from the
+`${IP}`/`${PREFIX}` placeholders in their user-data. Both cases, with
+examples: [cloud-init on libvirt, Static addresses](cloud-init-on-libvirt.md#static-addresses).
+
 ## Images from a registry (`Url` sources)
 
 A `BackingFile` source names a file you copied into a storage class's

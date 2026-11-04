@@ -1,5 +1,77 @@
 # Changelog
 
+## [2026-11-04 20:00] - Static addressing reaches libvirt and Cloud Hypervisor guests (ADR-0114)
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- libvirt and Cloud Hypervisor dropped a NIC's `ipam.static`: their NoCloud
+  seed carried only `meta-data` and `user-data`, so a static interface,
+  `networkOverrides` address or `VirtualMachinePool.spec.addressing` was
+  ignored and the guest came up on DHCP (or with no address on a segment
+  without DHCP), with nothing reporting it.
+
+### Changed
+- `crates/banlieue-provider-sdk/src/cloudinit/network.rs` (new):
+  `network_config`, `derive_mac`, `any_static`, `SeedNic`; the `network-config`
+  (v2) renderer moved from the Proxmox provider, output unchanged except that
+  a line break inside a value is flattened to a space. `seed_files` and
+  `build_seed_iso` take an optional `network-config`.
+- libvirt (`reconciler/libvirtmachine.rs`): `with_derived_macs` gives every
+  NIC a MAC derived from the `LibvirtMachine` UID (`52:54:00:…`) when any NIC
+  is static, applied in `reconcile` before `converge`, so the domain XML and
+  the seed agree; the seed carries the `network-config`. DHCP-only machines
+  keep libvirtd's MACs.
+- Cloud Hypervisor (`plan.rs`, `machine.rs`): the plan renders the
+  `network-config` from its derived MACs, and plans a seed disk for a static
+  machine with no user-data.
+- Proxmox (`network.rs`, `reconciler/proxmoxmachine.rs`): uses the shared
+  renderer; `sha2` dropped from its dependencies (now the SDK's).
+- `crates/banlieue-api/src/banlieue/virtualmachinepool.rs`: the
+  `PoolReadiness::GuestReady` and `READINESS_SIGNAL_ABSENT` doc comments no
+  longer say `GuestReady` is unimplemented.
+- ADR-0114 (new, Accepted); ADR-0109 amended (*what changed underneath*: the
+  gateway ADR is mediatore ADR-0028, not 0023; Decision 6's one-static-NIC
+  limit is gone on vSphere since ADR-0111; Decision 7 works on libvirt and
+  Cloud Hypervisor since ADR-0114).
+- CALM: control `static-addressing-seed`; libvirt and Cloud Hypervisor node
+  descriptions.
+- Guides: cloud-init on libvirt (*Static addresses*, cloud-init and Kairos),
+  virtualmachine-pools (how the address reaches the guest), Cloud Hypervisor
+  host (*Static addresses*).
+- Threat model: pass for ADR-0114, stamp ADR-0001 … ADR-0114; TB-1 row for
+  static-address strings in the seed; A-2 names the file.
+
+### Tests
+- SDK: 10 renderer tests (moved from Proxmox and extended: no gateway, no
+  route; a value with a line break cannot add a key; prefix-independent MAC
+  suffix), 2 seed tests.
+- libvirt: derived MACs (static, DHCP, explicit), the seed carries the
+  address and MAC, a DHCP seed has no `network-config`.
+- Cloud Hypervisor: the plan's `network-config` is matched by the planned
+  MAC; a static machine without user-data gets a seed disk and a seed.
+- Live, libvirt (`live_cloudinit.rs`,
+  `a_guest_applies_a_static_address_from_the_seed`, address and gateway from
+  the environment): a Debian 13 cloud image on a real host applied the
+  seed's address and default route on the derived MAC, installed
+  `qemu-guest-agent` through that route, and its agent reported the address
+  (68 s). The existing DHCP seed test passed beside it as a control.
+
+### Found live
+- A static libvirt guest with no agent shows no address: it takes no DHCP
+  lease, and libvirt's ARP source reported nothing even while the guest
+  pinged its gateway every 2 s. The provider's discovery uses those sources,
+  so `status.addresses` stays empty for such a machine. Recorded in ADR-0114
+  as a follow-up.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (provider images, Cloud Hypervisor host binary)
+- [ ] Config change only
+- [ ] Documentation only
+- Applies to machines created after the upgrade: an existing machine keeps
+  its seed (written once) and has already booted.
+
 ## [2026-11-04 16:00] - A Grype gate for the pre-lay image (ADR-0113, amended)
 
 **Author:** Erick Bourgeois

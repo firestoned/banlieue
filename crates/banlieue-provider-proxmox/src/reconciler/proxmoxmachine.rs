@@ -43,7 +43,7 @@ use banlieue_api::infrastructure::{
     ProxmoxAddressSource, ProxmoxMachine, ProxmoxMachineSpec, ProxmoxMachineStatus,
     proxmox_provider_id,
 };
-use banlieue_provider_sdk::cloudinit::{CIDATA_LABEL, IsoFile, build_iso9660, seed_files};
+use banlieue_provider_sdk::cloudinit::{CIDATA_LABEL, build_iso9660, seed_files};
 use banlieue_provider_sdk::finalizer::{ensure_finalizer, remove_finalizer};
 use banlieue_provider_sdk::reconciler::{requeue_default, requeue_long, requeue_on_error};
 use banlieue_provider_sdk::ssa::FIELD_MANAGER_PROVIDER_PROXMOX;
@@ -358,10 +358,8 @@ async fn upload_seed(
         .iso_storage
         .as_deref()
         .ok_or_else(|| invalid("ProxmoxMachine.spec.isoStorage", "unset"))?;
-    let mut files = seed_files(m.name, m.uid, spec.user_data.as_deref());
-    if let Some(doc) = network_config(nics) {
-        files.push(IsoFile::new("network-config", doc.into_bytes()));
-    }
+    let doc = network_config(nics);
+    let files = seed_files(m.name, m.uid, spec.user_data.as_deref(), doc.as_deref());
     let iso =
         build_iso9660(CIDATA_LABEL, &files).map_err(|e| invalid("seed ISO", e.to_string()))?;
     let upid = api

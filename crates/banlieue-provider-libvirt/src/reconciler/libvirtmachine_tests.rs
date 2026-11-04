@@ -758,6 +758,114 @@ mod tests {
         );
     }
 
+    // ------------------------------------------------------------------
+    // static addressing in the seed (ADR-0114)
+    // ------------------------------------------------------------------
+
+    const MACHINE_UID: &str = "7c9e6679-7425-40de-944b-e07fc1f90ae7";
+
+    fn static_spec() -> LibvirtMachineSpec {
+        let mut s = spec(LibvirtBootSourceKind::InstallMedia);
+        s.network[0].ipam.static_ = Some(banlieue_api::common::StaticIpamConfig {
+            address: "192.0.2.10".to_string(),
+            prefix: 24,
+            gateway: None,
+            nameservers: Vec::new(),
+            domain: None,
+        });
+        s
+    }
+
+    fn contains(haystack: &[u8], needle: &str) -> bool {
+        haystack
+            .windows(needle.len())
+            .any(|w| w == needle.as_bytes())
+    }
+
+    /// Whether the seed's Joliet tree names `file` (UCS-2, big-endian).
+    fn has_file(seed: &[u8], file: &str) -> bool {
+        let ucs2: Vec<u8> = file.encode_utf16().flat_map(u16::to_be_bytes).collect();
+        seed.windows(ucs2.len()).any(|w| w == ucs2)
+    }
+
+    /// libvirtd would pick a MAC the seed cannot know; a static machine gets
+    /// one derived from its UID instead, with libvirt's own prefix.
+    #[test]
+    fn a_static_machine_gets_derived_macs() {
+        let mut s = static_spec();
+        s.network.push(LibvirtNicSpec {
+            name: "eth1".to_string(),
+            ..s.network[0].clone()
+        });
+        s.network[1].ipam = IpamSpec::default();
+        let out = with_derived_macs(&s, MACHINE_UID);
+        let mac0 = out.network[0].mac_address.clone().expect("eth0 MAC");
+        let mac1 = out.network[1].mac_address.clone().expect("eth1 MAC");
+        assert!(mac0.starts_with("52:54:00:"), "{mac0}");
+        assert_ne!(mac0, mac1, "two NICs must not share a MAC");
+        assert_eq!(
+            out.network[0].mac_address,
+            with_derived_macs(&s, MACHINE_UID).network[0].mac_address,
+            "derivation must be stable across reconciles"
+        );
+    }
+
+    /// A DHCP-only machine keeps libvirtd's choice: an upgrade changes no
+    /// running DHCP machine's MAC.
+    #[test]
+    fn a_dhcp_machine_keeps_libvirt_macs() {
+        let s = spec(LibvirtBootSourceKind::InstallMedia);
+        assert_eq!(
+            with_derived_macs(&s, MACHINE_UID).network[0].mac_address,
+            None
+        );
+    }
+
+    #[test]
+    fn an_explicit_mac_is_kept() {
+        let mut s = static_spec();
+        s.network[0].mac_address = Some("52:54:00:12:34:56".to_string());
+        assert_eq!(
+            with_derived_macs(&s, MACHINE_UID).network[0]
+                .mac_address
+                .as_deref(),
+            Some("52:54:00:12:34:56")
+        );
+    }
+
+    /// The gap ADR-0114 closes: a static address reached `LibvirtMachine`
+    /// and went nowhere. It must be in the seed, matched by the NIC's MAC.
+    #[tokio::test]
+    async fn a_static_address_reaches_the_seed() {
+        let mut c = ready_host();
+        let s = with_derived_macs(&static_spec(), MACHINE_UID);
+        let mac = s.network[0].mac_address.clone().unwrap();
+
+        converge(&mut c, &s, false, false).await.expect("converge");
+
+        let seed = c.uploaded.get("sandboxes-agent-01-cidata.iso").unwrap();
+        assert!(
+            has_file(seed, "network-config"),
+            "no network-config in the seed"
+        );
+        assert!(contains(seed, "'192.0.2.10/24'"), "address missing");
+        assert!(
+            contains(seed, &mac),
+            "the document must match the NIC's MAC"
+        );
+        assert!(!contains(seed, "routes:"), "no gateway, so no route");
+    }
+
+    /// No static NIC: the seed is what it was, with no network-config.
+    #[tokio::test]
+    async fn a_dhcp_machine_seed_has_no_network_config() {
+        let mut c = ready_host();
+        let s = spec(LibvirtBootSourceKind::InstallMedia);
+        converge(&mut c, &s, false, false).await.expect("converge");
+        let seed = c.uploaded.get("sandboxes-agent-01-cidata.iso").unwrap();
+        assert!(!has_file(seed, "network-config"));
+    }
+
     /// `instance-id` comes from the domain UUID, so the seed can only be
     /// built after the first define — libvirt assigns the UUID there.
     #[tokio::test]

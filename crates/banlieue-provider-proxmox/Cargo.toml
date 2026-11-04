@@ -32,8 +32,6 @@ futures.workspace = true
 tracing.workspace = true
 clap.workspace = true
 async-trait.workspace = true
-# Stable per-NIC MAC derivation for statically addressed machines.
-sha2.workspace = true
 # Installs the ring crypto provider reqwest's `rustls-no-provider` needs
 # (ADR-0009), before the first TLS handshake.
 rustls.workspace = true

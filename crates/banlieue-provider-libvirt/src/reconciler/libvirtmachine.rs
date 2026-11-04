@@ -30,7 +30,7 @@
 
 use std::sync::Arc;
 
-use crate::cloudinit::build_seed_iso;
+use crate::cloudinit::{SeedNic, build_seed_iso, derive_mac, network_config};
 use banlieue_api::banlieue::Provider;
 use banlieue_api::common::{
     InitializationStatus, MachineAddress, MachineAddressType, PowerState, condition_types,
@@ -68,6 +68,48 @@ use crate::xml::{DomainXmlInput, build_domain_xml, ejected_install_cdrom_xml};
 
 /// Finalizer holding a `LibvirtMachine` until its domain and volumes are gone.
 pub const MACHINE_FINALIZER: &str = "banlieue.io/libvirtmachine";
+
+/// libvirt's own MAC prefix (`52:54:00`), for MACs banlieue derives so a
+/// static machine's seed can name its NICs (ADR-0114).
+const LIBVIRT_MAC_PREFIX: &str = "52:54:00";
+
+/// `spec` with a known MAC on every NIC, when any NIC is static (ADR-0114
+/// Decision 3).
+///
+/// cloud-init matches a `network-config` interface by MAC, and libvirtd
+/// would otherwise pick one the seed cannot know. Each NIC without an
+/// explicit `macAddress` gets one derived from the machine's `uid` and the
+/// NIC name, so it is stable across reconciles. A DHCP-only machine is
+/// returned unchanged and keeps libvirtd's choice.
+#[must_use]
+pub fn with_derived_macs(spec: &LibvirtMachineSpec, uid: &str) -> LibvirtMachineSpec {
+    let mut out = spec.clone();
+    if !spec.network.iter().any(|n| n.ipam.static_.is_some()) {
+        return out;
+    }
+    for nic in &mut out.network {
+        if nic.mac_address.is_none() {
+            nic.mac_address = Some(derive_mac(LIBVIRT_MAC_PREFIX, uid, &nic.name));
+        }
+    }
+    out
+}
+
+/// The seed's `network-config` for `spec`, or `None` with no static NIC
+/// (ADR-0114). Call on a spec from [`with_derived_macs`], so every NIC has a
+/// MAC to match on.
+fn seed_network_config(spec: &LibvirtMachineSpec) -> Option<String> {
+    let nics: Vec<SeedNic<'_>> = spec
+        .network
+        .iter()
+        .map(|n| SeedNic {
+            name: &n.name,
+            mac: n.mac_address.as_deref(),
+            ipam: &n.ipam,
+        })
+        .collect();
+    network_config(&nics)
+}
 
 /// Bytes per GiB, for converting `sizeGiB` to the byte capacity libvirt wants.
 const BYTES_PER_GIB: u64 = 1024 * 1024 * 1024;
@@ -164,9 +206,14 @@ pub async fn reconcile(machine: Arc<LibvirtMachine>, ctx: Arc<Context>) -> Resul
         .as_ref()
         .is_some_and(|s| !s.tpm_endorsement_certificates.is_empty());
 
+    // Known MACs before the domain and the seed are written (ADR-0114).
+    let spec = match machine.metadata.uid.as_deref() {
+        Some(uid) => with_derived_macs(&machine.spec, uid),
+        None => machine.spec.clone(),
+    };
     match converge(
         client.as_mut(),
-        &machine.spec,
+        &spec,
         already_detached,
         ek_already_published,
     )
@@ -586,10 +633,12 @@ async fn ensure_seed(
         return Ok(Some(existing));
     }
 
+    let network = seed_network_config(spec);
     let image = build_seed_iso(
         &spec.domain_name,
         &format_uuid(&domain.uuid),
         spec.user_data.as_deref(),
+        network.as_deref(),
     )
     .map_err(|e| Error::Invalid {
         what: "cloud-init seed",

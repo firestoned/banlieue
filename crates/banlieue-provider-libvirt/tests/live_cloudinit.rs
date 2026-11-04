@@ -23,6 +23,27 @@
 //!   cargo test -p banlieue-provider-libvirt --test live_cloudinit -- --ignored --nocapture
 //! ```
 //!
+//! # A static address from the seed (ADR-0114)
+//!
+//! `a_guest_applies_a_static_address_from_the_seed` boots the same kind of
+//! guest with a static NIC and **no DHCP**. Its user-data installs
+//! `qemu-guest-agent` through the default route the seed configured, and the
+//! agent then reports the guest's own interfaces: the MAC banlieue derived,
+//! carrying the address that can only have come from the seed's
+//! `network-config`. It needs a package mirror reachable through the
+//! network's gateway. (Found live: libvirt's ARP source reported nothing for
+//! such a guest even while it pinged its gateway, so it is no signal; and a
+//! guest left alone may send nothing to its gateway for minutes.) Pick an address on `LIBVIRT_NETWORK` that its DHCP
+//! server will not hand out, and the network's own gateway:
+//!
+//! ```sh
+//! LIBVIRT_STATIC_ADDRESS=<free address on the network> \
+//! LIBVIRT_STATIC_GATEWAY=<the network's gateway> \
+//! LIBVIRT_STATIC_PREFIX=24 \
+//!   cargo test -p banlieue-provider-libvirt --test live_cloudinit \
+//!     a_guest_applies_a_static_address_from_the_seed -- --ignored --nocapture
+//! ```
+//!
 //! # Choosing a guest, which is most of the difficulty
 //!
 //! The image must run **cloud-init** *and* its DHCP client must send the
@@ -55,13 +76,20 @@ use banlieue_libvirt::{
     network_get_dhcp_leases,
 };
 use banlieue_provider_libvirt::machine_client::SessionMachineClient;
-use banlieue_provider_libvirt::reconciler::libvirtmachine::{converge, finalize_backend};
+use banlieue_provider_libvirt::reconciler::libvirtmachine::{
+    converge, finalize_backend, with_derived_macs,
+};
 
 /// How long to wait for the guest to boot and DHCP. CirrOS is usually up in
 /// well under a minute; the rest is headroom for a loaded host.
 const BOOT_TIMEOUT: Duration = Duration::from_secs(240);
 /// Gap between lease polls.
 const POLL_INTERVAL: Duration = Duration::from_secs(5);
+/// `LIBVIRT_STATIC_PREFIX` when unset.
+const DEFAULT_STATIC_PREFIX: u8 = 24;
+/// How long the static guest has to boot, install its guest agent over the
+/// network the seed configured, and report: the package install is most of it.
+const STATIC_BOOT_TIMEOUT: Duration = Duration::from_secs(480);
 
 fn settings() -> Option<(String, PathBuf, String, String)> {
     Some((
@@ -256,4 +284,111 @@ async fn a_guest_consumes_the_cloud_init_seed() {
         )
     });
     eprintln!("cloud-init consumed the seed; guest reachable at {addr}");
+}
+
+/// A unique domain name for one run, `<prefix>-<epoch seconds>`.
+fn run_name(prefix: &str) -> String {
+    format!(
+        "{prefix}-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_secs()
+    )
+}
+
+#[tokio::test]
+#[ignore = "boots a real guest; set LIBVIRT_HOST, LIBVIRT_TLS_DIR, LIBVIRT_SOURCE_VOLUME, LIBVIRT_STATIC_ADDRESS, LIBVIRT_STATIC_GATEWAY"]
+async fn a_guest_applies_a_static_address_from_the_seed() {
+    let Some((host, dir, pool, source_volume)) = settings() else {
+        panic!("set LIBVIRT_HOST, LIBVIRT_TLS_DIR and LIBVIRT_SOURCE_VOLUME");
+    };
+    let address = std::env::var("LIBVIRT_STATIC_ADDRESS")
+        .expect("set LIBVIRT_STATIC_ADDRESS: a free address on LIBVIRT_NETWORK");
+    let gateway = std::env::var("LIBVIRT_STATIC_GATEWAY")
+        .expect("set LIBVIRT_STATIC_GATEWAY: LIBVIRT_NETWORK's gateway");
+    let prefix: u8 = std::env::var("LIBVIRT_STATIC_PREFIX")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(DEFAULT_STATIC_PREFIX);
+    let identity = load_identity(&dir);
+
+    let mut session = connect_tls(&host, DEFAULT_TLS_PORT, &identity)
+        .await
+        .expect("TLS (machine)");
+    connect_open(&mut session, Some("qemu:///system"), false)
+        .await
+        .expect("CONNECT_OPEN (machine)");
+    let mut client = SessionMachineClient::new(session);
+
+    let domain_name = run_name("staticcheck");
+    let mut base = spec(&domain_name, &pool, &source_volume);
+    base.network[0].ipam.static_ = Some(banlieue_api::common::StaticIpamConfig {
+        address: address.clone(),
+        prefix,
+        gateway: Some(gateway.clone()),
+        nameservers: vec![gateway.clone()],
+        domain: None,
+    });
+    // The guest agent reports the guest's own interfaces. The image has
+    // none, so cloud-init installs it, through the default route the seed's
+    // network-config set: the install itself proves that route works.
+    base.user_data = Some(
+        "#cloud-config\npackages: [qemu-guest-agent]\nruncmd:\n  - [systemctl, start, qemu-guest-agent]\n"
+            .to_string(),
+    );
+    // What the reconciler does before converge: known MACs (ADR-0114).
+    let spec = with_derived_macs(&base, &domain_name);
+    let mac = spec.network[0]
+        .mac_address
+        .clone()
+        .expect("a static NIC gets a derived MAC");
+    eprintln!("booting {domain_name} from {source_volume}: {address}/{prefix} on {mac}");
+
+    let outcome = converge(&mut client, &spec, false, false).await;
+
+    let mut seen = false;
+    if outcome.is_ok() {
+        use banlieue_provider_libvirt::machine_client::LibvirtMachineClient;
+        let deadline = Instant::now() + STATIC_BOOT_TIMEOUT;
+        while Instant::now() < deadline && !seen {
+            tokio::time::sleep(POLL_INTERVAL).await;
+            let Ok(Some(dom)) = client.lookup_domain(&domain_name).await else {
+                continue;
+            };
+            let Ok(Some((ifaces, source))) = client.domain_addresses(&dom).await else {
+                eprintln!("  waiting… no address from any source yet");
+                continue;
+            };
+            for i in &ifaces {
+                let ours = i
+                    .hwaddr
+                    .as_deref()
+                    .is_some_and(|h| h.eq_ignore_ascii_case(&mac));
+                if ours && i.addrs.iter().any(|a| a.addr == address) {
+                    eprintln!(
+                        "  {source:?} reports {address} on {mac}: the guest applied the seed"
+                    );
+                    seen = true;
+                }
+            }
+            if !seen {
+                eprintln!("  waiting… {source:?} reports {ifaces:?}");
+            }
+        }
+    }
+
+    eprintln!("  tearing down");
+    let teardown = finalize_backend(&mut client, &spec).await;
+
+    outcome.expect("converge failed");
+    teardown.expect("teardown failed");
+    assert!(
+        seen,
+        "no source reported {address} on {mac} within {STATIC_BOOT_TIMEOUT:?}. The address \
+         reaches the guest only through the seed's network-config, so either cloud-init did \
+         not apply it, or the guest could not install its agent through the gateway (it needs \
+         a package mirror). A Kairos image fails here because it applies no network-config \
+         (ADR-0114 Decision 4)."
+    );
 }

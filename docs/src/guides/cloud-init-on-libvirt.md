@@ -48,11 +48,12 @@ volume named `<domain>-cidata.iso` in the machine's storage pool.
 ### The seed's contents
 
 ```text
-/user-data     your payload, byte for byte
-/meta-data     generated:
+/user-data       your payload, byte for byte
+/meta-data       generated:
 
-               instance-id: <the domain's UUID>
-               local-hostname: <the domain name>
+                 instance-id: <the domain's UUID>
+                 local-hostname: <the domain name>
+/network-config  generated, only when a NIC is static (see below)
 ```
 
 `meta-data` is always present, even when you set no user-data at all —
@@ -67,6 +68,69 @@ cloud-init requires it and **silently ignores a seed without it**.
     Reusing an id across rebuilds makes a fresh VM treat its first boot as a
     reboot and skip every one of them. That failure is silent and looks like
     "cloud-init did nothing".
+
+## Static addresses
+
+A static interface (`ipam.static` in the `VMClass`, an address in
+`VirtualMachine.spec.networkOverrides`, or a pool's `spec.addressing`)
+reaches the guest through the seed
+([ADR-0114](https://github.com/firestoned/banlieue/blob/main/docs/adr/0114-static-addressing-in-the-nocloud-seed.md)).
+The same holds on Cloud Hypervisor and Proxmox. How the guest applies it
+depends on what reads the seed.
+
+**cloud-init guests** apply a generated `network-config` (v2):
+
+```yaml
+version: 2
+ethernets:
+  'eth0':
+    match:
+      macaddress: '52:54:00:43:ba:39'
+    set-name: 'eth0'
+    addresses:
+      - '192.0.2.10/24'
+    routes:              # only when the interface has a gateway
+      - to: default
+        via: '192.0.2.1'
+```
+
+Each NIC is matched by MAC, so a machine with a static NIC gets a MAC on
+every interface derived from its UID (`52:54:00:…`, stable across
+reconciles) unless the class sets `macAddress`. A machine with only DHCP
+interfaces keeps the MACs libvirtd picks and gets no `network-config`. An
+interface without a gateway gets no default route, as ADR-0109's sandboxes
+want.
+
+Verified on a real host: a Debian 13 cloud image came up with the address
+and route from the seed and installed packages through that route
+(`a_guest_applies_a_static_address_from_the_seed` in `live_cloudinit.rs`).
+
+**Kairos guests do not read `network-config`.** Kairos takes user-data,
+hostname and SSH keys from the seed and applies no network configuration
+from it. Give such an image its address through the placeholders banlieue
+renders into `userData` (`${IP}`, `${PREFIX}`, `${GATEWAY}`, `${DNS}`,
+`${DOMAIN}`, from the first static interface), with a stage that writes a
+networkd file, the way Kairos documents static addressing:
+
+```yaml
+#cloud-config
+stages:
+  initramfs:
+    - name: banlieue-static-address
+      files:
+        - path: /etc/systemd/network/10-static.network
+          permissions: 0644
+          content: |
+            [Match]
+            Name=en* eth*
+            [Network]
+            Address=${IP}/${PREFIX}
+```
+
+Add `Gateway=${GATEWAY}` when the interface has one. Only the first static
+interface has placeholders; a Kairos guest with two static NICs sets the
+second in its image. (This stage follows Kairos's documented pattern and has
+not yet been run through banlieue on a live Kairos guest.)
 
 ## Why the image is Joliet
 

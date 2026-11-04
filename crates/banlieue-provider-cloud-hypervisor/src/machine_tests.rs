@@ -332,6 +332,33 @@ lan = "br0"
         assert!(h.state.lock().unwrap().seeds.is_empty());
     }
 
+    /// ADR-0114: a static machine with no user-data still gets a seed, and
+    /// it carries the `network-config`.
+    #[tokio::test]
+    async fn a_static_machine_without_user_data_gets_a_seed_with_its_address() {
+        let mut s = spec();
+        s.user_data = None;
+        s.nics[0].ipam.static_ = Some(banlieue_api::common::StaticIpamConfig {
+            address: "192.0.2.10".into(),
+            prefix: 24,
+            gateway: None,
+            nameservers: Vec::new(),
+            domain: None,
+        });
+        let plan = plan_for(&s);
+        let h = host(&plan);
+        converge(&h, &plan, "db-01", None, &PowerState::PoweredOn)
+            .await
+            .unwrap();
+        let seeds = &h.state.lock().unwrap().seeds;
+        let iso = seeds.get(&plan.seed).expect("seed written");
+        let needle = b"'192.0.2.10/24'";
+        assert!(
+            iso.windows(needle.len()).any(|w| w == needle),
+            "address missing from the seed"
+        );
+    }
+
     // ------------------------------------------------------------------
     // Failures surface; they are not papered over
     // ------------------------------------------------------------------

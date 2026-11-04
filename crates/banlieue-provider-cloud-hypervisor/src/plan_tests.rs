@@ -234,6 +234,61 @@ lan = "br0"
         assert!(!p.needs_seed());
     }
 
+    fn static_spec() -> CloudHypervisorMachineSpec {
+        let mut s = spec();
+        s.user_data = None;
+        s.nics[0].ipam.static_ = Some(banlieue_api::common::StaticIpamConfig {
+            address: "192.0.2.10".into(),
+            prefix: 24,
+            gateway: None,
+            nameservers: Vec::new(),
+            domain: None,
+        });
+        s
+    }
+
+    /// ADR-0114: a static NIC's address reaches the seed, matched by the MAC
+    /// the plan derived for that NIC.
+    #[test]
+    fn a_static_nic_plans_a_network_config_matched_by_its_mac() {
+        let p = plan_machine(
+            UID,
+            MACHINE_NAME,
+            "ch-a",
+            &static_spec(),
+            &config(),
+            HOST_UID,
+        )
+        .unwrap();
+        let doc = p.network_config.as_deref().expect("network-config");
+        assert!(doc.contains("'192.0.2.10/24'"), "{doc}");
+        assert!(
+            doc.contains(&format!("macaddress: '{}'", p.nics[0].mac)),
+            "{doc}"
+        );
+        assert!(!doc.contains("routes:"), "no gateway, so no route: {doc}");
+    }
+
+    /// A static machine gets its address even with no user-data.
+    #[test]
+    fn a_static_machine_without_user_data_still_has_a_seed_disk() {
+        let p = plan_machine(
+            UID,
+            MACHINE_NAME,
+            "ch-a",
+            &static_spec(),
+            &config(),
+            HOST_UID,
+        )
+        .unwrap();
+        assert!(p.needs_seed());
+    }
+
+    #[test]
+    fn a_dhcp_machine_plans_no_network_config() {
+        assert_eq!(plan().network_config, None);
+    }
+
     #[test]
     fn the_guest_plan_carries_firmware_cpus_memory_and_taps() {
         let p = plan();

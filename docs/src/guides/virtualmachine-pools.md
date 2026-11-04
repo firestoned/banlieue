@@ -238,6 +238,15 @@ addressing:
   gateway: 192.0.2.1
 ```
 
+**How the address reaches the guest** depends on the backend: vSphere
+writes it into `guestinfo.network.*`; libvirt, Cloud Hypervisor and Proxmox
+write a cloud-init `network-config` into the seed, and a Kairos guest takes
+it from the `${IP}`/`${PREFIX}` placeholders in its user-data instead
+([cloud-init on libvirt](cloud-init-on-libvirt.md#static-addresses),
+[ADR-0114](https://github.com/firestoned/banlieue/blob/main/docs/adr/0114-static-addressing-in-the-nocloud-seed.md)).
+Before v0.4.12 libvirt and Cloud Hypervisor ignored the address and members
+came up on DHCP.
+
 **Size the pool above `maxReplicas`, with spares.** An address is held
 until a deleted member's backend VM is really gone, not until its delete is
 issued — so a pool churning members needs more addresses than it has

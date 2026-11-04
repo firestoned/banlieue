@@ -12,7 +12,7 @@ mod tests {
     /// a seed without it is silently ignored rather than rejected.
     #[test]
     fn meta_data_is_always_present() {
-        let files = seed_files("vm-01", UUID, None);
+        let files = seed_files("vm-01", UUID, None, None);
         assert!(files.iter().any(|f| f.name == "meta-data"));
     }
 
@@ -22,7 +22,7 @@ mod tests {
     /// is a new instance by construction (ADR-0054 Decision 5).
     #[test]
     fn instance_id_comes_from_the_domain_uuid() {
-        let files = seed_files("vm-01", UUID, None);
+        let files = seed_files("vm-01", UUID, None, None);
         let meta = files.iter().find(|f| f.name == "meta-data").unwrap();
         let text = String::from_utf8(meta.data.clone()).unwrap();
         assert!(text.contains(&format!("instance-id: {UUID}")), "{text}");
@@ -30,7 +30,7 @@ mod tests {
 
     #[test]
     fn local_hostname_comes_from_the_domain_name() {
-        let files = seed_files("web-01", UUID, None);
+        let files = seed_files("web-01", UUID, None, None);
         let meta = files.iter().find(|f| f.name == "meta-data").unwrap();
         let text = String::from_utf8(meta.data.clone()).unwrap();
         assert!(text.contains("local-hostname: web-01"), "{text}");
@@ -41,15 +41,15 @@ mod tests {
     /// every per-instance module.
     #[test]
     fn two_domains_get_distinct_instance_ids() {
-        let a = seed_files("a", "uuid-a", None);
-        let b = seed_files("b", "uuid-b", None);
+        let a = seed_files("a", "uuid-a", None, None);
+        let b = seed_files("b", "uuid-b", None, None);
         assert_ne!(a[0].data, b[0].data);
     }
 
     #[test]
     fn user_data_is_carried_verbatim() {
         let payload = "#cloud-config\nruncmd:\n  - [echo, hi]\n";
-        let files = seed_files("vm-01", UUID, Some(payload));
+        let files = seed_files("vm-01", UUID, Some(payload), None);
         let ud = files.iter().find(|f| f.name == "user-data").unwrap();
         assert_eq!(ud.data, payload.as_bytes());
     }
@@ -59,15 +59,33 @@ mod tests {
     /// rather than skipped.
     #[test]
     fn a_seed_without_user_data_still_builds() {
-        let files = seed_files("vm-01", UUID, None);
+        let files = seed_files("vm-01", UUID, None, None);
         assert!(!files.iter().any(|f| f.name == "user-data"));
-        assert!(build_seed_iso("vm-01", UUID, None).is_ok());
+        assert!(build_seed_iso("vm-01", UUID, None, None).is_ok());
+    }
+
+    /// ADR-0114: static addressing travels as `network-config`, verbatim.
+    #[test]
+    fn a_network_config_is_carried_when_given() {
+        let doc = "version: 2\nethernets: {}\n";
+        let files = seed_files("vm-01", UUID, None, Some(doc));
+        let nc = files.iter().find(|f| f.name == "network-config").unwrap();
+        assert_eq!(nc.data, doc.as_bytes());
+        assert!(build_seed_iso("vm-01", UUID, None, Some(doc)).is_ok());
+    }
+
+    /// No static NIC, no `network-config`: cloud-init keeps its DHCP default
+    /// and a DHCP machine's seed is byte-for-byte what it was.
+    #[test]
+    fn no_network_config_means_no_file() {
+        let files = seed_files("vm-01", UUID, Some("#cloud-config\n"), None);
+        assert!(!files.iter().any(|f| f.name == "network-config"));
     }
 
     /// The whole point: the finished image is what cloud-init mounts.
     #[test]
     fn the_built_image_carries_the_cidata_label_and_both_files() {
-        let img = build_seed_iso("vm-01", UUID, Some("#cloud-config\n")).unwrap();
+        let img = build_seed_iso("vm-01", UUID, Some("#cloud-config\n"), None).unwrap();
         assert_eq!(&img[16 * 2048 + 40..16 * 2048 + 46], b"CIDATA");
         for name in ["meta-data", "user-data"] {
             let ucs2: Vec<u8> = name.encode_utf16().flat_map(u16::to_be_bytes).collect();
@@ -82,8 +100,8 @@ mod tests {
     /// rewrite the volume on the host forever.
     #[test]
     fn the_seed_is_deterministic() {
-        let a = build_seed_iso("vm-01", UUID, Some("#cloud-config\n")).unwrap();
-        let b = build_seed_iso("vm-01", UUID, Some("#cloud-config\n")).unwrap();
+        let a = build_seed_iso("vm-01", UUID, Some("#cloud-config\n"), None).unwrap();
+        let b = build_seed_iso("vm-01", UUID, Some("#cloud-config\n"), None).unwrap();
         assert_eq!(a, b);
     }
 
@@ -110,6 +128,7 @@ mod tests {
             "banlieue-seedcheck",
             UUID,
             Some("#cloud-config\nhostname: banlieue-seedcheck\n"),
+            None,
         )
         .expect("build");
         std::fs::write(&path, &img).expect("write");
