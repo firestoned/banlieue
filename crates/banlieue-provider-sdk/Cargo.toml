@@ -12,6 +12,8 @@ homepage.workspace = true
 authors.workspace = true
 
 [dependencies]
+# Stable per-NIC MACs for the NoCloud network-config (ADR-0114).
+sha2.workspace = true
 banlieue-api = { path = "../banlieue-api" }
 kube.workspace = true
 k8s-openapi.workspace = true

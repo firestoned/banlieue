@@ -10,9 +10,13 @@ SPDX-License-Identifier: Apache-2.0
 - **Deciders:** Erick Bourgeois
 - **Amended:** 2026-10-28 (Decision 4: the proxies run Envoy with a SPIFFE
   identity, not haproxy; the proxy-choice item under *Still to decide* is
-  settled; see mediatore ADR-0023)
+  settled; see mediatore ADR-0028); 2026-11-04 (references: the gateway ADR
+  is mediatore ADR-0028, not 0023; Decision 6's one-static-NIC limit no
+  longer holds on vSphere since ADR-0111;
+  Decision 7's addresses reach libvirt and Cloud Hypervisor guests since
+  ADR-0114; see *Amendment: what changed underneath*)
 - **Related:** mediatore
-  [ADR-0023](https://github.com/firestoned/mediatore/blob/main/docs/adr/0023-egress-gateway-envoy-with-spiffe-identity.md)
+  [ADR-0028](https://github.com/firestoned/mediatore/blob/main/docs/adr/0028-egress-gateway-envoy-with-spiffe-identity.md)
   (the gateway's software, identity and authorization), [ADR-0030](0030-per-zone-capability-targets.md) (per-zone
   network targets), [ADR-0032](0032-per-zone-network-subnet-shape.md)
   (per-zone subnet shape), [ADR-0046](0046-virtualmachinepool.md)
@@ -60,6 +64,7 @@ vSphere 8.0 cluster; the fourth is read from the tree.
   to a literal port group per zone (ADR-0030). One gap is real: the vSphere
   provider writes only the **first** static NIC into `guestinfo.network.*`
   (`build_guestinfo`), so a VM cannot receive two static addresses that way.
+  (Closed by ADR-0111; see *Amendment: what changed underneath*.)
 
 ### Alternatives considered
 
@@ -112,7 +117,7 @@ vSphere 8.0 cluster; the fourth is read from the tree.
    from a local SPIRE agent, requiring mutual TLS from each sandbox and
    authorizing every CONNECT on the caller's claim identity and the requested
    authority (mediatore
-   [ADR-0023](https://github.com/firestoned/mediatore/blob/main/docs/adr/0023-egress-gateway-envoy-with-spiffe-identity.md)).
+   [ADR-0028](https://github.com/firestoned/mediatore/blob/main/docs/adr/0028-egress-gateway-envoy-with-spiffe-identity.md)).
    It listens on the `sandbox` interface only, never on `egress`. The
    destinations are a default-deny allowlist per claim, answered by the
    broker, not a list held in the proxy image. The text this replaces named
@@ -176,17 +181,44 @@ vSphere 8.0 cluster; the fourth is read from the tree.
 ### Still to decide
 
 - ~~How a sandbox picks among three proxies~~ Settled 2026-10-28 (mediatore
-  ADR-0023 decision 7): an ordered address list from the broker, a random
+  ADR-0028 decision 7): an ordered address list from the broker, a random
   start and failover per connection; no name, no floating address.
 - ~~Who authors and reviews the proxy allowlist, and how a change reaches
   running proxies without rebuilding the image.~~ Settled in part
   2026-10-28: the allowlist is per claim, comes from the broker's evaluation
   of the claim's policy, and changes with no image rebuild. Whether the
-  gateway also verifies the notaio bundle itself is open in mediatore
-  ADR-0023.
+  gateway also verifies the notaio bundle itself is open in notaio (its
+  roadmap 00, item D5, recommends it does not).
 - Whether the `guestinfo` convention should carry several static NICs, which
   would let banlieue, rather than the image, address a proxy's second NIC.
 - When `VMNetwork` (roadmap 19) replaces the hand-made port groups, and how
   an existing literal target migrates.
 - Whether `VMClass` interface order, which this ADR now leans on for the
   first-static-NIC rule, should be made an explicit contract.
+
+## Amendment: what changed underneath (2026-11-04)
+
+Three facts this ADR leans on moved after it was written. None changes a
+decision; each changes which backend can carry it out.
+
+1. **The gateway ADR is mediatore
+   [ADR-0028](https://github.com/firestoned/mediatore/blob/main/docs/adr/0028-egress-gateway-envoy-with-spiffe-identity.md).**
+   The references to "mediatore ADR-0023" predate a renumbering there;
+   mediatore's ADR-0023 is now its Kairos sandbox image. Fixed above.
+2. **Decision 6 is a vSphere constraint no longer.**
+   [ADR-0111](0111-vm-clone-additional-nics.md) gives a cloned vSphere VM one
+   adapter per interface and publishes `guestinfo.network.<i>.*` for each, so
+   banlieue can address a proxy's `sandbox` NIC there too. The image-set
+   address remains the way on libvirt and Cloud Hypervisor for a guest that
+   does not run cloud-init (Kairos): their user-data placeholders cover the
+   first static NIC only
+   ([ADR-0114](0114-static-addressing-in-the-nocloud-seed.md) Decision 4).
+   The *Still to decide* item on several static NICs in `guestinfo` is
+   settled by ADR-0111.
+3. **Decision 7's static addresses reach libvirt and Cloud Hypervisor
+   guests.** Before ADR-0114 those providers dropped `ipam.static` (their
+   seed had no `network-config`), so a pool's `spec.addressing` was ignored
+   there and a member came up on DHCP or not at all. Now a cloud-init guest
+   gets its address from the seed and a Kairos guest from the ADR-0024
+   placeholders in its user-data. On a homelab without a trunked VLAN, a
+   libvirt network with no `<forward>` plays the segment's part.

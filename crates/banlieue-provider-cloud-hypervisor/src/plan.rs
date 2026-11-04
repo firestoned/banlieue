@@ -27,6 +27,7 @@ use banlieue_api::infrastructure::{
     ChBootSourceKind, CloudHypervisorMachineSpec, cloud_hypervisor_provider_id,
 };
 use banlieue_cloud_hypervisor::{GuestPlan, PlannedDisk, PlannedNic};
+use banlieue_provider_sdk::cloudinit::{SeedNic, network_config};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::{Mutex, PoisonError};
@@ -210,6 +211,9 @@ pub struct MachinePlan {
     /// with `_<port>` appended, which is where a guest's connection to that
     /// host port lands.
     pub report_socket: PathBuf,
+    /// The seed's `network-config`, when any NIC is static (ADR-0114),
+    /// matched by each NIC's planned MAC. `None` for a DHCP-only machine.
+    pub network_config: Option<String>,
 }
 
 impl MachinePlan {
@@ -227,7 +231,8 @@ impl MachinePlan {
         self
     }
 
-    /// Whether the machine has user-data, and so a seed disk.
+    /// Whether the machine has a seed disk: it has user-data, or a static
+    /// NIC (ADR-0114).
     #[must_use]
     pub fn needs_seed(&self) -> bool {
         self.guest.disks.iter().any(|d| d.id == DISK_ID_SEED)
@@ -325,7 +330,22 @@ pub fn plan_machine(
             readonly: true,
         });
     }
-    if spec.user_data.is_some() {
+    // ADR-0114: the seed's `network-config`, from the MACs planned above.
+    let network_config = {
+        let seed_nics: Vec<SeedNic<'_>> = spec
+            .nics
+            .iter()
+            .zip(&nics)
+            .map(|(nic, planned)| SeedNic {
+                name: &nic.name,
+                mac: Some(&planned.mac),
+                ipam: &nic.ipam,
+            })
+            .collect();
+        network_config(&seed_nics)
+    };
+    // A seed for user-data, or for a static address with none (ADR-0114).
+    if spec.user_data.is_some() || network_config.is_some() {
         disks.push(PlannedDisk {
             id: DISK_ID_SEED.into(),
             path: seed.clone(),
@@ -374,6 +394,7 @@ pub fn plan_machine(
         empty_os_disk,
         first_boot_sealing: spec.first_boot_sealing.clone(),
         report_socket,
+        network_config,
     })
 }
 

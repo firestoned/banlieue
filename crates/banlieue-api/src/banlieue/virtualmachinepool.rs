@@ -57,8 +57,9 @@ pub mod pool_condition_reasons {
     pub const MAX_REPLICAS_REACHED: &str = "MaxReplicasReached";
     pub const ADDRESS_RANGE_EXHAUSTED: &str = "AddressRangeExhausted";
     /// No member has ever published the condition named by `spec.readiness`
-    /// (ADR-0046 Decision 3). A pool stuck at zero must say why, and the
-    /// most likely cause is `GuestReady` before ADR-0043 exists.
+    /// (ADR-0046 Decision 3). A pool stuck at zero must say why; the most
+    /// likely cause is `GuestReady` on a backend that does not publish it
+    /// (Proxmox today), or an image whose guest never reports.
     pub const READINESS_SIGNAL_ABSENT: &str = "ReadinessSignalAbsent";
     pub const NO_MEMBER_AVAILABLE: &str = "NoMemberAvailable";
     pub const POOL_NOT_FOUND: &str = "PoolNotFound";
@@ -186,8 +187,9 @@ pub enum PoolReadiness {
     /// for a Deferred-mode image, where `InfrastructureReady` fires when the
     /// install starts, not when it ends.
     ///
-    /// Not satisfiable yet: ADR-0043 is what publishes this condition. A
-    /// pool set to it today reports `Warm=False` with reason
+    /// Published by the libvirt, vSphere and Cloud Hypervisor providers
+    /// (ADR-0043); not by Proxmox yet. A pool on a backend whose members
+    /// never publish it reports `Warm=False` with reason
     /// `ReadinessSignalAbsent` rather than filling.
     GuestReady,
     /// The member's `InfrastructureReady` condition is `True`. Only safe for

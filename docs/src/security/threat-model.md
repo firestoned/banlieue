@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0
 # Threat Model
 
 > **Status:** Living document. Last full pass **2026-11-04**, against the
-> architecture defined by **ADR-0001 … ADR-0113** (0057–0059 unallocated,
+> architecture defined by **ADR-0001 … ADR-0114** (0057–0059 unallocated,
 > 0066 and 0068–0073 reserved; 0074 and 0075 Accepted 2026-09-28; 0076–0080
 > reserved by roadmap 19; 0081–0082 recorded but not implemented in banlieue, and kept canonically in
 > mediatore since ADR-0097;
@@ -14,8 +14,17 @@ SPDX-License-Identifier: Apache-2.0
 > Accepted 2026-10-28, renumbered 2026-10-30 from 0110, which main had
 > meanwhile taken twice; 0113 Proposed, its tool, the provider's pacing and
 > the imagebuilder's pre-lay Job implemented; 0087 amended 2026-11-01 and
-> 2026-11-03; 0113 accepted 2026-11-02 and amended twice 2026-11-04). The
-> most recent pass, 2026-11-04, covers three changes. **ADR-0113's second
+> 2026-11-03; 0113 accepted 2026-11-02 and amended twice 2026-11-04; 0114
+> Accepted 2026-11-04). The most recent pass, the second of 2026-11-04, is
+> **ADR-0114**: libvirt and Cloud Hypervisor now write a cloud-init
+> `network-config` into the NoCloud seed for a static NIC, through the
+> renderer Proxmox already used, and libvirt derives MACs for such a
+> machine. A tenant's address, gateway, nameserver and domain strings now
+> reach two more seeds as YAML: TB-1 gains a row (the renderer quotes every
+> value; the author already controls the guest through user-data) and A-2
+> names the file. No component, identity, grant or boundary changes and the
+> §5 diagram stands. The pass before it, the first of 2026-11-04, covers three
+> changes. **ADR-0113's second
 > amendment of that day, a Grype gate for the pre-lay image**: `make
 > grype-prelay` (the `grype-prelay` CI job) scans every pushed
 > `banlieue-prelay` image, reports every finding to Code Scanning, and fails
@@ -598,7 +607,7 @@ relationship to the host.
 | ID | Asset | Where it lives | Impact if lost |
 | --- | --- | --- | --- |
 | A-1 | Hypervisor credentials — vCenter username/password, a libvirt **mTLS client key**, or a Proxmox **API token** (`username` = `user@realm!tokenid`, `tokenValue`) | Secret named by `Provider.spec.connection.credentialsRef` | **Critical** — full virtualization-layer compromise, independent of Kubernetes |
-| A-2 | Guest bootstrap material (cloud-config, SSH keys, join tokens) | Secrets/ConfigMaps → `VSphereMachine.spec.userData` / `LibvirtMachine.spec.userData` / `CloudHypervisorMachine.spec.userData` / `ProxmoxMachine.spec.userData` → `guestinfo.userdata` or a NoCloud ISO (on Cloud Hypervisor, `seed.iso` in the machine directory on the host; on Proxmox, `banlieue-<machine uid>.iso` on an `iso`-content storage, attached for the machine's life) → built image | High — guest compromise, lateral movement into provisioned fleet |
+| A-2 | Guest bootstrap material (cloud-config, SSH keys, join tokens) | Secrets/ConfigMaps → `VSphereMachine.spec.userData` / `LibvirtMachine.spec.userData` / `CloudHypervisorMachine.spec.userData` / `ProxmoxMachine.spec.userData` → `guestinfo.userdata` or a NoCloud ISO (on Cloud Hypervisor, `seed.iso` in the machine directory on the host; on Proxmox, `banlieue-<machine uid>.iso` on an `iso`-content storage, attached for the machine's life; beside it a generated `network-config` for a static NIC, ADR-0114, which holds addresses, not secrets) → built image | High: guest compromise, lateral movement into provisioned fleet |
 | A-3 | VM image artifacts (ISO / raw disk) | `OSArtifact` PVC, then a vSphere datastore under `banlieue-images/`; on Cloud Hypervisor, the operator's **OCI registry** (a single-layer artifact, addressed by digest) and then each storage class's image cache on the host (`<storage class>/images/sha256-<hex>.raw`, `0750 banlieue`), or a file an admin placed there (ADR-0064); and, for a vSphere `Template` source, the administrator's own template in `<rootFolder>/<failure-domain>`, which banlieue only reads and clones, never writes or destroys (ADR-0104) | **Critical** — a tampered image compromises every VM built from it |
 | A-4 | Integrity of the control plane's own decisions | `Provider`, `ProviderClass`, `VMImage`, `VMClass` CRs | High — a forged `Provider` redirects credentials; a forged `VMImage` redirects the fleet's boot media; a forged or edited `VMClass` also chooses **which segments a VM joins**, since a VM gets one NIC per interface its class declares (ADR-0111) |
 | A-5 | Released binaries, container images (`banlieue`, and `banlieue-prelay`, which the privileged pre-lay Job runs, ADR-0113) and install manifests (`install.yaml`, clusterctl components; both pin the image by digest, ADR-0103) | GHCR, GitHub Releases | **Critical**: downstream supply-chain compromise |
@@ -777,6 +786,7 @@ relationship to the host.
 | Ref-swapping an existing VM onto another class/image | T | `banlieue-virtualmachine-immutable-refs`, `banlieue-provider-immutable-class` VAPs |
 | Resource-exhaustion via absurd specs (`numCpus`, disk counts) | D | schemars `range`/`length`/`maxItems` constraints on `VMClass`, `VSphereMachine` and `ProxmoxMachine` (`cores`, `memoryMiB`, `dataDisks` ≤ 30, `nics` ≤ 16); cross-field rules (a seed needs `isoStorage`, unique NIC and disk names, VLAN 1–4094) in `ProxmoxMachineSpec::validate`, called by the controller when it builds the machine — `crates/banlieue-api/src/infrastructure/proxmox_machine.rs` |
 | A `VirtualMachine` names user-data its author cannot read (confused deputy) | E, I | `banlieue-virtualmachine-userdata-authorization` VAP (ADR-0042) uses the CEL `authorizer`: the creating principal must itself be able to `get` the Secret / ConfigMap named by `spec.userData`, in the `VirtualMachine`'s own namespace — `deploy/admission/virtualmachine-userdata-authorization.yaml` |
+| A tenant's static-address strings (address, gateway, nameservers, domain) add keys to a guest's NoCloud `network-config` (ADR-0114) | T | The one renderer, `banlieue_provider_sdk::cloudinit::network_config` (`crates/banlieue-provider-sdk/src/cloudinit/network.rs`), single-quotes every value and flattens line breaks, so a value stays one scalar (`quotes_in_values_cannot_break_the_document`). The author gains nothing new: the same principal already controls the guest's user-data, which the seed runs as root |
 | Rendered user-data is readable from `VSphereMachine.spec` / `LibvirtMachine.spec` | I | **No code control — this is the accepted reflection of ADR-0025.** See §7.1 and §8 |
 | **Two claims bind the same warm member**, so one VM is handed to two subjects | I, E | The bind is a JSON merge patch carrying the member's `resourceVersion`, so a member written since the snapshot is rejected `409` and the loser re-picks — `crates/banlieue-controller/src/reconciler/claim.rs`. A member already carrying `banlieue.io/claim` reads as `MemberPhase::Claimed` (`reconciler/pool.rs::member_view`) and `pick_member` filters to `Ready` only (`reconciler/claim_plan.rs`) |
 | **One claim binds two warm members**, so one subject drains the pool's warm capacity and holds a sandbox nobody tracks | D, E | Before picking, the reconciler looks in the fresh member list for a member already labelled for this claim and finishes that bind instead — `reconciler/claim.rs::pick`, `reconciler/claim_plan.rs::member_bound_to`. Found live on 2026-09-28 (a reconcile from a stale cached claim); regression test `tests/live_claim.rs::a_stale_copy_of_a_bound_claim_does_not_bind_a_second_member` against a real API server |

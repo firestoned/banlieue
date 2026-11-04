@@ -86,7 +86,9 @@ pub struct Observed {
 /// Advance the machine one step toward `desired`.
 ///
 /// `hostname` is the guest's `local-hostname` in its seed; `user_data` the
-/// already-resolved payload (ADR-0025, ADR-0038), `None` for no seed.
+/// already-resolved payload (ADR-0025, ADR-0038). The seed is written when
+/// the plan has one: user-data, a static NIC's `network-config` (ADR-0114),
+/// or both.
 ///
 /// # Errors
 /// An [`Error`] from the first step that failed. Nothing is retried here;
@@ -105,9 +107,14 @@ pub async fn converge(
     host.prepare_dirs(plan).await?;
     host.ensure_os_disk(plan).await?;
     host.ensure_install_media(plan).await?;
-    if let Some(ud) = user_data {
-        let iso = build_seed_iso(hostname, &plan.uid, Some(ud))
-            .map_err(|e| Error::Io(std::io::Error::other(e.to_string())))?;
+    if plan.needs_seed() {
+        let iso = build_seed_iso(
+            hostname,
+            &plan.uid,
+            user_data,
+            plan.network_config.as_deref(),
+        )
+        .map_err(|e| Error::Io(std::io::Error::other(e.to_string())))?;
         host.write_seed(plan, iso).await?;
     }
     host.ensure_taps(plan).await?;
