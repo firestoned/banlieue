@@ -1,5 +1,43 @@
 # Changelog
 
+## [2026-11-05 01:00] - Every NoCloud seed carries user-data; static VMs without userData stayed on DHCP (ADR-0054 amended)
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `crates/banlieue-provider-sdk/src/cloudinit/mod.rs`: `seed_files` always
+  writes `user-data`, an empty `#cloud-config` (`EMPTY_USER_DATA`) when the
+  machine sets none. cloud-init accepts a NoCloud seed only with both
+  `meta-data` and `user-data`, and ignored a seed without `user-data`
+  entirely, hostname and `network-config` included.
+
+### Why
+Found on the v0.4.12 rollout smoke test on core: a VM with a static
+`networkOverrides` entry and no `userData` got a derived MAC and a correct
+`network-config` (both checked on the host), yet came up on DHCP. Its
+console: `DataSourceNoCloud.py[WARNING]: device /dev/sr0 with label=cidata
+not a valid seed.` Every libvirt VM created without `userData` since
+ADR-0054 had had its seed ignored the same way; the live tests always set
+user-data, so none noticed.
+
+### Changed
+- `seed_tests.rs`: the test that asserted "no user-data, no file" now asserts
+  the opposite.
+- `live_cloudinit.rs`: `a_seed_without_user_data_is_still_read` (the
+  hostname-in-lease test with no user-data); the existing test shares its
+  body. Green on a real host (22 s).
+- ADR-0054 amended (*every seed has user-data*); ADR-0114 Consequences;
+  guides: cloud-init on libvirt, libvirt provider; threat model header (no
+  row change).
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (provider images, Cloud Hypervisor host binary)
+- [ ] Config change only
+- [ ] Documentation only
+- New machines only: an existing machine keeps its seed. A static VM created
+  on v0.4.12 without `userData` must be recreated to get its address.
+
 ## [2026-11-04 19:00] - Rebuild an artifact whose node-local volume was lost (ADR-0115)
 
 **Author:** Erick Bourgeois
@@ -23,6 +61,7 @@ After every worker was rebuilt, six `OSArtifact`s stayed `Ready` with their ISOs
 - [x] Requires cluster rollout (apply the imagebuilder ClusterRole, then the new imagebuilder image)
 - [ ] Config change only
 - [ ] Documentation only
+
 ## [2026-11-04 23:00] - Kairos static addressing verified live (ADR-0114 Decision 4)
 
 **Author:** Erick Bourgeois

@@ -177,6 +177,23 @@ fn spec(domain_name: &str, pool: &str, source_volume: &str) -> LibvirtMachineSpe
 #[tokio::test]
 #[ignore = "boots a real guest; set LIBVIRT_HOST, LIBVIRT_TLS_DIR, LIBVIRT_SOURCE_VOLUME"]
 async fn a_guest_consumes_the_cloud_init_seed() {
+    hostname_lease_case(Some("#cloud-config\n".to_string())).await;
+}
+
+/// A VM with no `userData` must still have its seed read. cloud-init
+/// rejects a NoCloud seed with no `user-data` file and ignores all of it;
+/// found on the v0.4.12 rollout, where a static VM without `userData` stayed
+/// on DHCP. The seed now always carries one, so the hostname still arrives.
+#[tokio::test]
+#[ignore = "boots a real guest; set LIBVIRT_HOST, LIBVIRT_TLS_DIR, LIBVIRT_SOURCE_VOLUME"]
+async fn a_seed_without_user_data_is_still_read() {
+    hostname_lease_case(None).await;
+}
+
+/// Boot a guest whose seed carries `user_data` and wait for a DHCP lease
+/// announcing the domain name, which reaches the guest only through the
+/// seed's `meta-data`.
+async fn hostname_lease_case(user_data: Option<String>) {
     let Some((host, dir, pool, source_volume)) = settings() else {
         panic!("set LIBVIRT_HOST, LIBVIRT_TLS_DIR and LIBVIRT_SOURCE_VOLUME");
     };
@@ -216,7 +233,8 @@ async fn a_guest_consumes_the_cloud_init_seed() {
             .expect("clock")
             .as_secs()
     );
-    let spec = spec(&domain_name, &pool, &source_volume);
+    let mut spec = spec(&domain_name, &pool, &source_volume);
+    spec.user_data = user_data;
     eprintln!("booting {domain_name} from {source_volume}");
 
     let outcome = converge(&mut client, &spec, false, false).await;

@@ -20,6 +20,10 @@ pub mod network;
 pub use iso9660::{IsoError, IsoFile, build_iso9660};
 pub use network::{SeedNic, any_static, derive_mac, network_config};
 
+/// The `user-data` a seed carries when the machine sets none: an empty
+/// cloud-config, which changes nothing in the guest.
+pub const EMPTY_USER_DATA: &str = "#cloud-config\n";
+
 /// Name of the seed file carrying static addressing (ADR-0114).
 pub const NETWORK_CONFIG_FILE: &str = "network-config";
 
@@ -29,8 +33,12 @@ pub const CIDATA_LABEL: &str = "CIDATA";
 
 /// The files a NoCloud seed carries, for `domain_name` / `domain_uuid`.
 ///
-/// `meta-data` is always present — cloud-init requires it even when there
-/// is no user-data, and a seed missing it is ignored rather than rejected.
+/// `meta-data` and `user-data` are always present: cloud-init accepts a
+/// NoCloud seed only when it has both, and ignores a seed missing either,
+/// `network-config` and hostname included. With no user-data set, the seed
+/// carries [`EMPTY_USER_DATA`]. (Found live on cloud-init 25.1: a seed with
+/// `meta-data` and `network-config` but no `user-data` was rejected as "not
+/// a valid seed" and the guest stayed on DHCP.)
 /// `instance-id` comes from the domain UUID so that a rebuilt VM is a new
 /// instance by construction: cloud-init keys its "have I run for this
 /// instance already?" decision on that value, and a reused one makes a
@@ -47,10 +55,11 @@ pub fn seed_files(
     network_config: Option<&str>,
 ) -> Vec<IsoFile> {
     let meta = format!("instance-id: {domain_uuid}\nlocal-hostname: {domain_name}\n");
-    let mut files = vec![IsoFile::new("meta-data", meta.into_bytes())];
-    if let Some(ud) = user_data {
-        files.push(IsoFile::new("user-data", ud.as_bytes().to_vec()));
-    }
+    let ud = user_data.unwrap_or(EMPTY_USER_DATA);
+    let mut files = vec![
+        IsoFile::new("meta-data", meta.into_bytes()),
+        IsoFile::new("user-data", ud.as_bytes().to_vec()),
+    ];
     if let Some(nc) = network_config {
         files.push(IsoFile::new(NETWORK_CONFIG_FILE, nc.as_bytes().to_vec()));
     }

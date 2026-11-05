@@ -8,8 +8,8 @@ mod tests {
 
     const UUID: &str = "0f3c9a1e-0000-4000-8000-000000000001";
 
-    /// cloud-init requires `meta-data` even when there is no user-data, and
-    /// a seed without it is silently ignored rather than rejected.
+    /// cloud-init requires `meta-data` (and `user-data`) in every seed, and
+    /// a seed without either is silently ignored rather than rejected.
     #[test]
     fn meta_data_is_always_present() {
         let files = seed_files("vm-01", UUID, None, None);
@@ -54,13 +54,21 @@ mod tests {
         assert_eq!(ud.data, payload.as_bytes());
     }
 
-    /// No user-data is a legitimate state — the guest still wants its
-    /// hostname and instance-id — so the seed is built with meta-data alone
-    /// rather than skipped.
+    /// No user-data is a legitimate state (the guest still wants its
+    /// hostname, instance-id and any `network-config`), but cloud-init
+    /// rejects a NoCloud seed with no `user-data` file and then ignores all
+    /// of it. Found live on a v0.4.12 rollout: a static VM with no
+    /// `userData` logged "not a valid seed" and stayed on DHCP. The seed
+    /// therefore always carries one, an empty cloud-config when none is set.
     #[test]
-    fn a_seed_without_user_data_still_builds() {
-        let files = seed_files("vm-01", UUID, None, None);
-        assert!(!files.iter().any(|f| f.name == "user-data"));
+    fn a_seed_without_user_data_still_carries_an_empty_cloud_config() {
+        let files = seed_files("vm-01", UUID, None, Some("version: 2\n"));
+        let ud = files
+            .iter()
+            .find(|f| f.name == "user-data")
+            .expect("cloud-init needs a user-data file in every seed");
+        assert_eq!(ud.data, EMPTY_USER_DATA.as_bytes());
+        assert!(files.iter().any(|f| f.name == "network-config"));
         assert!(build_seed_iso("vm-01", UUID, None, None).is_ok());
     }
 
