@@ -38,6 +38,32 @@ user-data, so none noticed.
 - New machines only: an existing machine keeps its seed. A static VM created
   on v0.4.12 without `userData` must be recreated to get its address.
 
+## [2026-11-04 21:00] - vSphere provider decides from a live read, and recovers a lost vmRef by the marker (ADR-0101 amended)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0101-vspheremachine-ownership-marker-and-adoption.md`: amendment 2026-11-04, Decisions 6 and 7. A pass reads the `VSphereMachine` live and decides from that; a recorded `vmRef` whose VM is gone is recovered by the ownership marker.
+- `crates/banlieue-provider-vsphere/src/reconciler/vspheremachine.rs`: `MachineSource`, `ApiMachineSource`, `LiveBase`, `live_base`, `Route`, `route`, `OwnClone`, `find_own_clone`, `status_adopting`.
+- `crates/banlieue-provider-vsphere/src/reconciler/vspheremachine_live_tests.rs`: 17 tests, including the regression for the incident (`a_second_pass_from_a_stale_cache_does_not_destroy_the_vm_the_first_pass_built`, `a_pass_builds_on_the_live_status_not_the_stale_cached_one`), checked by mutation: both fail when `live_base` returns the cached object.
+- `crates/banlieue-provider-vsphere/src/client/fake.rs`: `FakeStep::FindVmsNamed`, so a failed ownership lookup can be injected.
+- `docs/src/guides/vsphere-provider.md`: troubleshooting for `reason=BackendMissing`, including not clearing `status.vmRef` by hand.
+
+### Changed
+- `reconcile` (vSphere `VSphereMachine`): after the `serves` check it reads the machine from the API server (an uncached `GET`) and uses that object for the deletion branch, the route and the base of every status write. The cached object only decides when a pass runs. One extra `GET` per pass.
+- `refresh_power_state`: on `ManagedObjectNotFound` for the recorded VM it looks for exactly one VM of the machine's name, in its folder, carrying the machine's UID, and adopts it; none, several or a failed lookup report `BackendMissing` as before.
+- `docs/architecture/calm/architecture.json`: `vm-ownership-marker` control description. `make calm-validate` passes; no structure change.
+- `docs/src/security/threat-model.md`: full pass; TB-4 vSphere ownership (intro and two rows) and the §8 marker risk. No new component, boundary, identity or RBAC grant (the provider's ClusterRole already grants `get` on `vspheremachines`, checked against the live cluster), so the §5 diagram stands. Stamp ADR range unchanged (ADR-0101 is amended, not new); the header records the amendment.
+
+### Why
+Rolling `openbao01`..`03` onto a new image left each VM `Ready=False` with `BackendMissing` while the guests ran. A pass that started 13 ms after the previous one was handed a cache snapshot older than that pass's own status write, took its healthy marked VM for "a clone from an interrupted pass", destroyed it and cloned again; the next pass then re-applied a stale status over the new `vmRef`. It happened on all four OpenBao creations in the session; the spire servers, on the same provider, won the same race.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (new `banlieue-provider-vsphere` image; nothing in RBAC or CRDs changes)
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-11-04 19:00] - Rebuild an artifact whose node-local volume was lost (ADR-0115)
 
 **Author:** Erick Bourgeois

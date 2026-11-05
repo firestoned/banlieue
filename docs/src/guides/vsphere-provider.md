@@ -633,6 +633,28 @@ A clone that **does** carry this machine's UID is never a conflict: it is
 left over from a pass that stopped between the clone and its status write,
 and the provider destroys it and clones again, or destroys it on deletion.
 
+`VSphereMachine` not `Ready` with `reason=BackendMissing` ("backend VM
+`vm-…` no longer exists in vCenter"): the VM in `status.vmRef` is gone. The
+provider first looks for a VM of the machine's name, in its folder, carrying
+**this machine's** UID in `banlieue.machine.uid` (ADR-0101, amended
+2026-11-04). If there is exactly one it **adopts** it: `status.vmRef` is
+rewritten to that VM and the machine recovers on the next pass, so a machine
+left in this state by an older provider repairs itself once the fixed
+provider runs. Nothing is recreated and the guest is not touched.
+
+If it stays `BackendMissing`, the lookup found nothing to adopt:
+
+- The VM really was deleted in vCenter. Delete the `VirtualMachine` and
+  recreate it.
+- The message says several VMs carry the marker. They cannot all be this
+  machine's, so none is adopted; remove the extras in vCenter.
+- The provider log says it could not look for the machine's own clone (a
+  vCenter fault); it adopts nothing then, and retries on the next pass.
+
+Do **not** clear `status.vmRef` by hand to force a re-clone: a pass with no
+`vmRef` destroys a VM carrying the machine's marker, which here would be the
+live one.
+
 ```sh
 kubectl -n banlieue-system logs deploy/banlieue-provider-vsphere
 kubectl -n banlieue-system logs deploy/banlieue-controller

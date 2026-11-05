@@ -592,6 +592,175 @@ pub async fn finalize_unrecorded(
     Ok(())
 }
 
+/// Where a pass reads the `VSphereMachine` it decides from (ADR-0101,
+/// amendment 2026-11-04, Decision 6).
+///
+/// A trait so the decision logic is testable with a source whose "API
+/// server" the test controls independently of the object the controller's
+/// cache handed in, which is the gap the incident lived in.
+#[async_trait::async_trait]
+pub trait MachineSource: Send + Sync {
+    /// The machine as the API server holds it now, `None` if it is gone.
+    ///
+    /// # Errors
+    /// [`Error::Kube`] if the read fails.
+    async fn read(&self, namespace: &str, name: &str) -> Result<Option<VSphereMachine>>;
+}
+
+/// [`MachineSource`] backed by the API server: a plain `GET`, which is served
+/// from the API server's storage and not from this process's watch cache.
+pub struct ApiMachineSource {
+    client: kube::Client,
+}
+
+impl ApiMachineSource {
+    /// A source reading through `client`.
+    #[must_use]
+    pub fn new(client: kube::Client) -> Self {
+        Self { client }
+    }
+}
+
+#[async_trait::async_trait]
+impl MachineSource for ApiMachineSource {
+    async fn read(&self, namespace: &str, name: &str) -> Result<Option<VSphereMachine>> {
+        let api: Api<VSphereMachine> = Api::namespaced(self.client.clone(), namespace);
+        Ok(api.get_opt(name).await?)
+    }
+}
+
+/// The object a pass is to act on, after the live read.
+#[derive(Debug)]
+pub enum LiveBase {
+    /// The machine as the API server holds it. Everything the pass decides
+    /// and every status it writes is built from this, never from the cached
+    /// object that triggered the pass.
+    Use(Box<VSphereMachine>),
+    /// The machine no longer exists, or exists under a different UID (deleted
+    /// and recreated since the event). Nothing to do: the replacement has its
+    /// own event.
+    Gone,
+}
+
+/// Read the machine live and decide whether the pass still has work (ADR-0101
+/// amendment, Decision 6).
+///
+/// The controller hands a pass the *cached* object, and a pass that starts
+/// right after the previous one can be handed one that does not yet contain
+/// that pass's own write. Reading "no `vmRef`" from such an object made the
+/// provider destroy the VM it had just built, and re-applying its status
+/// regressed `vmRef` to a VM that no longer existed. `cached` only says
+/// *which* machine to look at.
+///
+/// # Arguments
+/// * `source` - where to read the live object
+/// * `cached` - the object the controller handed to this pass
+///
+/// # Errors
+/// [`Error::Missing`] if `cached` has no namespace; whatever `source` returns
+/// if the read fails (the pass is retried, nothing is acted on).
+pub async fn live_base(source: &dyn MachineSource, cached: &VSphereMachine) -> Result<LiveBase> {
+    let namespace = cached.namespace().ok_or(Error::Missing("namespace"))?;
+    let Some(live) = source.read(&namespace, &cached.name_any()).await? else {
+        return Ok(LiveBase::Gone);
+    };
+    if live.metadata.uid != cached.metadata.uid {
+        return Ok(LiveBase::Gone);
+    }
+    Ok(LiveBase::Use(Box::new(live)))
+}
+
+/// What a pass does with the live machine.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Route {
+    /// The machine is provisioned: observe its VM, never clone.
+    Observe,
+    /// Run the create path. `existing_vm_ref` is the recorded moref, handed
+    /// to `ensure_vm`, which returns it untouched instead of cloning.
+    Create {
+        /// `status.vmRef`, if recorded.
+        existing_vm_ref: Option<String>,
+    },
+}
+
+/// Route a pass on the live machine's status. Pure.
+#[must_use]
+pub fn route(machine: &VSphereMachine) -> Route {
+    let status = machine.status.as_ref();
+    if status.is_some_and(|s| s.initialization.provisioned == Some(true)) {
+        return Route::Observe;
+    }
+    Route::Create {
+        existing_vm_ref: status.and_then(|s| s.vm_ref.clone()),
+    }
+}
+
+/// What the marker lookup found for a machine whose recorded VM is gone
+/// (ADR-0101 amendment, Decision 7).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OwnClone {
+    /// Exactly one VM of the machine's name in its folder carries its UID:
+    /// this is the machine's VM.
+    Adopt(String),
+    /// No such VM: the recorded one is really gone.
+    NotFound,
+    /// More than one marked VM. They cannot all be this machine's, so none is
+    /// chosen.
+    Ambiguous(Vec<String>),
+}
+
+/// Find the VM that carries this machine's marker, in the machine's own
+/// folder and under its own name (the lookup of Decision 3, read-only).
+///
+/// Ownership is the exact `banlieue.machine.uid` match and nothing else
+/// (Decisions 1 and 2): an unmarked or foreign-marked VM of the same name is
+/// never returned.
+///
+/// # Arguments
+/// * `client` - vCenter client
+/// * `spec` - the machine's spec (datacenter and folder)
+/// * `machine` - the machine's name and UID
+///
+/// # Errors
+/// [`Error::Vsphere`] if vCenter cannot be read. A failure is an error, never
+/// [`OwnClone::NotFound`]: the caller must not conclude anything from it.
+pub async fn find_own_clone(
+    client: &dyn VSphereClient,
+    spec: &VSphereMachineSpec,
+    machine: &MachineRef<'_>,
+) -> Result<OwnClone> {
+    let Some(dc) = client
+        .list_datacenters()
+        .await?
+        .into_iter()
+        .find(|d| d.name == spec.datacenter)
+    else {
+        return Ok(OwnClone::NotFound);
+    };
+    let ours: Vec<String> = client
+        .find_vms_named(&dc.moref, spec.folder.as_deref(), machine.name)
+        .await?
+        .into_iter()
+        .filter(|vm| vm.machine_uid.as_deref() == Some(machine.uid))
+        .map(|vm| vm.moref)
+        .collect();
+    Ok(match ours.as_slice() {
+        [] => OwnClone::NotFound,
+        [only] => OwnClone::Adopt(only.clone()),
+        _ => OwnClone::Ambiguous(ours),
+    })
+}
+
+/// The status to apply when adopting `moref`: the current status with
+/// `vmRef` replaced and every other field kept, because the apply re-sends the
+/// whole status and SSA would retract anything left out (see
+/// [`status_with_observed_state`]). Pure.
+#[must_use]
+pub fn status_adopting(mut current: VSphereMachineStatus, moref: &str) -> VSphereMachineStatus {
+    current.vm_ref = Some(moref.to_string());
+    current
+}
+
 /// Top-level reconcile entrypoint registered with [`kube::runtime::Controller`].
 pub async fn reconcile(machine: Arc<VSphereMachine>, ctx: Arc<Context>) -> Result<Action> {
     let namespace = machine.namespace().ok_or(Error::Missing("namespace"))?;
@@ -618,6 +787,23 @@ pub async fn reconcile(machine: Arc<VSphereMachine>, ctx: Arc<Context>) -> Resul
     }
     info!("reconciling VSphereMachine");
 
+    // ADR-0101 amendment 2026-11-04, Decision 6: decide from the object as
+    // the API server holds it now, not from the cached one that triggered this
+    // pass. A pass that starts right after the previous one can be handed a
+    // cache snapshot older than that pass's own status write; "no vmRef" read
+    // from it made the provider destroy the VM it had just built, and a
+    // status re-applied from it put a stale vmRef back. From here on `machine`
+    // is the live object: the deletion branch, the route, and the base of
+    // every status write all use it.
+    let machine = match live_base(&ApiMachineSource::new(ctx.client.clone()), &machine).await? {
+        LiveBase::Use(live) => Arc::new(*live),
+        LiveBase::Gone => {
+            debug!("VSphereMachine is gone or was replaced since the event; nothing to do");
+            return Ok(Action::await_change());
+        }
+    };
+    let generation = machine.metadata.generation.unwrap_or(0);
+
     let api: Api<VSphereMachine> = Api::namespaced(ctx.client.clone(), &namespace);
 
     // ADR-0026: deletion takes priority over every other branch below,
@@ -628,10 +814,7 @@ pub async fn reconcile(machine: Arc<VSphereMachine>, ctx: Arc<Context>) -> Resul
 
     ensure_finalizer(&api, machine.as_ref(), VSPHERE_MACHINE_FINALIZER).await?;
 
-    let already_provisioned = machine
-        .status
-        .as_ref()
-        .is_some_and(|s| s.initialization.provisioned == Some(true));
+    let step = route(&machine);
 
     // The WHOLE current status, not just its conditions: a failure report
     // re-applies every field, or SSA retracts the ones it omits.
@@ -734,22 +917,25 @@ pub async fn reconcile(machine: Arc<VSphereMachine>, ctx: Arc<Context>) -> Resul
     // the parent VirtualMachine's own Power printcolumn) reflect a VM
     // manually powered off/suspended out-of-band in vCenter, rather than
     // staying frozen at whatever was true at creation forever.
-    if already_provisioned {
-        return refresh_power_state(
-            &ctx,
-            &namespace,
-            &name,
-            generation,
-            &machine,
-            client.as_ref(),
-        )
-        .await;
-    }
+    let existing_vm_ref = match step {
+        Route::Observe => {
+            return refresh_power_state(
+                &ctx,
+                &namespace,
+                &name,
+                generation,
+                &machine,
+                client.as_ref(),
+            )
+            .await;
+        }
+        Route::Create { existing_vm_ref } => existing_vm_ref,
+    };
+    let existing_vm_ref = existing_vm_ref.as_deref();
 
     // ADR-0025: spec.userData is already-resolved, already-rendered content
     // by the time it reaches here — banlieue-controller reads and renders
     // the Secret; the provider never touches a Secret for this.
-    let existing_vm_ref = machine.status.as_ref().and_then(|s| s.vm_ref.as_deref());
 
     let uid = machine
         .metadata
@@ -1240,12 +1426,42 @@ async fn refresh_power_state(
         }
         Err(e) if is_backend_missing_error(&e) => {
             warn!(vm_ref, error = %e, "backend VM no longer exists — reporting BackendMissing");
-            let next = status_reporting_failure(
-                current,
-                reasons::BACKEND_MISSING,
-                format!("backend VM {vm_ref:?} no longer exists in vCenter: {e}"),
-                generation,
-            );
+            // ADR-0101 amendment 2026-11-04, Decision 7: before reporting the
+            // VM gone, look for the one that carries this machine's marker. A
+            // recorded vmRef can name a VM that was replaced (the incident
+            // behind the amendment), and the marker, not the name, says which
+            // VM is ours. Exactly one is adopted; none, several, or a failed
+            // lookup report BackendMissing as before.
+            let uid = machine
+                .metadata
+                .uid
+                .as_deref()
+                .ok_or(Error::Missing("VSphereMachine.metadata.uid"))?;
+            let me = MachineRef { name, uid };
+            let mut message = format!("backend VM {vm_ref:?} no longer exists in vCenter: {e}");
+            match find_own_clone(client, &machine.spec, &me).await {
+                Ok(OwnClone::Adopt(moref)) if moref != vm_ref => {
+                    warn!(recorded = %vm_ref, adopted = %moref, "recorded VM is gone; adopting this machine's own marked clone");
+                    patch_machine_status(ctx, namespace, name, status_adopting(current, &moref))
+                        .await?;
+                    return Ok(requeue_default());
+                }
+                Ok(OwnClone::Ambiguous(morefs)) => {
+                    warn!(
+                        ?morefs,
+                        "several VMs carry this machine's marker; adopting none"
+                    );
+                    message = format!(
+                        "{message}; several VMs carry this machine's marker ({morefs:?}), so none was adopted"
+                    );
+                }
+                Ok(OwnClone::Adopt(_) | OwnClone::NotFound) => {}
+                Err(lookup) => {
+                    warn!(error = %lookup, "could not look for this machine's own clone; adopting none");
+                }
+            }
+            let next =
+                status_reporting_failure(current, reasons::BACKEND_MISSING, message, generation);
             patch_machine_status(ctx, namespace, name, next).await?;
             Ok(requeue_long())
         }
@@ -1550,3 +1766,7 @@ mod vspheremachine_ensure_tests;
 #[cfg(test)]
 #[path = "vspheremachine_finalize_tests.rs"]
 mod vspheremachine_finalize_tests;
+
+#[cfg(test)]
+#[path = "vspheremachine_live_tests.rs"]
+mod vspheremachine_live_tests;
