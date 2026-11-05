@@ -1,5 +1,6 @@
 # Changelog
 
+<<<<<<< Updated upstream
 ## [2026-11-05 06:00] - ADR-0108 accepted; ADR-0049 amended: SPIRE attestation, status.nonce retired
 
 **Author:** Erick Bourgeois
@@ -52,6 +53,37 @@ does not exist. ADR-0108 had waited only on these items.
 - [x] Requires cluster rollout (controller image)
 - [ ] Config change only
 - [ ] Documentation only
+=======
+## [2026-11-05 12:30] - Re-pin the pre-lay image's base: apt 3.0.4 (CVE-2026-109518)
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `Dockerfile.prelay`: `debian:13-slim` re-pinned from `sha256:f6b08b09…` to
+  `sha256:a72b4433…`, which carries `apt`/`libapt-pkg7.0` 3.0.4. The
+  pre-lay image's Grype gate (ADR-0113, *a Grype gate for the pre-lay
+  image*) failed on #142's run: CVE-2026-109518, High, fixed in apt 3.0.4,
+  in the **base image** (apt is not one of the packages the Dockerfile
+  installs), so a cache-free rebuild could not have cleared it.
+
+### Verified
+- `dpkg-query` in each base: the old pin has apt 3.0.3, the new 3.0.4.
+- Grype 0.118.0 against the new base, `--only-fixed --fail-on high`: no
+  vulnerabilities found, exit 0. CI rebuilds the image and gates it on the
+  pull request.
+
+### Why
+The gate worked as designed: Debian fixed a high in a package the image
+ships. A release waits for the gate, so v0.4.14 could not publish until the
+base moved.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+- The next release's `banlieue-prelay` image gets the new base.
+>>>>>>> Stashed changes
 
 ## [2026-11-05 01:00] - Every NoCloud seed carries user-data; static VMs without userData stayed on DHCP (ADR-0054 amended)
 
