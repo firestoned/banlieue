@@ -4,7 +4,11 @@
 - **Date:** 2026-09-27
 - **Proposed:** 2026-09-22
 - **Deciders:** Erick Bourgeois
-- **Amended:** 2026-09-27 (Decision 10: `Provider.spec.attestation.ekTrustBundle`)
+- **Amended:** 2026-09-27 (Decision 10: `Provider.spec.attestation.ekTrustBundle`);
+  2026-11-05 (Decision 3 by [ADR-0108](0108-sandbox-guest-software-is-consumer-image-content.md);
+  Decision 4 superseded by SPIRE TPM node attestation, `status.nonce`
+  retired; Decision 2's published fields are the EK certificate and the
+  trust anchors; see *Amendment: SPIRE attestation, no nonce*)
 - **Related:** Completes the delivery half of
   [ADR-0047](0047-virtualmachineclaim.md) Decision 9 (the claim carries no
   credential) and consumes
@@ -75,7 +79,9 @@ ADR builds on.
    subject credentials.
 
 3. **The agent's keypair and AK are generated during the per-VM install,
-   never shipped in an image.** With `installMode: Deferred` this is
+   never shipped in an image.** *Amended 2026-11-05 by ADR-0108: generated
+   on the member's first boot, onto a sealed partition, never in an image;
+   see the amendment.* With `installMode: Deferred` this is
    natural rather than a constraint: the install *is* per-VM, so anything it
    generates is per-VM.
 
@@ -85,7 +91,9 @@ ADR builds on.
    responsibility (ADR-0040 Decision 5); this ADR does not rescue it.
 
 4. **The handshake is quote-over-nonce, verified against the claim's EK
-   certificate.** The broker sends `{claim, nonce, JWT}`; the agent returns
+   certificate.** *Superseded 2026-11-05: the consumer attests the guest with
+   SPIRE's TPM node attestation instead, and `status.nonce` is retired; see
+   the amendment.* The broker sends `{claim, nonce, JWT}`; the agent returns
    a TPM quote over `status.nonce`; the broker checks it against the EK
    certificate published on the claim (ADR-0045).
 
@@ -192,3 +200,39 @@ ADR builds on.
 - Nothing here is provider-specific. The vTPM's uniqueness is guaranteed by
   different mechanisms on vSphere and libvirt, but the anchor it provides is
   the same and the handshake does not know which backend it is on.
+
+## Amendment: SPIRE attestation, no nonce (2026-11-05)
+
+The handshake this ADR left to the broker was built, in mediatore, and not
+as Decision 4 drew it. mediatore
+[ADR-0018](https://github.com/firestoned/mediatore/blob/main/docs/adr/0018-tpm-attestation-with-the-spiffe-plugin.md)
+attests each guest with SPIRE's TPM node attestation plugin: the guest's
+SPIRE agent proves possession of its vTPM's EK through the TPM's own
+credential-activation exchange, and the SPIRE server checks the EK
+certificate against the hypervisors' EK CAs. The subject's credential then
+travels over an mTLS channel authenticated by the resulting SVID. Nothing
+reads a broker-sent nonce.
+
+1. **Decision 3 is amended by
+   [ADR-0108](0108-sandbox-guest-software-is-consumer-image-content.md)
+   Decision 4.** "Generated during the per-VM install" becomes "generated on
+   the member's first boot, onto a sealed partition, never in an image". For
+   a `Deferred` image these are the same event; the `Immediate` +
+   `firstBootSealing` path gains the rule.
+2. **Decision 4 is superseded.** Replay resistance comes from SPIRE's
+   credential activation, which binds each attestation to a fresh challenge
+   the server issues; banlieue publishes nothing for it.
+3. **`VirtualMachineClaim.status.nonce` is retired.** The controller stops
+   minting it at bind. The field stays in the schema, documented as
+   deprecated and never set, so an existing claim's status and an older
+   client still parse; it is removed with the next API version. The public
+   `CLAIM_NONCE_BITS` and `CLAIM_NONCE_BYTES` constants in `banlieue-api`
+   are marked `#[deprecated]`, not removed, because the crate is published.
+4. **Decision 2's published fields become two:** the bound member's EK
+   certificate, mirrored onto the claim (ADR-0045), and the trust anchors
+   (`Provider.spec.attestation.ekTrustBundle`, Decision 10). Decision 2's
+   rule is unchanged: banlieue neither carries nor validates the credential.
+5. **Decisions 1, 5 to 10 stand.** Decision 10's anchors are what a SPIRE
+   server is configured with; Decision 8 (a failed attestation leaves the
+   sandbox unused and reaped) holds for an agent that never attests.
+

@@ -1,5 +1,58 @@
 # Changelog
 
+## [2026-11-05 06:00] - ADR-0108 accepted; ADR-0049 amended: SPIRE attestation, status.nonce retired
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `crates/banlieue-controller/src/reconciler/claim.rs`: a bind no longer
+  mints `status.nonce`. The bind status is built by a new pure function,
+  `bound_status` (member, `boundAt`, `expiresAt`); `new_nonce` is gone.
+  `getrandom` moves to the controller's dev-dependencies (only the live
+  tests' scratch names use it now).
+- `crates/banlieue-api/src/banlieue/virtualmachineclaim.rs`:
+  `VirtualMachineClaimStatus.nonce` documented as deprecated and never set
+  (kept so existing claims parse; removed with the next API version);
+  `CLAIM_NONCE_BITS` and `CLAIM_NONCE_BYTES` are `#[deprecated]` (the crate
+  is published, so not removed). The claim and EK-certificate docs no longer
+  describe a quote over the nonce. `deploy/crds/` and the API reference
+  regenerated.
+- ADR-0108 Accepted (every acceptance item met). ADR-0049 amended
+  (*SPIRE attestation, no nonce*): Decision 3 per ADR-0108, Decision 4
+  superseded by SPIRE's TPM node attestation (mediatore ADR-0018), the
+  published fields are the EK certificate and `ekTrustBundle`.
+- CALM: the claim and in-guest agent nodes, the broker-to-guest relationship
+  and the claim and attestation flows describe SPIRE attestation; the
+  diagrams regenerated (`docs/src/architecture/flows.md`).
+- Docs: the pools guide gains *Building a sandbox image* (ADR-0108
+  Decisions 2 and 3, and what breaking them costs); the claims guide, the
+  claim-flow concept (section 6 rewritten around what mediatore built), the
+  claim-authorization testing guide, example 20 and roadmap 17 drop or retire
+  the nonce.
+- Threat model: full pass, stamp 2026-11-05. The TB row on who receives the
+  subject's token names the consumer's SPIRE attestation and banlieue's
+  published anchors; A-6a, the EK-mismatch row, the `GuestReady` risk and the
+  broker risk drop "quote"; §8 gains the ADR-0108 residual (a key that is
+  not TPM-bound baked into a sandbox image).
+
+### Why
+mediatore built the attestation ADR-0049 left to the broker as SPIRE's TPM
+node attestation, whose credential-activation challenge (confirmed in the
+plugin's own documentation) is its own replay guard. Nothing read
+`status.nonce`; a minted value nobody verifies reads as a guarantee that
+does not exist. ADR-0108 had waited only on these items.
+
+### Tests
+- `claim_tests.rs`: `a_bind_publishes_the_member_and_its_deadline`,
+  `a_bind_mints_no_nonce` (replacing the nonce-generator tests).
+- `live_claim.rs`: asserts a bound claim carries no nonce.
+
+### Impact
+- [ ] Breaking change (the field stays; it is no longer set)
+- [x] Requires cluster rollout (controller image)
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-11-05 01:00] - Every NoCloud seed carries user-data; static VMs without userData stayed on DHCP (ADR-0054 amended)
 
 **Author:** Erick Bourgeois

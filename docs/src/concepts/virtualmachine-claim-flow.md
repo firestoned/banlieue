@@ -248,7 +248,7 @@ sequenceDiagram
         alt precondition holds
             API-->>CC: 200
             CC->>API: PATCH claim status
-            Note over CC,API: phase Bound, virtualMachineRef,<br/>a 128-bit random nonce, boundAt,<br/>expiresAt = boundAt + ttlSeconds
+            Note over CC,API: phase Bound, virtualMachineRef, boundAt,<br/>expiresAt = boundAt + ttlSeconds
             API-->>PC: watch event: member is now Claimed
             PC->>PC: Claimed members are invisible to sizing —<br/>they only count against maxReplicas
             PC->>API: CREATE replacement member
@@ -272,9 +272,10 @@ Three consequences of that shape:
   `banlieue.io/claim-subject-issuer` / `-id` annotations. That is the whole
   of banlieue's interest in `subject`: it records the attribution and reads
   it no further.
-- **The nonce is minted at bind**, is single-use, and is *not secret*. Its
-  only job is to stop an attestation quote captured from one sandbox being
-  replayed against another.
+- **No nonce is minted.** Until v0.4.13 a bind published a 128-bit
+  `status.nonce` for a handshake nobody built; it is deprecated and never
+  set (ADR-0049, amended 2026-11-05). The guest's attestation carries its
+  own challenge (section 6).
 
 ### Two consumers, one member
 
@@ -424,12 +425,14 @@ sequenceDiagram
 
 ## 6. Delivering the subject's credential
 
-!!! danger "Designed, not built — ADR-0049 is Proposed"
-    Nothing in this section ships today. It is here because it is the reason
-    `status.nonce` and `status.tpmEndorsementCertificates` exist, and because
-    "how does the JWT get into the VM?" is the first question the claim model
-    provokes. ADR-0049 also depends on ADR-0045 (EK certificates), which is
-    itself not landed.
+!!! note "Built outside banlieue"
+    This is the consumer's side: mediatore builds it ([ADR-0097](https://github.com/firestoned/banlieue/blob/main/docs/adr/0097-api-ends-at-virtualmachineclaim.md)).
+    banlieue's share is what it publishes: the subject fields, the bound
+    member's EK certificate (`status.tpmEndorsementCertificates`,
+    ADR-0045), and the trust anchors on the Provider
+    (`spec.attestation.ekTrustBundle`).
+    [ADR-0049](https://github.com/firestoned/banlieue/blob/main/docs/adr/0049-attestation-trust-anchors.md)
+    as amended 2026-11-05 records the contract.
 
 A claim deliberately carries no credential: a custom resource is readable by
 every reader of the namespace and lands in the audit log, so a token in it is
@@ -441,37 +444,43 @@ therefore has to arrive later, over a channel banlieue is not part of.
 sequenceDiagram
     autonumber
     actor Dev as Developer
-    participant BR as Broker<br/>not built
+    participant BR as Broker<br/>(mediatore)
     participant API as API server
-    participant AG as In-guest agent<br/>not built, own repo
+    participant SP as SPIRE server
+    participant AG as Guest agents<br/>(SPIRE agent + mediatore's)
     participant TPM as per-VM vTPM
-    participant IDP as Issuer JWKS
+
+    AG->>SP: TPM node attestation: EK certificate + AK
+    SP->>SP: EK certificate chains to a hypervisor EK CA?
+    SP->>AG: credential-activation challenge, sealed to the EK
+    AG->>TPM: ActivateCredential
+    TPM-->>AG: the secret (only this vTPM can recover it)
+    AG-->>SP: secret
+    SP-->>AG: SVID for this node
 
     Dev->>BR: asks for a sandbox, presenting a token
     BR->>API: CREATE claim, setting subject on their behalf
-    API-->>BR: claim bound, carrying virtualMachineRef,<br/>addresses, nonce, tpmEndorsementCertificates
+    API-->>BR: claim bound, carrying virtualMachineRef,<br/>addresses, tpmEndorsementCertificates
+    BR->>AG: mTLS, peer SVID bound to the claim's EK
+    BR->>AG: the subject's credential
 
-    BR->>AG: connect over mTLS, send {claim, nonce, JWT}
-    AG->>TPM: quote over status.nonce
-    TPM-->>AG: signed quote
-    AG-->>BR: quote
-    BR->>BR: verify quote against the EK certificate<br/>published on the claim (ADR-0045)
-
-    alt quote verifies
-        Note over AG: the agent now holds the JWT and checks<br/>iss == subject.issuer, the subject claim<br/>== subject.id, aud == its OWN configured<br/>audience, plus exp, nbf and the signature
-        AG->>IDP: fetch JWKS to verify the signature
-        IDP-->>AG: keys
+    alt attestation and binding hold
+        Note over AG: the agent checks iss == subject.issuer,<br/>the subject claim == subject.id,<br/>aud == its OWN configured audience,<br/>plus exp, nbf and the signature
         AG->>AG: start the workload
-    else quote fails
+    else no SVID, or the EK does not match the claim
         BR->>AG: nothing
-        Note over AG,TPM: no token, no workload. The claim's TTL<br/>reaps the VM as usual — there is no<br/>partial-trust mode
+        Note over AG,TPM: no token, no workload. The claim's TTL<br/>reaps the VM as usual: there is no<br/>partial-trust mode
     end
 ```
+
+The challenge is what makes this unreplayable: SPIRE issues it fresh, sealed
+to the vTPM's EK, so an answer captured from one sandbox proves nothing about
+another. That is why banlieue publishes no nonce.
 
 Three points that are decisions rather than mechanics:
 
 - **banlieue neither carries nor validates the token.** It records the
-  attribution, publishes the nonce, and mirrors the EK certificate.
+  attribution and mirrors the EK certificate.
   Verification belongs to the agent, the only party that can legitimately
   hold the credential — which is what keeps subject credentials out of the
   controller's compromise radius.

@@ -283,7 +283,7 @@ provider can realise (see [Repo reality](#repo-reality-at-8360e19)).
 | A5 | vTPM EK certificate in machine status | 0045 | ✅ landed 2026-09-23 (libvirt; vSphere code-only) — published on the infra CR, mirrored through `VirtualMachine` onto a bound claim. **The design in phase D below was wrong**: swtpm persists no host-side copy of the certificate, so on libvirt the guest exports it to `/run/banlieue/ek.pem` and banlieue reads it with ADR-0043's read-only path (never `guest-exec`). Subject CN is checked against `<domain-name>:<domain-uuid>`, and for a `tpmEnabled` machine publication **gates `GuestReady`**, the same ordering ADR-0044 uses. The *mechanism* is verified against a real host — certificate read out of NV `0x01c00002` of a live domain, CN confirmed as `<name>:<uuid>` — and `tests/live_ek.rs` exercises the shipped path. **Unblocks F** |
 | A3 | `tpmEnabled` requires `installMode: Deferred` | 0048 | ✅ landed 2026-09-23 — pure check in `banlieue-controller`, rejected before scheduling so no infra CR is created; `Manual` passes, and an image with **no `template`** is rejected too (a pre-built disk is a pre-laid one) |
 | B1 | `VirtualMachinePool` | 0046 | ✅ landed and validated e2e against a real libvirt host — fills, self-heals, rolls, cascades on delete. **Also validated live against a real vSphere-backed pool (2026-09-23)**: a 2-member `GuestReady`-gated `sandbox-pool` (`debian-dev-v0.4.0`, `Deferred`, `tpmEnabled`, `small-dev` class) went apply→`Warm=True` in **130.3s**, both members within 29ms of each other — ~9.6s clone+vTPM+power-on, ~120.7s guest boot/install/announce, bounded by the 30s `NotAnnounced` poll cadence (ADR-0043 Decision 8) then correctly switching to the 300s interval once `GuestReady`. This is the first live confirmation that a `VirtualMachinePool` set to `readiness: GuestReady` actually reaches `Warm` on vSphere, not just that the signal decodes |
-| B2 | `VirtualMachineClaim` | 0047 | ✅ landed — bind/hold/release, TTL expiry, finalizer, nonce; a pool is now consumable |
+| B2 | `VirtualMachineClaim` | 0047 | ✅ landed: bind/hold/release, TTL expiry, finalizer, nonce (retired 2026-11-05, ADR-0049 amended); a pool is now consumable |
 | C | In-guest agent (separate repo) | own repo | ➡️ moved to [mediatore](https://github.com/firestoned/mediatore) (`mediatore-guest`), with `AgentSandbox` (ADR-0097, mediatore ADR-0008, 2026-10-12) |
 | D | libvirt provider: `LibvirtMachine` reconciler | 07 + 0050 + 0054 | ✅ complete — CRD, domain XML, reconciler, NoCloud user-data; roadmap 07 closed |
 | E | Proxmox provider, same | amend 06 | ⛔ pool work not started. The provider itself now exists (roadmap 06, ADR-0074/0075, template clone only); the TPM-class create-from-ISO path, `GuestReady`, media detach and EK read below are all open |
@@ -604,7 +604,9 @@ deletion. There is no unbind and no "return to pool".
 - A bound member that vanishes makes the claim `Failed`, terminally. A claim
   is never silently rebound to a different VM.
 - `status.nonce`: 128 random bits, not secret, for the consumer's attestation
-  exchange to echo so quotes cannot be replayed across claims.
+  exchange to echo so quotes cannot be replayed across claims. *Retired
+  2026-11-05: never minted since v0.4.14 (ADR-0049, amended), because the
+  consumer attests with SPIRE's TPM node attestation instead.*
 - The claim carries `subject.issuer` + `subject.id` for audit. It never
   carries a token. `guestinfo` is readable by anyone with vCenter read access
   and by processes in the guest; credentials travel only over the phase C
@@ -654,8 +656,9 @@ recorded alongside it.
 > object above the claim is a mediatore CRD
 > ([ADR-0097](../../docs/adr/0097-api-ends-at-virtualmachineclaim.md),
 > mediatore ADR-0008). mediatore's roadmaps track it; the design notes below
-> are kept as written. mediatore plans to replace the nonce-and-quote
-> handshake in step 2 with SPIRE attestation (its roadmap 03).
+> are kept as written. mediatore replaced the nonce-and-quote handshake in
+> step 2 with SPIRE's TPM node attestation (mediatore ADR-0018), and banlieue
+> retired `status.nonce` to match (ADR-0049, amended 2026-11-05).
 
 Out of banlieue. Baked into the sandbox image via `vm-build` and one
 `cloudConfigs` layer. Starts only from the installed system.

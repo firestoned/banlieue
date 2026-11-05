@@ -3,43 +3,34 @@
 //! Unit tests for `claim.rs`.
 //!
 //! The reconcile path itself is exercised through `claim_plan.rs`, which
-//! holds every decision as a pure function. What is left here is the nonce
-//! generator — small, but the one piece whose failure mode is silent: a
-//! nonce that is short, non-random or repeated still looks like a nonce.
+//! holds every decision as a pure function. What is left here is the status a
+//! bind publishes.
 
 #[cfg(test)]
 mod tests {
     use super::super::*;
-    use banlieue_api::banlieue::CLAIM_NONCE_BITS;
-    use std::collections::HashSet;
 
-    /// 128 bits, hex-encoded, is 32 characters. A nonce that silently came
-    /// out shorter would still serialize, still round-trip, and still look
-    /// like a nonce to every reader.
-    #[test]
-    fn a_nonce_is_128_bits_of_hex() {
-        let nonce = new_nonce();
-        assert_eq!(nonce.len(), CLAIM_NONCE_BITS / 4);
-        assert!(
-            nonce.chars().all(|c| c.is_ascii_hexdigit()),
-            "expected lowercase hex, got {nonce}"
-        );
+    fn at(second: i64) -> Timestamp {
+        Timestamp::from_second(second).expect("valid timestamp")
     }
 
-    /// The property the nonce exists for. Deriving it from the claim UID or
-    /// the clock would pass every other test in this file while making a
-    /// replayed attestation quote accepted (ADR-0047 Decision 8).
+    /// A bind publishes the member, when it was bound and when it expires:
+    /// what a consumer reads to find its sandbox and its deadline.
     #[test]
-    fn nonces_do_not_repeat() {
-        const DRAWS: usize = 256;
-        let seen: HashSet<String> = (0..DRAWS).map(|_| new_nonce()).collect();
-        assert_eq!(seen.len(), DRAWS, "nonce generator repeated a value");
+    fn a_bind_publishes_the_member_and_its_deadline() {
+        let status = bound_status("sandbox-pool-x7k2p", at(1_800_000_000), at(1_800_003_600));
+        assert_eq!(status["virtualMachineRef"]["name"], "sandbox-pool-x7k2p");
+        assert!(status.get("boundAt").is_some(), "{status}");
+        assert!(status.get("expiresAt").is_some(), "{status}");
     }
 
-    /// A zero nonce is what a broken or absent RNG produces, and it would
-    /// be indistinguishable from a real one at a glance.
+    /// ADR-0049, amended 2026-11-05: the attestation is SPIRE's TPM node
+    /// attestation, which carries its own challenge, so a bind mints no
+    /// nonce. A nonce nobody verifies would read as a replay guarantee that
+    /// does not exist.
     #[test]
-    fn a_nonce_is_not_all_zeroes() {
-        assert!(new_nonce().chars().any(|c| c != '0'));
+    fn a_bind_mints_no_nonce() {
+        let status = bound_status("m", at(1_800_000_000), at(1_800_003_600));
+        assert!(status.get("nonce").is_none(), "{status}");
     }
 }

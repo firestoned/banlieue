@@ -52,7 +52,6 @@ status:
   addresses:
     - type: InternalIP
       address: 192.0.2.17
-  nonce: 7f3a91c2e45b8d06a1f4c9e2b7d05386
   boundAt: "2026-09-20T14:02:11Z"
   expiresAt: "2026-09-20T14:17:11Z"
 ```
@@ -79,24 +78,26 @@ interprets it.
     disclosed.
 
     Delivering the subject's token to the guest is the **consumer's** job,
-    over its own attested channel — using `status.nonce` to tie that session
-    to this claim.
+    over its own attested channel, anchored on the member's EK certificate
+    (`status.tpmEndorsementCertificates`).
 
-### What `status.nonce` is for
+### `status.nonce` is retired
 
-128 random bits, generated at bind time, and **not secret**. Its only job is
-to be unpredictable to a guest that has not been told it, so an attestation
-quote produced by this VM cannot be replayed against a different claim.
+Up to v0.4.13 a bind minted a 128-bit `status.nonce` for ADR-0049's
+quote-over-nonce handshake. That handshake was never used: the consumer
+(mediatore) attests each guest with SPIRE's TPM node attestation, whose
+credential-activation challenge is its own replay guard. Since v0.4.14 no
+nonce is minted; the field stays in the schema, deprecated, so older claims
+still parse, and goes with the next API version
+([ADR-0049](https://github.com/firestoned/banlieue/blob/main/docs/adr/0049-attestation-trust-anchors.md),
+amended 2026-11-05).
 
-It is drawn from the OS CSPRNG, never derived from the claim's UID, name or
-the clock — all three of which a guest could guess.
-
-### Verifying a quote: where the trust anchor comes from
+### Verifying the guest: where the trust anchor comes from
 
 A bound `tpmEnabled` member publishes its vTPM's endorsement-key certificate
 on the claim (`status.tpmEndorsementCertificates`,
 [ADR-0045](https://github.com/firestoned/banlieue/blob/main/docs/adr/0045-vtpm-endorsement-key-certificate.md)).
-That certificate is what a verifier checks a TPM quote against — but a
+That certificate is what a verifier checks the guest's attestation against, but a
 certificate is only as good as its issuer, and which issuers count is a
 per-backend decision the administrator makes explicitly on the **Provider**:
 
@@ -271,7 +272,8 @@ in ConfigMap `banlieue-claim-subject-policy`.
     **It does not verify the issuer.** The API server does not reveal which
     issuer minted the caller's token, so the allowlist only stops a claim
     naming an issuer your site does not use. Verifying the subject's *token*
-    is the in-guest agent's job (roadmap phase C), against `status.nonce`.
+    is the in-guest agent's job, after the guest has attested against the
+    member's EK certificate (ADR-0049).
 
     **A broker is trusted for attribution.** Anyone on the `brokers` list can
     attribute a sandbox to any identity, which is what brokering means.

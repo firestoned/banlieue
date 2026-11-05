@@ -27,6 +27,8 @@ pub use virtualmachine::{
     ResolvedResource, ScheduledPlacement, UserDataSpec, VirtualMachine, VirtualMachineSpec,
     VirtualMachineStatus,
 };
+// The nonce constants are deprecated but still re-exported (ADR-0049, amended).
+#[allow(deprecated)]
 pub use virtualmachineclaim::{
     ANNOTATION_SUBJECT_ID, ANNOTATION_SUBJECT_ISSUER, CLAIM_FINALIZER, CLAIM_NONCE_BITS,
     CLAIM_NONCE_BYTES, ClaimPhase, ClaimSubject, VirtualMachineClaim, VirtualMachineClaimSpec,

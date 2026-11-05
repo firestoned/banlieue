@@ -391,8 +391,8 @@ async fn binds_a_ready_member_and_publishes_everything_a_consumer_needs() {
             st.virtual_machine_ref.as_ref().map(|r| r.name.as_str()),
             Some("m1")
         );
-        let nonce = st.nonce.as_ref().expect("a nonce is minted at bind");
-        assert_eq!(nonce.len(), 32, "128 bits of hex");
+        // ADR-0049, amended 2026-11-05: no nonce is minted any more.
+        assert_eq!(st.nonce, None, "a bind must not mint the retired nonce");
         assert!(st.bound_at.is_some() && st.expires_at.is_some());
 
         let member = s.vms().get("m1").await.unwrap();

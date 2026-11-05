@@ -270,6 +270,40 @@ is recorded but not implemented; when it lands this field gains a `poolRef`
 alternative ([ADR-0053](https://github.com/firestoned/banlieue/blob/main/docs/adr/0053-ipam-claims-for-pool-members.md))
 and the inline list stays as the zero-dependency option.
 
+## Building a sandbox image
+
+A pool of `tpmEnabled` members cloned from one image is only as isolated as
+the image is generic. banlieue ships none of the software that runs in a
+sandbox (the in-guest agent, the SPIFFE agent, the forwarder: that is the
+consumer's image content), but the image has to obey two rules
+([ADR-0108](https://github.com/firestoned/banlieue/blob/main/docs/adr/0108-sandbox-guest-software-is-consumer-image-content.md),
+Decisions 2 and 3):
+
+1. **The image carries no per-VM identity.** No private key, no cached
+   identity document (SVID, certificate, token) and no per-VM identifier.
+   Public trust material is fine: a SPIFFE trust bundle or a CA certificate
+   is the same for every member by design.
+2. **Per-VM identity is made on the member's first boot, after first-boot
+   sealing, onto a sealed partition.** Keys and state that must survive a
+   reboot go to `COS_PERSISTENT` (or another partition listed in
+   `firstBootSealing.partitions`), never to `COS_OEM` or anything else that
+   stays plaintext ([ADR-0088](https://github.com/firestoned/banlieue/blob/main/docs/adr/0088-first-boot-sealing-for-immediate-images.md)).
+
+banlieue does not check either rule: it cannot tell a public certificate
+from a private key inside your layers, and a check that pretended to would
+only give false comfort. What happens if they are broken:
+
+- **A cloned TPM-bound key fails loudly.** It cannot attest against the
+  clone's own EK, so the member never becomes usable.
+- **A cloned key that is not TPM-bound fails silently.** Every member
+  presents the same key and nothing in banlieue notices. Bind each agent's
+  identity to the EK banlieue publishes (`status.tpmEndorsementCertificates`)
+  so your identity layer can.
+
+The image must also open no inbound path (no sshd, no listener):
+[ADR-0082](https://github.com/firestoned/banlieue/blob/main/docs/adr/0082-no-inbound-to-sandboxes.md).
+Verifying that is part of your image test.
+
 ## Reading a pool's status
 
 ```sh

@@ -369,9 +369,9 @@ mod tests {
     // ADR-0045 — the claim mirrors its member's attestation anchor
     // ------------------------------------------------------------------
 
-    /// Without this the claim carries a nonce a verifier cannot use: ADR-0049
-    /// checks a quote against the EK certificate, and one GET of the claim is
-    /// supposed to yield both.
+    /// The claim's attestation anchor: a consumer verifies the guest against
+    /// this EK certificate (ADR-0045, ADR-0049), and one GET of the claim is
+    /// supposed to yield it.
     #[test]
     fn a_bound_claim_mirrors_its_members_endorsement_certificate() {
         const PEM: &str = "-----BEGIN CERTIFICATE-----\nstub\n-----END CERTIFICATE-----";
