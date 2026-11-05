@@ -36,14 +36,18 @@ pub const ANNOTATION_SUBJECT_ISSUER: &str = "banlieue.io/claim-subject-issuer";
 /// only on a claim that may already have been garbage-collected.
 pub const ANNOTATION_SUBJECT_ID: &str = "banlieue.io/claim-subject-id";
 
-/// Bits of randomness in [`VirtualMachineClaimStatus::nonce`].
-///
-/// 128 is the usual floor for a value whose only job is to be unguessable
-/// within the lifetime of one claim; the nonce is not secret and is not a
-/// key, so nothing here needs more.
+/// Bits of randomness the retired [`VirtualMachineClaimStatus::nonce`] held.
+#[deprecated(
+    since = "0.4.14",
+    note = "status.nonce is no longer minted (ADR-0049, amended 2026-11-05); removed with the next API version"
+)]
 pub const CLAIM_NONCE_BITS: usize = 128;
-/// Byte length of the generated nonce.
-pub const CLAIM_NONCE_BYTES: usize = CLAIM_NONCE_BITS / 8;
+/// Byte length the retired nonce had.
+#[deprecated(
+    since = "0.4.14",
+    note = "status.nonce is no longer minted (ADR-0049, amended 2026-11-05); removed with the next API version"
+)]
+pub const CLAIM_NONCE_BYTES: usize = 128 / 8;
 
 #[derive(CustomResource, Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[kube(
@@ -85,7 +89,8 @@ pub const CLAIM_NONCE_BYTES: usize = CLAIM_NONCE_BITS / 8;
 /// is for so the binding is auditable in the API server's own audit log; it
 /// is opaque to banlieue, and a token must never be placed in it. Delivering
 /// the subject's token to the guest is the consumer's job, over its own
-/// attested channel, using `status.nonce` to tie that session to this claim.
+/// attested channel, anchored on the bound member's EK certificate
+/// (`status.tpmEndorsementCertificates`, ADR-0045, ADR-0049).
 pub struct VirtualMachineClaimSpec {
     /// The pool to take a member from. Same namespace as the claim.
     pub pool_ref: LocalObjectReference,
@@ -151,14 +156,17 @@ pub struct VirtualMachineClaimStatus {
     pub addresses: Vec<MachineAddress>,
     /// PEM vTPM endorsement key certificate(s) of the bound member, mirrored
     /// from the infra CR (ADR-0045). Lets a verifier check that an
-    /// attestation quote comes from the VM banlieue itself created for this
+    /// attestation comes from the VM banlieue itself created for this
     /// claim. Populated since ADR-0045, from the bound member's
     /// `VirtualMachine.status`, which mirrors its infrastructure CR. Empty
     /// for a member with no vTPM.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tpm_endorsement_certificates: Vec<String>,
-    /// Random, single-use, *not secret*. The consumer's attestation exchange
-    /// must echo it so a quote cannot be replayed across claims.
+    /// Deprecated, never set since v0.4.14. It was a per-claim value for
+    /// ADR-0049's quote-over-nonce handshake, which SPIRE's TPM node
+    /// attestation superseded (ADR-0049, amended 2026-11-05). Kept so an
+    /// existing claim's status still parses; removed with the next API
+    /// version.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nonce: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

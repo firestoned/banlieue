@@ -4,12 +4,13 @@ SPDX-License-Identifier: Apache-2.0
 -->
 # 0108: Sandbox guest software is consumer image content; a template carries no per-VM identity
 
-- **Status:** Proposed
-- **Date:** 2026-10-15
+- **Status:** Accepted
+- **Date:** 2026-11-05
+- **Proposed:** 2026-10-15
 - **Renumbered:** 2026-10-26, from 0100, which [ADR-0100](0100-publish-banlieue-api-to-crates-io.md) already held.
 - **Deciders:** Erick Bourgeois
-- **Amends:** [ADR-0049](0049-attestation-trust-anchors.md) Decision 3, on
-  acceptance (where the agent's keys are generated).
+- **Amends:** [ADR-0049](0049-attestation-trust-anchors.md) Decision 3
+  (where the agent's keys are generated); amended there 2026-11-05.
 - **Related:** [ADR-0088](0088-first-boot-sealing-for-immediate-images.md)
   (members become clones of one installed disk),
   [ADR-0097](0097-api-ends-at-virtualmachineclaim.md) (Decision 5, the
@@ -151,7 +152,10 @@ after attestation. ADR-0088's warning that per-VM user-data lands in
 plaintext on `COS_OEM` therefore does not reach subject credentials. It
 still applies to anything else an operator puts in `spec.userData`.
 
-**ADR-0049 Decision 4 is not settled here.** The consumer may attest through
+**ADR-0049 Decision 4 is not settled here.** *(Settled 2026-11-05 in
+ADR-0049's amendment: the consumer attests with SPIRE's TPM node
+attestation, Decision 4 is superseded and `status.nonce` is retired, so
+banlieue publishes the EK certificate and the trust anchors only.)* The consumer may attest through
 the SPIFFE agent's TPM node attestation instead of the broker's
 quote-over-nonce handshake. banlieue's contract would not change: it still
 publishes the EK certificate, the nonce and the trust anchors
@@ -171,3 +175,17 @@ No CRD, controller or provider change is needed. This ADR is accepted
 together with ADR-0088 or after it, and it has nothing to govern before
 then: until ADR-0088 is accepted, every `tpmEnabled` member runs its own
 install.
+
+## Accepted (2026-11-05)
+
+Every acceptance item is met:
+
+- ADR-0049 Decision 3 is amended, with an `Amended:` bullet pointing here
+  (and Decision 4 settled in the same amendment);
+- the pools guide states Decisions 2 and 3 (*Building a sandbox image*);
+- the threat model's pass covers the cloned non-TPM-key residual (§8,
+  beside the `Asserted` and `Manual` rows).
+
+ADR-0088, which this waited for, is Accepted (2026-10-26), and pools of
+first-boot sealing clones run on libvirt, vSphere and Cloud Hypervisor.
+

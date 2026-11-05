@@ -16,9 +16,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use banlieue_api::banlieue::{
-    ANNOTATION_SUBJECT_ID, ANNOTATION_SUBJECT_ISSUER, CLAIM_FINALIZER, CLAIM_NONCE_BYTES,
-    ClaimPhase, LABEL_CLAIM, LABEL_POOL, VirtualMachine, VirtualMachineClaim, VirtualMachinePool,
-    pool_condition_reasons, pool_condition_types,
+    ANNOTATION_SUBJECT_ID, ANNOTATION_SUBJECT_ISSUER, CLAIM_FINALIZER, ClaimPhase, LABEL_CLAIM,
+    LABEL_POOL, VirtualMachine, VirtualMachineClaim, VirtualMachinePool, pool_condition_reasons,
+    pool_condition_types,
 };
 use banlieue_provider_sdk::{
     finalizer::{ensure_finalizer, remove_finalizer},
@@ -32,7 +32,7 @@ use kube::{
     api::{Api, DeleteParams, ListParams, Patch, PatchParams},
     runtime::controller::Action,
 };
-use serde_json::json;
+use serde_json::{Value, json};
 use tracing::{info, warn};
 
 use super::claim_plan::{
@@ -291,12 +291,7 @@ async fn bind(
         pool_condition_types::BOUND,
         format!("bound to {member}"),
         generation,
-        json!({
-            "virtualMachineRef": { "name": member },
-            "nonce": new_nonce(),
-            "boundAt": Time(bound_at),
-            "expiresAt": Time(expires_at),
-        }),
+        bound_status(member, bound_at, expires_at),
     )
     .await?;
     info!(claim = %name, member = %member, ttl = claim.spec.ttl_seconds, "claim bound");
@@ -437,15 +432,19 @@ async fn patch_status(
     Ok(())
 }
 
-/// 128 random bits, hex-encoded.
+/// The status fields a bind publishes: the member, and when it was bound and
+/// expires.
 ///
-/// Deliberately *not* derived from the claim UID, its name or the clock:
-/// the whole point is that a guest which has not been told the nonce cannot
-/// predict it, so an attestation quote cannot be replayed across claims.
-fn new_nonce() -> String {
-    let mut bytes = [0u8; CLAIM_NONCE_BYTES];
-    getrandom::fill(&mut bytes).expect("OS RNG unavailable");
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+/// No `nonce`: ADR-0049's quote-over-nonce handshake was superseded by SPIRE's
+/// TPM node attestation, whose challenge is its own (ADR-0049, amended
+/// 2026-11-05), so the field is deprecated and never set.
+#[must_use]
+pub fn bound_status(member: &str, bound_at: Timestamp, expires_at: Timestamp) -> Value {
+    json!({
+        "virtualMachineRef": { "name": member },
+        "boundAt": Time(bound_at),
+        "expiresAt": Time(expires_at),
+    })
 }
 
 #[cfg(test)]

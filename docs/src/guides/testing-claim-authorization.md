@@ -343,7 +343,8 @@ than it is:
   reveal which issuer minted the caller's token, so no admission policy can
   check it. The allowlist only stops a claim naming an issuer your site does
   not use. Verifying the subject's *token* is the in-guest agent's job
-  (roadmap 17 phase C), against `status.nonce`.
+  (mediatore), after the guest has attested against the member's EK
+  certificate (ADR-0049).
 - **Whether a VM is involved depends on the route.** `make dev-oidc-try-claim`
   uses `--dry-run=server`, which exercises admission and stops there — the
   right scope for a cluster built by `up`, which has no `Provider`. On a

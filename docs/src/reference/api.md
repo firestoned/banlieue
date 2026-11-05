@@ -1298,7 +1298,8 @@ It is not a credential channel. `spec.subject` records *who* the member
 is for so the binding is auditable in the API server's own audit log; it
 is opaque to banlieue, and a token must never be placed in it. Delivering
 the subject's token to the guest is the consumer's job, over its own
-attested channel, using `status.nonce` to tie that session to this claim.
+attested channel, anchored on the bound member's EK certificate
+(`status.tpmEndorsementCertificates`, ADR-0045, ADR-0049).
 
 **Printer columns** (`kubectl get`):
 
@@ -1344,10 +1345,10 @@ the member as annotations, and never interpreted.
 | `boundAt` | string |  | Time is a wrapper around time.Time which supports correct marshaling to YAML and JSON. Wrappers are provided for many of the factory methods that the time package offers. |
 | `conditions` | object[] |  |  |
 | `expiresAt` | string |  | `bound_at + spec.ttlSeconds`. The member is deleted at this instant. |
-| `nonce` | string |  | Random, single-use, *not secret*. The consumer's attestation exchange must echo it so a quote cannot be replayed across claims. |
+| `nonce` | string |  | Deprecated, never set since v0.4.14. It was a per-claim value for ADR-0049's quote-over-nonce handshake, which SPIRE's TPM node attestation superseded (ADR-0049, amended 2026-11-05). Kept so an existing claim's status still parses; removed with the next API version. |
 | `observedGeneration` | integer |  |  |
 | `phase` | string |  | Where a claim is in its one-way lifecycle. Allowed: `Pending`, `Bound`, `Releasing`, `Failed`. |
-| `tpmEndorsementCertificates` | string[] |  | PEM vTPM endorsement key certificate(s) of the bound member, mirrored from the infra CR (ADR-0045). Lets a verifier check that an attestation quote comes from the VM banlieue itself created for this claim. Populated since ADR-0045, from the bound member's `VirtualMachine.status`, which mirrors its infrastructure CR. Empty for a member with no vTPM. |
+| `tpmEndorsementCertificates` | string[] |  | PEM vTPM endorsement key certificate(s) of the bound member, mirrored from the infra CR (ADR-0045). Lets a verifier check that an attestation comes from the VM banlieue itself created for this claim. Populated since ADR-0045, from the bound member's `VirtualMachine.status`, which mirrors its infrastructure CR. Empty for a member with no vTPM. |
 | `virtualMachineRef` | object |  | The bound member. Set once, at bind time, and never rewritten. |
 
 #### `.status.addresses[]`
