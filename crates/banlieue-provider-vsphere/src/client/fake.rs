@@ -60,6 +60,9 @@ pub enum FakeStep {
     DestroyVm,
     /// [`VSphereClient::eject_install_media`].
     EjectInstallMedia,
+    /// [`VSphereClient::find_vms_named`] (ADR-0101): the ownership lookup
+    /// itself faults, so a caller must not read that as "no VM found".
+    FindVmsNamed,
 }
 
 /// Synthetic inventory used by [`FakeClient`] tests. Build with [`Inventory::builder`].
@@ -701,6 +704,7 @@ impl VSphereClient for FakeClient {
         name: &str,
     ) -> Result<Vec<NamedVm>> {
         *self.named_lookups.lock().expect("fake client lock") += 1;
+        self.injected(FakeStep::FindVmsNamed, name)?;
         let folder = folder_key(folder);
         let mut found: Vec<NamedVm> = self
             .live
