@@ -1,5 +1,32 @@
 # Changelog
 
+## [2026-11-06 10:00] - cargo-deny: allow ar_archive_writer's Apache-2.0 WITH LLVM-exception, for that crate only
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `deny.toml`: a `[licenses]` `exceptions` entry allowing
+  `Apache-2.0 WITH LLVM-exception` for `ar_archive_writer` alone. The lock
+  refresh with the `serde-saphyr` 2.1 bump brought `psm` 0.1.32, whose build
+  script depends on it (kube-client -> jsonpath-rust -> pest ->
+  pest_stack_guard -> psm), and cargo-deny rejected the license on #144.
+
+### Why
+The LLVM exception only adds permissions to Apache-2.0, and the crate is a
+build-time dependency, nothing of it linked into banlieue. A per-crate
+exception keeps the license from spreading to the rest of the tree
+unnoticed.
+
+### Verified
+- `cargo deny --all-features check` (0.20.2, as CI): advisories, bans,
+  licenses and sources all ok.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only
+- [ ] Documentation only
+
 ## [2026-11-06 08:00] - A static machine reports its declared address when nothing observes one (ADR-0114 amended)
 
 **Author:** Erick Bourgeois
