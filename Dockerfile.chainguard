@@ -30,7 +30,7 @@
 # graph, so an air-gapped build never reaches upstream.
 ARG BASE_IMAGE=pinned-base
 
-FROM cgr.dev/chainguard/glibc-dynamic:latest@sha256:709673274b417a48f56374da8a7633ef7b2f5b27e34612ce98a335737318cc94 AS pinned-base
+FROM cgr.dev/chainguard/glibc-dynamic:latest@sha256:671a621016fb33812136dea6182b1db957996d3c8c618187aaf86abd9b14af53 AS pinned-base
 
 FROM ${BASE_IMAGE}
 
