@@ -111,6 +111,16 @@ Verified on a real host: a Debian 13 cloud image came up with the address
 and route from the seed and installed packages through that route
 (`a_guest_applies_a_static_address_from_the_seed` in `live_cloudinit.rs`).
 
+**What status shows.** A static guest takes no DHCP lease, so unless it runs
+`qemu-guest-agent` nothing observes its address. A running static machine
+then reports each static interface's **declared** address, with
+`status.addressSource: Static`; an address the agent, a lease or the ARP
+table reports always replaces it. `Static` means banlieue configured the
+address, not that the guest is answering on it: wait for `GuestReady`, or an
+observed source, for that
+([ADR-0114](https://github.com/firestoned/banlieue/blob/main/docs/adr/0114-static-addressing-in-the-nocloud-seed.md),
+*Amendment: the declared address*).
+
 **Kairos guests do not read `network-config`.** Kairos takes user-data,
 hostname and SSH keys from the seed and applies no network configuration
 from it. Give such an image its address through the placeholders banlieue

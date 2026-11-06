@@ -214,6 +214,9 @@ pub struct MachinePlan {
     /// The seed's `network-config`, when any NIC is static (ADR-0114),
     /// matched by each NIC's planned MAC. `None` for a DHCP-only machine.
     pub network_config: Option<String>,
+    /// The static NICs' declared addresses, reported when nothing observes
+    /// one (ADR-0114, amendment 2026-11-06). Empty for a DHCP-only machine.
+    pub declared_addresses: Vec<banlieue_api::common::MachineAddress>,
 }
 
 impl MachinePlan {
@@ -395,6 +398,9 @@ pub fn plan_machine(
         first_boot_sealing: spec.first_boot_sealing.clone(),
         report_socket,
         network_config,
+        declared_addresses: banlieue_provider_sdk::status::declared_addresses(
+            spec.nics.iter().map(|n| &n.ipam),
+        ),
     })
 }
 

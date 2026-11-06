@@ -95,4 +95,47 @@ mod tests {
         assert_eq!(found.status, "True");
         assert!(find_condition(&conditions, "Missing").is_none());
     }
+
+    // ------------------------------------------------------------------
+    // declared addresses (ADR-0114, amendment 2026-11-06)
+    // ------------------------------------------------------------------
+
+    fn static_ipam(address: &str) -> banlieue_api::common::IpamSpec {
+        banlieue_api::common::IpamSpec {
+            static_: Some(banlieue_api::common::StaticIpamConfig {
+                address: address.to_string(),
+                prefix: 24,
+                gateway: None,
+                nameservers: Vec::new(),
+                domain: None,
+            }),
+            pool: None,
+        }
+    }
+
+    /// Each static NIC's address, in spec order, as `InternalIP`.
+    #[test]
+    fn declared_addresses_list_each_static_nic_in_order() {
+        let a = static_ipam("192.0.2.10");
+        let b = static_ipam("192.0.2.11");
+        let got = declared_addresses([&a, &b]);
+        let addrs: Vec<&str> = got.iter().map(|m| m.address.as_str()).collect();
+        assert_eq!(addrs, ["192.0.2.10", "192.0.2.11"]);
+        assert!(
+            got.iter()
+                .all(|m| m.address_type == banlieue_api::common::MachineAddressType::InternalIP)
+        );
+    }
+
+    /// A DHCP interface declares nothing; a DHCP-only machine reports
+    /// nothing, as before the amendment.
+    #[test]
+    fn a_dhcp_nic_declares_nothing() {
+        let dhcp = banlieue_api::common::IpamSpec::default();
+        let s = static_ipam("192.0.2.10");
+        assert!(declared_addresses([&dhcp]).is_empty());
+        let got = declared_addresses([&dhcp, &s]);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].address, "192.0.2.10");
+    }
 }

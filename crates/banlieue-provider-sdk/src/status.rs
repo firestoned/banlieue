@@ -83,6 +83,26 @@ pub fn find_condition<'a>(conditions: &'a [Condition], type_: &str) -> Option<&'
     conditions.iter().find(|c| c.type_ == type_)
 }
 
+/// The addresses a machine's static interfaces declare, in spec order, as
+/// `InternalIP` (ADR-0114, amendment 2026-11-06).
+///
+/// What a provider reports, labelled as declared, when no source observes
+/// an address for a running machine. A DHCP interface declares nothing. The
+/// result says what banlieue configured, not that the guest applied it.
+#[must_use]
+pub fn declared_addresses<'a>(
+    ipams: impl IntoIterator<Item = &'a banlieue_api::common::IpamSpec>,
+) -> Vec<banlieue_api::common::MachineAddress> {
+    ipams
+        .into_iter()
+        .filter_map(|ipam| ipam.static_.as_ref())
+        .map(|cfg| banlieue_api::common::MachineAddress {
+            address_type: banlieue_api::common::MachineAddressType::InternalIP,
+            address: cfg.address.clone(),
+        })
+        .collect()
+}
+
 #[cfg(test)]
 #[path = "status_tests.rs"]
 mod status_tests;

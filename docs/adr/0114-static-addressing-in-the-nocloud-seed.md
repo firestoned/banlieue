@@ -7,6 +7,8 @@ SPDX-License-Identifier: Apache-2.0
 - **Status:** Accepted
 - **Date:** 2026-11-04
 - **Deciders:** Erick Bourgeois
+- **Amended:** 2026-11-06 (a static machine reports its declared address
+  when nothing observes one; see *Amendment: the declared address*)
 - **Related:** Extends [ADR-0054](0054-nocloud-seed-iso-first-party.md) (the
   first-party NoCloud seed) and the per-interface `ipam` of
   [ADR-0024](0024-vspheremachine-clone-static-ip-cloud-config.md); generalizes
@@ -116,6 +118,77 @@ Two kinds of guest read a NoCloud seed, and they read it differently:
   discovery falls back to exactly those two sources, so such a machine's
   `status.addresses` stays empty although the guest is up and addressed. A
   follow-up decides whether a static machine reports its declared address.
+  Resolved 2026-11-06 by *Amendment: the declared address* (below): such a
+  machine reports its declared address, labelled `addressSource: Static`.
 - Not done: indexed placeholders for a second static NIC; IPv6; a status
   field saying which delivery path a guest used (the guest's own address,
   read back through DHCP leases or the agent, is the observable result).
+
+## Amendment: the declared address (2026-11-06)
+
+**The gap.** Found live under Consequences: a static libvirt guest with no
+guest agent reports no address. It takes no DHCP lease, and libvirt's ARP
+source reported nothing even while the guest pinged its gateway every 2 s.
+The provider's discovery uses exactly those sources, so
+`LibvirtMachine.status.addresses`, and the `VirtualMachine` and claim that
+mirror it, stay empty although the guest is up on the address banlieue
+gave it. Cloud Hypervisor has the same shape: it reads the host's neighbour
+table, which is blind until the guest transmits. A pool member on an
+ADR-0109 segment, static and agentless, would be invisible to a consumer
+looking for its address.
+
+banlieue already knows the answer: it wrote it. The question is whether
+reporting it breaks non-negotiable 6, *status mirrors infra*.
+
+**It does not, if the report says what it is.** The address goes into the
+**infra CR's** status, written by the provider like any other observation,
+and the controller mirrors it unchanged, so the `VirtualMachine` still
+reflects only what its infrastructure reports. What must not happen is a
+declared address passing as one the guest was seen to use. The
+`addressSource` field exists for exactly that distinction, and Cloud
+Hypervisor's `ChAddressSource` already defines `Static` ("known before boot,
+from IPAM", ADR-0024, ADR-0033), declared but never set.
+
+### Decision
+
+1. **Observed always wins.** A provider reports declared addresses only when
+   no observing source (guest agent, DHCP lease, ARP or neighbour table)
+   reports any address for the machine. When one does, its result is
+   reported as today and the declared address is not added to it.
+2. **Only while the machine runs, and only for static NICs.** The fallback
+   applies to a machine whose observed power state is `PoweredOn`, and it
+   lists the `ipam.static` address of each statically addressed NIC, in spec
+   order, as `InternalIP`. A DHCP NIC contributes nothing; a machine with no
+   static NIC reports nothing, as now. A stopped machine reports no address
+   at all.
+3. **`addressSource: Static` labels it.** libvirt's `LibvirtAddressSource`
+   gains `Static`, matching `ChAddressSource::Static`, which the Cloud
+   Hypervisor provider now sets. The CAPI `MachineAddress` shape is
+   unchanged: the source is banlieue's own field beside it, so CAPI
+   consumers see an address and banlieue consumers can tell how it was
+   known.
+4. **It means "declared", not "applied".** `Static` says banlieue configured
+   this address, not that the guest is answering on it: a guest that never
+   applied its seed (a Kairos image without the placeholder stage, or one
+   from before the ADR-0054 amendment) is reported the same way. Proof that
+   the guest is up and configured stays where it is today: `GuestReady`, or
+   an observed source.
+5. **No CRD shape changes beyond the enum value.** `Static` is added to
+   libvirt's enum (additive); the Cloud Hypervisor value already exists.
+
+### Consequences
+
+- An agentless static pool member shows its address in the `VirtualMachine`
+  and the claim, which is what a consumer reaches it by.
+- A consumer that treats any address as "reachable" must now check
+  `addressSource`, or wait for `GuestReady`; the guides say so.
+- The mismatch case (the guest reports an address that differs from the one
+  declared) is not detected here: Decision 1 reports the observation, and a
+  condition saying "observed differs from declared" is left to a later
+  change if one is wanted.
+
+Approved as written by Erick, 2026-11-06. The shared helper is
+`banlieue_provider_sdk::status::declared_addresses`; libvirt applies it in
+`converge` when no source answers and the domain runs, Cloud Hypervisor in
+`build_status` from the plan's declared addresses.
+

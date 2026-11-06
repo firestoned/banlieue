@@ -410,3 +410,70 @@ async fn a_guest_applies_a_static_address_from_the_seed() {
          (ADR-0114 Decision 4)."
     );
 }
+
+/// ADR-0114, amendment 2026-11-06: a static guest with no agent, against a
+/// real libvirtd, answers no address source, so `converge` reports the
+/// declared address labelled `Static`. Checks the premise the fallback rests
+/// on (that a real host reports nothing for such a guest, which the fake
+/// only asserts) and the fallback itself.
+#[tokio::test]
+#[ignore = "boots a real guest; set LIBVIRT_HOST, LIBVIRT_TLS_DIR, LIBVIRT_SOURCE_VOLUME, LIBVIRT_STATIC_ADDRESS, LIBVIRT_STATIC_GATEWAY"]
+async fn a_static_guest_without_an_agent_reports_its_declared_address() {
+    use banlieue_api::infrastructure::LibvirtAddressSource;
+    let Some((host, dir, pool, source_volume)) = settings() else {
+        panic!("set LIBVIRT_HOST, LIBVIRT_TLS_DIR and LIBVIRT_SOURCE_VOLUME");
+    };
+    let address = std::env::var("LIBVIRT_STATIC_ADDRESS")
+        .expect("set LIBVIRT_STATIC_ADDRESS: a free address on LIBVIRT_NETWORK");
+    let gateway = std::env::var("LIBVIRT_STATIC_GATEWAY")
+        .expect("set LIBVIRT_STATIC_GATEWAY: LIBVIRT_NETWORK's gateway");
+    let identity = load_identity(&dir);
+    let mut session = connect_tls(&host, DEFAULT_TLS_PORT, &identity)
+        .await
+        .expect("TLS (machine)");
+    connect_open(&mut session, Some("qemu:///system"), false)
+        .await
+        .expect("CONNECT_OPEN (machine)");
+    let mut client = SessionMachineClient::new(session);
+
+    let domain_name = run_name("declaredcheck");
+    let mut base = spec(&domain_name, &pool, &source_volume);
+    base.user_data = None; // no agent install: nothing observes the guest
+    base.network[0].ipam.static_ = Some(banlieue_api::common::StaticIpamConfig {
+        address: address.clone(),
+        prefix: DEFAULT_STATIC_PREFIX,
+        gateway: Some(gateway),
+        nameservers: Vec::new(),
+        domain: None,
+    });
+    let spec = with_derived_macs(&base, &domain_name);
+    eprintln!("booting {domain_name} from {source_volume}: {address}, no agent");
+
+    let first = converge(&mut client, &spec, false, false).await;
+    // Give the guest time to boot and apply its address; a later pass is
+    // what a reconcile would see.
+    let mut later = None;
+    if first.is_ok() {
+        tokio::time::sleep(BOOT_TIMEOUT / 4).await;
+        later = Some(converge(&mut client, &spec, false, false).await);
+    }
+
+    eprintln!("  tearing down");
+    let teardown = finalize_backend(&mut client, &spec).await;
+    first.expect("first converge failed");
+    teardown.expect("teardown failed");
+    let observed = later
+        .expect("second pass ran")
+        .expect("second converge failed");
+    eprintln!(
+        "  addresses {:?} source {:?}",
+        observed.addresses, observed.address_source
+    );
+    assert_eq!(
+        observed.address_source,
+        Some(LibvirtAddressSource::Static),
+        "no source should observe an agentless static guest, so the declared address is reported"
+    );
+    assert_eq!(observed.addresses.len(), 1);
+    assert_eq!(observed.addresses[0].address, address);
+}

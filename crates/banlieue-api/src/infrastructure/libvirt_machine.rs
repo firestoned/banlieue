@@ -346,6 +346,11 @@ pub enum LibvirtAddressSource {
     /// The host's ARP table. Best effort, and blind until the guest
     /// transmits.
     ArpTable,
+    /// Declared, not observed: the static interfaces' configured addresses,
+    /// reported while the domain runs and no other source answers
+    /// (ADR-0114, amendment 2026-11-06). Says banlieue configured the
+    /// address, not that the guest applied it.
+    Static,
 }
 
 /// Observed state of a LibvirtMachine, shaped to the CAPI v1beta2

@@ -245,7 +245,9 @@ it from the `${IP}`/`${PREFIX}` placeholders in its user-data instead
 ([cloud-init on libvirt](cloud-init-on-libvirt.md#static-addresses),
 [ADR-0114](https://github.com/firestoned/banlieue/blob/main/docs/adr/0114-static-addressing-in-the-nocloud-seed.md)).
 Before v0.4.12 libvirt and Cloud Hypervisor ignored the address and members
-came up on DHCP.
+came up on DHCP. An agentless member reports its drawn address with
+`addressSource: Static` (declared, not observed) until something observes
+it, so its `VirtualMachine` and claim show it either way.
 
 **Size the pool above `maxReplicas`, with spares.** An address is held
 until a deleted member's backend VM is really gone, not until its delete is

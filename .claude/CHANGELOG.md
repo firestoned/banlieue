@@ -1,5 +1,50 @@
 # Changelog
 
+## [2026-11-06 08:00] - A static machine reports its declared address when nothing observes one (ADR-0114 amended)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `crates/banlieue-provider-sdk/src/status.rs`: `declared_addresses`, each
+  static NIC's address in spec order as `InternalIP`.
+- `crates/banlieue-api/src/infrastructure/libvirt_machine.rs`:
+  `LibvirtAddressSource::Static` (declared, not observed), matching the
+  existing `ChAddressSource::Static`. `deploy/crds/` (one enum value) and the
+  API reference regenerated.
+
+### Changed
+- libvirt `converge`: when no source (agent, lease, ARP) answers and the
+  domain runs, report the declared addresses with `addressSource: Static`.
+- Cloud Hypervisor: the plan carries `declared_addresses`; `build_status`
+  reports them with `ChAddressSource::Static` for a running guest the
+  neighbour table has not seen. A neighbour observation replaces them and is
+  kept while the guest runs, as before.
+- ADR-0114 *Amendment: the declared address* (approved and accepted
+  2026-11-06); its "found live" gap marked resolved. CALM
+  `static-addressing-seed` control. Guides: cloud-init on libvirt (*What
+  status shows*), pools, Cloud Hypervisor host.
+- Threat model: pass, stamp 2026-11-06; TB-1 row for a declared address read
+  as an observed one.
+
+### Why
+An agentless static guest showed no address anywhere (no DHCP lease;
+libvirt's ARP source reported nothing in testing), so a sandbox member on a
+static segment was invisible to the consumer looking for its address.
+
+### Tests
+- SDK: 2 (`declared_addresses` order and DHCP); libvirt: 3 (declared when
+  nothing answers, observed wins, stopped reports none); Cloud Hypervisor: 3
+  (declared, neighbour replaces it, stopped or DHCP declares none).
+- Live, libvirt (`a_static_guest_without_an_agent_reports_its_declared_address`):
+  against a real host an agentless static Debian guest answered no source,
+  and `converge` reported its declared address labelled `Static` (63 s).
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (provider images, Cloud Hypervisor host binary; CRD enum value)
+- [ ] Config change only
+- [ ] Documentation only
+
 <<<<<<< Updated upstream
 ## [2026-11-05 06:00] - ADR-0108 accepted; ADR-0049 amended: SPIRE attestation, status.nonce retired
 
