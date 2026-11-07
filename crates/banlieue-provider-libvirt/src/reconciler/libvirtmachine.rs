@@ -49,7 +49,7 @@ use banlieue_provider_sdk::sealing::{
     sealing_gate, sticky_sealed_partitions,
 };
 use banlieue_provider_sdk::ssa::FIELD_MANAGER_PROVIDER_LIBVIRT;
-use banlieue_provider_sdk::status::{condition_status, set_condition};
+use banlieue_provider_sdk::status::{condition_status, declared_addresses, set_condition};
 
 use crate::guest::{EK_PATH, EkProbe, GuestProbe, MARKER_PATH, SEALED_PATH, expected_ek_cn};
 use k8s_openapi::jiff::Timestamp;
@@ -470,6 +470,14 @@ pub async fn converge(
             to_machine_addresses(&ifaces),
             Some(to_address_source(source)),
         ),
+        // Nothing observed: a running machine reports what its static
+        // interfaces declare, labelled as such (ADR-0114, amendment
+        // 2026-11-06). An observed address above always wins.
+        None if state.is_running() => {
+            let declared = declared_addresses(spec.network.iter().map(|n| &n.ipam));
+            let source = (!declared.is_empty()).then_some(LibvirtAddressSource::Static);
+            (declared, source)
+        }
         None => (Vec::new(), None),
     };
 

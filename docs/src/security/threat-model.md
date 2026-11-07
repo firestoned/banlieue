@@ -4,7 +4,7 @@ SPDX-License-Identifier: Apache-2.0
 -->
 # Threat Model
 
-> **Status:** Living document. Last full pass **2026-11-05**, against the
+> **Status:** Living document. Last full pass **2026-11-06**, against the
 > architecture defined by **ADR-0001 … ADR-0115** (0057–0059 unallocated,
 > 0066 and 0068–0073 reserved; 0074 and 0075 Accepted 2026-09-28; 0076–0080
 > reserved by roadmap 19; 0081–0082 recorded but not implemented in banlieue, and kept canonically in
@@ -17,7 +17,10 @@ SPDX-License-Identifier: Apache-2.0
 > §8 marker risk);
 > 0088 Accepted 2026-10-26, superseding 0048; 0108 Accepted 2026-11-05
 > (proposed 2026-10-15); 0049 amended 2026-11-05 (SPIRE TPM node
-> attestation supersedes Decision 4, `status.nonce` retired); 0109 Proposed and
+> attestation supersedes Decision 4, `status.nonce` retired); 0114 amended
+> 2026-11-06 (a static machine reports its declared address, labelled
+> `addressSource: Static`, when nothing observes one; TB-1 row; no new
+> component, identity, grant or boundary, §5 diagram unchanged); 0109 Proposed and
 > not implemented, 0108 and 0109 renumbered 2026-10-26 from duplicate 0100 and 0103; 0112
 > Accepted 2026-10-28, renumbered 2026-10-30 from 0110, which main had
 > meanwhile taken twice; 0113 Proposed, its tool, the provider's pacing and
@@ -26,8 +29,12 @@ SPDX-License-Identifier: Apache-2.0
 > Accepted 2026-11-04; 0054 amended 2026-11-04: every NoCloud seed carries
 > `user-data`, an empty cloud-config when none is set, so cloud-init stops
 > ignoring seeds without it; no row changes, the seed's contents and who
-> controls them are as before). The most recent pass, 2026-11-05, is
-> **ADR-0108's acceptance and ADR-0049's amendment**: the handshake the
+> controls them are as before). The most recent pass, 2026-11-06, is
+> **ADR-0114's amendment, the declared address**: a TB-1 row for a declared
+> address read as an observed one (labelled `Static`, replaced by any
+> observation, ADR-0083 keeps it from naming another VM's address). The
+> pass before it, 2026-11-05, is **ADR-0108's acceptance and ADR-0049's
+> amendment**: the handshake the
 > consumer built is SPIRE's TPM node attestation (a credential-activation
 > challenge sealed to the vTPM's EK), not quote-over-nonce, so the controller
 > stops minting `status.nonce`. The TB row on who receives the subject's
@@ -808,6 +815,7 @@ relationship to the host.
 | Resource-exhaustion via absurd specs (`numCpus`, disk counts) | D | schemars `range`/`length`/`maxItems` constraints on `VMClass`, `VSphereMachine` and `ProxmoxMachine` (`cores`, `memoryMiB`, `dataDisks` ≤ 30, `nics` ≤ 16); cross-field rules (a seed needs `isoStorage`, unique NIC and disk names, VLAN 1–4094) in `ProxmoxMachineSpec::validate`, called by the controller when it builds the machine — `crates/banlieue-api/src/infrastructure/proxmox_machine.rs` |
 | A `VirtualMachine` names user-data its author cannot read (confused deputy) | E, I | `banlieue-virtualmachine-userdata-authorization` VAP (ADR-0042) uses the CEL `authorizer`: the creating principal must itself be able to `get` the Secret / ConfigMap named by `spec.userData`, in the `VirtualMachine`'s own namespace — `deploy/admission/virtualmachine-userdata-authorization.yaml` |
 | A tenant's static-address strings (address, gateway, nameservers, domain) add keys to a guest's NoCloud `network-config` (ADR-0114) | T | The one renderer, `banlieue_provider_sdk::cloudinit::network_config` (`crates/banlieue-provider-sdk/src/cloudinit/network.rs`), single-quotes every value and flattens line breaks, so a value stays one scalar (`quotes_in_values_cannot_break_the_document`). The author gains nothing new: the same principal already controls the guest's user-data, which the seed runs as root |
+| A consumer takes a **declared** address in status as one the guest answers on (ADR-0114, amendment 2026-11-06) | S, T | A running static machine with no observed address reports its static NICs' declared addresses with `addressSource: Static`, never as an observation: `banlieue_provider_sdk::status::declared_addresses` (`crates/banlieue-provider-sdk/src/status.rs`), applied in libvirt's `converge` (`crates/banlieue-provider-libvirt/src/reconciler/libvirtmachine.rs`) and Cloud Hypervisor's `build_status` (`crates/banlieue-provider-cloud-hypervisor/src/machine.rs`). Any observed address replaces it, a stopped machine reports none, and the guides say `Static` means configured, not proven: `GuestReady` or an observed source is the proof. A tenant cannot use it to show another machine's address: a static address already held by another VM is refused before any infra CR exists (`address_conflict.rs`, ADR-0083, the row below) |
 | Rendered user-data is readable from `VSphereMachine.spec` / `LibvirtMachine.spec` | I | **No code control — this is the accepted reflection of ADR-0025.** See §7.1 and §8 |
 | **Two claims bind the same warm member**, so one VM is handed to two subjects | I, E | The bind is a JSON merge patch carrying the member's `resourceVersion`, so a member written since the snapshot is rejected `409` and the loser re-picks — `crates/banlieue-controller/src/reconciler/claim.rs`. A member already carrying `banlieue.io/claim` reads as `MemberPhase::Claimed` (`reconciler/pool.rs::member_view`) and `pick_member` filters to `Ready` only (`reconciler/claim_plan.rs`) |
 | **One claim binds two warm members**, so one subject drains the pool's warm capacity and holds a sandbox nobody tracks | D, E | Before picking, the reconciler looks in the fresh member list for a member already labelled for this claim and finishes that bind instead — `reconciler/claim.rs::pick`, `reconciler/claim_plan.rs::member_bound_to`. Found live on 2026-09-28 (a reconcile from a stale cached claim); regression test `tests/live_claim.rs::a_stale_copy_of_a_bound_claim_does_not_bind_a_second_member` against a real API server |

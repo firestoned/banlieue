@@ -46,6 +46,16 @@ allow = [
     # or patent obligations on our code. https://cdla.dev/permissive-2-0/
     "CDLA-Permissive-2.0",
 ]
+# Per-crate exceptions: a license allowed for one crate only, so it cannot
+# spread to the rest of the tree unnoticed.
+exceptions = [
+    # Apache-2.0 WITH LLVM-exception: Apache-2.0 plus an exception that only
+    # adds permissions (no attribution needed for compiled output). A
+    # build-time dependency of `psm` (kube-client -> jsonpath-rust -> pest ->
+    # pest_stack_guard -> psm), used by its build script to write a static
+    # archive; nothing of it is linked into banlieue.
+    { allow = ["Apache-2.0 WITH LLVM-exception"], crate = "ar_archive_writer" },
+]
 
 # ─── Bans (multiple versions, wildcards, banned crates) ─────────────────────
 [bans]

@@ -505,6 +505,57 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
+    // declared addresses (ADR-0114, amendment 2026-11-06)
+    // ------------------------------------------------------------------
+
+    /// The gap the amendment closes: a static guest with no agent answers
+    /// no source, so its declared address is reported, labelled `Static`.
+    #[tokio::test]
+    async fn a_running_static_machine_no_source_answers_reports_its_declared_address() {
+        let mut c = ready_host();
+        let observed = converge(&mut c, &static_spec(), false, false)
+            .await
+            .expect("converge");
+        assert_eq!(observed.addresses.len(), 1);
+        assert_eq!(observed.addresses[0].address, "192.0.2.10");
+        assert_eq!(observed.address_source, Some(LibvirtAddressSource::Static));
+    }
+
+    /// Decision 1: an observed address always wins over the declared one.
+    #[tokio::test]
+    async fn an_observed_address_wins_over_the_declared_one() {
+        let mut c = ready_host();
+        c.addresses_by_source.insert(
+            InterfaceAddressSource::Agent as u32,
+            ifaces(&["192.0.2.77"]),
+        );
+        let observed = converge(&mut c, &static_spec(), false, false)
+            .await
+            .expect("converge");
+        let addrs: Vec<&str> = observed
+            .addresses
+            .iter()
+            .map(|a| a.address.as_str())
+            .collect();
+        assert_eq!(addrs, ["192.0.2.77"]);
+        assert_eq!(
+            observed.address_source,
+            Some(LibvirtAddressSource::GuestAgent)
+        );
+    }
+
+    /// Decision 2: a stopped machine reports no address, declared or not.
+    #[tokio::test]
+    async fn a_stopped_static_machine_reports_no_address() {
+        let mut c = ready_host();
+        let mut s = static_spec();
+        s.desired_power_state = PowerState::PoweredOff;
+        let observed = converge(&mut c, &s, false, false).await.expect("converge");
+        assert!(observed.addresses.is_empty());
+        assert!(observed.address_source.is_none());
+    }
+
+    // ------------------------------------------------------------------
     // finalize
     // ------------------------------------------------------------------
 

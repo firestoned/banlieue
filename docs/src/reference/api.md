@@ -2403,7 +2403,7 @@ InfraMachine status contract (plus libvirt-specific diagnostics).
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `addressSource` | string |  | Which source answered when the provider looked up the guest's addresses (ADR-0050 Decision 8). Allowed: `guestAgent`, `dhcpLease`, `arpTable`. |
+| `addressSource` | string |  | Which source answered when the provider looked up the guest's addresses (ADR-0050 Decision 8). Allowed: `guestAgent`, `dhcpLease`, `arpTable`, `static`. |
 | `addresses` | object[] |  | CAPI contract field (optional): VM addresses. |
 | `conditions` | object[] |  | CAPI-compatible conditions. The `Ready` condition is mirrored as `InfrastructureReady` on the parent per contract. |
 | `domainUuid` | string |  | libvirt's UUID for the domain, in its 36-character textual form. The domain's real identity — stable across rename and host restart — and the source for `spec.providerID`. Not part of the CAPI contract. |

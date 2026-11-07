@@ -382,6 +382,7 @@ spec:
                 - guestAgent
                 - dhcpLease
                 - arpTable
+                - static
                 nullable: true
                 type: string
               addresses:

@@ -390,6 +390,14 @@ pub fn build_status(
         // keeps what a previous pass saw: neighbour entries expire.
         st.addresses.clear();
         st.address_source = None;
+    } else if st.address_source != Some(ChAddressSource::Neighbour)
+        && !plan.declared_addresses.is_empty()
+    {
+        // Running, and never observed: report what the static NICs declare,
+        // labelled as such (ADR-0114, amendment 2026-11-06). A later
+        // neighbour observation replaces it.
+        st.addresses = plan.declared_addresses.clone();
+        st.address_source = Some(ChAddressSource::Static);
     }
     st.observed_generation = Some(generation);
 

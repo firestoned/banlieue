@@ -565,6 +565,68 @@ lan = "br0"
         assert_eq!(st.address_source, Some(ChAddressSource::Neighbour));
     }
 
+    fn static_nic_spec() -> CloudHypervisorMachineSpec {
+        let mut s = spec();
+        s.nics[0].ipam.static_ = Some(banlieue_api::common::StaticIpamConfig {
+            address: "192.0.2.10".into(),
+            prefix: 24,
+            gateway: None,
+            nameservers: Vec::new(),
+            domain: None,
+        });
+        s
+    }
+
+    /// ADR-0114, amendment 2026-11-06: a running static guest the neighbour
+    /// table has not seen reports its declared address, labelled `Static`.
+    #[test]
+    fn a_running_static_guest_nothing_observed_reports_its_declared_address() {
+        let plan = plan_for(&static_nic_spec());
+        let st = build_status(None, &observed(Phase::Running, vec![]), &plan, "ch-a", 1);
+        let addrs: Vec<&str> = st.addresses.iter().map(|a| a.address.as_str()).collect();
+        assert_eq!(addrs, ["192.0.2.10"]);
+        assert_eq!(st.address_source, Some(ChAddressSource::Static));
+    }
+
+    /// Decision 1: an observed address replaces the declared one.
+    #[test]
+    fn a_neighbour_observation_replaces_the_declared_address() {
+        let plan = plan_for(&static_nic_spec());
+        let declared = build_status(None, &observed(Phase::Running, vec![]), &plan, "ch-a", 1);
+        let seen = build_status(
+            Some(&declared),
+            &observed(Phase::Running, vec![Ipv4Addr::new(192, 0, 2, 44)]),
+            &plan,
+            "ch-a",
+            1,
+        );
+        assert_eq!(seen.addresses[0].address, "192.0.2.44");
+        assert_eq!(seen.address_source, Some(ChAddressSource::Neighbour));
+    }
+
+    /// Decision 2: a stopped static guest reports nothing, and a DHCP guest
+    /// declares nothing.
+    #[test]
+    fn a_stopped_or_dhcp_guest_declares_no_address() {
+        let stopped = build_status(
+            None,
+            &observed(Phase::Stopped, vec![]),
+            &plan_for(&static_nic_spec()),
+            "ch-a",
+            1,
+        );
+        assert!(stopped.addresses.is_empty());
+        let dhcp = build_status(
+            None,
+            &observed(Phase::Running, vec![]),
+            &plan_for(&spec()),
+            "ch-a",
+            1,
+        );
+        assert!(dhcp.addresses.is_empty());
+        assert!(dhcp.address_source.is_none());
+    }
+
     /// A reconcile that has not seen addresses yet must not wipe ones a
     /// previous pass published: the neighbour cache expires quickly.
     #[test]

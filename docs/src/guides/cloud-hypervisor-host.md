@@ -747,6 +747,9 @@ seed for that even when the machine has no user-data
 Kairos guests apply no `network-config`; they take the address from the
 `${IP}`/`${PREFIX}` placeholders in their user-data. Both cases, with
 examples: [cloud-init on libvirt, Static addresses](cloud-init-on-libvirt.md#static-addresses).
+Until the host's neighbour table sees the guest, a running static machine
+reports its declared address with `addressSource: Static`; the first
+neighbour observation replaces it.
 
 ## Images from a registry (`Url` sources)
 
