@@ -1,5 +1,46 @@
 # Changelog
 
+## [2026-11-07 22:00] - Record Kairos's own unlock failure in the isolation test (roadmap 18 phase B)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `scripts/prelay-kairos-raw.sh`: `PRELAY_EXTRA_CMDLINE`, written to COS_OEM's
+  grubenv as `extra_cmdline` (every boot of the image), with
+  `check_extra_cmdline` refusing a newline or a backslash, which would
+  corrupt the grubenv line. For test images.
+- `scripts/prelay-kairos-raw-test.sh`: 4 cases (accepted, empty, newline
+  refused, backslash refused) and the grubenv round trip of a command line
+  with spaces.
+
+### Changed
+- `crates/banlieue-provider-cloud-hypervisor/tests/e2e_sealing_isolation.rs`:
+  the copy's console must show `failed to unlock partition COS_PERSISTENT`
+  (`UNLOCK_FAILED`), not only time out; the hints add `IMMUCORE BOOT FAILED`
+  (an unlock failure) beside `KAIROS BOOT FAILED` (an encryption failure);
+  the module docs require the image pre-laid with
+  `PRELAY_EXTRA_CMDLINE=console=ttyS0`.
+- libvirt isolation test docs: step 3 stays differential (the console is a
+  pty, with no log).
+- Roadmap 18 phase B "capture the failure" ticked for Cloud Hypervisor;
+  Cloud Hypervisor guide (pre-laid images).
+
+### Verified (offline, under QEMU and swtpm on a build host)
+- A test image pre-laid with `console=ttyS0`: the installed boot now logs to
+  serial (it wrote nothing before: Kairos's default command line ends
+  `console=ttyS0 console=tty1`, and the last `console=` wins).
+- Sealed under swtpm A (`COS_PERSISTENT` became `crypto_LUKS`); a copy under
+  a fresh swtpm B printed `IMMUCORE BOOT FAILED ... failed to unlock partition
+  COS_PERSISTENT_LUKS ... passphrase does not match` and rebooted; the
+  original under swtpm A booted to a login prompt. The Cloud Hypervisor e2e's
+  stronger assertion runs with its next live run.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only (plus a test-image option and a stronger e2e check)
+
 ## [2026-11-07 20:00] - ADR-0109 accepted: the isolated sandbox segment (example, guide, CALM, TB-18)
 
 **Author:** Erick Bourgeois

@@ -55,6 +55,17 @@
 //!         - echo "banlieue-e2e-persistent=$(findmnt -no SOURCE /usr/local || echo none)" > /dev/ttyS0
 //! ```
 //!
+//! **And its installed boot must log to the serial console**, so the copy's
+//! failure is recorded in Kairos's own words, not only proven by absence.
+//! Kairos's default command line ends `console=ttyS0 console=tty1`, and the
+//! last `console=` is the one the initramfs writes to, so add `console=ttyS0`
+//! after it: pre-lay the image with
+//! `PRELAY_EXTRA_CMDLINE=console=ttyS0 scripts/prelay-kairos-raw.sh ...`
+//! (COS_OEM's grubenv `extra_cmdline`). The copy must then print
+//! `failed to unlock partition COS_PERSISTENT_LUKS ... passphrase does not
+//! match` (found offline under QEMU and swtpm, 2026-11-07), and the run
+//! fails if it does not.
+//!
 //! Optional: `BANLIEUE_E2E_NAMESPACE` (default `banlieue-system`),
 //! `BANLIEUE_E2E_RUN_ROOT` (default `/run/banlieue/ch`).
 //!
@@ -99,9 +110,18 @@ const DEFAULT_NAMESPACE: &str = "banlieue-system";
 const OS_DISK: &str = "os.raw";
 const IMAGE_CACHE: &str = "images";
 const IMAGE_CACHE_MODE: u32 = 0o640;
+/// What Kairos's initramfs prints when it cannot unlock a sealed partition
+/// (immucore, Kairos v4.4): `failed to unlock partition COS_PERSISTENT_LUKS:
+/// ... passphrase does not match`, then `IMMUCORE BOOT FAILED` and a reboot.
+/// Seen only with `console=ttyS0` on the installed boot (module docs).
+const UNLOCK_FAILED: &str = "failed to unlock partition COS_PERSISTENT";
 /// Serial-console lines worth showing when a boot did not go as expected.
-const CONSOLE_HINTS: [&str; 5] = [
+const CONSOLE_HINTS: [&str; 7] = [
+    // A first-boot encryption that fails (no TPM; ADR-0088's evidence).
     "KAIROS BOOT FAILED",
+    // An unlock that fails (another vTPM; this test's copy).
+    "IMMUCORE BOOT FAILED",
+    UNLOCK_FAILED,
     "unlock",
     "TPM",
     "kcrypt",
@@ -601,9 +621,21 @@ async fn isolation_case(s: &Scratch, fixture: &VMImage, a: &str, foreign: &str, 
         },
     )
     .await;
+    // The failure in Kairos's own words, not only its absence: the image's
+    // installed boot logs to the serial console (module docs), so a copy that
+    // could not unlock says why.
+    let text = console(&gf.serial_log());
+    assert!(
+        text.contains(UNLOCK_FAILED),
+        "the copy timed out without unlocking, but its console does not show Kairos's unlock \
+         failure ({UNLOCK_FAILED:?}). Was the image pre-laid with \
+         PRELAY_EXTRA_CMDLINE=console=ttyS0 (module docs)?\n    {}",
+        hints(&text)
+    );
     eprintln!(
-        "  ✓ the copy did not unlock under a fresh vTPM: GuestReady=False, {reason}\n    {}",
-        hints(&console(&gf.serial_log()))
+        "  ✓ the copy did not unlock under a fresh vTPM: GuestReady=False, {reason}, and Kairos \
+         says so on its console\n    {}",
+        hints(&text)
     );
     s.vms()
         .delete(foreign, &DeleteParams::background())

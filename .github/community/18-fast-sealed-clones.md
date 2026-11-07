@@ -130,12 +130,20 @@ invariant 4 caveat).
       guest agent (`/run/banlieue/e2e-persistent`), not a console line.
 - [ ] **vSphere**: the same, copying the VMDK into a new VM with a fresh
       vTPM (ADR-0039).
-- [ ] **Capture the failure, not only its absence.** The installed system's
-      kernel does not write to the serial console, so step 3's evidence is
-      that the copy never unlocked while the same disk does under its own
-      vTPM: a differential proof. Add `console=ttyS0` to the installed
-      boot's command line in the test image so the run also records
-      Kairos's own unlock failure.
+- [x] **Capture the failure, not only its absence** (Cloud Hypervisor,
+      2026-11-07). Kairos's default command line ends `console=ttyS0
+      console=tty1` and the last `console=` wins, so the installed boot
+      wrote nothing to serial. `scripts/prelay-kairos-raw.sh` gains
+      `PRELAY_EXTRA_CMDLINE` (COS_OEM grubenv `extra_cmdline`); a test image
+      pre-laid with `console=ttyS0` logs its initramfs to serial. Verified
+      offline under QEMU and swtpm: a sealed disk under another vTPM prints
+      `IMMUCORE BOOT FAILED ... failed to unlock partition
+      COS_PERSISTENT_LUKS ... passphrase does not match` and reboots, while
+      the same disk under its own vTPM boots to a login prompt. The Cloud
+      Hypervisor test now **requires** that line on the copy's console
+      (`UNLOCK_FAILED`); its next live run confirms it end to end. libvirt
+      stays differential: banlieue's domains attach the console as a pty,
+      with no log for the test to read.
 
 ## C. Boot path to ≤ 30 s 🔶 (106 s → 39 s)
 
