@@ -4,7 +4,7 @@ SPDX-License-Identifier: Apache-2.0
 -->
 # Threat Model
 
-> **Status:** Living document. Last full pass **2026-11-06**, against the
+> **Status:** Living document. Last full pass **2026-11-07**, against the
 > architecture defined by **ADR-0001 … ADR-0115** (0057–0059 unallocated,
 > 0066 and 0068–0073 reserved; 0074 and 0075 Accepted 2026-09-28; 0076–0080
 > reserved by roadmap 19; 0081–0082 recorded but not implemented in banlieue, and kept canonically in
@@ -20,8 +20,8 @@ SPDX-License-Identifier: Apache-2.0
 > attestation supersedes Decision 4, `status.nonce` retired); 0114 amended
 > 2026-11-06 (a static machine reports its declared address, labelled
 > `addressSource: Static`, when nothing observes one; TB-1 row; no new
-> component, identity, grant or boundary, §5 diagram unchanged); 0109 Proposed and
-> not implemented, 0108 and 0109 renumbered 2026-10-26 from duplicate 0100 and 0103; 0112
+> component, identity, grant or boundary, §5 diagram unchanged); 0109 Accepted
+> 2026-11-07 (the isolated sandbox segment: TB-18); 0108 and 0109 renumbered 2026-10-26 from duplicate 0100 and 0103; 0112
 > Accepted 2026-10-28, renumbered 2026-10-30 from 0110, which main had
 > meanwhile taken twice; 0113 Proposed, its tool, the provider's pacing and
 > the imagebuilder's pre-lay Job implemented; 0087 amended 2026-11-01 and
@@ -29,8 +29,15 @@ SPDX-License-Identifier: Apache-2.0
 > Accepted 2026-11-04; 0054 amended 2026-11-04: every NoCloud seed carries
 > `user-data`, an empty cloud-config when none is set, so cloud-init stops
 > ignoring seeds without it; no row changes, the seed's contents and who
-> controls them are as before). The most recent pass, 2026-11-06, is
-> **ADR-0114's amendment, the declared address**: a TB-1 row for a declared
+> controls them are as before). The most recent pass, 2026-11-07, is
+> **ADR-0109's acceptance**: a new boundary, **TB-18** (sandbox segment →
+> egress gateway → routable network), in the §5 diagram and table; a §6
+> section mapping its threats to banlieue's topology controls (no default
+> route for members, egress first in the gateway class, ADR-0083) and to the
+> host and image controls that are not banlieue's; §7.29 (a segment routes
+> nowhere); two §8 risks (a gateway's image-set `sandbox` address is unseen
+> by ADR-0083; the gateways' hardening is the image author's). The pass
+> before it, 2026-11-06, is **ADR-0114's amendment, the declared address**: a TB-1 row for a declared
 > address read as an observed one (labelled `Static`, replaced by any
 > observation, ADR-0083 keeps it from naming another VM's address). The
 > pass before it, 2026-11-05, is **ADR-0108's acceptance and ADR-0049's
@@ -748,6 +755,11 @@ relationship to the host.
          operator ──get──▶ that Lease ──▶ Provider.status.workload.heartbeat
          controller scheduler ──▶ skips a Stale Provider (ADR-0102)
 
+  TB-18: sandbox members (one NIC, static, no default route)
+           ──▶ sandbox segment (layer 2, no router, no DHCP, no resolver)
+           ──mTLS CONNECT──▶ egress gateway VM: sandbox NIC │ egress NIC (ip_forward=0)
+           ──▶ routable network, from the gateway's own address (ADR-0109)
+
   KVM host, management nodes on Cloud Hypervisor (ADR-0099; no banlieue component):
     bootstrap operator ──sudo──▶ /etc/systemd/system/k0s-vm-<n>{,-net,-swtpm}.service
     systemd ──▶ k0s-vm-<n>-net    root oneshot: tap kv-<n> owned by k0s-vm ──▶ bridge
@@ -799,6 +811,7 @@ relationship to the host.
 | TB-15 | CAPI controllers → banlieue infrastructure objects | CAPI's manager creates, owns and deletes infrastructure machines through its aggregated role (ADR-0096) |
 | TB-16 | Bootstrap operator → running management cluster (`join`) | A join credential (A-20) is minted on a controller and carried to a new node, which then joins a cluster whose controllers the script does not reconfigure; a joining controller also receives a running controller's `/etc/k0s` (ADR-0099) |
 | TB-17 | Provider identity → its Lease → operator → scheduler | Since ADR-0102 a Lease a provider writes is read back as an input to placement: whoever can write it can hide a dead provider or starve a live one |
+| TB-18 | Sandbox segment → egress gateway → routable network | Untrusted code on the segment reaches the outside only through a gateway VM, the one component with a NIC on both sides (ADR-0109) |
 | TB-11 | Installer (root, once) → Cloud Hypervisor host | A root process writes the host's trust base (A-14), in part inside directories the provider's user owns, from artifacts downloaded from upstream or an operator's mirror (ADR-0067, ADR-0084) |
 
 ## 6. Threats by boundary
@@ -1304,6 +1317,22 @@ the scheduler do with what they read.
 | `Absent` is used to slip past the filter | D | By design `Absent` (no Lease) is not filtered, so `--no-leader-elect` runs and Providers from before ADR-0102 keep working. It is a different state from `Stale` and visible as such (column, gauge); a provider that was ever running leaves a Lease behind and reads `Stale`, not `Absent`, when it stops |
 | Clock skew between a host and the operator misjudges liveness | D | Bounded: a renewal stamped in the future reads `Alive` for at most `staleAfter`, and `staleAfter` is four lease durations. Skew larger than that is §8 |
 
+### TB-18: Sandbox segment → egress gateway → routable network
+
+ADR-0109 puts sandboxes on a segment with no router and lets them out only
+through gateway VMs. banlieue's controls are the topology it provisions; the
+segment's isolation is host configuration and the gateways' behaviour is
+image content, both recorded where they belong.
+
+| Threat | STRIDE | Control |
+| --- | --- | --- |
+| A sandbox reaches the routable network directly, bypassing the gateways | I, T | banlieue gives a member **no default route**: the pool's `addressing` carries no `gateway`, so the stamped `networkOverrides` has none, and the seed's `network-config` renders a route only when one is set (`crates/banlieue-provider-sdk/src/cloudinit/network.rs`, test `a_static_nic_without_a_gateway_has_no_route`); a Kairos member writes only `Address=` (`examples/25-isolated-sandbox-segment.yaml`, its shape enforced by `crates/banlieue-api/tests/examples.rs`, `isolated_segment_example_matches_the_types`: one NIC on the segment, no pool gateway). A guest that adds a route itself finds nothing that routes: the segment has no router, and on libvirt the isolated network rejects anything forwarded off its bridge (host configuration, §7.29; verified live 2026-11-05: rejected packets counted on the bridge) |
+| A gateway forwards between its two NICs, so the segment gains a route | I, E | The image author's control (`ip_forward=0`, a listener on the `sandbox` NIC only): §7.28 and the §8 row on two-NIC guests. banlieue puts `egress` first in the gateway class, so the first static interface (the one placeholders and `guestinfo` describe, and the only one with a gateway) is the routable one (`isolated_segment_example_matches_the_types` asserts it) |
+| A sandbox attacks a gateway, the one component on both sides | E | Bounded by the gateway's own controls (mutual TLS per claim, per-claim allowlist, no forwarding), which are mediatore's (its ADR-0028), and by the gateway being an ordinary VM: its vTPM, sealing and RBAC are banlieue's as for any VM. §8 records the image's hardening as the image author's |
+| A sandbox's address collides with a gateway's `sandbox` address and steals its traffic | S, D | Partly: two static addresses held by banlieue-managed VMs collide only if ADR-0083 lets them, and it does not (`address_conflict.rs`). A gateway's `sandbox` address is set by its image on libvirt and Cloud Hypervisor, which banlieue never sees: §8 |
+| A member reaches the gateway's control relay or proxy as another claim | S | Not banlieue's boundary: the gateway authorizes on the caller's claim SVID (mediatore ADR-0027, ADR-0028). banlieue mints no identity for it (ADR-0049, amended) |
+| An inbound path into a sandbox appears through a gateway | E | ADR-0082: banlieue injects no SSH key or listener through guest data; a gateway accepts nothing on `egress` and is not a jump host (image content, Decision 8) |
+
 ## 7. Deployment hardening requirements
 
 These are properties of the **current** design that operators must enforce
@@ -1712,6 +1741,14 @@ a different assumption is unsafe.
     NICs; it does not and cannot check what the guest does with them. Rebuild
     an image after the in-guest `configure-network` changes, or its NICs beyond
     the first come up unconfigured.
+29. **A sandbox segment routes nowhere (ADR-0109).** On libvirt define it as
+    an isolated network, with no `<forward>`, `<dhcp>` or `<dns>`, and give
+    the host an address on it only if something on the host must be reached
+    from the segment. On vSphere use a port group on a VLAN with no SVI,
+    trunked on every host a member can land on, and list a zone only after a
+    two-host test passes. Keep the pool's address range clear of the
+    gateways' `sandbox` addresses. Check it with the guide's table
+    (`docs/src/guides/isolated-sandbox-segment.md`).
 
 ## 8. Accepted risks
 
@@ -1791,6 +1828,8 @@ a different assumption is unsafe.
 | **`CARGO_REGISTRY_TOKEN` is a long-lived secret** (A-21): if it leaks, it publishes until revoked | The first upload needs a token; scope it to `publish-new` and `publish-update` and, once the name exists, to `banlieue-api` only, with an expiry (ADR-0100 Decision 6) | The crate exists on crates.io and the publish action accepts Trusted Publishing (GitHub OIDC), so the secret can be deleted |
 
 | **A guest with two NICs can forward between its segments**, and banlieue does not check that it does not (ADR-0111) | banlieue provisions the adapters and cannot inspect a guest; the isolation of a segment is a property of the guest that bridges it. §7.28 asks for forwarding off, and the first consumer (the egress gateways, ADR-0109) writes it in its own cloud-config and tests it | A policy can state which `VMClass`es may join an isolated `networkClass`, or the guest's forwarding state is readable from outside (a status field or a scan) |
+| **A gateway's `sandbox` address is image content on libvirt and Cloud Hypervisor** (ADR-0109 Decision 6), so a pool range that overlaps it is not detected (TB-18) | Three gateways are three per-image constants; ADR-0083 sees only addresses banlieue manages. The guide and §7.29 say to keep the range clear | A gateway's `sandbox` address is set through banlieue (as ADR-0111 does on vSphere), so ADR-0083 covers it |
+| **The egress gateways' hardening is the image author's control** (ADR-0109): forwarding off, a listener on the `sandbox` NIC only, the per-claim allowlist, no inbound on `egress`. banlieue provisions the VM and cannot inspect what runs in it | The software is consumer image content by design (ADR-0108, ADR-0109 Decision 5); a check banlieue made would see a disk, not a policy. mediatore's ADR-0028 and its image tests hold these controls | banlieue gains a way to verify an image's runtime configuration, or the gateway becomes banlieue code (ADR-0097 rules that out) |
 | **A `VMClass` edit does not change a VM that already exists** (ADR-0111, as ADR-0024): the NICs a VM was cloned with are the NICs it keeps, so removing an interface from a class does not detach running VMs from that segment | Reconciling a changed NIC list on a running VM is a reconfigure with its own failure modes (a NIC that is in use, a guest that has configured it) and is out of scope of the clone; the operator who retires a segment must rebuild its VMs | A VM's NIC list is reconciled after creation, or `VMClass` becomes immutable once a VM uses it |
 | **The pre-lay Job is privileged and runs a guest under QEMU/KVM on a build node** (ADR-0113): a QEMU escape lands in a privileged container on that node | The build namespace already runs privileged kairos-operator builds (row above), so the namespace boundary is unchanged; QEMU runs seccomp-sandboxed, with no network and no TPM, and the guest is the image being built. `--build-node-selector` keeps it on dedicated build nodes | QEMU can run unprivileged in the Job (non-root, a KVM device plugin instead of `privileged`) |
 | **The pre-lay image ships the findings Debian has not fixed** (ADR-0113, amendments 2026-11-04): it is a Debian 13 userland (QEMU, OVMF, e2fsprogs, gdisk, util-linux) run in a privileged Job, and its Grype gate (`make grype-prelay`) fails only on a high or critical finding **with** a fix. Built 2026-11-04, it carried 82 high or critical findings, every one `wont-fix` or `not-fixed` in Debian. A Debian fix is also missed while the cached `apt-get install` layer is reused, until the base is re-pinned or the image rebuilt without the cache | No rebuild can remove an unfixed finding, and a gate on them would be switched off. Every finding is in Code Scanning; the Job holds no API token, QEMU runs seccomp-sandboxed with no network and no TPM, and the guest it boots is the image being built. The image's SBOM is published with each release | A slimmer base (QEMU and OVMF without a full Debian userland), the gate is widened to unfixed findings with curated `.vex/prelay/` statements, or Code Scanning shows an unfixed critical in a package the Job reaches from its input |

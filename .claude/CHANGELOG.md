@@ -1,5 +1,80 @@
 # Changelog
 
+## [2026-11-07 20:00] - ADR-0109 accepted: the isolated sandbox segment (example, guide, CALM, TB-18)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `examples/25-isolated-sandbox-segment.yaml`: a libvirt Provider with a
+  routable and a segment network class, a two-NIC gateway class (`egress`
+  first, static with the default route; `sandbox` second), a one-NIC
+  sandbox class, Kairos user-data stages for both, a gateway
+  `VirtualMachine` and a pool whose addressing has no gateway. Placeholder
+  networks only (192.0.2.0/24, 10.200.0.0/24).
+- `crates/banlieue-api/tests/examples.rs`:
+  `isolated_segment_example_matches_the_types` (no dropped key; the segment
+  class offered; egress first and static with a gateway; one sandbox NIC on
+  the segment; no pool gateway).
+- `docs/src/guides/isolated-sandbox-segment.md` (nav and guides index):
+  the shape, the segment per backend, gateways, pool, Kairos addressing, an
+  isolation checklist, what has run live, what banlieue does not do.
+- CALM: `network-sandbox-segment` and `service-egress-gateway` nodes, the
+  guest-to-gateway `connects` and the segment `deployed-in` relationships,
+  the `isolated-sandbox-segment` control; the in-guest agent node no longer
+  says "not built". Diagrams regenerated.
+
+### Changed
+- ADR-0109 Accepted, with an *Accepted* section: every Consequences
+  deliverable, the live evidence (mediatore's run on libvirt, 2026-11-05),
+  and the one open item, an allowed request completing through a gateway's
+  Envoy, which is mediatore's to prove.
+- Threat model: full pass, stamp 2026-11-07. New boundary TB-18 in the §5
+  diagram and table and a §6 section; §7.29 (a segment routes nowhere); §8:
+  a gateway's image-set `sandbox` address is unseen by ADR-0083, and the
+  gateways' hardening is the image author's.
+
+### Verified
+- The host's firewall on the live run's libvirt host rejects traffic
+  forwarded into and off the segment's bridge (reject counter non-zero),
+  and the network has no `<forward>`, `<dhcp>` or `<dns>`: read-only checks.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only (plus one example test)
+
+## [2026-11-07 14:00] - kube 5.0 and k8s-openapi 0.29 (Kubernetes 1.37 types), replacing Dependabot #146
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `Cargo.toml`, `crates/banlieue-api/Cargo.toml`: `kube` `~4.2` -> `~5.0`,
+  `k8s-openapi` `0.28` -> `0.29`, moved together. Dependabot #146 bumped
+  `k8s-openapi` alone, which left both versions in the lock and failed every
+  build. kube 5.0's MSRV is 1.89, the workspace's. The lock drops `pem` 3,
+  the old `serde-saphyr` 0.0.29 and `granit-parser`, and adds `tower-http`
+  0.7 (kube's).
+- `crates/banlieue-operator/src/{workload,bootstrap}.rs` and their tests,
+  `tests/{e2e_provider_workload,e2e_provider_class,network_policies}.rs`:
+  `Deployment.spec` is no longer an `Option` in k8s-openapi 0.29 (upstream
+  1.37 made some `spec` fields required). Builders set it directly; readers
+  drop the `.as_ref().unwrap()`. No other type in use changed shape.
+- `deploy/crds/banlieue.io_providerclasses.yaml`, `docs/src/reference/api.md`:
+  regenerated; only the upstream `PolicyRule` field descriptions changed
+  (lowercase field names in Kubernetes 1.37's doc text). No schema change.
+
+### Why
+Keeps kube current (watcher EOF recovery, `Retry-After` overflow fix,
+impersonation headers) and unblocks Dependabot's kube-ecosystem group.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+- Re-applying `banlieue.io_providerclasses.yaml` is optional (descriptions only).
+
 ## [2026-11-07 12:00] - Roadmap 20: Firecracker provider, the sandbox backend
 
 **Author:** Erick Bourgeois
@@ -104,7 +179,36 @@ static segment was invisible to the consumer looking for its address.
 - [ ] Config change only
 - [ ] Documentation only
 
-<<<<<<< Updated upstream
+## [2026-11-05 12:30] - Re-pin the pre-lay image's base: apt 3.0.4 (CVE-2026-109518)
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `Dockerfile.prelay`: `debian:13-slim` re-pinned from `sha256:f6b08b09…` to
+  `sha256:a72b4433…`, which carries `apt`/`libapt-pkg7.0` 3.0.4. The
+  pre-lay image's Grype gate (ADR-0113, *a Grype gate for the pre-lay
+  image*) failed on #142's run: CVE-2026-109518, High, fixed in apt 3.0.4,
+  in the **base image** (apt is not one of the packages the Dockerfile
+  installs), so a cache-free rebuild could not have cleared it.
+
+### Verified
+- `dpkg-query` in each base: the old pin has apt 3.0.3, the new 3.0.4.
+- Grype 0.118.0 against the new base, `--only-fixed --fail-on high`: no
+  vulnerabilities found, exit 0. CI rebuilds the image and gates it on the
+  pull request.
+
+### Why
+The gate worked as designed: Debian fixed a high in a package the image
+ships. A release waits for the gate, so v0.4.14 could not publish until the
+base moved.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+- The next release's `banlieue-prelay` image gets the new base.
+
 ## [2026-11-05 06:00] - ADR-0108 accepted; ADR-0049 amended: SPIRE attestation, status.nonce retired
 
 **Author:** Erick Bourgeois
@@ -157,37 +261,6 @@ does not exist. ADR-0108 had waited only on these items.
 - [x] Requires cluster rollout (controller image)
 - [ ] Config change only
 - [ ] Documentation only
-=======
-## [2026-11-05 12:30] - Re-pin the pre-lay image's base: apt 3.0.4 (CVE-2026-109518)
-
-**Author:** Erick Bourgeois
-
-### Fixed
-- `Dockerfile.prelay`: `debian:13-slim` re-pinned from `sha256:f6b08b09…` to
-  `sha256:a72b4433…`, which carries `apt`/`libapt-pkg7.0` 3.0.4. The
-  pre-lay image's Grype gate (ADR-0113, *a Grype gate for the pre-lay
-  image*) failed on #142's run: CVE-2026-109518, High, fixed in apt 3.0.4,
-  in the **base image** (apt is not one of the packages the Dockerfile
-  installs), so a cache-free rebuild could not have cleared it.
-
-### Verified
-- `dpkg-query` in each base: the old pin has apt 3.0.3, the new 3.0.4.
-- Grype 0.118.0 against the new base, `--only-fixed --fail-on high`: no
-  vulnerabilities found, exit 0. CI rebuilds the image and gates it on the
-  pull request.
-
-### Why
-The gate worked as designed: Debian fixed a high in a package the image
-ships. A release waits for the gate, so v0.4.14 could not publish until the
-base moved.
-
-### Impact
-- [ ] Breaking change
-- [ ] Requires cluster rollout
-- [ ] Config change only
-- [ ] Documentation only
-- The next release's `banlieue-prelay` image gets the new base.
->>>>>>> Stashed changes
 
 ## [2026-11-05 01:00] - Every NoCloud seed carries user-data; static VMs without userData stayed on DHCP (ADR-0054 amended)
 
