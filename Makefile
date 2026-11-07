@@ -1164,7 +1164,7 @@ set-version-test: ## Prove set-version changes the workspace version (and only i
 # version from the environment instead. Keep it equal to the version
 # k8s-openapi's `latest` feature selects in the workspace dependency.
 PUBLISHED_CRATE ?= banlieue-api
-K8S_OPENAPI_PACKAGE_VERSION ?= 1.36
+K8S_OPENAPI_PACKAGE_VERSION ?= 1.37
 CRATES_IO_API ?= https://crates.io/api/v1
 CRATES_IO_USER_AGENT ?= banlieue-release (https://github.com/firestoned/banlieue)
 

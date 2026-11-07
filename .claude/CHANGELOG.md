@@ -1,5 +1,22 @@
 # Changelog
 
+## [2026-11-07 23:00] - crate-package builds banlieue-api against Kubernetes 1.37, as the workspace does
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `Makefile`: `K8S_OPENAPI_PACKAGE_VERSION` 1.36 -> 1.37. Its comment says to
+  keep it equal to the version k8s-openapi's `latest` feature selects, and
+  k8s-openapi 0.29 (the kube 5 bump, #150) sets `latest = ["v1_37"]`. The
+  packaged `banlieue-api` (`make crate-package`, the build a crates.io
+  consumer gets) was still checked against 1.36 types.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only (build)
+- [ ] Documentation only
+
 ## [2026-11-07 22:00] - Record Kairos's own unlock failure in the isolation test (roadmap 18 phase B)
 
 **Author:** Erick Bourgeois
