@@ -242,3 +242,100 @@ fn cloud_hypervisor_provider_example_matches_the_type() {
         .expect("the example shows spec.scheduling.cpuOvercommitRatio");
     assert!((MIN_CPU_OVERCOMMIT_RATIO..=MAX_CPU_OVERCOMMIT_RATIO).contains(&ratio));
 }
+
+/// The isolated sandbox segment (ADR-0109): every document parses with no
+/// dropped key, and the example keeps the decisions that make the segment
+/// isolated. The gateway class puts `egress` first (static, with the default
+/// route, Decision 6) and `sandbox` second on the segment; a sandbox has one
+/// NIC, on the segment; the pool draws addresses with **no gateway**
+/// (Decision 7), so a member has no default route.
+#[test]
+fn isolated_segment_example_matches_the_types() {
+    use banlieue_api::banlieue::{Provider, VMClass, VirtualMachine, VirtualMachinePool};
+
+    const SEGMENT: &str = "sandbox-segment";
+    let path = format!("{EXAMPLES}/25-isolated-sandbox-segment.yaml");
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
+    let mut seen = Vec::new();
+
+    for text in yaml_documents(&text) {
+        let doc: serde_json::Value = serde_saphyr::from_str(&text).expect("valid YAML");
+        let kind = doc["kind"].as_str().expect("kind").to_string();
+        let name = doc["metadata"]["name"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        let spec = doc.get("spec").cloned();
+        match kind.as_str() {
+            "Provider" => {
+                let p: Provider = serde_json::from_value(doc.clone()).expect("Provider");
+                assert_no_dropped_keys(&spec.unwrap(), &p.spec);
+                let names: Vec<&str> = p
+                    .spec
+                    .capabilities
+                    .network_classes
+                    .iter()
+                    .map(|c| c.name.as_str())
+                    .collect();
+                assert!(
+                    names.contains(&SEGMENT),
+                    "the Provider must offer the segment: {names:?}"
+                );
+                assert!(
+                    names.len() >= 2,
+                    "and a routable class for the gateways' egress"
+                );
+            }
+            "VMClass" => {
+                let c: VMClass = serde_json::from_value(doc.clone()).expect("VMClass");
+                assert_no_dropped_keys(&spec.unwrap(), &c.spec);
+                let nics = &c.spec.network.interfaces;
+                if name.contains("gateway") {
+                    assert_eq!(nics.len(), 2, "a gateway has two NICs");
+                    assert_ne!(nics[0].network_class, SEGMENT, "egress first");
+                    assert!(
+                        nics[0]
+                            .ipam
+                            .static_
+                            .as_ref()
+                            .is_some_and(|s| s.gateway.is_some()),
+                        "egress is static and carries the default route"
+                    );
+                    assert_eq!(
+                        nics[1].network_class, SEGMENT,
+                        "sandbox second, on the segment"
+                    );
+                } else {
+                    assert_eq!(nics.len(), 1, "a sandbox has one NIC");
+                    assert_eq!(nics[0].network_class, SEGMENT);
+                }
+            }
+            "VirtualMachine" => {
+                let v: VirtualMachine =
+                    serde_json::from_value(doc.clone()).expect("VirtualMachine");
+                assert_no_dropped_keys(&spec.unwrap(), &v.spec);
+            }
+            "VirtualMachinePool" => {
+                let pool: VirtualMachinePool =
+                    serde_json::from_value(doc.clone()).expect("VirtualMachinePool");
+                assert_no_dropped_keys(&spec.unwrap(), &pool.spec);
+                let addressing = pool.spec.addressing.as_ref().expect("static addressing");
+                assert!(
+                    addressing.gateway.is_none(),
+                    "a sandbox member has no default route (ADR-0109 Decision 7)"
+                );
+            }
+            _ => {}
+        }
+        seen.push(kind);
+    }
+    for kind in [
+        "Provider",
+        "VMClass",
+        "VirtualMachine",
+        "VirtualMachinePool",
+        "ConfigMap",
+    ] {
+        assert!(seen.iter().any(|k| k == kind), "example lacks a {kind}");
+    }
+}

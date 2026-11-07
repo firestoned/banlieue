@@ -46,15 +46,7 @@ mod tests {
     }
 
     fn container(deployment: &Deployment) -> &k8s_openapi::api::core::v1::Container {
-        &deployment
-            .spec
-            .as_ref()
-            .unwrap()
-            .template
-            .spec
-            .as_ref()
-            .unwrap()
-            .containers[0]
+        &deployment.spec.template.spec.as_ref().unwrap().containers[0]
     }
 
     // ----------------------------------------------------------------------
@@ -117,7 +109,7 @@ mod tests {
     fn deployment_defaults_to_a_single_replica() {
         let class = class_spec();
         let deployment = build_deployment(&inputs(&class));
-        assert_eq!(deployment.spec.as_ref().unwrap().replicas, Some(1));
+        assert_eq!(deployment.spec.replicas, Some(1));
     }
 
     #[test]
@@ -125,21 +117,14 @@ mod tests {
         let mut class = class_spec();
         class.replicas = Some(2);
         let deployment = build_deployment(&inputs(&class));
-        assert_eq!(deployment.spec.as_ref().unwrap().replicas, Some(2));
+        assert_eq!(deployment.spec.replicas, Some(2));
     }
 
     #[test]
     fn deployment_binds_the_per_instance_service_account() {
         let class = class_spec();
         let deployment = build_deployment(&inputs(&class));
-        let pod_spec = deployment
-            .spec
-            .as_ref()
-            .unwrap()
-            .template
-            .spec
-            .as_ref()
-            .unwrap();
+        let pod_spec = deployment.spec.template.spec.as_ref().unwrap();
         assert_eq!(
             pod_spec.service_account_name.as_deref(),
             Some("banlieue-provider-vsphere-prod-vc")
@@ -154,15 +139,7 @@ mod tests {
     fn deployment_exposes_its_own_service_account_name_via_the_downward_api() {
         let class = class_spec();
         let deployment = build_deployment(&inputs(&class));
-        let env = deployment
-            .spec
-            .as_ref()
-            .unwrap()
-            .template
-            .spec
-            .as_ref()
-            .unwrap()
-            .containers[0]
+        let env = deployment.spec.template.spec.as_ref().unwrap().containers[0]
             .env
             .as_ref()
             .expect("container must carry downward-API env");
@@ -194,7 +171,7 @@ mod tests {
     fn deployment_selector_matches_its_pod_template_labels() {
         let class = class_spec();
         let deployment = build_deployment(&inputs(&class));
-        let spec = deployment.spec.as_ref().unwrap();
+        let spec = &deployment.spec;
         let selector = spec.selector.match_labels.as_ref().unwrap();
         let template_labels = spec
             .template
@@ -232,14 +209,7 @@ mod tests {
     fn deployment_pod_runs_as_non_root() {
         let class = class_spec();
         let deployment = build_deployment(&inputs(&class));
-        let pod_spec = deployment
-            .spec
-            .as_ref()
-            .unwrap()
-            .template
-            .spec
-            .as_ref()
-            .unwrap();
+        let pod_spec = deployment.spec.template.spec.as_ref().unwrap();
         let security = pod_spec.security_context.as_ref().unwrap();
         assert_eq!(security.run_as_non_root, Some(true));
     }

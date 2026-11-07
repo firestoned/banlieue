@@ -91,6 +91,12 @@ Warm pools, single-use claims, the identity layer above them, and Cluster API.
     `ttlSeconds`, why release is always deletion, and why `subject` must
     never carry a credential.
 
+- :material-lan-disconnect: **[Isolated Sandbox Segment](isolated-sandbox-segment.md)**
+
+    Put sandboxes on a segment with no router and let them out only through
+    gateway VMs: the network classes, the two-NIC gateway, a pool with no
+    default route, and how to check it is isolated.
+
 - :material-shield-account: **[Sandbox Identity with mediatore](sandbox-identity-mediatore.md)**
 
     What happens *after* the bind: the companion broker that turns a claim

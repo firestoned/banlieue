@@ -171,7 +171,8 @@ fn deployed_components() -> BTreeSet<String> {
             serde_saphyr::from_str(&text).unwrap_or_else(|e| panic!("{}: {e}", manifest.display()));
         let labels = deployment
             .spec
-            .and_then(|s| s.template.metadata)
+            .template
+            .metadata
             .and_then(|m| m.labels)
             .unwrap_or_default();
         let c = labels

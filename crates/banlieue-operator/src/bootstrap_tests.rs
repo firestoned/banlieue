@@ -536,8 +536,6 @@ mod tests {
 
         let container = &manifests.deployments[0]
             .spec
-            .as_ref()
-            .unwrap()
             .template
             .spec
             .as_ref()
@@ -1188,8 +1186,6 @@ mod tests {
     fn container_image(deployment: &Deployment) -> String {
         deployment
             .spec
-            .as_ref()
-            .expect("spec")
             .template
             .spec
             .as_ref()
@@ -1900,8 +1896,6 @@ mod tests {
             let install = build_role_install(&role, &opts).unwrap();
             let args = install.deployments[0]
                 .spec
-                .as_ref()
-                .unwrap()
                 .template
                 .spec
                 .as_ref()

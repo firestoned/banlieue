@@ -516,7 +516,7 @@ pub fn build_deployment(inputs: &WorkloadInputs<'_>) -> Deployment {
             owner_references: inputs.owner_for(inputs.workload_is_owned()),
             ..Default::default()
         },
-        spec: Some(DeploymentSpec {
+        spec: DeploymentSpec {
             replicas: Some(inputs.class.replicas_or_default()),
             selector: LabelSelector {
                 match_labels: Some(selector_labels(inputs.provider_name)),
@@ -530,7 +530,7 @@ pub fn build_deployment(inputs: &WorkloadInputs<'_>) -> Deployment {
                 spec: Some(build_pod_spec(inputs)),
             },
             ..Default::default()
-        }),
+        },
         ..Default::default()
     }
 }

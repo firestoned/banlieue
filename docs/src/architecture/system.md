@@ -53,7 +53,7 @@ flowchart LR
     database-kine-datastore["kine datastore (external SQL, operator-provided)"]
     network-oidc-issuer["OIDC Token Issuer (JWKS / discovery)"]
     service-sandbox-broker["Sandbox Broker (planned, roadmap phase C — not shipped by banlieue)"]
-    service-in-guest-agent["In-guest agent (separate repository — not built)"]
+    service-in-guest-agent["In-guest agent (mediatore, separate repository)"]
     service-provider-cloud-hypervisor["banlieue-provider-cloud-hypervisor"]
     service-cloud-hypervisor-vmm["Cloud Hypervisor VMM (one per guest)"]
     network-cloud-hypervisor-host["Cloud Hypervisor KVM Host"]
@@ -66,6 +66,8 @@ flowchart LR
     service-otel-collector["OpenTelemetry collector (optional)"]
     actor-rust-api-consumer["Rust API consumer"]
     service-crates-io["crates.io (external)"]
+    network-sandbox-segment["Sandbox segment (layer 2, no router)"]
+    service-egress-gateway["Egress gateway VM (mediatore image)"]
     subgraph sg_system-banlieue-binary [System Banlieue Binary]
         service-banlieue-controller
         service-banlieue-operator
@@ -164,6 +166,11 @@ flowchart LR
     service-provider-cloud-hypervisor -->|HTTPS| service-otel-collector
     actor-rust-api-consumer -->|HTTPS| service-crates-io
     actor-rust-api-consumer -->|HTTPS| service-kubernetes-api
+    service-in-guest-agent -->|HTTPS| service-egress-gateway
+    subgraph sg_network-sandbox-segment [Network Sandbox Segment]
+        service-in-guest-agent
+        service-egress-gateway
+    end
 ```
 
 <sub>Source: nodes and relationships in `architecture.json`.</sub>

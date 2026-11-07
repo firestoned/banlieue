@@ -1,0 +1,257 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# An isolated sandbox segment with egress through gateway VMs (ADR-0109),
+# on libvirt.
+#
+# Sandboxes live on a layer-2 segment with no router: they can reach each
+# other and the gateways, nothing else. Each gateway is an ordinary
+# VirtualMachine with two NICs: `egress` on a routable network (static, the
+# default route) and `sandbox` on the segment. The gateway software (Envoy,
+# SPIRE, the allowlist) is image content, not a banlieue kind (ADR-0108,
+# ADR-0109 Decision 5); mediatore builds it (its ADR-0028). banlieue's part is
+# the topology below, and every field in it exists already.
+#
+# Addresses are placeholders: the routable side is the documentation range
+# 192.0.2.0/24, the segment 10.200.0.0/24. In production, Decision 1 takes
+# one /19 per environment from 100.64.0.0/10.
+#
+# THE SEGMENT ITSELF IS HOST CONFIGURATION
+#
+#   On libvirt it is an isolated network: no <forward>, so libvirt rejects
+#   anything forwarded off its bridge, and no <dhcp> or <dns>, so members
+#   take only the addresses the pool gives them. On the host:
+#
+#     <network>
+#       <name>sandbox-segment</name>
+#       <bridge name='virbr-sandbox'/>
+#       <!-- the host's own address on the segment; omit the <ip> element
+#            entirely if nothing on the host must be reachable from it -->
+#       <ip address='10.200.0.1' netmask='255.255.255.0'/>
+#     </network>
+#
+#     virsh net-define sandbox-segment.xml && virsh net-start sandbox-segment
+#     virsh net-autostart sandbox-segment
+#
+#   On vSphere it is a port group on a VLAN with no SVI, trunked on every
+#   host (Decision 3: a zone is listed only after a two-host test passes).
+#
+# KAIROS GUESTS SET THEIR OWN ADDRESS
+#
+#   Kairos applies no cloud-init network-config from the NoCloud seed, so
+#   each guest writes a networkd file from the placeholders banlieue renders
+#   into its user-data (${IP}, ${PREFIX}, ${GATEWAY}, ${DNS}), from the first
+#   static interface (ADR-0114 Decision 4). The two ConfigMaps below carry
+#   those stages. A cloud-init image needs neither: it gets the address from
+#   the seed. An agentless static guest reports its address as
+#   `addressSource: Static` (declared, not observed; ADR-0114 amendment).
+---
+apiVersion: banlieue.io/v1alpha1
+kind: Provider
+metadata:
+  name: libvirt-sandbox-host
+  namespace: banlieue-system
+  labels:
+    env: sandbox
+spec:
+  providerClassRef:
+    name: libvirt
+  connection:
+    endpoint: qemu+tls://kvm-sandbox.example/system
+    credentialsRef:
+      name: libvirt-sandbox-creds
+    caBundle:
+      configMapRef:
+        name: libvirt-sandbox-ca
+  capabilities:
+    storageClasses:
+      - name: standard
+        target:
+          pool: default
+    networkClasses:
+      # Routable: the gateways' egress side, and nothing else in this example.
+      - name: egress-nat
+        target:
+          network: default
+      # The segment: an isolated libvirt network (see the header).
+      - name: sandbox-segment
+        target:
+          network: sandbox-segment
+    features:
+      - vtpm
+---
+# A gateway: `egress` FIRST, so it is the interface the placeholders and
+# guestinfo describe and the one that carries the default route; `sandbox`
+# second, on the segment, with its fixed address set by the gateway image
+# (ADR-0109 Decision 6). IP forwarding stays off in the image: a gateway
+# terminates each connection and opens a new one, it never routes.
+apiVersion: banlieue.io/v1alpha1
+kind: VMClass
+metadata:
+  name: sandbox-gateway
+spec:
+  firmware: efi
+  tpmEnabled: true
+  features:
+    - vtpm
+  hardware:
+    cpus: 2
+    memoryMiB: 2048
+    disks:
+      - name: os
+        provisioning: thin
+        sizeGiB: 20
+        storageClass: standard
+  network:
+    interfaces:
+      - name: egress
+        networkClass: egress-nat
+        ipam:
+          static:
+            prefix: 24
+            gateway: 192.0.2.1
+            nameservers:
+              - 192.0.2.53
+      - name: sandbox
+        networkClass: sandbox-segment
+        ipam: {}
+---
+# A sandbox: one NIC, on the segment. No gateway and no resolver: members
+# reach the gateways by address and resolve names through them (Decision 7).
+apiVersion: banlieue.io/v1alpha1
+kind: VMClass
+metadata:
+  name: sandbox-member
+spec:
+  firmware: efi
+  tpmEnabled: true
+  features:
+    - vtpm
+  hardware:
+    cpus: 2
+    memoryMiB: 4096
+    disks:
+      - name: os
+        provisioning: thin
+        sizeGiB: 20
+        storageClass: standard
+  network:
+    interfaces:
+      - name: eth0
+        networkClass: sandbox-segment
+        ipam: {}
+---
+# Per-VM user-data for a Kairos gateway: the egress address from the
+# placeholders. Match the egress NIC by its name in the guest; on banlieue's
+# libvirt domains the first interface is `ens2` (check yours).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sandbox-gateway-egress
+  namespace: banlieue-system
+data:
+  user-data: |
+    #cloud-config
+    stages:
+      initramfs:
+        - name: egress-static-address
+          files:
+            - path: /etc/systemd/network/10-egress.network
+              permissions: 0644
+              content: |
+                [Match]
+                Name=ens2
+                [Network]
+                Address=${IP}/${PREFIX}
+                Gateway=${GATEWAY}
+                DNS=192.0.2.53
+---
+# Per-member user-data for a Kairos sandbox: the address the pool drew, no
+# gateway, no DNS.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sandbox-member-address
+  namespace: banlieue-system
+data:
+  user-data: |
+    #cloud-config
+    stages:
+      initramfs:
+        - name: sandbox-static-address
+          files:
+            - path: /etc/systemd/network/10-static.network
+              permissions: 0644
+              content: |
+                [Match]
+                Name=en* eth*
+                [Network]
+                Address=${IP}/${PREFIX}
+---
+# One of the gateways. Decision 4 runs three per environment, each with its
+# own egress address; repeat with gateway-02 and gateway-03.
+apiVersion: banlieue.io/v1alpha1
+kind: VirtualMachine
+metadata:
+  name: sandbox-gateway-01
+  namespace: banlieue-system
+spec:
+  classRef:
+    name: sandbox-gateway
+  imageRef:
+    name: sandbox-gateway-image # your gateway image (Envoy, SPIRE, nftables)
+  placement:
+    providerSelector:
+      matchLabels:
+        env: sandbox
+  networkOverrides:
+    - name: egress
+      static:
+        address: 192.0.2.21
+        prefix: 24
+        gateway: 192.0.2.1
+        nameservers:
+          - 192.0.2.53
+  userData:
+    configMapRef:
+      name: sandbox-gateway-egress
+      key: user-data
+  desiredPowerState: PoweredOn
+  migrationPolicy: never
+---
+# The sandboxes: a pool on the segment, each member drawing a static
+# address with no gateway. Keep the range clear of the gateways' `sandbox`
+# addresses (here .11 to .13, set in their image).
+apiVersion: banlieue.io/v1alpha1
+kind: VirtualMachinePool
+metadata:
+  name: sandbox-pool-segment
+  namespace: banlieue-system
+spec:
+  warmReplicas: 2
+  maxReplicas: 6
+  readiness: GuestReady
+  provisioningTimeoutSeconds: 1800
+  addressing:
+    interface: eth0
+    pool:
+      - 10.200.0.32-10.200.0.95
+    prefix: 24
+  template:
+    labels:
+      app.kubernetes.io/part-of: sandbox-pool-segment
+    spec:
+      classRef:
+        name: sandbox-member
+      imageRef:
+        name: sandbox-member-image # your sandbox image (first-boot sealing)
+      placement:
+        providerSelector:
+          matchLabels:
+            env: sandbox
+      userData:
+        configMapRef:
+          name: sandbox-member-address
+          key: user-data
+      desiredPowerState: PoweredOn
+      migrationPolicy: never

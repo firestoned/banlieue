@@ -1215,7 +1215,7 @@ pub fn build_deployment(role: &InstallRole, opts: &InstallOptions) -> Deployment
             labels: Some(role_labels.clone()),
             ..Default::default()
         },
-        spec: Some(DeploymentSpec {
+        spec: DeploymentSpec {
             replicas: Some(1),
             selector: LabelSelector {
                 match_labels: Some(selector),
@@ -1245,7 +1245,7 @@ pub fn build_deployment(role: &InstallRole, opts: &InstallOptions) -> Deployment
                 }),
             },
             ..Default::default()
-        }),
+        },
         ..Default::default()
     }
 }

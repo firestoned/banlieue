@@ -617,7 +617,7 @@
     {
       "unique-id": "service-in-guest-agent",
       "node-type": "service",
-      "name": "In-guest agent (separate repository \u2014 not built)",
+      "name": "In-guest agent (mediatore, separate repository)",
       "description": "Runs inside a sandbox VM, receives the subject's credential over an attested channel, and verifies it before starting any workload (ADR-0049). Deliberately NOT a banlieue binary: its release cadence is the image's, nothing in banlieue imports it, and banlieue's side of the contract is the subject fields it publishes on a claim (subject.issuer, subject.id) plus the mirrored EK certificate and the Provider's trust anchors; the guest attests through SPIRE's TPM node attestation (ADR-0049, amended 2026-11-05). Its keys are generated on the member's first boot, onto a sealed partition, never shipped in an image (ADR-0108). It checks iss against subject.issuer, the token's subject claim against subject.id, and aud against its OWN configured audience -- never one read from the claim, since whoever wrote the claim would then choose the audience and a token minted for any other service would pass. A failed handshake leaves the sandbox unused and reaped: there is no partial-trust mode, because a sandbox that ran unattested is indistinguishable afterwards from one that did not.",
       "interfaces": [
         {
@@ -791,6 +791,28 @@
       "node-type": "service",
       "name": "crates.io (external)",
       "description": "The Rust package registry. The release run of build.yaml publishes banlieue-api there under the release's version, from a job that alone reads the CARGO_REGISTRY_TOKEN secret (ADR-0100). Uploads are immutable (a bad version can be yanked, not replaced) and carry no Sigstore signature or SLSA provenance, unlike the binary and images (ADR-0006)."
+    },
+    {
+      "unique-id": "network-sandbox-segment",
+      "node-type": "network",
+      "name": "Sandbox segment (layer 2, no router)",
+      "description": "ADR-0109. The segment sandbox pool members live on: layer 2 only, with no gateway, no route to or from any other network, no DHCP and no resolver. A member reaches exactly two things, other members and the egress gateways. banlieue names it as a literal network-class target on the Provider (a libvirt isolated network with no <forward>, whose bridge libvirt rejects forwarded traffic on; a vSphere port group on a VLAN with no SVI) and creates, changes and deletes nothing about it; roadmap 19's VMNetwork will. Members take static addresses from VirtualMachinePool.spec.addressing with no gateway, so they have no default route; Kairos members write them from the ADR-0024 user-data placeholders (ADR-0114 Decision 4). Run live on libvirt 2026-11-05 (mediatore's live proof): forwarded traffic off the bridge was rejected."
+    },
+    {
+      "unique-id": "service-egress-gateway",
+      "node-type": "service",
+      "name": "Egress gateway VM (mediatore image)",
+      "description": "ADR-0109 Decision 4, amended; mediatore ADR-0028. Three per environment, each an ordinary VirtualMachine with two NICs: egress on a routable network (static, the default route, first in its VMClass) and sandbox on the segment (its fixed address set by the image, Decision 6; banlieue can set it on vSphere since ADR-0111). IP forwarding is off: Envoy terminates each sandbox connection and opens its own from the egress address, authorizing every CONNECT on the caller's claim identity (mutual TLS, a SPIFFE identity from a local SPIRE agent) and the requested authority, against a per-claim allowlist from the broker. It listens on the sandbox interface only. All of it is image content, not a banlieue kind (ADR-0108, ADR-0109 Decision 5): banlieue provisions the VM and nothing else.",
+      "interfaces": [
+        {
+          "unique-id": "gateway-egress-proxy",
+          "definition-url": "https://calm.finos.org/release/1.2/prototype/interface/http-endpoint.json",
+          "config": {
+            "port": 8443,
+            "protocol": "HTTPS"
+          }
+        }
+      ]
     }
   ],
   "relationships": [
@@ -2093,6 +2115,37 @@
         }
       },
       "protocol": "HTTPS"
+    },
+    {
+      "unique-id": "rel-guest-egress-through-gateway",
+      "description": "Every outbound connection from a sandbox goes through an egress gateway over the segment: the guest's proxy opens mutual TLS to one of the three gateways (an ordered list from the broker, a random start, failover per connection; mediatore ADR-0028 Decision 7) and asks it to CONNECT to a host:port; the gateway authorizes it per claim and opens its own connection from its routable address. No sandbox address reaches the routable network and no route or NAT exists. A request outside the claim's rules was refused live (403 outside_rules, 2026-11-05).",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "service-in-guest-agent"
+          },
+          "destination": {
+            "node": "service-egress-gateway",
+            "interfaces": [
+              "gateway-egress-proxy"
+            ]
+          }
+        }
+      },
+      "protocol": "HTTPS"
+    },
+    {
+      "unique-id": "rel-sandbox-segment-hosts-guests",
+      "description": "Sandbox members run on the segment (one NIC each, no default route); the egress gateways have one NIC on it and one on a routable network, which makes them the one component on both sides of that boundary (ADR-0109 Consequences).",
+      "relationship-type": {
+        "deployed-in": {
+          "container": "network-sandbox-segment",
+          "nodes": [
+            "service-in-guest-agent",
+            "service-egress-gateway"
+          ]
+        }
+      }
     }
   ],
   "flows": [
@@ -3190,6 +3243,23 @@
               "SI-10"
             ],
             "evidence": "docs/adr/0114-static-addressing-in-the-nocloud-seed.md, crates/banlieue-provider-sdk/src/cloudinit/network.rs, crates/banlieue-provider-sdk/src/cloudinit/mod.rs (seed_files), crates/banlieue-provider-libvirt/src/reconciler/libvirtmachine.rs, crates/banlieue-provider-cloud-hypervisor/src/plan.rs, crates/banlieue-provider-proxmox/src/network.rs, crates/banlieue-provider-sdk/src/status.rs (declared_addresses), crates/banlieue-provider-cloud-hypervisor/src/machine.rs (build_status)"
+          }
+        }
+      ]
+    },
+    "isolated-sandbox-segment": {
+      "description": "ADR-0109 (Accepted 2026-11-07). Sandboxes sit on a layer-2 segment with no router, no DHCP and no resolver, with static addresses and no default route, and leave it only through three two-NIC egress gateway VMs whose forwarding is off. banlieue's controls are the topology: a literal network-class target, a two-NIC gateway VMClass (egress first and static with the default route, sandbox second), a sandbox VMClass with one NIC on the segment, and a pool whose addressing carries no gateway. The gateways' software and hardening (Envoy, SPIFFE identity, allowlist, ip_forward=0, a listener on the sandbox interface only) is the image author's control (mediatore ADR-0028), as is the segment's host configuration.",
+      "requirements": [
+        {
+          "requirement-url": "https://github.com/firestoned/banlieue/blob/main/docs/adr/0109-isolated-sandbox-network-with-proxy-egress.md",
+          "config": {
+            "framework": "NIST SP 800-53 Rev. 5",
+            "controls": [
+              "SC-7",
+              "SC-7(5)",
+              "AC-4"
+            ],
+            "evidence": "docs/adr/0109-isolated-sandbox-network-with-proxy-egress.md, examples/25-isolated-sandbox-segment.yaml, crates/banlieue-api/tests/examples.rs (isolated_segment_example_matches_the_types), docs/src/guides/isolated-sandbox-segment.md"
           }
         }
       ]

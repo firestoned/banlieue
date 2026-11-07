@@ -104,14 +104,7 @@ async fn provider_lifecycle_creates_shapes_and_garbage_collects_its_workload() {
     );
 
     // ── Shape: the apiserver accepted it, but is it the right thing? ────────
-    let pod_spec = deployment
-        .spec
-        .as_ref()
-        .expect("Deployment spec")
-        .template
-        .spec
-        .as_ref()
-        .expect("pod spec");
+    let pod_spec = deployment.spec.template.spec.as_ref().expect("pod spec");
     let args = pod_spec.containers[0]
         .args
         .as_ref()
@@ -405,8 +398,9 @@ async fn the_libvirt_backend_produces_a_correctly_shaped_workload() {
 
     let args = deployment
         .spec
+        .template
+        .spec
         .as_ref()
-        .and_then(|s| s.template.spec.as_ref())
         .map(|p| p.containers[0].args.clone().unwrap_or_default())
         .expect("container args");
 

@@ -4,8 +4,9 @@ SPDX-License-Identifier: Apache-2.0
 -->
 # 0109: Isolated sandbox network, with egress through proxy VMs
 
-- **Status:** Proposed
-- **Date:** 2026-10-20
+- **Status:** Accepted
+- **Date:** 2026-11-07
+- **Proposed:** 2026-10-20
 - **Renumbered:** 2026-10-26, from 0103, which [ADR-0103](0103-digest-pinned-installs.md) already held.
 - **Deciders:** Erick Bourgeois
 - **Amended:** 2026-10-28 (Decision 4: the proxies run Envoy with a SPIFFE
@@ -222,3 +223,38 @@ decision; each changes which backend can carry it out.
    gets its address from the seed and a Kairos guest from the ADR-0024
    placeholders in its user-data. On a homelab without a trunked VLAN, a
    libvirt network with no `<forward>` plays the segment's part.
+
+## Accepted (2026-11-07)
+
+The design ran on a libvirt host (mediatore's live proof, 2026-11-05) and
+every deliverable the Consequences list now exists:
+
+- **Examples:** `examples/25-isolated-sandbox-segment.yaml`: the Provider's
+  two network classes, the two-NIC gateway class (`egress` first, static
+  with the default route; `sandbox` second), the one-NIC sandbox class, a
+  gateway `VirtualMachine`, the pool with no gateway in its addressing, and
+  the Kairos user-data stages. `crates/banlieue-api/tests/examples.rs`
+  (`isolated_segment_example_matches_the_types`) parses every document with
+  no dropped key and asserts those shapes.
+- **Guide:** `docs/src/guides/isolated-sandbox-segment.md`: the segment per
+  backend, the gateways, the pool, Kairos addressing, how to check
+  isolation, what has run live.
+- **CALM:** a `network-sandbox-segment` node, a `service-egress-gateway`
+  node, the guest-to-gateway relationship, and the
+  `isolated-sandbox-segment` control.
+- **Threat model:** TB-18 (sandbox segment → egress gateway → routable
+  network), §7.29, two §8 risks.
+- **Live:** on libvirt, an isolated network (no `<forward>`, `<dhcp>` or
+  `<dns>`) as the segment; three two-NIC gateways; a pool drawing static
+  addresses through the ADR-0114 placeholders. A member attested through a
+  gateway's relay, loaded a host table dropping all but the gateways, and
+  tunnelled to its egress proxy through them; a request outside the claim's
+  rules was refused (`403 outside_rules`); the host's firewall rejected
+  traffic forwarded off the segment's bridge (counted).
+
+**Open, and not banlieue's:** an *allowed* request completing through a
+gateway's Envoy. That run stopped at an expired upstream credential (an
+environment fault, recorded in mediatore's live-proof log); mediatore proves
+it on its next claim, under its ADR-0028. banlieue's part (the topology and
+its addressing) is what this ADR decides, and it has run.
+

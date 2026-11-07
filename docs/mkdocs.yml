@@ -208,6 +208,7 @@ nav:
           - VirtualMachine Claims: guides/virtualmachine-claims.md
           - Testing claim authorization: guides/testing-claim-authorization.md
           - Sandbox Identity with mediatore: guides/sandbox-identity-mediatore.md
+          - Isolated Sandbox Segment: guides/isolated-sandbox-segment.md
           - Environment / Provider Isolation: guides/environment-provider-isolation.md
           - Cluster API (clusterctl): guides/cluster-api.md
       - Images:

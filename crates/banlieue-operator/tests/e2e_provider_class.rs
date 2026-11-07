@@ -217,8 +217,9 @@ async fn editing_the_class_image_rolls_the_existing_workload() {
     .await;
     let original_image = original
         .spec
+        .template
+        .spec
         .as_ref()
-        .and_then(|s| s.template.spec.as_ref())
         .map(|p| p.containers[0].image.clone())
         .expect("initial image");
 
@@ -243,8 +244,9 @@ async fn editing_the_class_image_rolls_the_existing_workload() {
             let deployment = api.get_opt(E2E_WORKLOAD).await.ok().flatten()?;
             let image = deployment
                 .spec
+                .template
+                .spec
                 .as_ref()
-                .and_then(|s| s.template.spec.as_ref())
                 .map(|p| p.containers[0].image.clone())?;
             image
                 .as_deref()
