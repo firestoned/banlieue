@@ -1,5 +1,34 @@
 # Changelog
 
+## [2026-11-08 00:30] - libvirt holds an ARP-observed address while the domain runs
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `crates/banlieue-provider-libvirt/src/reconciler/libvirtmachine.rs`:
+  `holds_arp_observation`, used by `build_status`. libvirt's ARP source
+  reports a neighbour only while the host's entry is `REACHABLE` or `STALE`
+  (`virarptable.c`); the kernel cycles a live entry through `DELAY`/`PROBE`,
+  and a reconcile landing then saw nothing. A machine observed only by ARP
+  flapped: `addressSource` between `arpTable` and `static` (a static guest,
+  through the ADR-0114 declared fallback), or `status.addresses` between
+  the address and empty (no agent, no lease). The last ARP observation now
+  stands while the domain runs, until another source answers or the domain
+  stops, matching the Cloud Hypervisor provider's neighbour handling. Agent
+  and lease addresses are not held.
+- `libvirtmachine_tests.rs`: six tests (held when nothing answers, held
+  over the declared fallback, replaced by a new observation, dropped when
+  stopped, agent not held, the predicate).
+- `docs/adr/0050-libvirtmachine-domain-lifecycle.md`: a dated note under
+  Decision 8 with the measurement (three guests sampled every 5 s: the ARP
+  source missed exactly when the neighbour entry was in `DELAY`).
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (libvirt provider image)
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-11-07 23:30] - clusterctl metadata gains the 0.5 release series
 
 **Author:** Erick Bourgeois

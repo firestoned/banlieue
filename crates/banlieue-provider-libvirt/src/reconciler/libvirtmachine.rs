@@ -752,6 +752,36 @@ fn is_routable(addr: &str) -> bool {
     true
 }
 
+/// Whether `previous`'s ARP-observed addresses should stand over what this
+/// pass observed.
+///
+/// libvirt's ARP source reports a neighbour only while the host's entry is
+/// `REACHABLE` or `STALE` (`virarptable.c`), so a pass that lands while the
+/// kernel re-validates the entry (`DELAY`, `PROBE`) sees nothing, and the
+/// next pass sees it again. Holding the last observation while the domain
+/// runs keeps `status.addresses` from flapping, and keeps the declared
+/// fallback from relabelling an observed machine `Static`. The Cloud
+/// Hypervisor provider holds its neighbour addresses the same way. Only
+/// ARP is held: an agent or a lease that stops answering is news.
+///
+/// # Arguments
+/// * `previous` - the status published by an earlier pass
+/// * `observed` - what this pass saw
+///
+/// # Returns
+/// `true` when the domain is running, the previous addresses came from the
+/// ARP table, and this pass observed nothing from any source.
+pub fn holds_arp_observation(previous: &LibvirtMachineStatus, observed: &Observed) -> bool {
+    let observed_nothing = matches!(
+        observed.address_source,
+        None | Some(LibvirtAddressSource::Static)
+    );
+    observed.state.is_running()
+        && observed_nothing
+        && previous.address_source == Some(LibvirtAddressSource::ArpTable)
+        && !previous.addresses.is_empty()
+}
+
 /// Build the status for a successful convergence.
 fn build_status(
     machine: &LibvirtMachine,
@@ -770,8 +800,10 @@ fn build_status(
     };
     status.domain_uuid = Some(format_uuid(&observed.domain.uuid));
     status.observed_power_state = Some(to_power_state(observed.state));
-    status.addresses = observed.addresses.clone();
-    status.address_source = observed.address_source.clone();
+    if !holds_arp_observation(&status, observed) {
+        status.addresses = observed.addresses.clone();
+        status.address_source = observed.address_source.clone();
+    }
     status.failure_domain = machine.spec.failure_domain.clone();
     status.tpm_attached = machine.spec.tpm_enabled.then_some(true);
     status.guest_installed =
