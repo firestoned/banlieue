@@ -556,6 +556,112 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
+    // ARP observations are held while the domain runs
+    // ------------------------------------------------------------------
+
+    /// One `InternalIP` address.
+    fn internal_ip(addr: &str) -> MachineAddress {
+        MachineAddress {
+            address_type: MachineAddressType::InternalIP,
+            address: addr.to_string(),
+        }
+    }
+
+    /// A machine whose last published status came from the ARP table.
+    fn machine_seen_by_arp(addr: &str) -> LibvirtMachine {
+        let mut machine = machine_cr();
+        machine.status = Some(LibvirtMachineStatus {
+            addresses: vec![internal_ip(addr)],
+            address_source: Some(LibvirtAddressSource::ArpTable),
+            ..Default::default()
+        });
+        machine
+    }
+
+    /// libvirt's ARP source reports a neighbour only while the host's entry
+    /// is `REACHABLE` or `STALE` (`virarptable.c`), so a reconcile that lands
+    /// while the kernel re-validates it (`DELAY`, `PROBE`) sees nothing. That
+    /// gap must not retract an address a previous pass observed.
+    #[test]
+    fn a_running_machine_keeps_its_arp_address_when_no_source_answers() {
+        let machine = machine_seen_by_arp("192.0.2.40");
+        let observed = observed_running();
+        let st = build_status(&machine, &observed, 1);
+        assert_eq!(st.addresses, vec![internal_ip("192.0.2.40")]);
+        assert_eq!(st.address_source, Some(LibvirtAddressSource::ArpTable));
+    }
+
+    /// An observation beats a declaration (ADR-0114 amendment), including
+    /// one that is held: the declared fallback must not flip a machine ARP
+    /// has seen back to `Static` every time the entry is re-validated.
+    #[test]
+    fn a_held_arp_address_wins_over_the_declared_one() {
+        let machine = machine_seen_by_arp("192.0.2.40");
+        let mut observed = observed_running();
+        observed.addresses = vec![internal_ip("192.0.2.10")];
+        observed.address_source = Some(LibvirtAddressSource::Static);
+        let st = build_status(&machine, &observed, 1);
+        assert_eq!(st.addresses, vec![internal_ip("192.0.2.40")]);
+        assert_eq!(st.address_source, Some(LibvirtAddressSource::ArpTable));
+    }
+
+    /// A fresh observation replaces the held one.
+    #[test]
+    fn a_new_observation_replaces_a_held_arp_address() {
+        let machine = machine_seen_by_arp("192.0.2.40");
+        let mut observed = observed_running();
+        observed.addresses = vec![internal_ip("192.0.2.41")];
+        observed.address_source = Some(LibvirtAddressSource::ArpTable);
+        let st = build_status(&machine, &observed, 1);
+        assert_eq!(st.addresses, vec![internal_ip("192.0.2.41")]);
+    }
+
+    /// A stopped machine has no address, held or not.
+    #[test]
+    fn a_stopped_machine_drops_its_held_arp_address() {
+        let machine = machine_seen_by_arp("192.0.2.40");
+        let mut observed = observed_running();
+        observed.state = DomainState::ShutOff;
+        let st = build_status(&machine, &observed, 1);
+        assert!(st.addresses.is_empty());
+        assert!(st.address_source.is_none());
+    }
+
+    /// The predicate itself: it holds only a non-empty ARP observation of
+    /// a running domain that this pass saw nothing for.
+    #[test]
+    fn holds_arp_observation_needs_arp_running_and_nothing_observed() {
+        let seen = machine_seen_by_arp("192.0.2.40").status.unwrap_or_default();
+        let mut observed = observed_running();
+        assert!(holds_arp_observation(&seen, &observed));
+
+        observed.address_source = Some(LibvirtAddressSource::DhcpLease);
+        assert!(!holds_arp_observation(&seen, &observed));
+
+        let mut empty = seen.clone();
+        empty.addresses.clear();
+        assert!(!holds_arp_observation(&empty, &observed_running()));
+
+        assert!(!holds_arp_observation(
+            &LibvirtMachineStatus::default(),
+            &observed_running()
+        ));
+    }
+
+    /// Only ARP is held: it is the one source that is intermittent by
+    /// construction. An agent that stops answering is news.
+    #[test]
+    fn an_agent_address_is_not_held() {
+        let mut machine = machine_seen_by_arp("192.0.2.40");
+        if let Some(st) = machine.status.as_mut() {
+            st.address_source = Some(LibvirtAddressSource::GuestAgent);
+        }
+        let st = build_status(&machine, &observed_running(), 1);
+        assert!(st.addresses.is_empty());
+        assert!(st.address_source.is_none());
+    }
+
+    // ------------------------------------------------------------------
     // finalize
     // ------------------------------------------------------------------
 

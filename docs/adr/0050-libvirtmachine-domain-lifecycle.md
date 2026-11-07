@@ -163,6 +163,19 @@ reported success.
    work for libvirt-managed networks; ARP is best-effort on bridges. The
    chosen source is recorded on status so a wrong address is diagnosable.
 
+   *Note (2026-11-07):* ARP is also intermittent on libvirt's own networks.
+   libvirt reports a neighbour only while the host's entry is `REACHABLE`
+   or `STALE` (`src/util/virarptable.c`), and the kernel cycles a live
+   entry through `DELAY` and `PROBE` to re-validate it, so a pass can see
+   nothing for a guest the previous pass saw. Measured on a host with
+   three guests sampled every 5 s: each answered except in the samples its
+   entry was in `DELAY`. While the domain runs, an ARP-observed address
+   now stands until another source answers or the domain stops
+   (`holds_arp_observation`), as the Cloud Hypervisor provider already
+   holds its neighbour addresses; the declared fallback (ADR-0114
+   amendment) does not replace it. A guest that never exchanges traffic
+   with the host has no neighbour entry at all.
+
 9. **Controller dispatch by provider class.**
    `banlieue-controller`'s `infra.rs` gains a builder for `LibvirtMachine`
    beside `build_vsphere_machine`, selected by the resolved `Provider`'s
