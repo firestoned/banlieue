@@ -21,7 +21,14 @@
   stopped, agent not held, the predicate).
 - `docs/adr/0050-libvirtmachine-domain-lifecycle.md`: a dated note under
   Decision 8 with the measurement (three guests sampled every 5 s: the ARP
-  source missed exactly when the neighbour entry was in `DELAY`).
+  source missed exactly when the neighbour entry was in `DELAY`), and a
+  second note with the cause of ADR-0114's "ARP reported nothing": libvirt
+  reads only the first datagram of the neighbour dump (`virNetlinkGetNeighbor`
+  calls `nl_recv` once). Live on a libvirt host with 116 IPv4 neighbours:
+  two datagrams, the guest's entry always in the second, the ARP source
+  silent in every sample while the entry was `REACHABLE`/`STALE`.
+- `crates/banlieue-provider-libvirt/tests/live_cloudinit.rs`: the module
+  doc's ARP remark now names that cause.
 
 ### Impact
 - [ ] Breaking change

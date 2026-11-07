@@ -32,9 +32,13 @@
 //! carrying the address that can only have come from the seed's
 //! `network-config`. It needs a package mirror reachable through the
 //! network's gateway. (Found live: libvirt's ARP source reported nothing for
-//! such a guest even while it pinged its gateway, so it is no signal; and a
-//! guest left alone may send nothing to its gateway for minutes.) Pick an address on `LIBVIRT_NETWORK` that its DHCP
-//! server will not hand out, and the network's own gateway:
+//! such a guest even while the host's neighbour entry for it was
+//! `REACHABLE`. libvirt reads only the first datagram of the kernel's
+//! neighbour dump, so on a host with a large neighbour table most guests
+//! never appear; see ADR-0050 Decision 8. ARP is no signal here, and a
+//! guest left alone may send nothing to its gateway for minutes.) Pick an
+//! address on `LIBVIRT_NETWORK` that its DHCP server will not hand out, and
+//! the network's own gateway:
 //!
 //! ```sh
 //! LIBVIRT_STATIC_ADDRESS=<free address on the network> \

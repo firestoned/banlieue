@@ -176,6 +176,20 @@ reported success.
    amendment) does not replace it. A guest that never exchanges traffic
    with the host has no neighbour entry at all.
 
+   *Note (2026-11-07), a second cause:* libvirt reads only the **first
+   datagram** of the kernel's neighbour dump. `virNetlinkGetNeighbor`
+   (`src/util/virnetlink.c`) sends an `NLM_F_DUMP` request through
+   `virNetlinkTalk`, which calls `nl_recv` once, so entries the kernel puts
+   in later datagrams never reach `virArpTableGet`. A host on a busy LAN
+   has more neighbours than one datagram carries: measured on a host with
+   116 IPv4 neighbours, the dump came in two datagrams (56 and 70 entries),
+   the guest's entry was in the second in every sample, and the ARP source
+   answered in none, though the entry was `REACHABLE` or `STALE` for most of
+   a minute. This is the "ARP reported nothing" ADR-0114 recorded. banlieue
+   cannot fix it from the client side; on such a host ARP observes nothing,
+   and an agent or a lease is the only observation. Not yet reported
+   upstream.
+
 9. **Controller dispatch by provider class.**
    `banlieue-controller`'s `infra.rs` gains a builder for `LibvirtMachine`
    beside `build_vsphere_machine`, selected by the resolved `Provider`'s
