@@ -947,6 +947,13 @@ sudo scripts/prelay-kairos-raw.sh kairos-build.raw kairos-build-prelaid.raw 20
 sudo cp --sparse=always kairos-build-prelaid.raw /srv/banlieue/ch/images/
 ```
 
+For a test image whose boot you want to read, add kernel arguments with
+`PRELAY_EXTRA_CMDLINE` (written to `COS_OEM`'s `grubenv` as `extra_cmdline`).
+Kairos's own command line ends `console=ttyS0 console=tty1` and the last
+`console=` is the one the initramfs writes to, so
+`PRELAY_EXTRA_CMDLINE=console=ttyS0` puts the installed boot, unlock
+included, in the machine's `serial.log`.
+
 The script boots the image once under QEMU with no TPM and no network,
 running none of the image's own configuration (only AuroraBoot's reset and a
 throwaway admin user), so nothing is sealed and no stage of yours runs at

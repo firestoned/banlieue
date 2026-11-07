@@ -61,6 +61,12 @@
 //!
 //! `/run` is a tmpfs, so a probe read after a power-on is from that boot.
 //!
+//! **Step 3's evidence is differential here.** banlieue's libvirt domains
+//! attach the serial console as a pty, with no log, so unlike the Cloud
+//! Hypervisor suite this one cannot read Kairos's own unlock failure
+//! (`failed to unlock partition COS_PERSISTENT_LUKS`): it proves the copy
+//! never unlocked, and that the same disk still does under its own vTPM.
+//!
 //! Optional: `BANLIEUE_E2E_NAMESPACE` (default `banlieue-system`, and it
 //! must be the Provider's namespace).
 //!

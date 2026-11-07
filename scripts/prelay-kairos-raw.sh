@@ -55,6 +55,11 @@
 #                  match before anything is done to it (SEC-004)
 #   PRELAY_RESULT_FILE  where to write the output's sha256:<hex> when done
 #                  (the Job's /dev/termination-log)
+#   PRELAY_EXTRA_CMDLINE  kernel arguments added to every boot of the image,
+#                  as COS_OEM's grubenv `extra_cmdline`: for a test image,
+#                  `console=ttyS0` puts the installed system's kernel and
+#                  initramfs (where Kairos unlocks COS_PERSISTENT) on the
+#                  serial console (roadmap 18). No newline, no backslash.
 #
 # Needs: qemu-system-x86_64, sgdisk, losetup, blkid, mke2fs, mount, truncate.
 set -euo pipefail
@@ -105,6 +110,15 @@ grubenv_set() {
     printf '%s' "$content"
     printf '%*s' $((GRUBENV_BLOCK_BYTES - len)) '' | tr ' ' '#'
   } >"$file"
+}
+
+# check_extra_cmdline <value>: refuse a kernel command line that would corrupt
+# the grubenv line it is written to: a newline ends the variable early and a
+# backslash is grubenv's escape character. Empty is fine (nothing is set).
+check_extra_cmdline() {
+  local value=$1
+  [[ $value != *$'\n'* ]] || die "PRELAY_EXTRA_CMDLINE must not contain a newline"
+  [[ $value != *\\* ]] || die "PRELAY_EXTRA_CMDLINE must not contain a backslash"
 }
 
 # ensure_part_nodes <loopdev>: make sure /dev has a node for each partition
@@ -190,6 +204,7 @@ main() {
   }
   trap cleanup EXIT
 
+  check_extra_cmdline "${PRELAY_EXTRA_CMDLINE:-}"
   if [[ -n ${PRELAY_VERIFY_CHECKSUM:-} ]]; then
     say "verifying $input against $PRELAY_VERIFY_CHECKSUM"
     verify_checksum "$input" "$PRELAY_VERIFY_CHECKSUM"
@@ -259,6 +274,10 @@ main() {
   rm -f "$mnt"/*.yaml "$mnt"/*.yml "$mnt/grubcustom"
   cp -p "$work/oem"/* "$mnt/" 2>/dev/null || true
   grubenv_set "$mnt/grubenv" timeout 0
+  if [[ -n ${PRELAY_EXTRA_CMDLINE:-} ]]; then
+    grubenv_set "$mnt/grubenv" extra_cmdline "$PRELAY_EXTRA_CMDLINE"
+    say "extra kernel arguments on every boot: $PRELAY_EXTRA_CMDLINE"
+  fi
   say "COS_OEM now: $(ls "$mnt" | tr '\n' ' ')"
   umount "$mnt"
 

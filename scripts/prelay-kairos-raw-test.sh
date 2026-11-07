@@ -56,6 +56,20 @@ else
   echo "skip grub-editenv cross-check (not installed)"
 fi
 
+# ---- extra kernel command line (roadmap 18: capture the unlock failure) ----
+
+check "a plain command line is accepted" check_extra_cmdline 'console=ttyS0 console=tty1'
+check "an empty one is accepted (nothing set)" check_extra_cmdline ''
+check "a newline is refused (it would end the grubenv line)" bash -c "! (PRELAY_SOURCE_ONLY=1 source '$SCRIPT'; check_extra_cmdline \$'console=ttyS0\\nextra=1') 2>/dev/null"
+check "a backslash is refused (grubenv escapes with it)" bash -c "! (PRELAY_SOURCE_ONLY=1 source '$SCRIPT'; check_extra_cmdline 'console=ttyS0\\x') 2>/dev/null"
+grubenv_set "$env" extra_cmdline 'console=ttyS0 console=tty1'
+check "a command line with spaces is one variable" grep -qx 'extra_cmdline=console=ttyS0 console=tty1' "$env"
+check "and the timeout survives beside it" grep -qx 'timeout=5' "$env"
+check "and the block is still 1024 bytes" test "$(wc -c <"$env")" -eq 1024
+if command -v grub-editenv >/dev/null; then
+  check "grub-editenv reads the command line" bash -c "grub-editenv '$env' list | grep -qx 'extra_cmdline=console=ttyS0 console=tty1'"
+fi
+
 # ---- verify_checksum ------------------------------------------------------------
 
 printf 'kairos' >"$WORK/blob"
