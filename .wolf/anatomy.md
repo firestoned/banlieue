@@ -1,6 +1,6 @@
 # anatomy.md
 
-> Auto-maintained by OpenWolf. Last scanned: 2026-11-06T05:00:00.232Z
+> Auto-maintained by OpenWolf. Last scanned: 2026-11-07T11:00:00.272Z
 > Files: 513 tracked | Anatomy hits: 0 | Misses: 0
 
 ## ./
@@ -13,7 +13,7 @@
 - `cliff.toml` — SPDX-License-Identifier: Apache-2.0 (~699 tok)
 - `CODE_OF_CONDUCT.md` — Contributor Covenant Code of Conduct (~1470 tok)
 - `CONTRIBUTING.md` — Contributing to banlieue (~1439 tok)
-- `deny.toml` — cargo-deny configuration (~966 tok)
+- `deny.toml` — cargo-deny configuration (~1129 tok)
 - `Dockerfile` — Docker container definition (~959 tok)
 - `Dockerfile.chainguard` — SPDX-License-Identifier: Apache-2.0 (~770 tok)
 - `Dockerfile.prelay` — SPDX-License-Identifier: Apache-2.0 (~584 tok)
@@ -172,7 +172,7 @@
 - `cloud_hypervisor_machine_tests.rs` — Unit tests for `cloud_hypervisor_machine.rs`. (~3686 tok)
 - `cloud_hypervisor_machine.rs` — `infrastructure.banlieue.io/v1alpha1` CloudHypervisorMachine CRD (ADR-0062). (~4610 tok)
 - `libvirt_machine_tests.rs` — Unit tests for `libvirt_machine.rs`. (~4491 tok)
-- `libvirt_machine.rs` — `infrastructure.banlieue.io/v1alpha1` LibvirtMachine CRD (ADR-0050). (~6468 tok)
+- `libvirt_machine.rs` — `infrastructure.banlieue.io/v1alpha1` LibvirtMachine CRD (ADR-0050). (~6546 tok)
 - `mod.rs` — `infrastructure.banlieue.io/v1alpha1` API group. (~511 tok)
 - `proxmox_machine_tests.rs` — Unit tests for `proxmox_machine.rs`. (~3405 tok)
 - `proxmox_machine.rs` — `infrastructure.banlieue.io/v1alpha1` ProxmoxMachine CRD (ADR-0075). (~4619 tok)
@@ -452,12 +452,12 @@
 - `import_tests.rs` — Unit tests for `import.rs`, on real directories. The pull itself is (~660 tok)
 - `import.rs` — `banlieue provider cloud-hypervisor import`: put one registry image into (~1595 tok)
 - `lib.rs` — # banlieue-provider-cloud-hypervisor (~726 tok)
-- `machine_tests.rs` — Unit tests for `machine.rs`, driven against the strict `FakeHost`. (~12048 tok)
-- `machine.rs` — Converging one `CloudHypervisorMachine`, and tearing it down. (~5982 tok)
+- `machine_tests.rs` — Unit tests for `machine.rs`, driven against the strict `FakeHost`. (~12694 tok)
+- `machine.rs` — Converging one `CloudHypervisorMachine`, and tearing it down. (~6105 tok)
 - `neigh_tests.rs` — Unit tests for `neigh.rs`. (~709 tok)
 - `neigh.rs` — Guest addresses from the host's IPv4 neighbour table (ADR-0062 Decision 5). (~828 tok)
 - `plan_tests.rs` — Unit tests for `plan.rs`. (~6849 tok)
-- `plan.rs` — Planning: from a `CloudHypervisorMachine` and the host config to every (~6112 tok)
+- `plan.rs` — Planning: from a `CloudHypervisorMachine` and the host config to every (~6216 tok)
 - `provider_tests.rs` — Unit tests for `provider.rs`. (~4622 tok)
 - `provider.rs` — `Provider.status` for this host: one failure domain, the classes it can (~5072 tok)
 - `reconciler_tests.rs` — Unit tests for the pure decisions in `reconciler.rs`. (~2629 tok)
@@ -507,8 +507,8 @@
 
 ## crates/banlieue-provider-libvirt/src/reconciler/
 
-- `libvirtmachine_tests.rs` — Unit tests for the `LibvirtMachine` reconciler. (~16715 tok)
-- `libvirtmachine.rs` — `LibvirtMachine` reconciler — a scheduled VM becomes a real domain (~13877 tok)
+- `libvirtmachine_tests.rs` — Unit tests for the `LibvirtMachine` reconciler. (~17304 tok)
+- `libvirtmachine.rs` — `LibvirtMachine` reconciler — a scheduled VM becomes a real domain (~14014 tok)
 - `mod.rs` — libvirt provider reconcilers. (~132 tok)
 - `provider_tests.rs` — Unit tests for the `Provider` reconciler. (~2620 tok)
 - `provider.rs` — `Provider` reconciler for backend class `libvirt`. (~3809 tok)
@@ -529,7 +529,7 @@
 - `e2e_pool_claim.rs` — Pool → real libvirt domains → claim → release, end to end (ADR-0046/0047). (~14463 tok)
 - `e2e_sealing_isolation.rs` — A sealed disk opens only with its own vTPM, on libvirt: the cross-member (~7910 tok)
 - `e2e_vmimage_ssa.rs` — e2e: the `VMImage.status` field-manager split of ADR-0010. (~4235 tok)
-- `live_cloudinit.rs` — Proof that a **guest consumes** the cloud-init seed (ADR-0054). (~5095 tok)
+- `live_cloudinit.rs` — Proof that a **guest consumes** the cloud-init seed (ADR-0054). (~5958 tok)
 - `live_ek.rs` — The vTPM endorsement-certificate read path, against a **real guest with a (~3525 tok)
 - `live_guest.rs` — The guest-readiness read path, against a **real running guest** (ADR-0043). (~4994 tok)
 - `live_machine.rs` — The `LibvirtMachine` reconciler's convergence and teardown, against a (~2703 tok)
@@ -611,8 +611,8 @@
 - `sealing.rs` — First-boot sealing readback, shared by every provider (ADR-0088 (~1407 tok)
 - `ssa_tests.rs` — Unit tests for field-manager naming (ADR-0087). (~2661 tok)
 - `ssa.rs` — Server-side apply helper. (~2152 tok)
-- `status_tests.rs` — Unit tests for [`super::super::status`]. (~1014 tok)
-- `status.rs` — Helpers for managing `metav1.Condition` lists on CR status. (~965 tok)
+- `status_tests.rs` — Unit tests for [`super::super::status`]. (~1486 tok)
+- `status.rs` — Helpers for managing `metav1.Condition` lists on CR status. (~1198 tok)
 
 ## crates/banlieue-provider-sdk/src/cloudinit/
 

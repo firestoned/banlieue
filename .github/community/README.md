@@ -26,6 +26,7 @@ This directory holds the roadmap docs for building banlieue.
 | 17 | `17-ephemeral-vm-pools.md` | `VirtualMachinePool` + `VirtualMachineClaim`: warm, never-reused, TPM-sealed single-use VMs | Largest open initiative; read after 07 (libvirt is its first live target) |
 | 18 | `18-fast-sealed-clones.md` | Fast sealed clones: prove no member's sealed disk opens under another's vTPM, cut clone → `GuestReady` to seconds, verify the base; no memory forking (ADR-0052 stands) | After 17 (its first consumer); read ADR-0052, 0088 and 0112 first; phase C's split option needs 15 |
 | 19 | `19-port-groups.md` | Declared port groups: `VMNetwork` realized per backend (vSphere DVPortgroup, libvirt network, Proxmox SDN VNet, CH bridge VLAN), VLAN allowlist, ownership + in-use safety | Before touching network-class resolution; read ADR-0019, 0030, 0031, 0032 first |
+| 20 | `20-firecracker-provider.md` | Firecracker provider for sandbox pools: host-resident like 09, direct kernel boot, no vTPM, cold boot only; shared host-provider layer with Cloud Hypervisor | After 09 and 17; read ADR-0052, 0060, 0063, 0105 first |
 
 Status for every row above lives in [`ROADMAPS.md`](../../ROADMAPS.md) at the
 repo root — this table is the reading order, that one is the status board.
@@ -74,6 +75,8 @@ Phase 1A (controller + SDK)  ✅
    18 (fast sealed clones)   🔶   phase A via ADR-0088/0112; isolation test green on CH; boot speed, verified base, Proxmox left
 
    19 (port groups)          ⛔   after 1B/1D; phase E builds on 1C/1F
+
+   20 (Firecracker)          ⛔   after 1F (shares its host layer) and 17 (its consumer); spike gates the rest
 ```
 
 ## Updates to these docs

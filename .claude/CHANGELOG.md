@@ -1,5 +1,37 @@
 # Changelog
 
+## [2026-11-07 12:00] - Roadmap 20: Firecracker provider, the sandbox backend
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/community/20-firecracker-provider.md`: new roadmap. A
+  host-resident `firecracker` provider class with a `FirecrackerMachine`
+  InfraMachine CRD, for ephemeral, homogeneous sandbox pools; Cloud
+  Hypervisor stays the backend for UEFI, vTPM, sealing and devices. Maps the
+  proposed shape onto existing ADRs: template units instead of transient
+  ones (ADR-0063 amendment), the existing `banlieue-guests.slice` instead of
+  a new `firecracker.slice` (ADR-0105, plus an `IOWeight` flag for both
+  VMMs), systemd owning cgroups, the provider API being the CRDs (ADR-0060).
+  Records the gaps as declared-absent capabilities (direct kernel boot only,
+  no vTPM, no hotplug, limited devices, no live migration), keeps cold boot
+  only with snapshot-restore clones gated behind ADR-0052, and sets one VMM
+  per host for v1 so capacity is not double-counted (ADR-0107). Phase 0 spike
+  gates the rest. Reserves ADR-0116 to ADR-0122.
+- `ROADMAPS.md`, `.github/community/README.md`: index row, reading-order row
+  and dependency-graph entry for roadmap 20.
+
+### Why
+Firecracker's small device model and firmware-free boot suit agent
+sandboxes; the roadmap records what it costs (no TPM-backed sealing or
+attestation) before any ADR is written.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
 ## [2026-11-06 10:00] - cargo-deny: allow ar_archive_writer's Apache-2.0 WITH LLVM-exception, for that crate only
 
 **Author:** Erick Bourgeois
