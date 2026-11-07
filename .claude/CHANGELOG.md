@@ -1,5 +1,23 @@
 # Changelog
 
+## [2026-11-07 23:30] - clusterctl metadata gains the 0.5 release series
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `config/clusterctl/metadata.yaml`: a `0.5` / `v1beta2` release series. The
+  workspace moved to 0.5.0 with the kube 5 bump, and the v0.5.0 release run
+  failed on `clusterctl_metadata_has_an_entry_for_the_workspace_series`:
+  clusterctl refuses to install a version whose series is missing here
+  (ADR-0096 Decision 3). The guard did its job; no release assets were
+  attached.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only (release metadata)
+- [ ] Documentation only
+
 ## [2026-11-07 23:00] - crate-package builds banlieue-api against Kubernetes 1.37, as the workspace does
 
 **Author:** Erick Bourgeois
