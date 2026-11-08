@@ -1,5 +1,23 @@
 # Changelog
 
+## [2026-11-08 10:30] - Roadmap 18: first host on XFS, the firmware wait gone
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/community/18-fast-sealed-clones.md`, `ROADMAPS.md`: one host's
+  dedicated `/srv` moved to XFS with `scripts/ch-storage-to-xfs.sh`
+  (reboot-tested). The same pre-laid image and `ch-tpm` class through the
+  provider: the clone is a reflink (226 shared extents), and the firmware
+  loads the boot entry 0.12 s after its first console byte, against 6.84 s
+  on ext4. Still open: a sealed member to `GuestReady`, the other hosts.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
 ## [2026-11-08 06:00] - scripts/ch-storage-to-xfs.sh: move a dedicated CH storage partition to XFS
 
 **Author:** Erick Bourgeois
