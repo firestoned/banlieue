@@ -1,6 +1,6 @@
 # anatomy.md
 
-> Auto-maintained by OpenWolf. Last scanned: 2026-11-07T11:00:00.272Z
+> Auto-maintained by OpenWolf. Last scanned: 2026-11-07T23:00:00.245Z
 > Files: 513 tracked | Anatomy hits: 0 | Misses: 0
 
 ## ./
@@ -8,7 +8,7 @@
 - `.dockerignore` — Docker ignore rules (~237 tok)
 - `.gitignore` — Git ignore rules (~580 tok)
 - `AGENTS.md` — OpenWolf (~174 tok)
-- `Cargo.toml` — Rust package manifest (~1824 tok)
+- `Cargo.toml` — Rust package manifest (~1845 tok)
 - `CHANGELOG.md` — Change log (~2226 tok)
 - `cliff.toml` — SPDX-License-Identifier: Apache-2.0 (~699 tok)
 - `CODE_OF_CONDUCT.md` — Contributor Covenant Code of Conduct (~1470 tok)
@@ -24,7 +24,7 @@
 - `NOTICE` (~159 tok)
 - `osv-scanner.toml` — SPDX-License-Identifier: Apache-2.0 (~120 tok)
 - `README.md` — Project documentation (~3895 tok)
-- `ROADMAPS.md` — Roadmaps (~4973 tok)
+- `ROADMAPS.md` — Roadmaps (~5181 tok)
 - `SECURITY.md` — Security Policy (~382 tok)
 
 ## .clusterfuzzlite/
@@ -70,9 +70,10 @@
 - `15-vsphere-disk-image-import.md` — 15: vSphere disk-image import (raw and VMDK), alongside the ISO path (~4709 tok)
 - `16-scorecard-remediation.md` — 16 — OSSF Scorecard remediation (~2677 tok)
 - `17-ephemeral-vm-pools.md` — 17: Ephemeral, single-use VM pools (AI agent sandboxes) (~14621 tok)
-- `18-fast-sealed-clones.md` — 18: Fast sealed clones: isolation proof, boot speed, verified base (~5044 tok)
+- `18-fast-sealed-clones.md` — 18: Fast sealed clones: isolation proof, boot speed, verified base (~5188 tok)
 - `19-port-groups.md` — 19: Port groups — declared, reconciled, and safe to delete (~4109 tok)
-- `README.md` — Project documentation (~1447 tok)
+- `20-firecracker-provider.md` — 20: Firecracker provider, the sandbox backend (~5231 tok)
+- `README.md` — Project documentation (~1538 tok)
 
 ## .github/requirements/
 
@@ -125,7 +126,7 @@
 
 ## config/clusterctl/
 
-- `metadata.yaml` — SPDX-License-Identifier: Apache-2.0 (~282 tok)
+- `metadata.yaml` — SPDX-License-Identifier: Apache-2.0 (~296 tok)
 
 ## crates/banlieue-api/
 
@@ -183,7 +184,7 @@
 
 ## crates/banlieue-api/tests/
 
-- `examples.rs` — Every `examples/*.yaml` must parse into the types it names. (~2776 tok)
+- `examples.rs` — Every `examples/*.yaml` must parse into the types it names. (~3956 tok)
 
 ## crates/banlieue-cloud-hypervisor/
 
@@ -396,8 +397,8 @@
 
 - `app_tests.rs` — Unit tests for [`super::super::app`]. (~1136 tok)
 - `app.rs` — # `banlieue operator` entry point (~3355 tok)
-- `bootstrap_tests.rs` — Unit tests for `bootstrap.rs`. (~23005 tok)
-- `bootstrap.rs` — `banlieue bootstrap` — self-contained cluster install (ADR-0013). (~19027 tok)
+- `bootstrap_tests.rs` — Unit tests for `bootstrap.rs`. (~22964 tok)
+- `bootstrap.rs` — `banlieue bootstrap` — self-contained cluster install (ADR-0013). (~19025 tok)
 - `context.rs` — Shared reconcile context for `banlieue-operator`. (~1111 tok)
 - `error_tests.rs` — Unit tests for [`super::super::error`]: the metric `kind` of each variant. (~197 tok)
 - `error.rs` — Typed errors for `banlieue-operator`. (~372 tok)
@@ -408,8 +409,8 @@
 - `lib.rs` — # banlieue-operator (~500 tok)
 - `naming_tests.rs` — Unit tests for `naming.rs`. (~2492 tok)
 - `naming.rs` — Derived names and labels for per-instance provider workloads. (~1493 tok)
-- `workload_tests.rs` — Unit tests for `workload.rs`. (~10354 tok)
-- `workload.rs` — Builders for the per-instance provider workload. (~8632 tok)
+- `workload_tests.rs` — Unit tests for `workload.rs`. (~10207 tok)
+- `workload.rs` — Builders for the per-instance provider workload. (~8631 tok)
 
 ## crates/banlieue-operator/src/reconciler/
 
@@ -423,11 +424,11 @@
 
 - `e2e_bootstrap_install.rs` — End-to-end verification of `banlieue bootstrap operator` — the documented (~2230 tok)
 - `e2e_capi_contract.rs` — The Cluster API v1beta2 contract, against **real CAPI controllers** (~4794 tok)
-- `e2e_provider_class.rs` — `ProviderClass` changes must reach the workloads that reference the class (~2923 tok)
+- `e2e_provider_class.rs` — `ProviderClass` changes must reach the workloads that reference the class (~2916 tok)
 - `e2e_provider_pause.rs` — Pause semantics: `spec.paused` on a `Provider`, and on the `ProviderClass` (~1349 tok)
-- `e2e_provider_workload.rs` — The workload a `Provider` produces: creation, shape, ownership, status, (~4804 tok)
+- `e2e_provider_workload.rs` — The workload a `Provider` produces: creation, shape, ownership, status, (~4772 tok)
 - `e2e_workload_namespace.rs` — The `workloadNamespace` override — the riskiest branch in the design (~1879 tok)
-- `network_policies.rs` — Pins the shape of the opt-in NetworkPolicy templates in (~5298 tok)
+- `network_policies.rs` — Pins the shape of the opt-in NetworkPolicy templates in (~5297 tok)
 
 ## crates/banlieue-operator/tests/e2e_common/
 
@@ -479,7 +480,7 @@
 - `e2e_machine.rs` — End to end on a real Cloud Hypervisor host: a `VirtualMachine` becomes a (~4378 tok)
 - `e2e_pool_claim.rs` — Pool → Cloud Hypervisor guests → claim → release, end to end on the host (~8146 tok)
 - `e2e_restart.rs` — End to end on a real Cloud Hypervisor host: restarting the provider — (~3090 tok)
-- `e2e_sealing_isolation.rs` — A sealed disk opens only with its own vTPM: the cross-member negative (~6788 tok)
+- `e2e_sealing_isolation.rs` — A sealed disk opens only with its own vTPM: the cross-member negative (~7299 tok)
 - `e2e_vtpm.rs` — End to end on a real Cloud Hypervisor host: a `tpmEnabled` (~2468 tok)
 - `live_sys.rs` — Live test of the tap and bridge syscalls in `sys.rs`. (~1669 tok)
 - `live_systemd.rs` — Live test of template-unit instances against the calling user's systemd (~2013 tok)
@@ -507,8 +508,8 @@
 
 ## crates/banlieue-provider-libvirt/src/reconciler/
 
-- `libvirtmachine_tests.rs` — Unit tests for the `LibvirtMachine` reconciler. (~17304 tok)
-- `libvirtmachine.rs` — `LibvirtMachine` reconciler — a scheduled VM becomes a real domain (~14014 tok)
+- `libvirtmachine_tests.rs` — Unit tests for the `LibvirtMachine` reconciler. (~18597 tok)
+- `libvirtmachine.rs` — `LibvirtMachine` reconciler — a scheduled VM becomes a real domain (~14420 tok)
 - `mod.rs` — libvirt provider reconcilers. (~132 tok)
 - `provider_tests.rs` — Unit tests for the `Provider` reconciler. (~2620 tok)
 - `provider.rs` — `Provider` reconciler for backend class `libvirt`. (~3809 tok)
@@ -527,9 +528,9 @@
 
 - `e2e_import_pipeline.rs` — Full ADR-0010 pipeline against a real cluster and a real libvirt host. (~4153 tok)
 - `e2e_pool_claim.rs` — Pool → real libvirt domains → claim → release, end to end (ADR-0046/0047). (~14463 tok)
-- `e2e_sealing_isolation.rs` — A sealed disk opens only with its own vTPM, on libvirt: the cross-member (~7910 tok)
+- `e2e_sealing_isolation.rs` — A sealed disk opens only with its own vTPM, on libvirt: the cross-member (~8016 tok)
 - `e2e_vmimage_ssa.rs` — e2e: the `VMImage.status` field-manager split of ADR-0010. (~4235 tok)
-- `live_cloudinit.rs` — Proof that a **guest consumes** the cloud-init seed (ADR-0054). (~5958 tok)
+- `live_cloudinit.rs` — Proof that a **guest consumes** the cloud-init seed (ADR-0054). (~6018 tok)
 - `live_ek.rs` — The vTPM endorsement-certificate read path, against a **real guest with a (~3525 tok)
 - `live_guest.rs` — The guest-readiness read path, against a **real running guest** (ADR-0043). (~4994 tok)
 - `live_machine.rs` — The `LibvirtMachine` reconciler's convergence and teardown, against a (~2703 tok)
@@ -760,4 +761,3 @@
 
 - `clusterrole.yaml` — SPDX-License-Identifier: Apache-2.0 (~1841 tok)
 - `clusterrolebinding.yaml` — SPDX-License-Identifier: Apache-2.0 (~135 tok)
-- `role-leader-election.yaml` — SPDX-License-Identifier: Apache-2.0 (~407 tok)

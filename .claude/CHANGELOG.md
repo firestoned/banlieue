@@ -1,5 +1,27 @@
 # Changelog
 
+## [2026-11-08 02:00] - Roadmap 18: the firmware's 4 to 8 s wait does not reproduce
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/community/18-fast-sealed-clones.md`: the "find what the firmware
+  waits on" item records a 2026-11-07 measurement. With the pinned
+  `CLOUDHV.fd` and the same VMM build as 2026-11-01, the firmware loads the
+  boot entry 0.75 to 0.8 s after `vm.boot` in every condition tried (CLI
+  boot; every device a pool member has; the provider's `vm.create` body over
+  the API with Landlock; a 40 GiB disk; a pre-laid image; an unprivileged
+  VMM under the `banlieue-ch@` unit's sandbox and the guest slice; a
+  concurrent image copy), and GRUB's first output follows at 1.9 s. The
+  item stays open: the next step is timing a real pool member.
+- `ROADMAPS.md`: roadmap 18's row says so.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
 ## [2026-11-08 00:30] - libvirt holds an ARP-observed address while the domain runs
 
 **Author:** Erick Bourgeois
