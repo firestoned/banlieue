@@ -145,7 +145,7 @@ invariant 4 caveat).
       stays differential: banlieue's domains attach the console as a pty,
       with no log for the test to read.
 
-## C. Boot path to ≤ 30 s 🔶 (106 s → 39 s)
+## C. Boot path to ≤ 30 s 🔶 (106 s → 39 s → 21.5 s on Cloud Hypervisor)
 
 What remains is boot, not install: recovery boot, reset, reboot, seal,
 report. Any path that changes a `VMImage` contract or a provider's disk
@@ -297,7 +297,7 @@ layout is an ADR.
       DEBUG_ON_SERIAL_PORT=TRUE`, toolchain `GCC` in this edk2) was used to
       rule the firmware out; it loads `Boot0002` with no network boot
       attempt first.
-- [ ] Move a host's `/srv/banlieue/ch` to XFS (or btrfs) and re-measure a
+- [x] Move a host's `/srv/banlieue/ch` to XFS (or btrfs) and re-measure a
       sealed pre-laid member end to end: the 39 s should lose about 6 s.
       **2026-11-08, first host moved** (`scripts/ch-storage-to-xfs.sh` on a
       dedicated `/srv` partition). The same pre-laid image, the same
@@ -312,8 +312,38 @@ layout is an ADR.
       hosts moved the same day**: the dedicated `/srv` partition with
       `scripts/ch-storage-to-xfs.sh`, the other two by turning their swap
       partitions into XFS with `scripts/ch-storage-swap-to-xfs.sh` (no
-      console, no downtime for the cluster one hosts). Still open: the same
-      measurement with a sealing image, to `GuestReady`.
+      console, no downtime for the cluster one hosts).
+
+      **Sealed members to `GuestReady` on XFS, 2026-11-08: Debian 25 s,
+      Hadron 21.5 s (medians), both under the 30 s target.** Two images with
+      the sealing layer `banlieue-imagebuilder`'s `sealing_layer` produces
+      (Debian 13 with kairos-init v4.4.0, the 39.3 s recipe; Hadron v0.6.3,
+      the 30 s one), pre-laid at 20 GiB with `console=ttyS0`, a `BackingFile`
+      on one host, `ch-tpm` through the provider on the management cluster.
+      Per image, three members one at a time and three at once; all twelve
+      sealed `COS_PERSISTENT` and reported. Medians, seconds (Kubernetes
+      timestamps are whole seconds, so the totals are ±1):
+
+      | Stage | Debian | Hadron |
+      | --- | --- | --- |
+      | VM created → provider picks it up | 0.8 | 0.9 |
+      | clone (a reflink) and vTPM manufacture | 0.3 | 0.2 |
+      | swtpm and VMM units started (two 1 s passes) | 2.2 | 2.1 |
+      | VM created in the VMM | 0.3 | 0.1 |
+      | firmware → `Boot0002` | **0.4** | **0.4** |
+      | GRUB | 1.0 | 0.2 |
+      | kernel, initramfs, sealing, both reports | 20.1 | 19.0 |
+      | report → `GuestReady` | 0 | 0 |
+      | **creation → `GuestReady`** | **25** (22–26) | **21.5** (19–25) |
+
+      Three at once took no longer than one at a time (Debian 22–26 s,
+      Hadron 19–25 s), where on ext4 each clone queued its own writeback.
+      The firmware stage fell from 6.84 s to 0.4 s, as the storage move
+      predicted. The rest of the gain over the 39.3 s and 30 s records is not
+      claimed for XFS: the images here were built fresh, and the record runs
+      had no stage split to compare. What is left is the guest: 16 to 21 s
+      from the kernel to the reports, most of it the first-boot encryption of
+      `COS_PERSISTENT`, which is phase C's remaining lever.
 - [ ] Re-measure the pool with whichever lands, on all three backends.
 
 ## D. Verified base and build-time scanner (invariants 1, 3) ⛔
