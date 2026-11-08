@@ -136,13 +136,25 @@ if [[ ${CH_XFS_LIVE:-} == 1 ]]; then
     chown nobody:nogroup "$WORK/mnt/banlieue/ch/images/"*
     sum_before=$(sha256sum "$WORK/mnt/banlieue/ch/images/base.raw" | cut -d' ' -f1)
     printf 'UUID=%s %s ext4 defaults 0 2\n' "$(blkid -s UUID -o value "$LOOP")" "$WORK/mnt" >"$WORK/fstab-live"
+    # Never the host's own fstab, provider or guests: this may run on a live
+    # CH host (it once restarted one's provider before these were set).
+    LIVE_ENV=(env CH_XFS_FSTAB="$WORK/fstab-live"
+      CH_XFS_PROVIDER_UNIT="banlieue-test-no-such-provider-$$.service"
+      CH_XFS_GUEST_UNITS="banlieue-test-no-such-guest-$$@*")
 
-    CH_XFS_FSTAB="$WORK/fstab-live" bash "$SCRIPT" --backup-dir "$WORK/backups" "$WORK/mnt" >"$WORK/dry.out" 2>&1
+    "${LIVE_ENV[@]}" bash "$SCRIPT" --backup-dir "$WORK/backups" "$WORK/mnt" >"$WORK/dry.out" 2>&1
     check "live: a dry run succeeds" test $? -eq 0
     check "live: a dry run changes nothing" test "$(findmnt -no FSTYPE -M "$WORK/mnt")" = ext4
     check "live: a dry run says so" grep -q 'dry run' "$WORK/dry.out"
 
-    CH_XFS_FSTAB="$WORK/fstab-live" bash "$SCRIPT" --apply --backup-dir "$WORK/backups" "$WORK/mnt" >"$WORK/apply.out" 2>&1
+    { printf 'UUID=00000000-dead-beef-0000-000000000000 /nowhere ext4 defaults 0 2\n'; cat "$WORK/fstab-live"; } >"$WORK/fstab-broken"
+    env CH_XFS_FSTAB="$WORK/fstab-broken" CH_XFS_PROVIDER_UNIT="banlieue-test-no-such-provider-$$.service" \
+      CH_XFS_GUEST_UNITS="banlieue-test-no-such-guest-$$@*" \
+      bash "$SCRIPT" --apply --backup-dir "$WORK/backups" "$WORK/mnt" >"$WORK/broken.out" 2>&1
+    check "live: an fstab that is already broken is refused up front" grep -q 'already rejects' "$WORK/broken.out"
+    check "live: and nothing changed" test "$(findmnt -no FSTYPE -M "$WORK/mnt")" = ext4
+
+    "${LIVE_ENV[@]}" bash "$SCRIPT" --apply --backup-dir "$WORK/backups" "$WORK/mnt" >"$WORK/apply.out" 2>&1
     rc=$?
     check "live: --apply succeeds" test $rc -eq 0
     [[ $rc -eq 0 ]] || sed 's/^/     /' "$WORK/apply.out"
@@ -158,7 +170,7 @@ if [[ ${CH_XFS_LIVE:-} == 1 ]]; then
     check "live: the copy is left for the operator" bash -c 'ls -d "$1"/ch-storage-to-xfs.* >/dev/null' _ "$WORK/backups"
     check "live: a reflink copy now works there" cp --reflink=always "$WORK/mnt/banlieue/ch/images/base.raw" "$WORK/mnt/banlieue/ch/images/clone.raw"
 
-    CH_XFS_FSTAB="$WORK/fstab-live" bash "$SCRIPT" --apply --backup-dir "$WORK/backups" "$WORK/mnt" >"$WORK/again.out" 2>&1
+    "${LIVE_ENV[@]}" bash "$SCRIPT" --apply --backup-dir "$WORK/backups" "$WORK/mnt" >"$WORK/again.out" 2>&1
     check "live: a second run is a no-op" grep -q 'already XFS with reflinks' "$WORK/again.out"
   fi
 else

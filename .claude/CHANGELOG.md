@@ -1,5 +1,49 @@
 # Changelog
 
+## [2026-11-08 11:30] - scripts/ch-storage-swap-to-xfs.sh; the XFS scripts' tests no longer touch the host's provider
+
+**Author:** Erick Bourgeois
+
+### Added
+- `scripts/ch-storage-swap-to-xfs.sh`: for a host whose CH storage shares a
+  system partition, turn its swap partition into XFS with reflinks for that
+  storage, with no downtime. Dry run by default. Checks (root, one fstab swap
+  line, no kernel `resume=` for it, fstab already passes `findmnt --verify`,
+  the storage directory is not a mountpoint, no CH guest running, room for
+  the swap file on ext4/XFS, room on the partition, swap in use fits in free
+  memory plus the new file), then: swap file on first, swapoff and comment
+  out the partition's line, `RESUME=none` (initramfs rebuilt when it is the
+  system's file), `mkfs.xfs -m reflink=1`, copy and compare, fstab line,
+  move the old directory aside, mount, compare, restart the provider.
+- `scripts/ch-storage-swap-to-xfs-test.sh`, `make ch-storage-swap-to-xfs-test`:
+  34 checks without root and 25 more live with `sudo CH_XFS_LIVE=1` (a loop device as the
+  swap partition, copies of fstab, the resume file and the kernel command
+  line).
+- `docs/src/guides/cloud-hypervisor-host.md`: when to use which script.
+
+### Fixed
+- `scripts/ch-storage-to-xfs.sh`: the provider unit and the guest unit
+  pattern are overridable (`CH_XFS_PROVIDER_UNIT`, `CH_XFS_GUEST_UNITS`) and
+  the live test sets both to names that cannot exist. Before, a live test run
+  on a host with a running CH provider stopped and restarted that provider
+  (it happened three times on one host on 2026-11-08, with no guests
+  running). Both scripts now also refuse up front an fstab that
+  `findmnt --verify` already rejects, so a rejection after their edit is
+  theirs.
+- `scripts/ch-storage-swap-to-xfs.sh`: the resume file's backup goes to
+  `/var/backups/ch-storage-swap-to-xfs/<stamp>/` (`CH_XFS_BACKUP_DIR`), not
+  beside it. initramfs-tools reads every file in `conf.d`, so a backup there
+  put the old `RESUME=` back into the rebuilt initramfs, read after the new
+  `RESUME=none` (found on the first host it ran on; no boot delay there, the
+  initramfs mounted root 0.02 s after `/init`). The live test now checks that
+  `conf.d` holds only `resume` afterwards.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only (host tooling)
+- [ ] Documentation only
+
 ## [2026-11-08 10:30] - Roadmap 18: first host on XFS, the firmware wait gone
 
 **Author:** Erick Bourgeois

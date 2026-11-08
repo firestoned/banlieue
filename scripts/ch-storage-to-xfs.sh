@@ -16,7 +16,7 @@
 # prints the plan):
 #
 #   1. checks: root; the mountpoint is a real mount of a block device, not
-#      `/`; not already XFS; no Cloud Hypervisor guest is running; no libvirt
+#      `/`; not already XFS; `findmnt --verify` accepts fstab as it is; no Cloud Hypervisor guest is running; no libvirt
 #      domain is running when a libvirt pool lives under the mountpoint; the
 #      backup directory is on another filesystem with room for the data;
 #   2. stops banlieue-provider-cloud-hypervisor if it is running;
@@ -38,14 +38,20 @@
 # Usage (as root):
 #   scripts/ch-storage-to-xfs.sh [--apply] [--backup-dir DIR] <mountpoint>
 #
-# Environment:
-#   CH_XFS_FSTAB   the fstab to edit (default /etc/fstab; the tests use a copy)
+# Environment (the tests set all three, so a test run on a real CH host never
+# touches its fstab, its provider or its guests):
+#   CH_XFS_FSTAB           the fstab to edit (default /etc/fstab)
+#   CH_XFS_PROVIDER_UNIT   the provider unit to stop and start
+#                          (default banlieue-provider-cloud-hypervisor.service)
+#   CH_XFS_GUEST_UNITS     the guest unit pattern that must not be running
+#                          (default banlieue-ch@*)
 #
 # Needs: findmnt, blkid, mkfs.xfs, xfs_info, rsync, mount, umount, df, du.
 set -euo pipefail
 
-readonly PROVIDER_UNIT="banlieue-provider-cloud-hypervisor.service"
-readonly GUEST_UNIT_PATTERN="banlieue-ch@*"
+# Overridable so the tests never stop a real provider on the host they run on.
+readonly PROVIDER_UNIT="${CH_XFS_PROVIDER_UNIT:-banlieue-provider-cloud-hypervisor.service}"
+readonly GUEST_UNIT_PATTERN="${CH_XFS_GUEST_UNITS:-banlieue-ch@*}"
 readonly DEFAULT_BACKUP_ROOT="/var/tmp"
 readonly FSTAB_DEFAULT="/etc/fstab"
 # Headroom over the data's size before the backup filesystem counts as big
@@ -146,6 +152,10 @@ main() {
   fi
   fstab_rewrite "$fstab" "$mnt" 00000000-0000-0000-0000-000000000000 >/dev/null ||
     die "$fstab must have exactly one line for $mnt"
+  # Checked before anything changes, so a rejection after the edit is this
+  # script's, not a line that was already broken.
+  findmnt --verify --tab-file "$fstab" >/dev/null 2>&1 ||
+    die "findmnt --verify already rejects $fstab: fix it first (findmnt --verify --tab-file $fstab)"
   if command -v systemctl >/dev/null &&
     [[ -n $(systemctl list-units "$GUEST_UNIT_PATTERN" --state=active --no-legend 2>/dev/null) ]]; then
     die "Cloud Hypervisor guests are running; delete their VMs, or move them off this host, first"
