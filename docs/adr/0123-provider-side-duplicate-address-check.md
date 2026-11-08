@@ -4,8 +4,9 @@ SPDX-License-Identifier: Apache-2.0
 -->
 # 0123: Providers check a static address against their backend before creating a machine
 
-- **Status:** Proposed
+- **Status:** Rejected
 - **Date:** 2026-11-08
+- **Proposed:** 2026-11-08
 - **Deciders:** Erick Bourgeois
 - **Related:** Extends [ADR-0083](0083-block-duplicate-static-address.md)
   (its "Not decided here": the provider-side lookup);
@@ -15,6 +16,25 @@ SPDX-License-Identifier: Apache-2.0
   [ADR-0060](0060-cloud-hypervisor-first-class-provider-topology.md) (the Cloud
   Hypervisor provider runs on the host and owns its bridges' taps).
   ADR-0116 to ADR-0122 are reserved by roadmap 20.
+
+## Rejected (2026-11-08)
+
+Not adopted. The only check below that answers the question #157 asks, "is
+anything on the network already using this address", is the Cloud
+Hypervisor provider's active ARP probe, and that costs more than it buys:
+banlieue would put traffic on every network it provisions into, the provider
+would need `CAP_NET_RAW`, every static machine would wait seconds, a host on
+the segment could block all provisioning by answering every probe, and
+networks with ARP inspection would not want it at all. Without the probe the
+check reads records (leases, guest agents, Tools), which miss exactly the
+case at issue, a quiet machine banlieue knows nothing about, and would look
+like a control without being one.
+
+So the boundary stays where ADR-0083 drew it: **banlieue guarantees that its
+own `VirtualMachine`s never share a static address on a `networkClass`;
+an address outside banlieue's knowledge is the operator's to keep unique**,
+with IPAM and with static ranges kept outside DHCP scopes. #157 is closed on
+this decision. The design below is kept as the record of what was weighed.
 
 ## Context
 

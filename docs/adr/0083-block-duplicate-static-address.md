@@ -153,6 +153,10 @@ interval of the holder going away.
   reporting through the infra CR. It is deferred because no backend was
   available to verify it against, and a lookup built against an unverified
   model of a vSphere or Proxmox API would only look like a control.
+  *Decided 2026-11-08: not built.* [ADR-0123](0123-provider-side-duplicate-address-check.md)
+  designed it and was rejected: only an active ARP probe answers the
+  question, and its costs outweigh it. Uniqueness against machines banlieue
+  did not create stays the operator's (IPAM, static ranges outside DHCP).
 - **DHCP-assigned addresses.** A DHCP VM does not declare its address, and
   the only record of it is guest-reported. Keep static addresses outside DHCP
   scopes.
@@ -184,8 +188,9 @@ an address a standalone VM holds is blocked, reaped at
 bounded. The follow-up is to feed foreign claims into the pool planner.
 
 **`networkClass` is the limit of what is detected.** Two `networkClass`es that
-map to the same physical segment can still collide undetected. Only the
-deferred provider-side lookup can close that.
+map to the same physical segment can still collide undetected. Only a
+provider-side lookup could close that, and ADR-0123 declined it: map one
+segment to one `networkClass`.
 
 **Cost.** No API LISTs. One in-memory pass over the VM store per reconcile of
 a VM with a static override, plus one `VMClass` GET per distinct class among
