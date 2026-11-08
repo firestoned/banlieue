@@ -3,6 +3,10 @@
 - **Status:** Accepted
 - **Date:** 2026-09-20
 - **Proposed:** 2026-09-20
+- **Amended:** 2026-11-08 (Decision 8 a third time: a booting machine is
+  polled every 2 s for its first 90 s, not every 30 s; found measuring
+  sealed pre-laid members, whose `GuestReady` on libvirt was the poll, not
+  the boot)
 - **Amended:** 2026-09-28 (Decision 8 again — an unreachable agent backs off
   only after an agent-bootstrap grace window; found live when a `GuestReady`
   pool whose agent is seed-installed reaped every member it created)
@@ -230,6 +234,22 @@ booted from**.
    indistinguishable while cloud-init may still be running. An `Immediate`
    image with no agent costs at most the grace window of 30s polls per
    member, then settles at the long interval as before.
+
+   **Amended 2026-11-08:** "the default interval" is too slow for a guest
+   that announces in seconds. A sealed pre-laid member boots, seals and
+   reports in about 25 s; polled every 30 s, libvirt saw it at the 30 s
+   probe (33 s from creation) or, missing it, at the 60 s one (64 s), while
+   the same image on Cloud Hypervisor, whose guest pushes its report and
+   whose provider requeues every 1 s during a transition, was `GuestReady`
+   at 25 s. So "expecting the answer to change" now has two speeds: a
+   machine younger than `FAST_GUEST_POLL_WINDOW_SECS` (90 s, longer than
+   every measured boot to the report) is polled every
+   `FAST_GUEST_POLL_SECS` (2 s); after that, the default interval as
+   before. The cost is bounded per member, at most 45 extra probes, each
+   the handful of guest-agent calls a reconcile already makes, and nothing
+   changes for a long `Deferred` install or an agentless image past the
+   window. The window is counted from the machine's creation, like the
+   bootstrap grace, so it needs no state.
 
 9. **This is a liveness signal and must never be read as an integrity
    one.** It says a fresh, unclaimed guest booted from its installed disk.

@@ -363,6 +363,10 @@ layout is an ADR.
       certificate, sealed report), then back off to 30 s, as the Cloud
       Hypervisor provider's transition requeue does. Expected: libvirt's
       time to `GuestReady` falls from 33 s to the boot itself (about 25 s).
+      **Implemented 2026-11-08** (ADR-0043 Decision 8, amended):
+      `guest_poll_interval` polls every 2 s for a machine's first 90 s while
+      `should_poll_soon` holds, then 30 s; unit-tested. Ticks when a release
+      carrying it is re-measured on a libvirt host.
 - [ ] **The guest's share** (16 to 21 s, now the largest). Profiled
       2026-11-08 from immucore's own boot timeline (a `COS_OEM` stage
       dumping it to the serial console): `encrypt-pending` 4.3 to 5.0 s

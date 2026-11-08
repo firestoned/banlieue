@@ -38,12 +38,16 @@ use banlieue_api::common::{
 use banlieue_api::infrastructure::{
     LibvirtAddressSource, LibvirtMachine, LibvirtMachineSpec, LibvirtMachineStatus,
 };
+use std::time::Duration;
+
 use banlieue_libvirt::{
     Domain, DomainInterface, DomainState, InterfaceAddressSource, StoragePool, StorageVol,
     qcow2_overlay_volume_xml, qcow2_volume_xml, raw_volume_xml,
 };
 use banlieue_provider_sdk::finalizer::{ensure_finalizer, remove_finalizer};
-use banlieue_provider_sdk::reconciler::{requeue_default, requeue_long, requeue_on_error};
+use banlieue_provider_sdk::reconciler::{
+    REQUEUE_DEFAULT_SECS, REQUEUE_LONG_SECS, requeue_default, requeue_on_error,
+};
 use banlieue_provider_sdk::sealing::{
     REASON_FIRST_BOOT_SEALING_TIMEOUT, REASON_FIRST_BOOT_SEALING_UNVERIFIED, SealingGate,
     sealing_gate, sticky_sealed_partitions,
@@ -252,18 +256,13 @@ pub async fn reconcile(machine: Arc<LibvirtMachine>, ctx: Arc<Context>) -> Resul
                 .as_ref()
                 .and_then(|t| u64::try_from(now.as_second() - t.0.as_second()).ok())
                 .unwrap_or(0);
-            Ok(
-                if should_poll_soon(
-                    observed.guest,
-                    !observed.addresses.is_empty(),
-                    ek_pending || sealing_pending,
-                    within_agent_bootstrap_grace(age_secs),
-                ) {
-                    requeue_default()
-                } else {
-                    requeue_long()
-                },
-            )
+            let poll_soon = should_poll_soon(
+                observed.guest,
+                !observed.addresses.is_empty(),
+                ek_pending || sealing_pending,
+                within_agent_bootstrap_grace(age_secs),
+            );
+            Ok(Action::requeue(guest_poll_interval(poll_soon, age_secs)))
         }
         Err(e) => {
             warn!(error = %e, "libvirt machine convergence failed");
@@ -1166,6 +1165,15 @@ async fn patch_status(
 /// settles at the long interval exactly as before.
 pub const AGENT_BOOTSTRAP_GRACE_SECS: u64 = 600;
 
+/// How long after creation a machine still expecting its guest to report is
+/// polled fast (ADR-0043 Decision 8, amended 2026-11-08). Longer than every
+/// measured boot to the report (about 25 s), short enough that a guest that
+/// never reports costs a bounded number of fast probes.
+pub const FAST_GUEST_POLL_WINDOW_SECS: u64 = 90;
+
+/// The fast interval inside [`FAST_GUEST_POLL_WINDOW_SECS`].
+pub const FAST_GUEST_POLL_SECS: u64 = 2;
+
 /// Whether a machine of this age is still inside
 /// [`AGENT_BOOTSTRAP_GRACE_SECS`].
 #[must_use]
@@ -1213,6 +1221,29 @@ pub fn should_poll_soon(
         GuestProbe::AgentUnreachable => in_bootstrap_grace,
         _ => false,
     }
+}
+
+/// When to look at a running machine's guest again (ADR-0043 Decision 8).
+///
+/// Nothing expected to change ([`should_poll_soon`] false): the long
+/// interval. Expected to change, on a machine younger than
+/// [`FAST_GUEST_POLL_WINDOW_SECS`]: every [`FAST_GUEST_POLL_SECS`], because a
+/// sealed pre-laid guest reports in about 25 s and a 30 s poll made that 33
+/// or 64 s (amended 2026-11-08). Expected to change past the window: the
+/// default interval, as before.
+///
+/// # Arguments
+/// * `poll_soon` - [`should_poll_soon`]'s answer for this pass
+/// * `age_secs` - seconds since the machine was created
+#[must_use]
+pub fn guest_poll_interval(poll_soon: bool, age_secs: u64) -> Duration {
+    if !poll_soon {
+        return Duration::from_secs(REQUEUE_LONG_SECS);
+    }
+    if age_secs < FAST_GUEST_POLL_WINDOW_SECS {
+        return Duration::from_secs(FAST_GUEST_POLL_SECS);
+    }
+    Duration::from_secs(REQUEUE_DEFAULT_SECS)
 }
 
 /// Fold a fresh guest observation into the stored one, stickily.
