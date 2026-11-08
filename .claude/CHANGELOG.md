@@ -1,5 +1,24 @@
 # Changelog
 
+## [2026-11-08 12:30] - Pre-lay image applies Debian security updates (zlib CVEs)
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `Dockerfile.prelay`: `apt-get upgrade` before installing its packages.
+  The v0.5.1 release run's prelay Grype gate failed on zlib1g
+  1:1.3.dfsg+really1.3.1-1+b1 (CVE-2026-76844 and CVE-2026-85091, high;
+  CVE-2026-27171, medium), fixed in +deb13u1 in trixie-security. The newest
+  `debian:13-slim` (built 2026-11-04, the digest already pinned) still ships
+  the old zlib, so a re-pin, as in #143, could not fix it. The release
+  attached no assets.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only (image build)
+- [ ] Documentation only
+
 ## [2026-11-08 11:45] - All three CH hosts on XFS; swap script reloads systemd after each fstab edit
 
 **Author:** Erick Bourgeois
