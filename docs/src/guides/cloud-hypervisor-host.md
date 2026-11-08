@@ -1020,7 +1020,19 @@ sudo scripts/ch-storage-to-xfs.sh --apply /srv
 ```
 
 It refuses `/`, `/home`, `/var` and the like: storage that shares a system
-partition needs a new partition, which is a console job.
+partition needs a partition of its own. When the host has a swap partition
+and enough memory, `scripts/ch-storage-swap-to-xfs.sh` makes one from it with
+no downtime: it enables a swap file first, retires the swap partition (and
+its hibernation `RESUME=` entry, rebuilding the initramfs), formats it XFS,
+copies the storage directory onto it, and mounts it there, keeping the old
+directory aside:
+
+```sh
+sudo scripts/ch-storage-swap-to-xfs.sh --swapfile /home/swapfile /dev/sdXN /srv/banlieue/ch           # plan only
+sudo scripts/ch-storage-swap-to-xfs.sh --apply --swapfile /home/swapfile /dev/sdXN /srv/banlieue/ch
+```
+
+Otherwise, shrink a filesystem from a console and add a partition.
 
 The provider checks too, by cloning one block between two unnamed files in
 each storage class's directory, and names every class that cannot reflink in
