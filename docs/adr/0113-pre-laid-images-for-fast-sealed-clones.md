@@ -162,6 +162,13 @@ boot. What remains: provider 5 s, **9 s from the VMM starting to the firmware
 handing over to GRUB** (Cloud Hypervisor's firmware, worth its own look),
 kernel to `rootfs` 8 s, sealing 12 s, report 4 s.
 
+*Note (2026-11-07):* the firmware's share of that 9 s was not the firmware.
+On ext4 the provider cannot reflink, so each clone is a full copy that is
+still dirty in the page cache when the VM boots, and the firmware's first
+disk flush waits for it (6.94 s in one `fsync` on a 2.5 GB image). A reflink
+on XFS boots to GRUB in 0.96 s. Roadmap 18 phase C has the measurement; the
+Cloud Hypervisor host guide now asks for a reflink-capable filesystem.
+
 Found on the way, and what the steps above now guard against: an early
 version of the tool reported success on a run whose reset never happened,
 because the layout stage had already created the partitions and QEMU exits

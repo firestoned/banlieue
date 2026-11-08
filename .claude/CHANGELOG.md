@@ -1,5 +1,31 @@
 # Changelog
 
+## [2026-11-08 03:00] - Roadmap 18: the firmware's 4 to 8 s was the clone's writeback
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/community/18-fast-sealed-clones.md`: "find what the firmware
+  waits on" is done, and replaces the "not reproduced" note (#158). On ext4
+  the Cloud Hypervisor provider cannot reflink, so `clone_file` writes the
+  whole image into a fresh `os.raw` and the VM boots with it still dirty in
+  the page cache; the firmware's first disk flush waits for the writeback.
+  Measured through the real provider (6.8 s from the first console byte to
+  `Boot0002`) and standalone: 7.4 s on a fresh copy, 0.72 s after a `sync`,
+  0.96 s on an XFS reflink; one `fsync` on `os.raw` took 6.94 s. A new open
+  item: re-measure a sealed member on a reflink filesystem.
+- `docs/src/guides/cloud-hypervisor-host.md`: "Put guest storage on a
+  filesystem with reflinks", with the numbers and a check.
+- `docs/adr/0113-pre-laid-images-for-fast-sealed-clones.md`: a dated note
+  correcting the "9 s ... firmware" attribution.
+- `ROADMAPS.md`: roadmap 18's row.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
 ## [2026-11-08 02:00] - Roadmap 18: the firmware's 4 to 8 s wait does not reproduce
 
 **Author:** Erick Bourgeois
