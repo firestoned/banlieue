@@ -1,6 +1,6 @@
 # anatomy.md
 
-> Auto-maintained by OpenWolf. Last scanned: 2026-11-08T05:00:00.249Z
+> Auto-maintained by OpenWolf. Last scanned: 2026-11-08T17:00:00.186Z
 > Files: 513 tracked | Anatomy hits: 0 | Misses: 0
 
 ## ./
@@ -20,11 +20,11 @@
 - `GOVERNANCE.md` — Governance (~1125 tok)
 - `LICENSE` — Project license (~3029 tok)
 - `MAINTAINERS.md` — Maintainers (~165 tok)
-- `Makefile` — Make build targets (~31182 tok)
+- `Makefile` — Make build targets (~31279 tok)
 - `NOTICE` (~159 tok)
 - `osv-scanner.toml` — SPDX-License-Identifier: Apache-2.0 (~120 tok)
 - `README.md` — Project documentation (~3895 tok)
-- `ROADMAPS.md` — Roadmaps (~5240 tok)
+- `ROADMAPS.md` — Roadmaps (~5315 tok)
 - `SECURITY.md` — Security Policy (~382 tok)
 
 ## .clusterfuzzlite/
@@ -70,7 +70,7 @@
 - `15-vsphere-disk-image-import.md` — 15: vSphere disk-image import (raw and VMDK), alongside the ISO path (~4709 tok)
 - `16-scorecard-remediation.md` — 16 — OSSF Scorecard remediation (~2677 tok)
 - `17-ephemeral-vm-pools.md` — 17: Ephemeral, single-use VM pools (AI agent sandboxes) (~14621 tok)
-- `18-fast-sealed-clones.md` — 18: Fast sealed clones: isolation proof, boot speed, verified base (~5734 tok)
+- `18-fast-sealed-clones.md` — 18: Fast sealed clones: isolation proof, boot speed, verified base (~5948 tok)
 - `19-port-groups.md` — 19: Port groups — declared, reconciled, and safe to delete (~4109 tok)
 - `20-firecracker-provider.md` — 20: Firecracker provider, the sandbox backend (~5231 tok)
 - `README.md` — Project documentation (~1538 tok)
