@@ -299,6 +299,19 @@ layout is an ADR.
       attempt first.
 - [ ] Move a host's `/srv/banlieue/ch` to XFS (or btrfs) and re-measure a
       sealed pre-laid member end to end: the 39 s should lose about 6 s.
+      **2026-11-08, first host moved** (`scripts/ch-storage-to-xfs.sh` on a
+      dedicated `/srv` partition). The same pre-laid image, the same
+      `ch-tpm` class, through the provider on a cluster, an unsealed image:
+
+      | Host storage | clone | first console byte → firmware loads `Boot0002` |
+      | --- | --- | --- |
+      | ext4 | full copy | 6.84 s |
+      | XFS, `reflink=1` | reflink (226 shared extents) | **0.12 s** |
+
+      GRUB's first output came 1.09 s after the first byte. Still open: the
+      same measurement with a sealing image, to `GuestReady`, and the other
+      two hosts' moves (a swap partition on one, a console repartition on
+      the other).
 - [ ] Re-measure the pool with whichever lands, on all three backends.
 
 ## D. Verified base and build-time scanner (invariants 1, 3) ⛔

@@ -1,5 +1,55 @@
 # Changelog
 
+## [2026-11-08 10:30] - Roadmap 18: first host on XFS, the firmware wait gone
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/community/18-fast-sealed-clones.md`, `ROADMAPS.md`: one host's
+  dedicated `/srv` moved to XFS with `scripts/ch-storage-to-xfs.sh`
+  (reboot-tested). The same pre-laid image and `ch-tpm` class through the
+  provider: the clone is a reflink (226 shared extents), and the firmware
+  loads the boot entry 0.12 s after its first console byte, against 6.84 s
+  on ext4. Still open: a sealed member to `GuestReady`, the other hosts.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+## [2026-11-08 06:00] - scripts/ch-storage-to-xfs.sh: move a dedicated CH storage partition to XFS
+
+**Author:** Erick Bourgeois
+
+### Added
+- `scripts/ch-storage-to-xfs.sh`: reformat a dedicated partition holding
+  Cloud Hypervisor storage as XFS with reflinks, keeping its data. Dry run
+  by default (`--apply` to act). Refuses `/`, system mountpoints, a running
+  CH guest, running libvirt domains when a pool lives there, and a backup
+  directory on the same filesystem or without room (+10%). Copies with
+  `rsync -aHAXS`, `mkfs.xfs -m reflink=1`, rewrites the fstab line by UUID
+  (backup kept; restored if `findmnt --verify` rejects it), mounts, restores,
+  compares with the copy, checks `reflink=1`, restarts the provider,
+  refreshes libvirt pools under it. The copy is left for the operator.
+- `scripts/ch-storage-to-xfs-test.sh` and `make ch-storage-to-xfs-test`:
+  30 checks without root (fstab rewrite, refusals, backup rule) and, with
+  `sudo CH_XFS_LIVE=1`, 16 more running the whole move on an ext4 loop
+  device with a copy of fstab (data, owners, modes, a hard link and a sparse
+  file survive; reflinks work; a second run is a no-op). Both passed on a
+  Debian 13 host. Not wired into CI, like `dco-check-test`.
+- `docs/src/guides/cloud-hypervisor-host.md`: when and how to use it.
+
+### Why
+Roadmap 18: on ext4 every CH clone is a full copy and the first boot waits
+for its writeback (7.4 s against 0.96 s on an XFS reflink).
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only (host tooling)
+- [ ] Documentation only
+
 ## [2026-11-08 05:00] - ADR-0123 (Proposed): provider-side duplicate-address check
 
 **Author:** Erick Bourgeois
