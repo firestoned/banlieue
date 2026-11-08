@@ -109,6 +109,7 @@ lan = "br0"
                 hugepages_mib: Some(0),
                 storage_free_gib: [("fast".to_string(), 812)].into(),
             },
+            storage_without_reflink: BTreeSet::new(),
             guest_budget: SliceBudget::default(),
         }
     }
@@ -158,6 +159,46 @@ lan = "br0"
         assert_eq!(get("hugepagesMiB"), Some("0"));
         assert_eq!(get("storageFreeGiB"), Some("fast=812"));
         assert_eq!(get("nestedVirtualization"), Some("false"));
+    }
+
+    /// A storage class whose filesystem cannot reflink makes every clone a
+    /// full copy, and the guest's first disk flush waits for it to reach the
+    /// disk (roadmap 18, 2026-11-07): named in the failure domain, so it is
+    /// visible from the cluster.
+    #[test]
+    fn storage_that_cannot_reflink_is_named() {
+        let facts = HostFacts {
+            storage_without_reflink: ["fast".to_string()].into(),
+            ..healthy()
+        };
+        let st = compute_status(&provider(&[]), &config(), &facts, 1);
+        let raw = &st.failure_domains[0].attributes.raw;
+        assert_eq!(
+            raw.get("storageWithoutReflink").map(String::as_str),
+            Some("fast")
+        );
+    }
+
+    /// Slow clones are not a broken host: the Provider stays Ready and keeps
+    /// its failure domain.
+    #[test]
+    fn storage_that_cannot_reflink_does_not_block_scheduling() {
+        let facts = HostFacts {
+            storage_without_reflink: ["fast".to_string()].into(),
+            ..healthy()
+        };
+        let mut p = provider(&[]);
+        p.spec.capabilities.storage_classes.pop();
+        let st = compute_status(&p, &config(), &facts, 1);
+        assert_eq!(st.failure_domains.len(), 1);
+        assert_eq!(ready(&st).status, "True");
+    }
+
+    #[test]
+    fn storage_that_reflinks_is_not_mentioned() {
+        let st = compute_status(&provider(&[]), &config(), &healthy(), 1);
+        let raw = &st.failure_domains[0].attributes.raw;
+        assert!(!raw.contains_key("storageWithoutReflink"), "{raw:?}");
     }
 
     /// A figure the host would not give is left out, not reported as zero.

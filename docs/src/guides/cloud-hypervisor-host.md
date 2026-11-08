@@ -1006,6 +1006,16 @@ findmnt -no FSTYPE -T /srv/banlieue/ch           # xfs or btrfs
 sudo xfs_info /srv/banlieue/ch | grep -o 'reflink=[01]'   # XFS: reflink=1
 ```
 
+The provider checks too, by cloning one block between two unnamed files in
+each storage class's directory, and names every class that cannot reflink in
+its failure domain. It is not a gap: the Provider stays `Ready` and guests
+still run there.
+
+```sh
+kubectl get provider <name> -n banlieue-system \
+  -o jsonpath='{.status.failureDomains[0].attributes.raw.storageWithoutReflink}'
+```
+
 ## Gotchas
 
 Found in the roadmap 09 phase 0 spike, and handled by banlieue's provider so
