@@ -348,6 +348,36 @@ fn sparse_copy(from: &mut File, to: &mut File) -> io::Result<()> {
     to.set_len(len)
 }
 
+/// Bytes written to the probe file [`supports_reflink`] clones: one block, so
+/// every filesystem that can reflink at all accepts the range.
+const REFLINK_PROBE_BYTES: usize = 4096;
+
+/// Whether [`clone_file`] would reflink in `dir`, rather than copy.
+///
+/// Clones one block between two unnamed files (`O_TMPFILE`), so the probe
+/// leaves nothing in `dir` and never touches a guest's disk. A copy is the
+/// costly case: the guest boots while the copied data is still dirty in the
+/// page cache, and its firmware's first disk flush waits for all of it to
+/// reach the disk (roadmap 18, 2026-11-07).
+///
+/// # Errors
+/// The OS error when `dir` cannot hold an unnamed file (missing, not
+/// writable, or a filesystem without `O_TMPFILE`): the answer is unknown.
+pub fn supports_reflink(dir: &Path) -> io::Result<bool> {
+    use std::io::Write;
+    let unnamed = || {
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(libc::O_TMPFILE | libc::O_CLOEXEC)
+            .open(dir)
+    };
+    let mut src = unnamed()?;
+    src.write_all(&[0u8; REFLINK_PROBE_BYTES])?;
+    let dst = unnamed()?;
+    Ok(rustix::fs::ioctl_ficlone(&dst, &src).is_ok())
+}
+
 /// How [`clone_file`] produced the copy.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CloneKind {

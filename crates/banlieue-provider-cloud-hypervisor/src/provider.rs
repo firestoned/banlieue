@@ -41,6 +41,9 @@ use tracing::{info, warn};
 pub const TARGET_KEY_HOST_CLASS: &str = "hostClass";
 /// The feature string the scheduler matches for vTPM.
 const FEATURE_VTPM: &str = "vtpm";
+/// Failure-domain `raw` key naming the storage classes whose filesystem
+/// cannot reflink (each clone there is a full copy).
+const RAW_STORAGE_WITHOUT_REFLINK: &str = "storageWithoutReflink";
 /// The KVM device.
 const DEV_KVM: &str = "/dev/kvm";
 /// Where the host's CPUs and memory are read from.
@@ -90,6 +93,10 @@ pub struct HostFacts {
     pub ek_ca_pem: Option<String>,
     /// What the host has to give guests.
     pub capacity: HostCapacity,
+    /// Host storage classes whose filesystem cannot reflink, so each clone
+    /// there is a full copy (`sys::supports_reflink`). Not a gap: guests run,
+    /// their first boot is slower.
+    pub storage_without_reflink: BTreeSet<String>,
     /// The budget the host declares for guests: its guests' slice and their
     /// parent (ADR-0105, ADR-0106). Read from systemd by the reconciler.
     pub guest_budget: SliceBudget,
@@ -208,7 +215,8 @@ fn gather_capacity(config: &HostConfig) -> HostCapacity {
     }
 }
 
-/// Look at the host. Existence checks only; nothing is created.
+/// Look at the host. Nothing visible is created: apart from existence checks,
+/// the only probe is the reflink one, which clones between unnamed files.
 #[must_use]
 pub fn gather_facts(config: &HostConfig) -> HostFacts {
     HostFacts {
@@ -243,6 +251,14 @@ pub fn gather_facts(config: &HostConfig) -> HostFacts {
             .and_then(|t| std::fs::read_to_string(&t.ek_ca_certificate).ok())
             .and_then(|text| banlieue_provider_sdk::ek::parse_ek_pem_str(&text)),
         capacity: gather_capacity(config),
+        // A probe that cannot answer (an unwritable or missing directory) is
+        // not reported: the directory's absence is already a capability gap.
+        storage_without_reflink: config
+            .storage_classes
+            .iter()
+            .filter(|(_, p)| matches!(sys::supports_reflink(p), Ok(false)))
+            .map(|(n, _)| n.clone())
+            .collect(),
         guest_budget: SliceBudget::default(),
     }
 }
@@ -323,6 +339,14 @@ pub fn compute_status(
         config.network_class_names().join(","),
     );
     insert_capacity(&mut raw, &facts.capacity);
+    if !facts.storage_without_reflink.is_empty() {
+        let classes: Vec<&str> = facts
+            .storage_without_reflink
+            .iter()
+            .map(String::as_str)
+            .collect();
+        raw.insert(RAW_STORAGE_WITHOUT_REFLINK.to_string(), classes.join(","));
+    }
 
     let fd = FailureDomain {
         name,

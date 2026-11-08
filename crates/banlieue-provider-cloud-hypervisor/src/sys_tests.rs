@@ -84,6 +84,33 @@ mod tests {
         assert!(delete_persistent_tap("bchabsent00").is_ok());
     }
 
+    /// The probe must answer what `clone_file` will actually do in the same
+    /// directory, whatever filesystem the test runs on (ext4, XFS, tmpfs).
+    #[test]
+    fn supports_reflink_agrees_with_clone_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src.raw");
+        std::fs::write(&src, vec![1u8; 4096]).unwrap();
+        let (_file, kind) = clone_file(&src, &dir.path().join("dst.raw")).unwrap();
+        let probed = supports_reflink(dir.path()).unwrap();
+        assert_eq!(probed, kind == CloneKind::Reflink);
+    }
+
+    /// The probe leaves nothing behind: it runs in a directory guests' disks
+    /// live in, on every reconcile.
+    #[test]
+    fn supports_reflink_leaves_no_files() {
+        let dir = tempfile::tempdir().unwrap();
+        supports_reflink(dir.path()).unwrap();
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn supports_reflink_errors_on_a_missing_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(supports_reflink(&dir.path().join("absent")).is_err());
+    }
+
     #[test]
     fn clone_file_copies_content_and_refuses_to_overwrite() {
         let dir = tempfile::tempdir().unwrap();

@@ -1,5 +1,54 @@
 # Changelog
 
+## [2026-11-08 05:00] - ADR-0123 (Proposed): provider-side duplicate-address check
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0123-provider-side-duplicate-address-check.md`, Proposed, for
+  #157 (ADR-0083's deferred half). Each provider checks a new machine's
+  static addresses against its backend before creating it: Cloud Hypervisor
+  with an RFC 5227 ARP probe on its bridge (needs `CAP_NET_RAW`), libvirt
+  from its network's addresses, DHCP leases and other domains' agents (not
+  its ARP source, ADR-0050 Decision 8), vSphere from Tools-reported
+  addresses, Proxmox from guest agents. In use: `Ready=False AddressInUse`
+  and no backend machine; a check that could not look: `AddressChecked=Unknown`,
+  non-blocking. Three open questions (opt-out, probe window, libvirt's
+  DHCP-range rule). No CALM, code or threat-model change until accepted.
+  Numbered 0123: roadmap 20 reserves 0116 to 0122.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+## [2026-11-08 04:00] - Cloud Hypervisor provider names storage classes that cannot reflink
+
+**Author:** Erick Bourgeois
+
+### Added
+- `crates/banlieue-provider-cloud-hypervisor/src/sys.rs`:
+  `supports_reflink(dir)`, which clones one block between two `O_TMPFILE`
+  files, so it leaves nothing behind and answers what `clone_file` will do.
+- `crates/banlieue-provider-cloud-hypervisor/src/provider.rs`:
+  `HostFacts::storage_without_reflink`, gathered each pass, published as the
+  failure domain's `raw.storageWithoutReflink` (comma-separated classes).
+  Not a host gap: the Provider stays `Ready` and keeps its failure domain.
+  On such a class every clone is a full copy, and the guest's first disk
+  flush waits for it to reach the disk (roadmap 18, 2026-11-07).
+- Tests: three in `sys_tests.rs` (the probe agrees with `clone_file` on the
+  filesystem the test runs on, leaves no files, errors on a missing
+  directory), three in `provider_tests.rs` (named, not blocking, absent when
+  every class reflinks).
+- `docs/src/guides/cloud-hypervisor-host.md`: how to read it.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (Cloud Hypervisor host binary swap)
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-11-08 03:00] - Roadmap 18: the firmware's 4 to 8 s was the clone's writeback
 
 **Author:** Erick Bourgeois
