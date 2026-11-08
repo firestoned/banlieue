@@ -1,5 +1,29 @@
 # Changelog
 
+## [2026-11-08 21:30] - Roadmap 18: sealed members to GuestReady in 25 s (Debian) and 21.5 s (Hadron) on XFS
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/community/18-fast-sealed-clones.md`: phase C's Cloud Hypervisor
+  re-measure is done. Two sealing images (`sealing_layer`'s cloud-config;
+  Debian 13 + kairos-init v4.4.0, Hadron v0.6.3), pre-laid at 20 GiB, on an
+  XFS host, through the provider on the management cluster: six members per
+  image (three one at a time, three at once), all sealed and reported.
+  Medians: Debian 25 s, Hadron 21.5 s, both under the 30 s target; three at
+  once no slower than one. Per-stage table: host 3.5 s, firmware 0.4 s
+  (6.84 s on ext4), GRUB 0.2 to 1 s, guest 16 to 21 s (now the lever). The
+  gain beyond the firmware stage is not attributed to XFS.
+- `ROADMAPS.md`: roadmap 18's row.
+- `docs/src/reference/cloud-hypervisor-pool-timings.md`: a section for
+  sealed pre-laid members on XFS.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
 ## [2026-11-08 19:00] - ADR-0109: the allowed-request path through a gateway has run
 
 **Author:** Erick Bourgeois

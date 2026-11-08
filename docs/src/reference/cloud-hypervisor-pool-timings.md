@@ -36,6 +36,26 @@ encrypted install.
 vSphere's 2-member `GuestReady` pool warmed in 130.3 s (roadmap 17); this one
 brings three concurrent members to `Warm` in 107.5 s with no split-image work (roadmap 18).
 
+## Sealed pre-laid members on XFS (2026-11-08)
+
+The table above is a `Deferred` install pool. A **pre-laid, first-boot-sealed**
+image ([ADR-0113](https://github.com/firestoned/banlieue/blob/main/docs/adr/0113-pre-laid-images-for-fast-sealed-clones.md),
+ADR-0112) on a host whose guest storage reflinks (XFS) is four to five times
+faster:
+
+| Image | creation → `GuestReady`, median (range) | Three at once |
+| --- | --- | --- |
+| Debian 13, kairos-init v4.4.0 | **25 s** (22–26) | 22–26 s |
+| Kairos Hadron v0.6.3 | **21.5 s** (19–25) | 19–25 s |
+
+Of that, the host's part (pick-up, a reflink clone, the vTPM, starting
+swtpm and the VMM) is about 3.5 s, the firmware 0.4 s, GRUB 0.2 to 1 s, and
+the guest (kernel, initramfs, sealing `COS_PERSISTENT`, the reports) 16 to
+21 s. On ext4 every clone is a full copy and the firmware's first disk flush
+waits for it: 6.8 s more per member, queued behind every other clone in a
+warming pool. See the host guide, *Put guest storage on a filesystem with
+reflinks*, and roadmap 18 phase C for the per-stage table.
+
 ## Environment
 
 - **Host:** two 8-core Intel Xeon E5-2630 v3 (32 threads), 62 GiB, one SATA
