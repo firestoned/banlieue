@@ -1,5 +1,28 @@
 # Changelog
 
+## [2026-11-08 18:30] - ADR-0123 rejected: no provider-side duplicate-address probe
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docs/adr/0123-provider-side-duplicate-address-check.md`: Proposed →
+  Rejected, with the reasoning. The only check that answers #157 (an
+  address used by a machine banlieue did not create) is an active ARP probe,
+  and its costs (traffic on every network, `CAP_NET_RAW`, seconds per
+  static machine, a denial of service by anyone on the segment, networks
+  with ARP inspection) outweigh it; a records-only check misses the case at
+  issue. The design stays as the record of what was weighed.
+- `docs/adr/0083-block-duplicate-static-address.md`: its deferred
+  provider-side lookup and the one-segment-two-classes consequence now point
+  at that decision. Uniqueness against outside machines stays the
+  operator's (IPAM, static ranges outside DHCP scopes).
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
 ## [2026-11-08 12:30] - Pre-lay image applies Debian security updates (zlib CVEs)
 
 **Author:** Erick Bourgeois
