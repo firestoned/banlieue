@@ -1,5 +1,28 @@
 # Changelog
 
+## [2026-11-08 11:45] - All three CH hosts on XFS; swap script reloads systemd after each fstab edit
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/community/18-fast-sealed-clones.md`, `ROADMAPS.md`: every Cloud
+  Hypervisor host's guest storage is now XFS with reflinks: one by
+  `scripts/ch-storage-to-xfs.sh`, two by `scripts/ch-storage-swap-to-xfs.sh`
+  (one of them the management cluster's host, with its VMs running through
+  the move). Roadmap 18 phase C's last open item is the sealed member to
+  `GuestReady`.
+
+### Fixed
+- `scripts/ch-storage-swap-to-xfs.sh`: `systemctl daemon-reload` after the
+  swap-line edit of the real fstab too, not only after the final one, so the
+  staging mount no longer prints systemd's stale-fstab hint.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only (host tooling)
+- [ ] Documentation only
+
 ## [2026-11-08 11:30] - scripts/ch-storage-swap-to-xfs.sh; the XFS scripts' tests no longer touch the host's provider
 
 **Author:** Erick Bourgeois
