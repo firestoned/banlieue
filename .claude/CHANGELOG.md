@@ -1,5 +1,30 @@
 # Changelog
 
+## [2026-11-08 19:00] - ADR-0109: the allowed-request path through a gateway has run
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docs/adr/0109-isolated-sandbox-network-with-proxy-egress.md`: the "Open,
+  and not banlieue's" item is closed (Amended 2026-11-08). mediatore's
+  end-to-end claim on the management cluster reported an allowed request
+  through a gateway's Envoy answered 200 by the upstream with the
+  broker-minted bearer, a request outside the rules refused (403), and the
+  release retracting the entry and recycling the member.
+- `docs/src/guides/isolated-sandbox-segment.md`: *What has run live* moves
+  that path from "not yet proven" to proven.
+- `docs/architecture/calm/architecture.json`: the guest-to-gateway
+  relationship records the allowed request beside the refused one
+  (`make calm-validate` passes).
+- Threat model: no change. TB-18 never listed the path as open; the
+  gateway's controls are mediatore's (its ADR-0028), and no boundary moved.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
 ## [2026-11-08 18:30] - ADR-0123 rejected: no provider-side duplicate-address probe
 
 **Author:** Erick Bourgeois

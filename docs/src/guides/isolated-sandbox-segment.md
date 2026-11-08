@@ -127,18 +127,22 @@ seed's `network-config` ([ADR-0114](https://github.com/firestoned/banlieue/blob/
 
 ## What has run live
 
-On a libvirt host (2026-11-05), mediatore ran this topology: an isolated
-libvirt network as the segment, three two-NIC gateways, and a pool drawing
-static addresses through the Kairos stage above.
+On a libvirt host (2026-11-05, and end to end on 2026-11-08), mediatore ran
+this topology: an isolated libvirt network as the segment, three two-NIC
+gateways, and a pool drawing static addresses through the Kairos stage
+above.
 
 - **Proven:** a member attested through a gateway's relay, loaded a host
   table that drops everything but traffic to the gateways, and reached its
   egress proxy through the gateways. A request outside the claim's rules
   was refused (`403 outside_rules`). libvirt's isolated network refused a
   connection forwarded off the segment.
-- **Not yet proven:** an allowed request completing through a gateway's
-  Envoy. That run stopped at an expired upstream credential, which is an
-  environment problem, not the topology.
+- **Proven 2026-11-08:** an allowed request completing through a gateway's
+  Envoy. A request inside the claim's rules reached the upstream, which
+  answered 200 with the broker-minted bearer present, while a request outside
+  them was refused (403). Releasing the claim retracted its entry and the
+  pool recycled the member. (The 2026-11-05 run had stopped at an expired
+  upstream credential, an environment problem.)
 
 ## What banlieue does not do
 
