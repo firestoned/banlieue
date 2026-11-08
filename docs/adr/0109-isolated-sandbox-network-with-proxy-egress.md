@@ -15,7 +15,8 @@ SPDX-License-Identifier: Apache-2.0
   is mediatore ADR-0028, not 0023; Decision 6's one-static-NIC limit no
   longer holds on vSphere since ADR-0111;
   Decision 7's addresses reach libvirt and Cloud Hypervisor guests since
-  ADR-0114; see *Amendment: what changed underneath*)
+  ADR-0114; see *Amendment: what changed underneath*); 2026-11-08 (the last
+  open item, an allowed request through a gateway, ran; see *Accepted*)
 - **Related:** mediatore
   [ADR-0028](https://github.com/firestoned/mediatore/blob/main/docs/adr/0028-egress-gateway-envoy-with-spiffe-identity.md)
   (the gateway's software, identity and authorization), [ADR-0030](0030-per-zone-capability-targets.md) (per-zone
@@ -252,9 +253,14 @@ every deliverable the Consequences list now exists:
   rules was refused (`403 outside_rules`); the host's firewall rejected
   traffic forwarded off the segment's bridge (counted).
 
-**Open, and not banlieue's:** an *allowed* request completing through a
-gateway's Envoy. That run stopped at an expired upstream credential (an
-environment fault, recorded in mediatore's live-proof log); mediatore proves
-it on its next claim, under its ADR-0028. banlieue's part (the topology and
-its addressing) is what this ADR decides, and it has run.
+**Closed 2026-11-08:** an *allowed* request completing through a gateway's
+Envoy, the one item left open here (the 2026-11-05 run had stopped at an
+expired upstream credential, an environment fault). mediatore's end-to-end
+claim on the management cluster, under its ADR-0028, reported: a request
+inside the claim's rules went through a gateway's Envoy and the upstream
+answered 200, with the broker-minted bearer present; a request outside the
+rules was refused with 403; releasing the claim retracted its entry, and the
+pool recycled the member. Details are in mediatore's live-proof log. With
+that, the topology this ADR decides has run end to end with the software it
+was designed to carry.
 

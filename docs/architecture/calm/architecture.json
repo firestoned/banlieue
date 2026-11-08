@@ -2118,7 +2118,7 @@
     },
     {
       "unique-id": "rel-guest-egress-through-gateway",
-      "description": "Every outbound connection from a sandbox goes through an egress gateway over the segment: the guest's proxy opens mutual TLS to one of the three gateways (an ordered list from the broker, a random start, failover per connection; mediatore ADR-0028 Decision 7) and asks it to CONNECT to a host:port; the gateway authorizes it per claim and opens its own connection from its routable address. No sandbox address reaches the routable network and no route or NAT exists. A request outside the claim's rules was refused live (403 outside_rules, 2026-11-05).",
+      "description": "Every outbound connection from a sandbox goes through an egress gateway over the segment: the guest's proxy opens mutual TLS to one of the three gateways (an ordered list from the broker, a random start, failover per connection; mediatore ADR-0028 Decision 7) and asks it to CONNECT to a host:port; the gateway authorizes it per claim and opens its own connection from its routable address. No sandbox address reaches the routable network and no route or NAT exists. A request outside the claim's rules was refused live (403 outside_rules, 2026-11-05), and one inside them completed through a gateway's Envoy, answered 200 by the upstream (2026-11-08).",
       "relationship-type": {
         "connects": {
           "source": {
