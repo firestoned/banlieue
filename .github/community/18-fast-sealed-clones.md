@@ -345,6 +345,34 @@ layout is an ADR.
       from the kernel to the reports, most of it the first-boot encryption of
       `COS_PERSISTENT`, which is phase C's remaining lever.
 - [ ] Re-measure the pool with whichever lands, on all three backends.
+      **Cloud Hypervisor done** (above). **libvirt, 2026-11-08:** the Debian
+      recipe with `qemu-guest-agent`, the libvirt phase marker and example
+      21's EK export (libvirt reads `GuestReady`, the sealed report and the
+      EK certificate through the agent), pre-laid at 20 GiB, a `BackingFile`
+      in the pool of the one libvirt Provider that advertises `vtpm`, a
+      temporary `tpmEnabled` class: **33, 33 s one at a time (and one 64 s),
+      35 to 36 s three at once**, all sealed. The numbers are the poll, not
+      the boot: while a guest has not reported, the libvirt provider requeues
+      every `REQUEUE_DEFAULT_SECS` (30 s), so a guest ready at about 25 s is
+      seen at the 30 s poll (33 s) or, missing it, at the 60 s one (64 s).
+      Cloud Hypervisor's guest pushes over vsock and its provider requeues
+      every 1 s during a transition. No storage effect: libvirt's OS disk is
+      a qcow2 overlay, never a copy. vSphere: no access, still open.
+- [ ] **libvirt: poll a booting guest fast.** Requeue every few seconds
+      while a running machine waits for `GuestReady` (phase marker, EK
+      certificate, sealed report), then back off to 30 s, as the Cloud
+      Hypervisor provider's transition requeue does. Expected: libvirt's
+      time to `GuestReady` falls from 33 s to the boot itself (about 25 s).
+- [ ] **The guest's share** (16 to 21 s, now the largest). Profiled
+      2026-11-08 from immucore's own boot timeline (a `COS_OEM` stage
+      dumping it to the serial console): `encrypt-pending` 4.3 to 5.0 s
+      (about 3 s unlogged before the LUKS format starts, then about 1 s of
+      format, sync and udev settle), `initramfs-hook` 2.5 to 3.3 s (about 2 s
+      of it the datasource probe, which ends in "no metadata/userdata found"
+      on a machine with no seed), `mount-bind` 2.4 to 2.8 s (system
+      extensions enabled unvalidated), `unlock-all` 0.5 s. Levers: what the
+      3 s before the format is (kcrypt debug logging), skipping the
+      datasource probe when no seed is attached, and the extensions step.
 
 ## D. Verified base and build-time scanner (invariants 1, 3) ⛔
 

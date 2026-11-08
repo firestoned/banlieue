@@ -1,5 +1,29 @@
 # Changelog
 
+## [2026-11-08 23:30] - Roadmap 18: libvirt sealed members measured; the guest's boot profiled
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/community/18-fast-sealed-clones.md`, `ROADMAPS.md`:
+  - libvirt sealed pre-laid members (Debian with qemu-guest-agent, the
+    libvirt phase marker and example 21's EK export, a `tpmEnabled` class on
+    the one libvirt Provider advertising `vtpm`): 33 s one at a time (one
+    64 s), 35 to 36 s three at once, all sealed. The times are the libvirt
+    provider's 30 s guest poll (`REQUEUE_DEFAULT_SECS`), not the boot: a new
+    open item polls fast while a guest boots.
+  - The guest's 16 to 21 s, from immucore's boot timeline: `encrypt-pending`
+    4.3 to 5.0 s (about 3 s before the LUKS format starts), `initramfs-hook`
+    2.5 to 3.3 s (about 2 s of datasource probe with no seed), `mount-bind`
+    2.4 to 2.8 s (system extensions), `unlock-all` 0.5 s. A new open item
+    lists the levers.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
 ## [2026-11-08 21:30] - Roadmap 18: sealed members to GuestReady in 25 s (Debian) and 21.5 s (Hadron) on XFS
 
 **Author:** Erick Bourgeois
