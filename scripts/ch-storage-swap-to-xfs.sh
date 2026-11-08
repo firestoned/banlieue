@@ -51,6 +51,8 @@
 #   CH_XFS_RESUME_CONF     initramfs-tools' resume file
 #                          (default /etc/initramfs-tools/conf.d/resume)
 #   CH_XFS_CMDLINE         the kernel command line (default /proc/cmdline)
+#   CH_XFS_BACKUP_DIR      where the resume file's backup goes, outside
+#                          conf.d (default /var/backups/ch-storage-swap-to-xfs)
 #   CH_XFS_PROVIDER_UNIT   the provider unit to stop and start
 #   CH_XFS_GUEST_UNITS     the guest unit pattern that must not be running
 #
@@ -65,6 +67,10 @@ SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CH_XFS_SOURCE_ONLY=1 source "$SELF_DIR/ch-storage-to-xfs.sh"
 
 readonly RESUME_CONF_DEFAULT="/etc/initramfs-tools/conf.d/resume"
+# Where the resume file's backup goes: never beside it, because
+# initramfs-tools reads every file in conf.d, and a backup there would put the
+# old RESUME= back into the initramfs (found on a host, 2026-11-08).
+readonly BACKUP_DIR_DEFAULT="/var/backups/ch-storage-swap-to-xfs"
 readonly CMDLINE_DEFAULT="/proc/cmdline"
 readonly DEFAULT_SWAPFILE_SIZE="16G"
 readonly SWAPFILE_MODE="0600"
@@ -181,6 +187,7 @@ swap_main() {
   local fstab=${CH_XFS_FSTAB:-$FSTAB_DEFAULT}
   local resume_conf=${CH_XFS_RESUME_CONF:-$RESUME_CONF_DEFAULT}
   local cmdline=${CH_XFS_CMDLINE:-$CMDLINE_DEFAULT}
+  local backup_dir=${CH_XFS_BACKUP_DIR:-$BACKUP_DIR_DEFAULT}
 
   # ---- checks ---------------------------------------------------------------
   ((EUID == 0)) || die "run as root"
@@ -234,7 +241,7 @@ swap_main() {
   say "plan: $dev (swap, $((part_kib / BYTES_PER_KIB)) MiB, $((used_kib / BYTES_PER_KIB)) MiB in use) becomes XFS at $dir ($((data_kib / BYTES_PER_KIB)) MiB of data):"
   say "  swap file $swapfile ($swapfile_size): create, enable, add to $fstab"
   say "  swapoff $dev; comment out its $fstab line (backup $fstab.bak-ch-storage-swap-to-xfs.$stamp)"
-  $resume_change && say "  $resume_conf: RESUME=none$([[ $resume_conf == "$RESUME_CONF_DEFAULT" ]] && echo '; update-initramfs -u')"
+  $resume_change && say "  $resume_conf: RESUME=none (old file kept in $backup_dir/$stamp)$([[ $resume_conf == "$RESUME_CONF_DEFAULT" ]] && echo '; update-initramfs -u')"
   say "  mkfs.xfs -m reflink=1 $dev"
   $provider_active && say "  stop $PROVIDER_UNIT"
   say "  copy $dir onto it and compare; add it to $fstab at $dir; findmnt --verify"
@@ -267,9 +274,11 @@ swap_main() {
 
   if $resume_change; then
     step="point resume away from $dev"
-    cp -p "$resume_conf" "$resume_conf.bak-ch-storage-swap-to-xfs.$stamp"
+    mkdir -p "$backup_dir"
+    mkdir -m 0700 "$backup_dir/$stamp"
+    cp -p "$resume_conf" "$backup_dir/$stamp/$(basename "$resume_conf")"
     tmp=$(mktemp)
-    resume_rewrite "$resume_conf.bak-ch-storage-swap-to-xfs.$stamp" "$uuid" "$dev" >"$tmp"
+    resume_rewrite "$backup_dir/$stamp/$(basename "$resume_conf")" "$uuid" "$dev" >"$tmp"
     cat "$tmp" >"$resume_conf"
     rm -f "$tmp"
     if [[ $resume_conf == "$RESUME_CONF_DEFAULT" ]] && command -v update-initramfs >/dev/null; then

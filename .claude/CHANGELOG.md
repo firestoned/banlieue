@@ -16,7 +16,7 @@
   system's file), `mkfs.xfs -m reflink=1`, copy and compare, fstab line,
   move the old directory aside, mount, compare, restart the provider.
 - `scripts/ch-storage-swap-to-xfs-test.sh`, `make ch-storage-swap-to-xfs-test`:
-  34 checks without root and 23 more live with `sudo CH_XFS_LIVE=1` (a loop device as the
+  34 checks without root and 25 more live with `sudo CH_XFS_LIVE=1` (a loop device as the
   swap partition, copies of fstab, the resume file and the kernel command
   line).
 - `docs/src/guides/cloud-hypervisor-host.md`: when to use which script.
@@ -30,6 +30,13 @@
   running). Both scripts now also refuse up front an fstab that
   `findmnt --verify` already rejects, so a rejection after their edit is
   theirs.
+- `scripts/ch-storage-swap-to-xfs.sh`: the resume file's backup goes to
+  `/var/backups/ch-storage-swap-to-xfs/<stamp>/` (`CH_XFS_BACKUP_DIR`), not
+  beside it. initramfs-tools reads every file in `conf.d`, so a backup there
+  put the old `RESUME=` back into the rebuilt initramfs, read after the new
+  `RESUME=none` (found on the first host it ran on; no boot delay there, the
+  initramfs mounted root 0.02 s after `/init`). The live test now checks that
+  `conf.d` holds only `resume` afterwards.
 
 ### Impact
 - [ ] Breaking change

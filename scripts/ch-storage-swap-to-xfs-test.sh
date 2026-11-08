@@ -126,7 +126,8 @@ if [[ ${CH_XFS_LIVE:-} == 1 ]]; then
     suuid=$(blkid -s UUID -o value "$LOOP")
     # Only lines that resolve: findmnt --verify must accept it before the run.
     printf 'UUID=%s none swap sw 0 0\n' "$suuid" >"$WORK/fstab-live"
-    printf 'RESUME=UUID=%s\n' "$suuid" >"$WORK/resume-live"
+    mkdir -p "$WORK/conf.d"
+    printf 'RESUME=UUID=%s\n' "$suuid" >"$WORK/conf.d/resume"
     printf 'BOOT_IMAGE=/vmlinuz root=UUID=aaaa ro quiet\n' >"$WORK/cmdline-live"
     # The storage directory, as on a CH host: provider-owned, private, an
     # image, a hard link and a sparse disk.
@@ -139,7 +140,7 @@ if [[ ${CH_XFS_LIVE:-} == 1 ]]; then
     truncate -s 256M "$WORK/store/ch/images/sparse.raw"
     chown nobody:nogroup "$WORK/store/ch/images/"*
     sum_before=$(sha256sum "$WORK/store/ch/images/base.raw" | cut -d' ' -f1)
-    LIVE_ENV=(env CH_XFS_FSTAB="$WORK/fstab-live" CH_XFS_RESUME_CONF="$WORK/resume-live"
+    LIVE_ENV=(env CH_XFS_FSTAB="$WORK/fstab-live" CH_XFS_RESUME_CONF="$WORK/conf.d/resume" CH_XFS_BACKUP_DIR="$WORK/bk"
       CH_XFS_CMDLINE="$WORK/cmdline-live"
       CH_XFS_PROVIDER_UNIT="banlieue-test-no-such-provider-$$.service"
       CH_XFS_GUEST_UNITS="banlieue-test-no-such-guest-$$@*")
@@ -152,7 +153,7 @@ if [[ ${CH_XFS_LIVE:-} == 1 ]]; then
 
     printf 'UUID=00000000-dead-beef-0000-000000000000 /nowhere ext4 defaults 0 2\n' >"$WORK/fstab-broken"
     cat "$WORK/fstab-live" >>"$WORK/fstab-broken"
-    env CH_XFS_FSTAB="$WORK/fstab-broken" CH_XFS_RESUME_CONF="$WORK/resume-live" CH_XFS_CMDLINE="$WORK/cmdline-live" \
+    env CH_XFS_FSTAB="$WORK/fstab-broken" CH_XFS_RESUME_CONF="$WORK/conf.d/resume" CH_XFS_BACKUP_DIR="$WORK/bk" CH_XFS_CMDLINE="$WORK/cmdline-live" \
       CH_XFS_PROVIDER_UNIT="banlieue-test-no-such-provider-$$.service" CH_XFS_GUEST_UNITS="banlieue-test-no-such-guest-$$@*" \
       bash "$SCRIPT" "${args[@]}" >"$WORK/broken.out" 2>&1
     check "live: an fstab that is already broken is refused up front" grep -q 'already rejects' "$WORK/broken.out"
@@ -170,7 +171,9 @@ if [[ ${CH_XFS_LIVE:-} == 1 ]]; then
     check "live: fstab has the swap file" grep -qP "^\Q$WORK/swapfile\E\tnone\tswap" "$WORK/fstab-live"
     check "live: fstab mounts the new filesystem" grep -qP "^UUID=$(blkid -s UUID -o value "$LOOP")\t\Q$WORK/store/ch\E\txfs" "$WORK/fstab-live"
     check "live: findmnt accepts the fstab" findmnt --verify --tab-file "$WORK/fstab-live"
-    check "live: resume points nowhere" grep -qx 'RESUME=none' "$WORK/resume-live"
+    check "live: resume points nowhere" grep -qx 'RESUME=none' "$WORK/conf.d/resume"
+    check "live: nothing else is left in conf.d (initramfs-tools reads it all)" test "$(ls "$WORK/conf.d")" = resume
+    check "live: the old resume file is kept outside conf.d" bash -c 'grep -q "^RESUME=UUID=" "$1"/*/resume' _ "$WORK/bk"
     check "live: the data survived" test "$(sha256sum "$WORK/store/ch/images/base.raw" | cut -d' ' -f1)" = "$sum_before"
     check "live: owners survived" test "$(stat -c %U:%G "$WORK/store/ch/images/base.raw")" = nobody:nogroup
     check "live: the mountpoint's mode is the old directory's" test "$(stat -c %a "$WORK/store/ch")" = 711
