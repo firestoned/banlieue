@@ -261,34 +261,44 @@ layout is an ADR.
       pass (3.05 s every time). The rest, **4 to 8 s, is the firmware
       itself**, silent on the console, and the same on the prototype and the
       tpmfix VMMs and with no vTPM at all: **not the vTPM polling**, and
-      nothing for the upstream vTPM fix.
-- [ ] **Find what the firmware waits on** for 4 to 8 s before choosing the
-      boot disk: a debug build of the firmware (`CLOUDHV.fd`) with its
-      log on the console. The largest step left between 39 s and 30 s.
-      **2026-11-07: not reproduced.** On one host, with the pinned
-      firmware (`ch-97eeb7b09`, byte-identical to every artifact on the
-      hosts) and the same VMM build as 2026-11-01, measured from the
-      `vm.boot` call to the serial console, 3 runs per row:
+      nothing for the upstream vTPM fix. (Corrected 2026-11-07, below: it is
+      not the firmware either, but the firmware waiting on the clone's
+      writeback.)
+- [x] **Find what the firmware waits on** (2026-11-07). **Not the
+      firmware: the clone's writeback.** On ext4 the provider cannot
+      reflink, so `clone_file` (`sys.rs`) writes the whole image (2.5 GB for
+      a pre-laid Kairos raw) into the new `os.raw`, and the VM boots while
+      that data is still dirty in the page cache. The firmware's first disk
+      flush becomes an `fsync` on `os.raw` that waits for all of it to reach
+      the disk: **6.94 s in one `fsync`** (traced with io_uring off), with
+      2.5 GB dirty when the boot started. It is silent on the console
+      because the firmware is blocked on that flush. Through the real
+      provider (a `VirtualMachine` on a host's Cloud Hypervisor Provider),
+      the firmware loaded `Boot0002` 6.8 s after its first console byte.
+      Standalone, on one host, firmware `ch-97eeb7b09`, the same VMM build
+      as 2026-11-01, 3 runs each, from the `vm.boot` call:
 
-      | Condition | first byte | firmware loads `Boot0002` | GRUB's first output |
-      | --- | --- | --- | --- |
-      | raw image, CLI boot, no devices | | 0.8 s | 1.7 s (menu) |
-      | raw image, every device (seed disk, tap NIC, vTPM, vsock, virtio-rng, 4 GiB) | | 0.8 s | 2.0 s (menu) |
-      | the provider's `vm.create` body over the API, Landlock on | 0.37 s | 0.75 s | 1.9 s (menu) |
-      | the same, OS disk grown to 40 GiB | 0.37 s | 0.77 s | 1.9 s (menu) |
-      | a pre-laid image (`prelay-kairos-raw.sh`), GRUB timeout 0 | 0.37 s | 0.75 s | 1.9 s |
-      | the same, as an unprivileged user under the `banlieue-ch@` unit's sandbox and the guest slice | 0.37 s | 0.75 s | 1.9 s |
-      | the same, with a concurrent multi-GB image copy on the filesystem | 0.37 s | 0.75 s | 1.9 s |
+      | OS disk | firmware loads `Boot0002` |
+      | --- | --- |
+      | a fresh copy, booted straight away (the provider's path on ext4) | **7.4 s** |
+      | a fresh copy, `sync` before boot | 0.72 s |
+      | a copy over an existing file (ext4 starts writeback on the rewrite) | 0.72 s |
+      | a **reflink** on XFS (`reflink=1`), booted straight away | **0.96 s** |
 
-      The firmware hands over in under a second in every condition; the
-      0.75 s to 1.9 s that follows is shim and GRUB loading from the EFI
-      partition, not the firmware. What the 2026-11-01 runs had that these
-      do not: the provider's whole path (a cluster-created clone, a
-      `swtpm_setup`-provisioned vTPM, a pool warming several members at
-      once). Next: time a real pool member's boot from the provider's
-      journal and its serial log before building anything; the debug
-      firmware (`-b DEBUG -D DEBUG_ON_SERIAL_PORT=TRUE`, toolchain `GCC`
-      in this edk2) is ready if the gap reappears.
+      Nothing else mattered: every device a pool member has, the provider's
+      exact `vm.create` body with Landlock, a 40 GiB disk, a pre-laid image
+      and an unprivileged VMM under the `banlieue-ch@` unit's sandbox all
+      gave 0.75 s on a disk that was not freshly written. The cost scales
+      with the image's data and the disk's write speed, and a pool warming
+      several members at once pays it for each clone. **The fix is a
+      reflink-capable filesystem (XFS or btrfs) for the provider's storage
+      classes**, which the provider already uses when it can; the host guide
+      now says so. A debug firmware build (`-b DEBUG -D
+      DEBUG_ON_SERIAL_PORT=TRUE`, toolchain `GCC` in this edk2) was used to
+      rule the firmware out; it loads `Boot0002` with no network boot
+      attempt first.
+- [ ] Move a host's `/srv/banlieue/ch` to XFS (or btrfs) and re-measure a
+      sealed pre-laid member end to end: the 39 s should lose about 6 s.
 - [ ] Re-measure the pool with whichever lands, on all three backends.
 
 ## D. Verified base and build-time scanner (invariants 1, 3) ⛔

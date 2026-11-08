@@ -979,6 +979,33 @@ What changes for you:
 Each clone still seals its own copy of the plaintext partition:
 `make ch-sealing-isolation-e2e` passes against a pre-laid image.
 
+### Put guest storage on a filesystem with reflinks
+
+Each guest's `os.raw` is a **reflink** of the cached image where the
+storage class's filesystem supports one (XFS with `reflink=1`, the default
+for current `mkfs.xfs`, or btrfs), and a full copy where it does not (ext4).
+A copy is not only slower to make: the guest boots while the copied data is
+still dirty in the host's page cache, and the firmware's first disk flush
+waits until all of it has reached the disk. Measured on one host with an
+SATA SSD, with a pre-laid Kairos image of 2.5 GB of data
+(roadmap 18, 2026-11-07):
+
+| `os.raw` | Firmware hands over to GRUB |
+| --- | --- |
+| Copy on ext4 (the clone the provider makes there) | 7.4 s |
+| Reflink on XFS | 0.96 s |
+
+The wait is silent on the console, so it looks like a slow firmware. It
+grows with the image's data and shrinks with the disk's write speed, and a
+pool warming several members at once pays it for every clone. Put the
+directories your `storage_classes` name (`/srv/banlieue/ch` by default) on
+XFS or btrfs. To check a host:
+
+```sh
+findmnt -no FSTYPE -T /srv/banlieue/ch           # xfs or btrfs
+sudo xfs_info /srv/banlieue/ch | grep -o 'reflink=[01]'   # XFS: reflink=1
+```
+
 ## Gotchas
 
 Found in the roadmap 09 phase 0 spike, and handled by banlieue's provider so
