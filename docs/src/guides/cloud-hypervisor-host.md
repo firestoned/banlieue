@@ -1006,6 +1006,22 @@ findmnt -no FSTYPE -T /srv/banlieue/ch           # xfs or btrfs
 sudo xfs_info /srv/banlieue/ch | grep -o 'reflink=[01]'   # XFS: reflink=1
 ```
 
+When that directory is on a partition of its own (a `/srv` partition, say),
+`scripts/ch-storage-to-xfs.sh` moves it in place: it checks that no guest is
+running and that the copy fits elsewhere, copies the data aside, formats the
+partition `mkfs.xfs -m reflink=1`, rewrites its `/etc/fstab` line (keeping a
+backup, and only if `findmnt --verify` accepts the result), restores and
+compares the data, and leaves the copy for you to delete. Without `--apply`
+it only checks and prints the plan:
+
+```sh
+sudo scripts/ch-storage-to-xfs.sh /srv            # plan only
+sudo scripts/ch-storage-to-xfs.sh --apply /srv
+```
+
+It refuses `/`, `/home`, `/var` and the like: storage that shares a system
+partition needs a new partition, which is a console job.
+
 The provider checks too, by cloning one block between two unnamed files in
 each storage class's directory, and names every class that cannot reflink in
 its failure domain. It is not a gap: the Provider stays `Ready` and guests

@@ -1,6 +1,6 @@
 # anatomy.md
 
-> Auto-maintained by OpenWolf. Last scanned: 2026-11-07T23:00:00.245Z
+> Auto-maintained by OpenWolf. Last scanned: 2026-11-08T05:00:00.249Z
 > Files: 513 tracked | Anatomy hits: 0 | Misses: 0
 
 ## ./
@@ -24,7 +24,7 @@
 - `NOTICE` (~159 tok)
 - `osv-scanner.toml` — SPDX-License-Identifier: Apache-2.0 (~120 tok)
 - `README.md` — Project documentation (~3895 tok)
-- `ROADMAPS.md` — Roadmaps (~5181 tok)
+- `ROADMAPS.md` — Roadmaps (~5240 tok)
 - `SECURITY.md` — Security Policy (~382 tok)
 
 ## .clusterfuzzlite/
@@ -70,7 +70,7 @@
 - `15-vsphere-disk-image-import.md` — 15: vSphere disk-image import (raw and VMDK), alongside the ISO path (~4709 tok)
 - `16-scorecard-remediation.md` — 16 — OSSF Scorecard remediation (~2677 tok)
 - `17-ephemeral-vm-pools.md` — 17: Ephemeral, single-use VM pools (AI agent sandboxes) (~14621 tok)
-- `18-fast-sealed-clones.md` — 18: Fast sealed clones: isolation proof, boot speed, verified base (~5188 tok)
+- `18-fast-sealed-clones.md` — 18: Fast sealed clones: isolation proof, boot speed, verified base (~5734 tok)
 - `19-port-groups.md` — 19: Port groups — declared, reconciled, and safe to delete (~4109 tok)
 - `20-firecracker-provider.md` — 20: Firecracker provider, the sandbox backend (~5231 tok)
 - `README.md` — Project documentation (~1538 tok)
@@ -459,14 +459,14 @@
 - `neigh.rs` — Guest addresses from the host's IPv4 neighbour table (ADR-0062 Decision 5). (~828 tok)
 - `plan_tests.rs` — Unit tests for `plan.rs`. (~6849 tok)
 - `plan.rs` — Planning: from a `CloudHypervisorMachine` and the host config to every (~6216 tok)
-- `provider_tests.rs` — Unit tests for `provider.rs`. (~4622 tok)
-- `provider.rs` — `Provider.status` for this host: one failure domain, the classes it can (~5072 tok)
+- `provider_tests.rs` — Unit tests for `provider.rs`. (~5080 tok)
+- `provider.rs` — `Provider.status` for this host: one failure domain, the classes it can (~5414 tok)
 - `reconciler_tests.rs` — Unit tests for the pure decisions in `reconciler.rs`. (~2629 tok)
 - `reconciler.rs` — The `CloudHypervisorMachine` reconciler: Kubernetes glue around (~3652 tok)
 - `report_tests.rs` — Unit tests for `report.rs`: the parser, and a listener on a real socket (~2332 tok)
 - `report.rs` — The guest's `phase` report over vsock (ADR-0065 Decision 5). (~2979 tok)
-- `sys_tests.rs` — Unit tests for `sys.rs` that need no privilege. Tap and bridge calls are (~1580 tok)
-- `sys.rs` — The few syscalls the provider needs that `std` does not wrap: tap devices, (~3979 tok)
+- `sys_tests.rs` — Unit tests for `sys.rs` that need no privilege. Tap and bridge calls are (~1898 tok)
+- `sys.rs` — The few syscalls the provider needs that `std` does not wrap: tap devices, (~4322 tok)
 - `systemd_tests.rs` — Unit tests for `systemd.rs`, and for the template units it starts: what a (~2739 tok)
 - `systemd.rs` — Guests and their helpers as instances of root-owned template units, over (~4386 tok)
 - `token_tests.rs` — Unit tests for `token.rs`. (~1298 tok)

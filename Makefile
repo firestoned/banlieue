@@ -321,6 +321,9 @@ check-infra-identifiers: ## Fail if a tracked file names real infrastructure (ge
 check-infra-identifiers-test: ## Test scripts/check-infra-identifiers.sh against throwaway repositories
 	@scripts/check-infra-identifiers-test.sh
 
+ch-storage-to-xfs-test: ## Test scripts/ch-storage-to-xfs.sh (pure checks; sudo CH_XFS_LIVE=1 adds the whole move on a loop device)
+	@scripts/ch-storage-to-xfs-test.sh
+
 git-cliff-install: ## Install the pinned git-cliff (linux/amd64) into $(GIT_CLIFF_INSTALL_DIR), SHA-512 verified
 	@set -eu; tmp=$$(mktemp -d); trap 'rm -rf "$$tmp"' EXIT; \
 	  f=git-cliff-$(GIT_CLIFF_VERSION)-x86_64-unknown-linux-gnu.tar.gz; \
