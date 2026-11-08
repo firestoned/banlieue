@@ -1,5 +1,35 @@
 # Changelog
 
+## [2026-11-09 00:30] - libvirt polls a booting guest every 2 s for its first 90 s (ADR-0043 Decision 8, amended)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `crates/banlieue-provider-libvirt/src/reconciler/libvirtmachine.rs`:
+  `guest_poll_interval(poll_soon, age_secs)` replaces the two-way choice
+  after convergence: while `should_poll_soon` holds, every
+  `FAST_GUEST_POLL_SECS` (2 s) for a machine younger than
+  `FAST_GUEST_POLL_WINDOW_SECS` (90 s), then `REQUEUE_DEFAULT_SECS` (30 s);
+  otherwise `REQUEUE_LONG_SECS` (300 s), as before. Measured before: sealed
+  pre-laid members reached `GuestReady` at 33 s (one at 64 s) on libvirt,
+  which was the 30 s poll; the same image boots and reports in about 25 s.
+- `libvirtmachine_tests.rs`: four tests (fast while young, default past the
+  window, long when nothing is expected, the window's bounds checked at
+  compile time).
+- `docs/adr/0043-guestready-installed-guest-signal.md`: Decision 8 amended
+  a third time, with the measurement.
+- `docs/src/security/threat-model.md`: pass for the amendment, no table
+  changes (same read-only guest-agent calls over TB-4, sooner; load bounded
+  per member by a creation-counted window); stamp 2026-11-08.
+- `.github/community/18-fast-sealed-clones.md`: the item is implemented,
+  ticks after a libvirt re-measure.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (libvirt provider image)
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-11-08 23:30] - Roadmap 18: libvirt sealed members measured; the guest's boot profiled
 
 **Author:** Erick Bourgeois
