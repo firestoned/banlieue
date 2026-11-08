@@ -271,6 +271,9 @@ swap_main() {
   fstab_comment_swap "$fstab" "$uuid" "$dev" >"$tmp"
   cat "$tmp" >"$fstab"
   rm -f "$tmp"
+  # Reload after every edit of the real fstab: the staging mount below would
+  # otherwise run against systemd's stale copy (mount prints a hint).
+  [[ $fstab == "$FSTAB_DEFAULT" ]] && command -v systemctl >/dev/null && systemctl daemon-reload
 
   if $resume_change; then
     step="point resume away from $dev"

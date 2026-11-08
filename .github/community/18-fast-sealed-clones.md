@@ -308,10 +308,12 @@ layout is an ADR.
       | ext4 | full copy | 6.84 s |
       | XFS, `reflink=1` | reflink (226 shared extents) | **0.12 s** |
 
-      GRUB's first output came 1.09 s after the first byte. Still open: the
-      same measurement with a sealing image, to `GuestReady`, and the other
-      two hosts' moves (a swap partition on one, a console repartition on
-      the other).
+      GRUB's first output came 1.09 s after the first byte. **All three
+      hosts moved the same day**: the dedicated `/srv` partition with
+      `scripts/ch-storage-to-xfs.sh`, the other two by turning their swap
+      partitions into XFS with `scripts/ch-storage-swap-to-xfs.sh` (no
+      console, no downtime for the cluster one hosts). Still open: the same
+      measurement with a sealing image, to `GuestReady`.
 - [ ] Re-measure the pool with whichever lands, on all three backends.
 
 ## D. Verified base and build-time scanner (invariants 1, 3) ⛔
