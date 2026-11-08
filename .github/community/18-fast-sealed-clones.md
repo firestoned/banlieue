@@ -265,6 +265,30 @@ layout is an ADR.
 - [ ] **Find what the firmware waits on** for 4 to 8 s before choosing the
       boot disk: a debug build of the firmware (`CLOUDHV.fd`) with its
       log on the console. The largest step left between 39 s and 30 s.
+      **2026-11-07: not reproduced.** On one host, with the pinned
+      firmware (`ch-97eeb7b09`, byte-identical to every artifact on the
+      hosts) and the same VMM build as 2026-11-01, measured from the
+      `vm.boot` call to the serial console, 3 runs per row:
+
+      | Condition | first byte | firmware loads `Boot0002` | GRUB's first output |
+      | --- | --- | --- | --- |
+      | raw image, CLI boot, no devices | | 0.8 s | 1.7 s (menu) |
+      | raw image, every device (seed disk, tap NIC, vTPM, vsock, virtio-rng, 4 GiB) | | 0.8 s | 2.0 s (menu) |
+      | the provider's `vm.create` body over the API, Landlock on | 0.37 s | 0.75 s | 1.9 s (menu) |
+      | the same, OS disk grown to 40 GiB | 0.37 s | 0.77 s | 1.9 s (menu) |
+      | a pre-laid image (`prelay-kairos-raw.sh`), GRUB timeout 0 | 0.37 s | 0.75 s | 1.9 s |
+      | the same, as an unprivileged user under the `banlieue-ch@` unit's sandbox and the guest slice | 0.37 s | 0.75 s | 1.9 s |
+      | the same, with a concurrent multi-GB image copy on the filesystem | 0.37 s | 0.75 s | 1.9 s |
+
+      The firmware hands over in under a second in every condition; the
+      0.75 s to 1.9 s that follows is shim and GRUB loading from the EFI
+      partition, not the firmware. What the 2026-11-01 runs had that these
+      do not: the provider's whole path (a cluster-created clone, a
+      `swtpm_setup`-provisioned vTPM, a pool warming several members at
+      once). Next: time a real pool member's boot from the provider's
+      journal and its serial log before building anything; the debug
+      firmware (`-b DEBUG -D DEBUG_ON_SERIAL_PORT=TRUE`, toolchain `GCC`
+      in this edk2) is ready if the gap reappears.
 - [ ] Re-measure the pool with whichever lands, on all three backends.
 
 ## D. Verified base and build-time scanner (invariants 1, 3) ⛔
