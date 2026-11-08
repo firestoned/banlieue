@@ -4,7 +4,7 @@ SPDX-License-Identifier: Apache-2.0
 -->
 # Threat Model
 
-> **Status:** Living document. Last full pass **2026-11-07**, against the
+> **Status:** Living document. Last full pass **2026-11-08**, against the
 > architecture defined by **ADR-0001 … ADR-0115** (0057–0059 unallocated,
 > 0066 and 0068–0073 reserved; 0074 and 0075 Accepted 2026-09-28; 0076–0080
 > reserved by roadmap 19; 0081–0082 recorded but not implemented in banlieue, and kept canonically in
@@ -29,7 +29,15 @@ SPDX-License-Identifier: Apache-2.0
 > Accepted 2026-11-04; 0054 amended 2026-11-04: every NoCloud seed carries
 > `user-data`, an empty cloud-config when none is set, so cloud-init stops
 > ignoring seeds without it; no row changes, the seed's contents and who
-> controls them are as before). The most recent pass, 2026-11-07, is
+> controls them are as before). The most recent pass, 2026-11-08, is
+> **ADR-0043 Decision 8's third amendment**: the libvirt provider polls a
+> machine still expecting its guest's report every 2 s for its first 90 s
+> (then 30 s, as before). The reads are the same read-only guest-agent calls
+> over the same mutual-TLS libvirt session (TB-4), only sooner; the extra
+> load on libvirtd is bounded per member (at most 45 probes) by a window
+> counted from creation, which a guest cannot extend. No actor, identity,
+> grant, boundary or accepted risk changes; nothing changes beyond the stamp.
+> The pass before it, 2026-11-07, is
 > **ADR-0109's acceptance**: a new boundary, **TB-18** (sandbox segment →
 > egress gateway → routable network), in the §5 diagram and table; a §6
 > section mapping its threats to banlieue's topology controls (no default

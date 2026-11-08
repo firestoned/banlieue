@@ -1357,6 +1357,62 @@ mod tests {
         ));
     }
 
+    // ------------------------------------------------------------------
+    // guest_poll_interval (ADR-0043 Decision 8, amended 2026-11-08)
+    // ------------------------------------------------------------------
+
+    /// A machine expecting its guest to report is polled fast while it is
+    /// young: a sealed pre-laid guest reports in about 25 s, and a 30 s poll
+    /// turned that into 33 s, or 64 s when it just missed one.
+    #[test]
+    fn a_young_machine_expecting_a_report_is_polled_fast() {
+        let fast = std::time::Duration::from_secs(FAST_GUEST_POLL_SECS);
+        assert_eq!(guest_poll_interval(true, 0), fast);
+        assert_eq!(
+            guest_poll_interval(true, FAST_GUEST_POLL_WINDOW_SECS - 1),
+            fast
+        );
+    }
+
+    /// Past the window the default interval returns, so a long install or a
+    /// guest that never reports costs no more than before.
+    #[test]
+    fn past_the_window_a_machine_expecting_a_report_is_polled_at_the_default() {
+        let default =
+            std::time::Duration::from_secs(banlieue_provider_sdk::reconciler::REQUEUE_DEFAULT_SECS);
+        assert_eq!(
+            guest_poll_interval(true, FAST_GUEST_POLL_WINDOW_SECS),
+            default
+        );
+        assert_eq!(
+            guest_poll_interval(true, AGENT_BOOTSTRAP_GRACE_SECS),
+            default
+        );
+    }
+
+    /// Nothing expected to change: the long interval, young or not.
+    #[test]
+    fn a_machine_expecting_nothing_is_polled_at_the_long_interval() {
+        let long =
+            std::time::Duration::from_secs(banlieue_provider_sdk::reconciler::REQUEUE_LONG_SECS);
+        assert_eq!(guest_poll_interval(false, 0), long);
+        assert_eq!(
+            guest_poll_interval(false, FAST_GUEST_POLL_WINDOW_SECS),
+            long
+        );
+    }
+
+    /// The window covers every measured boot to the report (25 s on Cloud
+    /// Hypervisor, under 33 s on libvirt) and ends well inside the agent
+    /// bootstrap grace, and the fast interval is faster than the default.
+    #[test]
+    fn the_fast_window_covers_a_boot_and_stays_bounded() {
+        const MEASURED_BOOT_TO_REPORT_SECS: u64 = 33;
+        const { assert!(FAST_GUEST_POLL_WINDOW_SECS > MEASURED_BOOT_TO_REPORT_SECS) };
+        const { assert!(FAST_GUEST_POLL_WINDOW_SECS < AGENT_BOOTSTRAP_GRACE_SECS) };
+        const { assert!(FAST_GUEST_POLL_SECS < banlieue_provider_sdk::reconciler::REQUEUE_DEFAULT_SECS) };
+    }
+
     /// The grace window changes nothing for the other probe outcomes — it
     /// exists only to reinterpret "unreachable" on a machine still young
     /// enough to be installing its agent.
