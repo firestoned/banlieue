@@ -595,21 +595,23 @@ friends) no longer run on clones. See the Cloud Hypervisor guide's
 ## Probing only the datasource your backend uses
 
 Every Kairos boot that has not fetched user-data yet runs a datasource probe
-(`/system/oem/00_datasource.yaml`) in three stages (`rootfs.before`,
-`initramfs.before` and `network`), and the stock list has 13 providers: the
-NoCloud seed (`cdrom`) and a dozen cloud metadata services. On a hypervisor
-banlieue manages only one of them can answer, and the rest cost time:
-measured on a sealed, pre-laid Debian clone on Cloud Hypervisor (roadmap
-18, 2026-11-09), narrowing the list cut immucore's `initramfs-hook` step from
-3.3 s to about 1 s and the member's time to `GuestReady` from 25 s to 23 to
-24 s.
+(`/system/oem/00_datasource.yaml`) with 13 providers: the NoCloud seed
+(`cdrom`), config drives, and a dozen cloud metadata services. The probe
+checks the seed first and stops if it finds one. Otherwise it runs every
+other provider in parallel, each with a 2 s timeout, and waits for all of
+them, so a boot that finds no seed spends about 2 s on services that cannot
+exist on a hypervisor banlieue manages. Measured on a sealed, pre-laid
+Debian clone with no seed on Cloud Hypervisor (roadmap 18, 2026-11-09):
+narrowing the list cut immucore's `initramfs-hook` step from 3.3 s to about
+1 s and the member's time to `GuestReady` from 25 s to 23 to 24 s.
 
-Keep the provider your backend delivers user-data through:
+Who pays it depends on how banlieue delivers user-data:
 
-| Backend | How banlieue delivers user-data | Keep |
-| --- | --- | --- |
-| libvirt, Cloud Hypervisor, Proxmox | a NoCloud seed CD-ROM (ADR-0054, ADR-0114) | `cdrom` |
-| vSphere | `guestinfo.userdata` (ADR-0024) | `vmware` (not yet verified against a real vCenter) |
+| Backend | How banlieue delivers user-data | Pays the 2 s | Keep |
+| --- | --- | --- | --- |
+| libvirt | a NoCloud seed CD-ROM, always attached (ADR-0054) | no | `cdrom` |
+| Cloud Hypervisor, Proxmox | a NoCloud seed CD-ROM, attached only with user-data or a static NIC (ADR-0054, ADR-0114) | only machines with neither | `cdrom` |
+| vSphere | `guestinfo.userdata` (ADR-0024), read by the `vmware` provider, which runs in the parallel group | **every boot**: the probe waits for the other providers to time out even after `vmware` answers | `vmware` (not yet verified against a real vCenter) |
 
 The file is in the image's read-only system partition, so narrow it where
 the image is built, after `kairos-init` has run. Both Debian images and
@@ -626,6 +628,9 @@ RUN f=/system/oem/00_datasource.yaml; test -f "$f" && \
 
 The `grep` fails the build if a future `kairos-init` changes the file's
 shape, rather than shipping an image with the probe silently untouched.
+
+Narrowing changes nothing for a machine whose seed is found: the probe
+stops at the seed either way.
 
 **Narrow it; do not remove it.** Creating `/oem/95_userdata` would skip the
 probe entirely, but it would also skip the seed, and per-VM user-data

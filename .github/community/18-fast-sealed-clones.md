@@ -400,7 +400,14 @@ layout is an ADR.
       time to `GuestReady` from 25 s to 23 to 24 s (three members, Cloud
       Hypervisor). Skipping the probe outright (creating `/oem/95_userdata`)
       would also skip the seed, so per-VM user-data and static addressing
-      would stop reaching Kairos guests: narrowing is the safe form. Open:
+      would stop reaching Kairos guests: narrowing is the safe form. *From
+      yip v1.26.4's datasource plugin:* the seed is checked first and ends
+      the probe when found; the cloud providers run only without one, in
+      parallel, each with a 2 s timeout, and the stage waits for all. So the
+      2 s is paid by a machine booted without a seed (Cloud Hypervisor or
+      Proxmox with no user-data and no static NIC; never libvirt, which
+      always attaches one), and on vSphere by every boot, because `vmware`
+      runs in the parallel group. Open:
       where it belongs (a documented image recipe, the imagebuilder, or a
       configurable list upstream in Kairos); vSphere delivers user-data
       through guestinfo, so its list would be `["vmware"]`.
