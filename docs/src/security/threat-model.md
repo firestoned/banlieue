@@ -4,7 +4,7 @@ SPDX-License-Identifier: Apache-2.0
 -->
 # Threat Model
 
-> **Status:** Living document. Last full pass **2026-11-08**, against the
+> **Status:** Living document. Last full pass **2026-11-09**, against the
 > architecture defined by **ADR-0001 … ADR-0124** (0116–0122 reserved by roadmap 20, 0123
 > Rejected; 0057–0059 unallocated,
 > 0066 and 0068–0073 reserved; 0074 and 0075 Accepted 2026-09-28; 0076–0080
@@ -30,7 +30,14 @@ SPDX-License-Identifier: Apache-2.0
 > Accepted 2026-11-04; 0054 amended 2026-11-04: every NoCloud seed carries
 > `user-data`, an empty cloud-config when none is set, so cloud-init stops
 > ignoring seeds without it; no row changes, the seed's contents and who
-> controls them are as before). The most recent pass, 2026-11-08, is
+> controls them are as before). The most recent pass, 2026-11-09, is
+> **ADR-0124 Decision 2's amendment**: when placement fails after the cordon
+> removed a candidate, the scheduler re-runs the same pure function with the
+> cordon ignored, and reports `ProviderUnschedulable` naming the cordoned
+> Providers if that would have placed the VM. It changes a reason and a
+> message, not who can place what: no actor, identity, grant, boundary or
+> accepted risk changes. The second pass runs only on failure. The pass before
+> it, 2026-11-08, is
 > **ADR-0124**: a Provider labelled `banlieue.io/unschedulable: "true"` (a cordoned host) is
 > dropped by the scheduler right after the selector and takes no new VM; VMs already on it are
 > not moved and the provider keeps reconciling them. Implementing it found that ADR-0102's
