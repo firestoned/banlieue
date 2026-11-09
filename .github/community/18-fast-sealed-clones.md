@@ -351,22 +351,34 @@ layout is an ADR.
       EK certificate through the agent), pre-laid at 20 GiB, a `BackingFile`
       in the pool of the one libvirt Provider that advertises `vtpm`, a
       temporary `tpmEnabled` class: **33, 33 s one at a time (and one 64 s),
-      35 to 36 s three at once**, all sealed. The numbers are the poll, not
-      the boot: while a guest has not reported, the libvirt provider requeues
-      every `REQUEUE_DEFAULT_SECS` (30 s), so a guest ready at about 25 s is
-      seen at the 30 s poll (33 s) or, missing it, at the 60 s one (64 s).
-      Cloud Hypervisor's guest pushes over vsock and its provider requeues
-      every 1 s during a transition. No storage effect: libvirt's OS disk is
-      a qcow2 overlay, never a copy. vSphere: no access, still open.
-- [ ] **libvirt: poll a booting guest fast.** Requeue every few seconds
+      35 to 36 s three at once**, all sealed. The 64 s was a missed 30 s
+      poll. *Corrected 2026-11-09:* this first write-up said the 33 s was
+      the poll and not the boot; the re-measure with fast polling below shows
+      33 s is the boot. Cloud Hypervisor's guest pushes over vsock and its
+      provider requeues every 1 s during a transition. No storage effect:
+      libvirt's OS disk is a qcow2 overlay, never a copy. vSphere: no
+      access, still open.
+- [x] **libvirt: poll a booting guest fast.** Requeue every few seconds
       while a running machine waits for `GuestReady` (phase marker, EK
       certificate, sealed report), then back off to 30 s, as the Cloud
       Hypervisor provider's transition requeue does. Expected: libvirt's
       time to `GuestReady` falls from 33 s to the boot itself (about 25 s).
       **Implemented 2026-11-08** (ADR-0043 Decision 8, amended):
       `guest_poll_interval` polls every 2 s for a machine's first 90 s while
-      `should_poll_soon` holds, then 30 s; unit-tested. Ticks when a release
-      carrying it is re-measured on a libvirt host.
+      `should_poll_soon` holds, then 30 s; unit-tested. **Re-measured on
+      v0.5.2, 2026-11-09:** 33, 32, 32 s one at a time and 34 to 39 s three
+      at once, all sealed, with no missed poll. The median did not move: a
+      guest-agent probe of one member found it at 21.3 s of guest uptime
+      with its reports not yet written, and `GuestReady` came about 2 s
+      later, so libvirt's time is its boot. The domain starts within 1 s of
+      creation; about 8 s pass before the kernel (QEMU, OVMF, GRUB, against
+      0.4 s firmware and 0.2 to 1 s GRUB on Cloud Hypervisor), then 22 to
+      23 s to the reports. The fast poll removes the 30 to 60 s misses, not
+      the boot.
+- [ ] **libvirt: the 8 s before the kernel.** QEMU start, OVMF and GRUB on
+      the libvirt path. Where it goes (an OVMF debug log, as the Cloud
+      Hypervisor firmware investigation did) decides whether a firmware
+      setting, a smaller OVMF build or direct kernel boot is the lever.
 - [ ] **The guest's share** (16 to 21 s, now the largest). Profiled
       2026-11-08 from immucore's own boot timeline (a `COS_OEM` stage
       dumping it to the serial console): `encrypt-pending` 4.3 to 5.0 s

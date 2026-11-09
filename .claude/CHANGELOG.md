@@ -1,5 +1,26 @@
 # Changelog
 
+## [2026-11-09 01:00] - Roadmap 18: libvirt re-measured with the fast guest poll
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/community/18-fast-sealed-clones.md`, `ROADMAPS.md`: the libvirt
+  fast-poll item is done. On v0.5.2, sealed pre-laid members reached
+  `GuestReady` in 33, 32, 32 s (34 to 39 s three at once) with no missed
+  poll. A guest-agent probe showed the reports written at about 23 s of
+  guest uptime and seen about 2 s later, so libvirt's time is its boot:
+  about 8 s from domain start to the kernel (QEMU, OVMF, GRUB), then 22 to
+  23 s. The earlier write-up's "33 s is the poll, not the boot" is
+  corrected in place; the poll only cost the misses (64 s). New item:
+  libvirt's 8 s before the kernel.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
 ## [2026-11-09 00:30] - libvirt polls a booting guest every 2 s for its first 90 s (ADR-0043 Decision 8, amended)
 
 **Author:** Erick Bourgeois
