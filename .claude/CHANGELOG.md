@@ -1,5 +1,30 @@
 # Changelog
 
+## [2026-11-09 03:00] - Docs: probe only the datasource the backend uses (roadmap 18)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/src/guides/using-banlieue-imagebuilder.md`: *Probing only the
+  datasource your backend uses*: why (Kairos checks the NoCloud seed first
+  and stops there; without one it runs a dozen cloud metadata probes in
+  parallel with 2 s timeouts, which cost a seedless sealed clone about 2 s,
+  roadmap 18), who pays (libvirt never, since it always attaches a seed;
+  Cloud Hypervisor and Proxmox only without user-data or a static NIC;
+  vSphere every boot, because its `vmware` provider runs in the parallel
+  group), the provider per backend, the Containerfile lines with a `grep`
+  that fails the build if the file changes shape, and why the probe must be
+  narrowed, not skipped (the NoCloud seed rides on it). Read from yip
+  v1.26.4's datasource plugin.
+- `docs/src/guides/building-kairos-hadron-template.md`: the vSphere
+  (`["vmware"]`) step in the Hadron Dockerfile, after `kairos-init`.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
 ## [2026-11-09 02:00] - Roadmap 18: narrowing Kairos's datasource probe saves about 2 s per boot
 
 **Author:** Erick Bourgeois

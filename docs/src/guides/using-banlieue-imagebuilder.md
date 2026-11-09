@@ -592,6 +592,53 @@ not grow on a larger disk. Stages bound to the reset (`after-reset` and
 friends) no longer run on clones. See the Cloud Hypervisor guide's
 "Pre-laid images" section for the details and the measurements.
 
+## Probing only the datasource your backend uses
+
+Every Kairos boot that has not fetched user-data yet runs a datasource probe
+(`/system/oem/00_datasource.yaml`) with 13 providers: the NoCloud seed
+(`cdrom`), config drives, and a dozen cloud metadata services. The probe
+checks the seed first and stops if it finds one. Otherwise it runs every
+other provider in parallel, each with a 2 s timeout, and waits for all of
+them, so a boot that finds no seed spends about 2 s on services that cannot
+exist on a hypervisor banlieue manages. Measured on a sealed, pre-laid
+Debian clone with no seed on Cloud Hypervisor (roadmap 18, 2026-11-09):
+narrowing the list cut immucore's `initramfs-hook` step from 3.3 s to about
+1 s and the member's time to `GuestReady` from 25 s to 23 to 24 s.
+
+Who pays it depends on how banlieue delivers user-data:
+
+| Backend | How banlieue delivers user-data | Pays the 2 s | Keep |
+| --- | --- | --- | --- |
+| libvirt | a NoCloud seed CD-ROM, always attached (ADR-0054) | no | `cdrom` |
+| Cloud Hypervisor, Proxmox | a NoCloud seed CD-ROM, attached only with user-data or a static NIC (ADR-0054, ADR-0114) | only machines with neither | `cdrom` |
+| vSphere | `guestinfo.userdata` (ADR-0024), read by the `vmware` provider, which runs in the parallel group | **every boot**: the probe waits for the other providers to time out even after `vmware` answers | `vmware` (not yet verified against a real vCenter) |
+
+The file is in the image's read-only system partition, so narrow it where
+the image is built, after `kairos-init` has run. Both Debian images and
+Hadron (whose BusyBox provides `sed`) take the same line:
+
+```dockerfile
+RUN --mount=type=bind,from=quay.io/kairos/kairos-init:v4.4.0,src=/kairos-init,dst=/kairos-init \
+    /kairos-init --version v0.1.0
+# Probe only the NoCloud seed. Use ["vmware"] for an image that boots on vSphere.
+RUN f=/system/oem/00_datasource.yaml; test -f "$f" && \
+    sed -i 's/providers: \[.*\]/providers: ["cdrom"]/' "$f" && \
+    grep -q 'providers: \["cdrom"\]' "$f"
+```
+
+The `grep` fails the build if a future `kairos-init` changes the file's
+shape, rather than shipping an image with the probe silently untouched.
+
+Narrowing changes nothing for a machine whose seed is found: the probe
+stops at the seed either way.
+
+**Narrow it; do not remove it.** Creating `/oem/95_userdata` would skip the
+probe entirely, but it would also skip the seed, and per-VM user-data
+(including ADR-0114's static addressing on Kairos guests) would stop
+reaching the guest. An image built for one backend only probes that
+backend's datasource; build one per backend if you serve both NoCloud and
+vSphere from the same base.
+
 ## Integrity and lifecycle (security review 2026-07-31)
 
 Two guarantees hold over everything above:
