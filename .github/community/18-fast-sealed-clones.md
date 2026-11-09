@@ -389,6 +389,21 @@ layout is an ADR.
       extensions enabled unvalidated), `unlock-all` 0.5 s. Levers: what the
       3 s before the format is (kcrypt debug logging), skipping the
       datasource probe when no seed is attached, and the extensions step.
+      **Datasource probe, measured 2026-11-09:** Kairos's
+      `/system/oem/00_datasource.yaml` probes 13 providers (`cdrom` and a
+      dozen cloud metadata services) in `rootfs.before`, `initramfs.before`
+      and `network` whenever `/oem/95_userdata` is absent. Only `cdrom` (the
+      NoCloud seed, ADR-0054/0114) matters on libvirt, Cloud Hypervisor and
+      Proxmox. An image built with that list narrowed to `["cdrom"]` (one
+      `sed` at image build, since the file is in the read-only system image)
+      cut `initramfs-hook` from 3.3 s to 0.9 to 1.5 s and the sealed member's
+      time to `GuestReady` from 25 s to 23 to 24 s (three members, Cloud
+      Hypervisor). Skipping the probe outright (creating `/oem/95_userdata`)
+      would also skip the seed, so per-VM user-data and static addressing
+      would stop reaching Kairos guests: narrowing is the safe form. Open:
+      where it belongs (a documented image recipe, the imagebuilder, or a
+      configurable list upstream in Kairos); vSphere delivers user-data
+      through guestinfo, so its list would be `["vmware"]`.
 
 ## D. Verified base and build-time scanner (invariants 1, 3) ⛔
 

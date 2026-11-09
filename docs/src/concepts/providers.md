@@ -106,6 +106,21 @@ The authoritative type is in
 For a full deploy walkthrough see the
 [vSphere provider guide](../guides/vsphere-provider.md).
 
+### Cordoning a provider
+
+To stop new VMs landing on a provider, for maintenance, label it:
+
+```sh
+kubectl -n banlieue-system label provider hv01 banlieue.io/unschedulable=true
+kubectl -n banlieue-system label provider hv01 banlieue.io/unschedulable-   # uncordon
+```
+
+The scheduler then skips it for every new placement, right after `providerSelector`
+([ADR-0124](https://github.com/firestoned/banlieue/blob/main/docs/adr/0124-unschedulable-providers.md)). VMs already on it stay where
+they are and the provider keeps looking after them: a VM's own provider stays a candidate for
+it, so the cordon is never drift and never recreates it. Only the value `"true"` cordons. A VM
+whose every candidate is cordoned waits with `Scheduled=False`, reason `ProviderUnschedulable`.
+
 ## What a provider controller does
 
 A provider controller is a Kubernetes controller. Its responsibilities:
