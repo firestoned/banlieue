@@ -158,6 +158,13 @@ RUN --mount=type=bind,from=kairos-init,src=/kairos-init,dst=/kairos-init \
     /kairos-init -l debug -s install --model "${MODEL}" -t "${TRUSTED_BOOT}" --version "${VERSION}" && \
     /kairos-init -l debug -s init    --model "${MODEL}" -t "${TRUSTED_BOOT}" --version "${VERSION}"
 
+# Probe only vSphere's guestinfo for user-data, not the dozen cloud
+# metadata services Kairos tries by default (see "Probing only the
+# datasource your backend uses" in the imagebuilder guide).
+RUN f=/system/oem/00_datasource.yaml; test -f "$f" && \
+    sed -i 's/providers: \[.*\]/providers: ["vmware"]/' "$f" && \
+    grep -q 'providers: \["vmware"\]' "$f"
+
 # Payload COPYs run AFTER kairos-init so its cleanup can't remove them.
 COPY --from=tools /curl /usr/bin/curl
 
