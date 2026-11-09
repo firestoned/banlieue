@@ -1,6 +1,6 @@
 # anatomy.md
 
-> Auto-maintained by OpenWolf. Last scanned: 2026-11-08T23:00:00.210Z
+> Auto-maintained by OpenWolf. Last scanned: 2026-11-09T05:00:00.977Z
 > Files: 513 tracked | Anatomy hits: 0 | Misses: 0
 
 ## ./
@@ -24,7 +24,7 @@
 - `NOTICE` (~159 tok)
 - `osv-scanner.toml` — SPDX-License-Identifier: Apache-2.0 (~120 tok)
 - `README.md` — Project documentation (~3895 tok)
-- `ROADMAPS.md` — Roadmaps (~5432 tok)
+- `ROADMAPS.md` — Roadmaps (~5460 tok)
 - `SECURITY.md` — Security Policy (~382 tok)
 
 ## .clusterfuzzlite/
@@ -70,7 +70,7 @@
 - `15-vsphere-disk-image-import.md` — 15: vSphere disk-image import (raw and VMDK), alongside the ISO path (~4709 tok)
 - `16-scorecard-remediation.md` — 16 — OSSF Scorecard remediation (~2677 tok)
 - `17-ephemeral-vm-pools.md` — 17: Ephemeral, single-use VM pools (AI agent sandboxes) (~14621 tok)
-- `18-fast-sealed-clones.md` — 18: Fast sealed clones: isolation proof, boot speed, verified base (~6970 tok)
+- `18-fast-sealed-clones.md` — 18: Fast sealed clones: isolation proof, boot speed, verified base (~7563 tok)
 - `19-port-groups.md` — 19: Port groups — declared, reconciled, and safe to delete (~4109 tok)
 - `20-firecracker-provider.md` — 20: Firecracker provider, the sandbox backend (~5231 tok)
 - `README.md` — Project documentation (~1538 tok)
@@ -147,9 +147,9 @@
 
 ## crates/banlieue-api/src/banlieue/
 
-- `mod.rs` — `banlieue.io/v1alpha1` API group. (~736 tok)
+- `mod.rs` — `banlieue.io/v1alpha1` API group. (~742 tok)
 - `provider_tests.rs` — Unit tests for `provider.rs`. (~11104 tok)
-- `provider.rs` — `banlieue.io/v1alpha1` Provider CRD. (~8954 tok)
+- `provider.rs` — `banlieue.io/v1alpha1` Provider CRD. (~9052 tok)
 - `providerclass_tests.rs` — Unit tests for `providerclass.rs`. (~3356 tok)
 - `providerclass.rs` — `banlieue.io/v1alpha1` ProviderClass CRD. (~4099 tok)
 - `virtualmachine_tests.rs` — Unit tests for `virtualmachine.rs`. (~7592 tok)
@@ -254,8 +254,8 @@
 - `pool_plan.rs` — Pure planning logic for `VirtualMachinePool` (roadmap 17, ADR-0046). (~3198 tok)
 - `pool_tests.rs` — Unit tests for `pool.rs`. (~3070 tok)
 - `pool.rs` — `VirtualMachinePool` reconciler (roadmap 17, ADR-0046). (~5253 tok)
-- `scheduler_tests.rs` — Unit tests for [`super::super::scheduler`]. (~16319 tok)
-- `scheduler.rs` — Scheduler — the pure placement function. (~9472 tok)
+- `scheduler_tests.rs` — Unit tests for [`super::super::scheduler`]. (~18338 tok)
+- `scheduler.rs` — Scheduler — the pure placement function. (~9999 tok)
 - `status_mirror_tests.rs` — Unit tests for [`super::super::status_mirror`]. (~8350 tok)
 - `status_mirror.rs` — `VirtualMachine` status mirror. (~3571 tok)
 - `virtualmachine_tests.rs` — Unit tests for [`super::super::virtualmachine`]. (~4336 tok)
