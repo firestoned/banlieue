@@ -1281,8 +1281,109 @@ mod tests {
             .collect();
         let v = vm("a", "banlieue-system", BTreeMap::new());
         let err = schedule(&v, &cls, &img, &providers, &[], &[]).unwrap_err();
-        assert_eq!(err, ScheduleError::ProviderUnschedulable);
+        assert!(
+            matches!(err, ScheduleError::ProviderUnschedulable(_)),
+            "{err:?}"
+        );
         assert_eq!(err.reason(), "ProviderUnschedulable");
+    }
+
+    /// Three hosts whose failure domains are labelled with their own name, the
+    /// way a VM pins one host with `failureDomainSelector: {name: ...}`.
+    fn three_named_hosts() -> (Vec<Provider>, VMImage, VMClass) {
+        let (_, img, cls) = three_hosts();
+        let providers = HOSTS
+            .iter()
+            .map(|h| {
+                provider(
+                    h,
+                    BTreeMap::new(),
+                    vec![fd(h, lbls([("name", *h)]), &["gold"], &["prod"], &[])],
+                    caps_with(
+                        &[("gold", "datastore", "ds")],
+                        &[("prod", "portGroup", "pg")],
+                    ),
+                )
+            })
+            .collect();
+        (providers, img, cls)
+    }
+
+    fn pinned_to(fd_name: &str) -> VirtualMachine {
+        vm_with_placement(
+            "a",
+            "banlieue-system",
+            BTreeMap::new(),
+            PlacementSpec {
+                failure_domain_selector: Some(label_selector(&[("name", fd_name)])),
+                ..Default::default()
+            },
+        )
+    }
+
+    /// The rough edge found rolling ADR-0124 out: a VM pinned to a cordoned
+    /// host by its failure-domain selector failed at the failure-domain step
+    /// (`NoFailureDomainMatched`, a message naming every host but the
+    /// cordoned one), because other, uncordoned Providers passed the cordon
+    /// filter. The cordon is what stopped it, so the reason says so.
+    #[test]
+    fn a_vm_only_a_cordoned_provider_could_take_is_provider_unschedulable() {
+        let (providers, img, cls) = three_named_hosts();
+        let providers: Vec<Provider> = providers
+            .into_iter()
+            .map(|p| {
+                if p.name_any() == "h1" {
+                    labelled(p, LABEL_UNSCHEDULABLE, "true")
+                } else {
+                    p
+                }
+            })
+            .collect();
+        let err = schedule(&pinned_to("h1"), &cls, &img, &providers, &[], &[]).unwrap_err();
+        assert_eq!(err.reason(), "ProviderUnschedulable");
+        let ScheduleError::ProviderUnschedulable(names) = &err else {
+            panic!("expected ProviderUnschedulable, got {err:?}");
+        };
+        assert_eq!(names, "h1");
+        assert!(err.to_string().contains("h1"), "{err}");
+    }
+
+    /// A failure the cordon did not cause keeps its own reason: without the
+    /// cordon the VM still could not be placed.
+    #[test]
+    fn a_failure_the_cordon_did_not_cause_keeps_its_reason() {
+        let (providers, img, cls) = three_named_hosts();
+        let providers: Vec<Provider> = providers
+            .into_iter()
+            .map(|p| {
+                if p.name_any() == "h1" {
+                    labelled(p, LABEL_UNSCHEDULABLE, "true")
+                } else {
+                    p
+                }
+            })
+            .collect();
+        let err = schedule(&pinned_to("nowhere"), &cls, &img, &providers, &[], &[]).unwrap_err();
+        assert!(
+            matches!(err, ScheduleError::NoFailureDomainMatched(_)),
+            "{err:?}"
+        );
+    }
+
+    /// Every candidate cordoned also names them.
+    #[test]
+    fn every_candidate_unschedulable_names_them() {
+        let (providers, img, cls) = three_hosts();
+        let providers: Vec<Provider> = providers
+            .into_iter()
+            .map(|p| labelled(p, LABEL_UNSCHEDULABLE, "true"))
+            .collect();
+        let v = vm("a", "banlieue-system", BTreeMap::new());
+        let err = schedule(&v, &cls, &img, &providers, &[], &[]).unwrap_err();
+        assert_eq!(
+            err,
+            ScheduleError::ProviderUnschedulable("h1, h2, h3".into())
+        );
     }
 
     /// Only `"true"` cordons: any other value, or none, is schedulable.
@@ -1322,8 +1423,9 @@ mod tests {
                 &[],
                 &[]
             )
-            .unwrap_err(),
-            ScheduleError::ProviderUnschedulable
+            .unwrap_err()
+            .reason(),
+            "ProviderUnschedulable"
         );
         assert_eq!(
             schedule(&v, &cls, &img, &[cordoned_and_stale, only_stale], &[], &[]).unwrap_err(),
@@ -1412,8 +1514,10 @@ mod tests {
             .cloned()
             .collect();
         assert_eq!(
-            schedule(&v, &cls, &img, &only_others, &[], &[]).unwrap_err(),
-            ScheduleError::ProviderUnschedulable,
+            schedule(&v, &cls, &img, &only_others, &[], &[])
+                .unwrap_err()
+                .reason(),
+            "ProviderUnschedulable",
             "its own Provider gone, the cordoned ones are no refuge"
         );
     }

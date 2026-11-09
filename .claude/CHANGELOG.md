@@ -1,5 +1,35 @@
 # Changelog
 
+## [2026-11-09 13:30] - A VM only cordoned Providers could take says so, naming them (ADR-0124 amended)
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `crates/banlieue-controller/src/reconciler/scheduler.rs`: when placement
+  fails at a later step and the cordon removed at least one candidate,
+  `schedule` re-runs the placement (now the private `place`) with the cordon
+  ignored; if that would place the VM, the error is
+  `ProviderUnschedulable(names)`, naming the cordoned Providers. Found rolling
+  v0.5.3 out: a VM pinned to a cordoned host by `failureDomainSelector` was
+  reported `NoFailureDomainMatched`, with a message listing every failure
+  domain but the cordoned one. `ScheduleError::ProviderUnschedulable` now
+  carries the names in every case, and its message reads "only cordoned
+  providers (banlieue.io/unschedulable) could take this VM: <names>".
+- `scheduler_tests.rs`: three tests (pinned to a cordoned host, a failure
+  the cordon did not cause keeps its reason, every candidate cordoned names
+  them); four existing assertions compare the reason.
+- `docs/adr/0124-unschedulable-providers.md`: Decision 2 amended.
+- `docs/src/concepts/providers.md`, `docs/src/guides/vsphere-provider.md`:
+  when the reason appears.
+- `docs/src/security/threat-model.md`: pass for the amendment, no table
+  changes; stamp 2026-11-09.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (controller image)
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-11-09 03:00] - Docs: probe only the datasource the backend uses (roadmap 18)
 
 **Author:** Erick Bourgeois

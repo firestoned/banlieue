@@ -119,7 +119,9 @@ The scheduler then skips it for every new placement, right after `providerSelect
 ([ADR-0124](https://github.com/firestoned/banlieue/blob/main/docs/adr/0124-unschedulable-providers.md)). VMs already on it stay where
 they are and the provider keeps looking after them: a VM's own provider stays a candidate for
 it, so the cordon is never drift and never recreates it. Only the value `"true"` cordons. A VM
-whose every candidate is cordoned waits with `Scheduled=False`, reason `ProviderUnschedulable`.
+that only cordoned providers could take (every candidate cordoned, or one pinned to a cordoned
+host by its `failureDomainSelector`) waits with `Scheduled=False`, reason
+`ProviderUnschedulable`, and a message naming those providers.
 
 ## What a provider controller does
 

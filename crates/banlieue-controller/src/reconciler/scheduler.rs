@@ -154,11 +154,13 @@ pub enum ScheduleError {
     #[error("every matching provider has stopped renewing its Lease")]
     ProviderNotAlive,
 
-    /// Every Provider the selector matched is labelled
-    /// `banlieue.io/unschedulable: "true"`: cordoned, so it takes no new VM
-    /// (ADR-0124).
-    #[error("every matching provider is cordoned (banlieue.io/unschedulable)")]
-    ProviderUnschedulable,
+    /// The VM could only go to Providers labelled `banlieue.io/unschedulable:
+    /// "true"` (ADR-0124): every Provider the selector matched is cordoned, or
+    /// the placement fails with them excluded and would succeed with them
+    /// (ADR-0124 Decision 2, amended 2026-11-09). Carries the cordoned
+    /// Providers' names, comma-separated.
+    #[error("only cordoned providers (banlieue.io/unschedulable) could take this VM: {0}")]
+    ProviderUnschedulable(String),
 }
 
 /// Stable condition reasons. Mapped onto the `Scheduled` condition.
@@ -195,7 +197,7 @@ impl ScheduleError {
             ScheduleError::TpmUnsupported => reasons::TPM_UNSUPPORTED,
             ScheduleError::AntiAffinityUnsatisfied(_) => reasons::ANTI_AFFINITY_UNSATISFIED,
             ScheduleError::ProviderNotAlive => reasons::PROVIDER_NOT_ALIVE,
-            ScheduleError::ProviderUnschedulable => reasons::PROVIDER_UNSCHEDULABLE,
+            ScheduleError::ProviderUnschedulable(_) => reasons::PROVIDER_UNSCHEDULABLE,
         }
     }
 }
@@ -273,6 +275,60 @@ pub fn schedule(
     existing_vms: &[VirtualMachine],
     classes: &[VMClass],
 ) -> Result<Decision, ScheduleError> {
+    let err = match place(vm, class, image, providers, existing_vms, classes, true) {
+        Ok(decision) => return Ok(decision),
+        Err(err) => err,
+    };
+    // ADR-0124 Decision 2, amended: when a later step fails, ask whether the
+    // cordon is what stopped the VM. A VM pinned to a cordoned host by its
+    // failure-domain selector otherwise failed as `NoFailureDomainMatched`,
+    // with a message naming every host but the cordoned one.
+    if matches!(err, ScheduleError::ProviderUnschedulable(_)) {
+        return Err(err);
+    }
+    let cordoned = cordoned_candidates(vm, providers);
+    if cordoned.is_empty() {
+        return Err(err);
+    }
+    match place(vm, class, image, providers, existing_vms, classes, false) {
+        Ok(_) => Err(ScheduleError::ProviderUnschedulable(cordoned.join(", "))),
+        Err(_) => Err(err),
+    }
+}
+
+/// The Providers the VM's selector matches that the cordon drops (not its own
+/// Provider, which stays a candidate: ADR-0124 Decision 3), by name, sorted.
+fn cordoned_candidates(vm: &VirtualMachine, providers: &[Provider]) -> Vec<String> {
+    let own = own_provider_name(vm);
+    let mut names: Vec<String> = providers
+        .iter()
+        .filter(|p| selector_matches(&vm.spec.placement.provider_selector, p.labels()))
+        .filter(|p| is_unschedulable(p) && own != Some(p.name_any().as_str()))
+        .map(ResourceExt::name_any)
+        .collect();
+    names.sort();
+    names
+}
+
+/// The Provider the VM is already placed on, if any.
+fn own_provider_name(vm: &VirtualMachine) -> Option<&str> {
+    vm.status
+        .as_ref()
+        .and_then(|s| s.scheduled.as_ref())
+        .map(|s| s.provider_name.as_str())
+}
+
+/// The placement itself. `honour_cordon` is false only for [`schedule`]'s
+/// question "would the cordon alone have stopped this VM?".
+fn place(
+    vm: &VirtualMachine,
+    class: &VMClass,
+    image: &VMImage,
+    providers: &[Provider],
+    existing_vms: &[VirtualMachine],
+    classes: &[VMClass],
+    honour_cordon: bool,
+) -> Result<Decision, ScheduleError> {
     let placement = &vm.spec.placement;
     let classes_by_name: HashMap<String, &VMClass> =
         classes.iter().map(|c| (c.name_any(), c)).collect();
@@ -291,20 +347,18 @@ pub fn schedule(
     // every pass, and dropping the VM's own Provider would be drift, which the
     // default migrationPolicy answers by recreating the VM elsewhere (ADR-0124
     // decision 3, ADR-0102). Both filters are about new placements.
-    let own_provider = vm
-        .status
-        .as_ref()
-        .and_then(|s| s.scheduled.as_ref())
-        .map(|s| s.provider_name.as_str());
+    let own_provider = own_provider_name(vm);
     let is_own = |p: &Provider| own_provider == Some(p.name_any().as_str());
 
     // ADR-0124: a cordoned provider takes no new VM.
     let provider_candidates: Vec<&Provider> = provider_candidates
         .into_iter()
-        .filter(|p| is_own(p) || !is_unschedulable(p))
+        .filter(|p| !honour_cordon || is_own(p) || !is_unschedulable(p))
         .collect();
     if provider_candidates.is_empty() {
-        return Err(ScheduleError::ProviderUnschedulable);
+        return Err(ScheduleError::ProviderUnschedulable(
+            cordoned_candidates(vm, providers).join(", "),
+        ));
     }
 
     // ADR-0102: a provider that stopped renewing its Lease takes no new VM.

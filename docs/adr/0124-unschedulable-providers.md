@@ -7,6 +7,8 @@ SPDX-License-Identifier: Apache-2.0
 - **Status:** Accepted
 - **Date:** 2026-11-08
 - **Proposed:** 2026-11-08
+- **Amended:** 2026-11-09 (Decision 2: the reason also covers a VM that only cordoned
+  Providers could take, and names them; found rolling v0.5.3 out)
 - **Deciders:** Erick Bourgeois
 - **Related:** [ADR-0102](0102-provider-liveness-from-its-lease.md) (the liveness filter
   this sits beside); faubourg ADR-0003 decision 5 and its accepted risk R-4 (cordon is
@@ -38,6 +40,17 @@ about: any operator, with or without faubourg, needs the same switch.
    (ADR-0102), in the pure placement function. If the selector matched Providers and every one
    is unschedulable, the VM is not scheduled, with the new reason `ProviderUnschedulable` on
    its `Scheduled` condition, and is retried like any unscheduled VM.
+
+   **Amended 2026-11-09:** "every matched Provider is cordoned" missed the usual way to pin a
+   host. A VM that selects one host by `failureDomainSelector` (`name: <host>`) with an empty
+   `providerSelector` matches every Provider; with that host cordoned, the others passed this
+   filter and the VM failed later, as `NoFailureDomainMatched`, with a message listing every
+   failure domain except the cordoned one. Rolling v0.5.3 out on a real cluster showed it. Now,
+   when placement fails at any later step and the cordon removed at least one candidate, the
+   scheduler asks the same question with the cordon ignored; if the VM would have been placed,
+   the cordon is the cause and the reason is `ProviderUnschedulable`, its message naming the
+   cordoned Providers. If it would still fail, the later step's own reason stands. The second
+   pass runs only on failure and is the same pure function.
 3. **It only affects new placements.** A VM already placed on the Provider keeps its placement
    and keeps running; banlieue moves nothing and stops nothing. This needs care, because the
    reconciler re-runs the scheduler on every pass and answers drift by the VM's
