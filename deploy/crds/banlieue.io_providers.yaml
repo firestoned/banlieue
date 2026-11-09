@@ -745,6 +745,14 @@ spec:
                     format: int32
                     nullable: true
                     type: integer
+                  serviceAccountName:
+                    description: |-
+                      Name of the ServiceAccount the operator created for this Provider, in `namespace`: the
+                      identity its controller runs as, and what a host-resident provider's token is minted for
+                      (ADR-0126). Read it rather than derive it: the naming is the operator's. Unset on a
+                      Provider an older operator wrote.
+                    nullable: true
+                    type: string
                 required:
                 - namespace
                 type: object

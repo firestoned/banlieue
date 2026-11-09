@@ -158,6 +158,10 @@ A provider controller is a Kubernetes controller. Its responsibilities:
    provider whose Lease has stopped (`Stale`), because a provider that is
    down cannot clear its own `Ready=True`
    ([ADR-0102](https://github.com/firestoned/banlieue/blob/main/docs/adr/0102-provider-liveness-from-its-lease.md)).
+   The operator publishes the name of the ServiceAccount the provider runs as in
+   `status.workload.serviceAccountName`, beside `status.workload.namespace`: whoever mints a
+   host-resident provider's first token reads it there rather than deriving it
+   ([ADR-0126](https://github.com/firestoned/banlieue/blob/main/docs/adr/0126-provider-status-publishes-its-serviceaccount.md)).
 8. **Mark what it creates, and touch nothing unmarked.** Each backend object
    carries the machine's UID, written by the call that creates it (the
    Proxmox VM description, the vSphere `extraConfig` key

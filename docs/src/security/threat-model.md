@@ -5,8 +5,8 @@ SPDX-License-Identifier: Apache-2.0
 # Threat Model
 
 > **Status:** Living document. Last full pass **2026-11-09**, against the
-> architecture defined by **ADR-0001 … ADR-0124** (0116–0122 reserved by roadmap 20, 0123
-> Rejected; 0057–0059 unallocated,
+> architecture defined by **ADR-0001 … ADR-0126** (0116–0122 reserved by roadmap 20, 0123
+> Rejected, 0125 Proposed; 0057–0059 unallocated,
 > 0066 and 0068–0073 reserved; 0074 and 0075 Accepted 2026-09-28; 0076–0080
 > reserved by roadmap 19; 0081–0082 recorded but not implemented in banlieue, and kept canonically in
 > mediatore since ADR-0097; **ADR-0115** (2026-11-04: the imagebuilder's rebuild gate
@@ -31,6 +31,13 @@ SPDX-License-Identifier: Apache-2.0
 > `user-data`, an empty cloud-config when none is set, so cloud-init stops
 > ignoring seeds without it; no row changes, the seed's contents and who
 > controls them are as before). The most recent pass, 2026-11-09, is
+> **ADR-0126**: the operator writes the name of the ServiceAccount it created for a Provider into
+> `status.workload.serviceAccountName`, so a consumer minting a host-resident provider's first
+> token reads it instead of re-deriving banlieue's naming. The operator already creates that
+> account and writes the Provider's status, so nothing is granted; the name is not a secret (it
+> follows from the class and the Provider); a consumer that mints for it still needs its own
+> `serviceaccounts/token` grant, which this does not give. No row changes. The pass before it,
+> also 2026-11-09, is
 > **ADR-0124 Decision 2's amendment**: when placement fails after the cordon
 > removed a candidate, the scheduler re-runs the same pure function with the
 > cordon ignored, and reports `ProviderUnschedulable` naming the cordoned

@@ -406,6 +406,7 @@ conflict-free (ADR-0012).
 | `namespace` | string | Yes | Namespace the Deployment was created in — the ProviderClass's `workloadNamespace`, or the operator's own namespace when unset. |
 | `observedGeneration` | integer |  | The Provider generation the operator had observed when it last applied this workload. |
 | `readyReplicas` | integer |  | Ready replicas reported by that Deployment. Zero means the backend's controller is not currently running, whatever the Provider's other conditions say. Unset for `External`: there is no Deployment, and whether the provider is running is `heartbeat` (ADR-0102). |
+| `serviceAccountName` | string |  | Name of the ServiceAccount the operator created for this Provider, in `namespace`: the identity its controller runs as, and what a host-resident provider's token is minted for (ADR-0126). Read it rather than derive it: the naming is the operator's. Unset on a Provider an older operator wrote. |
 
 ---
 
