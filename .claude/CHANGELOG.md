@@ -1,5 +1,33 @@
 # Changelog
 
+## [2026-11-09 14:00] - A Provider's status publishes its ServiceAccount's name (ADR-0126)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0126-provider-status-publishes-its-serviceaccount.md`.
+- `banlieue-api`: `ProviderWorkloadStatus.service_account_name`
+  (`status.workload.serviceAccountName`), optional; CRD and API reference
+  regenerated.
+- `crates/banlieue-operator/src/reconciler/provider.rs`: the operator writes
+  it for Managed providers (the workload's name) and External ones (the
+  identity a host-resident provider's token is minted for), after applying
+  the ServiceAccount.
+
+### Tests
+- `provider_tests.rs`: both workload statuses carry the name.
+
+### Docs
+- `docs/src/concepts/providers.md` (the field), CALM (the operator's
+  description), threat model (pass stamp to ADR-0126; no row changes).
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+
 ## [2026-11-09 13:30] - A VM only cordoned Providers could take says so, naming them (ADR-0124 amended)
 
 **Author:** Erick Bourgeois

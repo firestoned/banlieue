@@ -119,6 +119,8 @@ pub fn workload_status(
     ProviderWorkloadStatus {
         mode: WorkloadMode::Managed,
         deployment_name: Some(name.to_string()),
+        // The workload's ServiceAccount carries the workload's name (ADR-0126).
+        service_account_name: Some(name.to_string()),
         namespace: namespace.to_string(),
         ready_replicas: Some(ready_replicas),
         observed_generation,
@@ -133,11 +135,13 @@ pub fn workload_status(
 #[must_use]
 pub fn external_workload_status(
     namespace: &str,
+    service_account: &str,
     observed_generation: Option<i64>,
 ) -> ProviderWorkloadStatus {
     ProviderWorkloadStatus {
         mode: WorkloadMode::External,
         deployment_name: None,
+        service_account_name: Some(service_account.to_string()),
         namespace: namespace.to_string(),
         ready_replicas: None,
         observed_generation,
@@ -453,7 +457,11 @@ async fn publish_status(
     ctx: &Context,
 ) -> Result<std::time::Duration> {
     let mut status = if class.spec.deployment_mode() == ProviderDeployment::External {
-        external_workload_status(provider_namespace, provider.meta().generation)
+        external_workload_status(
+            provider_namespace,
+            &workload_name(&class.name_any(), &provider.name_any()),
+            provider.meta().generation,
+        )
     } else {
         let workload_namespace = class.spec.workload_namespace_or(provider_namespace);
         let name = workload_name(&class.name_any(), &provider.name_any());

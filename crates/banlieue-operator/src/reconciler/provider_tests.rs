@@ -188,6 +188,11 @@ mod tests {
         assert_eq!(status.namespace, "banlieue-system");
         assert_eq!(status.ready_replicas, Some(1));
         assert_eq!(status.observed_generation, Some(3));
+        assert_eq!(
+            status.service_account_name.as_deref(),
+            Some("wl"),
+            "a Managed provider runs as the ServiceAccount named like its workload (ADR-0126)"
+        );
     }
 
     /// A Deployment with no status yet, or none at all, must read as zero ready
@@ -213,11 +218,20 @@ mod tests {
     /// Deployment — liveness is the provider's own Ready condition and Lease.
     #[test]
     fn external_workload_status_names_no_deployment() {
-        let status = external_workload_status("banlieue-system", Some(2));
+        let status = external_workload_status(
+            "banlieue-system",
+            "banlieue-provider-cloud-hypervisor-hv01",
+            Some(2),
+        );
         assert_eq!(status.mode, banlieue_api::banlieue::WorkloadMode::External);
         assert!(status.deployment_name.is_none() && status.ready_replicas.is_none());
         assert_eq!(status.namespace, "banlieue-system");
         assert_eq!(status.observed_generation, Some(2));
+        assert_eq!(
+            status.service_account_name.as_deref(),
+            Some("banlieue-provider-cloud-hypervisor-hv01"),
+            "an External provider's identity is what a host mints for (ADR-0126)"
+        );
     }
 
     /// A Managed class with no image cannot produce a Deployment; the

@@ -498,6 +498,13 @@ pub struct ProviderWorkloadStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deployment_name: Option<String>,
 
+    /// Name of the ServiceAccount the operator created for this Provider, in `namespace`: the
+    /// identity its controller runs as, and what a host-resident provider's token is minted for
+    /// (ADR-0126). Read it rather than derive it: the naming is the operator's. Unset on a
+    /// Provider an older operator wrote.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_account_name: Option<String>,
+
     /// Namespace the Deployment was created in — the ProviderClass's
     /// `workloadNamespace`, or the operator's own namespace when unset.
     pub namespace: String,

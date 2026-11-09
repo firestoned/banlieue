@@ -881,6 +881,7 @@ attestation:
         let workload = ProviderWorkloadStatus {
             mode: WorkloadMode::Managed,
             deployment_name: Some("banlieue-provider-libvirt-lab".to_string()),
+            service_account_name: Some("banlieue-provider-libvirt-lab".to_string()),
             namespace: "tenant-a".to_string(),
             ready_replicas: Some(2),
             observed_generation: Some(9),
