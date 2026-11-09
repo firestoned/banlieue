@@ -15,9 +15,11 @@
 //! ## Filter chain (in order)
 //!
 //! 1. Provider selector — `placement.providerSelector` against
-//!    `Provider.metadata.labels`. Then liveness (ADR-0102): a Provider
-//!    whose `status.workload.heartbeat` is `Stale` is dropped; `Absent` and
-//!    an unevaluated heartbeat are kept.
+//!    `Provider.metadata.labels`. Then a Provider labelled
+//!    `banlieue.io/unschedulable: "true"` (a cordoned host) is dropped
+//!    (ADR-0124). Then liveness (ADR-0102): a Provider whose
+//!    `status.workload.heartbeat` is `Stale` is dropped; `Absent` and an
+//!    unevaluated heartbeat are kept.
 //! 2. Failure-domain selector — `placement.failureDomainSelector` against
 //!    `FailureDomain.labels`.
 //! 3. Image readiness — `VMImage.status.perProvider[i].ready == true` for
@@ -57,9 +59,9 @@ use std::collections::{BTreeMap, HashMap};
 
 use banlieue_api::banlieue::{
     AffinityMode, AntiAffinityRule, DEFAULT_CPU_OVERCOMMIT_RATIO, FailureDomain,
-    FailureDomainCapacity, Heartbeat, ImageSourceKind, LABEL_POOL, NetworkClassMapping, Provider,
-    ProviderCapabilities, ProviderScheduling, ResolvedResource, StorageClassMapping, VMClass,
-    VMImage, VirtualMachine,
+    FailureDomainCapacity, Heartbeat, ImageSourceKind, LABEL_POOL, LABEL_UNSCHEDULABLE,
+    NetworkClassMapping, Provider, ProviderCapabilities, ProviderScheduling, ResolvedResource,
+    StorageClassMapping, VMClass, VMImage, VirtualMachine,
 };
 use banlieue_api::common::{Firmware, LabelSelector, LabelSelectorOperator};
 
@@ -151,6 +153,12 @@ pub enum ScheduleError {
     /// (ADR-0102).
     #[error("every matching provider has stopped renewing its Lease")]
     ProviderNotAlive,
+
+    /// Every Provider the selector matched is labelled
+    /// `banlieue.io/unschedulable: "true"`: cordoned, so it takes no new VM
+    /// (ADR-0124).
+    #[error("every matching provider is cordoned (banlieue.io/unschedulable)")]
+    ProviderUnschedulable,
 }
 
 /// Stable condition reasons. Mapped onto the `Scheduled` condition.
@@ -171,6 +179,8 @@ pub mod reasons {
     pub const ANTI_AFFINITY_UNSATISFIED: &str = "AntiAffinityUnsatisfied";
     /// Every matching Provider's heartbeat is `Stale` (ADR-0102).
     pub const PROVIDER_NOT_ALIVE: &str = "ProviderNotAlive";
+    /// Every matching Provider is labelled unschedulable (ADR-0124).
+    pub const PROVIDER_UNSCHEDULABLE: &str = "ProviderUnschedulable";
 }
 
 impl ScheduleError {
@@ -185,8 +195,19 @@ impl ScheduleError {
             ScheduleError::TpmUnsupported => reasons::TPM_UNSUPPORTED,
             ScheduleError::AntiAffinityUnsatisfied(_) => reasons::ANTI_AFFINITY_UNSATISFIED,
             ScheduleError::ProviderNotAlive => reasons::PROVIDER_NOT_ALIVE,
+            ScheduleError::ProviderUnschedulable => reasons::PROVIDER_UNSCHEDULABLE,
         }
     }
+}
+
+/// Whether `provider` is cordoned: labelled `banlieue.io/unschedulable:
+/// "true"`, exactly (ADR-0124).
+fn is_unschedulable(provider: &Provider) -> bool {
+    provider
+        .labels()
+        .get(LABEL_UNSCHEDULABLE)
+        .map(String::as_str)
+        == Some("true")
 }
 
 /// Whether `provider`'s heartbeat, as the operator last judged it, is
@@ -265,10 +286,31 @@ pub fn schedule(
         return Err(ScheduleError::NoProviderMatched);
     }
 
+    // A VM already placed keeps its own Provider as a candidate through the
+    // cordon and liveness filters below: the reconciler re-runs this function
+    // every pass, and dropping the VM's own Provider would be drift, which the
+    // default migrationPolicy answers by recreating the VM elsewhere (ADR-0124
+    // decision 3, ADR-0102). Both filters are about new placements.
+    let own_provider = vm
+        .status
+        .as_ref()
+        .and_then(|s| s.scheduled.as_ref())
+        .map(|s| s.provider_name.as_str());
+    let is_own = |p: &Provider| own_provider == Some(p.name_any().as_str());
+
+    // ADR-0124: a cordoned provider takes no new VM.
+    let provider_candidates: Vec<&Provider> = provider_candidates
+        .into_iter()
+        .filter(|p| is_own(p) || !is_unschedulable(p))
+        .collect();
+    if provider_candidates.is_empty() {
+        return Err(ScheduleError::ProviderUnschedulable);
+    }
+
     // ADR-0102: a provider that stopped renewing its Lease takes no new VM.
     let provider_candidates: Vec<&Provider> = provider_candidates
         .into_iter()
-        .filter(|p| !is_stale(p))
+        .filter(|p| is_own(p) || !is_stale(p))
         .collect();
     if provider_candidates.is_empty() {
         return Err(ScheduleError::ProviderNotAlive);

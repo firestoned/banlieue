@@ -1241,6 +1241,183 @@ mod tests {
         }
     }
 
+    // --- Unschedulable Providers (ADR-0124) --------------------------------
+
+    fn labelled(mut p: Provider, key: &str, value: &str) -> Provider {
+        p.metadata
+            .labels
+            .get_or_insert_with(BTreeMap::new)
+            .insert(key.into(), value.into());
+        p
+    }
+
+    /// A cordoned host takes no new VM, whatever the spread would prefer.
+    #[test]
+    fn an_unschedulable_provider_takes_no_new_vm() {
+        let (providers, img, cls) = three_hosts();
+        let providers: Vec<Provider> = providers
+            .into_iter()
+            .map(|p| {
+                if p.name_any() == "h2" {
+                    p
+                } else {
+                    labelled(p, LABEL_UNSCHEDULABLE, "true")
+                }
+            })
+            .collect();
+        for name in ["a", "b", "c", "d", "e", "f"] {
+            let v = vm(name, "banlieue-system", BTreeMap::new());
+            let d = schedule(&v, &cls, &img, &providers, &[], &[]).expect("schedule");
+            assert_eq!(d.provider_name, "h2", "{name}");
+        }
+    }
+
+    #[test]
+    fn every_candidate_unschedulable_is_provider_unschedulable() {
+        let (providers, img, cls) = three_hosts();
+        let providers: Vec<Provider> = providers
+            .into_iter()
+            .map(|p| labelled(p, LABEL_UNSCHEDULABLE, "true"))
+            .collect();
+        let v = vm("a", "banlieue-system", BTreeMap::new());
+        let err = schedule(&v, &cls, &img, &providers, &[], &[]).unwrap_err();
+        assert_eq!(err, ScheduleError::ProviderUnschedulable);
+        assert_eq!(err.reason(), "ProviderUnschedulable");
+    }
+
+    /// Only `"true"` cordons: any other value, or none, is schedulable.
+    #[test]
+    fn only_true_makes_a_provider_unschedulable() {
+        let (providers, img, cls) = three_hosts();
+        for value in ["false", "", "yes", "True"] {
+            let p = labelled(providers[0].clone(), LABEL_UNSCHEDULABLE, value);
+            let expected = p.name_any();
+            let v = vm("a", "banlieue-system", BTreeMap::new());
+            let d = schedule(&v, &cls, &img, &[p], &[], &[]).expect("schedule");
+            assert_eq!(d.provider_name, expected, "{value:?}");
+        }
+    }
+
+    /// The cordon is checked before liveness: a cordoned, stale host reports
+    /// the cordon, and an uncordoned but stale one is still not alive.
+    #[test]
+    fn unschedulable_is_reported_before_liveness() {
+        let (providers, img, cls) = three_hosts();
+        let mut providers = providers.into_iter();
+        let cordoned_and_stale = with_heartbeat(
+            labelled(providers.next().unwrap(), LABEL_UNSCHEDULABLE, "true"),
+            banlieue_api::banlieue::Heartbeat::Stale,
+        );
+        let only_stale = with_heartbeat(
+            providers.next().unwrap(),
+            banlieue_api::banlieue::Heartbeat::Stale,
+        );
+        let v = vm("a", "banlieue-system", BTreeMap::new());
+        assert_eq!(
+            schedule(
+                &v,
+                &cls,
+                &img,
+                std::slice::from_ref(&cordoned_and_stale),
+                &[],
+                &[]
+            )
+            .unwrap_err(),
+            ScheduleError::ProviderUnschedulable
+        );
+        assert_eq!(
+            schedule(&v, &cls, &img, &[cordoned_and_stale, only_stale], &[], &[]).unwrap_err(),
+            ScheduleError::ProviderNotAlive
+        );
+    }
+
+    /// `v`, as placed by `d`: what the reconciler records before it re-runs the scheduler on
+    /// every later pass.
+    fn placed_by(mut v: VirtualMachine, d: &Decision) -> VirtualMachine {
+        let now = k8s_openapi::apimachinery::pkg::apis::meta::v1::Time(
+            k8s_openapi::jiff::Timestamp::now(),
+        );
+        v.status = Some(VirtualMachineStatus {
+            scheduled: Some(d.to_scheduled_placement(now)),
+            ..Default::default()
+        });
+        v
+    }
+
+    /// Cordoning a host, or its provider going stale, must not move the VMs already on it: the
+    /// reconciler re-runs the scheduler every pass, and drift under the default
+    /// `migrationPolicy` recreates the VM elsewhere, losing a local disk (ADR-0124 decision 3,
+    /// ADR-0102). The VM's own Provider stays a candidate, so its decision does not change.
+    #[test]
+    fn a_placed_vm_keeps_its_provider_when_it_is_cordoned_or_stale() {
+        let (providers, img, cls) = three_hosts();
+        let v = vm("a", "banlieue-system", BTreeMap::new());
+        let first = schedule(&v, &cls, &img, &providers, &[], &[]).expect("schedule");
+        let v = placed_by(v, &first);
+        for (what, mark) in [
+            (
+                "cordoned",
+                (|p: Provider| labelled(p, LABEL_UNSCHEDULABLE, "true"))
+                    as fn(Provider) -> Provider,
+            ),
+            ("stale", |p: Provider| {
+                with_heartbeat(p, banlieue_api::banlieue::Heartbeat::Stale)
+            }),
+        ] {
+            let marked: Vec<Provider> = providers
+                .iter()
+                .cloned()
+                .map(|p| {
+                    if p.name_any() == first.provider_name {
+                        mark(p)
+                    } else {
+                        p
+                    }
+                })
+                .collect();
+            let again = schedule(&v, &cls, &img, &marked, &[], &[]).expect("schedule");
+            assert_eq!(again.provider_name, first.provider_name, "{what}: no drift");
+            assert_eq!(
+                again.failure_domain_name, first.failure_domain_name,
+                "{what}"
+            );
+            // A new VM still avoids it.
+            let fresh = vm("b", "banlieue-system", BTreeMap::new());
+            let d = schedule(&fresh, &cls, &img, &marked, &[], &[]).expect("schedule");
+            assert_ne!(d.provider_name, first.provider_name, "{what}: no new VM");
+        }
+    }
+
+    /// Only the VM's own Provider is exempt: another cordoned one is still excluded for it.
+    #[test]
+    fn the_exemption_is_only_for_the_vms_own_provider() {
+        let (providers, img, cls) = three_hosts();
+        let v = vm("a", "banlieue-system", BTreeMap::new());
+        let first = schedule(&v, &cls, &img, &providers, &[], &[]).expect("schedule");
+        let v = placed_by(v, &first);
+        let others_cordoned: Vec<Provider> = providers
+            .iter()
+            .cloned()
+            .map(|p| {
+                if p.name_any() == first.provider_name {
+                    p
+                } else {
+                    labelled(p, LABEL_UNSCHEDULABLE, "true")
+                }
+            })
+            .collect();
+        let only_others: Vec<Provider> = others_cordoned
+            .iter()
+            .filter(|p| p.name_any() != first.provider_name)
+            .cloned()
+            .collect();
+        assert_eq!(
+            schedule(&v, &cls, &img, &only_others, &[], &[]).unwrap_err(),
+            ScheduleError::ProviderUnschedulable,
+            "its own Provider gone, the cordoned ones are no refuge"
+        );
+    }
+
     /// A selector that matches nothing is still `NoProviderMatched`: being
     /// dead is only reported for providers the VM could otherwise use.
     #[test]

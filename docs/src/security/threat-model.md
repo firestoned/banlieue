@@ -5,7 +5,8 @@ SPDX-License-Identifier: Apache-2.0
 # Threat Model
 
 > **Status:** Living document. Last full pass **2026-11-08**, against the
-> architecture defined by **ADR-0001 … ADR-0115** (0057–0059 unallocated,
+> architecture defined by **ADR-0001 … ADR-0124** (0116–0122 reserved by roadmap 20, 0123
+> Rejected; 0057–0059 unallocated,
 > 0066 and 0068–0073 reserved; 0074 and 0075 Accepted 2026-09-28; 0076–0080
 > reserved by roadmap 19; 0081–0082 recorded but not implemented in banlieue, and kept canonically in
 > mediatore since ADR-0097; **ADR-0115** (2026-11-04: the imagebuilder's rebuild gate
@@ -30,7 +31,15 @@ SPDX-License-Identifier: Apache-2.0
 > `user-data`, an empty cloud-config when none is set, so cloud-init stops
 > ignoring seeds without it; no row changes, the seed's contents and who
 > controls them are as before). The most recent pass, 2026-11-08, is
-> **ADR-0043 Decision 8's third amendment**: the libvirt provider polls a
+> **ADR-0124**: a Provider labelled `banlieue.io/unschedulable: "true"` (a cordoned host) is
+> dropped by the scheduler right after the selector and takes no new VM; VMs already on it are
+> not moved and the provider keeps reconciling them. Implementing it found that ADR-0102's
+> stale filter moved placed VMs after all (the scheduler re-runs for them, and drift under the
+> default `migrationPolicy` recreates a VM); a VM's own Provider now stays a candidate through
+> both filters, and ADR-0102 is amended. Three TB-17 rows. Setting the label takes
+> `patch` on Providers, which already lets its holder change every label a selector matches,
+> so no grant, identity, boundary or accepted risk changes. The pass before it, also 2026-11-08,
+> is **ADR-0043 Decision 8's third amendment**: the libvirt provider polls a
 > machine still expecting its guest's report every 2 s for its first 90 s
 > (then 30 s, as before). The reads are the same read-only guest-agent calls
 > over the same mutual-TLS libvirt session (TB-4), only sooner; the extra
@@ -1324,6 +1333,9 @@ the scheduler do with what they read.
 | A provider that is down keeps `Ready=True` and keeps receiving VMs (the 2026-10-13 outage) | D | **ADR-0102**: `crates/banlieue-operator/src/heartbeat.rs` (`evaluate`) records `Stale` once the Lease is `staleAfter` (default 60 s) old; `crates/banlieue-controller/src/reconciler/scheduler.rs` (`is_stale`) skips it, `ProviderNotAlive` when none is left; `ProviderHeartbeatStale` Event and `banlieue_provider_heartbeat` gauge. Live-tested against a real API server |
 | `Absent` is used to slip past the filter | D | By design `Absent` (no Lease) is not filtered, so `--no-leader-elect` runs and Providers from before ADR-0102 keep working. It is a different state from `Stale` and visible as such (column, gauge); a provider that was ever running leaves a Lease behind and reads `Stale`, not `Absent`, when it stops |
 | Clock skew between a host and the operator misjudges liveness | D | Bounded: a renewal stamped in the future reads `Alive` for at most `staleAfter`, and `staleAfter` is four lease durations. Skew larger than that is §8 |
+| Someone labels a Provider `banlieue.io/unschedulable` to stop placement on it | D | **ADR-0124**: the label is a placement filter only (`crates/banlieue-controller/src/reconciler/scheduler.rs`, `is_unschedulable`); setting it takes `patch` on Providers, which already lets its holder change every label a selector matches, so it is no new power. A VM whose every candidate is cordoned is `Scheduled=False`, reason `ProviderUnschedulable`, visible and retried. |
+| A cordon is bypassed, so a new VM still lands on a host being drained | T | No per-VM override: every VM passes the filter after its selector, before liveness (ADR-0124 decision 4; `scheduler_tests.rs`: `an_unschedulable_provider_takes_no_new_vm`, `every_candidate_unschedulable_is_provider_unschedulable`, `unschedulable_is_reported_before_liveness`). Only the exact value `"true"` cordons (`only_true_makes_a_provider_unschedulable`). |
+| Cordoning a host, or its provider going stale, recreates the VMs already on it elsewhere (the reconciler re-runs the scheduler every pass, and drift under the default `migrationPolicy` recreates a VM, losing a local disk) | D, T | A VM's own Provider (its `status.scheduled`) stays a candidate through both filters, so neither changes its decision; only new placements avoid the Provider (`scheduler.rs`, `is_own`; `scheduler_tests.rs`: `a_placed_vm_keeps_its_provider_when_it_is_cordoned_or_stale`, `the_exemption_is_only_for_the_vms_own_provider`). The provider keeps reconciling its VMs: that is `spec.paused`, which the label does not touch (ADR-0124 decision 3; ADR-0102 amended, whose stale filter had this gap). |
 
 ### TB-18: Sandbox segment → egress gateway → routable network
 

@@ -1,5 +1,63 @@
 # Changelog
 
+## [2026-11-09 02:00] - Roadmap 18: narrowing Kairos's datasource probe saves about 2 s per boot
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/community/18-fast-sealed-clones.md`: measured. Kairos probes 13
+  datasource providers in three boot stages when no user-data was fetched;
+  only `cdrom` (the NoCloud seed) matters on libvirt, Cloud Hypervisor and
+  Proxmox. A sealed Debian image built with the list narrowed to `["cdrom"]`
+  cut immucore's `initramfs-hook` from 3.3 s to 0.9 to 1.5 s and time to
+  `GuestReady` from 25 s to 23 to 24 s. Skipping the probe outright would
+  drop the seed, so narrowing is the safe form; where to apply it is open.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+## [2026-11-09 02:00] - A Provider labelled unschedulable takes no new VM (ADR-0124; ADR-0102 amended)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0124-unschedulable-providers.md`: the well-known label
+  `banlieue.io/unschedulable: "true"` cordons a Provider: the scheduler drops
+  it right after the selector, for new placements only. No per-VM override.
+- `banlieue-api`: `LABEL_UNSCHEDULABLE`, re-exported from `banlieue::`.
+- `crates/banlieue-controller/src/reconciler/scheduler.rs`: the filter, a
+  `ScheduleError::ProviderUnschedulable` and the reason
+  `ProviderUnschedulable` when every matching Provider is cordoned.
+
+### Fixed
+- The scheduler re-runs for placed VMs every pass, and drift under the
+  default `migrationPolicy` recreates the VM. The liveness filter (ADR-0102)
+  therefore moved VMs off a stale provider, against its own Decision 4, and
+  the cordon would have done the same. A VM's own Provider
+  (`status.scheduled`) now stays a candidate through both filters; ADR-0102
+  is amended.
+
+### Tests
+- `scheduler_tests.rs`: an unschedulable provider takes no new VM; every
+  candidate unschedulable is `ProviderUnschedulable`; only `"true"` cordons;
+  the cordon is reported before liveness; a placed VM keeps its provider when
+  it is cordoned or stale, and the exemption is only for its own (342
+  controller tests).
+
+### Docs
+- `docs/src/concepts/providers.md` (Cordoning a provider),
+  `docs/src/guides/vsphere-provider.md` (the reason), CALM (the controller's
+  description), threat model (pass stamp to ADR-0124, three TB-17 rows).
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-11-09 01:00] - Roadmap 18: libvirt re-measured with the fast guest poll
 
 **Author:** Erick Bourgeois

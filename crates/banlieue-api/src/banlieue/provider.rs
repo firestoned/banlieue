@@ -19,6 +19,11 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+/// On a `Provider`, `"true"` means: place no new VM here (ADR-0124). The scheduler drops it right
+/// after the selector; VMs already on it stay. Any other value, or none, is schedulable. Set it to
+/// cordon a host, by `kubectl label` or from a controller such as faubourg.
+pub const LABEL_UNSCHEDULABLE: &str = "banlieue.io/unschedulable";
+
 #[derive(CustomResource, Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[kube(
     group = "banlieue.io",

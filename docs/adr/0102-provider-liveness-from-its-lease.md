@@ -6,6 +6,7 @@ SPDX-License-Identifier: Apache-2.0
 
 - **Status:** Accepted
 - **Date:** 2026-10-15
+- **Amended:** 2026-11-08 by ADR-0124 (Decision 4: a placed VM keeps its own Provider through the filter)
 - **Deciders:** Erick Bourgeois
 - **Related:** Extends [ADR-0012](0012-providerclass-crd-and-operator-role.md)
   (`status.workload`, the operator's own field) and
@@ -105,6 +106,13 @@ before.
 
 VMs already placed on a provider that goes stale are not moved: banlieue
 has no live migration, and a provider that comes back resumes them.
+
+*Amended 2026-11-08 by ADR-0124:* as first implemented, the filter did not
+keep that promise. The reconciler re-runs the scheduler for placed VMs too,
+so a stale provider dropped from the candidates was drift, and the default
+`migrationPolicy` recreated the VM elsewhere. A VM's own Provider (its
+`status.scheduled`) now stays a candidate through this filter and the cordon
+filter of ADR-0124; only new placements avoid a stale provider.
 
 ### 5. A gauge and a printed column
 

@@ -560,6 +560,9 @@ vCenter role (`VirtualMachine.Interact.PowerOn`).
 
 - `reason=ImageNotReady` — the `VMImage` isn't `ready` on any candidate provider
   (step 5).
+- `reason=ProviderUnschedulable`: every `Provider` the VM could use is labelled
+  `banlieue.io/unschedulable: "true"` (cordoned, ADR-0124). Uncordon one, or widen the
+  selector.
 - `reason=ProviderNotAlive`: every `Provider` the VM could use has a
   `Stale` heartbeat, so its provider is not running (ADR-0102). Check
   `kubectl get providers` and the provider pod; see
