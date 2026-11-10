@@ -1,6 +1,6 @@
 # anatomy.md
 
-> Auto-maintained by OpenWolf. Last scanned: 2026-11-09T05:00:00.977Z
+> Auto-maintained by OpenWolf. Last scanned: 2026-11-09T17:00:00.177Z
 > Files: 513 tracked | Anatomy hits: 0 | Misses: 0
 
 ## ./
@@ -148,8 +148,8 @@
 ## crates/banlieue-api/src/banlieue/
 
 - `mod.rs` — `banlieue.io/v1alpha1` API group. (~742 tok)
-- `provider_tests.rs` — Unit tests for `provider.rs`. (~11104 tok)
-- `provider.rs` — `banlieue.io/v1alpha1` Provider CRD. (~9052 tok)
+- `provider_tests.rs` — Unit tests for `provider.rs`. (~11128 tok)
+- `provider.rs` — `banlieue.io/v1alpha1` Provider CRD. (~9176 tok)
 - `providerclass_tests.rs` — Unit tests for `providerclass.rs`. (~3356 tok)
 - `providerclass.rs` — `banlieue.io/v1alpha1` ProviderClass CRD. (~4099 tok)
 - `virtualmachine_tests.rs` — Unit tests for `virtualmachine.rs`. (~7592 tok)
@@ -254,8 +254,8 @@
 - `pool_plan.rs` — Pure planning logic for `VirtualMachinePool` (roadmap 17, ADR-0046). (~3198 tok)
 - `pool_tests.rs` — Unit tests for `pool.rs`. (~3070 tok)
 - `pool.rs` — `VirtualMachinePool` reconciler (roadmap 17, ADR-0046). (~5253 tok)
-- `scheduler_tests.rs` — Unit tests for [`super::super::scheduler`]. (~18338 tok)
-- `scheduler.rs` — Scheduler — the pure placement function. (~9999 tok)
+- `scheduler_tests.rs` — Unit tests for [`super::super::scheduler`]. (~19422 tok)
+- `scheduler.rs` — Scheduler — the pure placement function. (~10645 tok)
 - `status_mirror_tests.rs` — Unit tests for [`super::super::status_mirror`]. (~8350 tok)
 - `status_mirror.rs` — `VirtualMachine` status mirror. (~3571 tok)
 - `virtualmachine_tests.rs` — Unit tests for [`super::super::virtualmachine`]. (~4336 tok)
@@ -415,8 +415,8 @@
 ## crates/banlieue-operator/src/reconciler/
 
 - `mod.rs` — Reconciler modules. (~12 tok)
-- `provider_tests.rs` — Unit tests for `reconciler/provider.rs`. (~2468 tok)
-- `provider.rs` — The `Provider` → workload reconciler. (~6595 tok)
+- `provider_tests.rs` — Unit tests for `reconciler/provider.rs`. (~2616 tok)
+- `provider.rs` — The `Provider` → workload reconciler. (~6690 tok)
 - `providerclass_tests.rs` — Unit tests for `reconciler/providerclass.rs`. (~2220 tok)
 - `providerclass.rs` — The `ProviderClass` status reconciler. (~2319 tok)
 

@@ -68,6 +68,8 @@ flowchart LR
     service-crates-io["crates.io (external)"]
     network-sandbox-segment["Sandbox segment (layer 2, no router)"]
     service-egress-gateway["Egress gateway VM (mediatore image)"]
+    data-asset-virtualmachinemove-cr["VirtualMachineMove Custom Resource"]
+    service-faubourg-controller["faubourg controller (external, firestoned/faubourg)"]
     subgraph sg_system-banlieue-binary [System Banlieue Binary]
         service-banlieue-controller
         service-banlieue-operator
@@ -171,6 +173,13 @@ flowchart LR
         service-in-guest-agent
         service-egress-gateway
     end
+    service-faubourg-controller --> data-asset-virtualmachinemove-cr
+    service-faubourg-controller --> data-asset-virtualmachine-cr
+    service-banlieue-controller --> data-asset-virtualmachinemove-cr
+    service-banlieue-controller --> data-asset-virtualmachine-cr
+    service-banlieue-controller --> data-asset-infra-machine-cr
+    service-provider-cloud-hypervisor -->|TLS| service-provider-cloud-hypervisor
+    service-cloud-hypervisor-vmm -->|TCP| service-provider-cloud-hypervisor
 ```
 
 <sub>Source: nodes and relationships in `architecture.json`.</sub>

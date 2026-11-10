@@ -20,7 +20,7 @@ This directory holds the roadmap docs for building banlieue.
 | 11 | `11-phase-3-provider-lifecycle.md` | ProviderClass + auto-Deployment | Phase 3 |
 | 12 | `12-phase-4-finos-ready.md` | Polish, governance, CAPI integration, release | Phase 4 |
 | 13 | `13-ipam-pool-integration.md` | CAPI IPAM pool integration (ADR-0033) — deferred, not started | After the virtrigaud migration; needs a decision from the existing IPAM system's owning team first |
-| 14 | `14-live-migration.md` | Same-class live migration, e.g. vSphere relocate (ADR-0036) — deferred, not started | After ADR-0035's placement-drift watch made `Recreate` fire more often; cross-class migration explicitly out of scope |
+| 14 | `14-live-migration.md` | Same-class live migration, e.g. vSphere relocate (ADR-0036), not started; Cloud Hypervisor moves within a zone proposed as ADR-0127 | After ADR-0035's placement-drift watch made `Recreate` fire more often; cross-class migration explicitly out of scope |
 | 15 | `15-vsphere-disk-image-import.md` | vSphere import from a raw disk as VMDK, next to the ISO path; first-party VMDK writer | Before touching `import.rs` or `BuildArtifactKind`; read ADR-0010, 0020, 0021, 0040 first |
 | 16 | `16-scorecard-remediation.md` | OSSF Scorecard: what to click, and which checks are deliberately capped | Before touching repo settings or "fixing" a Scorecard alert |
 | 17 | `17-ephemeral-vm-pools.md` | `VirtualMachinePool` + `VirtualMachineClaim`: warm, never-reused, TPM-sealed single-use VMs | Largest open initiative; read after 07 (libvirt is its first live target) |

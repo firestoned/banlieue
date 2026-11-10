@@ -65,3 +65,4 @@ node_modules/
 /proxmox-ca.pem
 /pve-root-ca.pem
 notes/
+.claude/worktrees
