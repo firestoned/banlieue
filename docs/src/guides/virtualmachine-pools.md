@@ -162,6 +162,12 @@ To keep a pool on particular hosts, narrow it with
 `placement.providerSelector` or `placement.failureDomainSelector` in the
 template; spread only orders the domains those allow.
 
+Spread places members; it never moves them. Adding a host does not pull
+existing members onto it: new members and refills fill it, and a member
+stays where it is while its placement still fits
+([ADR-0125](https://github.com/firestoned/banlieue/blob/main/docs/adr/0125-a-placed-vm-keeps-a-placement-that-still-fits.md)).
+To rebalance now, delete members on the busy domains and let the pool refill.
+
 ## Sizing
 
 Two numbers, and one of them is usually got wrong:

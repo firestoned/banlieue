@@ -1928,4 +1928,183 @@ mod tests {
         );
         assert_eq!(capacity_shortfall(2, 512, Usage::default(), &c, 4), None);
     }
+
+    // --- A placed VM keeps a placement that still fits (ADR-0125) -----------
+
+    /// `name`, a member of pool `a`, recorded as placed on `host`.
+    fn placed_self(name: &str, host: &str) -> VirtualMachine {
+        placed_member(name, "a", host)
+    }
+
+    /// A new, empty host must not pull a VM off a busier one: under the default
+    /// `migrationPolicy` that move is a recreate, and a local disk is lost.
+    #[test]
+    fn a_new_empty_host_does_not_move_a_placed_vm() {
+        let me = placed_self("self", "h1");
+        let existing = vec![
+            me.clone(),
+            placed_member("m1", "a", "h1"),
+            placed_member("m2", "a", "h2"),
+        ];
+        assert_eq!(
+            host_of(&me, &existing),
+            "h1",
+            "h3 is emptier, and no reason to move"
+        );
+        // A new member still fills the new host.
+        assert_eq!(host_of(&member("new", "a"), &existing), "h3");
+    }
+
+    /// A neighbour deleted from another host leaves a gap; no placed VM moves into it.
+    #[test]
+    fn a_deleted_neighbour_does_not_move_a_placed_vm() {
+        let me = placed_self("self", "h1");
+        let existing = vec![
+            me.clone(),
+            placed_member("m1", "a", "h1"),
+            placed_member("m2", "a", "h1"),
+            placed_member("m3", "a", "h2"),
+            placed_member("m4", "a", "h2"),
+            placed_member("m5", "a", "h3"),
+        ];
+        assert_eq!(host_of(&me, &existing), "h1");
+    }
+
+    /// Image readiness decides where a new disk can be made; a placed VM already has its disk.
+    #[test]
+    fn an_image_not_ready_on_its_host_does_not_move_a_placed_vm() {
+        let (providers, _, cls) = three_hosts();
+        let img = image_ready_on(&["h2", "h3"]);
+        let me = placed_self("self", "h1");
+        let d = schedule(&me, &cls, &img, &providers, std::slice::from_ref(&me), &[])
+            .expect("schedule");
+        assert_eq!(d.provider_name, "h1");
+        let fresh =
+            schedule(&member("new", "a"), &cls, &img, &providers, &[], &[]).expect("schedule");
+        assert_ne!(fresh.provider_name, "h1", "a new VM still needs the image");
+    }
+
+    /// The same for a `Template` source's per-zone readiness (ADR-0104).
+    #[test]
+    fn a_zone_whose_template_is_not_ready_keeps_its_placed_vm() {
+        let img = template_image_with_zones(
+            "vc1",
+            ImageSourceKind::Template,
+            &[("zone-a", false), ("zone-b", true)],
+            true,
+        );
+        let me = scheduled_vm("db-01", "ns", BTreeMap::new(), "vc1", "zone-a");
+        let d = schedule(
+            &me,
+            &gold_prod_class(),
+            &img,
+            &[two_zone_provider()],
+            std::slice::from_ref(&me),
+            &[],
+        )
+        .expect("schedule");
+        assert_eq!(d.failure_domain_name, "zone-a");
+    }
+
+    /// One provider, two failure domains, each labelled with its own name.
+    fn two_domain_provider() -> Provider {
+        provider(
+            "vc1",
+            BTreeMap::new(),
+            ["fd-a", "fd-b"]
+                .into_iter()
+                .map(|n| fd(n, lbls([("failure_domain", n)]), &["gold"], &["prod"], &[]))
+                .collect(),
+            caps_with(
+                &[("gold", "datastore", "ds-1")],
+                &[("prod", "portGroup", "pg-1")],
+            ),
+        )
+    }
+
+    /// A required anti-affinity rule that matches the VM's own labels is about its siblings:
+    /// the VM never blocks its own domain.
+    #[test]
+    fn required_anti_affinity_never_counts_the_vm_against_itself() {
+        let labels = lbls([("app", "db-prod")]);
+        let placement = PlacementSpec {
+            anti_affinity: vec![AntiAffinityRule {
+                topology_key: "failure_domain".into(),
+                label_selector: label_selector(&[("app", "db-prod")]),
+                mode: AffinityMode::Required,
+            }],
+            ..Default::default()
+        };
+        let mut me = scheduled_vm("db-01", "ns", labels.clone(), "vc1", "fd-a");
+        me.spec.placement = placement;
+        let img = image_ready_on(&["vc1"]);
+        let p = two_domain_provider();
+        let alone = std::slice::from_ref(&me);
+        let d = schedule(
+            &me,
+            &gold_prod_class(),
+            &img,
+            std::slice::from_ref(&p),
+            alone,
+            &[],
+        )
+        .expect("schedule");
+        assert_eq!(d.failure_domain_name, "fd-a", "it does not repel itself");
+
+        // A sibling on the same domain breaks the rule: the placement no longer fits.
+        let sibling = scheduled_vm("db-02", "ns", labels, "vc1", "fd-a");
+        let d = schedule(
+            &me,
+            &gold_prod_class(),
+            &img,
+            &[p],
+            &[me.clone(), sibling],
+            &[],
+        )
+        .expect("schedule");
+        assert_eq!(d.failure_domain_name, "fd-b");
+    }
+
+    /// A selector the placement no longer meets is real drift: the VM is placed again.
+    #[test]
+    fn a_selector_change_moves_a_placed_vm() {
+        let (providers, img, cls) = three_hosts();
+        let providers: Vec<Provider> = providers
+            .into_iter()
+            .map(|p| {
+                let n = p.name_any();
+                labelled(p, "host", &n)
+            })
+            .collect();
+        let mut me = placed_self("self", "h1");
+        me.spec.placement.provider_selector = Some(label_selector(&[("host", "h2")]));
+        let d = schedule(&me, &cls, &img, &providers, std::slice::from_ref(&me), &[])
+            .expect("schedule");
+        assert_eq!(d.provider_name, "h2");
+    }
+
+    /// A class the placement no longer offers is real drift too.
+    #[test]
+    fn a_class_its_domain_does_not_offer_moves_a_placed_vm() {
+        let (mut providers, img, cls) = three_hosts();
+        providers[0].status.as_mut().unwrap().failure_domains[0]
+            .attributes
+            .available_storage_classes = vec!["silver".into()];
+        let me = placed_self("self", "h1");
+        let d = schedule(&me, &cls, &img, &providers, std::slice::from_ref(&me), &[])
+            .expect("schedule");
+        assert_ne!(d.provider_name, "h1");
+    }
+
+    /// A placement on a Provider that is gone is placed afresh, by the spread.
+    #[test]
+    fn a_placement_on_a_vanished_provider_is_placed_again() {
+        let me = placed_self("self", "gone");
+        let existing = vec![
+            me.clone(),
+            placed_member("m1", "a", "h1"),
+            placed_member("m2", "a", "h2"),
+        ];
+        assert_eq!(host_of(&me, &existing), "h3");
+    }
 }

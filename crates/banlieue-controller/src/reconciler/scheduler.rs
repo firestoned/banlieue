@@ -38,11 +38,23 @@
 //!    `vtpm`; unset is universally acceptable (no vTPM is requested).
 //! 9. Anti-affinity (`required`) — drop candidates that would put this VM on
 //!    a failure domain sharing a `topologyKey` value with an already-
-//!    scheduled VM matching the rule's label selector.
+//!    scheduled VM matching the rule's label selector. The VM itself is
+//!    never one of them (ADR-0125).
+//!
+//! ## A placed VM keeps a placement that still fits (ADR-0125)
+//!
+//! The reconciler re-runs this function every pass and treats a different
+//! answer as drift, which the default `migrationPolicy` answers by
+//! recreating the VM. So for a VM with `status.scheduled`, when its recorded
+//! `(provider, failure domain)` survives every filter above, that is the
+//! answer: the spread below never moves it to an emptier domain. Image
+//! readiness (steps 3 and 3b) is not checked for it: the image decides where
+//! a new disk can be made, and the VM already has its disk.
 //!
 //! ## Spread (ADR-0098)
 //!
-//! The survivors are ordered, not just tie-broken, so placement spreads
+//! The survivors of a new placement (or of a placed VM whose placement no
+//! longer fits) are ordered, not just tie-broken, so placement spreads
 //! evenly across failure domains (D-023):
 //!
 //! 1. fewest already-scheduled VMs of the VM's spread group on the domain
@@ -350,6 +362,16 @@ fn place(
     let own_provider = own_provider_name(vm);
     let is_own = |p: &Provider| own_provider == Some(p.name_any().as_str());
 
+    // ADR-0125: the exact placement the VM holds, if any.
+    let current = vm
+        .status
+        .as_ref()
+        .and_then(|s| s.scheduled.as_ref())
+        .map(|s| (s.provider_name.as_str(), s.failure_domain.as_str()));
+    let is_current = |p: &Provider, fd: &FailureDomain| {
+        current.is_some_and(|(name, domain)| name == p.name_any() && domain == fd.name)
+    };
+
     // ADR-0124: a cordoned provider takes no new VM.
     let provider_candidates: Vec<&Provider> = provider_candidates
         .into_iter()
@@ -403,8 +425,12 @@ fn place(
                 continue;
             }
 
+            // Image readiness is about making a new disk; the VM's own
+            // placement already has one (ADR-0125 decision 2).
+            let here = is_current(provider, fd);
+
             // Step 3: image readiness
-            if !image_ready_for_provider {
+            if !here && !image_ready_for_provider {
                 reject_reasons.push(format!(
                     "{}/{}: image {} not ready on this provider",
                     provider.name_any(),
@@ -415,7 +441,7 @@ fn place(
             }
 
             // Step 3b: per-zone image readiness (Template-kind sources only)
-            if !image_ready_in_zone(image, provider, &fd.name) {
+            if !here && !image_ready_in_zone(image, provider, &fd.name) {
                 reject_reasons.push(format!(
                     "{}/{}: image {} has no ready template in this zone",
                     provider.name_any(),
@@ -561,7 +587,7 @@ fn place(
         .iter()
         .filter(|r| r.mode_is_required())
     {
-        let blocked_values = blocked_topology_values(rule, existing_vms);
+        let blocked_values = blocked_topology_values(rule, vm, existing_vms);
         survivors.retain(|(_, fd)| {
             fd.labels
                 .get(&rule.topology_key)
@@ -580,6 +606,13 @@ fn place(
     }
 
     let _ = pre_aa_len; // (kept for future scoring use)
+
+    // ADR-0125: a placement that still fits is kept. Only a new VM, or one
+    // whose placement failed a filter above, is spread.
+    if let Some((provider, fd)) = survivors.iter().find(|(p, fd)| is_current(p, fd)) {
+        return Ok(build_decision(vm, class, provider, fd));
+    }
+
     // Spread (ADR-0098): least loaded for the VM's group, then overall, then
     // rendezvous hash.
     let (provider, fd) = survivors
@@ -731,13 +764,18 @@ impl AntiAffinityRuleExt for AntiAffinityRule {
 }
 
 /// Compute the set of topology-key values that are already taken by sibling
-/// VMs matching the rule's label selector.
+/// VMs matching the rule's label selector. `vm` itself is never its own
+/// sibling: a placed VM whose labels match its rule must not repel itself
+/// from its own domain (ADR-0125).
 fn blocked_topology_values(
     rule: &AntiAffinityRule,
+    me: &VirtualMachine,
     existing_vms: &[VirtualMachine],
 ) -> Vec<String> {
+    let me = me.name_any();
     existing_vms
         .iter()
+        .filter(|vm| vm.name_any() != me)
         .filter(|vm| selector_matches(&Some(rule.label_selector.clone()), vm.labels()))
         .filter_map(|vm| {
             let scheduled = vm.status.as_ref()?.scheduled.as_ref()?;

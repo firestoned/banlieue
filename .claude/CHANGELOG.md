@@ -1,5 +1,40 @@
 # Changelog
 
+## [2026-11-10 10:00] - A placed VM keeps a placement that still fits (ADR-0125)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `crates/banlieue-controller/src/reconciler/scheduler.rs`: for a VM with
+  `status.scheduled`, the recorded `(provider, failure domain)` is returned
+  when it survives every filter, before the spread ranks anything. Image
+  readiness is not checked for it. Required anti-affinity no longer counts
+  the VM against itself (`blocked_topology_values`).
+
+### Why
+- The spread excluded the VM from its own domain's load, so a new empty
+  host, or a neighbour deleted elsewhere, made every placed VM drift, and
+  the default `migrationPolicy: Automatic` recreated it, losing a local
+  disk. A VM matching its own anti-affinity rule always drifted.
+
+### Tests
+- `scheduler_tests.rs`: a new empty host, a deleted neighbour, an image or
+  zone template not ready, and a self-matching anti-affinity rule move
+  nothing; a selector change, a class the domain no longer offers and a
+  vanished Provider still do.
+
+### Docs
+- `docs/adr/0125-a-placed-vm-keeps-a-placement-that-still-fits.md`
+  (Accepted), CALM (the controller's description),
+  `concepts/virtualmachine.md`, `guides/virtualmachine-pools.md`, threat
+  model (pass stamp, TB-1 placement row).
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-11-09 14:00] - A Provider's status publishes its ServiceAccount's name (ADR-0126)
 
 **Author:** Erick Bourgeois
