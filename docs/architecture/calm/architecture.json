@@ -39,7 +39,7 @@
       "unique-id": "service-banlieue-controller",
       "node-type": "service",
       "name": "banlieue-controller",
-      "description": "Main Rust kube-rs controller. Watches VirtualMachine CRs, resolves classRef/imageRef references, schedules the VM onto a Provider matched via placement.providerSelector/failureDomainSelector, creates a backend-specific infrastructure CR carrying the resolved spec, and mirrors status from that infra CR back onto the VirtualMachine. Owns no backend credentials \u2014 all backend access is delegated to provider controllers via CRDs. Placement is capacity-aware (ADR-0107): a failure domain that publishes `attributes.capacity` takes a VM only if its memory (class memory plus the per-VM overhead) fits strictly and its vCPUs fit `Provider.spec.scheduling.cpuOvercommitRatio` times the published CPUs, counting the VMs already scheduled there; a domain with no capacity is not filtered. A Provider labelled `banlieue.io/unschedulable: \"true\"` (a cordoned host) is dropped right after the selector and takes no new VM; VMs already on it are not moved (ADR-0124). A placed VM keeps its recorded placement while it still passes every filter (image readiness aside): the spread orders new placements only, so a host joining or a VM leaving moves nothing, and drift means the placement no longer fits (ADR-0125).",
+      "description": "Main Rust kube-rs controller. Watches VirtualMachine CRs, resolves classRef/imageRef references, schedules the VM onto a Provider matched via placement.providerSelector/failureDomainSelector, creates a backend-specific infrastructure CR carrying the resolved spec, and mirrors status from that infra CR back onto the VirtualMachine. Owns no backend credentials \u2014 all backend access is delegated to provider controllers via CRDs. Placement is capacity-aware (ADR-0107): a failure domain that publishes `attributes.capacity` takes a VM only if its memory (class memory plus the per-VM overhead) fits strictly and its vCPUs fit `Provider.spec.scheduling.cpuOvercommitRatio` times the published CPUs, counting the VMs already scheduled there; a domain with no capacity is not filtered. A Provider labelled `banlieue.io/unschedulable: \"true\"` (a cordoned host) is dropped right after the selector and takes no new VM; VMs already on it are not moved (ADR-0124). A placed VM keeps its recorded placement while it still passes every filter (image readiness aside): the spread orders new placements only, so a host joining or a VM leaving moves nothing, and drift means the placement no longer fits (ADR-0125). PROPOSED (ADR-0127, not yet implemented): it also reconciles VirtualMachineMove: it admits a move only between two cloud-hypervisor Providers with the same `banlieue.io/zone` label, the `move` feature, identical VMM version and CPU model and room for the VM, creates the destination CloudHypervisorMachine (carrying the source's identity), passes each side's published per-move certificate and endpoint to the other, and switches status.scheduled only at commit.",
       "interfaces": [
         {
           "unique-id": "banlieue-controller-metrics",
@@ -634,7 +634,7 @@
       "unique-id": "service-provider-cloud-hypervisor",
       "node-type": "service",
       "name": "banlieue-provider-cloud-hypervisor",
-      "description": "Host-resident provider for Cloud Hypervisor (ADR-0060): the first banlieue component that runs OUTSIDE the management cluster, as a systemd service on the KVM host, as the unprivileged `banlieue` user with CAP_NET_ADMIN, CAP_CHOWN and CAP_FOWNER only. It dials the API server with a bound ServiceAccount token from the host (nothing dials the host), watches its own Provider, CloudHypervisorMachines and VMImages, and realises each machine as one instance of a root-owned template unit, started over D-Bus (ADR-0063, amended), a persistent tap on a host bridge, an OS disk cloned from the host image cache and a NoCloud seed. Machines name storage and network CLASSES; the host resolves them through its own root-owned config, so a path or bridge never crosses into the cluster (ADR-0062 Decision 4). Holds no hypervisor credential: the hypervisor is local. Every privileged file change inside a guest's directory goes through a file handle, never a path, so a compromised guest cannot redirect it with a symlink. Code: crates/banlieue-provider-cloud-hypervisor. Host files: deploy/provider-cloud-hypervisor/host/. It publishes its failure domain's typed capacity (ADR-0107): CPUs and memory guests may use, the smaller of the host's and the guests' slice budget read from systemd over D-Bus, and the 512 MiB per-VM VMM overhead. For a firstBootSealing machine it reads the guest's `sealed=` vsock report into status.sealedPartitions and withholds GuestReady until every listed partition is sealed (ADR-0112). A static NIC reaches the guest as a cloud-init network-config (v2) in that seed, matched by the NIC's derived MAC, and a static machine gets a seed even with no user-data (ADR-0114).",
+      "description": "Host-resident provider for Cloud Hypervisor (ADR-0060): the first banlieue component that runs OUTSIDE the management cluster, as a systemd service on the KVM host, as the unprivileged `banlieue` user with CAP_NET_ADMIN, CAP_CHOWN and CAP_FOWNER only. It dials the API server with a bound ServiceAccount token from the host (nothing dials the host), watches its own Provider, CloudHypervisorMachines and VMImages, and realises each machine as one instance of a root-owned template unit, started over D-Bus (ADR-0063, amended), a persistent tap on a host bridge, an OS disk cloned from the host image cache and a NoCloud seed. Machines name storage and network CLASSES; the host resolves them through its own root-owned config, so a path or bridge never crosses into the cluster (ADR-0062 Decision 4). Holds no hypervisor credential: the hypervisor is local. Every privileged file change inside a guest's directory goes through a file handle, never a path, so a compromised guest cannot redirect it with a symlink. Code: crates/banlieue-provider-cloud-hypervisor. Host files: deploy/provider-cloud-hypervisor/host/. It publishes its failure domain's typed capacity (ADR-0107): CPUs and memory guests may use, the smaller of the host's and the guests' slice budget read from systemd over D-Bus, and the 512 MiB per-VM VMM overhead. For a firstBootSealing machine it reads the guest's `sealed=` vsock report into status.sealedPartitions and withholds GuestReady until every listed partition is sealed (ADR-0112). A static NIC reaches the guest as a cloud-init network-config (v2) in that seed, matched by the NIC's derived MAC, and a static machine gets a seed even with no user-data (ADR-0114). PROPOSED (ADR-0127, not yet implemented): it copies a moving guest's disk to the destination host's provider (a reflink clone streamed while the guest runs, then only the extents no longer shared with it, at cutover) and relays the VMM's migration stream, over one per-move TLS connection to that provider; it listens only for the duration of one move, for one pinned peer.",
       "interfaces": [
         {
           "unique-id": "guest-report-unix-socket",
@@ -672,6 +672,22 @@
             "port": 8080,
             "path": "/metrics",
             "protocol": "HTTP"
+          }
+        },
+        {
+          "unique-id": "provider-cloud-hypervisor-move-listener",
+          "definition-url": "https://calm.finos.org/release/1.2/prototype/interface/host-port.json",
+          "config": {
+            "host": "[move] listen (host config, zone network)",
+            "port": 0
+          }
+        },
+        {
+          "unique-id": "provider-cloud-hypervisor-migration-unix-socket",
+          "definition-url": "https://calm.finos.org/release/1.2/prototype/interface/host-port.json",
+          "config": {
+            "host": "unix:/run/banlieue/ch/<uid>/migrate.sock",
+            "port": 0
           }
         }
       ]
@@ -813,6 +829,18 @@
           }
         }
       ]
+    },
+    {
+      "unique-id": "data-asset-virtualmachinemove-cr",
+      "node-type": "data-asset",
+      "name": "VirtualMachineMove Custom Resource",
+      "description": "PROPOSED (ADR-0127, not yet implemented): namespaced CRD (banlieue.io/v1alpha1) asking banlieue to move one running VirtualMachine to another cloud-hypervisor host in the same zone, keeping its memory, disk, MAC and addresses. spec.vmRef names the VM; spec.target (a Provider name or selector) is optional, and without it banlieue's scheduler picks a host in the zone. status.phase runs Pending, Preparing, Copying, HandingOver, then Succeeded, Failed or Rejected (with a named reason), and records the pause as downtimeMilliseconds. One move per VM at a time; deleting one before HandingOver cancels it. Created by faubourg when it drains a host (faubourg ADR-0017), or by a person."
+    },
+    {
+      "unique-id": "service-faubourg-controller",
+      "node-type": "service",
+      "name": "faubourg controller (external, firestoned/faubourg)",
+      "description": "Bootstraps cloud-hypervisor hosts, groups them into AvailabilityZones and labels each host's Provider (zone, host, cordon). Not part of banlieue. PROPOSED (ADR-0127, not yet implemented): it also sets `banlieue.io/zone` on each Provider and, when a Host is drained, creates one VirtualMachineMove per VM on it, a few at a time, with no target; it never updates or deletes a VirtualMachine (faubourg ADR-0017)."
     }
   ],
   "relationships": [
@@ -2146,6 +2174,123 @@
           ]
         }
       }
+    },
+    {
+      "unique-id": "rel-faubourg-requests-move",
+      "description": "PROPOSED (ADR-0127, not yet implemented): faubourg creates VirtualMachineMoves for the VMs on a draining host, and lists VirtualMachines to find them. It holds create/get/list/watch/delete on moves and read-only access to VirtualMachines: it can ask for a move inside the zone, never choose a destination outside it, change a VM or delete one.",
+      "relationship-type": {
+        "interacts": {
+          "actor": "service-faubourg-controller",
+          "nodes": [
+            "data-asset-virtualmachinemove-cr",
+            "data-asset-virtualmachine-cr"
+          ]
+        }
+      },
+      "controls": {
+        "move-request-least-privilege": {
+          "description": "A move is a request banlieue admits or rejects (same zone, `move` feature, same VMM and CPU model, capacity, the VM's own placement, migrationPolicy not Never, no vTPM until Stage 2); the requester gets no write access to VirtualMachines or machines. docs/adr/0127-move-a-cloud-hypervisor-vm-between-hosts-in-a-zone.md, faubourg docs/adr/0017-host-drain-moves-vms-through-banlieue.md.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53",
+                "control": "AC-6 Least Privilege"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-controller-reconciles-move",
+      "description": "PROPOSED (ADR-0127, not yet implemented): the controller reconciles each VirtualMachineMove: it creates the destination CloudHypervisorMachine with spec.moveIn and spec.identity, sets spec.moveOut on the source, copies each provider's published certificate and endpoint to the other, requests cutover, writes commit only after the source reports Sent and its VMM has exited, then switches the VM's status.scheduled and deletes the source machine. Each host provider still reads only its own machine.",
+      "relationship-type": {
+        "interacts": {
+          "actor": "service-banlieue-controller",
+          "nodes": [
+            "data-asset-virtualmachinemove-cr",
+            "data-asset-virtualmachine-cr",
+            "data-asset-infra-machine-cr"
+          ]
+        }
+      },
+      "controls": {
+        "vm-move-single-runner": {
+          "description": "The guest runs on one host at a time: the VMM handover is paused to paused, the destination resumes only on commit, the source only on abort, the controller never writes both, and once commit is written the source copy is never booted again. docs/adr/0127-move-a-cloud-hypervisor-vm-between-hosts-in-a-zone.md Decisions 5 and 12.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53",
+                "control": "SI-7 Software, Firmware, and Information Integrity"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-provider-cloud-hypervisor-move-peer",
+      "description": "PROPOSED (ADR-0127, not yet implemented): the source host's provider connects to the destination host's provider for one move and sends the disk (precopy, then the delta at cutover) and the relayed VMM migration stream. Bytes only: every decision reaches each provider through its own CloudHypervisorMachine's spec, so non-negotiable 1 holds.",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "service-provider-cloud-hypervisor"
+          },
+          "destination": {
+            "node": "service-provider-cloud-hypervisor",
+            "interfaces": [
+              "provider-cloud-hypervisor-move-listener"
+            ]
+          }
+        }
+      },
+      "protocol": "TLS",
+      "controls": {
+        "move-link-post-quantum-and-pinned": {
+          "description": "TLS 1.3 with X25519MLKEM768 as the only key exchange (guest memory and disk cross it); mutual authentication against the exact per-move certificate the peer published, never a CA; keys generated on the host and discarded after the move. docs/adr/0127-move-a-cloud-hypervisor-vm-between-hosts-in-a-zone.md Decision 10.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53",
+                "control": "SC-8 Transmission Confidentiality and Integrity"
+              }
+            }
+          ]
+        },
+        "move-listener-scoped": {
+          "description": "The listener exists only between the destination's preparation and commit, accepts one connection from the pinned peer, closes on an idle timeout, and is never a control-plane endpoint; a host without `[move] listen` does not advertise `move`. docs/adr/0127-move-a-cloud-hypervisor-vm-between-hosts-in-a-zone.md Decision 10.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53",
+                "control": "SC-7 Boundary Protection"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-cloud-hypervisor-vmm-migration-relay",
+      "description": "PROPOSED (ADR-0127, not yet implemented): the source VMM runs vm.send-migration to a UNIX socket of its own provider, and the destination VMM vm.receive-migration from one of its provider's, so Cloud Hypervisor's TCP migration listener and tls_dir key files are never used. The source is paused first, so the destination arrives paused (CompletePaused).",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "service-cloud-hypervisor-vmm"
+          },
+          "destination": {
+            "node": "service-provider-cloud-hypervisor",
+            "interfaces": [
+              "provider-cloud-hypervisor-migration-unix-socket"
+            ]
+          }
+        }
+      },
+      "protocol": "TCP"
     }
   ],
   "flows": [
@@ -2892,6 +3037,72 @@
           "description": "banlieue-controller, which holds the banlieue.io/host-image-cache finalizer (ADR-0064 Decision 4), removes it once every existing Cloud Hypervisor Provider with a row reports Released."
         }
       ]
+    },
+    {
+      "unique-id": "flow-move-virtualmachine-cloud-hypervisor",
+      "name": "Move a running VM between Cloud Hypervisor hosts in one zone",
+      "description": "PROPOSED (ADR-0127, not yet implemented): a vMotion-shaped move on local storage. faubourg (or a person) asks; banlieue's controller orchestrates through the two CloudHypervisorMachines; the two host providers copy the disk and relay the VMM state over one per-move TLS connection. Stage 1 moves VMs without a vTPM and pauses for the disk delta plus the whole guest memory; a vTPM guest moves from Stage 2, once Cloud Hypervisor carries vTPM state in its own migration stream (swtpm serves one control client, the VMM).",
+      "transitions": [
+        {
+          "sequence-number": 1,
+          "relationship-unique-id": "rel-faubourg-requests-move",
+          "description": "faubourg drains a Host: it cordons the Provider and creates a VirtualMachineMove with no target for each VM scheduled on it."
+        },
+        {
+          "sequence-number": 2,
+          "relationship-unique-id": "rel-controller-reconciles-move",
+          "description": "The controller admits the move, picks the destination in the zone, creates the destination machine (spec.moveIn, spec.identity) and sets spec.moveOut on the source machine."
+        },
+        {
+          "sequence-number": 3,
+          "relationship-unique-id": "rel-provider-cloud-hypervisor-kube-api",
+          "description": "Each provider generates a per-move key and publishes its certificate (the destination also its endpoint, an empty VMM waiting); the controller copies each to the other machine's spec."
+        },
+        {
+          "sequence-number": 4,
+          "relationship-unique-id": "rel-provider-cloud-hypervisor-move-peer",
+          "description": "The source reflink-clones the disk and streams the clone while the guest runs, then reports Precopied."
+        },
+        {
+          "sequence-number": 5,
+          "relationship-unique-id": "rel-cloud-hypervisor-vmm-migration-relay",
+          "description": "On cutover the source provider pauses the guest; the VMM sends its state to the provider's UNIX socket and exits; the destination VMM receives it and stays paused."
+        },
+        {
+          "sequence-number": 6,
+          "relationship-unique-id": "rel-provider-cloud-hypervisor-move-peer",
+          "description": "The disk delta (extents no longer shared with the clone, plus discarded ranges) and the VMM stream cross to the destination, which reports Received."
+        },
+        {
+          "sequence-number": 7,
+          "relationship-unique-id": "rel-controller-reconciles-move",
+          "description": "Only after the source reports Sent and its VMM has exited does the controller write commit on the destination machine."
+        },
+        {
+          "sequence-number": 8,
+          "relationship-unique-id": "rel-provider-cloud-hypervisor-vmm",
+          "description": "The destination provider resumes the guest (same MAC, same addresses) and reports Running."
+        },
+        {
+          "sequence-number": 9,
+          "relationship-unique-id": "rel-controller-reconciles-move",
+          "description": "The controller switches the VM's status.scheduled to the destination, deletes the source machine (its finalizer removes the old disk and clone) and marks the move Succeeded with its downtime."
+        }
+      ],
+      "controls": {
+        "vm-move-abort-before-commit": {
+          "description": "Any failure before commit aborts: the source resumes its untouched guest and the destination machine is deleted with what it received. After commit the source copy is never booted. Nothing restarts a VM elsewhere after a host failure (no fencing, no HA). docs/adr/0127-move-a-cloud-hypervisor-vm-between-hosts-in-a-zone.md Decision 12.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53",
+                "control": "CP-10 System Recovery and Reconstitution"
+              }
+            }
+          ]
+        }
+      }
     }
   ],
   "controls": {
@@ -3382,6 +3593,7 @@
     "docs/adr/0112-first-boot-sealing-on-cloud-hypervisor.md",
     "docs/adr/0113-pre-laid-images-for-fast-sealed-clones.md",
     "docs/adr/0124-unschedulable-providers.md",
-    "docs/adr/0126-provider-status-publishes-its-serviceaccount.md"
+    "docs/adr/0126-provider-status-publishes-its-serviceaccount.md",
+    "docs/adr/0127-move-a-cloud-hypervisor-vm-between-hosts-in-a-zone.md"
   ]
 }

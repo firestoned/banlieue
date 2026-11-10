@@ -1,5 +1,40 @@
 # Changelog
 
+## [2026-11-10 12:00] - Proposed: move a Cloud Hypervisor VM between hosts in a zone (ADR-0127)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docs/adr/0127-move-a-cloud-hypervisor-vm-between-hosts-in-a-zone.md`
+  (Proposed): faubourg asks, banlieue moves. A `VirtualMachineMove` request,
+  admitted only between Providers with the same `banlieue.io/zone`; the
+  controller coordinates through the two `CloudHypervisorMachine`s; the
+  host providers copy the disk (reflink precopy, delta at cutover) and
+  relay the VMM stream over one per-move TLS link (`X25519MLKEM768`, pinned
+  peer). Stage 1 moves VMs without a vTPM; vTPM guests wait for Cloud
+  Hypervisor to carry swtpm state itself, since swtpm serves one control
+  client (the VMM).
+- `docs/architecture/calm/architecture.json`: `data-asset-virtualmachinemove-cr`,
+  `service-faubourg-controller`, `rel-faubourg-requests-move`,
+  `rel-controller-reconciles-move`, `rel-provider-cloud-hypervisor-move-peer`,
+  `rel-cloud-hypervisor-vmm-migration-relay`, two provider interfaces and
+  `flow-move-virtualmachine-cloud-hypervisor`, all marked PROPOSED;
+  `docs/src/architecture/{system,flows}.md` regenerated.
+- `.github/community/14-live-migration.md`: Cloud Hypervisor row and a
+  staged task list; ADR-0036 preconditions ticked (Accepted 2026-09-19).
+  `ROADMAPS.md` and `.github/community/README.md` rows for 14.
+
+### Why
+- Draining a Cloud Hypervisor host today loses its VMs; ADR-0124's cordon
+  moves nothing. Upstream Cloud Hypervisor migrates a VM but neither its
+  disk nor its vTPM.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
 ## [2026-11-10 10:00] - A placed VM keeps a placement that still fits (ADR-0125)
 
 **Author:** Erick Bourgeois

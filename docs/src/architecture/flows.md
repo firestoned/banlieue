@@ -251,3 +251,24 @@ flowchart TD
 
 <sub>Source: flow `flow-import-vmimage-cloud-hypervisor` in `architecture.json`.</sub>
 
+
+## Move a running VM between Cloud Hypervisor hosts in one zone
+
+PROPOSED (ADR-0127, not yet implemented): a vMotion-shaped move on local storage. faubourg (or a person) asks; banlieue's controller orchestrates through the two CloudHypervisorMachines; the two host providers copy the disk and relay the VMM state over one per-move TLS connection. Stage 1 moves VMs without a vTPM and pauses for the disk delta plus the whole guest memory; a vTPM guest moves from Stage 2, once Cloud Hypervisor carries vTPM state in its own migration stream (swtpm serves one control client, the VMM).
+
+```mermaid
+flowchart TD
+    t1["1. faubourg drains a Host: it cordons the Provider and creates a VirtualMachineMove with no target for each VM scheduled on it."]
+    t2["2. The controller admits the move, picks the destination in the zone, creates the destination machine (spec.moveIn, spec.identity) and sets spec.moveOut on the source machine."]
+    t3["3. Each provider generates a per-move key and publishes its certificate (the destination also its endpoint, an empty VMM waiting); the controller copies each to the other machine's spec."]
+    t4["4. The source reflink-clones the disk and streams the clone while the guest runs, then reports Precopied."]
+    t5["5. On cutover the source provider pauses the guest; the VMM sends its state to the provider's UNIX socket and exits; the destination VMM receives it and stays paused."]
+    t6["6. The disk delta (extents no longer shared with the clone, plus discarded ranges) and the VMM stream cross to the destination, which reports Received."]
+    t7["7. Only after the source reports Sent and its VMM has exited does the controller write commit on the destination machine."]
+    t8["8. The destination provider resumes the guest (same MAC, same addresses) and reports Running."]
+    t9["9. The controller switches the VM's status.scheduled to the destination, deletes the source machine (its finalizer removes the old disk and clone) and marks the move Succeeded with its downtime."]
+    t1 --> t2 --> t3 --> t4 --> t5 --> t6 --> t7 --> t8 --> t9
+```
+
+<sub>Source: flow `flow-move-virtualmachine-cloud-hypervisor` in `architecture.json`.</sub>
+

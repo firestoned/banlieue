@@ -21,6 +21,14 @@
 > unscoped here. **Read that ADR before touching this roadmap** — it is
 > the source of truth for the reasoning; this file is only the execution
 > plan for Phase A once someone picks the work up.
+>
+> *Updated 2026-11-10:* the Cloud Hypervisor class has its own design,
+> [ADR-0127](../../docs/adr/0127-move-a-cloud-hypervisor-vm-between-hosts-in-a-zone.md)
+> (Proposed): a move between two hosts of one zone on local storage, the
+> disk copied by the host providers, requested by faubourg's host drain
+> (faubourg ADR-0017). Its tasks are in
+> [Cloud Hypervisor (ADR-0127)](#cloud-hypervisor-adr-0127) and do not wait
+> for the vSphere tasks.
 
 ## Why this exists as its own roadmap entry
 
@@ -36,7 +44,7 @@ actually buildable today (same provider class).
 
 ## Preconditions
 
-- [ ] ADR-0036 accepted (currently Proposed).
+- [x] ADR-0036 accepted (Accepted 2026-09-19).
 - [ ] Decide and document, per provider class, whether it has *any*
       native in-place relocation mechanism at all:
   - vSphere: yes — `RelocateVM_Task` (vim_rs already used throughout
@@ -56,6 +64,11 @@ actually buildable today (same provider class).
     never applies to libvirt; confirm this is still true before writing
     libvirt-specific tasks, and if so, libvirt's `MigrationPolicy:
     Automatic` may always mean recreate, by design, indefinitely.
+  - Cloud Hypervisor: answered by ADR-0127 (2026-11-10). Upstream migrates
+    a VM between two VMMs but not its disk (cloud-hypervisor#8006, open) or
+    its vTPM (no support in `devices/src/tpm.rs`), so banlieue's host
+    providers copy the disk and a vTPM guest waits for the vTPM to move
+    inside Cloud Hypervisor's own stream.
 
 ## Per-class capability
 
@@ -66,7 +79,7 @@ Update a row when a backend's answer changes.
 |---|---|---|---|
 | vSphere | `Recreate` | `RelocateVM_Task` (vMotion, Storage vMotion) within one vCenter; cross-vCenter needs newer APIs | The first target: in place, no guest downtime, within one `Provider` |
 | libvirt | `Recreate` | libvirt can migrate, but banlieue's provider implements none of it, and pools are host-local | Likely `Recreate` by design (see Preconditions) |
-| Cloud Hypervisor | `Recreate` | Upstream `vm.send-migration` / `vm.receive-migration` between two VMMs, but only with the disk reachable from both hosts; each guest's swtpm state and its host-local storage class stay behind | Out of scope until a shared storage class exists; then a VMM-to-VMM move between two host-resident providers, which also needs a way for them to meet that is not an RPC between banlieue components (roadmap 09, 2026-09-27) |
+| Cloud Hypervisor | `Recreate` | Upstream `vm.send-migration` / `vm.receive-migration` between two VMMs, only with the disk already on both hosts (block migration is cloud-hypervisor#8006, open); the vTPM is not migrated, and swtpm serves one control client (the VMM), so only the VMM can carry its state | ADR-0127 (Proposed 2026-11-10): a move between two hosts with the same `banlieue.io/zone`, on local storage. The host providers copy the disk (reflink precopy, delta at cutover) and relay the VMM stream over one per-move TLS link; the controller coordinates through the two `CloudHypervisorMachine`s, so no RPC. Stage 1 moves VMs without a vTPM, pausing for the delta plus all guest memory; vTPM guests, live memory and upstream block migration are Stages 2 to 4 |
 | Proxmox | no provider | Live migration over shared storage (unresearched) | Unscoped until roadmap 06 lands |
 
 ## Current state (confirmed in code, as of this writing)
@@ -181,12 +194,71 @@ Update a row when a backend's answer changes.
       support this before setting `migrationPolicy: Automatic` and
       expecting graceful behavior.
 - [ ] `.claude/CHANGELOG.md` entry, `**Author:**` line.
-- [ ] Flip ADR-0036's status from Proposed to Accepted once Phase A's
+- [x] Flip ADR-0036's status from Proposed to Accepted once Phase A's
       design is final (even before full implementation lands, per this
-      project's ADR-first convention) — and open the still-deferred
+      project's ADR-first convention), and open the still-deferred
       Phase B (cross-class) as its own future ADR only once Phase A
       exists and there's an actual disk-artifact concept to design
       against.
+
+## Cloud Hypervisor (ADR-0127)
+
+Read [ADR-0127](../../docs/adr/0127-move-a-cloud-hypervisor-vm-between-hosts-in-a-zone.md)
+first; the stages are its Decision 13. faubourg's side is its ADR-0017
+(`Host.spec.maintenance: Drain`). Depends on ADR-0125 (a placed VM keeps
+its placement, merged in #178), without which the next scheduling pass
+would undo a move.
+
+### Design
+
+- [x] ADR-0127 drafted (Proposed, 2026-11-10), with faubourg ADR-0017.
+- [x] CALM: `data-asset-virtualmachinemove-cr`, `service-faubourg-controller`,
+      the host-to-host link (`rel-provider-cloud-hypervisor-move-peer`), the
+      VMM relay and `flow-move-virtualmachine-cloud-hypervisor`, all marked
+      PROPOSED.
+- [ ] ADR-0127 and faubourg ADR-0017 accepted.
+- [ ] Spikes before Stage 1 code: reflink delta on XFS (`FIEMAP_EXTENT_SHARED`
+      after guest writes and discards, against a running Cloud Hypervisor
+      guest); a paused-to-paused `send-migration` over a relayed UNIX socket
+      on the pinned VMM; the pause cost of `fsync` plus `FICLONE` on a busy
+      disk.
+
+### Stage 1: VMs without a vTPM
+
+- [ ] `VirtualMachineMove` CRD (`banlieue-api`), `make crds`, examples.
+- [ ] `CloudHypervisorMachine`: `spec.identity`, `spec.moveIn`/`moveOut`,
+      `status.moveIn`/`moveOut`; derive MAC, taps, machine dir and EK
+      subject from `spec.identity`.
+- [ ] Controller: admission checks (zone label, `move` feature, VMM and
+      CPU model, capacity, placement, policy, no vTPM), orchestration,
+      `Migrating` and `Ready=False/Moving`, commit and abort.
+- [ ] Provider: `[move] listen`, the `move` feature, per-move keys, the
+      TLS 1.3 link (`X25519MLKEM768` only, pinned peer), reflink precopy and
+      delta, VMM relay, resume on commit, abort paths.
+- [ ] Tests: unit (admission, single-runner state machine, delta
+      computation over a fake extent map); live tier on two real hosts
+      (same MAC and address after a move, abort at every phase leaves one
+      running guest); e2e through faubourg's drain.
+- [ ] Docs: a guide (zone networking promise, `[move] listen`, firewall),
+      CHANGELOG, threat-model pass (TB-10 host to host, the zone as a trust
+      unit).
+
+### Stage 2: VMs with a vTPM
+
+- [ ] Upstream Cloud Hypervisor: the TPM device fetches and loads swtpm's
+      `permanent` and `volatile` blobs in its migration stream, as QEMU does.
+- [ ] A pinned Cloud Hypervisor release with it (and the vTPM response fix,
+      cloud-hypervisor#9053).
+- [ ] Destination re-certifies the moved EK with its own `swtpm_localca`.
+
+### Stage 3: live memory
+
+- [ ] Upstream: a destination-stays-paused option for `send-migration`
+      (wire `CompletePaused` exists; cloud-hypervisor#8792).
+
+### Stage 4: no banlieue disk copy
+
+- [ ] Adopt upstream block migration (cloud-hypervisor#8006) when released.
 
 ## Open questions (answer before or during implementation)
 
