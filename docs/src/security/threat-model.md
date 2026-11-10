@@ -4,9 +4,9 @@ SPDX-License-Identifier: Apache-2.0
 -->
 # Threat Model
 
-> **Status:** Living document. Last full pass **2026-11-09**, against the
+> **Status:** Living document. Last full pass **2026-11-10**, against the
 > architecture defined by **ADR-0001 … ADR-0126** (0116–0122 reserved by roadmap 20, 0123
-> Rejected, 0125 Proposed; 0057–0059 unallocated,
+> Rejected, 0125 Accepted 2026-11-10; 0057–0059 unallocated,
 > 0066 and 0068–0073 reserved; 0074 and 0075 Accepted 2026-09-28; 0076–0080
 > reserved by roadmap 19; 0081–0082 recorded but not implemented in banlieue, and kept canonically in
 > mediatore since ADR-0097; **ADR-0115** (2026-11-04: the imagebuilder's rebuild gate
@@ -30,7 +30,13 @@ SPDX-License-Identifier: Apache-2.0
 > Accepted 2026-11-04; 0054 amended 2026-11-04: every NoCloud seed carries
 > `user-data`, an empty cloud-config when none is set, so cloud-init stops
 > ignoring seeds without it; no row changes, the seed's contents and who
-> controls them are as before). The most recent pass, 2026-11-09, is
+> controls them are as before). The most recent pass, 2026-11-10, is
+> **ADR-0125**: a placed VM keeps its recorded placement while it still passes every filter
+> (image readiness aside), so the spread no longer moves it to an emptier domain, and a VM no
+> longer counts against itself for required anti-affinity. Both were silent recreates under the
+> default `migrationPolicy`, losing a local disk: TB-1's placement row widens to cover them. No
+> new component, identity, grant or boundary; §5 diagram unchanged. The pass before it,
+> 2026-11-09, is
 > **ADR-0126**: the operator writes the name of the ServiceAccount it created for a Provider into
 > `status.workload.serviceAccountName`, so a consumer minting a host-resident provider's first
 > token reads it instead of re-deriving banlieue's naming. The operator already creates that
@@ -1349,7 +1355,7 @@ the scheduler do with what they read.
 | Clock skew between a host and the operator misjudges liveness | D | Bounded: a renewal stamped in the future reads `Alive` for at most `staleAfter`, and `staleAfter` is four lease durations. Skew larger than that is §8 |
 | Someone labels a Provider `banlieue.io/unschedulable` to stop placement on it | D | **ADR-0124**: the label is a placement filter only (`crates/banlieue-controller/src/reconciler/scheduler.rs`, `is_unschedulable`); setting it takes `patch` on Providers, which already lets its holder change every label a selector matches, so it is no new power. A VM whose every candidate is cordoned is `Scheduled=False`, reason `ProviderUnschedulable`, visible and retried. |
 | A cordon is bypassed, so a new VM still lands on a host being drained | T | No per-VM override: every VM passes the filter after its selector, before liveness (ADR-0124 decision 4; `scheduler_tests.rs`: `an_unschedulable_provider_takes_no_new_vm`, `every_candidate_unschedulable_is_provider_unschedulable`, `unschedulable_is_reported_before_liveness`). Only the exact value `"true"` cordons (`only_true_makes_a_provider_unschedulable`). |
-| Cordoning a host, or its provider going stale, recreates the VMs already on it elsewhere (the reconciler re-runs the scheduler every pass, and drift under the default `migrationPolicy` recreates a VM, losing a local disk) | D, T | A VM's own Provider (its `status.scheduled`) stays a candidate through both filters, so neither changes its decision; only new placements avoid the Provider (`scheduler.rs`, `is_own`; `scheduler_tests.rs`: `a_placed_vm_keeps_its_provider_when_it_is_cordoned_or_stale`, `the_exemption_is_only_for_the_vms_own_provider`). The provider keeps reconciling its VMs: that is `spec.paused`, which the label does not touch (ADR-0124 decision 3; ADR-0102 amended, whose stale filter had this gap). |
+| Cordoning a host, its provider going stale, a host joining, a neighbour leaving, or an image revision going not-ready recreates the VMs already placed elsewhere (the reconciler re-runs the scheduler every pass, and drift under the default `migrationPolicy` recreates a VM, losing a local disk) | D, T | A VM's own Provider (its `status.scheduled`) stays a candidate through the cordon and liveness filters, so neither changes its decision; only new placements avoid the Provider (`scheduler.rs`, `is_own`; `scheduler_tests.rs`: `a_placed_vm_keeps_its_provider_when_it_is_cordoned_or_stale`, `the_exemption_is_only_for_the_vms_own_provider`). Its recorded placement, when it survives every filter, is returned before the spread, image readiness is not checked for it, and it never counts against itself for anti-affinity (ADR-0125; `place`, `is_current`, `blocked_topology_values`; `a_new_empty_host_does_not_move_a_placed_vm`, `a_deleted_neighbour_does_not_move_a_placed_vm`, `an_image_not_ready_on_its_host_does_not_move_a_placed_vm`, `required_anti_affinity_never_counts_the_vm_against_itself`); a placement that no longer fits still moves (`a_selector_change_moves_a_placed_vm`). The provider keeps reconciling its VMs: that is `spec.paused`, which the label does not touch (ADR-0124 decision 3; ADR-0102 amended, whose stale filter had this gap). |
 
 ### TB-18: Sandbox segment → egress gateway → routable network
 

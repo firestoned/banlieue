@@ -95,6 +95,13 @@ stateDiagram-v2
   by hashing, so VMs created together spread rather than queue on one
   domain
   ([ADR-0098](https://github.com/firestoned/banlieue/blob/main/docs/adr/0098-spread-placement-across-failure-domains.md)).
+  That ranking is for new placements only. A VM already placed keeps its
+  failure domain for as long as it still passes the filters above (its image
+  being ready there aside, since its disk already exists), so a host joining
+  or a neighbour leaving moves nothing. Only a placement that no longer fits
+  (a changed selector or class, a capability or capacity gone) is drift, and
+  `migrationPolicy` decides what happens to it
+  ([ADR-0125](https://github.com/firestoned/banlieue/blob/main/docs/adr/0125-a-placed-vm-keeps-a-placement-that-still-fits.md)).
 - `desiredPowerState` *(string, optional)* — `PoweredOn` (default) |
   `PoweredOff` | `Suspended`. The provider keeps the VM in this state on every
   pass, on every backend: a VM that powers itself off (for example after an
