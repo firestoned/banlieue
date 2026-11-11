@@ -66,19 +66,33 @@
 //!
 //! Load comes from `status.scheduled` of the VMs passed in; a VM never
 //! counts against itself. Still a pure, deterministic function.
+//!
+//! ## Capacity (ADR-0107, ADR-0128)
+//!
+//! After the vTPM filter, a failure domain that publishes `capacity` must
+//! hold the VM. ADR-0107's reservation check counts the classes of the VMs
+//! scheduled there: memory strictly, vCPUs up to the Provider's overcommit
+//! ratio. ADR-0128 adds the measured figures, for a new placement only (a
+//! placed VM is already inside them): `memoryAvailableMiB`, and each storage
+//! class's `freeGiB` less `storageReservePercent` of its `totalGiB`, both less
+//! what in-flight VMs (scheduled, infrastructure not yet provisioned) will
+//! take. A store marked `shared` counts in-flight disks across all the
+//! Provider's failure domains. A figure that is not published is not checked.
 
 use std::collections::{BTreeMap, HashMap};
 
 use banlieue_api::banlieue::{
-    AffinityMode, AntiAffinityRule, DEFAULT_CPU_OVERCOMMIT_RATIO, FailureDomain,
-    FailureDomainCapacity, Heartbeat, ImageSourceKind, LABEL_POOL, LABEL_UNSCHEDULABLE,
-    NetworkClassMapping, Provider, ProviderCapabilities, ProviderScheduling, ResolvedResource,
-    StorageClassMapping, VMClass, VMImage, VirtualMachine,
+    AffinityMode, AntiAffinityRule, DEFAULT_CPU_OVERCOMMIT_RATIO, DEFAULT_STORAGE_RESERVE_PERCENT,
+    FailureDomain, FailureDomainCapacity, Heartbeat, ImageSourceKind, LABEL_POOL,
+    LABEL_UNSCHEDULABLE, NetworkClassMapping, Provider, ProviderCapabilities, ProviderScheduling,
+    ResolvedResource, StorageClassMapping, VMClass, VMImage, VirtualMachine,
 };
 use banlieue_api::common::{Firmware, LabelSelector, LabelSelectorOperator};
 
 use kube::ResourceExt;
 use tracing::warn;
+
+use super::infra::merge_disk_size_override;
 
 /// Feature flag a failure domain must advertise to support EFI secure boot.
 pub const FEATURE_EFI_SECURE_BOOT: &str = "efiSecureBoot";
@@ -88,6 +102,9 @@ pub const FEATURE_EFI_SECURE_BOOT: &str = "efiSecureBoot";
 /// `Provider.spec.capabilities.features` once the operator confirms KMS +
 /// vTPM actually work end-to-end in that vCenter — never auto-discovered.
 pub const FEATURE_VTPM: &str = "vtpm";
+
+/// Divisor turning `storageReservePercent` into a share of a store.
+const PERCENT: u64 = 100;
 
 /// Maximum number of per-candidate reject reasons kept for the
 /// `NoFailureDomainMatched` condition message. At admin-scale topology the
@@ -558,6 +575,46 @@ fn place(
                     ));
                     continue;
                 }
+
+                // Step 8c: measured capacity (ADR-0128), new placements only:
+                // the VM's own placement is already in the measurement.
+                if !here {
+                    let provider_name = provider.name_any();
+                    let in_domain = in_flight_on(
+                        vm,
+                        existing_vms,
+                        &classes_by_name,
+                        &provider_name,
+                        Some(&fd.name),
+                        overhead,
+                    );
+                    let in_provider = in_flight_on(
+                        vm,
+                        existing_vms,
+                        &classes_by_name,
+                        &provider_name,
+                        None,
+                        overhead,
+                    );
+                    let reserve = provider.spec.scheduling.as_ref().map_or(
+                        DEFAULT_STORAGE_RESERVE_PERCENT,
+                        ProviderScheduling::storage_reserve_percent,
+                    );
+                    if let Some(short) = measured_shortfall(
+                        u64::from(class.spec.hardware.memory_mi_b) + overhead,
+                        &disk_sizes(class, vm),
+                        &in_domain,
+                        &in_provider,
+                        capacity,
+                        reserve,
+                    ) {
+                        reject_reasons.push(format!(
+                            "{provider_name}/{}: insufficient capacity: {short}",
+                            fd.name,
+                        ));
+                        continue;
+                    }
+                }
             }
 
             survivors.push((provider, fd));
@@ -747,6 +804,126 @@ pub fn capacity_shortfall(
         if needed > allowed {
             return Some(format!(
                 "vCPUs {needed} > {host_cpus} CPUs x {cpu_overcommit_ratio}"
+            ));
+        }
+    }
+    None
+}
+
+/// What VMs scheduled on a failure domain but not yet provisioned will take
+/// (ADR-0128): they are promised there but not yet in its measured figures.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct InFlight {
+    /// Their memory plus the per-VM overhead, MiB.
+    pub memory_mi_b: u64,
+    /// Their disks, GiB, by storage class.
+    pub disks_gi_b: BTreeMap<String, u64>,
+}
+
+/// Whether the VM's infrastructure reports itself provisioned.
+fn is_provisioned(vm: &VirtualMachine) -> bool {
+    vm.status
+        .as_ref()
+        .and_then(|s| s.initialization.provisioned)
+        .unwrap_or(false)
+}
+
+/// The VM's disks, GiB, summed by storage class, with its
+/// `hardwareOverride.diskOverrides` applied.
+fn disk_sizes(class: &VMClass, vm: &VirtualMachine) -> BTreeMap<String, u64> {
+    let override_ = vm.spec.hardware_override.as_ref();
+    class
+        .spec
+        .hardware
+        .disks
+        .iter()
+        .fold(BTreeMap::new(), |mut sizes, disk| {
+            *sizes.entry(disk.storage_class.clone()).or_default() +=
+                u64::from(merge_disk_size_override(disk, override_));
+            sizes
+        })
+}
+
+/// What in-flight VMs other than `vm` hold on `provider`: on one failure
+/// domain, or on any of the Provider's when `failure_domain` is `None` (for a
+/// shared store). A VM whose class is not found counts at zero, as in
+/// [`usage_on`].
+fn in_flight_on(
+    vm: &VirtualMachine,
+    existing_vms: &[VirtualMachine],
+    classes: &HashMap<String, &VMClass>,
+    provider: &str,
+    failure_domain: Option<&str>,
+    overhead_mi_b: u64,
+) -> InFlight {
+    let me = vm.name_any();
+    existing_vms
+        .iter()
+        .filter(|other| other.name_any() != me && !is_provisioned(other))
+        .filter(|other| {
+            other
+                .status
+                .as_ref()
+                .and_then(|s| s.scheduled.as_ref())
+                .is_some_and(|s| {
+                    s.provider_name == provider
+                        && failure_domain.is_none_or(|fd| s.failure_domain == fd)
+                })
+        })
+        .fold(InFlight::default(), |mut held, other| {
+            let Some(class) = classes.get(&other.spec.class_ref.name) else {
+                return held;
+            };
+            held.memory_mi_b += u64::from(class.spec.hardware.memory_mi_b) + overhead_mi_b;
+            for (storage_class, gi_b) in disk_sizes(class, other) {
+                *held.disks_gi_b.entry(storage_class).or_default() += gi_b;
+            }
+            held
+        })
+}
+
+/// Why a new VM needing `memory_mi_b` (overhead included) and `disks_gi_b`
+/// by storage class does not fit the failure domain's measured figures, or
+/// `None` when it fits (ADR-0128). Memory is checked against
+/// `memoryAvailableMiB` less `in_domain`; each storage class against its
+/// store's `freeGiB` less `reserve_percent` of `totalGiB` (no reserve when
+/// the total is unknown) and less the in-flight disks: `in_provider`'s for a
+/// shared store, `in_domain`'s otherwise. A figure `capacity` lacks is not
+/// checked.
+#[must_use]
+pub fn measured_shortfall(
+    memory_mi_b: u64,
+    disks_gi_b: &BTreeMap<String, u64>,
+    in_domain: &InFlight,
+    in_provider: &InFlight,
+    capacity: &FailureDomainCapacity,
+    reserve_percent: u32,
+) -> Option<String> {
+    if let Some(available) = capacity.memory_available_mi_b {
+        let free = available.saturating_sub(in_domain.memory_mi_b);
+        if memory_mi_b > free {
+            return Some(format!(
+                "memory available {free} MiB < {memory_mi_b} MiB (measured, less in-flight VMs)"
+            ));
+        }
+    }
+    for (storage_class, needed) in disks_gi_b {
+        let Some(store) = capacity.storage_for(storage_class) else {
+            continue;
+        };
+        let Some(free) = store.free_gi_b else {
+            continue;
+        };
+        let reserve = store
+            .total_gi_b
+            .map_or(0, |total| total * u64::from(reserve_percent) / PERCENT);
+        let held = if store.shared { in_provider } else { in_domain };
+        let in_flight = held.disks_gi_b.get(storage_class).copied().unwrap_or(0);
+        let usable = free.saturating_sub(reserve).saturating_sub(in_flight);
+        if *needed > usable {
+            return Some(format!(
+                "storage class '{storage_class}': {needed} GiB > {usable} GiB \
+                 ({free} free less {reserve} reserve and {in_flight} in flight)"
             ));
         }
     }

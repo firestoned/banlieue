@@ -80,13 +80,19 @@ stateDiagram-v2
   selectors, optional)* — which `Provider`(s)/failure domains may schedule
   this VM. There is no direct-by-name `Provider` reference; the scheduler
   matches labels. A failure domain that publishes capacity
-  (`status.failureDomains[].attributes.capacity`, today the Cloud Hypervisor
-  provider) qualifies only if the VM fits beside the VMs already placed
-  there: its class's memory plus the per-VM overhead strictly, and its vCPUs
-  within the published CPUs times the Provider's
-  `spec.scheduling.cpuOvercommitRatio` (default 4). A domain without
-  capacity is not checked
+  (`status.failureDomains[].attributes.capacity`, every provider does)
+  qualifies only if the VM fits beside the VMs already placed there: its
+  class's memory plus the per-VM overhead strictly, and its vCPUs within the
+  published CPUs times the Provider's `spec.scheduling.cpuOvercommitRatio`
+  (default 4)
   ([ADR-0107](https://github.com/firestoned/banlieue/blob/main/docs/adr/0107-capacity-aware-scheduling.md)).
+  A new placement must also fit the measured figures: `memoryAvailableMiB`,
+  and each storage class's `freeGiB` less the Provider's
+  `storageReservePercent` (default 10%), both less what VMs scheduled there
+  but not yet provisioned will take. Disks count at full size, with
+  `hardwareOverride.diskOverrides` applied. A VM already placed is never
+  moved by a measured figure, since its own use is part of it
+  ([ADR-0128](https://github.com/firestoned/banlieue/blob/main/docs/adr/0128-every-provider-publishes-measured-capacity.md)). A domain without a figure is not checked on it.
   A VM that fits nowhere reports `Scheduled=False` with
   `NoFailureDomainMatched` and an `insufficient capacity` reason per domain.
   Among the failure domains that qualify, it picks the one

@@ -29,8 +29,9 @@ use banlieue_libvirt::{
     DEFAULT_TLS_PORT, Domain, InterfaceAddressSource, Session, TlsIdentity, TransportError,
     connect_open, connect_tls, domain_create, domain_define_xml, domain_destroy, domain_get_state,
     domain_interface_addresses, domain_lookup_by_name, domain_undefine, list_all_networks,
-    list_all_storage_pools, raw_volume_xml, storage_pool_list_all_volumes, storage_vol_create_xml,
-    storage_vol_upload,
+    list_all_storage_pools, node_get_info, node_get_memory_stats, node_memory_available_mib,
+    raw_volume_xml, storage_pool_get_info, storage_pool_list_all_volumes, storage_pool_refresh,
+    storage_vol_create_xml, storage_vol_upload,
 };
 use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -663,4 +664,64 @@ async fn update_device_flags_is_understood_by_real_libvirtd() {
          domain builder emits, so ADR-0044's eject would never find its target.",
     );
     eprintln!("  ✓ DOMAIN_UPDATE_DEVICE_FLAGS accepted AND applied to the persistent config");
+}
+
+/// ADR-0128: the three capacity reads decode against a real daemon. A
+/// misread layout (the 128-byte `model`, the 4-byte `unsigned char state`)
+/// shows up here as an absurd figure, not as an error, so each one is
+/// checked for plausibility, not just for success.
+#[tokio::test]
+#[ignore = "requires a reachable libvirtd; set LIBVIRT_HOST and LIBVIRT_TLS_DIR"]
+async fn capacity_reads_against_real_libvirtd() {
+    const MIN_PLAUSIBLE_MEMORY_KIB: u64 = 512 * 1024;
+    let Some((host, dir)) = settings() else {
+        panic!("set LIBVIRT_HOST and LIBVIRT_TLS_DIR");
+    };
+    let pool_name = std::env::var("LIBVIRT_POOL").unwrap_or_else(|_| "default".to_string());
+
+    let identity = load_identity(&dir);
+    let mut session = connect_tls(&host, DEFAULT_TLS_PORT, &identity)
+        .await
+        .expect("TLS connection failed");
+    connect_open(&mut session, Some("qemu:///system"), false)
+        .await
+        .expect("CONNECT_OPEN failed");
+
+    let info = node_get_info(&mut session)
+        .await
+        .expect("NODE_GET_INFO failed");
+    eprintln!("  node: {} CPUs, {} KiB", info.cpus, info.memory_kib);
+    assert!(info.cpus > 0, "decoded zero CPUs: {info:?}");
+    assert!(
+        info.memory_kib >= MIN_PLAUSIBLE_MEMORY_KIB,
+        "implausible memory, layout misread? {info:?}"
+    );
+
+    let stats = node_get_memory_stats(&mut session)
+        .await
+        .expect("NODE_GET_MEMORY_STATS failed");
+    eprintln!("  memory stats: {stats:?}");
+    let available = node_memory_available_mib(&stats).expect("no `free` statistic");
+    assert!(
+        available * 1024 <= info.memory_kib,
+        "available {available} MiB exceeds the host's {} KiB",
+        info.memory_kib
+    );
+
+    let pool = list_all_storage_pools(&mut session)
+        .await
+        .expect("listing pools")
+        .into_iter()
+        .find(|p| p.name == pool_name)
+        .unwrap_or_else(|| panic!("pool {pool_name} not found"));
+    storage_pool_refresh(&mut session, &pool)
+        .await
+        .expect("STORAGE_POOL_REFRESH failed");
+    let space = storage_pool_get_info(&mut session, &pool)
+        .await
+        .expect("STORAGE_POOL_GET_INFO failed");
+    eprintln!("  pool {pool_name}: {space:?}");
+    assert!(space.capacity_bytes > 0, "{space:?}");
+    assert!(space.available_bytes <= space.capacity_bytes, "{space:?}");
+    assert!(space.allocation_bytes <= space.capacity_bytes, "{space:?}");
 }

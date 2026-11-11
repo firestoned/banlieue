@@ -28,6 +28,7 @@ use crate::rpc::{
     PROC_DOMAIN_DESTROY, PROC_DOMAIN_GET_STATE, PROC_DOMAIN_GET_XML_DESC,
     PROC_DOMAIN_INTERFACE_ADDRESSES, PROC_DOMAIN_LOOKUP_BY_NAME, PROC_DOMAIN_SHUTDOWN,
     PROC_DOMAIN_UNDEFINE_FLAGS, PROC_DOMAIN_UPDATE_DEVICE_FLAGS, PROC_NETWORK_GET_DHCP_LEASES,
+    PROC_NODE_GET_INFO, PROC_NODE_GET_MEMORY_STATS, PROC_STORAGE_POOL_GET_INFO,
     PROC_STORAGE_POOL_LIST_ALL_VOLUMES, PROC_STORAGE_POOL_LOOKUP_BY_NAME,
     PROC_STORAGE_POOL_REFRESH, PROC_STORAGE_VOL_CREATE_XML, PROC_STORAGE_VOL_CREATE_XML_FROM,
     PROC_STORAGE_VOL_DELETE, PROC_STORAGE_VOL_LOOKUP_BY_NAME, PROC_STORAGE_VOL_UPLOAD,
@@ -1514,6 +1515,195 @@ where
     let args = encode_domain_interface_addresses_args(dom, source, 0);
     let body = session.call(PROC_DOMAIN_INTERFACE_ADDRESSES, &args).await?;
     decode_domain_interface_addresses_ret(&body)
+}
+
+// ----------------------------------------------------------------------
+// Host capacity (ADR-0128): node info, node memory stats, pool info
+// ----------------------------------------------------------------------
+
+/// Elements in `remote_node_get_info_ret.model`: `char model[32]`, an XDR
+/// fixed array of `char`, so each element is one 4-byte unit on the wire.
+const NODE_INFO_MODEL_LEN: usize = 32;
+
+/// `REMOTE_NODE_MEMORY_STATS_MAX`.
+pub const NODE_MEMORY_STATS_MAX: usize = 16;
+
+/// `VIR_NODE_MEMORY_STATS_ALL_CELLS`: the whole host, not one NUMA cell.
+pub const NODE_MEMORY_STATS_ALL_CELLS: i32 = -1;
+
+/// `VIR_NODE_MEMORY_STATS_FREE`, `_BUFFERS` and `_CACHED`, KiB.
+const MEMORY_STAT_FREE: &str = "free";
+const MEMORY_STAT_BUFFERS: &str = "buffers";
+const MEMORY_STAT_CACHED: &str = "cached";
+const KIB_PER_MIB: u64 = 1024;
+
+/// The parts of `remote_node_get_info_ret` banlieue publishes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NodeInfo {
+    /// Host memory, KiB.
+    pub memory_kib: u64,
+    /// Active logical CPUs.
+    pub cpus: u32,
+}
+
+/// `remote_storage_pool_get_info_ret`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StoragePoolInfo {
+    /// `virStoragePoolState`.
+    pub state: u32,
+    /// Size of the pool, bytes.
+    pub capacity_bytes: u64,
+    /// Allocated to volumes, bytes.
+    pub allocation_bytes: u64,
+    /// Free for new volumes, bytes.
+    pub available_bytes: u64,
+}
+
+/// Decode `remote_node_get_info_ret { char model[32]; unsigned hyper memory;
+/// int cpus; int mhz; int nodes; int sockets; int cores; int threads; }`.
+///
+/// # Errors
+/// [`TransportError::Protocol`] if the payload is short.
+pub fn decode_node_get_info_ret(body: &[u8]) -> Result<NodeInfo> {
+    let mut d = Decoder::new(body);
+    for _ in 0..NODE_INFO_MODEL_LEN {
+        d.read_i32()?;
+    }
+    let memory_kib = d.read_u64()?;
+    let cpus = d.read_i32()?;
+    Ok(NodeInfo {
+        memory_kib,
+        cpus: u32::try_from(cpus).unwrap_or(0),
+    })
+}
+
+/// Encode `remote_node_get_memory_stats_args { int nparams; int cellNum;
+/// unsigned int flags; }` for the whole host.
+#[must_use]
+pub fn encode_node_get_memory_stats_args(nparams: i32) -> Vec<u8> {
+    let mut e = Encoder::new();
+    e.write_i32(nparams);
+    e.write_i32(NODE_MEMORY_STATS_ALL_CELLS);
+    e.write_u32(0);
+    e.into_bytes()
+}
+
+/// Decode `remote_node_get_memory_stats_ret { params<16>; int nparams; }`:
+/// each param a `{ string field; unsigned hyper value; }` (KiB).
+///
+/// # Errors
+/// [`TransportError::Protocol`] on a short payload or an over-large count.
+pub fn decode_node_get_memory_stats_ret(body: &[u8]) -> Result<(Vec<(String, u64)>, i32)> {
+    let mut d = Decoder::new(body);
+    let count = read_checked_count(&mut d, NODE_MEMORY_STATS_MAX, "node memory stat")?;
+    let mut params = Vec::with_capacity(count);
+    for _ in 0..count {
+        let field = d.read_string()?.to_string();
+        params.push((field, d.read_u64()?));
+    }
+    let nparams = d.read_i32()?;
+    Ok((params, nparams))
+}
+
+/// What a new guest could take now, MiB: free memory plus buffers and page
+/// cache, which the kernel reclaims on demand. An approximation of Linux's
+/// `MemAvailable`, which libvirt does not report. `None` without `free`.
+#[must_use]
+pub fn node_memory_available_mib(stats: &[(String, u64)]) -> Option<u64> {
+    let get = |name: &str| stats.iter().find(|(f, _)| f == name).map(|(_, v)| *v);
+    let free = get(MEMORY_STAT_FREE)?;
+    let reclaimable = get(MEMORY_STAT_BUFFERS).unwrap_or(0) + get(MEMORY_STAT_CACHED).unwrap_or(0);
+    Some((free + reclaimable) / KIB_PER_MIB)
+}
+
+/// Encode `remote_storage_pool_get_info_args { pool; }`.
+#[must_use]
+pub fn encode_storage_pool_get_info_args(pool: &StoragePool) -> Vec<u8> {
+    let mut e = Encoder::new();
+    e.write_string(&pool.name);
+    e.write_opaque_fixed(&pool.uuid);
+    e.into_bytes()
+}
+
+/// Decode `remote_storage_pool_get_info_ret { unsigned char state;
+/// unsigned hyper capacity; unsigned hyper allocation; unsigned hyper
+/// available; }`. `unsigned char` is a 4-byte XDR unit.
+///
+/// # Errors
+/// [`TransportError::Protocol`] if the payload is short.
+pub fn decode_storage_pool_get_info_ret(body: &[u8]) -> Result<StoragePoolInfo> {
+    let mut d = Decoder::new(body);
+    Ok(StoragePoolInfo {
+        state: d.read_u32()?,
+        capacity_bytes: d.read_u64()?,
+        allocation_bytes: d.read_u64()?,
+        available_bytes: d.read_u64()?,
+    })
+}
+
+/// The host's CPUs and memory. Read-only.
+///
+/// # Errors
+/// Any [`TransportError`].
+#[instrument(name = "libvirt.node_get_info", skip_all)]
+pub async fn node_get_info<S>(session: &mut Session<S>) -> Result<NodeInfo>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let body = session.call(PROC_NODE_GET_INFO, &[]).await?;
+    decode_node_get_info_ret(&body)
+}
+
+/// The host's memory statistics (`total`, `free`, `buffers`, `cached`, KiB).
+/// Two calls, as libvirt requires: the first, with `nparams` 0, returns how
+/// many statistics the host has; the second fetches them. Read-only.
+///
+/// # Errors
+/// Any [`TransportError`].
+#[instrument(name = "libvirt.node_get_memory_stats", skip_all)]
+pub async fn node_get_memory_stats<S>(session: &mut Session<S>) -> Result<Vec<(String, u64)>>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let body = session
+        .call(
+            PROC_NODE_GET_MEMORY_STATS,
+            &encode_node_get_memory_stats_args(0),
+        )
+        .await?;
+    let (_, nparams) = decode_node_get_memory_stats_ret(&body)?;
+    if nparams <= 0 {
+        return Ok(Vec::new());
+    }
+    let body = session
+        .call(
+            PROC_NODE_GET_MEMORY_STATS,
+            &encode_node_get_memory_stats_args(nparams),
+        )
+        .await?;
+    Ok(decode_node_get_memory_stats_ret(&body)?.0)
+}
+
+/// A pool's size and free space. Refresh it first for a current figure on a
+/// directory pool. Read-only.
+///
+/// # Errors
+/// Any [`TransportError`].
+#[instrument(name = "libvirt.storage_pool_get_info", skip_all, fields(pool = %pool.name))]
+pub async fn storage_pool_get_info<S>(
+    session: &mut Session<S>,
+    pool: &StoragePool,
+) -> Result<StoragePoolInfo>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let body = session
+        .call(
+            PROC_STORAGE_POOL_GET_INFO,
+            &encode_storage_pool_get_info_args(pool),
+        )
+        .await?;
+    decode_storage_pool_get_info_ret(&body)
 }
 
 #[cfg(test)]

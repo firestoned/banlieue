@@ -12,9 +12,10 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use banlieue_api::banlieue::{
-    FailureDomain, FailureDomainAttributes, FailureDomainNameOverride, Provider,
-    ProviderCapabilities, ProviderConnection, ProviderStatus,
+    FailureDomain, FailureDomainAttributes, FailureDomainCapacity, FailureDomainNameOverride,
+    Provider, ProviderCapabilities, ProviderConnection, ProviderStatus, StorageCapacity,
 };
+use banlieue_provider_sdk::capacity::{available_memory_mib, bytes_to_gib};
 use banlieue_provider_sdk::reconciler::{requeue_long, requeue_on_error};
 use banlieue_provider_sdk::ssa::FIELD_MANAGER_PROVIDER_VSPHERE;
 use banlieue_provider_sdk::status::{condition_status, set_condition};
@@ -28,7 +29,7 @@ use kube::{
 use serde_json::json;
 use tracing::{info, warn};
 
-use crate::client::{Credentials, Datastore, Network, VSphereClient};
+use crate::client::{ClusterCapacity, Credentials, Datastore, Network, VSphereClient};
 use crate::context::Context;
 use crate::error::{Error, Result};
 
@@ -242,28 +243,56 @@ pub async fn discover_inventory(
     capabilities: &ProviderCapabilities,
     overrides: &[FailureDomainNameOverride],
 ) -> Result<Vec<FailureDomain>> {
-    let mut out = Vec::new();
+    // Read every cluster first: whether a datastore is shared (ADR-0128)
+    // depends on whether another cluster of this Provider reaches it too.
+    let mut clusters = Vec::new();
     for dc in client.list_datacenters().await? {
         for cluster in client.list_clusters(&dc).await? {
             // Per-cluster reachability drives which declared storage/network
             // classes are available in this failure domain (ADR-0019).
             let datastores = client.list_datastores(&cluster).await?;
             let networks = client.list_networks(&cluster).await?;
-            let attributes = compute_failure_domain_attributes(
-                capabilities,
-                &datastores,
-                &networks,
-                &dc.name,
-                &cluster.name,
-            );
-            out.push(build_failure_domain(
-                provider_name,
-                &dc.name,
-                &cluster.name,
-                attributes,
-                overrides,
+            let capacity = client.cluster_capacity(&cluster).await?;
+            clusters.push((
+                dc.name.clone(),
+                cluster.name,
+                datastores,
+                networks,
+                capacity,
             ));
         }
+    }
+    let mut reach: BTreeMap<&str, usize> = BTreeMap::new();
+    for (_, _, datastores, _, _) in &clusters {
+        for ds in datastores {
+            *reach.entry(ds.moref.as_str()).or_default() += 1;
+        }
+    }
+
+    let mut out = Vec::new();
+    for (dc_name, cluster_name, datastores, networks, capacity) in &clusters {
+        let mut attributes = compute_failure_domain_attributes(
+            capabilities,
+            datastores,
+            networks,
+            dc_name,
+            cluster_name,
+        );
+        attributes.capacity = cluster_guest_capacity(
+            capacity,
+            capabilities,
+            datastores,
+            &attributes.available_storage_classes,
+            (dc_name, cluster_name),
+            |moref| reach.get(moref).copied().unwrap_or(0) > 1,
+        );
+        out.push(build_failure_domain(
+            provider_name,
+            dc_name,
+            cluster_name,
+            attributes,
+            overrides,
+        ));
     }
     // Deterministic order: vCenter does not guarantee a stable inventory
     // ordering across calls, and an unstable order would rewrite
@@ -384,6 +413,85 @@ pub fn compute_failure_domain_attributes(
         raw,
         capacity: None,
     }
+}
+
+/// What one cluster offers guests (ADR-0107, ADR-0128): its CPU threads,
+/// effective memory (capped by its root resource pool's limit), the
+/// measured free memory (effective less what the hosts use, or the pool's
+/// unreserved memory, whichever is smaller; whole GiB), and for each
+/// available storage class the datastore a disk would land on. No per-VM
+/// overhead: vSphere accounts for its own. `None` when vCenter gave no
+/// figure at all.
+fn cluster_guest_capacity(
+    cluster: &ClusterCapacity,
+    capabilities: &ProviderCapabilities,
+    datastores: &[Datastore],
+    available_storage: &[String],
+    (dc_name, cluster_name): (&str, &str),
+    is_shared: impl Fn(&str) -> bool,
+) -> Option<FailureDomainCapacity> {
+    let memory_mi_b = min_known(cluster.effective_memory_mib, cluster.pool_memory_limit_mib);
+    let measured = min_known(
+        cluster
+            .effective_memory_mib
+            .zip(cluster.hosts_memory_used_mib)
+            .map(|(effective, used)| effective.saturating_sub(used)),
+        cluster.pool_memory_unreserved_mib,
+    );
+    let storage: Vec<StorageCapacity> = capabilities
+        .storage_classes
+        .iter()
+        .filter(|sc| available_storage.contains(&sc.name))
+        .filter_map(|sc| {
+            let target = sc.target_for(dc_name, cluster_name)?;
+            let ds = landing_datastore(target, datastores)?;
+            if ds.capacity_bytes.is_none() && ds.free_space_bytes.is_none() {
+                return None;
+            }
+            let gib = |b: i64| u64::try_from(b).ok().map(bytes_to_gib);
+            Some(StorageCapacity {
+                storage_class: sc.name.clone(),
+                total_gi_b: ds.capacity_bytes.and_then(gib),
+                free_gi_b: ds.free_space_bytes.and_then(gib),
+                shared: is_shared(&ds.moref),
+            })
+        })
+        .collect();
+    if cluster.cpu_threads.is_none() && memory_mi_b.is_none() && storage.is_empty() {
+        return None;
+    }
+    Some(FailureDomainCapacity {
+        cpus: cluster.cpu_threads,
+        memory_mi_b,
+        memory_overhead_mi_b_per_vm: None,
+        memory_available_mi_b: available_memory_mib(measured, memory_mi_b),
+        storage,
+    })
+}
+
+/// The smaller of two optional figures, or whichever is known.
+fn min_known(a: Option<u64>, b: Option<u64>) -> Option<u64> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    }
+}
+
+/// The datastore a disk of this storage class lands on: the named one, or
+/// the datastore-cluster member with the most free space (each disk lands on
+/// one member). Tag targets are not resolved here (ADR-0019).
+fn landing_datastore<'a>(
+    target: &BTreeMap<String, String>,
+    datastores: &'a [Datastore],
+) -> Option<&'a Datastore> {
+    if let Some(name) = target.get("datastore") {
+        return datastores.iter().find(|d| &d.name == name);
+    }
+    let pod = target.get("datastoreCluster")?;
+    datastores
+        .iter()
+        .filter(|d| d.datastore_cluster.as_deref() == Some(pod.as_str()))
+        .max_by_key(|d| d.free_space_bytes.unwrap_or(i64::MIN))
 }
 
 /// True when a `storageClasses[].target` is satisfiable by the datastores

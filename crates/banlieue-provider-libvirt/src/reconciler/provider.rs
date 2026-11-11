@@ -21,8 +21,14 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use banlieue_api::banlieue::{FailureDomain, FailureDomainAttributes, Provider, ProviderStatus};
+use banlieue_api::banlieue::{
+    FailureDomain, FailureDomainAttributes, FailureDomainCapacity, Provider, ProviderStatus,
+    StorageCapacity,
+};
 use banlieue_libvirt::{Network, StoragePool};
+use banlieue_provider_sdk::capacity::{
+    QEMU_MEMORY_OVERHEAD_MIB, available_memory_mib, bytes_to_gib,
+};
 use banlieue_provider_sdk::reconciler::{requeue_default, requeue_long, requeue_on_error};
 use banlieue_provider_sdk::ssa::FIELD_MANAGER_PROVIDER_LIBVIRT;
 use banlieue_provider_sdk::status::{condition_status, set_condition};
@@ -34,7 +40,7 @@ use kube::{
 use serde_json::json;
 use tracing::{info, warn};
 
-use crate::client::LibvirtClient;
+use crate::client::{HostCapacity, LibvirtClient};
 use crate::context::Context;
 use crate::error::{Error, Result};
 
@@ -60,6 +66,9 @@ pub mod reasons {
     /// Reconciliation is suspended via `spec.paused`.
     pub const PAUSED: &str = "Paused";
 }
+
+/// The storage-class `target` key naming a libvirt pool.
+const TARGET_KEY_POOL: &str = "pool";
 
 /// Key in the credentials Secret holding the PEM client certificate.
 pub const SECRET_KEY_TLS_CRT: &str = "tls.crt";
@@ -138,6 +147,7 @@ pub async fn compute_status(
 ) -> Result<ProviderStatus> {
     let pools = client.list_pools().await?;
     let networks = client.list_networks().await?;
+    let host = client.host_capacity().await?;
 
     let declared_storage: Vec<&str> = provider
         .spec
@@ -183,6 +193,7 @@ pub async fn compute_status(
     let mut labels = provider.metadata.labels.clone().unwrap_or_default();
     labels.insert("name".to_string(), name.clone());
 
+    let capacity = guest_capacity(&host, provider, &available_storage);
     let fd = FailureDomain {
         // A libvirt host is one failure boundary; name it after the Provider
         // so the identifier is stable and does not leak the endpoint.
@@ -193,7 +204,7 @@ pub async fn compute_status(
             available_network_classes: available_network,
             features: provider.spec.capabilities.features.clone(),
             raw,
-            capacity: None,
+            capacity,
         },
     };
 
@@ -285,7 +296,7 @@ fn partition_declared<T: HasName>(
                 .find(|c| c.name == *name)
                 // libvirt storage classes map to a `pool`.
                 .and_then(|c| c.target.as_ref())
-                .and_then(|t| t.get("pool"))
+                .and_then(|t| t.get(TARGET_KEY_POOL))
                 .cloned(),
             Kind::Network => provider
                 .spec
@@ -304,6 +315,44 @@ fn partition_declared<T: HasName>(
         }
     }
     (present, missing)
+}
+
+/// What this host offers guests (ADR-0107, ADR-0128): its CPUs and memory,
+/// the measured free memory (capped, whole GiB), the QEMU per-VM overhead,
+/// and each available storage class's pool. `None` when the host gave no
+/// figure at all, so it is not filtered on size.
+fn guest_capacity(
+    host: &HostCapacity,
+    provider: &Provider,
+    available_storage: &[String],
+) -> Option<FailureDomainCapacity> {
+    let storage: Vec<StorageCapacity> = provider
+        .spec
+        .capabilities
+        .storage_classes
+        .iter()
+        .filter(|c| available_storage.contains(&c.name))
+        .filter_map(|c| {
+            let pool = c.target.as_ref()?.get(TARGET_KEY_POOL)?;
+            let space = host.pools.get(pool)?;
+            Some(StorageCapacity {
+                storage_class: c.name.clone(),
+                total_gi_b: Some(bytes_to_gib(space.capacity_bytes)),
+                free_gi_b: Some(bytes_to_gib(space.available_bytes)),
+                shared: false,
+            })
+        })
+        .collect();
+    if host.cpus.is_none() && host.memory_mib.is_none() && storage.is_empty() {
+        return None;
+    }
+    Some(FailureDomainCapacity {
+        cpus: host.cpus,
+        memory_mi_b: host.memory_mib,
+        memory_overhead_mi_b_per_vm: Some(QEMU_MEMORY_OVERHEAD_MIB),
+        memory_available_mi_b: available_memory_mib(host.available_mib, host.memory_mib),
+        storage,
+    })
 }
 
 /// Minimal accessor so pools and networks share `partition_declared`.

@@ -502,6 +502,16 @@ spec:
                     minimum: 1.0
                     nullable: true
                     type: integer
+                  storageReservePercent:
+                    description: |-
+                      Percent of each store's `totalGiB` the scheduler keeps free when it
+                      places a new VM's disks (ADR-0128): a full store pauses the guests
+                      already on it. `0` disables the reserve. Unset: 10.
+                    format: uint32
+                    maximum: 50.0
+                    minimum: 0.0
+                    nullable: true
+                    type: integer
                 type: object
               useContentLibrary:
                 description: |-
@@ -623,6 +633,15 @@ spec:
                               minimum: 0.0
                               nullable: true
                               type: integer
+                            memoryAvailableMiB:
+                              description: |-
+                                Memory a new guest could take now, MiB, as the provider measured it
+                                (ADR-0128). Includes what running VMs already use, so the scheduler
+                                checks it for new placements only. Never more than `memoryMiB`.
+                              format: uint64
+                              minimum: 0.0
+                              nullable: true
+                              type: integer
                             memoryMiB:
                               description: |-
                                 Memory guests may use, MiB: the host's, or a smaller budget the host
@@ -638,6 +657,40 @@ spec:
                               minimum: 0.0
                               nullable: true
                               type: integer
+                            storage:
+                              description: |-
+                                Size and free space of the store behind each available storage
+                                class, as the provider measured it (ADR-0128).
+                              items:
+                                description: The store behind one storage class in a failure domain (ADR-0128).
+                                properties:
+                                  freeGiB:
+                                    description: |-
+                                      Space a new disk could take now, GiB, for the writer the provider
+                                      runs as.
+                                    format: uint64
+                                    minimum: 0.0
+                                    nullable: true
+                                    type: integer
+                                  shared:
+                                    description: |-
+                                      The same space backs other failure domains of this Provider (a
+                                      Proxmox shared storage, a datastore mounted by several clusters), so
+                                      disks placed in any of them draw on it.
+                                    type: boolean
+                                  storageClass:
+                                    description: A name from `availableStorageClasses`.
+                                    type: string
+                                  totalGiB:
+                                    description: The store's size, GiB.
+                                    format: uint64
+                                    minimum: 0.0
+                                    nullable: true
+                                    type: integer
+                                required:
+                                - storageClass
+                                type: object
+                              type: array
                           type: object
                         features:
                           description: |-

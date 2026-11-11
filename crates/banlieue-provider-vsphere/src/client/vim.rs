@@ -23,7 +23,9 @@ use vim_rs::mo::distributed_virtual_portgroup::DistributedVirtualPortgroup;
 use vim_rs::mo::distributed_virtual_switch::DistributedVirtualSwitch;
 use vim_rs::mo::file_manager::FileManager;
 use vim_rs::mo::folder::Folder;
+use vim_rs::mo::host_system::HostSystem as VimHostSystem;
 use vim_rs::mo::network::Network as VimNetwork;
+use vim_rs::mo::resource_pool::ResourcePool as VimResourcePool;
 use vim_rs::mo::storage_pod::StoragePod as VimStoragePod;
 use vim_rs::mo::task::Task;
 use vim_rs::mo::view_manager::ViewManager;
@@ -55,8 +57,8 @@ use vim_rs::types::vim_any::VimAny;
 use crate::error::{Error, Result};
 
 use super::{
-    Cluster, Credentials, Datacenter, Datastore, MACHINE_UID_KEY, NamedVm, Network, Template,
-    VSphereClient, VSphereClientFactory,
+    Cluster, ClusterCapacity, Credentials, Datacenter, Datastore, MACHINE_UID_KEY, NamedVm,
+    Network, Template, VSphereClient, VSphereClientFactory,
 };
 
 const APP_NAME: &str = env!("CARGO_PKG_NAME");
@@ -335,6 +337,46 @@ pub struct VimClientImpl {
 // argument and record inventory names and morefs only: never credentials,
 // `extraConfig` (it carries guest user-data), guestinfo values or custom
 // attribute values.
+/// Bytes in one MiB, for vCenter's byte figures.
+const BYTES_PER_MIB: i64 = 1024 * 1024;
+
+/// A positive byte count in MiB; `None` for zero or vCenter's `-1`
+/// ("unlimited" / "unknown").
+fn positive_bytes_to_mib(bytes: i64) -> Option<u64> {
+    u64::try_from(bytes / BYTES_PER_MIB).ok().filter(|m| *m > 0)
+}
+
+impl VimClientImpl {
+    /// The sum of the cluster's hosts' `summary.quickStats.overallMemoryUsage`,
+    /// MiB. `None` when any host cannot be read: a partial sum would
+    /// overstate free memory.
+    async fn hosts_memory_used_mib(&self, ccr: &ClusterComputeResource) -> Option<u64> {
+        let hosts = match ccr.host().await {
+            Ok(h) => h.unwrap_or_default(),
+            Err(e) => {
+                warn!(error = %e, "cluster hosts unreadable; no used-memory figure");
+                return None;
+            }
+        };
+        let mut used: u64 = 0;
+        for host in hosts {
+            let summary = match VimHostSystem::new(self.client.clone(), &host.value)
+                .summary()
+                .await
+            {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!(host = %host.value, error = %e, "host summary unreadable; no used-memory figure");
+                    return None;
+                }
+            };
+            let host_used = summary.quick_stats.overall_memory_usage?;
+            used += u64::try_from(host_used).ok()?;
+        }
+        Some(used)
+    }
+}
+
 #[async_trait]
 impl VSphereClient for VimClientImpl {
     #[instrument(name = "vsphere.list_datacenters", skip_all)]
@@ -531,18 +573,53 @@ impl VSphereClient for VimClientImpl {
                 }
                 _ => None,
             };
-            // Free space (summary.freeSpace) — best-effort; None if the summary
-            // read fails, so datastore-cluster selection can still fall back to
-            // a deterministic choice.
-            let free_space_bytes = ds.summary().await.ok().map(|s| s.free_space);
+            // Free space and size (summary.freeSpace, summary.capacity),
+            // best effort: None if the summary read fails, so datastore-cluster
+            // selection can still fall back to a deterministic choice and the
+            // failure domain simply publishes no space figure (ADR-0128).
+            let summary = ds.summary().await.ok();
             out.push(Datastore {
                 name,
                 moref: moref.value,
                 datastore_cluster,
-                free_space_bytes,
+                free_space_bytes: summary.as_ref().map(|s| s.free_space),
+                capacity_bytes: summary.as_ref().map(|s| s.capacity),
             });
         }
         Ok(out)
+    }
+
+    #[instrument(name = "vsphere.cluster_capacity", skip_all, fields(cluster = %cluster.name))]
+    async fn cluster_capacity(&self, cluster: &Cluster) -> Result<ClusterCapacity> {
+        let ccr = ClusterComputeResource::new(self.client.clone(), &cluster.moref);
+        let mut capacity = ClusterCapacity::default();
+        match ccr.summary().await {
+            Ok(summary) => {
+                capacity.cpu_threads = u32::try_from(summary.num_cpu_threads)
+                    .ok()
+                    .filter(|n| *n > 0);
+                capacity.effective_memory_mib = u64::try_from(summary.effective_memory).ok();
+            }
+            Err(e) => warn!(error = %e, "cluster summary unreadable; no CPU or memory figure"),
+        }
+        capacity.hosts_memory_used_mib = self.hosts_memory_used_mib(&ccr).await;
+        match ccr.resource_pool().await {
+            Ok(Some(pool)) => match VimResourcePool::new(self.client.clone(), &pool.value)
+                .runtime()
+                .await
+            {
+                Ok(runtime) => {
+                    capacity.pool_memory_limit_mib =
+                        positive_bytes_to_mib(runtime.memory.max_usage);
+                    capacity.pool_memory_unreserved_mib =
+                        positive_bytes_to_mib(runtime.memory.unreserved_for_vm);
+                }
+                Err(e) => warn!(error = %e, "resource pool runtime unreadable; no pool figure"),
+            },
+            Ok(None) => {}
+            Err(e) => warn!(error = %e, "cluster resource pool unreadable; no pool figure"),
+        }
+        Ok(capacity)
     }
 
     #[instrument(name = "vsphere.list_networks", skip_all, fields(cluster = %cluster.name))]

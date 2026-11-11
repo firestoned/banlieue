@@ -11,11 +11,12 @@ pub mod vmclass;
 pub mod vmimage;
 
 pub use provider::{
-    DEFAULT_CPU_OVERCOMMIT_RATIO, FailureDomain, FailureDomainAttributes, FailureDomainCapacity,
-    FailureDomainNameOverride, Heartbeat, LABEL_UNSCHEDULABLE, MAX_CPU_OVERCOMMIT_RATIO,
+    DEFAULT_CPU_OVERCOMMIT_RATIO, DEFAULT_STORAGE_RESERVE_PERCENT, FailureDomain,
+    FailureDomainAttributes, FailureDomainCapacity, FailureDomainNameOverride, Heartbeat,
+    LABEL_UNSCHEDULABLE, MAX_CPU_OVERCOMMIT_RATIO, MAX_STORAGE_RESERVE_PERCENT,
     MIN_CPU_OVERCOMMIT_RATIO, NetworkClassMapping, Provider, ProviderCapabilities,
     ProviderConnection, ProviderScheduling, ProviderSpec, ProviderStatus, ProviderWorkloadStatus,
-    ScopedSubnet, ScopedTarget, StorageClassMapping, SubnetShape, WorkloadMode,
+    ScopedSubnet, ScopedTarget, StorageCapacity, StorageClassMapping, SubnetShape, WorkloadMode,
 };
 pub use providerclass::{
     DEFAULT_PROVIDER_REPLICAS, ImagePullPolicy, LoggingSpec, ProviderClass, ProviderClassSpec,

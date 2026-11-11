@@ -68,6 +68,12 @@ const MESSAGE_MIN: usize = MESSAGE_LEN_PREFIX_LEN + MESSAGE_HEADER_LEN;
 pub const PROC_CONNECT_OPEN: i32 = 1;
 /// `REMOTE_PROC_CONNECT_CLOSE`.
 pub const PROC_CONNECT_CLOSE: i32 = 2;
+/// `REMOTE_PROC_NODE_GET_INFO`.
+pub const PROC_NODE_GET_INFO: i32 = 6;
+/// `REMOTE_PROC_STORAGE_POOL_GET_INFO`.
+pub const PROC_STORAGE_POOL_GET_INFO: i32 = 87;
+/// `REMOTE_PROC_NODE_GET_MEMORY_STATS`.
+pub const PROC_NODE_GET_MEMORY_STATS: i32 = 228;
 /// `REMOTE_PROC_AUTH_LIST` — the authentication negotiation every libvirt
 /// client performs *before* `CONNECT_OPEN`. Verified against a real client:
 /// libvirt's own first message on any connection is this procedure.

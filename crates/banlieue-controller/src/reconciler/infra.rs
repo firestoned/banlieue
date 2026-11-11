@@ -405,7 +405,10 @@ fn merge_ipam_override(
 /// `hardwareOverride.diskOverrides` entry matching this disk's name, if
 /// any, else the class's own size unchanged. A `VirtualMachine` with no
 /// `hardwareOverride` at all (`None`) always inherits the class verbatim.
-fn merge_disk_size_override(disk: &DiskSpec, override_: Option<&HardwareOverride>) -> u32 {
+pub(crate) fn merge_disk_size_override(
+    disk: &DiskSpec,
+    override_: Option<&HardwareOverride>,
+) -> u32 {
     override_
         .and_then(|h| h.disk_overrides.iter().find(|d| d.name == disk.name))
         .map(|d| d.size_gi_b)

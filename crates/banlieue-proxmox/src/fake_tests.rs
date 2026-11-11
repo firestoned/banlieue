@@ -441,4 +441,22 @@ mod tests {
             Some("2")
         );
     }
+
+    #[tokio::test]
+    async fn node_resources_and_storage_space_are_reported() {
+        let f = FakeProxmox::single_node("pve1");
+        f.set_node_resources("pve1", 8, 32 << 30, 10 << 30);
+        f.set_storage_space("local-lvm", 100 << 30, 40 << 30, true);
+        let n = f.list_nodes().await.unwrap();
+        assert_eq!(
+            (n[0].maxcpu, n[0].maxmem, n[0].mem),
+            (Some(8), Some(32 << 30), Some(10 << 30))
+        );
+        let st = f.node_storage("pve1").await.unwrap();
+        let lvm = st.iter().find(|s| s.storage == "local-lvm").unwrap();
+        assert_eq!(
+            (lvm.total, lvm.avail, lvm.shared),
+            (Some(100 << 30), Some(40 << 30), true)
+        );
+    }
 }

@@ -182,8 +182,10 @@ flowchart LR
    candidate Providers and failure domains through `placement`
    (provider selector, failure-domain selector, anti-affinity) and, where a
    failure domain publishes capacity, whether the VM fits beside the VMs
-   already there
-   ([ADR-0107](https://github.com/firestoned/banlieue/blob/main/docs/adr/0107-capacity-aware-scheduling.md)),
+   already there and, for a new placement, in the measured free memory and
+   disk
+   ([ADR-0107](https://github.com/firestoned/banlieue/blob/main/docs/adr/0107-capacity-aware-scheduling.md),
+   [ADR-0128](https://github.com/firestoned/banlieue/blob/main/docs/adr/0128-every-provider-publishes-measured-capacity.md)),
    then server-side-applies a `VSphereMachine` owned by the `VirtualMachine`.
 3. **Provider controller** (the pod the operator spawned for that
    Provider) sees the infra CR and provisions on its backend.

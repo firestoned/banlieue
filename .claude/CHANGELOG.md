@@ -1,5 +1,100 @@
 # Changelog
 
+## [2026-11-11 18:00] - Every provider publishes measured capacity (ADR-0128, implemented)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `crates/banlieue-api/src/banlieue/provider.rs`: `FailureDomainCapacity`
+  gains `memoryAvailableMiB` and `storage[]` (new `StorageCapacity`:
+  `storageClass`, `totalGiB`, `freeGiB`, `shared`) and `storage_for`;
+  `ProviderScheduling` gains `storageReservePercent` (0 to 50, default 10).
+  `deploy/crds/banlieue.io_providers.yaml` and `docs/src/reference/api.md`
+  regenerated.
+- `crates/banlieue-controller/src/reconciler/scheduler.rs`: step 8c, for new
+  placements only, checks measured free memory and each storage class's
+  free disk less the reserve, both less in-flight VMs (scheduled, not yet
+  provisioned; Provider-wide for a `shared` store). `InFlight`,
+  `measured_shortfall`. `infra::merge_disk_size_override` is now
+  `pub(crate)` so disks count with their overrides.
+- `crates/banlieue-provider-sdk/src/capacity.rs` (new): unit conversion,
+  whole-GiB rounding, `QEMU_MEMORY_OVERHEAD_MIB` (256, an estimate).
+- `crates/banlieue-provider-cloud-hypervisor`: `MemAvailable`, slice
+  headroom (`MemoryMax` less `MemoryCurrent` over D-Bus), typed `storage[]`
+  from `statvfs`; the `raw.storageFreeGiB` string is gone. New read-only
+  live test `tests/live_capacity.rs` (`CH_STORAGE_DIR=...`) passed on a real
+  host: slice headroom over the system bus (limit 20480 MiB, headroom
+  16695 MiB, published 16384), `MemAvailable`, and `statvfs` matching `df`.
+- `crates/banlieue-libvirt`: `NODE_GET_INFO` (6), `STORAGE_POOL_GET_INFO`
+  (87), `NODE_GET_MEMORY_STATS` (228), transcribed from
+  `remote_protocol.x`; live test `capacity_reads_against_real_libvirtd`
+  passed against a real libvirtd.
+- `crates/banlieue-provider-libvirt`: `LibvirtClient::host_capacity`, read
+  best effort on the snapshot session (pools refreshed first).
+- `crates/banlieue-proxmox`, `crates/banlieue-provider-proxmox`: `Node.mem`;
+  per-node capacity from fields already fetched; fake setters.
+- `crates/banlieue-provider-vsphere`: `VSphereClient::cluster_capacity`
+  (cluster, host and root-pool summaries), `Datastore.capacity_bytes`;
+  `discover_inventory` marks datastores reached by two clusters `shared`.
+- Docs: `docs/src/concepts/{providers,virtualmachine,architecture}.md`,
+  `docs/src/guides/{cloud-hypervisor-host,virtualmachine-pools}.md`
+  (including troubleshooting rows), `examples/01-provider-cloud-hypervisor.yaml`.
+- ADR-0128 implementation notes; CALM entries marked IMPLEMENTED; roadmap 03
+  action 6 done, `ROADMAPS.md` row 03 updated.
+- Threat model full pass: stamp 2026-11-11, ADR-0001 to ADR-0128. TB-1,
+  TB-4, TB-5 rows added, TB-8 row widened, §2 rows, §7.27, two §8 risks
+  revised and three added. No new identity, grant or boundary; §5 diagram
+  unchanged.
+
+### Why
+- Only the Cloud Hypervisor provider published capacity, as totals; disk was
+  never checked and memory used outside banlieue was invisible.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (re-apply `banlieue.io_providers.yaml`, then
+  roll the controller and every provider)
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-11-11 12:00] - Accepted: every provider publishes measured capacity (ADR-0128)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docs/adr/0128-every-provider-publishes-measured-capacity.md` (Accepted
+  2026-11-11, not implemented):
+  the libvirt, Proxmox and vSphere providers fill in ADR-0107's
+  `capacity`; `FailureDomainCapacity` gains a measured
+  `memoryAvailableMiB` and per-storage-class `storage[]` (`totalGiB`,
+  `freeGiB`, `shared`). Measured figures gate new placements only, with
+  in-flight VMs added; a placed VM is never moved by them. New
+  `Provider.spec.scheduling.storageReservePercent` (default 10). Figures
+  are rounded to whole GiB and patched only on change, since a Provider
+  status change requeues every VM. No measured CPU figure.
+- `docs/architecture/calm/architecture.json`: ADR-0128 notes (ACCEPTED, not
+  yet implemented) on
+  `service-banlieue-controller`, the four provider nodes,
+  `data-asset-provider-cr` and the `capacity-aware-placement` control; new
+  flow `flow-publish-and-fit-measured-capacity` with control
+  `measured-capacity-gates-new-placements-only`; ADR added to `adrs`.
+  `docs/src/architecture/flows.md` regenerated.
+- `.github/community/03-availability-zones-and-datastore-tiering.md`: the
+  capacity-aware spread question records ADR-0128; new roadmap action 6.
+  `ROADMAPS.md` row 03 notes it (status unchanged: ✅ covers the locked
+  principle, and no code has landed).
+
+### Why
+- Only the Cloud Hypervisor provider published capacity, as totals, and
+  nobody checked disk: a filling store pauses running guests, and memory
+  used by anything banlieue did not place was invisible to the scheduler.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
 ## [2026-11-10 12:00] - Proposed: move a Cloud Hypervisor VM between hosts in a zone (ADR-0127)
 
 **Author:** Erick Bourgeois

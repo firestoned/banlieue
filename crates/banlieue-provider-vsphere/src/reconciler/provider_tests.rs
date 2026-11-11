@@ -8,7 +8,9 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::client::{Datacenter, Datastore, FakeClient, Inventory, Network, VSphereClient};
+    use crate::client::{
+        ClusterCapacity, Datacenter, Datastore, FakeClient, Inventory, Network, VSphereClient,
+    };
 
     use banlieue_api::banlieue::{
         FailureDomainNameOverride, NetworkClassMapping, ProviderCapabilities, StorageClassMapping,
@@ -393,12 +395,14 @@ mod tests {
                 moref: "datastore-1".into(),
                 datastore_cluster: None,
                 free_space_bytes: None,
+                capacity_bytes: None,
             },
             Datastore {
                 name: "ds-99".into(),
                 moref: "datastore-2".into(),
                 datastore_cluster: Some("DSC-A".into()),
                 free_space_bytes: None,
+                capacity_bytes: None,
             },
         ];
         let networks = vec![
@@ -468,5 +472,164 @@ mod tests {
         };
         let dc2 = dc1.clone();
         assert_eq!(dc1, dc2);
+    }
+
+    // ------------------------------------- capacity (ADR-0107, ADR-0128)
+
+    const GIB: i64 = 1 << 30;
+
+    fn gold_on(target_key: &str, value: &str) -> ProviderCapabilities {
+        ProviderCapabilities {
+            storage_classes: vec![StorageClassMapping {
+                name: "gold".into(),
+                target: Some(target(&[(target_key, value)])),
+                ..Default::default()
+            }],
+            network_classes: Vec::new(),
+            features: Vec::new(),
+        }
+    }
+
+    fn measured_cluster() -> ClusterCapacity {
+        ClusterCapacity {
+            cpu_threads: Some(64),
+            effective_memory_mib: Some(100_000),
+            hosts_memory_used_mib: Some(40_000),
+            pool_memory_limit_mib: None,
+            pool_memory_unreserved_mib: None,
+        }
+    }
+
+    async fn capacity_of(
+        inv: Inventory,
+        caps: &ProviderCapabilities,
+        cluster: &str,
+    ) -> Option<banlieue_api::banlieue::FailureDomainCapacity> {
+        let client = fake_client(inv);
+        let fds = discover_inventory(as_client(&client), "p", caps, &[])
+            .await
+            .unwrap();
+        fds.into_iter()
+            .find(|f| f.labels["cluster"] == cluster)
+            .unwrap()
+            .attributes
+            .capacity
+    }
+
+    /// CPU threads, effective memory, and effective memory less what the
+    /// hosts use, rounded down to a whole GiB.
+    #[tokio::test]
+    async fn a_cluster_publishes_its_capacity() {
+        let inv = Inventory::builder()
+            .with_dc("dc")
+            .with_cluster("dc", "c1")
+            .with_cluster_capacity("dc", "c1", measured_cluster())
+            .build();
+        let cap = capacity_of(inv, &gold_on("datastore", "none"), "c1")
+            .await
+            .expect("capacity");
+        assert_eq!(cap.cpus, Some(64));
+        assert_eq!(cap.memory_mi_b, Some(100_000));
+        assert_eq!(cap.memory_available_mi_b, Some(58 * 1024));
+        assert_eq!(cap.memory_overhead_mi_b_per_vm, None);
+    }
+
+    /// A resource pool limit or a smaller unreserved figure wins.
+    #[tokio::test]
+    async fn the_resource_pool_caps_memory() {
+        let inv = Inventory::builder()
+            .with_dc("dc")
+            .with_cluster("dc", "c1")
+            .with_cluster_capacity(
+                "dc",
+                "c1",
+                ClusterCapacity {
+                    pool_memory_limit_mib: Some(80_000),
+                    pool_memory_unreserved_mib: Some(30_000),
+                    ..measured_cluster()
+                },
+            )
+            .build();
+        let cap = capacity_of(inv, &gold_on("datastore", "none"), "c1")
+            .await
+            .expect("capacity");
+        assert_eq!(cap.memory_mi_b, Some(80_000));
+        assert_eq!(cap.memory_available_mi_b, Some(29 * 1024));
+    }
+
+    #[tokio::test]
+    async fn a_datastore_class_publishes_its_space() {
+        let inv = Inventory::builder()
+            .with_dc("dc")
+            .with_cluster("dc", "c1")
+            .with_datastore("dc", "c1", "ds-1", None)
+            .with_datastore_space("dc", "c1", "ds-1", 1000 * GIB, 300 * GIB + 1)
+            .build();
+        let cap = capacity_of(inv, &gold_on("datastore", "ds-1"), "c1")
+            .await
+            .expect("capacity");
+        assert_eq!(
+            cap.storage,
+            vec![banlieue_api::banlieue::StorageCapacity {
+                storage_class: "gold".into(),
+                total_gi_b: Some(1000),
+                free_gi_b: Some(300),
+                shared: false,
+            }]
+        );
+    }
+
+    /// A datastore mounted by two clusters of the Provider is one store:
+    /// marked shared, so in-flight disks in either count against it.
+    #[tokio::test]
+    async fn a_datastore_reachable_from_two_clusters_is_shared() {
+        let inv = Inventory::builder()
+            .with_dc("dc")
+            .with_cluster("dc", "c1")
+            .with_cluster("dc", "c2")
+            .with_datastore("dc", "c1", "ds-1", None)
+            .with_datastore("dc", "c2", "ds-1", None)
+            .with_datastore_space("dc", "c1", "ds-1", 1000 * GIB, 300 * GIB)
+            .with_datastore_space("dc", "c2", "ds-1", 1000 * GIB, 300 * GIB)
+            .with_datastore_moref("dc", "c1", "ds-1", "datastore-42")
+            .with_datastore_moref("dc", "c2", "ds-1", "datastore-42")
+            .build();
+        let cap = capacity_of(inv, &gold_on("datastore", "ds-1"), "c2")
+            .await
+            .expect("capacity");
+        assert!(cap.storage[0].shared, "{cap:?}");
+    }
+
+    /// A datastore-cluster class lands each disk on one member, so it
+    /// publishes the member with the most free space.
+    #[tokio::test]
+    async fn a_datastore_cluster_class_publishes_its_emptiest_member() {
+        let inv = Inventory::builder()
+            .with_dc("dc")
+            .with_cluster("dc", "c1")
+            .with_datastore("dc", "c1", "ds-a", Some("DSC"))
+            .with_datastore("dc", "c1", "ds-b", Some("DSC"))
+            .with_datastore_space("dc", "c1", "ds-a", 500 * GIB, 100 * GIB)
+            .with_datastore_space("dc", "c1", "ds-b", 800 * GIB, 400 * GIB)
+            .build();
+        let cap = capacity_of(inv, &gold_on("datastoreCluster", "DSC"), "c1")
+            .await
+            .expect("capacity");
+        assert_eq!(cap.storage[0].total_gi_b, Some(800));
+        assert_eq!(cap.storage[0].free_gi_b, Some(400));
+    }
+
+    /// No figure at all: no capacity, so the domain is not filtered on size.
+    #[tokio::test]
+    async fn a_cluster_with_no_figures_publishes_no_capacity() {
+        let inv = Inventory::builder()
+            .with_dc("dc")
+            .with_cluster("dc", "c1")
+            .with_datastore("dc", "c1", "ds-1", None)
+            .build();
+        assert_eq!(
+            capacity_of(inv, &gold_on("datastore", "ds-1"), "c1").await,
+            None
+        );
     }
 }

@@ -15,7 +15,13 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use banlieue_api::banlieue::{FailureDomain, FailureDomainAttributes, Provider, ProviderStatus};
+use banlieue_api::banlieue::{
+    FailureDomain, FailureDomainAttributes, FailureDomainCapacity, Provider, ProviderStatus,
+    StorageCapacity,
+};
+use banlieue_provider_sdk::capacity::{
+    QEMU_MEMORY_OVERHEAD_MIB, available_memory_mib, bytes_to_gib, bytes_to_mib,
+};
 use banlieue_provider_sdk::reconciler::{requeue_default, requeue_long, requeue_on_error};
 use banlieue_provider_sdk::ssa::FIELD_MANAGER_PROVIDER_PROXMOX;
 use banlieue_provider_sdk::status::{condition_status, set_condition};
@@ -155,6 +161,48 @@ fn storage_check(class: &str, target: Option<&str>, storages: &[Storage]) -> Che
     Check::Available
 }
 
+/// What one node offers guests (ADR-0107, ADR-0128), from the fields
+/// `GET /nodes` and `GET /nodes/{node}/storage` already return: no extra
+/// call and no extra privilege. `available` lists the Provider's storage
+/// classes usable on this node with the storage id each targets. `None`
+/// when the node reported no figure at all.
+fn node_capacity(
+    node: &Node,
+    available: &[(String, String)],
+    storages: &[Storage],
+) -> Option<FailureDomainCapacity> {
+    let memory_mi_b = node.maxmem.map(bytes_to_mib);
+    let measured = node
+        .maxmem
+        .zip(node.mem)
+        .map(|(max, used)| bytes_to_mib(max.saturating_sub(used)));
+    let storage: Vec<StorageCapacity> = available
+        .iter()
+        .filter_map(|(class, id)| {
+            let st = storages.iter().find(|s| &s.storage == id)?;
+            if st.total.is_none() && st.avail.is_none() {
+                return None;
+            }
+            Some(StorageCapacity {
+                storage_class: class.clone(),
+                total_gi_b: st.total.map(bytes_to_gib),
+                free_gi_b: st.avail.map(bytes_to_gib),
+                shared: st.shared,
+            })
+        })
+        .collect();
+    if node.maxcpu.is_none() && memory_mi_b.is_none() && storage.is_empty() {
+        return None;
+    }
+    Some(FailureDomainCapacity {
+        cpus: node.maxcpu,
+        memory_mi_b,
+        memory_overhead_mi_b_per_vm: Some(QEMU_MEMORY_OVERHEAD_MIB),
+        memory_available_mi_b: available_memory_mib(measured, memory_mi_b),
+        storage,
+    })
+}
+
 fn network_check(class: &str, target: Option<&str>, nets: &[NetworkIface]) -> Check {
     let Some(bridge) = target else {
         return Check::Problem(format!(
@@ -208,6 +256,7 @@ pub async fn compute_status(
         let storages = api.node_storage(&node.node).await?;
         let nets = api.node_networks(&node.node).await?;
         let mut avail_storage = Vec::new();
+        let mut avail_targets: Vec<(String, String)> = Vec::new();
         for class in &caps.storage_classes {
             let target = class
                 .target_for("", "")
@@ -217,6 +266,9 @@ pub async fn compute_status(
                 Check::Available => {
                     avail_storage.push(class.name.clone());
                     storage_ok.push(class.name.clone());
+                    if let Some(id) = target {
+                        avail_targets.push((class.name.clone(), id.to_string()));
+                    }
                 }
                 Check::Problem(why) => storage_reasons
                     .entry(class.name.clone())
@@ -261,7 +313,7 @@ pub async fn compute_status(
                 available_network_classes: avail_network,
                 features: caps.features.clone(),
                 raw,
-                capacity: None,
+                capacity: node_capacity(node, &avail_targets, &storages),
             },
         });
     }

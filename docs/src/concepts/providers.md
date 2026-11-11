@@ -78,14 +78,20 @@ Notes:
 - `scheduling.cpuOvercommitRatio` *(1 to 64, default 4)* is how many vCPUs
   the scheduler may place per CPU a failure domain publishes in
   `status.failureDomains[].attributes.capacity`. Memory is never
-  overcommitted. Capacity is published today by the Cloud Hypervisor provider
-  only; a failure domain without it is not checked
+  overcommitted. Every provider (vSphere, libvirt, Proxmox, Cloud
+  Hypervisor) publishes capacity; a failure domain without it, or without a
+  figure, is not checked on it
   ([ADR-0107](https://github.com/firestoned/banlieue/blob/main/docs/adr/0107-capacity-aware-scheduling.md)).
+- `scheduling.storageReservePercent` *(0 to 50, default 10)* is the share of
+  each store's `totalGiB` the scheduler leaves free when it places a new VM's
+  disks: a full store pauses the guests already on it. `0` disables the
+  reserve ([ADR-0128](https://github.com/firestoned/banlieue/blob/main/docs/adr/0128-every-provider-publishes-measured-capacity.md)).
 
     ```yaml
     spec:
       scheduling:
-        cpuOvercommitRatio: 2   # at most 2 vCPUs per published CPU
+        cpuOvercommitRatio: 2      # at most 2 vCPUs per published CPU
+        storageReservePercent: 15  # keep 15% of each store free
     ```
 
     `examples/01-provider-cloud-hypervisor.yaml` is a complete Cloud
@@ -175,10 +181,15 @@ A provider controller is a Kubernetes controller. Its responsibilities:
    `status.failureDomains[].attributes.capacity` with what guests may use
    there: `cpus`, `memoryMiB` (after anything the backend reserves, or a
    smaller budget it enforces), and `memoryOverheadMiBPerVM` (what each VM
-   costs beyond its class's memory). Publish only figures you measured; leave
-   out any you cannot, and the scheduler does not check that resource. The
-   Cloud Hypervisor provider is the reference (`provider.rs::guest_capacity`)
-   ([ADR-0107](https://github.com/firestoned/banlieue/blob/main/docs/adr/0107-capacity-aware-scheduling.md)).
+   costs beyond its class's memory). Add the measured figures too:
+   `memoryAvailableMiB` (what a new guest could take now) and `storage[]`
+   (`storageClass`, `totalGiB`, `freeGiB`, and `shared` when the same store
+   backs other failure domains of the Provider). Round measured figures down
+   to whole GiB with `banlieue_provider_sdk::capacity`: every Provider status
+   change requeues every VirtualMachine. Publish only figures you measured;
+   leave out any you cannot, and the scheduler does not check that resource
+   ([ADR-0107](https://github.com/firestoned/banlieue/blob/main/docs/adr/0107-capacity-aware-scheduling.md),
+   [ADR-0128](https://github.com/firestoned/banlieue/blob/main/docs/adr/0128-every-provider-publishes-measured-capacity.md)).
 
 ## What a provider controller does **not** do
 

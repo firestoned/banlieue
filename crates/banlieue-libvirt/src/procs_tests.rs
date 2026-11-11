@@ -1307,4 +1307,153 @@ mod tests {
             None
         );
     }
+
+    // ------------------------------------------------------------------
+    // Host capacity (ADR-0128): node info, node memory stats, pool info
+    // ------------------------------------------------------------------
+
+    /// `remote_node_get_info_ret`: `char model[32]` is an XDR fixed array of
+    /// `char`, each element a 4-byte unit, so 128 bytes precede `memory`.
+    #[test]
+    fn node_info_skips_the_128_byte_model_and_reads_memory_and_cpus() {
+        let mut e = Encoder::new();
+        for c in b"x86_64\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0" {
+            e.write_i32(i32::from(*c));
+        }
+        e.write_u64(65_861_768); // memory, KiB
+        e.write_i32(32); // cpus
+        e.write_i32(2400); // mhz
+        e.write_i32(1); // nodes
+        e.write_i32(2); // sockets
+        e.write_i32(8); // cores
+        e.write_i32(2); // threads
+        let info = decode_node_get_info_ret(&e.into_bytes()).unwrap();
+        assert_eq!(
+            info,
+            NodeInfo {
+                memory_kib: 65_861_768,
+                cpus: 32
+            }
+        );
+    }
+
+    #[test]
+    fn a_short_node_info_fails_cleanly() {
+        assert!(decode_node_get_info_ret(&[0u8; 64]).is_err());
+    }
+
+    /// All cells (`-1`), the caller's `nparams`, no flags.
+    #[test]
+    fn node_memory_stats_args_ask_for_all_cells() {
+        let args = encode_node_get_memory_stats_args(4);
+        let mut d = Decoder::new(&args);
+        assert_eq!(d.read_i32().unwrap(), 4);
+        assert_eq!(d.read_i32().unwrap(), NODE_MEMORY_STATS_ALL_CELLS);
+        assert_eq!(d.read_u32().unwrap(), 0);
+        assert_eq!(NODE_MEMORY_STATS_ALL_CELLS, -1);
+    }
+
+    #[test]
+    fn node_memory_stats_decode_fields_then_the_count() {
+        let mut e = Encoder::new();
+        e.write_u32(2);
+        e.write_string("total");
+        e.write_u64(64 * 1024 * 1024);
+        e.write_string("free");
+        e.write_u64(1024 * 1024);
+        e.write_i32(4);
+        let (params, nparams) = decode_node_get_memory_stats_ret(&e.into_bytes()).unwrap();
+        assert_eq!(nparams, 4);
+        assert_eq!(
+            params,
+            vec![
+                ("total".to_string(), 64 * 1024 * 1024),
+                ("free".to_string(), 1024 * 1024)
+            ]
+        );
+    }
+
+    #[test]
+    fn too_many_memory_stats_are_rejected_before_allocating() {
+        let mut e = Encoder::new();
+        e.write_u32(u32::try_from(NODE_MEMORY_STATS_MAX).unwrap() + 1);
+        assert!(decode_node_get_memory_stats_ret(&e.into_bytes()).is_err());
+    }
+
+    /// What a new guest could take: free plus reclaimable cache, MiB; no
+    /// figure without `free`.
+    #[test]
+    fn available_memory_is_free_plus_buffers_plus_cached() {
+        let stats = vec![
+            ("total".to_string(), 8 * 1024 * 1024),
+            ("free".to_string(), 1024 * 1024),
+            ("buffers".to_string(), 512 * 1024),
+            ("cached".to_string(), 1536 * 1024),
+        ];
+        assert_eq!(node_memory_available_mib(&stats), Some(3 * 1024));
+        assert_eq!(node_memory_available_mib(&[("total".to_string(), 1)]), None);
+    }
+
+    #[test]
+    fn pool_info_args_are_the_pool() {
+        let pool = StoragePool {
+            name: "default".into(),
+            uuid: uuid_bytes(7),
+        };
+        let mut e = Encoder::new();
+        e.write_string("default");
+        e.write_opaque_fixed(&uuid_bytes(7));
+        assert_eq!(encode_storage_pool_get_info_args(&pool), e.into_bytes());
+    }
+
+    /// `unsigned char state` is a 4-byte XDR unit, then three hypers.
+    #[test]
+    fn pool_info_reads_state_then_capacity_allocation_available() {
+        let mut e = Encoder::new();
+        e.write_u32(2); // VIR_STORAGE_POOL_RUNNING
+        e.write_u64(900 << 30);
+        e.write_u64(88 << 30);
+        e.write_u64(812 << 30);
+        assert_eq!(
+            decode_storage_pool_get_info_ret(&e.into_bytes()).unwrap(),
+            StoragePoolInfo {
+                state: 2,
+                capacity_bytes: 900 << 30,
+                allocation_bytes: 88 << 30,
+                available_bytes: 812 << 30,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn node_get_info_calls_procedure_6_with_no_args() {
+        let (proc_, args) = capture_last_call_args(|mut s| async move {
+            let _ = node_get_info(&mut s).await;
+        })
+        .await;
+        assert_eq!(proc_, crate::rpc::PROC_NODE_GET_INFO);
+        assert_eq!(proc_, 6);
+        assert!(args.is_empty());
+    }
+
+    #[tokio::test]
+    async fn storage_pool_get_info_calls_procedure_87() {
+        let pool = StoragePool {
+            name: "default".into(),
+            uuid: uuid_bytes(7),
+        };
+        let (proc_, args) = capture_last_call_args(|mut s| async move {
+            let _ = storage_pool_get_info(&mut s, &pool).await;
+        })
+        .await;
+        assert_eq!(proc_, 87);
+        assert_eq!(
+            args,
+            encode_storage_pool_get_info_args(&StoragePool {
+                name: "default".into(),
+                uuid: uuid_bytes(7),
+            })
+        );
+        assert_eq!(crate::rpc::PROC_NODE_GET_MEMORY_STATS, 228);
+    }
 }

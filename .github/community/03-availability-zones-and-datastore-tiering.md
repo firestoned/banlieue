@@ -113,6 +113,13 @@ Consequences:
   per-Provider overcommit ratio) before spreading. Only the Cloud Hypervisor
   provider publishes capacity so far, and the spread itself is still by VM
   count (ADR-0098), not by utilization.
+  *Accepted and implemented 2026-11-11 as ADR-0128:* every provider
+  (vSphere, libvirt, Proxmox, Cloud Hypervisor) publishes capacity, plus a
+  measured `memoryAvailableMiB` and per-storage-class `storage[]`
+  (`totalGiB`, `freeGiB`, `shared`). New placements must also fit those,
+  less in-flight VMs and a per-Provider `storageReservePercent`; placed VMs
+  are never moved by a measured figure. Spread stays by count: spreading by
+  utilization is still open here.
 
 ## Roadmap actions
 
@@ -127,6 +134,13 @@ Consequences:
    resolved locally per domain, and make per-datastore tiering non-idiomatic.
 5. Docs: fold the AZ definition into `docs/src/concepts/` (failure domains) so
    users understand storage classes are uniform-tier + zone-local.
+6. ~~Capacity on every backend~~ **Done 2026-11-11 (ADR-0128).** vSphere,
+   libvirt, Proxmox and Cloud Hypervisor publish CPUs, memory, measured free
+   memory and per-storage-class free disk on their failure domains; the
+   scheduler fits new placements against them (`scheduler.rs::measured_shortfall`).
+   libvirt's reads verified against a real libvirtd; vSphere and Proxmox are
+   unit-tested against their fakes, not yet against a real vCenter or node.
+   Spreading by utilization rather than count remains open (above).
 
 ## Why this matters (one line)
 

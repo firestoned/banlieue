@@ -972,6 +972,7 @@ attestation:
             cpus: Some(96),
             memory_mi_b: Some(204_800),
             memory_overhead_mi_b_per_vm: Some(512),
+            ..FailureDomainCapacity::default()
         };
         let v = serde_json::to_value(&c).unwrap();
         assert_eq!(
@@ -1003,9 +1004,122 @@ attestation:
         );
         let explicit = ProviderScheduling {
             cpu_overcommit_ratio: Some(1),
+            ..ProviderScheduling::default()
         };
         assert_eq!(explicit.cpu_overcommit_ratio(), 1);
         assert_eq!(DEFAULT_CPU_OVERCOMMIT_RATIO, 4);
+    }
+
+    // ------------------------------------- measured capacity (ADR-0128)
+
+    #[test]
+    fn measured_capacity_round_trips_with_camel_case_fields() {
+        let c = FailureDomainCapacity {
+            cpus: Some(32),
+            memory_mi_b: Some(61_440),
+            memory_overhead_mi_b_per_vm: Some(512),
+            memory_available_mi_b: Some(40_960),
+            storage: vec![StorageCapacity {
+                storage_class: "fast".into(),
+                total_gi_b: Some(718),
+                free_gi_b: Some(512),
+                shared: true,
+            }],
+        };
+        let v = serde_json::to_value(&c).unwrap();
+        assert_eq!(
+            v,
+            serde_json::json!({
+                "cpus": 32,
+                "memoryMiB": 61_440,
+                "memoryOverheadMiBPerVM": 512,
+                "memoryAvailableMiB": 40_960,
+                "storage": [{
+                    "storageClass": "fast",
+                    "totalGiB": 718,
+                    "freeGiB": 512,
+                    "shared": true
+                }]
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<FailureDomainCapacity>(v).unwrap(),
+            c
+        );
+    }
+
+    /// A provider that measures nothing new writes nothing new: ADR-0107's
+    /// wire form is unchanged, and a store that is not shared says nothing.
+    #[test]
+    fn unmeasured_figures_and_unshared_storage_are_omitted() {
+        let c = FailureDomainCapacity {
+            memory_mi_b: Some(1024),
+            storage: vec![StorageCapacity {
+                storage_class: "local".into(),
+                free_gi_b: Some(10),
+                ..StorageCapacity::default()
+            }],
+            ..FailureDomainCapacity::default()
+        };
+        let v = serde_json::to_value(&c).unwrap();
+        assert_eq!(
+            v,
+            serde_json::json!({
+                "memoryMiB": 1024,
+                "storage": [{"storageClass": "local", "freeGiB": 10}]
+            })
+        );
+        let empty = serde_json::to_value(FailureDomainCapacity::default()).unwrap();
+        assert_eq!(empty, serde_json::json!({}));
+    }
+
+    #[test]
+    fn storage_capacity_looks_up_a_class() {
+        let c = FailureDomainCapacity {
+            storage: vec![
+                StorageCapacity {
+                    storage_class: "a".into(),
+                    free_gi_b: Some(1),
+                    ..StorageCapacity::default()
+                },
+                StorageCapacity {
+                    storage_class: "b".into(),
+                    free_gi_b: Some(2),
+                    ..StorageCapacity::default()
+                },
+            ],
+            ..FailureDomainCapacity::default()
+        };
+        assert_eq!(c.storage_for("b").and_then(|s| s.free_gi_b), Some(2));
+        assert!(c.storage_for("c").is_none());
+    }
+
+    #[test]
+    fn the_storage_reserve_defaults_when_unset() {
+        assert_eq!(
+            ProviderScheduling::default().storage_reserve_percent(),
+            DEFAULT_STORAGE_RESERVE_PERCENT
+        );
+        let explicit = ProviderScheduling {
+            storage_reserve_percent: Some(0),
+            ..ProviderScheduling::default()
+        };
+        assert_eq!(explicit.storage_reserve_percent(), 0);
+        assert_eq!(DEFAULT_STORAGE_RESERVE_PERCENT, 10);
+    }
+
+    #[test]
+    fn the_crd_bounds_the_storage_reserve() {
+        let crd = serde_json::to_value(Provider::crd()).unwrap();
+        let reserve = &crd["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"]["spec"]
+            ["properties"]["scheduling"]["properties"]["storageReservePercent"];
+        assert_eq!(reserve["minimum"].as_f64(), Some(0.0), "{reserve}");
+        assert_eq!(
+            reserve["maximum"].as_f64(),
+            Some(f64::from(MAX_STORAGE_RESERVE_PERCENT)),
+            "{reserve}"
+        );
+        assert_eq!(MAX_STORAGE_RESERVE_PERCENT, 50);
     }
 
     /// The API server enforces the ratio's range, so a typo cannot disable

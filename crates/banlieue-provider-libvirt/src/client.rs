@@ -16,9 +16,13 @@ use std::collections::BTreeMap;
 use async_trait::async_trait;
 use banlieue_api::banlieue::ProviderConnection;
 use banlieue_libvirt::{
-    DEFAULT_TLS_PORT, Network, StoragePool, TlsIdentity, connect_open, connect_tls,
-    list_all_networks, list_all_storage_pools, storage_pool_list_all_volumes,
+    DEFAULT_TLS_PORT, Network, Session, StoragePool, TlsIdentity, connect_open, connect_tls,
+    list_all_networks, list_all_storage_pools, node_get_info, node_get_memory_stats,
+    node_memory_available_mib, storage_pool_get_info, storage_pool_list_all_volumes,
+    storage_pool_refresh,
 };
+use tokio::io::{AsyncRead, AsyncWrite};
+use tracing::warn;
 
 use crate::error::{Error, Result};
 
@@ -41,6 +45,75 @@ pub trait LibvirtClient: Send + Sync {
     /// [`Error::Libvirt`] when the host has no such pool, or could not list
     /// it (an inactive pool cannot be listed).
     async fn volumes(&self, pool: &str) -> Result<Vec<String>>;
+    /// What the host has for guests (ADR-0128). Best effort: a figure the
+    /// host would not give is `None`, never an error.
+    async fn host_capacity(&self) -> Result<HostCapacity>;
+}
+
+/// A host's capacity as libvirt reports it (ADR-0128).
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct HostCapacity {
+    /// Active logical CPUs (`virNodeGetInfo`).
+    pub cpus: Option<u32>,
+    /// Host memory, MiB (`virNodeGetInfo`).
+    pub memory_mib: Option<u64>,
+    /// Free plus reclaimable memory, MiB (`virNodeGetMemoryStats`).
+    pub available_mib: Option<u64>,
+    /// Each pool's size and free space, by pool name, after a refresh.
+    pub pools: BTreeMap<String, PoolSpace>,
+}
+
+/// One storage pool's size and free space (`virStoragePoolGetInfo`).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct PoolSpace {
+    /// Size, bytes.
+    pub capacity_bytes: u64,
+    /// Free for new volumes, bytes.
+    pub available_bytes: u64,
+}
+
+/// KiB in one MiB, for `virNodeGetInfo`'s memory figure.
+const KIB_PER_MIB: u64 = 1024;
+
+/// Read the host's capacity on an open session. Every call is read-only
+/// (the pool refresh re-scans, it changes nothing) and best effort: a
+/// failure is logged and leaves that figure out, so capacity never blocks
+/// the rest of the status.
+async fn read_host_capacity<S>(session: &mut Session<S>, pools: &[StoragePool]) -> HostCapacity
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let mut capacity = HostCapacity::default();
+    match node_get_info(session).await {
+        Ok(info) => {
+            capacity.cpus = Some(info.cpus).filter(|c| *c > 0);
+            capacity.memory_mib = Some(info.memory_kib / KIB_PER_MIB);
+        }
+        Err(e) => warn!(error = %e, "node info unreadable; no CPU or memory figure"),
+    }
+    match node_get_memory_stats(session).await {
+        Ok(stats) => capacity.available_mib = node_memory_available_mib(&stats),
+        Err(e) => warn!(error = %e, "node memory stats unreadable; no free-memory figure"),
+    }
+    for pool in pools {
+        if let Err(e) = storage_pool_refresh(session, pool).await {
+            warn!(pool = %pool.name, error = %e, "pool refresh failed; no space figure");
+            continue;
+        }
+        match storage_pool_get_info(session, pool).await {
+            Ok(info) => {
+                capacity.pools.insert(
+                    pool.name.clone(),
+                    PoolSpace {
+                        capacity_bytes: info.capacity_bytes,
+                        available_bytes: info.available_bytes,
+                    },
+                );
+            }
+            Err(e) => warn!(pool = %pool.name, error = %e, "pool info unreadable; no space figure"),
+        }
+    }
+    capacity
 }
 
 /// Builds a [`LibvirtClient`] from a `Provider`'s connection details.
@@ -140,10 +213,12 @@ impl LibvirtClientFactory for TlsClientFactory {
                 .map_err(|e| e.to_string());
             volumes.insert(pool.name.clone(), listed);
         }
+        let capacity = read_host_capacity(&mut session, &pools).await;
         Ok(Box::new(SnapshotClient {
             pools,
             networks,
             volumes,
+            capacity,
         }))
     }
 }
@@ -155,6 +230,8 @@ struct SnapshotClient {
     networks: Vec<Network>,
     /// Each pool's volume names, or why they could not be listed.
     volumes: BTreeMap<String, std::result::Result<Vec<String>, String>>,
+    /// What the host has for guests.
+    capacity: HostCapacity,
 }
 
 #[async_trait]
@@ -172,6 +249,9 @@ impl LibvirtClient for SnapshotClient {
             None => Err(Error::Libvirt(format!("no storage pool named {pool}"))),
         }
     }
+    async fn host_capacity(&self) -> Result<HostCapacity> {
+        Ok(self.capacity.clone())
+    }
 }
 
 /// In-memory client for tests.
@@ -185,6 +265,8 @@ pub struct FakeClient {
     pub fail_with: Option<String>,
     /// Volume names per pool; a pool absent here has none.
     pub volumes: BTreeMap<String, Vec<String>>,
+    /// What the fake host reports for guests; empty by default.
+    pub capacity: HostCapacity,
 }
 
 impl FakeClient {
@@ -208,6 +290,7 @@ impl FakeClient {
                 .collect(),
             fail_with: None,
             volumes: BTreeMap::new(),
+            capacity: HostCapacity::default(),
         }
     }
 
@@ -253,6 +336,12 @@ impl LibvirtClient for FakeClient {
             return Err(Error::Libvirt(format!("no storage pool named {pool}")));
         }
         Ok(self.volumes.get(pool).cloned().unwrap_or_default())
+    }
+    async fn host_capacity(&self) -> Result<HostCapacity> {
+        match &self.fail_with {
+            Some(m) => Err(Error::Libvirt(m.clone())),
+            None => Ok(self.capacity.clone()),
+        }
     }
 }
 

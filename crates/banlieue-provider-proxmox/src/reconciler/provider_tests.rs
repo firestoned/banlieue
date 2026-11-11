@@ -298,4 +298,64 @@ mod tests {
         let e = Error::Missing("Provider.spec.connection.credentialsRef");
         assert_eq!(failure_reason(&e), reasons::CREDENTIALS_UNAVAILABLE);
     }
+
+    // ------------------------------------- capacity (ADR-0107, ADR-0128)
+
+    const GIB: u64 = 1 << 30;
+
+    /// Each node publishes its CPUs, memory, measured free memory (whole
+    /// GiB) and the QEMU per-VM overhead.
+    #[tokio::test]
+    async fn each_node_publishes_its_capacity() {
+        let f = FakeProxmox::single_node("pve1");
+        f.set_node_resources("pve1", 8, 32 * GIB, 10 * GIB + GIB / 2);
+        let s = compute_status(&f, &provider(&[], &[]), 1).await.unwrap();
+        let cap = s.failure_domains[0]
+            .attributes
+            .capacity
+            .clone()
+            .expect("capacity");
+        assert_eq!(cap.cpus, Some(8));
+        assert_eq!(cap.memory_mi_b, Some(32 * 1024));
+        assert_eq!(cap.memory_available_mi_b, Some(21 * 1024));
+        assert_eq!(
+            cap.memory_overhead_mi_b_per_vm,
+            Some(banlieue_provider_sdk::capacity::QEMU_MEMORY_OVERHEAD_MIB)
+        );
+    }
+
+    /// Each available class carries its storage's size and free space; a
+    /// Proxmox shared storage says so, since every node draws on it.
+    #[tokio::test]
+    async fn each_available_class_publishes_its_storage() {
+        let f = FakeProxmox::single_node("pve1");
+        f.set_storage_space("local-lvm", 100 * GIB, 40 * GIB + 1, true);
+        let p = provider(&[("gold", "local-lvm")], &[]);
+        let s = compute_status(&f, &p, 1).await.unwrap();
+        let cap = s.failure_domains[0]
+            .attributes
+            .capacity
+            .clone()
+            .expect("capacity");
+        assert_eq!(
+            cap.storage,
+            vec![banlieue_api::banlieue::StorageCapacity {
+                storage_class: "gold".into(),
+                total_gi_b: Some(100),
+                free_gi_b: Some(40),
+                shared: true,
+            }]
+        );
+    }
+
+    /// A node that reports no figures publishes no capacity, so it is not
+    /// filtered on size (ADR-0107).
+    #[tokio::test]
+    async fn a_node_with_no_figures_publishes_no_capacity() {
+        let f = FakeProxmox::single_node("pve1");
+        let s = compute_status(&f, &provider(&[("gold", "local-lvm")], &[]), 1)
+            .await
+            .unwrap();
+        assert_eq!(s.failure_domains[0].attributes.capacity, None);
+    }
 }

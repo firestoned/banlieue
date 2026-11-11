@@ -39,6 +39,7 @@
 
 pub mod bootstrap;
 pub mod ca_bundle;
+pub mod capacity;
 pub mod client;
 pub mod cloudinit;
 pub mod ek;

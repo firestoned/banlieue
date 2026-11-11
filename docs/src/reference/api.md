@@ -316,6 +316,7 @@ without it the defaults apply.
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `cpuOvercommitRatio` | integer |  | vCPUs the scheduler may place per CPU a failure domain publishes in `attributes.capacity.cpus`. `1` means no overcommit. CPU contention only slows guests, so the default allows 4; memory is never overcommitted. Unset: 4. |
+| `storageReservePercent` | integer |  | Percent of each store's `totalGiB` the scheduler keeps free when it places a new VM's disks (ADR-0128): a full store pauses the guests already on it. `0` disables the reserve. Unset: 10. |
 
 ### `.status`
 
@@ -382,8 +383,22 @@ publishes none is not filtered on capacity.
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `cpus` | integer |  | Logical CPUs guests may use. vCPUs are placed up to this times the Provider's `scheduling.cpuOvercommitRatio`. |
+| `memoryAvailableMiB` | integer |  | Memory a new guest could take now, MiB, as the provider measured it (ADR-0128). Includes what running VMs already use, so the scheduler checks it for new placements only. Never more than `memoryMiB`. |
 | `memoryMiB` | integer |  | Memory guests may use, MiB: the host's, or a smaller budget the host declares for guests (a Cloud Hypervisor host's guests' slice, ADR-0105). Never overcommitted. |
 | `memoryOverheadMiBPerVM` | integer |  | Memory each VM costs beyond its class's `memoryMiB` (its VMM), MiB. |
+| `storage` | object[] |  | Size and free space of the store behind each available storage class, as the provider measured it (ADR-0128). |
+
+####### `.status.failureDomains[].attributes.capacity.storage[]`
+
+Size and free space of the store behind each available storage
+class, as the provider measured it (ADR-0128).
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `freeGiB` | integer |  | Space a new disk could take now, GiB, for the writer the provider runs as. |
+| `shared` | boolean |  | The same space backs other failure domains of this Provider (a Proxmox shared storage, a datastore mounted by several clusters), so disks placed in any of them draw on it. |
+| `storageClass` | string | Yes | A name from `availableStorageClasses`. |
+| `totalGiB` | integer |  | The store's size, GiB. |
 
 #### `.status.workload`
 
