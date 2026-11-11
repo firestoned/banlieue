@@ -203,6 +203,9 @@ trait Slice {
 
     #[zbus(property, name = "AllowedCPUs")]
     fn allowed_cpus(&self) -> zbus::Result<Vec<u8>>;
+
+    #[zbus(property, name = "MemoryCurrent")]
+    fn memory_current(&self) -> zbus::Result<u64>;
 }
 
 /// The slice every guest's VMM and vTPM runs in (ADR-0105).
@@ -217,6 +220,17 @@ const BYTES_PER_MIB: u64 = 1024 * 1024;
 #[must_use]
 pub fn memory_max_mib(bytes: u64) -> Option<u64> {
     (bytes != u64::MAX).then_some(bytes / BYTES_PER_MIB)
+}
+
+/// What a slice may still take, MiB: `MemoryMax` less `MemoryCurrent`, both
+/// bytes. `None` when either is systemd's "infinity"/"unknown" (`u64::MAX`):
+/// no limit, or no memory accounting (ADR-0128).
+#[must_use]
+pub fn memory_headroom_mib(max_bytes: u64, current_bytes: u64) -> Option<u64> {
+    if current_bytes == u64::MAX {
+        return None;
+    }
+    memory_max_mib(max_bytes).map(|max| max.saturating_sub(current_bytes / BYTES_PER_MIB))
 }
 
 /// The number of CPUs in an `AllowedCPUs` mask (byte 0 bit 0 is CPU 0);
@@ -242,6 +256,7 @@ pub fn combine_budgets(
         memory_max_mib: tighter(guests.0, parent.0),
         allowed_cpus: tighter(guests.1.map(u64::from), parent.1.map(u64::from))
             .and_then(|n| u32::try_from(n).ok()),
+        memory_headroom_mib: None,
     }
 }
 
@@ -314,8 +329,23 @@ impl Systemd {
         ))
     }
 
-    /// The budget systemd enforces on guests together (ADR-0107). A slice
-    /// that cannot be read counts as unbounded, and is logged.
+    /// What the slice `name` may still take, MiB: its `MemoryMax` less its
+    /// `MemoryCurrent` (ADR-0128).
+    ///
+    /// # Errors
+    /// The D-Bus error.
+    pub async fn slice_memory_headroom(&self, name: &str) -> zbus::Result<Option<u64>> {
+        let path = self.manager.load_unit(name).await?;
+        let slice = SliceProxy::builder(&self.conn).path(path).build().await?;
+        Ok(memory_headroom_mib(
+            slice.memory_max().await?,
+            slice.memory_current().await?,
+        ))
+    }
+
+    /// The budget systemd enforces on guests together (ADR-0107), and the
+    /// headroom left in it (ADR-0128). A slice that cannot be read counts as
+    /// unbounded, and is logged.
     pub async fn guest_slice_budget(&self) -> crate::provider::SliceBudget {
         let read = |name: &'static str| async move {
             self.slice_limits(name).await.unwrap_or_else(|e| {
@@ -323,7 +353,19 @@ impl Systemd {
                 (None, None)
             })
         };
-        combine_budgets(read(GUEST_SLICE).await, read(VMS_SLICE).await)
+        let headroom = |name: &'static str| async move {
+            self.slice_memory_headroom(name).await.unwrap_or_else(|e| {
+                tracing::warn!(slice = name, error = %e, "slice memory use unreadable; no headroom figure");
+                None
+            })
+        };
+        let mut budget = combine_budgets(read(GUEST_SLICE).await, read(VMS_SLICE).await);
+        budget.memory_headroom_mib = match (headroom(GUEST_SLICE).await, headroom(VMS_SLICE).await)
+        {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        budget
     }
 
     /// Set `spec`'s runtime limits, then start the instance. The

@@ -17,7 +17,7 @@ mod tests {
     use kube::api::ObjectMeta;
     use std::collections::BTreeMap;
 
-    use crate::client::FakeClient;
+    use crate::client::{FakeClient, HostCapacity, PoolSpace};
 
     fn target(k: &str, v: &str) -> BTreeMap<String, String> {
         let mut m = BTreeMap::new();
@@ -213,5 +213,65 @@ mod tests {
             assert_eq!(c.status, condition_status::FALSE);
             assert_eq!(c.reason, reasons::CONNECT_FAILED);
         }
+    }
+
+    // ------------------------------------- capacity (ADR-0107, ADR-0128)
+
+    const GIB: u64 = 1 << 30;
+
+    fn measured_host() -> HostCapacity {
+        HostCapacity {
+            cpus: Some(16),
+            memory_mib: Some(32 * 1024),
+            available_mib: Some(20 * 1024 + 700),
+            pools: BTreeMap::from([(
+                "default".to_string(),
+                PoolSpace {
+                    capacity_bytes: 500 * GIB,
+                    available_bytes: 120 * GIB + 1,
+                },
+            )]),
+        }
+    }
+
+    /// The host's CPUs, memory, measured free memory (whole GiB), the QEMU
+    /// per-VM overhead, and each available class's pool, under the class name.
+    #[tokio::test]
+    async fn the_failure_domain_publishes_the_hosts_capacity() {
+        let mut client = FakeClient::with(&["default", "boot"], &["default"]);
+        client.capacity = measured_host();
+        let p = provider_with(vec![("gold", "default"), ("missing", "nope")], vec![]);
+        let st = compute_status(&client, &p, 1).await.unwrap();
+        let cap = st.failure_domains[0]
+            .attributes
+            .capacity
+            .clone()
+            .expect("capacity");
+        assert_eq!(cap.cpus, Some(16));
+        assert_eq!(cap.memory_mi_b, Some(32 * 1024));
+        assert_eq!(cap.memory_available_mi_b, Some(20 * 1024));
+        assert_eq!(
+            cap.memory_overhead_mi_b_per_vm,
+            Some(banlieue_provider_sdk::capacity::QEMU_MEMORY_OVERHEAD_MIB)
+        );
+        assert_eq!(
+            cap.storage,
+            vec![banlieue_api::banlieue::StorageCapacity {
+                storage_class: "gold".into(),
+                total_gi_b: Some(500),
+                free_gi_b: Some(120),
+                shared: false,
+            }]
+        );
+    }
+
+    /// A host that would give no figure publishes no capacity, so it is
+    /// not filtered on size (ADR-0107).
+    #[tokio::test]
+    async fn a_host_with_no_figures_publishes_no_capacity() {
+        let client = FakeClient::with(&["default"], &["default"]);
+        let p = provider_with(vec![("gold", "default")], vec![]);
+        let st = compute_status(&client, &p, 1).await.unwrap();
+        assert_eq!(st.failure_domains[0].attributes.capacity, None);
     }
 }

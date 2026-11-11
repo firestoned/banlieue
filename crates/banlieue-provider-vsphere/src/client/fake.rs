@@ -15,8 +15,8 @@ use banlieue_api::common::PowerState;
 use crate::error::{Error, Result};
 
 use super::{
-    CloneVmRequest, Cluster, Credentials, Datacenter, Datastore, MACHINE_UID_KEY, NamedVm, Network,
-    Template, VSphereClient, VSphereClientFactory,
+    CloneVmRequest, Cluster, ClusterCapacity, Credentials, Datacenter, Datastore, MACHINE_UID_KEY,
+    NamedVm, Network, Template, VSphereClient, VSphereClientFactory,
 };
 
 /// A VM that exists in the fake vCenter right now.
@@ -86,6 +86,8 @@ pub struct Inventory {
     pub datastores_by_cluster: HashMap<String, Vec<Datastore>>,
     /// Networks reachable from a cluster, grouped by `Cluster.moref`.
     pub networks_by_cluster: HashMap<String, Vec<Network>>,
+    /// Capacity per cluster, by `Cluster.moref`; absent means no figures.
+    pub capacity_by_cluster: HashMap<String, ClusterCapacity>,
 }
 
 impl Inventory {
@@ -182,6 +184,7 @@ impl InventoryBuilder {
             name: ds_name,
             datastore_cluster: datastore_cluster.map(str::to_string),
             free_space_bytes: None,
+            capacity_bytes: None,
         };
         self.inv
             .datastores_by_cluster
@@ -189,6 +192,62 @@ impl InventoryBuilder {
             .or_default()
             .push(ds);
         self
+    }
+
+    /// Set a seeded datastore's size and free space, bytes.
+    pub fn with_datastore_space(
+        mut self,
+        dc_name: &str,
+        cluster_name: &str,
+        ds_name: &str,
+        capacity_bytes: i64,
+        free_space_bytes: i64,
+    ) -> Self {
+        let ds = self.lookup_datastore(dc_name, cluster_name, ds_name);
+        ds.capacity_bytes = Some(capacity_bytes);
+        ds.free_space_bytes = Some(free_space_bytes);
+        self
+    }
+
+    /// Give a seeded datastore an explicit moref, so two clusters can name
+    /// the same datastore.
+    pub fn with_datastore_moref(
+        mut self,
+        dc_name: &str,
+        cluster_name: &str,
+        ds_name: &str,
+        moref: &str,
+    ) -> Self {
+        self.lookup_datastore(dc_name, cluster_name, ds_name).moref = moref.to_string();
+        self
+    }
+
+    /// Seed what `(dc_name, cluster_name)` reports as its capacity.
+    pub fn with_cluster_capacity(
+        mut self,
+        dc_name: &str,
+        cluster_name: &str,
+        capacity: ClusterCapacity,
+    ) -> Self {
+        let cmoref = self.lookup_cluster(dc_name, cluster_name);
+        self.inv.capacity_by_cluster.insert(cmoref, capacity);
+        self
+    }
+
+    fn lookup_datastore(
+        &mut self,
+        dc_name: &str,
+        cluster_name: &str,
+        ds_name: &str,
+    ) -> &mut Datastore {
+        let cmoref = self.lookup_cluster(dc_name, cluster_name);
+        self.inv
+            .datastores_by_cluster
+            .get_mut(&cmoref)
+            .and_then(|ds| ds.iter_mut().find(|d| d.name == ds_name))
+            .unwrap_or_else(|| {
+                panic!("datastore {ds_name:?} in {cluster_name:?} not seeded: call .with_datastore(...) first")
+            })
     }
 
     /// Seed a network reachable from `(dc_name, cluster_name)`. `distributed`
@@ -542,6 +601,15 @@ impl VSphereClient for FakeClient {
         Ok(self
             .inventory
             .datastores_by_cluster
+            .get(&cluster.moref)
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    async fn cluster_capacity(&self, cluster: &Cluster) -> Result<ClusterCapacity> {
+        Ok(self
+            .inventory
+            .capacity_by_cluster
             .get(&cluster.moref)
             .cloned()
             .unwrap_or_default())

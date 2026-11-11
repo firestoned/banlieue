@@ -286,6 +286,7 @@ mod tests {
             moref: format!("datastore-{name}"),
             datastore_cluster: cluster.map(str::to_string),
             free_space_bytes,
+            capacity_bytes: None,
         }
     }
 
@@ -437,6 +438,7 @@ mod tests {
             moref: "datastore-1".to_string(),
             datastore_cluster: None,
             free_space_bytes: None,
+            capacity_bytes: None,
         }
     }
 

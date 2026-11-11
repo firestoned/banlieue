@@ -72,6 +72,28 @@ pub struct Datastore {
     /// Free space in bytes (`summary.freeSpace`), when known. Used to pick the
     /// emptiest member when a datastore-cluster is the import target (ADR-0020).
     pub free_space_bytes: Option<i64>,
+    /// Size in bytes (`summary.capacity`), when known (ADR-0128).
+    pub capacity_bytes: Option<i64>,
+}
+
+/// What a cluster offers guests, as vCenter reports it (ADR-0128). Every
+/// figure is best effort: `None` when vCenter would not give it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ClusterCapacity {
+    /// Logical CPUs (`ComputeResourceSummary.numCpuThreads`).
+    pub cpu_threads: Option<u32>,
+    /// Memory available to VMs, MiB (`ComputeResourceSummary.effectiveMemory`,
+    /// which leaves out hosts in maintenance and the hypervisors' own use).
+    pub effective_memory_mib: Option<u64>,
+    /// Memory the cluster's hosts use now, MiB (the sum of each host's
+    /// `summary.quickStats.overallMemoryUsage`).
+    pub hosts_memory_used_mib: Option<u64>,
+    /// The cluster's root resource pool's memory limit, MiB
+    /// (`runtime.memory.maxUsage`).
+    pub pool_memory_limit_mib: Option<u64>,
+    /// Memory that pool can still reserve for a VM, MiB
+    /// (`runtime.memory.unreservedForVm`).
+    pub pool_memory_unreserved_mib: Option<u64>,
 }
 
 /// Slim local projection of a vCenter network reachable from a cluster — a
@@ -175,6 +197,10 @@ pub trait VSphereClient: Send + Sync {
     /// distinguishing standard port groups from distributed ones. Used for
     /// `networkClasses` reachability (ADR-0019).
     async fn list_networks(&self, cluster: &Cluster) -> Result<Vec<Network>>;
+
+    /// CPUs and memory `cluster` offers guests, and what is used now
+    /// (ADR-0128). Best effort: a figure vCenter would not give is `None`.
+    async fn cluster_capacity(&self, cluster: &Cluster) -> Result<ClusterCapacity>;
 
     /// Import a bootable ISO into one failure domain as a vCenter template
     /// (ADR-0020): upload the ISO to `req.datastore`, create an empty EFI VM in

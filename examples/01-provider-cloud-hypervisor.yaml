@@ -73,8 +73,11 @@ spec:
   # How the scheduler places VMs here (ADR-0107). Memory is never
   # overcommitted; vCPUs may be, up to this many per CPU the host publishes.
   # 1 to 64, default 4. 2 suits a host that also runs latency-sensitive work.
+  # storageReservePercent: share of each filesystem's size kept free when
+  # placing a new VM's disks (ADR-0128). 0 to 50, default 10.
   scheduling:
     cpuOvercommitRatio: 2
+    storageReservePercent: 10
 
 # What the provider publishes back, for reference (status is written by the
 # provider, never by you). `capacity` is what the scheduler fits each VM
@@ -95,8 +98,18 @@ spec:
 #           cpus: 80                     # AllowedCPUs 16-95
 #           memoryMiB: 204800            # 200G guests' slice budget
 #           memoryOverheadMiBPerVM: 512
+#           memoryAvailableMiB: 153600   # measured, whole GiB (ADR-0128)
+#           storage:                     # measured, per available class
+#             - storageClass: standard
+#               totalGiB: 718
+#               freeGiB: 512
+#             - storageClass: gold
+#               totalGiB: 1800
+#               freeGiB: 1200
 #
 # With ratio 2, this host takes VMs until their vCPUs reach 160, or their
-# memory plus 512 MiB each reaches 204800 MiB, whichever comes first. A VM
+# memory plus 512 MiB each reaches 204800 MiB, whichever comes first. A new
+# VM must also fit the measured free memory and, per storage class, freeGiB
+# less 10% of totalGiB, less VMs scheduled but not yet provisioned. A VM
 # that fits nowhere reports Scheduled=False, NoFailureDomainMatched,
 # "insufficient capacity: ...".

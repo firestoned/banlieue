@@ -28,12 +28,14 @@ mod tests {
     #[test]
     fn nodes_decode_and_online_is_derived() {
         let n: Vec<Node> = decode_data(
-            r#"{"data":[{"node":"pve1","status":"online","maxcpu":8,"maxmem":34359738368},{"node":"pve2","status":"offline"}]}"#,
+            r#"{"data":[{"node":"pve1","status":"online","maxcpu":8,"maxmem":34359738368,"mem":12884901888},{"node":"pve2","status":"offline"}]}"#,
         )
         .unwrap();
         assert!(n[0].is_online());
         assert!(!n[1].is_online());
         assert_eq!(n[0].maxcpu, Some(8));
+        assert_eq!(n[0].mem, Some(12_884_901_888));
+        assert_eq!(n[1].mem, None);
     }
 
     #[test]

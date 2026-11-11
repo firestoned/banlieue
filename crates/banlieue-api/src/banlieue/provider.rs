@@ -127,6 +127,11 @@ pub const DEFAULT_CPU_OVERCOMMIT_RATIO: u32 = 4;
 pub const MIN_CPU_OVERCOMMIT_RATIO: u32 = 1;
 /// Largest `cpuOvercommitRatio` the API server accepts.
 pub const MAX_CPU_OVERCOMMIT_RATIO: u32 = 64;
+/// Share of each store's `totalGiB` the scheduler leaves free when a
+/// Provider does not set `scheduling.storageReservePercent` (ADR-0128).
+pub const DEFAULT_STORAGE_RESERVE_PERCENT: u32 = 10;
+/// Largest `storageReservePercent` the API server accepts.
+pub const MAX_STORAGE_RESERVE_PERCENT: u32 = 50;
 
 /// Placement policy for one backend (ADR-0107).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -139,6 +144,13 @@ pub struct ProviderScheduling {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(range(min = MIN_CPU_OVERCOMMIT_RATIO, max = MAX_CPU_OVERCOMMIT_RATIO))]
     pub cpu_overcommit_ratio: Option<u32>,
+
+    /// Percent of each store's `totalGiB` the scheduler keeps free when it
+    /// places a new VM's disks (ADR-0128): a full store pauses the guests
+    /// already on it. `0` disables the reserve. Unset: 10.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 0, max = MAX_STORAGE_RESERVE_PERCENT))]
+    pub storage_reserve_percent: Option<u32>,
 }
 
 impl ProviderScheduling {
@@ -148,6 +160,14 @@ impl ProviderScheduling {
     pub fn cpu_overcommit_ratio(&self) -> u32 {
         self.cpu_overcommit_ratio
             .unwrap_or(DEFAULT_CPU_OVERCOMMIT_RATIO)
+    }
+
+    /// The storage reserve to apply, percent: the configured one, or
+    /// [`DEFAULT_STORAGE_RESERVE_PERCENT`].
+    #[must_use]
+    pub fn storage_reserve_percent(&self) -> u32 {
+        self.storage_reserve_percent
+            .unwrap_or(DEFAULT_STORAGE_RESERVE_PERCENT)
     }
 }
 
@@ -662,6 +682,51 @@ pub struct FailureDomainCapacity {
         skip_serializing_if = "Option::is_none"
     )]
     pub memory_overhead_mi_b_per_vm: Option<u64>,
+
+    /// Memory a new guest could take now, MiB, as the provider measured it
+    /// (ADR-0128). Includes what running VMs already use, so the scheduler
+    /// checks it for new placements only. Never more than `memoryMiB`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_available_mi_b: Option<u64>,
+
+    /// Size and free space of the store behind each available storage
+    /// class, as the provider measured it (ADR-0128).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub storage: Vec<StorageCapacity>,
+}
+
+impl FailureDomainCapacity {
+    /// The measured store behind `storage_class`, if the provider published
+    /// one.
+    #[must_use]
+    pub fn storage_for(&self, storage_class: &str) -> Option<&StorageCapacity> {
+        self.storage
+            .iter()
+            .find(|s| s.storage_class == storage_class)
+    }
+}
+
+/// The store behind one storage class in a failure domain (ADR-0128).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct StorageCapacity {
+    /// A name from `availableStorageClasses`.
+    pub storage_class: String,
+
+    /// The store's size, GiB.
+    #[serde(default, rename = "totalGiB", skip_serializing_if = "Option::is_none")]
+    pub total_gi_b: Option<u64>,
+
+    /// Space a new disk could take now, GiB, for the writer the provider
+    /// runs as.
+    #[serde(default, rename = "freeGiB", skip_serializing_if = "Option::is_none")]
+    pub free_gi_b: Option<u64>,
+
+    /// The same space backs other failure domains of this Provider (a
+    /// Proxmox shared storage, a datastore mounted by several clusters), so
+    /// disks placed in any of them draw on it.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub shared: bool,
 }
 
 #[inline]

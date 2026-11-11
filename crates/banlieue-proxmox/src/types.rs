@@ -63,6 +63,9 @@ pub struct Node {
     /// Memory in bytes.
     #[serde(default)]
     pub maxmem: Option<u64>,
+    /// Memory in use, bytes (ADR-0128).
+    #[serde(default)]
+    pub mem: Option<u64>,
 }
 
 impl Node {

@@ -1,12 +1,12 @@
 # anatomy.md
 
-> Auto-maintained by OpenWolf. Last scanned: 2026-11-09T17:00:00.177Z
+> Auto-maintained by OpenWolf. Last scanned: 2026-11-10T17:00:00.175Z
 > Files: 513 tracked | Anatomy hits: 0 | Misses: 0
 
 ## ./
 
 - `.dockerignore` — Docker ignore rules (~237 tok)
-- `.gitignore` — Git ignore rules (~580 tok)
+- `.gitignore` — Git ignore rules (~585 tok)
 - `AGENTS.md` — OpenWolf (~174 tok)
 - `Cargo.toml` — Rust package manifest (~1845 tok)
 - `CHANGELOG.md` — Change log (~2226 tok)
@@ -24,7 +24,7 @@
 - `NOTICE` (~159 tok)
 - `osv-scanner.toml` — SPDX-License-Identifier: Apache-2.0 (~120 tok)
 - `README.md` — Project documentation (~3895 tok)
-- `ROADMAPS.md` — Roadmaps (~5460 tok)
+- `ROADMAPS.md` — Roadmaps (~5504 tok)
 - `SECURITY.md` — Security Policy (~382 tok)
 
 ## .clusterfuzzlite/
@@ -66,14 +66,14 @@
 - `11-phase-3-provider-lifecycle.md` — Phase 3 — Provider Lifecycle Automation (~3154 tok)
 - `12-phase-4-finos-ready.md` — Phase 4 — FINOS-Ready Polish (~5184 tok)
 - `13-ipam-pool-integration.md` — IPAM Pool Integration (CAPI `ipam.cluster.x-k8s.io`) (~3676 tok)
-- `14-live-migration.md` — Live Migration (same-class first, cross-class deferred) (~3286 tok)
+- `14-live-migration.md` — Live Migration (same-class first, cross-class deferred) (~4264 tok)
 - `15-vsphere-disk-image-import.md` — 15: vSphere disk-image import (raw and VMDK), alongside the ISO path (~4709 tok)
 - `16-scorecard-remediation.md` — 16 — OSSF Scorecard remediation (~2677 tok)
 - `17-ephemeral-vm-pools.md` — 17: Ephemeral, single-use VM pools (AI agent sandboxes) (~14621 tok)
 - `18-fast-sealed-clones.md` — 18: Fast sealed clones: isolation proof, boot speed, verified base (~7563 tok)
 - `19-port-groups.md` — 19: Port groups — declared, reconciled, and safe to delete (~4109 tok)
 - `20-firecracker-provider.md` — 20: Firecracker provider, the sandbox backend (~5231 tok)
-- `README.md` — Project documentation (~1538 tok)
+- `README.md` — Project documentation (~1550 tok)
 
 ## .github/requirements/
 
@@ -254,8 +254,8 @@
 - `pool_plan.rs` — Pure planning logic for `VirtualMachinePool` (roadmap 17, ADR-0046). (~3198 tok)
 - `pool_tests.rs` — Unit tests for `pool.rs`. (~3070 tok)
 - `pool.rs` — `VirtualMachinePool` reconciler (roadmap 17, ADR-0046). (~5253 tok)
-- `scheduler_tests.rs` — Unit tests for [`super::super::scheduler`]. (~19422 tok)
-- `scheduler.rs` — Scheduler — the pure placement function. (~10645 tok)
+- `scheduler_tests.rs` — Unit tests for [`super::super::scheduler`]. (~21313 tok)
+- `scheduler.rs` — Scheduler — the pure placement function. (~11166 tok)
 - `status_mirror_tests.rs` — Unit tests for [`super::super::status_mirror`]. (~8350 tok)
 - `status_mirror.rs` — `VirtualMachine` status mirror. (~3571 tok)
 - `virtualmachine_tests.rs` — Unit tests for [`super::super::virtualmachine`]. (~4336 tok)

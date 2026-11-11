@@ -107,7 +107,15 @@ lan = "br0"
                 cpu_model: Some("Intel(R) Xeon(R) CPU E5-2630 v3 @ 2.40GHz".into()),
                 memory_mib: Some(64_318),
                 hugepages_mib: Some(0),
-                storage_free_gib: [("fast".to_string(), 812)].into(),
+                memory_available_mib: Some(40_000),
+                storage: [(
+                    "fast".to_string(),
+                    StoreSpace {
+                        total_gib: 900,
+                        free_gib: 812,
+                    },
+                )]
+                .into(),
             },
             storage_without_reflink: BTreeSet::new(),
             guest_budget: SliceBudget::default(),
@@ -145,6 +153,17 @@ lan = "br0"
         assert_eq!(parse_meminfo("garbage"), (None, None));
     }
 
+    /// `MemAvailable` already leaves out reserved hugepages and counts
+    /// reclaimable cache (ADR-0128).
+    #[test]
+    fn available_memory_comes_from_meminfo() {
+        assert_eq!(
+            parse_mem_available("MemTotal: 8192 kB\nMemAvailable:    4194304 kB\n"),
+            Some(4096)
+        );
+        assert_eq!(parse_mem_available(MEMINFO), None);
+    }
+
     #[test]
     fn the_failure_domain_reports_the_hosts_capacity() {
         let st = compute_status(&provider(&[]), &config(), &healthy(), 1);
@@ -157,7 +176,10 @@ lan = "br0"
         );
         assert_eq!(get("memoryMiB"), Some("64318"));
         assert_eq!(get("hugepagesMiB"), Some("0"));
-        assert_eq!(get("storageFreeGiB"), Some("fast=812"));
+        assert!(
+            get("storageFreeGiB").is_none(),
+            "free disk is typed now (ADR-0128)"
+        );
         assert_eq!(get("nestedVirtualization"), Some("false"));
     }
 
@@ -434,12 +456,14 @@ lan = "br0"
         let small = SliceBudget {
             allowed_cpus: Some(80),
             memory_max_mib: Some(204_800),
+            ..SliceBudget::default()
         };
         let c = guest_capacity(&h, &small);
         assert_eq!((c.cpus, c.memory_mi_b), (Some(80), Some(204_800)));
         let large = SliceBudget {
             allowed_cpus: Some(128),
             memory_max_mib: Some(1 << 30),
+            ..SliceBudget::default()
         };
         let c = guest_capacity(&h, &large);
         assert_eq!((c.cpus, c.memory_mi_b), (Some(96), Some(262_144)));
@@ -451,6 +475,7 @@ lan = "br0"
         let budget = SliceBudget {
             allowed_cpus: Some(8),
             memory_max_mib: Some(4096),
+            ..SliceBudget::default()
         };
         let c = guest_capacity(&HostCapacity::default(), &budget);
         assert_eq!((c.cpus, c.memory_mi_b), (Some(8), Some(4096)));
@@ -465,12 +490,74 @@ lan = "br0"
         assert_eq!(VMM_MEMORY_OVERHEAD_MIB, 512);
     }
 
+    // ------------------------------------------------------------------
+    // Measured capacity (ADR-0128)
+    // ------------------------------------------------------------------
+
+    /// Free memory is the host's, or the slice's headroom when smaller, never
+    /// more than what guests may use, and rounded down to a whole GiB so
+    /// the status does not change on every pass.
+    #[test]
+    fn available_memory_is_capped_and_rounded_down_to_a_gib() {
+        let mut h = host(None, Some(65_536), Some(0));
+        h.memory_available_mib = Some(40_000);
+        let c = guest_capacity(&h, &SliceBudget::default());
+        assert_eq!(c.memory_available_mi_b, Some(39 * 1024));
+
+        let tight = SliceBudget {
+            memory_headroom_mib: Some(5000),
+            ..SliceBudget::default()
+        };
+        assert_eq!(
+            guest_capacity(&h, &tight).memory_available_mi_b,
+            Some(4 * 1024)
+        );
+
+        let small = SliceBudget {
+            memory_max_mib: Some(8192),
+            ..SliceBudget::default()
+        };
+        assert_eq!(
+            guest_capacity(&h, &small).memory_available_mi_b,
+            Some(8192),
+            "never more than memoryMiB"
+        );
+
+        assert_eq!(
+            guest_capacity(&HostCapacity::default(), &SliceBudget::default()).memory_available_mi_b,
+            None
+        );
+    }
+
+    /// Each available storage class carries its store's size and free
+    /// space, under the Provider's class name; an unserved class has none.
+    #[test]
+    fn the_failure_domain_publishes_typed_storage() {
+        let status = compute_status(&provider(&[]), &config(), &healthy(), 1);
+        let cap = status.failure_domains[0]
+            .attributes
+            .capacity
+            .clone()
+            .expect("typed capacity");
+        assert_eq!(
+            cap.storage,
+            vec![banlieue_api::banlieue::StorageCapacity {
+                storage_class: "gold".into(),
+                total_gi_b: Some(900),
+                free_gi_b: Some(812),
+                shared: false,
+            }]
+        );
+        assert_eq!(cap.memory_available_mi_b, Some(39 * 1024));
+    }
+
     #[test]
     fn the_failure_domain_publishes_typed_capacity() {
         let mut facts = healthy();
         facts.guest_budget = SliceBudget {
             allowed_cpus: None,
             memory_max_mib: Some(32_768),
+            ..SliceBudget::default()
         };
         let status = compute_status(&provider(&[]), &config(), &facts, 1);
         let cap = status.failure_domains[0]

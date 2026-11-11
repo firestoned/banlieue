@@ -220,6 +220,17 @@ mod tests {
         assert_eq!(memory_max_mib(6_442_450_944), Some(6144));
     }
 
+    /// Headroom is `MemoryMax` less `MemoryCurrent`; no limit, or no
+    /// accounting (`u64::MAX`), means no headroom figure (ADR-0128).
+    #[test]
+    fn slice_headroom_is_its_limit_less_its_use() {
+        const MIB: u64 = 1024 * 1024;
+        assert_eq!(memory_headroom_mib(8192 * MIB, 3000 * MIB), Some(5192));
+        assert_eq!(memory_headroom_mib(1024 * MIB, 2048 * MIB), Some(0));
+        assert_eq!(memory_headroom_mib(u64::MAX, 3000 * MIB), None);
+        assert_eq!(memory_headroom_mib(8192 * MIB, u64::MAX), None);
+    }
+
     /// The guests' budget is the tighter of their slice and its parent.
     #[test]
     fn the_budget_is_the_tighter_of_the_two_slices() {
@@ -230,6 +241,7 @@ mod tests {
             crate::provider::SliceBudget {
                 allowed_cpus: Some(16),
                 memory_max_mib: Some(4 * 1024),
+                ..crate::provider::SliceBudget::default()
             }
         );
         assert_eq!(

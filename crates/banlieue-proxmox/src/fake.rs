@@ -48,8 +48,12 @@ struct FakeTask {
     exitstatus: String,
 }
 
+/// A node's `(maxcpu, maxmem, mem)`, as `GET /nodes` reports them.
+type NodeResources = (u32, u64, u64);
+
 struct State {
     nodes: Vec<String>,
+    node_resources: BTreeMap<String, NodeResources>,
     storages: Vec<Storage>,
     bridges: Vec<String>,
     offline: Vec<String>,
@@ -125,6 +129,7 @@ impl FakeProxmox {
         Self {
             state: Mutex::new(State {
                 nodes: vec![node.to_string()],
+                node_resources: BTreeMap::new(),
                 storages: vec![
                     storage("local", "dir", "iso,vztmpl,backup"),
                     storage("local-lvm", "lvmthin", "images,rootdir"),
@@ -187,6 +192,24 @@ impl FakeProxmox {
     /// Mark a node offline in \`GET /nodes\`.
     pub fn set_node_offline(&self, node: &str) {
         self.lock().offline.push(node.to_string());
+    }
+
+    /// Report `cpus`, `maxmem` and `mem` (bytes) for `node` in `GET /nodes`.
+    pub fn set_node_resources(&self, node: &str, cpus: u32, maxmem: u64, mem: u64) {
+        self.lock()
+            .node_resources
+            .insert(node.to_string(), (cpus, maxmem, mem));
+    }
+
+    /// Report `total` and `avail` (bytes) and the `shared` flag for an
+    /// existing storage.
+    pub fn set_storage_space(&self, name: &str, total: u64, avail: u64, shared: bool) {
+        let mut s = self.lock();
+        if let Some(st) = s.storages.iter_mut().find(|st| st.storage == name) {
+            st.total = Some(total);
+            st.avail = Some(avail);
+            st.shared = shared;
+        }
     }
 
     /// Add a storage, or replace one of the same name.
@@ -278,16 +301,20 @@ impl ProxmoxApi for FakeProxmox {
         let s = self.lock();
         Ok(s.nodes
             .iter()
-            .map(|n| Node {
-                node: n.clone(),
-                status: if s.offline.contains(n) {
-                    "offline"
-                } else {
-                    "online"
+            .map(|n| {
+                let resources = s.node_resources.get(n);
+                Node {
+                    node: n.clone(),
+                    status: if s.offline.contains(n) {
+                        "offline"
+                    } else {
+                        "online"
+                    }
+                    .to_string(),
+                    maxcpu: resources.map(|r| r.0),
+                    maxmem: resources.map(|r| r.1),
+                    mem: resources.map(|r| r.2),
                 }
-                .to_string(),
-                maxcpu: None,
-                maxmem: None,
             })
             .collect())
     }

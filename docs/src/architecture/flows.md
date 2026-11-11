@@ -272,3 +272,18 @@ flowchart TD
 
 <sub>Source: flow `flow-move-virtualmachine-cloud-hypervisor` in `architecture.json`.</sub>
 
+
+## Publish measured capacity and fit a new placement against it
+
+IMPLEMENTED (ADR-0128): each provider measures its backend at the Provider reconcile cadence, publishes typed capacity on its failure domains, and the scheduler fits new placements against it alongside ADR-0107's reservation check. Shown for libvirt; vSphere, Proxmox and Cloud Hypervisor follow the same three steps over their own relationships.
+
+```mermaid
+flowchart TD
+    t1["1. The provider reads node info, node memory stats and, for each storage class's pool, a refresh then pool info, over its existing mTLS connection. Read-only."]
+    t2["2. The provider rounds memoryAvailableMiB and freeGiB down to whole GiB and patches Provider status (attributes.capacity) only when a rounded figure changed."]
+    t3["3. The Provider watch requeues VirtualMachines. For a VM with no placement, the scheduler rejects a failure domain whose measured memory or storage, less in-flight VMs and the storage reserve, cannot hold the VM, and names the shortfall in NoFailureDomainMatched. Placed VMs are not re-checked against measured figures."]
+    t1 --> t2 --> t3
+```
+
+<sub>Source: flow `flow-publish-and-fit-measured-capacity` in `architecture.json`.</sub>
+

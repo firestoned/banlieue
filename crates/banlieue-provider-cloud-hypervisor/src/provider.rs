@@ -25,7 +25,9 @@ use crate::reconciler::Context;
 use crate::sys;
 use banlieue_api::banlieue::{
     FailureDomain, FailureDomainAttributes, FailureDomainCapacity, Provider, ProviderStatus,
+    StorageCapacity,
 };
+use banlieue_provider_sdk::capacity::available_memory_mib;
 use banlieue_provider_sdk::reconciler::{requeue_long, requeue_on_error};
 use banlieue_provider_sdk::status::{condition_status, set_condition};
 use kube::api::{Api, Patch, PatchParams};
@@ -111,20 +113,36 @@ pub struct SliceBudget {
     pub allowed_cpus: Option<u32>,
     /// `MemoryMax`, MiB.
     pub memory_max_mib: Option<u64>,
+    /// What the guests may still take under those limits now, MiB: the
+    /// smallest `MemoryMax` less `MemoryCurrent` of the two slices
+    /// (ADR-0128).
+    pub memory_headroom_mib: Option<u64>,
 }
 
 /// What guests may use on this host (ADR-0107): each figure is the host's
 /// (memory less reserved hugepages), or the slice budget's when that is
 /// smaller or the host's is unknown; plus the per-VM VMM overhead.
+///
+/// The measured free memory (ADR-0128) is the host's `MemAvailable`, or the
+/// slices' headroom when smaller, capped at the memory guests may use and
+/// rounded down to a whole GiB. Storage is added by [`compute_status`],
+/// which knows the Provider's class names.
 #[must_use]
 pub fn guest_capacity(host: &HostCapacity, budget: &SliceBudget) -> FailureDomainCapacity {
     let host_memory = host
         .memory_mib
         .map(|m| m.saturating_sub(host.hugepages_mib.unwrap_or(0)));
+    let memory_mi_b = min_known(host_memory, budget.memory_max_mib);
+    let available = available_memory_mib(
+        min_known(host.memory_available_mib, budget.memory_headroom_mib),
+        memory_mi_b,
+    );
     FailureDomainCapacity {
         cpus: min_known(host.cpus, budget.allowed_cpus),
-        memory_mi_b: min_known(host_memory, budget.memory_max_mib),
+        memory_mi_b,
         memory_overhead_mi_b_per_vm: Some(VMM_MEMORY_OVERHEAD_MIB),
+        memory_available_mi_b: available,
+        storage: Vec::new(),
     }
 }
 
@@ -150,8 +168,19 @@ pub struct HostCapacity {
     /// so it is its own figure: a scheduler that counts it as free memory
     /// overcommits a host that looks half empty.
     pub hugepages_mib: Option<u64>,
-    /// Free space for guests' disks, GiB, by host storage class.
-    pub storage_free_gib: BTreeMap<String, u64>,
+    /// `MemAvailable`, MiB: what a new guest could take now (ADR-0128).
+    pub memory_available_mib: Option<u64>,
+    /// The filesystem behind each host storage class, by host class name.
+    pub storage: BTreeMap<String, StoreSpace>,
+}
+
+/// One filesystem's size and free space, whole GiB rounded down.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StoreSpace {
+    /// Its size (`f_blocks`).
+    pub total_gib: u64,
+    /// Space an unprivileged writer may use (`f_bavail`).
+    pub free_gib: u64,
 }
 
 /// Logical CPU count and the first CPU's model from `/proc/cpuinfo` text.
@@ -188,29 +217,44 @@ pub fn parse_meminfo(text: &str) -> (Option<u64>, Option<u64>) {
     (memory, hugepages)
 }
 
-/// Free space on the filesystem holding `dir`, GiB, for an unprivileged
-/// writer (`f_bavail`).
-fn free_gib(dir: &Path) -> Option<u64> {
+/// `MemAvailable`, MiB, from `/proc/meminfo` text.
+#[must_use]
+pub fn parse_mem_available(text: &str) -> Option<u64> {
+    text.lines().find_map(|l| {
+        let (k, v) = l.split_once(':')?;
+        if k.trim() != "MemAvailable" {
+            return None;
+        }
+        let kib = v.split_whitespace().next()?.parse::<u64>().ok()?;
+        Some(kib / KIB_PER_MIB)
+    })
+}
+
+/// Size and free space of the filesystem holding `dir`.
+fn store_space(dir: &Path) -> Option<StoreSpace> {
     let st = rustix::fs::statvfs(dir).ok()?;
-    Some(st.f_bavail.saturating_mul(st.f_frsize) / BYTES_PER_GIB)
+    Some(StoreSpace {
+        total_gib: st.f_blocks.saturating_mul(st.f_frsize) / BYTES_PER_GIB,
+        free_gib: st.f_bavail.saturating_mul(st.f_frsize) / BYTES_PER_GIB,
+    })
 }
 
 fn gather_capacity(config: &HostConfig) -> HostCapacity {
     let (cpus, cpu_model) = std::fs::read_to_string(PROC_CPUINFO)
         .map(|t| parse_cpuinfo(&t))
         .unwrap_or_default();
-    let (memory_mib, hugepages_mib) = std::fs::read_to_string(PROC_MEMINFO)
-        .map(|t| parse_meminfo(&t))
-        .unwrap_or_default();
+    let meminfo = std::fs::read_to_string(PROC_MEMINFO).unwrap_or_default();
+    let (memory_mib, hugepages_mib) = parse_meminfo(&meminfo);
     HostCapacity {
         cpus,
         cpu_model,
         memory_mib,
         hugepages_mib,
-        storage_free_gib: config
+        memory_available_mib: parse_mem_available(&meminfo),
+        storage: config
             .storage_classes
             .iter()
-            .filter_map(|(n, p)| Some((n.clone(), free_gib(p)?)))
+            .filter_map(|(n, p)| Some((n.clone(), store_space(p)?)))
             .collect(),
     }
 }
@@ -282,14 +326,6 @@ fn insert_capacity(raw: &mut BTreeMap<String, String>, c: &HostCapacity) {
             raw.insert(key.to_string(), v);
         }
     }
-    if !c.storage_free_gib.is_empty() {
-        let free: Vec<String> = c
-            .storage_free_gib
-            .iter()
-            .map(|(class, gib)| format!("{class}={gib}"))
-            .collect();
-        raw.insert("storageFreeGiB".to_string(), free.join(","));
-    }
     // This class never offers nested virtualization, whatever the CPU can
     // do: the VMM is always started with `nested=off` (ADR-0061).
     raw.insert("nestedVirtualization".to_string(), "false".to_string());
@@ -307,9 +343,20 @@ pub fn compute_status(
     let mut missing: Vec<String> = Vec::new();
 
     let mut storage = Vec::new();
+    let mut store_capacity = Vec::new();
     for c in &caps.storage_classes {
         match host_class(c.target.as_ref()) {
-            Some(h) if facts.storage_present.contains(h) => storage.push(c.name.clone()),
+            Some(h) if facts.storage_present.contains(h) => {
+                storage.push(c.name.clone());
+                if let Some(space) = facts.capacity.storage.get(h) {
+                    store_capacity.push(StorageCapacity {
+                        storage_class: c.name.clone(),
+                        total_gi_b: Some(space.total_gib),
+                        free_gi_b: Some(space.free_gib),
+                        shared: false,
+                    });
+                }
+            }
             _ => missing.push(format!("storageClass {}", c.name)),
         }
     }
@@ -361,7 +408,10 @@ pub fn compute_status(
                 .cloned()
                 .collect(),
             raw,
-            capacity: Some(guest_capacity(&facts.capacity, &facts.guest_budget)),
+            capacity: Some(FailureDomainCapacity {
+                storage: store_capacity,
+                ..guest_capacity(&facts.capacity, &facts.guest_budget)
+            }),
         },
     };
 

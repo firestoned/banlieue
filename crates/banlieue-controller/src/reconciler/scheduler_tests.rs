@@ -11,16 +11,17 @@ mod tests {
     use std::collections::BTreeMap;
 
     use banlieue_api::banlieue::{
-        AffinityMode, AntiAffinityRule, Architecture, DiskSpec, FailureDomain,
-        FailureDomainAttributes, FailureDomainCapacity, GuestAgent, HardwareSpec,
+        AffinityMode, AntiAffinityRule, Architecture, DiskOverride, DiskSpec, FailureDomain,
+        FailureDomainAttributes, FailureDomainCapacity, GuestAgent, HardwareOverride, HardwareSpec,
         ImagePerProviderStatus, ImageSource, ImageSourceKind, MigrationPolicy, NetworkClassMapping,
         NetworkInterfaceSpec, NetworkSpec, OsFamily, PlacementSpec, Provider, ProviderCapabilities,
         ProviderConnection, ProviderScheduling, ProviderSpec, ProviderStatus, ScheduledPlacement,
-        StorageClassMapping, VMClass, VMClassSpec, VMImage, VMImageSpec, VMImageStatus,
-        VirtualMachine, VirtualMachineSpec, VirtualMachineStatus,
+        StorageCapacity, StorageClassMapping, VMClass, VMClassSpec, VMImage, VMImageSpec,
+        VMImageStatus, VirtualMachine, VirtualMachineSpec, VirtualMachineStatus,
     };
     use banlieue_api::common::{
-        DiskProvisioning, Firmware, IpamShape, LabelSelector, LocalObjectReference, PowerState,
+        DiskProvisioning, Firmware, InitializationStatus, IpamShape, LabelSelector,
+        LocalObjectReference, PowerState,
     };
     use kube::core::ObjectMeta;
 
@@ -1742,6 +1743,7 @@ mod tests {
         );
         prov.spec.scheduling = ratio.map(|r| ProviderScheduling {
             cpu_overcommit_ratio: Some(r),
+            ..ProviderScheduling::default()
         });
         (v, cls, img, prov)
     }
@@ -1751,6 +1753,7 @@ mod tests {
             cpus,
             memory_mi_b: memory,
             memory_overhead_mi_b_per_vm: overhead,
+            ..FailureDomainCapacity::default()
         }
     }
 
@@ -1927,6 +1930,303 @@ mod tests {
                 .starts_with("memory")
         );
         assert_eq!(capacity_shortfall(2, 512, Usage::default(), &c, 4), None);
+    }
+
+    // --- Filter: measured capacity (ADR-0128) -------------------------------
+    //
+    // The fixture class is 2 vCPUs, 1024 MiB and one 10 GiB disk "os" on
+    // storage class "gold".
+
+    /// A capacity with only measured figures: free memory, and the "gold"
+    /// store's size and free space.
+    fn measured(
+        available: Option<u64>,
+        total_gi_b: Option<u64>,
+        free_gi_b: Option<u64>,
+        shared: bool,
+    ) -> FailureDomainCapacity {
+        FailureDomainCapacity {
+            memory_overhead_mi_b_per_vm: Some(512),
+            memory_available_mi_b: available,
+            storage: vec![StorageCapacity {
+                storage_class: "gold".into(),
+                total_gi_b,
+                free_gi_b,
+                shared,
+            }],
+            ..FailureDomainCapacity::default()
+        }
+    }
+
+    /// `vm` as its infrastructure reports it: provisioned.
+    fn provisioned(mut vm: VirtualMachine) -> VirtualMachine {
+        if let Some(s) = vm.status.as_mut() {
+            s.initialization = InitializationStatus {
+                provisioned: Some(true),
+            };
+        }
+        vm
+    }
+
+    fn with_reserve(mut p: Provider, percent: u32) -> Provider {
+        p.spec.scheduling = Some(ProviderScheduling {
+            storage_reserve_percent: Some(percent),
+            ..ProviderScheduling::default()
+        });
+        p
+    }
+
+    fn reject_message(result: Result<Decision, ScheduleError>) -> String {
+        match result {
+            Err(ScheduleError::NoFailureDomainMatched(msg)) => msg,
+            other => panic!("expected NoFailureDomainMatched, got {other:?}"),
+        }
+    }
+
+    /// Measured free memory must hold the VM plus its overhead: 1024 + 512.
+    #[test]
+    fn measured_memory_fits_exactly_and_not_one_mib_more() {
+        for (available, fits) in [(1536, true), (1535, false)] {
+            let (v, cls, img, p) = capacity_fixture(
+                vec![("fd", Some(measured(Some(available), None, None, false)))],
+                None,
+            );
+            let result = schedule(&v, &cls, &img, &[p], &[], std::slice::from_ref(&cls));
+            assert_eq!(
+                result.is_ok(),
+                fits,
+                "{available} MiB available: {result:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_measured_memory_shortfall_is_named() {
+        let (v, cls, img, p) = capacity_fixture(
+            vec![("fd", Some(measured(Some(1024), None, None, false)))],
+            None,
+        );
+        let msg = reject_message(schedule(
+            &v,
+            &cls,
+            &img,
+            &[p],
+            &[],
+            std::slice::from_ref(&cls),
+        ));
+        assert!(msg.contains("memory available"), "{msg}");
+        assert!(msg.contains("1536") && msg.contains("1024"), "{msg}");
+    }
+
+    /// An in-flight VM (scheduled, infrastructure not provisioned) is not in
+    /// the measurement yet, so it is subtracted; a provisioned one already
+    /// is, so it is not subtracted twice.
+    #[test]
+    fn in_flight_vms_are_subtracted_and_provisioned_ones_are_not() {
+        let capacity = measured(Some(3072), None, None, false);
+        let in_flight = placed(1, "fd");
+        let (v, cls, img, p) = capacity_fixture(vec![("fd", Some(capacity.clone()))], None);
+        assert!(
+            schedule(
+                &v,
+                &cls,
+                &img,
+                std::slice::from_ref(&p),
+                &in_flight,
+                std::slice::from_ref(&cls)
+            )
+            .is_ok(),
+            "3072 - 1536 in flight = 1536 fits"
+        );
+        let two_in_flight = placed(2, "fd");
+        assert!(
+            schedule(
+                &v,
+                &cls,
+                &img,
+                std::slice::from_ref(&p),
+                &two_in_flight,
+                std::slice::from_ref(&cls)
+            )
+            .is_err(),
+            "3072 - 2 x 1536 = 0"
+        );
+        let done: Vec<_> = placed(2, "fd").into_iter().map(provisioned).collect();
+        assert!(
+            schedule(&v, &cls, &img, &[p], &done, std::slice::from_ref(&cls)).is_ok(),
+            "provisioned VMs are already in the measurement"
+        );
+    }
+
+    /// Free disk, less the reserve (10% of total by default), must hold the
+    /// VM's disks: total 100, reserve 10, so 20 free leaves 10, exactly one
+    /// 10 GiB disk.
+    #[test]
+    fn measured_storage_fits_after_the_default_reserve() {
+        for (free, fits) in [(20, true), (19, false)] {
+            let (v, cls, img, p) = capacity_fixture(
+                vec![("fd", Some(measured(None, Some(100), Some(free), false)))],
+                None,
+            );
+            let result = schedule(&v, &cls, &img, &[p], &[], std::slice::from_ref(&cls));
+            assert_eq!(result.is_ok(), fits, "{free} GiB free: {result:?}");
+        }
+    }
+
+    #[test]
+    fn a_storage_shortfall_names_the_class() {
+        let (v, cls, img, p) = capacity_fixture(
+            vec![("fd", Some(measured(None, Some(100), Some(15), false)))],
+            None,
+        );
+        let msg = reject_message(schedule(
+            &v,
+            &cls,
+            &img,
+            &[p],
+            &[],
+            std::slice::from_ref(&cls),
+        ));
+        assert!(msg.contains("storage class 'gold'"), "{msg}");
+    }
+
+    #[test]
+    fn the_provider_sets_the_storage_reserve() {
+        let (v, cls, img, p) = capacity_fixture(
+            vec![("fd", Some(measured(None, Some(100), Some(10), false)))],
+            None,
+        );
+        assert!(
+            schedule(
+                &v,
+                &cls,
+                &img,
+                &[with_reserve(p.clone(), 0)],
+                &[],
+                std::slice::from_ref(&cls)
+            )
+            .is_ok(),
+            "no reserve: 10 free holds 10"
+        );
+        assert!(
+            schedule(&v, &cls, &img, &[p], &[], std::slice::from_ref(&cls)).is_err(),
+            "default reserve: 10 - 10 = 0"
+        );
+    }
+
+    /// Without a total the reserve cannot be computed and is not applied.
+    #[test]
+    fn no_total_means_no_reserve() {
+        let (v, cls, img, p) = capacity_fixture(
+            vec![("fd", Some(measured(None, None, Some(10), false)))],
+            None,
+        );
+        assert!(schedule(&v, &cls, &img, &[p], &[], std::slice::from_ref(&cls)).is_ok());
+    }
+
+    /// A per-VM disk override counts at its overridden size.
+    #[test]
+    fn a_disk_override_counts_at_its_size() {
+        let (mut v, cls, img, p) = capacity_fixture(
+            vec![("fd", Some(measured(None, None, Some(15), false)))],
+            None,
+        );
+        v.spec.hardware_override = Some(HardwareOverride {
+            disk_overrides: vec![DiskOverride {
+                name: "os".into(),
+                size_gi_b: 20,
+            }],
+            ..HardwareOverride::default()
+        });
+        let msg = reject_message(schedule(
+            &v,
+            &cls,
+            &img,
+            &[p],
+            &[],
+            std::slice::from_ref(&cls),
+        ));
+        assert!(msg.contains("20"), "{msg}");
+    }
+
+    /// An in-flight disk on another failure domain draws on a shared store,
+    /// and only on a shared one.
+    #[test]
+    fn in_flight_disks_elsewhere_count_only_on_shared_storage() {
+        let elsewhere = placed(1, "other");
+        for (shared, fits) in [(false, true), (true, false)] {
+            let capacity = measured(None, None, Some(15), shared);
+            let (v, cls, img, p) = capacity_fixture(
+                vec![("fd", Some(capacity.clone())), ("other", Some(capacity))],
+                None,
+            );
+            let mut sel = BTreeMap::new();
+            sel.insert("name".to_string(), "fd".to_string());
+            let mut v = v;
+            v.spec.placement.failure_domain_selector = Some(LabelSelector {
+                match_labels: sel,
+                ..LabelSelector::default()
+            });
+            let mut p = p;
+            for f in &mut p.status.as_mut().unwrap().failure_domains {
+                f.labels.insert("name".into(), f.name.clone());
+            }
+            let result = schedule(&v, &cls, &img, &[p], &elsewhere, std::slice::from_ref(&cls));
+            assert_eq!(result.is_ok(), fits, "shared={shared}: {result:?}");
+        }
+    }
+
+    /// A placed VM is already inside the measurement: a full host never
+    /// moves or flags it (ADR-0128 decision 3).
+    #[test]
+    fn measured_figures_never_move_a_placed_vm() {
+        let (_, cls, img, p) = capacity_fixture(
+            vec![("fd", Some(measured(Some(0), Some(100), Some(0), false)))],
+            None,
+        );
+        let me = provisioned(scheduled_vm(
+            "new",
+            "banlieue-system",
+            BTreeMap::new(),
+            "p",
+            "fd",
+        ));
+        let d = schedule(
+            &me,
+            &cls,
+            &img,
+            &[p],
+            std::slice::from_ref(&me),
+            std::slice::from_ref(&cls),
+        )
+        .expect("a placed VM keeps its placement");
+        assert_eq!(d.failure_domain_name, "fd");
+    }
+
+    /// The pure check, in isolation.
+    #[test]
+    fn measured_shortfall_reports_memory_then_storage() {
+        let c = measured(Some(1000), Some(100), Some(50), false);
+        let none = InFlight::default();
+        let disks = BTreeMap::from([("gold".to_string(), 20_u64)]);
+        assert_eq!(measured_shortfall(512, &disks, &none, &none, &c, 0), None);
+        assert!(
+            measured_shortfall(2048, &disks, &none, &none, &c, 0)
+                .unwrap()
+                .starts_with("memory available")
+        );
+        let big = BTreeMap::from([("gold".to_string(), 51_u64)]);
+        assert!(
+            measured_shortfall(512, &big, &none, &none, &c, 0)
+                .unwrap()
+                .contains("storage class 'gold'")
+        );
+        let unknown = BTreeMap::from([("silver".to_string(), 1_000_u64)]);
+        assert_eq!(
+            measured_shortfall(512, &unknown, &none, &none, &c, 0),
+            None,
+            "a class with no measured store is not checked"
+        );
     }
 
     // --- A placed VM keeps a placement that still fits (ADR-0125) -----------
