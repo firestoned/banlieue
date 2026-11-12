@@ -149,6 +149,12 @@ Running banlieue day to day.
     the Grafana dashboard, opt-in OpenTelemetry traces, and why a standby
     replica reports Ready.
 
+- :material-gauge: **[Capacity-Aware Scheduling](capacity-scheduling.md)**
+
+    What each provider publishes as capacity, why a VM was refused, the
+    two settings that change the check, and a scenario-by-scenario test
+    plan for vSphere, Cloud Hypervisor, libvirt and Proxmox.
+
 </div>
 
 !!! info "Looking to hack on banlieue itself?"

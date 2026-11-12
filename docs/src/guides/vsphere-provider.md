@@ -469,6 +469,25 @@ Full worked examples:
     (`COS_PERSISTENT`) came up as `crypto_LUKS`, mounted and auto-unlocked
     via its own vTPM on first boot, with no manual intervention.
 
+## Capacity
+
+Each failure domain (one per datacenter and cluster) publishes what the
+cluster can still take, and the scheduler places a new VM only where it fits
+([ADR-0128](https://github.com/firestoned/banlieue/blob/main/docs/adr/0128-every-provider-publishes-measured-capacity.md)):
+
+- `cpus` and `memoryMiB` from the cluster summary (CPU threads, effective
+  memory), capped by the cluster's root resource pool limit;
+- `memoryAvailableMiB`: effective memory less what the cluster's hosts use,
+  or the root pool's unreserved memory when smaller, in whole GiB;
+- `storage[]`, per storage class, from the datastore's summary (for a
+  `datastoreCluster` class, the member with the most free space).
+  `shared: true` marks a datastore more than one cluster reaches.
+
+These are cluster totals. DRS picks the host, so a VM larger than any one
+host can still be placed and then fail in vCenter. Read the figures, the
+refusal messages and the full vSphere test plan in
+[Capacity-Aware Scheduling](capacity-scheduling.md).
+
 ## Rotating credentials
 
 1. Create the new vCenter user or password, with the same role as the old one.

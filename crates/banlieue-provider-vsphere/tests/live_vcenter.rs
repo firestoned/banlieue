@@ -35,16 +35,30 @@
 //!   is what production installs actually use.
 //! - `VSPHERE_TEMPLATE=<name>` — also exercise template lookup.
 //!
+//! The capacity reads (ADR-0128) are read-only and need no extra variable:
+//!
+//! ```sh
+//! cargo test -p banlieue-provider-vsphere --test live_vcenter \
+//!   capacity_reads_against_real_vcenter -- --ignored --nocapture
+//! ```
+//!
 //! Credentials come from the environment and are never written down here: this
 //! is a public repository (`.claude/rules/no-real-infrastructure.md`), and
 //! `bar.foo.io` above is a placeholder, not a host.
 
-use banlieue_api::banlieue::ProviderConnection;
+use banlieue_api::banlieue::{ProviderCapabilities, ProviderConnection, StorageClassMapping};
 use banlieue_api::common::LocalObjectReference;
 use banlieue_provider_vsphere::client::{
     Credentials, VSphereClient, VSphereClientFactory, VimClientFactory,
     install_default_crypto_provider,
 };
+use banlieue_provider_vsphere::reconciler::provider::discover_inventory;
+use std::collections::{BTreeMap, BTreeSet};
+
+/// MiB in one GiB: published free memory is a whole number of GiB.
+const MIB_PER_GIB: u64 = 1024;
+/// The storage-class target key naming one datastore.
+const TARGET_DATASTORE: &str = "datastore";
 
 /// Everything the harness needs, or `None` when the environment is not set up.
 struct Settings {
@@ -312,5 +326,126 @@ async fn guest_info_reads_extra_config_against_real_vcenter() {
             "{known_key} was expected to be set on {vm_moref} but read back as None/empty — \
              the extraConfig value-wrapper shape may have changed again"
         );
+    }
+}
+
+/// What a vSphere Provider publishes as capacity (ADR-0107, ADR-0128),
+/// read from a real vCenter. Read-only: it reads cluster, resource pool,
+/// host and datastore summaries and changes nothing.
+///
+/// Every datastore any cluster reaches gets a storage class of its own, so
+/// the failure domains carry a `storage[]` entry per reachable datastore.
+/// Compare the printed figures with the vSphere Client: each cluster's
+/// Summary tab (CPU threads, memory) and each datastore's capacity and free
+/// space. A datastore reached by more than one cluster must print
+/// `shared: true`.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires a real vCenter; set VSPHERE_ENDPOINT / VSPHERE_USERNAME / VSPHERE_PASSWORD"]
+async fn capacity_reads_against_real_vcenter() {
+    let settings = require_settings();
+    let client = connect(&settings).await;
+
+    // The raw reads, per cluster, and which clusters reach each datastore
+    // (by name, then moref: two datacenters may each have a datastore of one
+    // name, which are two stores).
+    let mut reach: BTreeMap<String, BTreeMap<String, BTreeSet<String>>> = BTreeMap::new();
+    for dc in client.list_datacenters().await.expect("list datacenters") {
+        for cluster in client.list_clusters(&dc).await.expect("list clusters") {
+            let raw = client
+                .cluster_capacity(&cluster)
+                .await
+                .unwrap_or_else(|e| panic!("cluster_capacity({}): {e}", cluster.name));
+            eprintln!("  {}/{}: {raw:?}", dc.name, cluster.name);
+            assert!(
+                raw.cpu_threads.is_some_and(|n| n > 0),
+                "{}: no CPU threads read from the cluster summary",
+                cluster.name
+            );
+            assert!(
+                raw.effective_memory_mib.is_some_and(|m| m > 0),
+                "{}: no effective memory read from the cluster summary",
+                cluster.name
+            );
+            for ds in client.list_datastores(&cluster).await.expect("datastores") {
+                eprintln!(
+                    "    datastore {:<24} capacity {:?} B, free {:?} B, pod {:?}",
+                    ds.name, ds.capacity_bytes, ds.free_space_bytes, ds.datastore_cluster
+                );
+                if let (Some(total), Some(free)) = (ds.capacity_bytes, ds.free_space_bytes) {
+                    assert!(free <= total, "{}: free {free} > capacity {total}", ds.name);
+                }
+                reach
+                    .entry(ds.name)
+                    .or_default()
+                    .entry(ds.moref)
+                    .or_default()
+                    .insert(format!("{}/{}", dc.name, cluster.name));
+            }
+        }
+    }
+
+    // What the reconciler publishes, from the same reads.
+    let class_of = |i: usize| format!("ds{i}");
+    let capabilities = ProviderCapabilities {
+        storage_classes: reach
+            .keys()
+            .enumerate()
+            .map(|(i, name)| StorageClassMapping {
+                name: class_of(i),
+                target: Some(BTreeMap::from([(
+                    TARGET_DATASTORE.to_string(),
+                    name.clone(),
+                )])),
+                ..Default::default()
+            })
+            .collect(),
+        network_classes: Vec::new(),
+        features: Vec::new(),
+    };
+    // Whether a store is shared is only known when its name is one store.
+    let shared_by_class: BTreeMap<String, (&String, Option<bool>)> = reach
+        .iter()
+        .enumerate()
+        .map(|(i, (name, stores))| {
+            let shared = match stores.values().collect::<Vec<_>>().as_slice() {
+                [clusters] => Some(clusters.len() > 1),
+                _ => None,
+            };
+            (class_of(i), (name, shared))
+        })
+        .collect();
+    let domains = discover_inventory(client.as_ref(), "live", &capabilities, &[])
+        .await
+        .expect("discover_inventory");
+    for fd in &domains {
+        let cap = fd
+            .attributes
+            .capacity
+            .as_ref()
+            .unwrap_or_else(|| panic!("{}: no capacity published", fd.name));
+        eprintln!(
+            "  failure domain {}: cpus {:?}, memoryMiB {:?}, memoryAvailableMiB {:?}",
+            fd.name, cap.cpus, cap.memory_mi_b, cap.memory_available_mi_b
+        );
+        if let (Some(available), Some(limit)) = (cap.memory_available_mi_b, cap.memory_mi_b) {
+            assert!(available <= limit, "{}: available > memoryMiB", fd.name);
+            assert_eq!(available % MIB_PER_GIB, 0, "not a whole GiB: {available}");
+        }
+        for store in &cap.storage {
+            let (ds, shared) = shared_by_class[&store.storage_class];
+            eprintln!(
+                "    {ds:<24} totalGiB {:?} freeGiB {:?} shared {}",
+                store.total_gi_b, store.free_gi_b, store.shared
+            );
+            if let (Some(total), Some(free)) = (store.total_gi_b, store.free_gi_b) {
+                assert!(free <= total, "{ds}: freeGiB {free} > totalGiB {total}");
+            }
+            if let Some(shared) = shared {
+                assert_eq!(
+                    store.shared, shared,
+                    "{ds}: shared must be true exactly when more than one cluster reaches it"
+                );
+            }
+        }
     }
 }

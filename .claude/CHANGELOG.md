@@ -1,5 +1,40 @@
 # Changelog
 
+## [2026-11-11 22:30] - Capacity-aware scheduling guide and a vCenter capacity live test (ADR-0128)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/src/guides/capacity-scheduling.md`: what each provider publishes as
+  capacity and where each figure comes from, how to read it, the checks in
+  order, every refusal message and what to do about it, the two settings,
+  the test layers, and a scenario-by-scenario test plan for vSphere (V1 to
+  V12), with notes for Cloud Hypervisor, libvirt and Proxmox. Listed in
+  `docs/mkdocs.yml` and `docs/src/guides/index.md`.
+- `crates/banlieue-provider-vsphere/tests/live_vcenter.rs`:
+  `capacity_reads_against_real_vcenter`, read-only. Prints each cluster's
+  raw reads and the failure domains `discover_inventory` publishes from
+  them, and checks the figures are plausible and that `shared` is true
+  exactly for a datastore more than one cluster reaches.
+
+### Changed
+- `docs/src/guides/vsphere-provider.md`, `libvirt-provider.md`,
+  `proxmox-provider.md`: a Capacity section each;
+  `cloud-hypervisor-host.md` links the new guide.
+
+### Why
+The vSphere and Proxmox capacity reads had been tested only against fakes,
+and nothing told an operator how to read the figures or test them on-prem.
+The guide records two known gaps: thin disks count at full size only while
+in flight, and `hardwareOverride.cpus`/`memoryMiB` are not counted by the
+scheduler.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only (plus an ignored live test)
+
 ## [2026-11-11 18:00] - Every provider publishes measured capacity (ADR-0128, implemented)
 
 **Author:** Erick Bourgeois
