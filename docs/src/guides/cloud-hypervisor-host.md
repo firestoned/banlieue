@@ -492,6 +492,9 @@ kubectl get provider <name> -n banlieue-system \
   -o jsonpath='{.status.failureDomains[0].attributes.capacity}'
 ```
 
+The refusal messages, the settings and a test plan are in
+[Capacity-Aware Scheduling](capacity-scheduling.md).
+
 Two limits remain. Memory used by anything that is not a banlieue guest (the
 host's own services, management nodes in `banlieue-nodes.slice`) is caught
 only by the measured `memoryAvailableMiB`, which refreshes every 30 s; on a

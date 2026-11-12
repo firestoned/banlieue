@@ -160,6 +160,17 @@ Deleting the `VirtualMachine` stops the VM if it is running, destroys it with
 its unreferenced disks, deletes the seed ISO, and only then releases the
 finalizer. "Already gone" counts as success at every step.
 
+## Capacity
+
+Each node's failure domain publishes its CPUs and memory (`maxcpu`,
+`maxmem`), its free memory (`maxmem` less `mem`) and, per storage class, the
+storage's `total` and `avail`, all from responses the provider already reads.
+A storage Proxmox marks `shared` (Ceph, NFS) is published `shared: true`,
+and in-flight disks on every node count against it. Each VM counts 256 MiB
+of QEMU overhead
+([ADR-0128](https://github.com/firestoned/banlieue/blob/main/docs/adr/0128-every-provider-publishes-measured-capacity.md)).
+See [Capacity-Aware Scheduling](capacity-scheduling.md).
+
 ## Rotating credentials
 
 1. Create a new API token in Proxmox VE for the same user, with the same

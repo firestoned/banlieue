@@ -217,6 +217,7 @@ nav:
           - Building a Kairos Hadron VM Template: guides/building-kairos-hadron-template.md
       - Operations:
           - Observability: guides/observability.md
+          - 'Capacity-Aware Scheduling: Reading and Testing It': guides/capacity-scheduling.md
 
   - Concepts:
       - Overview: concepts/index.md

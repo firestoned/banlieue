@@ -421,6 +421,19 @@ same name quietly inherits a stale one.
 The shared boot image is never deleted: it belongs to the `VMImage`, and
 removing it with one machine would break every other VM using it.
 
+## Capacity
+
+The host's failure domain publishes its CPUs and memory
+(`virNodeGetInfo`), its free memory (`virNodeGetMemoryStats`: free, buffers
+and cache) and, per storage class, the targeted pool's capacity and
+available space (`virStoragePoolGetInfo`, after a refresh). Each VM counts
+256 MiB of QEMU overhead on top of its memory. A new VM is placed only where
+it fits, less `spec.scheduling.storageReservePercent` of each pool
+([ADR-0128](https://github.com/firestoned/banlieue/blob/main/docs/adr/0128-every-provider-publishes-measured-capacity.md)).
+Compare with `virsh nodememstats` and `virsh pool-info <pool>`; see
+[Capacity-Aware Scheduling](capacity-scheduling.md) for the refusal messages
+and how to test it.
+
 ## Rotating credentials
 
 1. Issue a new client certificate from the CA the libvirt host trusts.
