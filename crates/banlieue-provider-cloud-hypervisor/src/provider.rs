@@ -25,7 +25,7 @@ use crate::reconciler::Context;
 use crate::sys;
 use banlieue_api::banlieue::{
     FailureDomain, FailureDomainAttributes, FailureDomainCapacity, Provider, ProviderStatus,
-    StorageCapacity,
+    RAW_CPU_MODEL, RAW_VMM, StorageCapacity,
 };
 use banlieue_provider_sdk::capacity::available_memory_mib;
 use banlieue_provider_sdk::reconciler::{requeue_long, requeue_on_error};
@@ -317,7 +317,7 @@ fn host_class(target: Option<&BTreeMap<String, String>>) -> Option<&str> {
 fn insert_capacity(raw: &mut BTreeMap<String, String>, c: &HostCapacity) {
     let figures = [
         ("cpus", c.cpus.map(|v| v.to_string())),
-        ("cpuModel", c.cpu_model.clone()),
+        (RAW_CPU_MODEL, c.cpu_model.clone()),
         ("memoryMiB", c.memory_mib.map(|v| v.to_string())),
         ("hugepagesMiB", c.hugepages_mib.map(|v| v.to_string())),
     ];
@@ -374,7 +374,7 @@ pub fn compute_status(
 
     let mut raw = BTreeMap::new();
     raw.insert(
-        "vmm".to_string(),
+        RAW_VMM.to_string(),
         format!("cloud-hypervisor {}", config.vmm.version),
     );
     raw.insert(

@@ -78,6 +78,9 @@ lan = "br0"
                 user_data: None,
                 desired_power_state: PowerState::PoweredOn,
                 first_boot_sealing: None,
+                identity: None,
+                move_in: None,
+                move_out: None,
             },
             status: host_uid.map(|u| CloudHypervisorMachineStatus {
                 host_uid: Some(u),

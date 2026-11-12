@@ -11,6 +11,7 @@ Every banlieue Custom Resource Definition, generated from the Rust types that ar
 - [VirtualMachine](#virtualmachine)
 - [VirtualMachinePool](#virtualmachinepool)
 - [VirtualMachineClaim](#virtualmachineclaim)
+- [VirtualMachineMove](#virtualmachinemove)
 - [VMClass](#vmclass)
 - [VMImage](#vmimage)
 
@@ -1397,6 +1398,116 @@ The bound member. Set once, at bind time, and never rewritten.
 
 ---
 
+## VirtualMachineMove
+
+**API:** `banlieue.io/v1alpha1` · **Kind:** `VirtualMachineMove` · **Scope:** Namespaced · **Short names:** `vmmove`
+
+VirtualMachineMove: move one running VM to another Cloud Hypervisor host in
+its zone, keeping its memory, disk, MAC and addresses (ADR-0127).
+
+**What a move guarantees**
+
+- **The guest runs on exactly one host, always.** Failure before commit
+  leaves it where it was; after commit the old copy is never booted again.
+- **Admitted only where it can work**: same zone (`banlieue.io/zone`), both
+  hosts advertising `move`, identical VMM version and CPU model, and a
+  destination the VM's own placement allows. Otherwise `Rejected`, with a
+  named reason.
+- **One move per VM at a time.** Deleting a move before `HandingOver`
+  cancels it; after that it runs to `Succeeded` or `Failed`.
+
+**What a move is not**
+
+Not a restart elsewhere after a host failure: that is fencing and HA, and
+banlieue does not do it. Until Stage 2 a VM with a vTPM is not movable.
+
+**Printer columns** (`kubectl get`):
+
+| Name | Type | JSON path | Priority |
+| --- | --- | --- | --- |
+| VM | string | `.spec.vmRef.name` | 0 |
+| Phase | string | `.status.phase` | 0 |
+| Source | string | `.status.source` | 0 |
+| Destination | string | `.status.destination` | 0 |
+| Downtime(ms) | integer | `.status.downtimeMilliseconds` | 1 |
+| Age | date | `.metadata.creationTimestamp` | 0 |
+
+### `.spec`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `target` | object |  | Where to move it. When absent, banlieue picks a host in the VM's zone: of those passing every check, the one with the most free memory left after the move, then the most free vCPUs, then by name (Decision 2). |
+| `vmRef` | object | Yes | The VM to move, in the move's namespace. Immutable. |
+
+#### `.spec.target`
+
+Where to move it. When absent, banlieue picks a host in the VM's zone:
+of those passing every check, the one with the most free memory left
+after the move, then the most free vCPUs, then by name (Decision 2).
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `providerName` | string |  | The destination Provider's name. |
+| `providerSelector` | object |  | Restricts the destination to the zone's Providers matching it; banlieue still ranks among them. |
+
+##### `.spec.target.providerSelector`
+
+Restricts the destination to the zone's Providers matching it; banlieue
+still ranks among them.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `matchExpressions` | object[] |  |  |
+| `matchLabels` | map[string]string |  |  |
+
+###### `.spec.target.providerSelector.matchExpressions[]`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `key` | string | Yes |  |
+| `operator` | string | Yes | Allowed: `In`, `NotIn`, `Exists`, `DoesNotExist`. |
+| `values` | string[] |  |  |
+
+#### `.spec.vmRef`
+
+The VM to move, in the move's namespace. Immutable.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | Yes |  |
+
+### `.status`
+
+Observed state of a move.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `bytesSent` | integer |  | Bytes sent so far. |
+| `bytesTotal` | integer |  | Bytes the source has to send (disk extents and VMM state), once known. |
+| `completedAt` | string |  | Time is a wrapper around time.Time which supports correct marshaling to YAML and JSON. Wrappers are provided for many of the factory methods that the time package offers. |
+| `conditions` | object[] |  | Standard conditions; `Admitted` carries the rejection reason. |
+| `destination` | string |  | The Provider chosen to receive it. |
+| `downtimeMilliseconds` | integer |  | How long the guest was paused, cutover to resume. Set on `Succeeded`. |
+| `observedGeneration` | integer |  |  |
+| `phase` | string |  | Where a move is. One way: nothing returns to an earlier phase. Allowed: `Pending`, `Preparing`, `Copying`, `HandingOver`, `Succeeded`, `Failed`, `Rejected`. |
+| `source` | string |  | The Provider the VM was on when the move was admitted. |
+| `startedAt` | string |  | Time is a wrapper around time.Time which supports correct marshaling to YAML and JSON. Wrappers are provided for many of the factory methods that the time package offers. |
+
+#### `.status.conditions[]`
+
+Standard conditions; `Admitted` carries the rejection reason.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `lastTransitionTime` | string | Yes | lastTransitionTime is the last time the condition transitioned from one status to another. This should be when the underlying condition changed. If that is not known, then using the time when the API field changed is acceptable. |
+| `message` | string | Yes | message is a human readable message indicating details about the transition. This may be an empty string. |
+| `observedGeneration` | integer |  | observedGeneration represents the .metadata.generation that the condition was set based upon. For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date with respect to the current state of the instance. |
+| `reason` | string | Yes | reason contains a programmatic identifier indicating the reason for the condition's last transition. Producers of specific condition types may define expected values and meanings for this field, and whether the values are considered a guaranteed API. The value should be a CamelCase string. This field may not be empty. |
+| `status` | string | Yes | status of the condition, one of True, False, Unknown. |
+| `type` | string | Yes | type of condition in CamelCase or in foo.example.com/CamelCase. |
+
+---
+
 ## VMClass
 
 **API:** `banlieue.io/v1alpha1` · **Kind:** `VMClass` · **Scope:** Cluster · **Short names:** `vmc`
@@ -1946,7 +2057,10 @@ provider on the chosen host runs it as a Cloud Hypervisor guest.
 | `desiredPowerState` | string |  | Desired power state, resolved from the parent `VirtualMachine`. Allowed: `PoweredOn`, `PoweredOff`, `Suspended`. |
 | `failureDomain` | string |  | CAPI contract (optional): failure domain placement. One host is one failure domain on this backend, as on libvirt. |
 | `firstBootSealing` | object |  | First-boot sealing the guest must report before `GuestReady` (ADR-0088, ADR-0112), copied by `banlieue-controller` from the parent `VirtualMachine`'s `VMImage.spec.firstBootSealing` when the class is `tpmEnabled`. The guest reports over its vsock (`sealed=` beside `phase=installed`). `None` for every other machine, which keeps today's `GuestReady` meaning unchanged. |
+| `identity` | object |  | The guest identity this machine carries when it is not its own: set by `banlieue-controller` on a move's destination machine to the source's identity (ADR-0127 Decision 6). The provider derives the MAC, tap names, machine directory and EK certificate subject from it instead of from this machine's name and UID, so a moved guest keeps all of them. Absent on every machine that was never the destination of a move. Immutable. |
 | `memory` | object | Yes | Guest memory. |
+| `moveIn` | object |  | This machine is a move's destination (ADR-0127 Decision 4). Set by `banlieue-controller` at creation; the host provider prepares to receive. |
+| `moveOut` | object |  | This machine is a move's source (ADR-0127 Decision 4). Set by `banlieue-controller`; the host provider copies the guest out. |
 | `nics` | object[] | Yes | Network interfaces. |
 | `osDiskSizeGiB` | integer | Yes | OS disk size in GiB. Required, and grown to before first boot; never shrunk. Must be at least the image's size. |
 | `providerID` | string |  | CAPI contract: Provider ID for the resulting Node, if this VM becomes a Kubernetes node. Format: `cloudhypervisor://<provider-name>/<machine-uid>`. Set by the provider once the guest exists. |
@@ -1987,6 +2101,20 @@ today's `GuestReady` meaning unchanged.
 | `partitions` | string[] |  | Kairos partition labels to seal on first boot. Defaults to `[COS_PERSISTENT]`. `COS_OEM`, `COS_STATE`, `COS_RECOVERY` and `COS_GRUB` are refused at admission, mirroring Kairos's own refusal. |
 | `timeoutSeconds` | integer |  | Seconds from the machine's power-on (its infrastructure `Ready` transition) within which the guest must report every listed partition sealed; after that `GuestReady` is `False` with reason `FirstBootSealingTimeout`. A clone that cannot seal halts in its initramfs and never reports anything, so this is how it is noticed. |
 
+#### `.spec.identity`
+
+The guest identity this machine carries when it is not its own: set by
+`banlieue-controller` on a move's destination machine to the source's
+identity (ADR-0127 Decision 6). The provider derives the MAC, tap names,
+machine directory and EK certificate subject from it instead of from
+this machine's name and UID, so a moved guest keeps all of them. Absent
+on every machine that was never the destination of a move. Immutable.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | Yes | The original machine's name. |
+| `uid` | string | Yes | The original machine's UID. |
+
 #### `.spec.memory`
 
 Guest memory.
@@ -1995,6 +2123,48 @@ Guest memory.
 | --- | --- | --- | --- |
 | `hugepages` | boolean |  | Back guest memory with hugepages. The host reports hugepages as their own capacity, since they are reserved rather than allocated on demand. |
 | `sizeMiB` | integer | Yes | Guest memory in MiB. |
+
+#### `.spec.moveIn`
+
+This machine is a move's destination (ADR-0127 Decision 4). Set by
+`banlieue-controller` at creation; the host provider prepares to receive.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `commit` | boolean |  | Resume the received guest. Written only after the source reported `Sent` and its VMM exited (Decision 5); never written with the source's `abort`. One way. |
+| `moveId` | string | Yes | The `VirtualMachineMove` this machine receives. Immutable. |
+| `peer` | object |  | The source host, once it has published its certificate. |
+
+##### `.spec.moveIn.peer`
+
+The source host, once it has published its certificate.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `certificate` | string | Yes | The peer's per-move certificate, PEM. |
+| `endpoint` | string |  | `host:port` the destination listens on. Set only on the source's `moveOut.peer`: the source connects, the destination listens. |
+
+#### `.spec.moveOut`
+
+This machine is a move's source (ADR-0127 Decision 4). Set by
+`banlieue-controller`; the host provider copies the guest out.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `abort` | boolean |  | Give up before commit: resume the guest here (Decision 12). One way; never written once the destination's `commit` is. |
+| `cutover` | boolean |  | Pause the guest and send the disk delta and the VMM state. One way. |
+| `moveId` | string | Yes | The `VirtualMachineMove` this machine sends. Immutable. |
+| `peer` | object |  | The destination host, once it has published its certificate and endpoint. |
+
+##### `.spec.moveOut.peer`
+
+The destination host, once it has published its certificate and
+endpoint.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `certificate` | string | Yes | The peer's per-move certificate, PEM. |
+| `endpoint` | string |  | `host:port` the destination listens on. Set only on the source's `moveOut.peer`: the source connects, the destination listens. |
 
 #### `.spec.nics[]`
 
@@ -2076,6 +2246,8 @@ backends alike.
 | `hostUid` | integer |  | The unprivileged host uid this machine's units run as (ADR-0063 Decision 3). Recorded so the provider re-adopts a running guest without trusting its own memory. |
 | `initialization` | object |  | CAPI contract field. |
 | `installMediaDetached` | boolean |  | Whether the installer has been removed, live and for future starts (ADR-0044, ADR-0065 Decision 4). Sticky once true; `None` when there was never an installer. |
+| `moveIn` | object |  | The destination side of a move, published by the host provider. |
+| `moveOut` | object |  | The source side of a move, published by the host provider. |
 | `observedGeneration` | integer |  | The `metadata.generation` this status was computed from. |
 | `observedPowerState` | string |  | The VM's last observed run state. Allowed: `PoweredOn`, `PoweredOff`, `Suspended`, `null`. |
 | `sealedPartitions` | string[] |  | Partitions the guest has reported sealed, as LUKS containers, on a first-boot sealing machine (ADR-0088, ADR-0112): from the `sealed=` line of its vsock report. **Sticky**: the report is re-sent every boot, and a powered-off machine has not become unsealed. Empty until reported, and on every machine without `spec.firstBootSealing`. Guest-supplied, so it is only ever used to *withhold* `GuestReady`. |
@@ -2111,6 +2283,31 @@ CAPI contract field.
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `provisioned` | boolean |  | True when the infrastructure provider reports that the resource's infrastructure is fully provisioned. |
+
+#### `.status.moveIn`
+
+The destination side of a move, published by the host provider.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `certificate` | string |  | This host's per-move certificate, PEM. |
+| `endpoint` | string |  | `host:port` this host listens on for the move, from its `[move] listen`. |
+| `message` | string |  | Why the move failed here, for a person. |
+| `moveId` | string | Yes | The move this reports on; a report for another move id is stale. |
+| `phase` | string | Yes | Where the destination host is in a move (ADR-0127 Decision 4). Allowed: `Preparing`, `Listening`, `Received`, `Running`, `Failed`. |
+
+#### `.status.moveOut`
+
+The source side of a move, published by the host provider.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `bytesSent` | integer |  | Bytes sent so far. |
+| `bytesTotal` | integer |  | Bytes to send, once known. |
+| `certificate` | string |  | This host's per-move certificate, PEM. The private key never leaves the host and is discarded when the move ends. |
+| `message` | string |  | Why the move failed here, for a person. |
+| `moveId` | string | Yes | The move this reports on; a report for another move id is stale. |
+| `phase` | string | Yes | Where the source host is in a move (ADR-0127 Decision 4). Allowed: `Preparing`, `Copying`, `Precopied`, `Sent`, `Resumed`, `Failed`. |
 
 ---
 
@@ -2149,7 +2346,10 @@ The CloudHypervisorMachine spec for machines created from this template.
 | `desiredPowerState` | string |  | Desired power state, resolved from the parent `VirtualMachine`. Allowed: `PoweredOn`, `PoweredOff`, `Suspended`. |
 | `failureDomain` | string |  | CAPI contract (optional): failure domain placement. One host is one failure domain on this backend, as on libvirt. |
 | `firstBootSealing` | object |  | First-boot sealing the guest must report before `GuestReady` (ADR-0088, ADR-0112), copied by `banlieue-controller` from the parent `VirtualMachine`'s `VMImage.spec.firstBootSealing` when the class is `tpmEnabled`. The guest reports over its vsock (`sealed=` beside `phase=installed`). `None` for every other machine, which keeps today's `GuestReady` meaning unchanged. |
+| `identity` | object |  | The guest identity this machine carries when it is not its own: set by `banlieue-controller` on a move's destination machine to the source's identity (ADR-0127 Decision 6). The provider derives the MAC, tap names, machine directory and EK certificate subject from it instead of from this machine's name and UID, so a moved guest keeps all of them. Absent on every machine that was never the destination of a move. Immutable. |
 | `memory` | object | Yes | Guest memory. |
+| `moveIn` | object |  | This machine is a move's destination (ADR-0127 Decision 4). Set by `banlieue-controller` at creation; the host provider prepares to receive. |
+| `moveOut` | object |  | This machine is a move's source (ADR-0127 Decision 4). Set by `banlieue-controller`; the host provider copies the guest out. |
 | `nics` | object[] | Yes | Network interfaces. |
 | `osDiskSizeGiB` | integer | Yes | OS disk size in GiB. Required, and grown to before first boot; never shrunk. Must be at least the image's size. |
 | `providerID` | string |  | CAPI contract: Provider ID for the resulting Node, if this VM becomes a Kubernetes node. Format: `cloudhypervisor://<provider-name>/<machine-uid>`. Set by the provider once the guest exists. |
@@ -2190,6 +2390,20 @@ today's `GuestReady` meaning unchanged.
 | `partitions` | string[] |  | Kairos partition labels to seal on first boot. Defaults to `[COS_PERSISTENT]`. `COS_OEM`, `COS_STATE`, `COS_RECOVERY` and `COS_GRUB` are refused at admission, mirroring Kairos's own refusal. |
 | `timeoutSeconds` | integer |  | Seconds from the machine's power-on (its infrastructure `Ready` transition) within which the guest must report every listed partition sealed; after that `GuestReady` is `False` with reason `FirstBootSealingTimeout`. A clone that cannot seal halts in its initramfs and never reports anything, so this is how it is noticed. |
 
+###### `.spec.template.spec.identity`
+
+The guest identity this machine carries when it is not its own: set by
+`banlieue-controller` on a move's destination machine to the source's
+identity (ADR-0127 Decision 6). The provider derives the MAC, tap names,
+machine directory and EK certificate subject from it instead of from
+this machine's name and UID, so a moved guest keeps all of them. Absent
+on every machine that was never the destination of a move. Immutable.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | Yes | The original machine's name. |
+| `uid` | string | Yes | The original machine's UID. |
+
 ###### `.spec.template.spec.memory`
 
 Guest memory.
@@ -2198,6 +2412,48 @@ Guest memory.
 | --- | --- | --- | --- |
 | `hugepages` | boolean |  | Back guest memory with hugepages. The host reports hugepages as their own capacity, since they are reserved rather than allocated on demand. |
 | `sizeMiB` | integer | Yes | Guest memory in MiB. |
+
+###### `.spec.template.spec.moveIn`
+
+This machine is a move's destination (ADR-0127 Decision 4). Set by
+`banlieue-controller` at creation; the host provider prepares to receive.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `commit` | boolean |  | Resume the received guest. Written only after the source reported `Sent` and its VMM exited (Decision 5); never written with the source's `abort`. One way. |
+| `moveId` | string | Yes | The `VirtualMachineMove` this machine receives. Immutable. |
+| `peer` | object |  | The source host, once it has published its certificate. |
+
+####### `.spec.template.spec.moveIn.peer`
+
+The source host, once it has published its certificate.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `certificate` | string | Yes | The peer's per-move certificate, PEM. |
+| `endpoint` | string |  | `host:port` the destination listens on. Set only on the source's `moveOut.peer`: the source connects, the destination listens. |
+
+###### `.spec.template.spec.moveOut`
+
+This machine is a move's source (ADR-0127 Decision 4). Set by
+`banlieue-controller`; the host provider copies the guest out.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `abort` | boolean |  | Give up before commit: resume the guest here (Decision 12). One way; never written once the destination's `commit` is. |
+| `cutover` | boolean |  | Pause the guest and send the disk delta and the VMM state. One way. |
+| `moveId` | string | Yes | The `VirtualMachineMove` this machine sends. Immutable. |
+| `peer` | object |  | The destination host, once it has published its certificate and endpoint. |
+
+####### `.spec.template.spec.moveOut.peer`
+
+The destination host, once it has published its certificate and
+endpoint.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `certificate` | string | Yes | The peer's per-move certificate, PEM. |
+| `endpoint` | string |  | `host:port` the destination listens on. Set only on the source's `moveOut.peer`: the source connects, the destination listens. |
 
 ###### `.spec.template.spec.nics[]`
 

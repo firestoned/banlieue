@@ -6,17 +6,19 @@ pub mod provider;
 pub mod providerclass;
 pub mod virtualmachine;
 pub mod virtualmachineclaim;
+pub mod virtualmachinemove;
 pub mod virtualmachinepool;
 pub mod vmclass;
 pub mod vmimage;
 
 pub use provider::{
-    DEFAULT_CPU_OVERCOMMIT_RATIO, DEFAULT_STORAGE_RESERVE_PERCENT, FailureDomain,
+    DEFAULT_CPU_OVERCOMMIT_RATIO, DEFAULT_STORAGE_RESERVE_PERCENT, FEATURE_MOVE, FailureDomain,
     FailureDomainAttributes, FailureDomainCapacity, FailureDomainNameOverride, Heartbeat,
-    LABEL_UNSCHEDULABLE, MAX_CPU_OVERCOMMIT_RATIO, MAX_STORAGE_RESERVE_PERCENT,
+    LABEL_UNSCHEDULABLE, LABEL_ZONE, MAX_CPU_OVERCOMMIT_RATIO, MAX_STORAGE_RESERVE_PERCENT,
     MIN_CPU_OVERCOMMIT_RATIO, NetworkClassMapping, Provider, ProviderCapabilities,
     ProviderConnection, ProviderScheduling, ProviderSpec, ProviderStatus, ProviderWorkloadStatus,
-    ScopedSubnet, ScopedTarget, StorageCapacity, StorageClassMapping, SubnetShape, WorkloadMode,
+    RAW_CPU_MODEL, RAW_VMM, ScopedSubnet, ScopedTarget, StorageCapacity, StorageClassMapping,
+    SubnetShape, WorkloadMode,
 };
 pub use providerclass::{
     DEFAULT_PROVIDER_REPLICAS, ImagePullPolicy, LoggingSpec, ProviderClass, ProviderClassSpec,
@@ -34,6 +36,10 @@ pub use virtualmachineclaim::{
     ANNOTATION_SUBJECT_ID, ANNOTATION_SUBJECT_ISSUER, CLAIM_FINALIZER, CLAIM_NONCE_BITS,
     CLAIM_NONCE_BYTES, ClaimPhase, ClaimSubject, VirtualMachineClaim, VirtualMachineClaimSpec,
     VirtualMachineClaimStatus,
+};
+pub use virtualmachinemove::{
+    MovePhase, MoveTarget, VirtualMachineMove, VirtualMachineMoveSpec, VirtualMachineMoveStatus,
+    move_condition_types, move_reasons,
 };
 pub use virtualmachinepool::{
     DEFAULT_POOL_MAX_SURGE, DEFAULT_POOL_PROVISIONING_TIMEOUT_SECS, LABEL_CLAIM, LABEL_POOL,

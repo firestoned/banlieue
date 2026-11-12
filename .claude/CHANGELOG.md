@@ -1,5 +1,58 @@
 # Changelog
 
+## [2026-11-12 09:00] - Move a CH VM between hosts: ADR-0127 accepted, API milestone
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docs/adr/0127-move-a-cloud-hypervisor-vm-between-hosts-in-a-zone.md`:
+  Accepted 2026-11-11. Revised before acceptance: a VM finds its machine
+  through `status.infrastructureRef`, switched with `status.scheduled` at
+  commit (Decision 4, 11); a second move keeps the first identity
+  (Decision 6); a move ranks destinations by most free memory after the
+  move, then vCPUs (Decision 2); pool members are moved like any VM
+  (Decision 1); faubourg decides when and from which host, banlieue where
+  (Decision 1); an API-first milestone (Decision 13).
+- `crates/banlieue-api/src/banlieue/virtualmachinemove.rs` (new): the
+  `VirtualMachineMove` CRD (`vmmove`): `spec.vmRef` (immutable by CEL),
+  optional `spec.target` (exactly one of `providerName`/`providerSelector`,
+  CEL), `MovePhase` with `is_cancellable`/`is_terminal`, status (source,
+  destination, byte counters, `downtimeMilliseconds`, conditions),
+  `move_condition_types::ADMITTED` and `move_reasons`.
+- `crates/banlieue-api/src/banlieue/provider.rs`: `LABEL_ZONE`
+  (`banlieue.io/zone`), `FEATURE_MOVE` (`move`), `RAW_VMM`, `RAW_CPU_MODEL`.
+  `banlieue-provider-cloud-hypervisor` publishes its raw keys through them.
+- `crates/banlieue-api/src/infrastructure/cloud_hypervisor_machine.rs`:
+  `spec.identity` (`ChMachineIdentity`; set at creation or never, immutable,
+  both by CEL), `spec.moveIn`/`moveOut` (`ChMoveIn`, `ChMoveOut`,
+  `ChMovePeer`; move ids immutable by CEL, one-way switches omitted while
+  false), `status.moveIn`/`moveOut` with `ChMoveInPhase`/`ChMoveOutPhase`,
+  and `derived_identity()`. Every spec literal gains the three fields as
+  `None`; the controller's builder still never sets them.
+- `deploy/crds/` and `docs/src/reference/api.md` regenerated
+  (`banlieue.io_virtualmachinemoves.yaml` new).
+- CALM: the ADR-0127 nodes, relationships and flow marked ACCEPTED; the CRD
+  node records the served API, the ranking, CEL immutability and pool
+  members; the controller relationship records the `infrastructureRef`
+  switch. `make calm-validate` clean; diagrams regenerated.
+- Docs: `docs/src/concepts/providers.md` (zones and moves, API only);
+  roadmap 14 (API-first section, ADR accepted); `ROADMAPS.md` row 14.
+- Threat model: pass for the API milestone (see its revision log).
+
+### Why
+faubourg's host drain (faubourg ADR-0017) builds against these types. With
+no other consumer, the API lands first and alone, so both projects share one
+contract before either writes orchestration code.
+
+### Impact
+- [ ] Breaking change: no (new optional fields and a new CRD)
+- [ ] Requires cluster rollout: CRDs only; nothing acts on a move yet
+- [x] Tests: 15 new API unit tests for the move CRD and 9 for the machine
+      fields, written first and red; every CEL rule exercised against a kind
+      apiserver (retarget, both or neither target, identity edited, added or
+      removed, move id changed: all refused; commit and a later moveOut
+      allowed)
+
 ## [2026-11-11 22:30] - Capacity-aware scheduling guide and a vCenter capacity live test (ADR-0128)
 
 **Author:** Erick Bourgeois
@@ -34,6 +87,7 @@ scheduler.
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Documentation only (plus an ignored live test)
+
 
 ## [2026-11-11 18:00] - Every provider publishes measured capacity (ADR-0128, implemented)
 

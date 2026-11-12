@@ -68,6 +68,12 @@ pub fn cloud_hypervisor_provider_id(provider_name: &str, machine_uid: &str) -> S
     printcolumn = r#"{"name":"Age","type":"date","jsonPath":".metadata.creationTimestamp"}"#
 )]
 #[serde(rename_all = "camelCase")]
+// A guest's identity is fixed when its machine is created (ADR-0127 Decision 6):
+// adding or removing `identity` later would change a running guest's MAC.
+#[schemars(extend("x-kubernetes-validations" = [{
+    "rule": "has(self.identity) == has(oldSelf.identity)",
+    "message": "identity is set when the machine is created, or never",
+}]))]
 /// CloudHypervisorMachine — the concrete, scheduled VM request for a Cloud
 /// Hypervisor host.
 ///
@@ -149,6 +155,114 @@ pub struct CloudHypervisorMachineSpec {
     /// today's `GuestReady` meaning unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub first_boot_sealing: Option<FirstBootSealing>,
+
+    /// The guest identity this machine carries when it is not its own: set by
+    /// `banlieue-controller` on a move's destination machine to the source's
+    /// identity (ADR-0127 Decision 6). The provider derives the MAC, tap names,
+    /// machine directory and EK certificate subject from it instead of from
+    /// this machine's name and UID, so a moved guest keeps all of them. Absent
+    /// on every machine that was never the destination of a move. Immutable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(extend("x-kubernetes-validations" = [{
+        "rule": "self == oldSelf",
+        "message": "identity is immutable",
+    }]))]
+    pub identity: Option<ChMachineIdentity>,
+
+    /// This machine is a move's destination (ADR-0127 Decision 4). Set by
+    /// `banlieue-controller` at creation; the host provider prepares to receive.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub move_in: Option<ChMoveIn>,
+
+    /// This machine is a move's source (ADR-0127 Decision 4). Set by
+    /// `banlieue-controller`; the host provider copies the guest out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub move_out: Option<ChMoveOut>,
+}
+
+impl CloudHypervisorMachineSpec {
+    /// The `(name, uid)` the provider derives the guest's MAC, taps, directory
+    /// and EK subject from: [`Self::identity`] when set, else the machine's own
+    /// (ADR-0127 Decision 6).
+    #[must_use]
+    pub fn derived_identity<'a>(
+        &'a self,
+        own_name: &'a str,
+        own_uid: &'a str,
+    ) -> (&'a str, &'a str) {
+        match &self.identity {
+            Some(id) => (&id.name, &id.uid),
+            None => (own_name, own_uid),
+        }
+    }
+}
+
+/// A guest identity carried across a move: the name and UID of the machine
+/// the guest was created as.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ChMachineIdentity {
+    /// The original machine's name.
+    pub name: String,
+    /// The original machine's UID.
+    pub uid: String,
+}
+
+/// The other host of a move, as the controller copied it from that host's
+/// machine status. Each side accepts only this exact certificate (ADR-0127
+/// Decision 10): pinned, never a CA.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ChMovePeer {
+    /// The peer's per-move certificate, PEM.
+    pub certificate: String,
+    /// `host:port` the destination listens on. Set only on the source's
+    /// `moveOut.peer`: the source connects, the destination listens.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+}
+
+/// The destination side of a move, written by `banlieue-controller`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ChMoveIn {
+    /// The `VirtualMachineMove` this machine receives. Immutable.
+    #[schemars(extend("x-kubernetes-validations" = [{
+        "rule": "self == oldSelf",
+        "message": "moveIn.moveId is immutable",
+    }]))]
+    pub move_id: String,
+    /// The source host, once it has published its certificate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peer: Option<ChMovePeer>,
+    /// Resume the received guest. Written only after the source reported
+    /// `Sent` and its VMM exited (Decision 5); never written with the source's
+    /// `abort`. One way.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub commit: bool,
+}
+
+/// The source side of a move, written by `banlieue-controller`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ChMoveOut {
+    /// The `VirtualMachineMove` this machine sends. Immutable.
+    #[schemars(extend("x-kubernetes-validations" = [{
+        "rule": "self == oldSelf",
+        "message": "moveOut.moveId is immutable",
+    }]))]
+    pub move_id: String,
+    /// The destination host, once it has published its certificate and
+    /// endpoint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peer: Option<ChMovePeer>,
+    /// Pause the guest and send the disk delta and the VMM state. One way.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cutover: bool,
+    /// Give up before commit: resume the guest here (Decision 12). One way;
+    /// never written once the destination's `commit` is.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub abort: bool,
 }
 
 /// Virtual CPUs for a machine.
@@ -326,6 +440,14 @@ pub struct CloudHypervisorMachineStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host_uid: Option<u32>,
 
+    /// The destination side of a move, published by the host provider.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub move_in: Option<ChMoveInStatus>,
+
+    /// The source side of a move, published by the host provider.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub move_out: Option<ChMoveOutStatus>,
+
     /// Standard Kubernetes conditions.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[schemars(extend(
@@ -337,6 +459,79 @@ pub struct CloudHypervisorMachineStatus {
     /// The `metadata.generation` this status was computed from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub observed_generation: Option<i64>,
+}
+
+/// Where the source host is in a move (ADR-0127 Decision 4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub enum ChMoveOutPhase {
+    /// Generating the per-move key; the certificate is not published yet.
+    Preparing,
+    /// Copying the disk while the guest runs.
+    Copying,
+    /// The running copy is done; waiting for `cutover`.
+    Precopied,
+    /// Paused, sent the delta and the VMM state, and its VMM has exited. The
+    /// controller may now commit the destination.
+    Sent,
+    /// Aborted before commit: the guest runs here again.
+    Resumed,
+    /// The move failed on this side; `message` says why.
+    Failed,
+}
+
+/// Where the destination host is in a move (ADR-0127 Decision 4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub enum ChMoveInPhase {
+    /// Allocating a guest uid and directories, starting an empty VMM.
+    Preparing,
+    /// Published its certificate and endpoint; waiting for the source.
+    Listening,
+    /// Received and restored the guest, which stays paused until `commit`.
+    Received,
+    /// Committed: the guest runs here.
+    Running,
+    /// The move failed on this side; `message` says why.
+    Failed,
+}
+
+/// The source host's report of a move.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ChMoveOutStatus {
+    /// The move this reports on; a report for another move id is stale.
+    pub move_id: String,
+    pub phase: ChMoveOutPhase,
+    /// This host's per-move certificate, PEM. The private key never leaves
+    /// the host and is discarded when the move ends.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub certificate: Option<String>,
+    /// Bytes to send, once known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bytes_total: Option<u64>,
+    /// Bytes sent so far.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bytes_sent: Option<u64>,
+    /// Why the move failed here, for a person.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+/// The destination host's report of a move.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ChMoveInStatus {
+    /// The move this reports on; a report for another move id is stale.
+    pub move_id: String,
+    pub phase: ChMoveInPhase,
+    /// This host's per-move certificate, PEM.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub certificate: Option<String>,
+    /// `host:port` this host listens on for the move, from its `[move] listen`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+    /// Why the move failed here, for a person.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }
 
 // ----------------------------------------------------------------------

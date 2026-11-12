@@ -129,6 +129,39 @@ that only cordoned providers could take (every candidate cordoned, or one pinned
 host by its `failureDomainSelector`) waits with `Scheduled=False`, reason
 `ProviderUnschedulable`, and a message naming those providers.
 
+### Zones and moving a VM between hosts
+
+> **API only.** The types below are served, but no controller acts on them yet: a
+> `VirtualMachineMove` stays `Pending` (it shows no phase) until Stage 1 of
+> [ADR-0127](https://github.com/firestoned/banlieue/blob/main/docs/adr/0127-move-a-cloud-hypervisor-vm-between-hosts-in-a-zone.md)
+> ships.
+
+Two `cloud-hypervisor` providers with the same non-empty `banlieue.io/zone` label are hosts a
+running VM may be moved between, keeping its memory, disk, MAC and addresses. The label is the
+operator's statement that the hosts share the L2 segments behind the VM's network classes, which
+banlieue cannot check; faubourg sets it from the host's availability zone. A move is asked for
+with a `VirtualMachineMove` in the VM's namespace:
+
+```yaml
+apiVersion: banlieue.io/v1alpha1
+kind: VirtualMachineMove
+metadata:
+  name: web-0-drain
+  namespace: apps
+spec:
+  vmRef:
+    name: web-0          # immutable
+  # target:              # optional: exactly one of the two
+  #   providerName: hv02
+  #   providerSelector: { matchLabels: { rack: r2 } }
+```
+
+Without a target, banlieue picks the host in the zone with the most free memory left after the
+move, then the most free vCPUs. It admits a move only between hosts that both advertise the
+`move` feature and publish identical `raw.vmm` and `raw.cpuModel`, and rejects one otherwise
+with a named reason in the `Admitted` condition (`NotInAZone`, `HostsDiffer`, `VTPMNotMovable`
+and others). Deleting a move cancels it while it is `Pending`, `Preparing` or `Copying`.
+
 ## What a provider controller does
 
 A provider controller is a Kubernetes controller. Its responsibilities:
