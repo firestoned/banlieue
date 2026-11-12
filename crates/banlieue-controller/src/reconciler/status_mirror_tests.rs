@@ -569,6 +569,9 @@ mod tests {
                 user_data: None,
                 desired_power_state: PowerState::PoweredOn,
                 first_boot_sealing: None,
+                identity: None,
+                move_in: None,
+                move_out: None,
             },
             status: Some(CloudHypervisorMachineStatus {
                 initialization: InitializationStatus {

@@ -24,9 +24,11 @@
 >
 > *Updated 2026-11-10:* the Cloud Hypervisor class has its own design,
 > [ADR-0127](../../docs/adr/0127-move-a-cloud-hypervisor-vm-between-hosts-in-a-zone.md)
-> (Proposed): a move between two hosts of one zone on local storage, the
-> disk copied by the host providers, requested by faubourg's host drain
-> (faubourg ADR-0017). Its tasks are in
+> (Accepted 2026-11-11): a move between two hosts of one zone on local
+> storage, the disk copied by the host providers, requested by faubourg's
+> host drain (faubourg ADR-0017). *Updated 2026-11-11:* its API milestone is
+> built (the `VirtualMachineMove` CRD and the `CloudHypervisorMachine` move
+> fields are served, with no controller acting on them). Its tasks are in
 > [Cloud Hypervisor (ADR-0127)](#cloud-hypervisor-adr-0127) and do not wait
 > for the vSphere tasks.
 
@@ -79,7 +81,7 @@ Update a row when a backend's answer changes.
 |---|---|---|---|
 | vSphere | `Recreate` | `RelocateVM_Task` (vMotion, Storage vMotion) within one vCenter; cross-vCenter needs newer APIs | The first target: in place, no guest downtime, within one `Provider` |
 | libvirt | `Recreate` | libvirt can migrate, but banlieue's provider implements none of it, and pools are host-local | Likely `Recreate` by design (see Preconditions) |
-| Cloud Hypervisor | `Recreate` | Upstream `vm.send-migration` / `vm.receive-migration` between two VMMs, only with the disk already on both hosts (block migration is cloud-hypervisor#8006, open); the vTPM is not migrated, and swtpm serves one control client (the VMM), so only the VMM can carry its state | ADR-0127 (Proposed 2026-11-10): a move between two hosts with the same `banlieue.io/zone`, on local storage. The host providers copy the disk (reflink precopy, delta at cutover) and relay the VMM stream over one per-move TLS link; the controller coordinates through the two `CloudHypervisorMachine`s, so no RPC. Stage 1 moves VMs without a vTPM, pausing for the delta plus all guest memory; vTPM guests, live memory and upstream block migration are Stages 2 to 4 |
+| Cloud Hypervisor | `Recreate` | Upstream `vm.send-migration` / `vm.receive-migration` between two VMMs, only with the disk already on both hosts (block migration is cloud-hypervisor#8006, open); the vTPM is not migrated, and swtpm serves one control client (the VMM), so only the VMM can carry its state | ADR-0127 (Accepted 2026-11-11, API served): a move between two hosts with the same `banlieue.io/zone`, on local storage. The host providers copy the disk (reflink precopy, delta at cutover) and relay the VMM stream over one per-move TLS link; the controller coordinates through the two `CloudHypervisorMachine`s, so no RPC. Stage 1 moves VMs without a vTPM, pausing for the delta plus all guest memory; vTPM guests, live memory and upstream block migration are Stages 2 to 4 |
 | Proxmox | no provider | Live migration over shared storage (unresearched) | Unscoped until roadmap 06 lands |
 
 ## Current state (confirmed in code, as of this writing)
@@ -214,21 +216,49 @@ would undo a move.
 - [x] ADR-0127 drafted (Proposed, 2026-11-10), with faubourg ADR-0017.
 - [x] CALM: `data-asset-virtualmachinemove-cr`, `service-faubourg-controller`,
       the host-to-host link (`rel-provider-cloud-hypervisor-move-peer`), the
-      VMM relay and `flow-move-virtualmachine-cloud-hypervisor`, all marked
-      PROPOSED.
-- [ ] ADR-0127 and faubourg ADR-0017 accepted.
+      VMM relay and `flow-move-virtualmachine-cloud-hypervisor`; marked
+      ACCEPTED on 2026-11-11, the CRD node as served with no controller.
+- [x] ADR-0127 accepted 2026-11-11 (faubourg ADR-0017 the same day), after
+      settling which machine a moved VM uses (`status.infrastructureRef`),
+      the destination ranking (most free memory after the move), pool
+      members (moved like any VM) and the API-first milestone.
 - [ ] Spikes before Stage 1 code: reflink delta on XFS (`FIEMAP_EXTENT_SHARED`
       after guest writes and discards, against a running Cloud Hypervisor
       guest); a paused-to-paused `send-migration` over a relayed UNIX socket
       on the pinned VMM; the pause cost of `fsync` plus `FICLONE` on a busy
       disk.
 
+### API first (ADR-0127 Decision 13)
+
+- [x] `VirtualMachineMove` CRD (`banlieue-api`, `virtualmachinemove.rs`):
+      `spec.vmRef` (immutable, CEL), `spec.target` (exactly one of
+      `providerName` or `providerSelector`, CEL), phases with
+      `is_cancellable` and `is_terminal`, the `Admitted` condition and the
+      rejection reasons; `make crds`.
+- [x] `LABEL_ZONE` (`banlieue.io/zone`), `FEATURE_MOVE` (`move`),
+      `RAW_VMM` and `RAW_CPU_MODEL` exported beside `LABEL_UNSCHEDULABLE`; the
+      Cloud Hypervisor provider publishes its raw keys through them.
+- [x] `CloudHypervisorMachine`: `spec.identity` (set at creation or never,
+      immutable, CEL), `spec.moveIn`/`moveOut` (move ids immutable, one-way
+      `commit`, `cutover`, `abort`), `status.moveIn`/`moveOut` with their
+      phases; `derived_identity()`. CEL rules proven on a kind apiserver.
+- [ ] Released in a `banlieue-api` version faubourg can depend on.
+
 ### Stage 1: VMs without a vTPM
 
-- [ ] `VirtualMachineMove` CRD (`banlieue-api`), `make crds`, examples.
-- [ ] `CloudHypervisorMachine`: `spec.identity`, `spec.moveIn`/`moveOut`,
-      `status.moveIn`/`moveOut`; derive MAC, taps, machine dir and EK
-      subject from `spec.identity`.
+- [ ] **Precondition, before any code reads the move fields:** only
+      `banlieue-controller` may write `spec.identity`, `spec.moveIn` and
+      `spec.moveOut` on a `CloudHypervisorMachine`. A host provider's Role has
+      `patch` on every machine in its namespace (threat model TB-8), so a
+      stolen host token could otherwise point another host's guest at a peer
+      it controls. Likely a `ValidatingAdmissionPolicy` keyed on the
+      controller's ServiceAccount, tested on kind.
+- [ ] Examples for `VirtualMachineMove` once a controller acts on it.
+- [ ] Provider: derive MAC, taps, machine dir and EK subject from
+      `derived_identity()`.
+- [ ] Controller: the VM reconciler addresses its machine by
+      `status.infrastructureRef.name` (create, recreate, status mirror,
+      finalizer), falling back to the VM's name only while it is unset.
 - [ ] Controller: admission checks (zone label, `move` feature, VMM and
       CPU model, capacity, placement, policy, no vTPM), orchestration,
       `Migrating` and `Ready=False/Moving`, commit and abort.

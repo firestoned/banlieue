@@ -126,6 +126,29 @@ spec:
                             minimum: 60.0
                             type: integer
                         type: object
+                      identity:
+                        description: |-
+                          The guest identity this machine carries when it is not its own: set by
+                          `banlieue-controller` on a move's destination machine to the source's
+                          identity (ADR-0127 Decision 6). The provider derives the MAC, tap names,
+                          machine directory and EK certificate subject from it instead of from
+                          this machine's name and UID, so a moved guest keeps all of them. Absent
+                          on every machine that was never the destination of a move. Immutable.
+                        nullable: true
+                        properties:
+                          name:
+                            description: The original machine's name.
+                            type: string
+                          uid:
+                            description: The original machine's UID.
+                            type: string
+                        required:
+                        - name
+                        - uid
+                        type: object
+                        x-kubernetes-validations:
+                        - message: identity is immutable
+                          rule: self == oldSelf
                       memory:
                         description: Guest memory.
                         properties:
@@ -143,6 +166,84 @@ spec:
                             type: integer
                         required:
                         - sizeMiB
+                        type: object
+                      moveIn:
+                        description: |-
+                          This machine is a move's destination (ADR-0127 Decision 4). Set by
+                          `banlieue-controller` at creation; the host provider prepares to receive.
+                        nullable: true
+                        properties:
+                          commit:
+                            description: |-
+                              Resume the received guest. Written only after the source reported
+                              `Sent` and its VMM exited (Decision 5); never written with the source's
+                              `abort`. One way.
+                            type: boolean
+                          moveId:
+                            description: The `VirtualMachineMove` this machine receives. Immutable.
+                            type: string
+                            x-kubernetes-validations:
+                            - message: moveIn.moveId is immutable
+                              rule: self == oldSelf
+                          peer:
+                            description: The source host, once it has published its certificate.
+                            nullable: true
+                            properties:
+                              certificate:
+                                description: The peer's per-move certificate, PEM.
+                                type: string
+                              endpoint:
+                                description: |-
+                                  `host:port` the destination listens on. Set only on the source's
+                                  `moveOut.peer`: the source connects, the destination listens.
+                                nullable: true
+                                type: string
+                            required:
+                            - certificate
+                            type: object
+                        required:
+                        - moveId
+                        type: object
+                      moveOut:
+                        description: |-
+                          This machine is a move's source (ADR-0127 Decision 4). Set by
+                          `banlieue-controller`; the host provider copies the guest out.
+                        nullable: true
+                        properties:
+                          abort:
+                            description: |-
+                              Give up before commit: resume the guest here (Decision 12). One way;
+                              never written once the destination's `commit` is.
+                            type: boolean
+                          cutover:
+                            description: Pause the guest and send the disk delta and the VMM state. One way.
+                            type: boolean
+                          moveId:
+                            description: The `VirtualMachineMove` this machine sends. Immutable.
+                            type: string
+                            x-kubernetes-validations:
+                            - message: moveOut.moveId is immutable
+                              rule: self == oldSelf
+                          peer:
+                            description: |-
+                              The destination host, once it has published its certificate and
+                              endpoint.
+                            nullable: true
+                            properties:
+                              certificate:
+                                description: The peer's per-move certificate, PEM.
+                                type: string
+                              endpoint:
+                                description: |-
+                                  `host:port` the destination listens on. Set only on the source's
+                                  `moveOut.peer`: the source connects, the destination listens.
+                                nullable: true
+                                type: string
+                            required:
+                            - certificate
+                            type: object
+                        required:
+                        - moveId
                         type: object
                       nics:
                         description: Network interfaces.
@@ -286,6 +387,9 @@ spec:
                     - providerRef
                     - storageClass
                     type: object
+                    x-kubernetes-validations:
+                    - message: identity is set when the machine is created, or never
+                      rule: has(self.identity) == has(oldSelf.identity)
                 required:
                 - spec
                 type: object

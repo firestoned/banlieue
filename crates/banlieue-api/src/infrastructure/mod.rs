@@ -13,10 +13,12 @@ pub mod vsphere_cluster;
 pub mod vsphere_machine;
 
 pub use cloud_hypervisor_machine::{
-    ChAddressSource, ChBootSource, ChBootSourceKind, ChCpuSpec, ChMemorySpec, ChNicSpec,
-    CloudHypervisorMachine, CloudHypervisorMachineSpec, CloudHypervisorMachineStatus,
-    CloudHypervisorMachineTemplate, CloudHypervisorMachineTemplateResource,
-    CloudHypervisorMachineTemplateSpec, cloud_hypervisor_provider_id,
+    ChAddressSource, ChBootSource, ChBootSourceKind, ChCpuSpec, ChMachineIdentity, ChMemorySpec,
+    ChMoveIn, ChMoveInPhase, ChMoveInStatus, ChMoveOut, ChMoveOutPhase, ChMoveOutStatus,
+    ChMovePeer, ChNicSpec, CloudHypervisorMachine, CloudHypervisorMachineSpec,
+    CloudHypervisorMachineStatus, CloudHypervisorMachineTemplate,
+    CloudHypervisorMachineTemplateResource, CloudHypervisorMachineTemplateSpec,
+    cloud_hypervisor_provider_id,
 };
 pub use libvirt_machine::{
     LibvirtAddressSource, LibvirtBootSource, LibvirtBootSourceKind, LibvirtDiskBus,

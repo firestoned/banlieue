@@ -4,8 +4,12 @@ SPDX-License-Identifier: Apache-2.0
 -->
 # 0127: Move a running Cloud Hypervisor VM between hosts in one zone
 
-- **Status:** Proposed
-- **Date:** 2026-11-10
+- **Status:** Accepted
+- **Date:** 2026-11-11
+- **Proposed:** 2026-11-10
+- **Revised:** 2026-11-11: the VM's machine (Decision 4), the move ranking (Decision 2), pool
+  members (Decision 1), the API milestone (Decision 13) and who may write the move fields
+  (Decision 4) settled before acceptance.
 - **Deciders:** Erick Bourgeois
 - **Related:** Phase A of [ADR-0036](0036-live-migration-phased-approach.md) for the Cloud
   Hypervisor class (execution plan: roadmap 14). Amends
@@ -82,12 +86,15 @@ must keep the VM there, not send it back.
 
 ### Who asks, who moves
 
-1. **faubourg asks, banlieue moves.** Deciding *when* and *where* a host's VMs go (drain for
-   maintenance, rebalance a zone) is host management and belongs to faubourg (faubourg
-   ADR-0017). Doing the move needs per-machine state that only banlieue's host provider holds
+1. **faubourg asks, banlieue moves.** Deciding *when* a host's VMs go and *from which host* (drain
+   for maintenance, rebalance a zone) is host management and belongs to faubourg (faubourg
+   ADR-0017); *where* each one goes is banlieue's (Decision 2) unless the request names a
+   target. Doing the move needs per-machine state that only banlieue's host provider holds
    (guest uid, swtpm state, machine directory, derived identity), so the mechanism is
    banlieue's. faubourg never touches a VM; banlieue never decides to drain a host. A human
-   can create the same request faubourg does.
+   can create the same request faubourg does. A pool member is moved like any other VM: a
+   move never consults or notifies its pool, and a pool never replaces a member because a
+   move was requested (faubourg ADR-0017 Decision 8 asks for a move of every VM on the host).
 
 2. **The request is a new namespaced CRD, `VirtualMachineMove`** (`banlieue.io/v1alpha1`),
    in the VM's namespace:
@@ -95,7 +102,12 @@ must keep the VM there, not send it back.
    - `spec.vmRef.name`: the VM to move. Required, immutable.
    - `spec.target` (optional): `providerName`, or a `providerSelector`. When absent, banlieue
      picks a destination with the scheduler, restricted to the VM's zone, excluding its current
-     Provider and cordoned ones.
+     Provider and cordoned ones. Among the destinations that pass every filter (Decision 3), a
+     move ranks by **most free memory left after the move**, using the same free-memory figure
+     as the capacity fit (ADR-0107, ADR-0128), then by most free vCPUs, then by name. This
+     differs from placement's spread (ADR-0098) on purpose: a move packs memory where it is
+     most plentiful, so a drain empties a host without crowding another one. It applies to
+     moves only; placing a new VM is unchanged.
    - `status.phase`: `Pending`, `Preparing`, `Copying`, `HandingOver`, `Succeeded`, `Failed`,
      `Rejected`; `status.source` and `status.destination` (Provider names); `conditions` with
      reasons; byte counters for the copy; `status.downtimeMilliseconds` once done.
@@ -155,6 +167,26 @@ must keep the VM there, not send it back.
    The controller gains `create` on `cloudhypervisormachines` (it creates machines today) and
    the new CRD's verbs.
 
+   **Only the controller writes `spec.identity`, `spec.moveIn` and `spec.moveOut`.** A host
+   provider's Role already allows `patch` on every machine in its namespace (machine names are
+   unknowable when the Role is written), so a stolen host token could otherwise set `moveOut` on
+   another host's machine and point its guest at a peer it controls. An admission policy keyed on
+   the controller's identity enforces it, and is in place before any code reads these fields.
+
+   **A VM finds its machine through `status.infrastructureRef`, not through its own name.**
+   Today the VM reconciler addresses its infrastructure machine by the VM's name (create,
+   recreate, status mirror, finalizer), which would find no machine after a move and create a
+   new one: the recreate a move exists to avoid. So every one of those paths reads the
+   machine's name from `status.infrastructureRef.name`, falling back to the VM's name only
+   while that is unset (a VM placed before this ADR, or not yet placed). The controller
+   switches `status.infrastructureRef` to the destination machine in the same status write
+   that switches `status.scheduled` (Decision 11), after `commit` and before it deletes the
+   source machine. A moved VM therefore owns a machine named `<vm>-<short move id>`; a VM's
+   machine name is no longer a stable identifier, and nothing may assume it is (the stable one
+   is `spec.identity`, Decision 6). The destination machine is created with the same owner
+   reference to the VM as the source, so deleting the VM still deletes whichever machine it
+   owns.
+
 5. **The guest runs on exactly one host, always.** The invariant is enforced in three places:
    the handover is paused to paused, so Cloud Hypervisor itself never resumes either side; the
    destination resumes only on the controller's `commit`; the source resumes only on the
@@ -166,7 +198,9 @@ must keep the VM there, not send it back.
    and the provider derives the MAC, tap names, machine directory and EK subject from it
    instead of from its own metadata. Without it the guest's MAC would change on every move and
    its EK certificate would no longer match ADR-0045's `<name>:<uid>` check. A machine with no
-   `spec.identity` derives from itself, as today. The guest uid is the destination host's own
+   `spec.identity` derives from itself, as today. A VM moved a second time keeps its first
+   identity: the controller copies the source machine's own `spec.identity` when it has one,
+   and its name and UID only when it has none. The guest uid is the destination host's own
    (allocated there); nothing outside the host depends on it.
 
 ### Data plane: the host provider copies
@@ -244,7 +278,8 @@ must keep the VM there, not send it back.
 
 11. **The VM shows the move.** `Migrating=True` (the condition ADR-0036 Decision 3 reserved)
     from `Preparing` to the end; `Ready=False`, reason `Moving`, only while the guest is paused
-    at cutover; `status.scheduled` switches to the destination at commit and only then. The
+    at cutover; `status.scheduled` and `status.infrastructureRef` switch to the destination
+    together, in one status write, at commit and only then. The
     `VirtualMachineMove` records `downtimeMilliseconds` (cutover pause to resume).
 
 12. **Failure before commit leaves the VM where it was.** The controller sets
@@ -269,6 +304,12 @@ must keep the VM there, not send it back.
 13. **Built in stages; each is a separate implementation milestone of this ADR.** Stages 2
     and 3 are independent of each other.
 
+    - **API first.** Before any controller or provider code, `banlieue-api` gains the
+      `VirtualMachineMove` CRD, the `banlieue.io/zone` key (`LABEL_ZONE`), the `move` feature
+      name, and `spec.identity`, `spec.moveIn`, `spec.moveOut` with their status halves on
+      `CloudHypervisorMachine`, released on their own. faubourg builds its drain against those
+      types. A served CRD with no controller yet leaves every move `Pending`, which a requester
+      treats as not progressing; nothing acts on it.
     - **Stage 1 (buildable now): VMs without a vTPM.** Decisions 1 to 12. Downtime is the disk
       delta and the *whole* guest memory, sent while paused (a running source always resumes
       on the destination upstream, so memory cannot be precopied live). Roughly RAM size over
@@ -309,9 +350,7 @@ must keep the VM there, not send it back.
   guest that still unlocks and an EK certificate re-issued under the destination CA) and an e2e
   through faubourg's drain.
 - **Questions for the implementation, not for this decision:** whether the guest needs a
-  network announcement beyond Cloud Hypervisor's RARP for every topology; how a drain orders
-  pool members (an unclaimed member may be cheaper to replace than to move, which is the pool's
-  call); a per-host limit on concurrent outgoing moves (a constant in the provider, sized by
+  network announcement beyond Cloud Hypervisor's RARP for every topology; a per-host limit on concurrent outgoing moves (a constant in the provider, sized by
   measurement).
 
 ### Alternatives considered

@@ -38,6 +38,9 @@ mod tests {
             user_data: None,
             desired_power_state: PowerState::PoweredOn,
             first_boot_sealing: None,
+            identity: None,
+            move_in: None,
+            move_out: None,
         }
     }
 
@@ -344,5 +347,204 @@ mod tests {
         assert_eq!(json["sealedPartitions"][0], "COS_PERSISTENT");
         let back: CloudHypervisorMachineStatus = serde_json::from_value(json).unwrap();
         assert_eq!(back.sealed_partitions, s.sealed_partitions);
+    }
+
+    // ------------------------------------------------------------------
+    // Moves (ADR-0127)
+    // ------------------------------------------------------------------
+
+    /// A machine that is not moving carries none of the move fields, so every
+    /// machine created before ADR-0127 serializes exactly as it did.
+    #[test]
+    fn spec_and_status_omit_move_fields_when_absent() {
+        let spec = serde_json::to_value(minimal_spec()).unwrap();
+        for key in ["identity", "moveIn", "moveOut"] {
+            assert!(spec.get(key).is_none(), "{key} present: {spec}");
+        }
+        let status = serde_json::to_value(CloudHypervisorMachineStatus::default()).unwrap();
+        for key in ["moveIn", "moveOut"] {
+            assert!(status.get(key).is_none(), "{key} present: {status}");
+        }
+    }
+
+    /// The destination machine derives the guest's MAC, taps, directory and
+    /// EK subject from `spec.identity`, not from its own name and UID
+    /// (Decision 6).
+    #[test]
+    fn identity_round_trips_and_wins_over_the_machine_itself() {
+        let mut spec = minimal_spec();
+        spec.identity = Some(ChMachineIdentity {
+            name: "web-0".to_string(),
+            uid: "0b8f3c2e-0000-4000-8000-000000000001".to_string(),
+        });
+        let json = serde_json::to_value(&spec).unwrap();
+        assert_eq!(json["identity"]["name"], "web-0");
+        let back: CloudHypervisorMachineSpec = serde_json::from_value(json).unwrap();
+        assert_eq!(back, spec);
+        assert_eq!(
+            back.derived_identity("web-0-k3x9q", "ffff"),
+            ("web-0", "0b8f3c2e-0000-4000-8000-000000000001")
+        );
+        assert_eq!(
+            minimal_spec().derived_identity("web-0", "aaaa"),
+            ("web-0", "aaaa"),
+            "a machine with no identity derives from itself"
+        );
+    }
+
+    /// The controller drives a move only through these fields (Decision 4):
+    /// the move id, the peer it copied across, and the one-way switches.
+    #[test]
+    fn move_in_and_move_out_round_trip_in_camel_case() {
+        let mut spec = minimal_spec();
+        spec.move_in = Some(ChMoveIn {
+            move_id: "k3x9q".to_string(),
+            peer: Some(ChMovePeer {
+                certificate: "-----BEGIN CERTIFICATE-----".to_string(),
+                endpoint: None,
+            }),
+            commit: true,
+        });
+        spec.move_out = Some(ChMoveOut {
+            move_id: "k3x9q".to_string(),
+            peer: Some(ChMovePeer {
+                certificate: "-----BEGIN CERTIFICATE-----".to_string(),
+                endpoint: Some("198.51.100.20:7443".to_string()),
+            }),
+            cutover: true,
+            abort: false,
+        });
+        let json = serde_json::to_value(&spec).unwrap();
+        assert_eq!(json["moveIn"]["moveId"], "k3x9q");
+        assert_eq!(json["moveIn"]["commit"], true);
+        assert_eq!(json["moveOut"]["peer"]["endpoint"], "198.51.100.20:7443");
+        assert_eq!(json["moveOut"]["cutover"], true);
+        assert!(
+            json["moveOut"].get("abort").is_none(),
+            "false switches are omitted"
+        );
+        let back: CloudHypervisorMachineSpec = serde_json::from_value(json).unwrap();
+        assert_eq!(back, spec);
+    }
+
+    /// A request names only its move id; every switch defaults off, so a
+    /// controller that has not yet decided anything cannot commit by omission.
+    #[test]
+    fn move_switches_default_off() {
+        let move_in: ChMoveIn =
+            serde_json::from_value(serde_json::json!({ "moveId": "k3x9q" })).unwrap();
+        assert!(!move_in.commit && move_in.peer.is_none());
+        let move_out: ChMoveOut =
+            serde_json::from_value(serde_json::json!({ "moveId": "k3x9q" })).unwrap();
+        assert!(!move_out.cutover && !move_out.abort && move_out.peer.is_none());
+    }
+
+    #[test]
+    fn move_status_round_trips() {
+        let st = CloudHypervisorMachineStatus {
+            move_out: Some(ChMoveOutStatus {
+                move_id: "k3x9q".to_string(),
+                phase: ChMoveOutPhase::Precopied,
+                certificate: Some("-----BEGIN CERTIFICATE-----".to_string()),
+                bytes_total: Some(21_474_836_480),
+                bytes_sent: Some(21_474_836_480),
+                message: None,
+            }),
+            move_in: Some(ChMoveInStatus {
+                move_id: "k3x9q".to_string(),
+                phase: ChMoveInPhase::Listening,
+                certificate: Some("-----BEGIN CERTIFICATE-----".to_string()),
+                endpoint: Some("198.51.100.20:7443".to_string()),
+                message: None,
+            }),
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&st).unwrap();
+        assert_eq!(json["moveOut"]["phase"], "Precopied");
+        assert_eq!(json["moveIn"]["phase"], "Listening");
+        let back: CloudHypervisorMachineStatus = serde_json::from_value(json).unwrap();
+        assert_eq!(back, st);
+    }
+
+    #[test]
+    fn no_move_phase_collides_with_a_yaml_boolean() {
+        const YAML_BOOLEANS: &[&str] = &[
+            "y", "n", "yes", "no", "on", "off", "true", "false", "t", "f",
+        ];
+        let tokens = [
+            ChMoveOutPhase::Preparing,
+            ChMoveOutPhase::Copying,
+            ChMoveOutPhase::Precopied,
+            ChMoveOutPhase::Sent,
+            ChMoveOutPhase::Resumed,
+            ChMoveOutPhase::Failed,
+        ]
+        .iter()
+        .map(|p| serde_json::to_value(p).unwrap())
+        .chain(
+            [
+                ChMoveInPhase::Preparing,
+                ChMoveInPhase::Listening,
+                ChMoveInPhase::Received,
+                ChMoveInPhase::Running,
+                ChMoveInPhase::Failed,
+            ]
+            .iter()
+            .map(|p| serde_json::to_value(p).unwrap()),
+        );
+        for token in tokens {
+            let s = token.as_str().expect("variants serialize as strings");
+            assert!(
+                !YAML_BOOLEANS.contains(&s.to_ascii_lowercase().as_str()),
+                "variant {s:?} is a YAML 1.1 boolean"
+            );
+        }
+    }
+
+    fn machine_spec_schema() -> serde_json::Value {
+        use kube::CustomResourceExt;
+        let crd = CloudHypervisorMachine::crd();
+        let schema = crd.spec.versions[0].schema.clone().unwrap();
+        let root = serde_json::to_value(schema.open_api_v3_schema.unwrap()).unwrap();
+        root["properties"]["spec"].clone()
+    }
+
+    /// The identity a guest carries never changes once set: a changed
+    /// identity would give a running guest a new MAC and an EK certificate
+    /// subject that no longer matches it. The apiserver refuses the edit.
+    #[test]
+    fn identity_is_immutable_in_the_crd() {
+        let spec = machine_spec_schema();
+        let rules = &spec["properties"]["identity"]["x-kubernetes-validations"];
+        assert_eq!(rules[0]["rule"], "self == oldSelf", "got {spec}");
+    }
+
+    /// `identity` is set when the machine is created or never: adding it
+    /// later, or removing it, would change a running guest's MAC as surely as
+    /// editing it (the field rule alone only sees an edit).
+    #[test]
+    fn identity_is_set_at_creation_or_never() {
+        let spec = machine_spec_schema();
+        let rules = spec["x-kubernetes-validations"]
+            .as_array()
+            .unwrap_or_else(|| panic!("no spec rules: {spec}"));
+        assert!(
+            rules
+                .iter()
+                .any(|r| r["rule"] == "has(self.identity) == has(oldSelf.identity)"),
+            "got {spec}"
+        );
+    }
+
+    /// A move id names one move for the machine's life: a machine is never
+    /// re-pointed at a second move half-way through the first.
+    #[test]
+    fn move_ids_are_immutable_in_the_crd() {
+        let spec = machine_spec_schema();
+        for field in ["moveIn", "moveOut"] {
+            let rules =
+                &spec["properties"][field]["properties"]["moveId"]["x-kubernetes-validations"];
+            assert_eq!(rules[0]["rule"], "self == oldSelf", "{field}: got {spec}");
+        }
     }
 }

@@ -24,6 +24,25 @@ use std::collections::BTreeMap;
 /// cordon a host, by `kubectl label` or from a controller such as faubourg.
 pub const LABEL_UNSCHEDULABLE: &str = "banlieue.io/unschedulable";
 
+/// On a `Provider`, the zone its host belongs to (ADR-0127 Decision 3). Two Cloud Hypervisor
+/// Providers with the same non-empty value are hosts a VM may move between: the label is the
+/// operator's statement that they share the L2 segments behind the VM's network classes, which
+/// banlieue cannot verify. Set by faubourg from the host's `AvailabilityZone`, or by hand.
+pub const LABEL_ZONE: &str = "banlieue.io/zone";
+
+/// The `spec.capabilities.features` and published feature name for a Provider that can send and
+/// receive VM moves (ADR-0127). A Cloud Hypervisor host advertises it only when its host config
+/// sets `[move] listen`.
+pub const FEATURE_MOVE: &str = "move";
+
+/// `raw` attribute key on a failure domain: the VMM version string. A move is admitted only
+/// between hosts publishing the identical value (ADR-0127 Decision 3).
+pub const RAW_VMM: &str = "vmm";
+
+/// `raw` attribute key on a failure domain: the host CPU model. A move is admitted only between
+/// hosts publishing the identical value, since the guest sees the host CPU (ADR-0127 Decision 3).
+pub const RAW_CPU_MODEL: &str = "cpuModel";
+
 #[derive(CustomResource, Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[kube(
     group = "banlieue.io",

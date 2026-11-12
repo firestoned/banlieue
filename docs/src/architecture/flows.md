@@ -254,7 +254,7 @@ flowchart TD
 
 ## Move a running VM between Cloud Hypervisor hosts in one zone
 
-PROPOSED (ADR-0127, not yet implemented): a vMotion-shaped move on local storage. faubourg (or a person) asks; banlieue's controller orchestrates through the two CloudHypervisorMachines; the two host providers copy the disk and relay the VMM state over one per-move TLS connection. Stage 1 moves VMs without a vTPM and pauses for the disk delta plus the whole guest memory; a vTPM guest moves from Stage 2, once Cloud Hypervisor carries vTPM state in its own migration stream (swtpm serves one control client, the VMM).
+ACCEPTED (ADR-0127), not yet implemented: a vMotion-shaped move on local storage. faubourg (or a person) asks; banlieue's controller orchestrates through the two CloudHypervisorMachines; the two host providers copy the disk and relay the VMM state over one per-move TLS connection. Stage 1 moves VMs without a vTPM and pauses for the disk delta plus the whole guest memory; a vTPM guest moves from Stage 2, once Cloud Hypervisor carries vTPM state in its own migration stream (swtpm serves one control client, the VMM).
 
 ```mermaid
 flowchart TD

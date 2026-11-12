@@ -73,6 +73,9 @@ lan = "br0"
             user_data: Some("#cloud-config\n".into()),
             desired_power_state: PowerState::PoweredOn,
             first_boot_sealing: None,
+            identity: None,
+            move_in: None,
+            move_out: None,
         }
     }
 
