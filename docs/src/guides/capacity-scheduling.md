@@ -67,6 +67,10 @@ every `VirtualMachine`.
 The checks run in this order, for each failure domain that already matches
 the VM's selectors, classes and features:
 
+Every VM, the new one and those already scheduled, counts at its
+`VMClass`'s size with its `hardwareOverride` applied (CPUs, memory, disk
+sizes): the size it is provisioned with.
+
 1. **Reservation (ADR-0107), always.** The memory of the VMs banlieue has
    scheduled there (plus overhead), plus this VM's, must fit `memoryMiB`.
    Their vCPUs must fit `cpus` times `spec.scheduling.cpuOvercommitRatio`.
@@ -94,9 +98,6 @@ placement fails ADR-0125's checks (selectors, classes, reservation).
       so a later VM can be placed against space the first may still grow
       into. Thick and `eagerZeroed` disks take their full size from
       `freeGiB` at once.
-    - **`hardwareOverride.cpus` and `hardwareOverride.memoryMiB` are not
-      counted.** The scheduler sizes a VM by its `VMClass`. Use a class of
-      the size you mean when testing.
     - **Two storage classes on one store are checked separately** and can
       together overbook it. Give each store one class.
 
@@ -246,8 +247,8 @@ kubectl get provider <name> -n banlieue-system -o json | jq --arg fd <failure-do
 | V5 | Thin versus thick, after provisioning | V4 with a `thin` class, then again with an `eagerZeroed` class | thin: once the first is provisioned, the second is placed (the known gap); thick: `freeGiB` drops by the disk's size and the second stays refused |
 | V6 | Shared datastore | a class whose datastore two clusters reach; V4 with each VM selecting a different cluster | `storage[].shared: true` on both failure domains; the second VM is refused with the first counted in flight, although it was placed on the other cluster |
 | V7 | Datastore cluster | a class targeting `datastoreCluster` | `storage[]` shows the member with the most free space; V3 against it is refused |
-| V8 | Measured memory | a `VMClass` whose `memoryMiB` is above `memoryAvailableMiB` but below `memoryMiB` | refused with `memory available … MiB < … MiB (measured, less in-flight VMs)` |
-| V9 | Reservation memory | a `VMClass` whose `memoryMiB` is above `memoryMiB` | refused with `memory … MiB > … MiB` |
+| V8 | Measured memory | a VM with `hardwareOverride.memoryMiB` above `memoryAvailableMiB` but below `memoryMiB` | refused with `memory available … MiB < … MiB (measured, less in-flight VMs)` |
+| V9 | Reservation memory | a VM with `hardwareOverride.memoryMiB` above `memoryMiB` | refused with `memory … MiB > … MiB` |
 | V10 | The reserve is applied | on a test Provider, set `storageReservePercent: 0`, then `50` | V3's message shows `0 reserve`, then half of `totalGiB`; a VM refused at 50 fits at 0 |
 | V11 | Placed VMs stay | with V2 running, fill the datastore from outside banlieue until V3's usable is below V2's disk | V2 stays scheduled and Ready, not moved; only new VMs are refused |
 | V12 | Status stays quiet | watch the Provider for 5 minutes with no change in vCenter | `resourceVersion` changes only on heartbeats, not on every reconcile |

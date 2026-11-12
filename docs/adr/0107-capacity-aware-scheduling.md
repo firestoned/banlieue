@@ -7,6 +7,8 @@ SPDX-License-Identifier: Apache-2.0
 - **Status:** Accepted
 - **Date:** 2026-10-24
 - **Deciders:** Erick Bourgeois
+- **Amended:** 2026-11-11 (Decision 3: a VM's size is its class with its
+  `hardwareOverride.cpus` and `memoryMiB` applied, as provisioned)
 - **Related:** Closes [ADR-0105](0105-cloud-hypervisor-guests-slice.md)'s
   follow-up (the scheduler should see the guests' slice budget); extends
   [ADR-0098](0098-spread-placement-across-failure-domains.md) (placement) and
@@ -57,12 +59,15 @@ ignoring the slice budget. No other backend publishes capacity.
 3. **The scheduler fits a VM before spreading.** For each candidate
    `(provider, failure domain)` that publishes capacity:
    - **used** = the sum over VMs already scheduled there (`status.scheduled`
-     names it, the VM is not the one being placed), using each VM's class:
-     vCPUs, and memory plus `memoryOverheadMiBPerVM`. A VM whose class cannot
+     names it, the VM is not the one being placed), using each VM's size:
+     vCPUs, and memory plus `memoryOverheadMiBPerVM`. A VM's size is its
+     class with its `hardwareOverride.cpus` and `memoryMiB` applied, the
+     same size its infrastructure is provisioned with (amended 2026-11-11:
+     the scheduler had used the class alone). A VM whose class cannot
      be found counts at zero and is logged, rather than blocking placement.
-   - **Memory is strict:** reject when `used.memory + class.memoryMiB +
+   - **Memory is strict:** reject when `used.memory + vm.memoryMiB +
      overhead > capacity.memoryMiB`.
-   - **CPU fits a ratio:** reject when `used.cpus + class.cpus >
+   - **CPU fits a ratio:** reject when `used.cpus + vm.cpus >
      capacity.cpus × ratio`. The ratio is `Provider.spec.scheduling.cpuOvercommitRatio`
      (1 to 64, default 4). `1` means no overcommit.
    - A failure domain with no `capacity`, or a capacity missing that figure,

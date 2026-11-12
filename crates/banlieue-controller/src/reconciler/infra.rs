@@ -278,12 +278,8 @@ pub fn build_vsphere_machine(
         template_folder,
         datastore,
         resource_pool: None,
-        num_cpus: hardware_override
-            .and_then(|h| h.cpus)
-            .unwrap_or(class.spec.hardware.cpus),
-        memory_mi_b: hardware_override
-            .and_then(|h| h.memory_mi_b)
-            .unwrap_or(class.spec.hardware.memory_mi_b),
+        num_cpus: effective_cpus(class, hardware_override),
+        memory_mi_b: effective_memory_mi_b(class, hardware_override),
         firmware: class.spec.firmware.clone(),
         tpm_enabled: class.spec.tpm_enabled,
         disks,
@@ -413,6 +409,23 @@ pub(crate) fn merge_disk_size_override(
         .and_then(|h| h.disk_overrides.iter().find(|d| d.name == disk.name))
         .map(|d| d.size_gi_b)
         .unwrap_or(disk.size_gi_b)
+}
+
+/// The VM's vCPUs: its `hardwareOverride.cpus` when set, else the class's.
+/// The scheduler sizes a placement with this and every infra builder
+/// provisions with it, so the two never disagree.
+pub(crate) fn effective_cpus(class: &VMClass, override_: Option<&HardwareOverride>) -> u32 {
+    override_
+        .and_then(|h| h.cpus)
+        .unwrap_or(class.spec.hardware.cpus)
+}
+
+/// The VM's memory, MiB: its `hardwareOverride.memoryMiB` when set, else
+/// the class's. See [`effective_cpus`].
+pub(crate) fn effective_memory_mi_b(class: &VMClass, override_: Option<&HardwareOverride>) -> u32 {
+    override_
+        .and_then(|h| h.memory_mi_b)
+        .unwrap_or(class.spec.hardware.memory_mi_b)
 }
 
 /// Failure-domain raw-attribute key for the libvirt host a domain lands on.
@@ -546,12 +559,8 @@ pub fn build_libvirt_machine(
         pool,
         domain_name: domain_name_for(vm),
         boot_source,
-        vcpus: hardware_override
-            .and_then(|h| h.cpus)
-            .unwrap_or(class.spec.hardware.cpus),
-        memory_mi_b: hardware_override
-            .and_then(|h| h.memory_mi_b)
-            .unwrap_or(class.spec.hardware.memory_mi_b),
+        vcpus: effective_cpus(class, hardware_override),
+        memory_mi_b: effective_memory_mi_b(class, hardware_override),
         firmware: class.spec.firmware.clone(),
         machine_type: None,
         tpm_enabled: class.spec.tpm_enabled,
@@ -710,15 +719,11 @@ pub fn build_cloud_hypervisor_machine(
             name: decision.provider_name.clone(),
         },
         cpus: ChCpuSpec {
-            boot: hardware_override
-                .and_then(|h| h.cpus)
-                .unwrap_or(class.spec.hardware.cpus),
+            boot: effective_cpus(class, hardware_override),
             max: None,
         },
         memory: ChMemorySpec {
-            size_mi_b: hardware_override
-                .and_then(|h| h.memory_mi_b)
-                .unwrap_or(class.spec.hardware.memory_mi_b),
+            size_mi_b: effective_memory_mi_b(class, hardware_override),
             hugepages: false,
         },
         storage_class,
@@ -929,13 +934,9 @@ pub fn build_proxmox_machine(
         template_vmid,
         storage,
         pool: None,
-        cores: hardware_override
-            .and_then(|h| h.cpus)
-            .unwrap_or(class.spec.hardware.cpus),
+        cores: effective_cpus(class, hardware_override),
         sockets: PROXMOX_SOCKETS,
-        memory_mi_b: hardware_override
-            .and_then(|h| h.memory_mi_b)
-            .unwrap_or(class.spec.hardware.memory_mi_b),
+        memory_mi_b: effective_memory_mi_b(class, hardware_override),
         cpu_type: None,
         firmware: class.spec.firmware.clone(),
         tpm_enabled: class.spec.tpm_enabled,

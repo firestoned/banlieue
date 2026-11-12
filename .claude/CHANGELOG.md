@@ -53,6 +53,48 @@ contract before either writes orchestration code.
       removed, move id changed: all refused; commit and a later moveOut
       allowed)
 
+## [2026-11-11 23:30] - The scheduler counts hardwareOverride CPUs and memory (ADR-0107 amended)
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `crates/banlieue-controller/src/reconciler/scheduler.rs`: every capacity
+  check sized a VM by its `VMClass` alone and ignored
+  `hardwareOverride.cpus` and `hardwareOverride.memoryMiB`, while the infra
+  builders provisioned with them. A VM overridden larger than its class
+  could be placed where it did not fit, and held only its class's size
+  against the next placement. The new VM, the VMs placed beside it
+  (ADR-0107 reservation) and in-flight VMs (ADR-0128 measured check) now
+  all count at their overridden size. Disk overrides already counted.
+- `crates/banlieue-controller/src/reconciler/infra.rs`: new
+  `effective_cpus` and `effective_memory_mi_b`, used by the scheduler and
+  by all four infra builders (vSphere, libvirt, Cloud Hypervisor, Proxmox),
+  so placement and provisioning size a VM the same way.
+
+### Tests
+- `scheduler_tests.rs`: an override larger than the class refuses and a
+  smaller one fits (memory and vCPUs); a placed VM's override counts against
+  the reservation; an in-flight VM's and the new VM's memory overrides
+  count against the measured figure. All four failed before the fix.
+- `infra_tests.rs`: `effective_cpus_and_memory_apply_each_override_alone`.
+
+### Docs
+- `docs/adr/0107-capacity-aware-scheduling.md`: amended, Decision 3 sizes a
+  VM as provisioned (class plus override).
+- `docs/src/concepts/virtualmachine.md`,
+  `docs/src/guides/capacity-scheduling.md`: overrides count; the known gap
+  is removed; V8 and V9 use an override.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (controller only)
+- [ ] Config change only
+- [ ] Documentation only
+
+Threat model: no boundary, identity or data-flow change (a scheduling
+bug fix), so no pass; ADR-0107's amendment narrows what the scheduler
+under-counts and changes no recorded risk.
+
 ## [2026-11-11 22:30] - Capacity-aware scheduling guide and a vCenter capacity live test (ADR-0128)
 
 **Author:** Erick Bourgeois

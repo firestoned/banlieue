@@ -92,7 +92,7 @@ use banlieue_api::common::{Firmware, LabelSelector, LabelSelectorOperator};
 use kube::ResourceExt;
 use tracing::warn;
 
-use super::infra::merge_disk_size_override;
+use super::infra::{effective_cpus, effective_memory_mi_b, merge_disk_size_override};
 
 /// Feature flag a failure domain must advertise to support EFI secure boot.
 pub const FEATURE_EFI_SECURE_BOOT: &str = "efiSecureBoot";
@@ -562,8 +562,11 @@ fn place(
                     ProviderScheduling::cpu_overcommit_ratio,
                 );
                 if let Some(short) = capacity_shortfall(
-                    class.spec.hardware.cpus,
-                    u64::from(class.spec.hardware.memory_mi_b) + overhead,
+                    effective_cpus(class, vm.spec.hardware_override.as_ref()),
+                    u64::from(effective_memory_mi_b(
+                        class,
+                        vm.spec.hardware_override.as_ref(),
+                    )) + overhead,
                     used,
                     capacity,
                     ratio,
@@ -601,7 +604,10 @@ fn place(
                         ProviderScheduling::storage_reserve_percent,
                     );
                     if let Some(short) = measured_shortfall(
-                        u64::from(class.spec.hardware.memory_mi_b) + overhead,
+                        u64::from(effective_memory_mi_b(
+                            class,
+                            vm.spec.hardware_override.as_ref(),
+                        )) + overhead,
                         &disk_sizes(class, vm),
                         &in_domain,
                         &in_provider,
@@ -741,7 +747,7 @@ pub struct Usage {
 }
 
 /// What VMs other than `vm` scheduled on `(provider, failure_domain)` use,
-/// from their classes. A VM whose class is not in `classes` counts at zero
+/// from their classes with their `hardwareOverride` applied. A VM whose class is not in `classes` counts at zero
 /// (and is logged): a deleted class must not block every placement.
 fn usage_on(
     vm: &VirtualMachine,
@@ -771,10 +777,11 @@ fn usage_on(
                 );
                 return used;
             };
+            let override_ = other.spec.hardware_override.as_ref();
             Usage {
-                cpus: used.cpus + u64::from(class.spec.hardware.cpus),
+                cpus: used.cpus + u64::from(effective_cpus(class, override_)),
                 memory_mi_b: used.memory_mi_b
-                    + u64::from(class.spec.hardware.memory_mi_b)
+                    + u64::from(effective_memory_mi_b(class, override_))
                     + overhead_mi_b,
             }
         })
@@ -874,7 +881,10 @@ fn in_flight_on(
             let Some(class) = classes.get(&other.spec.class_ref.name) else {
                 return held;
             };
-            held.memory_mi_b += u64::from(class.spec.hardware.memory_mi_b) + overhead_mi_b;
+            held.memory_mi_b += u64::from(effective_memory_mi_b(
+                class,
+                other.spec.hardware_override.as_ref(),
+            )) + overhead_mi_b;
             for (storage_class, gi_b) in disk_sizes(class, other) {
                 *held.disks_gi_b.entry(storage_class).or_default() += gi_b;
             }
