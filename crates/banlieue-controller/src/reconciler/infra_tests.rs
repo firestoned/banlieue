@@ -628,6 +628,30 @@ mod tests {
     // hardware_override (cpus / memoryMiB / disk sizes)
     // ----------------------------------------------------------------------
 
+    /// The class's size with no override, each overridden field alone,
+    /// and both: the sizes the scheduler places by and the builders use.
+    #[test]
+    fn effective_cpus_and_memory_apply_each_override_alone() {
+        let class = parent_class();
+        assert_eq!(effective_cpus(&class, None), 8);
+        assert_eq!(effective_memory_mi_b(&class, None), 32_768);
+
+        let cpus_only = HardwareOverride {
+            cpus: Some(2),
+            ..HardwareOverride::default()
+        };
+        assert_eq!(effective_cpus(&class, Some(&cpus_only)), 2);
+        assert_eq!(effective_memory_mi_b(&class, Some(&cpus_only)), 32_768);
+
+        let both = HardwareOverride {
+            cpus: Some(16),
+            memory_mi_b: Some(4096),
+            ..HardwareOverride::default()
+        };
+        assert_eq!(effective_cpus(&class, Some(&both)), 16);
+        assert_eq!(effective_memory_mi_b(&class, Some(&both)), 4096);
+    }
+
     #[test]
     fn build_vsphere_machine_uses_class_hardware_when_no_override() {
         let raw = BTreeMap::from([

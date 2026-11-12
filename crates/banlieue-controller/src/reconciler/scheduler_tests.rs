@@ -2149,6 +2149,154 @@ mod tests {
         assert!(msg.contains("20"), "{msg}");
     }
 
+    /// `vm` with `hardwareOverride` CPUs and memory set.
+    fn sized(
+        mut vm: VirtualMachine,
+        cpus: Option<u32>,
+        memory_mi_b: Option<u32>,
+    ) -> VirtualMachine {
+        vm.spec.hardware_override = Some(HardwareOverride {
+            cpus,
+            memory_mi_b,
+            ..HardwareOverride::default()
+        });
+        vm
+    }
+
+    /// The new VM is sized by its overrides, not its class (2 vCPUs,
+    /// 1024 MiB), in the reservation check: larger refuses, smaller fits.
+    #[test]
+    fn a_new_vms_cpu_and_memory_overrides_count_at_their_size() {
+        let (v, cls, img, p) =
+            capacity_fixture(vec![("fd", Some(cap(None, Some(3000), None)))], None);
+        let msg = reject_message(schedule(
+            &sized(v.clone(), None, Some(4096)),
+            &cls,
+            &img,
+            std::slice::from_ref(&p),
+            &[],
+            std::slice::from_ref(&cls),
+        ));
+        assert!(msg.contains("4096") && msg.contains("3000"), "{msg}");
+
+        let (v, cls, img, p) =
+            capacity_fixture(vec![("fd", Some(cap(None, Some(600), None)))], None);
+        assert!(
+            schedule(
+                &sized(v, None, Some(512)),
+                &cls,
+                &img,
+                &[p],
+                &[],
+                std::slice::from_ref(&cls)
+            )
+            .is_ok(),
+            "a 512 MiB override fits 600 MiB although the class's 1024 does not"
+        );
+
+        let (v, cls, img, p) =
+            capacity_fixture(vec![("fd", Some(cap(Some(2), None, None)))], Some(1));
+        let msg = reject_message(schedule(
+            &sized(v, Some(3), None),
+            &cls,
+            &img,
+            &[p],
+            &[],
+            std::slice::from_ref(&cls),
+        ));
+        assert!(msg.contains("vCPUs 3 > 2 CPUs x 1"), "{msg}");
+    }
+
+    /// A placed VM counts at its overridden size against the reservation:
+    /// 1024 (new) + 4096 (placed, overridden) > 5000, where the class size
+    /// (1024 + 1024) would fit.
+    #[test]
+    fn a_placed_vms_overrides_count_against_the_reservation() {
+        let (v, cls, img, p) =
+            capacity_fixture(vec![("fd", Some(cap(Some(2), Some(5000), None)))], None);
+        let big: Vec<_> = placed(1, "fd")
+            .into_iter()
+            .map(|vm| sized(vm, Some(8), Some(4096)))
+            .collect();
+        let msg = reject_message(schedule(
+            &v,
+            &cls,
+            &img,
+            std::slice::from_ref(&p),
+            &big,
+            std::slice::from_ref(&cls),
+        ));
+        assert!(msg.contains("memory 5120 MiB > 5000 MiB"), "{msg}");
+        assert!(
+            schedule(
+                &v,
+                &cls,
+                &img,
+                &[p],
+                &placed(1, "fd"),
+                std::slice::from_ref(&cls)
+            )
+            .is_ok(),
+            "at class size the same placement fits"
+        );
+    }
+
+    /// An in-flight VM holds its overridden memory against the measured
+    /// figure: 4000 - (3500 + 512) leaves nothing for 1024 + 512.
+    #[test]
+    fn an_in_flight_vms_memory_override_counts_against_the_measurement() {
+        let (v, cls, img, p) = capacity_fixture(
+            vec![("fd", Some(measured(Some(4000), None, None, false)))],
+            None,
+        );
+        let big: Vec<_> = placed(1, "fd")
+            .into_iter()
+            .map(|vm| sized(vm, None, Some(3500)))
+            .collect();
+        let msg = reject_message(schedule(
+            &v,
+            &cls,
+            &img,
+            std::slice::from_ref(&p),
+            &big,
+            std::slice::from_ref(&cls),
+        ));
+        assert!(msg.contains("memory available 0 MiB < 1536 MiB"), "{msg}");
+        assert!(
+            schedule(
+                &v,
+                &cls,
+                &img,
+                &[p],
+                &placed(1, "fd"),
+                std::slice::from_ref(&cls)
+            )
+            .is_ok(),
+            "at class size 4000 - 1536 leaves room"
+        );
+    }
+
+    /// The new VM's memory override is what the measured check needs too.
+    #[test]
+    fn a_new_vms_memory_override_counts_against_the_measurement() {
+        let (v, cls, img, p) = capacity_fixture(
+            vec![("fd", Some(measured(Some(2048), None, None, false)))],
+            None,
+        );
+        let msg = reject_message(schedule(
+            &sized(v, None, Some(2048)),
+            &cls,
+            &img,
+            &[p],
+            &[],
+            std::slice::from_ref(&cls),
+        ));
+        assert!(
+            msg.contains("memory available 2048 MiB < 2560 MiB"),
+            "{msg}"
+        );
+    }
+
     /// An in-flight disk on another failure domain draws on a shared store,
     /// and only on a shared one.
     #[test]
