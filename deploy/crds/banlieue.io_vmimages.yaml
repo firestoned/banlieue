@@ -169,7 +169,6 @@ spec:
                       sealed; after that `GuestReady` is `False` with reason
                       `FirstBootSealingTimeout`. A clone that cannot seal halts in its
                       initramfs and never reports anything, so this is how it is noticed.
-                    format: uint32
                     maximum: 86400.0
                     minimum: 60.0
                     type: integer
@@ -266,7 +265,6 @@ spec:
                       this size and does not grow on a larger one, and a smaller one cannot
                       hold the image: give the classes that use this image this disk size
                       (ADR-0113 Decision 4).
-                    format: uint32
                     maximum: 65536.0
                     minimum: 10.0
                     type: integer
@@ -657,7 +655,6 @@ spec:
                       The disk size, in GiB, the artifact was pre-laid for (ADR-0113), when
                       `spec.prelay` was honoured: `file` is then the pre-laid image and
                       `checksum` its digest, computed by the builder. Omitted otherwise.
-                    format: uint32
                     minimum: 0.0
                     nullable: true
                     type: integer

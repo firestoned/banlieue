@@ -143,13 +143,11 @@ spec:
             properties:
               bytesSent:
                 description: Bytes sent so far.
-                format: uint64
                 minimum: 0.0
                 nullable: true
                 type: integer
               bytesTotal:
                 description: Bytes the source has to send (disk extents and VMM state), once known.
-                format: uint64
                 minimum: 0.0
                 nullable: true
                 type: integer
@@ -200,7 +198,6 @@ spec:
                 type: string
               downtimeMilliseconds:
                 description: How long the guest was paused, cutover to resume. Set on `Succeeded`.
-                format: uint64
                 minimum: 0.0
                 nullable: true
                 type: integer

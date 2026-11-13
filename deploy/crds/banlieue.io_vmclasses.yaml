@@ -117,7 +117,6 @@ spec:
                 properties:
                   cpus:
                     description: Number of virtual CPUs.
-                    format: uint32
                     maximum: 256.0
                     minimum: 1.0
                     type: integer
@@ -148,7 +147,6 @@ spec:
                           description: |-
                             Size in GiB. For the OS disk this is the minimum size; if the image
                             is larger, the provider grows accordingly.
-                          format: uint32
                           maximum: 65536.0
                           minimum: 1.0
                           type: integer
@@ -167,7 +165,6 @@ spec:
                     type: array
                   memoryMiB:
                     description: Memory in MiB.
-                    format: uint32
                     maximum: 4194304.0
                     minimum: 128.0
                     type: integer
@@ -245,7 +242,6 @@ spec:
                                     type: string
                                   type: array
                                 prefix:
-                                  format: uint8
                                   maximum: 255.0
                                   minimum: 0.0
                                   nullable: true
@@ -254,7 +250,6 @@ spec:
                           type: object
                         mtu:
                           description: Optional MTU override. Provider may ignore if unsupported.
-                          format: uint32
                           maximum: 65535.0
                           minimum: 68.0
                           nullable: true
