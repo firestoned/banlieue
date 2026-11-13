@@ -1,5 +1,36 @@
 # Changelog
 
+## [2026-11-13 10:00] - CRDs carry no format the apiserver drops
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `crates/banlieue-api/src/crdgen_support.rs`: `prepared()` now strips every
+  schema `format` Kubernetes does not recognise
+  (`strip_unsupported_formats`). schemars names Rust's unsigned integers
+  `uint8` to `uint64`; the apiserver keeps only `int32`/`int64` on
+  integers, `float`/`double` on numbers and its own string set, so it
+  dropped all 90 of ours and warned on apply
+  (`Warning: unrecognized format "uint64"`, seen rolling v0.5.7 out). The
+  rules mirror apiextensions-apiserver's `validation/formats.go`. Since
+  `prepared()` feeds crdgen, crddoc and `banlieue bootstrap`, every install
+  path is fixed. Bounds (`minimum`, `maximum`) stay.
+- `deploy/crds/`: regenerated; the only change is the 90 removed
+  `format: uint*` lines. The API reference is unchanged.
+
+### Tests
+- `crdgen_support_tests.rs`: integer, number, string and other-type rules;
+  nested schemas (items, additionalProperties, anyOf) cleaned while a
+  property named `format` stays; and a guard that no CRD from `all_crds()`
+  carries an unsupported format, red with the strip disabled.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (re-apply CRDs; no stored-schema change,
+      since the apiserver already dropped these formats)
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-11-12 09:00] - Move a CH VM between hosts: ADR-0127 accepted, API milestone
 
 **Author:** Erick Bourgeois

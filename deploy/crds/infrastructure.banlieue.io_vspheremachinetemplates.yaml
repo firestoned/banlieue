@@ -98,7 +98,6 @@ spec:
                               description: |-
                                 Disk size in GiB. For the OS disk this is a floor — the template's disk
                                 is grown to at least this size.
-                              format: uint32
                               maximum: 65536.0
                               minimum: 1.0
                               type: integer
@@ -151,7 +150,6 @@ spec:
                               sealed; after that `GuestReady` is `False` with reason
                               `FirstBootSealingTimeout`. A clone that cannot seal halts in its
                               initramfs and never reports anything, so this is how it is noticed.
-                            format: uint32
                             maximum: 86400.0
                             minimum: 60.0
                             type: integer
@@ -166,7 +164,6 @@ spec:
                         type: string
                       memoryMiB:
                         description: Memory in MiB.
-                        format: uint32
                         maximum: 4194304.0
                         minimum: 128.0
                         type: integer
@@ -228,7 +225,6 @@ spec:
                                         type: string
                                       type: array
                                     prefix:
-                                      format: uint8
                                       maximum: 255.0
                                       minimum: 0.0
                                       type: integer
@@ -257,7 +253,6 @@ spec:
                         type: array
                       numCpus:
                         description: Number of virtual CPUs.
-                        format: uint32
                         maximum: 256.0
                         minimum: 1.0
                         type: integer

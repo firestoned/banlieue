@@ -40,7 +40,6 @@ spec:
                     properties:
                       cores:
                         description: Cores per socket.
-                        format: uint32
                         maximum: 512.0
                         minimum: 1.0
                         type: integer
@@ -68,7 +67,6 @@ spec:
                               type: string
                             sizeGiB:
                               description: Size in GiB.
-                              format: uint32
                               maximum: 65536.0
                               minimum: 1.0
                               type: integer
@@ -119,7 +117,6 @@ spec:
                         type: string
                       memoryMiB:
                         description: Memory in MiB.
-                        format: uint32
                         maximum: 4194304.0
                         minimum: 16.0
                         type: integer
@@ -184,7 +181,6 @@ spec:
                                         type: string
                                       type: array
                                     prefix:
-                                      format: uint8
                                       maximum: 255.0
                                       minimum: 0.0
                                       type: integer
@@ -211,7 +207,6 @@ spec:
                               type: string
                             vlan:
                               description: 802.1Q VLAN tag.
-                              format: uint16
                               maximum: 4094.0
                               minimum: 1.0
                               nullable: true
@@ -230,7 +225,6 @@ spec:
                         description: |-
                           OS disk size in GiB: the cloned disk is grown to at least this, never
                           shrunk.
-                        format: uint32
                         maximum: 65536.0
                         minimum: 1.0
                         type: integer
@@ -256,7 +250,6 @@ spec:
                       sockets:
                         default: 1
                         description: CPU sockets.
-                        format: uint32
                         maximum: 4.0
                         minimum: 1.0
                         type: integer
@@ -269,7 +262,6 @@ spec:
                         description: |-
                           VMID of the template VM to clone. Must be a template (ADR-0075
                           Decision 5a); the provider checks before cloning.
-                        format: uint32
                         minimum: 0.0
                         type: integer
                       tpmEnabled:

@@ -79,7 +79,6 @@ spec:
                 properties:
                   boot:
                     description: vCPUs the guest boots with.
-                    format: uint32
                     maximum: 256.0
                     minimum: 1.0
                     type: integer
@@ -87,7 +86,6 @@ spec:
                     description: |-
                       Hotplug headroom: the most vCPUs the guest may be resized to. Fixed
                       when the VM is created. `None` means no headroom.
-                    format: uint32
                     maximum: 256.0
                     minimum: 1.0
                     nullable: true
@@ -138,7 +136,6 @@ spec:
                       sealed; after that `GuestReady` is `False` with reason
                       `FirstBootSealingTimeout`. A clone that cannot seal halts in its
                       initramfs and never reports anything, so this is how it is noticed.
-                    format: uint32
                     maximum: 86400.0
                     minimum: 60.0
                     type: integer
@@ -177,7 +174,6 @@ spec:
                     type: boolean
                   sizeMiB:
                     description: Guest memory in MiB.
-                    format: uint32
                     maximum: 4194304.0
                     minimum: 128.0
                     type: integer
@@ -320,7 +316,6 @@ spec:
                                 type: string
                               type: array
                             prefix:
-                              format: uint8
                               maximum: 255.0
                               minimum: 0.0
                               type: integer
@@ -354,7 +349,6 @@ spec:
                 description: |-
                   OS disk size in GiB. Required, and grown to before first boot; never
                   shrunk. Must be at least the image's size.
-                format: uint32
                 maximum: 65536.0
                 minimum: 1.0
                 type: integer
@@ -495,7 +489,6 @@ spec:
                   The unprivileged host uid this machine's units run as (ADR-0063
                   Decision 3). Recorded so the provider re-adopts a running guest
                   without trusting its own memory.
-                format: uint32
                 minimum: 0.0
                 nullable: true
                 type: integer
@@ -555,13 +548,11 @@ spec:
                 properties:
                   bytesSent:
                     description: Bytes sent so far.
-                    format: uint64
                     minimum: 0.0
                     nullable: true
                     type: integer
                   bytesTotal:
                     description: Bytes to send, once known.
-                    format: uint64
                     minimum: 0.0
                     nullable: true
                     type: integer

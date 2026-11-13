@@ -111,7 +111,6 @@ spec:
                   creation — a claim that waited ten minutes for capacity still gets
                   its full TTL. Required, with no default: a claim without a deadline
                   is a leaked VM, and the right value is a property of the workload.
-                format: uint64
                 minimum: 0.0
                 type: integer
             required:
