@@ -274,7 +274,8 @@ CH_FIRMWARE=/opt/banlieue/firmware/<version>/CLOUDHV.fd
 | `CH_BRIDGE` | `LIBVIRT_BRIDGE`, else `LIBVIRT_NETWORK`'s bridge | Bridge for the node's tap. It must carry a host IPv4 address (see below). On libvirt's `default` network that is `virbr0`, whose DHCP server gives the nodes their addresses. |
 | `CH_BINARY` / `CH_REMOTE` | `/usr/local/bin/cloud-hypervisor`, `/usr/local/bin/ch-remote` | The VMM, and the client the stop command uses. A vTPM needs a VMM with the fix tracked in cloud-hypervisor#9053. |
 | `CH_VM_USER` | `k0s-vm` | System account (no login, `kvm` group, no capabilities) that runs every CH node's VMM and vTPM. Created on first use. |
-| `CH_VM_DIR` | `<libvirt pool dir>/../k0s-ch` | One directory per node: `disk.qcow2`, `seed.iso`, `tpm/`. Every parent must be searchable by `CH_VM_USER`. |
+| `CH_VM_DIR` | `<POOL_DIR>/../k0s-ch` | One directory per node: `disk.qcow2`, `seed.iso`, `tpm/`. Every parent must be searchable by `CH_VM_USER`. |
+| `POOL_DIR` | `<libvirt default pool>/k0s-bootstrap`; with no libvirt default pool (`virsh` absent, or naming none) and no libvirt node, `/var/lib/k0s-bootstrap/images` | Installer ISO, cloud image and seeds. The libvirt-free default is created through `sudo`, owned by you; any other `POOL_DIR` must be creatable by you. |
 | `CH_TPM` | `true` | Give each CH node a vTPM. Needs `swtpm` (`SWTPM`). |
 
 **A cluster built on libvirt** (before Cloud Hypervisor became the default)

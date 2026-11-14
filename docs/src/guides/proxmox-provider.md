@@ -178,7 +178,7 @@ See [Capacity-Aware Scheduling](capacity-scheduling.md).
 2. Update the Secret in place: `username` is the new `user@realm!tokenid`,
    `tokenValue` its secret.
 3. Wait about 30 seconds, and check that the `Provider` stays `Ready`
-   (`kubectl get provider <name>`).
+   (`kubectl get providers.banlieue.io <name>`).
 4. Delete the old token in Proxmox VE.
 
 banlieue never watches the Secret. Each reconcile reads it by name and builds

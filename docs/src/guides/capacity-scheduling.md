@@ -47,11 +47,11 @@ per QEMU process.
 
 ```sh
 # Every failure domain of a Provider, with its capacity
-kubectl get provider <name> -n banlieue-system -o json \
+kubectl get providers.banlieue.io <name> -n banlieue-system -o json \
   | jq '.status.failureDomains[] | {name, capacity: .attributes.capacity}'
 
 # Just the storage, as a table
-kubectl get provider <name> -n banlieue-system -o json \
+kubectl get providers.banlieue.io <name> -n banlieue-system -o json \
   | jq -r '.status.failureDomains[] | .name as $fd
       | .attributes.capacity.storage[]?
       | [$fd, .storageClass, .totalGiB, .freeGiB, .shared] | @tsv'
@@ -230,7 +230,7 @@ spec:
 Work out the usable space for a class on a failure domain first:
 
 ```sh
-kubectl get provider <name> -n banlieue-system -o json | jq --arg fd <failure-domain> --arg sc gold '
+kubectl get providers.banlieue.io <name> -n banlieue-system -o json | jq --arg fd <failure-domain> --arg sc gold '
   (.spec.scheduling.storageReservePercent // 10) as $r
   | .status.failureDomains[] | select(.name == $fd)
   | .attributes.capacity.storage[] | select(.storageClass == $sc)
@@ -256,7 +256,7 @@ kubectl get provider <name> -n banlieue-system -o json | jq --arg fd <failure-do
 For V12:
 
 ```sh
-kubectl get provider <name> -n banlieue-system -w \
+kubectl get providers.banlieue.io <name> -n banlieue-system -w \
   -o custom-columns=RV:.metadata.resourceVersion,HB:.status.workload.heartbeat
 ```
 

@@ -208,18 +208,22 @@ CLOUD_IMAGE_URL="${CLOUD_IMAGE_URL:-https://cloud.debian.org/images/cloud/trixie
 # hide, and re-hashing 300MB costs about a second.
 #
 #   auto (default)  fetch the checksum upstream publishes beside the image
-#                   (Kairos: <asset>.sha256; Debian: SHA512SUMS) and compare
+#                   (Kairos: <asset>.sha256; Debian: SHA512SUMS; Ubuntu, which
+#                   publishes no SHA512SUMS: SHA256SUMS) and compare
 #   off             skip verification entirely -- for air-gapped mirrors that
 #                   publish no checksum, and nothing else
 #
-# Setting IMAGE_SHA256 / CLOUD_IMAGE_SHA512 explicitly PINS the expected digest
-# and takes precedence over `auto`. That is the strongest option: `auto` trusts
+# Setting IMAGE_SHA256 / CLOUD_IMAGE_SHA512 / CLOUD_IMAGE_SHA256 explicitly
+# PINS the expected digest and takes precedence over `auto`
+# (CLOUD_IMAGE_SHA512 over CLOUD_IMAGE_SHA256 when both are set). That is the
+# strongest option: `auto` trusts
 # whatever the same server serves for the checksum, so it catches corruption
 # and a compromised mirror, but not a compromised origin. A pin in your own env
 # file catches that too. Pin in production.
 IMAGE_VERIFY="${IMAGE_VERIFY:-auto}"
 IMAGE_SHA256="${IMAGE_SHA256:-}"
 CLOUD_IMAGE_SHA512="${CLOUD_IMAGE_SHA512:-}"
+CLOUD_IMAGE_SHA256="${CLOUD_IMAGE_SHA256:-}"
 
 # Kairos additionally publishes cosign (sigstore) artifacts: .sig/.pem/.bundle.
 # Opt-in because it needs the cosign binary, and because verifying keylessly
@@ -390,16 +394,43 @@ WORKDIR="${WORKDIR:-$HOME/.local/share/k0s-bootstrap}"
 # pools on the filesystem with the most free space, because a stock Debian
 # install leaves /var far too small for disk images. Hardcoding the stock path
 # fails with a bare "Permission denied" on any host whose pool lives elsewhere.
+#
+# Where virsh names no `default` pool (it is not installed, or has none), the
+# stock path stays the default whenever libvirt may be in use: the vSphere
+# backend, DEFAULT_VMM=libvirt, a libvirt entry in NODE_VMMS, or a stock-path
+# directory left by an earlier run. Otherwise -- a host whose nodes are all
+# Cloud Hypervisor and that has no libvirt pool (ADR-0099) -- images go to
+# CH_ONLY_POOL_DIR, outside libvirt's tree, which ensure_pool_dir creates
+# through sudo when this user cannot.
+LIBVIRT_STOCK_IMAGES_DIR=/var/lib/libvirt/images
+CH_ONLY_POOL_DIR=/var/lib/k0s-bootstrap/images
 _default_pool_dir() {
-  local path
-  path="$(LIBVIRT_DEFAULT_URI="${LIBVIRT_URI:-qemu:///system}" \
-          virsh pool-dumpxml default 2>/dev/null \
-          | sed -n 's:.*<path>\(.*\)</path>.*:\1:p' | head -1)"
-  echo "${path:-/var/lib/libvirt/images}/k0s-bootstrap"
+  local path="" stock="$LIBVIRT_STOCK_IMAGES_DIR/k0s-bootstrap" vmm
+  if command -v virsh >/dev/null 2>&1; then
+    path="$(LIBVIRT_DEFAULT_URI="${LIBVIRT_URI:-qemu:///system}" \
+            virsh pool-dumpxml default 2>/dev/null \
+            | sed -n 's:.*<path>\(.*\)</path>.*:\1:p' | head -1)"
+  fi
+  if [[ -n "$path" ]]; then
+    echo "$path/k0s-bootstrap"
+    return
+  fi
+  if [[ "$BACKEND" != "libvirt" || "$DEFAULT_VMM" == "libvirt" || -d "$stock" ]]; then
+    echo "$stock"
+    return
+  fi
+  for vmm in $NODE_VMMS; do
+    if [[ "$vmm" == "libvirt" ]]; then
+      echo "$stock"
+      return
+    fi
+  done
+  echo "$CH_ONLY_POOL_DIR"
 }
 POOL_DIR="${POOL_DIR:-$(_default_pool_dir)}"
 # Cloud Hypervisor nodes' disks, seeds and vTPM state, one directory per node,
-# beside the libvirt pool so they land on the same large filesystem.
+# beside the image pool so they land on the same large filesystem
+# (/var/lib/k0s-bootstrap/k0s-ch with the CH_ONLY_POOL_DIR default).
 CH_VM_DIR="${CH_VM_DIR:-$(dirname "$POOL_DIR")/k0s-ch}"
 INSTALL_ISO="$POOL_DIR/$(basename "${BASE_IMAGE_PATH:-$IMAGE_URL}")"
 CLOUD_IMAGE="$POOL_DIR/$(basename "${BASE_IMAGE_PATH:-$CLOUD_IMAGE_URL}")"
@@ -434,13 +465,36 @@ KUBECONFIG_NAME="${KUBECONFIG_NAME:-$CLUSTER_NAME}"
 KUBECONFIG_OUT="${KUBECONFIG_OUT:-$WORKDIR/$KUBECONFIG_NAME.kubeconfig}"
 KUBECONFIG_SERVER_FILE="${KUBECONFIG_SERVER_FILE:-$WORKDIR/kubeconfig-server}"
 
-if [[ "${1:-}" != "--print-env-template" ]]; then
-  mkdir -p "$WORKDIR"
-  [[ "$BACKEND" == "libvirt" ]] && mkdir -p "$POOL_DIR"
-fi
-
 log() { echo "==> $*" >&2; }
 warn() { echo "!!! $*" >&2; }
+
+# ensure_pool_dir: create POOL_DIR, or refuse naming the settings that move
+# it. Only the libvirt-free default, CH_ONLY_POOL_DIR, is created through
+# sudo (owned by this user; its nodes need passwordless sudo anyway). Any
+# other POOL_DIR -- the operator's, or one in libvirt's tree -- is created as
+# this user or not at all.
+ensure_pool_dir() {
+  if [[ "$POOL_DIR" == "$CH_ONLY_POOL_DIR" ]]; then
+    mkdir -p "$POOL_DIR" 2>/dev/null && return 0
+    sudo -n install -d -m 0755 "$(dirname "$POOL_DIR")" 2>/dev/null \
+      && sudo -n install -d -m 0755 -o "$(id -un)" -g "$(id -gn)" "$POOL_DIR" 2>/dev/null \
+      && return 0
+    log "Cannot create POOL_DIR=$POOL_DIR, as this user or through passwordless sudo."
+  else
+    mkdir -p "$POOL_DIR" && return 0
+    log "Cannot create POOL_DIR=$POOL_DIR as this user."
+  fi
+  log "  POOL_DIR holds the installer ISO, cloud image and seeds; set it to a directory"
+  log "  this user can create, on a filesystem with room for them. Cloud Hypervisor"
+  log "  nodes' disks go to CH_VM_DIR (now $CH_VM_DIR), which follows POOL_DIR"
+  log "  unless set too."
+  exit 1
+}
+
+if [[ "${1:-}" != "--print-env-template" ]]; then
+  mkdir -p "$WORKDIR"
+  [[ "$BACKEND" == "libvirt" ]] && ensure_pool_dir
+fi
 
 # On-prem vCenter/API/SSH endpoints are reached directly -- a corporate HTTP
 # proxy in the environment would black-hole govc/kubectl/ssh. Unset every
@@ -778,18 +832,31 @@ verify_installer_iso() {
   fi
 }
 
-# Debian: SHA512SUMS beside the image, "<digest>  <filename>" per line.
+# Pins first: CLOUD_IMAGE_SHA512, then CLOUD_IMAGE_SHA256. Otherwise the sums
+# file beside the image, "<digest>  <filename>" per line: Debian's
+# SHA512SUMS, and only when that names no digest for the image, SHA256SUMS
+# (Ubuntu publishes no SHA512SUMS, and marks binary mode as "<digest> *<file>").
+# A digest that is found but does not match is a failure, never a reason to
+# try the next file.
 verify_cloud_image() {
   [[ "$IMAGE_VERIFY" == "off" ]] && { log "IMAGE_VERIFY=off -- skipping cloud image verification"; return 0; }
-  local expected="$CLOUD_IMAGE_SHA512" base
+  local algo="" expected="" base pair sums
   base="$(basename "$CLOUD_IMAGE_URL")"
-  if [[ -z "$expected" && -z "$BASE_IMAGE_PATH" ]]; then
-    log "Fetching SHA512SUMS for $base"
-    expected="$(curl -fsSL "$(dirname "$CLOUD_IMAGE_URL")/SHA512SUMS" 2>/dev/null \
-                | awk -v f="$base" '$2 == f {print $1; exit}' || true)"
+  if [[ -n "$CLOUD_IMAGE_SHA512" ]]; then
+    algo=sha512 expected="$CLOUD_IMAGE_SHA512"
+  elif [[ -n "$CLOUD_IMAGE_SHA256" ]]; then
+    algo=sha256 expected="$CLOUD_IMAGE_SHA256"
+  elif [[ -z "$BASE_IMAGE_PATH" ]]; then
+    for pair in sha512:SHA512SUMS sha256:SHA256SUMS; do
+      algo="${pair%%:*}" sums="${pair#*:}"
+      log "Fetching $sums for $base"
+      expected="$(curl -fsSL "$(dirname "$CLOUD_IMAGE_URL")/$sums" 2>/dev/null \
+                  | awk -v f="$base" '{ n = $2; sub(/^\*/, "", n) } n == f { print $1; exit }' || true)"
+      [[ -n "$expected" ]] && break
+    done
   fi
-  [[ -n "$expected" ]] || { log "no checksum available -- set CLOUD_IMAGE_SHA512 or IMAGE_VERIFY=off"; exit 1; }
-  verify_digest "$CLOUD_IMAGE" sha512 "$expected"
+  [[ -n "$expected" ]] || { log "no checksum available -- set CLOUD_IMAGE_SHA512, CLOUD_IMAGE_SHA256 or IMAGE_VERIFY=off"; exit 1; }
+  verify_digest "$CLOUD_IMAGE" "$algo" "$expected"
 }
 
 fetch_cloud_image() {
@@ -3010,6 +3077,12 @@ K0S_PAUSE_IMAGE=                                 # e.g. quay-mirror.example.com/
 K0S_PAUSE_VERSION=                               # e.g. 3.9 (match the tag your mirror carries)
 K0S_NETWORK_PROVIDER=calico                      # or kuberouter (k0s default)
 # CALICO_REACH=10.0.0.90                          # can-reach addr (defaults to first controller IP)
+
+# libvirt backend only (BACKEND=libvirt, LIBVIRT_IMAGE_KIND=cloud): pin the
+# cloud image's digest instead of trusting the sums file served beside it.
+# CLOUD_IMAGE_SHA512 wins when both are set; Ubuntu publishes only SHA-256.
+# CLOUD_IMAGE_SHA512=
+# CLOUD_IMAGE_SHA256=
 
 # Per-cluster placement as FLAT vars <PREFIX>_<cluster_id> (macOS bash 3.2 has
 # no associative arrays). One set per cluster id you use in NODES; fill with

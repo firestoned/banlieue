@@ -147,11 +147,11 @@ Within a few seconds the provider controller logs into vCenter, walks the
 inventory, and populates `status.failureDomains[]` (one per datacenter/cluster):
 
 ```sh
-kubectl -n banlieue-system get provider prod-vsphere
+kubectl -n banlieue-system get providers.banlieue.io prod-vsphere
 # NAME           CLASS     READY
 # prod-vsphere   vsphere   True
 
-kubectl -n banlieue-system get provider prod-vsphere -o yaml | yq '.status.failureDomains'
+kubectl -n banlieue-system get providers.banlieue.io prod-vsphere -o yaml | yq '.status.failureDomains'
 ```
 
 If `READY` is not `True`, jump to [Troubleshooting](#troubleshooting).
@@ -493,7 +493,7 @@ refusal messages and the full vSphere test plan in
 1. Create the new vCenter user or password, with the same role as the old one.
 2. Update the Secret in place (`kubectl -n <namespace> create secret generic <name> --from-literal=username=... --from-literal=password=... --dry-run=client -o yaml | kubectl apply -f -`).
 3. Wait about 30 seconds, and check that the `Provider` stays `Ready`
-   (`kubectl get provider <name>`).
+   (`kubectl get providers.banlieue.io <name>`).
 4. Remove the old password or user in vCenter.
 
 banlieue never watches the Secret. Each reconcile reads it by name and builds
@@ -584,7 +584,7 @@ vCenter role (`VirtualMachine.Interact.PowerOn`).
   message names them. Uncordon one, or widen the selector.
 - `reason=ProviderNotAlive`: every `Provider` the VM could use has a
   `Stale` heartbeat, so its provider is not running (ADR-0102). Check
-  `kubectl get providers` and the provider pod; see
+  `kubectl get providers.banlieue.io` and the provider pod; see
   [Provider liveness](observability.md#provider-liveness).
 - `reason=NoProviderMatched` — no `Provider` matches `placement.providerSelector`, or
   none advertises the requested storage/network class or feature. Check the

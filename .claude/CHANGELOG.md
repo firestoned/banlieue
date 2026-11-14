@@ -1,5 +1,80 @@
 # Changelog
 
+## [2026-11-14 12:00] - Ubuntu and libvirt-free Cloud Hypervisor hosts: k0s bootstrap and docs
+
+**Author:** Daniel Guns
+
+### Added
+- `scripts/bootstrap-k0s-cluster.sh`: `CLOUD_IMAGE_SHA256`, a SHA-256 pin
+  for the cloud image. `verify_cloud_image` checks `CLOUD_IMAGE_SHA512`
+  first (unchanged), then `CLOUD_IMAGE_SHA256`, then in `auto` mode
+  `SHA512SUMS` (unchanged) and, only when that names no digest for the
+  image, `SHA256SUMS`, whose `<digest> *<file>` binary-mode marker is now
+  accepted. Ubuntu cloud images publish only `SHA256SUMS`, so
+  `LIBVIRT_IMAGE_KIND=cloud` with one failed with "no checksum available".
+  A digest that is found but does not match still fails; it never falls
+  through to the next file. `--print-env-template` names both pins in a
+  commented-out block marked libvirt-backend only: the template is a vSphere
+  env file, so sourcing it still sets neither.
+
+### Fixed
+- `scripts/bootstrap-k0s-cluster.sh`: on a host whose nodes are all Cloud
+  Hypervisor (the default VMM since ADR-0099) and where `virsh` is absent
+  or names no `default` pool, `POOL_DIR` defaulted into
+  `/var/lib/libvirt/images` and the unprivileged `mkdir` failed with a bare
+  `Permission denied` before any step ran. `_default_pool_dir` now falls back
+  to `/var/lib/k0s-bootstrap/images` (so `CH_VM_DIR` becomes
+  `/var/lib/k0s-bootstrap/k0s-ch`) only in that case; the stock path stays
+  the default for the vSphere backend, `DEFAULT_VMM=libvirt`, any libvirt
+  entry in `NODE_VMMS`, or when `/var/lib/libvirt/images/k0s-bootstrap`
+  already exists. A pool `virsh` reports still decides. New
+  `ensure_pool_dir` creates that default through `sudo -n install -d`, owned
+  by the invoking user, when the user cannot; any other `POOL_DIR` is never
+  created through sudo, and an uncreatable one is refused with a message
+  naming `POOL_DIR` and `CH_VM_DIR`.
+
+### Changed
+- `docs/src/guides/{cloud-hypervisor-host,capacity-scheduling,vsphere-provider,libvirt-provider,observability,provider-lifecycle,proxmox-provider}.md`,
+  `docs/src/developer/local-development.md`, `deploy/provider-vsphere/README.md`:
+  `kubectl get provider(s)` → `kubectl get providers.banlieue.io`.
+  clusterctl's inventory kind, `providers.clusterctl.cluster.x-k8s.io`, has
+  the same plural and singular names, so with Cluster API installed
+  (ADR-0096) the bare name may resolve to it. `scripts/check-infra-identifiers-test.sh`
+  keeps its `kubectl get provider ch-bar` line: it is test input, not advice.
+- `docs/src/guides/cluster-api.md`: a note on the two `Provider` kinds and
+  the `prov` short name (clusterctl's CRD declares no short names).
+- `docs/src/guides/cloud-hypervisor-host.md`: Requirements gains the
+  AppArmor rule Ubuntu's `swtpm` profile needs for `/var/lib/banlieue` and
+  `/run/banlieue`, appended to `local/usr.bin.swtpm` only when absent, so
+  an administrator's existing local rules are kept and a re-run adds nothing.
+- `docs/src/guides/end-to-end-setup.md`: `POOL_DIR` row; `CH_VM_DIR` default
+  stated relative to `POOL_DIR`. `docs/src/guides/host-bootstrap.md`:
+  troubleshooting row for `Cannot create POOL_DIR=...`.
+
+### Tests
+- `scripts/bootstrap-k0s-cluster-test.sh`: cloud image checksums (SHA-256
+  pin, SHA-512 pin precedence, Debian `SHA512SUMS`, Ubuntu `SHA256SUMS` with
+  `*` markers, `SHA512SUMS` preferred and never bypassed on mismatch,
+  fallback only when it lists no digest, exact file-name match,
+  `IMAGE_VERIFY=off`); the env template naming both pins without setting
+  them; `_default_pool_dir` for every case above;
+  `ensure_pool_dir` creation, refusal, and sudo use only for the
+  libvirt-free default.
+
+### Why
+These were hit bringing up a management cluster on Ubuntu 24.04 with no
+libvirt and installing banlieue beside Cluster API. Every default on the
+existing path (Debian, libvirt present, Debian cloud images, no Cluster API)
+is unchanged. No ADR: an isolated fix and an opt-in pin within ADR-0099's
+existing design, with no new component, boundary or privilege (Cloud
+Hypervisor nodes already require passwordless sudo, threat model §4).
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-11-13 10:00] - CRDs carry no format the apiserver drops
 
 **Author:** Erick Bourgeois

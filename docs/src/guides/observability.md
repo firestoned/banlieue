@@ -206,8 +206,8 @@ records the result in `status.workload`:
 | `Absent` | no Lease: never started, or run with `--no-leader-elect` | normal |
 
 ```sh
-kubectl get providers -A                       # HEARTBEAT column
-kubectl get provider ch-bar -o jsonpath='{.status.workload.heartbeat} {.status.workload.lastHeartbeatTime}'
+kubectl get providers.banlieue.io -A   # HEARTBEAT column
+kubectl get providers.banlieue.io ch-bar -o jsonpath='{.status.workload.heartbeat} {.status.workload.lastHeartbeatTime}'
 kubectl get events -A --field-selector reason=ProviderHeartbeatStale
 ```
 

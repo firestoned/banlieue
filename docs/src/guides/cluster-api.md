@@ -76,6 +76,14 @@ apply a `Provider` (and its credentials Secret) as described in the
 [vSphere](vsphere-provider.md), [libvirt](libvirt-provider.md) or
 [Proxmox](proxmox-provider.md) guides.
 
+> **Two `Provider` kinds.** clusterctl keeps its inventory in a `Provider`
+> kind of its own, `providers.clusterctl.cluster.x-k8s.io`, which has the
+> same plural and singular names as banlieue's. With both installed, a bare
+> `kubectl get provider <name>` may resolve to clusterctl's kind and report a
+> banlieue `Provider` that exists as `NotFound`. Name banlieue's in full,
+> `kubectl get providers.banlieue.io`, or by its short name, `prov`; the
+> commands in these guides use the full name.
+
 ## 3. Reference banlieue objects from Cluster API
 
 A `Cluster` and a `Machine` name banlieue kinds through `infrastructureRef`.
