@@ -96,8 +96,8 @@ ClusterRoleBinding/banlieue-provider-vsphere-prod-vc
 Watch it come up:
 
 ```sh
-kubectl get providers -A
-kubectl get provider prod-vc -o jsonpath='{.status.workload}' | jq
+kubectl get providers.banlieue.io -A
+kubectl get providers.banlieue.io prod-vc -o jsonpath='{.status.workload}' | jq
 ```
 
 `status.workload.heartbeat` says whether the provider is actually running,

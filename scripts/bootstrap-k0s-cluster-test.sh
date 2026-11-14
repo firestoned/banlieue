@@ -4,7 +4,8 @@
 #
 # Tests for scripts/bootstrap-k0s-cluster.sh: the pure parts of the Cloud
 # Hypervisor node support and of the `join` step (ADR-0099), workers and
-# controllers. The script is
+# controllers, cloud image checksums and the image pool's default
+# directory. The script is
 # sourced, not run, so nothing here touches libvirt, systemd, sudo or SSH.
 #
 # Usage: scripts/bootstrap-k0s-cluster-test.sh
@@ -343,6 +344,119 @@ make_cloud_init_kairos core-01 "$TMP/seed-kl"
 expect_lacks "libvirt seed has no announce" "$(cat "$TMP/seed-kl/user-data")" "ping -c 3"
 make_cloud_init_cloud core-04 "$TMP/seed-c" 192.0.2.1
 expect_has "cloud seed announces every boot" "$(cat "$TMP/seed-c/user-data")" "k0s-vm-announce.service"
+
+# --- cloud image checksums: SHA-512 first, SHA-256 where that is all there is ---
+# Debian publishes SHA512SUMS beside its cloud images; Ubuntu publishes only
+# SHA256SUMS, in `<digest> *<file>` form. Stub: curl serves SUMS512 for
+# .../SHA512SUMS and SUMS256 for .../SHA256SUMS; an empty one is a 404.
+img_name=ubuntu-24.04-server-cloudimg-amd64.img
+img_bytes='cloud image bytes'
+img_sha512="$(printf '%s\n' "$img_bytes" | sha512sum | awk '{print $1}')"
+img_sha256="$(printf '%s\n' "$img_bytes" | sha256sum | awk '{print $1}')"
+bad_sha256="$(printf 'tampered\n' | sha256sum | awk '{print $1}')"
+bad_sha512="$(printf 'tampered\n' | sha512sum | awk '{print $1}')"
+mkdir -p "$TMP/img"
+# check_image <SHA512SUMS body> <SHA256SUMS body>: write a fresh image (a
+# mismatch deletes it), then verify it against whatever the stub serves.
+check_image() {
+  printf '%s\n' "$img_bytes" >"$TMP/img/$img_name"
+  CLOUD_IMAGE="$TMP/img/$img_name" BASE_IMAGE_PATH="" IMAGE_VERIFY=auto
+  CLOUD_IMAGE_URL="https://cloud-images.example.com/noble/current/$img_name"
+  SUMS512="$1" SUMS256="$2"
+  curl() {
+    local url; for url; do :; done
+    case "$url" in
+      */SHA512SUMS) [[ -n "$SUMS512" ]] && printf '%b\n' "$SUMS512" || return 22 ;;
+      */SHA256SUMS) [[ -n "$SUMS256" ]] && printf '%b\n' "$SUMS256" || return 22 ;;
+      *) return 22 ;;
+    esac
+  }
+  verify_cloud_image
+}
+# pinned <sha512 pin> <sha256 pin>: verify with pins and nothing published.
+pinned() { CLOUD_IMAGE_SHA512="$1" CLOUD_IMAGE_SHA256="$2"; check_image "" ""; }
+published() { CLOUD_IMAGE_SHA512="" CLOUD_IMAGE_SHA256=""; check_image "$1" "$2"; }
+expect_accepted "a SHA-256 pin verifies a cloud image" pinned "" "$img_sha256"
+expect_has "and says it checked sha256" "$( pinned "" "$img_sha256" 2>&1 )" "sha256 verified"
+expect_refused "a wrong SHA-256 pin is refused" pinned "" "$bad_sha256"
+expect_accepted "a SHA-512 pin still verifies" pinned "$img_sha512" ""
+expect_accepted "the SHA-512 pin wins over a SHA-256 pin" pinned "$img_sha512" "$bad_sha256"
+expect_refused "a wrong SHA-512 pin is not rescued by a SHA-256 pin" pinned "$bad_sha512" "$img_sha256"
+expect_accepted "Debian's SHA512SUMS still verifies" published "$img_sha512  $img_name" ""
+expect_accepted "Ubuntu's SHA256SUMS, binary marker and all, verifies" \
+  published "" "$bad_sha256 *other.img\n$img_sha256 *$img_name"
+expect_accepted "a text-mode SHA256SUMS line verifies too" published "" "$img_sha256  $img_name"
+expect_accepted "SHA512SUMS is used when both are published" \
+  published "$img_sha512  $img_name" "$bad_sha256 *$img_name"
+expect_refused "a SHA512SUMS mismatch does not fall back to SHA256SUMS" \
+  published "$bad_sha512  $img_name" "$img_sha256 *$img_name"
+expect_accepted "a SHA512SUMS that does not list the image falls back to SHA256SUMS" \
+  published "$img_sha512  other.img" "$img_sha256 *$img_name"
+expect_refused "a SHA256SUMS line for another file does not match" \
+  published "" "$img_sha256 *$img_name.manifest"
+expect_refused "no checksum anywhere is refused" published "" ""
+expect_has "the refusal names the SHA-256 pin" "$( published "" "" 2>&1 )" "CLOUD_IMAGE_SHA256"
+expect_accepted "IMAGE_VERIFY=off still skips verification" \
+  bash -c "$(declare -f log verify_cloud_image); IMAGE_VERIFY=off; verify_cloud_image"
+# The env-file template names both cloud image pins, commented out: it is a
+# vSphere file, and cloud images belong to the libvirt backend.
+template="$(print_env_template)"
+expect_has "the env template names the SHA-256 pin" "$template" "# CLOUD_IMAGE_SHA256="
+expect_has "the env template names the SHA-512 pin" "$template" "# CLOUD_IMAGE_SHA512="
+expect_eq "sourcing the template sets no cloud image pin" \
+  "$(CLOUD_IMAGE_SHA256="" CLOUD_IMAGE_SHA512=""; eval "$template" 2>/dev/null
+     echo "${CLOUD_IMAGE_SHA256}${CLOUD_IMAGE_SHA512}")" ""
+
+# --- the image pool's default directory ----------------------------------------
+# virsh's default pool decides it whenever it names one. A host with no
+# libvirt pool and no libvirt node gets a directory outside libvirt's tree.
+expect_eq "the libvirt-free pool directory" "$CH_ONLY_POOL_DIR" "/var/lib/k0s-bootstrap/images"
+expect_eq "libvirt's stock image directory" "$LIBVIRT_STOCK_IMAGES_DIR" "/var/lib/libvirt/images"
+# pool_default <backend> <default vmm> <node vmms> <pool path or "">
+pool_default() {
+  BACKEND="$1" DEFAULT_VMM="$2" NODE_VMMS="$3" POOL_PATH="$4"
+  LIBVIRT_STOCK_IMAGES_DIR="$TMP/stock"
+  virsh() { [[ -n "$POOL_PATH" ]] && echo "<pool><target><path>$POOL_PATH</path></target></pool>"; }
+  _default_pool_dir
+}
+expect_eq "virsh's default pool decides, on a CH host" \
+  "$(pool_default libvirt cloud-hypervisor "" /srv/pool)" "/srv/pool/k0s-bootstrap"
+expect_eq "virsh's default pool decides, on a libvirt host" \
+  "$(pool_default libvirt libvirt "" /srv/pool)" "/srv/pool/k0s-bootstrap"
+expect_eq "no libvirt pool and only CH nodes: outside libvirt's tree" \
+  "$(pool_default libvirt cloud-hypervisor "" "")" "$CH_ONLY_POOL_DIR"
+expect_eq "no libvirt pool but DEFAULT_VMM=libvirt: the stock path, as before" \
+  "$(pool_default libvirt libvirt "" "")" "$TMP/stock/k0s-bootstrap"
+expect_eq "no libvirt pool but a libvirt node: the stock path, as before" \
+  "$(pool_default libvirt cloud-hypervisor "cloud-hypervisor libvirt" "")" "$TMP/stock/k0s-bootstrap"
+expect_eq "the vSphere backend: the stock path, as before" \
+  "$(pool_default vsphere cloud-hypervisor "" "")" "$TMP/stock/k0s-bootstrap"
+mkdir -p "$TMP/stock/k0s-bootstrap"
+expect_eq "a stock-path pool already in use is kept" \
+  "$(pool_default libvirt cloud-hypervisor "" "")" "$TMP/stock/k0s-bootstrap"
+
+# ensure_pool_dir creates POOL_DIR; only the libvirt-free default may use sudo.
+expect_accepted "a creatable POOL_DIR is created" \
+  bash -c "$(declare -f log ensure_pool_dir); POOL_DIR='$TMP/new/pool'; ensure_pool_dir"
+[[ -d "$TMP/new/pool" ]] && ok "and exists afterwards" || fail "and exists afterwards"
+# no_mkdir <pool dir> <sudo exit status>: mkdir fails; sudo records its args.
+no_mkdir() {
+  POOL_DIR="$1" SUDO_STATUS="$2" CH_VM_DIR="/srv/k0s-ch"
+  mkdir() { return 1; }
+  sudo() { echo "SUDO $*"; return "$SUDO_STATUS"; }
+  ensure_pool_dir
+}
+out="$( no_mkdir /srv/elsewhere/pool 0 2>&1 )"
+expect_lacks "a POOL_DIR you chose is never created through sudo" "$out" "SUDO"
+expect_has "its refusal names POOL_DIR" "$out" "POOL_DIR=/srv/elsewhere/pool"
+expect_has "and CH_VM_DIR" "$out" "CH_VM_DIR"
+expect_refused "an uncreatable POOL_DIR is refused" no_mkdir /srv/elsewhere/pool 0
+out="$( no_mkdir "$CH_ONLY_POOL_DIR" 0 2>&1 )"
+expect_has "the libvirt-free default is created through sudo, owned by this user" \
+  "$out" "install -d -m 0755 -o $(id -un) -g $(id -gn) $CH_ONLY_POOL_DIR"
+expect_accepted "and then accepted" no_mkdir "$CH_ONLY_POOL_DIR" 0
+expect_refused "without sudo it is refused" no_mkdir "$CH_ONLY_POOL_DIR" 1
+expect_has "naming POOL_DIR" "$( no_mkdir "$CH_ONLY_POOL_DIR" 1 2>&1 )" "POOL_DIR=$CH_ONLY_POOL_DIR"
 
 # --- usage -------------------------------------------------------------------------
 expect_has "usage lists join" "$(main bogus 2>&1)" "join"

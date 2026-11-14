@@ -110,7 +110,7 @@ down with `make vcsim-down`.
 After a few seconds the `Provider` should report failure domains:
 
 ```sh
-kubectl get provider dev-vcsim -o yaml | yq '.status.failureDomains'
+kubectl get providers.banlieue.io dev-vcsim -o yaml | yq '.status.failureDomains'
 ```
 
 ### From your GOVC environment

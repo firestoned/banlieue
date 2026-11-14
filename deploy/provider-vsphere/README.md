@@ -44,7 +44,7 @@ EOF
 make provider-vsphere-run-local
 
 # 6. After a few seconds, the Provider should have failureDomains in status.
-kubectl get provider dev-vcsim -o yaml | yq '.status'
+kubectl get providers.banlieue.io dev-vcsim -o yaml | yq '.status'
 ```
 
 ## Creating the Secret + Provider from your `GOVC_*` environment

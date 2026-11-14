@@ -149,7 +149,7 @@ reporting `Ready` without ever having reached the host is actively misleading.
 
 ```sh
 kubectl apply -f examples/04-provider-libvirt-edge.yaml
-kubectl -n banlieue-system get provider libvirt-edge-host-7
+kubectl -n banlieue-system get providers.banlieue.io libvirt-edge-host-7
 ```
 
 Applying the `Provider` is all that is needed: the operator creates the
@@ -441,7 +441,7 @@ and how to test it.
    changes, add the new CA to the host's trust store first, then update the
    CA ConfigMap.
 3. Wait about 30 seconds, and check that the `Provider` stays `Ready`
-   (`kubectl get provider <name>`).
+   (`kubectl get providers.banlieue.io <name>`).
 4. Revoke the old certificate, or remove the old CA from the host.
 
 banlieue never watches the Secret. Each reconcile reads it by name and builds

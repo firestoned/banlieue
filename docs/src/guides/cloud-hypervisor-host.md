@@ -73,6 +73,30 @@ provider is not root, and the credential can read no Secrets.
     `preflight` checks for `systemctl`, `systemd-tmpfiles`, `swtpm`,
     `swtpm_setup` and `swtpm_localca` on `PATH`, and names every one that is
     missing.
+- **Ubuntu: an AppArmor rule for `swtpm`.** Ubuntu's `swtpm` package ships
+  an AppArmor profile, `/etc/apparmor.d/usr.bin.swtpm`, written for
+  libvirt's paths. Under it, `install` fails at the EK CA stage with
+  `swtpm_setup ... --tpmstate /var/lib/banlieue/.host-scratch ... failed`
+  (`/usr/bin/swtpm exit with status 256`), and the kernel log shows
+  `apparmor="DENIED" ... profile="swtpm" name="/var/lib/banlieue/.host-scratch/.lock"`.
+  The profile includes `local/usr.bin.swtpm`, so allow banlieue's state and
+  runtime roots there instead of editing the packaged file. That file may
+  already hold your own rules (libvirt's swtpm paths, for one), so add these
+  two lines to it rather than replacing it. This appends each line only if
+  it is not there yet, so it is safe to re-run:
+
+    ```sh
+    f=/etc/apparmor.d/local/usr.bin.swtpm
+    for rule in '/var/lib/banlieue/** rwk,' '/run/banlieue/** rwk,'; do
+      sudo grep -qxF "$rule" "$f" 2>/dev/null || echo "$rule" | sudo tee -a "$f" >/dev/null
+    done
+    sudo apparmor_parser -r /etc/apparmor.d/usr.bin.swtpm
+    ```
+
+    With it, `install` and `selftest` pass on Ubuntu 24.04. Guest vTPMs
+    have not been exercised under it: a guest's TPM state lives in its
+    machine directory under its storage class's path, so a storage class
+    outside `/var/lib/banlieue` likely needs its path added the same way.
 - **systemd, D-Bus and polkit.** Guests are systemd units (ADR-0063).
 - **cgroup v2** (the unified hierarchy at `/sys/fs/cgroup`, the default on
   Debian 12 and later, Fedora and current Ubuntu). VM slices and
@@ -488,7 +512,7 @@ and `freeGiB`. A new VM must fit those too, after the Provider's
 `storageReservePercent` (default 10%) of each filesystem. See it with:
 
 ```sh
-kubectl get provider <name> -n banlieue-system \
+kubectl get providers.banlieue.io <name> -n banlieue-system \
   -o jsonpath='{.status.failureDomains[0].attributes.capacity}'
 ```
 
@@ -733,7 +757,7 @@ Within seconds the `Provider` reports its failure domain and the `VMImage`
 row for this host turns ready:
 
 ```sh
-kubectl get provider -n banlieue-system -o yaml   # status.failureDomains, status.workload.mode: External
+kubectl get providers.banlieue.io -n banlieue-system -o yaml   # status.failureDomains, status.workload.mode: External
 kubectl get vmimage kairos-ubuntu-2404-ch -o jsonpath='{.status.perProvider}'
 ```
 
@@ -1050,7 +1074,7 @@ its failure domain. It is not a gap: the Provider stays `Ready` and guests
 still run there.
 
 ```sh
-kubectl get provider <name> -n banlieue-system \
+kubectl get providers.banlieue.io <name> -n banlieue-system \
   -o jsonpath='{.status.failureDomains[0].attributes.raw.storageWithoutReflink}'
 ```
 
@@ -1239,7 +1263,7 @@ restarting its unit; guests keep running (`make ch-restart-e2e`).
 
 | Symptom | Cause |
 | --- | --- |
-| `kubectl get providers` shows `HEARTBEAT` `Stale` for this host | The provider stopped renewing its Lease: it is down, or cannot reach the API server. `systemctl status banlieue-provider-cloud-hypervisor` and its journal say which; a crash loop of `Network is unreachable` means the `server:` in `/etc/banlieue/credentials/kubeconfig` no longer answers. No new VM is scheduled onto the host until it renews (ADR-0102). |
+| `kubectl get providers.banlieue.io` shows `HEARTBEAT` `Stale` for this host | The provider stopped renewing its Lease: it is down, or cannot reach the API server. `systemctl status banlieue-provider-cloud-hypervisor` and its journal say which; a crash loop of `Network is unreachable` means the `server:` in `/etc/banlieue/credentials/kubeconfig` no longer answers. No new VM is scheduled onto the host until it renews (ADR-0102). |
 | `running inside a VM (kvm)` in `preflight` | The host is a VM. Supported only for labs, with `--allow-virtualized-host`. |
 | `/dev/kvm missing` | VT-x/AMD-V disabled in firmware, or the `kvm_intel`/`kvm_amd` module is not loaded. |
 | `network class default -> br0: not a bridge on this host` | The bridge does not exist yet, or has a different name. See [Step 1](#step-1-a-bridge-for-guests). |
@@ -1258,5 +1282,5 @@ restarting its unit; guests keep running (`make ch-restart-e2e`).
 | Guests are slow while the host is not busy | A `CPUQuota` set on `banlieue.slice` caps them even when the host is idle (`systemctl show banlieue.slice -p CPUQuotaPerSecUSec`); use `CPUWeight` instead. Or `--guest-cpus` confines them to too few CPUs (`systemctl show banlieue-guests.slice -p AllowedCPUs`). |
 | `overhead` prints `no VMs found` with guests running | The host is on cgroup v1 (`stat -fc %T /sys/fs/cgroup` is not `cgroup2fs`), or the guests are not systemd units banlieue knows (`banlieue-ch@`, `k0s-vm-`, libvirt `machine-qemu`). |
 | `overhead` shows no `banlieue.slice total` line | No VM has started in the slice yet. |
-| A VM stays `Scheduled=False`, `NoFailureDomainMatched`, with `insufficient capacity: memory … > … MiB` (or `vCPUs … > … CPUs x …`) | Every host it may use is full for its class (ADR-0107). Raise the budget (`--guest-memory-max`, or `spec.scheduling.cpuOvercommitRatio` for CPU), add a host, or use a smaller class. Read what a host offers with `kubectl get provider <name> -o jsonpath='{.status.failureDomains[0].attributes.capacity}'`. |
+| A VM stays `Scheduled=False`, `NoFailureDomainMatched`, with `insufficient capacity: memory … > … MiB` (or `vCPUs … > … CPUs x …`) | Every host it may use is full for its class (ADR-0107). Raise the budget (`--guest-memory-max`, or `spec.scheduling.cpuOvercommitRatio` for CPU), add a host, or use a smaller class. Read what a host offers with `kubectl get providers.banlieue.io <name> -o jsonpath='{.status.failureDomains[0].attributes.capacity}'`. |
 | A new VM stays `Scheduled=False` with `insufficient capacity: memory available … MiB < … MiB (measured, less in-flight VMs)` or `storage class '…': … GiB > … GiB` | The host has the budget, but not the free memory or disk right now (ADR-0128): something outside banlieue uses memory, or the filesystem is filling. Free memory or disk on the host, lower `spec.scheduling.storageReservePercent`, or add a host. VMs already placed are never moved for this. |
