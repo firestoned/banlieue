@@ -1,5 +1,48 @@
 # Changelog
 
+## [2026-11-14 18:30] - ADR-0129 proposed: CAPI InfraMachines receive the Machine's bootstrap data
+
+**Author:** Daniel Guns
+
+### Added
+- `docs/adr/0129-capi-inframachines-receive-the-machines-bootstrap-data.md`
+  (Proposed, #191): `banlieue-controller` copies a CAPI Machine's bootstrap
+  Secret `value` into its InfraMachine's `spec.userData` after classifying
+  the Secret (CAPI type, `cluster-name` label, controller ownerReference
+  matching `configRef`, `format` absent or `cloud-config`), and reports on a
+  `BootstrapDataReady` condition only it writes. Host providers hold a
+  CAPI-intended machine (the `cluster.x-k8s.io/cluster-name` label or a
+  Cluster API owner, so from the moment CAPI creates it, before a Machine
+  adopts it) until it is Machine-owned and that condition is `True`, and
+  never apply the condition themselves. A new admission policy requires
+  whoever sets `dataSecretName` directly (Machine, MachineSet,
+  MachineDeployment) to be able to `get` that Secret, as ADR-0042 does for
+  `VirtualMachine` user-data. Secret-dependent waits are requeued on fixed
+  intervals (30 s / 5 min), since the controller holds `get` but not
+  `list/watch` on Secrets. Secret reads stay namespaced; the ClusterRole
+  gains only `get/list/watch` on `machines.cluster.x-k8s.io`. Cloud
+  Hypervisor first, then libvirt, vSphere and Proxmox.
+- `docs/architecture/calm/architecture.json`: node
+  `data-asset-capi-bootstrap-secret`, relationship
+  `rel-controller-delivers-capi-bootstrap-data` with control
+  `capi-bootstrap-data-source-checks` (classification) and
+  `capi-bootstrap-data-reference-authorization` (admission), flow
+  `flow-capi-machine-bootstrap-data` with control
+  `capi-bootstrap-data-before-boot`, all marked PROPOSED;
+  `data-asset-infra-machine-cr` notes the controller-written fields.
+  `docs/src/architecture/{flows,system}.md` regenerated.
+
+### Why
+A Machine created by Cluster API boots without its bootstrap data and never
+joins its cluster: the InfraMachine contract leaves delivering it to the
+infrastructure provider, and banlieue implemented only the status side.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only (decision recorded; nothing implemented yet)
+
 ## [2026-11-14 12:00] - Ubuntu and libvirt-free Cloud Hypervisor hosts: k0s bootstrap and docs
 
 **Author:** Daniel Guns

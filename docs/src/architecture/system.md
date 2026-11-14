@@ -47,6 +47,7 @@ flowchart LR
     data-asset-infra-machine-cr["Infrastructure Machine CR (VSphereMachine, etc.)"]
     data-asset-infra-cluster-cr["Infrastructure Cluster CR (VSphereCluster)"]
     data-asset-capi-cluster-cr["CAPI Cluster / MachineDeployment (external)"]
+    data-asset-capi-bootstrap-secret["CAPI bootstrap data Secret (external)"]
     service-capi-core["Cluster API core + control-plane provider (k0smotron)"]
     system-k0s-bootstrap["k0s Bootstrap Script"]
     service-k0s-bootstrap-ch-node["Management-cluster node on Cloud Hypervisor"]
@@ -99,6 +100,7 @@ flowchart LR
         data-asset-infra-machine-cr
         data-asset-infra-cluster-cr
         data-asset-capi-cluster-cr
+        data-asset-capi-bootstrap-secret
     end
     actor-vm-consumer --> data-asset-virtualmachine-cr
     actor-vm-consumer --> data-asset-vmclass-cr
@@ -177,6 +179,9 @@ flowchart LR
     service-faubourg-controller --> data-asset-virtualmachine-cr
     service-banlieue-controller --> data-asset-virtualmachinemove-cr
     service-banlieue-controller --> data-asset-virtualmachine-cr
+    service-banlieue-controller --> data-asset-infra-machine-cr
+    service-banlieue-controller --> data-asset-capi-cluster-cr
+    service-banlieue-controller --> data-asset-capi-bootstrap-secret
     service-banlieue-controller --> data-asset-infra-machine-cr
     service-provider-cloud-hypervisor -->|TLS| service-provider-cloud-hypervisor
     service-cloud-hypervisor-vmm -->|TCP| service-provider-cloud-hypervisor
