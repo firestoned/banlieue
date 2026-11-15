@@ -138,4 +138,42 @@ mod tests {
         let (reader, _writer) = reflector::store::<Namespace>();
         assert!(!NamespaceGate::selected(reader).serves(FLAGGED));
     }
+
+    #[test]
+    fn gate_names_are_the_selected_namespaces() {
+        let (reader, mut writer) = reflector::store::<Namespace>();
+        writer.apply_watcher_event(&Event::Apply(namespace("team-b")));
+        writer.apply_watcher_event(&Event::Apply(namespace(FLAGGED)));
+        let names = NamespaceGate::selected(reader).names();
+        assert_eq!(
+            names.into_iter().collect::<Vec<_>>(),
+            vec![FLAGGED.to_string(), "team-b".to_string()]
+        );
+        assert!(NamespaceGate::none().names().is_empty());
+    }
+
+    /// A selector such as `!foo` matches every namespace without that label,
+    /// kube-system included. Serving one is allowed, but it must be visible.
+    #[test]
+    fn system_namespaces_among_the_served_are_reported() {
+        let served: std::collections::BTreeSet<String> = ["team-a", "kube-system", "kube-public"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        assert_eq!(
+            system_namespaces(&served),
+            vec!["kube-public".to_string(), "kube-system".to_string()]
+        );
+        assert!(system_namespaces(&std::iter::once(FLAGGED.to_string()).collect()).is_empty());
+    }
+
+    /// The default narrowed from every namespace to the controller's own, so
+    /// falling back to it is worth a warning; choosing it is not.
+    #[test]
+    fn scope_is_implicit_only_when_no_flag_chose_it() {
+        assert!(scope_is_implicit(None, None));
+        assert!(scope_is_implicit(Some(" "), Some("")));
+        assert!(!scope_is_implicit(Some(SELECTOR), None));
+        assert!(!scope_is_implicit(None, Some(FLAGGED)));
+    }
 }

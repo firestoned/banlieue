@@ -17,7 +17,13 @@
 //! filtered by the selector on the server side.
 
 use k8s_openapi::api::core::v1::Namespace;
-use kube::{Api, Client, Resource, api::ListParams, runtime::reflector::Store};
+use std::collections::BTreeSet;
+
+use kube::{
+    Api, Client, Resource,
+    api::ListParams,
+    runtime::reflector::{ObjectRef, Store},
+};
 
 /// Where a resolved scope came from, for the startup log.
 const DESCRIBE_SELECTOR: &str = "namespaces matching selector";
@@ -201,11 +207,47 @@ impl NamespaceGate {
         let Some(store) = &self.selected else {
             return true;
         };
+        // A keyed lookup: this runs on every reconcile, and `state()` would
+        // clone every selected namespace each time.
+        store.get(&ObjectRef::new(namespace)).is_some()
+    }
+
+    /// The names of the namespaces currently served in selector mode; empty
+    /// for a gate that passes everything. Used to tell a real change of the
+    /// served set from a relist or an unrelated edit to a namespace.
+    #[must_use]
+    pub fn names(&self) -> BTreeSet<String> {
+        let Some(store) = &self.selected else {
+            return BTreeSet::new();
+        };
         store
             .state()
             .iter()
-            .any(|ns| ns.metadata.name.as_deref() == Some(namespace))
+            .filter_map(|ns| ns.metadata.name.clone())
+            .collect()
     }
+}
+
+/// Prefix of the namespaces Kubernetes itself owns (`kube-system`,
+/// `kube-public`, `kube-node-lease`).
+const SYSTEM_NAMESPACE_PREFIX: &str = "kube-";
+
+/// The system namespaces among `served`, for a startup warning: a negated
+/// selector such as `!foo` serves them, which is legal but rarely meant.
+#[must_use]
+pub fn system_namespaces(served: &BTreeSet<String>) -> Vec<String> {
+    served
+        .iter()
+        .filter(|name| name.starts_with(SYSTEM_NAMESPACE_PREFIX))
+        .cloned()
+        .collect()
+}
+
+/// Whether no flag chose the scope, so it is the implicit fallback to the
+/// controller's own namespace (ADR-0130).
+#[must_use]
+pub fn scope_is_implicit(selector: Option<&str>, namespace: Option<&str>) -> bool {
+    non_blank(selector).is_none() && non_blank(namespace).is_none()
 }
 
 #[cfg(test)]
