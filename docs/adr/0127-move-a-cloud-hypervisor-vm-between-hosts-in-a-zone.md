@@ -10,6 +10,8 @@ SPDX-License-Identifier: Apache-2.0
 - **Revised:** 2026-11-11: the VM's machine (Decision 4), the move ranking (Decision 2), pool
   members (Decision 1), the API milestone (Decision 13) and who may write the move fields
   (Decision 4) settled before acceptance.
+- **Amended:** 2026-11-14 (Decision 4: the move-fields policy ships, and the mover fails closed
+  without it)
 - **Deciders:** Erick Bourgeois
 - **Related:** Phase A of [ADR-0036](0036-live-migration-phased-approach.md) for the Cloud
   Hypervisor class (execution plan: roadmap 14). Amends
@@ -171,7 +173,10 @@ must keep the VM there, not send it back.
    provider's Role already allows `patch` on every machine in its namespace (machine names are
    unknowable when the Role is written), so a stolen host token could otherwise set `moveOut` on
    another host's machine and point its guest at a peer it controls. An admission policy keyed on
-   the controller's identity enforces it, and is in place before any code reads these fields.
+   the controller's identity enforces it (`deploy/admission/cloudhypervisormachine-move-fields.yaml`),
+   and is in place before any code reads these fields. banlieue's admission policies are opt-in, so
+   the mover fails closed: it admits no move while that policy's binding is missing or not in
+   `Deny` (a move is `Rejected`, reason `MoveFieldsUnguarded`).
 
    **A VM finds its machine through `status.infrastructureRef`, not through its own name.**
    Today the VM reconciler addresses its infrastructure machine by the VM's name (create,

@@ -236,6 +236,38 @@ infrastructure provider, and banlieue implemented only the status side.
 - [ ] Config change only
 - [x] Documentation only (decision recorded; nothing implemented yet)
 
+## [2026-11-14 18:00] - Only the controller writes a CH machine's move fields (ADR-0127, Stage 1)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `deploy/admission/cloudhypervisormachine-move-fields.yaml` (new):
+  ValidatingAdmissionPolicy `banlieue-cloudhypervisormachine-move-fields`
+  and its Deny binding. On CREATE and UPDATE of a `CloudHypervisorMachine`,
+  anyone but `system:serviceaccount:banlieue-system:banlieue-controller` is
+  refused if `spec.identity`, `spec.moveIn` or `spec.moveOut` is set or
+  changed. Status writes are untouched.
+- `crates/banlieue-controller/tests/live_move_fields_policy.rs` (new) and
+  `make move-fields-policy-live-test`: dry-run writes as the controller, a
+  host provider and a plain user, against a real API server.
+- `docs/adr/0127-...md`: amended 2026-11-14 (Decision 4): the policy ships,
+  and the mover is to fail closed without its binding in `Deny`
+  (`MoveFieldsUnguarded`), since admission policies are opt-in.
+- `deploy/admission/README.md`, CALM (`admission-policy-validation`),
+  roadmap 14 (the Stage 1 precondition done; the mover's check added).
+- Threat model: the TB-8 move-fields row now cites the policy; stamp bumped.
+
+### Why
+A host provider's Role allows `patch` on every machine in its namespace, so
+before any code reads the move fields a stolen host token must not be able to
+point another host's guest at a peer it controls.
+
+### Impact
+- [ ] Breaking change: no (opt-in policy; nothing reads the fields yet)
+- [ ] Requires cluster rollout: apply the policy before enabling moves
+- [x] Tests: the live test fails without the policy (a host provider creates
+      a machine with `moveOut`) and passes with it, on kind
+
 ## [2026-11-14 12:00] - Ubuntu and libvirt-free Cloud Hypervisor hosts: k0s bootstrap and docs
 
 **Author:** Daniel Guns
