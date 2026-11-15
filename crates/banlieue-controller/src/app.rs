@@ -40,6 +40,7 @@ use banlieue_provider_sdk::leader::{
 use banlieue_provider_sdk::runner::run_controller;
 use clap::Args;
 use futures::StreamExt;
+use k8s_openapi::api::core::v1::Namespace;
 use kube::{
     Api, ResourceExt,
     runtime::{
@@ -56,6 +57,7 @@ use crate::{
     reconciler::virtualmachine::{error_policy, reconcile},
     reconciler::vmimage,
     reconciler::vsphere_cluster,
+    scope::{NamespaceGate, Scope, check_selector, resolve_scope},
 };
 
 const DEFAULT_HEALTH_PORT: u16 = 8081;
@@ -80,9 +82,18 @@ pub struct Cli {
     #[arg(long, env = "KUBECONFIG")]
     pub kubeconfig: Option<String>,
 
-    /// Restrict the controller to a single namespace. Cluster-wide when unset.
+    /// Serve exactly this namespace. Used when `--namespace-selector` is not
+    /// set; when neither is, the controller serves the namespace it runs in.
+    /// It never defaults to every namespace (ADR-0130).
     #[arg(long, env = "BANLIEUE_NAMESPACE")]
     pub namespace: Option<String>,
+
+    /// Serve every namespace whose labels match this label selector, e.g.
+    /// `banlieue.io/tenant=true` or `team in (a,b)`. Takes precedence over
+    /// `--namespace`. A platform admin onboards a team by labelling its
+    /// namespace; no restart is needed (ADR-0130).
+    #[arg(long, env = "BANLIEUE_NAMESPACE_SELECTOR")]
+    pub namespace_selector: Option<String>,
 
     /// Health server bind port.
     #[arg(long, env = "BANLIEUE_HEALTH_PORT", default_value_t = DEFAULT_HEALTH_PORT)]
@@ -166,6 +177,7 @@ pub async fn run(cli: Cli) -> Result<()> {
     info!(
         version = env!("CARGO_PKG_VERSION"),
         namespace = ?cli.namespace,
+        namespace_selector = ?cli.namespace_selector,
         leader_elect = !cli.no_leader_elect,
         "banlieue-controller starting"
     );
@@ -173,6 +185,20 @@ pub async fn run(cli: Cli) -> Result<()> {
     let client = build_client_with(cli.kubeconfig.as_deref().map(std::ffi::OsStr::new))
         .await
         .context("constructing kube client")?;
+
+    // ADR-0130: resolve which namespaces to serve, and never widen to all.
+    let scope = resolve_scope(
+        cli.namespace_selector.as_deref(),
+        cli.namespace.as_deref(),
+        Some(client.default_namespace()),
+    )
+    .context("resolving the namespace scope")?;
+    if let Some(selector) = scope.selector() {
+        check_selector(&client, selector)
+            .await
+            .context("validating --namespace-selector")?;
+    }
+    info!(scope = %scope.describe(), "serving");
 
     let leader_cfg = (!cli.no_leader_elect).then(|| build_leader_config(&cli));
     let election = leader_cfg
@@ -206,40 +232,39 @@ pub async fn run(cli: Cli) -> Result<()> {
         info!("leader election disabled by --no-leader-elect");
     }
 
-    let vm_api: Api<VirtualMachine> = match cli.namespace.as_deref() {
-        Some(ns) => Api::namespaced(client.clone(), ns),
-        None => Api::all(client.clone()),
+    // Selector mode (ADR-0130): the controllers watch every namespace and gate
+    // each reconcile on a Namespace reflector the API server has already
+    // filtered by the selector. Its events also reconcile everything again, so
+    // labelling a namespace in takes effect at once. Single-namespace modes
+    // have a narrowed watch and need neither.
+    let (scope_tx, scope_rx) = tokio::sync::watch::channel(0_u64);
+    let (gate, scope_tx) = match &scope {
+        Scope::Selector(selector) => {
+            let gate = spawn_namespace_gate(&client, selector, scope_tx).await?;
+            (gate, None)
+        }
+        Scope::Namespace(_) => (NamespaceGate::none(), Some(scope_tx)),
     };
+
+    let vm_api: Api<VirtualMachine> = scope.api(&client);
 
     // Infra CRs we own (status-mirror feedback). `owns` follows
     // ownerReferences back to the parent VirtualMachine for fast event-driven
     // reconciles when the provider updates infra status.
-    let vsphere_api: Api<VSphereMachine> = match cli.namespace.as_deref() {
-        Some(ns) => Api::namespaced(client.clone(), ns),
-        None => Api::all(client.clone()),
-    };
+    let vsphere_api: Api<VSphereMachine> = scope.api(&client);
 
     // The libvirt counterpart (ADR-0050). Owned the same way and for the same
     // reason: without this watch a LibvirtMachine going Ready would only
     // reach its parent VirtualMachine on the next periodic requeue, so every
     // libvirt VM would sit `InfrastructureReady=False` for up to a full
     // requeue interval after it was in fact running.
-    let libvirt_api: Api<LibvirtMachine> = match cli.namespace.as_deref() {
-        Some(ns) => Api::namespaced(client.clone(), ns),
-        None => Api::all(client.clone()),
-    };
+    let libvirt_api: Api<LibvirtMachine> = scope.api(&client);
 
     // And the Cloud Hypervisor counterpart (ADR-0062), for the same reason.
-    let cloud_hypervisor_api: Api<CloudHypervisorMachine> = match cli.namespace.as_deref() {
-        Some(ns) => Api::namespaced(client.clone(), ns),
-        None => Api::all(client.clone()),
-    };
+    let cloud_hypervisor_api: Api<CloudHypervisorMachine> = scope.api(&client);
 
     // And the Proxmox counterpart (ADR-0075), for the same reason.
-    let proxmox_api: Api<ProxmoxMachine> = match cli.namespace.as_deref() {
-        Some(ns) => Api::namespaced(client.clone(), ns),
-        None => Api::all(client.clone()),
-    };
+    let proxmox_api: Api<ProxmoxMachine> = scope.api(&client);
 
     // VMImage is cluster-scoped; the image watcher requeues every VM
     // referencing an image whose status flipped.
@@ -259,18 +284,17 @@ pub async fn run(cli: Cli) -> Result<()> {
     // cheap. Found live: without this, a Provider label change left an
     // already-scheduled VirtualMachine's placement stale until the next
     // periodic `requeue_default` tick instead of reacting immediately.
-    let vm_provider_api: Api<Provider> = match cli.namespace.as_deref() {
-        Some(ns) => Api::namespaced(client.clone(), ns),
-        None => Api::all(client.clone()),
-    };
+    let vm_provider_api: Api<Provider> = scope.api(&client);
 
     info!("starting VirtualMachine controller");
-    let controller = Controller::new(vm_api, Config::default());
+    let controller = Controller::new(vm_api, Config::default())
+        .reconcile_all_on(scope_trigger(scope_rx.clone()));
     let vm_store = controller.store();
     // The duplicate-address check (ADR-0083) reads every VM from this store
     // rather than listing them from the API on each reconcile.
     let ctx = Arc::new(
-        Context::new(client.clone(), cli.namespace.clone())
+        Context::new(client.clone(), scope.namespace().map(str::to_owned))
+            .with_namespace_gate(gate.clone())
             .with_vm_store(vm_store.clone())
             .with_first_boot_sealing(cli.enable_first_boot_sealing),
     );
@@ -331,17 +355,12 @@ pub async fn run(cli: Cli) -> Result<()> {
     // failure domains into the CAPI status. A Provider's status changing
     // (failure domains added/removed) requeues every VSphereCluster — these
     // events are rare and operator-driven, so requeuing all is cheap.
-    let vsc_api: Api<VSphereCluster> = match cli.namespace.as_deref() {
-        Some(ns) => Api::namespaced(client.clone(), ns),
-        None => Api::all(client.clone()),
-    };
-    let provider_api: Api<Provider> = match cli.namespace.as_deref() {
-        Some(ns) => Api::namespaced(client.clone(), ns),
-        None => Api::all(client.clone()),
-    };
+    let vsc_api: Api<VSphereCluster> = scope.api(&client);
+    let provider_api: Api<Provider> = scope.api(&client);
 
     info!("starting VSphereCluster controller");
-    let vsc_controller = Controller::new(vsc_api, Config::default());
+    let vsc_controller = Controller::new(vsc_api, Config::default())
+        .reconcile_all_on(scope_trigger(scope_rx.clone()));
     let vsc_store = vsc_controller.store();
 
     let vsc_controller = vsc_controller.watches(
@@ -368,10 +387,7 @@ pub async fn run(cli: Cli) -> Result<()> {
     // Provider status from a reflector of its own: the two Provider watches
     // above are triggers whose stores kube-runtime does not expose. Providers
     // are few and operator-created, so the extra watch is cheap.
-    let fd_provider_api: Api<Provider> = match cli.namespace.as_deref() {
-        Some(ns) => Api::namespaced(client.clone(), ns),
-        None => Api::all(client.clone()),
-    };
+    let fd_provider_api: Api<Provider> = scope.api(&client);
     let (fd_store, fd_writer) = reflector::store::<Provider>();
     metrics.register_collector(Box::new(FailureDomainCollector::new(fd_store.clone())));
     // ADR-0102's heartbeat gauge reads the same Provider status: one store.
@@ -407,19 +423,13 @@ pub async fn run(cli: Cli) -> Result<()> {
     // member to its claim, and an owner-based watch would then tell only the
     // claim that the pool is a member short.
     info!("starting VirtualMachinePool controller");
-    let pool_api: Api<VirtualMachinePool> = match cli.namespace.as_deref() {
-        Some(ns) => Api::namespaced(client.clone(), ns),
-        None => Api::all(client.clone()),
-    };
-    let pool_member_api: Api<VirtualMachine> = match cli.namespace.as_deref() {
-        Some(ns) => Api::namespaced(client.clone(), ns),
-        None => Api::all(client.clone()),
-    };
-    let pool_controller = Controller::new(pool_api, Config::default()).watches(
-        pool_member_api,
-        Config::default(),
-        |vm: VirtualMachine| pool::pool_for_member(&vm),
-    );
+    let pool_api: Api<VirtualMachinePool> = scope.api(&client);
+    let pool_member_api: Api<VirtualMachine> = scope.api(&client);
+    let pool_controller = Controller::new(pool_api, Config::default())
+        .reconcile_all_on(scope_trigger(scope_rx.clone()))
+        .watches(pool_member_api, Config::default(), |vm: VirtualMachine| {
+            pool::pool_for_member(&vm)
+        });
     let pool_fut = run_controller(
         pool_controller,
         "VirtualMachinePool",
@@ -433,16 +443,12 @@ pub async fn run(cli: Cli) -> Result<()> {
     // from the pool at bind time — so the member going Ready, or being
     // destroyed, reaches the claim without waiting for a periodic requeue.
     info!("starting VirtualMachineClaim controller");
-    let claim_api: Api<VirtualMachineClaim> = match cli.namespace.as_deref() {
-        Some(ns) => Api::namespaced(client.clone(), ns),
-        None => Api::all(client.clone()),
-    };
-    let claim_member_api: Api<VirtualMachine> = match cli.namespace.as_deref() {
-        Some(ns) => Api::namespaced(client.clone(), ns),
-        None => Api::all(client.clone()),
-    };
+    let claim_api: Api<VirtualMachineClaim> = scope.api(&client);
+    let claim_member_api: Api<VirtualMachine> = scope.api(&client);
     let claim_fut = run_controller(
-        Controller::new(claim_api, Config::default()).owns(claim_member_api, Config::default()),
+        Controller::new(claim_api, Config::default())
+            .reconcile_all_on(scope_trigger(scope_rx.clone()))
+            .owns(claim_member_api, Config::default()),
         "VirtualMachineClaim",
         metrics.clone(),
         claim::reconcile,
@@ -476,8 +482,55 @@ pub async fn run(cli: Cli) -> Result<()> {
         }
     }
 
+    // Held to here so a single-namespace run's trigger streams stay pending
+    // instead of ending when the sender drops.
+    drop(scope_tx);
     telemetry.shutdown();
     Ok(())
+}
+
+/// A stream that yields `()` each time the served set of namespaces may have
+/// changed, for [`Controller::reconcile_all_on`]. It stays pending while the
+/// sender lives and nothing changes.
+fn scope_trigger(rx: tokio::sync::watch::Receiver<u64>) -> impl futures::Stream<Item = ()> {
+    futures::stream::unfold(rx, |mut rx| async move {
+        rx.changed().await.ok()?;
+        Some(((), rx))
+    })
+}
+
+/// Start the selector-filtered `Namespace` reflector, wait for its first
+/// sync, and return the gate over it. `changed` is bumped on every event so
+/// the controllers reconcile everything again.
+///
+/// Readiness stays false until the reflector has synced: an unsynced store
+/// must not read as "serve nothing" and quietly drop work.
+async fn spawn_namespace_gate(
+    client: &kube::Client,
+    selector: &str,
+    changed: tokio::sync::watch::Sender<u64>,
+) -> Result<NamespaceGate> {
+    let (store, writer) = reflector::store::<Namespace>();
+    let namespaces: Api<Namespace> = Api::all(client.clone());
+    let stream = watcher(namespaces, Config::default().labels(selector))
+        .default_backoff()
+        .reflect(writer);
+    tokio::spawn(async move {
+        stream
+            .for_each(|event| {
+                match event {
+                    Ok(_) => changed.send_modify(|n| *n = n.wrapping_add(1)),
+                    Err(e) => warn!(error = %e, "Namespace selector watch error; retrying"),
+                }
+                futures::future::ready(())
+            })
+            .await;
+    });
+    store
+        .wait_until_ready()
+        .await
+        .context("waiting for the namespace selector watch to sync")?;
+    Ok(NamespaceGate::selected(store))
 }
 
 /// Build a [`LeaderConfig`] from parsed CLI flags, filling the holder identity

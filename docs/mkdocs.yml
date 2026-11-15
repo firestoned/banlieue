@@ -218,6 +218,7 @@ nav:
       - Operations:
           - Observability: guides/observability.md
           - 'Capacity-Aware Scheduling: Reading and Testing It': guides/capacity-scheduling.md
+          - 'Multi-Tenancy: A Namespace Per Team': guides/multi-tenancy.md
 
   - Concepts:
       - Overview: concepts/index.md

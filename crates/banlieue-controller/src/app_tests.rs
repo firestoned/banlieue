@@ -39,6 +39,41 @@ mod tests {
         );
     }
 
+    /// ADR-0130: no scope flag leaves both unset, so the resolver falls back
+    /// to the controller's own namespace instead of every namespace.
+    #[test]
+    fn scope_flags_default_to_unset() {
+        let cli = parse(&[]);
+        assert_eq!(cli.namespace_selector, None);
+        assert_eq!(cli.namespace, None);
+    }
+
+    #[test]
+    fn namespace_selector_flag_is_parsed() {
+        let cli = parse(&["--namespace-selector", "banlieue.io/tenant=true"]);
+        assert_eq!(
+            cli.namespace_selector.as_deref(),
+            Some("banlieue.io/tenant=true")
+        );
+    }
+
+    /// The flags are not mutually exclusive: the selector wins (ADR-0130), so
+    /// a manifest that sets both must still start.
+    #[test]
+    fn selector_and_namespace_may_both_be_given() {
+        let cli = parse(&["--namespace-selector", "team=a", "--namespace", "team-a"]);
+        assert!(cli.namespace_selector.is_some() && cli.namespace.is_some());
+    }
+
+    /// A change in the served set reaches every controller as a trigger.
+    #[tokio::test]
+    async fn scope_trigger_fires_when_the_served_set_changes() {
+        let (tx, rx) = tokio::sync::watch::channel(0_u64);
+        let mut trigger = Box::pin(scope_trigger(rx));
+        tx.send_modify(|n| *n += 1);
+        assert_eq!(futures::StreamExt::next(&mut trigger).await, Some(()));
+    }
+
     /// ADR-0088 is Accepted (2026-10-26), so Decision 7's gate is lifted:
     /// first-boot sealing is on unless an operator turns it off.
     #[test]

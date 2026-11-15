@@ -54,6 +54,10 @@ pub fn pool_for_member(vm: &VirtualMachine) -> Option<ObjectRef<VirtualMachinePo
 
 pub async fn reconcile(pool: Arc<VirtualMachinePool>, ctx: Arc<Context>) -> Result<Action> {
     let namespace = pool.namespace().ok_or(Error::Missing("namespace"))?;
+    if let Some(action) = ctx.skip_unserved(&namespace, pool.metadata.deletion_timestamp.is_some())
+    {
+        return Ok(action);
+    }
     let name = pool.name_any();
     let generation = pool.metadata.generation.unwrap_or(0);
 
