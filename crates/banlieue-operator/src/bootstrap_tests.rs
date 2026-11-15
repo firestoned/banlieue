@@ -209,6 +209,40 @@ mod tests {
         assert_eq!(verbs, ["get", "list", "watch"]);
     }
 
+    /// ADR-0129 Decision 2: the controller watches the one CRD that says
+    /// whether Cluster API serves Machines, so it can start delivering when
+    /// Cluster API is installed after banlieue. The grant is pinned to that
+    /// name and to reads: it must never become a read of every CRD.
+    #[test]
+    fn controller_cluster_role_reads_only_the_capi_machine_crd() {
+        let rules: Vec<_> = InstallRole::Controller
+            .cluster_role()
+            .expect("embedded ClusterRole parses")
+            .rules
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|r| {
+                r.api_groups
+                    .as_ref()
+                    .is_some_and(|g| g.iter().any(|g| g == "apiextensions.k8s.io"))
+            })
+            .collect();
+        assert_eq!(rules.len(), 1, "{rules:?}");
+        let rule = &rules[0];
+        assert_eq!(
+            rule.resources.as_deref(),
+            Some(&["customresourcedefinitions".to_string()][..])
+        );
+        assert_eq!(
+            rule.resource_names.as_deref(),
+            Some(&["machines.cluster.x-k8s.io".to_string()][..]),
+            "a CRD grant without resourceNames reads every CRD in the cluster"
+        );
+        let mut verbs = rule.verbs.clone();
+        verbs.sort_unstable();
+        assert_eq!(verbs, ["get", "list", "watch"]);
+    }
+
     /// **TM-01 regression guard (ADR-0041).** A `ClusterRole` reached through a
     /// `ClusterRoleBinding` has no namespace scope, so ANY Secret rule in one
     /// reaches every Secret in the cluster. `banlieue-imagebuilder` shipped

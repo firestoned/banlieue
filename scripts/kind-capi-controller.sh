@@ -92,6 +92,9 @@ EOF
   can_i yes get secrets -n "$NS"
   can_i no get secrets --all-namespaces
   can_i yes list namespaces
+  # The one CRD it watches to start its CAPI reconcilers, and no other.
+  can_i yes watch customresourcedefinitions.apiextensions.k8s.io/machines.cluster.x-k8s.io
+  can_i no list customresourcedefinitions.apiextensions.k8s.io
   log "starting $BIN controller as system:serviceaccount:$NS:$SA_NAME"
   "$BIN" controller --kubeconfig "$SA_KUBECONFIG" --no-leader-elect \
     --namespace-selector "$NAMESPACE_SELECTOR" \

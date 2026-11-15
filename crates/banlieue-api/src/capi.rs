@@ -10,7 +10,8 @@
 //!
 //! - which machines Cluster API means ([`is_capi_intended`]) and which a
 //!   `Machine` already owns ([`owning_machine`]);
-//! - whether a provider must hold creation ([`holds_creation`]), and the
+//! - whether a provider must hold creation ([`holds_creation`],
+//!   [`holds_guest`]), and the
 //!   condition it must never write itself ([`retain_provider_conditions`]);
 //! - what the controller reads off a `Machine` ([`MachineBootstrap`]),
 //!   whether that Machine really is the InfraMachine's
@@ -32,6 +33,7 @@ use k8s_openapi::api::core::v1::Secret;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{Condition, ObjectMeta, OwnerReference};
 use serde_json::Value;
 
+use crate::banlieue::VirtualMachine;
 use crate::infrastructure::{
     CloudHypervisorMachine, LibvirtMachine, ProxmoxMachine, VSphereMachine,
 };
@@ -54,7 +56,8 @@ pub const CLUSTER_NAME_LABEL: &str = "cluster.x-k8s.io/cluster-name";
 pub const BOOTSTRAP_SECRET_TYPE: &str = "cluster.x-k8s.io/secret";
 /// The bootstrap data itself.
 pub const BOOTSTRAP_VALUE_KEY: &str = "value";
-/// How the bootstrap data is encoded; absent means [`FORMAT_CLOUD_CONFIG`].
+/// How the bootstrap data is encoded; absent or empty means
+/// [`FORMAT_CLOUD_CONFIG`].
 pub const BOOTSTRAP_FORMAT_KEY: &str = "format";
 /// The one format every banlieue backend can deliver.
 pub const FORMAT_CLOUD_CONFIG: &str = "cloud-config";
@@ -93,31 +96,55 @@ pub fn is_capi_group(group: &str) -> bool {
     group == CAPI_GROUP || group.ends_with(CAPI_GROUP_SUFFIX)
 }
 
-/// Whether Cluster API means this machine for one of its Machines: it carries
-/// [`CLUSTER_NAME_LABEL`], or a Cluster API object owns it. True from the
-/// moment CAPI creates the machine, before any Machine adopts it.
-#[must_use]
-pub fn is_capi_intended(meta: &ObjectMeta) -> bool {
-    let labelled = meta
-        .labels
-        .as_ref()
-        .is_some_and(|l| l.contains_key(CLUSTER_NAME_LABEL));
-    if labelled {
-        return true;
-    }
-    meta.owner_references
-        .iter()
-        .flatten()
-        .any(|o| is_capi_group(api_group(&o.api_version)))
+/// Whether a banlieue `VirtualMachine` controls this machine: banlieue built
+/// it for that VM, and Cluster API cannot adopt it, because it refuses an
+/// object another owner controls.
+fn controlled_by_virtual_machine(meta: &ObjectMeta) -> bool {
+    meta.owner_references.iter().flatten().any(|o| {
+        o.controller == Some(true)
+            && api_group(&o.api_version) == <VirtualMachine as kube::Resource>::group(&())
+            && o.kind == <VirtualMachine as kube::Resource>::kind(&())
+    })
 }
 
-/// The CAPI `Machine` that owns this machine, once it has been adopted.
+/// Whether Cluster API means this machine for one of its Machines: a Cluster
+/// API object owns it, or it carries [`CLUSTER_NAME_LABEL`]. True from the
+/// moment CAPI creates the machine, before any Machine adopts it.
+///
+/// Never true for a machine a `VirtualMachine` controls, whatever its labels:
+/// banlieue copies a VM's labels onto its machine, so a VM labelled with a
+/// cluster's name (a load balancer for that cluster, a kustomize
+/// `commonLabels`) would otherwise wait forever for bootstrap data no Machine
+/// will ever give it.
 #[must_use]
-pub fn owning_machine(meta: &ObjectMeta) -> Option<&OwnerReference> {
-    meta.owner_references
+pub fn is_capi_intended(meta: &ObjectMeta) -> bool {
+    if controlled_by_virtual_machine(meta) {
+        return false;
+    }
+    let capi_owned = meta
+        .owner_references
         .iter()
         .flatten()
-        .find(|o| api_group(&o.api_version) == CAPI_GROUP && o.kind == MACHINE_KIND)
+        .any(|o| is_capi_group(api_group(&o.api_version)));
+    if capi_owned {
+        return true;
+    }
+    meta.labels
+        .as_ref()
+        .is_some_and(|l| l.contains_key(CLUSTER_NAME_LABEL))
+}
+
+/// The CAPI `Machine` that controls this machine, once it has adopted it.
+/// Only the controller reference counts: Cluster API adopts with
+/// `SetControllerReference`, and any other `Machine` reference (a stale one,
+/// say, listed first) says nothing about which Machine's data this is.
+#[must_use]
+pub fn owning_machine(meta: &ObjectMeta) -> Option<&OwnerReference> {
+    meta.owner_references.iter().flatten().find(|o| {
+        o.controller == Some(true)
+            && api_group(&o.api_version) == CAPI_GROUP
+            && o.kind == MACHINE_KIND
+    })
 }
 
 /// Whether [`BOOTSTRAP_DATA_READY`] is `True`.
@@ -249,7 +276,7 @@ fn invalid(message: String) -> SecretRejection {
 /// The bootstrap data to copy from `secret` for `machine`, after ADR-0129
 /// Decision 4's checks: CAPI type, cluster label, a controller ownerReference
 /// matching the Machine's `configRef` when it has one, a non-empty UTF-8
-/// `value`, and `format` absent or [`FORMAT_CLOUD_CONFIG`].
+/// `value`, and `format` absent, empty or [`FORMAT_CLOUD_CONFIG`].
 ///
 /// These classify the Secret; they do not authorize whoever named it, which
 /// the admission policy does (Decision 5).
@@ -296,7 +323,9 @@ pub fn bootstrap_value(
     let format = data
         .and_then(|d| d.get(BOOTSTRAP_FORMAT_KEY))
         .map(|f| String::from_utf8_lossy(&f.0).into_owned());
-    if let Some(format) = format.filter(|f| f != FORMAT_CLOUD_CONFIG) {
+    // Empty is CABPK's own reading of an unset format (it renders
+    // cloud-config for it), so it is accepted like an absent key.
+    if let Some(format) = format.filter(|f| !f.is_empty() && f != FORMAT_CLOUD_CONFIG) {
         return Err(SecretRejection {
             reason: bootstrap_reasons::UNSUPPORTED_BOOTSTRAP_DATA_FORMAT,
             message: format!(
@@ -324,10 +353,27 @@ pub trait BootstrapTarget {
     fn provider_id(&self) -> Option<&str>;
     /// `status.conditions`, empty when there is no status.
     fn conditions(&self) -> &[Condition];
+    /// Whether the provider has gone past the point where it would hold the
+    /// guest: once it has set `spec.providerID`, and for Cloud Hypervisor
+    /// also once it has allocated the guest's host uid (the first thing it
+    /// does after the hold). `spec.providerID` survives what a status does
+    /// not (`clusterctl move`, a restore), so a running machine is not held
+    /// again for having lost its status. The controller never delivers to a
+    /// started machine, and a provider never holds one, so the two cannot
+    /// disagree.
+    fn creation_started(&self) -> bool;
+}
+
+/// Whether a host provider must not create this machine's guest yet: it has
+/// not started, and [`holds_creation`] says Cluster API means it and it is
+/// not yet owned and delivered. The predicate providers apply.
+#[must_use]
+pub fn holds_guest<K: kube::Resource + BootstrapTarget>(machine: &K) -> bool {
+    !machine.creation_started() && holds_creation(machine.meta(), machine.conditions())
 }
 
 macro_rules! bootstrap_target {
-    ($($kind:ty),+) => {$(
+    ($($kind:ty => |$m:ident| $started:expr),+ $(,)?) => {$(
         impl BootstrapTarget for $kind {
             fn user_data(&self) -> Option<&str> {
                 self.spec.user_data.as_deref()
@@ -338,15 +384,20 @@ macro_rules! bootstrap_target {
             fn conditions(&self) -> &[Condition] {
                 self.status.as_ref().map_or(&[], |s| s.conditions.as_slice())
             }
+            fn creation_started(&self) -> bool {
+                let $m = self;
+                $started
+            }
         }
     )+};
 }
 
 bootstrap_target!(
-    CloudHypervisorMachine,
-    LibvirtMachine,
-    VSphereMachine,
-    ProxmoxMachine
+    CloudHypervisorMachine => |m| m.spec.provider_id.is_some()
+        || m.status.as_ref().is_some_and(|s| s.host_uid.is_some()),
+    LibvirtMachine => |m| m.spec.provider_id.is_some(),
+    VSphereMachine => |m| m.spec.provider_id.is_some(),
+    ProxmoxMachine => |m| m.spec.provider_id.is_some(),
 );
 
 #[cfg(test)]

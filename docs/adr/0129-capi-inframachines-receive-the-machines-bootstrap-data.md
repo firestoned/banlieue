@@ -109,13 +109,20 @@ provider, classify a machine:
   `.cluster.x-k8s.io` (a MachineSet, a Machine, a control plane). CAPI's
   `GenerateTemplate` sets that label on every InfraMachine it creates, so a
   machine is CAPI-intended **from the moment CAPI creates it**, before any
-  Machine owns it.
-- **CAPI-owned**: it has an ownerReference with group `cluster.x-k8s.io` and
-  kind `Machine`, which exists only after adoption.
+  Machine owns it. A machine a `VirtualMachine` controls is never
+  CAPI-intended, whatever its labels (amended in review, 2026-11-15).
+- **CAPI-owned**: its **controller** ownerReference has group
+  `cluster.x-k8s.io` and kind `Machine`, which exists only after adoption
+  (Cluster API adopts with `SetControllerReference`); any other `Machine`
+  reference does not count (amended in review, 2026-11-15).
 
-A machine that is not CAPI-intended (owned by a `VirtualMachine`, or created
-standalone without those markers) behaves exactly as today. banlieue's own
-controller sets neither marker on the machines it builds. An InfraMachine
+A machine that is not CAPI-intended (controlled by a `VirtualMachine`, or
+created standalone without those markers) behaves exactly as today. banlieue's own
+controller sets no Cluster API owner on the machines it builds, but it copies
+a `VirtualMachine`'s labels onto its machine, so a VM labelled with a
+cluster's name (a load balancer for that cluster, a kustomize
+`commonLabels`) carries the label; it is exempt because the VM controls it,
+and Cluster API could not adopt it anyway. An InfraMachine
 written by hand for a hand-written Machine must carry the
 `cluster.x-k8s.io/cluster-name` label to be held before adoption; the guide
 says so, because nothing else distinguishes it from a standalone machine
@@ -128,13 +135,18 @@ until CAPI adopts it.
 `ProxmoxMachine`. Host providers still read no Secret (ADR-0025's division
 of labour, extended from `VirtualMachine` user-data to CAPI bootstrap data).
 
-It watches the four kinds and CAPI `Machine`s, mapping a Machine to the
+It runs, per kind, only once that kind's provider holds the guest
+(Decision 10): in milestone 1, `CloudHypervisorMachine` alone. It watches
+that kind and CAPI `Machine`s, mapping a Machine to the
 InfraMachine its `spec.infrastructureRef` names. Adoption and the moment
 CAPI sets `dataSecretName` are both Machine or InfraMachine changes, so they
-wake the right machine without delay. It starts only when the API server
-serves `machines.cluster.x-k8s.io` at controller startup, and logs that it
-is off otherwise. A cluster that installs Cluster API after banlieue
-restarts the controller to turn it on.
+wake the right machine without delay. It starts once the API server serves
+`machines.cluster.x-k8s.io` at `v1beta2`: the controller watches that one
+CRD (`Established`, `v1beta2` served), so it starts at once on a cluster
+that has Cluster API and, on one that installs it later, when it is
+installed, with no restart. An error on that watch is logged and retried
+with backoff; it never stops the controller's other loops (amended in
+review, 2026-11-15).
 
 ### 3. Waking up when only the Secret changes
 
@@ -173,7 +185,8 @@ Secret **in the Machine's namespace** and requires all of:
    `configRef`'s. Both CABPK and k0smotron set exactly this. A Machine with
    no `configRef` (its `dataSecretName` set directly) skips this check;
 4. a non-empty `value` that is valid UTF-8;
-5. `format` absent or `cloud-config`. Any other value (`ignition`,
+5. `format` absent, empty or `cloud-config` (CABPK renders cloud-config for
+   an unset format, so an empty one means the same). Any other value (`ignition`,
    `powershell`, ...) is refused, because no banlieue backend can deliver
    it. This replaces checking `format` against the image's `guestAgent`,
    which a CAPI-owned machine does not have.
@@ -201,17 +214,29 @@ admission, where its identity still exists. A new policy,
 `deploy/admission/capi-bootstrap-data-authorization.yaml`
 (`ValidatingAdmissionPolicy` with the CEL `authorizer`,
 `failurePolicy: Fail`), matches `CREATE` and `UPDATE` of every object through
-which a person can name one:
+which a person can name one, directly or through a bootstrap config:
 
-| Resource (`cluster.x-k8s.io`) | Field |
+| Resource (`cluster.x-k8s.io`) | Fields |
 |---|---|
-| `machines` | `spec.bootstrap.dataSecretName` |
-| `machinesets`, `machinedeployments` | `spec.template.spec.bootstrap.dataSecretName` |
+| `machines` | `spec.bootstrap.dataSecretName`, `spec.bootstrap.configRef` |
+| `machinesets`, `machinedeployments` | the same under `spec.template.spec` |
+
+For `configRef` the principal must be allowed to `get` the bootstrap config
+it names (resource: the config kind, lower-cased, plus `s`; an irregular
+plural names a resource no Role grants, so it fails closed). It matches only
+objects whose `infrastructureRef` is a banlieue InfraMachine
+(`matchConditions`), so other infrastructure providers' users are never
+checked and an authorizer error never blocks their writes, and evaluates them
+as `v1beta2`.
 
 The check runs only when the field is set and, on `UPDATE`, only when it
 changed, so an update that leaves it alone (a controller adding a finalizer,
 CAPI patching status) is never checked against an identity that did not
-make the reference. MachineSets and MachineDeployments are covered because
+make the reference. That skip applies only when the old object's
+`infrastructureRef` was a banlieue InfraMachine too: a reference made while
+it named another provider was never checked, so an update that switches it
+to banlieue checks the reference as if it were new (amended in review,
+2026-11-15). MachineSets and MachineDeployments are covered because
 CAPI's own manager copies their template into each Machine it creates; a
 check on Machines alone would see only that manager. When CAPI copies a
 bootstrap config's `status.dataSecretName` onto a Machine, the requester is
@@ -219,10 +244,13 @@ CAPI's manager, which can read Secrets and passes. MachinePools are not
 covered: their machines use an InfraMachinePool, which banlieue does not
 implement.
 
-The `configRef` path needs no policy of banlieue's: CAPI makes a Machine the
+The `configRef` path needs the same check. CAPI makes a Machine the
 controller of its bootstrap config and refuses one another Machine already
-controls (Context), and check 3 ties the Secret to that config. A principal
-who can create bootstrap configs and Machines can have CAPI render a join
+controls, but it takes over a config only a MachineSet or control plane owns
+(not yet adopted) or that nobody owns, and the bootstrap provider then
+renders that config's data for the new Machine. Check 3 ties the Secret to
+the config the Machine names; it cannot tell who named it. A principal who
+can create bootstrap configs and Machines can still have CAPI render a join
 credential for itself; that is Cluster API's trust model, not an escalation
 through banlieue.
 
@@ -284,6 +312,11 @@ CAPI `MachineHealthCheck`. The guide says so.
 - **Machines:** `banlieue-controller`'s ClusterRole gains `get`, `list` and
   `watch` on `machines.cluster.x-k8s.io`. A Machine carries the *name* of
   its bootstrap Secret, never its content.
+- **The Machine CRD:** the same three verbs on
+  `customresourcedefinitions`, limited by `resourceNames` to
+  `machines.cluster.x-k8s.io`, for Decision 2's watch. A list or watch with
+  `resourceNames` is allowed only for a request that selects that name, so
+  it reads no other CRD (added in review, 2026-11-15).
 - **Secrets:** `get` only, through a **namespaced** Role in each namespace
   that holds CAPI-owned InfraMachines, never a ClusterRole rule:
   - The install namespace needs nothing new: `banlieue-controller-userdata`
@@ -305,9 +338,11 @@ CAPI `MachineHealthCheck`. The guide says so.
    Hypervisor provider's hold.** Cloud Hypervisor first, because it is the
    backend this was found on and the one the live test runs against.
 2. **The libvirt, vSphere and Proxmox providers' hold**, the same two
-   changes each. Until each lands, the controller still delivers
-   `spec.userData` to a CAPI-owned machine of that kind, but the provider
-   may create the guest first. The guide states which backends hold.
+   changes each, and the controller turned on for that kind. Until each
+   lands, the controller does not deliver to that kind at all: its provider
+   still applies `BootstrapDataReady` from its status snapshot, so the two
+   would fight over the condition, and the guest could start before the
+   data. The guide states which backends receive data.
 
 ### 11. Tests
 
@@ -401,7 +436,8 @@ CAPI `MachineHealthCheck`. The guide says so.
   per waiting machine per interval.
 - An InfraMachine with the `cluster.x-k8s.io/cluster-name` label is held
   even when no Machine ever adopts it. A standalone machine must not carry
-  that label.
+  that label. A machine a `VirtualMachine` controls is never held, whatever
+  labels the VM gave it.
 - `userData` from an InfraMachineTemplate is replaced on CAPI-owned
   machines. A setup that put cloud-config in the template and relied on it
   booting instead of the bootstrap data changes behaviour.
@@ -409,8 +445,8 @@ CAPI `MachineHealthCheck`. The guide says so.
   holds, and may take ownership of `BootstrapDataReady` through its
   whole-status apply. Upgrade a Cloud Hypervisor host's `banlieue` binary
   with the controller.
-- Installing Cluster API after banlieue needs a controller restart to turn
-  the reconciler on.
+- Installing Cluster API after banlieue turns the reconciler on without a
+  restart. The controller holds a read of one CRD, by name, for that.
 
 ## Open questions, settled by the e2e
 
@@ -431,8 +467,8 @@ ownership, the hold rule, the provider-side condition filter),
 `banlieue-controller/src/reconciler/bootstrap_data.rs`,
 `deploy/admission/capi-bootstrap-data-authorization.yaml`, the controller's
 Machine read in `deploy/controller/rbac/clusterrole.yaml`, and the Cloud
-Hypervisor provider's hold (`reconciler.rs`: `creation_held`,
-`status_patch`). `e2e_capi_bootstrap_data.rs` passes against CAPI v1.14.3
+Hypervisor provider's hold (`reconciler.rs`: `holds_guest`, from
+`banlieue-api`, and `status_patch`). `e2e_capi_bootstrap_data.rs` passes against CAPI v1.14.3
 with kubeadm's bootstrap and control-plane providers, the controller running
 under its own ServiceAccount: kubeadm init data delivered byte for byte (13 KB
 of `kubeadm.k8s.io/v1beta4` config), after a `BootstrapSecretForbidden` that
@@ -477,12 +513,63 @@ the controller's namespace scope like every other loop. Their watches follow
 reconcile is gated on the selected namespaces, so a Cluster's namespace must
 be served for its machines to receive anything.
 
+Changed in review (2026-11-15):
+
+- **`configRef` is authorized at admission** (Decision 5 amended). The
+  Decision first said CAPI bounded that path. Its v1.14.3 source
+  (`ensureExternalOwnershipAndWatch`) shows it refuses a config another
+  Machine controls, and the e2e pins that, but it takes over one only a
+  MachineSet or control plane owns, or nobody owns.
+- **The policies match only banlieue machines** (`matchConditions` on the
+  `infrastructureRef` group), so a management cluster's other providers are
+  neither checked nor exposed to an authorizer outage.
+- **Only `CloudHypervisorMachine` is served until milestone 2** (Decision 10
+  amended): the other three providers still re-apply the condition.
+- **Discovery**: only a 404 means Cluster API is not installed. Any other
+  error is retried, then fails startup, instead of turning the controller
+  off for the life of the process. Superseded in the second review round
+  (below).
+- **One predicate for "past the hold"** (`BootstrapTarget::creation_started`):
+  the controller stopped delivering on `providerID` while the provider held
+  on its guest uid, so a machine with one and not the other was stuck.
+- The held machine's message points at the namespace selector when the
+  controller has never reported on it; the delivery condition reports the
+  generation that carries the data; a Machine without `spec.clusterName` is
+  no longer reported as not found.
+
+Changed in the second review round (2026-11-15):
+
+- **An update that switches `infrastructureRef` to banlieue is checked**
+  (Decision 5 amended). The unchanged-field skip had ignored whether the old
+  object was banlieue's, so a `dataSecretName` or `configRef` set under
+  another provider, which the policy never saw, crossed over unchecked.
+- **A machine a `VirtualMachine` controls is never CAPI-intended**
+  (Decision 1 amended). The controller copies a VM's labels onto its
+  machine, so a VM labelled with a cluster's name was held forever.
+- **The controller starts when Cluster API is served, not only at startup**
+  (Decision 2 amended). A watch on the `machines.cluster.x-k8s.io` CRD
+  replaces discovery at startup: a later `clusterctl init` turns the
+  reconciler on, and an API error neither leaves it off nor stops the
+  process. Decision 9 gains the CRD read. The held machine's message now
+  names the three reasons the controller may never have looked at it: not
+  running, not serving the namespace, Cluster API not serving v1beta2
+  Machines.
+- **Only the controller `Machine` reference is the owning Machine**
+  (Decision 1 amended), so a stale reference listed first is not mistaken
+  for it.
+- **An empty `format` means `cloud-config`** (Decision 4 amended).
+- **`spec.providerID` also means the provider has passed the hold** on Cloud
+  Hypervisor, besides the guest uid. `clusterctl move` or a restore keeps
+  the spec and loses the status; such a machine is no longer held again or
+  delivered to again. What the provider then does with a machine that has
+  lost its status is unchanged.
+
 Deviations from the Decision text, none of substance:
 
 - Decision 11 asked for the Cloud Hypervisor hold to be tested through
   `fake.rs`. The hold sits before the first host operation, guest uid
   allocation included, so there is no host call to observe: it is tested
-  through the CAPI ordering on `creation_held` and on the status the provider
+  through the CAPI ordering on `holds_guest` and on the status the provider
   writes while holding.
 - `e2e_capi_contract.rs` keeps a `dataSecretName`, because a v1beta2 Machine
   must name a bootstrap source; it is now a named, never-created stand-in, and

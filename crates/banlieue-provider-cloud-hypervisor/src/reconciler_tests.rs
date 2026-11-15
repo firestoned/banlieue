@@ -328,22 +328,22 @@ lan = "br0"
     #[test]
     fn a_capi_machine_is_held_from_creation_until_its_data_is_delivered() {
         let created = as_capi_creates_it();
-        assert!(creation_held(&created), "before adoption");
+        assert!(holds_guest(&created), "before adoption");
         let owned = adopted(&created);
-        assert!(creation_held(&owned), "adopted, no condition");
+        assert!(holds_guest(&owned), "adopted, no condition");
         assert!(
-            creation_held(&with_bootstrap_condition(&owned, "False")),
+            holds_guest(&with_bootstrap_condition(&owned, "False")),
             "adopted, data not delivered"
         );
         assert!(
-            !creation_held(&with_bootstrap_condition(&owned, "True")),
+            !holds_guest(&with_bootstrap_condition(&owned, "True")),
             "adopted, data delivered"
         );
     }
 
     #[test]
     fn a_delivered_condition_before_adoption_does_not_release_the_hold() {
-        assert!(creation_held(&with_bootstrap_condition(
+        assert!(holds_guest(&with_bootstrap_condition(
             &as_capi_creates_it(),
             "True"
         )));
@@ -351,19 +351,14 @@ lan = "br0"
 
     #[test]
     fn a_standalone_or_virtualmachine_machine_is_never_held() {
-        assert!(!creation_held(&machine(
-            "a",
-            "banlieue-system",
-            "ch-a",
-            None
-        )));
+        assert!(!holds_guest(&machine("a", "banlieue-system", "ch-a", None)));
         let mut vm_owned = machine("b", "banlieue-system", "ch-a", None);
         vm_owned.metadata.owner_references = Some(vec![owner(
             "banlieue.io/v1alpha1",
             "VirtualMachine",
             "vm-b",
         )]);
-        assert!(!creation_held(&vm_owned));
+        assert!(!holds_guest(&vm_owned));
     }
 
     /// A guest uid is recorded before anything is created on the host, so a
@@ -376,7 +371,7 @@ lan = "br0"
             host_uid: Some(2_000_001),
             ..Default::default()
         });
-        assert!(!creation_held(&m));
+        assert!(!holds_guest(&m));
     }
 
     #[test]
@@ -392,6 +387,66 @@ lan = "br0"
         assert_eq!(ready.reason, bootstrap_reasons::WAITING_FOR_BOOTSTRAP_DATA);
         assert_eq!(ready.observed_generation, Some(4));
         assert_eq!(st.host_uid, None, "no guest uid is allocated while held");
+    }
+
+    /// With no `BootstrapDataReady` at all, banlieue-controller has never
+    /// looked at this machine: it is not running, it does not serve the
+    /// namespace (ADR-0130), or Cluster API does not serve v1beta2 Machines
+    /// (the controller starts its bootstrap reconciler only then). The message
+    /// names all three, instead of implying the data is merely late.
+    #[test]
+    fn a_machine_the_controller_never_reported_on_says_what_to_check() {
+        let ready = |st: &CloudHypervisorMachineStatus| {
+            st.conditions
+                .iter()
+                .find(|c| c.type_ == "Ready")
+                .expect("Ready")
+                .message
+                .clone()
+        };
+        let never = held_status(None, 4);
+        for cause in ["is running", "namespace selector", "v1beta2 Machines"] {
+            assert!(ready(&never).contains(cause), "{cause}: {}", ready(&never));
+        }
+
+        let m = with_bootstrap_condition(&adopted(&as_capi_creates_it()), "False");
+        let reported = held_status(m.status.as_ref(), 4);
+        assert!(
+            !ready(&reported).contains("namespace selector"),
+            "{}",
+            ready(&reported)
+        );
+        assert!(
+            ready(&reported).contains("BootstrapDataReady"),
+            "{}",
+            ready(&reported)
+        );
+    }
+
+    /// The provider and the controller share one predicate: a machine with a
+    /// `providerID` and no status (after `clusterctl move` or a restore,
+    /// which keep the spec and lose the status) has been created, so it is
+    /// not held again, and the controller does not deliver to it again.
+    #[test]
+    fn a_machine_with_a_provider_id_is_not_held_after_losing_its_status() {
+        let mut m = adopted(&as_capi_creates_it());
+        m.spec.provider_id = Some("cloudhypervisor://host-1/x".to_string());
+        assert!(m.status.is_none());
+        assert!(!holds_guest(&m));
+    }
+
+    /// banlieue copies a VirtualMachine's labels onto its machine: a VM
+    /// labelled with a cluster's name is still an ordinary VM, never held.
+    #[test]
+    fn a_virtualmachine_machine_with_the_cluster_label_is_not_held() {
+        let mut m = machine("c", "banlieue-system", "ch-a", None);
+        m.metadata.owner_references = Some(vec![owner(
+            "banlieue.io/v1alpha1",
+            "VirtualMachine",
+            "lb-c",
+        )]);
+        m.metadata.labels = Some([(CLUSTER_NAME_LABEL.to_string(), "wl-1".to_string())].into());
+        assert!(!holds_guest(&m));
     }
 
     /// The provider applies its whole status from a snapshot; it must never

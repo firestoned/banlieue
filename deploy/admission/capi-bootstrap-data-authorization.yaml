@@ -3,8 +3,8 @@
 #
 # Cluster API bootstrap-data reference authorization (ADR-0129 Decision 5).
 #
-# banlieue-controller copies a CAPI Machine's bootstrap Secret — the one named
-# by spec.bootstrap.dataSecretName — into its InfraMachine's spec.userData,
+# banlieue-controller copies a CAPI Machine's bootstrap Secret (the one named
+# by spec.bootstrap.dataSecretName) into its InfraMachine's spec.userData,
 # which anyone who can read that InfraMachine can read back. The controller
 # checks the Secret is CAPI bootstrap data for that Machine's cluster
 # (ADR-0129 Decision 4), but that CLASSIFIES the Secret; it cannot tell whose
@@ -16,6 +16,18 @@
 # The cure is ADR-0042's: the principal that names the Secret must itself be
 # allowed to `get` it, checked here at admission, while its identity still
 # exists. By reconcile time it is long gone.
+#
+# The same holds for spec.bootstrap.configRef, which names the Secret
+# indirectly: Cluster API copies the named bootstrap config's
+# status.dataSecretName onto the Machine. CAPI refuses a config another
+# Machine already controls, but it takes over a config that only a MachineSet
+# or control plane owns (not yet adopted) or that nobody owns, and the
+# bootstrap provider then renders that config's data for the new Machine. So
+# the principal that names a config must be allowed to `get` it. The resource
+# is the config kind, lower-cased, plus "s" (kubeadmconfigs,
+# kubeadmconfigtemplates, k0sworkerconfigs, ...): for a kind whose plural is
+# irregular the check names a resource no Role grants, so it fails closed for
+# everyone but a principal granted every resource.
 #
 # Matched objects are every one through which a person can name a bootstrap
 # Secret directly:
@@ -31,10 +43,22 @@
 #
 # Each check runs only when the field is set and, on UPDATE, only when it
 # changed: an update that leaves it alone (a controller adding a finalizer) is
-# never checked against an identity that did not make the reference.
+# never checked against an identity that did not make the reference. That
+# skip needs the old object to have been a banlieue one too (wasBanlieue): an
+# unchanged reference was authorized only if this policy saw it, and it does
+# not see another provider's objects. Otherwise a reference made under another
+# infrastructureRef, never checked, would be carried over unchecked by an
+# update that only switches infrastructureRef to banlieue.
+#
+# Only Machines (and templates) whose infrastructureRef is a banlieue
+# InfraMachine are matched (matchConditions), so on a management cluster that
+# also runs other infrastructure providers, their users are never checked and
+# an authorizer error never blocks their writes. Objects are evaluated as
+# v1beta2 (matchPolicy Equivalent converts older versions), the version whose
+# references carry apiGroup, kind and name.
 #
 # What this does NOT do: it does not stop a principal who can already read a
-# Secret from surfacing it in an InfraMachine — the same accepted reflection
+# Secret from surfacing it in an InfraMachine: the same accepted reflection
 # as ADR-0025/0042. CAPI-owned InfraMachines are credential-bearing; restrict
 # `get` on them accordingly.
 #
@@ -51,12 +75,24 @@ metadata:
 spec:
   failurePolicy: Fail
   matchConstraints:
+    matchPolicy: Equivalent
     resourceRules:
       - apiGroups: ["cluster.x-k8s.io"]
-        apiVersions: ["*"]
+        apiVersions: ["v1beta2"]
         operations: ["CREATE", "UPDATE"]
         resources: ["machines"]
+  matchConditions:
+    - name: banlieue-infrastructure
+      expression: >-
+        has(object.spec.infrastructureRef)
+        && has(object.spec.infrastructureRef.apiGroup)
+        && object.spec.infrastructureRef.apiGroup == 'infrastructure.banlieue.io'
   variables:
+    - name: wasBanlieue
+      expression: >-
+        oldObject != null && has(oldObject.spec.infrastructureRef)
+        && has(oldObject.spec.infrastructureRef.apiGroup)
+        && oldObject.spec.infrastructureRef.apiGroup == 'infrastructure.banlieue.io'
     - name: secretName
       expression: >-
         has(object.spec.bootstrap) && has(object.spec.bootstrap.dataSecretName)
@@ -66,10 +102,20 @@ spec:
         oldObject != null && has(oldObject.spec.bootstrap)
         && has(oldObject.spec.bootstrap.dataSecretName)
         ? oldObject.spec.bootstrap.dataSecretName : ''
+    - name: configRef
+      expression: >-
+        has(object.spec.bootstrap) && has(object.spec.bootstrap.configRef)
+        ? object.spec.bootstrap.configRef : null
+    - name: previousConfigRef
+      expression: >-
+        oldObject != null && has(oldObject.spec.bootstrap)
+        && has(oldObject.spec.bootstrap.configRef)
+        ? oldObject.spec.bootstrap.configRef : null
   validations:
     - expression: >-
         variables.secretName == ''
-        || variables.secretName == variables.previousSecretName
+        || (variables.wasBanlieue
+            && variables.secretName == variables.previousSecretName)
         || authorizer.group('').resource('secrets')
              .namespace(object.metadata.namespace)
              .name(variables.secretName)
@@ -80,6 +126,22 @@ spec:
         + ', which you are not authorized to get; banlieue copies a Machine'
         + "'s bootstrap Secret into its InfraMachine, so a Machine may only"
         + ' name bootstrap data its author can read.'
+      reason: Forbidden
+    - expression: >-
+        variables.configRef == null
+        || (variables.wasBanlieue
+            && variables.configRef == variables.previousConfigRef)
+        || authorizer.group(variables.configRef.apiGroup)
+             .resource(variables.configRef.kind.lowerAscii() + 's')
+             .namespace(object.metadata.namespace)
+             .name(variables.configRef.name)
+             .check('get').allowed()
+      messageExpression: >-
+        'spec.bootstrap.configRef names ' + variables.configRef.kind + ' '
+        + variables.configRef.name + ' in namespace ' + object.metadata.namespace
+        + ', which you are not authorized to get; Cluster API copies its'
+        + ' bootstrap data to this Machine and banlieue into its InfraMachine,'
+        + ' so a Machine may only name a bootstrap config its author can read.'
       reason: Forbidden
 ---
 apiVersion: admissionregistration.k8s.io/v1
@@ -103,12 +165,29 @@ metadata:
 spec:
   failurePolicy: Fail
   matchConstraints:
+    matchPolicy: Equivalent
     resourceRules:
       - apiGroups: ["cluster.x-k8s.io"]
-        apiVersions: ["*"]
+        apiVersions: ["v1beta2"]
         operations: ["CREATE", "UPDATE"]
         resources: ["machinesets", "machinedeployments"]
+  matchConditions:
+    - name: banlieue-infrastructure
+      expression: >-
+        has(object.spec.template) && has(object.spec.template.spec)
+        && has(object.spec.template.spec.infrastructureRef)
+        && has(object.spec.template.spec.infrastructureRef.apiGroup)
+        && object.spec.template.spec.infrastructureRef.apiGroup
+           == 'infrastructure.banlieue.io'
   variables:
+    - name: wasBanlieue
+      expression: >-
+        oldObject != null && has(oldObject.spec.template)
+        && has(oldObject.spec.template.spec)
+        && has(oldObject.spec.template.spec.infrastructureRef)
+        && has(oldObject.spec.template.spec.infrastructureRef.apiGroup)
+        && oldObject.spec.template.spec.infrastructureRef.apiGroup
+           == 'infrastructure.banlieue.io'
     - name: secretName
       expression: >-
         has(object.spec.template) && has(object.spec.template.spec)
@@ -122,10 +201,23 @@ spec:
         && has(oldObject.spec.template.spec.bootstrap)
         && has(oldObject.spec.template.spec.bootstrap.dataSecretName)
         ? oldObject.spec.template.spec.bootstrap.dataSecretName : ''
+    - name: configRef
+      expression: >-
+        has(object.spec.template.spec.bootstrap)
+        && has(object.spec.template.spec.bootstrap.configRef)
+        ? object.spec.template.spec.bootstrap.configRef : null
+    - name: previousConfigRef
+      expression: >-
+        oldObject != null && has(oldObject.spec.template)
+        && has(oldObject.spec.template.spec)
+        && has(oldObject.spec.template.spec.bootstrap)
+        && has(oldObject.spec.template.spec.bootstrap.configRef)
+        ? oldObject.spec.template.spec.bootstrap.configRef : null
   validations:
     - expression: >-
         variables.secretName == ''
-        || variables.secretName == variables.previousSecretName
+        || (variables.wasBanlieue
+            && variables.secretName == variables.previousSecretName)
         || authorizer.group('').resource('secrets')
              .namespace(object.metadata.namespace)
              .name(variables.secretName)
@@ -135,6 +227,22 @@ spec:
         + variables.secretName + ' in namespace ' + object.metadata.namespace
         + ', which you are not authorized to get; every Machine created from'
         + ' this template would have it copied into its InfraMachine.'
+      reason: Forbidden
+    - expression: >-
+        variables.configRef == null
+        || (variables.wasBanlieue
+            && variables.configRef == variables.previousConfigRef)
+        || authorizer.group(variables.configRef.apiGroup)
+             .resource(variables.configRef.kind.lowerAscii() + 's')
+             .namespace(object.metadata.namespace)
+             .name(variables.configRef.name)
+             .check('get').allowed()
+      messageExpression: >-
+        'spec.template.spec.bootstrap.configRef names '
+        + variables.configRef.kind + ' ' + variables.configRef.name
+        + ' in namespace ' + object.metadata.namespace
+        + ', which you are not authorized to get; every Machine created from'
+        + ' this template would receive bootstrap data rendered from it.'
       reason: Forbidden
 ---
 apiVersion: admissionregistration.k8s.io/v1

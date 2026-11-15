@@ -13,7 +13,7 @@
 mod tests {
     use super::super::*;
     use crate::banlieue::VirtualMachine;
-    use crate::infrastructure::CloudHypervisorMachine;
+    use crate::infrastructure::{CloudHypervisorMachine, LibvirtMachine};
     use k8s_openapi::ByteString;
     use k8s_openapi::api::core::v1::Secret;
     use k8s_openapi::apimachinery::pkg::apis::meta::v1::{
@@ -212,6 +212,75 @@ mod tests {
         );
         assert!(!is_capi_intended(&m));
         assert!(owning_machine(&m).is_none());
+    }
+
+    #[test]
+    fn a_virtualmachine_owned_machine_with_the_cluster_label_is_not_intended() {
+        // banlieue copies a VirtualMachine's labels onto its machine, so a VM
+        // labelled with a cluster's name (a load balancer for it, a kustomize
+        // commonLabel) must not wait for bootstrap data no Machine sends.
+        let m = meta(
+            vec![owner(
+                &VirtualMachine::api_version(&()),
+                "VirtualMachine",
+                "lb-1",
+                true,
+            )],
+            &[(CLUSTER_NAME_LABEL, CLUSTER)],
+        );
+        assert!(!is_capi_intended(&m));
+        assert!(!holds_creation(&m, &[]));
+    }
+
+    #[test]
+    fn a_virtualmachine_reference_that_is_not_the_controller_does_not_exempt() {
+        let m = meta(
+            vec![owner(
+                &VirtualMachine::api_version(&()),
+                "VirtualMachine",
+                "vm-1",
+                false,
+            )],
+            &[(CLUSTER_NAME_LABEL, CLUSTER)],
+        );
+        assert!(is_capi_intended(&m));
+    }
+
+    #[test]
+    fn a_virtualmachine_kind_in_another_group_does_not_exempt() {
+        let m = meta(
+            vec![owner("example.com/v1", "VirtualMachine", "vm-1", true)],
+            &[(CLUSTER_NAME_LABEL, CLUSTER)],
+        );
+        assert!(is_capi_intended(&m));
+    }
+
+    #[test]
+    fn only_the_controller_machine_reference_is_the_owning_machine() {
+        // A stale, non-controller Machine reference listed first must not be
+        // taken for the Machine that adopted this one.
+        let m = meta(
+            vec![
+                owner("cluster.x-k8s.io/v1beta2", "Machine", "stale", false),
+                owner("cluster.x-k8s.io/v1beta2", "Machine", MACHINE, true),
+            ],
+            &[(CLUSTER_NAME_LABEL, CLUSTER)],
+        );
+        assert_eq!(owning_machine(&m).map(|o| o.name.as_str()), Some(MACHINE));
+    }
+
+    #[test]
+    fn a_machine_reference_that_is_not_the_controller_is_not_adoption() {
+        let m = meta(
+            vec![owner("cluster.x-k8s.io/v1beta2", "Machine", MACHINE, false)],
+            &[(CLUSTER_NAME_LABEL, CLUSTER)],
+        );
+        assert!(owning_machine(&m).is_none());
+        assert!(is_capi_intended(&m));
+        assert!(holds_creation(
+            &m,
+            &[condition(BOOTSTRAP_DATA_READY, "True")]
+        ));
     }
 
     #[test]
@@ -476,6 +545,18 @@ mod tests {
     }
 
     #[test]
+    fn an_empty_format_means_cloud_config() {
+        // CABPK renders cloud-config for an unset format, and a bootstrap
+        // provider that writes the key empty means the same.
+        let mut s = cabpk_secret();
+        s.data
+            .as_mut()
+            .expect("data")
+            .insert(BOOTSTRAP_FORMAT_KEY.to_string(), ByteString(Vec::new()));
+        assert_eq!(bootstrap_value(&s, &machine()).as_deref(), Ok(CLOUD_CONFIG));
+    }
+
+    #[test]
     fn a_secret_of_another_type_is_refused() {
         let mut s = cabpk_secret();
         s.type_ = Some("Opaque".to_string());
@@ -669,5 +750,99 @@ mod tests {
         assert!(chm.conditions().is_empty());
         chm.status = None;
         assert!(chm.conditions().is_empty());
+    }
+
+    // ----------------------------------------------------------------------
+    // creation_started / holds_guest: one predicate for both sides
+    // ----------------------------------------------------------------------
+
+    fn cloud_hypervisor(meta: ObjectMeta) -> CloudHypervisorMachine {
+        let mut m: CloudHypervisorMachine = serde_json::from_value(json!({
+            "apiVersion": "infrastructure.banlieue.io/v1alpha1",
+            "kind": "CloudHypervisorMachine",
+            "metadata": { "name": MACHINE, "namespace": "ns" },
+            "spec": {
+                "providerRef": { "name": "host-1" },
+                "cpus": { "boot": 2 },
+                "memory": { "sizeMiB": 4096 },
+                "storageClass": "default",
+                "bootSource": { "kind": "image", "image": "ubuntu.raw" },
+                "osDiskSizeGiB": 20,
+                "nics": []
+            }
+        }))
+        .expect("a valid CloudHypervisorMachine");
+        m.metadata = meta;
+        m
+    }
+
+    fn libvirt(meta: ObjectMeta) -> LibvirtMachine {
+        let mut m: LibvirtMachine = serde_json::from_value(json!({
+            "apiVersion": "infrastructure.banlieue.io/v1alpha1",
+            "kind": "LibvirtMachine",
+            "metadata": { "name": MACHINE, "namespace": "ns" },
+            "spec": {
+                "providerRef": { "name": "host-1" },
+                "pool": "default",
+                "domainName": MACHINE,
+                "bootSource": { "kind": "backingVolume", "volume": "ubuntu.qcow2" },
+                "vcpus": 2,
+                "memoryMiB": 4096,
+                "firmware": "efi",
+                "disks": [],
+                "network": []
+            }
+        }))
+        .expect("a valid LibvirtMachine");
+        m.metadata = meta;
+        m
+    }
+
+    #[test]
+    fn a_cloud_hypervisor_machine_has_started_once_it_has_a_host_uid() {
+        let mut m = cloud_hypervisor(as_adopted());
+        assert!(!m.creation_started());
+        m.status = Some(serde_json::from_value(json!({ "hostUid": 70001 })).expect("status"));
+        assert!(m.creation_started());
+    }
+
+    #[test]
+    fn a_cloud_hypervisor_machine_with_a_provider_id_has_started() {
+        // `clusterctl move` or a restore keeps spec.providerID and loses the
+        // status, host uid and BootstrapDataReady with it: the running
+        // machine must not be held again, or delivered to again.
+        let mut m = cloud_hypervisor(as_adopted());
+        m.spec.provider_id = Some("cloudhypervisor://host-1/x".to_string());
+        assert!(m.status.is_none());
+        assert!(m.creation_started());
+        assert!(!holds_guest(&m));
+    }
+
+    #[test]
+    fn a_backend_without_a_hold_has_started_once_it_has_a_provider_id() {
+        let mut m = libvirt(as_adopted());
+        assert!(!m.creation_started());
+        m.spec.provider_id = Some("libvirt://host-1/x".to_string());
+        assert!(m.creation_started());
+    }
+
+    #[test]
+    fn a_started_machine_is_never_held() {
+        let mut m = cloud_hypervisor(as_adopted());
+        assert!(holds_guest(&m));
+        m.status = Some(serde_json::from_value(json!({ "hostUid": 70001 })).expect("status"));
+        assert!(!holds_guest(&m));
+    }
+
+    #[test]
+    fn a_delivered_machine_is_not_held() {
+        let mut m = cloud_hypervisor(as_adopted());
+        m.status = Some(
+            serde_json::from_value(json!({ "conditions": [{
+                "type": BOOTSTRAP_DATA_READY, "status": "True", "reason": "R", "message": "",
+                "lastTransitionTime": "2026-11-15T00:00:00Z" }] }))
+            .expect("status"),
+        );
+        assert!(!holds_guest(&m));
     }
 }

@@ -21,7 +21,9 @@ use crate::host::HostOps;
 use crate::host_config::HostConfig;
 use crate::machine::{Observed, Phase, build_status, converge, failure_status, teardown};
 use crate::plan::{PlanError, UidLedger, plan_machine};
-use banlieue_api::capi::{bootstrap_reasons, holds_creation, retain_provider_conditions};
+use banlieue_api::capi::{
+    BOOTSTRAP_DATA_READY, bootstrap_reasons, holds_guest, retain_provider_conditions,
+};
 use banlieue_api::common::FirstBootSealing;
 use banlieue_api::infrastructure::{CloudHypervisorMachine, CloudHypervisorMachineStatus};
 use banlieue_provider_sdk::finalizer::{ensure_finalizer, remove_finalizer};
@@ -174,9 +176,10 @@ pub async fn reconcile(machine: Arc<CloudHypervisorMachine>, ctx: Arc<Context>) 
     // A Cluster API machine's guest waits for its bootstrap data (ADR-0129):
     // nothing is created on the host, not even a guest uid, until the
     // machine is owned by a Machine and the controller reports the data
-    // delivered. Checked before the uid, so a machine that already has one
-    // (a guest created before an upgrade) is never held.
-    if creation_held(&machine) {
+    // delivered. Checked before the uid, so a machine that already has one,
+    // or a providerID (a guest created before an upgrade, or a machine moved
+    // or restored without its status), is never held.
+    if holds_guest(machine.as_ref()) {
         let st = held_status(previous, generation);
         patch_status(&api, &name, &st, &field_manager).await?;
         return Ok(Action::await_change());
@@ -305,30 +308,35 @@ async fn finalize(
     Ok(Action::await_change())
 }
 
-/// Whether this machine's guest must not be created yet: Cluster API means it
-/// and it is not yet owned by a Machine with its bootstrap data delivered
-/// ([`holds_creation`]), and nothing has been created on the host for it (no
-/// guest uid recorded).
-#[must_use]
-pub fn creation_held(machine: &CloudHypervisorMachine) -> bool {
-    let status = machine.status.as_ref();
-    if status.and_then(|s| s.host_uid).is_some() {
-        return false;
-    }
-    let conditions = status.map_or(&[][..], |s| s.conditions.as_slice());
-    holds_creation(machine.meta(), conditions)
-}
+/// Held, and banlieue-controller has reported on the machine.
+const HELD_MESSAGE: &str =
+    "waiting for the Cluster API Machine's bootstrap data; see the BootstrapDataReady condition";
+
+/// Held, and banlieue-controller has never reported on the machine.
+const HELD_UNSERVED_MESSAGE: &str = "waiting for the Cluster API Machine's bootstrap data; \
+     banlieue-controller has not reported BootstrapDataReady on this machine: check that it \
+     is running, that its namespace selector serves this namespace, and that Cluster API \
+     serves v1beta2 Machines";
 
 /// The status a held machine reports: not provisioned, `Ready=False` with
-/// `WaitingForBootstrapData`.
+/// `WaitingForBootstrapData`. With no `BootstrapDataReady` at all, the
+/// controller has never looked at the machine, and the message names what
+/// to check.
 #[must_use]
 pub fn held_status(
     previous: Option<&CloudHypervisorMachineStatus>,
     generation: i64,
 ) -> CloudHypervisorMachineStatus {
+    let reported =
+        previous.is_some_and(|s| s.conditions.iter().any(|c| c.type_ == BOOTSTRAP_DATA_READY));
+    let message = if reported {
+        HELD_MESSAGE
+    } else {
+        HELD_UNSERVED_MESSAGE
+    };
     failure_status(
         previous,
-        "waiting for the Cluster API Machine's bootstrap data (BootstrapDataReady)",
+        message,
         bootstrap_reasons::WAITING_FOR_BOOTSTRAP_DATA,
         generation,
     )

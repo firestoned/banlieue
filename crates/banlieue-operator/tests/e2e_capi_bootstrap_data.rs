@@ -82,6 +82,9 @@ const MACHINE_AUTHOR: &str = "e2e-machine-author";
 /// A control plane the worker-only cases name and never create.
 const ABSENT_CONTROL_PLANE: &str = "e2e-absent-control-plane";
 
+/// Another infrastructure provider's group, outside banlieue's policies.
+const OTHER_INFRA_GROUP: &str = "infrastructure.cluster.x-k8s.io";
+
 /// Cluster API's documented opt-out of a MachineSet's preflight checks,
 /// which need a running control plane the worker-only cases do not have.
 const SKIP_PREFLIGHT_ANNOTATION: &str = "machineset.cluster.x-k8s.io/skip-preflight-checks";
@@ -344,6 +347,16 @@ fn bootstrap_condition(m: &CloudHypervisorMachine) -> Option<&Condition> {
         .find(|c| c.type_ == BOOTSTRAP_DATA_READY)
 }
 
+/// The delivery condition reports the generation that carries the data: the
+/// `spec.userData` apply bumps it, and the condition is written after.
+fn assert_condition_is_current(m: &CloudHypervisorMachine) {
+    let condition = bootstrap_condition(m).expect("BootstrapDataReady");
+    assert_eq!(
+        condition.observed_generation, m.metadata.generation,
+        "BootstrapDataReady observed a generation before the one carrying the data"
+    );
+}
+
 fn has_reason(m: &CloudHypervisorMachine, status: &str, reason: &str) -> bool {
     bootstrap_condition(m).is_some_and(|c| c.status == status && c.reason == reason)
 }
@@ -562,6 +575,7 @@ async fn kubeadm_init_data_reaches_the_cloud_hypervisor_machine() {
         Some(expected.as_str()),
         "spec.userData must be the Secret's value, byte for byte"
     );
+    assert_condition_is_current(&delivered);
     assert_nothing_provisioned(&client, NS, &delivered).await;
 }
 
@@ -569,8 +583,8 @@ async fn kubeadm_init_data_reaches_the_cloud_hypervisor_machine() {
 // 2. A MachineDeployment naming its Secret directly; template propagation
 // ---------------------------------------------------------------------------
 
-/// A `MachineDeployment` whose template names a bootstrap Secret directly.
-/// Also settles ADR-0129's open question about in-place propagation: after
+/// A `MachineDeployment` whose template names a bootstrap Secret directly,
+/// with an empty `format`. Also settles ADR-0129's open question about in-place propagation: after
 /// delivery, a template label change reaches the existing machine (so Cluster
 /// API did re-apply to it), and `spec.userData` must survive that.
 #[tokio::test]
@@ -585,11 +599,15 @@ async fn a_machinedeployment_secret_is_delivered_and_survives_propagation() {
     fresh_namespace(&client, NS).await;
     grant_controller_secret_reads(&client, NS).await;
 
-    create_secret(
-        &client,
-        &bootstrap_secret(NS, SECRET, CLUSTER, BOOTSTRAP_SECRET_TYPE, VALUE),
-    )
-    .await;
+    // `format` written empty: read as cloud-config, as CABPK reads an unset
+    // format (its `storeBootstrapData` never writes it empty itself).
+    let mut secret = bootstrap_secret(NS, SECRET, CLUSTER, BOOTSTRAP_SECRET_TYPE, VALUE);
+    secret
+        .data
+        .as_mut()
+        .expect("data")
+        .insert(BOOTSTRAP_FORMAT_KEY.to_string(), ByteString(Vec::new()));
+    create_secret(&client, &secret).await;
     create_machine_template(&client, NS, CLUSTER).await;
     create_cluster(&client, NS, CLUSTER, ABSENT_CONTROL_PLANE).await;
     let md = object(
@@ -633,6 +651,7 @@ async fn a_machinedeployment_secret_is_delivered_and_survives_propagation() {
     )
     .await;
     assert_eq!(delivered.spec.user_data.as_deref(), Some(VALUE));
+    assert_condition_is_current(&delivered);
 
     machine_deployments(&client, NS)
         .patch(
@@ -742,6 +761,8 @@ async fn a_principal_may_only_name_bootstrap_data_it_can_read() {
     const CLUSTER: &str = "cbd-adm";
     const SECRET: &str = "cbd-adm-other-machine";
     const READABLE: &str = "cbd-adm-readable";
+    const OTHER_CONFIG: &str = "cbd-adm-other-config";
+    const READABLE_CONFIG: &str = "cbd-adm-readable-config";
     let admin = client().await;
     assert_policy_installed(&admin).await;
     fresh_namespace(&admin, NS).await;
@@ -761,7 +782,10 @@ async fn a_principal_may_only_name_bootstrap_data_it_can_read() {
               "resources": ["machines", "machinesets", "machinedeployments"],
               "verbs": ["get", "list", "create", "update", "patch"] },
             { "apiGroups": [""], "resources": ["secrets"],
-              "resourceNames": [READABLE], "verbs": ["get"] }
+              "resourceNames": [READABLE], "verbs": ["get"] },
+            { "apiGroups": [BOOTSTRAP_GROUP],
+              "resources": ["kubeadmconfigs", "kubeadmconfigtemplates"],
+              "resourceNames": [READABLE_CONFIG], "verbs": ["get"] }
         ]
     }))
     .expect("a Role");
@@ -780,12 +804,13 @@ async fn a_principal_may_only_name_bootstrap_data_it_can_read() {
         .await
         .expect("binding the author's Role");
 
-    let machine_naming = |name: &str, secret: Option<&str>| {
-        let bootstrap = match secret {
-            Some(s) => json!({ "dataSecretName": s }),
-            None => json!({ "configRef": {
-                "apiGroup": BOOTSTRAP_GROUP, "kind": "KubeadmConfig", "name": name } }),
-        };
+    let secret_ref = |secret: &str| json!({ "dataSecretName": secret });
+    let config_ref = |kind: &str, config: &str| json!({ "configRef": { "apiGroup": BOOTSTRAP_GROUP, "kind": kind, "name": config } });
+    let banlieue_infra =
+        |kind: &str, name: &str| json!({ "apiGroup": INFRA_GROUP, "kind": kind, "name": name });
+    // Another infrastructure provider's InfraMachine: outside both policies.
+    let other_infra = |kind: &str, name: &str| json!({ "apiGroup": OTHER_INFRA_GROUP, "kind": kind, "name": name });
+    let machine_with = |name: &str, bootstrap: Value, infra: Value| {
         object(
             CAPI_GROUP,
             "Machine",
@@ -794,8 +819,34 @@ async fn a_principal_may_only_name_bootstrap_data_it_can_read() {
                 "spec": {
                     "clusterName": CLUSTER,
                     "bootstrap": bootstrap,
-                    "infrastructureRef": {
-                        "apiGroup": INFRA_GROUP, "kind": "CloudHypervisorMachine", "name": name
+                    "infrastructureRef": infra
+                }
+            }),
+        )
+    };
+    let machine_naming = |name: &str, bootstrap: Value| {
+        machine_with(
+            name,
+            bootstrap,
+            banlieue_infra("CloudHypervisorMachine", name),
+        )
+    };
+    let deployment_with = |name: &str, bootstrap: Value, infra: Value| {
+        object(
+            CAPI_GROUP,
+            "MachineDeployment",
+            json!({
+                "metadata": { "name": name, "namespace": NS },
+                "spec": {
+                    "clusterName": CLUSTER,
+                    "selector": { "matchLabels": { "pool": name } },
+                    "template": {
+                        "metadata": { "labels": { "pool": name } },
+                        "spec": {
+                            "clusterName": CLUSTER,
+                            "bootstrap": bootstrap,
+                            "infrastructureRef": infra
+                        }
                     }
                 }
             }),
@@ -811,7 +862,7 @@ async fn a_principal_may_only_name_bootstrap_data_it_can_read() {
     // Naming another Machine's bootstrap Secret: refused.
     let (code, message) = refusal(
         author_machines
-            .create(&dry_run, &machine_naming("m-other", Some(SECRET)))
+            .create(&dry_run, &machine_naming("m-other", secret_ref(SECRET)))
             .await,
     )
     .expect("a Machine naming a Secret its author cannot read must be refused");
@@ -819,38 +870,48 @@ async fn a_principal_may_only_name_bootstrap_data_it_can_read() {
     assert!(message.contains("not authorized to get"), "{message}");
 
     // The same through a MachineDeployment's template: refused.
-    let md = object(
-        CAPI_GROUP,
-        "MachineDeployment",
-        json!({
-            "metadata": { "name": "md-other", "namespace": NS },
-            "spec": {
-                "clusterName": CLUSTER,
-                "selector": { "matchLabels": { "pool": "x" } },
-                "template": {
-                    "metadata": { "labels": { "pool": "x" } },
-                    "spec": {
-                        "clusterName": CLUSTER,
-                        "bootstrap": { "dataSecretName": SECRET },
-                        "infrastructureRef": {
-                            "apiGroup": INFRA_GROUP,
-                            "kind": "CloudHypervisorMachineTemplate",
-                            "name": "x"
-                        }
-                    }
-                }
-            }
-        }),
+    let author_deployments = machine_deployments(&author, NS);
+    let md = deployment_with(
+        "md-other",
+        secret_ref(SECRET),
+        banlieue_infra("CloudHypervisorMachineTemplate", "x"),
     );
-    let (code, message) = refusal(machine_deployments(&author, NS).create(&dry_run, &md).await)
+    let (code, message) = refusal(author_deployments.create(&dry_run, &md).await)
         .expect("a MachineDeployment template naming an unreadable Secret must be refused");
     assert_eq!(code, HTTP_FORBIDDEN, "{message}");
 
-    // A Secret the author can read, and a Machine naming none: admitted.
+    // A bootstrap config the author cannot read names its Secret indirectly
+    // (Cluster API copies the config's dataSecretName): refused, on a Machine
+    // and through a template.
+    let (code, message) = refusal(
+        author_machines
+            .create(
+                &dry_run,
+                &machine_naming("m-other-config", config_ref("KubeadmConfig", OTHER_CONFIG)),
+            )
+            .await,
+    )
+    .expect("a Machine naming a bootstrap config its author cannot read must be refused");
+    assert_eq!(code, HTTP_FORBIDDEN, "{message}");
+    assert!(message.contains("spec.bootstrap.configRef"), "{message}");
+    let md = deployment_with(
+        "md-other-config",
+        config_ref("KubeadmConfigTemplate", OTHER_CONFIG),
+        banlieue_infra("CloudHypervisorMachineTemplate", "x"),
+    );
+    let (code, message) = refusal(author_deployments.create(&dry_run, &md).await).expect(
+        "a template naming a bootstrap config template its author cannot read must be refused",
+    );
+    assert_eq!(code, HTTP_FORBIDDEN, "{message}");
+
+    // A Secret or bootstrap config the author can read: admitted.
     assert_eq!(
         refusal(
             author_machines
-                .create(&dry_run, &machine_naming("m-readable", Some(READABLE)))
+                .create(
+                    &dry_run,
+                    &machine_naming("m-readable", secret_ref(READABLE))
+                )
                 .await
         ),
         None
@@ -858,17 +919,111 @@ async fn a_principal_may_only_name_bootstrap_data_it_can_read() {
     assert_eq!(
         refusal(
             author_machines
-                .create(&dry_run, &machine_naming("m-config", None))
+                .create(
+                    &dry_run,
+                    &machine_naming("m-config", config_ref("KubeadmConfig", READABLE_CONFIG)),
+                )
                 .await
         ),
         None
     );
+    assert_eq!(
+        refusal(
+            author_deployments
+                .create(
+                    &dry_run,
+                    &deployment_with(
+                        "md-config",
+                        config_ref("KubeadmConfigTemplate", READABLE_CONFIG),
+                        banlieue_infra("CloudHypervisorMachineTemplate", "x"),
+                    ),
+                )
+                .await
+        ),
+        None
+    );
+
+    // Another infrastructure provider's Machines are not banlieue's business:
+    // neither policy matches them, even naming an unreadable Secret.
+    assert_eq!(
+        refusal(
+            author_machines
+                .create(
+                    &dry_run,
+                    &machine_with(
+                        "m-elsewhere",
+                        secret_ref(SECRET),
+                        other_infra("DockerMachine", "m-elsewhere"),
+                    ),
+                )
+                .await
+        ),
+        None
+    );
+    assert_eq!(
+        refusal(
+            author_deployments
+                .create(
+                    &dry_run,
+                    &deployment_with(
+                        "md-elsewhere",
+                        secret_ref(SECRET),
+                        other_infra("DockerMachineTemplate", "x"),
+                    ),
+                )
+                .await
+        ),
+        None
+    );
+
+    // A reference made under another provider was never checked: an update
+    // that only switches infrastructureRef to banlieue is checked as if the
+    // reference were new. Refused for data the author cannot read, admitted
+    // for data it can (so the refusal is the policy's, not Cluster API's).
+    let switch_to_banlieue = json!({ "spec": { "template": { "spec": {
+        "infrastructureRef": banlieue_infra("CloudHypervisorMachineTemplate", "x")
+    } } } });
+    for (name, bootstrap, refused_on) in [
+        ("md-switch", secret_ref(SECRET), Some("dataSecretName")),
+        (
+            "md-switch-config",
+            config_ref("KubeadmConfigTemplate", OTHER_CONFIG),
+            Some("configRef"),
+        ),
+        ("md-switch-readable", secret_ref(READABLE), None),
+    ] {
+        create(
+            &author_deployments,
+            &deployment_with(name, bootstrap, other_infra("DockerMachineTemplate", "x")),
+        )
+        .await;
+        let switched = author_deployments
+            .patch(
+                name,
+                &PatchParams {
+                    dry_run: true,
+                    ..Default::default()
+                },
+                &Patch::Merge(switch_to_banlieue.clone()),
+            )
+            .await;
+        match refused_on {
+            Some(field) => {
+                let (code, message) = refusal(switched).unwrap_or_else(|| {
+                    panic!("{name}: switching to banlieue must check the {field} it carries")
+                });
+                assert_eq!(code, HTTP_FORBIDDEN, "{message}");
+                assert!(message.contains(field), "{message}");
+            }
+            None => assert_eq!(refusal(switched), None, "{name}"),
+        }
+    }
 
     // An update that leaves dataSecretName alone is admitted, whoever makes it:
     // the reference was authorized when it was made.
     create(
         &machines(&admin, NS),
-        &machine_naming("m-admin", Some(SECRET)),
+        &machine_naming("m-admin", secret_ref(SECRET)),
     )
     .await;
     let relabel = author_machines
@@ -930,6 +1085,7 @@ async fn an_owner_reference_alone_does_not_get_another_machines_data() {
     )
     .await;
     assert_eq!(delivered.spec.user_data.as_deref(), Some(VALUE));
+    assert_condition_is_current(&delivered);
 
     let victim = machines(&client, NS)
         .get(VICTIM)
@@ -970,5 +1126,135 @@ async fn an_owner_reference_alone_does_not_get_another_machines_data() {
             .and_then(|s| s.initialization.provisioned),
         Some(true),
         "no provider runs, yet the forged machine reports provisioned"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 6. Cluster API refuses a bootstrap config another Machine controls
+// ---------------------------------------------------------------------------
+
+/// Cluster API's reason on a Machine whose bootstrap config it could not
+/// reconcile, here because another Machine already controls that config.
+const INTERNAL_ERROR_REASON: &str = "InternalError";
+
+/// The admission policy authorizes who may name a bootstrap config; this case
+/// pins what Cluster API itself does when a config is already adopted, as an
+/// admin (whom the policy admits) names it from a second Machine: CAPI cannot
+/// make the second Machine its controller, so it never copies the config's
+/// `dataSecretName`, and nothing reaches the second Machine's InfraMachine.
+/// A config not yet adopted (owned only by a MachineSet or control plane, or
+/// by nobody) CAPI would take over; that path is the policy's to refuse, and
+/// case 4 tests it.
+#[tokio::test]
+#[ignore = "requires `make kind-e2e-capi-bootstrap`"]
+async fn an_adopted_bootstrap_config_is_not_shared_with_another_machine() {
+    const NS: &str = "banlieue-cbd-cfg";
+    const CLUSTER: &str = "cbd-cfg";
+    const VICTIM: &str = "cbd-cfg-victim";
+    const OTHER: &str = "cbd-cfg-other";
+    let client = client().await;
+    fresh_namespace(&client, NS).await;
+    grant_controller_secret_reads(&client, NS).await;
+    create_cluster(&client, NS, CLUSTER, ABSENT_CONTROL_PLANE).await;
+
+    let configs = Api::<DynamicObject>::namespaced_with(
+        client.clone(),
+        NS,
+        &resource(BOOTSTRAP_GROUP, "KubeadmConfig", "kubeadmconfigs"),
+    );
+    create(
+        &configs,
+        &object(
+            BOOTSTRAP_GROUP,
+            "KubeadmConfig",
+            json!({ "metadata": { "name": VICTIM, "namespace": NS },
+                    "spec": { "format": "cloud-config" } }),
+        ),
+    )
+    .await;
+    let machine_on = |name: &str| {
+        object(
+            CAPI_GROUP,
+            "Machine",
+            json!({
+                "metadata": { "name": name, "namespace": NS },
+                "spec": {
+                    "clusterName": CLUSTER,
+                    "bootstrap": { "configRef": {
+                        "apiGroup": BOOTSTRAP_GROUP, "kind": "KubeadmConfig", "name": VICTIM } },
+                    "infrastructureRef": {
+                        "apiGroup": INFRA_GROUP, "kind": "CloudHypervisorMachine", "name": name
+                    }
+                }
+            }),
+        )
+    };
+    create_infra_machine(&client, NS, VICTIM, CLUSTER, json!([])).await;
+    create(&machines(&client, NS), &machine_on(VICTIM)).await;
+
+    // The victim Machine adopts its config first.
+    let controller_of = |config: &DynamicObject| {
+        config
+            .metadata
+            .owner_references
+            .iter()
+            .flatten()
+            .find(|o| o.controller == Some(true))
+            .map(|o| (o.kind.clone(), o.name.clone()))
+    };
+    wait_for("the victim Machine to adopt its bootstrap config", || {
+        let configs = configs.clone();
+        async move {
+            let config = configs.get(VICTIM).await.ok()?;
+            (controller_of(&config) == Some(("Machine".to_string(), VICTIM.to_string())))
+                .then_some(())
+        }
+    })
+    .await;
+
+    create_infra_machine(&client, NS, OTHER, CLUSTER, json!([])).await;
+    create(&machines(&client, NS), &machine_on(OTHER)).await;
+
+    // Positive signal that CAPI reconciled, and refused, the second Machine.
+    let api = machines(&client, NS);
+    let refused = wait_for(
+        "Cluster API to refuse the second Machine's bootstrap config (BootstrapConfigReady=Unknown, InternalError)",
+        || {
+            let api = api.clone();
+            async move {
+                let m = api.get(OTHER).await.ok()?;
+                let refused = m
+                    .data
+                    .pointer("/status/conditions")?
+                    .as_array()?
+                    .iter()
+                    .any(|c| {
+                        c["type"] == "BootstrapConfigReady"
+                            && c["status"] == "Unknown"
+                            && c["reason"] == INTERNAL_ERROR_REASON
+                    });
+                refused.then_some(m)
+            }
+        },
+    )
+    .await;
+    assert_eq!(
+        refused.data.pointer("/spec/bootstrap/dataSecretName"),
+        None,
+        "Cluster API copied another Machine's bootstrap data to the second Machine"
+    );
+    let config = configs.get(VICTIM).await.expect("the victim's config");
+    assert_eq!(
+        controller_of(&config),
+        Some(("Machine".to_string(), VICTIM.to_string())),
+        "the second Machine took over the victim's bootstrap config"
+    );
+    let other = Api::<CloudHypervisorMachine>::namespaced(client.clone(), NS)
+        .get(OTHER)
+        .await
+        .expect("the second InfraMachine");
+    assert_eq!(
+        other.spec.user_data, None,
+        "the second InfraMachine received bootstrap data"
     );
 }

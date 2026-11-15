@@ -18,6 +18,7 @@
 //!    `VSphereCluster` (and the pool, claim and image controllers) through
 //!    the SDK's instrumented [`run_controller`].
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -60,7 +61,9 @@ use crate::{
     reconciler::virtualmachine::{error_policy, reconcile},
     reconciler::vmimage,
     reconciler::vsphere_cluster,
-    scope::{NamespaceGate, Scope, check_selector, resolve_scope},
+    scope::{
+        NamespaceGate, Scope, check_selector, resolve_scope, scope_is_implicit, system_namespaces,
+    },
 };
 
 const DEFAULT_HEALTH_PORT: u16 = 8081;
@@ -202,6 +205,14 @@ pub async fn run(cli: Cli) -> Result<()> {
             .context("validating --namespace-selector")?;
     }
     info!(scope = %scope.describe(), "serving");
+    if scope_is_implicit(cli.namespace_selector.as_deref(), cli.namespace.as_deref()) {
+        // ADR-0130 narrowed the default from every namespace to this one.
+        warn!(
+            scope = %scope.describe(),
+            "no --namespace-selector or --namespace set: serving only this controller's own \
+             namespace; set BANLIEUE_NAMESPACE_SELECTOR to serve tenant namespaces"
+        );
+    }
 
     let leader_cfg = (!cli.no_leader_elect).then(|| build_leader_config(&cli));
     let election = leader_cfg
@@ -459,54 +470,45 @@ pub async fn run(cli: Cli) -> Result<()> {
         ctx.clone(),
     );
 
-    // CAPI bootstrap data (ADR-0129): one controller per InfraMachine kind,
-    // each also watching CAPI Machines so adoption and `dataSecretName` wake
-    // the machine they name. Only when the API server serves v1beta2
-    // Machines; a cluster that installs Cluster API later restarts the
-    // controller to turn this on.
-    let bootstrap_fut: BoxFuture<'static, ()> =
-        if bootstrap_data::capi_machines_served(&client).await {
-            info!("starting CAPI bootstrap-data controllers");
-            futures::future::join4(
-                bootstrap_data_controller::<CloudHypervisorMachine>(
-                    "CloudHypervisorMachineBootstrapData",
-                    &client,
-                    &scope,
-                    &scope_rx,
-                    &metrics,
-                    &ctx,
-                ),
-                bootstrap_data_controller::<LibvirtMachine>(
-                    "LibvirtMachineBootstrapData",
-                    &client,
-                    &scope,
-                    &scope_rx,
-                    &metrics,
-                    &ctx,
-                ),
-                bootstrap_data_controller::<VSphereMachine>(
-                    "VSphereMachineBootstrapData",
-                    &client,
-                    &scope,
-                    &scope_rx,
-                    &metrics,
-                    &ctx,
-                ),
-                bootstrap_data_controller::<ProxmoxMachine>(
-                    "ProxmoxMachineBootstrapData",
-                    &client,
-                    &scope,
-                    &scope_rx,
-                    &metrics,
-                    &ctx,
-                ),
+    // CAPI bootstrap data (ADR-0129). It runs only for the kinds whose
+    // provider holds the guest until the data arrives and leaves the
+    // controller's condition alone: Cloud Hypervisor. The libvirt, vSphere and
+    // Proxmox providers still apply their whole status, conditions included,
+    // from a snapshot, so the controller would fight them over
+    // BootstrapDataReady, and their guests could boot before the data
+    // arrived; they join with milestone 2. The controller also watches CAPI
+    // Machines, so adoption and `dataSecretName` wake the machine they name.
+    // It starts once the API server serves v1beta2 Machines, whenever that
+    // is: a cluster that installs Cluster API after banlieue needs no
+    // restart, and an API error while waiting stops nothing else here.
+    let bootstrap_fut: BoxFuture<'static, ()> = {
+        let client = client.clone();
+        let scope = scope.clone();
+        let scope_rx = scope_rx.clone();
+        let metrics = metrics.clone();
+        let ctx = ctx.clone();
+        async move {
+            info!(
+                crd = bootstrap_data::MACHINE_CRD,
+                "CAPI bootstrap-data controllers start once Cluster API v1beta2 Machines are served"
+            );
+            bootstrap_data::wait_for_capi_machines(&client).await;
+            info!(
+                kind = %<CloudHypervisorMachine as kube::Resource>::kind(&()),
+                "starting CAPI bootstrap-data controllers"
+            );
+            bootstrap_data_controller::<CloudHypervisorMachine>(
+                "CloudHypervisorMachineBootstrapData",
+                &client,
+                &scope,
+                &scope_rx,
+                &metrics,
+                &ctx,
             )
-            .map(|_| ())
-            .boxed()
-        } else {
-            info!("Cluster API Machines not served: CAPI bootstrap-data controllers off");
-            futures::future::pending().boxed()
-        };
+            .await;
+        }
+        .boxed()
+    };
 
     readiness.controllers_started();
 
@@ -569,10 +571,7 @@ where
     // Same scope as every other controller here (ADR-0130): one namespace, or
     // every namespace gated per reconcile in selector mode.
     let kinds: Api<K> = scope.api(client);
-    let machines: Api<kube::api::DynamicObject> = match scope.namespace() {
-        Some(ns) => Api::namespaced_with(client.clone(), ns, &bootstrap_data::machine_resource()),
-        None => Api::all_with(client.clone(), &bootstrap_data::machine_resource()),
-    };
+    let machines = scope.api_with(client, &bootstrap_data::machine_resource());
     let controller = Controller::new(kinds, Config::default())
         .reconcile_all_on(scope_trigger(scope_rx.clone()))
         .watches_with(
@@ -618,11 +617,23 @@ async fn spawn_namespace_gate(
     let stream = watcher(namespaces, Config::default().labels(selector))
         .default_backoff()
         .reflect(writer);
+    let watched = NamespaceGate::selected(store.clone());
     tokio::spawn(async move {
+        // Bump only when the set of served names really changes. A relist
+        // (every Init event after a watch restart) and an edit to some other
+        // field of a selected namespace both leave it alone, and each bump
+        // reconciles every object in every controller.
+        let mut last = BTreeSet::new();
         stream
             .for_each(|event| {
                 match event {
-                    Ok(_) => changed.send_modify(|n| *n = n.wrapping_add(1)),
+                    Ok(_) => {
+                        let now = watched.names();
+                        if now != last {
+                            last = now;
+                            changed.send_modify(|n| *n = n.wrapping_add(1));
+                        }
+                    }
                     Err(e) => warn!(error = %e, "Namespace selector watch error; retrying"),
                 }
                 futures::future::ready(())
@@ -633,7 +644,17 @@ async fn spawn_namespace_gate(
         .wait_until_ready()
         .await
         .context("waiting for the namespace selector watch to sync")?;
-    Ok(NamespaceGate::selected(store))
+    let gate = NamespaceGate::selected(store);
+    let served = gate.names();
+    info!(namespaces = served.len(), "namespace selector synced");
+    let system = system_namespaces(&served);
+    if !system.is_empty() {
+        warn!(
+            namespaces = ?system,
+            "the namespace selector serves Kubernetes system namespaces; check it is not negated"
+        );
+    }
+    Ok(gate)
 }
 
 /// Build a [`LeaderConfig`] from parsed CLI flags, filling the holder identity

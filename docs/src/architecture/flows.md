@@ -96,7 +96,7 @@ flowchart TD
 
 ## Deliver a CAPI Machine&#x27;s bootstrap data to its InfraMachine (ADR-0129 milestone 1)
 
-PROPOSED (ADR-0129); milestone 1 IMPLEMENTED (controller, Cloud Hypervisor hold, admission policy; libvirt, vSphere and Proxmox do not hold yet). A Machine that CAPI creates over a banlieue InfraMachineTemplate gets its bootstrap provider's rendered data in spec.userData before its guest is created. Shown for Cloud Hypervisor, the first backend to hold creation; libvirt, vSphere and Proxmox follow in milestone 2 (ADR-0129 Decision 8).
+PROPOSED (ADR-0129); milestone 1 IMPLEMENTED (controller serving CloudHypervisorMachine, Cloud Hypervisor hold, admission policy; libvirt, vSphere and Proxmox are neither held nor served until milestone 2). A Machine that CAPI creates over a banlieue InfraMachineTemplate gets its bootstrap provider's rendered data in spec.userData before its guest is created. Shown for Cloud Hypervisor, the first backend to hold creation; libvirt, vSphere and Proxmox follow in milestone 2 (ADR-0129 Decision 8).
 
 ```mermaid
 flowchart TD

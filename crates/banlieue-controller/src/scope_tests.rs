@@ -8,6 +8,8 @@ mod tests {
     use kube::runtime::{reflector, watcher::Event};
 
     use super::super::*;
+    use kube::Config;
+    use kube::api::GroupVersionKind;
 
     const SELECTOR: &str = "banlieue.io/tenant=true";
     const FLAGGED: &str = "team-a";
@@ -137,5 +139,73 @@ mod tests {
     fn empty_selection_serves_nothing() {
         let (reader, _writer) = reflector::store::<Namespace>();
         assert!(!NamespaceGate::selected(reader).serves(FLAGGED));
+    }
+
+    #[test]
+    fn gate_names_are_the_selected_namespaces() {
+        let (reader, mut writer) = reflector::store::<Namespace>();
+        writer.apply_watcher_event(&Event::Apply(namespace("team-b")));
+        writer.apply_watcher_event(&Event::Apply(namespace(FLAGGED)));
+        let names = NamespaceGate::selected(reader).names();
+        assert_eq!(
+            names.into_iter().collect::<Vec<_>>(),
+            vec![FLAGGED.to_string(), "team-b".to_string()]
+        );
+        assert!(NamespaceGate::none().names().is_empty());
+    }
+
+    /// A selector such as `!foo` matches every namespace without that label,
+    /// kube-system included. Serving one is allowed, but it must be visible.
+    #[test]
+    fn system_namespaces_among_the_served_are_reported() {
+        let served: std::collections::BTreeSet<String> = ["team-a", "kube-system", "kube-public"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        assert_eq!(
+            system_namespaces(&served),
+            vec!["kube-public".to_string(), "kube-system".to_string()]
+        );
+        assert!(system_namespaces(&std::iter::once(FLAGGED.to_string()).collect()).is_empty());
+    }
+
+    /// The default narrowed from every namespace to the controller's own, so
+    /// falling back to it is worth a warning; choosing it is not.
+    #[test]
+    fn scope_is_implicit_only_when_no_flag_chose_it() {
+        assert!(scope_is_implicit(None, None));
+        assert!(scope_is_implicit(Some(" "), Some("")));
+        assert!(!scope_is_implicit(Some(SELECTOR), None));
+        assert!(!scope_is_implicit(None, Some(FLAGGED)));
+    }
+
+    /// A client that is never used to make a request: building one does not
+    /// connect, so no cluster is needed.
+    fn offline_client() -> Client {
+        let url = "http://127.0.0.1:1".parse().expect("valid URL");
+        Client::try_from(Config::new(url)).expect("client from static config")
+    }
+
+    fn machine_resource() -> ApiResource {
+        let gvk = GroupVersionKind::gvk("cluster.x-k8s.io", "v1beta2", "Machine");
+        ApiResource::from_gvk_with_plural(&gvk, "machines")
+    }
+
+    #[tokio::test]
+    async fn a_namespace_scope_gives_a_namespaced_dynamic_api() {
+        let api = Scope::Namespace(FLAGGED.into()).api_with(&offline_client(), &machine_resource());
+        assert_eq!(
+            api.resource_url(),
+            format!("/apis/cluster.x-k8s.io/v1beta2/namespaces/{FLAGGED}/machines")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_selector_scope_gives_a_cluster_wide_dynamic_api() {
+        let api = Scope::Selector(SELECTOR.into()).api_with(&offline_client(), &machine_resource());
+        assert_eq!(
+            api.resource_url(),
+            "/apis/cluster.x-k8s.io/v1beta2/machines"
+        );
     }
 }

@@ -19,7 +19,7 @@ mod tests {
     use banlieue_api::infrastructure::{CloudHypervisorMachine, LibvirtMachine};
     use k8s_openapi::ByteString;
     use k8s_openapi::api::core::v1::Secret;
-    use k8s_openapi::apimachinery::pkg::apis::meta::v1::APIResourceList;
+    use k8s_openapi::apiextensions_apiserver::pkg::apis::apiextensions::v1::CustomResourceDefinition;
     use k8s_openapi::apimachinery::pkg::apis::meta::v1::Condition;
     use kube::api::{ApiResource, DynamicObject, GroupVersionKind};
     use serde_json::json;
@@ -172,8 +172,49 @@ mod tests {
     #[test]
     fn a_machine_the_provider_has_passed_is_never_delivered_to() {
         let mut m = adopted();
+        m.status = Some(serde_json::from_value(json!({ "hostUid": 70001 })).expect("status"));
+        assert_eq!(gate(&m), Gate::Skip);
+    }
+
+    /// The gate and the provider's hold share `creation_started`: a machine
+    /// with a `providerID` but no status (after `clusterctl move` or a
+    /// restore) is past the hold, so nothing is delivered to it again.
+    #[test]
+    fn a_machine_with_a_provider_id_and_no_status_is_never_delivered_to() {
+        let mut m = adopted();
         m.spec.provider_id = Some("cloudhypervisor://host-1/u2".to_string());
         assert_eq!(gate(&m), Gate::Skip);
+    }
+
+    #[test]
+    fn a_virtualmachine_with_the_cluster_label_is_skipped() {
+        let m = chm(
+            json!([{ "apiVersion": "banlieue.io/v1alpha1", "kind": "VirtualMachine",
+                     "name": "lb", "uid": "u", "controller": true }]),
+            json!({ CLUSTER_NAME_LABEL: CLUSTER }),
+        );
+        assert_eq!(gate(&m), Gate::Skip);
+    }
+
+    // ----------------------------------------------------------------------
+    // unreadable_machine
+    // ----------------------------------------------------------------------
+
+    #[test]
+    fn a_machine_without_a_cluster_name_is_not_reported_as_missing() {
+        let o = unreadable_machine(MACHINE);
+        let Outcome::Report {
+            reason,
+            message,
+            requeue,
+        } = o
+        else {
+            panic!("expected a report");
+        };
+        assert_eq!(reason, bootstrap_reasons::WAITING_FOR_BOOTSTRAP_DATA);
+        assert!(message.contains("spec.clusterName"), "{message}");
+        assert!(!message.contains("not found"), "{message}");
+        assert_eq!(requeue, None, "a change to the Machine is a watch event");
     }
 
     // ----------------------------------------------------------------------
@@ -458,31 +499,84 @@ mod tests {
     }
 
     // ----------------------------------------------------------------------
-    // serves_machines: the discovery gate
+    // crd_serves_machines: what turns the reconciler on
     // ----------------------------------------------------------------------
 
-    fn resource_list(group_version: &str, names: &[&str]) -> APIResourceList {
+    fn machine_crd(
+        name: &str,
+        version: &str,
+        served: bool,
+        established: &str,
+    ) -> CustomResourceDefinition {
         serde_json::from_value(json!({
-            "groupVersion": group_version,
-            "resources": names.iter().map(|n| json!({
-                "name": n, "singularName": "", "namespaced": true, "kind": "X", "verbs": ["get"]
-            })).collect::<Vec<_>>()
+            "apiVersion": "apiextensions.k8s.io/v1",
+            "kind": "CustomResourceDefinition",
+            "metadata": { "name": name },
+            "spec": {
+                "group": "cluster.x-k8s.io",
+                "names": { "kind": "Machine", "plural": "machines" },
+                "scope": "Namespaced",
+                "versions": [
+                    { "name": "v1beta1", "served": true, "storage": false },
+                    { "name": version, "served": served, "storage": true }
+                ]
+            },
+            "status": { "conditions": [
+                { "type": "Established", "status": established, "reason": "R", "message": "",
+                  "lastTransitionTime": "2026-11-15T00:00:00Z" }
+            ] }
         }))
-        .expect("a valid APIResourceList")
+        .expect("a valid CustomResourceDefinition")
     }
 
     #[test]
-    fn capi_v1beta2_machines_turn_the_reconciler_on() {
-        let list = resource_list(
-            "cluster.x-k8s.io/v1beta2",
-            &["clusters", "machines", "machines/status"],
-        );
-        assert!(serves_machines(&list));
+    fn an_established_crd_serving_v1beta2_turns_the_reconciler_on() {
+        assert!(crd_serves_machines(&machine_crd(
+            MACHINE_CRD,
+            "v1beta2",
+            true,
+            "True"
+        )));
     }
 
     #[test]
-    fn a_group_without_machines_leaves_it_off() {
-        let list = resource_list("cluster.x-k8s.io/v1beta2", &["clusters", "machines/status"]);
-        assert!(!serves_machines(&list));
+    fn a_crd_not_yet_established_leaves_it_off() {
+        assert!(!crd_serves_machines(&machine_crd(
+            MACHINE_CRD,
+            "v1beta2",
+            true,
+            "False"
+        )));
+        let mut no_status = machine_crd(MACHINE_CRD, "v1beta2", true, "True");
+        no_status.status = None;
+        assert!(!crd_serves_machines(&no_status));
+    }
+
+    #[test]
+    fn a_crd_without_a_served_v1beta2_leaves_it_off() {
+        // An older Cluster API serves only v1beta1, which has no apiGroup on
+        // its references.
+        assert!(!crd_serves_machines(&machine_crd(
+            MACHINE_CRD,
+            "v1beta2",
+            false,
+            "True"
+        )));
+        assert!(!crd_serves_machines(&machine_crd(
+            MACHINE_CRD,
+            "v1alpha4",
+            true,
+            "True"
+        )));
+    }
+
+    #[test]
+    fn another_crd_never_turns_it_on() {
+        assert!(!crd_serves_machines(&machine_crd(
+            "machines.infrastructure.cluster.x-k8s.io",
+            "v1beta2",
+            true,
+            "True"
+        )));
     }
 }

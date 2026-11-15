@@ -139,8 +139,8 @@ InfraMachine contract leaves getting it into the guest to the infrastructure
 provider. banlieue does it in two halves
 ([ADR-0129](https://github.com/firestoned/banlieue/blob/main/docs/adr/0129-capi-inframachines-receive-the-machines-bootstrap-data.md)):
 
-- **`banlieue-controller` copies it.** For an InfraMachine owned by a
-  `Machine`, it waits for `dataSecretName`, reads that Secret by name in the
+- **`banlieue-controller` copies it.** For an InfraMachine a `Machine`
+  controls, it waits for `dataSecretName`, reads that Secret by name in the
   Machine's namespace, and copies its `value`, byte for byte, into the
   InfraMachine's `spec.userData`. It reports on the InfraMachine's
   `BootstrapDataReady` condition. Host providers never read the Secret.
@@ -149,7 +149,15 @@ provider. banlieue does it in two halves
   or control-plane owner from its first moment, before any `Machine` adopts
   it. The provider creates nothing for such a machine until a `Machine` owns
   it and `BootstrapDataReady` is `True`, and reports `Ready=False`,
-  `WaitingForBootstrapData`, meanwhile.
+  `WaitingForBootstrapData`, meanwhile. If the controller has never written
+  `BootstrapDataReady` on the machine, the message says to check that the
+  controller is running, that it serves the namespace, and that Cluster API
+  serves v1beta2 Machines.
+
+A machine banlieue built for a `VirtualMachine` is never held, even when the
+VM carries the `cluster.x-k8s.io/cluster-name` label (banlieue copies a VM's
+labels onto its machine), so labelling a load balancer VM with its cluster's
+name is safe.
 
 !!! warning "The Cluster's namespace must be one the controller serves"
     `banlieue-controller` acts only in the namespaces it serves
@@ -166,7 +174,12 @@ provider. banlieue does it in two halves
 | Backend | Data delivered | Guest held until delivered |
 | --- | --- | --- |
 | Cloud Hypervisor | yes | yes |
-| libvirt, vSphere, Proxmox | yes | not yet (ADR-0129 milestone 2): the guest may start before the data arrives |
+| libvirt, vSphere, Proxmox | not yet (ADR-0129 milestone 2) | not yet |
+
+Until milestone 2, a Cluster API machine on libvirt, vSphere or Proxmox gets
+no bootstrap data from banlieue: those providers do not hold the guest and
+still apply the controller's condition from their own status, so the
+controller leaves them alone rather than race them.
 
 What the controller accepts:
 
@@ -174,7 +187,7 @@ What the controller accepts:
   `cluster.x-k8s.io/cluster-name` with the Machine's `spec.clusterName`;
 - when the Machine has a `spec.bootstrap.configRef`, a Secret **controlled
   by** that bootstrap config, as kubeadm's and k0smotron's providers write it;
-- a non-empty UTF-8 `value`, with `format` absent or `cloud-config`. Every
+- a non-empty UTF-8 `value`, with `format` absent, empty or `cloud-config`. Every
   banlieue backend delivers cloud-init only, so `ignition` and `powershell`
   data is refused.
 
@@ -239,20 +252,36 @@ subjects:
 ```
 
 The controller's ClusterRole grants `get`, `list` and `watch` on
-`machines.cluster.x-k8s.io` only: a Machine carries the name of its Secret,
-not its content. The reconciler runs only when the API server serves
-`cluster.x-k8s.io/v1beta2` Machines at controller start; if you install
-Cluster API after banlieue, restart `banlieue-controller`.
+`machines.cluster.x-k8s.io`, and on the `machines.cluster.x-k8s.io`
+CustomResourceDefinition by name (it can read no other CRD); no Secret: a
+Machine carries the name of its Secret, not its content. The reconciler
+starts once that CRD is established and serves `v1beta2`, so you can install
+Cluster API before or after banlieue with no restart. The controller logs
+`starting CAPI bootstrap-data controllers` when it does; an API error before
+then is logged and retried, and stops nothing else.
 
 ### Who may name a bootstrap Secret
 
 The controller's checks tell bootstrap data from other Secrets, but not one
 Machine's bootstrap data from another's. Apply
-`deploy/admission/capi-bootstrap-data-authorization.yaml`: it requires whoever
-sets `dataSecretName` on a `Machine`, or in a `MachineSet` or
-`MachineDeployment` template, to be able to `get` that Secret. Without it, a
-principal who may create Machines could name another Machine's bootstrap
-Secret and read its join token from the InfraMachine.
+`deploy/admission/capi-bootstrap-data-authorization.yaml`. On a `Machine`, or
+in a `MachineSet` or `MachineDeployment` template, it requires whoever sets:
+
+- `dataSecretName` to be able to `get` that Secret;
+- `configRef` to be able to `get` that bootstrap config (a `KubeadmConfig`,
+  `KubeadmConfigTemplate`, `K0sWorkerConfig`, ...). Cluster API copies the
+  config's Secret name onto the Machine, and takes over a config that no
+  Machine has adopted yet.
+
+Each is checked when it is set or changed, and also when an update switches
+`infrastructureRef` to a banlieue InfraMachine: the policy never saw a
+reference made while it named another provider.
+
+Without it, a principal who may create Machines could name another Machine's
+bootstrap Secret, or its bootstrap config, and read the join token from the
+InfraMachine. The policy only applies to Machines whose `infrastructureRef`
+is a banlieue InfraMachine, so other infrastructure providers on the same
+management cluster are unaffected.
 
 Every CAPI-owned InfraMachine holds a join credential in `spec.userData`.
 Grant `get` on the InfraMachine kinds only to those you would trust with it.
@@ -315,7 +344,8 @@ reaches its `CloudHypervisorMachine` byte for byte (after first reporting
 `MachineDeployment`'s does and survives template propagation, that a Secret
 which is not bootstrap data is refused, that an InfraMachine whose owner
 reference names another `Machine` gets nothing (`MachineReferenceMismatch`),
-and what the admission policy admits.
+that Cluster API refuses a bootstrap config another Machine already
+controls, and what the admission policy admits and refuses.
 No host provider runs, and nothing may report a machine provisioned.
 
 Two things it established about Cluster API v1.14.3: a `Cluster` with no

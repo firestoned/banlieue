@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Cluster API bootstrap data → InfraMachine `spec.userData` (ADR-0129).
 //!
-//! One reconciler, generic over the four InfraMachine kinds. For a machine a
+//! One reconciler, generic over the four InfraMachine kinds, run only for the
+//! kinds whose provider holds the guest (`app.rs`: Cloud Hypervisor until
+//! milestone 2). For a machine a
 //! CAPI `Machine` owns (and that Machine, by UID and `spec.infrastructureRef`,
 //! confirms), it waits for `spec.bootstrap.dataSecretName`, reads
 //! that Secret by name in the Machine's namespace, classifies it
@@ -37,11 +39,14 @@ use banlieue_provider_sdk::reconciler::{
     REQUEUE_DEFAULT_SECS, REQUEUE_LONG_SECS, requeue_on_error,
 };
 use banlieue_provider_sdk::status::set_condition;
+use futures::StreamExt;
 use k8s_openapi::api::core::v1::Secret;
-use k8s_openapi::apimachinery::pkg::apis::meta::v1::{APIResourceList, Condition};
+use k8s_openapi::apiextensions_apiserver::pkg::apis::apiextensions::v1::CustomResourceDefinition;
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::Condition;
 use kube::api::{Api, ApiResource, DynamicObject, GroupVersionKind, Patch, PatchParams};
 use kube::runtime::controller::Action;
 use kube::runtime::reflector::ObjectRef;
+use kube::runtime::{WatchStreamExt, watcher};
 use kube::{Resource, ResourceExt};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -69,6 +74,13 @@ const INFRA_GROUP: &str = "infrastructure.banlieue.io";
 
 /// HTTP status the API server answers a read RBAC does not allow with.
 const HTTP_FORBIDDEN: u16 = 403;
+
+/// The CustomResourceDefinition that serves Cluster API `Machine`s. The
+/// controller's ClusterRole may read this one CRD and no other.
+pub const MACHINE_CRD: &str = "machines.cluster.x-k8s.io";
+
+/// The condition a CRD reports once the API server serves it.
+const CRD_ESTABLISHED: &str = "Established";
 
 const STATUS_TRUE: &str = "True";
 const STATUS_FALSE: &str = "False";
@@ -100,7 +112,7 @@ pub fn gate<K: Resource + BootstrapTarget>(machine: &K) -> Gate {
     if is_bootstrap_data_ready(machine.conditions()) {
         return Gate::Skip;
     }
-    if machine.provider_id().is_some() {
+    if machine.creation_started() {
         return Gate::Skip;
     }
     match owning_machine(meta) {
@@ -188,6 +200,18 @@ pub fn unconfirmed_adoption<K: Resource<DynamicType = ()>>(
         ),
         requeue: None,
     })
+}
+
+/// The report for an owning Machine that exists but has no
+/// `spec.clusterName`, which v1beta2 requires: not "not found", which would
+/// send whoever reads it looking for the wrong problem. No retry: fixing the
+/// Machine is a watch event.
+#[must_use]
+pub fn unreadable_machine(machine_name: &str) -> Outcome {
+    waiting(
+        format!("the owning Machine {machine_name} has no spec.clusterName"),
+        None,
+    )
 }
 
 /// Decide from the owning Machine (`None`: it does not exist) and, once it
@@ -315,25 +339,58 @@ pub fn machine_resource() -> ApiResource {
     ApiResource::from_gvk_with_plural(&gvk, MACHINE_PLURAL)
 }
 
-/// Whether an API group-version's resource list serves `machines` itself
-/// (not only a subresource).
+/// Whether this CRD makes the API server serve `Machine`s at
+/// [`MACHINE_VERSION`]: it is [`MACHINE_CRD`], `Established`, and serves that
+/// version.
 #[must_use]
-pub fn serves_machines(list: &APIResourceList) -> bool {
-    list.resources.iter().any(|r| r.name == MACHINE_PLURAL)
+pub fn crd_serves_machines(crd: &CustomResourceDefinition) -> bool {
+    if crd.metadata.name.as_deref() != Some(MACHINE_CRD) {
+        return false;
+    }
+    let established = crd.status.as_ref().is_some_and(|s| {
+        s.conditions
+            .iter()
+            .flatten()
+            .any(|c| c.type_ == CRD_ESTABLISHED && c.status == STATUS_TRUE)
+    });
+    established
+        && crd
+            .spec
+            .versions
+            .iter()
+            .any(|v| v.name == MACHINE_VERSION && v.served)
 }
 
-/// Whether the API server serves `machines.cluster.x-k8s.io/v1beta2`: the
-/// reconciler runs only then (ADR-0129 Decision 2). Any discovery failure
-/// (Cluster API not installed, or only an older version) counts as no.
-pub async fn capi_machines_served(client: &kube::Client) -> bool {
-    let group_version = format!("{CAPI_GROUP}/{MACHINE_VERSION}");
-    match client.list_api_group_resources(&group_version).await {
-        Ok(list) => serves_machines(&list),
-        Err(e) => {
-            info!(%group_version, error = %e, "Cluster API Machines not served");
-            false
+/// Return once the API server serves `machines.cluster.x-k8s.io` at
+/// [`MACHINE_VERSION`] (ADR-0129 Decision 2): at once when it already does,
+/// otherwise when Cluster API is installed, however long after the
+/// controller started.
+///
+/// A watch on the one CRD ([`MACHINE_CRD`]), not discovery at startup, so a
+/// later `clusterctl init` turns the reconciler on without a restart, and an
+/// API error (a 503 while the API server restarts, a missing grant) is
+/// logged and retried with backoff instead of stopping every other
+/// controller in the process.
+pub async fn wait_for_capi_machines(client: &kube::Client) {
+    let crds: Api<CustomResourceDefinition> = Api::all(client.clone());
+    let config = watcher::Config::default().fields(&format!("metadata.name={MACHINE_CRD}"));
+    let mut events = std::pin::pin!(watcher(crds, config).default_backoff().applied_objects());
+    while let Some(event) = events.next().await {
+        match event {
+            Ok(crd) if crd_serves_machines(&crd) => return,
+            Ok(_) => {}
+            Err(e) => {
+                warn!(crd = MACHINE_CRD, error = %e, "watching the Cluster API Machine CRD failed; retrying");
+            }
         }
     }
+    // A backed-off watcher stream does not end; if it ever does, the
+    // reconciler stays off rather than starting against an unserved API.
+    warn!(
+        crd = MACHINE_CRD,
+        "the Cluster API Machine CRD watch ended; CAPI bootstrap-data controllers stay off"
+    );
+    futures::future::pending::<()>().await;
 }
 
 /// Reconcile one InfraMachine of kind `K`.
@@ -358,7 +415,6 @@ where
     if let Some(action) = ctx.skip_unserved(&ns, false) {
         return Ok(action);
     }
-    let name = obj.name_any();
     let api: Api<K> = Api::namespaced(ctx.client.clone(), &ns);
 
     let Gate::ReadMachine {
@@ -366,59 +422,68 @@ where
         uid: owner_uid,
     } = gate
     else {
-        let message = "not yet adopted by a Cluster API Machine";
-        report(
-            &api,
-            obj.as_ref(),
-            bootstrap_reasons::WAITING_FOR_BOOTSTRAP_DATA,
-            message,
-        )
-        .await?;
-        return Ok(Action::await_change());
+        let not_adopted = waiting("not yet adopted by a Cluster API Machine".to_string(), None);
+        return act(&api, obj.as_ref(), not_adopted).await;
     };
 
     let machines: Api<DynamicObject> =
         Api::namespaced_with(ctx.client.clone(), &ns, &machine_resource());
     let found = machines.get_opt(&machine_name).await?;
     let machine_uid = found.as_ref().and_then(|m| m.metadata.uid.clone());
-    let machine = found.and_then(|m| MachineBootstrap::from_machine(&m.data));
+    let machine = match found {
+        None => None,
+        Some(m) => match MachineBootstrap::from_machine(&m.data) {
+            Some(parsed) => Some(parsed),
+            None => return act(&api, obj.as_ref(), unreadable_machine(&machine_name)).await,
+        },
+    };
     // Before any Secret is read: the owner reference must name this very
     // Machine, and the Machine must name this InfraMachine back.
     let mismatch = machine
         .as_ref()
         .and_then(|m| unconfirmed_adoption(obj.as_ref(), &owner_uid, machine_uid.as_deref(), m));
-    if let Some(Outcome::Report {
-        reason, message, ..
-    }) = mismatch
-    {
-        warn!(kind = K::kind(&()).as_ref(), machine = %name, namespace = %ns, owner = %machine_name, "owner Machine does not confirm adoption; bootstrap Secret not read");
-        report(&api, obj.as_ref(), reason, &message).await?;
-        return Ok(Action::await_change());
+    if let Some(mismatch) = mismatch {
+        warn!(kind = K::kind(&()).as_ref(), machine = %obj.name_any(), namespace = %ns, owner = %machine_name, "owner Machine does not confirm adoption; bootstrap Secret not read");
+        return act(&api, obj.as_ref(), mismatch).await;
     }
     let lookup = match machine.as_ref().and_then(|m| m.data_secret_name.as_deref()) {
         None => None,
         Some(secret_name) => Some(lookup_secret(&ctx, &ns, secret_name).await?),
     };
+    act(&api, obj.as_ref(), outcome(machine.as_ref(), lookup)).await
+}
 
-    match outcome(machine.as_ref(), lookup) {
+/// Carry out an [`Outcome`] on `machine`: deliver and report `True`, or
+/// report `False` and come back when it asks.
+async fn act<K>(api: &Api<K>, machine: &K, outcome: Outcome) -> Result<Action>
+where
+    K: Resource<DynamicType = ()> + BootstrapTarget + Clone + Debug + DeserializeOwned + Serialize,
+{
+    let name = machine.name_any();
+    match outcome {
         Outcome::Deliver { value } => {
-            if obj.user_data() != Some(value.as_str()) {
+            // The condition is written against the object the patch returned,
+            // so its observedGeneration is the generation that carries the
+            // data, not the one before it.
+            let delivered = if machine.user_data() == Some(value.as_str()) {
+                machine.clone()
+            } else {
                 api.patch(
                     &name,
                     &PatchParams::apply(FIELD_MANAGER).force(),
                     &Patch::Apply(&user_data_patch::<K>(&value)),
                 )
-                .await?;
-            }
+                .await?
+            };
             report_status(
-                &api,
-                obj.as_ref(),
+                api,
+                &delivered,
                 STATUS_TRUE,
                 bootstrap_reasons::BOOTSTRAP_DATA_DELIVERED,
                 "spec.userData holds the Machine's bootstrap data",
             )
             .await?;
-            info!(kind = K::kind(&()).as_ref(), machine = %name, namespace = %ns, "bootstrap data delivered");
+            info!(kind = K::kind(&()).as_ref(), machine = %name, namespace = %machine.namespace().unwrap_or_default(), "bootstrap data delivered");
             Ok(Action::await_change())
         }
         Outcome::Report {
@@ -426,7 +491,7 @@ where
             message,
             requeue,
         } => {
-            report(&api, obj.as_ref(), reason, &message).await?;
+            report_status(api, machine, STATUS_FALSE, reason, &message).await?;
             Ok(requeue.map_or_else(Action::await_change, Action::requeue))
         }
     }
@@ -440,13 +505,6 @@ async fn lookup_secret(ctx: &Context, ns: &str, name: &str) -> Result<SecretLook
         Err(kube::Error::Api(e)) if e.code == HTTP_FORBIDDEN => Ok(SecretLookup::Forbidden),
         Err(e) => Err(e.into()),
     }
-}
-
-async fn report<K>(api: &Api<K>, machine: &K, reason: &str, message: &str) -> Result<()>
-where
-    K: Resource<DynamicType = ()> + BootstrapTarget + Clone + Debug + DeserializeOwned,
-{
-    report_status(api, machine, STATUS_FALSE, reason, message).await
 }
 
 async fn report_status<K>(
