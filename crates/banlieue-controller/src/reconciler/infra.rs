@@ -139,6 +139,24 @@ pub enum InfraBuildError {
     InvalidSpec(String),
 }
 
+/// The name of the infrastructure machine `vm` owns (ADR-0127 Decision 4): the one its
+/// `status.infrastructureRef` names, else the VM's own name.
+///
+/// A machine is created under the VM's name, but a moved VM owns its move's destination,
+/// `<vm>-<move id>`, and every path that reads, applies, recreates or finalizes a VM's machine
+/// goes through here, so none of them finds nothing under the VM's name and makes a second one.
+/// A VM whose status names no machine (placed before ADR-0127, or not placed yet) owns the one
+/// under its own name.
+#[must_use]
+pub fn machine_name(vm: &VirtualMachine) -> String {
+    vm.status
+        .as_ref()
+        .and_then(|s| s.infrastructure_ref.as_ref())
+        .map(|r| r.name.clone())
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| vm.name_any())
+}
+
 /// Build a [`VSphereMachine`] from the scheduler [`Decision`], the original
 /// VM, its class, image, and the chosen [`Provider`]. Owner-reference is set
 /// to `vm` so the VSphereMachine is garbage-collected when the parent VM is
@@ -297,7 +315,7 @@ pub fn build_vsphere_machine(
             // Same name + namespace as the parent VM. This is the convention
             // for 1:1 owned infra CRs — keeps the relationship discoverable
             // without indexing.
-            name: Some(vm.name_any()),
+            name: Some(machine_name(vm)),
             namespace: vm.namespace(),
             owner_references: Some(vec![owner_reference_for(vm)]),
             labels: Some(propagate_labels(vm)),
@@ -573,7 +591,7 @@ pub fn build_libvirt_machine(
 
     Ok(LibvirtMachine {
         metadata: ObjectMeta {
-            name: Some(vm.name_any()),
+            name: Some(machine_name(vm)),
             namespace: vm.namespace(),
             owner_references: Some(vec![owner_reference_for(vm)]),
             labels: Some(propagate_labels(vm)),
@@ -744,7 +762,7 @@ pub fn build_cloud_hypervisor_machine(
 
     Ok(CloudHypervisorMachine {
         metadata: ObjectMeta {
-            name: Some(vm.name_any()),
+            name: Some(machine_name(vm)),
             namespace: vm.namespace(),
             owner_references: Some(vec![owner_reference_for(vm)]),
             labels: Some(propagate_labels(vm)),
@@ -951,7 +969,7 @@ pub fn build_proxmox_machine(
 
     Ok(ProxmoxMachine {
         metadata: ObjectMeta {
-            name: Some(vm.name_any()),
+            name: Some(machine_name(vm)),
             namespace: vm.namespace(),
             owner_references: Some(vec![owner_reference_for(vm)]),
             labels: Some(propagate_labels(vm)),

@@ -256,9 +256,11 @@ would undo a move.
 - [ ] Examples for `VirtualMachineMove` once a controller acts on it.
 - [ ] Provider: derive MAC, taps, machine dir and EK subject from
       `derived_identity()`.
-- [ ] Controller: the VM reconciler addresses its machine by
+- [x] Controller: the VM reconciler addresses its machine by
       `status.infrastructureRef.name` (create, recreate, status mirror,
-      finalizer), falling back to the VM's name only while it is unset.
+      finalizer), falling back to the VM's name only while it is unset
+      (`reconciler/infra.rs`, `machine_name`; every builder names that machine,
+      and the status write never resets the reference to the VM's name).
 - [ ] Controller: admission checks (zone label, `move` feature, VMM and
       CPU model, capacity, placement, policy, no vTPM), orchestration,
       `Migrating` and `Ready=False/Moving`, commit and abort.

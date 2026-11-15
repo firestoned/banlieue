@@ -163,6 +163,36 @@ per-tenant admission policy and quota ADR; a live check against a cluster.
 Renumbered from 0129 to 0130 on rebase: main had meanwhile taken 0129 for
 the CAPI bootstrap-data ADR.
 
+## [2026-11-14 19:00] - A VM finds its machine through status.infrastructureRef (ADR-0127, Stage 1)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `crates/banlieue-controller/src/reconciler/infra.rs`: `machine_name(vm)`,
+  the name of the machine a VM owns: `status.infrastructureRef.name`, else
+  the VM's name. Every builder (vSphere, libvirt, Cloud Hypervisor, Proxmox)
+  names its machine with it.
+- `crates/banlieue-controller/src/reconciler/virtualmachine.rs`: the recreate
+  delete, the drift-but-Never status mirror, the finalizer, the
+  duplicate-address block and its power patch all address the machine by
+  `machine_name`; the status write sets `infrastructureRef.name` from it,
+  never back to the VM's name.
+- Roadmap 14 (the Stage 1 controller item); threat model (one TB-1 row: a
+  forged reference, bounded by status RBAC and the API server's one
+  controller owner reference rule; stamp bumped).
+
+### Why
+A moved VM owns its move's destination machine, `<vm>-<move id>` (ADR-0127
+Decision 4). Addressed by the VM's name, the next pass would find nothing,
+create a new machine, and recreate the guest a move exists to keep.
+
+### Impact
+- [ ] Breaking change: no (every existing VM's reference already names a
+      machine under its own name, and one with none falls back to it)
+- [ ] Requires cluster rollout: with the next controller release
+- [x] Tests: `a_vms_machine_is_the_one_its_status_names`,
+      `every_builder_names_the_machine_the_vm_owns`; red first
+
 ## [2026-11-14 18:30] - ADR-0129 proposed: CAPI InfraMachines receive the Machine's bootstrap data
 
 **Author:** Daniel Guns

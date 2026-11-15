@@ -62,7 +62,7 @@ use super::address_conflict::{
 };
 use super::infra::{
     InfraKind, build_cloud_hypervisor_machine, build_libvirt_machine, build_proxmox_machine,
-    build_vsphere_machine,
+    build_vsphere_machine, machine_name,
 };
 use super::migration::{MigrationAction, PlacementDriftReason, evaluate};
 use super::scheduler::{ScheduleError, reasons, schedule};
@@ -407,7 +407,7 @@ pub async fn reconcile(vm: Arc<VirtualMachine>, ctx: Arc<Context>) -> Result<Act
                 reason = reason.reason(),
                 "placement drift; recreating infra CR for new placement"
             );
-            delete_existing_infra(&infra_apis, infra_kind, &vm.name_any()).await?;
+            delete_existing_infra(&infra_apis, infra_kind, &machine_name(&vm)).await?;
             patch_placement_invalid(&vm_api, &vm, &name, generation, reason).await?;
             return Ok(requeue_default());
         }
@@ -555,12 +555,13 @@ pub async fn reconcile(vm: Arc<VirtualMachine>, ctx: Arc<Context>) -> Result<Act
     // The infra CR was just applied with these addresses: from now on they
     // are held (ADR-0083). Written only here, carried forward everywhere else.
     next_status.held_addresses = held_addresses(&vm, &class);
-    // Both infra kinds live in the same API group and are named after their
-    // parent VM, so only `kind` actually varies here.
+    // Every infra kind lives in the same API group, so only `kind` varies. The
+    // name is the machine this VM owns, never reset to the VM's own: a moved
+    // VM keeps pointing at its move's destination (ADR-0127 Decision 4).
     next_status.infrastructure_ref = Some(TypedObjectReference {
         api_group: VSphereMachine::group(&()).to_string(),
         kind: infra_kind.kind_name().to_string(),
-        name: name.clone(),
+        name: machine_name(&vm),
         namespace: Some(namespace.clone()),
     });
 
@@ -580,25 +581,26 @@ async fn mirror_only_path(
     vm: &VirtualMachine,
     name: &str,
 ) -> Result<Action> {
+    let machine = machine_name(vm);
     let infra: Option<Box<dyn InfraMachineRead + Send>> = match infra_kind {
         InfraKind::VSphere => apis
             .vsphere
-            .get_opt(name)
+            .get_opt(&machine)
             .await?
             .map(|m| Box::new(m) as Box<dyn InfraMachineRead + Send>),
         InfraKind::Libvirt => apis
             .libvirt
-            .get_opt(name)
+            .get_opt(&machine)
             .await?
             .map(|m| Box::new(m) as Box<dyn InfraMachineRead + Send>),
         InfraKind::CloudHypervisor => apis
             .cloud_hypervisor
-            .get_opt(name)
+            .get_opt(&machine)
             .await?
             .map(|m| Box::new(m) as Box<dyn InfraMachineRead + Send>),
         InfraKind::Proxmox => apis
             .proxmox
-            .get_opt(name)
+            .get_opt(&machine)
             .await?
             .map(|m| Box::new(m) as Box<dyn InfraMachineRead + Send>),
     };
@@ -775,7 +777,7 @@ async fn finalize_vm(
     vm: &VirtualMachine,
 ) -> Result<Action> {
     info!("finalizing VirtualMachine");
-    let owned_name = vm.name_any();
+    let owned_name = machine_name(vm);
 
     let states = [
         (
@@ -1066,7 +1068,8 @@ async fn block_on_duplicate_address(
     generation: i64,
     dup: &DuplicateAddress,
 ) -> Result<()> {
-    let existing = existing_infra(apis, name).await?;
+    let machine = machine_name(vm);
+    let existing = existing_infra(apis, &machine).await?;
     let (mut status, message) = match &existing {
         None => (vm.status.clone().unwrap_or_default(), dup.message()),
         Some((kind, infra)) => {
@@ -1075,7 +1078,7 @@ async fn block_on_duplicate_address(
                     power = ?vm.spec.desired_power_state,
                     "applying desiredPowerState to the infra CR of a blocked VM"
                 );
-                patch_infra_power(apis, *kind, name, &vm.spec.desired_power_state).await?;
+                patch_infra_power(apis, *kind, &machine, &vm.spec.desired_power_state).await?;
             }
             (
                 mirror_onto_vm(vm, infra.as_ref()),
