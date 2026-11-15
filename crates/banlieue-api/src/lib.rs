@@ -28,6 +28,7 @@
 //! [`VSphereMachineTemplate`]: infrastructure::VSphereMachineTemplate
 
 pub mod banlieue;
+pub mod capi;
 pub mod common;
 pub mod infrastructure;
 

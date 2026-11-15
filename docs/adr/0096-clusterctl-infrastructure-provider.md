@@ -6,6 +6,8 @@ SPDX-License-Identifier: Apache-2.0
 
 - **Status:** Accepted
 - **Date:** 2026-10-08
+- **Amended:** 2026-11-14 (Decision 4: the aggregate role is also aggregated
+  into KubeadmControlPlane's manager)
 - **Deciders:** Erick Bourgeois
 - **Related:** Roadmap 12 §4.2 and §4.5; open decision O-004 in
   `.github/community/01-decisions.md` (closed by this ADR);
@@ -105,3 +107,31 @@ label (ADR-0005). Three things stop a CAPI user from actually using them:
 - The e2e pins a CAPI release, because v1beta2 behaviour is still settling
   upstream. Bumping it is a deliberate change.
 - O-004 ("CAPI clusterctl integration shape") is closed.
+
+## Amendment 2026-11-14: KubeadmControlPlane's manager gets the same role
+
+Found by ADR-0129's e2e (`e2e_capi_bootstrap_data.rs`), the first test to put
+a `KubeadmControlPlane` over a banlieue `InfraMachineTemplate`: KCP could not
+create its first machine, because it could not even list
+`cloudhypervisormachinetemplates`. KCP clones control-plane machines from the
+template itself, under its own ServiceAccount, and its manager role
+(`capi-kubeadm-control-plane-aggregated-manager-role`) aggregates on
+`kubeadm.controlplane.cluster.x-k8s.io/aggregate-to-manager`, not on CAPI
+core's label. Decision 4 put only the core label on
+`banlieue-capi-infrastructure`, so as shipped no KubeadmControlPlane could use
+a banlieue machine kind. `kind-e2e-capi` never exercised a control plane, so it
+could not see this.
+
+**Decision 4 is amended:** `banlieue-capi-infrastructure` carries both labels,
+so KCP's manager gets exactly the rules CAPI core's does: the contract verbs on
+`infrastructure.banlieue.io` machine, template and cluster kinds, and nothing
+else. A unit test pins the two aggregation labels
+(`capi_aggregate_role_aggregates_into_core_and_kubeadm_control_plane_only`).
+
+Not covered, and not fixable from banlieue's side: a control-plane provider
+whose manager role has no aggregation rule. k0smotron's `K0sControlPlane`
+grants itself only `infrastructure.cluster.x-k8s.io`, so it cannot create
+banlieue machines. Its hosted `K0smotronControlPlane` creates none, and its
+workers come from MachineDeployments, which CAPI core reconciles; that
+combination works.
+

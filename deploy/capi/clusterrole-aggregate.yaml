@@ -20,6 +20,14 @@
 # (`capi_aggregate_role_covers_exactly_the_capi_contract_kinds`) derives the
 # expected set from the generated CRDs, so a new infrastructure kind that is
 # not added here fails the build.
+#
+# Aggregated into TWO managers (ADR-0096, amended 2026-11-14): CAPI core's, and
+# KubeadmControlPlane's, which creates its machines from an
+# InfraMachineTemplate itself under its own ServiceAccount and aggregates on
+# its own label. Without the second label KCP cannot even list a banlieue
+# template. Both get exactly these rules. Other control-plane providers that
+# create machines must grant themselves access to infrastructure.banlieue.io;
+# k0smotron's K0sControlPlane, for one, grants only infrastructure.cluster.x-k8s.io.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -28,6 +36,7 @@ metadata:
     app.kubernetes.io/name: banlieue
     app.kubernetes.io/component: capi-infrastructure
     cluster.x-k8s.io/aggregate-to-manager: "true"
+    kubeadm.controlplane.cluster.x-k8s.io/aggregate-to-manager: "true"
 rules:
   - apiGroups: ["infrastructure.banlieue.io"]
     resources:

@@ -339,3 +339,47 @@ fn isolated_segment_example_matches_the_types() {
         assert!(seen.iter().any(|k| k == kind), "example lacks a {kind}");
     }
 }
+
+/// `26-capi-machinedeployment-cloud-hypervisor.yaml` (ADR-0129): the
+/// CloudHypervisorMachineTemplate parses with no dropped key, carries no
+/// `userData` (on a CAPI-owned machine the bootstrap data replaces it), and
+/// sits in the install namespace with the MachineDeployment, since a Cloud
+/// Hypervisor host serves only its Provider's namespace. The MachineDeployment
+/// gets its data from a bootstrap config, never a hand-named Secret.
+#[test]
+fn capi_cloud_hypervisor_example_matches_the_types() {
+    use banlieue_api::infrastructure::CloudHypervisorMachineTemplate;
+
+    const NAMESPACE: &str = "banlieue-system";
+    let path = format!("{EXAMPLES}/26-capi-machinedeployment-cloud-hypervisor.yaml");
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
+    let mut seen = Vec::new();
+    for text in yaml_documents(&text) {
+        let doc: serde_json::Value = serde_saphyr::from_str(&text).expect("valid YAML");
+        let kind = doc["kind"].as_str().expect("kind").to_string();
+        assert_eq!(doc["metadata"]["namespace"], NAMESPACE, "{kind}");
+        match kind.as_str() {
+            "CloudHypervisorMachineTemplate" => {
+                let t: CloudHypervisorMachineTemplate =
+                    serde_json::from_value(doc.clone()).expect("CloudHypervisorMachineTemplate");
+                assert_no_dropped_keys(&doc["spec"], &t.spec);
+                assert_eq!(t.spec.template.spec.user_data, None);
+            }
+            "MachineDeployment" => {
+                let bootstrap = &doc["spec"]["template"]["spec"]["bootstrap"];
+                assert!(bootstrap.get("configRef").is_some(), "{bootstrap}");
+                assert!(bootstrap.get("dataSecretName").is_none(), "{bootstrap}");
+            }
+            _ => {}
+        }
+        seen.push(kind);
+    }
+    for kind in [
+        "Cluster",
+        "MachineDeployment",
+        "CloudHypervisorMachineTemplate",
+        "KubeadmConfigTemplate",
+    ] {
+        assert!(seen.iter().any(|k| k == kind), "example lacks a {kind}");
+    }
+}

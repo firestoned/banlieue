@@ -164,6 +164,7 @@ help: ## Show this help
         clusterctl-components clusterctl-install clusterctl-local-repo \
         release-manifests install-yaml crds-yaml admission-policies-yaml network-policies-yaml \
         kind-capi-create kind-capi-delete kind-capi-init kind-e2e-capi kind-e2e-capi-logs \
+        kind-e2e-capi-bootstrap kind-e2e-capi-bootstrap-run \
         claim-live-test claim-policy-live-test move-fields-policy-live-test address-live-test pool-claim-e2e vsphere-pool-claim-e2e ch-e2e ch-vtpm-e2e ch-deferred-e2e ch-restart-e2e ch-host-install-test ch-polkit-test provider-bench ch-pool-timings \
         dev-oidc-up dev-oidc-attach dev-oidc-github-creds dev-oidc-login \
         dev-oidc-try-claim dev-oidc-status dev-oidc-down \
@@ -1903,6 +1904,49 @@ kind-e2e-capi: ## e2e: CAPI core drives banlieue infrastructure objects (fresh c
 	if [ $$rc -eq 0 ]; then echo "✓ e2e_capi_contract passed"; fi; \
 	exit $$rc
 
+# ----- CAPI bootstrap-data e2e (ADR-0129) -------------------------------------
+#
+# Real bootstrap data, nothing faked: kubeadm's control-plane and bootstrap
+# providers render it, Cluster API adopts the machines and publishes
+# dataSecretName, and banlieue-controller copies it into the InfraMachine.
+# The controller runs as a LOCAL binary under its own ServiceAccount's
+# identity (scripts/kind-capi-controller.sh), so it reads Secrets only where
+# a Role allows, as in production. No host provider runs. Same cluster
+# requirements as kind-e2e-capi above.
+
+CAPI_BOOTSTRAP_POLICY = deploy/admission/capi-bootstrap-data-authorization.yaml
+BANLIEUE_BIN         ?= $(or $(CARGO_TARGET_DIR),$(CURDIR)/target)/debug/banlieue
+
+kind-e2e-capi-bootstrap: ## e2e: CAPI bootstrap data reaches banlieue InfraMachines (ADR-0129; fresh cluster, always torn down)
+	@# CAPI_E2E_KEEP=1 keeps the cluster for debugging.
+	@if $(MAKE) --no-print-directory kind-capi-create && \
+	   $(MAKE) --no-print-directory kind-e2e-capi-bootstrap-run; then \
+	  rc=0; \
+	else \
+	  rc=$$?; \
+	  echo "::error::CAPI bootstrap-data e2e failed, dumping cluster state"; \
+	  $(MAKE) --no-print-directory kind-e2e-capi-logs || true; \
+	fi; \
+	if [ -z "$(CAPI_E2E_KEEP)" ]; then $(MAKE) --no-print-directory kind-capi-delete || true; fi; \
+	if [ $$rc -eq 0 ]; then echo "✓ e2e_capi_bootstrap_data passed"; fi; \
+	exit $$rc
+
+kind-e2e-capi-bootstrap-run: ## Run the bootstrap-data e2e on an existing CAPI kind cluster ($(CAPI_KIND_KUBECONFIG))
+	@$(MAKE) --no-print-directory kind-capi-init
+	@$(CAPI_KUBECTL) apply -f $(CAPI_BOOTSTRAP_POLICY)
+	@cargo build -q -p banlieue
+	@CAPI_KIND_KUBECONFIG=$(CAPI_KIND_KUBECONFIG) BANLIEUE_BIN=$(BANLIEUE_BIN) \
+	  scripts/kind-capi-controller.sh start
+	@if KUBECONFIG=$(CAPI_KIND_KUBECONFIG) \
+	   cargo test -p banlieue-operator --test e2e_capi_bootstrap_data -- \
+	     --ignored --nocapture --test-threads=1; then \
+	  CAPI_KIND_KUBECONFIG=$(CAPI_KIND_KUBECONFIG) scripts/kind-capi-controller.sh stop; \
+	else \
+	  rc=$$?; \
+	  CAPI_KIND_KUBECONFIG=$(CAPI_KIND_KUBECONFIG) LOG_TAIL=200 scripts/kind-capi-controller.sh stop; \
+	  exit $$rc; \
+	fi
+
 kind-e2e-capi-logs: ## Dump CAPI + banlieue state from the CAPI e2e cluster
 	@echo "── providers ───────────────────────────────────────────────────────"
 	-@$(CAPI_KUBECTL) get providers.clusterctl.cluster.x-k8s.io -A
@@ -1911,6 +1955,8 @@ kind-e2e-capi-logs: ## Dump CAPI + banlieue state from the CAPI e2e cluster
 	@echo "── e2e objects ─────────────────────────────────────────────────────"
 	-@$(CAPI_KUBECTL) -n banlieue-capi-e2e get clusters.cluster.x-k8s.io,machines.cluster.x-k8s.io,vsphereclusters,vspheremachines -o yaml
 	-@$(CAPI_KUBECTL) get clusterrole banlieue-capi-infrastructure -o yaml
+	@echo "── CAPI-owned banlieue machines (all namespaces) ─────────────────────"
+	-@$(CAPI_KUBECTL) get machines.cluster.x-k8s.io,cloudhypervisormachines -A -o yaml
 
 kind-up: kind-create kind-deploy-crds ## One-shot: create cluster + apply CRDs (controller still runs locally)
 	@echo ""

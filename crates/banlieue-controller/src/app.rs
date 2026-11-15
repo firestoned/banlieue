@@ -37,11 +37,13 @@ use banlieue_provider_sdk::leader::{
     DEFAULT_LEASE_DURATION_SECS, DEFAULT_RENEW_PERIOD_SECS, DEFAULT_RETRY_PERIOD_SECS,
     LeaderConfig, acquire_or_wait, renew_forever,
 };
+use banlieue_provider_sdk::metrics::Metrics;
 use banlieue_provider_sdk::runner::run_controller;
 use clap::Args;
-use futures::StreamExt;
+use futures::future::BoxFuture;
+use futures::{FutureExt as _, StreamExt};
 use kube::{
-    Api, ResourceExt,
+    Api, Client, ResourceExt,
     runtime::{
         Controller, WatchStreamExt, reflector, reflector::ObjectRef, watcher, watcher::Config,
     },
@@ -51,6 +53,7 @@ use tracing::{error, info, warn};
 use crate::{
     context::Context,
     metrics::{FailureDomainCollector, HeartbeatCollector, VirtualMachineCollector},
+    reconciler::bootstrap_data,
     reconciler::claim,
     reconciler::pool,
     reconciler::virtualmachine::{error_policy, reconcile},
@@ -468,6 +471,46 @@ pub async fn run(cli: Cli) -> Result<()> {
         ctx.clone(),
     );
 
+    // CAPI bootstrap data (ADR-0129). It runs only for the kinds whose
+    // provider holds the guest until the data arrives and leaves the
+    // controller's condition alone: Cloud Hypervisor. The libvirt, vSphere and
+    // Proxmox providers still apply their whole status, conditions included,
+    // from a snapshot, so the controller would fight them over
+    // BootstrapDataReady, and their guests could boot before the data
+    // arrived; they join with milestone 2. The controller also watches CAPI
+    // Machines, so adoption and `dataSecretName` wake the machine they name.
+    // It starts once the API server serves v1beta2 Machines, whenever that
+    // is: a cluster that installs Cluster API after banlieue needs no
+    // restart, and an API error while waiting stops nothing else here.
+    let bootstrap_fut: BoxFuture<'static, ()> = {
+        let client = client.clone();
+        let scope = scope.clone();
+        let scope_rx = scope_rx.clone();
+        let metrics = metrics.clone();
+        let ctx = ctx.clone();
+        async move {
+            info!(
+                crd = bootstrap_data::MACHINE_CRD,
+                "CAPI bootstrap-data controllers start once Cluster API v1beta2 Machines are served"
+            );
+            bootstrap_data::wait_for_capi_machines(&client).await;
+            info!(
+                kind = %<CloudHypervisorMachine as kube::Resource>::kind(&()),
+                "starting CAPI bootstrap-data controllers"
+            );
+            bootstrap_data_controller::<CloudHypervisorMachine>(
+                "CloudHypervisorMachineBootstrapData",
+                &client,
+                &scope,
+                &scope_rx,
+                &metrics,
+                &ctx,
+            )
+            .await;
+        }
+        .boxed()
+    };
+
     readiness.controllers_started();
 
     tokio::select! {
@@ -476,6 +519,9 @@ pub async fn run(cli: Cli) -> Result<()> {
         }
         () = pool_fut => {
             info!("VirtualMachinePool controller stream ended");
+        }
+        () = bootstrap_fut => {
+            info!("CAPI bootstrap-data controller streams ended");
         }
         () = claim_fut => {
             info!("VirtualMachineClaim controller stream ended");
@@ -499,6 +545,51 @@ pub async fn run(cli: Cli) -> Result<()> {
     drop(scope_tx);
     telemetry.shutdown();
     Ok(())
+}
+
+/// One CAPI bootstrap-data controller for InfraMachine kind `K` (ADR-0129):
+/// the kind itself, plus CAPI `Machine`s mapped to the InfraMachine their
+/// `spec.infrastructureRef` names.
+fn bootstrap_data_controller<K>(
+    name: &'static str,
+    client: &Client,
+    scope: &Scope,
+    scope_rx: &tokio::sync::watch::Receiver<u64>,
+    metrics: &Metrics,
+    ctx: &Arc<Context>,
+) -> BoxFuture<'static, ()>
+where
+    K: kube::Resource<DynamicType = (), Scope = k8s_openapi::NamespaceResourceScope>
+        + banlieue_api::capi::BootstrapTarget
+        + Clone
+        + std::fmt::Debug
+        + serde::de::DeserializeOwned
+        + serde::Serialize
+        + Send
+        + Sync
+        + 'static,
+{
+    // Same scope as every other controller here (ADR-0130): one namespace, or
+    // every namespace gated per reconcile in selector mode.
+    let kinds: Api<K> = scope.api(client);
+    let machines = scope.api_with(client, &bootstrap_data::machine_resource());
+    let controller = Controller::new(kinds, Config::default())
+        .reconcile_all_on(scope_trigger(scope_rx.clone()))
+        .watches_with(
+            machines,
+            bootstrap_data::machine_resource(),
+            Config::default(),
+            |machine| bootstrap_data::infra_machine_for::<K>(&machine),
+        );
+    run_controller(
+        controller,
+        name,
+        metrics.clone(),
+        bootstrap_data::reconcile::<K>,
+        bootstrap_data::error_policy::<K>,
+        ctx.clone(),
+    )
+    .boxed()
 }
 
 /// Build a [`LeaderConfig`] from parsed CLI flags, filling the holder identity

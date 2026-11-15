@@ -41,6 +41,7 @@ on:
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'Makefile'
+      - 'scripts/kind-capi-controller.sh'
       - '.github/workflows/e2e.yaml'
   push:
     branches:
@@ -51,6 +52,7 @@ on:
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'Makefile'
+      - 'scripts/kind-capi-controller.sh'
       - '.github/workflows/e2e.yaml'
   # Reusable: callable from build.yaml or a release pipeline.
   workflow_call:
@@ -132,3 +134,46 @@ jobs:
           KIND_CLUSTER_NAME: banlieue-e2e-${{ matrix.suite }}
           E2E_SUITE: ${{ matrix.suite }}
         run: make kind-e2e-ci
+
+  # Cluster API, against real CAPI controllers (ADR-0096, ADR-0129). Each suite
+  # builds its own fresh kind cluster and runs `clusterctl init` with the CAPI
+  # release pinned in the Makefile, so the two share nothing:
+  #   - capi:           the InfraMachine/InfraCluster status contract
+  #   - capi-bootstrap: real kubeadm bootstrap data reaching banlieue machines,
+  #                     with banlieue-controller running under its own
+  #                     ServiceAccount (scripts/kind-capi-controller.sh)
+  # CAPI v1.14 needs a v1.33+ management cluster, so kind v0.30 or newer.
+  capi:
+    name: 🧪 ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    # A cold build of the whole `banlieue` binary, a kind cluster and
+    # clusterctl init; the suites poll with a 120s budget per wait.
+    timeout-minutes: 60
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: kind-e2e-capi
+            name: CAPI contract
+            cluster: banlieue-capi
+          - target: kind-e2e-capi-bootstrap
+            name: CAPI bootstrap data
+            cluster: banlieue-capi-bootstrap
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (moving ref, re-pin quarterly)
+
+      - name: Cache cargo dependencies
+        uses: firestoned/github-actions/rust/cache-cargo@f52366c4f57f0110012035ac1bcd0bee4075b3e9 # v1.4.0
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Run ${{ matrix.name }}
+        env:
+          CAPI_KIND_CLUSTER_NAME: ${{ matrix.cluster }}
+        run: make ${{ matrix.target }}

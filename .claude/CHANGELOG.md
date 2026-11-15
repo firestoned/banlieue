@@ -1,5 +1,81 @@
 # Changelog
 
+## [2026-11-15 18:00] - ADR-0129: second PR #194 review round (update bypass, VM labels, late Cluster API, ownership)
+
+**Author:** Daniel Guns
+
+### Security
+- `deploy/admission/capi-bootstrap-data-authorization.yaml`: the
+  unchanged-reference skip on `UPDATE` now applies only when the old object's
+  `infrastructureRef` was a banlieue InfraMachine too (new `wasBanlieue`
+  variable, both policies, `dataSecretName` and `configRef`). A reference
+  made under another provider was never checked, and an update that only
+  switched `infrastructureRef` to banlieue carried it over unchecked, so a
+  principal could have another Machine's join token copied into an
+  InfraMachine it can read. Em-dashes in the new prose replaced.
+
+### Changed
+- `crates/banlieue-api/src/capi.rs`:
+  - `is_capi_intended`: a machine a `VirtualMachine` controls is never
+    CAPI-intended. `propagate_labels` copies a VM's labels onto its machine,
+    so a VM labelled `cluster.x-k8s.io/cluster-name` was held forever.
+  - `owning_machine`: only the controller `Machine` reference counts, so a
+    stale reference listed first no longer causes `MachineReferenceMismatch`.
+  - `bootstrap_value`: an empty `format` means `cloud-config`, as an absent
+    one does (CABPK v1.14.3 renders cloud-config for an unset format).
+  - `CloudHypervisorMachine::creation_started`: `spec.providerID` or the
+    guest uid. A machine moved (`clusterctl move`) or restored without its
+    status is no longer held again or delivered to again.
+- `crates/banlieue-controller/src/reconciler/bootstrap_data.rs`: discovery at
+  startup (`Discovery`, `discovery`, `capi_machines_served`,
+  `serves_machines`) is replaced by `wait_for_capi_machines`, a watch on the
+  `machines.cluster.x-k8s.io` CRD, and `crd_serves_machines` (`Established`,
+  `v1beta2` served). Cluster API installed after the controller now starts
+  the reconciler with no restart, and an API error is retried with backoff
+  instead of failing startup for every controller. `reconcile` carries out
+  every outcome through one `act` function (no unreachable `let ... else`).
+- `crates/banlieue-controller/src/error.rs`: `Error::Discovery` removed
+  (unused).
+- `crates/banlieue-controller/src/app.rs`: the bootstrap-data future waits for
+  the CRD, then runs the controller; the Machine `Api` comes from
+  `Scope::api_with`.
+- `crates/banlieue-provider-sdk/src/scope.rs` (moved there from the controller
+  by ADR-0131): `Scope::api_with`, the `Scope::api` rule for a dynamic
+  resource.
+- `crates/banlieue-provider-cloud-hypervisor/src/reconciler.rs`:
+  `creation_held` (an alias) removed, `holds_guest` called directly; the
+  never-reported held message names the controller not running, the
+  namespace not served and v1beta2 Machines not served.
+- `deploy/controller/rbac/clusterrole.yaml`: `get`/`list`/`watch` on
+  `customresourcedefinitions`, `resourceNames: [machines.cluster.x-k8s.io]`.
+- `scripts/kind-capi-controller.sh`: checks the controller's identity may
+  watch that CRD and may not list CRDs.
+
+### Tests
+- `capi_tests.rs`, `bootstrap_data_tests.rs`, `scope_tests.rs`, the Cloud
+  Hypervisor `reconciler_tests.rs` and `bootstrap_tests.rs`
+  (`controller_cluster_role_reads_only_the_capi_machine_crd`) cover each
+  change; the discovery tests are replaced by CRD tests.
+- `e2e_capi_bootstrap_data.rs`: `a_principal_may_only_name_bootstrap_data_it_can_read`
+  switches `infrastructureRef` of MachineDeployments created under another
+  provider to banlieue and asserts the refusal for `dataSecretName` and
+  `configRef` (and admission for a readable Secret); the MachineDeployment
+  case's Secret has an empty `format`.
+
+### Documentation
+- ADR-0129: Decisions 1, 2, 4, 5 and 9 amended, a "Changed in the second
+  review round" note, Consequences updated.
+- `docs/src/guides/cluster-api.md`, `deploy/admission/README.md`, CALM.
+- Threat model: TB-15 three rows (update switching `infrastructureRef`, a
+  labelled VM held, late Cluster API or a startup API error), the owner and
+  hold rows, TB-2 and §2 rows for the CRD grant; header updated.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-11-15 17:30] - Fix the kind e2e after ADR-0131: install flag and tenant label
 
 **Author:** Erick Bourgeois
@@ -22,6 +98,62 @@ propagation, workloadNamespace) failed: the operator now serves only
 
 ### Impact
 - [ ] Config change only (new optional install flag)
+
+## [2026-11-15 16:00] - ADR-0129: PR #194 review changes (configRef authorization, policy scope, discovery, one hold predicate)
+
+**Author:** Daniel Guns
+
+### Security
+- `deploy/admission/capi-bootstrap-data-authorization.yaml`: `spec.bootstrap.configRef`
+  (and a template's) is now authorized like `dataSecretName`: its author must
+  be able to `get` the named bootstrap config. Cluster API v1.14.3 refuses a
+  config another Machine controls, but takes over one only a MachineSet or
+  control plane owns, or nobody owns, so a principal without Secret read
+  could have such a config's join data rendered for its own Machine and read
+  it from the InfraMachine. Both policies now carry a `matchConditions` guard
+  on `infrastructureRef.apiGroup == infrastructure.banlieue.io`, so other
+  infrastructure providers' users are never evaluated (no denial, no outage
+  from an authorizer error), and evaluate objects as `v1beta2`.
+
+### Changed
+- `crates/banlieue-controller/src/app.rs`: the bootstrap-data controller runs
+  for `CloudHypervisorMachine` only. libvirt, vSphere and Proxmox still apply
+  `BootstrapDataReady` from their status snapshot and do not hold the guest;
+  they join with milestone 2.
+- `crates/banlieue-controller/src/reconciler/bootstrap_data.rs`: discovery
+  classifies its answer (`discovery`): only a 404 means Cluster API is not
+  installed; any other error is retried (`DISCOVERY_ATTEMPTS`) and then fails
+  startup (`Error::Discovery`). The delivery condition is written against the
+  patched object, so its `observedGeneration` is the generation carrying the
+  data. A Machine without `spec.clusterName` is reported as such
+  (`unreadable_machine`), not as not found.
+- `crates/banlieue-api/src/capi.rs`: `BootstrapTarget::creation_started` and
+  `holds_guest`, one predicate for the controller's gate and the provider's
+  hold (the guest uid for Cloud Hypervisor, `providerID` elsewhere). A Cloud
+  Hypervisor machine with a hand-set `providerID` and no guest uid was skipped
+  by the controller and held by the provider forever.
+- `crates/banlieue-provider-cloud-hypervisor/src/reconciler.rs`: a held
+  machine the controller never reported on says to check the namespace
+  selector (ADR-0130).
+- `crates/banlieue-operator/tests/e2e_capi_bootstrap_data.rs`: the admission
+  case covers `configRef` (refused and admitted) and other providers'
+  Machines (unmatched); a sixth case pins Cluster API refusing a config
+  another Machine controls; delivered machines assert a current
+  `observedGeneration`.
+
+### Docs
+- ADR-0129 Decisions 2, 5 and 10 amended, implementation notes; the Cluster
+  API guide; `deploy/admission/README.md`; CALM; threat model (TB-15 two rows,
+  §8 one row rewritten and one added).
+
+### Why
+Review of PR #194.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (controller, Cloud Hypervisor hosts, the admission policy)
+- [ ] Config change only
+- [ ] Documentation only
 
 ## [2026-11-15 14:00] - ADR-0131 implemented: operator and provider namespace scope
 
@@ -70,6 +202,87 @@ multi-tenant install needs the operator to serve exactly the tenant namespaces.
       an operator or hand-run provider that relied on watching every namespace
       must now set a selector or `--namespace`)
 
+## [2026-11-15 12:00] - CAPI bootstrap-data controllers follow ADR-0130's namespace scope
+
+**Author:** Daniel Guns
+
+### Changed
+- `crates/banlieue-controller/src/app.rs`: merging main brought ADR-0130,
+  under which the controller never serves every namespace by default. The
+  four bootstrap-data controllers used `--namespace` with "unset means all";
+  they now take the resolved `Scope` like every other loop (`scope.api`,
+  `reconcile_all_on` the scope trigger).
+- `crates/banlieue-controller/src/reconciler/bootstrap_data.rs`: returns
+  through `Context::skip_unserved` before reading anything, so selector mode
+  gates it per namespace.
+- `scripts/kind-capi-controller.sh`: runs the controller with
+  `--namespace-selector banlieue.io/tenant=true` and checks it may list
+  namespaces; `e2e_capi_bootstrap_data.rs` labels each case's namespace.
+
+### Docs
+- `docs/src/guides/cluster-api.md`: a Cluster's namespace must be served, or
+  its machines are held with no condition. `docs/adr/0129-…`: implementation
+  note. `docs/src/security/threat-model.md`: merge resolved; stamp covers
+  ADR-0001 … ADR-0130, and the controller row says the bootstrap loops are
+  scoped.
+
+### Why
+Without this, after the merge the controller would serve only its own
+namespace by default, and CAPI machines in any other namespace would wait
+forever.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (controller)
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-11-15 10:00] - ADR-0129 milestone 1: review fixes (owner confirmation, e2e cleanup, CALM, messages)
+
+**Author:** Daniel Guns
+
+### Fixed
+- `crates/banlieue-api/src/capi.rs`, `crates/banlieue-controller/src/reconciler/bootstrap_data.rs`:
+  the controller trusted an InfraMachine's ownerReference without checking
+  it. Anyone allowed to create or update an InfraMachine could point one at
+  another `Machine` and have that Machine's bootstrap data copied into it,
+  bypassing the admission check on `dataSecretName`. Before reading any
+  Secret, the controller now requires the owning Machine's UID to equal the
+  reference's and the Machine's `spec.infrastructureRef` to name this
+  InfraMachine (`machine_confirms_adoption`, `unconfirmed_adoption`, `infra_ref_of`;
+  `Gate::ReadMachine` carries the owner UID). Otherwise it reports the new
+  reason `MachineReferenceMismatch`, reads nothing, and the provider keeps
+  holding the machine. 5 tests in `capi_tests.rs`, 5 in
+  `bootstrap_data_tests.rs`.
+- `scripts/kind-capi-controller.sh`: `stop` no longer requires
+  `CAPI_KIND_KUBECONFIG` (only `start` uses it), so the Makefile's cleanup
+  after a passing run no longer exits before killing the controller; the
+  Makefile passes it anyway.
+- `deploy/admission/capi-bootstrap-data-authorization.yaml`: no ADR ID in the
+  two rejection messages (user-facing output).
+
+### Docs
+- `docs/architecture/calm/architecture.json`: ADR-0129's InfraMachine,
+  bootstrap Secret, relationship and flow say milestone 1 is implemented
+  (they said "PROPOSED, not yet implemented"); the relationship gains the
+  control `capi-bootstrap-data-owner-confirmation`. `make calm-validate`
+  passes; `make calm-diagrams` regenerated `docs/src/architecture/flows.md`.
+- `docs/adr/0129-…`: `MachineReferenceMismatch` in Decision 6's table and an
+  implementation note explaining it. `docs/src/guides/cluster-api.md`: the
+  reason in the condition table.
+- `docs/src/security/threat-model.md`: TB-15 row for a forged ownerReference;
+  stamp 2026-11-15 / ADR-0001 … ADR-0129.
+
+### Why
+Code review of the uncommitted milestone 1.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (same as the entry below)
+- [ ] Config change only
+- [ ] Documentation only
+
+
 ## [2026-11-15 10:00] - Namespace selector review fixes (ADR-0130)
 
 **Author:** Erick Bourgeois
@@ -103,6 +316,80 @@ wire); the unused trigger plumbing in single-namespace mode (works, harmless).
 - [ ] Breaking change
 - [ ] Requires cluster rollout
 - [x] Requires controller image rebuild (behaviour only)
+## [2026-11-14 22:00] - CAPI InfraMachines receive the Machine's bootstrap data (ADR-0129 milestone 1)
+
+**Author:** Daniel Guns
+
+### Added
+- `crates/banlieue-api/src/capi.rs` (+ `capi_tests.rs`, 40 tests): what the
+  controller and the providers share. `is_capi_intended` (the
+  `cluster.x-k8s.io/cluster-name` label or a Cluster API owner, so true from
+  the moment CAPI creates a machine), `owning_machine`, `holds_creation`,
+  `retain_provider_conditions`, `MachineBootstrap::from_machine` (v1beta2),
+  `bootstrap_value` (the five checks of Decision 4), and `BootstrapTarget`
+  over the four InfraMachine kinds. Fixtures follow CAPI v1.14, CABPK and
+  k0smotron as their source writes them.
+- `crates/banlieue-controller/src/reconciler/bootstrap_data.rs` (+ tests, 24):
+  one reconciler per InfraMachine kind, each also watching CAPI `Machine`s,
+  started only when the API server serves `cluster.x-k8s.io/v1beta2`
+  Machines. Applies `spec.userData` byte for byte and the one condition
+  `BootstrapDataReady` under its own field manager; waits on a Secret are
+  requeued at 30 s / 5 min (no Secret list/watch); one-shot. `app.rs` wires
+  them in.
+- `deploy/admission/capi-bootstrap-data-authorization.yaml`: whoever sets
+  `dataSecretName` on a `Machine`, or in a `MachineSet`/`MachineDeployment`
+  template, must be able to `get` that Secret (Decision 5); README row.
+- `crates/banlieue-operator/tests/e2e_capi_bootstrap_data.rs`,
+  `make kind-e2e-capi-bootstrap` / `kind-e2e-capi-bootstrap-run`,
+  `scripts/kind-capi-controller.sh`: real CAPI v1.14.3 and kubeadm providers,
+  the controller as a local binary under its own ServiceAccount. Four cases,
+  all passing: kubeadm init data delivered (after `BootstrapSecretForbidden`
+  without a Role), a MachineDeployment's data surviving template propagation,
+  an `Opaque` Secret refused, the admission policy.
+- `.github/workflows/e2e.yaml`: a `capi` job running `kind-e2e-capi` and
+  `kind-e2e-capi-bootstrap`; neither CAPI suite ran in CI before.
+- `examples/26-capi-machinedeployment-cloud-hypervisor.yaml`, with a test in
+  `banlieue-api/tests/examples.rs`; validated by a server-side dry run
+  against CAPI v1.14.3.
+
+### Changed
+- `crates/banlieue-provider-cloud-hypervisor/src/reconciler.rs`: creates
+  nothing, guest uid included, for a CAPI-intended machine until a `Machine`
+  owns it and `BootstrapDataReady` is `True` (`creation_held`); never applies
+  that condition (`status_patch`). 6 tests.
+- `deploy/controller/rbac/clusterrole.yaml`: `get`/`list`/`watch` on
+  `machines.cluster.x-k8s.io`, pinned by
+  `controller_cluster_role_only_reads_capi_machines`; `role.yaml` comment.
+- `crates/banlieue-operator/tests/e2e_capi_contract.rs`: its `dataSecretName`
+  is a named, never-created stand-in; bootstrap coverage moved to the new
+  suite.
+
+### Fixed
+- `deploy/capi/clusterrole-aggregate.yaml` (ADR-0096 amended 2026-11-14):
+  also aggregated into KubeadmControlPlane's manager. As shipped, KCP could
+  not list any banlieue machine template, so no `KubeadmControlPlane` could
+  use one; found by the new e2e. Pinned by
+  `capi_aggregate_role_aggregates_into_core_and_kubeadm_control_plane_only`.
+
+### Docs
+- `docs/adr/0129-…`: implementation notes; both open questions answered.
+  `docs/adr/0096-…`: amendment. CALM: the aggregate-role control names KCP.
+- `docs/src/guides/cluster-api.md`: Bootstrap data (flow, conditions, the
+  Role for other namespaces, the admission policy), the KCP aggregation, and
+  how both CAPI suites test.
+- `docs/src/security/threat-model.md`: full pass, stamp 2026-11-14 /
+  ADR-0001 … ADR-0129.
+
+### Why
+A Machine created by Cluster API booted without its bootstrap data and never
+joined (#191).
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (controller and its ClusterRole; the
+      aggregate role; a Cloud Hypervisor host's `banlieue` binary; apply the
+      new admission policy where CAPI is used)
+- [ ] Config change only
 - [ ] Documentation only
 
 ## [2026-11-14 19:00] - Serve namespaces by label selector, never all by default (ADR-0130)

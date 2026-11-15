@@ -189,6 +189,61 @@ mod tests {
         }
     }
 
+    /// ADR-0129 Decision 9: the controller watches CAPI `Machine`s to deliver
+    /// their bootstrap data, and reads nothing else of Cluster API's core
+    /// group. A Machine carries the NAME of its bootstrap Secret, never the
+    /// content, so this grant reads no secret material.
+    #[test]
+    fn controller_cluster_role_only_reads_capi_machines() {
+        let capi: Vec<_> = granted_triples(&InstallRole::Controller)
+            .into_iter()
+            .filter(|(group, _, _)| group == "cluster.x-k8s.io")
+            .collect();
+        let mut verbs: Vec<_> = capi
+            .iter()
+            .map(|(_, resource, verb)| {
+                assert_eq!(resource, "machines", "{capi:?}");
+                verb.as_str()
+            })
+            .collect();
+        verbs.sort_unstable();
+        assert_eq!(verbs, ["get", "list", "watch"]);
+    }
+
+    /// ADR-0129 Decision 2: the controller watches the one CRD that says
+    /// whether Cluster API serves Machines, so it can start delivering when
+    /// Cluster API is installed after banlieue. The grant is pinned to that
+    /// name and to reads: it must never become a read of every CRD.
+    #[test]
+    fn controller_cluster_role_reads_only_the_capi_machine_crd() {
+        let rules: Vec<_> = InstallRole::Controller
+            .cluster_role()
+            .expect("embedded ClusterRole parses")
+            .rules
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|r| {
+                r.api_groups
+                    .as_ref()
+                    .is_some_and(|g| g.iter().any(|g| g == "apiextensions.k8s.io"))
+            })
+            .collect();
+        assert_eq!(rules.len(), 1, "{rules:?}");
+        let rule = &rules[0];
+        assert_eq!(
+            rule.resources.as_deref(),
+            Some(&["customresourcedefinitions".to_string()][..])
+        );
+        assert_eq!(
+            rule.resource_names.as_deref(),
+            Some(&["machines.cluster.x-k8s.io".to_string()][..]),
+            "a CRD grant without resourceNames reads every CRD in the cluster"
+        );
+        let mut verbs = rule.verbs.clone();
+        verbs.sort_unstable();
+        assert_eq!(verbs, ["get", "list", "watch"]);
+    }
+
     /// **TM-01 regression guard (ADR-0041).** A `ClusterRole` reached through a
     /// `ClusterRoleBinding` has no namespace scope, so ANY Secret rule in one
     /// reaches every Secret in the cluster. `banlieue-imagebuilder` shipped
@@ -1610,6 +1665,29 @@ mod tests {
             labels.get(CAPI_AGGREGATE_LABEL).map(String::as_str),
             Some("true"),
             "the role exists only to be aggregated into CAPI's manager"
+        );
+    }
+
+    /// ADR-0096, amended 2026-11-14: KubeadmControlPlane creates its machines
+    /// from an InfraMachineTemplate itself, as its own manager, whose role
+    /// aggregates on its own label. Without it, KCP cannot even list a banlieue
+    /// template (found by `e2e_capi_bootstrap_data`). The same scoped rules
+    /// go to exactly these two managers, and to no other aggregated role.
+    #[test]
+    fn capi_aggregate_role_aggregates_into_core_and_kubeadm_control_plane_only() {
+        let labels = capi_role().metadata.labels.unwrap_or_default();
+        let mut aggregated: Vec<&str> = labels
+            .iter()
+            .filter(|(k, v)| k.contains("/aggregate-to-") && v.as_str() == "true")
+            .map(|(k, _)| k.as_str())
+            .collect();
+        aggregated.sort_unstable();
+        assert_eq!(
+            aggregated,
+            [
+                "cluster.x-k8s.io/aggregate-to-manager",
+                "kubeadm.controlplane.cluster.x-k8s.io/aggregate-to-manager",
+            ]
         );
     }
 

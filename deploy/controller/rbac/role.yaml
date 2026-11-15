@@ -14,6 +14,12 @@
 # ClusterRole comment (security review 2026-07-31, SEC-008) anticipated:
 # "no code in banlieue-controller reads a Secret... re-add scoped
 # (resourceNames/namespace) if a reconciler ever needs it."
+#
+# The same `get` on secrets lets the controller read a Cluster API Machine's
+# bootstrap Secret by name for InfraMachines in this namespace (ADR-0129
+# Decision 9). Another namespace that holds CAPI-owned InfraMachines needs a
+# Role like this one, created by the administrator; see
+# docs/src/guides/cluster-api.md.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:

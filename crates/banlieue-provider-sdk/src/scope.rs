@@ -24,7 +24,7 @@ use tracing::{info, warn};
 
 use kube::{
     Api, Client, Resource,
-    api::ListParams,
+    api::{ApiResource, DynamicObject, ListParams},
     runtime::{
         WatchStreamExt,
         controller::Action,
@@ -121,6 +121,17 @@ impl Scope {
         match self.namespace() {
             Some(ns) => Api::namespaced(client.clone(), ns),
             None => Api::all(client.clone()),
+        }
+    }
+
+    /// [`Scope::api`] for a resource known only at runtime (a Cluster API
+    /// `Machine`, which banlieue has no Rust type for), described by
+    /// `resource`. The same rule, so the two never drift.
+    #[must_use]
+    pub fn api_with(&self, client: &Client, resource: &ApiResource) -> Api<DynamicObject> {
+        match self.namespace() {
+            Some(ns) => Api::namespaced_with(client.clone(), ns, resource),
+            None => Api::all_with(client.clone(), resource),
         }
     }
 }
