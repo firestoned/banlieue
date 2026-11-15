@@ -69,6 +69,10 @@ const HTTP_NOT_FOUND: u16 = 404;
 /// no namespace or UID.
 pub async fn reconcile(claim: Arc<VirtualMachineClaim>, ctx: Arc<Context>) -> Result<Action> {
     let namespace = claim.namespace().ok_or(Error::Missing("namespace"))?;
+    if let Some(action) = ctx.skip_unserved(&namespace, claim.metadata.deletion_timestamp.is_some())
+    {
+        return Ok(action);
+    }
     let name = claim.name_any();
     let generation = claim.metadata.generation.unwrap_or(0);
 

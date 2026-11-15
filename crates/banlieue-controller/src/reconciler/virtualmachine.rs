@@ -223,6 +223,9 @@ pub fn image_class_mismatch(
 /// long to back off before retrying.
 pub async fn reconcile(vm: Arc<VirtualMachine>, ctx: Arc<Context>) -> Result<Action> {
     let namespace = vm.namespace().ok_or(Error::Missing("namespace"))?;
+    if let Some(action) = ctx.skip_unserved(&namespace, vm.metadata.deletion_timestamp.is_some()) {
+        return Ok(action);
+    }
     let name = vm.name_any();
     let generation = vm.metadata.generation.unwrap_or(0);
 

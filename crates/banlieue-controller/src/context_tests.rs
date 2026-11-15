@@ -52,4 +52,50 @@ mod tests {
         assert_eq!(ctx.namespace.as_deref(), Some("ns"));
         assert!(ctx.with_first_boot_sealing(true).first_boot_sealing);
     }
+
+    fn namespace(name: &str) -> k8s_openapi::api::core::v1::Namespace {
+        let mut ns = k8s_openapi::api::core::v1::Namespace::default();
+        ns.metadata.name = Some(name.to_string());
+        ns
+    }
+
+    /// Single-namespace modes narrow the watch itself, so the default gate
+    /// passes whatever the watch delivers.
+    #[tokio::test]
+    async fn default_context_serves_every_namespace_it_is_handed() {
+        assert!(Context::new(offline_client(), Some("ns".into())).serves("ns"));
+    }
+
+    #[tokio::test]
+    async fn gated_context_serves_only_selected_namespaces() {
+        let (reader, mut writer) = reflector::store::<k8s_openapi::api::core::v1::Namespace>();
+        writer.apply_watcher_event(&kube::runtime::watcher::Event::Apply(namespace("team-a")));
+        let ctx = Context::new(offline_client(), None)
+            .with_namespace_gate(NamespaceGate::selected(reader));
+        assert!(ctx.serves("team-a"));
+        assert!(!ctx.serves("team-b"));
+    }
+
+    /// A reconcile for an unserved namespace must do nothing and ask to be
+    /// woken only by a change: the namespace being labelled in triggers a
+    /// reconcile-all, so no timer is needed.
+    #[tokio::test]
+    async fn unserved_namespace_yields_await_change() {
+        let (reader, _writer) = reflector::store::<k8s_openapi::api::core::v1::Namespace>();
+        let ctx = Context::new(offline_client(), None)
+            .with_namespace_gate(NamespaceGate::selected(reader));
+        assert!(ctx.skip_unserved("team-b", false).is_some());
+        let served = Context::new(offline_client(), None);
+        assert!(served.skip_unserved("team-b", false).is_none());
+    }
+
+    /// Un-labelling a namespace must not strand a deletion: the finalizer
+    /// has to run even though the namespace is no longer served.
+    #[tokio::test]
+    async fn deletion_is_never_skipped_in_an_unserved_namespace() {
+        let (reader, _writer) = reflector::store::<k8s_openapi::api::core::v1::Namespace>();
+        let ctx = Context::new(offline_client(), None)
+            .with_namespace_gate(NamespaceGate::selected(reader));
+        assert!(ctx.skip_unserved("team-b", true).is_none());
+    }
 }

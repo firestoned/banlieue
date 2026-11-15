@@ -105,6 +105,22 @@
             }
           ]
         },
+        "tenant-namespace-scope": {
+          "description": "IMPLEMENTED (ADR-0130): the controller never serves every namespace by default. Scope resolves as --namespace-selector, else --namespace, else the namespace the controller runs in; startup fails rather than widening when none can be found. Selector mode gates reconciliation on a label-filtered Namespace reflector, so a team is onboarded by a platform admin labelling its namespace and un-labelling stops reconciliation without deleting anything. The selector chooses which namespaces are served; tenant isolation itself is RBAC, admission policy and quota (follow-up ADR). Selector mode reads Namespace objects through a read-only grant in deploy/controller/rbac/clusterrole.yaml; the controller cannot relabel a namespace.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": [
+                  "AC-4",
+                  "SC-7"
+                ],
+                "evidence": "crates/banlieue-controller/src/scope.rs, crates/banlieue-controller/src/context.rs, deploy/controller/rbac/clusterrole.yaml, docs/adr/0130-namespace-selector-multi-tenancy.md"
+              }
+            }
+          ]
+        },
         "placement-spread-across-failure-domains": {
           "description": "The scheduler orders the (provider, failure domain) candidates that pass its filters by least load (VMs of the same pool, then all VMs in the namespace, counted from status.scheduled) and breaks ties by rendezvous hashing of (VM, provider, failure domain), so a pool's members spread across hosts instead of all landing on the lexicographically first one (ADR-0098, D-023).",
           "requirements": [

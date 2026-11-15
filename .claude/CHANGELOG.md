@@ -1,5 +1,63 @@
 # Changelog
 
+## [2026-11-14 19:00] - Serve namespaces by label selector, never all by default (ADR-0130)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0130-namespace-selector-multi-tenancy.md`: Accepted. Scope
+  resolves as `--namespace-selector`, else `--namespace`, else the
+  controller's own namespace; never every namespace.
+- `crates/banlieue-controller/src/scope.rs` (+ `scope_tests.rs`):
+  `resolve_scope`, `Scope`, `NamespaceGate`, and `check_selector`, which
+  validates a selector by asking the API server (kube 5 has no selector
+  parser; a hand-rolled one could accept what the server rejects).
+- `Context::{with_namespace_gate, serves, skip_unserved}`; the VM, pool,
+  claim and VSphereCluster reconcilers skip an unserved namespace, except
+  an object being deleted, so un-labelling cannot strand a finalizer.
+- `banlieue controller --namespace-selector` / `BANLIEUE_NAMESPACE_SELECTOR`.
+  Selector mode runs a selector-filtered `Namespace` reflector, waits for
+  its first sync before starting controllers, and reconciles everything
+  again when the served set changes.
+- `deploy/controller/rbac/clusterrole.yaml`: read-only `get`/`list`/`watch`
+  on `namespaces`; test `the_controller_may_only_read_namespaces`.
+- `docs/src/guides/multi-tenancy.md` and its nav entries.
+
+### Changed
+- `--namespace` / `BANLIEUE_NAMESPACE` no longer means "cluster-wide when
+  unset"; unset now serves the controller's own namespace. The six
+  per-controller `match namespace` blocks in `app.rs` are `Scope::api`.
+- `deploy/controller/configmap.yaml`: documents the selector (commented out;
+  the shipped default serves `banlieue-system` only).
+- `docs/architecture/calm/architecture.json`: `tenant-namespace-scope`
+  control on the controller.
+- `docs/src/security/threat-model.md`: full pass, stamp advanced to
+  ADR-0130. §2, §3 (A-4), §4, §5 diagram and TB-1 row, four TB-1 STRIDE rows,
+  §7.30, and three §8 accepted risks (scope is not isolation; the ClusterRole
+  stays cluster-wide; status is kept when a namespace leaves the selection).
+  The two single-tenant §8 rows now say to revisit before serving an
+  untrusted tenant.
+
+### Why
+Several teams need their own namespace with pools and policies locked to it,
+and the controller offered only one namespace or all of them.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout: a deployment that relied on the old
+  cluster-wide default must set a selector and label its namespaces, or it
+  serves only `banlieue-system`. `make run-controller`-style local runs serve
+  the kubeconfig context's namespace.
+- [x] Config change only (selector)
+- [ ] Documentation only
+
+Not done here: the operator's `--watch-namespace` and the providers'
+namespace flags keep their cluster-wide default (ADR-0130 Consequences); the
+per-tenant admission policy and quota ADR; a live check against a cluster.
+
+Renumbered from 0129 to 0130 on rebase: main had meanwhile taken 0129 for
+the CAPI bootstrap-data ADR.
+
 ## [2026-11-14 18:30] - ADR-0129 proposed: CAPI InfraMachines receive the Machine's bootstrap data
 
 **Author:** Daniel Guns
