@@ -55,6 +55,8 @@ const INFRA_GROUP: &str = "infrastructure.banlieue.io";
 /// The controller's ServiceAccount, as `banlieue bootstrap operator` installs it.
 const CONTROLLER_SA: &str = "banlieue-controller";
 const CONTROLLER_NAMESPACE: &str = "banlieue-system";
+/// The label the controller's `--namespace-selector` matches in this suite.
+const SERVED_LABEL: &str = "banlieue.io/tenant";
 
 /// Both policies in `capi-bootstrap-data-authorization.yaml`.
 const MACHINE_POLICY: &str = "banlieue-capi-machine-bootstrap-data-authorization";
@@ -129,7 +131,9 @@ async fn create(api: &Api<DynamicObject>, obj: &DynamicObject) {
         });
 }
 
-/// Delete `ns` if a previous run left it, then create it afresh.
+/// Delete `ns` if a previous run left it, then create it afresh, labelled so
+/// the controller serves it (`scripts/kind-capi-controller.sh` runs it with
+/// this selector; ADR-0130).
 async fn fresh_namespace(client: &Client, ns: &str) {
     let namespaces: Api<Namespace> = Api::all(client.clone());
     let _ = namespaces.delete(ns, &DeleteParams::default()).await;
@@ -139,8 +143,10 @@ async fn fresh_namespace(client: &Client, ns: &str) {
         async move { matches!(api.get_opt(&ns).await, Ok(None)) }
     })
     .await;
-    let body: Namespace =
-        serde_json::from_value(json!({ "metadata": { "name": ns } })).expect("a Namespace");
+    let body: Namespace = serde_json::from_value(
+        json!({ "metadata": { "name": ns, "labels": { SERVED_LABEL: "true" } } }),
+    )
+    .expect("a Namespace");
     namespaces
         .create(&PostParams::default(), &body)
         .await

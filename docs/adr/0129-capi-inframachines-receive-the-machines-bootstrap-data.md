@@ -471,6 +471,12 @@ the Machine, before adoption. Otherwise it reports `MachineReferenceMismatch`
 `unconfirmed_adoption`). Because the condition stays `False`, the Cloud
 Hypervisor provider keeps holding such a machine.
 
+Merged over ADR-0130 (2026-11-15): the four bootstrap-data controllers use
+the controller's namespace scope like every other loop. Their watches follow
+`--namespace` or the controller's own namespace, and in selector mode every
+reconcile is gated on the selected namespaces, so a Cluster's namespace must
+be served for its machines to receive anything.
+
 Deviations from the Decision text, none of substance:
 
 - Decision 11 asked for the Cloud Hypervisor hold to be tested through

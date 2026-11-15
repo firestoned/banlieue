@@ -17,6 +17,9 @@
 //! missing, unreadable or wrong is requeued on a fixed interval instead
 //! (ADR-0129 Decision 3).
 //!
+//! Only machines in namespaces the controller serves are touched (ADR-0130):
+//! the watches follow its scope, and selector mode gates each reconcile.
+//!
 //! Once delivered, `spec.userData` is never rewritten, and nothing is
 //! delivered to a machine whose provider has already set `spec.providerID`
 //! (Decision 7).
@@ -350,6 +353,11 @@ where
     let ns = obj
         .namespace()
         .ok_or(Error::Missing("metadata.namespace"))?;
+    // Not served (ADR-0130): read nothing, write nothing. This reconciler
+    // holds no finalizer, so a deleting machine needs nothing either.
+    if let Some(action) = ctx.skip_unserved(&ns, false) {
+        return Ok(action);
+    }
     let name = obj.name_any();
     let api: Api<K> = Api::namespaced(ctx.client.clone(), &ns);
 

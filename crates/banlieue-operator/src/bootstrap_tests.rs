@@ -1475,6 +1475,31 @@ mod tests {
         }
     }
 
+    /// ADR-0130: selector mode lists and watches `Namespace` objects, and the
+    /// startup probe lists them. Without the grant a selector install never
+    /// becomes ready. It is read-only: the controller must not be able to
+    /// relabel a namespace, which would let it choose its own scope.
+    #[test]
+    fn the_controller_may_only_read_namespaces() {
+        let role = InstallRole::Controller.cluster_role().unwrap();
+        let granted = triples(&role.rules.unwrap_or_default());
+        let verbs: Vec<&str> = granted
+            .iter()
+            .filter(|(g, r, _)| g.is_empty() && r == "namespaces")
+            .map(|(_, _, v)| v.as_str())
+            .collect();
+        for needed in ["get", "list", "watch"] {
+            assert!(
+                verbs.contains(&needed),
+                "controller cannot {needed} namespaces"
+            );
+        }
+        assert!(
+            verbs.iter().all(|v| ["get", "list", "watch"].contains(v)),
+            "controller must not write namespaces: {verbs:?}"
+        );
+    }
+
     /// The controller resolves `spec.userData` Secrets and ConfigMaps in the
     /// install namespace (ADR-0025, ADR-0038) through a namespaced Role. A
     /// bootstrap install without it 403s on the first VirtualMachine that

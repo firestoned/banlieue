@@ -151,6 +151,16 @@ rules:
   # manager). Re-add scoped (resourceNames/namespace) if a reconciler ever
   # needs it.
 
+  # Namespaces, read-only (ADR-0130). `--namespace-selector` serves the
+  # namespaces whose labels match, so the controller lists and watches
+  # Namespace objects, and probes the selector with a one-item list at
+  # startup. No write verb, deliberately: a controller that could relabel a
+  # namespace could choose its own scope. Labelling a namespace in is a
+  # platform admin's act, never the controller's.
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "watch"]
+
   # Emit Events for state transitions visible via `kubectl describe`.
   - apiGroups: [""]
     resources: ["events"]

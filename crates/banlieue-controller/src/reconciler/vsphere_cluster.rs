@@ -52,6 +52,9 @@ mod reasons {
 /// Top-level reconcile entrypoint registered with [`kube::runtime::Controller`].
 pub async fn reconcile(vsc: Arc<VSphereCluster>, ctx: Arc<Context>) -> Result<Action> {
     let namespace = vsc.namespace().ok_or(Error::Missing("namespace"))?;
+    if let Some(action) = ctx.skip_unserved(&namespace, vsc.metadata.deletion_timestamp.is_some()) {
+        return Ok(action);
+    }
     let name = vsc.name_any();
     let generation = vsc.metadata.generation.unwrap_or(0);
 

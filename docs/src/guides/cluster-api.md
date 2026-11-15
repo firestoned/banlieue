@@ -151,6 +151,18 @@ provider. banlieue does it in two halves
   it and `BootstrapDataReady` is `True`, and reports `Ready=False`,
   `WaitingForBootstrapData`, meanwhile.
 
+!!! warning "The Cluster's namespace must be one the controller serves"
+    `banlieue-controller` acts only in the namespaces it serves
+    ([multi-tenancy](multi-tenancy.md)): by default its own, never every
+    namespace. Machines in any other namespace get no bootstrap data and no
+    `BootstrapDataReady` condition, so the host provider holds them forever.
+    Set a namespace selector on the controller and label each namespace that
+    holds Cluster API clusters:
+
+    ```sh
+    kubectl label namespace <namespace> banlieue.io/tenant=true
+    ```
+
 | Backend | Data delivered | Guest held until delivered |
 | --- | --- | --- |
 | Cloud Hypervisor | yes | yes |

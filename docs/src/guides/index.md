@@ -155,6 +155,11 @@ Running banlieue day to day.
     two settings that change the check, and a scenario-by-scenario test
     plan for vSphere, Cloud Hypervisor, libvirt and Proxmox.
 
+- :material-account-group: **[Multi-Tenancy](multi-tenancy.md)**
+
+    Serve a namespace per team by label: the selector, the default scope,
+    onboarding and removing a team, and what the selector does not isolate.
+
 </div>
 
 !!! info "Looking to hack on banlieue itself?"

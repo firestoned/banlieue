@@ -34,6 +34,9 @@ readonly METRICS_PORT=18080
 # Seconds to wait for the controller to report its CAPI reconcilers started.
 readonly START_TIMEOUT_S=60
 readonly STARTED_LINE="starting CAPI bootstrap-data controllers"
+# The controller serves only selected namespaces (ADR-0130); the e2e labels
+# each case's namespace with this.
+readonly NAMESPACE_SELECTOR="banlieue.io/tenant=true"
 
 BIN="${BANLIEUE_BIN:-target/debug/banlieue}"
 STATE_DIR="${STATE_DIR:-target/kind-capi-controller}"
@@ -88,8 +91,10 @@ EOF
   can_i yes list machines.cluster.x-k8s.io --all-namespaces
   can_i yes get secrets -n "$NS"
   can_i no get secrets --all-namespaces
+  can_i yes list namespaces
   log "starting $BIN controller as system:serviceaccount:$NS:$SA_NAME"
   "$BIN" controller --kubeconfig "$SA_KUBECONFIG" --no-leader-elect \
+    --namespace-selector "$NAMESPACE_SELECTOR" \
     --health-port "$HEALTH_PORT" --metrics-port "$METRICS_PORT" \
     >"$LOG_FILE" 2>&1 &
   echo $! >"$PID_FILE"
