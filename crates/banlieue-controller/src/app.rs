@@ -18,6 +18,7 @@
 //!    `VSphereCluster` (and the pool, claim and image controllers) through
 //!    the SDK's instrumented [`run_controller`].
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -57,7 +58,9 @@ use crate::{
     reconciler::virtualmachine::{error_policy, reconcile},
     reconciler::vmimage,
     reconciler::vsphere_cluster,
-    scope::{NamespaceGate, Scope, check_selector, resolve_scope},
+    scope::{
+        NamespaceGate, Scope, check_selector, resolve_scope, scope_is_implicit, system_namespaces,
+    },
 };
 
 const DEFAULT_HEALTH_PORT: u16 = 8081;
@@ -199,6 +202,14 @@ pub async fn run(cli: Cli) -> Result<()> {
             .context("validating --namespace-selector")?;
     }
     info!(scope = %scope.describe(), "serving");
+    if scope_is_implicit(cli.namespace_selector.as_deref(), cli.namespace.as_deref()) {
+        // ADR-0130 narrowed the default from every namespace to this one.
+        warn!(
+            scope = %scope.describe(),
+            "no --namespace-selector or --namespace set: serving only this controller's own \
+             namespace; set BANLIEUE_NAMESPACE_SELECTOR to serve tenant namespaces"
+        );
+    }
 
     let leader_cfg = (!cli.no_leader_elect).then(|| build_leader_config(&cli));
     let election = leader_cfg
@@ -515,11 +526,23 @@ async fn spawn_namespace_gate(
     let stream = watcher(namespaces, Config::default().labels(selector))
         .default_backoff()
         .reflect(writer);
+    let watched = NamespaceGate::selected(store.clone());
     tokio::spawn(async move {
+        // Bump only when the set of served names really changes. A relist
+        // (every Init event after a watch restart) and an edit to some other
+        // field of a selected namespace both leave it alone, and each bump
+        // reconciles every object in every controller.
+        let mut last = BTreeSet::new();
         stream
             .for_each(|event| {
                 match event {
-                    Ok(_) => changed.send_modify(|n| *n = n.wrapping_add(1)),
+                    Ok(_) => {
+                        let now = watched.names();
+                        if now != last {
+                            last = now;
+                            changed.send_modify(|n| *n = n.wrapping_add(1));
+                        }
+                    }
                     Err(e) => warn!(error = %e, "Namespace selector watch error; retrying"),
                 }
                 futures::future::ready(())
@@ -530,7 +553,17 @@ async fn spawn_namespace_gate(
         .wait_until_ready()
         .await
         .context("waiting for the namespace selector watch to sync")?;
-    Ok(NamespaceGate::selected(store))
+    let gate = NamespaceGate::selected(store);
+    let served = gate.names();
+    info!(namespaces = served.len(), "namespace selector synced");
+    let system = system_namespaces(&served);
+    if !system.is_empty() {
+        warn!(
+            namespaces = ?system,
+            "the namespace selector serves Kubernetes system namespaces; check it is not negated"
+        );
+    }
+    Ok(gate)
 }
 
 /// Build a [`LeaderConfig`] from parsed CLI flags, filling the holder identity

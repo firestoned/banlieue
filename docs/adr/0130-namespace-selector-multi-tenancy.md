@@ -61,7 +61,9 @@ controller has to know the set of selected namespaces and apply it itself.
 
 4. **In selector mode, controllers use `Api::all` and gate on the reflector.** `reconcile`
    returns early, doing nothing and writing nothing, for an object whose
-   namespace is not in the set. A `Namespace` add, remove or relabel event
+   namespace is not in the set. An object being deleted is the exception
+   (decision 6): its finalizer path runs in full, including the writes a
+   deletion needs, so un-labelling cannot strand it. A `Namespace` add, remove or relabel event
    requeues every object in that namespace, so labelling a namespace
    takes effect at once and un-labelling stops reconciliation at once,
    without a restart.

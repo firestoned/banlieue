@@ -1,5 +1,40 @@
 # Changelog
 
+## [2026-11-15 10:00] - Namespace selector review fixes (ADR-0130)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `crates/banlieue-controller/src/app.rs`: the Namespace watch reconciles
+  everything again only when the *set of served names* changes, not on every
+  event (a relist after a watch restart, or an edit to another field of a
+  selected namespace, used to reconcile every VM, pool and claim). Warns at
+  startup when no flag chose the scope, and when the selector serves a
+  `kube-*` namespace (a negated selector such as `!foo`). Logs how many
+  namespaces were selected.
+- `crates/banlieue-controller/src/scope.rs`: `NamespaceGate::serves` is a
+  keyed store lookup instead of cloning every selected namespace on each
+  reconcile; new `names`, `system_namespaces`, `scope_is_implicit` with tests.
+- `docs/adr/0130-namespace-selector-multi-tenancy.md`: decision 4 states the
+  deletion exception that decision 6 already required.
+- `docs/src/security/threat-model.md`: the "loud failure" row now says *at
+  start*; new §8 risk for a Namespace watch that fails after start (the last
+  served set stays in force); §7.30 describes the new warnings.
+  Threat model pass: no boundary, component or identity changes; one new
+  accepted risk; stamp advanced to 2026-11-15, still ADR-0130.
+
+### Why
+Found by code review of ADR-0130. Reviewed and not changed: the
+duplicate-address check counting unserved namespaces' VMs (the message already
+hides other-namespace holders, and a same-address VM is a real conflict on the
+wire); the unused trigger plumbing in single-namespace mode (works, harmless).
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Requires controller image rebuild (behaviour only)
+- [ ] Documentation only
+
 ## [2026-11-14 19:00] - Serve namespaces by label selector, never all by default (ADR-0130)
 
 **Author:** Erick Bourgeois
