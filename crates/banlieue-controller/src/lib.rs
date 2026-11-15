@@ -19,7 +19,6 @@ pub mod context;
 pub mod error;
 pub mod metrics;
 pub mod reconciler;
-pub mod scope;
 
 pub use app::{Cli, run};
 pub use context::Context;

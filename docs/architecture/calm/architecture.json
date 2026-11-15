@@ -116,7 +116,7 @@
                   "AC-4",
                   "SC-7"
                 ],
-                "evidence": "crates/banlieue-controller/src/scope.rs, crates/banlieue-controller/src/context.rs, deploy/controller/rbac/clusterrole.yaml, docs/adr/0130-namespace-selector-multi-tenancy.md"
+                "evidence": "crates/banlieue-provider-sdk/src/scope.rs, crates/banlieue-controller/src/context.rs, deploy/controller/rbac/clusterrole.yaml, docs/adr/0130-namespace-selector-multi-tenancy.md"
               }
             }
           ]
@@ -177,6 +177,22 @@
         }
       ],
       "controls": {
+        "tenant-namespace-scope": {
+          "description": "IMPLEMENTED (ADR-0131): the operator never serves Providers in every namespace by default. Scope resolves as --watch-namespace-selector, else --watch-namespace, else the namespace the operator runs in; startup fails rather than widening when none can be found. Selector mode shares the controller's scope code (banlieue-provider-sdk) and gates Provider reconciliation on a label-filtered Namespace reflector; a Provider being deleted bypasses the gate so its workload teardown still runs, and un-labelling deletes nothing. Selector mode reads Namespace objects through a read-only grant in the operator ClusterRole. The provider binaries lose their cluster-wide default too: --namespace unset serves the namespace they run in. The selector is scope, not isolation: who may create a Provider in a served namespace is the RBAC and admission follow-up.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": [
+                  "AC-4",
+                  "SC-7"
+                ],
+                "evidence": "crates/banlieue-provider-sdk/src/scope.rs, crates/banlieue-operator/src/app.rs, crates/banlieue-operator/src/reconciler/provider.rs, docs/adr/0131-operator-and-provider-namespace-scope.md"
+              }
+            }
+          ]
+        },
         "crd-only-contract": {
           "description": "banlieue-operator MUST NOT call provider controllers, the main controller, or any backend SDK. It creates workloads through the Kubernetes API and reads desired state from CRs; the spawned provider then talks to its backend on its own. Same non-negotiable as every other role (CLAUDE.md \"Non-Negotiables\" #1).",
           "requirements": [

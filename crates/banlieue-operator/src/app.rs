@@ -30,13 +30,17 @@ use banlieue_provider_sdk::leader::{
     LeaderConfig, acquire_or_wait, renew_forever,
 };
 use banlieue_provider_sdk::runner::run_controller;
+use banlieue_provider_sdk::scope::{
+    NamespaceGate, Scope, ScopeError, check_selector, resolve_scope, scope_is_implicit,
+    scope_trigger, spawn_namespace_gate,
+};
 use clap::Args;
 use k8s_openapi::api::apps::v1::Deployment;
 use kube::{
     Api, ResourceExt,
     runtime::{Controller, reflector::ObjectRef, watcher::Config},
 };
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::{
     context::Context,
@@ -85,10 +89,19 @@ pub struct Cli {
     )]
     pub provider_stale_after_secs: u64,
 
-    /// Restrict the Provider watch to a single namespace. Defaults to watching
-    /// every namespace, which is what a cluster-wide operator wants.
+    /// Serve the Providers in this one namespace. Used when
+    /// `--watch-namespace-selector` is not set; when neither is, the operator
+    /// serves the namespace it runs in (`--namespace`). It never defaults to
+    /// every namespace (ADR-0131).
     #[arg(long, env = "BANLIEUE_WATCH_NAMESPACE")]
     pub watch_namespace: Option<String>,
+
+    /// Serve the Providers in every namespace whose labels match this label
+    /// selector (for example `banlieue.io/tenant=true`). Wins over
+    /// `--watch-namespace`. Needs a read-only list/watch on `Namespace`.
+    /// Labelling a namespace onboards it without a restart (ADR-0131).
+    #[arg(long, env = "BANLIEUE_WATCH_NAMESPACE_SELECTOR")]
+    pub watch_namespace_selector: Option<String>,
 
     /// Health server bind port.
     #[arg(long, env = "BANLIEUE_HEALTH_PORT", default_value_t = DEFAULT_HEALTH_PORT)]
@@ -154,11 +167,29 @@ pub async fn run(cli: Cli) -> Result<()> {
         version = env!("CARGO_PKG_VERSION"),
         namespace = %cli.namespace,
         watch_namespace = ?cli.watch_namespace,
+        watch_namespace_selector = ?cli.watch_namespace_selector,
         leader_elect = !cli.no_leader_elect,
         "banlieue-operator starting"
     );
 
     let client = build_client().await.context("constructing kube client")?;
+
+    let scope = watch_scope(&cli).context("resolving which namespaces to serve")?;
+    info!(scope = %scope.describe(), "serving Providers in");
+    if let Scope::Selector(selector) = &scope {
+        check_selector(&client, selector)
+            .await
+            .context("checking --watch-namespace-selector")?;
+    }
+    if watch_scope_is_implicit(&cli) {
+        // ADR-0131 narrowed the default from every namespace to this one.
+        warn!(
+            scope = %scope.describe(),
+            "no --watch-namespace-selector or --watch-namespace set: serving only the \
+             operator's own namespace; set BANLIEUE_WATCH_NAMESPACE_SELECTOR to serve tenant \
+             namespaces"
+        );
+    }
 
     let leader_cfg = (!cli.no_leader_elect).then(|| build_leader_config(&cli));
     let election = leader_cfg
@@ -192,6 +223,20 @@ pub async fn run(cli: Cli) -> Result<()> {
         info!("leader election disabled by --no-leader-elect");
     }
 
+    // Selector mode: watch every namespace and gate each reconcile on a
+    // selector-filtered Namespace reflector, whose changes reconcile every
+    // Provider again. Single-namespace modes narrow the watch and need neither.
+    let (scope_tx, scope_rx) = tokio::sync::watch::channel(0_u64);
+    let (gate, scope_tx) = match &scope {
+        Scope::Selector(selector) => {
+            let gate = spawn_namespace_gate(&client, selector, scope_tx)
+                .await
+                .context("starting the namespace selector watch")?;
+            (gate, None)
+        }
+        Scope::Namespace(_) => (NamespaceGate::none(), Some(scope_tx)),
+    };
+
     let ctx = Arc::new(
         Context::with_build_scheduling(
             client.clone(),
@@ -200,13 +245,11 @@ pub async fn run(cli: Cli) -> Result<()> {
             cli.build_node_selector.clone(),
             cli.build_toleration.clone(),
         )
-        .with_provider_stale_after(Duration::from_secs(cli.provider_stale_after_secs)),
+        .with_provider_stale_after(Duration::from_secs(cli.provider_stale_after_secs))
+        .with_namespace_gate(gate),
     );
 
-    let provider_api: Api<Provider> = match cli.watch_namespace.as_deref() {
-        Some(ns) => Api::namespaced(client.clone(), ns),
-        None => Api::all(client.clone()),
-    };
+    let provider_api: Api<Provider> = scope.api(&client);
     let deployment_api: Api<Deployment> = Api::all(client.clone());
 
     info!("starting Provider lifecycle controller");
@@ -222,7 +265,8 @@ pub async fn run(cli: Cli) -> Result<()> {
     // Without this, a class edit was only noticed on the next periodic requeue:
     // un-pausing a class took up to five minutes (bug-117), and an image bump
     // took up to 30s. Both are now immediate.
-    let provider_controller = Controller::new(provider_api, Config::default());
+    let provider_controller =
+        Controller::new(provider_api, Config::default()).reconcile_all_on(scope_trigger(scope_rx));
     let provider_store = provider_controller.store();
     let class_watch_api: Api<ProviderClass> = Api::all(client.clone());
 
@@ -279,8 +323,35 @@ pub async fn run(cli: Cli) -> Result<()> {
         }
     }
 
+    // Held to here so a single-namespace run's trigger stream stays pending
+    // instead of ending when the sender drops.
+    drop(scope_tx);
     telemetry.shutdown();
     Ok(())
+}
+
+/// Resolve which namespaces' Providers this operator serves (ADR-0131):
+/// `--watch-namespace-selector`, else `--watch-namespace`, else the
+/// operator's own namespace (`--namespace`). Never every namespace.
+///
+/// # Errors
+/// [`ScopeError::NoScope`] if all three are blank.
+pub fn watch_scope(cli: &Cli) -> Result<Scope, ScopeError> {
+    resolve_scope(
+        cli.watch_namespace_selector.as_deref(),
+        cli.watch_namespace.as_deref(),
+        Some(&cli.namespace),
+    )
+}
+
+/// Whether no watch flag chose the scope, so it is the implicit fallback to
+/// the operator's own namespace.
+#[must_use]
+pub fn watch_scope_is_implicit(cli: &Cli) -> bool {
+    scope_is_implicit(
+        cli.watch_namespace_selector.as_deref(),
+        cli.watch_namespace.as_deref(),
+    )
 }
 
 /// Build a [`LeaderConfig`] from parsed CLI flags, filling the holder identity

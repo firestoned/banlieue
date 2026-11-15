@@ -1662,14 +1662,21 @@ kind-e2e: ## Run every operator e2e suite, in sequence, against one kind cluster
 	@echo ""
 	@echo "✓ all e2e suites passed ($(E2E_SUITES))"
 
+# Label the e2e suites put on their namespace so the operator serves it (ADR-0131).
+# Must match `E2E_TENANT_LABEL` in crates/banlieue-operator/tests/e2e_common/mod.rs.
+E2E_TENANT_SELECTOR ?= banlieue.io/tenant=true
+
 kind-bootstrap-install: kind-load kind-kubeconfig ## Install banlieue into kind via `banlieue bootstrap operator` (the documented path)
 	@echo "Installing via 'banlieue bootstrap operator' (ADR-0013)..."
 	@# `--version local-dev` resolves to $(KIND_IMAGE), which kind-load already
 	@# side-loaded, so the pods never pull. This exercises the SAME install path
 	@# a real user runs — unlike `kind-deploy-operator`, which applies deploy/
 	@# manifests directly and therefore cannot catch bootstrap-only defects.
+	@# The operator serves only its own namespace unless selected (ADR-0131),
+	@# and the e2e's Providers live in `banlieue-e2e`, which the suites label.
 	@KUBECONFIG=$(KIND_KUBECONFIG) cargo run -q -p banlieue -- \
-	  bootstrap operator --namespace $(NAMESPACE) --version local-dev
+	  bootstrap operator --namespace $(NAMESPACE) --version local-dev \
+	  --watch-namespace-selector $(E2E_TENANT_SELECTOR)
 	@kubectl --kubeconfig $(KIND_KUBECONFIG) -n $(NAMESPACE) rollout status \
 	  deployment/banlieue-operator --timeout=180s
 

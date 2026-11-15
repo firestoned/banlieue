@@ -81,7 +81,8 @@ pub struct Cli {
     #[arg(long, env = "KUBECONFIG")]
     pub kubeconfig: Option<String>,
 
-    /// Restrict the provider to a single namespace. Cluster-wide when unset.
+    /// Namespace the provider serves. Defaults to the namespace it runs in;
+    /// never every namespace (ADR-0131).
     #[arg(long, env = "BANLIEUE_NAMESPACE")]
     pub namespace: Option<String>,
 
@@ -226,6 +227,15 @@ pub async fn run(cli: Cli) -> Result<()> {
     let client = build_client_with(cli.kubeconfig.as_deref().map(std::ffi::OsStr::new))
         .await
         .context("constructing kube client")?;
+
+    // ADR-0131: one namespace, never every namespace. `--namespace` wins, else
+    // the namespace this provider runs in.
+    let namespace = banlieue_provider_sdk::scope::provider_namespace(
+        cli.namespace.as_deref(),
+        client.default_namespace(),
+    )
+    .context("resolving the namespace to serve")?;
+    info!(namespace = %namespace, "serving Providers in");
     let leader_cfg = (!cli.no_leader_elect).then(|| build_leader_config(&cli));
     let election = leader_cfg
         .as_ref()
@@ -260,7 +270,7 @@ pub async fn run(cli: Cli) -> Result<()> {
     let ctx = Arc::new(
         Context::new(
             client.clone(),
-            cli.namespace.clone(),
+            Some(namespace.clone()),
             Arc::new(TlsClientFactory::new()),
             Arc::new(TlsMachineClientFactory::new()),
             cli.build_namespace.clone(),
@@ -271,10 +281,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         .with_provider_name(cli.provider_name.clone()),
     );
 
-    let provider_api: Api<Provider> = match cli.namespace.as_deref() {
-        Some(ns) => Api::namespaced(client.clone(), ns),
-        None => Api::all(client.clone()),
-    };
+    let provider_api: Api<Provider> = Api::namespaced(client.clone(), &namespace);
 
     info!("starting Provider controller (class=libvirt)");
     let ctx2 = ctx.clone();
@@ -306,10 +313,7 @@ pub async fn run(cli: Cli) -> Result<()> {
     // Provider, because a machine always lives beside the VirtualMachine that
     // owns it.
     info!("starting LibvirtMachine controller");
-    let machine_api: Api<LibvirtMachine> = match cli.namespace.as_deref() {
-        Some(ns) => Api::namespaced(client.clone(), ns),
-        None => Api::all(client.clone()),
-    };
+    let machine_api: Api<LibvirtMachine> = Api::namespaced(client.clone(), &namespace);
     let machine_ctrl = run_controller(
         Controller::new(machine_api, Config::default()),
         "LibvirtMachine",

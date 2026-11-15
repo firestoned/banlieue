@@ -36,17 +36,84 @@ mod tests {
         assert_eq!(cli.leader_election_id, DEFAULT_LEADER_ELECTION_ID);
     }
 
-    /// A cluster-wide operator must watch every namespace by default, or
-    /// Providers outside its own namespace are silently never provisioned.
+    /// ADR-0131: no flag means no scope chosen, not "every namespace".
     #[test]
-    fn the_provider_watch_is_cluster_wide_by_default() {
-        assert_eq!(parse(&[]).watch_namespace, None);
+    fn no_watch_flag_is_set_by_default() {
+        let cli = parse(&[]);
+        assert_eq!(cli.watch_namespace, None);
+        assert_eq!(cli.watch_namespace_selector, None);
     }
 
     #[test]
     fn watch_namespace_override_parses() {
         let cli = parse(&["--watch-namespace", "tenant-a"]);
         assert_eq!(cli.watch_namespace.as_deref(), Some("tenant-a"));
+    }
+
+    #[test]
+    fn watch_namespace_selector_parses() {
+        let cli = parse(&["--watch-namespace-selector", "banlieue.io/tenant=true"]);
+        assert_eq!(
+            cli.watch_namespace_selector.as_deref(),
+            Some("banlieue.io/tenant=true")
+        );
+    }
+
+    /// The default must not be every namespace: with no flag the operator
+    /// serves the namespace it runs in.
+    #[test]
+    fn the_default_scope_is_the_operators_own_namespace() {
+        let scope = watch_scope(&parse(&[])).unwrap();
+        assert_eq!(scope, Scope::Namespace(DEFAULT_NAMESPACE.to_string()));
+    }
+
+    #[test]
+    fn a_custom_install_namespace_is_the_default_scope() {
+        let scope = watch_scope(&parse(&["--namespace", "banlieue-prod"])).unwrap();
+        assert_eq!(scope, Scope::Namespace("banlieue-prod".to_string()));
+    }
+
+    /// `--namespace` is where the operator runs, never the scope on its own
+    /// account when `--watch-namespace` is given.
+    #[test]
+    fn watch_namespace_wins_over_the_install_namespace() {
+        let cli = parse(&[
+            "--namespace",
+            "banlieue-prod",
+            "--watch-namespace",
+            "tenant-a",
+        ]);
+        assert_eq!(
+            watch_scope(&cli).unwrap(),
+            Scope::Namespace("tenant-a".to_string())
+        );
+    }
+
+    #[test]
+    fn the_selector_wins_over_both_namespaces() {
+        let cli = parse(&[
+            "--watch-namespace",
+            "tenant-a",
+            "--watch-namespace-selector",
+            "banlieue.io/tenant=true",
+        ]);
+        assert_eq!(
+            watch_scope(&cli).unwrap(),
+            Scope::Selector("banlieue.io/tenant=true".to_string())
+        );
+    }
+
+    #[test]
+    fn the_scope_is_implicit_only_when_no_watch_flag_chose_it() {
+        assert!(watch_scope_is_implicit(&parse(&[])));
+        assert!(!watch_scope_is_implicit(&parse(&[
+            "--watch-namespace",
+            "a"
+        ])));
+        assert!(!watch_scope_is_implicit(&parse(&[
+            "--watch-namespace-selector",
+            "a=b"
+        ])));
     }
 
     #[test]

@@ -78,6 +78,15 @@ rules:
   - apiGroups: ["apps"]
     resources: ["deployments"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Namespaces, read-only (ADR-0131). `--watch-namespace-selector` serves the
+  # Providers in the namespaces whose labels match, so the operator lists and
+  # watches Namespace objects and probes the selector with a one-item list at
+  # startup. No write verb, deliberately: an operator that could relabel a
+  # namespace could choose its own scope. This is not handed on to provider
+  # Roles; only the operator reads Namespaces.
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "watch"]
   - apiGroups: [""]
     resources: ["serviceaccounts"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]

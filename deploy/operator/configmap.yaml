@@ -13,3 +13,11 @@ data:
   RUST_LOG_FORMAT: "json"
   BANLIEUE_METRICS_PORT: "8080"
   BANLIEUE_HEALTH_PORT: "8081"
+  # Which namespaces' Providers the operator serves (ADR-0131). Unset, it
+  # serves only its own namespace; it never defaults to every namespace. To
+  # serve tenant namespaces, use the same label as the controller:
+  #   kubectl label namespace team-a banlieue.io/tenant=true
+  # The selector wins over BANLIEUE_WATCH_NAMESPACE, which wins over the
+  # operator's own namespace. Selector mode needs the read-only `namespaces`
+  # grant in rbac/clusterrole.yaml.
+  # BANLIEUE_WATCH_NAMESPACE_SELECTOR: "banlieue.io/tenant=true"

@@ -258,3 +258,51 @@ mod tests {
         assert_eq!(FINALIZER, "banlieue.io/provider-workload");
     }
 }
+
+#[cfg(test)]
+mod gate_tests {
+    use std::sync::Arc;
+
+    use banlieue_api::banlieue::Provider;
+    use banlieue_api::common::LocalObjectReference;
+    use banlieue_provider_sdk::scope::NamespaceGate;
+    use k8s_openapi::api::core::v1::Namespace;
+    use kube::runtime::reflector;
+    use kube::{Client, Config};
+
+    use super::super::*;
+
+    fn offline_client() -> Client {
+        let url = "http://127.0.0.1:1".parse().expect("valid URL");
+        Client::try_from(Config::new(url)).expect("client from static config")
+    }
+
+    fn provider_in(namespace: &str) -> Provider {
+        let mut spec: banlieue_api::banlieue::ProviderSpec =
+            serde_json::from_value(serde_json::json!({
+                "providerClassRef": { "name": "vsphere" },
+                "connection": { "endpoint": "https://vcenter.example.com/sdk" },
+            }))
+            .expect("valid spec");
+        spec.provider_class_ref = LocalObjectReference {
+            name: "vsphere".into(),
+        };
+        let mut p = Provider::new("prod", spec);
+        p.metadata.namespace = Some(namespace.to_string());
+        p
+    }
+
+    /// ADR-0131: a Provider outside the served set is left alone. The client
+    /// points nowhere, so any API call would error: returning `Ok` proves
+    /// the reconcile stopped before making one (no finalizer, no workload).
+    #[tokio::test]
+    async fn a_provider_in_an_unserved_namespace_is_skipped_before_any_write() {
+        let (reader, _writer) = reflector::store::<Namespace>();
+        let ctx = Arc::new(
+            Context::new(offline_client(), "banlieue-system".into())
+                .with_namespace_gate(NamespaceGate::selected(reader)),
+        );
+        let action = reconcile(Arc::new(provider_in("team-b")), ctx).await;
+        assert_eq!(action.unwrap(), Action::await_change());
+    }
+}

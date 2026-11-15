@@ -169,9 +169,15 @@ pub async fn reconcile(provider: Arc<Provider>, ctx: Arc<Context>) -> Result<Act
     let namespace = provider
         .namespace()
         .ok_or(Error::Missing("Provider.metadata.namespace"))?;
+    // ADR-0131: a Provider outside the served namespaces is left alone, before
+    // any finalizer or workload is written. A deleting one is not skipped.
+    let deleting = provider.meta().deletion_timestamp.is_some();
+    if let Some(action) = ctx.skip_unserved(&namespace, deleting) {
+        return Ok(action);
+    }
     let providers: Api<Provider> = Api::namespaced(ctx.client.clone(), &namespace);
 
-    if provider.meta().deletion_timestamp.is_some() {
+    if deleting {
         return cleanup(&provider, &providers, &ctx).await;
     }
 
