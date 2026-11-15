@@ -37,11 +37,13 @@ use banlieue_provider_sdk::leader::{
     DEFAULT_LEASE_DURATION_SECS, DEFAULT_RENEW_PERIOD_SECS, DEFAULT_RETRY_PERIOD_SECS,
     LeaderConfig, acquire_or_wait, renew_forever,
 };
+use banlieue_provider_sdk::metrics::Metrics;
 use banlieue_provider_sdk::runner::run_controller;
 use clap::Args;
-use futures::StreamExt;
+use futures::future::BoxFuture;
+use futures::{FutureExt as _, StreamExt};
 use kube::{
-    Api, ResourceExt,
+    Api, Client, ResourceExt,
     runtime::{
         Controller, WatchStreamExt, reflector, reflector::ObjectRef, watcher, watcher::Config,
     },
@@ -51,6 +53,7 @@ use tracing::{error, info, warn};
 use crate::{
     context::Context,
     metrics::{FailureDomainCollector, HeartbeatCollector, VirtualMachineCollector},
+    reconciler::bootstrap_data,
     reconciler::claim,
     reconciler::pool,
     reconciler::virtualmachine::{error_policy, reconcile},
@@ -450,6 +453,52 @@ pub async fn run(cli: Cli) -> Result<()> {
         ctx.clone(),
     );
 
+    // CAPI bootstrap data (ADR-0129): one controller per InfraMachine kind,
+    // each also watching CAPI Machines so adoption and `dataSecretName` wake
+    // the machine they name. Only when the API server serves v1beta2
+    // Machines; a cluster that installs Cluster API later restarts the
+    // controller to turn this on.
+    let bootstrap_fut: BoxFuture<'static, ()> =
+        if bootstrap_data::capi_machines_served(&client).await {
+            info!("starting CAPI bootstrap-data controllers");
+            let ns = cli.namespace.as_deref();
+            futures::future::join4(
+                bootstrap_data_controller::<CloudHypervisorMachine>(
+                    "CloudHypervisorMachineBootstrapData",
+                    &client,
+                    ns,
+                    &metrics,
+                    &ctx,
+                ),
+                bootstrap_data_controller::<LibvirtMachine>(
+                    "LibvirtMachineBootstrapData",
+                    &client,
+                    ns,
+                    &metrics,
+                    &ctx,
+                ),
+                bootstrap_data_controller::<VSphereMachine>(
+                    "VSphereMachineBootstrapData",
+                    &client,
+                    ns,
+                    &metrics,
+                    &ctx,
+                ),
+                bootstrap_data_controller::<ProxmoxMachine>(
+                    "ProxmoxMachineBootstrapData",
+                    &client,
+                    ns,
+                    &metrics,
+                    &ctx,
+                ),
+            )
+            .map(|_| ())
+            .boxed()
+        } else {
+            info!("Cluster API Machines not served: CAPI bootstrap-data controllers off");
+            futures::future::pending().boxed()
+        };
+
     readiness.controllers_started();
 
     tokio::select! {
@@ -458,6 +507,9 @@ pub async fn run(cli: Cli) -> Result<()> {
         }
         () = pool_fut => {
             info!("VirtualMachinePool controller stream ended");
+        }
+        () = bootstrap_fut => {
+            info!("CAPI bootstrap-data controller streams ended");
         }
         () = claim_fut => {
             info!("VirtualMachineClaim controller stream ended");
@@ -478,6 +530,54 @@ pub async fn run(cli: Cli) -> Result<()> {
 
     telemetry.shutdown();
     Ok(())
+}
+
+/// One CAPI bootstrap-data controller for InfraMachine kind `K` (ADR-0129):
+/// the kind itself, plus CAPI `Machine`s mapped to the InfraMachine their
+/// `spec.infrastructureRef` names.
+fn bootstrap_data_controller<K>(
+    name: &'static str,
+    client: &Client,
+    namespace: Option<&str>,
+    metrics: &Metrics,
+    ctx: &Arc<Context>,
+) -> BoxFuture<'static, ()>
+where
+    K: kube::Resource<DynamicType = (), Scope = k8s_openapi::NamespaceResourceScope>
+        + banlieue_api::capi::BootstrapTarget
+        + Clone
+        + std::fmt::Debug
+        + serde::de::DeserializeOwned
+        + serde::Serialize
+        + Send
+        + Sync
+        + 'static,
+{
+    let (kinds, machines): (Api<K>, Api<kube::api::DynamicObject>) = match namespace {
+        Some(ns) => (
+            Api::namespaced(client.clone(), ns),
+            Api::namespaced_with(client.clone(), ns, &bootstrap_data::machine_resource()),
+        ),
+        None => (
+            Api::all(client.clone()),
+            Api::all_with(client.clone(), &bootstrap_data::machine_resource()),
+        ),
+    };
+    let controller = Controller::new(kinds, Config::default()).watches_with(
+        machines,
+        bootstrap_data::machine_resource(),
+        Config::default(),
+        |machine| bootstrap_data::infra_machine_for::<K>(&machine),
+    );
+    run_controller(
+        controller,
+        name,
+        metrics.clone(),
+        bootstrap_data::reconcile::<K>,
+        bootstrap_data::error_policy::<K>,
+        ctx.clone(),
+    )
+    .boxed()
 }
 
 /// Build a [`LeaderConfig`] from parsed CLI flags, filling the holder identity

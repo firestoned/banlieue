@@ -26,6 +26,12 @@
 //! on them, and nothing should: the contract under test is between CAPI and
 //! the CRDs plus RBAC banlieue installs.
 //!
+//! **Bootstrap data is not covered here.** A v1beta2 `Machine` must name a
+//! bootstrap source, so this suite's Machine names [`UNUSED_BOOTSTRAP_SECRET`],
+//! a Secret that is never created: it is a stand-in for CAPI's validation, not
+//! bootstrap data, and no banlieue controller runs here to read it. Delivering
+//! real bootstrap data is `e2e_capi_bootstrap_data.rs` (ADR-0129).
+//!
 //! Addresses are RFC 5737 documentation addresses. `#[ignore]`d so
 //! `cargo test` stays hermetic; an unreachable cluster fails loudly.
 
@@ -52,6 +58,11 @@ const CLUSTER: &str = "capi-e2e";
 
 /// Shared name for the Machine and its VSphereMachine.
 const MACHINE: &str = "capi-e2e-md-0";
+
+/// The bootstrap Secret this suite's Machine names. Never created: CAPI only
+/// requires a Machine to name a bootstrap source, and this suite tests the
+/// status side of the contract. See the module docs.
+const UNUSED_BOOTSTRAP_SECRET: &str = "capi-e2e-unused-bootstrap";
 
 /// What the "provider" writes into `spec.providerID`.
 const PROVIDER_ID: &str = "vsphere://4211a6f2-0000-4000-8000-000000000001";
@@ -324,7 +335,7 @@ async fn capi_drives_banlieue_infrastructure_objects_through_the_v1beta2_contrac
                     "metadata": { "name": MACHINE, "namespace": NAMESPACE },
                     "spec": {
                         "clusterName": CLUSTER,
-                        "bootstrap": { "dataSecretName": "capi-e2e-bootstrap" },
+                        "bootstrap": { "dataSecretName": UNUSED_BOOTSTRAP_SECRET },
                         "infrastructureRef": {
                             "apiGroup": INFRA_GROUP,
                             "kind": "VSphereMachine",

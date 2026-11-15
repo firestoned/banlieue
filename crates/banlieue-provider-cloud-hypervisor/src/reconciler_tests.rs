@@ -6,10 +6,12 @@
 mod tests {
     use super::super::*;
     use crate::machine::{Observed, Phase};
+    use banlieue_api::capi::{BOOTSTRAP_DATA_READY, CLUSTER_NAME_LABEL, bootstrap_reasons};
     use banlieue_api::common::{IpamSpec, LocalObjectReference, PowerState};
     use banlieue_api::infrastructure::{
         ChBootSource, ChBootSourceKind, ChCpuSpec, ChMemorySpec, CloudHypervisorMachineSpec,
     };
+    use k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference;
     use kube::api::ObjectMeta;
     use std::net::Ipv4Addr;
 
@@ -262,5 +264,159 @@ lan = "br0"
         let died = Error::VmmExited("exit-code, status 217".into());
         assert_eq!(failure_reason(&died), "VmmExited");
         assert!(!is_permanent(&died), "retried, with backoff");
+    }
+
+    // ----------------------------------------------------------------------
+    // ADR-0129: hold a CAPI machine's guest until its bootstrap data is there
+    // ----------------------------------------------------------------------
+
+    fn owner(api_version: &str, kind: &str, name: &str) -> OwnerReference {
+        OwnerReference {
+            api_version: api_version.into(),
+            kind: kind.into(),
+            name: name.into(),
+            uid: format!("uid-{name}"),
+            controller: Some(true),
+            block_owner_deletion: None,
+        }
+    }
+
+    /// A machine shaped as Cluster API's `GenerateTemplate` creates it:
+    /// owned by its MachineSet, labelled with the cluster.
+    fn as_capi_creates_it() -> CloudHypervisorMachine {
+        let mut m = machine("wl-1-md-0-x", "banlieue-system", "ch-a", None);
+        m.metadata.owner_references = Some(vec![owner(
+            "cluster.x-k8s.io/v1beta2",
+            "MachineSet",
+            "wl-1-md-0",
+        )]);
+        m.metadata.labels = Some([(CLUSTER_NAME_LABEL.to_string(), "wl-1".to_string())].into());
+        m
+    }
+
+    /// The same machine once the Machine controller has adopted it.
+    fn adopted(m: &CloudHypervisorMachine) -> CloudHypervisorMachine {
+        let mut m = m.clone();
+        m.metadata.owner_references = Some(vec![owner(
+            "cluster.x-k8s.io/v1beta2",
+            "Machine",
+            "wl-1-md-0-x",
+        )]);
+        m
+    }
+
+    fn with_bootstrap_condition(
+        m: &CloudHypervisorMachine,
+        status: &str,
+    ) -> CloudHypervisorMachine {
+        let mut m = m.clone();
+        let mut st = m.status.clone().unwrap_or_default();
+        banlieue_provider_sdk::status::set_condition(
+            &mut st.conditions,
+            BOOTSTRAP_DATA_READY,
+            status,
+            "R",
+            "",
+            1,
+        );
+        m.status = Some(st);
+        m
+    }
+
+    /// The whole ordering, as Cluster API produces it: created (held), adopted
+    /// without data (held), adopted with data delivered (created).
+    #[test]
+    fn a_capi_machine_is_held_from_creation_until_its_data_is_delivered() {
+        let created = as_capi_creates_it();
+        assert!(creation_held(&created), "before adoption");
+        let owned = adopted(&created);
+        assert!(creation_held(&owned), "adopted, no condition");
+        assert!(
+            creation_held(&with_bootstrap_condition(&owned, "False")),
+            "adopted, data not delivered"
+        );
+        assert!(
+            !creation_held(&with_bootstrap_condition(&owned, "True")),
+            "adopted, data delivered"
+        );
+    }
+
+    #[test]
+    fn a_delivered_condition_before_adoption_does_not_release_the_hold() {
+        assert!(creation_held(&with_bootstrap_condition(
+            &as_capi_creates_it(),
+            "True"
+        )));
+    }
+
+    #[test]
+    fn a_standalone_or_virtualmachine_machine_is_never_held() {
+        assert!(!creation_held(&machine(
+            "a",
+            "banlieue-system",
+            "ch-a",
+            None
+        )));
+        let mut vm_owned = machine("b", "banlieue-system", "ch-a", None);
+        vm_owned.metadata.owner_references = Some(vec![owner(
+            "banlieue.io/v1alpha1",
+            "VirtualMachine",
+            "vm-b",
+        )]);
+        assert!(!creation_held(&vm_owned));
+    }
+
+    /// A guest uid is recorded before anything is created on the host, so a
+    /// machine that has one already exists there (created before an upgrade):
+    /// it is never held, or its running guest would be left unmanaged.
+    #[test]
+    fn a_machine_with_a_guest_uid_is_never_held() {
+        let mut m = adopted(&as_capi_creates_it());
+        m.status = Some(CloudHypervisorMachineStatus {
+            host_uid: Some(2_000_001),
+            ..Default::default()
+        });
+        assert!(!creation_held(&m));
+    }
+
+    #[test]
+    fn the_held_status_says_why_and_reports_nothing_provisioned() {
+        let st = held_status(None, 4);
+        assert_eq!(st.initialization.provisioned, Some(false));
+        let ready = st
+            .conditions
+            .iter()
+            .find(|c| c.type_ == "Ready")
+            .expect("Ready");
+        assert_eq!(ready.status, "False");
+        assert_eq!(ready.reason, bootstrap_reasons::WAITING_FOR_BOOTSTRAP_DATA);
+        assert_eq!(ready.observed_generation, Some(4));
+        assert_eq!(st.host_uid, None, "no guest uid is allocated while held");
+    }
+
+    /// The provider applies its whole status from a snapshot; it must never
+    /// carry the controller's condition, or it would own that entry and could
+    /// overwrite it with a stale value.
+    #[test]
+    fn the_status_patch_never_carries_the_controllers_condition() {
+        let m = with_bootstrap_condition(&adopted(&as_capi_creates_it()), "True");
+        let mut st = m.status.clone().expect("status");
+        banlieue_provider_sdk::status::set_condition(
+            &mut st.conditions,
+            "Ready",
+            "True",
+            "Running",
+            "",
+            1,
+        );
+        let patch = status_patch(&st);
+        let types: Vec<&str> = patch["status"]["conditions"]
+            .as_array()
+            .expect("conditions")
+            .iter()
+            .map(|c| c["type"].as_str().expect("type"))
+            .collect();
+        assert_eq!(types, ["Ready"]);
+        assert_eq!(patch["kind"], "CloudHypervisorMachine");
     }
 }

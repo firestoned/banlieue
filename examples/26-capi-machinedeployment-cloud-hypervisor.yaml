@@ -1,0 +1,105 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# Cluster API workers on a Cloud Hypervisor host (ADR-0129).
+#
+# A MachineDeployment over a CloudHypervisorMachineTemplate. kubeadm's
+# bootstrap provider renders each worker's join data into a Secret; Cluster API
+# names it in Machine.spec.bootstrap.dataSecretName; banlieue-controller copies
+# it into the CloudHypervisorMachine's spec.userData; and the host provider
+# starts the guest only once it is there (BootstrapDataReady=True).
+#
+# Everything is in banlieue-system: a Cloud Hypervisor host serves only its
+# Provider's namespace, and the controller may already read Secrets there.
+# For another backend in another namespace, grant the controller the Role
+# shown in docs/src/guides/cluster-api.md.
+#
+# The template carries no userData: on a CAPI-owned machine the bootstrap
+# data replaces it. Apply deploy/admission/capi-bootstrap-data-authorization.yaml
+# too, so nobody can point a Machine at another Machine's bootstrap Secret.
+#
+# Placeholders: `ch-bar` is your Cloud Hypervisor host's Provider; `default`
+# and `lan` are a storage and a network class that host declares; the image
+# is a raw cloud image in that storage class's image cache. 192.0.2.10 is an
+# RFC 5737 documentation address: use your control plane's.
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: Cluster
+metadata:
+  name: workload
+  namespace: banlieue-system
+spec:
+  controlPlaneEndpoint:
+    host: 192.0.2.10
+    port: 6443
+  # Your control-plane provider's object (a KubeadmControlPlane here; a
+  # K0smotronControlPlane works the same way), defined beside this file.
+  # Cluster API requires a Cluster to name a control plane, an
+  # infrastructureRef or a topology. Workers join once it is initialised.
+  controlPlaneRef:
+    apiGroup: controlplane.cluster.x-k8s.io
+    kind: KubeadmControlPlane
+    name: workload-control-plane
+---
+apiVersion: infrastructure.banlieue.io/v1alpha1
+kind: CloudHypervisorMachineTemplate
+metadata:
+  name: workload-md-0
+  namespace: banlieue-system
+spec:
+  template:
+    spec:
+      providerRef:
+        name: ch-bar
+      cpus:
+        boot: 2
+      memory:
+        sizeMiB: 4096
+      storageClass: default
+      bootSource:
+        kind: image
+        image: ubuntu-24.04-server-cloudimg-amd64.raw
+      osDiskSizeGiB: 20
+      nics:
+        - name: eth0
+          networkClass: lan
+          ipam: {}          # DHCP on the class's bridge
+---
+apiVersion: bootstrap.cluster.x-k8s.io/v1beta2
+kind: KubeadmConfigTemplate
+metadata:
+  name: workload-md-0
+  namespace: banlieue-system
+spec:
+  template:
+    spec:
+      # The one format every banlieue backend delivers (cloud-init); the
+      # controller refuses any other.
+      format: cloud-config
+---
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: MachineDeployment
+metadata:
+  name: workload-md-0
+  namespace: banlieue-system
+spec:
+  clusterName: workload
+  replicas: 1
+  selector:
+    matchLabels:
+      cluster.x-k8s.io/deployment-name: workload-md-0
+  template:
+    metadata:
+      labels:
+        cluster.x-k8s.io/deployment-name: workload-md-0
+    spec:
+      clusterName: workload
+      version: v1.34.1
+      bootstrap:
+        configRef:
+          apiGroup: bootstrap.cluster.x-k8s.io
+          kind: KubeadmConfigTemplate
+          name: workload-md-0
+      infrastructureRef:
+        apiGroup: infrastructure.banlieue.io
+        kind: CloudHypervisorMachineTemplate
+        name: workload-md-0

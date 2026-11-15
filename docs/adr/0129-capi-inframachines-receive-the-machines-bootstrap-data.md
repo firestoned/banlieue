@@ -241,6 +241,7 @@ The controller reports on a condition of the InfraMachine,
 | `False` | `WaitingForBootstrapData` | not yet owned by a Machine, the Machine has no `dataSecretName` yet, or the Secret does not exist yet; the message says which |
 | `False` | `BootstrapSecretInvalid` | checks 1 to 4 failed; the message names which |
 | `False` | `UnsupportedBootstrapDataFormat` | check 5 failed; the message names the format |
+| `False` | `MachineReferenceMismatch` | the owning Machine does not confirm the ownerReference (see Implementation notes); no Secret is read |
 | `False` | `BootstrapSecretForbidden` | the controller may not read Secrets in this namespace (Decision 9) |
 | `True` | `BootstrapDataDelivered` | `spec.userData` holds the Secret's `value` |
 
@@ -411,7 +412,10 @@ CAPI `MachineHealthCheck`. The guide says so.
 - Installing Cluster API after banlieue needs a controller restart to turn
   the reconciler on.
 
-## Open questions, settled by the e2e before this is Accepted
+## Open questions, settled by the e2e
+
+Both settled 2026-11-14 by `e2e_capi_bootstrap_data.rs` against Cluster API
+v1.14.3; see the implementation notes.
 
 - Whether CAPI v1.14 marks a `Cluster` with no `infrastructureRef` as
   infrastructure-provisioned, or whether the e2e needs an InfraCluster for a
@@ -419,3 +423,61 @@ CAPI `MachineHealthCheck`. The guide says so.
 - Whether a MachineSet in CAPI v1.14 re-applies the template's spec to an
   existing InfraMachine (in-place propagation), which would contend with
   the controller's ownership of `spec.userData`.
+
+## Implementation notes (2026-11-14)
+
+Milestone 1 is implemented: `banlieue-api/src/capi.rs` (classification,
+ownership, the hold rule, the provider-side condition filter),
+`banlieue-controller/src/reconciler/bootstrap_data.rs`,
+`deploy/admission/capi-bootstrap-data-authorization.yaml`, the controller's
+Machine read in `deploy/controller/rbac/clusterrole.yaml`, and the Cloud
+Hypervisor provider's hold (`reconciler.rs`: `creation_held`,
+`status_patch`). `e2e_capi_bootstrap_data.rs` passes against CAPI v1.14.3
+with kubeadm's bootstrap and control-plane providers, the controller running
+under its own ServiceAccount: kubeadm init data delivered byte for byte (13 KB
+of `kubeadm.k8s.io/v1beta4` config), after a `BootstrapSecretForbidden` that
+the guide's Role and annotation procedure clear; a MachineDeployment's data;
+an `Opaque` Secret refused; and the admission policy refusing and admitting
+as Decision 5 says.
+
+The open questions, answered:
+
+- **A `Cluster` without `infrastructureRef`**: CAPI v1.14.3 reports
+  `status.initialization.infrastructureProvisioned: true` and needs no
+  InfraCluster. Its webhook does require one of `controlPlaneRef`,
+  `infrastructureRef` or `topology`, so a Cluster always names a control
+  plane here.
+- **In-place propagation**: a MachineDeployment template label change reaches
+  the existing InfraMachine, so CAPI does re-apply to it; `spec.userData`,
+  owned by `banlieue.io/bootstrap-data-controller`, survives it.
+
+Found on the way, and fixed by amending ADR-0096 (2026-11-14): a
+`KubeadmControlPlane` could not use any banlieue machine template, because
+KCP's manager aggregates on its own label, which `banlieue-capi-infrastructure`
+did not carry.
+
+Added in review (2026-11-15): the controller does not trust the
+InfraMachine's ownerReference alone. An ownerReference is metadata anyone
+allowed to create or update the InfraMachine can write, so a principal who
+may create InfraMachines but cannot read Secrets could point one at another
+Machine and have that Machine's bootstrap data copied into an object it can
+read, without touching the `dataSecretName` that Decision 5 authorizes.
+Before reading any Secret, the controller now requires the owning Machine's
+UID to equal the ownerReference's and the Machine's `spec.infrastructureRef`
+to name this InfraMachine; Cluster API writes that reference when it creates
+the Machine, before adoption. Otherwise it reports `MachineReferenceMismatch`
+(a reason Decision 6 did not list) and waits for a change to either object
+(`capi.rs`: `machine_confirms_adoption`; `bootstrap_data.rs`:
+`unconfirmed_adoption`). Because the condition stays `False`, the Cloud
+Hypervisor provider keeps holding such a machine.
+
+Deviations from the Decision text, none of substance:
+
+- Decision 11 asked for the Cloud Hypervisor hold to be tested through
+  `fake.rs`. The hold sits before the first host operation, guest uid
+  allocation included, so there is no host call to observe: it is tested
+  through the CAPI ordering on `creation_held` and on the status the provider
+  writes while holding.
+- `e2e_capi_contract.rs` keeps a `dataSecretName`, because a v1beta2 Machine
+  must name a bootstrap source; it is now a named, never-created stand-in, and
+  the suite's module docs say bootstrap delivery is the new suite's.

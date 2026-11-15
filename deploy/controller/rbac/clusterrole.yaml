@@ -130,6 +130,18 @@ rules:
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 
   # ---------------------------------------------------------------------------
+  # Cluster API Machines (ADR-0129) — read-only
+  # ---------------------------------------------------------------------------
+  # The controller watches Machines to deliver their bootstrap data into the
+  # InfraMachine they name. A Machine carries the NAME of its bootstrap Secret
+  # (spec.bootstrap.dataSecretName), never its content: the Secret itself is
+  # read by name through a namespaced Role (role.yaml), never through this
+  # ClusterRole. Unused, and harmless, where Cluster API is not installed.
+  - apiGroups: ["cluster.x-k8s.io"]
+    resources: ["machines"]
+    verbs: ["get", "list", "watch"]
+
+  # ---------------------------------------------------------------------------
   # Core resources the controller reads or writes
   # ---------------------------------------------------------------------------
   # NO secrets rule, deliberately (security review 2026-07-31 SEC-008): no code

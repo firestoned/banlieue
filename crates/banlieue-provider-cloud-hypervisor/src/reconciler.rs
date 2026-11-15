@@ -21,6 +21,7 @@ use crate::host::HostOps;
 use crate::host_config::HostConfig;
 use crate::machine::{Observed, Phase, build_status, converge, failure_status, teardown};
 use crate::plan::{PlanError, UidLedger, plan_machine};
+use banlieue_api::capi::{bootstrap_reasons, holds_creation, retain_provider_conditions};
 use banlieue_api::common::FirstBootSealing;
 use banlieue_api::infrastructure::{CloudHypervisorMachine, CloudHypervisorMachineStatus};
 use banlieue_provider_sdk::finalizer::{ensure_finalizer, remove_finalizer};
@@ -29,8 +30,8 @@ use banlieue_provider_sdk::sealing::{SealingGate, sealing_gate};
 use k8s_openapi::jiff::Timestamp;
 use kube::api::{Api, ListParams, Patch, PatchParams};
 use kube::runtime::controller::Action;
-use kube::{Client, ResourceExt};
-use serde_json::json;
+use kube::{Client, Resource, ResourceExt};
+use serde_json::{Value, json};
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
@@ -170,6 +171,17 @@ pub async fn reconcile(machine: Arc<CloudHypervisorMachine>, ctx: Arc<Context>) 
         .await
         .map_err(|e| Error::Io(std::io::Error::other(e.to_string())))?;
 
+    // A Cluster API machine's guest waits for its bootstrap data (ADR-0129):
+    // nothing is created on the host, not even a guest uid, until the
+    // machine is owned by a Machine and the controller reports the data
+    // delivered. Checked before the uid, so a machine that already has one
+    // (a guest created before an upgrade) is never held.
+    if creation_held(&machine) {
+        let st = held_status(previous, generation);
+        patch_status(&api, &name, &st, &field_manager).await?;
+        return Ok(Action::await_change());
+    }
+
     // Record the guest uid before anything is created on the host for it.
     let Some(host_uid) = previous.and_then(|s| s.host_uid) else {
         let all = api.list(&ListParams::default()).await?.items;
@@ -293,17 +305,57 @@ async fn finalize(
     Ok(Action::await_change())
 }
 
+/// Whether this machine's guest must not be created yet: Cluster API means it
+/// and it is not yet owned by a Machine with its bootstrap data delivered
+/// ([`holds_creation`]), and nothing has been created on the host for it (no
+/// guest uid recorded).
+#[must_use]
+pub fn creation_held(machine: &CloudHypervisorMachine) -> bool {
+    let status = machine.status.as_ref();
+    if status.and_then(|s| s.host_uid).is_some() {
+        return false;
+    }
+    let conditions = status.map_or(&[][..], |s| s.conditions.as_slice());
+    holds_creation(machine.meta(), conditions)
+}
+
+/// The status a held machine reports: not provisioned, `Ready=False` with
+/// `WaitingForBootstrapData`.
+#[must_use]
+pub fn held_status(
+    previous: Option<&CloudHypervisorMachineStatus>,
+    generation: i64,
+) -> CloudHypervisorMachineStatus {
+    failure_status(
+        previous,
+        "waiting for the Cluster API Machine's bootstrap data (BootstrapDataReady)",
+        bootstrap_reasons::WAITING_FOR_BOOTSTRAP_DATA,
+        generation,
+    )
+}
+
+/// The server-side apply body for this provider's status. The controller's
+/// `BootstrapDataReady` condition is dropped: the provider applies its whole
+/// status from a snapshot, and must neither own that entry nor overwrite it
+/// with a stale copy (ADR-0129 Decision 6).
+#[must_use]
+pub fn status_patch(status: &CloudHypervisorMachineStatus) -> Value {
+    let mut status = status.clone();
+    retain_provider_conditions(&mut status.conditions);
+    json!({
+        "apiVersion": CloudHypervisorMachine::api_version(&()),
+        "kind": CloudHypervisorMachine::kind(&()),
+        "status": status,
+    })
+}
+
 async fn patch_status(
     api: &Api<CloudHypervisorMachine>,
     name: &str,
     status: &CloudHypervisorMachineStatus,
     field_manager: &str,
 ) -> Result<()> {
-    let patch = json!({
-        "apiVersion": "infrastructure.banlieue.io/v1alpha1",
-        "kind": "CloudHypervisorMachine",
-        "status": status,
-    });
+    let patch = status_patch(status);
     api.patch_status(
         name,
         // Scoped per ADR-0087. A CloudHypervisorMachine is reconciled by the

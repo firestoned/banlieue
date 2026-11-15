@@ -1,5 +1,126 @@
 # Changelog
 
+## [2026-11-15 10:00] - ADR-0129 milestone 1: review fixes (owner confirmation, e2e cleanup, CALM, messages)
+
+**Author:** Daniel Guns
+
+### Fixed
+- `crates/banlieue-api/src/capi.rs`, `crates/banlieue-controller/src/reconciler/bootstrap_data.rs`:
+  the controller trusted an InfraMachine's ownerReference without checking
+  it. Anyone allowed to create or update an InfraMachine could point one at
+  another `Machine` and have that Machine's bootstrap data copied into it,
+  bypassing the admission check on `dataSecretName`. Before reading any
+  Secret, the controller now requires the owning Machine's UID to equal the
+  reference's and the Machine's `spec.infrastructureRef` to name this
+  InfraMachine (`machine_confirms_adoption`, `unconfirmed_adoption`, `infra_ref_of`;
+  `Gate::ReadMachine` carries the owner UID). Otherwise it reports the new
+  reason `MachineReferenceMismatch`, reads nothing, and the provider keeps
+  holding the machine. 5 tests in `capi_tests.rs`, 5 in
+  `bootstrap_data_tests.rs`.
+- `scripts/kind-capi-controller.sh`: `stop` no longer requires
+  `CAPI_KIND_KUBECONFIG` (only `start` uses it), so the Makefile's cleanup
+  after a passing run no longer exits before killing the controller; the
+  Makefile passes it anyway.
+- `deploy/admission/capi-bootstrap-data-authorization.yaml`: no ADR ID in the
+  two rejection messages (user-facing output).
+
+### Docs
+- `docs/architecture/calm/architecture.json`: ADR-0129's InfraMachine,
+  bootstrap Secret, relationship and flow say milestone 1 is implemented
+  (they said "PROPOSED, not yet implemented"); the relationship gains the
+  control `capi-bootstrap-data-owner-confirmation`. `make calm-validate`
+  passes; `make calm-diagrams` regenerated `docs/src/architecture/flows.md`.
+- `docs/adr/0129-…`: `MachineReferenceMismatch` in Decision 6's table and an
+  implementation note explaining it. `docs/src/guides/cluster-api.md`: the
+  reason in the condition table.
+- `docs/src/security/threat-model.md`: TB-15 row for a forged ownerReference;
+  stamp 2026-11-15 / ADR-0001 … ADR-0129.
+
+### Why
+Code review of the uncommitted milestone 1.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (same as the entry below)
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-11-14 22:00] - CAPI InfraMachines receive the Machine's bootstrap data (ADR-0129 milestone 1)
+
+**Author:** Daniel Guns
+
+### Added
+- `crates/banlieue-api/src/capi.rs` (+ `capi_tests.rs`, 40 tests): what the
+  controller and the providers share. `is_capi_intended` (the
+  `cluster.x-k8s.io/cluster-name` label or a Cluster API owner, so true from
+  the moment CAPI creates a machine), `owning_machine`, `holds_creation`,
+  `retain_provider_conditions`, `MachineBootstrap::from_machine` (v1beta2),
+  `bootstrap_value` (the five checks of Decision 4), and `BootstrapTarget`
+  over the four InfraMachine kinds. Fixtures follow CAPI v1.14, CABPK and
+  k0smotron as their source writes them.
+- `crates/banlieue-controller/src/reconciler/bootstrap_data.rs` (+ tests, 24):
+  one reconciler per InfraMachine kind, each also watching CAPI `Machine`s,
+  started only when the API server serves `cluster.x-k8s.io/v1beta2`
+  Machines. Applies `spec.userData` byte for byte and the one condition
+  `BootstrapDataReady` under its own field manager; waits on a Secret are
+  requeued at 30 s / 5 min (no Secret list/watch); one-shot. `app.rs` wires
+  them in.
+- `deploy/admission/capi-bootstrap-data-authorization.yaml`: whoever sets
+  `dataSecretName` on a `Machine`, or in a `MachineSet`/`MachineDeployment`
+  template, must be able to `get` that Secret (Decision 5); README row.
+- `crates/banlieue-operator/tests/e2e_capi_bootstrap_data.rs`,
+  `make kind-e2e-capi-bootstrap` / `kind-e2e-capi-bootstrap-run`,
+  `scripts/kind-capi-controller.sh`: real CAPI v1.14.3 and kubeadm providers,
+  the controller as a local binary under its own ServiceAccount. Four cases,
+  all passing: kubeadm init data delivered (after `BootstrapSecretForbidden`
+  without a Role), a MachineDeployment's data surviving template propagation,
+  an `Opaque` Secret refused, the admission policy.
+- `.github/workflows/e2e.yaml`: a `capi` job running `kind-e2e-capi` and
+  `kind-e2e-capi-bootstrap`; neither CAPI suite ran in CI before.
+- `examples/26-capi-machinedeployment-cloud-hypervisor.yaml`, with a test in
+  `banlieue-api/tests/examples.rs`; validated by a server-side dry run
+  against CAPI v1.14.3.
+
+### Changed
+- `crates/banlieue-provider-cloud-hypervisor/src/reconciler.rs`: creates
+  nothing, guest uid included, for a CAPI-intended machine until a `Machine`
+  owns it and `BootstrapDataReady` is `True` (`creation_held`); never applies
+  that condition (`status_patch`). 6 tests.
+- `deploy/controller/rbac/clusterrole.yaml`: `get`/`list`/`watch` on
+  `machines.cluster.x-k8s.io`, pinned by
+  `controller_cluster_role_only_reads_capi_machines`; `role.yaml` comment.
+- `crates/banlieue-operator/tests/e2e_capi_contract.rs`: its `dataSecretName`
+  is a named, never-created stand-in; bootstrap coverage moved to the new
+  suite.
+
+### Fixed
+- `deploy/capi/clusterrole-aggregate.yaml` (ADR-0096 amended 2026-11-14):
+  also aggregated into KubeadmControlPlane's manager. As shipped, KCP could
+  not list any banlieue machine template, so no `KubeadmControlPlane` could
+  use one; found by the new e2e. Pinned by
+  `capi_aggregate_role_aggregates_into_core_and_kubeadm_control_plane_only`.
+
+### Docs
+- `docs/adr/0129-…`: implementation notes; both open questions answered.
+  `docs/adr/0096-…`: amendment. CALM: the aggregate-role control names KCP.
+- `docs/src/guides/cluster-api.md`: Bootstrap data (flow, conditions, the
+  Role for other namespaces, the admission policy), the KCP aggregation, and
+  how both CAPI suites test.
+- `docs/src/security/threat-model.md`: full pass, stamp 2026-11-14 /
+  ADR-0001 … ADR-0129.
+
+### Why
+A Machine created by Cluster API booted without its bootstrap data and never
+joined (#191).
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (controller and its ClusterRole; the
+      aggregate role; a Cloud Hypervisor host's `banlieue` binary; apply the
+      new admission policy where CAPI is used)
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-11-14 18:30] - ADR-0129 proposed: CAPI InfraMachines receive the Machine's bootstrap data
 
 **Author:** Daniel Guns

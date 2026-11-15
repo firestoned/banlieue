@@ -6,6 +6,7 @@
 //! sub-loop, and the main `virtualmachine` reconcile loop.
 
 pub mod address_conflict;
+pub mod bootstrap_data;
 pub mod claim;
 pub mod claim_plan;
 pub mod infra;

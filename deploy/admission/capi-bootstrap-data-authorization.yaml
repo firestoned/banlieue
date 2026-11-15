@@ -1,0 +1,149 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# Cluster API bootstrap-data reference authorization (ADR-0129 Decision 5).
+#
+# banlieue-controller copies a CAPI Machine's bootstrap Secret — the one named
+# by spec.bootstrap.dataSecretName — into its InfraMachine's spec.userData,
+# which anyone who can read that InfraMachine can read back. The controller
+# checks the Secret is CAPI bootstrap data for that Machine's cluster
+# (ADR-0129 Decision 4), but that CLASSIFIES the Secret; it cannot tell whose
+# it is. Without this policy, a principal who may create Machines could set
+# dataSecretName to ANOTHER Machine's bootstrap Secret in the namespace, which
+# passes every check, and read that Machine's join credential back out of the
+# InfraMachine.
+#
+# The cure is ADR-0042's: the principal that names the Secret must itself be
+# allowed to `get` it, checked here at admission, while its identity still
+# exists. By reconcile time it is long gone.
+#
+# Matched objects are every one through which a person can name a bootstrap
+# Secret directly:
+#   - Machine:                       spec.bootstrap.dataSecretName
+#   - MachineSet, MachineDeployment: spec.template.spec.bootstrap.dataSecretName
+# MachineSets and MachineDeployments are covered because Cluster API's own
+# manager copies their template into each Machine it creates; a check on
+# Machines alone would only ever see that manager. When CAPI copies a
+# bootstrap config's status.dataSecretName onto a Machine, the requester is
+# CAPI's manager, which may read Secrets, so that passes. MachinePools are not
+# covered: their machines use an InfraMachinePool, which banlieue does not
+# implement.
+#
+# Each check runs only when the field is set and, on UPDATE, only when it
+# changed: an update that leaves it alone (a controller adding a finalizer) is
+# never checked against an identity that did not make the reference.
+#
+# What this does NOT do: it does not stop a principal who can already read a
+# Secret from surfacing it in an InfraMachine — the same accepted reflection
+# as ADR-0025/0042. CAPI-owned InfraMachines are credential-bearing; restrict
+# `get` on them accordingly.
+#
+# NOTE: its own file, like virtualmachine-userdata-authorization.yaml, because
+# `authorizer` needs a sufficiently recent API server: an older one rejects
+# only this file. On a cluster without Cluster API it matches nothing.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: banlieue-capi-machine-bootstrap-data-authorization
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: admission
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["cluster.x-k8s.io"]
+        apiVersions: ["*"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["machines"]
+  variables:
+    - name: secretName
+      expression: >-
+        has(object.spec.bootstrap) && has(object.spec.bootstrap.dataSecretName)
+        ? object.spec.bootstrap.dataSecretName : ''
+    - name: previousSecretName
+      expression: >-
+        oldObject != null && has(oldObject.spec.bootstrap)
+        && has(oldObject.spec.bootstrap.dataSecretName)
+        ? oldObject.spec.bootstrap.dataSecretName : ''
+  validations:
+    - expression: >-
+        variables.secretName == ''
+        || variables.secretName == variables.previousSecretName
+        || authorizer.group('').resource('secrets')
+             .namespace(object.metadata.namespace)
+             .name(variables.secretName)
+             .check('get').allowed()
+      messageExpression: >-
+        'spec.bootstrap.dataSecretName names Secret ' + variables.secretName
+        + ' in namespace ' + object.metadata.namespace
+        + ', which you are not authorized to get; banlieue copies a Machine'
+        + "'s bootstrap Secret into its InfraMachine, so a Machine may only"
+        + ' name bootstrap data its author can read.'
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: banlieue-capi-machine-bootstrap-data-authorization
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: admission
+spec:
+  policyName: banlieue-capi-machine-bootstrap-data-authorization
+  validationActions: ["Deny"]
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: banlieue-capi-machine-template-bootstrap-data-authorization
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: admission
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["cluster.x-k8s.io"]
+        apiVersions: ["*"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["machinesets", "machinedeployments"]
+  variables:
+    - name: secretName
+      expression: >-
+        has(object.spec.template) && has(object.spec.template.spec)
+        && has(object.spec.template.spec.bootstrap)
+        && has(object.spec.template.spec.bootstrap.dataSecretName)
+        ? object.spec.template.spec.bootstrap.dataSecretName : ''
+    - name: previousSecretName
+      expression: >-
+        oldObject != null && has(oldObject.spec.template)
+        && has(oldObject.spec.template.spec)
+        && has(oldObject.spec.template.spec.bootstrap)
+        && has(oldObject.spec.template.spec.bootstrap.dataSecretName)
+        ? oldObject.spec.template.spec.bootstrap.dataSecretName : ''
+  validations:
+    - expression: >-
+        variables.secretName == ''
+        || variables.secretName == variables.previousSecretName
+        || authorizer.group('').resource('secrets')
+             .namespace(object.metadata.namespace)
+             .name(variables.secretName)
+             .check('get').allowed()
+      messageExpression: >-
+        'spec.template.spec.bootstrap.dataSecretName names Secret '
+        + variables.secretName + ' in namespace ' + object.metadata.namespace
+        + ', which you are not authorized to get; every Machine created from'
+        + ' this template would have it copied into its InfraMachine.'
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: banlieue-capi-machine-template-bootstrap-data-authorization
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: admission
+spec:
+  policyName: banlieue-capi-machine-template-bootstrap-data-authorization
+  validationActions: ["Deny"]

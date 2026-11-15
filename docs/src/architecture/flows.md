@@ -94,16 +94,16 @@ flowchart TD
 <sub>Source: flow `flow-provision-capi-cluster` in `architecture.json`.</sub>
 
 
-## Deliver a CAPI Machine&#x27;s bootstrap data to its InfraMachine (PROPOSED, ADR-0129)
+## Deliver a CAPI Machine&#x27;s bootstrap data to its InfraMachine (ADR-0129 milestone 1)
 
-PROPOSED (ADR-0129), not yet implemented. A Machine that CAPI creates over a banlieue InfraMachineTemplate gets its bootstrap provider's rendered data in spec.userData before its guest is created. Shown for Cloud Hypervisor, the first backend to hold creation; libvirt, vSphere and Proxmox follow (ADR-0129 Decision 8).
+PROPOSED (ADR-0129); milestone 1 IMPLEMENTED (controller, Cloud Hypervisor hold, admission policy; libvirt, vSphere and Proxmox do not hold yet). A Machine that CAPI creates over a banlieue InfraMachineTemplate gets its bootstrap provider's rendered data in spec.userData before its guest is created. Shown for Cloud Hypervisor, the first backend to hold creation; libvirt, vSphere and Proxmox follow in milestone 2 (ADR-0129 Decision 8).
 
 ```mermaid
 flowchart TD
     t1["1. A MachineSet or control plane creates a CloudHypervisorMachine from the CloudHypervisorMachineTemplate, owned by the MachineSet or control plane and labelled cluster.x-k8s.io/cluster-name. No Machine owns it yet."]
     t2["2. The host provider sees a CAPI-intended machine that is not yet owned by a Machine with BootstrapDataReady=True, creates nothing on the host (no guest uid, no units), and reports Ready=False, WaitingForBootstrapData."]
     t3["3. CAPI's Machine controller adopts the machine (the Machine becomes its controller). The bootstrap provider writes the bootstrap Secret, then publishes its name, which CAPI copies to Machine.spec.bootstrap.dataSecretName."]
-    t4["4. banlieue-controller's Machine watch fires. It reads the named Secret in the Machine's namespace, classifies it, applies its value into spec.userData, and sets BootstrapDataReady=True (or False with the reason it refused, requeued on a fixed interval when a Secret change could fix it)."]
+    t4["4. banlieue-controller's Machine watch fires. It confirms the Machine (its UID is the one the ownerReference names, and its spec.infrastructureRef names this machine), then reads the named Secret in the Machine's namespace, classifies it, applies its value into spec.userData, and sets BootstrapDataReady=True (or False with the reason it refused, requeued on a fixed interval when a Secret change could fix it)."]
     t5["5. With the machine owned by a Machine and BootstrapDataReady=True, the provider renders spec.userData into the guest's NoCloud seed and starts the VMM, as for any machine. The guest's cloud-init runs the bootstrap data and joins the workload cluster."]
     t1 --> t2 --> t3 --> t4 --> t5
 ```

@@ -526,7 +526,7 @@
       "unique-id": "data-asset-infra-machine-cr",
       "node-type": "data-asset",
       "name": "Infrastructure Machine CR (VSphereMachine, etc.)",
-      "description": "Namespaced CRD (infrastructure.banlieue.io/v1alpha1) created by the banlieue-controller as the message to the provider. Satisfies the CAPI v1beta2 InfraMachine contract so the same provider can serve both banlieue and CAPI. Status is owned by the provider; the banlieue controller mirrors it back onto the VirtualMachine. PROPOSED (ADR-0129): on a machine owned by a CAPI Machine, the controller also writes spec.userData (the Machine's bootstrap data) and the one status condition BootstrapDataReady, which providers never apply. VSphereMachine additionally carries an optional createdBy field (ADR-0089), copied from the parent VirtualMachine's banlieue.io/created-by annotation."
+      "description": "Namespaced CRD (infrastructure.banlieue.io/v1alpha1) created by the banlieue-controller as the message to the provider. Satisfies the CAPI v1beta2 InfraMachine contract so the same provider can serve both banlieue and CAPI. Status is owned by the provider; the banlieue controller mirrors it back onto the VirtualMachine. PROPOSED (ADR-0129); milestone 1 IMPLEMENTED (controller, Cloud Hypervisor hold, admission policy; libvirt, vSphere and Proxmox do not hold yet): on a machine owned by a CAPI Machine, the controller also writes spec.userData (the Machine's bootstrap data) and the one status condition BootstrapDataReady, which providers never apply. VSphereMachine additionally carries an optional createdBy field (ADR-0089), copied from the parent VirtualMachine's banlieue.io/created-by annotation."
     },
     {
       "unique-id": "data-asset-infra-cluster-cr",
@@ -544,7 +544,7 @@
       "unique-id": "data-asset-capi-bootstrap-secret",
       "node-type": "data-asset",
       "name": "CAPI bootstrap data Secret (external)",
-      "description": "A Secret of type cluster.x-k8s.io/secret that a CAPI bootstrap provider (kubeadm's CABPK, k0smotron) renders for one Machine and names in Machine.spec.bootstrap.dataSecretName: keys value (the guest's bootstrap payload, usually carrying a short-lived join token) and format, label cluster.x-k8s.io/cluster-name, and a controller ownerReference to the bootstrap config. NOT owned by banlieue. PROPOSED (ADR-0129): banlieue-controller copies its value into the owning InfraMachine's spec.userData."
+      "description": "A Secret of type cluster.x-k8s.io/secret that a CAPI bootstrap provider (kubeadm's CABPK, k0smotron) renders for one Machine and names in Machine.spec.bootstrap.dataSecretName: keys value (the guest's bootstrap payload, usually carrying a short-lived join token) and format, label cluster.x-k8s.io/cluster-name, and a controller ownerReference to the bootstrap config. NOT owned by banlieue. PROPOSED (ADR-0129); milestone 1 IMPLEMENTED (controller, Cloud Hypervisor hold, admission policy; libvirt, vSphere and Proxmox do not hold yet): banlieue-controller copies its value into the owning InfraMachine's spec.userData."
     },
     {
       "unique-id": "service-capi-core",
@@ -553,7 +553,7 @@
       "description": "Upstream CAPI controllers (cluster, machineset, machinedeployment) plus a control-plane/bootstrap provider \u2014 k0smotron for k0s. Reads VSphereCluster.status.failureDomains, balances Machines across them (count-based round-robin), and mints VSphereMachines from a VSphereMachineTemplate. banlieue does NOT ship these; the platform operator installs them. This is what lets any CAPI consumer (kubeadm, RKE2, k0smotron) use banlieue as an infra provider. banlieue ships it nothing beyond a dedicated aggregate ClusterRole, banlieue-capi-infrastructure, scoped to infrastructure.banlieue.io (ADR-0096), and is installable as the clusterctl infrastructure provider `banlieue`.",
       "controls": {
         "capi-aggregate-role-scoped": {
-          "description": "CAPI's manager is granted banlieue permissions only through banlieue-capi-infrastructure, which covers the infrastructure.banlieue.io machine, template and cluster kinds and nothing in banlieue.io (ADR-0096). The aggregation label is not on the controller's own ClusterRole.",
+          "description": "CAPI's manager, and KubeadmControlPlane's (ADR-0096, amended 2026-11-14), are granted banlieue permissions only through banlieue-capi-infrastructure, which covers the infrastructure.banlieue.io machine, template and cluster kinds and nothing in banlieue.io (ADR-0096). The aggregation labels are not on the controller's own ClusterRole.",
           "requirements": [
             {
               "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
@@ -2239,7 +2239,7 @@
     },
     {
       "unique-id": "rel-controller-delivers-capi-bootstrap-data",
-      "description": "PROPOSED (ADR-0129), not yet implemented: for an InfraMachine owned by a CAPI Machine, the controller watches the Machine, and once spec.bootstrap.dataSecretName is set reads that Secret by name in the Machine's namespace, classifies it (type cluster.x-k8s.io/secret, cluster-name label equal to the Machine's clusterName, a controller ownerReference matching spec.bootstrap.configRef when set, non-empty UTF-8 value, format absent or cloud-config), and server-side applies its value byte for byte into the InfraMachine's spec.userData, then sets the InfraMachine's BootstrapDataReady condition, which it alone writes. A Secret that fails is reported on that condition and never copied. A machine waiting on a missing, unreadable or invalid Secret is requeued on a fixed interval (30 s, or 5 min when a person must act), because the controller holds get on Secrets but not list/watch. Once delivered, userData is never rewritten. Host providers still read no Secret; they create no guest for a CAPI-intended machine (cluster-name label or a Cluster API owner, so from the moment CAPI creates it, before adoption) until it is owned by a Machine and BootstrapDataReady is True. Who may name a bootstrap Secret directly is authorized at admission. Secret reads come from a namespaced Role per namespace (banlieue-controller-userdata in the install namespace); the ClusterRole gains only get/list/watch on machines.cluster.x-k8s.io.",
+      "description": "PROPOSED (ADR-0129); milestone 1 IMPLEMENTED (controller, Cloud Hypervisor hold, admission policy; libvirt, vSphere and Proxmox do not hold yet): for an InfraMachine owned by a CAPI Machine, the controller watches the Machine and first confirms it: the Machine must carry the UID the InfraMachine's ownerReference names and name that InfraMachine in its spec.infrastructureRef, or it is reported MachineReferenceMismatch and no Secret is read. Once spec.bootstrap.dataSecretName is set it reads that Secret by name in the Machine's namespace, classifies it (type cluster.x-k8s.io/secret, cluster-name label equal to the Machine's clusterName, a controller ownerReference matching spec.bootstrap.configRef when set, non-empty UTF-8 value, format absent or cloud-config), and server-side applies its value byte for byte into the InfraMachine's spec.userData, then sets the InfraMachine's BootstrapDataReady condition, which it alone writes. A Secret that fails is reported on that condition and never copied. A machine waiting on a missing, unreadable or invalid Secret is requeued on a fixed interval (30 s, or 5 min when a person must act), because the controller holds get on Secrets but not list/watch. Once delivered, userData is never rewritten. Host providers still read no Secret; the Cloud Hypervisor provider creates no guest for a CAPI-intended machine (cluster-name label or a Cluster API owner, so from the moment CAPI creates it, before adoption) until it is owned by a Machine and BootstrapDataReady is True. Who may name a bootstrap Secret directly is authorized at admission. Secret reads come from a namespaced Role per namespace (banlieue-controller-userdata in the install namespace); the ClusterRole gains only get/list/watch on machines.cluster.x-k8s.io.",
       "relationship-type": {
         "interacts": {
           "actor": "service-banlieue-controller",
@@ -2265,6 +2265,18 @@
         },
         "capi-bootstrap-data-reference-authorization": {
           "description": "A principal that names a bootstrap Secret directly (spec.bootstrap.dataSecretName on a Machine, or in a MachineSet or MachineDeployment template) must itself be allowed to get it, checked at admission with the CEL authorizer when the field is set or changed: the ADR-0042 guarantee for CAPI. Without it, a Machine creator could name another Machine's valid bootstrap Secret and read its join credential back out of the InfraMachine. The configRef path is bounded by Cluster API, which will not let a Machine adopt a bootstrap config another Machine controls. docs/adr/0129-capi-inframachines-receive-the-machines-bootstrap-data.md Decision 5.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53",
+                "control": "AC-3 Access Enforcement"
+              }
+            }
+          ]
+        },
+        "capi-bootstrap-data-owner-confirmation": {
+          "description": "An ownerReference is metadata anyone allowed to write the InfraMachine can set, so the controller does not trust it alone: before reading any Secret it requires the owning Machine's UID to equal the reference's and the Machine's spec.infrastructureRef (written by Cluster API when it creates the Machine, before adoption) to name this InfraMachine. Without it, a principal who may create InfraMachines could point one at another Machine and receive that Machine's bootstrap data. crates/banlieue-api/src/capi.rs (machine_confirms_adoption), crates/banlieue-controller/src/reconciler/bootstrap_data.rs (unconfirmed_adoption).",
           "requirements": [
             {
               "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
@@ -2572,8 +2584,8 @@
     },
     {
       "unique-id": "flow-capi-machine-bootstrap-data",
-      "name": "Deliver a CAPI Machine's bootstrap data to its InfraMachine (PROPOSED, ADR-0129)",
-      "description": "PROPOSED (ADR-0129), not yet implemented. A Machine that CAPI creates over a banlieue InfraMachineTemplate gets its bootstrap provider's rendered data in spec.userData before its guest is created. Shown for Cloud Hypervisor, the first backend to hold creation; libvirt, vSphere and Proxmox follow (ADR-0129 Decision 8).",
+      "name": "Deliver a CAPI Machine's bootstrap data to its InfraMachine (ADR-0129 milestone 1)",
+      "description": "PROPOSED (ADR-0129); milestone 1 IMPLEMENTED (controller, Cloud Hypervisor hold, admission policy; libvirt, vSphere and Proxmox do not hold yet). A Machine that CAPI creates over a banlieue InfraMachineTemplate gets its bootstrap provider's rendered data in spec.userData before its guest is created. Shown for Cloud Hypervisor, the first backend to hold creation; libvirt, vSphere and Proxmox follow in milestone 2 (ADR-0129 Decision 8).",
       "transitions": [
         {
           "sequence-number": 1,
@@ -2596,7 +2608,7 @@
         {
           "sequence-number": 4,
           "relationship-unique-id": "rel-controller-delivers-capi-bootstrap-data",
-          "description": "banlieue-controller's Machine watch fires. It reads the named Secret in the Machine's namespace, classifies it, applies its value into spec.userData, and sets BootstrapDataReady=True (or False with the reason it refused, requeued on a fixed interval when a Secret change could fix it)."
+          "description": "banlieue-controller's Machine watch fires. It confirms the Machine (its UID is the one the ownerReference names, and its spec.infrastructureRef names this machine), then reads the named Secret in the Machine's namespace, classifies it, applies its value into spec.userData, and sets BootstrapDataReady=True (or False with the reason it refused, requeued on a fixed interval when a Secret change could fix it)."
         },
         {
           "sequence-number": 5,

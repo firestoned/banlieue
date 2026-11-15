@@ -131,12 +131,133 @@ What each side writes, per the contract:
 | owner reference and `cluster.x-k8s.io/cluster-name` label on the `VSphereMachine` | Cluster API |
 | deleting the `VSphereMachine` when its `Machine` is deleted | Cluster API |
 
+## Bootstrap data
+
+A `Machine` names its bootstrap data in `spec.bootstrap.dataSecretName`: a
+Secret your bootstrap provider (kubeadm, k0smotron, ...) renders. The
+InfraMachine contract leaves getting it into the guest to the infrastructure
+provider. banlieue does it in two halves
+([ADR-0129](https://github.com/firestoned/banlieue/blob/main/docs/adr/0129-capi-inframachines-receive-the-machines-bootstrap-data.md)):
+
+- **`banlieue-controller` copies it.** For an InfraMachine owned by a
+  `Machine`, it waits for `dataSecretName`, reads that Secret by name in the
+  Machine's namespace, and copies its `value`, byte for byte, into the
+  InfraMachine's `spec.userData`. It reports on the InfraMachine's
+  `BootstrapDataReady` condition. Host providers never read the Secret.
+- **The host provider holds the guest until then.** A machine Cluster API
+  creates carries the `cluster.x-k8s.io/cluster-name` label and a MachineSet
+  or control-plane owner from its first moment, before any `Machine` adopts
+  it. The provider creates nothing for such a machine until a `Machine` owns
+  it and `BootstrapDataReady` is `True`, and reports `Ready=False`,
+  `WaitingForBootstrapData`, meanwhile.
+
+| Backend | Data delivered | Guest held until delivered |
+| --- | --- | --- |
+| Cloud Hypervisor | yes | yes |
+| libvirt, vSphere, Proxmox | yes | not yet (ADR-0129 milestone 2): the guest may start before the data arrives |
+
+What the controller accepts:
+
+- a Secret of type `cluster.x-k8s.io/secret`, labelled
+  `cluster.x-k8s.io/cluster-name` with the Machine's `spec.clusterName`;
+- when the Machine has a `spec.bootstrap.configRef`, a Secret **controlled
+  by** that bootstrap config, as kubeadm's and k0smotron's providers write it;
+- a non-empty UTF-8 `value`, with `format` absent or `cloud-config`. Every
+  banlieue backend delivers cloud-init only, so `ignition` and `powershell`
+  data is refused.
+
+The data is delivered once. Editing the Secret afterwards changes nothing,
+and any `userData` in your InfraMachineTemplate is replaced by the bootstrap
+data. Bootstrap data usually carries a short-lived join token: a guest that
+starts too late fails to join, and banlieue does not re-deliver. Replace such
+a Machine with a `MachineHealthCheck`.
+
+### `BootstrapDataReady`
+
+| Status | Reason | What to do |
+| --- | --- | --- |
+| `False` | `WaitingForBootstrapData` | Nothing: the machine is not adopted yet, the Machine has no `dataSecretName` yet, or the Secret does not exist yet. The message says which. |
+| `False` | `MachineReferenceMismatch` | The `Machine` the InfraMachine's owner reference names is not that object (another UID), or does not name this InfraMachine in its `spec.infrastructureRef`. Cluster API never produces this; an owner reference written by hand does. No Secret is read. |
+| `False` | `BootstrapSecretForbidden` | Grant the controller `get` on Secrets in this namespace (below). |
+| `False` | `BootstrapSecretInvalid` | The Secret is not CAPI bootstrap data for this Machine; the message names the check that failed. |
+| `False` | `UnsupportedBootstrapDataFormat` | Use a bootstrap config that renders `cloud-config`. |
+| `True` | `BootstrapDataDelivered` | Delivered. |
+
+The controller looks at a machine stuck on a Secret again every 30 seconds
+(Secret not found) or 5 minutes (anything a person must fix). To have it look
+now, change any annotation on the InfraMachine; the key means nothing:
+
+```sh
+kubectl -n <namespace> annotate cloudhypervisormachine <name> \
+  banlieue.io/reconcile-requested="$(date +%s)" --overwrite
+```
+
+### Namespaces and RBAC
+
+The controller reads bootstrap Secrets by name, through a namespaced Role,
+never a ClusterRole. In the install namespace, `banlieue-system`, it already
+has one, and Cloud Hypervisor machines must live there anyway (a host
+provider serves only its own namespace). For InfraMachines in any other
+namespace, grant it:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: banlieue-controller-capi-bootstrap
+  namespace: <namespace>
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: banlieue-controller-capi-bootstrap
+  namespace: <namespace>
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: banlieue-controller-capi-bootstrap
+subjects:
+  - kind: ServiceAccount
+    name: banlieue-controller
+    namespace: banlieue-system
+```
+
+The controller's ClusterRole grants `get`, `list` and `watch` on
+`machines.cluster.x-k8s.io` only: a Machine carries the name of its Secret,
+not its content. The reconciler runs only when the API server serves
+`cluster.x-k8s.io/v1beta2` Machines at controller start; if you install
+Cluster API after banlieue, restart `banlieue-controller`.
+
+### Who may name a bootstrap Secret
+
+The controller's checks tell bootstrap data from other Secrets, but not one
+Machine's bootstrap data from another's. Apply
+`deploy/admission/capi-bootstrap-data-authorization.yaml`: it requires whoever
+sets `dataSecretName` on a `Machine`, or in a `MachineSet` or
+`MachineDeployment` template, to be able to `get` that Secret. Without it, a
+principal who may create Machines could name another Machine's bootstrap
+Secret and read its join token from the InfraMachine.
+
+Every CAPI-owned InfraMachine holds a join credential in `spec.userData`.
+Grant `get` on the InfraMachine kinds only to those you would trust with it.
+
 ## RBAC: the scoped aggregate role
 
 Cluster API's manager is authorised on banlieue objects by one ClusterRole,
 `banlieue-capi-infrastructure` (`deploy/capi/clusterrole-aggregate.yaml`).
 It carries `cluster.x-k8s.io/aggregate-to-manager: "true"`, so CAPI's
-aggregated manager role picks its rules up with no extra binding. It grants:
+aggregated manager role picks its rules up with no extra binding, and
+`kubeadm.controlplane.cluster.x-k8s.io/aggregate-to-manager: "true"`, so a
+`KubeadmControlPlane`, which creates its machines from a banlieue template
+itself, gets the same rules. A control-plane provider whose manager role
+aggregates nothing must grant itself access to `infrastructure.banlieue.io`:
+k0smotron's `K0sControlPlane` grants only `infrastructure.cluster.x-k8s.io`,
+so it cannot create banlieue machines (its hosted `K0smotronControlPlane`
+creates none, and works). It grants:
 
 - `get`, `list`, `watch`, `create`, `update`, `patch`, `delete`
 - on `infrastructure.banlieue.io` only: every machine, machine-template and
@@ -171,6 +292,28 @@ the provider: it sets `provisioned`, `providerID` and RFC 5737 addresses on a
 deleting the `Machine` (then the `Cluster`) deletes the banlieue object. The
 cluster is deleted afterwards. A backend provisioning a real VM for a CAPI
 `Machine` stays a live test against a real host.
+
+`make kind-e2e-capi-bootstrap` tests bootstrap data the same way, with nothing
+faked on the bootstrap side: kubeadm's control-plane and bootstrap providers
+render the data, and `banlieue-controller` runs as a local binary under its
+own ServiceAccount (`scripts/kind-capi-controller.sh`), so it can read Secrets
+only where a Role lets it. It asserts that a `KubeadmControlPlane`'s init data
+reaches its `CloudHypervisorMachine` byte for byte (after first reporting
+`BootstrapSecretForbidden` in a namespace with no Role), that a
+`MachineDeployment`'s does and survives template propagation, that a Secret
+which is not bootstrap data is refused, that an InfraMachine whose owner
+reference names another `Machine` gets nothing (`MachineReferenceMismatch`),
+and what the admission policy admits.
+No host provider runs, and nothing may report a machine provisioned.
+
+Two things it established about Cluster API v1.14.3: a `Cluster` with no
+`infrastructureRef` counts as infrastructure-provisioned, so the backends with
+no InfraCluster (Cloud Hypervisor, libvirt, Proxmox) need none, but the Cluster
+must name a `controlPlaneRef` (or a topology); and template label changes are
+propagated to existing InfraMachines without disturbing `spec.userData`.
+
+Both suites need Linux: rendering the clusterctl components runs the
+`banlieue` binary, which includes the Linux-only Cloud Hypervisor provider.
 
 To build the release assets locally:
 
