@@ -170,7 +170,7 @@ CLI flags (env-var fallbacks in `BANLIEUE_*`):
 ```
 banlieue provider vsphere
   [--kubeconfig PATH]                 # $KUBECONFIG
-  [--namespace NS]                    # scope to one namespace; cluster-wide when unset
+  [--namespace NS]                    # namespace to serve; defaults to the one it runs in (ADR-0131)
   [--no-leader-elect]                 # default: leader-elect
   [--leader-election-namespace NS]    # default: banlieue-system
   [--leader-election-id ID]           # default: banlieue-provider-vsphere

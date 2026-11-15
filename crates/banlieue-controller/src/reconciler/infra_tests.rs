@@ -2076,4 +2076,60 @@ mod tests {
                 .kind
         );
     }
+
+    // ------------------------------------------------------------------
+    // Which machine a VM owns (ADR-0127 Decision 4)
+    // ------------------------------------------------------------------
+
+    fn vm_owning(machine: &str) -> VirtualMachine {
+        let mut vm = parent_vm();
+        vm.status = Some(banlieue_api::banlieue::VirtualMachineStatus {
+            infrastructure_ref: Some(banlieue_api::common::TypedObjectReference {
+                api_group: "infrastructure.banlieue.io".into(),
+                kind: "CloudHypervisorMachine".into(),
+                name: machine.into(),
+                namespace: Some("banlieue-system".into()),
+            }),
+            ..Default::default()
+        });
+        vm
+    }
+
+    /// A VM's machine is the one its status names. Only a VM whose status names none (one
+    /// placed before ADR-0127, or not placed yet) falls back to its own name; a moved VM's
+    /// machine is `<vm>-<move id>`, so its own name would find nothing and create a duplicate.
+    #[test]
+    fn a_vms_machine_is_the_one_its_status_names() {
+        assert_eq!(machine_name(&parent_vm()), "db-01");
+        assert_eq!(machine_name(&vm_owning("db-01-k3x9q")), "db-01-k3x9q");
+        assert_eq!(
+            machine_name(&vm_owning("")),
+            "db-01",
+            "an empty name names nothing"
+        );
+    }
+
+    /// Every builder names the machine the VM owns, so applying it updates that machine
+    /// instead of creating a second one under the VM's name.
+    #[test]
+    fn every_builder_names_the_machine_the_vm_owns() {
+        use banlieue_api::banlieue::InstallMode;
+        let moved = vm_owning("db-01-k3x9q");
+        let ch = build_ch(&moved, &parent_class(), &ch_image(InstallMode::Immediate)).expect("ok");
+        assert_eq!(ch.metadata.name.as_deref(), Some("db-01-k3x9q"));
+        let raw = BTreeMap::from([
+            ("datacenter".to_string(), "dc1".to_string()),
+            ("cluster".to_string(), "cluster-a".to_string()),
+        ]);
+        let vs = build_vsphere_machine(
+            &moved,
+            &parent_class(),
+            &parent_image(),
+            &decision_with_raw(raw),
+            &parent_provider(),
+            None,
+        )
+        .expect("ok");
+        assert_eq!(vs.metadata.name.as_deref(), Some("db-01-k3x9q"));
+    }
 }

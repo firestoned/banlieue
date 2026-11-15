@@ -165,7 +165,7 @@ help: ## Show this help
         release-manifests install-yaml crds-yaml admission-policies-yaml network-policies-yaml \
         kind-capi-create kind-capi-delete kind-capi-init kind-e2e-capi kind-e2e-capi-logs \
         kind-e2e-capi-bootstrap kind-e2e-capi-bootstrap-run \
-        claim-live-test claim-policy-live-test address-live-test pool-claim-e2e vsphere-pool-claim-e2e ch-e2e ch-vtpm-e2e ch-deferred-e2e ch-restart-e2e ch-host-install-test ch-polkit-test provider-bench ch-pool-timings \
+        claim-live-test claim-policy-live-test move-fields-policy-live-test address-live-test pool-claim-e2e vsphere-pool-claim-e2e ch-e2e ch-vtpm-e2e ch-deferred-e2e ch-restart-e2e ch-host-install-test ch-polkit-test provider-bench ch-pool-timings \
         dev-oidc-up dev-oidc-attach dev-oidc-github-creds dev-oidc-login \
         dev-oidc-try-claim dev-oidc-status dev-oidc-down \
         dev-oidc-k0s-up dev-oidc-k0s-login dev-oidc-k0s-grant \
@@ -569,6 +569,22 @@ claim-policy-live-test: ## Run the claim subject policy (per-issuer prefixes, AD
 	  echo "No kubeconfig. Point KUBECONFIG at a cluster with the CRDs and the policy."; \
 	  exit 1; }
 	cargo test -p banlieue-controller --test live_claim_subject_policy -- \
+	  --ignored --nocapture --test-threads=1
+
+move-fields-policy-live-test: ## Run the CloudHypervisorMachine move-fields policy (ADR-0127) against a REAL API server (needs KUBECONFIG)
+	@# Only banlieue-controller may write spec.identity, spec.moveIn and
+	@# spec.moveOut. Dry-run writes as impersonated identities; one fixture
+	@# machine is created and deleted. Use a scratch cluster:
+	@#
+	@#   kind create cluster --name banlieue-policy-test
+	@#   kubectl apply --server-side -f deploy/crds/
+	@#   kubectl create namespace banlieue-system
+	@#   kubectl apply -f deploy/admission/cloudhypervisormachine-move-fields.yaml
+	@#   make move-fields-policy-live-test
+	@test -n "$$KUBECONFIG" -o -f "$$HOME/.kube/config" || { \
+	  echo "No kubeconfig. Point KUBECONFIG at a cluster with the CRDs and the policy."; \
+	  exit 1; }
+	cargo test -p banlieue-controller --test live_move_fields_policy -- \
 	  --ignored --nocapture --test-threads=1
 
 address-live-test: ## Run duplicate-address blocking (ADR-0083) against a REAL API server (needs KUBECONFIG; no libvirt)
@@ -1663,14 +1679,21 @@ kind-e2e: ## Run every operator e2e suite, in sequence, against one kind cluster
 	@echo ""
 	@echo "✓ all e2e suites passed ($(E2E_SUITES))"
 
+# Label the e2e suites put on their namespace so the operator serves it (ADR-0131).
+# Must match `E2E_TENANT_LABEL` in crates/banlieue-operator/tests/e2e_common/mod.rs.
+E2E_TENANT_SELECTOR ?= banlieue.io/tenant=true
+
 kind-bootstrap-install: kind-load kind-kubeconfig ## Install banlieue into kind via `banlieue bootstrap operator` (the documented path)
 	@echo "Installing via 'banlieue bootstrap operator' (ADR-0013)..."
 	@# `--version local-dev` resolves to $(KIND_IMAGE), which kind-load already
 	@# side-loaded, so the pods never pull. This exercises the SAME install path
 	@# a real user runs — unlike `kind-deploy-operator`, which applies deploy/
 	@# manifests directly and therefore cannot catch bootstrap-only defects.
+	@# The operator serves only its own namespace unless selected (ADR-0131),
+	@# and the e2e's Providers live in `banlieue-e2e`, which the suites label.
 	@KUBECONFIG=$(KIND_KUBECONFIG) cargo run -q -p banlieue -- \
-	  bootstrap operator --namespace $(NAMESPACE) --version local-dev
+	  bootstrap operator --namespace $(NAMESPACE) --version local-dev \
+	  --watch-namespace-selector $(E2E_TENANT_SELECTOR)
 	@kubectl --kubeconfig $(KIND_KUBECONFIG) -n $(NAMESPACE) rollout status \
 	  deployment/banlieue-operator --timeout=180s
 

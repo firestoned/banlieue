@@ -80,6 +80,50 @@ Selector mode lists and watches `Namespace` objects. The shipped
 `namespaces` and nothing else; the controller cannot relabel a namespace. If
 that grant is missing the controller fails at startup and never reports ready.
 
+## The operator and the providers
+
+The controller is one of three binaries that read a namespace scope
+([ADR-0131](https://github.com/firestoned/banlieue/blob/main/docs/adr/0131-operator-and-provider-namespace-scope.md)).
+A team's `Provider`s live in the team's namespace, so the operator has to
+serve that namespace too, or its `Provider`s get no workload.
+
+**The operator** takes the same three-step choice, with its own flag names
+(its `--namespace` means where it *runs*, so it is not reused as the scope):
+
+| # | Setting | Serves |
+| --- | --- | --- |
+| 1 | `--watch-namespace-selector` / `BANLIEUE_WATCH_NAMESPACE_SELECTOR` | the `Provider`s in every namespace whose labels match |
+| 2 | `--watch-namespace` / `BANLIEUE_WATCH_NAMESPACE` | exactly that namespace |
+| 3 | neither | the namespace the operator runs in (`--namespace`) |
+
+It no longer watches every namespace by default. To serve tenants, give it
+the **same label** as the controller:
+
+```yaml
+BANLIEUE_WATCH_NAMESPACE_SELECTOR: "banlieue.io/tenant=true"
+```
+
+If you install with `banlieue bootstrap operator`, pass it at install time
+instead of editing the Deployment afterwards:
+
+```sh
+banlieue bootstrap operator --watch-namespace-selector banlieue.io/tenant=true
+```
+
+Keep the two selectors aligned. If the controller serves a namespace the
+operator does not, a `VirtualMachine` there can schedule onto a `Provider`
+that never gets a workload. Un-labelling a namespace stops the operator
+reconciling its `Provider`s but deletes nothing; a `Provider` being deleted
+still has its workload torn down. The operator's `ClusterRole` grants
+read-only `get`, `list` and `watch` on `namespaces` for this.
+
+**The providers** (`libvirt`, `vsphere`, `proxmox`) take no selector. They
+serve `--namespace`, or the namespace they run in when it is unset, and no
+longer default to every namespace. A provider can only read the credentials in
+one namespace, so serving more would not work anyway. To serve another
+namespace, run a provider there: the operator already does, one per
+`Provider`.
+
 ## Checking it
 
 ```sh

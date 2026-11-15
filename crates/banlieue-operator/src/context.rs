@@ -4,7 +4,9 @@
 
 use std::time::Duration;
 
+use banlieue_provider_sdk::scope::NamespaceGate;
 use kube::Client;
+use kube::runtime::controller::Action;
 use kube::runtime::events::{Recorder, Reporter};
 
 /// Identifies this controller as the source of the Events it publishes, so
@@ -47,6 +49,12 @@ pub struct Context {
     /// How long a provider's Lease may go unrenewed before its heartbeat is
     /// `Stale` (ADR-0102).
     pub provider_stale_after: Duration,
+
+    /// Which namespaces' Providers are served (ADR-0131). The default passes
+    /// everything the watch delivers, which is right whenever the watch is
+    /// already narrowed to one namespace; selector mode installs a gate over
+    /// the label-filtered `Namespace` reflector.
+    pub namespace_gate: NamespaceGate,
 }
 
 impl Context {
@@ -101,6 +109,7 @@ impl Context {
             build_node_selector,
             build_toleration,
             provider_stale_after: Duration::from_secs(crate::heartbeat::DEFAULT_STALE_AFTER_SECS),
+            namespace_gate: NamespaceGate::none(),
         }
     }
 
@@ -110,4 +119,29 @@ impl Context {
         self.provider_stale_after = stale_after;
         self
     }
+
+    /// Install the namespace gate for selector mode (ADR-0131).
+    #[must_use]
+    pub fn with_namespace_gate(mut self, gate: NamespaceGate) -> Self {
+        self.namespace_gate = gate;
+        self
+    }
+
+    /// Whether Providers in `namespace` are served.
+    #[must_use]
+    pub fn serves(&self, namespace: &str) -> bool {
+        self.namespace_gate.serves(namespace)
+    }
+
+    /// `Some(action)` when a Provider in `namespace` is outside the served
+    /// set and the reconcile should stop before any write. A Provider being
+    /// deleted is never skipped, so its workload teardown still runs.
+    #[must_use]
+    pub fn skip_unserved(&self, namespace: &str, deleting: bool) -> Option<Action> {
+        self.namespace_gate.skip_unserved(namespace, deleting)
+    }
 }
+
+#[cfg(test)]
+#[path = "context_tests.rs"]
+mod context_tests;

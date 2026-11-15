@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Erick Bourgeois, banlieue
 // SPDX-License-Identifier: Apache-2.0
-//! Unit tests for [`super::super::scope`] (ADR-0130).
+//! Unit tests for [`super::super::scope`] (ADR-0130, ADR-0131).
 
 #[cfg(test)]
 mod tests {
@@ -207,5 +207,50 @@ mod tests {
             api.resource_url(),
             "/apis/cluster.x-k8s.io/v1beta2/machines"
         );
+    }
+
+    /// A reconcile for an unserved namespace does nothing and asks to be woken
+    /// only by a change: labelling the namespace in triggers a reconcile-all.
+    #[test]
+    fn an_unserved_namespace_is_skipped_until_something_changes() {
+        let (reader, _writer) = reflector::store::<Namespace>();
+        let gate = NamespaceGate::selected(reader);
+        assert!(gate.skip_unserved("team-b", false).is_some());
+        assert!(
+            NamespaceGate::none()
+                .skip_unserved("team-b", false)
+                .is_none()
+        );
+    }
+
+    /// Un-labelling must not strand a deletion: its finalizer still runs.
+    #[test]
+    fn a_deletion_is_never_skipped() {
+        let (reader, _writer) = reflector::store::<Namespace>();
+        let gate = NamespaceGate::selected(reader);
+        assert!(gate.skip_unserved("team-b", true).is_none());
+    }
+
+    #[test]
+    fn a_served_namespace_is_not_skipped() {
+        let (reader, mut writer) = reflector::store::<Namespace>();
+        writer.apply_watcher_event(&Event::Apply(namespace(FLAGGED)));
+        let gate = NamespaceGate::selected(reader);
+        assert!(gate.skip_unserved(FLAGGED, false).is_none());
+    }
+
+    /// ADR-0131: a provider has no selector. `--namespace` wins, else the
+    /// namespace it runs in; never every namespace.
+    #[test]
+    fn a_provider_serves_its_flag_else_its_own_namespace() {
+        assert_eq!(provider_namespace(Some(FLAGGED), CURRENT).unwrap(), FLAGGED);
+        assert_eq!(provider_namespace(None, CURRENT).unwrap(), CURRENT);
+        assert_eq!(provider_namespace(Some(" "), CURRENT).unwrap(), CURRENT);
+    }
+
+    #[test]
+    fn a_provider_with_no_namespace_at_all_refuses_to_widen() {
+        assert_eq!(provider_namespace(None, ""), Err(ScopeError::NoScope));
+        assert_eq!(provider_namespace(Some(""), " "), Err(ScopeError::NoScope));
     }
 }

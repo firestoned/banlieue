@@ -44,6 +44,10 @@ use kube::{Api, Client};
 /// `banlieue-system`, so a failed run cannot leave debris in the install.
 pub const E2E_NAMESPACE: &str = "banlieue-e2e";
 
+/// Label that puts the e2e namespace in the operator's served set (ADR-0131).
+/// The kind install selects on it: `E2E_TENANT_SELECTOR` in the Makefile.
+pub const E2E_TENANT_LABEL: (&str, &str) = ("banlieue.io/tenant", "true");
+
 /// Cluster-scoped ProviderClass the suites install.
 pub const E2E_CLASS: &str = "e2e-vsphere";
 
@@ -176,6 +180,13 @@ pub async fn setup(client: &Client) {
     let ns = Namespace {
         metadata: ObjectMeta {
             name: Some(E2E_NAMESPACE.to_string()),
+            labels: Some(
+                [(
+                    E2E_TENANT_LABEL.0.to_string(),
+                    E2E_TENANT_LABEL.1.to_string(),
+                )]
+                .into(),
+            ),
             ..Default::default()
         },
         ..Default::default()

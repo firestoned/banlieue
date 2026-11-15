@@ -18,7 +18,6 @@
 //!    `VSphereCluster` (and the pool, claim and image controllers) through
 //!    the SDK's instrumented [`run_controller`].
 
-use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -43,7 +42,6 @@ use banlieue_provider_sdk::runner::run_controller;
 use clap::Args;
 use futures::future::BoxFuture;
 use futures::{FutureExt as _, StreamExt};
-use k8s_openapi::api::core::v1::Namespace;
 use kube::{
     Api, Client, ResourceExt,
     runtime::{
@@ -61,9 +59,10 @@ use crate::{
     reconciler::virtualmachine::{error_policy, reconcile},
     reconciler::vmimage,
     reconciler::vsphere_cluster,
-    scope::{
-        NamespaceGate, Scope, check_selector, resolve_scope, scope_is_implicit, system_namespaces,
-    },
+};
+use banlieue_provider_sdk::scope::{
+    NamespaceGate, Scope, check_selector, resolve_scope, scope_is_implicit, scope_trigger,
+    spawn_namespace_gate,
 };
 
 const DEFAULT_HEALTH_PORT: u16 = 8081;
@@ -254,7 +253,9 @@ pub async fn run(cli: Cli) -> Result<()> {
     let (scope_tx, scope_rx) = tokio::sync::watch::channel(0_u64);
     let (gate, scope_tx) = match &scope {
         Scope::Selector(selector) => {
-            let gate = spawn_namespace_gate(&client, selector, scope_tx).await?;
+            let gate = spawn_namespace_gate(&client, selector, scope_tx)
+                .await
+                .context("starting the namespace selector watch")?;
             (gate, None)
         }
         Scope::Namespace(_) => (NamespaceGate::none(), Some(scope_tx)),
@@ -589,72 +590,6 @@ where
         ctx.clone(),
     )
     .boxed()
-}
-
-/// A stream that yields `()` each time the served set of namespaces may have
-/// changed, for [`Controller::reconcile_all_on`]. It stays pending while the
-/// sender lives and nothing changes.
-fn scope_trigger(rx: tokio::sync::watch::Receiver<u64>) -> impl futures::Stream<Item = ()> {
-    futures::stream::unfold(rx, |mut rx| async move {
-        rx.changed().await.ok()?;
-        Some(((), rx))
-    })
-}
-
-/// Start the selector-filtered `Namespace` reflector, wait for its first
-/// sync, and return the gate over it. `changed` is bumped on every event so
-/// the controllers reconcile everything again.
-///
-/// Readiness stays false until the reflector has synced: an unsynced store
-/// must not read as "serve nothing" and quietly drop work.
-async fn spawn_namespace_gate(
-    client: &kube::Client,
-    selector: &str,
-    changed: tokio::sync::watch::Sender<u64>,
-) -> Result<NamespaceGate> {
-    let (store, writer) = reflector::store::<Namespace>();
-    let namespaces: Api<Namespace> = Api::all(client.clone());
-    let stream = watcher(namespaces, Config::default().labels(selector))
-        .default_backoff()
-        .reflect(writer);
-    let watched = NamespaceGate::selected(store.clone());
-    tokio::spawn(async move {
-        // Bump only when the set of served names really changes. A relist
-        // (every Init event after a watch restart) and an edit to some other
-        // field of a selected namespace both leave it alone, and each bump
-        // reconciles every object in every controller.
-        let mut last = BTreeSet::new();
-        stream
-            .for_each(|event| {
-                match event {
-                    Ok(_) => {
-                        let now = watched.names();
-                        if now != last {
-                            last = now;
-                            changed.send_modify(|n| *n = n.wrapping_add(1));
-                        }
-                    }
-                    Err(e) => warn!(error = %e, "Namespace selector watch error; retrying"),
-                }
-                futures::future::ready(())
-            })
-            .await;
-    });
-    store
-        .wait_until_ready()
-        .await
-        .context("waiting for the namespace selector watch to sync")?;
-    let gate = NamespaceGate::selected(store);
-    let served = gate.names();
-    info!(namespaces = served.len(), "namespace selector synced");
-    let system = system_namespaces(&served);
-    if !system.is_empty() {
-        warn!(
-            namespaces = ?system,
-            "the namespace selector serves Kubernetes system namespaces; check it is not negated"
-        );
-    }
-    Ok(gate)
 }
 
 /// Build a [`LeaderConfig`] from parsed CLI flags, filling the holder identity

@@ -55,7 +55,8 @@ pub struct Cli {
     #[arg(long, env = "KUBECONFIG")]
     pub kubeconfig: Option<String>,
 
-    /// Restrict the provider to a single namespace. Cluster-wide when unset.
+    /// Namespace the provider serves. Defaults to the namespace it runs in;
+    /// never every namespace (ADR-0131).
     #[arg(long, env = "BANLIEUE_NAMESPACE")]
     pub namespace: Option<String>,
 
@@ -157,6 +158,15 @@ pub async fn run(cli: Cli) -> Result<()> {
     let client = build_client_with(cli.kubeconfig.as_deref().map(std::ffi::OsStr::new))
         .await
         .context("constructing kube client")?;
+
+    // ADR-0131: one namespace, never every namespace. `--namespace` wins, else
+    // the namespace this provider runs in.
+    let namespace = banlieue_provider_sdk::scope::provider_namespace(
+        cli.namespace.as_deref(),
+        client.default_namespace(),
+    )
+    .context("resolving the namespace to serve")?;
+    info!(namespace = %namespace, "serving Providers in");
     let leader_cfg = (!cli.no_leader_elect).then(|| build_leader_config(&cli));
     let election = leader_cfg
         .as_ref()
@@ -185,13 +195,13 @@ pub async fn run(cli: Cli) -> Result<()> {
 
     let ctx = Arc::new(Context::new(
         client.clone(),
-        cli.namespace.clone(),
+        Some(namespace.clone()),
         Arc::new(HttpClientFactory),
         cli.provider_name.clone(),
     ));
 
     info!("starting Provider controller (class=proxmox)");
-    let provider_api: Api<Provider> = scoped_api(client.clone(), cli.namespace.as_deref());
+    let provider_api: Api<Provider> = Api::namespaced(client.clone(), &namespace);
     let provider_ctrl = run_controller(
         Controller::new(
             provider_api,
@@ -216,7 +226,7 @@ pub async fn run(cli: Cli) -> Result<()> {
     );
 
     info!("starting ProxmoxMachine controller");
-    let machine_api: Api<ProxmoxMachine> = scoped_api(client.clone(), cli.namespace.as_deref());
+    let machine_api: Api<ProxmoxMachine> = Api::namespaced(client.clone(), &namespace);
     let machine_ctrl = run_controller(
         Controller::new(machine_api, Config::default()),
         "ProxmoxMachine",
@@ -236,18 +246,6 @@ pub async fn run(cli: Cli) -> Result<()> {
     }
     telemetry.shutdown();
     Ok(())
-}
-
-/// An \`Api\` scoped to \`namespace\`, or cluster-wide when unset.
-fn scoped_api<K>(client: kube::Client, namespace: Option<&str>) -> Api<K>
-where
-    K: kube::Resource<Scope = kube::core::NamespaceResourceScope>,
-    K::DynamicType: Default,
-{
-    match namespace {
-        Some(ns) => Api::namespaced(client, ns),
-        None => Api::all(client),
-    }
 }
 
 /// Build a [`LeaderConfig`] from parsed CLI flags.

@@ -249,6 +249,13 @@ pub struct CommonArgs {
     #[arg(long = "build-toleration", value_name = "KEY[=VALUE]:EFFECT")]
     pub build_toleration: Vec<String>,
 
+    /// Serve the `Provider`s in every namespace whose labels match this label
+    /// selector (for example `banlieue.io/tenant=true`). Passed to the
+    /// operator as `--watch-namespace-selector` (ADR-0131); without it the
+    /// operator serves only the install namespace. Ignored for other roles.
+    #[arg(long, value_name = "SELECTOR")]
+    pub watch_namespace_selector: Option<String>,
+
     /// Print the YAML that would be applied and exit, without contacting a
     /// cluster. Usable with no kubeconfig, and pipeable into `kubectl apply -f -`.
     #[arg(long)]
@@ -267,6 +274,7 @@ impl CommonArgs {
                 build_toleration: self.build_toleration.clone(),
                 image_digest: self.image_digest.clone(),
                 prelay_image_digest: None,
+                watch_namespace_selector: self.watch_namespace_selector.clone(),
             },
             self.dry_run,
         )
@@ -287,6 +295,9 @@ pub struct InstallOptions {
     pub build_node_selector: Vec<String>,
     /// `--build-toleration` values, for the same roles.
     pub build_toleration: Vec<String>,
+    /// `--watch-namespace-selector` for the operator (ADR-0131). `None`
+    /// leaves the operator on its default scope, its own namespace.
+    pub watch_namespace_selector: Option<String>,
     /// Image digest to pin every installed banlieue image to, e.g.
     /// `sha256:0f75…` (ADR-0103).
     ///
@@ -393,6 +404,10 @@ impl InstallRole {
         for value in &opts.build_toleration {
             args.push("--build-toleration".to_string());
             args.push(value.clone());
+        }
+        if let (Self::Operator, Some(selector)) = (self, &opts.watch_namespace_selector) {
+            args.push("--watch-namespace-selector".to_string());
+            args.push(selector.clone());
         }
         // The version being installed, not the binary's own default, and the
         // mirror under `--registry` (ADR-0113, amendment 2026-11-04).

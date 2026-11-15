@@ -246,19 +246,24 @@ would undo a move.
 
 ### Stage 1: VMs without a vTPM
 
-- [ ] **Precondition, before any code reads the move fields:** only
+- [x] **Precondition, before any code reads the move fields:** only
       `banlieue-controller` may write `spec.identity`, `spec.moveIn` and
       `spec.moveOut` on a `CloudHypervisorMachine`. A host provider's Role has
       `patch` on every machine in its namespace (threat model TB-8), so a
       stolen host token could otherwise point another host's guest at a peer
-      it controls. Likely a `ValidatingAdmissionPolicy` keyed on the
-      controller's ServiceAccount, tested on kind.
+      it controls. `deploy/admission/cloudhypervisormachine-move-fields.yaml`;
+      `make move-fields-policy-live-test` (red without the policy, green with
+      it, on kind).
+- [ ] The mover admits no move while that policy's binding is missing or not
+      in `Deny` (`Rejected`, `MoveFieldsUnguarded`): the policies are opt-in.
 - [ ] Examples for `VirtualMachineMove` once a controller acts on it.
 - [ ] Provider: derive MAC, taps, machine dir and EK subject from
       `derived_identity()`.
-- [ ] Controller: the VM reconciler addresses its machine by
+- [x] Controller: the VM reconciler addresses its machine by
       `status.infrastructureRef.name` (create, recreate, status mirror,
-      finalizer), falling back to the VM's name only while it is unset.
+      finalizer), falling back to the VM's name only while it is unset
+      (`reconciler/infra.rs`, `machine_name`; every builder names that machine,
+      and the status write never resets the reference to the VM's name).
 - [ ] Controller: admission checks (zone label, `move` feature, VMM and
       CPU model, capacity, placement, policy, no vTPM), orchestration,
       `Migrating` and `Ready=False/Moving`, commit and abort.

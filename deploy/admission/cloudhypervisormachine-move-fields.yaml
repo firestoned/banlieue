@@ -1,0 +1,76 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# Only banlieue-controller sets or changes a CloudHypervisorMachine's move fields:
+# spec.identity, spec.moveIn and spec.moveOut (ADR-0127 Decision 4).
+#
+# A host provider's Role allows `patch` on every cloudhypervisormachines in its
+# namespace (machine names are unknowable when the Role is written). Without this
+# policy, a stolen host token could set spec.moveOut on another host's machine and
+# point its guest, memory and disk, at a peer it controls. The host provider writes
+# its machines' status and finalizers, never these fields, so it loses nothing.
+#
+# The controller's identity is its ServiceAccount in banlieue-system; edit the
+# username in matchConditions if your controller runs elsewhere. Status writes are
+# not matched (the `status` subresource is a separate resource), so the providers'
+# reports are untouched.
+#
+# Enforced in the API server via CEL (no webhook). Requires Kubernetes 1.30+.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: banlieue-cloudhypervisormachine-move-fields
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: admission
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["infrastructure.banlieue.io"]
+        apiVersions: ["v1alpha1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["cloudhypervisormachines"]
+  matchConditions:
+    # The controller writes these fields; everyone else is checked below.
+    - name: not-banlieue-controller
+      expression: "request.userInfo.username != 'system:serviceaccount:banlieue-system:banlieue-controller'"
+  variables:
+    - name: created
+      expression: "request.operation == 'CREATE'"
+  validations:
+    - expression: >-
+        variables.created
+          ? !has(object.spec.identity)
+          : has(object.spec.identity) == has(oldObject.spec.identity)
+            && (!has(object.spec.identity) || object.spec.identity == oldObject.spec.identity)
+      message: "spec.identity is set only by banlieue-controller (ADR-0127)"
+      reason: Forbidden
+    - expression: >-
+        variables.created
+          ? !has(object.spec.moveIn)
+          : has(object.spec.moveIn) == has(oldObject.spec.moveIn)
+            && (!has(object.spec.moveIn) || object.spec.moveIn == oldObject.spec.moveIn)
+      message: "spec.moveIn is set only by banlieue-controller (ADR-0127)"
+      reason: Forbidden
+    - expression: >-
+        variables.created
+          ? !has(object.spec.moveOut)
+          : has(object.spec.moveOut) == has(oldObject.spec.moveOut)
+            && (!has(object.spec.moveOut) || object.spec.moveOut == oldObject.spec.moveOut)
+      message: "spec.moveOut is set only by banlieue-controller (ADR-0127)"
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: banlieue-cloudhypervisormachine-move-fields
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: admission
+spec:
+  policyName: banlieue-cloudhypervisormachine-move-fields
+  # Deny = enforce. Do not switch it to Warn or Audit on a cluster that moves VMs: banlieue's
+  # mover is to refuse any move while this binding is missing or not in Deny (ADR-0127
+  # Decision 4, Stage 1).
+  validationActions: ["Deny"]

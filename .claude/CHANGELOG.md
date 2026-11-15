@@ -39,8 +39,9 @@
 - `crates/banlieue-controller/src/app.rs`: the bootstrap-data future waits for
   the CRD, then runs the controller; the Machine `Api` comes from
   `Scope::api_with`.
-- `crates/banlieue-controller/src/scope.rs`: `Scope::api_with`, the
-  `Scope::api` rule for a dynamic resource.
+- `crates/banlieue-provider-sdk/src/scope.rs` (moved there from the controller
+  by ADR-0131): `Scope::api_with`, the `Scope::api` rule for a dynamic
+  resource.
 - `crates/banlieue-provider-cloud-hypervisor/src/reconciler.rs`:
   `creation_held` (an alias) removed, `holds_guest` called directly; the
   never-reported held message names the controller not running, the
@@ -74,6 +75,29 @@
 - [x] Requires cluster rollout
 - [ ] Config change only
 - [ ] Documentation only
+
+## [2026-11-15 17:30] - Fix the kind e2e after ADR-0131: install flag and tenant label
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `crates/banlieue-operator/src/bootstrap.rs` (+ tests): `banlieue bootstrap
+  operator --watch-namespace-selector SELECTOR`, passed to the operator only
+  (omitted when unset). Without it the documented install path could not
+  serve any namespace but its own, short of patching the Deployment.
+- `Makefile` (`kind-bootstrap-install`, `E2E_TENANT_SELECTOR`) and
+  `crates/banlieue-operator/tests/e2e_common/mod.rs` (`E2E_TENANT_LABEL`): the
+  kind install selects on `banlieue.io/tenant=true` and the e2e namespace
+  carries it.
+- `docs/src/guides/multi-tenancy.md`: the install-time flag.
+
+### Why
+PR #196's four operator e2e suites (pause, provider workload, ProviderClass
+propagation, workloadNamespace) failed: the operator now serves only
+`banlieue-system`, and the e2e's Providers live in `banlieue-e2e`.
+
+### Impact
+- [ ] Config change only (new optional install flag)
 
 ## [2026-11-15 16:00] - ADR-0129: PR #194 review changes (configRef authorization, policy scope, discovery, one hold predicate)
 
@@ -130,6 +154,53 @@ Review of PR #194.
 - [x] Requires cluster rollout (controller, Cloud Hypervisor hosts, the admission policy)
 - [ ] Config change only
 - [ ] Documentation only
+
+## [2026-11-15 14:00] - ADR-0131 implemented: operator and provider namespace scope
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `crates/banlieue-provider-sdk/src/scope.rs` (+ `scope_tests.rs`): moved from
+  `banlieue-controller` so the controller and the operator share one
+  definition of the served set. Error messages are now flag-neutral. Added
+  `NamespaceGate::skip_unserved`, `scope_trigger`, `spawn_namespace_gate`
+  (moved out of the controller's `app.rs`) and `provider_namespace`.
+- `crates/banlieue-controller`: uses the shared module; `Context::skip_unserved`
+  delegates to the gate. No behaviour change.
+- `crates/banlieue-operator/src/app.rs`: new `--watch-namespace-selector` /
+  `BANLIEUE_WATCH_NAMESPACE_SELECTOR`. The `Provider` watch resolves selector,
+  then `--watch-namespace`, then the operator's own namespace (`--namespace`);
+  it no longer defaults to every namespace. Selector mode gates on a
+  `Namespace` reflector and reconciles every Provider again when the served
+  set changes. Warns when no flag chose the scope.
+- `crates/banlieue-operator/src/{context,reconciler/provider}.rs`: namespace
+  gate; an unserved, non-deleting `Provider` is skipped before any write.
+- `deploy/operator/rbac/clusterrole.yaml`: read-only `get`/`list`/`watch` on
+  `namespaces`, tested by `the_operator_may_only_read_namespaces`.
+- `crates/banlieue-provider-{libvirt,vsphere,proxmox}/src/app.rs`:
+  `--namespace` unset now serves the namespace the provider runs in, not every
+  namespace; the `Api::all` fallbacks are gone (Proxmox's `scoped_api` helper
+  removed). Providers take no selector (their credential reads are
+  single-namespace, CHAIN-002).
+- `docs/architecture/calm/architecture.json`: `tenant-namespace-scope` control
+  on the operator; the controller control's evidence path follows the move.
+- `docs/src/guides/multi-tenancy.md`, `deploy/operator/configmap.yaml`,
+  `deploy/provider-vsphere/README.md`: the operator selector, the provider
+  default, and keeping the two selectors aligned.
+- `docs/src/security/threat-model.md`: full pass. Stamp now ADR-0001 to
+  ADR-0131. §2 operator and provider rows, TB-1 row and diagram, three STRIDE
+  rows, §7.30, and three §8 risks (a tenant able to create a `Provider`
+  causes a workload; the operator's cluster-wide reads; mismatched selectors).
+- `docs/adr/0131-operator-and-provider-namespace-scope.md`: Accepted.
+
+### Why
+ADR-0130 left the operator and providers defaulting to every namespace; a
+multi-tenant install needs the operator to serve exactly the tenant namespaces.
+
+### Impact
+- [ ] Requires cluster rollout (operator `ClusterRole` gains `namespaces` read;
+      an operator or hand-run provider that relied on watching every namespace
+      must now set a selector or `--namespace`)
 
 ## [2026-11-15 12:00] - CAPI bootstrap-data controllers follow ADR-0130's namespace scope
 
@@ -210,6 +281,7 @@ Code review of the uncommitted milestone 1.
 - [x] Requires cluster rollout (same as the entry below)
 - [ ] Config change only
 - [ ] Documentation only
+
 
 ## [2026-11-15 10:00] - Namespace selector review fixes (ADR-0130)
 
@@ -378,6 +450,36 @@ per-tenant admission policy and quota ADR; a live check against a cluster.
 Renumbered from 0129 to 0130 on rebase: main had meanwhile taken 0129 for
 the CAPI bootstrap-data ADR.
 
+## [2026-11-14 19:00] - A VM finds its machine through status.infrastructureRef (ADR-0127, Stage 1)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `crates/banlieue-controller/src/reconciler/infra.rs`: `machine_name(vm)`,
+  the name of the machine a VM owns: `status.infrastructureRef.name`, else
+  the VM's name. Every builder (vSphere, libvirt, Cloud Hypervisor, Proxmox)
+  names its machine with it.
+- `crates/banlieue-controller/src/reconciler/virtualmachine.rs`: the recreate
+  delete, the drift-but-Never status mirror, the finalizer, the
+  duplicate-address block and its power patch all address the machine by
+  `machine_name`; the status write sets `infrastructureRef.name` from it,
+  never back to the VM's name.
+- Roadmap 14 (the Stage 1 controller item); threat model (one TB-1 row: a
+  forged reference, bounded by status RBAC and the API server's one
+  controller owner reference rule; stamp bumped).
+
+### Why
+A moved VM owns its move's destination machine, `<vm>-<move id>` (ADR-0127
+Decision 4). Addressed by the VM's name, the next pass would find nothing,
+create a new machine, and recreate the guest a move exists to keep.
+
+### Impact
+- [ ] Breaking change: no (every existing VM's reference already names a
+      machine under its own name, and one with none falls back to it)
+- [ ] Requires cluster rollout: with the next controller release
+- [x] Tests: `a_vms_machine_is_the_one_its_status_names`,
+      `every_builder_names_the_machine_the_vm_owns`; red first
+
 ## [2026-11-14 18:30] - ADR-0129 proposed: CAPI InfraMachines receive the Machine's bootstrap data
 
 **Author:** Daniel Guns
@@ -420,6 +522,38 @@ infrastructure provider, and banlieue implemented only the status side.
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Documentation only (decision recorded; nothing implemented yet)
+
+## [2026-11-14 18:00] - Only the controller writes a CH machine's move fields (ADR-0127, Stage 1)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `deploy/admission/cloudhypervisormachine-move-fields.yaml` (new):
+  ValidatingAdmissionPolicy `banlieue-cloudhypervisormachine-move-fields`
+  and its Deny binding. On CREATE and UPDATE of a `CloudHypervisorMachine`,
+  anyone but `system:serviceaccount:banlieue-system:banlieue-controller` is
+  refused if `spec.identity`, `spec.moveIn` or `spec.moveOut` is set or
+  changed. Status writes are untouched.
+- `crates/banlieue-controller/tests/live_move_fields_policy.rs` (new) and
+  `make move-fields-policy-live-test`: dry-run writes as the controller, a
+  host provider and a plain user, against a real API server.
+- `docs/adr/0127-...md`: amended 2026-11-14 (Decision 4): the policy ships,
+  and the mover is to fail closed without its binding in `Deny`
+  (`MoveFieldsUnguarded`), since admission policies are opt-in.
+- `deploy/admission/README.md`, CALM (`admission-policy-validation`),
+  roadmap 14 (the Stage 1 precondition done; the mover's check added).
+- Threat model: the TB-8 move-fields row now cites the policy; stamp bumped.
+
+### Why
+A host provider's Role allows `patch` on every machine in its namespace, so
+before any code reads the move fields a stolen host token must not be able to
+point another host's guest at a peer it controls.
+
+### Impact
+- [ ] Breaking change: no (opt-in policy; nothing reads the fields yet)
+- [ ] Requires cluster rollout: apply the policy before enabling moves
+- [x] Tests: the live test fails without the policy (a host provider creates
+      a machine with `moveOut`) and passes with it, on kind
 
 ## [2026-11-14 12:00] - Ubuntu and libvirt-free Cloud Hypervisor hosts: k0s bootstrap and docs
 
