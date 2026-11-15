@@ -164,7 +164,7 @@ help: ## Show this help
         clusterctl-components clusterctl-install clusterctl-local-repo \
         release-manifests install-yaml crds-yaml admission-policies-yaml network-policies-yaml \
         kind-capi-create kind-capi-delete kind-capi-init kind-e2e-capi kind-e2e-capi-logs \
-        claim-live-test claim-policy-live-test address-live-test pool-claim-e2e vsphere-pool-claim-e2e ch-e2e ch-vtpm-e2e ch-deferred-e2e ch-restart-e2e ch-host-install-test ch-polkit-test provider-bench ch-pool-timings \
+        claim-live-test claim-policy-live-test move-fields-policy-live-test address-live-test pool-claim-e2e vsphere-pool-claim-e2e ch-e2e ch-vtpm-e2e ch-deferred-e2e ch-restart-e2e ch-host-install-test ch-polkit-test provider-bench ch-pool-timings \
         dev-oidc-up dev-oidc-attach dev-oidc-github-creds dev-oidc-login \
         dev-oidc-try-claim dev-oidc-status dev-oidc-down \
         dev-oidc-k0s-up dev-oidc-k0s-login dev-oidc-k0s-grant \
@@ -568,6 +568,22 @@ claim-policy-live-test: ## Run the claim subject policy (per-issuer prefixes, AD
 	  echo "No kubeconfig. Point KUBECONFIG at a cluster with the CRDs and the policy."; \
 	  exit 1; }
 	cargo test -p banlieue-controller --test live_claim_subject_policy -- \
+	  --ignored --nocapture --test-threads=1
+
+move-fields-policy-live-test: ## Run the CloudHypervisorMachine move-fields policy (ADR-0127) against a REAL API server (needs KUBECONFIG)
+	@# Only banlieue-controller may write spec.identity, spec.moveIn and
+	@# spec.moveOut. Dry-run writes as impersonated identities; one fixture
+	@# machine is created and deleted. Use a scratch cluster:
+	@#
+	@#   kind create cluster --name banlieue-policy-test
+	@#   kubectl apply --server-side -f deploy/crds/
+	@#   kubectl create namespace banlieue-system
+	@#   kubectl apply -f deploy/admission/cloudhypervisormachine-move-fields.yaml
+	@#   make move-fields-policy-live-test
+	@test -n "$$KUBECONFIG" -o -f "$$HOME/.kube/config" || { \
+	  echo "No kubeconfig. Point KUBECONFIG at a cluster with the CRDs and the policy."; \
+	  exit 1; }
+	cargo test -p banlieue-controller --test live_move_fields_policy -- \
 	  --ignored --nocapture --test-threads=1
 
 address-live-test: ## Run duplicate-address blocking (ADR-0083) against a REAL API server (needs KUBECONFIG; no libvirt)
