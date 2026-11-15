@@ -1,5 +1,75 @@
 # Changelog
 
+## [2026-11-15 17:30] - Fix the kind e2e after ADR-0131: install flag and tenant label
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `crates/banlieue-operator/src/bootstrap.rs` (+ tests): `banlieue bootstrap
+  operator --watch-namespace-selector SELECTOR`, passed to the operator only
+  (omitted when unset). Without it the documented install path could not
+  serve any namespace but its own, short of patching the Deployment.
+- `Makefile` (`kind-bootstrap-install`, `E2E_TENANT_SELECTOR`) and
+  `crates/banlieue-operator/tests/e2e_common/mod.rs` (`E2E_TENANT_LABEL`): the
+  kind install selects on `banlieue.io/tenant=true` and the e2e namespace
+  carries it.
+- `docs/src/guides/multi-tenancy.md`: the install-time flag.
+
+### Why
+PR #196's four operator e2e suites (pause, provider workload, ProviderClass
+propagation, workloadNamespace) failed: the operator now serves only
+`banlieue-system`, and the e2e's Providers live in `banlieue-e2e`.
+
+### Impact
+- [ ] Config change only (new optional install flag)
+
+## [2026-11-15 14:00] - ADR-0131 implemented: operator and provider namespace scope
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `crates/banlieue-provider-sdk/src/scope.rs` (+ `scope_tests.rs`): moved from
+  `banlieue-controller` so the controller and the operator share one
+  definition of the served set. Error messages are now flag-neutral. Added
+  `NamespaceGate::skip_unserved`, `scope_trigger`, `spawn_namespace_gate`
+  (moved out of the controller's `app.rs`) and `provider_namespace`.
+- `crates/banlieue-controller`: uses the shared module; `Context::skip_unserved`
+  delegates to the gate. No behaviour change.
+- `crates/banlieue-operator/src/app.rs`: new `--watch-namespace-selector` /
+  `BANLIEUE_WATCH_NAMESPACE_SELECTOR`. The `Provider` watch resolves selector,
+  then `--watch-namespace`, then the operator's own namespace (`--namespace`);
+  it no longer defaults to every namespace. Selector mode gates on a
+  `Namespace` reflector and reconciles every Provider again when the served
+  set changes. Warns when no flag chose the scope.
+- `crates/banlieue-operator/src/{context,reconciler/provider}.rs`: namespace
+  gate; an unserved, non-deleting `Provider` is skipped before any write.
+- `deploy/operator/rbac/clusterrole.yaml`: read-only `get`/`list`/`watch` on
+  `namespaces`, tested by `the_operator_may_only_read_namespaces`.
+- `crates/banlieue-provider-{libvirt,vsphere,proxmox}/src/app.rs`:
+  `--namespace` unset now serves the namespace the provider runs in, not every
+  namespace; the `Api::all` fallbacks are gone (Proxmox's `scoped_api` helper
+  removed). Providers take no selector (their credential reads are
+  single-namespace, CHAIN-002).
+- `docs/architecture/calm/architecture.json`: `tenant-namespace-scope` control
+  on the operator; the controller control's evidence path follows the move.
+- `docs/src/guides/multi-tenancy.md`, `deploy/operator/configmap.yaml`,
+  `deploy/provider-vsphere/README.md`: the operator selector, the provider
+  default, and keeping the two selectors aligned.
+- `docs/src/security/threat-model.md`: full pass. Stamp now ADR-0001 to
+  ADR-0131. §2 operator and provider rows, TB-1 row and diagram, three STRIDE
+  rows, §7.30, and three §8 risks (a tenant able to create a `Provider`
+  causes a workload; the operator's cluster-wide reads; mismatched selectors).
+- `docs/adr/0131-operator-and-provider-namespace-scope.md`: Accepted.
+
+### Why
+ADR-0130 left the operator and providers defaulting to every namespace; a
+multi-tenant install needs the operator to serve exactly the tenant namespaces.
+
+### Impact
+- [ ] Requires cluster rollout (operator `ClusterRole` gains `namespaces` read;
+      an operator or hand-run provider that relied on watching every namespace
+      must now set a selector or `--namespace`)
+
 ## [2026-11-15 10:00] - Namespace selector review fixes (ADR-0130)
 
 **Author:** Erick Bourgeois

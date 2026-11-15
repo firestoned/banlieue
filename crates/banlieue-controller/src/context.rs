@@ -10,7 +10,7 @@ use banlieue_api::banlieue::VirtualMachine;
 use kube::Client;
 use kube::runtime::{controller::Action, reflector::Store};
 
-use crate::scope::NamespaceGate;
+use banlieue_provider_sdk::scope::NamespaceGate;
 
 /// Context passed into every reconcile call.
 #[derive(Clone)]
@@ -80,7 +80,7 @@ impl Context {
     /// finalizer must still run, or un-labelling a namespace would strand it.
     #[must_use]
     pub fn skip_unserved(&self, namespace: &str, deleting: bool) -> Option<Action> {
-        (!deleting && !self.serves(namespace)).then(Action::await_change)
+        self.namespace_gate.skip_unserved(namespace, deleting)
     }
 
     /// Honour, or refuse, `VMImage.spec.firstBootSealing` (ADR-0088), from

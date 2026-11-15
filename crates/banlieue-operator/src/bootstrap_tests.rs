@@ -20,6 +20,7 @@ mod tests {
             build_toleration: Vec::new(),
             image_digest: None,
             prelay_image_digest: None,
+            watch_namespace_selector: None,
         }
     }
 
@@ -999,6 +1000,39 @@ mod tests {
         }
     }
 
+    /// ADR-0131: the operator serves only its own namespace unless told
+    /// otherwise, so the installer must be able to tell it, or a multi-tenant
+    /// install needs the Deployment patched by hand.
+    #[test]
+    fn only_the_operator_receives_the_watch_namespace_selector() {
+        let opts = InstallOptions {
+            watch_namespace_selector: Some("banlieue.io/tenant=true".to_string()),
+            ..opts()
+        };
+        let args = InstallRole::Operator.args_with(&opts);
+        assert!(
+            args.windows(2).any(|w| {
+                w[0] == "--watch-namespace-selector" && w[1] == "banlieue.io/tenant=true"
+            }),
+            "operator must receive the selector: {args:?}"
+        );
+        for role in [InstallRole::Controller, InstallRole::Imagebuilder] {
+            let args = role.args_with(&opts);
+            assert!(
+                !args.iter().any(|a| a == "--watch-namespace-selector"),
+                "{} does not declare the flag: {args:?}",
+                role.name()
+            );
+        }
+    }
+
+    /// Omitted entirely when unset: clap rejects an empty value.
+    #[test]
+    fn no_watch_namespace_selector_is_passed_when_unset() {
+        let args = InstallRole::Operator.args_with(&opts());
+        assert!(!args.iter().any(|a| a == "--watch-namespace-selector"));
+    }
+
     /// The controller has nothing to do with image builds; giving it flags it
     /// does not declare would make it fail to start.
     #[test]
@@ -1476,6 +1510,30 @@ mod tests {
         assert!(
             verbs.iter().all(|v| ["get", "list", "watch"].contains(v)),
             "controller must not write namespaces: {verbs:?}"
+        );
+    }
+
+    /// ADR-0131: `--watch-namespace-selector` makes the operator list and
+    /// watch Namespaces to learn which are served. Read-only: an operator
+    /// that could relabel a namespace could choose its own scope.
+    #[test]
+    fn the_operator_may_only_read_namespaces() {
+        let role = InstallRole::Operator.cluster_role().unwrap();
+        let granted = triples(&role.rules.unwrap_or_default());
+        let verbs: Vec<&str> = granted
+            .iter()
+            .filter(|(g, r, _)| g.is_empty() && r == "namespaces")
+            .map(|(_, _, v)| v.as_str())
+            .collect();
+        for needed in ["get", "list", "watch"] {
+            assert!(
+                verbs.contains(&needed),
+                "operator cannot {needed} namespaces"
+            );
+        }
+        assert!(
+            verbs.iter().all(|v| ["get", "list", "watch"].contains(v)),
+            "operator must not write namespaces: {verbs:?}"
         );
     }
 

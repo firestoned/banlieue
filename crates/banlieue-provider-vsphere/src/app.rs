@@ -82,7 +82,8 @@ pub struct Cli {
     #[arg(long, env = "KUBECONFIG")]
     pub kubeconfig: Option<String>,
 
-    /// Restrict the provider to a single namespace. Cluster-wide when unset.
+    /// Namespace the provider serves. Defaults to the namespace it runs in;
+    /// never every namespace (ADR-0131).
     #[arg(long, env = "BANLIEUE_NAMESPACE")]
     pub namespace: Option<String>,
 
@@ -277,6 +278,15 @@ pub async fn run(cli: Cli) -> Result<()> {
         .await
         .context("constructing kube client")?;
 
+    // ADR-0131: one namespace, never every namespace. `--namespace` wins, else
+    // the namespace this provider runs in.
+    let namespace = banlieue_provider_sdk::scope::provider_namespace(
+        cli.namespace.as_deref(),
+        client.default_namespace(),
+    )
+    .context("resolving the namespace to serve")?;
+    info!(namespace = %namespace, "serving Providers in");
+
     let leader_cfg = (!cli.no_leader_elect).then(|| build_leader_config(&cli));
     let election = leader_cfg
         .as_ref()
@@ -319,7 +329,7 @@ pub async fn run(cli: Cli) -> Result<()> {
     let ctx = Arc::new(
         Context::new(
             client.clone(),
-            cli.namespace.clone(),
+            Some(namespace.clone()),
             vsphere_factory,
             cli.build_namespace.clone(),
             cli.import_image.clone(),
@@ -329,18 +339,12 @@ pub async fn run(cli: Cli) -> Result<()> {
         .with_provider_name(cli.provider_name.clone()),
     );
 
-    let provider_api: Api<Provider> = match cli.namespace.as_deref() {
-        Some(ns) => Api::namespaced(client.clone(), ns),
-        None => Api::all(client.clone()),
-    };
+    let provider_api: Api<Provider> = Api::namespaced(client.clone(), &namespace);
     // VMImage is cluster-scoped; the per-Provider readiness check needs to
     // see every image and every Provider regardless of --namespace.
     let image_api: Api<VMImage> = Api::all(client.clone());
     // VSphereMachine is namespaced, same scoping rule as Provider.
-    let machine_api: Api<VSphereMachine> = match cli.namespace.as_deref() {
-        Some(ns) => Api::namespaced(client.clone(), ns),
-        None => Api::all(client.clone()),
-    };
+    let machine_api: Api<VSphereMachine> = Api::namespaced(client.clone(), &namespace);
 
     info!(
         provider_name = ?cli.provider_name,
