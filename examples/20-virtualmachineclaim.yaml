@@ -9,7 +9,8 @@
 # the VM itself is the isolation boundary between subjects, so a member that
 # has been exposed to one can never be given to another.
 #
-# Pairs with the pool in 19-virtualmachinepool.yaml.
+# Pairs with the pool in 19-virtualmachinepool.yaml. To claim from ANY
+# matching pool instead of this one, see 27-virtualmachineclaim-pool-selector.yaml.
 #
 # READ THIS BEFORE COPYING
 #
@@ -23,7 +24,8 @@ metadata:
   name: sandbox-for-alice
   namespace: banlieue-system
 spec:
-  # The pool to take a member from, in this claim's own namespace.
+  # The pool to take a member from, in this claim's own namespace. Exactly
+  # one of poolRef or poolSelector (ADR-0132).
   poolRef:
     name: sandbox-pool
 
@@ -57,7 +59,7 @@ spec:
 #   kubectl get vmclaim -n banlieue-system
 #
 #   NAME                POOL           VM                   PHASE     EXPIRES
-#   sandbox-for-alice   sandbox-pool                        Pending
+#   sandbox-for-alice                                       Pending
 #   sandbox-for-alice   sandbox-pool   sandbox-pool-9dmtx   Bound     2026-09-20T14:17:11Z
 #
 # Once Bound, `status` carries everything a consumer needs in one GET:
@@ -65,6 +67,7 @@ spec:
 #   status:
 #     phase: Bound
 #     virtualMachineRef: { name: sandbox-pool-9dmtx }
+#     poolRef: { name: sandbox-pool }
 #     addresses:
 #       - type: InternalIP
 #         address: 192.0.2.17

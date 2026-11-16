@@ -220,15 +220,24 @@ spec:
 
     # 4. The rest of the spec is immutable too, and for a plainer reason:
     #    mutating it does nothing. `expiresAt` is computed once at bind from
-    #    `ttlSeconds`, and `poolRef` is read once to pick a member — so an
-    #    edit here silently appears to work and changes nothing, which is
-    #    worse than being refused.
+    #    `ttlSeconds`, and `poolRef` / `poolSelector` are read once to pick a
+    #    member, so an edit here silently appears to work and changes
+    #    nothing, which is worse than being refused.
+    #
+    #    Optional access (`.?`) on purpose: a claim carries exactly one of
+    #    the two fields (ADR-0132), and comparing an ABSENT field errors in
+    #    CEL. This policy fails closed, so a plain `==` would deny every
+    #    update to every claim missing either field, the controller adding
+    #    its finalizer included. Setting or clearing a field counts as a
+    #    change: none() != of(x).
     - expression: >-
         request.operation != 'UPDATE'
-        || object.spec.poolRef == oldObject.spec.poolRef
+        || (object.spec.?poolRef == oldObject.spec.?poolRef
+            && object.spec.?poolSelector == oldObject.spec.?poolSelector)
       messageExpression: >-
-        'spec.poolRef is immutable; a claim binds one member from one pool'
-        + ' and is never rebound (ADR-0047 Decision 7).'
+        'spec.poolRef and spec.poolSelector are immutable; a claim binds one'
+        + ' member, picked once, and is never rebound (ADR-0047 Decision 7,'
+        + ' ADR-0132).'
       reason: Forbidden
     - expression: >-
         request.operation != 'UPDATE'

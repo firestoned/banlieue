@@ -197,3 +197,69 @@ async fn without_issuer_prefixes_one_prefix_applies_to_every_issuer() {
     })
     .await;
 }
+
+/// ADR-0132 Decision 8. A selector claim has no `spec.poolRef`, and a CEL
+/// comparison of an absent field errors, which this fail-closed policy turns
+/// into a denial of EVERY update, the controller's finalizer included. So:
+/// an update that leaves the pool fields alone is admitted, and changing,
+/// clearing or swapping either pool field is refused.
+///
+/// Persists one claim (no controller is needed, and none may run: it would
+/// bind the claim) and deletes it on the way out.
+#[tokio::test]
+#[ignore = "needs a cluster with the banlieue CRDs and the claim subject policy"]
+async fn a_selector_claim_can_be_updated_but_not_retargeted() {
+    use kube::ResourceExt as _;
+    use kube::api::DeleteParams;
+
+    with_policy(multi_issuer_policy(), || async {
+        let claim: VirtualMachineClaim = serde_json::from_value(json!({
+            "apiVersion": "banlieue.io/v1alpha1",
+            "kind": "VirtualMachineClaim",
+            "metadata": { "generateName": "policy-selector-", "namespace": NAMESPACE },
+            "spec": {
+                "poolSelector": {},
+                "subject": { "issuer": DEX, "id": "octocat" },
+                "ttlSeconds": CLAIM_TTL_SECS,
+            },
+        }))
+        .expect("claim fixture");
+        let user: Api<VirtualMachineClaim> =
+            Api::namespaced(as_user("github:octocat").await, NAMESPACE);
+        let created = user
+            .create(&PostParams::default(), &claim)
+            .await
+            .expect("a selector claim by its own subject is admitted");
+        let name = created.name_any();
+
+        let api: Api<VirtualMachineClaim> = Api::namespaced(admin().await, NAMESPACE);
+        let patch = |body: serde_json::Value| {
+            let api = api.clone();
+            let name = name.clone();
+            async move {
+                api.patch(&name, &PatchParams::default(), &Patch::Merge(body))
+                    .await
+            }
+        };
+        // What the controller does first: touch metadata, not the spec.
+        let touched =
+            patch(json!({ "metadata": { "labels": { "policy-test": "touched" } } })).await;
+        let narrowed =
+            patch(json!({ "spec": { "poolSelector": { "matchLabels": { "tier": "gold" } } } }))
+                .await;
+        let swapped =
+            patch(json!({ "spec": { "poolSelector": null, "poolRef": { "name": "p" } } })).await;
+
+        api.delete(&name, &DeleteParams::default())
+            .await
+            .expect("clean up the test claim");
+
+        assert!(touched.is_ok(), "a metadata update was denied: {touched:?}");
+        assert!(narrowed.is_err(), "spec.poolSelector must be immutable");
+        assert!(
+            swapped.is_err(),
+            "a selector claim must not become a named one"
+        );
+    })
+    .await;
+}

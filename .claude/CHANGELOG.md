@@ -1,5 +1,99 @@
 # Changelog
 
+## [2026-11-16 08:11] - ADR-0132: a VirtualMachineClaim may select its pool by label
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0132-claim-selects-its-pool-by-label.md`: ADR-0132, Accepted.
+  ADR-0047 gains an `Amended by` line pointing at it.
+- `crates/banlieue-api/src/banlieue/virtualmachineclaim.rs`:
+  `spec.poolSelector` (`LabelSelector`) beside `spec.poolRef`, which becomes
+  `Option`; CEL on the spec, `has(self.poolRef) != has(self.poolSelector)`.
+  `poolSelector: {}` is any pool in the namespace; neither field is refused.
+  `status.poolRef` records the pool the bound member came from, and the
+  `Pool` print column now reads it instead of `spec.poolRef.name`.
+- `crates/banlieue-api/src/banlieue/virtualmachinepool.rs`:
+  `pool_condition_reasons::NO_POOL_MATCHES` (`NoPoolMatches`).
+- `crates/banlieue-controller/src/reconciler/claim_plan.rs`: `PoolSelection`
+  (`Named`, `Selector`, `Unspecified`, with `matches`), `pool_selection`,
+  `pick_across_pools` (ADR-0047's order over every matched pool, staleness
+  judged per pool; `pick_member` now delegates to it), `PoolWarm`;
+  `PoolWaitState` is now `{ selection, pools }` and `wait_reason` reports
+  `NoPoolMatches` or each pool's `Warm` diagnosis (up to five, then a
+  count). `MirroredMemberState.pool` backfills `status.poolRef` on hold.
+- `crates/banlieue-controller/src/reconciler/scheduler.rs`:
+  `label_selector_matches` (a present selector), shared with the claim
+  planner; `selector_matches` delegates to it.
+- `examples/27-virtualmachineclaim-pool-selector.yaml` and its test in
+  `crates/banlieue-api/tests/examples.rs`.
+
+### Changed
+- `crates/banlieue-controller/src/reconciler/claim.rs`: `pick` does one pool
+  LIST (filtered by the claim's selection) and one LIST of every pool member
+  in the namespace; the finish-a-bind check searches all members, so a
+  relabelled pool cannot make a claim take a second member. `bind` writes
+  `status.poolRef`.
+- `deploy/admission/virtualmachineclaim-subject-authorization.yaml`: the
+  immutability rule covers `poolSelector` and uses CEL optionals
+  (`object.spec.?poolRef == oldObject.spec.?poolRef`). The old `==` on an
+  absent field errored, and the fail-closed policy then denied every update
+  to a selector claim, the controller's finalizer included.
+- `deploy/crds/banlieue.io_virtualmachineclaims.yaml`,
+  `docs/src/reference/api.md`: regenerated (`make crds`).
+- `examples/20-virtualmachineclaim.yaml`, `scripts/ch-pool-timings.py`: the
+  `POOL` column and a claim without `poolRef`.
+
+### Fixed
+- `crates/banlieue-controller/src/reconciler/claim.rs`: `bind` took its
+  `resourceVersion` precondition from a fresh GET of the member, so a claim
+  that lost the race read the winner's version and overwrote its label: two
+  claims `Bound` to one member. `pick` now returns the version from the list
+  the member was picked from, and `bind` patches under it (a 404 also counts
+  as a lost race). Latent on main; ADR-0132's extra LIST widened the window
+  (3 of 5 runs failed). `.wolf/buglog.json` bug-189.
+
+### Tests
+- Unit: `virtualmachineclaim_tests.rs` (selector parses, `{}` kept, CEL rule
+  and `poolRef` not required, `Pool` column, `status.poolRef`),
+  `claim_plan_tests.rs` (selection, matching, cross-pool ranking, wait
+  reasons, pool mirror), `claim_tests.rs` (`bound_status` publishes
+  `poolRef`).
+- Live, against a kind API server on the build host:
+  `live_claim.rs` 11/11, including new
+  `a_selector_claim_binds_from_any_matching_pool` and
+  `a_selector_matching_no_pool_says_so`, and
+  `two_claims_cannot_bind_the_same_member` 10/10 after the fix;
+  `live_claim_subject_policy.rs` 6/6, including new
+  `a_selector_claim_can_be_updated_but_not_retargeted`, which fails against
+  the previous policy with `no such key: poolRef`. The CRD's CEL rule
+  refuses neither and both on a real API server.
+
+### Docs
+- `docs/src/guides/virtualmachine-claims.md` (new section on `poolRef` or
+  `poolSelector`, wait reasons, troubleshooting rows),
+  `docs/src/concepts/virtualmachine-claim-flow.md` (sequence and decision
+  diagrams), CALM (`data-asset-virtualmachineclaim-cr`,
+  `rel-claim-binds-pool-member`; `make calm-validate` clean), roadmap 17
+  (B2 row and section; a stale example path fixed) and `ROADMAPS.md`.
+- Threat model full pass, stamp advanced to 2026-11-16 / ADR-0132: TB-1 bind
+  race row, stale-image row, spec-rewrite row, two new rows (pool labels
+  steering a selector claim; the policy failing closed on an absent pool
+  field), A-7 and §7.6. No component, identity, grant or boundary changes;
+  §5 diagram unchanged.
+
+### Why
+A namespace with several interchangeable pools left a claim waiting on an
+empty pool while its neighbour had a Ready member. Breaking for Rust
+consumers of `spec.pool_ref` (mediatore), accepted; wire compatible for
+existing claims.
+
+### Impact
+- [x] Breaking change (Rust API: `VirtualMachineClaimSpec.pool_ref` is `Option`)
+- [x] Requires cluster rollout (re-apply the `virtualmachineclaims` CRD and the claim admission policy before the new controller)
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-11-15 18:00] - ADR-0129: second PR #194 review round (update bypass, VM labels, late Cluster API, ownership)
 
 **Author:** Daniel Guns

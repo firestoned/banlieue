@@ -13,7 +13,7 @@
 //!
 //! [`VirtualMachinePool`]: super::VirtualMachinePool
 
-use crate::common::{LocalObjectReference, MachineAddress};
+use crate::common::{LabelSelector, LocalObjectReference, MachineAddress};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{Condition, Time};
 use kube::CustomResource;
 use schemars::JsonSchema;
@@ -59,7 +59,9 @@ pub const CLAIM_NONCE_BYTES: usize = 128 / 8;
     namespaced,
     status = "VirtualMachineClaimStatus",
     derive = "PartialEq",
-    printcolumn = r#"{"name":"Pool","type":"string","jsonPath":".spec.poolRef.name"}"#,
+    // The pool the bound member came from, not `spec.poolRef`: a claim with
+    // a `poolSelector` names no pool in its spec (ADR-0132 Decision 6).
+    printcolumn = r#"{"name":"Pool","type":"string","jsonPath":".status.poolRef.name"}"#,
     printcolumn = r#"{"name":"VM","type":"string","jsonPath":".status.virtualMachineRef.name"}"#,
     printcolumn = r#"{"name":"Phase","type":"string","jsonPath":".status.phase"}"#,
     // `string`, not `date`: kubectl renders a `date` column as time SINCE
@@ -91,9 +93,31 @@ pub const CLAIM_NONCE_BYTES: usize = 128 / 8;
 /// the subject's token to the guest is the consumer's job, over its own
 /// attested channel, anchored on the bound member's EK certificate
 /// (`status.tpmEndorsementCertificates`, ADR-0045, ADR-0049).
+///
+/// # Which pool
+///
+/// Exactly one of `poolRef` (one named pool) or `poolSelector` (every pool
+/// in the claim's namespace whose labels match). `poolSelector: {}` matches
+/// every pool in the namespace; a claim with neither field is refused
+/// rather than read as "any pool" (ADR-0132).
+#[schemars(extend("x-kubernetes-validations" = [{
+    "rule": "has(self.poolRef) != has(self.poolSelector)",
+    "message": "a claim takes exactly one of poolRef or poolSelector; use poolSelector: {} for any pool in the namespace",
+}]))]
 pub struct VirtualMachineClaimSpec {
     /// The pool to take a member from. Same namespace as the claim.
-    pub pool_ref: LocalObjectReference,
+    /// Exactly one of this or `poolSelector`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pool_ref: Option<LocalObjectReference>,
+
+    /// Take a member from any pool in the claim's namespace whose labels
+    /// match. Members of every matching pool are ranked as one set (Ready
+    /// only, current image revision of their own pool first, then the one
+    /// Ready longest, then name), and `status.poolRef` records the pool
+    /// the bound member came from. `{}` matches every pool in the
+    /// namespace. Exactly one of this or `poolRef` (ADR-0132).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pool_selector: Option<LabelSelector>,
 
     /// Who this member is for. Opaque to banlieue: recorded, mirrored onto
     /// the member as annotations, and never interpreted.
@@ -151,6 +175,11 @@ pub struct VirtualMachineClaimStatus {
     /// The bound member. Set once, at bind time, and never rewritten.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub virtual_machine_ref: Option<LocalObjectReference>,
+    /// The pool the bound member came from. Set at bind time from the
+    /// member's `banlieue.io/pool` label; the only place a claim made with
+    /// `spec.poolSelector` says which pool supplied its VM (ADR-0132).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pool_ref: Option<LocalObjectReference>,
     /// Mirrored from the bound member so a consumer needs one GET.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub addresses: Vec<MachineAddress>,

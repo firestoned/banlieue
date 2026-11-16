@@ -23,6 +23,10 @@
   [ADR-0026](0026-vspheremachine-deletion-lifecycle.md) and
   [ADR-0050](0050-libvirtmachine-domain-lifecycle.md) — a claim's deletion
   guarantee is only as strong as theirs.
+- **Amended by:** [ADR-0132](0132-claim-selects-its-pool-by-label.md)
+  (2026-11-16): `spec.poolRef` is optional beside a new `spec.poolSelector`,
+  exactly one of the two; Decisions 4 and 11 rank and report across every
+  matched pool.
 
 ## Context
 

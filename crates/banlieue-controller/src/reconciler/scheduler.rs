@@ -1145,6 +1145,18 @@ pub(crate) fn selector_matches(
     let Some(sel) = selector else {
         return true;
     };
+    label_selector_matches(sel, labels)
+}
+
+/// Evaluate a present [`LabelSelector`]. The empty selector matches
+/// everything, as in Kubernetes.
+///
+/// Shared with the claim planner, which matches `spec.poolSelector` against
+/// pool labels (ADR-0132).
+pub(crate) fn label_selector_matches(
+    sel: &LabelSelector,
+    labels: &BTreeMap<String, String>,
+) -> bool {
     for (k, v) in &sel.match_labels {
         if labels.get(k) != Some(v) {
             return false;

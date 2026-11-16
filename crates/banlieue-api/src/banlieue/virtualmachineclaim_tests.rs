@@ -25,7 +25,11 @@ mod tests {
     fn minimal_claim_round_trips() {
         let spec: VirtualMachineClaimSpec =
             serde_json::from_value(minimal_claim_json()).expect("minimal claim must parse");
-        assert_eq!(spec.pool_ref.name, "sandbox-pool");
+        assert_eq!(
+            spec.pool_ref.as_ref().map(|r| r.name.as_str()),
+            Some("sandbox-pool")
+        );
+        assert!(spec.pool_selector.is_none());
         assert_eq!(spec.subject.issuer, "https://issuer.example.com");
         assert_eq!(spec.ttl_seconds, 900);
     }
@@ -50,12 +54,83 @@ mod tests {
         );
     }
 
+    // ------------------------------------------------------------------
+    // poolRef / poolSelector: exactly one (ADR-0132 Decisions 1 and 2)
+    // ------------------------------------------------------------------
+
+    /// A claim may select among pools instead of naming one. `poolRef` is
+    /// then absent, which the type must accept: the "exactly one" rule is
+    /// the apiserver's (CEL), not serde's.
     #[test]
-    fn pool_ref_is_required() {
+    fn a_claim_may_select_its_pool_by_label() {
         let mut json = minimal_claim_json();
-        json.as_object_mut().unwrap().remove("poolRef");
-        serde_json::from_value::<VirtualMachineClaimSpec>(json)
-            .expect_err("a claim with no pool must not parse");
+        let obj = json.as_object_mut().unwrap();
+        obj.remove("poolRef");
+        obj.insert(
+            "poolSelector".into(),
+            serde_json::json!({ "matchLabels": { "sandbox.example.com/image": "agent" } }),
+        );
+        let spec: VirtualMachineClaimSpec =
+            serde_json::from_value(json).expect("a selector claim must parse");
+        assert!(spec.pool_ref.is_none());
+        let selector = spec.pool_selector.expect("selector kept");
+        assert_eq!(
+            selector
+                .match_labels
+                .get("sandbox.example.com/image")
+                .map(String::as_str),
+            Some("agent")
+        );
+    }
+
+    /// `poolSelector: {}` is how a claim says "any pool in my namespace".
+    /// It must survive a round trip as an empty selector, not vanish into
+    /// `None`: an absent selector and an empty one mean opposite things.
+    #[test]
+    fn an_empty_selector_is_kept_rather_than_dropped() {
+        let mut json = minimal_claim_json();
+        let obj = json.as_object_mut().unwrap();
+        obj.remove("poolRef");
+        obj.insert("poolSelector".into(), serde_json::json!({}));
+        let spec: VirtualMachineClaimSpec = serde_json::from_value(json).expect("parses");
+        assert_eq!(
+            spec.pool_selector,
+            Some(crate::common::LabelSelector::default())
+        );
+
+        let back = serde_json::to_value(&spec).unwrap();
+        assert_eq!(back["poolSelector"], serde_json::json!({}), "got {back}");
+        assert!(back.get("poolRef").is_none(), "got {back}");
+    }
+
+    fn spec_schema() -> serde_json::Value {
+        use kube::CustomResourceExt as _;
+        let crd = VirtualMachineClaim::crd();
+        let schema = crd.spec.versions[0].schema.clone().unwrap();
+        let root = serde_json::to_value(schema.open_api_v3_schema.unwrap()).unwrap();
+        root["properties"]["spec"].clone()
+    }
+
+    /// Neither and both are refused by the apiserver, before any controller
+    /// sees the claim. Neither must never be read as "any pool": that is
+    /// spelled `poolSelector: {}` (ADR-0132 Decision 2).
+    #[test]
+    fn a_claim_takes_exactly_one_of_pool_ref_or_pool_selector() {
+        let spec = spec_schema();
+        let rules = spec["x-kubernetes-validations"]
+            .as_array()
+            .unwrap_or_else(|| panic!("no CEL rules on spec: {spec}"));
+        assert!(
+            rules
+                .iter()
+                .any(|r| r["rule"] == "has(self.poolRef) != has(self.poolSelector)"),
+            "got {spec}"
+        );
+        let required = spec["required"].as_array().cloned().unwrap_or_default();
+        assert!(
+            !required.iter().any(|f| f == "poolRef"),
+            "poolRef must no longer be required: {spec}"
+        );
     }
 
     #[test]
@@ -192,6 +267,38 @@ mod tests {
     /// value gives a negative duration and prints literally `<invalid>`.
     /// Observed on a real cluster — the one column whose whole job is to say
     /// when the sandbox dies was the one showing nothing.
+    /// With a selector the spec no longer says which pool supplied the VM,
+    /// so the column reads the pool the claim actually bound from
+    /// (ADR-0132 Decision 6).
+    #[test]
+    fn the_pool_column_shows_the_pool_bound_from() {
+        use kube::CustomResourceExt as _;
+        let crd = VirtualMachineClaim::crd();
+        let columns = crd.spec.versions[0]
+            .additional_printer_columns
+            .as_ref()
+            .expect("printer columns");
+        let pool = columns
+            .iter()
+            .find(|c| c.name == "Pool")
+            .expect("a Pool column");
+        assert_eq!(pool.json_path, ".status.poolRef.name");
+    }
+
+    #[test]
+    fn status_pool_ref_round_trips_and_is_omitted_when_unset() {
+        let st = VirtualMachineClaimStatus {
+            pool_ref: Some(LocalObjectReference {
+                name: "sandbox-pool".into(),
+            }),
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&st).unwrap();
+        assert_eq!(json["poolRef"]["name"], "sandbox-pool");
+        let empty = serde_json::to_value(VirtualMachineClaimStatus::default()).unwrap();
+        assert!(empty.get("poolRef").is_none(), "got {empty}");
+    }
+
     #[test]
     fn the_expires_column_is_not_rendered_as_an_age() {
         use kube::CustomResourceExt as _;
