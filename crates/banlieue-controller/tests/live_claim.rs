@@ -288,18 +288,28 @@ async fn make_member(
 }
 
 async fn make_claim(s: &Scratch, name: &str, pool: &str, ttl: u64) -> VirtualMachineClaim {
+    make_claim_from(s, name, json!({ "poolRef": { "name": pool } }), ttl).await
+}
+
+/// A claim whose pool choice is `pool_field`: `{"poolRef": ...}` or
+/// `{"poolSelector": ...}` (ADR-0132).
+async fn make_claim_from(
+    s: &Scratch,
+    name: &str,
+    pool_field: serde_json::Value,
+    ttl: u64,
+) -> VirtualMachineClaim {
+    let mut spec = pool_field;
+    spec["subject"] = json!({
+        "issuer": "https://issuer.example.com",
+        "id": format!("subject-{name}"),
+    });
+    spec["ttlSeconds"] = json!(ttl);
     let claim: VirtualMachineClaim = serde_json::from_value(json!({
         "apiVersion": "banlieue.io/v1alpha1",
         "kind": "VirtualMachineClaim",
         "metadata": { "name": name, "namespace": s.namespace },
-        "spec": {
-            "poolRef": { "name": pool },
-            "subject": {
-                "issuer": "https://issuer.example.com",
-                "id": format!("subject-{name}"),
-            },
-            "ttlSeconds": ttl,
-        },
+        "spec": spec,
     }))
     .expect("claim fixture");
 
@@ -307,6 +317,18 @@ async fn make_claim(s: &Scratch, name: &str, pool: &str, ttl: u64) -> VirtualMac
         .create(&PostParams::default(), &claim)
         .await
         .expect("create claim")
+}
+
+/// Label a pool, as an operator grouping interchangeable pools would.
+async fn label_pool(s: &Scratch, name: &str, key: &str, value: &str) {
+    s.pools()
+        .patch(
+            name,
+            &PatchParams::default(),
+            &Patch::Merge(json!({ "metadata": { "labels": { key: value } } })),
+        )
+        .await
+        .expect("label pool");
 }
 
 /// Reconcile once, from the object as it currently stands.
@@ -394,6 +416,8 @@ async fn binds_a_ready_member_and_publishes_everything_a_consumer_needs() {
         // ADR-0049, amended 2026-11-05: no nonce is minted any more.
         assert_eq!(st.nonce, None, "a bind must not mint the retired nonce");
         assert!(st.bound_at.is_some() && st.expires_at.is_some());
+        // ADR-0132 Decision 6: the pool the member came from.
+        assert_eq!(st.pool_ref.as_ref().map(|r| r.name.as_str()), Some("p"));
 
         let member = s.vms().get("m1").await.unwrap();
         assert_eq!(
@@ -721,6 +745,83 @@ async fn a_claim_against_a_missing_pool_says_so() {
             .expect("a condition explaining the wait");
         assert_eq!(cond.reason, pool_condition_reasons::POOL_NOT_FOUND);
         assert!(cond.message.contains("does-not-exist"), "{}", cond.message);
+        s
+    })
+    .await;
+}
+
+/// ADR-0132: a selector claim draws from every matching pool, so an empty
+/// pool beside a warm one no longer leaves it waiting, and a pool that does
+/// not match is never drawn from even when it has the longest-Ready member.
+/// The claim records which pool supplied its VM.
+#[tokio::test]
+#[ignore = "needs a cluster with the banlieue CRDs"]
+async fn a_selector_claim_binds_from_any_matching_pool() {
+    with_scratch("selector", |s| async move {
+        let empty = make_pool(&s, "empty", Some("rev-1")).await;
+        let warm = make_pool(&s, "warm", Some("rev-1")).await;
+        let other = make_pool(&s, "other", Some("rev-1")).await;
+        label_pool(&s, &empty.name_any(), "sandbox.example.com/image", "agent").await;
+        label_pool(&s, &warm.name_any(), "sandbox.example.com/image", "agent").await;
+        label_pool(&s, &other.name_any(), "sandbox.example.com/image", "other").await;
+        // Created first, so Ready longest: picked if the selector leaked.
+        make_member(&s, &other, "other-m1", "rev-1", false).await;
+        make_member(&s, &warm, "warm-m1", "rev-1", false).await;
+
+        make_claim_from(
+            &s,
+            "c1",
+            json!({ "poolSelector": {
+                "matchLabels": { "sandbox.example.com/image": "agent" },
+            }}),
+            900,
+        )
+        .await;
+        reconcile(&s, "c1").await;
+
+        let claim = s.claims().get("c1").await.unwrap();
+        let st = claim.status.as_ref().expect("status published");
+        assert_eq!(st.phase, ClaimPhase::Bound, "{st:?}");
+        assert_eq!(
+            st.virtual_machine_ref.as_ref().map(|r| r.name.as_str()),
+            Some("warm-m1")
+        );
+        assert_eq!(st.pool_ref.as_ref().map(|r| r.name.as_str()), Some("warm"));
+        let other_member = s.vms().get("other-m1").await.unwrap();
+        assert!(
+            !other_member.labels().contains_key(LABEL_CLAIM),
+            "a non-matching pool's member must never be bound"
+        );
+        s
+    })
+    .await;
+}
+
+/// ADR-0132 Decision 7: a selector that matches nothing is its own reason,
+/// not "pool not found" and not "no member available".
+#[tokio::test]
+#[ignore = "needs a cluster with the banlieue CRDs"]
+async fn a_selector_matching_no_pool_says_so() {
+    with_scratch("nomatch", |s| async move {
+        let pool = make_pool(&s, "p", Some("rev-1")).await;
+        make_member(&s, &pool, "m1", "rev-1", false).await;
+        make_claim_from(
+            &s,
+            "c1",
+            json!({ "poolSelector": { "matchLabels": { "tier": "gold" } } }),
+            900,
+        )
+        .await;
+        reconcile(&s, "c1").await;
+
+        let claim = s.claims().get("c1").await.unwrap();
+        assert_eq!(phase(&claim), ClaimPhase::Pending);
+        let cond = claim
+            .status
+            .as_ref()
+            .and_then(|st| st.conditions.first().cloned())
+            .expect("a condition explaining the wait");
+        assert_eq!(cond.reason, pool_condition_reasons::NO_POOL_MATCHES);
         s
     })
     .await;

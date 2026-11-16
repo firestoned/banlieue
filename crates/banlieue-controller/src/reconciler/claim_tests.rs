@@ -18,8 +18,15 @@ mod tests {
     /// what a consumer reads to find its sandbox and its deadline.
     #[test]
     fn a_bind_publishes_the_member_and_its_deadline() {
-        let status = bound_status("sandbox-pool-x7k2p", at(1_800_000_000), at(1_800_003_600));
+        let status = bound_status(
+            "sandbox-pool-x7k2p",
+            "sandbox-pool",
+            at(1_800_000_000),
+            at(1_800_003_600),
+        );
         assert_eq!(status["virtualMachineRef"]["name"], "sandbox-pool-x7k2p");
+        // ADR-0132 Decision 6: a selector claim's only record of its pool.
+        assert_eq!(status["poolRef"]["name"], "sandbox-pool");
         assert!(status.get("boundAt").is_some(), "{status}");
         assert!(status.get("expiresAt").is_some(), "{status}");
     }
@@ -30,7 +37,7 @@ mod tests {
     /// does not exist.
     #[test]
     fn a_bind_mints_no_nonce() {
-        let status = bound_status("m", at(1_800_000_000), at(1_800_003_600));
+        let status = bound_status("m", "p", at(1_800_000_000), at(1_800_003_600));
         assert!(status.get("nonce").is_none(), "{status}");
     }
 }

@@ -1318,11 +1318,18 @@ the subject's token to the guest is the consumer's job, over its own
 attested channel, anchored on the bound member's EK certificate
 (`status.tpmEndorsementCertificates`, ADR-0045, ADR-0049).
 
+**Which pool**
+
+Exactly one of `poolRef` (one named pool) or `poolSelector` (every pool
+in the claim's namespace whose labels match). `poolSelector: {}` matches
+every pool in the namespace; a claim with neither field is refused
+rather than read as "any pool" (ADR-0132).
+
 **Printer columns** (`kubectl get`):
 
 | Name | Type | JSON path | Priority |
 | --- | --- | --- | --- |
-| Pool | string | `.spec.poolRef.name` | 0 |
+| Pool | string | `.status.poolRef.name` | 0 |
 | VM | string | `.status.virtualMachineRef.name` | 0 |
 | Phase | string | `.status.phase` | 0 |
 | Expires | string | `.status.expiresAt` | 0 |
@@ -1332,17 +1339,41 @@ attested channel, anchored on the bound member's EK certificate
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `poolRef` | object | Yes | The pool to take a member from. Same namespace as the claim. |
+| `poolRef` | object |  | The pool to take a member from. Same namespace as the claim. Exactly one of this or `poolSelector`. |
+| `poolSelector` | object |  | Take a member from any pool in the claim's namespace whose labels match. Members of every matching pool are ranked as one set (Ready only, current image revision of their own pool first, then the one Ready longest, then name), and `status.poolRef` records the pool the bound member came from. `{}` matches every pool in the namespace. Exactly one of this or `poolRef` (ADR-0132). |
 | `subject` | object | Yes | Who this member is for. Opaque to banlieue: recorded, mirrored onto the member as annotations, and never interpreted. |
 | `ttlSeconds` | integer | Yes | Hard lifetime in seconds, counted from binding rather than from creation — a claim that waited ten minutes for capacity still gets its full TTL. Required, with no default: a claim without a deadline is a leaked VM, and the right value is a property of the workload. |
 
 #### `.spec.poolRef`
 
 The pool to take a member from. Same namespace as the claim.
+Exactly one of this or `poolSelector`.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `name` | string | Yes |  |
+
+#### `.spec.poolSelector`
+
+Take a member from any pool in the claim's namespace whose labels
+match. Members of every matching pool are ranked as one set (Ready
+only, current image revision of their own pool first, then the one
+Ready longest, then name), and `status.poolRef` records the pool
+the bound member came from. `{}` matches every pool in the
+namespace. Exactly one of this or `poolRef` (ADR-0132).
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `matchExpressions` | object[] |  |  |
+| `matchLabels` | map[string]string |  |  |
+
+##### `.spec.poolSelector.matchExpressions[]`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `key` | string | Yes |  |
+| `operator` | string | Yes | Allowed: `In`, `NotIn`, `Exists`, `DoesNotExist`. |
+| `values` | string[] |  |  |
 
 #### `.spec.subject`
 
@@ -1365,6 +1396,7 @@ the member as annotations, and never interpreted.
 | `nonce` | string |  | Deprecated, never set since v0.4.14. It was a per-claim value for ADR-0049's quote-over-nonce handshake, which SPIRE's TPM node attestation superseded (ADR-0049, amended 2026-11-05). Kept so an existing claim's status still parses; removed with the next API version. |
 | `observedGeneration` | integer |  |  |
 | `phase` | string |  | Where a claim is in its one-way lifecycle. Allowed: `Pending`, `Bound`, `Releasing`, `Failed`. |
+| `poolRef` | object |  | The pool the bound member came from. Set at bind time from the member's `banlieue.io/pool` label; the only place a claim made with `spec.poolSelector` says which pool supplied its VM (ADR-0132). |
 | `tpmEndorsementCertificates` | string[] |  | PEM vTPM endorsement key certificate(s) of the bound member, mirrored from the infra CR (ADR-0045). Lets a verifier check that an attestation comes from the VM banlieue itself created for this claim. Populated since ADR-0045, from the bound member's `VirtualMachine.status`, which mirrors its infrastructure CR. Empty for a member with no vTPM. |
 | `virtualMachineRef` | object |  | The bound member. Set once, at bind time, and never rewritten. |
 
@@ -1387,6 +1419,16 @@ Mirrored from the bound member so a consumer needs one GET.
 | `reason` | string | Yes | reason contains a programmatic identifier indicating the reason for the condition's last transition. Producers of specific condition types may define expected values and meanings for this field, and whether the values are considered a guaranteed API. The value should be a CamelCase string. This field may not be empty. |
 | `status` | string | Yes | status of the condition, one of True, False, Unknown. |
 | `type` | string | Yes | type of condition in CamelCase or in foo.example.com/CamelCase. |
+
+#### `.status.poolRef`
+
+The pool the bound member came from. Set at bind time from the
+member's `banlieue.io/pool` label; the only place a claim made with
+`spec.poolSelector` says which pool supplied its VM (ADR-0132).
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | Yes |  |
 
 #### `.status.virtualMachineRef`
 

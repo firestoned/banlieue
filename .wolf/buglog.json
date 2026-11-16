@@ -3448,6 +3448,27 @@
       ],
       "occurrences": 1,
       "last_seen": "2026-11-03T20:30:46.000Z"
+    },
+    {
+      "id": "bug-189",
+      "timestamp": "2026-11-16T00:00:00.000Z",
+      "error_message": "live_claim two_claims_cannot_bind_the_same_member: exactly one claim may bind one member; bound: [\"a\", \"b\"]",
+      "file": "crates/banlieue-controller/src/reconciler/claim.rs",
+      "root_cause": "bind() re-GET the member and used that fresh resourceVersion as the merge-patch precondition. A GET after a competing bind returns the winner's version, so the loser's precondition matched and it overwrote the claim label: both claims Bound on one member. Latent on main (timing hid it); ADR-0132's extra pool LIST in pick() widened the window (3/5 failures).",
+      "fix": "pick() returns the member's resourceVersion from the LIST it was picked from (Candidate); bind() patches under that, no re-GET; 404 also treated as a lost race. Race test 10/10 on kind, live_claim 11/11.",
+      "tags": [
+        "claim",
+        "race",
+        "resourceVersion",
+        "optimistic-concurrency",
+        "adr-0047",
+        "adr-0132"
+      ],
+      "related_bugs": [
+        "bug-170"
+      ],
+      "occurrences": 1,
+      "last_seen": "2026-11-16T00:00:00.000Z"
     }
-  ]
+]
 }

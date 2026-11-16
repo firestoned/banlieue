@@ -63,6 +63,11 @@ pub mod pool_condition_reasons {
     pub const READINESS_SIGNAL_ABSENT: &str = "ReadinessSignalAbsent";
     pub const NO_MEMBER_AVAILABLE: &str = "NoMemberAvailable";
     pub const POOL_NOT_FOUND: &str = "PoolNotFound";
+    /// A claim's `spec.poolSelector` matches no pool in its namespace, or
+    /// the claim sets neither `poolRef` nor `poolSelector` (ADR-0132
+    /// Decision 7). A labelling problem, distinct from both a full pool and
+    /// a misspelled pool name.
+    pub const NO_POOL_MATCHES: &str = "NoPoolMatches";
     pub const EXPIRED: &str = "Expired";
     /// The claim was deleted; its member is being destroyed. Distinct from
     /// `Expired` (the TTL ran out) and from `MemberLost` (the member

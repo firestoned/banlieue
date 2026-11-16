@@ -39,9 +39,12 @@ kubectl get vmclaim -n banlieue-system -w
 
 ```text
 NAME                POOL           VM                   PHASE     EXPIRES
-sandbox-for-alice   sandbox-pool                        Pending
+sandbox-for-alice                                       Pending
 sandbox-for-alice   sandbox-pool   sandbox-pool-9dmtx   Bound     2026-09-20T14:17:11Z
 ```
+
+The `POOL` column reads `status.poolRef`, the pool the bound member came
+from, so it stays empty until the claim binds.
 
 Once `Bound`, everything a consumer needs is in one GET:
 
@@ -49,6 +52,7 @@ Once `Bound`, everything a consumer needs is in one GET:
 status:
   phase: Bound
   virtualMachineRef: { name: sandbox-pool-9dmtx }
+  poolRef: { name: sandbox-pool }
   addresses:
     - type: InternalIP
       address: 192.0.2.17
@@ -189,9 +193,57 @@ Bound=False   reason=PoolNotFound
 message: pool sandbox-pool does not exist
 ```
 
+A selector that matches no pool is its own reason, and a selector claim
+waiting on several pools repeats each one's diagnosis (up to five, then a
+count):
+
+```text
+Bound=False   reason=NoPoolMatches
+message: no pool in this namespace matches spec.poolSelector
+
+Bound=False   reason=NoMemberAvailable
+message: no Ready, unclaimed member in any of 2 matching pools:
+         pool-a (pool: Filling: 0 of 2 members ready);
+         pool-b (pool has not published a Warm condition yet)
+```
+
+## Choosing the pool: `poolRef` or `poolSelector`
+
+A claim takes **exactly one** of two fields (ADR-0132):
+
+- `spec.poolRef` names one pool in the claim's namespace.
+- `spec.poolSelector` is a label selector over the pools in the claim's
+  namespace. The members of every matching pool are ranked together, as
+  one set, by the rules in the next section.
+
+```yaml
+spec:
+  poolSelector:
+    matchLabels:
+      sandbox.example.com/image: agent
+```
+
+Use a selector when several pools are interchangeable (one per host, one
+per zone, all serving the same image). A claim on one named pool waits
+while that pool is empty, even when the pool next to it holds a Ready
+member; a selector claim takes that member.
+
+For **any pool in the namespace**, write the empty selector,
+`poolSelector: {}`. A claim with neither field, or with both, is refused by
+the API server: an omitted pool is never read as "any pool". A selector
+never reaches outside the claim's namespace.
+
+Both fields are immutable once the claim exists. Since the spec of a
+selector claim names no pool, `status.poolRef` records the one that
+supplied the VM. `examples/27-virtualmachineclaim-pool-selector.yaml` is a
+complete selector claim.
+
 ## Which member you get
 
 In order: **current image revision**, then **longest Ready**, then name.
+With a `poolSelector`, these rules run over the members of every matching
+pool at once, and "current revision" means current *for the member's own
+pool*. No pool is preferred over another.
 
 - *Current revision first*, so a rebuild that was meant to retire an
   unpatched build actually does.
@@ -207,9 +259,11 @@ a full install during exactly the rollout the pool exists to hide.
 ## What happens when two consumers race
 
 Nothing special, and deliberately so. Binding is a merge patch on the member
-carrying its `resourceVersion`, so if anyone — including another claim —
+carrying its `resourceVersion`, so if anyone, including another claim,
 wrote that member since the controller listed it, the patch is rejected with
-`409 Conflict` and the loser simply picks again.
+`409 Conflict` and the loser simply picks again. The version is the one from
+the list the member was picked from: re-reading the member just before the
+patch would return the winner's version and let the loser overwrite it.
 
 Optimistic concurrency, no lock, no lease. The API server is already the
 serialisation point and it is the only participant that cannot disagree with
@@ -310,6 +364,8 @@ libvirt provided the image carries the guest-phase layer and
 | Symptom | Cause |
 | --- | --- |
 | `Pending` forever, `reason=PoolNotFound` | `spec.poolRef.name` names a pool that does not exist in this namespace. |
+| `Pending` forever, `reason=NoPoolMatches` | `spec.poolSelector` matches no pool's labels in this namespace. Check `kubectl get vmpool --show-labels`. |
+| Claim refused: `exactly one of poolRef or poolSelector` | The claim has neither field or both. For any pool, use `poolSelector: {}`. |
 | `Pending` forever, `reason=NoMemberAvailable` | Read the pool reason in the message. `Filling` means wait; `ReadinessSignalAbsent` means the pool will never warm. |
 | `Phase: Failed` | The bound member was deleted out from under the claim. Terminal by design — create a new claim. |
 | `kubectl delete vmclaim` hangs | Expected while the backend VM is being destroyed. Check the member: `kubectl get virtualmachine <name> -o yaml`. If its own finalizer is stuck, the provider cannot reach the backend. |
@@ -321,5 +377,6 @@ libvirt provided the image carries the guest-phase layer and
 
 - [`VirtualMachineClaim` API reference](../reference/api.md#virtualmachineclaim)
 - [ADR-0047 — `VirtualMachineClaim`: bound once, released by deletion](https://github.com/firestoned/banlieue/blob/main/docs/adr/0047-virtualmachineclaim.md)
+- [ADR-0132: A claim may select its pool by label](https://github.com/firestoned/banlieue/blob/main/docs/adr/0132-claim-selects-its-pool-by-label.md)
 - [The Claim Flow, End to End](../concepts/virtualmachine-claim-flow.md) — every actor and message, end to end
 - [VirtualMachine Pools guide](virtualmachine-pools.md) — where the members come from

@@ -93,11 +93,34 @@ fn virtualmachineclaim_example_matches_the_type() {
     let claim: VirtualMachineClaim =
         serde_json::from_value(doc.clone()).expect("example must parse as a VirtualMachineClaim");
 
-    assert_eq!(claim.spec.pool_ref.name, "sandbox-pool");
+    assert_eq!(
+        claim.spec.pool_ref.as_ref().map(|r| r.name.as_str()),
+        Some("sandbox-pool")
+    );
+    assert!(claim.spec.pool_selector.is_none());
     assert_eq!(claim.spec.ttl_seconds, 900);
     assert!(
         claim.spec.subject.issuer.starts_with("https://"),
         "the example issuer should look like an OIDC issuer URL"
+    );
+
+    let spec_doc = doc.get("spec").expect("example has a spec");
+    assert_no_dropped_keys(spec_doc, &claim.spec);
+}
+
+/// The selector example takes exactly one of the two pool fields, which the
+/// CRD's CEL rule enforces on a real API server (ADR-0132).
+#[test]
+fn virtualmachineclaim_selector_example_matches_the_type() {
+    let doc = read_example("27-virtualmachineclaim-pool-selector.yaml");
+    let claim: VirtualMachineClaim =
+        serde_json::from_value(doc.clone()).expect("example must parse as a VirtualMachineClaim");
+
+    assert!(claim.spec.pool_ref.is_none(), "exactly one pool field");
+    let selector = claim.spec.pool_selector.as_ref().expect("a poolSelector");
+    assert!(
+        !selector.match_labels.is_empty(),
+        "the example should select by a label"
     );
 
     let spec_doc = doc.get("spec").expect("example has a spec");
@@ -131,7 +154,7 @@ fn a_misspelled_key_is_caught() {
     pool_ref.insert("reference".into(), name);
 
     let spec_doc = doc.get("spec").unwrap().clone();
-    // `poolRef.name` is required, so parse the spec leniently for this check.
+    // `poolRef.name` is required, so parse a well-formed spec for this check.
     let claim: banlieue_api::banlieue::VirtualMachineClaimSpec = serde_json::from_value(
         serde_saphyr::from_str(
             r#"
