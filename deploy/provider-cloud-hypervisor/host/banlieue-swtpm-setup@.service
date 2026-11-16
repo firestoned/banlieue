@@ -24,4 +24,9 @@ ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
 ReadWritePaths=@STATE_ROOT@/tpm/%i @STATE_ROOT@/ek @EK_CA_DIR@
+# /dev read-only: ProtectSystem=strict leaves it writable, and /dev/shm is
+# shared by every uid. Device nodes still open read-write. A private IPC
+# namespace keeps SysV IPC and POSIX message queues per guest too.
+ReadOnlyPaths=/dev
+PrivateIPC=yes
 DevicePolicy=closed

@@ -370,8 +370,12 @@ mod tests {
         }
         assert!(
             h.getent("group", "kvm")
-                .is_some_and(|l| l.ends_with(":banlieue")),
-            "banlieue joined kvm"
+                .is_some_and(|l| !l.contains("banlieue")),
+            "the provider only stat()s /dev/kvm: it is not in kvm"
+        );
+        assert!(
+            h.exists(Path::new("/dev/net/tun")),
+            "the tun node exists before the provider starts"
         );
         // One user and one group record per guest uid, plus a uid link each.
         let records = h.list(Path::new(USERDB_DIR));
@@ -397,13 +401,51 @@ mod tests {
         let again: Vec<String> = h.commands().split_off(ran);
         for c in &again {
             assert!(
-                !["useradd", "usermod", "apt-get", "systemd-tmpfiles"]
-                    .iter()
-                    .any(|p| c.starts_with(p))
+                ![
+                    "useradd",
+                    "usermod",
+                    "gpasswd",
+                    "apt-get",
+                    "systemd-tmpfiles",
+                    "systemctl restart",
+                ]
+                .iter()
+                .any(|p| c.starts_with(p))
                     && !c.contains("--create-ek-cert --config"),
                 "second run changed the host: {c}"
             );
         }
+    }
+
+    /// A host installed before the provider stopped needing `/dev/kvm`
+    /// leaves the kvm group; one whose tmpfiles.d entry predates the tun
+    /// node gets it applied, so the node exists before the provider's next
+    /// start.
+    #[tokio::test]
+    async fn an_older_install_is_brought_to_least_privilege() {
+        let h = fake_host();
+        let s = settings(&h);
+        install_all(&h, &s, &opts()).await.unwrap();
+        h.run(&Cmd::new("usermod", &["-aG", "kvm", BANLIEUE_USER]))
+            .unwrap();
+        h.write(
+            Path::new(TMPFILES_CONF),
+            b"d /run/banlieue 0755 root root -\n",
+            0o644,
+            &crate::ops::Owner::root(),
+        )
+        .unwrap();
+        h.remove(Path::new("/dev/net/tun")).unwrap();
+
+        super::super::host(&h, &s, &release(), &Options::default()).unwrap();
+
+        assert!(
+            h.getent("group", "kvm")
+                .is_some_and(|l| !l.contains("banlieue")),
+            "left kvm"
+        );
+        assert_eq!(count(&h, "gpasswd -d banlieue kvm"), 1);
+        assert!(h.exists(Path::new("/dev/net/tun")));
     }
 
     /// An edited host config is the admin's: kept unless --force.
@@ -580,8 +622,58 @@ mod tests {
             (0o755, "root".into(), "root".into())
         );
         assert_eq!(count(&h, "systemctl enable --now"), 1);
-        // Already running: not enabled again.
+        // Already running: not enabled again, and nothing changed, so not
+        // restarted either.
         provider(&h, &s, &Options::default()).unwrap();
+        assert_eq!(count(&h, "systemctl enable --now"), 1);
+        assert_eq!(count(&h, "systemctl restart"), 0);
+    }
+
+    /// A running provider is restarted when its unit or its binary changed,
+    /// or the new sandbox and the new build would wait for a reboot. Guests
+    /// keep running: KillMode=process (ADR-0063 Decision 1).
+    #[tokio::test]
+    async fn a_running_provider_restarts_when_its_unit_or_binary_changes() {
+        let h = fake_host();
+        let s = settings(&h);
+        h.write(
+            Path::new(PROVIDER_BINARY),
+            b"build 1",
+            0o755,
+            &crate::ops::Owner::root(),
+        )
+        .unwrap();
+        install_all(&h, &s, &opts()).await.unwrap();
+        h.write(Path::new(KUBECONFIG_PATH), b"k", 0o600, &banlieue())
+            .unwrap();
+        provider(&h, &s, &Options::default()).unwrap();
+        assert_eq!(count(&h, "systemctl enable --now"), 1);
+        assert_eq!(count(&h, "systemctl restart"), 0, "just started");
+
+        // An older unit on disk: the install rewrites it and restarts.
+        let unit = Path::new(SYSTEMD_UNIT_DIR).join(PROVIDER_UNIT);
+        h.write(
+            &unit,
+            b"[Service]\nReadOnlyPaths=/dev\n",
+            0o644,
+            &crate::ops::Owner::root(),
+        )
+        .unwrap();
+        provider(&h, &s, &Options::default()).unwrap();
+        assert_eq!(count(&h, &format!("systemctl restart {PROVIDER_UNIT}")), 1);
+
+        // A new binary: restarted again.
+        h.put_file("/tmp/banlieue", b"build 2", Kind::File);
+        let with_binary = Options {
+            provider_binary: Some("/tmp/banlieue".into()),
+            ..Options::default()
+        };
+        provider(&h, &s, &with_binary).unwrap();
+        assert_eq!(count(&h, "systemctl restart"), 2);
+
+        // The same binary again changes nothing.
+        provider(&h, &s, &with_binary).unwrap();
+        assert_eq!(count(&h, "systemctl restart"), 2);
         assert_eq!(count(&h, "systemctl enable --now"), 1);
     }
 
@@ -633,7 +725,9 @@ mod tests {
         let h = fake_host();
         let s = settings(&h);
         install_all(&h, &s, &opts()).await.unwrap();
-        h.env.lock().unwrap().kvm_access = false;
+        h.remove(Path::new("/dev/net/tun")).unwrap();
+        h.run(&Cmd::new("usermod", &["-aG", "kvm", BANLIEUE_USER]))
+            .unwrap();
         h.write(
             &release().firmware,
             b"drifted",
@@ -651,7 +745,8 @@ mod tests {
         let all = problems.join("\n");
         for expected in [
             "firmware does not match",
-            "cannot open /dev/kvm",
+            "/dev/net/tun is missing",
+            "banlieue is in the kvm group",
             "network class default",
         ] {
             assert!(all.contains(expected), "missing {expected:?} in:\n{all}");

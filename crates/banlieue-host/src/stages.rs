@@ -53,6 +53,13 @@ const BYTES_PER_GIB: u64 = 1 << 30;
 /// A scratch directory under the state root, the provider's and removed
 /// after each use; never the shared `/tmp`.
 const SCRATCH_DIR: &str = ".host-scratch";
+
+/// The device the provider opens to create taps; the tmpfiles.d entry
+/// creates it, and the provider unit's `DeviceAllow=` names it.
+const TUN_DEVICE: &str = "/dev/net/tun";
+
+/// The group owning `/dev/kvm`: guests join it, the provider must not.
+const KVM_GROUP: &str = "kvm";
 /// The CN the self-test's vTPM must carry: `<name>:<uuid>`, as ADR-0045
 /// checks for a machine.
 const SELFTEST_VMID_NAME: &str = "banlieue-selftest";
@@ -137,15 +144,19 @@ fn root_banlieue() -> Owner {
 }
 
 /// Write `data` unless the file is already exactly that.
-fn put(host: &dyn Host, path: &Path, data: &[u8], mode: u32, owner: &Owner) -> Result<(), Error> {
+///
+/// # Returns
+/// Whether the file was written.
+fn put(host: &dyn Host, path: &Path, data: &[u8], mode: u32, owner: &Owner) -> Result<bool, Error> {
     let same = host
         .stat(path)
         .is_some_and(|s| s.kind == Kind::File && s.mode == mode && &s.owner == owner)
         && host.read(path).is_ok_and(|d| d == data);
-    if !same {
-        host.write(path, data, mode, owner)?;
+    if same {
+        return Ok(false);
     }
-    Ok(())
+    host.write(path, data, mode, owner)?;
+    Ok(true)
 }
 
 /// Create or fix a directory unless it already is exactly that.
@@ -183,6 +194,13 @@ fn getent_field(line: &str, index: usize) -> Option<&str> {
     line.split(':').nth(index)
 }
 
+/// Is the provider's user a member of the kvm group?
+fn provider_in_kvm<P: Probe + ?Sized>(probe: &P) -> bool {
+    probe.getent("group", KVM_GROUP).is_some_and(|line| {
+        getent_field(&line, 3).is_some_and(|m| m.split(',').any(|u| u == BANLIEUE_USER))
+    })
+}
+
 // ---------------------------------------------------------------- preflight
 
 /// Is this host fit for guests? Every problem, not just the first.
@@ -205,7 +223,7 @@ pub fn preflight(probe: &dyn Probe, s: &Settings) -> Result<(), Error> {
     if !probe.exists(Path::new("/dev/kvm")) {
         bad.push("/dev/kvm is missing (VT-x/AMD-V in firmware? the kvm module?)".into());
     }
-    if probe.getent("group", "kvm").is_none() {
+    if probe.getent("group", KVM_GROUP).is_none() {
         bad.push("no kvm group".into());
     }
     let arch = probe.arch();
@@ -376,13 +394,13 @@ pub fn host(host: &dyn Host, s: &Settings, release: &Release, o: &Options) -> Re
             ],
         ))?;
     }
-    // The provider joins kvm to check /dev/kvm; guests get it themselves.
-    if let Some(kvm) = host.getent("group", "kvm") {
-        let member =
-            getent_field(&kvm, 3).is_some_and(|m| m.split(',').any(|u| u == BANLIEUE_USER));
-        if !member {
-            host.run(&Cmd::new("usermod", &["-aG", "kvm", BANLIEUE_USER]))?;
-        }
+    // The provider only checks that /dev/kvm exists, which needs no access;
+    // guests join kvm themselves. Earlier installs added it: take it out.
+    if provider_in_kvm(host) {
+        host.run(&Cmd::new("gpasswd", &["-d", BANLIEUE_USER, KVM_GROUP]))?;
+        note(format!(
+            "{BANLIEUE_USER} left the {KVM_GROUP} group: it needs no access to /dev/kvm"
+        ));
     }
 
     dir(host, Path::new(CONF_DIR), MODE_ROOT_DIR, &Owner::root())?;
@@ -411,15 +429,18 @@ pub fn host(host: &dyn Host, s: &Settings, release: &Release, o: &Options) -> Re
     if let Some(parent) = Path::new(TMPFILES_CONF).parent() {
         shared_dir(host, parent)?;
     }
+    // It also creates the tun node, which the provider unit's DeviceAllow=
+    // needs at start: apply it whenever it changed, not only at first boot.
     let tmpfiles = render::render(&render::TMPFILES, &values)?;
-    put(
+    let tmpfiles_changed = put(
         host,
         Path::new(TMPFILES_CONF),
         tmpfiles.as_bytes(),
         MODE_PUBLIC_FILE,
         &Owner::root(),
     )?;
-    if !host.is_dir(Path::new(RUN_ROOT)) {
+    if tmpfiles_changed || !host.is_dir(Path::new(RUN_ROOT)) || !host.exists(Path::new(TUN_DEVICE))
+    {
         host.run(&Cmd::new("systemd-tmpfiles", &["--create", TMPFILES_CONF]))?;
     }
 
@@ -684,16 +705,20 @@ pub fn polkit(host: &dyn Host, s: &Settings) -> Result<(), Error> {
 // ----------------------------------------------------------------- provider
 
 /// The template units and the provider unit. The provider is enabled only
-/// when its binary and kubeconfig both exist (invariant 5).
+/// when its binary and kubeconfig both exist (invariant 5), and a running
+/// provider is restarted when its unit or binary changed, so neither waits
+/// for a reboot. Guests keep running: `KillMode=process` (ADR-0063
+/// Decision 1).
 ///
 /// # Errors
 /// The I/O error, a template error, or `systemctl` failing.
 pub fn provider(host: &dyn Host, s: &Settings, o: &Options) -> Result<(), Error> {
     log("Units");
+    let mut provider_changed = false;
     if let Some(src) = &o.provider_binary {
         let bytes = host.read(src)?;
         shared_dir(host, Path::new(BIN_DIR))?;
-        put(
+        provider_changed |= put(
             host,
             Path::new(PROVIDER_BINARY),
             &bytes,
@@ -705,18 +730,30 @@ pub fn provider(host: &dyn Host, s: &Settings, o: &Options) -> Result<(), Error>
     let units = Path::new(SYSTEMD_UNIT_DIR);
     shared_dir(host, units)?;
     let values = render::values(s, host);
-    for t in render::UNIT_TEMPLATES
-        .iter()
-        .chain([&render::GUEST_SLICE, &render::PROVIDER_UNIT])
-    {
+    let mut templates_changed = false;
+    for t in render::UNIT_TEMPLATES.iter().chain([&render::GUEST_SLICE]) {
         let text = render::render(t, &values)?;
-        put(
+        templates_changed |= put(
             host,
             &units.join(t.name),
             text.as_bytes(),
             MODE_PUBLIC_FILE,
             &Owner::root(),
         )?;
+    }
+    let unit = render::render(&render::PROVIDER_UNIT, &values)?;
+    provider_changed |= put(
+        host,
+        &units.join(render::PROVIDER_UNIT.name),
+        unit.as_bytes(),
+        MODE_PUBLIC_FILE,
+        &Owner::root(),
+    )?;
+    if templates_changed {
+        note(
+            "guest unit templates updated: a running guest keeps the sandbox it started with \
+             until its next start",
+        );
     }
     if s.guest_slice.is_unbounded() {
         note(format!(
@@ -753,7 +790,14 @@ pub fn provider(host: &dyn Host, s: &Settings, o: &Options) -> Result<(), Error>
         .query(&Cmd::new("systemctl", &["is-active", PROVIDER_UNIT]))
         .is_some_and(|st| st.trim() == "active")
     {
-        note(format!("{PROVIDER_UNIT} running"));
+        if !provider_changed {
+            note(format!("{PROVIDER_UNIT} running"));
+            return Ok(());
+        }
+        host.run(&Cmd::new("systemctl", &["restart", PROVIDER_UNIT]))?;
+        note(format!(
+            "{PROVIDER_UNIT} restarted: its unit or binary changed (guests keep running)"
+        ));
         return Ok(());
     }
     host.run(&Cmd::new("systemctl", &["enable", "--now", PROVIDER_UNIT]))?;
@@ -775,8 +819,9 @@ pub fn certificate_cn(der: &[u8]) -> Option<String> {
 }
 
 /// Prove the pieces work together without booting a guest: the VMM runs,
-/// the firmware matches the release's digest, guest uids resolve, the provider's
-/// user can open `/dev/kvm`, the host config loads and passes the
+/// the firmware matches the release's digest, guest uids resolve, the tun
+/// device the provider opens exists, the provider's user is not in the kvm
+/// group (it needs no access to `/dev/kvm`), the host config loads and passes the
 /// provider's own host checks, and a vTPM can be manufactured with the EK
 /// CN a machine's would carry. Leaves nothing behind.
 ///
@@ -815,13 +860,19 @@ pub fn selftest(
             "guest uid {base} does not resolve (systemd would fail it with 217/USER)"
         ));
     }
-    if host
-        .run(&Cmd::new("test", &["-r", "/dev/kvm", "-a", "-w", "/dev/kvm"]).as_user(BANLIEUE_USER))
-        .is_ok()
-    {
-        ok(format!("{BANLIEUE_USER} can open /dev/kvm"));
+    if host.exists(Path::new(TUN_DEVICE)) {
+        ok(format!("{TUN_DEVICE} exists"));
     } else {
-        bad.push(format!("{BANLIEUE_USER} cannot open /dev/kvm"));
+        bad.push(format!(
+            "{TUN_DEVICE} is missing (systemd-tmpfiles --create {TMPFILES_CONF})"
+        ));
+    }
+    if provider_in_kvm(host) {
+        bad.push(format!(
+            "{BANLIEUE_USER} is in the {KVM_GROUP} group; it needs no access to /dev/kvm (re-run install)"
+        ));
+    } else {
+        ok(format!("{BANLIEUE_USER} is not in the {KVM_GROUP} group"));
     }
 
     // The provider's own view of this host.

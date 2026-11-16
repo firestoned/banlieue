@@ -79,8 +79,9 @@ pub enum Verb {
     /// Report what is installed. Changes nothing.
     Status(settings::HostArgs),
     /// Prove the pieces work together: the VMM and firmware, guest uids,
-    /// /dev/kvm, the provider's own host checks, a vTPM with the right EK
-    /// CN. Boots nothing, leaves nothing. Needs root.
+    /// /dev/net/tun, the provider's user outside the kvm group, the
+    /// provider's own host checks (/dev/kvm among them), a vTPM with the
+    /// right EK CN. Boots nothing, leaves nothing. Needs root.
     Selftest(SelftestArgs),
     /// Prepare this host, every stage in order, or one with --only. Needs
     /// root, except with --dry-run.

@@ -30,6 +30,11 @@ PrivateTmp=yes
 # is 2770 guest:banlieue under a 0711 root, so file permissions confine it
 # to its own; the list here only lifts ProtectSystem.
 ReadWritePaths=@RUN_ROOT@/%i @STORAGE_DIRS@
+# /dev read-only: ProtectSystem=strict leaves it writable, and /dev/shm is
+# shared by every uid. Device nodes still open read-write. A private IPC
+# namespace keeps SysV IPC and POSIX message queues per guest too.
+ReadOnlyPaths=/dev
+PrivateIPC=yes
 DevicePolicy=closed
 DeviceAllow=/dev/kvm rw
 DeviceAllow=/dev/net/tun rw
