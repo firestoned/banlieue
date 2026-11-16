@@ -14,7 +14,9 @@ SPDX-License-Identifier: Apache-2.0
   Decision 3: guest uids are registered with NSS as userdb records, each
   with a private group — all found while implementing, the last two on the
   first live run); 2026-09-27 (Decision 1: **root-owned template units, not transient
-  units** — a security fix; see *Amendment 2026-09-27*)
+  units** — a security fix; see *Amendment 2026-09-27*); 2026-11-15
+  (Decision 6: `/dev` is read-only to the provider, and it may open only
+  `/dev/net/tun`)
 - **Related:** [ADR-0060](0060-cloud-hypervisor-first-class-provider-topology.md)
   (host-resident provider), [ADR-0061](0061-banlieue-cloud-hypervisor-vmm-client.md)
   (the socket this ADR places), [ADR-0062](0062-cloudhypervisormachine-inframachine-contract.md)
@@ -272,7 +274,12 @@ The provider runs as a dedicated `banlieue` system user, not root, with:
   the rule now allows only what the provider uses, and each feature widens
   it in the change that needs it;
 - read-only access to the host config and kubeconfig, and write access only
-  to the run root and the storage targets.
+  to the run root and the storage targets;
+- *amended 2026-11-15:* a read-only `/dev` (`ReadOnlyPaths=/dev`), which
+  `ProtectSystem=strict` leaves writable, and `DevicePolicy=closed` with
+  `DeviceAllow=/dev/net/tun rw`: it changes no device node and opens no
+  device but the tun device it creates taps with. It only checks that
+  `/dev/kvm` exists.
 
 The unit, the rule and the tmpfiles entry are files in
 `deploy/provider-cloud-hypervisor/host/`, explained setting by setting in

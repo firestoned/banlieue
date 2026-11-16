@@ -1,5 +1,34 @@
 # Changelog
 
+## [2026-11-15 21:00] - Harden the Cloud Hypervisor provider unit: read-only /dev, tun device only
+
+**Author:** Daniel Guns
+
+### Changed
+- `deploy/provider-cloud-hypervisor/host/banlieue-provider-cloud-hypervisor.service`:
+  `ReadOnlyPaths=/dev`, `DevicePolicy=closed` and `DeviceAllow=/dev/net/tun rw`.
+  `ProtectSystem=strict` leaves `/dev` writable; the provider changes no
+  device node, and the only device it opens is `/dev/net/tun`, for taps. It
+  only checks that `/dev/kvm` exists, which needs no access.
+- `crates/banlieue-provider-cloud-hypervisor/src/systemd_tests.rs`:
+  `the_provider_opens_only_the_tun_device_and_changes_no_device_node` pins
+  the three settings.
+- `docs/src/guides/cloud-hypervisor-host-systemd.md`: a row for the new
+  settings, and the `ProtectSystem=strict` row now says it leaves the API
+  filesystems writable.
+- `docs/adr/0063-cloud-hypervisor-host-supervision.md`: Decision 6 amended.
+- `docs/src/security/threat-model.md`: the Cloud Hypervisor provider's §2 row.
+
+### Why
+Least privilege: the provider needs one device and writes no device node.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires a host rollout: re-run `banlieue host cloud-hypervisor install`
+  to install the updated unit, then restart the provider (guests keep running)
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-11-15 18:00] - ADR-0129: second PR #194 review round (update bypass, VM labels, late Cluster API, ownership)
 
 **Author:** Daniel Guns

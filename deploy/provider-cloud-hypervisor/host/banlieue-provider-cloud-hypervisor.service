@@ -33,6 +33,12 @@ PrivateTmp=yes
 # class, and its credentials directory, where it renews its own token
 # (ADR-0060 Decision 5). Everything else (config, firmware) is read-only.
 ReadWritePaths=@PROVIDER_RW_PATHS@ @CREDENTIALS_DIR@
+# ProtectSystem=strict leaves /dev writable. The provider changes no device
+# node, and opens one device: /dev/net/tun, for taps. It only checks that
+# /dev/kvm exists, which needs no access.
+ReadOnlyPaths=/dev
+DevicePolicy=closed
+DeviceAllow=/dev/net/tun rw
 # Guests are template-unit instances owned by systemd, not children of this process:
 # stopping or upgrading the provider must not stop them (ADR-0063 Decision 1).
 KillMode=process
