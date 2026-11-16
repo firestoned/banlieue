@@ -17,6 +17,9 @@ mod tests {
     );
     const TEMPLATE_IMPORT: &str =
         include_str!("../../../deploy/provider-cloud-hypervisor/host/banlieue-ch-import@.service");
+    const PROVIDER_UNIT: &str = include_str!(
+        "../../../deploy/provider-cloud-hypervisor/host/banlieue-provider-cloud-hypervisor.service"
+    );
 
     /// Values of `key=` in a unit file, ignoring comments.
     fn values<'a>(unit: &'a str, key: &str) -> Vec<&'a str> {
@@ -51,6 +54,21 @@ mod tests {
             assert_eq!(one(t, "CollectMode"), "inactive", "{name}");
             assert!(!values(t, "ReadWritePaths").is_empty(), "{name}");
         }
+    }
+
+    /// The provider opens one device, the tun device for taps, and changes
+    /// no device node: `/dev` is read-only to it. `/dev/kvm` is only checked
+    /// for existence, which needs no access.
+    #[test]
+    fn the_provider_opens_only_the_tun_device_and_changes_no_device_node() {
+        assert_eq!(one(PROVIDER_UNIT, "NoNewPrivileges"), "yes");
+        assert_eq!(one(PROVIDER_UNIT, "ProtectSystem"), "strict");
+        assert_eq!(one(PROVIDER_UNIT, "ReadOnlyPaths"), "/dev");
+        assert_eq!(one(PROVIDER_UNIT, "DevicePolicy"), "closed");
+        assert_eq!(
+            values(PROVIDER_UNIT, "DeviceAllow"),
+            vec!["/dev/net/tun rw"]
+        );
     }
 
     /// The guest's own processes run as the instance: its uid and its
