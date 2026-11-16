@@ -36,8 +36,8 @@ use serde_json::{Value, json};
 use tracing::{info, warn};
 
 use super::claim_plan::{
-    BoundMember, ClaimInputs, ClaimStep, PoolWaitState, expiry, is_expired, mirrored_member_state,
-    next_step, wait_reason,
+    BoundMember, ClaimInputs, ClaimStep, Pick, PoolMembers, PoolWaitState, PoolWarm, expiry,
+    is_expired, mirrored_member_state, next_step, pick_across_pools, pool_selection, wait_reason,
 };
 use super::pool::member_view;
 use super::pool_plan::MemberView;
@@ -106,14 +106,18 @@ pub async fn reconcile(claim: Arc<VirtualMachineClaim>, ctx: Arc<Context>) -> Re
         }),
     };
 
-    // Picking is only needed on the Bind path, and it costs a pool GET plus
-    // a member LIST — so it is deferred until the step is known to need it.
-    let mut pool = None;
+    // Picking is only needed on the Bind path, and it costs a pool LIST
+    // plus a member LIST, so it is deferred until the step is known to need
+    // it.
+    let mut pools = Vec::new();
+    let mut picked: Option<Candidate> = None;
     let step = match next_step(&inputs, None) {
         ClaimStep::Wait => {
-            let (candidate, found) = pick(&ctx, &namespace, &claim).await?;
-            pool = found;
-            next_step(&inputs, candidate)
+            let (candidate, matched) = pick(&ctx, &namespace, &claim).await?;
+            pools = matched;
+            let member = candidate.as_ref().map(|c| c.pick.member.clone());
+            picked = candidate;
+            next_step(&inputs, member)
         }
         other => other,
     };
@@ -147,15 +151,30 @@ pub async fn reconcile(claim: Arc<VirtualMachineClaim>, ctx: Arc<Context>) -> Re
         }
         ClaimStep::Bind { member } => {
             ensure_finalizer(&claim_api, claim.as_ref(), CLAIM_FINALIZER).await?;
-            bind(&claim_api, &vm_api, &claim, &name, &member, now, generation).await
+            let picked = picked.ok_or(Error::Missing("picked member"))?;
+            let target = BindTarget {
+                member: &member,
+                pool: &picked.pick.pool,
+                resource_version: picked.resource_version.as_deref(),
+            };
+            bind(&claim_api, &vm_api, &claim, &name, target, now, generation).await
         }
         ClaimStep::Wait => {
             ensure_finalizer(&claim_api, claim.as_ref(), CLAIM_FINALIZER).await?;
-            let warm = pool.as_ref().and_then(warm_condition);
+            let warms: Vec<(String, Option<(String, String)>)> = pools
+                .iter()
+                .map(|p| (p.name_any(), warm_condition(p)))
+                .collect();
+            let pool_warms: Vec<PoolWarm> = warms
+                .iter()
+                .map(|(pool, warm)| PoolWarm {
+                    name: pool,
+                    warm: warm.as_ref().map(|(r, m)| (r.as_str(), m.as_str())),
+                })
+                .collect();
             let (reason, message) = wait_reason(&PoolWaitState {
-                pool_name: &claim.spec.pool_ref.name,
-                pool_exists: pool.is_some(),
-                warm: warm.as_ref().map(|(r, m)| (r.as_str(), m.as_str())),
+                selection: pool_selection(&claim.spec),
+                pools: &pool_warms,
             });
             patch_status(
                 &claim_api,
@@ -178,50 +197,107 @@ pub fn error_policy(_claim: Arc<VirtualMachineClaim>, err: &Error, _ctx: Arc<Con
     requeue_on_error()
 }
 
-/// Choose a member of the claim's pool, or `None` if none is claimable.
+/// Choose a member from the claim's pool or pools, or `None` if none is
+/// claimable. Also returns every matched pool, sorted by name, so a waiting
+/// claim can report on each.
 ///
-/// A missing pool is not an error: a claim may legitimately be created
+/// Matching no pool is not an error: a claim may legitimately be created
 /// before its pool exists, and a claim whose pool was deleted should say so
 /// rather than crash-looping.
+///
+/// Two LISTs, both in the claim's namespace: the pools, filtered by the
+/// claim's [`pool_selection`], and every pool member (ADR-0132).
 async fn pick(
     ctx: &Context,
     namespace: &str,
     claim: &VirtualMachineClaim,
-) -> Result<(Option<String>, Option<VirtualMachinePool>)> {
-    let pool_api: Api<VirtualMachinePool> = Api::namespaced(ctx.client.clone(), namespace);
-    let Some(pool) = pool_api.get_opt(&claim.spec.pool_ref.name).await? else {
-        return Ok((None, None));
-    };
+) -> Result<(Option<Candidate>, Vec<VirtualMachinePool>)> {
     let vm_api: Api<VirtualMachine> = Api::namespaced(ctx.client.clone(), namespace);
     let members = vm_api
-        .list(&ListParams::default().labels(&format!("{LABEL_POOL}={}", pool.name_any())))
+        .list(&ListParams::default().labels(LABEL_POOL))
         .await?
         .items;
 
-    // Finish a bind this claim already made before picking another.
+    // Finish a bind this claim already made before picking another. Every
+    // pool member is searched, not only the matched pools': a pool
+    // relabelled between the bind and the claim's own status patch must not
+    // make the claim take a second member (ADR-0132 Decision 5).
     let labelled = members.iter().map(|vm| {
         (
             vm.metadata.name.as_deref().unwrap_or_default(),
             vm.labels().get(LABEL_CLAIM).map(String::as_str),
         )
     });
+    let pool_api: Api<VirtualMachinePool> = Api::namespaced(ctx.client.clone(), namespace);
+    let selection = pool_selection(&claim.spec);
+    let mut pools: Vec<VirtualMachinePool> = pool_api
+        .list(&ListParams::default())
+        .await?
+        .items
+        .into_iter()
+        .filter(|p| selection.matches(&p.name_any(), p.labels()))
+        .collect();
+    pools.sort_by_key(ResourceExt::name_any);
+
     if let Some(ours) = super::claim_plan::member_bound_to(labelled, &claim.name_any()) {
-        return Ok((Some(ours), Some(pool)));
+        let pool = members
+            .iter()
+            .find(|vm| vm.name_any() == ours)
+            .and_then(|vm| vm.labels().get(LABEL_POOL).cloned())
+            .unwrap_or_default();
+        let pick = Pick { pool, member: ours };
+        return Ok((Some(candidate(pick, &members)), pools));
     }
 
     let now = Timestamp::now();
-    let views: Vec<MemberView> = members
+    let per_pool: Vec<(String, String, Vec<MemberView>)> = pools
         .iter()
-        .map(|vm| member_view(vm, pool.spec.readiness, now))
+        .map(|pool| {
+            let pool_name = pool.name_any();
+            let views = members
+                .iter()
+                .filter(|vm| vm.labels().get(LABEL_POOL) == Some(&pool_name))
+                .map(|vm| member_view(vm, pool.spec.readiness, now))
+                .collect();
+            let revision = pool
+                .status
+                .as_ref()
+                .and_then(|s| s.image_revision.clone())
+                .unwrap_or_default();
+            (pool_name, revision, views)
+        })
         .collect();
-    let current_revision = pool
-        .status
-        .as_ref()
-        .and_then(|s| s.image_revision.clone())
-        .unwrap_or_default();
+    let candidates: Vec<PoolMembers> = per_pool
+        .iter()
+        .map(|(pool, current_revision, views)| PoolMembers {
+            pool,
+            current_revision,
+            views,
+        })
+        .collect();
 
-    let choice = super::claim_plan::pick_member(&views, &current_revision);
-    Ok((choice, Some(pool)))
+    let chosen = pick_across_pools(&candidates).map(|pick| candidate(pick, &members));
+    Ok((chosen, pools))
+}
+
+/// A picked member, with the `resourceVersion` it had in the list it was
+/// picked from.
+#[derive(Clone, Debug)]
+struct Candidate {
+    pick: Pick,
+    resource_version: Option<String>,
+}
+
+/// Attach the listed `resourceVersion` to `pick`.
+fn candidate(pick: Pick, members: &[VirtualMachine]) -> Candidate {
+    let resource_version = members
+        .iter()
+        .find(|vm| vm.name_any() == pick.member)
+        .and_then(ResourceExt::resource_version);
+    Candidate {
+        pick,
+        resource_version,
+    }
 }
 
 /// The pool's own `Warm` condition as `(reason, message)`, so a waiting
@@ -235,6 +311,15 @@ fn warm_condition(pool: &VirtualMachinePool) -> Option<(String, String)> {
         .map(|c| (c.reason.clone(), c.message.clone()))
 }
 
+/// The member a bind takes, the pool it came from, and the
+/// `resourceVersion` it had when it was picked.
+#[derive(Clone, Copy, Debug)]
+struct BindTarget<'a> {
+    member: &'a str,
+    pool: &'a str,
+    resource_version: Option<&'a str>,
+}
+
 /// Take a member: label it, stamp the subject on it, and re-parent it from
 /// the pool to this claim.
 ///
@@ -243,26 +328,32 @@ fn warm_condition(pool: &VirtualMachinePool) -> Option<(String, String)> {
 /// another claim binding the same member — wrote that object since we
 /// listed it. No lock, no lease, and the API server is already the
 /// serialisation point.
+///
+/// The precondition is the version from the LIST the member was picked
+/// from, never from a fresh GET here: a GET after a competing bind returns
+/// that bind's version, the precondition then matches, and the second claim
+/// overwrites the first one's label. Both claims went `Bound` on one member
+/// in `live_claim.rs` `two_claims_cannot_bind_the_same_member` (ADR-0132).
 async fn bind(
     claim_api: &Api<VirtualMachineClaim>,
     vm_api: &Api<VirtualMachine>,
     claim: &VirtualMachineClaim,
     name: &str,
-    member: &str,
+    target: BindTarget<'_>,
     now: Timestamp,
     generation: i64,
 ) -> Result<Action> {
-    let vm = vm_api
-        .get_opt(member)
-        .await?
-        .ok_or(Error::Missing("member"))?;
+    let member = target.member;
+    let resource_version = target
+        .resource_version
+        .ok_or(Error::Missing("member resourceVersion"))?;
     let owner = claim
         .controller_owner_ref(&())
         .ok_or(Error::Missing("metadata.uid"))?;
 
     let patch = json!({
         "metadata": {
-            "resourceVersion": vm.resource_version(),
+            "resourceVersion": resource_version,
             "labels": { LABEL_CLAIM: name },
             "annotations": {
                 ANNOTATION_SUBJECT_ISSUER: claim.spec.subject.issuer,
@@ -280,7 +371,9 @@ async fn bind(
         .await
     {
         Ok(_) => {}
-        Err(kube::Error::Api(e)) if e.code == HTTP_CONFLICT => {
+        // 409: somebody wrote the member since we listed it. 404: it was
+        // deleted since. Either way the snapshot is stale; pick again.
+        Err(kube::Error::Api(e)) if e.code == HTTP_CONFLICT || e.code == HTTP_NOT_FOUND => {
             info!(claim = %name, member = %member, "lost bind race; picking again");
             return Ok(Action::requeue(Duration::from_secs(BIND_RACE_RETRY_SECS)));
         }
@@ -295,10 +388,10 @@ async fn bind(
         pool_condition_types::BOUND,
         format!("bound to {member}"),
         generation,
-        bound_status(member, bound_at, expires_at),
+        bound_status(member, target.pool, bound_at, expires_at),
     )
     .await?;
-    info!(claim = %name, member = %member, ttl = claim.spec.ttl_seconds, "claim bound");
+    info!(claim = %name, member = %member, pool = %target.pool, ttl = claim.spec.ttl_seconds, "claim bound");
     Ok(requeue_default())
 }
 
@@ -315,6 +408,15 @@ async fn hold(
     // bound claim yields both the nonce and the anchor a quote must chain to
     // (ADR-0049). Empty for a member with no vTPM.
     let mirrored = mirrored_member_state(vm);
+    let mut extra = json!({
+        "addresses": mirrored.addresses,
+        "tpmEndorsementCertificates": mirrored.tpm_endorsement_certificates,
+    });
+    // ADR-0132 Decision 6: backfills a claim bound before status.poolRef
+    // existed; for any other claim it rewrites the value the bind wrote.
+    if let Some(pool) = mirrored.pool {
+        extra["poolRef"] = json!({ "name": pool });
+    }
     patch_status(
         claim_api,
         name,
@@ -322,10 +424,7 @@ async fn hold(
         pool_condition_types::BOUND,
         format!("bound to {member}"),
         generation,
-        json!({
-            "addresses": mirrored.addresses,
-            "tpmEndorsementCertificates": mirrored.tpm_endorsement_certificates,
-        }),
+        extra,
     )
     .await?;
     Ok(requeue_default())
@@ -436,16 +535,17 @@ async fn patch_status(
     Ok(())
 }
 
-/// The status fields a bind publishes: the member, and when it was bound and
-/// expires.
+/// The status fields a bind publishes: the member, the pool it came from
+/// (ADR-0132 Decision 6), and when it was bound and expires.
 ///
 /// No `nonce`: ADR-0049's quote-over-nonce handshake was superseded by SPIRE's
 /// TPM node attestation, whose challenge is its own (ADR-0049, amended
 /// 2026-11-05), so the field is deprecated and never set.
 #[must_use]
-pub fn bound_status(member: &str, bound_at: Timestamp, expires_at: Timestamp) -> Value {
+pub fn bound_status(member: &str, pool: &str, bound_at: Timestamp, expires_at: Timestamp) -> Value {
     json!({
         "virtualMachineRef": { "name": member },
+        "poolRef": { "name": pool },
         "boundAt": Time(bound_at),
         "expiresAt": Time(expires_at),
     })

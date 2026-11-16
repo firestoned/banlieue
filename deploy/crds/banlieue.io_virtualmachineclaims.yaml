@@ -13,7 +13,7 @@ spec:
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .spec.poolRef.name
+    - jsonPath: .status.poolRef.name
       name: Pool
       type: string
     - jsonPath: .status.virtualMachineRef.name
@@ -53,6 +53,13 @@ spec:
           the subject's token to the guest is the consumer's job, over its own
           attested channel, anchored on the bound member's EK certificate
           (`status.tpmEndorsementCertificates`, ADR-0045, ADR-0049).
+
+          # Which pool
+
+          Exactly one of `poolRef` (one named pool) or `poolSelector` (every pool
+          in the claim's namespace whose labels match). `poolSelector: {}` matches
+          every pool in the namespace; a claim with neither field is refused
+          rather than read as "any pool" (ADR-0132).
         properties:
           spec:
             description: |-
@@ -77,14 +84,60 @@ spec:
               the subject's token to the guest is the consumer's job, over its own
               attested channel, anchored on the bound member's EK certificate
               (`status.tpmEndorsementCertificates`, ADR-0045, ADR-0049).
+
+              # Which pool
+
+              Exactly one of `poolRef` (one named pool) or `poolSelector` (every pool
+              in the claim's namespace whose labels match). `poolSelector: {}` matches
+              every pool in the namespace; a claim with neither field is refused
+              rather than read as "any pool" (ADR-0132).
             properties:
               poolRef:
-                description: The pool to take a member from. Same namespace as the claim.
+                description: |-
+                  The pool to take a member from. Same namespace as the claim.
+                  Exactly one of this or `poolSelector`.
+                nullable: true
                 properties:
                   name:
                     type: string
                 required:
                 - name
+                type: object
+              poolSelector:
+                description: |-
+                  Take a member from any pool in the claim's namespace whose labels
+                  match. Members of every matching pool are ranked as one set (Ready
+                  only, current image revision of their own pool first, then the one
+                  Ready longest, then name), and `status.poolRef` records the pool
+                  the bound member came from. `{}` matches every pool in the
+                  namespace. Exactly one of this or `poolRef` (ADR-0132).
+                nullable: true
+                properties:
+                  matchExpressions:
+                    items:
+                      properties:
+                        key:
+                          type: string
+                        operator:
+                          enum:
+                          - In
+                          - NotIn
+                          - Exists
+                          - DoesNotExist
+                          type: string
+                        values:
+                          items:
+                            type: string
+                          type: array
+                      required:
+                      - key
+                      - operator
+                      type: object
+                    type: array
+                  matchLabels:
+                    additionalProperties:
+                      type: string
+                    type: object
                 type: object
               subject:
                 description: |-
@@ -114,10 +167,12 @@ spec:
                 minimum: 0.0
                 type: integer
             required:
-            - poolRef
             - subject
             - ttlSeconds
             type: object
+            x-kubernetes-validations:
+            - message: "a claim takes exactly one of poolRef or poolSelector; use poolSelector: {} for any pool in the namespace"
+              rule: has(self.poolRef) != has(self.poolSelector)
           status:
             nullable: true
             properties:
@@ -212,6 +267,18 @@ spec:
                 - Releasing
                 - Failed
                 type: string
+              poolRef:
+                description: |-
+                  The pool the bound member came from. Set at bind time from the
+                  member's `banlieue.io/pool` label; the only place a claim made with
+                  `spec.poolSelector` says which pool supplied its VM (ADR-0132).
+                nullable: true
+                properties:
+                  name:
+                    type: string
+                required:
+                - name
+                type: object
               tpmEndorsementCertificates:
                 description: |-
                   PEM vTPM endorsement key certificate(s) of the bound member, mirrored

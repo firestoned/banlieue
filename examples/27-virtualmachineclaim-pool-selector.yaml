@@ -1,0 +1,65 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# Claim a warm VM from ANY matching pool, not one named pool (ADR-0132).
+#
+# Everything in 20-virtualmachineclaim.yaml applies here: one member, one
+# subject, bound once, and releasing the claim DESTROYS the VM. The only
+# difference is how the pool is chosen.
+#
+# `spec.poolRef` names exactly one pool. `spec.poolSelector` matches pools in
+# the claim's own namespace by their labels, and banlieue ranks the members
+# of every matching pool as one set: Ready and unclaimed only, then current
+# image revision of the member's own pool, then the one Ready longest, then
+# name. An empty pool next to a warm one no longer leaves a claim waiting.
+#
+# A claim takes EXACTLY ONE of poolRef or poolSelector; the API server
+# refuses neither and both. For "any pool in this namespace", write the
+# empty selector:
+#
+#   poolSelector: {}
+#
+# Omitting both is never read as "any pool".
+---
+apiVersion: banlieue.io/v1alpha1
+kind: VirtualMachineClaim
+metadata:
+  name: agent-sandbox-for-alice
+  namespace: banlieue-system
+spec:
+  # Any pool in this namespace labelled for the agent image. Label your
+  # pools to match, e.g. one pool per host or per zone, all serving the
+  # same image:
+  #
+  #   kind: VirtualMachinePool
+  #   metadata:
+  #     name: sandbox-pool-a
+  #     labels:
+  #       sandbox.example.com/image: agent
+  poolSelector:
+    matchLabels:
+      sandbox.example.com/image: agent
+
+  # An identifier, never a credential: see 20-virtualmachineclaim.yaml.
+  subject:
+    issuer: https://issuer.example.com
+    id: 0c3b7f2e-1d4a-4b6c-9e8f-5a2d1c0b9e7f
+
+  ttlSeconds: 900
+#
+# WHAT HAPPENS NEXT
+#
+# The spec names no pool, so `status.poolRef` records the one the bound
+# member came from, and the POOL column reads it:
+#
+#   kubectl get vmclaim -n banlieue-system
+#
+#   NAME                      POOL             VM                     PHASE     EXPIRES
+#   agent-sandbox-for-alice                                           Pending
+#   agent-sandbox-for-alice   sandbox-pool-b   sandbox-pool-b-4kq7z   Bound     2026-11-16T14:17:11Z
+#
+# While waiting, the Bound condition says why:
+#
+#   NoPoolMatches       no pool in the namespace carries matching labels
+#   NoMemberAvailable   pools matched, none has a Ready member; the message
+#                       repeats each pool's own Warm diagnosis

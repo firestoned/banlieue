@@ -192,7 +192,7 @@ flowchart TD
     C2 --> OK1([allow])
 
     OP -->|UPDATE| U3["3. spec.subject is immutable"]
-    U3 --> U4["4. spec.poolRef is immutable"]
+    U3 --> U4["4. spec.poolRef and spec.poolSelector are immutable"]
     U4 --> U5["5. spec.ttlSeconds is immutable"]
     U5 --> OK2([allow])
 
@@ -237,9 +237,9 @@ sequenceDiagram
 
     Note over CC: next_step sees not deleting,<br/>not expired, not bound, so Wait,<br/>and now it looks for a member
 
-    CC->>API: GET pool named by spec.poolRef
-    CC->>API: LIST vms labelled banlieue.io/pool=<pool>
-    CC->>CC: pick_member: Ready only, current image<br/>revision first, then Ready longest, then name
+    CC->>API: LIST vms carrying a banlieue.io/pool label
+    CC->>API: LIST pools, keep spec.poolRef's or those matching spec.poolSelector
+    CC->>CC: pick_across_pools: Ready only, current image revision<br/>of its own pool first, then Ready longest, then name
 
     alt a Ready member exists
         CC->>API: PATCH member, merge patch carrying a resourceVersion precondition
@@ -248,7 +248,7 @@ sequenceDiagram
         alt precondition holds
             API-->>CC: 200
             CC->>API: PATCH claim status
-            Note over CC,API: phase Bound, virtualMachineRef, boundAt,<br/>expiresAt = boundAt + ttlSeconds
+            Note over CC,API: phase Bound, virtualMachineRef, poolRef, boundAt,<br/>expiresAt = boundAt + ttlSeconds
             API-->>PC: watch event: member is now Claimed
             PC->>PC: Claimed members are invisible to sizing —<br/>they only count against maxReplicas
             PC->>API: CREATE replacement member
@@ -353,7 +353,7 @@ flowchart TD
     D2 -->|yes| D3{"does that member still exist?"}
     D3 -->|no| FAIL["<b>Fail</b><br/>terminal — never a rebind"]
     D3 -->|yes| HOLD["<b>Hold</b><br/>mirror addresses, sleep"]
-    D2 -->|no| D4{"pick_member found a candidate?"}
+    D2 -->|no| D4{"pick_across_pools found a candidate?"}
     D4 -->|yes| BIND["<b>Bind</b><br/>take it"]
     D4 -->|no| WAIT["<b>Wait</b><br/>phase Pending, retry in 3s"]
 

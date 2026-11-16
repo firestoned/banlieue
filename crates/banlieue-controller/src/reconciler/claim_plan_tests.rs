@@ -6,7 +6,16 @@
 mod tests {
     use super::super::*;
     use crate::reconciler::pool_plan::{MemberPhase, MemberView};
-    use banlieue_api::banlieue::pool_condition_reasons;
+    use banlieue_api::banlieue::{ClaimSubject, VirtualMachineClaimSpec, pool_condition_reasons};
+    use banlieue_api::common::{LabelSelector, LocalObjectReference};
+    use std::collections::BTreeMap;
+
+    fn subject() -> ClaimSubject {
+        ClaimSubject {
+            issuer: "https://issuer.example.com".into(),
+            id: "0c3b7f2e".into(),
+        }
+    }
 
     const CURRENT: &str = "sha256:current";
     const STALE: &str = "sha256:stale";
@@ -302,9 +311,8 @@ mod tests {
     #[test]
     fn a_missing_pool_is_reported_as_such() {
         let (reason, message) = wait_reason(&PoolWaitState {
-            pool_name: "sandbox-pool",
-            pool_exists: false,
-            warm: None,
+            selection: PoolSelection::Named("sandbox-pool"),
+            pools: &[],
         });
         assert_eq!(reason, pool_condition_reasons::POOL_NOT_FOUND);
         assert!(message.contains("sandbox-pool"), "got: {message}");
@@ -314,9 +322,11 @@ mod tests {
     #[test]
     fn a_filling_pool_reports_no_member_available() {
         let (reason, message) = wait_reason(&PoolWaitState {
-            pool_name: "sandbox-pool",
-            pool_exists: true,
-            warm: Some(("Filling", "1 of 2 members ready")),
+            selection: PoolSelection::Named("sandbox-pool"),
+            pools: &[PoolWarm {
+                name: "sandbox-pool",
+                warm: Some(("Filling", "1 of 2 members ready")),
+            }],
         });
         assert_eq!(reason, pool_condition_reasons::NO_MEMBER_AVAILABLE);
         assert!(message.contains("Filling"), "got: {message}");
@@ -330,12 +340,14 @@ mod tests {
     #[test]
     fn a_stuck_pool_surfaces_its_own_reason_on_the_claim() {
         let (reason, message) = wait_reason(&PoolWaitState {
-            pool_name: "sandbox-pool",
-            pool_exists: true,
-            warm: Some((
-                "ReadinessSignalAbsent",
-                "no member has published the \"GuestReady\" condition",
-            )),
+            selection: PoolSelection::Named("sandbox-pool"),
+            pools: &[PoolWarm {
+                name: "sandbox-pool",
+                warm: Some((
+                    "ReadinessSignalAbsent",
+                    "no member has published the \"GuestReady\" condition",
+                )),
+            }],
         });
         assert_eq!(reason, pool_condition_reasons::NO_MEMBER_AVAILABLE);
         assert!(
@@ -353,9 +365,11 @@ mod tests {
     #[test]
     fn a_pool_that_has_not_reported_yet_is_not_a_missing_pool() {
         let (reason, message) = wait_reason(&PoolWaitState {
-            pool_name: "sandbox-pool",
-            pool_exists: true,
-            warm: None,
+            selection: PoolSelection::Named("sandbox-pool"),
+            pools: &[PoolWarm {
+                name: "sandbox-pool",
+                warm: None,
+            }],
         });
         assert_eq!(reason, pool_condition_reasons::NO_MEMBER_AVAILABLE);
         assert!(
@@ -363,6 +377,270 @@ mod tests {
             "an existing pool must never be described as missing: {message}"
         );
         assert!(message.contains("sandbox-pool"), "got: {message}");
+    }
+
+    // ------------------------------------------------------------------
+    // ADR-0132: waiting on a selector
+    // ------------------------------------------------------------------
+
+    /// A selector that matches nothing is a labelling problem, not a
+    /// capacity one, and not a typo in a pool name either: its own reason.
+    #[test]
+    fn a_selector_matching_no_pool_says_so() {
+        let selector = LabelSelector::default();
+        let (reason, message) = wait_reason(&PoolWaitState {
+            selection: PoolSelection::Selector(&selector),
+            pools: &[],
+        });
+        assert_eq!(reason, pool_condition_reasons::NO_POOL_MATCHES);
+        assert!(message.contains("poolSelector"), "got: {message}");
+    }
+
+    /// A claim the CEL rule should have refused (an older CRD, say) still
+    /// gets a reason that names the fix rather than a silent wait.
+    #[test]
+    fn a_claim_naming_no_pool_says_which_field_is_missing() {
+        let (reason, message) = wait_reason(&PoolWaitState {
+            selection: PoolSelection::Unspecified,
+            pools: &[],
+        });
+        assert_eq!(reason, pool_condition_reasons::NO_POOL_MATCHES);
+        assert!(
+            message.contains("poolRef") && message.contains("poolSelector"),
+            "got: {message}"
+        );
+    }
+
+    /// Every matched pool's own diagnosis is repeated, so a consumer waiting
+    /// on three pools learns why each one has nothing to give.
+    #[test]
+    fn waiting_on_several_pools_repeats_each_pools_diagnosis() {
+        let selector = LabelSelector::default();
+        let (reason, message) = wait_reason(&PoolWaitState {
+            selection: PoolSelection::Selector(&selector),
+            pools: &[
+                PoolWarm {
+                    name: "pool-a",
+                    warm: Some(("Filling", "0 of 2 members ready")),
+                },
+                PoolWarm {
+                    name: "pool-b",
+                    warm: None,
+                },
+            ],
+        });
+        assert_eq!(reason, pool_condition_reasons::NO_MEMBER_AVAILABLE);
+        assert!(message.contains("2 matching pools"), "got: {message}");
+        assert!(
+            message.contains("pool-a") && message.contains("Filling"),
+            "got: {message}"
+        );
+        assert!(message.contains("pool-b"), "got: {message}");
+    }
+
+    /// A condition message is bounded; a namespace with dozens of pools
+    /// must not produce one line per pool.
+    #[test]
+    fn waiting_on_many_pools_lists_a_few_and_counts_the_rest() {
+        let selector = LabelSelector::default();
+        let names: Vec<String> = (0..8).map(|i| format!("pool-{i}")).collect();
+        let pools: Vec<PoolWarm> = names
+            .iter()
+            .map(|n| PoolWarm {
+                name: n,
+                warm: None,
+            })
+            .collect();
+        let (_, message) = wait_reason(&PoolWaitState {
+            selection: PoolSelection::Selector(&selector),
+            pools: &pools,
+        });
+        assert!(message.contains("pool-4"), "got: {message}");
+        assert!(!message.contains("pool-5"), "got: {message}");
+        assert!(message.contains("and 3 more"), "got: {message}");
+    }
+
+    // ------------------------------------------------------------------
+    // ADR-0132: which pools a claim draws from
+    // ------------------------------------------------------------------
+
+    fn labels(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn selection_comes_from_whichever_field_is_set() {
+        let named = VirtualMachineClaimSpec {
+            pool_ref: Some(LocalObjectReference {
+                name: "sandbox-pool".into(),
+            }),
+            pool_selector: None,
+            subject: subject(),
+            ttl_seconds: 60,
+        };
+        assert_eq!(pool_selection(&named), PoolSelection::Named("sandbox-pool"));
+
+        let selected = VirtualMachineClaimSpec {
+            pool_ref: None,
+            pool_selector: Some(LabelSelector::default()),
+            ..named.clone()
+        };
+        assert_eq!(
+            pool_selection(&selected),
+            PoolSelection::Selector(&LabelSelector::default())
+        );
+
+        let neither = VirtualMachineClaimSpec {
+            pool_ref: None,
+            pool_selector: None,
+            ..named
+        };
+        assert_eq!(pool_selection(&neither), PoolSelection::Unspecified);
+    }
+
+    #[test]
+    fn a_named_selection_matches_that_pool_only() {
+        let sel = PoolSelection::Named("sandbox-pool");
+        assert!(sel.matches("sandbox-pool", &labels(&[])));
+        assert!(!sel.matches("other-pool", &labels(&[])));
+    }
+
+    /// `poolSelector: {}` is the written-down "any pool" (Decision 2).
+    #[test]
+    fn an_empty_selector_matches_every_pool() {
+        let empty = LabelSelector::default();
+        let sel = PoolSelection::Selector(&empty);
+        assert!(sel.matches("a", &labels(&[])));
+        assert!(sel.matches("b", &labels(&[("tier", "gold")])));
+    }
+
+    #[test]
+    fn a_selector_matches_on_pool_labels_not_names() {
+        let gold = LabelSelector {
+            match_labels: labels(&[("tier", "gold")]),
+            ..Default::default()
+        };
+        let sel = PoolSelection::Selector(&gold);
+        assert!(sel.matches("anything", &labels(&[("tier", "gold")])));
+        assert!(!sel.matches("gold", &labels(&[("tier", "silver")])));
+    }
+
+    /// Omitting both fields never widens to "every pool".
+    #[test]
+    fn an_unspecified_selection_matches_nothing() {
+        assert!(!PoolSelection::Unspecified.matches("a", &labels(&[])));
+    }
+
+    // ------------------------------------------------------------------
+    // ADR-0132 Decision 4: one ranking across every matched pool
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn picks_the_longest_ready_member_across_pools() {
+        let a = [member("a-1", MemberPhase::Ready, 10, CURRENT)];
+        let b = [member("b-1", MemberPhase::Ready, 500, CURRENT)];
+        let pick = pick_across_pools(&[
+            PoolMembers {
+                pool: "pool-a",
+                current_revision: CURRENT,
+                views: &a,
+            },
+            PoolMembers {
+                pool: "pool-b",
+                current_revision: CURRENT,
+                views: &b,
+            },
+        ]);
+        assert_eq!(
+            pick,
+            Some(Pick {
+                pool: "pool-b".into(),
+                member: "b-1".into(),
+            })
+        );
+    }
+
+    /// An empty pool next to a warm one is the case this ADR exists for.
+    #[test]
+    fn an_empty_pool_does_not_block_a_warm_neighbour() {
+        let a: [MemberView; 0] = [];
+        let b = [member("b-1", MemberPhase::Ready, 5, CURRENT)];
+        let pick = pick_across_pools(&[
+            PoolMembers {
+                pool: "pool-a",
+                current_revision: CURRENT,
+                views: &a,
+            },
+            PoolMembers {
+                pool: "pool-b",
+                current_revision: CURRENT,
+                views: &b,
+            },
+        ]);
+        assert_eq!(pick.map(|p| p.pool), Some("pool-b".to_string()));
+    }
+
+    /// Staleness is judged against each member's own pool: pool B's
+    /// revision is not pool A's, and a member current in its own pool beats
+    /// one that is stale in its own, however long the stale one was Ready.
+    #[test]
+    fn staleness_is_judged_against_the_members_own_pool() {
+        let a = [member("a-1", MemberPhase::Ready, 900, "sha256:a-old")];
+        let b = [member("b-1", MemberPhase::Ready, 5, "sha256:b-new")];
+        let pick = pick_across_pools(&[
+            PoolMembers {
+                pool: "pool-a",
+                current_revision: "sha256:a-new",
+                views: &a,
+            },
+            PoolMembers {
+                pool: "pool-b",
+                current_revision: "sha256:b-new",
+                views: &b,
+            },
+        ]);
+        assert_eq!(pick.map(|p| p.member), Some("b-1".to_string()));
+    }
+
+    #[test]
+    fn never_picks_a_claimed_member_in_any_pool() {
+        let a = [member("a-1", MemberPhase::Claimed, 900, CURRENT)];
+        let b = [member("b-1", MemberPhase::Provisioning, 0, CURRENT)];
+        let pick = pick_across_pools(&[
+            PoolMembers {
+                pool: "pool-a",
+                current_revision: CURRENT,
+                views: &a,
+            },
+            PoolMembers {
+                pool: "pool-b",
+                current_revision: CURRENT,
+                views: &b,
+            },
+        ]);
+        assert_eq!(pick, None);
+    }
+
+    #[test]
+    fn a_full_tie_across_pools_breaks_on_member_name() {
+        let a = [member("zzz", MemberPhase::Ready, 60, CURRENT)];
+        let b = [member("aaa", MemberPhase::Ready, 60, CURRENT)];
+        let pick = pick_across_pools(&[
+            PoolMembers {
+                pool: "pool-a",
+                current_revision: CURRENT,
+                views: &a,
+            },
+            PoolMembers {
+                pool: "pool-b",
+                current_revision: CURRENT,
+                views: &b,
+            },
+        ]);
+        assert_eq!(pick.map(|p| p.member), Some("aaa".to_string()));
     }
 
     // ------------------------------------------------------------------
@@ -393,6 +671,23 @@ mod tests {
         let got = mirrored_member_state(&vm);
         assert!(got.tpm_endorsement_certificates.is_empty());
         assert!(got.addresses.is_empty());
+    }
+
+    /// ADR-0132 Decision 6: a claim bound before `status.poolRef` existed
+    /// learns its pool on the next hold, from the member's own label, which
+    /// is the record the bind left on the member.
+    #[test]
+    fn a_bound_claim_mirrors_the_pool_its_member_came_from() {
+        let mut vm = member_vm();
+        vm.metadata.labels = Some(BTreeMap::from([(
+            banlieue_api::banlieue::LABEL_POOL.to_string(),
+            "sandbox-pool".to_string(),
+        )]));
+        assert_eq!(
+            mirrored_member_state(&vm).pool.as_deref(),
+            Some("sandbox-pool")
+        );
+        assert_eq!(mirrored_member_state(&member_vm()).pool, None);
     }
 
     /// A pool member with no status yet.

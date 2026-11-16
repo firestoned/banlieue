@@ -145,7 +145,7 @@ def snapshot(rec, phase):
     vms = kget("virtualmachines", f"banlieue.io/pool={POOL}")
     chms = {c["metadata"]["name"]: c for c in kget("cloudhypervisormachines.infrastructure.banlieue.io")}
     pools = [p for p in kget("virtualmachinepools") if p["metadata"]["name"] == POOL]
-    claims = [c for c in kget("virtualmachineclaims") if c["spec"]["poolRef"]["name"] == POOL]
+    claims = [c for c in kget("virtualmachineclaims") if (c["spec"].get("poolRef") or {}).get("name") == POOL]
     for vm in vms:
         n = vm["metadata"]["name"]
         st = vm.get("status") or {}
