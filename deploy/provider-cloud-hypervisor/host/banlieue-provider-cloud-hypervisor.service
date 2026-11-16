@@ -14,6 +14,10 @@ After=network-online.target dbus.service systemd-tmpfiles-setup.service
 # Refuse to start half-installed, rather than crash-looping.
 ConditionPathExists=@PROVIDER_BINARY@
 ConditionPathExists=@KUBECONFIG_PATH@
+# DeviceAllow= below is resolved to a device number once, at start: without
+# the node it allows nothing until the next restart. The installer's
+# tmpfiles.d entry creates it at boot; fail loudly if it is still missing.
+AssertPathExists=/dev/net/tun
 
 [Service]
 User=@BANLIEUE_USER@
@@ -33,11 +37,20 @@ PrivateTmp=yes
 # class, and its credentials directory, where it renews its own token
 # (ADR-0060 Decision 5). Everything else (config, firmware) is read-only.
 ReadWritePaths=@PROVIDER_RW_PATHS@ @CREDENTIALS_DIR@
-# ProtectSystem=strict leaves /dev writable. The provider changes no device
-# node, and opens one device: /dev/net/tun, for taps. It only checks that
-# /dev/kvm exists, which needs no access.
-ReadOnlyPaths=/dev
+# ProtectSystem=strict leaves /dev, /sys and /proc writable. The provider
+# writes none of them: it opens one device, /dev/net/tun, for taps (a device
+# node still opens read-write on a read-only mount), only checks that
+# /dev/kvm exists, and only reads /sys/class/net and /proc. Read-only, its
+# CAP_CHOWN and CAP_FOWNER cannot re-own a device node, a sysfs attribute or
+# a cgroup.procs file (which would let it leave this cgroup and its device
+# filter), and CAP_NET_ADMIN cannot write /proc/sys/net.
+# Deliberately not ProtectKernelTunables= or ProtectControlGroups=: both
+# imply MountAPIVFS=yes, with which systemd 257 mounts /dev and /sys afresh
+# over these paths and leaves both writable.
+ReadOnlyPaths=/dev /sys /proc
 DevicePolicy=closed
+# DevicePolicy=closed also always allows /dev/null, zero, full, random,
+# urandom, tty, ptmx and pts; file permissions still apply to those.
 DeviceAllow=/dev/net/tun rw
 # Guests are template-unit instances owned by systemd, not children of this process:
 # stopping or upgrading the provider must not stop them (ADR-0063 Decision 1).

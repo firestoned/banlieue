@@ -50,25 +50,48 @@ mod tests {
             assert_eq!(one(t, "ProtectHome"), "yes", "{name}");
             assert_eq!(one(t, "PrivateTmp"), "yes", "{name}");
             assert_eq!(one(t, "DevicePolicy"), "closed", "{name}");
+            // ProtectSystem=strict leaves /dev (and the /dev/shm every uid
+            // shares) writable; IPC is per unit too.
+            assert_eq!(one(t, "ReadOnlyPaths"), "/dev", "{name}");
+            assert_eq!(one(t, "PrivateIPC"), "yes", "{name}");
             // A failed unit stays loaded so the provider can read why.
             assert_eq!(one(t, "CollectMode"), "inactive", "{name}");
             assert!(!values(t, "ReadWritePaths").is_empty(), "{name}");
         }
     }
 
-    /// The provider opens one device, the tun device for taps, and changes
-    /// no device node: `/dev` is read-only to it. `/dev/kvm` is only checked
-    /// for existence, which needs no access.
+    /// The provider's only device beyond the always-allowed pseudo-devices is
+    /// the tun device, for taps, and it writes nothing under `/dev`, `/sys`
+    /// or `/proc`: with those read-only, `CAP_CHOWN` cannot re-own a device
+    /// node, a sysfs attribute or a `cgroup.procs` (leaving its device
+    /// filter), and `CAP_NET_ADMIN` cannot write `/proc/sys/net`.
     #[test]
-    fn the_provider_opens_only_the_tun_device_and_changes_no_device_node() {
+    fn the_provider_writes_no_device_node_sysfs_or_procfs_and_opens_only_tun() {
         assert_eq!(one(PROVIDER_UNIT, "NoNewPrivileges"), "yes");
         assert_eq!(one(PROVIDER_UNIT, "ProtectSystem"), "strict");
-        assert_eq!(one(PROVIDER_UNIT, "ReadOnlyPaths"), "/dev");
+        assert_eq!(one(PROVIDER_UNIT, "ReadOnlyPaths"), "/dev /sys /proc");
         assert_eq!(one(PROVIDER_UNIT, "DevicePolicy"), "closed");
         assert_eq!(
             values(PROVIDER_UNIT, "DeviceAllow"),
             vec!["/dev/net/tun rw"]
         );
+        // DeviceAllow= resolves the node once, at start: refuse to start
+        // without it rather than run with an empty allow-list.
+        assert_eq!(one(PROVIDER_UNIT, "AssertPathExists"), "/dev/net/tun");
+    }
+
+    /// Measured on systemd 257: `MountAPIVFS=yes`, which both `Protect*`
+    /// settings imply, mounts `/dev` and `/sys` afresh over
+    /// `ReadOnlyPaths=`, leaving both writable again.
+    #[test]
+    fn the_provider_sets_nothing_that_undoes_its_read_only_paths() {
+        for key in [
+            "ProtectKernelTunables",
+            "ProtectControlGroups",
+            "MountAPIVFS",
+        ] {
+            assert!(values(PROVIDER_UNIT, key).is_empty(), "{key}");
+        }
     }
 
     /// The guest's own processes run as the instance: its uid and its

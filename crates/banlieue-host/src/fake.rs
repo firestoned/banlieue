@@ -66,8 +66,6 @@ pub struct Env {
     pub root: bool,
     /// NSS consults `/etc/userdb` (the `systemd` module).
     pub nss_systemd: bool,
-    /// The provider user can open `/dev/kvm`.
-    pub kvm_access: bool,
     /// Free bytes by path prefix.
     pub free: BTreeMap<PathBuf, u64>,
 }
@@ -81,7 +79,6 @@ impl Default for Env {
             systemd_running: true,
             root: true,
             nss_systemd: true,
-            kvm_access: true,
             free: BTreeMap::new(),
         }
     }
@@ -289,7 +286,25 @@ impl FakeHost {
                     .ok_or_else(|| io::Error::other(format!("usermod: no group {group}")))?;
                 g.1.insert((*user).to_string());
             }
+            ("gpasswd", ["-d", user, group]) => {
+                let mut s = self.state.lock().unwrap();
+                let g = s
+                    .groups
+                    .get_mut(*group)
+                    .ok_or_else(|| io::Error::other(format!("gpasswd: no group {group}")))?;
+                if !g.1.remove(*user) {
+                    return Err(io::Error::other(format!(
+                        "gpasswd: {user} is not in {group}"
+                    )));
+                }
+            }
             ("systemctl", ["daemon-reload"]) => {}
+            ("systemctl", ["restart", unit]) => {
+                let s = self.state.lock().unwrap();
+                if s.units.get(*unit).map(String::as_str) != Some("active") {
+                    return Err(io::Error::other(format!("fake: {unit} is not running")));
+                }
+            }
             ("systemctl", ["enable", "--now", unit]) => {
                 self.state
                     .lock()
@@ -310,13 +325,21 @@ impl FakeHost {
                         owner: Owner::new(user, user),
                     });
                 }
+                // The `c` line: the tun node, and its parent.
+                s.fs.entry("/dev/net".into()).or_insert(Node {
+                    kind: Kind::Dir,
+                    data: vec![],
+                    mode: 0o755,
+                    owner: Owner::root(),
+                });
+                s.fs.entry("/dev/net/tun".into()).or_insert(Node {
+                    kind: Kind::Other,
+                    data: vec![],
+                    mode: 0o666,
+                    owner: Owner::root(),
+                });
             }
             ("swtpm_setup", _) => self.swtpm_setup(&args)?,
-            ("test", _) => {
-                if !self.env.lock().unwrap().kvm_access {
-                    return Err(io::Error::other("test failed"));
-                }
-            }
             (p, _) => return Err(io::Error::other(format!("fake: unexpected command {p}"))),
         }
         Ok(String::new())

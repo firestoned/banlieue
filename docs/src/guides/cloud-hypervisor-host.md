@@ -319,11 +319,11 @@ intended way to change a setting.
 | --- | --- |
 | `preflight` | Bare metal, `/dev/kvm`, the `kvm` group, x86_64, the commands the host supplies (`systemctl`, `systemd-tmpfiles`, `swtpm`, `swtpm_setup`, `swtpm_localca`), every declared bridge exists, the guest uid range is free, NSS has its `systemd` module. Changes nothing (also `banlieue host cloud-hypervisor preflight`). |
 | `vmm` | Downloads `cloud-hypervisor`, `ch-remote` and `CLOUDHV.fd`, checks each against its sha256, and installs nothing, leaving the previous release as it was, on any mismatch. |
-| `host` | The `banlieue` system user, one userdb user and private group per guest uid, state, storage and run directories, and `/etc/banlieue/cloud-hypervisor.toml` (rendered from the provider's own config type and parsed back before it is written). An existing file is kept, except that its `[vmm]` section follows the release just installed. |
+| `host` | The `banlieue` system user (not in the `kvm` group; an earlier install's membership is removed), one userdb user and private group per guest uid, state, storage and run directories, the tmpfiles.d entry (applied whenever it changes; it also creates `/dev/net/tun` if missing), and `/etc/banlieue/cloud-hypervisor.toml` (rendered from the provider's own config type and parsed back before it is written). An existing file is kept, except that its `[vmm]` section follows the release just installed. |
 | `tpm` | A per-host EK certificate authority for `swtpm_localca`, created as `banlieue`, readable by `banlieue` only. |
 | `polkit` | A rule letting `banlieue` manage instances of its own templates, for uids in the guest range, and nothing else. |
-| `provider` | The four template units, `banlieue-guests.slice` (ADR-0105) and the provider unit. The provider is enabled only once its binary and kubeconfig exist. |
-| `selftest` | The VMM runs, the firmware matches its sha256, guest uids resolve, `banlieue` can open `/dev/kvm`, the provider's own host checks pass, and a test vTPM gets an EK certificate with a `<name>:<uid>` CN. Boots nothing (also `banlieue host cloud-hypervisor selftest`). |
+| `provider` | The four template units, `banlieue-guests.slice` (ADR-0105) and the provider unit. The provider is enabled only once its binary and kubeconfig exist, and a running provider is restarted when its unit or binary changed (guests keep running). A running guest keeps the sandbox it started with until its next start. |
+| `selftest` | The VMM runs, the firmware matches its sha256, guest uids resolve, `/dev/net/tun` exists, `banlieue` is not in the `kvm` group, the provider's own host checks pass, and a test vTPM gets an EK certificate with a `<name>:<uid>` CN. Boots nothing (also `banlieue host cloud-hypervisor selftest`). |
 
 `banlieue host cloud-hypervisor status` reports what is installed and changes nothing.
 `banlieue host cloud-hypervisor overhead` measures what the VMs cost the host and changes nothing; see [Measuring VM overhead](#measuring-vm-overhead).
@@ -1144,7 +1144,8 @@ So, on Kairos:
           --shell /usr/sbin/nologin --user-group banlieue
     ```
 
-    `install` keeps an existing `banlieue` user and adds it to `kvm`.
+    `install` keeps an existing `banlieue` user. It does not add it to
+    `kvm`: the provider only checks that `/dev/kvm` exists.
 
 2. **Make banlieue's state persistent**, with a file under `/oem`
    ([Kairos: persistent paths](https://kairos.io/docs/examples/extra_persistent_paths_after_install/)),
@@ -1254,8 +1255,12 @@ restart `banlieue-provider-cloud-hypervisor.service` so the provider reads
 it. Run `selftest` with the same `--vmm-version`/`--firmware-tag` flags, so
 it checks the firmware you installed.
 
-Upgrading the provider itself is replacing `/usr/local/bin/banlieue` and
-restarting its unit; guests keep running (`make ch-restart-e2e`).
+Upgrading the provider itself is re-running `install` with the flags it
+was first run with, plus `--provider-binary <new build>`: it replaces
+`/usr/local/bin/banlieue` **and** the unit files, and restarts the provider
+when either changed. Guests keep running (`make ch-restart-e2e`). Replacing
+the binary by hand and restarting the unit keeps the old unit file, and with
+it the old sandbox.
 
 ---
 
@@ -1266,6 +1271,8 @@ restarting its unit; guests keep running (`make ch-restart-e2e`).
 | `kubectl get providers.banlieue.io` shows `HEARTBEAT` `Stale` for this host | The provider stopped renewing its Lease: it is down, or cannot reach the API server. `systemctl status banlieue-provider-cloud-hypervisor` and its journal say which; a crash loop of `Network is unreachable` means the `server:` in `/etc/banlieue/credentials/kubeconfig` no longer answers. No new VM is scheduled onto the host until it renews (ADR-0102). |
 | `running inside a VM (kvm)` in `preflight` | The host is a VM. Supported only for labs, with `--allow-virtualized-host`. |
 | `/dev/kvm missing` | VT-x/AMD-V disabled in firmware, or the `kvm_intel`/`kvm_amd` module is not loaded. |
+| The provider does not start: `Assertion failed ... AssertPathExists=/dev/net/tun`, or `selftest` says `/dev/net/tun is missing` | The tun node did not exist when the provider started, so its `DeviceAllow=` would have allowed nothing. Run `systemd-tmpfiles --create /etc/tmpfiles.d/banlieue-cloud-hypervisor.conf` (or re-run `install`), then start the provider. |
+| `selftest`: `banlieue is in the kvm group` | Left over from an install before 2026-11-16, or added by hand. Re-run `install`, which removes it; the provider needs no access to `/dev/kvm`. |
 | `network class default -> br0: not a bridge on this host` | The bridge does not exist yet, or has a different name. See [Step 1](#step-1-a-bridge-for-guests). |
 | `no network class, and no virbr0 bridge` | No bridge was named and libvirt's isn't present. Create one and pass `--network-class`. |
 | `account ... uses uid ..., inside the guest range` or `... overlaps guest uids` | Move `--guest-uid-base` to a free range, clear of `/etc/subuid` and `/etc/subgid` (rootless containers). |

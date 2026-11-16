@@ -12,11 +12,15 @@ SPDX-License-Identifier: Apache-2.0
   `rtnetlink`, and one digit longer for the NIC index; Decision 5: machine
   and run directories are `2770` guest-uid:banlieue under `0711` roots;
   Decision 3: guest uids are registered with NSS as userdb records, each
-  with a private group — all found while implementing, the last two on the
+  with a private group; all found while implementing, the last two on the
   first live run); 2026-09-27 (Decision 1: **root-owned template units, not transient
-  units** — a security fix; see *Amendment 2026-09-27*); 2026-11-15
-  (Decision 6: `/dev` is read-only to the provider, and it may open only
-  `/dev/net/tun`)
+  units**, a security fix; see *Amendment 2026-09-27*); 2026-11-15
+  (Decision 6: `/dev` is read-only to the provider, and its only device
+  beyond the standard pseudo-devices is `/dev/net/tun`); 2026-11-16
+  (Decision 6: `/sys` and `/proc` read-only to the provider too, without
+  `ProtectKernelTunables=`/`ProtectControlGroups=`, and it leaves the kvm
+  group; Decision 3: every template gets a read-only `/dev` and a private
+  IPC namespace)
 - **Related:** [ADR-0060](0060-cloud-hypervisor-first-class-provider-topology.md)
   (host-resident provider), [ADR-0061](0061-banlieue-cloud-hypervisor-vmm-client.md)
   (the socket this ADR places), [ADR-0062](0062-cloudhypervisormachine-inframachine-contract.md)
@@ -172,6 +176,18 @@ umask — see Decision 5.) Every setting, and why it is needed, is in
 `deploy/provider-cloud-hypervisor/host/banlieue-ch-guest.example.service`,
 which a test keeps equal to what the provider sends.
 
+*Amended 2026-11-16.* Every template (VMM, swtpm, swtpm-setup, image
+import) also sets `ReadOnlyPaths=/dev` and `PrivateIPC=yes`.
+`ProtectSystem=strict` leaves `/dev` writable, including `/dev/shm`, which
+every uid on the host shares: an escaped VMM could leave files there or
+pass data to another guest's escaped VMM around the per-uid isolation.
+Device nodes still open read-write on a read-only mount, so `/dev/kvm` and
+`/dev/net/tun` work as before. POSIX message queues do not go through
+`/dev/mqueue` at all, so the private IPC namespace, not the read-only
+mount, is what separates them (and SysV IPC). Both were checked on
+systemd 257 by booting the firmware in a VMM, and running `swtpm_setup`
+and `swtpm`, under exactly these settings.
+
 cgroup limits come from the spec: `MemoryMax` is guest memory plus a named
 overhead constant, `TasksMax` is bounded, and hugepages are accounted
 separately. The VMM runs with `--seccomp true` and `--landlock`.
@@ -277,9 +293,29 @@ The provider runs as a dedicated `banlieue` system user, not root, with:
   to the run root and the storage targets;
 - *amended 2026-11-15:* a read-only `/dev` (`ReadOnlyPaths=/dev`), which
   `ProtectSystem=strict` leaves writable, and `DevicePolicy=closed` with
-  `DeviceAllow=/dev/net/tun rw`: it changes no device node and opens no
-  device but the tun device it creates taps with. It only checks that
-  `/dev/kvm` exists.
+  `DeviceAllow=/dev/net/tun rw`: it changes no device node, and its only
+  device beyond the pseudo-devices `DevicePolicy=closed` always allows
+  (`/dev/null`, `zero`, `full`, `random`, `urandom`, `tty`, `ptmx`, `pts`)
+  is the tun device it creates taps with. It only checks that `/dev/kvm`
+  exists;
+- *amended 2026-11-16:* `/sys` and `/proc` read-only as well
+  (`ReadOnlyPaths=/dev /sys /proc`). `ProtectSystem=strict` leaves them
+  writable, and the provider's own capabilities reach them: `CAP_CHOWN`
+  could re-own the root cgroup's `cgroup.procs`, move the provider out of
+  its cgroup and so out from under the `DevicePolicy=` filter (or move a
+  guest's VMM out of `banlieue-guests.slice`), or re-own a sysfs attribute
+  such as `/sys/power/state` and then write it; `CAP_NET_ADMIN` alone
+  writes every `/proc/sys/net` sysctl. The provider only reads `/sys` and
+  `/proc`. Not `ProtectKernelTunables=` or `ProtectControlGroups=`: both
+  imply `MountAPIVFS=yes`, and on systemd 257 that mounts `/dev` and
+  `/sys` afresh over `ReadOnlyPaths=`, leaving both writable (measured, and
+  pinned by a test). `DeviceAllow=` resolves `/dev/net/tun` once, at start,
+  so the installer's tmpfiles.d entry creates the node at boot and the unit
+  asserts it exists. The `banlieue` user is no longer in the `kvm` group:
+  checking that `/dev/kvm` exists needs no access, and the membership would
+  have been a working grant to `/dev/kvm` for any `banlieue` process
+  outside the device filter. `install` removes it from earlier installs,
+  and restarts a running provider whose unit or binary changed.
 
 The unit, the rule and the tmpfiles entry are files in
 `deploy/provider-cloud-hypervisor/host/`, explained setting by setting in

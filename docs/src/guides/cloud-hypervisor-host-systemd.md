@@ -20,7 +20,7 @@ is an error, never an installed unit:
 | --- | --- | --- |
 | `banlieue-provider-cloud-hypervisor.service` | `/etc/systemd/system/` | The provider itself |
 | `60-banlieue-cloud-hypervisor.rules` | `/etc/polkit-1/rules.d/` | What the provider may ask systemd to do |
-| `banlieue-cloud-hypervisor.tmpfiles.conf` | `/etc/tmpfiles.d/banlieue-cloud-hypervisor.conf` | The run root, recreated every boot |
+| `banlieue-cloud-hypervisor.tmpfiles.conf` | `/etc/tmpfiles.d/banlieue-cloud-hypervisor.conf` | The run root, recreated every boot, and the `/dev/net/tun` node |
 | `banlieue-guests.slice` | `/etc/systemd/system/` | The budget every guest and vTPM shares ([below](#the-guests-slice)) |
 | `banlieue-ch@.service` | `/etc/systemd/system/` | One VMM per guest, instance = guest uid |
 | `banlieue-swtpm@.service` | `/etc/systemd/system/` | One swtpm per `tpmEnabled` guest |
@@ -51,12 +51,15 @@ as the unprivileged `banlieue` user.
 | `After=dbus.service` | It talks to systemd over D-Bus to start guests. |
 | `After=systemd-tmpfiles-setup.service` | The run root must exist (see [tmpfiles](#the-run-root-tmpfiles)). |
 | `ConditionPathExists=` binary and kubeconfig | A half-installed host stays stopped instead of crash-looping. The kubeconfig arrives separately, from `banlieue bootstrap cloud-hypervisor-host`. |
+| `AssertPathExists=/dev/net/tun` | systemd resolves `DeviceAllow=/dev/net/tun` to a device number once, when the unit starts, and silently skips it if the node is missing: every tap would then fail with `EPERM` until the next restart. The tmpfiles entry creates the node at boot; if it is still missing, the start fails and says why. |
 | `User=`/`Group=banlieue` | Never root. |
 | `AmbientCapabilities=` / `CapabilityBoundingSet=CAP_NET_ADMIN CAP_CHOWN CAP_FOWNER` | The only three privileges it holds, and each is used: **`CAP_NET_ADMIN`** creates each guest's tap, sets its owner and persistence, adds it to the bridge and brings it up. **`CAP_CHOWN`** hands machine directories, OS disks and seeds to the guest's uid. **`CAP_FOWNER`** re-modes files the guest owns — its directories each pass, and the VMM's API socket, which Cloud Hypervisor always creates `0700` (see [the API socket](#the-vmms-api-socket)). |
 | `NoNewPrivileges=yes` | Nothing it runs can gain privileges. |
-| `ProtectSystem=strict`, `ProtectHome=yes`, `PrivateTmp=yes` | The whole filesystem is read-only to it except `ReadWritePaths` and the kernel's API filesystems (`/dev`, `/proc`, `/sys`), which `strict` leaves alone; home directories are invisible. |
+| `ProtectSystem=strict`, `ProtectHome=yes`, `PrivateTmp=yes` | The whole filesystem is read-only to it except `ReadWritePaths` and the kernel's API filesystems (`/dev`, `/proc`, `/sys`), which `strict` leaves alone (see `ReadOnlyPaths=` below); home directories are invisible. |
 | `ReadWritePaths=` run root + each storage class directory + `/var/lib/banlieue/{ek,tpm,units}` + `/etc/banlieue/credentials` | Where it creates and removes per-guest run and machine directories (and, after each import, evicts superseded cache files), each vTPM's state and EK certificate directories, the template units' environment files, and where it **replaces its own token** at half-life (ADR-0060 Decision 5). It reads its config and the firmware; it writes nothing else. |
-| `ReadOnlyPaths=/dev`, `DevicePolicy=closed` + `DeviceAllow=/dev/net/tun rw` | It changes no device node, so `/dev` is read-only to it, and it opens one device, `/dev/net/tun`, to create taps, plus the standard pseudo-devices `closed` always allows. It only checks that `/dev/kvm` exists, which needs no access. |
+| `ReadOnlyPaths=/dev /sys /proc` | It writes none of the three: it opens `/dev/net/tun` (a device node still opens read-write on a read-only mount), checks that `/dev/kvm` exists, and reads `/sys/class/net`, `/proc/net/arp`, `/proc/meminfo` and the like. Writable, they are within reach of its own capabilities: `CAP_CHOWN` could re-own a device node, a sysfs attribute (`/sys/power/state`, a PCI device's `remove`) or the root cgroup's `cgroup.procs`, and moving itself there would take it out from under `DevicePolicy=`; `CAP_NET_ADMIN` writes every `/proc/sys/net` sysctl. |
+| *not* `ProtectKernelTunables=`, `ProtectControlGroups=` | Both imply `MountAPIVFS=yes`, and on systemd 257 that mounts `/dev` and `/sys` afresh **over** `ReadOnlyPaths=`, leaving both writable (`/sys` included, despite `ProtectKernelTunables`). Measured; a test keeps them out of the unit. |
+| `DevicePolicy=closed` + `DeviceAllow=/dev/net/tun rw` | Its one device, to create taps. `closed` also always allows `/dev/null`, `zero`, `full`, `random`, `urandom`, `tty`, `ptmx` and `/dev/pts/*`; file permissions still apply to those. The `banlieue` user is **not** in the `kvm` group: checking that `/dev/kvm` exists needs no access. |
 | `KillMode=process` | Stopping, restarting or upgrading the provider must **not** stop guests. They are separate units owned by systemd (ADR-0063 Decision 1); the provider re-adopts them when it comes back. |
 | `Restart=on-failure`, `RestartSec=5s` | A crash is retried without a tight loop. |
 
@@ -81,7 +84,9 @@ the provider then creates and boots the VM through that socket.
 | `MemoryMax=` guest memory + 512 MiB | Caps the VMM's memory in its cgroup; the overhead covers the VMM itself. | A runaway VMM can take the host's memory. |
 | `TasksMax=1024` | Caps processes and threads. | A runaway VMM can fork the host out of PIDs. |
 | `NoNewPrivileges=yes` | Nothing in the VMM can gain privileges. | — |
-| `ProtectSystem=strict`, `ProtectHome=yes`, `PrivateTmp=yes` | The filesystem is read-only except its own two directories; home directories are invisible; `/tmp` is private. | A compromised VMM could write anywhere its uid can. |
+| `ProtectSystem=strict`, `ProtectHome=yes`, `PrivateTmp=yes` | The filesystem is read-only except its own two directories and the API filesystems `strict` leaves alone; home directories are invisible; `/tmp` is private. | A compromised VMM could write anywhere its uid can. |
+| `ReadOnlyPaths=/dev` | `strict` leaves `/dev` writable, including `/dev/shm`, which every uid on the host shares. Device nodes still open read-write. | An escaped VMM could leave files in `/dev/shm`, or pass data to another guest's escaped VMM there, around the per-uid isolation. |
+| `PrivateIPC=yes` | Its own IPC namespace. POSIX message queues are not reached through `/dev/mqueue`, so the read-only mount does not cover them; this does, and SysV IPC too. | Two escaped VMMs could talk over a world-accessible queue or segment. |
 | `ReadWritePaths=` its run directory and the storage roots | A template cannot name the machine directory (`<storage class>/<machine UID>/`), so the storage roots are listed; each machine directory is `2770 guest:banlieue` under a `0711` root, so the guest can write only its own. | — |
 | `DevicePolicy=closed` + `DeviceAllow=/dev/kvm rw`, `/dev/net/tun rw` | Only the two devices it needs, plus the standard pseudo-devices (`/dev/null`, `/dev/urandom`, …) that `closed` always allows. | Every device node its uid can open would be open to it. |
 
@@ -149,6 +154,11 @@ uid owns its machine directory and could swap a certificate there for its
 own. That directory is also how the provider knows a TPM was already made,
 so deleting its own state never gets a guest a second manufacture.
 
+Both units share the guest unit's sandbox: `NoNewPrivileges=yes`,
+`ProtectSystem=strict`, `ProtectHome=yes`, `PrivateTmp=yes`,
+`ReadOnlyPaths=/dev`, `PrivateIPC=yes` and `DevicePolicy=closed` with no
+device allowed.
+
 Between the two units the provider hands the state to the guest's uid,
 file by file through handles opened without following links. Power-off and
 delete stop swtpm after the VMM; delete removes the state and the EK
@@ -172,6 +182,7 @@ the provider restarts.
 | --- | --- |
 | `User=`, `Group=` the provider's own | It writes the provider's image cache; no guest identity is involved. |
 | `ProtectSystem=strict`, `ProtectHome=yes`, `PrivateTmp=yes`, `NoNewPrivileges=yes` | As for guests. |
+| `ReadOnlyPaths=/dev`, `PrivateIPC=yes` | As for guests. |
 | `ReadWritePaths=` each storage class's `images/` | The only place it writes: the cache files, through a temporary name and a rename. |
 | `DevicePolicy=closed`, no `DeviceAllow` | It needs no device. |
 | `CollectMode=inactive` | A failed import stays loaded until the provider has reported why (`ImportFailed`) and cleared it; a successful one is collected. |
@@ -230,6 +241,7 @@ recreates:
 | --- | --- | --- |
 | `/run/banlieue` | `0755 root:root` | Parent. |
 | `/run/banlieue/ch` | `0711 banlieue:banlieue` | The provider creates per-guest run directories here. `0711` lets a guest reach its own directory without being able to list anyone else's. |
+| `/dev/net/tun` | `0666 root:root`, char `10:200` | Created only if missing (kmod's static nodes usually create it). The provider unit's `DeviceAllow=` needs the node to exist when it starts. Opening it loads the `tun` module. |
 
 ## Guest identities (`/etc/userdb`)
 

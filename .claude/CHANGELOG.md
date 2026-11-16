@@ -1,5 +1,87 @@
 # Changelog
 
+## [2026-11-16 11:30] - CH host sandbox: read-only /sys and /proc for the provider, read-only /dev and private IPC for guests (ADR-0063 amended)
+
+**Author:** Erick Bourgeois
+
+Follow-up to #199, from its review. Each change below was first measured
+on a systemd 257 host with throwaway transient units carrying the exact
+sandbox and capabilities.
+
+### Changed
+- `deploy/provider-cloud-hypervisor/host/banlieue-provider-cloud-hypervisor.service`:
+  `ReadOnlyPaths=/dev /sys /proc` (was `/dev`). With `/sys` and `/proc`
+  writable, the provider's own `CAP_CHOWN` could re-own the root cgroup's
+  `cgroup.procs` and move itself out of its cgroup, and with it out of the
+  `DevicePolicy=` filter #199 added; re-own a sysfs attribute and write it;
+  and `CAP_NET_ADMIN` could write any `/proc/sys/net` sysctl. All refused
+  now with `EROFS`; tap creation, its `/proc` reads and the `/dev/kvm`
+  check unaffected. **Not** `ProtectKernelTunables=`/`ProtectControlGroups=`,
+  as the review suggested: both imply `MountAPIVFS=yes`, which on systemd
+  257 mounts `/dev` and `/sys` afresh over `ReadOnlyPaths=` and leaves both
+  writable (`/sys` included, despite its name), so they would have undone
+  #199. Also `AssertPathExists=/dev/net/tun`: `DeviceAllow=` resolves the
+  node once, at start, and silently allows nothing if it is missing.
+- The four guest templates (`banlieue-ch@`, `banlieue-swtpm@`,
+  `banlieue-swtpm-setup@`, `banlieue-ch-import@`): `ReadOnlyPaths=/dev` and
+  `PrivateIPC=yes`. `/dev/shm` was writable and shared by every uid, a
+  channel between escaped VMMs around per-uid isolation; POSIX queues do
+  not go through `/dev/mqueue`, hence the IPC namespace. Verified by
+  booting the firmware in a VMM with a tap, and running `swtpm_setup` and
+  `swtpm`, under these settings.
+- `banlieue-cloud-hypervisor.tmpfiles.conf`: `c /dev/net/tun 0666 root root
+  - 10:200`, so the node exists at boot before the provider starts.
+- `crates/banlieue-host/src/stages.rs`: the `banlieue` user is no longer
+  added to `kvm` (the provider only stat()s `/dev/kvm`), and an earlier
+  install's membership is removed (`gpasswd -d`); the tmpfiles entry is
+  applied whenever it changed or the tun node is missing; `provider`
+  restarts a running provider when its unit or binary changed (guests keep
+  running, `KillMode=process`), so an upgrade no longer leaves the old
+  sandbox loaded; `selftest` checks `/dev/net/tun` and that `banlieue` is
+  not in `kvm`, instead of opening `/dev/kvm` as `banlieue`. `put` reports
+  whether it wrote. `lib.rs`: the `selftest` help.
+- `crates/banlieue-host/src/fake.rs`: simulates `gpasswd -d`,
+  `systemctl restart` (only of a running unit) and the tmpfiles tun node;
+  the `kvm_access` knob and the `test` command are gone.
+
+### Tests
+- `systemd_tests.rs`: every template pins `ReadOnlyPaths=/dev` and
+  `PrivateIPC=yes`; `the_provider_writes_no_device_node_sysfs_or_procfs_and_opens_only_tun`
+  (renamed, now also `AssertPathExists`);
+  `the_provider_sets_nothing_that_undoes_its_read_only_paths`.
+- `stages_tests.rs`: `an_older_install_is_brought_to_least_privilege`,
+  `a_running_provider_restarts_when_its_unit_or_binary_changes`; the
+  layout, idempotence and selftest tests updated.
+
+### Docs
+- `docs/adr/0063-cloud-hypervisor-host-supervision.md`: amended 2026-11-16
+  (Decision 3 and Decision 6); the 2026-11-15 wording no longer says the
+  provider opens no device but tun (the pseudo-devices are listed).
+- `docs/src/guides/cloud-hypervisor-host-systemd.md`,
+  `docs/src/guides/cloud-hypervisor-host.md`: the new settings and why;
+  the upgrade path is re-running `install --provider-binary`, not copying
+  the binary; two troubleshooting rows.
+- `docs/architecture/calm/architecture.json`: provider, VMM and host nodes.
+- **Threat model pass** (`docs/src/security/threat-model.md`): header
+  lists the 0063 amendments (stamp stays 2026-11-16, ADR-0001 … ADR-0132);
+  §2 provider row fixed (it still said transient units, and overclaimed
+  "only /dev/net/tun"), VMM row; A-14 adds the tmpfiles entry; §4
+  compromised VMM; TB-9 gains three rows (provider capabilities on kernel
+  interfaces, provider and kvm devices, the empty allow-list) plus the
+  shared `/dev/shm`/IPC row, and the slice row now covers cgroupfs; TB-10
+  import row; TB-11 gains the stale-sandbox-after-upgrade row; §7.11 and
+  the §8 compromised-provider entry updated. §3 assets otherwise, §5 (no
+  new component or boundary; the diagram stands), §9 and §10 unchanged.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires host rollout: re-run `banlieue host cloud-hypervisor install`
+  on each CH host (it rewrites the units, leaves `kvm`, and restarts the
+  provider); running guests pick up the new template sandbox at their next
+  start
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-11-16 08:11] - ADR-0132: a VirtualMachineClaim may select its pool by label
 
 **Author:** Erick Bourgeois
