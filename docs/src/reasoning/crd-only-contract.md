@@ -65,8 +65,10 @@ sync with our schema bumps.
 A CRD contract is *open*. The CRD is published in the cluster. Anyone with
 RBAC can write a controller against it. The Kubernetes type system is the
 schema language, server-side validation is the type checker, and `kubectl
-explain` is the documentation. Outside contributors do not need to fork
-anything to ship a provider.
+explain` is the documentation. A provider needs no proto, no generated stubs
+and no link-time dependency on the controller. (The controller's own set of
+infrastructure kinds is closed today: a new backend also adds its builder to
+`banlieue-controller`, see [Adding a provider](../concepts/providers.md#adding-a-provider).)
 
 ### 3. RPC creates a status-of-truth problem
 

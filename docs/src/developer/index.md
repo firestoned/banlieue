@@ -10,6 +10,9 @@ provider against `kind` + the `vcsim` simulator with no real vCenter.
   Google or Auth0 client so a dev cluster can authenticate you as a real
   person, which is what makes the claim subject policy testable. Starts with
   the one decision that matters: GitHub needs Dex, Google and Auth0 do not.
+- **[Rust API Crate](rust-api-crate.md)**: using the published
+  `banlieue-api` crate to create, read or watch banlieue objects from your
+  own Rust program (ADR-0100).
 
 If instead you want to *install a release* on a cluster, start with the
 **[Guides](../guides/index.md)** (production manifests, `ghcr.io` images).

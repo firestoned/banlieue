@@ -198,7 +198,7 @@ async fn without_issuer_prefixes_one_prefix_applies_to_every_issuer() {
     .await;
 }
 
-/// ADR-0132 Decision 8. A selector claim has no `spec.poolRef`, and a CEL
+/// ADR-0132 Decision 8 and ADR-0135 Decision 7. A selector claim has no `spec.poolRef`, and a CEL
 /// comparison of an absent field errors, which this fail-closed policy turns
 /// into a denial of EVERY update, the controller's finalizer included. So:
 /// an update that leaves the pool fields alone is admitted, and changing,
@@ -249,6 +249,8 @@ async fn a_selector_claim_can_be_updated_but_not_retargeted() {
                 .await;
         let swapped =
             patch(json!({ "spec": { "poolSelector": null, "poolRef": { "name": "p" } } })).await;
+        // ADR-0135 Decision 7: setting a strategy after creation is an edit.
+        let strategised = patch(json!({ "spec": { "selection": { "strategy": "Spread" } } })).await;
 
         api.delete(&name, &DeleteParams::default())
             .await
@@ -259,6 +261,10 @@ async fn a_selector_claim_can_be_updated_but_not_retargeted() {
         assert!(
             swapped.is_err(),
             "a selector claim must not become a named one"
+        );
+        assert!(
+            strategised.is_err(),
+            "spec.selection must be immutable (ADR-0135)"
         );
     })
     .await;

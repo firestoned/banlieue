@@ -23,7 +23,7 @@ every sandbox:
    only the claim.
 2. **Binding.** The pool member attested its vTPM to a SPIRE server at boot
    (the EK certificate chain, the same one
-   [ADR-0045](https://github.com/firestoned/banlieue/blob/main/docs/adr/0045-vtpm-ek-certificate.md)
+   [ADR-0045](https://github.com/firestoned/banlieue/blob/main/docs/adr/0045-vtpm-endorsement-key-certificate.md)
    publishes on the infra CR). On bind, mediatore creates a SPIFFE identity
    scoped to that claim, that VM, and a per-subject Linux user.
 3. **Delegation.** The jailed workload trades its SPIFFE identity for

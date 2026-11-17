@@ -11,8 +11,8 @@ SPDX-License-Identifier: Apache-2.0
 - **Related:** [ADR-0060](0060-cloud-hypervisor-first-class-provider-topology.md) (External
   providers: the operator gives the provider an identity and runs nothing);
   [ADR-0102](0102-provider-liveness-from-its-lease.md) (`status.workload`). faubourg ADR-0011
-  and its accepted risk R-10. ADR-0116 to ADR-0122 are reserved by roadmap 20; ADR-0125 is
-  proposed separately.
+  and its accepted risk R-10. ADR-0116 to ADR-0122 are reserved by roadmap 20; [ADR-0125](0125-a-placed-vm-keeps-a-placement-that-still-fits.md)
+  was proposed separately (accepted 2026-11-10).
 
 ## Context
 

@@ -13,6 +13,8 @@
   (imagebuild namespace). Builds on [ADR-0008](0008-byoc-vsphere-http-client.md)
   (BYOC vim client) and mirrors [ADR-0011](0011-libvirt-provider-own-client.md)'s
   per-target import-Job pattern.
+- **Amended by:** [ADR-0028](0028-vmimage-template-deletion-lifecycle.md) (2026-08-22, template deletion
+  lifecycle) and [ADR-0031](0031-vmimage-template-multiple-nics.md) (2026-08-23, multiple NICs on a template).
 
 ## Context
 

@@ -8,6 +8,10 @@
   Does not change `crates/banlieue-controller/src/reconciler/migration.rs`
   today — this ADR records the phasing decision and scopes Phase A; no code
   lands with it. Execution plan: `.github/community/14-live-migration.md`.
+- **Followed by:** [ADR-0127](0127-move-a-cloud-hypervisor-vm-between-hosts-in-a-zone.md)
+  (2026-11-11) decides Phase A for the Cloud Hypervisor class. Only its API
+  milestone (the `VirtualMachineMove` CRD) has shipped; no controller acts on a
+  move yet.
 
 ## Context
 

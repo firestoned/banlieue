@@ -1,9 +1,10 @@
 # Infrastructure CRDs & CAPI
 
 banlieue's provider infrastructure CRDs satisfy the
-[Cluster API (CAPI) v1beta2 infrastructure contracts](https://cluster-api.sigs.k8s.io/developer/providers/contracts/)
-— the **InfraMachine** contract (`VSphereMachine`) and the **InfraCluster**
-contract (`VSphereCluster`).
+[Cluster API (CAPI) v1beta2 infrastructure contracts](https://cluster-api.sigs.k8s.io/developer/providers/contracts/):
+the **InfraMachine** contract (`CloudHypervisorMachine`, `VSphereMachine`,
+`LibvirtMachine`, `ProxmoxMachine`) and the **InfraCluster** contract
+(`VSphereCluster`).
 
 This page explains *what those contracts are*, *why banlieue uses them*, and
 *what you get for free* by piggybacking on them.
@@ -51,9 +52,9 @@ We had three options for what shape provider CRDs should take:
 3. **Adopt the CAPI v1beta2 contract verbatim.** Lose nothing, gain
    compatibility, inherit a battle-tested status model.
 
-We picked (3). Banlieue's infrastructure CRDs (`VSphereMachine`,
-`VSphereMachineTemplate`, future `ProxmoxMachine`, `LibvirtMachine`) satisfy
-the InfraMachine contract.
+We picked (3). Banlieue's infrastructure CRDs (`CloudHypervisorMachine`,
+`VSphereMachine`, `LibvirtMachine`, `ProxmoxMachine`, and a `*MachineTemplate`
+for each) satisfy the InfraMachine contract.
 
 The user-facing `VirtualMachine` is **not** a `clusterv1.Machine` — it's a
 peer-level resource — but the infrastructure CRDs banlieue creates *behind
@@ -78,6 +79,12 @@ InfraMachine contract. That means:
   standalone VMs **using the same provider deployment**, the same
   credentials, and the same backend connectivity.
 - Provider authors can target two upstream consumers with one codebase.
+
+One part of the contract is not complete on every backend: a CAPI
+`Machine`'s bootstrap data reaches the guest on Cloud Hypervisor only, and
+libvirt, vSphere and Proxmox wait for milestone 2 of
+[ADR-0129](https://github.com/firestoned/banlieue/blob/main/docs/adr/0129-capi-inframachines-receive-the-machines-bootstrap-data.md).
+See the [Cluster API guide](../guides/cluster-api.md).
 
 ### 3. CAPI tooling works on banlieue's infra CRDs
 
@@ -135,5 +142,7 @@ via `infrastructureRef`.
 
 Banlieue's interpretation of the contract is encoded in
 [`crates/banlieue-api/src/infrastructure/`](https://github.com/firestoned/banlieue/tree/main/crates/banlieue-api/src/infrastructure)
-(Phase 0 ships `VSphereMachine` + `VSphereMachineTemplate`; further providers
-follow in Phases 1C and 1D).
+(one machine and one machine template per backend: Cloud Hypervisor,
+vSphere, libvirt and Proxmox VE). The
+[Cluster API guide](../guides/cluster-api.md) installs banlieue as a
+`clusterctl` infrastructure provider.

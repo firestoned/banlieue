@@ -11,6 +11,8 @@
   `MoveTarget`, and the "never all by default" rule of
   [ADR-0130](0130-namespace-selector-multi-tenancy.md) and
   [ADR-0131](0131-operator-and-provider-namespace-scope.md).
+- **Amended by:** [ADR-0135](0135-claim-selection-strategies.md) (2026-11-17): Decision 4's "no preference
+  between pools" is replaced by `spec.selection.strategy`.
 
 ## Context
 

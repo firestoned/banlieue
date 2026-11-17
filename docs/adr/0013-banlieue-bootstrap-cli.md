@@ -10,6 +10,8 @@ SPDX-License-Identifier: Apache-2.0
 - **Related:** ADR-0012 (`ProviderClass` + operator role); ADR-0003
   (per-instance topology); ADR-0004 (single binary, dispatch-only `banlieue`
   crate); ADR-0006 (release pipeline — the binary is the released artifact).
+- **Amended by:** [ADR-0103](0103-digest-pinned-installs.md) (2026-10-21): installs can be pinned to
+  an image digest (`--image-digest`).
 
 ## Context
 

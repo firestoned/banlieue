@@ -11,6 +11,8 @@ SPDX-License-Identifier: Apache-2.0
   this decision; ADR-0013 (bootstrap CLI); ADR-0004 (single binary, role crates);
   open decision O-003 ("multi-tenancy boundaries within a single Provider");
   D-007 (Provider model); least-privilege project principle.
+- **Amended by:** [ADR-0060](0060-cloud-hypervisor-first-class-provider-topology.md) (2026-09-27): an `External`
+  `ProviderClass` reconciles to no Deployment; the host runs the provider.
 
 > **Amended 2026-07-31.** The 2026-05-30 draft proposed a *hybrid* topology
 > (`deploymentStrategy: Shared | PerInstance`, defaulting to `Shared`). That

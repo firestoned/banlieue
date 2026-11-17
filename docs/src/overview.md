@@ -161,8 +161,9 @@ Because everything below the user's CR is uniform and pluggable:
 - **Mix backends** in one cluster (sandboxes and pools on Cloud Hypervisor
   hosts, prod on vSphere, dev on libvirt, edge on Proxmox), addressed by the
   same `kind: VirtualMachine`.
-- **Add a new backend** by writing a provider once; every existing
-  `VirtualMachine` becomes deployable there with no manifest change.
+- **Add a new backend** by writing a provider (and its builder in the
+  controller) once; every existing `VirtualMachine` becomes deployable there
+  with no manifest change.
 - **Audit, RBAC, GitOps, OPA, dashboards, etc.** all work the same way they
   work for any Kubernetes resource — no special tooling.
 
@@ -173,12 +174,14 @@ time to read two pages of *Why banlieue?*, read those.
 
 ## Warm pools and single-use sandboxes
 
-One class of VM cannot be provisioned on demand at all. A disk sealed to a
-per-VM vTPM can only be produced by letting the guest install itself on first
-boot with its own TPM attached ([ADR-0040](https://github.com/firestoned/banlieue/blob/main/docs/adr/0040-deferred-install-for-vtpm-encryption.md)),
-which costs minutes — and the slowness *is* the security property, so no
-provisioning cleverness removes it. The only way to hand such a VM over
-quickly is to have installed it already.
+One class of VM cannot be provisioned instantly. A disk sealed to a per-VM
+vTPM is produced inside the guest, with its own TPM attached: either by a
+first-boot install ([ADR-0040](https://github.com/firestoned/banlieue/blob/main/docs/adr/0040-deferred-install-for-vtpm-encryption.md)),
+which costs minutes, or by first-boot sealing of an `Immediate` clone
+([ADR-0088](https://github.com/firestoned/banlieue/blob/main/docs/adr/0088-first-boot-sealing-for-immediate-images.md)),
+which costs tens of seconds. Either way the sealing happens on the VM's own
+first boot, so no provisioning cleverness removes it. The only way to hand
+such a VM over at once is to have booted it already.
 
 Two more kinds cover that, built on the same uniform substrate as everything
 above:
@@ -194,8 +197,8 @@ above:
   deletion, and deleting a claim blocks until the backend VM is really gone.
 
 That pair is what makes banlieue usable as a sandbox substrate for CI jobs and
-AI agents. Both are implemented and validated end-to-end against a real libvirt
-host. The claim is the top of banlieue's API
+AI agents. Both are implemented and validated end-to-end against real libvirt
+and Cloud Hypervisor hosts. The claim is the top of banlieue's API
 ([ADR-0097](https://github.com/firestoned/banlieue/blob/main/docs/adr/0097-api-ends-at-virtualmachineclaim.md)):
 agent-specific layers such as `AgentSandbox` live in
 [mediatore](https://github.com/firestoned/mediatore).

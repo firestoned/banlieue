@@ -10,6 +10,8 @@ SPDX-License-Identifier: Apache-2.0
 - **Related:** ADR-0003 (per-instance topology — this ADR implements it);
   ADR-0013 (bootstrap CLI); ADR-0004 (single binary, library role crates);
   D-003 (CRD-only bus); least-privilege project principle.
+- **Amended by:** [ADR-0060](0060-cloud-hypervisor-first-class-provider-topology.md) (2026-09-27): `ProviderClass` gains
+  `deployment`, and the operator's object set depends on it.
 
 ## Context
 

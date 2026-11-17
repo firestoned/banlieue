@@ -24,7 +24,7 @@ user waits for: scheduling, the provider, the hypervisor and the guest.
 | --- | --- | --- | --- | --- |
 | Status | Implemented (roadmap 09) | Implemented (roadmap 05) | Implemented (roadmap 07) | Implemented; cluster end-to-end test and this column pending (roadmap 06) |
 | Where the provider runs | **On the KVM host**, as a systemd service; `External` ProviderClass (ADR-0060) | In the cluster, one Deployment per Provider | In the cluster, one Deployment per Provider (ADR-0012) | — |
-| Talks to | The local VMM's REST API on a Unix socket (ADR-0061) | vCenter SOAP API (ADR-0008) | Remote `libvirtd`, native RPC over mutual TLS (ADR-0011) | — |
+| Talks to | The local VMM's REST API on a Unix socket (ADR-0061) | vCenter VI JSON API via `vim_rs` (ADR-0008, ADR-0009) | Remote `libvirtd`, native RPC over mutual TLS (ADR-0011) | Proxmox VE REST API with an API token (ADR-0074) |
 | Credential it holds | A bound ServiceAccount token on the host, self-renewing; **no hypervisor credential and no Secret reads** | vCenter username/password (Secret) | mTLS client key (Secret) | — |
 | Hypervisor | Cloud Hypervisor v53 (Rust, KVM) | ESXi | QEMU/KVM (C) via libvirt | Proxmox VE (QEMU/KVM) |
 | One VM is | A systemd unit (`banlieue-ch@<uid>`) running one VMM process | A vSphere VM | A libvirt domain | — |
@@ -36,7 +36,7 @@ user waits for: scheduling, the provider, the hypervisor and the guest.
 | EK certificate source | **Read on the host**, where it was minted | Read from vCenter | Reported by the guest (ADR-0045) | — |
 | `GuestReady` signal | vsock report (ADR-0065 D5) | `guestinfo` (ADR-0043) | `qemu-guest-agent` file read (ADR-0043) | — |
 | UEFI Secure Boot | **No**: no persistent UEFI variables (ADR-0065 D7) | Yes | Yes (OVMF secboot, SMM) | — |
-| Live migration | No (roadmap 14 not started) | No | No | — |
+| Live migration | No: a move between hosts of one zone has its API, no controller yet (ADR-0127, roadmap 14) | No | No | No |
 | Snapshots | No (roadmap 10 not started) | No | No | — |
 
 ## Performance through banlieue

@@ -8,6 +8,10 @@
   (install-once, generalized templates). Extends `banlieue.io/v1alpha1`
   `VirtualMachine` (`crates/banlieue-api/src/banlieue/virtualmachine.rs`) and
   `VMClass` (`crates/banlieue-api/src/banlieue/vmclass.rs`).
+- **Amended by:** [ADR-0026](0026-vspheremachine-deletion-lifecycle.md) (2026-08-22, deletion lifecycle),
+  [ADR-0034](0034-vspheremachine-observed-power-state.md) (2026-08-24, observed power state),
+  [ADR-0101](0101-vspheremachine-ownership-marker-and-adoption.md) (2026-10-14, ownership marker and adoption) and
+  [ADR-0111](0111-vm-clone-additional-nics.md) (2026-10-30, additional NICs on a clone).
 
 ## Context
 

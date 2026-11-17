@@ -3,7 +3,8 @@
 banlieue and [Cluster API](https://cluster-api.sigs.k8s.io/) are different
 products, but they meet at a contract: banlieue's provider infrastructure CRDs
 satisfy the **CAPI v1beta2 infrastructure contracts** — both the `InfraMachine`
-contract (`VSphereMachine`) and the `InfraCluster` contract (`VSphereCluster`).
+contract (`CloudHypervisorMachine`, `VSphereMachine`, `LibvirtMachine`,
+`ProxmoxMachine`) and the `InfraCluster` contract (`VSphereCluster`).
 That makes banlieue usable as a CAPI **infrastructure provider**: the same
 provider binary serves banlieue's own `VirtualMachine` *and* CAPI-managed
 clusters.
@@ -34,7 +35,8 @@ contract buys us — banlieue does not have to *become* CAPI to be *used by* it.
 
 Two contracts, nothing more.
 
-**InfraMachine** (`VSphereMachine`) — the per-machine contract. Every banlieue
+**InfraMachine** (`CloudHypervisorMachine`, `VSphereMachine`, `LibvirtMachine`,
+`ProxmoxMachine`): the per-machine contract. Every banlieue
 provider's machine CRD exposes a status an upstream CAPI consumer can read
 without modification:
 

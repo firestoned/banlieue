@@ -1,7 +1,8 @@
 # Guide: Core Controller
 
 This guide installs the **banlieue main controller** on a real Kubernetes
-cluster from the released image `ghcr.io/firestoned/banlieue:v0.4.0`. The
+cluster from a released image, `ghcr.io/firestoned/banlieue:$BANLIEUE_VERSION`
+(see [Conventions](index.md#conventions-used-in-these-guides)). The
 controller watches `VirtualMachine` resources, schedules them onto a `Provider`,
 creates the backend-specific infrastructure CR (e.g. `VSphereMachine`), and
 mirrors status back. It is the foundation every provider builds on — install it
@@ -22,7 +23,7 @@ first, then add a provider with the [vSphere Provider guide](vsphere-provider.md
 - The released manifests. Pin the repo to the tag so the YAML matches the image:
 
     ```sh
-    git clone --branch v0.4.0 --depth 1 https://github.com/firestoned/banlieue
+    git clone --branch "$BANLIEUE_VERSION" --depth 1 https://github.com/firestoned/banlieue
     cd banlieue
     ```
 
@@ -35,11 +36,20 @@ kubectl apply -f deploy/crds/
 ```
 
 ```text
-customresourcedefinition.apiextensions.k8s.io/providers.banlieue.io created
 customresourcedefinition.apiextensions.k8s.io/providerclasses.banlieue.io created
+customresourcedefinition.apiextensions.k8s.io/providers.banlieue.io created
+customresourcedefinition.apiextensions.k8s.io/virtualmachineclaims.banlieue.io created
+customresourcedefinition.apiextensions.k8s.io/virtualmachinemoves.banlieue.io created
+customresourcedefinition.apiextensions.k8s.io/virtualmachinepools.banlieue.io created
 customresourcedefinition.apiextensions.k8s.io/virtualmachines.banlieue.io created
 customresourcedefinition.apiextensions.k8s.io/vmclasses.banlieue.io created
 customresourcedefinition.apiextensions.k8s.io/vmimages.banlieue.io created
+customresourcedefinition.apiextensions.k8s.io/cloudhypervisormachines.infrastructure.banlieue.io created
+customresourcedefinition.apiextensions.k8s.io/cloudhypervisormachinetemplates.infrastructure.banlieue.io created
+customresourcedefinition.apiextensions.k8s.io/libvirtmachines.infrastructure.banlieue.io created
+customresourcedefinition.apiextensions.k8s.io/libvirtmachinetemplates.infrastructure.banlieue.io created
+customresourcedefinition.apiextensions.k8s.io/proxmoxmachines.infrastructure.banlieue.io created
+customresourcedefinition.apiextensions.k8s.io/proxmoxmachinetemplates.infrastructure.banlieue.io created
 customresourcedefinition.apiextensions.k8s.io/vsphereclusters.infrastructure.banlieue.io created
 customresourcedefinition.apiextensions.k8s.io/vspheremachines.infrastructure.banlieue.io created
 customresourcedefinition.apiextensions.k8s.io/vspheremachinetemplates.infrastructure.banlieue.io created
@@ -79,19 +89,32 @@ metadata:
 The controller needs a ServiceAccount, a ClusterRole, and a binding. The role is
 scoped tightly:
 
-- **`banlieue.io`** — full reconcile on `providers`, `virtualmachines`,
+- **`banlieue.io`**: full reconcile on `providers`, `virtualmachines`,
   `vmclasses`, `vmimages` (+ their `status` and the `finalizers` subresources it
-  writes).
-- **`infrastructure.banlieue.io`** — full reconcile on `vspheremachines` /
-  `vspheremachinetemplates`, but only **watch + status** on `vsphereclusters`
-  (CAPI/the operator owns their lifecycle — the controller never creates or
-  deletes them).
-- **`events`** — create/patch (state transitions visible in `kubectl describe`).
-- **`coordination.k8s.io/leases`** — leader election.
+  writes); read plus `status` and `finalizers` on `virtualmachinepools`, and
+  read, `patch`, `delete` plus `status` and `finalizers` on
+  `virtualmachineclaims`.
+- **`infrastructure.banlieue.io`**: full reconcile on every machine and
+  machine-template kind (vSphere, libvirt, Cloud Hypervisor, Proxmox), but
+  only **watch + status** on `vsphereclusters` (CAPI/the operator owns their
+  lifecycle; the controller never creates or deletes them).
+- **`ipam.cluster.x-k8s.io`** `ipaddressclaims` / `ipaddresses`, and read-only
+  Cluster API `machines`, for the CAPI integrations.
+- **`namespaces`**: read, for the namespace selector (ADR-0130).
+- **`events`**: create/patch (state transitions visible in `kubectl describe`).
+- **`coordination.k8s.io/leases`**: leader election, in its own namespaced
+  Role (`role-leader-election.yaml`).
 
-No `secrets` access at all (security review 2026-07-31 SEC-008): providers read
-their own credentials through their per-instance Roles, and user-data travels
-inside the infrastructure CRDs — the controller never reads a Secret.
+The ClusterRole has no `secrets` rule (security review 2026-07-31 SEC-008):
+providers read their own credentials through their per-instance Roles. The one
+Secret read the controller does is a namespaced Role,
+`banlieue-controller-userdata` (`deploy/controller/rbac/role.yaml`), granting
+`get` on Secrets and ConfigMaps in `banlieue-system` only. It resolves a
+`VirtualMachine`'s `spec.userData` reference before inlining the rendered
+content into the infrastructure CR (ADR-0025, ADR-0038), and reads a Cluster
+API Machine's bootstrap Secret (ADR-0129). The
+`virtualmachine-userdata-authorization` admission policy (ADR-0042) is what
+keeps that grant from becoming a confused deputy; apply it (step 6).
 
 ```sh
 kubectl apply -R -f deploy/controller/rbac/
@@ -116,13 +139,22 @@ RUST_LOG: "info,kube=warn,hyper=warn,tower=warn"
 RUST_LOG_FORMAT: "json"            # structured logs for in-cluster
 BANLIEUE_METRICS_PORT: "8080"
 BANLIEUE_HEALTH_PORT: "8081"
+# BANLIEUE_NAMESPACE_SELECTOR: "banlieue.io/tenant=true"   # serve tenant namespaces (ADR-0130)
+# BANLIEUE_PROVIDER_NAMESPACE: "banlieue-system"           # shared providers' namespace (ADR-0133)
 ```
+
+Unset, the controller serves only its own namespace; it never defaults to
+every namespace. See [Multi-tenancy](multi-tenancy.md) for the two
+commented-out keys.
 
 ## 5. Deploy the controller
 
 ```sh
 kubectl apply -f deploy/controller/deployment.yaml
 kubectl apply -f deploy/controller/service.yaml
+# The manifest's tag is a reference only; run the release you cloned.
+kubectl -n banlieue-system set image deployment/banlieue-controller \
+  controller=ghcr.io/firestoned/banlieue:"$BANLIEUE_VERSION"
 ```
 
 The Deployment runs the **single `banlieue` binary** with the `controller`
@@ -141,7 +173,7 @@ spec:
         seccompProfile: { type: RuntimeDefault }
       containers:
         - name: controller
-          image: ghcr.io/firestoned/banlieue:v0.4.0   # pinned, never :latest
+          image: ghcr.io/firestoned/banlieue:<release>   # pinned, never :latest
           args: ["controller"]                          # role selector
           envFrom:
             - configMapRef: { name: banlieue-controller-config }
@@ -177,6 +209,20 @@ CEL, with **no webhook to run or certificates to rotate** (Kubernetes 1.30+):
 | `banlieue-provider-credentialsref-authorization` | The principal creating/updating a `Provider` must itself be authorized to `get` the Secret named by `spec.connection.credentialsRef` (CHAIN-001). |
 | `banlieue-providerclass-guardrails` | Bounds what a `ProviderClass` writer can hand a provider Deployment via `spec.additionalRules` / `spec.workloadNamespace` (SEC-006). |
 | `banlieue-vmimage-import-source` | `VMImage.spec.sources[].importFrom` must be digest-pinned (`@sha256:`) and from an allow-listed registry (CHAIN-003). |
+| `banlieue-virtualmachine-userdata-authorization` | The principal creating/updating a `VirtualMachine` must be authorized to `get` the Secret or ConfigMap named by `spec.userData` (ADR-0042). |
+| `banlieue-provider-attestation-ektrustbundle` | `Provider.spec.attestation.ekTrustBundle` names exactly one of `inline` / `configMapRef` / `secretRef` (ADR-0049). |
+| `banlieue-provider-namespace-selector-authorization` | Setting `Provider.spec.namespaceSelector` needs `update` on `providers/namespaceselector` (ADR-0133). |
+| `banlieue-machine-provider-ref` | Only the controller sets or changes a machine's `spec.providerRef.namespace` (ADR-0133). Required when shared providers serve tenant namespaces. |
+| `banlieue-virtualmachineclaim-subject-authorization` | A claim's `spec.subject.id` must equal the authenticated username unless the requester is a declared broker (ADR-0047). Edit its `issuers` list before applying. |
+| `banlieue-vmimage-first-boot-sealing` | `VMImage.spec.firstBootSealing` names only plain, sealable Kairos partitions and is not combined with `trustedBoot` (ADR-0088). |
+| `banlieue-cloudhypervisormachine-move-fields` | Only the controller sets a `CloudHypervisorMachine`'s move fields (ADR-0127). Required when VMs are moved. |
+| `banlieue-capi-machine-bootstrap-data-authorization` | Who may point a Cluster API `Machine` at a bootstrap Secret (ADR-0129). Matches nothing without Cluster API. |
+
+`deploy/admission/virtualmachine-created-by.yaml` is a
+`MutatingAdmissionPolicy` that stamps `banlieue.io/created-by` (ADR-0089) and
+needs Kubernetes 1.36+; on an older API server that one file is rejected while
+the rest apply. `deploy/admission/README.md` has the per-file notes (parameter
+ConfigMaps to edit, the 1.34 to 1.35 variant in `compat/`).
 
 ```sh
 kubectl apply -f deploy/admission/

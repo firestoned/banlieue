@@ -26,14 +26,14 @@ matches the project's stated principles.
 
 | Section | Count | Examples |
 | --- | --- | --- |
-| Nodes | 33 | actors, the management cluster, the controllers, every CRD, each backend, the OIDC issuer |
-| Relationships | 30 | every wire (`connects`), every container (`composed-of`), every consumer (`interacts`) |
-| Flows | 10 | create / swap / delete a `VirtualMachine`, provision a CAPI cluster, build and import a `VMImage`, register and upgrade a backend, claim a pool member, deliver a credential |
-| Controls | 7 top-level + 22 scoped | CRD-only contract, code-first CRDs, admission-policy validation, least-privilege secret access, supply-chain scanning — plus controls attached to individual nodes, relationships and flows |
+| Nodes | 51 | actors, the management cluster, the controllers, every CRD, each backend, the OIDC issuer |
+| Relationships | 70 | every wire (`connects`), every container (`composed-of`), every consumer (`interacts`) |
+| Flows | 17 | create / swap / delete a `VirtualMachine`, provision a CAPI cluster and deliver its bootstrap data, build and import a `VMImage`, register and upgrade a backend, claim a pool member, deliver a credential, run and move VMs on Cloud Hypervisor hosts, fit a placement against measured capacity, serve tenants from a shared provider |
+| Controls | 21 top-level + 68 scoped | CRD-only contract, code-first CRDs, admission-policy validation, least-privilege secret access, supply-chain scanning, plus controls attached to individual nodes, relationships and flows |
 
-Each provider node carries its **development phase** in its display name
-(`(planned, Phase 1B)`, etc.) so the picture is honest about what's
-implemented today vs the target architecture.
+A node that is modelled but not built carries that in its display name
+(the sandbox broker is `(planned, ...)`), so the picture is honest about
+what's implemented today vs the target architecture.
 
 ## Rendered artefacts
 
@@ -58,7 +58,7 @@ in sync with the CALM model on disk.
 
 The CALM `controls` block is where banlieue's invariants are encoded as
 machine-readable requirements with links to evidence files and NIST
-references. The top-level controls are below; further controls are attached
+references. The main controls are below; further controls are attached
 to individual nodes (`crd-only-contract`, `least-privilege`), relationships
 (`tls-trust-byoc`, `libvirt-mutual-tls`) and flows (`finalizer-ordering`,
 `claim-subject-attribution`, `bind-once-optimistic-concurrency`,

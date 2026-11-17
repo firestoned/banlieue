@@ -6,7 +6,7 @@
 - **Deciders:** Erick Bourgeois
 - **Amended:** 2026-11-16 (Decision 4's "no selector on a provider" is
   superseded by [ADR-0133](0133-shared-provider-serves-tenant-namespaces.md),
-  Proposed; the premise that a provider cannot serve many namespaces held only
+  accepted 2026-11-16; the premise that a provider cannot serve many namespaces held only
   while it resolved its `Provider` and credentials in the machine's namespace)
 - **Related:** Extends [ADR-0130](0130-namespace-selector-multi-tenancy.md)
   (which fixed the controller only and named this as its follow-up).

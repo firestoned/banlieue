@@ -145,7 +145,7 @@ spec:
                 type: integer
               readiness:
                 description: |-
-                  Which member condition makes it claimable. See [`PoolReadiness`].
+                  Which member condition makes it claimable. See `PoolReadiness`.
 
                   **Required, with no default** (ADR-0046 Decision 2). `GuestReady` is
                   the correct answer for a Deferred-mode image and would be the natural
@@ -529,7 +529,7 @@ spec:
                           configMapRef:
                             description: |-
                               Key in a ConfigMap in the VirtualMachine's namespace (key defaults to
-                              [`DEFAULT_USER_DATA_KEY`]).
+                              `DEFAULT_USER_DATA_KEY`).
                             nullable: true
                             properties:
                               key:
@@ -545,7 +545,7 @@ spec:
                           secretRef:
                             description: |-
                               Key in a Secret in the VirtualMachine's namespace (key defaults to
-                              [`DEFAULT_USER_DATA_KEY`]).
+                              `DEFAULT_USER_DATA_KEY`).
                             nullable: true
                             properties:
                               key:

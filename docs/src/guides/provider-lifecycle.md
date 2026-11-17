@@ -8,8 +8,11 @@ Two pieces make that work:
 
 - **`ProviderClass`** — cluster-scoped, says *what banlieue runs* for a class of
   backends (which provider role, which image, what pod shape).
-- **`banlieue-operator`** — watches `Provider` CRs and creates one Deployment,
+- **`banlieue-operator`**: watches `Provider` CRs and creates one Deployment,
   ServiceAccount, Role, RoleBinding and ClusterRoleBinding **per Provider**.
+  A class with `deployment: External` (ADR-0060, the Cloud Hypervisor host
+  providers) gets the identity and RBAC but no Deployment: the process runs
+  on the host.
 
 The topology decision is recorded in ADR-0003, and the CRD and role split in
 ADR-0012 (both under `docs/adr/` in the repository).
@@ -36,6 +39,9 @@ Useful flags:
 | `--namespace` | Install somewhere other than `banlieue-system`. |
 | `--version` | Image tag. Defaults to the binary's own version. |
 | `--registry` | Air-gapped mirror: image becomes `<registry>/banlieue:<version>`. |
+| `--image-digest` | Pin every banlieue image the install writes to this digest (ADR-0103). Recommended for anything but throwaway clusters. |
+| `--watch-namespace-selector` | Let the operator serve `Provider`s in every namespace matching this label selector, besides the install namespace (ADR-0131). |
+| `--build-node-selector`, `--build-toleration` | Pin image-build and import workloads to dedicated nodes (ADR-0016). |
 | `--dry-run` | Print the YAML and exit. Never contacts a cluster. |
 | `--skip-provider-classes` | Do not seed a class per backend. |
 
@@ -92,6 +98,15 @@ Role/banlieue-provider-vsphere-prod-vc
 RoleBinding/banlieue-provider-vsphere-prod-vc
 ClusterRoleBinding/banlieue-provider-vsphere-prod-vc
 ```
+
+It also creates a read-only import Role and RoleBinding beside the
+`Provider`, granting the build namespace's import ServiceAccount `get` on
+this Provider and its credentials, for the provider's import Jobs (ADR-0016).
+
+To let this one `Provider` serve VMs in tenant namespaces while its
+credentials stay in `banlieue-system`, set `spec.namespaceSelector` on it
+(ADR-0133); see [Multi-tenancy](multi-tenancy.md) and
+`examples/28-provider-vsphere-shared.yaml`.
 
 Watch it come up:
 

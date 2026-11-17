@@ -49,7 +49,11 @@ spec:
           # (ADR-0004). Pin to a released version tag — NEVER use :latest in
           # production. Local dev uses `kubectl set image` to swap in
           # ghcr.io/firestoned/banlieue:local-dev.
-          image: ghcr.io/firestoned/banlieue:v0.4.0
+          # A release tag is cut without editing this file, so set the image to
+          # the release you install (`kubectl set image`, see the guides), or
+          # install with `banlieue bootstrap operator --version`, which pins
+          # that release's own image by digest.
+          image: ghcr.io/firestoned/banlieue:v0.5.9
           imagePullPolicy: IfNotPresent
           args: ["operator"]
           envFrom:

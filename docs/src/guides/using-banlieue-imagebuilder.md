@@ -5,7 +5,8 @@ provider-agnostic controller that turns a `VMImage` sourced from an OCI
 image (e.g. a nightly Kairos build) into a **build artifact** via
 kairos-operator: a raw cloud image for libvirt sources, or a bootable ISO
 with a baked-in default cloud-config for vSphere sources (ADR-0020).
-Everything uses the released image `ghcr.io/firestoned/banlieue:v0.4.0`.
+Everything uses a released image, `ghcr.io/firestoned/banlieue:$BANLIEUE_VERSION`
+(see [Conventions](index.md#conventions-used-in-these-guides)).
 
 ```mermaid
 flowchart LR
@@ -19,8 +20,9 @@ flowchart LR
 
 !!! info "What this pipeline delivers today"
     `banlieue-imagebuilder` drives a `VMImage`'s build all the way to
-    `status.buildArtifact.phase: Ready`, and **both** in-tree providers
-    complete the per-zone import from there:
+    `status.buildArtifact.phase: Ready`, and the vSphere, libvirt and Cloud
+    Hypervisor providers complete delivery from there (Proxmox takes
+    `Template` sources only):
 
     - **vSphere** (ADR-0020, ADR-0021): one `image-import` Job per failure
       domain uploads the ISO to the zone's datastore, creates an EFI VM
@@ -32,6 +34,9 @@ flowchart LR
       remaining stub — it reports `ContentLibraryNotImplemented`.
     - **libvirt** (ADR-0011): one import Job per declared storage pool
       streams the raw cloud image into a volume over mTLS.
+    - **Cloud Hypervisor** (ADR-0064): the imagebuilder pushes the artifact
+      to an OCI registry and each host pulls it by digest; see
+      [Cloud Hypervisor hosts](#cloud-hypervisor-hosts-pushed-to-a-registry).
 
 ## Prerequisites
 
@@ -42,7 +47,7 @@ flowchart LR
 - The repo checked out at the release tag (for the imagebuilder manifests):
 
     ```sh
-    git clone --branch v0.4.0 --depth 1 https://github.com/firestoned/banlieue
+    git clone --branch "$BANLIEUE_VERSION" --depth 1 https://github.com/firestoned/banlieue
     cd banlieue
     ```
 
@@ -63,6 +68,9 @@ kubectl apply -R -f deploy/imagebuilder/rbac/
 kubectl apply -f deploy/imagebuilder/configmap.yaml
 kubectl apply -f deploy/imagebuilder/deployment.yaml
 kubectl apply -f deploy/imagebuilder/service.yaml
+# The manifest's tag is a reference only; run the release you cloned.
+kubectl -n banlieue-system set image deployment/banlieue-imagebuilder \
+  imagebuilder=ghcr.io/firestoned/banlieue:"$BANLIEUE_VERSION"
 ```
 
 ```sh
@@ -162,7 +170,7 @@ into a vCenter template (ADR-0020):
     power itself off for templating) and no `after-install-chroot`
     identity-wipe stage (each clone installs fresh and gets its own
     machine-id/SSH host keys naturally). See
-    [`examples/15-vmimage-kairos-deferred-install-tpm.yaml`](https://github.com/firestoned/banlieue/blob/v0.4.0/examples/15-vmimage-kairos-deferred-install-tpm.yaml)
+    [`examples/15-vmimage-kairos-deferred-install-tpm.yaml`](https://github.com/firestoned/banlieue/blob/main/examples/15-vmimage-kairos-deferred-install-tpm.yaml)
     and ADR-0040. Note that `VSphereMachine.status.initialization.provisioned`
     still flips `true` the instant the clone powers on — for a
     `deferred`-mode VM that now means "the 8-12 minute install just
@@ -249,7 +257,7 @@ into a vCenter template (ADR-0020):
     and the enroller. Pair this with `spec.template.firmware: efi-secure` and
     a `tpmEnabled: true` `VMClass` (ADR-0039/0040) for TPM-sealed `kcrypt`
     disk encryption end to end — see
-    [`examples/16-vmimage-kairos-trusted-boot-uki.yaml`](https://github.com/firestoned/banlieue/blob/v0.4.0/examples/16-vmimage-kairos-trusted-boot-uki.yaml).
+    [`examples/16-vmimage-kairos-trusted-boot-uki.yaml`](https://github.com/firestoned/banlieue/blob/main/examples/16-vmimage-kairos-trusted-boot-uki.yaml).
     **Live-verified:** vSphere UEFI Secure Boot key enrollment works via the
     `uefi.secureBoot.{pk,kek,db}Default.file0` VMX `extraConfig` mechanism
     (Broadcom KB 377306) — upload the three DER-encoded certs
@@ -330,7 +338,7 @@ spec:
     installMode: immediate        # immediate (default) | deferred | manual — see ADR-0040
 ```
 
-(Also available as [`examples/09-vmimage-kairos-url-source.yaml`](https://github.com/firestoned/banlieue/blob/v0.4.0/examples/09-vmimage-kairos-url-source.yaml).)
+(Also available as [`examples/09-vmimage-kairos-url-source.yaml`](https://github.com/firestoned/banlieue/blob/main/examples/09-vmimage-kairos-url-source.yaml).)
 
 ```sh
 kubectl apply -f vmimage-kairos.yaml
@@ -511,12 +519,14 @@ volume was lost with its node`.
 
 ## Pre-laying a raw image (ADR-0113)
 
-!!! note "You build the pre-lay image"
+!!! note "The pre-lay image is published with each release"
     ADR-0113 is accepted (2026-11-02: a Hadron `Url` image pre-laid in a
-    cluster, its clone sealed and `GuestReady` in 30 s), but banlieue does not
-    publish the pre-lay image yet: build it from `Dockerfile.prelay`
+    cluster, its clone sealed and `GuestReady` in 30 s). Since its
+    2026-11-04 amendment every release publishes
+    `ghcr.io/firestoned/banlieue-prelay` (below). To build your own instead,
+    use `Dockerfile.prelay`
     (`docker build -f Dockerfile.prelay -t <registry>/banlieue-prelay:<tag> .`)
-    and push it where the build namespace can pull it.
+    and point `--prelay-image` at it.
 
 A raw Kairos image makes every clone run a recovery boot, a reset that lays
 out `COS_STATE` and `COS_PERSISTENT`, and a reboot before its real first
@@ -718,7 +728,7 @@ half-built VM).
 
 ```sh
 kubectl -n banlieue-system logs deploy/banlieue-imagebuilder
-kubectl -n banlieue-system logs deploy/banlieue-provider-vsphere
+kubectl -n banlieue-system logs deploy/banlieue-provider-vsphere-<provider>   # standalone install: deploy/banlieue-provider-vsphere
 kubectl -n banlieue-imagebuild logs job/<import-job-name>
 kubectl describe vmimage kairos-ubuntu-2404   # Events
 ```

@@ -46,11 +46,11 @@ clusterctl reads `metadata.yaml` from the same release.
 providers:
   - name: banlieue
     type: InfrastructureProvider
-    url: https://github.com/firestoned/banlieue/releases/v0.4.0/infrastructure-components.yaml
+    url: https://github.com/firestoned/banlieue/releases/latest/infrastructure-components.yaml
 ```
 
-To always resolve the newest release, use `releases/latest/` in place of
-`releases/v0.4.0/`.
+`releases/latest/` resolves the newest release. To pin one, name its tag in
+its place, for example `releases/vX.Y.Z/`.
 
 ## 2. Initialise the management cluster
 
@@ -67,14 +67,14 @@ clusterctl init \
   --core cluster-api:v1.14.3 \
   --bootstrap kubeadm:v1.14.3 \
   --control-plane kubeadm:v1.14.3 \
-  --infrastructure banlieue:v0.4.0
+  --infrastructure banlieue:vX.Y.Z
 ```
 
 `clusterctl` reads the target namespace, `banlieue-system`, from the
 components file. Then register a backend exactly as without Cluster API:
 apply a `Provider` (and its credentials Secret) as described in the
-[vSphere](vsphere-provider.md), [libvirt](libvirt-provider.md) or
-[Proxmox](proxmox-provider.md) guides.
+[Cloud Hypervisor](cloud-hypervisor-host.md), [vSphere](vsphere-provider.md),
+[libvirt](libvirt-provider.md) or [Proxmox](proxmox-provider.md) guides.
 
 > **Two `Provider` kinds.** clusterctl keeps its inventory in a `Provider`
 > kind of its own, `providers.clusterctl.cluster.x-k8s.io`, which has the
@@ -221,9 +221,11 @@ kubectl -n <namespace> annotate cloudhypervisormachine <name> \
 
 The controller reads bootstrap Secrets by name, through a namespaced Role,
 never a ClusterRole. In the install namespace, `banlieue-system`, it already
-has one, and Cloud Hypervisor machines must live there anyway (a host
-provider serves only its own namespace). For InfraMachines in any other
-namespace, grant it:
+has one. Cloud Hypervisor machines live there too unless the host's
+`Provider` declares a `namespaceSelector`
+([ADR-0134](https://github.com/firestoned/banlieue/blob/main/docs/adr/0134-cloud-hypervisor-serves-tenant-namespaces.md),
+see [multi-tenancy](multi-tenancy.md#one-shared-provider-for-every-team)).
+For InfraMachines in any other namespace, grant it:
 
 ```yaml
 apiVersion: rbac.authorization.k8s.io/v1

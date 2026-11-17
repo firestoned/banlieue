@@ -7,7 +7,7 @@ SPDX-License-Identifier: Apache-2.0
 The guarantee: every `tpmEnabled` VM gets a **new** vTPM of its own, with
 its own endorsement key, and installs (and seals its disk to that vTPM) at
 its own first boot. No vTPM state, identity or disk-encryption material is
-copied from a template or from another VM (ADR-0040, ADR-0048, ADR-0081).
+copied from a template or from another VM (ADR-0040, ADR-0081, ADR-0088).
 
 This page says how each provider does that today, and marks what is
 verified by an automated live test, by a recorded manual run, by unit tests
@@ -16,15 +16,17 @@ only, or not at all.
 ## The controller gate (all providers)
 
 `tpmEnabled: true` on a `VMClass` requires a `VMImage` whose install mode is
-not `Immediate` (ADR-0048). An `Immediate` image is installed once into a
-template, so every clone would share one sealed disk.
+not `Immediate`, unless the image declares first-boot sealing (ADR-0088,
+which superseded ADR-0048 and keeps its refusal of a plain `Immediate`
+image). An `Immediate` image is installed once into a template, so without
+first-boot sealing every clone would share one sealed disk.
 
 - Enforced in `crates/banlieue-controller/src/reconciler/virtualmachine.rs`
   (`image_class_mismatch`), before scheduling. An image with no install
   template (a `Template` or `BackingFile` source) counts as `Immediate` and
   is rejected.
 - `Manual` is accepted. It is an operator's assertion that the image
-  installs per VM, and banlieue cannot check it (ADR-0048).
+  installs per VM, and banlieue cannot check it (ADR-0040, ADR-0088).
 - No admission policy enforces this. Admission cannot see the `VMClass` and
   the `VMImage` together, so the check is in the controller. **Unit tests
   only** (`virtualmachine_tests.rs`).
@@ -61,7 +63,7 @@ encrypts that disk to the VM's own vTPM.
 | Template | Templates banlieue builds carry no vTPM: the only `VirtualTpm` constructor is the per-clone add | Code reading |
 | Deferred | For a non-`Immediate` image, the template is left uninstalled with the installer attached; each clone installs at first boot | One manual live run, one VM, 2026-09-04 (ADR-0040). Not automated |
 | EK certificate | Read host-side from the `VirtualTpm` device and published on the infra CR (ADR-0045); read from the raw `config` document, since the typed decode fails on a VM carrying a vTPM | One live run, three VMs, 2026-10-22 |
-| First-boot sealing | For an `Immediate` image with `firstBootSealing`, the clone gets its vTPM before first power-on as above; the guest seals on first boot and reports `guestinfo.banlieue.sealed`, which gates `GuestReady` (ADR-0088) | Unit tests only |
+| First-boot sealing | For an `Immediate` image with `firstBootSealing`, the clone gets its vTPM before first power-on as above; the guest seals on first boot and reports `guestinfo.banlieue.sealed`, which gates `GuestReady` (ADR-0088) | Unit tests; one live run end to end, 2026-10-22 (an `iso` build, ADR-0088) |
 
 !!! warning "Hand-built templates"
     vSphere's default clone behaviour **copies** a source VM's vTPM,
@@ -81,7 +83,8 @@ encrypts that disk to the VM's own vTPM.
 | vTPM | `<tpm model='tpm-crb'><backend type='emulator' version='2.0'/></tpm>` with no carried state (`xml/domain.rs`, `render_tpm`). libvirt generates a new domain UUID on first define, and swtpm keys its state by that UUID | Unit tests. The swtpm-by-UUID state path is from libvirt behaviour and ADR-0045, **not independently verified here** |
 | Delete | Undefine always passes `VIR_DOMAIN_UNDEFINE_TPM`, so the swtpm state is removed with the domain (`banlieue-libvirt/src/procs.rs`) | Unit tests |
 | EK certificate | Read out of the guest with `guest-file-read`, and rejected unless its subject CN is `<domain-name>:<domain-uuid>` (`guest.rs`, `ek_cn_matches` in `banlieue-provider-sdk/src/ek.rs`) | Live, **one domain**: `make libvirt-ek-live-test` (`tests/live_ek.rs`) |
-| Deferred sealing | Installer on an empty disk | **Not verified live** on libvirt |
+| Deferred sealing | Installer on an empty disk | Live, a pool: a `Deferred`, `tpmEnabled` member installed, reported, had its installer ejected and its EK published, `GuestReady` in 158 s (2026-10-12, roadmap 17) |
+| Cross-member isolation | A sealed disk opens only with its own vTPM | Live: `make libvirt-sealing-isolation-e2e` (`tests/e2e_sealing_isolation.rs`, roadmap 18 phase B), green 2026-11-04 |
 
 ## Cloud Hypervisor
 
@@ -97,8 +100,15 @@ encrypts that disk to the VM's own vTPM.
 
 ## Proxmox
 
-No provider yet (roadmap 06). ADR-0074 and roadmap 18 plan a fresh
-`tpmstate0` per VM at create.
+| Step | What the code does | Verified by |
+| --- | --- | --- |
+| Create | A full clone of a template (ADR-0075). There is no `Deferred` path: the provider has no create-from-ISO | Unit tests against the fake client |
+| vTPM | With `tpmEnabled`, the provider adds a new `tpmstate0` disk to the clone, but only when the clone has none (`banlieue-provider-proxmox/src/config.rs`) | Unit tests |
+
+!!! warning "Templates with a `tpmstate0`"
+    A template that already carries a `tpmstate0` disk passes it to every
+    full clone, and the provider then adds none. Use templates with no
+    vTPM state.
 
 ## What no test proves yet
 

@@ -1,8 +1,8 @@
 # Guides
 
 Production-oriented, step-by-step guides for installing and operating banlieue
-on a real cluster, using the released container image
-`ghcr.io/firestoned/banlieue:v0.4.5`. No build-from-source, no simulators.
+on a real cluster, using a released container image, `ghcr.io/firestoned/banlieue:<release>`.
+No build-from-source, no simulators.
 
 ## Get started
 
@@ -26,6 +26,11 @@ Bring up a management cluster and install banlieue.
 
     Install the CRDs, the `banlieue-controller`, RBAC, and the optional
     ValidatingAdmissionPolicies — the foundation every provider builds on.
+
+- :material-cog-sync: **[Provider Lifecycle & Install](provider-lifecycle.md)**
+
+    `banlieue bootstrap operator`, `ProviderClass`, and how applying a
+    `Provider` brings a backend's workload up, one per `Provider`.
 
 </div>
 
@@ -91,11 +96,22 @@ Warm pools, single-use claims, the identity layer above them, and Cluster API.
     `ttlSeconds`, why release is always deletion, and why `subject` must
     never carry a credential.
 
+- :material-account-check: **[Testing Claim Authorization](testing-claim-authorization.md)**
+
+    A dev cluster that logs you in with your GitHub account through Dex, so
+    the claim-subject admission policy can be watched accepting and refusing
+    real identities.
+
 - :material-lan-disconnect: **[Isolated Sandbox Segment](isolated-sandbox-segment.md)**
 
     Put sandboxes on a segment with no router and let them out only through
     gateway VMs: the network classes, the two-NIC gateway, a pool with no
     default route, and how to check it is isolated.
+
+- :material-call-split: **[Environment / Provider Isolation](environment-provider-isolation.md)**
+
+    When one `Provider` serves several environments (more classes) and when
+    a second `Provider` is the right call (separate credentials or vCenter).
 
 - :material-shield-account: **[Sandbox Identity with mediatore](sandbox-identity-mediatore.md)**
 
@@ -135,6 +151,12 @@ Building the disk images VMs boot from.
     — install `banlieue-imagebuilder`, watch the build, and see exactly what's
     implemented today versus tracked as a follow-up.
 
+- :material-package-variant: **[Building a Kairos Hadron VM Template](building-kairos-hadron-template.md)**
+
+    Build the OCI image the imagebuilder consumes when stock Hadron needs
+    extra payloads baked in. For Alpine on vSphere, see
+    [Building an Alpine VM Template](alpine-vsphere-template.md).
+
 </div>
 
 ## Operations
@@ -158,7 +180,9 @@ Running banlieue day to day.
 - :material-account-group: **[Multi-Tenancy](multi-tenancy.md)**
 
     Serve a namespace per team by label: the selector, the default scope,
-    onboarding and removing a team, and what the selector does not isolate.
+    onboarding and removing a team, one shared provider that serves every
+    team without handing out its credentials, and what the selector does not
+    isolate.
 
 </div>
 
@@ -168,9 +192,13 @@ Running banlieue day to day.
 
 ## Conventions used in these guides
 
-- Everything is pinned to the released tag **`v0.4.5`**. Manifests live in the
-  repository under [`deploy/`](https://github.com/firestoned/banlieue/tree/v0.4.5/deploy)
-  at that tag; the guides apply them directly.
+- Everything is pinned to **one release**, named once in `BANLIEUE_VERSION`
+  (pick it from the [releases page](https://github.com/firestoned/banlieue/releases)).
+  The manifests the guides apply live under
+  [`deploy/`](https://github.com/firestoned/banlieue/tree/main/deploy) at that
+  tag. A tag is cut without editing those files, so the image tag inside them
+  is only a reference: every guide that applies a Deployment sets its image to
+  `ghcr.io/firestoned/banlieue:$BANLIEUE_VERSION` straight after.
 - All workloads run in the **`banlieue-system`** namespace under the
   Pod Security **restricted** profile.
 - A cluster of **Kubernetes 1.30+** is assumed (required for the
@@ -178,7 +206,9 @@ Running banlieue day to day.
   clusters).
 
 ```sh
-# Pin the repo to the release so the manifests match the image.
-git clone --branch v0.4.5 --depth 1 https://github.com/firestoned/banlieue
+# The release to install, from https://github.com/firestoned/banlieue/releases
+export BANLIEUE_VERSION=vX.Y.Z
+# Pin the repo to it so the manifests match the image.
+git clone --branch "$BANLIEUE_VERSION" --depth 1 https://github.com/firestoned/banlieue
 cd banlieue
 ```

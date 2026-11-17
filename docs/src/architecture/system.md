@@ -15,9 +15,9 @@ and the connections between them. `connects` and `interacts`
 relationships become arrows (the protocol, when defined, labels the
 arrow); `deployed-in` / `composed-of` containers become subgraphs.
 
-Note: nodes whose `name` includes "(planned, Phase 1B/C/D)" are not yet
-implemented in the repo — the diagram shows the *target* architecture so
-contributors and users have one canonical picture.
+Note: a node whose `name` includes "(planned" is not built by this
+repository (today only the sandbox broker, which mediatore provides); the
+diagram shows it so contributors and users have one canonical picture.
 
 ```mermaid
 flowchart LR
@@ -132,6 +132,8 @@ flowchart LR
     service-banlieue-controller --> data-asset-virtualmachine-cr
     service-banlieue-controller --> data-asset-virtualmachineclaim-cr
     service-banlieue-controller --> data-asset-virtualmachinepool-cr
+    service-banlieue-controller --> data-asset-virtualmachine-cr
+    service-banlieue-controller --> data-asset-provider-cr
     service-banlieue-controller --> data-asset-virtualmachine-cr
     actor-vm-consumer -->|HTTPS| network-oidc-issuer
     service-kubernetes-api -->|HTTPS| network-oidc-issuer

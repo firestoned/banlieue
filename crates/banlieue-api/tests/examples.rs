@@ -127,6 +127,26 @@ fn virtualmachineclaim_selector_example_matches_the_type() {
     assert_no_dropped_keys(spec_doc, &claim.spec);
 }
 
+/// The strategy example spreads one subject's sandboxes across failure
+/// domains (ADR-0135). A misspelled `selection` would be dropped by serde and
+/// the claim would silently rank as `LongestReady`, so the round-trip matters.
+#[test]
+fn virtualmachineclaim_spread_example_selects_a_strategy() {
+    use banlieue_api::banlieue::SelectionStrategy;
+    let doc = read_example("29-virtualmachineclaim-spread.yaml");
+    let claim: VirtualMachineClaim =
+        serde_json::from_value(doc.clone()).expect("example must parse as a VirtualMachineClaim");
+
+    assert_eq!(claim.spec.strategy(), SelectionStrategy::Spread);
+    assert!(
+        claim.spec.pool_selector.is_some(),
+        "spread is about several pools' members"
+    );
+
+    let spec_doc = doc.get("spec").expect("example has a spec");
+    assert_no_dropped_keys(spec_doc, &claim.spec);
+}
+
 /// The shared-provider example declares the namespaces it serves (ADR-0133).
 /// A misspelled `namespaceSelector` would be silently dropped by serde and the
 /// Provider would serve its own namespace only, so the round-trip matters.

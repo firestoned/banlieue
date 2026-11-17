@@ -2,6 +2,8 @@
 
 - **Status:** Accepted
 - **Date:** 2026-09-04
+- **Amended by:** [ADR-0040](0040-deferred-install-for-vtpm-encryption.md) (2026-09-04): encryption needs a
+  `Deferred` install, not `cloudConfigs` alone.
 
 ## Context
 

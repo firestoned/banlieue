@@ -70,7 +70,7 @@ spec:
   policyName: banlieue-machine-provider-ref
   # Deny = enforce. Do not switch it to Warn or Audit on a cluster that serves
   # tenant namespaces from a shared provider: a forged providerRef.namespace is a
-  # VM on the platform's vCenter.
+  # VM on the platform's shared backend.
   validationActions: ["Deny"]
 ---
 # The same rule for the machine template a Cluster API MachineDeployment

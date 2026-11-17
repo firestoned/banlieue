@@ -112,7 +112,131 @@ pub fn prepared(mut crd: CustomResourceDefinition) -> CustomResourceDefinition {
     promote_spec_description(&mut crd);
     add_capi_contract_label(&mut crd);
     strip_unsupported_formats(&mut crd);
+    plain_crd_doc_links(&mut crd);
     crd
+}
+
+/// Every version's root schema of `crd`, mutably.
+fn version_roots(crd: &mut CustomResourceDefinition) -> impl Iterator<Item = &mut JSONSchemaProps> {
+    crd.spec.versions.iter_mut().filter_map(|v| {
+        v.schema
+            .as_mut()
+            .and_then(|s| s.open_api_v3_schema.as_mut())
+    })
+}
+
+/// Call `f` on `schema` and on every schema under it: properties, items,
+/// additional properties and items, the combinators, pattern properties,
+/// definitions and schema dependencies.
+fn for_each_schema_mut(schema: &mut JSONSchemaProps, f: &mut dyn FnMut(&mut JSONSchemaProps)) {
+    f(schema);
+    let maps = [
+        schema.properties.as_mut(),
+        schema.pattern_properties.as_mut(),
+        schema.definitions.as_mut(),
+    ];
+    for child in maps.into_iter().flatten().flat_map(|m| m.values_mut()) {
+        for_each_schema_mut(child, f);
+    }
+    let lists = [
+        schema.all_of.as_mut(),
+        schema.any_of.as_mut(),
+        schema.one_of.as_mut(),
+    ];
+    for child in lists.into_iter().flatten().flat_map(|v| v.iter_mut()) {
+        for_each_schema_mut(child, f);
+    }
+    match schema.items.as_mut() {
+        Some(JSONSchemaPropsOrArray::Schema(child)) => for_each_schema_mut(child, f),
+        Some(JSONSchemaPropsOrArray::Schemas(children)) => {
+            for child in children.iter_mut() {
+                for_each_schema_mut(child, f);
+            }
+        }
+        None => {}
+    }
+    for child in [
+        schema.additional_properties.as_mut(),
+        schema.additional_items.as_mut(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if let JSONSchemaPropsOrBool::Schema(child) = child {
+            for_each_schema_mut(child, f);
+        }
+    }
+    if let Some(child) = schema.not.as_mut() {
+        for_each_schema_mut(child, f);
+    }
+    for dependency in schema.dependencies.iter_mut().flat_map(|m| m.values_mut()) {
+        if let JSONSchemaPropsOrStringArray::Schema(child) = dependency {
+            for_each_schema_mut(child, f);
+        }
+    }
+}
+
+/// Rewrite rustdoc intra-doc links in every description of `crd` as plain
+/// code, so `kubectl explain` and the API reference never show `[`X`]`.
+pub fn plain_crd_doc_links(crd: &mut CustomResourceDefinition) {
+    for root in version_roots(crd) {
+        plain_schema_doc_links(root);
+    }
+}
+
+/// [`plain_crd_doc_links`] for one schema and everything under it.
+pub fn plain_schema_doc_links(schema: &mut JSONSchemaProps) {
+    for_each_schema_mut(schema, &mut |s| {
+        if let Some(description) = s.description.as_mut() {
+            *description = plain_doc_links(description);
+        }
+    });
+}
+
+/// Turn rustdoc intra-doc links into inline code.
+///
+/// The doc comments under `crates/banlieue-api/src/` become CRD
+/// descriptions, and rustdoc's link syntax means nothing there: a reader of
+/// `kubectl explain` or of the API reference page sees `[`X`]` or a link to a
+/// Rust path that goes nowhere. So `[`X`]` and `[`X`](path)` both become
+/// `` `X` ``. A link whose target contains `://` is a real URL and is kept.
+#[must_use]
+pub fn plain_doc_links(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find("[`") {
+        out.push_str(&rest[..start]);
+        let after_open = &rest[start + "[`".len()..];
+        let Some(code_end) = after_open.find("`]") else {
+            out.push_str(&rest[start..]);
+            return out;
+        };
+        let code = &after_open[..code_end];
+        let after_close = &after_open[code_end + "`]".len()..];
+        if code.contains('`') {
+            // Not a single code span: leave the bracket as written.
+            out.push_str("[`");
+            rest = after_open;
+            continue;
+        }
+        let (target_len, is_url) = match after_close.strip_prefix('(') {
+            Some(target) => match target.find(')') {
+                Some(end) => (end + "()".len(), target[..end].contains("://")),
+                None => (0, false),
+            },
+            None => (0, false),
+        };
+        if is_url {
+            out.push_str(&rest[start..start + "[`".len() + code_end + "`]".len() + target_len]);
+        } else {
+            out.push('`');
+            out.push_str(code);
+            out.push('`');
+        }
+        rest = &after_close[target_len..];
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Remove every `format` the apiserver does not recognise from each
@@ -124,14 +248,8 @@ pub fn prepared(mut crd: CustomResourceDefinition) -> CustomResourceDefinition {
 /// The bounds that matter (`minimum: 0`, `maximum`) are separate keywords
 /// and stay.
 pub fn strip_unsupported_formats(crd: &mut CustomResourceDefinition) {
-    for version in &mut crd.spec.versions {
-        if let Some(root) = version
-            .schema
-            .as_mut()
-            .and_then(|s| s.open_api_v3_schema.as_mut())
-        {
-            strip_unsupported_schema_formats(root);
-        }
+    for root in version_roots(crd) {
+        strip_unsupported_schema_formats(root);
     }
 }
 
@@ -146,62 +264,20 @@ pub fn is_supported_string_format(format: &str) -> bool {
 /// properties, items, additional properties and items, the combinators,
 /// pattern properties, definitions and schema dependencies.
 pub fn strip_unsupported_schema_formats(schema: &mut JSONSchemaProps) {
-    if let Some(format) = schema.format.as_deref() {
-        let keep = match schema.type_.as_deref() {
+    for_each_schema_mut(schema, &mut |s| {
+        let Some(format) = s.format.as_deref() else {
+            return;
+        };
+        let keep = match s.type_.as_deref() {
             Some("integer") => INTEGER_FORMATS.contains(&format),
             Some("number") => NUMBER_FORMATS.contains(&format),
             None | Some("string") => is_supported_string_format(format),
             Some(_) => false,
         };
         if !keep {
-            schema.format = None;
+            s.format = None;
         }
-    }
-
-    let maps = [
-        schema.properties.as_mut(),
-        schema.pattern_properties.as_mut(),
-        schema.definitions.as_mut(),
-    ];
-    for child in maps.into_iter().flatten().flat_map(|m| m.values_mut()) {
-        strip_unsupported_schema_formats(child);
-    }
-    let lists = [
-        schema.all_of.as_mut(),
-        schema.any_of.as_mut(),
-        schema.one_of.as_mut(),
-    ];
-    for child in lists.into_iter().flatten().flat_map(|v| v.iter_mut()) {
-        strip_unsupported_schema_formats(child);
-    }
-    match schema.items.as_mut() {
-        Some(JSONSchemaPropsOrArray::Schema(child)) => strip_unsupported_schema_formats(child),
-        Some(JSONSchemaPropsOrArray::Schemas(children)) => {
-            children
-                .iter_mut()
-                .for_each(strip_unsupported_schema_formats);
-        }
-        None => {}
-    }
-    for child in [
-        schema.additional_properties.as_mut(),
-        schema.additional_items.as_mut(),
-    ]
-    .into_iter()
-    .flatten()
-    {
-        if let JSONSchemaPropsOrBool::Schema(child) = child {
-            strip_unsupported_schema_formats(child);
-        }
-    }
-    if let Some(child) = schema.not.as_mut() {
-        strip_unsupported_schema_formats(child);
-    }
-    for dependency in schema.dependencies.iter_mut().flat_map(|m| m.values_mut()) {
-        if let JSONSchemaPropsOrStringArray::Schema(child) = dependency {
-            strip_unsupported_schema_formats(child);
-        }
-    }
+    });
 }
 
 /// Add the CAPI v1beta2 contract-discovery label to `infrastructure.banlieue.io`

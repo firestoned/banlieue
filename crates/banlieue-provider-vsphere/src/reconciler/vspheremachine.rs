@@ -40,7 +40,6 @@ use banlieue_provider_sdk::sealing::{
 use banlieue_provider_sdk::ssa::FIELD_MANAGER_PROVIDER_VSPHERE;
 use banlieue_provider_sdk::status::{condition_status, set_condition};
 use base64::Engine;
-use chrono::Utc;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Condition;
 use k8s_openapi::jiff::Timestamp;
 use kube::{
@@ -439,6 +438,18 @@ pub async fn ensure_vm(
     })
 }
 
+/// The `CreatedAt` custom attribute's value for a clone made at `now`
+/// (ADR-0089): RFC 3339 in UTC with a numeric `+00:00` offset and only as
+/// many fractional digits as the instant has. This is the shape chrono's
+/// `to_rfc3339()` wrote before the move to jiff, kept because a fleet
+/// tool outside banlieue reads the same field.
+#[must_use]
+pub(crate) fn created_at_value(now: k8s_openapi::jiff::Timestamp) -> String {
+    now.to_zoned(k8s_openapi::jiff::tz::TimeZone::UTC)
+        .strftime("%Y-%m-%dT%H:%M:%S%.f%:z")
+        .to_string()
+}
+
 /// The steps of [`ensure_vm`] after `CloneVM_Task`: custom attributes, OS
 /// disk floor, vTPM, endorsement certificates, power state. Returns
 /// `(tpm_attached, tpm_endorsement_certificates)` for the outcome.
@@ -452,7 +463,10 @@ async fn finish_clone(
     // parent VirtualMachine carried the banlieue.io/created-by annotation.
     let mut custom_attributes = vec![
         (CUSTOM_ATTR_TEMPLATE.to_string(), spec.template.clone()),
-        (CUSTOM_ATTR_CREATED_AT.to_string(), Utc::now().to_rfc3339()),
+        (
+            CUSTOM_ATTR_CREATED_AT.to_string(),
+            created_at_value(k8s_openapi::jiff::Timestamp::now()),
+        ),
     ];
     if let Some(created_by) = &spec.created_by {
         custom_attributes.push((CUSTOM_ATTR_CREATED_BY.to_string(), created_by.clone()));

@@ -18,6 +18,8 @@ SPDX-License-Identifier: Apache-2.0
   [ADR-0050](0050-libvirtmachine-domain-lifecycle.md) (InfraMachine on a KVM
   host); roadmap 09 (Cloud Hypervisor provider) and its phase 0 spike;
   roadmap 17 (first consumer).
+- **Amended by:** [ADR-0127](0127-move-a-cloud-hypervisor-vm-between-hosts-in-a-zone.md) (2026-11-11): a host provider opens a
+  listening socket for one move at a time.
 
 > **Decision 1 is the maintainer's call (2026-09-25):** Cloud Hypervisor gets
 > first-class support as its own provider, not libvirt's `ch` driver. The
@@ -240,6 +242,9 @@ which invalidates every token bound to it (threat model §8, §7.11).
 - ADR-0061 (VMM client), ADR-0062 (`CloudHypervisorMachine`), ADR-0063
   (host supervision), ADR-0064 (artifact delivery), ADR-0065 (vTPM and
   `Deferred`), ADR-0066 (optional snapshot-to-disk).
+
+> **Note (2026-11-17):** ADR-0066 is reserved for the optional snapshot-to-disk
+> decision (roadmap 09) and has not been written.
 - CALM: add the host-resident provider node, its outbound-only relationship
   to the API server, and the hypervisor-host trust boundary.
 - Threat model: the credential-on-hypervisor boundary above.

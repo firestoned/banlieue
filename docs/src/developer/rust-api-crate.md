@@ -12,13 +12,13 @@ the CRD YAML.
 
 ```toml
 [dependencies]
-banlieue-api = "=0.4.3"   # the release whose CRDs your cluster runs
-k8s-openapi = { version = "0.28", features = ["latest"] }
-kube = { version = "4.2", features = ["client", "runtime"] }
+banlieue-api = "=0.5.9"   # the release whose CRDs your cluster runs
+k8s-openapi = { version = "0.29", features = ["latest"] }
+kube = { version = "5.0", features = ["client", "runtime"] }
 ```
 
-- **Match the installed release.** `banlieue-api 0.4.3` holds the types of
-  the `v0.4.3` CRDs. The API groups are `v1alpha1`, so any minor version may
+- **Match the installed release.** `banlieue-api 0.5.9` holds the types of
+  the `v0.5.9` CRDs. The API groups are `v1alpha1`, so any minor version may
   change them; pin the exact version, or at least the minor.
 - **Choose the Kubernetes version yourself.** Like any library built on
   k8s-openapi, the crate enables no Kubernetes version feature; your binary

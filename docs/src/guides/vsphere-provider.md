@@ -4,7 +4,8 @@ This guide takes you from a cluster that already runs the
 [core controller](core-controller.md) to a **scheduled `VirtualMachine` on
 vCenter** — installing the vSphere provider, registering a vCenter, and applying
 every `VMClass`, `VMImage`, and `VirtualMachine` along the way. Everything uses
-the released image `ghcr.io/firestoned/banlieue:v0.4.0`; nothing is built
+a released image, `ghcr.io/firestoned/banlieue:$BANLIEUE_VERSION` (see
+[Conventions](index.md#conventions-used-in-these-guides)); nothing is built
 locally and there is no simulator. (For `vcsim`/local development, see
 [Developer → Local Development](../developer/local-development.md).)
 
@@ -30,7 +31,7 @@ flowchart LR
 - The repo checked out at the release tag (for the provider manifests):
 
     ```sh
-    git clone --branch v0.4.0 --depth 1 https://github.com/firestoned/banlieue
+    git clone --branch "$BANLIEUE_VERSION" --depth 1 https://github.com/firestoned/banlieue
     cd banlieue
     ```
 
@@ -45,6 +46,9 @@ kubectl apply -R -f deploy/provider-vsphere/rbac/
 kubectl apply -f deploy/provider-vsphere/configmap.yaml
 kubectl apply -f deploy/provider-vsphere/deployment.yaml
 kubectl apply -f deploy/provider-vsphere/service.yaml
+# The manifest's tag is a reference only; run the release you cloned.
+kubectl -n banlieue-system set image deployment/banlieue-provider-vsphere \
+  provider=ghcr.io/firestoned/banlieue:"$BANLIEUE_VERSION"
 ```
 
 !!! note "Operator-managed installs are the norm"
@@ -62,7 +66,7 @@ release:
 # deploy/provider-vsphere/deployment.yaml (excerpt)
 containers:
   - name: provider
-    image: ghcr.io/firestoned/banlieue:v0.4.0
+    image: ghcr.io/firestoned/banlieue:<release>
     args: ["provider", "vsphere", "--namespace", "banlieue-system"]
     envFrom:
       - configMapRef: { name: banlieue-provider-vsphere-config }
@@ -148,8 +152,8 @@ inventory, and populates `status.failureDomains[]` (one per datacenter/cluster):
 
 ```sh
 kubectl -n banlieue-system get providers.banlieue.io prod-vsphere
-# NAME           CLASS     READY
-# prod-vsphere   vsphere   True
+# NAME           CLASS     ENDPOINT                          READY   HEARTBEAT   AGE
+# prod-vsphere   vsphere   https://vcenter.example.com/sdk   True    Alive       1m
 
 kubectl -n banlieue-system get providers.banlieue.io prod-vsphere -o yaml | yq '.status.failureDomains'
 ```
@@ -354,8 +358,8 @@ kubectl apply -f virtualmachine.yaml
 
 ```sh
 kubectl -n banlieue-system get virtualmachine db-prod-01
-# NAME         CLASS           IMAGE                    PROVIDER       POWER       READY
-# db-prod-01   db-prod-large   ubuntu-22.04-cloudinit   prod-vsphere   PoweredOn   ...
+# NAME         CLASS           IMAGE                    PROVIDER       FAILUREDOMAIN   POWER       READY
+# db-prod-01   db-prod-large   ubuntu-22.04-cloudinit   prod-vsphere   ...             PoweredOn   ...
 
 # The controller created a backend infra CR, owned by the VM:
 kubectl -n banlieue-system get vspheremachines -l app.kubernetes.io/name=banlieue
@@ -422,14 +426,15 @@ happen:
    machine-id/SSH host keys.
 
 Full worked examples:
-[`14-vmclass-tpm-encrypted.yaml`](https://github.com/firestoned/banlieue/blob/v0.4.0/examples/14-vmclass-tpm-encrypted.yaml),
-[`15-vmimage-kairos-deferred-install-tpm.yaml`](https://github.com/firestoned/banlieue/blob/v0.4.0/examples/15-vmimage-kairos-deferred-install-tpm.yaml).
+[`14-vmclass-tpm-encrypted.yaml`](https://github.com/firestoned/banlieue/blob/main/examples/14-vmclass-tpm-encrypted.yaml),
+[`15-vmimage-kairos-deferred-install-tpm.yaml`](https://github.com/firestoned/banlieue/blob/main/examples/15-vmimage-kairos-deferred-install-tpm.yaml).
 
 !!! danger "Getting step 3 wrong is now an error, not a silent no-op"
     Pairing `tpmEnabled: true` with an `immediate` image used to clone
-    successfully, attach a vTPM, and encrypt **nothing** — reporting `Ready`
-    the whole time. Since **ADR-0048** the controller rejects the pairing
-    before scheduling: `Ready=False`, `reason=ImageClassMismatch`, and no
+    successfully, attach a vTPM, and encrypt **nothing**, reporting `Ready`
+    the whole time. Since **ADR-0048** (superseded by ADR-0088, which adds
+    the third option below) the controller rejects the pairing before
+    scheduling: `Ready=False`, `reason=ImageClassMismatch`, and no
     infrastructure CR is created, so the VM never reaches a provider.
 
     ```sh
@@ -449,7 +454,7 @@ Full worked examples:
     [`23-vmimage-immediate-first-boot-sealing.yaml`](https://github.com/firestoned/banlieue/blob/main/examples/23-vmimage-immediate-first-boot-sealing.yaml).
     The operator cloud-config for it must not set
     `install.encrypted_partitions`, and needs a Kairos with first-boot
-    sealing (kairos-io/kairos#4924, not in a stable release yet).
+    sealing (v4.4.0 or later).
 
     A `VMImage` with **no `template` block at all** (a `Template`- or
     `BackingFile`-source image) is rejected on the same grounds: it is a
@@ -457,11 +462,14 @@ Full worked examples:
 
 !!! warning "Provisioning time and readiness"
     A `deferred`-mode VM's `VirtualMachine`/`VSphereMachine` reports
-    `provisioned=true`/`Ready` the instant the clone powers on — which for
+    `provisioned=true`/`Ready` the instant the clone powers on, which for
     this mode means "the unattended install just started," not "the VM is
-    ready" (a documented gap, ADR-0034/ADR-0040). Expect the full
+    ready" (ADR-0034/ADR-0040). The installed guest announces itself
+    separately: wait on the `GuestReady` condition (ADR-0043), which turns
+    `True` only once the installed system writes its marker and the install
+    ISO is ejected (ADR-0044). Expect the full
     unattended-install window (typically 8-12 minutes) before the VM is
-    actually usable, every time, for every VM — not just once at
+    actually usable, every time, for every VM, not just once at
     template-build time like a normal `immediate`-mode image.
 
 !!! success "Confirmed working end-to-end"

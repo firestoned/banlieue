@@ -64,10 +64,10 @@ spec:
                     type: string
                   volume:
                     description: |-
-                      Volume name within [`LibvirtMachineSpec::pool`]: the backing image
-                      for [`BackingVolume`](LibvirtBootSourceKind::BackingVolume), or the
+                      Volume name within `LibvirtMachineSpec::pool`: the backing image
+                      for `BackingVolume`, or the
                       installer ISO for
-                      [`InstallMedia`](LibvirtBootSourceKind::InstallMedia).
+                      `InstallMedia`.
                     type: string
                 required:
                 - kind
@@ -334,7 +334,7 @@ spec:
                   The device must exist before first boot, because Kairos's `kcrypt`
                   seals LUKS keys to it during the unattended install — which is why
                   `tpmEnabled` only makes sense paired with
-                  [`LibvirtBootSource::InstallMedia`] (ADR-0040, ADR-0048).
+                  `LibvirtBootSource::InstallMedia` (ADR-0040, ADR-0048).
 
                   swtpm keys its state by domain UUID, so a new domain always gets a
                   fresh TPM. The corollary is that a domain carrying TPM state must
@@ -492,7 +492,7 @@ spec:
                 description: |-
                   Whether the install medium has been ejected (ADR-0044).
 
-                  **Sticky once true**, for the same reason as [`Self::guest_installed`]:
+                  **Sticky once true**, for the same reason as `Self::guest_installed`:
                   an ejected ISO does not come back, and a stopped domain has not become
                   re-armed.
 
@@ -515,7 +515,7 @@ spec:
               observedPowerState:
                 description: |-
                   The domain's last observed run state, mapped onto banlieue's
-                  backend-neutral [`PowerState`] (ADR-0034). The hypervisor's view, not
+                  backend-neutral `PowerState` (ADR-0034). The hypervisor's view, not
                   a guest-OS-boot signal. Not part of the CAPI contract; mirrored onto
                   the parent `VirtualMachine`'s `status.observedPowerState`.
                 enum:

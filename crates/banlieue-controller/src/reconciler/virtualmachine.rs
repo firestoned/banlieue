@@ -414,9 +414,10 @@ pub async fn reconcile(vm: Arc<VirtualMachine>, ctx: Arc<Context>) -> Result<Act
     }
 
     // ---- Resolve + render userData (ADR-0025) ---------------------------
-    // Read here, not in the provider: banlieue-controller already has a
-    // namespace-scoped Secret Role for this (deploy/controller/rbac/role.
-    // yaml); the provider deliberately has none.
+    // Read here, not in the provider: banlieue-controller has a namespaced
+    // Secret Role for this in each namespace that needs one
+    // (deploy/controller/rbac/role.yaml for banlieue-system; a tenant
+    // namespace gets a copy, ADR-0130); the provider deliberately has none.
     let rendered_user_data = match resolve_rendered_user_data(&ctx, &namespace, &name, &vm).await {
         Ok(u) => u,
         Err(e) => {
