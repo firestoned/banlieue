@@ -27,7 +27,7 @@ This directory holds the roadmap docs for building banlieue.
 | 18 | `18-fast-sealed-clones.md` | Fast sealed clones: prove no member's sealed disk opens under another's vTPM, cut clone → `GuestReady` to seconds, verify the base; no memory forking (ADR-0052 stands) | After 17 (its first consumer); read ADR-0052, 0088 and 0112 first; phase C's split option needs 15 |
 | 19 | `19-port-groups.md` | Declared port groups: `VMNetwork` realized per backend (vSphere DVPortgroup, libvirt network, Proxmox SDN VNet, CH bridge VLAN), VLAN allowlist, ownership + in-use safety | Before touching network-class resolution; read ADR-0019, 0030, 0031, 0032 first |
 | 20 | `20-firecracker-provider.md` | Firecracker provider for sandbox pools: host-resident like 09, direct kernel boot, no vTPM, cold boot only; shared host-provider layer with Cloud Hypervisor | After 09 and 17; read ADR-0052, 0060, 0063, 0105 first |
-| 21 | `21-pci-passthrough.md` | PCI passthrough (VFIO) for Cloud Hypervisor guests: host-declared device classes, a root grant of one IOMMU group per guest uid, device capacity in scheduling, GPU workers through Cluster API | After 09; read ADR-0133, 0062, 0063, 0065, 0107 and 0128 first |
+| 21 | `21-pci-passthrough.md` | PCI passthrough (VFIO) for Cloud Hypervisor guests: host-declared device classes, a root grant of one IOMMU group per guest uid, device capacity in scheduling, GPU workers through Cluster API | After 09; read ADR-0135, 0062, 0063, 0065, 0107 and 0128 first |
 
 Status for every row above lives in [`ROADMAPS.md`](../../ROADMAPS.md) at the
 repo root — this table is the reading order, that one is the status board.
@@ -79,7 +79,7 @@ Phase 1A (controller + SDK)  ✅
 
    20 (Firecracker)          ⛔   after 1F (shares its host layer) and 17 (its consumer); spike gates the rest
 
-   21 (PCI passthrough)      ⛔   after 1F; ADR-0133 Proposed
+   21 (PCI passthrough)      ⛔   after 1F; ADR-0135 Proposed
 ```
 
 ## Updates to these docs

@@ -104,7 +104,7 @@ pub struct CloudHypervisorMachineSpec {
     // banlieue / Cloud Hypervisor-specific
     // ------------------------------------------------------------------
     /// The `Provider` for the one host that runs this machine (ADR-0060).
-    pub provider_ref: LocalObjectReference,
+    pub provider_ref: ProviderReference,
 
     /// Virtual CPUs.
     pub cpus: ChCpuSpec,

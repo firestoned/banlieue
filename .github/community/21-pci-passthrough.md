@@ -16,10 +16,10 @@
 > `MachineDeployment` of one GPU worker (`maxSurge: 0`) joins its cluster,
 > and a replacement `Machine` gets the GPU too.
 >
-> **Status (2026-11-16): not started.** ADR-0133 is Proposed.
+> **Status (2026-11-16): not started.** ADR-0135 is Proposed.
 
-Baseline when written: ADRs 0001 to 0132 exist or are reserved. **This
-roadmap reserves ADR-0133.** Issue #190.
+Baseline when written: ADRs 0001 to 0134 exist or are reserved. **This
+roadmap reserves ADR-0135.** Issue #190.
 
 ## Why
 
@@ -34,7 +34,7 @@ exactly one device.
 | Phase | What | Status |
 | --- | --- | --- |
 | A | API (`VMClass.spec.hardware.devices`, `CloudHypervisorMachine(Template).spec.devices`, `status.devices`, `DevicesAssigned`), host config `[device_classes]` and `--device-class`, install / preflight / selftest checks, per-class device capacity, `gpuPassthrough` published only when served | ⛔ |
-| B | `banlieue-vfio@<uid>` root grant and `vfio-grant`, polkit, guest unit `LimitMEMLOCK` and VFIO `DeviceAllow`, assignment and release on the host, orphan release, wire format and the Landlock symlink layout (cloud-hypervisor#9399) | ⛔ |
+| B | Boot the Landlock symlink layout on the pinned VMM first (else move the pin to a build with cloud-hypervisor#9405); `banlieue-vfio@<uid>` root grant (`vfio-grant`/`vfio-release`, no env file, request read as data, hardened unit), polkit, guest unit `LimitMEMLOCK` and VFIO `DeviceAllow`, serialised assignment with `status.devices` as the record, release, orphan release from a synced list only, wire format and the Landlock symlink layout (cloud-hypervisor#9399) | ⛔ |
 | C | Scheduler device step, controller class resolution, moves of device guests refused, Cluster API guide and example (`maxSurge: 0`) | ⛔ |
 | D | Live test on a real GPU host, both paths (not committed: no host details in the repo); nested-VFIO e2e attempted, or documented as manual | ⛔ |
 | E | Drop the Landlock symlink layout once banlieue pins a Cloud Hypervisor release containing cloud-hypervisor#9405 | ⛔ |
@@ -48,5 +48,5 @@ vSphere (DirectPath I/O) and Proxmox (`hostpci`).
 
 ## Read first
 
-ADR-0133, then ADR-0062 Decision 4, ADR-0063 (Decisions 1, 3 and 6),
+ADR-0135, then ADR-0062 Decision 4, ADR-0063 (Decisions 1, 3 and 6),
 ADR-0065 Decision 2, ADR-0107 and ADR-0128.

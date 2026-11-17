@@ -90,7 +90,7 @@ pub struct VSphereMachineSpec {
     // ------------------------------------------------------------------
     /// Reference to the banlieue `Provider` whose connection details
     /// describe the target vCenter.
-    pub provider_ref: LocalObjectReference,
+    pub provider_ref: ProviderReference,
 
     /// vCenter template's bare display name (resolved from `VMImage`).
     /// Never a decorated string (no `[dc]`/folder prefix) — see

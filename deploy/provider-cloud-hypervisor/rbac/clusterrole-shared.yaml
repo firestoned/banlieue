@@ -1,0 +1,37 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# Opt-in ClusterRole for a SHARED host-resident Cloud Hypervisor provider
+# (ADR-0134, ADR-0133). Installed by `banlieue bootstrap operator`; the operator
+# binds it to a cloud-hypervisor Provider's ServiceAccount ONLY when that
+# Provider declares a non-empty `spec.namespaceSelector`. A host that is not
+# shared keeps the namespaced-only token of ADR-0060.
+#
+# What a namespaced Role cannot give: machine access in tenant namespaces
+# chosen by label. RBAC cannot be scoped by label, so this role is the CEILING:
+# the provider's software gate (the namespace selector) is what narrows it.
+#
+# NO secrets, NO configmaps: the provider reads its own Provider and
+# credentials from its home namespace only, and the controller already writes
+# the rendered userData into the machine (ADR-0025).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: banlieue-provider-cloud-hypervisor-shared
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: provider-cloud-hypervisor
+rules:
+  - apiGroups: ["infrastructure.banlieue.io"]
+    resources: ["cloudhypervisormachines"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups: ["infrastructure.banlieue.io"]
+    resources: ["cloudhypervisormachines/status"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: ["infrastructure.banlieue.io"]
+    resources: ["cloudhypervisormachines/finalizers"]
+    verbs: ["update"]
+  # The selector-filtered Namespace reflector that gates each reconcile.
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["list", "watch"]

@@ -24,6 +24,9 @@ use banlieue_provider_sdk::leader::{
     LeaderConfig, acquire_or_wait, renew_forever,
 };
 use banlieue_provider_sdk::runner::run_controller;
+use banlieue_provider_sdk::scope::{
+    NamespaceGate, ProviderScope, check_selector, scope_trigger, spawn_namespace_gate,
+};
 use clap::{Args, Subcommand};
 use kube::{
     Api,
@@ -85,6 +88,14 @@ pub struct Cli {
     /// never every namespace (ADR-0131).
     #[arg(long, env = "BANLIEUE_NAMESPACE")]
     pub namespace: Option<String>,
+
+    /// Label selector (`key=value,...`) over namespaces whose machines this
+    /// provider also serves (ADR-0133). `--namespace` stays the home namespace:
+    /// the `Provider`, credentials and CA bundle are read there only. The
+    /// operator renders it from `Provider.spec.namespaceSelector`. Unset means
+    /// the home namespace only; never every namespace.
+    #[arg(long, env = "BANLIEUE_WATCH_NAMESPACE_SELECTOR")]
+    pub watch_namespace_selector: Option<String>,
 
     /// Health server bind port.
     #[arg(long, env = "BANLIEUE_HEALTH_PORT", default_value_t = DEFAULT_HEALTH_PORT)]
@@ -230,12 +241,15 @@ pub async fn run(cli: Cli) -> Result<()> {
 
     // ADR-0131: one namespace, never every namespace. `--namespace` wins, else
     // the namespace this provider runs in.
-    let namespace = banlieue_provider_sdk::scope::provider_namespace(
+    // ADR-0133 adds the namespaces a label selector picks, for machines only.
+    let scope = ProviderScope::resolve(
         cli.namespace.as_deref(),
         client.default_namespace(),
+        cli.watch_namespace_selector.as_deref(),
     )
     .context("resolving the namespace to serve")?;
-    info!(namespace = %namespace, "serving Providers in");
+    let namespace = scope.home().to_string();
+    info!(scope = %scope.describe(), "serving Providers in the home namespace, machines in");
     let leader_cfg = (!cli.no_leader_elect).then(|| build_leader_config(&cli));
     let election = leader_cfg
         .as_ref()
@@ -267,6 +281,23 @@ pub async fn run(cli: Cli) -> Result<()> {
     let import_tolerations =
         banlieue_provider_sdk::scheduling::parse_tolerations(&cli.build_toleration)
             .map_err(|e| anyhow::anyhow!("{e}"))?;
+    // ADR-0133: with a selector, gate machine reconciles on a Namespace reflector
+    // the API server has already filtered by it. An invalid selector fails
+    // startup here rather than later as a provider that serves nothing.
+    let (scope_tx, scope_rx) = tokio::sync::watch::channel(0_u64);
+    let (gate, _scope_tx) = match scope.selector() {
+        Some(selector) => {
+            check_selector(&client, selector)
+                .await
+                .context("validating --watch-namespace-selector")?;
+            let gate = spawn_namespace_gate(&client, selector, scope_tx)
+                .await
+                .context("starting the namespace selector watch")?;
+            (gate, None)
+        }
+        None => (NamespaceGate::none(), Some(scope_tx)),
+    };
+
     let ctx = Arc::new(
         Context::new(
             client.clone(),
@@ -278,7 +309,8 @@ pub async fn run(cli: Cli) -> Result<()> {
             cli.import_service_account.clone(),
             import_tolerations,
         )
-        .with_provider_name(cli.provider_name.clone()),
+        .with_provider_name(cli.provider_name.clone())
+        .with_scope(scope.clone(), gate),
     );
 
     let provider_api: Api<Provider> = Api::namespaced(client.clone(), &namespace);
@@ -309,13 +341,14 @@ pub async fn run(cli: Cli) -> Result<()> {
         ctx2,
     );
 
-    // LibvirtMachine — the VM lifecycle (ADR-0050). Namespaced like the
-    // Provider, because a machine always lives beside the VirtualMachine that
-    // owns it.
+    // LibvirtMachine — the VM lifecycle (ADR-0050). It follows the scope: the
+    // home namespace, or every namespace behind the selector gate (ADR-0133).
+    // The Provider above never does: its credentials are read from the home
+    // namespace only.
     info!("starting LibvirtMachine controller");
-    let machine_api: Api<LibvirtMachine> = Api::namespaced(client.clone(), &namespace);
+    let machine_api: Api<LibvirtMachine> = scope.api(&client);
     let machine_ctrl = run_controller(
-        Controller::new(machine_api, Config::default()),
+        Controller::new(machine_api, Config::default()).reconcile_all_on(scope_trigger(scope_rx)),
         "LibvirtMachine",
         metrics.clone(),
         libvirtmachine::reconcile,

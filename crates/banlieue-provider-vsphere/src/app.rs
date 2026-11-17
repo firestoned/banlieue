@@ -32,6 +32,9 @@ use banlieue_provider_sdk::leader::{
     LeaderConfig, acquire_or_wait, renew_forever,
 };
 use banlieue_provider_sdk::runner::run_controller;
+use banlieue_provider_sdk::scope::{
+    NamespaceGate, ProviderScope, check_selector, scope_trigger, spawn_namespace_gate,
+};
 use clap::{Args, Subcommand};
 use k8s_openapi::api::batch::v1::Job;
 use kube::{
@@ -82,10 +85,19 @@ pub struct Cli {
     #[arg(long, env = "KUBECONFIG")]
     pub kubeconfig: Option<String>,
 
-    /// Namespace the provider serves. Defaults to the namespace it runs in;
-    /// never every namespace (ADR-0131).
+    /// The provider's home namespace: where its `Provider`, credentials Secret,
+    /// CA bundle and leader-election Lease live. Defaults to the namespace it
+    /// runs in; never every namespace (ADR-0131). It always reads its own
+    /// `Provider` and credentials here, whatever namespace a machine is in.
     #[arg(long, env = "BANLIEUE_NAMESPACE")]
     pub namespace: Option<String>,
+
+    /// Also serve `VSphereMachine`s in every namespace whose labels match this
+    /// selector (ADR-0133), the same mechanism the controller and the operator
+    /// use. The operator renders it from `Provider.spec.namespaceSelector`.
+    /// Unset means the home namespace only; never every namespace.
+    #[arg(long, env = "BANLIEUE_WATCH_NAMESPACE_SELECTOR")]
+    pub watch_namespace_selector: Option<String>,
 
     /// Health server bind port.
     #[arg(long, env = "BANLIEUE_HEALTH_PORT", default_value_t = DEFAULT_HEALTH_PORT)]
@@ -278,14 +290,17 @@ pub async fn run(cli: Cli) -> Result<()> {
         .await
         .context("constructing kube client")?;
 
-    // ADR-0131: one namespace, never every namespace. `--namespace` wins, else
-    // the namespace this provider runs in.
-    let namespace = banlieue_provider_sdk::scope::provider_namespace(
+    // ADR-0131: never every namespace. The home namespace is `--namespace`, else
+    // the namespace this provider runs in; ADR-0133 adds the namespaces a
+    // label selector picks, for machines only.
+    let scope = ProviderScope::resolve(
         cli.namespace.as_deref(),
         client.default_namespace(),
+        cli.watch_namespace_selector.as_deref(),
     )
     .context("resolving the namespace to serve")?;
-    info!(namespace = %namespace, "serving Providers in");
+    let namespace = scope.home().to_string();
+    info!(scope = %scope.describe(), "serving Providers in the home namespace, machines in");
 
     let leader_cfg = (!cli.no_leader_elect).then(|| build_leader_config(&cli));
     let election = leader_cfg
@@ -325,6 +340,24 @@ pub async fn run(cli: Cli) -> Result<()> {
         banlieue_provider_sdk::scheduling::parse_tolerations(&cli.build_toleration)
             .map_err(|e| anyhow::anyhow!("{e}"))?;
 
+    // Selector mode (ADR-0133): watch machines in every namespace and gate each
+    // reconcile on a Namespace reflector the API server has already filtered by
+    // the selector. An invalid selector fails startup, here, rather than later
+    // as a provider that serves nothing.
+    let (scope_tx, scope_rx) = tokio::sync::watch::channel(0_u64);
+    let (gate, _scope_tx) = match scope.selector() {
+        Some(selector) => {
+            check_selector(&client, selector)
+                .await
+                .context("validating --watch-namespace-selector")?;
+            let gate = spawn_namespace_gate(&client, selector, scope_tx)
+                .await
+                .context("starting the namespace selector watch")?;
+            (gate, None)
+        }
+        None => (NamespaceGate::none(), Some(scope_tx)),
+    };
+
     let vsphere_factory = Arc::new(VimClientFactory::new());
     let ctx = Arc::new(
         Context::new(
@@ -336,15 +369,18 @@ pub async fn run(cli: Cli) -> Result<()> {
             cli.import_service_account.clone(),
             import_tolerations,
         )
-        .with_provider_name(cli.provider_name.clone()),
+        .with_provider_name(cli.provider_name.clone())
+        .with_scope(scope.clone(), gate),
     );
 
     let provider_api: Api<Provider> = Api::namespaced(client.clone(), &namespace);
     // VMImage is cluster-scoped; the per-Provider readiness check needs to
     // see every image and every Provider regardless of --namespace.
     let image_api: Api<VMImage> = Api::all(client.clone());
-    // VSphereMachine is namespaced, same scoping rule as Provider.
-    let machine_api: Api<VSphereMachine> = Api::namespaced(client.clone(), &namespace);
+    // VSphereMachine follows the scope: the home namespace, or every namespace
+    // behind the selector gate (ADR-0133). The Provider above never does: its
+    // credentials are read from the home namespace only.
+    let machine_api: Api<VSphereMachine> = scope.api(&client);
 
     info!(
         provider_name = ?cli.provider_name,
@@ -383,7 +419,7 @@ pub async fn run(cli: Cli) -> Result<()> {
     // ADR-0024: clone-from-template create path only — see
     // reconciler::vspheremachine's module doc comment for scope.
     let machine_ctrl = run_controller(
-        Controller::new(machine_api, Config::default()),
+        Controller::new(machine_api, Config::default()).reconcile_all_on(scope_trigger(scope_rx)),
         "VSphereMachine",
         metrics.clone(),
         vspheremachine::reconcile,

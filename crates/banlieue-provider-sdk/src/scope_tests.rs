@@ -253,4 +253,299 @@ mod tests {
         assert_eq!(provider_namespace(None, ""), Err(ScopeError::NoScope));
         assert_eq!(provider_namespace(Some(""), " "), Err(ScopeError::NoScope));
     }
+
+    // ---- selector_to_string (ADR-0133 Decision 11) ------------------------
+
+    use banlieue_api::common::{LabelSelector, LabelSelectorOperator, LabelSelectorRequirement};
+    use std::collections::BTreeMap;
+
+    fn sel_labels(pairs: &[(&str, &str)]) -> LabelSelector {
+        LabelSelector {
+            match_labels: pairs
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+                .collect::<BTreeMap<_, _>>(),
+            ..Default::default()
+        }
+    }
+
+    fn req(key: &str, op: LabelSelectorOperator, values: &[&str]) -> LabelSelectorRequirement {
+        LabelSelectorRequirement {
+            key: key.to_string(),
+            operator: op,
+            values: values.iter().map(|v| (*v).to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn a_single_label_renders_as_key_equals_value() {
+        assert_eq!(
+            selector_to_string(&sel_labels(&[("banlieue.io/tenant", "true")])).as_deref(),
+            Some("banlieue.io/tenant=true")
+        );
+    }
+
+    /// The flag is rendered the same way every time, so an operator
+    /// reconcile that changes nothing does not roll the provider.
+    #[test]
+    fn several_labels_render_sorted_and_comma_joined() {
+        assert_eq!(
+            selector_to_string(&sel_labels(&[("b", "2"), ("a", "1")])).as_deref(),
+            Some("a=1,b=2")
+        );
+    }
+
+    #[test]
+    fn set_based_operators_render_in_label_selector_syntax() {
+        let sel = LabelSelector {
+            match_expressions: vec![
+                req("team", LabelSelectorOperator::In, &["a", "b"]),
+                req("env", LabelSelectorOperator::NotIn, &["prod"]),
+                req("tenant", LabelSelectorOperator::Exists, &[]),
+                req("legacy", LabelSelectorOperator::DoesNotExist, &[]),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(
+            selector_to_string(&sel).as_deref(),
+            Some("team in (a,b),env notin (prod),tenant,!legacy")
+        );
+    }
+
+    #[test]
+    fn labels_and_expressions_combine() {
+        let mut sel = sel_labels(&[("banlieue.io/tenant", "true")]);
+        sel.match_expressions = vec![req("env", LabelSelectorOperator::NotIn, &["prod"])];
+        assert_eq!(
+            selector_to_string(&sel).as_deref(),
+            Some("banlieue.io/tenant=true,env notin (prod)")
+        );
+    }
+
+    /// `{}` is Kubernetes' "every namespace". A blank flag means unset, so
+    /// rendering it would silently become "home only" on the provider while the
+    /// controller read it as "all"; it serves nothing on both sides instead.
+    #[test]
+    fn an_empty_selector_renders_nothing() {
+        assert_eq!(selector_to_string(&LabelSelector::default()), None);
+    }
+
+    // ---- ProviderScope (ADR-0133 Decision 4) ------------------------------
+
+    #[test]
+    fn a_provider_with_no_selector_serves_its_home_only() {
+        let scope = ProviderScope::resolve(Some(CURRENT), "ignored", None).unwrap();
+        assert_eq!(scope.home(), CURRENT);
+        assert_eq!(scope.selector(), None);
+    }
+
+    #[test]
+    fn the_home_namespace_defaults_to_the_current_one() {
+        let scope = ProviderScope::resolve(None, CURRENT, None).unwrap();
+        assert_eq!(scope.home(), CURRENT);
+    }
+
+    #[test]
+    fn a_blank_selector_is_no_selector() {
+        let scope = ProviderScope::resolve(Some(CURRENT), "x", Some("  ")).unwrap();
+        assert_eq!(scope.selector(), None);
+    }
+
+    #[test]
+    fn a_selector_is_carried() {
+        let scope = ProviderScope::resolve(Some(CURRENT), "x", Some(SELECTOR)).unwrap();
+        assert_eq!(scope.selector(), Some(SELECTOR));
+        assert_eq!(scope.home(), CURRENT);
+    }
+
+    #[test]
+    fn a_provider_with_no_home_at_all_fails_rather_than_widening() {
+        assert_eq!(
+            ProviderScope::resolve(None, "  ", Some(SELECTOR)),
+            Err(ScopeError::NoScope)
+        );
+    }
+
+    /// Without a selector the gate is the "none" gate that passes everything;
+    /// the provider must NOT inherit that, or it would serve every namespace.
+    #[test]
+    fn without_a_selector_only_home_is_served_whatever_the_gate_says() {
+        let scope = ProviderScope::resolve(Some(CURRENT), "x", None).unwrap();
+        let gate = NamespaceGate::none();
+        assert!(scope.serves(&gate, CURRENT));
+        assert!(!scope.serves(&gate, FLAGGED));
+    }
+
+    #[test]
+    fn with_a_selector_home_and_selected_namespaces_are_served() {
+        let scope = ProviderScope::resolve(Some(CURRENT), "x", Some(SELECTOR)).unwrap();
+        let (reader, mut writer) = reflector::store::<Namespace>();
+        writer.apply_watcher_event(&Event::Apply(namespace(FLAGGED)));
+        let gate = NamespaceGate::selected(reader);
+        assert!(scope.serves(&gate, CURRENT), "home is always served");
+        assert!(scope.serves(&gate, FLAGGED));
+        assert!(!scope.serves(&gate, "team-b"));
+    }
+
+    /// An empty selected set serves home and nothing else.
+    #[test]
+    fn an_empty_selection_still_serves_home() {
+        let scope = ProviderScope::resolve(Some(CURRENT), "x", Some(SELECTOR)).unwrap();
+        let (reader, _writer) = reflector::store::<Namespace>();
+        let gate = NamespaceGate::selected(reader);
+        assert!(scope.serves(&gate, CURRENT));
+        assert!(!scope.serves(&gate, FLAGGED));
+    }
+
+    #[test]
+    fn an_unserved_namespace_is_skipped_but_a_deleting_object_never_is() {
+        let scope = ProviderScope::resolve(Some(CURRENT), "x", Some(SELECTOR)).unwrap();
+        let (reader, _writer) = reflector::store::<Namespace>();
+        let gate = NamespaceGate::selected(reader);
+        assert!(scope.skip_unserved(&gate, FLAGGED, false).is_some());
+        assert!(
+            scope.skip_unserved(&gate, FLAGGED, true).is_none(),
+            "a finalizer must still run when a namespace is un-labelled"
+        );
+        assert!(scope.skip_unserved(&gate, CURRENT, false).is_none());
+    }
+
+    #[test]
+    fn the_provider_scope_describes_itself_for_the_startup_log() {
+        let none = ProviderScope::resolve(Some(CURRENT), "x", None).unwrap();
+        assert!(none.describe().contains(CURRENT));
+        let sel = ProviderScope::resolve(Some(CURRENT), "x", Some(SELECTOR)).unwrap();
+        assert!(sel.describe().contains(SELECTOR));
+        assert!(sel.describe().contains(CURRENT));
+    }
+
+    // ---- SHARED_PROVIDER_BACKENDS (ADR-0133 Decision 10) -------------------
+
+    /// Every provider binary that parses `--watch-namespace-selector` and reads
+    /// its `Provider` from its home namespace is in the list; anything else is
+    /// not. The operator renders the flag and the controller offers a foreign
+    /// `Provider` only for these, so the two cannot disagree.
+    #[test]
+    fn every_implemented_backend_supports_shared_serving() {
+        for backend in ["vsphere", "libvirt", "proxmox", "cloud-hypervisor"] {
+            assert!(supports_shared_provider(backend), "{backend}");
+        }
+    }
+
+    #[test]
+    fn an_unknown_backend_does_not_support_shared_serving() {
+        assert!(!supports_shared_provider("firecracker"));
+        assert!(!supports_shared_provider(""));
+        assert!(!supports_shared_provider("VSphere"));
+    }
+
+    // ---- SharedServing (ADR-0133 Decisions 4 and 5), shared by every provider ----
+
+    use banlieue_api::common::ProviderReference;
+
+    const HOME: &str = "banlieue-system";
+    const TENANT: &str = "team-a";
+    const OTHER: &str = "team-b";
+
+    fn pref(name: &str, namespace: Option<&str>) -> ProviderReference {
+        ProviderReference {
+            name: name.to_string(),
+            namespace: namespace.map(str::to_string),
+        }
+    }
+
+    fn selected(names: &[&str]) -> NamespaceGate {
+        let (reader, mut writer) = reflector::store::<Namespace>();
+        for n in names {
+            writer.apply_watcher_event(&Event::Apply(namespace(n)));
+        }
+        NamespaceGate::selected(reader)
+    }
+
+    fn serving(selector: Option<&str>, served: &[&str]) -> SharedServing {
+        let scope = ProviderScope::resolve(Some(HOME), "x", selector).unwrap();
+        let gate = if selector.is_some() {
+            selected(served)
+        } else {
+            NamespaceGate::none()
+        };
+        SharedServing::new(scope, gate)
+    }
+
+    /// The home namespace is where a provider reads its `Provider`, credentials
+    /// and CA bundle, whatever namespace a machine is in: this is what keeps the
+    /// credentials out of tenant namespaces.
+    #[test]
+    fn shared_serving_reads_credentials_from_home_whatever_the_machine_namespace() {
+        let s = serving(Some(SELECTOR), &[TENANT]);
+        assert_eq!(s.home_namespace(None, TENANT), HOME);
+        assert_eq!(s.home_namespace(None, HOME), HOME);
+    }
+
+    /// With no scope installed (a unit test, or the legacy cluster-wide shape)
+    /// the serving namespace is the home, and the machine's own only as a last
+    /// resort: today's behaviour.
+    #[test]
+    fn without_a_scope_home_falls_back_to_the_serving_namespace_then_the_machines() {
+        let none = SharedServing::default();
+        assert_eq!(none.home_namespace(Some(HOME), TENANT), HOME);
+        assert_eq!(none.home_namespace(None, TENANT), TENANT);
+    }
+
+    #[test]
+    fn shared_serving_takes_a_tenant_machine_that_names_it() {
+        let s = serving(Some(SELECTOR), &[TENANT]);
+        assert!(s.serves_machine(Some("vcenter"), None, TENANT, &pref("vcenter", Some(HOME))));
+    }
+
+    #[test]
+    fn shared_serving_ignores_a_tenant_machine_that_names_only_the_providers_name() {
+        let s = serving(Some(SELECTOR), &[TENANT]);
+        assert!(!s.serves_machine(Some("vcenter"), None, TENANT, &pref("vcenter", None)));
+    }
+
+    #[test]
+    fn shared_serving_ignores_another_providers_machine() {
+        let s = serving(Some(SELECTOR), &[TENANT]);
+        assert!(!s.serves_machine(Some("vcenter"), None, TENANT, &pref("dr", Some(HOME))));
+    }
+
+    #[test]
+    fn shared_serving_takes_a_bare_ref_in_the_home_namespace() {
+        let s = serving(Some(SELECTOR), &[]);
+        assert!(s.serves_machine(Some("vcenter"), None, HOME, &pref("vcenter", None)));
+    }
+
+    #[test]
+    fn shared_serving_skips_an_unselected_namespace_and_serves_home_and_selected() {
+        let s = serving(Some(SELECTOR), &[TENANT]);
+        assert!(s.skip_unserved(TENANT, false).is_none());
+        assert!(s.skip_unserved(HOME, false).is_none());
+        assert!(s.skip_unserved(OTHER, false).is_some());
+    }
+
+    /// A finalizer must still run when a namespace is un-labelled, or the
+    /// machine, and its guest on the backend, would be stranded.
+    #[test]
+    fn shared_serving_never_skips_a_deleting_object() {
+        let s = serving(Some(SELECTOR), &[]);
+        assert!(s.skip_unserved(OTHER, true).is_none());
+    }
+
+    #[test]
+    fn without_a_selector_shared_serving_serves_home_only() {
+        let s = serving(None, &[]);
+        assert!(s.skip_unserved(HOME, false).is_none());
+        assert!(s.skip_unserved(TENANT, false).is_some());
+    }
+
+    /// No scope installed serves everything the watch delivers, as before.
+    #[test]
+    fn a_default_shared_serving_skips_nothing() {
+        assert!(
+            SharedServing::default()
+                .skip_unserved(TENANT, false)
+                .is_none()
+        );
+    }
 }

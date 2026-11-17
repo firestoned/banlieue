@@ -11,7 +11,7 @@
 #[cfg(test)]
 mod tests {
     use super::super::*;
-    use banlieue_api::common::{Firmware, IpamSpec, LocalObjectReference};
+    use banlieue_api::common::{Firmware, IpamSpec, ProviderReference};
     use banlieue_api::infrastructure::{
         LibvirtBootSource, LibvirtBootSourceKind, LibvirtDiskBus, LibvirtDiskSpec,
         LibvirtNicSource, LibvirtNicSourceKind, LibvirtNicSpec,
@@ -27,8 +27,9 @@ mod tests {
         LibvirtMachineSpec {
             provider_id: None,
             failure_domain: Some("kvm-a-default".to_string()),
-            provider_ref: LocalObjectReference {
+            provider_ref: ProviderReference {
                 name: "kvm-a".to_string(),
+                namespace: None,
             },
             pool: POOL.to_string(),
             domain_name: "sandboxes-agent-01".to_string(),

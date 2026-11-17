@@ -39,7 +39,7 @@
       "unique-id": "service-banlieue-controller",
       "node-type": "service",
       "name": "banlieue-controller",
-      "description": "Main Rust kube-rs controller. Watches VirtualMachine CRs, resolves classRef/imageRef references, schedules the VM onto a Provider matched via placement.providerSelector/failureDomainSelector, creates a backend-specific infrastructure CR carrying the resolved spec, and mirrors status from that infra CR back onto the VirtualMachine. Owns no backend credentials \u2014 all backend access is delegated to provider controllers via CRDs. Placement is capacity-aware (ADR-0107): a failure domain that publishes `attributes.capacity` takes a VM only if its memory (class memory plus the per-VM overhead) fits strictly and its vCPUs fit `Provider.spec.scheduling.cpuOvercommitRatio` times the published CPUs, counting the VMs already scheduled there; a domain with no capacity is not filtered. A Provider labelled `banlieue.io/unschedulable: \"true\"` (a cordoned host) is dropped right after the selector and takes no new VM; VMs already on it are not moved (ADR-0124). A placed VM keeps its recorded placement while it still passes every filter (image readiness aside): the spread orders new placements only, so a host joining or a VM leaving moves nothing, and drift means the placement no longer fits (ADR-0125). ACCEPTED (ADR-0127), not yet implemented: it also reconciles VirtualMachineMove: it admits a move only between two cloud-hypervisor Providers with the same `banlieue.io/zone` label, the `move` feature, identical VMM version and CPU model and room for the VM, creates the destination CloudHypervisorMachine (carrying the source's identity), passes each side's published per-move certificate and endpoint to the other, and switches status.scheduled only at commit. IMPLEMENTED (ADR-0128): a new placement also fits the measured figures: memoryAvailableMiB less in-flight VMs (scheduled there, infrastructure not yet provisioned) must hold the VM's memory plus overhead, and each storage class's freeGiB, less Provider.spec.scheduling.storageReservePercent (default 10) of totalGiB and the in-flight disks (across the Provider's failure domains when the store is shared), must hold the VM's disks at full size. A placed VM is never moved or flagged by a measured figure; ADR-0125's fit check stays the reservation check.",
+      "description": "Main Rust kube-rs controller. Watches VirtualMachine CRs, resolves classRef/imageRef references, schedules the VM onto a Provider matched via placement.providerSelector/failureDomainSelector, creates a backend-specific infrastructure CR carrying the resolved spec, and mirrors status from that infra CR back onto the VirtualMachine. Owns no backend credentials \u2014 all backend access is delegated to provider controllers via CRDs. Placement is capacity-aware (ADR-0107): a failure domain that publishes `attributes.capacity` takes a VM only if its memory (class memory plus the per-VM overhead) fits strictly and its vCPUs fit `Provider.spec.scheduling.cpuOvercommitRatio` times the published CPUs, counting the VMs already scheduled there; a domain with no capacity is not filtered. A Provider labelled `banlieue.io/unschedulable: \"true\"` (a cordoned host) is dropped right after the selector and takes no new VM; VMs already on it are not moved (ADR-0124). A placed VM keeps its recorded placement while it still passes every filter (image readiness aside): the spread orders new placements only, so a host joining or a VM leaving moves nothing, and drift means the placement no longer fits (ADR-0125). ACCEPTED (ADR-0127), not yet implemented: it also reconciles VirtualMachineMove: it admits a move only between two cloud-hypervisor Providers with the same `banlieue.io/zone` label, the `move` feature, identical VMM version and CPU model and room for the VM, creates the destination CloudHypervisorMachine (carrying the source's identity), passes each side's published per-move certificate and endpoint to the other, and switches status.scheduled only at commit. IMPLEMENTED (ADR-0128): a new placement also fits the measured figures: memoryAvailableMiB less in-flight VMs (scheduled there, infrastructure not yet provisioned) must hold the VM's memory plus overhead, and each storage class's freeGiB, less Provider.spec.scheduling.storageReservePercent (default 10) of totalGiB and the in-flight disks (across the Provider's failure domains when the store is shared), must hold the VM's disks at full size. A placed VM is never moved or flagged by a measured figure; ADR-0125's fit check stays the reservation check. IMPLEMENTED (ADR-0133, vSphere): provider lookup is the VM's own namespace first, then the provider namespace (--provider-namespace) only when the VM's namespace holds no Provider at all; a namespace with its own Provider never spills onto the shared one. The machine CR stays in the VM's namespace beside its VM, pool and claim; the controller records the chosen Provider's namespace in the machine's spec.providerRef.namespace. It still renders the tenant's userData itself and writes it inline into the machine's spec.userData.",
       "interfaces": [
         {
           "unique-id": "banlieue-controller-metrics",
@@ -133,6 +133,22 @@
                   "SC-36"
                 ],
                 "evidence": "crates/banlieue-controller/src/reconciler/scheduler.rs, docs/adr/0098-spread-placement-across-failure-domains.md"
+              }
+            }
+          ]
+        },
+        "shared-provider-lookup": {
+          "description": "IMPLEMENTED (ADR-0133): Provider candidates come from the VM's namespace; only a namespace with no Provider falls back to --provider-namespace, and an unset flag means no fallback, never every namespace. A namespace with its own Provider fails closed with NoProviderMatched rather than being placed on the shared platform. The machine is created in the VM's namespace with spec.providerRef.namespace set to where the Provider was found, so every ownerReference (pool to member, claim to member, VM to machine) stays same-namespace. docs/adr/0133-shared-provider-serves-tenant-namespaces.md",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": [
+                  "AC-4",
+                  "SC-7"
+                ],
+                "evidence": "docs/adr/0133-shared-provider-serves-tenant-namespaces.md, crates/banlieue-controller/src/reconciler/provider_lookup.rs, crates/banlieue-controller/src/reconciler/infra.rs, crates/banlieue-controller/src/app.rs"
               }
             }
           ]
@@ -232,7 +248,7 @@
       "unique-id": "service-provider-vsphere",
       "node-type": "service",
       "name": "banlieue-provider-vsphere",
-      "description": "Provider controller drives vCenter via a BYOC vim_rs client (ADR-0008). Live today: the `provider` reconciler (capability introspection, failure-domain discovery, ADR-0019), the `vmimage` reconciler (per-zone Kairos template build via ISO import, install-once-and-generalize, ADR-0020/0021; for a `Template`-kind source it adopts an existing vCenter template instead, looked up per failure domain under `<rootFolder>/<failure-domain>` and reported in `status.perProvider[].zones[]` with a bare name, and it never destroys a template it did not import, ADR-0104), and the `VSphereMachine` reconciler \u2014 cloning a VM from the per-zone template and delivering static IP + templated cloud-config via vCenter guestinfo on first provision (ADR-0024). The VSphereMachine reconciler is create-path only: it clones and powers on once, then only observes power state; update/drift reconciliation and live migration beyond a recreate-on-change fallback are not yet implemented (ADR-0036). Satisfies the CAPI v1beta2 InfraMachine contract so the same provider can also serve CAPI Clusters. On first provision it also stamps three vCenter custom attributes (CustomFieldsManager, ADR-0089) on the cloned VM for fleet auditing outside Kubernetes: Template (the source template name), CreatedAt (the clone timestamp), and CreatedBy (copied from the VirtualMachine's banlieue.io/created-by annotation when the admission policy in admission-policy-mutation set one). Each clone carries the machine's UID in a non-guestinfo extraConfig key, the ownership marker that lets an interrupted create or a deletion without status.vmRef find its own VM, and only its own (ADR-0101). IMPLEMENTED (ADR-0128): publishes each (datacenter, cluster) failure domain's typed capacity from vCenter: CPUs (cluster summary numCpuThreads), memory (effectiveMemory, or the target resource pool's runtime.memory.maxUsage when smaller), memoryAvailableMiB (effectiveMemory less the hosts' quickStats.overallMemoryUsage, or the pool's unreservedForVm), and per storage class its datastore's capacity and freeSpace. Cluster aggregates only; DRS picks the host.",
+      "description": "Provider controller drives vCenter via a BYOC vim_rs client (ADR-0008). Live today: the `provider` reconciler (capability introspection, failure-domain discovery, ADR-0019), the `vmimage` reconciler (per-zone Kairos template build via ISO import, install-once-and-generalize, ADR-0020/0021; for a `Template`-kind source it adopts an existing vCenter template instead, looked up per failure domain under `<rootFolder>/<failure-domain>` and reported in `status.perProvider[].zones[]` with a bare name, and it never destroys a template it did not import, ADR-0104), and the `VSphereMachine` reconciler \u2014 cloning a VM from the per-zone template and delivering static IP + templated cloud-config via vCenter guestinfo on first provision (ADR-0024). The VSphereMachine reconciler is create-path only: it clones and powers on once, then only observes power state; update/drift reconciliation and live migration beyond a recreate-on-change fallback are not yet implemented (ADR-0036). Satisfies the CAPI v1beta2 InfraMachine contract so the same provider can also serve CAPI Clusters. On first provision it also stamps three vCenter custom attributes (CustomFieldsManager, ADR-0089) on the cloned VM for fleet auditing outside Kubernetes: Template (the source template name), CreatedAt (the clone timestamp), and CreatedBy (copied from the VirtualMachine's banlieue.io/created-by annotation when the admission policy in admission-policy-mutation set one). Each clone carries the machine's UID in a non-guestinfo extraConfig key, the ownership marker that lets an interrupted create or a deletion without status.vmRef find its own VM, and only its own (ADR-0101). IMPLEMENTED (ADR-0128): publishes each (datacenter, cluster) failure domain's typed capacity from vCenter: CPUs (cluster summary numCpuThreads), memory (effectiveMemory, or the target resource pool's runtime.memory.maxUsage when smaller), memoryAvailableMiB (effectiveMemory less the hosts' quickStats.overallMemoryUsage, or the pool's unreservedForVm), and per storage class its datastore's capacity and freeSpace. Cluster aggregates only; DRS picks the host. IMPLEMENTED (ADR-0133): it serves machines in namespaces chosen by --watch-namespace-selector, reusing the banlieue-provider-sdk Scope and NamespaceGate that the controller and operator use, while --namespace stays its home namespace. It resolves its Provider, credentials Secret and CA bundle from that home namespace whatever namespace a machine is in, so it reads no Secret in a tenant namespace, and acts only on a machine whose providerRef resolves to the Provider it serves.",
       "interfaces": [
         {
           "unique-id": "provider-vsphere-health",
@@ -264,13 +280,32 @@
             "protocol": "HTTP"
           }
         }
-      ]
+      ],
+      "controls": {
+        "provider-namespace-selector-scope": {
+          "description": "IMPLEMENTED (ADR-0133): the provider never serves every namespace by default. With no selector it serves its home namespace only; with --watch-namespace-selector it serves the selected namespaces plus its home, gated on a label-filtered Namespace reflector, and an object being deleted bypasses the gate so finalizers run. Its Provider, credentials and CA bundle are always read from the home namespace through the namespaced Role, never from the machine's namespace, so CHAIN-002 is unchanged. The ClusterRole (machine kind get/list/watch/patch, Namespace list/watch) is the ceiling: RBAC cannot be label-scoped, so the gate is software. docs/adr/0133-shared-provider-serves-tenant-namespaces.md",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": [
+                  "AC-4",
+                  "AC-6",
+                  "SC-7"
+                ],
+                "evidence": "docs/adr/0133-shared-provider-serves-tenant-namespaces.md, crates/banlieue-provider-sdk/src/scope.rs, crates/banlieue-provider-vsphere/src/context.rs, crates/banlieue-provider-vsphere/src/app.rs, deploy/provider-vsphere/rbac/clusterrole.yaml"
+              }
+            }
+          ]
+        }
+      }
     },
     {
       "unique-id": "service-provider-proxmox",
       "node-type": "service",
       "name": "banlieue-provider-proxmox",
-      "description": "Provider controller for Proxmox VE clusters. Watches ProxmoxMachine infrastructure CRs and drives the Proxmox REST API through the first-party `banlieue-proxmox` crate (ADR-0074): API tokens only, privilege-separated to the BanlieueProvider role, TLS verified against the node's own CA, every mutation awaited as a bounded UPID task. The machine spec arrives fully resolved (node, storage, bridge, template VMID), like VSphereMachine (ADR-0075). The VMID is recorded in status before the clone so a crash cannot duplicate a VM, and ownership is the machine's UID in the VM description, set atomically by the clone and checked before any adopt or delete, so a same-named VM is never touched. Guest bootstrap is a NoCloud CIDATA ISO built in-process (ADR-0054) and uploaded to an iso-capable storage, because the API cannot upload cicustom snippets; the provider deletes it with the VM. Verifies each Template VMID a VMImage names and publishes one failure domain per node. Status: implemented and unit-tested against an in-memory Proxmox; not yet run against a real node (ADR-0074, ADR-0075). IMPLEMENTED (ADR-0128): publishes each node's typed capacity from fields it already reads: GET /nodes (maxcpu, maxmem, mem) and GET /nodes/{node}/storage (total, avail, shared). No new API call and no new token privilege.",
+      "description": "Provider controller for Proxmox VE clusters. Watches ProxmoxMachine infrastructure CRs and drives the Proxmox REST API through the first-party `banlieue-proxmox` crate (ADR-0074): API tokens only, privilege-separated to the BanlieueProvider role, TLS verified against the node's own CA, every mutation awaited as a bounded UPID task. The machine spec arrives fully resolved (node, storage, bridge, template VMID), like VSphereMachine (ADR-0075). The VMID is recorded in status before the clone so a crash cannot duplicate a VM, and ownership is the machine's UID in the VM description, set atomically by the clone and checked before any adopt or delete, so a same-named VM is never touched. Guest bootstrap is a NoCloud CIDATA ISO built in-process (ADR-0054) and uploaded to an iso-capable storage, because the API cannot upload cicustom snippets; the provider deletes it with the VM. Verifies each Template VMID a VMImage names and publishes one failure domain per node. Status: implemented and unit-tested against an in-memory Proxmox; not yet run against a real node (ADR-0074, ADR-0075). IMPLEMENTED (ADR-0128): publishes each node's typed capacity from fields it already reads: GET /nodes (maxcpu, maxmem, mem) and GET /nodes/{node}/storage (total, avail, shared). No new API call and no new token privilege. IMPLEMENTED (ADR-0133): like the vSphere provider it serves ProxmoxMachines in the namespaces --watch-namespace-selector picks (rendered by the operator from Provider.spec.namespaceSelector), and reads its own Provider, credentials Secret and CA bundle from its home namespace only, holding no Secret access in any namespace it serves.",
       "interfaces": [
         {
           "unique-id": "provider-proxmox-health",
@@ -302,13 +337,32 @@
             "protocol": "HTTP"
           }
         }
-      ]
+      ],
+      "controls": {
+        "provider-namespace-selector-scope": {
+          "description": "IMPLEMENTED (ADR-0133): the proxmox provider never serves every namespace by default: with no selector it serves its home namespace only; with --watch-namespace-selector it serves the selected namespaces plus home behind a label-filtered Namespace gate (a deleting machine bypasses it). Its Provider, credentials and CA bundle are read from the home namespace through the namespaced Role, never the machine's namespace, and its ClusterRole has read-only list/watch on namespaces and no Secret or ConfigMap rule. docs/adr/0133-shared-provider-serves-tenant-namespaces.md",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": [
+                  "AC-4",
+                  "AC-6",
+                  "SC-7"
+                ],
+                "evidence": "docs/adr/0133-shared-provider-serves-tenant-namespaces.md, crates/banlieue-provider-proxmox/src/context.rs, crates/banlieue-provider-proxmox/src/app.rs, crates/banlieue-provider-proxmox/src/reconciler/proxmoxmachine.rs, deploy/provider-proxmox/rbac/clusterrole.yaml"
+              }
+            }
+          ]
+        }
+      }
     },
     {
       "unique-id": "service-provider-libvirt",
       "node-type": "service",
       "name": "banlieue-provider-libvirt",
-      "description": "Provider controller for libvirt/KVM hosts, speaking libvirt's own RPC protocol through the first-party `banlieue-libvirt` crate (XDR codec + message framing) rather than any third-party client \u2014 zero new dependencies, no C library, no FFI. Split by plane (ADR-0011): the CONTROL plane runs in-process \u2014 the Provider reconciler connects, lists storage pools and networks, verifies the admin-declared spec.capabilities actually exist, and publishes status.failureDomains[] (one per host, with pools as the interesting sub-structure since libvirt has no datacenter/cluster hierarchy). The DATA plane runs as a Kubernetes Job so bulk disk bytes never flow through the controller process; that Job runs the `banlieue` binary itself, so there is no third-party tools image to pin, trust, or patch. VM lifecycle (a LibvirtMachine InfraMachine CRD) is deliberately out of scope for this increment. A third reconciler (ADR-0050) owns the LibvirtMachine lifecycle: it defines, starts, inspects and undefines domains through the same first-party `banlieue-libvirt` crate, adding domain procedures beside the existing storage ones rather than taking on libvirt's C client. Undefine always passes MANAGED_SAVE|NVRAM|TPM so no varstore or swtpm state outlives a deleted VM. Domain XML is rendered through an escaping-only template module: every value reaching it (domain name, volume paths, bridge names) is user- or admin-influenced. Guest readiness (ADR-0043) adds a SECOND libvirt RPC program to the same connection: virDomainQemuAgentCommand lives in libvirt's qemu-specific program (0x20008087), not the remote program (0x20008086) this crate has spoken until now, so the session and framing code stop assuming one connection means one program. The installed guest writes a marker file that only a system booted from the installed disk writes (guarded on immucore's active/passive sentinels), and the provider reads it with guest-file-open/read/close rather than guest-exec -- three deterministic calls instead of a fire-and-poll with a pid to chase, and no executable required inside the guest. This distinguishes the INSTALLED system from the live installer, which every cheap liveness signal (agent ping, DHCP lease, open SSH port) fails to do because the installer environment satisfies all of them while it is still overwriting the disk. User-data reaches a libvirt guest as a cloud-init NoCloud seed: a small ISO labelled CIDATA, built in-process with a Joliet tree (ADR-0054) because ISO9660 Level 1 cannot spell the hyphenated `meta-data`/`user-data` names cloud-init requires. No genisoimage, no subprocess, and the payload never touches the container's filesystem \u2014 unlike vSphere, which has guestinfo and needs no disk at all. When any NIC is static the seed also carries a cloud-init network-config (v2), and every NIC without an explicit MAC gets one derived from the LibvirtMachine UID so the document can match it (ADR-0114). IMPLEMENTED (ADR-0128): publishes its host's typed capacity over the existing mTLS RPC connection: CPUs and memory from node info, memoryAvailableMiB from node memory stats, and per storage class the targeted pool's capacity and available space (refreshed first). Three new read-only procedures.",
+      "description": "Provider controller for libvirt/KVM hosts, speaking libvirt's own RPC protocol through the first-party `banlieue-libvirt` crate (XDR codec + message framing) rather than any third-party client \u2014 zero new dependencies, no C library, no FFI. Split by plane (ADR-0011): the CONTROL plane runs in-process \u2014 the Provider reconciler connects, lists storage pools and networks, verifies the admin-declared spec.capabilities actually exist, and publishes status.failureDomains[] (one per host, with pools as the interesting sub-structure since libvirt has no datacenter/cluster hierarchy). The DATA plane runs as a Kubernetes Job so bulk disk bytes never flow through the controller process; that Job runs the `banlieue` binary itself, so there is no third-party tools image to pin, trust, or patch. VM lifecycle (a LibvirtMachine InfraMachine CRD) is deliberately out of scope for this increment. A third reconciler (ADR-0050) owns the LibvirtMachine lifecycle: it defines, starts, inspects and undefines domains through the same first-party `banlieue-libvirt` crate, adding domain procedures beside the existing storage ones rather than taking on libvirt's C client. Undefine always passes MANAGED_SAVE|NVRAM|TPM so no varstore or swtpm state outlives a deleted VM. Domain XML is rendered through an escaping-only template module: every value reaching it (domain name, volume paths, bridge names) is user- or admin-influenced. Guest readiness (ADR-0043) adds a SECOND libvirt RPC program to the same connection: virDomainQemuAgentCommand lives in libvirt's qemu-specific program (0x20008087), not the remote program (0x20008086) this crate has spoken until now, so the session and framing code stop assuming one connection means one program. The installed guest writes a marker file that only a system booted from the installed disk writes (guarded on immucore's active/passive sentinels), and the provider reads it with guest-file-open/read/close rather than guest-exec -- three deterministic calls instead of a fire-and-poll with a pid to chase, and no executable required inside the guest. This distinguishes the INSTALLED system from the live installer, which every cheap liveness signal (agent ping, DHCP lease, open SSH port) fails to do because the installer environment satisfies all of them while it is still overwriting the disk. User-data reaches a libvirt guest as a cloud-init NoCloud seed: a small ISO labelled CIDATA, built in-process with a Joliet tree (ADR-0054) because ISO9660 Level 1 cannot spell the hyphenated `meta-data`/`user-data` names cloud-init requires. No genisoimage, no subprocess, and the payload never touches the container's filesystem \u2014 unlike vSphere, which has guestinfo and needs no disk at all. When any NIC is static the seed also carries a cloud-init network-config (v2), and every NIC without an explicit MAC gets one derived from the LibvirtMachine UID so the document can match it (ADR-0114). IMPLEMENTED (ADR-0128): publishes its host's typed capacity over the existing mTLS RPC connection: CPUs and memory from node info, memoryAvailableMiB from node memory stats, and per storage class the targeted pool's capacity and available space (refreshed first). Three new read-only procedures. IMPLEMENTED (ADR-0133): like the vSphere provider it serves LibvirtMachines in the namespaces --watch-namespace-selector picks (rendered by the operator from Provider.spec.namespaceSelector), and reads its own Provider, credentials Secret and CA bundle from its home namespace only, holding no Secret access in any namespace it serves.",
       "interfaces": [
         {
           "unique-id": "provider-libvirt-health",
@@ -340,7 +394,26 @@
             "protocol": "HTTP"
           }
         }
-      ]
+      ],
+      "controls": {
+        "provider-namespace-selector-scope": {
+          "description": "IMPLEMENTED (ADR-0133): the libvirt provider never serves every namespace by default: with no selector it serves its home namespace only; with --watch-namespace-selector it serves the selected namespaces plus home behind a label-filtered Namespace gate (a deleting machine bypasses it). Its Provider, credentials and CA bundle are read from the home namespace through the namespaced Role, never the machine's namespace, and its ClusterRole has read-only list/watch on namespaces and no Secret or ConfigMap rule. docs/adr/0133-shared-provider-serves-tenant-namespaces.md",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": [
+                  "AC-4",
+                  "AC-6",
+                  "SC-7"
+                ],
+                "evidence": "docs/adr/0133-shared-provider-serves-tenant-namespaces.md, crates/banlieue-provider-libvirt/src/context.rs, crates/banlieue-provider-libvirt/src/app.rs, crates/banlieue-provider-libvirt/src/reconciler/libvirtmachine.rs, deploy/provider-libvirt/rbac/clusterrole.yaml"
+              }
+            }
+          ]
+        }
+      }
     },
     {
       "unique-id": "service-banlieue-imagebuilder",
@@ -528,7 +601,7 @@
       "unique-id": "data-asset-provider-cr",
       "node-type": "data-asset",
       "name": "Provider Custom Resource",
-      "description": "Namespaced CRD (banlieue.io/v1alpha1) declaring one backend instance in this cluster: providerClassRef (\u2192 ProviderClass, which carries the backend kind), connection (endpoint, credentialsRef, optional caBundle/insecureSkipTLSVerify), and capabilities (storage/network class mappings plus a free-form features list, e.g. the vtpm well-known value gating VMClass.spec.tpmEnabled, ADR-0039). spec.attestation.ekTrustBundle (ADR-0049 Decision 10) is the admin-supplied, never-discovered EK trust anchor for this backend's vTPMs \u2014 vCenter's CA on vSphere, each host's swtpm_localca issuer on libvirt \u2014 published for the broker, which banlieue itself never verifies against. Owned by the platform operator; VirtualMachines never reference a Provider by name \u2014 they are matched onto one via placement.providerSelector against the Provider's labels. features is set by hand, never auto-discovered from the backend (e.g. vtpm requires the operator to confirm KMS + vTPM actually work end-to-end in that vCenter first). IMPLEMENTED (ADR-0128): status.failureDomains[].attributes.capacity gains memoryAvailableMiB and storage[] (storageClass, totalGiB, freeGiB, shared), measured by each provider and rounded down to whole GiB so a status patch happens only when a rounded figure changes (each Provider status change requeues every VirtualMachine); spec.scheduling gains storageReservePercent (0 to 50, default 10)."
+      "description": "Namespaced CRD (banlieue.io/v1alpha1) declaring one backend instance in this cluster: providerClassRef (\u2192 ProviderClass, which carries the backend kind), connection (endpoint, credentialsRef, optional caBundle/insecureSkipTLSVerify), and capabilities (storage/network class mappings plus a free-form features list, e.g. the vtpm well-known value gating VMClass.spec.tpmEnabled, ADR-0039). spec.attestation.ekTrustBundle (ADR-0049 Decision 10) is the admin-supplied, never-discovered EK trust anchor for this backend's vTPMs \u2014 vCenter's CA on vSphere, each host's swtpm_localca issuer on libvirt \u2014 published for the broker, which banlieue itself never verifies against. Owned by the platform operator; VirtualMachines never reference a Provider by name \u2014 they are matched onto one via placement.providerSelector against the Provider's labels. features is set by hand, never auto-discovered from the backend (e.g. vtpm requires the operator to confirm KMS + vTPM actually work end-to-end in that vCenter first). IMPLEMENTED (ADR-0128): status.failureDomains[].attributes.capacity gains memoryAvailableMiB and storage[] (storageClass, totalGiB, freeGiB, shared), measured by each provider and rounded down to whole GiB so a status patch happens only when a rounded figure changes (each Provider status change requeues every VirtualMachine); spec.scheduling gains storageReservePercent (0 to 50, default 10). IMPLEMENTED (ADR-0133): a Provider may live in the provider namespace and serve every served tenant namespace that has no Provider of its own; its credentialsRef Secret stays in that namespace, out of reach of tenants. spec.namespaceSelector (ADR-0133 Decision 11) declares the namespaces the Provider serves besides its own; absent means its own only and an empty selector serves nothing. Setting it needs update on the virtual subresource providers/namespaceselector (deploy/admission/provider-namespace-selector-authorization.yaml)."
     },
     {
       "unique-id": "data-asset-providerclass-cr",
@@ -558,7 +631,7 @@
       "unique-id": "data-asset-infra-machine-cr",
       "node-type": "data-asset",
       "name": "Infrastructure Machine CR (VSphereMachine, etc.)",
-      "description": "Namespaced CRD (infrastructure.banlieue.io/v1alpha1) created by the banlieue-controller as the message to the provider. Satisfies the CAPI v1beta2 InfraMachine contract so the same provider can serve both banlieue and CAPI. Status is owned by the provider; the banlieue controller mirrors it back onto the VirtualMachine. PROPOSED (ADR-0129); milestone 1 IMPLEMENTED (controller serving CloudHypervisorMachine, Cloud Hypervisor hold, admission policy; libvirt, vSphere and Proxmox are neither held nor served until milestone 2): on a machine owned by a CAPI Machine, the controller also writes spec.userData (the Machine's bootstrap data) and the one status condition BootstrapDataReady, which providers never apply. VSphereMachine additionally carries an optional createdBy field (ADR-0089), copied from the parent VirtualMachine's banlieue.io/created-by annotation."
+      "description": "Namespaced CRD (infrastructure.banlieue.io/v1alpha1) created by the banlieue-controller as the message to the provider. Satisfies the CAPI v1beta2 InfraMachine contract so the same provider can serve both banlieue and CAPI. Status is owned by the provider; the banlieue controller mirrors it back onto the VirtualMachine. PROPOSED (ADR-0129); milestone 1 IMPLEMENTED (controller serving CloudHypervisorMachine, Cloud Hypervisor hold, admission policy; libvirt, vSphere and Proxmox are neither held nor served until milestone 2): on a machine owned by a CAPI Machine, the controller also writes spec.userData (the Machine's bootstrap data) and the one status condition BootstrapDataReady, which providers never apply. VSphereMachine additionally carries an optional createdBy field (ADR-0089), copied from the parent VirtualMachine's banlieue.io/created-by annotation. IMPLEMENTED (ADR-0133): spec.providerRef gains an optional namespace (absent means the machine's own namespace). The machine always lives beside its VM; a provider in another namespace is named by this reference. Only the controller's identity may create a machine or set providerRef (RBAC default-deny for tenants plus a ValidatingAdmissionPolicy), because a machine naming a platform Provider is a placement that skipped scheduling."
     },
     {
       "unique-id": "data-asset-infra-cluster-cr",
@@ -672,7 +745,7 @@
       "unique-id": "service-provider-cloud-hypervisor",
       "node-type": "service",
       "name": "banlieue-provider-cloud-hypervisor",
-      "description": "Host-resident provider for Cloud Hypervisor (ADR-0060): the first banlieue component that runs OUTSIDE the management cluster, as a systemd service on the KVM host, as the unprivileged `banlieue` user with CAP_NET_ADMIN, CAP_CHOWN and CAP_FOWNER only. Its unit makes /dev, /sys and /proc read-only, so those capabilities cannot re-own a device node, a sysfs attribute or a cgroup.procs, or write a /proc/sys/net sysctl; it deliberately sets neither ProtectKernelTunables nor ProtectControlGroups, which on systemd 257 re-mount /dev and /sys writable. Its only device beyond the standard pseudo-devices is /dev/net/tun, and the `banlieue` user is not in the kvm group (ADR-0063 Decision 6, amended 2026-11-16). It dials the API server with a bound ServiceAccount token from the host (nothing dials the host), watches its own Provider, CloudHypervisorMachines and VMImages, and realises each machine as one instance of a root-owned template unit, started over D-Bus (ADR-0063, amended), a persistent tap on a host bridge, an OS disk cloned from the host image cache and a NoCloud seed. Machines name storage and network CLASSES; the host resolves them through its own root-owned config, so a path or bridge never crosses into the cluster (ADR-0062 Decision 4). Holds no hypervisor credential: the hypervisor is local. Every privileged file change inside a guest's directory goes through a file handle, never a path, so a compromised guest cannot redirect it with a symlink. Code: crates/banlieue-provider-cloud-hypervisor. Host files: deploy/provider-cloud-hypervisor/host/. It publishes its failure domain's typed capacity (ADR-0107): CPUs and memory guests may use, the smaller of the host's and the guests' slice budget read from systemd over D-Bus, and the 512 MiB per-VM VMM overhead. For a firstBootSealing machine it reads the guest's `sealed=` vsock report into status.sealedPartitions and withholds GuestReady until every listed partition is sealed (ADR-0112). A static NIC reaches the guest as a cloud-init network-config (v2) in that seed, matched by the NIC's derived MAC, and a static machine gets a seed even with no user-data (ADR-0114). ACCEPTED (ADR-0127), not yet implemented: it copies a moving guest's disk to the destination host's provider (a reflink clone streamed while the guest runs, then only the extents no longer shared with it, at cutover) and relays the VMM's migration stream, over one per-move TLS connection to that provider; it listens only for the duration of one move, for one pinned peer. IMPLEMENTED (ADR-0128): adds memoryAvailableMiB (/proc/meminfo MemAvailable, capped by the guests' slice budget less what the slice uses) and a typed storage[] (statvfs size and f_bavail per storage-class directory) to its capacity, replacing the raw storageFreeGiB display string.",
+      "description": "Host-resident provider for Cloud Hypervisor (ADR-0060): the first banlieue component that runs OUTSIDE the management cluster, as a systemd service on the KVM host, as the unprivileged `banlieue` user with CAP_NET_ADMIN, CAP_CHOWN and CAP_FOWNER only. Its unit makes /dev, /sys and /proc read-only, so those capabilities cannot re-own a device node, a sysfs attribute or a cgroup.procs, or write a /proc/sys/net sysctl; it deliberately sets neither ProtectKernelTunables nor ProtectControlGroups, which on systemd 257 re-mount /dev and /sys writable. Its only device beyond the standard pseudo-devices is /dev/net/tun, and the `banlieue` user is not in the kvm group (ADR-0063 Decision 6, amended 2026-11-16). It dials the API server with a bound ServiceAccount token from the host (nothing dials the host), watches its own Provider, CloudHypervisorMachines and VMImages, and realises each machine as one instance of a root-owned template unit, started over D-Bus (ADR-0063, amended), a persistent tap on a host bridge, an OS disk cloned from the host image cache and a NoCloud seed. Machines name storage and network CLASSES; the host resolves them through its own root-owned config, so a path or bridge never crosses into the cluster (ADR-0062 Decision 4). Holds no hypervisor credential: the hypervisor is local. Every privileged file change inside a guest's directory goes through a file handle, never a path, so a compromised guest cannot redirect it with a symlink. Code: crates/banlieue-provider-cloud-hypervisor. Host files: deploy/provider-cloud-hypervisor/host/. It publishes its failure domain's typed capacity (ADR-0107): CPUs and memory guests may use, the smaller of the host's and the guests' slice budget read from systemd over D-Bus, and the 512 MiB per-VM VMM overhead. For a firstBootSealing machine it reads the guest's `sealed=` vsock report into status.sealedPartitions and withholds GuestReady until every listed partition is sealed (ADR-0112). A static NIC reaches the guest as a cloud-init network-config (v2) in that seed, matched by the NIC's derived MAC, and a static machine gets a seed even with no user-data (ADR-0114). ACCEPTED (ADR-0127), not yet implemented: it copies a moving guest's disk to the destination host's provider (a reflink clone streamed while the guest runs, then only the extents no longer shared with it, at cutover) and relays the VMM's migration stream, over one per-move TLS connection to that provider; it listens only for the duration of one move, for one pinned peer. IMPLEMENTED (ADR-0128): adds memoryAvailableMiB (/proc/meminfo MemAvailable, capped by the guests' slice budget less what the slice uses) and a typed storage[] (statvfs size and f_bavail per storage-class directory) to its capacity, replacing the raw storageFreeGiB display string. IMPLEMENTED (ADR-0134): a host can serve tenant namespaces. It reads its own Provider.spec.namespaceSelector from its home namespace once at startup (a change needs a restart), watches CloudHypervisorMachines in the selected namespaces, matches a machine by name and namespace, and reads no Secret outside its home namespace. The machines behind a selector are reachable only through the opt-in banlieue-provider-cloud-hypervisor-shared ClusterRole, which the operator binds only for a Provider with a non-empty namespaceSelector; a host with none keeps a namespaced-only token.",
       "interfaces": [
         {
           "unique-id": "guest-report-unix-socket",
@@ -728,7 +801,25 @@
             "port": 0
           }
         }
-      ]
+      ],
+      "controls": {
+        "shared-host-token-reach": {
+          "description": "IMPLEMENTED (ADR-0134): a stolen host token (A-11) reaches machines, and their rendered userData, only in the namespaces a host serves through an opt-in second ClusterRole, bound by the operator only for a Provider with a non-empty namespaceSelector and pruned when the selector is dropped. The always-bound base role grants no machine access; the shared role holds no Secret or ConfigMap, no create or delete, and is a subset of what the operator may delegate. RBAC cannot be scoped by label, so the ClusterRole is the ceiling (accepted risk, threat model section 8). docs/adr/0134-cloud-hypervisor-serves-tenant-namespaces.md",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": [
+                  "AC-6",
+                  "SC-7"
+                ],
+                "evidence": "docs/adr/0134-cloud-hypervisor-serves-tenant-namespaces.md, deploy/provider-cloud-hypervisor/rbac/clusterrole-shared.yaml, crates/banlieue-operator/src/workload.rs, crates/banlieue-operator/src/bootstrap_tests.rs"
+              }
+            }
+          ]
+        }
+      }
     },
     {
       "unique-id": "service-cloud-hypervisor-vmm",
@@ -884,13 +975,13 @@
       "unique-id": "service-vfio-grant",
       "node-type": "service",
       "name": "VFIO group grant (one per Cloud Hypervisor guest with a device)",
-      "description": "PROPOSED (ADR-0133), not yet implemented. banlieue-vfio@<guest uid>.service, a root-owned oneshot template run as root: banlieue host cloud-hypervisor vfio-grant reads the device address from an environment file the provider writes, treats it as untrusted, re-validates it against the root-owned host config (a declared device class, bound to vfio-pci, a viable IOMMU group, a reset method, and a group node owned by root or already by this uid), then makes /dev/vfio/<group> <uid>:<uid> 0600. ExecStop returns the node to root:root 0600 if this uid still owns it. The provider cannot change a device node's owner itself: /dev is read-only to it (ADR-0063 Decision 6, amended 2026-11-15)."
+      "description": "PROPOSED (ADR-0135), not yet implemented. banlieue-vfio@<guest uid>.service, a root-owned, hardened oneshot template (RemainAfterExit=yes) run as root with no EnvironmentFile: banlieue host cloud-hypervisor vfio-grant --uid reads the device address the provider picked as data (O_NOFOLLOW, a regular file owned by the provider's user, one strictly parsed line), takes nothing from its environment, and re-validates it against the root-owned host config (a declared device class, bound to vfio-pci, a viable IOMMU group, a reset method, no ACS override or unsafe interrupts, and a group node root:root with no group or other bits or already this uid's 0600), then makes /dev/vfio/<group> <uid>:<uid> 0600 and creates the Landlock symlink layout in a root-owned directory. ExecStop (vfio-release) reads nothing the provider wrote: it returns every declared group node this uid owns to root:root 0600. The provider cannot change a device node's owner itself: /dev is read-only to it (ADR-0063 Decision 6, amended 2026-11-15)."
     },
     {
       "unique-id": "system-host-pci-device",
       "node-type": "system",
       "name": "Host PCI device passed through (VFIO)",
-      "description": "PROPOSED (ADR-0133), not yet implemented. A whole PCI function, typically a GPU, that the host declares in a device class ([device_classes] in the host config, by PCI address), bound to vfio-pci at boot, alone among declared devices in its IOMMU group. One guest holds it at a time; the owner of /dev/vfio/<group> is the lock. The provider publishes each class's total and free count in its failure domain's capacity."
+      "description": "PROPOSED (ADR-0135), not yet implemented. A whole PCI function, typically a GPU, that the host declares in a device class ([device_classes] in the host config, by PCI address), bound to vfio-pci at boot, alone among declared devices in its IOMMU group; the guest that holds it can reach its whole group. One guest holds it at a time: a reservation in the machine's status.devices is the record, the owner of /dev/vfio/<group> the host-side lock. The provider publishes each class's total and free count in its failure domain's capacity, counting this host's machines in every namespace it serves."
     }
   ],
   "relationships": [
@@ -2398,8 +2489,94 @@
       "protocol": "TCP"
     },
     {
+      "unique-id": "rel-shared-provider-serves-tenant-machine",
+      "description": "IMPLEMENTED (ADR-0133): the shared provider (vSphere here; libvirt, Proxmox and Cloud Hypervisor have the same relationship below), running in the provider namespace with its credentials, watches VSphereMachine CRs in every namespace its selector serves, and for a machine whose spec.providerRef names the Provider it serves (namespace defaulting to the machine's) it reads that Provider, the credentials Secret and the CA bundle from its own home namespace, provisions on the backend, and patches the machine's status in the tenant namespace. It reads no Secret in the tenant namespace; the tenant's userData is already inline in the machine, put there by the controller.",
+      "relationship-type": {
+        "interacts": {
+          "actor": "service-provider-vsphere",
+          "nodes": [
+            "data-asset-infra-machine-cr",
+            "data-asset-provider-cr"
+          ]
+        }
+      },
+      "controls": {
+        "provider-placement-forgery-prevention": {
+          "description": "IMPLEMENTED (ADR-0133 Decision 6): a machine whose providerRef names a platform Provider is a placement that skipped scheduling, class and image checks. No tenant identity holds a verb on machine CRs (RBAC default-deny), and a ValidatingAdmissionPolicy lets only the controller's identity create a machine or set or change spec.providerRef, limiting the provider's identity to status and finalizers. RBAC is the default and the VAP is the enforcement; neither relies on the other. docs/adr/0133-shared-provider-serves-tenant-namespaces.md",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": [
+                  "AC-3",
+                  "AC-6"
+                ],
+                "evidence": "docs/adr/0133-shared-provider-serves-tenant-namespaces.md, deploy/admission/machine-provider-ref.yaml, crates/banlieue-operator/tests/admission_policies.rs, crates/banlieue-controller/tests/live_provider_ref_policy.rs"
+              }
+            }
+          ]
+        },
+        "provider-credentials-stay-in-home-namespace": {
+          "description": "IMPLEMENTED (ADR-0133 Decision 5): the provider reads its Provider, credentials Secret and CA bundle only from its home namespace, never from a tenant namespace, so tenants with Secret read in their own namespace cannot read hypervisor credentials and the provider needs no Secret access outside its Role (SEC-008). docs/adr/0133-shared-provider-serves-tenant-namespaces.md",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": [
+                  "AC-6",
+                  "SC-7"
+                ],
+                "evidence": "docs/adr/0133-shared-provider-serves-tenant-namespaces.md, crates/banlieue-provider-vsphere/src/reconciler/vspheremachine.rs, crates/banlieue-provider-sdk/src/reconciler.rs, deploy/provider-vsphere/rbac/clusterrole.yaml"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-shared-provider-libvirt-serves-tenant-machine",
+      "description": "IMPLEMENTED (ADR-0133): the shared libvirt provider watches LibvirtMachine CRs in every namespace its selector serves, and for a machine whose spec.providerRef names the Provider it serves (namespace defaulting to the machine's) reads that Provider and its credentials from its own home namespace, provisions on the backend, and patches the machine's status in the tenant namespace. It reads no Secret in the tenant namespace; the tenant's userData is already inline in the machine, put there by the controller.",
+      "relationship-type": {
+        "interacts": {
+          "actor": "service-provider-libvirt",
+          "nodes": [
+            "data-asset-infra-machine-cr",
+            "data-asset-provider-cr"
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-shared-provider-proxmox-serves-tenant-machine",
+      "description": "IMPLEMENTED (ADR-0133): the shared proxmox provider watches ProxmoxMachine CRs in every namespace its selector serves, and for a machine whose spec.providerRef names the Provider it serves (namespace defaulting to the machine's) reads that Provider and its credentials from its own home namespace, provisions on the backend, and patches the machine's status in the tenant namespace. It reads no Secret in the tenant namespace; the tenant's userData is already inline in the machine, put there by the controller.",
+      "relationship-type": {
+        "interacts": {
+          "actor": "service-provider-proxmox",
+          "nodes": [
+            "data-asset-infra-machine-cr",
+            "data-asset-provider-cr"
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-shared-provider-cloud-hypervisor-serves-tenant-machine",
+      "description": "IMPLEMENTED (ADR-0134): a Cloud Hypervisor host that serves tenants dials out with its bound ServiceAccount token, reads its own Provider (and so its namespaceSelector) from its home namespace, and watches CloudHypervisorMachine CRs in the namespaces that selector serves, through the opt-in shared ClusterRole. The guest uid ledger and image-eviction check count machines across every served namespace. A move (ADR-0127) and the CAPI hold (ADR-0129) are data on the machine and need no change.",
+      "relationship-type": {
+        "interacts": {
+          "actor": "service-provider-cloud-hypervisor",
+          "nodes": [
+            "data-asset-infra-machine-cr",
+            "data-asset-provider-cr"
+          ]
+        }
+      }
+    },
+    {
       "unique-id": "rel-provider-cloud-hypervisor-vfio-grant",
-      "description": "PROPOSED (ADR-0133). Before starting the VMM of a machine with spec.devices, the provider writes <state root>/units/vfio-<uid>.env naming the device address it picked and starts banlieue-vfio@<uid>.service over D-Bus; polkit allows only start, stop and reset-failed of instances for uids in the guest range. Deleting the machine stops the instance, which returns the group node to root.",
+      "description": "PROPOSED (ADR-0135). Before starting the VMM of a machine with spec.devices, the provider reserves a device in the machine's status.devices under a host-wide assignment lock, writes <state root>/units/vfio-<uid>.request naming the address, and starts banlieue-vfio@<uid>.service over D-Bus; polkit allows only start, stop and reset-failed of instances for uids in the guest range. Deleting the machine stops the instance, which returns the group node to root; an orphaned grant is stopped only from a synced machine list and while the uid's VMM unit is inactive.",
       "relationship-type": {
         "connects": {
           "source": {
@@ -2413,7 +2590,7 @@
       "protocol": "TCP",
       "controls": {
         "vfio-grant-revalidates-as-root": {
-          "description": "The grant runs as root on input the unprivileged provider wrote, so it re-checks everything against the root-owned host config before changing any owner, and refuses an undeclared device, a non-viable group, a device off vfio-pci or without a reset method, or a group node another uid owns. The provider can choose only among devices root declared. Specified in docs/adr/0133-cloud-hypervisor-guests-get-whole-pci-devices-through-vfio.md Decision 5; not yet implemented.",
+          "description": "The grant runs as root on a request the unprivileged provider wrote, so the request never reaches root's environment (no EnvironmentFile, no env-backed arguments: no LD_PRELOAD or BANLIEUE_HOST_* override), is read as data with O_NOFOLLOW and a strict parse, and is re-checked against the root-owned host config before any owner changes: an undeclared device, a non-viable group, a device off vfio-pci or without a reset method, or a group node in any state but root's 0600 or this uid's is refused. Release reads only root's config. The unit is hardened to CAP_CHOWN and CAP_FOWNER with only /dev/vfio and its layout directory writable. Specified in docs/adr/0135-cloud-hypervisor-guests-get-whole-pci-devices-through-vfio.md Decision 5; not yet implemented.",
           "requirements": [
             {
               "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
@@ -2428,7 +2605,7 @@
     },
     {
       "unique-id": "rel-cloud-hypervisor-vmm-vfio-device",
-      "description": "PROPOSED (ADR-0133). The VMM, as the guest's uid under Landlock, opens /dev/vfio/vfio and its own /dev/vfio/<group> (DeviceAllow=/dev/vfio/vfio and char-vfio in banlieue-ch@.service; ownership confines each uid to its group), pins all guest memory (LimitMEMLOCK=infinity, bounded by the guest's MemoryMax) and exposes the function to the guest.",
+      "description": "PROPOSED (ADR-0135). The VMM, as the guest's uid under Landlock, opens /dev/vfio/vfio and its own /dev/vfio/<group> (DeviceAllow=/dev/vfio/vfio and char-vfio in banlieue-ch@.service; ownership confines each uid to its group), pins all guest memory (LimitMEMLOCK=infinity, bounded per guest by its MemoryMax and on the host by the guests slice's root-set MemoryMax, which a device class requires) and exposes the function to the guest.",
       "relationship-type": {
         "connects": {
           "source": {
@@ -2442,7 +2619,7 @@
       "protocol": "TCP",
       "controls": {
         "iommu-confines-device-dma": {
-          "description": "The IOMMU translates the device's DMA into the guest's memory only; install, preflight and the provider before each assignment refuse a host without an IOMMU or a group with an endpoint on a host driver. Specified in docs/adr/0133-cloud-hypervisor-guests-get-whole-pci-devices-through-vfio.md Decisions 2 and 8; not yet implemented.",
+          "description": "The IOMMU translates the device's DMA into the guest's memory only; install, preflight and the provider before each assignment refuse a host without an IOMMU, with pcie_acs_override or vfio_iommu_type1 allow_unsafe_interrupts, or with a group that has an endpoint on a host driver. Specified in docs/adr/0135-cloud-hypervisor-guests-get-whole-pci-devices-through-vfio.md Decisions 2 and 8; not yet implemented.",
           "requirements": [
             {
               "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
@@ -3355,9 +3532,56 @@
       }
     },
     {
+      "unique-id": "flow-create-virtualmachine-shared-provider",
+      "name": "Create a VirtualMachine served by a shared provider (ADR-0133)",
+      "description": "A tenant namespace with no Provider is served by the platform's provider, which runs in the provider namespace with the credentials and watches tenant namespaces by selector. The pool, VMs, claims and machine all stay in the tenant namespace; only the providerRef crosses.",
+      "transitions": [
+        {
+          "sequence-number": 1,
+          "relationship-unique-id": "rel-consumer-kubectl",
+          "description": "A VirtualMachine (or a VirtualMachinePool member) is created in a namespace labelled for the controller and the provider. The namespace has no Provider and holds no hypervisor credentials."
+        },
+        {
+          "sequence-number": 2,
+          "relationship-unique-id": "rel-controller-kube-api",
+          "description": "banlieue-controller lists Providers in the VM's namespace, finds none, and lists those in --provider-namespace. It schedules onto one, reads the tenant's userData in the VM's namespace, renders it, and applies the machine CR in the VM's own namespace with spec.providerRef.namespace set to the Provider's namespace. The machine is owner-referenced to its VM as today.",
+          "direction": "destination-to-source"
+        },
+        {
+          "sequence-number": 3,
+          "relationship-unique-id": "rel-shared-provider-serves-tenant-machine",
+          "description": "The shared provider sees the machine through its namespace selector, reads its own Provider and credentials from its home namespace, provisions on the backend and patches machine status in the tenant namespace."
+        },
+        {
+          "sequence-number": 4,
+          "relationship-unique-id": "rel-controller-kube-api",
+          "description": "The controller's existing owner-based watch wakes it and it mirrors the machine's status onto the VirtualMachine. Deleting the VM garbage-collects the machine as today.",
+          "direction": "destination-to-source"
+        }
+      ],
+      "controls": {
+        "no-rpc-between-controllers": {
+          "description": "Every transition in this flow is a Kubernetes API call. There is no direct controller-to-controller communication. Enforces the CRD-only contract.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": [
+                  "AC-4",
+                  "SC-7"
+                ],
+                "evidence": "docs/src/reasoning/crd-only-contract.md"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
       "unique-id": "flow-assign-pci-device-cloud-hypervisor",
       "name": "Give a Cloud Hypervisor guest a host PCI device",
-      "description": "ADR-0133, PROPOSED. A VMClass (or a CloudHypervisorMachineTemplate) names a device class; the host decides which device, root grants the guest's uid exactly that device's IOMMU group, and the sandboxed VMM attaches it.",
+      "description": "ADR-0135, PROPOSED. A VMClass (or a CloudHypervisorMachineTemplate) names a device class; the host decides which device, root grants the guest's uid exactly that device's IOMMU group, and the sandboxed VMM attaches it.",
       "transitions": [
         {
           "sequence-number": 1,
@@ -3372,7 +3596,7 @@
         {
           "sequence-number": 3,
           "relationship-unique-id": "rel-provider-cloud-hypervisor-kube-api",
-          "description": "The provider picks the lowest free device of the class, re-checks it, and records it in status.devices; with none free the machine waits, DevicesAssigned=False/NoFreeDevice."
+          "description": "The provider, under one host-wide assignment lock, picks the lowest device of the class that no counted machine has reserved (this host's machines in every namespace it serves), checks the class's namespaceSelector and maxPerNamespace, re-checks the device, and reserves it in status.devices with a resourceVersion precondition; with none free the machine waits, DevicesAssigned=False/NoFreeDevice, and is re-queued when a device is released."
         },
         {
           "sequence-number": 4,
@@ -3382,7 +3606,7 @@
         {
           "sequence-number": 5,
           "relationship-unique-id": "rel-provider-cloud-hypervisor-vmm",
-          "description": "The provider starts banlieue-ch@<uid> and creates the VM with the device, through a symlink layout in the guest's run directory that lets the pinned VMM's Landlock rule find the group (cloud-hypervisor#9399)."
+          "description": "The provider starts banlieue-ch@<uid> and creates the VM with the device, through a symlink layout the grant created in a root-owned directory, which lets the pinned VMM's Landlock rule find the group (cloud-hypervisor#9399)."
         },
         {
           "sequence-number": 6,
@@ -3885,6 +4109,8 @@
     "docs/adr/0127-move-a-cloud-hypervisor-vm-between-hosts-in-a-zone.md",
     "docs/adr/0128-every-provider-publishes-measured-capacity.md",
     "docs/adr/0129-capi-inframachines-receive-the-machines-bootstrap-data.md",
-    "docs/adr/0133-cloud-hypervisor-guests-get-whole-pci-devices-through-vfio.md"
+    "docs/adr/0133-shared-provider-serves-tenant-namespaces.md",
+    "docs/adr/0134-cloud-hypervisor-serves-tenant-namespaces.md",
+    "docs/adr/0135-cloud-hypervisor-guests-get-whole-pci-devices-through-vfio.md"
   ]
 }

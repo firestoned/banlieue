@@ -1,11 +1,57 @@
 # Changelog
 
-## [2026-11-16 20:00] - ADR-0133 (Proposed): Cloud Hypervisor guests get whole PCI devices through VFIO
+## [2026-11-17 10:00] - ADR-0135 (Proposed): revised after review
+
+**Author:** Daniel Guns
+
+### Changed
+- `docs/adr/0135-cloud-hypervisor-guests-get-whole-pci-devices-through-vfio.md`:
+  - Decision 5: the root grant takes no `EnvironmentFile=` and no `env =`
+    arguments; it reads the provider's request as data (`O_NOFOLLOW`,
+    owner check, strict parse). `RemainAfterExit=yes`; `vfio-release`
+    reads only root's config. The unit's hardening is listed.
+  - Decision 2: preflight refuses `pcie_acs_override`, unsafe interrupts,
+    any group node state but root's `0600` or a guest's `0600` (a udev
+    `root:kvm 0660` rule, libvirt), and a device class without a guests
+    slice memory ceiling.
+  - Decision 1: access is per IOMMU group, said plainly.
+  - Decision 3: `deviceClasses[].namespaceSelector` and `maxPerNamespace`.
+  - Decision 6: the host-wide bound on pinned memory is the root-set slice
+    ceiling, not the provider-set `MemoryMax`.
+  - Decision 7: the symlink layout lives in a root-owned directory the
+    grant creates, not the guest's run directory; milestone 2 first boots
+    it on the pinned v53.0, else the pin moves to a build with
+    cloud-hypervisor#9405.
+  - Decision 8: `status.devices` is the record (node ownership is lost at
+    reboot); serialised assignment; `DevicesAssigned=True` only after the
+    grant; re-grant on every start; uids not reused while holding a group;
+    orphan release only from a synced list with the VMM inactive; waiters
+    re-queued.
+  - Decision 9: device capacity is checked for new placements only, so a
+    placed VM is not recreated in a loop.
+- `docs/architecture/calm/architecture.json`: the grant, device,
+  relationships, controls and assignment flow follow the ADR;
+  `make calm-validate` clean, `docs/src/architecture/{system,flows}.md`
+  regenerated.
+- `.github/community/21-pci-passthrough.md`: phase B row.
+
+### Why
+Review of the Proposed ADR found a root code-execution path through the
+grant's environment file, unsafe orphan release, and gaps in isolation,
+exclusivity and tenant limits.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+## [2026-11-16 20:00] - ADR-0135 (Proposed): Cloud Hypervisor guests get whole PCI devices through VFIO
 
 **Author:** Daniel Guns
 
 ### Added
-- `docs/adr/0133-cloud-hypervisor-guests-get-whole-pci-devices-through-vfio.md`:
+- `docs/adr/0135-cloud-hypervisor-guests-get-whole-pci-devices-through-vfio.md`:
   hosts declare device classes by PCI address; machines name a class
   (`VMClass.spec.hardware.devices`, `CloudHypervisorMachine(Template).spec.devices`);
   install, preflight and selftest check the IOMMU, the `vfio-pci` binding,
@@ -23,7 +69,7 @@
   (`service-vfio-grant`), the passed-through device, two relationships and
   `flow-assign-pci-device-cloud-hypervisor`; `make calm-validate` clean,
   `docs/src/architecture/{system,flows}.md` regenerated.
-- `docs/src/security/threat-model.md`: header records ADR-0133 as Proposed
+- `docs/src/security/threat-model.md`: header records ADR-0135 as Proposed
   and outside this pass.
 
 ### Why
@@ -36,6 +82,105 @@ ADR-0129; implementation follows.
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Documentation only
+
+## [2026-11-16 20:00] - A shared provider serves tenant namespaces and keeps the credentials, for every provider (ADR-0133, ADR-0134)
+
+**Author:** Erick Bourgeois
+
+Found live: a `VirtualMachinePool` in a tenant namespace stayed at 0 available,
+every member `NoProviderMatched`, because the only vSphere `Provider` is in the
+platform namespace and the controller looked for `Provider`s only in the VM's
+own namespace. The only way ADR-0131 offered was a provider, and the hypervisor
+credentials, in every tenant namespace. ADR-0133 serves tenants from one
+provider that keeps its credentials in its own namespace; ADR-0134 does the same
+for a host-resident Cloud Hypervisor provider. Implemented for vSphere, libvirt,
+Proxmox and Cloud Hypervisor. Firecracker does not exist yet (roadmap 20) and is
+to be built shared-capable.
+
+### Added
+- `docs/adr/0133-shared-provider-serves-tenant-namespaces.md` and
+  `docs/adr/0134-cloud-hypervisor-serves-tenant-namespaces.md` (Accepted);
+  ADR-0131 Decision 4 is marked amended. CALM model, flows and diagrams updated
+  and validated.
+- `banlieue-api`: `ProviderReference { name, namespace? }`, now the type of
+  `providerRef` on `VSphereMachine`, `LibvirtMachine`, `ProxmoxMachine` and
+  `CloudHypervisorMachine` (an absent namespace means the machine's own, so
+  nothing written before changes); `ProviderSpec.namespaceSelector` (absent: own
+  namespace only; **empty: serves nothing**); `LabelSelector::is_empty`. CRDs and
+  API reference regenerated.
+- `banlieue-controller`: `reconciler/provider_lookup.rs`. A VM's own namespace
+  first; only a namespace with **no** `Provider` falls back to
+  `--provider-namespace` (`BANLIEUE_PROVIDER_NAMESPACE`, unset means no
+  fallback), and only to a `Provider` whose `namespaceSelector` matches the VM
+  namespace's labels. The machine stays in the VM's namespace, owner-referenced
+  to the VM as before; only `providerRef` carries the provider's namespace.
+  `VSphereCluster` uses the same lookup. Capacity peers for a shared provider are
+  listed across served namespaces.
+- `banlieue-provider-sdk`: `ProviderScope` (home namespace plus an optional label
+  selector, home always served, never every namespace), `SharedServing` (the
+  home-namespace, serves-machine and skip-unserved rules every provider
+  delegates to), `selector_to_string`, `reconciler::serves_machine` (name **and**
+  namespace), and `SHARED_PROVIDER_BACKENDS`, the one list the operator and the
+  controller both read.
+- Every provider (`vsphere`, `libvirt`, `proxmox`, `cloud-hypervisor`):
+  `--watch-namespace-selector` (Cloud Hypervisor reads it from its own
+  `Provider` at startup instead), machines watched behind a selector gate, and
+  its `Provider`, credentials and CA bundle read from its **home** namespace in
+  both the create and delete paths. A Cloud Hypervisor host also counts guest
+  uids and live image references across every served namespace.
+- `banlieue-operator`: renders `--watch-namespace-selector` from
+  `Provider.spec.namespaceSelector`, **only for backends in
+  `SHARED_PROVIDER_BACKENDS`**; for a Cloud Hypervisor `Provider` with a selector
+  it binds the opt-in `banlieue-provider-cloud-hypervisor-shared` ClusterRole.
+- RBAC: read-only `list`/`watch` on `namespaces` in the vSphere, libvirt and
+  Proxmox provider ClusterRoles (no Secret or ConfigMap rule, pinned by tests);
+  `deploy/provider-cloud-hypervisor/rbac/clusterrole-shared.yaml` (machines and
+  read-only namespaces, opt-in, pinned as a subset of what the operator holds).
+- `deploy/admission/machine-provider-ref.yaml`: only the controller sets
+  `providerRef.namespace`, on the machines and the machine templates of all four
+  kinds.
+- `deploy/admission/provider-namespace-selector-authorization.yaml`: setting
+  `namespaceSelector` needs `update` on `providers/namespaceselector`; ships the
+  `banlieue-provider-namespaceselector-admin` ClusterRole that grants it.
+- `make provider-ref-policy-live-test`
+  (`crates/banlieue-controller/tests/live_provider_ref_policy.rs`, exercises the
+  vSphere kinds) and an offline structural test
+  (`crates/banlieue-operator/tests/admission_policies.rs`, all eight resources).
+- `examples/28-provider-vsphere-shared.yaml`, with a round-trip test.
+
+### Changed
+- `docs/src/guides/multi-tenancy.md`: replaces "providers take no selector" with
+  the shared-provider workflow and a Cloud Hypervisor note.
+  `deploy/controller/configmap.yaml`: documents `BANLIEUE_PROVIDER_NAMESPACE`.
+  `deploy/operator/rbac/clusterrole.yaml`: comment, the operator holds what it
+  delegates.
+- `docs/src/security/threat-model.md`: full pass; stamp advanced to ADR-0134
+  (§2, A-1, §4, §5 diagram, TB-1 and TB-8 rows, §7.31, §8 accepted risks, §9).
+
+### Why
+Tenants with Secret read in their own namespace must not be able to read the
+hypervisor credentials, and a team's pool, VMs, claims and `AgentSandbox`es must
+stay together in one namespace, because their ownership links are
+`ownerReference`s, which cannot cross namespaces. Only the provider reference
+crosses.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (controller, operator, every provider; CRDs)
+- [x] Config change (apply both admission policies; set
+  `BANLIEUE_PROVIDER_NAMESPACE`; add `spec.namespaceSelector` to the shared
+  `Provider`; grant tenants no verb on any machine kind)
+- [ ] Documentation only
+
+### Not done
+- Not exercised against a real cluster: neither the live policy test nor an
+  end-to-end placement on a shared provider has been run, for any provider.
+- The Cloud Hypervisor provider's new tests compile but cannot run on macOS (the
+  crate is Linux-only); they were type-checked and linted for
+  `x86_64-unknown-linux-gnu` only.
+- A Cluster API machine naming a platform `Provider`; `ScheduledPlacement`
+  recording the provider's namespace; a status condition for an unserved
+  namespace.
 
 ## [2026-11-16 11:30] - CH host sandbox: read-only /sys and /proc for the provider, read-only /dev and private IPC for guests (ADR-0063 amended)
 

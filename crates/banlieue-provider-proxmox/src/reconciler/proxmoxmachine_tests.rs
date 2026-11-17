@@ -10,7 +10,7 @@
 mod tests {
     use super::super::*;
     use banlieue_api::common::{
-        Firmware, IpamSpec, LocalObjectReference, PowerState, StaticIpamConfig,
+        Firmware, IpamSpec, PowerState, ProviderReference, StaticIpamConfig,
     };
     use banlieue_api::infrastructure::{
         ProxmoxMachineSpec, ProxmoxMachineStatus, ProxmoxNicModel, ProxmoxNicSpec,
@@ -32,8 +32,9 @@ mod tests {
         ProxmoxMachineSpec {
             provider_id: None,
             failure_domain: Some("pve-a-pve1".into()),
-            provider_ref: LocalObjectReference {
+            provider_ref: ProviderReference {
                 name: "pve-a".into(),
+                namespace: None,
             },
             node: "pve1".into(),
             template_vmid: TEMPLATE,

@@ -316,6 +316,16 @@ spec:
                   describe the target vCenter.
                 properties:
                   name:
+                    description: Name of the `Provider`.
+                    type: string
+                  namespace:
+                    description: |-
+                      Namespace of the `Provider`. Defaults to the referrer's namespace.
+
+                      Only `banlieue-controller` may set this: a machine naming a provider in
+                      another namespace is a placement that skipped scheduling, so an
+                      admission policy reserves the field to the controller's identity.
+                    nullable: true
                     type: string
                 required:
                 - name

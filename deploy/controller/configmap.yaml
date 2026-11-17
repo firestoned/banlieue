@@ -21,3 +21,12 @@ data:
   # cluster-wide ClusterRole in rbac/clusterrole.yaml; the label must include
   # the controller's own namespace if Providers live there and should be seen.
   # BANLIEUE_NAMESPACE_SELECTOR: "banlieue.io/tenant=true"
+  # Where the platform's shared providers run (ADR-0133). A VirtualMachine whose
+  # own namespace holds no Provider is scheduled onto the Providers here that
+  # declare its namespace through spec.namespaceSelector, so tenant namespaces
+  # need no Provider, no credentials Secret and no provider pod. It is the value
+  # those providers already have as --namespace. Unset means no fallback; the
+  # controller never searches every namespace. Needs the two admission policies
+  # in deploy/admission/ (machine-provider-ref.yaml and
+  # provider-namespace-selector-authorization.yaml).
+  # BANLIEUE_PROVIDER_NAMESPACE: "banlieue-system"

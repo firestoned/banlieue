@@ -73,6 +73,24 @@ rules:
   # the Provider's namespace; the per-instance Role already grants exactly
   # those objects.
 
+  # Namespaces, read-only (ADR-0133). `--watch-namespace-selector` serves the
+  # ProxmoxMachines in the namespaces whose labels match, so the provider lists
+  # and watches Namespace objects, and probes the selector with a one-item list
+  # at startup. No write verb, deliberately: a provider that could relabel a
+  # namespace could choose its own scope. Labelling a namespace in is a platform
+  # admin's act, never the provider's. No `get`: nothing here reads one
+  # namespace by name.
+  #
+  # This grants the provider NO access to anything IN those namespaces beyond
+  # the ProxmoxMachine rules above. In particular there is still no Secret or
+  # ConfigMap rule: the provider reads its own Provider, API token and CA
+  # bundle from its home namespace through the namespaced Role, never from a
+  # tenant namespace, so tenants with Secret read in their own namespace cannot
+  # reach the hypervisor credentials.
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["list", "watch"]
+
   # Emit Events for state transitions visible via `kubectl describe provider`.
   - apiGroups: [""]
     resources: ["events"]

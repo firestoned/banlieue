@@ -189,6 +189,174 @@ mod tests {
         }
     }
 
+    /// The cluster-resident backends that serve tenant namespaces from a shared
+    /// provider (ADR-0133), with the machine kind each one reconciles.
+    const SHARED_BACKENDS: &[(&str, &str)] = &[
+        ("vsphere", "vspheremachines"),
+        ("libvirt", "libvirtmachines"),
+        ("proxmox", "proxmoxmachines"),
+    ];
+
+    /// ADR-0133 Decision 7: a provider that serves namespaces by selector lists
+    /// and watches `Namespace` objects, and its startup probe lists them. Without
+    /// the grant a selector-scoped provider never becomes ready. Read-only: a
+    /// provider that could relabel a namespace could choose its own scope.
+    #[test]
+    fn shared_capable_providers_may_only_read_namespaces() {
+        for (backend, _) in SHARED_BACKENDS {
+            let verbs: Vec<String> =
+                granted_triples(&InstallRole::Provider((*backend).to_string()))
+                    .into_iter()
+                    .filter(|(g, r, _)| g.is_empty() && r == "namespaces")
+                    .map(|(_, _, v)| v)
+                    .collect();
+            for needed in ["list", "watch"] {
+                assert!(
+                    verbs.iter().any(|v| v == needed),
+                    "the {backend} provider cannot {needed} namespaces: {verbs:?}"
+                );
+            }
+            assert!(
+                verbs
+                    .iter()
+                    .all(|v| ["get", "list", "watch"].contains(&v.as_str())),
+                "the {backend} provider must not write namespaces: {verbs:?}"
+            );
+        }
+    }
+
+    /// ADR-0133 Decisions 5 and 7: serving tenant namespaces must not give the
+    /// provider Secret access there. The credential and CA reads stay in the
+    /// provider's home namespace, through the namespaced Role (CHAIN-002).
+    #[test]
+    fn serving_tenant_namespaces_grants_no_provider_secret_access() {
+        for (backend, _) in SHARED_BACKENDS {
+            for (group, resource, verb) in
+                granted_triples(&InstallRole::Provider((*backend).to_string()))
+            {
+                assert!(
+                    !(group.is_empty() && (resource == "secrets" || resource == "configmaps")),
+                    "the {backend} provider ClusterRole grants {verb} on {resource} cluster-wide, \
+                     which would reach every tenant namespace"
+                );
+            }
+        }
+    }
+
+    /// ADR-0133: each provider already patches its machines cluster-wide, which
+    /// is what lets it serve a tenant namespace. Pinned so a later narrowing
+    /// does not silently break shared serving. No `create`/`delete`: only the
+    /// controller mints a machine.
+    #[test]
+    fn shared_capable_providers_reconcile_machines_in_any_served_namespace() {
+        for (backend, kind) in SHARED_BACKENDS {
+            let granted = granted_triples(&InstallRole::Provider((*backend).to_string()));
+            let has = |resource: &str, verb: &str| {
+                granted.iter().any(|(g, r, v)| {
+                    g == "infrastructure.banlieue.io" && r == resource && v == verb
+                })
+            };
+            for verb in ["get", "list", "watch", "patch"] {
+                assert!(
+                    has(kind, verb),
+                    "the {backend} provider cannot {verb} {kind}"
+                );
+            }
+            assert!(
+                has(&format!("{kind}/finalizers"), "update"),
+                "the {backend} provider cannot release its finalizer"
+            );
+            for verb in ["create", "delete"] {
+                assert!(
+                    !has(kind, verb),
+                    "the {backend} provider must not {verb} {kind}: a compromised provider \
+                     must not mint machines the controller never scheduled"
+                );
+            }
+        }
+    }
+
+    const CH_SHARED_ROLE: &str =
+        include_str!("../../../deploy/provider-cloud-hypervisor/rbac/clusterrole-shared.yaml");
+
+    fn ch_shared_triples() -> Vec<(String, String, String)> {
+        let role: k8s_openapi::api::rbac::v1::ClusterRole =
+            serde_saphyr::from_str(CH_SHARED_ROLE).expect("shared CH ClusterRole parses");
+        triples(&role.rules.unwrap_or_default())
+    }
+
+    /// ADR-0134: a Cloud Hypervisor host serves tenant namespaces only through a
+    /// SECOND, opt-in ClusterRole, so a host that is not shared keeps a token
+    /// that reaches machines in its own namespace alone. The always-bound base
+    /// role must therefore grant no machine access.
+    #[test]
+    fn the_base_cloud_hypervisor_role_grants_no_machine_access() {
+        for (group, resource, verb) in
+            granted_triples(&InstallRole::Provider("cloud-hypervisor".to_string()))
+        {
+            assert!(
+                !(group == "infrastructure.banlieue.io"
+                    && resource.starts_with("cloudhypervisormachines")),
+                "the always-bound cloud-hypervisor ClusterRole grants {verb} on {resource}: \
+                 machine access across namespaces belongs in the opt-in shared role"
+            );
+        }
+    }
+
+    /// The shared role: this host's machines in any served namespace, read-only
+    /// Namespaces for the selector, and nothing else. No Secret or ConfigMap
+    /// (a stolen host token must not read a tenant's credentials), and no
+    /// `create`/`delete` (only the controller mints a machine).
+    #[test]
+    fn the_shared_cloud_hypervisor_role_is_machines_and_namespaces_only() {
+        let granted = ch_shared_triples();
+        for (group, resource, verb) in &granted {
+            let machines = group == "infrastructure.banlieue.io"
+                && resource.starts_with("cloudhypervisormachines");
+            let namespaces = group.is_empty() && resource == "namespaces";
+            assert!(
+                machines || namespaces,
+                "unexpected grant: {group}/{resource} {verb}"
+            );
+            assert!(
+                !["create", "delete", "deletecollection", "*"].contains(&verb.as_str()),
+                "unexpected verb {verb} on {resource}"
+            );
+            if namespaces {
+                assert!(
+                    ["list", "watch"].contains(&verb.as_str()),
+                    "namespaces {verb}"
+                );
+            }
+        }
+        assert!(
+            granted
+                .iter()
+                .any(|(_, r, v)| r == "cloudhypervisormachines" && v == "patch")
+        );
+        assert!(
+            granted
+                .iter()
+                .any(|(_, r, v)| r == "cloudhypervisormachines/finalizers" && v == "update")
+        );
+    }
+
+    /// RBAC refuses to let a grantor delegate permissions it does not itself
+    /// hold. If the operator's own ClusterRole were missing one of these, binding
+    /// the shared role would fail on a real cluster with a Forbidden the unit
+    /// tests never see.
+    #[test]
+    fn the_operator_holds_everything_the_shared_cloud_hypervisor_role_delegates() {
+        let held = granted_triples(&InstallRole::Operator);
+        for (group, resource, verb) in ch_shared_triples() {
+            assert!(
+                held.iter()
+                    .any(|(g, r, v)| *g == group && *r == resource && *v == verb),
+                "the operator cannot delegate {verb} on {group}/{resource}"
+            );
+        }
+    }
+
     /// ADR-0129 Decision 9: the controller watches CAPI `Machine`s to deliver
     /// their bootstrap data, and reads nothing else of Cluster API's core
     /// group. A Machine carries the NAME of its bootstrap Secret, never the
@@ -1481,6 +1649,7 @@ mod tests {
             build_toleration: &[],
             ca_bundle_config_map: None,
             ca_bundle_secret: None,
+            watch_namespace_selector: None,
             owner: None,
         };
         let role = crate::workload::build_role(&inputs);

@@ -165,7 +165,7 @@ help: ## Show this help
         release-manifests install-yaml crds-yaml admission-policies-yaml network-policies-yaml \
         kind-capi-create kind-capi-delete kind-capi-init kind-e2e-capi kind-e2e-capi-logs \
         kind-e2e-capi-bootstrap kind-e2e-capi-bootstrap-run \
-        claim-live-test claim-policy-live-test move-fields-policy-live-test address-live-test pool-claim-e2e vsphere-pool-claim-e2e ch-e2e ch-vtpm-e2e ch-deferred-e2e ch-restart-e2e ch-host-install-test ch-polkit-test provider-bench ch-pool-timings \
+        claim-live-test claim-policy-live-test move-fields-policy-live-test provider-ref-policy-live-test address-live-test pool-claim-e2e vsphere-pool-claim-e2e ch-e2e ch-vtpm-e2e ch-deferred-e2e ch-restart-e2e ch-host-install-test ch-polkit-test provider-bench ch-pool-timings \
         dev-oidc-up dev-oidc-attach dev-oidc-github-creds dev-oidc-login \
         dev-oidc-try-claim dev-oidc-status dev-oidc-down \
         dev-oidc-k0s-up dev-oidc-k0s-login dev-oidc-k0s-grant \
@@ -585,6 +585,25 @@ move-fields-policy-live-test: ## Run the CloudHypervisorMachine move-fields poli
 	  echo "No kubeconfig. Point KUBECONFIG at a cluster with the CRDs and the policy."; \
 	  exit 1; }
 	cargo test -p banlieue-controller --test live_move_fields_policy -- \
+	  --ignored --nocapture --test-threads=1
+
+provider-ref-policy-live-test: ## Run the shared-provider admission policies (ADR-0133) against a REAL API server (needs KUBECONFIG, cluster-admin)
+	@# Only banlieue-controller may set VSphereMachine spec.providerRef.namespace,
+	@# and setting Provider spec.namespaceSelector needs the virtual
+	@# providers/namespaceselector grant. Dry-run writes as impersonated identities;
+	@# a scratch namespace and two ClusterRole/Binding pairs are created and removed.
+	@# Use a scratch cluster:
+	@#
+	@#   kind create cluster --name banlieue-policy-test
+	@#   kubectl apply --server-side -f deploy/crds/
+	@#   kubectl create namespace banlieue-system
+	@#   kubectl apply -f deploy/admission/machine-provider-ref.yaml
+	@#   kubectl apply -f deploy/admission/provider-namespace-selector-authorization.yaml
+	@#   make provider-ref-policy-live-test
+	@test -n "$$KUBECONFIG" -o -f "$$HOME/.kube/config" || { \
+	  echo "No kubeconfig. Point KUBECONFIG at a cluster with the CRDs and the policies."; \
+	  exit 1; }
+	cargo test -p banlieue-controller --test live_provider_ref_policy -- \
 	  --ignored --nocapture --test-threads=1
 
 address-live-test: ## Run duplicate-address blocking (ADR-0083) against a REAL API server (needs KUBECONFIG; no libvirt)

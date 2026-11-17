@@ -1,0 +1,85 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# Who may set Provider.spec.namespaceSelector (ADR-0133 Decision 11).
+#
+# The selector declares which namespaces a Provider serves. The operator renders
+# it onto the provider workload as --watch-namespace-selector, and the controller
+# offers a provider-namespace Provider only to namespaces it matches. Whoever can
+# write it chooses which tenants a shared provider reaches (and, for a Provider
+# they create, which namespaces' machines a workload in their namespace watches),
+# so it is a platform decision, not a tenant's.
+#
+# This policy requires the principal creating or updating a Provider that sets the
+# field to be authorized for the virtual subresource `providers/namespaceselector`
+# (verb `update`), evaluated as the admission request's principal with the CEL
+# `authorizer`. The ClusterRole below grants exactly that; bind it only to platform
+# admins. cluster-admin passes by holding `*`. A principal who creates Providers
+# but lacks the grant can still create one with no selector, which serves its own
+# namespace only. An update that leaves an existing selector unchanged needs no
+# grant, so a delegated role can keep managing the rest of a Provider.
+#
+# NOTE: shipped as its own file because it needs an apiserver new enough to
+# support `authorizer` in admission policies, like
+# provider-credentialsref-authorization.yaml.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: banlieue-provider-namespace-selector-authorization
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: admission
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["banlieue.io"]
+        apiVersions: ["v1alpha1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["providers"]
+  variables:
+    - name: unchanged
+      expression: >-
+        request.operation == 'UPDATE'
+        && has(object.spec.namespaceSelector) == has(oldObject.spec.namespaceSelector)
+        && (!has(object.spec.namespaceSelector)
+            || object.spec.namespaceSelector == oldObject.spec.namespaceSelector)
+  validations:
+    - expression: >-
+        !has(object.spec.namespaceSelector)
+        || variables.unchanged
+        || authorizer.group('banlieue.io').resource('providers')
+          .subresource('namespaceselector')
+          .namespace(object.metadata.namespace)
+          .name(object.metadata.name)
+          .check('update').allowed()
+      messageExpression: >-
+        'spec.namespaceSelector chooses which namespaces this Provider serves; setting or'
+        + ' changing it requires update on providers/namespaceselector (bind the'
+        + ' banlieue-provider-namespaceselector-admin ClusterRole to platform admins).'
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: banlieue-provider-namespace-selector-authorization
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: admission
+spec:
+  policyName: banlieue-provider-namespace-selector-authorization
+  validationActions: ["Deny"]
+---
+# Grants the virtual permission the policy above checks. Bind it only to platform
+# admins; it is not part of any tenant role and is not aggregated into admin/edit.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: banlieue-provider-namespaceselector-admin
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: admission
+rules:
+  - apiGroups: ["banlieue.io"]
+    resources: ["providers/namespaceselector"]
+    verbs: ["update"]

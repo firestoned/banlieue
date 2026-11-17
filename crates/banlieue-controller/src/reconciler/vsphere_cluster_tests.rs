@@ -57,6 +57,7 @@ mod tests {
             failure_domain_name_overrides: Vec::new(),
             attestation: None,
             scheduling: None,
+            namespace_selector: None,
         };
         let mut p = Provider::new(name, spec);
         if !labels.is_empty() {
@@ -258,6 +259,7 @@ mod tests {
                 failure_domain_name_overrides: Vec::new(),
                 attestation: None,
                 scheduling: None,
+                namespace_selector: None,
             },
         );
         let refs = vec![&p1, &p2, &p3];

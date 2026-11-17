@@ -27,8 +27,9 @@ mod tests {
         VSphereMachineSpec {
             provider_id: None,
             failure_domain: None,
-            provider_ref: LocalObjectReference {
+            provider_ref: ProviderReference {
                 name: "vsphere-dc1".to_string(),
+                namespace: None,
             },
             template: "ubuntu-22.04-cloudinit".to_string(),
             template_folder: None,
@@ -555,5 +556,40 @@ mod tests {
         assert_eq!(json["installMediaDetached"], true);
         let back: VSphereMachineStatus = serde_json::from_value(json).unwrap();
         assert_eq!(back.install_media_detached, Some(true));
+    }
+
+    // ----------------------------------------------------------------------
+    // spec.providerRef.namespace (ADR-0133)
+    // ----------------------------------------------------------------------
+
+    /// A machine written before ADR-0133 has no namespace on its reference and
+    /// must keep meaning "the Provider beside me".
+    #[test]
+    fn provider_ref_without_namespace_still_deserializes() {
+        let spec: VSphereMachineSpec = serde_json::from_str(
+            r#"{"providerRef":{"name":"p"},"template":"t","datacenter":"dc","cluster":"c","datastore":"ds","numCpus":1,"memoryMiB":1024,"firmware":"efi","disks":[],"network":[]}"#,
+        )
+        .unwrap();
+        assert_eq!(spec.provider_ref.name, "p");
+        assert!(spec.provider_ref.is_local());
+    }
+
+    #[test]
+    fn provider_ref_namespace_round_trips_on_the_machine_spec() {
+        let mut s = minimal_spec();
+        s.provider_ref.namespace = Some("banlieue-system".to_string());
+        let json = serde_json::to_value(&s).unwrap();
+        assert_eq!(json["providerRef"]["namespace"], "banlieue-system");
+        let back: VSphereMachineSpec = serde_json::from_value(json).unwrap();
+        assert_eq!(
+            back.provider_ref.namespace.as_deref(),
+            Some("banlieue-system")
+        );
+    }
+
+    #[test]
+    fn provider_ref_namespace_is_omitted_when_local() {
+        let json = serde_json::to_value(minimal_spec()).unwrap();
+        assert!(json["providerRef"].get("namespace").is_none());
     }
 }

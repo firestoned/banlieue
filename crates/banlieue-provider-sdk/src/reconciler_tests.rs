@@ -44,6 +44,93 @@ mod tests {
         assert!(serves(None, "kvm-a"));
     }
 
+    // --- serves_machine (ADR-0133 Decision 5) ---------------------------------
+
+    use banlieue_api::common::ProviderReference;
+
+    const HOME: &str = "banlieue-system";
+    const TENANT: &str = "team-a";
+
+    fn pref(name: &str, namespace: Option<&str>) -> ProviderReference {
+        ProviderReference {
+            name: name.to_string(),
+            namespace: namespace.map(str::to_string),
+        }
+    }
+
+    /// The case the whole ADR is for: a tenant's machine names the shared
+    /// provider in its home namespace, and that provider takes it.
+    #[test]
+    fn a_shared_provider_serves_a_tenant_machine_that_names_it() {
+        assert!(serves_machine(
+            Some("vcenter"),
+            HOME,
+            TENANT,
+            &pref("vcenter", Some(HOME))
+        ));
+    }
+
+    /// The namespace half of the match: the same name in another namespace is
+    /// another provider's machine, and a tenant must not be able to steer a
+    /// machine onto a provider by name alone.
+    #[test]
+    fn a_machine_naming_a_same_named_provider_elsewhere_is_ignored() {
+        assert!(!serves_machine(
+            Some("vcenter"),
+            HOME,
+            TENANT,
+            &pref("vcenter", Some("other-ns"))
+        ));
+    }
+
+    /// A bare name means the machine's own namespace, which is not the home
+    /// namespace for a tenant machine: the shared provider does not take it.
+    #[test]
+    fn a_bare_provider_ref_in_a_tenant_namespace_is_not_the_shared_providers() {
+        assert!(!serves_machine(
+            Some("vcenter"),
+            HOME,
+            TENANT,
+            &pref("vcenter", None)
+        ));
+    }
+
+    /// The pre-ADR-0133 case: machine, Provider and provider in one namespace.
+    #[test]
+    fn a_bare_provider_ref_in_the_home_namespace_is_served() {
+        assert!(serves_machine(
+            Some("vcenter"),
+            HOME,
+            HOME,
+            &pref("vcenter", None)
+        ));
+    }
+
+    #[test]
+    fn another_providers_machine_is_never_served() {
+        assert!(!serves_machine(
+            Some("vcenter"),
+            HOME,
+            TENANT,
+            &pref("dr-vcenter", Some(HOME))
+        ));
+    }
+
+    /// A static install has no `--provider-name` and serves every Provider in
+    /// its home namespace, but still only that namespace's.
+    #[test]
+    fn a_provider_without_a_name_serves_every_provider_in_its_home_namespace_only() {
+        assert!(serves_machine(None, HOME, TENANT, &pref("any", Some(HOME))));
+        assert!(serves_machine(None, HOME, HOME, &pref("any", None)));
+        assert!(!serves_machine(None, HOME, TENANT, &pref("any", None)));
+        assert!(!serves_machine(
+            None,
+            HOME,
+            TENANT,
+            &pref("any", Some("other-ns"))
+        ));
+    }
+
     fn provider(name: &str) -> banlieue_api::banlieue::Provider {
         let mut p: banlieue_api::banlieue::Provider = serde_json::from_value(serde_json::json!({
             "apiVersion": "banlieue.io/v1alpha1",

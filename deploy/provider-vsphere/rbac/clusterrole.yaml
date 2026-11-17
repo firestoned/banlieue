@@ -4,10 +4,11 @@
 # Cluster-wide role for the vSphere provider binary.
 #
 # Multi-tenancy: the role is cluster-wide so the provider can reconcile
-# Provider and VSphereMachine CRs in any tenant namespace. Per-namespace
-# RoleBindings could narrow this if a deployment wants tighter scopes —
-# for now, banlieue ships the cluster-wide pattern matching the main
-# controller.
+# VSphereMachine CRs in any tenant namespace it serves (ADR-0133). RBAC cannot
+# be scoped by namespace label, so this is the ceiling and the provider's own
+# namespace selector (--watch-namespace-selector, rendered by the operator from
+# Provider.spec.namespaceSelector) is the gate. Per-namespace RoleBindings could
+# narrow this if a deployment wants tighter scopes.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -101,6 +102,24 @@ rules:
   # in the provider is by name in the Provider's namespace, and that Role
   # already grants exactly those objects; the rules here were redundant
   # privilege and have been removed.
+
+  # Namespaces, read-only (ADR-0133). `--watch-namespace-selector` serves the
+  # VSphereMachines in the namespaces whose labels match, so the provider lists
+  # and watches Namespace objects, and probes the selector with a one-item list
+  # at startup. No write verb, deliberately: a provider that could relabel a
+  # namespace could choose its own scope. Labelling a namespace in is a platform
+  # admin's act, never the provider's. No `get`: nothing here reads one
+  # namespace by name.
+  #
+  # This grants the provider NO access to anything IN those namespaces beyond
+  # the VSphereMachine rules above. In particular there is still no Secret or
+  # ConfigMap rule: the provider reads its own Provider, credentials and CA
+  # bundle from its home namespace through the namespaced Role, never from a
+  # tenant namespace, so tenants with Secret read in their own namespace cannot
+  # reach the hypervisor credentials.
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["list", "watch"]
 
   # Emit Events for state transitions visible via `kubectl describe provider`.
   - apiGroups: [""]

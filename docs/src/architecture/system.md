@@ -189,6 +189,14 @@ flowchart LR
     service-banlieue-controller --> data-asset-infra-machine-cr
     service-provider-cloud-hypervisor -->|TLS| service-provider-cloud-hypervisor
     service-cloud-hypervisor-vmm -->|TCP| service-provider-cloud-hypervisor
+    service-provider-vsphere --> data-asset-infra-machine-cr
+    service-provider-vsphere --> data-asset-provider-cr
+    service-provider-libvirt --> data-asset-infra-machine-cr
+    service-provider-libvirt --> data-asset-provider-cr
+    service-provider-proxmox --> data-asset-infra-machine-cr
+    service-provider-proxmox --> data-asset-provider-cr
+    service-provider-cloud-hypervisor --> data-asset-infra-machine-cr
+    service-provider-cloud-hypervisor --> data-asset-provider-cr
     service-provider-cloud-hypervisor -->|TCP| service-vfio-grant
     service-cloud-hypervisor-vmm -->|TCP| system-host-pci-device
 ```

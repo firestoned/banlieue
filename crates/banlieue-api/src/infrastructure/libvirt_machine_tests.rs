@@ -31,8 +31,9 @@ mod tests {
         LibvirtMachineSpec {
             provider_id: None,
             failure_domain: None,
-            provider_ref: LocalObjectReference {
+            provider_ref: crate::common::ProviderReference {
                 name: "libvirt-host-a".to_string(),
+                namespace: None,
             },
             pool: "default".to_string(),
             domain_name: "db-prod-01".to_string(),

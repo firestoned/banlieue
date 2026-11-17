@@ -137,6 +137,26 @@ pub struct ProviderSpec {
     /// without it the defaults apply.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scheduling: Option<ProviderScheduling>,
+
+    /// The namespaces this Provider serves, besides its own (ADR-0133).
+    ///
+    /// A label selector over `Namespace` objects. Absent means the Provider's
+    /// own namespace only, so a Provider written before ADR-0133 serves nobody
+    /// new. It is the single source for both readers:
+    ///
+    /// - the operator renders it onto the provider workload as
+    ///   `--watch-namespace-selector`, so the provider watches machines in
+    ///   those namespaces while it keeps its credentials in its own;
+    /// - the controller considers a Provider in the provider namespace for a
+    ///   VM only when this selector matches the VM's namespace labels.
+    ///
+    /// An empty selector (`{}`) serves nothing: banlieue never defaults to every
+    /// namespace, so a Provider cannot serve all of them by omission or by
+    /// accident. The selector is scope, not isolation: who may create a VM in a
+    /// matching namespace is RBAC and admission policy. Set it only on a Provider
+    /// in the platform's provider namespace; tenants must not be able to write it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub namespace_selector: Option<LabelSelector>,
 }
 
 /// vCPUs the scheduler places per published CPU when a Provider does not

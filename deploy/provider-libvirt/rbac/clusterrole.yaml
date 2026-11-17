@@ -1,7 +1,9 @@
 # Copyright (c) 2026 Erick Bourgeois, banlieue
 # SPDX-License-Identifier: Apache-2.0
 #
-# Cluster-wide role for the libvirt provider binary.
+# Cluster-wide role for the libvirt provider binary. Machines are watched
+# cluster-wide so a shared provider can serve the tenant namespaces its
+# selector picks (ADR-0133); credentials stay in the home namespace.
 #
 # Mirrors deploy/provider-vsphere/rbac/clusterrole.yaml, with LibvirtMachine
 # in place of VSphereMachine (ADR-0050), minus IPAM (Pool-based IpamSpec is not
@@ -85,6 +87,24 @@ rules:
   # the CA that signed libvirtd's server certificate (connection.caBundle,
   # ADR-0008) are read by name in the Provider's namespace; the per-instance
   # Role already grants exactly those objects.
+
+  # Namespaces, read-only (ADR-0133). `--watch-namespace-selector` serves the
+  # LibvirtMachines in the namespaces whose labels match, so the provider lists
+  # and watches Namespace objects, and probes the selector with a one-item list
+  # at startup. No write verb, deliberately: a provider that could relabel a
+  # namespace could choose its own scope. Labelling a namespace in is a platform
+  # admin's act, never the provider's. No `get`: nothing here reads one
+  # namespace by name.
+  #
+  # This grants the provider NO access to anything IN those namespaces beyond
+  # the LibvirtMachine rules above. In particular there is still no Secret or
+  # ConfigMap rule: the provider reads its own Provider, credentials and CA
+  # bundle from its home namespace through the namespaced Role, never from a
+  # tenant namespace, so tenants with Secret read in their own namespace cannot
+  # reach the hypervisor credentials.
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["list", "watch"]
 
   # Emit Events for state transitions visible via `kubectl describe provider`.
   - apiGroups: [""]

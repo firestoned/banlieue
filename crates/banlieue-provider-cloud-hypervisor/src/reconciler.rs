@@ -28,6 +28,7 @@ use banlieue_api::common::FirstBootSealing;
 use banlieue_api::infrastructure::{CloudHypervisorMachine, CloudHypervisorMachineStatus};
 use banlieue_provider_sdk::finalizer::{ensure_finalizer, remove_finalizer};
 use banlieue_provider_sdk::reconciler::{requeue_default, requeue_long, requeue_on_error};
+use banlieue_provider_sdk::scope::{ProviderScope, SharedServing};
 use banlieue_provider_sdk::sealing::{SealingGate, sealing_gate};
 use k8s_openapi::jiff::Timestamp;
 use kube::api::{Api, ListParams, Patch, PatchParams};
@@ -60,14 +61,39 @@ pub struct Context {
     /// Guest uids handed out by this process, so concurrent reconciles
     /// never share one.
     pub uids: UidLedger,
+    /// What this host serves: its home namespace and, with a selector, the
+    /// namespaces whose labels match (ADR-0134).
+    pub scope: ProviderScope,
+    /// The scope plus the gate over the selector; answers "is this namespace
+    /// served" for a reconcile.
+    pub serving: SharedServing,
 }
 
-/// Whether `machine` is for this host: its Provider is ours and it lives in
-/// our Provider's namespace.
+impl Context {
+    /// An [`Api`] over this host's machines: the home namespace without a
+    /// selector, every namespace with one (the caller gates the result).
+    #[must_use]
+    pub fn machines(&self) -> Api<CloudHypervisorMachine> {
+        self.scope.api(&self.client)
+    }
+}
+
+/// Whether `machine` is for this host: its `providerRef` resolves to this
+/// host's `Provider` in its home namespace, by name AND namespace. A bare
+/// `providerRef` resolves in the machine's own namespace, so a tenant machine
+/// that merely names this host by name is not ours (ADR-0133 Decision 5,
+/// ADR-0134). A machine with no namespace is nobody's.
 #[must_use]
 pub fn is_ours(machine: &CloudHypervisorMachine, config: &HostConfig) -> bool {
-    machine.spec.provider_ref.name == config.provider.name
-        && machine.namespace().as_deref() == Some(config.provider.namespace.as_str())
+    let Some(namespace) = machine.namespace() else {
+        return false;
+    };
+    banlieue_provider_sdk::reconciler::serves_machine(
+        Some(&config.provider.name),
+        &config.provider.namespace,
+        &namespace,
+        &machine.spec.provider_ref,
+    )
 }
 
 /// Guest uids already recorded by this host's machines, other than `except`.
@@ -157,6 +183,15 @@ pub async fn reconcile(machine: Arc<CloudHypervisorMachine>, ctx: Arc<Context>) 
     let ns = machine
         .namespace()
         .ok_or(Error::Missing("metadata.namespace"))?;
+    // A namespace the selector does not serve is left alone, unless the
+    // machine is being deleted: its finalizer must still run (ADR-0130
+    // Decision 6).
+    if let Some(action) = ctx
+        .serving
+        .skip_unserved(&ns, machine.metadata.deletion_timestamp.is_some())
+    {
+        return Ok(action);
+    }
     let name = machine.name_any();
     let uid = machine.uid().ok_or(Error::Missing("metadata.uid"))?;
     let generation = machine.metadata.generation.unwrap_or(0);
@@ -187,7 +222,8 @@ pub async fn reconcile(machine: Arc<CloudHypervisorMachine>, ctx: Arc<Context>) 
 
     // Record the guest uid before anything is created on the host for it.
     let Some(host_uid) = previous.and_then(|s| s.host_uid) else {
-        let all = api.list(&ListParams::default()).await?.items;
+        // Every namespace this host serves: guest uids are one pool per host.
+        let all = ctx.machines().list(&ListParams::default()).await?.items;
         let used = used_host_uids(&all, &ctx.config, &uid);
         let Some(host_uid) = ctx.uids.assign(&uid, &used, ctx.config.guests) else {
             let st = failure_status(

@@ -26,7 +26,7 @@ use banlieue_provider_sdk::status::{condition_status, set_condition};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Condition;
 use kube::{
     Resource, ResourceExt,
-    api::{Api, ListParams, Patch, PatchParams},
+    api::{Api, Patch, PatchParams},
     runtime::controller::Action,
 };
 use serde_json::json;
@@ -35,6 +35,7 @@ use tracing::{info, warn};
 use crate::context::Context;
 use crate::error::{Error, Result};
 
+use super::provider_lookup::candidate_providers;
 use super::scheduler::selector_matches;
 
 /// Condition type (in addition to `Ready` from `condition_types`) reflecting
@@ -77,8 +78,9 @@ pub async fn reconcile(vsc: Arc<VSphereCluster>, ctx: Arc<Context>) -> Result<Ac
 
     // Read every Provider in the namespace; `build_status` selects the relevant
     // subset. Provider status is the only input — no backend access.
-    let provider_api: Api<Provider> = Api::namespaced(ctx.client.clone(), &namespace);
-    let all_providers = provider_api.list(&ListParams::default()).await?.items;
+    // The cluster's own namespace first, then the provider namespace (ADR-0133
+    // Decision 8): the same lookup a VirtualMachine uses.
+    let all_providers = candidate_providers(&ctx, &namespace).await?.providers;
 
     let status = build_status(&vsc.spec, &all_providers, generation);
     let fd_count = status.failure_domains.len();

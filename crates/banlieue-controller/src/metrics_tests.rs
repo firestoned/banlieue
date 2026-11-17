@@ -86,6 +86,7 @@ mod tests {
             failure_domain_name_overrides: Vec::new(),
             attestation: None,
             scheduling: None,
+            namespace_selector: None,
         };
         let mut p = Provider::new(name, spec);
         p.status = Some(ProviderStatus {

@@ -19,6 +19,11 @@
 > numbers sit next to Cloud Hypervisor's in the provider comparison.
 >
 > **Status (2026-11-07): not started.** Nothing in the tree yet.
+>
+> **Build it shared-capable from the first commit** (ADR-0133): `FirecrackerMachine.spec.providerRef`
+> is a `ProviderReference`, and the provider serves tenant namespaces through `ProviderScope` and
+> reads its `Provider` and credentials from its home namespace. Do not build it single-namespace
+> and port it later.
 
 Baseline when written: `933f94d` (2026-11-07). ADRs 0001 to 0115 exist or
 are reserved (0057 to 0059 by roadmap 15, 0070 to 0073 by roadmap 18, 0076

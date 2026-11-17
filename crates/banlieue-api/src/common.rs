@@ -94,6 +94,72 @@ pub struct LocalObjectReference {
     pub name: String,
 }
 
+/// Reference to a [`Provider`](crate::banlieue::Provider), by name and optionally by
+/// namespace (ADR-0133).
+///
+/// An absent `namespace` means the referrer's own namespace, which is what a
+/// bare name has always meant, so nothing written before ADR-0133 changes. The
+/// controller sets `namespace` when it places a VM on a shared provider that
+/// lives in the platform's provider namespace, so the machine can stay beside
+/// its VM, pool and claim while the credentials stay beside the provider.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ProviderReference {
+    /// Name of the `Provider`.
+    pub name: String,
+
+    /// Namespace of the `Provider`. Defaults to the referrer's namespace.
+    ///
+    /// Only `banlieue-controller` may set this: a machine naming a provider in
+    /// another namespace is a placement that skipped scheduling, so an
+    /// admission policy reserves the field to the controller's identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
+}
+
+impl ProviderReference {
+    /// The namespace this reference resolves in, given the namespace of the
+    /// object that holds it.
+    ///
+    /// # Arguments
+    /// * `referrer_namespace` - the namespace of the machine carrying the reference.
+    #[must_use]
+    pub fn namespace_or<'a>(&'a self, referrer_namespace: &'a str) -> &'a str {
+        self.namespace.as_deref().unwrap_or(referrer_namespace)
+    }
+
+    /// Whether the reference names a provider in the referrer's own
+    /// namespace (no explicit namespace).
+    #[must_use]
+    pub fn is_local(&self) -> bool {
+        self.namespace.is_none()
+    }
+
+    /// Whether this reference resolves to the provider `name` in
+    /// `provider_namespace`, for a machine in `referrer_namespace`.
+    ///
+    /// This is how a provider decides a machine is its own work: both halves
+    /// must match, so a machine naming a same-named provider elsewhere is
+    /// ignored.
+    #[must_use]
+    pub fn resolves_to(
+        &self,
+        name: &str,
+        provider_namespace: &str,
+        referrer_namespace: &str,
+    ) -> bool {
+        self.name == name && self.namespace_or(referrer_namespace) == provider_namespace
+    }
+}
+
+impl From<LocalObjectReference> for ProviderReference {
+    fn from(local: LocalObjectReference) -> Self {
+        Self {
+            name: local.name,
+            namespace: None,
+        }
+    }
+}
+
 /// Typed reference (apiGroup + kind + name + optional namespace).
 ///
 /// Used wherever the referenced kind is pluggable — e.g. IPAM pools, where we
@@ -317,6 +383,18 @@ pub struct LabelSelector {
     pub match_labels: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub match_expressions: Vec<LabelSelectorRequirement>,
+}
+
+impl LabelSelector {
+    /// Whether the selector has no label and no expression.
+    ///
+    /// Kubernetes reads that as "everything". banlieue never defaults to every
+    /// namespace (ADR-0130, ADR-0131), so `Provider.spec.namespaceSelector`
+    /// treats an empty selector as one that serves nothing (ADR-0133).
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.match_labels.is_empty() && self.match_expressions.is_empty()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

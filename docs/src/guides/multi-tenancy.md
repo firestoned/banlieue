@@ -117,12 +117,105 @@ reconciling its `Provider`s but deletes nothing; a `Provider` being deleted
 still has its workload torn down. The operator's `ClusterRole` grants
 read-only `get`, `list` and `watch` on `namespaces` for this.
 
-**The providers** (`libvirt`, `vsphere`, `proxmox`) take no selector. They
-serve `--namespace`, or the namespace they run in when it is unset, and no
-longer default to every namespace. A provider can only read the credentials in
-one namespace, so serving more would not work anyway. To serve another
-namespace, run a provider there: the operator already does, one per
-`Provider`.
+**The providers** keep their credentials in one namespace, their **home**
+namespace (`--namespace`, or the namespace they run in). That is where their
+`Provider`, credentials Secret and CA bundle live, and they never read a
+Secret anywhere else. Every provider can also *serve* other namespaces
+(`vsphere`, `libvirt`, `proxmox` and `cloud-hypervisor`), which is how one
+provider serves many teams without any team ever holding the hypervisor
+credentials. See the next section.
+
+## One shared provider for every team
+
+Putting a `Provider` and its credentials in each team's namespace would hand
+the team's Secret readers the vCenter login. Instead keep one `Provider` in the
+platform namespace and let it declare the namespaces it serves
+([ADR-0133](https://github.com/firestoned/banlieue/blob/main/docs/adr/0133-shared-provider-serves-tenant-namespaces.md)).
+Everything else stays in the team's namespace: the pool, its VMs, the claims,
+the `AgentSandbox`es and the infrastructure machine CRs. Only the **reference**
+to the provider crosses a namespace.
+
+1. Declare who the `Provider` serves. In the platform namespace, on the
+   `Provider` that holds the credentials:
+
+    ```yaml
+    apiVersion: banlieue.io/v1alpha1
+    kind: Provider
+    metadata:
+      name: vcenter
+      namespace: banlieue-system
+    spec:
+      providerClassRef:
+        name: vsphere
+      namespaceSelector:
+        matchLabels:
+          banlieue.io/tenant: "true"
+      connection:
+        endpoint: https://vcenter.example.com/sdk
+        credentialsRef:
+          name: vcenter-creds
+    ```
+
+    The operator renders `--watch-namespace-selector` onto the provider from
+    this field, so the provider and the controller read the same selector and
+    cannot disagree. An absent selector serves the home namespace only, and an
+    **empty** one (`{}`) serves nothing: banlieue never defaults to every
+    namespace.
+
+2. Tell the controller where the shared providers are:
+
+    ```yaml
+    BANLIEUE_PROVIDER_NAMESPACE: "banlieue-system"
+    ```
+
+3. Label the team's namespace, as above. A team namespace with no `Provider` of
+   its own is now scheduled onto the shared one.
+
+The lookup is: the VM's own namespace first, then the provider namespace. If a
+team namespace holds **any** `Provider`, those are the only candidates, so a
+selector that matches nothing there fails with `NoProviderMatched` instead of
+landing on the shared platform. Only a `Provider` that declares the VM's
+namespace is ever a fallback.
+
+!!! important "Apply the admission policies"
+    A machine that names a provider in another namespace is a placement that
+    skipped scheduling. Apply both policies in
+    [`deploy/admission/`](https://github.com/firestoned/banlieue/tree/main/deploy/admission):
+
+    * `machine-provider-ref.yaml` lets only the controller set
+      `providerRef.namespace`, so a team cannot write a machine that names the
+      platform's provider.
+    * `provider-namespace-selector-authorization.yaml` makes setting
+      `namespaceSelector` need `update` on `providers/namespaceselector`. Bind
+      the `banlieue-provider-namespaceselector-admin` ClusterRole it ships to
+      platform admins only.
+
+    Give teams **no verb on machine CRs** (`vspheremachines`, `libvirtmachines`,
+    `proxmoxmachines`, `cloudhypervisormachines`). They need to see
+    their pool, VMs and claims, not the machines behind them.
+
+!!! note "Cloud Hypervisor hosts are opt-in and read the selector at startup"
+    A Cloud Hypervisor provider runs on the KVM host with a bound
+    ServiceAccount token, not as a pod
+    ([ADR-0134](https://github.com/firestoned/banlieue/blob/main/docs/adr/0134-cloud-hypervisor-serves-tenant-namespaces.md)).
+    It reads its `namespaceSelector` from its own `Provider` **once, at
+    startup**, so changing the selector needs a provider restart. A host with
+    no selector keeps a token that reaches machines in its own namespace only.
+    With a selector, the operator binds a second ClusterRole,
+    `banlieue-provider-cloud-hypervisor-shared`, which lets the host's token
+    read and patch machines in the namespaces it serves (RBAC cannot be scoped
+    by label, so it can in every namespace). It holds no Secret or ConfigMap.
+    That is a wider stolen-host-token reach than a single-namespace host has,
+    so enable it only on hosts that must serve tenants.
+
+!!! note "What the shared provider can and cannot reach"
+    Its `ClusterRole` can read and patch `VSphereMachine`s in any namespace and
+    list and watch `Namespace`s. RBAC cannot be scoped by label, so the
+    selector is the gate and the `ClusterRole` is the ceiling. It has **no**
+    Secret or ConfigMap access outside its home namespace, so a team that can
+    read Secrets in its own namespace cannot read the credentials. A team's
+    `userData` is rendered by the controller into the machine in the team's own
+    namespace; the provider never reads it from a Secret.
 
 ## Checking it
 

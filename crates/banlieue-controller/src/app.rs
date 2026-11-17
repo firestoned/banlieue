@@ -100,6 +100,14 @@ pub struct Cli {
     #[arg(long, env = "BANLIEUE_NAMESPACE_SELECTOR")]
     pub namespace_selector: Option<String>,
 
+    /// The namespace the platform's shared providers run in (ADR-0133). A
+    /// `VirtualMachine` whose own namespace holds no `Provider` is scheduled
+    /// onto the `Provider`s here that declare its namespace through
+    /// `spec.namespaceSelector`. It is the value those providers already have
+    /// as `--namespace`. Unset means no fallback; never "every namespace".
+    #[arg(long, env = "BANLIEUE_PROVIDER_NAMESPACE")]
+    pub provider_namespace: Option<String>,
+
     /// Health server bind port.
     #[arg(long, env = "BANLIEUE_HEALTH_PORT", default_value_t = DEFAULT_HEALTH_PORT)]
     pub health_port: u16,
@@ -311,7 +319,13 @@ pub async fn run(cli: Cli) -> Result<()> {
         Context::new(client.clone(), scope.namespace().map(str::to_owned))
             .with_namespace_gate(gate.clone())
             .with_vm_store(vm_store.clone())
-            .with_first_boot_sealing(cli.enable_first_boot_sealing),
+            .with_first_boot_sealing(cli.enable_first_boot_sealing)
+            .with_provider_namespace(cli.provider_namespace.clone()),
+    );
+    info!(
+        provider_namespace = ?ctx.provider_namespace(),
+        "provider namespace (ADR-0133): a VM whose namespace holds no Provider falls back to the \
+         Providers here that declare it; unset means no fallback"
     );
     let vm_store_for_class = vm_store.clone();
     let vm_store_for_provider = vm_store.clone();
