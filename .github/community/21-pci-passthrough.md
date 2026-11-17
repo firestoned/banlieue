@@ -16,10 +16,10 @@
 > `MachineDeployment` of one GPU worker (`maxSurge: 0`) joins its cluster,
 > and a replacement `Machine` gets the GPU too.
 >
-> **Status (2026-11-16): not started.** ADR-0135 is Proposed.
+> **Status (2026-11-16): not started.** ADR-0136 is Proposed.
 
-Baseline when written: ADRs 0001 to 0134 exist or are reserved. **This
-roadmap reserves ADR-0135.** Issue #190.
+Baseline when written: ADRs 0001 to 0135 exist or are reserved. **This
+roadmap reserves ADR-0136.** Issue #190.
 
 ## Why
 
@@ -48,5 +48,5 @@ vSphere (DirectPath I/O) and Proxmox (`hostpci`).
 
 ## Read first
 
-ADR-0135, then ADR-0062 Decision 4, ADR-0063 (Decisions 1, 3 and 6),
+ADR-0136, then ADR-0062 Decision 4, ADR-0063 (Decisions 1, 3 and 6),
 ADR-0065 Decision 2, ADR-0107 and ADR-0128.
