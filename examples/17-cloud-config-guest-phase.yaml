@@ -37,7 +37,7 @@
 ---
 stages:
   boot:
-    # ---- libvirt (implemented) --------------------------------------------
+    # ---- libvirt (implemented, verified live 2026-10-12) -----------------
     #
     # libvirt has no guestinfo channel, so the marker IS the channel: the
     # provider reads this file back with qemu-guest-agent
@@ -52,14 +52,13 @@ stages:
         - mkdir -p /run/banlieue
         - echo installed > /run/banlieue/phase
 
-    # ---- vSphere (implemented, unverified against a real vCenter) --------
+    # ---- vSphere (implemented, verified live 2026-09-23) -----------------
     #
     # vSphere already has a host-readable guest channel, so the marker goes
     # there instead of to a file: the guest sets it with vmware-rpctool, and
-    # VSphereClient::guest_info reads it back from config.extraConfig. The
-    # provider-side read has no vCenter to verify it against yet (ADR-0043
-    # Notes) — the first live run of a Deferred pool on vSphere is this
-    # layer's actual test.
+    # VSphereClient::guest_info reads it back from config.extraConfig.
+    # Verified against a real vCenter: a Deferred, tpmEnabled VM ran this
+    # stage at boot and reported GuestReady=True (roadmap 17, phase A2).
     - name: banlieue-guest-phase-vsphere
       if: '[ -f /run/cos/active_mode ] || [ -f /run/cos/passive_mode ]'
       commands:

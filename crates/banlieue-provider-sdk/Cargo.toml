@@ -42,7 +42,6 @@ tracing-opentelemetry.workspace = true
 # Installs `ring` as the process crypto provider before the OTLP exporter's
 # reqwest client (built with `rustls-no-provider`) makes its first TLS call.
 rustls.workspace = true
-chrono.workspace = true
 async-trait.workspace = true
 
 [dev-dependencies]

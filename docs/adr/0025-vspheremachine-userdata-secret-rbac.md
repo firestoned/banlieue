@@ -8,6 +8,8 @@
   before implementation; see *History* below.
   Extended by [ADR-0038](0038-userdata-configmap-support.md) (adds ConfigMap
   source alongside Secret).
+- **Amended by:** [ADR-0042](0042-userdata-reference-authorization.md) (2026-09-09): a userData reference is
+  authorized at admission.
 
 ## Context
 

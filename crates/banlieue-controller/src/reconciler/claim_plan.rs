@@ -9,17 +9,20 @@
 //! ([`super::pool_plan`]), and for the same reason: a state machine that
 //! needs a cluster to exercise is a state machine nobody exercises.
 
+use std::cmp::{Ordering, Reverse};
 use std::collections::BTreeMap;
+use std::fmt;
 
 use banlieue_api::banlieue::{
-    LABEL_POOL, VirtualMachine, VirtualMachineClaimSpec, pool_condition_reasons,
+    ANNOTATION_SUBJECT_ID, ANNOTATION_SUBJECT_ISSUER, ClaimSubject, LABEL_CLAIM, LABEL_POOL,
+    Provider, SelectionStrategy, VirtualMachine, VirtualMachineClaimSpec, pool_condition_reasons,
 };
 use banlieue_api::common::{LabelSelector, MachineAddress};
 use k8s_openapi::jiff::Timestamp;
 use kube::ResourceExt;
 
 use super::pool_plan::{MemberPhase, MemberView};
-use super::scheduler::label_selector_matches;
+use super::scheduler::{is_stale, is_unschedulable, label_selector_matches};
 
 /// How many pools a waiting claim's message lists before it only counts
 /// the rest. A condition message is read by a person; one line per pool in
@@ -205,7 +208,8 @@ pub struct Pick {
 }
 
 /// Choose the member to bind from every matched pool at once (ADR-0132
-/// Decision 4).
+/// Decision 4), with no placement information: [`rank_pick`] under
+/// `LongestReady` with empty inputs.
 ///
 /// [`pick_member`]'s order over the union: Ready only, then current image
 /// revision *of the member's own pool*, then the one Ready longest, then
@@ -217,22 +221,316 @@ pub struct Pick {
 /// * `pools` - each matched pool with its members and current revision.
 #[must_use]
 pub fn pick_across_pools(pools: &[PoolMembers]) -> Option<Pick> {
-    pools
+    let placements = BTreeMap::new();
+    let held = BTreeMap::new();
+    rank_pick(
+        pools,
+        &SelectionInputs {
+            strategy: SelectionStrategy::LongestReady,
+            placements: &placements,
+            subject_held: &held,
+        },
+    )
+    .map(|r| r.pick)
+}
+
+/// A failure domain: the pair `(providerName, failureDomain)` from a
+/// member's `status.scheduled` (ADR-0135 Decision 4).
+///
+/// The pair, not the name: failure-domain names are scoped to their
+/// `Provider`, and two Cloud Hypervisor or libvirt hosts commonly carry the
+/// same single name, which alone would merge two hosts into one bucket.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct FailureDomainKey {
+    pub provider: String,
+    pub failure_domain: String,
+}
+
+impl fmt::Display for FailureDomainKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}/{}", self.provider, self.failure_domain)
+    }
+}
+
+/// Where a member runs, and whether that host is fit to hand out from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MemberPlacement {
+    /// `None` for a member with no `status.scheduled`, which a Ready member
+    /// should never be. Ranks after every placed member.
+    pub domain: Option<FailureDomainKey>,
+    /// `false` when the member's `Provider` is cordoned, its heartbeat is
+    /// `Stale`, or it cannot be found (ADR-0135 Decision 3).
+    pub host_healthy: bool,
+}
+
+impl MemberPlacement {
+    /// What the ranking assumes for a member it has no placement for:
+    /// nothing is known, so nothing is held against it.
+    fn unknown() -> Self {
+        Self {
+            domain: None,
+            host_healthy: true,
+        }
+    }
+}
+
+/// The failure domain `vm` was placed in, from its `status.scheduled`.
+#[must_use]
+pub fn member_domain(vm: &VirtualMachine) -> Option<FailureDomainKey> {
+    let scheduled = vm.status.as_ref()?.scheduled.as_ref()?;
+    Some(FailureDomainKey {
+        provider: scheduled.provider_name.clone(),
+        failure_domain: scheduled.failure_domain.clone(),
+    })
+}
+
+/// Where `vm` runs and whether its host is healthy, judged with the
+/// scheduler's own predicates so "unhealthy" means one thing in banlieue:
+/// cordoned (ADR-0124), `Stale` heartbeat (ADR-0102), or a `Provider` that
+/// is not among `providers` at all.
+///
+/// # Arguments
+/// * `vm` - the member.
+/// * `providers` - the candidate `Provider`s for the claim's namespace,
+///   resolved as ADR-0133 Decision 1 resolves them.
+#[must_use]
+pub fn member_placement(vm: &VirtualMachine, providers: &[Provider]) -> MemberPlacement {
+    let domain = member_domain(vm);
+    let host_healthy = domain.as_ref().is_some_and(|d| {
+        providers
+            .iter()
+            .find(|p| p.name_any() == d.provider)
+            .is_some_and(|p| !is_unschedulable(p) && !is_stale(p))
+    });
+    MemberPlacement {
+        domain,
+        host_healthy,
+    }
+}
+
+/// How many members `subject` already holds in each failure domain: the
+/// count `Spread` minimises (ADR-0135 Decision 5).
+///
+/// A member is held when it carries a claim label, is not being deleted,
+/// and both subject annotations equal `subject`'s. Issuer and id are
+/// matched together, never the id alone: the same id at two issuers is two
+/// people (ADR-0047).
+///
+/// # Arguments
+/// * `members` - every pool member in the claim's namespace.
+/// * `subject` - the claim's `spec.subject`.
+#[must_use]
+pub fn subject_held(
+    members: &[VirtualMachine],
+    subject: &ClaimSubject,
+) -> BTreeMap<FailureDomainKey, u32> {
+    let mut held = BTreeMap::new();
+    for vm in members {
+        if vm.metadata.deletion_timestamp.is_some() || !vm.labels().contains_key(LABEL_CLAIM) {
+            continue;
+        }
+        let annotations = vm.annotations();
+        let same_subject = annotations.get(ANNOTATION_SUBJECT_ISSUER) == Some(&subject.issuer)
+            && annotations.get(ANNOTATION_SUBJECT_ID) == Some(&subject.id);
+        if !same_subject {
+            continue;
+        }
+        if let Some(domain) = member_domain(vm) {
+            *held.entry(domain).or_insert(0) += 1;
+        }
+    }
+    held
+}
+
+/// What [`rank_pick`] needs beyond the members themselves.
+#[derive(Clone, Copy, Debug)]
+pub struct SelectionInputs<'a> {
+    pub strategy: SelectionStrategy,
+    /// Each member's placement, by member name. A member absent here is
+    /// ranked as [`MemberPlacement::unknown`].
+    pub placements: &'a BTreeMap<String, MemberPlacement>,
+    /// [`subject_held`] for the claim's subject. Read by `Spread` only.
+    pub subject_held: &'a BTreeMap<FailureDomainKey, u32>,
+}
+
+/// Why the chosen member was chosen, for the `Bound` condition message
+/// (ADR-0135 Decision 6).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PickDetail {
+    pub domain: Option<FailureDomainKey>,
+    pub host_healthy: bool,
+    /// Members the subject already held in that domain.
+    pub subject_held: u32,
+}
+
+/// The member a claim should bind, with why.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RankedPick {
+    pub pick: Pick,
+    pub detail: PickDetail,
+}
+
+/// One Ready candidate with everything its rank depends on.
+struct Ranked<'a> {
+    pool: &'a str,
+    name: &'a str,
+    stale: bool,
+    ready_for_secs: u64,
+    placement: MemberPlacement,
+    available: u32,
+    held: u32,
+}
+
+impl Ranked<'_> {
+    /// The strategy's own key (ADR-0135 Decisions 4 and 5): unplaced last,
+    /// then fewest held by the subject, then the fullest domain. Each part
+    /// is constant for a strategy that does not read it.
+    fn strategy_key(&self, strategy: SelectionStrategy) -> (bool, u32, Reverse<u32>) {
+        let unplaced = self.placement.domain.is_none();
+        match strategy {
+            SelectionStrategy::LongestReady => (false, 0, Reverse(0)),
+            SelectionStrategy::MostAvailable => (unplaced, 0, Reverse(self.available)),
+            SelectionStrategy::Spread => (unplaced, self.held, Reverse(self.available)),
+        }
+    }
+
+    /// The whole order (ADR-0135 Decision 2). Lower is better.
+    fn cmp(&self, other: &Self, strategy: SelectionStrategy) -> Ordering {
+        self.stale
+            .cmp(&other.stale)
+            .then_with(|| (!self.placement.host_healthy).cmp(&!other.placement.host_healthy))
+            .then_with(|| {
+                self.strategy_key(strategy)
+                    .cmp(&other.strategy_key(strategy))
+            })
+            .then_with(|| other.ready_for_secs.cmp(&self.ready_for_secs))
+            .then_with(|| self.name.cmp(other.name))
+    }
+}
+
+/// Choose the member to bind, by the claim's strategy (ADR-0135).
+///
+/// The order, lowest first:
+/// 1. Ready only (a `Claimed` member is never offered again);
+/// 2. current image revision of the member's own pool before stale, so no
+///    placement preference keeps an unpatched build in circulation;
+/// 3. a healthy host before a cordoned, `Stale` or unknown one, under every
+///    strategy;
+/// 4. the strategy's key: none for `LongestReady`; for `MostAvailable` the
+///    failure domain with the most Ready members; for `Spread` the domain
+///    where the subject holds fewest, then `MostAvailable`'s key;
+/// 5. the member Ready longest;
+/// 6. member name, so two controllers reading one snapshot agree.
+///
+/// Only reorders: if any member is Ready, one is returned. Availability is
+/// counted over every matched pool, from this snapshot rather than from a
+/// pool's lagging `status.available`.
+///
+/// # Arguments
+/// * `pools` - each matched pool with its members and current revision.
+/// * `inputs` - the strategy, placements and the subject's holdings.
+#[must_use]
+pub fn rank_pick(pools: &[PoolMembers], inputs: &SelectionInputs) -> Option<RankedPick> {
+    let ready: Vec<(&PoolMembers, &MemberView, MemberPlacement)> = pools
         .iter()
         .flat_map(|p| p.views.iter().map(move |m| (p, m)))
         .filter(|(_, m)| m.phase == MemberPhase::Ready)
-        .min_by(|(pa, a), (pb, b)| {
-            let a_stale = a.image_revision != pa.current_revision;
-            let b_stale = b.image_revision != pb.current_revision;
-            a_stale
-                .cmp(&b_stale)
-                .then_with(|| b.ready_for_secs.cmp(&a.ready_for_secs))
-                .then_with(|| a.name.cmp(&b.name))
+        .map(|(p, m)| {
+            let placement = inputs
+                .placements
+                .get(&m.name)
+                .cloned()
+                .unwrap_or_else(MemberPlacement::unknown);
+            (p, m, placement)
         })
-        .map(|(p, m)| Pick {
-            pool: p.pool.to_string(),
-            member: m.name.clone(),
+        .collect();
+
+    let mut available: BTreeMap<&FailureDomainKey, u32> = BTreeMap::new();
+    for (_, _, placement) in &ready {
+        if let Some(domain) = &placement.domain {
+            *available.entry(domain).or_insert(0) += 1;
+        }
+    }
+
+    let ranked: Vec<Ranked> = ready
+        .iter()
+        .map(|(p, m, placement)| {
+            let (avail, held) = placement.domain.as_ref().map_or((0, 0), |d| {
+                (
+                    available.get(d).copied().unwrap_or(0),
+                    inputs.subject_held.get(d).copied().unwrap_or(0),
+                )
+            });
+            Ranked {
+                pool: p.pool,
+                name: &m.name,
+                stale: m.image_revision != p.current_revision,
+                ready_for_secs: m.ready_for_secs,
+                placement: placement.clone(),
+                available: avail,
+                held,
+            }
         })
+        .collect();
+
+    ranked
+        .into_iter()
+        .min_by(|a, b| a.cmp(b, inputs.strategy))
+        .map(|r| RankedPick {
+            pick: Pick {
+                pool: r.pool.to_string(),
+                member: r.name.to_string(),
+            },
+            detail: PickDetail {
+                domain: r.placement.domain,
+                host_healthy: r.placement.host_healthy,
+                subject_held: r.held,
+            },
+        })
+}
+
+/// The `Bound` condition message for a fresh bind (ADR-0135 Decision 6):
+/// the strategy, the domain the member came from, and whether the choice
+/// was a fallback (an unhealthy host, or a domain the subject already
+/// occupied). `detail` is `None` when finishing a bind made on an earlier
+/// pass, which knows only the member.
+#[must_use]
+pub fn bound_message(
+    member: &str,
+    strategy: SelectionStrategy,
+    detail: Option<&PickDetail>,
+) -> String {
+    let Some(detail) = detail else {
+        return format!("bound to {member}");
+    };
+    let mut msg = format!("bound to {member} by {strategy}");
+    if let Some(domain) = &detail.domain {
+        msg.push_str(&format!(" from {domain}"));
+    }
+    if !detail.host_healthy {
+        msg.push_str(
+            "; its host is cordoned or not reporting, and nothing better ranked was Ready",
+        );
+    }
+    if detail.subject_held > 0 {
+        msg.push_str(&format!(
+            "; the subject already holds {} member(s) in that domain",
+            detail.subject_held
+        ));
+    }
+    msg
+}
+
+/// The `Bound` message a hold publishes: the bind's own explanation when
+/// it is about this member, so a hold does not erase it on the next pass;
+/// otherwise the plain "bound to {member}".
+#[must_use]
+pub fn hold_message(existing: Option<&str>, member: &str) -> String {
+    let plain = format!("bound to {member}");
+    match existing {
+        Some(msg) if msg == plain || msg.starts_with(&format!("{plain} ")) => msg.to_string(),
+        _ => plain,
+    }
 }
 
 /// `(bound_at, expires_at)` for a claim binding at `now`.

@@ -101,7 +101,7 @@ each host's `swtpm_localca` issuer certificate, one entry per host.
 
 Same value-or-source shape as `connection.caBundle`: exactly one of
 `inline`, `configMapRef`, `secretRef` must be set (see
-[`CABundleSource`]); references resolve in the Provider's namespace.
+`CABundleSource`); references resolve in the Provider's namespace.
 Removal of an issuer from this bundle is the revocation mechanism on
 libvirt — swtpm EK certificates never expire.
 
@@ -161,7 +161,7 @@ Per-`(datacenter, cluster)` overrides of `target` (ADR-0030).
 | --- | --- | --- | --- |
 | `cluster` | string | Yes | Cluster name as vCenter reports it. |
 | `datacenter` | string | Yes | Datacenter name as vCenter reports it. |
-| `target` | map[string]string | Yes | Concrete backend target for this zone, same shape as [`StorageClassMapping::target`] / [`NetworkClassMapping::target`]. |
+| `target` | map[string]string | Yes | Concrete backend target for this zone, same shape as `StorageClassMapping::target` / `NetworkClassMapping::target`. |
 
 ###### `.spec.capabilities.networkClasses[].perZoneSubnet[]`
 
@@ -218,7 +218,7 @@ Per-`(datacenter, cluster)` overrides of `target` (ADR-0030).
 | --- | --- | --- | --- |
 | `cluster` | string | Yes | Cluster name as vCenter reports it. |
 | `datacenter` | string | Yes | Datacenter name as vCenter reports it. |
-| `target` | map[string]string | Yes | Concrete backend target for this zone, same shape as [`StorageClassMapping::target`] / [`NetworkClassMapping::target`]. |
+| `target` | map[string]string | Yes | Concrete backend target for this zone, same shape as `StorageClassMapping::target` / `NetworkClassMapping::target`. |
 
 #### `.spec.connection`
 
@@ -237,7 +237,7 @@ Optional CA bundle to validate the endpoint's TLS certificate.
 
 A value-or-source: inline PEM, or a `configMapRef` / `secretRef` naming a
 key (default `ca.crt`) in the Provider's namespace. Exactly one source
-must be set; see [`CABundleSource`]. Resolved by the provider controller
+must be set; see `CABundleSource`. Resolved by the provider controller
 and injected into the HTTP client (ADR-0008, BYOC). When unset, the
 system trust roots are used.
 
@@ -469,7 +469,7 @@ ProviderClass — what banlieue runs for a class of backends.
 A ProviderClass carries the install metadata for one backend type: which
 `banlieue provider <backend>` role to run, from which image, with what pod
 shape and extra permissions. It names no endpoint and holds no credentials
-— that is a [`Provider`](super::Provider)'s job.
+— that is a `Provider`'s job.
 
 **Why create one**
 
@@ -516,7 +516,7 @@ Cluster-scoped: one ProviderClass serves Providers in any namespace.
 | `logging` | object |  | Log level and format passed to spawned workloads. |
 | `nodeSelector` | map[string]string |  | Node selector applied to provider pods. Useful when backend access is only routable from particular nodes. |
 | `paused` | boolean |  | Suspend lifecycle reconciliation for every Provider of this class. Existing workloads are left running untouched. |
-| `replicas` | integer |  | Replicas for each provider Deployment. Defaults to [`DEFAULT_PROVIDER_REPLICAS`]. Provider controllers are leader-elected, so values above one provide failover, not parallelism. |
+| `replicas` | integer |  | Replicas for each provider Deployment. Defaults to `DEFAULT_PROVIDER_REPLICAS`. Provider controllers are leader-elected, so values above one provide failover, not parallelism. |
 | `resources` | object |  | Resource requests and limits for the provider container. When unset the operator applies its own conservative defaults. |
 | `tolerations` | object[] |  | Tolerations applied to provider pods. |
 | `workloadNamespace` | string |  | Namespace to create provider workloads in. |
@@ -859,13 +859,13 @@ Optional user-data delivered to the guest via the image's
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `configMapRef` | object |  | Key in a ConfigMap in the VirtualMachine's namespace (key defaults to [`DEFAULT_USER_DATA_KEY`]). |
-| `secretRef` | object |  | Key in a Secret in the VirtualMachine's namespace (key defaults to [`DEFAULT_USER_DATA_KEY`]). |
+| `configMapRef` | object |  | Key in a ConfigMap in the VirtualMachine's namespace (key defaults to `DEFAULT_USER_DATA_KEY`). |
+| `secretRef` | object |  | Key in a Secret in the VirtualMachine's namespace (key defaults to `DEFAULT_USER_DATA_KEY`). |
 
 ##### `.spec.userData.configMapRef`
 
 Key in a ConfigMap in the VirtualMachine's namespace (key defaults to
-[`DEFAULT_USER_DATA_KEY`]).
+`DEFAULT_USER_DATA_KEY`).
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -875,7 +875,7 @@ Key in a ConfigMap in the VirtualMachine's namespace (key defaults to
 ##### `.spec.userData.secretRef`
 
 Key in a Secret in the VirtualMachine's namespace (key defaults to
-[`DEFAULT_USER_DATA_KEY`]).
+`DEFAULT_USER_DATA_KEY`).
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -1037,7 +1037,7 @@ also where the scheduler looks for candidate Providers.
 | `maxReplicas` | integer | Yes | Hard ceiling on members of any phase, claimed ones included. Leave headroom above `warmReplicas` plus expected concurrent claims, or image rollouts have to trade warm capacity for replacements. |
 | `maxSurge` | integer |  | Most members allowed to be provisioning at once. Bounds the install load a refill puts on the hosts that claimed members are running on. |
 | `provisioningTimeoutSeconds` | integer |  | A member still provisioning after this long is treated as poisoned and deleted, never repaired. |
-| `readiness` | string | Yes | Which member condition makes it claimable. See [`PoolReadiness`]. Allowed: `GuestReady`, `InfrastructureReady`. |
+| `readiness` | string | Yes | Which member condition makes it claimable. See `PoolReadiness`. Allowed: `GuestReady`, `InfrastructureReady`. |
 | `recycleOnImageChange` | boolean |  | Replace warm members when the referenced `VMImage`'s build changes. |
 | `template` | object | Yes | Template for each member. `spec.networkOverrides` entries for the interface named in `addressing` are replaced per member; everything else is copied verbatim. |
 | `warmReplicas` | integer | Yes | How many Ready, unclaimed members to keep available. |
@@ -1278,13 +1278,13 @@ Optional user-data delivered to the guest via the image's
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `configMapRef` | object |  | Key in a ConfigMap in the VirtualMachine's namespace (key defaults to [`DEFAULT_USER_DATA_KEY`]). |
-| `secretRef` | object |  | Key in a Secret in the VirtualMachine's namespace (key defaults to [`DEFAULT_USER_DATA_KEY`]). |
+| `configMapRef` | object |  | Key in a ConfigMap in the VirtualMachine's namespace (key defaults to `DEFAULT_USER_DATA_KEY`). |
+| `secretRef` | object |  | Key in a Secret in the VirtualMachine's namespace (key defaults to `DEFAULT_USER_DATA_KEY`). |
 
 ####### `.spec.template.spec.userData.configMapRef`
 
 Key in a ConfigMap in the VirtualMachine's namespace (key defaults to
-[`DEFAULT_USER_DATA_KEY`]).
+`DEFAULT_USER_DATA_KEY`).
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -1294,7 +1294,7 @@ Key in a ConfigMap in the VirtualMachine's namespace (key defaults to
 ####### `.spec.template.spec.userData.secretRef`
 
 Key in a Secret in the VirtualMachine's namespace (key defaults to
-[`DEFAULT_USER_DATA_KEY`]).
+`DEFAULT_USER_DATA_KEY`).
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -1375,6 +1375,7 @@ rather than read as "any pool" (ADR-0132).
 | --- | --- | --- | --- |
 | `poolRef` | object |  | The pool to take a member from. Same namespace as the claim. Exactly one of this or `poolSelector`. |
 | `poolSelector` | object |  | Take a member from any pool in the claim's namespace whose labels match. Members of every matching pool are ranked as one set (Ready only, current image revision of their own pool first, then the one Ready longest, then name), and `status.poolRef` records the pool the bound member came from. `{}` matches every pool in the namespace. Exactly one of this or `poolRef` (ADR-0132). |
+| `selection` | object |  | How the member is chosen among the Ready ones (ADR-0135). Absent means `LongestReady`, the order every claim used before this field existed. A strategy only reorders: no strategy leaves a claim `Pending` while a Ready member exists. Immutable, like the pool fields: it is read once, when the member is picked. |
 | `subject` | object | Yes | Who this member is for. Opaque to banlieue: recorded, mirrored onto the member as annotations, and never interpreted. |
 | `ttlSeconds` | integer | Yes | Hard lifetime in seconds, counted from binding rather than from creation — a claim that waited ten minutes for capacity still gets its full TTL. Required, with no default: a claim without a deadline is a leaked VM, and the right value is a property of the workload. |
 
@@ -1408,6 +1409,18 @@ namespace. Exactly one of this or `poolRef` (ADR-0132).
 | `key` | string | Yes |  |
 | `operator` | string | Yes | Allowed: `In`, `NotIn`, `Exists`, `DoesNotExist`. |
 | `values` | string[] |  |  |
+
+#### `.spec.selection`
+
+How the member is chosen among the Ready ones (ADR-0135). Absent
+means `LongestReady`, the order every claim used before this field
+existed. A strategy only reorders: no strategy leaves a claim
+`Pending` while a Ready member exists. Immutable, like the pool
+fields: it is read once, when the member is picked.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `strategy` | string |  | The ranking to apply. Defaults to `LongestReady`. Allowed: `LongestReady`, `MostAvailable`, `Spread`. |
 
 #### `.spec.subject`
 
@@ -1676,14 +1689,14 @@ Network interfaces in attachment order.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `ipam` | object | Yes | IPAM configuration. Uses [`IpamShape`] (not [`IpamSpec`]) because a `VMClass` is shared by many VMs — there is no per-VM address at this level. Per-VM static addresses are provided via `VirtualMachine.spec.networkOverrides`. |
+| `ipam` | object | Yes | IPAM configuration. Uses `IpamShape` (not `IpamSpec`) because a `VMClass` is shared by many VMs — there is no per-VM address at this level. Per-VM static addresses are provided via `VirtualMachine.spec.networkOverrides`. |
 | `mtu` | integer |  | Optional MTU override. Provider may ignore if unsupported. |
 | `name` | string | Yes | Stable name within the VM. |
 | `networkClass` | string | Yes | Abstract network class name. MUST be advertised in the chosen Provider's `spec.capabilities.networkClasses`. |
 
 ###### `.spec.network.interfaces[].ipam`
 
-IPAM configuration. Uses [`IpamShape`] (not [`IpamSpec`]) because a
+IPAM configuration. Uses `IpamShape` (not `IpamSpec`) because a
 `VMClass` is shared by many VMs — there is no per-VM address at this
 level. Per-VM static addresses are provided via
 `VirtualMachine.spec.networkOverrides`.
@@ -1772,17 +1785,17 @@ Cluster-scoped: a VMImage is shared by VirtualMachines in any namespace.
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `architecture` | string | Yes | Guest CPU architecture. Failure domains whose hosts cannot run this architecture are filtered out by the scheduler. Allowed: `amd64`, `arm64`. |
-| `cloudConfigs` | object[] |  | Layered cloud-configs baked into the built artifact for `Url`-kind sources (ADR-0037). `banlieue-imagebuilder` fetches each referenced Secret in list order, deep-merges their YAML content (maps deep-merge, lists concatenate, type-mismatch errors), SSA-applies a single merged Secret (`<vmimage-name>-cloud-config-merged`), and passes *that* to the kairos-operator `OSArtifact` as `cloudConfigRef` (`auroraboot build-iso --cloud-config`). Empty list = no cloud-config. Index 0 is the base; each subsequent entry layers on top. SecretRef-first; see [`CloudConfigSource`] and ADR-0020. Ignored for non-`Url` sources. |
+| `cloudConfigs` | object[] |  | Layered cloud-configs baked into the built artifact for `Url`-kind sources (ADR-0037). `banlieue-imagebuilder` fetches each referenced Secret in list order, deep-merges their YAML content (maps deep-merge, lists concatenate, type-mismatch errors), SSA-applies a single merged Secret (`<vmimage-name>-cloud-config-merged`), and passes *that* to the kairos-operator `OSArtifact` as `cloudConfigRef` (`auroraboot build-iso --cloud-config`). Empty list = no cloud-config. Index 0 is the base; each subsequent entry layers on top. SecretRef-first; see `CloudConfigSource` and ADR-0020. Ignored for non-`Url` sources. |
 | `firstBootSealing` | object |  | Declares that every clone of this image seals the listed partitions to its own vTPM on its first boot (ADR-0088), which is what lets a `VMClass` with `tpmEnabled: true` use an `Immediate` (pre-installed) image. Without it that pairing is refused, because the template was installed before any per-VM vTPM existed (ADR-0048). |
 | `guestAgent` | string |  | Guest agent contract this image is built to support; determines how `VirtualMachine.spec.userData` is delivered. Allowed: `cloud-init`, `ignition`, `sysprep`, `none`. |
-| `isoOverlay` | object |  | Additional files overlaid onto a built ISO for `Url`-kind vSphere sources (e.g. a hand-verified `grub.cfg`). Resolved by `banlieue-imagebuilder` into the kairos-operator `OSArtifact`'s `spec.volumes[]` + `spec.artifacts.overlayISOVolume` — the same `auroraboot build-iso --overlay-iso` mechanism a hand-run ISO-build pipeline would use. See [`IsoOverlaySource`] and ADR-0022. Ignored for `cloudImage`-kind builds and non-`Url` sources. |
+| `isoOverlay` | object |  | Additional files overlaid onto a built ISO for `Url`-kind vSphere sources (e.g. a hand-verified `grub.cfg`). Resolved by `banlieue-imagebuilder` into the kairos-operator `OSArtifact`'s `spec.volumes[]` + `spec.artifacts.overlayISOVolume` — the same `auroraboot build-iso --overlay-iso` mechanism a hand-run ISO-build pipeline would use. See `IsoOverlaySource` and ADR-0022. Ignored for `cloudImage`-kind builds and non-`Url` sources. |
 | `osDistribution` | string | Yes | Free-form distribution string. Examples: ubuntu, rhel, debian, fedora-coreos, windows-server. |
 | `osFamily` | string | Yes | Broad operating-system family. Coarser than `osDistribution`; lets providers apply high-level guest handling. Allowed: `linux`, `windows`, `bsd`, `other`. |
 | `osVersion` | string | Yes | Free-form version string. Examples: "22.04", "9.4", "2022". |
 | `prelay` | object |  | Pre-lay the built image (ADR-0113): `banlieue-imagebuilder` boots the raw `cloudImage` once, at build time, through the Kairos recovery reset every clone would otherwise run on its first boot, so each clone boots straight into the installed system. Only for a `Url` source built as a `cloudImage`; an `iso` build is refused (`PrelayNeedsCloudImage`). The pre-lay Job runs the published `banlieue-prelay` image (`banlieue-imagebuilder --prelay-image`) and needs `/dev/kvm` on the build node. The published artifact is the pre-laid file, with a checksum the builder computed after verifying the built file against the source's `checksum`. |
 | `sources` | object[] | Yes | Per-provider source mappings — one backend binding for this catalog entry per `providerClass` you intend to schedule VMs onto ("one name, many backends", see the type-level doc comment above). |
-| `template` | object |  | How the backend **template** is built from a `Url` source (root folder, network, disk, CPU / memory / firmware / NIC, force knobs). Every field is optional and falls back to a built-in default. Only meaningful for `Url` sources, with one exception: for a vSphere `Template` source (an existing template banlieue adopts and never builds) only `rootFolder` is read, to find the template in `<rootFolder>/<failure-domain>`; every other field is ignored. Ignored for `BackingFile`. See [`VMImageTemplate`], ADR-0020 and ADR-0104. |
-| `trustedBoot` | object |  | Requests a Trusted Boot (UKI) artifact instead of a classic kernel+initrd one, for `Url`-kind vSphere sources. Resolved by `banlieue-imagebuilder` into the kairos-operator `OSArtifact`'s `spec.artifacts.uki.{iso,keysVolume}` (replacing the plain `artifacts.iso` request) — the `auroraboot build-uki` mechanism. See [`TrustedBootSource`] and ADR-0051. Ignored for `cloudImage`-kind builds and non-`Url` sources. |
+| `template` | object |  | How the backend **template** is built from a `Url` source (root folder, network, disk, CPU / memory / firmware / NIC, force knobs). Every field is optional and falls back to a built-in default. Only meaningful for `Url` sources, with one exception: for a vSphere `Template` source (an existing template banlieue adopts and never builds) only `rootFolder` is read, to find the template in `<rootFolder>/<failure-domain>`; every other field is ignored. Ignored for `BackingFile`. See `VMImageTemplate`, ADR-0020 and ADR-0104. |
+| `trustedBoot` | object |  | Requests a Trusted Boot (UKI) artifact instead of a classic kernel+initrd one, for `Url`-kind vSphere sources. Resolved by `banlieue-imagebuilder` into the kairos-operator `OSArtifact`'s `spec.artifacts.uki.{iso,keysVolume}` (replacing the plain `artifacts.iso` request) — the `auroraboot build-uki` mechanism. See `TrustedBootSource` and ADR-0051. Ignored for `cloudImage`-kind builds and non-`Url` sources. |
 
 #### `.spec.cloudConfigs[]`
 
@@ -1794,17 +1807,17 @@ Secret (`<vmimage-name>-cloud-config-merged`), and passes *that* to
 the kairos-operator `OSArtifact` as `cloudConfigRef`
 (`auroraboot build-iso --cloud-config`). Empty list = no cloud-config.
 Index 0 is the base; each subsequent entry layers on top.
-SecretRef-first; see [`CloudConfigSource`] and ADR-0020.
+SecretRef-first; see `CloudConfigSource` and ADR-0020.
 Ignored for non-`Url` sources.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `secretRef` | object |  | Key in a Secret in the imagebuild namespace holding the cloud-config YAML (key defaults to [`DEFAULT_CLOUD_CONFIG_KEY`]). |
+| `secretRef` | object |  | Key in a Secret in the imagebuild namespace holding the cloud-config YAML (key defaults to `DEFAULT_CLOUD_CONFIG_KEY`). |
 
 ##### `.spec.cloudConfigs[].secretRef`
 
 Key in a Secret in the imagebuild namespace holding the cloud-config
-YAML (key defaults to [`DEFAULT_CLOUD_CONFIG_KEY`]).
+YAML (key defaults to `DEFAULT_CLOUD_CONFIG_KEY`).
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -1842,7 +1855,7 @@ sources (e.g. a hand-verified `grub.cfg`). Resolved by
 `banlieue-imagebuilder` into the kairos-operator `OSArtifact`'s
 `spec.volumes[]` + `spec.artifacts.overlayISOVolume` — the same
 `auroraboot build-iso --overlay-iso` mechanism a hand-run ISO-build
-pipeline would use. See [`IsoOverlaySource`] and ADR-0022. Ignored for
+pipeline would use. See `IsoOverlaySource` and ADR-0022. Ignored for
 `cloudImage`-kind builds and non-`Url` sources.
 
 | Field | Type | Required | Description |
@@ -1913,18 +1926,18 @@ meaningful for `Url` sources, with one exception: for a vSphere
 `Template` source (an existing template banlieue adopts and never
 builds) only `rootFolder` is read, to find the template in
 `<rootFolder>/<failure-domain>`; every other field is ignored.
-Ignored for `BackingFile`. See [`VMImageTemplate`], ADR-0020 and
+Ignored for `BackingFile`. See `VMImageTemplate`, ADR-0020 and
 ADR-0104.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `cpus` | integer |  | Virtual CPU count of the template (`govc vm.create -c`). When unset, defaults to 2. vSphere-only. |
 | `disk` | object |  | Install disk of the template (the clone source's disk). When unset, a thin 100 GiB disk on a pvscsi controller is used. |
-| `firmware` | string |  | Firmware for the template (`govc vm.create -firmware`). Reuses the backend-agnostic [`Firmware`] hint (`bios` / `efi` / `efi-secure`). When unset, defaults to `efi`. vSphere maps `efi-secure` to EFI with secure boot enabled. Allowed: `bios`, `efi`, `efi-secure`, `null`. |
+| `firmware` | string |  | Firmware for the template (`govc vm.create -firmware`). Reuses the backend-agnostic `Firmware` hint (`bios` / `efi` / `efi-secure`). When unset, defaults to `efi`. vSphere maps `efi-secure` to EFI with secure boot enabled. Allowed: `bios`, `efi`, `efi-secure`, `null`. |
 | `forceCreate` | boolean |  | Recreate the template even if one of that name already exists, destroying the existing one first. Threaded as `--force-create`. |
 | `forceUpload` | boolean |  | Re-upload the built ISO even if one of that name already exists on the backend, deleting the existing one first (the vСenter datastore file API does not overwrite in place). Threaded as `--force-upload`. |
 | `guestId` | string |  | vCenter `guestId` for the template (`govc vm.create -g`, e.g. `rhel9_64Guest`, `ubuntu64Guest`). When unset, it is derived from the VMImage's `osFamily` / `osDistribution` / `osVersion`. vSphere-only. |
-| `installMode` | string |  | How the template's install step is driven. See [`InstallMode`] and ADR-0021 / ADR-0040. Allowed: `immediate`, `deferred`, `manual`. |
+| `installMode` | string |  | How the template's install step is driven. See `InstallMode` and ADR-0021 / ADR-0040. Allowed: `immediate`, `deferred`, `manual`. |
 | `installTimeoutSeconds` | integer |  | Bound, in seconds, on how long the import Job waits for the unattended Kairos install to finish and the VM to power itself off (`install.poweroff: true` in the cloud-config) before failing the Job. When unset, defaults to 1800 (30 min). See ADR-0021: the golden disk is never rebooted by the build, so this bounds only the (typically 8-12 min) unattended-install window, not a boot cycle. |
 | `memoryMib` | integer |  | Memory of the template, in MiB (`govc vm.create -m`). When unset, defaults to 4096. vSphere-only. |
 | `network` | object[] |  | The template's network interfaces. Empty means exactly one NIC, using every per-entry default below — the same behavior this field had before it became a list (ADR-0031). vSphere-only. |
@@ -1940,7 +1953,7 @@ thin 100 GiB disk on a pvscsi controller is used.
 | --- | --- | --- | --- |
 | `controller` | string |  | Disk controller type. Defaults to `pvscsi`. Allowed: `pvscsi`, `lsiLogic`, `lsiLogicSas`, `busLogic`. |
 | `size` | integer |  | Disk size, in GiB. Defaults to 100 when unset. |
-| `type` | string |  | Provisioning hint: `thin` (default), `thick`, or `eagerZeroed`. Reuses the backend-agnostic [`DiskProvisioning`] shared with `VMClass` / `VSphereMachine`; eager-zeroing is the `eagerZeroed` variant, not a separate flag. Providers honor it on a best-effort basis. Allowed: `thin`, `thick`, `eagerZeroed`. |
+| `type` | string |  | Provisioning hint: `thin` (default), `thick`, or `eagerZeroed`. Reuses the backend-agnostic `DiskProvisioning` shared with `VMClass` / `VSphereMachine`; eager-zeroing is the `eagerZeroed` variant, not a separate flag. Providers honor it on a best-effort basis. Allowed: `thin`, `thick`, `eagerZeroed`. |
 
 ##### `.spec.template.network[]`
 
@@ -1961,7 +1974,7 @@ kernel+initrd one, for `Url`-kind vSphere sources. Resolved by
 `banlieue-imagebuilder` into the kairos-operator `OSArtifact`'s
 `spec.artifacts.uki.{iso,keysVolume}` (replacing the plain
 `artifacts.iso` request) — the `auroraboot build-uki` mechanism. See
-[`TrustedBootSource`] and ADR-0051. Ignored for `cloudImage`-kind
+`TrustedBootSource` and ADR-0051. Ignored for `cloudImage`-kind
 builds and non-`Url` sources.
 
 | Field | Type | Required | Description |
@@ -2078,7 +2091,7 @@ row. That was a real, reproduced bug, not a theoretical one.
 | `providerNamespace` | string | Yes | Namespace of the Provider. |
 | `ready` | boolean | Yes | True when the image can be used to clone/create a VM on this provider. |
 | `reason` | string |  | Short reason if not ready. Stable values from `condition_reasons::IMAGE_*`. |
-| `resolvedRef` | string |  | Resolved concrete reference on the backend, for backends with one reference per provider. Proxmox: VMID. Libvirt: path. Unset for vSphere, whose per-zone references are in [`Self::zones`] (ADR-0104). |
+| `resolvedRef` | string |  | Resolved concrete reference on the backend, for backends with one reference per provider. Proxmox: VMID. Libvirt: path. Unset for vSphere, whose per-zone references are in `Self::zones` (ADR-0104). |
 | `zones` | object[] |  | Per-zone (per-`Provider.status.failureDomains[]`) readiness. Populated by the vSphere provider for both `Url` sources (import progress) and `Template` sources (whether the adopted template exists in each zone's folder, ADR-0104). For `Url`, `ready` means every zone is ready; for `Template` it means at least one zone is, and the scheduler places VMs only in ready zones. Empty for backends without zones (libvirt, Proxmox). |
 
 ##### `.status.perProvider[].zones[]`
@@ -2097,8 +2110,8 @@ Proxmox).
 | `name` | string | Yes | Name of the failure domain, matching `Provider.status.failureDomains[].name`. |
 | `ready` | boolean | Yes | True once the template is usable in this zone (import finished for `Url`; template found in the zone's folder for `Template`). |
 | `reason` | string |  |  |
-| `resolvedRef` | string |  | The template's bare display name within this zone once ready — the value a provider passes to a name-based template lookup. NOT a decorated string (no `[dc]`/folder prefix): the folder lives in [`Self::template_folder`], kept separate so a lookup can be built from structured fields instead of parsing this one. |
-| `templateFolder` | string |  | The vCenter folder path (relative to the datacenter's VM folder, e.g. `templates/cluster-01`) the template in [`Self::resolved_ref`] lives in: `<spec.template.rootFolder>/<zone>` for both `Url` imports (ADR-0020 Decision #5) and `Template` sources (ADR-0104). Unset while the zone is not ready. |
+| `resolvedRef` | string |  | The template's bare display name within this zone once ready — the value a provider passes to a name-based template lookup. NOT a decorated string (no `[dc]`/folder prefix): the folder lives in `Self::template_folder`, kept separate so a lookup can be built from structured fields instead of parsing this one. |
+| `templateFolder` | string |  | The vCenter folder path (relative to the datacenter's VM folder, e.g. `templates/cluster-01`) the template in `Self::resolved_ref` lives in: `<spec.template.rootFolder>/<zone>` for both `Url` imports (ADR-0020 Decision #5) and `Template` sources (ADR-0104). Unset while the zone is not ready. |
 
 ---
 
@@ -2142,7 +2155,7 @@ provider on the chosen host runs it as a Cloud Hypervisor guest.
 | `providerID` | string |  | CAPI contract: Provider ID for the resulting Node, if this VM becomes a Kubernetes node. Format: `cloudhypervisor://<provider-name>/<machine-uid>`. Set by the provider once the guest exists. |
 | `providerRef` | object | Yes | The `Provider` for the one host that runs this machine (ADR-0060). |
 | `storageClass` | string | Yes | Storage class the machine's disks live in. A name the host declares in its local config and publishes on its failure domain; never a path. |
-| `tpmEnabled` | boolean |  | Attach a vTPM (swtpm), resolved from the VM's `VMClass.spec.tpmEnabled`. Requires [`ChBootSourceKind::InstallMedia`] (ADR-0040, ADR-0048, ADR-0065), or an image that seals itself on first boot ([`Self::first_boot_sealing`], ADR-0088, ADR-0112). |
+| `tpmEnabled` | boolean |  | Attach a vTPM (swtpm), resolved from the VM's `VMClass.spec.tpmEnabled`. Requires `ChBootSourceKind::InstallMedia` (ADR-0040, ADR-0048, ADR-0065), or an image that seals itself on first boot (`Self::first_boot_sealing`, ADR-0088, ADR-0112). |
 | `userData` | string |  | Guest bootstrap payload, already resolved and placeholder-substituted by `banlieue-controller` (ADR-0025, ADR-0038). Rendered into a NoCloud `CIDATA` seed disk; the provider reads no Secret or ConfigMap. |
 
 #### `.spec.bootSource`
@@ -2151,7 +2164,7 @@ Where the OS disk comes from.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `image` | string | Yes | The image in the host's image cache: an installed raw disk for [`Image`](ChBootSourceKind::Image), the installer ISO for [`InstallMedia`](ChBootSourceKind::InstallMedia). |
+| `image` | string | Yes | The image in the host's image cache: an installed raw disk for `Image`, the installer ISO for `InstallMedia`. |
 | `kind` | string | Yes | Which provisioning shape this machine uses. Allowed: `image`, `installMedia`. |
 
 #### `.spec.cpus`
@@ -2432,7 +2445,7 @@ The CloudHypervisorMachine spec for machines created from this template.
 | `providerID` | string |  | CAPI contract: Provider ID for the resulting Node, if this VM becomes a Kubernetes node. Format: `cloudhypervisor://<provider-name>/<machine-uid>`. Set by the provider once the guest exists. |
 | `providerRef` | object | Yes | The `Provider` for the one host that runs this machine (ADR-0060). |
 | `storageClass` | string | Yes | Storage class the machine's disks live in. A name the host declares in its local config and publishes on its failure domain; never a path. |
-| `tpmEnabled` | boolean |  | Attach a vTPM (swtpm), resolved from the VM's `VMClass.spec.tpmEnabled`. Requires [`ChBootSourceKind::InstallMedia`] (ADR-0040, ADR-0048, ADR-0065), or an image that seals itself on first boot ([`Self::first_boot_sealing`], ADR-0088, ADR-0112). |
+| `tpmEnabled` | boolean |  | Attach a vTPM (swtpm), resolved from the VM's `VMClass.spec.tpmEnabled`. Requires `ChBootSourceKind::InstallMedia` (ADR-0040, ADR-0048, ADR-0065), or an image that seals itself on first boot (`Self::first_boot_sealing`, ADR-0088, ADR-0112). |
 | `userData` | string |  | Guest bootstrap payload, already resolved and placeholder-substituted by `banlieue-controller` (ADR-0025, ADR-0038). Rendered into a NoCloud `CIDATA` seed disk; the provider reads no Secret or ConfigMap. |
 
 ###### `.spec.template.spec.bootSource`
@@ -2441,7 +2454,7 @@ Where the OS disk comes from.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `image` | string | Yes | The image in the host's image cache: an installed raw disk for [`Image`](ChBootSourceKind::Image), the installer ISO for [`InstallMedia`](ChBootSourceKind::InstallMedia). |
+| `image` | string | Yes | The image in the host's image cache: an installed raw disk for `Image`, the installer ISO for `InstallMedia`. |
 | `kind` | string | Yes | Which provisioning shape this machine uses. Allowed: `image`, `installMedia`. |
 
 ###### `.spec.template.spec.cpus`
@@ -2647,7 +2660,7 @@ How this machine's OS disk comes into being.
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `kind` | string | Yes | Which of the two provisioning shapes this machine uses. Allowed: `backingVolume`, `installMedia`. |
-| `volume` | string | Yes | Volume name within [`LibvirtMachineSpec::pool`]: the backing image for [`BackingVolume`](LibvirtBootSourceKind::BackingVolume), or the installer ISO for [`InstallMedia`](LibvirtBootSourceKind::InstallMedia). |
+| `volume` | string | Yes | Volume name within `LibvirtMachineSpec::pool`: the backing image for `BackingVolume`, or the installer ISO for `InstallMedia`. |
 
 #### `.spec.disks[]`
 
@@ -2763,7 +2776,7 @@ InfraMachine status contract (plus libvirt-specific diagnostics).
 | `initialization` | object |  | CAPI contract field: replaces the deprecated v1beta1 `status.ready`. |
 | `installMediaDetached` | boolean |  | Whether the install medium has been ejected (ADR-0044). |
 | `observedGeneration` | integer |  |  |
-| `observedPowerState` | string |  | The domain's last observed run state, mapped onto banlieue's backend-neutral [`PowerState`] (ADR-0034). The hypervisor's view, not a guest-OS-boot signal. Not part of the CAPI contract; mirrored onto the parent `VirtualMachine`'s `status.observedPowerState`. Allowed: `PoweredOn`, `PoweredOff`, `Suspended`, `null`. |
+| `observedPowerState` | string |  | The domain's last observed run state, mapped onto banlieue's backend-neutral `PowerState` (ADR-0034). The hypervisor's view, not a guest-OS-boot signal. Not part of the CAPI contract; mirrored onto the parent `VirtualMachine`'s `status.observedPowerState`. Allowed: `PoweredOn`, `PoweredOff`, `Suspended`, `null`. |
 | `sealedPartitions` | string[] |  | Partitions the guest has reported sealed, as LUKS containers, on a first-boot sealing machine (ADR-0088): from ``/run/banlieue/sealed`, read with the guest agent`. **Sticky**: the report is re-asserted every boot but lives in volatile state, and a powered-off machine has not become unsealed. Empty until reported, and on every machine without `spec.firstBootSealing`. Guest-supplied, so it is only ever used to *withhold* `GuestReady`. |
 | `tpmAttached` | boolean |  | Whether an emulated TPM was attached, when `spec.tpmEnabled` is set (ADR-0039). `None` when `tpmEnabled` is `false` or the attach has not run yet. A failed attach surfaces through the conditions rather than a dedicated `VirtualMachine`-level mirror. |
 | `tpmEndorsementCertificates` | string[] |  | PEM vTPM endorsement key certificate(s) reported by the guest and validated against this domain (ADR-0045). |
@@ -2862,7 +2875,7 @@ How this machine's OS disk comes into being.
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `kind` | string | Yes | Which of the two provisioning shapes this machine uses. Allowed: `backingVolume`, `installMedia`. |
-| `volume` | string | Yes | Volume name within [`LibvirtMachineSpec::pool`]: the backing image for [`BackingVolume`](LibvirtBootSourceKind::BackingVolume), or the installer ISO for [`InstallMedia`](LibvirtBootSourceKind::InstallMedia). |
+| `volume` | string | Yes | Volume name within `LibvirtMachineSpec::pool`: the backing image for `BackingVolume`, or the installer ISO for `InstallMedia`. |
 
 ###### `.spec.template.spec.disks[]`
 

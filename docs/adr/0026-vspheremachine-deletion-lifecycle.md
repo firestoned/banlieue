@@ -10,6 +10,8 @@
   work under this same reconciler, likely its own ADR amendment once the
   create path (this ADR) is proven." The create path is proven (live-tested,
   several rounds of bugfixing); this ADR covers deletion.
+- **Amended by:** [ADR-0090](0090-finalize-vm-per-backend-isolation.md) (2026-10-06, per-backend finalize
+  isolation) and [ADR-0101](0101-vspheremachine-ownership-marker-and-adoption.md) (2026-10-14, deletion with no `status.vmRef`).
 
 ## Context
 

@@ -96,7 +96,7 @@ flowchart TD
 
 ## Deliver a CAPI Machine&#x27;s bootstrap data to its InfraMachine (ADR-0129 milestone 1)
 
-PROPOSED (ADR-0129); milestone 1 IMPLEMENTED (controller serving CloudHypervisorMachine, Cloud Hypervisor hold, admission policy; libvirt, vSphere and Proxmox are neither held nor served until milestone 2). A Machine that CAPI creates over a banlieue InfraMachineTemplate gets its bootstrap provider's rendered data in spec.userData before its guest is created. Shown for Cloud Hypervisor, the first backend to hold creation; libvirt, vSphere and Proxmox follow in milestone 2 (ADR-0129 Decision 8).
+ACCEPTED (ADR-0129); milestone 1 IMPLEMENTED (controller serving CloudHypervisorMachine, Cloud Hypervisor hold, admission policy; libvirt, vSphere and Proxmox are neither held nor served until milestone 2). A Machine that CAPI creates over a banlieue InfraMachineTemplate gets its bootstrap provider's rendered data in spec.userData before its guest is created. Shown for Cloud Hypervisor, the first backend to hold creation; libvirt, vSphere and Proxmox follow in milestone 2 (ADR-0129 Decision 8).
 
 ```mermaid
 flowchart TD
@@ -192,10 +192,11 @@ flowchart TD
     t1["1. Consumer authenticates to the issuer (kubectl oidc-login / kubelogin, PKCE browser flow) and receives a signed ID token, cached locally and replayed as a bearer token."]
     t2["2. API server verifies the token against the issuer's JWKS and derives request.userInfo.username by prepending --oidc-username-prefix. This is the only identity assertion the rest of the path can trust."]
     t3["3. Consumer creates a VirtualMachineClaim naming a pool, a mandatory ttlSeconds, and a subject. Admission compares the claim issuer's prefix (its issuerPrefixes entry, else usernamePrefix) + spec.subject.id against the authenticated username, which with a distinct prefix per issuer also binds the claim to the issuer that authenticated its author (ADR-0047 Decision 9, amended 2026-10-13), and checks spec.subject.issuer against the operator allowlist. CREATE only: on UPDATE the requester is normally the controller adding its own finalizer, and applying the identity check there denies it, leaving claims that are created and then never reconciled."]
-    t4["4. Claim reconciler picks one Ready, unclaimed member (current image revision first, then longest-Ready, then name) and binds it with a resourceVersion-preconditioned merge patch: claim label, subject annotations, and ownerReferences re-parented from pool to claim. A second claim racing for the same member gets 409 and picks again. Status then publishes virtualMachineRef, boundAt and expiresAt = boundAt + ttlSeconds, counted from the bind instant so a claim that waited for capacity still gets its full TTL."]
-    t5["5. The pool sees a member it may no longer count as warm and creates a replacement, so the next consumer still finds one Ready. The pool never learns that claims exist."]
-    t6["6. On deletion or at expiresAt the claim deletes its member and holds its own finalizer until that member is gone from the API server, while the member's provider finalizer holds IT until the backend VM is destroyed. So a deleted claim means a destroyed sandbox, transitively. A vanished member fails the claim terminally rather than rebinding it: a consumer holding a claim believes it is talking to one specific VM."]
-    t1 --> t2 --> t3 --> t4 --> t5 --> t6
+    t4["4. IMPLEMENTED (ADR-0135): with more than one Ready candidate, the claim reconciler reads the candidates' Providers to rank members on a cordoned or Stale host last, and for Spread counts the subject's Claimed members per (provider, failure domain). Read-only."]
+    t5["5. Claim reconciler picks one Ready, unclaimed member (current image revision first, then host health and the claim's selection strategy per ADR-0135, then longest-Ready, then name) and binds it with a resourceVersion-preconditioned merge patch: claim label, subject annotations, and ownerReferences re-parented from pool to claim. A second claim racing for the same member gets 409 and picks again. Status then publishes virtualMachineRef, boundAt and expiresAt = boundAt + ttlSeconds, counted from the bind instant so a claim that waited for capacity still gets its full TTL."]
+    t6["6. The pool sees a member it may no longer count as warm and creates a replacement, so the next consumer still finds one Ready. The pool never learns that claims exist."]
+    t7["7. On deletion or at expiresAt the claim deletes its member and holds its own finalizer until that member is gone from the API server, while the member's provider finalizer holds IT until the backend VM is destroyed. So a deleted claim means a destroyed sandbox, transitively. A vanished member fails the claim terminally rather than rebinding it: a consumer holding a claim believes it is talking to one specific VM."]
+    t1 --> t2 --> t3 --> t4 --> t5 --> t6 --> t7
 ```
 
 <sub>Source: flow `flow-claim-pool-member` in `architecture.json`.</sub>
@@ -323,7 +324,7 @@ flowchart TD
 
 ## Give a Cloud Hypervisor guest a host PCI device
 
-ADR-0135, PROPOSED. A VMClass (or a CloudHypervisorMachineTemplate) names a device class; the host decides which device, root grants the guest's uid exactly that device's IOMMU group, and the sandboxed VMM attaches it.
+ADR-0136, PROPOSED. A VMClass (or a CloudHypervisorMachineTemplate) names a device class; the host decides which device, root grants the guest's uid exactly that device's IOMMU group, and the sandboxed VMM attaches it.
 
 ```mermaid
 flowchart TD

@@ -233,7 +233,7 @@ impl ScheduleError {
 
 /// Whether `provider` is cordoned: labelled `banlieue.io/unschedulable:
 /// "true"`, exactly (ADR-0124).
-fn is_unschedulable(provider: &Provider) -> bool {
+pub(crate) fn is_unschedulable(provider: &Provider) -> bool {
     provider
         .labels()
         .get(LABEL_UNSCHEDULABLE)
@@ -243,7 +243,7 @@ fn is_unschedulable(provider: &Provider) -> bool {
 
 /// Whether `provider`'s heartbeat, as the operator last judged it, is
 /// `Stale`. `Absent` and an unevaluated heartbeat are not (ADR-0102).
-fn is_stale(provider: &Provider) -> bool {
+pub(crate) fn is_stale(provider: &Provider) -> bool {
     provider
         .status
         .as_ref()

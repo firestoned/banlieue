@@ -44,7 +44,6 @@ sha2.workspace = true
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util", "fs"] }
 # Timestamps for the e2e status conditions.
-chrono.workspace = true
 tempfile.workspace = true
 # `e2e_pool_claim` generates scratch namespace suffixes and catches panics so
 # teardown always runs.

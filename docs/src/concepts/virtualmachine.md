@@ -47,6 +47,8 @@ condition vocabulary:
 | `PlacementValid` | The requested `VMClass`/`VMImage`/placement combination is resolvable. |
 | `InfrastructureReady` | The backend infrastructure CR reports Ready. |
 | `Migrating` | (optional) A recreate-based migration to a new `Provider`/failure domain is in progress. |
+| `GuestReady` | (optional) The installed guest has announced itself, mirrored from the infra CR (ADR-0043). `Ready` does not depend on it; a `GuestReady` pool does. |
+| `Paused` | Present while `spec.paused` holds reconciliation. |
 
 `status.initialization.provisioned` (a boolean, not a condition) tracks
 whether the backend has ever accepted the spec.
@@ -70,7 +72,7 @@ stateDiagram-v2
 
 ## Spec field reference
 
-> The list below is illustrative for Phase 0–1A. Use `kubectl explain
+> The list below is illustrative, not complete. Use `kubectl explain
 > virtualmachine.spec` (or
 > [the API reference](../reference/api.md)) for the authoritative shape.
 
@@ -221,7 +223,7 @@ message: address 192.0.2.90 on interface eth0 (networkClass prod) is already
 - **[VMImage](../reference/api.md)** — boot image source.
 - **[Provider](providers.md)** — which backend serves this VM.
 
-The infrastructure CRDs (`VSphereMachine`, future `ProxmoxMachine`,
-`LibvirtMachine`) are documented under [Provider Model](providers.md) and
+The infrastructure CRDs (`CloudHypervisorMachine`, `VSphereMachine`,
+`LibvirtMachine`, `ProxmoxMachine`) are documented under [Provider Model](providers.md) and
 [Infrastructure CRDs & CAPI](infra-crds-capi.md). The user normally doesn't
 touch them.

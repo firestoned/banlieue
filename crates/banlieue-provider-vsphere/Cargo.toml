@@ -63,7 +63,6 @@ tracing.workspace = true
 
 clap.workspace = true
 async-trait.workspace = true
-chrono.workspace = true
 
 # guestinfo.userdata delivery (ADR-0024): already present transitively
 # (pulled in by reqwest/vim_rs) at 0.22.1, so this adds no new third-party

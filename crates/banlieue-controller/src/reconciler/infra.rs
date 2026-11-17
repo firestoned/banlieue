@@ -65,10 +65,10 @@ impl InfraKind {
     /// Map a `Provider.spec.providerClassRef.name` onto its infra kind.
     ///
     /// `None` for a provider class this controller has no builder for. That
-    /// is a real state, not an impossible one: a `ProviderClass` can be
-    /// installed for a provider binary that exists while the controller-side
-    /// builder does not — Proxmox will be exactly that for a while — and it
-    /// must surface as a condition rather than a panic or a silent no-op.
+    /// is a real state, not an impossible one: a `ProviderClass` can name any
+    /// class, while the set of builders is closed to these four (see
+    /// `docs/src/concepts/providers.md`, "Adding a provider"). It must
+    /// surface as a condition rather than a panic or a silent no-op.
     #[must_use]
     pub fn from_provider_class(class: &str) -> Option<Self> {
         match class {

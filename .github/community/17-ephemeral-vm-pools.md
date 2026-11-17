@@ -283,7 +283,7 @@ provider can realise (see [Repo reality](#repo-reality-at-8360e19)).
 | A5 | vTPM EK certificate in machine status | 0045 | ✅ landed 2026-09-23 (libvirt; vSphere code-only) — published on the infra CR, mirrored through `VirtualMachine` onto a bound claim. **The design in phase D below was wrong**: swtpm persists no host-side copy of the certificate, so on libvirt the guest exports it to `/run/banlieue/ek.pem` and banlieue reads it with ADR-0043's read-only path (never `guest-exec`). Subject CN is checked against `<domain-name>:<domain-uuid>`, and for a `tpmEnabled` machine publication **gates `GuestReady`**, the same ordering ADR-0044 uses. The *mechanism* is verified against a real host — certificate read out of NV `0x01c00002` of a live domain, CN confirmed as `<name>:<uuid>` — and `tests/live_ek.rs` exercises the shipped path. **Unblocks F** |
 | A3 | `tpmEnabled` requires `installMode: Deferred` | 0048 | ✅ landed 2026-09-23 — pure check in `banlieue-controller`, rejected before scheduling so no infra CR is created; `Manual` passes, and an image with **no `template`** is rejected too (a pre-built disk is a pre-laid one) |
 | B1 | `VirtualMachinePool` | 0046 | ✅ landed and validated e2e against a real libvirt host — fills, self-heals, rolls, cascades on delete. **Also validated live against a real vSphere-backed pool (2026-09-23)**: a 2-member `GuestReady`-gated `sandbox-pool` (`debian-dev-v0.4.0`, `Deferred`, `tpmEnabled`, `small-dev` class) went apply→`Warm=True` in **130.3s**, both members within 29ms of each other — ~9.6s clone+vTPM+power-on, ~120.7s guest boot/install/announce, bounded by the 30s `NotAnnounced` poll cadence (ADR-0043 Decision 8) then correctly switching to the 300s interval once `GuestReady`. This is the first live confirmation that a `VirtualMachinePool` set to `readiness: GuestReady` actually reaches `Warm` on vSphere, not just that the signal decodes |
-| B2 | `VirtualMachineClaim` | 0047, 0132 | ✅ landed: bind/hold/release, TTL expiry, finalizer, nonce (retired 2026-11-05, ADR-0049 amended); a pool is now consumable. A claim may select its pool by label (`spec.poolSelector`, ADR-0132, 2026-11-16) |
+| B2 | `VirtualMachineClaim` | 0047, 0132 | ✅ landed: bind/hold/release, TTL expiry, finalizer, nonce (retired 2026-11-05, ADR-0049 amended); a pool is now consumable. A claim may select its pool by label (`spec.poolSelector`, ADR-0132, 2026-11-16), and chooses its member by strategy and host health (`spec.selection.strategy`, ADR-0135, 2026-11-17) |
 | C | In-guest agent (separate repo) | own repo | ➡️ moved to [mediatore](https://github.com/firestoned/mediatore) (`mediatore-guest`), with `AgentSandbox` (ADR-0097, mediatore ADR-0008, 2026-10-12) |
 | D | libvirt provider: `LibvirtMachine` reconciler | 07 + 0050 + 0054 | ✅ complete — CRD, domain XML, reconciler, NoCloud user-data; roadmap 07 closed |
 | E | Proxmox provider, same | amend 06 | ⛔ pool work not started. The provider itself now exists (roadmap 06, ADR-0074/0075, template clone only); the TPM-class create-from-ISO path, `GuestReady`, media detach and EK read below are all open |
@@ -664,6 +664,22 @@ retargeted). That run also found a latent bind race, now fixed: the
 `resourceVersion` precondition was taken from a fresh GET instead of from the
 list the member was picked from, so a second claim could overwrite the first
 one's label.
+
+**Member by strategy, 2026-11-17 (ADR-0135).** `spec.selection.strategy` is
+`LongestReady` (the default, the order above), `MostAvailable` (the failure
+domain with the most Ready members) or `Spread` (the domain where the claim's
+subject, issuer and id together, holds fewest, then `MostAvailable`). A
+failure domain is `(providerName, failureDomain)` from `status.scheduled`.
+Under every strategy a member on a cordoned, `Stale` or unknown host ranks
+last; current revision still ranks first, and nothing ever leaves a claim
+`Pending` while a member is Ready. The `Bound` message names the strategy and
+the domain. Immutable by the claim policy. Example
+`examples/29-virtualmachineclaim-spread.yaml`. Unit-tested
+(`claim_plan_tests.rs`, `admission_policies.rs`), and verified against a real
+API server (kind, 2026-11-17): `live_claim.rs` 11/11 and
+`live_claim_subject_policy.rs` 6/6, including the new case that refuses
+setting `selection` after creation. Still open: a live multi-host `Spread`
+run, which needs members on two hosts.
 
 ### C: In-guest agent (separate repo under `firestoned`)
 

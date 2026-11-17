@@ -87,8 +87,8 @@ claimable. How the installed system reports differs by backend:
 | Backend | How the installed system reports | What the image or user-data must carry | Verified live |
 | --- | --- | --- | --- |
 | **libvirt** | writes `/run/banlieue/phase`; the provider reads it through `qemu-guest-agent` | the libvirt stage of `examples/17-cloud-config-guest-phase.yaml`, and `qemu-guest-agent` installed and enabled. A `tpmEnabled` class also needs `examples/21-cloud-config-guest-ek-certificate.yaml` plus `tpm2-tools` and `openssl`: swtpm keeps no host-side copy of the certificate, so the guest exports it | 2026-10-12: Deferred, `tpmEnabled`, Kairos on Debian 13. A member reached `GuestReady` **158 s** after creation, installer ejected, EK certificate published; the pool e2e (warm, claim, refill, release, pool deletion) passed |
-| **Cloud Hypervisor** | `systemd-notify phase=installed` over vsock; the provider listens on the host | the Cloud Hypervisor stage of example 16. No guest agent. The EK certificate is read on the host | 2026-10-09: a 2-member pool `Warm` in **90 s**, refills in 80 s and 100 s. 2026-10-12, two hosts with the vTPM-fixed VMM: `Warm` in 115 s and 110 s, the pool e2e passed on both. See [the timings page](../reference/cloud-hypervisor-pool-timings.md) for the vTPM fault and the VMM it needs |
-| **vSphere** | `vmware-rpctool` writes `guestinfo.banlieue.phase` | the vSphere stage of example 16, and open-vm-tools | 2026-09-23: a 2-member `GuestReady` pool `Warm` in **130.3 s** |
+| **Cloud Hypervisor** | `systemd-notify phase=installed` over vsock; the provider listens on the host | the Cloud Hypervisor stage of example 17. No guest agent. The EK certificate is read on the host | 2026-10-09: a 2-member pool `Warm` in **90 s**, refills in 80 s and 100 s. 2026-10-12, two hosts with the vTPM-fixed VMM: `Warm` in 115 s and 110 s, the pool e2e passed on both. See [the timings page](../reference/cloud-hypervisor-pool-timings.md) for the vTPM fault and the VMM it needs |
+| **vSphere** | `vmware-rpctool` writes `guestinfo.banlieue.phase` | the vSphere stage of example 17, and open-vm-tools | 2026-09-23: a 2-member `GuestReady` pool `Warm` in **130.3 s** |
 
 Example 17 carries all three stages; each one only runs where its
 transport exists, so one layer serves every backend.
@@ -252,7 +252,7 @@ it from the `${IP}`/`${PREFIX}` placeholders in its user-data instead
 [ADR-0114](https://github.com/firestoned/banlieue/blob/main/docs/adr/0114-static-addressing-in-the-nocloud-seed.md)).
 Before v0.4.12 libvirt and Cloud Hypervisor ignored the address and members
 came up on DHCP. An agentless member reports its drawn address with
-`addressSource: Static` (declared, not observed) until something observes
+`addressSource: static` (declared, not observed) until something observes
 it, so its `VirtualMachine` and claim show it either way.
 
 **Size the pool above `maxReplicas`, with spares.** An address is held

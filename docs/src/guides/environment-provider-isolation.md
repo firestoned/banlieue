@@ -224,7 +224,7 @@ hardcodes a cluster, and neither needs a second `Provider`.
   to live in the same vCenter today. This is a real, defensible reason; it
   just isn't a *networking* reason, and it should be a conscious choice
   (documented in an ADR if it's architecturally significant, per this
-  project's [ADD methodology](https://github.com/firestoned/banlieue/blob/main/rules/architecture-driven-development.md)),
+  project's [ADD methodology](https://github.com/firestoned/banlieue/blob/main/.claude/rules/architecture-driven-development.md)),
   not a default reached for out of habit.
 - **A `Provider.metadata.labels` convention like `env: dev`/`env: qa`**
   (used by `VirtualMachine.spec.placement.providerSelector` to pick a

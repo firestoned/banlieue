@@ -2,8 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Builders for the per-instance provider workload.
 //!
-//! Every `Provider` gets its own Deployment, ServiceAccount, Role, RoleBinding
-//! and ClusterRoleBinding (ADR-0003). These builders are **pure**: they take a
+//! A `Provider` whose class runs in-cluster gets its own Deployment,
+//! ServiceAccount, Role, RoleBinding and ClusterRoleBinding (ADR-0003). A
+//! class with an External workload (a Cloud Hypervisor host provider, which
+//! runs on its host) gets no Deployment: only its identity and the bindings
+//! it needs, including the opt-in tenant ClusterRole of ADR-0134 when the
+//! `Provider` serves other namespaces. These builders are **pure**: they take a
 //! resolved [`WorkloadInputs`] and return objects, touching no cluster. That is
 //! what lets the reconciler and `banlieue bootstrap` share one definition of
 //! the workload shape (ADR-0013) — a workload created by the CLI is identical

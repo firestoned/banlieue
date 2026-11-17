@@ -239,6 +239,16 @@ spec:
         + ' member, picked once, and is never rebound (ADR-0047 Decision 7,'
         + ' ADR-0132).'
       reason: Forbidden
+    #    `selection` (ADR-0135) is read once, at pick time, exactly like the
+    #    pool fields, and is usually absent: the same optional access and
+    #    the same reasoning apply.
+    - expression: >-
+        request.operation != 'UPDATE'
+        || object.spec.?selection == oldObject.spec.?selection
+      messageExpression: >-
+        'spec.selection is immutable; it is read once, when the claim picks'
+        + ' its member, and a claim is never rebound (ADR-0135).'
+      reason: Forbidden
     - expression: >-
         request.operation != 'UPDATE'
         || object.spec.ttlSeconds == oldObject.spec.ttlSeconds

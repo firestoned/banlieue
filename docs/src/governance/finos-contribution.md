@@ -21,7 +21,7 @@ FINOS's current requirements when it starts rather than assumed.
 | Governance and maintainer criteria | `GOVERNANCE.md`, `MAINTAINERS.md` | Done |
 | Security policy and threat model | `SECURITY.md`, [threat model](../security/threat-model.md) | Done |
 | Signed releases, SBOMs, SLSA provenance | release workflow (ADR-0006) | Done |
-| DCO enforced on every pull request | DCO GitHub App on the repository | To do (repository setting) |
+| DCO enforced on every pull request | `dco` job in `.github/workflows/build.yaml` (`make dco-check`) | Done |
 | OpenSSF Best Practices badge | bestpractices.dev registration | To do (roadmap 16) |
 | Charter | [charter](charter.md) | Draft |
 

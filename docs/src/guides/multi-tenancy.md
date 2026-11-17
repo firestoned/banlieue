@@ -51,6 +51,17 @@ error.
 3. Give the team a namespaced `Role` and `RoleBinding` for its own objects.
    Use a `Role`, never a `ClusterRole`.
 
+4. If the team's `VirtualMachine`s name a `spec.userData` Secret or
+   ConfigMap, let the controller read them there. The controller resolves
+   `userData` in the VM's own namespace, and the shipped
+   `deploy/controller/rbac/role.yaml` grants that only in `banlieue-system`.
+   Copy that `Role` and its `RoleBinding` into the team's namespace (change
+   `metadata.namespace`, keep the subject `banlieue-controller` in
+   `banlieue-system`). Without it, such a VM reports a `userData` resolution
+   failure; a VM with inline `userData`, or none, needs nothing here. The
+   `virtualmachine-userdata-authorization` admission policy (ADR-0042) still
+   decides which Secrets a team may name.
+
 The controller notices the label at once: no restart, and everything already
 in the namespace is reconciled.
 

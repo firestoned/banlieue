@@ -40,7 +40,7 @@ spec:
           A ProviderClass carries the install metadata for one backend type: which
           `banlieue provider <backend>` role to run, from which image, with what pod
           shape and extra permissions. It names no endpoint and holds no credentials
-          — that is a [`Provider`](super::Provider)'s job.
+          — that is a `Provider`'s job.
 
           # Why create one
 
@@ -72,7 +72,7 @@ spec:
               A ProviderClass carries the install metadata for one backend type: which
               `banlieue provider <backend>` role to run, from which image, with what pod
               shape and extra permissions. It names no endpoint and holds no credentials
-              — that is a [`Provider`](super::Provider)'s job.
+              — that is a `Provider`'s job.
 
               # Why create one
 
@@ -244,7 +244,7 @@ spec:
               replicas:
                 description: |-
                   Replicas for each provider Deployment. Defaults to
-                  [`DEFAULT_PROVIDER_REPLICAS`]. Provider controllers are leader-elected,
+                  `DEFAULT_PROVIDER_REPLICAS`. Provider controllers are leader-elected,
                   so values above one provide failover, not parallelism.
                 format: int32
                 nullable: true

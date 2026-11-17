@@ -98,13 +98,13 @@ spec:
                   the kairos-operator `OSArtifact` as `cloudConfigRef`
                   (`auroraboot build-iso --cloud-config`). Empty list = no cloud-config.
                   Index 0 is the base; each subsequent entry layers on top.
-                  SecretRef-first; see [`CloudConfigSource`] and ADR-0020.
+                  SecretRef-first; see `CloudConfigSource` and ADR-0020.
                   Ignored for non-`Url` sources.
                 items:
                   description: |-
                     Source of a default cloud-config baked into a built image artifact.
 
-                    Mirrors [`CABundleSource`]'s value-or-source shape, but is **secretRef-first**
+                    Mirrors `CABundleSource`'s value-or-source shape, but is **secretRef-first**
                     (ADR-0020): only `secret_ref` is implemented today, because kairos-operator's
                     `OSArtifact.spec.cloudConfigRef` is itself Secret-only and
                     `banlieue-imagebuilder` passes this Secret straight through. The `inline` and
@@ -115,7 +115,7 @@ spec:
                     secretRef:
                       description: |-
                         Key in a Secret in the imagebuild namespace holding the cloud-config
-                        YAML (key defaults to [`DEFAULT_CLOUD_CONFIG_KEY`]).
+                        YAML (key defaults to `DEFAULT_CLOUD_CONFIG_KEY`).
                       nullable: true
                       properties:
                         key:
@@ -191,7 +191,7 @@ spec:
                   `banlieue-imagebuilder` into the kairos-operator `OSArtifact`'s
                   `spec.volumes[]` + `spec.artifacts.overlayISOVolume` — the same
                   `auroraboot build-iso --overlay-iso` mechanism a hand-run ISO-build
-                  pipeline would use. See [`IsoOverlaySource`] and ADR-0022. Ignored for
+                  pipeline would use. See `IsoOverlaySource` and ADR-0022. Ignored for
                   `cloudImage`-kind builds and non-`Url` sources.
                 nullable: true
                 properties:
@@ -202,7 +202,7 @@ spec:
                       an empty list is accepted but wires nothing into the `OSArtifact`.
                     items:
                       description: |-
-                        One overlay file: a key within [`IsoOverlaySource::secret_ref`] mapped to
+                        One overlay file: a key within `IsoOverlaySource::secret_ref` mapped to
                         a destination path relative to the built ISO's root.
                       properties:
                         key:
@@ -339,7 +339,7 @@ spec:
                   `Template` source (an existing template banlieue adopts and never
                   builds) only `rootFolder` is read, to find the template in
                   `<rootFolder>/<failure-domain>`; every other field is ignored.
-                  Ignored for `BackingFile`. See [`VMImageTemplate`], ADR-0020 and
+                  Ignored for `BackingFile`. See `VMImageTemplate`, ADR-0020 and
                   ADR-0104.
                 nullable: true
                 properties:
@@ -374,7 +374,7 @@ spec:
                         default: thin
                         description: |-
                           Provisioning hint: `thin` (default), `thick`, or `eagerZeroed`. Reuses
-                          the backend-agnostic [`DiskProvisioning`] shared with `VMClass` /
+                          the backend-agnostic `DiskProvisioning` shared with `VMClass` /
                           `VSphereMachine`; eager-zeroing is the `eagerZeroed` variant, not a
                           separate flag. Providers honor it on a best-effort basis.
                         enum:
@@ -386,7 +386,7 @@ spec:
                   firmware:
                     description: |-
                       Firmware for the template (`govc vm.create -firmware`). Reuses the
-                      backend-agnostic [`Firmware`] hint (`bios` / `efi` / `efi-secure`). When
+                      backend-agnostic `Firmware` hint (`bios` / `efi` / `efi-secure`). When
                       unset, defaults to `efi`. vSphere maps `efi-secure` to EFI with secure
                       boot enabled.
                     enum:
@@ -417,7 +417,7 @@ spec:
                   installMode:
                     default: immediate
                     description: |-
-                      How the template's install step is driven. See [`InstallMode`] and
+                      How the template's install step is driven. See `InstallMode` and
                       ADR-0021 / ADR-0040.
                     enum:
                     - immediate
@@ -514,7 +514,7 @@ spec:
                   `banlieue-imagebuilder` into the kairos-operator `OSArtifact`'s
                   `spec.artifacts.uki.{iso,keysVolume}` (replacing the plain
                   `artifacts.iso` request) — the `auroraboot build-uki` mechanism. See
-                  [`TrustedBootSource`] and ADR-0051. Ignored for `cloudImage`-kind
+                  `TrustedBootSource` and ADR-0051. Ignored for `cloudImage`-kind
                   builds and non-`Url` sources.
                 nullable: true
                 properties:
@@ -771,7 +771,7 @@ spec:
                       description: |-
                         Resolved concrete reference on the backend, for backends with one
                         reference per provider. Proxmox: VMID. Libvirt: path. Unset for
-                        vSphere, whose per-zone references are in [`Self::zones`] (ADR-0104).
+                        vSphere, whose per-zone references are in `Self::zones` (ADR-0104).
                       nullable: true
                       type: string
                     zones:
@@ -812,14 +812,14 @@ spec:
                               The template's bare display name within this zone once ready — the
                               value a provider passes to a name-based template lookup. NOT a
                               decorated string (no `[dc]`/folder prefix): the folder lives in
-                              [`Self::template_folder`], kept separate so a lookup can be built
+                              `Self::template_folder`, kept separate so a lookup can be built
                               from structured fields instead of parsing this one.
                             nullable: true
                             type: string
                           templateFolder:
                             description: |-
                               The vCenter folder path (relative to the datacenter's VM folder,
-                              e.g. `templates/cluster-01`) the template in [`Self::resolved_ref`]
+                              e.g. `templates/cluster-01`) the template in `Self::resolved_ref`
                               lives in: `<spec.template.rootFolder>/<zone>` for both `Url` imports
                               (ADR-0020 Decision #5) and `Template` sources (ADR-0104). Unset while
                               the zone is not ready.

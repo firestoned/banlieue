@@ -34,8 +34,8 @@ pub use virtualmachine::{
 #[allow(deprecated)]
 pub use virtualmachineclaim::{
     ANNOTATION_SUBJECT_ID, ANNOTATION_SUBJECT_ISSUER, CLAIM_FINALIZER, CLAIM_NONCE_BITS,
-    CLAIM_NONCE_BYTES, ClaimPhase, ClaimSubject, VirtualMachineClaim, VirtualMachineClaimSpec,
-    VirtualMachineClaimStatus,
+    CLAIM_NONCE_BYTES, ClaimPhase, ClaimSelection, ClaimSubject, SelectionStrategy,
+    VirtualMachineClaim, VirtualMachineClaimSpec, VirtualMachineClaimStatus,
 };
 pub use virtualmachinemove::{
     MovePhase, MoveTarget, VirtualMachineMove, VirtualMachineMoveSpec, VirtualMachineMoveStatus,

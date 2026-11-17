@@ -62,10 +62,12 @@ names mean the same thing — by contract — on every provider that resolves th
 4. That backend's provider watches, sees the new CR, and provisions.
 5. Status propagates back; the user's `VirtualMachine` is `Ready=true` again.
 
-> This is the design target for *every* pair of backends. Today only the
-> vSphere backend has a working machine reconciler, so this flow is only
-> exercisable between two vSphere `Provider`s (e.g. two vCenters) until a
-> `ProxmoxMachine`/`LibvirtMachine` reconciler exists on the other side.
+> Every backend (Cloud Hypervisor, vSphere, libvirt, Proxmox VE) has a
+> working machine reconciler, so this flow works between any two of them.
+> The swap is a recreate: the new VM is a fresh one on the new backend, and
+> what moves with it is the spec, not the disk. A VM moves only when its
+> current placement no longer fits (ADR-0125), and `migrationPolicy`
+> decides whether that happens automatically.
 
 **What the user did NOT have to do:**
 
@@ -151,7 +153,9 @@ What this enables, that wasn't easily possible before:
 A team running OpenStack wants to participate. Today, banlieue doesn't have an
 OpenStack provider. Tomorrow they write one.
 
-**What that team has to build:**
+**What that team has to build** (in banlieue itself: the controller's set of
+infrastructure kinds is closed today, see
+[Adding a provider](../concepts/providers.md#adding-a-provider)):
 
 - A controller (a Rust crate, using `banlieue-provider-sdk`) that:
   - Watches `OpenStackMachine` infrastructure CRs.
@@ -159,6 +163,8 @@ OpenStack provider. Tomorrow they write one.
   - Reports status back on the CR's `.status`.
 - An infrastructure CRD (`OpenStackMachine`, `OpenStackMachineTemplate`) that
   satisfies the [CAPI v1beta2 InfraMachine contract](https://cluster-api.sigs.k8s.io/developer/providers/contracts/).
+- A builder in `banlieue-controller` that renders a scheduled
+  `VirtualMachine` as an `OpenStackMachine`, and a `ProviderClass` for it.
 - A container image and a deployment manifest.
 
 **What every existing user has to do to consume it:**

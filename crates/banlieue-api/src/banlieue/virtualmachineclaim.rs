@@ -119,6 +119,14 @@ pub struct VirtualMachineClaimSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pool_selector: Option<LabelSelector>,
 
+    /// How the member is chosen among the Ready ones (ADR-0135). Absent
+    /// means `LongestReady`, the order every claim used before this field
+    /// existed. A strategy only reorders: no strategy leaves a claim
+    /// `Pending` while a Ready member exists. Immutable, like the pool
+    /// fields: it is read once, when the member is picked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selection: Option<ClaimSelection>,
+
     /// Who this member is for. Opaque to banlieue: recorded, mirrored onto
     /// the member as annotations, and never interpreted.
     pub subject: ClaimSubject,
@@ -128,6 +136,62 @@ pub struct VirtualMachineClaimSpec {
     /// its full TTL. Required, with no default: a claim without a deadline
     /// is a leaked VM, and the right value is a property of the workload.
     pub ttl_seconds: u64,
+}
+
+impl VirtualMachineClaimSpec {
+    /// The strategy this claim ranks members by: `spec.selection.strategy`,
+    /// or [`SelectionStrategy::LongestReady`] when unset (ADR-0135).
+    #[must_use]
+    pub fn strategy(&self) -> SelectionStrategy {
+        self.selection
+            .as_ref()
+            .map(|s| s.strategy)
+            .unwrap_or_default()
+    }
+}
+
+/// How a claim chooses among the Ready members it may take (ADR-0135).
+///
+/// A struct rather than a bare enum, so later knobs (a hard spread, a
+/// preferred failure domain) have somewhere to go.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaimSelection {
+    /// The ranking to apply. Defaults to `LongestReady`.
+    #[serde(default)]
+    pub strategy: SelectionStrategy,
+}
+
+/// The ranking a claim applies to Ready members (ADR-0135 Decision 1).
+///
+/// Every strategy sits inside the same fixed order: Ready and unclaimed
+/// only, then current image revision of the member's own pool, then members
+/// on a healthy host, then the strategy's own key, then the member Ready
+/// longest, then member name. A failure domain is the pair
+/// `(status.scheduled.providerName, status.scheduled.failureDomain)`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub enum SelectionStrategy {
+    /// No placement preference: the member Ready longest, which is the one
+    /// idle expiry would otherwise reap next.
+    #[default]
+    LongestReady,
+    /// Take from the failure domain with the most Ready members, so warm
+    /// capacity drains evenly and no single domain runs dry first.
+    MostAvailable,
+    /// Take from the failure domain where this claim's subject (issuer and
+    /// id together) holds the fewest members, then as `MostAvailable`.
+    /// Soft: a claim never waits for a free domain.
+    Spread,
+}
+
+impl std::fmt::Display for SelectionStrategy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::LongestReady => "LongestReady",
+            Self::MostAvailable => "MostAvailable",
+            Self::Spread => "Spread",
+        })
+    }
 }
 
 /// The identity a claim is made on behalf of.

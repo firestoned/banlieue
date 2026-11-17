@@ -58,11 +58,11 @@ flowchart TB
     P5 -.->|"these VMs can become\nnodes of"| P6
 ```
 
-> Steps 3 and 5 are drawn for both backends to show the target shape. Only
-> the vSphere path is fully wired end-to-end today: `banlieue-provider-libvirt`
-> handles registration + image import (steps 2–3) but has no
-> `LibvirtMachine` reconciler yet, so step 5 only clones/powers on a real VM
-> on vSphere. See [Project status](../index.md#project-status).
+> Steps 3 and 5 are drawn with the vSphere and libvirt kinds for brevity.
+> Every backend (Cloud Hypervisor, vSphere, libvirt and Proxmox) runs the
+> whole chain end to end, each with its own machine kind
+> (`CloudHypervisorMachine`, `VSphereMachine`, `LibvirtMachine`,
+> `ProxmoxMachine`). See [Project status](../index.md#project-status).
 
 ## Walkthrough
 
@@ -112,7 +112,7 @@ BANLIEUE_ENV_FILE=~/.k0s/banlieue.env BACKEND=vsphere \
 ```
 
 Subcommands run individually: `vms | config | apply | kubeconfig | label |
-flux | destroy`. `GOVC_*` (URL/creds/datacenter/CA) comes from the ambient
+flux | join | destroy`. `GOVC_*` (URL/creds/datacenter/CA) comes from the ambient
 environment; nothing environment-specific is ever committed to the env file
 (`rules/no-real-infrastructure.md`).
 
@@ -479,8 +479,9 @@ for a bootstrap install with `--image-digest`; it pins the controller,
 operator and imagebuilder Deployments and every seeded `ProviderClass`:
 
 ```sh
-DIGEST=$(crane digest ghcr.io/firestoned/banlieue:v0.4.5)
-banlieue bootstrap operator --version v0.4.5 --image-digest "$DIGEST"
+BANLIEUE_VERSION=vX.Y.Z   # the release to install
+DIGEST=$(crane digest ghcr.io/firestoned/banlieue:"$BANLIEUE_VERSION")
+banlieue bootstrap operator --version "$BANLIEUE_VERSION" --image-digest "$DIGEST"
 ```
 
 **Output:** CRDs installed, two controllers running, zero backends
@@ -535,13 +536,13 @@ portable across every cluster of a `Provider`, and across multiple
 A `VirtualMachine` references a `classRef`/`imageRef` and (optionally)
 placement constraints. `banlieue-controller` resolves the scheduling
 decision and server-side-applies the backend-specific infra CR
-(`VSphereMachine` today; a `LibvirtMachine` is the design target but not
-implemented yet — see [libvirt Provider](libvirt-provider.md)) owned by the
-`VirtualMachine`, and that provider clones a real VM from the template
-resolved in step 3.
+(`CloudHypervisorMachine`, `VSphereMachine`, `LibvirtMachine` or
+`ProxmoxMachine`) owned by the `VirtualMachine`, and that provider creates a
+real VM from the image resolved in step 3.
 
 **Output:** a running VM, with `VirtualMachine.status` mirroring the infra
-CR's own status. See **[vSphere Provider](vsphere-provider.md)** step 6.
+CR's own status. See the provider guide for your backend, for example
+**[vSphere Provider](vsphere-provider.md)** step 6.
 
 ### 6. Optional: use these VMs as a k0s workload cluster
 
@@ -576,11 +577,11 @@ cluster in phase 6 — goes through banlieue's own CRD-only contract.
 
 | Phase | Guide |
 | --- | --- |
-| 0 — Bootstrap | `scripts/bootstrap-k0s-cluster.sh --help`; ADR-0017, ADR-0018 |
-| 1 — Install banlieue | [Core Controller](core-controller.md) |
-| 2 — Register a backend | [vSphere Provider](vsphere-provider.md), [libvirt Provider](libvirt-provider.md), [Provider Lifecycle & Install](provider-lifecycle.md), [Environment / Provider Isolation](environment-provider-isolation.md) |
-| 3 — Build an image | [Using banlieue-imagebuilder](using-banlieue-imagebuilder.md), [Setting up the Kairos Operator](kairos-operator-setup.md), [Building an Alpine VM Template](alpine-vsphere-template.md), [Building a Kairos Hadron VM Template](building-kairos-hadron-template.md) |
-| 4 / 5 — VMClass / VirtualMachine | [vSphere Provider](vsphere-provider.md) steps 4–7 |
-| 6 — CAPI workload cluster | [Infrastructure CRDs & CAPI](../concepts/infra-crds-capi.md) |
+| 0: Bootstrap | `scripts/bootstrap-k0s-cluster.sh --help`; ADR-0017, ADR-0018 |
+| 1: Install banlieue | [Core Controller](core-controller.md) |
+| 2: Register a backend | [Cloud Hypervisor Provider](cloud-hypervisor-host.md), [vSphere Provider](vsphere-provider.md), [libvirt Provider](libvirt-provider.md), [Proxmox VE Provider](proxmox-provider.md), [Provider Lifecycle & Install](provider-lifecycle.md), [Environment / Provider Isolation](environment-provider-isolation.md) |
+| 3: Build an image | [Using banlieue-imagebuilder](using-banlieue-imagebuilder.md), [Setting up the Kairos Operator](kairos-operator-setup.md), [Building an Alpine VM Template](alpine-vsphere-template.md), [Building a Kairos Hadron VM Template](building-kairos-hadron-template.md) |
+| 4 / 5: VMClass / VirtualMachine | [vSphere Provider](vsphere-provider.md) steps 4–7 |
+| 6: CAPI workload cluster | [Cluster API](cluster-api.md), [Infrastructure CRDs & CAPI](../concepts/infra-crds-capi.md) |
 
 Every field of every CRD used along the way: **[API Reference](../reference/api.md)**.

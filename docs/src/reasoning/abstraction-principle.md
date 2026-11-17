@@ -52,9 +52,9 @@ banlieue's principle is stricter:
   name. The provider holds the credential. The user never sees a vSphere
   password or a Proxmox API token in a manifest.
 - **Errors are uniform.** Backend-specific errors are translated into
-  banlieue-native conditions ("`ProvisioningFailed`", "`ImageNotAvailable`",
-  "`ProviderUnreachable`") that the user can act on without knowing which
-  backend produced them.
+  banlieue-native condition reasons (`ImageNotReady`, `TpmUnsupported`,
+  `ProviderNotAlive` on the `Scheduled` condition) that the user can act on
+  without knowing which backend produced them.
 
 ## What this gets us
 
@@ -106,8 +106,8 @@ type system is the source of truth, and it is small on purpose.
 
 ### 2. Providers implement a fixed contract
 
-Provider infrastructure CRDs (`VSphereMachine`, future `ProxmoxMachine`, future
-`LibvirtMachine`) satisfy the
+Provider infrastructure CRDs (`CloudHypervisorMachine`, `VSphereMachine`,
+`LibvirtMachine`, `ProxmoxMachine`) satisfy the
 [Cluster API v1beta2 InfraMachine contract](https://cluster-api.sigs.k8s.io/developer/providers/contracts/).
 That contract is **not banlieue-invented**; it's a public, versioned, multi-vendor
 spec for *what an infrastructure object looks like* that the CAPI community has

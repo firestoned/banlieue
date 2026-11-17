@@ -3,6 +3,13 @@
 - **Status:** Accepted
 - **Date:** 2026-09-19
 - **Proposed:** 2026-09-19
+- **Amended by:** [ADR-0056](0056-vmpool-address-pool-entries.md) (2026-09-24): Decision 9's inline
+  `PoolAddressing` is a list of addresses and ranges, not one range.
+
+> **Note (2026-11-17):** the Context below predates
+> [ADR-0043](0043-guestready-installed-guest-signal.md)'s implementation.
+> `GuestReady` is now published (libvirt, vSphere and Cloud Hypervisor), so a
+> pool can name it; `spec.readiness` stays required (Decision 2).
 
 ## Context
 

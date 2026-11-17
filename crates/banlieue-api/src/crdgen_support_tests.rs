@@ -297,4 +297,112 @@ mod tests {
         }
         assert!(seen.is_empty(), "unsupported formats: {seen:?}");
     }
+
+    // ------------------------------------------------------------------
+    // Rustdoc intra-doc links become plain code in descriptions. A Rust
+    // path is not a link a `kubectl explain` reader or the API reference
+    // page can follow, so `[`X`]` and `[`X`](super::X)` print as `X`.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn a_bare_intra_doc_link_becomes_code() {
+        assert_eq!(
+            plain_doc_links("set by [`StorageClassMapping`] here"),
+            "set by `StorageClassMapping` here"
+        );
+    }
+
+    #[test]
+    fn an_intra_doc_link_with_a_rust_path_target_becomes_code() {
+        assert_eq!(
+            plain_doc_links("see [`Provider`](super::Provider) and [`A::b`](crate::A::b)."),
+            "see `Provider` and `A::b`."
+        );
+    }
+
+    /// A real URL is a link a reader can follow, so it stays a link.
+    #[test]
+    fn a_link_to_a_url_is_kept() {
+        let text = "see [`kube`](https://kube.rs/) for more";
+        assert_eq!(plain_doc_links(text), text);
+    }
+
+    #[test]
+    fn text_without_doc_links_is_unchanged() {
+        for text in [
+            "plain text",
+            "a [note] in brackets",
+            "an [ordinary](https://example.com) link",
+            "an array `[1, 2]` in code",
+            "unterminated [`code",
+            "",
+        ] {
+            assert_eq!(plain_doc_links(text), text, "{text}");
+        }
+    }
+
+    #[test]
+    fn nested_descriptions_are_cleaned() {
+        let mut child = JSONSchemaProps {
+            description: Some("child [`Inner`](super::Inner)".into()),
+            ..JSONSchemaProps::default()
+        };
+        child.items = None;
+        let mut root = JSONSchemaProps {
+            description: Some("root [`Outer`]".into()),
+            properties: Some(BTreeMap::from([("child".to_string(), child)])),
+            ..JSONSchemaProps::default()
+        };
+        plain_schema_doc_links(&mut root);
+        assert_eq!(root.description.as_deref(), Some("root `Outer`"));
+        assert_eq!(
+            root.properties.unwrap()["child"].description.as_deref(),
+            Some("child `Inner`")
+        );
+    }
+
+    /// Every shipped CRD, after `prepared`: no rustdoc link syntax left in
+    /// any description, so neither `kubectl explain` nor the API reference
+    /// shows `[`X`]`.
+    #[test]
+    fn no_shipped_crd_carries_rustdoc_link_syntax() {
+        fn descriptions(schema: &JSONSchemaProps, out: &mut Vec<String>) {
+            if let Some(d) = &schema.description {
+                out.push(d.clone());
+            }
+            for child in schema.properties.iter().flat_map(|m| m.values()) {
+                descriptions(child, out);
+            }
+            if let Some(JSONSchemaPropsOrArray::Schema(child)) = &schema.items {
+                descriptions(child, out);
+            }
+            if let Some(JSONSchemaPropsOrBool::Schema(child)) = &schema.additional_properties {
+                descriptions(child, out);
+            }
+            for list in [&schema.all_of, &schema.any_of, &schema.one_of] {
+                for child in list.iter().flatten() {
+                    descriptions(child, out);
+                }
+            }
+        }
+        for crd in all_crds() {
+            for version in &crd.spec.versions {
+                let root = version
+                    .schema
+                    .as_ref()
+                    .and_then(|s| s.open_api_v3_schema.as_ref())
+                    .expect("schema");
+                let mut all = Vec::new();
+                descriptions(root, &mut all);
+                for d in all {
+                    assert_eq!(
+                        plain_doc_links(&d),
+                        d,
+                        "{}: rustdoc link syntax left in: {d}",
+                        crd.spec.names.kind
+                    );
+                }
+            }
+        }
+    }
 }

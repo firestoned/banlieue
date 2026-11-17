@@ -6,6 +6,8 @@
   (per-zone template import) and follows the same shape as
   [ADR-0026](0026-vspheremachine-deletion-lifecycle.md) (`VSphereMachine`
   deletion lifecycle) — this ADR is the same fix for `VMImage`.
+- **Amended by:** [ADR-0104](0104-vsphere-template-kind-per-zone-lookup.md) (2026-10-21): deletion destroys only the
+  per-zone templates banlieue owns.
 
 ## Context
 

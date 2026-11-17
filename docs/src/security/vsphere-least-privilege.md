@@ -22,8 +22,9 @@ guess at what a VM provider usually needs.
 
 Transport is the VI/JSON API (`/sdk/vim25/{release}`) through `vim_rs`. The
 provider never calls OvfManager, HttpNfcLease, Content Library, tagging,
-custom attributes, CryptoManager, guest operations or `AcquireTicket`. It
-therefore needs none of the privileges those require.
+CryptoManager, guest operations or `AcquireTicket`. It therefore needs none
+of the privileges those require. It does set vCenter custom attributes on
+every clone (ADR-0089), which needs two `Global.*` privileges.
 
 | Operation | Where | Target object | Why |
 | --- | --- | --- | --- |
@@ -36,6 +37,7 @@ therefore needs none of the privileges those require.
 | `VirtualMachine.PowerOnVM_Task` / `PowerOffVM_Task` / `SuspendVM_Task` | `set_power_state`, install boot | VM | Desired power state (ADR-0024) |
 | `ClusterComputeResource.PlaceVm` | `clone_vm` | cluster | DRS host recommendation before clone |
 | `VirtualMachine.CloneVM_Task` | `clone_vm` | template → folder, cluster root pool, datastore | Provision a `VSphereMachine` |
+| `CustomFieldsManager.AddCustomFieldDef`, `.SetField` | `set_custom_attributes`, after every clone | CustomFieldsManager, VM | Stamp `Template`, `CreatedAt` and `CreatedBy` (ADR-0089); the definition is created on first use |
 | `VirtualMachine.Destroy_Task` | `destroy_vm` | VM or template | Machine delete, image finalize, forced rebuild |
 | `FileManager.MakeDirectory` | `ensure_datastore_dir` | datastore | ISO upload directory |
 | HTTP `HEAD` / `PUT` / `DELETE` on `/folder/...` | `import.rs` | datastore | Check, upload and replace the install ISO |
@@ -75,11 +77,14 @@ Create a custom role, for example `banlieue-sandbox`, with these privileges:
 | `Datastore.Browse` | ISO existence check, ISO-backed CD-ROM | Medium |
 | `Datastore.FileManagement` | ISO directory, upload, replace | High |
 | `Network.Assign` | NIC backings on create and clone | High |
+| `Global.SetCustomField` | `SetField` on each clone (ADR-0089). Without it every clone fails after `CloneVM_Task` | **Unverified** |
+| `Global.ManageCustomFields` | `AddCustomFieldDef`, only until the three attribute definitions exist on the vCenter; an administrator can create them once instead | **Unverified** |
 | `Cryptographer.*` subset | Adding a vTPM (only if any `VMClass` sets `tpmEnabled`) | **Unverified**: likely `Cryptographer.Access` plus the encrypt-new and reconfigure privileges; needs a key provider on vCenter |
 
 Leave out everything else, including `VirtualMachine.Interact.ConsoleInteract`,
-guest operations, snapshot management, `Host.*` and all `Global.*`
-privileges. The provider uses none of them.
+guest operations, snapshot management, `Host.*` and every `Global.*`
+privilege other than the two custom-attribute ones above. The provider uses
+none of them.
 
 If image builds run under a different Provider or account than VM
 provisioning, you can split the role. Only the import path needs

@@ -26,7 +26,10 @@
 - **Amended by:** [ADR-0132](0132-claim-selects-its-pool-by-label.md)
   (2026-11-16): `spec.poolRef` is optional beside a new `spec.poolSelector`,
   exactly one of the two; Decisions 4 and 11 rank and report across every
-  matched pool.
+  matched pool. [ADR-0135](0135-claim-selection-strategies.md) (2026-11-17):
+  Decision 4's member ranking is chosen by `spec.selection.strategy`
+  (`LongestReady`, the default, keeps it), and a member on a cordoned or
+  stale-heartbeat Provider is taken last.
 
 ## Context
 

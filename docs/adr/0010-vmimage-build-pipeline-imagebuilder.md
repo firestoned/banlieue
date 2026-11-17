@@ -11,6 +11,9 @@ SPDX-License-Identifier: Apache-2.0
   (single-binary subcommand dispatch); `VMImage` / `ImageSource`
   (`crates/banlieue-api/src/banlieue/vmimage.rs`); `banlieue-provider-vsphere`
   `vmimage.rs` reconciler; `banlieue-provider-sdk` (`bootstrap`, `ssa`).
+- **Amended by:** [ADR-0016](0016-imagebuild-namespace-isolation.md) (2026-07-31): builds run in their own
+  namespace; [ADR-0064](0064-artifact-delivery-to-host-resident-providers.md) (2026-09-27) revisits the deferred
+  alternative for host-resident providers.
 
 ## Context
 

@@ -256,10 +256,13 @@ A domain is named `<namespace>-<name>`, so `web-01` in `banlieue-system`
 becomes `banlieue-system-web-01`.
 
 The qualification is not decoration. One libvirt host has a single flat
-domain namespace, while two Kubernetes namespaces can each hold a `web-01` —
-and `DOMAIN_DEFINE_XML` is an upsert, so the second one would silently
-redefine the first's domain rather than failing. vCenter has no equivalent
-problem because its inventory is a folder tree.
+domain namespace, while two Kubernetes namespaces can each hold a `web-01`.
+The provider looks a domain up by name and redefines one that exists under its
+existing UUID (that is how every pass after the first converges, since
+`DOMAIN_DEFINE_XML` refuses a define that does not name the UUID already on the
+host), so the second one would silently redefine the first's domain rather
+than failing. vCenter has no equivalent problem because its inventory is a
+folder tree.
 
 Volume names follow from the domain name for the same reason:
 `banlieue-system-web-01-os.qcow2`.
@@ -389,6 +392,11 @@ replaced pool member, say — is a new instance by construction. Reusing an
 id would make a fresh VM skip every per-instance module as though it had
 merely rebooted.
 
+A machine with a static NIC (`ipam.static` in the `VMClass`, or an address
+from `spec.networkOverrides` or a pool's `spec.addressing`) also gets a
+generated `network-config`, matched to the NIC by MAC
+([ADR-0114](https://github.com/firestoned/banlieue/blob/main/docs/adr/0114-static-addressing-in-the-nocloud-seed.md)).
+
 The volume is `<domain>-cidata.iso` in the machine's pool, and it is deleted
 with the domain.
 
@@ -462,7 +470,7 @@ everywhere at once.
 | `Ready=False`, reason `ConnectFailed` | TLS or reachability. Check 16514, then reproduce with `virsh -c qemu+tls://…`. |
 | `Ready=False`, reason `CredentialsUnavailable` | The Secret or CA ConfigMap is missing a key. `tls.crt` / `tls.key` / `ca.crt`. |
 | Zone stuck at `BuildPending` | `status.buildArtifact` is not `Ready` yet — the problem is upstream, in `banlieue-imagebuilder`. |
-| Import Job `403` on `jobs` | The `ProviderClass` is missing `additionalRules`. See `examples/11-providerclass-libvirt.yaml`. |
+| Import Job `403` on `jobs` | An operator-managed provider gets Job access only from its `ProviderClass`'s `additionalRules`, which `banlieue bootstrap operator` seeds; a hand-written class without them is refused. See `examples/11-providerclass-libvirt.yaml`. (The static install in `deploy/provider-libvirt/` grants it in its ClusterRole instead.) |
 | Import Job `Pending`, ServiceAccount not found | The Job's namespace and the provider's differ. The provider falls back to that namespace's `default` SA, which needs the grant. |
 | `VirtualMachine` stuck `Scheduled=False`, reason `ImageNotReady` | The `VMImage` has no ready `libvirt` source. For a `BackingFile`, the volume must already be in every pool the Provider targets: its row then says `VolumeNotFound` and names the pools that lack it, or `HostUnreachable` if the host could not be asked. |
 | `LibvirtMachine` `Ready=False`: *volume … is not in pool* | The image has not finished importing, or a `BackingFile` names a volume that is not there. `virsh vol-list <pool>`. |

@@ -13,6 +13,9 @@ SPDX-License-Identifier: Apache-2.0
   closes the spread item of [roadmap 17](../../.github/community/17-ephemeral-vm-pools.md)
   phase G; refines the scheduler's tie-break, which every earlier ADR left
   as "lexicographic, sufficient until a richer score is needed"
+- **Amended by:** [ADR-0125](0125-a-placed-vm-keeps-a-placement-that-still-fits.md)
+  (2026-11-10): the spread ordering ranks new placements only; a placed VM
+  keeps a placement that still fits.
 
 ## Context
 

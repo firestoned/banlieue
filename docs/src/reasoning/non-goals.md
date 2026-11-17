@@ -73,16 +73,23 @@ otherwise reach inside the VM after it boots.
 Configuration management is a separate problem with mature tools. We do not
 duplicate them.
 
-## 8. banlieue does not implement live migration, snapshots, or backup
+## 8. banlieue does not implement snapshots or backup, and moves only within a zone
 
-Not in v1alpha1. Maybe later, once the *uniform* shape of those operations
-across backends is honest. (Spoiler: snapshots in vSphere and snapshots in
+Snapshots and backup are not in v1alpha1. Maybe later, once the *uniform*
+shape of those operations across backends is honest. (Spoiler: snapshots in vSphere and snapshots in
 Proxmox have very different semantics, and a leaky abstraction here would be
 worse than nothing.)
 
 If the underlying backend supports these operations, you can drive them
 through the provider's own infrastructure CRD until banlieue has a vetted
 uniform contract.
+
+Live migration has one deliberate exception: a `VirtualMachineMove`
+([ADR-0127](https://github.com/firestoned/banlieue/blob/main/docs/adr/0127-move-a-cloud-hypervisor-vm-between-hosts-in-a-zone.md))
+moves a running Cloud Hypervisor VM to another host in the **same zone**,
+for maintenance or rebalancing. Its API is served; the controller that acts
+on it is not built yet. Cross-zone moves and migration on other backends
+stay out of scope.
 
 ## 9. banlieue does not solve storage modelling
 

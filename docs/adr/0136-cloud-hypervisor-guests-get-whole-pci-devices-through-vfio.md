@@ -2,7 +2,7 @@
 Copyright (c) 2026 Erick Bourgeois, banlieue
 SPDX-License-Identifier: Apache-2.0
 -->
-# 0135: Cloud Hypervisor guests get whole PCI devices through VFIO
+# 0136: Cloud Hypervisor guests get whole PCI devices through VFIO
 
 - **Status:** Proposed
 - **Date:** 2026-11-16

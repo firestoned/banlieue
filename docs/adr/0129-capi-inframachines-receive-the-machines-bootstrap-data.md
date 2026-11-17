@@ -4,8 +4,12 @@ SPDX-License-Identifier: Apache-2.0
 -->
 # 0129: Cluster API InfraMachines receive the Machine's bootstrap data
 
-- **Status:** Proposed
-- **Date:** 2026-11-14
+- **Status:** Accepted
+- **Date:** 2026-11-17
+- **Proposed:** 2026-11-14
+- **Implemented:** 2026-11-14, milestone 1 only (`CloudHypervisorMachine`;
+  libvirt, vSphere and Proxmox wait for milestone 2, Decision 10). See
+  *Implementation notes*.
 - **Deciders:** Erick Bourgeois
 - **Related:** Completes the InfraMachine contract that
   [ADR-0096](0096-clusterctl-infrastructure-provider.md) packaged (its
