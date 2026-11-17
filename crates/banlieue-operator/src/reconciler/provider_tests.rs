@@ -11,6 +11,68 @@ mod tests {
     use banlieue_api::common::{CABundleSource, KeySelector, LocalObjectReference};
     use k8s_openapi::api::apps::v1::{Deployment, DeploymentStatus};
 
+    // ---- watch_namespace_selector (ADR-0133 Decision 11) ------------------
+
+    use banlieue_api::common::LabelSelector;
+
+    fn with_selector(labels: &[(&str, &str)]) -> ProviderSpec {
+        let mut spec = provider_spec();
+        spec.namespace_selector = Some(LabelSelector {
+            match_labels: labels
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+                .collect(),
+            ..Default::default()
+        });
+        spec
+    }
+
+    #[test]
+    fn a_provider_without_a_namespace_selector_passes_no_flag() {
+        assert_eq!(watch_namespace_selector(&provider_spec(), "vsphere"), None);
+    }
+
+    #[test]
+    fn the_selector_is_rendered_for_the_flag() {
+        assert_eq!(
+            watch_namespace_selector(&with_selector(&[("banlieue.io/tenant", "true")]), "vsphere")
+                .as_deref(),
+            Some("banlieue.io/tenant=true")
+        );
+    }
+
+    /// A backend whose binary does not parse the flag must not be handed it:
+    /// clap rejects an unknown argument at startup and the provider pod would
+    /// crash-loop. Only the backends in `SHARED_PROVIDER_BACKENDS` get it.
+    #[test]
+    fn a_backend_that_cannot_serve_shared_namespaces_gets_no_flag() {
+        let spec = with_selector(&[("banlieue.io/tenant", "true")]);
+        assert_eq!(watch_namespace_selector(&spec, "firecracker"), None);
+        assert_eq!(watch_namespace_selector(&spec, "some-custom-backend"), None);
+    }
+
+    #[test]
+    fn every_implemented_backend_gets_the_flag() {
+        let spec = with_selector(&[("banlieue.io/tenant", "true")]);
+        for backend in ["vsphere", "libvirt", "proxmox", "cloud-hypervisor"] {
+            assert_eq!(
+                watch_namespace_selector(&spec, backend).as_deref(),
+                Some("banlieue.io/tenant=true"),
+                "{backend}"
+            );
+        }
+    }
+
+    /// `{}` serves nothing (ADR-0133): it renders no flag, so the provider
+    /// serves home only, and the controller does not offer it as a fallback.
+    #[test]
+    fn an_empty_selector_passes_no_flag() {
+        assert_eq!(
+            watch_namespace_selector(&with_selector(&[]), "vsphere"),
+            None
+        );
+    }
+
     fn connection() -> ProviderConnection {
         ProviderConnection {
             endpoint: "https://vcenter.example.com/sdk".to_string(),
@@ -34,6 +96,7 @@ mod tests {
             failure_domain_name_overrides: Vec::new(),
             attestation: None,
             scheduling: None,
+            namespace_selector: None,
         }
     }
 

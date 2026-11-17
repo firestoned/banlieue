@@ -945,4 +945,121 @@ mod tests {
     fn first_boot_sealing_rejects_unknown_type_for_timeout() {
         assert!(serde_json::from_str::<FirstBootSealing>(r#"{"timeoutSeconds":"ten"}"#).is_err());
     }
+
+    // ----------------------------------------------------------------------
+    // ProviderReference (ADR-0133 Decision 3)
+    // ----------------------------------------------------------------------
+
+    #[test]
+    fn provider_reference_omits_namespace_when_absent() {
+        let r = ProviderReference {
+            name: "vcenter".to_string(),
+            namespace: None,
+        };
+        let json = serde_json::to_value(&r).unwrap();
+        assert_eq!(json, serde_json::json!({"name": "vcenter"}));
+    }
+
+    #[test]
+    fn provider_reference_without_namespace_deserializes() {
+        let r: ProviderReference = serde_json::from_str(r#"{"name":"vcenter"}"#).unwrap();
+        assert_eq!(r.name, "vcenter");
+        assert_eq!(r.namespace, None);
+    }
+
+    #[test]
+    fn provider_reference_namespace_round_trips() {
+        let r = ProviderReference {
+            name: "vcenter".to_string(),
+            namespace: Some("banlieue-system".to_string()),
+        };
+        let json = serde_json::to_value(&r).unwrap();
+        assert_eq!(json["namespace"], "banlieue-system");
+        let back: ProviderReference = serde_json::from_value(json).unwrap();
+        assert_eq!(back, r);
+    }
+
+    #[test]
+    fn provider_reference_requires_a_name() {
+        assert!(serde_json::from_str::<ProviderReference>(r#"{"namespace":"ns"}"#).is_err());
+    }
+
+    /// A reference with no namespace means the referrer's own namespace, so
+    /// every machine written before ADR-0133 keeps resolving where it did.
+    #[test]
+    fn provider_reference_namespace_defaults_to_the_referrers() {
+        let local = ProviderReference {
+            name: "p".to_string(),
+            namespace: None,
+        };
+        assert_eq!(local.namespace_or("team-a"), "team-a");
+        assert!(local.is_local());
+    }
+
+    #[test]
+    fn provider_reference_explicit_namespace_wins() {
+        let foreign = ProviderReference {
+            name: "p".to_string(),
+            namespace: Some("banlieue-system".to_string()),
+        };
+        assert_eq!(foreign.namespace_or("team-a"), "banlieue-system");
+        assert!(!foreign.is_local());
+    }
+
+    #[test]
+    fn provider_reference_from_local_object_reference_is_local() {
+        let r = ProviderReference::from(LocalObjectReference {
+            name: "p".to_string(),
+        });
+        assert_eq!(r.name, "p");
+        assert_eq!(r.namespace, None);
+    }
+
+    #[test]
+    fn provider_reference_names_exactly_the_provider_it_resolves_to() {
+        let foreign = ProviderReference {
+            name: "p".to_string(),
+            namespace: Some("banlieue-system".to_string()),
+        };
+        assert!(foreign.resolves_to("p", "banlieue-system", "team-a"));
+        assert!(!foreign.resolves_to("p", "team-a", "team-a"));
+        assert!(!foreign.resolves_to("other", "banlieue-system", "team-a"));
+        let local = ProviderReference {
+            name: "p".to_string(),
+            namespace: None,
+        };
+        assert!(local.resolves_to("p", "team-a", "team-a"));
+        assert!(!local.resolves_to("p", "banlieue-system", "team-a"));
+    }
+
+    // ----------------------------------------------------------------------
+    // LabelSelector::is_empty (ADR-0133: an empty namespaceSelector serves nothing)
+    // ----------------------------------------------------------------------
+
+    #[test]
+    fn an_empty_label_selector_is_empty() {
+        assert!(LabelSelector::default().is_empty());
+    }
+
+    #[test]
+    fn a_selector_with_labels_is_not_empty() {
+        let sel = LabelSelector {
+            match_labels: BTreeMap::from([("a".to_string(), "b".to_string())]),
+            ..Default::default()
+        };
+        assert!(!sel.is_empty());
+    }
+
+    #[test]
+    fn a_selector_with_only_expressions_is_not_empty() {
+        let sel = LabelSelector {
+            match_expressions: vec![LabelSelectorRequirement {
+                key: "k".to_string(),
+                operator: LabelSelectorOperator::Exists,
+                values: Vec::new(),
+            }],
+            ..Default::default()
+        };
+        assert!(!sel.is_empty());
+    }
 }

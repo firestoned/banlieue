@@ -127,6 +127,11 @@ pub struct WorkloadInputs<'a> {
     pub ca_bundle_config_map: Option<&'a str>,
     /// Secret holding an optional CA bundle, when the Provider names one.
     pub ca_bundle_secret: Option<&'a str>,
+    /// Label selector (already rendered as a string) for the namespaces the
+    /// provider serves besides its own, from `Provider.spec.namespaceSelector`
+    /// (ADR-0133). Rendered as `--watch-namespace-selector`. `None` leaves the
+    /// provider on its home namespace only.
+    pub watch_namespace_selector: Option<&'a str>,
     /// Owner reference to the `Provider`, applied only to objects that share
     /// its namespace (a cross-namespace owner reference is invalid).
     pub owner: Option<OwnerReference>,
@@ -200,6 +205,10 @@ pub struct WorkloadSet {
     /// Binds the backend's shared ClusterRole to the ServiceAccount, covering
     /// the cluster-scoped resources a Role cannot reach.
     pub cluster_role_binding: ClusterRoleBinding,
+    /// Binds the backend's `-shared` ClusterRole (machine access in tenant
+    /// namespaces) to the ServiceAccount, only for a Provider that declares a
+    /// namespace selector and a backend that ships one (ADR-0134).
+    pub shared_cluster_role_binding: Option<ClusterRoleBinding>,
     /// Read-only, cross-namespace access for the import Job (ADR-0016 §4).
     /// Present for every Managed provider; harmless for backends that never
     /// import. `None` for External: nothing imports through the cluster.
@@ -225,6 +234,7 @@ pub fn build_workload(inputs: &WorkloadInputs<'_>, build_namespace: &str) -> Wor
         role: build_role(inputs),
         role_binding: build_role_binding(inputs),
         cluster_role_binding: build_cluster_role_binding(inputs),
+        shared_cluster_role_binding: build_shared_cluster_role_binding(inputs),
         import_role: managed.then(|| build_import_role(inputs)),
         import_role_binding: managed.then(|| build_import_role_binding(inputs, build_namespace)),
         deployment: managed.then(|| build_deployment(inputs)),
@@ -503,6 +513,77 @@ pub fn build_cluster_role_binding(inputs: &WorkloadInputs<'_>) -> ClusterRoleBin
     }
 }
 
+/// Backends whose provider holds its machine access in tenant namespaces in a
+/// second, opt-in `<shared ClusterRole>-shared` ClusterRole rather than in its
+/// one shared ClusterRole (ADR-0134). A host-resident provider's token is
+/// otherwise namespaced-only, so a host that is not shared must not carry it.
+const SHARED_SCOPE_CLUSTER_ROLE_BACKENDS: &[&str] = &["cloud-hypervisor"];
+
+/// Suffix of the opt-in shared-serving ClusterRole and its binding.
+const SHARED_SCOPE_SUFFIX: &str = "shared";
+
+/// Whether a Provider of `backend` with this rendered `selector` is bound to
+/// the `-shared` ClusterRole.
+#[must_use]
+pub fn wants_shared_cluster_role(backend: &str, selector: Option<&str>) -> bool {
+    selector.is_some() && SHARED_SCOPE_CLUSTER_ROLE_BACKENDS.contains(&backend)
+}
+
+/// Name of the opt-in shared-serving ClusterRole, e.g.
+/// `banlieue-provider-cloud-hypervisor-shared`.
+#[must_use]
+pub fn shared_scope_cluster_role_name(backend: &str) -> String {
+    format!(
+        "{}-{SHARED_SCOPE_SUFFIX}",
+        shared_cluster_role_name(backend)
+    )
+}
+
+/// Name of the cluster-scoped binding of the shared-serving ClusterRole,
+/// distinct from [`build_cluster_role_binding`]'s.
+#[must_use]
+pub fn shared_cluster_role_binding_name(
+    class: &str,
+    provider_namespace: &str,
+    provider: &str,
+) -> String {
+    cluster_scoped_name(
+        class,
+        provider_namespace,
+        &format!("{provider}-{SHARED_SCOPE_SUFFIX}"),
+    )
+}
+
+/// Build the ClusterRoleBinding granting the `-shared` ClusterRole, or `None`
+/// unless the Provider declares a namespace selector and the backend ships
+/// that role (ADR-0134 Decision 1). Never owned, for the reason
+/// [`build_cluster_role_binding`] is not.
+#[must_use]
+pub fn build_shared_cluster_role_binding(
+    inputs: &WorkloadInputs<'_>,
+) -> Option<ClusterRoleBinding> {
+    if !wants_shared_cluster_role(&inputs.class.backend, inputs.watch_namespace_selector) {
+        return None;
+    }
+    Some(ClusterRoleBinding {
+        metadata: ObjectMeta {
+            name: Some(shared_cluster_role_binding_name(
+                inputs.class_name,
+                inputs.provider_namespace,
+                inputs.provider_name,
+            )),
+            labels: Some(inputs.labels()),
+            ..Default::default()
+        },
+        role_ref: RoleRef {
+            api_group: Some("rbac.authorization.k8s.io".to_string()),
+            kind: "ClusterRole".to_string(),
+            name: shared_scope_cluster_role_name(&inputs.class.backend),
+        },
+        subjects: Some(vec![service_account_subject(inputs)]),
+    })
+}
+
 /// Build the provider Deployment.
 #[must_use]
 pub fn build_deployment(inputs: &WorkloadInputs<'_>) -> Deployment {
@@ -664,6 +745,14 @@ fn build_args(inputs: &WorkloadInputs<'_>) -> Vec<String> {
         "--leader-election-namespace".to_string(),
         inputs.workload_namespace.to_string(),
     ];
+
+    // The namespaces served besides home (ADR-0133). `--namespace` above stays
+    // the Provider's own namespace: the credentials are there, and the provider
+    // reads them from there whatever namespace a machine is in.
+    if let Some(selector) = inputs.watch_namespace_selector {
+        args.push("--watch-namespace-selector".to_string());
+        args.push(selector.to_string());
+    }
 
     // The Jobs a provider spawns run the same binary it does, so they run the
     // same image. Without this the provider falls back to its compiled-in

@@ -19,6 +19,35 @@ mod tests {
         Wrapper::parse_from(argv).cli
     }
 
+    /// ADR-0133: no selector means the provider serves its home namespace only.
+    #[test]
+    fn the_watch_namespace_selector_defaults_to_unset() {
+        assert_eq!(parse(&[]).watch_namespace_selector, None);
+    }
+
+    #[test]
+    fn the_watch_namespace_selector_flag_is_parsed() {
+        let cli = parse(&["--watch-namespace-selector", "banlieue.io/tenant=true"]);
+        assert_eq!(
+            cli.watch_namespace_selector.as_deref(),
+            Some("banlieue.io/tenant=true")
+        );
+    }
+
+    /// `--namespace` keeps its meaning as the home namespace alongside the
+    /// selector: the Provider and its credentials are there.
+    #[test]
+    fn namespace_and_selector_may_both_be_given() {
+        let cli = parse(&[
+            "--namespace",
+            "banlieue-system",
+            "--watch-namespace-selector",
+            "banlieue.io/tenant=true",
+        ]);
+        assert_eq!(cli.namespace.as_deref(), Some("banlieue-system"));
+        assert!(cli.watch_namespace_selector.is_some());
+    }
+
     #[test]
     fn defaults_are_applied() {
         let cli = parse(&[]);

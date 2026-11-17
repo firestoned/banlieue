@@ -647,20 +647,31 @@ pub async fn reconcile(machine: Arc<ProxmoxMachine>, ctx: Arc<Context>) -> Resul
         tracing::info_span!("reconcile", kind = "ProxmoxMachine", %namespace, %name, generation);
     let _enter = span.enter();
 
+    // A namespace the selector does not pick is not ours (ADR-0133). A machine
+    // being deleted is never skipped: its finalizer must still run, or
+    // un-labelling a namespace would strand a VM on the backend.
+    if let Some(action) =
+        ctx.skip_unserved(&namespace, machine.metadata.deletion_timestamp.is_some())
+    {
+        return Ok(action);
+    }
+
     // Another Provider's machine is its own workload's to reconcile. Acting
     // on it here fails on credentials at best, and at worst finalizes it
-    // against the wrong host (bug-178).
-    if !banlieue_provider_sdk::reconciler::serves(
-        ctx.provider_name.as_deref(),
-        &machine.spec.provider_ref.name,
-    ) {
+    // against the wrong host (bug-178). By name AND namespace (ADR-0133).
+    if !ctx.serves_machine(&namespace, &machine.spec.provider_ref) {
         return Ok(Action::await_change());
     }
 
+    // The Provider, its API token and CA bundle are read from this provider's
+    // HOME namespace, never the machine's: tenants must not hold, or be able to
+    // plant, the hypervisor credentials (ADR-0133 Decision 5). Same for the
+    // deletion path below, which shares this resolution.
+    let home = ctx.home_namespace(&namespace);
     let api: Api<ProxmoxMachine> = Api::namespaced(ctx.client.clone(), &namespace);
-    let providers: Api<Provider> = Api::namespaced(ctx.client.clone(), &namespace);
+    let providers: Api<Provider> = Api::namespaced(ctx.client.clone(), home);
     let provider = providers.get(&machine.spec.provider_ref.name).await?;
-    let creds = crate::credentials::resolve(&ctx.client, &namespace, &provider).await?;
+    let creds = crate::credentials::resolve(&ctx.client, home, &provider).await?;
     let proxmox = ctx.proxmox.build(&provider.spec.connection, &creds).await?;
     let m = MachineRef {
         name: &name,

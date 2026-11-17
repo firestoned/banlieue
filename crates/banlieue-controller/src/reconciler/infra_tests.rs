@@ -48,6 +48,7 @@ mod tests {
                 failure_domain_name_overrides: Vec::new(),
                 attestation: None,
                 scheduling: None,
+                namespace_selector: None,
             },
             status: None,
         }
@@ -213,6 +214,75 @@ mod tests {
         assert_eq!(m.spec.disks[0].name, "os");
         assert_eq!(m.spec.disks[0].size_gi_b, 100);
         assert!(!m.spec.tpm_enabled);
+    }
+
+    // ---- providerRef.namespace (ADR-0133 Decision 3) ----------------------
+
+    fn raw_dc() -> BTreeMap<String, String> {
+        BTreeMap::from([
+            ("datacenter".to_string(), "dc1".to_string()),
+            ("cluster".to_string(), "cluster-a".to_string()),
+        ])
+    }
+
+    /// A VM and its Provider in one namespace: the reference stays a bare name,
+    /// exactly as before ADR-0133, so nothing already placed is rewritten.
+    #[test]
+    fn a_provider_beside_the_vm_is_referenced_by_name_only() {
+        let m = build_vsphere_machine(
+            &parent_vm(),
+            &parent_class(),
+            &parent_image(),
+            &decision_with_raw(raw_dc()),
+            &parent_provider(),
+            None,
+        )
+        .expect("ok");
+        assert_eq!(m.spec.provider_ref.name, "vc1");
+        assert_eq!(m.spec.provider_ref.namespace, None);
+    }
+
+    /// A shared Provider in the provider namespace: the machine stays beside
+    /// its VM and names where the Provider is.
+    #[test]
+    fn a_provider_in_another_namespace_is_named_with_its_namespace() {
+        let mut vm = parent_vm();
+        vm.metadata.namespace = Some("team-a".into());
+        let m = build_vsphere_machine(
+            &vm,
+            &parent_class(),
+            &parent_image(),
+            &decision_with_raw(raw_dc()),
+            &parent_provider(),
+            None,
+        )
+        .expect("ok");
+        assert_eq!(m.metadata.namespace.as_deref(), Some("team-a"));
+        assert_eq!(m.spec.provider_ref.name, "vc1");
+        assert_eq!(
+            m.spec.provider_ref.namespace.as_deref(),
+            Some("banlieue-system")
+        );
+    }
+
+    /// Everything but the reference stays same-namespace: the owner is the VM.
+    #[test]
+    fn a_machine_for_a_shared_provider_is_still_owned_by_its_vm() {
+        let mut vm = parent_vm();
+        vm.metadata.namespace = Some("team-a".into());
+        let m = build_vsphere_machine(
+            &vm,
+            &parent_class(),
+            &parent_image(),
+            &decision_with_raw(raw_dc()),
+            &parent_provider(),
+            None,
+        )
+        .expect("ok");
+        let owners = m.metadata.owner_references.expect("owner");
+        assert_eq!(owners.len(), 1);
+        assert_eq!(owners[0].kind, "VirtualMachine");
+        assert_eq!(owners[0].name, "db-01");
     }
 
     #[test]
@@ -2131,5 +2201,94 @@ mod tests {
         )
         .expect("ok");
         assert_eq!(vs.metadata.name.as_deref(), Some("db-01-k3x9q"));
+    }
+
+    // ======================================================================
+    // providerRef.namespace on every kind (ADR-0133 Decision 3)
+    // ======================================================================
+
+    fn in_tenant_namespace() -> VirtualMachine {
+        let mut vm = parent_vm();
+        vm.metadata.namespace = Some("team-a".into());
+        vm
+    }
+
+    #[test]
+    fn libvirt_machine_for_a_shared_provider_names_its_namespace() {
+        use banlieue_api::banlieue::InstallMode;
+        let m = build_libvirt(
+            &in_tenant_namespace(),
+            &parent_class(),
+            &libvirt_image(InstallMode::Immediate),
+            &libvirt_provider(("network", "default")),
+        )
+        .expect("ok");
+        assert_eq!(m.metadata.namespace.as_deref(), Some("team-a"));
+        assert_eq!(m.spec.provider_ref.name, "kvm-a");
+        assert_eq!(
+            m.spec.provider_ref.namespace.as_deref(),
+            Some("banlieue-system")
+        );
+    }
+
+    #[test]
+    fn libvirt_machine_beside_its_provider_names_no_namespace() {
+        use banlieue_api::banlieue::InstallMode;
+        let m = build_libvirt(
+            &parent_vm(),
+            &parent_class(),
+            &libvirt_image(InstallMode::Immediate),
+            &libvirt_provider(("network", "default")),
+        )
+        .expect("ok");
+        assert_eq!(m.spec.provider_ref.namespace, None);
+    }
+
+    #[test]
+    fn ch_machine_for_a_shared_provider_names_its_namespace() {
+        use banlieue_api::banlieue::InstallMode;
+        let m = build_cloud_hypervisor_machine(
+            &in_tenant_namespace(),
+            &parent_class(),
+            &ch_image(InstallMode::Immediate),
+            &ch_decision(),
+            &ch_provider(),
+            None,
+        )
+        .expect("ok");
+        assert_eq!(m.metadata.namespace.as_deref(), Some("team-a"));
+        assert_eq!(
+            m.spec.provider_ref.namespace.as_deref(),
+            Some("banlieue-system")
+        );
+    }
+
+    #[test]
+    fn ch_machine_beside_its_provider_names_no_namespace() {
+        use banlieue_api::banlieue::InstallMode;
+        let m = build_ch(
+            &parent_vm(),
+            &parent_class(),
+            &ch_image(InstallMode::Immediate),
+        )
+        .expect("ok");
+        assert_eq!(m.spec.provider_ref.namespace, None);
+    }
+
+    #[test]
+    fn pve_machine_for_a_shared_provider_names_its_namespace() {
+        let m = build_pve(&in_tenant_namespace(), &parent_class(), None).expect("ok");
+        assert_eq!(m.metadata.namespace.as_deref(), Some("team-a"));
+        assert_eq!(m.spec.provider_ref.name, "pve-a");
+        assert_eq!(
+            m.spec.provider_ref.namespace.as_deref(),
+            Some("banlieue-system")
+        );
+    }
+
+    #[test]
+    fn pve_machine_beside_its_provider_names_no_namespace() {
+        let m = build_pve(&parent_vm(), &parent_class(), None).expect("ok");
+        assert_eq!(m.spec.provider_ref.namespace, None);
     }
 }

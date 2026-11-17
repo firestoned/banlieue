@@ -17,6 +17,7 @@
 //! reconcile on a [`NamespaceGate`]: a reflector over `Namespace` objects,
 //! filtered by the selector on the server side.
 
+use banlieue_api::common::{LabelSelector, LabelSelectorOperator};
 use futures::StreamExt;
 use k8s_openapi::api::core::v1::Namespace;
 use std::collections::BTreeSet;
@@ -188,6 +189,224 @@ pub fn provider_namespace(namespace: Option<&str>, current: &str) -> Result<Stri
         Scope::Namespace(ns) => Ok(ns),
         // `resolve_scope` returns a selector only when handed one.
         Scope::Selector(_) => Err(ScopeError::NoScope),
+    }
+}
+
+/// The provider backends that can serve tenant namespaces from one shared
+/// provider (ADR-0133): each parses `--watch-namespace-selector` and reads its
+/// own `Provider`, credentials and CA bundle from its home namespace.
+///
+/// One list for both readers: the operator renders the flag only for these (a
+/// binary that does not parse it would fail at startup), and the controller
+/// offers a `Provider` in the provider namespace only for these (a machine
+/// nothing will reconcile must not be scheduled). A backend joins it in the
+/// same change that makes its binary accept the flag.
+pub const SHARED_PROVIDER_BACKENDS: &[&str] =
+    &["vsphere", "libvirt", "proxmox", "cloud-hypervisor"];
+
+/// Whether `backend` can serve tenant namespaces from a shared provider.
+#[must_use]
+pub fn supports_shared_provider(backend: &str) -> bool {
+    SHARED_PROVIDER_BACKENDS.contains(&backend)
+}
+
+/// Render a label selector as the string form a `--watch-namespace-selector`
+/// flag takes, deterministically (labels sorted, expressions in order).
+///
+/// Returns `None` for an empty selector: Kubernetes reads `{}` as "every
+/// namespace", and a blank flag means "unset", so rendering it would turn into
+/// "home only" on the provider while the controller read it as "all". It
+/// serves nothing instead (ADR-0133 Decision 11).
+#[must_use]
+pub fn selector_to_string(selector: &LabelSelector) -> Option<String> {
+    if selector.is_empty() {
+        return None;
+    }
+    let labels = selector
+        .match_labels
+        .iter()
+        .map(|(k, v)| format!("{k}={v}"));
+    let expressions = selector.match_expressions.iter().map(|r| {
+        let values = r.values.join(",");
+        match r.operator {
+            LabelSelectorOperator::In => format!("{} in ({values})", r.key),
+            LabelSelectorOperator::NotIn => format!("{} notin ({values})", r.key),
+            LabelSelectorOperator::Exists => r.key.clone(),
+            LabelSelectorOperator::DoesNotExist => format!("!{}", r.key),
+        }
+    });
+    Some(labels.chain(expressions).collect::<Vec<_>>().join(","))
+}
+
+/// What a provider serves (ADR-0133 Decision 4): its **home** namespace, where
+/// its `Provider`, credentials Secret, CA bundle and Lease live, plus, with a
+/// selector, the namespaces whose labels match.
+///
+/// Unlike [`Scope`] the home namespace is always served and never replaced by
+/// the selector: the provider reads its own `Provider` and credentials from
+/// home whatever namespace a machine is in, so it holds no Secret access
+/// anywhere else.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderScope {
+    home: String,
+    selector: Option<String>,
+}
+
+impl ProviderScope {
+    /// Resolve the scope.
+    ///
+    /// # Arguments
+    /// * `namespace` - `--namespace`: the home namespace.
+    /// * `current` - the namespace the provider runs in; the home when no flag is set.
+    /// * `selector` - `--watch-namespace-selector`; blank means none.
+    ///
+    /// # Errors
+    /// [`ScopeError::NoScope`] when no home namespace can be determined.
+    pub fn resolve(
+        namespace: Option<&str>,
+        current: &str,
+        selector: Option<&str>,
+    ) -> Result<Self, ScopeError> {
+        Ok(Self {
+            home: provider_namespace(namespace, current)?,
+            selector: non_blank(selector).map(str::to_string),
+        })
+    }
+
+    /// The home namespace.
+    #[must_use]
+    pub fn home(&self) -> &str {
+        &self.home
+    }
+
+    /// The namespace label selector, when the provider serves more than home.
+    #[must_use]
+    pub fn selector(&self) -> Option<&str> {
+        self.selector.as_deref()
+    }
+
+    /// An [`Api`] for `K` honouring this scope: the home namespace without a
+    /// selector, cluster-wide (to be gated) with one.
+    #[must_use]
+    pub fn api<K>(&self, client: &Client) -> Api<K>
+    where
+        K: Resource<Scope = kube::core::NamespaceResourceScope>,
+        K::DynamicType: Default,
+    {
+        match self.selector {
+            Some(_) => Api::all(client.clone()),
+            None => Api::namespaced(client.clone(), &self.home),
+        }
+    }
+
+    /// Whether objects in `namespace` are served: home always, otherwise only
+    /// what `gate` selects.
+    ///
+    /// Without a selector the gate is [`NamespaceGate::none`], which passes
+    /// everything because the watch is already narrowed; this must not defer to
+    /// it, or a provider with no selector would serve every namespace.
+    #[must_use]
+    pub fn serves(&self, gate: &NamespaceGate, namespace: &str) -> bool {
+        if namespace == self.home {
+            return true;
+        }
+        self.selector.is_some() && gate.serves(namespace)
+    }
+
+    /// `Some(action)` when a reconcile for `namespace` should stop: it is not
+    /// served. An object being deleted is never skipped (ADR-0130 Decision 6).
+    #[must_use]
+    pub fn skip_unserved(
+        &self,
+        gate: &NamespaceGate,
+        namespace: &str,
+        deleting: bool,
+    ) -> Option<Action> {
+        (!deleting && !self.serves(gate, namespace)).then(Action::await_change)
+    }
+
+    /// One line for the startup log.
+    #[must_use]
+    pub fn describe(&self) -> String {
+        match &self.selector {
+            Some(selector) => format!(
+                "home namespace {:?} plus {DESCRIBE_SELECTOR} {selector:?}",
+                self.home
+            ),
+            None => format!("home namespace {:?} only", self.home),
+        }
+    }
+}
+
+/// What every provider needs to serve tenant namespaces without holding a
+/// credential there (ADR-0133): the [`ProviderScope`] and the gate over its
+/// namespace selector, with the three questions a machine reconciler asks.
+///
+/// One type, so a provider's `Context` delegates and the rules cannot drift
+/// between backends. `Default` is "no scope installed", which serves everything
+/// the watch delivers and reads from the serving namespace (today's behaviour
+/// for a unit test or a legacy cluster-wide provider).
+#[derive(Clone, Default)]
+pub struct SharedServing {
+    scope: Option<ProviderScope>,
+    gate: NamespaceGate,
+}
+
+impl SharedServing {
+    /// Serving with `scope` and the selector `gate`.
+    #[must_use]
+    pub fn new(scope: ProviderScope, gate: NamespaceGate) -> Self {
+        Self {
+            scope: Some(scope),
+            gate,
+        }
+    }
+
+    /// The namespace a provider reads its own `Provider`, credentials Secret and
+    /// CA bundle from, whatever namespace a machine is in (Decision 5).
+    ///
+    /// The scope's home; failing that `serving_namespace` (`--namespace`); and
+    /// only when neither exists (cluster-wide, a legacy shape) the machine's own
+    /// namespace.
+    #[must_use]
+    pub fn home_namespace<'a>(
+        &'a self,
+        serving_namespace: Option<&'a str>,
+        machine_namespace: &'a str,
+    ) -> &'a str {
+        if let Some(scope) = &self.scope {
+            return scope.home();
+        }
+        serving_namespace.unwrap_or(machine_namespace)
+    }
+
+    /// Whether this provider reconciles a machine: its `providerRef` must
+    /// resolve to the `Provider` this workload serves, in its home namespace
+    /// (Decision 5). See [`crate::reconciler::serves_machine`].
+    #[must_use]
+    pub fn serves_machine(
+        &self,
+        provider_name: Option<&str>,
+        serving_namespace: Option<&str>,
+        machine_namespace: &str,
+        provider_ref: &banlieue_api::common::ProviderReference,
+    ) -> bool {
+        crate::reconciler::serves_machine(
+            provider_name,
+            self.home_namespace(serving_namespace, machine_namespace),
+            machine_namespace,
+            provider_ref,
+        )
+    }
+
+    /// `Some(action)` when a reconcile for `namespace` must do nothing because
+    /// it is not served. An object being deleted is never skipped (ADR-0130
+    /// Decision 6): its finalizer must still run.
+    #[must_use]
+    pub fn skip_unserved(&self, namespace: &str, deleting: bool) -> Option<Action> {
+        self.scope
+            .as_ref()?
+            .skip_unserved(&self.gate, namespace, deleting)
     }
 }
 

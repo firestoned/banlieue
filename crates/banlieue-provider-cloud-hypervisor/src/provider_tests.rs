@@ -83,6 +83,7 @@ lan = "br0"
                 use_content_library: Default::default(),
                 attestation: None,
                 scheduling: None,
+                namespace_selector: None,
             },
         );
         p.metadata = ObjectMeta {

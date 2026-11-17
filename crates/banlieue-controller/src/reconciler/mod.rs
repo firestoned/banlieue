@@ -13,6 +13,7 @@ pub mod infra;
 pub mod migration;
 pub mod pool;
 pub mod pool_plan;
+pub mod provider_lookup;
 pub mod scheduler;
 pub mod status_mirror;
 pub mod virtualmachine;

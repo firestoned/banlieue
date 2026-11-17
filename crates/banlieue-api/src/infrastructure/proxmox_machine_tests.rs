@@ -21,8 +21,9 @@ mod tests {
         ProxmoxMachineSpec {
             provider_id: None,
             failure_domain: None,
-            provider_ref: LocalObjectReference {
+            provider_ref: crate::common::ProviderReference {
                 name: "pve-a".to_string(),
+                namespace: None,
             },
             node: "pve1".to_string(),
             template_vmid: 9000,

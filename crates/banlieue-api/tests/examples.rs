@@ -13,7 +13,7 @@
 //! default, so merely deserializing an example proves nothing about a
 //! misspelled key. Re-serializing and comparing key sets does.
 
-use banlieue_api::banlieue::{ClaimPhase, VirtualMachineClaim};
+use banlieue_api::banlieue::{ClaimPhase, Provider, VirtualMachineClaim};
 
 /// Repo-relative path to `examples/`, resolved from this crate.
 const EXAMPLES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples");
@@ -125,6 +125,36 @@ fn virtualmachineclaim_selector_example_matches_the_type() {
 
     let spec_doc = doc.get("spec").expect("example has a spec");
     assert_no_dropped_keys(spec_doc, &claim.spec);
+}
+
+/// The shared-provider example declares the namespaces it serves (ADR-0133).
+/// A misspelled `namespaceSelector` would be silently dropped by serde and the
+/// Provider would serve its own namespace only, so the round-trip matters.
+#[test]
+fn shared_provider_example_declares_a_namespace_selector() {
+    let doc = read_example("28-provider-vsphere-shared.yaml");
+    let provider: Provider =
+        serde_json::from_value(doc.clone()).expect("example must parse as a Provider");
+
+    let selector = provider
+        .spec
+        .namespace_selector
+        .as_ref()
+        .expect("a namespaceSelector");
+    assert!(
+        !selector.is_empty(),
+        "an empty selector serves nothing, so the example must select by a label"
+    );
+    assert_eq!(
+        selector
+            .match_labels
+            .get("banlieue.io/tenant")
+            .map(String::as_str),
+        Some("true")
+    );
+
+    let spec_doc = doc.get("spec").expect("example has a spec");
+    assert_no_dropped_keys(spec_doc, &provider.spec);
 }
 
 /// The example's documented status block is what a consumer reads, so the

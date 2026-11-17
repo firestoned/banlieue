@@ -10,7 +10,7 @@ mod tests {
     use crate::host_config::HostConfig;
     use crate::plan::{MachinePlan, plan_machine};
     use crate::sys;
-    use banlieue_api::common::{IpamSpec, LocalObjectReference, PowerState};
+    use banlieue_api::common::{IpamSpec, PowerState, ProviderReference};
     use banlieue_api::infrastructure::{
         ChBootSource, ChBootSourceKind, ChCpuSpec, ChMemorySpec, ChNicSpec,
         CloudHypervisorMachineSpec,
@@ -91,8 +91,9 @@ lan = "br0"
         let spec = CloudHypervisorMachineSpec {
             provider_id: None,
             failure_domain: None,
-            provider_ref: LocalObjectReference {
+            provider_ref: ProviderReference {
                 name: "ch-a".into(),
+                namespace: None,
             },
             cpus: ChCpuSpec { boot: 1, max: None },
             memory: ChMemorySpec {

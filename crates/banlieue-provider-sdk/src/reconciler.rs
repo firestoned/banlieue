@@ -54,6 +54,35 @@ pub fn serves(provider_name: Option<&str>, machine_provider: &str) -> bool {
     provider_name.is_none_or(|mine| mine == machine_provider)
 }
 
+/// Whether a provider reconciles a machine, by name **and** namespace
+/// (ADR-0133 Decision 5).
+///
+/// A provider serves machines in more than its home namespace, so the name
+/// half of [`serves`] is no longer enough: the machine's `providerRef` must
+/// resolve to a `Provider` *in the provider's home namespace*, where its
+/// credentials live. A bare reference resolves in the machine's own namespace,
+/// so a tenant machine that merely names the shared provider is not served: a
+/// tenant must not be able to steer a machine onto a provider by name alone.
+///
+/// # Arguments
+/// * `provider_name` - `--provider-name`; `None` for a static install, which
+///   serves every `Provider` in its home namespace.
+/// * `home_namespace` - the provider's home namespace.
+/// * `machine_namespace` - the namespace the machine is in.
+/// * `provider_ref` - the machine's `spec.providerRef`.
+#[must_use]
+pub fn serves_machine(
+    provider_name: Option<&str>,
+    home_namespace: &str,
+    machine_namespace: &str,
+    provider_ref: &banlieue_api::common::ProviderReference,
+) -> bool {
+    if provider_ref.namespace_or(machine_namespace) != home_namespace {
+        return false;
+    }
+    serves(provider_name, &provider_ref.name)
+}
+
 /// The `Provider`s a workload reconciles shared rows (such as
 /// `VMImage.status.perProvider`) for.
 ///

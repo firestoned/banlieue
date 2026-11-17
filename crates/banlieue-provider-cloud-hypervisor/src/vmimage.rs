@@ -32,7 +32,6 @@ use banlieue_api::banlieue::{
     BuildArtifactStatus, ImagePerProviderStatus, ImageSource, ImageSourceKind, OciArtifactPhase,
     VMImage,
 };
-use banlieue_api::infrastructure::CloudHypervisorMachine;
 use banlieue_oci::Reference;
 use banlieue_oci::reference::{SHA256_PREFIX, require_digest};
 use banlieue_provider_sdk::reconciler::{requeue_default, requeue_long, requeue_on_error};
@@ -484,13 +483,9 @@ async fn live_references(ctx: &Context) -> Result<BTreeSet<String>> {
         .list(&ListParams::default())
         .await?
         .items;
-    let machines = Api::<CloudHypervisorMachine>::namespaced(
-        ctx.client.clone(),
-        &ctx.config.provider.namespace,
-    )
-    .list(&ListParams::default())
-    .await?
-    .items;
+    // Every namespace this host serves, not just its home: a tenant machine's
+    // boot image must not be evicted from under it (ADR-0134).
+    let machines = ctx.machines().list(&ListParams::default()).await?.items;
     let boot_images = machines
         .iter()
         .filter(|m| is_ours(m, &ctx.config))

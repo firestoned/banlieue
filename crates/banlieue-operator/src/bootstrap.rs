@@ -127,6 +127,10 @@ const PROVIDER_PROXMOX_CLUSTER_ROLE: &str =
     include_str!("../../../deploy/provider-proxmox/rbac/clusterrole.yaml");
 const PROVIDER_CLOUD_HYPERVISOR_CLUSTER_ROLE: &str =
     include_str!("../../../deploy/provider-cloud-hypervisor/rbac/clusterrole.yaml");
+/// The opt-in shared-serving ClusterRole of the Cloud Hypervisor provider
+/// (ADR-0134). The operator binds it only for a Provider with a selector.
+const PROVIDER_CLOUD_HYPERVISOR_SHARED_CLUSTER_ROLE: &str =
+    include_str!("../../../deploy/provider-cloud-hypervisor/rbac/clusterrole-shared.yaml");
 const CAPI_AGGREGATE_CLUSTER_ROLE_YAML: &str =
     include_str!("../../../deploy/capi/clusterrole-aggregate.yaml");
 /// The controller's namespaced user-data Role and its binding (ADR-0025,
@@ -635,6 +639,15 @@ pub fn build_operator_install(
                  add deploy/provider-{backend}/rbac/clusterrole.yaml and embed it in bootstrap.rs"
                 )
             })?);
+    }
+
+    // The opt-in shared-serving ClusterRole (ADR-0134). Installed whenever the
+    // backend is, and bound by the operator only for a Provider with a selector.
+    if backends.contains(&"cloud-hypervisor") {
+        manifests.cluster_roles.push(
+            serde_saphyr::from_str(PROVIDER_CLOUD_HYPERVISOR_SHARED_CLUSTER_ROLE)
+                .context("parsing embedded shared ClusterRole for cloud-hypervisor")?,
+        );
     }
 
     // What Cluster API's manager may do on the infrastructure kinds

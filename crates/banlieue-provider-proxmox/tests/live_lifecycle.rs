@@ -31,7 +31,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use futures::FutureExt;
 
-use banlieue_api::common::{Firmware, IpamSpec, LocalObjectReference, PowerState};
+use banlieue_api::common::{Firmware, IpamSpec, PowerState, ProviderReference};
 use banlieue_api::infrastructure::{ProxmoxMachineSpec, ProxmoxNicModel, ProxmoxNicSpec};
 use banlieue_provider_proxmox::config::{is_ours, seed_volid};
 use banlieue_provider_proxmox::reconciler::proxmoxmachine::{
@@ -85,8 +85,9 @@ fn spec(node: &str, template: u32) -> ProxmoxMachineSpec {
     ProxmoxMachineSpec {
         provider_id: None,
         failure_domain: None,
-        provider_ref: LocalObjectReference {
+        provider_ref: ProviderReference {
             name: "pve-e2e".to_string(),
+            namespace: None,
         },
         node: node.to_string(),
         template_vmid: template,

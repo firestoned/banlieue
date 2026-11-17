@@ -82,8 +82,10 @@ rules:
   # Providers in the namespaces whose labels match, so the operator lists and
   # watches Namespace objects and probes the selector with a one-item list at
   # startup. No write verb, deliberately: an operator that could relabel a
-  # namespace could choose its own scope. This is not handed on to provider
-  # Roles; only the operator reads Namespaces.
+  # namespace could choose its own scope. The vSphere provider's ClusterRole
+  # also reads Namespaces (list/watch, ADR-0133) for the same selector; the
+  # operator must hold at least that to bind it (RBAC refuses to let a grantor
+  # delegate permissions it does not itself have), and does.
   - apiGroups: [""]
     resources: ["namespaces"]
     verbs: ["get", "list", "watch"]

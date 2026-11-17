@@ -188,6 +188,7 @@ mod tests {
             failure_domain_name_overrides: Vec::new(),
             attestation: None,
             scheduling: None,
+            namespace_selector: None,
         };
         let json = serde_json::to_value(&s).unwrap();
         let obj = json.as_object().unwrap();
@@ -223,6 +224,7 @@ mod tests {
             failure_domain_name_overrides: Vec::new(),
             attestation: None,
             scheduling: None,
+            namespace_selector: None,
         };
         let json = serde_json::to_value(&s).unwrap();
         assert_eq!(json["paused"], true);
@@ -254,6 +256,7 @@ mod tests {
             failure_domain_name_overrides: Vec::new(),
             attestation: None,
             scheduling: None,
+            namespace_selector: None,
         };
         let json = serde_json::to_value(&s).unwrap();
         assert_eq!(json["useContentLibrary"], true);
@@ -663,6 +666,7 @@ mod tests {
             failure_domain_name_overrides: Vec::new(),
             attestation: None,
             scheduling: None,
+            namespace_selector: None,
         };
         let json = serde_json::to_value(&s).unwrap();
         assert!(
@@ -698,6 +702,7 @@ mod tests {
             }],
             attestation: None,
             scheduling: None,
+            namespace_selector: None,
         };
         let json = serde_json::to_value(&s).unwrap();
         assert_eq!(json["failureDomainNameOverrides"][0]["name"], "cluster-01");
@@ -728,6 +733,7 @@ mod tests {
             failure_domain_name_overrides: Vec::new(),
             attestation: None,
             scheduling: None,
+            namespace_selector: None,
         }
     }
 
@@ -1139,5 +1145,41 @@ attestation:
             Some(f64::from(MAX_CPU_OVERCOMMIT_RATIO)),
             "{ratio}"
         );
+    }
+
+    // ----------------------------------------------------------------------
+    // spec.namespaceSelector — the namespaces a Provider serves (ADR-0133)
+    // ----------------------------------------------------------------------
+
+    /// Absent means "my own namespace only": a Provider written before
+    /// ADR-0133 must not start serving anyone else.
+    #[test]
+    fn provider_spec_omits_namespace_selector_when_absent() {
+        let json = serde_json::to_value(minimal_spec()).unwrap();
+        assert!(!json.as_object().unwrap().contains_key("namespaceSelector"));
+    }
+
+    #[test]
+    fn provider_spec_namespace_selector_round_trips() {
+        let mut s = minimal_spec();
+        s.namespace_selector = Some(LabelSelector {
+            match_labels: BTreeMap::from([("banlieue.io/tenant".to_string(), "true".to_string())]),
+            ..Default::default()
+        });
+        let json = serde_json::to_value(&s).unwrap();
+        assert_eq!(
+            json["namespaceSelector"]["matchLabels"]["banlieue.io/tenant"],
+            "true"
+        );
+        let back: ProviderSpec = serde_json::from_value(json).unwrap();
+        assert_eq!(back.namespace_selector, s.namespace_selector);
+    }
+
+    #[test]
+    fn provider_crd_schema_declares_namespace_selector() {
+        let crd = serde_json::to_value(Provider::crd()).unwrap();
+        let props = &crd["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"]["spec"]
+            ["properties"];
+        assert!(props.get("namespaceSelector").is_some());
     }
 }

@@ -157,6 +157,27 @@ pub fn machine_name(vm: &VirtualMachine) -> String {
         .unwrap_or_else(|| vm.name_any())
 }
 
+/// The `providerRef` for a machine bound for `provider` (ADR-0133 Decision 3).
+///
+/// A `Provider` in the VM's own namespace is named by its bare name, as it
+/// always was. One in another namespace (a shared provider in the provider
+/// namespace) is named with its namespace, so the machine can stay beside its
+/// VM, pool and claim while the provider reads its own `Provider` and
+/// credentials from its own namespace.
+fn provider_reference(
+    vm: &VirtualMachine,
+    provider: &Provider,
+    name: &str,
+) -> banlieue_api::common::ProviderReference {
+    let namespace = provider
+        .namespace()
+        .filter(|ns| Some(ns.as_str()) != vm.namespace().as_deref());
+    banlieue_api::common::ProviderReference {
+        name: name.to_string(),
+        namespace,
+    }
+}
+
 /// Build a [`VSphereMachine`] from the scheduler [`Decision`], the original
 /// VM, its class, image, and the chosen [`Provider`]. Owner-reference is set
 /// to `vm` so the VSphereMachine is garbage-collected when the parent VM is
@@ -282,9 +303,7 @@ pub fn build_vsphere_machine(
     let spec = VSphereMachineSpec {
         provider_id: None,
         failure_domain: Some(decision.failure_domain_name.clone()),
-        provider_ref: banlieue_api::common::LocalObjectReference {
-            name: decision.provider_name.clone(),
-        },
+        provider_ref: provider_reference(vm, provider, &decision.provider_name),
         template,
         datacenter,
         cluster,
@@ -571,9 +590,7 @@ pub fn build_libvirt_machine(
     let spec = LibvirtMachineSpec {
         provider_id: None,
         failure_domain: Some(decision.failure_domain_name.clone()),
-        provider_ref: banlieue_api::common::LocalObjectReference {
-            name: decision.provider_name.clone(),
-        },
+        provider_ref: provider_reference(vm, provider, &decision.provider_name),
         pool,
         domain_name: domain_name_for(vm),
         boot_source,
@@ -733,9 +750,7 @@ pub fn build_cloud_hypervisor_machine(
     let spec = CloudHypervisorMachineSpec {
         provider_id: None,
         failure_domain: Some(decision.failure_domain_name.clone()),
-        provider_ref: banlieue_api::common::LocalObjectReference {
-            name: decision.provider_name.clone(),
-        },
+        provider_ref: provider_reference(vm, provider, &decision.provider_name),
         cpus: ChCpuSpec {
             boot: effective_cpus(class, hardware_override),
             max: None,
@@ -945,9 +960,7 @@ pub fn build_proxmox_machine(
     let spec = ProxmoxMachineSpec {
         provider_id: None,
         failure_domain: Some(decision.failure_domain_name.clone()),
-        provider_ref: banlieue_api::common::LocalObjectReference {
-            name: decision.provider_name.clone(),
-        },
+        provider_ref: provider_reference(vm, provider, &decision.provider_name),
         node,
         template_vmid,
         storage,

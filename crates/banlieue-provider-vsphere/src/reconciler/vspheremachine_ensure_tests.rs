@@ -4,9 +4,7 @@
 
 #[cfg(test)]
 mod tests {
-    use banlieue_api::common::{
-        DiskProvisioning, IpamSpec, LocalObjectReference, StaticIpamConfig,
-    };
+    use banlieue_api::common::{DiskProvisioning, IpamSpec, StaticIpamConfig};
     use banlieue_api::common::{Firmware, PowerState};
     use banlieue_api::infrastructure::{VSphereDiskSpec, VSphereMachineSpec, VSphereNicSpec};
 
@@ -41,8 +39,9 @@ mod tests {
         VSphereMachineSpec {
             provider_id: None,
             failure_domain: None,
-            provider_ref: LocalObjectReference {
+            provider_ref: banlieue_api::common::ProviderReference {
                 name: "vc1".to_string(),
+                namespace: None,
             },
             template: "ubuntu-22.04-cloudinit".to_string(),
             template_folder: None,

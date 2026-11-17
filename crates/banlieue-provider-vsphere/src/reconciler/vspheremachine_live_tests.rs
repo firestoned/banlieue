@@ -14,9 +14,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use async_trait::async_trait;
-    use banlieue_api::common::{
-        DiskProvisioning, Firmware, IpamSpec, LocalObjectReference, PowerState,
-    };
+    use banlieue_api::common::{DiskProvisioning, Firmware, IpamSpec, PowerState};
     use banlieue_api::infrastructure::{
         VSphereDiskSpec, VSphereMachine, VSphereMachineSpec, VSphereMachineStatus, VSphereNicSpec,
     };
@@ -40,8 +38,9 @@ mod tests {
         VSphereMachineSpec {
             provider_id: None,
             failure_domain: None,
-            provider_ref: LocalObjectReference {
+            provider_ref: banlieue_api::common::ProviderReference {
                 name: "vc1".to_string(),
+                namespace: None,
             },
             template: "ubuntu-22.04-cloudinit".to_string(),
             template_folder: None,

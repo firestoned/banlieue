@@ -304,3 +304,19 @@ flowchart TD
 
 <sub>Source: flow `flow-publish-and-fit-measured-capacity` in `architecture.json`.</sub>
 
+
+## Create a VirtualMachine served by a shared provider (ADR-0133)
+
+A tenant namespace with no Provider is served by the platform's provider, which runs in the provider namespace with the credentials and watches tenant namespaces by selector. The pool, VMs, claims and machine all stay in the tenant namespace; only the providerRef crosses.
+
+```mermaid
+flowchart TD
+    t1["1. A VirtualMachine (or a VirtualMachinePool member) is created in a namespace labelled for the controller and the provider. The namespace has no Provider and holds no hypervisor credentials."]
+    t2["2. banlieue-controller lists Providers in the VM's namespace, finds none, and lists those in --provider-namespace. It schedules onto one, reads the tenant's userData in the VM's namespace, renders it, and applies the machine CR in the VM's own namespace with spec.providerRef.namespace set to the Provider's namespace. The machine is owner-referenced to its VM as today."]
+    t3["3. The shared provider sees the machine through its namespace selector, reads its own Provider and credentials from its home namespace, provisions on the backend and patches machine status in the tenant namespace."]
+    t4["4. The controller's existing owner-based watch wakes it and it mirrors the machine's status onto the VirtualMachine. Deleting the VM garbage-collects the machine as today."]
+    t1 --> t2 --> t3 --> t4
+```
+
+<sub>Source: flow `flow-create-virtualmachine-shared-provider` in `architecture.json`.</sub>
+

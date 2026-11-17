@@ -19,8 +19,9 @@ mod tests {
         CloudHypervisorMachineSpec {
             provider_id: None,
             failure_domain: None,
-            provider_ref: LocalObjectReference {
+            provider_ref: crate::common::ProviderReference {
                 name: "ch-host-a".to_string(),
+                namespace: None,
             },
             cpus: ChCpuSpec { boot: 2, max: None },
             memory: ChMemorySpec {

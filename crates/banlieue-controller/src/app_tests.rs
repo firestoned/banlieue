@@ -65,6 +65,18 @@ mod tests {
         assert!(cli.namespace_selector.is_some() && cli.namespace.is_some());
     }
 
+    /// ADR-0133 Decision 2: unset means no fallback, never "every namespace".
+    #[test]
+    fn provider_namespace_defaults_to_unset() {
+        assert_eq!(parse(&[]).provider_namespace, None);
+    }
+
+    #[test]
+    fn provider_namespace_flag_is_parsed() {
+        let cli = parse(&["--provider-namespace", "banlieue-system"]);
+        assert_eq!(cli.provider_namespace.as_deref(), Some("banlieue-system"));
+    }
+
     /// A change in the served set reaches every controller as a trigger.
     #[tokio::test]
     async fn scope_trigger_fires_when_the_served_set_changes() {

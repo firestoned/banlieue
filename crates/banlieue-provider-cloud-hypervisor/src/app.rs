@@ -15,6 +15,7 @@ use std::time::Duration;
 
 use anyhow::{Context as _, Result};
 use banlieue_api::banlieue::{Provider, VMImage};
+use banlieue_api::common::LabelSelector;
 use banlieue_api::infrastructure::CloudHypervisorMachine;
 use banlieue_provider_sdk::bootstrap::{
     Observability, init_tracing, shutdown_signal, start_observability,
@@ -27,6 +28,10 @@ use banlieue_provider_sdk::leader::{
 };
 use banlieue_provider_sdk::naming::workload_name;
 use banlieue_provider_sdk::runner::run_controller;
+use banlieue_provider_sdk::scope::{
+    NamespaceGate, ProviderScope, ScopeError, SharedServing, check_selector, scope_trigger,
+    selector_to_string, spawn_namespace_gate,
+};
 use clap::{Args, Subcommand, ValueEnum};
 use kube::runtime::{Controller, watcher::Config as WatchConfig};
 use kube::{Api, Client};
@@ -143,6 +148,21 @@ pub fn provider_watch_config(config: &HostConfig) -> WatchConfig {
     WatchConfig::default().fields(&format!("metadata.name={}", config.provider.name))
 }
 
+/// The scope this host serves, from its own `Provider.spec.namespaceSelector`
+/// (ADR-0134 Decision 2): its home namespace always, plus the namespaces the
+/// selector matches. An absent or empty selector means home only, never every
+/// namespace (ADR-0133 Decision 11). Read once at startup.
+///
+/// # Errors
+/// [`ScopeError`] when no home namespace can be determined (an empty one).
+pub fn provider_scope(
+    selector: Option<&LabelSelector>,
+    home: &str,
+) -> Result<ProviderScope, ScopeError> {
+    let rendered = selector.and_then(selector_to_string);
+    ProviderScope::resolve(Some(home), home, rendered.as_deref())
+}
+
 /// A client from the kubeconfig the host config names — never an ambient
 /// `KUBECONFIG` or `~/.kube/config`, so the identity this process acts as
 /// is exactly the one the bootstrap provisioned (ADR-0060 Decision 5).
@@ -201,6 +221,14 @@ pub async fn run(cli: Cli) -> Result<()> {
             )
         })?;
     let class = provider.spec.provider_class_ref.name.clone();
+    // The namespaces it serves besides home: read once, so changing the
+    // selector needs a provider restart (ADR-0134 Decision 2).
+    let scope = provider_scope(
+        provider.spec.namespace_selector.as_ref(),
+        &config.provider.namespace,
+    )
+    .context("resolving the namespaces this host serves")?;
+    info!(scope = %scope.describe(), "serving");
 
     // Keep the credential alive (ADR-0060 Decision 5). Only a token FILE can
     // be renewed in place; a kubeconfig with the token inline keeps working
@@ -258,12 +286,31 @@ pub async fn run(cli: Cli) -> Result<()> {
         info!("leader election disabled by --no-leader-elect");
     }
 
+    // Selector mode (ADR-0133 Decision 4): machines in every namespace, gated by
+    // a Namespace reflector the API server has already filtered. An invalid
+    // selector fails startup here, not later as a host that serves nothing.
+    let (scope_tx, scope_rx) = tokio::sync::watch::channel(0_u64);
+    let (gate, _scope_tx) = match scope.selector() {
+        Some(selector) => {
+            check_selector(&client, selector)
+                .await
+                .context("validating the Provider's namespaceSelector")?;
+            let gate = spawn_namespace_gate(&client, selector, scope_tx)
+                .await
+                .context("starting the namespace selector watch")?;
+            (gate, None)
+        }
+        None => (NamespaceGate::none(), Some(scope_tx)),
+    };
+
     let ctx = Arc::new(Context {
         client: client.clone(),
         config: config.clone(),
         host: Arc::new(host),
         group,
         uids: UidLedger::default(),
+        serving: SharedServing::new(scope.clone(), gate),
+        scope: scope.clone(),
     });
 
     let provider_api: Api<Provider> = Api::namespaced(client.clone(), &config.provider.namespace);
@@ -276,10 +323,10 @@ pub async fn run(cli: Cli) -> Result<()> {
         ctx.clone(),
     );
 
-    // Machines live beside their Provider (ADR-0060); the reconciler skips
-    // any whose providerRef names another host.
-    let machine_api: Api<CloudHypervisorMachine> =
-        Api::namespaced(client.clone(), &config.provider.namespace);
+    // Machines follow the scope: the home namespace, or every namespace behind
+    // the selector gate (ADR-0134). The reconciler skips any whose providerRef
+    // does not resolve to this host.
+    let machine_api: Api<CloudHypervisorMachine> = scope.api(&client);
     // Reports are once per machine, when its install finishes, and the
     // controller dedups what is queued, so waking every machine is cheap and
     // needs no unstable `reconcile_on`.
@@ -287,7 +334,9 @@ pub async fn run(cli: Cli) -> Result<()> {
         rx.recv().await.map(|()| ((), rx))
     });
     let machine_ctrl = run_controller(
-        Controller::new(machine_api, WatchConfig::default()).reconcile_all_on(woken),
+        Controller::new(machine_api, WatchConfig::default())
+            .reconcile_all_on(woken)
+            .reconcile_all_on(scope_trigger(scope_rx)),
         "CloudHypervisorMachine",
         metrics.clone(),
         reconciler::reconcile,

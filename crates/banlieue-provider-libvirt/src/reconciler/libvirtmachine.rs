@@ -170,13 +170,20 @@ pub async fn reconcile(machine: Arc<LibvirtMachine>, ctx: Arc<Context>) -> Resul
     );
     let _enter = span.enter();
 
+    // A namespace the selector does not (or no longer) pick is not ours; a
+    // deleting machine is never skipped, or its domain would be stranded.
+    if let Some(action) =
+        ctx.skip_unserved(&namespace, machine.metadata.deletion_timestamp.is_some())
+    {
+        return Ok(action);
+    }
+
     // Another Provider's machine is its own workload's to reconcile. Acting
     // on it here fails on credentials at best, and at worst finalizes it
     // against the wrong host (bug-178).
-    if !banlieue_provider_sdk::reconciler::serves(
-        ctx.provider_name.as_deref(),
-        &machine.spec.provider_ref.name,
-    ) {
+    // By name AND namespace (ADR-0133): the `providerRef` must resolve to the
+    // Provider this workload serves, in its home namespace.
+    if !ctx.serves_machine(&namespace, &machine.spec.provider_ref) {
         return Ok(Action::await_change());
     }
 
@@ -184,8 +191,11 @@ pub async fn reconcile(machine: Arc<LibvirtMachine>, ctx: Arc<Context>) -> Resul
 
     // Connecting is the expensive part of every path below, deletion
     // included, so it happens once here.
-    let provider = resolve_provider(&ctx, &namespace, &machine.spec).await?;
-    let identity = crate::credentials::resolve(&ctx.client, &namespace, &provider).await?;
+    // The Provider, its credentials and CA bundle come from the provider's home
+    // namespace, never the machine's (ADR-0133 Decision 5).
+    let home = ctx.home_namespace(&namespace);
+    let provider = resolve_provider(&ctx, home, &machine.spec).await?;
+    let identity = crate::credentials::resolve(&ctx.client, home, &provider).await?;
     let mut client = ctx
         .libvirt_machine
         .build(&provider.spec.connection, &identity)

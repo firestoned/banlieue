@@ -102,7 +102,7 @@ pub struct ProxmoxMachineSpec {
     // banlieue / Proxmox-specific
     // ------------------------------------------------------------------
     /// The `Provider` whose connection describes the target Proxmox cluster.
-    pub provider_ref: LocalObjectReference,
+    pub provider_ref: ProviderReference,
 
     /// Node the VM is created on (resolved from the failure domain).
     pub node: String,
