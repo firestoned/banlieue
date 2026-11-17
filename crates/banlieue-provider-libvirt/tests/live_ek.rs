@@ -37,7 +37,7 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use banlieue_api::common::{Firmware, IpamSpec, LocalObjectReference, PowerState};
+use banlieue_api::common::{Firmware, IpamSpec, PowerState, ProviderReference};
 use banlieue_api::infrastructure::{
     LibvirtBootSource, LibvirtBootSourceKind, LibvirtDiskBus, LibvirtDiskSpec, LibvirtMachineSpec,
     LibvirtNicSource, LibvirtNicSourceKind, LibvirtNicSpec,
@@ -113,8 +113,9 @@ fn spec(domain_name: &str, pool: &str, source_volume: &str) -> LibvirtMachineSpe
     LibvirtMachineSpec {
         provider_id: None,
         failure_domain: None,
-        provider_ref: LocalObjectReference {
+        provider_ref: ProviderReference {
             name: "live-ek-test".to_string(),
+            namespace: None,
         },
         pool: pool.to_string(),
         domain_name: domain_name.to_string(),

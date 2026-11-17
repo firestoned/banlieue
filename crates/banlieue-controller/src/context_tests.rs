@@ -98,4 +98,29 @@ mod tests {
             .with_namespace_gate(NamespaceGate::selected(reader));
         assert!(ctx.skip_unserved("team-b", true).is_none());
     }
+
+    // ---- provider namespace (ADR-0133 Decision 2) --------------------------
+
+    /// Unset is the default and means no fallback: the controller never
+    /// searches "every namespace" for a Provider.
+    #[tokio::test]
+    async fn the_provider_namespace_is_unset_by_default() {
+        let ctx = Context::new(offline_client(), None);
+        assert_eq!(ctx.provider_namespace(), None);
+    }
+
+    #[tokio::test]
+    async fn with_provider_namespace_sets_it() {
+        let ctx = Context::new(offline_client(), None)
+            .with_provider_namespace(Some("banlieue-system".into()));
+        assert_eq!(ctx.provider_namespace(), Some("banlieue-system"));
+    }
+
+    /// A blank value (an empty `BANLIEUE_PROVIDER_NAMESPACE=""` in a manifest)
+    /// is unset, not the empty namespace.
+    #[tokio::test]
+    async fn a_blank_provider_namespace_is_unset() {
+        let ctx = Context::new(offline_client(), None).with_provider_namespace(Some("  ".into()));
+        assert_eq!(ctx.provider_namespace(), None);
+    }
 }

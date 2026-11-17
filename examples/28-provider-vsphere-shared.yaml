@@ -1,0 +1,48 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# One vCenter shared by every team (ADR-0133). The Provider, its credentials
+# Secret and its provider pod live in the platform namespace; tenant namespaces
+# hold none of them. `namespaceSelector` declares which namespaces it serves:
+#
+#   * the operator renders it onto the provider as --watch-namespace-selector,
+#     so the provider watches the machines in those namespaces while it keeps
+#     reading its own Provider and credentials from this namespace;
+#   * the controller considers this Provider for a VirtualMachine only in a
+#     namespace that has no Provider of its own and whose labels match.
+#
+# A team joins by labelling its namespace:
+#   kubectl label namespace team-a banlieue.io/tenant=true
+#
+# Setting namespaceSelector needs `update` on `providers/namespaceselector`
+# (deploy/admission/provider-namespace-selector-authorization.yaml), and the
+# controller needs BANLIEUE_PROVIDER_NAMESPACE=banlieue-system. Omit the field
+# and the Provider serves its own namespace only. An empty selector (`{}`)
+# serves nothing: banlieue never defaults to every namespace.
+apiVersion: banlieue.io/v1alpha1
+kind: Provider
+metadata:
+  name: vcenter-shared
+  namespace: banlieue-system
+  labels:
+    dc: dc1
+    env: nonprod
+spec:
+  providerClassRef:
+    name: vsphere
+  namespaceSelector:
+    matchLabels:
+      banlieue.io/tenant: "true"
+  connection:
+    endpoint: https://vcenter-dc1.corp.example/sdk
+    credentialsRef:
+      name: vcenter-shared-creds
+  capabilities:
+    storageClasses:
+      - name: gold
+        target:
+          datastoreCluster: dsc-gold
+    networkClasses:
+      - name: prod
+        target:
+          portGroup: vmnet-prod

@@ -30,9 +30,7 @@
 use std::sync::Arc;
 
 use banlieue_api::banlieue::DEFAULT_USER_DATA_KEY;
-use banlieue_api::banlieue::{
-    InstallMode, Provider, VMClass, VMImage, VirtualMachine, VirtualMachineStatus,
-};
+use banlieue_api::banlieue::{InstallMode, VMClass, VMImage, VirtualMachine, VirtualMachineStatus};
 use banlieue_api::common::{
     LocalObjectReference as _PlaceholderLocalRef, TypedObjectReference, condition_types,
 };
@@ -65,6 +63,7 @@ use super::infra::{
     build_vsphere_machine, machine_name,
 };
 use super::migration::{MigrationAction, PlacementDriftReason, evaluate};
+use super::provider_lookup::{candidate_providers, placement_peers};
 use super::scheduler::{ScheduleError, reasons, schedule};
 use super::status_mirror::{InfraMachineRead, mirror_onto_vm, mirror_status_from_infra};
 use crate::context::Context;
@@ -267,12 +266,13 @@ pub async fn reconcile(vm: Arc<VirtualMachine>, ctx: Arc<Context>) -> Result<Act
     // ---- Resolve refs ---------------------------------------------------
     let class_api: Api<VMClass> = Api::all(ctx.client.clone());
     let image_api: Api<VMImage> = Api::all(ctx.client.clone());
-    let provider_api: Api<Provider> = Api::namespaced(ctx.client.clone(), &namespace);
 
     let class = class_api.get(&vm.spec.class_ref.name).await?;
     let image = image_api.get(&vm.spec.image_ref.name).await?;
-    let providers = provider_api.list(&ListParams::default()).await?.items;
-    let sibling_vms = vm_api.list(&ListParams::default()).await?.items;
+    // The VM's own namespace first, then the provider namespace (ADR-0133).
+    let candidates = candidate_providers(&ctx, &namespace).await?;
+    let providers = candidates.providers;
+    let sibling_vms = placement_peers(&ctx, &namespace, candidates.source).await?;
 
     // ---- Validate the class/image pairing (ADR-0048) --------------------
     //

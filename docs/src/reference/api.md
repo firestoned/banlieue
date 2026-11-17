@@ -74,6 +74,7 @@ never does. Communication between them is CRD-only.
 | `capabilities` | object |  | Admin-defined capability mappings. Every storage / network class that VMClass and VMImage may request MUST be listed here for this provider to be considered by the scheduler. |
 | `connection` | object | Yes | Connection details for the backend. |
 | `failureDomainNameOverrides` | object[] |  | Explicit overrides for individual discovered failure domains' generated `name`. The auto-computed, collision-safe name (`<provider>-<datacenter>-<cluster>`, hashed when too long) is always the fallback for any `(datacenter, cluster)` pair with no matching entry here — this is opt-in, never required. See ADR-0023. |
+| `namespaceSelector` | object |  | The namespaces this Provider serves, besides its own (ADR-0133). |
 | `paused` | boolean |  | Suspend reconciliation. Equivalent to setting the `cluster.x-k8s.io/paused` annotation but in-band. |
 | `providerClassRef` | object | Yes | Reference to a ProviderClass that identifies the backend type. |
 | `scheduling` | object |  | How the scheduler places VMs on this backend (ADR-0107). Optional: without it the defaults apply. |
@@ -295,6 +296,39 @@ matching entry here — this is opt-in, never required. See ADR-0023.
 | `cluster` | string | Yes | Cluster name as vCenter reports it. |
 | `datacenter` | string | Yes | Datacenter name as vCenter reports it (matches `discover_inventory`'s walk, not an operator-chosen alias). |
 | `name` | string | Yes | The name to use instead of the auto-computed one, e.g. `cluster-01`. Slugified the same way auto-computed names are, so `Cluster 01` still produces a valid Kubernetes name. |
+
+#### `.spec.namespaceSelector`
+
+The namespaces this Provider serves, besides its own (ADR-0133).
+
+A label selector over `Namespace` objects. Absent means the Provider's
+own namespace only, so a Provider written before ADR-0133 serves nobody
+new. It is the single source for both readers:
+
+- the operator renders it onto the provider workload as
+  `--watch-namespace-selector`, so the provider watches machines in
+  those namespaces while it keeps its credentials in its own;
+- the controller considers a Provider in the provider namespace for a
+  VM only when this selector matches the VM's namespace labels.
+
+An empty selector (`{}`) serves nothing: banlieue never defaults to every
+namespace, so a Provider cannot serve all of them by omission or by
+accident. The selector is scope, not isolation: who may create a VM in a
+matching namespace is RBAC and admission policy. Set it only on a Provider
+in the platform's provider namespace; tenants must not be able to write it.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `matchExpressions` | object[] |  |  |
+| `matchLabels` | map[string]string |  |  |
+
+##### `.spec.namespaceSelector.matchExpressions[]`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `key` | string | Yes |  |
+| `operator` | string | Yes | Allowed: `In`, `NotIn`, `Exists`, `DoesNotExist`. |
+| `values` | string[] |  |  |
 
 #### `.spec.providerClassRef`
 
@@ -2269,7 +2303,8 @@ The `Provider` for the one host that runs this machine (ADR-0060).
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `name` | string | Yes |  |
+| `name` | string | Yes | Name of the `Provider`. |
+| `namespace` | string |  | Namespace of the `Provider`. Defaults to the referrer's namespace. |
 
 ### `.status`
 
@@ -2558,7 +2593,8 @@ The `Provider` for the one host that runs this machine (ADR-0060).
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `name` | string | Yes |  |
+| `name` | string | Yes | Name of the `Provider`. |
+| `namespace` | string |  | Namespace of the `Provider`. Defaults to the referrer's namespace. |
 
 ---
 
@@ -2708,7 +2744,8 @@ the target libvirt host.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `name` | string | Yes |  |
+| `name` | string | Yes | Name of the `Provider`. |
+| `namespace` | string |  | Namespace of the `Provider`. Defaults to the referrer's namespace. |
 
 ### `.status`
 
@@ -2922,7 +2959,8 @@ the target libvirt host.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `name` | string | Yes |  |
+| `name` | string | Yes | Name of the `Provider`. |
+| `namespace` | string |  | Namespace of the `Provider`. Defaults to the referrer's namespace. |
 
 ---
 
@@ -3048,7 +3086,8 @@ The `Provider` whose connection describes the target Proxmox cluster.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `name` | string | Yes |  |
+| `name` | string | Yes | Name of the `Provider`. |
+| `namespace` | string |  | Namespace of the `Provider`. Defaults to the referrer's namespace. |
 
 ### `.status`
 
@@ -3227,7 +3266,8 @@ The `Provider` whose connection describes the target Proxmox cluster.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `name` | string | Yes |  |
+| `name` | string | Yes | Name of the `Provider`. |
+| `namespace` | string |  | Namespace of the `Provider`. Defaults to the referrer's namespace. |
 
 ---
 
@@ -3545,7 +3585,8 @@ describe the target vCenter.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `name` | string | Yes |  |
+| `name` | string | Yes | Name of the `Provider`. |
+| `namespace` | string |  | Namespace of the `Provider`. Defaults to the referrer's namespace. |
 
 ### `.status`
 
@@ -3743,7 +3784,8 @@ describe the target vCenter.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `name` | string | Yes |  |
+| `name` | string | Yes | Name of the `Provider`. |
+| `namespace` | string |  | Namespace of the `Provider`. Defaults to the referrer's namespace. |
 
 ---
 

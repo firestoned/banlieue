@@ -72,6 +72,7 @@ mod tests {
                 failure_domain_name_overrides: Vec::new(),
                 attestation: None,
                 scheduling: None,
+                namespace_selector: None,
             },
             status: None,
         }

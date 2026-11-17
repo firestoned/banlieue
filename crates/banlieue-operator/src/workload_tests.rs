@@ -41,6 +41,7 @@ mod tests {
             build_toleration: &[],
             ca_bundle_config_map: None,
             ca_bundle_secret: None,
+            watch_namespace_selector: None,
             owner: None,
         }
     }
@@ -52,6 +53,47 @@ mod tests {
     // ----------------------------------------------------------------------
     // Deployment
     // ----------------------------------------------------------------------
+
+    // ----------------------------------------------------------------------
+    // --watch-namespace-selector (ADR-0133 Decision 11)
+    // ----------------------------------------------------------------------
+
+    fn args_of(deployment: &Deployment) -> Vec<String> {
+        container(deployment).args.clone().unwrap()
+    }
+
+    /// With no selector the provider serves its home namespace only, as before.
+    #[test]
+    fn no_namespace_selector_renders_no_flag() {
+        let class = class_spec();
+        let args = args_of(&build_deployment(&inputs(&class)));
+        assert!(!args.iter().any(|a| a == "--watch-namespace-selector"));
+    }
+
+    #[test]
+    fn a_namespace_selector_is_passed_to_the_provider() {
+        let class = class_spec();
+        let mut i = inputs(&class);
+        i.watch_namespace_selector = Some("banlieue.io/tenant=true");
+        let args = args_of(&build_deployment(&i));
+        let at = args
+            .iter()
+            .position(|a| a == "--watch-namespace-selector")
+            .expect("flag rendered");
+        assert_eq!(args[at + 1], "banlieue.io/tenant=true");
+    }
+
+    /// `--namespace` stays the Provider's own namespace: its home, where the
+    /// credentials are. The selector adds namespaces; it never replaces home.
+    #[test]
+    fn the_selector_does_not_change_the_home_namespace_flag() {
+        let class = class_spec();
+        let mut i = inputs(&class);
+        i.watch_namespace_selector = Some("banlieue.io/tenant=true");
+        let args = args_of(&build_deployment(&i));
+        let at = args.iter().position(|a| a == "--namespace").unwrap();
+        assert_eq!(args[at + 1], "banlieue-system");
+    }
 
     #[test]
     fn deployment_runs_the_backend_subcommand_for_this_provider() {
@@ -497,6 +539,74 @@ mod tests {
         input.owner = Some(owner_reference("prod-vc", "uid-1234"));
         let binding = build_cluster_role_binding(&input);
         assert!(binding.metadata.owner_references.is_none());
+    }
+
+    // ----------------------------------------------------------------------
+    // The shared-serving ClusterRole (ADR-0134)
+    // ----------------------------------------------------------------------
+
+    fn ch_class_spec() -> ProviderClassSpec {
+        let mut c = class_spec();
+        c.backend = "cloud-hypervisor".to_string();
+        c
+    }
+
+    /// A host that is not shared keeps today's namespaced-only token.
+    #[test]
+    fn no_selector_means_no_shared_cluster_role_binding() {
+        let class = ch_class_spec();
+        assert!(build_shared_cluster_role_binding(&inputs(&class)).is_none());
+        assert!(
+            build_workload(&inputs(&class), "build")
+                .shared_cluster_role_binding
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_selector_binds_the_shared_cluster_role_to_the_provider_account() {
+        let class = ch_class_spec();
+        let mut i = inputs(&class);
+        i.watch_namespace_selector = Some("banlieue.io/tenant=true");
+        let binding = build_shared_cluster_role_binding(&i).unwrap();
+        assert_eq!(binding.role_ref.kind, "ClusterRole");
+        assert_eq!(
+            binding.role_ref.name,
+            "banlieue-provider-cloud-hypervisor-shared"
+        );
+        let subject = &binding.subjects.as_ref().unwrap()[0];
+        assert_eq!(subject.kind, "ServiceAccount");
+        assert_eq!(subject.name, workload_name("vsphere", "prod-vc"));
+        assert!(binding.metadata.owner_references.is_none());
+        assert_ne!(
+            binding.metadata.name,
+            build_cluster_role_binding(&i).metadata.name,
+            "the two bindings must not share a name"
+        );
+        assert_eq!(
+            binding.metadata.name.as_deref(),
+            Some(
+                shared_cluster_role_binding_name("vsphere", "banlieue-system", "prod-vc").as_str()
+            )
+        );
+        assert!(
+            build_workload(&i, "build")
+                .shared_cluster_role_binding
+                .is_some()
+        );
+    }
+
+    /// Only a backend that ships a `-shared` ClusterRole gets the binding: the
+    /// others hold their machine access in their one ClusterRole already.
+    #[test]
+    fn a_backend_without_a_shared_cluster_role_gets_no_binding() {
+        let class = class_spec();
+        let mut i = inputs(&class);
+        i.watch_namespace_selector = Some("banlieue.io/tenant=true");
+        assert!(build_shared_cluster_role_binding(&i).is_none());
+        assert!(!wants_shared_cluster_role("vsphere", Some("a=b")));
+        assert!(wants_shared_cluster_role("cloud-hypervisor", Some("a=b")));
+        assert!(!wants_shared_cluster_role("cloud-hypervisor", None));
     }
 
     // ----------------------------------------------------------------------

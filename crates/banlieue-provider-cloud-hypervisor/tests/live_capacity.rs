@@ -91,6 +91,7 @@ fn provider() -> Provider {
             use_content_library: Default::default(),
             attestation: None,
             scheduling: None,
+            namespace_selector: None,
         },
     );
     p.metadata.namespace = Some("banlieue-system".into());

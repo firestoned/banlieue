@@ -7,7 +7,7 @@ mod tests {
     use super::super::*;
     use crate::machine::{Observed, Phase};
     use banlieue_api::capi::{BOOTSTRAP_DATA_READY, CLUSTER_NAME_LABEL, bootstrap_reasons};
-    use banlieue_api::common::{IpamSpec, LocalObjectReference, PowerState};
+    use banlieue_api::common::{IpamSpec, PowerState, ProviderReference};
     use banlieue_api::infrastructure::{
         ChBootSource, ChBootSourceKind, ChCpuSpec, ChMemorySpec, CloudHypervisorMachineSpec,
     };
@@ -47,6 +47,17 @@ lan = "br0"
         provider: &str,
         host_uid: Option<u32>,
     ) -> CloudHypervisorMachine {
+        machine_ref(name, ns, provider, None, host_uid)
+    }
+
+    /// A machine in `ns` whose `providerRef` names `provider` in `provider_ns`.
+    fn machine_ref(
+        name: &str,
+        ns: &str,
+        provider: &str,
+        provider_ns: Option<&str>,
+        host_uid: Option<u32>,
+    ) -> CloudHypervisorMachine {
         let _ = IpamSpec::default();
         CloudHypervisorMachine {
             metadata: ObjectMeta {
@@ -61,8 +72,9 @@ lan = "br0"
             spec: CloudHypervisorMachineSpec {
                 provider_id: None,
                 failure_domain: None,
-                provider_ref: LocalObjectReference {
+                provider_ref: ProviderReference {
                     name: provider.into(),
+                    namespace: provider_ns.map(str::to_string),
                 },
                 cpus: ChCpuSpec { boot: 1, max: None },
                 memory: ChMemorySpec {
@@ -91,14 +103,52 @@ lan = "br0"
         }
     }
 
-    /// One Provider is one host (ADR-0060). Another host's machines, or ours
-    /// in another namespace, are not touched.
+    /// One Provider is one host (ADR-0060). Another host's machines are not
+    /// touched, and a bare `providerRef` in a tenant namespace resolves to the
+    /// tenant namespace, not to this host's Provider (ADR-0134).
     #[test]
     fn only_this_hosts_machines_are_ours() {
         let c = config();
         assert!(is_ours(&machine("a", "banlieue-system", "ch-a", None), &c));
         assert!(!is_ours(&machine("a", "banlieue-system", "ch-b", None), &c));
-        assert!(!is_ours(&machine("a", "tenant", "ch-a", None), &c));
+        assert!(!is_ours(&machine("a", "team-a", "ch-a", None), &c));
+    }
+
+    /// A tenant machine names the shared host by name AND namespace.
+    #[test]
+    fn a_tenant_machine_naming_our_provider_in_home_is_ours() {
+        let c = config();
+        let m = machine_ref("a", "team-a", "ch-a", Some("banlieue-system"), None);
+        assert!(is_ours(&m, &c));
+    }
+
+    #[test]
+    fn a_tenant_machine_naming_another_namespace_or_host_is_not_ours() {
+        let c = config();
+        let other_ns = machine_ref("a", "team-a", "ch-a", Some("team-b"), None);
+        let other_host = machine_ref("a", "team-a", "ch-b", Some("banlieue-system"), None);
+        assert!(!is_ours(&other_ns, &c));
+        assert!(!is_ours(&other_host, &c));
+    }
+
+    /// Guest uids are one pool per host, so the ledger spans every namespace
+    /// the host serves.
+    #[test]
+    fn used_uids_span_every_namespace_the_host_serves() {
+        let c = config();
+        let machines = vec![
+            machine("a", "banlieue-system", "ch-a", Some(2_000_000)),
+            machine_ref(
+                "b",
+                "team-a",
+                "ch-a",
+                Some("banlieue-system"),
+                Some(2_000_001),
+            ),
+            machine("c", "team-a", "ch-a", Some(2_000_002)),
+        ];
+        let used = used_host_uids(&machines, &c, "nobody");
+        assert_eq!(used, [2_000_000, 2_000_001].into());
     }
 
     #[test]

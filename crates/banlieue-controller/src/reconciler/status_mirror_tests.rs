@@ -308,8 +308,9 @@ mod tests {
             spec: LibvirtMachineSpec {
                 provider_id: Some("libvirt://kvm-a/0f3c9a1e".to_string()),
                 failure_domain: None,
-                provider_ref: banlieue_api::common::LocalObjectReference {
+                provider_ref: banlieue_api::common::ProviderReference {
                     name: "kvm-a".to_string(),
+                    namespace: None,
                 },
                 pool: "default".to_string(),
                 domain_name: "ns-db-01".to_string(),
@@ -550,8 +551,9 @@ mod tests {
             spec: CloudHypervisorMachineSpec {
                 provider_id: Some("cloudhypervisor://ch-a/0f3c9a1e".to_string()),
                 failure_domain: None,
-                provider_ref: banlieue_api::common::LocalObjectReference {
+                provider_ref: banlieue_api::common::ProviderReference {
                     name: "ch-a".to_string(),
+                    namespace: None,
                 },
                 cpus: ChCpuSpec { boot: 2, max: None },
                 memory: ChMemorySpec {
@@ -667,8 +669,9 @@ mod tests {
             spec: ProxmoxMachineSpec {
                 provider_id: Some("proxmox://pve-a/100".to_string()),
                 failure_domain: None,
-                provider_ref: banlieue_api::common::LocalObjectReference {
+                provider_ref: banlieue_api::common::ProviderReference {
                     name: "pve-a".to_string(),
+                    namespace: None,
                 },
                 node: "pve1".to_string(),
                 template_vmid: 9000,

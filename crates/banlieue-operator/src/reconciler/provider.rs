@@ -37,7 +37,10 @@ use crate::error::{Error, Result};
 use crate::events;
 use crate::heartbeat::{self, Transition};
 use crate::naming::{cluster_scoped_name, owned_by_selector, workload_name};
-use crate::workload::{WorkloadInputs, build_workload, owner_reference};
+use crate::workload::{
+    WorkloadInputs, build_workload, owner_reference, shared_cluster_role_binding_name,
+    wants_shared_cluster_role,
+};
 
 /// Finalizer held on every `Provider` this operator manages.
 ///
@@ -82,6 +85,23 @@ pub fn skip_reason(provider: &ProviderSpec, class: &ProviderClassSpec) -> Option
         return Some(SkipReason::ClassPaused);
     }
     None
+}
+
+/// The `--watch-namespace-selector` value for a Provider's workload, from its
+/// `spec.namespaceSelector` (ADR-0133 Decision 11).
+///
+/// `None` when the backend cannot serve shared namespaces (its binary does not
+/// parse the flag, and the pod would fail at startup), or the Provider declares
+/// no selector, or an empty one: an empty
+/// selector serves nothing (banlieue never defaults to every namespace), and a
+/// blank flag would mean "unset", so it renders no flag at all and the provider
+/// serves its home namespace only.
+#[must_use]
+pub fn watch_namespace_selector(spec: &ProviderSpec, backend: &str) -> Option<String> {
+    if !banlieue_provider_sdk::scope::supports_shared_provider(backend) {
+        return None;
+    }
+    banlieue_provider_sdk::scope::selector_to_string(spec.namespace_selector.as_ref()?)
 }
 
 /// Names of the ConfigMap and Secret (in that order) a Provider's CA bundle is
@@ -295,14 +315,30 @@ async fn prune_orphans(
             workload_name(&class.name_any(), &name)
         ));
     }
-    let keep_cluster_scoped = cluster_scoped_name(&class.name_any(), provider_namespace, &name);
+    let mut keep_cluster_scoped = vec![cluster_scoped_name(
+        &class.name_any(),
+        provider_namespace,
+        &name,
+    )];
+    // The opt-in shared-serving binding stays only while the Provider still
+    // declares a selector; dropping the selector prunes it (ADR-0134).
+    if wants_shared_cluster_role(
+        &class.spec.backend,
+        watch_namespace_selector(&provider.spec, &class.spec.backend).as_deref(),
+    ) {
+        keep_cluster_scoped.push(shared_cluster_role_binding_name(
+            &class.name_any(),
+            provider_namespace,
+            &name,
+        ));
+    }
 
     let mut pruned = Vec::new();
     pruned.extend(prune_namespaced::<Deployment>(ctx, &selector, &keep_deployments).await?);
     pruned.extend(prune_namespaced::<ServiceAccount>(ctx, &selector, &identity).await?);
     pruned.extend(prune_namespaced::<Role>(ctx, &selector, &keep_rbac).await?);
     pruned.extend(prune_namespaced::<RoleBinding>(ctx, &selector, &keep_rbac).await?);
-    pruned.extend(prune_cluster_role_bindings(ctx, &selector, Some(&keep_cluster_scoped)).await?);
+    pruned.extend(prune_cluster_role_bindings(ctx, &selector, &keep_cluster_scoped).await?);
 
     // One name may appear for several kinds; the caller emits one Event per
     // distinct workload, not per object.
@@ -354,7 +390,7 @@ where
 async fn prune_cluster_role_bindings(
     ctx: &Context,
     selector: &str,
-    keep: Option<&str>,
+    keep: &[String],
 ) -> Result<Vec<String>> {
     let api: Api<ClusterRoleBinding> = Api::all(ctx.client.clone());
     let found = api.list(&ListParams::default().labels(selector)).await?;
@@ -362,7 +398,7 @@ async fn prune_cluster_role_bindings(
 
     for binding in found.items {
         let binding_name = binding.name_any();
-        if keep == Some(binding_name.as_str()) {
+        if keep.contains(&binding_name) {
             continue;
         }
         delete_ignoring_missing(&api, &binding_name).await?;
@@ -384,6 +420,7 @@ async fn apply_workload(
         .workload_namespace_or(provider_namespace)
         .to_string();
     let (ca_config_map, ca_secret) = ca_bundle_refs(&provider.spec.connection);
+    let namespace_selector = watch_namespace_selector(&provider.spec, &class.spec.backend);
     let owner = provider
         .meta()
         .uid
@@ -400,6 +437,7 @@ async fn apply_workload(
         build_toleration: &ctx.build_toleration,
         ca_bundle_config_map: ca_config_map.as_deref(),
         ca_bundle_secret: ca_secret.as_deref(),
+        watch_namespace_selector: namespace_selector.as_deref(),
         owner,
     };
     let set = build_workload(&inputs, &ctx.imagebuild_namespace);
@@ -438,6 +476,9 @@ async fn apply_workload(
         &set.cluster_role_binding,
     )
     .await?;
+    if let Some(shared) = &set.shared_cluster_role_binding {
+        server_side_apply(&cluster_role_bindings, FIELD_MANAGER, shared).await?;
+    }
     if let Some(deployment) = &set.deployment {
         server_side_apply(&deployments, FIELD_MANAGER, deployment).await?;
     }
@@ -551,7 +592,7 @@ async fn cleanup(provider: &Provider, providers: &Api<Provider>, ctx: &Context) 
     // is belt-and-braces for them and the only mechanism for the rest.
     let selector = owned_by_selector(&namespace, &name);
 
-    prune_cluster_role_bindings(ctx, &selector, None).await?;
+    prune_cluster_role_bindings(ctx, &selector, &[]).await?;
     // Deleting the Provider: keep nothing, including the import identity's
     // Role and RoleBinding.
     prune_namespaced::<Deployment>(ctx, &selector, &[]).await?;

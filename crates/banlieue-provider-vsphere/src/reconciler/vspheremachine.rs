@@ -776,13 +776,22 @@ pub async fn reconcile(machine: Arc<VSphereMachine>, ctx: Arc<Context>) -> Resul
     );
     let _enter = span.enter();
 
+    // A namespace this provider does not serve is left alone (ADR-0133). A
+    // machine being deleted is never skipped: its finalizer must still run, or
+    // un-labelling a namespace would strand a VM on the backend.
+    if let Some(action) =
+        ctx.skip_unserved(&namespace, machine.metadata.deletion_timestamp.is_some())
+    {
+        return Ok(action);
+    }
+
     // Another Provider's machine is its own workload's to reconcile. Acting
     // on it here fails on credentials at best, and at worst finalizes it
-    // against the wrong host (bug-178).
-    if !banlieue_provider_sdk::reconciler::serves(
-        ctx.provider_name.as_deref(),
-        &machine.spec.provider_ref.name,
-    ) {
+    // against the wrong host (bug-178). By name AND namespace (ADR-0133): the
+    // `providerRef` must resolve to the Provider this workload serves, in its
+    // home namespace, so a tenant machine that merely names the shared provider
+    // is not served.
+    if !ctx.serves_machine(&namespace, &machine.spec.provider_ref) {
         return Ok(Action::await_change());
     }
     info!("reconciling VSphereMachine");
@@ -820,7 +829,12 @@ pub async fn reconcile(machine: Arc<VSphereMachine>, ctx: Arc<Context>) -> Resul
     // re-applies every field, or SSA retracts the ones it omits.
     let existing = machine.status.clone().unwrap_or_default();
 
-    let provider_api: Api<Provider> = Api::namespaced(ctx.client.clone(), &namespace);
+    // The Provider, its credentials Secret and its CA bundle are read from this
+    // provider's HOME namespace, never from the machine's (ADR-0133 Decision 5):
+    // the machine may be in a tenant namespace that holds no credentials, and
+    // this provider holds no Secret access there.
+    let home = ctx.home_namespace(&namespace).to_string();
+    let provider_api: Api<Provider> = Api::namespaced(ctx.client.clone(), &home);
     let provider = match provider_api.get(&machine.spec.provider_ref.name).await {
         Ok(p) => p,
         Err(kube::Error::Api(e)) if e.code == 404 => {
@@ -840,33 +854,32 @@ pub async fn reconcile(machine: Arc<VSphereMachine>, ctx: Arc<Context>) -> Resul
         Err(e) => return Err(Error::Kube(e)),
     };
 
-    let creds = match super::provider::read_credentials(&ctx, &namespace, &provider.spec.connection)
-        .await
-    {
-        Ok(c) => c,
-        Err(e) => {
-            let reason = match &e {
-                Error::Missing(_) => reasons::SECRET_MISSING,
-                _ => reasons::SECRET_INVALID,
-            };
-            warn!(error = %e, "credentials resolution failed");
-            patch_status_failed(
-                &ctx,
-                &namespace,
-                &name,
-                generation,
-                existing.clone(),
-                reason,
-                format!("{e}"),
-            )
-            .await?;
-            return Ok(requeue_on_error());
-        }
-    };
+    let creds =
+        match super::provider::read_credentials(&ctx, &home, &provider.spec.connection).await {
+            Ok(c) => c,
+            Err(e) => {
+                let reason = match &e {
+                    Error::Missing(_) => reasons::SECRET_MISSING,
+                    _ => reasons::SECRET_INVALID,
+                };
+                warn!(error = %e, "credentials resolution failed");
+                patch_status_failed(
+                    &ctx,
+                    &namespace,
+                    &name,
+                    generation,
+                    existing.clone(),
+                    reason,
+                    format!("{e}"),
+                )
+                .await?;
+                return Ok(requeue_on_error());
+            }
+        };
 
     let ca_bundle_pem = match crate::reconciler::ca_bundle::resolve_ca_bundle(
         &ctx,
-        &namespace,
+        &home,
         &provider.spec.connection.ca_bundle,
     )
     .await
@@ -1047,7 +1060,9 @@ async fn finalize(
     info!("finalizing VSphereMachine");
     let vm_ref = machine.status.as_ref().and_then(|s| s.vm_ref.as_deref());
 
-    let provider_api: Api<Provider> = Api::namespaced(ctx.client.clone(), namespace);
+    // Home namespace, not the machine's (ADR-0133 Decision 5).
+    let home = ctx.home_namespace(namespace).to_string();
+    let provider_api: Api<Provider> = Api::namespaced(ctx.client.clone(), &home);
     let provider = match provider_api.get(&machine.spec.provider_ref.name).await {
         Ok(p) => p,
         // With nothing recorded there may be nothing to destroy, and no
@@ -1061,11 +1076,10 @@ async fn finalize(
         }
         Err(e) => return Err(Error::Kube(e)),
     };
-    let creds =
-        super::provider::read_credentials(ctx, namespace, &provider.spec.connection).await?;
+    let creds = super::provider::read_credentials(ctx, &home, &provider.spec.connection).await?;
     let ca_bundle_pem = crate::reconciler::ca_bundle::resolve_ca_bundle(
         ctx,
-        namespace,
+        &home,
         &provider.spec.connection.ca_bundle,
     )
     .await?;

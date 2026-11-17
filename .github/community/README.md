@@ -77,6 +77,7 @@ Phase 1A (controller + SDK)  ✅
    19 (port groups)          ⛔   after 1B/1D; phase E builds on 1C/1F
 
    20 (Firecracker)          ⛔   after 1F (shares its host layer) and 17 (its consumer); spike gates the rest
+
 ```
 
 ## Updates to these docs

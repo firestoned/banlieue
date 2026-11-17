@@ -36,6 +36,11 @@ pub struct Context {
     /// narrowed to one namespace; selector mode installs a gate over the
     /// label-filtered `Namespace` reflector.
     pub namespace_gate: NamespaceGate,
+    /// The namespace the platform's shared providers run in (ADR-0133
+    /// Decision 2), from `--provider-namespace`. A VM whose own namespace holds
+    /// no `Provider` is scheduled onto the `Provider`s there that declare its
+    /// namespace. `None` means no fallback: never "every namespace".
+    provider_namespace: Option<String>,
 }
 
 impl Context {
@@ -47,6 +52,7 @@ impl Context {
             vm_store: None,
             first_boot_sealing: true,
             namespace_gate: NamespaceGate::none(),
+            provider_namespace: None,
         }
     }
 
@@ -62,6 +68,21 @@ impl Context {
     pub fn with_namespace_gate(mut self, gate: NamespaceGate) -> Self {
         self.namespace_gate = gate;
         self
+    }
+
+    /// Set the provider namespace (ADR-0133). A blank value is unset.
+    #[must_use]
+    pub fn with_provider_namespace(mut self, namespace: Option<String>) -> Self {
+        self.provider_namespace = namespace
+            .map(|n| n.trim().to_string())
+            .filter(|n| !n.is_empty());
+        self
+    }
+
+    /// The provider namespace, if one is configured (ADR-0133).
+    #[must_use]
+    pub fn provider_namespace(&self) -> Option<&str> {
+        self.provider_namespace.as_deref()
     }
 
     /// Whether objects in `namespace` are served.

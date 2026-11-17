@@ -9,8 +9,11 @@
 
 use std::sync::Arc;
 
+use banlieue_api::common::ProviderReference;
+use banlieue_provider_sdk::scope::{NamespaceGate, ProviderScope, SharedServing};
 use k8s_openapi::api::core::v1::Toleration;
 use kube::Client;
+use kube::runtime::controller::Action;
 
 use crate::client::VSphereClientFactory;
 
@@ -57,6 +60,12 @@ pub struct Context {
     /// The `Provider` this workload serves (`--provider-name`). `None` for a
     /// static install, which serves every Provider of its class.
     pub provider_name: Option<String>,
+
+    /// What this provider serves (ADR-0133): its home namespace plus, with a
+    /// selector, the namespaces whose labels match. The default, outside the
+    /// running provider (tests), serves everything the watch delivers and reads
+    /// from [`Context::namespace`].
+    serving: SharedServing,
 }
 
 impl Context {
@@ -79,6 +88,7 @@ impl Context {
             import_service_account,
             import_tolerations,
             provider_name: None,
+            serving: SharedServing::default(),
         }
     }
 
@@ -89,4 +99,49 @@ impl Context {
         self.provider_name = provider_name;
         self
     }
+
+    /// Install the provider's scope and the gate over its namespace selector
+    /// (ADR-0133 Decision 4).
+    #[must_use]
+    pub fn with_scope(mut self, scope: ProviderScope, gate: NamespaceGate) -> Self {
+        self.serving = SharedServing::new(scope, gate);
+        self
+    }
+
+    /// The namespace this provider reads its own `Provider`, credentials Secret
+    /// and CA bundle from, whatever namespace a machine is in (ADR-0133
+    /// Decision 5). That is what keeps hypervisor credentials out of tenant
+    /// namespaces.
+    #[must_use]
+    pub fn home_namespace<'a>(&'a self, machine_namespace: &'a str) -> &'a str {
+        self.serving
+            .home_namespace(self.namespace.as_deref(), machine_namespace)
+    }
+
+    /// Whether this provider reconciles a machine in `machine_namespace` with
+    /// this `providerRef` (ADR-0133 Decision 5).
+    #[must_use]
+    pub fn serves_machine(
+        &self,
+        machine_namespace: &str,
+        provider_ref: &ProviderReference,
+    ) -> bool {
+        self.serving.serves_machine(
+            self.provider_name.as_deref(),
+            self.namespace.as_deref(),
+            machine_namespace,
+            provider_ref,
+        )
+    }
+
+    /// `Some(action)` when a reconcile for `namespace` must do nothing because
+    /// the namespace is not served; a deleting object is never skipped.
+    #[must_use]
+    pub fn skip_unserved(&self, namespace: &str, deleting: bool) -> Option<Action> {
+        self.serving.skip_unserved(namespace, deleting)
+    }
 }
+
+#[cfg(test)]
+#[path = "context_tests.rs"]
+mod context_tests;

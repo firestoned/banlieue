@@ -7,7 +7,7 @@
 mod tests {
     use crate::client::{FakeClient, Inventory, VSphereClient};
 
-    use banlieue_api::common::{DiskProvisioning, Firmware, LocalObjectReference, PowerState};
+    use banlieue_api::common::{DiskProvisioning, Firmware, PowerState};
     use banlieue_api::infrastructure::{VSphereDiskSpec, VSphereMachineSpec};
 
     use super::super::{MachineRef, compensate_gone, finalize_unrecorded, finalize_vm, is_gone};
@@ -26,8 +26,9 @@ mod tests {
         VSphereMachineSpec {
             provider_id: None,
             failure_domain: None,
-            provider_ref: LocalObjectReference {
+            provider_ref: banlieue_api::common::ProviderReference {
                 name: "vc1".to_string(),
+                namespace: None,
             },
             template: "ubuntu-22.04-cloudinit".to_string(),
             template_folder: None,

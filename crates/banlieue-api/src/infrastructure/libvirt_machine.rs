@@ -89,7 +89,7 @@ pub struct LibvirtMachineSpec {
     // ------------------------------------------------------------------
     /// Reference to the banlieue `Provider` whose connection details describe
     /// the target libvirt host.
-    pub provider_ref: LocalObjectReference,
+    pub provider_ref: ProviderReference,
 
     /// Storage pool that holds this machine's volumes, resolved from the
     /// storage class by the scheduler.

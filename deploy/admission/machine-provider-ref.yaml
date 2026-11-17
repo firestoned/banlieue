@@ -1,0 +1,121 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# Only banlieue-controller sets or changes an infrastructure machine's
+# spec.providerRef.namespace (ADR-0133 Decision 6), on every machine kind that
+# can be served from a shared provider: VSphereMachine, LibvirtMachine,
+# ProxmoxMachine and CloudHypervisorMachine.
+#
+# A shared provider runs in the platform's provider namespace, holds the
+# vCenter credentials there, and serves machines in tenant namespaces. A machine
+# names its provider by name AND namespace, so a machine whose
+# providerRef.namespace is the provider namespace is a *placement*: it has
+# skipped scheduling, the class and image checks, and any accounting. Without
+# this policy a tenant who may create a machine in their own namespace could
+# write that field and get a VM on the platform's vCenter on their own say-so.
+# A bare providerRef (no namespace) resolves in the machine's own namespace, which
+# is not the provider's home, so it reaches nothing here and needs no policy.
+#
+# Tenants should hold no verb on machine CRs at all (RBAC default-deny); this is
+# the enforcement that does not depend on that staying true. A provider's
+# identity writes status and finalizers, never this field, so it loses
+# nothing. Status is a separate subresource and is not matched.
+#
+# The controller's identity is its ServiceAccount in banlieue-system; edit the
+# username in matchConditions if your controller runs elsewhere. Cluster API's
+# manager is deliberately NOT exempt: a CAPI machine naming a platform provider
+# is a separate authorization decision (ADR-0133 Decision 10).
+#
+# Enforced in the API server via CEL (no webhook). Requires Kubernetes 1.30+.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: banlieue-machine-provider-ref
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: admission
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["infrastructure.banlieue.io"]
+        apiVersions: ["v1alpha1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["vspheremachines", "libvirtmachines", "proxmoxmachines", "cloudhypervisormachines"]
+  matchConditions:
+    # The controller writes this field; everyone else is checked below.
+    - name: not-banlieue-controller
+      expression: "request.userInfo.username != 'system:serviceaccount:banlieue-system:banlieue-controller'"
+  variables:
+    - name: created
+      expression: "request.operation == 'CREATE'"
+  validations:
+    - expression: >-
+        variables.created
+          ? !has(object.spec.providerRef.namespace)
+          : has(object.spec.providerRef.namespace) == has(oldObject.spec.providerRef.namespace)
+            && (!has(object.spec.providerRef.namespace)
+                || object.spec.providerRef.namespace == oldObject.spec.providerRef.namespace)
+      message: "spec.providerRef.namespace is set only by banlieue-controller (ADR-0133)"
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: banlieue-machine-provider-ref
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: admission
+spec:
+  policyName: banlieue-machine-provider-ref
+  # Deny = enforce. Do not switch it to Warn or Audit on a cluster that serves
+  # tenant namespaces from a shared provider: a forged providerRef.namespace is a
+  # VM on the platform's vCenter.
+  validationActions: ["Deny"]
+---
+# The same rule for the machine template a Cluster API MachineDeployment
+# stamps machines from: the template's spec.template.spec is the kind's machine spec,
+# so a forged providerRef.namespace there would be carried into every machine.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: banlieue-machinetemplate-provider-ref
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: admission
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["infrastructure.banlieue.io"]
+        apiVersions: ["v1alpha1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["vspheremachinetemplates", "libvirtmachinetemplates", "proxmoxmachinetemplates", "cloudhypervisormachinetemplates"]
+  matchConditions:
+    - name: not-banlieue-controller
+      expression: "request.userInfo.username != 'system:serviceaccount:banlieue-system:banlieue-controller'"
+  variables:
+    - name: created
+      expression: "request.operation == 'CREATE'"
+  validations:
+    - expression: >-
+        variables.created
+          ? !has(object.spec.template.spec.providerRef.namespace)
+          : has(object.spec.template.spec.providerRef.namespace)
+              == has(oldObject.spec.template.spec.providerRef.namespace)
+            && (!has(object.spec.template.spec.providerRef.namespace)
+                || object.spec.template.spec.providerRef.namespace
+                   == oldObject.spec.template.spec.providerRef.namespace)
+      message: "spec.template.spec.providerRef.namespace is set only by banlieue-controller (ADR-0133)"
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: banlieue-machinetemplate-provider-ref
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: admission
+spec:
+  policyName: banlieue-machinetemplate-provider-ref
+  validationActions: ["Deny"]

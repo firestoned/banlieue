@@ -6,7 +6,7 @@
 mod tests {
     use super::super::*;
     use crate::host_config::HostConfig;
-    use banlieue_api::common::{IpamSpec, LocalObjectReference, PowerState};
+    use banlieue_api::common::{IpamSpec, PowerState, ProviderReference};
     use banlieue_api::infrastructure::{
         ChBootSource, ChBootSourceKind, ChCpuSpec, ChMemorySpec, ChNicSpec,
         CloudHypervisorMachineSpec,
@@ -49,8 +49,9 @@ lan = "br0"
         CloudHypervisorMachineSpec {
             provider_id: None,
             failure_domain: Some("ch-a".into()),
-            provider_ref: LocalObjectReference {
+            provider_ref: ProviderReference {
                 name: "ch-a".into(),
+                namespace: None,
             },
             cpus: ChCpuSpec { boot: 2, max: None },
             memory: ChMemorySpec {

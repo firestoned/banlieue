@@ -45,6 +45,35 @@ lan = "br0"
         .unwrap()
     }
 
+    fn selector(labels: &[(&str, &str)]) -> LabelSelector {
+        LabelSelector {
+            match_labels: labels
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    /// No selector, or an empty one, serves the home namespace only; never
+    /// every namespace (ADR-0133 Decision 11).
+    #[test]
+    fn no_or_empty_selector_serves_home_only() {
+        for s in [None, Some(LabelSelector::default())] {
+            let scope = provider_scope(s.as_ref(), "banlieue-system").unwrap();
+            assert_eq!(scope.home(), "banlieue-system");
+            assert_eq!(scope.selector(), None);
+        }
+    }
+
+    #[test]
+    fn a_selector_is_rendered_and_home_stays_the_provider_namespace() {
+        let s = selector(&[("banlieue.io/tenant", "true")]);
+        let scope = provider_scope(Some(&s), "banlieue-system").unwrap();
+        assert_eq!(scope.home(), "banlieue-system");
+        assert_eq!(scope.selector(), Some("banlieue.io/tenant=true"));
+    }
+
     #[test]
     fn defaults_are_production() {
         let cli = parse(&[]);
