@@ -1,5 +1,42 @@
 # Changelog
 
+## [2026-11-16 20:00] - ADR-0133 (Proposed): Cloud Hypervisor guests get whole PCI devices through VFIO
+
+**Author:** Daniel Guns
+
+### Added
+- `docs/adr/0133-cloud-hypervisor-guests-get-whole-pci-devices-through-vfio.md`:
+  hosts declare device classes by PCI address; machines name a class
+  (`VMClass.spec.hardware.devices`, `CloudHypervisorMachine(Template).spec.devices`);
+  install, preflight and selftest check the IOMMU, the `vfio-pci` binding,
+  the group and the reset method; the provider publishes per-class device
+  capacity and `gpuPassthrough` only when served; a root oneshot,
+  `banlieue-vfio@<uid>`, re-validates the provider's request and gives the
+  guest's uid its one IOMMU group; `LimitMEMLOCK=infinity` bounded by
+  `MemoryMax`; a symlink layout so the pinned VMM's Landlock rule finds the
+  group (cloud-hypervisor#9399, fixed upstream by #9405, in no release yet);
+  the scheduler never assumes a device; moves of device guests refused;
+  Cluster API GPU pools use `maxSurge: 0`.
+- `.github/community/21-pci-passthrough.md`, `ROADMAPS.md` and
+  `.github/community/README.md`: roadmap 21, not started.
+- `docs/architecture/calm/architecture.json`: the proposed grant
+  (`service-vfio-grant`), the passed-through device, two relationships and
+  `flow-assign-pci-device-cloud-hypervisor`; `make calm-validate` clean,
+  `docs/src/architecture/{system,flows}.md` regenerated.
+- `docs/src/security/threat-model.md`: header records ADR-0133 as Proposed
+  and outside this pass.
+
+### Why
+Issue #190: GPU worker nodes as Cloud Hypervisor guests, from a
+`VirtualMachine` or a Cluster API `MachineDeployment`. ADR first, as with
+ADR-0129; implementation follows.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
 ## [2026-11-16 11:30] - CH host sandbox: read-only /sys and /proc for the provider, read-only /dev and private IPC for guests (ADR-0063 amended)
 
 **Author:** Erick Bourgeois

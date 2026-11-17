@@ -879,6 +879,18 @@
       "node-type": "service",
       "name": "faubourg controller (external, firestoned/faubourg)",
       "description": "Bootstraps cloud-hypervisor hosts, groups them into AvailabilityZones and labels each host's Provider (zone, host, cordon). Not part of banlieue. ACCEPTED (ADR-0127), not yet implemented: it also sets `banlieue.io/zone` on each Provider and, when a Host is drained, creates one VirtualMachineMove per VM on it, one at a time per host, with no target; it never updates or deletes a VirtualMachine (faubourg ADR-0017)."
+    },
+    {
+      "unique-id": "service-vfio-grant",
+      "node-type": "service",
+      "name": "VFIO group grant (one per Cloud Hypervisor guest with a device)",
+      "description": "PROPOSED (ADR-0133), not yet implemented. banlieue-vfio@<guest uid>.service, a root-owned oneshot template run as root: banlieue host cloud-hypervisor vfio-grant reads the device address from an environment file the provider writes, treats it as untrusted, re-validates it against the root-owned host config (a declared device class, bound to vfio-pci, a viable IOMMU group, a reset method, and a group node owned by root or already by this uid), then makes /dev/vfio/<group> <uid>:<uid> 0600. ExecStop returns the node to root:root 0600 if this uid still owns it. The provider cannot change a device node's owner itself: /dev is read-only to it (ADR-0063 Decision 6, amended 2026-11-15)."
+    },
+    {
+      "unique-id": "system-host-pci-device",
+      "node-type": "system",
+      "name": "Host PCI device passed through (VFIO)",
+      "description": "PROPOSED (ADR-0133), not yet implemented. A whole PCI function, typically a GPU, that the host declares in a device class ([device_classes] in the host config, by PCI address), bound to vfio-pci at boot, alone among declared devices in its IOMMU group. One guest holds it at a time; the owner of /dev/vfio/<group> is the lock. The provider publishes each class's total and free count in its failure domain's capacity."
     }
   ],
   "relationships": [
@@ -1651,7 +1663,9 @@
           "nodes": [
             "service-provider-cloud-hypervisor",
             "service-cloud-hypervisor-vmm",
-            "service-swtpm"
+            "service-swtpm",
+            "service-vfio-grant",
+            "system-host-pci-device"
           ]
         }
       }
@@ -2382,6 +2396,64 @@
         }
       },
       "protocol": "TCP"
+    },
+    {
+      "unique-id": "rel-provider-cloud-hypervisor-vfio-grant",
+      "description": "PROPOSED (ADR-0133). Before starting the VMM of a machine with spec.devices, the provider writes <state root>/units/vfio-<uid>.env naming the device address it picked and starts banlieue-vfio@<uid>.service over D-Bus; polkit allows only start, stop and reset-failed of instances for uids in the guest range. Deleting the machine stops the instance, which returns the group node to root.",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "service-provider-cloud-hypervisor"
+          },
+          "destination": {
+            "node": "service-vfio-grant"
+          }
+        }
+      },
+      "protocol": "TCP",
+      "controls": {
+        "vfio-grant-revalidates-as-root": {
+          "description": "The grant runs as root on input the unprivileged provider wrote, so it re-checks everything against the root-owned host config before changing any owner, and refuses an undeclared device, a non-viable group, a device off vfio-pci or without a reset method, or a group node another uid owns. The provider can choose only among devices root declared. Specified in docs/adr/0133-cloud-hypervisor-guests-get-whole-pci-devices-through-vfio.md Decision 5; not yet implemented.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53",
+                "control": "AC-6 Least Privilege"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-cloud-hypervisor-vmm-vfio-device",
+      "description": "PROPOSED (ADR-0133). The VMM, as the guest's uid under Landlock, opens /dev/vfio/vfio and its own /dev/vfio/<group> (DeviceAllow=/dev/vfio/vfio and char-vfio in banlieue-ch@.service; ownership confines each uid to its group), pins all guest memory (LimitMEMLOCK=infinity, bounded by the guest's MemoryMax) and exposes the function to the guest.",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "service-cloud-hypervisor-vmm"
+          },
+          "destination": {
+            "node": "system-host-pci-device"
+          }
+        }
+      },
+      "protocol": "TCP",
+      "controls": {
+        "iommu-confines-device-dma": {
+          "description": "The IOMMU translates the device's DMA into the guest's memory only; install, preflight and the provider before each assignment refuse a host without an IOMMU or a group with an endpoint on a host driver. Specified in docs/adr/0133-cloud-hypervisor-guests-get-whole-pci-devices-through-vfio.md Decisions 2 and 8; not yet implemented.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53",
+                "control": "SC-39 Process Isolation"
+              }
+            }
+          ]
+        }
+      }
     }
   ],
   "flows": [
@@ -3281,6 +3353,43 @@
           ]
         }
       }
+    },
+    {
+      "unique-id": "flow-assign-pci-device-cloud-hypervisor",
+      "name": "Give a Cloud Hypervisor guest a host PCI device",
+      "description": "ADR-0133, PROPOSED. A VMClass (or a CloudHypervisorMachineTemplate) names a device class; the host decides which device, root grants the guest's uid exactly that device's IOMMU group, and the sandboxed VMM attaches it.",
+      "transitions": [
+        {
+          "sequence-number": 1,
+          "relationship-unique-id": "rel-provider-cloud-hypervisor-kube-api",
+          "description": "The provider publishes each host device class's total and free count in its failure domain's capacity, and publishes gpuPassthrough only when a declared class passes the host checks."
+        },
+        {
+          "sequence-number": 2,
+          "relationship-unique-id": "rel-controller-kube-api",
+          "description": "banlieue-controller resolves the VMClass's abstract device class through Provider.spec.capabilities.deviceClasses, places the VM only where that class has a free device after in-flight VMs (a domain publishing no device capacity never qualifies), and applies a CloudHypervisorMachine naming the host class in spec.devices. A Cluster API machine names it directly and skips this step."
+        },
+        {
+          "sequence-number": 3,
+          "relationship-unique-id": "rel-provider-cloud-hypervisor-kube-api",
+          "description": "The provider picks the lowest free device of the class, re-checks it, and records it in status.devices; with none free the machine waits, DevicesAssigned=False/NoFreeDevice."
+        },
+        {
+          "sequence-number": 4,
+          "relationship-unique-id": "rel-provider-cloud-hypervisor-vfio-grant",
+          "description": "The provider starts banlieue-vfio@<uid>; root re-validates the request and makes /dev/vfio/<group> the guest uid's."
+        },
+        {
+          "sequence-number": 5,
+          "relationship-unique-id": "rel-provider-cloud-hypervisor-vmm",
+          "description": "The provider starts banlieue-ch@<uid> and creates the VM with the device, through a symlink layout in the guest's run directory that lets the pinned VMM's Landlock rule find the group (cloud-hypervisor#9399)."
+        },
+        {
+          "sequence-number": 6,
+          "relationship-unique-id": "rel-cloud-hypervisor-vmm-vfio-device",
+          "description": "The VMM opens the container and its group under Landlock and attaches the function; the guest's driver sees the device."
+        }
+      ]
     }
   ],
   "controls": {
@@ -3775,6 +3884,7 @@
     "docs/adr/0126-provider-status-publishes-its-serviceaccount.md",
     "docs/adr/0127-move-a-cloud-hypervisor-vm-between-hosts-in-a-zone.md",
     "docs/adr/0128-every-provider-publishes-measured-capacity.md",
-    "docs/adr/0129-capi-inframachines-receive-the-machines-bootstrap-data.md"
+    "docs/adr/0129-capi-inframachines-receive-the-machines-bootstrap-data.md",
+    "docs/adr/0133-cloud-hypervisor-guests-get-whole-pci-devices-through-vfio.md"
   ]
 }

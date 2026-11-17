@@ -71,6 +71,8 @@ flowchart LR
     service-egress-gateway["Egress gateway VM (mediatore image)"]
     data-asset-virtualmachinemove-cr["VirtualMachineMove Custom Resource"]
     service-faubourg-controller["faubourg controller (external, firestoned/faubourg)"]
+    service-vfio-grant["VFIO group grant (one per Cloud Hypervisor guest with a device)"]
+    system-host-pci-device["Host PCI device passed through (VFIO)"]
     subgraph sg_system-banlieue-binary [System Banlieue Binary]
         service-banlieue-controller
         service-banlieue-operator
@@ -144,6 +146,8 @@ flowchart LR
         service-provider-cloud-hypervisor
         service-cloud-hypervisor-vmm
         service-swtpm
+        service-vfio-grant
+        system-host-pci-device
     end
     service-banlieue-imagebuilder -->|HTTPS| service-oci-registry
     service-provider-cloud-hypervisor -->|HTTPS| service-oci-registry
@@ -185,6 +189,8 @@ flowchart LR
     service-banlieue-controller --> data-asset-infra-machine-cr
     service-provider-cloud-hypervisor -->|TLS| service-provider-cloud-hypervisor
     service-cloud-hypervisor-vmm -->|TCP| service-provider-cloud-hypervisor
+    service-provider-cloud-hypervisor -->|TCP| service-vfio-grant
+    service-cloud-hypervisor-vmm -->|TCP| system-host-pci-device
 ```
 
 <sub>Source: nodes and relationships in `architecture.json`.</sub>
