@@ -187,7 +187,7 @@ spec:
                       properties:
                         ipam:
                           description: |-
-                            IPAM configuration. Uses [`IpamShape`] (not [`IpamSpec`]) because a
+                            IPAM configuration. Uses `IpamShape` (not `IpamSpec`) because a
                             `VMClass` is shared by many VMs — there is no per-VM address at this
                             level. Per-VM static addresses are provided via
                             `VirtualMachine.spec.networkOverrides`.

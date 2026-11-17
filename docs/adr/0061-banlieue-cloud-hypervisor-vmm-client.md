@@ -57,6 +57,9 @@ Endpoints for roadmap 09's stop condition: `vmm.ping`, `vm.create`,
 `vm.resize`, `vm.add-disk`, `vm.snapshot`, `vm.restore` (ADR-0066). Nothing
 else gets a type until something uses it.
 
+> **Note (2026-11-17):** ADR-0066 is reserved (roadmap 09) and has not been
+> written.
+
 ### 2. The upstream spec is pinned and vendored
 
 `crates/banlieue-cloud-hypervisor/spec/cloud-hypervisor-v53.0.yaml`, copied

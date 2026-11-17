@@ -63,10 +63,10 @@ spec:
                             type: string
                           volume:
                             description: |-
-                              Volume name within [`LibvirtMachineSpec::pool`]: the backing image
-                              for [`BackingVolume`](LibvirtBootSourceKind::BackingVolume), or the
+                              Volume name within `LibvirtMachineSpec::pool`: the backing image
+                              for `BackingVolume`, or the
                               installer ISO for
-                              [`InstallMedia`](LibvirtBootSourceKind::InstallMedia).
+                              `InstallMedia`.
                             type: string
                         required:
                         - kind
@@ -333,7 +333,7 @@ spec:
                           The device must exist before first boot, because Kairos's `kcrypt`
                           seals LUKS keys to it during the unattended install — which is why
                           `tpmEnabled` only makes sense paired with
-                          [`LibvirtBootSource::InstallMedia`] (ADR-0040, ADR-0048).
+                          `LibvirtBootSource::InstallMedia` (ADR-0040, ADR-0048).
 
                           swtpm keys its state by domain UUID, so a new domain always gets a
                           fresh TPM. The corollary is that a domain carrying TPM state must

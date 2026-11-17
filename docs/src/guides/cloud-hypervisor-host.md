@@ -258,10 +258,13 @@ variable, so a cloud-init payload needs no file of its own
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | `--provider-name` | the host's short name | The `Provider` this host is. One `Provider` is one host (ADR-0060). |
+| `--provider-namespace` | `banlieue-system` | The `Provider`'s namespace: the operator's install namespace, where External Providers live. |
 | `--storage-class name=path` | `default=<roomiest of /srv, /data, /home, /opt, /var/lib>/banlieue/ch` | Where guest disks and the image cache live. Repeat, or comma-separate. |
 | `--network-class name=bridge` | `default=virbr0` if it exists | Each bridge must exist. Repeat, or comma-separate. |
 | `--guest-uid-base`, `--guest-uid-count` | `2000000`, `1024` | One unprivileged uid per guest. Must not overlap real accounts or `/etc/subuid`. |
 | `--registry-repository` | none | The one repository `Url` images are pulled from, by digest (ADR-0064). |
+| `--registry-plain-http` | off | Speak `http://` to that registry (a private network or a test only). |
+| `--registry-keep-unreferenced` | the provider's default | Superseded pulls kept on disk for a rollback. |
 | `--vmm-version`, `--firmware-tag` | the pinned release | Which Cloud Hypervisor release and edk2 firmware tag to install. See [Choosing the VMM](#choosing-the-vmm-version-and-where-it-comes-from). |
 | `--vmm-url`, `--ch-remote-url`, `--firmware-url` | the GitHub release asset | Where each file is downloaded from, for a mirror. HTTPS only. |
 | `--vmm-sha256`, `--ch-remote-sha256`, `--firmware-sha256` | the pin, or GitHub's digest | The sha256 of a file that is not the pinned release. |
@@ -724,6 +727,15 @@ process runs here. Three steps, in order.
     (`banlieue-system`): that is the only namespace where it may grant token
     renewal.
 
+    To let one host serve VMs in tenant namespaces, set
+    `spec.namespaceSelector` on its `Provider` (ADR-0133, ADR-0134). The
+    operator then also binds the opt-in
+    `banlieue-provider-cloud-hypervisor-shared` ClusterRole (machine access in
+    the matching namespaces, no Secrets or ConfigMaps) to the host's
+    ServiceAccount. The host reads the selector once, at startup: restart
+    `banlieue-provider-cloud-hypervisor` after changing it. See
+    [Multi-tenancy](multi-tenancy.md).
+
 2. **Issue the host its first credential**, as a cluster admin, anywhere
    your kubeconfig works:
 
@@ -766,10 +778,12 @@ give: `cpus`, `cpuModel`, `memoryMiB`, `hugepagesMiB` (reserved, so not
 free memory), and
 `nestedVirtualization: "false"`, which this class never offers.
 
-Upgrading the provider is replacing `/usr/local/bin/banlieue` and
-restarting `banlieue-provider-cloud-hypervisor`: guests are their own
-`banlieue-ch@` units and keep running, and the new process adopts them.
-`make ch-restart-e2e` checks exactly that on a host.
+Upgrading the provider is re-running `install` with
+`--provider-binary <new build>`, which replaces `/usr/local/bin/banlieue` and
+the unit files and restarts `banlieue-provider-cloud-hypervisor` (see
+[Choosing the VMM version](#choosing-the-vmm-version-and-where-it-comes-from)):
+guests are their own `banlieue-ch@` units and keep running, and the new
+process adopts them. `make ch-restart-e2e` checks exactly that on a host.
 
 ## Static addresses
 

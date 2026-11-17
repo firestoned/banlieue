@@ -116,9 +116,11 @@ fn run() -> anyhow::Result<()> {
         anyhow::anyhow!("failed to load --vex-dir {}: {}", cli.vex_dir.display(), e)
     })?;
 
-    let timestamp = cli
-        .timestamp
-        .unwrap_or_else(|| chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string());
+    let timestamp = cli.timestamp.unwrap_or_else(|| {
+        jiff::Timestamp::now()
+            .strftime("%Y-%m-%dT%H:%M:%SZ")
+            .to_string()
+    });
 
     let statements = compute_presence_vex(&grype, &sboms, &triaged, &cli.product_purl, &timestamp);
     let doc = build_document(statements, &cli.id, &cli.author, &timestamp);

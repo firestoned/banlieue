@@ -85,7 +85,9 @@ tracing-opentelemetry = { version = "0.34", default-features = false }
 clap = { version = "4", features = ["derive", "env"] }
 
 # Misc
-chrono = { version = "0.4", features = ["serde"] }
+# Time: jiff, the same crate k8s-openapi 0.29 uses for `Time`. chrono is
+# unmaintained (RUSTSEC-2026-0543) and was removed from the workspace.
+jiff = "0.2"
 async-trait = "0.1"
 # Artifact integrity for provider import Jobs (SEC-004): the import subcommand
 # hashes the built raw disk before streaming it to a backend.

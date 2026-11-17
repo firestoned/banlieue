@@ -4,6 +4,8 @@
 - **Date:** 2026-08-27
 - **Related:** Extends [ADR-0025](0025-vspheremachine-userdata-secret-rbac.md)
   (`UserDataSpec` shape and controller-side resolution).
+- **Amended by:** [ADR-0042](0042-userdata-reference-authorization.md) (2026-09-09): a userData reference is
+  authorized at admission.
 
 ## Context
 

@@ -457,7 +457,7 @@ async fn one_run(
         "run": run,
         "class": s.class,
         "image": s.image,
-        "date": chrono::Utc::now().format("%Y-%m-%d").to_string(),
+        "date": k8s_openapi::jiff::Timestamp::now().strftime("%Y-%m-%d").to_string(),
         "timings_s": timings,
         "bench": bench,
     }))

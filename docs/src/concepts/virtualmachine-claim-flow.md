@@ -239,7 +239,11 @@ sequenceDiagram
 
     CC->>API: LIST vms carrying a banlieue.io/pool label
     CC->>API: LIST pools, keep spec.poolRef's or those matching spec.poolSelector
-    CC->>CC: pick_across_pools: Ready only, current image revision<br/>of its own pool first, then Ready longest, then name
+    opt more than one Ready member (ADR-0135)
+        CC->>API: LIST Providers (claim's namespace, else the provider namespace)
+        CC->>CC: placement per member: (provider, failureDomain),<br/>host healthy unless cordoned, Stale or not found
+    end
+    CC->>CC: rank_pick: Ready only, current image revision of its own pool,<br/>healthy host, spec.selection.strategy, Ready longest, name
 
     alt a Ready member exists
         CC->>API: PATCH member, merge patch carrying a resourceVersion precondition

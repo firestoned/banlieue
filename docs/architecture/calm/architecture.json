@@ -595,7 +595,7 @@
       "unique-id": "data-asset-virtualmachineclaim-cr",
       "node-type": "data-asset",
       "name": "VirtualMachineClaim Custom Resource",
-      "description": "Namespaced CRD (banlieue.io/v1alpha1) that hands one warm VirtualMachinePool member to one subject, and is the only way a member ever leaves the pool (ADR-0047). The claim names its pool with spec.poolRef or selects among the pools of its own namespace with spec.poolSelector, exactly one of the two (CEL); poolSelector: {} is the explicit way to say any pool, an omitted field never means it, and status.poolRef records which pool supplied the bound member (ADR-0132). A member is bound at most once in its life: there is no unbind and no return-to-pool, because the VM itself is the isolation boundary between subjects. Binding is a resourceVersion-preconditioned merge patch on the member, so two claims racing for one member yield exactly one success and one 409 \u2014 optimistic concurrency, never a lock. The bind also re-parents the member's ownerReferences from pool to claim, which is what lets a pool be deleted without destroying sandboxes in use. spec.ttlSeconds is mandatory (a claim without a deadline is a leaked VM) and a finalizer holds the claim until the member is gone from the API server, so \"claim deleted\" means \"sandbox destroyed\". spec.subject carries an opaque issuer+id that banlieue records for audit and never interprets; it is never a credential. status.nonce is retired (ADR-0049, amended 2026-11-05): no longer minted, kept in the schema as deprecated until the next API version. banlieue's side of the attestation contract is the subject fields, the mirrored EK certificate and the Provider's trust anchors: subject.issuer tells the in-guest agent which issuer to trust, subject.id holds the RAW subject as that issuer spells it rather than the prefixed Kubernetes username -- a JWT carries no github: prefix, so storing the prefixed form left a value the agent could not compare (fixed as ADR-0047 Decision 9, amended) -- banlieue neither carries nor validates the credential: the consumer (mediatore) attests the guest with SPIRE's TPM node attestation, a credential-activation challenge against the vTPM whose EK certificate is mirrored onto the claim, and delivers the credential over the resulting SVID-authenticated mTLS channel. Nothing is at rest -- no disk, no CR, no hypervisor channel -- which is forced rather than chosen, because a warm pool member exists BEFORE any claim does, so nothing baked in at provisioning time can be subject-specific. The per-VM vTPM that anchors the attestation is unique by construction on both backends: on vSphere because deferred install never installs the golden template, so each clone installs itself with its own already-unique vTPM (ADR-0040), and on libvirt because swtpm state is keyed by domain UUID."
+      "description": "Namespaced CRD (banlieue.io/v1alpha1) that hands one warm VirtualMachinePool member to one subject, and is the only way a member ever leaves the pool (ADR-0047). The claim names its pool with spec.poolRef or selects among the pools of its own namespace with spec.poolSelector, exactly one of the two (CEL); poolSelector: {} is the explicit way to say any pool, an omitted field never means it, and status.poolRef records which pool supplied the bound member (ADR-0132). IMPLEMENTED (ADR-0135): an optional, immutable spec.selection.strategy chooses how the member is ranked: LongestReady (the default, today's order), MostAvailable (the failure domain with the most Ready members) or Spread (the failure domain where the claim's subject, matched on issuer and id together, holds the fewest members). A strategy only reorders and never filters, so no strategy leaves a claim Pending while a Ready member exists. A member is bound at most once in its life: there is no unbind and no return-to-pool, because the VM itself is the isolation boundary between subjects. Binding is a resourceVersion-preconditioned merge patch on the member, so two claims racing for one member yield exactly one success and one 409 \u2014 optimistic concurrency, never a lock. The bind also re-parents the member's ownerReferences from pool to claim, which is what lets a pool be deleted without destroying sandboxes in use. spec.ttlSeconds is mandatory (a claim without a deadline is a leaked VM) and a finalizer holds the claim until the member is gone from the API server, so \"claim deleted\" means \"sandbox destroyed\". spec.subject carries an opaque issuer+id that banlieue records for audit and never interprets; it is never a credential. status.nonce is retired (ADR-0049, amended 2026-11-05): no longer minted, kept in the schema as deprecated until the next API version. banlieue's side of the attestation contract is the subject fields, the mirrored EK certificate and the Provider's trust anchors: subject.issuer tells the in-guest agent which issuer to trust, subject.id holds the RAW subject as that issuer spells it rather than the prefixed Kubernetes username -- a JWT carries no github: prefix, so storing the prefixed form left a value the agent could not compare (fixed as ADR-0047 Decision 9, amended) -- banlieue neither carries nor validates the credential: the consumer (mediatore) attests the guest with SPIRE's TPM node attestation, a credential-activation challenge against the vTPM whose EK certificate is mirrored onto the claim, and delivers the credential over the resulting SVID-authenticated mTLS channel. Nothing is at rest -- no disk, no CR, no hypervisor channel -- which is forced rather than chosen, because a warm pool member exists BEFORE any claim does, so nothing baked in at provisioning time can be subject-specific. The per-VM vTPM that anchors the attestation is unique by construction on both backends: on vSphere because deferred install never installs the golden template, so each clone installs itself with its own already-unique vTPM (ADR-0040), and on libvirt because swtpm state is keyed by domain UUID."
     },
     {
       "unique-id": "data-asset-provider-cr",
@@ -631,7 +631,7 @@
       "unique-id": "data-asset-infra-machine-cr",
       "node-type": "data-asset",
       "name": "Infrastructure Machine CR (VSphereMachine, etc.)",
-      "description": "Namespaced CRD (infrastructure.banlieue.io/v1alpha1) created by the banlieue-controller as the message to the provider. Satisfies the CAPI v1beta2 InfraMachine contract so the same provider can serve both banlieue and CAPI. Status is owned by the provider; the banlieue controller mirrors it back onto the VirtualMachine. PROPOSED (ADR-0129); milestone 1 IMPLEMENTED (controller serving CloudHypervisorMachine, Cloud Hypervisor hold, admission policy; libvirt, vSphere and Proxmox are neither held nor served until milestone 2): on a machine owned by a CAPI Machine, the controller also writes spec.userData (the Machine's bootstrap data) and the one status condition BootstrapDataReady, which providers never apply. VSphereMachine additionally carries an optional createdBy field (ADR-0089), copied from the parent VirtualMachine's banlieue.io/created-by annotation. IMPLEMENTED (ADR-0133): spec.providerRef gains an optional namespace (absent means the machine's own namespace). The machine always lives beside its VM; a provider in another namespace is named by this reference. Only the controller's identity may create a machine or set providerRef (RBAC default-deny for tenants plus a ValidatingAdmissionPolicy), because a machine naming a platform Provider is a placement that skipped scheduling."
+      "description": "Namespaced CRD (infrastructure.banlieue.io/v1alpha1) created by the banlieue-controller as the message to the provider. Satisfies the CAPI v1beta2 InfraMachine contract so the same provider can serve both banlieue and CAPI. Status is owned by the provider; the banlieue controller mirrors it back onto the VirtualMachine. ACCEPTED (ADR-0129); milestone 1 IMPLEMENTED (controller serving CloudHypervisorMachine, Cloud Hypervisor hold, admission policy; libvirt, vSphere and Proxmox are neither held nor served until milestone 2): on a machine owned by a CAPI Machine, the controller also writes spec.userData (the Machine's bootstrap data) and the one status condition BootstrapDataReady, which providers never apply. VSphereMachine additionally carries an optional createdBy field (ADR-0089), copied from the parent VirtualMachine's banlieue.io/created-by annotation. IMPLEMENTED (ADR-0133): spec.providerRef gains an optional namespace (absent means the machine's own namespace). The machine always lives beside its VM; a provider in another namespace is named by this reference. Only the controller's identity may create a machine or set providerRef (RBAC default-deny for tenants plus a ValidatingAdmissionPolicy), because a machine naming a platform Provider is a placement that skipped scheduling."
     },
     {
       "unique-id": "data-asset-infra-cluster-cr",
@@ -649,7 +649,7 @@
       "unique-id": "data-asset-capi-bootstrap-secret",
       "node-type": "data-asset",
       "name": "CAPI bootstrap data Secret (external)",
-      "description": "A Secret of type cluster.x-k8s.io/secret that a CAPI bootstrap provider (kubeadm's CABPK, k0smotron) renders for one Machine and names in Machine.spec.bootstrap.dataSecretName: keys value (the guest's bootstrap payload, usually carrying a short-lived join token) and format, label cluster.x-k8s.io/cluster-name, and a controller ownerReference to the bootstrap config. NOT owned by banlieue. PROPOSED (ADR-0129); milestone 1 IMPLEMENTED (controller serving CloudHypervisorMachine, Cloud Hypervisor hold, admission policy; libvirt, vSphere and Proxmox are neither held nor served until milestone 2): banlieue-controller copies its value into the owning InfraMachine's spec.userData."
+      "description": "A Secret of type cluster.x-k8s.io/secret that a CAPI bootstrap provider (kubeadm's CABPK, k0smotron) renders for one Machine and names in Machine.spec.bootstrap.dataSecretName: keys value (the guest's bootstrap payload, usually carrying a short-lived join token) and format, label cluster.x-k8s.io/cluster-name, and a controller ownerReference to the bootstrap config. NOT owned by banlieue. ACCEPTED (ADR-0129); milestone 1 IMPLEMENTED (controller serving CloudHypervisorMachine, Cloud Hypervisor hold, admission policy; libvirt, vSphere and Proxmox are neither held nor served until milestone 2): banlieue-controller copies its value into the owning InfraMachine's spec.userData."
     },
     {
       "unique-id": "service-capi-core",
@@ -1549,7 +1549,7 @@
     },
     {
       "unique-id": "rel-claim-binds-pool-member",
-      "description": "banlieue-controller's claim reconciler picks one Ready, unclaimed member across the pool named by spec.poolRef or every pool in the claim's namespace matching spec.poolSelector (ADR-0132), ranked as one set (current image revision of the member's own pool first, then longest-Ready, then name) and binds it with a resourceVersion-preconditioned merge patch that labels it claimed, records the subject as annotations, and re-parents ownerReferences from the pool to the claim. The pool never learns claims exist \u2014 it only sees a member it must no longer delete or count as warm. On deletion or TTL expiry the claim deletes the member and holds its own finalizer until the member is gone, so a released claim means a destroyed VM, never a recycled one (ADR-0047).",
+      "description": "banlieue-controller's claim reconciler picks one Ready, unclaimed member across the pool named by spec.poolRef or every pool in the claim's namespace matching spec.poolSelector (ADR-0132), ranked as one set (current image revision of the member's own pool first, then longest-Ready, then name; per ADR-0135: current revision, then host health, then the claim's spec.selection.strategy key, then longest-Ready, then name, with a failure domain being the pair (status.scheduled.providerName, status.scheduled.failureDomain)) and binds it with a resourceVersion-preconditioned merge patch that labels it claimed, records the subject as annotations, and re-parents ownerReferences from the pool to the claim. The pool never learns claims exist \u2014 it only sees a member it must no longer delete or count as warm. On deletion or TTL expiry the claim deletes the member and holds its own finalizer until the member is gone, so a released claim means a destroyed VM, never a recycled one (ADR-0047).",
       "relationship-type": {
         "interacts": {
           "actor": "service-banlieue-controller",
@@ -1557,6 +1557,38 @@
             "data-asset-virtualmachineclaim-cr",
             "data-asset-virtualmachinepool-cr",
             "data-asset-virtualmachine-cr"
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-claim-reads-provider-health",
+      "description": "IMPLEMENTED (ADR-0135): when more than one Ready member is a candidate, the claim reconciler resolves each member's Provider from status.scheduled.providerName, in the claim's namespace first and then the configured provider namespace only if the claim's namespace holds no Provider (ADR-0133 Decision 1), and ranks members on a cordoned Provider (banlieue.io/unschedulable: \"true\", ADR-0124), a Stale heartbeat (ADR-0102) or an unresolvable Provider after those on a healthy host, under every strategy. These are the scheduler's own predicates, shared, so unhealthy means one thing in banlieue. Read-only, a LIST at pick time with no new watch: a waiting claim waits for members, not Providers, and a bound claim is never re-ranked. The controller's ClusterRole already lists providers, so no RBAC grant is added. For Spread it also reads the subject annotations the bind already writes on Claimed members of its own namespace; nothing new is recorded or exposed.",
+      "relationship-type": {
+        "interacts": {
+          "actor": "service-banlieue-controller",
+          "nodes": [
+            "data-asset-provider-cr",
+            "data-asset-virtualmachine-cr"
+          ]
+        }
+      },
+      "controls": {
+        "claim-selection-ranks-never-filters": {
+          "description": "IMPLEMENTED (ADR-0135): a selection strategy and host health only reorder Ready, unclaimed members; they never remove one. A claim is therefore never left Pending by a preference, and current image revision still ranks before host health and every strategy, so no placement preference can keep an unpatched build in circulation once a rebuild is Ready. Every strategy is a fixed lexicographic order ending in member name, so two controllers reading one snapshot still choose the same member and the bind-once 409 path is unchanged. Whoever can edit a member's subject annotations could steer that subject's next Spread pick, but only among Ready members of the same namespace, and that principal can already delete the member: no new power.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": [
+                  "CP-10",
+                  "SC-36",
+                  "SI-7"
+                ],
+                "evidence": "crates/banlieue-controller/src/reconciler/claim_plan.rs (rank_pick, member_placement, subject_held), crates/banlieue-controller/src/reconciler/claim_plan_tests.rs, crates/banlieue-controller/src/reconciler/claim.rs (pick), deploy/admission/virtualmachineclaim-subject-authorization.yaml, docs/adr/0135-claim-selection-strategies.md"
+              }
+            }
           ]
         }
       }
@@ -2362,7 +2394,7 @@
     },
     {
       "unique-id": "rel-controller-delivers-capi-bootstrap-data",
-      "description": "PROPOSED (ADR-0129); milestone 1 IMPLEMENTED (controller serving CloudHypervisorMachine, Cloud Hypervisor hold, admission policy; libvirt, vSphere and Proxmox are neither held nor served until milestone 2): once the API server serves v1beta2 Machines (it watches the machines.cluster.x-k8s.io CRD, so Cluster API installed after banlieue needs no restart), for an InfraMachine a CAPI Machine controls, the controller watches the Machine and first confirms it: the Machine must carry the UID the InfraMachine's ownerReference names and name that InfraMachine in its spec.infrastructureRef, or it is reported MachineReferenceMismatch and no Secret is read. Once spec.bootstrap.dataSecretName is set it reads that Secret by name in the Machine's namespace, classifies it (type cluster.x-k8s.io/secret, cluster-name label equal to the Machine's clusterName, a controller ownerReference matching spec.bootstrap.configRef when set, non-empty UTF-8 value, format absent, empty or cloud-config), and server-side applies its value byte for byte into the InfraMachine's spec.userData, then sets the InfraMachine's BootstrapDataReady condition, which it alone writes. A Secret that fails is reported on that condition and never copied. A machine waiting on a missing, unreadable or invalid Secret is requeued on a fixed interval (30 s, or 5 min when a person must act), because the controller holds get on Secrets but not list/watch. Once delivered, userData is never rewritten. Host providers still read no Secret; the Cloud Hypervisor provider creates no guest for a CAPI-intended machine (a Cluster API owner or the cluster-name label, so from the moment CAPI creates it, before adoption; never a machine a VirtualMachine controls, whose labels banlieue copies from the VM) until it is owned by a Machine and BootstrapDataReady is True. Who may name a bootstrap Secret, directly or through a bootstrap config, is authorized at admission. Secret reads come from a namespaced Role per namespace (banlieue-controller-userdata in the install namespace); the ClusterRole gains only get/list/watch on machines.cluster.x-k8s.io and on the one CRD of that name (resourceNames).",
+      "description": "ACCEPTED (ADR-0129); milestone 1 IMPLEMENTED (controller serving CloudHypervisorMachine, Cloud Hypervisor hold, admission policy; libvirt, vSphere and Proxmox are neither held nor served until milestone 2): once the API server serves v1beta2 Machines (it watches the machines.cluster.x-k8s.io CRD, so Cluster API installed after banlieue needs no restart), for an InfraMachine a CAPI Machine controls, the controller watches the Machine and first confirms it: the Machine must carry the UID the InfraMachine's ownerReference names and name that InfraMachine in its spec.infrastructureRef, or it is reported MachineReferenceMismatch and no Secret is read. Once spec.bootstrap.dataSecretName is set it reads that Secret by name in the Machine's namespace, classifies it (type cluster.x-k8s.io/secret, cluster-name label equal to the Machine's clusterName, a controller ownerReference matching spec.bootstrap.configRef when set, non-empty UTF-8 value, format absent, empty or cloud-config), and server-side applies its value byte for byte into the InfraMachine's spec.userData, then sets the InfraMachine's BootstrapDataReady condition, which it alone writes. A Secret that fails is reported on that condition and never copied. A machine waiting on a missing, unreadable or invalid Secret is requeued on a fixed interval (30 s, or 5 min when a person must act), because the controller holds get on Secrets but not list/watch. Once delivered, userData is never rewritten. Host providers still read no Secret; the Cloud Hypervisor provider creates no guest for a CAPI-intended machine (a Cluster API owner or the cluster-name label, so from the moment CAPI creates it, before adoption; never a machine a VirtualMachine controls, whose labels banlieue copies from the VM) until it is owned by a Machine and BootstrapDataReady is True. Who may name a bootstrap Secret, directly or through a bootstrap config, is authorized at admission. Secret reads come from a namespaced Role per namespace (banlieue-controller-userdata in the install namespace); the ClusterRole gains only get/list/watch on machines.cluster.x-k8s.io and on the one CRD of that name (resourceNames).",
       "relationship-type": {
         "interacts": {
           "actor": "service-banlieue-controller",
@@ -2794,7 +2826,7 @@
     {
       "unique-id": "flow-capi-machine-bootstrap-data",
       "name": "Deliver a CAPI Machine's bootstrap data to its InfraMachine (ADR-0129 milestone 1)",
-      "description": "PROPOSED (ADR-0129); milestone 1 IMPLEMENTED (controller serving CloudHypervisorMachine, Cloud Hypervisor hold, admission policy; libvirt, vSphere and Proxmox are neither held nor served until milestone 2). A Machine that CAPI creates over a banlieue InfraMachineTemplate gets its bootstrap provider's rendered data in spec.userData before its guest is created. Shown for Cloud Hypervisor, the first backend to hold creation; libvirt, vSphere and Proxmox follow in milestone 2 (ADR-0129 Decision 8).",
+      "description": "ACCEPTED (ADR-0129); milestone 1 IMPLEMENTED (controller serving CloudHypervisorMachine, Cloud Hypervisor hold, admission policy; libvirt, vSphere and Proxmox are neither held nor served until milestone 2). A Machine that CAPI creates over a banlieue InfraMachineTemplate gets its bootstrap provider's rendered data in spec.userData before its guest is created. Shown for Cloud Hypervisor, the first backend to hold creation; libvirt, vSphere and Proxmox follow in milestone 2 (ADR-0129 Decision 8).",
       "transitions": [
         {
           "sequence-number": 1,
@@ -3129,18 +3161,23 @@
         },
         {
           "sequence-number": 4,
-          "relationship-unique-id": "rel-claim-binds-pool-member",
-          "description": "Claim reconciler picks one Ready, unclaimed member (current image revision first, then longest-Ready, then name) and binds it with a resourceVersion-preconditioned merge patch: claim label, subject annotations, and ownerReferences re-parented from pool to claim. A second claim racing for the same member gets 409 and picks again. Status then publishes virtualMachineRef, boundAt and expiresAt = boundAt + ttlSeconds, counted from the bind instant so a claim that waited for capacity still gets its full TTL.",
-          "direction": "destination-to-source"
+          "relationship-unique-id": "rel-claim-reads-provider-health",
+          "description": "IMPLEMENTED (ADR-0135): with more than one Ready candidate, the claim reconciler reads the candidates' Providers to rank members on a cordoned or Stale host last, and for Spread counts the subject's Claimed members per (provider, failure domain). Read-only."
         },
         {
           "sequence-number": 5,
+          "relationship-unique-id": "rel-claim-binds-pool-member",
+          "description": "Claim reconciler picks one Ready, unclaimed member (current image revision first, then host health and the claim's selection strategy per ADR-0135, then longest-Ready, then name) and binds it with a resourceVersion-preconditioned merge patch: claim label, subject annotations, and ownerReferences re-parented from pool to claim. A second claim racing for the same member gets 409 and picks again. Status then publishes virtualMachineRef, boundAt and expiresAt = boundAt + ttlSeconds, counted from the bind instant so a claim that waited for capacity still gets its full TTL.",
+          "direction": "destination-to-source"
+        },
+        {
+          "sequence-number": 6,
           "relationship-unique-id": "rel-pool-creates-virtualmachines",
           "description": "The pool sees a member it may no longer count as warm and creates a replacement, so the next consumer still finds one Ready. The pool never learns that claims exist.",
           "direction": "destination-to-source"
         },
         {
-          "sequence-number": 6,
+          "sequence-number": 7,
           "relationship-unique-id": "rel-claim-binds-pool-member",
           "description": "On deletion or at expiresAt the claim deletes its member and holds its own finalizer until that member is gone from the API server, while the member's provider finalizer holds IT until the backend VM is destroyed. So a deleted claim means a destroyed sandbox, transitively. A vanished member fails the claim terminally rather than rebinding it: a consumer holding a claim believes it is talking to one specific VM.",
           "direction": "destination-to-source"
@@ -3951,18 +3988,20 @@
     "docs/adr/0040-deferred-install-for-vtpm-encryption.md",
     "docs/adr/0041-imagebuilder-namespaced-secret-access.md",
     "docs/adr/0042-userdata-reference-authorization.md",
-    "docs/adr/0046-virtualmachinepool.md",
     "docs/adr/0043-guestready-installed-guest-signal.md",
+    "docs/adr/0044-detach-install-media-after-install.md",
+    "docs/adr/0045-vtpm-endorsement-key-certificate.md",
+    "docs/adr/0046-virtualmachinepool.md",
     "docs/adr/0047-virtualmachineclaim.md",
+    "docs/adr/0048-tpm-enabled-requires-deferred-install.md",
     "docs/adr/0049-attestation-trust-anchors.md",
     "docs/adr/0050-libvirtmachine-domain-lifecycle.md",
     "docs/adr/0051-vmimage-trusted-boot-uki-support.md",
     "docs/adr/0052-instant-clone-vmfork-not-supported.md",
     "docs/adr/0053-ipam-claims-for-pool-members.md",
     "docs/adr/0054-nocloud-seed-iso-first-party.md",
-    "docs/adr/0048-tpm-enabled-requires-deferred-install.md",
-    "docs/adr/0044-detach-install-media-after-install.md",
-    "docs/adr/0045-vtpm-endorsement-key-certificate.md",
+    "docs/adr/0055-agentsandbox.md",
+    "docs/adr/0056-vmpool-address-pool-entries.md",
     "docs/adr/0060-cloud-hypervisor-first-class-provider-topology.md",
     "docs/adr/0061-banlieue-cloud-hypervisor-vmm-client.md",
     "docs/adr/0062-cloudhypervisormachine-inframachine-contract.md",
@@ -3970,6 +4009,10 @@
     "docs/adr/0064-artifact-delivery-to-host-resident-providers.md",
     "docs/adr/0065-cloud-hypervisor-vtpm-and-deferred-install.md",
     "docs/adr/0067-banlieue-host-install-subcommand.md",
+    "docs/adr/0074-banlieue-proxmox-rest-client.md",
+    "docs/adr/0075-proxmoxmachine-inframachine-contract.md",
+    "docs/adr/0081-kubernetes-orchestrates-vms-run-agents.md",
+    "docs/adr/0082-no-inbound-to-sandboxes.md",
     "docs/adr/0083-block-duplicate-static-address.md",
     "docs/adr/0084-host-install-release-sources-and-versions.md",
     "docs/adr/0085-management-cluster-kine-bridge-kairos-debian.md",
@@ -3977,6 +4020,7 @@
     "docs/adr/0087-field-manager-identity-per-writer.md",
     "docs/adr/0088-first-boot-sealing-for-immediate-images.md",
     "docs/adr/0089-vspheremachine-custom-attributes.md",
+    "docs/adr/0090-finalize-vm-per-backend-isolation.md",
     "docs/adr/0091-prometheus-metrics-endpoint.md",
     "docs/adr/0092-opentelemetry-tracing-opt-in.md",
     "docs/adr/0093-health-endpoints-reflect-leadership.md",
@@ -3985,6 +4029,7 @@
     "docs/adr/0096-clusterctl-infrastructure-provider.md",
     "docs/adr/0097-api-ends-at-virtualmachineclaim.md",
     "docs/adr/0098-spread-placement-across-failure-domains.md",
+    "docs/adr/0099-cloud-hypervisor-nodes-and-node-join-in-k0s-bootstrap.md",
     "docs/adr/0100-publish-banlieue-api-to-crates-io.md",
     "docs/adr/0101-vspheremachine-ownership-marker-and-adoption.md",
     "docs/adr/0102-provider-liveness-from-its-lease.md",
@@ -3993,14 +4038,26 @@
     "docs/adr/0105-cloud-hypervisor-guests-slice.md",
     "docs/adr/0106-vm-systemd-slices-and-overhead-sampler.md",
     "docs/adr/0107-capacity-aware-scheduling.md",
+    "docs/adr/0108-sandbox-guest-software-is-consumer-image-content.md",
+    "docs/adr/0109-isolated-sandbox-network-with-proxy-egress.md",
+    "docs/adr/0110-registry-push-job-ca-bundle.md",
+    "docs/adr/0111-vm-clone-additional-nics.md",
     "docs/adr/0112-first-boot-sealing-on-cloud-hypervisor.md",
     "docs/adr/0113-pre-laid-images-for-fast-sealed-clones.md",
+    "docs/adr/0114-static-addressing-in-the-nocloud-seed.md",
+    "docs/adr/0115-rebuild-an-artifact-whose-node-local-volume-was-lost.md",
+    "docs/adr/0123-provider-side-duplicate-address-check.md",
     "docs/adr/0124-unschedulable-providers.md",
+    "docs/adr/0125-a-placed-vm-keeps-a-placement-that-still-fits.md",
     "docs/adr/0126-provider-status-publishes-its-serviceaccount.md",
     "docs/adr/0127-move-a-cloud-hypervisor-vm-between-hosts-in-a-zone.md",
     "docs/adr/0128-every-provider-publishes-measured-capacity.md",
     "docs/adr/0129-capi-inframachines-receive-the-machines-bootstrap-data.md",
+    "docs/adr/0130-namespace-selector-multi-tenancy.md",
+    "docs/adr/0131-operator-and-provider-namespace-scope.md",
+    "docs/adr/0132-claim-selects-its-pool-by-label.md",
     "docs/adr/0133-shared-provider-serves-tenant-namespaces.md",
-    "docs/adr/0134-cloud-hypervisor-serves-tenant-namespaces.md"
+    "docs/adr/0134-cloud-hypervisor-serves-tenant-namespaces.md",
+    "docs/adr/0135-claim-selection-strategies.md"
   ]
 }

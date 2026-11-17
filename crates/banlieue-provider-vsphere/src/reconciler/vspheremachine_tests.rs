@@ -11,6 +11,27 @@ mod tests {
     use super::super::build_guestinfo;
     use super::super::{TpmObservation, refresh_needs_patch, status_with_observed_state};
 
+    // ------------------------------------------------------------------
+    // CreatedAt custom attribute (ADR-0089): RFC 3339 with a numeric UTC
+    // offset, the shape chrono's `to_rfc3339()` wrote before the move to
+    // jiff, because a fleet tool outside banlieue reads the same field.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn created_at_is_rfc3339_with_a_numeric_utc_offset() {
+        use super::super::created_at_value;
+        use k8s_openapi::jiff::Timestamp;
+
+        let whole = Timestamp::from_second(1_763_371_800).unwrap();
+        assert_eq!(created_at_value(whole), "2025-11-17T09:30:00+00:00");
+
+        let fractional = Timestamp::new(1_763_371_800, 123_456_789).unwrap();
+        assert_eq!(
+            created_at_value(fractional),
+            "2025-11-17T09:30:00.123456789+00:00"
+        );
+    }
+
     fn dhcp_nic(name: &str) -> VSphereNicSpec {
         VSphereNicSpec {
             name: name.to_string(),

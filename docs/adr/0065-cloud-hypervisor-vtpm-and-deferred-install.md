@@ -26,6 +26,8 @@ SPDX-License-Identifier: Apache-2.0
   (trust anchors), [ADR-0062](0062-cloudhypervisormachine-inframachine-contract.md),
   [ADR-0063](0063-cloud-hypervisor-host-supervision.md); roadmap 09 phase 6,
   roadmap 17.
+- **Amended by:** [ADR-0127](0127-move-a-cloud-hypervisor-vm-between-hosts-in-a-zone.md) (2026-11-11): vTPM state is moved with
+  the VM, never duplicated.
 
 ## Context
 

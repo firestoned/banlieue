@@ -138,7 +138,7 @@ No default, on purpose. A claim without a deadline is a leaked VM waiting to
 happen, and there is no number banlieue could pick that is not wrong for
 somebody's workload.
 
-Two properties worth knowing:
+Three properties worth knowing:
 
 - **It runs from binding, not creation.** A claim that waited ten minutes
   for capacity still gets its full TTL.
@@ -240,21 +240,75 @@ complete selector claim.
 
 ## Which member you get
 
-In order: **current image revision**, then **longest Ready**, then name.
+In order:
+
+1. **current image revision** of the member's own pool;
+2. a member on a **healthy host** before one on an unhealthy host;
+3. the claim's **selection strategy** (below);
+4. **longest Ready**;
+5. name.
+
 With a `poolSelector`, these rules run over the members of every matching
 pool at once, and "current revision" means current *for the member's own
 pool*. No pool is preferred over another.
 
 - *Current revision first*, so a rebuild that was meant to retire an
-  unpatched build actually does.
-- *Longest Ready next*, so the member closest to being reaped for staleness
+  unpatched build actually does. No placement preference outranks it.
+- *Healthy host next*, under every strategy. A host is unhealthy when its
+  `Provider` is cordoned (`banlieue.io/unschedulable: "true"`), its
+  heartbeat is `Stale`, or it cannot be found. These are the scheduler's
+  own tests, so a host the scheduler will not place new VMs on is also the
+  last one a claim takes from.
+- *Longest Ready*, so the member closest to being reaped for staleness
   is the one handed out and idle expiry rarely has to fire.
 - *Name last*, purely so the choice is deterministic.
 
-A **stale-revision member is still handed out** when nothing fresher is
-Ready. An available sandbox on yesterday's image beats no sandbox, and its
-life is bounded by the TTL anyway — refusing would mean a consumer waits out
+None of these rules ever leaves a claim waiting. A **stale-revision
+member**, or a member on a **cordoned host**, is still handed out when
+nothing better is Ready. An available sandbox beats no sandbox, and its
+life is bounded by the TTL anyway. Refusing would mean a consumer waits out
 a full install during exactly the rollout the pool exists to hide.
+
+### Choosing a strategy: `spec.selection.strategy`
+
+```yaml
+spec:
+  poolSelector:
+    matchLabels:
+      sandbox.example.com/image: agent
+  selection:
+    strategy: Spread
+```
+
+| Strategy | Takes from | Use it when |
+| --- | --- | --- |
+| `LongestReady` (default) | the member Ready longest, wherever it runs | you have no placement preference |
+| `MostAvailable` | the failure domain with the most Ready members | you want warm capacity to drain evenly, so losing one domain costs the fewest warm members |
+| `Spread` | the failure domain where this subject holds the fewest members, then as `MostAvailable` | one subject holds several sandboxes and they must not share a host |
+
+A **failure domain** is the pair `(provider, failureDomain)` from the
+member's `status.scheduled`. Two hosts whose failure domain carries the same
+name (each Cloud Hypervisor or libvirt host's single domain, typically) are
+two domains, not one.
+
+`Spread` matches the subject on **issuer and id together**, from the
+annotations a bind writes on each member. It only sees members in the
+claim's own namespace, and it is **soft**: when every Ready member is in a
+domain the subject already occupies, the claim binds the one in the domain
+it occupies least rather than waiting. Two claims for one subject racing on
+one snapshot pick the same member; the loser retries on a fresh list and
+usually lands elsewhere, but two members can still share a domain.
+
+The `Bound` condition says what was chosen and why:
+
+```text
+bound to sandbox-pool-b-4kq7z by Spread from host-b/default
+```
+
+and adds a note when the choice was a fallback (an unhealthy host, or a
+domain the subject already held). `spec.selection` is immutable once the
+claim exists. `examples/29-virtualmachineclaim-spread.yaml` is a complete
+example.
 
 ## What happens when two consumers race
 
@@ -370,6 +424,9 @@ libvirt provided the image carries the guest-phase layer and
 | `Phase: Failed` | The bound member was deleted out from under the claim. Terminal by design — create a new claim. |
 | `kubectl delete vmclaim` hangs | Expected while the backend VM is being destroyed. Check the member: `kubectl get virtualmachine <name> -o yaml`. If its own finalizer is stuck, the provider cannot reach the backend. |
 | Claim bound to an old image | Nothing fresher was Ready. Expected; see "Which member you get". |
+| Claim bound to a member on a cordoned host | Nothing on a healthy host was Ready (or only stale-revision members were). The `Bound` message says `its host is cordoned or not reporting`. Expected; see "Which member you get". |
+| `Spread` put two of a subject's sandboxes in one domain | Every Ready member was in a domain the subject already held, or two claims raced on one snapshot. Spread is soft; the `Bound` message says `already holds N member(s)`. |
+| Claim refused: `spec.selection is immutable` | The strategy is read once, at pick time. Create a new claim. |
 | Bound, but `status.addresses` is empty | The member has no address yet. The claim mirrors what the VM reports. |
 | `status.tpmEndorsementCertificates` always empty | The member's class is not `tpmEnabled` — publication gates `GuestReady` for `tpmEnabled` members (ADR-0045), so a bound one always carries its certificate. |
 
@@ -378,5 +435,6 @@ libvirt provided the image carries the guest-phase layer and
 - [`VirtualMachineClaim` API reference](../reference/api.md#virtualmachineclaim)
 - [ADR-0047 — `VirtualMachineClaim`: bound once, released by deletion](https://github.com/firestoned/banlieue/blob/main/docs/adr/0047-virtualmachineclaim.md)
 - [ADR-0132: A claim may select its pool by label](https://github.com/firestoned/banlieue/blob/main/docs/adr/0132-claim-selects-its-pool-by-label.md)
+- [ADR-0135: A claim chooses its member by strategy](https://github.com/firestoned/banlieue/blob/main/docs/adr/0135-claim-selection-strategies.md)
 - [The Claim Flow, End to End](../concepts/virtualmachine-claim-flow.md) — every actor and message, end to end
 - [VirtualMachine Pools guide](virtualmachine-pools.md) — where the members come from

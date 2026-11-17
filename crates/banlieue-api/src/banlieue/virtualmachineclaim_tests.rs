@@ -35,6 +35,83 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
+    // spec.selection: how the member is ranked (ADR-0135)
+    // ------------------------------------------------------------------
+
+    /// A claim written before ADR-0135 has no `selection`, and must still
+    /// parse and serialize without one: the field is optional and absent
+    /// means `LongestReady`, today's order.
+    #[test]
+    fn selection_is_optional_and_omitted_when_unset() {
+        let spec: VirtualMachineClaimSpec =
+            serde_json::from_value(minimal_claim_json()).expect("minimal claim must parse");
+        assert!(spec.selection.is_none());
+        assert_eq!(spec.strategy(), SelectionStrategy::LongestReady);
+        let back = serde_json::to_value(&spec).unwrap();
+        assert!(back.get("selection").is_none(), "got {back}");
+    }
+
+    #[test]
+    fn each_strategy_parses_from_its_wire_name() {
+        for (wire, want) in [
+            ("LongestReady", SelectionStrategy::LongestReady),
+            ("MostAvailable", SelectionStrategy::MostAvailable),
+            ("Spread", SelectionStrategy::Spread),
+        ] {
+            let mut json = minimal_claim_json();
+            json["selection"] = serde_json::json!({ "strategy": wire });
+            let spec: VirtualMachineClaimSpec = serde_json::from_value(json).unwrap();
+            assert_eq!(spec.strategy(), want, "{wire}");
+            let back = serde_json::to_value(&spec).unwrap();
+            assert_eq!(back["selection"]["strategy"], wire);
+        }
+    }
+
+    /// `selection: {}` is a claim that wrote the struct but no strategy:
+    /// the strategy defaults inside it, exactly as an absent struct does.
+    #[test]
+    fn an_empty_selection_means_longest_ready() {
+        let mut json = minimal_claim_json();
+        json["selection"] = serde_json::json!({});
+        let spec: VirtualMachineClaimSpec = serde_json::from_value(json).unwrap();
+        assert_eq!(spec.strategy(), SelectionStrategy::LongestReady);
+    }
+
+    #[test]
+    fn an_unknown_strategy_is_refused() {
+        let mut json = minimal_claim_json();
+        json["selection"] = serde_json::json!({ "strategy": "Fastest" });
+        assert!(serde_json::from_value::<VirtualMachineClaimSpec>(json).is_err());
+    }
+
+    /// The apiserver, not the controller, refuses a misspelt strategy: the
+    /// schema carries the enum, so a typo fails at `kubectl apply`.
+    #[test]
+    fn the_schema_lists_every_strategy() {
+        let spec = spec_schema();
+        let strategy = &spec["properties"]["selection"]["properties"]["strategy"];
+        let values: Vec<String> = strategy["enum"]
+            .as_array()
+            .unwrap_or_else(|| panic!("strategy has no enum: {spec}"))
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(values, ["LongestReady", "MostAvailable", "Spread"]);
+        let required = spec["required"].as_array().cloned().unwrap_or_default();
+        assert!(!required.iter().any(|f| f == "selection"), "got {spec}");
+    }
+
+    #[test]
+    fn strategy_display_is_its_wire_name() {
+        assert_eq!(
+            SelectionStrategy::MostAvailable.to_string(),
+            "MostAvailable"
+        );
+        assert_eq!(SelectionStrategy::Spread.to_string(), "Spread");
+        assert_eq!(SelectionStrategy::LongestReady.to_string(), "LongestReady");
+    }
+
+    // ------------------------------------------------------------------
     // ttlSeconds: required, no default (ADR-0047 Decision 5)
     // ------------------------------------------------------------------
 

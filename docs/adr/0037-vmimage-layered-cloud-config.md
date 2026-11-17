@@ -6,6 +6,8 @@
 - **Related:** Extends `banlieue.io/v1alpha1` `VMImage`
   (`crates/banlieue-api/src/banlieue/vmimage.rs`) and
   `crates/banlieue-imagebuilder`.
+- **Amended by:** [ADR-0041](0041-imagebuilder-namespaced-secret-access.md) (2026-09-09): the imagebuilder reads
+  Secrets through a namespaced grant, not a cluster-wide one.
 
 ## Context
 

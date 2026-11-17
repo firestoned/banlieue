@@ -115,7 +115,9 @@ are in place, and so is each provider:
 | libvirt | Complete: VM lifecycle, NoCloud cloud-init, vTPM, pools |
 | Proxmox VE | Implemented end to end and tested against a real node; the cluster end-to-end test is the last item |
 
-Live migration and snapshots are not started. Phase plans and their status
+Snapshots are not started. Moving a Cloud Hypervisor VM between hosts has its
+API (`VirtualMachineMove`, ADR-0127) but no controller acting on it yet. Phase
+plans and their status
 are in [`ROADMAPS.md`](https://github.com/firestoned/banlieue/blob/main/ROADMAPS.md).
 
 The CRD surface is `v1alpha1` and will break before `v1`. Don't run production

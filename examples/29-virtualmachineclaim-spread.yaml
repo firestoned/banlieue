@@ -1,0 +1,65 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# Claim a warm VM and say HOW the member is chosen (ADR-0135).
+#
+# Everything in 20-virtualmachineclaim.yaml and
+# 27-virtualmachineclaim-pool-selector.yaml applies here. This claim adds
+# `spec.selection.strategy`:
+#
+#   LongestReady    (the default) the member Ready longest; no placement
+#                   preference
+#   MostAvailable   take from the failure domain with the most Ready
+#                   members, so warm capacity drains evenly
+#   Spread          take from the failure domain where this subject
+#                   (issuer AND id) holds the fewest members, then as
+#                   MostAvailable, so one subject's sandboxes do not share
+#                   a host
+#
+# A failure domain is the pair (provider, failureDomain) from the member's
+# status.scheduled. Two hosts whose failure domain has the same name are
+# two domains.
+#
+# Every strategy sits inside the same order: Ready and unclaimed only, then
+# current image revision, then members on a healthy host (not cordoned,
+# heartbeat not Stale), then the strategy, then the one Ready longest, then
+# name. A strategy only reorders: a claim never waits while a Ready member
+# exists, even if every Ready member is in a domain the subject already
+# occupies.
+#
+# The field is immutable once the claim exists.
+---
+apiVersion: banlieue.io/v1alpha1
+kind: VirtualMachineClaim
+metadata:
+  name: agent-sandbox-for-alice-2
+  namespace: banlieue-system
+spec:
+  poolSelector:
+    matchLabels:
+      sandbox.example.com/image: agent
+
+  selection:
+    strategy: Spread
+
+  # An identifier, never a credential: see 20-virtualmachineclaim.yaml.
+  subject:
+    issuer: https://issuer.example.com
+    id: 0c3b7f2e-1d4a-4b6c-9e8f-5a2d1c0b9e7f
+
+  ttlSeconds: 900
+#
+# WHAT HAPPENS NEXT
+#
+# The Bound condition says which strategy chose the member, the domain it
+# came from, and whether the choice was a fallback:
+#
+#   kubectl get vmclaim agent-sandbox-for-alice-2 -n banlieue-system \
+#     -o jsonpath='{.status.conditions[?(@.type=="Bound")].message}'
+#
+#   bound to sandbox-pool-b-4kq7z by Spread from host-b/default
+#
+# or, when every domain already held one of this subject's sandboxes:
+#
+#   bound to sandbox-pool-a-9fx2m by Spread from host-a/default; the
+#   subject already holds 1 member(s) in that domain

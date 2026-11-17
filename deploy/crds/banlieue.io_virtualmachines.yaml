@@ -415,7 +415,7 @@ spec:
                   configMapRef:
                     description: |-
                       Key in a ConfigMap in the VirtualMachine's namespace (key defaults to
-                      [`DEFAULT_USER_DATA_KEY`]).
+                      `DEFAULT_USER_DATA_KEY`).
                     nullable: true
                     properties:
                       key:
@@ -431,7 +431,7 @@ spec:
                   secretRef:
                     description: |-
                       Key in a Secret in the VirtualMachine's namespace (key defaults to
-                      [`DEFAULT_USER_DATA_KEY`]).
+                      `DEFAULT_USER_DATA_KEY`).
                     nullable: true
                     properties:
                       key:

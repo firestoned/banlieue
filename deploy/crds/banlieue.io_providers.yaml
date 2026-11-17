@@ -99,7 +99,7 @@ spec:
 
                       Same value-or-source shape as `connection.caBundle`: exactly one of
                       `inline`, `configMapRef`, `secretRef` must be set (see
-                      [`CABundleSource`]); references resolve in the Provider's namespace.
+                      `CABundleSource`); references resolve in the Provider's namespace.
                       Removal of an issuer from this bundle is the revocation mechanism on
                       libvirt — swtpm EK certificates never expire.
                     properties:
@@ -160,7 +160,7 @@ spec:
                       description: |-
                         Maps one abstract network-class name to a concrete backend target.
 
-                        Same per-zone override shape as [`StorageClassMapping`] and for the same
+                        Same per-zone override shape as `StorageClassMapping` and for the same
                         reason: the "same" logical network commonly has a differently-named
                         port group on each cluster of a Provider (ADR-0030).
                       properties:
@@ -176,7 +176,7 @@ spec:
                               `Provider.spec.failureDomainNameOverrides` is (ADR-0023): the
                               vCenter-reported identity, not a failure domain's own (possibly
                               admin-renamed) display name, which would make the mapping fragile to a
-                              rename. Shared by [`StorageClassMapping`] and [`NetworkClassMapping`] —
+                              rename. Shared by `StorageClassMapping` and `NetworkClassMapping` —
                               same shape, same identity key (ADR-0030).
                             properties:
                               cluster:
@@ -190,7 +190,7 @@ spec:
                                   type: string
                                 description: |-
                                   Concrete backend target for this zone, same shape as
-                                  [`StorageClassMapping::target`] / [`NetworkClassMapping::target`].
+                                  `StorageClassMapping::target` / `NetworkClassMapping::target`.
                                 type: object
                             required:
                             - cluster
@@ -301,7 +301,7 @@ spec:
                               `Provider.spec.failureDomainNameOverrides` is (ADR-0023): the
                               vCenter-reported identity, not a failure domain's own (possibly
                               admin-renamed) display name, which would make the mapping fragile to a
-                              rename. Shared by [`StorageClassMapping`] and [`NetworkClassMapping`] —
+                              rename. Shared by `StorageClassMapping` and `NetworkClassMapping` —
                               same shape, same identity key (ADR-0030).
                             properties:
                               cluster:
@@ -315,7 +315,7 @@ spec:
                                   type: string
                                 description: |-
                                   Concrete backend target for this zone, same shape as
-                                  [`StorageClassMapping::target`] / [`NetworkClassMapping::target`].
+                                  `StorageClassMapping::target` / `NetworkClassMapping::target`.
                                 type: object
                             required:
                             - cluster
@@ -352,7 +352,7 @@ spec:
 
                       A value-or-source: inline PEM, or a `configMapRef` / `secretRef` naming a
                       key (default `ca.crt`) in the Provider's namespace. Exactly one source
-                      must be set; see [`CABundleSource`]. Resolved by the provider controller
+                      must be set; see `CABundleSource`. Resolved by the provider controller
                       and injected into the HTTP client (ADR-0008, BYOC). When unset, the
                       system trust roots are used.
                     nullable: true

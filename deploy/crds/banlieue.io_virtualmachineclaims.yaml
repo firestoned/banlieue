@@ -139,6 +139,24 @@ spec:
                       type: string
                     type: object
                 type: object
+              selection:
+                description: |-
+                  How the member is chosen among the Ready ones (ADR-0135). Absent
+                  means `LongestReady`, the order every claim used before this field
+                  existed. A strategy only reorders: no strategy leaves a claim
+                  `Pending` while a Ready member exists. Immutable, like the pool
+                  fields: it is read once, when the member is picked.
+                nullable: true
+                properties:
+                  strategy:
+                    default: LongestReady
+                    description: The ranking to apply. Defaults to `LongestReady`.
+                    enum:
+                    - LongestReady
+                    - MostAvailable
+                    - Spread
+                    type: string
+                type: object
               subject:
                 description: |-
                   Who this member is for. Opaque to banlieue: recorded, mirrored onto

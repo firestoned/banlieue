@@ -15,6 +15,8 @@ SPDX-License-Identifier: Apache-2.0
   [ADR-0063](0063-cloud-hypervisor-host-supervision.md) without banlieue;
   [ADR-0086](0086-management-cluster-control-plane-vip.md) (the VIP a
   joining node dials, which a joining controller also serves)
+- **Amended by:** [ADR-0106](0106-vm-systemd-slices-and-overhead-sampler.md) (2026-10-23): each node's units run in
+  `banlieue-nodes.slice`, not `system.slice`.
 
 ## Context
 

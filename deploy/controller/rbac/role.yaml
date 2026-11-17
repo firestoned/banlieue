@@ -4,11 +4,13 @@
 # Namespace-scoped grant for banlieue-controller to resolve a
 # VirtualMachine.spec.userData Secret or ConfigMap before inlining its
 # (rendered) content onto the VSphereMachine it builds (ADR-0025).
-# Deliberately a namespaced Role, not a ClusterRole rule: this project
-# runs single-tenant today (one namespace, banlieue-system), so this is
-# the whole grant — no per-Provider or per-VM Role bookkeeping. Revisit
-# if multiple namespaces / tenants become real (see ADR-0025's
-# Consequences).
+# Deliberately a namespaced Role, not a ClusterRole rule: the controller
+# resolves userData in the VM's own namespace, and a ClusterRole would let
+# it read every Secret in the cluster. This Role covers banlieue-system.
+# Since ADR-0130 the controller can serve other namespaces too: a tenant
+# namespace whose VMs reference a userData Secret or ConfigMap needs a copy
+# of this Role and RoleBinding, created by the administrator (see
+# docs/src/guides/multi-tenancy.md, "Onboard a team").
 #
 # This is the "scoped (namespace)" case banlieue-controller's own
 # ClusterRole comment (security review 2026-07-31, SEC-008) anticipated:

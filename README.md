@@ -29,7 +29,7 @@
 `Deployment` or `Service` — one Kubernetes Custom Resource — and have it
 scheduled onto whatever hypervisor or VM platform you run: **Cloud
 Hypervisor** on your own KVM hosts (the reference backend), **vSphere**,
-**libvirt**, **Proxmox VE**, and any backend a third party writes. The user's
+**libvirt** and **Proxmox VE**, with more added through the same CRD contract. The user's
 manifest never changes when the backend does.
 
 ```yaml
@@ -146,6 +146,7 @@ main controller mirrors that status onto the `VirtualMachine`.
 | `Provider` | `banlieue.io/v1alpha1` | One registered backend instance (a Cloud Hypervisor host, a vCenter, a libvirt host, a Proxmox node). |
 | `VirtualMachinePool` | `banlieue.io/v1alpha1` | A self-refilling set of warm, already-provisioned `VirtualMachine`s. |
 | `VirtualMachineClaim` | `banlieue.io/v1alpha1` | One subject's exclusive, time-boxed hold on one pool member. |
+| `VirtualMachineMove` | `banlieue.io/v1alpha1` | A request to move one Cloud Hypervisor VM to another host in its zone (ADR-0127). The API is in place; no controller acts on it yet. |
 | `ProviderClass` | `banlieue.io/v1alpha1` | Cluster-scoped install metadata for a backend class (image, resources, RBAC). |
 | `CloudHypervisorMachine` / `CloudHypervisorMachineTemplate` | `infrastructure.banlieue.io/v1alpha1` | Concrete, CAPI-contract infra CRs the Cloud Hypervisor provider reconciles. |
 | `VSphereMachine` / `VSphereMachineTemplate` / `VSphereCluster` | `infrastructure.banlieue.io/v1alpha1` | The same for vSphere, plus its InfraCluster. |
@@ -288,8 +289,9 @@ banlieue is **early, and runs real VMs on all four backends**:
 | Proxmox VE | Implemented end to end and tested against a real node; the cluster end-to-end test is the last item |
 
 The controller, `banlieue-operator`, `banlieue-imagebuilder`, warm pools and
-claims are in place. Live migration and snapshots are not started (see
-[`ROADMAPS.md`](ROADMAPS.md)). The CRD surface is `v1alpha1` and **will break
+claims are in place. Snapshots are not started, and live migration has only
+its API so far (`VirtualMachineMove`, ADR-0127, with no controller acting on
+it); see [`ROADMAPS.md`](ROADMAPS.md). The CRD surface is `v1alpha1` and **will break
 before `v1`**: don't run production workloads against it yet.
 
 ## License

@@ -1,5 +1,136 @@
 # Changelog
 
+## [2026-11-17 14:00] - chrono replaced by jiff; docs, ADR metadata and generated references brought up to date
+
+**Author:** Erick Bourgeois
+
+### Changed
+- **Dependency: chrono removed, jiff added.** `cargo deny` failed on
+  RUSTSEC-2026-0543 (chrono is unmaintained, no fixed version). jiff is
+  already in the tree (k8s-openapi 0.29 uses it for `Time`) and actively
+  maintained, so no new crate enters `Cargo.lock`; chrono and its platform
+  time-zone dependencies leave it (105 lines). Uses: the vSphere `CreatedAt`
+  custom attribute (`vspheremachine.rs::created_at_value`, keeping chrono's
+  `to_rfc3339()` shape with a `+00:00` offset because a fleet tool outside
+  banlieue reads it; new unit test), the two VEX binaries' timestamps, and
+  the provider bench's date. chrono was declared but unused in
+  `banlieue-controller`, `banlieue-provider-sdk` and
+  `banlieue-provider-libvirt`.
+- **Generated references: rustdoc links no longer leak.**
+  `crdgen_support::prepared` now rewrites `[`X`]` and `[`X`](rust::path)` in
+  every schema description as `` `X` `` (URLs are kept), so `kubectl explain`,
+  `deploy/crds/` and `docs/src/reference/api.md` stop showing link syntax
+  that goes nowhere. The schema walk is shared with the unsupported-format
+  fix-up (`for_each_schema_mut`). New tests in `crdgen_support_tests.rs`,
+  including one over every shipped CRD. CRDs and API reference regenerated
+  (descriptions only).
+- **Docs audit** (README, `docs/src/`, every ADR): about 20 ADRs gain the
+  `Amended by` / `Followed by` pointers they were missing; ADR-0129 is
+  Accepted (milestone 1 shipped); ADR-0060 and ADR-0061 note that ADR-0066
+  is reserved, not written. User docs fixed where they contradicted the
+  tree: provider and controller guides (flags, RBAC, CRD list, admission
+  policies), concepts and reasoning pages that listed only vSphere, a wrong
+  infra API group, libvirt's redefine described as an upsert, vSphere
+  least-privilege rows, the README status line and `VirtualMachineMove` row.
+- **Install guides are version-agnostic.** They pinned `v0.4.0`/`v0.4.5`
+  while `deploy/` manifests are never edited when a tag is cut, so a clone
+  at any tag ran `v0.4.0`. The guides now name the release once
+  (`BANLIEUE_VERSION`), `kubectl set image` it after applying a Deployment,
+  link examples at `main`, and use `releases/latest/`. `deploy/*/deployment.yaml`
+  reference `v0.5.9` with a comment saying why it is only a reference.
+- **Third-party providers**: the docs claimed a new backend needs no change
+  to banlieue. The controller's builders are a closed set of four
+  (`InfraKind`), so `concepts/providers.md` ("Adding a provider"), the
+  reasoning pages and the README now say so.
+- **Multi-tenancy**: a tenant namespace whose VMs reference a `userData`
+  Secret or ConfigMap needs a copy of `banlieue-controller-userdata`; the
+  guide's onboarding steps and `deploy/controller/rbac/role.yaml` now say so.
+- Smaller fixes: `reasoning/non-goals.md` names ADR-0127's in-zone move as
+  the live-migration exception; `vtpm-per-provider.md` cites ADR-0088, not
+  the superseded ADR-0048; example 17 records vSphere and libvirt as verified
+  live; `deploy/admission/README.md` and `machine-provider-ref.yaml` cover
+  all four machine kinds; the libvirt "Import Job 403" row explains when it
+  happens; threat model §7.10 reflects the shipped claim subject policy and
+  §10 names the tenancy assumptions; CALM `adrs` lists all 113 ADRs and
+  labels ADR-0129 Accepted; the CALM system template's "planned" note; stale
+  comments in `workload.rs`, `infra.rs` and `virtualmachine.rs`.
+
+### Why
+`cargo deny` blocks every PR on the chrono advisory, and a documentation
+audit found guides and ADR metadata that contradicted the code.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout (CRD descriptions changed only; re-applying
+  is harmless and optional)
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-11-17 09:30] - A claim chooses its member by strategy and host health (ADR-0135)
+
+**Author:** Erick Bourgeois
+
+A claim ranked Ready members with no idea where they ran: claims drained
+whichever failure domain held the oldest members, one subject's sandboxes
+could all land on one host, and a member on a cordoned or silent host was
+handed out like any other (the claim reconciler never read a `Provider`).
+
+### Added
+- `docs/adr/0135-claim-selection-strategies.md` (Accepted, implemented).
+  Amends ADR-0132 Decision 4 and ADR-0047 Decision 4. CALM: new relationship
+  `rel-claim-reads-provider-health` and control
+  `claim-selection-ranks-never-filters`; the claim node, the bind
+  relationship and `flow-claim-pool-member` (now seven steps) updated;
+  diagrams regenerated, `make calm-validate` clean.
+- `banlieue-api`: `VirtualMachineClaimSpec.selection: Option<ClaimSelection>`
+  with `strategy: SelectionStrategy` (`LongestReady` default,
+  `MostAvailable`, `Spread`), and `VirtualMachineClaimSpec::strategy()`.
+  CRD and API reference regenerated (only `virtualmachineclaims` changed).
+- `banlieue-controller` `claim_plan.rs`: `rank_pick` (revision, then host
+  health, then the strategy key, then longest Ready, then name),
+  `FailureDomainKey` (`provider/failureDomain`), `member_placement`,
+  `subject_held` (issuer and id matched together), `bound_message`,
+  `hold_message`. `pick_across_pools` is now `rank_pick` with empty inputs.
+- `examples/29-virtualmachineclaim-spread.yaml`, with a round-trip test in
+  `banlieue-api/tests/examples.rs`.
+
+### Changed
+- `claim.rs::pick`: with more than one Ready member, lists the candidate
+  `Provider`s (`provider_lookup::candidate_providers`, ADR-0133 Decision 1)
+  and, for `Spread`, counts the subject's members per domain. The `Bound`
+  message names the strategy and domain, and a hold keeps it instead of
+  overwriting it with `bound to <member>`. **Behaviour change for every
+  claim, including the default:** a member on a cordoned or `Stale` host is
+  now taken last rather than in turn.
+- `scheduler.rs`: `is_unschedulable` and `is_stale` are `pub(crate)`, shared
+  with the claim reconciler.
+- `deploy/admission/virtualmachineclaim-subject-authorization.yaml`:
+  `spec.selection` is immutable (optional CEL access, like the pool fields).
+  Offline test `banlieue-operator/tests/admission_policies.rs`; a live case
+  in `live_claim_subject_policy.rs`, passing on kind (6/6, with
+  `live_claim.rs` 11/11).
+- Docs: `guides/virtualmachine-claims.md` ("Which member you get", strategy
+  table, troubleshooting), `concepts/virtualmachine-claim-flow.md` sequence.
+- Roadmap 17 detail doc and `ROADMAPS.md` row updated.
+- Threat model full pass, stamp advanced to ADR-0135 (2026-11-17): no
+  component, identity, grant, namespace or boundary change, §5 diagram
+  unchanged; TB-1 gains three rows (placement in the `Bound` message, a
+  `Provider`'s cordon or heartbeat steering claims, forged subject
+  annotations steering `Spread`) and two rows updated; A-7 updated; §8
+  unchanged.
+
+### Why
+Placement-aware selection for availability (ADR-0135 Context).
+
+### Impact
+- [ ] Breaking change (wire compatible; Rust struct literals of
+  `VirtualMachineClaimSpec`, e.g. mediatore's `sandbox.rs`, need
+  `selection: None`)
+- [x] Requires cluster rollout (re-apply the `virtualmachineclaims` CRD and
+  the claim subject admission policy, then roll the controller)
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-11-16 20:00] - A shared provider serves tenant namespaces and keeps the credentials, for every provider (ADR-0133, ADR-0134)
 
 **Author:** Erick Bourgeois

@@ -61,8 +61,8 @@ spec:
                   image:
                     description: |-
                       The image in the host's image cache: an installed raw disk for
-                      [`Image`](ChBootSourceKind::Image), the installer ISO for
-                      [`InstallMedia`](ChBootSourceKind::InstallMedia).
+                      `Image`, the installer ISO for
+                      `InstallMedia`.
                     type: string
                   kind:
                     description: Which provisioning shape this machine uses.
@@ -388,9 +388,9 @@ spec:
                 default: false
                 description: |-
                   Attach a vTPM (swtpm), resolved from the VM's `VMClass.spec.tpmEnabled`.
-                  Requires [`ChBootSourceKind::InstallMedia`] (ADR-0040, ADR-0048,
+                  Requires `ChBootSourceKind::InstallMedia` (ADR-0040, ADR-0048,
                   ADR-0065), or an image that seals itself on first boot
-                  ([`Self::first_boot_sealing`], ADR-0088, ADR-0112).
+                  (`Self::first_boot_sealing`, ADR-0088, ADR-0112).
                 type: boolean
               userData:
                 description: |-

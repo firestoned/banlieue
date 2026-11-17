@@ -15,6 +15,8 @@ const PROVIDER_REF: &str = include_str!("../../../deploy/admission/machine-provi
 const SELECTOR_AUTHZ: &str =
     include_str!("../../../deploy/admission/provider-namespace-selector-authorization.yaml");
 const CONTROLLER_SA: &str = include_str!("../../../deploy/controller/rbac/serviceaccount.yaml");
+const CLAIM_SUBJECT: &str =
+    include_str!("../../../deploy/admission/virtualmachineclaim-subject-authorization.yaml");
 
 /// The controller's identity as the API server reports it in `userInfo`.
 const CONTROLLER_IDENTITY: &str = "system:serviceaccount:banlieue-system:banlieue-controller";
@@ -201,5 +203,32 @@ fn the_selector_admin_role_grants_exactly_one_virtual_permission() {
     assert!(
         labels.keys().all(|k| !k.contains("aggregate-to")),
         "the admin role must not be aggregated into admin/edit/view: {labels:?}"
+    );
+}
+
+/// ADR-0135 Decision 7: `spec.selection` is read once, at pick time, so the
+/// claim policy refuses an edit to it on UPDATE, and compares it with
+/// optional access (`.?`): the field is usually absent, and comparing an
+/// absent field errors in CEL, which this fail-closed policy would turn into
+/// a denial of every update to every claim.
+#[test]
+fn the_claim_policy_freezes_selection_with_optional_access() {
+    let all = docs(CLAIM_SUBJECT);
+    let policy = of_kind(&all, "ValidatingAdmissionPolicy")
+        .into_iter()
+        .find(|p| name(p) == "banlieue-virtualmachineclaim-subject-authorization")
+        .expect("claim subject policy");
+    let expressions: Vec<&str> = policy["spec"]["validations"]
+        .as_array()
+        .expect("validations")
+        .iter()
+        .filter_map(|v| v["expression"].as_str())
+        .collect();
+    assert!(
+        expressions.iter().any(|e| {
+            e.contains("request.operation != 'UPDATE'")
+                && e.contains("object.spec.?selection == oldObject.spec.?selection")
+        }),
+        "no UPDATE-scoped, optional-access immutability rule for spec.selection: {expressions:#?}"
     );
 }

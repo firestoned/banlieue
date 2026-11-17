@@ -36,13 +36,18 @@ use serde_json::{Value, json};
 use tracing::{info, warn};
 
 use super::claim_plan::{
-    BoundMember, ClaimInputs, ClaimStep, Pick, PoolMembers, PoolWaitState, PoolWarm, expiry,
-    is_expired, mirrored_member_state, next_step, pick_across_pools, pool_selection, wait_reason,
+    BoundMember, ClaimInputs, ClaimStep, MemberPlacement, Pick, PickDetail, PoolMembers,
+    PoolWaitState, PoolWarm, SelectionInputs, bound_message, expiry, hold_message, is_expired,
+    member_placement, mirrored_member_state, next_step, pool_selection, rank_pick, subject_held,
+    wait_reason,
 };
 use super::pool::member_view;
-use super::pool_plan::MemberView;
+use super::pool_plan::{MemberPhase, MemberView};
+use super::provider_lookup::candidate_providers;
 use crate::context::Context;
 use crate::error::{Error, Result};
+use banlieue_api::banlieue::SelectionStrategy;
+use std::collections::BTreeMap;
 
 /// Seconds between retries while no member is available. Short, because a
 /// consumer is blocked on this — unlike every other requeue in the
@@ -132,7 +137,7 @@ pub async fn reconcile(claim: Arc<VirtualMachineClaim>, ctx: Arc<Context>) -> Re
         ClaimStep::Hold { member } => {
             ensure_finalizer(&claim_api, claim.as_ref(), CLAIM_FINALIZER).await?;
             let vm = bound_vm.ok_or(Error::Missing("bound member"))?;
-            hold(&claim_api, &name, &member, &vm, generation).await
+            hold(&claim_api, &claim, &member, &vm, generation).await
         }
         ClaimStep::Fail { member } => {
             ensure_finalizer(&claim_api, claim.as_ref(), CLAIM_FINALIZER).await?;
@@ -156,6 +161,7 @@ pub async fn reconcile(claim: Arc<VirtualMachineClaim>, ctx: Arc<Context>) -> Re
                 member: &member,
                 pool: &picked.pick.pool,
                 resource_version: picked.resource_version.as_deref(),
+                detail: picked.detail.as_ref(),
             };
             bind(&claim_api, &vm_api, &claim, &name, target, now, generation).await
         }
@@ -206,7 +212,10 @@ pub fn error_policy(_claim: Arc<VirtualMachineClaim>, err: &Error, _ctx: Arc<Con
 /// rather than crash-looping.
 ///
 /// Two LISTs, both in the claim's namespace: the pools, filtered by the
-/// claim's [`pool_selection`], and every pool member (ADR-0132).
+/// claim's [`pool_selection`], and every pool member (ADR-0132). When more
+/// than one member is Ready, also the candidate `Provider`s, so members on
+/// an unhealthy host rank last and a strategy can see failure domains
+/// (ADR-0135); with one or none there is nothing to rank.
 async fn pick(
     ctx: &Context,
     namespace: &str,
@@ -246,7 +255,7 @@ async fn pick(
             .and_then(|vm| vm.labels().get(LABEL_POOL).cloned())
             .unwrap_or_default();
         let pick = Pick { pool, member: ours };
-        return Ok((Some(candidate(pick, &members)), pools));
+        return Ok((Some(candidate(pick, None, &members)), pools));
     }
 
     let now = Timestamp::now();
@@ -276,20 +285,49 @@ async fn pick(
         })
         .collect();
 
-    let chosen = pick_across_pools(&candidates).map(|pick| candidate(pick, &members));
+    let strategy = claim.spec.strategy();
+    let ready: Vec<&str> = candidates
+        .iter()
+        .flat_map(|p| p.views.iter())
+        .filter(|m| m.phase == MemberPhase::Ready)
+        .map(|m| m.name.as_str())
+        .collect();
+    let mut placements: BTreeMap<String, MemberPlacement> = BTreeMap::new();
+    let mut held = BTreeMap::new();
+    if ready.len() > 1 {
+        let providers = candidate_providers(ctx, namespace).await?.providers;
+        for vm in members
+            .iter()
+            .filter(|vm| ready.contains(&vm.name_any().as_str()))
+        {
+            placements.insert(vm.name_any(), member_placement(vm, &providers));
+        }
+        if strategy == SelectionStrategy::Spread {
+            held = subject_held(&members, &claim.spec.subject);
+        }
+    }
+    let inputs = SelectionInputs {
+        strategy,
+        placements: &placements,
+        subject_held: &held,
+    };
+    let chosen = rank_pick(&candidates, &inputs)
+        .map(|ranked| candidate(ranked.pick, Some(ranked.detail), &members));
     Ok((chosen, pools))
 }
 
 /// A picked member, with the `resourceVersion` it had in the list it was
-/// picked from.
+/// picked from, and why it was picked (`None` when finishing a bind made on
+/// an earlier pass).
 #[derive(Clone, Debug)]
 struct Candidate {
     pick: Pick,
     resource_version: Option<String>,
+    detail: Option<PickDetail>,
 }
 
-/// Attach the listed `resourceVersion` to `pick`.
-fn candidate(pick: Pick, members: &[VirtualMachine]) -> Candidate {
+/// Attach the listed `resourceVersion` and the pick's `detail` to `pick`.
+fn candidate(pick: Pick, detail: Option<PickDetail>, members: &[VirtualMachine]) -> Candidate {
     let resource_version = members
         .iter()
         .find(|vm| vm.name_any() == pick.member)
@@ -297,6 +335,7 @@ fn candidate(pick: Pick, members: &[VirtualMachine]) -> Candidate {
     Candidate {
         pick,
         resource_version,
+        detail,
     }
 }
 
@@ -318,6 +357,8 @@ struct BindTarget<'a> {
     member: &'a str,
     pool: &'a str,
     resource_version: Option<&'a str>,
+    /// Why this member, for the `Bound` message (ADR-0135 Decision 6).
+    detail: Option<&'a PickDetail>,
 }
 
 /// Take a member: label it, stamp the subject on it, and re-parent it from
@@ -386,7 +427,7 @@ async fn bind(
         name,
         ClaimPhase::Bound,
         pool_condition_types::BOUND,
-        format!("bound to {member}"),
+        bound_message(member, claim.spec.strategy(), target.detail),
         generation,
         bound_status(member, target.pool, bound_at, expires_at),
     )
@@ -396,10 +437,11 @@ async fn bind(
 }
 
 /// Bound and healthy: mirror the member's observable state onto the claim
-/// so a consumer needs one GET rather than two.
+/// so a consumer needs one GET rather than two. The `Bound` message the
+/// bind wrote is kept, so its explanation survives the next pass.
 async fn hold(
     claim_api: &Api<VirtualMachineClaim>,
-    name: &str,
+    claim: &VirtualMachineClaim,
     member: &str,
     vm: &VirtualMachine,
     generation: i64,
@@ -417,12 +459,21 @@ async fn hold(
     if let Some(pool) = mirrored.pool {
         extra["poolRef"] = json!({ "name": pool });
     }
+    let existing = claim
+        .status
+        .as_ref()
+        .and_then(|s| {
+            s.conditions
+                .iter()
+                .find(|c| c.type_ == pool_condition_types::BOUND)
+        })
+        .map(|c| c.message.as_str());
     patch_status(
         claim_api,
-        name,
+        &claim.name_any(),
         ClaimPhase::Bound,
         pool_condition_types::BOUND,
-        format!("bound to {member}"),
+        hold_message(existing, member),
         generation,
         extra,
     )

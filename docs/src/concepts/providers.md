@@ -259,7 +259,7 @@ crates/banlieue-provider-vsphere/
         ├── mod.rs
         ├── provider.rs     # Provider inventory walk → failureDomains[]
         ├── vmimage.rs      # per-zone Kairos template build/import (ADR-0020/0021)
-        └── vspheremachine.rs  # VSphereMachine create path: CloneVM_Task + PowerOnVM_Task (ADR-0024); create-path only, no update/drift/live-migration yet
+        └── vspheremachine.rs  # VSphereMachine lifecycle: clone and power-on (ADR-0024), observed power state (ADR-0034), deletion (ADR-0026), ownership marker (ADR-0101)
 ```
 
 The crate exports `Cli` (a `clap::Args` payload) and `pub async fn run(cli)`;
@@ -281,21 +281,35 @@ gives you:
 - `reconciler::{requeue_default, requeue_on_error, requeue_long, no_requeue}`
   — small helpers around `kube::runtime::Action`.
 
-## Writing a third-party provider
+## Adding a provider
 
-banlieue's provider model is open. To ship a new provider:
+The contract between the controller and a provider is CRD-only, so a provider
+needs no RPC, proto or link-time dependency on the controller. The set of
+backends the controller can drive is **closed** today, though: the controller
+builds an infrastructure CR only for the four kinds it knows
+(`InfraKind` in `crates/banlieue-controller/src/reconciler/infra.rs`:
+`VSphereMachine`, `LibvirtMachine`, `CloudHypervisorMachine`,
+`ProxmoxMachine`). A `Provider` whose `ProviderClass` names any other class
+schedules, and then reports `provider class '<name>' has no infrastructure
+builder in banlieue-controller` on the `VirtualMachine` rather than creating
+anything. A new backend is therefore a change to banlieue, not a separate
+project. To add one:
 
-1. Define your infrastructure CRD(s) in a separate crate, satisfying the
+1. Define the infrastructure CRD(s) in `crates/banlieue-api/src/infrastructure/`,
+   satisfying the
    [CAPI v1beta2 InfraMachine contract](https://cluster-api.sigs.k8s.io/developer/providers/contracts/).
-   The provider CRD shape used in `crates/banlieue-api/src/infrastructure/`
-   (`VSphereMachine`, `VSphereMachineTemplate`) is the reference.
+   The four existing kinds are the reference.
 2. Build a controller against your CRD using `banlieue-provider-sdk`. Its
    leader election gives you the Lease that liveness reads (item 7 above);
    name it with `banlieue_provider_sdk::naming::workload_name`, and grant
    your identity that Lease alone, never Leases cluster-wide.
-3. Ship a container image and a Kustomize manifest.
+3. Add an `InfraKind` variant and its builder to `banlieue-controller`, which
+   turns a scheduled `VirtualMachine` into your CR and mirrors its status
+   back.
+4. Add a `ProviderClass` for it, and the binary or image the operator runs.
 
-That's it. No registration with the banlieue project. No code changes to
-`banlieue-api`. No coordination with the main controller team. The whole point
-of the [CRD-only contract](../reasoning/crd-only-contract.md) is that you
-*don't have to be us* to add a provider.
+What stays true is the user-facing half: no existing `VirtualMachine` changes
+shape, and a user moves to the new backend by changing a selector. Opening
+the controller to kinds it was not built with (a generic builder that needs
+no change to banlieue) would be its own decision, recorded in an ADR; none
+exists yet.

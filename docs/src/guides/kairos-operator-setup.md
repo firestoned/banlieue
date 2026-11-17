@@ -14,6 +14,18 @@ third-party operator your cluster depends on.
 ## Prerequisites
 
 - A Kubernetes cluster with `kubectl` context pointed at it.
+- A **default StorageClass**, in place before the first `OSArtifact` is
+  created. kairos-operator creates each build's PVC without a
+  `storageClassName`, so a PVC created before a default exists can never
+  bind, and its `OSArtifact` hangs.
+
+!!! tip "Or let the script do it"
+    `scripts/bootstrap-kairos-operator.sh all` installs a default
+    StorageClass (Rancher's local-path-provisioner; `INSTALL_STORAGE=false`
+    skips it), then the operator, then runs the smoke test below, in that
+    order. It acts on whatever `KUBECONFIG` you have exported. Pin the
+    operator as the warning below says, through `KAIROS_OPERATOR_REF`
+    (a `config/default?ref=<release-tag>` URL).
 
 !!! info "No cert-manager or Helm chart required"
     Unlike some operators, the Kairos operator's own installation docs do not
