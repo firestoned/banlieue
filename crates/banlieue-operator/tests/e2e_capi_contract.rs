@@ -38,9 +38,7 @@
 mod e2e_common;
 
 use banlieue_api::infrastructure::{VSphereCluster, VSphereMachine};
-use k8s_openapi::api::core::v1::Namespace;
 use k8s_openapi::api::rbac::v1::ClusterRole;
-use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use kube::api::{
     ApiResource, DeleteParams, DynamicObject, GroupVersionKind, ListParams, Patch, PatchParams,
     PostParams,
@@ -48,7 +46,7 @@ use kube::api::{
 use kube::{Api, Client};
 use serde_json::{Value, json};
 
-use e2e_common::{client, wait_for, wait_until_gone};
+use e2e_common::{client, fresh_namespace, wait_for, wait_until_gone};
 
 /// Namespace the suite works in, recreated on every run.
 const NAMESPACE: &str = "banlieue-capi-e2e";
@@ -113,28 +111,6 @@ async fn wait_for_machine(
         }
     })
     .await
-}
-
-/// Delete the namespace from a previous run and create it afresh.
-async fn fresh_namespace(client: &Client) {
-    let namespaces: Api<Namespace> = Api::all(client.clone());
-    let _ = namespaces.delete(NAMESPACE, &DeleteParams::default()).await;
-    wait_until_gone("the previous run's namespace to be deleted", || {
-        let api = namespaces.clone();
-        async move { matches!(api.get_opt(NAMESPACE).await, Ok(None)) }
-    })
-    .await;
-    let ns = Namespace {
-        metadata: ObjectMeta {
-            name: Some(NAMESPACE.to_string()),
-            ..Default::default()
-        },
-        ..Default::default()
-    };
-    namespaces
-        .create(&PostParams::default(), &ns)
-        .await
-        .expect("creating the e2e namespace");
 }
 
 /// The aggregation actually happened: CAPI's aggregated manager role now
@@ -215,7 +191,7 @@ async fn capi_manager_aggregates_only_the_infrastructure_role() {
 #[ignore = "requires a clusterctl-initialised cluster; run `make kind-e2e-capi`"]
 async fn capi_drives_banlieue_infrastructure_objects_through_the_v1beta2_contract() {
     let client = client().await;
-    fresh_namespace(&client).await;
+    fresh_namespace(&client, NAMESPACE, &[]).await;
 
     let clusters = capi_api(&client, "Cluster", "clusters");
     let machines = capi_api(&client, "Machine", "machines");

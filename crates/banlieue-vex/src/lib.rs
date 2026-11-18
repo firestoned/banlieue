@@ -15,7 +15,9 @@
 //!   library symbols are all absent from the release binary's dynamic
 //!   symbol-import table.
 //!
-//! All I/O lives in `src/bin/`; the modules are pure and exhaustively tested.
+//! The binaries in `src/bin/` only parse flags and report; the file I/O they
+//! share is in [`cli`], and the derivation modules are exhaustively tested.
 
 pub mod auto_vex_presence;
 pub mod auto_vex_reachability;
+pub mod cli;

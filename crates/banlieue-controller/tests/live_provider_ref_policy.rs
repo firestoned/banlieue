@@ -29,6 +29,8 @@
 //! Needs an identity that may impersonate and manage RBAC (cluster-admin). Run
 //! it against a scratch cluster.
 
+mod common;
+
 use banlieue_api::banlieue::Provider;
 use banlieue_api::infrastructure::{VSphereMachine, VSphereMachineTemplate};
 use k8s_openapi::api::rbac::v1::{ClusterRole, ClusterRoleBinding};
@@ -36,9 +38,10 @@ use kube::Client;
 use kube::api::{Api, DeleteParams, Patch, PatchParams, PostParams};
 use serde_json::{Value, json};
 
+use common::{admin, as_master, impersonating, verdict};
+
 const PLATFORM_NAMESPACE: &str = "banlieue-system";
 const TENANT_NAMESPACE: &str = "banlieue-policy-test";
-const PRIVILEGED_GROUP: &str = "system:masters";
 const CONTROLLER: &str = "system:serviceaccount:banlieue-system:banlieue-controller";
 /// The shared vSphere provider's identity: the operator names each after its Provider.
 const PROVIDER: &str = "system:serviceaccount:banlieue-system:banlieue-provider-vsphere-vcenter";
@@ -50,25 +53,6 @@ const DELEGATE: &str = "policy-test-delegate";
 /// A principal that also holds `providers/namespaceselector` `update`.
 const PLATFORM_ADMIN: &str = "policy-test-platform-admin";
 const DELEGATE_ROLE: &str = "policy-test-provider-writer";
-
-async fn client(user: &str, groups: Vec<String>) -> Client {
-    let mut config = kube::Config::infer()
-        .await
-        .expect("kubeconfig: set KUBECONFIG");
-    config.auth_info.impersonate = Some(user.to_string());
-    config.auth_info.impersonate_groups = Some(groups);
-    Client::try_from(config).expect("client")
-}
-
-async fn admin() -> Client {
-    Client::try_default()
-        .await
-        .expect("kubeconfig: set KUBECONFIG")
-}
-
-async fn as_master(user: &str) -> Client {
-    client(user, vec![PRIVILEGED_GROUP.to_string()]).await
-}
 
 fn machine_spec(provider_ref: &Value) -> Value {
     json!({
@@ -111,17 +95,6 @@ fn foreign() -> Value {
 
 fn local() -> Value {
     json!({ "name": "vcenter" })
-}
-
-fn verdict<T>(r: Result<T, kube::Error>, what: &str) -> bool {
-    match r {
-        Ok(_) => true,
-        Err(kube::Error::Api(e)) if e.code == 422 || e.code == 403 => {
-            eprintln!("    {what}: denied: {}", e.message);
-            false
-        }
-        Err(e) => panic!("{what}: unexpected error: {e}"),
-    }
 }
 
 async fn may_create_machine(user: &str, provider_ref: Value) -> bool {
@@ -328,7 +301,7 @@ async fn revoke(admin: &Client) {
 async fn may_create_provider(user: &str, selector: Option<Value>) -> bool {
     // No `system:masters`: this policy asks the authorizer about the caller.
     let api: Api<Provider> = Api::namespaced(
-        client(user, vec!["system:authenticated".to_string()]).await,
+        impersonating(user, vec!["system:authenticated".to_string()]).await,
         TENANT_NAMESPACE,
     );
     let params = PostParams {

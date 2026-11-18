@@ -38,16 +38,18 @@
 //! previous runs persist until their `VMImage` is deleted.
 
 use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use banlieue_api::banlieue::{
     Architecture, GuestAgent, ImageSourceKind, Provider, VMImage, VMImageSpec,
 };
-use banlieue_libvirt::{DEFAULT_TLS_PORT, TlsIdentity, connect_open, connect_tls};
 use k8s_openapi::api::batch::v1::Job;
 use kube::api::{Api, DeleteParams, ListParams, ObjectMeta, PostParams};
 use kube::{Client, ResourceExt};
+
+mod common;
+use common::{libvirt_settings, load_identity, open_session};
 
 /// The build pulls an OCI image and writes a multi-gigabyte disk; on a homelab
 /// host that is minutes, not seconds.
@@ -62,28 +64,6 @@ const IMAGE_NAME: &str = "e2e-import-pipeline";
 
 fn provider_name() -> Option<String> {
     std::env::var("BANLIEUE_E2E_PROVIDER").ok()
-}
-
-fn libvirt_settings() -> Option<(String, PathBuf)> {
-    let host = std::env::var("LIBVIRT_HOST").ok()?;
-    let dir = std::env::var("LIBVIRT_TLS_DIR").ok()?;
-    let dir = match (dir.strip_prefix("~/"), std::env::var("HOME")) {
-        (Some(rest), Ok(home)) => format!("{home}/{rest}"),
-        _ => dir,
-    };
-    Some((host, PathBuf::from(dir)))
-}
-
-fn load_identity(dir: &Path) -> TlsIdentity {
-    let read = |name: &str| {
-        std::fs::read(dir.join(name))
-            .unwrap_or_else(|e| panic!("reading {}/{name}: {e}", dir.display()))
-    };
-    TlsIdentity {
-        ca_pem: read("ca.pem"),
-        client_cert_pem: read("client-cert.pem"),
-        client_key_pem: read("client-key.pem"),
-    }
 }
 
 async fn client() -> Client {
@@ -168,12 +148,7 @@ fn discovered_pools(provider: &Provider) -> BTreeSet<String> {
 
 async fn volumes_in_pool(host: &str, dir: &Path, pool_name: &str) -> Vec<String> {
     let identity = load_identity(dir);
-    let mut session = connect_tls(host, DEFAULT_TLS_PORT, &identity)
-        .await
-        .expect("TLS to libvirt host");
-    connect_open(&mut session, Some("qemu:///system"), false)
-        .await
-        .expect("CONNECT_OPEN");
+    let mut session = open_session(host, &identity).await;
     let pool = banlieue_libvirt::list_all_storage_pools(&mut session)
         .await
         .expect("listing pools")

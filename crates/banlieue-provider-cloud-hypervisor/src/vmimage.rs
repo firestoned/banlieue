@@ -34,8 +34,9 @@ use banlieue_api::banlieue::{
 };
 use banlieue_oci::Reference;
 use banlieue_oci::reference::{SHA256_PREFIX, require_digest};
-use banlieue_provider_sdk::reconciler::{requeue_default, requeue_long, requeue_on_error};
-use kube::api::{Api, ListParams, Patch, PatchParams};
+use banlieue_provider_sdk::reconciler::{requeue_default, requeue_long};
+use banlieue_provider_sdk::ssa::apply_status;
+use kube::api::{Api, ListParams};
 use kube::runtime::controller::Action;
 use kube::{Resource, ResourceExt};
 use serde_json::json;
@@ -43,7 +44,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::SystemTime;
-use tracing::{info, warn};
+use tracing::info;
 
 /// `ImageSource.providerClass` this provider serves.
 pub const PROVIDER_CLASS: &str = "cloud-hypervisor";
@@ -636,12 +637,7 @@ async fn url_row(image: &VMImage, ctx: &Context) -> Result<ImagePerProviderStatu
 async fn patch_row(ctx: &Context, name: &str, row: &ImagePerProviderStatus) -> Result<()> {
     // Only our row: other fields of status belong to the imagebuilder and
     // the controller (ADR-0010, ADR-0015).
-    let patch = json!({
-        "apiVersion": VMImage::api_version(&()).to_string(),
-        "kind": VMImage::kind(&()).to_string(),
-        "metadata": { "name": name },
-        "status": { "perProvider": [row] },
-    });
+    let status = json!({ "perProvider": [row] });
     let api: Api<VMImage> = Api::all(ctx.client.clone());
     // Scoped to this host's Provider, and deliberately NOT forced
     // (ADR-0087). `perProvider` is merge-keyed, so this host owns only its own
@@ -649,20 +645,8 @@ async fn patch_row(ctx: &Context, name: &str, row: &ImagePerProviderStatus) -> R
     // is a defect that must surface rather than be steamrolled. Forcing under a
     // class-wide manager is what erased every other host's row and produced a
     // permanent write loop.
-    api.patch_status(
-        name,
-        &PatchParams::apply(&ctx.config.field_manager()),
-        &Patch::Apply(&patch),
-    )
-    .await
-    .map_err(Error::from)?;
+    apply_status(&api, name, &ctx.config.field_manager(), &status, false).await?;
     Ok(())
-}
-
-/// Requeue after a reconcile error.
-pub fn error_policy(_i: Arc<VMImage>, e: &Error, _ctx: Arc<Context>) -> Action {
-    warn!(error = %e, "VMImage reconcile error");
-    requeue_on_error()
 }
 
 #[cfg(test)]

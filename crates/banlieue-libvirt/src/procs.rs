@@ -34,10 +34,9 @@ use crate::rpc::{
     PROC_STORAGE_VOL_DELETE, PROC_STORAGE_VOL_LOOKUP_BY_NAME, PROC_STORAGE_VOL_UPLOAD,
     STREAM_CHUNK_MAX,
 };
-use crate::transport::{Result, Session, TransportError};
+use crate::transport::{Io, Result, Session, TransportError};
 use crate::xdr::{Decoder, Encoder};
-use tokio::io::AsyncReadExt;
-use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::io::{AsyncRead, AsyncReadExt};
 use tracing::instrument;
 
 /// `VIR_UUID_BUFLEN` — libvirt UUIDs are a fixed 16 raw bytes on the wire,
@@ -93,6 +92,23 @@ pub struct StoragePool {
     pub uuid: [u8; UUID_LEN],
 }
 
+impl StoragePool {
+    /// Encode as `remote_nonnull_storage_pool`: the name, then the raw
+    /// 16-byte uuid, with no trailing id (unlike the domain handle).
+    fn encode(&self, e: &mut Encoder) {
+        e.write_string(&self.name);
+        e.write_opaque_fixed(&self.uuid);
+    }
+
+    /// Decode a `remote_nonnull_storage_pool`.
+    fn decode(d: &mut Decoder<'_>) -> Result<Self> {
+        Ok(Self {
+            name: d.read_string()?.to_string(),
+            uuid: read_uuid(d)?,
+        })
+    }
+}
+
 /// A network as returned by `CONNECT_LIST_ALL_NETWORKS`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Network {
@@ -108,13 +124,7 @@ pub struct Network {
 /// followed by the string only when `Some`.
 pub fn encode_connect_open_args(uri: Option<&str>, flags: u32) -> Vec<u8> {
     let mut e = Encoder::new();
-    match uri {
-        Some(u) => {
-            e.write_bool(true);
-            e.write_string(u);
-        }
-        None => e.write_bool(false),
-    }
+    write_optional_string(&mut e, uri);
     e.write_u32(flags);
     e.into_bytes()
 }
@@ -145,6 +155,31 @@ fn read_checked_count(d: &mut Decoder<'_>, max: usize, what: &'static str) -> Re
     Ok(count)
 }
 
+/// Read a counted array: the count, checked against `max`, then that many
+/// elements, each decoded by `item`.
+fn read_list<'a, T>(
+    d: &mut Decoder<'a>,
+    max: usize,
+    what: &'static str,
+    mut item: impl FnMut(&mut Decoder<'a>) -> Result<T>,
+) -> Result<Vec<T>> {
+    let count = read_checked_count(d, max, what)?;
+    let mut items = Vec::with_capacity(count);
+    for _ in 0..count {
+        items.push(item(d)?);
+    }
+    Ok(items)
+}
+
+/// Write a pointer-typed string (`remote_string`): a boolean, then the value
+/// only when there is one.
+fn write_optional_string(e: &mut Encoder, value: Option<&str>) {
+    e.write_bool(value.is_some());
+    if let Some(v) = value {
+        e.write_string(v);
+    }
+}
+
 /// Read a fixed 16-byte UUID.
 fn read_uuid(d: &mut Decoder<'_>) -> Result<[u8; UUID_LEN]> {
     let bytes = d.read_opaque_fixed(UUID_LEN)?;
@@ -160,41 +195,32 @@ fn read_uuid(d: &mut Decoder<'_>) -> Result<[u8; UUID_LEN]> {
 /// array we actually received.
 pub fn decode_storage_pools(payload: &[u8]) -> Result<Vec<StoragePool>> {
     let mut d = Decoder::new(payload);
-    let count = read_checked_count(&mut d, STORAGE_POOL_LIST_MAX, "storage pool")?;
-    let mut pools = Vec::with_capacity(count);
-    for _ in 0..count {
-        pools.push(StoragePool {
-            name: d.read_string()?.to_string(),
-            uuid: read_uuid(&mut d)?,
-        });
-    }
-    Ok(pools)
+    read_list(
+        &mut d,
+        STORAGE_POOL_LIST_MAX,
+        "storage pool",
+        StoragePool::decode,
+    )
 }
 
 /// Decode `remote_connect_list_all_networks_ret`. Same shape as
 /// [`decode_storage_pools`].
 pub fn decode_networks(payload: &[u8]) -> Result<Vec<Network>> {
     let mut d = Decoder::new(payload);
-    let count = read_checked_count(&mut d, NETWORK_LIST_MAX, "network")?;
-    let mut nets = Vec::with_capacity(count);
-    for _ in 0..count {
-        nets.push(Network {
+    read_list(&mut d, NETWORK_LIST_MAX, "network", |d| {
+        Ok(Network {
             name: d.read_string()?.to_string(),
-            uuid: read_uuid(&mut d)?,
-        });
-    }
-    Ok(nets)
+            uuid: read_uuid(d)?,
+        })
+    })
 }
 
 /// Decode `remote_auth_list_ret { remote_auth_type types<>; }`.
 pub fn decode_auth_list(payload: &[u8]) -> Result<Vec<AuthType>> {
     let mut d = Decoder::new(payload);
-    let count = read_checked_count(&mut d, AUTH_TYPE_LIST_MAX, "auth type")?;
-    let mut types = Vec::with_capacity(count);
-    for _ in 0..count {
-        types.push(AuthType::from_wire(d.read_i32()?));
-    }
-    Ok(types)
+    read_list(&mut d, AUTH_TYPE_LIST_MAX, "auth type", |d| {
+        Ok(AuthType::from_wire(d.read_i32()?))
+    })
 }
 
 /// Ask libvirtd which authentication mechanisms it requires.
@@ -204,10 +230,7 @@ pub fn decode_auth_list(payload: &[u8]) -> Result<Vec<AuthType>> {
 /// # Errors
 /// Any [`TransportError`].
 #[instrument(name = "libvirt.auth_list", skip_all)]
-pub async fn auth_list<S>(session: &mut Session<S>) -> Result<Vec<AuthType>>
-where
-    S: AsyncRead + AsyncWrite + Unpin,
-{
+pub async fn auth_list<S: Io>(session: &mut Session<S>) -> Result<Vec<AuthType>> {
     let body = session.call(PROC_AUTH_LIST, &[]).await?;
     decode_auth_list(&body)
 }
@@ -232,14 +255,11 @@ where
 /// `auth_tls="none"` the client certificate is already the credential), plus
 /// any other [`TransportError`].
 #[instrument(name = "libvirt.connect_open", skip_all, fields(read_only))]
-pub async fn connect_open<S>(
+pub async fn connect_open<S: Io>(
     session: &mut Session<S>,
     uri: Option<&str>,
     read_only: bool,
-) -> Result<()>
-where
-    S: AsyncRead + AsyncWrite + Unpin,
-{
+) -> Result<()> {
     let offered = auth_list(session).await?;
     if !offered.contains(&AuthType::None) {
         return Err(TransportError::Protocol {
@@ -261,10 +281,7 @@ where
 /// # Errors
 /// Any [`TransportError`].
 #[instrument(name = "libvirt.list_all_storage_pools", skip_all)]
-pub async fn list_all_storage_pools<S>(session: &mut Session<S>) -> Result<Vec<StoragePool>>
-where
-    S: AsyncRead + AsyncWrite + Unpin,
-{
+pub async fn list_all_storage_pools<S: Io>(session: &mut Session<S>) -> Result<Vec<StoragePool>> {
     // need_results=true, flags=0 (no filtering: banlieue verifies the
     // admin-declared pools against the full list itself).
     let args = encode_list_all_args(true, 0);
@@ -279,10 +296,7 @@ where
 /// # Errors
 /// Any [`TransportError`].
 #[instrument(name = "libvirt.list_all_networks", skip_all)]
-pub async fn list_all_networks<S>(session: &mut Session<S>) -> Result<Vec<Network>>
-where
-    S: AsyncRead + AsyncWrite + Unpin,
-{
+pub async fn list_all_networks<S: Io>(session: &mut Session<S>) -> Result<Vec<Network>> {
     let args = encode_list_all_args(true, 0);
     let body = session.call(PROC_CONNECT_LIST_ALL_NETWORKS, &args).await?;
     decode_networks(&body)
@@ -504,18 +518,13 @@ pub fn raw_volume_xml(name: &str, capacity_bytes: u64) -> String {
 /// Any [`TransportError`]; a `Remote` error typically means the volume already
 /// exists or the pool is inactive.
 #[instrument(name = "libvirt.storage_vol_create_xml", skip_all, fields(pool = %pool.name))]
-pub async fn storage_vol_create_xml<S>(
+pub async fn storage_vol_create_xml<S: Io>(
     session: &mut Session<S>,
     pool: &StoragePool,
     xml: &str,
-) -> Result<StorageVol>
-where
-    S: AsyncRead + AsyncWrite + Unpin,
-{
+) -> Result<StorageVol> {
     let mut e = Encoder::new();
-    // remote_nonnull_storage_pool: name then the raw 16-byte uuid.
-    e.write_string(&pool.name);
-    e.write_opaque_fixed(&pool.uuid);
+    pool.encode(&mut e);
     e.write_string(xml);
     e.write_u32(0); // flags
     let body = session
@@ -534,8 +543,7 @@ pub fn encode_storage_vol_create_xml_from_args(
     source: &StorageVol,
 ) -> Vec<u8> {
     let mut e = Encoder::new();
-    e.write_string(&pool.name);
-    e.write_opaque_fixed(&pool.uuid);
+    pool.encode(&mut e);
     e.write_string(xml);
     source.encode(&mut e);
     e.write_u32(0); // flags
@@ -555,15 +563,12 @@ pub fn encode_storage_vol_create_xml_from_args(
 /// already exists, the source is in use by a running domain, or the pool is
 /// inactive.
 #[instrument(name = "libvirt.storage_vol_create_xml_from", skip_all, fields(pool = %pool.name, source = %source.name))]
-pub async fn storage_vol_create_xml_from<S>(
+pub async fn storage_vol_create_xml_from<S: Io>(
     session: &mut Session<S>,
     pool: &StoragePool,
     xml: &str,
     source: &StorageVol,
-) -> Result<StorageVol>
-where
-    S: AsyncRead + AsyncWrite + Unpin,
-{
+) -> Result<StorageVol> {
     let args = encode_storage_vol_create_xml_from_args(pool, xml, source);
     let body = session
         .call(PROC_STORAGE_VOL_CREATE_XML_FROM, &args)
@@ -598,7 +603,7 @@ pub async fn storage_vol_upload<S, R>(
     length: u64,
 ) -> Result<()>
 where
-    S: AsyncRead + AsyncWrite + Unpin,
+    S: Io,
     R: AsyncRead + Unpin,
 {
     let mut e = Encoder::new();
@@ -642,28 +647,24 @@ where
 /// # Errors
 /// Any [`TransportError`].
 #[instrument(name = "libvirt.storage_pool_list_all_volumes", skip_all, fields(pool = %pool.name))]
-pub async fn storage_pool_list_all_volumes<S>(
+pub async fn storage_pool_list_all_volumes<S: Io>(
     session: &mut Session<S>,
     pool: &StoragePool,
-) -> Result<Vec<StorageVol>>
-where
-    S: AsyncRead + AsyncWrite + Unpin,
-{
+) -> Result<Vec<StorageVol>> {
     let mut e = Encoder::new();
-    e.write_string(&pool.name);
-    e.write_opaque_fixed(&pool.uuid);
+    pool.encode(&mut e);
     e.write_i32(1); // need_results
     e.write_u32(0); // flags
     let body = session
         .call(PROC_STORAGE_POOL_LIST_ALL_VOLUMES, &e.into_bytes())
         .await?;
     let mut d = Decoder::new(&body);
-    let count = read_checked_count(&mut d, STORAGE_VOL_LIST_MAX, "storage volume")?;
-    let mut vols = Vec::with_capacity(count);
-    for _ in 0..count {
-        vols.push(StorageVol::decode(&mut d)?);
-    }
-    Ok(vols)
+    read_list(
+        &mut d,
+        STORAGE_VOL_LIST_MAX,
+        "storage volume",
+        StorageVol::decode,
+    )
 }
 
 /// Encode `remote_storage_pool_lookup_by_name_args { string name; }`.
@@ -678,10 +679,8 @@ pub fn encode_storage_pool_lookup_by_name_args(name: &str) -> Vec<u8> {
 #[must_use]
 pub fn encode_storage_vol_lookup_by_name_args(pool: &StoragePool, name: &str) -> Vec<u8> {
     let mut e = Encoder::new();
-    // `remote_nonnull_storage_pool` is name + uuid, with no trailing id —
-    // unlike the domain handle. An extra field here shifts `name`.
-    e.write_string(&pool.name);
-    e.write_opaque_fixed(&pool.uuid);
+    // The pool handle has no trailing id: an extra field here shifts `name`.
+    pool.encode(&mut e);
     e.write_string(name);
     e.into_bytes()
 }
@@ -699,8 +698,7 @@ pub fn encode_storage_vol_delete_args(vol: &StorageVol) -> Vec<u8> {
 #[must_use]
 pub fn encode_storage_pool_refresh_args(pool: &StoragePool) -> Vec<u8> {
     let mut e = Encoder::new();
-    e.write_string(&pool.name);
-    e.write_opaque_fixed(&pool.uuid);
+    pool.encode(&mut e);
     e.write_u32(0);
     e.into_bytes()
 }
@@ -710,11 +708,7 @@ pub fn encode_storage_pool_refresh_args(pool: &StoragePool) -> Vec<u8> {
 /// # Errors
 /// [`TransportError::Protocol`] if the payload is short or malformed.
 pub fn decode_storage_pool_ret(body: &[u8]) -> Result<StoragePool> {
-    let mut d = Decoder::new(body);
-    let name = d.read_string()?.to_string();
-    let mut uuid = [0u8; UUID_LEN];
-    uuid.copy_from_slice(d.read_opaque_fixed(UUID_LEN)?);
-    Ok(StoragePool { name, uuid })
+    StoragePool::decode(&mut Decoder::new(body))
 }
 
 /// Decode a reply whose whole body is one `remote_nonnull_storage_vol`.
@@ -731,13 +725,10 @@ pub fn decode_storage_vol_ret(body: &[u8]) -> Result<StorageVol> {
 /// # Errors
 /// Any [`TransportError`]; a `Remote` error means no such pool.
 #[instrument(name = "libvirt.storage_pool_lookup_by_name", skip_all, fields(pool = %name))]
-pub async fn storage_pool_lookup_by_name<S>(
+pub async fn storage_pool_lookup_by_name<S: Io>(
     session: &mut Session<S>,
     name: &str,
-) -> Result<StoragePool>
-where
-    S: AsyncRead + AsyncWrite + Unpin,
-{
+) -> Result<StoragePool> {
     let args = encode_storage_pool_lookup_by_name_args(name);
     let body = session
         .call(PROC_STORAGE_POOL_LOOKUP_BY_NAME, &args)
@@ -755,14 +746,11 @@ where
 /// Any [`TransportError`]; a `Remote` error means no such volume, which is
 /// how a caller tests for existence.
 #[instrument(name = "libvirt.storage_vol_lookup_by_name", skip_all, fields(pool = %pool.name, volume = %name))]
-pub async fn storage_vol_lookup_by_name<S>(
+pub async fn storage_vol_lookup_by_name<S: Io>(
     session: &mut Session<S>,
     pool: &StoragePool,
     name: &str,
-) -> Result<StorageVol>
-where
-    S: AsyncRead + AsyncWrite + Unpin,
-{
+) -> Result<StorageVol> {
     let args = encode_storage_vol_lookup_by_name_args(pool, name);
     let body = session.call(PROC_STORAGE_VOL_LOOKUP_BY_NAME, &args).await?;
     decode_storage_vol_ret(&body)
@@ -773,10 +761,7 @@ where
 /// # Errors
 /// Any [`TransportError`]; a `Remote` error if the volume is gone already.
 #[instrument(name = "libvirt.storage_vol_delete", skip_all, fields(pool = %vol.pool, volume = %vol.name))]
-pub async fn storage_vol_delete<S>(session: &mut Session<S>, vol: &StorageVol) -> Result<()>
-where
-    S: AsyncRead + AsyncWrite + Unpin,
-{
+pub async fn storage_vol_delete<S: Io>(session: &mut Session<S>, vol: &StorageVol) -> Result<()> {
     let args = encode_storage_vol_delete_args(vol);
     session.call(PROC_STORAGE_VOL_DELETE, &args).await?;
     Ok(())
@@ -791,10 +776,10 @@ where
 /// # Errors
 /// Any [`TransportError`].
 #[instrument(name = "libvirt.storage_pool_refresh", skip_all, fields(pool = %pool.name))]
-pub async fn storage_pool_refresh<S>(session: &mut Session<S>, pool: &StoragePool) -> Result<()>
-where
-    S: AsyncRead + AsyncWrite + Unpin,
-{
+pub async fn storage_pool_refresh<S: Io>(
+    session: &mut Session<S>,
+    pool: &StoragePool,
+) -> Result<()> {
     let args = encode_storage_pool_refresh_args(pool);
     session.call(PROC_STORAGE_POOL_REFRESH, &args).await?;
     Ok(())
@@ -833,13 +818,7 @@ pub fn encode_network_get_dhcp_leases_args(net: &Network, mac: Option<&str>) -> 
     let mut e = Encoder::new();
     e.write_string(&net.name);
     e.write_opaque_fixed(&net.uuid);
-    match mac {
-        Some(m) => {
-            e.write_bool(true);
-            e.write_string(m);
-        }
-        None => e.write_bool(false),
-    }
+    write_optional_string(&mut e, mac);
     e.write_i32(1); // need_results
     e.write_u32(0); // flags
     e.into_bytes()
@@ -851,27 +830,24 @@ pub fn encode_network_get_dhcp_leases_args(net: &Network, mac: Option<&str>) -> 
 /// [`TransportError::Protocol`] on a short payload or an over-large count.
 pub fn decode_network_get_dhcp_leases_ret(body: &[u8]) -> Result<Vec<DhcpLease>> {
     let mut d = Decoder::new(body);
-    let count = read_checked_count(&mut d, NETWORK_DHCP_LEASES_MAX, "dhcp lease")?;
-    let mut out = Vec::with_capacity(count);
-    for _ in 0..count {
+    read_list(&mut d, NETWORK_DHCP_LEASES_MAX, "dhcp lease", |d| {
         let iface = d.read_string()?.to_string();
         let _expiry = d.read_i64()?;
         let _type = d.read_i32()?;
-        let mac = optional_string(&mut d)?;
-        let _iaid = optional_string(&mut d)?;
+        let mac = optional_string(d)?;
+        let _iaid = optional_string(d)?;
         let ipaddr = d.read_string()?.to_string();
         let prefix = d.read_u32()?;
-        let hostname = optional_string(&mut d)?;
-        let _clientid = optional_string(&mut d)?;
-        out.push(DhcpLease {
+        let hostname = optional_string(d)?;
+        let _clientid = optional_string(d)?;
+        Ok(DhcpLease {
             iface,
             ipaddr,
             prefix,
             mac,
             hostname,
-        });
-    }
-    Ok(out)
+        })
+    })
 }
 
 /// Read a `remote_string` — a pointer type, so a boolean then the value.
@@ -889,14 +865,11 @@ fn optional_string(d: &mut Decoder<'_>) -> Result<Option<String>> {
 /// Any [`TransportError`]; a `Remote` error if the network has no lease
 /// database, which is the case for a bridge rather than a managed network.
 #[instrument(name = "libvirt.network_get_dhcp_leases", skip_all, fields(network = %net.name))]
-pub async fn network_get_dhcp_leases<S>(
+pub async fn network_get_dhcp_leases<S: Io>(
     session: &mut Session<S>,
     net: &Network,
     mac: Option<&str>,
-) -> Result<Vec<DhcpLease>>
-where
-    S: AsyncRead + AsyncWrite + Unpin,
-{
+) -> Result<Vec<DhcpLease>> {
     let args = encode_network_get_dhcp_leases_args(net, mac);
     let body = session.call(PROC_NETWORK_GET_DHCP_LEASES, &args).await?;
     decode_network_get_dhcp_leases_ret(&body)
@@ -1016,12 +989,9 @@ impl Domain {
 
     /// Decode a `remote_nonnull_domain`.
     pub(crate) fn decode(d: &mut Decoder<'_>) -> Result<Self> {
-        let name = d.read_string()?.to_string();
-        let mut uuid = [0u8; UUID_LEN];
-        uuid.copy_from_slice(d.read_opaque_fixed(UUID_LEN)?);
         Ok(Self {
-            name,
-            uuid,
+            name: d.read_string()?.to_string(),
+            uuid: read_uuid(d)?,
             id: d.read_i32()?,
         })
     }
@@ -1148,11 +1118,7 @@ pub fn encode_domain_qemu_agent_command_args(
 /// [`TransportError::Protocol`] if the payload is not a well-formed
 /// optional string.
 pub fn decode_domain_qemu_agent_command_ret(payload: &[u8]) -> Result<Option<String>> {
-    let mut d = Decoder::new(payload);
-    if !d.read_bool()? {
-        return Ok(None);
-    }
-    Ok(Some(d.read_string()?.to_string()))
+    optional_string(&mut Decoder::new(payload))
 }
 
 /// Send one `qemu-guest-agent` command and return its raw JSON reply.
@@ -1167,15 +1133,12 @@ pub fn decode_domain_qemu_agent_command_ret(payload: &[u8]) -> Result<Option<Str
 /// surfaces as [`TransportError::Remote`] — which the caller should read as
 /// "not ready", not as a fault.
 #[instrument(name = "libvirt.domain_qemu_agent_command", skip_all, fields(domain = %dom.name))]
-pub async fn domain_qemu_agent_command<S>(
+pub async fn domain_qemu_agent_command<S: Io>(
     session: &mut Session<S>,
     dom: &Domain,
     cmd: &str,
     timeout: i32,
-) -> Result<Option<String>>
-where
-    S: AsyncRead + AsyncWrite + Unpin,
-{
+) -> Result<Option<String>> {
     let args = encode_domain_qemu_agent_command_args(dom, cmd, timeout, 0);
     let payload = session
         .call_on_program(
@@ -1289,33 +1252,24 @@ pub fn decode_domain_get_state_ret(body: &[u8]) -> Result<DomainState> {
 /// [`TransportError::Protocol`] on a short payload or an over-large count.
 pub fn decode_domain_interface_addresses_ret(body: &[u8]) -> Result<Vec<DomainInterface>> {
     let mut d = Decoder::new(body);
-    let count = read_checked_count(&mut d, DOMAIN_INTERFACE_MAX, "domain interface")?;
-    let mut ifaces = Vec::with_capacity(count);
-    for _ in 0..count {
+    read_list(&mut d, DOMAIN_INTERFACE_MAX, "domain interface", |d| {
         let name = d.read_string()?.to_string();
         // `remote_string hwaddr` is a pointer type: a boolean, then the
         // string only when that boolean is true.
-        let hwaddr = if d.read_bool()? {
-            Some(d.read_string()?.to_string())
-        } else {
-            None
-        };
-        let n_addrs = read_checked_count(&mut d, DOMAIN_IP_ADDR_MAX, "domain interface address")?;
-        let mut addrs = Vec::with_capacity(n_addrs);
-        for _ in 0..n_addrs {
-            addrs.push(DomainIpAddr {
+        let hwaddr = optional_string(d)?;
+        let addrs = read_list(d, DOMAIN_IP_ADDR_MAX, "domain interface address", |d| {
+            Ok(DomainIpAddr {
                 kind: d.read_i32()?,
                 addr: d.read_string()?.to_string(),
                 prefix: d.read_u32()?,
-            });
-        }
-        ifaces.push(DomainInterface {
+            })
+        })?;
+        Ok(DomainInterface {
             name,
             hwaddr,
             addrs,
-        });
-    }
-    Ok(ifaces)
+        })
+    })
 }
 
 /// Look up a domain by name.
@@ -1323,10 +1277,7 @@ pub fn decode_domain_interface_addresses_ret(body: &[u8]) -> Result<Vec<DomainIn
 /// # Errors
 /// Any [`TransportError`]; a `Remote` error means no such domain.
 #[instrument(name = "libvirt.domain_lookup_by_name", skip_all, fields(domain = %name))]
-pub async fn domain_lookup_by_name<S>(session: &mut Session<S>, name: &str) -> Result<Domain>
-where
-    S: AsyncRead + AsyncWrite + Unpin,
-{
+pub async fn domain_lookup_by_name<S: Io>(session: &mut Session<S>, name: &str) -> Result<Domain> {
     let args = encode_domain_lookup_by_name_args(name);
     let body = session.call(PROC_DOMAIN_LOOKUP_BY_NAME, &args).await?;
     decode_domain_ret(&body)
@@ -1341,10 +1292,7 @@ where
 /// # Errors
 /// Any [`TransportError`]; a `Remote` error typically means invalid XML.
 #[instrument(name = "libvirt.domain_define", skip_all)]
-pub async fn domain_define_xml<S>(session: &mut Session<S>, xml: &str) -> Result<Domain>
-where
-    S: AsyncRead + AsyncWrite + Unpin,
-{
+pub async fn domain_define_xml<S: Io>(session: &mut Session<S>, xml: &str) -> Result<Domain> {
     let args = encode_domain_define_xml_flags_args(xml, 0);
     let body = session.call(PROC_DOMAIN_DEFINE_XML_FLAGS, &args).await?;
     decode_domain_ret(&body)
@@ -1355,10 +1303,7 @@ where
 /// # Errors
 /// Any [`TransportError`]; a `Remote` error if the domain is already running.
 #[instrument(name = "libvirt.domain_create", skip_all, fields(domain = %dom.name))]
-pub async fn domain_create<S>(session: &mut Session<S>, dom: &Domain) -> Result<Domain>
-where
-    S: AsyncRead + AsyncWrite + Unpin,
-{
+pub async fn domain_create<S: Io>(session: &mut Session<S>, dom: &Domain) -> Result<Domain> {
     let args = encode_domain_flags_args(dom, 0);
     let body = session.call(PROC_DOMAIN_CREATE_WITH_FLAGS, &args).await?;
     decode_domain_ret(&body)
@@ -1369,10 +1314,7 @@ where
 /// # Errors
 /// Any [`TransportError`].
 #[instrument(name = "libvirt.domain_shutdown", skip_all, fields(domain = %dom.name))]
-pub async fn domain_shutdown<S>(session: &mut Session<S>, dom: &Domain) -> Result<()>
-where
-    S: AsyncRead + AsyncWrite + Unpin,
-{
+pub async fn domain_shutdown<S: Io>(session: &mut Session<S>, dom: &Domain) -> Result<()> {
     let args = encode_domain_args(dom);
     session.call(PROC_DOMAIN_SHUTDOWN, &args).await?;
     Ok(())
@@ -1383,10 +1325,7 @@ where
 /// # Errors
 /// Any [`TransportError`]; a `Remote` error if the domain is not running.
 #[instrument(name = "libvirt.domain_destroy", skip_all, fields(domain = %dom.name))]
-pub async fn domain_destroy<S>(session: &mut Session<S>, dom: &Domain) -> Result<()>
-where
-    S: AsyncRead + AsyncWrite + Unpin,
-{
+pub async fn domain_destroy<S: Io>(session: &mut Session<S>, dom: &Domain) -> Result<()> {
     let args = encode_domain_args(dom);
     session.call(PROC_DOMAIN_DESTROY, &args).await?;
     Ok(())
@@ -1403,10 +1342,7 @@ where
 /// Any [`TransportError`]; a `Remote` error if the domain is still running
 /// (call [`domain_destroy`] first).
 #[instrument(name = "libvirt.domain_undefine", skip_all, fields(domain = %dom.name))]
-pub async fn domain_undefine<S>(session: &mut Session<S>, dom: &Domain) -> Result<()>
-where
-    S: AsyncRead + AsyncWrite + Unpin,
-{
+pub async fn domain_undefine<S: Io>(session: &mut Session<S>, dom: &Domain) -> Result<()> {
     let args = encode_domain_flags_args(dom, DOMAIN_UNDEFINE_EPHEMERAL);
     session.call(PROC_DOMAIN_UNDEFINE_FLAGS, &args).await?;
     Ok(())
@@ -1431,15 +1367,12 @@ where
 /// in `xml`, or if the guest holds the tray locked (which is deliberately
 /// not forced — see [`DEVICE_MODIFY_FORCE`]).
 #[instrument(name = "libvirt.domain_update_device", skip_all, fields(domain = %dom.name))]
-pub async fn domain_update_device_flags<S>(
+pub async fn domain_update_device_flags<S: Io>(
     session: &mut Session<S>,
     dom: &Domain,
     xml: &str,
     flags: u32,
-) -> Result<()>
-where
-    S: AsyncRead + AsyncWrite + Unpin,
-{
+) -> Result<()> {
     let args = encode_domain_update_device_flags_args(dom, xml, flags);
     session.call(PROC_DOMAIN_UPDATE_DEVICE_FLAGS, &args).await?;
     Ok(())
@@ -1450,10 +1383,10 @@ where
 /// # Errors
 /// Any [`TransportError`].
 #[instrument(name = "libvirt.domain_get_state", skip_all, fields(domain = %dom.name))]
-pub async fn domain_get_state<S>(session: &mut Session<S>, dom: &Domain) -> Result<DomainState>
-where
-    S: AsyncRead + AsyncWrite + Unpin,
-{
+pub async fn domain_get_state<S: Io>(
+    session: &mut Session<S>,
+    dom: &Domain,
+) -> Result<DomainState> {
     let args = encode_domain_flags_args(dom, 0);
     let body = session.call(PROC_DOMAIN_GET_STATE, &args).await?;
     decode_domain_get_state_ret(&body)
@@ -1480,14 +1413,11 @@ pub fn decode_domain_get_xml_desc_ret(body: &[u8]) -> Result<String> {
 /// # Errors
 /// Any [`TransportError`]; a `Remote` error if the domain no longer exists.
 #[instrument(name = "libvirt.domain_get_xml_desc", skip_all, fields(domain = %dom.name))]
-pub async fn domain_get_xml_desc<S>(
+pub async fn domain_get_xml_desc<S: Io>(
     session: &mut Session<S>,
     dom: &Domain,
     flags: u32,
-) -> Result<String>
-where
-    S: AsyncRead + AsyncWrite + Unpin,
-{
+) -> Result<String> {
     let args = encode_domain_flags_args(dom, flags);
     let body = session.call(PROC_DOMAIN_GET_XML_DESC, &args).await?;
     decode_domain_get_xml_desc_ret(&body)
@@ -1504,14 +1434,11 @@ where
 /// Any [`TransportError`]; a `Remote` error when the source is unavailable
 /// (no guest agent, no lease file, domain not running).
 #[instrument(name = "libvirt.domain_interface_addresses", skip_all, fields(domain = %dom.name))]
-pub async fn domain_interface_addresses<S>(
+pub async fn domain_interface_addresses<S: Io>(
     session: &mut Session<S>,
     dom: &Domain,
     source: InterfaceAddressSource,
-) -> Result<Vec<DomainInterface>>
-where
-    S: AsyncRead + AsyncWrite + Unpin,
-{
+) -> Result<Vec<DomainInterface>> {
     let args = encode_domain_interface_addresses_args(dom, source, 0);
     let body = session.call(PROC_DOMAIN_INTERFACE_ADDRESSES, &args).await?;
     decode_domain_interface_addresses_ret(&body)
@@ -1595,12 +1522,9 @@ pub fn encode_node_get_memory_stats_args(nparams: i32) -> Vec<u8> {
 /// [`TransportError::Protocol`] on a short payload or an over-large count.
 pub fn decode_node_get_memory_stats_ret(body: &[u8]) -> Result<(Vec<(String, u64)>, i32)> {
     let mut d = Decoder::new(body);
-    let count = read_checked_count(&mut d, NODE_MEMORY_STATS_MAX, "node memory stat")?;
-    let mut params = Vec::with_capacity(count);
-    for _ in 0..count {
-        let field = d.read_string()?.to_string();
-        params.push((field, d.read_u64()?));
-    }
+    let params = read_list(&mut d, NODE_MEMORY_STATS_MAX, "node memory stat", |d| {
+        Ok((d.read_string()?.to_string(), d.read_u64()?))
+    })?;
     let nparams = d.read_i32()?;
     Ok((params, nparams))
 }
@@ -1620,8 +1544,7 @@ pub fn node_memory_available_mib(stats: &[(String, u64)]) -> Option<u64> {
 #[must_use]
 pub fn encode_storage_pool_get_info_args(pool: &StoragePool) -> Vec<u8> {
     let mut e = Encoder::new();
-    e.write_string(&pool.name);
-    e.write_opaque_fixed(&pool.uuid);
+    pool.encode(&mut e);
     e.into_bytes()
 }
 
@@ -1646,10 +1569,7 @@ pub fn decode_storage_pool_get_info_ret(body: &[u8]) -> Result<StoragePoolInfo> 
 /// # Errors
 /// Any [`TransportError`].
 #[instrument(name = "libvirt.node_get_info", skip_all)]
-pub async fn node_get_info<S>(session: &mut Session<S>) -> Result<NodeInfo>
-where
-    S: AsyncRead + AsyncWrite + Unpin,
-{
+pub async fn node_get_info<S: Io>(session: &mut Session<S>) -> Result<NodeInfo> {
     let body = session.call(PROC_NODE_GET_INFO, &[]).await?;
     decode_node_get_info_ret(&body)
 }
@@ -1661,10 +1581,7 @@ where
 /// # Errors
 /// Any [`TransportError`].
 #[instrument(name = "libvirt.node_get_memory_stats", skip_all)]
-pub async fn node_get_memory_stats<S>(session: &mut Session<S>) -> Result<Vec<(String, u64)>>
-where
-    S: AsyncRead + AsyncWrite + Unpin,
-{
+pub async fn node_get_memory_stats<S: Io>(session: &mut Session<S>) -> Result<Vec<(String, u64)>> {
     let body = session
         .call(
             PROC_NODE_GET_MEMORY_STATS,
@@ -1690,13 +1607,10 @@ where
 /// # Errors
 /// Any [`TransportError`].
 #[instrument(name = "libvirt.storage_pool_get_info", skip_all, fields(pool = %pool.name))]
-pub async fn storage_pool_get_info<S>(
+pub async fn storage_pool_get_info<S: Io>(
     session: &mut Session<S>,
     pool: &StoragePool,
-) -> Result<StoragePoolInfo>
-where
-    S: AsyncRead + AsyncWrite + Unpin,
-{
+) -> Result<StoragePoolInfo> {
     let body = session
         .call(
             PROC_STORAGE_POOL_GET_INFO,

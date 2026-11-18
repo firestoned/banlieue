@@ -6,10 +6,9 @@
 mod tests {
     use super::super::*;
     use crate::host_config::HostConfig;
-    use banlieue_api::common::{IpamSpec, PowerState, ProviderReference};
+    use crate::test_fixtures;
     use banlieue_api::infrastructure::{
-        ChBootSource, ChBootSourceKind, ChCpuSpec, ChMemorySpec, ChNicSpec,
-        CloudHypervisorMachineSpec,
+        ChBootSource, ChBootSourceKind, CloudHypervisorMachineSpec,
     };
     use std::collections::BTreeSet;
     use std::path::Path;
@@ -19,65 +18,23 @@ mod tests {
     const MACHINE_NAME: &str = "m1";
     const HOST_UID: u32 = 2_000_007;
 
+    /// The shared host, with the firmware path and the uid range these
+    /// tests assert on.
     fn config() -> HostConfig {
-        HostConfig::parse(
-            r#"
-[provider]
-name = "ch-a"
-namespace = "banlieue-system"
-kubeconfig = "/etc/banlieue/kubeconfig"
-[vmm]
-binary = "/usr/local/bin/cloud-hypervisor"
-version = "v53.0"
-firmware = "/opt/banlieue/firmware/ch-97eeb7b09/CLOUDHV.fd"
-[paths]
-run_root = "/run/banlieue/ch"
-state_root = "/var/lib/banlieue"
-[guests]
-uid_base = 2000000
-uid_count = 10000
-[storage_classes]
-fast = "/srv/banlieue/ch"
-[network_classes]
-lan = "br0"
-"#,
-        )
-        .unwrap()
+        let mut c = test_fixtures::config();
+        c.vmm.firmware = "/opt/banlieue/firmware/ch-97eeb7b09/CLOUDHV.fd".into();
+        c.guests.uid_count = 10000;
+        c
     }
 
+    /// The shared machine, with the memory, image and user-data these tests
+    /// assert on.
     fn spec() -> CloudHypervisorMachineSpec {
-        CloudHypervisorMachineSpec {
-            provider_id: None,
-            failure_domain: Some("ch-a".into()),
-            provider_ref: ProviderReference {
-                name: "ch-a".into(),
-                namespace: None,
-            },
-            cpus: ChCpuSpec { boot: 2, max: None },
-            memory: ChMemorySpec {
-                size_mi_b: 4096,
-                hugepages: false,
-            },
-            storage_class: "fast".into(),
-            boot_source: ChBootSource {
-                kind: ChBootSourceKind::Image,
-                image: "kairos-ubuntu-2404.raw".into(),
-            },
-            os_disk_size_gi_b: 20,
-            nics: vec![ChNicSpec {
-                name: "eth0".into(),
-                network_class: "lan".into(),
-                mac_address: None,
-                ipam: IpamSpec::default(),
-            }],
-            tpm_enabled: false,
-            user_data: Some("#cloud-config\n".into()),
-            desired_power_state: PowerState::PoweredOn,
-            first_boot_sealing: None,
-            identity: None,
-            move_in: None,
-            move_out: None,
-        }
+        let mut s = test_fixtures::spec();
+        s.memory.size_mi_b = 4096;
+        s.boot_source.image = "kairos-ubuntu-2404.raw".into();
+        s.user_data = Some("#cloud-config\n".into());
+        s
     }
 
     fn plan() -> MachinePlan {
@@ -452,21 +409,18 @@ lan = "br0"
         );
     }
 
-    fn tpm_config() -> HostConfig {
-        let mut c = config();
-        c.tpm = Some(crate::host_config::TpmSection {
-            swtpm: "/usr/bin/swtpm".into(),
-            swtpm_setup: "/usr/bin/swtpm_setup".into(),
-            setup_config: "/etc/banlieue/swtpm/swtpm_setup.conf".into(),
-            ek_ca_certificate: "/var/lib/banlieue/swtpm-localca/issuercert.pem".into(),
-        });
-        c
-    }
-
     fn tpm_plan() -> MachinePlan {
         let mut s = spec();
         s.tpm_enabled = true;
-        plan_machine(UID, MACHINE_NAME, "ch-a", &s, &tpm_config(), HOST_UID).unwrap()
+        plan_machine(
+            UID,
+            MACHINE_NAME,
+            "ch-a",
+            &s,
+            &test_fixtures::with_tpm(config()),
+            HOST_UID,
+        )
+        .unwrap()
     }
 
     /// A host without `[tpm]` never advertises `vtpm`, so a `tpmEnabled`

@@ -126,38 +126,44 @@ mod tests {
     // ------------------------------------------------------------------
 
     #[test]
-    fn a_single_address_is_a_range_of_one() {
-        let r = parse_address_pool_entry("192.0.2.40").unwrap();
-        assert_eq!(r.start, Ipv4Addr::new(192, 0, 2, 40));
-        assert_eq!(r.end, Ipv4Addr::new(192, 0, 2, 40));
-    }
-
-    #[test]
-    fn a_low_high_range_parses_both_ends() {
-        let r = parse_address_pool_entry("192.0.2.10-192.0.2.29").unwrap();
-        assert_eq!(r.start, Ipv4Addr::new(192, 0, 2, 10));
-        assert_eq!(r.end, Ipv4Addr::new(192, 0, 2, 29));
-    }
-
-    #[test]
-    fn a_cidr_expands_to_its_full_block_network_and_broadcast_included() {
-        let r = parse_address_pool_entry("192.0.2.4/30").unwrap();
-        assert_eq!(r.start, Ipv4Addr::new(192, 0, 2, 4));
-        assert_eq!(r.end, Ipv4Addr::new(192, 0, 2, 7));
-    }
-
-    #[test]
-    fn a_slash_32_cidr_is_a_single_address() {
-        let r = parse_address_pool_entry("192.0.2.9/32").unwrap();
-        assert_eq!(r.start, Ipv4Addr::new(192, 0, 2, 9));
-        assert_eq!(r.end, Ipv4Addr::new(192, 0, 2, 9));
-    }
-
-    #[test]
-    fn a_slash_0_cidr_covers_every_address() {
-        let r = parse_address_pool_entry("0.0.0.0/0").unwrap();
-        assert_eq!(r.start, Ipv4Addr::new(0, 0, 0, 0));
-        assert_eq!(r.end, Ipv4Addr::new(255, 255, 255, 255));
+    fn an_entry_parses_to_its_inclusive_range() {
+        let cases = [
+            (
+                "a single address is a range of one",
+                "192.0.2.40",
+                [192, 0, 2, 40],
+                [192, 0, 2, 40],
+            ),
+            (
+                "a low-high range parses both ends",
+                "192.0.2.10-192.0.2.29",
+                [192, 0, 2, 10],
+                [192, 0, 2, 29],
+            ),
+            (
+                "a CIDR expands to its full block, network and broadcast included",
+                "192.0.2.4/30",
+                [192, 0, 2, 4],
+                [192, 0, 2, 7],
+            ),
+            (
+                "a /32 CIDR is a single address",
+                "192.0.2.9/32",
+                [192, 0, 2, 9],
+                [192, 0, 2, 9],
+            ),
+            (
+                "a /0 CIDR covers every address",
+                "0.0.0.0/0",
+                [0, 0, 0, 0],
+                [255, 255, 255, 255],
+            ),
+        ];
+        for (case, entry, start, end) in cases {
+            let r = parse_address_pool_entry(entry).unwrap_or_else(|e| panic!("{case}: {e}"));
+            assert_eq!(r.start, Ipv4Addr::from(start), "{case}: start");
+            assert_eq!(r.end, Ipv4Addr::from(end), "{case}: end");
+        }
     }
 
     #[test]

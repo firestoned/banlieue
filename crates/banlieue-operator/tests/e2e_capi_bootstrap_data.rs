@@ -34,17 +34,16 @@ use banlieue_api::capi::{
 use banlieue_api::infrastructure::{CloudHypervisorMachine, CloudHypervisorMachineTemplate};
 use k8s_openapi::ByteString;
 use k8s_openapi::api::admissionregistration::v1::ValidatingAdmissionPolicy;
-use k8s_openapi::api::core::v1::{Namespace, Secret};
+use k8s_openapi::api::core::v1::Secret;
 use k8s_openapi::api::rbac::v1::{Role, RoleBinding};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Condition;
 use kube::api::{
-    ApiResource, DeleteParams, DynamicObject, GroupVersionKind, ListParams, Patch, PatchParams,
-    PostParams,
+    ApiResource, DynamicObject, GroupVersionKind, ListParams, Patch, PatchParams, PostParams,
 };
 use kube::{Api, Client, ResourceExt};
 use serde_json::{Value, json};
 
-use e2e_common::{client, wait_for, wait_until_gone};
+use e2e_common::{client, wait_for};
 
 const CAPI_GROUP: &str = "cluster.x-k8s.io";
 const CONTROL_PLANE_GROUP: &str = "controlplane.cluster.x-k8s.io";
@@ -134,26 +133,10 @@ async fn create(api: &Api<DynamicObject>, obj: &DynamicObject) {
         });
 }
 
-/// Delete `ns` if a previous run left it, then create it afresh, labelled so
-/// the controller serves it (`scripts/kind-capi-controller.sh` runs it with
-/// this selector; ADR-0130).
+/// Recreate `ns`, labelled so the controller serves it
+/// (`scripts/kind-capi-controller.sh` runs it with this selector; ADR-0130).
 async fn fresh_namespace(client: &Client, ns: &str) {
-    let namespaces: Api<Namespace> = Api::all(client.clone());
-    let _ = namespaces.delete(ns, &DeleteParams::default()).await;
-    wait_until_gone("the previous run's namespace to be deleted", || {
-        let api = namespaces.clone();
-        let ns = ns.to_string();
-        async move { matches!(api.get_opt(&ns).await, Ok(None)) }
-    })
-    .await;
-    let body: Namespace = serde_json::from_value(
-        json!({ "metadata": { "name": ns, "labels": { SERVED_LABEL: "true" } } }),
-    )
-    .expect("a Namespace");
-    namespaces
-        .create(&PostParams::default(), &body)
-        .await
-        .expect("creating the case's namespace");
+    e2e_common::fresh_namespace(client, ns, &[(SERVED_LABEL, "true")]).await;
 }
 
 /// The Role an administrator creates so the controller can read bootstrap

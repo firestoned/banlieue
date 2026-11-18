@@ -232,4 +232,89 @@ mod tests {
             FIELD_MANAGER_PROVIDER_VSPHERE
         );
     }
+
+    // ========================================================================
+    // status_patch / provider_id_patch: the apply bodies
+    // ========================================================================
+
+    use banlieue_api::banlieue::{Provider, ProviderStatus, VMImage};
+    use banlieue_api::infrastructure::LibvirtMachine;
+
+    const GENERATION: i64 = 7;
+
+    /// A whole status struct goes under `status`, beside the kind's own
+    /// `apiVersion` and `kind`, with no `metadata`.
+    #[test]
+    fn a_status_struct_is_wrapped_with_the_kinds_type_meta() {
+        let status = ProviderStatus {
+            observed_generation: Some(GENERATION),
+            ..ProviderStatus::default()
+        };
+        let patch = status_patch::<Provider, _>(&status).expect("serializes");
+        assert_eq!(
+            patch,
+            serde_json::json!({
+                "apiVersion": "banlieue.io/v1alpha1",
+                "kind": "Provider",
+                "status": { "observedGeneration": GENERATION },
+            })
+        );
+    }
+
+    /// A partial `Value` is passed through untouched: under server-side apply
+    /// the manager then owns exactly those fields.
+    #[test]
+    fn a_partial_value_is_passed_through_untouched() {
+        let partial = serde_json::json!({ "workload": { "ready": true } });
+        let patch = status_patch::<Provider, _>(&partial).expect("serializes");
+        assert_eq!(patch["status"], partial);
+        assert_eq!(patch["kind"], "Provider");
+        assert!(patch.get("metadata").is_none());
+    }
+
+    #[test]
+    fn the_type_meta_follows_the_kind() {
+        let empty = serde_json::json!({});
+        let machine = status_patch::<LibvirtMachine, _>(&empty).expect("serializes");
+        assert_eq!(machine["apiVersion"], "infrastructure.banlieue.io/v1alpha1");
+        assert_eq!(machine["kind"], "LibvirtMachine");
+        let image = status_patch::<VMImage, _>(&empty).expect("serializes");
+        assert_eq!(image["kind"], "VMImage");
+    }
+
+    /// Only `spec.providerID`: anything more and the provider's manager
+    /// would contend with the controller's ownership of the rest of spec.
+    #[test]
+    fn the_provider_id_patch_sets_that_field_alone() {
+        assert_eq!(
+            provider_id_patch::<LibvirtMachine>("libvirt://bar.foo.io/vm-a"),
+            serde_json::json!({
+                "apiVersion": "infrastructure.banlieue.io/v1alpha1",
+                "kind": "LibvirtMachine",
+                "spec": { "providerID": "libvirt://bar.foo.io/vm-a" },
+            })
+        );
+    }
+
+    // ========================================================================
+    // is_not_found
+    // ========================================================================
+
+    const HTTP_CONFLICT: u16 = 409;
+
+    fn api_error(code: u16) -> kube::Error {
+        kube::Error::Api(Box::new(
+            kube::core::Status::failure("nope", "Reason").with_code(code),
+        ))
+    }
+
+    #[test]
+    fn only_a_404_from_the_api_server_is_not_found() {
+        assert!(is_not_found(&api_error(HTTP_NOT_FOUND)));
+        assert!(!is_not_found(&api_error(HTTP_CONFLICT)));
+        let not_api = kube::Error::SerdeError(
+            serde_json::from_str::<u8>("not json").expect_err("invalid JSON"),
+        );
+        assert!(!is_not_found(&not_api));
+    }
 }

@@ -183,19 +183,7 @@ mod tests {
 
     #[test]
     fn happy_path_populates_every_required_vsphere_field() {
-        let raw = BTreeMap::from([
-            ("datacenter".to_string(), "dc1".to_string()),
-            ("cluster".to_string(), "cluster-a".to_string()),
-        ]);
-        let m = build_vsphere_machine(
-            &parent_vm(),
-            &parent_class(),
-            &parent_image(),
-            &decision_with_raw(raw),
-            &parent_provider(),
-            None,
-        )
-        .expect("ok");
+        let m = build(&parent_vm()).expect("ok");
 
         assert_eq!(m.metadata.name.as_deref(), Some("db-01"));
         assert_eq!(m.metadata.namespace.as_deref(), Some("banlieue-system"));
@@ -225,19 +213,24 @@ mod tests {
         ])
     }
 
-    /// A VM and its Provider in one namespace: the reference stays a bare name,
-    /// exactly as before ADR-0133, so nothing already placed is rewritten.
-    #[test]
-    fn a_provider_beside_the_vm_is_referenced_by_name_only() {
-        let m = build_vsphere_machine(
-            &parent_vm(),
+    /// [`build_vsphere_machine`] for `vm` with the default class, image,
+    /// provider and `raw_dc()` failure domain, and no user data.
+    fn build(vm: &VirtualMachine) -> Result<VSphereMachine, InfraBuildError> {
+        build_vsphere_machine(
+            vm,
             &parent_class(),
             &parent_image(),
             &decision_with_raw(raw_dc()),
             &parent_provider(),
             None,
         )
-        .expect("ok");
+    }
+
+    /// A VM and its Provider in one namespace: the reference stays a bare name,
+    /// exactly as before ADR-0133, so nothing already placed is rewritten.
+    #[test]
+    fn a_provider_beside_the_vm_is_referenced_by_name_only() {
+        let m = build(&parent_vm()).expect("ok");
         assert_eq!(m.spec.provider_ref.name, "vc1");
         assert_eq!(m.spec.provider_ref.namespace, None);
     }
@@ -248,15 +241,7 @@ mod tests {
     fn a_provider_in_another_namespace_is_named_with_its_namespace() {
         let mut vm = parent_vm();
         vm.metadata.namespace = Some("team-a".into());
-        let m = build_vsphere_machine(
-            &vm,
-            &parent_class(),
-            &parent_image(),
-            &decision_with_raw(raw_dc()),
-            &parent_provider(),
-            None,
-        )
-        .expect("ok");
+        let m = build(&vm).expect("ok");
         assert_eq!(m.metadata.namespace.as_deref(), Some("team-a"));
         assert_eq!(m.spec.provider_ref.name, "vc1");
         assert_eq!(
@@ -270,15 +255,7 @@ mod tests {
     fn a_machine_for_a_shared_provider_is_still_owned_by_its_vm() {
         let mut vm = parent_vm();
         vm.metadata.namespace = Some("team-a".into());
-        let m = build_vsphere_machine(
-            &vm,
-            &parent_class(),
-            &parent_image(),
-            &decision_with_raw(raw_dc()),
-            &parent_provider(),
-            None,
-        )
-        .expect("ok");
+        let m = build(&vm).expect("ok");
         let owners = m.metadata.owner_references.expect("owner");
         assert_eq!(owners.len(), 1);
         assert_eq!(owners[0].kind, "VirtualMachine");
@@ -287,17 +264,13 @@ mod tests {
 
     #[test]
     fn tpm_enabled_is_resolved_from_the_vm_class() {
-        let raw = BTreeMap::from([
-            ("datacenter".to_string(), "dc1".to_string()),
-            ("cluster".to_string(), "cluster-a".to_string()),
-        ]);
         let mut class = parent_class();
         class.spec.tpm_enabled = true;
         let m = build_vsphere_machine(
             &parent_vm(),
             &class,
             &parent_image(),
-            &decision_with_raw(raw),
+            &decision_with_raw(raw_dc()),
             &parent_provider(),
             None,
         )
@@ -313,10 +286,7 @@ mod tests {
     // machine can seal (the pairing check refuses the rest before this runs).
 
     fn sealing_raw() -> BTreeMap<String, String> {
-        BTreeMap::from([
-            ("datacenter".to_string(), "dc1".to_string()),
-            ("cluster".to_string(), "cluster-a".to_string()),
-        ])
+        raw_dc()
     }
 
     #[test]
@@ -375,19 +345,7 @@ mod tests {
 
     #[test]
     fn owner_reference_is_controller_and_blocks_owner_deletion() {
-        let raw = BTreeMap::from([
-            ("datacenter".to_string(), "dc1".to_string()),
-            ("cluster".to_string(), "cluster-a".to_string()),
-        ]);
-        let m = build_vsphere_machine(
-            &parent_vm(),
-            &parent_class(),
-            &parent_image(),
-            &decision_with_raw(raw),
-            &parent_provider(),
-            None,
-        )
-        .unwrap();
+        let m = build(&parent_vm()).unwrap();
         let owners = m.metadata.owner_references.expect("set");
         assert_eq!(owners.len(), 1);
         assert_eq!(owners[0].kind, "VirtualMachine");
@@ -435,10 +393,6 @@ mod tests {
 
     #[test]
     fn missing_image_resolved_ref_errors() {
-        let raw = BTreeMap::from([
-            ("datacenter".to_string(), "dc1".to_string()),
-            ("cluster".to_string(), "cluster-a".to_string()),
-        ]);
         let mut img = parent_image();
         if let Some(s) = img.status.as_mut() {
             s.per_provider[0].resolved_ref = None;
@@ -447,7 +401,7 @@ mod tests {
             &parent_vm(),
             &parent_class(),
             &img,
-            &decision_with_raw(raw),
+            &decision_with_raw(raw_dc()),
             &parent_provider(),
             None,
         )
@@ -460,19 +414,7 @@ mod tests {
 
     #[test]
     fn propagates_app_label_and_adds_owned_by_label() {
-        let raw = BTreeMap::from([
-            ("datacenter".to_string(), "dc1".to_string()),
-            ("cluster".to_string(), "cluster-a".to_string()),
-        ]);
-        let m = build_vsphere_machine(
-            &parent_vm(),
-            &parent_class(),
-            &parent_image(),
-            &decision_with_raw(raw),
-            &parent_provider(),
-            None,
-        )
-        .unwrap();
+        let m = build(&parent_vm()).unwrap();
         let labels = m.metadata.labels.expect("labels");
         assert_eq!(labels.get("app").map(String::as_str), Some("db-prod"));
         assert_eq!(
@@ -595,39 +537,15 @@ mod tests {
 
     #[test]
     fn build_vsphere_machine_leaves_ipam_untouched_when_no_override_matches() {
-        let raw = BTreeMap::from([
-            ("datacenter".to_string(), "dc1".to_string()),
-            ("cluster".to_string(), "cluster-a".to_string()),
-        ]);
-        let m = build_vsphere_machine(
-            &parent_vm(),
-            &parent_class(),
-            &parent_image(),
-            &decision_with_raw(raw),
-            &parent_provider(),
-            None,
-        )
-        .unwrap();
+        let m = build(&parent_vm()).unwrap();
         assert_eq!(m.spec.network[0].ipam.source(), IpamSource::Dhcp);
     }
 
     #[test]
     fn build_vsphere_machine_applies_matching_network_override() {
-        let raw = BTreeMap::from([
-            ("datacenter".to_string(), "dc1".to_string()),
-            ("cluster".to_string(), "cluster-a".to_string()),
-        ]);
         let mut vm = parent_vm();
         vm.spec.network_overrides = vec![static_override("eth0", "10.0.0.90")];
-        let m = build_vsphere_machine(
-            &vm,
-            &parent_class(),
-            &parent_image(),
-            &decision_with_raw(raw),
-            &parent_provider(),
-            None,
-        )
-        .unwrap();
+        let m = build(&vm).unwrap();
         assert_eq!(m.spec.network[0].ipam.source(), IpamSource::Static);
         assert_eq!(
             m.spec.network[0].ipam.static_.as_ref().unwrap().address,
@@ -641,10 +559,6 @@ mod tests {
         // a Provider declaring a per-zone subnet for the "prod" networkClass
         // (ADR-0032) fills in what the VM's own override left unset, with
         // no VMClass change and no extra VirtualMachine field.
-        let raw = BTreeMap::from([
-            ("datacenter".to_string(), "dc1".to_string()),
-            ("cluster".to_string(), "cluster-a".to_string()),
-        ]);
         let mut provider = parent_provider();
         provider.spec.capabilities.network_classes =
             vec![banlieue_api::banlieue::NetworkClassMapping {
@@ -662,7 +576,7 @@ mod tests {
             &vm,
             &parent_class(),
             &parent_image(),
-            &decision_with_raw(raw),
+            &decision_with_raw(raw_dc()),
             &provider,
             None,
         )
@@ -676,21 +590,9 @@ mod tests {
 
     #[test]
     fn build_vsphere_machine_ignores_override_for_a_different_interface_name() {
-        let raw = BTreeMap::from([
-            ("datacenter".to_string(), "dc1".to_string()),
-            ("cluster".to_string(), "cluster-a".to_string()),
-        ]);
         let mut vm = parent_vm();
         vm.spec.network_overrides = vec![static_override("eth9-does-not-exist", "10.0.0.90")];
-        let m = build_vsphere_machine(
-            &vm,
-            &parent_class(),
-            &parent_image(),
-            &decision_with_raw(raw),
-            &parent_provider(),
-            None,
-        )
-        .unwrap();
+        let m = build(&vm).unwrap();
         assert_eq!(m.spec.network[0].ipam.source(), IpamSource::Dhcp);
     }
 
@@ -724,19 +626,7 @@ mod tests {
 
     #[test]
     fn build_vsphere_machine_uses_class_hardware_when_no_override() {
-        let raw = BTreeMap::from([
-            ("datacenter".to_string(), "dc1".to_string()),
-            ("cluster".to_string(), "cluster-a".to_string()),
-        ]);
-        let m = build_vsphere_machine(
-            &parent_vm(),
-            &parent_class(),
-            &parent_image(),
-            &decision_with_raw(raw),
-            &parent_provider(),
-            None,
-        )
-        .unwrap();
+        let m = build(&parent_vm()).unwrap();
         assert_eq!(m.spec.num_cpus, 8);
         assert_eq!(m.spec.memory_mi_b, 32_768);
         assert_eq!(m.spec.disks[0].size_gi_b, 100);
@@ -744,25 +634,13 @@ mod tests {
 
     #[test]
     fn build_vsphere_machine_applies_cpus_and_memory_override() {
-        let raw = BTreeMap::from([
-            ("datacenter".to_string(), "dc1".to_string()),
-            ("cluster".to_string(), "cluster-a".to_string()),
-        ]);
         let mut vm = parent_vm();
         vm.spec.hardware_override = Some(HardwareOverride {
             cpus: Some(16),
             memory_mi_b: Some(65_536),
             disk_overrides: Vec::new(),
         });
-        let m = build_vsphere_machine(
-            &vm,
-            &parent_class(),
-            &parent_image(),
-            &decision_with_raw(raw),
-            &parent_provider(),
-            None,
-        )
-        .unwrap();
+        let m = build(&vm).unwrap();
         assert_eq!(m.spec.num_cpus, 16);
         assert_eq!(m.spec.memory_mi_b, 65_536);
         // Disk untouched — no disk_overrides entry.
@@ -772,35 +650,19 @@ mod tests {
     #[test]
     fn build_vsphere_machine_applies_partial_hardware_override() {
         // Only cpus set — memoryMiB and disks still inherit the class.
-        let raw = BTreeMap::from([
-            ("datacenter".to_string(), "dc1".to_string()),
-            ("cluster".to_string(), "cluster-a".to_string()),
-        ]);
         let mut vm = parent_vm();
         vm.spec.hardware_override = Some(HardwareOverride {
             cpus: Some(16),
             memory_mi_b: None,
             disk_overrides: Vec::new(),
         });
-        let m = build_vsphere_machine(
-            &vm,
-            &parent_class(),
-            &parent_image(),
-            &decision_with_raw(raw),
-            &parent_provider(),
-            None,
-        )
-        .unwrap();
+        let m = build(&vm).unwrap();
         assert_eq!(m.spec.num_cpus, 16);
         assert_eq!(m.spec.memory_mi_b, 32_768);
     }
 
     #[test]
     fn build_vsphere_machine_applies_disk_size_override_by_name() {
-        let raw = BTreeMap::from([
-            ("datacenter".to_string(), "dc1".to_string()),
-            ("cluster".to_string(), "cluster-a".to_string()),
-        ]);
         let mut vm = parent_vm();
         vm.spec.hardware_override = Some(HardwareOverride {
             cpus: None,
@@ -810,24 +672,12 @@ mod tests {
                 size_gi_b: 500,
             }],
         });
-        let m = build_vsphere_machine(
-            &vm,
-            &parent_class(),
-            &parent_image(),
-            &decision_with_raw(raw),
-            &parent_provider(),
-            None,
-        )
-        .unwrap();
+        let m = build(&vm).unwrap();
         assert_eq!(m.spec.disks[0].size_gi_b, 500);
     }
 
     #[test]
     fn build_vsphere_machine_ignores_disk_override_for_a_different_disk_name() {
-        let raw = BTreeMap::from([
-            ("datacenter".to_string(), "dc1".to_string()),
-            ("cluster".to_string(), "cluster-a".to_string()),
-        ]);
         let mut vm = parent_vm();
         vm.spec.hardware_override = Some(HardwareOverride {
             cpus: None,
@@ -837,15 +687,7 @@ mod tests {
                 size_gi_b: 500,
             }],
         });
-        let m = build_vsphere_machine(
-            &vm,
-            &parent_class(),
-            &parent_image(),
-            &decision_with_raw(raw),
-            &parent_provider(),
-            None,
-        )
-        .unwrap();
+        let m = build(&vm).unwrap();
         assert_eq!(m.spec.disks[0].size_gi_b, 100);
     }
 
@@ -855,15 +697,11 @@ mod tests {
         // and renders VirtualMachine.spec.userData's Secret *before*
         // calling build_vsphere_machine, which just inlines whatever
         // content it's given — it never reads a Secret itself.
-        let raw = BTreeMap::from([
-            ("datacenter".to_string(), "dc1".to_string()),
-            ("cluster".to_string(), "cluster-a".to_string()),
-        ]);
         let m = build_vsphere_machine(
             &parent_vm(),
             &parent_class(),
             &parent_image(),
-            &decision_with_raw(raw),
+            &decision_with_raw(raw_dc()),
             &parent_provider(),
             Some("#cloud-config\nhostname: db-01\n"),
         )
@@ -876,37 +714,13 @@ mod tests {
 
     #[test]
     fn build_vsphere_machine_omits_user_data_when_none_rendered() {
-        let raw = BTreeMap::from([
-            ("datacenter".to_string(), "dc1".to_string()),
-            ("cluster".to_string(), "cluster-a".to_string()),
-        ]);
-        let m = build_vsphere_machine(
-            &parent_vm(),
-            &parent_class(),
-            &parent_image(),
-            &decision_with_raw(raw),
-            &parent_provider(),
-            None,
-        )
-        .unwrap();
+        let m = build(&parent_vm()).unwrap();
         assert!(m.spec.user_data.is_none());
     }
 
     #[test]
     fn build_vsphere_machine_omits_created_by_when_vm_has_no_annotation() {
-        let raw = BTreeMap::from([
-            ("datacenter".to_string(), "dc1".to_string()),
-            ("cluster".to_string(), "cluster-a".to_string()),
-        ]);
-        let m = build_vsphere_machine(
-            &parent_vm(),
-            &parent_class(),
-            &parent_image(),
-            &decision_with_raw(raw),
-            &parent_provider(),
-            None,
-        )
-        .unwrap();
+        let m = build(&parent_vm()).unwrap();
         assert!(m.spec.created_by.is_none());
     }
 
@@ -919,37 +733,13 @@ mod tests {
             ANNOTATION_CREATED_BY.to_string(),
             "alice".to_string(),
         )]));
-        let raw = BTreeMap::from([
-            ("datacenter".to_string(), "dc1".to_string()),
-            ("cluster".to_string(), "cluster-a".to_string()),
-        ]);
-        let m = build_vsphere_machine(
-            &vm,
-            &parent_class(),
-            &parent_image(),
-            &decision_with_raw(raw),
-            &parent_provider(),
-            None,
-        )
-        .unwrap();
+        let m = build(&vm).unwrap();
         assert_eq!(m.spec.created_by.as_deref(), Some("alice"));
     }
 
     #[test]
     fn build_vsphere_machine_defaults_to_powered_on() {
-        let raw = BTreeMap::from([
-            ("datacenter".to_string(), "dc1".to_string()),
-            ("cluster".to_string(), "cluster-a".to_string()),
-        ]);
-        let m = build_vsphere_machine(
-            &parent_vm(),
-            &parent_class(),
-            &parent_image(),
-            &decision_with_raw(raw),
-            &parent_provider(),
-            None,
-        )
-        .unwrap();
+        let m = build(&parent_vm()).unwrap();
         assert_eq!(m.spec.desired_power_state, PowerState::PoweredOn);
     }
 
@@ -976,15 +766,11 @@ mod tests {
                 message: None,
             }],
         }];
-        let raw = BTreeMap::from([
-            ("datacenter".to_string(), "dc1".to_string()),
-            ("cluster".to_string(), "cluster-a".to_string()),
-        ]);
         let m = build_vsphere_machine(
             &parent_vm(),
             &parent_class(),
             &image,
-            &decision_with_raw(raw),
+            &decision_with_raw(raw_dc()),
             &parent_provider(),
             None,
         )
@@ -1018,15 +804,11 @@ mod tests {
     }
 
     fn build_for(image: &VMImage) -> VSphereMachine {
-        let raw = BTreeMap::from([
-            ("datacenter".to_string(), "dc1".to_string()),
-            ("cluster".to_string(), "cluster-a".to_string()),
-        ]);
         build_vsphere_machine(
             &parent_vm(),
             &parent_class(),
             image,
-            &decision_with_raw(raw),
+            &decision_with_raw(raw_dc()),
             &parent_provider(),
             None,
         )
@@ -1075,21 +857,9 @@ mod tests {
 
     #[test]
     fn build_vsphere_machine_threads_desired_power_state_from_virtual_machine_spec() {
-        let raw = BTreeMap::from([
-            ("datacenter".to_string(), "dc1".to_string()),
-            ("cluster".to_string(), "cluster-a".to_string()),
-        ]);
         let mut vm = parent_vm();
         vm.spec.desired_power_state = PowerState::PoweredOff;
-        let m = build_vsphere_machine(
-            &vm,
-            &parent_class(),
-            &parent_image(),
-            &decision_with_raw(raw),
-            &parent_provider(),
-            None,
-        )
-        .unwrap();
+        let m = build(&vm).unwrap();
         assert_eq!(m.spec.desired_power_state, PowerState::PoweredOff);
     }
 
@@ -2187,19 +1957,7 @@ mod tests {
         let moved = vm_owning("db-01-k3x9q");
         let ch = build_ch(&moved, &parent_class(), &ch_image(InstallMode::Immediate)).expect("ok");
         assert_eq!(ch.metadata.name.as_deref(), Some("db-01-k3x9q"));
-        let raw = BTreeMap::from([
-            ("datacenter".to_string(), "dc1".to_string()),
-            ("cluster".to_string(), "cluster-a".to_string()),
-        ]);
-        let vs = build_vsphere_machine(
-            &moved,
-            &parent_class(),
-            &parent_image(),
-            &decision_with_raw(raw),
-            &parent_provider(),
-            None,
-        )
-        .expect("ok");
+        let vs = build(&moved).expect("ok");
         assert_eq!(vs.metadata.name.as_deref(), Some("db-01-k3x9q"));
     }
 

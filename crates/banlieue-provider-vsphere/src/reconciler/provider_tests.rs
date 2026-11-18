@@ -8,23 +8,19 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::client::{
-        ClusterCapacity, Datacenter, Datastore, FakeClient, Inventory, Network, VSphereClient,
-    };
+    use crate::client::{ClusterCapacity, Datacenter, Datastore, FakeClient, Inventory, Network};
 
     use banlieue_api::banlieue::{
         FailureDomainNameOverride, NetworkClassMapping, ProviderCapabilities, StorageClassMapping,
     };
     use std::collections::BTreeMap;
 
+    use crate::reconciler::test_fixtures::as_client;
+
     use super::super::{
         FailureDomainIdentity, compute_failure_domain_attributes, discover_inventory,
         failure_domain_name,
     };
-
-    fn as_client(c: &FakeClient) -> &dyn VSphereClient {
-        c
-    }
 
     fn fd_name(provider: &str, dc: &str, cluster: &str) -> String {
         failure_domain_name(&FailureDomainIdentity {

@@ -19,7 +19,6 @@
 //!    the SDK's instrumented [`run_controller`].
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use anyhow::{Context as _, Result};
 use banlieue_api::banlieue::{
@@ -32,11 +31,11 @@ use banlieue_provider_sdk::bootstrap::{
     Observability, init_tracing, shutdown_signal, start_observability,
 };
 use banlieue_provider_sdk::client::build_client_with;
-use banlieue_provider_sdk::health::Election;
-use banlieue_provider_sdk::leader::{
-    DEFAULT_LEASE_DURATION_SECS, DEFAULT_RENEW_PERIOD_SECS, DEFAULT_RETRY_PERIOD_SECS,
-    LeaderConfig, acquire_or_wait, renew_forever,
+use banlieue_provider_sdk::defaults::{
+    DEFAULT_HEALTH_PORT, DEFAULT_LEADER_ELECTION_NAMESPACE, DEFAULT_METRICS_PORT,
 };
+use banlieue_provider_sdk::health::Election;
+use banlieue_provider_sdk::leader::{self, LeaderConfig};
 use banlieue_provider_sdk::metrics::Metrics;
 use banlieue_provider_sdk::runner::run_controller;
 use clap::Args;
@@ -48,7 +47,7 @@ use kube::{
         Controller, WatchStreamExt, reflector, reflector::ObjectRef, watcher, watcher::Config,
     },
 };
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 use crate::{
     context::Context,
@@ -61,13 +60,9 @@ use crate::{
     reconciler::vsphere_cluster,
 };
 use banlieue_provider_sdk::scope::{
-    NamespaceGate, Scope, check_selector, resolve_scope, scope_is_implicit, scope_trigger,
-    spawn_namespace_gate,
+    Scope, ScopeChanges, check_selector, resolve_scope, scope_is_implicit, start_gate,
 };
 
-const DEFAULT_HEALTH_PORT: u16 = 8081;
-const DEFAULT_METRICS_PORT: u16 = 8080;
-const DEFAULT_LEADER_ELECTION_NAMESPACE: &str = "banlieue-system";
 const DEFAULT_LEADER_ELECTION_ID: &str = "banlieue-controller";
 
 /// This role's name: the OTLP `service.name` (ADR-0092) and the `role`
@@ -230,44 +225,16 @@ pub async fn run(cli: Cli) -> Result<()> {
             .await
             .context("starting health and metrics servers")?;
 
-    if let Some(leader_cfg) = leader_cfg {
-        info!(
-            namespace = %leader_cfg.namespace,
-            lease = %leader_cfg.lease_name,
-            identity = %leader_cfg.identity,
-            "waiting for leader election"
-        );
-        acquire_or_wait(client.clone(), &leader_cfg, &readiness)
-            .await
-            .context("acquiring leader lease")?;
-
-        let renewer_client = client.clone();
-        let renewer_readiness = readiness.clone();
-        tokio::spawn(async move {
-            if let Err(e) = renew_forever(renewer_client, leader_cfg, renewer_readiness).await {
-                error!(error = %e, "leader lease renewer terminated — exiting");
-                std::process::exit(1);
-            }
-        });
-    } else {
-        info!("leader election disabled by --no-leader-elect");
-    }
+    leader::elect(client.clone(), leader_cfg, &readiness)
+        .await
+        .context("acquiring leader lease")?;
 
     // Selector mode (ADR-0130): the controllers watch every namespace and gate
     // each reconcile on a Namespace reflector the API server has already
     // filtered by the selector. Its events also reconcile everything again, so
     // labelling a namespace in takes effect at once. Single-namespace modes
     // have a narrowed watch and need neither.
-    let (scope_tx, scope_rx) = tokio::sync::watch::channel(0_u64);
-    let (gate, scope_tx) = match &scope {
-        Scope::Selector(selector) => {
-            let gate = spawn_namespace_gate(&client, selector, scope_tx)
-                .await
-                .context("starting the namespace selector watch")?;
-            (gate, None)
-        }
-        Scope::Namespace(_) => (NamespaceGate::none(), Some(scope_tx)),
-    };
+    let (gate, scope_changes) = start_gate(&client, scope.selector(), None).await?;
 
     let vm_api: Api<VirtualMachine> = scope.api(&client);
 
@@ -310,8 +277,8 @@ pub async fn run(cli: Cli) -> Result<()> {
     let vm_provider_api: Api<Provider> = scope.api(&client);
 
     info!("starting VirtualMachine controller");
-    let controller = Controller::new(vm_api, Config::default())
-        .reconcile_all_on(scope_trigger(scope_rx.clone()));
+    let controller =
+        Controller::new(vm_api, Config::default()).reconcile_all_on(scope_changes.trigger());
     let vm_store = controller.store();
     // The duplicate-address check (ADR-0083) reads every VM from this store
     // rather than listing them from the API on each reconcile.
@@ -388,8 +355,8 @@ pub async fn run(cli: Cli) -> Result<()> {
     let provider_api: Api<Provider> = scope.api(&client);
 
     info!("starting VSphereCluster controller");
-    let vsc_controller = Controller::new(vsc_api, Config::default())
-        .reconcile_all_on(scope_trigger(scope_rx.clone()));
+    let vsc_controller =
+        Controller::new(vsc_api, Config::default()).reconcile_all_on(scope_changes.trigger());
     let vsc_store = vsc_controller.store();
 
     let vsc_controller = vsc_controller.watches(
@@ -455,7 +422,7 @@ pub async fn run(cli: Cli) -> Result<()> {
     let pool_api: Api<VirtualMachinePool> = scope.api(&client);
     let pool_member_api: Api<VirtualMachine> = scope.api(&client);
     let pool_controller = Controller::new(pool_api, Config::default())
-        .reconcile_all_on(scope_trigger(scope_rx.clone()))
+        .reconcile_all_on(scope_changes.trigger())
         .watches(pool_member_api, Config::default(), |vm: VirtualMachine| {
             pool::pool_for_member(&vm)
         });
@@ -476,7 +443,7 @@ pub async fn run(cli: Cli) -> Result<()> {
     let claim_member_api: Api<VirtualMachine> = scope.api(&client);
     let claim_fut = run_controller(
         Controller::new(claim_api, Config::default())
-            .reconcile_all_on(scope_trigger(scope_rx.clone()))
+            .reconcile_all_on(scope_changes.trigger())
             .owns(claim_member_api, Config::default()),
         "VirtualMachineClaim",
         metrics.clone(),
@@ -499,7 +466,7 @@ pub async fn run(cli: Cli) -> Result<()> {
     let bootstrap_fut: BoxFuture<'static, ()> = {
         let client = client.clone();
         let scope = scope.clone();
-        let scope_rx = scope_rx.clone();
+        let scope_changes = scope_changes.clone();
         let metrics = metrics.clone();
         let ctx = ctx.clone();
         async move {
@@ -516,7 +483,7 @@ pub async fn run(cli: Cli) -> Result<()> {
                 "CloudHypervisorMachineBootstrapData",
                 &client,
                 &scope,
-                &scope_rx,
+                &scope_changes,
                 &metrics,
                 &ctx,
             )
@@ -554,9 +521,6 @@ pub async fn run(cli: Cli) -> Result<()> {
         }
     }
 
-    // Held to here so a single-namespace run's trigger streams stay pending
-    // instead of ending when the sender drops.
-    drop(scope_tx);
     telemetry.shutdown();
     Ok(())
 }
@@ -568,7 +532,7 @@ fn bootstrap_data_controller<K>(
     name: &'static str,
     client: &Client,
     scope: &Scope,
-    scope_rx: &tokio::sync::watch::Receiver<u64>,
+    scope_changes: &ScopeChanges,
     metrics: &Metrics,
     ctx: &Arc<Context>,
 ) -> BoxFuture<'static, ()>
@@ -588,7 +552,7 @@ where
     let kinds: Api<K> = scope.api(client);
     let machines = scope.api_with(client, &bootstrap_data::machine_resource());
     let controller = Controller::new(kinds, Config::default())
-        .reconcile_all_on(scope_trigger(scope_rx.clone()))
+        .reconcile_all_on(scope_changes.trigger())
         .watches_with(
             machines,
             bootstrap_data::machine_resource(),
@@ -609,18 +573,8 @@ where
 /// Build a [`LeaderConfig`] from parsed CLI flags, filling the holder identity
 /// from `--leader-election-identity` or the `POD_NAME` / `HOSTNAME` fallback.
 fn build_leader_config(cli: &Cli) -> LeaderConfig {
-    let identity = cli
-        .leader_election_identity
-        .clone()
-        .unwrap_or_else(LeaderConfig::default_identity);
-    LeaderConfig {
-        namespace: cli.leader_election_namespace.clone(),
-        lease_name: cli.leader_election_id.clone(),
-        identity,
-        lease_duration: Duration::from_secs(DEFAULT_LEASE_DURATION_SECS),
-        renew_period: Duration::from_secs(DEFAULT_RENEW_PERIOD_SECS),
-        retry_period: Duration::from_secs(DEFAULT_RETRY_PERIOD_SECS),
-    }
+    LeaderConfig::new(&cli.leader_election_namespace, &cli.leader_election_id)
+        .with_identity(cli.leader_election_identity.clone())
 }
 
 #[cfg(test)]

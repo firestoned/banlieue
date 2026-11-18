@@ -41,7 +41,10 @@ use banlieue_provider_sdk::{
     finalizer::{ensure_finalizer, remove_finalizer},
     guestdata::{GuestDataContext, render_placeholders},
     reconciler::{requeue_default, requeue_long, requeue_on_error},
-    ssa::{FIELD_MANAGER_CONTROLLER, server_side_apply},
+    ssa::{
+        FIELD_MANAGER_CONTROLLER, apply_status, delete_ignoring_404, is_not_found,
+        server_side_apply,
+    },
     status::{condition_status, set_condition},
 };
 use k8s_openapi::api::core::v1::{ConfigMap, Secret};
@@ -60,11 +63,11 @@ use super::address_conflict::{
 };
 use super::infra::{
     InfraKind, build_cloud_hypervisor_machine, build_libvirt_machine, build_proxmox_machine,
-    build_vsphere_machine, machine_name,
+    build_vsphere_machine, install_mode, machine_name,
 };
 use super::migration::{MigrationAction, PlacementDriftReason, evaluate};
 use super::provider_lookup::{candidate_providers, placement_peers};
-use super::scheduler::{ScheduleError, reasons, schedule};
+use super::scheduler::{ScheduleError, schedule};
 use super::status_mirror::{InfraMachineRead, mirror_onto_vm, mirror_status_from_infra};
 use crate::context::Context;
 use crate::error::{Error, Result};
@@ -288,11 +291,7 @@ pub async fn reconcile(vm: Arc<VirtualMachine>, ctx: Arc<Context>) -> Result<Act
     // (`Immediate`) and is rejected on the same grounds. Fail closed: the
     // error of rejecting a sealable image is visible and fixable, while the
     // error of accepting an unsealable one is silent (ADR-0048 Decision 6).
-    let install_mode = image
-        .spec
-        .template
-        .as_ref()
-        .map_or_else(InstallMode::default, |t| t.install_mode);
+    let install_mode = install_mode(&image);
 
     // ADR-0088: an image that declares first-boot sealing changes the table,
     // and only when the controller was started with the feature on.
@@ -430,9 +429,11 @@ pub async fn reconcile(vm: Arc<VirtualMachine>, ctx: Arc<Context>) -> Result<Act
     // ---- Build + SSA the infra CR --------------------------------------
     // Both arms end at the same place: an applied object behind
     // `InfraMachineRead`, so everything below this match is backend-blind.
-    let applied: Box<dyn InfraMachineRead + Send> = match infra_kind {
-        InfraKind::VSphere => {
-            let infra = match build_vsphere_machine(
+    // `$build` builds the kind's infra CR, which is applied through the
+    // `InfraApis` field `$api`; `$field` is the kind's log field.
+    macro_rules! build_and_apply {
+        ($build:ident, $api:ident, $field:ident, $kind:literal) => {
+            match $build(
                 &vm,
                 &class,
                 &image,
@@ -440,88 +441,54 @@ pub async fn reconcile(vm: Arc<VirtualMachine>, ctx: Arc<Context>) -> Result<Act
                 chosen_provider,
                 rendered_user_data.as_deref(),
             ) {
-                Ok(m) => m,
-                Err(e) => {
-                    warn!(error = %e, "infra builder failed; reporting Scheduled=False");
-                    patch_infra_build_failure(&vm_api, &vm, &name, generation, &e.to_string())
+                Err(e) => Err(e),
+                Ok(infra) => {
+                    let m = server_side_apply(&infra_apis.$api, FIELD_MANAGER_CONTROLLER, &infra)
                         .await?;
-                    return Ok(requeue_on_error());
+                    debug!($field = %m.name_any(), concat!("applied ", $kind, " via SSA"));
+                    Ok(Box::new(m) as Box<dyn InfraMachineRead + Send>)
                 }
-            };
-            let m =
-                server_side_apply(&infra_apis.vsphere, FIELD_MANAGER_CONTROLLER, &infra).await?;
-            debug!(vsphere_machine = %m.name_any(), "applied VSphereMachine via SSA");
-            Box::new(m)
+            }
+        };
+    }
+    let applied = match infra_kind {
+        InfraKind::VSphere => {
+            build_and_apply!(
+                build_vsphere_machine,
+                vsphere,
+                vsphere_machine,
+                "VSphereMachine"
+            )
         }
         InfraKind::Libvirt => {
-            let infra = match build_libvirt_machine(
-                &vm,
-                &class,
-                &image,
-                &decision,
-                chosen_provider,
-                rendered_user_data.as_deref(),
-            ) {
-                Ok(m) => m,
-                Err(e) => {
-                    warn!(error = %e, "infra builder failed; reporting Scheduled=False");
-                    patch_infra_build_failure(&vm_api, &vm, &name, generation, &e.to_string())
-                        .await?;
-                    return Ok(requeue_on_error());
-                }
-            };
-            let m =
-                server_side_apply(&infra_apis.libvirt, FIELD_MANAGER_CONTROLLER, &infra).await?;
-            debug!(libvirt_machine = %m.name_any(), "applied LibvirtMachine via SSA");
-            Box::new(m)
-        }
-        InfraKind::CloudHypervisor => {
-            let infra = match build_cloud_hypervisor_machine(
-                &vm,
-                &class,
-                &image,
-                &decision,
-                chosen_provider,
-                rendered_user_data.as_deref(),
-            ) {
-                Ok(m) => m,
-                Err(e) => {
-                    warn!(error = %e, "infra builder failed; reporting Scheduled=False");
-                    patch_infra_build_failure(&vm_api, &vm, &name, generation, &e.to_string())
-                        .await?;
-                    return Ok(requeue_on_error());
-                }
-            };
-            let m = server_side_apply(
-                &infra_apis.cloud_hypervisor,
-                FIELD_MANAGER_CONTROLLER,
-                &infra,
+            build_and_apply!(
+                build_libvirt_machine,
+                libvirt,
+                libvirt_machine,
+                "LibvirtMachine"
             )
-            .await?;
-            debug!(cloud_hypervisor_machine = %m.name_any(), "applied CloudHypervisorMachine via SSA");
-            Box::new(m)
         }
+        InfraKind::CloudHypervisor => build_and_apply!(
+            build_cloud_hypervisor_machine,
+            cloud_hypervisor,
+            cloud_hypervisor_machine,
+            "CloudHypervisorMachine"
+        ),
         InfraKind::Proxmox => {
-            let infra = match build_proxmox_machine(
-                &vm,
-                &class,
-                &image,
-                &decision,
-                chosen_provider,
-                rendered_user_data.as_deref(),
-            ) {
-                Ok(m) => m,
-                Err(e) => {
-                    warn!(error = %e, "infra builder failed; reporting Scheduled=False");
-                    patch_infra_build_failure(&vm_api, &vm, &name, generation, &e.to_string())
-                        .await?;
-                    return Ok(requeue_on_error());
-                }
-            };
-            let m =
-                server_side_apply(&infra_apis.proxmox, FIELD_MANAGER_CONTROLLER, &infra).await?;
-            debug!(proxmox_machine = %m.name_any(), "applied ProxmoxMachine via SSA");
-            Box::new(m)
+            build_and_apply!(
+                build_proxmox_machine,
+                proxmox,
+                proxmox_machine,
+                "ProxmoxMachine"
+            )
+        }
+    };
+    let applied = match applied {
+        Ok(m) => m,
+        Err(e) => {
+            warn!(error = %e, "infra builder failed; reporting Scheduled=False");
+            patch_infra_build_failure(&vm_api, &vm, &name, generation, &e.to_string()).await?;
+            return Ok(requeue_on_error());
         }
     };
 
@@ -582,29 +549,7 @@ async fn mirror_only_path(
     vm: &VirtualMachine,
     name: &str,
 ) -> Result<Action> {
-    let machine = machine_name(vm);
-    let infra: Option<Box<dyn InfraMachineRead + Send>> = match infra_kind {
-        InfraKind::VSphere => apis
-            .vsphere
-            .get_opt(&machine)
-            .await?
-            .map(|m| Box::new(m) as Box<dyn InfraMachineRead + Send>),
-        InfraKind::Libvirt => apis
-            .libvirt
-            .get_opt(&machine)
-            .await?
-            .map(|m| Box::new(m) as Box<dyn InfraMachineRead + Send>),
-        InfraKind::CloudHypervisor => apis
-            .cloud_hypervisor
-            .get_opt(&machine)
-            .await?
-            .map(|m| Box::new(m) as Box<dyn InfraMachineRead + Send>),
-        InfraKind::Proxmox => apis
-            .proxmox
-            .get_opt(&machine)
-            .await?
-            .map(|m| Box::new(m) as Box<dyn InfraMachineRead + Send>),
-    };
+    let infra = get_infra(apis, infra_kind, &machine_name(vm)).await?;
     let Some(infra) = infra else {
         // The infra CR vanished out from under us (manual delete, GC
         // cascade, etc). Drop back to the normal apply path on the
@@ -620,15 +565,61 @@ async fn mirror_only_path(
     Ok(requeue_default())
 }
 
+/// Every infra kind, in the order the controller checks them.
+const INFRA_KINDS: [InfraKind; 4] = [
+    InfraKind::VSphere,
+    InfraKind::Libvirt,
+    InfraKind::CloudHypervisor,
+    InfraKind::Proxmox,
+];
+
+/// Evaluate `$body` with `$api` bound to the typed [`Api`] in `$apis` for the
+/// [`InfraKind`] `$kind`. A macro because each kind's `Api<K>` is a different
+/// type, so no one function body can name them all.
+macro_rules! with_infra_api {
+    ($apis:expr, $kind:expr, |$api:ident| $body:expr) => {
+        match $kind {
+            InfraKind::VSphere => {
+                let $api = &$apis.vsphere;
+                $body
+            }
+            InfraKind::Libvirt => {
+                let $api = &$apis.libvirt;
+                $body
+            }
+            InfraKind::CloudHypervisor => {
+                let $api = &$apis.cloud_hypervisor;
+                $body
+            }
+            InfraKind::Proxmox => {
+                let $api = &$apis.proxmox;
+                $body
+            }
+        }
+    };
+}
+
 /// Delete the owned infra CR of `infra_kind` by name. 404 is treated as
 /// success so the call is idempotent across retries.
 async fn delete_existing_infra(apis: &InfraApis, infra_kind: InfraKind, name: &str) -> Result<()> {
-    match infra_kind {
-        InfraKind::VSphere => delete_ignoring_404(&apis.vsphere, name).await,
-        InfraKind::Libvirt => delete_ignoring_404(&apis.libvirt, name).await,
-        InfraKind::CloudHypervisor => delete_ignoring_404(&apis.cloud_hypervisor, name).await,
-        InfraKind::Proxmox => delete_ignoring_404(&apis.proxmox, name).await,
-    }
+    with_infra_api!(apis, infra_kind, |api| {
+        delete_ignoring_404(api, name, &DeleteParams::default()).await?
+    });
+    Ok(())
+}
+
+/// The infra CR of `kind` named `name`, behind [`InfraMachineRead`]; `None`
+/// when there is none.
+async fn get_infra(
+    apis: &InfraApis,
+    kind: InfraKind,
+    name: &str,
+) -> Result<Option<Box<dyn InfraMachineRead + Send + Sync>>> {
+    Ok(with_infra_api!(apis, kind, |api| {
+        api.get_opt(name)
+            .await?
+            .map(|m| Box::new(m) as Box<dyn InfraMachineRead + Send + Sync>)
+    }))
 }
 
 /// The typed API for every infra kind, in one namespace.
@@ -651,19 +642,6 @@ impl InfraApis {
             cloud_hypervisor: Api::namespaced(client.clone(), namespace),
             proxmox: Api::namespaced(client.clone(), namespace),
         }
-    }
-}
-
-/// Delete `name` through `api`, treating "already gone" as success.
-async fn delete_ignoring_404<K>(api: &Api<K>, name: &str) -> Result<()>
-where
-    K: kube::Resource + Clone + serde::de::DeserializeOwned + std::fmt::Debug,
-{
-    use kube::Error as KubeError;
-    match api.delete(name, &DeleteParams::default()).await {
-        Ok(_) => Ok(()),
-        Err(KubeError::Api(e)) if e.code == 404 => Ok(()),
-        Err(e) => Err(e.into()),
     }
 }
 
@@ -780,29 +758,12 @@ async fn finalize_vm(
     info!("finalizing VirtualMachine");
     let owned_name = machine_name(vm);
 
-    let states = [
-        (
-            InfraKind::VSphere,
-            infra_state(&apis.vsphere, &owned_name, "VSphereMachine").await,
-        ),
-        (
-            InfraKind::Libvirt,
-            infra_state(&apis.libvirt, &owned_name, "LibvirtMachine").await,
-        ),
-        (
-            InfraKind::CloudHypervisor,
-            infra_state(
-                &apis.cloud_hypervisor,
-                &owned_name,
-                "CloudHypervisorMachine",
-            )
-            .await,
-        ),
-        (
-            InfraKind::Proxmox,
-            infra_state(&apis.proxmox, &owned_name, "ProxmoxMachine").await,
-        ),
-    ];
+    let mut states = INFRA_KINDS.map(|kind| (kind, InfraState::Unknown));
+    for (kind, state) in &mut states {
+        *state = with_infra_api!(apis, *kind, |api| {
+            infra_state(api, &owned_name, kind.kind_name()).await
+        });
+    }
     let plan = plan_finalize(&states);
 
     // Issue a delete for anything present. Each kind's failure is caught
@@ -812,24 +773,21 @@ async fn finalize_vm(
     // withholds the finalizer below exactly like an unresolved lookup does.
     let mut delete_failed = false;
     for kind in &plan.delete {
-        let result = match kind {
+        match kind {
             InfraKind::VSphere => {
                 info!(vsphere_machine = %owned_name, "requesting VSphereMachine deletion; waiting for cascade");
-                delete_ignoring_404(&apis.vsphere, &owned_name).await
             }
             InfraKind::Libvirt => {
                 info!(libvirt_machine = %owned_name, "requesting LibvirtMachine deletion; waiting for cascade");
-                delete_ignoring_404(&apis.libvirt, &owned_name).await
             }
             InfraKind::CloudHypervisor => {
                 info!(cloud_hypervisor_machine = %owned_name, "requesting CloudHypervisorMachine deletion; waiting for cascade");
-                delete_ignoring_404(&apis.cloud_hypervisor, &owned_name).await
             }
             InfraKind::Proxmox => {
                 info!(proxmox_machine = %owned_name, "requesting ProxmoxMachine deletion; waiting for cascade");
-                delete_ignoring_404(&apis.proxmox, &owned_name).await
             }
-        };
+        }
+        let result = delete_existing_infra(apis, *kind, &owned_name).await;
         if let Err(e) = result {
             warn!(infra_kind = ?kind, error = %e, "infra CR delete failed; other backends still proceed");
             delete_failed = true;
@@ -861,25 +819,15 @@ async fn patch_scheduling_failure(
     generation: i64,
     err: &ScheduleError,
 ) -> Result<()> {
-    let mut status = vm.status.clone().unwrap_or_default();
-    set_condition(
-        &mut status.conditions,
-        condition_types::SCHEDULED,
-        condition_status::FALSE,
-        err.reason(),
-        err.to_string(),
-        generation,
-    );
-    set_condition(
-        &mut status.conditions,
-        condition_types::READY,
-        condition_status::FALSE,
-        "Scheduling",
-        "scheduling not yet successful",
-        generation,
-    );
-    status.observed_generation = Some(generation);
-    patch_status(api, name, &status).await
+    let conditions = [
+        (condition_types::SCHEDULED, err.reason(), &*err.to_string()),
+        (
+            condition_types::READY,
+            "Scheduling",
+            "scheduling not yet successful",
+        ),
+    ];
+    patch_false_conditions(api, vm, name, generation, &conditions).await
 }
 
 /// Resolve `vm.spec.userData`'s Secret or ConfigMap and render the fixed
@@ -919,6 +867,15 @@ async fn resolve_rendered_user_data(
     Ok(Some(render_placeholders(&raw, &gd_ctx)))
 }
 
+/// A failed GET as this crate's error: a 404 is `what` missing, anything
+/// else is the API error itself.
+fn missing_on_404(error: kube::Error, what: &'static str) -> Error {
+    if is_not_found(&error) {
+        return Error::Missing(what);
+    }
+    Error::Kube(error)
+}
+
 /// Read a single key from a Secret.
 async fn resolve_secret_data(
     ctx: &Context,
@@ -926,14 +883,10 @@ async fn resolve_secret_data(
     sel: &banlieue_api::common::KeySelector,
 ) -> Result<String> {
     let api: Api<Secret> = Api::namespaced(ctx.client.clone(), namespace);
-    let secret = api.get(&sel.name).await.map_err(|e| {
-        if let kube::Error::Api(api_err) = &e
-            && api_err.code == 404
-        {
-            return Error::Missing("VirtualMachine.spec.userData.secretRef");
-        }
-        Error::Kube(e)
-    })?;
+    let secret = api
+        .get(&sel.name)
+        .await
+        .map_err(|e| missing_on_404(e, "VirtualMachine.spec.userData.secretRef"))?;
     let key = sel.key_or(DEFAULT_USER_DATA_KEY);
     let data = secret.data.unwrap_or_default();
     let raw = data
@@ -950,14 +903,10 @@ async fn resolve_configmap_data(
     sel: &banlieue_api::common::KeySelector,
 ) -> Result<String> {
     let api: Api<ConfigMap> = Api::namespaced(ctx.client.clone(), namespace);
-    let cm = api.get(&sel.name).await.map_err(|e| {
-        if let kube::Error::Api(api_err) = &e
-            && api_err.code == 404
-        {
-            return Error::Missing("VirtualMachine.spec.userData.configMapRef");
-        }
-        Error::Kube(e)
-    })?;
+    let cm = api
+        .get(&sel.name)
+        .await
+        .map_err(|e| missing_on_404(e, "VirtualMachine.spec.userData.configMapRef"))?;
     let key = sel.key_or(DEFAULT_USER_DATA_KEY);
     let data = cm.data.unwrap_or_default();
     data.get(key)
@@ -980,17 +929,8 @@ async fn patch_image_class_mismatch(
     generation: i64,
     refusal: PairingRefusal,
 ) -> Result<()> {
-    let mut status = vm.status.clone().unwrap_or_default();
-    set_condition(
-        &mut status.conditions,
-        condition_types::READY,
-        condition_status::FALSE,
-        refusal.reason,
-        refusal.message,
-        generation,
-    );
-    status.observed_generation = Some(generation);
-    patch_status(api, name, &status).await
+    let conditions = [(condition_types::READY, refusal.reason, refusal.message)];
+    patch_false_conditions(api, vm, name, generation, &conditions).await
 }
 
 /// `Some` when `vm`'s static addresses are claimed by a VM that outranks it
@@ -1071,7 +1011,7 @@ async fn block_on_duplicate_address(
 ) -> Result<()> {
     let machine = machine_name(vm);
     let existing = existing_infra(apis, &machine).await?;
-    let (mut status, message) = match &existing {
+    let (status, message) = match &existing {
         None => (vm.status.clone().unwrap_or_default(), dup.message()),
         Some((kind, infra)) => {
             if infra.desired_power_state() != &vm.spec.desired_power_state {
@@ -1092,16 +1032,8 @@ async fn block_on_duplicate_address(
             )
         }
     };
-    set_condition(
-        &mut status.conditions,
-        condition_types::READY,
-        condition_status::FALSE,
-        REASON_DUPLICATE_ADDRESS,
-        message,
-        generation,
-    );
-    status.observed_generation = Some(generation);
-    patch_status(api, name, &status).await
+    let conditions = [(condition_types::READY, REASON_DUPLICATE_ADDRESS, &*message)];
+    patch_conditions_false(api, name, generation, status, &conditions).await
 }
 
 /// The infra CR named `name`, of whichever kind exists. Every kind is
@@ -1110,17 +1042,10 @@ async fn existing_infra(
     apis: &InfraApis,
     name: &str,
 ) -> Result<Option<(InfraKind, Box<dyn InfraMachineRead + Send + Sync>)>> {
-    if let Some(m) = apis.vsphere.get_opt(name).await? {
-        return Ok(Some((InfraKind::VSphere, Box::new(m))));
-    }
-    if let Some(m) = apis.libvirt.get_opt(name).await? {
-        return Ok(Some((InfraKind::Libvirt, Box::new(m))));
-    }
-    if let Some(m) = apis.cloud_hypervisor.get_opt(name).await? {
-        return Ok(Some((InfraKind::CloudHypervisor, Box::new(m))));
-    }
-    if let Some(m) = apis.proxmox.get_opt(name).await? {
-        return Ok(Some((InfraKind::Proxmox, Box::new(m))));
+    for kind in INFRA_KINDS {
+        if let Some(m) = get_infra(apis, kind, name).await? {
+            return Ok(Some((kind, m)));
+        }
     }
     Ok(None)
 }
@@ -1136,20 +1061,9 @@ async fn patch_infra_power(
 ) -> Result<()> {
     let patch = Patch::Merge(json!({ "spec": { "desiredPowerState": power } }));
     let params = PatchParams::default();
-    match kind {
-        InfraKind::VSphere => {
-            apis.vsphere.patch(name, &params, &patch).await?;
-        }
-        InfraKind::Libvirt => {
-            apis.libvirt.patch(name, &params, &patch).await?;
-        }
-        InfraKind::CloudHypervisor => {
-            apis.cloud_hypervisor.patch(name, &params, &patch).await?;
-        }
-        InfraKind::Proxmox => {
-            apis.proxmox.patch(name, &params, &patch).await?;
-        }
-    }
+    with_infra_api!(apis, kind, |api| {
+        api.patch(name, &params, &patch).await?;
+    });
     Ok(())
 }
 
@@ -1160,25 +1074,15 @@ async fn patch_infra_build_failure(
     generation: i64,
     detail: &str,
 ) -> Result<()> {
-    let mut status = vm.status.clone().unwrap_or_default();
-    set_condition(
-        &mut status.conditions,
-        condition_types::SCHEDULED,
-        condition_status::FALSE,
-        "InfraBuildFailed",
-        detail,
-        generation,
-    );
-    set_condition(
-        &mut status.conditions,
-        condition_types::READY,
-        condition_status::FALSE,
-        "InfraBuildFailed",
-        "could not construct provider infrastructure CR",
-        generation,
-    );
-    status.observed_generation = Some(generation);
-    patch_status(api, name, &status).await
+    let conditions = [
+        (condition_types::SCHEDULED, "InfraBuildFailed", detail),
+        (
+            condition_types::READY,
+            "InfraBuildFailed",
+            "could not construct provider infrastructure CR",
+        ),
+    ];
+    patch_false_conditions(api, vm, name, generation, &conditions).await
 }
 
 /// Patch `PlacementValid=False` with the drift reason. Also marks `Ready=False`
@@ -1195,23 +1099,55 @@ async fn patch_placement_invalid(
     generation: i64,
     reason: &PlacementDriftReason,
 ) -> Result<()> {
-    let mut status = vm.status.clone().unwrap_or_default();
-    set_condition(
-        &mut status.conditions,
-        condition_types::PLACEMENT_VALID,
-        condition_status::FALSE,
-        reason.reason(),
-        reason.message(),
-        generation,
-    );
-    set_condition(
-        &mut status.conditions,
-        condition_types::READY,
-        condition_status::FALSE,
-        "PlacementInvalid",
-        "current placement no longer satisfies the spec",
-        generation,
-    );
+    let conditions = [
+        (
+            condition_types::PLACEMENT_VALID,
+            reason.reason(),
+            &*reason.message(),
+        ),
+        (
+            condition_types::READY,
+            "PlacementInvalid",
+            "current placement no longer satisfies the spec",
+        ),
+    ];
+    patch_false_conditions(api, vm, name, generation, &conditions).await
+}
+
+/// [`patch_conditions_false`] starting from `vm.status`, not an empty status:
+/// see `patch_scheduling_failure`'s doc comment for why a conditions-only
+/// narrower patch from the same field manager as the full-status success path
+/// is unsafe under SSA.
+async fn patch_false_conditions(
+    api: &Api<VirtualMachine>,
+    vm: &VirtualMachine,
+    name: &str,
+    generation: i64,
+    conditions: &[(&str, &str, &str)],
+) -> Result<()> {
+    let status = vm.status.clone().unwrap_or_default();
+    patch_conditions_false(api, name, generation, status, conditions).await
+}
+
+/// Set each `(type, reason, message)` condition to `False` on `status`, in
+/// order, stamp `observedGeneration`, and patch the whole status.
+async fn patch_conditions_false(
+    api: &Api<VirtualMachine>,
+    name: &str,
+    generation: i64,
+    mut status: VirtualMachineStatus,
+    conditions: &[(&str, &str, &str)],
+) -> Result<()> {
+    for (type_, reason, message) in conditions {
+        set_condition(
+            &mut status.conditions,
+            type_,
+            condition_status::FALSE,
+            reason,
+            *message,
+            generation,
+        );
+    }
     status.observed_generation = Some(generation);
     patch_status(api, name, &status).await
 }
@@ -1253,14 +1189,7 @@ async fn patch_status_raw(
     name: &str,
     status: &VirtualMachineStatus,
 ) -> Result<()> {
-    let patch = json!({
-        "apiVersion": format!("{}/{}", VirtualMachine::group(&()), VirtualMachine::version(&())),
-        "kind": "VirtualMachine",
-        "status": status,
-    });
-    let params = PatchParams::apply(FIELD_MANAGER_CONTROLLER).force();
-    api.patch_status(name, &params, &Patch::Apply(&patch))
-        .await?;
+    apply_status(api, name, FIELD_MANAGER_CONTROLLER, status, true).await?;
     Ok(())
 }
 
@@ -1269,9 +1198,6 @@ pub fn error_policy(_vm: Arc<VirtualMachine>, err: &Error, _ctx: Arc<Context>) -
     warn!(error = %err, "reconcile failed; requeuing on short interval");
     requeue_on_error()
 }
-
-// Backwards-compatible re-exports for tests written against iteration 1.
-pub use reasons::SCHEDULED as REASON_SCHEDULED;
 
 #[cfg(test)]
 #[path = "virtualmachine_tests.rs"]

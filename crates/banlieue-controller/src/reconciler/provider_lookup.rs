@@ -20,6 +20,7 @@
 use std::collections::BTreeMap;
 
 use banlieue_api::banlieue::{Provider, VirtualMachine};
+use banlieue_provider_sdk::scope::supports_shared_provider;
 use k8s_openapi::api::core::v1::Namespace;
 use kube::api::ListParams;
 use kube::{Api, ResourceExt};
@@ -48,18 +49,6 @@ pub struct Candidates {
     pub providers: Vec<Provider>,
     /// Which namespace they were found in.
     pub source: CandidateSource,
-}
-
-/// Whether a provider class resolves its `Provider` from its own namespace, and
-/// so can serve a machine whose `providerRef` names another namespace.
-///
-/// The list is `banlieue_provider_sdk::scope::SHARED_PROVIDER_BACKENDS`, shared
-/// with the operator (ADR-0133 Decision 10): offering a foreign reference to a
-/// class that cannot honour it would schedule a machine nothing will ever
-/// reconcile.
-#[must_use]
-pub fn supports_shared_provider(class: &str) -> bool {
-    banlieue_provider_sdk::scope::supports_shared_provider(class)
 }
 
 /// Whether the reconciler should look in the provider namespace at all.
@@ -103,6 +92,11 @@ pub fn select_candidates(
             source: CandidateSource::VmNamespace,
         };
     }
+    // Only a class that resolves its `Provider` from its own namespace can
+    // serve a machine whose `providerRef` names another namespace. The list
+    // is shared with the operator (ADR-0133 Decision 10): offering a foreign
+    // reference to a class that cannot honour it would schedule a machine
+    // nothing will ever reconcile.
     let providers: Vec<Provider> = platform
         .into_iter()
         .filter(|p| supports_shared_provider(&p.spec.provider_class_ref.name))

@@ -122,19 +122,6 @@ mod tests {
         assert_eq!(parse(&[]).provider_name, None);
     }
 
-    /// A per-instance workload must narrow its watch server-side rather than
-    /// filtering in the reconciler, or every pod caches every backend's objects.
-    #[test]
-    fn provider_name_produces_a_field_selector_for_that_object() {
-        let cfg = provider_watch_config(Some("prod-vc"));
-        assert_eq!(cfg.field_selector.as_deref(), Some("metadata.name=prod-vc"));
-    }
-
-    #[test]
-    fn no_provider_name_leaves_the_watch_unscoped() {
-        assert!(provider_watch_config(None).field_selector.is_none());
-    }
-
     // ------------------------------------------------------------------
     // vmimage_ref_from_job — event-driven VMImage reconciliation off the
     // per-zone import Job's status, instead of polling (found live: after

@@ -26,7 +26,7 @@
 //! Pure logic only; I/O is driven by the CLI wrapper in
 //! `src/bin/auto_vex_reachability.rs`.
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 
 // Re-export the OpenVEX shape and Grype shape from auto_vex_presence so
@@ -177,14 +177,10 @@ pub fn compute_reachability_vex(
     product_purl: &str,
     statement_timestamp: &str,
 ) -> Vec<Statement> {
-    let mut emitted: BTreeSet<String> = BTreeSet::new();
     let mut statements: BTreeMap<String, Statement> = BTreeMap::new();
     for m in &grype.matches {
         let cve = &m.vulnerability.id;
-        if already_triaged.contains(cve) {
-            continue;
-        }
-        if emitted.contains(cve) {
+        if already_triaged.contains(cve) || statements.contains_key(cve) {
             continue;
         }
         let fns = match affected_functions.get(cve) {
@@ -196,7 +192,6 @@ pub fn compute_reachability_vex(
         if fns.iter().any(|f| imported_symbols.contains(f)) {
             continue;
         }
-        emitted.insert(cve.clone());
         let impact = format!(
             "{} ({}). The dynamic symbol-import table was inspected via \
              `nm -D --undefined-only` against the release artifact; \

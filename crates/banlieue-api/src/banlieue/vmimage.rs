@@ -8,7 +8,7 @@
 //! supported) importing the image on demand.
 
 use crate::common::{
-    CloudConfigSource, DiskProvisioning, Firmware, FirstBootSealing, LocalObjectReference,
+    CloudConfigSource, DiskProvisioning, Firmware, FirstBootSealing, LocalObjectReference, is_false,
 };
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Condition;
 use kube::CustomResource;
@@ -506,11 +506,6 @@ impl std::str::FromStr for NicAdapter {
             )),
         }
     }
-}
-
-/// `skip_serializing_if` predicate: omit a `bool` field when it is `false`.
-fn is_false(b: &bool) -> bool {
-    !*b
 }
 
 /// Broad operating-system family of a VMImage.

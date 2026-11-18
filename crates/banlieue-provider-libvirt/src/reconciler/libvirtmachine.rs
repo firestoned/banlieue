@@ -44,6 +44,7 @@ use banlieue_libvirt::{
     Domain, DomainInterface, DomainState, InterfaceAddressSource, StoragePool, StorageVol,
     qcow2_overlay_volume_xml, qcow2_volume_xml, raw_volume_xml,
 };
+use banlieue_provider_sdk::capacity::BYTES_PER_GIB;
 use banlieue_provider_sdk::finalizer::{ensure_finalizer, remove_finalizer};
 use banlieue_provider_sdk::reconciler::{
     REQUEUE_DEFAULT_SECS, REQUEUE_LONG_SECS, requeue_default, requeue_on_error,
@@ -52,17 +53,12 @@ use banlieue_provider_sdk::sealing::{
     REASON_FIRST_BOOT_SEALING_TIMEOUT, REASON_FIRST_BOOT_SEALING_UNVERIFIED, SealingGate,
     sealing_gate, sticky_sealed_partitions,
 };
-use banlieue_provider_sdk::ssa::FIELD_MANAGER_PROVIDER_LIBVIRT;
+use banlieue_provider_sdk::ssa::{FIELD_MANAGER_PROVIDER_LIBVIRT, apply_status, is_not_found};
 use banlieue_provider_sdk::status::{condition_status, declared_addresses, set_condition};
 
 use crate::guest::{EK_PATH, EkProbe, GuestProbe, MARKER_PATH, SEALED_PATH, expected_ek_cn};
 use k8s_openapi::jiff::Timestamp;
-use kube::{
-    ResourceExt,
-    api::{Api, Patch, PatchParams},
-    runtime::controller::Action,
-};
-use serde_json::json;
+use kube::{ResourceExt, api::Api, runtime::controller::Action};
 use tracing::{debug, info, warn};
 
 use crate::context::Context;
@@ -114,9 +110,6 @@ fn seed_network_config(spec: &LibvirtMachineSpec) -> Option<String> {
         .collect();
     network_config(&nics)
 }
-
-/// Bytes per GiB, for converting `sizeGiB` to the byte capacity libvirt wants.
-const BYTES_PER_GIB: u64 = 1024 * 1024 * 1024;
 
 /// Format of the backing image banlieue's own pipeline uploads.
 ///
@@ -283,17 +276,6 @@ pub async fn reconcile(machine: Arc<LibvirtMachine>, ctx: Arc<Context>) -> Resul
             Ok(requeue_on_error())
         }
     }
-}
-
-/// Requeue policy for a failed reconcile.
-///
-/// Uniform backoff rather than a per-error branch: the failures this
-/// reconciler sees are almost all transient (host unreachable, pool not yet
-/// refreshed, image import still running), and the ones that are not already
-/// surface as a `Ready=False` condition carrying their own message.
-pub fn error_policy(_machine: Arc<LibvirtMachine>, err: &Error, _ctx: Arc<Context>) -> Action {
-    warn!(error = %err, "libvirt machine reconcile error policy fired");
-    requeue_on_error()
 }
 
 /// What one convergence pass observed about the backend.
@@ -1027,9 +1009,6 @@ async fn finalize(
     Ok(requeue_default())
 }
 
-/// The API server's status code for an object that does not exist.
-const HTTP_NOT_FOUND: u16 = 404;
-
 /// Whether `err` says the `LibvirtMachine` itself no longer exists.
 #[must_use]
 pub fn is_gone(err: &Error) -> bool {
@@ -1037,7 +1016,7 @@ pub fn is_gone(err: &Error) -> bool {
         Error::Kube(e) | Error::Sdk(banlieue_provider_sdk::Error::Kube(e)) => e,
         _ => return false,
     };
-    matches!(kube, kube::Error::Api(status) if status.code == HTTP_NOT_FOUND)
+    is_not_found(kube)
 }
 
 /// A status write failed with `err`. If the machine is gone, remove what
@@ -1150,18 +1129,7 @@ async fn patch_status(
     name: &str,
     status: &LibvirtMachineStatus,
 ) -> Result<()> {
-    let patch = json!({
-        "apiVersion": "infrastructure.banlieue.io/v1alpha1",
-        "kind": "LibvirtMachine",
-        "status": status,
-    });
-    api.patch_status(
-        name,
-        &PatchParams::apply(FIELD_MANAGER_PROVIDER_LIBVIRT).force(),
-        &Patch::Apply(&patch),
-    )
-    .await?;
-    Ok(())
+    Ok(apply_status(api, name, FIELD_MANAGER_PROVIDER_LIBVIRT, status, true).await?)
 }
 
 /// How long an unreachable guest agent is read as "not yet" rather than

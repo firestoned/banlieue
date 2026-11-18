@@ -14,9 +14,8 @@
 //! guest must not be able to make a reconcile loop panic, allocate without
 //! bound, or retry forever.
 
-use banlieue_libvirt::{AGENT_TIMEOUT_DEFAULT, Domain, Session, domain_qemu_agent_command};
+use banlieue_libvirt::{AGENT_TIMEOUT_DEFAULT, Domain, Io, Session, domain_qemu_agent_command};
 use base64::Engine as _;
-use tokio::io::{AsyncRead, AsyncWrite};
 
 /// Path the installed system writes its phase to.
 ///
@@ -203,10 +202,7 @@ impl GuestProbe {
 /// # Errors
 /// Never fails on a guest-side condition. Propagates only transport errors
 /// that mean the *host* connection is unusable.
-pub async fn probe_guest<S>(session: &mut Session<S>, dom: &Domain) -> GuestProbe
-where
-    S: AsyncRead + AsyncWrite + Unpin,
-{
+pub async fn probe_guest<S: Io>(session: &mut Session<S>, dom: &Domain) -> GuestProbe {
     let open = guest_file_open_cmd(MARKER_PATH);
     // An agent error is NOT delivered as an Ok payload carrying JSON:
     // libvirtd turns it into an RPC fault, so `guest-file-open` on a marker
@@ -261,10 +257,7 @@ pub fn sealed_from_read(reply: &str) -> Vec<String> {
 /// Read-only throughout, exactly like [`read_ek_certificate`]:
 /// `guest-file-open` with `mode: "r"`, read, close. An absent file, no agent
 /// and an unreadable reply all mean "nothing reported yet".
-pub async fn read_sealed_report<S>(session: &mut Session<S>, dom: &Domain) -> Vec<String>
-where
-    S: AsyncRead + AsyncWrite + Unpin,
-{
+pub async fn read_sealed_report<S: Io>(session: &mut Session<S>, dom: &Domain) -> Vec<String> {
     let open = guest_file_open_cmd(SEALED_PATH);
     let Ok(Some(reply)) =
         domain_qemu_agent_command(session, dom, &open, AGENT_TIMEOUT_DEFAULT).await
@@ -314,15 +307,12 @@ pub enum EkProbe {
 /// does so as [`EkProbe::NotPublished`] for the same reason `probe_guest`
 /// collapses its transport failures: a member spends most of its install
 /// legitimately in this state.
-pub async fn read_ek_certificate<S>(
+pub async fn read_ek_certificate<S: Io>(
     session: &mut Session<S>,
     dom: &Domain,
     domain_name: &str,
     domain_uuid: &str,
-) -> EkProbe
-where
-    S: AsyncRead + AsyncWrite + Unpin,
-{
+) -> EkProbe {
     let open = guest_file_open_cmd(EK_PATH);
     let reply = match domain_qemu_agent_command(session, dom, &open, AGENT_TIMEOUT_DEFAULT).await {
         Ok(Some(reply)) => reply,
@@ -362,10 +352,7 @@ where
 /// while a Deferred member installs, and the reason this distinction exists
 /// at all: `AgentUnreachable` and `NotAnnounced` drive different requeue
 /// cadences (ADR-0043 Decision 8).
-async fn classify_open_failure<S>(session: &mut Session<S>, dom: &Domain) -> GuestProbe
-where
-    S: AsyncRead + AsyncWrite + Unpin,
-{
+async fn classify_open_failure<S: Io>(session: &mut Session<S>, dom: &Domain) -> GuestProbe {
     match domain_qemu_agent_command(session, dom, &guest_ping_cmd(), AGENT_TIMEOUT_DEFAULT).await {
         Ok(Some(_)) => GuestProbe::NotAnnounced,
         Ok(None) | Err(_) => GuestProbe::AgentUnreachable,

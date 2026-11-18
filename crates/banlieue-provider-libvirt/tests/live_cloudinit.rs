@@ -67,22 +67,17 @@
 //! - **Overlay smaller than the backing image's virtual size.** The guest
 //!   gets a truncated disk and never boots.
 
-use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use banlieue_api::common::{Firmware, IpamSpec, PowerState, ProviderReference};
-use banlieue_api::infrastructure::{
-    LibvirtBootSource, LibvirtBootSourceKind, LibvirtDiskBus, LibvirtDiskSpec, LibvirtMachineSpec,
-    LibvirtNicSource, LibvirtNicSourceKind, LibvirtNicSpec,
-};
-use banlieue_libvirt::{
-    DEFAULT_TLS_PORT, TlsIdentity, connect_open, connect_tls, list_all_networks,
-    network_get_dhcp_leases,
-};
-use banlieue_provider_libvirt::machine_client::SessionMachineClient;
+use banlieue_api::infrastructure::LibvirtMachineSpec;
+use banlieue_libvirt::{list_all_networks, network_get_dhcp_leases};
+use banlieue_provider_libvirt::machine_client::{LibvirtMachineClient, SessionMachineClient};
 use banlieue_provider_libvirt::reconciler::libvirtmachine::{
     converge, finalize_backend, with_derived_macs,
 };
+
+mod common;
+use common::{base_spec, load_identity, network_name, open_session, os_disk, settings};
 
 /// How long to wait for the guest to boot and DHCP. CirrOS is usually up in
 /// well under a minute; the rest is headroom for a loaded host.
@@ -95,87 +90,22 @@ const DEFAULT_STATIC_PREFIX: u8 = 24;
 /// network the seed configured, and report: the package install is most of it.
 const STATIC_BOOT_TIMEOUT: Duration = Duration::from_secs(480);
 
-fn settings() -> Option<(String, PathBuf, String, String)> {
-    Some((
-        std::env::var("LIBVIRT_HOST").ok()?,
-        PathBuf::from(expand_home(&std::env::var("LIBVIRT_TLS_DIR").ok()?)),
-        std::env::var("LIBVIRT_POOL").unwrap_or_else(|_| "default".to_string()),
-        std::env::var("LIBVIRT_SOURCE_VOLUME").ok()?,
-    ))
-}
-
-fn expand_home(p: &str) -> String {
-    match (p.strip_prefix("~/"), std::env::var("HOME")) {
-        (Some(rest), Ok(home)) => format!("{home}/{rest}"),
-        _ => p.to_string(),
-    }
-}
-
-fn load_identity(dir: &Path) -> TlsIdentity {
-    let read = |name: &str| {
-        std::fs::read(dir.join(name))
-            .unwrap_or_else(|e| panic!("reading {}/{name}: {e}", dir.display()))
-    };
-    TlsIdentity {
-        ca_pem: read("ca.pem"),
-        client_cert_pem: read("client-cert.pem"),
-        client_key_pem: read("client-key.pem"),
-    }
-}
-
 fn spec(domain_name: &str, pool: &str, source_volume: &str) -> LibvirtMachineSpec {
+    // `LIBVIRT_DISK_GIB`, default 20. Must be at least the backing image's
+    // *virtual* size: a qcow2 overlay smaller than what it overlays gives the
+    // guest a truncated disk, so it never reaches a bootloader.
+    let disk_gib = std::env::var("LIBVIRT_DISK_GIB")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(20);
     LibvirtMachineSpec {
-        provider_id: None,
-        failure_domain: None,
-        provider_ref: ProviderReference {
-            name: "live-test".to_string(),
-            namespace: None,
-        },
-        pool: pool.to_string(),
-        domain_name: domain_name.to_string(),
-        boot_source: LibvirtBootSource {
-            kind: LibvirtBootSourceKind::BackingVolume,
-            volume: source_volume.to_string(),
-        },
-        vcpus: 2,
-        memory_mi_b: 2048,
-        // `LIBVIRT_FIRMWARE=bios|efi`, default EFI. The image decides:
-        // Kairos builds are EFI-only, while CirrOS's plain disk image is
-        // MBR/BIOS. Booting one with the other's firmware yields a domain
-        // that runs and never reaches a bootloader — which looks exactly
-        // like "the guest ignored the seed".
-        firmware: match std::env::var("LIBVIRT_FIRMWARE").as_deref() {
-            Ok("bios") => Firmware::Bios,
-            _ => Firmware::Efi,
-        },
-        machine_type: None,
-        tpm_enabled: false,
-        disks: vec![LibvirtDiskSpec {
-            name: "os".to_string(),
-            // `LIBVIRT_DISK_GIB`, default 20. Must be at least the backing
-            // image's *virtual* size: a qcow2 overlay smaller than what it
-            // overlays gives the guest a truncated disk, so it never
-            // reaches a bootloader.
-            size_gi_b: std::env::var("LIBVIRT_DISK_GIB")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(20),
-            bus: LibvirtDiskBus::Virtio,
-        }],
-        network: vec![LibvirtNicSpec {
-            name: "eth0".to_string(),
-            source: LibvirtNicSource {
-                kind: LibvirtNicSourceKind::Network,
-                name: std::env::var("LIBVIRT_NETWORK").unwrap_or_else(|_| "default".to_string()),
-            },
-            model: None,
-            mac_address: None,
-            ipam: IpamSpec::default(),
-        }],
+        // The firmware follows `LIBVIRT_FIRMWARE`: with the wrong one a domain
+        // runs and never reaches a bootloader, which looks exactly like "the
+        // guest ignored the seed".
+        disks: vec![os_disk(disk_gib)],
         // A marker the guest can only have got from the seed.
         user_data: Some("#cloud-config\n".to_string()),
-        desired_power_state: PowerState::PoweredOn,
-        first_boot_sealing: None,
+        ..base_spec(domain_name, pool, source_volume)
     }
 }
 
@@ -207,21 +137,10 @@ async fn hostname_lease_case(user_data: Option<String>) {
     // Two sessions: one drives the machine, one polls leases. A session
     // carries a single in-flight call, so sharing would mean interleaving
     // the poll with whatever converge is doing.
-    let mut machine_session = connect_tls(&host, DEFAULT_TLS_PORT, &identity)
-        .await
-        .expect("TLS (machine)");
-    connect_open(&mut machine_session, Some("qemu:///system"), false)
-        .await
-        .expect("CONNECT_OPEN (machine)");
-    let mut client = SessionMachineClient::new(machine_session);
+    let mut client = SessionMachineClient::new(open_session(&host, &identity).await);
 
-    let mut lease_session = connect_tls(&host, DEFAULT_TLS_PORT, &identity)
-        .await
-        .expect("TLS (leases)");
-    connect_open(&mut lease_session, Some("qemu:///system"), false)
-        .await
-        .expect("CONNECT_OPEN (leases)");
-    let net_name = std::env::var("LIBVIRT_NETWORK").unwrap_or_else(|_| "default".to_string());
+    let mut lease_session = open_session(&host, &identity).await;
+    let net_name = network_name();
     let network = list_all_networks(&mut lease_session)
         .await
         .expect("list networks")
@@ -270,7 +189,6 @@ async fn hostname_lease_case(user_data: Option<String>) {
                 // bootloader, one that is Running with no address booted but
                 // did not network, and one with an address but no matching
                 // lease hostname read no seed.
-                use banlieue_provider_libvirt::machine_client::LibvirtMachineClient;
                 let state = match client.lookup_domain(&domain_name).await {
                     Ok(Some(d)) => match client.domain_state(&d).await {
                         Ok(st) => format!("{st:?}"),
@@ -279,10 +197,9 @@ async fn hostname_lease_case(user_data: Option<String>) {
                     Ok(None) => "gone".to_string(),
                     Err(e) => format!("lookup-error: {e}"),
                 };
-                let addrs = match client.domain_addresses_any(&domain_name).await {
-                    Some(a) => a,
-                    None => "none".to_string(),
-                };
+                let addrs = domain_addresses_any(&mut client, &domain_name)
+                    .await
+                    .unwrap_or_else(|| "none".to_string());
                 let names: Vec<&str> = leases
                     .iter()
                     .filter_map(|l| l.hostname.as_deref())
@@ -310,6 +227,22 @@ async fn hostname_lease_case(user_data: Option<String>) {
 }
 
 /// A unique domain name for one run, `<prefix>-<epoch seconds>`.
+/// Diagnostic helper: a domain's addresses as a printable string, whichever
+/// source answers, or `None` when none does. "The guest is Running but has no
+/// address" and "the guest never booted" look identical from the outside.
+async fn domain_addresses_any(
+    client: &mut impl LibvirtMachineClient,
+    domain_name: &str,
+) -> Option<String> {
+    let domain = client.lookup_domain(domain_name).await.ok().flatten()?;
+    let (ifaces, source) = client.domain_addresses(&domain).await.ok().flatten()?;
+    let listed: Vec<String> = ifaces
+        .iter()
+        .flat_map(|i| i.addrs.iter().map(|a| a.addr.clone()))
+        .collect();
+    Some(format!("{listed:?} via {source:?}"))
+}
+
 fn run_name(prefix: &str) -> String {
     format!(
         "{prefix}-{}",
@@ -336,13 +269,7 @@ async fn a_guest_applies_a_static_address_from_the_seed() {
         .unwrap_or(DEFAULT_STATIC_PREFIX);
     let identity = load_identity(&dir);
 
-    let mut session = connect_tls(&host, DEFAULT_TLS_PORT, &identity)
-        .await
-        .expect("TLS (machine)");
-    connect_open(&mut session, Some("qemu:///system"), false)
-        .await
-        .expect("CONNECT_OPEN (machine)");
-    let mut client = SessionMachineClient::new(session);
+    let mut client = SessionMachineClient::new(open_session(&host, &identity).await);
 
     let domain_name = run_name("staticcheck");
     let mut base = spec(&domain_name, &pool, &source_volume);
@@ -372,7 +299,6 @@ async fn a_guest_applies_a_static_address_from_the_seed() {
 
     let mut seen = false;
     if outcome.is_ok() {
-        use banlieue_provider_libvirt::machine_client::LibvirtMachineClient;
         let deadline = Instant::now() + STATIC_BOOT_TIMEOUT;
         while Instant::now() < deadline && !seen {
             tokio::time::sleep(POLL_INTERVAL).await;
@@ -433,13 +359,7 @@ async fn a_static_guest_without_an_agent_reports_its_declared_address() {
     let gateway = std::env::var("LIBVIRT_STATIC_GATEWAY")
         .expect("set LIBVIRT_STATIC_GATEWAY: LIBVIRT_NETWORK's gateway");
     let identity = load_identity(&dir);
-    let mut session = connect_tls(&host, DEFAULT_TLS_PORT, &identity)
-        .await
-        .expect("TLS (machine)");
-    connect_open(&mut session, Some("qemu:///system"), false)
-        .await
-        .expect("CONNECT_OPEN (machine)");
-    let mut client = SessionMachineClient::new(session);
+    let mut client = SessionMachineClient::new(open_session(&host, &identity).await);
 
     let domain_name = run_name("declaredcheck");
     let mut base = spec(&domain_name, &pool, &source_volume);

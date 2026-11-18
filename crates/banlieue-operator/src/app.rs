@@ -24,15 +24,12 @@ use banlieue_provider_sdk::bootstrap::{
     Observability, init_tracing, shutdown_signal, start_observability,
 };
 use banlieue_provider_sdk::client::build_client;
+use banlieue_provider_sdk::defaults::{DEFAULT_HEALTH_PORT, DEFAULT_METRICS_PORT};
 use banlieue_provider_sdk::health::Election;
-use banlieue_provider_sdk::leader::{
-    DEFAULT_LEASE_DURATION_SECS, DEFAULT_RENEW_PERIOD_SECS, DEFAULT_RETRY_PERIOD_SECS,
-    LeaderConfig, acquire_or_wait, renew_forever,
-};
+use banlieue_provider_sdk::leader::{self, LeaderConfig};
 use banlieue_provider_sdk::runner::run_controller;
 use banlieue_provider_sdk::scope::{
-    NamespaceGate, Scope, ScopeError, check_selector, resolve_scope, scope_is_implicit,
-    scope_trigger, spawn_namespace_gate,
+    Scope, ScopeError, check_selector, resolve_scope, scope_is_implicit, start_gate,
 };
 use clap::Args;
 use k8s_openapi::api::apps::v1::Deployment;
@@ -40,16 +37,14 @@ use kube::{
     Api, ResourceExt,
     runtime::{Controller, reflector::ObjectRef, watcher::Config},
 };
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 use crate::{
+    bootstrap::DEFAULT_NAMESPACE,
     context::Context,
     reconciler::{provider, providerclass},
 };
 
-const DEFAULT_HEALTH_PORT: u16 = 8081;
-const DEFAULT_METRICS_PORT: u16 = 8080;
-const DEFAULT_NAMESPACE: &str = "banlieue-system";
 const DEFAULT_LEADER_ELECTION_ID: &str = "banlieue-operator";
 
 /// This role's name: the OTLP `service.name` (ADR-0092) and the `role`
@@ -200,42 +195,14 @@ pub async fn run(cli: Cli) -> Result<()> {
             .await
             .context("starting health and metrics servers")?;
 
-    if let Some(leader_cfg) = leader_cfg {
-        info!(
-            namespace = %leader_cfg.namespace,
-            lease = %leader_cfg.lease_name,
-            identity = %leader_cfg.identity,
-            "waiting for leader election"
-        );
-        acquire_or_wait(client.clone(), &leader_cfg, &readiness)
-            .await
-            .context("acquiring leader lease")?;
-
-        let renewer_client = client.clone();
-        let renewer_readiness = readiness.clone();
-        tokio::spawn(async move {
-            if let Err(e) = renew_forever(renewer_client, leader_cfg, renewer_readiness).await {
-                error!(error = %e, "leader lease renewer terminated — exiting");
-                std::process::exit(1);
-            }
-        });
-    } else {
-        info!("leader election disabled by --no-leader-elect");
-    }
+    leader::elect(client.clone(), leader_cfg, &readiness)
+        .await
+        .context("acquiring leader lease")?;
 
     // Selector mode: watch every namespace and gate each reconcile on a
     // selector-filtered Namespace reflector, whose changes reconcile every
     // Provider again. Single-namespace modes narrow the watch and need neither.
-    let (scope_tx, scope_rx) = tokio::sync::watch::channel(0_u64);
-    let (gate, scope_tx) = match &scope {
-        Scope::Selector(selector) => {
-            let gate = spawn_namespace_gate(&client, selector, scope_tx)
-                .await
-                .context("starting the namespace selector watch")?;
-            (gate, None)
-        }
-        Scope::Namespace(_) => (NamespaceGate::none(), Some(scope_tx)),
-    };
+    let (gate, scope_changes) = start_gate(&client, scope.selector(), None).await?;
 
     let ctx = Arc::new(
         Context::with_build_scheduling(
@@ -266,7 +233,7 @@ pub async fn run(cli: Cli) -> Result<()> {
     // un-pausing a class took up to five minutes (bug-117), and an image bump
     // took up to 30s. Both are now immediate.
     let provider_controller =
-        Controller::new(provider_api, Config::default()).reconcile_all_on(scope_trigger(scope_rx));
+        Controller::new(provider_api, Config::default()).reconcile_all_on(scope_changes.trigger());
     let provider_store = provider_controller.store();
     let class_watch_api: Api<ProviderClass> = Api::all(client.clone());
 
@@ -323,9 +290,6 @@ pub async fn run(cli: Cli) -> Result<()> {
         }
     }
 
-    // Held to here so a single-namespace run's trigger stream stays pending
-    // instead of ending when the sender drops.
-    drop(scope_tx);
     telemetry.shutdown();
     Ok(())
 }
@@ -357,18 +321,8 @@ pub fn watch_scope_is_implicit(cli: &Cli) -> bool {
 /// Build a [`LeaderConfig`] from parsed CLI flags, filling the holder identity
 /// from `--leader-election-identity` or the `POD_NAME` / `HOSTNAME` fallback.
 fn build_leader_config(cli: &Cli) -> LeaderConfig {
-    let identity = cli
-        .leader_election_identity
-        .clone()
-        .unwrap_or_else(LeaderConfig::default_identity);
-    LeaderConfig {
-        namespace: cli.leader_election_namespace.clone(),
-        lease_name: cli.leader_election_id.clone(),
-        identity,
-        lease_duration: Duration::from_secs(DEFAULT_LEASE_DURATION_SECS),
-        renew_period: Duration::from_secs(DEFAULT_RENEW_PERIOD_SECS),
-        retry_period: Duration::from_secs(DEFAULT_RETRY_PERIOD_SECS),
-    }
+    LeaderConfig::new(&cli.leader_election_namespace, &cli.leader_election_id)
+        .with_identity(cli.leader_election_identity.clone())
 }
 
 #[cfg(test)]

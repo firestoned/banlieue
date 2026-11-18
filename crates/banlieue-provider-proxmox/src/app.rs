@@ -10,7 +10,6 @@
 //! [`run_controller`]. All three are watch-driven: nothing here polls.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use anyhow::{Context as _, Result};
 use banlieue_api::banlieue::{Provider, VMImage};
@@ -19,29 +18,25 @@ use banlieue_provider_sdk::bootstrap::{
     Observability, init_tracing, shutdown_signal, start_observability,
 };
 use banlieue_provider_sdk::client::build_client_with;
+use banlieue_provider_sdk::defaults::{
+    DEFAULT_HEALTH_PORT, DEFAULT_LEADER_ELECTION_NAMESPACE, DEFAULT_METRICS_PORT,
+};
 use banlieue_provider_sdk::health::Election;
-use banlieue_provider_sdk::leader::{
-    DEFAULT_LEASE_DURATION_SECS, DEFAULT_RENEW_PERIOD_SECS, DEFAULT_RETRY_PERIOD_SECS,
-    LeaderConfig, acquire_or_wait, renew_forever,
-};
+use banlieue_provider_sdk::leader::{LeaderConfig, elect};
+use banlieue_provider_sdk::reconciler::{provider_watch_config, requeue_error_policy};
 use banlieue_provider_sdk::runner::run_controller;
-use banlieue_provider_sdk::scope::{
-    NamespaceGate, ProviderScope, check_selector, scope_trigger, spawn_namespace_gate,
-};
+use banlieue_provider_sdk::scope::{ProviderScope, start_gate};
 use clap::Args;
 use kube::{
     Api,
     runtime::{Controller, watcher::Config},
 };
-use tracing::{error, info};
+use tracing::info;
 
 use crate::client::{HttpClientFactory, install_default_crypto_provider};
 use crate::context::Context;
 use crate::reconciler::{image, provider, proxmoxmachine};
 
-const DEFAULT_HEALTH_PORT: u16 = 8081;
-const DEFAULT_METRICS_PORT: u16 = 8080;
-const DEFAULT_LEADER_ELECTION_NAMESPACE: &str = "banlieue-system";
 const DEFAULT_LEADER_ELECTION_ID: &str = "banlieue-provider-proxmox";
 
 /// This role's name: the OTLP `service.name` (ADR-0092) and the `role`
@@ -132,16 +127,6 @@ pub struct Cli {
     pub build_toleration: Vec<String>,
 }
 
-/// Watch configuration for the `Provider` controller, standalone so the
-/// scoping rule is unit-testable without a cluster.
-#[must_use]
-pub fn provider_watch_config(provider_name: Option<&str>) -> Config {
-    match provider_name {
-        Some(name) => Config::default().fields(&format!("metadata.name={name}")),
-        None => Config::default(),
-    }
-}
-
 /// Run the Proxmox provider to completion.
 ///
 /// # Errors
@@ -190,40 +175,20 @@ pub async fn run(cli: Cli) -> Result<()> {
             .await
             .context("starting health and metrics servers")?;
 
-    if let Some(leader_cfg) = leader_cfg {
-        info!(lease = %leader_cfg.lease_name, "waiting for leader election");
-        acquire_or_wait(client.clone(), &leader_cfg, &readiness)
-            .await
-            .context("acquiring leader lease")?;
-        let renewer_client = client.clone();
-        let renewer_readiness = readiness.clone();
-        tokio::spawn(async move {
-            if let Err(e) = renew_forever(renewer_client, leader_cfg, renewer_readiness).await {
-                error!(error = %e, "leader lease renewer terminated; exiting");
-                std::process::exit(1);
-            }
-        });
-    } else {
-        info!("leader election disabled by --no-leader-elect");
-    }
+    elect(client.clone(), leader_cfg, &readiness)
+        .await
+        .context("acquiring leader lease")?;
 
     // Selector mode (ADR-0133): watch machines in every namespace and gate each
     // reconcile on a Namespace reflector the API server has already filtered by
     // the selector. An invalid selector fails startup here, not later as a
     // provider that serves nothing.
-    let (scope_tx, scope_rx) = tokio::sync::watch::channel(0_u64);
-    let (gate, _scope_tx) = match scope.selector() {
-        Some(selector) => {
-            check_selector(&client, selector)
-                .await
-                .context("validating --watch-namespace-selector")?;
-            let gate = spawn_namespace_gate(&client, selector, scope_tx)
-                .await
-                .context("starting the namespace selector watch")?;
-            (gate, None)
-        }
-        None => (NamespaceGate::none(), Some(scope_tx)),
-    };
+    let (gate, scope_changes) = start_gate(
+        &client,
+        scope.selector(),
+        Some("--watch-namespace-selector"),
+    )
+    .await?;
 
     let ctx = Arc::new(
         Context::new(
@@ -245,7 +210,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         "Provider",
         metrics.clone(),
         provider::reconcile,
-        provider::error_policy,
+        requeue_error_policy,
         ctx.clone(),
     );
 
@@ -256,7 +221,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         "VMImage",
         metrics.clone(),
         image::reconcile,
-        image::error_policy,
+        requeue_error_policy,
         ctx.clone(),
     );
 
@@ -265,11 +230,11 @@ pub async fn run(cli: Cli) -> Result<()> {
     // behind the selector gate (ADR-0133). The Provider above never does.
     let machine_api: Api<ProxmoxMachine> = scope.api(&client);
     let machine_ctrl = run_controller(
-        Controller::new(machine_api, Config::default()).reconcile_all_on(scope_trigger(scope_rx)),
+        Controller::new(machine_api, Config::default()).reconcile_all_on(scope_changes.trigger()),
         "ProxmoxMachine",
         metrics.clone(),
         proxmoxmachine::reconcile,
-        proxmoxmachine::error_policy,
+        requeue_error_policy,
         ctx,
     );
 
@@ -287,17 +252,8 @@ pub async fn run(cli: Cli) -> Result<()> {
 
 /// Build a [`LeaderConfig`] from parsed CLI flags.
 fn build_leader_config(cli: &Cli) -> LeaderConfig {
-    LeaderConfig {
-        namespace: cli.leader_election_namespace.clone(),
-        lease_name: cli.leader_election_id.clone(),
-        identity: cli
-            .leader_election_identity
-            .clone()
-            .unwrap_or_else(LeaderConfig::default_identity),
-        lease_duration: Duration::from_secs(DEFAULT_LEASE_DURATION_SECS),
-        renew_period: Duration::from_secs(DEFAULT_RENEW_PERIOD_SECS),
-        retry_period: Duration::from_secs(DEFAULT_RETRY_PERIOD_SECS),
-    }
+    LeaderConfig::new(&cli.leader_election_namespace, &cli.leader_election_id)
+        .with_identity(cli.leader_election_identity.clone())
 }
 
 #[cfg(test)]

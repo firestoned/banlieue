@@ -274,20 +274,6 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_status_carries_the_reason_on_both_conditions() {
-        let s = failed_status(4, reasons::CONNECT_FAILED, "refused".into());
-        assert!(s.failure_domains.is_empty());
-        assert_eq!(s.observed_generation, Some(4));
-        for t in [condition_types::READY, condition_types::PROVIDER_REACHABLE] {
-            let c = find_condition(&s.conditions, t).unwrap();
-            assert_eq!(
-                (c.status.as_str(), c.reason.as_str()),
-                ("False", reasons::CONNECT_FAILED)
-            );
-        }
-    }
-
-    #[test]
     fn unauthorized_errors_get_their_own_reason() {
         let e = Error::Proxmox(banlieue_proxmox::Error::Api {
             status: 401,

@@ -4,6 +4,7 @@
 
 use banlieue_api::common::Firmware;
 use banlieue_api::infrastructure::{ProxmoxMachineSpec, ProxmoxNicSpec};
+use banlieue_provider_sdk::capacity::{BYTES_PER_GIB, MIB_PER_GIB};
 use banlieue_proxmox::{Params, VmConfig};
 
 /// Config key of the OS disk.
@@ -26,10 +27,8 @@ const SCSI_HW_IOTHREAD: &str = "virtio-scsi-single";
 /// Proxmox allocates a 1 GiB volume for an EFI or TPM state disk and ignores
 /// the size for both; `1` is the documented placeholder.
 const STATE_DISK_SIZE: u32 = 1;
-const MIB_PER_GIB: u64 = 1024;
 const GIB_PER_TIB: u64 = 1024;
 const KIB_PER_GIB: u64 = 1024 * 1024;
-const BYTES_PER_GIB: u64 = KIB_PER_GIB * 1024;
 
 /// Prefix of the ownership line in a VM's description.
 const OWNERSHIP_PREFIX: &str = "banlieue-machine-uid=";

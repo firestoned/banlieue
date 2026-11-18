@@ -20,7 +20,9 @@ mod tests {
     use banlieue_api::common::{DiskProvisioning, Firmware, LocalObjectReference};
     use kube::api::ObjectMeta;
 
-    use crate::client::{Datacenter, FakeClient, Inventory, VSphereClient};
+    use crate::client::{Datacenter, FakeClient, Inventory};
+
+    use crate::reconciler::test_fixtures::as_client;
 
     use super::super::{
         ImportForce, ImportJobIdentity, ImportJobInputs, build_import_job, compute_template_status,
@@ -100,8 +102,35 @@ mod tests {
         }
     }
 
-    fn as_client(c: &FakeClient) -> &dyn VSphereClient {
-        c
+    /// The import Job inputs every `build_import_job` test starts from: no
+    /// force, no template hardware, the namespace default ServiceAccount. A
+    /// test overrides what it is about with struct update syntax.
+    fn inputs<'a>(
+        provider: &'a Provider,
+        artifact: &'a BuildArtifactStatus,
+    ) -> ImportJobInputs<'a> {
+        ImportJobInputs {
+            job_name: "import-x",
+            namespace: "banlieue-imagebuild",
+            image: "img",
+            service_account: None,
+            vmimage: "kairos-rhel98",
+            provider,
+            failure_domain: "vc-dc-east-cluster-a",
+            artifact,
+            tolerations: &[],
+            force_upload: false,
+            force_create: false,
+            nics: &[],
+            disk: None,
+            cpus: None,
+            memory_mib: None,
+            firmware: None,
+            guest_id: None,
+            root_folder: None,
+            install_timeout_seconds: None,
+            install_mode: None,
+        }
     }
 
     // ---------- find_vsphere_source --------------------------------------
@@ -565,26 +594,9 @@ mod tests {
         let p = provider("vc", "banlieue-system");
         let artifact = iso_artifact(BuildArtifactPhase::Ready);
         let job = build_import_job(&ImportJobInputs {
-            job_name: "import-x",
-            namespace: "banlieue-imagebuild",
             image: "ghcr.io/firestoned/banlieue:local-dev",
             service_account: Some("banlieue-import"),
-            vmimage: "kairos-rhel98",
-            provider: &p,
-            failure_domain: "vc-dc-east-cluster-a",
-            artifact: &artifact,
-            tolerations: &[],
-            force_upload: false,
-            force_create: false,
-            nics: &[],
-            disk: None,
-            cpus: None,
-            memory_mib: None,
-            firmware: None,
-            guest_id: None,
-            root_folder: None,
-            install_timeout_seconds: None,
-            install_mode: None,
+            ..inputs(&p, &artifact)
         });
 
         assert_eq!(job["kind"], "Job");
@@ -618,28 +630,7 @@ mod tests {
         let p = provider("vc", "banlieue-system");
         let artifact = iso_artifact(BuildArtifactPhase::Ready);
         assert!(artifact.os_artifact_uid.is_none());
-        let job = build_import_job(&ImportJobInputs {
-            job_name: "import-x",
-            namespace: "banlieue-imagebuild",
-            image: "img",
-            service_account: None,
-            vmimage: "kairos-rhel98",
-            provider: &p,
-            failure_domain: "vc-dc-east-cluster-a",
-            artifact: &artifact,
-            tolerations: &[],
-            force_upload: false,
-            force_create: false,
-            nics: &[],
-            disk: None,
-            cpus: None,
-            memory_mib: None,
-            firmware: None,
-            guest_id: None,
-            root_folder: None,
-            install_timeout_seconds: None,
-            install_mode: None,
-        });
+        let job = build_import_job(&inputs(&p, &artifact));
         assert!(job["metadata"]["ownerReferences"].is_null());
     }
 
@@ -650,28 +641,7 @@ mod tests {
             os_artifact_uid: Some("11111111-2222-3333-4444-555555555555".to_string()),
             ..iso_artifact(BuildArtifactPhase::Ready)
         };
-        let job = build_import_job(&ImportJobInputs {
-            job_name: "import-x",
-            namespace: "banlieue-imagebuild",
-            image: "img",
-            service_account: None,
-            vmimage: "kairos-rhel98",
-            provider: &p,
-            failure_domain: "vc-dc-east-cluster-a",
-            artifact: &artifact,
-            tolerations: &[],
-            force_upload: false,
-            force_create: false,
-            nics: &[],
-            disk: None,
-            cpus: None,
-            memory_mib: None,
-            firmware: None,
-            guest_id: None,
-            root_folder: None,
-            install_timeout_seconds: None,
-            install_mode: None,
-        });
+        let job = build_import_job(&inputs(&p, &artifact));
         let owner = &job["metadata"]["ownerReferences"][0];
         assert_eq!(owner["apiVersion"], "build.kairos.io/v1alpha2");
         assert_eq!(owner["kind"], "OSArtifact");
@@ -684,28 +654,7 @@ mod tests {
         let p = provider("vc", "banlieue-system");
         let mut artifact = iso_artifact(BuildArtifactPhase::Ready);
         artifact.checksum = Some("sha256:abc".to_string());
-        let job = build_import_job(&ImportJobInputs {
-            job_name: "import-x",
-            namespace: "banlieue-imagebuild",
-            image: "img",
-            service_account: None,
-            vmimage: "kairos-rhel98",
-            provider: &p,
-            failure_domain: "vc-dc-east-cluster-a",
-            artifact: &artifact,
-            tolerations: &[],
-            force_upload: false,
-            force_create: false,
-            nics: &[],
-            disk: None,
-            cpus: None,
-            memory_mib: None,
-            firmware: None,
-            guest_id: None,
-            root_folder: None,
-            install_timeout_seconds: None,
-            install_mode: None,
-        });
+        let job = build_import_job(&inputs(&p, &artifact));
         let args: Vec<String> = job["spec"]["template"]["spec"]["containers"][0]["args"]
             .as_array()
             .unwrap()
@@ -722,26 +671,9 @@ mod tests {
         let artifact = iso_artifact(BuildArtifactPhase::Ready);
         let args_of = |upload: bool, create: bool| -> Vec<String> {
             let job = build_import_job(&ImportJobInputs {
-                job_name: "import-x",
-                namespace: "banlieue-imagebuild",
-                image: "img",
-                service_account: None,
-                vmimage: "kairos-rhel98",
-                provider: &p,
-                failure_domain: "vc-dc-east-cluster-a",
-                artifact: &artifact,
-                tolerations: &[],
                 force_upload: upload,
                 force_create: create,
-                nics: &[],
-                disk: None,
-                cpus: None,
-                memory_mib: None,
-                firmware: None,
-                guest_id: None,
-                root_folder: None,
-                install_timeout_seconds: None,
-                install_mode: None,
+                ..inputs(&p, &artifact)
             });
             job["spec"]["template"]["spec"]["containers"][0]["args"]
                 .as_array()
@@ -850,17 +782,6 @@ mod tests {
             pci_slot: Some(256),
         }];
         let job = build_import_job(&ImportJobInputs {
-            job_name: "import-x",
-            namespace: "banlieue-imagebuild",
-            image: "img",
-            service_account: None,
-            vmimage: "kairos-rhel98",
-            provider: &p,
-            failure_domain: "vc-dc-east-cluster-a",
-            artifact: &artifact,
-            tolerations: &[],
-            force_upload: false,
-            force_create: false,
             nics: &nics,
             disk: Some(&disk),
             cpus: Some(8),
@@ -870,6 +791,7 @@ mod tests {
             root_folder: Some("templates/kairos"),
             install_timeout_seconds: Some(900),
             install_mode: Some(InstallMode::Deferred),
+            ..inputs(&p, &artifact)
         });
         let args: Vec<String> = job["spec"]["template"]["spec"]["containers"][0]["args"]
             .as_array()
@@ -914,26 +836,8 @@ mod tests {
             },
         ];
         let job = build_import_job(&ImportJobInputs {
-            job_name: "import-x",
-            namespace: "banlieue-imagebuild",
-            image: "img",
-            service_account: None,
-            vmimage: "kairos-rhel98",
-            provider: &p,
-            failure_domain: "vc-dc-east-cluster-a",
-            artifact: &artifact,
-            tolerations: &[],
-            force_upload: false,
-            force_create: false,
             nics: &nics,
-            disk: None,
-            cpus: None,
-            memory_mib: None,
-            firmware: None,
-            guest_id: None,
-            root_folder: None,
-            install_timeout_seconds: None,
-            install_mode: None,
+            ..inputs(&p, &artifact)
         });
         let args: Vec<String> = job["spec"]["template"]["spec"]["containers"][0]["args"]
             .as_array()
@@ -959,28 +863,7 @@ mod tests {
     fn build_import_job_omits_install_timeout_flag_when_unset() {
         let p = provider("vc", "banlieue-system");
         let artifact = iso_artifact(BuildArtifactPhase::Ready);
-        let job = build_import_job(&ImportJobInputs {
-            job_name: "import-x",
-            namespace: "banlieue-imagebuild",
-            image: "img",
-            service_account: None,
-            vmimage: "kairos-rhel98",
-            provider: &p,
-            failure_domain: "vc-dc-east-cluster-a",
-            artifact: &artifact,
-            tolerations: &[],
-            force_upload: false,
-            force_create: false,
-            nics: &[],
-            disk: None,
-            cpus: None,
-            memory_mib: None,
-            firmware: None,
-            guest_id: None,
-            root_folder: None,
-            install_timeout_seconds: None,
-            install_mode: None,
-        });
+        let job = build_import_job(&inputs(&p, &artifact));
         let args: Vec<String> = job["spec"]["template"]["spec"]["containers"][0]["args"]
             .as_array()
             .unwrap()

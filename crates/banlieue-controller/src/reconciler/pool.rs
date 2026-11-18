@@ -18,16 +18,16 @@ use banlieue_api::banlieue::{
 use banlieue_api::common::{StaticIpamConfig, condition_types};
 use banlieue_provider_sdk::{
     reconciler::{requeue_default, requeue_long, requeue_on_error},
+    ssa::{apply_status, delete_ignoring_404},
     status::{condition_status, set_condition},
 };
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{Condition, OwnerReference};
 use k8s_openapi::jiff::Timestamp;
 use kube::{
     Resource, ResourceExt,
-    api::{Api, DeleteParams, ListParams, ObjectMeta, Patch, PatchParams, PostParams},
+    api::{Api, DeleteParams, ListParams, ObjectMeta, PostParams},
     runtime::{controller::Action, reflector::ObjectRef},
 };
-use serde_json::json;
 use tracing::{info, warn};
 
 use super::pool_plan::{AddressRange, MemberPhase, MemberView, NewMember, PoolInputs, plan};
@@ -112,11 +112,7 @@ pub async fn reconcile(pool: Arc<VirtualMachinePool>, ctx: Arc<Context>) -> Resu
 
     for (member, reason) in &decided.delete {
         info!(pool = %name, %member, ?reason, "deleting pool member");
-        match vm_api.delete(member, &DeleteParams::background()).await {
-            Ok(_) => {}
-            Err(kube::Error::Api(e)) if e.code == 404 => {}
-            Err(e) => return Err(Error::Kube(e)),
-        }
+        delete_ignoring_404(&vm_api, member, &DeleteParams::background()).await?;
     }
 
     for new in &decided.create {
@@ -508,16 +504,7 @@ async fn publish(
     };
 
     let api: Api<VirtualMachinePool> = Api::namespaced(ctx.client.clone(), namespace);
-    api.patch_status(
-        name,
-        &PatchParams::apply(FIELD_MANAGER).force(),
-        &Patch::Apply(json!({
-            "apiVersion": "banlieue.io/v1alpha1",
-            "kind": "VirtualMachinePool",
-            "status": status,
-        })),
-    )
-    .await?;
+    apply_status(&api, name, FIELD_MANAGER, &status, true).await?;
     Ok(())
 }
 

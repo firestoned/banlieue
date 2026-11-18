@@ -37,4 +37,13 @@ mod tests {
     fn qemu_overhead_is_published_per_vm() {
         assert_eq!(QEMU_MEMORY_OVERHEAD_MIB, 256);
     }
+
+    #[test]
+    fn min_known_is_the_smaller_or_whichever_is_known() {
+        assert_eq!(min_known(Some(3_u64), Some(5)), Some(3));
+        assert_eq!(min_known(Some(5_u64), Some(3)), Some(3));
+        assert_eq!(min_known(Some(5_u64), None), Some(5));
+        assert_eq!(min_known(None, Some(5_u64)), Some(5));
+        assert_eq!(min_known::<u64>(None, None), None);
+    }
 }

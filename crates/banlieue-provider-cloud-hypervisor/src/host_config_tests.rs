@@ -103,45 +103,45 @@ default = "br-test"
         HostConfig::parse(&FROM_BOOTSTRAP.replace(from, to))
     }
 
-    /// A typo in a key must fail loudly, not be silently ignored.
-    #[test]
-    fn an_unknown_key_is_refused() {
-        assert!(with("uid_count = 10000", "uid_cuont = 10000").is_err());
-    }
-
     /// A relative path would resolve against the provider's working
     /// directory, which nobody reasons about.
     #[test]
-    fn a_relative_path_is_refused() {
+    fn a_relative_firmware_path_is_invalid() {
         let e = with(
             "firmware = \"/opt/banlieue/firmware/ch-97eeb7b09/CLOUDHV.fd\"",
             "firmware = \"CLOUDHV.fd\"",
         )
         .unwrap_err();
         assert!(matches!(e, HostConfigError::Invalid(_)), "{e:?}");
-        assert!(with("default = \"/srv/banlieue/ch\"", "default = \"srv/ch\"").is_err());
     }
 
     #[test]
-    fn an_empty_uid_range_is_refused() {
-        assert!(with("uid_count = 10000", "uid_count = 0").is_err());
-    }
-
-    #[test]
-    fn a_uid_range_that_overflows_is_refused() {
-        assert!(with("uid_base = 2000000", "uid_base = 4294967290").is_err());
-    }
-
-    /// uid 0 is root. A guest must never run as it.
-    #[test]
-    fn a_uid_range_including_root_is_refused() {
-        assert!(with("uid_base = 2000000", "uid_base = 0").is_err());
-    }
-
-    #[test]
-    fn no_storage_or_network_class_is_refused() {
-        assert!(with("default = \"/srv/banlieue/ch\"", "").is_err());
-        assert!(with("default = \"br-test\"", "").is_err());
+    fn a_config_that_could_not_be_served_is_refused() {
+        for (case, from, to) in [
+            // A typo in a key must fail loudly, not be silently ignored.
+            ("unknown key", "uid_count = 10000", "uid_cuont = 10000"),
+            (
+                "relative storage path",
+                "default = \"/srv/banlieue/ch\"",
+                "default = \"srv/ch\"",
+            ),
+            ("empty uid range", "uid_count = 10000", "uid_count = 0"),
+            (
+                "uid range that overflows",
+                "uid_base = 2000000",
+                "uid_base = 4294967290",
+            ),
+            // uid 0 is root. A guest must never run as it.
+            (
+                "uid range including root",
+                "uid_base = 2000000",
+                "uid_base = 0",
+            ),
+            ("no storage class", "default = \"/srv/banlieue/ch\"", ""),
+            ("no network class", "default = \"br-test\"", ""),
+        ] {
+            assert!(with(from, to).is_err(), "{case} should be refused");
+        }
     }
 
     /// Linux interface names are at most 15 characters (IFNAMSIZ − 1).

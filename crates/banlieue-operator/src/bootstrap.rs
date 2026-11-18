@@ -39,22 +39,23 @@ use banlieue_provider_sdk::ssa::server_side_apply;
 use clap::{Args, Subcommand};
 use k8s_openapi::api::apps::v1::{Deployment, DeploymentSpec};
 use k8s_openapi::api::core::v1::{
-    ConfigMap, Container, ContainerPort, EnvVar, EnvVarSource, HTTPGetAction, Namespace,
-    ObjectFieldSelector, PodSecurityContext, PodSpec, PodTemplateSpec, Probe, ResourceRequirements,
-    SeccompProfile, SecurityContext, ServiceAccount,
+    ConfigMap, Container, Namespace, PodSpec, PodTemplateSpec, ServiceAccount,
 };
-use k8s_openapi::api::rbac::v1::{
-    ClusterRole, ClusterRoleBinding, PolicyRule, Role, RoleBinding, RoleRef, Subject,
-};
+use k8s_openapi::api::rbac::v1::{ClusterRole, ClusterRoleBinding, PolicyRule, Role, RoleBinding};
 use k8s_openapi::apiextensions_apiserver::pkg::apis::apiextensions::v1::CustomResourceDefinition;
-use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{LabelSelector, ObjectMeta};
-use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
 use kube::Api;
 use std::collections::BTreeMap;
 use tracing::info;
 
 use crate::naming::{APP_NAME, LABEL_COMPONENT, LABEL_MANAGED_BY, LABEL_NAME};
+use crate::pod::{
+    DEFAULT_CPU_REQUEST, DEFAULT_MEMORY_REQUEST, HEALTH_PORT, LIVENESS_INITIAL_DELAY_SECS,
+    LIVENESS_PATH, LIVENESS_PERIOD_SECS, METRICS_PORT, READINESS_INITIAL_DELAY_SECS,
+    READINESS_PATH, READINESS_PERIOD_SECS, TERMINATION_GRACE_PERIOD_SECS, container_ports,
+    container_security_context, downward_api_env, http_probe, pod_security_context, resources,
+};
+use crate::rbac::{named_rule, namespace_with_psa, role_ref, rule, sa_subject};
 
 /// Namespace banlieue installs into unless `--namespace` says otherwise.
 pub const DEFAULT_NAMESPACE: &str = "banlieue-system";
@@ -68,7 +69,8 @@ pub const DEFAULT_NAMESPACE: &str = "banlieue-system";
 /// control-plane namespace would remove the floor from the controller, the
 /// operator (an RBAC grantor) and every per-backend provider pod, to
 /// accommodate one workload. See ADR-0016.
-pub const DEFAULT_IMAGEBUILD_NAMESPACE: &str = "banlieue-imagebuild";
+pub const DEFAULT_IMAGEBUILD_NAMESPACE: &str =
+    banlieue_provider_sdk::defaults::DEFAULT_BUILD_NAMESPACE;
 
 /// Image repository, without a tag.
 pub const IMAGE_BASE: &str = "ghcr.io/firestoned/banlieue";
@@ -95,20 +97,6 @@ pub const FIELD_MANAGER: &str = "banlieue.io/bootstrap";
 /// Value of the managed-by label on bootstrap-installed objects.
 const MANAGED_BY_BOOTSTRAP: &str = "banlieue-bootstrap";
 
-const METRICS_PORT: i32 = 8080;
-const HEALTH_PORT: i32 = 8081;
-const HEALTH_PORT_NAME: &str = "health";
-const METRICS_PORT_NAME: &str = "metrics";
-const RUN_AS_NONROOT_UID: i64 = 65532;
-const SECCOMP_RUNTIME_DEFAULT: &str = "RuntimeDefault";
-const TERMINATION_GRACE_PERIOD_SECS: i64 = 30;
-const PROBE_FAILURE_THRESHOLD: i32 = 3;
-const LIVENESS_INITIAL_DELAY_SECS: i32 = 10;
-const LIVENESS_PERIOD_SECS: i32 = 30;
-const READINESS_INITIAL_DELAY_SECS: i32 = 2;
-const READINESS_PERIOD_SECS: i32 = 5;
-const DEFAULT_CPU_REQUEST: &str = "50m";
-const DEFAULT_MEMORY_REQUEST: &str = "128Mi";
 const DEFAULT_CPU_LIMIT: &str = "500m";
 const DEFAULT_MEMORY_LIMIT: &str = "256Mi";
 
@@ -583,18 +571,6 @@ pub fn parse_image_digest(value: &str) -> Result<String, String> {
         .map_err(|_| format!("{value:?} is not a digest: expected sha256:<64 lowercase hex>"))
 }
 
-/// Every CRD this binary implements, post-processed exactly as `crdgen` does.
-///
-/// Delegates to [`all_crds`], the one list `crdgen` and the API reference
-/// also read. This used to be a second hand-written list, and adding a CRD
-/// to one and not the other went unnoticed until
-/// `bootstrap_installs_every_crd_that_is_generated_into_deploy` failed in CI
-/// (`CloudHypervisorMachine`, ADR-0062, after `LibvirtMachine` before it).
-#[must_use]
-pub fn build_crds() -> Vec<CustomResourceDefinition> {
-    all_crds()
-}
-
 /// Build the full platform install.
 ///
 /// # Arguments
@@ -610,7 +586,9 @@ pub fn build_operator_install(
 ) -> Result<InstallManifests> {
     let mut manifests = InstallManifests {
         namespace: build_namespace(&opts.namespace),
-        crds: build_crds(),
+        // The one list `crdgen` and the API reference also read: a second
+        // hand-written list here once missed a CRD until CI caught it.
+        crds: all_crds(),
         creates_namespace: true,
         ..Default::default()
     };
@@ -837,21 +815,7 @@ pub fn build_namespace(name: &str) -> Namespace {
     // (ADR-0013) produced a control-plane namespace with no admission floor
     // while the manifest path enforced one — and ADR-0016's reasoning depends
     // on this namespace actually being restricted.
-    let mut labels = BTreeMap::from([(LABEL_NAME.to_string(), APP_NAME.to_string())]);
-    for mode in ["enforce", "audit", "warn"] {
-        labels.insert(
-            format!("pod-security.kubernetes.io/{mode}"),
-            "restricted".to_string(),
-        );
-    }
-    Namespace {
-        metadata: ObjectMeta {
-            name: Some(name.to_string()),
-            labels: Some(labels),
-            ..Default::default()
-        },
-        ..Default::default()
-    }
+    namespace_with_psa(name, "restricted")
 }
 
 /// The namespace image builds run in (ADR-0016).
@@ -866,25 +830,7 @@ pub fn build_namespace(name: &str) -> Namespace {
 /// escape to its node regardless of namespace.
 #[must_use]
 pub fn build_imagebuild_namespace(name: &str) -> Namespace {
-    let mut labels = BTreeMap::from([(LABEL_NAME.to_string(), APP_NAME.to_string())]);
-    labels.insert(
-        "pod-security.kubernetes.io/enforce".to_string(),
-        "privileged".to_string(),
-    );
-    for mode in ["audit", "warn"] {
-        labels.insert(
-            format!("pod-security.kubernetes.io/{mode}"),
-            "restricted".to_string(),
-        );
-    }
-    Namespace {
-        metadata: ObjectMeta {
-            name: Some(name.to_string()),
-            labels: Some(labels),
-            ..Default::default()
-        },
-        ..Default::default()
-    }
+    namespace_with_psa(name, "privileged")
 }
 
 /// Build a role's ServiceAccount.
@@ -910,17 +856,8 @@ pub fn build_cluster_role_binding(role: &InstallRole, opts: &InstallOptions) -> 
             labels: Some(labels(role)),
             ..Default::default()
         },
-        role_ref: RoleRef {
-            api_group: Some("rbac.authorization.k8s.io".to_string()),
-            kind: "ClusterRole".to_string(),
-            name: role.name().to_string(),
-        },
-        subjects: Some(vec![Subject {
-            kind: "ServiceAccount".to_string(),
-            name: role.name().to_string(),
-            namespace: Some(opts.namespace.clone()),
-            ..Default::default()
-        }]),
+        role_ref: role_ref("ClusterRole", role.name()),
+        subjects: Some(vec![sa_subject(role.name(), &opts.namespace)]),
     }
 }
 
@@ -942,18 +879,8 @@ pub fn build_namespaced_role(role: &InstallRole, opts: &InstallOptions) -> Role 
             ..Default::default()
         },
         rules: Some(vec![
-            PolicyRule {
-                api_groups: Some(vec![String::new()]),
-                resources: Some(vec!["secrets".to_string()]),
-                verbs: vec!["get".to_string()],
-                ..Default::default()
-            },
-            PolicyRule {
-                api_groups: Some(vec![String::new()]),
-                resources: Some(vec!["configmaps".to_string()]),
-                verbs: vec!["get".to_string()],
-                ..Default::default()
-            },
+            rule("", "secrets", &["get"]),
+            rule("", "configmaps", &["get"]),
         ]),
     }
 }
@@ -981,13 +908,6 @@ pub fn elects_through_own_lease(role: &InstallRole) -> bool {
 /// is named after the role, each binary's default `--leader-election-id`.
 #[must_use]
 pub fn build_leader_election_role(role: &InstallRole, opts: &InstallOptions) -> Role {
-    let lease_rule = |verbs: &[&str], names: Option<Vec<String>>| PolicyRule {
-        api_groups: Some(vec![COORDINATION_API_GROUP.to_string()]),
-        resources: Some(vec!["leases".to_string()]),
-        resource_names: names,
-        verbs: verbs.iter().map(|v| (*v).to_string()).collect(),
-        ..Default::default()
-    };
     Role {
         metadata: ObjectMeta {
             name: Some(format!("{}{LEADER_ELECTION_ROLE_SUFFIX}", role.name())),
@@ -996,10 +916,12 @@ pub fn build_leader_election_role(role: &InstallRole, opts: &InstallOptions) -> 
             ..Default::default()
         },
         rules: Some(vec![
-            lease_rule(&["create"], None),
-            lease_rule(
+            rule(COORDINATION_API_GROUP, "leases", &["create"]),
+            named_rule(
+                COORDINATION_API_GROUP,
+                "leases",
                 &["get", "update", "patch"],
-                Some(vec![role.name().to_string()]),
+                &[role.name().to_string()],
             ),
         ]),
     }
@@ -1019,17 +941,8 @@ pub fn build_leader_election_role_binding(
             labels: Some(labels(role)),
             ..Default::default()
         },
-        role_ref: RoleRef {
-            api_group: Some("rbac.authorization.k8s.io".to_string()),
-            kind: "Role".to_string(),
-            name,
-        },
-        subjects: Some(vec![Subject {
-            kind: "ServiceAccount".to_string(),
-            name: role.name().to_string(),
-            namespace: Some(opts.namespace.clone()),
-            ..Default::default()
-        }]),
+        role_ref: role_ref("Role", name),
+        subjects: Some(vec![sa_subject(role.name(), &opts.namespace)]),
     }
 }
 
@@ -1047,12 +960,7 @@ pub fn build_operator_token_role(opts: &InstallOptions) -> Role {
             labels: Some(labels(&InstallRole::Operator)),
             ..Default::default()
         },
-        rules: Some(vec![PolicyRule {
-            api_groups: Some(vec![String::new()]),
-            resources: Some(vec!["serviceaccounts/token".to_string()]),
-            verbs: vec!["create".to_string()],
-            ..Default::default()
-        }]),
+        rules: Some(vec![rule("", "serviceaccounts/token", &["create"])]),
     }
 }
 
@@ -1066,17 +974,11 @@ pub fn build_operator_token_role_binding(opts: &InstallOptions) -> RoleBinding {
             labels: Some(labels(&InstallRole::Operator)),
             ..Default::default()
         },
-        role_ref: RoleRef {
-            api_group: Some("rbac.authorization.k8s.io".to_string()),
-            kind: "Role".to_string(),
-            name: OPERATOR_TOKEN_ROLE_NAME.to_string(),
-        },
-        subjects: Some(vec![Subject {
-            kind: "ServiceAccount".to_string(),
-            name: InstallRole::Operator.name().to_string(),
-            namespace: Some(opts.namespace.clone()),
-            ..Default::default()
-        }]),
+        role_ref: role_ref("Role", OPERATOR_TOKEN_ROLE_NAME),
+        subjects: Some(vec![sa_subject(
+            InstallRole::Operator.name(),
+            &opts.namespace,
+        )]),
     }
 }
 
@@ -1090,17 +992,8 @@ pub fn build_namespaced_role_binding(role: &InstallRole, opts: &InstallOptions) 
             labels: Some(labels(role)),
             ..Default::default()
         },
-        role_ref: RoleRef {
-            api_group: Some("rbac.authorization.k8s.io".to_string()),
-            kind: "Role".to_string(),
-            name: role.name().to_string(),
-        },
-        subjects: Some(vec![Subject {
-            kind: "ServiceAccount".to_string(),
-            name: role.name().to_string(),
-            namespace: Some(opts.namespace.clone()),
-            ..Default::default()
-        }]),
+        role_ref: role_ref("Role", role.name()),
+        subjects: Some(vec![sa_subject(role.name(), &opts.namespace)]),
     }
 }
 
@@ -1127,48 +1020,17 @@ pub fn build_cloud_config_role(role: &InstallRole) -> Role {
         // because a server-side apply is a CREATE when the merged Secret is
         // absent and a PATCH when it exists. Never delete.
         rules: Some(vec![
-            PolicyRule {
-                api_groups: Some(vec![String::new()]),
-                resources: Some(vec!["secrets".to_string()]),
-                verbs: vec![
-                    "get".to_string(),
-                    "list".to_string(),
-                    "watch".to_string(),
-                    "create".to_string(),
-                    "patch".to_string(),
-                ],
-                ..Default::default()
-            },
+            rule("", "secrets", &["get", "list", "watch", "create", "patch"]),
             // The registry push Job (ADR-0064): created by server-side
             // apply, deleted when a previous build's Job or a Job whose
             // result was lost must be replaced.
-            PolicyRule {
-                api_groups: Some(vec!["batch".to_string()]),
-                resources: Some(vec!["jobs".to_string()]),
-                verbs: vec![
-                    "get".to_string(),
-                    "create".to_string(),
-                    "patch".to_string(),
-                    "delete".to_string(),
-                ],
-                ..Default::default()
-            },
+            rule("batch", "jobs", &["get", "create", "patch", "delete"]),
             // The push Job's only output is its pod's termination message.
-            PolicyRule {
-                api_groups: Some(vec![String::new()]),
-                resources: Some(vec!["pods".to_string()]),
-                verbs: vec!["list".to_string()],
-                ..Default::default()
-            },
+            rule("", "pods", &["list"]),
             // The rebuild gate reads the artifacts PVC's deletionTimestamp so
             // a stale OSArtifact is never recreated over a volume that is
             // still being torn down. Read-only.
-            PolicyRule {
-                api_groups: Some(vec![String::new()]),
-                resources: Some(vec!["persistentvolumeclaims".to_string()]),
-                verbs: vec!["get".to_string()],
-                ..Default::default()
-            },
+            rule("", "persistentvolumeclaims", &["get"]),
         ]),
     }
 }
@@ -1187,17 +1049,8 @@ pub fn build_cloud_config_role_binding(role: &InstallRole, opts: &InstallOptions
             labels: Some(labels(role)),
             ..Default::default()
         },
-        role_ref: RoleRef {
-            api_group: Some("rbac.authorization.k8s.io".to_string()),
-            kind: "Role".to_string(),
-            name: CLOUD_CONFIG_ROLE_NAME.to_string(),
-        },
-        subjects: Some(vec![Subject {
-            kind: "ServiceAccount".to_string(),
-            name: role.name().to_string(),
-            namespace: Some(opts.namespace.clone()),
-            ..Default::default()
-        }]),
+        role_ref: role_ref("Role", CLOUD_CONFIG_ROLE_NAME),
+        subjects: Some(vec![sa_subject(role.name(), &opts.namespace)]),
     }
 }
 
@@ -1256,17 +1109,7 @@ pub fn build_deployment(role: &InstallRole, opts: &InstallOptions) -> Deployment
                 }),
                 spec: Some(PodSpec {
                     service_account_name: Some(role.name().to_string()),
-                    security_context: Some(PodSecurityContext {
-                        run_as_non_root: Some(true),
-                        run_as_user: Some(RUN_AS_NONROOT_UID),
-                        run_as_group: Some(RUN_AS_NONROOT_UID),
-                        fs_group: Some(RUN_AS_NONROOT_UID),
-                        seccomp_profile: Some(SeccompProfile {
-                            type_: SECCOMP_RUNTIME_DEFAULT.to_string(),
-                            ..Default::default()
-                        }),
-                        ..Default::default()
-                    }),
+                    security_context: Some(pod_security_context()),
                     termination_grace_period_seconds: Some(TERMINATION_GRACE_PERIOD_SECS),
                     containers: vec![build_container(role, opts)],
                     ..Default::default()
@@ -1307,92 +1150,30 @@ fn build_container(role: &InstallRole, opts: &InstallOptions) -> Container {
         image: Some(install_image(opts)),
         image_pull_policy: Some("IfNotPresent".to_string()),
         args: Some(args),
-        env: Some(
-            ["metadata.name", "metadata.namespace"]
-                .into_iter()
-                .zip(["POD_NAME", "POD_NAMESPACE"])
-                .map(|(field_path, name)| EnvVar {
-                    name: name.to_string(),
-                    value_from: Some(EnvVarSource {
-                        field_ref: Some(ObjectFieldSelector {
-                            field_path: field_path.to_string(),
-                            ..Default::default()
-                        }),
-                        ..Default::default()
-                    }),
-                    ..Default::default()
-                })
-                .collect(),
-        ),
-        ports: Some(vec![
-            ContainerPort {
-                name: Some(METRICS_PORT_NAME.to_string()),
-                container_port: METRICS_PORT,
-                protocol: Some("TCP".to_string()),
-                ..Default::default()
-            },
-            ContainerPort {
-                name: Some(HEALTH_PORT_NAME.to_string()),
-                container_port: HEALTH_PORT,
-                protocol: Some("TCP".to_string()),
-                ..Default::default()
-            },
-        ]),
+        env: Some(downward_api_env(&[
+            ("POD_NAME", "metadata.name"),
+            ("POD_NAMESPACE", "metadata.namespace"),
+        ])),
+        ports: Some(container_ports()),
         liveness_probe: Some(http_probe(
-            "/livez",
+            LIVENESS_PATH,
             LIVENESS_INITIAL_DELAY_SECS,
             LIVENESS_PERIOD_SECS,
+            None,
         )),
         readiness_probe: Some(http_probe(
-            "/readyz",
+            READINESS_PATH,
             READINESS_INITIAL_DELAY_SECS,
             READINESS_PERIOD_SECS,
+            None,
         )),
-        resources: Some(ResourceRequirements {
-            requests: Some(BTreeMap::from([
-                ("cpu".to_string(), Quantity(DEFAULT_CPU_REQUEST.to_string())),
-                (
-                    "memory".to_string(),
-                    Quantity(DEFAULT_MEMORY_REQUEST.to_string()),
-                ),
-            ])),
-            limits: Some(BTreeMap::from([
-                ("cpu".to_string(), Quantity(DEFAULT_CPU_LIMIT.to_string())),
-                (
-                    "memory".to_string(),
-                    Quantity(DEFAULT_MEMORY_LIMIT.to_string()),
-                ),
-            ])),
-            ..Default::default()
-        }),
-        security_context: Some(SecurityContext {
-            allow_privilege_escalation: Some(false),
-            read_only_root_filesystem: Some(true),
-            capabilities: Some(k8s_openapi::api::core::v1::Capabilities {
-                drop: Some(vec!["ALL".to_string()]),
-                ..Default::default()
-            }),
-            seccomp_profile: Some(SeccompProfile {
-                type_: SECCOMP_RUNTIME_DEFAULT.to_string(),
-                ..Default::default()
-            }),
-            ..Default::default()
-        }),
-        ..Default::default()
-    }
-}
-
-/// Build an HTTP probe against the health port.
-fn http_probe(path: &str, initial_delay: i32, period: i32) -> Probe {
-    Probe {
-        http_get: Some(HTTPGetAction {
-            path: Some(path.to_string()),
-            port: IntOrString::String(HEALTH_PORT_NAME.to_string()),
-            ..Default::default()
-        }),
-        initial_delay_seconds: Some(initial_delay),
-        period_seconds: Some(period),
-        failure_threshold: Some(PROBE_FAILURE_THRESHOLD),
+        resources: Some(resources(
+            DEFAULT_CPU_REQUEST,
+            DEFAULT_MEMORY_REQUEST,
+            DEFAULT_CPU_LIMIT,
+            DEFAULT_MEMORY_LIMIT,
+        )),
+        security_context: Some(container_security_context()),
         ..Default::default()
     }
 }
@@ -1464,34 +1245,23 @@ pub fn build_provider_class(backend: &str, opts: &InstallOptions) -> ProviderCla
 #[must_use]
 pub fn backend_additional_rules(backend: &str) -> Vec<PolicyRule> {
     match backend {
-        "libvirt" => vec![PolicyRule {
-            api_groups: Some(vec!["batch".to_string()]),
-            resources: Some(vec!["jobs".to_string()]),
-            verbs: ["get", "create", "patch"]
-                .into_iter()
-                .map(str::to_string)
-                .collect(),
-            ..Default::default()
-        }],
+        "libvirt" => vec![rule("batch", "jobs", &["get", "create", "patch"])],
         // Its machines, namespaced like the Role (ADR-0062): no create, no
         // delete — the controller owns their lifecycle.
         "cloud-hypervisor" => {
-            let rule = |resource: &str, verbs: &[&str]| PolicyRule {
-                api_groups: Some(vec!["infrastructure.banlieue.io".to_string()]),
-                resources: Some(vec![resource.to_string()]),
-                verbs: verbs.iter().map(|v| (*v).to_string()).collect(),
-                ..Default::default()
+            let machines = |resource: &str, verbs: &[&str]| {
+                rule("infrastructure.banlieue.io", resource, verbs)
             };
             vec![
-                rule(
+                machines(
                     "cloudhypervisormachines",
                     &["get", "list", "watch", "update", "patch"],
                 ),
-                rule(
+                machines(
                     "cloudhypervisormachines/status",
                     &["get", "update", "patch"],
                 ),
-                rule("cloudhypervisormachines/finalizers", &["update"]),
+                machines("cloudhypervisormachines/finalizers", &["update"]),
             ]
         }
         _ => Vec::new(),

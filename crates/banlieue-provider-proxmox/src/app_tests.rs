@@ -105,11 +105,4 @@ mod tests {
         assert_eq!(cli.namespace.as_deref(), Some("banlieue-system"));
         assert_eq!(cli.log_format, "json");
     }
-
-    #[test]
-    fn the_provider_watch_is_narrowed_server_side_by_name() {
-        let cfg = provider_watch_config(Some("pve-a"));
-        assert_eq!(cfg.field_selector.as_deref(), Some("metadata.name=pve-a"));
-        assert_eq!(provider_watch_config(None).field_selector, None);
-    }
 }

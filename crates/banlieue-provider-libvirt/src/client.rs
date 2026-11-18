@@ -16,12 +16,11 @@ use std::collections::BTreeMap;
 use async_trait::async_trait;
 use banlieue_api::banlieue::ProviderConnection;
 use banlieue_libvirt::{
-    DEFAULT_TLS_PORT, Network, Session, StoragePool, TlsIdentity, connect_open, connect_tls,
+    DEFAULT_TLS_PORT, Io, Network, Session, StoragePool, TlsIdentity, connect_open, connect_tls,
     list_all_networks, list_all_storage_pools, node_get_info, node_get_memory_stats,
     node_memory_available_mib, storage_pool_get_info, storage_pool_list_all_volumes,
     storage_pool_refresh,
 };
-use tokio::io::{AsyncRead, AsyncWrite};
 use tracing::warn;
 
 use crate::error::{Error, Result};
@@ -79,10 +78,10 @@ const KIB_PER_MIB: u64 = 1024;
 /// (the pool refresh re-scans, it changes nothing) and best effort: a
 /// failure is logged and leaves that figure out, so capacity never blocks
 /// the rest of the status.
-async fn read_host_capacity<S>(session: &mut Session<S>, pools: &[StoragePool]) -> HostCapacity
-where
-    S: AsyncRead + AsyncWrite + Unpin,
-{
+async fn read_host_capacity<S: Io>(
+    session: &mut Session<S>,
+    pools: &[StoragePool],
+) -> HostCapacity {
     let mut capacity = HostCapacity::default();
     match node_get_info(session).await {
         Ok(info) => {

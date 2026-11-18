@@ -81,7 +81,7 @@ mod tests {
     #[tokio::test]
     async fn scope_trigger_fires_when_the_served_set_changes() {
         let (tx, rx) = tokio::sync::watch::channel(0_u64);
-        let mut trigger = Box::pin(scope_trigger(rx));
+        let mut trigger = Box::pin(banlieue_provider_sdk::scope::scope_trigger(rx));
         tx.send_modify(|n| *n += 1);
         assert_eq!(futures::StreamExt::next(&mut trigger).await, Some(()));
     }

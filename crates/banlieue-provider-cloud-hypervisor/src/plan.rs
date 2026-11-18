@@ -27,13 +27,12 @@ use banlieue_api::infrastructure::{
     ChBootSourceKind, CloudHypervisorMachineSpec, cloud_hypervisor_provider_id,
 };
 use banlieue_cloud_hypervisor::{GuestPlan, PlannedDisk, PlannedNic};
+use banlieue_provider_sdk::capacity::{BYTES_PER_GIB, BYTES_PER_MIB};
 use banlieue_provider_sdk::cloudinit::{SeedNic, network_config};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::{Mutex, PoisonError};
 
-/// Bytes in one GiB.
-const BYTES_PER_GIB: u64 = 1024 * 1024 * 1024;
 /// Length of a canonical UUID string.
 const UUID_LEN: usize = 36;
 /// Positions of the dashes in a canonical UUID.
@@ -62,8 +61,6 @@ const MAC_OCTETS: usize = 6;
 /// Memory the VMM process itself needs beyond guest RAM, MiB: added to each
 /// guest's `MemoryMax`, and published so the scheduler counts it (ADR-0107).
 pub const VMM_MEMORY_OVERHEAD_MIB: u64 = 512;
-/// Bytes in one MiB.
-const BYTES_PER_MIB: u64 = 1024 * 1024;
 /// [`VMM_MEMORY_OVERHEAD_MIB`] in bytes, for `MemoryMax`.
 const VMM_MEMORY_OVERHEAD_BYTES: u64 = VMM_MEMORY_OVERHEAD_MIB * BYTES_PER_MIB;
 

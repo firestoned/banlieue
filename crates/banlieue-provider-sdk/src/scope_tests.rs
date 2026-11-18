@@ -548,4 +548,54 @@ mod tests {
                 .is_none()
         );
     }
+
+    // ----- start_gate -----
+
+    /// How long a stream that must stay pending is given to prove otherwise.
+    const PENDING_PROBE: std::time::Duration = std::time::Duration::from_millis(50);
+
+    /// Single-namespace mode: the gate passes everything and no request is
+    /// made (the client here could not make one).
+    #[tokio::test]
+    async fn without_a_selector_the_gate_serves_everything() {
+        let (gate, _changes) = start_gate(&offline_client(), None, Some("--flag"))
+            .await
+            .expect("no selector, nothing to start");
+        assert!(gate.serves(FLAGGED));
+        assert!(gate.serves("kube-system"));
+    }
+
+    /// The reason the idle sender is kept: a trigger stream that ended would
+    /// end the controller it feeds. It must stay pending even after the
+    /// `ScopeChanges` it came from is gone.
+    #[tokio::test]
+    async fn without_a_selector_the_trigger_stays_pending() {
+        use futures::StreamExt;
+
+        let (_gate, changes) = start_gate(&offline_client(), None, None)
+            .await
+            .expect("no selector, nothing to start");
+        let mut trigger = Box::pin(changes.trigger());
+        drop(changes);
+        let next = tokio::time::timeout(PENDING_PROBE, trigger.next()).await;
+        assert!(next.is_err(), "the stream ended or fired: {next:?}");
+    }
+
+    /// A rejected selector reads as the context each binary attached by hand:
+    /// the stage as the message, the probe's failure as its source.
+    #[test]
+    fn a_gate_error_reads_as_stage_then_cause() {
+        use std::error::Error as _;
+
+        let err = GateError::Check {
+            what: "--watch-namespace-selector",
+            source: selector_probe_error("team in (", &api_error(400)),
+        };
+        assert_eq!(err.to_string(), "validating --watch-namespace-selector");
+        assert!(err.source().is_some());
+
+        let err = GateError::Watch(ScopeError::Sync("closed".into()));
+        assert_eq!(err.to_string(), "starting the namespace selector watch");
+        assert!(err.source().is_some());
+    }
 }

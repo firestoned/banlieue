@@ -29,6 +29,8 @@
 //! would race it. Every test works in generated namespaces and cluster-
 //! scoped objects with a random suffix, and removes them on the way out.
 
+mod common;
+
 use std::sync::Arc;
 
 use banlieue_api::banlieue::{Provider, VMClass, VMImage, VirtualMachine};
@@ -40,6 +42,8 @@ use banlieue_controller::reconciler::virtualmachine;
 use kube::api::{Api, DeleteParams, Patch, PatchParams, PostParams};
 use kube::{Client, ResourceExt};
 use serde_json::json;
+
+use common::nonce;
 
 /// The contested address (RFC 5737).
 const ADDR: &str = "192.0.2.10";
@@ -70,12 +74,6 @@ async fn client() -> Client {
         )
     });
     client
-}
-
-fn nonce() -> String {
-    let mut b = [0u8; 4];
-    getrandom::fill(&mut b).unwrap();
-    b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
 /// One test's world: a namespace (or two) each holding a schedulable

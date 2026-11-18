@@ -31,6 +31,7 @@ use banlieue_libvirt::{
     StoragePool, StorageVol, connect_open, connect_tls, list_all_storage_pools, raw_volume_xml,
     storage_pool_list_all_volumes, storage_vol_create_xml, storage_vol_upload,
 };
+use banlieue_provider_sdk::artifact::{self, ChecksumError, SourceError};
 use banlieue_provider_sdk::client::build_client;
 use clap::Args;
 use kube::Api;
@@ -42,12 +43,6 @@ use crate::error::{Error, Result};
 
 /// Suffix identifying the uploaded volume's on-disk format.
 const RAW_SUFFIX: &str = ".raw";
-
-/// Read size when hashing the artifact.
-///
-/// Large enough that a multi-gigabyte disk is not thousands of syscalls, small
-/// enough that the buffer is irrelevant next to the image itself.
-const HASH_CHUNK_BYTES: usize = 1024 * 1024;
 
 /// Arguments for `banlieue provider libvirt import`.
 ///
@@ -158,20 +153,18 @@ pub fn plan(volumes: &[StorageVol], volume: &str) -> ImportPlan {
 /// artifact means the build produced nothing; creating a zero-capacity volume
 /// would report success and leave an unbootable image behind.
 pub async fn source_length(path: &Path) -> Result<u64> {
-    let meta = tokio::fs::metadata(path)
-        .await
-        .map_err(|e| Error::Invalid {
+    artifact::source_length(path).await.map_err(|e| {
+        let detail = match e {
+            SourceError::Empty { path } => {
+                format!("{} is empty; the build produced no disk", path.display())
+            }
+            unreadable @ SourceError::Unreadable { .. } => unreadable.to_string(),
+        };
+        Error::Invalid {
             what: "--source",
-            detail: format!("cannot read {}: {e}", path.display()),
-        })?;
-    let len = meta.len();
-    if len == 0 {
-        return Err(Error::Invalid {
-            what: "--source",
-            detail: format!("{} is empty; the build produced no disk", path.display()),
-        });
-    }
-    Ok(len)
+            detail,
+        }
+    })
 }
 
 /// Verify the artifact against an expected `<alg>:<hex>` checksum.
@@ -185,81 +178,27 @@ pub async fn source_length(path: &Path) -> Result<u64> {
 /// [`Error::Invalid`] if the algorithm is unsupported, the file cannot be
 /// read, or the digest does not match (the error names expected and actual).
 pub async fn verify_checksum(path: &Path, expected: &str) -> Result<()> {
-    use sha2::Digest;
-    use tokio::io::AsyncReadExt;
-
-    let (alg, expected_hex) = expected.split_once(':').ok_or_else(|| Error::Invalid {
-        what: "--checksum",
-        detail: format!("expected `<alg>:<hex>`, got {expected:?}"),
-    })?;
-
-    let mut file = File::open(path).await.map_err(|e| Error::Invalid {
-        what: "--source",
-        detail: format!("cannot read {}: {e}", path.display()),
-    })?;
-
-    // Hash in chunks; the digest type is picked once from the algorithm.
-    let mut buf = vec![0u8; HASH_CHUNK_BYTES];
-    let actual_hex = match alg {
-        "sha256" => {
-            let mut h = sha2::Sha256::new();
-            loop {
-                let n = file.read(&mut buf).await.map_err(|e| Error::Invalid {
-                    what: "--source",
-                    detail: format!("cannot read {}: {e}", path.display()),
-                })?;
-                if n == 0 {
-                    break;
+    let algorithm = artifact::verify_checksum(path, expected)
+        .await
+        .map_err(|e| {
+            let (what, detail) = match &e {
+                ChecksumError::Open { .. } | ChecksumError::Read { .. } => {
+                    ("--source", e.to_string())
                 }
-                h.update(&buf[..n]);
-            }
-            hex_encode(&h.finalize())
-        }
-        "sha512" => {
-            let mut h = sha2::Sha512::new();
-            loop {
-                let n = file.read(&mut buf).await.map_err(|e| Error::Invalid {
-                    what: "--source",
-                    detail: format!("cannot read {}: {e}", path.display()),
-                })?;
-                if n == 0 {
-                    break;
-                }
-                h.update(&buf[..n]);
-            }
-            hex_encode(&h.finalize())
-        }
-        other => {
-            return Err(Error::Invalid {
-                what: "--checksum",
-                detail: format!(
-                    "unsupported algorithm {other:?} (supported: sha256, sha512); \
-                     refusing to import an unverified artifact"
+                ChecksumError::Malformed { .. } => ("--checksum", e.to_string()),
+                ChecksumError::Unsupported { .. } => (
+                    "--checksum",
+                    format!("{e}; refusing to import an unverified artifact"),
                 ),
-            });
-        }
-    };
-
-    if !actual_hex.eq_ignore_ascii_case(expected_hex) {
-        return Err(Error::Invalid {
-            what: "--checksum",
-            detail: format!(
-                "checksum mismatch for {}: expected {expected}, computed {alg}:{actual_hex}; \
-                 refusing to import a corrupted or substituted artifact",
-                path.display()
-            ),
-        });
-    }
-    info!(path = %path.display(), algorithm = %alg, "artifact checksum verified");
+                ChecksumError::Mismatch { .. } => (
+                    "--checksum",
+                    format!("{e}; refusing to import a corrupted or substituted artifact"),
+                ),
+            };
+            Error::Invalid { what, detail }
+        })?;
+    info!(path = %path.display(), algorithm = %algorithm, "artifact checksum verified");
     Ok(())
-}
-
-/// Lowercase hex encoding of a digest. `sha2`'s `Output` (a `hybrid_array::Array`,
-/// as of `digest` 0.11) does not implement `LowerHex` the way the old
-/// `GenericArray`-backed output did, so this replaces a `format!("{:x}", ...)`
-/// that stopped compiling on the `sha2` 0.11 upgrade.
-fn hex_encode(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Run one import to completion.
