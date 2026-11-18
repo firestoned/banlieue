@@ -13,6 +13,10 @@ SPDX-License-Identifier: Apache-2.0
   alias `ch`; Decision 2: no `packages` stage; Decision 4: the VMM and
   firmware come from any URL at any version the client's gate accepts;
   Decisions 7 and 8: no package installation on any distribution)
+- **Amended:** 2026-11-18 (Decision 5: the settings a kept host config
+  records are read from it, and a flag that contradicts it is refused;
+  found live when a provider-only upgrade rendered units for another
+  storage path than the config named)
 - **Related:** [ADR-0004](0004-single-binary-subcommand-dispatch.md) (one
   binary, subcommands), [ADR-0011](0011-libvirt-provider-own-client.md) (no
   subprocess in a reconcile path), [ADR-0013](0013-banlieue-bootstrap-cli.md)
@@ -137,6 +141,16 @@ verified the same way, for air-gapped hosts and for the container test.
 - An existing host config and an existing EK CA are kept unless `--force`.
   Rotating the CA invalidates every EK certificate this host has issued
   (ADR-0065 Decision 6); `--force` says so before it acts.
+- A kept host config is the source for every setting it records
+  (provider name and namespace, storage and network classes, guest uid
+  range, registry), for every stage and verb but `status`: a flag left out
+  takes the file's value, and a flag that contradicts it is refused, naming
+  the flag and the file. Otherwise later stages render units from a fresh
+  default while the provider reads the kept file: a provider-only upgrade
+  on a host whose storage had moved wrote `ReadWritePaths=` for a path the
+  probe preferred, the sandbox mounted the real storage read-only, and every
+  machine failed. With `--force` the flags alone decide, since the file is
+  regenerated from them. (Amended 2026-11-18.)
 - **Idempotence is equality.** A second `install` changes nothing: same
   files, same bytes, same modes, same owners, same units.
 - `systemctl daemon-reload`, `enable` and `start` run only when systemd is

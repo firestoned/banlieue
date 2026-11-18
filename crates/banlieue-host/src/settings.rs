@@ -6,7 +6,11 @@
 
 use crate::error::Error;
 use crate::ops::Probe;
+use crate::paths::HOST_CONFIG;
+use banlieue_provider_cloud_hypervisor::host_config::HostConfig;
 use clap::Args;
+use std::collections::BTreeMap;
+use std::io;
 use std::path::{Path, PathBuf};
 
 /// First guest uid (ADR-0063 Decision 3).
@@ -39,16 +43,26 @@ pub const MAX_MEMORY_PERCENT: u32 = 100;
 const SIZE_SUFFIXES: [char; 4] = ['K', 'M', 'G', 'T'];
 
 /// Settings shared by every `banlieue host cloud-hypervisor` verb.
+///
+/// On a host whose config `install` keeps (no `--force`), every setting
+/// that config records (provider name and namespace, storage and network
+/// classes, the guest uid range, the registry) comes from it when the flag
+/// is not given, and a flag that contradicts it is refused: the config is
+/// not rewritten, so units rendered from the flag would disagree with what
+/// the provider reads.
 #[derive(Clone, Debug, Default, Args)]
 pub struct HostArgs {
-    /// The `Provider` this host is. Default: the host's short name.
+    /// The `Provider` this host is. Default: the kept host config's, else
+    /// the host's short name.
     #[arg(long, env = "BANLIEUE_HOST_PROVIDER_NAME")]
     pub provider_name: Option<String>,
-    /// The `Provider`'s namespace.
-    #[arg(long, env = "BANLIEUE_HOST_PROVIDER_NAMESPACE", default_value = DEFAULT_NAMESPACE)]
-    pub provider_namespace: String,
+    /// The `Provider`'s namespace. Default: the kept host config's, else
+    /// `banlieue-system`.
+    #[arg(long, env = "BANLIEUE_HOST_PROVIDER_NAMESPACE")]
+    pub provider_namespace: Option<String>,
     /// A storage class, `name=/path`. Repeat, or comma-separate. Default:
-    /// `default` on the candidate mount with the most free space.
+    /// the kept host config's, else `default` on the candidate mount with
+    /// the most free space.
     #[arg(
         long = "storage-class",
         env = "BANLIEUE_HOST_STORAGE_CLASSES",
@@ -57,7 +71,8 @@ pub struct HostArgs {
     )]
     pub storage_classes: Vec<String>,
     /// A network class, `name=bridge`. The bridge must exist; banlieue never
-    /// creates one. Default: `default=virbr0` when it exists.
+    /// creates one. Default: the kept host config's, else `default=virbr0`
+    /// when it exists.
     #[arg(
         long = "network-class",
         env = "BANLIEUE_HOST_NETWORK_CLASSES",
@@ -65,14 +80,16 @@ pub struct HostArgs {
         value_name = "NAME=BRIDGE"
     )]
     pub network_classes: Vec<String>,
-    /// First uid a guest runs as.
-    #[arg(long, env = "BANLIEUE_HOST_GUEST_UID_BASE", default_value_t = DEFAULT_GUEST_UID_BASE)]
-    pub guest_uid_base: u32,
-    /// How many guest uids.
-    #[arg(long, env = "BANLIEUE_HOST_GUEST_UID_COUNT", default_value_t = DEFAULT_GUEST_UID_COUNT)]
-    pub guest_uid_count: u32,
+    /// First uid a guest runs as. Default: the kept host config's, else
+    /// 2000000.
+    #[arg(long, env = "BANLIEUE_HOST_GUEST_UID_BASE")]
+    pub guest_uid_base: Option<u32>,
+    /// How many guest uids. Default: the kept host config's, else 1024.
+    #[arg(long, env = "BANLIEUE_HOST_GUEST_UID_COUNT")]
+    pub guest_uid_count: Option<u32>,
     /// The one registry repository `Url` images are pulled from, by digest
-    /// (ADR-0064). Unset: `BackingFile` images only.
+    /// (ADR-0064). Unset: the kept host config's registry, else
+    /// `BackingFile` images only.
     #[arg(long, env = "BANLIEUE_HOST_REGISTRY_REPOSITORY")]
     pub registry_repository: Option<String>,
     /// Speak `http://` to the registry (a private network or a test only).
@@ -156,6 +173,17 @@ pub struct Registry {
     pub plain_http: bool,
     /// Superseded pulls to keep.
     pub keep_unreferenced: u32,
+}
+
+impl Registry {
+    /// One line, for a message.
+    #[must_use]
+    pub fn describe(&self) -> String {
+        format!(
+            "{} (plain_http {}, keep_unreferenced {})",
+            self.repository, self.plain_http, self.keep_unreferenced
+        )
+    }
 }
 
 /// Settings, resolved and validated.
@@ -313,53 +341,193 @@ pub fn default_storage(probe: &dyn Probe) -> PathBuf {
         .join(STORAGE_SUBDIR)
 }
 
-/// Resolve `args` against `probe`.
+/// Resolve `args` against `probe` and the host config `install` keeps,
+/// if there is one: what that config records is used where no flag is
+/// given, and a flag that contradicts it is refused.
+///
+/// # Errors
+/// [`Error::Setting`] naming the first unusable value or contradicting
+/// flag; [`Error::KeptConfig`] when the kept config does not load.
+pub fn resolve(args: &HostArgs, probe: &dyn Probe) -> Result<Settings, Error> {
+    let kept = kept_host_config(probe)?;
+    resolve_with(args, probe, kept.as_ref())
+}
+
+/// Resolve `args` against `probe` alone, as for a config `install
+/// --force` regenerates: the kept config, if any, is not consulted.
 ///
 /// # Errors
 /// [`Error::Setting`] naming the first unusable value.
-pub fn resolve(args: &HostArgs, probe: &dyn Probe) -> Result<Settings, Error> {
-    let mut storage: Vec<(String, PathBuf)> = pairs("--storage-class", &args.storage_classes)?
+pub fn resolve_fresh(args: &HostArgs, probe: &dyn Probe) -> Result<Settings, Error> {
+    resolve_with(args, probe, None)
+}
+
+/// The host config `install` keeps, if one is there.
+///
+/// # Errors
+/// [`Error::KeptConfig`] when it exists but cannot be read or does not
+/// load as the provider would load it.
+pub fn kept_host_config(probe: &dyn Probe) -> Result<Option<HostConfig>, Error> {
+    let raw = match probe.read(Path::new(HOST_CONFIG)) {
+        Ok(raw) => raw,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(Error::KeptConfig(e.to_string())),
+    };
+    HostConfig::parse(&String::from_utf8_lossy(&raw))
+        .map(Some)
+        .map_err(|e| Error::KeptConfig(e.to_string()))
+}
+
+/// A flag the kept config contradicts.
+fn contradicts(name: &'static str, given: &str, kept: &str) -> Error {
+    Error::Setting {
+        name,
+        why: format!(
+            "{given}, but {HOST_CONFIG}, which install keeps, says {kept}: drop the flag, \
+             edit the file, or pass --force to regenerate it (which also rotates the EK CA)"
+        ),
+    }
+}
+
+/// `given` when there is no kept value or it agrees; the kept value when
+/// nothing is given; refused when they differ.
+fn agree<T: PartialEq + std::fmt::Display + Clone>(
+    name: &'static str,
+    given: Option<T>,
+    kept: Option<T>,
+) -> Result<Option<T>, Error> {
+    match (given, kept) {
+        (Some(g), Some(k)) if g != k => Err(contradicts(name, &g.to_string(), &k.to_string())),
+        (g, k) => Ok(g.or(k)),
+    }
+}
+
+fn class_list<V: AsRef<str>>(classes: &BTreeMap<String, V>) -> String {
+    classes
+        .iter()
+        .map(|(k, v)| format!("{k}={}", v.as_ref()))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// The given classes, or the kept ones; refused when both exist and differ
+/// as sets (the order given does not matter, the config has none).
+fn agree_classes<V: Clone + PartialEq + AsRef<str>>(
+    name: &'static str,
+    given: Vec<(String, V)>,
+    kept: Option<&BTreeMap<String, V>>,
+) -> Result<Vec<(String, V)>, Error> {
+    let Some(kept) = kept else {
+        return Ok(given);
+    };
+    let as_map: BTreeMap<String, V> = given.iter().cloned().collect();
+    if !given.is_empty() && &as_map != kept {
+        return Err(contradicts(name, &class_list(&as_map), &class_list(kept)));
+    }
+    // The kept order, always: the same classes given in another order must
+    // render the same units, or a re-run would restart the provider.
+    Ok(kept.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+}
+
+/// The given registry, or the kept one; refused when both exist and differ.
+fn agree_registry(
+    given: Option<Registry>,
+    kept: Option<Registry>,
+) -> Result<Option<Registry>, Error> {
+    match (given, kept) {
+        (Some(g), Some(k)) if g != k => Err(contradicts(
+            "--registry-repository",
+            &g.describe(),
+            &k.describe(),
+        )),
+        (Some(g), None) => Ok(Some(g)),
+        (_, k) => Ok(k),
+    }
+}
+
+fn resolve_with(
+    args: &HostArgs,
+    probe: &dyn Probe,
+    kept: Option<&HostConfig>,
+) -> Result<Settings, Error> {
+    let given_storage: Vec<(String, PathBuf)> = pairs("--storage-class", &args.storage_classes)?
         .into_iter()
         .map(|(k, v)| (k, PathBuf::from(v)))
         .collect();
-    if let Some((k, p)) = storage.iter().find(|(_, p)| !p.is_absolute()) {
+    if let Some((k, p)) = given_storage.iter().find(|(_, p)| !p.is_absolute()) {
         return Err(Error::Setting {
             name: "--storage-class",
             why: format!("{k}={}: not an absolute path", p.display()),
         });
     }
+    let mut storage = agree_classes(
+        "--storage-class",
+        given_storage
+            .into_iter()
+            .map(|(k, p)| (k, StoragePath(p)))
+            .collect(),
+        kept.map(|c| {
+            c.storage_classes
+                .iter()
+                .map(|(k, p)| (k.clone(), StoragePath(p.clone())))
+                .collect::<BTreeMap<_, _>>()
+        })
+        .as_ref(),
+    )?
+    .into_iter()
+    .map(|(k, p)| (k, p.0))
+    .collect::<Vec<_>>();
     if storage.is_empty() {
         storage.push((DEFAULT_CLASS.into(), default_storage(probe)));
     }
-    let mut network = pairs("--network-class", &args.network_classes)?;
-    if network.is_empty() && probe.exists(&Path::new(SYS_CLASS_NET).join(DEFAULT_BRIDGE)) {
+    let mut network = agree_classes(
+        "--network-class",
+        pairs("--network-class", &args.network_classes)?,
+        kept.map(|c| &c.network_classes),
+    )?;
+    if network.is_empty()
+        && kept.is_none()
+        && probe.exists(&Path::new(SYS_CLASS_NET).join(DEFAULT_BRIDGE))
+    {
         network.push((DEFAULT_CLASS.into(), DEFAULT_BRIDGE.into()));
     }
-    if args.guest_uid_count == 0
-        || args
-            .guest_uid_base
-            .checked_add(args.guest_uid_count)
-            .is_none()
-    {
+    let uid_base = agree(
+        "--guest-uid-base",
+        args.guest_uid_base,
+        kept.map(|c| c.guests.uid_base),
+    )?
+    .unwrap_or(DEFAULT_GUEST_UID_BASE);
+    let uid_count = agree(
+        "--guest-uid-count",
+        args.guest_uid_count,
+        kept.map(|c| c.guests.uid_count),
+    )?
+    .unwrap_or(DEFAULT_GUEST_UID_COUNT);
+    if uid_count == 0 || uid_base.checked_add(uid_count).is_none() {
         return Err(Error::Setting {
             name: "--guest-uid-count",
-            why: format!(
-                "{} uids from {} is empty or overflows",
-                args.guest_uid_count, args.guest_uid_base
-            ),
+            why: format!("{uid_count} uids from {uid_base} is empty or overflows"),
         });
     }
-    let provider_name = args
-        .provider_name
-        .clone()
-        .unwrap_or_else(|| probe.hostname());
+    let provider_name = agree(
+        "--provider-name",
+        args.provider_name.clone(),
+        kept.map(|c| c.provider.name.clone()),
+    )?
+    .unwrap_or_else(|| probe.hostname());
     if provider_name.is_empty() {
         return Err(Error::Setting {
             name: "--provider-name",
             why: "empty, and the host has no name".into(),
         });
     }
-    let registry = args
+    let namespace = agree(
+        "--provider-namespace",
+        args.provider_namespace.clone(),
+        kept.map(|c| c.provider.namespace.clone()),
+    )?
+    .unwrap_or_else(|| DEFAULT_NAMESPACE.into());
+    let given_registry = args
         .registry_repository
         .as_ref()
         .filter(|r| !r.is_empty())
@@ -368,17 +536,37 @@ pub fn resolve(args: &HostArgs, probe: &dyn Probe) -> Result<Settings, Error> {
             plain_http: args.registry_plain_http,
             keep_unreferenced: args.registry_keep_unreferenced,
         });
+    let kept_registry = kept.and_then(|c| c.registry.as_ref()).map(|r| Registry {
+        repository: r.repository.clone(),
+        plain_http: r.plain_http,
+        keep_unreferenced: r.keep_unreferenced,
+    });
+    let registry = if kept.is_some() {
+        agree_registry(given_registry, kept_registry)?
+    } else {
+        given_registry
+    };
     Ok(Settings {
         provider_name,
-        namespace: args.provider_namespace.clone(),
+        namespace,
         storage,
         network,
-        uid_base: args.guest_uid_base,
-        uid_count: args.guest_uid_count,
+        uid_base,
+        uid_count,
         registry,
         allow_virtualized: args.allow_virtualized_host,
         guest_slice: guest_slice(args)?,
     })
+}
+
+/// A storage path, compared and printed as the config spells it.
+#[derive(Clone, PartialEq, Eq)]
+struct StoragePath(PathBuf);
+
+impl AsRef<str> for StoragePath {
+    fn as_ref(&self) -> &str {
+        self.0.to_str().unwrap_or_default()
+    }
 }
 
 #[cfg(test)]

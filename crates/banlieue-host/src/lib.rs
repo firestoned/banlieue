@@ -150,7 +150,8 @@ pub async fn run(cli: Cli) -> Result<(), Error> {
     match ch.verb {
         Verb::Preflight(args) => stages::preflight(&host, &settings::resolve(&args, &host)?),
         Verb::Status(args) => {
-            settings::resolve(&args, &host)?;
+            // Status reports on whatever is there, a broken config included.
+            settings::resolve_fresh(&args, &host)?;
             stages::status(&host);
             Ok(())
         }
@@ -164,7 +165,13 @@ pub async fn run(cli: Cli) -> Result<(), Error> {
         }
         Verb::Overhead(args) => overhead::run(&args).await,
         Verb::Install(args) => {
-            let s = settings::resolve(&args.settings, &host)?;
+            // A config `install` keeps decides what the units name; one
+            // `--force` regenerates is rendered from the flags alone.
+            let s = if args.force {
+                settings::resolve_fresh(&args.settings, &host)?
+            } else {
+                settings::resolve(&args.settings, &host)?
+            };
             let release = release::resolve(&args.release, &fetch::GitHubDigests::new()).await?;
             let o = stages::Options {
                 only: args.only,

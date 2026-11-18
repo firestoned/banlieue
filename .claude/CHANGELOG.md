@@ -1,5 +1,58 @@
 # Changelog
 
+## [2026-11-18 08:00] - CH host install honours the host config it keeps (ADR-0067 amended)
+
+**Author:** Erick Bourgeois
+
+Found live upgrading two lab hosts to v0.5.10 with `install --only provider
+--provider-binary`: without `--storage-class`, the installer defaulted the
+storage class to the roomiest mount (`/home/banlieue/ch` on one host,
+`/var/lib/banlieue/ch` on the other) while keeping
+`/etc/banlieue/cloud-hypervisor.toml`, which says `/srv/banlieue/ch`. The provider unit's `ReadWritePaths=` and the
+`banlieue-ch@` template named the guessed path, the sandbox mounted the real
+storage read-only, and every machine failed with `Read-only file system (os
+error 30)` until the flag was added. Guests kept running.
+
+### Changed
+- `banlieue-host` `settings.rs`: `resolve` reads the kept host config
+  (`kept_host_config`) and takes from it every setting it records (provider
+  name and namespace, storage and network classes, guest uid range,
+  registry) when the flag is not given; a contradicting flag is refused with
+  `Error::Setting` naming the flag, the file and `--force`. The kept order of
+  the classes is used, so the same classes given in another order render the
+  same units. `resolve_fresh` ignores the file, for `install --force` (which
+  regenerates it) and `status`. `--provider-namespace`, `--guest-uid-base`
+  and `--guest-uid-count` are now optional, so a given flag can be told from
+  a default; defaults are unchanged.
+- `error.rs`: `Error::KeptConfig` for a kept config that does not load.
+- `lib.rs`: `install` uses `resolve_fresh` under `--force`; `status` always.
+- Tests: `settings_tests.rs` (kept config supplies every recorded setting,
+  agreeing flags accepted, contradicting flags refused per flag, `--force`
+  path ignores the file, an unloadable file refused);
+  `stages_tests.rs::a_provider_only_rerun_follows_the_kept_config` (the live
+  case: probe now prefers `/home`, the re-run changes nothing and restarts
+  nothing).
+- Docs: `guides/cloud-hypervisor-host.md` (Step 2: what the kept config
+  decides, that slice flags must be repeated; the upgrade paragraph: `--only
+  provider`, and that a full `install` relinks the VMM it is given);
+  ADR-0067 amended (Decision 5).
+- Threat model: no boundary change (the installer already runs as root on the
+  host; this only keeps the provider unit's `ReadWritePaths=` consistent with
+  the config the provider reads). Stamp unchanged.
+
+### Why
+`install` keeps the host config but rendered later stages from fresh
+defaults, so re-running it without every original flag produced units that
+contradicted the config: on a live host, a provider that could not write its
+own storage.
+
+### Impact
+- [ ] Breaking change (a re-run with a flag that contradicts the kept config
+  now fails instead of silently rendering mismatched units)
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-11-17 14:00] - chrono replaced by jiff; docs, ADR metadata and generated references brought up to date
 
 **Author:** Erick Bourgeois
