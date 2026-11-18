@@ -39,8 +39,6 @@ tokio-util = { workspace = true }
 
 kube.workspace = true
 k8s-openapi.workspace = true
-schemars.workspace = true
-serde.workspace = true
 serde_json.workspace = true
 
 thiserror.workspace = true
@@ -54,10 +52,6 @@ anyhow.workspace = true
 # `time` backs the CreateVM_Task poll loop (`tokio::time::sleep`, ADR-0020).
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "fs", "io-util", "time"] }
 futures.workspace = true
-
-# SEC-004: verify the built ISO against its published checksum before it
-# reaches any datastore. Same crate + version the libvirt import path uses.
-sha2 = { workspace = true }
 
 tracing.workspace = true
 

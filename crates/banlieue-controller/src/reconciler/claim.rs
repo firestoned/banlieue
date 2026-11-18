@@ -23,6 +23,7 @@ use banlieue_api::banlieue::{
 use banlieue_provider_sdk::{
     finalizer::{ensure_finalizer, remove_finalizer},
     reconciler::{requeue_default, requeue_long, requeue_on_error},
+    ssa::{HTTP_NOT_FOUND, delete_ignoring_404},
     status::{condition_status, set_condition},
 };
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{Condition, Time};
@@ -59,8 +60,6 @@ const BIND_RACE_RETRY_SECS: u64 = 1;
 /// HTTP status the API server returns when a `resourceVersion` precondition
 /// fails — i.e. somebody else wrote the member since we listed it.
 const HTTP_CONFLICT: u16 = 409;
-/// HTTP status for an object that is already gone.
-const HTTP_NOT_FOUND: u16 = 404;
 
 /// Reconcile one `VirtualMachineClaim`.
 ///
@@ -533,11 +532,7 @@ async fn release(
     // Expired but not deleted by anyone: remove the claim ourselves, so it
     // cannot be mistaken for a live hold on a VM that no longer exists.
     info!(claim = %name, "claim expired; member destroyed");
-    match claim_api.delete(name, &DeleteParams::default()).await {
-        Ok(_) => {}
-        Err(kube::Error::Api(e)) if e.code == HTTP_NOT_FOUND => {}
-        Err(e) => return Err(Error::Kube(e)),
-    }
+    delete_ignoring_404(claim_api, name, &DeleteParams::default()).await?;
     Ok(requeue_long())
 }
 

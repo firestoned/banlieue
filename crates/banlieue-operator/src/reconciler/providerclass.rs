@@ -21,8 +21,9 @@ use std::sync::Arc;
 
 use banlieue_api::banlieue::{Provider, ProviderClass, ProviderClassSpec, ProviderDeployment};
 use banlieue_provider_sdk::reconciler::{requeue_default, requeue_on_error};
+use banlieue_provider_sdk::ssa::apply_status;
 use k8s_openapi::api::rbac::v1::ClusterRole;
-use kube::api::{ListParams, Patch, PatchParams};
+use kube::api::ListParams;
 use kube::runtime::controller::Action;
 use kube::{Api, Resource, ResourceExt};
 use serde_json::json;
@@ -166,32 +167,21 @@ pub async fn reconcile(class: Arc<ProviderClass>, ctx: Arc<Context>) -> Result<A
     }
 
     let classes: Api<ProviderClass> = Api::all(ctx.client.clone());
-    let patch = json!({
-        "apiVersion": ProviderClass::api_version(&()),
-        "kind": ProviderClass::kind(&()),
-        "status": {
-            "providers": referencing,
+    let status = json!({
+        "providers": referencing,
+        "observedGeneration": class.meta().generation,
+        "conditions": [{
+            "type": CONDITION_READY,
+            "status": if assessment.is_ready() { "True" } else { "False" },
+            "reason": assessment.reason(),
+            "message": assessment.message(&class.spec.backend),
+            "lastTransitionTime": k8s_openapi::apimachinery::pkg::apis::meta::v1::Time(
+                k8s_openapi::jiff::Timestamp::now(),
+            ),
             "observedGeneration": class.meta().generation,
-            "conditions": [{
-                "type": CONDITION_READY,
-                "status": if assessment.is_ready() { "True" } else { "False" },
-                "reason": assessment.reason(),
-                "message": assessment.message(&class.spec.backend),
-                "lastTransitionTime": k8s_openapi::apimachinery::pkg::apis::meta::v1::Time(
-                    k8s_openapi::jiff::Timestamp::now(),
-                ),
-                "observedGeneration": class.meta().generation,
-            }],
-        },
+        }],
     });
-
-    classes
-        .patch_status(
-            &name,
-            &PatchParams::apply(FIELD_MANAGER).force(),
-            &Patch::Apply(&patch),
-        )
-        .await?;
+    apply_status(&classes, &name, FIELD_MANAGER, &status, true).await?;
 
     debug!(class = %name, providers = referencing, ready = assessment.is_ready(), "class status published");
     Ok(requeue_default())

@@ -35,10 +35,13 @@
 //! which is where machines must live), `BANLIEUE_E2E_RUN_ROOT` (default
 //! `/run/banlieue/ch`). Or `make ch-e2e`.
 
+mod common;
+
+use common::{condition_true, present, required, taps_for, wait_for};
 use std::net::{SocketAddr, TcpStream};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use banlieue_api::banlieue::{Provider, VMImage, VirtualMachine};
 use banlieue_api::infrastructure::CloudHypervisorMachine;
@@ -63,9 +66,6 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(2 * 60);
 /// The login the user-data creates for this test.
 const LOGIN_USER: &str = "e2e";
-/// Tap names are `bch` + the first 10 hex digits of the machine UID + NIC.
-const TAP_PREFIX: &str = "bch";
-const TAP_UID_DIGITS: usize = 10;
 const DEFAULT_RUN_ROOT: &str = "/run/banlieue/ch";
 
 struct Settings {
@@ -75,12 +75,6 @@ struct Settings {
     storage_dir: PathBuf,
     run_root: PathBuf,
     namespace: Option<String>,
-}
-
-fn required(name: &str) -> String {
-    std::env::var(name).unwrap_or_else(|_| {
-        panic!("{name} is not set; see the module docs of tests/e2e_machine.rs")
-    })
 }
 
 fn settings() -> Settings {
@@ -93,59 +87,6 @@ fn settings() -> Settings {
             std::env::var("BANLIEUE_E2E_RUN_ROOT").unwrap_or_else(|_| DEFAULT_RUN_ROOT.into()),
         ),
         namespace: std::env::var("BANLIEUE_E2E_NAMESPACE").ok(),
-    }
-}
-
-/// Poll `check` until it returns `Some`, or fail naming `what`.
-async fn wait_for<T, F, Fut>(what: &str, timeout: Duration, mut check: F) -> T
-where
-    F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = Option<T>>,
-{
-    let start = Instant::now();
-    loop {
-        if let Some(v) = check().await {
-            return v;
-        }
-        assert!(
-            start.elapsed() < timeout,
-            "timed out after {timeout:?} waiting for {what}"
-        );
-        tokio::time::sleep(POLL).await;
-    }
-}
-
-fn condition_true(
-    conditions: &[k8s_openapi::apimachinery::pkg::apis::meta::v1::Condition],
-    kind: &str,
-) -> bool {
-    conditions
-        .iter()
-        .any(|c| c.type_ == kind && c.status == "True")
-}
-
-/// Host interfaces that are this machine's taps.
-fn taps_for(uid: &str) -> Vec<String> {
-    let hex: String = uid
-        .chars()
-        .filter(|c| *c != '-')
-        .take(TAP_UID_DIGITS)
-        .collect();
-    let prefix = format!("{TAP_PREFIX}{hex}");
-    std::fs::read_dir("/sys/class/net")
-        .expect("reading /sys/class/net")
-        .filter_map(|e| e.ok()?.file_name().into_string().ok())
-        .filter(|n| n.starts_with(&prefix))
-        .collect()
-}
-
-/// Whether `p` exists, without needing to read inside it (the directories
-/// are `2770 guest:banlieue`; their `0711` parents let anyone stat them).
-fn present(p: &Path) -> bool {
-    match std::fs::symlink_metadata(p) {
-        Ok(_) => true,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
-        Err(e) => panic!("stat {}: {e}", p.display()),
     }
 }
 
@@ -265,6 +206,7 @@ async fn run(
 
     // Ready with an address.
     let (uid, address, host_uid) = wait_for(
+        POLL,
         "the machine to be Ready with an address",
         READY_TIMEOUT,
         || async {
@@ -293,6 +235,7 @@ async fn run(
     }
     // The VirtualMachine mirrors it (ADR-0015's "status mirrors infra").
     wait_for(
+        POLL,
         "the VirtualMachine to mirror Ready",
         READY_TIMEOUT,
         || async {
@@ -306,7 +249,7 @@ async fn run(
     let ssh: SocketAddr = format!("{address}:{SSH_PORT}")
         .parse()
         .map_err(|e| format!("address {address:?}: {e}"))?;
-    wait_for("the guest's sshd", SSH_TIMEOUT, || async move {
+    wait_for(POLL, "the guest's sshd", SSH_TIMEOUT, || async move {
         TcpStream::connect_timeout(&ssh, CONNECT_TIMEOUT)
             .ok()
             .map(drop)
@@ -315,36 +258,41 @@ async fn run(
 
     // The guest applied its user-data: the login it created accepts this
     // run's key, and the file it wrote holds the marker.
-    let read = wait_for("a login with the user-data's key", LOGIN_TIMEOUT, || {
-        let key = key.clone();
-        let target = format!("{LOGIN_USER}@{address}");
-        let path = format!("/run/{marker}");
-        async move {
-            let out = Command::new("ssh")
-                .args(["-i"])
-                .arg(&key)
-                .args([
-                    "-o",
-                    "BatchMode=yes",
-                    "-o",
-                    "StrictHostKeyChecking=no",
-                    "-o",
-                    "UserKnownHostsFile=/dev/null",
-                    "-o",
-                    "ConnectTimeout=5",
-                    "-o",
-                    "LogLevel=ERROR",
-                    &target,
-                    "cat",
-                    &path,
-                ])
-                .output()
-                .ok()?;
-            out.status
-                .success()
-                .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
-        }
-    })
+    let read = wait_for(
+        POLL,
+        "a login with the user-data's key",
+        LOGIN_TIMEOUT,
+        || {
+            let key = key.clone();
+            let target = format!("{LOGIN_USER}@{address}");
+            let path = format!("/run/{marker}");
+            async move {
+                let out = Command::new("ssh")
+                    .args(["-i"])
+                    .arg(&key)
+                    .args([
+                        "-o",
+                        "BatchMode=yes",
+                        "-o",
+                        "StrictHostKeyChecking=no",
+                        "-o",
+                        "UserKnownHostsFile=/dev/null",
+                        "-o",
+                        "ConnectTimeout=5",
+                        "-o",
+                        "LogLevel=ERROR",
+                        &target,
+                        "cat",
+                        &path,
+                    ])
+                    .output()
+                    .ok()?;
+                out.status
+                    .success()
+                    .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+            }
+        },
+    )
     .await;
     if read != marker {
         return Err(format!(
@@ -382,6 +330,7 @@ async fn run(
         .await
         .map_err(|e| format!("deleting VirtualMachine: {e}"))?;
     wait_for(
+        POLL,
         "the VirtualMachine and its machine to be gone",
         DELETE_TIMEOUT,
         || async {

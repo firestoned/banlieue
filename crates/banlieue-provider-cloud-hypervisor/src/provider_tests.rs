@@ -5,38 +5,13 @@
 #[cfg(test)]
 mod tests {
     use super::super::*;
+    use crate::test_fixtures::config;
     use banlieue_api::banlieue::{
         NetworkClassMapping, ProviderCapabilities, ProviderConnection, ProviderSpec,
         StorageClassMapping,
     };
     use banlieue_api::common::LocalObjectReference;
     use kube::api::ObjectMeta;
-
-    fn config() -> HostConfig {
-        HostConfig::parse(
-            r#"
-[provider]
-name = "ch-a"
-namespace = "banlieue-system"
-kubeconfig = "/etc/banlieue/kubeconfig"
-[vmm]
-binary = "/usr/local/bin/cloud-hypervisor"
-version = "v53.0"
-firmware = "/opt/banlieue/firmware/f/CLOUDHV.fd"
-[paths]
-run_root = "/run/banlieue/ch"
-state_root = "/var/lib/banlieue"
-[guests]
-uid_base = 2000000
-uid_count = 10
-[storage_classes]
-fast = "/srv/banlieue/ch"
-[network_classes]
-lan = "br0"
-"#,
-        )
-        .unwrap()
-    }
 
     fn target(host_class: &str) -> Option<BTreeMap<String, String>> {
         Some(BTreeMap::from([(

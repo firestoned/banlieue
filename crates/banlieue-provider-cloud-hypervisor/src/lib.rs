@@ -52,6 +52,8 @@ pub mod reconciler;
 pub mod report;
 pub mod sys;
 pub mod systemd;
+#[cfg(test)]
+mod test_fixtures;
 pub mod token;
 pub mod vmimage;
 

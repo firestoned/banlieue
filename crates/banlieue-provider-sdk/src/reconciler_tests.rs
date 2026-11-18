@@ -163,4 +163,46 @@ mod tests {
         let all = vec![provider("kvm-a"), provider("kvm-b")];
         assert_eq!(providers_in_scope(all, None).len(), 2);
     }
+
+    // --- provider_watch_config -----------------------------------------------
+
+    #[test]
+    fn a_named_provider_narrows_the_watch_to_that_object() {
+        let config = provider_watch_config(Some("kvm-a"));
+        assert_eq!(
+            config.field_selector.as_deref(),
+            Some("metadata.name=kvm-a")
+        );
+    }
+
+    #[test]
+    fn a_static_install_watches_every_provider() {
+        assert_eq!(provider_watch_config(None).field_selector, None);
+    }
+
+    // --- providers_of_class ---------------------------------------------------
+
+    #[test]
+    fn only_providers_of_the_class_are_kept() {
+        let mut other = provider("vc-a");
+        other.spec.provider_class_ref.name = "vsphere".to_string();
+        let kept = providers_of_class(vec![provider("kvm-a"), other], "libvirt");
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].metadata.name.as_deref(), Some("kvm-a"));
+        assert!(providers_of_class(vec![provider("kvm-a")], "proxmox").is_empty());
+    }
+
+    // --- requeue_error_policy -------------------------------------------------
+
+    /// Whatever the kind, error and context types, a failed reconcile is
+    /// retried on the error interval.
+    #[test]
+    fn the_shared_error_policy_requeues_on_the_error_interval() {
+        let action = requeue_error_policy(
+            Arc::new(provider("kvm-a")),
+            &std::io::Error::other("backend unreachable"),
+            Arc::new(()),
+        );
+        assert_eq!(format!("{action:?}"), format!("{:?}", requeue_on_error()));
+    }
 }

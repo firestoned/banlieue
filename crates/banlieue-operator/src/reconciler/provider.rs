@@ -20,13 +20,13 @@ use banlieue_api::banlieue::{
 };
 use banlieue_provider_sdk::finalizer::{ensure_finalizer, remove_finalizer};
 use banlieue_provider_sdk::reconciler::{requeue_default, requeue_on_error};
-use banlieue_provider_sdk::ssa::server_side_apply;
+use banlieue_provider_sdk::ssa::{apply_status, delete_ignoring_404, server_side_apply};
 use k8s_openapi::api::apps::v1::Deployment;
 use k8s_openapi::api::coordination::v1::Lease;
 use k8s_openapi::api::core::v1::ServiceAccount;
 use k8s_openapi::api::rbac::v1::{ClusterRoleBinding, Role, RoleBinding};
 use k8s_openapi::jiff::Timestamp;
-use kube::api::{DeleteParams, ListParams, Patch, PatchParams};
+use kube::api::{DeleteParams, ListParams};
 use kube::runtime::controller::Action;
 use kube::{Api, Resource, ResourceExt};
 use serde_json::json;
@@ -374,7 +374,7 @@ where
             continue;
         };
         let api: Api<K> = Api::namespaced(ctx.client.clone(), &object_namespace);
-        delete_ignoring_missing(&api, &object_name).await?;
+        delete_ignoring_404(&api, &object_name, &DeleteParams::default()).await?;
         info!(
             kind = std::any::type_name::<K>(),
             namespace = %object_namespace,
@@ -401,7 +401,7 @@ async fn prune_cluster_role_bindings(
         if keep.contains(&binding_name) {
             continue;
         }
-        delete_ignoring_missing(&api, &binding_name).await?;
+        delete_ignoring_404(&api, &binding_name, &DeleteParams::default()).await?;
         info!(name = %binding_name, "pruned orphaned ClusterRoleBinding");
         removed.push(binding_name);
     }
@@ -559,18 +559,14 @@ async fn publish_status(
 
     // Patch only `status.workload`; `status.conditions` stays owned by the
     // provider's own field manager (ADR-0012).
-    let patch = json!({
-        "apiVersion": Provider::api_version(&()),
-        "kind": Provider::kind(&()),
-        "status": { "workload": status },
-    });
-    providers
-        .patch_status(
-            &provider.name_any(),
-            &PatchParams::apply(FIELD_MANAGER).force(),
-            &Patch::Apply(&patch),
-        )
-        .await?;
+    apply_status(
+        providers,
+        &provider.name_any(),
+        FIELD_MANAGER,
+        &json!({ "workload": status }),
+        true,
+    )
+    .await?;
 
     Ok(reading.recheck_in)
 }
@@ -613,21 +609,6 @@ async fn cleanup(provider: &Provider, providers: &Api<Provider>, ctx: &Context) 
     remove_finalizer(providers, provider, FINALIZER).await?;
     Ok(Action::await_change())
 }
-
-/// Delete `name`, treating "already gone" as success so cleanup is idempotent.
-async fn delete_ignoring_missing<K>(api: &Api<K>, name: &str) -> Result<()>
-where
-    K: Clone + std::fmt::Debug + serde::de::DeserializeOwned,
-{
-    match api.delete(name, &DeleteParams::default()).await {
-        Ok(_) => Ok(()),
-        Err(kube::Error::Api(e)) if e.code == HTTP_NOT_FOUND => Ok(()),
-        Err(e) => Err(Error::Kube(e)),
-    }
-}
-
-/// HTTP status the apiserver returns for an object that no longer exists.
-const HTTP_NOT_FOUND: u16 = 404;
 
 /// Requeue policy for a failed reconcile.
 #[must_use]

@@ -45,18 +45,26 @@ pub mod reasons {
     pub const HEARTBEAT_RESTORED: &str = "ProviderHeartbeatRestored";
 }
 
+/// The one shape every event here has: no secondary object.
+fn event(type_: EventType, reason: &str, action: &str, note: String) -> Event {
+    Event {
+        type_,
+        reason: reason.to_string(),
+        note: Some(note),
+        action: action.to_string(),
+        secondary: None,
+    }
+}
+
 /// A workload was created or updated.
 #[must_use]
 pub fn workload_applied(workload: &str, namespace: &str) -> Event {
-    Event {
-        type_: EventType::Normal,
-        reason: reasons::WORKLOAD_APPLIED.to_string(),
-        note: Some(format!(
-            "Applied provider workload {workload} in namespace {namespace}"
-        )),
-        action: "Apply".to_string(),
-        secondary: None,
-    }
+    event(
+        EventType::Normal,
+        reasons::WORKLOAD_APPLIED,
+        "Apply",
+        format!("Applied provider workload {workload} in namespace {namespace}"),
+    )
 }
 
 /// A superseded workload was pruned.
@@ -66,30 +74,26 @@ pub fn workload_applied(workload: &str, namespace: &str) -> Event {
 /// see it stand out in `kubectl describe`.
 #[must_use]
 pub fn workload_pruned(workload: &str) -> Event {
-    Event {
-        type_: EventType::Warning,
-        reason: reasons::WORKLOAD_PRUNED.to_string(),
-        note: Some(format!(
+    event(
+        EventType::Warning,
+        reasons::WORKLOAD_PRUNED,
+        "Prune",
+        format!(
             "Pruned superseded provider workload {workload}; it is no longer part of this \
-             Provider (its ProviderClass reference changed)"
-        )),
-        action: "Prune".to_string(),
-        secondary: None,
-    }
+         Provider (its ProviderClass reference changed)"
+        ),
+    )
 }
 
 /// A workload was removed because its Provider is going away.
 #[must_use]
 pub fn workload_deleted(workload: &str) -> Event {
-    Event {
-        type_: EventType::Normal,
-        reason: reasons::WORKLOAD_DELETED.to_string(),
-        note: Some(format!(
-            "Deleted provider workload {workload} as its Provider is being removed"
-        )),
-        action: "Delete".to_string(),
-        secondary: None,
-    }
+    event(
+        EventType::Normal,
+        reasons::WORKLOAD_DELETED,
+        "Delete",
+        format!("Deleted provider workload {workload} as its Provider is being removed"),
+    )
 }
 
 /// Reconciliation is suspended.
@@ -109,13 +113,12 @@ pub fn reconcile_skipped(reason: SkipReason) -> Event {
              suspends every Provider of that class. Existing workloads are left running."
         }
     };
-    Event {
-        type_: EventType::Normal,
-        reason: reasons::RECONCILE_SKIPPED.to_string(),
-        note: Some(note.to_string()),
-        action: "Skip".to_string(),
-        secondary: None,
-    }
+    event(
+        EventType::Normal,
+        reasons::RECONCILE_SKIPPED,
+        "Skip",
+        note.to_string(),
+    )
 }
 
 /// The referenced `ProviderClass` does not exist.
@@ -125,16 +128,15 @@ pub fn reconcile_skipped(reason: SkipReason) -> Event {
 /// class, or a typo in `providerClassRef`.
 #[must_use]
 pub fn class_not_found(class: &str) -> Event {
-    Event {
-        type_: EventType::Warning,
-        reason: reasons::CLASS_NOT_FOUND.to_string(),
-        note: Some(format!(
+    event(
+        EventType::Warning,
+        reasons::CLASS_NOT_FOUND,
+        "Resolve",
+        format!(
             "ProviderClass {class} not found; no workload can be created until it exists. \
-             `banlieue bootstrap operator` seeds one per compiled-in backend."
-        )),
-        action: "Resolve".to_string(),
-        secondary: None,
-    }
+         `banlieue bootstrap operator` seeds one per compiled-in backend."
+        ),
+    )
 }
 
 /// The provider stopped renewing its Lease (ADR-0102).
@@ -148,30 +150,26 @@ pub fn heartbeat_stale(lease: &str, last_renewed: Option<&str>) -> Event {
         || "it records no renewal".to_string(),
         |t| format!("last renewed {t}"),
     );
-    Event {
-        type_: EventType::Warning,
-        reason: reasons::HEARTBEAT_STALE.to_string(),
-        note: Some(format!(
+    event(
+        EventType::Warning,
+        reasons::HEARTBEAT_STALE,
+        "Evaluate",
+        format!(
             "Provider is not running: Lease {lease} has stopped renewing ({when}). No new \
-             VirtualMachine is scheduled onto it until it renews again."
-        )),
-        action: "Evaluate".to_string(),
-        secondary: None,
-    }
+         VirtualMachine is scheduled onto it until it renews again."
+        ),
+    )
 }
 
 /// A stale provider is renewing its Lease again (ADR-0102).
 #[must_use]
 pub fn heartbeat_restored(lease: &str) -> Event {
-    Event {
-        type_: EventType::Normal,
-        reason: reasons::HEARTBEAT_RESTORED.to_string(),
-        note: Some(format!(
-            "Provider is running again: Lease {lease} is renewing; it is schedulable."
-        )),
-        action: "Evaluate".to_string(),
-        secondary: None,
-    }
+    event(
+        EventType::Normal,
+        reasons::HEARTBEAT_RESTORED,
+        "Evaluate",
+        format!("Provider is running again: Lease {lease} is renewing; it is schedulable."),
+    )
 }
 
 #[cfg(test)]

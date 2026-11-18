@@ -54,6 +54,15 @@ pub fn available_memory_mib(
         .map(round_down_to_gib)
 }
 
+/// The smaller of two optional figures, or whichever is known.
+#[must_use]
+pub fn min_known<T: Ord>(a: Option<T>, b: Option<T>) -> Option<T> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    }
+}
+
 #[cfg(test)]
 #[path = "capacity_tests.rs"]
 mod capacity_tests;

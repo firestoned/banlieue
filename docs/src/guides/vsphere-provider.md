@@ -526,7 +526,7 @@ everywhere at once.
 
 `VMImage` per-provider not ready: `TemplateNotFound` (template absent from a
 zone's folder; the zone's `message` names the folder searched), `ConnectFailed`,
-`LookupFailed`, `NoFailureDomains`, `NoVSphereSource`.
+`LookupFailed`, `NoFailureDomains`.
 
 A zone with `reason=ImportFailed`: its import Job failed; read the Job's
 logs (`kubectl -n banlieue-imagebuild logs job/<the Job named in the zone's

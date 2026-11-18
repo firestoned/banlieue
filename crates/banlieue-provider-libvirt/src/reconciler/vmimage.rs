@@ -28,31 +28,33 @@ use std::sync::Arc;
 
 use banlieue_api::banlieue::{
     BuildArtifactKind, BuildArtifactPhase, BuildArtifactStatus, ImagePerProviderStatus,
-    ImageSource, ImageSourceKind, Provider, VMImage, VMImageStatus, ZoneImageStatus,
+    ImageSource, ImageSourceKind, Provider, VMImage, ZoneImageStatus,
 };
-use banlieue_provider_sdk::reconciler::providers_in_scope;
-use banlieue_provider_sdk::reconciler::{requeue_default, requeue_long, requeue_on_error};
-use banlieue_provider_sdk::ssa::{FIELD_MANAGER_PROVIDER_LIBVIRT, status_field_manager};
+use banlieue_provider_sdk::reconciler::{
+    list_providers_of_class, providers_in_scope, requeue_default, requeue_long,
+};
+use banlieue_provider_sdk::ssa::{
+    FIELD_MANAGER_PROVIDER_LIBVIRT, apply_status, is_not_found, status_field_manager,
+};
+use banlieue_provider_sdk::status::{image_row, provider_rows_status};
 use k8s_openapi::api::batch::v1::Job;
 use k8s_openapi::api::core::v1::Toleration;
 use kube::{
-    Resource, ResourceExt,
-    api::{Api, ListParams, Patch, PatchParams},
+    ResourceExt,
+    api::{Api, Patch, PatchParams},
     runtime::controller::Action,
 };
 use serde_json::json;
-use tracing::{info, warn};
+use tracing::info;
 
 use super::provider::PROVIDER_CLASS_NAME;
 use crate::context::Context;
-use crate::error::{Error, Result};
+use crate::error::Result;
 
 /// Stable `reason` strings for `ImagePerProviderStatus` / `ZoneImageStatus`.
 pub mod reasons {
     /// Everything this provider is responsible for is present.
     pub const RECONCILED: &str = "Reconciled";
-    /// No libvirt source on this VMImage — nothing for us to do.
-    pub const NO_LIBVIRT_SOURCE: &str = "NoLibvirtSource";
     /// `status.buildArtifact` is absent, Pending, or Building.
     pub const BUILD_PENDING: &str = "BuildPending";
     /// `status.buildArtifact.phase == Failed`.
@@ -86,7 +88,7 @@ pub async fn reconcile(image: Arc<VMImage>, ctx: Arc<Context>) -> Result<Action>
     };
 
     let providers = providers_in_scope(
-        list_libvirt_providers(&ctx).await?,
+        list_providers_of_class(&ctx.client, ctx.namespace.as_deref(), PROVIDER_CLASS_NAME).await?,
         ctx.provider_name.as_deref(),
     );
     if providers.is_empty() {
@@ -124,12 +126,6 @@ pub async fn reconcile(image: Arc<VMImage>, ctx: Arc<Context>) -> Result<Action>
     } else {
         requeue_long()
     })
-}
-
-/// `error_policy` invoked on `reconcile` failure.
-pub fn error_policy(_image: Arc<VMImage>, err: &Error, _ctx: Arc<Context>) -> Action {
-    warn!(error = %err, "libvirt vmimage reconcile error policy fired");
-    requeue_on_error()
 }
 
 /// Pick the first `libvirt` source of a kind this provider supports.
@@ -324,7 +320,7 @@ async fn ensure_import_jobs(
 
         let zone = match observed {
             Ok(job) => zone_from_job(pool, &job_name, &job),
-            Err(kube::Error::Api(e)) if e.code == 404 => {
+            Err(e) if is_not_found(&e) => {
                 // No Job yet — create one.
                 let spec = build_import_job(&ImportJobInputs {
                     job_name: &job_name,
@@ -420,13 +416,9 @@ fn row_with_ref(
     resolved_ref: Option<String>,
 ) -> ImagePerProviderStatus {
     ImagePerProviderStatus {
-        provider_name: provider.name_any(),
-        provider_namespace: provider.namespace().unwrap_or_default(),
-        ready,
         resolved_ref,
-        reason: Some(reason.to_string()),
-        message,
         zones,
+        ..image_row(provider, ready, reason, message)
     }
 }
 
@@ -698,19 +690,6 @@ pub fn build_import_job(inputs: &ImportJobInputs<'_>) -> serde_json::Value {
     })
 }
 
-async fn list_libvirt_providers(ctx: &Context) -> Result<Vec<Provider>> {
-    let api: Api<Provider> = match ctx.namespace.as_deref() {
-        Some(ns) => Api::namespaced(ctx.client.clone(), ns),
-        None => Api::all(ctx.client.clone()),
-    };
-    Ok(api
-        .list(&ListParams::default())
-        .await?
-        .into_iter()
-        .filter(|p| p.spec.provider_class_ref.name == PROVIDER_CLASS_NAME)
-        .collect())
-}
-
 async fn patch_status(
     ctx: &Context,
     name: &str,
@@ -718,31 +697,13 @@ async fn patch_status(
     per_provider: Vec<ImagePerProviderStatus>,
     field_manager: &str,
 ) -> Result<()> {
-    let status = VMImageStatus {
-        per_provider,
-        // Written solely by banlieue-imagebuilder (ADR-0010).
-        build_artifact: None,
-        // Written solely by banlieue-controller (ADR-0015). A provider cannot
-        // compute "ready everywhere" from rows it does not own, so it reports
-        // its own perProvider entry and says nothing about the aggregate.
-        conditions: Vec::new(),
-        observed_generation: Some(generation),
-        first_boot_sealing: None,
-    };
-    let patch = json!({
-        "apiVersion": VMImage::api_version(&()).to_string(),
-        "kind": VMImage::kind(&()).to_string(),
-        "metadata": { "name": name },
-        "status": status,
-    });
+    // `buildArtifact` is written solely by banlieue-imagebuilder (ADR-0010)
+    // and `conditions` solely by banlieue-controller (ADR-0015). A provider
+    // cannot compute "ready everywhere" from rows it does not own, so it
+    // reports its own perProvider entry and says nothing about the aggregate.
+    let status = provider_rows_status(per_provider, generation);
     let api: Api<VMImage> = Api::all(ctx.client.clone());
-    api.patch_status(
-        name,
-        &PatchParams::apply(field_manager).force(),
-        &Patch::Apply(&patch),
-    )
-    .await?;
-    Ok(())
+    Ok(apply_status(&api, name, field_manager, &status, true).await?)
 }
 
 #[cfg(test)]

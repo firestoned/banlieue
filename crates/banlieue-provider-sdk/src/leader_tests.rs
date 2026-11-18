@@ -207,4 +207,52 @@ mod tests {
         assert_eq!(identity_from(None, None, None), "unknown");
         assert_eq!(identity_from(None, None, Some("\n".into())), "unknown");
     }
+
+    // ----- with_identity / elect -----
+
+    /// `--leader-election-identity` replaces the derived identity; without
+    /// the flag the config keeps the one it had.
+    #[test]
+    fn with_identity_overrides_only_when_one_is_given() {
+        assert_eq!(
+            config().with_identity(Some(OTHER_IDENTITY.into())).identity,
+            OTHER_IDENTITY
+        );
+        assert_eq!(config().with_identity(None).identity, OUR_IDENTITY);
+    }
+
+    /// A client that is never used to make a request.
+    fn offline_client() -> kube::Client {
+        let url = "http://127.0.0.1:1".parse().expect("valid URL");
+        kube::Client::try_from(kube::Config::new(url)).expect("client from static config")
+    }
+
+    /// `--no-leader-elect`: nothing to acquire, so it returns at once and
+    /// never touches the API server.
+    #[tokio::test]
+    async fn a_disabled_election_returns_without_calling_the_api_server() {
+        use crate::health::{Election, Readiness};
+
+        let readiness = Readiness::new(Election::Disabled, Default::default());
+        super::super::elect(offline_client(), None, &readiness)
+            .await
+            .expect("disabled election cannot fail");
+    }
+
+    /// An invalid config is refused before any wait begins, so a programming
+    /// mistake cannot leave a process blocked on a lease it will never hold.
+    #[tokio::test]
+    async fn an_invalid_config_is_refused_before_waiting() {
+        use crate::health::Readiness;
+
+        let cfg = LeaderConfig {
+            identity: String::new(),
+            ..config()
+        };
+        let readiness = Readiness::new(cfg.election(), Default::default());
+        let err = super::super::elect(offline_client(), Some(cfg), &readiness)
+            .await
+            .expect_err("an empty identity is invalid");
+        assert!(err.to_string().contains("identity"), "{err}");
+    }
 }

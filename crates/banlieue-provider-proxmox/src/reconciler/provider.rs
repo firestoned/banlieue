@@ -23,16 +23,14 @@ use banlieue_provider_sdk::capacity::{
     QEMU_MEMORY_OVERHEAD_MIB, available_memory_mib, bytes_to_gib, bytes_to_mib,
 };
 use banlieue_provider_sdk::reconciler::{requeue_default, requeue_long, requeue_on_error};
-use banlieue_provider_sdk::ssa::FIELD_MANAGER_PROVIDER_PROXMOX;
-use banlieue_provider_sdk::status::{condition_status, set_condition};
-use banlieue_proxmox::{NetworkIface, Node, ProxmoxApi, Storage};
-use kube::{
-    Resource, ResourceExt,
-    api::{Api, Patch, PatchParams},
-    runtime::controller::Action,
+use banlieue_provider_sdk::ssa::{FIELD_MANAGER_PROVIDER_PROXMOX, apply_status};
+use banlieue_provider_sdk::status::{
+    condition_status, provider_condition_types as condition_types, set_condition,
+    unreachable_provider_status,
 };
-use serde_json::json;
-use tracing::{info, warn};
+use banlieue_proxmox::{NetworkIface, Node, ProxmoxApi, Storage};
+use kube::{ResourceExt, api::Api, runtime::controller::Action};
+use tracing::info;
 
 use crate::context::Context;
 use crate::error::{Error, Result};
@@ -52,14 +50,6 @@ const CONTENT_ISO: &str = "iso";
 /// Failure-domain raw attribute naming the Proxmox node. The controller
 /// schedules by this key (`FD_RAW_PROXMOX_NODE`).
 pub const RAW_KEY_NODE: &str = "node";
-
-/// Condition types published on a `Provider`.
-pub mod condition_types {
-    /// Overall readiness.
-    pub const READY: &str = "Ready";
-    /// The API answered.
-    pub const PROVIDER_REACHABLE: &str = "ProviderReachable";
-}
 
 /// Stable `reason` strings.
 pub mod reasons {
@@ -105,17 +95,11 @@ pub async fn reconcile(provider: Arc<Provider>, ctx: Arc<Context>) -> Result<Act
             Ok(requeue_default())
         }
         Err(e) => {
-            let status = failed_status(generation, failure_reason(&e), e.to_string());
+            let status = unreachable_provider_status(generation, failure_reason(&e), e.to_string());
             patch_status(&ctx, &name, &namespace, status).await?;
             Ok(requeue_on_error())
         }
     }
-}
-
-/// Requeue after a reconcile error.
-pub fn error_policy(_p: Arc<Provider>, err: &Error, _ctx: Arc<Context>) -> Action {
-    warn!(error = %err, "proxmox provider reconcile error policy fired");
-    requeue_on_error()
 }
 
 /// The stable reason for a failure, so operators can match on it.
@@ -373,45 +357,14 @@ pub async fn compute_status(
     })
 }
 
-/// Status published when the cluster could not be probed at all.
-#[must_use]
-pub fn failed_status(generation: i64, reason: &str, message: String) -> ProviderStatus {
-    let mut conditions = Vec::new();
-    for t in [condition_types::PROVIDER_REACHABLE, condition_types::READY] {
-        set_condition(
-            &mut conditions,
-            t,
-            condition_status::FALSE,
-            reason,
-            message.clone(),
-            generation,
-        );
-    }
-    ProviderStatus {
-        failure_domains: Vec::new(),
-        conditions,
-        workload: None,
-        observed_generation: Some(generation),
-        ek_ca_certificates: vec![],
-    }
-}
-
 async fn patch_status(
     ctx: &Context,
     name: &str,
     namespace: &str,
     status: ProviderStatus,
 ) -> Result<()> {
-    let patch = json!({
-        "apiVersion": Provider::api_version(&()).to_string(),
-        "kind": Provider::kind(&()).to_string(),
-        "metadata": { "name": name },
-        "status": status,
-    });
     let api: Api<Provider> = Api::namespaced(ctx.client.clone(), namespace);
-    let params = PatchParams::apply(FIELD_MANAGER_PROVIDER_PROXMOX).force();
-    api.patch_status(name, &params, &Patch::Apply(&patch))
-        .await?;
+    apply_status(&api, name, FIELD_MANAGER_PROVIDER_PROXMOX, &status, true).await?;
     Ok(())
 }
 

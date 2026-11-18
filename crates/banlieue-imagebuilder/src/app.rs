@@ -16,7 +16,6 @@
 //!    instrumented [`run_controller`].
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use anyhow::{Context as _, Result};
 use banlieue_api::banlieue::VMImage;
@@ -24,11 +23,11 @@ use banlieue_provider_sdk::bootstrap::{
     Observability, init_tracing, shutdown_signal, start_observability,
 };
 use banlieue_provider_sdk::client::build_client;
-use banlieue_provider_sdk::health::Election;
-use banlieue_provider_sdk::leader::{
-    DEFAULT_LEASE_DURATION_SECS, DEFAULT_RENEW_PERIOD_SECS, DEFAULT_RETRY_PERIOD_SECS,
-    LeaderConfig, acquire_or_wait, renew_forever,
+use banlieue_provider_sdk::defaults::{
+    DEFAULT_HEALTH_PORT, DEFAULT_LEADER_ELECTION_NAMESPACE, DEFAULT_METRICS_PORT,
 };
+use banlieue_provider_sdk::health::Election;
+use banlieue_provider_sdk::leader::{self, LeaderConfig};
 use banlieue_provider_sdk::runner::run_controller;
 use banlieue_provider_sdk::scheduling::BuildScheduling;
 use clap::{Args, Subcommand};
@@ -36,7 +35,7 @@ use kube::{
     Api,
     runtime::{Controller, watcher::Config},
 };
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 use crate::importer_image::ImporterImage;
 use crate::oci_push::PushArgs;
@@ -44,9 +43,6 @@ use crate::reconciler::push::{CaBundle, CaBundleSource, DEFAULT_CA_BUNDLE_KEY, R
 use crate::reconciler::vmimage::ISO_OVERLAY_IMPORTER_IMAGE;
 use crate::{context::Context, reconciler::vmimage};
 
-const DEFAULT_HEALTH_PORT: u16 = 8081;
-const DEFAULT_METRICS_PORT: u16 = 8080;
-const DEFAULT_LEADER_ELECTION_NAMESPACE: &str = "banlieue-system";
 const DEFAULT_LEADER_ELECTION_ID: &str = "banlieue-imagebuilder";
 
 /// This role's name: the OTLP `service.name` (ADR-0092) and the `role`
@@ -62,7 +58,7 @@ pub const ROLE: &str = "banlieue-imagebuilder";
 // artifacts PVC here and each provider's import Job mounts it, and a PVC
 // cannot be mounted across namespaces. A cross-crate test in the `banlieue`
 // binary asserts the defaults agree.
-const DEFAULT_BUILD_NAMESPACE: &str = "banlieue-imagebuild";
+use banlieue_provider_sdk::defaults::DEFAULT_BUILD_NAMESPACE;
 
 /// Image the registry push Job runs: the banlieue image itself.
 const DEFAULT_PUSH_IMAGE: &str =
@@ -340,28 +336,9 @@ pub async fn run(cli: Cli) -> Result<()> {
             .await
             .context("starting health and metrics servers")?;
 
-    if let Some(leader_cfg) = leader_cfg {
-        info!(
-            namespace = %leader_cfg.namespace,
-            lease = %leader_cfg.lease_name,
-            identity = %leader_cfg.identity,
-            "waiting for leader election"
-        );
-        acquire_or_wait(client.clone(), &leader_cfg, &readiness)
-            .await
-            .context("acquiring leader lease")?;
-
-        let renewer_client = client.clone();
-        let renewer_readiness = readiness.clone();
-        tokio::spawn(async move {
-            if let Err(e) = renew_forever(renewer_client, leader_cfg, renewer_readiness).await {
-                error!(error = %e, "leader lease renewer terminated — exiting");
-                std::process::exit(1);
-            }
-        });
-    } else {
-        info!("leader election disabled by --no-leader-elect");
-    }
+    leader::elect(client.clone(), leader_cfg, &readiness)
+        .await
+        .context("acquiring leader lease")?;
 
     // Parsed once at startup: a malformed selector must fail the process, not
     // silently schedule privileged builds anywhere (ADR-0016 follow-up).
@@ -427,18 +404,8 @@ pub async fn run(cli: Cli) -> Result<()> {
 /// Build a [`LeaderConfig`] from parsed CLI flags, filling the holder identity
 /// from `--leader-election-identity` or the `POD_NAME` / `HOSTNAME` fallback.
 fn build_leader_config(cli: &Cli) -> LeaderConfig {
-    let identity = cli
-        .leader_election_identity
-        .clone()
-        .unwrap_or_else(LeaderConfig::default_identity);
-    LeaderConfig {
-        namespace: cli.leader_election_namespace.clone(),
-        lease_name: cli.leader_election_id.clone(),
-        identity,
-        lease_duration: Duration::from_secs(DEFAULT_LEASE_DURATION_SECS),
-        renew_period: Duration::from_secs(DEFAULT_RENEW_PERIOD_SECS),
-        retry_period: Duration::from_secs(DEFAULT_RETRY_PERIOD_SECS),
-    }
+    LeaderConfig::new(&cli.leader_election_namespace, &cli.leader_election_id)
+        .with_identity(cli.leader_election_identity.clone())
 }
 
 #[cfg(test)]

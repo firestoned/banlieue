@@ -52,7 +52,10 @@
 //! those, including after a failure, and reports anything the teardown left
 //! on the host rather than swallowing it.
 
-use std::path::{Path, PathBuf};
+mod common;
+
+use common::{condition_true, present, required, taps_for, wait_for_logged as wait_for};
+use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use banlieue_api::banlieue::{
@@ -63,7 +66,6 @@ use banlieue_api::infrastructure::CloudHypervisorMachine;
 use banlieue_provider_cloud_hypervisor::systemd::{Bus, Systemd};
 use futures::FutureExt as _;
 use k8s_openapi::api::core::v1::ConfigMap;
-use k8s_openapi::apimachinery::pkg::apis::meta::v1::Condition;
 use kube::api::{Api, DeleteParams, ListParams, PostParams};
 use kube::{Client, ResourceExt};
 use serde_json::json;
@@ -89,9 +91,6 @@ const CLAIM_TTL_SECS: u64 = 3600;
 /// default, 1800 s, outlasts `PROVISION_TIMEOUT`, so the suite would give up
 /// before the pool heals; 600 s lets one replacement land inside it.
 const MEMBER_PROVISIONING_TIMEOUT_SECS: u64 = 600;
-/// Tap names are `bch` + the first 10 hex digits of the machine UID + NIC.
-const TAP_PREFIX: &str = "bch";
-const TAP_UID_DIGITS: usize = 10;
 const DEFAULT_RUN_ROOT: &str = "/run/banlieue/ch";
 const DEFAULT_NAMESPACE: &str = "banlieue-system";
 const DEFAULT_READINESS: &str = "InfrastructureReady";
@@ -115,12 +114,6 @@ struct Settings {
     namespace: String,
     readiness: String,
     user_data: Option<String>,
-}
-
-fn required(name: &str) -> String {
-    std::env::var(name).unwrap_or_else(|_| {
-        panic!("{name} is not set; see the module docs of tests/e2e_pool_claim.rs")
-    })
 }
 
 fn settings() -> Settings {
@@ -147,27 +140,6 @@ fn settings() -> Settings {
 // Waiting
 // ---------------------------------------------------------------------------
 
-async fn wait_for<T, F, Fut>(what: &str, timeout: Duration, mut check: F) -> T
-where
-    F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = Option<T>>,
-{
-    let start = Instant::now();
-    eprintln!("  … {what}");
-    loop {
-        if let Some(v) = check().await {
-            eprintln!("  ✓ {what} ({}s)", start.elapsed().as_secs());
-            return v;
-        }
-        assert!(
-            start.elapsed() < timeout,
-            "timed out after {}s waiting for: {what}",
-            timeout.as_secs()
-        );
-        tokio::time::sleep(POLL).await;
-    }
-}
-
 /// `wait_for` that reports failure instead of panicking: teardown must
 /// finish its remaining steps even when one of them times out.
 async fn wait_for_opt<F, Fut>(what: &str, timeout: Duration, mut check: F) -> Option<()>
@@ -188,12 +160,6 @@ where
     }
 }
 
-fn condition_true(conditions: &[Condition], kind: &str) -> bool {
-    conditions
-        .iter()
-        .any(|c| c.type_ == kind && c.status == "True")
-}
-
 // ---------------------------------------------------------------------------
 // The host
 // ---------------------------------------------------------------------------
@@ -207,31 +173,6 @@ struct Guest {
     unit: String,
     machine_dir: PathBuf,
     run_dir: PathBuf,
-}
-
-/// Host interfaces that are this machine's taps.
-fn taps_for(uid: &str) -> Vec<String> {
-    let hex: String = uid
-        .chars()
-        .filter(|c| *c != '-')
-        .take(TAP_UID_DIGITS)
-        .collect();
-    let prefix = format!("{TAP_PREFIX}{hex}");
-    std::fs::read_dir("/sys/class/net")
-        .expect("reading /sys/class/net")
-        .filter_map(|e| e.ok()?.file_name().into_string().ok())
-        .filter(|n| n.starts_with(&prefix))
-        .collect()
-}
-
-/// Whether `p` exists, without needing to read inside it (the directories
-/// are `2770 guest:banlieue`; their `0711` parents let anyone stat them).
-fn present(p: &Path) -> bool {
-    match std::fs::symlink_metadata(p) {
-        Ok(_) => true,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
-        Err(e) => panic!("stat {}: {e}", p.display()),
-    }
 }
 
 /// Every trace of `g` still on the host. Empty means the guest is gone.
@@ -465,15 +406,20 @@ impl Scratch {
     }
 
     async fn wait_bound(&self, claim: &str) -> String {
-        wait_for("the claim to bind a member", TEARDOWN_TIMEOUT, || async {
-            self.api::<VirtualMachineClaim>()
-                .get(claim)
-                .await
-                .ok()?
-                .status?
-                .virtual_machine_ref
-                .map(|r| r.name)
-        })
+        wait_for(
+            POLL,
+            "the claim to bind a member",
+            TEARDOWN_TIMEOUT,
+            || async {
+                self.api::<VirtualMachineClaim>()
+                    .get(claim)
+                    .await
+                    .ok()?
+                    .status?
+                    .virtual_machine_ref
+                    .map(|r| r.name)
+            },
+        )
         .await
     }
 
@@ -495,7 +441,7 @@ impl Scratch {
     /// Wait for `Warm=True` with `available >= WARM`, and return how long it
     /// took from `since`.
     async fn wait_warm(&self, pool: &str, what: &str, since: Instant) -> Duration {
-        wait_for(what, PROVISION_TIMEOUT, || async {
+        wait_for(POLL, what, PROVISION_TIMEOUT, || async {
             let (available, warm) = self.warmth(pool).await;
             (warm && available >= WARM).then_some(())
         })
@@ -632,6 +578,7 @@ async fn release_case(s: &Scratch, pool: &str, guests: &mut Vec<Guest>) {
     // still true from before the claim until the pool next reconciles.
     let refill = Instant::now();
     let replacement = wait_for(
+        POLL,
         "the pool to create a replacement for the claimed member",
         PROVISION_TIMEOUT,
         || async {
@@ -654,6 +601,7 @@ async fn release_case(s: &Scratch, pool: &str, guests: &mut Vec<Guest>) {
         .expect("delete claim");
     let release = Instant::now();
     wait_for(
+        POLL,
         "the claim and its member to be gone",
         TEARDOWN_TIMEOUT,
         || async {
@@ -738,6 +686,7 @@ async fn pool_gc_case(s: &Scratch, pool: &str, guests: &mut Vec<Guest>) {
         .await
         .expect("delete pool");
     wait_for(
+        POLL,
         "the unclaimed members to be collected",
         TEARDOWN_TIMEOUT,
         || async {
@@ -767,6 +716,7 @@ async fn pool_gc_case(s: &Scratch, pool: &str, guests: &mut Vec<Guest>) {
     for g in guests.iter().filter(|g| g.member != bound) {
         let g = g.clone();
         wait_for(
+            POLL,
             &format!("collected member {} to leave the host", g.member),
             TEARDOWN_TIMEOUT,
             || {

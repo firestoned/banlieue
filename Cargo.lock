@@ -280,7 +280,6 @@ name = "banlieue-controller"
 version = "0.5.0"
 dependencies = [
  "anyhow",
- "async-trait",
  "banlieue-api",
  "banlieue-provider-sdk",
  "clap",
@@ -289,7 +288,6 @@ dependencies = [
  "k8s-openapi",
  "kube",
  "prometheus-client",
- "schemars",
  "serde",
  "serde_json",
  "tempfile",
@@ -328,12 +326,8 @@ dependencies = [
  "banlieue-oci",
  "banlieue-provider-sdk",
  "clap",
- "futures",
  "k8s-openapi",
  "kube",
- "reqwest",
- "schemars",
- "serde",
  "serde-saphyr",
  "serde_json",
  "thiserror",
@@ -346,7 +340,6 @@ name = "banlieue-libvirt"
 version = "0.5.0"
 dependencies = [
  "rustls",
- "rustls-pki-types",
  "thiserror",
  "tokio",
  "tokio-rustls",
@@ -384,10 +377,8 @@ dependencies = [
  "banlieue-oci",
  "banlieue-provider-sdk",
  "clap",
- "futures",
  "k8s-openapi",
  "kube",
- "schemars",
  "serde",
  "serde-saphyr",
  "serde_json",
@@ -440,14 +431,11 @@ dependencies = [
  "getrandom 0.4.3",
  "k8s-openapi",
  "kube",
- "serde",
  "serde_json",
- "sha2",
  "tempfile",
  "thiserror",
  "tokio",
  "tracing",
- "x509-parser",
 ]
 
 [[package]]
@@ -464,7 +452,6 @@ dependencies = [
  "k8s-openapi",
  "kube",
  "rustls",
- "serde",
  "serde_json",
  "thiserror",
  "tokio",
@@ -475,7 +462,6 @@ dependencies = [
 name = "banlieue-provider-sdk"
 version = "0.5.0"
 dependencies = [
- "async-trait",
  "banlieue-api",
  "base64 0.23.1",
  "futures",
@@ -486,7 +472,6 @@ dependencies = [
  "opentelemetry_sdk",
  "prometheus-client",
  "rustls",
- "schemars",
  "serde",
  "serde_json",
  "sha2",
@@ -515,10 +500,7 @@ dependencies = [
  "kube",
  "reqwest",
  "rustls",
- "schemars",
- "serde",
  "serde_json",
- "sha2",
  "thiserror",
  "tokio",
  "tokio-util",

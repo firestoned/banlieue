@@ -351,6 +351,22 @@ pub struct ScopedTarget {
     pub target: BTreeMap<String, String>,
 }
 
+/// Shared body of [`StorageClassMapping::target_for`] and
+/// [`NetworkClassMapping::target_for`]: an exact `per_zone` match wins, else
+/// the default target.
+fn zone_target<'a>(
+    per_zone: &'a [ScopedTarget],
+    default: Option<&'a BTreeMap<String, String>>,
+    datacenter: &str,
+    cluster: &str,
+) -> Option<&'a BTreeMap<String, String>> {
+    per_zone
+        .iter()
+        .find(|z| z.datacenter == datacenter && z.cluster == cluster)
+        .map(|z| &z.target)
+        .or(default)
+}
+
 /// Maps one abstract storage-class name to a concrete backend target.
 ///
 /// A single class name can resolve differently per failure domain of the
@@ -388,11 +404,7 @@ impl StorageClassMapping {
     /// when this class does not resolve in that zone at all (ADR-0030).
     #[must_use]
     pub fn target_for(&self, datacenter: &str, cluster: &str) -> Option<&BTreeMap<String, String>> {
-        self.per_zone
-            .iter()
-            .find(|z| z.datacenter == datacenter && z.cluster == cluster)
-            .map(|z| &z.target)
-            .or(self.target.as_ref())
+        zone_target(&self.per_zone, self.target.as_ref(), datacenter, cluster)
     }
 }
 
@@ -437,11 +449,7 @@ impl NetworkClassMapping {
     /// when this class does not resolve in that zone at all (ADR-0030).
     #[must_use]
     pub fn target_for(&self, datacenter: &str, cluster: &str) -> Option<&BTreeMap<String, String>> {
-        self.per_zone
-            .iter()
-            .find(|z| z.datacenter == datacenter && z.cluster == cluster)
-            .map(|z| &z.target)
-            .or(self.target.as_ref())
+        zone_target(&self.per_zone, self.target.as_ref(), datacenter, cluster)
     }
 
     /// Effective subnet shape for a given `(datacenter, cluster)`: an exact
@@ -766,11 +774,6 @@ pub struct StorageCapacity {
     /// disks placed in any of them draw on it.
     #[serde(default, skip_serializing_if = "is_false")]
     pub shared: bool,
-}
-
-#[inline]
-fn is_false(b: &bool) -> bool {
-    !*b
 }
 
 #[cfg(test)]

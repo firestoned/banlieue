@@ -22,6 +22,8 @@ use k8s_openapi::api::batch::v1::Job;
 use k8s_openapi::api::core::v1::Toleration;
 use serde_json::{Value, json};
 
+use super::job::{JobParts, job_parts};
+
 const PRELAY_JOB_SUFFIX: &str = "-prelay";
 const PRELAID_FILE_SUFFIX: &str = "-prelaid.raw";
 const ARTIFACTS_MOUNT_PATH: &str = "/artifacts";
@@ -148,12 +150,12 @@ pub fn build_prelay_job(inputs: &PrelayJobInputs<'_>) -> Value {
         node_selector,
     } = *inputs;
 
-    let pvc = artifact
-        .pvc_ref
-        .as_ref()
-        .map(|r| r.name.clone())
-        .unwrap_or_default();
-    let file = artifact.file.clone().unwrap_or_default();
+    let JobParts {
+        pvc,
+        file,
+        labels,
+        owner_references,
+    } = job_parts("prelay", vmimage, artifact, os_artifact_uid);
 
     let mut env = vec![
         json!({ "name": "PRELAY_INPUT", "value": format!("{ARTIFACTS_MOUNT_PATH}/{file}") }),
@@ -165,19 +167,6 @@ pub fn build_prelay_job(inputs: &PrelayJobInputs<'_>) -> Value {
     if let Some(checksum) = &artifact.checksum {
         env.push(json!({ "name": "PRELAY_VERIFY_CHECKSUM", "value": checksum }));
     }
-
-    let labels = BTreeMap::from([
-        ("app.kubernetes.io/name".to_string(), "banlieue".to_string()),
-        (
-            "app.kubernetes.io/component".to_string(),
-            "prelay".to_string(),
-        ),
-        ("banlieue.io/vmimage".to_string(), vmimage.to_string()),
-    ]);
-    let owner_references = banlieue_provider_sdk::osartifact::owner_references(
-        &artifact.os_artifact_ref,
-        Some(os_artifact_uid),
-    );
 
     json!({
         "apiVersion": "batch/v1",

@@ -171,6 +171,8 @@
 - **A qcow2 overlay over a *raw* backing volume does boot.** Retires the earlier "BackingFile does not boot" suspicion, which was an artefact of that test's upload path (volume declared raw, contents qcow2), not of the shipped pipeline.
 - **GitHub is OAuth2, not OIDC** — no ID tokens, no discovery document — so `kube-apiserver --oidc-issuer-url` cannot point at it; Dex bridges it. Two details that cost real time: use ONE issuer URL reachable from browser, kubectl and the apiserver (NodePort + kind host-port mapping, hence an IP SAN not a DNS name — `iss` must match byte-for-byte), and `--oidc-ca-file` needs the CA across BOTH boundaries (kind `extraMounts` host→node AND kubeadm `apiServer.extraVolumes` node→static pod). The apiserver starts fine with an issuer that does not exist yet, so cluster-then-Dex ordering is safe.
 
+- **[2026-11-18] Never write a body that holds `vim_rs` types across an `.await` inside an `#[async_trait]` method.** `async_trait` adds `where 'life0: 'async_trait, ..` bounds; under them rustc cannot use its global trait cache, and proving the future `Send` re-walks the whole `vim_rs` type model (134 s versus 1 s, measured). This made `banlieue-provider-vsphere` take 12 min to compile. Bodies go in the inherent `impl VimClientImpl` as `fn name<'a>(..) -> BoxFuture<'a, ..> { Box::pin(async move { .. }) }`; the `#[async_trait]` impl only awaits them. To diagnose a slow crate: `RUSTC_BOOTSTRAP=1 cargo rustc -p <crate> --lib --profile check -- -Zself-profile=<dir> -Zself-profile-events=default,args`, then measureme's `summarize` and `crox`.
+
 ## Decision Log
 
 <!-- Significant technical decisions with rationale. Why X was chosen over Y. -->

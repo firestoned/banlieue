@@ -162,7 +162,26 @@ pub struct Session<S> {
     timeout: Duration,
 }
 
-impl<S: AsyncRead + AsyncWrite + Unpin> Session<S> {
+/// The byte stream a [`Session`] runs over. Implemented for every stream
+/// that can be read and written asynchronously.
+pub trait Io: AsyncRead + AsyncWrite + Unpin {}
+
+impl<T: AsyncRead + AsyncWrite + Unpin + ?Sized> Io for T {}
+
+/// A `Stream` packet's header on the remote program: every one carries the
+/// procedure and serial of the call that opened the stream.
+fn stream_header(procedure: i32, serial: u32, status: MessageStatus) -> MessageHeader {
+    MessageHeader {
+        program: REMOTE_PROGRAM,
+        version: REMOTE_PROTOCOL_VERSION,
+        procedure,
+        message_type: MessageType::Stream,
+        serial,
+        status,
+    }
+}
+
+impl<S: Io> Session<S> {
     /// Wrap an already-connected stream, using [`DEFAULT_TIMEOUT`].
     pub fn new(stream: S) -> Self {
         Self::with_timeout(stream, DEFAULT_TIMEOUT)
@@ -175,16 +194,6 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Session<S> {
             serial: 0,
             timeout,
         }
-    }
-
-    /// The per-call timeout in force.
-    pub fn timeout(&self) -> Duration {
-        self.timeout
-    }
-
-    /// Consume the session and return the underlying stream.
-    pub fn into_inner(self) -> S {
-        self.stream
     }
 
     /// Serial for the next call.
@@ -275,6 +284,30 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Session<S> {
         Ok((header, payload))
     }
 
+    /// Await the next message in `program`, within the session timeout, and
+    /// check that it answers `serial`.
+    async fn recv_reply(
+        &mut self,
+        program: u32,
+        version: u32,
+        serial: u32,
+    ) -> Result<(MessageHeader, Vec<u8>)> {
+        let (reply, body) =
+            tokio::time::timeout(self.timeout, self.recv_on_program(program, version))
+                .await
+                .map_err(|_| TransportError::Timeout {
+                    op: "receive",
+                    after: self.timeout,
+                })??;
+        if reply.serial != serial {
+            return Err(TransportError::SerialMismatch {
+                expected: serial,
+                got: reply.serial,
+            });
+        }
+        Ok((reply, body))
+    }
+
     /// Issue a call and await its reply, returning the reply payload.
     ///
     /// # Errors
@@ -355,19 +388,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Session<S> {
         };
         self.send(&header, payload).await?;
 
-        let (reply, body) =
-            tokio::time::timeout(self.timeout, self.recv_on_program(program, version))
-                .await
-                .map_err(|_| TransportError::Timeout {
-                    op: "receive",
-                    after: self.timeout,
-                })??;
-        if reply.serial != serial {
-            return Err(TransportError::SerialMismatch {
-                expected: serial,
-                got: reply.serial,
-            });
-        }
+        let (reply, body) = self.recv_reply(program, version, serial).await?;
         if reply.message_type != MessageType::Reply {
             return Err(TransportError::UnexpectedMessageType(reply.message_type));
         }
@@ -405,14 +426,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Session<S> {
                 ),
             });
         }
-        let header = MessageHeader {
-            program: REMOTE_PROGRAM,
-            version: REMOTE_PROTOCOL_VERSION,
-            procedure,
-            message_type: MessageType::Stream,
-            serial,
-            status: MessageStatus::Continue,
-        };
+        let header = stream_header(procedure, serial, MessageStatus::Continue);
         self.send(&header, data).await
     }
 
@@ -426,28 +440,12 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Session<S> {
     /// [`TransportError::Remote`] if the server reports failure, plus any I/O
     /// or decoding error.
     pub async fn finish_stream(&mut self, procedure: i32, serial: u32) -> Result<()> {
-        let header = MessageHeader {
-            program: REMOTE_PROGRAM,
-            version: REMOTE_PROTOCOL_VERSION,
-            procedure,
-            message_type: MessageType::Stream,
-            serial,
-            status: MessageStatus::Ok,
-        };
+        let header = stream_header(procedure, serial, MessageStatus::Ok);
         self.send(&header, &[]).await?;
 
-        let (reply, body) = tokio::time::timeout(self.timeout, self.recv())
-            .await
-            .map_err(|_| TransportError::Timeout {
-                op: "receive",
-                after: self.timeout,
-            })??;
-        if reply.serial != serial {
-            return Err(TransportError::SerialMismatch {
-                expected: serial,
-                got: reply.serial,
-            });
-        }
+        let (reply, body) = self
+            .recv_reply(REMOTE_PROGRAM, REMOTE_PROTOCOL_VERSION, serial)
+            .await?;
         match reply.status {
             MessageStatus::Ok => Ok(()),
             MessageStatus::Error => Err(decode_remote_error(&body)),

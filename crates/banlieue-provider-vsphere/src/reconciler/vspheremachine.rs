@@ -37,17 +37,12 @@ use banlieue_provider_sdk::sealing::{
     REASON_FIRST_BOOT_SEALING_TIMEOUT, REASON_FIRST_BOOT_SEALING_UNVERIFIED, SealingGate,
     sealing_gate, sticky_sealed_partitions,
 };
-use banlieue_provider_sdk::ssa::FIELD_MANAGER_PROVIDER_VSPHERE;
+use banlieue_provider_sdk::ssa::{FIELD_MANAGER_PROVIDER_VSPHERE, apply_status, is_not_found};
 use banlieue_provider_sdk::status::{condition_status, set_condition};
 use base64::Engine;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Condition;
 use k8s_openapi::jiff::Timestamp;
-use kube::{
-    Resource, ResourceExt,
-    api::{Api, Patch, PatchParams},
-    runtime::controller::Action,
-};
-use serde_json::json;
+use kube::{ResourceExt, api::Api, runtime::controller::Action};
 use tracing::{debug, info, warn};
 
 pub use crate::client::MACHINE_UID_KEY;
@@ -851,7 +846,7 @@ pub async fn reconcile(machine: Arc<VSphereMachine>, ctx: Arc<Context>) -> Resul
     let provider_api: Api<Provider> = Api::namespaced(ctx.client.clone(), &home);
     let provider = match provider_api.get(&machine.spec.provider_ref.name).await {
         Ok(p) => p,
-        Err(kube::Error::Api(e)) if e.code == 404 => {
+        Err(e) if is_not_found(&e) => {
             warn!(provider = %machine.spec.provider_ref.name, "Provider not found");
             patch_status_failed(
                 &ctx,
@@ -1021,8 +1016,6 @@ pub async fn reconcile(machine: Arc<VSphereMachine>, ctx: Arc<Context>) -> Resul
     }
 }
 
-const HTTP_NOT_FOUND: u16 = 404;
-
 /// Whether `err` says the `VSphereMachine` itself no longer exists.
 #[must_use]
 pub fn is_gone(err: &Error) -> bool {
@@ -1030,7 +1023,7 @@ pub fn is_gone(err: &Error) -> bool {
         Error::Kube(e) | Error::Sdk(banlieue_provider_sdk::Error::Kube(e)) => e,
         _ => return false,
     };
-    matches!(kube, kube::Error::Api(status) if status.code == HTTP_NOT_FOUND)
+    is_not_found(kube)
 }
 
 /// A status write after `ensure_vm` failed with `err`. If the machine is
@@ -1083,7 +1076,7 @@ async fn finalize(
         // vCenter to ask without the Provider: do not block deletion on it
         // (ADR-0101 Decision 4). A recorded vmRef still blocks, as ADR-0026
         // decided.
-        Err(kube::Error::Api(e)) if e.code == HTTP_NOT_FOUND && vm_ref.is_none() => {
+        Err(e) if is_not_found(&e) && vm_ref.is_none() => {
             warn!(provider = %machine.spec.provider_ref.name, "Provider gone and no vmRef recorded; skipping the unrecorded-clone lookup");
             remove_finalizer(api, machine, VSPHERE_MACHINE_FINALIZER).await?;
             return Ok(requeue_default());
@@ -1133,14 +1126,6 @@ async fn finalize_vm(client: &dyn VSphereClient, vm_ref: Option<&str>) -> Result
         return Ok(());
     };
     client.destroy_vm(vm_ref).await
-}
-
-/// `error_policy` callback the controller invokes when [`reconcile`] returns
-/// `Err`. Short backoff — most errors here are transient (network blips,
-/// vCenter session expiry).
-pub fn error_policy(_machine: Arc<VSphereMachine>, err: &Error, _ctx: Arc<Context>) -> Action {
-    warn!(error = %err, "reconcile error policy fired");
-    requeue_on_error()
 }
 
 /// SSA-patch `VSphereMachine.status` on successful provisioning. Takes the
@@ -1761,25 +1746,8 @@ async fn patch_machine_status(
     name: &str,
     status: VSphereMachineStatus,
 ) -> Result<()> {
-    let patch = json!({
-        "apiVersion": VSphereMachine::api_version(&()).to_string(),
-        "kind": VSphereMachine::kind(&()).to_string(),
-        "metadata": { "name": name, "namespace": namespace },
-        "status": status,
-    });
-    apply_status_patch(ctx, namespace, name, patch).await
-}
-
-async fn apply_status_patch(
-    ctx: &Context,
-    namespace: &str,
-    name: &str,
-    patch: serde_json::Value,
-) -> Result<()> {
     let api: Api<VSphereMachine> = Api::namespaced(ctx.client.clone(), namespace);
-    let params = PatchParams::apply(FIELD_MANAGER_PROVIDER_VSPHERE).force();
-    api.patch_status(name, &params, &Patch::Apply(&patch))
-        .await?;
+    apply_status(&api, name, FIELD_MANAGER_PROVIDER_VSPHERE, &status, true).await?;
     Ok(())
 }
 

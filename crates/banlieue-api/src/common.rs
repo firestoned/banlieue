@@ -546,14 +546,26 @@ impl IpamSpec {
     /// Precedence: `static` > `pool` > DHCP.
     #[must_use]
     pub fn source(&self) -> IpamSource {
-        if self.static_.is_some() {
-            IpamSource::Static
-        } else if self.pool.is_some() {
-            IpamSource::Pool
-        } else {
-            IpamSource::Dhcp
-        }
+        ipam_source(self.static_.is_some(), self.pool.is_some())
     }
+}
+
+/// Shared body of [`IpamSpec::source`] and [`IpamShape::source`]: `static`
+/// wins over `pool`, and neither means DHCP.
+fn ipam_source(has_static: bool, has_pool: bool) -> IpamSource {
+    if has_static {
+        return IpamSource::Static;
+    }
+    if has_pool {
+        return IpamSource::Pool;
+    }
+    IpamSource::Dhcp
+}
+
+/// `skip_serializing_if` predicate: omit a `bool` field when it is `false`.
+#[inline]
+pub(crate) fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 /// IPAM source, derived from the presence of `static` or `pool` on
@@ -638,13 +650,7 @@ impl IpamShape {
     /// Precedence: `static` > `pool` > DHCP.
     #[must_use]
     pub fn source(&self) -> IpamSource {
-        if self.static_.is_some() {
-            IpamSource::Static
-        } else if self.pool.is_some() {
-            IpamSource::Pool
-        } else {
-            IpamSource::Dhcp
-        }
+        ipam_source(self.static_.is_some(), self.pool.is_some())
     }
 }
 

@@ -34,9 +34,10 @@
 
 use kube::{
     Resource, ResourceExt,
-    api::{Api, Patch, PatchParams},
+    api::{Api, DeleteParams, Patch, PatchParams},
 };
 use serde::{Serialize, de::DeserializeOwned};
+use serde_json::{Value, json};
 
 use crate::error::Result;
 
@@ -172,6 +173,132 @@ pub fn status_field_manager(
     match provider_name {
         Some(name) => provider_field_manager(class, provider_namespace, name),
         None => class.to_string(),
+    }
+}
+
+/// HTTP status the API server returns for an object that does not exist.
+pub const HTTP_NOT_FOUND: u16 = 404;
+
+/// The apply body for a status write: `apiVersion`, `kind` and `status`.
+///
+/// `status` is either a whole status struct or a partial
+/// `serde_json::Value`; with server-side apply the manager owns exactly the
+/// fields present. No `metadata` is sent: the object is named by the request
+/// path, and the API server rejects nothing for its absence.
+///
+/// # Errors
+/// When `status` does not serialize to JSON.
+pub fn status_patch<K, S>(status: &S) -> std::result::Result<Value, serde_json::Error>
+where
+    K: Resource<DynamicType = ()>,
+    S: Serialize + ?Sized,
+{
+    Ok(json!({
+        "apiVersion": K::api_version(&()),
+        "kind": K::kind(&()),
+        "status": serde_json::to_value(status)?,
+    }))
+}
+
+/// The apply body that sets `spec.providerID` and nothing else.
+#[must_use]
+pub fn provider_id_patch<K>(provider_id: &str) -> Value
+where
+    K: Resource<DynamicType = ()>,
+{
+    json!({
+        "apiVersion": K::api_version(&()),
+        "kind": K::kind(&()),
+        "spec": { "providerID": provider_id },
+    })
+}
+
+/// Server-side-apply `status` onto the status subresource of `name`.
+///
+/// `field_manager` names one writer (module docs, ADR-0087). Pass
+/// `force = true` for a status this writer solely owns, and `false` for rows
+/// in a shared, merge-keyed list, where a conflict must surface instead of
+/// becoming a takeover.
+///
+/// # Arguments
+/// * `api` - the `Api` scoped to the object's namespace (or cluster-wide).
+/// * `name` - the object to patch.
+/// * `field_manager` - the writer's field manager.
+/// * `status` - a whole status struct, or a partial `serde_json::Value`.
+/// * `force` - whether to take fields owned by another manager.
+///
+/// # Errors
+/// The API server's refusal, or [`kube::Error::SerdeError`] when `status`
+/// does not serialize.
+pub async fn apply_status<K, S>(
+    api: &Api<K>,
+    name: &str,
+    field_manager: &str,
+    status: &S,
+    force: bool,
+) -> std::result::Result<(), kube::Error>
+where
+    K: Resource<DynamicType = ()> + Clone + DeserializeOwned + std::fmt::Debug,
+    S: Serialize + ?Sized,
+{
+    let patch = status_patch::<K, S>(status).map_err(kube::Error::SerdeError)?;
+    let mut params = PatchParams::apply(field_manager);
+    params.force = force;
+    api.patch_status(name, &params, &Patch::Apply(&patch))
+        .await?;
+    Ok(())
+}
+
+/// Server-side-apply `spec.providerID` on `name`, without force.
+///
+/// CAPI puts `providerID` on spec and the provider sets it, as its own field
+/// under the provider's field manager, so it never contends with the
+/// controller's ownership of the rest of spec.
+///
+/// # Errors
+/// The API server's refusal.
+pub async fn apply_provider_id<K>(
+    api: &Api<K>,
+    name: &str,
+    field_manager: &str,
+    provider_id: &str,
+) -> std::result::Result<(), kube::Error>
+where
+    K: Resource<DynamicType = ()> + Clone + DeserializeOwned + std::fmt::Debug,
+{
+    let patch = provider_id_patch::<K>(provider_id);
+    api.patch(
+        name,
+        &PatchParams::apply(field_manager),
+        &Patch::Apply(&patch),
+    )
+    .await?;
+    Ok(())
+}
+
+/// Whether `error` is the API server saying the object does not exist.
+#[must_use]
+pub fn is_not_found(error: &kube::Error) -> bool {
+    matches!(error, kube::Error::Api(status) if status.code == HTTP_NOT_FOUND)
+}
+
+/// Delete `name` through `api`, treating "already gone" as success so that
+/// cleanup is idempotent.
+///
+/// # Errors
+/// Any failure other than a 404.
+pub async fn delete_ignoring_404<K>(
+    api: &Api<K>,
+    name: &str,
+    params: &DeleteParams,
+) -> std::result::Result<(), kube::Error>
+where
+    K: Clone + DeserializeOwned + std::fmt::Debug,
+{
+    match api.delete(name, params).await {
+        Ok(_) => Ok(()),
+        Err(e) if is_not_found(&e) => Ok(()),
+        Err(e) => Err(e),
     }
 }
 

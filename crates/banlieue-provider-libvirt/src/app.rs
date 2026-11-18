@@ -9,7 +9,6 @@
 //! instrumented [`run_controller`].
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use anyhow::{Context as _, Result};
 use banlieue_api::banlieue::{Provider, VMImage};
@@ -18,21 +17,21 @@ use banlieue_provider_sdk::bootstrap::{
     Observability, init_tracing, shutdown_signal, start_observability,
 };
 use banlieue_provider_sdk::client::build_client_with;
+use banlieue_provider_sdk::defaults::{
+    DEFAULT_BUILD_NAMESPACE, DEFAULT_HEALTH_PORT, DEFAULT_IMPORT_IMAGE,
+    DEFAULT_IMPORT_SERVICE_ACCOUNT, DEFAULT_LEADER_ELECTION_NAMESPACE, DEFAULT_METRICS_PORT,
+};
 use banlieue_provider_sdk::health::Election;
-use banlieue_provider_sdk::leader::{
-    DEFAULT_LEASE_DURATION_SECS, DEFAULT_RENEW_PERIOD_SECS, DEFAULT_RETRY_PERIOD_SECS,
-    LeaderConfig, acquire_or_wait, renew_forever,
-};
+use banlieue_provider_sdk::leader::{LeaderConfig, elect};
+use banlieue_provider_sdk::reconciler::{provider_watch_config, requeue_error_policy};
 use banlieue_provider_sdk::runner::run_controller;
-use banlieue_provider_sdk::scope::{
-    NamespaceGate, ProviderScope, check_selector, scope_trigger, spawn_namespace_gate,
-};
+use banlieue_provider_sdk::scope::{ProviderScope, start_gate};
 use clap::{Args, Subcommand};
 use kube::{
     Api,
     runtime::{Controller, watcher::Config},
 };
-use tracing::{error, info};
+use tracing::info;
 
 use crate::{
     client::TlsClientFactory,
@@ -42,31 +41,11 @@ use crate::{
     reconciler::{libvirtmachine, provider, vmimage},
 };
 
-const DEFAULT_HEALTH_PORT: u16 = 8081;
-const DEFAULT_METRICS_PORT: u16 = 8080;
-const DEFAULT_LEADER_ELECTION_NAMESPACE: &str = "banlieue-system";
 const DEFAULT_LEADER_ELECTION_ID: &str = "banlieue-provider-libvirt";
 
 /// This role's name: the OTLP `service.name` (ADR-0092) and the `role`
 /// label of `banlieue_leader` (ADR-0091).
 pub const ROLE: &str = "banlieue-provider-libvirt";
-// The namespace image builds run in. Deliberately NOT `banlieue-system`:
-// kairos-operator's OSArtifact build pods require `privileged: true`, which
-// `baseline` denies as well as `restricted`, so this namespace enforces
-// `privileged` — no admission floor. Confining that exception keeps the
-// control-plane namespace restricted (ADR-0016).
-//
-// Must match every other component's default: the imagebuilder creates the
-// artifacts PVC here and each provider's import Job mounts it, and a PVC
-// cannot be mounted across namespaces. A cross-crate test in the `banlieue`
-// binary asserts the defaults agree.
-const DEFAULT_BUILD_NAMESPACE: &str = "banlieue-imagebuild";
-const DEFAULT_IMPORT_IMAGE: &str =
-    concat!("ghcr.io/firestoned/banlieue:v", env!("CARGO_PKG_VERSION"));
-/// Identity import Jobs run as, created in the build namespace by
-/// `banlieue bootstrap imagebuilder` (ADR-0016 §4).
-const DEFAULT_IMPORT_SERVICE_ACCOUNT: &str = "banlieue-import";
-
 /// Per-crate `tracing` directives layered on top of the base log level.
 const LOG_DIRECTIVES: &[&str] = &["kube=warn"];
 
@@ -196,17 +175,6 @@ pub enum LibvirtCommand {
     Import(ImportArgs),
 }
 
-/// Watch configuration for the `Provider` controller.
-///
-/// Standalone so the scoping rule is unit-testable without a cluster.
-#[must_use]
-pub fn provider_watch_config(provider_name: Option<&str>) -> Config {
-    match provider_name {
-        Some(name) => Config::default().fields(&format!("metadata.name={name}")),
-        None => Config::default(),
-    }
-}
-
 /// Run the libvirt provider to completion.
 ///
 /// # Errors
@@ -259,22 +227,9 @@ pub async fn run(cli: Cli) -> Result<()> {
             .await
             .context("starting health and metrics servers")?;
 
-    if let Some(leader_cfg) = leader_cfg {
-        info!(lease = %leader_cfg.lease_name, "waiting for leader election");
-        acquire_or_wait(client.clone(), &leader_cfg, &readiness)
-            .await
-            .context("acquiring leader lease")?;
-        let renewer_client = client.clone();
-        let renewer_readiness = readiness.clone();
-        tokio::spawn(async move {
-            if let Err(e) = renew_forever(renewer_client, leader_cfg, renewer_readiness).await {
-                error!(error = %e, "leader lease renewer terminated — exiting");
-                std::process::exit(1);
-            }
-        });
-    } else {
-        info!("leader election disabled by --no-leader-elect");
-    }
+    elect(client.clone(), leader_cfg, &readiness)
+        .await
+        .context("acquiring leader lease")?;
 
     // Parsed once at startup: a malformed toleration must fail the process
     // rather than surface later as an unschedulable Job.
@@ -284,19 +239,12 @@ pub async fn run(cli: Cli) -> Result<()> {
     // ADR-0133: with a selector, gate machine reconciles on a Namespace reflector
     // the API server has already filtered by it. An invalid selector fails
     // startup here rather than later as a provider that serves nothing.
-    let (scope_tx, scope_rx) = tokio::sync::watch::channel(0_u64);
-    let (gate, _scope_tx) = match scope.selector() {
-        Some(selector) => {
-            check_selector(&client, selector)
-                .await
-                .context("validating --watch-namespace-selector")?;
-            let gate = spawn_namespace_gate(&client, selector, scope_tx)
-                .await
-                .context("starting the namespace selector watch")?;
-            (gate, None)
-        }
-        None => (NamespaceGate::none(), Some(scope_tx)),
-    };
+    let (gate, scope_changes) = start_gate(
+        &client,
+        scope.selector(),
+        Some("--watch-namespace-selector"),
+    )
+    .await?;
 
     let ctx = Arc::new(
         Context::new(
@@ -326,7 +274,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         "Provider",
         metrics.clone(),
         provider::reconcile,
-        provider::error_policy,
+        requeue_error_policy,
         ctx,
     );
 
@@ -337,7 +285,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         "VMImage",
         metrics.clone(),
         vmimage::reconcile,
-        vmimage::error_policy,
+        requeue_error_policy,
         ctx2,
     );
 
@@ -348,11 +296,11 @@ pub async fn run(cli: Cli) -> Result<()> {
     info!("starting LibvirtMachine controller");
     let machine_api: Api<LibvirtMachine> = scope.api(&client);
     let machine_ctrl = run_controller(
-        Controller::new(machine_api, Config::default()).reconcile_all_on(scope_trigger(scope_rx)),
+        Controller::new(machine_api, Config::default()).reconcile_all_on(scope_changes.trigger()),
         "LibvirtMachine",
         metrics.clone(),
         libvirtmachine::reconcile,
-        libvirtmachine::error_policy,
+        requeue_error_policy,
         ctx3,
     );
 
@@ -370,18 +318,8 @@ pub async fn run(cli: Cli) -> Result<()> {
 
 /// Build a [`LeaderConfig`] from parsed CLI flags.
 fn build_leader_config(cli: &Cli) -> LeaderConfig {
-    let identity = cli
-        .leader_election_identity
-        .clone()
-        .unwrap_or_else(LeaderConfig::default_identity);
-    LeaderConfig {
-        namespace: cli.leader_election_namespace.clone(),
-        lease_name: cli.leader_election_id.clone(),
-        identity,
-        lease_duration: Duration::from_secs(DEFAULT_LEASE_DURATION_SECS),
-        renew_period: Duration::from_secs(DEFAULT_RENEW_PERIOD_SECS),
-        retry_period: Duration::from_secs(DEFAULT_RETRY_PERIOD_SECS),
-    }
+    LeaderConfig::new(&cli.leader_election_namespace, &cli.leader_election_id)
+        .with_identity(cli.leader_election_identity.clone())
 }
 
 #[cfg(test)]

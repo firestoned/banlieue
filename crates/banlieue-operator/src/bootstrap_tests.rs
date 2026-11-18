@@ -1546,7 +1546,7 @@ mod tests {
     fn bootstrap_installs_every_crd_that_is_generated_into_deploy() {
         use std::collections::BTreeSet;
 
-        let installed: BTreeSet<String> = build_crds()
+        let installed: BTreeSet<String> = all_crds()
             .iter()
             .map(|c| c.metadata.name.clone().unwrap_or_default())
             .collect();
@@ -1570,7 +1570,7 @@ mod tests {
         assert!(
             missing.is_empty(),
             "these CRDs are in deploy/crds but `banlieue bootstrap` would not \
-             install them: {missing:?}. Add them to build_crds()."
+             install them: {missing:?}. Add them to all_crds()."
         );
         let extra: Vec<&String> = installed.difference(&generated).collect();
         assert!(
@@ -1900,7 +1900,7 @@ mod tests {
     #[test]
     fn capi_aggregate_role_covers_exactly_the_capi_contract_kinds() {
         let mut expected = std::collections::BTreeSet::new();
-        for crd in build_crds() {
+        for crd in all_crds() {
             let labels = crd.metadata.labels.clone().unwrap_or_default();
             if !labels.contains_key(CAPI_CONTRACT_LABEL) {
                 continue;

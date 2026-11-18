@@ -138,4 +138,100 @@ mod tests {
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].address, "192.0.2.10");
     }
+
+    // ----- provider status and VMImage rows -----
+
+    use banlieue_api::banlieue::Provider;
+
+    const GENERATION: i64 = 4;
+    const REASON: &str = "ConnectFailed";
+
+    fn provider(name: &str, namespace: Option<&str>) -> Provider {
+        let mut p: Provider = serde_json::from_value(serde_json::json!({
+            "apiVersion": "banlieue.io/v1alpha1",
+            "kind": "Provider",
+            "metadata": { "name": name },
+            "spec": {
+                "providerClassRef": { "name": "libvirt" },
+                "connection": { "endpoint": "qemu+tls://bar.foo.io/system" }
+            }
+        }))
+        .expect("a valid Provider");
+        p.metadata.namespace = namespace.map(str::to_string);
+        p
+    }
+
+    /// Both conditions go False with the one reason and message, and nothing
+    /// unverified is advertised.
+    #[test]
+    fn an_unreachable_provider_is_neither_reachable_nor_ready() {
+        let status = unreachable_provider_status(GENERATION, REASON, "no route".to_string());
+
+        for type_ in [
+            provider_condition_types::PROVIDER_REACHABLE,
+            provider_condition_types::READY,
+        ] {
+            let c = find_condition(&status.conditions, type_).expect(type_);
+            assert_eq!(c.status, condition_status::FALSE);
+            assert_eq!(c.reason, REASON);
+            assert_eq!(c.message, "no route");
+            assert_eq!(c.observed_generation, Some(GENERATION));
+        }
+        assert_eq!(
+            status.conditions[0].type_,
+            provider_condition_types::PROVIDER_REACHABLE
+        );
+        assert!(status.failure_domains.is_empty());
+        assert!(status.ek_ca_certificates.is_empty());
+        assert_eq!(status.observed_generation, Some(GENERATION));
+        // `status.workload` is banlieue-operator's field (ADR-0012).
+        assert!(status.workload.is_none());
+    }
+
+    #[test]
+    fn the_provider_condition_types_are_the_published_names() {
+        assert_eq!(provider_condition_types::READY, "Ready");
+        assert_eq!(
+            provider_condition_types::PROVIDER_REACHABLE,
+            "ProviderReachable"
+        );
+    }
+
+    #[test]
+    fn an_image_row_names_its_provider_and_carries_the_verdict() {
+        let row = image_row(
+            &provider("kvm-a", Some("banlieue-system")),
+            false,
+            "ImportFailed",
+            Some("boom".to_string()),
+        );
+        assert_eq!(row.provider_name, "kvm-a");
+        assert_eq!(row.provider_namespace, "banlieue-system");
+        assert!(!row.ready);
+        assert_eq!(row.reason.as_deref(), Some("ImportFailed"));
+        assert_eq!(row.message.as_deref(), Some("boom"));
+        assert!(row.resolved_ref.is_none());
+        assert!(row.zones.is_empty());
+    }
+
+    #[test]
+    fn an_image_row_for_a_provider_without_a_namespace_has_an_empty_one() {
+        let row = image_row(&provider("kvm-a", None), true, "Resolved", None);
+        assert!(row.ready);
+        assert_eq!(row.provider_namespace, "");
+        assert!(row.message.is_none());
+    }
+
+    /// A provider reports its own rows and the generation, and stays silent
+    /// on the fields other writers own (ADR-0010, ADR-0015).
+    #[test]
+    fn provider_rows_status_sets_only_the_rows_and_the_generation() {
+        let row = image_row(&provider("kvm-a", None), true, "Resolved", None);
+        let status = provider_rows_status(vec![row.clone()], GENERATION);
+        assert_eq!(status.per_provider, vec![row]);
+        assert_eq!(status.observed_generation, Some(GENERATION));
+        assert!(status.build_artifact.is_none());
+        assert!(status.conditions.is_empty());
+        assert!(status.first_boot_sealing.is_none());
+    }
 }

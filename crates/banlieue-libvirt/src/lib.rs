@@ -64,7 +64,7 @@ pub use rpc::{
     REMOTE_PROTOCOL_VERSION, RpcError, decode_message, encode_message, parse_length_prefix,
 };
 pub use transport::{
-    DEFAULT_TIMEOUT, DEFAULT_TLS_PORT, Result, Session, TlsIdentity, TransportError, connect_tls,
-    connect_tls_with_timeout,
+    DEFAULT_TIMEOUT, DEFAULT_TLS_PORT, Io, Result, Session, TlsIdentity, TransportError,
+    connect_tls, connect_tls_with_timeout,
 };
 pub use xdr::{Decoder, Encoder, XdrError};

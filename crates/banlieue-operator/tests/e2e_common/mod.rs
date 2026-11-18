@@ -171,6 +171,35 @@ where
     .await;
 }
 
+/// Delete the namespace `name` if a previous run left it, then create it
+/// afresh carrying `labels`.
+pub async fn fresh_namespace(client: &Client, name: &str, labels: &[(&str, &str)]) {
+    let namespaces: Api<Namespace> = Api::all(client.clone());
+    let _ = namespaces.delete(name, &DeleteParams::default()).await;
+    wait_until_gone("the previous run's namespace to be deleted", || {
+        let api = namespaces.clone();
+        let name = name.to_string();
+        async move { matches!(api.get_opt(&name).await, Ok(None)) }
+    })
+    .await;
+    let labels: BTreeMap<String, String> = labels
+        .iter()
+        .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
+        .collect();
+    let ns = Namespace {
+        metadata: ObjectMeta {
+            name: Some(name.to_string()),
+            labels: (!labels.is_empty()).then_some(labels),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    namespaces
+        .create(&PostParams::default(), &ns)
+        .await
+        .expect("creating the e2e namespace");
+}
+
 /// Create the namespace, ProviderClass and Secret every suite needs, removing
 /// any leftovers from a previous run first so the suites are re-runnable.
 pub async fn setup(client: &Client) {

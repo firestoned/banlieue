@@ -23,6 +23,7 @@ use banlieue_api::banlieue::{
     DiskController, InstallMode, NicAdapter, Provider, VMImage, VMImageTemplateNic,
 };
 use banlieue_api::common::{DiskProvisioning, Firmware};
+use banlieue_provider_sdk::artifact::{self, ChecksumError, SourceError};
 use banlieue_provider_sdk::client::build_client;
 use clap::Args;
 use futures::StreamExt;
@@ -37,15 +38,8 @@ use crate::client::{
 };
 use crate::nic_flag::parse_nic_flag;
 
-const SECRET_KEY_USERNAME: &str = "username";
-const SECRET_KEY_PASSWORD: &str = "password";
-
 /// Datastore folder the ISO is uploaded into, relative to the datastore root.
 const DATASTORE_UPLOAD_DIR: &str = "banlieue-images";
-
-/// Read size when hashing the artifact — large enough that a multi-gigabyte ISO
-/// is not millions of syscalls, small enough to stay off the heap.
-const HASH_CHUNK_BYTES: usize = 1024 * 1024;
 
 /// Attribute keys the provider reconciler writes into each failure domain's
 /// `attributes.raw` (see `reconciler::provider`).
@@ -482,14 +476,17 @@ fn resolve_network_target(
 
 /// Size of the source ISO. A zero-byte file means the build produced nothing.
 async fn source_length(path: &Path) -> Result<u64> {
-    let meta = tokio::fs::metadata(path)
-        .await
-        .with_context(|| format!("cannot read {}", path.display()))?;
-    let len = meta.len();
-    if len == 0 {
-        bail!("{} is empty; the build produced no ISO", path.display());
-    }
-    Ok(len)
+    artifact::source_length(path).await.map_err(|e| match e {
+        SourceError::Unreadable { path, source } => cannot_read(&path, source),
+        SourceError::Empty { path } => {
+            anyhow!("{} is empty; the build produced no ISO", path.display())
+        }
+    })
+}
+
+/// An I/O failure on `path`, worded as this subcommand always has.
+fn cannot_read(path: &Path, source: std::io::Error) -> anyhow::Error {
+    anyhow::Error::new(source).context(format!("cannot read {}", path.display()))
 }
 
 /// Verify the artifact against an expected `<alg>:<hex>` checksum.
@@ -501,64 +498,31 @@ async fn source_length(path: &Path) -> Result<u64> {
 /// When the algorithm is unsupported, the file cannot be read, or the digest
 /// does not match.
 pub async fn verify_checksum(path: &Path, expected: &str) -> Result<()> {
-    use sha2::Digest;
-    use tokio::io::AsyncReadExt;
-
-    let (alg, expected_hex) = expected
-        .split_once(':')
-        .ok_or_else(|| anyhow!("--checksum expected `<alg>:<hex>`, got {expected:?}"))?;
-
-    let mut file = File::open(path)
+    let algorithm = artifact::verify_checksum(path, expected)
         .await
-        .with_context(|| format!("cannot read {}", path.display()))?;
-    let mut buf = vec![0u8; HASH_CHUNK_BYTES];
-
-    let actual_hex = match alg {
-        "sha256" => {
-            let mut h = sha2::Sha256::new();
-            loop {
-                let n = file.read(&mut buf).await?;
-                if n == 0 {
-                    break;
-                }
-                h.update(&buf[..n]);
+        .map_err(|e| match e {
+            ChecksumError::Malformed { expected } => {
+                anyhow!("--checksum expected `<alg>:<hex>`, got {expected:?}")
             }
-            hex_encode(&h.finalize())
-        }
-        "sha512" => {
-            let mut h = sha2::Sha512::new();
-            loop {
-                let n = file.read(&mut buf).await?;
-                if n == 0 {
-                    break;
-                }
-                h.update(&buf[..n]);
-            }
-            hex_encode(&h.finalize())
-        }
-        other => bail!(
-            "unsupported checksum algorithm {other:?} (supported: sha256, sha512); \
-             refusing to import an unverified artifact"
-        ),
-    };
-
-    if !actual_hex.eq_ignore_ascii_case(expected_hex) {
-        bail!(
-            "checksum mismatch for {}: expected {expected}, computed {alg}:{actual_hex}; \
-             refusing to import a corrupted or substituted artifact",
-            path.display()
-        );
-    }
-    info!(path = %path.display(), algorithm = %alg, "ISO checksum verified");
+            ChecksumError::Open { path, source } => cannot_read(&path, source),
+            ChecksumError::Read { source, .. } => anyhow::Error::new(source),
+            ChecksumError::Unsupported { algorithm } => anyhow!(
+                "unsupported checksum algorithm {algorithm:?} (supported: sha256, sha512); \
+                 refusing to import an unverified artifact"
+            ),
+            ChecksumError::Mismatch {
+                path,
+                expected,
+                algorithm,
+                actual_hex,
+            } => anyhow!(
+                "checksum mismatch for {}: expected {expected}, computed {algorithm}:{actual_hex}; \
+                 refusing to import a corrupted or substituted artifact",
+                path.display()
+            ),
+        })?;
+    info!(path = %path.display(), algorithm = %algorithm, "ISO checksum verified");
     Ok(())
-}
-
-/// Lowercase hex encoding of a digest. `sha2`'s `Output` (a `hybrid_array::Array`,
-/// as of `digest` 0.11) does not implement `LowerHex` the way the old
-/// `GenericArray`-backed output did, so this replaces a `format!("{:x}", ...)`
-/// that stopped compiling on the `sha2` 0.11 upgrade.
-fn hex_encode(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Read the Provider's credentials Secret (`username` / `password`).
@@ -579,10 +543,10 @@ async fn read_credentials(
         .with_context(|| format!("reading credentials Secret {secret_name:?}"))?;
     let data = secret.data.unwrap_or_default();
     let username = data
-        .get(SECRET_KEY_USERNAME)
+        .get(crate::reconciler::provider::SECRET_KEY_USERNAME)
         .ok_or_else(|| anyhow!("secret.data.username missing"))?;
     let password = data
-        .get(SECRET_KEY_PASSWORD)
+        .get(crate::reconciler::provider::SECRET_KEY_PASSWORD)
         .ok_or_else(|| anyhow!("secret.data.password missing"))?;
     Ok(Credentials {
         username: String::from_utf8(username.0.clone())

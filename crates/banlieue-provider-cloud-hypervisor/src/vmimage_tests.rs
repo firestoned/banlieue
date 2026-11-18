@@ -52,33 +52,14 @@ mod tests {
         })
     }
 
+    /// The shared host, with its storage classes pointed at test directories.
     fn config(fast: &Path, slow: &Path) -> HostConfig {
-        HostConfig::parse(&format!(
-            r#"
-[provider]
-name = "ch-a"
-namespace = "banlieue-system"
-kubeconfig = "/etc/banlieue/kubeconfig"
-[vmm]
-binary = "/usr/local/bin/cloud-hypervisor"
-version = "v53.0"
-firmware = "/opt/banlieue/firmware/f/CLOUDHV.fd"
-[paths]
-run_root = "/run/banlieue/ch"
-state_root = "/var/lib/banlieue"
-[guests]
-uid_base = 2000000
-uid_count = 10
-[storage_classes]
-fast = "{}"
-slow = "{}"
-[network_classes]
-lan = "br0"
-"#,
-            fast.display(),
-            slow.display()
-        ))
-        .unwrap()
+        let mut c = crate::test_fixtures::config();
+        c.storage_classes = BTreeMap::from([
+            ("fast".to_string(), fast.to_path_buf()),
+            ("slow".to_string(), slow.to_path_buf()),
+        ]);
+        c
     }
 
     fn source(class: &str, kind: ImageSourceKind, reference: &str) -> ImageSource {

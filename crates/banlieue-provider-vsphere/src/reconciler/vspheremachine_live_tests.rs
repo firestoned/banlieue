@@ -14,62 +14,22 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use async_trait::async_trait;
-    use banlieue_api::common::{DiskProvisioning, Firmware, IpamSpec, PowerState};
-    use banlieue_api::infrastructure::{
-        VSphereDiskSpec, VSphereMachine, VSphereMachineSpec, VSphereMachineStatus, VSphereNicSpec,
-    };
+    use banlieue_api::infrastructure::{VSphereMachine, VSphereMachineStatus};
 
-    use crate::client::{FakeClient, FakeStep, Inventory, VSphereClient};
+    use crate::client::{FakeClient, FakeStep, Inventory};
     use crate::error::Result;
+    use crate::reconciler::test_fixtures::{UID, as_client, base_spec, machine_ref};
 
     use super::super::{
-        InitializationStatus, LiveBase, MachineRef, MachineSource, OwnClone, Route, ensure_vm,
-        find_own_clone, live_base, route, status_adopting,
+        InitializationStatus, LiveBase, MachineSource, OwnClone, Route, ensure_vm, find_own_clone,
+        live_base, route, status_adopting,
     };
 
-    const UID: &str = "7c0d1f9e-0000-4000-8000-0000000000db";
     const OTHER_UID: &str = "00000000-0000-4000-8000-00000000beef";
     const NAMESPACE: &str = "banlieue-system";
     const NAME: &str = "db-01";
 
     // ---- fixtures ---------------------------------------------------------
-
-    fn spec() -> VSphereMachineSpec {
-        VSphereMachineSpec {
-            provider_id: None,
-            failure_domain: None,
-            provider_ref: banlieue_api::common::ProviderReference {
-                name: "vc1".to_string(),
-                namespace: None,
-            },
-            template: "ubuntu-22.04-cloudinit".to_string(),
-            template_folder: None,
-            datacenter: "dc1".to_string(),
-            cluster: "cluster-a".to_string(),
-            datastore: "ds-fast-01".to_string(),
-            folder: None,
-            resource_pool: None,
-            num_cpus: 4,
-            memory_mi_b: 8192,
-            firmware: Firmware::Efi,
-            tpm_enabled: false,
-            disks: vec![VSphereDiskSpec {
-                name: "os".to_string(),
-                size_gi_b: 40,
-                provisioning: DiskProvisioning::Thin,
-            }],
-            network: vec![VSphereNicSpec {
-                name: "eth0".to_string(),
-                port_group: "vmnet-prod".to_string(),
-                mac_address: None,
-                ipam: IpamSpec::default(),
-            }],
-            user_data: None,
-            desired_power_state: PowerState::PoweredOn,
-            created_by: None,
-            first_boot_sealing: None,
-        }
-    }
 
     fn inventory() -> Inventory {
         Inventory::builder()
@@ -82,7 +42,7 @@ mod tests {
     }
 
     fn machine(uid: &str, status: Option<VSphereMachineStatus>) -> VSphereMachine {
-        let mut m = VSphereMachine::new(NAME, spec());
+        let mut m = VSphereMachine::new(NAME, base_spec());
         m.metadata.namespace = Some(NAMESPACE.to_string());
         m.metadata.uid = Some(uid.to_string());
         m.status = status;
@@ -98,17 +58,6 @@ mod tests {
             vm_ref: Some(vm_ref.to_string()),
             ..VSphereMachineStatus::default()
         }
-    }
-
-    fn me() -> MachineRef<'static> {
-        MachineRef {
-            name: NAME,
-            uid: UID,
-        }
-    }
-
-    fn as_client(c: &FakeClient) -> &dyn VSphereClient {
-        c
     }
 
     /// An uncached read of the machine, standing in for the API server. The
@@ -175,7 +124,7 @@ mod tests {
                 let outcome = ensure_vm(
                     as_client(client),
                     &base.spec,
-                    &me(),
+                    &machine_ref(),
                     existing_vm_ref.as_deref(),
                     None,
                 )
@@ -329,7 +278,7 @@ mod tests {
         let client = FakeClient::new(inventory());
         let live = client.add_vm(None, NAME, Some(UID));
 
-        let found = find_own_clone(as_client(&client), &spec(), &me())
+        let found = find_own_clone(as_client(&client), &base_spec(), &machine_ref())
             .await
             .unwrap();
 
@@ -339,7 +288,7 @@ mod tests {
     #[tokio::test]
     async fn no_marked_vm_means_the_vm_is_really_gone() {
         let client = FakeClient::new(inventory());
-        let found = find_own_clone(as_client(&client), &spec(), &me())
+        let found = find_own_clone(as_client(&client), &base_spec(), &machine_ref())
             .await
             .unwrap();
         assert_eq!(found, OwnClone::NotFound);
@@ -351,7 +300,7 @@ mod tests {
         for foreign in [None, Some(OTHER_UID)] {
             let client = FakeClient::new(inventory());
             client.add_vm(None, NAME, foreign);
-            let found = find_own_clone(as_client(&client), &spec(), &me())
+            let found = find_own_clone(as_client(&client), &base_spec(), &machine_ref())
                 .await
                 .unwrap();
             assert_eq!(found, OwnClone::NotFound, "{foreign:?}");
@@ -361,12 +310,14 @@ mod tests {
     #[tokio::test]
     async fn only_the_machines_own_folder_is_searched() {
         let client = FakeClient::new(inventory());
-        let mut s = spec();
+        let mut s = base_spec();
         s.folder = Some("team-a".to_string());
         client.add_vm(Some("team-b"), NAME, Some(UID));
         let ours = client.add_vm(Some("team-a"), NAME, Some(UID));
 
-        let found = find_own_clone(as_client(&client), &s, &me()).await.unwrap();
+        let found = find_own_clone(as_client(&client), &s, &machine_ref())
+            .await
+            .unwrap();
 
         assert_eq!(found, OwnClone::Adopt(ours));
     }
@@ -378,7 +329,7 @@ mod tests {
         let a = client.add_vm(None, NAME, Some(UID));
         let b = client.add_vm(None, NAME, Some(UID));
 
-        let found = find_own_clone(as_client(&client), &spec(), &me())
+        let found = find_own_clone(as_client(&client), &base_spec(), &machine_ref())
             .await
             .unwrap();
 
@@ -393,7 +344,7 @@ mod tests {
         client.add_vm(None, NAME, Some(UID));
         client.fail(FakeStep::FindVmsNamed);
 
-        let result = find_own_clone(as_client(&client), &spec(), &me()).await;
+        let result = find_own_clone(as_client(&client), &base_spec(), &machine_ref()).await;
 
         assert!(result.is_err(), "{result:?}");
     }
@@ -402,10 +353,12 @@ mod tests {
     async fn an_unknown_datacenter_finds_nothing() {
         let client = FakeClient::new(inventory());
         client.add_vm(None, NAME, Some(UID));
-        let mut s = spec();
+        let mut s = base_spec();
         s.datacenter = "no-such-dc".to_string();
 
-        let found = find_own_clone(as_client(&client), &s, &me()).await.unwrap();
+        let found = find_own_clone(as_client(&client), &s, &machine_ref())
+            .await
+            .unwrap();
 
         assert_eq!(found, OwnClone::NotFound);
     }

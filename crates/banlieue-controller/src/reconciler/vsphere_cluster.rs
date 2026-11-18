@@ -21,14 +21,10 @@ use banlieue_api::banlieue::Provider;
 use banlieue_api::common::{ClusterFailureDomain, LabelSelector, condition_types};
 use banlieue_api::infrastructure::{VSphereCluster, VSphereClusterSpec, VSphereClusterStatus};
 use banlieue_provider_sdk::reconciler::{requeue_long, requeue_on_error};
-use banlieue_provider_sdk::ssa::FIELD_MANAGER_CONTROLLER;
+use banlieue_provider_sdk::ssa::{FIELD_MANAGER_CONTROLLER, apply_status};
 use banlieue_provider_sdk::status::{condition_status, set_condition};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Condition;
-use kube::{
-    Resource, ResourceExt,
-    api::{Api, Patch, PatchParams},
-    runtime::controller::Action,
-};
+use kube::{ResourceExt, api::Api, runtime::controller::Action};
 use serde_json::json;
 use tracing::{info, warn};
 
@@ -216,13 +212,7 @@ async fn patch_status(
     name: &str,
     status: VSphereClusterStatus,
 ) -> Result<()> {
-    let patch = json!({
-        "apiVersion": VSphereCluster::api_version(&()).to_string(),
-        "kind": VSphereCluster::kind(&()).to_string(),
-        "metadata": { "name": name, "namespace": namespace },
-        "status": status,
-    });
-    apply_status_patch(ctx, namespace, name, patch).await
+    apply_controller_status(ctx, namespace, name, &status).await
 }
 
 /// SSA-patch only the `Paused` / `Ready` conditions; leaves any previously
@@ -245,25 +235,18 @@ async fn patch_paused(ctx: &Context, namespace: &str, name: &str, generation: i6
         "reconciliation paused",
         generation,
     );
-    let patch = json!({
-        "apiVersion": VSphereCluster::api_version(&()).to_string(),
-        "kind": VSphereCluster::kind(&()).to_string(),
-        "metadata": { "name": name, "namespace": namespace },
-        "status": { "conditions": conditions, "observedGeneration": generation },
-    });
-    apply_status_patch(ctx, namespace, name, patch).await
+    let status = json!({ "conditions": conditions, "observedGeneration": generation });
+    apply_controller_status(ctx, namespace, name, &status).await
 }
 
-async fn apply_status_patch(
+async fn apply_controller_status<S: serde::Serialize>(
     ctx: &Context,
     namespace: &str,
     name: &str,
-    patch: serde_json::Value,
+    status: &S,
 ) -> Result<()> {
     let api: Api<VSphereCluster> = Api::namespaced(ctx.client.clone(), namespace);
-    let params = PatchParams::apply(FIELD_MANAGER_CONTROLLER).force();
-    api.patch_status(name, &params, &Patch::Apply(&patch))
-        .await?;
+    apply_status(&api, name, FIELD_MANAGER_CONTROLLER, status, true).await?;
     Ok(())
 }
 

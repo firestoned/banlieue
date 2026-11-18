@@ -291,17 +291,36 @@ mod tests {
         }
     }
 
+    /// The standard class: one `gold` disk, one `prod` NIC, EFI.
+    fn gold_prod_class() -> VMClass {
+        class(
+            vec![("os", "gold")],
+            vec![("eth0", "prod")],
+            vec![],
+            Firmware::Efi,
+        )
+    }
+
+    /// The standard provider: one failure domain `fd-a` offering `gold`
+    /// storage and the `prod` network.
+    fn gold_prod_provider(name: &str) -> Provider {
+        provider(
+            name,
+            BTreeMap::new(),
+            vec![fd("fd-a", BTreeMap::new(), &["gold"], &["prod"], &[])],
+            caps_with(
+                &[("gold", "datastore", "ds-1")],
+                &[("prod", "portGroup", "pg-1")],
+            ),
+        )
+    }
+
     // --- Happy path ----------------------------------------------------------
 
     #[test]
     fn happy_path_picks_single_candidate() {
         let v = vm("db-01", "banlieue-system", BTreeMap::new());
-        let cls = class(
-            vec![("os", "gold")],
-            vec![("eth0", "prod")],
-            vec![],
-            Firmware::Efi,
-        );
+        let cls = gold_prod_class();
         let img = image_ready_on(&["vc1"]);
         let p = provider(
             "vc1",
@@ -341,12 +360,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        let cls = class(
-            vec![("os", "gold")],
-            vec![("eth0", "prod")],
-            vec![],
-            Firmware::Efi,
-        );
+        let cls = gold_prod_class();
         let img = image_ready_on(&["vc1"]);
         let p = provider(
             "vc1",
@@ -363,22 +377,9 @@ mod tests {
     #[test]
     fn provider_selector_none_matches_every_provider() {
         let v = vm("db-01", "ns", BTreeMap::new()); // no selector
-        let cls = class(
-            vec![("os", "gold")],
-            vec![("eth0", "prod")],
-            vec![],
-            Firmware::Efi,
-        );
+        let cls = gold_prod_class();
         let img = image_ready_on(&["vc1"]);
-        let p = provider(
-            "vc1",
-            BTreeMap::new(),
-            vec![fd("fd-a", BTreeMap::new(), &["gold"], &["prod"], &[])],
-            caps_with(
-                &[("gold", "datastore", "ds-1")],
-                &[("prod", "portGroup", "pg-1")],
-            ),
-        );
+        let p = gold_prod_provider("vc1");
 
         assert!(schedule(&v, &cls, &img, &[p], &[], &[]).is_ok());
     }
@@ -396,12 +397,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        let cls = class(
-            vec![("os", "gold")],
-            vec![("eth0", "prod")],
-            vec![],
-            Firmware::Efi,
-        );
+        let cls = gold_prod_class();
         let img = image_ready_on(&["vc1"]);
         let p = provider(
             "vc1",
@@ -425,22 +421,9 @@ mod tests {
     #[test]
     fn image_not_ready_on_provider_yields_image_not_ready() {
         let v = vm("db-01", "ns", BTreeMap::new());
-        let cls = class(
-            vec![("os", "gold")],
-            vec![("eth0", "prod")],
-            vec![],
-            Firmware::Efi,
-        );
+        let cls = gold_prod_class();
         let img = image_ready_on(&[]); // not ready anywhere
-        let p = provider(
-            "vc1",
-            BTreeMap::new(),
-            vec![fd("fd-a", BTreeMap::new(), &["gold"], &["prod"], &[])],
-            caps_with(
-                &[("gold", "datastore", "ds-1")],
-                &[("prod", "portGroup", "pg-1")],
-            ),
-        );
+        let p = gold_prod_provider("vc1");
 
         let err = schedule(&v, &cls, &img, &[p], &[], &[]).unwrap_err();
         assert_eq!(err, ScheduleError::ImageNotReady);
@@ -498,15 +481,7 @@ mod tests {
             Firmware::Efi,
         );
         let img = image_ready_on(&["vc1"]);
-        let p = provider(
-            "vc1",
-            BTreeMap::new(),
-            vec![fd("fd-a", BTreeMap::new(), &["gold"], &["prod"], &[])],
-            caps_with(
-                &[("gold", "datastore", "ds-1")],
-                &[("prod", "portGroup", "pg-1")],
-            ),
-        );
+        let p = gold_prod_provider("vc1");
 
         let err = schedule(&v, &cls, &img, &[p], &[], &[]).unwrap_err();
         assert!(matches!(err, ScheduleError::NoFailureDomainMatched(_)));
@@ -524,15 +499,7 @@ mod tests {
             Firmware::Efi,
         );
         let img = image_ready_on(&["vc1"]);
-        let p = provider(
-            "vc1",
-            BTreeMap::new(),
-            vec![fd("fd-a", BTreeMap::new(), &["gold"], &["prod"], &[])],
-            caps_with(
-                &[("gold", "datastore", "ds-1")],
-                &[("prod", "portGroup", "pg-1")],
-            ),
-        );
+        let p = gold_prod_provider("vc1");
 
         let err = schedule(&v, &cls, &img, &[p], &[], &[]).unwrap_err();
         assert!(matches!(err, ScheduleError::NoFailureDomainMatched(_)));
@@ -550,15 +517,7 @@ mod tests {
             Firmware::EfiSecure,
         );
         let img = image_ready_on(&["vc1"]);
-        let p = provider(
-            "vc1",
-            BTreeMap::new(),
-            vec![fd("fd-a", BTreeMap::new(), &["gold"], &["prod"], &[])],
-            caps_with(
-                &[("gold", "datastore", "ds-1")],
-                &[("prod", "portGroup", "pg-1")],
-            ),
-        );
+        let p = gold_prod_provider("vc1");
 
         let err = schedule(&v, &cls, &img, &[p], &[], &[]).unwrap_err();
         assert_eq!(err, ScheduleError::FirmwareUnsupported);
@@ -569,25 +528,9 @@ mod tests {
     #[test]
     fn tpm_enabled_without_feature_yields_tpm_unsupported() {
         let v = vm("db-01", "ns", BTreeMap::new());
-        let cls = class_with_tpm_enabled(
-            class(
-                vec![("os", "gold")],
-                vec![("eth0", "prod")],
-                vec![],
-                Firmware::Efi,
-            ),
-            true,
-        );
+        let cls = class_with_tpm_enabled(gold_prod_class(), true);
         let img = image_ready_on(&["vc1"]);
-        let p = provider(
-            "vc1",
-            BTreeMap::new(),
-            vec![fd("fd-a", BTreeMap::new(), &["gold"], &["prod"], &[])],
-            caps_with(
-                &[("gold", "datastore", "ds-1")],
-                &[("prod", "portGroup", "pg-1")],
-            ),
-        );
+        let p = gold_prod_provider("vc1");
 
         let err = schedule(&v, &cls, &img, &[p], &[], &[]).unwrap_err();
         assert_eq!(err, ScheduleError::TpmUnsupported);
@@ -596,15 +539,7 @@ mod tests {
     #[test]
     fn tpm_enabled_with_feature_is_accepted() {
         let v = vm("db-01", "ns", BTreeMap::new());
-        let cls = class_with_tpm_enabled(
-            class(
-                vec![("os", "gold")],
-                vec![("eth0", "prod")],
-                vec![],
-                Firmware::Efi,
-            ),
-            true,
-        );
+        let cls = class_with_tpm_enabled(gold_prod_class(), true);
         let img = image_ready_on(&["vc1"]);
         let p = provider(
             "vc1",
@@ -627,15 +562,7 @@ mod tests {
 
     fn sealing_fixture() -> (VirtualMachine, VMClass, VMImage) {
         let v = vm("db-01", "ns", BTreeMap::new());
-        let cls = class_with_tpm_enabled(
-            class(
-                vec![("os", "gold")],
-                vec![("eth0", "prod")],
-                vec![],
-                Firmware::Efi,
-            ),
-            true,
-        );
+        let cls = class_with_tpm_enabled(gold_prod_class(), true);
         let mut img = image_ready_on(&["ch1", "vc1"]);
         img.spec.first_boot_sealing = Some(banlieue_api::common::FirstBootSealing::default());
         (v, cls, img)
@@ -689,22 +616,9 @@ mod tests {
     #[test]
     fn tpm_disabled_does_not_require_feature() {
         let v = vm("db-01", "ns", BTreeMap::new());
-        let cls = class(
-            vec![("os", "gold")],
-            vec![("eth0", "prod")],
-            vec![],
-            Firmware::Efi,
-        );
+        let cls = gold_prod_class();
         let img = image_ready_on(&["vc1"]);
-        let p = provider(
-            "vc1",
-            BTreeMap::new(),
-            vec![fd("fd-a", BTreeMap::new(), &["gold"], &["prod"], &[])],
-            caps_with(
-                &[("gold", "datastore", "ds-1")],
-                &[("prod", "portGroup", "pg-1")],
-            ),
-        );
+        let p = gold_prod_provider("vc1");
 
         let decision = schedule(&v, &cls, &img, &[p], &[], &[]).unwrap();
         assert_eq!(decision.failure_domain_name, "fd-a");
@@ -756,12 +670,7 @@ mod tests {
         let v = vm_with_placement("db-02", "ns", labels_db_prod.clone(), placement);
         let sibling = scheduled_vm("db-01", "ns", labels_db_prod.clone(), "vc1", "fd-a");
 
-        let cls = class(
-            vec![("os", "gold")],
-            vec![("eth0", "prod")],
-            vec![],
-            Firmware::Efi,
-        );
+        let cls = gold_prod_class();
         let img = image_ready_on(&["vc1"]);
         let p = provider(
             "vc1",
@@ -806,12 +715,7 @@ mod tests {
         let v = vm_with_placement("db-02", "ns", labels_db_prod.clone(), placement);
         let sibling = scheduled_vm("db-01", "ns", labels_db_prod, "vc1", "fd-a");
 
-        let cls = class(
-            vec![("os", "gold")],
-            vec![("eth0", "prod")],
-            vec![],
-            Firmware::Efi,
-        );
+        let cls = gold_prod_class();
         let img = image_ready_on(&["vc1"]);
         let p = provider(
             "vc1",
@@ -960,12 +864,7 @@ mod tests {
                 )
             })
             .collect();
-        let cls = class(
-            vec![("os", "gold")],
-            vec![("eth0", "prod")],
-            vec![],
-            Firmware::Efi,
-        );
+        let cls = gold_prod_class();
         (providers, image_ready_on(&HOSTS), cls)
     }
 
@@ -1150,22 +1049,9 @@ mod tests {
     #[test]
     fn to_scheduled_placement_round_trips_resolution() {
         let v = vm("db-01", "ns", BTreeMap::new());
-        let cls = class(
-            vec![("os", "gold")],
-            vec![("eth0", "prod")],
-            vec![],
-            Firmware::Efi,
-        );
+        let cls = gold_prod_class();
         let img = image_ready_on(&["vc1"]);
-        let p = provider(
-            "vc1",
-            BTreeMap::new(),
-            vec![fd("fd-a", BTreeMap::new(), &["gold"], &["prod"], &[])],
-            caps_with(
-                &[("gold", "datastore", "ds-1")],
-                &[("prod", "portGroup", "pg-1")],
-            ),
-        );
+        let p = gold_prod_provider("vc1");
         let d = schedule(&v, &cls, &img, &[p], &[], &[]).unwrap();
 
         let now = k8s_openapi::apimachinery::pkg::apis::meta::v1::Time(
@@ -1592,15 +1478,6 @@ mod tests {
         )
     }
 
-    fn gold_prod_class() -> VMClass {
-        class(
-            vec![("os", "gold")],
-            vec![("eth0", "prod")],
-            vec![],
-            Firmware::Efi,
-        )
-    }
-
     #[test]
     fn template_source_never_places_into_a_zone_that_is_not_ready() {
         let v = vm("db-01", "ns", BTreeMap::new());
@@ -1720,12 +1597,7 @@ mod tests {
         ratio: Option<u32>,
     ) -> (VirtualMachine, VMClass, VMImage, Provider) {
         let v = vm("new", "banlieue-system", BTreeMap::new());
-        let cls = class(
-            vec![("os", "gold")],
-            vec![("eth0", "prod")],
-            vec![],
-            Firmware::Efi,
-        );
+        let cls = gold_prod_class();
         let img = image_ready_on(&["p"]);
         let mut prov = provider(
             "p",

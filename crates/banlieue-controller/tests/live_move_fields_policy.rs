@@ -18,29 +18,20 @@
 //!
 //! Needs an identity that may impersonate (cluster-admin). Run it against a scratch cluster.
 
+mod common;
+
 use banlieue_api::infrastructure::CloudHypervisorMachine;
-use kube::Client;
 use kube::api::{Api, DeleteParams, Patch, PatchParams, PostParams};
 use serde_json::{Value, json};
 
+use common::{admin, as_master, verdict};
+
 const NAMESPACE: &str = "banlieue-system";
-const PRIVILEGED_GROUP: &str = "system:masters";
 const CONTROLLER: &str = "system:serviceaccount:banlieue-system:banlieue-controller";
 /// A host provider's identity: the operator names each after its Provider.
 const HOST_PROVIDER: &str = "system:serviceaccount:banlieue-system:banlieue-provider-hv01";
 const SOMEONE: &str = "octocat";
 const FIXTURE: &str = "move-fields-policy-test";
-
-async fn client(user: Option<&str>) -> Client {
-    let mut config = kube::Config::infer()
-        .await
-        .expect("kubeconfig: set KUBECONFIG");
-    if let Some(user) = user {
-        config.auth_info.impersonate = Some(user.to_string());
-        config.auth_info.impersonate_groups = Some(vec![PRIVILEGED_GROUP.to_string()]);
-    }
-    Client::try_from(config).expect("client")
-}
 
 fn machine(name: &str, extra: &Value) -> CloudHypervisorMachine {
     let mut m = json!({
@@ -63,20 +54,9 @@ fn machine(name: &str, extra: &Value) -> CloudHypervisorMachine {
     serde_json::from_value(m).expect("machine fixture")
 }
 
-fn verdict(r: Result<CloudHypervisorMachine, kube::Error>, what: &str) -> bool {
-    match r {
-        Ok(_) => true,
-        Err(kube::Error::Api(e)) if e.code == 422 || e.code == 403 => {
-            eprintln!("    {what}: denied: {}", e.message);
-            false
-        }
-        Err(e) => panic!("{what}: unexpected error: {e}"),
-    }
-}
-
 /// Whether `user` may create a machine carrying `extra` in its spec. Dry run.
 async fn may_create(user: &str, extra: Value) -> bool {
-    let api: Api<CloudHypervisorMachine> = Api::namespaced(client(Some(user)).await, NAMESPACE);
+    let api: Api<CloudHypervisorMachine> = Api::namespaced(as_master(user).await, NAMESPACE);
     let params = PostParams {
         dry_run: true,
         ..PostParams::default()
@@ -90,7 +70,7 @@ async fn may_create(user: &str, extra: Value) -> bool {
 
 /// Whether `user` may merge-patch the fixture machine with `patch`. Dry run.
 async fn may_patch(user: &str, patch: Value) -> bool {
-    let api: Api<CloudHypervisorMachine> = Api::namespaced(client(Some(user)).await, NAMESPACE);
+    let api: Api<CloudHypervisorMachine> = Api::namespaced(as_master(user).await, NAMESPACE);
     let params = PatchParams {
         dry_run: true,
         ..PatchParams::default()
@@ -104,11 +84,11 @@ async fn may_patch(user: &str, patch: Value) -> bool {
 #[tokio::test]
 #[ignore = "needs a real API server with the CRDs and the move-fields policy"]
 async fn only_the_controller_writes_the_move_fields() {
-    let admin: Api<CloudHypervisorMachine> = Api::namespaced(client(None).await, NAMESPACE);
+    let admin: Api<CloudHypervisorMachine> = Api::namespaced(admin().await, NAMESPACE);
     let _ = admin.delete(FIXTURE, &DeleteParams::default()).await;
     // The fixture is a machine already mid-move, as only the controller can make one.
     let controller: Api<CloudHypervisorMachine> =
-        Api::namespaced(client(Some(CONTROLLER)).await, NAMESPACE);
+        Api::namespaced(as_master(CONTROLLER).await, NAMESPACE);
     controller
         .create(
             &PostParams::default(),

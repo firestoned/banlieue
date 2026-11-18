@@ -18,7 +18,7 @@
 //! With a vTPM, the host's EK CA certificate is published on the status
 //! (Decision 6).
 
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::host_config::HostConfig;
 pub use crate::plan::VMM_MEMORY_OVERHEAD_MIB;
 use crate::reconciler::Context;
@@ -27,13 +27,14 @@ use banlieue_api::banlieue::{
     FailureDomain, FailureDomainAttributes, FailureDomainCapacity, Provider, ProviderStatus,
     RAW_CPU_MODEL, RAW_VMM, StorageCapacity,
 };
-use banlieue_provider_sdk::capacity::available_memory_mib;
-use banlieue_provider_sdk::reconciler::{requeue_long, requeue_on_error};
+use banlieue_provider_sdk::capacity::{BYTES_PER_GIB, available_memory_mib, min_known};
+use banlieue_provider_sdk::reconciler::requeue_long;
+use banlieue_provider_sdk::ssa::apply_status;
+pub use banlieue_provider_sdk::status::provider_condition_types as condition_types;
 use banlieue_provider_sdk::status::{condition_status, set_condition};
-use kube::api::{Api, Patch, PatchParams};
+use kube::ResourceExt;
+use kube::api::Api;
 use kube::runtime::controller::Action;
-use kube::{Resource, ResourceExt};
-use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::Arc;
@@ -52,15 +53,6 @@ const DEV_KVM: &str = "/dev/kvm";
 const PROC_CPUINFO: &str = "/proc/cpuinfo";
 const PROC_MEMINFO: &str = "/proc/meminfo";
 const KIB_PER_MIB: u64 = 1024;
-const BYTES_PER_GIB: u64 = 1024 * 1024 * 1024;
-
-/// Condition types on `Provider.status`.
-pub mod condition_types {
-    /// Everything this host needs to run guests is present.
-    pub const READY: &str = "Ready";
-    /// The provider is running and can talk to the API server.
-    pub const PROVIDER_REACHABLE: &str = "ProviderReachable";
-}
 
 /// Stable reasons. Operators match on these.
 pub mod reasons {
@@ -143,14 +135,6 @@ pub fn guest_capacity(host: &HostCapacity, budget: &SliceBudget) -> FailureDomai
         memory_overhead_mi_b_per_vm: Some(VMM_MEMORY_OVERHEAD_MIB),
         memory_available_mi_b: available,
         storage: Vec::new(),
-    }
-}
-
-/// The smaller of two optional figures, or whichever is known.
-fn min_known<T: Ord>(a: Option<T>, b: Option<T>) -> Option<T> {
-    match (a, b) {
-        (Some(a), Some(b)) => Some(a.min(b)),
-        (a, b) => a.or(b),
     }
 }
 
@@ -535,30 +519,12 @@ pub async fn reconcile(provider: Arc<Provider>, ctx: Arc<Context>) -> Result<Act
 }
 
 async fn patch_status(ctx: &Context, name: &str, status: &ProviderStatus) -> Result<()> {
-    let patch = json!({
-        "apiVersion": Provider::api_version(&()).to_string(),
-        "kind": Provider::kind(&()).to_string(),
-        "metadata": { "name": name },
-        "status": status,
-    });
     let api: Api<Provider> = Api::namespaced(ctx.client.clone(), &ctx.config.provider.namespace);
-    api.patch_status(
-        name,
-        // Scoped per ADR-0087. Force is still right here: this host is the
-        // sole writer of its OWN Provider's status, so there is no other
-        // manager to take fields from.
-        &PatchParams::apply(&ctx.config.field_manager()).force(),
-        &Patch::Apply(&patch),
-    )
-    .await
-    .map_err(Error::from)?;
+    // Scoped per ADR-0087. Force is still right here: this host is the
+    // sole writer of its OWN Provider's status, so there is no other
+    // manager to take fields from.
+    apply_status(&api, name, &ctx.config.field_manager(), status, true).await?;
     Ok(())
-}
-
-/// Requeue after a reconcile error.
-pub fn error_policy(_p: Arc<Provider>, e: &Error, _ctx: Arc<Context>) -> Action {
-    warn!(error = %e, "Provider reconcile error");
-    requeue_on_error()
 }
 
 #[cfg(test)]

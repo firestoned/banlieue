@@ -26,8 +26,11 @@
 //!
 //! Or `make ch-vtpm-e2e`.
 
-use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+mod common;
+
+use common::{present, required, wait_for};
+use std::path::PathBuf;
+use std::time::Duration;
 
 use banlieue_api::banlieue::Provider;
 use banlieue_api::infrastructure::CloudHypervisorMachine;
@@ -44,37 +47,6 @@ const POLL: Duration = Duration::from_secs(3);
 const OS_DISK_GIB: u32 = 20;
 const MEMORY_MIB: u32 = 2048;
 const FEATURE_VTPM: &str = "vtpm";
-
-fn required(name: &str) -> String {
-    std::env::var(name)
-        .unwrap_or_else(|_| panic!("{name} is not set; see the module docs of tests/e2e_vtpm.rs"))
-}
-
-async fn wait_for<T, F, Fut>(what: &str, timeout: Duration, mut check: F) -> T
-where
-    F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = Option<T>>,
-{
-    let start = Instant::now();
-    loop {
-        if let Some(v) = check().await {
-            return v;
-        }
-        assert!(
-            start.elapsed() < timeout,
-            "timed out after {timeout:?} waiting for {what}"
-        );
-        tokio::time::sleep(POLL).await;
-    }
-}
-
-fn present(p: &Path) -> bool {
-    match std::fs::symlink_metadata(p) {
-        Ok(_) => true,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
-        Err(e) => panic!("stat {}: {e}", p.display()),
-    }
-}
 
 #[tokio::test]
 #[ignore = "needs a Cloud Hypervisor host with [tpm] running banlieue: see the module docs"]
@@ -147,7 +119,7 @@ async fn a_tpm_machine_gets_its_own_swtpm_and_a_host_minted_ek() {
     let host_uid = std::sync::Mutex::new(None::<u32>);
 
     let outcome = async {
-        let ready = wait_for("Ready with a vTPM", READY_TIMEOUT, || async {
+        let ready = wait_for(POLL, "Ready with a vTPM", READY_TIMEOUT, || async {
             let m = machines.get(&name).await.ok()?;
             let st = m.status?;
             let ready = st
@@ -196,7 +168,7 @@ async fn a_tpm_machine_gets_its_own_swtpm_and_a_host_minted_ek() {
         .delete(&name, &DeleteParams::default())
         .await
         .expect("deleting the machine");
-    wait_for("the machine to be gone", DELETE_TIMEOUT, || async {
+    wait_for(POLL, "the machine to be gone", DELETE_TIMEOUT, || async {
         machines.get_opt(&name).await.ok()?.is_none().then_some(())
     })
     .await;

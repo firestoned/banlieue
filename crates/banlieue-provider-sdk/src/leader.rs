@@ -76,6 +76,17 @@ impl LeaderConfig {
         }
     }
 
+    /// Replace the holder identity when one was given (the
+    /// `--leader-election-identity` flag), keeping
+    /// [`LeaderConfig::default_identity`] otherwise.
+    #[must_use]
+    pub fn with_identity(mut self, identity: Option<String>) -> Self {
+        if let Some(identity) = identity {
+            self.identity = identity;
+        }
+        self
+    }
+
     /// Validate the configuration before launching the loop. Catches
     /// programmer mistakes (zero durations, renew >= lease) early
     /// instead of producing pathological lease behaviour at runtime.
@@ -325,6 +336,47 @@ pub async fn renew_forever(client: Client, cfg: LeaderConfig, readiness: Readine
             Err(other) => return Err(other),
         }
     }
+}
+
+/// Exit status of a process whose lease renewer ended: it no longer leads,
+/// so it must stop reconciling at once and let its supervisor restart it.
+const LEASE_LOST_EXIT_CODE: i32 = 1;
+
+/// Become the leader before the controllers start, and stay it.
+///
+/// With a config: log the wait, block in [`acquire_or_wait`], then spawn
+/// [`renew_forever`], whose failure exits the process. With `None`
+/// (`--no-leader-elect`) it only logs that election is off.
+///
+/// # Arguments
+/// * `client` - the client the Lease is read and written with.
+/// * `cfg` - the election to run, or `None` when it is disabled.
+/// * `readiness` - the process readiness the election feeds (ADR-0093).
+///
+/// # Errors
+/// Whatever [`acquire_or_wait`] returns: an invalid config, or the
+/// [`kube::Error`] of the write that acquires the lease.
+pub async fn elect(client: Client, cfg: Option<LeaderConfig>, readiness: &Readiness) -> Result<()> {
+    let Some(cfg) = cfg else {
+        info!("leader election disabled by --no-leader-elect");
+        return Ok(());
+    };
+    info!(
+        namespace = %cfg.namespace,
+        lease = %cfg.lease_name,
+        identity = %cfg.identity,
+        "waiting for leader election"
+    );
+    acquire_or_wait(client.clone(), &cfg, readiness).await?;
+
+    let readiness = readiness.clone();
+    tokio::spawn(async move {
+        if let Err(e) = renew_forever(client, cfg, readiness).await {
+            error!(error = %e, "leader lease renewer terminated; exiting");
+            std::process::exit(LEASE_LOST_EXIT_CODE);
+        }
+    });
+    Ok(())
 }
 
 async fn fetch_lease(api: &Api<Lease>, name: &str) -> Result<Option<Lease>> {

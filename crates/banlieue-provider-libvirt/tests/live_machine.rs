@@ -24,94 +24,32 @@
 //! It creates a real domain and a real volume, and removes both before it
 //! returns — including when the body fails.
 
-use std::path::{Path, PathBuf};
-
-use banlieue_api::common::{Firmware, IpamSpec, PowerState, ProviderReference};
-use banlieue_api::infrastructure::{
-    LibvirtBootSource, LibvirtBootSourceKind, LibvirtDiskBus, LibvirtDiskSpec, LibvirtMachineSpec,
-    LibvirtNicSource, LibvirtNicSourceKind, LibvirtNicSpec,
-};
-use banlieue_libvirt::{DEFAULT_TLS_PORT, TlsIdentity, connect_open, connect_tls};
+use banlieue_api::common::Firmware;
+use banlieue_api::infrastructure::LibvirtMachineSpec;
 use banlieue_provider_libvirt::machine_client::SessionMachineClient;
 use banlieue_provider_libvirt::reconciler::libvirtmachine::{converge, finalize_backend};
+
+mod common;
+use common::{base_spec, load_identity, open_session, os_disk, settings};
 
 /// Smallest disk the test asks for. A qcow2 volume is sparse, so this costs
 /// kilobytes on the host regardless of the number.
 const DISK_GIB: u32 = 1;
 
-fn settings() -> Option<(String, PathBuf, String, String)> {
-    let host = std::env::var("LIBVIRT_HOST").ok()?;
-    let dir = std::env::var("LIBVIRT_TLS_DIR").ok()?;
-    let pool = std::env::var("LIBVIRT_POOL").unwrap_or_else(|_| "default".to_string());
-    let source = std::env::var("LIBVIRT_SOURCE_VOLUME").ok()?;
-    Some((host, PathBuf::from(expand_home(&dir)), pool, source))
-}
-
-fn expand_home(p: &str) -> String {
-    match (p.strip_prefix("~/"), std::env::var("HOME")) {
-        (Some(rest), Ok(home)) => format!("{home}/{rest}"),
-        _ => p.to_string(),
-    }
-}
-
-fn load_identity(dir: &Path) -> TlsIdentity {
-    let read = |name: &str| {
-        std::fs::read(dir.join(name))
-            .unwrap_or_else(|e| panic!("reading {}/{name}: {e}", dir.display()))
-    };
-    TlsIdentity {
-        ca_pem: read("ca.pem"),
-        client_cert_pem: read("client-cert.pem"),
-        client_key_pem: read("client-key.pem"),
-    }
-}
-
 fn spec(domain_name: &str, pool: &str, source_volume: &str) -> LibvirtMachineSpec {
     LibvirtMachineSpec {
-        provider_id: None,
-        failure_domain: None,
-        provider_ref: ProviderReference {
-            name: "live-test".to_string(),
-            namespace: None,
-        },
-        pool: pool.to_string(),
-        domain_name: domain_name.to_string(),
-        boot_source: LibvirtBootSource {
-            // An overlay over the imported image: the `Immediate` shape, and
-            // the one that matches a `.raw` artifact from banlieue's own
-            // import pipeline (ADR-0011).
-            kind: LibvirtBootSourceKind::BackingVolume,
-            volume: source_volume.to_string(),
-        },
         vcpus: 1,
         memory_mi_b: 512,
         // EFI with no explicit loader, so this also proves libvirt's firmware
         // autoselection works on a real host rather than only in a unit test.
         firmware: Firmware::Efi,
-        machine_type: None,
-        tpm_enabled: false,
-        disks: vec![LibvirtDiskSpec {
-            name: "os".to_string(),
-            size_gi_b: DISK_GIB,
-            bus: LibvirtDiskBus::Virtio,
-        }],
-        network: vec![LibvirtNicSpec {
-            name: "eth0".to_string(),
-            source: LibvirtNicSource {
-                kind: LibvirtNicSourceKind::Network,
-                name: std::env::var("LIBVIRT_NETWORK").unwrap_or_else(|_| "default".to_string()),
-            },
-            model: None,
-            mac_address: None,
-            ipam: IpamSpec::default(),
-        }],
+        disks: vec![os_disk(DISK_GIB)],
         // Exercises the cloud-init seed path (ADR-0054). The payload is
-        // deliberately inert — the point is that libvirtd accepts the
+        // deliberately inert: the point is that libvirtd accepts the
         // generated ISO as a CD-ROM and the volume lands in the pool, not
         // that a guest runs it.
         user_data: Some("#cloud-config\nhostname: banlieue-livetest\n".to_string()),
-        desired_power_state: PowerState::PoweredOn,
-        first_boot_sealing: None,
+        ..base_spec(domain_name, pool, source_volume)
     }
 }
 
@@ -126,13 +64,7 @@ async fn converge_and_finalize_against_real_libvirtd() {
     };
     let identity = load_identity(&dir);
 
-    let mut session = connect_tls(&host, DEFAULT_TLS_PORT, &identity)
-        .await
-        .expect("TLS connection failed");
-    connect_open(&mut session, Some("qemu:///system"), false)
-        .await
-        .expect("CONNECT_OPEN failed");
-    let mut client = SessionMachineClient::new(session);
+    let mut client = SessionMachineClient::new(open_session(&host, &identity).await);
 
     let domain_name = format!(
         "banlieue-livetest-{}",

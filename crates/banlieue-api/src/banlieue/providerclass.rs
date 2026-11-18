@@ -317,11 +317,6 @@ pub struct ProviderClassStatus {
     pub observed_generation: Option<i64>,
 }
 
-#[inline]
-fn is_false(b: &bool) -> bool {
-    !*b
-}
-
 #[cfg(test)]
 #[path = "providerclass_tests.rs"]
 mod providerclass_tests;

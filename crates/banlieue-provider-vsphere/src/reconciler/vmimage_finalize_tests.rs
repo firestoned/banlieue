@@ -14,16 +14,14 @@ mod tests {
     };
     use kube::api::ObjectMeta;
 
-    use crate::client::{Datacenter, FakeClient, Inventory, VSphereClient};
+    use crate::client::{Datacenter, FakeClient, Inventory};
+
+    use crate::reconciler::test_fixtures::as_client;
 
     use super::super::{
         destroy_owned_zone_templates, destroy_zone_templates, finalizer_can_go,
         image_owns_templates, rows_to_clean, with_zones_cleared,
     };
-
-    fn as_client(c: &FakeClient) -> &dyn VSphereClient {
-        c
-    }
 
     fn dc(name: &str) -> Datacenter {
         Datacenter {

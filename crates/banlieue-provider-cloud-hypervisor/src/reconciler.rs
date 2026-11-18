@@ -30,8 +30,9 @@ use banlieue_provider_sdk::finalizer::{ensure_finalizer, remove_finalizer};
 use banlieue_provider_sdk::reconciler::{requeue_default, requeue_long, requeue_on_error};
 use banlieue_provider_sdk::scope::{ProviderScope, SharedServing};
 use banlieue_provider_sdk::sealing::{SealingGate, sealing_gate};
+use banlieue_provider_sdk::ssa::{apply_provider_id, apply_status};
 use k8s_openapi::jiff::Timestamp;
-use kube::api::{Api, ListParams, Patch, PatchParams};
+use kube::api::{Api, ListParams};
 use kube::runtime::controller::Action;
 use kube::{Client, Resource, ResourceExt};
 use serde_json::{Value, json};
@@ -399,15 +400,11 @@ async fn patch_status(
     status: &CloudHypervisorMachineStatus,
     field_manager: &str,
 ) -> Result<()> {
-    let patch = status_patch(status);
-    api.patch_status(
-        name,
-        // Scoped per ADR-0087. A CloudHypervisorMachine is reconciled by the
-        // one host that owns it, so force remains correct.
-        &PatchParams::apply(field_manager).force(),
-        &Patch::Apply(&patch),
-    )
-    .await?;
+    // Scoped per ADR-0087. A CloudHypervisorMachine is reconciled by the
+    // one host that owns it, so force remains correct. The status applied is
+    // the one `status_patch` builds, without the controller's condition.
+    let owned = &status_patch(status)["status"];
+    apply_status(api, name, field_manager, owned, true).await?;
     Ok(())
 }
 
@@ -420,24 +417,8 @@ async fn patch_provider_id(
     id: &str,
     field_manager: &str,
 ) -> Result<()> {
-    let patch = json!({
-        "apiVersion": "infrastructure.banlieue.io/v1alpha1",
-        "kind": "CloudHypervisorMachine",
-        "spec": { "providerID": id },
-    });
-    api.patch(
-        name,
-        &PatchParams::apply(field_manager),
-        &Patch::Apply(&patch),
-    )
-    .await?;
+    apply_provider_id(api, name, field_manager, id).await?;
     Ok(())
-}
-
-/// Requeue after a reconcile error.
-pub fn error_policy(_m: Arc<CloudHypervisorMachine>, e: &Error, _ctx: Arc<Context>) -> Action {
-    warn!(error = %e, "CloudHypervisorMachine reconcile error");
-    requeue_on_error()
 }
 
 #[cfg(test)]

@@ -13,12 +13,10 @@ use std::collections::BTreeMap;
 
 use banlieue_api::banlieue::InstallMode;
 use banlieue_api::banlieue::{
-    ANNOTATION_CREATED_BY, DiskSpec, HardwareOverride, ImagePerProviderStatus, Provider,
-    SubnetShape, VMClass, VMImage, VirtualMachine,
+    ANNOTATION_CREATED_BY, DiskSpec, HardwareOverride, ImagePerProviderStatus, NetworkClassMapping,
+    NetworkInterfaceSpec, Provider, SubnetShape, VMClass, VMImage, VirtualMachine,
 };
-use banlieue_api::common::{
-    FirstBootSealing, IpamShape, IpamSpec, MachineAddress, StaticIpamConfig,
-};
+use banlieue_api::common::{FirstBootSealing, IpamShape, IpamSpec, StaticIpamConfig};
 use banlieue_api::infrastructure::{
     ChBootSource, ChBootSourceKind, ChCpuSpec, ChMemorySpec, ChNicSpec, CloudHypervisorMachine,
     CloudHypervisorMachineSpec, LibvirtBootSource, LibvirtBootSourceKind, LibvirtDiskBus,
@@ -178,6 +176,83 @@ fn provider_reference(
     }
 }
 
+/// The metadata every infra CR carries: the machine's name ([`machine_name`]),
+/// the parent VM's namespace, a controller owner reference back to the VM, and
+/// the VM's labels. Same namespace as the parent VM is the convention for 1:1
+/// owned infra CRs: it keeps the relationship discoverable without indexing.
+fn infra_meta(vm: &VirtualMachine) -> ObjectMeta {
+    ObjectMeta {
+        name: Some(machine_name(vm)),
+        namespace: vm.namespace(),
+        owner_references: Some(vec![owner_reference_for(vm)]),
+        labels: Some(propagate_labels(vm)),
+        ..Default::default()
+    }
+}
+
+/// The chosen failure domain's raw attribute `key`, or
+/// [`InfraBuildError::MissingFdRaw`] naming the domain and the key.
+fn fd_raw(decision: &Decision, key: &'static str) -> Result<String, InfraBuildError> {
+    decision
+        .failure_domain_raw
+        .get(key)
+        .cloned()
+        .ok_or_else(|| InfraBuildError::MissingFdRaw(decision.failure_domain_name.clone(), key))
+}
+
+/// [`resolve_template_ref`] for the decision's provider and failure domain, or
+/// [`InfraBuildError::MissingResolvedImageRef`].
+fn required_template_ref(
+    image: &VMImage,
+    decision: &Decision,
+) -> Result<(String, Option<String>), InfraBuildError> {
+    resolve_template_ref(
+        image,
+        &decision.provider_name,
+        &decision.failure_domain_name,
+    )
+    .ok_or_else(|| InfraBuildError::MissingResolvedImageRef {
+        image: image.name_any(),
+        provider: decision.provider_name.clone(),
+        zone: decision.failure_domain_name.clone(),
+    })
+}
+
+/// What every backend looks up per class NIC: the VM's static override for
+/// it (ADR-0024), if any, and the Provider's mapping for its network class.
+fn nic_inputs<'a>(
+    vm: &'a VirtualMachine,
+    provider: &'a Provider,
+    nic: &NetworkInterfaceSpec,
+) -> (
+    Option<&'a StaticIpamConfig>,
+    Option<&'a NetworkClassMapping>,
+) {
+    let override_ = vm
+        .spec
+        .network_overrides
+        .iter()
+        .find(|o| o.name == nic.name)
+        .map(|o| &o.static_);
+    let mapping = provider
+        .spec
+        .capabilities
+        .network_classes
+        .iter()
+        .find(|c| c.name == nic.network_class);
+    (override_, mapping)
+}
+
+/// An image's install mode (ADR-0040): its template's, or the default for an
+/// image with no template.
+pub(crate) fn install_mode(image: &VMImage) -> InstallMode {
+    image
+        .spec
+        .template
+        .as_ref()
+        .map_or(InstallMode::default(), |t| t.install_mode)
+}
+
 /// Build a [`VSphereMachine`] from the scheduler [`Decision`], the original
 /// VM, its class, image, and the chosen [`Provider`]. Owner-reference is set
 /// to `vm` so the VSphereMachine is garbage-collected when the parent VM is
@@ -202,26 +277,8 @@ pub fn build_vsphere_machine(
     provider: &Provider,
     rendered_user_data: Option<&str>,
 ) -> Result<VSphereMachine, InfraBuildError> {
-    let datacenter = decision
-        .failure_domain_raw
-        .get(FD_RAW_VSPHERE_DATACENTER)
-        .cloned()
-        .ok_or_else(|| {
-            InfraBuildError::MissingFdRaw(
-                decision.failure_domain_name.clone(),
-                FD_RAW_VSPHERE_DATACENTER,
-            )
-        })?;
-    let cluster = decision
-        .failure_domain_raw
-        .get(FD_RAW_VSPHERE_CLUSTER)
-        .cloned()
-        .ok_or_else(|| {
-            InfraBuildError::MissingFdRaw(
-                decision.failure_domain_name.clone(),
-                FD_RAW_VSPHERE_CLUSTER,
-            )
-        })?;
+    let datacenter = fd_raw(decision, FD_RAW_VSPHERE_DATACENTER)?;
+    let cluster = fd_raw(decision, FD_RAW_VSPHERE_CLUSTER)?;
 
     // OS disk is the first disk; its backend_id is the resolved datastore.
     let os_storage = decision
@@ -234,16 +291,7 @@ pub fn build_vsphere_machine(
     // display name plus (for a Url-kind, per-zone import) the folder it
     // lives in — kept as two fields, not one encoded string, since every
     // zone's template shares the same name (ADR-0020 Decision #5).
-    let (template, template_folder) = resolve_template_ref(
-        image,
-        &decision.provider_name,
-        &decision.failure_domain_name,
-    )
-    .ok_or_else(|| InfraBuildError::MissingResolvedImageRef {
-        image: image.name_any(),
-        provider: decision.provider_name.clone(),
-        zone: decision.failure_domain_name.clone(),
-    })?;
+    let (template, template_folder) = required_template_ref(image, decision)?;
     let template = bare_template_name(&template).to_string();
 
     // Disks: 1:1 with VMClass disks. Storage class resolution is via
@@ -278,19 +326,8 @@ pub fn build_vsphere_machine(
         .iter()
         .zip(decision.resolved_networks.iter())
         .map(|(nic, resolved)| {
-            let override_ = vm
-                .spec
-                .network_overrides
-                .iter()
-                .find(|o| o.name == nic.name)
-                .map(|o| &o.static_);
-            let zone_subnet = provider
-                .spec
-                .capabilities
-                .network_classes
-                .iter()
-                .find(|c| c.name == nic.network_class)
-                .and_then(|c| c.subnet_for(&datacenter, &cluster));
+            let (override_, mapping) = nic_inputs(vm, provider, nic);
+            let zone_subnet = mapping.and_then(|c| c.subnet_for(&datacenter, &cluster));
             VSphereNicSpec {
                 name: nic.name.clone(),
                 port_group: resolved.backend_id.clone(),
@@ -330,16 +367,7 @@ pub fn build_vsphere_machine(
     };
 
     Ok(VSphereMachine {
-        metadata: ObjectMeta {
-            // Same name + namespace as the parent VM. This is the convention
-            // for 1:1 owned infra CRs — keeps the relationship discoverable
-            // without indexing.
-            name: Some(machine_name(vm)),
-            namespace: vm.namespace(),
-            owner_references: Some(vec![owner_reference_for(vm)]),
-            labels: Some(propagate_labels(vm)),
-            ..Default::default()
-        },
+        metadata: infra_meta(vm),
         spec,
         status: None,
     })
@@ -465,13 +493,6 @@ pub(crate) fn effective_memory_mi_b(class: &VMClass, override_: Option<&Hardware
         .unwrap_or(class.spec.hardware.memory_mi_b)
 }
 
-/// Failure-domain raw-attribute key for the libvirt host a domain lands on.
-/// Optional: a libvirt failure domain is one host, so the domain's placement
-/// is the failure domain itself.
-pub const FD_RAW_LIBVIRT_HOST: &str = "host";
-
-/// `NetworkClassMapping.target` key naming a libvirt-managed network.
-const TARGET_KEY_LIBVIRT_NETWORK: &str = "network";
 /// `NetworkClassMapping.target` key naming a raw host bridge.
 const TARGET_KEY_LIBVIRT_BRIDGE: &str = "bridge";
 
@@ -517,16 +538,7 @@ pub fn build_libvirt_machine(
         .clone();
 
     // libvirt has no per-zone template folder, so only the name is used.
-    let (volume, _folder) = resolve_template_ref(
-        image,
-        &decision.provider_name,
-        &decision.failure_domain_name,
-    )
-    .ok_or_else(|| InfraBuildError::MissingResolvedImageRef {
-        image: image.name_any(),
-        provider: decision.provider_name.clone(),
-        zone: decision.failure_domain_name.clone(),
-    })?;
+    let (volume, _folder) = required_template_ref(image, decision)?;
 
     let boot_source = LibvirtBootSource {
         kind: boot_source_kind(image),
@@ -557,22 +569,11 @@ pub fn build_libvirt_machine(
         .iter()
         .zip(decision.resolved_networks.iter())
         .map(|(nic, resolved)| {
-            let override_ = vm
-                .spec
-                .network_overrides
-                .iter()
-                .find(|o| o.name == nic.name)
-                .map(|o| &o.static_);
             // libvirt failure domains carry no datacenter/cluster, so the
-            // per-zone lookup falls through to the mapping's default target
-            // — which is the documented behaviour for a backend with no zone
+            // per-zone lookup falls through to the mapping's default target,
+            // which is the documented behaviour for a backend with no zone
             // hierarchy (ADR-0030).
-            let mapping = provider
-                .spec
-                .capabilities
-                .network_classes
-                .iter()
-                .find(|c| c.name == nic.network_class);
+            let (override_, mapping) = nic_inputs(vm, provider, nic);
             let zone_subnet = mapping.and_then(|c| c.subnet_for("", ""));
             LibvirtNicSpec {
                 name: nic.name.clone(),
@@ -607,13 +608,7 @@ pub fn build_libvirt_machine(
     };
 
     Ok(LibvirtMachine {
-        metadata: ObjectMeta {
-            name: Some(machine_name(vm)),
-            namespace: vm.namespace(),
-            owner_references: Some(vec![owner_reference_for(vm)]),
-            labels: Some(propagate_labels(vm)),
-            ..Default::default()
-        },
+        metadata: infra_meta(vm),
         spec,
         status: None,
     })
@@ -640,12 +635,7 @@ fn domain_name_for(vm: &VirtualMachine) -> String {
 /// attach the media and let the guest install itself; the two names exist to
 /// distinguish *why*, not *what* (ADR-0040's `InstallMode` doc).
 fn boot_source_kind(image: &VMImage) -> LibvirtBootSourceKind {
-    let mode = image
-        .spec
-        .template
-        .as_ref()
-        .map_or(InstallMode::default(), |t| t.install_mode);
-    match mode {
+    match install_mode(image) {
         InstallMode::Immediate => LibvirtBootSourceKind::BackingVolume,
         InstallMode::Deferred | InstallMode::Manual => LibvirtBootSourceKind::InstallMedia,
     }
@@ -705,16 +695,7 @@ pub fn build_cloud_hypervisor_machine(
         .backend_id
         .clone();
 
-    let (image_ref, _folder) = resolve_template_ref(
-        image,
-        &decision.provider_name,
-        &decision.failure_domain_name,
-    )
-    .ok_or_else(|| InfraBuildError::MissingResolvedImageRef {
-        image: image.name_any(),
-        provider: decision.provider_name.clone(),
-        zone: decision.failure_domain_name.clone(),
-    })?;
+    let (image_ref, _folder) = required_template_ref(image, decision)?;
 
     let nics: Vec<ChNicSpec> = class
         .spec
@@ -723,21 +704,10 @@ pub fn build_cloud_hypervisor_machine(
         .iter()
         .zip(decision.resolved_networks.iter())
         .map(|(nic, resolved)| {
-            let override_ = vm
-                .spec
-                .network_overrides
-                .iter()
-                .find(|o| o.name == nic.name)
-                .map(|o| &o.static_);
             // One host is one failure domain, with no zone hierarchy, so the
             // mapping's default subnet applies (ADR-0030), as on libvirt.
-            let zone_subnet = provider
-                .spec
-                .capabilities
-                .network_classes
-                .iter()
-                .find(|c| c.name == nic.network_class)
-                .and_then(|c| c.subnet_for("", ""));
+            let (override_, mapping) = nic_inputs(vm, provider, nic);
+            let zone_subnet = mapping.and_then(|c| c.subnet_for("", ""));
             ChNicSpec {
                 name: nic.name.clone(),
                 network_class: resolved.backend_id.clone(),
@@ -776,13 +746,7 @@ pub fn build_cloud_hypervisor_machine(
     };
 
     Ok(CloudHypervisorMachine {
-        metadata: ObjectMeta {
-            name: Some(machine_name(vm)),
-            namespace: vm.namespace(),
-            owner_references: Some(vec![owner_reference_for(vm)]),
-            labels: Some(propagate_labels(vm)),
-            ..Default::default()
-        },
+        metadata: infra_meta(vm),
         spec,
         status: None,
     })
@@ -845,13 +809,7 @@ pub fn build_proxmox_machine(
     provider: &Provider,
     rendered_user_data: Option<&str>,
 ) -> Result<ProxmoxMachine, InfraBuildError> {
-    let node = decision
-        .failure_domain_raw
-        .get(FD_RAW_PROXMOX_NODE)
-        .cloned()
-        .ok_or_else(|| {
-            InfraBuildError::MissingFdRaw(decision.failure_domain_name.clone(), FD_RAW_PROXMOX_NODE)
-        })?;
+    let node = fd_raw(decision, FD_RAW_PROXMOX_NODE)?;
 
     let disks = &class.spec.hardware.disks;
     let os_disk = disks
@@ -866,16 +824,7 @@ pub fn build_proxmox_machine(
 
     // The template is a VMID, published as the image's resolvedRef; the
     // per-zone folder vSphere needs has no Proxmox counterpart.
-    let (resolved_ref, _folder) = resolve_template_ref(
-        image,
-        &decision.provider_name,
-        &decision.failure_domain_name,
-    )
-    .ok_or_else(|| InfraBuildError::MissingResolvedImageRef {
-        image: image.name_any(),
-        provider: decision.provider_name.clone(),
-        zone: decision.failure_domain_name.clone(),
-    })?;
+    let (resolved_ref, _folder) = required_template_ref(image, decision)?;
     let template_vmid =
         resolved_ref
             .parse::<u32>()
@@ -913,20 +862,9 @@ pub fn build_proxmox_machine(
         .iter()
         .zip(decision.resolved_networks.iter())
         .map(|(nic, resolved)| {
-            let override_ = vm
-                .spec
-                .network_overrides
-                .iter()
-                .find(|o| o.name == nic.name)
-                .map(|o| &o.static_);
             // A Proxmox node has no datacenter/cluster hierarchy, so the
             // mapping's default target and subnet apply (ADR-0030).
-            let mapping = provider
-                .spec
-                .capabilities
-                .network_classes
-                .iter()
-                .find(|c| c.name == nic.network_class);
+            let (override_, mapping) = nic_inputs(vm, provider, nic);
             let target = mapping.and_then(|m| m.target_for("", ""));
             let bridge = target
                 .and_then(|t| t.get(TARGET_KEY_PROXMOX_BRIDGE))
@@ -981,13 +919,7 @@ pub fn build_proxmox_machine(
     spec.validate().map_err(InfraBuildError::InvalidSpec)?;
 
     Ok(ProxmoxMachine {
-        metadata: ObjectMeta {
-            name: Some(machine_name(vm)),
-            namespace: vm.namespace(),
-            owner_references: Some(vec![owner_reference_for(vm)]),
-            labels: Some(propagate_labels(vm)),
-            ..Default::default()
-        },
+        metadata: infra_meta(vm),
         spec,
         status: None,
     })
@@ -1011,12 +943,7 @@ fn seed_storage(provider: &Provider) -> Result<String, InfraBuildError> {
 /// Which provisioning shape an image's install mode calls for on Cloud
 /// Hypervisor, the counterpart of [`boot_source_kind`] (ADR-0040, ADR-0065).
 fn ch_boot_source_kind(image: &VMImage) -> ChBootSourceKind {
-    let mode = image
-        .spec
-        .template
-        .as_ref()
-        .map_or(InstallMode::default(), |t| t.install_mode);
-    match mode {
+    match install_mode(image) {
         InstallMode::Immediate => ChBootSourceKind::Image,
         InstallMode::Deferred | InstallMode::Manual => ChBootSourceKind::InstallMedia,
     }
@@ -1028,13 +955,10 @@ fn ch_boot_source_kind(image: &VMImage) -> ChBootSourceKind {
 /// the scheduler's own fallback. Guessing "bridge" would be the worse
 /// default: a raw bridge puts the guest directly onto a host L2 segment,
 /// while a managed network is the contained option.
-fn nic_source_kind(
-    mapping: Option<&banlieue_api::banlieue::NetworkClassMapping>,
-) -> LibvirtNicSourceKind {
+fn nic_source_kind(mapping: Option<&NetworkClassMapping>) -> LibvirtNicSourceKind {
     let target = mapping.and_then(|m| m.target_for("", ""));
     match target {
         Some(t) if t.contains_key(TARGET_KEY_LIBVIRT_BRIDGE) => LibvirtNicSourceKind::Bridge,
-        Some(t) if t.contains_key(TARGET_KEY_LIBVIRT_NETWORK) => LibvirtNicSourceKind::Network,
         _ => LibvirtNicSourceKind::Network,
     }
 }
@@ -1083,15 +1007,6 @@ fn bare_template_name(resolved_ref: &str) -> &str {
         .and_then(|rest| rest.split_once("] "))
         .map_or(resolved_ref, |(_, name)| name)
 }
-
-// Convenience accessors used by status_mirror tests. Suppresses unused-warning
-// noise on the trait import once everything is wired.
-#[allow(dead_code)]
-pub(crate) fn unused_addresses_marker(addrs: &[MachineAddress]) -> usize {
-    addrs.len()
-}
-#[allow(dead_code)]
-pub(crate) fn unused_ipam_marker(_i: &IpamSpec) {}
 
 #[cfg(test)]
 #[path = "infra_tests.rs"]

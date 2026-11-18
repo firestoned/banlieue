@@ -89,11 +89,6 @@ pub struct VMClassSpec {
     pub tpm_enabled: bool,
 }
 
-/// `skip_serializing_if` predicate: omit a `bool` field when it is `false`.
-fn is_false(b: &bool) -> bool {
-    !*b
-}
-
 /// The virtual hardware shape requested by a VMClass: CPU, memory, and disks.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]

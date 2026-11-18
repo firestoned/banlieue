@@ -32,10 +32,13 @@
 //!   make ch-restart-e2e
 //! ```
 
+mod common;
+
+use common::{present_as_root as present, required, taps_for, wait_for};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use banlieue_api::infrastructure::CloudHypervisorMachine;
 use banlieue_provider_cloud_hypervisor::report::REPORT_PORT;
@@ -49,47 +52,7 @@ const DELETE_TIMEOUT: Duration = Duration::from_secs(3 * 60);
 const POLL: Duration = Duration::from_secs(2);
 const OS_DISK_GIB: u32 = 20;
 const MEMORY_MIB: u32 = 2048;
-/// `crate::plan`'s tap naming: `bch` and the first hex digits of the UID.
-const TAP_PREFIX: &str = "bch";
-const TAP_UID_DIGITS: usize = 10;
 const READY: &str = "Ready";
-
-fn required(name: &str) -> String {
-    std::env::var(name).unwrap_or_else(|_| {
-        panic!("{name} is not set; see the module docs of tests/e2e_restart.rs")
-    })
-}
-
-async fn wait_for<T, F, Fut>(what: &str, timeout: Duration, mut check: F) -> T
-where
-    F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = Option<T>>,
-{
-    let start = Instant::now();
-    loop {
-        if let Some(v) = check().await {
-            return v;
-        }
-        assert!(
-            start.elapsed() < timeout,
-            "timed out after {timeout:?} waiting for {what}"
-        );
-        tokio::time::sleep(POLL).await;
-    }
-}
-
-/// Whether anything is at `p`. Permission errors fail: this test runs as
-/// root, and a check it cannot make proves nothing.
-fn present(p: &Path) -> bool {
-    match std::fs::symlink_metadata(p) {
-        Ok(_) => true,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
-        Err(e) => panic!(
-            "stat {} (run as root: see the module docs): {e}",
-            p.display()
-        ),
-    }
-}
 
 fn systemctl(args: &[&str]) -> String {
     let out = Command::new("systemctl")
@@ -120,20 +83,6 @@ fn restart_provider(unit: &str) {
         "active",
         "{unit} came back"
     );
-}
-
-fn taps_for(uid: &str) -> Vec<String> {
-    let hex: String = uid
-        .chars()
-        .filter(|c| *c != '-')
-        .take(TAP_UID_DIGITS)
-        .collect();
-    let prefix = format!("{TAP_PREFIX}{hex}");
-    std::fs::read_dir("/sys/class/net")
-        .expect("reading /sys/class/net")
-        .filter_map(|e| e.ok()?.file_name().into_string().ok())
-        .filter(|n| n.starts_with(&prefix))
-        .collect()
 }
 
 fn inode(p: &Path) -> Option<u64> {
@@ -189,7 +138,7 @@ async fn restarting_the_provider_never_disturbs_a_guest() {
 
     let outcome = async {
         // 1. Mid-provision: as soon as the guest uid is recorded.
-        let n = wait_for("a guest uid", READY_TIMEOUT, || async {
+        let n = wait_for(POLL, "a guest uid", READY_TIMEOUT, || async {
             machines.get(&name).await.ok()?.status?.host_uid
         })
         .await;
@@ -197,6 +146,7 @@ async fn restarting_the_provider_never_disturbs_a_guest() {
         restart_provider(&provider_unit);
         println!("restarted the provider mid-provision (guest uid {n})");
         wait_for(
+            POLL,
             "Ready after a mid-provision restart",
             READY_TIMEOUT,
             || async {
@@ -219,6 +169,7 @@ async fn restarting_the_provider_never_disturbs_a_guest() {
         let listener_before = inode(&report).expect("the report socket exists");
         restart_provider(&provider_unit);
         wait_for(
+            POLL,
             "the new provider to adopt the guest",
             ADOPT_TIMEOUT,
             || async { inode(&report).filter(|i| *i != listener_before) },
@@ -252,7 +203,7 @@ async fn restarting_the_provider_never_disturbs_a_guest() {
         .expect("deleting the machine");
     restart_provider(&provider_unit);
     println!("restarted the provider mid-delete");
-    wait_for("the machine to be gone", DELETE_TIMEOUT, || async {
+    wait_for(POLL, "the machine to be gone", DELETE_TIMEOUT, || async {
         machines.get_opt(&name).await.ok()?.is_none().then_some(())
     })
     .await;

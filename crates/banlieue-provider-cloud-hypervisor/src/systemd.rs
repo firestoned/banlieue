@@ -15,6 +15,7 @@
 //!
 //! No `systemd-run`, no subprocess.
 
+use banlieue_provider_sdk::capacity::BYTES_PER_MIB;
 use futures::StreamExt as _;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -212,8 +213,6 @@ trait Slice {
 pub const GUEST_SLICE: &str = "banlieue-guests.slice";
 /// Its parent, holding every banlieue VM on the host (ADR-0106).
 pub const VMS_SLICE: &str = "banlieue.slice";
-/// Bytes in one MiB.
-const BYTES_PER_MIB: u64 = 1024 * 1024;
 
 /// A slice's `MemoryMax`, MiB rounded down; `None` for systemd's
 /// "infinity" (`u64::MAX`).

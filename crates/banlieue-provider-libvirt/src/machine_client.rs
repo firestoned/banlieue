@@ -24,14 +24,13 @@
 use async_trait::async_trait;
 use banlieue_api::banlieue::ProviderConnection;
 use banlieue_libvirt::{
-    DEVICE_MODIFY_EJECT, Domain, DomainInterface, DomainState, InterfaceAddressSource, Session,
+    DEVICE_MODIFY_EJECT, Domain, DomainInterface, DomainState, InterfaceAddressSource, Io, Session,
     StoragePool, StorageVol, TlsIdentity, connect_open, connect_tls, domain_create,
     domain_define_xml, domain_destroy, domain_get_state, domain_interface_addresses,
     domain_lookup_by_name, domain_undefine, domain_update_device_flags, is_not_found,
     storage_pool_lookup_by_name, storage_pool_refresh, storage_vol_create_xml, storage_vol_delete,
     storage_vol_lookup_by_name, storage_vol_upload,
 };
-use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::client::{LOCAL_DRIVER_URI, parse_endpoint};
 use crate::error::{Error, Result};
@@ -199,27 +198,6 @@ pub trait LibvirtMachineClient: Send {
     async fn read_sealed_report(&mut self, domain: &Domain) -> Vec<String>;
 }
 
-/// Diagnostic helper: a domain's addresses as a printable string,
-/// whichever source answers, or `None` when none does.
-///
-/// Exists for live tests, where "the guest is Running but has no address"
-/// and "the guest never booted" look identical from the outside.
-impl<S> SessionMachineClient<S>
-where
-    S: AsyncRead + AsyncWrite + Unpin + Send,
-{
-    /// Best-effort address summary for `domain_name`.
-    pub async fn domain_addresses_any(&mut self, domain_name: &str) -> Option<String> {
-        let domain = self.lookup_domain(domain_name).await.ok().flatten()?;
-        let (ifaces, source) = self.domain_addresses(&domain).await.ok().flatten()?;
-        let listed: Vec<String> = ifaces
-            .iter()
-            .flat_map(|i| i.addrs.iter().map(|a| a.addr.clone()))
-            .collect();
-        Some(format!("{listed:?} via {source:?}"))
-    }
-}
-
 /// Builds a [`LibvirtMachineClient`] against a Provider's host.
 #[async_trait]
 pub trait LibvirtMachineClientFactory: Send + Sync {
@@ -294,10 +272,7 @@ fn idempotent(r: banlieue_libvirt::Result<()>) -> Result<()> {
 }
 
 #[async_trait]
-impl<S> LibvirtMachineClient for SessionMachineClient<S>
-where
-    S: AsyncRead + AsyncWrite + Unpin + Send,
-{
+impl<S: Io + Send> LibvirtMachineClient for SessionMachineClient<S> {
     async fn lookup_pool(&mut self, name: &str) -> Result<Option<StoragePool>> {
         optional(storage_pool_lookup_by_name(&mut self.session, name).await)
     }
