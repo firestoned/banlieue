@@ -321,3 +321,21 @@ flowchart TD
 
 <sub>Source: flow `flow-create-virtualmachine-shared-provider` in `architecture.json`.</sub>
 
+
+## Give a Cloud Hypervisor guest a host PCI device
+
+ADR-0136, PROPOSED. A VMClass (or a CloudHypervisorMachineTemplate) names a device class; the host decides which device, root grants the guest's uid exactly that device's IOMMU group, and the sandboxed VMM attaches it.
+
+```mermaid
+flowchart TD
+    t1["1. The provider publishes each host device class's total and free count in its failure domain's capacity, and publishes gpuPassthrough only when a declared class passes the host checks."]
+    t2["2. banlieue-controller resolves the VMClass's abstract device class through Provider.spec.capabilities.deviceClasses, places the VM only where that class has a free device after in-flight VMs (a domain publishing no device capacity never qualifies), and applies a CloudHypervisorMachine naming the host class in spec.devices. A Cluster API machine names it directly and skips this step."]
+    t3["3. The provider, under one host-wide assignment lock, picks the lowest device of the class that no counted machine has reserved (this host's machines in every namespace it serves), checks the class's namespaceSelector and maxPerNamespace, re-checks the device, and reserves it in status.devices with a resourceVersion precondition; with none free the machine waits, DevicesAssigned=False/NoFreeDevice, and is re-queued when a device is released."]
+    t4["4. The provider starts banlieue-vfio@<uid>; root re-validates the request and makes /dev/vfio/<group> the guest uid's."]
+    t5["5. The provider starts banlieue-ch@<uid> and creates the VM with the device, through a symlink layout the grant created in a root-owned directory, which lets the pinned VMM's Landlock rule find the group (cloud-hypervisor#9399)."]
+    t6["6. The VMM opens the container and its group under Landlock and attaches the function; the guest's driver sees the device."]
+    t1 --> t2 --> t3 --> t4 --> t5 --> t6
+```
+
+<sub>Source: flow `flow-assign-pci-device-cloud-hypervisor` in `architecture.json`.</sub>
+

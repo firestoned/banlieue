@@ -119,6 +119,53 @@ audit found guides and ADR metadata that contradicted the code.
 - [ ] Config change only
 - [ ] Documentation only
 
+## [2026-11-17 10:00] - ADR-0136 (Proposed): revised after review
+
+**Author:** Daniel Guns
+
+### Changed
+- `docs/adr/0136-cloud-hypervisor-guests-get-whole-pci-devices-through-vfio.md`:
+  - Decision 5: the root grant takes no `EnvironmentFile=` and no `env =`
+    arguments; it reads the provider's request as data (`O_NOFOLLOW`,
+    owner check, strict parse). `RemainAfterExit=yes`; `vfio-release`
+    reads only root's config. The unit's hardening is listed.
+  - Decision 2: preflight refuses `pcie_acs_override`, unsafe interrupts,
+    any group node state but root's `0600` or a guest's `0600` (a udev
+    `root:kvm 0660` rule, libvirt), and a device class without a guests
+    slice memory ceiling.
+  - Decision 1: access is per IOMMU group, said plainly.
+  - Decision 3: `deviceClasses[].namespaceSelector` and `maxPerNamespace`.
+  - Decision 6: the host-wide bound on pinned memory is the root-set slice
+    ceiling, not the provider-set `MemoryMax`.
+  - Decision 7: the symlink layout lives in a root-owned directory the
+    grant creates, not the guest's run directory; milestone 2 first boots
+    it on the pinned v53.0, else the pin moves to a build with
+    cloud-hypervisor#9405.
+  - Decision 8: `status.devices` is the record (node ownership is lost at
+    reboot); serialised assignment; `DevicesAssigned=True` only after the
+    grant; re-grant on every start; uids not reused while holding a group;
+    orphan release only from a synced list with the VMM inactive; waiters
+    re-queued.
+  - Decision 9: device capacity is checked for new placements only, so a
+    placed VM is not recreated in a loop.
+- `docs/architecture/calm/architecture.json`: the grant, device,
+  relationships, controls and assignment flow follow the ADR;
+  `make calm-validate` clean, `docs/src/architecture/{system,flows}.md`
+  regenerated.
+- `.github/community/21-pci-passthrough.md`: phase B row.
+
+### Why
+Renumbered ADR-0135 to ADR-0136: main took 0135 for claim selection
+strategies. Review of the Proposed ADR found a root code-execution path through the
+grant's environment file, unsafe orphan release, and gaps in isolation,
+exclusivity and tenant limits.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
 ## [2026-11-17 09:30] - A claim chooses its member by strategy and host health (ADR-0135)
 
 **Author:** Erick Bourgeois
@@ -183,6 +230,43 @@ Placement-aware selection for availability (ADR-0135 Context).
   the claim subject admission policy, then roll the controller)
 - [ ] Config change only
 - [ ] Documentation only
+
+## [2026-11-16 20:00] - ADR-0136 (Proposed): Cloud Hypervisor guests get whole PCI devices through VFIO
+
+**Author:** Daniel Guns
+
+### Added
+- `docs/adr/0136-cloud-hypervisor-guests-get-whole-pci-devices-through-vfio.md`:
+  hosts declare device classes by PCI address; machines name a class
+  (`VMClass.spec.hardware.devices`, `CloudHypervisorMachine(Template).spec.devices`);
+  install, preflight and selftest check the IOMMU, the `vfio-pci` binding,
+  the group and the reset method; the provider publishes per-class device
+  capacity and `gpuPassthrough` only when served; a root oneshot,
+  `banlieue-vfio@<uid>`, re-validates the provider's request and gives the
+  guest's uid its one IOMMU group; `LimitMEMLOCK=infinity` bounded by
+  `MemoryMax`; a symlink layout so the pinned VMM's Landlock rule finds the
+  group (cloud-hypervisor#9399, fixed upstream by #9405, in no release yet);
+  the scheduler never assumes a device; moves of device guests refused;
+  Cluster API GPU pools use `maxSurge: 0`.
+- `.github/community/21-pci-passthrough.md`, `ROADMAPS.md` and
+  `.github/community/README.md`: roadmap 21, not started.
+- `docs/architecture/calm/architecture.json`: the proposed grant
+  (`service-vfio-grant`), the passed-through device, two relationships and
+  `flow-assign-pci-device-cloud-hypervisor`; `make calm-validate` clean,
+  `docs/src/architecture/{system,flows}.md` regenerated.
+- `docs/src/security/threat-model.md`: header records ADR-0136 as Proposed
+  and outside this pass.
+
+### Why
+Issue #190: GPU worker nodes as Cloud Hypervisor guests, from a
+`VirtualMachine` or a Cluster API `MachineDeployment`. ADR first, as with
+ADR-0129; implementation follows.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
 
 ## [2026-11-16 20:00] - A shared provider serves tenant namespaces and keeps the credentials, for every provider (ADR-0133, ADR-0134)
 
