@@ -188,4 +188,192 @@ mod tests {
             }
         }
     }
+    // ------------------------------------- the host config install keeps
+
+    /// A host config as `install` wrote it, then edited by its admin: the
+    /// storage moved to `/srv/banlieue/ch`, a second bridge, a registry.
+    const KEPT: &str = r#"
+[provider]
+name = "baz"
+namespace = "platform"
+kubeconfig = "/etc/banlieue/credentials/kubeconfig"
+
+[vmm]
+binary = "/usr/local/bin/cloud-hypervisor"
+version = "v53.0"
+firmware = "/opt/banlieue/firmware/ch-97eeb7b09/CLOUDHV.fd"
+
+[paths]
+run_root = "/run/banlieue/ch"
+state_root = "/var/lib/banlieue"
+
+[guests]
+uid_base = 3000000
+uid_count = 512
+
+[registry]
+repository = "registry.internal:5000/banlieue/images"
+plain_http = true
+keep_unreferenced = 2
+
+[storage_classes]
+default = "/srv/banlieue/ch"
+fast = "/data/banlieue/ch"
+
+[network_classes]
+default = "virbr0"
+lan = "br0"
+"#;
+
+    /// The case found live: `/home` has the most free space, so the probe would
+    /// pick `/home/banlieue/ch`, while the config `install` keeps says
+    /// `/srv/banlieue/ch`.
+    fn kept_host() -> FakeHost {
+        let h = FakeHost::debian();
+        h.put_dir("/home");
+        h.env.lock().unwrap().free.insert("/home".into(), 900 << 30);
+        h.put_file(crate::paths::HOST_CONFIG, KEPT.as_bytes(), Kind::File);
+        h
+    }
+
+    /// A re-run without flags renders units from the config it keeps, not
+    /// from a fresh guess, so `ReadWritePaths=` names the real storage.
+    #[test]
+    fn a_kept_host_config_supplies_every_setting_it_records() {
+        let h = kept_host();
+        assert_eq!(default_storage(&h), PathBuf::from("/home/banlieue/ch"));
+        let s = resolve(&args(&[]), &h).unwrap();
+        assert_eq!(s.provider_name, "baz");
+        assert_eq!(s.namespace, "platform");
+        assert_eq!(
+            s.storage,
+            vec![
+                ("default".into(), PathBuf::from("/srv/banlieue/ch")),
+                ("fast".into(), PathBuf::from("/data/banlieue/ch")),
+            ]
+        );
+        assert_eq!(
+            s.network,
+            vec![
+                ("default".into(), "virbr0".into()),
+                ("lan".into(), "br0".into())
+            ]
+        );
+        assert_eq!((s.uid_base, s.uid_count), (3_000_000, 512));
+        assert_eq!(
+            s.registry,
+            Some(Registry {
+                repository: "registry.internal:5000/banlieue/images".into(),
+                plain_http: true,
+                keep_unreferenced: 2,
+            })
+        );
+    }
+
+    /// Flags that say what the config says are accepted, in any order.
+    #[test]
+    fn flags_that_agree_with_the_kept_config_are_accepted() {
+        let h = kept_host();
+        let s = resolve(
+            &args(&[
+                "--provider-name",
+                "baz",
+                "--provider-namespace",
+                "platform",
+                "--storage-class",
+                "fast=/data/banlieue/ch,default=/srv/banlieue/ch",
+                "--network-class",
+                "lan=br0",
+                "--network-class",
+                "default=virbr0",
+                "--guest-uid-base",
+                "3000000",
+                "--guest-uid-count",
+                "512",
+                "--registry-repository",
+                "registry.internal:5000/banlieue/images",
+                "--registry-plain-http",
+                "--registry-keep-unreferenced",
+                "2",
+            ]),
+            &h,
+        )
+        .unwrap();
+        // The kept order, not the order given: the same units either way.
+        assert_eq!(s, resolve(&args(&[]), &h).unwrap());
+    }
+
+    /// The config is kept, so a flag that contradicts it would render units
+    /// that disagree with what the provider reads: refused, naming the flag.
+    #[test]
+    fn a_flag_that_contradicts_the_kept_config_is_refused() {
+        let h = kept_host();
+        for (bad, flag) in [
+            (
+                &["--storage-class", "default=/home/banlieue/ch"][..],
+                "--storage-class",
+            ),
+            (
+                &["--storage-class", "default=/srv/banlieue/ch"],
+                "--storage-class",
+            ),
+            (&["--network-class", "default=virbr0"], "--network-class"),
+            (&["--provider-name", "bar"], "--provider-name"),
+            (
+                &["--provider-namespace", "banlieue-system"],
+                "--provider-namespace",
+            ),
+            (&["--guest-uid-base", "2000000"], "--guest-uid-base"),
+            (&["--guest-uid-count", "1024"], "--guest-uid-count"),
+            (
+                &[
+                    "--registry-repository",
+                    "registry.internal:5000/banlieue/images",
+                ],
+                "--registry-repository",
+            ),
+        ] {
+            match resolve(&args(bad), &h) {
+                Err(Error::Setting { name, why }) => {
+                    assert_eq!(name, flag, "{bad:?}");
+                    assert!(why.contains(crate::paths::HOST_CONFIG), "{why}");
+                    assert!(why.contains("--force"), "{why}");
+                }
+                other => panic!("{bad:?}: {other:?}"),
+            }
+        }
+    }
+
+    /// `--force` regenerates the config, so the flags and the probe decide
+    /// and the kept file is not consulted.
+    #[test]
+    fn a_fresh_resolve_ignores_the_kept_config() {
+        let h = kept_host();
+        let s = resolve_fresh(&args(&["--guest-uid-base", "2000000"]), &h).unwrap();
+        assert_eq!(s.provider_name, "bar");
+        assert_eq!(s.namespace, DEFAULT_NAMESPACE);
+        assert_eq!(
+            s.storage,
+            vec![("default".into(), PathBuf::from("/home/banlieue/ch"))]
+        );
+        assert_eq!(s.uid_base, DEFAULT_GUEST_UID_BASE);
+        assert!(s.registry.is_none());
+    }
+
+    /// A kept config that does not load would leave the units guessing:
+    /// refused, with the way out.
+    #[test]
+    fn a_kept_config_that_does_not_load_is_refused() {
+        let h = FakeHost::debian();
+        h.put_file(
+            crate::paths::HOST_CONFIG,
+            b"[provider]\nnope = 1\n",
+            Kind::File,
+        );
+        match resolve(&args(&[]), &h) {
+            Err(Error::KeptConfig(why)) => assert!(!why.is_empty()),
+            other => panic!("{other:?}"),
+        }
+        assert!(resolve_fresh(&args(&[]), &h).is_ok());
+    }
 }

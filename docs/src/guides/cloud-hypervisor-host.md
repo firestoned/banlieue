@@ -272,6 +272,15 @@ variable, so a cloud-init payload needs no file of its own
 | `--guest-cpus`, `--guest-cpu-weight`, `--guest-memory-max`, `--guest-tasks-max` | none (unbounded) | The budget all guests share on a host that runs other workloads: `banlieue-guests.slice` ([details](cloud-hypervisor-host-systemd.md#the-guests-slice)). |
 | `--allow-virtualized-host` | off | Lab use only: run on a host that is itself a VM. |
 
+On a host `install` has already prepared, `/etc/banlieue/cloud-hypervisor.toml`
+is kept (only `--force` regenerates it), so it decides the settings it
+records: the provider name and namespace, the storage and network classes,
+the guest uid range and the registry. Leave those flags out and the values
+come from the file; give one that says something else and `install` refuses,
+naming the flag, rather than render units that disagree with what the
+provider reads. The guests' slice budget is not in that file: pass its flags
+again on every run, or the slice loses its limits.
+
 By default the VMM is the release pinned in the binary, the one its client
 is written against (ADR-0061), downloaded from GitHub and checked against the
 sha256 compiled in.
@@ -1269,12 +1278,24 @@ restart `banlieue-provider-cloud-hypervisor.service` so the provider reads
 it. Run `selftest` with the same `--vmm-version`/`--firmware-tag` flags, so
 it checks the firmware you installed.
 
-Upgrading the provider itself is re-running `install` with the flags it
-was first run with, plus `--provider-binary <new build>`: it replaces
-`/usr/local/bin/banlieue` **and** the unit files, and restarts the provider
-when either changed. Guests keep running (`make ch-restart-e2e`). Replacing
-the binary by hand and restarting the unit keeps the old unit file, and with
-it the old sandbox.
+Upgrading the provider itself is re-running `install` with
+`--provider-binary <new build>`: it replaces `/usr/local/bin/banlieue`
+**and** the unit files, and restarts the provider when either changed.
+Guests keep running (`make ch-restart-e2e`). The settings the host config
+records come from it (see [Step 2](#step-2-settings)), so only the guests'
+slice flags need repeating. To change nothing but the provider, run the one
+stage, with `--dry-run` first:
+
+```sh
+sudo banlieue host cloud-hypervisor install --only provider \
+  --provider-binary ./banlieue --guest-memory-max 20G --dry-run
+```
+
+A full `install` also re-runs the VMM stage, which links the VMM release
+it is given (the pinned one by default) and names it in `[vmm]`: on a host
+running a VMM build of its own, pass `--vmm-version` for that build, or use
+`--only provider`. Replacing the binary by hand and restarting the unit
+keeps the old unit file, and with it the old sandbox.
 
 ---
 

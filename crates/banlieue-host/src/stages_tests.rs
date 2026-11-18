@@ -120,15 +120,17 @@ mod tests {
         h
     }
 
-    fn settings(h: &FakeHost) -> Settings {
-        let args = crate::settings::HostArgs {
-            provider_namespace: crate::settings::DEFAULT_NAMESPACE.into(),
-            guest_uid_base: crate::settings::DEFAULT_GUEST_UID_BASE,
-            guest_uid_count: TEST_UID_COUNT,
+    /// The flags every test installs with: few guest uids.
+    fn host_args() -> crate::settings::HostArgs {
+        crate::settings::HostArgs {
+            guest_uid_count: Some(TEST_UID_COUNT),
             registry_keep_unreferenced: crate::settings::DEFAULT_KEEP_UNREFERENCED,
             ..crate::settings::HostArgs::default()
-        };
-        resolve(&args, h).unwrap()
+        }
+    }
+
+    fn settings(h: &FakeHost) -> Settings {
+        resolve(&host_args(), h).unwrap()
     }
 
     fn opts() -> Options {
@@ -415,6 +417,52 @@ mod tests {
                 "second run changed the host: {c}"
             );
         }
+    }
+
+    /// The documented upgrade, `--only provider --provider-binary`, re-run
+    /// without the original flags on a host where the probe would now pick
+    /// other storage (found live: the units named `/home/banlieue/ch`, the
+    /// provider's sandbox mounted the real storage read-only, and every
+    /// machine failed with EROFS). The kept config decides, so the units
+    /// still name the storage it names and the re-run changes nothing.
+    #[tokio::test]
+    async fn a_provider_only_rerun_follows_the_kept_config() {
+        let h = fake_host();
+        let first = settings(&h);
+        install_all(&h, &first, &opts()).await.unwrap();
+        let unit = format!("/etc/systemd/system/{PROVIDER_UNIT}");
+        let before = String::from_utf8(h.read(Path::new(&unit)).unwrap()).unwrap();
+        assert!(before.contains("/srv/banlieue/ch"), "{before}");
+
+        h.put_dir("/home");
+        h.env.lock().unwrap().free.insert("/home".into(), 900 << 30);
+        assert_eq!(
+            crate::settings::default_storage(&h),
+            PathBuf::from("/home/banlieue/ch")
+        );
+        let again = resolve(&crate::settings::HostArgs::default(), &h).unwrap();
+        assert_eq!(again.storage, first.storage);
+        assert_eq!(again.network, first.network);
+        assert_eq!(
+            (again.uid_base, again.uid_count),
+            (first.uid_base, first.uid_count)
+        );
+
+        let snapshot = without_serial(h.snapshot());
+        let ran = h.commands().len();
+        let only = Options {
+            only: Some(Stage::Provider),
+            ..Options::default()
+        };
+        install_all(&h, &again, &only).await.unwrap();
+        assert_eq!(without_serial(h.snapshot()), snapshot);
+        assert!(
+            h.commands()
+                .split_off(ran)
+                .iter()
+                .all(|c| !c.starts_with("systemctl restart")),
+            "an unchanged unit restarted the provider"
+        );
     }
 
     /// A host installed before the provider stopped needing `/dev/kvm`

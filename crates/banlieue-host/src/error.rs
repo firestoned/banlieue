@@ -61,6 +61,13 @@ pub enum Error {
     /// The rendered host config does not parse as the provider would.
     #[error("the host config this would write does not load: {0}")]
     Config(String),
+    /// The host config `install` keeps is there but does not load, so the
+    /// settings it records cannot be honoured.
+    #[error(
+        "the kept host config does not load: {0}; fix it, or pass --force to regenerate it \
+         (which also rotates the EK CA)"
+    )]
+    KeptConfig(String),
     /// The verb needs root.
     #[error("{0} must run as root")]
     NotRoot(&'static str),
