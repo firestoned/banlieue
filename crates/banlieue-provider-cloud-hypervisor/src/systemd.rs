@@ -204,6 +204,9 @@ trait Slice {
     #[zbus(property, name = "AllowedCPUs")]
     fn allowed_cpus(&self) -> zbus::Result<Vec<u8>>;
 
+    #[zbus(property, name = "CPUQuotaPerSecUSec")]
+    fn cpu_quota_per_sec_usec(&self) -> zbus::Result<u64>;
+
     #[zbus(property, name = "MemoryCurrent")]
     fn memory_current(&self) -> zbus::Result<u64>;
 }
@@ -214,6 +217,9 @@ pub const GUEST_SLICE: &str = "banlieue-guests.slice";
 pub const VMS_SLICE: &str = "banlieue.slice";
 /// Bytes in one MiB.
 const BYTES_PER_MIB: u64 = 1024 * 1024;
+/// Microseconds of CPU time one CPU provides each second
+/// (`CPUQuotaPerSecUSec` of `CPUQuota=100%`).
+const USEC_PER_CPU_SECOND: u64 = 1_000_000;
 
 /// A slice's `MemoryMax`, MiB rounded down; `None` for systemd's
 /// "infinity" (`u64::MAX`).
@@ -239,6 +245,28 @@ pub fn memory_headroom_mib(max_bytes: u64, current_bytes: u64) -> Option<u64> {
 pub fn allowed_cpu_count(mask: &[u8]) -> Option<u32> {
     let count: u32 = mask.iter().map(|b| b.count_ones()).sum();
     (count > 0).then_some(count)
+}
+
+/// The CPUs a slice's `CPUQuota=` allows, from `CPUQuotaPerSecUSec`: whole
+/// CPUs, rounded down; `None` for systemd's "infinity" (`u64::MAX`), no quota
+/// (ADR-0139).
+#[must_use]
+pub fn cpu_quota_cpus(usec_per_sec: u64) -> Option<u32> {
+    if usec_per_sec == u64::MAX {
+        return None;
+    }
+    u32::try_from(usec_per_sec / USEC_PER_CPU_SECOND).ok()
+}
+
+/// A slice's CPU limit: the tighter of its `AllowedCPUs` count and its
+/// `CPUQuota=`. A cgroup v1 host cannot pin cpusets, so the quota is the
+/// whole budget there (ADR-0138 Decision 4, ADR-0139 Decision 3).
+#[must_use]
+pub fn cpu_limit(allowed: Option<u32>, quota: Option<u32>) -> Option<u32> {
+    match (allowed, quota) {
+        (Some(a), Some(q)) => Some(a.min(q)),
+        (a, q) => a.or(q),
+    }
 }
 
 /// The guests' budget: the tighter of their slice and its parent, each a
@@ -314,7 +342,8 @@ impl Systemd {
         Ok(Self { conn, manager })
     }
 
-    /// `(MemoryMax MiB, AllowedCPUs count)` of the slice `name`, from its
+    /// `(MemoryMax MiB, CPU limit)` of the slice `name`, the CPU limit being
+    /// the tighter of `AllowedCPUs` and `CPUQuota=`, from its
     /// unit properties, which include `systemctl set-property` drop-ins and
     /// are there while the slice is inactive.
     ///
@@ -325,7 +354,10 @@ impl Systemd {
         let slice = SliceProxy::builder(&self.conn).path(path).build().await?;
         Ok((
             memory_max_mib(slice.memory_max().await?),
-            allowed_cpu_count(&slice.allowed_cpus().await?),
+            cpu_limit(
+                allowed_cpu_count(&slice.allowed_cpus().await?),
+                cpu_quota_cpus(slice.cpu_quota_per_sec_usec().await?),
+            ),
         ))
     }
 

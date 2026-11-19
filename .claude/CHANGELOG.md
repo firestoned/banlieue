@@ -1,5 +1,27 @@
 # Changelog
 
+## [2026-11-18 20:45] - Provider capacity honours `CPUQuota=` (ADR-0138 Decision 4, ADR-0139 Decision 3)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `crates/banlieue-provider-cloud-hypervisor/src/systemd.rs`: the slice reader
+  now reads `CPUQuotaPerSecUSec` as well as `AllowedCPUs`; the CPU limit is the
+  tighter of the two (`cpu_quota_cpus`, `cpu_limit`; tests in `systemd_tests.rs`).
+  `SliceBudget::allowed_cpus` (`provider.rs`) documents that meaning.
+
+### Why
+On a cgroup v1 host the only CPU budget is `CPUQuota=` (`--guest-cpu-quota`,
+ADR-0139), but the provider read only `AllowedCPUs`, found it empty and
+published the whole host (96 CPUs) for a 48 CPU slice. With a Firecracker
+Provider on the same host that is one machine counted twice, the very double
+count ADR-0138 Decision 4 exists to prevent. Found registering a RHEL 8.10
+cgroup v1 host with a 4800% quota per VMM.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires provider rollout on cgroup v1 hosts (capacity drops to the quota)
+
 ## [2026-11-18 08:00] - CH host install honours the host config it keeps (ADR-0067 amended)
 
 **Author:** Erick Bourgeois
@@ -50,6 +72,7 @@ own storage.
 - [ ] Breaking change (a re-run with a flag that contradicts the kept config
   now fails instead of silently rendering mismatched units)
 - [ ] Requires cluster rollout
+
 - [ ] Config change only
 - [ ] Documentation only
 

@@ -109,7 +109,8 @@ pub struct HostFacts {
 /// `None`: that dimension is unbounded.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SliceBudget {
-    /// CPUs in `AllowedCPUs`.
+    /// CPUs the guests may use: the tighter of `AllowedCPUs` and `CPUQuota=`
+    /// (the quota is the only CPU budget on a cgroup v1 host, ADR-0139).
     pub allowed_cpus: Option<u32>,
     /// `MemoryMax`, MiB.
     pub memory_max_mib: Option<u64>,
