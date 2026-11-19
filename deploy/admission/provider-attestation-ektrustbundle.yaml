@@ -24,11 +24,14 @@ spec:
         apiVersions: ["v1alpha1"]
         operations: ["CREATE", "UPDATE"]
         resources: ["providers"]
-  # Only evaluate when an attestation block is present; absence is valid (a
-  # Provider running no tpmEnabled classes has no reason to set one).
+  # Only evaluate when the bundle itself is present; absence is valid. A Provider
+  # running no tpmEnabled classes has no reason to set one, and a firecracker
+  # Provider carries spec.attestation.hostCa with no EK bundle (ADR-0143).
+  # Guarding on the attestation block alone made a hostCa-only Provider hit a
+  # "no such key" evaluation error, which failurePolicy: Fail turns into a denial.
   matchConditions:
-    - name: has-attestation
-      expression: "has(object.spec.attestation)"
+    - name: has-ek-trust-bundle
+      expression: "has(object.spec.attestation) && has(object.spec.attestation.ekTrustBundle)"
   validations:
     # Count the set sources; exactly one is required. CEL has() is true only when
     # the optional field is present, so this is a clean 0/1/many check.

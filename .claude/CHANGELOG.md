@@ -1,5 +1,50 @@
 # Changelog
 
+## [2026-11-19 14:00] - ekTrustBundle admission policy no longer denies a hostCa-only Provider
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `deploy/admission/provider-attestation-ektrustbundle.yaml`: the matchCondition now requires
+  `spec.attestation.ekTrustBundle` to be present, not only `spec.attestation`. With the
+  ADR-0143 API change a firecracker Provider has `attestation.hostCa` and no EK bundle; the
+  old condition made the validation read a missing key, and `failurePolicy: Fail` denied it.
+
+### Added
+- `scripts/test-provider-ektrustbundle-policy.py` and `make ektrustbundle-policy-test`: 11
+  fixtures, an evaluation error counts as a denial. Red before the fix (9 of 11), green after;
+  `--no-policy` is 7 of 11.
+
+### Why
+This must be deployed before the Provider API change (hostCa, optional ekTrustBundle), or a
+firecracker Provider cannot be created.
+
+### Impact
+- [ ] Requires cluster rollout (apply the policy before the API change)
+
+## [2026-11-19 12:00] - Admission policy for Provider.spec.attestation.hostCa (ADR-0143 Decision 2)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `deploy/admission/provider-attestation-hostca.yaml`: ValidatingAdmissionPolicy and
+  binding (Deny, failurePolicy Fail) on Provider create and update. When
+  `spec.attestation.hostCa` is set: exactly one of inline / configMapRef / secretRef;
+  an inline PEM has exactly one `-----BEGIN CERTIFICATE-----` block and no `PRIVATE KEY`
+  armor of any kind (PKCS#8, RSA, EC, encrypted, OpenSSH, PGP). CEL string functions only.
+- `scripts/test-provider-hostca-policy.py` and `make hostca-policy-test`: evaluates the
+  policy's CEL with cel-python over 18 hand-written fixtures (valid and invalid), plus a
+  structural check of the binding. `--no-policy` is the red run.
+- `deploy/admission/README.md` and `docs/src/guides/core-controller.md`: policy rows.
+
+### Why
+hostCa is one admin-asserted certificate that banlieue never verifies (ADR-0049 Decision 2),
+so admission is the only check. The policy is written against the field path before the
+API crate carries it; the fixtures are hand-written objects, not validated against the CRD.
+
+### Impact
+- [ ] Config change only (opt-in policy, applies with the rest of deploy/admission/)
+
 ## [2026-11-19 09:00] - ADR-0144 accepted: sandbox segment and two egress gateway VMs on a Cloud Hypervisor host
 
 **Author:** Erick Bourgeois

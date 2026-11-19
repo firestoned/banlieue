@@ -211,6 +211,7 @@ CEL, with **no webhook to run or certificates to rotate** (Kubernetes 1.30+):
 | `banlieue-vmimage-import-source` | `VMImage.spec.sources[].importFrom` must be digest-pinned (`@sha256:`) and from an allow-listed registry (CHAIN-003). |
 | `banlieue-virtualmachine-userdata-authorization` | The principal creating/updating a `VirtualMachine` must be authorized to `get` the Secret or ConfigMap named by `spec.userData` (ADR-0042). |
 | `banlieue-provider-attestation-ektrustbundle` | `Provider.spec.attestation.ekTrustBundle` names exactly one of `inline` / `configMapRef` / `secretRef` (ADR-0049). |
+| `banlieue-provider-attestation-hostca` | `Provider.spec.attestation.hostCa` names exactly one of `inline` / `configMapRef` / `secretRef`; inline holds exactly one certificate and no private key (ADR-0143). |
 | `banlieue-provider-namespace-selector-authorization` | Setting `Provider.spec.namespaceSelector` needs `update` on `providers/namespaceselector` (ADR-0133). |
 | `banlieue-machine-provider-ref` | Only the controller sets or changes a machine's `spec.providerRef.namespace` (ADR-0133). Required when shared providers serve tenant namespaces. |
 | `banlieue-virtualmachineclaim-subject-authorization` | A claim's `spec.subject.id` must equal the authenticated username unless the requester is a declared broker (ADR-0047). Edit its `issuers` list before applying. |

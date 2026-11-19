@@ -1,0 +1,76 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# A Provider's spec.attestation.hostCa is the one certificate a firecracker
+# host's guests are attested against (ADR-0143 Decision 2). It is a value-or-
+# source, the same CABundleSource shape as ekTrustBundle (ADR-0049 Decision 10),
+# with two extra rules, both about what an administrator can get wrong by hand:
+#
+#   1. exactly one of `inline`, `configMapRef`, `secretRef` is set;
+#   2. when the source is `inline`, the PEM holds exactly ONE certificate block
+#      and no private key of any kind. A bundle of several certificates would
+#      widen the anchor silently; a private key pasted by mistake would publish
+#      a secret in a Provider, which is world-readable to every principal that
+#      can list Providers.
+#
+# banlieue never resolves or verifies against this field (ADR-0049 Decision 2),
+# so admission is the only banlieue-side check it will ever meet. The content of
+# a configMapRef / secretRef cannot be inspected here; those are the broker's to
+# validate. Enforced in the API server via CEL (no webhook), string functions
+# only. Requires Kubernetes 1.30+ (ValidatingAdmissionPolicy GA).
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: banlieue-provider-attestation-hostca
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: admission
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["banlieue.io"]
+        apiVersions: ["v1alpha1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["providers"]
+  # Absence is valid: only a firecracker-class Provider has a host CA.
+  matchConditions:
+    - name: has-hostca
+      expression: "has(object.spec.attestation) && has(object.spec.attestation.hostCa)"
+  validations:
+    # 0, 1 or many sources: exactly one is required.
+    - expression: >-
+        [has(object.spec.attestation.hostCa.inline),
+         has(object.spec.attestation.hostCa.configMapRef),
+         has(object.spec.attestation.hostCa.secretRef)].filter(x, x).size() == 1
+      messageExpression: >-
+        'spec.attestation.hostCa must set exactly one of inline, configMapRef, secretRef.'
+      reason: Invalid
+    # An inline PEM carries one certificate. Present once; and not twice (a
+    # second BEGIN after the first; RE2 has no lookahead, so say it as a pair).
+    - expression: >-
+        !has(object.spec.attestation.hostCa.inline) ||
+        (object.spec.attestation.hostCa.inline.contains('-----BEGIN CERTIFICATE-----') &&
+         !object.spec.attestation.hostCa.inline.matches('(?s)-----BEGIN CERTIFICATE-----.*-----BEGIN CERTIFICATE-----'))
+      messageExpression: >-
+        'spec.attestation.hostCa.inline must contain exactly one certificate (one -----BEGIN CERTIFICATE----- block).'
+      reason: Invalid
+    # No private key of any kind. "PRIVATE KEY" covers PKCS#8 (plain and
+    # ENCRYPTED), RSA, EC, DSA, OPENSSH and the PGP "PRIVATE KEY BLOCK" armor.
+    - expression: >-
+        !has(object.spec.attestation.hostCa.inline) ||
+        !object.spec.attestation.hostCa.inline.contains('PRIVATE KEY')
+      message: >-
+        spec.attestation.hostCa.inline must not contain a private key; it is the host's public CA certificate (ca.crt) only.
+      reason: Invalid
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: banlieue-provider-attestation-hostca
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: admission
+spec:
+  policyName: banlieue-provider-attestation-hostca
+  validationActions: ["Deny"]

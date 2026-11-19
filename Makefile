@@ -165,7 +165,7 @@ help: ## Show this help
         release-manifests install-yaml crds-yaml admission-policies-yaml network-policies-yaml \
         kind-capi-create kind-capi-delete kind-capi-init kind-e2e-capi kind-e2e-capi-logs \
         kind-e2e-capi-bootstrap kind-e2e-capi-bootstrap-run \
-        claim-live-test claim-policy-live-test move-fields-policy-live-test provider-ref-policy-live-test address-live-test pool-claim-e2e vsphere-pool-claim-e2e ch-e2e ch-vtpm-e2e ch-deferred-e2e ch-restart-e2e ch-host-install-test ch-polkit-test provider-bench ch-pool-timings \
+        claim-live-test claim-policy-live-test move-fields-policy-live-test provider-ref-policy-live-test address-live-test pool-claim-e2e vsphere-pool-claim-e2e ch-e2e ch-vtpm-e2e ch-deferred-e2e ch-restart-e2e ch-host-install-test ch-polkit-test hostca-policy-test ektrustbundle-policy-test provider-bench ch-pool-timings \
         dev-oidc-up dev-oidc-attach dev-oidc-github-creds dev-oidc-login \
         dev-oidc-try-claim dev-oidc-status dev-oidc-down \
         dev-oidc-k0s-up dev-oidc-k0s-login dev-oidc-k0s-grant \
@@ -722,6 +722,12 @@ ch-host-install-test: ## Cloud Hypervisor: `banlieue host cloud-hypervisor insta
 
 ch-polkit-test: ## Cloud Hypervisor: run the host polkit rule against its allow/deny cases (needs node)
 	node scripts/test-cloud-hypervisor-polkit.js
+
+hostca-policy-test: ## Evaluate the Provider hostCa admission policy (ADR-0143) offline as CEL (needs: pip install cel-python pyyaml)
+	python3 scripts/test-provider-hostca-policy.py
+
+ektrustbundle-policy-test: ## Evaluate the Provider ekTrustBundle admission policy offline as CEL, incl. a hostCa-only Provider (needs: pip install cel-python pyyaml)
+	python3 scripts/test-provider-ektrustbundle-policy.py
 
 ch-e2e: ## Cloud Hypervisor: VM -> guest with an address -> delete leaves nothing on the host (ON THE HOST, never CI)
 	@# Runs on the Cloud Hypervisor host itself: the unit, the tap and the
