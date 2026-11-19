@@ -1,5 +1,32 @@
 # Changelog
 
+## [2026-11-19 17:00] - Roadmaps 22 to 25 reserve ADR-0158 to ADR-0169
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/community/22-public-cloud-foundation.md`, `23-azure-provider.md`,
+  `24-ec2-provider.md`, `25-lambda-microvms-provider.md`, `ROADMAPS.md` rows 22
+  to 25: every reserved ADR number moved up by 13. Old to new: 0145 to 0158,
+  0146 to 0159, 0147 to 0160, 0148 to 0161, 0149 to 0162, 0150 to 0163 (roadmap
+  22); 0151 to 0164, 0152 to 0165 (roadmap 23); 0153 to 0166, 0154 to 0167
+  (roadmap 24); 0155 to 0168, 0156 to 0169 (roadmap 25). Roadmap 22 records the
+  renumbering beside its reservation.
+- `docs/adr/0157-*.md`: its note on the reserved block now says where the block
+  went.
+
+### Why
+ADR-0145 (the controller progress audit, #215) and ADR-0157 (credential
+references, #216) landed inside the block roadmaps 22 to 25 had reserved.
+Nothing implements the cloud ADRs yet, so only documents move. Earlier entries
+in this file keep the numbers that were true when they were written.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
 ## [2026-11-19 15:00] - attestationSubject is mirrored machine, VM, claim; ADR-0143 Decision 7
 
 **Author:** Erick Bourgeois

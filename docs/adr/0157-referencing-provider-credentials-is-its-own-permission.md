@@ -14,7 +14,8 @@ SPDX-License-Identifier: Apache-2.0
   over mutual TLS, the client certificate as the credential);
   [ADR-0133](0133-shared-provider-serves-tenant-namespaces.md) (credentials stay in the
   provider's home namespace). faubourg ADR-0018 (libvirt zones), whose live test found this.
-  ADR-0145 to ADR-0156 are reserved by roadmaps 22 to 25.
+  ADR-0146 to ADR-0156 were held for roadmaps 22 to 25 when this was written; that
+  block has since moved to ADR-0158 to ADR-0169.
 
 ## Context
 

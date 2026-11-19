@@ -24,9 +24,11 @@
 > **Status (2026-11-19): not started.** Nothing in the tree yet.
 
 Baseline when written: `dca5f45` (2026-11-19). ADRs 0001 to 0144 exist or are
-reserved. **Roadmaps 22 to 25 together reserve ADR-0145 to ADR-0156**; this
-one takes ADR-0145 to ADR-0150. Renumber at landing if anything else claims
-them first.
+reserved. **Roadmaps 22 to 25 together reserve ADR-0158 to ADR-0169**; this
+one takes ADR-0158 to ADR-0163. Renumber at landing if anything else claims
+them first. *Renumbered 2026-11-19:* the block was ADR-0145 to ADR-0156, until
+ADR-0145 (the controller progress audit) and ADR-0157 (credential references)
+landed first; every number in roadmaps 22 to 25 moved up by 13.
 
 ## Why public clouds, and why in banlieue
 
@@ -47,7 +49,7 @@ cloud networking.
 
 ## Decisions this roadmap makes (one ADR each)
 
-### ADR-0145: shape of a cloud provider class
+### ADR-0158: shape of a cloud provider class
 
 - **Deployment `Managed`**, in the cluster, like vSphere and Proxmox
   (ADR-0003, ADR-0012): one provider workload per `Provider`, its own
@@ -72,7 +74,7 @@ cloud networking.
   after a grace period, logging each deletion. This is a reconcile over a
   listed snapshot, not a poll in the reconcile path.
 
-### ADR-0146: credentials by workload identity federation
+### ADR-0159: credentials by workload identity federation
 
 The provider's ServiceAccount token is the only credential. AWS trusts it
 through an IAM OIDC identity provider and `AssumeRoleWithWebIdentity`;
@@ -95,7 +97,7 @@ Secret read from the provider's Role.
   proves unworkable somewhere specific; the default and the examples use
   federation.
 
-### ADR-0147: a `VMClass` becomes an instance size by explicit mapping
+### ADR-0160: a `VMClass` becomes an instance size by explicit mapping
 
 A cloud does not take "4 vCPU, 16 GiB"; it takes `m7i.xlarge` or
 `Standard_D4s_v5`. The admin maps each `VMClass` to an instance size per
@@ -106,7 +108,7 @@ schedulable on that `Provider`, and the scheduler says so. Storage classes
 map to disk SKUs (`gp3`, `io2`; `Premium_LRS`, `PremiumV2_LRS`); network
 classes map to subnet and security group (or NSG) identifiers per zone.
 
-### ADR-0148: capacity on a cloud is quota, not measured hardware
+### ADR-0161: capacity on a cloud is quota, not measured hardware
 
 ADR-0128 has every provider publish measured capacity. A cloud has no host
 to measure. The provider publishes **quota headroom** (vCPU quota per
@@ -118,7 +120,7 @@ that size in that zone right now (`InsufficientInstanceCapacity`,
 in another zone of the same `Provider` with back-off, and surfaced as a
 condition, never a silent spin.
 
-### ADR-0149: publishing a `VMImage` into a cloud
+### ADR-0162: publishing a `VMImage` into a cloud
 
 This is the centre of the roadmap. Today `banlieue-imagebuilder` produces a
 raw disk (ADR-0010) and an OCI artifact for host-resident providers
@@ -164,7 +166,7 @@ catalogue. The ADR decides:
 whichever, roadmap 15's first-party VMDK writer and this VHD writer should
 share one disk-format module rather than grow two.
 
-### ADR-0150: `GuestReady` on a cloud
+### ADR-0163: `GuestReady` on a cloud
 
 ADR-0043 gives `GuestReady` one condition and a per-backend transport
 (guestinfo on vSphere, the guest agent on libvirt, vsock on Cloud
@@ -205,13 +207,13 @@ candidate transports, for the ADR to choose between with measurements:
 
 | Phase | What | Status |
 | --- | --- | --- |
-| 0 | The phase 0 questions above, answered in ADR-0145 and ADR-0146 | ⛔ |
+| 0 | The phase 0 questions above, answered in ADR-0158 and ADR-0159 | ⛔ |
 | A | API: cloud `Provider` connection (account or subscription, region, identity), instance-size mapping, zone failure domains, quota on status; `VMImage` publish targets and per-Provider publication status; `regen-crds`, examples | ⛔ |
 | B | Operator renders the projected token with the cloud audience; federation guide; least-privilege policy documents in `deploy/` for each provider and for the publisher | ⛔ |
-| C | Shared cloud crate (name decided in ADR-0145): ownership tags, adopt-or-create, orphan sweep, quota-to-capacity, zone retry on capacity errors | ⛔ |
+| C | Shared cloud crate (name decided in ADR-0158): ownership tags, adopt-or-create, orphan sweep, quota-to-capacity, zone retry on capacity errors | ⛔ |
 | D | Image publish Job: EC2 (EBS direct, AMI), Azure (VHD writer, direct upload, gallery version), digest recorded, deletion lifecycle; Lambda MicroVM publish lands in roadmap 25 | ⛔ |
-| E | `GuestReady` transport chosen and implemented (ADR-0150), used by roadmaps 23 and 24 | ⛔ |
-| F | Docs: provider comparison gains cloud columns; threat-model full pass for ADR-0145 to ADR-0150 | ⛔ |
+| E | `GuestReady` transport chosen and implemented (ADR-0163), used by roadmaps 23 and 24 | ⛔ |
+| F | Docs: provider comparison gains cloud columns; threat-model full pass for ADR-0158 to ADR-0163 | ⛔ |
 
 ## Threat model, in advance
 
@@ -241,7 +243,7 @@ share).
 
 - [ ] Stop condition above, verified live against a real AWS account and a
       real Azure subscription.
-- [ ] ADR-0145 to ADR-0150 accepted, each with its threat-model pass.
+- [ ] ADR-0158 to ADR-0163 accepted, each with its threat-model pass.
 - [ ] No cloud key in any `Secret` in the shipped manifests or examples.
 - [ ] `cargo deny` clean with whatever the phase 0 SDK decision added.
 - [ ] `ROADMAPS.md` updated.
