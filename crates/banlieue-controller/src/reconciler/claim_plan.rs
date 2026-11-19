@@ -15,7 +15,8 @@ use std::fmt;
 
 use banlieue_api::banlieue::{
     ANNOTATION_SUBJECT_ID, ANNOTATION_SUBJECT_ISSUER, ClaimSubject, LABEL_CLAIM, LABEL_POOL,
-    Provider, SelectionStrategy, VirtualMachine, VirtualMachineClaimSpec, pool_condition_reasons,
+    Provider, SelectionStrategy, VirtualMachine, VirtualMachineClaimSpec,
+    VirtualMachineClaimStatus, pool_condition_reasons,
 };
 use banlieue_api::common::{LabelSelector, MachineAddress};
 use k8s_openapi::jiff::Timestamp;
@@ -530,6 +531,33 @@ pub fn hold_message(existing: Option<&str>, member: &str) -> String {
     match existing {
         Some(msg) if msg == plain || msg.starts_with(&format!("{plain} ")) => msg.to_string(),
         _ => plain,
+    }
+}
+
+/// What a pass that finishes an earlier pass's bind (the member already
+/// labelled ours, ADR-0132 Decision 5) does with the claim's status, given a
+/// fresh read of the claim rather than the copy the pass was handed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FinishBind {
+    /// The earlier pass published its bind, with the message that names the
+    /// strategy and the domain (ADR-0135 Decision 6). Nothing is written:
+    /// the plain message this pass could write would erase that one.
+    AlreadyBound,
+    /// The earlier pass stopped between labelling the member and publishing
+    /// the bind. Publish it, saying only what this pass knows.
+    Publish,
+}
+
+/// `AlreadyBound` when `fresh` already names `member` as the bound one.
+#[must_use]
+pub fn finish_bind(fresh: Option<&VirtualMachineClaimStatus>, member: &str) -> FinishBind {
+    let published = fresh
+        .and_then(|s| s.virtual_machine_ref.as_ref())
+        .is_some_and(|r| r.name == member);
+    if published {
+        FinishBind::AlreadyBound
+    } else {
+        FinishBind::Publish
     }
 }
 
