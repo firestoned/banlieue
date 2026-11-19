@@ -1339,7 +1339,12 @@ jobs:
       - name: Install git-cliff
         run: make git-cliff-install
 
+      # cliff.toml's tag_pattern matches only vX.Y.Z, so a prerelease tag is
+      # invisible to `git-cliff --current`. A prerelease names its tag instead,
+      # and its notes cover everything since the last stable release.
       - name: Generate release notes
+        env:
+          TAG: ${{ github.event.release.prerelease && github.event.release.tag_name || '' }}
         run: make release-notes
 
       - name: Download all artifacts

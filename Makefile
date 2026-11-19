@@ -287,7 +287,9 @@ calm-diagrams: ## Render CALM Mermaid diagrams into $(CALM_DIAGRAMS_OUT)
 # Conventional Commits by cliff.toml (roadmap 12 §4.8). Regenerate it before
 # tagging, with TAG naming the release about to be cut so its entries move out
 # of "Unreleased". release-notes renders a single release for the GitHub
-# Release body.
+# Release body. A prerelease tag (vX.Y.Z-rc.N) never matches cliff.toml's
+# tag_pattern, so its notes need TAG set to it: they then cover everything
+# since the last stable release. CI does this for every prerelease.
 
 GIT_CLIFF ?= git-cliff
 RELEASE_NOTES ?= notes/RELEASE_NOTES.md

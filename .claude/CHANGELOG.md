@@ -1,5 +1,28 @@
 # Changelog
 
+## [2026-11-19 18:00] - A prerelease gets release notes
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `.github/workflows/build.yaml` (Upload Release Assets): a prerelease passes
+  its tag to `make release-notes` as `TAG`; a stable release passes nothing and
+  is unchanged.
+- `Makefile`: the release-changelog comment says why a prerelease needs `TAG`.
+
+### Why
+`v0.6.0-rc.1` failed at its last job with `No tag exists for the current
+commit`: `cliff.toml`'s `tag_pattern` matches only `vX.Y.Z`, so `git-cliff
+--current` cannot see an rc tag, and no assets were uploaded. Verified with
+git-cliff 2.14.2 on the rc tag (13 entries since v0.5.10) and on v0.5.10
+(unchanged).
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only (CI)
+- [ ] Documentation only
+
 ## [2026-11-19 17:00] - Roadmaps 22 to 25 reserve ADR-0158 to ADR-0169
 
 **Author:** Erick Bourgeois
