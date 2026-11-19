@@ -982,6 +982,36 @@
       "node-type": "system",
       "name": "Host PCI device passed through (VFIO)",
       "description": "PROPOSED (ADR-0136), not yet implemented. A whole PCI function, typically a GPU, that the host declares in a device class ([device_classes] in the host config, by PCI address), bound to vfio-pci at boot, alone among declared devices in its IOMMU group; the guest that holds it can reach its whole group. One guest holds it at a time: a reservation in the machine's status.devices is the record, the owner of /dev/vfio/<group> the host-side lock. The provider publishes each class's total and free count in its failure domain's capacity, counting this host's machines in every namespace it serves."
+    },
+    {
+      "unique-id": "network-ch-sandbox-bridge",
+      "node-type": "network",
+      "name": "Cloud Hypervisor sandbox bridge",
+      "description": "ACCEPTED (ADR-0144), not yet implemented. An internal bridge with no physical port and no uplink, created by the operator (ADR-0067 Decision 7). A network class declared isolate_ports = true in the host config puts every guest tap on it in kernel port isolation, so a sandbox reaches the gateways and nothing else on the segment. The host answers nothing on it."
+    },
+    {
+      "unique-id": "network-ch-uplink-bridge",
+      "node-type": "network",
+      "name": "Cloud Hypervisor uplink bridge",
+      "description": "ACCEPTED (ADR-0144), not yet implemented. A second internal bridge with no physical port. Only the egress gateways attach to it; the host masquerades its range out through the host's own address, so no additional routable address is put on the host."
+    },
+    {
+      "unique-id": "service-ch-egress-gateway",
+      "node-type": "service",
+      "name": "Egress gateway VM (two per Cloud Hypervisor host)",
+      "description": "ACCEPTED (ADR-0144), not yet implemented. An ordinary VM of the egress class with two NICs, one on the sandbox bridge and one on the uplink bridge, placed on its host by a label unique to that host. Two exist per host and share one address on the sandbox segment; how that address fails over is the gateway image's concern (mediatore ADR-0027, ADR-0028, ADR-0029). Its ports are not isolated."
+    },
+    {
+      "unique-id": "system-ch-sandbox-guest",
+      "node-type": "system",
+      "name": "Sandbox guest on a Cloud Hypervisor host",
+      "description": "ACCEPTED (ADR-0144), not yet implemented. One NIC on the sandbox bridge with a static address from a pool (ADR-0114) and a default route to the gateways' shared address, never to the host."
+    },
+    {
+      "unique-id": "system-ch-host-sandbox-rules",
+      "node-type": "system",
+      "name": "Host rules for the sandbox segment",
+      "description": "ACCEPTED (ADR-0144), not yet implemented. Root-owned iptables rules installed by the operator from a documented recipe (the binary installs no package, ADR-0067 Decision 7): INPUT dropped from the sandbox bridge, FORWARD dropped from the sandbox bridge to anything outside it and between the two bridges, masquerade of the uplink bridge's range only, IPv6 disabled on both bridges. preflight reports them and refuses install for a sandbox class without them."
     }
   ],
   "relationships": [
@@ -2663,6 +2693,138 @@
           ]
         }
       }
+    },
+    {
+      "unique-id": "rel-ch-sandbox-guest-sandbox-bridge",
+      "description": "ACCEPTED (ADR-0144). The provider creates the guest's tap, joins it to the sandbox bridge and sets it isolated on (kernel brport/isolated, measured present on RHEL 8's 4.18 kernel), so one sandbox cannot reach another. preflight refuses isolate_ports = true on a kernel without it.",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "system-ch-sandbox-guest"
+          },
+          "destination": {
+            "node": "network-ch-sandbox-bridge"
+          }
+        }
+      },
+      "protocol": "TCP",
+      "controls": {
+        "port-isolation-between-sandboxes": {
+          "description": "Every sandbox port is isolated; only non-isolated ports (the gateways') are reachable. Isolation that is configured and not enforced is refused by preflight.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53",
+                "control": "SC-7 Boundary Protection"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-ch-egress-gateway-sandbox-bridge",
+      "description": "ACCEPTED (ADR-0144). The gateways' sandbox-side NICs are non-isolated ports: they are the only thing a sandbox can reach on its segment.",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "service-ch-egress-gateway"
+          },
+          "destination": {
+            "node": "network-ch-sandbox-bridge"
+          }
+        }
+      },
+      "protocol": "TCP"
+    },
+    {
+      "unique-id": "rel-ch-egress-gateway-uplink-bridge",
+      "description": "ACCEPTED (ADR-0144). The gateways' second NIC, on the uplink bridge: the only path off the host for sandbox traffic.",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "service-ch-egress-gateway"
+          },
+          "destination": {
+            "node": "network-ch-uplink-bridge"
+          }
+        }
+      },
+      "protocol": "TCP"
+    },
+    {
+      "unique-id": "rel-ch-uplink-bridge-host-nat",
+      "description": "ACCEPTED (ADR-0144). The host masquerades the uplink bridge's range out of every interface except the uplink bridge, so the source beyond the host is its existing address. The sandbox bridge is neither masqueraded nor forwarded.",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "network-ch-uplink-bridge"
+          },
+          "destination": {
+            "node": "network-cloud-hypervisor-host"
+          }
+        }
+      },
+      "protocol": "TCP",
+      "controls": {
+        "nat-through-the-hosts-own-address": {
+          "description": "No additional routable address is put on the host; only the uplink bridge's range is masqueraded.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53",
+                "control": "SC-7 Boundary Protection"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-ch-host-rules-sandbox-bridge",
+      "description": "ACCEPTED (ADR-0144). The host drops INPUT from the sandbox bridge and FORWARD from it to anything outside it, so a guest that names the host as its gateway is not routed (the host measured ip_forward = 1 and a FORWARD policy of ACCEPT, set by another tenant).",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "system-ch-host-sandbox-rules"
+          },
+          "destination": {
+            "node": "network-ch-sandbox-bridge"
+          }
+        }
+      },
+      "protocol": "TCP",
+      "controls": {
+        "host-drops-sandbox-traffic": {
+          "description": "INPUT and FORWARD from the sandbox bridge are dropped; preflight reports the rules and refuses install for a sandbox class without them.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53",
+                "control": "SC-7 Boundary Protection"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-provider-cloud-hypervisor-port-isolation",
+      "description": "ACCEPTED (ADR-0144). For a class declared isolate_ports = true the provider, which already creates and owns the guest's tap with CAP_NET_ADMIN (ADR-0063), also sets isolated on for that port. A compromised provider could clear it; that is a host-level compromise already (ADR-0063) and is recorded, not defended here.",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "service-provider-cloud-hypervisor"
+          },
+          "destination": {
+            "node": "network-ch-sandbox-bridge"
+          }
+        }
+      },
+      "protocol": "TCP"
     }
   ],
   "flows": [
@@ -4168,6 +4330,7 @@
     "docs/adr/0133-shared-provider-serves-tenant-namespaces.md",
     "docs/adr/0134-cloud-hypervisor-serves-tenant-namespaces.md",
     "docs/adr/0135-claim-selection-strategies.md",
-    "docs/adr/0136-cloud-hypervisor-guests-get-whole-pci-devices-through-vfio.md"
+    "docs/adr/0136-cloud-hypervisor-guests-get-whole-pci-devices-through-vfio.md",
+    "docs/adr/0144-sandbox-segment-and-egress-gateways-on-a-cloud-hypervisor-host.md"
   ]
 }

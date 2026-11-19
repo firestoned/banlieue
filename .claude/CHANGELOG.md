@@ -1,5 +1,34 @@
 # Changelog
 
+## [2026-11-19 09:00] - ADR-0144 accepted: sandbox segment and two egress gateway VMs on a Cloud Hypervisor host
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docs/adr/0144-sandbox-segment-and-egress-gateways-on-a-cloud-hypervisor-host.md`:
+  Proposed on 2026-11-18, Accepted on 2026-11-19. A sandbox host has a sandbox
+  bridge (no uplink, every guest port in kernel port isolation through a new
+  `isolate_ports` network class attribute) and an uplink bridge reached only by two
+  egress gateway VMs per host; the host NATs the uplink bridge out through its own
+  address and drops INPUT and FORWARD from the sandbox bridge.
+- `docs/architecture/calm/architecture.json`: five nodes (sandbox bridge, uplink
+  bridge, egress gateway VM, sandbox guest, host rules for the segment), six
+  relationships and the ADR in `adrs`. `make calm-validate` passes with no
+  errors or warnings; `make calm-diagrams` regenerated `docs/src/architecture/system.md`.
+
+### Why
+Agent sandboxes on a Cloud Hypervisor host must not reach each other or the host,
+and need a governed way out. Measured on the first host: kernel port isolation is
+available, `iptables` is present and `nft` is not, and another tenant has already
+set `ip_forward = 1` with a FORWARD policy of ACCEPT.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only (the ADR is accepted and not yet implemented; the
+      threat-model pass follows the implementation)
+
 ## [2026-11-18 20:45] - Provider capacity honours `CPUQuota=` (ADR-0138 Decision 4, ADR-0139 Decision 3)
 
 **Author:** Erick Bourgeois

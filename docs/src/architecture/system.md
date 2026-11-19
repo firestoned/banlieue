@@ -73,6 +73,11 @@ flowchart LR
     service-faubourg-controller["faubourg controller (external, firestoned/faubourg)"]
     service-vfio-grant["VFIO group grant (one per Cloud Hypervisor guest with a device)"]
     system-host-pci-device["Host PCI device passed through (VFIO)"]
+    network-ch-sandbox-bridge["Cloud Hypervisor sandbox bridge"]
+    network-ch-uplink-bridge["Cloud Hypervisor uplink bridge"]
+    service-ch-egress-gateway["Egress gateway VM (two per Cloud Hypervisor host)"]
+    system-ch-sandbox-guest["Sandbox guest on a Cloud Hypervisor host"]
+    system-ch-host-sandbox-rules["Host rules for the sandbox segment"]
     subgraph sg_system-banlieue-binary [System Banlieue Binary]
         service-banlieue-controller
         service-banlieue-operator
@@ -201,6 +206,12 @@ flowchart LR
     service-provider-cloud-hypervisor --> data-asset-provider-cr
     service-provider-cloud-hypervisor -->|TCP| service-vfio-grant
     service-cloud-hypervisor-vmm -->|TCP| system-host-pci-device
+    system-ch-sandbox-guest -->|TCP| network-ch-sandbox-bridge
+    service-ch-egress-gateway -->|TCP| network-ch-sandbox-bridge
+    service-ch-egress-gateway -->|TCP| network-ch-uplink-bridge
+    network-ch-uplink-bridge -->|TCP| network-cloud-hypervisor-host
+    system-ch-host-sandbox-rules -->|TCP| network-ch-sandbox-bridge
+    service-provider-cloud-hypervisor -->|TCP| network-ch-sandbox-bridge
 ```
 
 <sub>Source: nodes and relationships in `architecture.json`.</sub>
