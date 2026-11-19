@@ -1,5 +1,38 @@
 # Changelog
 
+## [2026-11-19 12:00] - banlieue-oci: multi-layer microvm artifact (ADR-0142 Decisions 1, 3, 5, 6, 7)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `crates/banlieue-oci/src/microvm.rs` (+ `microvm_tests.rs`): the one implementation of the
+  microvm image format. Constants (artifactType, config and layer media types, the
+  `io.banlieue.layer.size` annotation), a typed `MicrovmConfig` (schema 1, `deny_unknown_fields`),
+  `build_manifest` and a strict `parse_manifest` (fixed order kernel, optional initramfs, rootfs),
+  `refuse_platform_args` (a pure function), `Client::push_microvm` (blobs by digest, gzip for kernel
+  and initramfs, rootfs as built) and `Client::pull_microvm` (into `images/sha256-<manifest hex>/`
+  through a temporary directory and one atomic rename; every digest and size verified; gzip layers
+  must decompress to exactly the annotated length; a caller-supplied per-layer ceiling with no
+  default; the architecture must equal the host's).
+- Tests run against an in-memory registry on loopback; each Decision 6 fail-closed condition has
+  its own test and asserts nothing is left in the image area.
+
+### Changed
+- `crates/banlieue-oci/src/client.rs`, `manifest.rs`: a few helpers became `pub(crate)` so the new
+  module reuses them. The single-layer disk API and its tests are unchanged.
+- `crates/banlieue-oci/src/lib.rs`: `pub mod microvm`.
+
+### Why
+ADR-0142 Decision 7: the host's pull and a later push subcommand must share one implementation.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+No new dependency. No CLI subcommand yet. ADR-0142 is not fully implemented, so no threat model pass.
+
 ## [2026-11-19 09:00] - ADR-0144 accepted: sandbox segment and two egress gateway VMs on a Cloud Hypervisor host
 
 **Author:** Erick Bourgeois

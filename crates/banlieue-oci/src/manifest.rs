@@ -28,7 +28,7 @@ pub const LAYER_MEDIA_TYPE_GZIP: &str = "application/vnd.banlieue.disk.v1+gzip";
 /// would decompress to anything else is refused.
 pub const ANNOTATION_UNCOMPRESSED_SIZE: &str = "io.banlieue.disk.size";
 /// OCI schema version.
-const SCHEMA_VERSION: u32 = 2;
+pub(crate) const SCHEMA_VERSION: u32 = 2;
 
 /// A content descriptor.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

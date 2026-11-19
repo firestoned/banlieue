@@ -14,6 +14,7 @@
 //!   explicit.
 //! - [`auth`]: anonymous, Basic, and Bearer token challenges.
 //! - [`manifest`]: the one manifest shape pushed and accepted.
+//! - [`microvm`]: the multi-layer kernel, initramfs and root filesystem artifact (ADR-0142).
 //! - [`sparse`]: zero runs become holes.
 //! - [`tls`]: the HTTP client, with an optional operator-named CA bundle.
 //! - [`client`]: push and pull.
@@ -22,6 +23,7 @@ pub mod auth;
 pub mod client;
 pub mod error;
 pub mod manifest;
+pub mod microvm;
 pub mod reference;
 pub mod sparse;
 pub mod tls;
