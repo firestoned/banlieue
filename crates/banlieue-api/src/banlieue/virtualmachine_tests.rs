@@ -660,10 +660,36 @@ mod tests {
             tpm_endorsement_certificates: vec![
                 "-----BEGIN CERTIFICATE-----\nstub\n-----END CERTIFICATE-----".to_string(),
             ],
+            attestation_subject: None,
             conditions: Vec::new(),
             observed_generation: Some(5),
         };
         let json = serde_json::to_value(&s).unwrap();
+        let back: VirtualMachineStatus = serde_json::from_value(json).unwrap();
+        assert_eq!(back, s);
+    }
+
+    // ----------------------------------------------------------------------
+    // status.attestationSubject (ADR-0143 Decision 3)
+    // ----------------------------------------------------------------------
+
+    #[test]
+    fn attestation_subject_omitted_when_absent() {
+        let json = serde_json::to_value(VirtualMachineStatus::default()).unwrap();
+        assert!(json.get("attestationSubject").is_none(), "{json}");
+    }
+
+    #[test]
+    fn attestation_subject_round_trips_camel_case() {
+        let s = VirtualMachineStatus {
+            attestation_subject: Some("0f3c9a1e-0000-4000-8000-000000000001".to_string()),
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&s).unwrap();
+        assert_eq!(
+            json["attestationSubject"],
+            "0f3c9a1e-0000-4000-8000-000000000001"
+        );
         let back: VirtualMachineStatus = serde_json::from_value(json).unwrap();
         assert_eq!(back, s);
     }

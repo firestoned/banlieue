@@ -718,6 +718,14 @@ pub async fn reconcile_for_provider(
                 Some("BackingFile sources are not supported by the vsphere provider".to_string()),
             );
         }
+        ImageSourceKind::OciArtifact => {
+            return image_row(
+                provider,
+                false,
+                reasons::UNSUPPORTED_SOURCE_KIND,
+                Some("OciArtifact sources are not supported by the vsphere provider".to_string()),
+            );
+        }
         ImageSourceKind::Template => {}
     }
 

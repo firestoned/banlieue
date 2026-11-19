@@ -750,13 +750,14 @@ mod tests {
     fn attestation_ek_trust_bundle_round_trips_and_uses_camel_case_keys() {
         let s = ProviderSpec {
             attestation: Some(ProviderAttestation {
-                ek_trust_bundle: CABundleSource {
+                ek_trust_bundle: Some(CABundleSource {
                     config_map_ref: Some(KeySelector {
                         name: "swtpm-issuers".to_string(),
                         key: Some("ek-ca.crt".to_string()),
                     }),
                     ..Default::default()
-                },
+                }),
+                host_ca: None,
             }),
             ..minimal_spec()
         };
@@ -785,24 +786,26 @@ attestation:
             attestation: ProviderAttestation,
         }
         let p: Partial = serde_saphyr::from_str(yaml).unwrap();
-        assert!(p.attestation.ek_trust_bundle.inline.is_some());
-        assert!(p.attestation.ek_trust_bundle.validate().is_ok());
+        let bundle = p.attestation.ek_trust_bundle.as_ref().unwrap();
+        assert!(bundle.inline.is_some());
+        assert!(bundle.validate().is_ok());
     }
 
     #[test]
     fn attestation_ek_trust_bundle_reuses_the_exactly_one_source_invariant() {
         let a = ProviderAttestation {
-            ek_trust_bundle: CABundleSource {
+            ek_trust_bundle: Some(CABundleSource {
                 inline: Some("pem".to_string()),
                 config_map_ref: Some(KeySelector {
                     name: "also-set".to_string(),
                     key: None,
                 }),
                 ..Default::default()
-            },
+            }),
+            host_ca: None,
         };
         assert!(
-            a.ek_trust_bundle.validate().is_err(),
+            a.ek_trust_bundle.as_ref().unwrap().validate().is_err(),
             "two sources must fail the CABundleSource invariant"
         );
     }
@@ -1181,5 +1184,154 @@ attestation:
         let props = &crd["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"]["spec"]
             ["properties"];
         assert!(props.get("namespaceSelector").is_some());
+    }
+
+    // ----------------------------------------------------------------------
+    // attestation.hostCa (ADR-0143 Decision 2)
+    // ----------------------------------------------------------------------
+
+    const BEGIN_CERT: &str = "-----BEGIN CERTIFICATE-----";
+    const END_CERT: &str = "-----END CERTIFICATE-----";
+
+    fn one_cert() -> String {
+        format!("{BEGIN_CERT}\nMIIB\n{END_CERT}\n")
+    }
+
+    fn host_ca_inline(pem: String) -> ProviderAttestation {
+        ProviderAttestation {
+            ek_trust_bundle: None,
+            host_ca: Some(CABundleSource {
+                inline: Some(pem),
+                ..Default::default()
+            }),
+        }
+    }
+
+    #[test]
+    fn attestation_host_ca_round_trips_and_uses_camel_case_keys() {
+        let a = host_ca_inline(one_cert());
+        let json = serde_json::to_value(&a).unwrap();
+        assert!(json["hostCa"]["inline"].is_string(), "{json}");
+        assert!(
+            json.get("ekTrustBundle").is_none(),
+            "absent ekTrustBundle must be skipped: {json}"
+        );
+        let back: ProviderAttestation = serde_json::from_value(json).unwrap();
+        assert_eq!(back, a);
+    }
+
+    #[test]
+    fn attestation_with_only_ek_trust_bundle_still_parses() {
+        // Existing Providers carry ekTrustBundle alone.
+        let json = serde_json::json!({ "ekTrustBundle": { "inline": one_cert() } });
+        let a: ProviderAttestation = serde_json::from_value(json).unwrap();
+        assert!(a.host_ca.is_none());
+        assert!(a.validate().is_ok());
+    }
+
+    #[test]
+    fn attestation_validate_accepts_one_inline_certificate() {
+        assert_eq!(host_ca_inline(one_cert()).validate(), Ok(()));
+    }
+
+    #[test]
+    fn attestation_validate_accepts_a_reference_without_reading_it() {
+        let a = ProviderAttestation {
+            ek_trust_bundle: None,
+            host_ca: Some(CABundleSource {
+                config_map_ref: Some(KeySelector {
+                    name: "fc-host-ca".to_string(),
+                    key: None,
+                }),
+                ..Default::default()
+            }),
+        };
+        assert_eq!(a.validate(), Ok(()));
+    }
+
+    #[test]
+    fn attestation_validate_rejects_no_source_and_two_sources_for_host_ca() {
+        let none = ProviderAttestation {
+            ek_trust_bundle: None,
+            host_ca: Some(CABundleSource::default()),
+        };
+        assert!(none.validate().is_err());
+        let two = ProviderAttestation {
+            ek_trust_bundle: None,
+            host_ca: Some(CABundleSource {
+                inline: Some(one_cert()),
+                secret_ref: Some(KeySelector {
+                    name: "also".to_string(),
+                    key: None,
+                }),
+                ..Default::default()
+            }),
+        };
+        assert!(two.validate().is_err());
+    }
+
+    #[test]
+    fn attestation_validate_rejects_two_inline_certificates() {
+        let two = format!("{}{}", one_cert(), one_cert());
+        let err = host_ca_inline(two).validate().unwrap_err();
+        assert!(err.contains("exactly one certificate"), "{err}");
+    }
+
+    #[test]
+    fn attestation_validate_rejects_inline_without_a_certificate() {
+        let err = host_ca_inline("not a pem".to_string())
+            .validate()
+            .unwrap_err();
+        assert!(err.contains("exactly one certificate"), "{err}");
+    }
+
+    #[test]
+    fn attestation_validate_rejects_a_private_key_block_beside_the_certificate() {
+        let key_kind = ["PRIVATE", "KEY"].join(" ");
+        let pem = format!(
+            "{}-----BEGIN {key_kind}-----\nAAAA\n-----END {key_kind}-----\n",
+            one_cert()
+        );
+        let err = host_ca_inline(pem).validate().unwrap_err();
+        assert!(err.contains("private key"), "{err}");
+    }
+
+    #[test]
+    fn attestation_validate_rejects_other_private_key_flavours() {
+        for kind in ["RSA PRIVATE KEY", "EC PRIVATE KEY", "ENCRYPTED PRIVATE KEY"] {
+            let pem = format!("{}-----BEGIN {kind}-----\nAAAA\n", one_cert());
+            assert!(host_ca_inline(pem).validate().is_err(), "{kind}");
+        }
+    }
+
+    #[test]
+    fn attestation_validate_rejects_an_empty_attestation() {
+        let a = ProviderAttestation {
+            ek_trust_bundle: None,
+            host_ca: None,
+        };
+        assert!(a.validate().is_err());
+    }
+
+    #[test]
+    fn attestation_validate_still_applies_the_one_source_rule_to_ek_trust_bundle() {
+        let a = ProviderAttestation {
+            ek_trust_bundle: Some(CABundleSource::default()),
+            host_ca: None,
+        };
+        assert!(a.validate().is_err());
+    }
+
+    #[test]
+    fn provider_crd_schema_declares_host_ca_and_no_longer_requires_ek_trust_bundle() {
+        let json = serde_json::to_value(Provider::crd()).unwrap();
+        let attestation = &json["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"]["spec"]
+            ["properties"]["attestation"];
+        assert!(attestation["properties"]["hostCa"].is_object());
+        let required = attestation["required"].as_array();
+        assert!(
+            required.is_none_or(|r| !r.iter().any(|v| v == "ekTrustBundle")),
+            "a firecracker Provider has no EK trust bundle: {attestation}"
+        );
     }
 }

@@ -477,6 +477,14 @@ spec:
                   - type
                   type: object
                 type: array
+              attestationSubject:
+                description: |-
+                  Mirrored from the infra CR's `status.attestationSubject` (ADR-0143
+                  Decision 3): the exact certificate subject CN the host's signer sets
+                  for a guest with no vTPM (the `firecracker` class). Public, carrying
+                  no authorization; mirrored onward onto a bound `VirtualMachineClaim`.
+                nullable: true
+                type: string
               conditions:
                 description: |-
                   Standard Kubernetes conditions. Required types:

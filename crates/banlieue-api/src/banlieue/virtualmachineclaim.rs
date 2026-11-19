@@ -255,6 +255,14 @@ pub struct VirtualMachineClaimStatus {
     /// for a member with no vTPM.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tpm_endorsement_certificates: Vec<String>,
+    /// The certificate subject CN of the bound member's node-attestation
+    /// identity, mirrored from the infra CR (ADR-0143 Decision 3), beside
+    /// [`tpm_endorsement_certificates`](Self::tpm_endorsement_certificates).
+    /// Set for a member of a class with no vTPM (`firecracker`), which signs
+    /// a certificate with this subject for the guest; absent otherwise.
+    /// Public and carrying no authorization, so a consumer needs one GET.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attestation_subject: Option<String>,
     /// Deprecated, never set since v0.4.14. It was a per-claim value for
     /// ADR-0049's quote-over-nonce handshake, which SPIRE's TPM node
     /// attestation superseded (ADR-0049, amended 2026-11-05). Kept so an

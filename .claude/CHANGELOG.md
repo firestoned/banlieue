@@ -1,5 +1,33 @@
 # Changelog
 
+## [2026-11-19 15:00] - attestationSubject is mirrored machine, VM, claim; ADR-0143 Decision 7
+
+**Author:** Erick Bourgeois
+
+### Added
+- `crates/banlieue-controller/src/reconciler/status_mirror.rs`: `InfraMachineRead::attestation_subject`
+  (default `None`), implemented for `FirecrackerMachine`; the VM status now carries the subject, replaced
+  (not merged) on every mirror so a withdrawn subject does not linger. `FirecrackerMachine` joins the
+  macro with no EK certificates.
+- `claim_plan.rs`: `MirroredMemberState.attestation_subject`; `claim.rs`: `mirrored_status_fields`, the
+  merge-patch body `hold` writes, naming `attestationSubject` as `null` when absent so the claim drops it.
+- 8 tests (red first: the build failed on the missing items). Three sabotages, each removing one of the
+  three mirror points, are each caught by 1 to 3 of them.
+- `docs/adr/0143-*.md` Decision 7: a `firecracker` Provider with no `hostCa` is `Ready=False`
+  (`HostCaMissing`, or `HostCaUnreadable`), raised by the Firecracker provider, which creates no guest
+  meanwhile. Not implemented: that provider does not exist yet.
+
+### Why
+mediatore computes the node entry's parent from the subject on the claim. Without these three copies a
+Firecracker pool member could not be bound.
+
+### Not done
+The controller does not yet know the `FirecrackerMachine` kind (infra build from the scheduler decision,
+app wiring, VM reconciler ownership and deletion). This change only makes the mirror ready for it.
+
+### Impact
+- [ ] Requires cluster rollout
+
 ## [2026-11-19 14:00] - Roadmaps 22 to 25: public-cloud providers (Azure, EC2, Lambda MicroVMs)
 
 **Author:** Erick Bourgeois
@@ -28,6 +56,46 @@ cloud.
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Documentation only
+
+## [2026-11-19 12:00] - Firecracker API types (ADR-0137, ADR-0142, ADR-0143)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `crates/banlieue-api/src/infrastructure/firecracker_machine.rs` (new):
+  `FirecrackerMachine` and `FirecrackerMachineTemplate` CRDs
+  (`infrastructure.banlieue.io/v1alpha1`), CAPI v1beta2 InfraMachine contract.
+  Spec: `providerRef` (`ProviderReference`, shared-capable, ADR-0133), `vcpus`,
+  `memoryMiB`, `image` (`<repository>@sha256:<digest>`), `nics` (network class
+  and ipam), `userData`, `desiredPowerState`. No vTPM, hotplug, device,
+  storage-class, boot-source or kernel-argument field (ADR-0137 Decision 7).
+  Status: contract fields plus `hostUid`, `guestInstalled` and
+  `attestationSubject` (the machine's `metadata.uid`, ADR-0143 Decision 3).
+- `crates/banlieue-api/src/banlieue/vmimage.rs`: `ImageSourceKind::OciArtifact`
+  (ADR-0142 Decision 2). The vsphere and libvirt providers' exhaustive matches
+  gain an arm reporting `UnsupportedSourceKind`; no other behaviour changes.
+- `crates/banlieue-api/src/banlieue/provider.rs`:
+  `Provider.spec.attestation.hostCa` (ADR-0143 Decision 2) and
+  `ProviderAttestation::validate` (at least one anchor; exactly one source;
+  an inline `hostCa` holds exactly one certificate and no private key).
+  `ekTrustBundle` becomes optional (a firecracker host has no EK CA); existing
+  objects still parse.
+- `virtualmachine.rs`, `virtualmachineclaim.rs`: `status.attestationSubject`,
+  mirrored in the shape of `tpmEndorsementCertificates` (types only; the
+  controller wiring is a later change).
+- `crates/banlieue-api/src/capi.rs`, `crdgen_support.rs`: the new kinds are
+  registered; `deploy/crds/`, `docs/src/reference/api.md` regenerated;
+  `examples/30-firecrackermachine.yaml` added.
+
+### Why
+The API half of the Firecracker provider class, code-first.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (re-apply the Provider, VMImage, VirtualMachine,
+      VirtualMachineClaim CRDs and the two new ones)
+- [ ] Config change only
+- [ ] Documentation only
 
 ## [2026-11-19 09:00] - ADR-0144 accepted: sandbox segment and two egress gateway VMs on a Cloud Hypervisor host
 

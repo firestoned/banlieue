@@ -1,0 +1,49 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# A FirecrackerMachine: the scheduled microVM request for a Firecracker host
+# (ADR-0137). banlieue-controller normally creates this from a VirtualMachine;
+# it is shown here so the shape is visible.
+#
+# What is deliberately absent (ADR-0137 Decision 7): no vTPM, no hotplug, no
+# device list, no kernel arguments. A guest is a kernel and a read-only root
+# filesystem delivered as one digest-pinned OCI artifact (ADR-0142), so there
+# is also no storage class, no OS disk and no boot source.
+#
+# Placeholders: `fc-bar` is your Firecracker host's Provider; `sandbox` is a
+# network class that host declares; the image is `<repository>@sha256:<digest>`
+# in the repository the host pins. 192.0.2.x is an RFC 5737 documentation range.
+apiVersion: infrastructure.banlieue.io/v1alpha1
+kind: FirecrackerMachine
+metadata:
+  name: sandbox-0
+  namespace: banlieue-system
+spec:
+  providerRef:
+    name: fc-bar
+  vcpus: 2
+  memoryMiB: 512
+  image: registry.internal:5000/banlieue/sandbox@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  nics:
+    - name: eth0
+      networkClass: sandbox
+      ipam:
+        static:
+          address: 192.0.2.24
+          prefix: 24
+          gateway: 192.0.2.1
+  desiredPowerState: PoweredOn
+
+# What the provider publishes back, for reference (status is written by the
+# provider, never by you). `attestationSubject` is the exact certificate
+# subject the host signs for this guest: this machine's metadata.uid
+# (ADR-0143 Decision 3). It is mirrored onto the bound claim.
+#
+# status:
+#   initialization:
+#     provisioned: true
+#   addresses:
+#     - type: InternalIP
+#       address: 192.0.2.24
+#   hostUid: 2000001
+#   attestationSubject: 0f3c9a1e-0000-4000-8000-000000000001

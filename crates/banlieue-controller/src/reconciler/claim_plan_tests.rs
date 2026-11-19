@@ -667,6 +667,31 @@ mod tests {
         assert_eq!(got.tpm_endorsement_certificates, vec![PEM.to_string()]);
     }
 
+    /// ADR-0143 Decision 3: a member with no vTPM publishes the subject of
+    /// its attestation certificate instead, and the claim carries it so
+    /// mediatore can compute the node entry's parent from one GET.
+    #[test]
+    fn a_bound_claim_mirrors_its_members_attestation_subject() {
+        let mut vm = member_vm();
+        vm.status = Some(banlieue_api::banlieue::VirtualMachineStatus {
+            attestation_subject: Some("0f3c9a1e-0000-4000-8000-000000000001".to_string()),
+            ..Default::default()
+        });
+        let got = mirrored_member_state(&vm);
+        assert_eq!(
+            got.attestation_subject.as_deref(),
+            Some("0f3c9a1e-0000-4000-8000-000000000001")
+        );
+    }
+
+    #[test]
+    fn a_member_with_no_attestation_subject_mirrors_none() {
+        let mut vm = member_vm();
+        assert_eq!(mirrored_member_state(&vm).attestation_subject, None);
+        vm.status = Some(banlieue_api::banlieue::VirtualMachineStatus::default());
+        assert_eq!(mirrored_member_state(&vm).attestation_subject, None);
+    }
+
     /// A member with no vTPM mirrors nothing, and a member with no status at
     /// all must not panic the reconciler.
     #[test]

@@ -147,6 +147,24 @@ pure-Rust, no FFI, no subprocess in a request path). The X.509 and ECDSA crates 
 needs are chosen and recorded in the CHANGELOG when they are added, vetted as the
 dependency rule requires; this ADR does not name them.
 
+### 7. A Provider with no `hostCa` is not Ready, and says so
+
+`hostCa` is optional in the API (a vTPM class has none), and admission cannot require
+it per class (the policy sees the Provider, not what its `providerClassRef` means). So the
+check is made by the one component that owns the Provider's conditions for this class: the
+Firecracker provider process, which reads the Provider it serves (as the Cloud
+Hypervisor provider does for its `Ready` condition). When the Provider's class is `firecracker` and `spec.attestation.hostCa` is
+absent, it sets `Ready=False` with reason `HostCaMissing` and a message naming the field,
+and it creates no guest while the condition holds. A guest started without it would boot,
+sign a certificate, and then have no entry parent mediatore could compute, so it would
+fail late and silently; failing at the Provider fails early and visibly.
+
+Nothing else raises it. Admission does not (above), the main controller does not know the
+class's needs, and mediatore sees only claims. It clears when `hostCa` is set. An
+unreadable `hostCa` source (a `configMapRef` naming a missing key) is the same condition
+with reason `HostCaUnreadable`; whether the certificate is the host's actual `ca.crt` is
+not checked, because banlieue never verifies the anchor (Decision 2).
+
 ## Consequences
 
 - A Firecracker guest's identity needs one administrator action per host: copy the

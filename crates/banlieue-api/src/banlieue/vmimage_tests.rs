@@ -104,12 +104,35 @@ mod tests {
             (ImageSourceKind::Template, "Template"),
             (ImageSourceKind::BackingFile, "BackingFile"),
             (ImageSourceKind::Url, "Url"),
+            (ImageSourceKind::OciArtifact, "OciArtifact"),
         ] {
             let json = serde_json::to_value(&variant).unwrap();
             assert_eq!(json, serde_json::json!(expected));
             let back: ImageSourceKind = serde_json::from_value(json).unwrap();
             assert_eq!(back, variant);
         }
+    }
+
+    /// ADR-0142 Decision 2: `ref` is `<repository>@sha256:<manifest digest>`
+    /// and `importFrom` is not used.
+    #[test]
+    fn oci_artifact_source_carries_a_digest_pinned_ref() {
+        let digest = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let src = ImageSource {
+            provider_class: "firecracker".to_string(),
+            kind: ImageSourceKind::OciArtifact,
+            reference: format!("registry.internal:5000/banlieue/sandbox@{digest}"),
+            import_from: None,
+            checksum: None,
+        };
+        let json = serde_json::to_value(&src).unwrap();
+        assert_eq!(json["kind"], "OciArtifact");
+        assert_eq!(
+            json["ref"],
+            format!("registry.internal:5000/banlieue/sandbox@{digest}")
+        );
+        let back: ImageSource = serde_json::from_value(json).unwrap();
+        assert_eq!(back, src);
     }
 
     #[test]

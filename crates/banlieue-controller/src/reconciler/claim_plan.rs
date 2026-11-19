@@ -681,6 +681,9 @@ pub struct MirroredMemberState {
     /// attestation quote against (ADR-0045). Empty for a member with no
     /// vTPM, which is every member of a pool that does not need attestation.
     pub tpm_endorsement_certificates: Vec<String>,
+    /// The certificate subject CN of the member's node-attestation identity
+    /// (ADR-0143 Decision 3), for a member with no vTPM. `None` otherwise.
+    pub attestation_subject: Option<String>,
     /// The pool the member came from, from its `banlieue.io/pool` label:
     /// `status.poolRef`, backfilled for a claim bound before that field
     /// existed (ADR-0132 Decision 6).
@@ -703,6 +706,7 @@ pub fn mirrored_member_state(vm: &VirtualMachine) -> MirroredMemberState {
     MirroredMemberState {
         addresses: status.addresses.clone(),
         tpm_endorsement_certificates: status.tpm_endorsement_certificates.clone(),
+        attestation_subject: status.attestation_subject.clone(),
         pool,
     }
 }

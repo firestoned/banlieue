@@ -7,6 +7,7 @@
 //! `Cluster` objects as well as from banlieue's own VirtualMachine.
 
 pub mod cloud_hypervisor_machine;
+pub mod firecracker_machine;
 pub mod libvirt_machine;
 pub mod proxmox_machine;
 pub mod vsphere_cluster;
@@ -19,6 +20,11 @@ pub use cloud_hypervisor_machine::{
     CloudHypervisorMachineStatus, CloudHypervisorMachineTemplate,
     CloudHypervisorMachineTemplateResource, CloudHypervisorMachineTemplateSpec,
     cloud_hypervisor_provider_id,
+};
+pub use firecracker_machine::{
+    FIRECRACKER_PROVIDER_ID_SCHEME, FcNicSpec, FirecrackerMachine, FirecrackerMachineSpec,
+    FirecrackerMachineStatus, FirecrackerMachineTemplate, FirecrackerMachineTemplateResource,
+    FirecrackerMachineTemplateSpec, firecracker_provider_id,
 };
 pub use libvirt_machine::{
     LibvirtAddressSource, LibvirtBootSource, LibvirtBootSourceKind, LibvirtDiskBus,
