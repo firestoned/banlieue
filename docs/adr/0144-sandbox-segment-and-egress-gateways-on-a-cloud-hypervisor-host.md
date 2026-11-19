@@ -4,8 +4,9 @@ SPDX-License-Identifier: Apache-2.0
 -->
 # 0144: A Cloud Hypervisor host serves sandboxes from an isolated segment, behind two egress gateway VMs that NAT out through the host's own address
 
-- **Status:** Proposed
-- **Date:** 2026-11-18
+- **Status:** Accepted
+- **Date:** 2026-11-19
+- **Proposed:** 2026-11-18
 - **Deciders:** Erick Bourgeois
 - **Related:** Builds on [ADR-0063](0063-cloud-hypervisor-host-supervision.md)
   (the provider creates and owns taps), [ADR-0067](0067-banlieue-host-install-subcommand.md)
@@ -157,7 +158,8 @@ the design.
 - Threat model: two new trust boundaries (the sandbox segment, and the uplink
   segment with NAT), a new host rules file, a new class attribute. Pass due when
   implemented.
-- Not implemented. CALM and the threat-model pass follow Acceptance.
+- Accepted, not implemented. CALM follows now; the threat-model pass follows
+  the implementation.
 
 ## Open questions
 
