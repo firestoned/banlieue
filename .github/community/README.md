@@ -28,6 +28,10 @@ This directory holds the roadmap docs for building banlieue.
 | 19 | `19-port-groups.md` | Declared port groups: `VMNetwork` realized per backend (vSphere DVPortgroup, libvirt network, Proxmox SDN VNet, CH bridge VLAN), VLAN allowlist, ownership + in-use safety | Before touching network-class resolution; read ADR-0019, 0030, 0031, 0032 first |
 | 20 | `20-firecracker-provider.md` | Firecracker provider for sandbox pools: host-resident like 09, direct kernel boot, no vTPM, cold boot only; shared host-provider layer with Cloud Hypervisor | After 09 and 17; read ADR-0052, 0060, 0063, 0105 first |
 | 21 | `21-pci-passthrough.md` | PCI passthrough (VFIO) for Cloud Hypervisor guests: host-declared device classes, a root grant of one IOMMU group per guest uid, device capacity in scheduling, GPU workers through Cluster API | After 09; read ADR-0136, 0062, 0063, 0065, 0107 and 0128 first |
+| 22 | `22-public-cloud-foundation.md` | Public-cloud foundation: provider shape, workload identity federation, instance-size mapping, quota as capacity, ownership tags, and publishing `VMImage`s into each cloud | Before 23, 24 or 25; read ADR-0010, 0064, 0101, 0128 and roadmap 15 first |
+| 23 | `23-azure-provider.md` | Azure VMs: first-party ARM client, gallery images, Trusted Launch vTPM | After 22; read ADR-0011, 0045, 0088 first |
+| 24 | `24-ec2-provider.md` | EC2 instances: `EC2Machine`, AMIs, IMDSv2, NitroTPM and its EK public key | After 22 (recommended before 23); read ADR-0045, 0049, 0088 first |
+| 25 | `25-lambda-microvms-provider.md` | Lambda MicroVMs as a managed sandbox backend; go/no-go first | After 20 and 22; read ADR-0052, 0097, 0108 first |
 
 Status for every row above lives in [`ROADMAPS.md`](../../ROADMAPS.md) at the
 repo root — this table is the reading order, that one is the status board.
@@ -80,6 +84,11 @@ Phase 1A (controller + SDK)  ✅
    20 (Firecracker)          ⛔   after 1F (shares its host layer) and 17 (its consumer); spike gates the rest
 
    21 (PCI passthrough)      ⛔   after 1F; ADR-0136 Proposed
+
+   22 (public-cloud base)    ⛔   provider shape, federation, cloud image publishing
+         ├─→ 24 (EC2)        ⛔   recommended first
+         ├─→ 23 (Azure)      ⛔
+         └─→ 25 (Lambda MicroVMs) ⛔   also after 20; go/no-go first
 ```
 
 ## Updates to these docs
