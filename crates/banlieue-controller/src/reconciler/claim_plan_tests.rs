@@ -6,7 +6,10 @@
 mod tests {
     use super::super::*;
     use crate::reconciler::pool_plan::{MemberPhase, MemberView};
-    use banlieue_api::banlieue::{ClaimSubject, VirtualMachineClaimSpec, pool_condition_reasons};
+    use banlieue_api::banlieue::{
+        ClaimPhase, ClaimSubject, VirtualMachineClaimSpec, VirtualMachineClaimStatus,
+        pool_condition_reasons,
+    };
     use banlieue_api::common::{LabelSelector, LocalObjectReference};
     use std::collections::BTreeMap;
 
@@ -1237,6 +1240,44 @@ mod tests {
             hold_message(Some("bound to m-10 by Spread"), "m-1"),
             "bound to m-1"
         );
+    }
+
+    /// A pass that finishes an earlier pass's bind (the member already
+    /// labelled ours, ADR-0132 Decision 5) re-reads the claim before it
+    /// writes: when that bind is already published, nothing is written, so
+    /// the message naming the strategy and the domain survives (ADR-0135
+    /// Decision 6). Seen live 2026-11-19: three bind passes within 300 ms
+    /// left a Spread claim saying only `bound to <member>`.
+    #[test]
+    fn finishing_a_published_bind_writes_nothing() {
+        let published = VirtualMachineClaimStatus {
+            phase: ClaimPhase::Bound,
+            virtual_machine_ref: Some(LocalObjectReference { name: "m-1".into() }),
+            ..VirtualMachineClaimStatus::default()
+        };
+        assert_eq!(
+            finish_bind(Some(&published), "m-1"),
+            FinishBind::AlreadyBound
+        );
+    }
+
+    /// The earlier pass stopped between labelling the member and publishing
+    /// the bind, the case the finish path exists for: publish it, with the
+    /// plain message, since the pick's reasons are gone with that pass.
+    #[test]
+    fn finishing_an_unpublished_bind_publishes_it() {
+        assert_eq!(finish_bind(None, "m-1"), FinishBind::Publish);
+        let pending = VirtualMachineClaimStatus::default();
+        assert_eq!(finish_bind(Some(&pending), "m-1"), FinishBind::Publish);
+        // Another member in the status is not this bind, published or not.
+        let other = VirtualMachineClaimStatus {
+            phase: ClaimPhase::Bound,
+            virtual_machine_ref: Some(LocalObjectReference {
+                name: "m-10".into(),
+            }),
+            ..VirtualMachineClaimStatus::default()
+        };
+        assert_eq!(finish_bind(Some(&other), "m-1"), FinishBind::Publish);
     }
 
     /// A pool member with no status yet.

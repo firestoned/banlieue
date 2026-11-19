@@ -23,7 +23,6 @@ use banlieue_api::banlieue::{
 use banlieue_provider_sdk::{
     finalizer::{ensure_finalizer, remove_finalizer},
     reconciler::{requeue_default, requeue_long, requeue_on_error},
-    ssa::{HTTP_NOT_FOUND, delete_ignoring_404},
     status::{condition_status, set_condition},
 };
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{Condition, Time};
@@ -37,10 +36,10 @@ use serde_json::{Value, json};
 use tracing::{info, warn};
 
 use super::claim_plan::{
-    BoundMember, ClaimInputs, ClaimStep, MemberPlacement, Pick, PickDetail, PoolMembers,
-    PoolWaitState, PoolWarm, SelectionInputs, bound_message, expiry, hold_message, is_expired,
-    member_placement, mirrored_member_state, next_step, pool_selection, rank_pick, subject_held,
-    wait_reason,
+    BoundMember, ClaimInputs, ClaimStep, FinishBind, MemberPlacement, Pick, PickDetail,
+    PoolMembers, PoolWaitState, PoolWarm, SelectionInputs, bound_message, expiry, finish_bind,
+    hold_message, is_expired, member_placement, mirrored_member_state, next_step, pool_selection,
+    rank_pick, subject_held, wait_reason,
 };
 use super::pool::member_view;
 use super::pool_plan::{MemberPhase, MemberView};
@@ -60,6 +59,8 @@ const BIND_RACE_RETRY_SECS: u64 = 1;
 /// HTTP status the API server returns when a `resourceVersion` precondition
 /// fails — i.e. somebody else wrote the member since we listed it.
 const HTTP_CONFLICT: u16 = 409;
+/// HTTP status for an object that is already gone.
+const HTTP_NOT_FOUND: u16 = 404;
 
 /// Reconcile one `VirtualMachineClaim`.
 ///
@@ -420,17 +421,49 @@ async fn bind(
         Err(e) => return Err(Error::Kube(e)),
     }
 
+    // Finishing a bind an earlier pass made (`detail` is `None`): that pass
+    // may have published it already, with the message that names the
+    // strategy and the domain (ADR-0135 Decision 6), and the copy of the
+    // claim this pass was handed may predate it. A fresh read decides; when
+    // the bind is published nothing is written, since the plain message this
+    // pass could write would erase that one (seen live 2026-11-19: three
+    // passes within 300 ms left a Spread claim saying `bound to <member>`).
+    // Otherwise the publish carries the claim's resourceVersion, so a publish
+    // landing in between fails this one's precondition instead of being
+    // overwritten, and the next pass holds.
+    let mut precondition = None;
+    if target.detail.is_none() {
+        let fresh = claim_api.get(name).await?;
+        if finish_bind(fresh.status.as_ref(), member) == FinishBind::AlreadyBound {
+            info!(claim = %name, member = %member, "bind already published by an earlier pass; its message stands");
+            return Ok(requeue_default());
+        }
+        precondition = fresh.metadata.resource_version;
+    }
+
     let (bound_at, expires_at) = expiry(now, claim.spec.ttl_seconds);
-    patch_status(
-        claim_api,
-        name,
+    let body = status_body(
         ClaimPhase::Bound,
         pool_condition_types::BOUND,
         bound_message(member, claim.spec.strategy(), target.detail),
         generation,
         bound_status(member, target.pool, bound_at, expires_at),
-    )
-    .await?;
+    );
+    let mut patch = json!({ "status": body });
+    if let Some(version) = precondition {
+        patch["metadata"] = json!({ "resourceVersion": version });
+    }
+    match claim_api
+        .patch_status(name, &PatchParams::default(), &Patch::Merge(&patch))
+        .await
+    {
+        Ok(_) => {}
+        Err(kube::Error::Api(e)) if e.code == HTTP_CONFLICT => {
+            info!(claim = %name, member = %member, "bind published by an earlier pass meanwhile; holding next");
+            return Ok(Action::requeue(Duration::from_secs(BIND_RACE_RETRY_SECS)));
+        }
+        Err(e) => return Err(Error::Kube(e)),
+    }
     info!(claim = %name, member = %member, pool = %target.pool, ttl = claim.spec.ttl_seconds, "claim bound");
     Ok(requeue_default())
 }
@@ -532,7 +565,11 @@ async fn release(
     // Expired but not deleted by anyone: remove the claim ourselves, so it
     // cannot be mistaken for a live hold on a VM that no longer exists.
     info!(claim = %name, "claim expired; member destroyed");
-    delete_ignoring_404(claim_api, name, &DeleteParams::default()).await?;
+    match claim_api.delete(name, &DeleteParams::default()).await {
+        Ok(_) => {}
+        Err(kube::Error::Api(e)) if e.code == HTTP_NOT_FOUND => {}
+        Err(e) => return Err(Error::Kube(e)),
+    }
     Ok(requeue_long())
 }
 
@@ -546,6 +583,26 @@ async fn patch_status(
     generation: i64,
     extra: serde_json::Value,
 ) -> Result<()> {
+    let body = status_body(phase, reason, message, generation, extra);
+    api.patch_status(
+        name,
+        &PatchParams::default(),
+        &Patch::Merge(json!({ "status": body })),
+    )
+    .await?;
+    Ok(())
+}
+
+/// The `status` a reconcile publishes: the phase, the `Bound` condition
+/// (`True` for `Bound`, `False` otherwise), the observed generation and
+/// `extra`'s fields.
+fn status_body(
+    phase: ClaimPhase,
+    reason: &str,
+    message: String,
+    generation: i64,
+    extra: serde_json::Value,
+) -> serde_json::Value {
     let status = if phase == ClaimPhase::Bound {
         condition_status::TRUE
     } else {
@@ -571,14 +628,7 @@ async fn patch_status(
             base.insert(k.clone(), v.clone());
         }
     }
-
-    api.patch_status(
-        name,
-        &PatchParams::default(),
-        &Patch::Merge(json!({ "status": body })),
-    )
-    .await?;
-    Ok(())
+    body
 }
 
 /// The status fields a bind publishes: the member, the pool it came from

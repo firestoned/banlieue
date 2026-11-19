@@ -3469,6 +3469,28 @@
       ],
       "occurrences": 1,
       "last_seen": "2026-11-16T00:00:00.000Z"
+    },
+    {
+      "id": "bug-190",
+      "timestamp": "2026-11-19T00:40:00.000Z",
+      "error_message": "Bound condition of a Spread claim read `bound to sandbox-pool-<x>`, without `by Spread from <provider>/<domain>` (ADR-0135 Decision 6); controller logged `claim bound` three times within 300 ms for one claim",
+      "file": "crates/banlieue-controller/src/reconciler/claim.rs",
+      "root_cause": "The bind that labels the member re-triggers the claim before its own status patch lands (bug-170). The re-entered passes take pick()'s finish path (member_bound_to, Candidate.detail None) and bind() wrote bound_message(.., None), the plain message, over the first pass's one; the cached claim they were handed predated that status, so hold() never ran.",
+      "fix": "claim_plan::finish_bind decides from a fresh GET of the claim: AlreadyBound (virtualMachineRef names the member) writes nothing; Publish patches with the fresh resourceVersion as precondition, a 409 requeues for the hold. patch_status split into status_body + patch. Tests: claim_plan_tests finishing_a_published_bind_writes_nothing, finishing_an_unpublished_bind_publishes_it. Found by mediatore's live Spread proof on the core cluster, banlieue v0.5.10.",
+      "tags": [
+        "claim",
+        "race",
+        "stale-cache",
+        "bound-message",
+        "adr-0135",
+        "roadmap-17"
+      ],
+      "related_bugs": [
+        "bug-170",
+        "bug-189"
+      ],
+      "occurrences": 1,
+      "last_seen": "2026-11-19T00:19:00.000Z"
     }
-]
+  ]
 }
