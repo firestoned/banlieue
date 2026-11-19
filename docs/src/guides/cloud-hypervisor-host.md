@@ -475,6 +475,7 @@ sudo banlieue host cloud-hypervisor install --network-class default=br0 \
 | Flag (each also a `BANLIEUE_HOST_*` variable) | Slice setting | Effect on the guests |
 | --- | --- | --- |
 | `--guest-cpus 16-95` | `AllowedCPUs=` | Confined to those CPUs. A ceiling, not a reservation: other workloads may still use them unless their own cpuset keeps them off. |
+| `--guest-cpu-quota 4800%` | `CPUQuota=` | A share of CPU **time** (48 CPUs' worth), not a set of cores: the only CPU ceiling on a cgroup v1 host, where `--guest-cpus` is refused. The provider publishes the tighter of this and `AllowedCPUs=` as the Provider's `cpus`, so a host split between two VMMs advertises each half and not the whole machine twice. |
 | `--guest-cpu-weight 50` | `CPUWeight=` (1 to 10000, default 100) | A share **under contention only**: idle CPU is still theirs. At 50 the guests together get half the CPU time of an equally busy peer. Almost always the right CPU control. |
 | `--guest-memory-max 200G` (or `75%`) | `MemoryMax=` | A **hard cap** on all guests together. Exceeding it makes the kernel **OOM-kill a VMM**, which is that guest crashing. Size it from the guests (below). |
 | `--guest-tasks-max 30000` | `TasksMax=` | Processes and threads, all guests together. |

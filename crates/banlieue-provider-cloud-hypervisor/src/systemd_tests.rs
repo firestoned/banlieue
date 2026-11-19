@@ -291,6 +291,29 @@ mod tests {
         );
     }
 
+    /// `CPUQuotaPerSecUSec` is microseconds of CPU time per second, so
+    /// `CPUQuota=4800%` is 48 CPUs' worth; `u64::MAX` is "no quota".
+    /// Rounded down: a partial CPU is not given to guests (ADR-0139).
+    #[test]
+    fn cpu_quota_is_counted_in_whole_cpus() {
+        assert_eq!(cpu_quota_cpus(u64::MAX), None);
+        assert_eq!(cpu_quota_cpus(48_000_000), Some(48));
+        assert_eq!(cpu_quota_cpus(48_999_999), Some(48));
+        assert_eq!(cpu_quota_cpus(500_000), Some(0));
+    }
+
+    /// On a cgroup v1 host `AllowedCPUs` is unset and the quota is the whole
+    /// CPU budget; on v2 both may be set and the tighter one binds
+    /// (ADR-0138 Decision 4, ADR-0139 Decision 3).
+    #[test]
+    fn the_cpu_limit_is_the_tighter_of_cpuset_and_quota() {
+        assert_eq!(cpu_limit(None, None), None);
+        assert_eq!(cpu_limit(Some(16), None), Some(16));
+        assert_eq!(cpu_limit(None, Some(48)), Some(48));
+        assert_eq!(cpu_limit(Some(16), Some(48)), Some(16));
+        assert_eq!(cpu_limit(Some(64), Some(48)), Some(48));
+    }
+
     /// The slice names match the ones `banlieue host` installs (ADR-0105) and
     /// systemd derives (ADR-0106).
     #[test]
