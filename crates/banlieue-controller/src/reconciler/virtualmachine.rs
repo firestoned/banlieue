@@ -226,6 +226,13 @@ pub fn image_class_mismatch(
 pub async fn reconcile(vm: Arc<VirtualMachine>, ctx: Arc<Context>) -> Result<Action> {
     let namespace = vm.namespace().ok_or(Error::Missing("namespace"))?;
     if let Some(action) = ctx.skip_unserved(&namespace, vm.metadata.deletion_timestamp.is_some()) {
+        // Silent at `info` on purpose (a tenant outside the selector is normal), but at
+        // `debug` "invoked and skipped" is distinguishable from "never invoked" (ADR-0145).
+        tracing::debug!(
+            namespace = %namespace,
+            name = %vm.name_any(),
+            "VirtualMachine is in a namespace this controller does not serve; leaving it alone"
+        );
         return Ok(action);
     }
     let name = vm.name_any();
@@ -518,8 +525,13 @@ pub async fn reconcile(vm: Arc<VirtualMachine>, ctx: Arc<Context>) -> Result<Act
         generation,
     );
     let mut next_status = mirror_status_from_infra(&current_status, applied.as_ref(), generation);
-    next_status.scheduled =
-        Some(decision.to_scheduled_placement(Time(k8s_openapi::jiff::Timestamp::now())));
+    // `scheduledAt` is when the decision was made, so an unchanged decision keeps its time:
+    // re-stamping it each pass rewrote every VM on every reconcile, and each write woke the next
+    // reconcile (a loop of about 25 events a second over 77 VMs).
+    next_status.scheduled = Some(decision.to_scheduled_placement_keeping(
+        current_status.scheduled.as_ref(),
+        Time(k8s_openapi::jiff::Timestamp::now()),
+    ));
     // The infra CR was just applied with these addresses: from now on they
     // are held (ADR-0083). Written only here, carried forward everywhere else.
     next_status.held_addresses = held_addresses(&vm, &class);

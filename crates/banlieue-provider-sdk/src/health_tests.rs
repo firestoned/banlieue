@@ -244,4 +244,80 @@ mod tests {
             .expect_err("port already bound");
         assert!(matches!(err, BootstrapError::Bind { port: p, .. } if p == port));
     }
+
+    // ---- staleness (ADR-0145) ---------------------------------------------
+
+    #[test]
+    fn livez_is_503_stale_when_an_audited_controller_is_stale() {
+        for state in [ReadyState::Leader, ReadyState::Standby] {
+            let response = handle_live(b"GET /livez HTTP/1.1\r\n\r\n", state, Liveness::Stale);
+            assert_eq!(response.status, Status::ServiceUnavailable);
+            // The body never names the controller or any object: it goes to the log.
+            assert_eq!(response.body, "stale");
+        }
+    }
+
+    #[test]
+    fn livez_stays_200_ok_while_live() {
+        let response = handle_live(
+            b"GET /livez HTTP/1.1\r\n\r\n",
+            ReadyState::Leader,
+            Liveness::Live,
+        );
+        assert_eq!(
+            (response.status, response.body.as_str()),
+            (Status::Ok, "ok")
+        );
+    }
+
+    #[test]
+    fn readyz_ignores_staleness() {
+        // A stale controller is restarted by the liveness probe, not taken out of the
+        // Service: readiness keeps meaning "can do the job, or could take over".
+        let response = handle_live(
+            b"GET /readyz HTTP/1.1\r\n\r\n",
+            ReadyState::Leader,
+            Liveness::Stale,
+        );
+        assert_eq!(
+            (response.status, response.body.as_str()),
+            (Status::Ok, "leader")
+        );
+    }
+
+    #[test]
+    fn handle_without_a_liveness_argument_is_the_live_case() {
+        // The pre-existing entry point keeps its meaning for every caller that has no audit.
+        let response = handle(b"GET /livez HTTP/1.1\r\n\r\n", ReadyState::Leader);
+        assert_eq!(response.status, Status::Ok);
+    }
+
+    #[test]
+    fn readiness_is_live_until_a_controller_is_marked_stale() {
+        let readiness = Readiness::new(Election::Disabled, Gauge::default());
+        assert_eq!(readiness.liveness(), Liveness::Live);
+        readiness.mark_stale("VirtualMachine");
+        assert_eq!(readiness.liveness(), Liveness::Stale);
+        readiness.clear_stale("VirtualMachine");
+        assert_eq!(readiness.liveness(), Liveness::Live);
+    }
+
+    #[test]
+    fn staleness_is_per_controller_so_one_recovering_does_not_hide_another() {
+        let readiness = Readiness::new(Election::Disabled, Gauge::default());
+        readiness.mark_stale("VirtualMachine");
+        readiness.mark_stale("VirtualMachinePool");
+        readiness.clear_stale("VirtualMachine");
+        assert_eq!(readiness.liveness(), Liveness::Stale);
+        readiness.clear_stale("VirtualMachinePool");
+        assert_eq!(readiness.liveness(), Liveness::Live);
+    }
+
+    #[test]
+    fn staleness_is_shared_between_clones_like_the_rest_of_readiness() {
+        let readiness = Readiness::new(Election::Disabled, Gauge::default());
+        let probe_side = readiness.clone();
+        readiness.mark_stale("VirtualMachine");
+        assert_eq!(probe_side.liveness(), Liveness::Stale);
+    }
 }

@@ -164,4 +164,115 @@ mod tests {
             r#"banlieue_reconcile_total{{controller="ConfigMap",result="success"}} {OBJECTS}"#
         )));
     }
+
+    // ---- audit ledger (ADR-0145) -------------------------------------------
+
+    fn object_with_uid(uid: &str) -> Arc<ConfigMap> {
+        Arc::new(ConfigMap {
+            metadata: ObjectMeta {
+                name: Some(OBJECT_NAME.to_string()),
+                namespace: Some(OBJECT_NAMESPACE.to_string()),
+                uid: Some(uid.to_string()),
+                resource_version: Some("42".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+    }
+
+    #[tokio::test]
+    async fn an_audited_controller_records_every_invocation_in_the_ledger() {
+        let metrics = Metrics::new("test");
+        metrics.enable_audit("ConfigMap");
+        let mut wrapped = instrument_reconcile(
+            "ConfigMap",
+            metrics.clone(),
+            |_obj: Arc<ConfigMap>, _ctx: Arc<()>| async { Ok::<_, TestError>(requeue_default()) },
+        );
+
+        let _ = wrapped(object_with_uid("uid-1"), Arc::new(())).await;
+
+        assert!(
+            metrics
+                .ledger("ConfigMap")
+                .expect("opted in")
+                .contains("uid-1")
+        );
+    }
+
+    #[tokio::test]
+    async fn an_invocation_that_returns_early_still_counts_as_invoked() {
+        // The namespace gate's unserved path returns `await_change` before doing anything
+        // (ADR-0130): that is "invoked and skipped", which the audit must tell from "never
+        // invoked".
+        let metrics = Metrics::new("test");
+        metrics.enable_audit("ConfigMap");
+        let mut wrapped = instrument_reconcile(
+            "ConfigMap",
+            metrics.clone(),
+            |_obj: Arc<ConfigMap>, _ctx: Arc<()>| async { Ok::<_, TestError>(no_requeue()) },
+        );
+
+        let _ = wrapped(object_with_uid("uid-skip"), Arc::new(())).await;
+
+        assert!(
+            metrics
+                .ledger("ConfigMap")
+                .expect("opted in")
+                .contains("uid-skip")
+        );
+    }
+
+    #[tokio::test]
+    async fn an_invocation_that_errors_still_counts_as_invoked() {
+        // A failing reconcile must never trip the audit: only "never invoked" does.
+        let metrics = Metrics::new("test");
+        metrics.enable_audit("ConfigMap");
+        let mut wrapped = instrument_reconcile(
+            "ConfigMap",
+            metrics.clone(),
+            |_obj: Arc<ConfigMap>, _ctx: Arc<()>| async {
+                Err::<Action, _>(TestError::Backend("no".into()))
+            },
+        );
+
+        let _ = wrapped(object_with_uid("uid-err"), Arc::new(())).await;
+
+        assert!(
+            metrics
+                .ledger("ConfigMap")
+                .expect("opted in")
+                .contains("uid-err")
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unaudited_controller_keeps_no_ledger_so_its_memory_does_not_grow() {
+        let metrics = Metrics::new("test");
+        let mut wrapped = instrument_reconcile(
+            "ConfigMap",
+            metrics.clone(),
+            |_obj: Arc<ConfigMap>, _ctx: Arc<()>| async { Ok::<_, TestError>(requeue_default()) },
+        );
+
+        let _ = wrapped(object_with_uid("uid-1"), Arc::new(())).await;
+
+        assert!(metrics.ledger("ConfigMap").is_none());
+    }
+
+    #[tokio::test]
+    async fn an_object_with_no_uid_is_not_recorded_and_does_not_break_the_reconcile() {
+        let metrics = Metrics::new("test");
+        metrics.enable_audit("ConfigMap");
+        let mut wrapped = instrument_reconcile(
+            "ConfigMap",
+            metrics.clone(),
+            |_obj: Arc<ConfigMap>, _ctx: Arc<()>| async { Ok::<_, TestError>(requeue_default()) },
+        );
+
+        let outcome = wrapped(object(), Arc::new(())).await;
+
+        assert!(outcome.is_ok());
+        assert_eq!(metrics.ledger("ConfigMap").expect("opted in").len(), 0);
+    }
 }

@@ -124,4 +124,74 @@ mod tests {
                 .all(|w| w[0] < w[1])
         );
     }
+
+    // ---- audit (ADR-0145) ---------------------------------------------------
+
+    #[test]
+    fn the_audit_gauge_is_labelled_by_controller_and_reason_only() {
+        let metrics = Metrics::new("test");
+        metrics.set_unreconciled("VirtualMachine", "missing_from_store", 2);
+        metrics.set_unreconciled("VirtualMachine", "never_reconciled", 0);
+        let text = metrics.encode().expect("encode");
+        assert!(
+            text.contains(
+                r#"banlieue_audit_unreconciled_objects{controller="VirtualMachine",reason="missing_from_store"} 2"#
+            ),
+            "{text}"
+        );
+        assert!(
+            text.contains(
+                r#"banlieue_audit_unreconciled_objects{controller="VirtualMachine",reason="never_reconciled"} 0"#
+            ),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn the_audit_gauge_follows_the_latest_value() {
+        let metrics = Metrics::new("test");
+        metrics.set_unreconciled("VirtualMachine", "missing_from_store", 3);
+        metrics.set_unreconciled("VirtualMachine", "missing_from_store", 0);
+        let text = metrics.encode().expect("encode");
+        assert!(
+            text.contains(
+                r#"banlieue_audit_unreconciled_objects{controller="VirtualMachine",reason="missing_from_store"} 0"#
+            ),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_controller_has_no_ledger_until_it_opts_in() {
+        let metrics = Metrics::new("test");
+        assert!(metrics.ledger("VirtualMachine").is_none());
+        metrics.note_invoked("VirtualMachine", "uid-1");
+        assert!(metrics.ledger("VirtualMachine").is_none());
+    }
+
+    #[test]
+    fn an_audited_controller_records_invocations_in_its_own_ledger() {
+        let metrics = Metrics::new("test");
+        metrics.enable_audit("VirtualMachine");
+        metrics.note_invoked("VirtualMachine", "uid-1");
+        metrics.note_invoked("Other", "uid-2");
+        let ledger = metrics.ledger("VirtualMachine").expect("opted in");
+        assert!(ledger.contains("uid-1"));
+        // Another controller's invocation never lands in this one's ledger.
+        assert!(!ledger.contains("uid-2"));
+    }
+
+    #[test]
+    fn enabling_the_audit_twice_keeps_the_same_ledger() {
+        let metrics = Metrics::new("test");
+        metrics.enable_audit("VirtualMachine");
+        metrics.note_invoked("VirtualMachine", "uid-1");
+        metrics.enable_audit("VirtualMachine");
+        assert!(
+            metrics
+                .ledger("VirtualMachine")
+                .expect("opted in")
+                .contains("uid-1")
+        );
+    }
 }

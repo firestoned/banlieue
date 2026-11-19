@@ -27,6 +27,7 @@ use banlieue_api::banlieue::{
 use banlieue_api::infrastructure::{
     CloudHypervisorMachine, LibvirtMachine, ProxmoxMachine, VSphereCluster, VSphereMachine,
 };
+use banlieue_provider_sdk::audit::{self, AuditConfig};
 use banlieue_provider_sdk::bootstrap::{
     Observability, init_tracing, shutdown_signal, start_observability,
 };
@@ -68,6 +69,9 @@ const DEFAULT_LEADER_ELECTION_ID: &str = "banlieue-controller";
 /// This role's name: the OTLP `service.name` (ADR-0092) and the `role`
 /// label of `banlieue_leader` (ADR-0091).
 pub const ROLE: &str = "banlieue-controller";
+
+/// The `controller` label and audit key of the `VirtualMachine` controller (ADR-0091, ADR-0145).
+const VM_CONTROLLER: &str = "VirtualMachine";
 
 /// Per-crate `tracing` directives layered on top of the base log level.
 const LOG_DIRECTIVES: &[&str] = &["kube=warn"];
@@ -190,6 +194,9 @@ pub async fn run(cli: Cli) -> Result<()> {
         "banlieue-controller starting"
     );
 
+    // The audit's start-up grace counts from here (ADR-0145 decision 2).
+    let started = std::time::Instant::now();
+
     let client = build_client_with(cli.kubeconfig.as_deref().map(std::ffi::OsStr::new))
         .await
         .context("constructing kube client")?;
@@ -280,6 +287,10 @@ pub async fn run(cli: Cli) -> Result<()> {
     let controller =
         Controller::new(vm_api, Config::default()).reconcile_all_on(scope_changes.trigger());
     let vm_store = controller.store();
+    // ADR-0145: opt this controller in to the audit before its first reconcile, so the
+    // ledger sees every invocation. The audit itself is spawned below.
+    metrics.enable_audit(VM_CONTROLLER);
+    let vm_store_for_audit = vm_store.clone();
     // The duplicate-address check (ADR-0083) reads every VM from this store
     // rather than listing them from the API on each reconcile.
     let ctx = Arc::new(
@@ -340,12 +351,28 @@ pub async fn run(cli: Cli) -> Result<()> {
         );
     let controller_fut = run_controller(
         vm_controller,
-        "VirtualMachine",
+        VM_CONTROLLER,
         metrics.clone(),
         reconcile,
         error_policy,
         ctx.clone(),
     );
+
+    // ADR-0145: a controller that stops acting on objects that exist says nothing, so this
+    // one audits itself. Every minute it lists the VMs from the API (metadata only), checks
+    // each against its own cache and ledger, and after five bad minutes in a row fails
+    // `/livez` so the kubelet restarts the pod. A detached task: it must never end the
+    // process, and a failed list leaves the verdict where it was.
+    tokio::spawn(audit::run(
+        VM_CONTROLLER,
+        AuditConfig::default(),
+        scope.api::<VirtualMachine>(&client),
+        vm_store_for_audit,
+        gate.clone(),
+        metrics.clone(),
+        readiness.clone(),
+        started,
+    ));
 
     // VSphereCluster (CAPI InfraCluster) controller. Aggregates Provider
     // failure domains into the CAPI status. A Provider's status changing
